@@ -129,9 +129,9 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 		mutate func(*Snapshot)
 		reason string
 	}{
-		// Idle PYUSD waits for the next down step's repay; it never blocks
-		// nor joins the top-up.
-		"debt idle": {func(s *Snapshot) { s.DebtIdleRaw = s.PositionDebtRaw }, topupAllocationReason},
+		// Idle PYUSD beside debt is a step's conversion excess: it converts
+		// to collateral before any top-up.
+		"debt idle": {func(s *Snapshot) { s.DebtIdleRaw = s.PositionDebtRaw }, stepResidueReason},
 		// Ethena is no leverage lane: debt keeps the installed hold.
 		"non-leverage lane": {func(s *Snapshot) { s.RouteLane, s.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane }, "single_loop_position_ready"},
 	} {
@@ -141,12 +141,12 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 			t.Fatalf("%s: %+v", name, got)
 		}
 	}
-	// OnRe debt is Squads USDC: cash there beside debt starts no leg (no
-	// top-up beside shared USDC debt, no lone swap).
+	// OnRe debt is Squads USDC: cash there beside debt converts to
+	// collateral as a step's excess, never as a Voltr top-up.
 	onre := liveDebtTopupSnapshot()
 	onre.RouteLane, onre.StrategyKey, onre.SquadsIdleRaw = onreONycUSDC, onreONycUSDC, 1_000_000
-	if got := Decide(onre); got.Action == SwapDebtToCollateralStep || got.Action == SwapStableToCollateralStep {
-		t.Fatalf("OnRe cash beside debt was swapped: %+v", got)
+	if got := Decide(onre); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 1_000_000 {
+		t.Fatalf("OnRe cash beside debt: %+v", got)
 	}
 }
 

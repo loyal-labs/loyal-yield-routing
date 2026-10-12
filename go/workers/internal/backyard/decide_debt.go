@@ -10,6 +10,10 @@ const (
 	topupSwapReason       = "topup_usdc_requires_collateral"
 	topupAllocationReason = "topup_voltr_idle"
 	topupDepositReason    = "topup_collateral_deposit"
+	// A step's close moves its conversion's minimum output; the excess the
+	// conversion delivers stays beside the position. Borrowed-token excess
+	// converts to collateral, which the top-up deposit then joins.
+	stepResidueReason = "step_residue_to_collateral"
 )
 
 const onreONycUSDC = "OnRe/ONyc/USDC"
@@ -39,10 +43,10 @@ func laneSwap(lane string, action Action) bool {
 	return err == nil
 }
 
-// topupStep is the plan B3 sequence beside a funded position: swap Squads
-// cash to collateral, deposit that collateral, then move idle Voltr cash into
-// Squads. No top-up leg borrows or repays, and debt residue beside the
-// position waits for the next down step's repay. It runs before any borrow,
+// topupStep is the plan B3 sequence beside a funded position: convert a
+// step's borrowed-token excess (stepResidueReason), swap Squads cash to
+// collateral, deposit that collateral, then move idle Voltr cash into Squads.
+// No top-up leg borrows or repays. It runs before any borrow,
 // so a later borrow levers the whole collateral. Every withdrawal, hard-LTV,
 // unwind and report rule has already run.
 func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (Decision, bool) {
@@ -55,6 +59,9 @@ func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (
 	// whose next overflow tranche moves them on. Its own residue and
 	// collateral still redeposit above and below.
 	_, overflow := overflowSourceOf(s.RouteLane)
+	if s.PositionDebtRaw > 0 && s.DebtIdleRaw > partialWithdrawalDustRaw {
+		return d(SwapDebtToCollateralStep, stepResidueReason, s.DebtIdleRaw), true
+	}
 	if s.SquadsIdleRaw > 0 && !overflow {
 		return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw), true
 	}

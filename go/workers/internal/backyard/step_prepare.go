@@ -102,6 +102,10 @@ type stepState struct {
 	collateral                     decodedKaminoReserve
 	obligation                     kamino.Obligation
 	heldCollateral, heldDebt, slot uint64
+	// The custody balances the step's effects start from. They equal the
+	// held amounts except on a shared-USDC-debt lane, whose debt custody is
+	// the Squads bridge account: its cash is the bridge's, never a step's.
+	collateralBalance, debtBalance uint64
 	// topology is the obligation's reserves before the step, as its first
 	// refresh names them.
 	topology []string
@@ -124,8 +128,12 @@ func readStepState(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) 
 	if st.heldCollateral, err = stepCustodyRaw(accounts, route.CollateralCustody, route.Kamino.CollateralMint); err != nil {
 		return stepState{}, err
 	}
-	if st.heldDebt, err = stepCustodyRaw(accounts, route.DebtCustody, route.Kamino.DebtMint); err != nil {
+	if st.debtBalance, err = stepCustodyRaw(accounts, route.DebtCustody, route.Kamino.DebtMint); err != nil {
 		return stepState{}, err
+	}
+	st.collateralBalance, st.heldDebt = st.heldCollateral, st.debtBalance
+	if sharedUSDCDebt(route.Lane) {
+		st.heldDebt = 0
 	}
 	if position.CollateralDepositedRaw > 0 {
 		st.topology = append(st.topology, route.Kamino.CollateralReserve)
@@ -206,11 +214,15 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (uint64
 		}
 		return receipts, min(convert.Uint64(), liquidity+st.heldCollateral), nil
 	}
-	if repayRaw <= st.heldDebt {
-		return 0, 0, budgetHold("step_down_nothing_to_convert")
+	// Held debt shortens what the conversion must cover, and held collateral
+	// what the withdrawal must free; when held custody alone covers it the
+	// step still converts the whole amount, repaying a little more.
+	short := repayRaw
+	if st.heldDebt < repayRaw {
+		short -= st.heldDebt
 	}
 	p := st.position
-	need, err := valueBetweenTokenRaw(repayRaw-st.heldDebt, p.DebtDecimals, p.CollateralDecimals, p.DebtPriceSF, p.CollateralPriceSF, true)
+	need, err := valueBetweenTokenRaw(short, p.DebtDecimals, p.CollateralDecimals, p.DebtPriceSF, p.CollateralPriceSF, true)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -219,10 +231,10 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (uint64
 	if !margined.IsUint64() {
 		return 0, 0, budgetHold("step_amounts_invalid")
 	}
-	if need = margined.Uint64(); need <= st.heldCollateral {
-		return 0, 0, budgetHold("step_down_nothing_to_convert")
+	if need = margined.Uint64(); need > st.heldCollateral {
+		need -= st.heldCollateral
 	}
-	receipts, err := payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.collateralMintSupply, need-st.heldCollateral)
+	receipts, err := payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.collateralMintSupply, need)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -267,11 +279,18 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		if err != nil {
 			return Observation{}, StepExecutionEvidence{}, err
 		}
-		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, true, borrow, borrow, s.Slot)
+		// The conversion also takes the lane's held borrowed token, the
+		// excess a previous step's conversion left.
+		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, true, borrow, borrow+st.heldDebt, s.Slot)
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
 	repay, full := stepDownRepay(s, decision.Reason)
+	// Under a split policy's leg cap a repay leaves a tenth for the
+	// conversion's excess; the step then repeats while debt remains.
+	if limit := stepLegCap(route); repay > limit-limit/10 {
+		repay, full = limit-limit/10, false
+	}
 	if full {
 		bound, _, err := observeRawFullPayoff(ctx, view, route, s.Slot)
 		if err != nil {
@@ -390,11 +409,15 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 	effect := func(custody, mint, program string, before, after uint64) ExpectedAccountEffect {
 		return ExpectedAccountEffect{Address: custody, Owner: program, Mint: mint, Authority: bridgeVault, BeforeRaw: before, AfterRaw: after}
 	}
-	collateral := effect(route.CollateralCustody, route.Kamino.CollateralMint, route.CollateralTokenProgram, st.heldCollateral, 0)
-	debt := effect(route.DebtCustody, route.Kamino.DebtMint, route.DebtTokenProgram, st.heldDebt, st.heldDebt)
+	// Up: the borrow and the held debt convert exactly, and the deposit takes
+	// the held collateral plus the minimum output. Down: the withdrawal less
+	// the conversion stays as collateral, and the repay takes the held debt
+	// plus the minimum output. Conversion excess stays beside them.
+	collateral := effect(route.CollateralCustody, route.Kamino.CollateralMint, route.CollateralTokenProgram, st.collateralBalance, st.collateralBalance-st.heldCollateral)
+	debt := effect(route.DebtCustody, route.Kamino.DebtMint, route.DebtTokenProgram, st.debtBalance, st.debtBalance+openLiquidity-convertRaw)
 	if !up {
-		collateral.AfterRaw = st.heldCollateral + openLiquidity - convertRaw
-		debt.AfterRaw = 0
+		collateral.AfterRaw = st.collateralBalance + openLiquidity - convertRaw
+		debt.AfterRaw = st.debtBalance - st.heldDebt
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: stepEffects(up, collateral, debt)}, guaranteed, nil
 }

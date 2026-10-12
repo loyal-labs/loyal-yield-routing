@@ -2,6 +2,8 @@ package backyard
 
 import (
 	"context"
+	"encoding/binary"
+	"math/big"
 	"reflect"
 	"strings"
 	"testing"
@@ -122,5 +124,79 @@ func TestWorkerDispatchesAtomicStep(t *testing.T) {
 	}}
 	if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != "prepare,record,admit,build" {
 		t.Fatal(order, err)
+	}
+}
+
+// A step's close moves its conversion's minimum; the excess beside the
+// position joins it: borrowed-token excess (above dust) and Squads cash
+// beside USDC debt convert to collateral, and collateral deposits.
+func TestStepConversionExcessJoinsThePosition(t *testing.T) {
+	t.Parallel()
+	pyusd := leverageSnapshot(1.5)
+	pyusd.RouteLane, pyusd.StrategyKey, pyusd.LeverageTargetLevel = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, 1.5
+	pyusd.MinimumCollateralDepositRaw = 1
+	if got := Decide(pyusd); got.Action != Hold {
+		t.Fatalf("a settled position moved: %+v", got)
+	}
+	excess := pyusd
+	excess.DebtIdleRaw = 2_500_000
+	if got := Decide(excess); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 {
+		t.Fatalf("PYUSD excess: %+v", got)
+	}
+	excess.DebtIdleRaw = partialWithdrawalDustRaw
+	if got := Decide(excess); got.Action != Hold {
+		t.Fatalf("dust started a leg: %+v", got)
+	}
+	excess.DebtIdleRaw, excess.CollateralIdleRaw, excess.PrimeIdleRaw = 0, 2_400_000, 2_400_000
+	if got := Decide(excess); got.Action != OpenRouteStep || got.Reason != topupDepositReason || got.AmountRaw != 2_400_000 {
+		t.Fatalf("AUTO excess: %+v", got)
+	}
+	maple := leverageSnapshot(1.5)
+	maple.RouteLane, maple.StrategyKey, maple.LeverageTargetLevel = SelectedRouteID, SelectedRouteID, 1.5
+	maple.MinimumCollateralDepositRaw = 1
+	maple.SquadsIdleRaw = 2_500_000
+	if got := Decide(maple); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 || got.Validate() != nil {
+		t.Fatalf("Squads cash beside USDC debt: %+v", got)
+	}
+	maple.SquadsIdleRaw, maple.CollateralIdleRaw, maple.PrimeIdleRaw = 0, 2_400_000, 2_400_000
+	got := Decide(maple)
+	if got.Action != OpenRouteStep || got.Reason != topupDepositReason {
+		t.Fatalf("syrupUSDC excess: %+v", got)
+	}
+	position := leverageTestPosition(3_000_000_000, 1_000_000_000)
+	if leg, wire, _, err := selectKaminoLeg(got, position); err != nil || leg != kaminoLegDeposit || wire != 2_400_000 {
+		t.Fatalf("excess deposit beside debt: leg %d wire %d %v", leg, wire, err)
+	}
+}
+
+// A step on a shared-USDC-debt lane never spends the Squads bridge cash:
+// its debt custody balance only starts the effects.
+func TestStepNeverSpendsBridgeCash(t *testing.T) {
+	t.Parallel()
+	_, _, _, _, accounts, route := leverage175Fixture(t)
+	for _, reserve := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve} {
+		putKey(t, accountAt(accounts, reserve).Data[5112:5144], kaminoScopePrices)
+	}
+	// $50 of bridge cash waits in the Squads USDC account, the lane's debt
+	// custody.
+	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 50_000_000)
+	// The obligation's own values: $1,750 deposited at a 66% borrow limit
+	// against $750 of debt.
+	obligation := accountAt(accounts, route.Kamino.Obligation).Data
+	for offset, value := range map[int]int64{1192: 1750, 2208: 750, 2224: 750, 2240: 1155} {
+		putScaledFraction(obligation[offset:offset+16], new(big.Int).Lsh(big.NewInt(value), 60))
+	}
+	st, err := readStepState(append(accounts, clockFixture()), route, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.debtBalance != 50_000_000 || st.heldDebt != 0 || st.heldCollateral != st.collateralBalance {
+		t.Fatalf("OnRe step state: balance %d held %d", st.debtBalance, st.heldDebt)
+	}
+	// Held debt covering the repay shortens the conversion, never refuses it.
+	st.heldDebt = 10_000
+	s := leverageSnapshot(1.5)
+	if _, convert, err := planDownStep(s, Decision{Reason: hardLTVDeleverReason}, st, 5_000); err != nil || convert == 0 {
+		t.Fatalf("held debt over the repay refused the step: %d %v", convert, err)
 	}
 }

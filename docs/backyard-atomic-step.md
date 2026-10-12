@@ -18,13 +18,25 @@ executes (the vault signs nothing at top level):
 
 - The open leg's amount is decided before the quote: the capacity-sized borrow
   (up), or the collateral receipts the down step withdraws.
-- The conversion is quoted for exactly the open leg's output plus any custody
-  already held. Its on-chain minimum output (Jupiter's slippage floor, or
-  Hastra's quoted price) is the guaranteed output.
-- The close leg moves the held custody plus that guaranteed output. If the
-  conversion delivers less, the close leg lacks custody and the whole step
-  fails atomically; if it delivers more, the excess stays as idle custody and
-  is swept by the next step's close leg.
+- The conversion is quoted for exactly the open leg's output plus the lane's
+  held custody of the source token. Its on-chain minimum output (Jupiter's
+  slippage floor, or Hastra's quoted price) is the guaranteed output.
+- The close leg moves the held custody of the destination token plus that
+  guaranteed output. If the conversion delivers less, the close leg lacks
+  custody and the whole step fails atomically.
+- On a shared-USDC-debt lane (Maple, OnRe, Prime/PRIME/USDC) the debt custody
+  is the Squads bridge account; its cash belongs to the bridge flows
+  (withdrawals, stages, tranches), so a step never counts it as held. Its
+  balance only starts the step's expected effects.
+- A Jupiter conversion usually delivers more than its minimum. That excess
+  joins the position by the next tick: borrowed-token excess beside debt above
+  dust, and Squads cash beside USDC debt, convert to collateral
+  (`step_residue_to_collateral`), and collateral beside debt deposits
+  (`topup_collateral_deposit`). Neither leg borrows or repays; each only
+  lowers LTV. A lane's next up step also converts its held borrowed token.
+- A split-policy lane caps each KLend leg at the installed `1e12` raw: a down
+  step repays at most nine tenths of it, leaving room for the conversion's
+  excess, and repeats while debt remains.
 - KLend repays `min(amount, owed)`, so a down step that repays all debt asks
   for the payoff's upper bound and never leaves a dust remainder by rounding.
 - KLend checks obligation health per top-level instruction, so the refresh
@@ -54,7 +66,11 @@ same snapshot, so a refreshed snapshot re-decides to an equal decision.
 
 Hard LTV is `min(6000, liquidationThresholdBPS - 1500)` bps as before; the
 step no longer needs an idle repayment buffer, so the old
-`hard_ltv_without_repayment_buffer` manual stop is gone.
+`hard_ltv_without_repayment_buffer` manual stop is gone. Held custody that
+already covers part of a repay shortens the conversion but never refuses the
+step. If the obligation's borrow limit leaves no withdrawal room (LTV within
+300 bps of the limit), the step holds with `step_no_withdraw_room`; only
+outside cash can repay then.
 
 ## Why one transaction
 
@@ -86,14 +102,19 @@ the one v1 compiler (`message_v1.go`).
 
 - The compute budget lives in the v1 message config, not in ComputeBudget
   instructions: the CU limit is always set (200,000 per instruction, at most
-  1,400,000), the priority fee is a lamport total, AUTO-collateral lanes
-  request a 64 KiB heap, and loaded account data is capped at 64 MiB.
+  1,400,000), AUTO-collateral lanes request a 64 KiB heap, and loaded account
+  data is capped at 64 MiB. The config's priority fee (a lamport total, not a
+  per-CU price) is left unset, as Backyard set none before.
 - RPC reads ask for `maxSupportedTransactionVersion` of at least 1.
 - The binding limit is the 64 keys, not the bytes: a step's Jupiter route is
   quoted with `maxAccounts` = 64 minus the keys the step's KLend legs, refreshes
   and Squads executes already use, so the route always fits.
 - Wires persisted by an older binary (legacy or v0, count-prefixed signature)
-  still split, so a row in flight across the upgrade lands and settles.
+  still split, so a row already in broadcast intent keeps resending its exact
+  bytes and settles by its receipt. A row signed but not yet sent fails the
+  recompile comparison and expires unsent; an old initializer or failed
+  report row that needs recompiling holds. All of these fail closed; deploy
+  with no Backyard row in flight.
 
 ## Keys and bytes per lane
 
@@ -147,7 +168,7 @@ Read-only `simulateTransaction` against the public mainnet RPC on
 
 | Lane | Dir | Slot | Bytes | Keys | CU | LTV before -> after | Result |
 |---|---|---:|---:|---:|---:|---|---|
-| AUTO/AUTO/wYLDS | up | 455874134 | 1454 | 31 | 481,529 | 4283 -> 4284 bps | OK |
+| AUTO/AUTO/wYLDS | up | 455874134 | 1454 | 31 | 481,529 | 4283 -> 4284 bps | OK (again at 455879610 after the review fixes: 481,368 CU) |
 | AUTO/AUTO/wYLDS | down | 455874151 | 1386 | 29 | 467,781 | 4283 -> 4282 bps | OK |
 | AUTO/AUTO/PYUSD | down | 455874166 | 2012 | 46 | 591,210 | 4284 -> 4284 bps | OK |
 | AUTO/AUTO/PYUSD | up | 455874202 | 1913 | 43 | n/a | n/a | KLend 6098 `BorrowingAboveUtilizationRateDisabled` (PYUSD reserve at 90.08% of its 90% limit) |

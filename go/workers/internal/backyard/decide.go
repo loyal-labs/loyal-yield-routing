@@ -342,9 +342,16 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		// same reserve-derived builder bound already refuses.
 		depositReady = s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
 	}
-	// A levered position moves only by atomic steps; residue beside it waits
-	// for the next step to sweep it.
+	// A levered position moves only by atomic steps. The excess a step's
+	// conversion leaves joins the position: Squads cash beside the USDC debt
+	// converts to collateral (stepResidueReason), and collateral deposits.
 	if s.PositionDebtRaw > 0 {
+		if earnActiveLane(s.RouteLane) && s.SquadsIdleRaw > 0 {
+			return decision(SwapDebtToCollateralStep, stepResidueReason, s.SquadsIdleRaw)
+		}
+		if earnActiveLane(s.RouteLane) && depositReady {
+			return decision(OpenRouteStep, topupDepositReason, s.CollateralIdleRaw)
+		}
 		return decision(Hold, "single_loop_position_ready", 0)
 	}
 	if earnHeldLane(s.RouteLane) && s.SquadsIdleRaw > 0 && (s.CollateralIdleRaw > 0 || s.PositionCollateralRaw > 0) {
