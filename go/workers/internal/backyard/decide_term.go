@@ -16,8 +16,9 @@ import (
 // maturity (no update_obligation_config, no rollover): the borrowed cash then
 // converts to collateral and redeposits through the lane's ordinary loop
 // legs. A lane it cannot keep alive delevers fully before maturity through
-// the down-move chain, under the debt-clear confirmation every full payoff
-// keeps.
+// the down-move chain. Its full payoff needs no operator confirmation: the
+// batch's own maturity proof mints an emergency debt-clear authority
+// (verifyDebtClearRiskBatch) with reason termMaturityReason.
 const (
 	// termKeepAliveSeconds: under this much time to maturity a held term
 	// lane borrows again.
@@ -27,6 +28,7 @@ const (
 	// termAlertSeconds: the days-to-maturity alert (loyal.rules.yml).
 	termAlertSeconds    int64 = 2 * 24 * 3600
 	termKeepAliveReason       = "term_keepalive"
+	termMaturityReason        = "term_maturity"
 	// termKeepAliveBorrowRaw is the keep-alive borrow: KLend's term restarts
 	// on any borrow, so the smallest borrow the lane takes is enough. It
 	// needs no economic approval: it keeps the existing position, it does

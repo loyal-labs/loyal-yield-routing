@@ -62,6 +62,14 @@ The worker creates emergency authority internally from fresh coherent account
 observations. Utilization, an operator-supplied reason, withdrawal demand and a
 saved `Fresh` flag do not establish an emergency.
 
+Term-debt maturity is the second emergency (reason `term_maturity`). A lane
+owing term debt (wYLDS, 30-day term) that is under a day from maturity, with no
+room for the keep-alive borrow, delevers fully without operator confirmation.
+The same account batch must show the obligation's term end and the chain clock;
+a snapshot that only claims the maturity grants nothing. Past maturity KLend
+refuses the keep-alive borrow and the debt becomes liquidatable, so this exit
+cannot wait for an operator.
+
 Emergency authority is limited to the verified risk-reduction flow. After its
 first leg reconciles, the remaining bounded exit may continue if LTV improves.
 That authority cannot fund a new position, switch lanes or grant permission to
