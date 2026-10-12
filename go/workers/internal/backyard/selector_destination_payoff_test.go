@@ -993,7 +993,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 		equity = uint64(200_000_000)
 	)
 	m, route, rpc, client := autoCandidateStack(t, slot, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1115,7 +1115,7 @@ func TestSelectorDestinationCandidatePricesFullEntryAndPayoff(t *testing.T) {
 		out, _ := base(in, destination, a)
 		return out, out * 9950 / 10000
 	}, nil)
-	honestQuote, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), honest, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false, nil)
+	honestQuote, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), honest, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1164,7 +1164,7 @@ func TestSelectorDestinationCandidateHoldsUnconvertibleDustResidue(t *testing.T)
 	t.Parallel()
 	const slot = int64(77)
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
-	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 200_037_035, slot, false, nil)
+	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 200_037_035, slot, false)
 	assertBudgetHold(t, err, "jupiter_auto_wire_floor_zero")
 }
 
@@ -1216,7 +1216,7 @@ func TestSelectorDestinationCandidateConvertsTinyAbovePegResidue(t *testing.T) {
 		}
 		return quoted, quoted
 	}, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), abovePeg, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 200_037_035, slot, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), abovePeg, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 200_037_035, slot, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1283,11 +1283,11 @@ func TestSelectorDestinationGateIsTheActiveRegistry(t *testing.T) {
 	m, _, rpc, client := autoCandidateStack(t, slot, nil)
 	// The AUTO lane passes the lane gate (this stack's Jupiter stub may still
 	// refuse the swap itself; full AUTO pricing is covered above).
-	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(testAutoLane), 200_037_035, slot, false, nil); err != nil && strings.Contains(err.Error(), "invalid_selector_destination") {
+	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(testAutoLane), 200_037_035, slot, false); err != nil && strings.Contains(err.Error(), "invalid_selector_destination") {
 		t.Fatal("destination gate refused the AUTO lane:", err)
 	}
 	for _, lane := range []string{ethenaUSDePYUSD.Lane, RouteID} {
-		_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(lane), 1_000_000, slot, false, nil)
+		_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(lane), 1_000_000, slot, false)
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
 }
@@ -1415,7 +1415,9 @@ func autoCandidateInitializerStack(t *testing.T, slot int64, funded bool, varian
 		}
 		values := payload.Result.Value
 		for i, address := range addresses {
-			if a, ok := prestate[address]; ok {
+			if a, ok := prestate[address]; ok && a.Lamports == 0 {
+				values[i] = nil
+			} else if ok {
 				values[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": false,
 					"data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
 			}
@@ -1440,7 +1442,7 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 		equity = uint64(200_000_000) // coherent parity economics: zero guaranteed residue
 	)
 	m, route, rpc, client := autoCandidateInitializerStack(t, slot, false, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1492,7 +1494,7 @@ func TestSelectorDestinationCandidateInitializerPrestateRefusals(t *testing.T) {
 	m, _, rpc, client := autoCandidateInitializerStack(t, 77, false, func(_ RuntimeRoute, prestate map[string]ConfirmedAccount) {
 		prestate[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1}
 	})
-	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 2_000_000, 77, false, nil)
+	_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), 2_000_000, 77, false)
 	assertBudgetHold(t, err, "initializer_native_funding_unavailable")
 }
 
@@ -1532,92 +1534,4 @@ func TestCandidateInitializerDecodesToTheManifestCompile(t *testing.T) {
 	if otherMessage, err := m.compileKaminoInitializationMessage(other); err != nil || bytes.Equal(otherMessage, message) {
 		t.Fatalf("a request through another policy compiled the same wire: %v", err)
 	}
-}
-
-// The reentry wrapper admits the funded AUTO lane only with the exact source
-// exit bound of its own observation; an exit-only lane never reenters.
-func TestSelectorDestinationReentryStaysBoundToTheSourceExit(t *testing.T) {
-	t.Parallel()
-	const slot = int64(77)
-	m, _, rpc, client := autoCandidateInitializerStack(t, slot, false, nil)
-	funded := Observation{Snapshot: Snapshot{RouteLane: testAutoLane, StrategyKey: testAutoLane, Fresh: true, ObligationPresenceKnown: true, ObligationPresent: true, HasPosition: true, PositionCollateralRaw: 10_000_000_000, PositionDebtRaw: 5_000_000, StrategyNAVRaw: 1, Slot: slot, ObservationID: "candidate-observation"}}
-	source := selectorSourceQuote{Lane: testAutoLane, ObservationID: funded.Snapshot.ObservationID, ExitBound: &selectorExitBound{MaxCollateralRaw: 10_000_000_000, MaxDebtRaw: 5_000_000}, Recipe: selectorRecipe{EvidenceID: sha256Bytes([]byte("candidate-exit")), ValidThroughSlot: slot + 1}}
-	unbound := source
-	unbound.ExitBound = nil
-	if _, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, funded, leveredTestMarket(funded.Snapshot.RouteLane), unbound, 2_000_000, false); err == nil {
-		t.Fatal("reentry priced without the source exit bound")
-	}
-	exitOnly := funded
-	exitOnly.Snapshot.RouteLane, exitOnly.Snapshot.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
-	_, err := observeSelectorReentryDestinationSize(context.Background(), rpc, fixtureView(t, rpc), client, m, exitOnly, leveredTestMarket(exitOnly.Snapshot.RouteLane), source, 2_000_000, false)
-	assertBudgetHold(t, err, "selector_reentry_destination_unavailable")
-}
-
-// Doc 17: the bounded reentry forecast validates recreation pricing against a
-// SUPPLIED source exit bound over the observed funded same-lane position — the
-// bound admits the funded obligation into the forecast-only prestate and the
-// recipe still leads with the exact initializer recreation rent and fee. This
-// proves the recreation half of the loop from the given bound; it is NOT a
-// proved complete unwind (the bound's own exit economics are the source
-// quote's, not re-proved here). The strictly absent-only EXECUTION prestate
-// behind the same manifest stays enforced.
-func TestSelectorDestinationCandidateReentryPricesBoundedRecreation(t *testing.T) {
-	t.Parallel()
-	const (
-		slot       = int64(77)
-		equity     = uint64(200_000_000)
-		collateral = int64(15_000_000_000) // 15 AUTO of receipts at the pinned 1:1 rate (9dp)
-		debt       = int64(5_000_000)      // 5 PYUSD (6dp)
-	)
-	m, route, rpc, client := autoCandidateInitializerStack(t, slot, true, nil)
-	bound := selectorExitBound{MaxCollateralRaw: collateral, MaxDebtRaw: debt}
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(autoAUTOPYUSD.Lane), equity, slot, false, &selectorReentryForecast{bound: bound})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Recreation is still priced FIRST: exact reviewed binding identity, the
-	// transport's exact rent and the observed fee, wrapped at the appended
-	// eighth constraint of the reviewed policy — despite the obligation being
-	// observed present.
-	request, effects, message, err := q.Recipe.Inputs[0].decodeWithManifest(m)
-	if err != nil {
-		t.Fatal(err)
-	}
-	init, ok := request.(KaminoInitializationRequest)
-	if !ok || effects.Kind != "kamino-initialize" || !effects.Conserved || effects.Initialization == nil || *effects.Initialization != init {
-		t.Fatalf("initializer step drifted: %+v %+v", request, effects)
-	}
-	if init.RouteLane != route.Lane || init.Policy != installedAutoPolicyKey() {
-		t.Fatalf("initializer lost the installed AUTO policy: %+v", init)
-	}
-	if init.RentLamports != autoCandidateInitializerRent() || init.MaximumFeeLamports != 5000 {
-		t.Fatalf("initializer rent/fee drifted: %+v", init)
-	}
-	manifestMessage, err := m.compileKaminoInitializationMessage(init)
-	if err != nil || !bytes.Equal(manifestMessage, message) {
-		t.Fatalf("retained initializer message is not the manifest compile: %v", err)
-	}
-	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitialize {
-		t.Fatalf("initializer not wrapped at its leg %d", autoInitialize)
-	}
-	if second, _, _, err := q.Recipe.Inputs[1].decodeWithManifest(m); err != nil {
-		t.Fatal(err)
-	} else if bridge, ok := second.(BridgeBuildRequest); !ok || bridge.Action != VoltrAllocateToSquads {
-		t.Fatalf("initializer is not the first priced step: %T", second)
-	}
-	if q.Recipe.SetupLamports != init.RentLamports || len(q.Recipe.Costs) != len(q.Recipe.Inputs) || q.Recipe.Costs[0].Fee.Lamports != 5000 {
-		t.Fatalf("initializer rent or costing drifted: setup=%d costs=%d", q.Recipe.SetupLamports, len(q.Recipe.Costs))
-	}
-	if len(q.Recipe.Inputs) != 24 || int64(len(q.Recipe.Inputs)) > selectorFullRecipeWindows {
-		t.Fatal("recipe window count drifted", len(q.Recipe.Inputs))
-	}
-	// The EXECUTION admission gate on the same reviewed manifest stays strictly
-	// absent-only: priced against this exact funded state it must refuse.
-	execution, err := m.initializationRequest(testPolicies(t), testAutoLane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, autoCandidateInitializerRent(), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	execution.MaximumFeeLamports = 5000
-	_, err = m.observePhase3KnownBuildCost(context.Background(), rpc, fixtureView(t, rpc), execution, ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &execution})
-	assertBudgetHold(t, err, "initializer_obligation_already_present")
 }

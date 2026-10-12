@@ -44,6 +44,7 @@ type Facts struct {
 	leverageReaction    prometheus.Histogram
 	leverageOutages     *prometheus.CounterVec
 	termDebtDays        *prometheus.GaugeVec
+	stepNoRoom          *prometheus.CounterVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -103,9 +104,12 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		termDebtDays: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_term_debt_days_to_maturity", Help: "A held Earn Max lane's days from the chain clock to its term debt's maturity (negative once matured); no series without term debt.",
 		}, []string{"lane"}),
+		stepNoRoom: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "loyal_backyard_step_no_room_total", Help: "Backyard ticks whose step held because the chain had no room for the move its target wants, by lane and target rule.",
+		}, []string{"lane", "rule"}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
-		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays)
+		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom)
 	return f
 }
 
@@ -140,6 +144,11 @@ func (f *Facts) BackyardLeverageGap(lane string, gap float64, targeted bool) {
 // BackyardLeverageOutage counts a leverage sample that could not be decided.
 func (f *Facts) BackyardLeverageOutage(reason string) {
 	f.leverageOutages.WithLabelValues(reason).Inc()
+}
+
+// BackyardStepNoRoom counts a step held for lack of chain room.
+func (f *Facts) BackyardStepNoRoom(lane, rule string) {
+	f.stepNoRoom.WithLabelValues(lane, rule).Inc()
 }
 
 // BackyardTermDebtDays sets a held lane's days to its term debt's maturity;

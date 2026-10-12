@@ -148,18 +148,3 @@ func concurrentReads(ctx context.Context, steps ...func(context.Context) error) 
 	}
 	return nil
 }
-
-// exitLegCostReads reads each cost-only leg's cost from its own template.
-func exitLegCostReads(rpc *chain.Client, view *View, m RouteManifest, legs []phase3BridgeExitCost) []func(context.Context) error {
-	reads := make([]func(context.Context) error, len(legs))
-	for i := range legs {
-		reads[i] = func(ctx context.Context) error {
-			request, effects, _, err := legs[i].Template.decodeWithManifest(m)
-			if err == nil {
-				legs[i].Cost, err = m.observePhase3KnownBuildCost(ctx, rpc, view, request, effects)
-			}
-			return err
-		}
-	}
-	return reads
-}

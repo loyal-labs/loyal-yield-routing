@@ -17,17 +17,16 @@ import (
 // own observation as always.
 
 // roomWatch is one reserve the worker waits on. Debt watches borrow room on
-// a lane's debt reserve (a held lane below its stored leverage target, or a
-// tranche destination); collateral watches deposit room on a tranche
-// destination's collateral reserve. leverage marks a lane below its target,
-// the only watches the leverage reaction time is measured on.
+// a held lane's debt reserve; collateral watches deposit room on a
+// collateral reserve. leverage marks a lane below its target, the only
+// watches the leverage reaction time is measured on.
 type roomWatch struct {
 	lane     string
 	route    RuntimeRoute
 	debt     bool
 	leverage bool
-	// wakes: an opening wakes the tick loop (a lane below its target or a
-	// tranche destination); other held lanes are watched for the gauge.
+	// wakes: an opening wakes the tick loop (a lane below its target);
+	// other held lanes are watched for the gauge.
 	wakes bool
 }
 
@@ -96,7 +95,7 @@ func reserveUSD(raw uint64, r decodedKaminoReserve) float64 {
 
 // leverageRoomWatches is what a tick watches: the debt reserve of every held
 // lane (for the room gauge), waking on the ones below their stored leverage
-// target, and a tranche destination's debt and collateral reserves.
+// target.
 func leverageRoomWatches(o Observation) []roomWatch {
 	var out []roomWatch
 	index := map[string]int{}
@@ -118,10 +117,6 @@ func leverageRoomWatches(o Observation) []roomWatch {
 		below := lane.targeted && lane.gap > 0
 		add(lane.lane, true, below, below)
 	}
-	if o.planning != nil && o.planning.tranche != nil {
-		add(o.planning.tranche.Destination, true, false, true)
-		add(o.planning.tranche.Destination, false, false, true)
-	}
 	return out
 }
 
@@ -139,39 +134,21 @@ type laneLeverage struct {
 }
 
 // heldLaneLeverage is every held lane with positive equity in one
-// observation: the working lane from its snapshot, the others from their
-// observed values.
+// observation, from its own view.
 func heldLaneLeverage(o Observation) []laneLeverage {
-	values := map[string][2]int64{}
-	terms := map[string]int64{}
-	s := o.Snapshot
-	if s.HasPosition && s.PositionCollateralValueRaw > 0 {
-		values[s.RouteLane] = [2]int64{s.PositionCollateralValueRaw, s.PositionDebtValueRaw}
-		if s.PositionDebtRaw > 0 {
-			terms[s.RouteLane] = s.DebtTermEndUnix
-		}
-	}
-	for _, f := range o.heldFacts {
-		values[f.Lane] = [2]int64{f.CollateralValueRaw, f.DebtValueRaw}
-		if f.DebtValueRaw > 0 {
-			terms[f.Lane] = f.DebtTermEndUnix
-		}
-	}
 	var out []laneLeverage
-	for lane, v := range values {
-		equity := v[0] - v[1]
-		if equity <= 0 || v[1] < 0 {
+	for _, s := range o.lanes {
+		equity := s.PositionCollateralValueRaw - s.PositionDebtValueRaw
+		if !s.HasPosition || s.PositionCollateralValueRaw <= 0 || equity <= 0 || s.PositionDebtValueRaw < 0 {
 			continue
 		}
-		l := laneLeverage{lane: lane, current: float64(v[0]) / float64(equity)}
-		if end := terms[lane]; end > 0 && s.ChainUnix > 0 {
-			l.termDays, l.termOwed = float64(end-s.ChainUnix)/86_400, true
+		l := laneLeverage{lane: s.RouteLane, current: float64(s.PositionCollateralValueRaw) / float64(equity)}
+		if s.PositionDebtRaw > 0 && s.DebtTermEndUnix > 0 && s.ChainUnix > 0 {
+			l.termDays, l.termOwed = float64(s.DebtTermEndUnix-s.ChainUnix)/86_400, true
 		}
-		if o.planning != nil {
-			if target, ok := o.planning.leverage[lane]; ok && target.Level > 0 {
-				l.targeted, l.target = true, min(target.Level, leverageMaxLiveLevel)
-				l.gap = max(l.target-l.current, 0)
-			}
+		if s.LeverageTargetLevel > 0 {
+			l.targeted, l.target = true, min(s.LeverageTargetLevel, leverageMaxLiveLevel)
+			l.gap = max(l.target-l.current, 0)
 		}
 		out = append(out, l)
 	}

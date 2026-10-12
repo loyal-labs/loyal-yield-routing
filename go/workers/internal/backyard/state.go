@@ -85,46 +85,24 @@ type Snapshot struct {
 	// the part of StrategyNAVRaw the other held lanes carry.
 	HeldLanes        string `json:",omitempty"`
 	OtherLanesNAVRaw int64  `json:",omitempty"`
-	// CrossLaneHardLTV marks a view moved off the working lane because
-	// another held lane reached its hard LTV: its risk is handled first.
-	CrossLaneHardLTV bool `json:",omitempty"`
-	// OtherLanesCustodyHeld: another held lane has collateral or debt cash in
-	// a custody of its own. Only the working lane may hold transient cash.
-	OtherLanesCustodyHeld bool `json:",omitempty"`
-	// Tranche move (selector_tranche.go). TrancheTargetIdleRaw is the Voltr
-	// idle this lane frees to as a tranche source; TrancheDestinationRaw is
-	// the E reserved for this lane as a tranche destination. Zero otherwise.
-	TrancheTargetIdleRaw  int64 `json:",omitempty"`
-	TrancheDestinationRaw int64 `json:",omitempty"`
-	// Overflow tranche (selector_overflow.go). TrancheOverflowRaw is the E
-	// (bridge USDC value) an overflow source frees as collateral into the
-	// custody it shares with its overflow lane; TrancheOverflowDestination
-	// marks the overflow lane's view while it takes that collateral over.
-	TrancheOverflowRaw         int64 `json:",omitempty"`
-	TrancheOverflowDestination bool  `json:",omitempty"`
 	// OverflowRoom* is, on a lane that has an overflow lane, that lane's
 	// debt reserve borrow room this batch (raw debt units, and its bridge
 	// USDC value, floored); unknown unless Known.
 	OverflowRoomRaw      uint64 `json:",omitempty"`
 	OverflowRoomValueRaw int64  `json:",omitempty"`
 	OverflowRoomKnown    bool   `json:",omitempty"`
+	// OverflowObligationPresent: the overflow lane's obligation exists, from
+	// the same capture as its room.
+	OverflowObligationPresent bool `json:",omitempty"`
 	// DebtTermEndUnix is the working lane's borrow maturity on a term debt
 	// reserve (KLend's last borrow plus the reserve's debt term, or the
 	// market-wide maturity when earlier); zero without term debt.
 	// ChainUnix is the batch's Clock time.
-	DebtTermEndUnix int64 `json:",omitempty"`
-	ChainUnix       int64 `json:",omitempty"`
-	// Unwind is an admitted full exit, independent of the user's claim amount.
-	Unwind bool
-	// Expired debt envelope needs fresh same-source exit admission, not a manual latch.
-	UnwindRefreshRequired bool
-	SelectorEntryPaused   bool
-	// Exact equity authorized by a current durable selector quote.
-	SelectorEntryEquityRaw int64
-	CutoverDrain           bool
-	VoltrStrategyIdleRaw   int64
-	VoltrIdleRaw           int64
-	HasPosition            bool
+	DebtTermEndUnix      int64 `json:",omitempty"`
+	ChainUnix            int64 `json:",omitempty"`
+	VoltrStrategyIdleRaw int64
+	VoltrIdleRaw         int64
+	HasPosition          bool
 	// ObligationPresent is the observed existence of the lane's Kamino
 	// obligation account, and ObligationPresenceKnown is set only by the
 	// production observe path, so hand-built unit snapshots keep their existing
@@ -210,23 +188,21 @@ type Snapshot struct {
 	PolicyLimitRaw                int64
 	MaxTargetLTVEntryRaw          int64
 	BorrowUtilizationBlocked      bool
-	// LeverageTargetLevel is the durable B2 option-1 level target for this
-	// lane (1, 1.5 or 1.75); 0 means no target is stored, which keeps the
-	// installed behaviour (one 50% loop).
+	// LeverageTargetLevel is the lane's stored level (1, 1.5 or 1.75; 0 when
+	// none is stored) and LeverageUpApproved whether the selector's
+	// economics approve the up step toward it: target()'s level inputs.
 	LeverageTargetLevel float64
+	LeverageUpApproved  bool
 	// Same-batch exact receive ceilings for the next 1.5x/1.75x step.
 	// Zero known room holds borrowing, never targets repayment of existing debt.
-	LeverageBorrowOperationID string
-	LeverageApprovedBorrowRaw uint64
-	LeverageSourceDebtRaw     uint64
-	BorrowCapacityKnown       bool
-	AdditionalDebtRoomRaw     uint64
-	LeverageBorrow150Raw      uint64
-	BorrowDebtPriceSF         [16]byte
-	BorrowUSDCPriceSF         [16]byte
-	BorrowDebtDecimals        uint8
-	BorrowFeeRate             uint64
-	LeverageBorrow175Raw      uint64
+	BorrowCapacityKnown   bool
+	AdditionalDebtRoomRaw uint64
+	LeverageBorrow150Raw  uint64
+	BorrowDebtPriceSF     [16]byte
+	BorrowUSDCPriceSF     [16]byte
+	BorrowDebtDecimals    uint8
+	BorrowFeeRate         uint64
+	LeverageBorrow175Raw  uint64
 	// LeverageDesired150Raw/175Raw are the whole step to the level inside
 	// the position's risk limits, not bounded by reserve room: the size an
 	// up move is priced and approved at.
@@ -235,8 +211,6 @@ type Snapshot struct {
 	// BorrowUtilizationHeadroomRaw is the debt reserve's room to its
 	// utilization borrow limit (MaxUint64 without a limit).
 	BorrowUtilizationHeadroomRaw uint64
-	PartialWithdrawalLTVBPS      int64
-	PartialWithdrawalOperationID string
 	// TopupDepositRoomRaw is the collateral reserve's remaining deposit limit,
 	// valued in bridge USDC (floored, less a 1% price margin). It sizes a
 	// plan B3 top-up; zero or unknown allocates nothing.
@@ -244,6 +218,10 @@ type Snapshot struct {
 	CapitalMutated          bool
 	PostMutationNAVRequired bool
 	LastReportAgeSeconds    int64
+	// Target is where target() puts this lane this tick (target.go), and
+	// TargetInputs every candidate lane's stored inputs it read.
+	Target       LaneTarget `json:",omitempty"`
+	TargetInputs string     `json:",omitempty"`
 }
 
 // heldLanes is HeldLanes as a list.
@@ -359,8 +337,10 @@ type Observation struct {
 	// local data on the tick's own observation — never persisted in the
 	// decision JSON and never a mutable global.
 	custodyProof *sharedCustodyAdmissionProof
-	// heldFacts are the other held lanes' position values from this batch.
-	heldFacts       []heldLaneFact
+	// lanes are every candidate lane's view of this batch, in registry
+	// order, with their stored levels: target()'s input. Snapshot is the
+	// working lane's.
+	lanes           []Snapshot
 	ValuationSource string `json:",omitempty"`
 	ValuationSlot   int64  `json:",omitempty"`
 	Snapshot        Snapshot

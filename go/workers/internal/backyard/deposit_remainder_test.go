@@ -31,20 +31,16 @@ func TestDepositRemainderDoesNotRestartEntryLoop(t *testing.T) {
 	}
 	// Exit-only Ethena never levers: the residue beside its position holds.
 	s.PostMutationNAVRequired = false
-	if got := Decide(s); got.Reason != "single_loop_position_ready" {
+	if got := Decide(targeted(s)); got.Reason != holdAtTarget {
 		t.Fatal("rounding residue restarted the loop", got)
 	}
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.DebtIdleRaw = 1004, 2008, 1000
-	if got := Decide(s); got.Reason != "single_loop_position_ready" {
-		t.Fatal("debt residue converted outside a step", got)
+	if got := Decide(targeted(s)); got.Reason != holdAtTarget {
+		t.Fatal("debt residue at dust converted outside a step", got)
 	}
-	s.CutoverDrain = true
-	if got := Decide(s); got.Reason != withdrawalDeleverReason {
+	exit := targetInputs{Exits: map[string]laneExit{ethenaUSDePYUSD.Lane: {EquityZero: true}}}
+	if got := Decide(targetedWith(s, exit)); got.Reason != debtZeroReason {
 		t.Fatal("rounding rule blocked exit", got)
-	}
-	s.CutoverDrain, s.MinimumCollateralDepositRaw = false, 0
-	if got := Decide(s); got.Reason != "deposit_rounding_window_unavailable" {
-		t.Fatal("missing bound treated as dust", got)
 	}
 }
 
@@ -62,32 +58,26 @@ func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 				t.Fatal("remainder bypassed required NAV", got)
 			}
 			s.PostMutationNAVRequired = false
-			want := "prime_collateral_requires_borrow"
+			if got := Decide(targeted(s)); got.Action != Hold || got.Reason != holdAtTarget {
+				t.Fatal("B2: a debt-free position without a level borrowed", got)
+			}
 			if earnActiveLane(lane) {
-				if got := Decide(s); got.Action != Hold || got.Reason != "leverage_target_required" {
-					t.Fatal("B2: a debt-free position without a target borrowed", got)
-				}
-				s.LeverageTargetLevel, want = 1.5, leverageUpReason
+				s.LeverageTargetLevel = 1.5
 				armLeverageCapacityFixture(&s)
+				if got := Decide(targeted(s)); got.Action != OpenRouteStep || got.Reason != leverageUpReason {
+					t.Fatal("deposit remainder blocked borrowing", got)
+				}
 			}
-			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != want {
-				t.Fatal("deposit remainder blocked borrowing", got)
-			}
-			// At the target level the remainder beside debt starts no leg:
-			// the next step's deposit sweeps it.
+			// At the level the remainder beside debt starts no leg: the next
+			// step's deposit sweeps it.
 			s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 33_000_000, 33_000_000, 33_000_001
 			s.LTVBPS = s.PositionDebtValueRaw * 10_000 / s.PositionCollateralValueRaw
-			if got := Decide(s); got.Action != Hold {
+			if got := Decide(targeted(s)); got.Action != Hold {
 				t.Fatal("remainder restarted finished loop", got)
 			}
-			s.Unwind = true
-			if got := Decide(s); got.Action != DeleverRouteStep {
+			exit := targetInputs{Exits: map[string]laneExit{lane: {EquityZero: true}}}
+			if got := Decide(targetedWith(s, exit)); got.Action != DeleverRouteStep {
 				t.Fatal("rounding threshold blocked exit", got)
-			}
-			s.Unwind = false
-			s.MinimumCollateralDepositRaw = 0
-			if got := Decide(s); got.Action != Hold || got.Reason != "deposit_rounding_window_unavailable" {
-				t.Fatal("missing threshold treated as dust", got)
 			}
 		})
 	}

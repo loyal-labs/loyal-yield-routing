@@ -454,8 +454,4 @@ func TestLegacyPhase3RecordDecodes(t *testing.T) {
 	if err = json.Unmarshal(raw, &decoded); err != nil || decoded.IntentSHA256 != auth.IntentSHA256 || decoded.SignedWireSHA256 != auth.SignedWireSHA256 || decoded.BuildInput == nil {
 		t.Fatalf("legacy record lost its integrity fields: %+v %v", decoded, err)
 	}
-	var intent UnwindIntent
-	if err = json.Unmarshal([]byte(`{"sourceLane":"OnRe/ONyc/USDC","reason":"economic_rotation","observationId":"o","maxCollateralRaw":1,"maxDebtRaw":1,"costBoundRaw":5,"budgetScope":"g","budgetFamily":"OnRe","evidenceId":"`+strings.Repeat("a", 64)+`","createdAt":"2026-10-01T00:00:00Z"}`), &intent); err != nil || intent.validate() != nil {
-		t.Fatalf("legacy unwind intent no longer decodes: %+v %v", intent, err)
-	}
 }

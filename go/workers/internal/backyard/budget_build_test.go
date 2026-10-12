@@ -102,7 +102,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			values := make([]any, 0, len(addresses))
 			for _, address := range addresses {
 				a, ok := accounts[address]
-				if !ok {
+				if !ok || a.Lamports == 0 {
 					values = append(values, nil)
 					continue
 				}

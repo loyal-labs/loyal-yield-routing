@@ -9,41 +9,46 @@ import (
 	"testing"
 )
 
-// Every leverage move decides one atomic step: hard LTV, a drain, the down
-// moves to 1x and 1.5x and a partial withdrawal's release go down; leverage
-// up goes up. Each down step's repay is sized from the decided snapshot.
+// Every leverage move decides one atomic step: hard LTV, debt 0 (term
+// maturity or the operator exit), the down move to 1.5x and a withdrawal's
+// release go down; leverage up goes up. Each down step's repay is sized from
+// the decided snapshot.
 func TestLeverageMovesDecideAtomicSteps(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, autoAUTOWYLDSLane, onreONycUSDC} {
-		hard := leverageExitSnapshot(lane)
+		hard := targeted(leverageExitSnapshot(lane))
 		hard.LTVBPS = 6000
-		drain := leverageExitSnapshot(lane)
-		drain.Unwind = true
-		down := leverageExitSnapshot(lane)
-		down.LeverageTargetLevel = 1
+		hard = targeted(hard)
+		exit := targetedWith(leverageExitSnapshot(lane), targetInputs{Exits: map[string]laneExit{lane: {}}})
 		partialDown := leverageSnapshot(1.75)
 		partialDown.RouteLane, partialDown.StrategyKey, partialDown.LeverageTargetLevel = lane, lane, 1.5
+		partialDown = targeted(partialDown)
+		// A stored 1x is held at 1.5x: an economic level never repays all.
+		economic1x := leverageSnapshot(1.75)
+		economic1x.RouteLane, economic1x.StrategyKey, economic1x.LeverageTargetLevel = lane, lane, 1
+		economic1x = targeted(economic1x)
 		withdrawal := livePartialSnapshot()
 		withdrawal.RouteLane, withdrawal.StrategyKey = lane, lane
+		withdrawal = targeted(withdrawal)
 		for _, c := range []struct {
 			s      Snapshot
 			reason string
 			full   bool
 		}{
 			{hard, hardLTVDeleverReason, false},
-			{drain, withdrawalDeleverReason, true},
-			{down, leverageDownReason, true},
+			{exit, debtZeroReason, true},
 			{partialDown, leverageDownPartialReason, false},
-			{withdrawal, partialReleaseReason, false},
+			{economic1x, leverageDownPartialReason, false},
+			{withdrawal, releaseReason, false},
 		} {
 			got := Decide(c.s)
 			if got.Action != DeleverRouteStep || got.Reason != c.reason || got.StrategyKey != lane {
-				t.Fatalf("%s %s: decided %+v", lane, c.reason, got)
+				t.Fatalf("%s %s: decided %+v (target %+v)", lane, c.reason, got, c.s.Target)
 			}
 			if up, ok := stepDecision(c.s, got); !ok || up {
 				t.Fatalf("%s %s: not a down step", lane, c.reason)
 			}
-			if c.reason == partialReleaseReason {
+			if c.reason == releaseReason {
 				continue
 			}
 			repay, full := stepDownRepay(c.s, c.reason)
@@ -135,31 +140,31 @@ func TestStepConversionExcessJoinsThePosition(t *testing.T) {
 	pyusd := leverageSnapshot(1.5)
 	pyusd.RouteLane, pyusd.StrategyKey, pyusd.LeverageTargetLevel = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, 1.5
 	pyusd.MinimumCollateralDepositRaw = 1
-	if got := Decide(pyusd); got.Action != Hold {
+	if got := Decide(targeted(pyusd)); got.Action != Hold {
 		t.Fatalf("a settled position moved: %+v", got)
 	}
 	excess := pyusd
 	excess.DebtIdleRaw = 2_500_000
-	if got := Decide(excess); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 {
+	if got := Decide(targeted(excess)); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 {
 		t.Fatalf("PYUSD excess: %+v", got)
 	}
 	excess.DebtIdleRaw = partialWithdrawalDustRaw
-	if got := Decide(excess); got.Action != Hold {
+	if got := Decide(targeted(excess)); got.Action != Hold {
 		t.Fatalf("dust started a leg: %+v", got)
 	}
 	excess.DebtIdleRaw, excess.CollateralIdleRaw, excess.PrimeIdleRaw = 0, 2_400_000, 2_400_000
-	if got := Decide(excess); got.Action != OpenRouteStep || got.Reason != topupDepositReason || got.AmountRaw != 2_400_000 {
+	if got := Decide(targeted(excess)); got.Action != OpenRouteStep || got.Reason != topupDepositReason || got.AmountRaw != 2_400_000 {
 		t.Fatalf("AUTO excess: %+v", got)
 	}
 	maple := leverageSnapshot(1.5)
 	maple.RouteLane, maple.StrategyKey, maple.LeverageTargetLevel = SelectedRouteID, SelectedRouteID, 1.5
 	maple.MinimumCollateralDepositRaw = 1
 	maple.SquadsIdleRaw = 2_500_000
-	if got := Decide(maple); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 || got.Validate() != nil {
+	if got := Decide(targeted(maple)); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 || got.Validate() != nil {
 		t.Fatalf("Squads cash beside USDC debt: %+v", got)
 	}
 	maple.SquadsIdleRaw, maple.CollateralIdleRaw, maple.PrimeIdleRaw = 0, 2_400_000, 2_400_000
-	got := Decide(maple)
+	got := Decide(targeted(maple))
 	if got.Action != OpenRouteStep || got.Reason != topupDepositReason {
 		t.Fatalf("syrupUSDC excess: %+v", got)
 	}

@@ -115,19 +115,18 @@ func TestTopupSwapDecisionBesideDebtFreePosition(t *testing.T) {
 	s := liveIdleDebtSnapshot()
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS, s.DebtIdleRaw = 0, 0, 0, 0, 0
 	s.SquadsIdleRaw = 336_000_000
-	got := Decide(s)
+	got := Decide(targeted(s))
 	if got.Action != SwapStableToCollateralStep || got.Reason != topupSwapReason || got.AmountRaw != s.SquadsIdleRaw || got.Validate() != nil {
 		t.Fatalf("top-up cash was not swapped: %+v", got)
 	}
 	for name, mutate := range map[string]func(*Snapshot){
 		"uncovered demand": func(s *Snapshot) { s.WithdrawalDemandRaw, s.VoltrIdleRaw = 10, 0 },
-		"unwind":           func(s *Snapshot) { s.Unwind = true },
 		"hard ltv":         func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS = 1, 1, 6000 },
 		"report due":       func(s *Snapshot) { s.PostMutationNAVRequired = true },
 	} {
 		c := s
 		mutate(&c)
-		if got := Decide(c); got.Reason == topupSwapReason {
+		if got := Decide(targeted(c)); got.Reason == topupSwapReason {
 			t.Fatalf("%s lost priority to the top-up swap: %+v", name, got)
 		}
 	}

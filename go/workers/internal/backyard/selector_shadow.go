@@ -23,13 +23,6 @@ func (r shadowJournal) ReconciledBridgeJournal(ctx context.Context, key string) 
 func (r shadowJournal) RecordPositionSnapshot(context.Context, string, Observation) error {
 	return fmt.Errorf("shadow_projection_writes_disabled")
 }
-func (r shadowJournal) LoadUnwindIntent(ctx context.Context, key string) (*UnwindIntent, error) {
-	return r.db.LoadUnwindIntent(ctx, key)
-}
-
-func (r shadowJournal) SelectorEntryPaused(ctx context.Context, key string) (bool, error) {
-	return r.db.SelectorEntryPaused(ctx, key)
-}
 
 // This observer enriches a separate snapshot without projecting NAV or taking
 // an execution lease. Broader ownership failures stay confined to shadow output.
@@ -38,9 +31,7 @@ func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.C
 	if err != nil {
 		return Observation{}, err
 	}
-	manifest = planning.observationManifest(manifest)
-	manifest.selectorObservation = true
-	observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, planning.landedSlot)
+	observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, planning.landedSlot, planning.inputs)
 	if err != nil {
 		return Observation{}, fmt.Errorf("shadow confirmed observation unavailable: %w", err)
 	}
@@ -77,8 +68,4 @@ func runSelectorSamples(ctx context.Context, interval time.Duration, sample func
 		case <-ticker.C:
 		}
 	}
-}
-
-func (r shadowJournal) LoadSelectorEntry(ctx context.Context, key string) (*SelectorEntry, error) {
-	return r.db.LoadSelectorEntry(ctx, key)
 }

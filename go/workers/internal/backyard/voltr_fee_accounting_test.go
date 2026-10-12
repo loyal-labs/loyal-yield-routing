@@ -58,7 +58,7 @@ func TestVoltrApprovedFeeTupleAndEveryTermDrift(t *testing.T) {
 			}
 			// The normal worker dispatch must use its durable stop recorder,
 			// never preparation, for a decoded fee-policy fault.
-			s.RouteLane = RouteID
+			s.RouteLane = PhaseOneLaneID
 			recorded := false
 			w := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
@@ -102,7 +102,8 @@ func TestVoltrLegitimateFeeRatioKeepsNAVAndQueueUnwindLive(t *testing.T) {
 		underfunded := s
 		underfunded.PostMutationNAVRequired = true
 		underfunded.WithdrawalDemandRaw = 20
-		if got := Decide(underfunded); got.Action != SwapPrimeToUSDCStep {
+		underfunded = targeted(underfunded)
+		if got := Decide(underfunded); got.Action != StageSquadsToVoltr || got.Reason != outboundStageReason {
 			t.Fatalf("legitimate fee share blocked underfunded queue unwind: %+v", got)
 		}
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -147,7 +146,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate [--execute] | clear-hold --reason "<text>" | commit-unwind-intent --lane <lane> --reason <reason> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute] | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate [--execute] | clear-hold --reason "<text>" | exit-lane --lane <lane> (--by <operator> [--equity-zero] | --clear) | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
@@ -208,18 +207,20 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		}
 		_, err = fmt.Fprintln(out, result)
 		return err
-	case command == "commit-unwind-intent":
-		request, execute, err := parseUnwindIntentFlags(rest)
+	case command == "exit-lane":
+		// The operator exit row: the lane's target debt is 0 (and with
+		// --equity-zero its equity too). The worker delevers it by atomic
+		// steps on its next ticks; --clear removes the row.
+		request, err := parseExitLaneFlags(rest)
 		if err != nil {
 			return err
 		}
-		// Dry-run by default; --execute takes a short route lease. A release
-		// failure after a durable commit still prints the committed intent.
-		result, err := backyard.RunUnwindIntentCommit(ctx, cfg.DatabaseURL, request, execute)
-		if err != nil && errors.Is(err, backyard.ErrUnwindIntentCommittedReleaseUnconfirmed) {
-			_ = json.NewEncoder(out).Encode(result)
+		result, err := backyard.RunLaneExit(ctx, cfg.DatabaseURL, request)
+		if err != nil {
+			return err
 		}
-		return encode(result, err)
+		_, err = fmt.Fprintln(out, result)
+		return err
 	case command == "settle-manual-restore":
 		request, execute, err := parseSettleManualRestoreFlags(rest)
 		if err != nil {
@@ -296,76 +297,36 @@ func parseSettleManualRestoreFlags(args []string) (backyard.ManualRestoreReproce
 	return request, execute, nil
 }
 
-// parseUnwindIntentFlags is syntactic only; value shape and lane authority
-// stay with the shared unwind-intent validation.
-func parseUnwindIntentFlags(args []string) (backyard.UnwindIntentCommitRequest, bool, error) {
-	request, execute := backyard.UnwindIntentCommitRequest{}, false
-	usage := `usage: loyal-engine backyard commit-unwind-intent --lane <lane> --reason <economic_rotation|withdrawal_shortfall|hard_ltv_reduction> --observation-id <id> --max-collateral-raw <n> --max-debt-raw <n> --evidence-id <sha256> [--confirmation-file <json>] [--execute]`
-	texts := map[string]*string{"--lane": &request.Lane, "--reason": &request.Reason, "--observation-id": &request.ObservationID, "--evidence-id": &request.EvidenceID}
-	numbers := map[string]*int64{"--max-collateral-raw": &request.MaxCollateralRaw, "--max-debt-raw": &request.MaxDebtRaw}
-	seen := make(map[string]bool)
-	for index := 0; index < len(args); index++ {
-		arg := args[index]
-		if seen[arg] {
-			return request, execute, fmt.Errorf("commit-unwind-intent: duplicate argument %q", arg)
-		}
-		seen[arg] = true
-		if arg == "--execute" {
-			execute = true
-			continue
-		}
-		if index+1 >= len(args) {
-			return request, execute, fmt.Errorf("commit-unwind-intent: %s requires a value\n%s", arg, usage)
-		}
-		if arg == "--confirmation-file" {
-			confirmation, err := readDebtClearConfirmation(args[index+1])
-			if err != nil {
-				return request, execute, err
-			}
-			request.Confirmation = confirmation
-		} else if target, ok := numbers[arg]; ok {
-			value, err := strconv.ParseInt(args[index+1], 10, 64)
-			if err != nil {
-				return request, execute, fmt.Errorf("commit-unwind-intent: %s requires an integer\n%s", arg, usage)
-			}
-			*target = value
-		} else if target, ok := texts[arg]; ok {
-			*target = args[index+1]
-		} else {
-			return request, execute, fmt.Errorf("commit-unwind-intent: unexpected argument %q\n%s", arg, usage)
-		}
-		index++
-	}
-	if request.Lane == "" || request.Reason == "" || request.ObservationID == "" || request.EvidenceID == "" {
-		return request, execute, fmt.Errorf("commit-unwind-intent: --lane, --reason, --observation-id and --evidence-id are required\n%s", usage)
-	}
-	if execute && request.Confirmation == nil {
-		return request, execute, errors.New("commit-unwind-intent: --execute requires --confirmation-file acknowledging full debt repayment")
-	}
-	return request, execute, nil
-}
+const exitLaneUsage = `usage: loyal-engine backyard exit-lane --lane <lane> (--by <operator> [--equity-zero] | --clear)`
 
-// The file records an explicit privileged-operator attestation, not proof of
-// human identity. The domain layer validates its bounds before any DB mutation.
-func readDebtClearConfirmation(path string) (*backyard.DebtClearConfirmation, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, errors.New("commit-unwind-intent: cannot read confirmation file")
+// parseExitLaneFlags is syntactic only; the lane is checked where the row is
+// written.
+func parseExitLaneFlags(args []string) (backyard.LaneExitRequest, error) {
+	var request backyard.LaneExitRequest
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--equity-zero":
+			request.EquityZero = true
+			continue
+		case "--clear":
+			request.Clear = true
+			continue
+		case "--lane", "--by":
+			if index+1 >= len(args) {
+				return request, fmt.Errorf("exit-lane: %s requires a value\n%s", args[index], exitLaneUsage)
+			}
+			if args[index] == "--lane" {
+				request.Lane = args[index+1]
+			} else {
+				request.RequestedBy = args[index+1]
+			}
+			index++
+		default:
+			return request, fmt.Errorf("exit-lane: unexpected argument %q\n%s", args[index], exitLaneUsage)
+		}
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, 4097))
-	if err != nil || len(data) > 4096 {
-		return nil, errors.New("commit-unwind-intent: confirmation file exceeds 4096 bytes or cannot be read")
+	if request.Lane == "" || request.Clear == (request.RequestedBy != "") || (request.Clear && request.EquityZero) {
+		return request, fmt.Errorf("exit-lane: --lane and either --by or --clear are required\n%s", exitLaneUsage)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var confirmation *backyard.DebtClearConfirmation
-	if err := decoder.Decode(&confirmation); err != nil || confirmation == nil {
-		return nil, errors.New("commit-unwind-intent: invalid confirmation JSON")
-	}
-	var trailing any
-	if decoder.Decode(&trailing) != io.EOF {
-		return nil, errors.New("commit-unwind-intent: confirmation file must contain exactly one JSON object")
-	}
-	return confirmation, nil
+	return request, nil
 }

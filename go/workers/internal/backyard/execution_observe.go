@@ -242,49 +242,19 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}
-	// A withdrawal beside debt that repays nothing is an overflow source's
-	// release (overflowSourceStep): sized within the release limits.
-	repaymentRelease := position.DebtRaw > 0 && decision.Action == DeleverRouteStep && decision.Reason == partialReleaseReason && earnHeldLane(route.Lane)
-	var leg kaminoPrimeUSDCLeg
-	var wireAmount, effectAmount uint64
-	// Release sizing reads raw reserves (see the helpers).
-	releaseAccounts := accounts
-	if repaymentRelease {
-		bound, raw, err := manifest.observeRawRepaymentRelease(ctx, view, route, observation.Snapshot.Slot)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
+	// A release beside no debt is one withdrawal of its equity's collateral
+	// share, sized from this prepared snapshot.
+	legDecision := decision
+	if decision.Reason == releaseReason {
+		receipts := partialWithdrawalReleaseReceipts(observation.Snapshot, decision.AmountRaw)
+		if receipts <= 0 {
+			return Observation{}, KaminoExecutionEvidence{}, budgetHold("release_leg_unavailable")
 		}
-		leg, wireAmount, effectAmount, releaseAccounts = kaminoLegWithdraw, bound.ReceiptRaw, bound.LiquidityRaw, raw
-		// The release is its share, capped at the safe size.
-		if wire, sized := partialWithdrawalWireAmount(observation.Snapshot, decision); sized {
-			if wire <= 0 {
-				return Observation{}, KaminoExecutionEvidence{}, budgetHold("partial_withdrawal_leg_unavailable")
-			}
-			if uint64(wire) < wireAmount {
-				reserve, err := decodeKaminoReserve(accountAt(raw, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
-				if err != nil {
-					return Observation{}, KaminoExecutionEvidence{}, err
-				}
-				wireAmount = uint64(wire)
-				if effectAmount, err = reserve.redeemLiquidityRaw(wireAmount); err != nil || effectAmount == 0 {
-					return Observation{}, KaminoExecutionEvidence{}, budgetHoldFrom(err, "partial_withdrawal_leg_unavailable")
-				}
-			}
-		}
-	} else {
-		// Stable partial decisions (E in USDC) become exact wire amounts from
-		// this prepared snapshot.
-		legDecision := decision
-		if wire, sized := partialWithdrawalWireAmount(observation.Snapshot, decision); sized {
-			if wire <= 0 {
-				return Observation{}, KaminoExecutionEvidence{}, budgetHold("partial_withdrawal_leg_unavailable")
-			}
-			legDecision.AmountRaw = wire
-		}
-		leg, wireAmount, effectAmount, err = selectKaminoLeg(legDecision, position)
-		if err != nil {
-			return Observation{}, KaminoExecutionEvidence{}, err
-		}
+		legDecision.AmountRaw = receipts
+	}
+	leg, wireAmount, effectAmount, err := selectKaminoLeg(legDecision, position)
+	if err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
 	}
 	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
@@ -295,11 +265,6 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}
 	request.ObligationReserves = []string{}
-	request.RepaymentRelease = repaymentRelease
-	request.PilotRepaymentRelease = repaymentRelease
-	if repaymentRelease {
-		request.ReleaseDebtIdleRaw = uint64(debtCashRaw(observation.Snapshot))
-	}
 	if position.CollateralDepositedRaw > 0 {
 		request.ObligationReserves = append(request.ObligationReserves, route.Kamino.CollateralReserve)
 	}
@@ -314,7 +279,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if leg == kaminoLegDeposit {
 		effects, err = boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)
 	} else {
-		effects, err = exactKaminoTokenEffects(releaseAccounts, source, destination, effectAmount)
+		effects, err = exactKaminoTokenEffects(accounts, source, destination, effectAmount)
 	}
 	if err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
@@ -347,8 +312,8 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
 		}
 	case DeleverPrimeUSDCStep:
-		if position.DebtRaw == 0 && decision.Reason == partialReleaseReason && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < position.CollateralDepositedRaw && position.RedeemablePrimeRaw > 0 {
-			// Debt-free partial withdrawal: withdraw the collateral share.
+		if position.DebtRaw == 0 && decision.Reason == releaseReason && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < position.CollateralDepositedRaw && position.RedeemablePrimeRaw > 0 {
+			// Debt-free release: withdraw the collateral share.
 			primeRaw := new(big.Int).Mul(big.NewInt(decision.AmountRaw), new(big.Int).SetUint64(position.RedeemablePrimeRaw))
 			primeRaw.Quo(primeRaw, new(big.Int).SetUint64(position.CollateralDepositedRaw))
 			if !primeRaw.IsUint64() || primeRaw.Sign() <= 0 {
@@ -356,13 +321,10 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 			}
 			return kaminoLegWithdraw, uint64(decision.AmountRaw), primeRaw.Uint64(), nil
 		}
-		// Beside debt every withdrawal is a down step's or an overflow
-		// release's.
+		// Beside debt every withdrawal is a step's; beside none, an exit
+		// withdraws all of it.
 		if position.DebtRaw == 0 && position.CollateralDepositedRaw > 0 && position.RedeemablePrimeRaw > 0 {
 			receiptRaw := position.CollateralDepositedRaw
-			if decision.Reason == "phase2_cutover_withdraw_collateral" && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < receiptRaw {
-				receiptRaw = uint64(decision.AmountRaw)
-			}
 			primeRaw := new(big.Int).Mul(new(big.Int).SetUint64(receiptRaw), new(big.Int).SetUint64(position.RedeemablePrimeRaw))
 			primeRaw.Quo(primeRaw, new(big.Int).SetUint64(position.CollateralDepositedRaw))
 			if !primeRaw.IsUint64() || primeRaw.Sign() <= 0 {

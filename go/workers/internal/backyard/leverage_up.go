@@ -20,7 +20,9 @@ const (
 )
 
 // leverageUpLevel is the next level above the position (at most one step),
-// when the stored target allows it; 0 means no up move.
+// when the stored level allows it; 0 means no up move. An up step sizes from
+// the same batch (LeverageBorrow150Raw/175Raw) once the selector's economics
+// approve it (target.go).
 func leverageUpLevel(s Snapshot) float64 {
 	if !earnActiveLane(s.RouteLane) || s.LeverageTargetLevel <= 1 {
 		return 0
@@ -41,74 +43,6 @@ func leverageUpLevel(s Snapshot) float64 {
 		}
 	}
 	return 0
-}
-
-// leverageBorrowStep is the B2 up step (an atomic borrow, conversion and
-// deposit) for a funded active registry position. It runs before the
-// selector-entry pause (an up move adds to the current lane; it is not a new
-// entry). Collateral residue beside the position needs no leg of its own: the
-// step deposits it with the conversion's output.
-func leverageBorrowStep(s Snapshot, hard int64) (Action, string, int64, bool) {
-	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || hard <= TargetLTVBPS {
-		return "", "", 0, false
-	}
-	if s.PositionDebtRaw == 0 {
-		action, reason, amount := leverageDebtFreeStep(s)
-		return action, reason, amount, true
-	}
-	return leverageUpStepWithDebt(s)
-}
-
-// leverageDebtFreeStep replaces the installed first-loop borrow on AUTO and
-// OnRe: a funded debt-free position borrows only toward a stored target.
-func leverageDebtFreeStep(s Snapshot) (Action, string, int64) {
-	switch {
-	case s.BorrowUtilizationBlocked:
-		return Hold, "debt_reserve_utilization_blocks_borrow", 0
-	case s.LeverageTargetLevel == 0:
-		// Never the stored selector entry quote (live 2026-09-28: a 09-26
-		// quote would have borrowed $189.87 against $1,676, ~1.11x).
-		return Hold, "leverage_target_required", 0
-	case s.LeverageTargetLevel == 1:
-		return Hold, "leverage_target_1x", 0
-	}
-	level := leverageUpLevel(s)
-	if level == 0 {
-		return Hold, "leverage_target_required", 0
-	}
-	receive := leverageBorrowReceive(s, level)
-	if receive < leverageMinimumBorrowRaw {
-		return Hold, leverageUpHoldReason(s), 0
-	}
-	return OpenRouteStep, leverageUpReason, int64(receive)
-}
-
-// leverageUpHoldReason names why a position below its stored target does not
-// borrow this tick: no live approval from the selector's economics, or no
-// capacity for the minimum borrow.
-func leverageUpHoldReason(s Snapshot) string {
-	if !leverageApprovalLive(s) {
-		return "leverage_up_awaiting_approval"
-	}
-	return "leverage_up_no_borrow_room"
-}
-
-// leverageUpStepWithDebt is the up move on a settled leveraged position below
-// its stored target; ok=false (target reached) keeps the installed
-// single_loop_position_ready hold.
-func leverageUpStepWithDebt(s Snapshot) (Action, string, int64, bool) {
-	level := leverageUpLevel(s)
-	if level == 0 {
-		return "", "", 0, false
-	}
-	if s.BorrowUtilizationBlocked {
-		return Hold, "debt_reserve_utilization_blocks_borrow", 0, true
-	}
-	receive := leverageBorrowReceive(s, level)
-	if receive < leverageMinimumBorrowRaw {
-		return Hold, leverageUpHoldReason(s), 0, true
-	}
-	return OpenRouteStep, leverageUpReason, int64(receive), true
 }
 
 // leverageUpBorrowRaw sizes the borrow toward levelHundredths (150 or 175)
@@ -175,56 +109,12 @@ func borrowDebtMatches(observed, snapshot uint64) bool {
 	return observed+tolerance >= snapshot && observed <= snapshot+tolerance
 }
 
-// leverageUpBypassesEntryFence: a leverage_up borrow is authorized by the
-// stored level target of the same lane, not by a selector entry. Every other
-// borrow keeps the entry fence.
-func leverageUpBypassesEntryFence(request any, journaledReason string, unwinding bool, operationLane string, rawTarget []byte, operationID ...string) (bool, error) {
-	if journaledReason != leverageUpReason {
-		return false, nil
-	}
-	r, ok := stepBorrow(request)
-	if !ok {
-		return false, budgetHold("leverage_up_authority_mismatch")
-	}
-	_, leg, err := kaminoPrimeUSDCInstruction(r)
-	target, targetErr := decodeLeverageTarget(rawTarget)
-	if err != nil || leg != kaminoLegBorrow || unwinding || r.RouteLane != operationLane || !earnActiveLane(operationLane) ||
-		targetErr != nil || target == nil || target.Lane != operationLane || target.Level <= 1 || target.BorrowRaw < leverageMinimumBorrowRaw || r.AmountRaw != target.BorrowRaw || len(operationID) != 1 || target.OperationID != operationID[0] || target.OperationID == "" {
-		return false, budgetHold("leverage_up_authority_mismatch")
-	}
-	return true, nil
-}
-
-// B2 down moves, each an atomic down step (withdraw, convert, repay): to 1x
-// (a stored 1x target, or a term lane it cannot keep alive, decide_term.go)
-// the step repays the whole debt, sized on its payoff bound, and repeats while
-// a withdrawal limit leaves debt; 1.75x -> 1.5x repays to the 1.5x LTV.
-func leverageDownPending(s Snapshot) bool {
-	return earnActiveLane(s.RouteLane) && (s.LeverageTargetLevel == 1 || termDeleverDue(s)) && s.HasPosition && s.PositionDebtRaw > 0
-}
-
-func leverageDownStep(s Snapshot) (Action, string, int64, bool) {
-	if !leverageDownPending(s) {
-		return "", "", 0, false
-	}
-	return DeleverRouteStep, leverageDownReason, stepDownMarker, true
-}
-
-// leverageDownPartialStep is the 1.75x -> 1.5x step: a stored 1.5x target
-// below a position above the 1.5x band (an unknown LTV never moves).
-func leverageDownPartialStep(s Snapshot) (Action, string, int64, bool) {
-	band := leverageLevelLTVBPS(1.5)
-	if !earnActiveLane(s.RouteLane) || s.LeverageTargetLevel != 1.5 || !s.HasPosition || s.PositionDebtRaw <= 0 || s.LTVBPS <= band+leverageUpNearBPS {
-		return "", "", 0, false
-	}
-	if stepDebtToLTVRaw(s, band) <= 0 {
-		return "", "", 0, false
-	}
-	return DeleverRouteStep, leverageDownPartialReason, stepDownMarker, true
-}
-
 // hardLTVTargetBPS is the LTV a hard-LTV step brings the position to: its
 // stored level's, between 1.5x and the live cap.
 func hardLTVTargetBPS(s Snapshot) int64 {
 	return leverageLevelLTVBPS(min(max(s.LeverageTargetLevel, 1.5), leverageMaxLiveLevel))
 }
+
+// leverageDownPartialReason is the down step to the 1.5x LTV (a stored 1.5x
+// or 1x level below a position above the 1.5x band).
+const leverageDownPartialReason = "leverage_down_partial"

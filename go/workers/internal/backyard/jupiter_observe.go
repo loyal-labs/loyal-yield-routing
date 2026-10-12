@@ -57,16 +57,7 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 	if sourceRaw < amount {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("Jupiter source custody is below exact input")
 	}
-	// A partial-withdrawal debt-share swap carries the idle collateral;
-	// the exact input is sized here from the prepared snapshot.
-	quoteDecision := decision
-	if wire, ok := partialWithdrawalWireAmount(observation.Snapshot, decision); ok {
-		if wire <= 0 || uint64(wire) > sourceRaw {
-			return Observation{}, JupiterExecutionEvidence{}, budgetHold("partial_withdrawal_swap_unavailable")
-		}
-		quoteDecision.AmountRaw = wire
-	}
-	evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, quoteDecision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
+	evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 	logStage("prepare_jupiter_quote", prepareStart)
 	if err == nil && decision.Action == SwapStableToCollateralStep && earnHeldLane(decision.StrategyKey) {
 		evidence.Request.EntryReturnReserved = true

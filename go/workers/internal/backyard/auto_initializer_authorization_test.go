@@ -199,13 +199,10 @@ func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_auto_signed_transition_test", 30*time.Second)
 	defer cancel()
 	rpc, sends := autoInitializerAuthorizationRPC(t, f)
-	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 
 	signedOperation := func(key string, decision Decision) PersistedOperation {
 		t.Helper()
 		id := seedAutoInitializerDecidedOperation(t, ctx, db, f, key, true)
-		// The selector entry that authorizes the initializer at send.
-		storeTestSelectorEntry(t, ctx, db, key, autoSelectorEntryFixture(time.Now().UTC(), 3_000_000, &price))
 		// A local unsigned wire fixture: no signer exists in this chain, the
 		// exact compiled message is bound into the journal like any wire.
 		hash := sha256Bytes(f.wire)

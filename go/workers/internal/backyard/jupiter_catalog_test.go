@@ -67,13 +67,11 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 			s.RouteLane = "AUTO/AUTO/PYUSD"
 			switch action {
 			case SwapStableToCollateralStep:
-				s.SquadsIdleRaw = 5
+				s.SquadsIdleRaw, s.Target = 5, LaneTarget{Rule: ruleEntry}
 			case SwapCollateralToStableStep:
-				s.CutoverDrain = true
-				s.CollateralIdleRaw = 5
+				s.CollateralIdleRaw, s.Target = 5_000, exitAllTarget
 			case SwapDebtToUSDCStep:
-				s.CutoverDrain = true
-				s.DebtIdleRaw = 5
+				s.DebtIdleRaw, s.Target = 5_000, exitAllTarget
 			}
 			o := tickObservation(s)
 			want := Decide(s)
@@ -143,14 +141,12 @@ func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 			s.RouteLane = autoAUTOWYLDSLane
 			switch action {
 			case SwapStableToCollateralStep:
-				s.SquadsIdleRaw = 5
+				s.SquadsIdleRaw, s.Target = 5, LaneTarget{Rule: ruleEntry}
 			case SwapCollateralToStableStep:
-				s.CutoverDrain = true
-				s.CollateralIdleRaw = 5
+				s.CollateralIdleRaw, s.Target = 5_000, exitAllTarget
 			case SwapDebtToCollateralStep:
-				// A drain's wYLDS residue stakes to AUTO.
-				s.CutoverDrain = true
-				s.DebtIdleRaw = 5
+				// An exit's wYLDS residue stakes to AUTO.
+				s.DebtIdleRaw, s.Target = 5_000, exitAllTarget
 			}
 			o := tickObservation(s)
 			want := Decide(s)

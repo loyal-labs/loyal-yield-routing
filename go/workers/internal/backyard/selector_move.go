@@ -31,7 +31,7 @@ func observeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, cli
 	if equity == 0 {
 		return empty, budgetHold("selector_move_has_no_entry_cash")
 	}
-	destination, err := observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, market, equity, o.Snapshot.Slot, false, nil)
+	destination, err := observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, market, equity, o.Snapshot.Slot, false)
 	if err != nil {
 		return empty, err
 	}

@@ -37,7 +37,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	unavailable.Lane = "OnRe/ONyc/USDC"
 	unavailable.EntryBlockedReason = "reserve_inactive_or_emergency"
 	markets := []LaneEconomics{market, unavailable}
-	if _, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 10_000_000, 42, true, nil); err != nil {
+	if _, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 10_000_000, 42, true); err != nil {
 		t.Fatal("partial producer", err)
 	}
 	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, markets, in.Policy)
@@ -53,7 +53,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	}
 	// The exact-size API still refuses, so callers cannot accidentally execute a
 	// different amount from the one they asked to price.
-	if _, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 10_000_000, 42, false, nil); err == nil {
+	if _, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 10_000_000, 42, false); err == nil {
 		t.Fatal("exact-size contract silently clamped")
 	}
 	in.Markets, in.Quotes = observed, quotes
@@ -126,73 +126,6 @@ func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {
 	if !quotes[0].currentAtSlot(42) {
 		t.Fatal("retained expired quote")
 	}
-}
-
-func TestPilotSelectorCannotSwitchDuringFundedTranche(t *testing.T) {
-	t.Parallel()
-	in := selectorFixture()
-	s := &in.Snapshot
-	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
-	s.HasPosition = true
-	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 10_000_000, 10_000_000
-	s.StrategyNAVRaw, s.PriorReportedNAVRaw = 10_000_000, 10_000_000
-	current := in.Markets[0]
-	current.Lane, current.NativeAPY = s.RouteLane, .10
-	in.Markets = append(in.Markets, current)
-	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 10_000_000, 5_000_000
-	history := SelectorState{SourceLane: s.RouteLane, Advantages: map[string]AdvantageWindow{in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now.Add(-time.Second)}}}
-	if got := SelectOpportunity(in, history); got.Action != "KEEP" || got.Reason != "complete_current_tranche_first" || got.SelectedQuote != nil {
-		t.Fatal("temporary unlevered baseline triggered rotation", got)
-	}
-	s.PositionDebtRaw, s.PositionDebtValueRaw = 5_000_000, 5_000_000
-	s.SquadsIdleRaw = 5_000_000
-	if !selectorTrancheInProgress(*s) {
-		t.Fatal("borrowed cash treated as completed entry")
-	}
-	s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 5_000_000
-	if !selectorTrancheInProgress(*s) {
-		t.Fatal("pending redeposit treated as completed entry")
-	}
-	s.CollateralIdleRaw = 0
-	if selectorTrancheInProgress(*s) {
-		t.Fatal("settled loop blocked")
-	}
-	s.CollateralIdleRaw, s.MinimumCollateralDepositRaw = 1, 2
-	if selectorTrancheInProgress(*s) {
-		t.Fatal("sub-receipt residue blocked economics")
-	}
-}
-
-// A settled funded lane is only quoted when a strictly larger same-lane
-// reinvestment is eligible; otherwise it stays the unquotable keep baseline.
-func TestLiveSelectorPricesEligibleSameLaneReentryAndSkipsIneligible(t *testing.T) {
-	t.Parallel()
-	m, rpc, client, _, o, _, _ := reentryFundedFixture(t)
-	now := time.Now().UTC()
-	market := LaneEconomics{Lane: SelectedRouteID, EvidenceID: "rates", ObservedAt: now, NativeObservedAt: now, NativeAPY: .10, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}
-	policy := DefaultSelectorPolicy()
-	s := o.Snapshot
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, 10_000_000)
-	if err != nil || len(quotes) != 1 {
-		t.Fatal("eligible same-lane reentry was not priced", err, quotes, observed)
-	}
-	if quotes[0].SourceLane != s.RouteLane || quotes[0].DestinationLane != s.RouteLane || quotes[0].EquityRaw <= 0 || quotes[0].CostRaw >= quotes[0].EquityRaw {
-		t.Fatal("same-lane quote is not a complete reinvestment move", quotes[0])
-	}
-	// Buffer-only idle keeps the funded lane unquotable and its feed untouched.
-	buffered := policy
-	buffered.IdleBufferRaw = s.VoltrIdleRaw
-	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, buffered, 10_000_000)
-	if err != nil || len(quotes) != 0 {
-		t.Fatal("buffer-only idle quoted the funded lane", err, quotes, observed)
-	}
-	// An incomplete tranche never reaches pricing at all.
-	staging := s
-	staging.SquadsIdleRaw = 5_000_000
-	staging.PositionDebtRaw, staging.PositionDebtValueRaw = 0, 0
-	stagedObservation := reentryObservation(staging)
-	_, _, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, stagedObservation, []LaneEconomics{market}, policy, 10_000_000)
-	assertBudgetHold(t, err, "complete_current_tranche_first")
 }
 
 func TestCanaryQuoteCollectionSkipsOtherLanes(t *testing.T) {

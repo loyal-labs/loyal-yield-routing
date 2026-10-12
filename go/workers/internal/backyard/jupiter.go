@@ -78,14 +78,12 @@ type JupiterSwapRequest struct {
 	QuotedOutputRaw  uint64
 	MinimumOutputRaw uint64
 	// Policy is the installed account of the swap's policy (jupiterPolicyLeg).
-	Policy                 string
-	Instruction            JupiterSwapInstruction
-	RecentBlockhash        string
-	LastValidBlockHeight   int64
-	RouteLane              string
-	FullPayoffFunding      bool `json:"fullPayoffFunding,omitempty"`
-	EntryReturnReserved    bool `json:"entryReturnReserved,omitempty"`
-	PositionReturnReserved bool `json:"positionReturnReserved,omitempty"`
+	Policy               string
+	Instruction          JupiterSwapInstruction
+	RecentBlockhash      string
+	LastValidBlockHeight int64
+	RouteLane            string
+	EntryReturnReserved  bool `json:"entryReturnReserved,omitempty"`
 	// TopupReturnReserved marks an entry swap beside a funded debt-free
 	// position (plan B3). It is set only for the journaled top-up reason and
 	// always together with EntryReturnReserved.

@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -70,22 +71,28 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	if err := request.validate(input.Now); err != nil {
 		return result, nil, err
 	}
-	// Always suppress economic switching while an acceptance request is installed.
+	// Always suppress economic entry while an acceptance request is installed.
 	// Worker recovery, NAV, risk and withdrawal actions run independently first.
 	result.Action, result.Reason, result.DestinationLane, result.SelectedQuote = "KEEP", "operator_canary_waiting", "", nil
-	if prior, exists := history[request.ID]; exists {
-		if prior.Request != *request {
-			return result, nil, budgetHold("pilot_canary_request_id_reused")
-		}
-		if !canaryReacceptable(input, prior) {
-			result.Reason = "operator_canary_already_consumed"
-			return result, nil, nil
-		}
-	} else if len(history) >= pilotCanaryReceiptCapacity {
+	if prior, exists := history[request.ID]; exists && prior.Request != *request {
+		return result, nil, budgetHold("pilot_canary_request_id_reused")
+	} else if !exists && len(history) >= pilotCanaryReceiptCapacity {
 		return result, nil, budgetHold("pilot_canary_history_full")
 	}
+	// The request enters a flat vault. It keeps its lane, with a fresh quote
+	// each sample, until the cash it allocated reaches the lane: target()
+	// reads the latest result for the vault's Squads cash. A new allocation
+	// needs a quiet book.
 	s := input.Snapshot
-	if !s.Fresh || !unwindComplete(s) || s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.PostMutationNAVRequired || s.CapitalMutated || s.LastReportAgeSeconds >= 60 || s.VoltrIdleRaw < request.EquityRaw || Decide(s).Action == ReportNAV {
+	if !s.Fresh || laneExposure(s) || s.WithdrawalDemandRaw != 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.VoltrStrategyIdleRaw != 0 {
+		return result, nil, nil
+	}
+	// Squads cash is this request's allocation in flight; any other request
+	// needs it empty.
+	if _, accepted := history[request.ID]; s.SquadsIdleRaw > 0 && !accepted {
+		return result, nil, nil
+	}
+	if s.SquadsIdleRaw == 0 && (s.PostMutationNAVRequired || s.CapitalMutated || s.LastReportAgeSeconds >= 60 || s.VoltrIdleRaw < request.EquityRaw || Decide(s).Action == ReportNAV) {
 		return result, nil, nil
 	}
 	// Candidate validity includes current market data, capacity, bounded full
@@ -103,7 +110,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	var chosen *MoveQuote
 	for i := range input.Quotes {
 		q := input.Quotes[i]
-		if !q.Tranche && q.DestinationLane == request.Lane && q.SourceLane == s.RouteLane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
+		if q.DestinationLane == request.Lane && q.SourceLane == s.RouteLane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
 			if chosen != nil {
 				return result, nil, budgetHold("duplicate_move_quote")
 			}
@@ -113,25 +120,9 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	if chosen == nil {
 		return result, nil, nil
 	}
-	entry := SelectorEntry{Lane: request.Lane, EquityRaw: request.EquityRaw, ObservationID: s.ObservationID, Quote: *chosen, AcceptedAt: input.Now, ExpiresAt: chosen.ObservedAt.Add(min(input.Policy.QuoteMaxAge, 30*time.Second))}
-	if err := entry.validate(); err != nil {
-		return result, nil, err
+	if chosen.CostRaw < 0 || chosen.CostRaw >= chosen.EquityRaw || chosen.MinimumIdleRaw < uint64(chosen.EquityRaw) || !chosen.validBorrow() || !chosen.storedWindowValid() || !sha256Pattern.MatchString(chosen.EvidenceID) {
+		return result, nil, fmt.Errorf("invalid_selector_entry")
 	}
 	result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ENTER", "operator_acceptance_not_economic_recommendation", request.Lane, request.EquityRaw, chosen
 	return result, &pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, QuoteEvidenceID: chosen.EvidenceID}, nil
-}
-
-// canaryReacceptable lets one unexpired request re-accept with a fresh quote
-// when its own last entry lapsed before any allocation bound to it. A new lane
-// needs an obligation initializer and then the allocation, and the entry
-// lapses 30 s after its quote, so one attempt could never fund a new lane
-// (live 2026-09-24: Maple and AUTO each consumed two receipts). Once an
-// allocation binds, or the request's own <=15-minute expiry passes, the
-// request stays consumed; every money step still needs a current quote. The
-// caller already requires the route flat and the request valid.
-func canaryReacceptable(input SelectorInput, prior pilotCanaryEntryReceipt) bool {
-	e := input.canaryPriorEntry
-	return e != nil && e.Lane == prior.Request.Lane && e.EquityRaw == prior.Request.EquityRaw &&
-		e.Quote.EvidenceID == prior.QuoteEvidenceID && e.AllocationOperationID == "" &&
-		(!input.Now.Before(e.ExpiresAt) || !e.Quote.currentAtSlot(input.Snapshot.Slot))
 }

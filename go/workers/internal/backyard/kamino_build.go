@@ -37,11 +37,6 @@ type KaminoPrimeUSDCRequest struct {
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 	RouteLane            string
-	RepaymentRelease     bool   `json:"repaymentRelease,omitempty"`
-	ReleaseDebtIdleRaw   uint64 `json:"releaseDebtIdleRaw,omitempty"`
-	// This selects the reviewed pilot release model, never authority. The
-	// locked budget must authorize pilot mode at admission, build and send.
-	PilotRepaymentRelease bool `json:"pilotRepaymentRelease,omitempty"`
 	// ObligationReserves is the exact confirmed deposit-then-borrow reserve
 	// sequence currently present in the obligation. RefreshObligation requires
 	// this live topology; deriving it from the mutation leg breaks re-deposits.
@@ -102,18 +97,11 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 // shared byte builder. Keeping resolution outside permits offline SDK/SBF parity
 // tests without registering candidate routes or changing production authority.
 func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
-	if request.PilotRepaymentRelease && (!request.RepaymentRelease || !earnHeldLane(request.RouteLane)) {
-		return nil, budgetHold("invalid_pilot_repayment_release")
-	}
 	return compileReviewedKaminoMessage(request, delegate, route)
 }
 
-// compileReviewedKaminoMessage is the checked byte builder. The pilot release
-// must be a withdrawal-only repayment release.
+// compileReviewedKaminoMessage is the checked byte builder.
 func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
-	if request.PilotRepaymentRelease && !request.RepaymentRelease {
-		return nil, budgetHold("invalid_pilot_repayment_release")
-	}
 	if request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Kamino blockhash lifetime")
 	}
@@ -121,12 +109,9 @@ func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 	if err != nil {
 		return nil, err
 	}
-	instructions, leg, err := kaminoPolicyInstructions(request, delegate, route)
+	instructions, _, err := kaminoPolicyInstructions(request, delegate, route)
 	if err != nil {
 		return nil, err
-	}
-	if request.PilotRepaymentRelease && (leg != kaminoLegWithdraw || request.Action != DeleverRouteStep) {
-		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
 	message, err := compileV1Message(delegate, blockhash, instructions, executionBudget(route.Lane, len(instructions)))
 	if err != nil {

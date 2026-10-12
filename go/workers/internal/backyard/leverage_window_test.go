@@ -25,7 +25,7 @@ func oct10WindowSnapshot(t *testing.T, roomRaw uint64) (Snapshot, LaneEconomics)
 	s.TotalVaultNAVRaw, s.StrategyNAVRaw = 101_172_000_000, 101_172_000_000
 	armFeeAuthorityFixture(t, &s)
 	armLeverageCapacityFixture(&s)
-	s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = 0, 0
+	s.LeverageUpApproved = false
 	s.AdditionalDebtRoomRaw, s.BorrowUtilizationHeadroomRaw = roomRaw, roomRaw
 	s.LeverageBorrow150Raw = min(s.LeverageDesired150Raw, roomRaw)
 	s.LeverageBorrow175Raw = min(s.LeverageDesired175Raw, roomRaw)
@@ -79,7 +79,7 @@ func TestRealizedAUTOSpreadApprovesTheStepsTo1_75x(t *testing.T) {
 	at15.PositionDebtValueRaw, at15.PositionDebtRaw = 50_586_000_000, 50_586_000_000
 	at15.LTVBPS = leverageLevelLTVBPS(1.5)
 	armLeverageCapacityFixture(&at15)
-	at15.LeverageApprovedBorrowRaw, at15.LeverageSourceDebtRaw = 0, 0
+	at15.LeverageUpApproved = false
 	at15.BorrowUtilizationHeadroomRaw = 3_300_000_000
 	got, ok = decideLeverageTarget(at15, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), measuredStepCost(0))
 	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != at15.LeverageDesired175Raw || got.GainRaw <= 0 {
@@ -102,40 +102,35 @@ func TestLeverageUpApprovesTheStepAndBorrowsTheRoom(t *testing.T) {
 	const room = 3_300_000_000
 	s, m := oct10WindowSnapshot(t, room)
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0))
-	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesired150Raw || got.GainRaw <= 0 || got.SourceDebtRaw != uint64(s.PositionDebtRaw) {
+	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesired150Raw || got.GainRaw <= 0 || !got.level().UpApproved {
 		t.Fatalf("a profitable step got no approval: %+v ok=%t", got, ok)
 	}
 	if !got.storeChanges(s) {
 		t.Fatal("a new approval was not stored")
 	}
 	// The worker borrows this tick's room, not the whole approved step.
-	s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = got.BorrowRaw, got.SourceDebtRaw
-	if d := Decide(s); d.Action != OpenRouteStep || d.Reason != leverageUpReason || d.AmountRaw != room {
+	s.LeverageUpApproved = got.level().UpApproved
+	if d := Decide(targeted(s)); d.Action != OpenRouteStep || d.Reason != leverageUpReason || d.AmountRaw != room {
 		t.Fatalf("the approved step did not borrow the room: %+v", d)
 	}
-	// The same decision a sample later is not rewritten (no generation churn).
+	// The same decision a sample later is not rewritten.
 	if got.storeChanges(s) {
 		t.Fatal("an unchanged approval was rewritten")
 	}
 	// The reserve fills: the approval stands (it was priced at the limit
-	// rate) and the tick names the hold.
+	// rate) and the step holds for room.
 	full, _ := oct10WindowSnapshot(t, 0)
 	again, _ := decideLeverageTarget(full, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0))
 	if again.BorrowRaw != got.BorrowRaw || again.Reason != "up_move_approved" || again.RoomRaw != 0 {
 		t.Fatalf("a full reserve withdrew the approval: %+v", again)
 	}
-	full.LeverageApprovedBorrowRaw, full.LeverageSourceDebtRaw = got.BorrowRaw, got.SourceDebtRaw
-	if d := Decide(full); d.Action != Hold || d.Reason != "leverage_up_no_borrow_room" {
+	full.LeverageUpApproved = true
+	if d := Decide(targeted(full)); d.Action != Hold || d.Reason != holdNoRoom {
 		t.Fatalf("a full reserve under a live approval: %+v", d)
 	}
-	full.LeverageApprovedBorrowRaw = 0
-	if d := Decide(full); d.Action != Hold || d.Reason != "leverage_up_awaiting_approval" {
+	full.LeverageUpApproved = false
+	if d := Decide(targeted(full)); d.Action != Hold || d.Reason != holdAtTarget {
 		t.Fatalf("no approval: %+v", d)
-	}
-	// A consumed approval (bound to a borrow) never borrows again.
-	s.LeverageBorrowOperationID = "op"
-	if d := Decide(s); d.Action != Hold || d.Reason != "leverage_up_awaiting_approval" {
-		t.Fatalf("a consumed approval borrowed again: %+v", d)
 	}
 }
 

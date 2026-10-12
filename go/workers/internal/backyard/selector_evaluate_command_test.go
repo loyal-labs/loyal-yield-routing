@@ -71,16 +71,22 @@ func canaryEvaluateClosure(key string, manifest RouteManifest, input SelectorInp
 	}
 }
 
-func canaryRouteStateAssertions(t *testing.T, ctx context.Context, db *Database, key string) (entry *SelectorEntry, receipts map[string]pilotCanaryEntryReceipt, version int64) {
+// canaryRouteStateAssertions reads back the selector's entering quote (nil
+// unless the latest result enters), the canary receipts and the version.
+func canaryRouteStateAssertions(t *testing.T, ctx context.Context, db *Database, key string) (entry *MoveQuote, receipts map[string]pilotCanaryEntryReceipt, version int64) {
 	t.Helper()
-	var entryRaw, receiptsRaw []byte
-	if err := db.pool.QueryRow(ctx, `SELECT state->'selectorEntry', state->'pilotCanaryEntries', state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).
-		Scan(&entryRaw, &receiptsRaw, &version); err != nil {
+	var resultRaw, receiptsRaw []byte
+	if err := db.pool.QueryRow(ctx, `SELECT state->'selector'->'result', state->'pilotCanaryEntries', state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).
+		Scan(&resultRaw, &receiptsRaw, &version); err != nil {
 		t.Fatal(err)
 	}
-	if len(entryRaw) != 0 && string(entryRaw) != "null" {
-		if err := json.Unmarshal(entryRaw, &entry); err != nil {
+	if len(resultRaw) != 0 && string(resultRaw) != "null" {
+		var result SelectorResult
+		if err := json.Unmarshal(resultRaw, &result); err != nil {
 			t.Fatal(err)
+		}
+		if result.Action == "ENTER" || result.Action == "CANARY_ENTER" {
+			entry = result.SelectedQuote
 		}
 	}
 	receipts = map[string]pilotCanaryEntryReceipt{}
@@ -275,14 +281,15 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	if len(receipts) != 1 || receipts[input.canaryRequest.ID].Request.EquityRaw != input.canaryRequest.EquityRaw {
 		t.Fatalf("canary receipt not recorded exactly once: %+v", receipts)
 	}
+	// A new entry choice is a new target input: one generation step.
 	if version != 3 {
-		t.Fatalf("entry commit did not bump the version once: %d", version)
+		t.Fatalf("the entry choice did not advance the generation once: %d", version)
 	}
 	assertNoCanaryOperations(t, ctx, db, key)
 	assertCanaryLeaseFree(t, ctx, db, key)
 
-	// Repeat: the same request is already consumed — no second entry, no
-	// second receipt, no further version bump.
+	// Repeat while the vault is still flat: the same request keeps its lane
+	// with a fresh quote — one receipt, no further generation step.
 	out.Reset()
 	if err = runSelectorEvaluate(ctx, &out, true, reviewedDeps); err != nil {
 		t.Fatal("repeat execute failed:", err)
@@ -290,8 +297,8 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	if err = json.Unmarshal(canaryJSON(t, &out), &done); err != nil {
 		t.Fatal(err)
 	}
-	if done.Result.Action != "KEEP" || done.Result.Reason != "operator_canary_already_consumed" {
-		t.Fatalf("repeat did not report the consumed request: %+v", done.Result)
+	if done.Result.Action != "CANARY_ENTER" || done.Result.DestinationLane != input.canaryRequest.Lane {
+		t.Fatalf("repeat did not keep the request's lane: %+v", done.Result)
 	}
 	entry, receipts, version = canaryRouteStateAssertions(t, ctx, db, key)
 	if entry == nil || entry.EquityRaw != input.canaryRequest.EquityRaw || len(receipts) != 1 || version != 3 {

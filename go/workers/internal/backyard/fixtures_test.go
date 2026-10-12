@@ -75,3 +75,21 @@ func liveIdleDebtSnapshot() Snapshot {
 	s.VoltrIdleRaw = 1_295_000_000
 	return s
 }
+
+// livePartialSnapshot is the live 2026-09-29 AUTO state: $1,677 at ~1.5x
+// with a $470 withdrawal queued and no Voltr idle.
+func livePartialSnapshot() Snapshot {
+	s := base()
+	s.RouteLane, s.StrategyKey, s.HasPosition = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane, true
+	s.LeverageTargetLevel = 1.5
+	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 2_463_480_000, 2_514_967_000
+	s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 837_770_000, 837_770_000, 837_900_000
+	s.StrategyNAVRaw, s.TotalVaultNAVRaw = 1_677_197_000, 1_677_197_000
+	s.LTVBPS = 3331
+	s.WithdrawalDemandRaw = 470_000_000
+	return s
+}
+
+// exitAllTarget is the operator exit with equity 0: debt to 0, then every
+// custody of the lane toward Voltr.
+var exitAllTarget = LaneTarget{Rule: ruleOperatorExit, Level: 1, EquityZero: true, Outbound: true}

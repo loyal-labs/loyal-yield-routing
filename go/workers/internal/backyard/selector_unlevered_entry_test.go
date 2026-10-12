@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"math"
 	"math/big"
 	"reflect"
 	"testing"
@@ -52,7 +51,7 @@ func selectorRecipeActions(t *testing.T, q selectorDestinationQuote) []Action {
 func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 1_000_000, 42, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +81,7 @@ func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 func TestUnblockedLaneKeepsTheLeveragedEntryAndBlockedMapleTakes1x(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 100_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 100_000_000, 42, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +89,7 @@ func TestUnblockedLaneKeepsTheLeveragedEntryAndBlockedMapleTakes1x(t *testing.T)
 		t.Fatalf("unblocked OnRe lost its leveraged entry: %+v", q)
 	}
 	m, rpc, client, _ = selectorDestinationFixtureForLane(t, SelectedRouteID, blockDebtUtilization(t, SelectedRouteID))
-	q, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 1_000_000, 42, true, nil)
+	q, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 1_000_000, 42, true)
 	if err != nil || !q.Unlevered || q.BorrowReceiveRaw != 0 {
 		t.Fatalf("blocked Maple did not price the 1x entry: %+v %v", q, err)
 	}
@@ -131,60 +130,6 @@ func onreCandidate(t *testing.T, r SelectorResult) CandidateForecast {
 	return CandidateForecast{}
 }
 
-// (a)+(b) The 1x quote is scored at the 1x yield (no borrow) and pays its
-// full switch cost; SWITCH needs gain > MinimumBenefit + cost over the 30-day
-// horizon, persisted 30 minutes in its own 1x window.
-func TestUnleveredSwitchIsScoredAt1xAndNeedsPersistence(t *testing.T) {
-	t.Parallel()
-	in := unleveredSwitchFixtureAt(3_000_000, .16) // a clearly better 1x lane
-	years := in.Policy.Horizon.Hours() / (365.25 * 24)
-	first := selectUnlevered(in, SelectorState{})
-	c := onreCandidate(t, first)
-	invested := float64(1_677_000_000 - 3_000_000)
-	gross := forecastGain(invested, invested, 0, in.Markets[1], 0, years) - 3_000_000
-	want := float64(in.Snapshot.TotalVaultNAVRaw) * math.Expm1(.8*math.Log1p(gross/float64(in.Snapshot.TotalVaultNAVRaw)))
-	if !c.CostsKnown || c.BlockedReason != "" || c.GainRaw != want || c.BorrowAPR != 0 {
-		t.Fatalf("1x candidate %+v want gain %.0f", c, want)
-	}
-	if first.Action != "KEEP" || first.Reason != "advantage_not_yet_persistent" || c.BenefitRaw <= float64(in.Policy.MinimumBenefitRaw) {
-		t.Fatalf("first sample: %+v benefit %.0f", first.Reason, c.BenefitRaw)
-	}
-	if _, ok := first.State.Advantages[unleveredAdvantageKey(onreONycUSDC)]; !ok {
-		t.Fatal("1x window not started")
-	}
-	state := first.State
-	for i := 1; i <= 6; i++ { // 30 minutes of 5-minute samples
-		advanceSelectorFixture(&in, 5*time.Minute)
-		r := selectUnlevered(in, state)
-		state = r.State
-		if i < 6 && r.Action != "KEEP" {
-			t.Fatalf("switched before 30 minutes (%d min): %+v", i*5, r.Reason)
-		}
-		if i == 6 && (r.Action != "SWITCH" || r.DestinationLane != onreONycUSDC || r.SelectedQuote == nil || !r.SelectedQuote.Unlevered) {
-			t.Fatalf("no switch after 30 minutes: %+v %+v", r.Action, r.Reason)
-		}
-	}
-	// A leveraged feed-level window never stands in for the 1x window.
-	in = unleveredSwitchFixtureAt(3_000_000, .16)
-	lev := SelectorState{SourceLane: autoAUTOPYUSD.Lane, Advantages: map[string]AdvantageWindow{onreONycUSDC: {Since: in.Now.Add(-time.Hour), LastSample: in.Now.Add(-time.Minute)}}}
-	if r := selectUnlevered(in, lev); r.Action == "SWITCH" {
-		t.Fatal("leveraged window reused for a 1x switch")
-	}
-	// Gross cost that removes the remaining investor edge: never switches.
-	in = unleveredSwitchFixtureAt(0, .16)
-	gap := onreCandidate(t, selectUnlevered(in, SelectorState{})).BenefitRaw
-	in = unleveredSwitchFixtureAt(int64((gap-float64(in.Policy.MinimumBenefitRaw))*1.25)+1, .16)
-	state = SelectorState{}
-	for i := 0; i <= 7; i++ {
-		r := selectUnlevered(in, state)
-		if r.Action == "SWITCH" {
-			t.Fatalf("switched with benefit %.0f <= MinimumBenefit", onreCandidate(t, r).BenefitRaw)
-		}
-		state = r.State
-		advanceSelectorFixture(&in, 5*time.Minute)
-	}
-}
-
 // A 1x quote carrying any borrow is invalid; 1x is AUTO/OnRe only.
 func TestUnleveredQuoteShape(t *testing.T) {
 	t.Parallel()
@@ -206,37 +151,42 @@ func TestUnleveredQuoteShape(t *testing.T) {
 	}
 }
 
-// (d) After the 1x entry lands: borrow blocked -> B2 holds, the position is a
-// finished tranche (no selector freeze, no re-entry loop), and same-lane
-// reinvestment stays closed. When the pool reopens, B2 owns leverage.
+// (d) A flat vault enters the selector's 1x lane: allocation, swap and
+// deposit, then borrow blocked -> the step holds at target; when the pool
+// reopens with an approved 1.5x level, B2 levers through leverage_up.
 func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	t.Parallel()
 	s := base()
+	s.Slot = 42
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
 	s.BorrowUtilizationBlocked = true
 	s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = 2_000_000_000, 2_000_000_000, int64(strategyTwoBridgeLegCapRaw)
-	s.VoltrIdleRaw, s.TotalVaultNAVRaw, s.SelectorEntryEquityRaw = 1_677_000_000, 1_677_000_000, 1_677_000_000
+	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 1_677_000_000, 1_677_000_000
 	s.MinimumCollateralDepositRaw = 1
+	q := entryQuoteFixture(time.Now().UTC(), onreONycUSDC, 1_677_000_000)
+	q.Unlevered, q.BorrowReceiveRaw = true, 0
+	in := targetInputs{Entry: &SelectorResult{Action: "ENTER", DestinationLane: onreONycUSDC, SelectedQuote: &q}}
 	check := func(action Action, reason string) {
 		t.Helper()
-		if got := Decide(s); got.Action != action || got.Reason != reason {
-			t.Fatalf("want %s %s, got %+v", action, reason, got)
+		if got := Decide(targetedWith(s, in)); got.Action != action || got.Reason != reason {
+			t.Fatalf("want %s %s, got %+v (target %+v)", action, reason, got, targetedWith(s, in).Target)
 		}
 	}
-	check(VoltrAllocateToSquads, "eligible_voltr_idle")
+	check(VoltrAllocateToSquads, entryAllocationReason)
 	s.VoltrIdleRaw, s.SquadsIdleRaw = 0, 1_677_000_000
-	check(SwapStableToCollateralStep, "usdc_requires_prime_collateral")
+	check(SwapStableToCollateralStep, entrySwapReason)
 	s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 1_670_000_000, 1_670_000_000
-	check(OpenRouteStep, "prime_collateral_ready")
+	check(OpenRouteStep, entryDepositReason)
 	s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 0
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.StrategyNAVRaw = true, 1_670_000_000, 1_670_000_000, 1_670_000_000
-	check(Hold, "debt_reserve_utilization_blocks_borrow")
-	if selectorTrancheInProgress(s) || sameLaneReinvestmentEligible(s, DefaultSelectorPolicy()) {
-		t.Fatal("1x position looks unfinished or re-enterable")
+	check(Hold, holdAtTarget)
+	// Held, the vault keeps its lane: no selector entry, no re-entry loop.
+	if !laneExposure(s) {
+		t.Fatal("a funded 1x position is not exposure")
 	}
 	s.LeverageTargetLevel = 1
-	check(Hold, "debt_reserve_utilization_blocks_borrow")
-	// Pool reopens with a 1.5x target: B2 levers through leverage_up.
+	check(Hold, holdAtTarget)
+	// Pool reopens with an approved 1.5x level: B2 levers through leverage_up.
 	s.BorrowUtilizationBlocked, s.LeverageTargetLevel = false, 1.5
 	armLeverageCapacityFixture(&s)
 	check(OpenRouteStep, leverageUpReason)
@@ -247,7 +197,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 1_000_000, 42, true, nil)
+	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 1_000_000, 42, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,17 +237,4 @@ func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
 	if kamino != 2 || swaps != 2 {
 		t.Fatalf("recipe legs kamino=%d swaps=%d", kamino, swaps)
 	}
-}
-
-// Live numbers (2026-09-29): AUTO 1x 9.48%, OnRe 1x 11.02%, $1,677. Reports
-// the largest switch cost the unchanged rule accepts.
-func TestUnleveredSwitchLiveBreakEven(t *testing.T) {
-	t.Parallel()
-	in := unleveredSwitchFixture(0)
-	r := selectUnlevered(in, SelectorState{})
-	c := onreCandidate(t, r)
-	// benefit(cost) = benefit(0) - cost*(1 + ~yield over horizon); the rule
-	// needs benefit > MinimumBenefit.
-	t.Logf("keep=%.0f onreGain(cost 0)=%.0f uncertainty=%d benefit(cost 0)=%.0f minimum=%d -> max switch cost ~%.0f raw",
-		r.KeepGainRaw, c.GainRaw, in.Snapshot.TotalVaultNAVRaw*in.Policy.UncertaintyBPS/10_000, c.BenefitRaw, in.Policy.MinimumBenefitRaw, c.BenefitRaw-float64(in.Policy.MinimumBenefitRaw))
 }

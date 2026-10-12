@@ -23,7 +23,7 @@ func monitorSnapshot(t *testing.T, mutate func(accounts []ConfirmedAccount, s *S
 		t.Fatal(err)
 	}
 	s := Snapshot{ObservationID: "monitor", Slot: 77, RouteKind: RouteKind, Fresh: true,
-		RouteLane: RouteID, StrategyKey: RouteID,
+		RouteLane: PhaseOneLaneID, StrategyKey: PhaseOneLaneID,
 		VoltrIdleRaw: int64(nav.Custodies.VoltrIdleRaw), VoltrStrategyIdleRaw: int64(nav.Custodies.StrategyUSDCraw),
 		SquadsIdleRaw: int64(nav.Custodies.SquadsUSDCraw), PrimeIdleRaw: int64(nav.Custodies.SquadsPRIMEraw),
 		CollateralIdleRaw: int64(nav.Custodies.SquadsPRIMEraw), StrategyNAVRaw: int64(nav.StrategyNAVRaw)}
@@ -42,7 +42,7 @@ func monitorSnapshot(t *testing.T, mutate func(accounts []ConfirmedAccount, s *S
 	if mutate != nil {
 		mutate(accounts, &s)
 	}
-	return s
+	return targeted(s)
 }
 
 func TestMonitorBookIdentityHoldsOnVaultMismatch(t *testing.T) {
@@ -136,7 +136,7 @@ func TestMonitorIdleCoversPendingRequestQuotes(t *testing.T) {
 	if got := Decide(s); got.Action == ReportNAV || got.Action == VoltrAllocateToSquads || got.Action == HoldManualRecovery {
 		t.Fatalf("underfunded queue allowed a refresh or allocation tick: %+v", got)
 	}
-	if got := Decide(s); got.Action != SwapPrimeToUSDCStep {
+	if got := Decide(s); got.Action != StageSquadsToVoltr || got.Reason != outboundStageReason {
 		t.Fatalf("underfunded queue did not keep the unwind leg admissible: %+v", got)
 	}
 	disarmed := s

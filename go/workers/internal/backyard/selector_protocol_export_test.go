@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"os"
 	"sort"
@@ -111,82 +110,6 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	t.Log("exported unsigned protocol-position experiment; no lifecycle proof")
 }
 
-func TestExportSelectorProtocolRelease(t *testing.T) {
-	dir := os.Getenv("SELECTOR_PROTOCOL_DIR")
-	if dir == "" {
-		t.Skip("executed position witness required")
-	}
-	raw, err := os.ReadFile(dir + "/position-result.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var report struct {
-		Slot           int64
-		FourLegsPassed bool
-		Steps          []struct {
-			After []struct {
-				Address, Owner, DataBase64, DataSHA256 string
-				Lamports                               uint64
-				Present                                bool
-			}
-		}
-	}
-	if json.Unmarshal(raw, &report) != nil || !report.FourLegsPassed || len(report.Steps) != 4 {
-		t.Fatal("incomplete position witness")
-	}
-	accounts := []ConfirmedAccount{}
-	for _, row := range report.Steps[1].After {
-		if !row.Present {
-			continue
-		}
-		data, err := base64.StdEncoding.Strict().DecodeString(row.DataBase64)
-		if err != nil || sha256Bytes(data) != row.DataSHA256 {
-			t.Fatal("witness account hash mismatch")
-		}
-		accounts = append(accounts, ConfirmedAccount{Address: row.Address, Owner: row.Owner, Lamports: row.Lamports, Data: data})
-	}
-	route, err := runtimeRoute(SelectedRouteID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bound, err := decodeKaminoRepaymentReleaseForMode(accounts, route, report.Slot, 5, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, bound.ReceiptRaw, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.RepaymentRelease = true
-	r.PilotRepaymentRelease = true
-	r.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	r.ReleaseDebtIdleRaw = binary.LittleEndian.Uint64(accountAt(accounts, route.DebtCustody).Data[64:72])
-	message, err := CompileKaminoMessage(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wire := signedWire(message, make([]byte, 64))
-	out, err := json.MarshalIndent(map[string]any{"schema": "selector-kamino-release-probe/v1", "lane": route.Lane, "sourceResultSHA256": sha256Bytes(raw), "bound": bound, "request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)}, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.OpenFile(dir+"/release-plan.json", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.Write(out); err != nil {
-		f.Close()
-		t.Fatal(err)
-	}
-	if err = f.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // Retained SBF witnesses must remain byte-identical to today's compiler.
 func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
 	t.Parallel()
@@ -223,18 +146,9 @@ func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
 		}
 		verify(r)
 	}
-	var release record
-	data, err = os.ReadFile(dir + "/release-plan.json")
-	if err != nil || json.Unmarshal(data, &release) != nil {
-		t.Fatal("invalid retained release", err)
-	}
-	if !release.Request.PilotRepaymentRelease || !release.Request.RepaymentRelease || release.Request.RouteLane != SelectedRouteID {
-		t.Fatal("release mode drift")
-	}
-	verify(release)
 	if data, err = os.ReadFile(dir + "/partial-plan.json"); err == nil {
 		var partial record
-		if json.Unmarshal(data, &partial) != nil || partial.Request.RouteLane != SelectedRouteID || partial.Request.RepaymentRelease || partial.Request.Action != DeleverRouteStep || partial.Request.AmountRaw != 1_000_000 {
+		if json.Unmarshal(data, &partial) != nil || partial.Request.RouteLane != SelectedRouteID || partial.Request.Action != DeleverRouteStep || partial.Request.AmountRaw != 1_000_000 {
 			t.Fatal("partial repayment mode drift")
 		}
 		_, leg, err := kaminoPrimeUSDCInstruction(partial.Request)

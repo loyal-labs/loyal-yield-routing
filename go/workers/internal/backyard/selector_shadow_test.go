@@ -34,7 +34,7 @@ func TestSlowShadowDoesNotBlockLifecycleTick(t *testing.T) {
 	if err := worker.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !recorded || worker.manifest.selectorObservation {
+	if !recorded {
 		t.Fatal("shadow changed execution")
 	}
 	cancel()

@@ -271,9 +271,9 @@ func openInitializerAutoScopeServiceDatabase(t *testing.T, name string, timeout 
 	return ctx, cancel, db
 }
 
-// seedAutoInitializerPilotRoute seeds a test-owned route key with a persisted
-// candidate selector entry — and deliberately no operation row: it must come
-// from the real producer and the real bind below.
+// seedAutoInitializerPilotRoute seeds a test-owned route key whose selector
+// result enters the AUTO lane — and deliberately no operation row: it must
+// come from the real producer and the real bind below.
 func seedAutoInitializerPilotRoute(t *testing.T, ctx context.Context, db *Database, key string, price *BudgetPrice, equity int64) {
 	t.Helper()
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":2}',2)`, key); err != nil {
@@ -282,7 +282,7 @@ func seedAutoInitializerPilotRoute(t *testing.T, ctx context.Context, db *Databa
 	if _, err := db.AcquireRouteLease(ctx, key, "auto-initializer-service", 5*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	storeTestSelectorEntry(t, ctx, db, key, autoSelectorEntryFixture(time.Now().UTC(), equity, price))
+	storeTestSelectorEnter(t, ctx, db, key, autoEntryQuoteFixture(time.Now().UTC(), equity, price))
 }
 
 func upsertConfirmedAccount(accounts *[]ConfirmedAccount, account ConfirmedAccount) {
@@ -401,8 +401,6 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	t.Parallel()
 	candidate := embeddedTestManifest(t)
 	maplePreferred := candidate
-	maplePreferred.selectorObservation = true
-	maplePreferred.observationLane = SelectedRouteID
 	requested := map[string]bool{}
 	for _, address := range routeFixedAddresses(maplePreferred) {
 		requested[address] = true
@@ -427,22 +425,21 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 			upsertConfirmedAccount(&accounts, tokenAccountFixture(t, laneRoute.CollateralCustody, laneRoute.Kamino.CollateralMint, bridgeVault, 0))
 		}
 	}
-	// Candidate-only ownership selects the candidate lane even with a Maple
+	// Candidate-only ownership holds the candidate lane even with a Maple
 	// preference.
-	selected, err := observedSelectorRoute(accounts, SelectedRouteID)
-	if err != nil || selected.Lane != autoAUTOPYUSD.Lane {
-		t.Fatalf("candidate ownership was not selected: %q %v", selected.Lane, err)
+	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), SelectedRouteID)
+	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane {
+		t.Fatalf("candidate ownership was not held: %v %v", held, err)
 	}
-	// Combined candidate and Maple exposure is one held set; the preferred
-	// held lane works.
+	// Combined candidate and Maple exposure is one held set.
 	mapleRoute, err := runtimeRoute(SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	upsertConfirmedAccount(&accounts, kaminoObligationImage(t, mapleRoute, 77, autoFixtureDepositReceiptRaw, autoFixtureDebtRaw))
-	working, held, err := observedSelectorLanes(accounts, SelectedRouteID, "")
-	if err != nil || working.Lane != SelectedRouteID || strings.Join(held, ",") != SelectedRouteID+","+autoAUTOPYUSD.Lane {
-		t.Fatalf("combined candidate and Maple exposure: working %s held %v err %v", working.Lane, held, err)
+	held, err = observedSelectorHeldLanes(accounts, earnLaneIDs(true), SelectedRouteID)
+	if err != nil || strings.Join(held, ",") != SelectedRouteID+","+autoAUTOPYUSD.Lane {
+		t.Fatalf("combined candidate and Maple exposure: held %v err %v", held, err)
 	}
 }
 
@@ -573,7 +570,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 			if err != nil {
 				return Observation{}, err
 			}
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, planning.observationManifest(manifest), planning.landedSlot)
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, planning.landedSlot, planning.inputs)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -603,7 +600,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	}
 	if !o.Snapshot.Fresh || o.Snapshot.RouteLane != autoAUTOPYUSD.Lane ||
 		!o.Snapshot.ObligationPresenceKnown || o.Snapshot.ObligationPresent || o.Snapshot.HasPosition ||
-		o.Snapshot.SelectorEntryEquityRaw != candidateEquity || o.Snapshot.StrategyNAVRaw != 0 ||
+		o.Snapshot.Target.EntryRaw != candidateEquity || o.Snapshot.StrategyNAVRaw != 0 ||
 		o.Snapshot.CapacityRaw <= 0 || o.Snapshot.Nonterminal != "" {
 		t.Fatalf("real candidate observation did not reach initializer readiness: %+v", o.Snapshot)
 	}
@@ -735,16 +732,14 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	if err = db.requireBoundIntent(ctx, id, r, auth.BuildInput.Effects); err != nil {
 		t.Fatal("bound intent is not the prepared request", err)
 	}
-	// The initializer is the account-setup leg: the bind refuses a second
-	// allocation but never binds allocationOperationId — that bind belongs to
-	// the funding operation (selector_entry.go:465-487) — so the actual
-	// recorded entry keeps the candidate lane, unallocated.
-	var entryLane, allocationID string
-	if err = db.pool.QueryRow(ctx, `SELECT COALESCE(state->'selectorEntry'->>'lane',''),COALESCE(state->'selectorEntry'->>'allocationOperationId','') FROM loyal_yield.multiply_route_states WHERE route_key=$1`, productionRouteKey).Scan(&entryLane, &allocationID); err != nil {
+	// The initializer moves no money and leaves the stored inputs alone: the
+	// selector's entry still names the candidate lane for the allocation.
+	var entryLane string
+	if err = db.pool.QueryRow(ctx, `SELECT COALESCE(state->'selector'->'result'->>'destinationLane','') FROM loyal_yield.multiply_route_states WHERE route_key=$1`, productionRouteKey).Scan(&entryLane); err != nil {
 		t.Fatal(err)
 	}
-	if entryLane != autoAUTOPYUSD.Lane || allocationID != "" {
-		t.Fatalf("initializer bind drifted the persisted entry: lane=%q allocation=%q", entryLane, allocationID)
+	if entryLane != autoAUTOPYUSD.Lane {
+		t.Fatalf("initializer bind drifted the selector's entry: lane=%q", entryLane)
 	}
 	// A bound row is never bound again.
 	assertBudgetHold(t, db.bindOperation(ctx, rpc, view, manifest, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
@@ -772,23 +767,4 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatalf("installed manifest did not resolve its own initializer request: %+v %v", installedRequest, installedErr)
 	}
 
-	// An expired entry refuses the bind itself, leaving the row unbound. The
-	// initializer ignores only the quote's slot window (it moves no
-	// principal), never the entry's own wall-clock expiry.
-	expiredKey := "auto-init-expired-" + time.Now().Format("150405.000000000")
-	seedAutoInitializerPilotRoute(t, ctx, db, expiredKey, &price, candidateEquity)
-	slotExpired := autoSelectorEntryFixture(time.Now().UTC().Add(-time.Minute), candidateEquity, &price)
-	storeTestSelectorEntry(t, ctx, db, expiredKey, slotExpired)
-	expiredRecord, err := db.RecordDecisionOnManifest(ctx, manifest, expiredKey, o, d, manifest.SHA256)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, view, manifest, expiredRecord.OperationID, o, d, r, kaminoInitializationEffects(r)), "selector_entry_quote_expired")
-	var bound bool
-	if err = db.pool.QueryRow(ctx, `SELECT expected_effects ? 'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, expiredRecord.OperationID).Scan(&bound); err != nil {
-		t.Fatal(err)
-	}
-	if bound {
-		t.Fatal("refused bind left a bound record behind")
-	}
 }

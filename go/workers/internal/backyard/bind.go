@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -14,16 +13,15 @@ import (
 )
 
 // phase3OperationAuthorization is expected_effects.phase3: the integrity
-// record of one operation. Bind writes the intent, its exact build input, the
-// shared-custody proof and the debt-clear authority; the signer adds the wire
-// hash; send checks the persisted wire is still that intent. It holds no money
-// policy. Rows written before the budget was deleted carry extra fields, which
-// decoding ignores.
+// record of one operation. Bind writes the intent, its exact build input and
+// the shared-custody proof; the signer adds the wire hash; send checks the
+// persisted wire is still that intent. It holds no money policy. Rows
+// written before the budget or the debt-clear authority were deleted carry
+// extra fields, which decoding ignores.
 type phase3OperationAuthorization struct {
-	DebtClear        *debtClearAuthority `json:"debtClear,omitempty"`
-	IntentSHA256     string              `json:"intentSha256"`
-	SignedWireSHA256 string              `json:"signedWireSha256,omitempty"`
-	BuildInput       *phase3BuildInput   `json:"buildInput,omitempty"`
+	IntentSHA256     string            `json:"intentSha256"`
+	SignedWireSHA256 string            `json:"signedWireSha256,omitempty"`
+	BuildInput       *phase3BuildInput `json:"buildInput,omitempty"`
 	// CustodyProof is the pre-decision shared-custody ownership proof
 	// (doc 26) of a positive AUTO-PYUSD spend, bound under the route lock.
 	// Nil for every other lane and zero-spend operation.
@@ -186,9 +184,8 @@ func Phase3IntentDigest(request any, effects []byte) (string, error) {
 
 // bindOperation is the tick's step between RecordDecision and build. Under
 // the route lock it checks the decided row is this decision, then records the
-// operation's integrity: the intent hash and exact build input of the prepared
-// wire, the AUTO-PYUSD shared-custody proof, the selector-entry allocation and
-// the debt-clear authority (with the partial-repayment proof it classifies).
+// operation's integrity: the intent hash and exact build input of the
+// prepared wire, and the AUTO-PYUSD shared-custody proof.
 func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *View, m RouteManifest, operationID string, o Observation, decision Decision, request any, effects ExpectedEffects) error {
 	if d == nil || d.pool == nil || rpc == nil {
 		return budgetHold("bind_database_unavailable")
@@ -205,11 +202,6 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *V
 	if err != nil {
 		return err
 	}
-	risk, err := verifyDebtClearEmergency(m, o, decision, operationID, time.Now().UTC())
-	if err != nil {
-		return err
-	}
-	plan := debtClearPlan{Snapshot: o.Snapshot, Decision: decision}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -237,19 +229,9 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *V
 	if err != nil {
 		return err
 	}
-	slot, err := view.slot(ctx)
-	if err != nil {
-		return err
-	}
 	auth := phase3OperationAuthorization{IntentSHA256: intent, BuildInput: input}
 	if custody.SpendRaw > 0 {
 		auth.CustodyProof = &custody
-	}
-	if err = d.authorizeDebtClearTx(ctx, tx, m, operationID, request, effects, plan, &auth, risk, slot); err != nil {
-		return err
-	}
-	if err = d.authorizeSelectorEntryTxOnManifest(ctx, m, tx, operationID, request, effects, slot, true); err != nil {
-		return err
 	}
 	raw, err := json.Marshal(auth)
 	if err != nil {
@@ -386,8 +368,7 @@ func (d *Database) finalSend(ctx context.Context, manifest RouteManifest, operat
 }
 
 // authorizeSendTx is the locked final-send fence: the signed row is the bound
-// wire, the debt-clear authority it was bound under is still live, and a
-// selector entry still authorizes its allocation.
+// wire.
 func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.Tx, operationID string, request any, bound phase3OperationAuthorization) error {
 	auth, err := readPhase3AuthorizationTx(ctx, tx, operationID)
 	if err != nil {
@@ -400,12 +381,6 @@ func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.
 	if len(wire) == 0 || auth.SignedWireSHA256 != sha256Bytes(wire) || auth.IntentSHA256 != bound.IntentSHA256 || auth.SignedWireSHA256 != bound.SignedWireSHA256 {
 		return budgetHold("final_send_identity_changed")
 	}
-	_, effects, _, err := auth.BuildInput.decodeWithManifest(m)
-	if err != nil {
-		return err
-	}
-	if err = d.checkSignedDebtClearTx(ctx, tx, m, operationID, request, auth); err != nil {
-		return err
-	}
-	return d.authorizeSelectorEntryTxOnManifest(ctx, m, tx, operationID, request, effects, 0, false)
+	_, _, _, err = auth.BuildInput.decodeWithManifest(m)
+	return err
 }

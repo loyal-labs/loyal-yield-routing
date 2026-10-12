@@ -23,12 +23,13 @@ import (
 //
 // minSlot is the highest slot the route's own operations landed at: nothing
 // plans from a view that has not seen its own transactions.
-func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, minSlot int64) (Observation, []ConfirmedAccount, error) {
+func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, minSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil || view == nil {
 		return Observation{}, nil, fmt.Errorf("RPC client and account view are required")
 	}
 	return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
 		minSlot: minSlot,
+		inputs:  inputs,
 		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 			// A null strategy receipt must reach the integrity classifier
 			// instead of failing the batch as a required absent account.
@@ -78,15 +79,21 @@ type routeObservationBatch struct {
 
 type routeObservationRuntime struct {
 	// refreshValuation captures one bank after refreshing every valued
-	// lane's reserves (the working lane first, then the other held lanes).
+	// lane's reserves.
 	refreshValuation func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)
 	// read returns the fixed accounts and the vault's open withdrawal
 	// receipts at one view slot no older than its minimum.
 	read    func(context.Context, []string, int64) (int64, []ConfirmedAccount, []programAccount, error)
 	minSlot int64
 	now     func() time.Time
+	// inputs are target()'s stored inputs, read with the planning state.
+	inputs targetInputs
 }
 
+// observeConfirmedRouteSnapshotWithAccounts reads one coherent bank, builds
+// a per-lane view of every held lane (or, in a flat vault, of the lane its
+// cash enters), computes target() over them and returns the working lane's
+// view with its target. Every view carries the same vault facts.
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
 	if runtime.read == nil || runtime.now == nil {
 		return Observation{}, nil, fmt.Errorf("route observation runtime is incomplete")
@@ -96,7 +103,6 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		return Observation{}, nil, err
 	}
 	addresses := routeFixedAddresses(manifest)
-	route := selectedRoute
 	slot, accounts, receipts, err := runtime.read(ctx, addresses, runtime.minSlot)
 	if err != nil {
 		return Observation{}, nil, err
@@ -108,74 +114,45 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	// A strategy receipt that is absent, foreign-owned or the wrong length
 	// is an observed integrity failure, not a transport fault.
 	if strategyReceiptIntegrityFault(accountAt(accounts, bridgeStrategyReceipt)) {
-		return receiptIntegrityObservation(slot, route), accounts, nil
+		return receiptIntegrityObservation(slot, selectedRoute), accounts, nil
 	}
-	cutoverDrain := false
-	var held []string
-	if manifest.selectorObservation {
-		route, held, err = observedSelectorLanes(accounts, selectedRoute.Lane, manifest.workingLane)
-		if err != nil {
-			return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
-		}
-	} else if route.Lane == SelectedRouteID {
-		legacyRoute, legacyErr := runtimeRoute(RouteID)
-		if legacyErr != nil {
-			return Observation{}, nil, legacyErr
-		}
-		legacyPosition, legacyErr := observeKaminoWithCashFallback(slot, accounts, legacyRoute)
-		if legacyErr != nil {
-			return Observation{}, nil, fmt.Errorf("verify legacy PRIME cutover state: %w", legacyErr)
-		}
-		legacyCustody, legacyErr := decodePinnedPrime(accountAt(accounts, kaminoPrimeCustody))
-		if legacyErr != nil {
-			return Observation{}, nil, fmt.Errorf("verify legacy PRIME custody: %w", legacyErr)
-		}
-		if legacyPrimeExposure(legacyPosition, legacyCustody.Raw) {
-			route, legacyErr = runtimeRoute(RouteID)
-			if legacyErr != nil {
-				return Observation{}, nil, legacyErr
-			}
-			cutoverDrain = true
-		}
+	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), selectedRoute.Lane)
+	if err != nil {
+		return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 	}
-	// Every other held lane is valued in the same NAV, from the same bank.
-	routes, err := navRoutes(route, held)
+	viewLanes := held
+	if len(held) == 0 {
+		viewLanes = []string{flatViewLane(selectedRoute.Lane, runtime.inputs)}
+	}
+	first, err := runtimeRoute(viewLanes[0])
+	if err != nil {
+		return Observation{}, nil, err
+	}
+	// Every held lane is valued in the same NAV, from the same bank.
+	routes, err := navRoutes(first, held)
 	if err != nil {
 		return Observation{}, nil, err
 	}
 	// Reserve refresh changes valuation inputs only. Capture the complete
 	// bank again so custody, obligations, receipts and Clock are coherent
 	// with those refreshed inputs, including after a landed swap.
-	position, reserveErr := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	refreshExhausted := false
-	// A non-USDC lane's NAV also health-checks the pinned USDC reference
-	// reserve. With the lane's own reserves fresh it was never refreshed,
-	// so its age latched kamino_stale without a refresh try (09-26 23:19).
-	usdcReferenceStale := reserveErr == nil && navUSDCReferenceStale(slot, accounts, route)
-	otherLanesStale := heldLanesStale(slot, accounts, routes[1:])
-	if (errors.Is(reserveErr, errKaminoReserveStale) || usdcReferenceStale || otherLanesStale) && runtime.refreshValuation != nil {
-		captureAddresses := addresses
-		if manifest.selectorObservation {
-			captureAddresses = selectorValuationAddresses(routes, addresses)
-		}
+	if routesStale(slot, accounts, routes) && runtime.refreshValuation != nil {
+		captureAddresses := selectorValuationAddresses(routes, addresses)
 		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, routes, captureAddresses, slot)
 		if refreshErr == nil {
 			refreshSimulationFailures.Store(0)
-		}
-		if refreshErr == nil {
 			if err := validateRouteValuationCapture(refreshedSlot, refreshedAccounts, captureAddresses, slot); err != nil {
 				return Observation{}, nil, err
 			}
 			// A capture that disagrees with the view on the receipt or the
-			// selector route proves nothing; the next tick reads again.
+			// held set proves nothing; the next tick reads again.
 			if strategyReceiptIntegrityFault(accountAt(refreshedAccounts, bridgeStrategyReceipt)) {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture breaks the strategy receipt"))
 			}
-			if manifest.selectorObservation {
-				freshRoute, freshHeld, routeErr := observedSelectorLanes(refreshedAccounts, selectedRoute.Lane, manifest.workingLane)
-				if routeErr != nil || freshRoute.Lane != route.Lane || strings.Join(freshHeld, ",") != strings.Join(held, ",") {
-					return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture moved the selector route"))
-				}
+			freshHeld, heldErr := observedSelectorHeldLanes(refreshedAccounts, earnLaneIDs(true), selectedRoute.Lane)
+			if heldErr != nil || strings.Join(freshHeld, ",") != strings.Join(held, ",") {
+				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture moved the held lanes"))
 			}
 			slot, accounts = refreshedSlot, refreshedAccounts
 			// The withdrawal receipts come from the view at the capture's
@@ -187,16 +164,12 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			if demand, fingerprint, err = decodeConfirmedWithdrawalDemand(receipts); err != nil {
 				return Observation{}, nil, err
 			}
-			if usdcReferenceStale || otherLanesStale {
-				// Keep the position on the same refreshed bank as the NAV.
-				position, reserveErr = observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
-			}
 		} else {
 			detail := ""
 			if te := holdTransactionError(refreshErr); te != "" {
 				detail = " transactionError=" + te
 			}
-			_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: reserve valuation refresh failed lane=%s: %v%s\n", route.Lane, refreshErr, detail)
+			_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: reserve valuation refresh failed lane=%s: %v%s\n", first.Lane, refreshErr, detail)
 			if transientValuationRefreshFailure(refreshErr) {
 				// Unavailable or late capture evidence cannot establish reserve
 				// health. Retry next tick without accepting it; a refresh Kamino
@@ -221,40 +194,88 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		// On unavailable refresh, cash-only accounting still works. Any
 		// noncash exposure retains the original fail-closed health hold.
 	}
-	err = reserveErr
+	views := make([]Observation, 0, len(viewLanes))
+	for _, lane := range viewLanes {
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		view, hold, err := observeLaneView(ctx, manifest, runtime, slot, accounts, route, held, demand, fingerprint, refreshExhausted)
+		if err != nil || hold != nil {
+			if hold != nil {
+				return *hold, accounts, nil
+			}
+			return Observation{}, nil, err
+		}
+		views = append(views, view)
+	}
+	snapshots := make([]Snapshot, len(views))
+	for i := range views {
+		level := runtime.inputs.Levels[views[i].Snapshot.RouteLane]
+		views[i].Snapshot.LeverageTargetLevel, views[i].Snapshot.LeverageUpApproved = level.Level, level.UpApproved && level.Level > 1
+		snapshots[i] = views[i].Snapshot
+	}
+	index, laneTarget := target(snapshots, runtime.inputs)
+	working := views[index]
+	working.Snapshot.Target = laneTarget
+	working.Snapshot.TargetInputs = targetSummary(snapshots, runtime.inputs)
+	// The target is a decision input like the chain: the identity binds it.
+	working.Snapshot.ObservationID = sha256Bytes([]byte(fmt.Sprintf("%s|target:%+v|inputs:%s", working.Snapshot.ObservationID, laneTarget, working.Snapshot.TargetInputs)))
+	working.routeBatch.ObservationID = working.Snapshot.ObservationID
+	working.lanes = snapshots
+	return working, accounts, nil
+}
+
+// flatViewLane is the lane a flat vault's view describes: the selector's
+// latest entry lane, else the preferred lane.
+func flatViewLane(preferred string, in targetInputs) string {
+	if r := in.Entry; r != nil && (r.Action == "ENTER" || r.Action == "CANARY_ENTER") && earnActiveLane(r.DestinationLane) {
+		if _, exiting := in.Exits[r.DestinationLane]; !exiting {
+			return r.DestinationLane
+		}
+	}
+	return preferred
+}
+
+// routesStale reports whether a valued lane's reserves, or the USDC reference
+// its NAV reads, are past the Kamino age limit, so the one refreshed bank
+// must cover them. Other decode faults are left to the NAV.
+func routesStale(slot int64, accounts []ConfirmedAccount, routes []RuntimeRoute) bool {
+	for _, route := range routes {
+		_, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
+		if errors.Is(err, errKaminoReserveStale) || (err == nil && navUSDCReferenceStale(slot, accounts, route)) {
+			return true
+		}
+	}
+	return false
+}
+
+// observeLaneView is one lane's view of the bank: its position, custody and
+// capacity, and the whole vault's NAV valued with this lane first. A Kamino
+// health fault is a hold observation, not an error.
+func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, held []string, demand int64, fingerprint string, refreshExhausted bool) (Observation, *Observation, error) {
+	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if err != nil {
 		position, err = observeKaminoWithCashFallback(slot, accounts, route)
 	}
-	if err != nil {
+	healthHold := func(err error, lane string) (*Observation, error) {
 		// A stale, paused, or emergency Kamino state is a decision input,
 		// not a broken observer: the tick holds with the audited reason.
-		if hold, ok := kaminoHealthHold(err, slot, runtime.now(), route.Lane); ok {
+		if hold, ok := kaminoHealthHold(err, slot, runtime.now(), lane); ok {
 			if retry := staleHealthRetry(hold, err, refreshExhausted); retry != nil {
-				return Observation{}, nil, retry
+				return nil, retry
 			}
-			return hold, accounts, nil
+			return &hold, nil
 		}
-		return Observation{}, nil, err
+		return nil, err
 	}
-	// Hard-LTV protection runs over every held lane before the working
-	// lane's own decisions: a held lane past its hard LTV becomes this
-	// tick's per-lane view, so Decide's risk branch repays it first.
-	crossLaneHardLTV := false
-	if risky, ok := heldLaneOverHardLTV(slot, accounts, routes); ok {
-		riskyPosition, riskErr := observeKaminoFromFixedAccounts(slot, accounts, risky.Kamino)
-		if riskErr != nil {
-			if hold, ok := kaminoHealthHold(riskErr, slot, runtime.now(), risky.Lane); ok {
-				if retry := staleHealthRetry(hold, riskErr, refreshExhausted); retry != nil {
-					return Observation{}, nil, retry
-				}
-				return hold, accounts, nil
-			}
-			return Observation{}, nil, riskErr
-		}
-		route, position, crossLaneHardLTV = risky, riskyPosition, true
-		if routes, err = navRoutes(route, held); err != nil {
-			return Observation{}, nil, err
-		}
+	if err != nil {
+		hold, err := healthHold(err, route.Lane)
+		return Observation{}, hold, err
+	}
+	routes, err := navRoutes(route, held)
+	if err != nil {
+		return Observation{}, nil, err
 	}
 	navAccounts, err := selectRouteNAVAccountsForRoutes(accounts, routes)
 	if err != nil {
@@ -262,13 +283,8 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	}
 	nav, err := ComputeRouteNAVForRoutes(slot, navAccounts, manifest, nil, routes)
 	if err != nil {
-		if hold, ok := kaminoHealthHold(err, slot, runtime.now(), route.Lane); ok {
-			if retry := staleHealthRetry(hold, err, refreshExhausted); retry != nil {
-				return Observation{}, nil, retry
-			}
-			return hold, accounts, nil
-		}
-		return Observation{}, nil, err
+		hold, err := healthHold(err, route.Lane)
+		return Observation{}, hold, err
 	}
 	kaminoStaleHolds.Store(0)
 	collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
@@ -316,7 +332,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
 	base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 	base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
-	if (route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane)) && prime.Raw > 0 && !cutoverDrain && demand == 0 {
+	if (route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane)) && prime.Raw > 0 && demand == 0 {
 		minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
 		if err != nil && !basicLane(route.Lane) {
 			return Observation{}, nil, err
@@ -331,9 +347,6 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	base.Snapshot.StrategyKey = route.Lane
 	base.Snapshot.HeldLanes = strings.Join(held, ",")
 	base.Snapshot.OtherLanesNAVRaw = nav.OtherLanesNAVRaw
-	base.Snapshot.CrossLaneHardLTV = crossLaneHardLTV
-	base.Snapshot.OtherLanesCustodyHeld = nav.OtherLanesCustodyHeld
-	base.Snapshot.CutoverDrain = cutoverDrain
 	base.Snapshot.TicketLastConsumedSequenceRaw = int64(ticket.LastConsumedSequence)
 	base.Snapshot.HasPosition = position.HasPosition
 	// The position view and the NAV view decode the obligation independently
@@ -415,10 +428,10 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))
 		base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 	}
-	if nav.OtherLanesState != "" || crossLaneHardLTV {
+	if nav.OtherLanesState != "" {
 		// Other held lanes are part of this decision input; a lone held
 		// lane keeps its exact one-lane observation identity.
-		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|held:%s|other-lanes:%s|cross-lane-hard-ltv:%t", base.Snapshot.ObservationID, base.Snapshot.HeldLanes, nav.OtherLanesState, crossLaneHardLTV)))
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|held:%s|other-lanes:%s", base.Snapshot.ObservationID, base.Snapshot.HeldLanes, nav.OtherLanesState)))
 		base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 	}
 	base.ObservedAt = observedAt
@@ -430,9 +443,8 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if base.ValuationSource != "confirmed" {
 		base.Snapshot.ObservationID = sha256Bytes([]byte(fmt.Sprintf("%s|valuation:%s|liquidation:%d", base.Snapshot.ObservationID, base.ValuationSource, base.Snapshot.LiquidationThresholdBPS)))
 	}
-	base.heldFacts = nav.OtherLanes
 	base.routeBatch = &routeObservationBatch{Slot: slot, ObservationID: base.Snapshot.ObservationID, ManifestSHA256: manifest.SHA256, Accounts: accounts}
-	return base, accounts, nil
+	return base, nil, nil
 }
 
 // receiptIntegrityObservation is the only observation a batch with a broken
@@ -448,65 +460,19 @@ func receiptIntegrityObservation(slot int64, route RuntimeRoute) Observation {
 	}}
 }
 
-// heldLanesStale reports whether a non-working held lane's reserves, or the
-// USDC reference its NAV reads, are past the Kamino age limit, so the one
-// refreshed bank must cover it too. Other decode faults are left to the NAV.
-func heldLanesStale(slot int64, accounts []ConfirmedAccount, routes []RuntimeRoute) bool {
-	for _, route := range routes {
-		_, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
-		if errors.Is(err, errKaminoReserveStale) || (err == nil && navUSDCReferenceStale(slot, accounts, route)) {
-			return true
-		}
-	}
-	return false
-}
-
-// heldLaneOverHardLTV returns the held lane furthest past its hard LTV,
-// min(liquidation threshold - 1500, 6000) bps, when that lane is not the
-// working lane (routes[0]): the working lane's own risk is Decide's first
-// branch already. A lane whose position cannot be observed is left to the
-// NAV, which refuses it.
-func heldLaneOverHardLTV(slot int64, accounts []ConfirmedAccount, routes []RuntimeRoute) (RuntimeRoute, bool) {
-	worst, worstExcess := -1, int64(-1)
-	for i, route := range routes {
-		position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
-		if err != nil || !position.HasPosition || position.DebtRaw == 0 {
-			continue
-		}
-		ltv, err := observedLTVBPS(position)
-		hard := min(position.LiquidationThresholdBPS-1500, int64(6000))
-		if err != nil || hard <= TargetLTVBPS || ltv < hard {
-			continue
-		}
-		if ltv-hard > worstExcess {
-			worst, worstExcess = i, ltv-hard
-		}
-	}
-	if worst <= 0 {
-		return RuntimeRoute{}, false
-	}
-	return routes[worst], true
-}
-
-func legacyPrimeExposure(position KaminoPosition, custodyRaw uint64) bool {
-	return custodyRaw != 0 || position.HasPosition || position.CollateralDepositedRaw != 0 || position.DebtRaw != 0
-}
-
 func routeFixedAddresses(manifest RouteManifest) []string {
 	route, err := manifest.activeRuntimeRoute()
 	if err != nil {
 		return nil
 	}
 	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
-	if manifest.selectorObservation {
-		for _, lane := range earnLaneIDs(true) {
-			other, _ := runtimeRoute(lane)
-			for _, address := range pinnedRouteNAVAddressesForRoute(other) {
-				addressSet[address] = struct{}{}
-			}
-			for _, address := range []string{other.Kamino.Market, other.CollateralLiquiditySupply, other.DebtLiquiditySupply, other.DebtFeeReceiver, other.Kamino.Obligation, other.CollateralCustody} {
-				addressSet[address] = struct{}{}
-			}
+	for _, lane := range earnLaneIDs(true) {
+		other, _ := runtimeRoute(lane)
+		for _, address := range pinnedRouteNAVAddressesForRoute(other) {
+			addressSet[address] = struct{}{}
+		}
+		for _, address := range []string{other.Kamino.Market, other.CollateralLiquiditySupply, other.DebtLiquiditySupply, other.DebtFeeReceiver, other.Kamino.Obligation, other.CollateralCustody} {
+			addressSet[address] = struct{}{}
 		}
 	}
 

@@ -115,7 +115,7 @@ func TestSelectorDestinationLeversOnlyAtTheLiveSpreadMinimum(t *testing.T) {
 		if closeBorrowing {
 			binary.LittleEndian.PutUint64(accountAt(accounts, mapleSyrupUSDCUSDC.Kamino.DebtReserve).Data[kaminoOutsideBorrowLimitOffset:], 0)
 		}
-		q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), market, 100_000_000, 42, false, nil)
+		q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), market, 100_000_000, 42, false)
 		if err != nil {
 			t.Fatal(err)
 		}

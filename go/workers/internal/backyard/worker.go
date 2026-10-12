@@ -32,8 +32,8 @@ type Worker struct {
 	manifest     RouteManifest
 	runtime      tickRuntime
 	leaseHandoff startupLeaseHandoffRuntime
-	// borrowBlockedLog reports a borrow-blocked hold at most once an hour.
-	borrowBlockedLog borrowBlockedLog
+	// noRoom reports a no_room hold: always on /metrics, hourly in the log.
+	noRoom noRoomLog
 }
 
 type startupLeaseHandoffRuntime struct {
@@ -42,15 +42,10 @@ type startupLeaseHandoffRuntime struct {
 }
 
 type tickRuntime struct {
-	withdrawalHealth        func(context.Context, WithdrawalHealth) error
-	observeWithdrawalHealth func(context.Context) (Observation, error)
-	prepareInitialization   func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
-	buildInitialization     func(context.Context, string, KaminoInitializationRequest) error
-	refreshUnwind           func(context.Context) error
-	// advanceTranche applies one tranche transition (handoff, completion or
-	// abandonment) from a quiet observation; true ends the tick.
-	advanceTranche                   func(context.Context, Observation) (bool, error)
-	completeUnwind                   func(context.Context, Observation) (bool, error)
+	withdrawalHealth                 func(context.Context, WithdrawalHealth) error
+	observeWithdrawalHealth          func(context.Context) (Observation, error)
+	prepareInitialization            func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
+	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
 	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
 	advance                          func(context.Context, PersistedOperation) error
 	observe                          func(context.Context) (Observation, error)
@@ -190,84 +185,6 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	observation.Snapshot.StagedAmountKnown = journal.StagedAmountKnown
 	observation.Snapshot.StageTransient = journal.StageAfterTicket
 	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
-	if observation.planning != nil {
-		planning := observation.planning
-		if err := applyUnwindIntent(&observation.Snapshot, planning.unwind); err != nil {
-			observation.Snapshot.ManualReason = err.Error()
-		}
-		observation.Snapshot.SelectorEntryPaused = planning.paused
-		applyLeverageTarget(&observation.Snapshot, leverageTargetFor(planning.leverage, observation.Snapshot.RouteLane))
-		applyTranche(&observation.Snapshot, planning.tranche)
-		if err := applyPartialWithdrawal(&observation.Snapshot, partialWithdrawalFor(planning.partialWithdrawals, observation.Snapshot.RouteLane)); err != nil {
-			return err
-		}
-		return applySelectorEntry(&observation.Snapshot, planning.entry, time.Now().UTC())
-	}
-	if reader, ok := p.journal.(interface {
-		LoadUnwindIntent(context.Context, string) (*UnwindIntent, error)
-	}); ok {
-		intent, err := reader.LoadUnwindIntent(ctx, p.routeKey)
-		if err != nil {
-			return err
-		}
-		if err := applyUnwindIntent(&observation.Snapshot, intent); err != nil {
-			observation.Snapshot.ManualReason = err.Error()
-		}
-	}
-	// The B2 level target is a durable planning input like the entry and the
-	// unwind: a construction refresh (no planning read) must see the same
-	// stored target as the outer decision, or leverage_up never matches
-	// (live 2026-09-29: every tick 'prepared evidence does not match').
-	if reader, ok := p.journal.(interface {
-		LoadPartialWithdrawal(context.Context, string, string) (*partialWithdrawalState, error)
-	}); ok {
-		partial, err := reader.LoadPartialWithdrawal(ctx, p.routeKey, observation.Snapshot.RouteLane)
-		if err != nil {
-			return err
-		}
-		if err = applyPartialWithdrawal(&observation.Snapshot, partial); err != nil {
-			return err
-		}
-	}
-	if reader, ok := p.journal.(interface {
-		LoadTranche(context.Context, string) (*trancheIntent, error)
-	}); ok {
-		tranche, err := reader.LoadTranche(ctx, p.routeKey)
-		if err != nil {
-			return err
-		}
-		applyTranche(&observation.Snapshot, tranche)
-	}
-	observation.Snapshot.LeverageTargetLevel = 0
-	if reader, ok := p.journal.(interface {
-		LoadLeverageTarget(context.Context, string, string) (*LeverageTarget, error)
-	}); ok {
-		target, err := reader.LoadLeverageTarget(ctx, p.routeKey, observation.Snapshot.RouteLane)
-		if err != nil {
-			return err
-		}
-		applyLeverageTarget(&observation.Snapshot, target)
-	}
-	if reader, ok := p.journal.(interface {
-		SelectorEntryPaused(context.Context, string) (bool, error)
-	}); ok {
-		paused, err := reader.SelectorEntryPaused(ctx, p.routeKey)
-		if err != nil {
-			return err
-		}
-		observation.Snapshot.SelectorEntryPaused = paused
-	}
-	if reader, ok := p.journal.(interface {
-		LoadSelectorEntry(context.Context, string) (*SelectorEntry, error)
-	}); ok {
-		entry, err := reader.LoadSelectorEntry(ctx, p.routeKey)
-		if err != nil {
-			return err
-		}
-		if err = applySelectorEntry(&observation.Snapshot, entry, time.Now().UTC()); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -281,7 +198,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			if err != nil {
 				return Observation{}, err
 			}
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, planning.observationManifest(manifest), planning.landedSlot)
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, planning.landedSlot, planning.inputs)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -301,34 +218,12 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			}
 			return o, err
 		},
-		refreshUnwind: func(ctx context.Context) error {
-			return database.refreshSelectorUnwind(ctx, rpc, view, manifest, state.observe)
-		},
 		watchRoom: view.WatchRoom,
 		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision) (Observation, KaminoInitializationRequest, error) {
 			return prepareKaminoInitialization(ctx, rpc, view, m, d, state.observe)
 		},
 		buildInitialization: func(ctx context.Context, id string, r KaminoInitializationRequest) error {
 			return BuildSimulateAndPersistKaminoInitialization(ctx, database, rpc, view, id, manifest, r, credentials)
-		},
-		advanceTranche: func(ctx context.Context, observation Observation) (bool, error) {
-			if observation.planning == nil || observation.planning.tranche == nil {
-				return false, nil
-			}
-			return database.AdvanceTranche(ctx, productionRouteKey, observation.Snapshot, time.Now().UTC())
-		},
-		completeUnwind: func(ctx context.Context, observation Observation) (bool, error) {
-			if !observation.Snapshot.Unwind || !unwindComplete(observation.Snapshot) {
-				return false, nil
-			}
-			intent, err := database.LoadUnwindIntent(ctx, productionRouteKey)
-			if err != nil {
-				return false, err
-			}
-			if intent == nil {
-				return false, fmt.Errorf("unwind disappeared before completion")
-			}
-			return true, database.CompleteUnwindIntent(ctx, productionRouteKey, *intent, observation.Snapshot)
 		},
 		loadNonterminal: func(ctx context.Context, routeKey string) (*PersistedOperation, error) {
 			return database.LoadNonterminal(ctx, routeKey)
@@ -344,17 +239,9 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			return prepareBridgeFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
 		prepareKamino: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
-			manifest, err := manifestForUnwind(ctx, database, manifest)
-			if err != nil {
-				return Observation{}, KaminoExecutionEvidence{}, err
-			}
 			return prepareKaminoFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, JupiterExecutionEvidence, error) {
-			manifest, err := manifestForUnwind(ctx, database, manifest)
-			if err != nil {
-				return Observation{}, JupiterExecutionEvidence{}, err
-			}
 			return prepareJupiterFromTickObservation(ctx, rpc, manifest, decision, productionJupiter, observation)
 		},
 		prepareHastra: func(ctx context.Context, decision Decision, observation Observation) (Observation, HastraExecutionEvidence, error) {
@@ -467,39 +354,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	if w.runtime.watchRoom != nil {
 		w.runtime.watchRoom(leverageRoomWatches(observation), w.roomObserved)
 	}
-	if w.runtime.completeUnwind != nil {
-		completed, err := w.runtime.completeUnwind(ctx, observation)
-		if err != nil {
-			return err
-		}
-		if completed {
-			return nil
-		}
-	}
-	if w.runtime.advanceTranche != nil {
-		advanced, err := w.runtime.advanceTranche(ctx, observation)
-		if err != nil {
-			return err
-		}
-		if advanced {
-			return nil
-		}
-	}
 	decision := Decide(observation.Snapshot)
 	healthDecision = decision
-	w.borrowBlockedLog.note(time.Now(), decision)
-	if decision.Action == Hold && decision.Reason == "unwind_requires_fresh_admission" && w.runtime.refreshUnwind != nil {
-		if err = w.runtime.refreshUnwind(ctx); err == nil {
-			return nil
-		}
-		var hold *BudgetHold
-		if !errors.As(err, &hold) {
-			return err
-		}
-		// A refused renewal stays a retryable journaled hold. It never turns
-		// ordinary accrued interest into a permanent manual recovery latch.
-		decision.Reason = hold.Reason
-	}
+	w.noRoom.note(time.Now(), observation.Snapshot, decision)
 	// Decide maps every observation-level hold to one generic reason. The
 	// observer records the audited Kamino health reason on the snapshot, so it
 	// is carried into the durable decision instead of being discarded.
@@ -930,7 +787,7 @@ func isPreSendHold(err error) bool {
 // notifySelectorCommit requests another serialized tick; never execute a
 // transaction from the collector. A queued wake survives an active tick.
 func (w *Worker) notifySelectorCommit(action string) {
-	if action != "ENTER" && action != "CANARY_ENTER" && action != "SWITCH" && action != "TRANCHE" {
+	if action != "ENTER" && action != "CANARY_ENTER" {
 		return
 	}
 	select {

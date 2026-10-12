@@ -179,20 +179,31 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 					return database.RecordLeverageWatch(ctx, productionRouteKey, summary, version)
 				}, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format, args...) })
 			}
-			// B2 option 1: store the funded lane's level target. It
-			// never runs beside a selector move, unwind or open
-			// operation, and changes no money by itself.
-			if decision, ok := decideLeverageTarget(observed.Snapshot, result, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, productionJupiter, worker.manifest, observed.Snapshot)); ok && observed.planning != nil {
+			// B2 option 1: each held lane's level, target()'s level input. It
+			// changes no money by itself.
+			for _, lane := range observed.lanes {
+				decision, ok := decideLeverageTarget(lane, result, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, productionJupiter, worker.manifest, lane))
+				if !ok {
+					continue
+				}
 				if levDecisionLog.due(time.Now(), decision) {
 					_, _ = fmt.Fprintln(out, decision.logLine())
 				}
 				if decision.outage() {
 					backyardEvents.leverageDecisionOutage(decision.Reason)
 				}
-				if decision.storeChanges(observed.Snapshot) {
-					target := LeverageTarget{Lane: decision.Lane, Level: decision.Next, SpreadBPS: decision.SpreadBPS, DecidedAt: time.Now().UTC(), BorrowRaw: decision.BorrowRaw, SourceDebtRaw: decision.SourceDebtRaw}
-					if err := database.RecordLeverageTarget(ctx, productionRouteKey, target, observed.planning.generation); err != nil {
-						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: leverage target not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
+				if decision.storeChanges(lane) {
+					if err := database.RecordLaneLevel(ctx, productionRouteKey, decision.Lane, decision.level()); err != nil {
+						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: lane level not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
+					}
+				}
+			}
+			// An overflow lane its source cannot lever into takes the live cap
+			// before it holds anything.
+			for _, source := range observed.lanes {
+				if lane, level, ok := decideOverflowLevel(source, markets, DefaultSelectorPolicy(), time.Now().UTC()); ok && observed.planning != nil && observed.planning.inputs.Levels[lane] != level {
+					if err := database.RecordLaneLevel(ctx, productionRouteKey, lane, level); err != nil {
+						_, _ = fmt.Fprintf(out, "backyard-rwa-worker: overflow lane level not stored: %s\n", sanitizedSelectorEvaluateFailure(err))
 					}
 				}
 			}
@@ -200,7 +211,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			publishCurrentAPY(ctx, time.Now(), apyThrottle, observed, markets, func(ctx context.Context, value CurrentAPY, version int64) error {
 				return database.RecordCurrentAPY(ctx, productionRouteKey, value, version)
 			}, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format, args...) })
-			if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH" || result.Action == "TRANCHE" {
+			if result.Action == "ENTER" || result.Action == "CANARY_ENTER" {
 				worker.notifySelectorCommit(result.Action)
 				_, _ = fmt.Fprintf(out, "backyard-rwa-worker: selector action=%s source=%s destination=%s\n", result.Action, result.SourceLane, result.DestinationLane)
 				lastSampleKey = ""

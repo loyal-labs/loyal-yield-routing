@@ -862,6 +862,9 @@ func custodyAttributionSchema(ctx context.Context, t *testing.T, db *Database) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err = applyTargetInputMigration(ctx, db); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Real PostgreSQL roundtrip: rows inserted through ::jsonb casts (text

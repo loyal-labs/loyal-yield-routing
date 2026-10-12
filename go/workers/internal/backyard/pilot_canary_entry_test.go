@@ -38,10 +38,18 @@ func TestPilotCanaryUsesRealQuoteWithoutEconomicRecommendation(t *testing.T) {
 	if result.Candidates[0].BenefitRaw != economic.Candidates[0].BenefitRaw {
 		t.Fatal("canary fabricated economics")
 	}
+	// While the vault is flat the request keeps its lane on a fresh quote:
+	// target() enters the allocated cash on the latest result. Once the lane
+	// holds capital the request is spent.
 	history := map[string]pilotCanaryEntryReceipt{receipt.Request.ID: *receipt}
 	result, again, err := selectPilotCanaryEntry(in, economic, history)
-	if err != nil || result.Action != "KEEP" || again != nil {
-		t.Fatal("request replayed", result, err)
+	if err != nil || result.Action != "CANARY_ENTER" || again == nil || again.Request != receipt.Request {
+		t.Fatal("flat request lost its lane", result, err)
+	}
+	held := in
+	held.Snapshot.CollateralIdleRaw = 1
+	if result, again, err = selectPilotCanaryEntry(held, economic, history); err != nil || result.Action != "KEEP" || again != nil {
+		t.Fatal("request replayed into a held lane", result, err)
 	}
 	for _, change := range []func(*SelectorInput){
 		func(i *SelectorInput) { i.Quotes = nil },
@@ -78,12 +86,17 @@ func TestPilotCanaryConfigFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// One request ID is one receipt across restarts; the selector result names
+// the lane target() enters while the vault stays flat, so a restarted
+// evaluation re-accepts the same request with its fresh quote. Nothing bumps
+// the route generation.
 func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer db.Close()
 	key := fmt.Sprintf("pilot-canary-%d", time.Now().UnixNano())
-	state := map[string]any{"generation": 2, "selectorEntryPaused": true}
+	state := map[string]any{"generation": 2}
 	raw, _ := json.Marshal(state)
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
 		t.Fatal(err)
@@ -122,8 +135,10 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
+	// The first acceptance advanced the generation once (a new entry choice);
+	// the replay keeps the choice and the generation.
 	result, err = restarted.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 3)
-	if err != nil || result.Action != "KEEP" || result.Reason != "operator_canary_already_consumed" {
+	if err != nil || result.Action != "CANARY_ENTER" || result.DestinationLane != in.canaryRequest.Lane {
 		t.Fatal("restart replay", result, err)
 	}
 	var history []byte
@@ -132,14 +147,14 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if version != 3 {
-		t.Fatal("canary replayed generation")
+		t.Fatal("the replayed entry choice moved the generation", version)
 	}
 	var receipts map[string]pilotCanaryEntryReceipt
 	if json.Unmarshal(history, &receipts) != nil || len(receipts) != 1 || receipts[in.canaryRequest.ID].QuoteEvidenceID != in.Quotes[0].EvidenceID {
 		t.Fatal("lost one-use receipt")
 	}
-	entry, err := restarted.LoadSelectorEntry(ctx, key)
-	if err != nil || entry == nil || entry.EquityRaw != in.canaryRequest.EquityRaw {
+	planning, err := restarted.readRoutePlanningState(ctx, key, true)
+	if err != nil || planning.inputs.Entry == nil || planning.inputs.Entry.SelectedQuote == nil || planning.inputs.Entry.SelectedQuote.EquityRaw != in.canaryRequest.EquityRaw {
 		t.Fatal("lost exact entry", err)
 	}
 }
@@ -218,8 +233,8 @@ func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testi
 		t.Fatalf("expected exactly %d retained receipts at the boundary, got %d", pilotCanaryReceiptCapacity, len(boundary))
 	}
 	result, receipt, err = selectPilotCanaryEntry(in, economic, boundary)
-	if err != nil || receipt != nil || result.Action != "KEEP" || result.Reason != "operator_canary_already_consumed" {
-		t.Fatal("consumed request not idempotent at capacity", result, err)
+	if err != nil || receipt == nil || result.Action != "CANARY_ENTER" {
+		t.Fatal("a known request was refused at capacity", result, err)
 	}
 
 	// A changed reuse of a retained ID is also classified BEFORE the capacity
@@ -240,46 +255,5 @@ func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testi
 	result, receipt, err = selectPilotCanaryEntry(in, economic, reused)
 	if err == nil || receipt != nil || canaryHoldReason(t, err) != "pilot_canary_request_id_reused" {
 		t.Fatal("changed reuse not rejected before capacity", result, err)
-	}
-}
-
-// One unexpired request may re-accept with a fresh quote after its own entry
-// lapsed unallocated: a new lane needs the obligation initializer and then the
-// allocation, which outlive one 30-second entry (live 2026-09-24). A bound
-// allocation, another request's entry or a still-live entry keeps it consumed.
-func TestPilotCanaryReacceptsOnlyUnallocatedLapsedEntry(t *testing.T) {
-	t.Parallel()
-	in := pilotCanaryFixture()
-	economic := SelectOpportunity(in, SelectorState{})
-	_, receipt, err := selectPilotCanaryEntry(in, economic, nil)
-	if err != nil || receipt == nil {
-		t.Fatal(receipt, err)
-	}
-	history := map[string]pilotCanaryEntryReceipt{receipt.Request.ID: *receipt}
-	lapsed := SelectorEntry{Lane: receipt.Request.Lane, EquityRaw: receipt.Request.EquityRaw, Quote: in.Quotes[0], AcceptedAt: in.Now.Add(-time.Minute), ExpiresAt: in.Now.Add(-30 * time.Second)}
-	lapsed.Quote.EvidenceID = receipt.QuoteEvidenceID
-	for name, tc := range map[string]struct {
-		change func(*SelectorEntry)
-		want   bool
-	}{
-		"lapsed unallocated": {func(*SelectorEntry) {}, true},
-		"allocated":          {func(e *SelectorEntry) { e.AllocationOperationID = "op" }, false},
-		"still live":         {func(e *SelectorEntry) { e.ExpiresAt = in.Now.Add(time.Second) }, false},
-		"other request":      {func(e *SelectorEntry) { e.Quote.EvidenceID = sha256Bytes([]byte("other")) }, false},
-	} {
-		e := lapsed
-		tc.change(&e)
-		x := in
-		x.canaryPriorEntry = &e
-		result, again, err := selectPilotCanaryEntry(x, economic, history)
-		if err != nil || (result.Action == "CANARY_ENTER") != tc.want || (again != nil) != tc.want {
-			t.Fatal(name, result.Action, result.Reason, err)
-		}
-	}
-	x := in
-	x.canaryPriorEntry = &lapsed
-	x.Now = receipt.Request.ExpiresAt
-	if result, again, _ := selectPilotCanaryEntry(x, economic, history); result.Action == "CANARY_ENTER" || again != nil {
-		t.Fatal("expired request re-accepted")
 	}
 }

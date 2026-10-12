@@ -110,11 +110,6 @@ type RouteNAVSnapshot struct {
 	// OtherLanesState is the other held lanes' economic state (lane,
 	// collateral, debt and counted custody raws), "" when one lane is held.
 	OtherLanesState string
-	// OtherLanesCustodyHeld: another held lane has cash in a custody the
-	// working lane does not share.
-	OtherLanesCustodyHeld bool
-	// OtherLanes are the other held lanes' position values.
-	OtherLanes []heldLaneFact
 }
 
 func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
@@ -549,8 +544,6 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		counted[route.DebtCustody] = true
 	}
 	var otherNAV int64
-	var otherLanes []heldLaneFact
-	otherCustodyHeld := false
 	otherState := make([]string, 0, len(routes)-1)
 	for _, other := range routes[1:] {
 		value, err := valueHeldLane(slot, accounts, other, counted)
@@ -563,8 +556,6 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		}
 		otherNAV += value.netRaw
 		otherState = append(otherState, value.state)
-		otherCustodyHeld = otherCustodyHeld || value.custodyHeld
-		otherLanes = append(otherLanes, heldLaneFact{Lane: other.Lane, CollateralValueRaw: value.collateralValueRaw, DebtValueRaw: value.debtValueRaw, DebtTermEndUnix: value.debtTermEndUnix})
 	}
 	nav, err := ComputeNAV(NAVSnapshotContext{
 		Slot: slot, ReceiptFingerprint: fingerprint,
@@ -589,20 +580,15 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		Receipt:           receipt, Voltr: vault, LPSupplyRaw: lpSupply,
 		SnapshotDigest:   nav.SnapshotDigest,
 		Report:           BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
-		OtherLanesNAVRaw: otherNAV, OtherLanesState: strings.Join(otherState, "|"), OtherLanesCustodyHeld: otherCustodyHeld, OtherLanes: otherLanes,
+		OtherLanesNAVRaw: otherNAV, OtherLanesState: strings.Join(otherState, "|"),
 	}, nil
 }
 
 // heldLaneValue is one non-working held lane's share of the vault NAV.
 type heldLaneValue struct {
-	components  []NAVComponent
-	netRaw      int64
-	state       string
-	custodyHeld bool
-	// Per-lane facts for the selector's yield ordering, and its term debt
-	// maturity for the keep-alive.
-	collateralValueRaw, debtValueRaw int64
-	debtTermEndUnix                  int64
+	components []NAVComponent
+	netRaw     int64
+	state      string
 }
 
 // valueHeldLane values one non-working held lane from the same batch: its
@@ -657,13 +643,8 @@ func valueHeldLane(slot int64, accounts []ConfirmedAccount, route RuntimeRoute, 
 			return heldLaneValue{}, err
 		}
 	}
-	termEnd, err := observedDebtTermEnd(accounts, route)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
 	state := fmt.Sprintf("%s:%d:%d:%d:%d", route.Lane, obligation.collateralDepositedRaw, obligation.debtRaw, collateralIdle, debtIdle)
-	custodyHeld := collateralIdle > 0 || debtIdle > 0
-	if !obligation.hasPosition && !custodyHeld {
+	if !obligation.hasPosition && collateralIdle == 0 && debtIdle == 0 {
 		return heldLaneValue{state: state}, nil
 	}
 	collateralReserve, err := decodeKaminoReserve(accountAt(accounts, config.CollateralReserve), config.CollateralMint, config)
@@ -732,8 +713,7 @@ func valueHeldLane(slot int64, accounts []ConfirmedAccount, route RuntimeRoute, 
 			return heldLaneValue{}, fmt.Errorf("NAV component exceeds signed range")
 		}
 	}
-	out := heldLaneValue{state: state, custodyHeld: custodyHeld, netRaw: int64(collateralValue) + int64(collateralIdleValue) + int64(debtIdleValue) - int64(debtValue),
-		collateralValueRaw: int64(collateralValue), debtValueRaw: int64(debtValue), debtTermEndUnix: termEnd}
+	out := heldLaneValue{state: state, netRaw: int64(collateralValue) + int64(collateralIdleValue) + int64(debtIdleValue) - int64(debtValue)}
 	out.components = append(out.components,
 		NAVComponent{Account: config.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(collateralValue), Slot: slot, Known: true},
 		NAVComponent{Account: config.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(debtValue), Slot: slot, Known: true, Liability: true})

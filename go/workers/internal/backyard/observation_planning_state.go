@@ -2,32 +2,21 @@ package backyard
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
 )
 
-// One database snapshot supplies lane selection and planning enrichment for
-// one observation. It is never serialized or retained across observations.
+// One database snapshot supplies target()'s stored inputs for one
+// observation. It is never serialized or retained across observations.
 // Production rechecks this generation under its projection lock; selector
 // collection rechecks it under RecordSelectorEvaluation's existing lock.
 type routePlanningState struct {
 	routeKey   string
 	generation int64
 	lease      *RouteLease
-	entry      *SelectorEntry
-	unwind     *UnwindIntent
-	paused     bool
-	// leverage is the durable B2 option-1 level target per lane.
-	leverage map[string]LeverageTarget
-	// partialWithdrawals is the admitted release sequence per lane.
-	partialWithdrawals map[string]partialWithdrawalState
-	// workingLane is the durable working lane, "" when none is recorded.
-	workingLane string
-	// tranche is the tranche move in progress, nil when none.
-	tranche *trancheIntent
+	inputs     targetInputs
 	// landedSlot is the highest slot any of the route's operations landed at.
 	landedSlot int64
 }
@@ -40,12 +29,10 @@ func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string, 
 	return d.readRoutePlanningStateOnManifest(ctx, manifest, routeKey, execution)
 }
 
-// readRoutePlanningStateOnManifest is the identical batch planning read with
-// the durable entry and unwind decodes resolved through the explicit reviewed
-// manifest: the candidate AUTO entry and a recorded candidate-source unwind
-// are decoded through that manifest's lane authority, and every lease and
-// generation check is shared verbatim.
-func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifest RouteManifest, routeKey string, execution bool) (*routePlanningState, error) {
+// readRoutePlanningStateOnManifest reads the route generation, target()'s
+// stored inputs and the selector's latest result in one statement, under the
+// execution lease when execution is set.
+func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, _ RouteManifest, routeKey string, execution bool) (*routePlanningState, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return nil, fmt.Errorf("planning state database is not configured")
 	}
@@ -60,14 +47,13 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 		out.lease = &lease
 		owner, fence = lease.Owner, lease.FencingToken
 	}
-	var entry, unwind, leverage, partial, tranche []byte
-	err := d.pool.QueryRow(ctx, `SELECT state_version,
-		state->'selectorEntry',state->'selectorUnwind',COALESCE((state->>'selectorEntryPaused')::boolean,false),
-		COALESCE(state->'leverageTargets','null'::jsonb),state->'partialWithdrawals',COALESCE(state->>'workingLane',''),state->'tranche',
-		(SELECT COALESCE(MAX(confirmed_slot),0) FROM loyal_yield.multiply_operations WHERE route_key=$1)
+	var levels, exits, entry []byte
+	err := d.pool.QueryRow(ctx, `SELECT state_version, COALESCE(state->'selector'->'result','null'::jsonb),
+		(SELECT COALESCE(MAX(confirmed_slot),0) FROM loyal_yield.multiply_operations WHERE route_key=$1),
+		`+targetInputsSQL+`
 		FROM loyal_yield.multiply_route_states WHERE route_key=$1
 		AND ($2='' OR (lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()))`,
-		routeKey, owner, fence).Scan(&out.generation, &entry, &unwind, &out.paused, &leverage, &partial, &out.workingLane, &tranche, &out.landedSlot)
+		routeKey, owner, fence).Scan(&out.generation, &entry, &out.landedSlot, &levels, &exits)
 	if errors.Is(err, pgx.ErrNoRows) && execution {
 		d.setLease(nil)
 		return nil, ErrRouteLeaseLost
@@ -78,54 +64,10 @@ func (d *Database) readRoutePlanningStateOnManifest(ctx context.Context, manifes
 	if out.generation <= 0 {
 		return nil, fmt.Errorf("invalid planning generation")
 	}
-	out.entry, err = decodeSelectorEntry(entry)
-	if err != nil {
+	if out.inputs, err = decodeTargetInputs(levels, exits, entry); err != nil {
 		return nil, err
-	}
-	out.unwind, err = decodeUnwindIntent(unwind)
-	if err != nil {
-		return nil, err
-	}
-	if out.workingLane != "" && !earnHeldLane(out.workingLane) {
-		return nil, budgetHold("invalid_durable_working_lane")
-	}
-	if out.tranche, err = decodeTrancheIntent(tranche); err != nil {
-		return nil, err
-	}
-	out.leverage, err = decodeLeverageTargets(leverage)
-	if err != nil {
-		return nil, err
-	}
-	out.partialWithdrawals, err = decodePartialWithdrawals(partial)
-	if err != nil {
-		return nil, err
-	}
-	for _, p := range out.partialWithdrawals {
-		if p.Generation > out.generation {
-			return nil, budgetHold("invalid_partial_withdrawal_generation")
-		}
-		raw, err := json.Marshal(p)
-		if err != nil {
-			return nil, err
-		}
-		if err = d.validatePartialWithdrawalOrigin(ctx, d.pool, routeKey, raw); err != nil {
-			return nil, err
-		}
 	}
 	return out, nil
-}
-
-func (p *routePlanningState) observationManifest(manifest RouteManifest) RouteManifest {
-	manifest.selectorObservation = true
-	manifest.workingLane = p.workingLane
-	if p.entry != nil {
-		manifest.observationLane = p.entry.Lane
-	}
-	if p.unwind != nil {
-		manifest.selectorObservation = true
-		manifest.observationLane = p.unwind.SourceLane
-	}
-	return manifest
 }
 
 func (p *routePlanningState) validateGeneration(routeKey string, lease RouteLease, generation int64) error {
