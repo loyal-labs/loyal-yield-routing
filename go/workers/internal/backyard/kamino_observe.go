@@ -115,7 +115,7 @@ type decodedKaminoObligation struct {
 	debtAmountSF           [16]byte
 	cumulativeBorrowRate   [32]byte
 	// debtBorrow is the debt reserve's borrow slot, whose last borrow time
-	// starts its debt term (kaminoDebtTermEnd); zero without debt.
+	// starts its debt term (debtTermEnd); zero without debt.
 	debtBorrow kamino.ObligationLiquidity
 }
 type decodedKaminoReserve struct {

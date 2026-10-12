@@ -16,47 +16,48 @@ func kaminoReserveTermOpen(reserve decodedKaminoReserve, now int64) bool {
 	return t.SupportedInterestTerms() == nil && (t.DebtMaturityTimestamp == 0 || now >= 0 && uint64(now) < t.DebtMaturityTimestamp)
 }
 
-// kaminoDebtTermEnd is the unix time obligation's debt term on reserve
-// ends: its last borrow plus the reserve's debt term (kamino's DebtTermEnd).
-// It is absent when the reserve has no term or the obligation no borrow.
-func kaminoDebtTermEnd(obligation decodedKaminoObligation, reserve decodedKaminoReserve) (uint64, bool) {
-	if obligation.debtRaw == 0 {
-		return 0, false
+// debtTermEnd is the one derivation of an obligation's borrow maturity on
+// reserve: its own term end (last borrow plus the reserve's debt term), or
+// the reserve's market-wide maturity when that is earlier. Zero when it owes
+// nothing there or the reserve has no term; termMaturityUnknown when term
+// debt carries no borrow time.
+func debtTermEnd(obligation decodedKaminoObligation, reserve decodedKaminoReserve) int64 {
+	terms := reserve.terms
+	if obligation.debtRaw == 0 || terms.DebtTermSeconds == 0 && terms.DebtMaturityTimestamp == 0 {
+		return 0
 	}
-	return obligation.debtBorrow.DebtTermEnd(reserve.terms)
+	end, ok := obligation.debtBorrow.DebtTermEnd(terms)
+	if terms.DebtTermSeconds != 0 && (!ok || end > 1<<62) {
+		return termMaturityUnknown
+	}
+	if market := terms.DebtMaturityTimestamp; market != 0 && market <= 1<<62 && (!ok || market < end) {
+		end = market
+	}
+	return int64(end)
 }
 
 // kaminoObligationTermOpen reports whether obligation may still borrow from
-// reserve at chain time now: the reserve admits it and the obligation's own
-// term, when it has one, has not ended.
+// reserve at chain time now: the reserve admits it and the obligation's term,
+// when it has one, is known and still ahead.
 func kaminoObligationTermOpen(obligation decodedKaminoObligation, reserve decodedKaminoReserve, now int64) bool {
-	if !kaminoReserveTermOpen(reserve, now) {
-		return false
-	}
-	end, ok := kaminoDebtTermEnd(obligation, reserve)
-	return !ok || now >= 0 && uint64(now) < end
+	end := debtTermEnd(obligation, reserve)
+	return kaminoReserveTermOpen(reserve, now) && end != termMaturityUnknown && (end == 0 || now < end)
 }
 
-// wyldsTermEnd is the unix time route's obligation's debt term ends, read
-// from one account batch holding the obligation and the debt reserve: what
-// the keep-alive and maturity decisions read. It is absent when the
-// reserve has no term or the obligation no debt (or no account).
-func wyldsTermEnd(accounts []ConfirmedAccount, route RuntimeRoute) (uint64, bool, error) {
+// observedDebtTermEnd is debtTermEnd of route's obligation from one batch:
+// zero when the obligation is absent.
+func observedDebtTermEnd(accounts []ConfirmedAccount, route RuntimeRoute) (int64, error) {
+	account := accountAt(accounts, route.Kamino.Obligation)
+	if account.Address != route.Kamino.Obligation || account.Lamports == 0 {
+		return 0, nil
+	}
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
 	if err != nil {
-		return 0, false, err
-	}
-	account := accountAt(accounts, route.Kamino.Obligation)
-	if account.Address != route.Kamino.Obligation {
-		return 0, false, budgetHold("term_obligation_missing")
-	}
-	if account.Lamports == 0 {
-		return 0, false, nil
+		return 0, err
 	}
 	obligation, err := decodeKaminoObligation(account, route.Kamino)
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
-	end, ok := kaminoDebtTermEnd(obligation, reserve)
-	return end, ok, nil
+	return debtTermEnd(obligation, reserve), nil
 }

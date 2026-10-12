@@ -271,11 +271,14 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	}
 	if up {
 		borrow := uint64(decision.AmountRaw)
-		if decision.Reason == termKeepAliveReason {
-			err = validateTermKeepAliveBorrow(st.position, accounts, route, borrow)
-		} else if capped, capErr := capacitySizedBorrow(st.position, accounts, route, int64(leverageUpLevel(s)*100)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
-			err = budgetHoldFrom(capErr, "borrow_capacity_shrank")
-		} else {
+		// The keep-alive is the minimum up step: target() found its room in
+		// this batch, and the chain refuses it past the term or the room.
+		if decision.Reason != termKeepAliveReason {
+			if capped, capErr := capacitySizedBorrow(st.position, accounts, route, int64(leverageUpLevel(s)*100)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
+				err = budgetHoldFrom(capErr, "borrow_capacity_shrank")
+			}
+		}
+		if err == nil {
 			// A split policy caps each KLend leg: the borrow, and the deposit
 			// of its conversion, stay a tenth under the cap.
 			borrow, err = stepUpBorrowWithinCap(st, borrow)
