@@ -639,3 +639,114 @@ func TestDebtClearActiveDebtFreeTailKeepsExpiryAndScope(t *testing.T) {
 		}
 	}
 }
+
+// A term lane under a day from maturity exits without an operator: the
+// batch's own term and clock, below hard LTV, mint a term_maturity authority.
+// A snapshot that only claims the maturity, or a term still days away, does
+// not.
+func TestDebtClearTermMaturityProofFromBatch(t *testing.T) {
+	t.Parallel()
+	for _, variant := range []string{"due", "matured", "days_away", "snapshot_only", "no_term"} {
+		t.Run(variant, func(t *testing.T) {
+			o, _, _, m, _ := debtClearRiskFixture(t)
+			s := &o.Snapshot
+			accounts := o.routeBatch.Accounts
+			route, _ := runtimeRoute(s.RouteLane)
+			// Halve the LTV: below hard, only maturity can grant authority.
+			collateralAccount := accountAt(accounts, route.Kamino.CollateralReserve)
+			putScaledFraction(collateralAccount.Data[248:264], new(big.Int).Mul(littleInt(collateralAccount.Data[248:264]), big.NewInt(2)))
+			collateral, err := decodeKaminoReserve(collateralAccount, route.Kamino.CollateralMint, route.Kamino)
+			if err != nil {
+				t.Fatal(err)
+			}
+			debtAccount := accountAt(accounts, route.Kamino.DebtReserve)
+			if variant != "no_term" {
+				binary.LittleEndian.PutUint64(debtAccount.Data[kaminoReserveConfigOffset+928:], 30*86_400)
+			}
+			debt, err := decodeKaminoReserve(debtAccount, route.Kamino.DebtMint, route.Kamino)
+			if err != nil {
+				t.Fatal(err)
+			}
+			obligationAccount := accountAt(accounts, route.Kamino.Obligation)
+			chainNow := clockUnixTimestamp(accounts)
+			if chainNow <= 0 {
+				t.Fatal("fixture batch has no clock")
+			}
+			left := int64(3600)
+			switch variant {
+			case "matured":
+				left = -60
+			case "days_away":
+				left = 2 * 86_400
+			}
+			slot := -1
+			for i := range 5 {
+				if sameKey(obligationAccount.Data[1208+i*200:1240+i*200], route.Kamino.DebtReserve) {
+					slot = i
+				}
+			}
+			if slot < 0 {
+				t.Fatal("fixture obligation does not borrow from its debt reserve")
+			}
+			binary.LittleEndian.PutUint64(obligationAccount.Data[1208+slot*200+80:], uint64(chainNow+left-30*86_400))
+			obligation, err := decodeKaminoObligation(obligationAccount, route.Kamino)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rawDebt, err := obligation.debtAtReserveRate(debt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			redeemed, err := collateral.redeemLiquidityRaw(obligation.collateralDepositedRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ltv, err := observedLTVBPS(KaminoPosition{DebtRaw: rawDebt, RedeemablePrimeRaw: redeemed, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF})
+			if err != nil || ltv >= 6000 || ltv <= 0 {
+				t.Fatal("fixture LTV not below hard", ltv, err)
+			}
+			s.LTVBPS = ltv
+			s.ChainUnix, s.DebtTermEndUnix = chainNow, chainNow+left
+			if variant == "snapshot_only" {
+				binary.LittleEndian.PutUint64(obligationAccount.Data[1208+slot*200+80:], uint64(chainNow+2*86_400-30*86_400))
+			}
+			proof, err := verifyDebtClearRiskBatch(m, o, "term-origin", time.Now().UTC())
+			switch variant {
+			case "days_away":
+				if err != nil || proof != nil {
+					t.Fatal("a term days from maturity obtained authority", proof, err)
+				}
+				return
+			case "snapshot_only", "no_term":
+				if err == nil || proof != nil {
+					t.Fatal("a maturity the batch does not show obtained authority", proof, err)
+				}
+				return
+			}
+			if err != nil || proof == nil || proof.TermEndUnix != chainNow+left || proof.ChainUnix != chainNow || proof.reason() != termMaturityReason {
+				t.Fatal("batch-proven maturity rejected", proof, err)
+			}
+			origin := UnwindIntent{SourceLane: s.RouteLane, Reason: proof.reason(), ObservationID: s.ObservationID, MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: s.PositionDebtRaw, EvidenceID: proof.AccountsSHA256, CreatedAt: time.Now().UTC()}
+			authority, err := newDebtClearAuthority(m, "route", sha256Bytes([]byte("emergency:term-origin")), origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authority.Emergency = proof
+			if err = authority.validate(m, "route", time.Now().UTC()); err != nil {
+				t.Fatal("term authority invalid", err)
+			}
+			forged := authority
+			forgedProof := *proof
+			forgedProof.TermEndUnix = forgedProof.ChainUnix + termDeleverSeconds
+			forged.Emergency = &forgedProof
+			if forged.validate(m, "route", time.Now().UTC()) == nil {
+				t.Fatal("a proof outside the delever window validated")
+			}
+			hardShaped := authority
+			hardShaped.Origin.Reason = "hard_ltv_reduction"
+			if hardShaped.validate(m, "route", time.Now().UTC()) == nil {
+				t.Fatal("a term proof below hard LTV authorized a hard-LTV unwind")
+			}
+		})
+	}
+}

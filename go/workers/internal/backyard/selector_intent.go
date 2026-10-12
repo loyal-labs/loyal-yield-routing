@@ -26,7 +26,7 @@ type UnwindIntent struct {
 // lanes included, so a held position can always be exited), the reason, the
 // bounds and the evidence shape.
 func (i UnwindIntent) validate() error {
-	if !earnHeldLane(i.SourceLane) || (i.Reason != "economic_rotation" && i.Reason != "withdrawal_shortfall" && i.Reason != "hard_ltv_reduction") || i.ObservationID == "" || i.MaxCollateralRaw < 0 || i.MaxDebtRaw < 0 || !sha256Pattern.MatchString(i.EvidenceID) || i.CreatedAt.IsZero() {
+	if !earnHeldLane(i.SourceLane) || (i.Reason != "economic_rotation" && i.Reason != "withdrawal_shortfall" && i.Reason != "hard_ltv_reduction" && i.Reason != termMaturityReason) || i.ObservationID == "" || i.MaxCollateralRaw < 0 || i.MaxDebtRaw < 0 || !sha256Pattern.MatchString(i.EvidenceID) || i.CreatedAt.IsZero() {
 		return fmt.Errorf("invalid_unwind_intent")
 	}
 	return nil

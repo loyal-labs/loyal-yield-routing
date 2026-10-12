@@ -55,6 +55,18 @@ type debtClearRiskProof struct {
 	ObservedAt      time.Time `json:"observedAt"`
 	LTVBPS          int64     `json:"ltvBps"`
 	HardLTVBPS      int64     `json:"hardLtvBps"`
+	// TermEndUnix and ChainUnix are set on a term-maturity proof: term debt
+	// the batch shows inside termDeleverSeconds of its maturity, below hard LTV.
+	TermEndUnix int64 `json:"termEndUnix,omitempty"`
+	ChainUnix   int64 `json:"chainUnix,omitempty"`
+}
+
+// reason is the unwind reason the proof grants.
+func (p debtClearRiskProof) reason() string {
+	if p.TermEndUnix != 0 {
+		return termMaturityReason
+	}
+	return "hard_ltv_reduction"
 }
 
 type debtClearRouteState struct {
@@ -79,7 +91,10 @@ func (a debtClearAuthority) validate(m RouteManifest, routeKey string, now time.
 	}
 	if a.Emergency != nil {
 		p := a.Emergency
-		if a.Confirmation != nil || p.OperationID == "" || p.ObservationID != a.Origin.ObservationID || p.AccountsSHA256 != a.Origin.EvidenceID || !sha256Pattern.MatchString(p.AccountsSHA256) || p.Slot <= 0 || p.ObservedAt.IsZero() || p.HardLTVBPS <= TargetLTVBPS || p.HardLTVBPS > 6000 || p.LTVBPS < p.HardLTVBPS || a.Origin.Reason != "hard_ltv_reduction" {
+		if a.Confirmation != nil || p.OperationID == "" || p.ObservationID != a.Origin.ObservationID || p.AccountsSHA256 != a.Origin.EvidenceID || !sha256Pattern.MatchString(p.AccountsSHA256) || p.Slot <= 0 || p.ObservedAt.IsZero() || p.HardLTVBPS <= TargetLTVBPS || p.HardLTVBPS > 6000 || a.Origin.Reason != p.reason() {
+			return budgetHold("debt_clear_emergency_proof_invalid")
+		}
+		if p.TermEndUnix != 0 && (p.TermEndUnix < 0 || p.ChainUnix <= 0 || p.TermEndUnix-p.ChainUnix >= termDeleverSeconds) || p.TermEndUnix == 0 && p.LTVBPS < p.HardLTVBPS {
 			return budgetHold("debt_clear_emergency_proof_invalid")
 		}
 		return nil
@@ -244,7 +259,9 @@ func verifyDebtClearEmergency(m RouteManifest, o Observation, decision Decision,
 func verifyDebtClearRiskBatch(m RouteManifest, o Observation, operationID string, now time.Time) (*debtClearRiskProof, error) {
 	s, b := o.Snapshot, o.routeBatch
 	hard := min(s.LiquidationThresholdBPS-1500, int64(6000))
-	if !s.HasPosition || s.PositionDebtRaw <= 0 || hard <= TargetLTVBPS || s.LTVBPS < hard {
+	left, term := termSecondsLeft(s)
+	term = term && left < termDeleverSeconds
+	if !s.HasPosition || s.PositionDebtRaw <= 0 || hard <= TargetLTVBPS || s.LTVBPS < hard && !term {
 		return nil, nil
 	}
 	if b == nil || b.ManifestSHA256 != m.SHA256 || b.ObservationID != s.ObservationID || b.Slot != s.Slot || !s.Fresh || !freshAt(now, o.ObservedAt, 30*time.Second) {
@@ -302,10 +319,25 @@ func verifyDebtClearRiskBatch(m RouteManifest, o Observation, operationID string
 	}
 	ltv, err := observedLTVBPS(KaminoPosition{DebtRaw: rawDebt, RedeemablePrimeRaw: redeemable, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF})
 	verifiedHard := min(int64(collateral.liquidationThresholdPct)*100-1500, int64(6000))
-	if err != nil || rawDebt != uint64(s.PositionDebtRaw) || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || ltv != s.LTVBPS || verifiedHard != hard || ltv < verifiedHard {
+	if err != nil || rawDebt != uint64(s.PositionDebtRaw) || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) || ltv != s.LTVBPS || verifiedHard != hard {
 		return nil, budgetHoldFrom(err, "debt_clear_emergency_evidence_changed")
 	}
-	return &debtClearRiskProof{OperationID: operationID, ObservationID: s.ObservationID, AccountsSHA256: hashConfirmedAccounts(b.Accounts), ValuationSource: o.ValuationSource, Slot: s.Slot, ObservedAt: o.ObservedAt, LTVBPS: ltv, HardLTVBPS: verifiedHard}, nil
+	proof := &debtClearRiskProof{OperationID: operationID, ObservationID: s.ObservationID, AccountsSHA256: hashConfirmedAccounts(b.Accounts), ValuationSource: o.ValuationSource, Slot: s.Slot, ObservedAt: o.ObservedAt, LTVBPS: ltv, HardLTVBPS: verifiedHard}
+	if ltv >= verifiedHard {
+		return proof, nil
+	}
+	// Below hard LTV, only term debt the batch itself shows inside the
+	// delever window grants authority: past maturity KLend refuses the
+	// keep-alive borrow and the debt turns liquidatable, so the exit cannot
+	// wait for an operator. Decide still had to choose the down chain, which
+	// it does only without keep-alive room (termDeleverDue).
+	end, err := observedDebtTermEnd(b.Accounts, route)
+	chain := clockUnixTimestamp(b.Accounts)
+	if err != nil || end <= 0 || chain <= 0 || end != s.DebtTermEndUnix || chain != s.ChainUnix || end-chain >= termDeleverSeconds {
+		return nil, budgetHoldFrom(err, "debt_clear_emergency_evidence_changed")
+	}
+	proof.TermEndUnix, proof.ChainUnix = end, chain
+	return proof, nil
 }
 
 // authorizeDebtClearTx is the bind half of the debt-clear fence, under the
@@ -344,7 +376,7 @@ func (d *Database) authorizeDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteM
 				maxDebt = max(maxDebt, int64(r.AmountRaw))
 			}
 		}
-		origin := UnwindIntent{SourceLane: s.RouteLane, Reason: "hard_ltv_reduction", ObservationID: s.ObservationID, MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: maxDebt, EvidenceID: risk.AccountsSHA256, CreatedAt: now}
+		origin := UnwindIntent{SourceLane: s.RouteLane, Reason: risk.reason(), ObservationID: s.ObservationID, MaxCollateralRaw: s.PositionCollateralRaw, MaxDebtRaw: maxDebt, EvidenceID: risk.AccountsSHA256, CreatedAt: now}
 		authority, err := newDebtClearAuthority(m, routeKey, sha256Bytes([]byte("emergency:"+operationID)), origin)
 		if err != nil {
 			return err
