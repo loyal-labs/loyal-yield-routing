@@ -14,5 +14,5 @@ bun run check
 The four-market Voltr router CLI (`src/cli.ts`), its policy catalog
 authorization and its evidence directory were removed: the Backyard Voltr
 vault is empty and its fleet route was deleted (#321), and Backyard executes
-through the Go policy literals checked against the on-chain capture in
-`go/workers/internal/backyard/testdata/installed-policies.json`.
+through the Go policy literals (`go/workers/internal/backyard/policy.go`),
+which each build finds among the policies installed on chain.
