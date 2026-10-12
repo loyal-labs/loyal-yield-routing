@@ -116,10 +116,11 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 }
 
 // The observation identity and report digest the one-lane observer (before
-// multi-lane observation, origin/main 877b297e) gave this test's batch.
+// multi-lane observation, origin/main 877b297e) gave this test's batch; the
+// digest binds the manifest bytes, whose legacy PRIME/USDC packets P4 removed.
 const (
 	oneLaneAUTOObservationID = "d2f0257fb3e4fb86c63671447f66162d942a5dd73f63d0c1cc0f04b118509515"
-	oneLaneAUTOReportDigest  = "0bf7ffa2e7e01686c2425c13b71b7447aa284c4246ad96a4b06d5e9dc1b1f619"
+	oneLaneAUTOReportDigest  = "d4d1a47a6025d1077d472c8df2f02f1fe44508619e8a082ff808f62ed0c53882"
 )
 
 // Two held lanes are one book: the working lane's view plus every other held
@@ -197,7 +198,7 @@ func TestHeldLanePastHardLTVIsProtectedFirst(t *testing.T) {
 func TestSharedCustodyBalanceAttribution(t *testing.T) {
 	_, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
 		fundLane(t, accounts, primePRIMEPYUSD.Lane, 5_000_000, 1_000_000)
-		upsertConfirmedAccount(accounts, tokenAccountFixture(t, kaminoPrimeCustody, kaminoPrimeMint, bridgeVault, 1))
+		upsertConfirmedAccount(accounts, tokenAccountFixture(t, primePRIMEUSDC.CollateralCustody, primePRIMEUSDC.Kamino.CollateralMint, bridgeVault, 1))
 	})
 	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
 	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+primePRIMEPYUSD.Lane {

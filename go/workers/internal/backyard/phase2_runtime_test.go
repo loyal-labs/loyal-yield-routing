@@ -59,9 +59,8 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 
 func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
 	t.Parallel()
-	manifest := embeddedTestManifest(t)
-	addresses := routeFixedAddresses(manifest)
-	for _, lane := range []string{RouteID, SelectedRouteID} {
+	addresses := routeFixedAddresses()
+	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
@@ -136,14 +135,14 @@ func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if borrow.Policy != mustBasicPolicy(t, BasicDebtLifecycle) || borrow.Accounts[12].Address != mapleObligationDebtFarm || borrow.Accounts[13].Address != mapleDebtFarm {
+	if borrow.Policy != mustBasicPolicy(t, BasicDebtLifecycle) || borrow.Accounts[12].Address != mapleSyrupUSDCUSDC.ObligationDebtFarm || borrow.Accounts[13].Address != mapleSyrupUSDCUSDC.DebtFarm {
 		t.Fatalf("borrow packet did not pin live farm accounts: %+v", borrow)
 	}
 	repay, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegRepay, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repay.Policy != mustBasicPolicy(t, BasicDebtLifecycle) || repay.Accounts[9].Address != mapleObligationDebtFarm || repay.Accounts[10].Address != mapleDebtFarm {
+	if repay.Policy != mustBasicPolicy(t, BasicDebtLifecycle) || repay.Accounts[9].Address != mapleSyrupUSDCUSDC.ObligationDebtFarm || repay.Accounts[10].Address != mapleSyrupUSDCUSDC.DebtFarm {
 		t.Fatalf("repay packet did not pin live farm accounts: %+v", repay)
 	}
 }
@@ -175,11 +174,8 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 	manifest := embeddedTestManifest(t)
 	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		route, err := runtimeRoute(lane)
-		if err != nil || !route.BasicPolicy {
+		if err != nil || !basicLane(route.Lane) {
 			t.Fatalf("%s is not a basic runtime route: %+v, %v", lane, route, err)
-		}
-		if _, err := fixedRouteAction(OpenRouteStep, lane); err != nil {
-			t.Fatalf("%s lifecycle action was not dispatchable: %v", lane, err)
 		}
 		for _, test := range []struct {
 			leg    kaminoPrimeUSDCLeg
@@ -248,11 +244,11 @@ func TestPhase2JupiterQuotePinsManifestVenue(t *testing.T) {
 		SwapMode: "ExactIn", SlippageBPS: 50, PlatformFee: json.RawMessage("null"),
 		RoutePlan: []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"Manifest"}}`)},
 	}
-	if _, _, err := validateJupiterQuoteForRoute(quote, SwapUSDCToPrimeStep, 1_000_000, SelectedRouteID); err != nil {
+	if _, _, err := validateJupiterQuoteForRoute(quote, SwapStableToCollateralStep, 1_000_000, SelectedRouteID); err != nil {
 		t.Fatalf("basic quote rejected: %v", err)
 	}
 	quote.RoutePlan = []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"AlphaQ"}}`)}
-	if _, _, err := validateJupiterQuoteForRoute(quote, SwapUSDCToPrimeStep, 1_000_000, SelectedRouteID); err != nil {
+	if _, _, err := validateJupiterQuoteForRoute(quote, SwapStableToCollateralStep, 1_000_000, SelectedRouteID); err != nil {
 		t.Fatalf("basic quote with recorded route plan rejected: %v", err)
 	}
 }

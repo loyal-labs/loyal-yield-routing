@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -1286,7 +1287,7 @@ func TestSelectorDestinationGateIsTheActiveRegistry(t *testing.T) {
 	if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(testAutoLane), 200_037_035, slot, false); err != nil && strings.Contains(err.Error(), "invalid_selector_destination") {
 		t.Fatal("destination gate refused the AUTO lane:", err)
 	}
-	for _, lane := range []string{ethenaUSDePYUSD.Lane, RouteID} {
+	for _, lane := range []string{ethenaUSDePYUSD.Lane, "PRIME/USDC"} {
 		_, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(lane), 1_000_000, slot, false)
 		assertBudgetHold(t, err, "invalid_selector_destination")
 	}
@@ -1468,8 +1469,8 @@ func TestSelectorDestinationCandidateAdmitsAbsentObligationWithInitializer(t *te
 	if err != nil || !bytes.Equal(manifestMessage, message) {
 		t.Fatalf("retained initializer message is not the manifest compile: %v", err)
 	}
-	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitialize {
-		t.Fatalf("initializer not wrapped at its leg %d", autoInitialize)
+	if wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:]); wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != policy.LoopInitialize {
+		t.Fatalf("initializer not wrapped at its leg %d", policy.LoopInitialize)
 	}
 	// Rent is priced FIRST, ahead of every entry step.
 	if second, _, _, err := q.Recipe.Inputs[1].decodeWithManifest(m); err != nil {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	lanepolicy "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -125,8 +126,8 @@ func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
 	// The Squads execute-sync payload pins the constraint index at a fixed
 	// offset behind the discriminator: the AUTO policy's initializer leg.
 	wrapped := bytes.Index(message, squads.ExecuteTransactionSyncV2Discriminator[:])
-	if wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != autoInitialize {
-		t.Fatalf("initializer not wrapped at its leg %d", autoInitialize)
+	if wrapped < 0 || wrapped+17 >= len(message) || message[wrapped+17] != lanepolicy.LoopInitialize {
+		t.Fatalf("initializer not wrapped at its leg %d", lanepolicy.LoopInitialize)
 	}
 	repeated, err := manifest.compileKaminoInitializationMessage(r)
 	if err != nil || !bytes.Equal(message, repeated) {

@@ -30,7 +30,7 @@ func TestPhase3ReadOnlyPricePreflight(t *testing.T) {
 	if err != nil {
 		t.Fatal("view slot unavailable")
 	}
-	for _, lane := range []string{RouteID, SelectedRouteID} {
+	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)

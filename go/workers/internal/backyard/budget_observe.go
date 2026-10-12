@@ -23,17 +23,11 @@ func ObserveBudgetTokenPrice(ctx context.Context, rpc *chain.Client, view *View,
 	if rpc == nil || minimumSlot <= 0 || debit.Raw == 0 {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
 	}
-	if lane == "" {
-		lane = RouteID
-	}
 	route, err := runtimeRoute(lane)
 	if err != nil {
 		return BudgetPrice{}, err
 	}
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return BudgetPrice{}, err
-	}
+	reference := usdcReference
 	reserveAddress := reference.DebtReserve
 	config := reference
 	switch debit.Mint {

@@ -165,7 +165,7 @@ func seedChain(t *testing.T, slot int64, accounts []ConfirmedAccount, receipts .
 func viewRouteBatch(t *testing.T, mutate func([]ConfirmedAccount)) []ConfirmedAccount {
 	t.Helper()
 	accounts := productionRouteBatchAccounts(t, 77, mutate)
-	for _, address := range routeFixedAddresses(readyWorkerManifest(t)) {
+	for _, address := range routeFixedAddresses() {
 		if accountAt(accounts, address).Address == "" && address != bridgeStrategyReceipt {
 			accounts = append(accounts, ConfirmedAccount{Address: address, Owner: squads.ProgramID.String(), Lamports: 1, Data: bytes.Repeat([]byte{7}, 96)})
 		}

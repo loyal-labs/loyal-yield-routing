@@ -13,14 +13,14 @@ import (
 )
 
 // budgetReserveRefreshInstructions pins the closed instruction set: the lane's
-// two refreshes plus the Prime USDC reference refresh, deduplicated.
+// two refreshes plus the USDC reference reserve's, deduplicated.
 func budgetReserveRefreshInstructions(lane string) ([]compiledInstruction, error) {
 	if _, err := runtimeRoute(lane); err != nil {
 		return nil, err
 	}
 	seen := map[publicKey]bool{}
 	var instructions []compiledInstruction
-	for _, id := range []string{lane, RouteID} {
+	for _, id := range []string{lane, PhaseOneLaneID} {
 		prefix := kaminoPrimeUSDCRefreshInstructionsForRoute(kaminoLegDeposit, id)
 		if len(prefix) != 3 {
 			return nil, budgetHold("price_refresh_binding_unavailable")

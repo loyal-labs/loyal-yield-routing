@@ -36,8 +36,8 @@ func overflowLaneOf(source string) (string, bool) {
 		return "", false
 	}
 	for _, l := range earnLanes {
-		if l.overflowOf == source && earnActiveLane(l.lane) {
-			return l.lane, true
+		if l.overflowOf == source && earnActiveLane(l.route.Lane) {
+			return l.route.Lane, true
 		}
 	}
 	return "", false
@@ -152,10 +152,7 @@ func applyOverflowRoom(ctx context.Context, s *Snapshot, slot int64, route Runti
 
 // overflowRoomAddresses are the accounts overflowRoom reads.
 func overflowRoomAddresses(overflow RuntimeRoute) ([]string, error) {
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return nil, err
-	}
+	reference := usdcReference
 	return []string{overflow.Kamino.CollateralReserve, overflow.Kamino.DebtReserve, overflow.Kamino.Obligation, reference.DebtReserve, budgetClockAddress}, nil
 }
 
@@ -183,10 +180,7 @@ func overflowRoom(accounts []ConfirmedAccount, overflow RuntimeRoute) (uint64, i
 	if now := clockUnixTimestamp(accounts); end == termMaturityUnknown || end > 0 && end <= now {
 		receive = 0
 	}
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return 0, 0, err
-	}
+	reference := usdcReference
 	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
 	if err != nil {
 		return 0, 0, err

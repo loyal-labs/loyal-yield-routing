@@ -75,7 +75,7 @@ func TestObservationTargetsWatchBackyardAutoReservesWithoutAPILookup(t *testing.
 		if target.LiquidityMint == nil || want[target.Reserve] != *target.LiquidityMint {
 			t.Fatalf("watched reserve %s has mint %v", target.Reserve, target.LiquidityMint)
 		}
-		if target.Reserve != "reserve" && (target.Market == nil || *target.Market != "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk" || target.MarketName == nil || *target.MarketName != "Auto Market" || target.APISupplyAPY != nil) {
+		if target.Reserve != "reserve" && (target.Market == nil || *target.Market != "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk" || target.MarketName == nil || *target.MarketName != "AUTO Market" || target.APISupplyAPY != nil) {
 			t.Fatalf("Backyard AUTO reserve identity = %+v", target)
 		}
 	}

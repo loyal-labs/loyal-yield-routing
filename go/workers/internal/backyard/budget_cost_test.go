@@ -33,8 +33,8 @@ func TestExecutableBridgeDebitsUseSourceAndFullSweep(t *testing.T) {
 
 func TestWithdrawalChargesUnderlyingNotReceiptUnits(t *testing.T) {
 	t.Parallel()
-	request := kaminoTestRequest(DeleverPrimeUSDCStep, kaminoLegWithdraw)
-	source, destination := kaminoLegCustodies(kaminoLegWithdraw)
+	request := kaminoTestRequest(DeleverRouteStep, kaminoLegWithdraw)
+	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, primePRIMEUSDC)
 	effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{
 		{Address: source.Address, Mint: source.Mint, Authority: source.Authority, Owner: classicTokenProgram, BeforeRaw: 2_000_000, AfterRaw: 1_500_000},
 		{Address: destination.Address, Mint: destination.Mint, Authority: destination.Authority, Owner: classicTokenProgram, BeforeRaw: 0, AfterRaw: 500_000},

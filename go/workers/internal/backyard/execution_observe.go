@@ -215,8 +215,7 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 // prepareKaminoFromTickObservation builds from the tick's own view batch, as
 // the bridge does; it reads only the policies it executes through, at its slot.
 func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
-	if rpc == nil || observation.routeBatch == nil || (decision.Action != OpenPrimeUSDCStep && decision.Action != DeleverPrimeUSDCStep &&
-		decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
+	if rpc == nil || observation.routeBatch == nil || (decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
 	}
 	prepareStart, accounts := time.Now(), observation.routeBatch.Accounts
@@ -280,15 +279,8 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 }
 
 func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {
-	action := decision.Action
-	if action == OpenRouteStep {
-		action = OpenPrimeUSDCStep
-	}
-	if action == DeleverRouteStep {
-		action = DeleverPrimeUSDCStep
-	}
-	switch action {
-	case OpenPrimeUSDCStep:
+	switch decision.Action {
+	case OpenRouteStep:
 		if decision.AmountRaw <= 0 {
 			return 0, 0, 0, fmt.Errorf("OPEN requires a positive exact amount")
 		}
@@ -301,7 +293,7 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 		if position.CollateralDepositedRaw > 0 && position.DebtRaw > 0 && decision.Reason == topupDepositReason && earnActiveLane(decision.StrategyKey) {
 			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
 		}
-	case DeleverPrimeUSDCStep:
+	case DeleverRouteStep:
 		if position.DebtRaw == 0 && decision.Reason == releaseReason && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < position.CollateralDepositedRaw && position.RedeemablePrimeRaw > 0 {
 			// Debt-free release: withdraw the collateral share.
 			primeRaw := new(big.Int).Mul(big.NewInt(decision.AmountRaw), new(big.Int).SetUint64(position.RedeemablePrimeRaw))
@@ -323,7 +315,7 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 			return kaminoLegWithdraw, receiptRaw, primeRaw.Uint64(), nil
 		}
 	}
-	return 0, 0, 0, fmt.Errorf("PRIME/USDC position is not in a supported next-leg state")
+	return 0, 0, 0, fmt.Errorf("Kamino position is not in a supported next-leg state")
 }
 
 const unwindLTVBPS uint64 = 4_500
@@ -385,29 +377,7 @@ type kaminoCustodyBoundary struct {
 	Address, Mint, Authority string
 }
 
-func kaminoLegCustodies(leg kaminoPrimeUSDCLeg) (kaminoCustodyBoundary, kaminoCustodyBoundary) {
-	primeVault := kaminoCustodyBoundary{kaminoPrimeCustody, kaminoPrimeMint, bridgeVault}
-	primeReserve := kaminoCustodyBoundary{kaminoPrimeLiquiditySupply, kaminoPrimeMint, kaminoPrimeMarketAuthority}
-	usdcVault := kaminoCustodyBoundary{bridgeSquadsATA, bridgeUSDC, bridgeVault}
-	usdcReserve := kaminoCustodyBoundary{kaminoUSDCLiquiditySupply, bridgeUSDC, kaminoPrimeMarketAuthority}
-	switch leg {
-	case kaminoLegDeposit:
-		return primeVault, primeReserve
-	case kaminoLegBorrow:
-		return usdcReserve, usdcVault
-	case kaminoLegRepay:
-		return usdcVault, usdcReserve
-	case kaminoLegWithdraw:
-		return primeReserve, primeVault
-	default:
-		return kaminoCustodyBoundary{}, kaminoCustodyBoundary{}
-	}
-}
-
 func kaminoLegCustodiesForRoute(leg kaminoPrimeUSDCLeg, route RuntimeRoute) (kaminoCustodyBoundary, kaminoCustodyBoundary) {
-	if route.Lane == RouteID || route.Lane == "" {
-		return kaminoLegCustodies(leg)
-	}
 	collateralVault := kaminoCustodyBoundary{route.CollateralCustody, route.Kamino.CollateralMint, route.Kamino.Vault}
 	collateralReserve := kaminoCustodyBoundary{route.CollateralLiquiditySupply, route.Kamino.CollateralMint, route.Kamino.MarketAuthority}
 	stableVault := kaminoCustodyBoundary{route.DebtCustody, route.Kamino.DebtMint, route.Kamino.Vault}

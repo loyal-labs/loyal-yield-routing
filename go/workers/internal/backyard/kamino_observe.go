@@ -1,8 +1,8 @@
 package backyard
 
-// This file deliberately decodes only the frozen PRIME/USDC Kamino graph. It
-// is not a general KLend decoder: an unfamiliar account layout or topology is
-// an observation failure, not an opportunity to guess.
+// This file decodes only the registry lanes' Kamino graphs. It is not a
+// general KLend decoder: an unfamiliar account layout or topology is an
+// observation failure, not an opportunity to guess.
 
 import (
 	"bytes"
@@ -20,12 +20,6 @@ import (
 )
 
 const (
-	kaminoMarket              = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
-	kaminoPrimeUSDCObligation = "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv"
-	kaminoCollateralReserve   = "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh"
-	kaminoDebtReserve         = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu"
-	kaminoPrimeMint           = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
-	kaminoUSDCMint            = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	kaminoRequiredPriceStatus = 0x3f
 	kaminoReserveConfigOffset = 4856
 
@@ -90,14 +84,6 @@ func KaminoHealthHoldObservation(err error, slot int64, now time.Time) (Observat
 type KaminoObservationConfig struct {
 	Program, Market, Obligation, CollateralReserve, DebtReserve string
 	Vault, MarketAuthority, CollateralMint, DebtMint            string
-}
-
-func pinnedKaminoObservationConfig() (KaminoObservationConfig, error) {
-	return KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Market: kaminoMarket, Obligation: kaminoPrimeUSDCObligation,
-		CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve,
-		Vault: bridgeVault, MarketAuthority: kaminoPrimeMarketAuthority, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint,
-	}, nil
 }
 
 type KaminoPosition struct {

@@ -90,11 +90,7 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 		if err != nil {
 			return ExecutableDebit{}, err
 		}
-		lane := r.RouteLane
-		if lane == "" {
-			lane = RouteID
-		}
-		route, err := runtimeRoute(lane)
+		route, err := runtimeRoute(r.RouteLane)
 		if err != nil {
 			return ExecutableDebit{}, err
 		}

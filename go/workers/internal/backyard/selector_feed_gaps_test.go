@@ -30,11 +30,11 @@ func TestFeedScoresLaneWhoseDebtReserveBorrowedExceedsSupply(t *testing.T) {
 	now := time.Now().UTC()
 	usds, pyusd := primePRIMEUSDS, primePRIMEPYUSD
 	reserves := map[string]reserveEconomics{
-		kaminoDebtReserve:              feedReserveFixture(kaminoDebtReserve, bridgeUSDC, kaminoMarket, now, 0.9999),
-		usds.Kamino.CollateralReserve:  feedReserveFixture(usds.Kamino.CollateralReserve, usds.Kamino.CollateralMint, usds.Kamino.Market, now, 1.05),
-		usds.Kamino.DebtReserve:        feedReserveFixture(usds.Kamino.DebtReserve, usds.Kamino.DebtMint, usds.Kamino.Market, now, 1),
-		pyusd.Kamino.DebtReserve:       feedReserveFixture(pyusd.Kamino.DebtReserve, pyusd.Kamino.DebtMint, pyusd.Kamino.Market, now, 0.9998),
-		pyusd.Kamino.CollateralReserve: feedReserveFixture(pyusd.Kamino.CollateralReserve, pyusd.Kamino.CollateralMint, pyusd.Kamino.Market, now, 1.05),
+		primePRIMEUSDC.Kamino.DebtReserve: feedReserveFixture(primePRIMEUSDC.Kamino.DebtReserve, bridgeUSDC, primePRIMEUSDC.Kamino.Market, now, 0.9999),
+		usds.Kamino.CollateralReserve:     feedReserveFixture(usds.Kamino.CollateralReserve, usds.Kamino.CollateralMint, usds.Kamino.Market, now, 1.05),
+		usds.Kamino.DebtReserve:           feedReserveFixture(usds.Kamino.DebtReserve, usds.Kamino.DebtMint, usds.Kamino.Market, now, 1),
+		pyusd.Kamino.DebtReserve:          feedReserveFixture(pyusd.Kamino.DebtReserve, pyusd.Kamino.DebtMint, pyusd.Kamino.Market, now, 0.9998),
+		pyusd.Kamino.CollateralReserve:    feedReserveFixture(pyusd.Kamino.CollateralReserve, pyusd.Kamino.CollateralMint, pyusd.Kamino.Market, now, 1.05),
 	}
 	over := reserves[usds.Kamino.DebtReserve]
 	supply, borrowed := 926_393_022_185.062, 926_398_351_359.7037
@@ -64,7 +64,7 @@ func TestFeedScoresLaneWhoseDebtReserveBorrowedExceedsSupply(t *testing.T) {
 	}
 	// Without a verified USDC reference the conversion stays unknown; the
 	// lane's 1x economics remain.
-	delete(reserves, kaminoDebtReserve)
+	delete(reserves, primePRIMEUSDC.Kamino.DebtReserve)
 	for _, e := range combineEconomics([]RuntimeRoute{usds}, reserves, yields, nil, now, DefaultSelectorPolicy()) {
 		if e.DebtRawPerUSDCRaw != 0 {
 			t.Fatalf("conversion without a USDC reference: %+v", e)

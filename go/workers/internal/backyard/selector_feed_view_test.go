@@ -33,7 +33,7 @@ func TestReserveFeedPricesLanesOnlyFromCurrentViewReserves(t *testing.T) {
 	collateral := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, slot, one, 80, 100)
 	putScaledFraction(collateral.Data[128+104:128+120], new(big.Int).Lsh(big.NewInt(20), 60))
 	copy(collateral.Data[4856+64:4856+64+88], debt.Data[4856+64:4856+64+88])
-	usdc := reserveFixture(t, kaminoDebtReserve, bridgeUSDC, slot, one, 100, 100)
+	usdc := reserveFixture(t, primePRIMEUSDC.Kamino.DebtReserve, bridgeUSDC, slot, one, 100, 100)
 	putKey(t, debt.Data[32:64], route.Kamino.Market)
 	putKey(t, collateral.Data[32:64], route.Kamino.Market)
 	feed := func(chainTime time.Time, debt ConfirmedAccount, slotsPerSecond float64) []LaneEconomics {

@@ -35,7 +35,7 @@ func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	}
 	// A lane outside the registry, or an incoherent view, never moves.
 	s = base()
-	s.RouteLane = RouteID
+	s.RouteLane = "PRIME/USDC"
 	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "unsupported_runtime_lane" {
 		t.Fatal(got)
 	}

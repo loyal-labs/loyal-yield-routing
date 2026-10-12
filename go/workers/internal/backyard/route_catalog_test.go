@@ -125,13 +125,10 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					// AUTO executes every leg through its one policy, not the
-					// retained per-leg shard.
-					policy := op.Policy
-					if lane.Lane == autoAUTOPYUSD.Lane {
-						policy = testPolicyAccount(policyKey{lane: lane.Lane})
-					}
-					if request.Policy != policy || !reflect.DeepEqual(request.Accounts, op.Accounts) {
+					// The leg executes through its lane's installed literal
+					// (AUTO's one policy, a split lane's per-leg policy).
+					key, _ := kaminoPolicyLeg(route, leg)
+					if request.Policy != testPolicyAccount(key) || !reflect.DeepEqual(request.Accounts, op.Accounts) {
 						t.Fatal("Go packet diverges from independent installed-policy account vector")
 					}
 					message, err := CompileKaminoMessage(request)

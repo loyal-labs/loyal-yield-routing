@@ -163,12 +163,8 @@ func feeAccumulatorNeedsWarning(fees, supply uint64) bool {
 }
 
 func monitorHold(s Snapshot, reason string) Decision {
-	strategyKey := s.RouteLane
-	if strategyKey == "" {
-		strategyKey = RouteID
-	}
 	return Decision{
-		Action: HoldManualRecovery, Reason: reason, AmountRaw: 0, StrategyKey: strategyKey,
+		Action: HoldManualRecovery, Reason: reason, AmountRaw: 0, StrategyKey: s.RouteLane,
 		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, reason, s.Slot),
 	}
 }

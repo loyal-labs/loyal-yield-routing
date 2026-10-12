@@ -327,11 +327,7 @@ func (d *Database) recordDecisionTx(
 	}
 	idHash := sha256.Sum256([]byte(persistedIdempotencyKey))
 	operationID := hex.EncodeToString(idHash[:])
-	strategyKey := decision.StrategyKey
-	if strategyKey == "" {
-		strategyKey = RouteID
-	}
-	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(Decided), persistedIdempotencyKey, strategyKey, string(expected), nil); err != nil {
+	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(Decided), persistedIdempotencyKey, decision.StrategyKey, string(expected), nil); err != nil {
 		return DecisionRecord{}, fmt.Errorf("insert decision: %w", err)
 	}
 	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: Decided}, nil
@@ -721,9 +717,6 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 	var forecastAPYBPS *int64
 	if snapshot.HasPosition {
 		value := snapshot.StrategyKey
-		if value == "" {
-			value = RouteID
-		}
 		strategyKey = &value
 	} else {
 		zero := int64(0)

@@ -21,10 +21,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 	if rpc == nil || minimumSlot <= 0 {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
 	}
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return BudgetPrice{}, err
-	}
+	reference := usdcReference
 	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: budgetSOLMarket}
 	debit := ExecutableDebit{Mint: budgetWrappedSOLMint, TokenProgram: classicTokenProgram, Raw: 1}
 	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}

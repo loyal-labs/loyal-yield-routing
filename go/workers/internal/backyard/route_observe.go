@@ -102,7 +102,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	addresses := routeFixedAddresses(manifest)
+	addresses := routeFixedAddresses()
 	slot, accounts, receipts, err := runtime.read(ctx, addresses, runtime.minSlot)
 	if err != nil {
 		return Observation{}, nil, err
@@ -463,47 +463,16 @@ func receiptIntegrityObservation(slot int64, route RuntimeRoute) Observation {
 	}}
 }
 
-func routeFixedAddresses(manifest RouteManifest) []string {
-	route, err := manifest.activeRuntimeRoute()
-	if err != nil {
-		return nil
+// routeFixedAddresses is every account a tick reads: the bridge's, and each
+// registry lane's position, custody, reserves and market, with the Clock.
+func routeFixedAddresses() []string {
+	addresses := []string{reportTicketPDA, budgetClockAddress}
+	for _, l := range earnLanes {
+		r := l.route
+		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(r)...), r.Kamino.Market, r.Kamino.CollateralReserve, r.Kamino.DebtReserve,
+			r.CollateralLiquiditySupply, r.DebtLiquiditySupply, r.DebtFeeReceiver, r.Kamino.Obligation, r.CollateralCustody)
 	}
-	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
-	for _, lane := range earnLaneIDs(true) {
-		other, _ := runtimeRoute(lane)
-		for _, address := range pinnedRouteNAVAddressesForRoute(other) {
-			addressSet[address] = struct{}{}
-		}
-		for _, address := range []string{other.Kamino.Market, other.CollateralLiquiditySupply, other.DebtLiquiditySupply, other.DebtFeeReceiver, other.Kamino.Obligation, other.CollateralCustody} {
-			addressSet[address] = struct{}{}
-		}
-	}
-
-	// All deposit rounding bounds use the Clock from the same custody/reserve
-	// batch, including retained PRIME/Maple consumers.
-	addressSet[budgetClockAddress] = struct{}{}
-	// The selected Phase 2 route can still require a legacy PRIME cutover
-	// drain. That observer now validates PRIME's lending market as part of the
-	// same confirmed batch, so pin the legacy market even when Maple is active.
-	if legacy, err := pinnedKaminoObservationConfig(); err == nil {
-		addressSet[legacy.Market] = struct{}{}
-	}
-	addressSet[route.DebtFeeReceiver] = struct{}{}
-	if catalogJupiterRoute(route.Lane) {
-		addressSet[route.CollateralLiquiditySupply] = struct{}{}
-		addressSet[route.DebtLiquiditySupply] = struct{}{}
-	}
-	if route.Lane == SelectedRouteID {
-		addressSet[mapleSyrupUSDCUSDC.CollateralLiquiditySupply] = struct{}{}
-		addressSet[mapleSyrupUSDCUSDC.DebtLiquiditySupply] = struct{}{}
-	}
-	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
-		addressSet[address] = struct{}{}
-	}
-	addresses := make([]string, 0, len(addressSet))
-	for address := range addressSet {
-		addresses = append(addresses, address)
-	}
+	addresses = uniqueNonzero(addresses)
 	sort.Strings(addresses)
 	return addresses
 }
@@ -629,10 +598,7 @@ func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount
 		}
 		return position.EntryCapacityRaw, nil
 	}
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return 0, err
-	}
+	reference := usdcReference
 	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
 	if err != nil {
 		return 0, err
@@ -657,9 +623,7 @@ func topupDepositRoomUSDC(accounts []ConfirmedAccount, route RuntimeRoute) (uint
 	}
 	usdcReserve, usdcConfig := route.Kamino.DebtReserve, route.Kamino
 	if route.Kamino.DebtMint != bridgeUSDC {
-		if usdcConfig, err = pinnedKaminoObservationConfig(); err != nil {
-			return 0, err
-		}
+		usdcConfig = usdcReference
 		usdcReserve = usdcConfig.DebtReserve
 	}
 	usdc, err := decodeKaminoReserve(accountAt(accounts, usdcReserve), bridgeUSDC, usdcConfig)
@@ -821,10 +785,7 @@ func navUSDCReferenceStale(slot int64, accounts []ConfirmedAccount, route Runtim
 	if route.Kamino.DebtMint == "" || route.Kamino.DebtMint == bridgeUSDC {
 		return false
 	}
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return false
-	}
+	reference := usdcReference
 	reserve, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
 	return err == nil && reserve.refreshedSlot <= slot && slot-reserve.refreshedSlot > kaminoMaxReserveAgeSlots
 }

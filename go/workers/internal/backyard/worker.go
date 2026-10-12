@@ -320,11 +320,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return blocker
 	}
 	logStage("observe_decide", tickStart)
-	executionDecision, err := fixedRouteAction(decision.Action, decision.StrategyKey)
-	if err != nil {
-		return err
-	}
-	request, effects, prepared, err := w.prepare(ctx, decision, executionDecision, observation)
+	request, effects, prepared, err := w.prepare(ctx, decision, observation)
 	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.ManualReason == "" && !prepared.Snapshot.StrategyReceiptIntegrityFault {
 		healthObservation = prepared
 	}
@@ -372,10 +368,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 
 // prepare builds the decided action's request from the tick's batch: the one
 // transaction this tick will sign. It never decides again.
-func (w *Worker) prepare(ctx context.Context, decision Decision, executionDecision Action, observation Observation) (any, ExpectedEffects, Observation, error) {
+func (w *Worker) prepare(ctx context.Context, decision Decision, observation Observation) (any, ExpectedEffects, Observation, error) {
 	wireDecision := decision
-	wireDecision.Action = executionDecision
-	switch executionDecision {
+	switch decision.Action {
 	case InitializeKaminoObligation:
 		if w.runtime.prepareInitialization == nil {
 			return nil, ExpectedEffects{}, observation, budgetHold("initializer_preparation_unavailable")
@@ -385,7 +380,7 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, executionDecisi
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		prepared, e, err := w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
 		return e.Request, e.ExpectedEffects, prepared, err
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
+	case OpenRouteStep, DeleverRouteStep:
 		// A leverage move executes as one atomic step (step.go).
 		if _, atomic := stepDecision(observation.Snapshot, wireDecision); atomic {
 			if w.runtime.prepareStep == nil {
@@ -396,7 +391,7 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, executionDecisi
 		}
 		prepared, e, err := w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
 		return e.Request, e.ExpectedEffects, prepared, err
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
+	case SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		// A conversion executes through Hastra or Jupiter by its lane and
 		// action (hastraConversionLeg).
 		if conversionVenueHastra(wireDecision) {

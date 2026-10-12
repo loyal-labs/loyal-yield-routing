@@ -58,7 +58,7 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 	if err = applyRouteNAVSnapshot(&s, nav, time.Unix(1_700_000_010, 0)); err == nil {
 		t.Fatal("debt custody overflow accepted")
 	}
-	binary.LittleEndian.PutUint64(accountAt(accounts, kaminoDebtReserve).Data[272:280], 9)
+	binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[272:280], 9)
 	if _, err = routeEntryCapacityUSDC(position, accounts, route); err == nil {
 		t.Fatal("wrong USDC reference decimals accepted")
 	}

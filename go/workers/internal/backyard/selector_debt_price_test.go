@@ -433,19 +433,6 @@ func TestExitOnlyLaneNeverReachesFeedEconomics(t *testing.T) {
 	}
 }
 
-// Pair capacity is registry authority: a route outside the registry (the
-// legacy PRIME/USDC alias) fails closed instead of being read as capacity.
-func TestPairCapacityFailsClosedOutsideTheRegistry(t *testing.T) {
-	t.Parallel()
-	route, err := runtimeRoute(RouteID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := kaminoPairEntryCapacity(KaminoPosition{EntryCapacityRaw: 6600}, nil, route); err == nil || got != 0 || !strings.Contains(err.Error(), "pair_capacity_lane_unreviewed") {
-		t.Fatalf("lane outside the registry produced capacity: %d %v", got, err)
-	}
-}
-
 func TestComposedDebtPriceIsAnImmutableCopy(t *testing.T) {
 	t.Parallel()
 	original := BudgetPrice{Mint: "mint", TokenProgram: "program", Decimals: 6, TokenUpperSF: [16]byte{1}, USDCLowerSF: [16]byte{2}, ObservedSlot: 1, ValidThroughSlot: 2, EvidenceSHA256: strings.Repeat("a", 64), Credit: &BudgetCreditBounds{TokenLowerSF: [16]byte{3}, USDCUpperSF: [16]byte{4}}}

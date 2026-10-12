@@ -9,7 +9,7 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 	t.Parallel()
 	const slot = int64(77)
 	manifest := readyWorkerManifest(t)
-	route, _ := runtimeRoute(RouteID)
+	route, _ := runtimeRoute(PhaseOneLaneID)
 	flat := func() []ConfirmedAccount {
 		accounts := routeNAVFixture(t, slot)
 		clear(accountAt(accounts, route.Kamino.Obligation).Data[96:2208])

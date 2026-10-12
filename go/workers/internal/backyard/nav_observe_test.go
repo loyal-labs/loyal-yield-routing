@@ -183,11 +183,11 @@ func routeNAVFixture(t *testing.T, slot int64) []ConfirmedAccount {
 		tokenAccountFixture(t, bridgeIdleATA, bridgeUSDC, bridgeIdleAuthority, 11),
 		tokenAccountFixture(t, bridgeStrategyATA, bridgeUSDC, bridgeStrategyAuth, 5),
 		tokenAccountFixture(t, bridgeSquadsATA, bridgeUSDC, bridgeVault, 6),
-		tokenAccountFixture(t, kaminoPrimeCustody, kaminoPrimeMint, bridgeVault, 3),
+		tokenAccountFixture(t, primePRIMEUSDC.CollateralCustody, primePRIMEUSDC.Kamino.CollateralMint, bridgeVault, 3),
 		obligationFixture(t, slot, 10, 7),
-		reserveFixture(t, kaminoCollateralReserve, kaminoPrimeMint, slot, oneAndHalf, 200, 100),
-		reserveFixture(t, kaminoDebtReserve, kaminoUSDCMint, slot, one, 100, 100),
-		marketFixture(t, kaminoMarket),
+		reserveFixture(t, primePRIMEUSDC.Kamino.CollateralReserve, primePRIMEUSDC.Kamino.CollateralMint, slot, oneAndHalf, 200, 100),
+		reserveFixture(t, primePRIMEUSDC.Kamino.DebtReserve, bridgeUSDC, slot, one, 100, 100),
+		marketFixture(t, primePRIMEUSDC.Kamino.Market),
 		voltrVaultFixture(t, 49),
 		voltrLPMintFixture(t, 1_000),
 	}
@@ -227,7 +227,7 @@ func TestComputeRouteNAVValuesConfirmedCustodyAndPositionConservatively(t *testi
 
 func nonUSDCDebtNAVFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount) {
 	t.Helper()
-	route, err := runtimeRoute(RouteID)
+	route, err := runtimeRoute(PhaseOneLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestNonUSDCDebtNAVRejectsIncompleteOrMismatchedInputs(t *testing.T) {
 			route, accounts := nonUSDCDebtNAVFixture(t)
 			switch name {
 			case "missing reference", "missing custody":
-				address := kaminoDebtReserve
+				address := primePRIMEUSDC.Kamino.DebtReserve
 				if name == "missing custody" {
 					address = route.DebtCustody
 				}
@@ -292,9 +292,9 @@ func TestNonUSDCDebtNAVRejectsIncompleteOrMismatchedInputs(t *testing.T) {
 			case "wrong program":
 				route.DebtTokenProgram = classicTokenProgram
 			case "wrong reference decimals":
-				binary.LittleEndian.PutUint64(accountAt(accounts, kaminoDebtReserve).Data[272:280], 9)
+				binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[272:280], 9)
 			case "future reference":
-				binary.LittleEndian.PutUint64(accountAt(accounts, kaminoDebtReserve).Data[16:24], 78)
+				binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], 78)
 			}
 			if _, err := ComputeRouteNAVForRoute(77, accounts, readyWorkerManifest(t), nil, route); err == nil {
 				t.Fatal("unsafe non-USDC NAV input was accepted")
@@ -324,14 +324,14 @@ func TestComputeRouteNAVAcceptsRefreshMarkerAndRejectsInvalidInputs(t *testing.T
 	manifest := readyWorkerManifest(t)
 	t.Run("refresh marker", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
-		accountAt(accounts, kaminoCollateralReserve).Data[24] = 1
+		accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data[24] = 1
 		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err != nil {
 			t.Fatalf("transaction refresh marker rejected: %v", err)
 		}
 	})
 	t.Run("zero refresh slot", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
-		binary.LittleEndian.PutUint64(accountAt(accounts, kaminoCollateralReserve).Data[16:24], 0)
+		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 0)
 		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "reserve") {
 			t.Fatalf("zero reserve refresh slot accepted: %v", err)
 		}
@@ -339,7 +339,7 @@ func TestComputeRouteNAVAcceptsRefreshMarkerAndRejectsInvalidInputs(t *testing.T
 	t.Run("invalid zero price", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
 		for index := 248; index < 264; index++ {
-			accountAt(accounts, kaminoCollateralReserve).Data[index] = 0
+			accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data[index] = 0
 		}
 		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "price") {
 			t.Fatalf("zero reserve price accepted: %v", err)
@@ -353,7 +353,7 @@ func TestComputeRouteNAVAcceptsRefreshMarkerAndRejectsInvalidInputs(t *testing.T
 	})
 	t.Run("unsupported obligation reserve", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
-		obligation := accountAt(accounts, kaminoPrimeUSDCObligation)
+		obligation := accountAt(accounts, primePRIMEUSDC.Kamino.Obligation)
 		putKey(t, obligation.Data[232:264], bridgeSettings)
 		binary.LittleEndian.PutUint64(obligation.Data[264:272], 1)
 		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "unsupported Kamino collateral") {
@@ -367,7 +367,7 @@ func TestComputeRouteNAVRejectsOverflowNegativeNAVAndReceiptDrift(t *testing.T) 
 	manifest := readyWorkerManifest(t)
 	t.Run("valuation overflow", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
-		prime := accountAt(accounts, kaminoPrimeCustody)
+		prime := accountAt(accounts, primePRIMEUSDC.CollateralCustody)
 		binary.LittleEndian.PutUint64(prime.Data[64:72], math.MaxUint64)
 		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "exceeds") {
 			t.Fatalf("overflow accepted: %v", err)

@@ -18,12 +18,12 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 		m.RuntimeActivation.SelectedLane = PhaseOneLaneID
 		initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
 			binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
-			binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
-			binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
+			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
+			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], 1)
 		})
 		captured := productionRouteBatchAccounts(t, 78, func(a []ConfirmedAccount) {
 			binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 78)
-			for _, address := range []string{kaminoCollateralReserve, kaminoDebtReserve} {
+			for _, address := range []string{primePRIMEUSDC.Kamino.CollateralReserve, primePRIMEUSDC.Kamino.DebtReserve} {
 				for i := 1; i < 11; i++ {
 					binary.LittleEndian.PutUint32(accountAt(a, address).Data[kaminoReserveConfigOffset+64+i*8:], 10_000)
 				}
@@ -32,7 +32,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 			// valued using the new bank, never old balances plus new reserve prices.
 			binary.LittleEndian.PutUint64(accountAt(a, bridgeSquadsATA).Data[64:72], 21)
 			if staleOracle {
-				binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[kaminoMarketPriceLastUpdatedTSOffset:], 1)
+				binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[kaminoMarketPriceLastUpdatedTSOffset:], 1)
 			}
 		})
 		refreshCalls, read, readSlots := 0, fixtureBatchRuntime(77, initial), []int64{}
@@ -125,7 +125,7 @@ func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
 			case "extra":
 				copyAccounts = append(copyAccounts, accounts[0])
 			case "namespace":
-				copyAccounts[0].Address = kaminoDebtReserve
+				copyAccounts[0].Address = primePRIMEUSDC.Kamino.DebtReserve
 			case "fee_payer":
 				copyAccounts[0].Address, copyAddresses[0] = bridgeDelegate, bridgeDelegate
 			case "duplicate":
@@ -149,8 +149,7 @@ func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
 
 func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
 	t.Parallel()
-	m := readyWorkerManifest(t)
-	all := routeFixedAddresses(m)
+	all := routeFixedAddresses()
 	for _, lane := range earnLaneIDs(true) {
 		route, _ := runtimeRoute(lane)
 		selected := selectorValuationAddresses([]RuntimeRoute{route}, all)
@@ -206,8 +205,8 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 		m.RuntimeActivation.SelectedLane = PhaseOneLaneID
 		initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
 			binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
-			binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
-			binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
+			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
+			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], 1)
 		})
 		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
 			read: fixtureBatchRuntime(77, initial),
@@ -240,8 +239,8 @@ func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
 	initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
 		binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
-		binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
-		binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
+		binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
+		binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], 1)
 	})
 	// Even near both latch thresholds, aged evidence must not count as bad health.
 	refreshSimulationFailures.Store(refreshSimulationLatchAfter - 1)
@@ -289,8 +288,8 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
 	initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
 		binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
-		binary.LittleEndian.PutUint64(accountAt(a, kaminoCollateralReserve).Data[16:24], 1)
-		binary.LittleEndian.PutUint64(accountAt(a, kaminoDebtReserve).Data[16:24], 1)
+		binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
+		binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], 1)
 	})
 	rejected := true
 	observe := func() (Observation, error) {

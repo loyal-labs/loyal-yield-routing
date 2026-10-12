@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/solana-foundation/solana-go/v2"
@@ -39,11 +40,11 @@ func hastraConversionLeg(action Action, lane string) (byte, bool) {
 	}
 	switch action {
 	case SwapDebtToCollateralStep:
-		return hastraStakeDepositLeg, true
+		return policy.HastraStakeDeposit, true
 	case SwapCollateralToDebtStep:
-		return hastraStakeRedeemLeg, true
+		return policy.HastraStakeRedeem, true
 	case SwapUSDCToDebtStep:
-		return hastraMintDepositLeg, true
+		return policy.HastraMintDeposit, true
 	}
 	return 0, false
 }
@@ -68,9 +69,9 @@ func hastraEdgeForRoute(action Action, lane string) (hastraEdge, error) {
 	collateral := [2]string{route.CollateralCustody, route.Kamino.CollateralMint}
 	from, to := [2]string{bridgeSquadsATA, bridgeUSDC}, debt // mint deposit
 	switch leg {
-	case hastraStakeDepositLeg:
+	case policy.HastraStakeDeposit:
 		from, to = debt, collateral
-	case hastraStakeRedeemLeg:
+	case policy.HastraStakeRedeem:
 		from, to = collateral, debt
 	}
 	return hastraEdge{leg: leg, source: from[0], sourceMint: from[1], destination: to[0], destinationMint: to[1]}, nil
@@ -119,11 +120,11 @@ func (r HastraConversionRequest) stakePrice() (hastra.StakePrice, error) {
 // rounding.
 func hastraOutput(leg byte, price hastra.StakePrice, amount uint64) (uint64, error) {
 	switch leg {
-	case hastraStakeDepositLeg:
+	case policy.HastraStakeDeposit:
 		return price.AUTOForWYLDS(amount)
-	case hastraStakeRedeemLeg:
+	case policy.HastraStakeRedeem:
 		return price.WYLDSForAUTO(amount)
-	case hastraMintDepositLeg:
+	case policy.HastraMintDeposit:
 		return amount, nil
 	}
 	return 0, fmt.Errorf("unknown Hastra leg %d", leg)
@@ -140,7 +141,7 @@ func hastraInstruction(r HastraConversionRequest) (compiledInstruction, byte, er
 		return compiledInstruction{}, 0, fmt.Errorf("Hastra conversion of nothing")
 	}
 	var price hastra.StakePrice
-	if edge.leg != hastraMintDepositLeg {
+	if edge.leg != policy.HastraMintDeposit {
 		if price, err = r.stakePrice(); err != nil {
 			return compiledInstruction{}, 0, err
 		}
@@ -161,9 +162,9 @@ func hastraInstruction(r HastraConversionRequest) (compiledInstruction, byte, er
 	}
 	var ix *solana.GenericInstruction
 	switch edge.leg {
-	case hastraStakeDepositLeg:
+	case policy.HastraStakeDeposit:
 		ix = hastra.StakeDeposit(stake, r.AmountRaw)
-	case hastraStakeRedeemLeg:
+	case policy.HastraStakeRedeem:
 		ix = hastra.StakeRedeem(stake, r.AmountRaw)
 	default:
 		ix = hastra.MintDeposit(mint, r.AmountRaw)
@@ -301,7 +302,7 @@ func prepareHastraQuoteEvidence(ctx context.Context, rpc *chain.Client, view *Vi
 	amount := uint64(decision.AmountRaw)
 	request := HastraConversionRequest{Action: decision.Action, AmountRaw: amount, RouteLane: decision.StrategyKey}
 	var price hastra.StakePrice
-	if edge.leg != hastraMintDepositLeg {
+	if edge.leg != policy.HastraMintDeposit {
 		var now int64
 		if price, now, _, err = hastraPriceAt(ctx, view, slot); err != nil {
 			return HastraExecutionEvidence{}, confirmedObservationUnavailable(err)

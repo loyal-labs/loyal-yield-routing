@@ -3,7 +3,6 @@ package backyard
 import (
 	"crypto/sha256"
 	_ "embed"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -25,7 +24,6 @@ type RouteManifest struct {
 	Cluster               string `json:"cluster"`
 	GenesisHash           string `json:"genesisHash"`
 	Commitment            string `json:"commitment"`
-	MVPRoute              string `json:"mvpRoute"`
 	TargetLTVBPS          int64  `json:"targetLtvBps"`
 	HardLTVRule           string `json:"hardLtvRule"`
 	WithdrawalWaitSeconds int64  `json:"withdrawalWaitSeconds"`
@@ -49,17 +47,6 @@ type RouteManifest struct {
 		ClassicToken      string `json:"classicTokenProgram"`
 		Token2022         string `json:"token2022Program"`
 	} `json:"identities"`
-	// RuntimeBindings carries the legacy PRIME/USDC route's packets: each
-	// lifecycle leg's exact KLend accounts and instruction data.
-	RuntimeBindings struct {
-		PrimeUSDC struct {
-			Packets []struct {
-				Action     Action                  `json:"action"`
-				Accounts   KaminoPrimeUSDCAccounts `json:"accounts"`
-				DataBase64 string                  `json:"dataBase64"`
-			} `json:"packets"`
-		} `json:"primeUsdc"`
-	} `json:"runtimeBindings"`
 	// RuntimeActivation names the lane a flat route observes before any
 	// selector entry or exposure orients it. The lanes themselves are the
 	// earnLanes registry, never a manifest list.
@@ -95,7 +82,7 @@ func loadEmbeddedRouteManifest() (RouteManifest, error) {
 
 func (m RouteManifest) validateBindings() error {
 	if m.Schema != "loyal-backyard-rwa-manifest/v2" || m.Cluster != "mainnet-beta" ||
-		m.Commitment != "confirmed" || m.MVPRoute != RouteID || m.TargetLTVBPS != TargetLTVBPS ||
+		m.Commitment != "confirmed" || m.TargetLTVBPS != TargetLTVBPS ||
 		m.HardLTVRule != "min(6000, liquidationThresholdBps - 1500)" ||
 		m.WithdrawalWaitSeconds != 600 || m.NAVMaxAgeSeconds != 60 || m.VaultCapRaw != "1000000000000" {
 		return fmt.Errorf("embedded Backyard manifest has an invalid fixed route")
@@ -117,56 +104,9 @@ func (m RouteManifest) validateBindings() error {
 	return nil
 }
 
-// primeUSDCPacket is the legacy PRIME/USDC route's packet for leg, for amount,
-// executed through the leg's installed policy.
-func (m RouteManifest) primeUSDCPacket(policies installedPolicies, action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash) (KaminoPrimeUSDCRequest, error) {
-	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
-		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
-	}
-	discriminator := kaminoLegDiscriminator(leg)
-	if discriminator == nil {
-		return KaminoPrimeUSDCRequest{}, fmt.Errorf("unknown PRIME/USDC leg")
-	}
-	route, err := runtimeRoute(RouteID)
-	if err != nil {
-		return KaminoPrimeUSDCRequest{}, err
-	}
-	key, _ := kaminoPolicyLeg(route, leg)
-	policy, err := policies.account(key)
-	if err != nil {
-		return KaminoPrimeUSDCRequest{}, err
-	}
-	for _, binding := range m.RuntimeBindings.PrimeUSDC.Packets {
-		if binding.Action != action {
-			continue
-		}
-		data, err := base64.StdEncoding.Strict().DecodeString(binding.DataBase64)
-		if err != nil || len(data) != 16 || !bytesEqual(data[:8], discriminator) || readU64(data[8:]) != 0 {
-			continue
-		}
-		binary.LittleEndian.PutUint64(data[8:], amount)
-		request := KaminoPrimeUSDCRequest{
-			Action: action, AmountRaw: amount, Policy: policy,
-			Accounts: binding.Accounts, Data: data, RecentBlockhash: blockhash.Blockhash,
-			LastValidBlockHeight: blockhash.LastValidBlockHeight,
-		}
-		if _, observedLeg, err := kaminoPrimeUSDCInstruction(request); err == nil && observedLeg == leg {
-			return request, nil
-		}
-	}
-	return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
-}
-
 // kaminoPacketForRoute is lane's packet for leg, for amount, executed through
 // the leg's installed policy.
 func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoPrimeUSDCRequest, error) {
-	if lane == "" || lane == RouteID {
-		request, err := m.primeUSDCPacket(policies, action, leg, amount, blockhash)
-		if err == nil {
-			request.RouteLane = lane
-		}
-		return request, err
-	}
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
 		return KaminoPrimeUSDCRequest{}, ErrBridgePrerequisitesUnavailable
 	}
@@ -217,9 +157,5 @@ func (m RouteManifest) hasPhaseOneUnresolved() bool {
 }
 
 func (m RouteManifest) activeRuntimeRoute() (RuntimeRoute, error) {
-	lane := PhaseOneLaneID
-	if m.RuntimeActivation.SelectedLane != "" {
-		lane = m.RuntimeActivation.SelectedLane
-	}
-	return runtimeRoute(lane)
+	return runtimeRoute(m.RuntimeActivation.SelectedLane)
 }

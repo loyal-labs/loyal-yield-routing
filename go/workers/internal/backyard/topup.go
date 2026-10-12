@@ -11,8 +11,6 @@ const (
 	stepResidueReason     = "step_residue_to_collateral"
 )
 
-const onreONycUSDC = "OnRe/ONyc/USDC"
-
 // A top-up allocation below this is not worth its fees; the cash waits in
 // Voltr for the next deposit. ponytail: fixed $10 floor, derive it from the
 // measured leg costs if small deposits matter.

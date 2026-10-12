@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
@@ -33,23 +34,22 @@ func earnMaxObservationTargets() []Target {
 	return targets
 }
 
-// supplementalObservationTargets is EARN_MAX_SUPPLEMENTAL_OBSERVATION_RESERVES
-// (loyal-actions earn_max.rs) as loyal-kamino-data targets.rs
-// supplemental_observation_targets builds it: the Backyard AUTO collateral and
-// PYUSD debt reserves, and the wYLDS debt reserve of AUTO's overflow lane
-// (AUTO/AUTO/wYLDS), pinned, named "Auto Market" and never resolved through
-// the Kamino API catalog.
+// supplementalObservationTargets are Backyard's lane reserves (its earnLanes
+// registry) in markets the Kamino API catalog does not resolve (the AUTO
+// market): pinned, named by their lanes' protocol, never resolved through the
+// API catalog.
 func supplementalObservationTargets() []Target {
-	const market, marketName = "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk", "Auto Market"
-	rows := [][2]string{
-		{"G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX", "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm"},
-		{"6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"},
-		{"34GJjXf7jGTdNL8Yw1HtqWSVvfX6JTsft3UsuFFUL7VU", "8fr7WGTVFszfyNWRMXj6fRjZZAnDwmXwEpCrtzmUkdih"},
+	resolved := map[string]bool{}
+	for _, market := range policySupportedMarkets {
+		resolved[market.market] = true
 	}
-	targets := make([]Target, 0, len(rows))
-	for _, row := range rows {
-		marketID, name, mint := market, marketName, row[1]
-		targets = append(targets, Target{Reserve: row[0], Market: &marketID, MarketName: &name, LiquidityMint: &mint})
+	var targets []Target
+	for _, r := range backyard.ObservationReserves() {
+		if resolved[r.Market] {
+			continue
+		}
+		market, name, mint := r.Market, r.MarketName, r.LiquidityMint
+		targets = append(targets, Target{Reserve: r.Reserve, Market: &market, MarketName: &name, LiquidityMint: &mint})
 	}
 	return targets
 }

@@ -135,7 +135,7 @@ func fetchFeedYields(ctx context.Context, client *http.Client, endpoint string, 
 func readReserveEconomics(ctx context.Context, view *View, routes []RuntimeRoute, slotRate func(context.Context) (float64, error)) (map[string]reserveEconomics, error) {
 	// The pinned USDC reserve is the USDC side of every non-USDC debt lane's
 	// price conversion, as in the live borrow capacity observation.
-	reserves := []string{kaminoDebtReserve}
+	reserves := []string{usdcReference.DebtReserve}
 	for _, r := range routes {
 		reserves = append(reserves, r.Kamino.CollateralReserve, r.Kamino.DebtReserve)
 	}
@@ -213,8 +213,8 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomic
 	priced := func(r reserveEconomics) bool {
 		return finite(r.PriceUSD) && r.PriceUSD > 0 && r.Decimals <= 18
 	}
-	usdc := reserves[kaminoDebtReserve]
-	usdcPriced := valid(usdc, kaminoDebtReserve, bridgeUSDC, kaminoMarket) && priced(usdc) && usdc.Decimals == 6
+	usdc := reserves[usdcReference.DebtReserve]
+	usdcPriced := valid(usdc, usdcReference.DebtReserve, bridgeUSDC, usdcReference.Market) && priced(usdc) && usdc.Decimals == 6
 	for _, route := range routes {
 		c, d := reserves[route.Kamino.CollateralReserve], reserves[route.Kamino.DebtReserve]
 		y, ok := yields[route.Lane]

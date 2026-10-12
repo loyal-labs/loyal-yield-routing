@@ -39,7 +39,7 @@ func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing
 		}
 	})
 	addresses := []string{budgetClockAddress, bridgeVault, bridgeStrategy}
-	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
+	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, PhaseOneLaneID, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
 	if err != nil || slot != 43 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}
@@ -93,9 +93,9 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 			addresses := []string{budgetClockAddress, bridgeVault}
 			var captureErr error
 			if testCase.optional {
-				_, _, captureErr = simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, addresses, []string{budgetClockAddress}, 41)
+				_, _, captureErr = simulateBudgetReserveRefreshOptional(context.Background(), client, PhaseOneLaneID, addresses, []string{budgetClockAddress}, 41)
 			} else {
-				_, _, captureErr = simulateBudgetReserveRefresh(context.Background(), client, RouteID, addresses, 41)
+				_, _, captureErr = simulateBudgetReserveRefresh(context.Background(), client, PhaseOneLaneID, addresses, 41)
 			}
 			var hold *BudgetHold
 			if !errors.As(captureErr, &hold) || hold.Reason != "price_refresh_capture_incomplete" {
@@ -163,7 +163,7 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 		body2 := `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":{"err":null,"accounts":[` + populated + `,null]}}}`
 		return response(body2), nil
 	})
-	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
+	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, PhaseOneLaneID, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
 	if err != nil || slot != 43 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}

@@ -156,6 +156,40 @@ func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) 
 			t.Fatalf("action=%s engine=%s lane=%s admitted=%t valid=%t err=%v", row.action, row.engine, row.lane, err == nil, row.valid, err)
 		}
 	}
+	// 0107 drops every lane-listing scope: the lanes are the earnLanes
+	// registry, not a CHECK. A lane the old scopes refused journals; the
+	// engine restriction stays.
+	raw, err := os.ReadFile("../../../../migrations/yield/0107_backyard_drop_lane_lists.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, strings.ReplaceAll(string(raw), "loyal_yield.", "initializer_auto_scope_test.")); err != nil {
+		t.Fatalf("migration 0107 did not apply: %v", err)
+	}
+	var scopes int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid='initializer_auto_scope_test.multiply_operations'::regclass
+	 AND conname IN ('multiply_operations_backyard_phase3_strategy_scope','multiply_operations_backyard_initializer_scope','multiply_operations_backyard_setup_scope')`).Scan(&scopes); err != nil || scopes != 0 {
+		t.Fatalf("lane scopes left after 0107: %d %v", scopes, err)
+	}
+	for index, row := range []struct {
+		action, engine, lane string
+		valid                bool
+	}{
+		{string(InitializeKaminoObligation), "backyard_rwa_v1", "Ethena/USDe/PYUSD", true},
+		{string(OpenRouteStep), "backyard_rwa_v1", "unregistered", true},
+		{string(SwapDebtToCollateralStep), "backyard_rwa_v1", "AUTO/AUTO/USDG", true},
+		{string(InitializeKaminoObligation), "earn_max_v2", autoAUTOWYLDSLane, false},
+	} {
+		nested, err := tx.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = nested.Exec(ctx, `INSERT INTO initializer_auto_scope_test.multiply_operations(operation_id,action,engine_version,strategy_key,status) VALUES($1,$2,$3,NULLIF($4,''),'decided')`, fmt.Sprintf("lane-list-probe-%d", index), row.action, row.engine, row.lane)
+		_ = nested.Rollback(ctx)
+		if (err == nil) != row.valid {
+			t.Fatalf("after 0107 action=%s engine=%s lane=%s admitted=%t valid=%t err=%v", row.action, row.engine, row.lane, err == nil, row.valid, err)
+		}
+	}
 }
 
 // openInitializerAutoScopeServiceDatabase builds a dedicated disposable
@@ -395,10 +429,8 @@ func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]Confirme
 // instead of picking one.
 func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	t.Parallel()
-	candidate := embeddedTestManifest(t)
-	maplePreferred := candidate
 	requested := map[string]bool{}
-	for _, address := range routeFixedAddresses(maplePreferred) {
+	for _, address := range routeFixedAddresses() {
 		requested[address] = true
 	}
 	if !requested[autoAUTOPYUSD.Kamino.Obligation] || !requested[autoAUTOPYUSD.CollateralCustody] {
