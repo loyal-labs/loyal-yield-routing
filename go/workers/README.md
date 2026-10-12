@@ -68,7 +68,8 @@ cleanup packets require active mode and independently fenced writer admission.
 Backyard (`LOYAL_WORKER_SCOPE=backyard`) is the production Voltr/Kamino RWA
 line ported from `origin/feat/voltr-rwa-selector`. It requires the credentials
 `BACKYARD_DATABASE_URL` (the direct, non-pooler DSN: it also holds the family
-lock), `BACKYARD_SOLANA_RPC_URL` and `BACKYARD_POLICY_KEYPAIR`; an optional
+lock, Backyard's one-writer lock, which a second process waits for;
+`docs/backyard-one-writer.md`), `BACKYARD_SOLANA_RPC_URL` and `BACKYARD_POLICY_KEYPAIR`; an optional
 `JUPITER_API_KEY` credential selects the keyed Jupiter API. The selector
 collector is off by default; `BACKYARD_RWA_SELECTOR_LIVE=1` enables it; it reads lane reserves
 from Backyard's own account view. `BACKYARD_RWA_PILOT_CANARY_ENTRY`
@@ -105,7 +106,8 @@ pinned Apps baseline; the production-specific 0071 data activation and ledger
 entry are excluded. Branch CI provides actual PostgreSQL 17 and Timescale.
 Tests never apply schema to production.
 
-`cmd/loyal-migrate` is the production runner (`-db yield|timescale status|up`).
+`cmd/loyal-migrate` is the production runner (`-db yield|timescale [-to version] status|up`;
+`-to` leaves later migrations pending, for those that need a new binary live first).
 It keeps the ledger the retired Rust runners wrote: version, name and the
 SHA-256 of the file bytes. `status` is read-only and fails on drift.
 

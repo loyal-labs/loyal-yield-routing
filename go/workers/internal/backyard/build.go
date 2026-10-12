@@ -448,20 +448,3 @@ func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
 		return nil
 	}
 }
-
-func decodeShortVec(data []byte, offset *int) (int, error) {
-	value, shift := 0, 0
-	for count := 0; count < 5; count++ {
-		if *offset >= len(data) {
-			return 0, fmt.Errorf("truncated shortvec")
-		}
-		byteValue := data[*offset]
-		*offset++
-		value |= int(byteValue&0x7f) << shift
-		if byteValue&0x80 == 0 {
-			return value, nil
-		}
-		shift += 7
-	}
-	return 0, fmt.Errorf("shortvec overflow")
-}

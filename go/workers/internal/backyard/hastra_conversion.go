@@ -171,10 +171,6 @@ func hastraInstruction(r HastraConversionRequest) (compiledInstruction, byte, er
 	return kaminoCompiled(ix), edge.leg, nil
 }
 
-func CompileHastraMessage(request HastraConversionRequest) ([]byte, error) {
-	return compileHastraMessageForDelegate(request, mustKey(bridgeDelegate))
-}
-
 // compileHastraMessageForDelegate is the conversion's message: the
 // canonical heap frame (the Hastra policy is as large as AUTO's KLend policy,
 // which the deployed Squads ELF parses only under the 64 KiB heap) and the
