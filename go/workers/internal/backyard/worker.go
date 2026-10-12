@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,25 +20,25 @@ type Worker struct {
 	interval time.Duration
 	manifest RouteManifest
 	runtime  tickRuntime
-	// noRoom reports a no_room hold: always on /metrics, hourly in the log.
-	noRoom noRoomLog
+	// holds reports why a tick did not move the vault: a gauge on /metrics
+	// and a log line when it changes; a hold is never a journal row.
+	holds holdLog
 }
 
 type tickRuntime struct {
-	withdrawalHealth                 func(context.Context, WithdrawalHealth) error
-	observeWithdrawalHealth          func(context.Context) (Observation, error)
-	prepareInitialization            func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error)
-	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
-	advance                          func(context.Context, PersistedOperation) error
-	observe                          func(context.Context) (Observation, error)
-	loadLatch                        func(context.Context, string) (ManualRecoveryLatch, bool, error)
-	recordManualRecovery             func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
-	recordManualRecoveryAtGeneration func(context.Context, string, Observation, Decision, string, int64) (DecisionRecord, error)
-	beforeRecordLatchedHold          func(context.Context, ManualRecoveryLatch) error
-	prepareBridge                    func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
-	prepareKamino                    func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
-	prepareJupiter                   func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
-	prepareHastra                    func(context.Context, Decision, Observation) (Observation, HastraExecutionEvidence, error)
+	withdrawalHealth        func(context.Context, WithdrawalHealth) error
+	observeWithdrawalHealth func(context.Context) (Observation, error)
+	prepareInitialization   func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error)
+	loadNonterminal         func(context.Context, string) (*PersistedOperation, error)
+	advance                 func(context.Context, PersistedOperation) error
+	observe                 func(context.Context) (Observation, error)
+	loadLatch               func(context.Context, string) (ManualRecoveryLatch, bool, error)
+	// latch writes the operator's stop for a HOLD_MANUAL_RECOVERY decision.
+	latch          func(context.Context, string, ManualRecoveryLatch) error
+	prepareBridge  func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
+	prepareKamino  func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
+	prepareJupiter func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
+	prepareHastra  func(context.Context, Decision, Observation) (Observation, HastraExecutionEvidence, error)
 	// prepareStep builds an atomic step (stepDecision) from the tick's batch.
 	prepareStep    func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
 	recordDecision func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
@@ -192,10 +191,9 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		advance: func(ctx context.Context, operation PersistedOperation) error {
 			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, operation)
 		},
-		observe:                          state.observe,
-		loadLatch:                        database.ManualRecoveryLatch,
-		recordManualRecovery:             database.RecordManualRecovery,
-		recordManualRecoveryAtGeneration: database.RecordManualRecoveryAtGeneration,
+		observe:   state.observe,
+		loadLatch: database.ManualRecoveryLatch,
+		latch:     database.LatchManualRecovery,
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 			return prepareBridgeFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
@@ -253,9 +251,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	var healthObservation Observation
 	var healthDecision Decision
 	defer func() { w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr) }()
-	// The manual recovery latch is re-read before anything else in the tick, so
-	// a healthy batch, a restart, or a new worker state object can never resume
-	// execution behind a durable stop.
+	// The manual recovery latch is read before anything else in the tick, so
+	// a healthy batch or a restart can never resume execution behind the
+	// operator's stop. A latched tick writes nothing.
 	if w.runtime.loadLatch != nil {
 		latch, latched, err := w.runtime.loadLatch(ctx, w.routeKey)
 		if err != nil {
@@ -264,7 +262,8 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		backyardEvents.noteLatch(latched, latch.Reason)
 		if latched {
 			healthDecision = Decision{Action: HoldManualRecovery}
-			return w.recordLatchedHold(ctx, latch)
+			w.holds.note(Snapshot{}, "", holdManualRecovery, latch.Reason)
+			return nil
 		}
 	}
 	operation, err := w.runtime.loadNonterminal(ctx, w.routeKey)
@@ -296,7 +295,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	decision := Decide(observation.Snapshot)
 	healthDecision = decision
-	w.noRoom.note(time.Now(), observation.Snapshot, decision)
 	// Decide maps every observation-level hold to one generic reason. The
 	// observer records the audited Kamino health reason on the snapshot, so it
 	// is carried into the durable decision instead of being discarded.
@@ -308,16 +306,15 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	healthDecision = decision
 	backyardEvents.noteAction(decision.Action)
-	if decision.Action == Hold || decision.Action == HoldManualRecovery {
-		healthDecision = decision
-		if decision.Action == HoldManualRecovery {
-			return w.recordManualRecoveryDecision(ctx, observation, decision)
-		}
-		if _, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256); err != nil {
-			return err
-		}
+	switch decision.Action {
+	case Hold:
+		w.holds.note(observation.Snapshot, decision.StrategyKey, decision.Reason, "")
 		return nil
+	case HoldManualRecovery:
+		w.holds.note(observation.Snapshot, decision.StrategyKey, holdManualRecovery, decision.Reason)
+		return w.latchManualRecovery(ctx, observation, decision)
 	}
+	w.holds.note(observation.Snapshot, decision.StrategyKey, "", "")
 	if blocker := w.manifest.executionBlocker(); blocker != nil {
 		return blocker
 	}
@@ -336,7 +333,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		// target's no_room, counted like Decide's.
 		var hold *BudgetHold
 		if errors.As(err, &hold) && hold.Reason == holdNoRoom {
-			w.noRoom.note(time.Now(), observation.Snapshot, Decision{Action: Hold, Reason: holdNoRoom, StrategyKey: decision.StrategyKey})
+			w.holds.note(observation.Snapshot, decision.StrategyKey, holdNoRoom, "")
 		}
 		return err
 	}
@@ -436,56 +433,17 @@ func (w *Worker) journalTickError(ctx context.Context, operationID string, err e
 	return err
 }
 
-// recordLatchedHold re-records the same durable hold identity on every latched
-// tick. The observation identity comes from the latch itself, so the recorded
-// evidence stays byte-identical across ticks and restarts and the journal keeps
-// showing the stop without anything touching the chain.
-func (w *Worker) recordLatchedHold(ctx context.Context, latch ManualRecoveryLatch) error {
-	if latch.Reason == "" || latch.ObservationID == "" || latch.ObservationSlot <= 0 || latch.Generation < 0 {
-		return fmt.Errorf("latched manual recovery identity is incomplete")
+// latchManualRecovery writes the operator's stop for a manual recovery
+// decision; the next tick reads it and does nothing until clear-hold.
+func (w *Worker) latchManualRecovery(ctx context.Context, observation Observation, decision Decision) error {
+	if w.runtime.latch == nil {
+		return fmt.Errorf("manual recovery latch runtime is unavailable")
 	}
-	if w.runtime.beforeRecordLatchedHold != nil {
-		if err := w.runtime.beforeRecordLatchedHold(ctx, latch); err != nil {
-			return err
-		}
-	}
-	observation := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{
-		ObservationID: latch.ObservationID, Slot: latch.ObservationSlot,
-		RouteKind: RouteKind, Fresh: true, MonitorsArmed: true,
-	}}
-	decision := Decision{
-		Action:         HoldManualRecovery,
-		Reason:         "latched:" + latch.Reason,
-		AmountRaw:      0,
-		IdempotencyKey: fmt.Sprintf("%s:latched:%s", latch.ObservationID, latch.Reason),
-	}
-	if err := decision.Validate(); err != nil {
+	latch := ManualRecoveryLatch{Reason: decision.Reason, ObservationID: observation.Snapshot.ObservationID, ObservationSlot: observation.Snapshot.Slot}
+	if err := w.runtime.latch(ctx, w.routeKey, latch); err != nil {
 		return err
 	}
-	if w.runtime.recordManualRecoveryAtGeneration != nil {
-		if _, err := w.runtime.recordManualRecoveryAtGeneration(ctx, w.routeKey, observation, decision, w.manifest.SHA256, latch.Generation); err != nil {
-			if errors.Is(err, errManualRecoveryLatchGenerationChanged) && w.runtime.loadLatch != nil {
-				_, _, rereadErr := w.runtime.loadLatch(ctx, w.routeKey)
-				return rereadErr
-			}
-			return err
-		}
-		return nil
-	}
-	return w.recordManualRecoveryDecision(ctx, observation, decision)
-}
-
-func (w *Worker) recordManualRecoveryDecision(ctx context.Context, observation Observation, decision Decision) error {
-	if w.runtime.recordManualRecovery == nil {
-		return fmt.Errorf("manual recovery persistence runtime is unavailable")
-	}
-	if _, err := w.runtime.recordManualRecovery(ctx, w.routeKey, observation, decision, w.manifest.SHA256); err != nil {
-		return err
-	}
-	// A "latched:" reason is the per-tick re-record of an existing stop.
-	if !strings.HasPrefix(decision.Reason, "latched:") {
-		backyardEvents.latched(decision.Reason)
-	}
+	backyardEvents.latched(decision.Reason)
 	return nil
 }
 

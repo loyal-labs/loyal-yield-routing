@@ -447,6 +447,14 @@ func (e *events) leverageUpLanded(lane string, borrowedRaw int64, signature stri
 	}
 }
 
+// hold sets the hold the tick ended in ("" while it acts).
+func (e *events) hold(lane, reason string) {
+	if e == nil || e.facts == nil {
+		return
+	}
+	e.facts.BackyardHold(lane, reason)
+}
+
 // stepNoRoom counts a step that holds for lack of chain room, by lane and
 // target rule.
 func (e *events) stepNoRoom(lane, rule string) {

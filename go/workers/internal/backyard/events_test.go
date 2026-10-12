@@ -112,3 +112,54 @@ func TestWithdrawalMetricsKeepAttentionAndClockWhenEvidenceUnavailable(t *testin
 	e.withdrawalHealthStored(WithdrawalHealth{RouteKey: productionRouteKey, Status: "waiting", ObservedAt: now.Add(2 * time.Minute)})
 	check(0, 1120)
 }
+
+// A hold is one gauge series (lane, reason) while the tick holds, none while
+// it acts, and one log line per change.
+func TestHoldIsAGaugeAndALineOnChange(t *testing.T) {
+	t.Parallel()
+	registry := prometheus.NewRegistry()
+	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), engine.NewFacts(registry))
+	held := func() map[string]float64 {
+		families, err := registry.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]float64{}
+		for _, family := range families {
+			if family.GetName() != "loyal_backyard_hold" {
+				continue
+			}
+			for _, metric := range family.GetMetric() {
+				key := ""
+				for _, label := range metric.GetLabel() {
+					key += label.GetName() + "=" + label.GetValue() + ","
+				}
+				out[key] = metric.GetGauge().GetValue()
+			}
+		}
+		return out
+	}
+	e.hold(autoAUTOPYUSD.Lane, holdNoRoom)
+	if got := held(); len(got) != 1 || got["lane="+autoAUTOPYUSD.Lane+",reason=no_room,"] != 1 {
+		t.Fatalf("no_room hold: %v", got)
+	}
+	e.hold(autoAUTOPYUSD.Lane, holdAtTarget)
+	if got := held(); len(got) != 1 || got["lane="+autoAUTOPYUSD.Lane+",reason=at_target,"] != 1 {
+		t.Fatalf("at_target replaced no_room: %v", got)
+	}
+	e.hold(autoAUTOPYUSD.Lane, "")
+	if got := held(); len(got) != 0 {
+		t.Fatalf("an acting tick kept a hold: %v", got)
+	}
+
+	var out bytes.Buffer
+	log := holdLog{out: &out}
+	s := Snapshot{BorrowUtilizationBlocked: true}
+	log.note(s, autoAUTOPYUSD.Lane, holdNoRoom, "")
+	log.note(s, autoAUTOPYUSD.Lane, holdNoRoom, "")
+	log.note(s, autoAUTOPYUSD.Lane, "", "")
+	log.note(s, autoAUTOPYUSD.Lane, holdNoRoom, "")
+	if lines := strings.Count(out.String(), "\n"); lines != 2 || !strings.Contains(out.String(), "utilization limit") {
+		t.Fatalf("hold lines are not once per change: %q", out.String())
+	}
+}

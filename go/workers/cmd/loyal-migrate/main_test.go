@@ -91,7 +91,14 @@ func TestUpAndStatusAgainstDisposableDatabase(t *testing.T) {
 	if err != nil || len(p.Pending) != 2 {
 		t.Fatalf("status before up: %v %+v", err, p)
 	}
-	if err := up(ctx, conn, db, files, &out); err != nil {
+	// -to applies only the migrations at or below its version.
+	if err := up(ctx, conn, db, files, 1, &out); err != nil {
+		t.Fatal(err, out.String())
+	}
+	if p, err := status(ctx, conn, db, files, &out); err != nil || len(p.Applied) != 1 || len(p.Pending) != 1 || p.Pending[0].Version != 2 {
+		t.Fatalf("status after up -to 1: %v %+v", err, p)
+	}
+	if err := up(ctx, conn, db, files, 0, &out); err != nil {
 		t.Fatal(err, out.String())
 	}
 	var indexes int
@@ -110,7 +117,7 @@ func TestUpAndStatusAgainstDisposableDatabase(t *testing.T) {
 	// A failing migration leaves neither schema nor ledger row behind.
 	write("0003_broken.sql", "CREATE TABLE loyal_yield.u (id BIGINT);\nSELECT 1/0;\n")
 	files, _ = load(dir)
-	if err := up(ctx, conn, db, files, &out); err == nil {
+	if err := up(ctx, conn, db, files, 0, &out); err == nil {
 		t.Fatal("broken migration applied")
 	}
 	var leaked bool
@@ -125,7 +132,7 @@ func TestUpAndStatusAgainstDisposableDatabase(t *testing.T) {
 	if _, err := status(ctx, conn, db, files, &out); err == nil {
 		t.Fatal("status accepted an edited applied migration")
 	}
-	if err := up(ctx, conn, db, files, &out); err == nil || !strings.Contains(err.Error(), "drifted") {
+	if err := up(ctx, conn, db, files, 0, &out); err == nil || !strings.Contains(err.Error(), "drifted") {
 		t.Fatalf("up accepted drift: %v", err)
 	}
 }

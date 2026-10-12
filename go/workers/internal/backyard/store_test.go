@@ -25,22 +25,6 @@ func TestRestorePersistedDecisionIncludesImmutableAmountAndReason(t *testing.T) 
 	}
 }
 
-func TestEveryDecisionHasDurableInitialStatus(t *testing.T) {
-	t.Parallel()
-	held, reason := initialDecisionStatus(Decision{Action: Hold, Reason: "no_action"})
-	if held != Held || reason != nil || IsNonterminal(held) {
-		t.Fatalf("HOLD was not terminal and durable: status=%s reason=%v", held, reason)
-	}
-	manual, reason := initialDecisionStatus(Decision{Action: HoldManualRecovery, Reason: "identity"})
-	if manual != ManualRecovery || reason != "identity" || IsNonterminal(manual) {
-		t.Fatalf("manual hold was not terminal and durable: status=%s reason=%v", manual, reason)
-	}
-	transactional, _ := initialDecisionStatus(Decision{Action: VoltrAllocateToSquads})
-	if transactional != Decided || !IsNonterminal(transactional) {
-		t.Fatalf("transactional decision did not enter decided: %s", transactional)
-	}
-}
-
 func TestFlatObservationProjectionRetainsConfirmedDashboardTruth(t *testing.T) {
 	t.Parallel()
 	observedAt := time.Unix(1_700_000_000, 0).UTC()
@@ -296,18 +280,6 @@ func TestActionableIdempotencyUsesDurableTerminalEpoch(t *testing.T) {
 	}
 	if _, err := durableDecisionIdempotencyKey("route", "", actionable); err == nil {
 		t.Fatal("actionable decision accepted an absent durable epoch")
-	}
-	hold := Decision{Action: Hold, IdempotencyKey: "unchanged-hold"}
-	holdA, err := durableDecisionIdempotencyKey("route", "reconciled-a", hold)
-	if err != nil {
-		t.Fatal(err)
-	}
-	holdB, err := durableDecisionIdempotencyKey("route", "reconciled-b", hold)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if holdA != holdB {
-		t.Fatal("unchanged HOLD stopped deduping across lifecycle epochs")
 	}
 }
 

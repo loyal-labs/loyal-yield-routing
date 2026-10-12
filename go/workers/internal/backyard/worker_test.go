@@ -159,7 +159,7 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 	}
 }
 
-func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {
+func TestTickHoldsWithoutARowWhileManifestIsBlocked(t *testing.T) {
 	manifest, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)
@@ -170,23 +170,20 @@ func TestTickPreservesHoldJournalWhileManifestIsBlocked(t *testing.T) {
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return observation, nil },
-		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			recorded = true
-			if decision.Action != Hold {
-				t.Fatalf("expected terminal HOLD, got %s", decision.Action)
-			}
-			return DecisionRecord{Status: Held}, nil
+			return DecisionRecord{}, nil
 		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !recorded {
-		t.Fatal("blocked manifest discarded the HOLD journal")
+	if recorded || worker.holds.reason != holdAtTarget {
+		t.Fatalf("a hold behind a blocked manifest wrote a row or lost its reason: recorded=%v hold=%q", recorded, worker.holds.reason)
 	}
 }
 
-func TestTickJournalsUtilizationHoldWithoutPreparingBorrow(t *testing.T) {
+func TestTickHoldsUtilizationWithoutPreparingBorrow(t *testing.T) {
 	manifest := readyWorkerManifest(t)
 	observation := tickObservation(Snapshot{
 		ObservationID: "utilization-blocked", Slot: 10, RouteKind: RouteKind, Fresh: true,
@@ -202,19 +199,16 @@ func TestTickJournalsUtilizationHoldWithoutPreparingBorrow(t *testing.T) {
 			t.Fatal("utilization-blocked reserve attempted to prepare another borrow")
 			return Observation{}, KaminoExecutionEvidence{}, nil
 		},
-		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
+		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			recorded = true
-			if decision.Action != Hold || decision.Reason != holdNoRoom {
-				t.Fatalf("wrong utilization decision: %+v", decision)
-			}
-			return DecisionRecord{Status: Held}, nil
+			return DecisionRecord{}, nil
 		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !recorded {
-		t.Fatal("utilization HOLD was not durably journaled")
+	if recorded || worker.holds.reason != holdNoRoom {
+		t.Fatalf("utilization hold wrote a row or lost its reason: recorded=%v hold=%q", recorded, worker.holds.reason)
 	}
 }
 
@@ -296,11 +290,8 @@ func TestWorkerRetriesObservation(t *testing.T) {
 			if observations == 1 {
 				return Observation{}, fmt.Errorf("%w: minimum context slot has not been reached", errConfirmedObservationUnavailable)
 			}
-			return tickObservation(Snapshot{ObservationID: "retry-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
-		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			cancel()
-			return DecisionRecord{Status: Held}, nil
+			return tickObservation(Snapshot{ObservationID: "retry-hold", Slot: 10, RouteKind: RouteKind, Fresh: true}), nil
 		},
 	}}
 	err := worker.Run(ctx)

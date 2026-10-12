@@ -137,23 +137,10 @@ func durableDecisionIdempotencyKey(routeKey, operationEpoch string, decision Dec
 	if routeKey == "" || decision.IdempotencyKey == "" {
 		return "", fmt.Errorf("decision idempotency identity is incomplete")
 	}
-	if decision.Action == Hold || decision.Action == HoldManualRecovery {
-		return routeKey + ":" + decision.IdempotencyKey, nil
-	}
 	if operationEpoch == "" {
 		return "", fmt.Errorf("durable operation epoch is empty")
 	}
 	return routeKey + ":" + operationEpoch + ":" + decision.IdempotencyKey, nil
-}
-
-// holdBoundIdempotencyKey namespaces a terminal hold's audit-only identity by
-// the manifest it was decided under: holds carry no epoch, so an unchanged
-// observation after a rollover reused the historical row's identity and failed
-// the evidence comparison every tick. The suffix is collision-free (a
-// validated 64-hex hash, fixed segment absent from executable epochs);
-// executable epoch identities stay untouched.
-func holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256 string) string {
-	return persistedIdempotencyKey + ":hold-binding:" + manifestSHA256
 }
 
 type decisionEvidence struct {
@@ -198,20 +185,10 @@ func newDecisionEvidence(observation Observation, decision Decision, manifestSHA
 	}
 }
 
-func initialDecisionStatus(decision Decision) (OperationStatus, any) {
-	if decision.Action == Hold {
-		return Held, nil
-	}
-	if decision.Action == HoldManualRecovery {
-		return ManualRecovery, decision.Reason
-	}
-	return Decided, nil
-}
-
-// RecordDecision serializes on the existing route row and relies on the
-// existing one-nonterminal partial unique index as the final concurrency gate.
-// HOLD and HOLD_MANUAL_RECOVERY are persisted as terminal journal decisions;
-// neither can accidentally occupy the transaction execution slot.
+// RecordDecision journals the tick's transaction as a decided operation. Only
+// transactions get rows: a hold is a gauge (holdLog) and a manual stop is the
+// latch row. The one-nonterminal partial unique index keeps one operation in
+// flight.
 func (d *Database) RecordDecision(
 	ctx context.Context,
 	routeKey string,
@@ -237,8 +214,8 @@ func (d *Database) RecordDecisionOnManifest(
 	decision Decision,
 	manifestSHA256 string,
 ) (DecisionRecord, error) {
-	if decision.Action == HoldManualRecovery {
-		return d.RecordManualRecovery(ctx, routeKey, observation, decision, manifestSHA256)
+	if decision.Action == Hold || decision.Action == HoldManualRecovery {
+		return DecisionRecord{}, fmt.Errorf("a hold is not a journal row")
 	}
 	if err := validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256); err != nil {
 		return DecisionRecord{}, err
@@ -279,32 +256,6 @@ func persistedValuationMetadata(o Observation) (string, int64, error) {
 	return source, slot, nil
 }
 
-// Keep the first persisted slot when the same economic decision is observed
-// again. Old rows did not record provenance: their economic identity remains
-// authoritative, and they must not be rewritten or made unrecoverable.
-func sameDecisionEvidence(existing, candidate decisionEvidence) bool {
-	candidate.ObservationSlot = existing.ObservationSlot
-	candidate.ValuationSlot = existing.ValuationSlot
-	if existing.ValuationSource == "" {
-		candidate.ValuationSource = ""
-	}
-	return existing == candidate
-}
-
-func validateDecisionPersistence(
-	d *Database,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-) error {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	return validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256)
-}
-
 func validateDecisionPersistenceOnManifest(
 	d *Database,
 	manifest RouteManifest,
@@ -335,157 +286,6 @@ func validateDecisionPersistenceOnManifest(
 	return nil
 }
 
-// RecordManualRecovery persists the terminal hold and its route latch in the
-// same transaction. A committed HOLD_MANUAL_RECOVERY can therefore never be
-// observed without the stop that protects the next tick.
-func (d *Database) RecordManualRecovery(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, nil, nil)
-}
-
-// RecordManualRecoveryAtGeneration re-records a latched hold only if the
-// physical latch still has the generation read at the top of the tick. A clear
-// increments that generation, so a stale tick rolls back its journal attempt
-// instead of re-arming the route.
-func (d *Database) RecordManualRecoveryAtGeneration(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-	generation int64,
-) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, &generation, nil)
-}
-
-// recordManualRecovery keeps the failure hook package-private so the database
-// test can force an error after the hold insert and prove that the transaction
-// rolls back both durable facts together.
-func (d *Database) recordManualRecovery(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-	afterInsert func() error,
-) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, nil, afterInsert)
-}
-
-func (d *Database) recordManualRecoveryWithGeneration(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-	expectedGeneration *int64,
-	afterInsert func() error,
-) (DecisionRecord, error) {
-	if decision.Action != HoldManualRecovery {
-		return DecisionRecord{}, fmt.Errorf("manual recovery persistence requires HOLD_MANUAL_RECOVERY")
-	}
-	if err := validateDecisionPersistence(d, routeKey, observation, decision, manifestSHA256); err != nil {
-		return DecisionRecord{}, err
-	}
-	latch := ManualRecoveryLatch{
-		Reason:          decision.Reason,
-		ObservationID:   observation.Snapshot.ObservationID,
-		ObservationSlot: observation.Snapshot.Slot,
-	}
-	if err := validateManualRecoveryLatch(latch); err != nil {
-		return DecisionRecord{}, err
-	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return DecisionRecord{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256)
-	if err != nil {
-		return DecisionRecord{}, err
-	}
-	var generation int64
-	if expectedGeneration != nil {
-		if err := compareAndSetManualRecoveryGeneration(ctx, tx, routeKey, *expectedGeneration); err != nil {
-			return DecisionRecord{}, err
-		}
-		generation = *expectedGeneration
-	} else {
-		generation, err = currentManualRecoveryGeneration(ctx, tx, routeKey)
-		if err != nil {
-			return DecisionRecord{}, err
-		}
-	}
-	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations
-		SET expected_effects = expected_effects || jsonb_build_object('latchGeneration', $2::bigint)
-		WHERE operation_id = $1`, record.OperationID, generation); err != nil {
-		return DecisionRecord{}, fmt.Errorf("record manual recovery generation: %w", err)
-	}
-	if afterInsert != nil {
-		if err := afterInsert(); err != nil {
-			return DecisionRecord{}, err
-		}
-	}
-	if _, err := tx.Exec(ctx, latchManualRecoverySQL, routeKey, manualRecoveryLatchReason(latch.Reason), latch.ObservationID, latch.ObservationSlot, generation); err != nil {
-		return DecisionRecord{}, fmt.Errorf("latch manual recovery: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return DecisionRecord{}, err
-	}
-	return record, nil
-}
-
-func currentManualRecoveryGeneration(ctx context.Context, tx pgx.Tx, routeKey string) (int64, error) {
-	var generation int64
-	err := tx.QueryRow(ctx,
-		`SELECT generation FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key = $1 FOR UPDATE`, routeKey).
-		Scan(&generation)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// A derived legacy latch has no physical row to carry the generation.
-		// Continue the sequence from the journal so a new physical latch cannot
-		// reset the route's fence after an operator clear.
-		err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(
-			CASE
-				WHEN expected_effects ->> 'latchGeneration' ~ '^[0-9]+$'
-				THEN (expected_effects ->> 'latchGeneration')::bigint
-				ELSE 0
-			END
-		), 0)
-		FROM loyal_yield.multiply_operations
-		WHERE route_key = $1 AND status = 'manual_recovery'
-		  AND action IN ('HOLD_MANUAL_RECOVERY', 'HOLD_CLEARED')`, routeKey).Scan(&generation)
-		if err != nil {
-			return 0, fmt.Errorf("read journal manual recovery generation: %w", err)
-		}
-		return generation, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read manual recovery generation: %w", err)
-	}
-	return generation, nil
-}
-
-func compareAndSetManualRecoveryGeneration(ctx context.Context, tx pgx.Tx, routeKey string, expected int64) error {
-	var generation int64
-	err := tx.QueryRow(ctx,
-		`UPDATE loyal_yield.backyard_manual_recovery_latches
-		 SET generation = generation
-		 WHERE route_key = $1 AND cleared_at IS NULL AND generation = $2
-		 RETURNING generation`, routeKey, expected).Scan(&generation)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errManualRecoveryLatchGenerationChanged
-	}
-	if err != nil {
-		return fmt.Errorf("compare manual recovery latch generation: %w", err)
-	}
-	return nil
-}
-
 func (d *Database) recordDecisionTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -494,70 +294,28 @@ func (d *Database) recordDecisionTx(
 	decision Decision,
 	manifestSHA256 string,
 ) (DecisionRecord, error) {
-	operationEpoch := ""
-	if decision.Action != Hold && decision.Action != HoldManualRecovery {
-		var unresolvedCapitalRecovery bool
-		if err := tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, routeKey).Scan(&unresolvedCapitalRecovery); err != nil {
-			return DecisionRecord{}, fmt.Errorf("read unresolved capital recovery: %w", err)
-		}
-		if unresolvedCapitalRecovery {
-			return DecisionRecord{}, fmt.Errorf("unresolved capital-moving manual recovery blocks execution")
-		}
-		// Economic observations intentionally exclude slot. Namespace executable
-		// decisions by the last completed lifecycle mutation so retries before
-		// reconciliation dedupe, while a genuinely later cycle can execute the
-		// same economic decision again. HOLD dedupes per manifest and policy
-		// catalog binding.
-		if err := tx.QueryRow(ctx, LatestDecisionEpochSQL, routeKey).Scan(&operationEpoch); err != nil {
-			return DecisionRecord{}, fmt.Errorf("read durable operation epoch: %w", err)
-		}
+	var unresolvedCapitalRecovery bool
+	if err := tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, routeKey).Scan(&unresolvedCapitalRecovery); err != nil {
+		return DecisionRecord{}, fmt.Errorf("read unresolved capital recovery: %w", err)
+	}
+	if unresolvedCapitalRecovery {
+		return DecisionRecord{}, fmt.Errorf("unresolved capital-moving manual recovery blocks execution")
+	}
+	// Economic observations intentionally exclude slot. Namespace the
+	// operation by the last completed lifecycle mutation, so a later cycle
+	// can execute the same economic decision again.
+	var operationEpoch string
+	if err := tx.QueryRow(ctx, LatestDecisionEpochSQL, routeKey).Scan(&operationEpoch); err != nil {
+		return DecisionRecord{}, fmt.Errorf("read durable operation epoch: %w", err)
 	}
 	persistedIdempotencyKey, err := durableDecisionIdempotencyKey(routeKey, operationEpoch, decision)
 	if err != nil {
 		return DecisionRecord{}, err
 	}
-	if decision.Action == Hold || decision.Action == HoldManualRecovery {
-		persistedIdempotencyKey = holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256)
-	}
-	var existing DecisionRecord
-	var existingAction string
-	var existingEffects []byte
-	err = tx.QueryRow(ctx, `SELECT operation_id, cycle, status, action, expected_effects FROM loyal_yield.multiply_operations WHERE idempotency_key = $1`, persistedIdempotencyKey).
-		Scan(&existing.OperationID, &existing.Cycle, &existing.Status, &existingAction, &existingEffects)
-	if err == nil {
-		if existingAction != string(decision.Action) {
-			return DecisionRecord{}, fmt.Errorf("idempotency identity has a different action")
-		}
-		var existingEnvelope struct {
-			Decision decisionEvidence `json:"decision"`
-		}
-		if json.Unmarshal(existingEffects, &existingEnvelope) != nil {
-			return DecisionRecord{}, fmt.Errorf("idempotency identity has invalid decision evidence")
-		}
-		candidate := newDecisionEvidence(observation, decision, manifestSHA256)
-		// An identical economic state may be confirmed again at a later slot.
-		// Preserve the first durable observation slot while treating the later
-		// read as the same decision identity.
-		if !sameDecisionEvidence(existingEnvelope.Decision, candidate) {
-			return DecisionRecord{}, fmt.Errorf("idempotency identity has different decision evidence")
-		}
-		return existing, nil
-	}
-	if err != pgx.ErrNoRows {
-		return DecisionRecord{}, fmt.Errorf("read duplicate decision: %w", err)
-	}
 	var cycle int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE((state ->> 'cycle')::bigint, 1) FROM loyal_yield.multiply_route_states WHERE route_key = $1`, routeKey).Scan(&cycle); err != nil {
 		return DecisionRecord{}, fmt.Errorf("read route cycle: %w", err)
 	}
-	var active bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status IN ('prepared','signed_persisted','broadcast_intent','confirmed','reconciliation_pending','decided','built','simulated','signed','submitted','reconciling'))`, routeKey).Scan(&active); err != nil {
-		return DecisionRecord{}, fmt.Errorf("read active operation: %w", err)
-	}
-	if active {
-		return DecisionRecord{}, fmt.Errorf("one nonterminal operation already exists")
-	}
-
 	expected, err := json.Marshal(map[string]any{
 		"schema":                "loyal-backyard-rwa-operation-evidence/v1",
 		"journalStrategyConfig": bridgeStrategy,
@@ -569,15 +327,14 @@ func (d *Database) recordDecisionTx(
 	}
 	idHash := sha256.Sum256([]byte(persistedIdempotencyKey))
 	operationID := hex.EncodeToString(idHash[:])
-	status, recoveryReason := initialDecisionStatus(decision)
 	strategyKey := decision.StrategyKey
 	if strategyKey == "" {
 		strategyKey = RouteID
 	}
-	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(status), persistedIdempotencyKey, strategyKey, string(expected), recoveryReason); err != nil {
+	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(Decided), persistedIdempotencyKey, strategyKey, string(expected), nil); err != nil {
 		return DecisionRecord{}, fmt.Errorf("insert decision: %w", err)
 	}
-	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: status}, nil
+	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: Decided}, nil
 }
 
 const nonterminalStatusSQL = `'decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling'`

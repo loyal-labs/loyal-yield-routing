@@ -154,11 +154,8 @@ func TestRestartJournalRecoveryPrecedesFreshDecisions(t *testing.T) {
 			return tickObservation(Snapshot{ObservationID: "post-recovery", Slot: 11, RouteKind: RouteKind, Fresh: true}), nil
 		},
 		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
-			recovered.add("journal")
-			if decision.Action != Hold {
-				t.Fatalf("post-recovery tick journaled an executable decision: %+v", decision)
-			}
-			return DecisionRecord{Status: Held}, nil
+			t.Fatalf("post-recovery hold wrote a journal row: %+v", decision)
+			return DecisionRecord{}, nil
 		},
 	}}
 	if err := phase2.Tick(context.Background()); err != nil {
@@ -167,7 +164,7 @@ func TestRestartJournalRecoveryPrecedesFreshDecisions(t *testing.T) {
 	if err := phase2.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(recovered.snapshot(), ","); got != "load,recover-intent,load,observe,journal" {
+	if got := strings.Join(recovered.snapshot(), ","); got != "load,recover-intent,load,observe" {
 		t.Fatalf("fresh decision preceded or replaced intent recovery: %s", got)
 	}
 }
@@ -252,7 +249,7 @@ func holdTickRuntime(events *runtimeEvents, cancel context.CancelFunc) tickRunti
 		},
 		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			events.add("journal")
-			return DecisionRecord{Status: Held}, nil
+			return DecisionRecord{}, nil
 		},
 	}
 }
@@ -272,7 +269,7 @@ func TestEngineRunsInjectedRuntimeAndJoinsOnCancellation(t *testing.T) {
 	if !strings.Contains(banner, "owner="+journal.LeaseOwner) || !strings.Contains(banner, "route="+productionRouteKey) {
 		t.Fatalf("startup banner lost the injected identity: %q", banner)
 	}
-	if got := strings.Join(events.snapshot(), ","); got != "tick,observe,journal" {
+	if got := strings.Join(events.snapshot(), ","); got != "tick,observe" {
 		t.Fatalf("engine tick sequence drifted: %s", got)
 	}
 }

@@ -25,17 +25,14 @@ func TestSlowShadowDoesNotBlockLifecycleTick(t *testing.T) {
 		observe:         func(context.Context) (Observation, error) { return observation, nil },
 		recordDecision: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
 			recorded = true
-			if d.Action != Hold {
-				t.Fatal(d)
-			}
-			return DecisionRecord{Status: Held}, nil
+			return DecisionRecord{}, nil
 		},
 	}}
 	if err := worker.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !recorded {
-		t.Fatal("shadow changed execution")
+	if recorded || worker.holds.reason != holdAtTarget {
+		t.Fatalf("shadow changed execution: recorded=%v hold=%q", recorded, worker.holds.reason)
 	}
 	cancel()
 	select {
