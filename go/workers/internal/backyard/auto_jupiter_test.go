@@ -35,16 +35,6 @@ func autoSwapKey(t *testing.T, action Action) policyKey {
 	return key
 }
 
-// autoSwapLeg is the constraint index the AUTO lane swaps action under.
-func autoSwapLeg(t *testing.T, action Action) byte {
-	t.Helper()
-	_, leg, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, action)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return leg
-}
-
 // autoJupiterTestRequest is the swap request on one approved AUTO edge,
 // through the AUTO lane's installed policy.
 func autoJupiterTestRequest(t *testing.T, action Action, amount, out uint64, filler int) JupiterSwapRequest {
@@ -142,24 +132,6 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 	}
 }
 
-func mustDecodeKey(t *testing.T, value string) []byte {
-	t.Helper()
-	key, err := decodeKey(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return key[:]
-}
-
 func newJSONBody(value string) io.ReadCloser {
 	return io.NopCloser(strings.NewReader(value))
-}
-
-func marshalTestJSON(t *testing.T, value any) string {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(encoded)
 }

@@ -211,11 +211,3 @@ func debtCashRaw(s Snapshot) int64 {
 	}
 	return s.DebtIdleRaw
 }
-
-func setDebtCashRaw(s *Snapshot, raw int64) {
-	if sharedUSDCDebt(s.RouteLane) {
-		s.SquadsIdleRaw, s.DebtIdleRaw = raw, 0
-	} else {
-		s.DebtIdleRaw = raw
-	}
-}

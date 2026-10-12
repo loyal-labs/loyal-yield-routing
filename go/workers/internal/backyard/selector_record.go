@@ -7,10 +7,6 @@ import (
 	"time"
 )
 
-func hasWorkingCapital(s Snapshot) bool {
-	return s.HasPosition || s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0 || s.CollateralIdleRaw > 0 || s.PrimeIdleRaw > 0 || s.SquadsIdleRaw > 0 || s.DebtIdleRaw > 0 || s.VoltrStrategyIdleRaw > 0
-}
-
 // RecordSelectorEvaluation consumes a complete economic quote, never a shadow
 // ranking. It re-evaluates persistence under the same route lock as execution
 // and stores the result, the rates' choice target() reads: a flat vault

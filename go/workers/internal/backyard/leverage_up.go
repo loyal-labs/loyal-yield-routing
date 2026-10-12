@@ -98,17 +98,6 @@ func leverageUpCapFee(p KaminoPosition, receive uint64, fee func(uint64) (uint64
 	return receive, nil
 }
 
-// borrowDebtMatches compares a re-read obligation debt with the snapshot's:
-// exact for a debt-free position (installed behaviour), within 0.1% + 1 raw
-// of accrual otherwise.
-func borrowDebtMatches(observed, snapshot uint64) bool {
-	if snapshot == 0 {
-		return observed == 0
-	}
-	tolerance := snapshot/1000 + 1
-	return observed+tolerance >= snapshot && observed <= snapshot+tolerance
-}
-
 // hardLTVTargetBPS is the LTV a hard-LTV step brings the position to: its
 // stored level's, between 1.5x and the live cap.
 func hardLTVTargetBPS(s Snapshot) int64 {

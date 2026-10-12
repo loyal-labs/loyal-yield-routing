@@ -100,30 +100,6 @@ func autoInitializerView(t *testing.T, accounts map[string]ConfirmedAccount) *Vi
 	return accountView(t, 78, slices.Collect(maps.Values(accounts)))
 }
 
-// autoInitializerFundedObligation returns the fixture accounts with the AUTO
-// obligation funded at the exact raw amounts given (debt is a u64-by-2^60
-// scaled fraction, little endian over 128 bits).
-func autoInitializerFundedObligation(t *testing.T, r KaminoInitializationRequest, collateral, debt uint64) map[string]ConfirmedAccount {
-	t.Helper()
-	route, err := runtimeRoute(r.RouteLane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts := autoInitializerPrestateAccounts(t, r)
-	data := make([]byte, kamino.ObligationSize)
-	copy(data, kamino.ObligationDiscriminator[:])
-	binary.LittleEndian.PutUint64(data[8:16], 1)
-	putKey(t, data[32:64], route.Kamino.Market)
-	putKey(t, data[64:96], route.Kamino.Vault)
-	putKey(t, data[96:128], route.Kamino.CollateralReserve)
-	binary.LittleEndian.PutUint64(data[128:136], collateral)
-	putKey(t, data[1208:1240], route.Kamino.DebtReserve)
-	binary.LittleEndian.PutUint64(data[1296:1304], debt<<60)
-	binary.LittleEndian.PutUint64(data[1304:1312], debt>>4)
-	accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: data}
-	return accounts
-}
-
 // The AUTO initializer message wraps the initializer at the AUTO policy's
 // initializer leg, through the installed AUTO policy — and the public
 // compiler must still refuse the lane outright.
@@ -237,75 +213,6 @@ func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
 			_, publicErr := validateKaminoInitializationPrestate(context.Background(), autoInitializerView(t, accounts), r, 77)
 			assertBudgetHold(t, publicErr, "initializer_prestate_unavailable")
 		})
-	}
-}
-
-// The reentry forecast prices recreation of the exact obligation the validated
-// source exit is forecast to close: same identity, observed amounts, bounded.
-func TestAutoInitializerReentryForecastIsBounded(t *testing.T) {
-	t.Parallel()
-	manifest, r := autoInitializerRequestFixture(t)
-	const collateralRaw, debtRaw = uint64(2_000_000), uint64(1_000_000)
-	// The exact observed funded lane at the exact exit bound is admitted.
-	slot, err := manifest.validateKaminoReentryForecastPrestate(context.Background(),
-		autoInitializerView(t, autoInitializerFundedObligation(t, r, collateralRaw, debtRaw)), r, 77,
-		selectorExitBound{MaxCollateralRaw: int64(collateralRaw), MaxDebtRaw: int64(debtRaw)})
-	if err != nil || slot != 78 {
-		t.Fatalf("exact observed reentry position: slot=%d err=%v", slot, err)
-	}
-	// A position above either bound is not the observed lane.
-	assertBudgetHold(t, holdFor(func() error {
-		_, err := manifest.validateKaminoReentryForecastPrestate(context.Background(),
-			autoInitializerView(t, autoInitializerFundedObligation(t, r, collateralRaw+1, debtRaw)), r, 77,
-			selectorExitBound{MaxCollateralRaw: int64(collateralRaw), MaxDebtRaw: int64(debtRaw)})
-		return err
-	}), "initializer_reentry_obligation_unobserved")
-	assertBudgetHold(t, holdFor(func() error {
-		_, err := manifest.validateKaminoReentryForecastPrestate(context.Background(),
-			autoInitializerView(t, autoInitializerFundedObligation(t, r, collateralRaw, debtRaw+1)), r, 77,
-			selectorExitBound{MaxCollateralRaw: int64(collateralRaw), MaxDebtRaw: int64(debtRaw)})
-		return err
-	}), "initializer_reentry_obligation_unobserved")
-	// A negative exit bound is invalid before any observation.
-	assertBudgetHold(t, holdFor(func() error {
-		_, err := manifest.validateKaminoReentryForecastPrestate(context.Background(), nil, r, 77,
-			selectorExitBound{MaxCollateralRaw: -1, MaxDebtRaw: int64(debtRaw)})
-		return err
-	}), "initializer_reentry_bound_invalid")
-	// The public reentry forecast still refuses the candidate lane outright,
-	// with the same typed hold as every unreviewed lane.
-	_, publicErr := validateKaminoReentryForecastPrestate(context.Background(), nil, r, 77,
-		selectorExitBound{MaxCollateralRaw: int64(collateralRaw), MaxDebtRaw: int64(debtRaw)})
-	assertBudgetHold(t, publicErr, "initializer_prestate_unavailable")
-}
-
-func holdFor(run func() error) error { return run() }
-
-// The post-state validator keeps its exact installed empty-state checks on the
-// candidate lane.
-func TestAutoInitializerEmptyObligationValidated(t *testing.T) {
-	t.Parallel()
-	manifest, r := autoInitializerRequestFixture(t)
-	route, err := runtimeRoute(r.RouteLane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	empty := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: r.RentLamports, Data: make([]byte, kamino.ObligationSize)}
-	copy(empty.Data, kamino.ObligationDiscriminator[:])
-	binary.LittleEndian.PutUint64(empty.Data[8:16], 1)
-	putKey(t, empty.Data[32:64], route.Kamino.Market)
-	putKey(t, empty.Data[64:96], route.Kamino.Vault)
-	if err := manifest.validateInitializedKaminoObligation(r, empty); err != nil {
-		t.Fatal(err)
-	}
-	funded := append([]byte(nil), empty.Data...)
-	putKey(t, funded[96:128], route.Kamino.CollateralReserve)
-	binary.LittleEndian.PutUint64(funded[128:136], 1)
-	if err := manifest.validateInitializedKaminoObligation(r, ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: r.RentLamports, Data: funded}); err == nil {
-		t.Fatal("funded obligation validated as empty")
-	}
-	if err := manifest.validateInitializedKaminoObligation(r, ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: r.RentLamports + 1, Data: append([]byte(nil), empty.Data...)}); err == nil {
-		t.Fatal("changed rent validated")
 	}
 }
 

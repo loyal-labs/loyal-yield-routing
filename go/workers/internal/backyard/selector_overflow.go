@@ -43,15 +43,6 @@ func overflowLaneOf(source string) (string, bool) {
 	return "", false
 }
 
-// overflowPair reports a source lane and its overflow lane, in either order.
-func overflowPair(a, b string) bool {
-	if source, ok := overflowSourceOf(b); ok && source == a {
-		return true
-	}
-	source, ok := overflowSourceOf(a)
-	return ok && source == b
-}
-
 // selectorDestinationLane reports a lane the selector may enter, switch to
 // or move a tranche into on its own economics: every active lane except an
 // overflow lane, which only an overflow tranche enters.

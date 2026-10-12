@@ -332,28 +332,3 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 		t.Fatal("missing amount accepted", got)
 	}
 }
-
-// sameLaneSelectorFixture is a settled, fully funded one-pass Maple position
-// with later deposits stranded as Voltr idle. The same reserve pays a fresh,
-// strictly larger one-pass entry more than the stale deployed position earns.
-func sameLaneSelectorFixture() SelectorInput {
-	in := selectorFixture()
-	s := &in.Snapshot
-	s.HasPosition = true
-	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
-	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 15_000_000, 15_000_000
-	s.PositionDebtRaw, s.PositionDebtValueRaw = 5_000_000, 5_000_000
-	s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.LTVBPS = 10_000_000, 10_000_000, 3334
-	current := in.Markets[0]
-	current.Lane, current.NativeAPY = s.RouteLane, .10
-	in.Markets = []LaneEconomics{current}
-	in.Quotes[0].DestinationLane = s.RouteLane
-	in.Quotes[0].EquityRaw, in.Quotes[0].CostRaw = 20_000_000, 100
-	in.Quotes[0].BorrowReceiveRaw, in.Quotes[0].MinimumIdleRaw = 10_000_000, 99_900_000
-	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 20_000_000}
-	return in
-}
-
-func sameLaneSelectorHistory(in SelectorInput) SelectorState {
-	return SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{in.Snapshot.RouteLane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}
-}

@@ -61,8 +61,6 @@ func leverageExitSnapshot(lane string) Snapshot {
 	return s
 }
 
-func setDebtCash(s *Snapshot, raw int64) { setDebtCashRaw(s, raw) }
-
 // liveIdleDebtSnapshot is the live 2026-09-28 AUTO state: a cancelled exit
 // left 226.44 PYUSD in debt custody against 189.92 PYUSD debt at 55% LTV,
 // with no withdrawal demand.

@@ -143,14 +143,3 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 		}
 	}
 }
-
-func TestUnwindWithdrawsOnlyConservativeCollateralExcess(t *testing.T) {
-	t.Parallel()
-	position := KaminoPosition{CollateralDepositedRaw: 150, RedeemablePrimeRaw: 150, DebtRaw: 50}
-	binary.LittleEndian.PutUint64(position.CollateralPriceSF[:8], uint64(1)<<60)
-	binary.LittleEndian.PutUint64(position.DebtPriceSF[:8], uint64(1)<<60)
-	receipt, prime, err := withdrawExcessForRepayment(position)
-	if err != nil || receipt != 38 || prime != 38 {
-		t.Fatalf("receipt=%d prime=%d err=%v", receipt, prime, err)
-	}
-}

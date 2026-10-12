@@ -232,30 +232,10 @@ func (s Snapshot) heldLanes() []string {
 	return strings.Split(s.HeldLanes, ",")
 }
 
-// withOtherLanesNAV adds the other held lanes' value to a working-lane
-// poststate NAV: a move on the working lane leaves them in the book.
-func withOtherLanesNAV(workingRaw uint64, s Snapshot) uint64 {
-	if s.OtherLanesNAVRaw <= 0 {
-		return workingRaw
-	}
-	return workingRaw + uint64(s.OtherLanesNAVRaw)
-}
-
 // laneNAVRaw is the working lane's own share of StrategyNAVRaw: its
 // position, custodies and the Squads cash it works with.
 func laneNAVRaw(s Snapshot) int64 {
 	return s.StrategyNAVRaw - s.OtherLanesNAVRaw
-}
-
-// otherHeldLanes is every held lane except the working lane.
-func (s Snapshot) otherHeldLanes() []string {
-	var out []string
-	for _, lane := range s.heldLanes() {
-		if lane != s.RouteLane {
-			out = append(out, lane)
-		}
-	}
-	return out
 }
 
 type Decision struct {

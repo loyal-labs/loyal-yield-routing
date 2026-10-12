@@ -119,17 +119,6 @@ func selectUnlevered(in SelectorInput, previous SelectorState) SelectorResult {
 	return SelectOpportunity(in, previous)
 }
 
-func onreCandidate(t *testing.T, r SelectorResult) CandidateForecast {
-	t.Helper()
-	for _, c := range r.Candidates {
-		if c.Lane == onreONycUSDC {
-			return c
-		}
-	}
-	t.Fatal("no OnRe candidate", r)
-	return CandidateForecast{}
-}
-
 // A 1x quote carrying any borrow is invalid; 1x is AUTO/OnRe only.
 func TestUnleveredQuoteShape(t *testing.T) {
 	t.Parallel()

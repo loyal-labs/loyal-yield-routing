@@ -156,10 +156,6 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 	if e.Accounts[2].AfterRaw != 9 {
 		t.Fatal("rounding omitted fee")
 	}
-	cost, err := observePhase3KnownBuildCost(context.Background(), rpc, fixtureView(t, rpc), r, e)
-	if err != nil || cost.PrincipalMicros <= 2000 {
-		t.Fatal("gross debit not valued", err, cost)
-	}
 	if _, err := m.validateRequestPrestate(context.Background(), rpc, fixtureView(t, rpc), r, e); err != nil {
 		t.Fatal(err)
 	}

@@ -408,6 +408,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 			prefetchedCustody = w.runtime.prefetchCustodyProof(ctx, w.manifest, autoSharedPYUSDAttributionConfig(route, w.routeKey))
 		}
 	}
+	decided := observation.Snapshot
 	switch executionDecision {
 	case InitializeKaminoObligation:
 		if w.runtime.prepareInitialization == nil {
@@ -452,6 +453,12 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	logStage("prepare", tickStart)
 	if err != nil {
+		// A step the chain has no room for (no withdraw room) is the
+		// target's no_room, counted like Decide's.
+		var hold *BudgetHold
+		if errors.As(err, &hold) && hold.Reason == holdNoRoom {
+			w.noRoom.note(time.Now(), decided, Decision{Action: Hold, Reason: holdNoRoom, StrategyKey: decision.StrategyKey})
+		}
 		return err
 	}
 	decision = Decide(observation.Snapshot)

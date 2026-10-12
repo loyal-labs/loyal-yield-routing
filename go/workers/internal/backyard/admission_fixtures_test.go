@@ -510,60 +510,6 @@ func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observ
 	return o, d, KaminoExecutionEvidence{r, effects}, m, rpc, client, accounts
 }
 
-// Realistic 10-USDC equity, one 50% borrow and full redeposit. This is a
-// controlled account fixture, not an executed protocol or price-peg assertion.
-func pilotReleaseFixture(t *testing.T, lane string) (RuntimeRoute, []ConfirmedAccount) {
-	t.Helper()
-	route, _ := runtimeRoute(lane)
-	one := new(big.Int).Lsh(big.NewInt(1), 60)
-	c := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 42, one, 1_000_000_000, 1_000_000_000)
-	d := reserveFixture(t, route.Kamino.DebtReserve, route.Kamino.DebtMint, 42, one, 1_000_000_000, 1_000_000_000)
-	for _, a := range []*ConfirmedAccount{&c, &d} {
-		putKey(t, a.Data[32:64], route.Kamino.Market)
-		binary.LittleEndian.PutUint64(a.Data[272:280], 6)
-		binary.LittleEndian.PutUint64(a.Data[264:272], 1000)
-		binary.LittleEndian.PutUint32(a.Data[28:32], 1000)
-		a.Data[kaminoReserveConfigOffset+9] = 1
-		a.Data[kaminoLoanToValueOffset], a.Data[kaminoLoanToValueOffset+1] = 80, 90
-		binary.LittleEndian.PutUint64(a.Data[kaminoBorrowFactorOffset:], 100)
-		for i := 0; i < 11; i++ {
-			off := kaminoReserveConfigOffset + 64 + i*8
-			if i > 0 {
-				binary.LittleEndian.PutUint32(a.Data[off:], 10_000)
-			}
-			binary.LittleEndian.PutUint32(a.Data[off+4:], 7500)
-		}
-	}
-	o := obligationFixture(t, 42, 15_000_000, 5_000_000)
-	o.Address = route.Kamino.Obligation
-	putKey(t, o.Data[32:64], route.Kamino.Market)
-	putKey(t, o.Data[96:128], route.Kamino.CollateralReserve)
-	putKey(t, o.Data[1208:1240], route.Kamino.DebtReserve)
-	market := marketFixture(t, route.Kamino.Market)
-	binary.LittleEndian.PutUint64(market.Data[kaminoGlobalBorrowValueOffset:], 45_000_000)
-	clock := clockFixture()
-	binary.LittleEndian.PutUint64(clock.Data[:8], 42)
-	binary.LittleEndian.PutUint64(clock.Data[32:40], 1000)
-	accounts := []ConfirmedAccount{c, d, o, market, clock}
-	for _, row := range []struct {
-		address, mint, owner string
-		amount               uint64
-	}{
-		{route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, 0},
-		{route.CollateralLiquiditySupply, route.Kamino.CollateralMint, route.Kamino.MarketAuthority, 1_000_000_000},
-		{route.DebtCustody, route.Kamino.DebtMint, bridgeVault, 0},
-		{route.DebtLiquiditySupply, route.Kamino.DebtMint, route.Kamino.MarketAuthority, 1_000_000_000},
-	} {
-		data := make([]byte, 165)
-		putKey(t, data[:32], row.mint)
-		putKey(t, data[32:64], row.owner)
-		binary.LittleEndian.PutUint64(data[64:72], row.amount)
-		data[108] = 1
-		accounts = append(accounts, ConfirmedAccount{Address: row.address, Owner: classicTokenProgram, Lamports: 1, Data: data})
-	}
-	return route, accounts
-}
-
 func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Observation, Decision, BridgeExecutionEvidence, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
 	o, m, rpc, client, accounts, route := leverage175Fixture(t)

@@ -748,21 +748,6 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	return nil
 }
 
-func decodePinnedPrime(account ConfirmedAccount) (DecodedTokenCustody, error) {
-	mint, err := decodeBase58PublicKey(kaminoPrimeMint)
-	if err != nil {
-		return DecodedTokenCustody{}, err
-	}
-	authority, err := decodeBase58PublicKey(bridgeVault)
-	if err != nil {
-		return DecodedTokenCustody{}, err
-	}
-	if account.Address != kaminoPrimeCustody || account.Owner != bridgeTokenProgram || account.Executable || account.Lamports == 0 {
-		return DecodedTokenCustody{}, fmt.Errorf("PRIME custody envelope drifted")
-	}
-	return DecodeTokenCustody(account.Owner, account.Data, mint, authority)
-}
-
 func observedLTVBPS(position KaminoPosition) (int64, error) {
 	if position.CollateralDecimals > 18 || position.DebtDecimals > 18 {
 		return 0, fmt.Errorf("Kamino LTV decimals exceed supported scale")

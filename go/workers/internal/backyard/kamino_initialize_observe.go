@@ -34,22 +34,6 @@ func (m RouteManifest) validateKaminoInitializationPrestate(ctx context.Context,
 	return observeKaminoInitializationPrestate(ctx, view, r, minimumSlot, selectorExitBound{}, false, inner)
 }
 
-// validateKaminoReentryForecastPrestateOnRoute is the manifest-aware reentry
-// forecast: identical shape and gates, bounded by the exact exit bound.
-func (m RouteManifest) validateKaminoReentryForecastPrestate(ctx context.Context, view *View, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound) (int64, error) {
-	if err := m.validateInitializationRequest(r); err != nil {
-		return 0, err
-	}
-	_, inner, err := initializerRouteForRequest(r)
-	if err != nil {
-		return 0, err
-	}
-	if bound.MaxCollateralRaw < 0 || bound.MaxDebtRaw < 0 {
-		return 0, budgetHold("initializer_reentry_bound_invalid")
-	}
-	return observeKaminoInitializationPrestate(ctx, view, r, minimumSlot, bound, true, inner)
-}
-
 // initializerRouteForRequest resolves the lane topology: basic lanes through
 // the Multiply initializer, other initializer lanes (AUTO) through the checked
 // route-aware core (its request already compiled by the caller).
@@ -64,23 +48,6 @@ func initializerRouteForRequest(r KaminoInitializationRequest) (RuntimeRoute, co
 	}
 	inner, err := kaminoRouteInitializer(route)
 	return route, inner, err
-}
-
-// Forecast-only prestate for the same-lane reentry quote. It prices recreation
-// of an obligation the validated source exit is forecast to close, so it
-// requires the exact observed funded lane obligation — same identity, decode
-// evidence and exit-bound amounts — and weakens no other check. This never
-// replaces the execution wrapper above, which still demands absence. An
-// unreviewed lane keeps the installed typed hold.
-func validateKaminoReentryForecastPrestate(ctx context.Context, view *View, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound) (int64, error) {
-	if bound.MaxCollateralRaw < 0 || bound.MaxDebtRaw < 0 {
-		return 0, budgetHold("initializer_reentry_bound_invalid")
-	}
-	inner, err := kaminoMultiplyInitializer(r.RouteLane)
-	if err != nil {
-		return 0, budgetHoldFrom(err, "initializer_prestate_unavailable")
-	}
-	return observeKaminoInitializationPrestate(ctx, view, r, minimumSlot, bound, true, inner)
 }
 
 func observeKaminoInitializationPrestate(ctx context.Context, view *View, r KaminoInitializationRequest, minimumSlot int64, bound selectorExitBound, forecastExistingObligation bool, inner compiledInstruction) (int64, error) {

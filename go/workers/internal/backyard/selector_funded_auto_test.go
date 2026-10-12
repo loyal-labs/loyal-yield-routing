@@ -31,39 +31,6 @@ func fundedAutoFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) Sel
 	return in
 }
 
-// fundedAutoSourceFixture builds the funded follow-up state: an AUTO position
-// is the production route, so the selector must keep its economics, hold the
-// same-lane baseline, and stay able to unwind.
-func fundedAutoSourceFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) SelectorInput {
-	t.Helper()
-	in := fundedAutoFixture(t, debtPrice, collateralPrice)
-	s := in.Snapshot
-	s.RouteLane, s.StrategyKey = testAutoLane, testAutoLane
-	s.HasPosition = true
-	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 4_000_000, 4_000_000
-	s.PositionDebtRaw, s.PositionDebtValueRaw = 1_000_000, 1_000_000
-	s.StrategyNAVRaw = 3_000_000
-	s.VoltrIdleRaw = 0
-	in.Snapshot = s
-	// The destination candidate: a profitable installed lane quoted from the
-	// AUTO source at the pilot tranche, carrying the exact bounded exit for
-	// the live position.
-	source := in.Markets[0]
-	destination := source
-	destination.Lane = "OnRe/ONyc/USDC"
-	destination.NativeAPY = .5
-	in.Markets = []LaneEconomics{source, destination}
-	quote := MoveQuote{
-		MinimumIdleRaw: 100_000_000, BorrowReceiveRaw: 5_000_000,
-		SourceExit: &selectorExitBound{MaxCollateralRaw: 4_000_000, MaxDebtRaw: 1_000_000},
-		SourceLane: testAutoLane, DestinationLane: destination.Lane, ObservationID: s.ObservationID,
-		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
-		EvidenceID: sha256Bytes([]byte("auto-source-unwind")), SampleSlot: s.Slot, ValidThroughSlot: s.Slot + budgetMaxObservationLagSlots,
-	}
-	in.Quotes = []MoveQuote{quote}
-	return in
-}
-
 // The candidate AUTO lane must select through ordinary priced persistence: no
 // operator canary, no parity assumption. The first profitable sample opens the
 // window, a later sample inside MaxSampleGap at Persistence selects, and a gap

@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -63,12 +64,6 @@ func (r StepRequest) conversion() (any, error) {
 type stepMessage struct {
 	Message         []byte
 	WireBytes, Keys int
-}
-
-// stepBorrow is the borrow an up step opens with.
-func stepBorrow(request any) (KaminoPrimeUSDCRequest, bool) {
-	r, ok := request.(StepRequest)
-	return r.Open, ok
 }
 
 // stepUp reports the step's direction from its Open leg.
@@ -320,7 +315,7 @@ func BuildSimulateAndPersistStep(ctx context.Context, database *Database, rpc *c
 	}
 	simulation, err := simulateSigned(ctx, rpc, build.SignedWire)
 	if err != nil {
-		return err
+		return stepSimulationHold(err)
 	}
 	logStage("step_build_simulate", buildStart)
 	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {
@@ -349,4 +344,16 @@ func signStep(r StepRequest, executor ed25519.PrivateKey) (BuildResult, error) {
 	}
 	return BuildResult{MessageSHA256: signed.messageSHA256, SignedWire: signed.signedWire, SignedWireSHA256: signed.signedWireSHA256,
 		TransactionSignature: signed.transactionSignature, RecentBlockhash: signed.recentBlockhash, LastValidBlockHeight: signed.lastValidBlockHeight}, nil
+}
+
+// stepSimulationHold is a step the chain refuses in simulation: the
+// target's chain_refused hold, journaled on the never-sent operation with the
+// simulation's error; the next tick decides again. An unavailable endpoint
+// and the Squads spending-limit refusal keep their own paths.
+func stepSimulationHold(err error) error {
+	var limit *SquadsSpendingLimitError
+	if errors.Is(err, errConfirmedObservationUnavailable) || errors.As(err, &limit) {
+		return err
+	}
+	return &BudgetHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
 }

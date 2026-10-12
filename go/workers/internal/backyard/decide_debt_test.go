@@ -27,9 +27,6 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 	if err != nil || ltv != 4667 {
 		t.Fatalf("LTV lost decimal scale or rounded risk down: %d %v", ltv, err)
 	}
-	if _, _, err = withdrawExcessForRepayment(position); err == nil {
-		t.Fatal("released collateral above the unwind LTV")
-	}
 	position.EntryCapacityRaw = 123
 	capacity, err := routeEntryCapacityUSDC(position, accounts, route)
 	if err != nil || capacity != 246 {

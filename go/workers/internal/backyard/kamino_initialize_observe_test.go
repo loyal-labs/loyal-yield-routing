@@ -136,26 +136,3 @@ func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testin
 	_, _, err = m.validateSignedIdentity(auth, op)
 	assertBudgetHold(t, err, "persisted_signature_or_expiry_mismatch")
 }
-
-// The build prices rent and the exact message's fee without a fee read, and
-// keeps the policy/rent read's window.
-func TestInitializationBuildPricesRentAndRetainsPrestateExpiry(t *testing.T) {
-	t.Parallel()
-	r, accounts := initializationPrestateFixture(t)
-	// Controlled lower rent allows the success path under the finite canary cap.
-	r.RentLamports = 3_472_000
-	rent := accounts["SysvarRent111111111111111111111111111111111"]
-	binary.LittleEndian.PutUint64(rent.Data, 1000)
-	e := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r}
-	noReads := newFakeChain(t, roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		t.Fatal("the build read the chain for its fee")
-		return nil, nil
-	}))
-	cost, err := observePhase3KnownBuildCost(context.Background(), noReads, initializationView(t, accounts), r, e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cost.SetupLamports != r.RentLamports || cost.SetupLamportsMicros <= 0 || cost.PrincipalMicros != 0 || cost.TotalMicros != cost.SetupLamportsMicros+cost.NetworkFeeMicros || cost.ValidThroughSlot != 74 {
-		t.Fatalf("rent or prestate bound lost: %+v", cost)
-	}
-}

@@ -123,7 +123,4 @@ func TestLeverageUpSizingAndCaps(t *testing.T) {
 			t.Fatalf("level %d accepted", bad)
 		}
 	}
-	if !borrowDebtMatches(0, 0) || borrowDebtMatches(1, 0) || !borrowDebtMatches(500_000_300, 500_000_000) || borrowDebtMatches(501_000_000, 500_000_000) {
-		t.Fatal("debt match tolerance")
-	}
 }

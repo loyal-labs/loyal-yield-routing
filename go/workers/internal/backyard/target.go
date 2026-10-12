@@ -43,6 +43,9 @@ const (
 	holdAtTarget = "at_target"
 	holdNoRoom   = "no_room"
 	holdStale    = "stale"
+	// holdChainRefused: the step's signed simulation failed; the operation is
+	// journaled failed with the simulation error and never sent.
+	holdChainRefused = "chain_refused"
 )
 
 // Target rules.

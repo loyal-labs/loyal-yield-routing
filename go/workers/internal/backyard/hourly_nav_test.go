@@ -85,24 +85,6 @@ func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 	}
 }
 
-func TestHourlyKEEPUpperCoversPinnedHolderReturns(t *testing.T) {
-	t.Parallel()
-	in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
-	for _, tc := range []struct{ gain, actual float64 }{
-		{100_000, 79_999.489455}, {100_000, 79_616.834171}, {1, 0}, {-100_000, -100_000},
-	} {
-		upper := selectorKeepGainUpper(in.Snapshot, tc.gain)
-		if upper < tc.actual || upper > tc.gain {
-			t.Fatalf("KEEP upper=%f pinned=%f gross=%f", upper, tc.actual, tc.gain)
-		}
-	}
-	// Recovery below a prior high-water mark does not owe a new performance fee.
-	putScaledLittleSF(&in.Snapshot.VoltrHighWaterMarkBits, new(big.Int).Lsh(big.NewInt(2), 48))
-	if got := selectorKeepGainUpper(in.Snapshot, 100_000); got != 100_000 {
-		t.Fatalf("taxed recovery below HWM: %f", got)
-	}
-}
-
 func TestHourlyFeeIncomeIncludesPeakBeforeEndingLoss(t *testing.T) {
 	t.Parallel()
 	m := LaneEconomics{NativeAPY: math.Expm1(.10)}
@@ -127,16 +109,6 @@ func TestHourlyNAVFreshnessRetainsActualReportTimestamp(t *testing.T) {
 		p, err = newRouteObservationProjection(Observation{ObservedAt: now, Snapshot: s})
 		if err != nil || p.NAVFresh {
 			t.Fatalf("unreported mutation presented as fresh NAV: %+v err=%v", p, err)
-		}
-	}
-}
-
-func TestHourlyKEEPUpperDoesNotTaxQ48DustWithoutProfit(t *testing.T) {
-	t.Parallel()
-	in := coherentFeeSelectorFixture(t, 1_051_576, 1<<60, big.NewInt(256))
-	for _, gain := range []float64{0, -1, -1000} {
-		if got := selectorKeepGainUpper(in.Snapshot, gain); got != gain {
-			t.Fatalf("unchanged/loss report charged initial Q48 dust: gain=%f upper=%f", gain, got)
 		}
 	}
 }

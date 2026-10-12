@@ -338,10 +338,6 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 
 const unwindLTVBPS uint64 = 4_500
 
-func withdrawExcessForRepayment(position KaminoPosition) (uint64, uint64, error) {
-	return withdrawExcessAtLTV(position, unwindLTVBPS)
-}
-
 func withdrawExcessAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, uint64, error) {
 	if ltvBPS == 0 || ltvBPS >= 10_000 {
 		return 0, 0, fmt.Errorf("invalid repayment release LTV")
