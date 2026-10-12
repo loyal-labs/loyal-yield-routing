@@ -174,7 +174,10 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		t.Rule, t.Level = ruleHardLTV, min(max(lanes[worst].level.Level, 1.5), leverageMaxLiveLevel)
 		return worst, t
 	}
-	// 2. Term maturity.
+	shortfall := vault.WithdrawalDemandRaw - vault.VoltrIdleRaw
+	outbound := shortfall > 0
+	// 2. Term maturity. The keep-alive waits for an unfunded withdrawal until
+	// the term's last day.
 	for i, l := range lanes {
 		s := l.s
 		if !l.held || s.PositionDebtRaw <= 0 {
@@ -186,11 +189,9 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		if termDeleverDue(s) {
 			return i, LaneTarget{Rule: ruleTermMaturity, Level: 1}
 		}
-		if left, ok := termSecondsLeft(s); ok && left < termKeepAliveSeconds && termKeepAliveRoom(s) {
+		if left, ok := termSecondsLeft(s); ok && left < termKeepAliveSeconds && termKeepAliveRoom(s) && (!outbound || left < termDeleverSeconds) {
 			t := stored(l)
-			t.Rule = ruleTermKeepAlive
-			// An approved up step borrows anyway and restarts the term itself.
-			t.KeepAlive = !(t.UpApproved && leverageUpReceive(s, t) >= leverageMinimumBorrowRaw)
+			t.Rule, t.KeepAlive = ruleTermKeepAlive, true
 			return i, t
 		}
 	}
@@ -204,8 +205,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 			return i, LaneTarget{Rule: ruleOperatorExit, Level: 1, EquityZero: l.exit.EquityZero, Outbound: l.exit.EquityZero}
 		}
 	}
-	shortfall := vault.WithdrawalDemandRaw - vault.VoltrIdleRaw
-	outbound := shortfall > 0
 	// 4a. Custody in flight finishes first, in its direction. A custody two
 	// lanes share belongs to the first of them in registry order.
 	for i, l := range lanes {
@@ -217,13 +216,15 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		return i, t
 	}
 	home := homeLane(lanes)
-	// 4b. Withdrawal: Squads cash stages; the largest lane frees the rest.
+	// 4b. Withdrawal: Squads cash stages; the lane with the most equity frees
+	// the rest, up to under 90% of its own equity (more is an exit), and the
+	// next lane frees what is still missing on a later tick.
 	if outbound {
 		if gap := shortfall - vault.SquadsIdleRaw; gap > 0 {
 			if i := releaseLane(lanes); i >= 0 {
 				free := gap + max(gap*partialWithdrawalBufferBPS/10_000, partialWithdrawalMinimumBuffer)
 				t := stored(lanes[i])
-				t.Rule, t.Outbound, t.ReleaseRaw = ruleWithdrawal, true, free
+				t.Rule, t.Outbound, t.ReleaseRaw = ruleWithdrawal, true, min(free, laneReleaseLimitRaw(lanes[i].s))
 				return i, t
 			}
 		}
@@ -303,12 +304,9 @@ func homeLane(lanes []targetLane) int {
 	return best
 }
 
-// releaseLane is the lane a withdrawal frees from: the home lane, else the
-// held lane with the most equity.
+// releaseLane is the lane a withdrawal frees from: the held lane with the
+// most equity, an overflow lane included.
 func releaseLane(lanes []targetLane) int {
-	if i := homeLane(lanes); i >= 0 {
-		return i
-	}
 	best, equity := -1, int64(0)
 	for i, l := range lanes {
 		if l.held && l.s.HasPosition && earnHeldLane(l.s.RouteLane) {
@@ -320,26 +318,35 @@ func releaseLane(lanes []targetLane) int {
 	return best
 }
 
+// laneReleaseLimitRaw is the most equity a release frees from s: under 90%
+// of its equity (90% or more is the operator's exit).
+func laneReleaseLimitRaw(s Snapshot) int64 {
+	return max((laneEquityRaw(s)*partialWithdrawalFullExitBPS-1)/10_000, 0)
+}
+
 // overflowMove is the overflow lane a held source i moves collateral to, and
 // how much (bridge USDC value): the source is below its stored level with no
 // borrow room of its own, its overflow lane's reserve has room and its stored
 // level approves levering there, and neither lane is exiting or near its term.
+// The source's stored level is the live cap the move releases to, and the
+// overflow lane levers what an earlier move brought before the next move:
+// each move is sized by the room the overflow reserve still has.
 func overflowMove(lanes []targetLane, i int, in targetInputs) (string, int64) {
 	l := lanes[i]
 	s := l.s
 	lane, ok := overflowLaneOf(s.RouteLane)
-	if !ok || !l.held || l.exit != nil || l.level.Level <= 1 || !s.HasPosition {
+	if !ok || !l.held || l.exit != nil || l.level.Level != leverageMaxLiveLevel || !s.HasPosition {
 		return "", 0
 	}
 	if _, exiting := in.Exits[lane]; exiting {
 		return "", 0
 	}
+	dest := in.Levels[lane]
 	for _, other := range lanes {
-		if t := other.s; other.held && t.RouteLane == lane && (termDebtUnknown(t) || termDeleverDue(t)) {
+		if t := other.s; other.held && t.RouteLane == lane && (termDebtUnknown(t) || termDeleverDue(t) || leverageUpLevel(withLevel(t, dest.Level)) > 0) {
 			return "", 0
 		}
 	}
-	dest := in.Levels[lane]
 	if leverageUpLevel(withLevel(s, l.level.Level)) == 0 || !overflowSourceBorrowClosed(s) || !s.OverflowRoomKnown || s.OverflowRoomRaw < leverageMinimumBorrowRaw ||
 		dest.Level < 1.5 || !dest.UpApproved {
 		return "", 0
@@ -574,11 +581,16 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 // inboundStep moves cash and custody into the working lane, then levers it
 // toward its level.
 func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, int64) Decision) Decision {
-	// A flat vault's Squads cash returns to Voltr unless it enters this lane
-	// and the lane can take all of it.
-	if !s.HasPosition && s.CollateralIdleRaw == 0 && s.SquadsIdleRaw > 0 &&
-		(t.Rule != ruleEntry || min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS) {
-		return d(StageSquadsToVoltr, returnCashReason, s.SquadsIdleRaw)
+	// A flat vault's Squads cash is an entry's allocation. It returns to
+	// Voltr when the lane cannot take all of it; without a current entry it
+	// waits for the selector (a withdrawal stages it).
+	if !s.HasPosition && s.CollateralIdleRaw == 0 && s.SquadsIdleRaw > 0 {
+		if min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS {
+			return d(StageSquadsToVoltr, returnCashReason, s.SquadsIdleRaw)
+		}
+		if t.Rule != ruleEntry {
+			return d(Hold, holdStale, 0)
+		}
 	}
 	if hard <= TargetLTVBPS && (s.HasPosition || s.CollateralIdleRaw > 0 || s.SquadsIdleRaw > 0) {
 		return d(HoldManualRecovery, "invalid_entry_ltv", 0)
@@ -632,6 +644,11 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 			return d(Hold, holdNoRoom, 0)
 		}
 		return d(VoltrAllocateToSquads, entryAllocationReason, t.EntryRaw)
+	}
+	// Squads cash no held lane tops up (only an overflow or exiting lane is
+	// held) returns to Voltr.
+	if t.Rule == ruleHold && s.HasPosition && s.SquadsIdleRaw > 0 {
+		return d(StageSquadsToVoltr, returnCashReason, s.SquadsIdleRaw)
 	}
 	// The target wants a move the chain has no room for.
 	if t.UpApproved && leverageUpLevel(withLevel(s, t.Level)) > 0 || t.Rule == ruleTopup && s.SquadsIdleRaw > 0 {

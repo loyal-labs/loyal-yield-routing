@@ -26,20 +26,24 @@ authority.
    1500)` bps steps down to its level's LTV.
 2. **Term maturity** (wYLDS, 30-day term). Under 1 day left without room for
    the keep-alive borrow, or past maturity: debt 0. Under 3 days with room:
-   the keep-alive borrow (the minimum up step), unless an approved up step
-   borrows anyway. A term whose end is unknown holds `stale`.
+   the keep-alive borrow (the minimum up step); an unfunded withdrawal goes
+   first until the term's last day. A term whose end is unknown holds
+   `stale`.
 3. **Operator exit.** Debt 0; with `--equity-zero` the collateral returns to
    Voltr too.
 4. **Withdrawal demand** beyond Voltr idle. Custody in flight finishes first
-   in the withdrawal's direction, Squads cash stages, and the home lane (the
-   held lane with the most equity) releases the rest plus 1% (at least $1)
-   at its own LTV. A release of 90% of a lane's equity or more is an exit, not
-   a release: it holds `no_room`.
+   in the withdrawal's direction, Squads cash stages, and the held lane with
+   the most equity (an overflow lane included) releases the rest plus 1% (at
+   least $1) at its own LTV, up to under 90% of its equity; the next lane
+   frees what is still missing. 90% of a lane or more is the operator's exit.
 5. **Selector choices.** An overflow source (AUTO/AUTO/PYUSD) below its level
    with its own borrowing closed moves the collateral it can release down to
    the live cap's LTV into its overflow lane, when that lane's level is
-   approved and its reserve has room. New Voltr cash tops up the home lane. A
-   flat vault enters the selector's lane.
+   approved, its reserve has room and it has levered the previous move. New
+   Voltr cash tops up the home lane (the held non-overflow lane with the most
+   equity). A flat vault enters the selector's lane; Squads cash an entry
+   allocated waits for the selector while no entry is current, and returns to
+   Voltr when the lane cannot take it.
 6. **Level.** Down to a stored 1.5 from above it; up toward the stored level
    when the selector approved the step and the reserve has room.
 

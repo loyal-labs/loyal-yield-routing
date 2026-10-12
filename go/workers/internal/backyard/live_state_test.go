@@ -3,9 +3,11 @@ package backyard
 import (
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"testing"
 	"time"
 )
@@ -151,5 +153,39 @@ func TestLiveStateRestartComputesTheCurrentState(t *testing.T) {
 				t.Fatalf("%s would move %d to %s", view.RouteLane, e, lane)
 			}
 		}
+	}
+}
+
+// Custody several lanes share belongs, while no lane holds a position on it,
+// to the selector's entry lane: PRIME bought for Prime/PRIME/PYUSD is that
+// lane's, not Prime/PRIME/USDC's (the first sharer in registry order).
+func TestSharedCustodyIsTheEntryLanes(t *testing.T) {
+	t.Parallel()
+	c := loadLiveCapture(t, "testdata/live_state_2026-10-12.json.gz")
+	route, err := runtimeRoute("Prime/PRIME/PYUSD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fund := func(accounts []ConfirmedAccount) {
+		for i := range accounts {
+			if accounts[i].Address == route.CollateralCustody {
+				accounts[i].Data = append([]byte(nil), accounts[i].Data...)
+				binary.LittleEndian.PutUint64(accounts[i].Data[64:72], 5_000_000_000)
+			}
+		}
+	}
+	accounts := c.Reads[0].Accounts
+	fund(accounts)
+	manifest, err := loadEmbeddedRouteManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := liveInputs(false)
+	in.Entry = &SelectorResult{Action: "ENTER", DestinationLane: route.Lane}
+	// The observer's preferred lane for the batch.
+	preferred := flatViewLane(manifest.RuntimeActivation.SelectedLane, in)
+	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), preferred)
+	if err != nil || !slices.Contains(held, route.Lane) || slices.Contains(held, PhaseOneLaneID) {
+		t.Fatalf("shared PRIME custody held by %v (%v)", held, err)
 	}
 }

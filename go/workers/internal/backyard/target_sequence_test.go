@@ -133,6 +133,7 @@ func (b *book) apply(t *testing.T, s Snapshot, d Decision) {
 			// borrow restarts the term.
 			l.debt += d.AmountRaw
 			l.coll += d.AmountRaw
+			l.room -= d.AmountRaw
 			if l.termEnd > 0 {
 				l.termEnd = b.now + 30*86_400
 			}
@@ -427,5 +428,64 @@ func TestStepSimulationRefusalIsChainRefused(t *testing.T) {
 		if got := stepSimulationHold(err); got != err {
 			t.Fatalf("%v became %v", err, got)
 		}
+	}
+}
+
+// A withdrawal larger than 90% of the biggest lane frees the rest from the
+// next lane: Maple ($100k) frees up to 90% of itself, OnRe ($60k) the rest.
+func TestTargetWithdrawalSpansLanes(t *testing.T) {
+	t.Parallel()
+	b := mapleBook(1.5, false)
+	b.in.Levels[onreONycUSDC] = laneLevel{Level: 1.5}
+	onre := b.lane(onreONycUSDC)
+	onre.coll, onre.debt, onre.obligationPresent = 90_000_000_000, 30_000_000_000, true
+	b.demand = 95_000_000_000
+	steps := b.walk(t, 12)
+	release := "DELEVER_ROUTE_STEP:" + releaseReason
+	swap := "SWAP_COLLATERAL_TO_STABLE_STEP:" + outboundCollateralReason
+	stage := "STAGE_SQUADS_TO_VOLTR:" + outboundStageReason
+	wantSteps(t, steps, release, swap, stage, release, swap, stage, "HOLD:"+holdAtTarget)
+	if b.voltr < b.demand || b.lane(SelectedRouteID).debt == 0 || onre.debt == 0 {
+		t.Fatalf("freed %d of %d; debts %d %d", b.voltr, b.demand, b.lane(SelectedRouteID).debt, onre.debt)
+	}
+}
+
+// Each overflow move is sized by the room the overflow reserve still has,
+// and the overflow lane levers it before the next move: with room for only
+// $10k of borrowing, one move of ~$13.3k and its up steps, then nothing.
+func TestTargetOverflowMovesOnlyWhatTheRoomLevers(t *testing.T) {
+	t.Parallel()
+	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{
+		autoAUTOPYUSD.Lane: {Level: 1.75, UpApproved: true},
+		autoAUTOWYLDSLane:  {Level: 1.75, UpApproved: true},
+	}}}
+	pyusd := b.lane(autoAUTOPYUSD.Lane)
+	pyusd.coll, pyusd.debt, pyusd.blocked, pyusd.obligationPresent = 151_858_745_714, 50_609_586_879, true, true
+	wylds := b.lane(autoAUTOWYLDSLane)
+	wylds.room, wylds.termEnd, wylds.obligationPresent = 10_000_000_000, bookNow+30*86_400, true
+	steps := b.walk(t, 12)
+	moves := 0
+	for _, d := range steps {
+		if d.Reason == overflowMoveReason {
+			moves++
+		}
+	}
+	if moved := wylds.coll - wylds.debt; moves != 1 || moved < 13_000_000_000 || moved > 13_400_000_000 || wylds.room > leverageMinimumBorrowRaw {
+		t.Fatalf("%d moves of %d, room left %d: %s", moves, moved, wylds.room, stepNames(steps))
+	}
+}
+
+// An unfunded withdrawal runs before a term's keep-alive until its last day.
+func TestTargetKeepAliveWaitsForAWithdrawalUntilTheLastDay(t *testing.T) {
+	t.Parallel()
+	b := wyldsBook(2*86_400, 1<<40)
+	b.demand = 5_000_000_000
+	if s, d := b.next(); s.Target.Rule != ruleWithdrawal || d.Reason != releaseReason {
+		t.Fatalf("2 days left: %+v %+v", s.Target, d)
+	}
+	b = wyldsBook(20*3_600, 1<<40)
+	b.demand = 5_000_000_000
+	if s, d := b.next(); s.Target.Rule != ruleTermKeepAlive || d.Reason != termKeepAliveReason {
+		t.Fatalf("20 hours left: %+v %+v", s.Target, d)
 	}
 }

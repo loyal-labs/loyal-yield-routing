@@ -53,8 +53,12 @@ func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 	if err := json.Unmarshal(levels, &in.Levels); err != nil {
 		return in, budgetHold("invalid_lane_levels")
 	}
+	// A row for a lane this binary does not install has no view to target;
+	// it never stops the lanes that are installed (hard LTV included).
 	for lane, level := range in.Levels {
-		if !earnHeldLane(lane) || !validLevel(level.Level) {
+		if !earnHeldLane(lane) {
+			delete(in.Levels, lane)
+		} else if !validLevel(level.Level) {
 			return in, budgetHold("invalid_lane_levels")
 		}
 	}
@@ -63,7 +67,7 @@ func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 	}
 	for lane := range in.Exits {
 		if !earnHeldLane(lane) {
-			return in, budgetHold("invalid_lane_exits")
+			delete(in.Exits, lane)
 		}
 	}
 	if len(entry) > 0 && string(entry) != "null" {
@@ -94,9 +98,15 @@ func (d *Database) RecordLaneLevel(ctx context.Context, routeKey, lane string, l
 	if lease.RouteKey != routeKey {
 		return fmt.Errorf("lane_level_route_lease_mismatch")
 	}
-	tag, err := d.pool.Exec(ctx, `INSERT INTO loyal_yield.backyard_lane_levels (route_key, lane, level, up_approved, decided_at)
-		SELECT $1, $4, $5, $6, clock_timestamp() FROM loyal_yield.multiply_route_states
-		WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp()
+	// A changed level is a new target input: the route generation advances
+	// with it, so a tick planned on the old level re-reads.
+	tag, err := d.pool.Exec(ctx, `WITH route AS (
+			UPDATE loyal_yield.multiply_route_states
+			SET state_version = state_version + 1, state = jsonb_set(state, '{generation}', to_jsonb(state_version + 1)), updated_at = clock_timestamp()
+			WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp()
+			RETURNING route_key)
+		INSERT INTO loyal_yield.backyard_lane_levels (route_key, lane, level, up_approved, decided_at)
+		SELECT route_key, $4, $5, $6, clock_timestamp() FROM route
 		ON CONFLICT (route_key, lane) DO UPDATE SET level = EXCLUDED.level, up_approved = EXCLUDED.up_approved, decided_at = EXCLUDED.decided_at`,
 		routeKey, lease.Owner, lease.FencingToken, lane, level.Level, level.UpApproved)
 	if err != nil {
@@ -133,9 +143,16 @@ func RunLaneExit(ctx context.Context, databaseURL string, request LaneExitReques
 	return database.recordLaneExit(ctx, productionRouteKey, request)
 }
 
+// bumpRouteGenerationSQL advances route $1's generation: an exit is a new
+// target input, so a tick planned before it re-reads.
+const bumpRouteGenerationSQL = `UPDATE loyal_yield.multiply_route_states
+	SET state_version = state_version + 1, state = jsonb_set(state, '{generation}', to_jsonb(state_version + 1)), updated_at = clock_timestamp()
+	WHERE route_key = $1 RETURNING route_key`
+
 func (d *Database) recordLaneExit(ctx context.Context, routeKey string, request LaneExitRequest) (string, error) {
 	if request.Clear {
-		tag, err := d.pool.Exec(ctx, `DELETE FROM loyal_yield.backyard_lane_exits WHERE route_key = $1 AND lane = $2`, routeKey, request.Lane)
+		tag, err := d.pool.Exec(ctx, `WITH route AS (`+bumpRouteGenerationSQL+`)
+			DELETE FROM loyal_yield.backyard_lane_exits e USING route WHERE e.route_key = route.route_key AND e.lane = $2`, routeKey, request.Lane)
 		if err != nil {
 			return "", err
 		}
@@ -145,8 +162,9 @@ func (d *Database) recordLaneExit(ctx context.Context, routeKey string, request 
 		return fmt.Sprintf("lane %s exit cleared", request.Lane), nil
 	}
 	var at time.Time
-	err := d.pool.QueryRow(ctx, `INSERT INTO loyal_yield.backyard_lane_exits (route_key, lane, equity_zero, requested_by)
-		VALUES ($1, $2, $3, $4)
+	err := d.pool.QueryRow(ctx, `WITH route AS (`+bumpRouteGenerationSQL+`)
+		INSERT INTO loyal_yield.backyard_lane_exits (route_key, lane, equity_zero, requested_by)
+		SELECT route_key, $2, $3, $4 FROM route
 		ON CONFLICT (route_key, lane) DO UPDATE SET equity_zero = EXCLUDED.equity_zero, requested_by = EXCLUDED.requested_by, requested_at = clock_timestamp()
 		RETURNING requested_at`, routeKey, request.Lane, request.EquityZero, request.RequestedBy).Scan(&at)
 	if err == pgx.ErrNoRows {

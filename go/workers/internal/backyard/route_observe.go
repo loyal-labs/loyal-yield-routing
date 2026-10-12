@@ -116,13 +116,16 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if strategyReceiptIntegrityFault(accountAt(accounts, bridgeStrategyReceipt)) {
 		return receiptIntegrityObservation(slot, selectedRoute), accounts, nil
 	}
-	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), selectedRoute.Lane)
+	// Custody several lanes share, with no position yet, is the entry's: the
+	// selector's entry lane, else the manifest's.
+	preferred := flatViewLane(selectedRoute.Lane, runtime.inputs)
+	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), preferred)
 	if err != nil {
 		return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 	}
 	viewLanes := held
 	if len(held) == 0 {
-		viewLanes = []string{flatViewLane(selectedRoute.Lane, runtime.inputs)}
+		viewLanes = []string{preferred}
 	}
 	first, err := runtimeRoute(viewLanes[0])
 	if err != nil {
@@ -150,7 +153,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			if strategyReceiptIntegrityFault(accountAt(refreshedAccounts, bridgeStrategyReceipt)) {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture breaks the strategy receipt"))
 			}
-			freshHeld, heldErr := observedSelectorHeldLanes(refreshedAccounts, earnLaneIDs(true), selectedRoute.Lane)
+			freshHeld, heldErr := observedSelectorHeldLanes(refreshedAccounts, earnLaneIDs(true), preferred)
 			if heldErr != nil || strings.Join(freshHeld, ",") != strings.Join(held, ",") {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture moved the held lanes"))
 			}

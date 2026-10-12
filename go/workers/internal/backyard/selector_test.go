@@ -180,7 +180,7 @@ func TestEconomicOutageDoesNotBlockSafetyWithdrawalOrExactRecovery(t *testing.T)
 	s = in.Snapshot
 	s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1
 	s.SquadsIdleRaw = 1
-	if got := Decide(s); got.Action != StageSquadsToVoltr {
+	if got := Decide(targeted(s)); got.Action != StageSquadsToVoltr || got.Reason != outboundStageReason {
 		t.Fatal(got)
 	}
 	s.Nonterminal = Signed
