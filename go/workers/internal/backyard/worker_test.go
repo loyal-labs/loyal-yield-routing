@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -89,17 +88,10 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			}
 			return DecisionRecord{OperationID: "operation", Status: Decided}, nil
 		},
-		buildBridge: func(_ context.Context, operationID string, evidence BridgeExecutionEvidence) error {
+		build: func(_ context.Context, operationID string, request any, _ ExpectedEffects) error {
 			order = append(order, "build")
-			if operationID != "operation" || evidence.Request.Action != VoltrAllocateToSquads {
+			if r, ok := request.(BridgeBuildRequest); operationID != "operation" || !ok || r.Action != VoltrAllocateToSquads {
 				t.Fatalf("bridge dispatch drifted")
-			}
-			return nil
-		},
-		bind: func(_ context.Context, id string, got Observation, d Decision, _ any, _ ExpectedEffects) error {
-			order = append(order, "admit")
-			if id != "operation" || !reflect.DeepEqual(got, observation) || d != decision {
-				t.Fatal("admission lost the recorded decision")
 			}
 			return nil
 		},
@@ -107,17 +99,13 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare,record,admit,build" {
+	if got := strings.Join(order, ","); got != "prepare,record,build" {
 		t.Fatalf("decision was not persisted before build: %s", got)
 	}
-	// The same real dispatch path must preserve a typed admission rejection,
-	// not turn it into generic restart recovery or a successful build.
-	rejected := &BudgetHold{Reason: "transaction_cap_exceeded"}
-	worker.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return rejected }
-	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
-		t.Fatal("admission rejection reached construction/signing")
-		return nil
-	}
+	// A typed build refusal stays a journaled stop, never generic restart
+	// recovery or a successful build.
+	rejected := &BudgetHold{Reason: holdChainRefused}
+	worker.runtime.build = func(context.Context, string, any, ExpectedEffects) error { return rejected }
 	journaled := false
 	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *BudgetHold) error {
 		if id != "operation" || hold != rejected {
@@ -147,8 +135,7 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			return DecisionRecord{OperationID: "operation", Status: Decided}, nil
 		},
-		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
-		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+		build: func(context.Context, string, any, ExpectedEffects) error {
 			if builds++; builds == 1 {
 				return budgetHoldFrom(fmt.Errorf("simulateTransaction: %w", chain.ErrBehind), "deposit_projection_unavailable")
 			}
@@ -164,7 +151,7 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 	}
 	// A hold on anything else is still journaled.
 	builds = 0
-	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
+	worker.runtime.build = func(context.Context, string, any, ExpectedEffects) error {
 		return budgetHoldFrom(errors.New("bad layout"), "execution_mint_layout_mismatch")
 	}
 	if err := worker.Tick(context.Background()); err == nil || !journaled {
@@ -253,32 +240,20 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 			order = append(order, "record")
 			return DecisionRecord{OperationID: "kamino", Status: Decided}, nil
 		},
-		buildKamino: func(_ context.Context, id string, evidence KaminoExecutionEvidence) error {
+		build: func(_ context.Context, id string, request any, _ ExpectedEffects) error {
 			order = append(order, "build-kamino")
-			if id != "kamino" || evidence.Request.Action != OpenRouteStep {
+			if r, ok := request.(KaminoPrimeUSDCRequest); id != "kamino" || !ok || r.Action != OpenRouteStep {
 				t.Fatal("wrong Kamino evidence dispatch")
 			}
-			return nil
-		},
-		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
-			order = append(order, "admit-kamino")
 			return nil
 		},
 	}}
 	if err := worker.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(order, ","); got != "prepare-kamino,record,admit-kamino,build-kamino" {
+	if got := strings.Join(order, ","); got != "prepare-kamino,record,build-kamino" {
 		t.Fatalf("wrong Kamino dispatch order: %s", got)
 	}
-	worker.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
-		return budgetHold("complete_position_exit_admission_unavailable")
-	}
-	worker.runtime.buildKamino = func(context.Context, string, KaminoExecutionEvidence) error {
-		t.Fatal("rejected position admission reached signing")
-		return nil
-	}
-	assertBudgetHold(t, worker.Tick(context.Background()), "complete_position_exit_admission_unavailable")
 }
 
 func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
@@ -362,12 +337,11 @@ func TestWorkerRetriesPreparationBeforeRecordingOrBuilding(t *testing.T) {
 			records++
 			return DecisionRecord{Status: Decided, OperationID: "operation"}, nil
 		},
-		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+		build: func(context.Context, string, any, ExpectedEffects) error {
 			builds++
 			cancel()
 			return nil
 		},
-		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
 	}}
 	err := worker.Run(ctx)
 	if !errors.Is(err, context.Canceled) {
@@ -410,8 +384,7 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 				recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 					return DecisionRecord{OperationID: "report-op", Status: Decided}, nil
 				},
-				bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
-				buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+				build: func(context.Context, string, any, ExpectedEffects) error {
 					persisted = &PersistedOperation{Operation: Operation{ID: "report-op"}, Status: after, SignedWire: []byte{1, 2, 3}}
 					return nil
 				},

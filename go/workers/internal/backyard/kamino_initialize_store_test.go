@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestInitializationDatabaseSettlementBindsWire(t *testing.T) {
+func TestInitializationDatabaseSettlement(t *testing.T) {
 	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 20*time.Second)
 	defer cancel()
 	defer db.Close()
@@ -36,40 +36,18 @@ func TestInitializationDatabaseSettlementBindsWire(t *testing.T) {
 	receipt.Initialization.SignedWireSHA256 = sha256Bytes(wire)
 	receipt.Signature = encodeBase58(wireSig(wire))
 	raw, _ := json.Marshal(expected)
-	digest, err := Phase3IntentDigest(*expected.Initialization, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	input, err := encodePhase3BuildInput(*expected.Initialization, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bound, _ := json.Marshal(phase3OperationAuthorization{IntentSHA256: digest, BuildInput: input})
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects)
- VALUES($1,$2,'decided',$3,$4,$5::jsonb || jsonb_build_object('phase3',$6::jsonb))`, id, key, string(InitializeKaminoObligation), SelectedRouteID, string(raw), string(bound)); err != nil {
-		t.Fatal(err)
-	}
-	tx, err := db.pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = bindSignedWireTx(ctx, tx, id, receipt.Initialization.SignedWireSHA256); err != nil {
-		_ = tx.Rollback(ctx)
-		t.Fatal(err)
-	}
-	if err = tx.Commit(ctx); err != nil {
+ VALUES($1,$2,'decided',$3,$4,$5::jsonb)`, id, key, string(InitializeKaminoObligation), SelectedRouteID, string(raw)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciling',signed_wire_sha256=$2,transaction_signature=$3,confirmed_slot=$4,signed_wire=$5 WHERE operation_id=$1`, id, receipt.Initialization.SignedWireSHA256, receipt.Signature, receipt.Slot, wire); err != nil {
 		t.Fatal(err)
 	}
-	for _, drift := range []string{"wire", "rent", "unfinalized", ""} {
+	for _, drift := range []string{"rent", "unfinalized", ""} {
 		candidate := receipt
 		n := *receipt.Initialization
 		candidate.Initialization = &n
 		switch drift {
-		case "wire":
-			n.SignedWireSHA256 = sha256Bytes([]byte("unrelated wire"))
 		case "rent":
 			n.Obligation.Lamports++
 		case "unfinalized":
@@ -77,7 +55,7 @@ func TestInitializationDatabaseSettlementBindsWire(t *testing.T) {
 		}
 		checked, effects, reconcileErr := ReconcileConfirmedTransaction(expected, candidate)
 		if reconcileErr == nil {
-			reconcileErr = db.MarkReconciled(ctx, id, checked, effects, candidate)
+			reconcileErr = db.MarkReconciled(ctx, id, checked, effects)
 		}
 		if (reconcileErr == nil) != (drift == "") {
 			t.Fatalf("drift=%s err=%v", drift, reconcileErr)

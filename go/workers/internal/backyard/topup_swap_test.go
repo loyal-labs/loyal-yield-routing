@@ -96,20 +96,6 @@ func autoDebtTopupSwapFixture(t *testing.T, variant string) (Observation, Decisi
 	return o, d, e, m, rpc, client
 }
 
-// Beside debt, build and send re-read the debt-bearing obligation for the
-// flagged top-up swap on AUTO only.
-func TestTopupSwapBesideDebtPrestateAcceptsOnlyTheFlaggedTopup(t *testing.T) {
-	_, _, e, m, rpc, _ := autoDebtTopupSwapFixture(t, "")
-	if _, err := m.validateRequestPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
-		t.Fatal("prestate refused the top-up swap beside debt", err)
-	}
-	flat := e
-	flat.Request.TopupReturnReserved = false
-	if _, err := m.validateRequestPrestate(context.Background(), rpc, fixtureView(t, rpc), flat.Request, flat.ExpectedEffects); err == nil {
-		t.Fatal("unflagged entry swap accepted a debt-bearing obligation")
-	}
-}
-
 func TestTopupSwapDecisionBesideDebtFreePosition(t *testing.T) {
 	t.Parallel()
 	s := liveIdleDebtSnapshot()
@@ -129,20 +115,5 @@ func TestTopupSwapDecisionBesideDebtFreePosition(t *testing.T) {
 		if got := Decide(targeted(c)); got.Reason == topupSwapReason {
 			t.Fatalf("%s lost priority to the top-up swap: %+v", name, got)
 		}
-	}
-}
-
-// Build and send accept the flagged top-up swap beside the debt-free
-// position; a flat entry swap may not carry it.
-func TestTopupSwapPrestateAcceptsTheFlaggedPosition(t *testing.T) {
-	t.Parallel()
-	_, _, e, _, rpc, _, _ := topupSwapAdmissionFixture(t)
-	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
-		t.Fatal("prestate refused the top-up swap", err)
-	}
-	flat := e
-	flat.Request.TopupReturnReserved = false
-	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), flat.Request, flat.ExpectedEffects); err == nil {
-		t.Fatal("entry swap without the top-up flag accepted a funded obligation")
 	}
 }

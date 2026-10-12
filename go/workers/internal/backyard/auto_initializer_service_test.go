@@ -19,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // applyInitializerScopeMigrationFile executes one actual store migration file,
@@ -581,14 +580,14 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// above — build stops at the pinned-signer boundary, never a broadcast.
 	rt := productionTickRuntime(db, rpc, view, manifest, Credentials{})
 	rt.observe = state.observe
-	rt.prepareInitialization = func(ctx context.Context, m RouteManifest, dec Decision) (Observation, KaminoInitializationRequest, error) {
-		return prepareKaminoInitialization(ctx, rpc, view, m, dec, state.observe)
+	rt.prepareInitialization = func(ctx context.Context, m RouteManifest, dec Decision, obs Observation) (Observation, KaminoInitializationRequest, error) {
+		return prepareKaminoInitialization(ctx, rpc, m, dec, obs)
 	}
 	rt.recordDecision = func(ctx context.Context, key string, obs Observation, dec Decision, manifestSHA256 string) (DecisionRecord, error) {
 		return db.RecordDecisionOnManifest(ctx, manifest, key, obs, dec, manifestSHA256)
 	}
 	buildGatePending := errors.New("initializer build gate stops before the pinned policy signer")
-	rt.buildInitialization = func(context.Context, string, KaminoInitializationRequest) error {
+	rt.build = func(context.Context, string, any, ExpectedEffects) error {
 		return buildGatePending
 	}
 	o, err := rt.observe(ctx)
@@ -619,71 +618,19 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// the scoped admission is exercised by the real decision recording later
 	// in this lifecycle.
 
-	// Real measured preparation through the production closure: a first pass
-	// proves the request identity, the candidate prestate for that exact request
-	// is then served, and the real preparation succeeds against the same
-	// transport.
-	_, r, probeErr := rt.prepareInitialization(ctx, manifest, d)
-	if probeErr == nil {
-		t.Fatal("preparation succeeded before its candidate prestate was served")
+	// Real measured preparation through the production closure, from the
+	// tick's own observation.
+	_, r, err := rt.prepareInitialization(ctx, manifest, d, o)
+	if err != nil {
+		t.Fatal("measured preparation", err)
 	}
 	if r.RouteLane != autoAUTOPYUSD.Lane || r.RecentBlockhash != bridgeVault || r.RentLamports == 0 || r.MaximumFeeLamports != 5000 {
-		t.Fatalf("measured preparation did not produce the candidate request: %+v (%v)", r, probeErr)
-	}
-	for address, account := range autoInitializerPrestateAccounts(t, r) {
-		prestate[address] = account
-	}
-	// The preparation prestate must not clobber the confirmed batch bytes the
-	// observer decodes: only the accounts the initializer validation itself
-	// reads keep their preparation form; everything the batch proves is
-	// restored, so the next real observation still decodes its reserves,
-	// custody and vault bytes.
-	for address, account := range batchImage {
-		switch address {
-		case bridgeSettings, bridgeVault, bridgeDelegate,
-			autoAUTOPYUSD.Kamino.CollateralMint, autoAUTOPYUSD.Kamino.DebtMint:
-			continue
-		}
-		prestate[address] = account
-	}
-	const rentAddress = "SysvarRent111111111111111111111111111111111"
-	rent := prestate[rentAddress]
-	binary.LittleEndian.PutUint64(rent.Data, r.RentLamports/(kamino.ObligationSize+128))
-	prestate[rentAddress] = rent
-	// The build-cost native valuation read (ObserveNativeSOLBudgetPrice) adds
-	// the wSOL reserve price batch. Every account the confirmed batch already
-	// publishes — the clock, the USDC reference reserve and mints — keeps its
-	// batch bytes, and the SOL price timestamp agrees with the fixture chain
-	// clock those bytes carry, so the re-observation and the valuation read see
-	// one coherent chain.
-	solReserve := reserveFixture(t, budgetSOLReserve, budgetWrappedSOLMint, observationSlot, new(big.Int).Lsh(big.NewInt(1), 60+7), 1, 1)
-	putKey(t, solReserve.Data[32:64], budgetSOLMarket)
-	binary.LittleEndian.PutUint64(solReserve.Data[272:280], 9)
-	binary.LittleEndian.PutUint64(solReserve.Data[264:272], uint64(kaminoFixtureUnix))
-	prestate[budgetSOLReserve] = solReserve
-	splMint := func(address string, decimals byte) ConfirmedAccount {
-		data := make([]byte, 82)
-		data[44], data[45] = decimals, 1
-		return ConfirmedAccount{Address: address, Owner: classicTokenProgram, Lamports: 1, Data: data}
-	}
-	if _, ok := prestate[budgetWrappedSOLMint]; !ok {
-		prestate[budgetWrappedSOLMint] = splMint(budgetWrappedSOLMint, 9)
-	}
-	if _, ok := prestate[bridgeUSDC]; !ok {
-		prestate[bridgeUSDC] = splMint(bridgeUSDC, 6)
-	}
-	// The view takes its start-up read again, now with the candidate prestate.
-	if err = view.seed(ctx); err != nil {
-		t.Fatal(err)
-	}
-	_, r, err = rt.prepareInitialization(ctx, manifest, d)
-	if err != nil {
-		t.Fatal("measured preparation with the candidate prestate", err)
+		t.Fatalf("measured preparation did not produce the candidate request: %+v", r)
 	}
 
 	// Real service tick — productionTickRuntime's remaining closures exactly as
-	// installed: observe -> decide -> record -> prepare -> bind,
-	// stopping only at the reported signer boundary.
+	// installed: observe -> decide -> prepare -> record, stopping only at the
+	// reported signer boundary.
 	w := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: rt}
 	if err = w.Tick(ctx); err == nil || err.Error() != buildGatePending.Error() {
 		t.Fatalf("service tick did not stop at the signer boundary: %v", err)
@@ -717,18 +664,6 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatalf("producer did not journal the candidate decision: %s %s %s", status, action, lane)
 	}
 
-	// The bind recorded exactly the prepared initializer request.
-	var encodedAuth []byte
-	if err = db.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&encodedAuth); err != nil {
-		t.Fatal(err)
-	}
-	var auth phase3OperationAuthorization
-	if json.Unmarshal(encodedAuth, &auth) != nil || auth.BuildInput == nil || auth.BuildInput.Kind != "kamino-initialize" {
-		t.Fatalf("bind lost the initializer request: %s", encodedAuth)
-	}
-	if err = db.requireBoundIntent(ctx, id, r, auth.BuildInput.Effects); err != nil {
-		t.Fatal("bound intent is not the prepared request", err)
-	}
 	// The initializer moves no money and leaves the stored inputs alone: the
 	// selector's entry still names the candidate lane for the allocation.
 	var entryLane string
@@ -736,10 +671,8 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatal(err)
 	}
 	if entryLane != autoAUTOPYUSD.Lane {
-		t.Fatalf("initializer bind drifted the selector's entry: lane=%q", entryLane)
+		t.Fatalf("initializer drifted the selector's entry: lane=%q", entryLane)
 	}
-	// A bound row is never bound again.
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, view, manifest, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
 
 	// Installed-closure and hold regressions on the producer and bind.
 	for _, closure := range []struct {

@@ -2,15 +2,12 @@ package backyard
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"math/big"
 	"strconv"
-	"time"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -290,10 +287,6 @@ func jupiterValidateAutoRetainedMinimum(request JupiterSwapRequest) error {
 	return nil
 }
 
-func BuildAndSignJupiterTransaction(request JupiterSwapRequest, executor ed25519.PrivateKey) (SignedTransaction, error) {
-	return buildAndSignJupiterTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
-}
-
 func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
 	return compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate))
 }
@@ -338,68 +331,9 @@ func jupiterPolicyExecute(request JupiterSwapRequest, delegate publicKey) (compi
 	return wrapSquadsJupiterPolicy(policy, delegate, delegate, index, inner)
 }
 
-func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
-	message, err := compileJupiterMessageForDelegate(request, expectedDelegate)
-	if err != nil {
-		return SignedTransaction{}, err
-	}
-	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
-}
-
 func wrapSquadsJupiterPolicy(policy, executor, expectedDelegate publicKey, constraintIndex byte, inner compiledInstruction) (compiledInstruction, error) {
 	if executor != expectedDelegate || inner.program != publicKey(jupiter.ProgramID) {
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads Jupiter policy or delegate")
 	}
 	return wrapSquadsPolicy(policy, executor, []byte{constraintIndex}, inner)
-}
-
-func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc *chain.Client, view *View, operationID string, evidence JupiterExecutionEvidence, credentials Credentials) error {
-	if database == nil || rpc == nil || operationID == "" {
-		return fmt.Errorf("Jupiter runtime dependencies are required")
-	}
-	if _, err := validateJupiterInstructionForRoute(evidence.Request.Instruction, evidence.Request.Action, evidence.Request.AmountRaw, evidence.Request.QuotedOutputRaw, evidence.Request.MinimumOutputRaw, evidence.Request.RouteLane); err != nil {
-		return err
-	}
-	if err := jupiterValidateAutoRetainedMinimum(evidence.Request); err != nil {
-		return err
-	}
-	effects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)
-	if err != nil {
-		return err
-	}
-	if _, err := DecodeExpectedEffects(effects); err != nil {
-		return err
-	}
-	buildStart := time.Now()
-	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, effects); err != nil {
-		return err
-	}
-	if err := validateBuildPrestate(ctx, rpc, view, evidence.Request, evidence.ExpectedEffects); err != nil {
-		return err
-	}
-	logStage("jupiter_build_prestate", buildStart)
-	signer, err := credentials.signer()
-	if err != nil {
-		return err
-	}
-	signed, err := BuildAndSignJupiterTransaction(evidence.Request, signer)
-	if err != nil {
-		return err
-	}
-	if err := database.MarkBuilt(ctx, operationID, signed.messageSHA256, effects); err != nil {
-		return err
-	}
-	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
-	if err != nil {
-		return err
-	}
-	logStage("jupiter_build_simulate", buildStart)
-	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {
-		return err
-	}
-	build, err := signed.BuildResult(simulation.Slot)
-	if err != nil {
-		return err
-	}
-	return database.PersistSigned(ctx, operationID, build)
 }

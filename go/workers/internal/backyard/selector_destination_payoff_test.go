@@ -948,8 +948,8 @@ func TestJupiterAutoRetainedMinimumRejectsForgedRequests(t *testing.T) {
 		if _, err := compileJupiterMessageForDelegate(forged, mustKey(bridgeDelegate)); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
 			t.Fatalf("%s: forged retained minimum compiled: %v", forge.name, err)
 		}
-		if err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, rpc, fixtureView(t, rpc), "forged-"+forge.name, JupiterExecutionEvidence{forged, evidence.ExpectedEffects}, Credentials{}); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
-			t.Fatalf("%s: persisted-evidence path accepted the forgery: %v", forge.name, err)
+		if _, err := compileRequestMessage(embeddedTestManifest(t), forged); err == nil || !strings.Contains(err.Error(), "exceeds enforceable wire floor") {
+			t.Fatalf("%s: the build's compiler accepted the forgery: %v", forge.name, err)
 		}
 	}
 	conservative := evidence.Request

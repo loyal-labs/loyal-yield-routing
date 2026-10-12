@@ -182,19 +182,6 @@ func fixedRouteAction(action Action, lane string) (Action, error) {
 	return neutralizeRouteAction(Decision{Action: action}).Action, nil
 }
 
-func decisionsEqual(left, right Decision) bool {
-	// Preparation re-observes confirmed state and journals that refreshed
-	// observation's idempotency identity. Accruing reserves may change the
-	// identity while leaving the exact executable decision unchanged, so this
-	// guard compares execution semantics rather than the superseded identity.
-	if left.AmountRaw != right.AmountRaw || left.Reason != right.Reason || left.StrategyKey != right.StrategyKey {
-		return false
-	}
-	leftAction, leftErr := fixedRouteAction(left.Action, left.StrategyKey)
-	rightAction, rightErr := fixedRouteAction(right.Action, right.StrategyKey)
-	return leftErr == nil && rightErr == nil && leftAction == rightAction
-}
-
 func sharedUSDCDebt(lane string) bool {
 	route, err := runtimeRoute(lane)
 	return err == nil && route.Kamino.DebtMint == bridgeUSDC && route.DebtCustody == bridgeSquadsATA

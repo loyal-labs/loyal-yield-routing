@@ -74,7 +74,11 @@ const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.m
  AND expected_effects->'manualResolution'->>'evidenceSha256' ~ '^[0-9a-f]{64}$'
  AND length(expected_effects->'manualResolution'->>'evidencePath')>0,false))`
 
-const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7, updated_at = now() WHERE operation_id = $1 AND status = 'simulated'`
+// PersistSignedUpdate is the write-ahead record of a tick's transaction: the
+// exact signed wire, its simulation and the effects reconcile checks, in one
+// statement, before anything sends it.
+const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7,
+ simulation_slot = $8, simulation_result = $9::jsonb, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $10::jsonb), updated_at = now() WHERE operation_id = $1 AND status = 'decided'`
 
 const PersistBroadcastIntentUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'broadcast_intent', broadcast_intent_at = now(), updated_at = now() WHERE operation_id = $1 AND status = 'signed' AND signed_wire IS NOT NULL`
 
@@ -986,47 +990,17 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 	if d == nil || d.pool == nil || operationID == "" || !CanTransition(from, to) {
 		return fmt.Errorf("invalid durable transition %s -> %s", from, to)
 	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	query := `UPDATE loyal_yield.multiply_operations SET status = $2, updated_at = now()` + suffix + ` WHERE operation_id = $1 AND status = $3`
 	parameters := []any{operationID, string(to), string(from)}
 	parameters = append(parameters, args...)
-	result, err := tx.Exec(ctx, query, parameters...)
+	result, err := d.pool.Exec(ctx, query, parameters...)
 	if err != nil {
 		return fmt.Errorf("persist transition %s -> %s: %w", from, to, err)
 	}
 	if result.RowsAffected() != 1 {
-		return fmt.Errorf("transition %s -> %s lost serialization", from, to)
+		return fmt.Errorf("transition %s -> %s found no %s operation", from, to, from)
 	}
-	return tx.Commit(ctx)
-}
-
-func (d *Database) MarkBuilt(ctx context.Context, operationID, messageSHA256 string, expectedEffects []byte) error {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	return d.markBuiltOnManifest(ctx, manifest, operationID, messageSHA256, expectedEffects)
-}
-
-// markBuiltOnManifest is the shared build-persistence body: identical checks
-// and SQL, with the effect decode resolved through the explicit reviewed
-// manifest so a candidate AUTO build persists against the same binding that
-// compiled it. The public wrapper above loads the embedded reviewed manifest.
-func (d *Database) markBuiltOnManifest(ctx context.Context, manifest RouteManifest, operationID, messageSHA256 string, expectedEffects []byte) error {
-	if !sha256Pattern.MatchString(messageSHA256) || !json.Valid(expectedEffects) {
-		return fmt.Errorf("invalid built transaction evidence")
-	}
-	if _, err := decodeExpectedEffectsWithManifest(manifest, expectedEffects); err != nil {
-		return err
-	}
-	// Preserve the pre-construction decision envelope and merge only the
-	// independently checked execution-effect fields.
-	return d.transition(ctx, operationID, Decided, Built,
-		`, message_sha256 = $4, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $5::jsonb)`, messageSHA256, string(expectedEffects))
+	return nil
 }
 
 // MarkPreBroadcastFailed releases the one-nonterminal invariant only for
@@ -1055,145 +1029,65 @@ func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID stri
 	return nil
 }
 
-func (d *Database) MarkSimulated(ctx context.Context, operationID string, simulation SimulationResult) error {
-	if simulation.Slot <= 0 {
-		return fmt.Errorf("invalid simulation evidence")
+// PersistSigned records the tick's exact signed wire with its simulation and
+// expected effects. Nothing is sent before it commits.
+func (d *Database) PersistSigned(ctx context.Context, operationID string, signed SignedTransaction, simulation SimulationResult, effects []byte) error {
+	if simulation.Slot <= 0 || !json.Valid(effects) {
+		return fmt.Errorf("invalid signed transaction evidence")
 	}
-	encoded, err := json.Marshal(simulation)
+	result, err := simulationJSON(simulation)
 	if err != nil {
 		return err
 	}
-	return d.transition(ctx, operationID, Built, Simulated,
-		`, simulation_slot = $4, simulation_result = $5::jsonb`, simulation.Slot, string(encoded))
-}
-
-func (d *Database) PersistSigned(ctx context.Context, operationID string, build BuildResult) error {
-	if err := build.validateForDelegate(mustKey(bridgeDelegate)); err != nil {
-		// Nothing was persisted or sent: the refused wire exists only in
-		// memory. A typed hold fails this never-submitted row and retries on
-		// the next tick instead of stopping the worker (live 2026-09-28).
-		return &BudgetHold{Reason: "signed_wire_shape_refused", Details: map[string]string{"error": err.Error()}}
-	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := bindSignedWireTx(ctx, tx, operationID, build.SignedWireSHA256); err != nil {
-		return err
-	}
-	result, err := tx.Exec(ctx, PersistSignedUpdate, operationID, build.MessageSHA256, build.SignedWire,
-		build.SignedWireSHA256, build.TransactionSignature, build.RecentBlockhash, build.LastValidBlockHeight)
+	tag, err := d.pool.Exec(ctx, PersistSignedUpdate, operationID, signed.messageSHA256, signed.signedWire, signed.signedWireSHA256,
+		signed.transactionSignature, signed.recentBlockhash, signed.lastValidBlockHeight, simulation.Slot, result, string(effects))
 	if err != nil {
 		return fmt.Errorf("persist exact signed wire: %w", err)
 	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("persist signed wire lost serialization")
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("persist signed wire found no decided operation")
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
-// markBroadcastIntentOnManifest records broadcast intent under the operation
-// lock, after the custody, debt-clear and selector-entry fences pass.
-func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, request any, bound phase3OperationAuthorization) error {
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound); err != nil {
-		return err
-	}
-	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
+// MarkBroadcastIntent records that the signed wire may now be sent.
+func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) error {
+	tag, err := d.pool.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
 	if err != nil {
 		return fmt.Errorf("persist broadcast intent: %w", err)
 	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("broadcast intent lost serialization")
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("broadcast intent found no signed operation")
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (d *Database) MarkConfirmed(ctx context.Context, operationID string, from OperationStatus, slot int64) error {
 	if slot <= 0 || (from != BroadcastIntent && from != Submitted) {
 		return fmt.Errorf("invalid confirmation")
 	}
-	if from == BroadcastIntent {
-		// Landing confirms the broadcast_intent row directly; submitted is only
-		// left on rows an older binary wrote.
-		tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'confirmed', confirmed_slot = $2, confirmation_status = 'confirmed', updated_at = now() WHERE operation_id = $1 AND status = 'broadcast_intent'`, operationID, slot)
-		if err != nil {
-			return fmt.Errorf("persist recovered confirmation: %w", err)
-		}
-		if result.RowsAffected() != 1 {
-			return fmt.Errorf("persist recovered confirmation lost serialization")
-		}
-		return tx.Commit(ctx)
-	}
-	return d.transition(ctx, operationID, Submitted, Confirmed,
-		`, confirmed_slot = $4, confirmation_status = 'confirmed'`, slot)
-}
-
-func (d *Database) MarkReconciling(ctx context.Context, operationID string) error {
-	return d.transition(ctx, operationID, Confirmed, Reconciling, ``)
-}
-
-func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
-	manifest, err := loadEmbeddedRouteManifest()
+	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'confirmed', confirmed_slot = $2, confirmation_status = 'confirmed', updated_at = now() WHERE operation_id = $1 AND status = $3`, operationID, slot, string(from))
 	if err != nil {
-		return err
+		return fmt.Errorf("persist confirmation: %w", err)
 	}
-	return d.markReconciledOnManifest(ctx, manifest, operationID, reconciliation, effects, receipt)
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("confirmation found no %s operation", from)
+	}
+	return nil
 }
 
-// markReconciledOnManifest is the shared locked-settlement body: identical
-// identity SQL in one transaction, with the journal
-// decode and reconciliation resolved through the explicit reviewed manifest.
-// The public wrapper above loads the embedded reviewed manifest.
-func (d *Database) markReconciledOnManifest(ctx context.Context, manifest RouteManifest, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
-	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) || !receipt.Finalized || receipt.Slot != reconciliation.ConfirmedSlot {
+// MarkReconciled settles a landed operation whose finalized receipt matched
+// its persisted effects.
+func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte) error {
+	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) {
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status IN ('confirmed','reconciling')`, operationID, reconciliation.EffectsSHA256, string(effects))
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var signature string
-	var slot int64
-	var expectedBytes []byte
-	var signedWireHash string
-	if err = tx.QueryRow(ctx, `SELECT transaction_signature,confirmed_slot,expected_effects,COALESCE(signed_wire_sha256,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='reconciling'`, operationID).Scan(&signature, &slot, &expectedBytes, &signedWireHash); err != nil {
-		return err
-	}
-	if signature != receipt.Signature || slot != receipt.Slot {
-		return fmt.Errorf("finalized receipt does not match journal identity")
-	}
-	expected, err := decodeExpectedEffectsWithManifest(manifest, expectedBytes)
-	if err != nil {
-		return err
-	}
-	if expected.Initialization != nil && (receipt.Initialization == nil || signedWireHash == "" || receipt.Initialization.SignedWireSHA256 != signedWireHash) {
-		return fmt.Errorf("initializer finalized wire does not match journal identity")
-	}
-	checked, checkedEffects, err := manifest.ReconcileConfirmedTransaction(expected, receipt)
-	if err != nil || checked != reconciliation || sha256Bytes(checkedEffects) != sha256Bytes(effects) {
-		return fmt.Errorf("finalized effects do not match journal contract")
-	}
-	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status='reconciling'`, operationID, reconciliation.EffectsSHA256, string(effects))
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("finalized reconciliation lost serialization")
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return err
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("reconciliation found no landed operation")
 	}
 	d.eventReconciled(ctx, operationID)
 	return nil
@@ -1203,20 +1097,12 @@ func (d *Database) MarkManualRecovery(ctx context.Context, operationID string, f
 	if reason == "" || !IsNonterminal(from) {
 		return fmt.Errorf("manual recovery reason and nonterminal source are required")
 	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'manual_recovery', recovery_reason = $2, updated_at = now() WHERE operation_id = $1 AND status = $3`, operationID, reason, string(from))
+	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'manual_recovery', recovery_reason = $2, updated_at = now() WHERE operation_id = $1 AND status = $3`, operationID, reason, string(from))
 	if err != nil {
 		return fmt.Errorf("persist manual recovery: %w", err)
 	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("persist manual recovery lost serialization")
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("manual recovery found no %s operation", from)
 	}
 	d.eventFailedAfterSend(ctx, operationID, reason)
 	return nil

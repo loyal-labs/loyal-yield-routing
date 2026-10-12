@@ -160,7 +160,7 @@ func TestBridgeTransactionSignsExactWireAndPersistsOnlyAfterSimulation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := result.Validate(); err != nil || result.SimulationSlot != 123 {
+	if err := result.validateForDelegate(publicKey{}); err != nil || result.SimulationSlot != 123 {
 		t.Fatalf("persistable exact transaction invalid: %v", err)
 	}
 	if err := result.validateForDelegate(delegate); err != nil {
@@ -172,13 +172,17 @@ func TestBridgeTransactionSignsExactWireAndPersistsOnlyAfterSimulation(t *testin
 	tampered := result
 	tampered.SignedWire = append([]byte(nil), result.SignedWire...)
 	tampered.SignedWire[len(tampered.SignedWire)-1] ^= 1
-	if err := tampered.Validate(); err == nil {
+	if err := tampered.validateForDelegate(publicKey{}); err == nil {
 		t.Fatal("tampered persisted wire passed validation")
 	}
 
 	// Production refuses a locally generated key even though the test-only
 	// builder above can use one to prove wire/signature mechanics.
-	if _, err := BuildAndSignBridgeTransaction(bridgeTestRequest(ReportNAV, 0), key); err == nil {
+	message, err := CompileBridgeMessage(bridgeTestRequest(ReportNAV, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := signMessage(key, mustKey(bridgeDelegate), message, bridgeVault, 99); err == nil {
 		t.Fatal("unpinned executor key was accepted")
 	}
 }

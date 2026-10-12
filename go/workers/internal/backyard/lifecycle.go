@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -14,122 +15,106 @@ import (
 // landResendEvery matches the fleet landing cadence.
 var landResendEvery = time.Second
 
-// AdvanceNonterminal resumes the one durable operation before any new
-// observation is permitted. Only Signed may start a submission: it records
-// broadcast_intent before its first send. Signed, BroadcastIntent and Submitted
-// all land the exact persisted wire, resending the same bytes until it lands,
-// fails on chain or expires.
-func AdvanceNonterminal(ctx context.Context, database *Database, rpc *chain.Client, view *View, operation PersistedOperation) error {
-	manifest, err := loadEmbeddedRouteManifest()
+// The one transaction path of a tick, after Decide chose an action and
+// prepare built its request: sign the request's message, simulate that exact
+// signed wire, and persist it (write-ahead) before anything sends it. The
+// simulation, the Squads policy, KLend and the request's own minimum output
+// refuse a wrong transaction; nothing here re-reads the chain or re-checks
+// the bytes it just encoded.
+func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Client, manifest RouteManifest, operationID string, request any, effects ExpectedEffects, credentials Credentials) error {
+	if database == nil || rpc == nil || operationID == "" {
+		return fmt.Errorf("build runtime dependencies are required")
+	}
+	encoded, err := jsonMarshalExpectedEffects(effects)
 	if err != nil {
 		return err
 	}
-	return advanceNonterminalWithManifest(ctx, manifest, database, rpc, view, operation)
+	message, blockhash, height, err := compileRequest(manifest, request)
+	if err != nil {
+		return err
+	}
+	signer, err := credentials.signer()
+	if err != nil {
+		return err
+	}
+	signed, err := signMessage(signer, mustKey(bridgeDelegate), message, blockhash, height)
+	if err != nil {
+		return err
+	}
+	start := time.Now()
+	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
+	logStage("build_simulate", start)
+	if err != nil {
+		return database.simulationRefused(ctx, operationID, err)
+	}
+	return database.PersistSigned(ctx, operationID, signed, simulation, encoded)
 }
 
-// advanceNonterminalWithManifest is the identical recovery state machine with
-// the immutable reviewed manifest explicit: only the reconciliation decode,
-// initializer receipt observation, reconciliation and locked settlement resolve
-// through it. Every other state transition is unchanged.
-func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *chain.Client, view *View, operation PersistedOperation) error {
+// simulationRefused journals a wire the chain refused in simulation; it was
+// never sent. A Squads spending limit and an adaptor report past its age end
+// the row under their own reason; every other refusal is the target's
+// chain_refused hold, which the tick journals; an endpoint that could not
+// answer leaves the row decided for the next tick.
+func (d *Database) simulationRefused(ctx context.Context, operationID string, err error) error {
+	var limit *SquadsSpendingLimitError
+	var slot *ReportSlotSimulationError
+	switch {
+	case errors.Is(err, errConfirmedObservationUnavailable):
+		return err
+	case errors.As(err, &limit):
+		if markErr := d.MarkPreBroadcastFailed(ctx, operationID, Decided, squadsSpendingLimitReason); markErr != nil {
+			return errors.Join(err, markErr)
+		}
+		return journaledBudgetHold(squadsSpendingLimitReason)
+	case errors.As(err, &slot):
+		if markErr := d.MarkPreBroadcastFailed(ctx, operationID, Decided, reportExpiredInSimulationReason); markErr != nil {
+			return errors.Join(err, markErr)
+		}
+		return journaledBudgetHold(reportExpiredInSimulationReason)
+	}
+	return &BudgetHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
+}
+
+// advanceNonterminalWithManifest moves the one durable operation on:
+// a row never signed fails (the next tick decides again), a signed row lands
+// its exact persisted wire, and a landed row reconciles once it is final.
+func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *chain.Client, operation PersistedOperation) error {
 	if database == nil || rpc == nil || !IsNonterminal(operation.Status) {
 		return fmt.Errorf("invalid nonterminal recovery input")
 	}
 	switch operation.Status {
 	case Decided, Built, Simulated:
-		reason, err := preBroadcastRecoveryReason(ctx, view, operation)
-		if err != nil {
-			return err
-		}
-		return database.MarkPreBroadcastFailed(ctx, operation.ID, operation.Status, reason)
-	case Signed:
-		if WithdrawalPreemptsOpenLoop(operation.Decision.Action, Signed, 1) {
-			observation, err := ObserveConfirmedBridgeSnapshot(ctx, view, operation)
-			if err != nil {
-				return err
-			}
-			if WithdrawalPreemptsOpenLoop(operation.Decision.Action, Signed, observation.Snapshot.WithdrawalDemandRaw) {
-				return database.MarkManualRecovery(ctx, operation.ID, Signed, "fresh_onchain_withdrawal_fence_required")
-			}
-		}
-		if !persistedWireIntact(operation) {
-			return database.MarkManualRecovery(ctx, operation.ID, Signed, "incomplete_persisted_signed_wire")
-		}
-		markIntent, err := database.finalSend(ctx, manifest, operation)
-		if err != nil {
-			return database.journalSignedHold(ctx, operation.ID, err)
-		}
-		return database.land(ctx, rpc, operation, markIntent)
-	case BroadcastIntent, Submitted:
-		// Submitted is no longer written; rows left in it by an older binary
+		return database.MarkPreBroadcastFailed(ctx, operation.ID, operation.Status, "prebroadcast_restart_reobserve_required")
+	case Signed, BroadcastIntent, Submitted:
+		// Submitted is no longer written; rows an older binary left in it
 		// resume exactly like broadcast_intent.
-		if !persistedWireIntact(operation) {
-			return database.MarkManualRecovery(ctx, operation.ID, operation.Status, "incomplete_submission_identity")
-		}
-		return database.land(ctx, rpc, operation, nil)
-	case Confirmed:
-		return database.MarkReconciling(ctx, operation.ID)
-	case Reconciling:
-		status, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
-		if err != nil {
-			return err
-		}
-		if status.Failed {
-			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "finalization_transaction_error")
-		}
-		if !status.Finalized {
-			return nil
-		}
-		expected, err := decodeExpectedEffectsWithManifest(manifest, operation.ExpectedEffects)
-		if err != nil {
-			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "invalid_expected_effects")
-		}
-		var receipt ConfirmedTransactionEvidence
-		if expected.Initialization != nil {
-			receipt, err = manifest.observeFinalizedKaminoInitialization(ctx, rpc, *expected.Initialization, operation)
-		} else {
-			receipt, err = finalizedTransaction(ctx, rpc, operation.TransactionSignature)
-		}
-		if err != nil {
-			return err
-		}
-		if receipt.Slot != operation.ConfirmedSlot {
-			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "confirmed_transaction_slot_mismatch")
-		}
-		reconciliation, effects, err := manifest.ReconcileConfirmedTransaction(expected, receipt)
-		if err != nil {
-			return database.MarkManualRecovery(ctx, operation.ID, Reconciling, "exact_effect_reconciliation_failed")
-		}
-		return database.markReconciledOnManifest(ctx, manifest, operation.ID, reconciliation, effects, receipt)
+		return database.land(ctx, rpc, operation)
+	case Confirmed, Reconciling:
+		return database.reconcile(ctx, manifest, rpc, operation)
 	default:
 		return fmt.Errorf("unsupported nonterminal status: %s", operation.Status)
 	}
 }
 
-// persistedWireIntact checks the row's wire is the bytes it hashed and signs
-// the signature it names, so landing and expiry are decided for these bytes.
-func persistedWireIntact(operation PersistedOperation) bool {
-	_, signature, err := splitSignedWire(operation.SignedWire)
-	return err == nil && sha256Bytes(operation.SignedWire) == operation.SignedWireSHA256 &&
-		operation.TransactionSignature == encodeBase58(signature) &&
-		operation.RecentBlockhash != "" && operation.LastValidBlockHeight > 0
-}
-
 // land resends the persisted wire through chain.Land until it lands, fails on
-// chain or its blockhash expires. A signed row records broadcast intent behind
-// markIntent's database fences before its first send; a row that already
-// recorded it resends the same bytes, which cannot spend twice. A signed row
-// stays signed while a fence holds, until its expiry proves the wire absent.
-func (d *Database) land(ctx context.Context, rpc *chain.Client, operation PersistedOperation, markIntent func(context.Context) error) error {
+// chain or its blockhash expires. The bytes are the row's, owned by their
+// hash; a signed row records broadcast intent before its first send, and a
+// row that already recorded it resends the same bytes, which cannot spend
+// twice.
+func (d *Database) land(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
+	wire, err := chain.OwnSignedWire(operation.SignedWire, operation.SignedWireSHA256)
+	if err != nil || operation.TransactionSignature == "" || operation.LastValidBlockHeight <= 0 {
+		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "incomplete_persisted_signed_wire")
+	}
 	out, err := chain.Land(ctx, rpc, chain.Attempt{
-		Wire: operation.SignedWire, Signature: operation.TransactionSignature,
+		Wire: wire.Bytes(), Signature: operation.TransactionSignature,
 		LastValidBlockHeight: uint64(operation.LastValidBlockHeight), Required: chain.Confirmed,
 	}, landResendEvery, func(ctx context.Context) error {
 		if operation.Status != Signed {
 			return nil
 		}
-		if err := markIntent(ctx); err != nil {
-			return d.journalSignedHold(ctx, operation.ID, err)
+		if err := d.MarkBroadcastIntent(ctx, operation.ID); err != nil {
+			return err
 		}
 		operation.Status = BroadcastIntent
 		return nil
@@ -152,36 +137,49 @@ func (d *Database) land(ctx context.Context, rpc *chain.Client, operation Persis
 	return d.MarkConfirmed(ctx, operation.ID, operation.Status, int64(out.Slot))
 }
 
-// journalSignedHold keeps a signed row's hold reason on the row; the wire
-// stays signed and is never sent behind a hold.
-func (d *Database) journalSignedHold(ctx context.Context, operationID string, err error) error {
-	var hold *BudgetHold
-	if errors.As(err, &hold) {
-		if journalErr := d.RecordPhase3SignedBudgetHold(ctx, operationID, hold); journalErr != nil {
-			return errors.Join(err, journalErr)
-		}
-	}
-	return err
-}
-
-func preBroadcastRecoveryReason(ctx context.Context, view *View, operation PersistedOperation) (string, error) {
-	if operation.Status != Decided && operation.Status != Built && operation.Status != Simulated {
-		return "", fmt.Errorf("operation is not pre-broadcast")
-	}
-	if !WithdrawalPreemptsOpenLoop(operation.Decision.Action, operation.Status, 1) {
-		return "prebroadcast_restart_reobserve_required", nil
-	}
-	observation, err := ObserveConfirmedBridgeSnapshot(ctx, view, operation)
+// reconcile checks a landed operation's finalized receipt against the
+// effects persisted with its wire, once.
+func (d *Database) reconcile(ctx context.Context, manifest RouteManifest, rpc *chain.Client, operation PersistedOperation) error {
+	status, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if WithdrawalPreemptsOpenLoop(operation.Decision.Action, operation.Status, observation.Snapshot.WithdrawalDemandRaw) {
-		return "prebroadcast_withdrawal_preempted", nil
+	if status.Failed {
+		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "finalization_transaction_error")
 	}
-	return "prebroadcast_restart_reobserve_required", nil
+	if !status.Finalized {
+		return nil
+	}
+	expected, err := decodeExpectedEffectsWithManifest(manifest, operation.ExpectedEffects)
+	if err != nil {
+		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "invalid_expected_effects")
+	}
+	var receipt ConfirmedTransactionEvidence
+	if expected.Initialization != nil {
+		receipt, err = manifest.observeFinalizedKaminoInitialization(ctx, rpc, *expected.Initialization, operation)
+	} else {
+		receipt, err = finalizedTransaction(ctx, rpc, operation.TransactionSignature)
+	}
+	if err != nil {
+		return err
+	}
+	if receipt.Slot != operation.ConfirmedSlot {
+		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "confirmed_transaction_slot_mismatch")
+	}
+	reconciliation, effects, err := manifest.ReconcileConfirmedTransaction(expected, receipt)
+	if err != nil {
+		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "exact_effect_reconciliation_failed")
+	}
+	return d.MarkReconciled(ctx, operation.ID, reconciliation, effects)
 }
 
 func sha256Bytes(data []byte) string {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
+}
+
+// simulationJSON is the persisted form of a simulation result.
+func simulationJSON(simulation SimulationResult) (string, error) {
+	encoded, err := json.Marshal(simulation)
+	return string(encoded), err
 }

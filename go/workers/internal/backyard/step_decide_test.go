@@ -82,8 +82,8 @@ func TestStepDebtToLTVLandsOnTheTarget(t *testing.T) {
 	}
 }
 
-// The worker carries a step decision through prepareStep, record, bind (the
-// StepRequest) and buildStep, never through the single-leg Kamino path.
+// The worker carries a step decision through prepareStep, record and build
+// (the StepRequest), never through the single-leg Kamino path.
 func TestWorkerDispatchesAtomicStep(t *testing.T) {
 	s := leverageExitSnapshot(autoAUTOPYUSD.Lane)
 	s.LTVBPS = 6000
@@ -112,22 +112,15 @@ func TestWorkerDispatchesAtomicStep(t *testing.T) {
 			order = append(order, "record")
 			return DecisionRecord{OperationID: "local-step", Status: Decided}, nil
 		},
-		bind: func(_ context.Context, id string, _ Observation, d Decision, r any, _ ExpectedEffects) error {
-			if id != "local-step" || d != want || !reflect.DeepEqual(r, request) {
-				t.Fatalf("bound %T", r)
-			}
-			order = append(order, "admit")
-			return nil
-		},
-		buildStep: func(_ context.Context, id string, e StepExecutionEvidence) error {
-			if id != "local-step" || !reflect.DeepEqual(e.Request, request) {
+		build: func(_ context.Context, id string, r any, _ ExpectedEffects) error {
+			if id != "local-step" || !reflect.DeepEqual(r, request) {
 				t.Fatal("build drift")
 			}
 			order = append(order, "build")
 			return nil
 		},
 	}}
-	if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != "prepare,record,admit,build" {
+	if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != "prepare,record,build" {
 		t.Fatal(order, err)
 	}
 }

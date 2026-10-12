@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -95,39 +94,25 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 					order = append(order, "record")
 					return DecisionRecord{OperationID: "local-conversion", Status: Decided}, nil
 				},
-				buildJupiter: func(_ context.Context, id string, e JupiterExecutionEvidence) error {
-					if id != "local-conversion" || e.Request.Action != action || e.Request.RouteLane != s.RouteLane {
+				build: func(_ context.Context, id string, request any, _ ExpectedEffects) error {
+					r, ok := request.(JupiterSwapRequest)
+					if id != "local-conversion" || !ok || r.Action != action || r.RouteLane != s.RouteLane {
 						return fmt.Errorf("dispatch drift")
 					}
 					order = append(order, "build")
 					return nil
 				},
-				bind: func(_ context.Context, id string, observed Observation, d Decision, _ any, _ ExpectedEffects) error {
-					if id != "local-conversion" || !reflect.DeepEqual(observed, o) || d != want {
-						t.Fatal("admission identity drift")
-					}
-					order = append(order, "admit")
-					return nil
-				},
 			}}
-			if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != "prepare,record,admit,build" {
+			if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != "prepare,record,build" {
 				t.Fatal(order, err)
 			}
-			worker.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
-				return budgetHold("complete_collateral_return_admission_unavailable")
-			}
-			worker.runtime.buildJupiter = func(context.Context, string, JupiterExecutionEvidence) error {
-				t.Fatal("swap admission HOLD reached signing")
-				return nil
-			}
-			assertBudgetHold(t, worker.Tick(context.Background()), "complete_collateral_return_admission_unavailable")
 		})
 	}
 }
 
 // The worker dispatches the wYLDS lane's debt conversions to Hastra and its
 // collateral and USDC conversions to Jupiter, carrying each decided
-// conversion's identity unchanged through prepare, record, bind and build;
+// conversion's identity unchanged through prepare, record and build;
 // AUTO/AUTO/PYUSD keeps dispatching every conversion to Jupiter (above).
 // (Borrowed wYLDS stakes inside an atomic step; collateral into debt is a
 // down step's conversion; TestEveryHastraLegExecutesAtItsOwnConstraint builds
@@ -171,27 +156,20 @@ func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 					order = append(order, "record")
 					return DecisionRecord{OperationID: "local-conversion", Status: Decided}, nil
 				},
-				bind: func(_ context.Context, _ string, _ Observation, _ Decision, request any, _ ExpectedEffects) error {
-					_, hastraRequest := request.(HastraConversionRequest)
-					if hastraRequest != (venue == "hastra") {
-						t.Fatalf("bound a %T", request)
+				build: func(_ context.Context, id string, request any, _ ExpectedEffects) error {
+					switch r := request.(type) {
+					case JupiterSwapRequest:
+						order = append(order, "build-jupiter")
+					case HastraConversionRequest:
+						if id != "local-conversion" || r.Action != action || r.RouteLane != autoAUTOWYLDSLane {
+							return fmt.Errorf("dispatch drift")
+						}
+						order = append(order, "build-hastra")
 					}
-					order = append(order, "admit")
-					return nil
-				},
-				buildJupiter: func(_ context.Context, _ string, e JupiterExecutionEvidence) error {
-					order = append(order, "build-jupiter")
-					return nil
-				},
-				buildHastra: func(_ context.Context, id string, e HastraExecutionEvidence) error {
-					if id != "local-conversion" || e.Request.Action != action || e.Request.RouteLane != autoAUTOWYLDSLane {
-						return fmt.Errorf("dispatch drift")
-					}
-					order = append(order, "build-hastra")
 					return nil
 				},
 			}}
-			if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != venue+",record,admit,build-"+venue {
+			if err := worker.Tick(context.Background()); err != nil || strings.Join(order, ",") != venue+",record,build-"+venue {
 				t.Fatal(order, err)
 			}
 		})

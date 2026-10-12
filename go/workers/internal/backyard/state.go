@@ -347,18 +347,6 @@ type PersistedOperation struct {
 	ConfirmedSlot           int64
 }
 
-// BuildResult is the exact signed transaction that passed simulation. It must
-// be persisted before broadcast intent is recorded or the wire is submitted.
-type BuildResult struct {
-	MessageSHA256        string
-	SignedWire           []byte
-	SignedWireSHA256     string
-	TransactionSignature string
-	RecentBlockhash      string
-	LastValidBlockHeight int64
-	SimulationSlot       int64
-}
-
 // Reconciliation is independently observed after confirmation. EffectsSHA256
 // identifies canonical observed balance deltas, not the RPC send response.
 type Reconciliation struct {

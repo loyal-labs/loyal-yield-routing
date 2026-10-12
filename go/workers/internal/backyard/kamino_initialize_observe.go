@@ -8,18 +8,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// Execution admission prestate: strictly absent-only. The target obligation
-// must not exist when an initializer is admitted for execution. An unreviewed
-// lane keeps the installed typed hold: admission prestate failure is a
-// retryable observation outcome, not a fatal configuration error.
-func validateKaminoInitializationPrestate(ctx context.Context, view *View, r KaminoInitializationRequest, minimumSlot int64) (int64, error) {
-	inner, err := kaminoMultiplyInitializer(r.RouteLane)
-	if err != nil {
-		return 0, budgetHoldFrom(err, "initializer_prestate_unavailable")
-	}
-	return observeKaminoInitializationPrestate(ctx, view, r, minimumSlot, selectorExitBound{}, false, inner)
-}
-
 // validateKaminoInitializationPrestate is the manifest-aware form that also
 // admits the AUTO lane once its request compiles; every absent-only check
 // below is the exact installed check.

@@ -15,7 +15,8 @@ import (
 )
 
 // Real PostgreSQL checks the shipped lifecycle SQL and proof persistence,
-// through 0099, which stops requiring booked-cost fields. This deliberately
+// through 0099, which stops requiring booked-cost fields, and 0104, which
+// stops requiring the phase3 bind record. This deliberately
 // uses a synthetic signed fixture: the pure validator tests the
 // cryptographic/effect boundary, not a production signer.
 func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
@@ -121,7 +122,7 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 		t.Fatal("0083 refused its own booked failure:", err)
 	}
 	// Under 0083 a failure without booked cost is refused.
-	auth := phase3OperationAuthorization{IntentSHA256: sha256Bytes([]byte("intent")), SignedWireSHA256: wireHash}
+	auth := map[string]any{"intentSha256": sha256Bytes([]byte("intent")), "signedWireSha256": wireHash}
 	if err = insert("unbooked", "submitted", marshal(map[string]any{"phase3": auth})); err != nil {
 		t.Fatal(err)
 	}
@@ -199,5 +200,26 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 	var count int
 	if err = pool.QueryRow(ctx, `SELECT count(*) FROM `+operations+` WHERE status='failed' AND operation_id IN ('failed','legacy')`).Scan(&count); err != nil || count != 2 {
 		t.Fatal("terminal rows changed", count, err)
+	}
+
+	// Under 0099 a failure whose row carries no phase3 bind record is refused;
+	// 0104 admits it on its own columns, as the one-writer binary writes it.
+	if err = insert("unbound", "submitted", marshal(map[string]any{"decision": map[string]string{"reason": "report"}})); err != nil {
+		t.Fatal(err)
+	}
+	if err = settle("unbound", marshal(proof), ""); err == nil {
+		t.Fatal("0099 admitted a failure without its bind record")
+	}
+	migrate("0104_backyard_lifecycle_without_bind.sql")
+	if err = settle("unbound", marshal(proof), ""); err != nil {
+		t.Fatal("0104 refused a failure without its bind record:", err)
+	}
+	for _, mutation := range []string{",signed_wire=NULL", ",action='VOLTR_ALLOCATE_TO_SQUADS'", ",confirmation_status='confirmed'"} {
+		if err = insert("unbound-"+mutation, "submitted", "{}"); err != nil {
+			t.Fatal(err)
+		}
+		if err = settle("unbound-"+mutation, marshal(proof), mutation); err == nil {
+			t.Fatal("0104 admitted a malformed failure:", mutation)
+		}
 	}
 }

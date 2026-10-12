@@ -74,11 +74,6 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, accountView(t, 110, nil), m, decision, o); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatal("expired slot admitted", err)
 	}
-	changed := decision
-	changed.AmountRaw++
-	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, view, m, changed, o); !errors.Is(err, errConfirmedObservationUnavailable) {
-		t.Fatal("ordinary decision drift is not retryable", err)
-	}
 	uninstalled = true
 	_, _, err = prepareBridgeFromTickObservation(context.Background(), client, view, m, decision, o)
 	assertBudgetHold(t, err, "REPORT_NAV policy not installed")

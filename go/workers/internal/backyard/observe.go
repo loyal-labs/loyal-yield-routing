@@ -1,13 +1,10 @@
 package backyard
 
 import (
-	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 )
 
 func (o Observation) Validate() error {
@@ -18,64 +15,6 @@ func (o Observation) Validate() error {
 		return fmt.Errorf("missing route observation kind")
 	}
 	return nil
-}
-
-// ObserveConfirmedBridgeSnapshot is the withdrawal fence of a persisted
-// operation: the withdrawal receipts and all three USDC custodies at one view
-// slot no older than the slot the operation was decided at. Kamino state is
-// intentionally not inferred here; without an exact current account graph the
-// decision engine can only HOLD or select a bridge/withdrawal action.
-func ObserveConfirmedBridgeSnapshot(ctx context.Context, view *View, operation PersistedOperation) (Observation, error) {
-	var effects struct {
-		Decision decisionEvidence `json:"decision"`
-	}
-	if err := json.Unmarshal(operation.ExpectedEffects, &effects); err != nil {
-		return Observation{}, fmt.Errorf("decode the operation's decision slot: %w", err)
-	}
-	slot, accounts, receipts, err := view.readWithReceipts(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, effects.Decision.ObservationSlot)
-	if err != nil {
-		return Observation{}, err
-	}
-	idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
-	if err != nil {
-		return Observation{}, fmt.Errorf("decode Voltr idle custody: %w", err)
-	}
-	strategy, err := decodePinnedUSDC(accountAt(accounts, bridgeStrategyATA), bridgeStrategyAuth)
-	if err != nil {
-		return Observation{}, fmt.Errorf("decode Voltr strategy custody: %w", err)
-	}
-	squads, err := decodePinnedUSDC(accountAt(accounts, bridgeSquadsATA), bridgeVault)
-	if err != nil {
-		return Observation{}, fmt.Errorf("decode Squads USDC custody: %w", err)
-	}
-	if idle.Raw > uint64(^uint64(0)>>1) || strategy.Raw > uint64(^uint64(0)>>1) || squads.Raw > uint64(^uint64(0)>>1) {
-		return Observation{}, fmt.Errorf("bridge custody exceeds signed decision range")
-	}
-	demand, receiptFingerprint, err := decodeConfirmedWithdrawalDemand(receipts)
-	if err != nil {
-		return Observation{}, err
-	}
-	stateHash := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d",
-		receiptFingerprint, idle.Raw, strategy.Raw, squads.Raw,
-	)))
-	return Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{
-		ObservationID:        fmt.Sprintf("%x", stateHash[:]),
-		Slot:                 slot,
-		RouteKind:            RouteKind,
-		Fresh:                true,
-		WithdrawalDemandRaw:  demand,
-		VoltrIdleRaw:         int64(idle.Raw),
-		VoltrStrategyIdleRaw: int64(strategy.Raw),
-		SquadsIdleRaw:        int64(squads.Raw),
-		// No complete, current Kamino graph is checked into this repository.
-		// Leaving these gates false prevents an unsupported OPEN decision.
-		CapacityRaw:             0,
-		PolicyLimitRaw:          0,
-		MaxTargetLTVEntryRaw:    0,
-		LastReportAgeSeconds:    0,
-		LiquidationThresholdBPS: 0,
-	}}, nil
 }
 
 func accountAt(accounts []ConfirmedAccount, address string) ConfirmedAccount {

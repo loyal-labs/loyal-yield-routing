@@ -127,60 +127,6 @@ func budgetView(t *testing.T) *View {
 	return fixtureView(t, budgetBuildRPC(t, 5000, 42))
 }
 
-func TestProductionBridgeRequiresBindBeforeSigner(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		action      Action
-		amount, fee uint64
-	}{
-		{ReportNAV, 0, 20_000_000},
-		{StageSquadsToVoltr, 1_000_000, 5_000},
-		{VoltrRestoreIdle, 1_000_000, 5_000},
-	} {
-		t.Run(string(tc.action), func(t *testing.T) {
-			effects, _, _, err := bridgeExpectedEffects(Decision{Action: tc.action, AmountRaw: int64(tc.amount)}, 2_000_000, 1_000_000, 1_000_000)
-			if err != nil {
-				t.Fatal(err)
-			}
-			request := bridgeTestRequest(tc.action, tc.amount)
-			err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, tc.fee, 42), budgetView(t), "negative-probe", BridgeExecutionEvidence{request, effects}, Credentials{})
-			if err == nil || err.Error() != "database is not configured" {
-				t.Fatalf("unconfigured builder reached signer: %v", err)
-			}
-		})
-	}
-}
-
-func TestProductionKaminoAndJupiterRequireBindBeforeSigner(t *testing.T) {
-	t.Parallel()
-	t.Run("Kamino", func(t *testing.T) {
-		request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegBorrow)
-		source, destination := kaminoLegCustodies(kaminoLegBorrow)
-		effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{
-			{Address: source.Address, Owner: classicTokenProgram, Mint: source.Mint, Authority: source.Authority, BeforeRaw: 2_000_000, AfterRaw: 1_000_000},
-			{Address: destination.Address, Owner: classicTokenProgram, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: 0, AfterRaw: 1_000_000},
-		}}
-		err := BuildSimulateAndPersistKamino(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), budgetView(t), "negative-kamino", KaminoExecutionEvidence{request, effects}, Credentials{})
-		if err == nil || err.Error() != "database is not configured" {
-			t.Fatalf("unconfigured builder reached signer: %v", err)
-		}
-	})
-	t.Run("Jupiter", func(t *testing.T) {
-		request := JupiterSwapRequest{Action: SwapUSDCToPrimeStep, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
-			Policy:      "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG",
-			Instruction: jupiterTestInstruction(SwapUSDCToPrimeStep, 1_000_000, 990_000), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99}
-		minimum := uint64(985_050)
-		effects := ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Accounts: []ExpectedAccountEffect{
-			{Address: bridgeSquadsATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeVault, BeforeRaw: 1_000_000, AfterRaw: 0},
-			{Address: kaminoPrimeCustody, Owner: classicTokenProgram, Mint: kaminoPrimeMint, Authority: bridgeVault, BeforeRaw: 0, AfterRaw: minimum, MinimumAfterRaw: &minimum},
-		}}
-		err := BuildSimulateAndPersistJupiter(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), budgetView(t), "negative-jupiter", JupiterExecutionEvidence{request, effects}, Credentials{})
-		if err == nil || err.Error() != "database is not configured" {
-			t.Fatalf("unconfigured builder reached signer: %v", err)
-		}
-	})
-}
-
 // A failed read stops the pricing pass as the serial sequence did: the reads
 // after it are cancelled, and the reported failure is the first in step
 // order, so a consequence never displaces its root cause.

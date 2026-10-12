@@ -1,14 +1,11 @@
 package backyard
 
 import (
-	"context"
-	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
 
 	"github.com/solana-foundation/solana-go/v2"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -69,13 +66,6 @@ const (
 	kaminoLegRepay
 	kaminoLegWithdraw
 )
-
-// BuildAndSignKaminoPrimeUSDCTransaction creates the legacy Solana wire for
-// one exact Kamino SDK instruction under the supplied confirmed Squads policy.
-// It signs but never simulates, persists, or broadcasts the result.
-func BuildAndSignKaminoPrimeUSDCTransaction(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey) (SignedTransaction, error) {
-	return buildAndSignKaminoPrimeUSDCTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
-}
 
 func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
 	return compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
@@ -140,14 +130,6 @@ func kaminoPolicyInstructions(request KaminoPrimeUSDCRequest, delegate publicKey
 		return nil, 0, err
 	}
 	return append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer), leg, nil
-}
-
-func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
-	message, err := compileKaminoMessageForDelegate(request, expectedDelegate)
-	if err != nil {
-		return SignedTransaction{}, err
-	}
-	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
 func bytesEqual(left, right []byte) bool {
@@ -354,51 +336,6 @@ func wrapSquadsKaminoPolicy(policy, executor, expectedDelegate publicKey, constr
 type KaminoExecutionEvidence struct {
 	Request         KaminoPrimeUSDCRequest
 	ExpectedEffects ExpectedEffects
-}
-
-func BuildSimulateAndPersistKamino(ctx context.Context, database *Database, rpc *chain.Client, view *View, operationID string, evidence KaminoExecutionEvidence, credentials Credentials) error {
-	if database == nil || rpc == nil || operationID == "" {
-		return fmt.Errorf("Kamino runtime dependencies are required")
-	}
-	if _, _, err := kaminoPrimeUSDCInstruction(evidence.Request); err != nil {
-		return err
-	}
-	effects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)
-	if err != nil {
-		return err
-	}
-	if _, err := DecodeExpectedEffects(effects); err != nil {
-		return err
-	}
-	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, effects); err != nil {
-		return err
-	}
-	if err := validateBuildPrestate(ctx, rpc, view, evidence.Request, evidence.ExpectedEffects); err != nil {
-		return err
-	}
-	signer, err := credentials.signer()
-	if err != nil {
-		return err
-	}
-	signed, err := BuildAndSignKaminoPrimeUSDCTransaction(evidence.Request, signer)
-	if err != nil {
-		return err
-	}
-	if err := database.MarkBuilt(ctx, operationID, signed.messageSHA256, effects); err != nil {
-		return err
-	}
-	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
-	if err != nil {
-		return err
-	}
-	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {
-		return err
-	}
-	build, err := signed.BuildResult(simulation.Slot)
-	if err != nil {
-		return err
-	}
-	return database.PersistSigned(ctx, operationID, build)
 }
 
 func validSHA256(value string) bool {

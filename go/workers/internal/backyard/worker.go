@@ -28,8 +28,7 @@ type Worker struct {
 type tickRuntime struct {
 	withdrawalHealth                 func(context.Context, WithdrawalHealth) error
 	observeWithdrawalHealth          func(context.Context) (Observation, error)
-	prepareInitialization            func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
-	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
+	prepareInitialization            func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error)
 	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
 	advance                          func(context.Context, PersistedOperation) error
 	observe                          func(context.Context) (Observation, error)
@@ -44,13 +43,9 @@ type tickRuntime struct {
 	// prepareStep builds an atomic step (stepDecision) from the tick's batch.
 	prepareStep    func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
 	recordDecision func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
-	// bind persists the decided operation's integrity record before build.
-	bind             func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
-	buildBridge      func(context.Context, string, BridgeExecutionEvidence) error
-	buildKamino      func(context.Context, string, KaminoExecutionEvidence) error
-	buildJupiter     func(context.Context, string, JupiterExecutionEvidence) error
-	buildHastra      func(context.Context, string, HastraExecutionEvidence) error
-	buildStep        func(context.Context, string, StepExecutionEvidence) error
+	// build signs the decided operation's request, simulates that exact wire
+	// and persists it with its expected effects before anything sends it.
+	build            func(context.Context, string, any, ExpectedEffects) error
 	recordBudgetHold func(context.Context, string, *BudgetHold) error
 	// watchRoom hands the account view the reserves this tick waits on
 	// (leverage_room_watch.go); nil without a streaming view.
@@ -188,17 +183,14 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			return o, err
 		},
 		watchRoom: view.WatchRoom,
-		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision) (Observation, KaminoInitializationRequest, error) {
-			return prepareKaminoInitialization(ctx, rpc, view, m, d, state.observe)
-		},
-		buildInitialization: func(ctx context.Context, id string, r KaminoInitializationRequest) error {
-			return BuildSimulateAndPersistKaminoInitialization(ctx, database, rpc, view, id, manifest, r, credentials)
+		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision, o Observation) (Observation, KaminoInitializationRequest, error) {
+			return prepareKaminoInitialization(ctx, rpc, m, d, o)
 		},
 		loadNonterminal: func(ctx context.Context, routeKey string) (*PersistedOperation, error) {
 			return database.LoadNonterminal(ctx, routeKey)
 		},
 		advance: func(ctx context.Context, operation PersistedOperation) error {
-			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, view, operation)
+			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, operation)
 		},
 		observe:                          state.observe,
 		loadLatch:                        database.ManualRecoveryLatch,
@@ -223,23 +215,8 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
-		bind: func(ctx context.Context, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
-			return database.bindOperation(ctx, rpc, view, manifest, operationID, observation, decision, request, effects)
-		},
-		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
-			return BuildSimulateAndPersistBridge(ctx, database, rpc, view, operationID, evidence, credentials)
-		},
-		buildKamino: func(ctx context.Context, operationID string, evidence KaminoExecutionEvidence) error {
-			return BuildSimulateAndPersistKamino(ctx, database, rpc, view, operationID, evidence, credentials)
-		},
-		buildJupiter: func(ctx context.Context, operationID string, evidence JupiterExecutionEvidence) error {
-			return BuildSimulateAndPersistJupiter(ctx, database, rpc, view, operationID, evidence, credentials)
-		},
-		buildHastra: func(ctx context.Context, operationID string, evidence HastraExecutionEvidence) error {
-			return BuildSimulateAndPersistHastra(ctx, database, rpc, view, operationID, evidence, credentials)
-		},
-		buildStep: func(ctx context.Context, operationID string, evidence StepExecutionEvidence) error {
-			return BuildSimulateAndPersistStep(ctx, database, rpc, view, operationID, evidence, credentials)
+		build: func(ctx context.Context, operationID string, request any, effects ExpectedEffects) error {
+			return buildSimulatePersist(ctx, database, rpc, manifest, operationID, request, effects, credentials)
 		},
 	}
 }
@@ -345,66 +322,13 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return blocker
 	}
 	logStage("observe_decide", tickStart)
-	var initializationRequest KaminoInitializationRequest
-	var bridgeEvidence BridgeExecutionEvidence
-	var kaminoEvidence KaminoExecutionEvidence
-	var jupiterEvidence JupiterExecutionEvidence
-	var hastraEvidence HastraExecutionEvidence
-	var stepEvidence StepExecutionEvidence
-	preparedDecision := decision
 	executionDecision, err := fixedRouteAction(decision.Action, decision.StrategyKey)
 	if err != nil {
 		return err
 	}
-	wireDecision := decision
-	wireDecision.Action = executionDecision
-	// A conversion executes through Hastra or Jupiter by its lane and action
-	// (hastraConversionLeg); every case below splits on it.
-	hastraConversion := conversionVenueHastra(wireDecision)
-	// A leverage move executes as one atomic step (step.go).
-	_, atomic := stepDecision(observation.Snapshot, wireDecision)
-	decided := observation.Snapshot
-	switch executionDecision {
-	case InitializeKaminoObligation:
-		if w.runtime.prepareInitialization == nil {
-			return budgetHold("initializer_preparation_unavailable")
-		}
-		observation, initializationRequest, err = w.runtime.prepareInitialization(ctx, w.manifest, wireDecision)
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		if atomic {
-			if w.runtime.prepareStep == nil {
-				return budgetHold("step_preparation_unavailable")
-			}
-			observation, stepEvidence, err = w.runtime.prepareStep(ctx, w.manifest, wireDecision, observation)
-		} else {
-			observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
-		}
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		if hastraConversion {
-			if w.runtime.prepareHastra == nil {
-				return budgetHold("hastra_preparation_unavailable")
-			}
-			observation, hastraEvidence, err = w.runtime.prepareHastra(ctx, wireDecision, observation)
-		} else {
-			observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision, observation)
-		}
-	default:
-		return fmt.Errorf("action %s is not dispatchable", decision.Action)
-	}
-	if observation.Validate() == nil && observation.Snapshot.Fresh && observation.Snapshot.ManualReason == "" && !observation.Snapshot.StrategyReceiptIntegrityFault {
-		healthObservation = observation
-	}
-	// Construction refreshes the same confirmed inputs that will be sent. A
-	// refreshed manual-recovery decision is a new durable stop, not ordinary
-	// decision drift, and must be recorded before the tick returns.
-	if ok, persistErr := w.persistRefreshedManualRecovery(ctx, observation); ok {
-		healthDecision = Decision{Action: HoldManualRecovery}
-		if persistErr != nil {
-			return persistErr
-		}
-		return nil
+	request, effects, prepared, err := w.prepare(ctx, decision, executionDecision, observation)
+	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.ManualReason == "" && !prepared.Snapshot.StrategyReceiptIntegrityFault {
+		healthObservation = prepared
 	}
 	logStage("prepare", tickStart)
 	if err != nil {
@@ -412,115 +336,82 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		// target's no_room, counted like Decide's.
 		var hold *BudgetHold
 		if errors.As(err, &hold) && hold.Reason == holdNoRoom {
-			w.noRoom.note(time.Now(), decided, Decision{Action: Hold, Reason: holdNoRoom, StrategyKey: decision.StrategyKey})
+			w.noRoom.note(time.Now(), observation.Snapshot, Decision{Action: Hold, Reason: holdNoRoom, StrategyKey: decision.StrategyKey})
 		}
 		return err
-	}
-	decision = Decide(observation.Snapshot)
-	healthDecision = decision
-	if err := decision.Validate(); err != nil {
-		return err
-	}
-	// Drift is a new state: nothing is recorded yet, so retry the leg on the
-	// next tick instead of stopping the worker.
-	if !decisionsEqual(decision, preparedDecision) {
-		return confirmedObservationUnavailable(fmt.Errorf("prepared evidence does not match the refreshed decision: decided %s/%s/%d, refreshed %s/%s/%d",
-			preparedDecision.Action, preparedDecision.Reason, preparedDecision.AmountRaw, decision.Action, decision.Reason, decision.AmountRaw))
 	}
 	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256)
 	if err != nil {
 		return err
 	}
-	logStage("record_decision", tickStart)
 	if record.Status != Decided || record.OperationID == "" {
 		return fmt.Errorf("actionable decision was not durably recorded as decided")
 	}
-	var request any
-	var effects ExpectedEffects
-	switch executionDecision {
-	case InitializeKaminoObligation:
-		request, effects = initializationRequest, kaminoInitializationEffects(initializationRequest)
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		request, effects = bridgeEvidence.Request, bridgeEvidence.ExpectedEffects
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		request, effects = kaminoEvidence.Request, kaminoEvidence.ExpectedEffects
-		if atomic {
-			request, effects = stepEvidence.Request, stepEvidence.ExpectedEffects
-		}
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		request, effects = jupiterEvidence.Request, jupiterEvidence.ExpectedEffects
-		if hastraConversion {
-			request, effects = hastraEvidence.Request, hastraEvidence.ExpectedEffects
-		}
-	default:
-		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
-	}
-	if w.runtime.bind == nil {
-		err = budgetHold("bind_unavailable")
+	if w.runtime.build == nil {
+		err = budgetHold("build_unavailable")
 	} else {
-		err = w.runtime.bind(ctx, record.OperationID, observation, decision, request, effects)
-	}
-	logStage("bind", tickStart)
-	if err == nil {
-		switch executionDecision {
-		case InitializeKaminoObligation:
-			err = w.runtime.buildInitialization(ctx, record.OperationID, initializationRequest)
-		case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-			err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
-		case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-			if atomic {
-				if w.runtime.buildStep == nil {
-					err = budgetHold("step_build_unavailable")
-				} else {
-					err = w.runtime.buildStep(ctx, record.OperationID, stepEvidence)
-				}
-			} else {
-				err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
-			}
-		default:
-			if hastraConversion {
-				if w.runtime.buildHastra == nil {
-					err = budgetHold("hastra_build_unavailable")
-				} else {
-					err = w.runtime.buildHastra(ctx, record.OperationID, hastraEvidence)
-				}
-			} else {
-				err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
-			}
-		}
+		err = w.runtime.build(ctx, record.OperationID, request, effects)
 	}
 	logStage("build_sign", tickStart)
 	if err != nil {
 		return w.journalTickError(ctx, record.OperationID, err)
 	}
-	// A newly signed report has only 32 slots to land. Persisting the wire is
-	// the recovery boundary; waiting a polling interval adds no safety and
-	// can expire it. Reload durable state and use the normal send/recovery
-	// path immediately, with the same fresh manual-stop check as a new tick.
-	if w.runtime.loadLatch != nil {
-		latch, latched, err := w.runtime.loadLatch(ctx, w.routeKey)
-		if err != nil {
-			return err
-		}
-		if latched {
-			healthDecision = Decision{Action: HoldManualRecovery}
-			return w.recordLatchedHold(ctx, latch)
-		}
-	}
+	// The signed wire is persisted: send it now through the same path a
+	// restart takes. A newly signed report has only 32 slots to land.
 	pending, err := w.runtime.loadNonterminal(ctx, w.routeKey)
-	if err != nil {
+	if err != nil || pending == nil {
 		return err
 	}
-	if pending != nil {
-		if pending.ID != record.OperationID {
-			return fmt.Errorf("operation changed after durable build")
-		}
-		if pending.Status == Signed {
-			defer logStage("final_check_send", tickStart)
-			return w.runtime.advance(ctx, *pending)
-		}
+	if pending.ID != record.OperationID {
+		return fmt.Errorf("operation changed after durable build")
 	}
-	return nil
+	if pending.Status != Signed {
+		return nil
+	}
+	defer logStage("send", tickStart)
+	return w.runtime.advance(ctx, *pending)
+}
+
+// prepare builds the decided action's request from the tick's batch: the one
+// transaction this tick will sign. It never decides again.
+func (w *Worker) prepare(ctx context.Context, decision Decision, executionDecision Action, observation Observation) (any, ExpectedEffects, Observation, error) {
+	wireDecision := decision
+	wireDecision.Action = executionDecision
+	switch executionDecision {
+	case InitializeKaminoObligation:
+		if w.runtime.prepareInitialization == nil {
+			return nil, ExpectedEffects{}, observation, budgetHold("initializer_preparation_unavailable")
+		}
+		prepared, r, err := w.runtime.prepareInitialization(ctx, w.manifest, wireDecision, observation)
+		return r, kaminoInitializationEffects(r), prepared, err
+	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
+		prepared, e, err := w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
+		return e.Request, e.ExpectedEffects, prepared, err
+	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
+		// A leverage move executes as one atomic step (step.go).
+		if _, atomic := stepDecision(observation.Snapshot, wireDecision); atomic {
+			if w.runtime.prepareStep == nil {
+				return nil, ExpectedEffects{}, observation, budgetHold("step_preparation_unavailable")
+			}
+			prepared, e, err := w.runtime.prepareStep(ctx, w.manifest, wireDecision, observation)
+			return e.Request, e.ExpectedEffects, prepared, err
+		}
+		prepared, e, err := w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
+		return e.Request, e.ExpectedEffects, prepared, err
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
+		// A conversion executes through Hastra or Jupiter by its lane and
+		// action (hastraConversionLeg).
+		if conversionVenueHastra(wireDecision) {
+			if w.runtime.prepareHastra == nil {
+				return nil, ExpectedEffects{}, observation, budgetHold("hastra_preparation_unavailable")
+			}
+			prepared, e, err := w.runtime.prepareHastra(ctx, wireDecision, observation)
+			return e.Request, e.ExpectedEffects, prepared, err
+		}
+		prepared, e, err := w.runtime.prepareJupiter(ctx, w.manifest, wireDecision, observation)
+		return e.Request, e.ExpectedEffects, prepared, err
+	}
+	return nil, ExpectedEffects{}, observation, fmt.Errorf("action %s is not dispatchable", decision.Action)
 }
 
 // journalTickError journals a pre-send hold for the tick's operation once.
@@ -596,17 +487,6 @@ func (w *Worker) recordManualRecoveryDecision(ctx context.Context, observation O
 		backyardEvents.latched(decision.Reason)
 	}
 	return nil
-}
-
-func (w *Worker) persistRefreshedManualRecovery(ctx context.Context, observation Observation) (bool, error) {
-	if observation.Snapshot.ObservationID == "" || observation.Snapshot.Slot <= 0 {
-		return false, nil
-	}
-	decision := Decide(observation.Snapshot)
-	if decision.Action != HoldManualRecovery {
-		return false, nil
-	}
-	return true, w.recordManualRecoveryDecision(ctx, observation, decision)
 }
 
 // afterBroadcastError marks a tick error from advancing an operation whose

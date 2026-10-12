@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 	"math"
 	"math/big"
@@ -213,15 +212,6 @@ func hastraPolicyExecute(request HastraConversionRequest, delegate publicKey) (c
 	return wrapSquadsPolicy(policy, delegate, []byte{leg}, inner)
 }
 
-// signHastraConversion signs the request's message as the pinned delegate.
-func signHastraConversion(request HastraConversionRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
-	message, err := compileHastraMessageForDelegate(request, expectedDelegate)
-	if err != nil {
-		return SignedTransaction{}, err
-	}
-	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
-}
-
 // hastraPriceAt reads the stake price and the chain clock at a view slot no
 // older than minimumSlot.
 func hastraPriceAt(ctx context.Context, view *View, minimumSlot int64) (hastra.StakePrice, int64, int64, error) {
@@ -249,35 +239,6 @@ func hastraPriceAt(ctx context.Context, view *View, minimumSlot int64) (hastra.S
 // on price: price stays inside its staleness limit for the wire's lifetime.
 func landable(price hastra.StakePrice, now int64) bool {
 	return now <= math.MaxInt64-hastraPriceLandingSeconds && price.Fresh(now+hastraPriceLandingSeconds)
-}
-
-// validateHastraPrice re-reads the stake price a stake conversion was
-// quoted at, before it is signed (validateRequestPrestate): the program's
-// price is still the quoted one (a newer push changes what the conversion
-// pays) and stays fresh for the signed wire's whole lifetime
-// (hastraPriceLandingSeconds), which is what makes the final send, which
-// reads no chain, safe. Either change holds the conversion; it never errors.
-// It returns the view slot of the read.
-func validateHastraPrice(ctx context.Context, view *View, r HastraConversionRequest, slot int64) (int64, error) {
-	leg, ok := hastraConversionLeg(r.Action, r.RouteLane)
-	if !ok {
-		return 0, budgetHold("hastra_conversion_edge_unregistered")
-	}
-	if leg == hastraMintDepositLeg {
-		return slot, nil
-	}
-	price, now, observed, err := hastraPriceAt(ctx, view, slot)
-	if err != nil {
-		return 0, budgetHoldFrom(err, "hastra_price_unavailable")
-	}
-	quoted, err := r.stakePrice()
-	if err != nil || price.Price.Cmp(quoted.Price) != 0 || price.Scale != quoted.Scale || price.Timestamp != quoted.Timestamp {
-		return 0, budgetHold("hastra_price_moved")
-	}
-	if !landable(price, now) {
-		return 0, budgetHold("hastra_price_stale")
-	}
-	return observed, nil
 }
 
 // prepareHastraFromTickObservation builds a Hastra conversion from the tick's
@@ -376,57 +337,6 @@ func prepareHastraQuoteEvidence(ctx context.Context, rpc *chain.Client, view *Vi
 			{Address: edge.destination, Owner: classicTokenProgram, Mint: edge.destinationMint, Authority: bridgeVault, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
 		}},
 	}, nil
-}
-
-// BuildSimulateAndPersistHastra is the Hastra counterpart of
-// BuildSimulateAndPersistJupiter: the bound intent, the prestate (the quoted
-// price still the program's), then sign, simulate and persist the wire.
-func BuildSimulateAndPersistHastra(ctx context.Context, database *Database, rpc *chain.Client, view *View, operationID string, evidence HastraExecutionEvidence, credentials Credentials) error {
-	if database == nil || rpc == nil || operationID == "" {
-		return fmt.Errorf("Hastra runtime dependencies are required")
-	}
-	if _, _, err := hastraInstruction(evidence.Request); err != nil {
-		return err
-	}
-	effects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)
-	if err != nil {
-		return err
-	}
-	if _, err := DecodeExpectedEffects(effects); err != nil {
-		return err
-	}
-	buildStart := time.Now()
-	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, effects); err != nil {
-		return err
-	}
-	if err := validateBuildPrestate(ctx, rpc, view, evidence.Request, evidence.ExpectedEffects); err != nil {
-		return err
-	}
-	logStage("hastra_build_prestate", buildStart)
-	signer, err := credentials.signer()
-	if err != nil {
-		return err
-	}
-	signed, err := signHastraConversion(evidence.Request, signer, mustKey(bridgeDelegate))
-	if err != nil {
-		return err
-	}
-	if err := database.MarkBuilt(ctx, operationID, signed.messageSHA256, effects); err != nil {
-		return err
-	}
-	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
-	if err != nil {
-		return err
-	}
-	logStage("hastra_build_simulate", buildStart)
-	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {
-		return err
-	}
-	build, err := signed.BuildResult(simulation.Slot)
-	if err != nil {
-		return err
-	}
-	return database.PersistSigned(ctx, operationID, build)
 }
 
 // conversionIntent is what the swap admissions read of a debt/collateral

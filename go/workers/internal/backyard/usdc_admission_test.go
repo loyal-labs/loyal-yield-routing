@@ -123,31 +123,6 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 	return o, m, rpc, client, accounts
 }
 
-func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) {
-	t.Parallel()
-	o, m, rpc, client, accounts := usdcReturnFixture(t)
-	route, _ := runtimeRoute(o.Snapshot.RouteLane)
-	clear(accountAt(accounts, route.Kamino.Obligation).Data[96:1408])
-	d := Decision{Action: SwapStableToCollateralStep, StrategyKey: route.Lane, AmountRaw: 11_000}
-	e, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, m, testPolicies(t), d, 11_000, 0, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.Request.EntryReturnReserved = true
-	if _, err = validateEntrySwap(context.Background(), fixtureView(t, rpc), e.Request, e.ExpectedEffects, 42); err != nil {
-		t.Fatal(err)
-	}
-	partial := e.Request
-	partial.AmountRaw = 10_000
-	if _, err = validateEntrySwap(context.Background(), fixtureView(t, rpc), partial, e.ExpectedEffects, 42); err == nil {
-		t.Fatal("partial working-cash swap accepted")
-	}
-	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 12_000)
-	if _, err = validateEntrySwap(context.Background(), fixtureView(t, rpc), e.Request, e.ExpectedEffects, 42); err == nil {
-		t.Fatal("changed shared source was accepted")
-	}
-}
-
 func TestUSDCHardLTVIsOneDownStep(t *testing.T) {
 	t.Parallel()
 	s := base()

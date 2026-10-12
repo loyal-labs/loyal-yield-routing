@@ -92,7 +92,7 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 			preparedCalls++
 			return Observation{}, JupiterExecutionEvidence{}, errExecutionResumed
 		},
-		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+		build: func(context.Context, string, any, ExpectedEffects) error {
 			buildCalls++
 			return nil
 		},
@@ -420,7 +420,7 @@ func TestManualRecoveryDerivedLatchBlocksWithoutLatchRow(t *testing.T) {
 			recorded = decision
 			return DecisionRecord{OperationID: "derived-latched", Cycle: 1, Status: ManualRecovery}, nil
 		},
-		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+		build: func(context.Context, string, any, ExpectedEffects) error {
 			buildCalls++
 			return nil
 		},
@@ -506,7 +506,7 @@ func TestManualRecoveryDerivedLatchIgnoresLatchedRerecords(t *testing.T) {
 			t.Fatal("genuine fallback latch allowed a chain observation")
 			return Observation{}, nil
 		},
-		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
+		build: func(context.Context, string, any, ExpectedEffects) error {
 			buildCalls++
 			return nil
 		},
@@ -527,83 +527,6 @@ func TestManualRecoveryDerivedLatchIgnoresLatchedRerecords(t *testing.T) {
 	}
 	if fallback, latched, err := db.ManualRecoveryLatch(ctx, productionRouteKey); err != nil || latched {
 		t.Fatalf("higher-generation clear did not release the fallback latch: %+v %v", fallback, err)
-	}
-}
-
-func TestManualRecoveryConstructionRefreshPersistsHoldBeforeDispatch(t *testing.T) {
-	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("requires isolated PHASE3_TEST_DATABASE_URL")
-	}
-	config, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatal("invalid local test database config")
-	}
-	if !strings.HasPrefix(config.ConnConfig.Host, "/private/tmp/backyard-phase3-pg.") || config.ConnConfig.Database != "phase3_budget_test" {
-		t.Fatal("refusing non-disposable database")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	db, err := OpenDatabase(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := ensureManualRecoveryTestSchema(ctx, db); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.pool.Exec(ctx, `DELETE FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key = $1`, productionRouteKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.pool.Exec(ctx, `DELETE FROM loyal_yield.multiply_operations WHERE route_key = $1`, productionRouteKey); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":1,"cycle":1}',1)
-		ON CONFLICT (route_key) DO UPDATE SET state = EXCLUDED.state, state_version = EXCLUDED.state_version, lease_owner = NULL, lease_expires_at = NULL`, productionRouteKey); err != nil {
-		t.Fatal(err)
-	}
-	manifest := readyWorkerManifest(t)
-	initial := manualRecoveryTestObservation("refresh-before", 903)
-	initial.Snapshot.MonitorsArmed = false
-	initial.Snapshot.VoltrIdleRaw = 7
-	initial.Snapshot = tickObservation(initial.Snapshot).Snapshot
-	refreshed := manualRecoveryTestObservation("refresh-hold", 904)
-	refreshed.Snapshot.MonitorsArmed = true
-	refreshed.Snapshot.StrategyReceiptIntegrityFault = true
-	var observeCalls, prepareCalls, admitCalls, buildCalls int
-	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
-		loadLatch:       db.ManualRecoveryLatch,
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
-		observe: func(context.Context) (Observation, error) {
-			observeCalls++
-			return initial, nil
-		},
-		recordManualRecovery: db.RecordManualRecovery,
-		prepareBridge: func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error) {
-			prepareCalls++
-			return refreshed, BridgeExecutionEvidence{}, nil
-		},
-		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
-			admitCalls++
-			return nil
-		},
-		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
-			buildCalls++
-			return nil
-		},
-	}}
-	if err := worker.Tick(ctx); err != nil {
-		t.Fatal(err)
-	}
-	latch, latched, err := db.ManualRecoveryLatch(ctx, productionRouteKey)
-	if err != nil || !latched {
-		t.Fatalf("construction refresh hold was not latched: %+v %v", latch, err)
-	}
-	if latch.Reason != "strategy_receipt_integrity" || latch.ObservationID != refreshed.Snapshot.ObservationID || latch.ObservationSlot != refreshed.Snapshot.Slot {
-		t.Fatalf("unexpected construction-refresh latch: %+v", latch)
-	}
-	if observeCalls != 1 || prepareCalls != 1 || admitCalls != 0 || buildCalls != 0 {
-		t.Fatalf("construction refresh hold reached execution: %d observes, %d prepares, %d admissions, %d builds", observeCalls, prepareCalls, admitCalls, buildCalls)
 	}
 }
 
@@ -683,10 +606,7 @@ func TestManualRecoveryClearBetweenLatchReadAndRerecordDoesNotRearm(t *testing.T
 		}
 		return healthy, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: decision.Action}}, nil
 	}
-	worker.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
-		return nil
-	}
-	worker.runtime.buildBridge = func(context.Context, string, BridgeExecutionEvidence) error {
+	worker.runtime.build = func(context.Context, string, any, ExpectedEffects) error {
 		buildCalls++
 		return nil
 	}
@@ -695,204 +615,5 @@ func TestManualRecoveryClearBetweenLatchReadAndRerecordDoesNotRearm(t *testing.T
 	}
 	if observeCalls != 1 || buildCalls != 1 {
 		t.Fatalf("the next tick did not proceed after clear: %d observes, %d builds", observeCalls, buildCalls)
-	}
-}
-
-func TestManualRecoveryVerifiedConstructionRefreshBuildsThroughProductionPath(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 60*time.Second)
-	defer cancel()
-	defer db.Close()
-	resetManualRecoveryProductionRoute(t, ctx, db, "manual-recovery-verified-refresh")
-
-	manifest := readyWorkerManifest(t)
-	initial := manualRecoveryHealthyRefreshObservation("verified-refresh-initial", 907)
-	initial.Snapshot.MonitorsArmed = false
-	refreshed := manualRecoveryHealthyRefreshObservation("verified-refresh-construction", 908)
-	identityCalls := 0
-	identity := func(context.Context) (programIdentityObservation, error) {
-		identityCalls++
-		return programIdentityObservation{Verified: true,
-			VoltrProgramDeploySlot: voltrProgramDeploySlot, AdaptorProgramDeploySlot: adaptorProgramDeploySlot}, nil
-	}
-	state := productionObserveState{
-		routeKey: productionRouteKey,
-		journal:  &stubProductionJournal{journal: reconciledJournal()},
-		batch:    func(context.Context) (Observation, error) { return initial, nil },
-		identity: identity,
-	}
-	var prepareCalls, buildCalls int
-	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
-		loadLatch:       db.ManualRecoveryLatch,
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
-		observe:         state.observe,
-		recordManualRecovery: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
-			t.Fatal("a verified construction refresh produced a manual-recovery hold")
-			return DecisionRecord{}, nil
-		},
-		prepareBridge: func(ctx context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
-			prepareCalls++
-			if err := state.enrich(ctx, &refreshed); err != nil {
-				return Observation{}, BridgeExecutionEvidence{}, err
-			}
-			if !refreshed.Snapshot.ProgramIdentityKnown {
-				t.Fatal("the verified identity was not carried into the construction snapshot")
-			}
-			return refreshed, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: decision.Action}}, nil
-		},
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
-			return DecisionRecord{OperationID: "verified-refresh-operation", Cycle: 1, Status: Decided}, nil
-		},
-		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error { return nil },
-		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
-			buildCalls++
-			return nil
-		},
-	}}
-	if err := worker.Tick(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if identityCalls != 2 || prepareCalls != 1 || buildCalls != 1 {
-		t.Fatalf("verified refresh did not complete the production path: identity=%d prepare=%d build=%d", identityCalls, prepareCalls, buildCalls)
-	}
-	if decision := Decide(refreshed.Snapshot); decision.Action == HoldManualRecovery {
-		t.Fatalf("verified construction snapshot still held: %+v", decision)
-	}
-	if _, latched, err := db.ManualRecoveryLatch(ctx, productionRouteKey); err != nil || latched {
-		t.Fatalf("verified construction refresh unexpectedly latched: %v", err)
-	}
-}
-
-func TestManualRecoveryUnverifiedConstructionRefreshLatchesThroughProductionPath(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 60*time.Second)
-	defer cancel()
-	defer db.Close()
-	resetManualRecoveryProductionRoute(t, ctx, db, "manual-recovery-unverified-refresh")
-
-	manifest := readyWorkerManifest(t)
-	initial := manualRecoveryHealthyRefreshObservation("unverified-refresh-initial", 909)
-	initial.Snapshot.MonitorsArmed = false
-	refreshed := manualRecoveryHealthyRefreshObservation("unverified-refresh-construction", 910)
-	identityCalls := 0
-	identity := func(context.Context) (programIdentityObservation, error) {
-		identityCalls++
-		if identityCalls == 1 {
-			return programIdentityObservation{Verified: true,
-				VoltrProgramDeploySlot: voltrProgramDeploySlot, AdaptorProgramDeploySlot: adaptorProgramDeploySlot}, nil
-		}
-		return programIdentityObservation{}, nil
-	}
-	state := productionObserveState{
-		routeKey: productionRouteKey,
-		journal:  &stubProductionJournal{journal: reconciledJournal()},
-		batch:    func(context.Context) (Observation, error) { return initial, nil },
-		identity: identity,
-	}
-	var prepareCalls, buildCalls int
-	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
-		loadLatch:       db.ManualRecoveryLatch,
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
-		observe:         state.observe,
-		prepareBridge: func(ctx context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
-			prepareCalls++
-			if err := state.enrich(ctx, &refreshed); err != nil {
-				return Observation{}, BridgeExecutionEvidence{}, err
-			}
-			if refreshed.Snapshot.ProgramIdentityKnown {
-				t.Fatal("the unverified identity unexpectedly became verified")
-			}
-			return refreshed, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: decision.Action}}, nil
-		},
-		recordManualRecovery: db.RecordManualRecovery,
-		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
-			t.Fatal("an unverified construction refresh reached admission")
-			return nil
-		},
-		buildBridge: func(context.Context, string, BridgeExecutionEvidence) error {
-			buildCalls++
-			return nil
-		},
-	}}
-	if err := worker.Tick(ctx); err != nil {
-		t.Fatal(err)
-	}
-	latch, latched, err := db.ManualRecoveryLatch(ctx, productionRouteKey)
-	if err != nil || !latched {
-		t.Fatalf("unverified construction refresh did not latch: %+v %v", latch, err)
-	}
-	if latch.Reason != "program_identity_unverified" || latch.ObservationID != refreshed.Snapshot.ObservationID || latch.ObservationSlot != refreshed.Snapshot.Slot {
-		t.Fatalf("unexpected unverified-refresh latch: %+v", latch)
-	}
-	if identityCalls != 2 || prepareCalls != 1 || buildCalls != 0 {
-		t.Fatalf("unverified refresh reached execution or skipped identity merge: identity=%d prepare=%d build=%d", identityCalls, prepareCalls, buildCalls)
-	}
-}
-
-func TestManualRecoveryKaminoConstructionErrorAfterRefreshHoldPersists(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 60*time.Second)
-	defer cancel()
-	defer db.Close()
-	resetManualRecoveryProductionRoute(t, ctx, db, "manual-recovery-kamino-refresh")
-
-	manifest := readyWorkerManifest(t)
-	initial := manualRecoveryHealthyRefreshObservation("kamino-refresh-initial", 911)
-	initial.Snapshot.MonitorsArmed = false
-	initial.Snapshot.HasPosition = true
-	initial.Snapshot.PositionDebtRaw = 3
-	initial.Snapshot.SquadsIdleRaw = 3
-	initial.Snapshot.LTVBPS = 7_000
-	refreshed := manualRecoveryKaminoRefreshObservation("kamino-refresh-hold", 912)
-	identityCalls := 0
-	identity := func(context.Context) (programIdentityObservation, error) {
-		identityCalls++
-		if identityCalls == 1 {
-			return programIdentityObservation{Verified: true,
-				VoltrProgramDeploySlot: voltrProgramDeploySlot, AdaptorProgramDeploySlot: adaptorProgramDeploySlot}, nil
-		}
-		return programIdentityObservation{}, nil
-	}
-	state := productionObserveState{
-		routeKey: productionRouteKey,
-		journal:  &stubProductionJournal{journal: reconciledJournal()},
-		batch:    func(context.Context) (Observation, error) { return initial, nil },
-		identity: identity,
-	}
-	constructionErr := errors.New("Kamino reserve construction failed after refresh")
-	var prepareCalls, buildCalls int
-	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
-		loadLatch:       db.ManualRecoveryLatch,
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
-		observe:         state.observe,
-		prepareStep: func(ctx context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, StepExecutionEvidence, error) {
-			prepareCalls++
-			if decision.Action != DeleverRouteStep || decision.Reason != hardLTVDeleverReason {
-				t.Fatalf("initial decision did not select the hard-LTV step: %+v", decision)
-			}
-			if err := state.enrich(ctx, &refreshed); err != nil {
-				return Observation{}, StepExecutionEvidence{}, err
-			}
-			return refreshed, StepExecutionEvidence{}, constructionErr
-		},
-		recordManualRecovery: db.RecordManualRecovery,
-		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
-			t.Fatal("a Kamino construction hold reached admission")
-			return nil
-		},
-		buildStep: func(context.Context, string, StepExecutionEvidence) error {
-			buildCalls++
-			return nil
-		},
-	}}
-	if err := worker.Tick(ctx); err != nil {
-		t.Fatal(err)
-	}
-	latch, latched, err := db.ManualRecoveryLatch(ctx, productionRouteKey)
-	if err != nil || !latched {
-		t.Fatalf("Kamino construction error discarded the refresh hold: %+v %v", latch, err)
-	}
-	if latch.Reason != "program_identity_unverified" || latch.ObservationID != refreshed.Snapshot.ObservationID || latch.ObservationSlot != refreshed.Snapshot.Slot {
-		t.Fatalf("unexpected Kamino refresh latch: %+v", latch)
-	}
-	if identityCalls != 2 || prepareCalls != 1 || buildCalls != 0 {
-		t.Fatalf("Kamino construction error reached execution or skipped refresh identity: identity=%d prepare=%d build=%d", identityCalls, prepareCalls, buildCalls)
 	}
 }

@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"strconv"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -209,18 +208,10 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 	} else if operation.Status != Submitted && operation.Status != BroadcastIntent {
 		return fmt.Errorf("invalid finalized failure settlement")
 	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	auth, err := readPhase3AuthorizationTx(ctx, tx, operation.ID)
-	if err != nil {
-		return err
-	}
 	var wire []byte
 	var signature, wireHash, messageHash, action, status, recoveryReason string
-	if err = tx.QueryRow(ctx, `SELECT signed_wire,transaction_signature,signed_wire_sha256,message_sha256,action,status,COALESCE(recovery_reason,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.ID).Scan(&wire, &signature, &wireHash, &messageHash, &action, &status, &recoveryReason); err != nil {
+	var expected []byte
+	if err := d.pool.QueryRow(ctx, `SELECT signed_wire,transaction_signature,signed_wire_sha256,message_sha256,action,status,COALESCE(recovery_reason,''),expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.ID).Scan(&wire, &signature, &wireHash, &messageHash, &action, &status, &recoveryReason, &expected); err != nil {
 		return err
 	}
 	if status != string(operation.Status) || signature != operation.TransactionSignature {
@@ -233,36 +224,24 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 	if manualRecovery && recoveryReason != unclassifiedTransactionErrReason {
 		return budgetHold("failed_settlement_requires_exact_report")
 	}
-	request, effects, message, err := auth.BuildInput.decode()
-	if err != nil {
-		return err
-	}
-	bridge, ok := request.(BridgeBuildRequest)
 	// Scope fee settlement to the two report-bearing bridge wires: the
-	// report-only NAV refresh, and the restore — the latter only through the
-	// operator path and only for the adaptor's report-age refusal. The
-	// compiled request must be the same action the journal row records, and
-	// its compiled message must hash to the persisted message digest.
-	restore := ok && bridge.Action == VoltrRestoreIdle
-	// The restore is admitted from the automatic walk's broadcast states and
-	// the explicit manual state alike — in both cases only for the ReportSlot
-	// refusal, whose receipt proves the report was refused before the Voltr
-	// CPI and therefore that no capital moved.
-	if !ok || action != string(bridge.Action) || sha256Bytes(message) != messageHash ||
-		(bridge.Action != ReportNAV && !restore) ||
-		(restore && reason != adaptorReportSlotRefusedReason) {
+	// report-only NAV refresh, and the restore — the latter only for the
+	// adaptor's report-age refusal, whose receipt proves the report was
+	// refused before the Voltr CPI and therefore that no capital moved.
+	restore := action == string(VoltrRestoreIdle)
+	if action != string(ReportNAV) && !restore || restore && reason != adaptorReportSlotRefusedReason {
 		return budgetHold("failed_settlement_requires_exact_report")
+	}
+	effects, err := DecodeExpectedEffects(expected)
+	if err != nil {
+		return budgetHoldFrom(err, "failed_settlement_requires_exact_report")
 	}
 	// The restore's persisted effects predict successful capital movement
 	// (custody down, idle up). The receipt must instead prove the exact wire
 	// rolled back, so validate against their rollback form — every AfterRaw
-	// replaced by its own BeforeRaw — and bind the compiled message to the
-	// saved exact wire bytes. The report-only validator itself is unchanged.
+	// replaced by its own BeforeRaw.
 	receiptEffects := effects
 	if restore {
-		if signed, _, err := splitSignedWire(wire); err != nil || !bytes.Equal(message, signed) {
-			return budgetHold("failed_settlement_requires_exact_report")
-		}
 		rollback := make([]ExpectedAccountEffect, len(effects.Accounts))
 		for index, account := range effects.Accounts {
 			account.AfterRaw = account.BeforeRaw
@@ -273,24 +252,17 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 	if err = validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, mustKey(bridgeDelegate), receiptEffects); err != nil {
 		return err
 	}
-	intent, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
-	if err != nil || intent != auth.IntentSHA256 || auth.SignedWireSHA256 != wireHash {
-		return budgetHoldFrom(err, "failed_settlement_intent_changed")
-	}
 	proof := finalizedFailureSettlement{Schema: "backyard-finalized-failure/v1", Signature: signature, SignedWireSHA256: wireHash, MessageSHA256: messageHash, Slot: receipt.Slot, Reason: reason, AtomicNoCapitalMovement: true, FeeLamports: *receipt.Meta.Fee, Receipt: receipt}
 	encoded, err := json.Marshal(proof)
 	if err != nil {
 		return err
 	}
-	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='failed',confirmation_status='finalized',confirmed_slot=$3,reconciliation_sha256=$4,reconciled_effects=$5::jsonb,recovery_reason=$6,updated_at=clock_timestamp() WHERE operation_id=$1 AND status=$2`, operation.ID, status, receipt.Slot, sha256Bytes(encoded), string(encoded), reason)
+	result, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='failed',confirmation_status='finalized',confirmed_slot=$3,reconciliation_sha256=$4,reconciled_effects=$5::jsonb,recovery_reason=$6,updated_at=clock_timestamp() WHERE operation_id=$1 AND status=$2`, operation.ID, status, receipt.Slot, sha256Bytes(encoded), string(encoded), reason)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() != 1 {
-		return fmt.Errorf("failed settlement lost serialization")
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return err
+		return fmt.Errorf("failed settlement found no %s operation", status)
 	}
 	d.eventFailedAfterSend(ctx, operation.ID, reason)
 	return nil

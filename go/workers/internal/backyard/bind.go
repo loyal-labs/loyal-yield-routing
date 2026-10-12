@@ -2,30 +2,13 @@ package backyard
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// phase3OperationAuthorization is expected_effects.phase3: the integrity
-// record of one operation. Bind writes the intent, its exact build input and
-// the shared-custody proof; the signer adds the wire hash; send checks the
-// persisted wire is still that intent. It holds no money policy. Rows
-// written before the budget or the debt-clear authority were deleted carry
-// extra fields, which decoding ignores.
-type phase3OperationAuthorization struct {
-	IntentSHA256     string            `json:"intentSha256"`
-	SignedWireSHA256 string            `json:"signedWireSha256,omitempty"`
-	BuildInput       *phase3BuildInput `json:"buildInput,omitempty"`
-}
-
-// Byte strings retain the exact canonical request/effects encoding through
-// JSONB storage; JSON objects would lose their original key ordering and digest.
+// phase3BuildInput is one priced request of a selector recipe. Byte strings
+// retain the exact canonical request/effects encoding through JSONB storage;
+// JSON objects would lose their original key ordering and digest.
 type phase3BuildInput struct {
 	Kind    string `json:"kind"`
 	Request []byte `json:"request"`
@@ -58,20 +41,8 @@ func encodePhase3BuildInput(request any, effects []byte) (*phase3BuildInput, err
 	return input, nil
 }
 
-// decode compiles the persisted request against the embedded route manifest,
-// exactly as every send/reconcile/journal path has always done.
-func (input *phase3BuildInput) decode() (any, ExpectedEffects, []byte, error) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return nil, ExpectedEffects{}, nil, err
-	}
-	return input.decodeWithManifest(manifest)
-}
-
-// decodeWithManifest is the manifest-aware form of decode. Kamino,
-// initializer, Jupiter and Hastra requests compile via the manifest-bound compilers
-// with the fixed bridge delegate; the delegate is never request-supplied.
-// Bridge compilation alone is manifest-independent.
+// decodeWithManifest decodes a recipe request and compiles it as the build
+// would (compileRequest).
 func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, ExpectedEffects, []byte, error) {
 	if input == nil {
 		return nil, ExpectedEffects{}, nil, budgetHold("missing_persisted_build_input")
@@ -101,29 +72,8 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 	if err := decoder.Decode(target); err != nil {
 		return nil, ExpectedEffects{}, nil, budgetHoldFrom(err, "invalid_persisted_build_input")
 	}
-	var request any
-	var message []byte
-	var err error
-	switch r := target.(type) {
-	case *BridgeBuildRequest:
-		request = *r
-		message, err = CompileBridgeMessage(*r)
-	case *KaminoPrimeUSDCRequest:
-		request = *r
-		message, err = compileKaminoMessageForDelegate(*r, mustKey(bridgeDelegate))
-	case *KaminoInitializationRequest:
-		request = *r
-		message, err = m.compileKaminoInitializationMessage(*r)
-	case *JupiterSwapRequest:
-		request = *r
-		message, err = compileJupiterMessageForDelegate(*r, mustKey(bridgeDelegate))
-	case *HastraConversionRequest:
-		request = *r
-		message, err = compileHastraMessageForDelegate(*r, mustKey(bridgeDelegate))
-	case *StepRequest:
-		request = *r
-		message, err = compileStepMessageForDelegate(*r, mustKey(bridgeDelegate))
-	}
+	request := requestValue(target)
+	message, err := compileRequestMessage(m, request)
 	if err != nil {
 		return nil, ExpectedEffects{}, nil, budgetHoldFrom(err, "persisted_build_no_longer_compiles")
 	}
@@ -162,209 +112,57 @@ func decodeExpectedEffectsWithManifest(m RouteManifest, data []byte) (ExpectedEf
 	return expected, nil
 }
 
-// Phase3IntentDigest binds the exact production request and expected effects,
-// including blockhash, amounts, account graph and policy identities.
-func Phase3IntentDigest(request any, effects []byte) (string, error) {
-	if !json.Valid(effects) {
-		return "", budgetHold("invalid_intent_effects")
-	}
-	encoded, err := json.Marshal(struct {
-		Request any             `json:"request"`
-		Effects json.RawMessage `json:"effects"`
-	}{request, json.RawMessage(effects)})
-	if err != nil {
-		return "", fmt.Errorf("encode intent: %w", err)
-	}
-	return sha256Bytes(encoded), nil
-}
-
-// bindOperation is the tick's step between RecordDecision and build. Under
-// the route lock it checks the decided row is this decision, then records the
-// operation's integrity: the intent hash and exact build input of the
-// prepared wire, and the AUTO-PYUSD shared-custody proof.
-func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *View, m RouteManifest, operationID string, o Observation, decision Decision, request any, effects ExpectedEffects) error {
-	if d == nil || d.pool == nil || rpc == nil {
-		return budgetHold("bind_database_unavailable")
-	}
-	encoded, err := jsonMarshalExpectedEffects(effects)
-	if err != nil {
-		return err
-	}
-	input, err := encodePhase3BuildInput(request, encoded)
-	if err != nil {
-		return err
-	}
-	intent, err := Phase3IntentDigest(request, encoded)
-	if err != nil {
-		return err
-	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var status, lane, routeKey, action string
-	var bound bool
-	var decisionBytes []byte
-	if err = tx.QueryRow(ctx, `SELECT status,COALESCE(strategy_key,''),route_key,COALESCE(action,''),expected_effects->'decision',expected_effects ? 'phase3'
-		FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&status, &lane, &routeKey, &action, &decisionBytes, &bound); err != nil {
-		return err
-	}
-	var recorded decisionEvidence
-	if json.Unmarshal(decisionBytes, &recorded) != nil || bound || status != string(Decided) || lane != decision.StrategyKey || action != string(decision.Action) ||
-		recorded.StrategyKey != lane || recorded.AmountRaw != decision.AmountRaw || recorded.Reason != decision.Reason ||
-		recorded.ObservationID != o.Snapshot.ObservationID || recorded.ObservationSlot <= 0 || recorded.ObservationSlot > o.Snapshot.Slot {
-		return budgetHold("bind_journal_mismatch")
-	}
-	auth := phase3OperationAuthorization{IntentSHA256: intent, BuildInput: input}
-	raw, err := json.Marshal(auth)
-	if err != nil {
-		return err
-	}
-	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{phase3}',$2::jsonb,true),updated_at=clock_timestamp() WHERE operation_id=$1 AND status='decided'`, operationID, string(raw))
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("bind lost serialization")
-	}
-	return tx.Commit(ctx)
-}
-
-// requireBoundIntent runs before a builder loads its signer: the decided row
-// must already carry the bind of exactly this request and effects, so no wire
-// is signed (or shown to an RPC simulation) for an unbound operation.
-func (d *Database) requireBoundIntent(ctx context.Context, operationID string, request any, effects []byte) error {
-	if d == nil || d.pool == nil {
-		return fmt.Errorf("database is not configured")
-	}
-	intent, err := Phase3IntentDigest(request, effects)
-	if err != nil {
-		return err
-	}
-	var bound string
-	if err = d.pool.QueryRow(ctx, `SELECT COALESCE(expected_effects->'phase3'->>'intentSha256','') FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='decided'`, operationID).Scan(&bound); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return budgetHold("operation_not_bound")
-		}
-		return err
-	}
-	if bound != intent {
-		return budgetHold("operation_not_bound")
+// requestValue is the request a decode target points at.
+func requestValue(target any) any {
+	switch r := target.(type) {
+	case *BridgeBuildRequest:
+		return *r
+	case *KaminoPrimeUSDCRequest:
+		return *r
+	case *KaminoInitializationRequest:
+		return *r
+	case *JupiterSwapRequest:
+		return *r
+	case *HastraConversionRequest:
+		return *r
+	case *StepRequest:
+		return *r
 	}
 	return nil
 }
 
-// readPhase3AuthorizationTx reads the bound record under the caller's
-// operation lock.
-func readPhase3AuthorizationTx(ctx context.Context, tx pgx.Tx, operationID string) (phase3OperationAuthorization, error) {
-	var raw []byte
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(expected_effects->'phase3','null'::jsonb) FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&raw); err != nil {
-		return phase3OperationAuthorization{}, err
-	}
-	var auth phase3OperationAuthorization
-	if json.Unmarshal(raw, &auth) != nil || !sha256Pattern.MatchString(auth.IntentSHA256) || auth.BuildInput == nil {
-		return auth, budgetHold("operation_not_bound")
-	}
-	return auth, nil
+// compileRequestMessage compiles one prepared request to the unsigned v1
+// message the pinned delegate signs, with the blockhash and expiry it carries.
+// Kamino, initializer, Jupiter, Hastra and step requests compile with the
+// fixed bridge delegate; the delegate is never request-supplied.
+func compileRequestMessage(m RouteManifest, request any) ([]byte, error) {
+	message, _, _, err := compileRequest(m, request)
+	return message, err
 }
 
-// bindSignedWireTx records the signed wire's hash on the bound record, under
-// the same transaction that persists the wire.
-func bindSignedWireTx(ctx context.Context, tx pgx.Tx, operationID, wireSHA256 string) error {
-	auth, err := readPhase3AuthorizationTx(ctx, tx, operationID)
-	if err != nil {
-		return err
-	}
-	if !sha256Pattern.MatchString(wireSHA256) || auth.SignedWireSHA256 != "" && auth.SignedWireSHA256 != wireSHA256 {
-		return budgetHold("signed_wire_binding_mismatch")
-	}
-	_, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=jsonb_set(expected_effects,'{phase3,signedWireSha256}',to_jsonb($2::text),true),updated_at=clock_timestamp() WHERE operation_id=$1`, operationID, wireSHA256)
-	return err
-}
-
-// validateSignedIdentity proves the persisted signed wire is the bound intent:
-// the bound build input recompiles to the signed message, and its blockhash,
-// expiry and signature are the row's.
-func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization, operation PersistedOperation) (any, ExpectedEffects, error) {
-	wire := operation.SignedWire
-	signed, signature, err := splitSignedWire(wire)
-	if err != nil || auth.SignedWireSHA256 != sha256Bytes(wire) {
-		return nil, ExpectedEffects{}, budgetHold("signed_wire_binding_mismatch")
-	}
-	request, effects, message, err := auth.BuildInput.decodeWithManifest(m)
-	if err != nil {
-		return nil, ExpectedEffects{}, err
-	}
-	digest, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
-	if err != nil || digest != auth.IntentSHA256 || !bytes.Equal(message, signed) {
-		return nil, ExpectedEffects{}, budgetHoldFrom(err, "persisted_build_intent_mismatch")
-	}
-	var blockhash string
-	var height int64
+func compileRequest(m RouteManifest, request any) (message []byte, blockhash string, height int64, err error) {
+	delegate := mustKey(bridgeDelegate)
 	switch r := request.(type) {
 	case BridgeBuildRequest:
+		message, err = compileBridgeMessageForDelegate(r, delegate)
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case KaminoPrimeUSDCRequest:
+		message, err = compileKaminoMessageForDelegate(r, delegate)
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case KaminoInitializationRequest:
-		if m.validateInitializerDecision(operation.Decision, r) != nil {
-			return nil, ExpectedEffects{}, budgetHold("initializer_journal_identity_mismatch")
-		}
+		message, err = m.compileKaminoInitializationMessage(r)
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case JupiterSwapRequest:
+		message, err = compileJupiterMessageForDelegate(r, delegate)
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case HastraConversionRequest:
+		message, err = compileHastraMessageForDelegate(r, delegate)
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case StepRequest:
+		message, err = compileStepMessageForDelegate(r, delegate)
 		blockhash, height = r.Open.RecentBlockhash, r.Open.LastValidBlockHeight
+	default:
+		err = fmt.Errorf("request %T has no compiler", request)
 	}
-	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(signature) {
-		return nil, ExpectedEffects{}, budgetHold("persisted_signature_or_expiry_mismatch")
-	}
-	return request, effects, nil
-}
-
-// finalSend proves the persisted signed wire is still the bound intent and
-// returns the locked fence that records broadcast intent before its first
-// send. Nothing here reads the chain: the transaction itself enforces the
-// swap minimum, klend limits, the Squads policy and the adaptor's report age,
-// and simulation already ran it. Only the database fences run again.
-func (d *Database) finalSend(ctx context.Context, manifest RouteManifest, operation PersistedOperation) (func(context.Context) error, error) {
-	if d == nil || d.pool == nil || operation.ID == "" || operation.Status != Signed {
-		return nil, fmt.Errorf("invalid final-send input")
-	}
-	var encoded []byte
-	if err := d.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='signed'`, operation.ID).Scan(&encoded); err != nil {
-		return nil, err
-	}
-	var auth phase3OperationAuthorization
-	if json.Unmarshal(encoded, &auth) != nil {
-		return nil, budgetHold("operation_not_bound")
-	}
-	request, _, err := manifest.validateSignedIdentity(auth, operation)
-	if err != nil {
-		return nil, err
-	}
-	return func(ctx context.Context) error {
-		return d.markBroadcastIntentOnManifest(ctx, manifest, operation.ID, request, auth)
-	}, nil
-}
-
-// authorizeSendTx is the locked final-send fence: the signed row is the bound
-// wire.
-func (d *Database) authorizeSendTx(ctx context.Context, m RouteManifest, tx pgx.Tx, operationID string, request any, bound phase3OperationAuthorization) error {
-	auth, err := readPhase3AuthorizationTx(ctx, tx, operationID)
-	if err != nil {
-		return err
-	}
-	var wire []byte
-	if err = tx.QueryRow(ctx, `SELECT signed_wire FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='signed'`, operationID).Scan(&wire); err != nil {
-		return err
-	}
-	if len(wire) == 0 || auth.SignedWireSHA256 != sha256Bytes(wire) || auth.IntentSHA256 != bound.IntentSHA256 || auth.SignedWireSHA256 != bound.SignedWireSHA256 {
-		return budgetHold("final_send_identity_changed")
-	}
-	_, _, _, err = auth.BuildInput.decodeWithManifest(m)
-	return err
+	return message, blockhash, height, err
 }
