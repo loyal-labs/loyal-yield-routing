@@ -12,21 +12,16 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// The down steps' reasons. A leverage_up or term_keepalive borrow is an up
-// step; a partial withdrawal's withdrawal_partial_release is a down step
-// except on an overflow source, whose release repays nothing.
-const (
-	hardLTVDeleverReason      = "hard_ltv_delever"
-	leverageDownReason        = "leverage_down"
-	leverageDownPartialReason = "leverage_down_partial"
-	withdrawalDeleverReason   = "withdrawal_delever"
-)
+// The hard-LTV down step's reason. A leverage_up or term_keepalive borrow is
+// an up step; debt_zero, leverage_down_partial and (beside debt)
+// withdrawal_release are down steps; overflow_move is a move.
+const hardLTVDeleverReason = "hard_ltv_delever"
 
 const (
 	// stepDownMarker is the amount of every down step's decision but a
-	// partial withdrawal's (which carries its equity, stable): prepare sizes
-	// the repay from the same snapshot (stepDownRepay), so re-deciding on a
-	// refreshed snapshot keeps the decision equal.
+	// release's (which carries its equity, stable): prepare sizes the repay
+	// from the same snapshot (stepDownRepay), so re-deciding on a refreshed
+	// snapshot keeps the decision equal.
 	stepDownMarker = 1
 	// stepSwapLossBPS is the margin a down step converts over the debt it
 	// means to repay: the swap's slippage and the prices' drift.
@@ -37,7 +32,7 @@ const (
 )
 
 // stepDecision reports whether d is an atomic step of s's lane, and whether
-// it is an up step.
+// it is an up step. An overflow move is a step that is not up.
 func stepDecision(s Snapshot, d Decision) (up bool, ok bool) {
 	if !earnHeldLane(d.StrategyKey) {
 		return false, false
@@ -47,12 +42,11 @@ func stepDecision(s Snapshot, d Decision) (up bool, ok bool) {
 		return true, d.Reason == leverageUpReason || d.Reason == termKeepAliveReason
 	case DeleverRouteStep:
 		switch d.Reason {
-		case hardLTVDeleverReason, leverageDownReason, leverageDownPartialReason, withdrawalDeleverReason:
+		case hardLTVDeleverReason, debtZeroReason, leverageDownPartialReason, overflowMoveReason:
 			return false, true
-		case partialReleaseReason:
-			// Beside no debt it is one withdrawal; an overflow source's release
-			// repays nothing.
-			return false, !overflowSourceHalf(s) && s.PositionDebtRaw > 0
+		case releaseReason:
+			// Beside no debt a release is one withdrawal.
+			return false, s.PositionDebtRaw > 0
 		}
 	}
 	return false, false
@@ -80,12 +74,11 @@ func stepDebtToLTVRaw(s Snapshot, ltvBPS int64) int64 {
 
 // stepDownRepay is the debt a down step of reason repays, from the snapshot
 // it was decided on: to the stored level's LTV after hard LTV, to 1.5x for
-// the partial down move, all of it (full, sized on the payoff bound) for the
-// down move to 1x and a drain. A partial withdrawal repays its debt share
-// (planDownStep).
+// the partial down move, all of it (full, sized on the payoff bound) for
+// debt 0. A release repays its debt share (planDownStep).
 func stepDownRepay(s Snapshot, reason string) (uint64, bool) {
 	switch reason {
-	case leverageDownReason, withdrawalDeleverReason:
+	case debtZeroReason:
 		return uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)), true
 	case hardLTVDeleverReason:
 		return uint64(max(stepDebtToLTVRaw(s, hardLTVTargetBPS(s)), 0)), false
@@ -181,36 +174,38 @@ func (st stepState) stepWithdrawReceipts() (uint64, error) {
 	}
 	receipts, _, err := withdrawExcessAtLTV(st.position, uint64(ceiling.Int64()-stepWithdrawMarginBPS))
 	if err != nil {
-		return 0, budgetHoldFrom(err, "step_no_withdraw_room")
+		// Only outside cash can repay now: the target's no_room, counted on
+		// /metrics where its alert lives.
+		return 0, &BudgetHold{Reason: holdNoRoom, Details: map[string]string{"cause": "step_no_withdraw_room"}, cause: err}
 	}
 	return min(receipts, stepLegCap(st.route)), nil
 }
 
 // planDownStep sizes a down step from decision: the receipts it withdraws
-// and the collateral it converts. A partial withdrawal frees its equity E
-// (the decision amount) at the position's own level: it withdraws the
-// collateral share C*E/Eq and converts only the debt share of it, so the
-// rest waits as collateral for the withdrawal's exit legs. Every other down
-// step repays the decision amount of debt: it converts the withdrawal and
-// the held collateral, which covers that debt less the held debt, plus
+// and the collateral it converts. A release frees its equity E (the
+// decision amount) at the position's own level: it withdraws the collateral
+// share C*E/Eq and converts only the debt share of it, so the rest waits as
+// collateral for the withdrawal's exit legs. Every other down step repays
+// the decision amount of debt: it converts the withdrawal and the held
+// collateral, which covers that debt less the held debt, plus
 // stepSwapLossBPS.
 func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (uint64, uint64, error) {
 	limit, err := st.stepWithdrawReceipts()
 	if err != nil {
 		return 0, 0, err
 	}
-	if d.Reason == partialReleaseReason {
+	if d.Reason == releaseReason {
 		receipts := uint64(max(partialWithdrawalReleaseReceipts(s, d.AmountRaw), 0))
 		receipts = min(receipts, limit)
 		liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
 		if err != nil || liquidity == 0 || s.PositionCollateralValueRaw <= 0 {
-			return 0, 0, budgetHoldFrom(err, "partial_withdrawal_leg_unavailable")
+			return 0, 0, budgetHoldFrom(err, "release_leg_unavailable")
 		}
 		convert := new(big.Int).Mul(new(big.Int).SetUint64(liquidity), big.NewInt(s.PositionDebtValueRaw))
 		convert.Mul(convert, big.NewInt(10_000+stepSwapLossBPS))
 		convert.Quo(convert, new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(10_000)))
 		if !convert.IsUint64() || convert.Sign() <= 0 {
-			return 0, 0, budgetHold("partial_withdrawal_leg_unavailable")
+			return 0, 0, budgetHold("release_leg_unavailable")
 		}
 		return receipts, min(convert.Uint64(), liquidity+st.heldCollateral), nil
 	}
@@ -269,12 +264,21 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	if err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}
+	if decision.Reason == overflowMoveReason {
+		evidence, err := assembleMove(ctx, rpc, manifest, observation.policies, accounts, st, s, decision)
+		logStage("prepare_step", prepareStart)
+		return observation, evidence, err
+	}
 	if up {
 		borrow := uint64(decision.AmountRaw)
 		if decision.Reason == termKeepAliveReason {
 			err = validateTermKeepAliveBorrow(st.position, accounts, route, borrow)
 		} else if capped, capErr := capacitySizedBorrow(st.position, accounts, route, int64(leverageUpLevel(s)*100)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
 			err = budgetHoldFrom(capErr, "borrow_capacity_shrank")
+		} else {
+			// A split policy caps each KLend leg: the borrow, and the deposit
+			// of its conversion, stay a tenth under the cap.
+			borrow, err = stepUpBorrowWithinCap(st, borrow)
 		}
 		if err != nil {
 			return Observation{}, StepExecutionEvidence{}, err
@@ -420,4 +424,108 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		debt.AfterRaw = st.debtBalance - st.heldDebt
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: stepEffects(up, collateral, debt)}, guaranteed, nil
+}
+
+// stepUpBorrowWithinCap sizes an up step under a split policy's leg cap: the
+// borrow, and the deposit its conversion makes beside the held collateral,
+// stay a tenth under the cap, so an up step larger than the cap borrows the
+// cap's share instead of holding.
+func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
+	limit := stepLegCap(st.route)
+	if limit == math.MaxUint64 {
+		return borrow, nil
+	}
+	limit -= limit / 10
+	borrow = min(borrow, limit)
+	p := st.position
+	if limit <= st.heldCollateral {
+		return 0, budgetHold("step_over_policy_cap")
+	}
+	collateral, err := valueBetweenTokenRaw(borrow, p.DebtDecimals, p.CollateralDecimals, p.DebtPriceSF, p.CollateralPriceSF, true)
+	if err != nil {
+		return 0, err
+	}
+	if collateral > limit-st.heldCollateral {
+		if borrow, err = valueBetweenTokenRaw(limit-st.heldCollateral, p.CollateralDecimals, p.DebtDecimals, p.CollateralPriceSF, p.DebtPriceSF, false); err != nil {
+			return 0, err
+		}
+	}
+	if borrow < leverageMinimumBorrowRaw {
+		return 0, budgetHold("step_over_policy_cap")
+	}
+	return borrow, nil
+}
+
+// assembleMove is an overflow move of st's lane: it withdraws the receipts
+// worth the decision's equity (within the live cap's LTV and the
+// obligation's withdraw room) and deposits what they redeem, with any
+// collateral already in the shared custody, into the overflow lane's
+// obligation, in one transaction.
+func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest, policies installedPolicies, accounts []ConfirmedAccount, st stepState, s Snapshot, decision Decision) (StepExecutionEvidence, error) {
+	route := st.route
+	lane, ok := overflowLaneOf(route.Lane)
+	if !ok {
+		return StepExecutionEvidence{}, fmt.Errorf("lane %s has no overflow lane", route.Lane)
+	}
+	destination, err := runtimeRoute(lane)
+	if err != nil {
+		return StepExecutionEvidence{}, err
+	}
+	if destination.CollateralCustody != route.CollateralCustody || destination.Kamino.CollateralReserve != route.Kamino.CollateralReserve {
+		return StepExecutionEvidence{}, fmt.Errorf("an overflow lane shares its source's collateral")
+	}
+	limit, err := st.stepWithdrawReceipts()
+	if err != nil {
+		return StepExecutionEvidence{}, err
+	}
+	receipts := min(uint64(max(overflowReleaseReceipts(s, decision.AmountRaw), 0)), limit, st.position.CollateralDepositedRaw-1)
+	liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
+	if err != nil || receipts == 0 || liquidity == 0 {
+		return StepExecutionEvidence{}, budgetHoldFrom(err, holdNoRoom)
+	}
+	deposit := st.heldCollateral + liquidity
+	if receipts > stepLegCap(route) || deposit > stepLegCap(destination) {
+		return StepExecutionEvidence{}, budgetHold("step_over_policy_cap")
+	}
+	// The overflow obligation's reserves before the deposit, as its refresh
+	// names them.
+	account := accountAt(accounts, destination.Kamino.Obligation)
+	if account.Address != destination.Kamino.Obligation || account.Lamports == 0 {
+		return StepExecutionEvidence{}, budgetHold("overflow_obligation_absent")
+	}
+	obligation, err := decodeKaminoObligation(account, destination.Kamino)
+	if err != nil {
+		return StepExecutionEvidence{}, err
+	}
+	topology := []string{}
+	if obligation.collateralDepositedRaw > 0 {
+		topology = append(topology, destination.Kamino.CollateralReserve)
+	}
+	if obligation.debtRaw > 0 {
+		topology = append(topology, destination.Kamino.DebtReserve)
+	}
+	blockhash, err := latestBlockhash(ctx, rpc)
+	if err != nil {
+		return StepExecutionEvidence{}, err
+	}
+	open, err := manifest.kaminoPacketForRoute(policies, DeleverRouteStep, kaminoLegWithdraw, receipts, blockhash, route.Lane)
+	if err != nil {
+		return StepExecutionEvidence{}, err
+	}
+	open.ObligationReserves = st.topology
+	closing, err := manifest.kaminoPacketForRoute(policies, DeleverRouteStep, kaminoLegDeposit, deposit, blockhash, destination.Lane)
+	if err != nil {
+		return StepExecutionEvidence{}, err
+	}
+	closing.ObligationReserves = topology
+	request := StepRequest{Open: open, Close: closing}
+	if _, err := compileStepMessageForDelegate(request, mustKey(bridgeDelegate)); err != nil {
+		return StepExecutionEvidence{}, budgetHoldFrom(err, "step_does_not_compile")
+	}
+	// The shared custody gives up what it held: the withdrawal arrives and
+	// leaves in the same transaction.
+	after := st.collateralBalance - st.heldCollateral
+	collateral := ExpectedAccountEffect{Address: route.CollateralCustody, Owner: route.CollateralTokenProgram, Mint: route.Kamino.CollateralMint, Authority: bridgeVault,
+		BeforeRaw: st.collateralBalance, AfterRaw: after, MinimumAfterRaw: &after}
+	return StepExecutionEvidence{Request: request, ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "atomic-step", Conserved: false, Accounts: []ExpectedAccountEffect{collateral}}}, nil
 }

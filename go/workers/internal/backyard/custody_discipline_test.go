@@ -95,7 +95,7 @@ func TestRestoreAmountEqualsJournaledStagedAmount(t *testing.T) {
 		{"matched journal restores exactly the staged amount", 5, 5, true, VoltrRestoreIdle, 5, "withdrawal_staged"},
 		{"unknown journal never infers an amount", 5, 0, false, HoldManualRecovery, 0, "custody_mismatch"},
 		{"divergent journaled amount never sweeps custody", 5, 4, true, HoldManualRecovery, 0, "custody_mismatch"},
-		{"empty custody needs no journaled stage", 0, 0, false, StageSquadsToVoltr, 5, "withdrawal_demand"},
+		{"empty custody needs no journaled stage", 0, 0, false, StageSquadsToVoltr, 5, outboundStageReason},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := base()
@@ -105,7 +105,7 @@ func TestRestoreAmountEqualsJournaledStagedAmount(t *testing.T) {
 			s.SquadsIdleRaw = 5
 			s.StagedAmountKnown = tc.known
 			s.StagedAmountRaw = tc.staged
-			got := Decide(s)
+			got := Decide(targeted(s))
 			if got.Action != tc.wantAction || got.AmountRaw != tc.wantAmount || got.Reason != tc.wantReason {
 				t.Fatalf("custody=%d journaled=%d known=%t: %+v", tc.custody, tc.staged, tc.known, got)
 			}

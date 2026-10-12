@@ -100,11 +100,6 @@ type HastraConversionRequest struct {
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 	RouteLane            string
-	// PositionReturnReserved marks a leverage conversion of borrowed debt
-	// into collateral; FullPayoffFunding a conversion that funds a payoff.
-	// Their admissions are the swap admissions' (conversionIntent).
-	PositionReturnReserved bool `json:"positionReturnReserved,omitempty"`
-	FullPayoffFunding      bool `json:"fullPayoffFunding,omitempty"`
 }
 
 type HastraExecutionEvidence struct {
@@ -325,14 +320,7 @@ func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return Observation{}, HastraExecutionEvidence{}, err
 	}
-	quoteDecision := decision
-	if wire, ok := partialWithdrawalWireAmount(observation.Snapshot, decision); ok {
-		if wire <= 0 || uint64(wire) > sourceRaw {
-			return Observation{}, HastraExecutionEvidence{}, budgetHold("partial_withdrawal_swap_unavailable")
-		}
-		quoteDecision.AmountRaw = wire
-	}
-	evidence, err := prepareHastraQuoteEvidence(ctx, rpc, view, observation.policies, quoteDecision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
+	evidence, err := prepareHastraQuoteEvidence(ctx, rpc, view, observation.policies, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 	logStage("prepare_hastra_quote", prepareStart)
 	if err != nil {
 		return observation, evidence, err
@@ -445,21 +433,19 @@ func BuildSimulateAndPersistHastra(ctx context.Context, database *Database, rpc 
 // conversion, whichever venue converts it: its action, lane, exact input,
 // the least output its venue guarantees, and the reservation it carries.
 type conversionIntent struct {
-	Action                                                                              Action
-	RouteLane                                                                           string
-	AmountRaw, MinimumOutputRaw                                                         uint64
-	PositionReturnReserved, EntryReturnReserved, TopupReturnReserved, FullPayoffFunding bool
+	Action                                   Action
+	RouteLane                                string
+	AmountRaw, MinimumOutputRaw              uint64
+	EntryReturnReserved, TopupReturnReserved bool
 }
 
 func (r JupiterSwapRequest) intent() conversionIntent {
 	return conversionIntent{Action: r.Action, RouteLane: r.RouteLane, AmountRaw: r.AmountRaw, MinimumOutputRaw: r.MinimumOutputRaw,
-		PositionReturnReserved: r.PositionReturnReserved, EntryReturnReserved: r.EntryReturnReserved, TopupReturnReserved: r.TopupReturnReserved,
-		FullPayoffFunding: r.FullPayoffFunding}
+		EntryReturnReserved: r.EntryReturnReserved, TopupReturnReserved: r.TopupReturnReserved}
 }
 
 func (r HastraConversionRequest) intent() conversionIntent {
-	return conversionIntent{Action: r.Action, RouteLane: r.RouteLane, AmountRaw: r.AmountRaw, MinimumOutputRaw: r.OutputRaw,
-		PositionReturnReserved: r.PositionReturnReserved, FullPayoffFunding: r.FullPayoffFunding}
+	return conversionIntent{Action: r.Action, RouteLane: r.RouteLane, AmountRaw: r.AmountRaw, MinimumOutputRaw: r.OutputRaw}
 }
 
 // conversionVenueHastra reports a decided conversion that executes through
@@ -499,19 +485,6 @@ func (c conversionEvidence) quotedOutputRaw() uint64 {
 	return 0
 }
 
-// withFunding is c with its full-payoff funding reservation set to funding.
-func (c conversionEvidence) withFunding(funding bool) conversionEvidence {
-	switch r := c.Request.(type) {
-	case JupiterSwapRequest:
-		r.FullPayoffFunding = funding
-		c.Request = r
-	case HastraConversionRequest:
-		r.FullPayoffFunding = funding
-		c.Request = r
-	}
-	return c
-}
-
 // prepareConversionQuoteEvidence quotes decision's conversion on its venue:
 // Hastra for a Hastra lane's debt conversions (hastraConversionLeg), Jupiter
 // for every other.
@@ -522,38 +495,4 @@ func prepareConversionQuoteEvidence(ctx context.Context, rpc *chain.Client, view
 	}
 	e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, policies, decision, sourceRaw, destinationRaw, slot)
 	return conversionEvidence{e.Request, e.ExpectedEffects}, err
-}
-
-// validateConversionFunding is validatePayoffFunding on c's venue.
-func validateConversionFunding(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, c conversionEvidence, slot, steps int64, refreshedBasis bool) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	switch r := c.Request.(type) {
-	case JupiterSwapRequest:
-		return validatePayoffFunding(ctx, rpc, view, manifest, r, c.ExpectedEffects, slot, steps, refreshedBasis)
-	case HastraConversionRequest:
-		return validateHastraPayoffFunding(ctx, rpc, view, manifest, r, c.ExpectedEffects, slot, steps, refreshedBasis)
-	}
-	return KaminoPayoffBound{}, nil, budgetHold("invalid_full_payoff_funding_intent")
-}
-
-// validateConversionFundingAccounts is validatePayoffFundingAccounts on c's
-// venue, over accounts already read.
-func validateConversionFundingAccounts(manifest RouteManifest, c conversionEvidence, bound KaminoPayoffBound, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	switch r := c.Request.(type) {
-	case JupiterSwapRequest:
-		return validatePayoffFundingAccounts(manifest, r, c.ExpectedEffects, bound, accounts, route)
-	case HastraConversionRequest:
-		intent := r.intent()
-		if !intent.FullPayoffFunding || !isPayoffFundingAction(r.Action) || r.RouteLane != route.Lane {
-			return bound, nil, budgetHold("invalid_full_payoff_funding_intent")
-		}
-		if _, err := manifest.measureExecutableDebit(r, c.ExpectedEffects); err != nil {
-			return bound, nil, err
-		}
-		edge, err := hastraEdgeForRoute(r.Action, r.RouteLane)
-		if err != nil {
-			return bound, nil, err
-		}
-		return validateFundingCustody(intent, edge.source, edge.sourceMint, r.OutputRaw, c.ExpectedEffects, bound, accounts, route)
-	}
-	return bound, nil, budgetHold("invalid_full_payoff_funding_intent")
 }

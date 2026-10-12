@@ -42,18 +42,4 @@ func TestEveryActiveRegistryLaneEntersUnderTheUnchangedSelectorRule(t *testing.T
 	if entered.Action != "ENTER" || entered.DestinationLane != onreONycUSDC {
 		t.Fatalf("persistent OnRe advantage did not enter: %+v", entered)
 	}
-	// A funded OnRe position may price its own same-lane reinvestment.
-	same := sameLaneSelectorFixture()
-	same.Snapshot.RouteLane, same.Snapshot.StrategyKey = onreONycUSDC, onreONycUSDC
-	if !sameLaneReinvestmentEligible(same.Snapshot, same.Policy) {
-		t.Fatal("funded OnRe position cannot reinvest in its own lane")
-	}
-	same.Snapshot.RouteLane, same.Snapshot.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
-	if !sameLaneReinvestmentEligible(same.Snapshot, same.Policy) {
-		t.Fatal("Prime/PRIME/USDC may not reinvest")
-	}
-	same.Snapshot.RouteLane, same.Snapshot.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
-	if sameLaneReinvestmentEligible(same.Snapshot, same.Policy) {
-		t.Fatal("exit-only Ethena may reinvest")
-	}
 }

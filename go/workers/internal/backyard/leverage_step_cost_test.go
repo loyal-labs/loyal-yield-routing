@@ -67,7 +67,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 	if approved.BorrowRaw == 0 {
 		t.Fatalf("fixture not approved: %+v", approved)
 	}
-	s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = approved.BorrowRaw, approved.SourceDebtRaw
+	s.LeverageTargetLevel, s.LeverageUpApproved = approved.level().Level, approved.level().UpApproved
 	outage := func(uint64) (leverageStepCost, error) {
 		return leverageStepCost{}, costOutage("exit_quote", fmt.Errorf("Jupiter https://api.example/?api-key=secret: %w", context.DeadlineExceeded))
 	}
@@ -84,7 +84,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 	if got, _ := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), quoteFailed); got.Reason != "leverage_cost_unavailable(entry_quote)" || got.storeChanges(s) {
 		t.Fatalf("entry quote outage: %+v", got)
 	}
-	if d := Decide(s); d.Action != OpenRouteStep || d.Reason != leverageUpReason || d.AmountRaw != room {
+	if d := Decide(targeted(s)); d.Action != OpenRouteStep || d.Reason != leverageUpReason || d.AmountRaw != room {
 		t.Fatalf("the carried approval did not borrow the room: %+v", d)
 	}
 	// The spread falls under the 1.5x rule: the target steps down and the

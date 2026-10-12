@@ -182,10 +182,9 @@ func (e *events) tickResult(err error, fatal bool) {
 		e.facts.Progress(engine.FamilyBackyard)
 	}
 	if heartbeat {
-		// mid_move: an admitted unwind, borrowed cash or withdrawn collateral
-		// not yet redeposited legitimately passes the 55% LTV line by design.
+		// mid_move: borrowed cash or withdrawn collateral not yet redeposited.
 		e.log.Info("backyard_heartbeat", "lane", s.RouteLane, "ltv_bps", s.LTVBPS, "nav_raw", s.StrategyNAVRaw, "manual", manual,
-			"has_position", s.HasPosition, "mid_move", s.Unwind || debtCashRaw(s) > 0 || s.CollateralIdleRaw > 0,
+			"has_position", s.HasPosition, "mid_move", debtCashRaw(s) > 0 || s.CollateralIdleRaw > 0, "target_rule", s.Target.Rule,
 			"withdrawal_demand_raw", s.WithdrawalDemandRaw, "voltr_idle_raw", s.VoltrIdleRaw, "withdrawal_waiting_seconds", waiting,
 			"fee_accumulator_raw", s.FeeAccumulatorRaw, "lp_supply_incl_fees_raw", s.LPSupplyInclFeesRaw,
 			"fee_accumulator_warning", s.MonitorsArmed && s.Nonterminal == "" && approvedVoltrFeeTerms(s) && s.FeeAccumulatorRaw >= 0 && s.LPSupplyInclFeesRaw >= s.FeeAccumulatorRaw && feeAccumulatorNeedsWarning(uint64(s.FeeAccumulatorRaw), uint64(s.LPSupplyInclFeesRaw)))
@@ -456,6 +455,15 @@ func (e *events) leverageUpLanded(lane string, borrowedRaw int64, signature stri
 	if e.facts != nil {
 		e.facts.BackyardLeverageUpLanded(lane, reaction, known)
 	}
+}
+
+// stepNoRoom counts a step that holds for lack of chain room, by lane and
+// target rule.
+func (e *events) stepNoRoom(lane, rule string) {
+	if e == nil || e.facts == nil {
+		return
+	}
+	e.facts.BackyardStepNoRoom(lane, rule)
 }
 
 // leverageDecisionOutage counts a leverage sample that could not be decided,

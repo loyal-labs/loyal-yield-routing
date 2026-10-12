@@ -9,7 +9,7 @@ func validateEntrySwap(ctx context.Context, view *View, request JupiterSwapReque
 	if basicLane(request.RouteLane) && (len(effects.Accounts) == 0 || effects.Accounts[0].BeforeRaw != request.AmountRaw) {
 		return 0, budgetHold("entry_swap_must_consume_working_cash")
 	}
-	if !request.EntryReturnReserved || request.FullPayoffFunding || request.Action != SwapStableToCollateralStep || len(effects.Accounts) != 2 {
+	if !request.EntryReturnReserved || request.Action != SwapStableToCollateralStep || len(effects.Accounts) != 2 {
 		return 0, budgetHold("entry_swap_intent_mismatch")
 	}
 	if _, err := MeasureExecutableDebit(request, effects); err != nil {

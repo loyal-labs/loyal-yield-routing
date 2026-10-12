@@ -20,43 +20,36 @@ func liveTopupSnapshot() Snapshot {
 func TestTopupAllocationSizingAndPriority(t *testing.T) {
 	t.Parallel()
 	s := liveTopupSnapshot()
-	got := Decide(s)
+	got := Decide(targeted(s))
 	if got.Action != VoltrAllocateToSquads || got.Reason != topupAllocationReason || got.AmountRaw != s.VoltrIdleRaw || got.Validate() != nil {
 		t.Fatalf("idle cash was not topped up: %+v", got)
 	}
 	// Size = min(idle - buffer, working tranche cap, deposit-limit room).
 	room := s
 	room.TopupDepositRoomRaw = 700_000_000
-	if got := Decide(room); got.AmountRaw != 700_000_000 {
+	if got := Decide(targeted(room)); got.AmountRaw != 700_000_000 {
 		t.Fatalf("deposit-limit room ignored: %+v", got)
 	}
 	capped := s
 	capped.VoltrIdleRaw, capped.TopupDepositRoomRaw = int64(strategyTwoBridgeLegCapRaw)+5, int64(strategyTwoBridgeLegCapRaw)+5
-	if got := Decide(capped); got.AmountRaw != int64(strategyTwoBridgeLegCapRaw) {
+	if got := Decide(targeted(capped)); got.AmountRaw != int64(strategyTwoBridgeLegCapRaw) {
 		t.Fatalf("working tranche cap ignored: %+v", got)
 	}
 	// Open borrowing does not jump ahead of idle cash: top up first, then the
 	// borrow levers the whole collateral.
 	open := s
 	open.BorrowUtilizationBlocked = false
-	if got := Decide(open); got.Reason != topupAllocationReason {
+	if got := Decide(targeted(open)); got.Reason != topupAllocationReason {
 		t.Fatalf("borrow preempted the top-up: %+v", got)
 	}
 	open.VoltrIdleRaw, open.LeverageTargetLevel = 0, 1.5
 	armLeverageCapacityFixture(&open)
-	if got := Decide(open); got.Action != OpenRouteStep || got.Reason != leverageUpReason {
+	if got := Decide(targeted(open)); got.Action != OpenRouteStep || got.Reason != leverageUpReason {
 		t.Fatalf("no borrow after the top-up is done: %+v", got)
-	}
-	// The selector-entry pause does not block adding to the current loop.
-	paused := s
-	paused.SelectorEntryPaused = true
-	if got := Decide(paused); got.Reason != topupAllocationReason {
-		t.Fatalf("paused selector entry blocked the top-up: %+v", got)
 	}
 	for name, mutate := range map[string]func(*Snapshot){
 		"uncovered demand": func(s *Snapshot) { s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1 },
 		"covered demand":   func(s *Snapshot) { s.WithdrawalDemandRaw = 1 },
-		"unwind":           func(s *Snapshot) { s.Unwind = true },
 		"hard ltv":         func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS, s.DebtIdleRaw = 1, 1, 6000, 1 },
 		"report due":       func(s *Snapshot) { s.PostMutationNAVRequired = true },
 		"nonterminal":      func(s *Snapshot) { s.Nonterminal = Built },
@@ -67,7 +60,7 @@ func TestTopupAllocationSizingAndPriority(t *testing.T) {
 	} {
 		c := s
 		mutate(&c)
-		if got := Decide(c); got.Reason == topupAllocationReason {
+		if got := Decide(targeted(c)); got.Reason == topupAllocationReason {
 			t.Fatalf("%s: top-up allocation selected: %+v", name, got)
 		}
 	}
@@ -103,11 +96,11 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 		{func(s *Snapshot) {
 			s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 0, 0, 0
 			s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.LTVBPS = 99_958_000_000, 102_000_000_000, 88
-		}, Hold, "single_loop_position_ready", 0},
+		}, Hold, holdAtTarget, 0},
 	}
 	for i, step := range steps {
 		step.mutate(&s)
-		got := Decide(s)
+		got := Decide(targeted(s))
 		if got.Action != step.action || got.Reason != step.reason || got.AmountRaw != step.amount || got.Validate() != nil {
 			t.Fatalf("step %d: %+v", i, got)
 		}
@@ -115,14 +108,14 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 	// Sizing is the debt-free tranche rule: deposit-limit room still binds.
 	room := liveDebtTopupSnapshot()
 	room.TopupDepositRoomRaw = 700_000_000
-	if got := Decide(room); got.Reason != topupAllocationReason || got.AmountRaw != 700_000_000 {
+	if got := Decide(targeted(room)); got.Reason != topupAllocationReason || got.AmountRaw != 700_000_000 {
 		t.Fatalf("deposit-limit room ignored beside debt: %+v", got)
 	}
 	// Idle collateral beside debt joins the top-up: Squads cash swaps first,
 	// then one deposit takes both.
 	loop := liveDebtTopupSnapshot()
 	loop.SquadsIdleRaw, loop.CollateralIdleRaw, loop.PrimeIdleRaw = 1_000_000, 35_000_000, 35_000_000
-	if got := Decide(loop); got.Action != SwapStableToCollateralStep || got.Reason != topupSwapReason || got.AmountRaw != 1_000_000 {
+	if got := Decide(targeted(loop)); got.Action != SwapStableToCollateralStep || got.Reason != topupSwapReason || got.AmountRaw != 1_000_000 {
 		t.Fatalf("collateral beside top-up cash: %+v", got)
 	}
 	for name, c := range map[string]struct {
@@ -133,11 +126,11 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 		// to collateral before any top-up.
 		"debt idle": {func(s *Snapshot) { s.DebtIdleRaw = s.PositionDebtRaw }, stepResidueReason},
 		// Ethena is no leverage lane: debt keeps the installed hold.
-		"non-leverage lane": {func(s *Snapshot) { s.RouteLane, s.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane }, "single_loop_position_ready"},
+		"non-leverage lane": {func(s *Snapshot) { s.RouteLane, s.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane }, holdAtTarget},
 	} {
 		d := liveDebtTopupSnapshot()
 		c.mutate(&d)
-		if got := Decide(d); got.Reason != c.reason {
+		if got := Decide(targeted(d)); got.Reason != c.reason {
 			t.Fatalf("%s: %+v", name, got)
 		}
 	}
@@ -145,7 +138,7 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 	// collateral as a step's excess, never as a Voltr top-up.
 	onre := liveDebtTopupSnapshot()
 	onre.RouteLane, onre.StrategyKey, onre.SquadsIdleRaw = onreONycUSDC, onreONycUSDC, 1_000_000
-	if got := Decide(onre); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 1_000_000 {
+	if got := Decide(targeted(onre)); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 1_000_000 {
 		t.Fatalf("OnRe cash beside debt: %+v", got)
 	}
 }
@@ -162,35 +155,11 @@ func autoDebtTopupFixture(t *testing.T) (Observation, RouteManifest, *chain.Clie
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeIdleATA).Data[64:72], 50_000_000)
 	s := &o.Snapshot
-	s.PartialWithdrawalOperationID, s.PartialWithdrawalLTVBPS, s.LeverageTargetLevel, s.WithdrawalDemandRaw = "", 0, 0, 0
+	s.LeverageTargetLevel, s.WithdrawalDemandRaw = 0, 0
 	s.VoltrStrategyIdleRaw, s.StagedAmountRaw, s.StagedAmountKnown, s.StageTransient = 0, 0, false, false
 	s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw, s.DebtIdleRaw, s.VoltrIdleRaw = 0, 0, 0, 0, 50_000_000
 	if !s.HasPosition || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 {
 		t.Fatalf("fixture lost the debt-bearing AUTO position: %+v", *s)
 	}
 	return o, m, rpc, client, accounts
-}
-
-func TestSelectorEntryFenceBypassedOnlyForJournaledTopupAllocation(t *testing.T) {
-	t.Parallel()
-	allocation := BridgeBuildRequest{Action: VoltrAllocateToSquads, AmountRaw: 1}
-	if !topupAllocationBypassesEntryFence(allocation, topupAllocationReason, false) {
-		t.Fatal("journaled top-up allocation still needs a selector entry")
-	}
-	for name, c := range map[string]struct {
-		request   any
-		reason    string
-		unwinding bool
-	}{
-		"entry allocation": {allocation, "eligible_voltr_idle", false},
-		"no reason":        {allocation, "", false},
-		"unwinding":        {allocation, topupAllocationReason, true},
-		"report":           {BridgeBuildRequest{Action: ReportNAV}, topupAllocationReason, false},
-		"borrow":           {KaminoPrimeUSDCRequest{Action: OpenRouteStep}, topupAllocationReason, false},
-		"initializer":      {KaminoInitializationRequest{}, topupAllocationReason, false},
-	} {
-		if topupAllocationBypassesEntryFence(c.request, c.reason, c.unwinding) {
-			t.Fatalf("%s bypassed the selector entry fence", name)
-		}
-	}
 }

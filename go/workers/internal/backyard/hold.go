@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -50,16 +49,6 @@ func budgetHoldFrom(err error, reason string) error { return &BudgetHold{Reason:
 // on the operation row.
 func journaledBudgetHold(reason string) error {
 	return &BudgetHold{Reason: reason, alreadyJournaled: true}
-}
-
-// sanitizedHoldCause keeps a nested hold's reason, or a generic cause for
-// transport errors (raw errors may carry RPC URLs).
-func sanitizedHoldCause(err error) string {
-	var hold *BudgetHold
-	if errors.As(err, &hold) {
-		return hold.Reason
-	}
-	return "rpc_read_failed"
 }
 
 // budgetSum adds non-negative micros, refusing overflow.

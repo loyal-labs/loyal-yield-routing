@@ -244,14 +244,13 @@ func validateSelectorDestinationCommon(route RuntimeRoute, slot int64, accounts 
 }
 
 // observeSelectorDestinationForecast prices the real one-pass entry graph into
-// an active registry lane from a flat destination, or — with reentry set —
-// the same graph as the recreated position after the bound source exit closes
-// the funded one. Future balances stay explicit scalars; no invented account
-// image reaches an RPC simulation or execution admission.
+// an active registry lane from a flat destination. Future balances stay
+// explicit scalars; no invented account image reaches an RPC simulation or
+// execution admission.
 //
 // market is the lane's economics from the same sample; its spread decides
 // whether the entry levers (see the borrow below).
-func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, market LaneEconomics, equity uint64, sampleSlot int64, clampCapacity bool, reentry *selectorReentryForecast) (selectorDestinationQuote, error) {
+func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, market LaneEconomics, equity uint64, sampleSlot int64, clampCapacity bool) (selectorDestinationQuote, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	lane := market.Lane
@@ -260,15 +259,7 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 		return out, budgetHold("invalid_selector_destination")
 	}
 	route, _ := runtimeRoute(lane)
-	var slot int64
-	var accounts []ConfirmedAccount
-	var position KaminoPosition
-	var err error
-	if reentry == nil {
-		slot, accounts, position, err = selectorDestinationAccounts(ctx, rpc, view, route, sampleSlot)
-	} else {
-		slot, accounts, position, err = selectorReentryDestinationAccounts(ctx, rpc, view, route, sampleSlot, reentry.bound, reentry.collateralIdle)
-	}
+	slot, accounts, position, err := selectorDestinationAccounts(ctx, rpc, view, route, sampleSlot)
 	if err != nil {
 		return out, err
 	}
@@ -336,12 +327,7 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 		inputs = append(inputs, input)
 		return nil
 	}
-	// A reentry recipe always recreates the obligation: the bound source exit
-	// closes the currently funded one, so its rent and exact initializer fee
-	// stay in this quote even though the account is observed present. Future
-	// rent refunds are not spendable, so the funding checks below still see
-	// the full recreation rent.
-	if !position.ObligationPresent || reentry != nil {
+	if !position.ObligationPresent {
 		rent, err := rpc.RentExempt(ctx, kamino.ObligationSize)
 		if err != nil {
 			return out, unavailable(err)
@@ -362,15 +348,8 @@ func observeSelectorDestinationForecast(ctx context.Context, rpc *chain.Client, 
 		if err != nil {
 			return out, budgetHoldFrom(err, "message_fee_unpriced")
 		}
-		var initSlot int64
-		if reentry != nil && position.ObligationPresent {
-			// Forecast-only prestate: the initializer is priced against the
-			// exact observed funded obligation this exit will close. The
-			// execution admission wrapper stays strictly absent-only.
-			if initSlot, err = m.validateKaminoReentryForecastPrestate(ctx, view, r, sampleSlot, reentry.bound); err != nil {
-				return out, err
-			}
-		} else if initSlot, err = m.validateKaminoInitializationPrestate(ctx, view, r, sampleSlot); err != nil {
+		initSlot, err := m.validateKaminoInitializationPrestate(ctx, view, r, sampleSlot)
+		if err != nil {
 			return out, err
 		}
 		observationFloor = max(slot, initSlot)

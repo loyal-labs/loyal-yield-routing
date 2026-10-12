@@ -219,10 +219,6 @@ type MoveQuote struct {
 	// observations cannot extend older quote/reserve evidence past this window.
 	SampleSlot       int64 `json:"sampleSlot"`
 	ValidThroughSlot int64 `json:"validThroughSlot"`
-	// Tranche marks a partial move of EquityRaw out of the held source: its
-	// cost is the scaled partial exit plus the destination recipe, and its
-	// source keeps the rest of its position (SourceExit stays nil).
-	Tranche bool `json:"tranche,omitempty"`
 }
 
 // storedWindowValid checks a PERSISTED quote's own slot window against the
@@ -254,27 +250,14 @@ func (q MoveQuote) selectorEconomicCostRaw() int64 {
 
 type SelectorInput struct {
 	canaryRequest *pilotCanaryEntryRequest
-	// canaryPriorEntry is the persisted selector entry, read under the route lock.
-	canaryPriorEntry *SelectorEntry
-	Now              time.Time
-	Snapshot         Snapshot
-	Markets          []LaneEconomics
-	Quotes           []MoveQuote
-	Policy           SelectorPolicy
-	// trancheRefusals labels (source>destination) pairs the quote collector
-	// refused for an economic or capacity reason, never an outage.
-	trancheRefusals map[string]string
-	// trancheSetReason labels every tranche pair when the collector priced
-	// none at all (no planning read, a source it could not scale, a paused
-	// collection); it never hides behind a generic missing-quote code.
-	trancheSetReason string
-	// heldFacts are the other held lanes' positions, for the worst-yield
-	// working-lane ordering.
-	heldFacts []heldLaneFact
+	Now           time.Time
+	Snapshot      Snapshot
+	Markets       []LaneEconomics
+	Quotes        []MoveQuote
+	Policy        SelectorPolicy
 }
 
-// Only economic persistence lives here. A source exit is committed by the
-// existing route state's UnwindIntent; forecasts do not manufacture
+// Only economic persistence lives here; forecasts do not manufacture
 // authorization or a second cash ledger.
 type AdvantageWindow struct {
 	Since      time.Time `json:"since"`
@@ -283,8 +266,6 @@ type AdvantageWindow struct {
 type SelectorState struct {
 	SourceLane string                     `json:"sourceLane,omitempty"`
 	Advantages map[string]AdvantageWindow `json:"advantages,omitempty"`
-	// Tranches are the (source>destination) tranche persistence windows.
-	Tranches map[string]AdvantageWindow `json:"tranches,omitempty"`
 }
 
 type CandidateForecast struct {
@@ -319,60 +300,16 @@ type SelectorResult struct {
 	KeepGainRaw     float64             `json:"keepGainRaw"`
 	Candidates      []CandidateForecast `json:"candidates"`
 	State           SelectorState       `json:"state"`
-	// The exact quote selected for ENTER/SWITCH/TRANCHE, copied from the
-	// validated candidate. Net equity alone cannot identify its gross input
-	// or costs.
+	// The exact quote selected for ENTER, copied from the validated
+	// candidate. Net equity alone cannot identify its gross input or costs.
 	SelectedQuote *MoveQuote `json:"selectedQuote,omitempty"`
-	// HeldLanes and Tranches are the multi-lane view: every held lane and
-	// every (working source, destination, E) tranche candidate.
-	HeldLanes string             `json:"heldLanes,omitempty"`
-	Tranches  []TrancheCandidate `json:"tranches,omitempty"`
-	// Overflow is why the working lane started no overflow tranche this
-	// sample ("" when it has no overflow lane or started one).
-	Overflow string `json:"overflow,omitempty"`
-	// WorkingLane is set when the sample moves the working lane to the
-	// worst-yielding held lane (no money moves).
-	WorkingLane string `json:"workingLane,omitempty"`
 }
 
-// A funded entry must finish before its temporary holdings become an economic
-// KEEP baseline. Safety and withdrawal handling remain separate priorities.
-//
-// B2: a funded debt-free position is complete when 1x is the chosen level
-// (LeverageTargetLevel == 1) or borrowing is blocked; otherwise debt 0 still
-// means the first borrow loop is pending. Idle Squads/debt/collateral cash
-// always means the tranche is in progress.
-func selectorTrancheInProgress(s Snapshot) bool {
-	if !hasWorkingCapital(s) {
-		return false
-	}
-	unborrowed := s.PositionDebtRaw <= 0 && !(s.HasPosition && s.PositionCollateralRaw > 0 && (s.LeverageTargetLevel == 1 || s.BorrowUtilizationBlocked || (earnActiveLane(s.RouteLane) && s.BorrowCapacityKnown && leverageBorrowReceive(s, leverageUpLevel(s)) < leverageMinimumBorrowRaw)))
-	// A pending B2 up move (target above the position, borrowing open) is
-	// unfinished work too, so the selector never switches in its middle.
-	_, _, _, downPartial := leverageDownPartialStep(s)
-	levelPending := (leverageBorrowReceive(s, leverageUpLevel(s)) >= leverageMinimumBorrowRaw && !s.BorrowUtilizationBlocked) || leverageDownPending(s) || downPartial
-	return unborrowed || levelPending || s.SquadsIdleRaw > 0 || s.DebtIdleRaw > 0 ||
-		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw))
-}
-
-// sameLaneReinvestmentEligible reports when the funded current lane itself may
-// compete as a SWITCH destination instead of staying a keep-only baseline.
-// Later deposits otherwise strand: with the funded lane unquotable, extra idle
-// cash can never buy a strictly larger position in the reviewed lane it sits
-// beside. It binds to an active registry lane only, and only for a
-// positively funded, settled one-pass position (collateral, debt and NAV all
-// present) whose tranche loop has completed. Eligibility gates pricing only —
-// capacity, the complete exit+entry quote, persistence and net-benefit
-// admission below are unchanged, and a same-lane move still commits the full
-// debt unwind before its fresh entry.
-func sameLaneReinvestmentEligible(s Snapshot, p SelectorPolicy) bool {
-	if !earnActiveLane(s.RouteLane) || s.VoltrIdleRaw <= p.IdleBufferRaw {
-		return false
-	}
-	if !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 0 || s.StrategyNAVRaw <= 0 {
-		return false
-	}
-	return !selectorTrancheInProgress(s)
+// laneExposure: the vault holds a lane's position or custody. Only a flat
+// vault (cash in Voltr or Squads) enters a lane on the selector's choice; held
+// lanes keep their capital, and an operator exit row moves it.
+func laneExposure(s Snapshot) bool {
+	return s.HasPosition || s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0 || s.CollateralIdleRaw > 0 || s.PrimeIdleRaw > 0 || s.DebtIdleRaw > 0 || s.OtherLanesNAVRaw != 0 || s.HeldLanes != ""
 }
 
 func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR, years float64) float64 {
@@ -446,12 +383,7 @@ func selectorSampleLine(result SelectorResult) (key, line string) {
 		keys = append(keys, fmt.Sprintf("%s:%s:%s:%s:%t", c.Lane, reason, borrow, lev, roomOpen))
 		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s %s borrow=%s room=%s benefit=%s reason=%s)", c.Lane, lev, net, nativeFeedText(c.NativeAPY, c.FeedNativeAPY), borrow, room, benefit, reason))
 	}
-	trancheKey, trancheLine := trancheSampleSuffix(result.HeldLanes, result.Tranches)
-	keys = append(keys, trancheKey, result.Overflow)
-	if result.Overflow != "" {
-		trancheLine += " overflow=" + result.Overflow
-	}
-	return strings.Join(keys, "|"), fmt.Sprintf("backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s", result.Action, result.Reason, result.SourceLane, strings.Join(parts, " ")) + trancheLine
+	return strings.Join(keys, "|"), fmt.Sprintf("backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s", result.Action, result.Reason, result.SourceLane, strings.Join(parts, " "))
 }
 
 // nativeFeedText prints a lane's realized native APY beside the yield feed's
@@ -505,11 +437,12 @@ func pilotForecastEconomics(e pilotEconomics, invested float64, m LaneEconomics,
 	return e
 }
 
-// SelectOpportunity never creates a transaction. The serialized worker must
-// apply fresh policy/exit admission before committing an unwind or entry.
-// The source lane may be any registry lane (exit-only ones included, so a held
-// position keeps its economics and can unwind); markets are the active
-// registry lanes the selector scores.
+// SelectOpportunity never creates a transaction. It chooses the lane a flat
+// vault's cash enters (ENTER), with the persistence and net benefit of an
+// executable quote; target() reads its latest result. A vault that holds a
+// lane keeps it: an ordinary economic choice never repays a lane's debt to
+// move it (the operator exit row does). Markets are the active registry lanes
+// the selector scores.
 func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult {
 	s, p := in.Snapshot, in.Policy
 	out := SelectorResult{Action: "KEEP", Reason: "no_worthwhile_move", SourceLane: s.RouteLane}
@@ -521,11 +454,14 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		return hold("fee_hwm_baseline_unavailable")
 	}
 	base := Decide(s)
-	if base.Action == RecoverTransaction || base.Action == HoldManualRecovery || base.Action == DeleverRouteStep || base.Action == DeleverPrimeUSDCStep || base.Reason == "hard_ltv_buffer_swap" || s.Nonterminal != "" {
+	if base.Action == RecoverTransaction || base.Action == HoldManualRecovery || s.Nonterminal != "" {
 		return hold("execution_recovery_or_safety_first")
 	}
-	if s.WithdrawalDemandRaw > 0 || s.Unwind || s.CutoverDrain || s.VoltrStrategyIdleRaw > 0 {
-		return hold("withdrawal_unwind_or_accounting_first")
+	if laneExposure(s) {
+		return hold("held_lanes_keep_their_capital")
+	}
+	if s.WithdrawalDemandRaw > 0 || s.VoltrStrategyIdleRaw > 0 {
+		return hold("withdrawal_or_accounting_first")
 	}
 	if !s.Fresh || s.SquadsIdleRaw < 0 || s.TotalVaultNAVRaw > 1<<53 || s.TotalVaultNAVRaw < 0 || s.PositionCollateralValueRaw < 0 || s.PositionDebtValueRaw < 0 || s.CollateralIdleValueRaw < 0 {
 		return hold("invalid_holdings")
@@ -551,19 +487,6 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		markets[m.Lane] = m
 	}
 	years := p.Horizon.Hours() / (365.25 * 24)
-	exposed := s.HasPosition || s.PositionDebtRaw > 0 || s.PositionCollateralRaw > 0 || s.CollateralIdleRaw > 0
-	var keepGrossGain float64
-	if exposed {
-		m, ok := markets[s.RouteLane]
-		if !ok || m.validate(in.Now, p) != nil {
-			return hold("current_lane_economics_unavailable")
-		}
-		keepGrossGain = forecastGain(float64(s.PositionCollateralValueRaw)+float64(s.CollateralIdleValueRaw), float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), m, math.Log1p(m.CurrentBorrowAPY), years)
-		out.KeepGainRaw = selectorKeepGainUpper(s, keepGrossGain)
-		if !finite(out.KeepGainRaw) {
-			return hold("invalid_keep_forecast")
-		}
-	}
 	lanes := make([]string, 0, len(markets))
 	for lane := range markets {
 		lanes = append(lanes, lane)
@@ -581,12 +504,6 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		c := CandidateForecast{Lane: lane, NativeAPY: m.NativeAPY, FeedNativeAPY: m.FeedNativeAPY}
 		if err := m.validate(in.Now, p); err != nil {
 			c.BlockedReason = err.Error()
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
-			out.Candidates = append(out.Candidates, c)
-			continue
-		}
-		if exposed && lane == s.RouteLane && !sameLaneReinvestmentEligible(s, p) {
-			c.BlockedReason = "current_position_is_keep_baseline"
 			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
@@ -644,7 +561,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 				continue
 			}
 			quoteAmount := min(amount, max(int64(0), int64(q.MinimumIdleRaw)-p.IdleBufferRaw))
-			if !q.Tranche && q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == quoteAmount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
+			if q.SourceLane == s.RouteLane && q.DestinationLane == lane && q.EquityRaw == quoteAmount && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" {
 				if quote != nil {
 					return hold("duplicate_move_quote")
 				}
@@ -676,17 +593,6 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		// limits); the capital a move actually loses is its expected expense.
 		c.InvestedRaw = amount - quote.selectorEconomicCostRaw()
 		c.IdleRaw = s.TotalVaultNAVRaw - amount
-		// A same-lane move only pays for its full exit+entry round trip when the
-		// net reinvestment is strictly larger than the funded position it unwinds.
-		if lane == s.RouteLane && c.InvestedRaw <= s.StrategyNAVRaw {
-			c.BlockedReason = "same_lane_reinvestment_not_larger"
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
-			out.Candidates = append(out.Candidates, c)
-			continue
-		}
-		// Every pilot move fully unwinds the existing debt before the new entry,
-		// even when reentering the same reserve; it does not lever existing debt
-		// twice.
 		economics, blocked := pilotQuoteEconomics(*quote, m, float64(c.InvestedRaw), years)
 		if blocked != "" {
 			c.BlockedReason = blocked
@@ -735,10 +641,6 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			}
 		}
 	}
-	if selectorTrancheInProgress(s) {
-		out.Reason = "complete_current_tranche_first"
-		return out
-	}
 	if base.Action == ReportNAV {
 		out.Reason = "accounting_first"
 		return out
@@ -763,9 +665,6 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	out.SelectedQuote = &quote
 	out.Action = "ENTER"
 	out.Reason = "persistent_net_benefit"
-	if exposed {
-		out.Action = "SWITCH"
-	}
 	return out
 }
 
@@ -784,14 +683,6 @@ var selectorAvailabilityReasons = map[string]bool{
 	"selector_source_quote_unavailable":  true,
 	"selector_source_unavailable":        true,
 	"selector_live_snapshot_unavailable": true,
-	// Tranche collection outages: a pair that could not be priced this
-	// sample keeps its window; a destination without room never does.
-	trancheReasonPlanningUnavailable:                  true,
-	trancheReasonSourceQuote:                          true,
-	trancheReasonDestinationQuote:                     true,
-	trancheReasonMoveQuote:                            true,
-	trancheReasonDeadline:                             true,
-	"tranche_collection_paused_for_single_lane_quote": true,
 }
 
 // carryAdvantageWindows keeps the lane's leveraged and 1x windows exactly

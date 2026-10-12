@@ -138,8 +138,8 @@ func TestPilotCanarySelectOnRegistry(t *testing.T) {
 	}
 	history := map[string]pilotCanaryEntryReceipt{receipt.Request.ID: *receipt}
 	replayed, again, err := selectPilotCanaryEntry(in, result, history)
-	if err != nil || again != nil || replayed.Action != "KEEP" || replayed.Reason != "operator_canary_already_consumed" {
-		t.Fatalf("consumed-ID check drifted under manifest scope: %+v %v %v", replayed, again, err)
+	if err != nil || again == nil || replayed.Action != "CANARY_ENTER" {
+		t.Fatalf("a flat vault's accepted request lost its lane under manifest scope: %+v %v %v", replayed, again, err)
 	}
 	reused := in
 	reused.canaryRequest = &pilotCanaryEntryRequest{ID: receipt.Request.ID, Lane: autoAUTOPYUSD.Lane, EquityRaw: 999, ExpiresAt: in.Now.Add(10 * time.Minute)}

@@ -9,16 +9,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// initializationSnapshotReady reports a flat, entry-authorized lane whose
-// obligation is known absent and is created through an installed initializer
-// policy. A lane whose obligation pre-exists has no initializer: its absence
-// holds.
+// initializationSnapshotReady reports a flat lane whose obligation is known
+// absent and is created through an installed initializer policy, while the
+// target enters it with a current selector quote. A lane whose obligation
+// pre-exists has no initializer: its absence holds.
 func initializationSnapshotReady(s Snapshot) bool {
-	// An overflow lane's obligation is created when its source's freed
-	// collateral waits for it, under the overflow tranche's authority.
-	if overflowInitializationReady(s) {
-		return true
-	}
 	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}
@@ -28,10 +23,21 @@ func initializationSnapshotReady(s Snapshot) bool {
 	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || laneNAVRaw(s) != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
 		return false
 	}
-	if s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.Unwind || s.CutoverDrain || s.SelectorEntryPaused || s.WithdrawalDemandRaw != 0 {
+	if s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.WithdrawalDemandRaw != 0 {
 		return false
 	}
-	return s.SelectorEntryEquityRaw > 0 && s.SelectorEntryEquityRaw <= min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && min(s.LiquidationThresholdBPS-1500, 6000) > TargetLTVBPS
+	t := s.Target
+	return t.Rule == ruleEntry && t.EntryRaw > 0 && t.EntryRaw <= min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s) > TargetLTVBPS
+}
+
+// initializationAuthorized: the decision initializes the view's own entry
+// lane, or the overflow lane the view's next move deposits into.
+func initializationAuthorized(s Snapshot, d Decision) bool {
+	if d.StrategyKey == s.RouteLane {
+		return initializationSnapshotReady(s)
+	}
+	lane, ok := overflowLaneOf(s.RouteLane)
+	return ok && lane == d.StrategyKey && s.Target.MoveTo == lane && s.Target.MoveRaw > 0 && !s.OverflowObligationPresent && earnInitializerLane(lane)
 }
 
 // This prepares only an empty account before allocating user principal.
@@ -45,7 +51,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *V
 	if err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
-	if !decisionsEqual(Decide(o.Snapshot), decision) || !initializationSnapshotReady(o.Snapshot) {
+	if !decisionsEqual(Decide(o.Snapshot), decision) || !initializationAuthorized(o.Snapshot, decision) {
 		return o, KaminoInitializationRequest{}, budgetHold("initializer_decision_changed")
 	}
 	if err = manifest.validateBindings(); err != nil {

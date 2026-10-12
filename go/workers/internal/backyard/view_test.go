@@ -143,7 +143,7 @@ func seedChain(t *testing.T, slot int64, accounts []ConfirmedAccount, receipts .
 				return nil, err
 			}
 			for _, address := range addresses {
-				if account := accountAt(accounts, address); account.Address != "" {
+				if account := accountAt(accounts, address); account.Address != "" && account.Lamports > 0 {
 					values = append(values, encode(account))
 				} else {
 					values = append(values, "null")
@@ -234,7 +234,7 @@ func fillAccounts(base http.RoundTripper, accounts map[string]ConfirmedAccount) 
 			return nil, fmt.Errorf("account read: %v", err)
 		}
 		for i, address := range addresses {
-			if a, ok := accounts[address]; ok && payload.Result.Value[i] == nil {
+			if a, ok := accounts[address]; ok && a.Lamports > 0 && payload.Result.Value[i] == nil {
 				payload.Result.Value[i] = map[string]any{"owner": a.Owner, "lamports": a.Lamports, "executable": a.Executable, "data": []string{base64.StdEncoding.EncodeToString(a.Data), "base64"}}
 			}
 		}
@@ -339,16 +339,20 @@ func TestViewStreamPlansAtS(t *testing.T) {
 		t.Fatalf("subscription does not start after the start-up read: %v", request)
 	}
 	manifest := readyWorkerManifest(t)
-	if _, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, 0); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, 0, targetInputs{}); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("a view without confirmed slots planned: %v", err)
 	}
 	squadsUSDC := accountAt(viewRouteBatch(t, nil), bridgeSquadsATA)
+	clock := accountAt(viewRouteBatch(t, nil), budgetClockAddress)
+	clock.Data = slices.Clone(clock.Data)
+	binary.LittleEndian.PutUint64(clock.Data[:8], 80)
 	connector.send(t, view, true,
+		accountFrame(clock, 80, 6, viewAccountsFilter),
 		accountFrame(usdcAmount(squadsUSDC, 900), 80, 5, viewAccountsFilter),
 		accountFrame(usdcAmount(squadsUSDC, 111), 79, 9, viewAccountsFilter),
 		accountFrame(usdcAmount(squadsUSDC, 222), 80, 4, viewAccountsFilter),
 		slotFrame(80), slotFrame(81))
-	observation, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, 0)
+	observation, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, 0, targetInputs{})
 	if err != nil || observation.Snapshot.Slot != 80 || observation.Snapshot.SquadsIdleRaw != 900 {
 		t.Fatalf("observed slot %d squads USDC %d, want 80 and 900: %v", observation.Snapshot.Slot, observation.Snapshot.SquadsIdleRaw, err)
 	}
@@ -366,7 +370,7 @@ func TestViewStreamPlansAtS(t *testing.T) {
 	view.now = func() time.Time { return time.Unix(kaminoFixtureUnix+60, 0) }
 	state := productionObserveState{routeKey: productionRouteKey, manifest: manifest, journal: &stubProductionJournal{journal: reconciledJournal()}, identity: pinnedIdentityObservation,
 		batch: func(ctx context.Context) (Observation, error) {
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, client, view, manifest, 0)
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, client, view, manifest, 0, targetInputs{})
 			return observation, err
 		}}
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{

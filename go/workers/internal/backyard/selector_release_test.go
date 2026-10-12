@@ -78,22 +78,3 @@ func TestSelectorScalarReleaseUsesTokenScalesAndRejectsInvalidValues(t *testing.
 		}
 	}
 }
-
-func TestPilotScalarExtractionPreservesRuntimeReceiptFloors(t *testing.T) {
-	t.Parallel()
-	route, accounts := pilotReleaseFixture(t, SelectedRouteID)
-	values := selectorReleaseValues()
-	position := KaminoPosition{CollateralDepositedRaw: 6, RedeemablePrimeRaw: values.CollateralRaw, DebtRaw: values.DebtRaw,
-		CollateralDecimals: values.CollateralDecimals, DebtDecimals: values.DebtDecimals,
-		CollateralPriceSF: values.CollateralPriceSF, DebtPriceSF: values.DebtPriceSF}
-	// With six large receipts, the preexisting receipt-ratio floors permit only
-	// two receipts (5 USDC), even though scalar risk room is about 5.9 USDC.
-	receipts, legacyRounded, err := withdrawExcessAtLTV(position, 5500)
-	if err != nil || receipts != 2 || legacyRounded != 5_000_000 {
-		t.Fatal("receipt-ratio floors changed", receipts, legacyRounded, err)
-	}
-	got, err := pilotRepaymentLiquidityAllowance(accounts, route, position, 90)
-	if err != nil || got != legacyRounded {
-		t.Fatal("scalar extraction enlarged actual release", got, legacyRounded, err)
-	}
-}

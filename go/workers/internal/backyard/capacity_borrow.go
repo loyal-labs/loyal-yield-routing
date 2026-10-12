@@ -343,26 +343,6 @@ func validateCapacityBorrow(accounts []ConfirmedAccount, route RuntimeRoute, rec
 	return nil
 }
 
-// leverageBorrowReceive is this tick's leverage_up borrow: the stored
-// approval, sized down to this tick's capacity (room, deposit room, risk), so
-// room that opens is used on the tick that sees it, not after the next
-// selector sample. Zero below the minimum borrow.
-func leverageBorrowReceive(s Snapshot, level float64) uint64 {
-	if !leverageApprovalLive(s) {
-		return 0
-	}
-	n := min(s.LeverageApprovedBorrowRaw, leverageBorrowCeiling(s, level))
-	if n < leverageMinimumBorrowRaw {
-		return 0
-	}
-	return n
-}
-
-// leverageApprovalLive: an unconsumed approval decided from this position's debt.
-func leverageApprovalLive(s Snapshot) bool {
-	return s.LeverageBorrowOperationID == "" && s.LeverageApprovedBorrowRaw >= leverageMinimumBorrowRaw && s.PositionDebtRaw >= 0 && borrowDebtMatches(uint64(s.PositionDebtRaw), s.LeverageSourceDebtRaw)
-}
-
 // capacityBorrowCentralValue values debt raw in USDC at the snapshot's central
 // reserve prices, without capacityBorrowValue's margins: an expectation for
 // the income forecast, never a bound. liability rounds up.

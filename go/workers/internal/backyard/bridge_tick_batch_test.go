@@ -17,7 +17,8 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	m := readyWorkerManifest(t)
 	accounts := append(routeNAVFixture(t, 77), exactReportTicketAccount(t, 4))
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
-	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{ObservationID: "tick-batch", Slot: 77, RouteKind: RouteKind, RouteLane: RouteID, StrategyKey: RouteID, Fresh: true, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: 0, SquadsIdleRaw: 6, LastReportAgeSeconds: 3600}}
+	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{ObservationID: "tick-batch", Slot: 77, RouteKind: RouteKind, RouteLane: PhaseOneLaneID, StrategyKey: PhaseOneLaneID, Fresh: true, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: 0, SquadsIdleRaw: 6, LastReportAgeSeconds: 3600}}
+	o.Snapshot = targeted(o.Snapshot)
 	o.routeBatch = &routeObservationBatch{Slot: 77, ObservationID: o.Snapshot.ObservationID, ManifestSHA256: m.SHA256, Accounts: accounts}
 	decision := Decide(o.Snapshot)
 	if decision.Action != ReportNAV {

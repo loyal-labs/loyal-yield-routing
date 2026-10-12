@@ -2,15 +2,18 @@ package backyard
 
 import "testing"
 
+// base is a fresh, coherent, flat Maple view: no position, no cash.
 func base() Snapshot {
-	return Snapshot{ObservationID: "o", Slot: 9, RouteKind: RouteKind, Fresh: true, LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, MinimumCollateralDepositRaw: 1}
+	return Snapshot{ObservationID: "o", Slot: 9, RouteKind: RouteKind, Fresh: true, RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID,
+		LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, MinimumCollateralDepositRaw: 1}
 }
+
 func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	t.Parallel()
 	s := base()
 	s.Nonterminal = Submitted
 	s.HasAmbiguousSubmission = true
-	if got := Decide(s); got.Action != RecoverTransaction {
+	if got := Decide(s); got.Action != RecoverTransaction || got.Reason != "recover_ambiguous_submission" {
 		t.Fatal(got)
 	}
 	s = base()
@@ -18,87 +21,40 @@ func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	if got := Decide(s); got.Action != RecoverTransaction || got.Reason != "resume_nonterminal_operation" {
 		t.Fatal(got)
 	}
+	// A journal-explained stage restores before anything reads Voltr idle.
 	s = base()
-	s.HasPosition = true
-	s.PositionDebtRaw = 3
-	s.SquadsIdleRaw = 3
-	s.LTVBPS = 6000
-	s.WithdrawalDemandRaw = 3
-	if got := Decide(s); got.Action != DeleverPrimeUSDCStep {
+	s.WithdrawalDemandRaw, s.VoltrIdleRaw, s.SquadsIdleRaw = 8, 3, 3
+	s.VoltrStrategyIdleRaw, s.StagedAmountKnown, s.StagedAmountRaw = 5, true, 5
+	if got := Decide(targeted(s)); got.Action != VoltrRestoreIdle || got.AmountRaw != 5 || got.Reason != "withdrawal_staged" {
+		t.Fatal(got)
+	}
+	// An unexplained strategy custody balance is a manual stop.
+	s.StagedAmountRaw = 4
+	if got := Decide(targeted(s)); got.Action != HoldManualRecovery || got.Reason != "custody_mismatch" {
+		t.Fatal(got)
+	}
+	// A lane outside the registry, or an incoherent view, never moves.
+	s = base()
+	s.RouteLane = RouteID
+	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "unsupported_runtime_lane" {
 		t.Fatal(got)
 	}
 	s = base()
-	s.WithdrawalDemandRaw = 3
-	s.SquadsIdleRaw = 5
-	if got := Decide(s); got.Action != StageSquadsToVoltr || got.AmountRaw != 3 {
-		t.Fatal(got)
-	}
-	s = base()
-	s.WithdrawalDemandRaw = 8
-	s.VoltrIdleRaw = 3
-	s.VoltrStrategyIdleRaw = 5
-	s.StagedAmountKnown, s.StagedAmountRaw = true, 5
-	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 5 {
-		t.Fatal(got)
-	}
-	s = base()
-	s.WithdrawalDemandRaw = 8
-	s.SquadsIdleRaw = 2
-	s.HasPosition = true
-	if got := Decide(s); got.Action != DeleverPrimeUSDCStep || got.AmountRaw != 6 {
-		t.Fatal(got)
-	}
-	s = base()
-	s.WithdrawalDemandRaw = 8
-	s.VoltrStrategyIdleRaw = 2
-	s.StagedAmountKnown, s.StagedAmountRaw = true, 2
-	s.SquadsIdleRaw = 3
-	s.HasPosition = true
-	if got := Decide(s); got.Action != VoltrRestoreIdle || got.AmountRaw != 2 {
-		t.Fatal(got)
-	}
-	s = base()
-	s.WithdrawalDemandRaw = 8
-	s.VoltrIdleRaw = 8
-	if got := Decide(s); got.Action != Hold || got.Reason != "withdrawal_covered" {
+	s.Fresh = false
+	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "invalid_or_incoherent_snapshot" {
 		t.Fatal(got)
 	}
 }
 
-func TestSelectedRouteCoveredWithdrawalUsesOrdinaryHold(t *testing.T) {
-	t.Parallel()
-	s := base()
-	s.RouteLane = SelectedRouteID
-	s.WithdrawalDemandRaw = 1
-	s.VoltrIdleRaw = 10
-	s.PriorReportedNAVRaw = 9
-	if got := Decide(s); got.Action != Hold || got.AmountRaw != 0 || got.Reason != "withdrawal_covered" {
-		t.Fatalf("covered withdrawal created new exposure: %+v", got)
-	}
-}
-
-func TestSelectedRouteRestoreModelsFullWithinCapSweep(t *testing.T) {
-	t.Parallel()
-	s := base()
-	s.RouteLane = SelectedRouteID
-	s.WithdrawalDemandRaw = 500_000
-	s.StrategyNAVRaw = 900_000
-	s.VoltrStrategyIdleRaw = 900_000
-	s.StagedAmountKnown, s.StagedAmountRaw = true, 900_000
-	got := Decide(s)
-	if got.Action != VoltrRestoreIdle || got.AmountRaw != 900_000 || got.Reason != "withdrawal_staged" {
-		t.Fatal(got)
-	}
-}
 func TestDuplicateObservationIsIdempotent(t *testing.T) {
 	t.Parallel()
-	a, b := Decide(base()), Decide(base())
+	a, b := Decide(targeted(base())), Decide(targeted(base()))
 	if a.IdempotencyKey != b.IdempotencyKey || a.Action != b.Action {
 		t.Fatalf("%+v %+v", a, b)
 	}
 	later := base()
 	later.Slot++
-	c := Decide(later)
+	c := Decide(targeted(later))
 	if a.IdempotencyKey != c.IdempotencyKey {
 		t.Fatalf("identical state at a later slot created a new identity: %s != %s", a.IdempotencyKey, c.IdempotencyKey)
 	}
@@ -107,112 +63,12 @@ func TestDuplicateObservationIsIdempotent(t *testing.T) {
 func TestIdempotencyIdentityIncludesEconomics(t *testing.T) {
 	t.Parallel()
 	baseline := base()
-	baseline.SquadsIdleRaw = 4
-	a := Decide(baseline)
+	baseline.WithdrawalDemandRaw, baseline.SquadsIdleRaw = 9, 4
+	a := Decide(targeted(baseline))
 	changed := baseline
 	changed.SquadsIdleRaw = 3
-	b := Decide(changed)
-	if a.IdempotencyKey == b.IdempotencyKey || a.AmountRaw == b.AmountRaw {
+	b := Decide(targeted(changed))
+	if a.Action != StageSquadsToVoltr || a.IdempotencyKey == b.IdempotencyKey || a.AmountRaw == b.AmountRaw {
 		t.Fatalf("changed economics aliased: a=%+v b=%+v", a, b)
-	}
-}
-
-func TestEntryIsBoundedAndInvalidThresholdFailsClosed(t *testing.T) {
-	t.Parallel()
-	s := base()
-	s.SquadsIdleRaw = 4
-	if got := Decide(s); got.Action != SwapUSDCToPrimeStep || got.AmountRaw != 4 {
-		t.Fatal(got)
-	}
-	s.LiquidationThresholdBPS = 6000
-	if got := Decide(s); got.Action != HoldManualRecovery {
-		t.Fatal(got)
-	}
-	s = base()
-	s.SquadsIdleRaw = 9
-	s.MaxTargetLTVEntryRaw = 2
-	if got := Decide(s); got.Action != SwapUSDCToPrimeStep || got.AmountRaw != 2 {
-		t.Fatalf("target-LTV/capacity bound was not applied: %+v", got)
-	}
-	s.MaxTargetLTVEntryRaw = 0
-	if got := Decide(s); got.Action != Hold || got.Reason != "insufficient_reviewed_entry_capacity" {
-		t.Fatalf("zero Kamino headroom was admitted: %+v", got)
-	}
-}
-
-func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
-	t.Parallel()
-	entry := base()
-	entry.PolicyLimitRaw = 1_000
-	entry.CapacityRaw = 1_000
-	entry.MaxTargetLTVEntryRaw = 1_000
-	entry.SquadsIdleRaw = 100
-	if got := Decide(entry); got.Action != SwapUSDCToPrimeStep || got.AmountRaw != 100 {
-		t.Fatal(got)
-	}
-	entry.SquadsIdleRaw, entry.PrimeIdleRaw = 0, 99
-	if got := Decide(entry); got.Action != OpenPrimeUSDCStep || got.Reason != "prime_collateral_ready" {
-		t.Fatal(got)
-	}
-	// The legacy route never levers: a 1x position is finished. Leverage
-	// moves only as atomic steps on registry lanes.
-	entry.PrimeIdleRaw, entry.HasPosition, entry.PositionCollateralRaw = 0, true, 99
-	if got := Decide(entry); got.Action != Hold {
-		t.Fatal(got)
-	}
-	entry.PositionDebtRaw, entry.LTVBPS, entry.PositionCollateralRaw = 40, TargetLTVBPS, 138
-	entry.PositionCollateralValueRaw, entry.PositionDebtValueRaw, entry.PayoffDebtRaw = 138, 40, 41
-	if got := Decide(entry); got.Action != Hold || got.Reason != "single_loop_position_ready" {
-		t.Fatal(got)
-	}
-
-	withdraw := entry
-	withdraw.WithdrawalDemandRaw = 99
-	if got := Decide(withdraw); got.Action != Hold || got.Reason != "withdrawal_full_exit_unproven" {
-		t.Fatal(got)
-	}
-	withdraw.Unwind = true // Full-chain planning remains scoped to explicit unwind.
-	if got := Decide(withdraw); got.Action != DeleverPrimeUSDCStep || got.Reason != withdrawalDeleverReason {
-		t.Fatal(got)
-	}
-	// Down steps repeat until debt is exactly zero; then collateral leaves.
-	withdraw.PositionDebtRaw, withdraw.SquadsIdleRaw = 0, 0
-	if got := Decide(withdraw); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_withdraw_collateral" {
-		t.Fatal(got)
-	}
-	withdraw.HasPosition, withdraw.PositionCollateralRaw, withdraw.PrimeIdleRaw = false, 0, 99
-	if got := Decide(withdraw); got.Action != SwapPrimeToUSDCStep || got.AmountRaw != 99 {
-		t.Fatal(got)
-	}
-	withdraw.PrimeIdleRaw, withdraw.SquadsIdleRaw = 0, 99
-	if got := Decide(withdraw); got.Action != StageSquadsToVoltr || got.AmountRaw != 99 {
-		t.Fatal(got)
-	}
-	withdraw.SquadsIdleRaw, withdraw.VoltrStrategyIdleRaw = 0, 99
-	withdraw.StagedAmountKnown, withdraw.StagedAmountRaw = true, 99
-	if got := Decide(withdraw); got.Action != VoltrRestoreIdle || got.AmountRaw != 99 {
-		t.Fatal(got)
-	}
-
-	release := base()
-	release.Unwind = true
-	release.WithdrawalDemandRaw, release.HasPosition, release.PositionCollateralRaw, release.PositionDebtRaw = 99, true, 99, 40
-	if got := Decide(release); got.Action != DeleverPrimeUSDCStep || got.Reason != withdrawalDeleverReason {
-		t.Fatal(got)
-	}
-}
-
-func TestDebtReserveUtilizationDefersBorrowWithoutBlockingWithdrawal(t *testing.T) {
-	t.Parallel()
-	s := base()
-	s.HasPosition = true
-	s.PositionCollateralRaw = 99
-	s.BorrowUtilizationBlocked = true
-	if got := Decide(s); got.Action != Hold || got.Reason != "debt_reserve_utilization_blocks_borrow" {
-		t.Fatalf("blocked debt reserve retried borrow: %+v", got)
-	}
-	s.WithdrawalDemandRaw = 50
-	if got := Decide(s); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_withdraw_collateral" {
-		t.Fatalf("utilization hold blocked withdrawal unwind: %+v", got)
 	}
 }

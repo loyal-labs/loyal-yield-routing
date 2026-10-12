@@ -26,16 +26,7 @@ const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_
 
 const RouteStateForUpdate = `SELECT state_version, state FROM loyal_yield.multiply_route_states WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() FOR UPDATE`
 
-// AcquireRouteLeaseSQL also moves the single-slot per-lane state written by
-// one-lane releases ('leverageTarget', 'partialWithdrawal') into its per-lane
-// map ('leverageTargets', 'partialWithdrawals'), keyed by the entry's own
-// lane, before this instance reads anything. Values, generations and the
-// state version are unchanged; every reader and writer uses the maps.
-const AcquireRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_owner = $2, lease_expires_at = clock_timestamp() + ($3 * interval '1 millisecond'), fencing_token = fencing_token + 1, updated_at = clock_timestamp(),
-	state = CASE WHEN state ? 'leverageTarget' OR state ? 'partialWithdrawal' THEN (state - 'leverageTarget' - 'partialWithdrawal')
-		|| CASE WHEN jsonb_typeof(state->'leverageTarget') = 'object' THEN jsonb_build_object('leverageTargets', COALESCE(state->'leverageTargets', '{}'::jsonb) || jsonb_build_object(state->'leverageTarget'->>'lane', state->'leverageTarget')) ELSE '{}'::jsonb END
-		|| CASE WHEN jsonb_typeof(state->'partialWithdrawal') = 'object' THEN jsonb_build_object('partialWithdrawals', COALESCE(state->'partialWithdrawals', '{}'::jsonb) || jsonb_build_object(state->'partialWithdrawal'->>'lane', state->'partialWithdrawal')) ELSE '{}'::jsonb END
-		ELSE state END
+const AcquireRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_owner = $2, lease_expires_at = clock_timestamp() + ($3 * interval '1 millisecond'), fencing_token = fencing_token + 1, updated_at = clock_timestamp()
 	WHERE route_key = $1 AND (lease_owner IS NULL OR lease_expires_at <= clock_timestamp()) RETURNING fencing_token, lease_expires_at`
 
 const RefreshRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_expires_at = clock_timestamp() + ($4 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at`
@@ -732,20 +723,6 @@ func (d *Database) recordDecisionTx(
 	if active {
 		return DecisionRecord{}, fmt.Errorf("one nonterminal operation already exists")
 	}
-	partials, err := decodePartialWithdrawals(setupState["partialWithdrawals"])
-	if err != nil {
-		return DecisionRecord{}, err
-	}
-	// The per-lane view decides for its own lane: only that lane's release
-	// sequence binds this decision.
-	partialLane := observation.Snapshot.RouteLane
-	partial := partialWithdrawalFor(partials, partialLane)
-	if decision.Action != Hold && decision.Action != HoldManualRecovery && partial != nil && (partial.Generation > stateVersion || partial.Lane != observation.Snapshot.RouteLane || partial.OperationID != observation.Snapshot.PartialWithdrawalOperationID || partial.LTVBPS != observation.Snapshot.PartialWithdrawalLTVBPS) {
-		return DecisionRecord{}, budgetHold("partial_withdrawal_state_changed")
-	}
-	if decision.Action != Hold && decision.Action != HoldManualRecovery && partial == nil && observation.Snapshot.PartialWithdrawalOperationID != "" {
-		return DecisionRecord{}, budgetHold("partial_withdrawal_state_changed")
-	}
 
 	expected, err := json.Marshal(map[string]any{
 		"schema":                "loyal-backyard-rwa-operation-evidence/v1",
@@ -758,24 +735,6 @@ func (d *Database) recordDecisionTx(
 	}
 	idHash := sha256.Sum256([]byte(persistedIdempotencyKey))
 	operationID := hex.EncodeToString(idHash[:])
-	if decision.Reason == leverageUpReason {
-		targets, err := decodeLeverageTargets(setupState["leverageTargets"])
-		target := leverageTargetFor(targets, decision.StrategyKey)
-		// The decision borrows this tick's capacity-sized part of the
-		// approval; binding narrows the approval to exactly that amount, so
-		// the entry fence still matches one receive to one operation.
-		if err != nil || target == nil || target.Lane != decision.StrategyKey || target.OperationID != "" || decision.AmountRaw < leverageMinimumBorrowRaw || uint64(decision.AmountRaw) > target.BorrowRaw {
-			return DecisionRecord{}, budgetHoldFrom(err, "leverage_authorization_consumed_or_changed")
-		}
-		target.BorrowRaw, target.OperationID = uint64(decision.AmountRaw), operationID
-		raw, err := json.Marshal(target)
-		if err != nil {
-			return DecisionRecord{}, err
-		}
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=`+setLeverageTargetSQL("$3", "$2")+` WHERE route_key=$1`, routeKey, string(raw), target.Lane); err != nil {
-			return DecisionRecord{}, err
-		}
-	}
 	status, recoveryReason := initialDecisionStatus(decision)
 	strategyKey := decision.StrategyKey
 	if strategyKey == "" {
@@ -783,33 +742,6 @@ func (d *Database) recordDecisionTx(
 	}
 	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(status), persistedIdempotencyKey, strategyKey, string(expected), recoveryReason); err != nil {
 		return DecisionRecord{}, fmt.Errorf("insert decision: %w", err)
-	}
-	if decision.Reason == partialReleaseReason && partial == nil {
-		target, ok := partialWithdrawalTargetLTVBPS(observation.Snapshot)
-		if !ok || target > leverageMaxLTVBPS {
-			return DecisionRecord{}, budgetHold("partial_withdrawal_ratio_unavailable")
-		}
-		raw, err := json.Marshal(partialWithdrawalState{Lane: decision.StrategyKey, OperationID: operationID, Generation: stateVersion, LTVBPS: target})
-		if err != nil {
-			return DecisionRecord{}, err
-		}
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawals}',COALESCE(state->'partialWithdrawals','{}'::jsonb)||jsonb_build_object($3::text,$2::jsonb),true) WHERE route_key=$1`, routeKey, string(raw), decision.StrategyKey); err != nil {
-			return DecisionRecord{}, err
-		}
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=expected_effects || jsonb_build_object('partialWithdrawal',$2::jsonb) WHERE operation_id=$1`, operationID, string(raw)); err != nil {
-			return DecisionRecord{}, err
-		}
-
-	} else if partial != nil && decision.Action != HoldManualRecovery && observation.Snapshot.PartialWithdrawalOperationID == partial.OperationID && partialWithdrawalTerminal(observation.Snapshot) {
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{partialWithdrawals}',COALESCE(state->'partialWithdrawals','{}'::jsonb)-$2::text,true) WHERE route_key=$1`, routeKey, partialLane); err != nil {
-			return DecisionRecord{}, err
-		}
-	}
-	if partial != nil && !partialWithdrawalTerminal(observation.Snapshot) {
-		raw, _ := json.Marshal(partial)
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET expected_effects=expected_effects || jsonb_build_object('partialWithdrawal',$2::jsonb) WHERE operation_id=$1`, operationID, string(raw)); err != nil {
-			return DecisionRecord{}, err
-		}
 	}
 	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: status}, nil
 }

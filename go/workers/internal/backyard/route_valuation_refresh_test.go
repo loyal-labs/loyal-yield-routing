@@ -150,7 +150,6 @@ func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
 func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
 	t.Parallel()
 	m := readyWorkerManifest(t)
-	m.selectorObservation = true
 	all := routeFixedAddresses(m)
 	for _, lane := range earnLaneIDs(true) {
 		route, _ := runtimeRoute(lane)

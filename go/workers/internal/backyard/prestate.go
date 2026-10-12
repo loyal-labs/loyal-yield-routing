@@ -67,34 +67,13 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 		}
 		slot = max(slot, observed)
 	}
-	if r, ok := request.(KaminoPrimeUSDCRequest); ok && r.RepaymentRelease {
-		bound, _, err := m.validateRepaymentReleaseRequest(ctx, view, r, effects, slot)
-		if err != nil {
-			return 0, err
-		}
-		slot = max(slot, bound.Payoff.ObservedSlot)
-	}
 	if r, ok := request.(JupiterSwapRequest); ok {
-		if r.PositionReturnReserved {
-			bound, _, err := validateLeverageSwap(ctx, view, r, effects, slot)
-			if err != nil {
-				return 0, err
-			}
-			slot = max(slot, bound.ObservedSlot)
-		}
 		if r.EntryReturnReserved {
 			observed, err := validateEntrySwap(ctx, view, r, effects, slot)
 			if err != nil {
 				return 0, err
 			}
 			slot = max(slot, observed)
-		}
-		if r.FullPayoffFunding {
-			bound, _, err := validatePayoffFunding(ctx, rpc, view, m, r, effects, slot, 3, false)
-			if err != nil {
-				return 0, err
-			}
-			slot = max(slot, bound.ObservedSlot)
 		}
 	}
 	if r, ok := request.(HastraConversionRequest); ok {
@@ -103,20 +82,6 @@ func (m RouteManifest) validateRequestPrestate(ctx context.Context, rpc *chain.C
 			return 0, err
 		}
 		slot = max(slot, observed)
-		if r.PositionReturnReserved {
-			bound, _, err := validateLeverageConversion(ctx, view, r, r.intent(), effects, slot)
-			if err != nil {
-				return 0, err
-			}
-			slot = max(slot, bound.ObservedSlot)
-		}
-		if r.FullPayoffFunding {
-			bound, _, err := validateHastraPayoffFunding(ctx, rpc, view, m, r, effects, slot, 3, false)
-			if err != nil {
-				return 0, err
-			}
-			slot = max(slot, bound.ObservedSlot)
-		}
 	}
 	return slot, nil
 }

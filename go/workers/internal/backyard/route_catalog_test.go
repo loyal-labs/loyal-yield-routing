@@ -235,8 +235,8 @@ func TestAUTOWYLDSRouteIsTheLiveReserveAndAUTOsOverflow(t *testing.T) {
 		!slices.Contains(earnLaneIDs(true), autoAUTOWYLDSLane) {
 		t.Fatal("wYLDS lane is not a registry lane")
 	}
-	if source, ok := overflowSourceOf(autoAUTOWYLDSLane); !ok || source != autoAUTOPYUSD.Lane || !overflowPair(autoAUTOPYUSD.Lane, autoAUTOWYLDSLane) ||
-		siblingLanes(autoAUTOPYUSD.Lane, autoAUTOWYLDSLane) || selectorDestinationLane(autoAUTOWYLDSLane) || !selectorDestinationLane(autoAUTOPYUSD.Lane) {
+	if source, ok := overflowSourceOf(autoAUTOWYLDSLane); !ok || source != autoAUTOPYUSD.Lane ||
+		selectorDestinationLane(autoAUTOWYLDSLane) || !selectorDestinationLane(autoAUTOPYUSD.Lane) {
 		t.Fatal("wYLDS lane is not AUTO/PYUSD's overflow")
 	}
 }

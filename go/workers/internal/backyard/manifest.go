@@ -20,13 +20,6 @@ import (
 var embeddedBackyardManifest []byte
 
 type RouteManifest struct {
-	// Runtime observation scope; does not alter the signed manifest or admit entry.
-	selectorObservation bool
-	observationLane     string
-	// workingLane is the durable working lane of a multi-lane route: the
-	// one lane whose per-lane view Decide acts on. "" lets the held set
-	// choose (see observedSelectorLanes).
-	workingLane           string
 	Schema                string `json:"schema"`
 	Status                string `json:"status"`
 	Cluster               string `json:"cluster"`
@@ -224,13 +217,6 @@ func (m RouteManifest) hasPhaseOneUnresolved() bool {
 }
 
 func (m RouteManifest) activeRuntimeRoute() (RuntimeRoute, error) {
-	if m.observationLane != "" {
-		// The observation lane is any registry lane, exit-only ones included.
-		if !m.selectorObservation || !earnHeldLane(m.observationLane) {
-			return RuntimeRoute{}, fmt.Errorf("unadmitted observation lane")
-		}
-		return runtimeRoute(m.observationLane)
-	}
 	lane := PhaseOneLaneID
 	if m.RuntimeActivation.SelectedLane != "" {
 		lane = m.RuntimeActivation.SelectedLane

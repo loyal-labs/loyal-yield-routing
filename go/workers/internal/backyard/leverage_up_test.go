@@ -3,50 +3,7 @@ package backyard
 import (
 	"encoding/binary"
 	"testing"
-	"time"
 )
-
-// Live 2026-09-28 shape: route state still carries the 09-26 AUTO selector
-// entry (quote borrow $189.87, allocation bound), the AUTO position is funded
-// and debt-free (~$1,676) and borrowing reopens. The installed code borrowed
-// the old quote (~1.11x). B2: no target holds; a 1.5x target borrows through
-// leverage_up sized to the target, and the entry quote is never used.
-func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
-	t.Parallel()
-	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
-		entry := selectorEntryFixture(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), lane, 1_000_000_000)
-		entry.Quote.BorrowReceiveRaw, entry.AllocationOperationID = 189_873_681, "alloc-0926"
-		s := base()
-		s.Slot = 451_000_000
-		s.RouteLane, s.StrategyKey = lane, lane
-		s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 1_676_000_000, 1_676_000_000
-		if lane == onreONycUSDC {
-			if err := applySelectorEntry(&s, &entry, time.Now().UTC()); err != nil {
-				t.Fatal(lane, err)
-			}
-		} else {
-			// The PYUSD quote needs bound price evidence to validate; set
-			// what applySelectorEntry stamps for a funded position.
-			s.SelectorEntryEquityRaw = entry.EquityRaw
-		}
-		if s.SelectorEntryPaused || entry.Quote.BorrowReceiveRaw != 189_873_681 {
-			t.Fatalf("%s: fixture is not the live shape: paused=%t borrow=%d", lane, s.SelectorEntryPaused, entry.Quote.BorrowReceiveRaw)
-		}
-		if got := Decide(s); got.Action != Hold || got.Reason != "leverage_target_required" {
-			t.Fatalf("%s: no target must hold, got %+v", lane, got)
-		}
-		s.LeverageTargetLevel = 1.5
-		armLeverageCapacityFixture(&s)
-		got := Decide(s)
-		if got.Action != OpenRouteStep || got.Reason != leverageUpReason || got.AmountRaw != 837_162_000 {
-			t.Fatalf("%s: target 1.5x must borrow through leverage_up, got %+v", lane, got)
-		}
-		// Sizing: 50% of collateral value (the target), not the entry quote.
-		if up, ok := stepDecision(s, got); !ok || !up || uint64(got.AmountRaw) == entry.Quote.BorrowReceiveRaw {
-			t.Fatalf("%s: leverage_up is not an up step sized on the target: %+v", lane, got)
-		}
-	}
-}
 
 // Six-decimal collateral and debt at $1 each: value raw == amount raw.
 func leverageTestPosition(collateral, debt uint64) KaminoPosition {
@@ -76,45 +33,41 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 		}{
 			{1, 1.5, OpenRouteStep, leverageUpReason, 499_500_000},
 			{1, 1.75, OpenRouteStep, leverageUpReason, 499_500_000}, // one level per move
-			{1, 1, Hold, "leverage_target_1x", 0},
+			{1, 1, Hold, holdAtTarget, 0},
 			{1.5, 1.75, OpenRouteStep, leverageUpReason, 249_250_000},
-			{1.5, 1.5, Hold, "single_loop_position_ready", 0},
-			{1.75, 1.75, Hold, "single_loop_position_ready", 0},
+			{1.5, 1.5, Hold, holdAtTarget, 0},
+			{1.75, 1.75, Hold, holdAtTarget, 0},
 		} {
 			s := at(tc.level, tc.target)
-			got := Decide(s)
+			got := Decide(targeted(s))
 			if got.Action != tc.action || got.Reason != tc.reason || got.AmountRaw != tc.amount {
 				t.Fatalf("%s %.2fx target %.2fx: %+v", lane, tc.level, tc.target, got)
 			}
 			// Blocked borrowing never starts an up move.
 			s.BorrowUtilizationBlocked = true
-			if got := Decide(s); got.Action == OpenRouteStep {
+			if got := Decide(targeted(s)); got.Action == OpenRouteStep {
 				t.Fatalf("%s %.2fx: blocked borrowing still borrowed: %+v", lane, tc.level, got)
 			}
 		}
-		// The selector-entry pause does not stop an up move on the current
-		// lane, and a pending up move keeps the selector frozen.
-		s := at(1, 1.5)
-		s.SelectorEntryPaused = true
-		if got := Decide(s); got.Reason != leverageUpReason || !selectorTrancheInProgress(s) {
-			t.Fatalf("%s: paused up move: %+v in-progress=%t", lane, got, selectorTrancheInProgress(s))
-		}
-		// Withdrawal, unwind and hard LTV keep their priority.
-		for name, mutate := range map[string]func(*Snapshot){
-			"withdrawal": func(s *Snapshot) { s.WithdrawalDemandRaw = 1 },
-			"unwind":     func(s *Snapshot) { s.Unwind = true },
-			"hard ltv":   func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS = 1, 1, 6_000 },
+		// Withdrawal, an operator exit and hard LTV keep their priority.
+		for name, c := range map[string]struct {
+			mutate func(*Snapshot)
+			in     targetInputs
+		}{
+			"withdrawal": {func(s *Snapshot) { s.WithdrawalDemandRaw = 1 }, targetInputs{}},
+			"exit":       {func(*Snapshot) {}, targetInputs{Exits: map[string]laneExit{lane: {EquityZero: true}}}},
+			"hard ltv":   {func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS = 1, 1, 6_000 }, targetInputs{}},
 		} {
-			c := at(1, 1.5)
-			mutate(&c)
-			if got := Decide(c); got.Reason == leverageUpReason {
+			s := at(1, 1.5)
+			c.mutate(&s)
+			if got := Decide(targetedWith(s, c.in)); got.Reason == leverageUpReason {
 				t.Fatalf("%s: %s did not preempt leverage_up", lane, name)
 			}
 		}
 	}
 	exitOnly := leverageSnapshot(1.5)
 	exitOnly.RouteLane, exitOnly.StrategyKey, exitOnly.LeverageTargetLevel = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane, 1.75
-	if got := Decide(exitOnly); got.Reason == leverageUpReason {
+	if got := Decide(targeted(exitOnly)); got.Reason == leverageUpReason {
 		t.Fatalf("exit-only Ethena levered up: %+v", got)
 	}
 }
@@ -169,67 +122,5 @@ func TestLeverageUpSizingAndCaps(t *testing.T) {
 		if _, err := p.leverageUpBorrowRaw(bad); err == nil {
 			t.Fatalf("level %d accepted", bad)
 		}
-	}
-	if !borrowDebtMatches(0, 0) || borrowDebtMatches(1, 0) || !borrowDebtMatches(500_000_300, 500_000_000) || borrowDebtMatches(501_000_000, 500_000_000) {
-		t.Fatal("debt match tolerance")
-	}
-}
-
-// The borrow-authority exception is exactly: journaled reason leverage_up,
-// a step opening with a borrow, same AUTO/OnRe lane, no unwind, a stored target above 1x.
-func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
-	t.Parallel()
-	manifest := embeddedTestManifest(t)
-	borrow, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deposit, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreONycUSDC)
-	if err != nil {
-		t.Fatal(err)
-	}
-	target := []byte(`{"lane":"OnRe/ONyc/USDC","level":1.5,"borrowRaw":10000000,"operationId":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","spreadBps":150,"decidedAt":"2026-09-28T12:00:00Z"}`)
-	step := StepRequest{Open: borrow, Close: deposit}
-	if ok, err := leverageUpBypassesEntryFence(step, leverageUpReason, false, onreONycUSDC, target, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); !ok || err != nil {
-		t.Fatalf("valid leverage_up refused: %v", err)
-	}
-	if ok, err := leverageUpBypassesEntryFence(step, "prime_collateral_requires_borrow", false, onreONycUSDC, target, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); ok || err != nil {
-		t.Fatal("other reasons must keep the entry fence")
-	}
-	for name, c := range map[string]struct {
-		request any
-		unwind  bool
-		lane    string
-		target  string
-	}{
-		"lone borrow leg":   {borrow, false, onreONycUSDC, string(target)},
-		"deposit-led step":  {StepRequest{Open: deposit, Close: deposit}, false, onreONycUSDC, string(target)},
-		"unwinding":         {step, true, onreONycUSDC, string(target)},
-		"other op lane":     {step, false, autoAUTOPYUSD.Lane, string(target)},
-		"no target":         {step, false, onreONycUSDC, "null"},
-		"1x target":         {step, false, onreONycUSDC, `{"lane":"OnRe/ONyc/USDC","level":1,"spreadBps":0,"decidedAt":"2026-09-28T12:00:00Z"}`},
-		"other lane target": {step, false, onreONycUSDC, `{"lane":"AUTO/AUTO/PYUSD","level":1.5,"spreadBps":0,"decidedAt":"2026-09-28T12:00:00Z"}`},
-	} {
-		if ok, err := leverageUpBypassesEntryFence(c.request, leverageUpReason, c.unwind, c.lane, []byte(c.target)); ok || err == nil {
-			t.Fatalf("%s: leverage_up bypassed the fence", name)
-		}
-	}
-}
-
-// The one-release exit covers 1.5x but not 1.75x: that is why 1.75x runs
-// the multi-cycle exit (leverage_exit_pricer.go).
-func TestOneReleaseExitCoversOnlyUpTo1_5x(t *testing.T) {
-	t.Parallel()
-	for _, c := range []struct {
-		collateral, debt uint64
-		covered          bool
-	}{{1_500_000_000, 500_000_000, true}, {1_750_000_000, 750_000_000, false}} {
-		_, release, err := withdrawExcessAtLTV(leverageTestPosition(c.collateral, c.debt), 5500)
-		if err != nil || (release >= c.debt) != c.covered {
-			t.Fatalf("C=%d D=%d: one release %d covered=%t, want %t", c.collateral, c.debt, release, release >= c.debt, c.covered)
-		}
-	}
-	if leverageMaxLiveLevel != 1.75 {
-		t.Fatal("live cap")
 	}
 }

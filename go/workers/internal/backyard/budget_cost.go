@@ -110,9 +110,6 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 			}
 			deposit = true
 		}
-		if r.RepaymentRelease && (r.Action != DeleverRouteStep || leg != kaminoLegWithdraw || !earnHeldLane(lane)) {
-			return ExecutableDebit{}, budgetHold("invalid_repayment_release_intent")
-		}
 		if effects.Repayment != nil {
 			_, destination := kaminoLegCustodiesForRoute(leg, route)
 			if leg != kaminoLegRepay || effects.Repayment.MaximumDebitRaw != r.AmountRaw ||
@@ -188,17 +185,11 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 // validateConversionReservation checks a conversion's reservation flags
 // agree with its action, whichever venue converts it.
 func validateConversionReservation(r conversionIntent) error {
-	if r.PositionReturnReserved && (r.Action != SwapDebtToCollateralStep || r.FullPayoffFunding || r.EntryReturnReserved) {
-		return budgetHold("invalid_position_return_intent")
-	}
-	if r.EntryReturnReserved && (r.Action != SwapStableToCollateralStep || r.FullPayoffFunding) {
+	if r.EntryReturnReserved && r.Action != SwapStableToCollateralStep {
 		return budgetHold("invalid_entry_return_intent")
 	}
 	if r.TopupReturnReserved && !r.EntryReturnReserved {
 		return budgetHold("invalid_entry_return_intent")
-	}
-	if r.FullPayoffFunding && !isPayoffFundingAction(r.Action) {
-		return budgetHold("funding_bounds_on_non_funding_swap")
 	}
 	return nil
 }

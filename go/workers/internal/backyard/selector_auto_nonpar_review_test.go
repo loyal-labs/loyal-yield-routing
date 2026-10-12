@@ -297,7 +297,7 @@ func TestAutoNonParWithdrawalPriorityPrecedesCandidates(t *testing.T) {
 	in := nonParReviewFixture(t, &price09, &coll10, upper09+1_000_000)
 	in.Snapshot.WithdrawalDemandRaw = 1
 	result := SelectOpportunity(in, SelectorState{})
-	if result.Action != "KEEP" || result.Reason != "withdrawal_unwind_or_accounting_first" {
+	if result.Action != "KEEP" || result.Reason != "withdrawal_or_accounting_first" {
 		t.Fatal("withdrawal demand did not hold the selection", result)
 	}
 	if len(result.Candidates) != 0 || len(result.State.Advantages) != 0 {

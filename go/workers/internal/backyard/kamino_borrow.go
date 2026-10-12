@@ -96,7 +96,7 @@ func validateBorrowRequest(ctx context.Context, rpc *chain.Client, view *View, r
 }
 
 func measureBorrowDebit(r KaminoPrimeUSDCRequest, e ExpectedEffects, route RuntimeRoute) (ExecutableDebit, error) {
-	if r.RepaymentRelease || e.Kind != "kamino-borrow" || !e.Conserved || len(e.Accounts) != 3 || e.Deposit != nil || e.Repayment != nil || e.ReturnData != nil {
+	if e.Kind != "kamino-borrow" || !e.Conserved || len(e.Accounts) != 3 || e.Deposit != nil || e.Repayment != nil || e.ReturnData != nil {
 		return ExecutableDebit{}, budgetHold("invalid_borrow_effect_graph")
 	}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegBorrow, route)

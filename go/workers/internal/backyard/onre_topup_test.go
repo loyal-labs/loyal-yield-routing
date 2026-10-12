@@ -22,7 +22,7 @@ func TestOnReTopupSequenceOnTheUSDCPath(t *testing.T) {
 	s := onreTopupSnapshot()
 	check := func(s Snapshot, action Action, reason string, amount int64) {
 		t.Helper()
-		got := Decide(s)
+		got := Decide(targeted(s))
 		if got.Action != action || got.Reason != reason || got.AmountRaw != amount || got.StrategyKey != onreONycUSDC || got.Validate() != nil {
 			t.Fatalf("want %s %s %d, got %+v", action, reason, amount, got)
 		}
@@ -37,7 +37,7 @@ func TestOnReTopupSequenceOnTheUSDCPath(t *testing.T) {
 	s.CollateralIdleRaw, s.PrimeIdleRaw, s.PositionCollateralRaw = 0, 0, 1_420_000_000_000
 	s.LeverageTargetLevel = 1.5
 	armLeverageCapacityFixture(&s)
-	check(s, OpenRouteStep, leverageUpReason, int64(s.LeverageApprovedBorrowRaw))
+	check(s, OpenRouteStep, leverageUpReason, int64(s.LeverageBorrow150Raw))
 	// Size: min(idle - buffer, tranche cap, deposit-limit room).
 	room := onreTopupSnapshot()
 	room.TopupDepositRoomRaw = 400_000_000
@@ -50,7 +50,6 @@ func TestTopupKeepsSafetyPriorityAndFollowsTheRegistry(t *testing.T) {
 	for name, mutate := range map[string]func(*Snapshot){
 		"uncovered demand": func(s *Snapshot) { s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1 },
 		"covered demand":   func(s *Snapshot) { s.WithdrawalDemandRaw = 1 },
-		"unwind":           func(s *Snapshot) { s.Unwind = true },
 		"hard ltv": func(s *Snapshot) {
 			s.PositionDebtRaw, s.PositionDebtValueRaw, s.LTVBPS, s.SquadsIdleRaw = 1, 1, 6000, 1
 		},
@@ -63,7 +62,7 @@ func TestTopupKeepsSafetyPriorityAndFollowsTheRegistry(t *testing.T) {
 	} {
 		c := s
 		mutate(&c)
-		switch got := Decide(c); got.Reason {
+		switch got := Decide(targeted(c)); got.Reason {
 		case topupAllocationReason, topupSwapReason, topupDepositReason:
 			t.Fatalf("%s: top-up selected: %+v", name, got)
 		}
@@ -74,11 +73,11 @@ func TestTopupKeepsSafetyPriorityAndFollowsTheRegistry(t *testing.T) {
 	maple := s
 	maple.RouteLane, maple.StrategyKey = SelectedRouteID, SelectedRouteID
 	maple.VoltrIdleRaw, maple.SquadsIdleRaw = 0, 1_000_000
-	if got := Decide(maple); got.Reason != topupSwapReason {
+	if got := Decide(targeted(maple)); got.Reason != topupSwapReason {
 		t.Fatalf("Maple did not top up its Squads cash: %+v", got)
 	}
 	maple.SquadsIdleRaw, maple.VoltrIdleRaw = 0, 1_295_000_000
-	if got := Decide(maple); got.Reason != topupAllocationReason {
+	if got := Decide(targeted(maple)); got.Reason != topupAllocationReason {
 		t.Fatalf("Maple did not top up its Voltr idle: %+v", got)
 	}
 }

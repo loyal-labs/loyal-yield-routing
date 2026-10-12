@@ -9,29 +9,29 @@ import (
 
 func TestHourlyRoutineNAVKeepsUrgentReportsAndSafety(t *testing.T) {
 	t.Parallel()
-	for _, lane := range []string{RouteID, SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane} {
+	for _, lane := range []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane} {
 		t.Run(lane, func(t *testing.T) {
 			s := base()
-			s.RouteLane, s.StrategyKey, s.SelectorEntryPaused = lane, lane, true
+			s.RouteLane, s.StrategyKey = lane, lane
 			for _, age := range []int64{60, 3599, 3600} {
 				s.LastReportAgeSeconds = age
-				got := Decide(s)
+				got := Decide(targeted(s))
 				if (got.Action == ReportNAV) != (age >= 3600) {
 					t.Fatalf("routine age=%d: %+v", age, got)
 				}
 			}
 			s.LastReportAgeSeconds = 60
 			s.WithdrawalDemandRaw, s.VoltrIdleRaw = 1, 1
-			if got := Decide(s); got.Action != ReportNAV || got.Reason != "withdrawal_covered_nav_due" {
+			if got := Decide(targeted(s)); got.Action != ReportNAV || got.Reason != "withdrawal_covered_nav_due" {
 				t.Fatal("withdrawal reporting delayed", got)
 			}
 			s.WithdrawalDemandRaw, s.VoltrIdleRaw = 0, 0
 			s.CapitalMutated = true
-			if got := Decide(s); got.Action != ReportNAV {
+			if got := Decide(targeted(s)); got.Action != ReportNAV {
 				t.Fatal("capital mutation reporting delayed", got)
 			}
 			s.CapitalMutated, s.PostMutationNAVRequired, s.LastReportAgeSeconds = false, true, 1
-			if got := Decide(s); got.Action != ReportNAV {
+			if got := Decide(targeted(s)); got.Action != ReportNAV {
 				t.Fatal("post-transaction reporting delayed", got)
 			}
 			s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 10, 10
@@ -40,7 +40,7 @@ func TestHourlyRoutineNAVKeepsUrgentReportsAndSafety(t *testing.T) {
 			if lane == autoAUTOPYUSD.Lane {
 				s.SquadsIdleRaw, s.DebtIdleRaw = 0, 6
 			}
-			if got := Decide(s); got.Reason != hardLTVDeleverReason {
+			if got := Decide(targeted(s)); got.Reason != hardLTVDeleverReason {
 				t.Fatal("risk repayment lost priority", got)
 			}
 		})
@@ -85,46 +85,6 @@ func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 	}
 }
 
-// KEEP also pays the approved fee. Comparing a taxed candidate to untaxed KEEP
-// can reject a profitable move even after correcting the report cadence.
-func TestHourlyFeeComparisonDoesNotExemptKEEP(t *testing.T) {
-	t.Parallel()
-	const wealth, supply = 1_207_762_608, 3_256_644
-	floor := new(big.Int).Quo(new(big.Int).Lsh(big.NewInt(wealth), 48), big.NewInt(supply))
-	in := coherentFeeSelectorFixture(t, wealth, supply, floor)
-	s := &in.Snapshot
-	s.HasPosition, s.LeverageTargetLevel = true, 1
-	s.LiquidationThresholdBPS = 8000
-	s.PositionCollateralRaw, s.PositionCollateralValueRaw = wealth, wealth
-	s.VoltrIdleRaw, s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.JournalArmedNAVRaw = 0, wealth, wealth, wealth
-	in.Markets = []LaneEconomics{in.Markets[0]}
-	in.Markets[0].Lane, in.Markets[0].NativeAPY = s.RouteLane, .10
-	in.Markets[0].CurrentBorrowAPY = 0
-	got := SelectOpportunity(in, SelectorState{})
-	gross := forecastGain(wealth, wealth, 0, in.Markets[0], 0, in.Policy.Horizon.Hours()/(365.25*24))
-	if got.KeepGainRaw > .81*gross || got.KeepGainRaw < .79*gross {
-		t.Fatalf("KEEP fee upper estimate=%f gross=%f result=%+v", got.KeepGainRaw, gross, got)
-	}
-}
-
-func TestHourlyKEEPUpperCoversPinnedHolderReturns(t *testing.T) {
-	t.Parallel()
-	in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
-	for _, tc := range []struct{ gain, actual float64 }{
-		{100_000, 79_999.489455}, {100_000, 79_616.834171}, {1, 0}, {-100_000, -100_000},
-	} {
-		upper := selectorKeepGainUpper(in.Snapshot, tc.gain)
-		if upper < tc.actual || upper > tc.gain {
-			t.Fatalf("KEEP upper=%f pinned=%f gross=%f", upper, tc.actual, tc.gain)
-		}
-	}
-	// Recovery below a prior high-water mark does not owe a new performance fee.
-	putScaledLittleSF(&in.Snapshot.VoltrHighWaterMarkBits, new(big.Int).Lsh(big.NewInt(2), 48))
-	if got := selectorKeepGainUpper(in.Snapshot, 100_000); got != 100_000 {
-		t.Fatalf("taxed recovery below HWM: %f", got)
-	}
-}
-
 func TestHourlyFeeIncomeIncludesPeakBeforeEndingLoss(t *testing.T) {
 	t.Parallel()
 	m := LaneEconomics{NativeAPY: math.Expm1(.10)}
@@ -149,16 +109,6 @@ func TestHourlyNAVFreshnessRetainsActualReportTimestamp(t *testing.T) {
 		p, err = newRouteObservationProjection(Observation{ObservedAt: now, Snapshot: s})
 		if err != nil || p.NAVFresh {
 			t.Fatalf("unreported mutation presented as fresh NAV: %+v err=%v", p, err)
-		}
-	}
-}
-
-func TestHourlyKEEPUpperDoesNotTaxQ48DustWithoutProfit(t *testing.T) {
-	t.Parallel()
-	in := coherentFeeSelectorFixture(t, 1_051_576, 1<<60, big.NewInt(256))
-	for _, gain := range []float64{0, -1, -1000} {
-		if got := selectorKeepGainUpper(in.Snapshot, gain); got != gain {
-			t.Fatalf("unchanged/loss report charged initial Q48 dust: gain=%f upper=%f", gain, got)
 		}
 	}
 }

@@ -37,10 +37,8 @@ func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *
 }
 
 // selectorQuoteCapture is what one sample's quote collection priced beyond
-// its whole-move quotes: the full-exit source quote, the policies it read,
-// and every destination recipe its ladders priced. Tranche quotes are
-// composed from these, so a tranche never prices a destination twice and
-// never runs after the sample's own deadline.
+// its whole-move quotes: the source quote, the policies it read, and every
+// destination recipe its ladders priced.
 type selectorQuoteCapture struct {
 	source       selectorSourceQuote
 	policies     installedPolicies
@@ -58,8 +56,8 @@ func (c *selectorQuoteCapture) addDestination(d selectorDestinationQuote) {
 }
 
 // collectSelectorQuotesWithSource is collectSelectorQuotesForLane that also
-// hands back the priced full-exit source quote, which tranche pricing scales
-// to a partial exit instead of pricing the source a second time.
+// hands back what it priced. Only a flat vault is quoted: held lanes keep
+// their capital.
 func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, capture *selectorQuoteCapture, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
@@ -80,8 +78,8 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 	if s.TotalVaultNAVRaw <= policy.IdleBufferRaw || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) {
 		return out, nil, budgetHold("selector_live_snapshot_unavailable")
 	}
-	if selectorTrancheInProgress(s) {
-		return out, nil, budgetHold("complete_current_tranche_first")
+	if laneExposure(s) {
+		return out, nil, budgetHold("held_lanes_keep_their_capital")
 	}
 	// The policies every quote of this sample is priced through: one read,
 	// at the sample's slot.
@@ -99,15 +97,13 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 	// the same finite exit the basic lanes get, with its debt residue requoted
 	// at the guaranteed funding remainder.
 	observeSource := observeSelectorSource
-	sourceManifest := manifest
 	if catalogJupiterRoute(s.RouteLane) {
 		if o.planning == nil {
 			return out, nil, budgetHold("selector_source_unavailable")
 		}
-		sourceManifest = o.planning.observationManifest(manifest)
 		observeSource = observeAutoSelectorSource
 	}
-	source, err := observeSource(ctx, rpc, view, client, sourceManifest, o)
+	source, err := observeSource(ctx, rpc, view, client, manifest, o)
 	if err != nil {
 		return out, nil, err
 	}
@@ -137,35 +133,19 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 			}
 			continue
 		}
-		// Current deployed capital is the KEEP baseline, never close/reopen merely
-		// to quote the same destination — unless a strictly larger same-lane
-		// reinvestment is eligible. Idle ownership can enter that lane normally.
-		sameLane := hasWorkingCapital(s) && market.Lane == s.RouteLane
-		if (sameLane && !sameLaneReinvestmentEligible(s, policy)) || market.validate(time.Now().UTC(), policy) != nil || market.EntryBlockedReason != "" {
+		if market.validate(time.Now().UTC(), policy) != nil || market.EntryBlockedReason != "" {
 			continue
 		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			price := func(size uint64) (MoveQuote, uint64, string, bool, error) {
-				// An eligible funded lane prices a forecast-only reentry against its
-				// own full source exit binding; every other lane prices the ordinary
-				// flat entry. Both yield the same complete move quote and neither
-				// relaxes actual entry admission.
-				var destination selectorDestinationQuote
-				var err error
-				if sameLane {
-					destination, err = observeSelectorReentryDestinationSize(ctx, rpc, view, client, manifest, o, out[i], source, size, true)
-				} else {
-					destination, err = observeSelectorDestinationForecast(ctx, rpc, view, client, manifest, o.policies, out[i], size, s.Slot, true, nil)
-				}
+				destination, err := observeSelectorDestinationForecast(ctx, rpc, view, client, manifest, o.policies, out[i], size, s.Slot, true)
 				if err != nil {
 					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
 					return MoveQuote{}, 0, "complete_entry_quote_unavailable", false, err
 				}
-				if !sameLane {
-					capture.addDestination(destination)
-				}
+				capture.addDestination(destination)
 				loss := destinationEntrySwapLoss(destination.Recipe)
 				q, err := composeSelectorMove(ctx, view, o, source, destination)
 				if err != nil {
@@ -324,7 +304,7 @@ func selectorMoveQuoteBenefit(manifest RouteManifest, o Observation, markets []L
 // selector_source_quote_unavailable code, so nothing arbitrary ever reaches
 // the persisted lane evidence.
 var selectorQuoteCollectionHoldCodes = map[string]bool{
-	"complete_current_tranche_first":     true,
+	"held_lanes_keep_their_capital":      true,
 	"invalid_selector_market_set":        true,
 	"selector_live_snapshot_unavailable": true,
 	"selector_move_has_no_entry_cash":    true,
@@ -369,34 +349,11 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if request != nil {
 		maximum = []uint64{uint64(request.EquityRaw)}
 		onlyLane = request.Lane
-	} else if t := o.planning.tranche; t != nil && t.SourceFreed && o.Snapshot.RouteLane == t.Destination && !hasWorkingCapital(o.Snapshot) && o.Snapshot.VoltrIdleRaw > 0 {
-		// A tranche's destination half quotes only its flat destination, at
-		// most the reserved E.
-		maximum = []uint64{uint64(min(t.EquityRaw, o.Snapshot.VoltrIdleRaw))}
-		onlyLane = t.Destination
 	}
-	capture := &selectorQuoteCapture{}
-	enriched, quotes, quoteErr := collectSelectorQuotesWithSource(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, capture, maximum...)
-	var tranches trancheCollection
-	switch {
-	case onlyLane != "":
-		tranches.SetReason = "tranche_collection_paused_for_single_lane_quote"
-	case quoteErr != nil:
-		// The full-exit source quote every tranche scales was not priced.
-		tranches.SetReason = "selector_source_quote_unavailable"
-		var hold *BudgetHold
-		if errors.As(quoteErr, &hold) && selectorQuoteCollectionHoldCodes[hold.Reason] {
-			tranches.SetReason = hold.Reason
-		}
-	default:
-		priced := o
-		priced.policies = capture.policies
-		tranches = collectTrancheQuotes(ctx, rpc, view, productionJupiter, manifest, priced, markets, policy, capture)
-		quotes = append(quotes, tranches.Quotes...)
-	}
+	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, maximum...)
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
-		// can still maintain persistence, while pure selection cannot enter/switch.
+		// can still maintain persistence, while pure selection cannot enter.
 		// Each lane keeps one sanitized refusal code: the collector's own closed
 		// gate codes echo, and every deeper producer, transport or database
 		// failure collapses to the generic source-quote code — never the raw
@@ -416,6 +373,6 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}
-	result, err := d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request, trancheRefusals: tranches.Refusals, trancheSetReason: tranches.SetReason, heldFacts: o.heldFacts}, slot, version)
+	result, err := d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot, version)
 	return result, o, err
 }

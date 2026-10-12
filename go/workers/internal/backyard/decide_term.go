@@ -15,10 +15,8 @@ import (
 // Backyard keeps a held term lane alive with a normal borrow before its
 // maturity (no update_obligation_config, no rollover): the borrowed cash then
 // converts to collateral and redeposits through the lane's ordinary loop
-// legs. A lane it cannot keep alive delevers fully before maturity through
-// the down-move chain. Its full payoff needs no operator confirmation: the
-// batch's own maturity proof mints an emergency debt-clear authority
-// (verifyDebtClearRiskBatch) with reason termMaturityReason.
+// legs. A lane it cannot keep alive goes to debt 0 before maturity: target()'s
+// term rule, from the batch's own term end and Clock, needs no operator.
 const (
 	// termKeepAliveSeconds: under this much time to maturity a held term
 	// lane borrows again.
@@ -28,7 +26,6 @@ const (
 	// termAlertSeconds: the days-to-maturity alert (loyal.rules.yml).
 	termAlertSeconds    int64 = 2 * 24 * 3600
 	termKeepAliveReason       = "term_keepalive"
-	termMaturityReason        = "term_maturity"
 	// termKeepAliveBorrowRaw is the keep-alive borrow: KLend's term restarts
 	// on any borrow, so the smallest borrow the lane takes is enough. It
 	// needs no economic approval: it keeps the existing position, it does
@@ -133,28 +130,6 @@ func termDeleverDue(s Snapshot) bool {
 	return ok && (left <= 0 || left < termDeleverSeconds && !termKeepAliveRoom(s))
 }
 
-// termKeepAliveStep is the keep-alive borrow on a settled held term lane
-// under termKeepAliveSeconds from maturity. A leverage_up borrow due the same
-// tick restarts the term itself and goes first; a lane that must delever is
-// the down chain's (leverageDownStep). Without room it holds, named.
-func termKeepAliveStep(s Snapshot, hard int64) (Action, string, int64, bool) {
-	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.PositionDebtRaw <= 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 ||
-		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw)) || hard <= TargetLTVBPS {
-		return "", "", 0, false
-	}
-	left, ok := termSecondsLeft(s)
-	if !ok || left >= termKeepAliveSeconds || termDeleverDue(s) {
-		return "", "", 0, false
-	}
-	if action, _, _, up := leverageUpStepWithDebt(s); up && action == OpenRouteStep {
-		return "", "", 0, false
-	}
-	if !termKeepAliveRoom(s) {
-		return Hold, "term_keepalive_no_room", 0, true
-	}
-	return OpenRouteStep, termKeepAliveReason, int64(termKeepAliveBorrowRaw), true
-}
-
 // validateTermKeepAliveBorrow is the prepare- and build-time bound of a
 // keep-alive borrow: exactly the keep-alive size, on term debt still ahead
 // of its maturity, inside the reserve's fee-inclusive room and the
@@ -185,25 +160,6 @@ func validateTermKeepAliveBorrow(position KaminoPosition, accounts []ConfirmedAc
 		return budgetHoldFrom(err, "term_keepalive_capacity_shrank")
 	}
 	return nil
-}
-
-// termKeepAliveBypassesEntryFence: a keep-alive borrow is authorized by the
-// held lane's own maturity, not by a selector entry or a leverage approval.
-// Only the exact keep-alive size on the operation's own active lane, outside
-// an unwind, passes.
-func termKeepAliveBypassesEntryFence(request any, journaledReason string, unwinding bool, operationLane string) (bool, error) {
-	if journaledReason != termKeepAliveReason {
-		return false, nil
-	}
-	r, ok := stepBorrow(request)
-	if !ok {
-		return false, budgetHold("term_keepalive_authority_mismatch")
-	}
-	_, leg, err := kaminoPrimeUSDCInstruction(r)
-	if err != nil || leg != kaminoLegBorrow || unwinding || r.RouteLane != operationLane || !earnActiveLane(operationLane) || r.AmountRaw != termKeepAliveBorrowRaw {
-		return false, budgetHold("term_keepalive_authority_mismatch")
-	}
-	return true, nil
 }
 
 // termDays is days to maturity for logs and the gauge; false without term

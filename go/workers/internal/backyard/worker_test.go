@@ -37,7 +37,28 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 
 // tickObservation is an observation of snapshot that found every literal
 // installed where today's Settings holds it.
+// tickObservation is the observation the production observer returns for
+// snapshot: its view always names a registry lane (Maple when the literal
+// names none), and its target is computed, a flat vault's Voltr idle entering
+// that lane under the selector's current quote.
 func tickObservation(snapshot Snapshot) Observation {
+	if snapshot.RouteLane == "" {
+		snapshot.RouteLane, snapshot.StrategyKey = SelectedRouteID, SelectedRouteID
+	}
+	if snapshot.Target.Rule == "" {
+		var in targetInputs
+		if !snapshot.HasPosition && snapshot.VoltrIdleRaw > 0 && snapshot.WithdrawalDemandRaw == 0 {
+			for _, limit := range []*int64{&snapshot.CapacityRaw, &snapshot.PolicyLimitRaw, &snapshot.MaxTargetLTVEntryRaw} {
+				if *limit == 0 {
+					*limit = snapshot.VoltrIdleRaw
+				}
+			}
+			q := entryQuoteFixture(time.Unix(1, 0).UTC(), snapshot.RouteLane, min(snapshot.VoltrIdleRaw, snapshot.CapacityRaw, snapshot.PolicyLimitRaw, snapshot.MaxTargetLTVEntryRaw))
+			q.SampleSlot, q.ValidThroughSlot = snapshot.Slot, snapshot.Slot
+			in.Entry = &SelectorResult{Action: "ENTER", DestinationLane: snapshot.RouteLane, SelectedQuote: &q}
+		}
+		snapshot = targetedWith(snapshot, in)
+	}
 	return Observation{Snapshot: snapshot, ObservedAt: time.Unix(1, 0).UTC(), policies: capturedTestPolicies()}
 }
 
@@ -183,8 +204,9 @@ func TestTickJournalsUtilizationHoldWithoutPreparingBorrow(t *testing.T) {
 	manifest := readyWorkerManifest(t)
 	observation := tickObservation(Snapshot{
 		ObservationID: "utilization-blocked", Slot: 10, RouteKind: RouteKind, Fresh: true,
-		HasPosition: true, PositionCollateralRaw: 99, BorrowUtilizationBlocked: true,
-		LiquidationThresholdBPS: 8000,
+		HasPosition: true, PositionCollateralRaw: 99_000_000, PositionCollateralValueRaw: 99_000_000, BorrowUtilizationBlocked: true,
+		LiquidationThresholdBPS: 8000, LeverageTargetLevel: 1.5, LeverageUpApproved: true,
+		CapacityRaw: 99_000_000, PolicyLimitRaw: 99_000_000,
 	})
 	recorded := false
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
@@ -196,7 +218,7 @@ func TestTickJournalsUtilizationHoldWithoutPreparingBorrow(t *testing.T) {
 		},
 		recordDecision: func(_ context.Context, _ string, _ Observation, decision Decision, _ string) (DecisionRecord, error) {
 			recorded = true
-			if decision.Action != Hold || decision.Reason != "debt_reserve_utilization_blocks_borrow" {
+			if decision.Action != Hold || decision.Reason != holdNoRoom {
 				t.Fatalf("wrong utilization decision: %+v", decision)
 			}
 			return DecisionRecord{Status: Held}, nil
@@ -214,8 +236,8 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 	manifest := readyWorkerManifest(t)
 	openObservation := tickObservation(Snapshot{
 		ObservationID: "open", Slot: 10, RouteKind: RouteKind, Fresh: true,
-		PrimeIdleRaw: 5, CapacityRaw: 5, PolicyLimitRaw: 5,
-		MaxTargetLTVEntryRaw: 5, LiquidationThresholdBPS: 8000,
+		CollateralIdleRaw: 5_000, MinimumCollateralDepositRaw: 1, CapacityRaw: 5_000, PolicyLimitRaw: 5_000,
+		MaxTargetLTVEntryRaw: 5_000, LiquidationThresholdBPS: 8000,
 	})
 	order := []string{}
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
@@ -223,7 +245,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 		observe:         func(context.Context) (Observation, error) { return openObservation, nil },
 		prepareKamino: func(_ context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, KaminoExecutionEvidence, error) {
 			order = append(order, "prepare-kamino")
-			if decision.Action != OpenPrimeUSDCStep {
+			if decision.Action != OpenRouteStep || decision.Reason != entryDepositReason {
 				t.Fatalf("wrong Kamino action: %s", decision.Action)
 			}
 			return openObservation, KaminoExecutionEvidence{Request: KaminoPrimeUSDCRequest{Action: decision.Action}}, nil
@@ -234,7 +256,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 		},
 		buildKamino: func(_ context.Context, id string, evidence KaminoExecutionEvidence) error {
 			order = append(order, "build-kamino")
-			if id != "kamino" || evidence.Request.Action != OpenPrimeUSDCStep {
+			if id != "kamino" || evidence.Request.Action != OpenRouteStep {
 				t.Fatal("wrong Kamino evidence dispatch")
 			}
 			return nil

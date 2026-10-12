@@ -58,9 +58,20 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 	// The production observer validates oracle age against chain time from the
 	// same confirmed batch, so keep the Clock image beside the reserve images.
 	accounts = append(accounts, clockFixture())
+	binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], uint64(slot))
+	// The lane's debt payoff window reads the debt reserve's borrow curve.
+	debt := accountAt(accounts, kaminoDebtReserve).Data
+	for i := 0; i < 11; i++ {
+		offset := kaminoReserveConfigOffset + 64 + i*8
+		if i > 0 {
+			binary.LittleEndian.PutUint32(debt[offset:], 10_000)
+		}
+		binary.LittleEndian.PutUint32(debt[offset+4:], 500)
+	}
 	// A live reserve carries an 80% liquidation threshold; the decision engine
 	// refuses to plan around a position without one.
 	accountAt(accounts, kaminoCollateralReserve).Data[kaminoReserveConfigOffset+17] = 80
+	withFlatLanes(t, &accounts)
 	if mutate != nil {
 		mutate(accounts)
 	}
@@ -84,8 +95,19 @@ func fixtureBatchRuntime(slot int64, accounts []ConfirmedAccount) func(context.C
 	}
 }
 
+// primeFixtureManifest observes the PRIME fixture: routeNAVFixture's
+// accounts are the Prime/PRIME/USDC lane's (market, obligation, reserves and
+// custody), so the observer selects that lane when the manifest names Maple.
+func primeFixtureManifest(manifest RouteManifest) RouteManifest {
+	if manifest.RuntimeActivation.SelectedLane == SelectedRouteID {
+		manifest.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	}
+	return manifest
+}
+
 func productionConfirmedBatchForManifest(t *testing.T, manifest RouteManifest, slot int64, mutate func([]ConfirmedAccount)) func(context.Context) (Observation, error) {
 	t.Helper()
+	manifest = primeFixtureManifest(manifest)
 	return func(ctx context.Context) (Observation, error) {
 		observation, _, err := observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
 			read: fixtureBatchRuntime(slot, productionRouteBatchAccounts(t, slot, mutate)),

@@ -26,6 +26,8 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 		StrategyKey: SelectedRouteID, Fresh: true, SquadsIdleRaw: 100,
 		CollateralIdleRaw: 0, MinimumCollateralDepositRaw: 1, CapacityRaw: 100, PolicyLimitRaw: 100, MaxTargetLTVEntryRaw: 100,
 		LiquidationThresholdBPS: 9000,
+		// The selector's entry into this lane already allocated the cash.
+		Target: LaneTarget{Rule: ruleEntry},
 	}
 	decision := Decide(snapshot)
 	if decision.Action != SwapStableToCollateralStep || decision.StrategyKey != SelectedRouteID {
@@ -40,32 +42,6 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	}
 }
 
-func TestPhase2WithdrawalDemandRequiresExplicitDrain(t *testing.T) {
-	t.Parallel()
-	snapshot := Snapshot{
-		ObservationID: "maple-withdrawal", Slot: 42, RouteKind: RouteKind,
-		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, Fresh: true,
-		WithdrawalDemandRaw: 1, StrategyNAVRaw: 2_793_180,
-		HasPosition: true, PositionCollateralRaw: 3_000_000,
-		PositionDebtRaw: 590_717, CollateralIdleRaw: 250_000,
-		LiquidationThresholdBPS: 8_000, LTVBPS: 2_000,
-	}
-
-	decision := Decide(snapshot)
-	if decision.Action != Hold || decision.Reason != "withdrawal_full_exit_unproven" {
-		t.Fatal(decision)
-	}
-	snapshot.Unwind = true
-	decision = Decide(snapshot)
-	// The drain repays the whole debt by down steps, each funding its own repay.
-	if decision.Action != DeleverRouteStep || decision.Reason != withdrawalDeleverReason || decision.AmountRaw != stepDownMarker {
-		t.Fatalf("selected-lane withdrawal did not begin full conservative drain: %+v", decision)
-	}
-	if decision.StrategyKey != SelectedRouteID {
-		t.Fatalf("selected-lane withdrawal lost strategy binding: %+v", decision)
-	}
-}
-
 func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 	t.Parallel()
 	snapshot := Snapshot{
@@ -76,7 +52,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 		LiquidationThresholdBPS: 8_000}
 
 	decision := Decide(snapshot)
-	if decision.Action != Hold || decision.Reason != "withdrawal_covered" || decision.AmountRaw != 0 {
+	if decision.Action != Hold || decision.Reason != holdAtTarget || decision.AmountRaw != 0 {
 		t.Fatalf("selected-lane terminal withdrawal state is not stable: %+v", decision)
 	}
 }
@@ -248,27 +224,6 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 	}
 }
 
-func TestPhase2CutoverRejectsAnyLegacyPrimeExposure(t *testing.T) {
-	t.Parallel()
-	if legacyPrimeExposure(KaminoPosition{}, 0) {
-		t.Fatal("flat legacy route was treated as exposed")
-	}
-	for _, test := range []struct {
-		name     string
-		position KaminoPosition
-		custody  uint64
-	}{
-		{"custody", KaminoPosition{}, 1},
-		{"position flag", KaminoPosition{HasPosition: true}, 0},
-		{"collateral", KaminoPosition{CollateralDepositedRaw: 1}, 0},
-		{"debt", KaminoPosition{DebtRaw: 1}, 0},
-	} {
-		if !legacyPrimeExposure(test.position, test.custody) {
-			t.Fatalf("%s exposure was not rejected", test.name)
-		}
-	}
-}
-
 func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T) {
 	t.Parallel()
 	entry, entryLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapStableToCollateralStep)
@@ -335,42 +290,5 @@ func TestPreparedDecisionEqualityUsesRefreshedIdentityButPinsSemantics(t *testin
 	refreshed.AmountRaw--
 	if decisionsEqual(prepared, refreshed) {
 		t.Fatal("decision equality accepted a changed amount")
-	}
-}
-
-func TestPhase2CutoverDrainChunksLegacyCollateral(t *testing.T) {
-	t.Parallel()
-	decision := Decide(Snapshot{
-		ObservationID: "cutover", Slot: 1, RouteKind: RouteKind, RouteLane: RouteID,
-		Fresh: true, CutoverDrain: true, HasPosition: true,
-		PositionCollateralRaw:   Phase2TransactionCapRaw + 500_000,
-		StrategyNAVRaw:          Phase2TransactionCapRaw + 500_000,
-		LiquidationThresholdBPS: 9000,
-	})
-	if decision.Action != DeleverPrimeUSDCStep || decision.AmountRaw != Phase2TransactionCapRaw {
-		t.Fatalf("legacy cutover was not chunked: %+v", decision)
-	}
-	leg, receiptRaw, collateralRaw, err := selectKaminoLeg(decision, KaminoPosition{
-		HasPosition: true, CollateralDepositedRaw: 1_500_000, RedeemablePrimeRaw: 1_200_000,
-	})
-	if err != nil || leg != kaminoLegWithdraw || receiptRaw != 1_000_000 || collateralRaw != 800_000 {
-		t.Fatalf("partial legacy withdrawal is wrong: leg=%v receipt=%d collateral=%d err=%v", leg, receiptRaw, collateralRaw, err)
-	}
-}
-
-func TestPhase2CutoverFundsMaxLTVRepaymentBeforeCollateralRelease(t *testing.T) {
-	t.Parallel()
-	decision := Decide(Snapshot{
-		ObservationID: "cutover-repayment", Slot: 1, RouteKind: RouteKind, RouteLane: RouteID,
-		Fresh: true, CutoverDrain: true, HasPosition: true,
-		VoltrIdleRaw:            1_000_000,
-		PositionCollateralRaw:   1_695_770,
-		PositionDebtRaw:         896_575,
-		StrategyNAVRaw:          1_793_206,
-		LTVBPS:                  4_999,
-		LiquidationThresholdBPS: 9_000,
-	})
-	if decision.Action != VoltrAllocateToSquads || decision.Reason != "phase2_cutover_fund_repayment" || decision.AmountRaw != 896_575 || decision.StrategyKey != RouteID {
-		t.Fatalf("max-LTV cutover did not fund repayment first: %+v", decision)
 	}
 }

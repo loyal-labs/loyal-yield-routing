@@ -53,7 +53,7 @@ func TestWithdrawalHealthPreservesAttentionUntilCurrentRecovery(t *testing.T) {
 }
 
 func TestWithdrawalHealthCurrentHoldBeforeOperationExists(t *testing.T) {
-	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: livePartialSnapshot()}
+	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
 	var stored WithdrawalHealth
 	w := Worker{runtime: tickRuntime{withdrawalHealth: func(_ context.Context, h WithdrawalHealth) error { stored = h; return nil }}}
 	// Prepare may return no observation or operation ID. The tick retains its
@@ -76,7 +76,7 @@ func TestWithdrawalHealthFencedPersistenceDoesNotChangeAuthority(t *testing.T) {
 	defer cancel()
 	defer db.Close()
 	resetManualRecoveryProductionRoute(t, ctx, db, "withdrawal-health-worker")
-	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: livePartialSnapshot()}
+	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
 	h, _ := assessWithdrawalHealth(o, Decision{Action: Hold, Reason: "withdrawal_full_exit_unproven"}, nil)
 	if err := db.RecordWithdrawalHealth(ctx, h); err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestWithdrawalHealthFencedPersistenceDoesNotChangeAuthority(t *testing.T) {
 }
 
 func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T) {
-	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: livePartialSnapshot()}
+	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
 	var stored WithdrawalHealth
 	recorded := false
 	w := Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{

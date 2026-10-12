@@ -231,17 +231,9 @@ func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
 	for _, address := range viewAddresses() {
 		held[address] = true
 	}
-	manifests := []RouteManifest{readyWorkerManifest(t)}
-	for _, lane := range earnLaneIDs(true) {
-		manifest := manifests[0]
-		manifest.selectorObservation, manifest.observationLane = true, lane
-		manifests = append(manifests, manifest)
-	}
-	for _, manifest := range manifests {
-		for _, address := range routeFixedAddresses(manifest) {
-			if !held[address] {
-				t.Fatalf("lane %q reads %s outside the view", manifest.observationLane, address)
-			}
+	for _, address := range routeFixedAddresses(readyWorkerManifest(t)) {
+		if !held[address] {
+			t.Fatalf("the observation reads %s outside the view", address)
 		}
 	}
 }

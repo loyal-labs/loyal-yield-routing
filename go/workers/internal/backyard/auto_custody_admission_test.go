@@ -186,15 +186,12 @@ func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 		}
 	}
 
-	// Route state with a REAL persisted candidate AUTO selector entry — the
+	// Route state with a REAL selector result entering the AUTO lane — the
 	// PYUSD-debt lane requires the observed bounded debt price evidence, so
-	// the shared autoSelectorEntryFixture carries it. Only the explicit
-	// candidate manifest decodes it (the embedded manifest's entry decode
-	// rejects the candidate lane), so this test fails if the helper ever goes
-	// back to the embedded-manifest planning read.
+	// the shared autoEntryQuoteFixture carries it.
 	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
-	entry := autoSelectorEntryFixture(time.Now().UTC(), 3_000_000, &price)
-	state, err := json.Marshal(map[string]any{"generation": 1, "selectorEntry": entry})
+	quote := autoEntryQuoteFixture(time.Now().UTC(), 3_000_000, &price)
+	state, err := json.Marshal(map[string]any{"generation": 1, "selector": map[string]any{"result": SelectorResult{Action: "ENTER", DestinationLane: quote.DestinationLane, EquityRaw: quote.EquityRaw, SelectedQuote: &quote}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,13 +203,12 @@ func TestSharedCustodyAdmissionSpendProofLifecycle(t *testing.T) {
 	manifest := embeddedTestManifest(t)
 	decoded, err := db.readRoutePlanningStateOnManifest(ctx, embeddedTestManifest(t), key, true)
 	if err != nil {
-		t.Fatalf("embedded planning read refused the persisted candidate entry: %v", err)
+		t.Fatalf("embedded planning read refused the selector result: %v", err)
 	}
-	// Identity at the seam this guard owns: the candidate lane entry decoded
-	// back with its observation and quoted equity (full wire round-trips have
-	// their own dedicated tests).
-	if decoded.entry == nil || decoded.entry.Lane != entry.Lane || decoded.entry.ObservationID != entry.ObservationID || decoded.entry.EquityRaw != entry.EquityRaw {
-		t.Fatalf("embedded planning read lost the persisted candidate entry: %+v", decoded.entry)
+	// Identity at the seam this guard owns: the selector's entry decoded back
+	// with its quote (full wire round-trips have their own dedicated tests).
+	if r := decoded.inputs.Entry; r == nil || r.DestinationLane != quote.DestinationLane || r.SelectedQuote == nil || r.SelectedQuote.EquityRaw != quote.EquityRaw {
+		t.Fatalf("embedded planning read lost the selector's entry: %+v", r)
 	}
 
 	cfg := autoSharedPYUSDAttributionConfig(autoAUTOPYUSD, key)

@@ -70,27 +70,6 @@ func TestPerformanceFeeFeedPersistenceUsesInvestorBenefit(t *testing.T) {
 	}
 }
 
-// The priced 1x window must not persist a pre-fee advantage when the fee-aware
-// investor benefit is below the required minimum.
-func TestPerformanceFeeUnleveredPersistenceUsesInvestorBenefit(t *testing.T) {
-	t.Parallel()
-	in := unleveredSwitchFixtureAt(3_000_000, .16)
-	in.Policy.MinimumBenefitRaw = 3_000_000
-	state := SelectorState{}
-	for i := 0; i < 8; i++ {
-		got := selectUnlevered(in, state)
-		candidate := onreCandidate(t, got)
-		if candidate.BenefitRaw >= 3_000_000 || got.Action != "KEEP" || got.SelectedQuote != nil {
-			t.Fatalf("gross-only 1x benefit admitted: %+v", got)
-		}
-		if _, ok := got.State.Advantages[unleveredAdvantageKey(onreONycUSDC)]; ok {
-			t.Fatalf("gross-only 1x advantage persisted: %+v", got.State)
-		}
-		state = got.State
-		advanceSelectorFixture(&in, 5*time.Minute)
-	}
-}
-
 // coherentFeeSelectorFixture runs the real vault decoder/merge before economic
 // selection. Unlike the old unarmed model fixtures, it proves the money gate.
 func coherentFeeSelectorFixture(t *testing.T, wealth, supply uint64, hwm *big.Int) SelectorInput {
@@ -431,25 +410,12 @@ func TestPerformanceFeeArmedAdmissionFixturesHaveProvableCandidates(t *testing.T
 	t.Parallel()
 	_, debt, _ := autoDebtPriceFixture(t, 1_000_000)
 	collateral := autoCollateralPriceFixture(t, 1_000_000)
-	for _, funded := range []bool{false, true} {
-		in := fundedAutoFixture(t, debt, collateral)
-		if funded {
-			in = fundedAutoSourceFixture(t, debt, collateral)
-			in.Snapshot.VoltrIdleRaw = in.Snapshot.TotalVaultNAVRaw - in.Snapshot.StrategyNAVRaw
-			in.Markets[1].NativeAPY = 2
-		} else {
-			in.Markets[0].NativeAPY = 2
-		}
-		armFeeAuthorityFixture(t, &in.Snapshot)
-		first := SelectOpportunity(in, SelectorState{})
-		advanceSelectorFixture(&in, time.Minute)
-		got := SelectOpportunity(in, first.State)
-		want := "ENTER"
-		if funded {
-			want = "SWITCH"
-		}
-		if got.Action != want || got.SelectedQuote == nil {
-			t.Fatalf("valid armed admission fixture failed %s: %+v", want, got)
-		}
+	in := fundedAutoFixture(t, debt, collateral)
+	in.Markets[0].NativeAPY = 2
+	armFeeAuthorityFixture(t, &in.Snapshot)
+	first := SelectOpportunity(in, SelectorState{})
+	advanceSelectorFixture(&in, time.Minute)
+	if got := SelectOpportunity(in, first.State); got.Action != "ENTER" || got.SelectedQuote == nil {
+		t.Fatalf("valid armed admission fixture failed ENTER: %+v", got)
 	}
 }

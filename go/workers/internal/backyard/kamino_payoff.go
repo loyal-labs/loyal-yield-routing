@@ -6,7 +6,6 @@ import (
 	"math"
 	"math/big"
 
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -53,34 +52,6 @@ func observeKaminoPayoffWindowAccounts(ctx context.Context, view *View, route Ru
 	}
 	bound, err := decodeKaminoPayoffWindow(accounts, route, slot, steps)
 	return bound, accounts, err
-}
-
-// Re-derive the payoff window over the same closed unsigned reserve-refresh
-// simulation the route observer uses when raw reserves are health-stale. A
-// snapshot priced on that simulated bank (ValuationSource
-// routeRefreshValuationSource) carries position debt at the refreshed
-// cumulative borrow rate, while a raw re-capture still prices the same
-// unmutated obligation at the last on-chain refresh's older rate; one unit of
-// reserve accrual between the bases straddles the whole-unit ceil and a strict
-// debt comparison then refuses a position whose principal never changed.
-// Re-capturing through the identical simulation restores one rate basis.
-// Custody, policy and Clock bytes are read-only to those refreshes. When the
-// simulation is unavailable the raw capture stands and the caller's exact
-// comparison stays the fail-closed backstop.
-func observeKaminoPayoffWindowOnSnapshotBasis(ctx context.Context, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot, steps int64, additional ...string) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	bound, accounts, err := observeKaminoPayoffWindowAccounts(ctx, view, route, minimumSlot, steps, additional...)
-	if err != nil || rpc == nil || minimumSlot <= 0 {
-		return bound, accounts, err
-	}
-	slot, refreshed, refreshErr := simulateBudgetReserveRefreshOptional(ctx, rpc, route.Lane, payoffWindowAddresses(route, additional...), nil, minimumSlot)
-	if refreshErr != nil {
-		return bound, accounts, nil
-	}
-	coherent, err := decodeKaminoPayoffWindow(refreshed, route, slot, steps)
-	if err != nil {
-		return bound, accounts, nil
-	}
-	return coherent, refreshed, nil
 }
 
 func decodeKaminoPayoffBound(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (KaminoPayoffBound, error) {
@@ -209,23 +180,6 @@ func upperKaminoCompoundedDebtSF(debtSF *big.Int, annualBPS, elapsed, unitsPerYe
 		return 0, budgetHold("payoff_interest_overflow")
 	}
 	return upper.Uint64(), nil
-}
-
-// sameAccruingDebt reports whether a snapshot's debt and a later capture's
-// debt are the same obligation principal seen at different interest bases.
-// The route observer prices snapshot debt on the unsigned reserve-refresh
-// simulation, while prestate captures read raw reserves (older rate) or a
-// fresh simulation a few slots later, so exact equality refuses unmutated
-// positions once accrual crosses a whole unit (hit live with a $99.50 Maple
-// borrow, 2026-09-24). The gap may not exceed the interest this window
-// already prices, plus one unit of ceil rounding; any real borrow or repay
-// beyond that still fails closed.
-func sameAccruingDebt(b KaminoPayoffBound, snapshotDebtRaw int64) bool {
-	if snapshotDebtRaw <= 0 || b.ObservedDebtRaw == 0 || b.UpperDebtRaw < b.ObservedDebtRaw {
-		return false
-	}
-	d := uint64(snapshotDebtRaw)
-	return max(d, b.ObservedDebtRaw)-min(d, b.ObservedDebtRaw) <= b.UpperDebtRaw-b.ObservedDebtRaw+1
 }
 
 // observeRawFullPayoff sizes a full payoff on a raw capture over three steps.

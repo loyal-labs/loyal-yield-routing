@@ -15,6 +15,11 @@ executes (the vault signs nothing at top level):
 |---|---|
 | up | refresh reserves + obligation, `Squads{borrow}`, `Squads{swap \| Hastra stake}`, refresh, `Squads{deposit}` |
 | down | refresh reserves + obligation, `Squads{withdraw}`, `Squads{swap \| Hastra redeem}`, refresh, `Squads{repay}` |
+| move | refresh source reserves + obligation, `Squads{withdraw}` (source), refresh overflow reserves + obligation, `Squads{deposit}` (overflow) |
+
+A move carries collateral from an overflow source to its overflow lane
+(AUTO/AUTO/PYUSD to AUTO/AUTO/wYLDS share the AUTO reserve and custody): no
+conversion, no debt leg, the source's LTV rises to the live cap at most.
 
 - The open leg's amount is decided before the quote: the capacity-sized borrow
   (up), or the collateral receipts the down step withdraws.
@@ -26,7 +31,7 @@ executes (the vault signs nothing at top level):
   custody and the whole step fails atomically.
 - On a shared-USDC-debt lane (Maple, OnRe, Prime/PRIME/USDC) the debt custody
   is the Squads bridge account; its cash belongs to the bridge flows
-  (withdrawals, stages, tranches), so a step never counts it as held. Its
+  (withdrawals, stages, top-ups), so a step never counts it as held. Its
   balance only starts the step's expected effects.
 - A Jupiter conversion usually delivers more than its minimum. That excess
   joins the position by the next tick: borrowed-token excess beside debt above
@@ -36,7 +41,9 @@ executes (the vault signs nothing at top level):
   lowers LTV. A lane's next up step also converts its held borrowed token.
 - A split-policy lane caps each KLend leg at the installed `1e12` raw: a down
   step repays at most nine tenths of it, leaving room for the conversion's
-  excess, and repeats while debt remains.
+  excess, and repeats while debt remains; an up step borrows at most what
+  deposits within nine tenths of it (custody already held counts) and the
+  next tick takes the rest.
 - KLend repays `min(amount, owed)`, so a down step that repays all debt asks
   for the payoff's upper bound and never leaves a dust remainder by rounding.
 - KLend checks obligation health per top-level instruction, so the refresh
@@ -51,15 +58,17 @@ receipt against them.
 
 ## Which decisions are steps
 
+Every decision is one step toward the tick's target (`docs/backyard-target.md`).
+
 | Decision reason | Direction | Repay / borrow |
 |---|---|---|
-| `leverage_up` | up | capacity-sized borrow to the stored level |
+| `leverage_up` | up | capacity-sized borrow toward the stored level |
 | `term_keepalive` | up | the keep-alive borrow |
 | `hard_ltv_delever` | down | debt down to the stored level's LTV |
-| `leverage_down` | down | the whole debt (payoff upper bound), repeated while a withdrawal limit leaves debt |
+| `debt_zero` | down | the whole debt (payoff upper bound), repeated while a withdrawal limit leaves debt: term maturity or an operator exit |
 | `leverage_down_partial` | down | debt down to the 1.5x LTV |
-| `withdrawal_delever` | down | the whole debt, for an admitted unwind or drain |
-| `withdrawal_partial_release` beside debt | down | the withdrawal's debt share (+1%) |
+| `withdrawal_release` beside debt | down | the freed equity's debt share, LTV unchanged |
+| `overflow_move` | move | none: collateral to the overflow lane |
 
 Down decisions carry a fixed marker amount; prepare sizes the repay from the
 same snapshot, so a refreshed snapshot re-decides to an equal decision.
@@ -69,8 +78,9 @@ step no longer needs an idle repayment buffer, so the old
 `hard_ltv_without_repayment_buffer` manual stop is gone. Held custody that
 already covers part of a repay shortens the conversion but never refuses the
 step. If the obligation's borrow limit leaves no withdrawal room (LTV within
-300 bps of the limit), the step holds with `step_no_withdraw_room`; only
-outside cash can repay then.
+300 bps of the limit), the step holds `no_room` (cause
+`step_no_withdraw_room`), counted on `loyal_backyard_step_no_room_total`
+where `LoyalBackyardSafetyStepNoRoom` pages; only outside cash can repay then.
 
 ## Why one transaction
 

@@ -198,7 +198,7 @@ groups:
           summary: "Earn Max lane {{ $labels.lane }} has had borrow room below its leverage target for 15m"
           trigger: "The lane's debt reserve had over $1,000 of borrow room and the lane sat at least 0.05x below its stored leverage target for 15 minutes with no leverage_up borrow landing."
           impact: "The lane earns less than its stored leverage target would while its debt reserve could fund the borrow; no funds are at risk."
-          action: "Read the latest 'leverage decision' line (reason, gain, cost, borrow, room) and the HOLD reasons journaled for the lane (leverage_up_awaiting_approval, leverage_up_no_borrow_room). An approval refused as up_move_not_worth_cost is the cost model's answer, not a fault; anything else is why the borrow is not planned or does not land. Do not lower the target or raise limits to clear it."
+          action: "Read the latest 'leverage decision' line (reason, gain, cost, borrow, room) and the HOLD reasons journaled for the lane (at_target: no approved up step; no_room: the step does not fit the chain). An approval refused as up_move_not_worth_cost is the cost model's answer, not a fault; anything else is why the borrow is not planned or does not land. Do not lower the target or raise limits to clear it."
           recovery: "Confirm a leverage_up borrow lands for the lane (backyard_leverage_up_landed) or the gap closes. The series vanishing or a restart is not recovery."
 
       # Term debt (wYLDS, 30-day term): a held lane borrows again inside its
@@ -214,8 +214,24 @@ groups:
           summary: "Earn Max lane {{ $labels.lane }} term debt is under 2 days from maturity"
           trigger: "The lane's term debt is under 2 days from maturity: its keep-alive borrow (inside 3 days) has not landed."
           impact: "Past maturity KLend refuses new borrowing on the lane and its debt becomes liquidatable, ramping to the whole debt over 3 days."
-          action: "Read the HOLD reasons journaled for the lane (term_keepalive_no_room: the debt reserve has no room; a leverage_down chain under 1 day waits on debt_clear_confirmation_required) and the 'leverage decision' line's term_days. Confirm the full delever (docs/backyard-debt-clear-confirmation.md) if the reserve stays without room; do not extend or roll the term by hand."
+          action: "Read the HOLD reasons journaled for the lane (no_room under rule term_keepalive: the debt reserve has no room for the keep-alive borrow) and the 'leverage decision' line's term_days. Under 1 day without room the worker repays the debt by itself (debt_zero); if that step holds no_room too, see LoyalBackyardSafetyStepNoRoom. Do not extend or roll the term by hand."
           recovery: "A keep-alive or leverage_up borrow lands and the lane's days to maturity read about 30, or the lane's debt is repaid and the series is gone."
+
+      # The target wants a safety move (hard LTV, term maturity, a
+      # withdrawal, an operator exit) the chain has no room for: no withdraw
+      # room on the obligation, no borrow room for a keep-alive, a release a
+      # lane cannot make. The worker retries every tick; only outside cash or
+      # the reserve recovering moves it.
+      - alert: LoyalBackyardSafetyStepNoRoom
+        expr: sum by (lane, rule) (increase(loyal_backyard_step_no_room_total{rule=~"hard_ltv|term_maturity|term_keepalive|withdrawal|operator_exit|custody"}[10m])) > 0
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "Earn Max lane {{ $labels.lane }} cannot take its {{ $labels.rule }} step: no room on chain"
+          trigger: "For 10 minutes every tick's {{ $labels.rule }} step on the lane held no_room: the chain has no room for the move its target wants."
+          impact: "{{ if eq $labels.rule \"hard_ltv\" }}The lane stays above its hard LTV and nearer liquidation.{{ else if match \"^term_\" $labels.rule }}The lane's term debt nears or passes maturity, after which it becomes liquidatable.{{ else if eq $labels.rule \"withdrawal\" }}Queued withdrawals wait.{{ else }}The operator's exit does not progress.{{ end }}"
+          action: "Read the worker's hourly 'no_room lane=... rule=...' line and the HOLD rows' cause (step_no_withdraw_room: the obligation cannot release collateral without outside cash; utilization: the debt reserve is full). Bring outside cash or wait for the reserve; do not raise caps or bypass the step."
+          recovery: "A step of the rule lands for the lane, or its target no longer needs the move; the series stops increasing."
 
   - name: loyal-units
     rules:

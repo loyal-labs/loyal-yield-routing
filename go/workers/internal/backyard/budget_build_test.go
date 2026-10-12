@@ -102,7 +102,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			values := make([]any, 0, len(addresses))
 			for _, address := range addresses {
 				a, ok := accounts[address]
-				if !ok {
+				if !ok || a.Lamports == 0 {
 					values = append(values, nil)
 					continue
 				}
@@ -148,24 +148,6 @@ func TestProductionBridgeRequiresBindBeforeSigner(t *testing.T) {
 				t.Fatalf("unconfigured builder reached signer: %v", err)
 			}
 		})
-	}
-}
-
-func TestKnownBuildCostDoesNotGrantAdmission(t *testing.T) {
-	t.Parallel()
-	request := bridgeTestRequest(ReportNAV, 0)
-	effects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 0, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cost, err := observePhase3KnownBuildCost(context.Background(), budgetBuildRPC(t, 5_000, 42), budgetView(t), request, effects)
-	if err != nil || cost.TotalMicros <= 0 || cost.PrincipalMicros != 0 {
-		t.Fatalf("unexpected measured report cost: %+v %v", cost, err)
-	}
-	// Passing known-cost measurement cannot replace the bind.
-	err = BuildSimulateAndPersistBridge(context.Background(), &Database{}, budgetBuildRPC(t, 5_000, 42), budgetView(t), "unbound", BridgeExecutionEvidence{request, effects}, Credentials{})
-	if err == nil {
-		t.Fatal("unbound production build passed")
 	}
 }
 

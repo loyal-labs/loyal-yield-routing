@@ -104,19 +104,22 @@ func TestReserveUpdateThatOpensRoomWakesATickThatBorrowsIt(t *testing.T) {
 	// capacity is the room the update opened, and the tick borrows exactly it.
 	receive := kaminoReceiveWithinRoom(last.roomRaw, binary.LittleEndian.Uint64(debtReserveWithRoom(t, route, room).Data[kaminoReserveConfigOffset+40:]))
 	s, _ := oct10WindowSnapshot(t, receive)
-	s.LeverageApprovedBorrowRaw, s.LeverageSourceDebtRaw = s.LeverageDesired150Raw, uint64(s.PositionDebtRaw)
-	if d := Decide(s); d.Action != OpenRouteStep || d.Reason != leverageUpReason || uint64(d.AmountRaw) != receive {
+	s.LeverageUpApproved = true
+	if d := Decide(targeted(s)); d.Action != OpenRouteStep || d.Reason != leverageUpReason || uint64(d.AmountRaw) != receive {
 		t.Fatalf("the woken tick did not borrow the opened room %d: %+v", receive, d)
 	}
 }
 
 // The watch set: every held lane's debt reserve for the gauge, waking only
-// on a lane below its stored target, plus a tranche destination's reserves.
-func TestLeverageRoomWatchesFollowTargetsAndTranche(t *testing.T) {
+// on a lane below its stored level.
+func TestLeverageRoomWatchesFollowTheLevels(t *testing.T) {
 	t.Parallel()
 	s, _ := oct10WindowSnapshot(t, 0)
-	o := Observation{Snapshot: s, planning: &routePlanningState{leverage: map[string]LeverageTarget{s.RouteLane: {Lane: s.RouteLane, Level: 1.75}}}}
-	o.heldFacts = []heldLaneFact{{Lane: onreONycUSDC, CollateralValueRaw: 1_500_000_000, DebtValueRaw: 500_000_000}}
+	other := s
+	other.RouteLane, other.StrategyKey = onreONycUSDC, onreONycUSDC
+	other.PositionCollateralValueRaw, other.PositionDebtValueRaw, other.PositionDebtRaw = 1_500_000_000, 500_000_000, 500_000_000
+	other.LeverageTargetLevel = 0
+	o := Observation{Snapshot: s, lanes: []Snapshot{s, other}}
 	gaps := heldLaneLeverage(o)
 	if len(gaps) != 2 || gaps[0].lane != s.RouteLane || !gaps[0].targeted || gaps[0].gap < 0.7 || gaps[1].targeted {
 		t.Fatalf("held lane leverage: %+v", gaps)
@@ -125,11 +128,11 @@ func TestLeverageRoomWatchesFollowTargetsAndTranche(t *testing.T) {
 	if len(watches) != 2 || !watches[0].wakes || !watches[0].debt || watches[1].wakes || watches[1].lane != onreONycUSDC {
 		t.Fatalf("watches: %+v", watches)
 	}
-	o.planning.leverage[onreONycUSDC] = LeverageTarget{Lane: onreONycUSDC, Level: 1.5}
-	o.planning.tranche = &trancheIntent{Destination: onreONycUSDC}
+	// A level below the position wakes nothing; one above it does.
+	o.lanes[1].LeverageTargetLevel = 1.75
 	watches = leverageRoomWatches(o)
-	if len(watches) != 3 || !watches[1].wakes || watches[2].debt || !watches[2].wakes {
-		t.Fatalf("tranche destination watches: %+v", watches)
+	if len(watches) != 2 || !watches[1].wakes {
+		t.Fatalf("a lane below its level is not woken on: %+v", watches)
 	}
 }
 

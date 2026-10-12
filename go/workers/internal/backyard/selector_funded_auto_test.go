@@ -1,8 +1,6 @@
 package backyard
 
 import (
-	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -28,39 +26,6 @@ func fundedAutoFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) Sel
 		SourceLane: in.Snapshot.RouteLane, DestinationLane: testAutoLane, ObservationID: in.Snapshot.ObservationID,
 		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
 		EvidenceID: sha256Bytes([]byte("auto-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + budgetMaxObservationLagSlots,
-	}
-	in.Quotes = []MoveQuote{quote}
-	return in
-}
-
-// fundedAutoSourceFixture builds the funded follow-up state: an AUTO position
-// is the production route, so the selector must keep its economics, hold the
-// same-lane baseline, and stay able to unwind.
-func fundedAutoSourceFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) SelectorInput {
-	t.Helper()
-	in := fundedAutoFixture(t, debtPrice, collateralPrice)
-	s := in.Snapshot
-	s.RouteLane, s.StrategyKey = testAutoLane, testAutoLane
-	s.HasPosition = true
-	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 4_000_000, 4_000_000
-	s.PositionDebtRaw, s.PositionDebtValueRaw = 1_000_000, 1_000_000
-	s.StrategyNAVRaw = 3_000_000
-	s.VoltrIdleRaw = 0
-	in.Snapshot = s
-	// The destination candidate: a profitable installed lane quoted from the
-	// AUTO source at the pilot tranche, carrying the exact bounded exit for
-	// the live position.
-	source := in.Markets[0]
-	destination := source
-	destination.Lane = "OnRe/ONyc/USDC"
-	destination.NativeAPY = .5
-	in.Markets = []LaneEconomics{source, destination}
-	quote := MoveQuote{
-		MinimumIdleRaw: 100_000_000, BorrowReceiveRaw: 5_000_000,
-		SourceExit: &selectorExitBound{MaxCollateralRaw: 4_000_000, MaxDebtRaw: 1_000_000},
-		SourceLane: testAutoLane, DestinationLane: destination.Lane, ObservationID: s.ObservationID,
-		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
-		EvidenceID: sha256Bytes([]byte("auto-source-unwind")), SampleSlot: s.Slot, ValidThroughSlot: s.Slot + budgetMaxObservationLagSlots,
 	}
 	in.Quotes = []MoveQuote{quote}
 	return in
@@ -156,39 +121,6 @@ func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testin
 	}
 }
 
-// A funded AUTO allocation must not strand the selector: the candidate lane as
-// production source keeps its keep-gain baseline, holds the same-lane
-// reinvestment baseline closed, and can select a safe unwind to a better
-// installed lane. A source outside the registry is still refused outright.
-func TestAutoSourceKeepsEconomicsAndSelectsSafeUnwind(t *testing.T) {
-	t.Parallel()
-	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
-	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
-	in := fundedAutoSourceFixture(t, debtPrice, collateralPrice)
-	foreign := in
-	foreign.Snapshot.RouteLane = RouteID
-	if public := SelectOpportunity(foreign, SelectorState{}); public.Reason != "pilot_lane_unavailable" {
-		t.Fatal("a source outside the registry was admitted", public)
-	}
-	result := SelectOpportunity(in, SelectorState{})
-	if result.Reason == "pilot_lane_unavailable" || result.KeepGainRaw <= 0 {
-		t.Fatal("AUTO source lost its current economics", result)
-	}
-	for _, c := range result.Candidates {
-		if c.Lane == testAutoLane && c.BlockedReason != "current_position_is_keep_baseline" {
-			t.Fatal("same-lane baseline not held for the funded source", c)
-		}
-	}
-	if result.Action != "KEEP" || result.Reason != "advantage_not_yet_persistent" {
-		t.Fatal("destination persistence not started from AUTO source", result)
-	}
-	advanceSelectorFixture(&in, time.Minute)
-	result = SelectOpportunity(in, result.State)
-	if result.Action != "SWITCH" || result.DestinationLane != "OnRe/ONyc/USDC" || result.SelectedQuote == nil || result.SelectedQuote.SourceExit == nil {
-		t.Fatal("AUTO source could not select its safe unwind", result)
-	}
-}
-
 // The funding authority is the active registry: Maple and AUTO fund, an
 // unknown lane never does.
 func TestSelectorEntryFundingLaneAuthority(t *testing.T) {
@@ -218,157 +150,5 @@ func TestSelectorEntryFundingLaneAuthority(t *testing.T) {
 				t.Fatal("unknown lane admitted", got)
 			}
 		})
-	}
-}
-
-// The locked production path persists an ordinary AUTO entry: priced
-// persistence from the route state selects ENTER through the registry. The
-// same input aimed at the exit-only Ethena lane stays closed. A closed KEEP
-// persistence still records its diagnostic selector result (the existing
-// recordSelectorEvaluation contract), so the closed assertions pin exactly
-// what that contract guarantees: no entry, unchanged pause, canary history
-// and planning generation, and no state_version bump.
-func TestLockedManifestSelectorPersistsCandidateEntry(t *testing.T) {
-	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
-	defer cancel()
-	defer db.Close()
-	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
-	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
-	cases := []struct {
-		name      string
-		lane      string
-		wantEntry bool
-	}{
-		{"registry", testAutoLane, true},
-		{"exit_only", ethenaUSDePYUSD.Lane, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			key := fmt.Sprintf("auto-entry-%s-%d", tc.name, time.Now().UnixNano())
-			in := fundedAutoFixture(t, debtPrice, collateralPrice)
-			in.Markets[0].Lane, in.Quotes[0].DestinationLane = tc.lane, tc.lane
-			in.Markets[0].NativeAPY = 2 // synthetic fee-reserved winner; rate is not live evidence
-			armFeeAuthorityFixture(t, &in.Snapshot)
-			history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{tc.lane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
-			state := map[string]any{"generation": 2, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": true}
-			raw, _ := json.Marshal(state)
-			if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := db.AcquireRouteLease(ctx, key, "auto-entry-a", time.Minute); err != nil {
-				t.Fatal(err)
-			}
-			advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-			result, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2)
-			if tc.wantEntry && (err != nil || result.Action != "ENTER" || result.DestinationLane != testAutoLane) {
-				t.Fatal("locked candidate entry did not persist its selection", err, result)
-			}
-			if !tc.wantEntry && (err != nil || result.Action != "KEEP") {
-				t.Fatal("closed locked path admitted the candidate", err, result)
-			}
-			var version int64
-			var paused bool
-			var stateRaw []byte
-			if err = db.pool.QueryRow(ctx, `SELECT state_version,(state->>'selectorEntryPaused')::boolean,state FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version, &paused, &stateRaw); err != nil {
-				t.Fatal(err)
-			}
-			if !tc.wantEntry {
-				if version != 2 {
-					t.Fatal("closed KEEP advanced the route fence version", version)
-				}
-				if !paused {
-					t.Fatal("closed KEEP unpaused entry")
-				}
-				var persisted struct {
-					Generation json.RawMessage `json:"generation"`
-					Entry      json.RawMessage `json:"selectorEntry"`
-					Unwind     json.RawMessage `json:"selectorUnwind"`
-					Canaries   json.RawMessage `json:"pilotCanaryEntries"`
-				}
-				if err = json.Unmarshal(stateRaw, &persisted); err != nil {
-					t.Fatal(err)
-				}
-				if len(persisted.Entry) != 0 && string(persisted.Entry) != "null" {
-					t.Fatal("closed KEEP persisted an entry", string(persisted.Entry))
-				}
-				if len(persisted.Unwind) != 0 || len(persisted.Canaries) != 0 {
-					t.Fatal("closed KEEP wrote unwind or canary history", string(persisted.Unwind), string(persisted.Canaries))
-				}
-				if string(persisted.Generation) != "2" {
-					t.Fatal("closed KEEP moved the planning generation", string(persisted.Generation))
-				}
-				if entry, err := db.LoadSelectorEntry(ctx, key); err != nil || entry != nil {
-					t.Fatal("closed path persisted an entry", err, entry)
-				}
-				if _, err = db.ReleaseRouteLease(ctx); err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			if version != 3 {
-				t.Fatal("candidate entry did not advance generation exactly once", version)
-			}
-			if paused {
-				t.Fatal("candidate entry left selection paused")
-			}
-			restarted, err := OpenDatabase(ctx, url)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer restarted.Close()
-			entry, err := restarted.LoadSelectorEntry(ctx, key)
-			if err != nil || entry == nil || entry.Lane != testAutoLane || entry.EquityRaw != 10_000_000 {
-				t.Fatal("restart lost the AUTO entry", err, entry)
-			}
-			if _, err = db.ReleaseRouteLease(ctx); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-}
-
-// The recorded candidate-source unwind is the anti-strand proof: a funded AUTO
-// position can record its bounded economic rotation under the reviewed
-// manifest, and the intent decodes across a restart.
-func TestLockedManifestSelectorRecordsCandidateSourceUnwind(t *testing.T) {
-	ctx, cancel, db, url := openManualRecoveryTestDatabase(t, 30*time.Second)
-	defer cancel()
-	defer db.Close()
-	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
-	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
-	key := fmt.Sprintf("auto-unwind-%d", time.Now().UnixNano())
-	in := fundedAutoSourceFixture(t, debtPrice, collateralPrice)
-	in.Snapshot.VoltrIdleRaw = in.Snapshot.TotalVaultNAVRaw - in.Snapshot.StrategyNAVRaw
-	in.Markets[1].NativeAPY = 2 // synthetic fee-reserved winner for persistence ownership
-	armFeeAuthorityFixture(t, &in.Snapshot)
-	history := SelectorResult{State: SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{"OnRe/ONyc/USDC": {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}}
-	state := map[string]any{"generation": 2, "selector": map[string]any{"mode": "live", "result": history}, "selectorEntryPaused": false}
-	raw, _ := json.Marshal(state)
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,$2,2)`, key, raw); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.AcquireRouteLease(ctx, key, "auto-unwind-a", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
-	result, err := db.RecordSelectorEvaluation(ctx, key, in, in.Snapshot.Slot, 2)
-	if err != nil || result.Action != "SWITCH" || result.DestinationLane != "OnRe/ONyc/USDC" {
-		t.Fatal("candidate-source unwind not recorded", err, result)
-	}
-	restarted, err := OpenDatabase(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer restarted.Close()
-	intent, err := restarted.LoadUnwindIntent(ctx, key)
-	if err != nil || intent == nil || intent.SourceLane != testAutoLane {
-		t.Fatal("restart lost the candidate-source unwind", err, intent)
-	}
-	var version int64
-	if err = restarted.pool.QueryRow(ctx, `SELECT state_version FROM loyal_yield.multiply_route_states WHERE route_key=$1`, key).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != 3 {
-		t.Fatal("unwind write did not advance generation exactly once", version)
 	}
 }

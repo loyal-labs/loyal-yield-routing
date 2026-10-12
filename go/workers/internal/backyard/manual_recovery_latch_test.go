@@ -186,6 +186,7 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 func manualRecoveryTestObservation(id string, slot int64) Observation {
 	return Observation{ObservedAt: time.Unix(slot, 0).UTC(), Snapshot: Snapshot{
 		ObservationID: id, Slot: slot, RouteKind: RouteKind, Fresh: true, MonitorsArmed: true,
+		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID,
 	}}
 }
 
@@ -206,6 +207,8 @@ func manualRecoveryHealthyRefreshObservation(id string, slot int64) Observation 
 	snapshot.VoltrTotalValueRaw = 49
 	snapshot.PriorReportedNAVRaw = 42
 	snapshot.StrategyNAVRaw = 42
+	// A flat vault entering Maple: the allocation is the actionable decision.
+	snapshot.Target = LaneTarget{Rule: ruleEntry, EntryRaw: 7}
 	return Observation{Snapshot: snapshot, ObservedAt: time.Unix(slot, 0).UTC()}
 }
 
@@ -300,9 +303,23 @@ func ensureManualRecoveryTestSchema(ctx context.Context, db *Database) error {
 	 generation bigint NOT NULL DEFAULT 0,
 	 latched_at timestamptz NOT NULL DEFAULT clock_timestamp(),cleared_at timestamptz,
 	 cleared_reason text,CHECK ((cleared_at IS NULL)=(cleared_reason IS NULL)));`)
+	if err != nil {
+		return err
+	}
 	if _, err := db.pool.Exec(ctx, `ALTER TABLE loyal_yield.backyard_manual_recovery_latches ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
+	return applyTargetInputMigration(ctx, db)
+}
+
+// applyTargetInputMigration applies the shipped 0103 migration: target()'s
+// stored inputs, the lane levels and the operator exits.
+func applyTargetInputMigration(ctx context.Context, db *Database) error {
+	raw, err := os.ReadFile("../../../../migrations/yield/0103_backyard_target_inputs.sql")
+	if err != nil {
+		return err
+	}
+	_, err = db.pool.Exec(ctx, string(raw))
 	return err
 }
 
@@ -561,6 +578,7 @@ func TestManualRecoveryConstructionRefreshPersistsHoldBeforeDispatch(t *testing.
 	initial := manualRecoveryTestObservation("refresh-before", 903)
 	initial.Snapshot.MonitorsArmed = false
 	initial.Snapshot.VoltrIdleRaw = 7
+	initial.Snapshot = tickObservation(initial.Snapshot).Snapshot
 	refreshed := manualRecoveryTestObservation("refresh-hold", 904)
 	refreshed.Snapshot.MonitorsArmed = true
 	refreshed.Snapshot.StrategyReceiptIntegrityFault = true
@@ -856,22 +874,22 @@ func TestManualRecoveryKaminoConstructionErrorAfterRefreshHoldPersists(t *testin
 		loadLatch:       db.ManualRecoveryLatch,
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         state.observe,
-		prepareKamino: func(ctx context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, KaminoExecutionEvidence, error) {
+		prepareStep: func(ctx context.Context, _ RouteManifest, decision Decision, _ Observation) (Observation, StepExecutionEvidence, error) {
 			prepareCalls++
-			if decision.Action != DeleverPrimeUSDCStep {
-				t.Fatalf("initial decision did not select the Kamino path: %+v", decision)
+			if decision.Action != DeleverRouteStep || decision.Reason != hardLTVDeleverReason {
+				t.Fatalf("initial decision did not select the hard-LTV step: %+v", decision)
 			}
 			if err := state.enrich(ctx, &refreshed); err != nil {
-				return Observation{}, KaminoExecutionEvidence{}, err
+				return Observation{}, StepExecutionEvidence{}, err
 			}
-			return refreshed, KaminoExecutionEvidence{}, constructionErr
+			return refreshed, StepExecutionEvidence{}, constructionErr
 		},
 		recordManualRecovery: db.RecordManualRecovery,
 		bind: func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
 			t.Fatal("a Kamino construction hold reached admission")
 			return nil
 		},
-		buildKamino: func(context.Context, string, KaminoExecutionEvidence) error {
+		buildStep: func(context.Context, string, StepExecutionEvidence) error {
 			buildCalls++
 			return nil
 		},

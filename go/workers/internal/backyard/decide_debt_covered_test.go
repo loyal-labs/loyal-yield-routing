@@ -11,23 +11,21 @@ func TestNonUSDCCoveredWithdrawalDoesNotUnwind(t *testing.T) {
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw = true, 560_000_000, 190_000_000
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 571_000_000, 190_000_000, 190_001_000
 	s.LTVBPS, s.WithdrawalDemandRaw, s.VoltrIdleRaw = 3322, 5_000_000, 1_295_000_000
-	if got := Decide(s); got.Action != Hold || got.Reason != "withdrawal_covered" {
+	if got := Decide(targeted(s)); got.Action != Hold || got.Reason != holdAtTarget {
 		t.Fatalf("covered demand unwound: %+v", got)
 	}
 	s.LastReportAgeSeconds = 60
-	if got := Decide(s); got.Action != ReportNAV || got.Reason != "withdrawal_covered_nav_due" {
+	if got := Decide(targeted(s)); got.Action != ReportNAV || got.Reason != "withdrawal_covered_nav_due" {
 		t.Fatalf("covered demand skipped its report: %+v", got)
 	}
-	// Admitted unwind and hard LTV retain priority.
+	// An operator exit and hard LTV retain priority.
 	s.LastReportAgeSeconds = 0
-	unwind := s
-	unwind.Unwind = true
-	if got := Decide(unwind); got.Action != DeleverRouteStep {
-		t.Fatalf("admitted unwind was held: %+v", got)
+	if got := Decide(targetedWith(s, targetInputs{Exits: map[string]laneExit{s.RouteLane: {}}})); got.Action != DeleverRouteStep || got.Reason != debtZeroReason {
+		t.Fatalf("operator exit was held: %+v", got)
 	}
 	hard := s
 	hard.LTVBPS, hard.DebtIdleRaw = 6000, 1
-	if got := Decide(hard); got.Reason != hardLTVDeleverReason {
+	if got := Decide(targeted(hard)); got.Reason != hardLTVDeleverReason {
 		t.Fatalf("hard LTV lost priority: %+v", got)
 	}
 }

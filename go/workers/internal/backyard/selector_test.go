@@ -99,43 +99,6 @@ func TestSelectorPersistenceRestartsAfterCapacityClosureAndSurvivesJSONRestart(t
 		t.Fatal(got)
 	}
 }
-func TestSelectorPartialCapacityValuesIdleAndDoesNotExitFullCurrentLane(t *testing.T) {
-	t.Parallel()
-	in := selectorFixture()
-	s := &in.Snapshot
-	s.VoltrIdleRaw = 0
-	s.HasPosition = true
-	s.PositionCollateralRaw = 1_500_000_000
-	s.PositionDebtRaw = 500_000_000
-	s.PositionCollateralValueRaw = s.PositionCollateralRaw
-	s.PositionDebtValueRaw = s.PositionDebtRaw
-	s.StrategyNAVRaw = 1_000_000_000
-	s.PriorReportedNAVRaw = s.StrategyNAVRaw
-	s.LTVBPS = 3334
-	current := in.Markets[0]
-	current.Lane = s.RouteLane
-	current.NativeAPY = .10
-	current.EntryCapacity = Capacity{Known: true, Raw: 0}
-	in.Markets = append(in.Markets, current)
-	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 100_000_000}
-	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 100_000_000, 50_000_000
-	got := SelectOpportunity(in, SelectorState{})
-	if got.Action != "KEEP" || got.KeepGainRaw <= 0 {
-		t.Fatal(got)
-	}
-	for _, c := range got.Candidates {
-		if c.Lane == "OnRe/ONyc/USDC" && (c.IdleRaw != 900_000_000 || c.BenefitRaw >= 0) {
-			t.Fatal(c)
-		}
-	}
-	// Closing entry to the owned lane does not erase its actual income.
-	current.EntryBlockedReason = "entry_closed"
-	in.Markets[1] = current
-	again := SelectOpportunity(in, SelectorState{})
-	if again.KeepGainRaw != got.KeepGainRaw || again.Action != "KEEP" {
-		t.Fatal(again)
-	}
-}
 func TestSelectorMissingEvidenceNeverBecomesFreeCapacityOrZeroCosts(t *testing.T) {
 	t.Parallel()
 	for _, mutate := range []func(*SelectorInput){
@@ -181,22 +144,23 @@ func TestWithdrawalDemandRemainsTruthfulAcrossTypedLanes(t *testing.T) {
 		s.PositionCollateralRaw = 1000
 		s.PositionDebtRaw = 100
 		s.LTVBPS = 1000
+		s = targeted(s)
 		original := s
 		got := Decide(s)
-		if got.Action != Hold || got.Reason != "withdrawal_covered" || s != original {
+		if got.Action != Hold || got.Reason != holdAtTarget || s != original {
 			t.Fatalf("covered %s: %+v", lane, got)
 		}
+		// Squads cash beside a held lane stages before any position moves.
 		s.VoltrIdleRaw = 0
 		s.SquadsIdleRaw = 40
-		got = Decide(s)
-		if got.Action != Hold || got.AmountRaw != 0 || got.Reason != "withdrawal_full_exit_unproven" || s.WithdrawalDemandRaw != 10 {
+		if got = Decide(targeted(s)); got.Action != StageSquadsToVoltr || got.AmountRaw != 40 || s.WithdrawalDemandRaw != 10 {
 			t.Fatalf("uncovered %s: %+v", lane, got)
 		}
 		s = base()
 		s.RouteLane = lane
 		s.WithdrawalDemandRaw = 10
 		s.SquadsIdleRaw = 40
-		if got = Decide(s); got.Action != StageSquadsToVoltr || got.AmountRaw != 40 {
+		if got = Decide(targeted(s)); got.Action != StageSquadsToVoltr || got.AmountRaw != 40 {
 			t.Fatal(got)
 		}
 	}
@@ -216,7 +180,7 @@ func TestEconomicOutageDoesNotBlockSafetyWithdrawalOrExactRecovery(t *testing.T)
 	s = in.Snapshot
 	s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1
 	s.SquadsIdleRaw = 1
-	if got := Decide(s); got.Action != StageSquadsToVoltr {
+	if got := Decide(targeted(s)); got.Action != StageSquadsToVoltr || got.Reason != outboundStageReason {
 		t.Fatal(got)
 	}
 	s.Nonterminal = Signed
@@ -229,45 +193,6 @@ func TestEconomicOutageDoesNotBlockSafetyWithdrawalOrExactRecovery(t *testing.T)
 		t.Fatal(got)
 	}
 }
-func TestCommittedUnwindDoesNotRewriteWithdrawalOrTrustFlatIntent(t *testing.T) {
-	t.Parallel()
-	s := base()
-	s.RouteLane = SelectedRouteID
-	s.StrategyKey = s.RouteLane
-	s.PositionCollateralRaw = 100
-	s.HasPosition = true
-	intent := UnwindIntent{SourceLane: s.RouteLane, Reason: "economic_rotation", ObservationID: "admitted", MaxCollateralRaw: 100, MaxDebtRaw: 50, EvidenceID: sha256Bytes([]byte("exit")), CreatedAt: time.Now().UTC()}
-	if err := applyUnwindIntent(&s, &intent); err != nil {
-		t.Fatal(err)
-	}
-	if got := Decide(s); got.Action != DeleverRouteStep || s.WithdrawalDemandRaw != 0 || unwindComplete(s) {
-		t.Fatal(got)
-	}
-	s.HasPosition = false
-	s.PositionCollateralRaw = 0
-	s.CollateralIdleRaw = 1
-	if unwindComplete(s) {
-		t.Fatal("custody residue hidden")
-	}
-	s.CollateralIdleRaw = 0
-	s.PositionDebtRaw = 1
-	if unwindComplete(s) {
-		t.Fatal("debt residue hidden")
-	}
-	s.PositionDebtRaw = 0
-	s.PriorReportedNAVRaw = 1
-	if unwindComplete(s) {
-		t.Fatal("stale report hidden")
-	}
-	s.PriorReportedNAVRaw = 0
-	if !unwindComplete(s) {
-		t.Fatal("flat reconciled state did not complete")
-	}
-	s.RouteLane = "OnRe/ONyc/USDC"
-	if applyUnwindIntent(&s, &intent) == nil {
-		t.Fatal("source changed before reconciliation")
-	}
-}
 
 func TestSelectorNeverPreemptsExecutableRiskReduction(t *testing.T) {
 	t.Parallel()
@@ -277,7 +202,7 @@ func TestSelectorNeverPreemptsExecutableRiskReduction(t *testing.T) {
 	in.Snapshot.SquadsIdleRaw = 100
 	in.Snapshot.LTVBPS = 6000
 	got := SelectOpportunity(in, SelectorState{})
-	if got.Action != "KEEP" || got.Reason != "execution_recovery_or_safety_first" {
+	if got.Action != "KEEP" || got.SelectedQuote != nil {
 		t.Fatal(got)
 	}
 }
@@ -338,23 +263,6 @@ func TestStagedRestoreFinishesAfterWithdrawalDemandChanges(t *testing.T) {
 	}
 }
 
-func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
-	t.Parallel()
-	for _, lane := range []string{"PRIME/USDC", SelectedRouteID, "OnRe/ONyc/USDC"} {
-		s := base()
-		s.RouteLane = lane
-		s.WithdrawalDemandRaw = 1
-		s.HasPosition, s.PositionDebtRaw, s.SquadsIdleRaw = true, 5, 5
-		s.Unwind = true   // Canonical repay applies to an explicitly scoped full exit.
-		s.DebtIdleRaw = 0 // Same USDC account must not be counted twice.
-		d := Decide(s)
-		action, err := fixedRouteAction(d.Action, lane)
-		if err != nil || (lane == RouteID && action != DeleverPrimeUSDCStep) || (lane != RouteID && action != DeleverRouteStep) || d.Reason != withdrawalDeleverReason {
-			t.Fatal(lane, d, action, err)
-		}
-	}
-}
-
 func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *testing.T) {
 	t.Parallel()
 	in := selectorFixture()
@@ -399,35 +307,6 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 	}
 }
 
-func TestPilotSelectorKeepsActualSourceIncomeWhenCandidateTrancheIsSmaller(t *testing.T) {
-	t.Parallel()
-	in := selectorFixture()
-	// The destination quotes only the bounded candidate tranche against the
-	// larger funded source position.
-	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
-	in.Snapshot.VoltrIdleRaw = 0
-	in.Snapshot.HasPosition = true
-	in.Snapshot.PositionCollateralRaw, in.Snapshot.PositionCollateralValueRaw = 150_000_000, 150_000_000
-	in.Snapshot.PositionDebtRaw, in.Snapshot.PositionDebtValueRaw = 50_000_000, 50_000_000
-	in.Snapshot.StrategyNAVRaw, in.Snapshot.PriorReportedNAVRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000, 100_000_000
-	in.Snapshot.LTVBPS = 3334
-	current := in.Markets[0]
-	current.Lane = in.Snapshot.RouteLane
-	current.EntryCapacity = Capacity{Known: true}
-	in.Markets = append(in.Markets, current)
-	in.Quotes[0].EquityRaw, in.Quotes[0].CostRaw = 10_000_000, 100
-	in.Quotes[0].BorrowReceiveRaw = 5_000_000
-	got := SelectOpportunity(in, SelectorState{})
-	if got.Action != "KEEP" || got.KeepGainRaw <= 0 {
-		t.Fatal(got)
-	}
-	for _, c := range got.Candidates {
-		if c.Lane != current.Lane && (!c.CostsKnown || c.BenefitRaw >= 0 || c.GainRaw >= got.KeepGainRaw) {
-			t.Fatal("source income was clipped to candidate tranche", c, got.KeepGainRaw)
-		}
-	}
-}
-
 func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *testing.T) {
 	t.Parallel()
 	in := selectorFixture()
@@ -451,154 +330,5 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 	in.Quotes[0].BorrowReceiveRaw = 0
 	if got = SelectOpportunity(in, SelectorState{}).Candidates[0]; got.CostsKnown || got.BlockedReason != "bounded_borrow_unavailable" {
 		t.Fatal("missing amount accepted", got)
-	}
-}
-
-// sameLaneSelectorFixture is a settled, fully funded one-pass Maple position
-// with later deposits stranded as Voltr idle. The same reserve pays a fresh,
-// strictly larger one-pass entry more than the stale deployed position earns.
-func sameLaneSelectorFixture() SelectorInput {
-	in := selectorFixture()
-	s := &in.Snapshot
-	s.HasPosition = true
-	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 90_000_000, 100_000_000
-	s.PositionCollateralRaw, s.PositionCollateralValueRaw = 15_000_000, 15_000_000
-	s.PositionDebtRaw, s.PositionDebtValueRaw = 5_000_000, 5_000_000
-	s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.LTVBPS = 10_000_000, 10_000_000, 3334
-	current := in.Markets[0]
-	current.Lane, current.NativeAPY = s.RouteLane, .10
-	in.Markets = []LaneEconomics{current}
-	in.Quotes[0].DestinationLane = s.RouteLane
-	in.Quotes[0].EquityRaw, in.Quotes[0].CostRaw = 20_000_000, 100
-	in.Quotes[0].BorrowReceiveRaw, in.Quotes[0].MinimumIdleRaw = 10_000_000, 99_900_000
-	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 20_000_000}
-	return in
-}
-
-func sameLaneSelectorHistory(in SelectorInput) SelectorState {
-	return SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{in.Snapshot.RouteLane: {Since: in.Now.Add(-2 * time.Minute), LastSample: in.Now.Add(-time.Second)}}}
-}
-
-// Eligibility is bound lane-by-lane and position-by-position: only an active
-// pilot's settled, positively funded Maple position with idle above the buffer
-// may price a same-lane reinvestment. Everything else stays a keep baseline.
-func TestSameLaneReinvestmentEligibilityBindings(t *testing.T) {
-	t.Parallel()
-	in := sameLaneSelectorFixture()
-	if !sameLaneReinvestmentEligible(in.Snapshot, in.Policy) {
-		t.Fatal("settled funded Maple position with excess idle not eligible", in.Snapshot)
-	}
-	for _, tc := range []struct {
-		name   string
-		mutate func(*SelectorInput)
-	}{
-		{"exit_only_lane", func(i *SelectorInput) {
-			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
-		}},
-		{"zero_position", func(i *SelectorInput) { i.Snapshot.HasPosition = false }},
-		{"zero_collateral", func(i *SelectorInput) { i.Snapshot.PositionCollateralRaw, i.Snapshot.PositionCollateralValueRaw = 0, 0 }},
-		{"zero_debt", func(i *SelectorInput) { i.Snapshot.PositionDebtRaw, i.Snapshot.PositionDebtValueRaw = 0, 0 }},
-		{"zero_nav", func(i *SelectorInput) { i.Snapshot.StrategyNAVRaw, i.Snapshot.PriorReportedNAVRaw = 0, 0 }},
-		{"incomplete_tranche", func(i *SelectorInput) { i.Snapshot.SquadsIdleRaw = 5_000_000 }},
-		{"idle_at_buffer", func(i *SelectorInput) { i.Policy.IdleBufferRaw = i.Snapshot.VoltrIdleRaw }},
-		{"no_idle", func(i *SelectorInput) { i.Snapshot.VoltrIdleRaw = 0 }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			mutated := in
-			tc.mutate(&mutated)
-			if sameLaneReinvestmentEligible(mutated.Snapshot, mutated.Policy) {
-				t.Fatal("ineligible state admitted same-lane reinvestment", tc.name, mutated.Snapshot)
-			}
-		})
-	}
-}
-
-func TestPilotSelectorSwitchesToLargerSameLaneReinvestment(t *testing.T) {
-	t.Parallel()
-	in := sameLaneSelectorFixture()
-	got := SelectOpportunity(in, sameLaneSelectorHistory(in))
-	if got.Action != "SWITCH" || got.DestinationLane != in.Snapshot.RouteLane || got.EquityRaw != 19_999_900 || got.SelectedQuote == nil {
-		t.Fatal("persistent profitable extra idle did not select the same-lane switch", got)
-	}
-	if got.SelectedQuote.DestinationLane != in.Snapshot.RouteLane || got.SelectedQuote.EquityRaw != 20_000_000 {
-		t.Fatal("selected quote is not the complete same-lane move", got.SelectedQuote)
-	}
-}
-
-func TestPilotSameLaneSwitchStaysBlockedWithoutStrictReinvestmentCase(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name   string
-		mutate func(*SelectorInput)
-		reason string
-	}{
-		{"no_idle", func(i *SelectorInput) { i.Snapshot.VoltrIdleRaw = 0 }, "current_position_is_keep_baseline"},
-		{"buffer_only", func(i *SelectorInput) { i.Policy.IdleBufferRaw = i.Snapshot.VoltrIdleRaw }, "current_position_is_keep_baseline"},
-		{"at_cap", func(i *SelectorInput) {
-			i.Quotes[0].EquityRaw, i.Markets[0].EntryCapacity.Raw = 10_000_100, 10_000_100
-		}, "same_lane_reinvestment_not_larger"},
-		{"high_cost", func(i *SelectorInput) { i.Quotes[0].CostRaw = 5_000_000 }, ""},
-		{"closed_capacity", func(i *SelectorInput) { i.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 0} }, "entry_closed"},
-		{"stale_quote", func(i *SelectorInput) { i.Quotes[0].ObservedAt = i.Now.Add(-31 * time.Second) }, "bounded_move_cost_unavailable"},
-		{"incomplete_tranche", func(i *SelectorInput) { i.Snapshot.SquadsIdleRaw = 5_000_000 }, "complete_current_tranche_first"},
-		{"withdrawal", func(i *SelectorInput) { i.Snapshot.WithdrawalDemandRaw = 1 }, "withdrawal_unwind_or_accounting_first"},
-		{"exit_only_lane", func(i *SelectorInput) {
-			i.Snapshot.RouteLane, i.Snapshot.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
-			i.Markets[0].Lane = i.Snapshot.RouteLane
-			i.Quotes[0].SourceLane, i.Quotes[0].DestinationLane = i.Snapshot.RouteLane, i.Snapshot.RouteLane
-		}, "current_lane_economics_unavailable"},
-		{"working_ceiling", func(i *SelectorInput) {
-			s := &i.Snapshot
-			s.PositionCollateralRaw, s.PositionCollateralValueRaw = 300_000_000_000, 300_000_000_000
-			s.PositionDebtRaw, s.PositionDebtValueRaw = 100_000_000_000, 100_000_000_000
-			s.StrategyNAVRaw, s.PriorReportedNAVRaw = int64(strategyTwoBridgeLegCapRaw), int64(strategyTwoBridgeLegCapRaw)
-			s.VoltrIdleRaw, s.TotalVaultNAVRaw = 200_000_000_000, 400_000_000_000
-			i.Quotes[0].EquityRaw = int64(strategyTwoBridgeLegCapRaw)
-			i.Quotes[0].BorrowReceiveRaw = strategyTwoBridgeLegCapRaw / 2
-			i.Quotes[0].MinimumIdleRaw = 399_900_000_000
-			i.Markets[0].EntryCapacity = Capacity{Known: true, Raw: int64(strategyTwoBridgeLegCapRaw)}
-		}, "same_lane_reinvestment_not_larger"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			in := sameLaneSelectorFixture()
-			tc.mutate(&in)
-			got := SelectOpportunity(in, sameLaneSelectorHistory(in))
-			if got.Action != "KEEP" || got.SelectedQuote != nil {
-				t.Fatal("blocked same-lane case still switched", got)
-			}
-			if tc.reason == "" {
-				if got.Reason != "no_worthwhile_executable_move" {
-					t.Fatal("high cost did not fail the net-benefit gate", got)
-				}
-				return
-			}
-			blocked := false
-			for _, c := range got.Candidates {
-				if c.BlockedReason == tc.reason {
-					blocked = true
-				}
-			}
-			if !blocked && got.Reason != tc.reason {
-				t.Fatal("expected gate reason missing", tc.reason, got)
-			}
-		})
-	}
-}
-
-func TestFlatMapleUnwindReportsBeforeCompleting(t *testing.T) {
-	t.Parallel()
-	s := base()
-	s.RouteLane = SelectedRouteID
-	s.StrategyKey = s.RouteLane
-	s.Unwind = true
-	// Flat after restore, but the reconciled bridge mutations are unreported:
-	// unwindComplete needs !CapitalMutated, so only a report can finish it.
-	s.CapitalMutated = true
-	if got := Decide(s); got.Action != ReportNAV || got.Reason != "withdrawal_terminal_nav_due" {
-		t.Fatal("flat unwind held before its terminal report", got)
-	}
-	s.CapitalMutated, s.PriorReportedNAVRaw, s.LastReportAgeSeconds = false, 0, 0
-	if got := Decide(s); got.Action != Hold || got.Reason != "unwind_complete" || !unwindComplete(s) {
-		t.Fatal("reported flat unwind did not complete", got)
 	}
 }

@@ -175,6 +175,7 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 		debtSupplyVault,
 		{Address: route.DebtFeeReceiver, Owner: "11111111111111111111111111111111", Lamports: 1},
 	}
+	withFlatLanes(t, &accounts)
 	if mutate != nil {
 		mutate(accounts)
 	}

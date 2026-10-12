@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -15,7 +16,10 @@ import (
 //
 //	up:   refreshes, Squads{borrow}, Squads{swap|stake}, refreshes, Squads{deposit}
 //	down: refreshes, Squads{withdraw}, Squads{swap|redeem}, refreshes, Squads{repay}
+//	move: refreshes, Squads{withdraw}, refreshes, Squads{deposit}
 //
+// A move converts nothing: its source lane's withdrawal deposits into the
+// overflow lane that shares the source's collateral reserve and custody.
 // Each leg is a request its single-leg builder already accepts; the step only
 // orders their instructions. KLend's check_refresh counts back from each
 // top-level instruction, so each KLend execute carries its own refresh prefix
@@ -25,12 +29,13 @@ type StepRequest struct {
 	// ObligationReserves is the obligation's topology before the step.
 	Open KaminoPrimeUSDCRequest
 	// The conversion of what Open released, exactly one of the two: debt
-	// into collateral (up), collateral into debt (down).
+	// into collateral (up), collateral into debt (down); neither on a move.
 	Swap   *JupiterSwapRequest      `json:",omitempty"`
 	Hastra *HastraConversionRequest `json:",omitempty"`
-	// Close is the KLend deposit (up) or repay (down) leg of held custody
-	// plus the conversion's guaranteed output (stepCloseAmount). Its
-	// topology is the obligation's after Open, which the step sets.
+	// Close is the KLend deposit (up, move) or repay (down) leg of held
+	// custody plus the conversion's guaranteed output (stepCloseAmount), or
+	// a move's redeemed withdrawal. A step sets its topology (the
+	// obligation's after Open); a move's is the overflow obligation's own.
 	Close KaminoPrimeUSDCRequest
 }
 
@@ -38,6 +43,9 @@ type StepExecutionEvidence struct {
 	Request         StepRequest
 	ExpectedEffects ExpectedEffects
 }
+
+// move reports a step that converts nothing: an overflow move.
+func (r StepRequest) move() bool { return r.Swap == nil && r.Hastra == nil }
 
 // conversion is the step's conversion request, whichever venue converts it.
 func (r StepRequest) conversion() (any, error) {
@@ -56,12 +64,6 @@ func (r StepRequest) conversion() (any, error) {
 type stepMessage struct {
 	Message         []byte
 	WireBytes, Keys int
-}
-
-// stepBorrow is the borrow an up step opens with.
-func stepBorrow(request any) (KaminoPrimeUSDCRequest, bool) {
-	r, ok := request.(StepRequest)
-	return r.Open, ok
 }
 
 // stepUp reports the step's direction from its Open leg.
@@ -87,7 +89,15 @@ func buildStepMessage(step StepRequest, delegate publicKey) (stepMessage, error)
 	if err != nil {
 		return stepMessage{}, err
 	}
-	if step.Close.RouteLane != route.Lane {
+	closeRoute := route
+	if step.move() {
+		if lane, ok := overflowLaneOf(route.Lane); !ok || step.Close.RouteLane != lane {
+			return stepMessage{}, fmt.Errorf("a move deposits only into its source's overflow lane")
+		}
+		if closeRoute, err = runtimeRoute(step.Close.RouteLane); err != nil {
+			return stepMessage{}, err
+		}
+	} else if step.Close.RouteLane != route.Lane {
 		return stepMessage{}, fmt.Errorf("step legs name different lanes")
 	}
 	up, err := stepUp(step.Open, route)
@@ -98,9 +108,16 @@ func buildStepMessage(step StepRequest, delegate publicKey) (stepMessage, error)
 	if up {
 		conversion, closeLeg = SwapDebtToCollateralStep, kaminoLegDeposit
 	}
-	// After a borrow or a partial withdrawal the obligation holds both the
-	// collateral deposit and the debt.
-	step.Close.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+	if step.move() {
+		if up {
+			return stepMessage{}, fmt.Errorf("a move opens with a withdrawal")
+		}
+		closeLeg = kaminoLegDeposit
+	} else {
+		// After a borrow or a partial withdrawal the obligation holds both the
+		// collateral deposit and the debt.
+		step.Close.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+	}
 	blockhash, err := decodeKey(step.Open.RecentBlockhash)
 	if err != nil {
 		return stepMessage{}, err
@@ -109,18 +126,22 @@ func buildStepMessage(step StepRequest, delegate publicKey) (stepMessage, error)
 	if err != nil {
 		return stepMessage{}, err
 	}
-	convert, err := stepConversionExecute(step, route.Lane, conversion, delegate)
-	if err != nil {
-		return stepMessage{}, err
+	instructions := append([]compiledInstruction{}, open...)
+	if !step.move() {
+		convert, err := stepConversionExecute(step, route.Lane, conversion, delegate)
+		if err != nil {
+			return stepMessage{}, err
+		}
+		instructions = append(instructions, convert)
 	}
-	closing, leg, err := kaminoPolicyInstructions(step.Close, delegate, route)
+	closing, leg, err := kaminoPolicyInstructions(step.Close, delegate, closeRoute)
 	if err != nil {
 		return stepMessage{}, err
 	}
 	if leg != closeLeg {
 		return stepMessage{}, fmt.Errorf("a %s step closes with a %s, not a %s", map[bool]string{true: "up", false: "down"}[up], closeLeg, leg)
 	}
-	instructions := append(append(append([]compiledInstruction{}, open...), convert), closing...)
+	instructions = append(instructions, closing...)
 	keys := distinctKeys(delegate, instructions)
 	if keys > maxTransactionKeys {
 		return stepMessage{Keys: keys}, budgetHold("step_over_key_limit")
@@ -160,12 +181,15 @@ func stepSwapMaxAccounts(step StepRequest, action Action) (int, error) {
 // compileStepMessageForDelegate is the step's signed message: every leg on
 // the step's one blockhash, within the packet.
 func compileStepMessageForDelegate(r StepRequest, delegate publicKey) ([]byte, error) {
-	conversion, err := r.conversion()
-	if err != nil {
-		return nil, err
-	}
 	blockhash, height := r.Open.RecentBlockhash, r.Open.LastValidBlockHeight
-	cb, ch := stepConversionBlockhash(conversion)
+	cb, ch := blockhash, height
+	if !r.move() {
+		conversion, err := r.conversion()
+		if err != nil {
+			return nil, err
+		}
+		cb, ch = stepConversionBlockhash(conversion)
+	}
 	if height <= 0 || r.Close.RecentBlockhash != blockhash || r.Close.LastValidBlockHeight != height || cb != blockhash || ch != height {
 		return nil, fmt.Errorf("step legs do not share one blockhash")
 	}
@@ -291,7 +315,7 @@ func BuildSimulateAndPersistStep(ctx context.Context, database *Database, rpc *c
 	}
 	simulation, err := simulateSigned(ctx, rpc, build.SignedWire)
 	if err != nil {
-		return err
+		return stepSimulationHold(err)
 	}
 	logStage("step_build_simulate", buildStart)
 	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {
@@ -320,4 +344,16 @@ func signStep(r StepRequest, executor ed25519.PrivateKey) (BuildResult, error) {
 	}
 	return BuildResult{MessageSHA256: signed.messageSHA256, SignedWire: signed.signedWire, SignedWireSHA256: signed.signedWireSHA256,
 		TransactionSignature: signed.transactionSignature, RecentBlockhash: signed.recentBlockhash, LastValidBlockHeight: signed.lastValidBlockHeight}, nil
+}
+
+// stepSimulationHold is a step the chain refuses in simulation: the
+// target's chain_refused hold, journaled on the never-sent operation with the
+// simulation's error; the next tick decides again. An unavailable endpoint
+// and the Squads spending-limit refusal keep their own paths.
+func stepSimulationHold(err error) error {
+	var limit *SquadsSpendingLimitError
+	if errors.Is(err, errConfirmedObservationUnavailable) || errors.As(err, &limit) {
+		return err
+	}
+	return &BudgetHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
 }

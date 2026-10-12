@@ -148,84 +148,6 @@ func TestUSDCEntryConsumesWorkingCashAndValidatesSharedSourceOnce(t *testing.T) 
 	}
 }
 
-func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
-	t.Parallel()
-	for _, lane := range basicLaneIDs() {
-		s := base()
-		scale := int64(1)
-		if earnActiveLane(lane) {
-			scale = 10_000
-		}
-		s.SelectorEntryEquityRaw = 20_000 * scale
-		s.RouteLane, s.StrategyKey = lane, lane
-		s.VoltrIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = (100_000 * scale), (20_000 * scale), (20_000 * scale), (100_000 * scale)
-		d := Decide(s)
-		if d.Action != VoltrAllocateToSquads || d.AmountRaw != (20_000*scale) {
-			t.Fatalf("%s allocation: %+v", lane, d)
-		}
-		o, _, evidence := bridgeAdmissionFixture(t, d.Action, d.AmountRaw, s.VoltrIdleRaw, 0, 0)
-		o.Snapshot.RouteLane, o.Snapshot.StrategyKey = lane, lane
-		d.StrategyKey = lane
-		if _, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence); !earnHeldLane(lane) {
-			assertBudgetHold(t, err, "bridge_admission_snapshot_unavailable")
-		} else if err != nil {
-			t.Fatal("bounded allocation return", err)
-		}
-		s.VoltrIdleRaw -= d.AmountRaw
-		s.SquadsIdleRaw = d.AmountRaw
-		d = Decide(s)
-		if d.Action != SwapStableToCollateralStep || d.AmountRaw != s.SquadsIdleRaw {
-			t.Fatalf("%s working cash: %+v", lane, d)
-		}
-		for _, capacity := range []int64{0, (19_999 * scale)} {
-			changed := s
-			changed.CapacityRaw = capacity
-			d = Decide(changed)
-			if d.Action != StageSquadsToVoltr || d.AmountRaw != s.SquadsIdleRaw {
-				t.Fatalf("%s capacity shrink: %+v", lane, d)
-			}
-			o, _, evidence = bridgeAdmissionFixture(t, d.Action, d.AmountRaw, changed.VoltrIdleRaw, 0, changed.SquadsIdleRaw)
-			o.Snapshot.RouteLane, o.Snapshot.StrategyKey = lane, lane
-			if _, err := phase3BridgeTemplates(testPolicies(t), o.Snapshot, d, evidence); !earnHeldLane(lane) {
-				assertBudgetHold(t, err, "bridge_admission_snapshot_unavailable")
-			} else if err != nil {
-				t.Fatal("capacity return", err)
-			}
-		}
-		s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, (20_000 * scale), (20_000 * scale)
-		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != "prime_collateral_ready" {
-			t.Fatalf("%s finish deposit before allocating more: %+v", lane, d)
-		}
-		s.CollateralIdleRaw, s.PrimeIdleRaw, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.HasPosition = 0, 0, (20_000 * scale), (20_000 * scale), true
-		wantBorrow := "prime_collateral_requires_borrow"
-		if earnActiveLane(lane) {
-			s.LeverageTargetLevel, wantBorrow = 1.5, leverageUpReason
-			armLeverageCapacityFixture(&s)
-		}
-		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != wantBorrow {
-			t.Fatalf("%s finish borrow: %+v", lane, d)
-		}
-		if up, ok := stepDecision(s, d); !ok || !up {
-			t.Fatalf("%s borrow is not an up step: %+v", lane, d)
-		}
-		for _, action := range []Action{SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
-			invalid := d
-			invalid.Action = action
-			if invalid.Validate() == nil {
-				t.Fatal("USDC self-swap admitted", lane, action)
-			}
-		}
-		// The up step lands borrow, conversion and deposit at once; the
-		// position then holds at its level and idle stays in Voltr.
-		s.PositionDebtRaw, s.PositionDebtValueRaw = (10_000 * scale), (10_000 * scale)
-		s.PositionCollateralRaw, s.PositionCollateralValueRaw = (30_000 * scale), (30_000 * scale)
-		s.LTVBPS = 3333
-		if d = Decide(s); d.Action != Hold || s.VoltrIdleRaw != (80_000*scale) {
-			t.Fatalf("%s idle remains separate: %+v", lane, d)
-		}
-	}
-}
-
 func TestUSDCHardLTVIsOneDownStep(t *testing.T) {
 	t.Parallel()
 	s := base()
@@ -240,32 +162,6 @@ func TestUSDCHardLTVIsOneDownStep(t *testing.T) {
 			if d.Action != DeleverRouteStep || d.Reason != hardLTVDeleverReason || d.Validate() != nil {
 				t.Fatalf("%s hard LTV with %d idle: %+v (%v)", lane, cash, d, d.Validate())
 			}
-		}
-	}
-}
-
-func TestUSDCCanaryAllocationPricesCompleteBridgeReturn(t *testing.T) {
-	t.Parallel()
-	s := base()
-	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
-	s.VoltrIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw, s.PolicyLimitRaw = 5_000_000, 5_000_000, 5_000_000, int64(strategyTwoBridgeLegCapRaw)
-	s.SelectorEntryEquityRaw = 500_000
-	d := Decide(s)
-	if d.Action != VoltrAllocateToSquads || d.AmountRaw != 500_000 {
-		t.Fatalf("canary size: %+v", d)
-	}
-	o, _, e := bridgeAdmissionFixture(t, d.Action, d.AmountRaw, s.VoltrIdleRaw, 0, 0)
-	o.Snapshot.RouteLane, o.Snapshot.StrategyKey = s.RouteLane, s.StrategyKey
-	plan, err := observePhase3BridgeAdmission(context.Background(), budgetBuildRPC(t, 5000, 42), budgetView(t), o, d, e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plan.CurrentCost.TotalMicros <= 0 || len(plan.Exit) != 5 {
-		t.Fatal("canary has no measured return")
-	}
-	for _, step := range plan.Exit {
-		if step.Cost.TotalMicros <= 0 {
-			t.Fatal("return leg is not priced")
 		}
 	}
 }

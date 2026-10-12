@@ -2,45 +2,50 @@ package backyard
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
 	"time"
 )
 
-// multiLaneFixture is the coherent AUTO candidate batch observed in selector
-// mode: every other registry lane joins with an absent obligation and empty
+// multiLaneFixture is the coherent AUTO candidate batch: every other registry lane joins with an absent obligation and empty
 // custodies, exactly as the production inventory requests them, and mutate
 // may then fund further lanes. The manifest prefers AUTO.
 func multiLaneFixture(t *testing.T, mutate func(*[]ConfirmedAccount)) (RouteManifest, []ConfirmedAccount) {
 	t.Helper()
 	manifest, _, accounts := autoObservationBatch(t, 77, nil)
-	manifest.selectorObservation = true
-	manifest.observationLane = autoAUTOPYUSD.Lane
-	for _, lane := range earnLaneIDs(true) {
-		if lane == autoAUTOPYUSD.Lane {
-			continue
-		}
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		upsertConfirmedAccount(&accounts, ConfirmedAccount{Address: route.Kamino.Obligation})
-		if accountAt(accounts, route.CollateralCustody).Address == "" {
-			custody := tokenAccountFixture(t, route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, 0)
-			custody.Owner = route.CollateralTokenProgram
-			upsertConfirmedAccount(&accounts, custody)
-		}
-		if route.Kamino.DebtMint != bridgeUSDC && accountAt(accounts, route.DebtCustody).Address == "" {
-			custody := tokenAccountFixture(t, route.DebtCustody, route.Kamino.DebtMint, bridgeVault, 0)
-			custody.Owner = route.DebtTokenProgram
-			upsertConfirmedAccount(&accounts, custody)
-		}
-	}
+	withFlatLanes(t, &accounts)
 	if mutate != nil {
 		mutate(&accounts)
 	}
 	return manifest, accounts
+}
+
+// withFlatLanes adds every registry lane the batch does not carry yet as a
+// flat lane: an absent obligation and empty custodies, exactly as the
+// production inventory requests them.
+func withFlatLanes(t *testing.T, accounts *[]ConfirmedAccount) {
+	t.Helper()
+	for _, lane := range earnLaneIDs(true) {
+		route, err := runtimeRoute(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if accountAt(*accounts, route.Kamino.Obligation).Address == "" {
+			upsertConfirmedAccount(accounts, ConfirmedAccount{Address: route.Kamino.Obligation})
+		}
+		if accountAt(*accounts, route.CollateralCustody).Address == "" {
+			custody := tokenAccountFixture(t, route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, 0)
+			custody.Owner = route.CollateralTokenProgram
+			upsertConfirmedAccount(accounts, custody)
+		}
+		if route.Kamino.DebtMint != bridgeUSDC && accountAt(*accounts, route.DebtCustody).Address == "" {
+			custody := tokenAccountFixture(t, route.DebtCustody, route.Kamino.DebtMint, bridgeVault, 0)
+			custody.Owner = route.DebtTokenProgram
+			upsertConfirmedAccount(accounts, custody)
+		}
+	}
 }
 
 // fundLane gives lane a position of collateralRaw receipts (redeeming 1:1,
@@ -83,7 +88,7 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 	manifest, accounts := multiLaneFixture(t, nil)
 	o := observeMultiLane(t, manifest, accounts)
 	s := o.Snapshot
-	if s.RouteLane != autoAUTOPYUSD.Lane || s.HeldLanes != autoAUTOPYUSD.Lane || s.OtherLanesNAVRaw != 0 || s.CrossLaneHardLTV {
+	if s.RouteLane != autoAUTOPYUSD.Lane || s.HeldLanes != autoAUTOPYUSD.Lane || s.OtherLanesNAVRaw != 0 {
 		t.Fatalf("one held lane is not the working lane alone: %q %q %d", s.RouteLane, s.HeldLanes, s.OtherLanesNAVRaw)
 	}
 	if s.StrategyNAVRaw != 32_000_010 || s.TotalVaultNAVRaw != 32_000_021 {
@@ -103,8 +108,9 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 		t.Fatalf("one held lane changed the report: %d %s vs %d %s", s.StrategyNAVRaw, s.ReportSnapshotDigest, single.StrategyNAVRaw, single.SnapshotDigest)
 	}
 	// The observation identity is the one-lane identity (pinned from the
-	// one-lane observer on the same fixture).
-	if s.ObservationID != oneLaneAUTOObservationID || s.ReportSnapshotDigest != oneLaneAUTOReportDigest {
+	// one-lane observer on the same fixture) bound to the tick's target.
+	identity := sha256Bytes([]byte(fmt.Sprintf("%s|target:%+v|inputs:%s", oneLaneAUTOObservationID, s.Target, s.TargetInputs)))
+	if s.ObservationID != identity || s.ReportSnapshotDigest != oneLaneAUTOReportDigest {
 		t.Fatalf("one-lane observation identity or report digest changed: %s %s", s.ObservationID, s.ReportSnapshotDigest)
 	}
 }
@@ -124,7 +130,7 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 		fundLane(t, accounts, onreONycUSDC, 10_000_000, 2_000_000)
 	})
 	s := observeMultiLane(t, manifest, accounts).Snapshot
-	if s.RouteLane != autoAUTOPYUSD.Lane || s.HeldLanes != onreONycUSDC+","+autoAUTOPYUSD.Lane || s.CrossLaneHardLTV {
+	if s.RouteLane != autoAUTOPYUSD.Lane || s.HeldLanes != onreONycUSDC+","+autoAUTOPYUSD.Lane {
 		t.Fatalf("held set or working lane wrong: %q %q", s.RouteLane, s.HeldLanes)
 	}
 	if s.OtherLanesNAVRaw != 8_000_000 || s.StrategyNAVRaw != 32_000_010+8_000_000 || s.TotalVaultNAVRaw != 32_000_021+8_000_000 {
@@ -166,16 +172,16 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 	}
 }
 
-// A held lane past its hard LTV is handled before the working lane: the
-// per-lane view moves to it and Decide's risk branch repays it.
+// A held lane past its hard LTV is target()'s first rule: the working view
+// is that lane's and its step repays it.
 func TestHeldLanePastHardLTVIsProtectedFirst(t *testing.T) {
 	manifest, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
 		// 80% liquidation threshold: hard LTV 6000; 7_000_000/10_000_000 = 70%.
 		fundLane(t, accounts, onreONycUSDC, 10_000_000, 7_000_000)
 	})
 	s := observeMultiLane(t, manifest, accounts).Snapshot
-	if s.RouteLane != onreONycUSDC || !s.CrossLaneHardLTV || s.LTVBPS < 6000 {
-		t.Fatalf("risky held lane was not protected first: %q cross=%t ltv=%d", s.RouteLane, s.CrossLaneHardLTV, s.LTVBPS)
+	if s.RouteLane != onreONycUSDC || s.Target.Rule != ruleHardLTV || s.LTVBPS < 6000 {
+		t.Fatalf("risky held lane was not protected first: %q target=%+v ltv=%d", s.RouteLane, s.Target, s.LTVBPS)
 	}
 	// The bridge monitors read journal facts this batch-only fixture lacks;
 	// the risk branch itself is the per-lane Decide.
@@ -186,24 +192,21 @@ func TestHeldLanePastHardLTVIsProtectedFirst(t *testing.T) {
 	}
 }
 
-// A shared custody balance belongs to the one positioned sharing lane; two
-// positioned sharing lanes with neither working nor preferred among them is
-// the one unattributable case, refused.
+// A shared custody balance belongs to the positioned sharing lane, the first
+// in registry order when two are positioned: both are held either way.
 func TestSharedCustodyBalanceAttribution(t *testing.T) {
 	_, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
 		fundLane(t, accounts, primePRIMEPYUSD.Lane, 5_000_000, 1_000_000)
 		upsertConfirmedAccount(accounts, tokenAccountFixture(t, kaminoPrimeCustody, kaminoPrimeMint, bridgeVault, 1))
 	})
-	working, held, err := observedSelectorLanes(accounts, autoAUTOPYUSD.Lane, "")
-	if err != nil || working.Lane != autoAUTOPYUSD.Lane || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+primePRIMEPYUSD.Lane {
-		t.Fatalf("PRIME balance beside one positioned Prime lane: %s %v %v", working.Lane, held, err)
+	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
+	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+primePRIMEPYUSD.Lane {
+		t.Fatalf("PRIME balance beside one positioned Prime lane: %v %v", held, err)
 	}
 	route, _ := runtimeRoute(PhaseOneLaneID)
 	upsertConfirmedAccount(&accounts, kaminoObligationImage(t, route, 77, 1_000_000, 0))
-	if _, _, err = observedSelectorLanes(accounts, autoAUTOPYUSD.Lane, ""); err == nil || err.Error() != "selector_shared_custody_unattributable" {
-		t.Fatalf("PRIME balance beside two positioned Prime lanes was attributed: %v", err)
-	}
-	if working, _, err = observedSelectorLanes(accounts, autoAUTOPYUSD.Lane, PhaseOneLaneID); err != nil || working.Lane != PhaseOneLaneID {
-		t.Fatalf("the working Prime lane owns its transient PRIME: %s %v", working.Lane, err)
+	held, err = observedSelectorHeldLanes(accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
+	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+PhaseOneLaneID+","+primePRIMEPYUSD.Lane {
+		t.Fatalf("PRIME balance beside two positioned Prime lanes: %v %v", held, err)
 	}
 }
