@@ -312,11 +312,6 @@ type Observation struct {
 	// build this observation was prepared for (prepare*, a selector sample):
 	// never by the tick's observation, never persisted or cached.
 	policies installedPolicies
-	// custodyProof carries the strict pre-decision shared-custody ownership
-	// proof for the CURRENT operation only (doc 26). Unexported: per-operation
-	// local data on the tick's own observation — never persisted in the
-	// decision JSON and never a mutable global.
-	custodyProof *sharedCustodyAdmissionProof
 	// lanes are every candidate lane's view of this batch, in registry
 	// order, with their stored levels: target()'s input. Snapshot is the
 	// working lane's.
@@ -325,12 +320,6 @@ type Observation struct {
 	ValuationSlot   int64  `json:",omitempty"`
 	Snapshot        Snapshot
 	ObservedAt      time.Time
-}
-
-// carriedCustodyOwnershipProof returns the tick's pre-decision shared-custody
-// ownership proof, or nil when the operation spends no shared custody.
-func (o Observation) carriedCustodyOwnershipProof() *sharedCustodyAdmissionProof {
-	return o.custodyProof
 }
 
 // Operation is the durable journal identity created before transaction work.

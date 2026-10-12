@@ -22,10 +22,6 @@ type phase3OperationAuthorization struct {
 	IntentSHA256     string            `json:"intentSha256"`
 	SignedWireSHA256 string            `json:"signedWireSha256,omitempty"`
 	BuildInput       *phase3BuildInput `json:"buildInput,omitempty"`
-	// CustodyProof is the pre-decision shared-custody ownership proof
-	// (doc 26) of a positive AUTO-PYUSD spend, bound under the route lock.
-	// Nil for every other lane and zero-spend operation.
-	CustodyProof *sharedCustodyProofBinding `json:"custodyProof,omitempty"`
 }
 
 // Byte strings retain the exact canonical request/effects encoding through
@@ -223,16 +219,7 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *V
 		recorded.ObservationID != o.Snapshot.ObservationID || recorded.ObservationSlot <= 0 || recorded.ObservationSlot > o.Snapshot.Slot {
 		return budgetHold("bind_journal_mismatch")
 	}
-	// The custody proof was observed before the row existed; it must still
-	// bind the generation and lease of the route lock held here.
-	custody, err := bindSharedCustodyAdmissionProofOnManifest(ctx, tx, routeKey, lane, o, effects)
-	if err != nil {
-		return err
-	}
 	auth := phase3OperationAuthorization{IntentSHA256: intent, BuildInput: input}
-	if custody.SpendRaw > 0 {
-		auth.CustodyProof = &custody
-	}
 	raw, err := json.Marshal(auth)
 	if err != nil {
 		return err

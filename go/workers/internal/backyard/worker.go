@@ -67,11 +67,7 @@ type tickRuntime struct {
 	buildJupiter          func(context.Context, string, JupiterExecutionEvidence) error
 	buildHastra           func(context.Context, string, HastraExecutionEvidence) error
 	buildStep             func(context.Context, string, StepExecutionEvidence) error
-	custodyOwnershipProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
-	// prefetchCustodyProof starts the pre-decision custody journal read while
-	// the spend is prepared; nil keeps the serial custodyOwnershipProof.
-	prefetchCustodyProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig) custodyProofFinisher
-	recordBudgetHold     func(context.Context, string, *BudgetHold) error
+	recordBudgetHold      func(context.Context, string, *BudgetHold) error
 	// watchRoom hands the account view the reserves this tick waits on
 	// (leverage_room_watch.go); nil without a streaming view.
 	watchRoom func([]roomWatch, func(roomUpdate))
@@ -253,12 +249,6 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 		},
-		prefetchCustodyProof: func(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig) custodyProofFinisher {
-			return database.prefetchSharedCustodyOwnershipProof(ctx, manifest, cfg, rpc)
-		},
-		custodyOwnershipProof: func(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64) (sharedCustodyAdmissionProof, error) {
-			return database.ObserveSharedCustodyOwnershipProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, rpc)
-		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
 		bind: func(ctx context.Context, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
 			return database.bindOperation(ctx, rpc, view, manifest, operationID, observation, decision, request, effects)
@@ -400,14 +390,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	hastraConversion := conversionVenueHastra(wireDecision)
 	// A leverage move executes as one atomic step (step.go).
 	_, atomic := stepDecision(observation.Snapshot, wireDecision)
-	// The custody journal read of a PYUSD spend does not depend on the
-	// prepared wire, so it runs while preparation re-observes the chain.
-	var prefetchedCustody custodyProofFinisher
-	if w.runtime.prefetchCustodyProof != nil && custodyProofPrefetchAction(decision, observation.Snapshot) {
-		if route, err := runtimeRoute(decision.StrategyKey); err == nil {
-			prefetchedCustody = w.runtime.prefetchCustodyProof(ctx, w.manifest, autoSharedPYUSDAttributionConfig(route, w.routeKey))
-		}
-	}
 	decided := observation.Snapshot
 	switch executionDecision {
 	case InitializeKaminoObligation:
@@ -472,31 +454,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return confirmedObservationUnavailable(fmt.Errorf("prepared evidence does not match the refreshed decision: decided %s/%s/%d, refreshed %s/%s/%d",
 			preparedDecision.Action, preparedDecision.Reason, preparedDecision.AmountRaw, decision.Action, decision.Reason, decision.AmountRaw))
 	}
-	// Strict pre-decision shared-custody ownership proof (doc 26): a prepared
-	// AUTO-PYUSD spend is proofed against the prepared evidence's exact
-	// effects BEFORE the row exists, and the proof rides this observation into
-	// RecordDecision and the locked bind. Zero-spend and other lanes are
-	// untouched.
-	switch executionDecision {
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, bridgeEvidence.ExpectedEffects, prefetchedCustody)
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		effects := kaminoEvidence.ExpectedEffects
-		if atomic {
-			effects = stepEvidence.ExpectedEffects
-		}
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, effects, prefetchedCustody)
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		effects := jupiterEvidence.ExpectedEffects
-		if hastraConversion {
-			effects = hastraEvidence.ExpectedEffects
-		}
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, effects, prefetchedCustody)
-	}
-	if err != nil {
-		return err
-	}
-	logStage("custody_proof", tickStart)
 	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256)
 	if err != nil {
 		return err

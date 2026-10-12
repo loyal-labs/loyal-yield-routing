@@ -1309,12 +1309,6 @@ func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest R
 	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
 		return err
 	}
-	// Shared broadcast-intent custody seam (doc 26 §4): the bound custody
-	// proof is re-validated under THIS transaction's route lock against the
-	// PERSISTED built effects before broadcast intent can be recorded.
-	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, bound.CustodyProof); err != nil {
-		return err
-	}
 	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound); err != nil {
 		return err
 	}
