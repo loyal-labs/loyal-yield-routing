@@ -3,21 +3,9 @@ package backyard
 import (
 	"encoding/hex"
 	"testing"
-)
 
-func TestManifestIdentitiesMatchStrategyTwo(t *testing.T) {
-	t.Parallel()
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Identities.V2StrategyConfig != bridgeStrategy ||
-		manifest.Identities.ReportTicket != reportTicketPDA ||
-		manifest.Identities.ReportTicketBump != int64(reportTicketBump) {
-		t.Fatalf("manifest identities do not match the pinned strategy-two worker consts: config=%s ticket=%s bump=%d",
-			manifest.Identities.V2StrategyConfig, manifest.Identities.ReportTicket, manifest.Identities.ReportTicketBump)
-	}
-}
+	"github.com/solana-foundation/solana-go/v2"
+)
 
 func TestStrategyTwoBridgeLegsRespectPerExecutionCap(t *testing.T) {
 	t.Parallel()
@@ -60,11 +48,11 @@ func TestReportTicketIsDerivedFromStrategyTwoConfig(t *testing.T) {
 	// PublicKey.findProgramAddressSync, which returned this exact address and
 	// bump 255 for the pinned config.
 	program := mustKey(bridgeAdaptorProgram)
-	derived, err := findProgramDerivedAddress([]byte("report_ticket"), program[:], config[:])
+	key, bump, err := solana.FindProgramAddress([][]byte{[]byte("report_ticket"), config[:]}, solana.PublicKey(program))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if derived != reportTicketPDA || reportTicketBump != 255 {
+	if derived := key.String(); derived != reportTicketPDA || bump != reportTicketBump || reportTicketBump != 255 {
 		t.Fatalf("strategy-two ticket drift: derived %s bump %d, pinned %s bump %d",
 			derived, reportTicketBump, reportTicketPDA, reportTicketBump)
 	}

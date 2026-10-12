@@ -135,15 +135,13 @@ func OpenView(ctx context.Context, client *chain.Client, connector stream.Connec
 // stream bills by the byte, so no oracle or AMM pool is among them.
 func viewAddresses() []string {
 	metadata, _ := kamino.UserMetadataAddress(kaminoKey(bridgeVault))
-	addresses := []string{reportTicketPDA, budgetClockAddress, kaminoMarket, kaminoPrimeLiquiditySupply, kaminoUSDCLiquiditySupply,
-		kaminoCollateralReserve, kaminoDebtReserve, kaminoPrimeCustody, kaminoPrimeUSDCObligation,
-		voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress,
+	addresses := []string{reportTicketPDA, budgetClockAddress, voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress,
 		bridgeVault, bridgeDelegate, metadata.String(), solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(),
 		bridgeUSDC, budgetSOLReserve, budgetWrappedSOLMint}
-	for _, lane := range append([]string{RouteID}, earnLaneIDs(true)...) {
-		route, _ := runtimeRoute(lane)
+	for _, l := range earnLanes {
+		route := l.route
 		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(route)...),
-			route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
+			route.Kamino.Market, route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
 			route.CollateralReceiptMint, route.CollateralReceiptSupply, route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm)
 		if hastraLane(route) {
 			// A Hastra conversion is quoted at, and revalidated against, the

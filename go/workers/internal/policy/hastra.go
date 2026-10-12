@@ -21,18 +21,18 @@ type HastraAmounts struct {
 
 // The hastra ops in policy order: a leg's value is its constraint index.
 const (
-	hastraStakeDeposit = iota
-	hastraStakeRedeem
-	hastraMintDeposit
-	hastraLegs
+	HastraStakeDeposit = iota
+	HastraStakeRedeem
+	HastraMintDeposit
+	HastraLegs
 )
 
-// hastraConstraints are a vault's Hastra conversions between its own
+// HastraConstraints are a vault's Hastra conversions between its own
 // associated token accounts, in policy order: every account pinned (the
 // vault, its three ATAs and every program account), the amount free by the
 // owner's no-limits choice for conversions.
-func hastraConstraints(vault solana.PublicKey) ([hastraLegs]squads.InstructionConstraintView, hastra.StakeAccounts, hastra.MintAccounts, error) {
-	var out [hastraLegs]squads.InstructionConstraintView
+func HastraConstraints(vault solana.PublicKey) ([HastraLegs]squads.InstructionConstraintView, hastra.StakeAccounts, hastra.MintAccounts, error) {
+	var out [HastraLegs]squads.InstructionConstraintView
 	stake, err := hastra.OwnStake(vault)
 	if err != nil {
 		return out, hastra.StakeAccounts{}, hastra.MintAccounts{}, err
@@ -41,9 +41,9 @@ func hastraConstraints(vault solana.PublicKey) ([hastraLegs]squads.InstructionCo
 	if err != nil {
 		return out, hastra.StakeAccounts{}, hastra.MintAccounts{}, err
 	}
-	out[hastraStakeDeposit] = hastra.StakeDepositAllowed(hastra.PinStake(stake))
-	out[hastraStakeRedeem] = hastra.StakeRedeemAllowed(hastra.PinStake(stake))
-	out[hastraMintDeposit] = hastra.MintDepositAllowed(hastra.PinMint(mint))
+	out[HastraStakeDeposit] = hastra.StakeDepositAllowed(hastra.PinStake(stake))
+	out[HastraStakeRedeem] = hastra.StakeRedeemAllowed(hastra.PinStake(stake))
+	out[HastraMintDeposit] = hastra.MintDepositAllowed(hastra.PinMint(mint))
 	return out, stake, mint, nil
 }
 
@@ -58,7 +58,7 @@ func Hastra(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, payer 
 		if err != nil {
 			return Product{}, err
 		}
-		constraints, stake, mint, err := hastraConstraints(vault)
+		constraints, stake, mint, err := HastraConstraints(vault)
 		if err != nil {
 			return Product{}, err
 		}
@@ -80,12 +80,12 @@ func Hastra(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, payer 
 		create := func(mint solana.PublicKey) []solana.Instruction {
 			return []solana.Instruction{spl.CreateIdempotentATA(payer, vault, mint, solana.TokenProgramID)}
 		}
-		ops := make([]Op, hastraLegs)
-		ops[hastraStakeDeposit] = Op{Name: fmt.Sprintf("stake deposit %d wYLDS for %s AUTO", amounts.StakeDeposit, quote(price.AUTOForWYLDS, amounts.StakeDeposit)),
+		ops := make([]Op, HastraLegs)
+		ops[HastraStakeDeposit] = Op{Name: fmt.Sprintf("stake deposit %d wYLDS for %s AUTO", amounts.StakeDeposit, quote(price.AUTOForWYLDS, amounts.StakeDeposit)),
 			Inner: hastra.StakeDeposit(stake, amounts.StakeDeposit), Before: create(hastra.AUTOMint)}
-		ops[hastraStakeRedeem] = Op{Name: fmt.Sprintf("stake redeem %d AUTO for %s wYLDS", amounts.StakeRedeem, quote(price.WYLDSForAUTO, amounts.StakeRedeem)),
+		ops[HastraStakeRedeem] = Op{Name: fmt.Sprintf("stake redeem %d AUTO for %s wYLDS", amounts.StakeRedeem, quote(price.WYLDSForAUTO, amounts.StakeRedeem)),
 			Inner: hastra.StakeRedeem(stake, amounts.StakeRedeem), Before: create(hastra.WYLDSMint)}
-		ops[hastraMintDeposit] = Op{Name: fmt.Sprintf("mint deposit %d USDC for as much wYLDS", amounts.MintDeposit),
+		ops[HastraMintDeposit] = Op{Name: fmt.Sprintf("mint deposit %d USDC for as much wYLDS", amounts.MintDeposit),
 			Inner: hastra.MintDeposit(mint, amounts.MintDeposit), Before: create(hastra.WYLDSMint)}
 		for i := range ops {
 			ops[i].Allowed = constraints[i]

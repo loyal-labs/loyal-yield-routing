@@ -165,7 +165,7 @@ func canaryHoldReason(t *testing.T, err error) string {
 	if !ok {
 		t.Fatalf("expected a budget hold, got %v", err)
 	}
-	return hold.Reason
+	return holdCause(hold)
 }
 
 func TestPilotCanaryCapacityRetainsHistoryWithoutBlockingCurrentRelease(t *testing.T) {

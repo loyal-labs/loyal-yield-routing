@@ -757,8 +757,6 @@ tests:
     values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="pilot_canary_request_id_reused"}
     values: 0+1x16
-  - series: loyal_family_failed_total{family="backyard",code="route_lease_lost"}
-    values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="selector_entry_allocation_bind_failed"}
     values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="selector_entry_allocation_not_bound"}
@@ -789,8 +787,6 @@ tests:
     values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_query_cancelled"}
     values: 0+1x16
-  - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_route_fence_unavailable"}
-    values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_timeout"}
     values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="selector_evaluate_unavailable"}
@@ -798,8 +794,6 @@ tests:
   - series: loyal_family_failed_total{family="backyard",code="selector_evaluation_not_current"}
     values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="selector_fee_evidence_unavailable"}
-    values: 0+1x16
-  - series: loyal_family_failed_total{family="backyard",code="selector_finish_current_work_first"}
     values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="selector_manual_recovery_active"}
     values: 0+1x16
@@ -965,16 +959,6 @@ tests:
         trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
-        code: route_lease_lost
-        severity: page
-      exp_annotations:
-        action: Check the current lease owner, fencing token and competing worker processes. Restore one intended owner through the runbook; never force a lease while signed work may still land.
-        impact: The worker cannot establish exclusive route ownership, so guarded work may stop.
-        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
-        summary: 'backyard failure incident: route_lease_lost'
-        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
-    - exp_labels:
-        family: backyard
         code: selector_entry_allocation_bind_failed
         severity: page
       exp_annotations:
@@ -1125,16 +1109,6 @@ tests:
         trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
-        code: selector_evaluate_route_fence_unavailable
-        severity: page
-      exp_annotations:
-        action: Check the current lease owner, fencing token and competing worker processes. Restore one intended owner through the runbook; never force a lease while signed work may still land.
-        impact: The worker cannot establish exclusive route ownership, so guarded work may stop.
-        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
-        summary: 'backyard failure incident: selector_evaluate_route_fence_unavailable'
-        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
-    - exp_labels:
-        family: backyard
         code: selector_evaluate_timeout
         severity: page
       exp_annotations:
@@ -1172,16 +1146,6 @@ tests:
         impact: Required quote, valuation or confirmed-chain evidence is missing, stale or inconsistent.
         recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
         summary: 'backyard failure incident: selector_fee_evidence_unavailable'
-        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
-    - exp_labels:
-        family: backyard
-        code: selector_finish_current_work_first
-        severity: page
-      exp_annotations:
-        action: Check the deployed worker version and whether this is an old metric window. Inspect the in-flight operation if it is stalled; do not cancel it or restart solely for this expected deferral.
-        impact: The selector is waiting for existing work; this code alone is not a failed transaction.
-        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
-        summary: 'backyard failure incident: selector_finish_current_work_first'
         trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard

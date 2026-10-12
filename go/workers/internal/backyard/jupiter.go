@@ -97,39 +97,23 @@ type JupiterExecutionEvidence struct {
 var productionJupiter *jupiter.Client
 
 func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMint, sourceATA, destinationATA string, err error) {
-	if lane == "" {
-		lane = RouteID
-	}
 	if catalogJupiterRoute(lane) {
 		// A catalog lane, AUTO among them, swaps along its catalog edge, the
 		// one its policy admits.
 		edge, err := catalogConversion(action, lane)
 		return edge.from.mint.String(), edge.to.mint.String(), edge.from.custody.String(), edge.to.custody.String(), err
 	}
-	if lane != RouteID && !basicLane(lane) {
-		return "", "", "", "", fmt.Errorf("unregistered Jupiter lane")
-	}
-	if basicLane(lane) {
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			return "", "", "", "", err
-		}
-		switch action {
-		case SwapStableToCollateralStep, SwapUSDCToPrimeStep, SwapDebtToCollateralStep:
-			return bridgeUSDC, route.Kamino.CollateralMint, bridgeSquadsATA, route.CollateralCustody, nil
-		case SwapCollateralToStableStep, SwapPrimeToUSDCStep, SwapCollateralToDebtStep:
-			return route.Kamino.CollateralMint, bridgeUSDC, route.CollateralCustody, bridgeSquadsATA, nil
-		default:
-			return "", "", "", "", fmt.Errorf("action %s is not an approved basic Jupiter edge", action)
-		}
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		return "", "", "", "", err
 	}
 	switch action {
-	case SwapUSDCToPrimeStep:
-		return bridgeUSDC, kaminoPrimeMint, bridgeSquadsATA, kaminoPrimeCustody, nil
-	case SwapPrimeToUSDCStep:
-		return kaminoPrimeMint, bridgeUSDC, kaminoPrimeCustody, bridgeSquadsATA, nil
+	case SwapStableToCollateralStep, SwapDebtToCollateralStep:
+		return bridgeUSDC, route.Kamino.CollateralMint, bridgeSquadsATA, route.CollateralCustody, nil
+	case SwapCollateralToStableStep, SwapCollateralToDebtStep:
+		return route.Kamino.CollateralMint, bridgeUSDC, route.CollateralCustody, bridgeSquadsATA, nil
 	default:
-		return "", "", "", "", fmt.Errorf("action %s is not an approved Jupiter edge", action)
+		return "", "", "", "", fmt.Errorf("action %s is not an approved basic Jupiter edge", action)
 	}
 }
 
@@ -145,11 +129,8 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 	// returns for a V2 quote with shared accounts.
 	request := jupiter.QuoteRequest{InputMint: sourceMint, OutputMint: destinationMint, Amount: amount, SlippageBPS: jupiterMaxSlippageBPS,
 		MaxAccounts: maxAccounts, InstructionVersion: "V2"}
-	if lane == SelectedRouteID {
-		// The selected RWA representative was reviewed against Manifest. Keep
-		// Jupiter's optimizer inside that one venue family instead of accepting
-		// whichever venue happens to quote one raw unit better.
-		request.Dexes = "Manifest"
+	if l, ok := findEarnLane(lane); ok {
+		request.Dexes = l.jupiterDexes
 	}
 	quote, err := client.Quote(ctx, request)
 	if err != nil {
@@ -285,10 +266,6 @@ func jupiterValidateAutoRetainedMinimum(request JupiterSwapRequest) error {
 		return fmt.Errorf("Jupiter AUTO minimum exceeds enforceable wire floor")
 	}
 	return nil
-}
-
-func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
-	return compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate))
 }
 
 func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publicKey) ([]byte, error) {

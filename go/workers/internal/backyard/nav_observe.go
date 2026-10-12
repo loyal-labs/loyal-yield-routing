@@ -133,7 +133,7 @@ func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 		bridgeLPMint,
 	}
 	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
-		addresses = append(addresses, route.DebtCustody, kaminoDebtReserve)
+		addresses = append(addresses, route.DebtCustody, usdcReference.DebtReserve)
 	}
 	return addresses
 }
@@ -143,7 +143,7 @@ func pinnedRouteNAVAddressesForRoute(route RuntimeRoute) []string {
 func heldLaneNAVAddresses(route RuntimeRoute) []string {
 	addresses := []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve, route.Kamino.Market, route.CollateralCustody}
 	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
-		addresses = append(addresses, route.DebtCustody, kaminoDebtReserve)
+		addresses = append(addresses, route.DebtCustody, usdcReference.DebtReserve)
 	}
 	return addresses
 }
@@ -186,10 +186,6 @@ func navRoutes(working RuntimeRoute, held []string) ([]RuntimeRoute, error) {
 		routes = append(routes, route)
 	}
 	return routes, nil
-}
-
-func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRoute) ([]ConfirmedAccount, error) {
-	return selectRouteNAVAccountsForRoutes(accounts, []RuntimeRoute{route})
 }
 
 func selectRouteNAVAccountsForRoutes(accounts []ConfirmedAccount, routes []RuntimeRoute) ([]ConfirmedAccount, error) {
@@ -358,23 +354,6 @@ func navInputFingerprintForRoutes(slot int64, accounts []ConfirmedAccount, custo
 	return hex.EncodeToString(hash[:]), nil
 }
 
-// ComputeRouteNAV is a pure, fixed-route calculator over one coherent account
-// batch. The optional custody override is used only for a transaction's exact
-// expected poststate; all identity, receipt, reserve, and obligation bytes are
-// still independently decoded from the confirmed batch.
-func ComputeRouteNAV(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies) (RouteNAVSnapshot, error) {
-	route := RuntimeRoute{Lane: RouteID, Kamino: KaminoObservationConfig{Obligation: kaminoPrimeUSDCObligation, CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint, Market: kaminoMarket, Program: kamino.ProgramID.String(), Vault: bridgeVault}, CollateralCustody: kaminoPrimeCustody}
-	return computeRouteNAVForRoute(slot, accounts, manifest, override, route)
-}
-
-func ComputeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, route RuntimeRoute) (RouteNAVSnapshot, error) {
-	return computeRouteNAVForRoute(slot, accounts, manifest, override, route)
-}
-
-func computeRouteNAVForRoute(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, route RuntimeRoute) (RouteNAVSnapshot, error) {
-	return computeRouteNAVForRoutes(slot, accounts, manifest, override, []RuntimeRoute{route})
-}
-
 // ComputeRouteNAVForRoutes values the whole vault book over one coherent
 // batch: the working lane (routes[0], whose custodies the override may
 // replace) plus every other held lane. A custody shared by several lanes is
@@ -470,10 +449,7 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	// non-USDC lanes; neither a ticker nor equal decimals establishes a peg.
 	usdcReserve := debtReserve
 	if kaminoConfig.DebtMint != bridgeUSDC {
-		reference, err := pinnedKaminoObservationConfig()
-		if err != nil {
-			return RouteNAVSnapshot{}, err
-		}
+		reference := usdcReference
 		usdcReserve, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
 		if err != nil {
 			return RouteNAVSnapshot{}, fmt.Errorf("decode NAV USDC reference: %w", err)
@@ -667,10 +643,7 @@ func valueHeldLane(slot int64, accounts []ConfirmedAccount, route RuntimeRoute, 
 	}
 	usdcReserve := debtReserve
 	if nonUSDC {
-		reference, err := pinnedKaminoObservationConfig()
-		if err != nil {
-			return heldLaneValue{}, err
-		}
+		reference := usdcReference
 		if usdcReserve, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference); err != nil {
 			return heldLaneValue{}, fmt.Errorf("decode NAV USDC reference: %w", err)
 		}

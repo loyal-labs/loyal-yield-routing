@@ -31,5 +31,3 @@ func deriveKaminoObligationFarmUserState(reserveFarmState, obligation string) (s
 	user, err := kamino.ObligationFarmUserState(solana.PublicKey(farm), solana.PublicKey(obligationKey))
 	return user.String(), err
 }
-
-const onreDebtFarmState = "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF"

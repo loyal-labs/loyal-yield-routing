@@ -8,18 +8,32 @@ import (
 	"sort"
 )
 
+// The holds a tick ends in, the closed set loyal_backyard_hold carries:
+//
+//	at_target       the vault is where target() puts it
+//	no_room         the target wants a move the chain has no room for
+//	stale           an input is not current or could not be read; the next
+//	                tick observes again
+//	chain_refused   the signed simulation of the decided transaction failed
+//	stopped         the operator's manual recovery latch
+//
+// Why, in detail, goes in the hold's Details ("cause", "simulation") and the
+// log line, never in the reason.
+const (
+	holdAtTarget     = "at_target"
+	holdNoRoom       = "no_room"
+	holdStale        = "stale"
+	holdChainRefused = "chain_refused"
+	holdStopped      = "stopped"
+)
+
 // BudgetHold is a pre-send refusal, never an authorization to sign or retry
-// an unchanged intent.
+// an unchanged intent. Its Reason is one of the hold enum; a producer that
+// names only its check (budgetHold) holds stale with that check as its cause.
 type BudgetHold struct {
 	Reason  string            `json:"reason"`
 	Details map[string]string `json:"details,omitempty"`
-	// alreadyJournaled marks a hold that its own send path already recorded
-	// durably on the operation row (the pre-broadcast spending-limit
-	// refusal). The tick tail must not journal it a second time: the row is
-	// already failed, so the store would reject the transition and joining
-	// that rejection into the hold would mask it.
-	alreadyJournaled bool
-	cause            error
+	cause   error
 }
 
 // Unwrap is the error the hold was taken on, if any.
@@ -40,15 +54,26 @@ func (h *BudgetHold) Error() string {
 	}
 	return text
 }
-func budgetHold(reason string) error { return &BudgetHold{Reason: reason} }
 
-// budgetHoldFrom is the hold for reason taken on err.
-func budgetHoldFrom(err error, reason string) error { return &BudgetHold{Reason: reason, cause: err} }
+// budgetHold is the stale hold of a check named cause.
+func budgetHold(cause string) error { return holdOf(holdStale, cause, nil) }
 
-// journaledBudgetHold constructs a hold whose named reason is already durable
-// on the operation row.
-func journaledBudgetHold(reason string) error {
-	return &BudgetHold{Reason: reason, alreadyJournaled: true}
+// budgetHoldFrom is budgetHold taken on err.
+func budgetHoldFrom(err error, cause string) error { return holdOf(holdStale, cause, err) }
+
+// roomHold is the no_room hold of a check named cause, taken on err.
+func roomHold(cause string, err error) error { return holdOf(holdNoRoom, cause, err) }
+
+func holdOf(reason, cause string, err error) error {
+	return &BudgetHold{Reason: reason, Details: map[string]string{"cause": cause}, cause: err}
+}
+
+// holdCause is a hold's detail: the check it names, or its simulation error.
+func holdCause(h *BudgetHold) string {
+	if c := h.Details["cause"]; c != "" {
+		return c
+	}
+	return h.Details["simulation"]
 }
 
 // budgetSum adds non-negative micros, refusing overflow.
@@ -63,9 +88,10 @@ func budgetSum(values ...int64) (int64, error) {
 	return total, nil
 }
 
-// RecordPhase3BudgetHold preserves a pre-send hold before restart recovery can
-// replace it with a generic reason. Only never-submitted states may fail.
-func (d *Database) RecordPhase3BudgetHold(ctx context.Context, operationID string, hold *BudgetHold) error {
+// RecordBudgetHold fails the tick's never-submitted operation with its hold:
+// recovery_reason hold:<reason>, the hold in its expected effects. Only
+// never-submitted states may fail.
+func (d *Database) RecordBudgetHold(ctx context.Context, operationID string, hold *BudgetHold) error {
 	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == "" {
 		return fmt.Errorf("invalid budget hold journal input")
 	}
@@ -74,7 +100,7 @@ func (d *Database) RecordPhase3BudgetHold(ctx context.Context, operationID strin
 		return err
 	}
 	if status != Decided && status != Built && status != Simulated {
-		return budgetHold("budget_hold_requires_never_submitted_operation")
+		return fmt.Errorf("budget hold requires a never-submitted operation, not %s", status)
 	}
 	encoded, err := json.Marshal(hold)
 	if err != nil {
@@ -82,31 +108,5 @@ func (d *Database) RecordPhase3BudgetHold(ctx context.Context, operationID strin
 	}
 	return d.transition(ctx, operationID, status, Failed,
 		`, recovery_reason = $4, expected_effects = jsonb_set(expected_effects, '{budgetHold}', $5::jsonb)`,
-		"phase3_budget_hold:"+hold.Reason, string(encoded))
-}
-
-// RecordPhase3SignedBudgetHold retains the reason while leaving the signed
-// bytes untouched. Merely not recording broadcast intent does not prove a
-// signature absent.
-func (d *Database) RecordPhase3SignedBudgetHold(ctx context.Context, operationID string, hold *BudgetHold) error {
-	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == "" {
-		return fmt.Errorf("invalid signed budget hold")
-	}
-	encoded, err := json.Marshal(hold)
-	if err != nil {
-		return err
-	}
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET recovery_reason=$2,expected_effects=jsonb_set(expected_effects,'{budgetHold}',$3::jsonb),updated_at=clock_timestamp() WHERE operation_id=$1 AND status='signed'`, operationID, "phase3_budget_hold:"+hold.Reason, string(encoded))
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return budgetHold("signed_budget_hold_state_changed")
-	}
-	return tx.Commit(ctx)
+		"hold:"+hold.Reason, string(encoded))
 }

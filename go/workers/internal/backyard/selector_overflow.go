@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -36,8 +35,8 @@ func overflowLaneOf(source string) (string, bool) {
 		return "", false
 	}
 	for _, l := range earnLanes {
-		if l.overflowOf == source && earnActiveLane(l.lane) {
-			return l.lane, true
+		if l.overflowOf == source && earnActiveLane(l.route.Lane) {
+			return l.route.Lane, true
 		}
 	}
 	return "", false
@@ -111,18 +110,14 @@ func overflowReleaseReceipts(s Snapshot, free int64) int64 {
 }
 
 // applyOverflowRoom stamps, on a lane with an overflow lane, that lane's
-// fee-inclusive receive room and its bridge USDC value, judged on the
-// overflow lane's own refresh simulation. Nobody but us borrows from the
-// overflow lane's debt reserve, so its raw reserve is far past the health age
-// (2026-10-11: wYLDS 34GJ ~9,500 slots), and the observation batch, which
-// keeps only valued lanes' reserves, does not carry it at all; the borrow
-// that would use the room refreshes it first. The capture is kept apart from
-// the NAV capture, so its failure only leaves this room unknown, and the
-// returned error says why.
-func applyOverflowRoom(ctx context.Context, s *Snapshot, slot int64, route RuntimeRoute, refresh func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error)) error {
+// fee-inclusive receive room and its bridge USDC value, judged on the tick's
+// refreshed batch, which refreshes the overflow lane's reserves with the
+// valued lanes' (nobody but us borrows from the wYLDS reserve, so its raw
+// state is far past the health age). Only a source holding a position that
+// cannot borrow reads it.
+func applyOverflowRoom(s *Snapshot, accounts []ConfirmedAccount, route RuntimeRoute) error {
 	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown, s.OverflowObligationPresent = 0, 0, false, false
 	lane, ok := overflowLaneOf(route.Lane)
-	// Only a source holding a position that cannot borrow ever reads the room.
 	if !ok || !s.HasPosition || !overflowSourceBorrowClosed(*s) {
 		return nil
 	}
@@ -130,33 +125,13 @@ func applyOverflowRoom(ctx context.Context, s *Snapshot, slot int64, route Runti
 	if err != nil {
 		return err
 	}
-	if refresh == nil {
-		return fmt.Errorf("no refresh simulation to judge the overflow room")
-	}
-	addresses, err := overflowRoomAddresses(overflow)
-	if err != nil {
-		return err
-	}
-	_, refreshed, err := refresh(ctx, []RuntimeRoute{overflow}, addresses, slot)
-	if err != nil {
-		return err
-	}
-	receive, value, err := overflowRoom(refreshed, overflow)
+	receive, value, err := overflowRoom(accounts, overflow)
 	if err != nil {
 		return err
 	}
 	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown = receive, value, true
-	s.OverflowObligationPresent = accountAt(refreshed, overflow.Kamino.Obligation).Lamports != 0
+	s.OverflowObligationPresent = accountAt(accounts, overflow.Kamino.Obligation).Lamports != 0
 	return nil
-}
-
-// overflowRoomAddresses are the accounts overflowRoom reads.
-func overflowRoomAddresses(overflow RuntimeRoute) ([]string, error) {
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return nil, err
-	}
-	return []string{overflow.Kamino.CollateralReserve, overflow.Kamino.DebtReserve, overflow.Kamino.Obligation, reference.DebtReserve, budgetClockAddress}, nil
 }
 
 // overflowRoom is the overflow lane's fee-inclusive receive room and its
@@ -183,10 +158,7 @@ func overflowRoom(accounts []ConfirmedAccount, overflow RuntimeRoute) (uint64, i
 	if now := clockUnixTimestamp(accounts); end == termMaturityUnknown || end > 0 && end <= now {
 		receive = 0
 	}
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return 0, 0, err
-	}
+	reference := usdcReference
 	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
 	if err != nil {
 		return 0, 0, err

@@ -67,11 +67,6 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if err != nil {
 		return err
 	}
-	// Strategy-two cutover gate: never run while a legacy seed 62-65 policy
-	// still exists at finalized commitment (see the strategy-two runbook).
-	if _, err := backyard.AssertLegacyPoliciesRetired(ctx, cluster); err != nil {
-		return err
-	}
 	view, err := backyard.OpenView(ctx, cluster, laserstream)
 	if err != nil {
 		return err

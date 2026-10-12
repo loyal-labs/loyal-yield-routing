@@ -38,9 +38,6 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifes
 	if rpc == nil || decision.Action != InitializeKaminoObligation || decision.Validate() != nil {
 		return o, KaminoInitializationRequest{}, budgetHold("invalid_initializer_preparation")
 	}
-	if err := manifest.validateBindings(); err != nil {
-		return o, KaminoInitializationRequest{}, err
-	}
 	rent, err := rpc.RentExempt(ctx, kamino.ObligationSize)
 	if err != nil {
 		return o, KaminoInitializationRequest{}, budgetHoldFrom(err, "initializer_rent_unavailable")

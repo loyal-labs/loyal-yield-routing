@@ -54,7 +54,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 	if len(seen) != 14 {
 		t.Fatal("missing conversion coverage", len(seen))
 	}
-	if _, _, _, _, err := jupiterEdgeForRoute(SwapUSDCToPrimeStep, "unknown/asset/debt"); err == nil {
+	if _, _, _, _, err := jupiterEdgeForRoute(SwapStableToCollateralStep, "unknown/asset/debt"); err == nil {
 		t.Fatal("unknown lane inherited Prime edge")
 	}
 }

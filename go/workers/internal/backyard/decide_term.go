@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"encoding/binary"
 	"math/big"
 )
 
@@ -12,19 +11,16 @@ import (
 // debt becomes liquidatable, ramping to the whole debt over three days, with
 // no rate jump.
 //
-// Backyard keeps a held term lane alive with a normal borrow before its
-// maturity (no update_obligation_config, no rollover): the borrowed cash then
-// converts to collateral and redeposits through the lane's ordinary loop
-// legs. A lane it cannot keep alive goes to debt 0 before maturity: target()'s
+// Backyard keeps a held term lane alive with the minimum up step before its
+// maturity (no update_obligation_config, no rollover): an ordinary atomic
+// borrow, conversion and deposit. A lane it cannot keep alive goes to debt 0 before maturity: target()'s
 // term rule, from the batch's own term end and Clock, needs no operator.
 const (
 	// termKeepAliveSeconds: under this much time to maturity a held term
 	// lane borrows again.
 	termKeepAliveSeconds int64 = 3 * 24 * 3600
 	// termDeleverSeconds: under this, a lane that cannot keep alive delevers.
-	termDeleverSeconds int64 = 24 * 3600
-	// termAlertSeconds: the days-to-maturity alert (loyal.rules.yml).
-	termAlertSeconds    int64 = 2 * 24 * 3600
+	termDeleverSeconds  int64 = 24 * 3600
 	termKeepAliveReason       = "term_keepalive"
 	// termKeepAliveBorrowRaw is the keep-alive borrow: KLend's term restarts
 	// on any borrow, so the smallest borrow the lane takes is enough. It
@@ -35,41 +31,6 @@ const (
 	// time: its maturity cannot be known, so nothing borrows or plans on it.
 	termMaturityUnknown int64 = -1
 )
-
-// observedDebtTermEnd is a lane's borrow maturity from one batch: its
-// obligation's term end (wyldsTermEnd), or the debt reserve's market-wide
-// maturity when that is earlier. Zero when the obligation is absent, owes
-// nothing there, or the reserve has no term; termMaturityUnknown when term
-// debt has no borrow time.
-func observedDebtTermEnd(accounts []ConfirmedAccount, route RuntimeRoute) (int64, error) {
-	account := accountAt(accounts, route.Kamino.Obligation)
-	if account.Address != route.Kamino.Obligation || account.Lamports == 0 {
-		return 0, nil
-	}
-	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
-	if err != nil {
-		return 0, err
-	}
-	terms := reserve.terms
-	if terms.DebtTermSeconds == 0 && terms.DebtMaturityTimestamp == 0 {
-		return 0, nil
-	}
-	obligation, err := decodeKaminoObligation(account, route.Kamino)
-	if err != nil || obligation.debtRaw == 0 {
-		return 0, err
-	}
-	end, ok, err := wyldsTermEnd(accounts, route)
-	if err != nil {
-		return 0, err
-	}
-	if terms.DebtTermSeconds != 0 && (!ok || end > 1<<62) {
-		return termMaturityUnknown, nil
-	}
-	if market := terms.DebtMaturityTimestamp; market != 0 && market <= 1<<62 && (!ok || market < end) {
-		end = market
-	}
-	return int64(end), nil
-}
 
 // applyDebtTerm stamps the working lane's maturity and the batch's chain
 // time into its snapshot.
@@ -128,38 +89,6 @@ func termDeleverDue(s Snapshot) bool {
 	}
 	left, ok := termSecondsLeft(s)
 	return ok && (left <= 0 || left < termDeleverSeconds && !termKeepAliveRoom(s))
-}
-
-// validateTermKeepAliveBorrow is the prepare- and build-time bound of a
-// keep-alive borrow: exactly the keep-alive size, on term debt still ahead
-// of its maturity, inside the reserve's fee-inclusive room and the
-// position's risk caps (protocol LTV, 50% instant LTV with the fee).
-func validateTermKeepAliveBorrow(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, receive uint64) error {
-	if receive != termKeepAliveBorrowRaw || position.DebtRaw == 0 {
-		return budgetHold("term_keepalive_amount_invalid")
-	}
-	// Only term debt still ahead of its maturity is kept alive.
-	end, err := observedDebtTermEnd(accounts, route)
-	if err != nil {
-		return err
-	}
-	if now := clockUnixTimestamp(accounts); end <= 0 || now <= 0 || end <= now {
-		return budgetHold("term_keepalive_not_term_debt")
-	}
-	room, err := kaminoAdditionalDebtRoom(accounts, route)
-	if err != nil {
-		return err
-	}
-	debt := accountAt(accounts, route.Kamino.DebtReserve)
-	if len(debt.Data) < kaminoReserveConfigOffset+48 {
-		return budgetHold("term_keepalive_capacity_shrank")
-	}
-	rate := binary.LittleEndian.Uint64(debt.Data[kaminoReserveConfigOffset+40:])
-	capped, err := leverageStepWithinRisk(position, accounts, route, min(receive, kaminoReceiveWithinRoom(room, rate)), rate)
-	if err != nil || capped != receive {
-		return budgetHoldFrom(err, "term_keepalive_capacity_shrank")
-	}
-	return nil
 }
 
 // termDays is days to maturity for logs and the gauge; false without term

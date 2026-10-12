@@ -41,9 +41,9 @@ func TestWYLDSTermReadersFollowTheLiveTerm(t *testing.T) {
 	}
 	route := autoAUTOWYLDS
 	route.Kamino.Obligation, route.Kamino.Vault = multiply, owner.Owner.String()
-	end, ok, err := wyldsTermEnd(accounts, route)
-	if err != nil || !ok || end != 1_791_697_379+2_592_000 {
-		t.Fatalf("term end %d %t (%v)", end, ok, err)
+	end, err := observedDebtTermEnd(accounts, route)
+	if err != nil || end != 1_791_697_379+2_592_000 {
+		t.Fatalf("term end %d (%v)", end, err)
 	}
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
 	if err != nil {

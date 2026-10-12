@@ -39,7 +39,7 @@ func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing
 		}
 	})
 	addresses := []string{budgetClockAddress, bridgeVault, bridgeStrategy}
-	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
+	slot, accounts, err := simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
 	if err != nil || slot != 43 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}
@@ -93,12 +93,12 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 			addresses := []string{budgetClockAddress, bridgeVault}
 			var captureErr error
 			if testCase.optional {
-				_, _, captureErr = simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, addresses, []string{budgetClockAddress}, 41)
+				_, _, captureErr = simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, addresses, []string{budgetClockAddress}, 41)
 			} else {
-				_, _, captureErr = simulateBudgetReserveRefresh(context.Background(), client, RouteID, addresses, 41)
+				_, _, captureErr = simulateBudgetReserveRefresh(context.Background(), client, PhaseOneLaneID, addresses, 41)
 			}
 			var hold *BudgetHold
-			if !errors.As(captureErr, &hold) || hold.Reason != "price_refresh_capture_incomplete" {
+			if !errors.As(captureErr, &hold) || holdCause(hold) != "price_refresh_capture_incomplete" {
 				t.Fatalf("unexpected error: %v", captureErr)
 			}
 		})
@@ -163,7 +163,7 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 		body2 := `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":{"err":null,"accounts":[` + populated + `,null]}}}`
 		return response(body2), nil
 	})
-	slot, accounts, err := simulateBudgetReserveRefreshOptional(context.Background(), client, RouteID, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
+	slot, accounts, err := simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
 	if err != nil || slot != 43 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}
@@ -180,10 +180,7 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 func TestTwoAUTOLaneValuationRefreshSimulatesEveryReserve(t *testing.T) {
 	t.Parallel()
 	routes := []RuntimeRoute{autoAUTOWYLDS, autoAUTOPYUSD}
-	addresses, err := overflowRoomAddresses(autoAUTOWYLDS)
-	if err != nil {
-		t.Fatal(err)
-	}
+	addresses := []string{autoAUTOWYLDS.Kamino.CollateralReserve, autoAUTOWYLDS.Kamino.DebtReserve, autoAUTOWYLDS.Kamino.Obligation, usdcReference.DebtReserve, budgetClockAddress}
 	reserves := map[publicKey]bool{}
 	for _, route := range routes {
 		for _, reserve := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve} {

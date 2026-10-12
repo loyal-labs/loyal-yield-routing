@@ -19,17 +19,6 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest.Status = "ready"
-	manifest.Unresolved = nil
-	commit := strings.Repeat("1", 40)
-	digest := "sha256:" + strings.Repeat("2", 64)
-	service := "loyal-backyard-rwa-worker"
-	manifest.Deployment.SourceCommit = &commit
-	manifest.Deployment.ImageDigest = &digest
-	manifest.Deployment.SingleWriterService = &service
-	if blocker := manifest.executionBlocker(); blocker != nil {
-		t.Fatalf("ready test manifest remained blocked: %v", blocker)
-	}
 	return manifest
 }
 
@@ -159,30 +148,6 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 	}
 }
 
-func TestTickHoldsWithoutARowWhileManifestIsBlocked(t *testing.T) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest.Status = "blocked"
-	observation := tickObservation(Snapshot{ObservationID: "hold", Slot: 10, RouteKind: RouteKind, Fresh: true})
-	recorded := false
-	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
-		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
-		observe:         func(context.Context) (Observation, error) { return observation, nil },
-		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
-			recorded = true
-			return DecisionRecord{}, nil
-		},
-	}}
-	if err := worker.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if recorded || worker.holds.reason != holdAtTarget {
-		t.Fatalf("a hold behind a blocked manifest wrote a row or lost its reason: recorded=%v hold=%q", recorded, worker.holds.reason)
-	}
-}
-
 func TestTickHoldsUtilizationWithoutPreparingBorrow(t *testing.T) {
 	manifest := readyWorkerManifest(t)
 	observation := tickObservation(Snapshot{
@@ -253,28 +218,6 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 func TestNewWorkerRejectsMissingSigningCapability(t *testing.T) {
 	if _, err := NewWorker(&Database{pool: &pgxpool.Pool{}}, &chain.Client{}, &View{}, DefaultConfig(), Credentials{}); err == nil {
 		t.Fatal("worker accepted a missing signing capability")
-	}
-}
-
-func TestExecutionGateKeepsPhaseTwoCatalogOutOfFirstRelease(t *testing.T) {
-	t.Parallel()
-	manifest := readyWorkerManifest(t)
-	manifest.Deployment.SourceCommit = nil
-	manifest.Deployment.ImageDigest = nil
-	manifest.Deployment.SingleWriterService = nil
-	manifest.Unresolved = append(manifest.Unresolved, struct {
-		Code            string `json:"code"`
-		ResumeCondition string `json:"resumeCondition"`
-	}{Code: "UNRESOLVED_CURRENT_POLICY_GRAPH"})
-	if blocker := manifest.executionBlocker(); blocker != nil {
-		t.Fatalf("Phase 2 catalog disabled fixed PRIME/USDC: %v", blocker)
-	}
-	manifest.Unresolved = append(manifest.Unresolved, struct {
-		Code            string `json:"code"`
-		ResumeCondition string `json:"resumeCondition"`
-	}{Code: "UNRESOLVED_PRIME_USDC_PACKETS"})
-	if blocker := manifest.executionBlocker(); blocker == nil {
-		t.Fatal("Phase 1 packet blocker was ignored")
 	}
 }
 

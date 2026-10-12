@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -46,9 +46,6 @@ type policyKey struct {
 // conversion is one swap a policy admits: the from symbol into the to symbol.
 type conversion struct{ from, to string }
 
-// splitKaminoRoutes are the routes with one split KLend policy per leg.
-var splitKaminoRoutes = []RuntimeRoute{ethenaUSDePYUSD, primePRIMEPYUSD, primePRIMEUSDS}
-
 var kaminoLegs = []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegWithdraw, kaminoLegBorrow, kaminoLegRepay}
 
 // backyardPolicies is every policy Backyard executes through, by what the
@@ -62,7 +59,7 @@ func backyardPolicies() (map[policyKey]squads.Policy, error) {
 		}
 		out[key] = policy
 	}
-	for _, route := range autoRoutes {
+	for _, route := range lanesWithPolicy(policyAuto) {
 		auto, err := autoPolicy(route)
 		add(policyKey{lane: route.Lane}, auto, err)
 	}
@@ -72,22 +69,11 @@ func backyardPolicies() (map[policyKey]squads.Policy, error) {
 		policy, err := basicPolicy(family)
 		add(policyKey{family: family}, policy, err)
 	}
-	for _, lane := range earnLaneIDs(true) {
-		if !basicLane(lane) {
-			continue
-		}
-		route, err := runtimeRoute(lane)
-		if err != nil {
-			return nil, err
-		}
+	for _, route := range lanesWithPolicy(policyBasic) {
 		policy, err := initializerPolicy(route)
-		add(policyKey{lane: lane, action: InitializeKaminoObligation}, policy, err)
+		add(policyKey{lane: route.Lane, action: InitializeKaminoObligation}, policy, err)
 	}
-	legacy, err := runtimeRoute(RouteID)
-	if err != nil {
-		return nil, err
-	}
-	for _, route := range append([]RuntimeRoute{legacy}, splitKaminoRoutes...) {
+	for _, route := range lanesWithPolicy(policySplit) {
 		for _, leg := range kaminoLegs {
 			policy, err := kaminoLegPolicy(route, leg)
 			add(policyKey{lane: route.Lane, leg: leg}, policy, err)
@@ -195,21 +181,17 @@ func (p installedPolicies) account(key policyKey) (string, error) {
 	}
 }
 
-// bridgePolicyKeys are the Voltr bridge's four policies, which every lane
-// with a bridge exit leaves through.
-var bridgePolicyKeys = []policyKey{{action: VoltrAllocateToSquads}, {action: StageSquadsToVoltr}, {action: VoltrRestoreIdle}, {action: ReportNAV}}
-
 // kaminoPolicyLeg is the policy a route executes leg through and the leg's
 // constraint there: the AUTO lane's KLend policy, a basic family, or the
 // route's split policy for the leg.
 func kaminoPolicyLeg(route RuntimeRoute, leg kaminoPrimeUSDCLeg) (policyKey, byte) {
 	switch {
 	case autoRoute(route.Lane):
-		return policyKey{lane: route.Lane}, map[kaminoPrimeUSDCLeg]byte{kaminoLegDeposit: autoDeposit, kaminoLegWithdraw: autoWithdraw,
-			kaminoLegBorrow: autoBorrow, kaminoLegRepay: autoRepay}[leg]
-	case route.BasicPolicy && (leg == kaminoLegDeposit || leg == kaminoLegWithdraw):
+		return policyKey{lane: route.Lane}, map[kaminoPrimeUSDCLeg]byte{kaminoLegDeposit: policy.LoopDeposit, kaminoLegWithdraw: policy.LoopWithdraw,
+			kaminoLegBorrow: policy.LoopBorrow, kaminoLegRepay: policy.LoopRepay}[leg]
+	case basicLane(route.Lane) && (leg == kaminoLegDeposit || leg == kaminoLegWithdraw):
 		return policyKey{family: BasicCollateralLifecycle}, map[kaminoPrimeUSDCLeg]byte{kaminoLegDeposit: basicDeposit, kaminoLegWithdraw: basicWithdraw}[leg]
-	case route.BasicPolicy:
+	case basicLane(route.Lane):
 		return policyKey{family: BasicDebtLifecycle}, map[kaminoPrimeUSDCLeg]byte{kaminoLegBorrow: basicBorrow, kaminoLegRepay: basicRepay}[leg]
 	default:
 		return policyKey{lane: route.Lane, leg: leg}, splitLeg
@@ -220,7 +202,7 @@ func kaminoPolicyLeg(route RuntimeRoute, leg kaminoPrimeUSDCLeg) (policyKey, byt
 // constraint there.
 func initializerPolicyLeg(lane string) (policyKey, byte) {
 	if autoRoute(lane) {
-		return policyKey{lane: lane}, autoInitialize
+		return policyKey{lane: lane}, policy.LoopInitialize
 	}
 	return policyKey{lane: lane, action: InitializeKaminoObligation}, splitLeg
 }
@@ -228,9 +210,6 @@ func initializerPolicyLeg(lane string) (policyKey, byte) {
 // jupiterPolicyLeg is the policy lane swaps action through and the edge's
 // constraint there.
 func jupiterPolicyLeg(lane string, action Action) (policyKey, byte, error) {
-	if lane == "" {
-		lane = RouteID
-	}
 	switch {
 	case catalogJupiterRoute(lane):
 		edges, leg, err := catalogEdge(action, lane)
@@ -244,55 +223,22 @@ func jupiterPolicyLeg(lane string, action Action) (policyKey, byte, error) {
 		if source == bridgeSquadsATA {
 			family = BasicSwapRoutesA
 		}
-		return policyKey{family: family}, basicSwapLeg[lane], nil
-	case lane == RouteID && (action == SwapUSDCToPrimeStep || action == SwapPrimeToUSDCStep):
-		// The PRIME/USDC route swaps along the catalog's USDC/PRIME edges.
-		from, to := "USDC", "PRIME"
-		if action == SwapPrimeToUSDCStep {
-			from, to = to, from
-		}
-		edges, leg, err := catalogSwap(from, to)
-		return policyKey{swaps: swapsName(edges)}, leg, err
+		l, _ := findEarnLane(lane)
+		return policyKey{family: family}, l.basicSwapLeg, nil
 	default:
 		return policyKey{}, 0, fmt.Errorf("lane %q has no Jupiter policy for %s", lane, action)
 	}
 }
 
-// autoRoutes are the lanes that run every KLend leg through one autoPolicy
-// literal of their own: AUTO's PYUSD lane and its wYLDS overflow lane.
-var autoRoutes = []RuntimeRoute{autoAUTOPYUSD, autoAUTOWYLDS}
-
-// autoRoute reports one of autoRoutes' lanes.
-func autoRoute(lane string) bool {
-	return lane == autoAUTOPYUSD.Lane || lane == autoAUTOWYLDS.Lane
-}
-
-// An AUTO lane's KLend legs, in the order of its policy: a leg's value is the
-// constraint index it executes under. Its swaps are catalog conversions; the
-// wYLDS lane's debt conversions are Hastra's (hastraPolicy).
-const (
-	autoDeposit = iota
-	autoWithdraw
-	autoBorrow
-	autoRepay
-	autoInitialize
-	autoLegs
-)
-
-// autoPolicy is an AUTO lane's KLend policy. The KLend legs pin the vault, an
-// obligation it owns, and the reserve (or market) and custody they move; the
-// initializer pins every account of the lane's one obligation. KLend checks
-// the rest itself.
+// autoPolicy is an AUTO lane's KLend policy: the klend-loop policy
+// (policy.LoopConstraints) on its collateral and debt reserves. The KLend legs
+// pin the vault, an obligation it owns, and the reserve (or market) and
+// custody they move; the initializer pins every account of the lane's one
+// obligation. KLend checks the rest.
 func autoPolicy(route RuntimeRoute) (squads.Policy, error) {
-	var out [autoLegs]squads.InstructionConstraintView
-	collateralLeg := vaultCollateral(pinned(route.Kamino.CollateralReserve), pinned(route.CollateralCustody))
-	debtLeg := vaultDebt(pinned(route.Kamino.Market), pinned(route.DebtCustody))
-	out[autoDeposit] = kamino.DepositV2Allowed(collateralLeg, squads.Unpinned)
-	out[autoWithdraw] = kamino.WithdrawV2Allowed(collateralLeg, squads.Unpinned)
-	out[autoBorrow] = kamino.BorrowV2Allowed(debtLeg, squads.Unpinned)
-	out[autoRepay] = kamino.RepayV2Allowed(debtLeg, squads.Unpinned)
-	var err error
-	out[autoInitialize], err = obligationInitAllowed(route)
+	k := route.Kamino
+	out, err := policy.LoopConstraints(kaminoKey(k.Vault), kaminoKey(k.Market), kaminoKey(k.CollateralReserve), kaminoKey(k.CollateralMint),
+		kaminoKey(route.CollateralTokenProgram), kaminoKey(k.DebtMint), kaminoKey(route.DebtTokenProgram))
 	return vaultPolicy(out[:]...), err
 }
 
@@ -317,24 +263,13 @@ const (
 	basicSwapLegs
 )
 
-// basicSwapLeg is the swap leg each basic lane executes under.
-var basicSwapLeg = map[string]byte{"OnRe/ONyc/USDC": basicSwapONycPrime, PhaseOneLaneID: basicSwapONycPrime, SelectedRouteID: basicSwapSyrup}
-
 // basicPolicy is one basic family's policy, shared by the three runtime lanes
 // (OnRe, Prime, Maple, in that order in every pin). Its KLend legs pin the
 // vault, an obligation it owns, each lane's collateral reserve (or market) and
 // the custodies; its swaps pin the vault's custodies of their direction and no
 // fee (vaultSwap).
 func basicPolicy(family BasicPolicyFamily) (squads.Policy, error) {
-	var lanes [3]RuntimeRoute
-	for i, lane := range [3]string{onreONycUSDC, PhaseOneLaneID, SelectedRouteID} {
-		route, err := basicRuntimeRoute(lane)
-		if err != nil {
-			return squads.Policy{}, err
-		}
-		lanes[i] = route
-	}
-	onre, prime, maple := lanes[0], lanes[1], lanes[2]
+	onre, prime, maple := onreONycUSDCRoute, primePRIMEUSDC, mapleSyrupUSDCUSDC
 	switch family {
 	case BasicCollateralLifecycle:
 		leg := vaultCollateral(pinned(onre.Kamino.CollateralReserve, prime.Kamino.CollateralReserve, maple.Kamino.CollateralReserve),
@@ -492,10 +427,6 @@ func debtAsset(r RuntimeRoute) swapAsset {
 }
 
 func routeSwapAssets() (swapAssets, error) {
-	onre, err := basicRuntimeRoute("OnRe/ONyc/USDC")
-	if err != nil {
-		return swapAssets{}, err
-	}
 	usdg, err := spl.AssociatedTokenAddress(kaminoKey(bridgeVault), kaminoKey(usdgMint), solana.Token2022ProgramID)
 	if err != nil {
 		return swapAssets{}, err
@@ -503,7 +434,7 @@ func routeSwapAssets() (swapAssets, error) {
 	return swapAssets{
 		usdc: usdcAsset(), prime: collateralAsset(primePRIMEPYUSD), usds: debtAsset(primePRIMEUSDS), pyusd: debtAsset(autoAUTOPYUSD),
 		auto: collateralAsset(autoAUTOPYUSD), usde: collateralAsset(ethenaUSDePYUSD), syrup: collateralAsset(mapleSyrupUSDCUSDC),
-		onyc: collateralAsset(onre), usdg: asset("USDG", usdg.String(), usdgMint, token2022Program),
+		onyc: collateralAsset(onreONycUSDCRoute), usdg: asset("USDG", usdg.String(), usdgMint, token2022Program),
 	}, nil
 }
 
@@ -547,18 +478,9 @@ func vaultDebt(market, custody squads.Slot) kamino.LiquidityAllowed {
 	return kamino.OwnDebtAllowed(kaminoKey(bridgeVault), market, custody)
 }
 
-// The Hastra conversion policy's legs, in its constraint order (W1's hastra
-// product order): a leg's value is the constraint index it executes under.
-const (
-	hastraStakeDepositLeg = iota // wYLDS -> AUTO
-	hastraStakeRedeemLeg         // AUTO -> wYLDS
-	hastraMintDepositLeg         // USDC -> wYLDS
-	hastraLegs
-)
-
 // hastraConversions are the conversions of the Hastra policy, by leg.
-var hastraConversions = [hastraLegs]conversion{hastraStakeDepositLeg: {"wYLDS", "AUTO"}, hastraStakeRedeemLeg: {"AUTO", "wYLDS"},
-	hastraMintDepositLeg: {"USDC", "wYLDS"}}
+var hastraConversions = [policy.HastraLegs]conversion{policy.HastraStakeDeposit: {"wYLDS", "AUTO"}, policy.HastraStakeRedeem: {"AUTO", "wYLDS"},
+	policy.HastraMintDeposit: {"USDC", "wYLDS"}}
 
 // hastraName names the Hastra policy by its conversions in constraint order,
 // as "wYLDS->AUTO/AUTO->wYLDS/USDC->wYLDS".
@@ -571,27 +493,11 @@ func hastraName() string {
 }
 
 // hastraPolicy is the vault's Hastra conversions between its own associated
-// token accounts (its USDC, wYLDS and AUTO custodies), every account pinned:
-// the vault signs, both user accounts are its own (which the programs also
-// require), and every program account is the program's own. The amount is
-// free, by the owner's no-limits choice for conversions. It is the hastra
-// product's policy for the Backyard vault (policy's
-// TestHastraPolicyIsBackyardHastraPolicy).
+// token accounts, every account pinned (policy.HastraConstraints): the
+// amount is free, by the owner's no-limits choice for conversions.
 func hastraPolicy() (squads.Policy, error) {
-	vault := kaminoKey(bridgeVault)
-	stake, err := hastra.OwnStake(vault)
-	if err != nil {
-		return squads.Policy{}, err
-	}
-	mint, err := hastra.OwnMint(vault)
-	if err != nil {
-		return squads.Policy{}, err
-	}
-	var out [hastraLegs]squads.InstructionConstraintView
-	out[hastraStakeDepositLeg] = hastra.StakeDepositAllowed(hastra.PinStake(stake))
-	out[hastraStakeRedeemLeg] = hastra.StakeRedeemAllowed(hastra.PinStake(stake))
-	out[hastraMintDepositLeg] = hastra.MintDepositAllowed(hastra.PinMint(mint))
-	return vaultPolicy(out[:]...), nil
+	out, _, _, err := policy.HastraConstraints(kaminoKey(bridgeVault))
+	return vaultPolicy(out[:]...), err
 }
 
 // vaultSwap is a shared_accounts_route_v2 by the vault from its custody of

@@ -64,7 +64,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if string(withBatch) != string(withoutBatch) {
 		t.Fatal("tick-local batch leaked into persisted JSON")
 	}
-	for _, change := range []func(*Observation){func(x *Observation) { x.routeBatch = nil }, func(x *Observation) { x.ObservedAt = x.ObservedAt.Add(-31 * time.Second) }, func(x *Observation) { x.Snapshot.Slot++ }, func(x *Observation) { x.Snapshot.ObservationID = "changed" }} {
+	for _, change := range []func(*Observation){func(x *Observation) { x.routeBatch = nil }, func(x *Observation) { x.Snapshot.Slot++ }, func(x *Observation) { x.Snapshot.ObservationID = "changed" }} {
 		changed := o
 		change(&changed)
 		if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, view, m, decision, changed); !errors.Is(err, errConfirmedObservationUnavailable) {

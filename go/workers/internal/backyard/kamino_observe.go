@@ -1,8 +1,8 @@
 package backyard
 
-// This file deliberately decodes only the frozen PRIME/USDC Kamino graph. It
-// is not a general KLend decoder: an unfamiliar account layout or topology is
-// an observation failure, not an opportunity to guess.
+// This file decodes only the registry lanes' Kamino graphs. It is not a
+// general KLend decoder: an unfamiliar account layout or topology is an
+// observation failure, not an opportunity to guess.
 
 import (
 	"bytes"
@@ -20,19 +20,8 @@ import (
 )
 
 const (
-	kaminoMarket              = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
-	kaminoPrimeUSDCObligation = "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv"
-	kaminoCollateralReserve   = "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh"
-	kaminoDebtReserve         = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu"
-	kaminoPrimeMint           = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
-	kaminoUSDCMint            = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 	kaminoRequiredPriceStatus = 0x3f
 	kaminoReserveConfigOffset = 4856
-
-	// LendingMarket: 8-byte discriminator + size_of::<LendingMarket>() == 4656
-	// in the pinned klend-interface 23b9f2b. emergency_mode follows version,
-	// bump_seed, the two owner keys, quote_currency, and referral_fee_bps.
-	kaminoMarketEmergencyModeOffset = 122
 
 	// ReserveConfig.status (0 = Active) sits at the config base, and its
 	// emergency_mode follows status, asset_tier padding, host_fixed_interest_
@@ -41,15 +30,13 @@ const (
 	// already-decoded cross-check for this base.
 	kaminoReserveStatusOffset        = kaminoReserveConfigOffset
 	kaminoReserveEmergencyModeOffset = kaminoReserveConfigOffset + 8
-	// ReserveLiquidity.market_price_last_updated_ts: i64 unix seconds between
-	// market_price_sf (248) and mint_decimals (272, already decoded as u64).
-	kaminoMarketPriceLastUpdatedTSOffset = 264
 
 	// Audit U5 / monitor M5: a reserve that has not refreshed within the
-	// adaptor's report window, a paused reserve, or a stale oracle price keeps
-	// reporting the last valuation. Every report-bearing action fails closed.
-	kaminoMaxReserveAgeSlots = int64(32)
-	kaminoOracleMaxAgeSecs   = int64(300)
+	// adaptor's report window (adaptorMaxReportAgeSlots), a paused reserve,
+	// or a stale oracle price keeps reporting the last valuation. Every
+	// report-bearing action fails closed. kaminoOracleMaxAgeSecs is the one
+	// price age every valuation is held to.
+	kaminoOracleMaxAgeSecs = int64(300)
 )
 
 // Fail-closed reserve health violations are sentinel errors so the observers
@@ -92,14 +79,6 @@ type KaminoObservationConfig struct {
 	Vault, MarketAuthority, CollateralMint, DebtMint            string
 }
 
-func pinnedKaminoObservationConfig() (KaminoObservationConfig, error) {
-	return KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Market: kaminoMarket, Obligation: kaminoPrimeUSDCObligation,
-		CollateralReserve: kaminoCollateralReserve, DebtReserve: kaminoDebtReserve,
-		Vault: bridgeVault, MarketAuthority: kaminoPrimeMarketAuthority, CollateralMint: kaminoPrimeMint, DebtMint: kaminoUSDCMint,
-	}, nil
-}
-
 type KaminoPosition struct {
 	Slot, RefreshedSlot int64
 	HasPosition         bool
@@ -128,7 +107,7 @@ type decodedKaminoObligation struct {
 	debtAmountSF           [16]byte
 	cumulativeBorrowRate   [32]byte
 	// debtBorrow is the debt reserve's borrow slot, whose last borrow time
-	// starts its debt term (kaminoDebtTermEnd); zero without debt.
+	// starts its debt term (debtTermEnd); zero without debt.
 	debtBorrow kamino.ObligationLiquidity
 }
 type decodedKaminoReserve struct {
@@ -430,7 +409,7 @@ func decodeKaminoMarketEmergency(account ConfirmedAccount, c KaminoObservationCo
 
 // validateKaminoReserveHealth is the fail-closed gate behind monitor M5. On
 // top of validateKaminoRefresh's relative freshness it requires, at the
-// observation slot: every reserve refreshed within kaminoMaxReserveAgeSlots,
+// observation slot: every reserve refreshed within adaptorMaxReportAgeSlots,
 // ReserveConfig.status 0, and no reserve- or market-level emergency mode.
 func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, obligation decodedKaminoObligation, reserves ...decodedKaminoReserve) error {
 	if marketEmergencyMode {
@@ -441,7 +420,7 @@ func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, o
 			return fmt.Errorf("Kamino reserve %d/%t is not active: %w",
 				reserve.status, reserve.emergencyMode, errKaminoReservePaused)
 		}
-		if reserve.refreshedSlot > observedSlot || observedSlot-reserve.refreshedSlot > kaminoMaxReserveAgeSlots {
+		if reserve.refreshedSlot > observedSlot || observedSlot-reserve.refreshedSlot > adaptorMaxReportAgeSlots {
 			return fmt.Errorf("Kamino reserve last refreshed at %d, observation slot %d: %w",
 				reserve.refreshedSlot, observedSlot, errKaminoReserveStale)
 		}

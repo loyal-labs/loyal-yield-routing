@@ -53,7 +53,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, cluster, view, route, viewSlot)
+	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, cluster, route, viewSlot)
 	if err != nil {
 		return err
 	}

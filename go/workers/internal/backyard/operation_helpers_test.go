@@ -6,10 +6,12 @@ import (
 	"testing"
 )
 
+// assertBudgetHold wants a hold whose reason (one of the enum) or cause is
+// reason.
 func assertBudgetHold(t *testing.T, err error, reason string) {
 	t.Helper()
 	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.Reason != reason {
+	if !errors.As(err, &hold) || hold.Reason != reason && holdCause(hold) != reason {
 		t.Fatalf("wanted HOLD %s; got %v", reason, err)
 	}
 }

@@ -22,15 +22,16 @@ type LoopAmounts struct {
 	Deposit, Withdraw, Borrow, Repay uint64
 }
 
-// The klend-loop ops in policy order, which is Backyard's AUTO lane order
-// (autoPolicy): a leg's value is its constraint index.
+// The klend-loop ops in policy order, which is also the order of Backyard's
+// AUTO lane policies (built here, LoopConstraints): a leg's value is its
+// constraint index.
 const (
-	loopDeposit = iota
-	loopWithdraw
-	loopBorrow
-	loopRepay
-	loopInitialize
-	loopLegs
+	LoopDeposit = iota
+	LoopWithdraw
+	LoopBorrow
+	LoopRepay
+	LoopInitialize
+	LoopLegs
 )
 
 // loopLane is what a loop's policy pins: the vault, its lane obligation in
@@ -62,21 +63,30 @@ func newLoopLane(vault, market, collateralReserve, collateralMint, collateralPro
 // reserve and its collateral custody; borrow and repayment on any obligation
 // it owns, in the market and its debt custody; and the creation of its one
 // lane obligation, every account pinned, the vault paying. KLend checks the
-// rest. These are Backyard's autoPolicy shapes, so a loop installed on a
-// test Settings proves the literal Backyard installs
-// (TestKLendLoopPolicyIsBackyardAUTOPolicy).
-func (l loopLane) constraints() [loopLegs]squads.InstructionConstraintView {
-	var out [loopLegs]squads.InstructionConstraintView
+// rest. Backyard's AUTO lanes run through exactly these (LoopConstraints).
+func (l loopLane) constraints() [LoopLegs]squads.InstructionConstraintView {
+	var out [LoopLegs]squads.InstructionConstraintView
 	collateral := kamino.OwnCollateralAllowed(l.vault, squads.Pin(l.collateralReserve), squads.Pin(l.collateralCustody))
 	debt := kamino.OwnDebtAllowed(l.vault, squads.Pin(l.market), squads.Pin(l.debtCustody))
-	out[loopDeposit] = kamino.DepositV2Allowed(collateral, squads.Unpinned)
-	out[loopWithdraw] = kamino.WithdrawV2Allowed(collateral, squads.Unpinned)
-	out[loopBorrow] = kamino.BorrowV2Allowed(debt, squads.Unpinned)
-	out[loopRepay] = kamino.RepayV2Allowed(debt, squads.Unpinned)
-	out[loopInitialize] = kamino.InitObligationAllowed(kamino.ObligationInitAllowed{Owner: squads.Pin(l.vault), FeePayer: squads.Pin(l.vault),
+	out[LoopDeposit] = kamino.DepositV2Allowed(collateral, squads.Unpinned)
+	out[LoopWithdraw] = kamino.WithdrawV2Allowed(collateral, squads.Unpinned)
+	out[LoopBorrow] = kamino.BorrowV2Allowed(debt, squads.Unpinned)
+	out[LoopRepay] = kamino.RepayV2Allowed(debt, squads.Unpinned)
+	out[LoopInitialize] = kamino.InitObligationAllowed(kamino.ObligationInitAllowed{Owner: squads.Pin(l.vault), FeePayer: squads.Pin(l.vault),
 		Obligation: squads.Pin(l.obligation), LendingMarket: squads.Pin(l.market), Seed1: squads.Pin(l.collateralMint),
 		Seed2: squads.Pin(l.debtMint), OwnerUserMetadata: squads.Pin(l.metadata)}, 1, 0)
 	return out
+}
+
+// LoopConstraints are the klend-loop policy's constraints for vault's lane
+// obligation (tag 1, id 0, seeds the two mints) in market: the one builder
+// of the policy both this product and Backyard's AUTO lanes execute through.
+func LoopConstraints(vault, market, collateralReserve, collateralMint, collateralProgram, debtMint, debtProgram solana.PublicKey) ([LoopLegs]squads.InstructionConstraintView, error) {
+	lane, err := newLoopLane(vault, market, collateralReserve, collateralMint, collateralProgram, debtMint, debtProgram)
+	if err != nil {
+		return [LoopLegs]squads.InstructionConstraintView{}, err
+	}
+	return lane.constraints(), nil
 }
 
 // KLendLoop is the product of one smart-account vault running a leveraged
@@ -218,18 +228,18 @@ func KLendLoop(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, col
 		}
 
 		constraints := lane.constraints()
-		ops := make([]Op, loopLegs)
-		ops[loopDeposit] = Op{Name: fmt.Sprintf("deposit %d (deposited collateral %d)", amounts.Deposit, obligation.Collateral(collateralReserve)),
+		ops := make([]Op, LoopLegs)
+		ops[LoopDeposit] = Op{Name: fmt.Sprintf("deposit %d (deposited collateral %d)", amounts.Deposit, obligation.Collateral(collateralReserve)),
 			Inner:  kamino.DepositV2(collateralAccounts, amounts.Deposit),
 			Before: before(append([]solana.Instruction{createCollateral}, farmInit(collateralFarm, collateral.FarmCollateral, collateralReserve, 0)...)...)}
-		ops[loopWithdraw] = Op{Name: fmt.Sprintf("withdraw %d collateral (deposited %d)", withdraw, obligation.Collateral(collateralReserve)),
+		ops[LoopWithdraw] = Op{Name: fmt.Sprintf("withdraw %d collateral (deposited %d)", withdraw, obligation.Collateral(collateralReserve)),
 			Inner: kamino.WithdrawV2(collateralAccounts, withdraw), Before: before(createCollateral)}
-		ops[loopBorrow] = Op{Name: fmt.Sprintf("borrow %d (debt now %d)", amounts.Borrow, debtNow),
+		ops[LoopBorrow] = Op{Name: fmt.Sprintf("borrow %d (debt now %d)", amounts.Borrow, debtNow),
 			Inner:  kamino.BorrowV2(debtAccounts, amounts.Borrow),
 			Before: before(append([]solana.Instruction{createDebt}, farmInit(debtFarm, debt.FarmDebt, debtReserve, 1)...)...)}
-		ops[loopRepay] = Op{Name: fmt.Sprintf("repay %d (debt now %d, before interest since the last refresh)", amounts.Repay, debtNow),
+		ops[LoopRepay] = Op{Name: fmt.Sprintf("repay %d (debt now %d, before interest since the last refresh)", amounts.Repay, debtNow),
 			Inner: kamino.RepayV2(debtAccounts, amounts.Repay), Before: before()}
-		ops[loopInitialize] = Op{Name: "init lane obligation " + lane.obligation.String(),
+		ops[LoopInitialize] = Op{Name: "init lane obligation " + lane.obligation.String(),
 			Inner: kamino.InitObligation(kamino.ObligationInitAccounts{Owner: vault, FeePayer: vault, Obligation: lane.obligation,
 				LendingMarket: market, Seed1: lane.collateralMint, Seed2: lane.debtMint, OwnerUserMetadata: lane.metadata}, 1, 0),
 			Before: topUp, Done: state[1] != nil}

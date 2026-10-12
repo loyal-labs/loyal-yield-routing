@@ -18,9 +18,9 @@ func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T
 		observe := productionConfirmedBatchForManifest(t, m, 77, func(accounts []ConfirmedAccount) {
 			// Keep the real production decoders; replace only controlled chain
 			// bytes. A collateral-only obligation avoids a separate debt window.
-			clear(accountAt(accounts, kaminoPrimeUSDCObligation).Data[1208:2208])
+			clear(accountAt(accounts, primePRIMEUSDC.Kamino.Obligation).Data[1208:2208])
 			binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], 77)
-			reserve := accountAt(accounts, kaminoCollateralReserve).Data
+			reserve := accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data
 			for i := 1; i < 11; i++ {
 				binary.LittleEndian.PutUint32(reserve[kaminoReserveConfigOffset+64+i*8:], 10_000)
 			}
@@ -67,10 +67,10 @@ func cadenceArmedIdentity(s *Snapshot) {
 func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
 	t.Parallel()
 	selected := mapleSyrupUSDCUSDC.Kamino.Obligation
-	if got := optionalLifecycleObligations([]string{kaminoPrimeUSDCObligation, selected}); len(got) != 2 || got[0] != selected || got[1] != kaminoPrimeUSDCObligation {
+	if got := optionalLifecycleObligations([]string{primePRIMEUSDC.Kamino.Obligation, selected}); len(got) != 2 || got[0] != selected || got[1] != primePRIMEUSDC.Kamino.Obligation {
 		t.Fatalf("both closed lifecycle obligations must be optional: %v", got)
 	}
-	if got := optionalLifecycleObligations([]string{kaminoPrimeUSDCObligation}); len(got) != 1 || got[0] != kaminoPrimeUSDCObligation {
+	if got := optionalLifecycleObligations([]string{primePRIMEUSDC.Kamino.Obligation}); len(got) != 1 || got[0] != primePRIMEUSDC.Kamino.Obligation {
 		t.Fatalf("Phase 1 obligation fallback drifted: %v", got)
 	}
 	if got := optionalLifecycleObligations([]string{bridgeSquadsATA}); len(got) != 0 {
@@ -210,8 +210,8 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 
 func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
 	t.Parallel()
-	addresses := routeFixedAddresses(readyWorkerManifest(t))
-	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, bridgeVoltrVault: false, bridgeLPMint: false, kaminoPrimeCustody: false, kaminoPrimeUSDCObligation: false, kaminoCollateralReserve: false, kaminoDebtReserve: false, kaminoPrimeLiquiditySupply: false, kaminoUSDCLiquiditySupply: false, reportTicketPDA: false}
+	addresses := routeFixedAddresses()
+	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, bridgeVoltrVault: false, bridgeLPMint: false, primePRIMEUSDC.CollateralCustody: false, primePRIMEUSDC.Kamino.Obligation: false, primePRIMEUSDC.Kamino.CollateralReserve: false, primePRIMEUSDC.Kamino.DebtReserve: false, primePRIMEUSDC.CollateralLiquiditySupply: false, primePRIMEUSDC.DebtLiquiditySupply: false, reportTicketPDA: false}
 	for _, address := range addresses {
 		if _, ok := wanted[address]; ok {
 			wanted[address] = true
@@ -231,7 +231,7 @@ func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
 	for _, address := range viewAddresses() {
 		held[address] = true
 	}
-	for _, address := range routeFixedAddresses(readyWorkerManifest(t)) {
+	for _, address := range routeFixedAddresses() {
 		if !held[address] {
 			t.Fatalf("the observation reads %s outside the view", address)
 		}

@@ -45,33 +45,20 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
 	logStage("build_simulate", start)
 	if err != nil {
-		return database.simulationRefused(ctx, operationID, err)
+		return simulationRefused(err)
 	}
 	return database.PersistSigned(ctx, operationID, signed, simulation, encoded)
 }
 
-// simulationRefused journals a wire the chain refused in simulation; it was
-// never sent. A Squads spending limit and an adaptor report past its age end
-// the row under their own reason; every other refusal is the target's
-// chain_refused hold, which the tick journals; an endpoint that could not
-// answer leaves the row decided, and the next tick fails it and decides
+// simulationRefused is a wire the chain refused in simulation (a policy, a
+// spending limit, KLend, the adaptor's report age, a minimum output): it was
+// never sent, it is the chain_refused hold, which the tick journals with the
+// simulation error, and the next tick decides again. An endpoint that could
+// not answer leaves the row decided; the next tick fails it and decides
 // again.
-func (d *Database) simulationRefused(ctx context.Context, operationID string, err error) error {
-	var limit *SquadsSpendingLimitError
-	var slot *ReportSlotSimulationError
-	switch {
-	case errors.Is(err, errConfirmedObservationUnavailable):
+func simulationRefused(err error) error {
+	if errors.Is(err, errConfirmedObservationUnavailable) {
 		return err
-	case errors.As(err, &limit):
-		if markErr := d.MarkPreBroadcastFailed(ctx, operationID, Decided, squadsSpendingLimitReason); markErr != nil {
-			return errors.Join(err, markErr)
-		}
-		return journaledBudgetHold(squadsSpendingLimitReason)
-	case errors.As(err, &slot):
-		if markErr := d.MarkPreBroadcastFailed(ctx, operationID, Decided, reportExpiredInSimulationReason); markErr != nil {
-			return errors.Join(err, markErr)
-		}
-		return journaledBudgetHold(reportExpiredInSimulationReason)
 	}
 	return &BudgetHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
 }

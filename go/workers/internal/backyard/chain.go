@@ -156,42 +156,16 @@ func simulateSigned(ctx context.Context, c *chain.Client, signedWire []byte) (Si
 	if errors.As(err, &failure) {
 		raw, _ := json.Marshal(failure.Err)
 		slot := int64(failure.Slot)
-		if squadsSpendingLimitExceeded(raw, failure.Logs) {
-			return SimulationResult{}, &SquadsSpendingLimitError{Slot: slot, Err: raw}
-		}
 		logTail := failure.Logs
 		if len(logTail) > 8 {
 			logTail = logTail[len(logTail)-8:]
 		}
-		err := fmt.Errorf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", slot, string(raw), strings.Join(logTail, " | "))
-		if code, ok := decodeInstructionErrorCustom(raw); ok && code == adaptorErrorReportSlot && failingProgramFromLogs(failure.Logs) == bridgeAdaptorProgram {
-			return SimulationResult{}, &ReportSlotSimulationError{err: err}
-		}
-		return SimulationResult{}, err
+		return SimulationResult{}, fmt.Errorf("signed transaction simulation failed: slot=%d err=%s log_tail=%q", slot, string(raw), strings.Join(logTail, " | "))
 	}
 	if err != nil {
 		return SimulationResult{}, unavailable(err)
 	}
 	return SimulationResult{Slot: int64(simulated.Slot), UnitsConsumed: simulated.Units, Logs: simulated.Logs}, nil
-}
-
-// ReportSlotSimulationError is a simulation the NAV adaptor refused with
-// ReportSlot (Custom 9).
-type ReportSlotSimulationError struct{ err error }
-
-func (e *ReportSlotSimulationError) Error() string { return e.err.Error() }
-
-// SquadsSpendingLimitError marks a simulation the pinned Squads program
-// refused with its spending-limit-exceeded custom error (6073). It is a
-// specific, non-retryable pre-broadcast refusal, never a generic simulation
-// failure.
-type SquadsSpendingLimitError struct {
-	Slot int64
-	Err  json.RawMessage
-}
-
-func (e *SquadsSpendingLimitError) Error() string {
-	return fmt.Sprintf("squads spending limit exceeded: slot=%d err=%s", e.Slot, string(e.Err))
 }
 
 // signatureStatus reads one signature with full history. A processed-only

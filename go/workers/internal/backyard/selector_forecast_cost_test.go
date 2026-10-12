@@ -31,7 +31,7 @@ func sfIntervalPrice(mint, program string, decimals byte, slot int64) BudgetPric
 	}
 	return BudgetPrice{
 		Credit:           &BudgetCreditBounds{TokenLowerSF: mk(99, 100), USDCUpperSF: mk(101, 100)},
-		Source:           "confirmed-chain-accounts",
+		Source:           routeRefreshValuationSource,
 		Mint:             mint,
 		TokenProgram:     program,
 		Decimals:         decimals,
@@ -224,7 +224,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	}
 	_, err = composeSelectorMove(context.Background(), fixtureView(t, rpc), o, source, destination)
 	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.Reason != "selector_move_cost_exceeds_equity" {
+	if !errors.As(err, &hold) || holdCause(hold) != "selector_move_cost_exceeds_equity" {
 		t.Fatal("largest refusal is not the economic cost outcome", err)
 	}
 	// The ladder continues past that refused largest size and stops at the

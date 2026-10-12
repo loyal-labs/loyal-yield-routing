@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -165,7 +166,7 @@ func seedChain(t *testing.T, slot int64, accounts []ConfirmedAccount, receipts .
 func viewRouteBatch(t *testing.T, mutate func([]ConfirmedAccount)) []ConfirmedAccount {
 	t.Helper()
 	accounts := productionRouteBatchAccounts(t, 77, mutate)
-	for _, address := range routeFixedAddresses(readyWorkerManifest(t)) {
+	for _, address := range routeFixedAddresses() {
 		if accountAt(accounts, address).Address == "" && address != bridgeStrategyReceipt {
 			accounts = append(accounts, ConfirmedAccount{Address: address, Owner: squads.ProgramID.String(), Lamports: 1, Data: bytes.Repeat([]byte{7}, 96)})
 		}
@@ -309,6 +310,34 @@ func TestViewIsCompleteThroughThePreviousConfirmedSlot(t *testing.T) {
 // reconnects 32 slots behind S.
 func TestViewStreamPlansAtS(t *testing.T) {
 	view, client, connector := streamView(t)
+	// The valuation refresh simulates on the node at the view's S, over the
+	// accounts the stream has delivered.
+	seeded := rpcOf(client).Transport
+	rpcOf(client).Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, err
+		}
+		if payload.Method != "simulateTransaction" {
+			request.Body = io.NopCloser(bytes.NewReader(body))
+			return seeded.RoundTrip(request)
+		}
+		view.mu.Lock()
+		through, held := int64(view.through), maps.Clone(view.accounts)
+		view.mu.Unlock()
+		encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": simulatedCapture(t, payload.Params, through, func(address string) (ConfirmedAccount, bool) {
+			a, ok := held[address]
+			return a.ConfirmedAccount, ok
+		})})
+		return response(string(encoded)), nil
+	})
 	request, _ := connector.last()
 	if request.GetFromSlot() != 78 || !slices.Contains(request.Accounts[viewAccountsFilter].Account, bridgeSquadsATA) ||
 		request.Accounts[viewReceiptsFilter].Owner[0] != voltr.ProgramID.String() || request.GetCommitment() != pb.CommitmentLevel_CONFIRMED {

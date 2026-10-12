@@ -84,7 +84,7 @@ func kaminoReserveImage(t *testing.T, market, address, mint string, slot int64, 
 	putKey(t, reserve.Data[32:64], market)
 	binary.LittleEndian.PutUint64(reserve.Data[272:280], uint64(decimals))
 	putScaledFraction(reserve.Data[232:248], new(big.Int).Lsh(new(big.Int).SetUint64(borrowedRaw), 60))
-	putKey(t, reserve.Data[5112:5144], kaminoPrimeMint)
+	putKey(t, reserve.Data[5112:5144], primePRIMEUSDC.Kamino.CollateralMint)
 	reserve.Data[kaminoReserveConfigOffset+17] = 80
 	putKaminoBorrowCurve(reserve.Data)
 	return reserve
@@ -153,15 +153,15 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 		exactReportTicketAccount(t, 4),
 		autoObservationClock(slot),
 		// One configured oracle account serves every reserve image.
-		{Address: kaminoPrimeMint, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}},
+		{Address: primePRIMEUSDC.Kamino.CollateralMint, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}},
 		// Legacy PRIME/USDC identities the candidate batch still requests.
-		kaminoReserveImage(t, kaminoMarket, kaminoCollateralReserve, kaminoPrimeMint, slot, oneAndHalf, 200, 0, 100, 6),
-		kaminoReserveImage(t, kaminoMarket, kaminoDebtReserve, kaminoUSDCMint, slot, peg, 100, 0, 100, 6),
-		marketFixture(t, kaminoMarket),
-		tokenAccountFixture(t, kaminoPrimeCustody, kaminoPrimeMint, bridgeVault, 0),
+		kaminoReserveImage(t, primePRIMEUSDC.Kamino.Market, primePRIMEUSDC.Kamino.CollateralReserve, primePRIMEUSDC.Kamino.CollateralMint, slot, oneAndHalf, 200, 0, 100, 6),
+		kaminoReserveImage(t, primePRIMEUSDC.Kamino.Market, primePRIMEUSDC.Kamino.DebtReserve, bridgeUSDC, slot, peg, 100, 0, 100, 6),
+		marketFixture(t, primePRIMEUSDC.Kamino.Market),
+		tokenAccountFixture(t, primePRIMEUSDC.CollateralCustody, primePRIMEUSDC.Kamino.CollateralMint, bridgeVault, 0),
 		obligationFixture(t, slot, 0, 0),
-		tokenAccountFixture(t, kaminoPrimeLiquiditySupply, kaminoPrimeMint, kaminoPrimeMarketAuthority, 200),
-		tokenAccountFixture(t, kaminoUSDCLiquiditySupply, bridgeUSDC, kaminoPrimeMarketAuthority, 100),
+		tokenAccountFixture(t, primePRIMEUSDC.CollateralLiquiditySupply, primePRIMEUSDC.Kamino.CollateralMint, primePRIMEUSDC.Kamino.MarketAuthority, 200),
+		tokenAccountFixture(t, primePRIMEUSDC.DebtLiquiditySupply, bridgeUSDC, primePRIMEUSDC.Kamino.MarketAuthority, 100),
 		// The candidate AUTO protocol identities themselves.
 		kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, slot, oneAndHalf,
 			autoFixturePoolLiquidity, 0, autoFixturePoolReceiptSupply, 9),
@@ -188,8 +188,9 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 func autoObservationForAccounts(manifest RouteManifest, slot int64, accounts []ConfirmedAccount) func(context.Context) (Observation, []ConfirmedAccount, error) {
 	return func(ctx context.Context) (Observation, []ConfirmedAccount, error) {
 		return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
-			read: fixtureBatchRuntime(slot, accounts),
-			now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+			read:             fixtureBatchRuntime(slot, accounts),
+			refreshValuation: fixtureRefresh(slot, accounts),
+			now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 		})
 	}
 }
@@ -263,7 +264,7 @@ func TestAutoCandidateObservationReportsOwnedPYUSDPosition(t *testing.T) {
 	if observation.Snapshot.BorrowUtilizationBlocked || observation.Snapshot.CapacityRaw != 0 || observation.Snapshot.TicketLastConsumedSequenceRaw != 4 {
 		t.Fatalf("unexpected book facts on the healthy candidate batch: %+v", observation.Snapshot)
 	}
-	if observation.Snapshot.ValuationSource != "confirmed" || observation.Snapshot.ValuationSlot != 77 {
+	if observation.Snapshot.ValuationSource != routeRefreshValuationSource || observation.Snapshot.ValuationSlot != 77 {
 		t.Fatalf("valuation provenance drifted: %+v", observation.Snapshot)
 	}
 }
@@ -330,7 +331,7 @@ func TestAutoCandidateObservationPricesAbovePegDebtThroughReservePrice(t *testin
 // the observer quietly reinterprets.
 func TestAutoCandidateForeignReserveIdentityFailsClosed(t *testing.T) {
 	foreign := func(accounts []ConfirmedAccount) {
-		putKey(t, accountAt(accounts, autoAUTOPYUSD.Kamino.DebtReserve).Data[128:160], kaminoPrimeMint)
+		putKey(t, accountAt(accounts, autoAUTOPYUSD.Kamino.DebtReserve).Data[128:160], primePRIMEUSDC.Kamino.CollateralMint)
 	}
 	manifest, _, accounts := autoObservationBatch(t, 77, foreign)
 	observation, _, err := autoObservationForAccounts(manifest, 77, accounts)(context.Background())
@@ -348,7 +349,7 @@ func TestAutoCandidateForeignReserveIdentityFailsClosed(t *testing.T) {
 // position: the fallback refuses the route outright.
 func TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash(t *testing.T) {
 	stale := func(accounts []ConfirmedAccount) {
-		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	manifest, route, accounts := autoObservationBatch(t, 77, stale)
 	// Pin the third stale hold in a row, the one that latches.
@@ -420,7 +421,7 @@ func TestAutoEmptyLaneStaleReserveFallsBackToCash(t *testing.T) {
 	t.Parallel()
 	stale := func(accounts []ConfirmedAccount) {
 		flattenAutoPosition(accounts)
-		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	_, route, accounts := autoObservationBatch(t, 77, stale)
 	position, err := observeKaminoWithCashFallback(77, accounts, route)
@@ -440,7 +441,7 @@ func TestKaminoStaleHealthHoldLatchesOnlyOnThirdInARow(t *testing.T) {
 	kaminoStaleHolds.Store(0)
 	t.Cleanup(func() { kaminoStaleHolds.Store(0) })
 	stale := func(accounts []ConfirmedAccount) {
-		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	manifest, _, staleAccounts := autoObservationBatch(t, 77, stale)
 	_, _, freshAccounts := autoObservationBatch(t, 77, nil)
@@ -470,8 +471,8 @@ func TestKaminoStaleHealthHoldLatchesOnlyOnThirdInARow(t *testing.T) {
 // refresh; it retries without counting toward the rejected-refresh latch.
 func TestRefreshBlockhashNotFoundIsTransient(t *testing.T) {
 	t.Parallel()
-	notFound := &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `"BlockhashNotFound"`}}
-	rejected := &BudgetHold{Reason: "price_refresh_simulation_failed", Details: map[string]string{"transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
+	notFound := &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `"BlockhashNotFound"`}}
+	rejected := &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
 	if !transientValuationRefreshFailure(notFound) || transientValuationRefreshFailure(rejected) || transientValuationRefreshFailure(budgetHold("price_refresh_simulation_failed")) {
 		t.Fatal("BlockhashNotFound classification is wrong")
 	}
@@ -485,7 +486,7 @@ func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
 	refreshSimulationFailures.Store(0)
 	t.Cleanup(func() { kaminoStaleHolds.Store(0); refreshSimulationFailures.Store(0) })
 	manifest, _, accounts := autoObservationBatch(t, 77, func(accounts []ConfirmedAccount) {
-		binary.LittleEndian.PutUint64(accountAt(accounts, kaminoDebtReserve).Data[16:24], uint64(77-kaminoMaxReserveAgeSlots-8))
+		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	})
 	refreshCalls := 0
 	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{

@@ -185,13 +185,13 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		if errors.As(settleErr, &pgErr) {
 			result.Stage = "settlement_sql_" + pgErr.Code + "_" + pgErr.ConstraintName
 		}
-		// A BudgetHold names the exact existing safety guard that refused
-		// settlement; surfacing its Reason alone keeps operator output fixed
-		// while still identifying the guard. The row is unchanged; the
+		// A BudgetHold's cause names the exact safety guard that refused
+		// settlement; surfacing it alone keeps operator output fixed while
+		// still identifying the guard. The row is unchanged; the
 		// sanitized stage code is all the operator output carries.
 		var hold *BudgetHold
 		if errors.As(settleErr, &hold) {
-			result.Stage = hold.Reason
+			result.Stage = holdCause(hold)
 		}
 		return result, sanitizedStage(result.Stage)
 	}

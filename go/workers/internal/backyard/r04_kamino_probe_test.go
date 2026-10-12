@@ -113,7 +113,7 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 			// prove that maximum fully repaid at the future execution clock.
 			binary.LittleEndian.PutUint64(clock.Data[:8], probe.ClockBefore.Slot)
 			binary.LittleEndian.PutUint64(clock.Data[32:40], uint64(probe.ClockBefore.UnixTimestamp))
-			bound, err := decodeKaminoPayoffBound(before, route, result.Slot)
+			bound, err := decodeKaminoPayoffWindow(before, route, result.Slot, 1)
 			if err != nil || bound.InterestBasis != 1 || bound.UpperDebtRaw != maximum || bound.ThroughUnix != probe.ExecutionClock.UnixTimestamp {
 				t.Fatal("payoff bound does not cover executed seconds-based interest", bound, err)
 			}

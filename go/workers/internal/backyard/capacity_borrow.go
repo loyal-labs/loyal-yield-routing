@@ -218,10 +218,7 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 	}
 	reference, config := route.Kamino.DebtReserve, route.Kamino
 	if route.Kamino.DebtMint != bridgeUSDC {
-		config, err = pinnedKaminoObservationConfig()
-		if err != nil {
-			return
-		}
+		config = usdcReference
 		reference = config.DebtReserve
 	}
 	usdc, err := decodeKaminoReserve(accountAt(accounts, reference), bridgeUSDC, config)

@@ -83,10 +83,10 @@ func coherentFeeSelectorFixture(t *testing.T, wealth, supply uint64, hwm *big.In
 		binary.LittleEndian.PutUint64(accountAt(accounts, bridgeLPMint).Data[36:44], supply)
 		binary.LittleEndian.PutUint64(accountAt(accounts, bridgeIdleATA).Data[64:72], wealth)
 		binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 0)
-		binary.LittleEndian.PutUint64(accountAt(accounts, kaminoPrimeCustody).Data[64:72], 0)
+		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.CollateralCustody).Data[64:72], 0)
 		binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyReceipt).Data[104:112], 0)
 		for i := range accounts {
-			if accounts[i].Address == kaminoPrimeUSDCObligation {
+			if accounts[i].Address == primePRIMEUSDC.Kamino.Obligation {
 				accounts[i].Owner, accounts[i].Data, accounts[i].Lamports = "", nil, 0
 			}
 		}

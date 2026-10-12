@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,25 +84,19 @@ func TestWidenedWindowStillBoundsPriceAge(t *testing.T) {
 
 // The adaptor refuses a report older than 32 slots (Custom 9 = ReportSlot).
 // On 09-27 the A1 window (49 slots) let two NAV reports reach simulation at
-// ages 34 and 39 and the worker exited. The simulation refusal must be a
-// typed error, and a report-bearing tick observation must stay within 32
-// slots even when the general window is wider.
-func TestReportSlotSimulationRefusalIsTypedAndReportWindowStaysAtAdaptorLimit(t *testing.T) {
+// ages 34 and 39 and the worker exited. The adaptor's refusal is the
+// chain_refused hold like any refusal, carrying its simulation error, and a
+// report-bearing tick observation stays within 32 slots even when the
+// general window is wider.
+func TestReportSlotSimulationRefusalIsChainRefusedAndReportWindowStaysAtAdaptorLimit(t *testing.T) {
 	client := newFakeChain(t, nil)
 	rpcOf(client).Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":450928730},"value":{"err":{"InstructionError":[0,{"Custom":9}]},"logs":["Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]","Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]","Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW failed: custom program error: 0x9","Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x9"],"unitsConsumed":1}}}`), nil
 	})
 	_, err := simulateSigned(context.Background(), client, []byte{1, 2})
-	var slotErr *ReportSlotSimulationError
-	if !errors.As(err, &slotErr) {
-		t.Fatalf("adaptor ReportSlot simulation refusal is not typed: %v", err)
-	}
-	// Same Custom 9 from another program is not the adaptor's refusal.
-	rpcOf(client).Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":5},"value":{"err":{"InstructionError":[0,{"Custom":9}]},"logs":["Program Other111 invoke [1]","Program Other111 failed: custom program error: 0x9"],"unitsConsumed":1}}}`), nil
-	})
-	if _, err := simulateSigned(context.Background(), client, []byte{1, 2}); err == nil || errors.As(err, &slotErr) {
-		t.Fatalf("a foreign Custom 9 was typed as the adaptor refusal: %v", err)
+	var hold *BudgetHold
+	if refused := simulationRefused(err); !errors.As(refused, &hold) || hold.Reason != holdChainRefused || !strings.Contains(hold.Details["simulation"], "Custom") {
+		t.Fatalf("adaptor ReportSlot refusal is not chain_refused: %v", refused)
 	}
 	observationLag.Store(49)
 	t.Cleanup(func() { observationLag.Store(0) })

@@ -68,8 +68,9 @@ func fundLane(t *testing.T, accounts *[]ConfirmedAccount, lane string, collatera
 func observeMultiLane(t *testing.T, manifest RouteManifest, accounts []ConfirmedAccount) Observation {
 	t.Helper()
 	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
-		read: fixtureBatchRuntime(77, accounts),
-		now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
+		read:             fixtureBatchRuntime(77, accounts),
+		refreshValuation: fixtureRefresh(77, accounts),
+		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +97,8 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 	}
 	// The same batch through the single-route calculator gives the same
 	// report bytes: the union namespace of one lane is its own namespace.
-	navAccounts, err := selectRouteNAVAccountsForRoute(accounts, autoAUTOPYUSD)
+	_, refreshed, _ := fixtureRefresh(77, accounts)(context.Background(), nil, routeFixedAddresses(), 77)
+	navAccounts, err := selectRouteNAVAccountsForRoute(refreshed, autoAUTOPYUSD)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +118,12 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 }
 
 // The observation identity and report digest the one-lane observer (before
-// multi-lane observation, origin/main 877b297e) gave this test's batch.
+// multi-lane observation, origin/main 877b297e) gave this test's batch; the
+// digest binds the manifest, which P4 made the hash of the lane registry,
+// and both bind the valuation's refresh provenance, which every batch carries.
 const (
-	oneLaneAUTOObservationID = "d2f0257fb3e4fb86c63671447f66162d942a5dd73f63d0c1cc0f04b118509515"
-	oneLaneAUTOReportDigest  = "0bf7ffa2e7e01686c2425c13b71b7447aa284c4246ad96a4b06d5e9dc1b1f619"
+	oneLaneAUTOObservationID = "ccb310d607d6fb7d6764ef809ebb38167a6e2bee50443b0c1bccda92651f7177"
+	oneLaneAUTOReportDigest  = "c41775a8090c7b9c59fc5d2e0b5590788d59941e5c4a87e5d4762b085e54cb97"
 )
 
 // Two held lanes are one book: the working lane's view plus every other held
@@ -197,7 +201,7 @@ func TestHeldLanePastHardLTVIsProtectedFirst(t *testing.T) {
 func TestSharedCustodyBalanceAttribution(t *testing.T) {
 	_, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
 		fundLane(t, accounts, primePRIMEPYUSD.Lane, 5_000_000, 1_000_000)
-		upsertConfirmedAccount(accounts, tokenAccountFixture(t, kaminoPrimeCustody, kaminoPrimeMint, bridgeVault, 1))
+		upsertConfirmedAccount(accounts, tokenAccountFixture(t, primePRIMEUSDC.CollateralCustody, primePRIMEUSDC.Kamino.CollateralMint, bridgeVault, 1))
 	})
 	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
 	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+primePRIMEPYUSD.Lane {

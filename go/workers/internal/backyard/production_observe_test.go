@@ -53,14 +53,14 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeVoltrVault).Data[168:176], 53)
 	binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[514:516], uint16(approvedAdminPerformanceFeeBPS))
 	// The full observation path requires a configured oracle on the reserves.
-	putKey(t, accountAt(accounts, kaminoCollateralReserve).Data[5112:5144], kaminoPrimeMint)
-	putKey(t, accountAt(accounts, kaminoDebtReserve).Data[5112:5144], kaminoPrimeMint)
+	putKey(t, accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data[5112:5144], primePRIMEUSDC.Kamino.CollateralMint)
+	putKey(t, accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[5112:5144], primePRIMEUSDC.Kamino.CollateralMint)
 	// The production observer validates oracle age against chain time from the
 	// same confirmed batch, so keep the Clock image beside the reserve images.
 	accounts = append(accounts, clockFixture())
 	binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], uint64(slot))
 	// The lane's debt payoff window reads the debt reserve's borrow curve.
-	debt := accountAt(accounts, kaminoDebtReserve).Data
+	debt := accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data
 	for i := 0; i < 11; i++ {
 		offset := kaminoReserveConfigOffset + 64 + i*8
 		if i > 0 {
@@ -70,7 +70,7 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 	}
 	// A live reserve carries an 80% liquidation threshold; the decision engine
 	// refuses to plan around a position without one.
-	accountAt(accounts, kaminoCollateralReserve).Data[kaminoReserveConfigOffset+17] = 80
+	accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data[kaminoReserveConfigOffset+17] = 80
 	withFlatLanes(t, &accounts)
 	if mutate != nil {
 		mutate(accounts)
@@ -109,9 +109,11 @@ func productionConfirmedBatchForManifest(t *testing.T, manifest RouteManifest, s
 	t.Helper()
 	manifest = primeFixtureManifest(manifest)
 	return func(ctx context.Context) (Observation, error) {
+		accounts := productionRouteBatchAccounts(t, slot, mutate)
 		observation, _, err := observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
-			read: fixtureBatchRuntime(slot, productionRouteBatchAccounts(t, slot, mutate)),
-			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+			read:             fixtureBatchRuntime(slot, accounts),
+			refreshValuation: fixtureRefresh(slot, accounts),
+			now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 		})
 		if err != nil {
 			return Observation{}, err
@@ -278,7 +280,7 @@ func TestProductionStrategyReceiptIntegrityHoldsDurably(t *testing.T) {
 // holds, and the same healthy batch without the move does not.
 func TestProductionUnexplainedDriftHoldsThroughObserve(t *testing.T) {
 	manifest := readyWorkerManifest(t)
-	manifest.RuntimeActivation.SelectedLane = ""
+	manifest.RuntimeActivation.SelectedLane = PhaseOneLaneID
 	nonCutover := func(accounts []ConfirmedAccount) {
 		config, err := pinnedKaminoObservationConfig()
 		if err != nil {
@@ -291,7 +293,7 @@ func TestProductionUnexplainedDriftHoldsThroughObserve(t *testing.T) {
 		for i := 1208; i < 1272; i++ {
 			obligation.Data[i] = 0
 		}
-		binary.LittleEndian.PutUint64(accountAt(accounts, kaminoPrimeCustody).Data[64:72], 0)
+		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.CollateralCustody).Data[64:72], 0)
 	}
 	unexplained := func(accounts []ConfirmedAccount) {
 		nonCutover(accounts)

@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -86,9 +87,11 @@ func TestLiveSelectorRejectsDuplicateMarketFanoutAndStaleSource(t *testing.T) {
 	market := in.Markets[0]
 	_, _, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market, market}, in.Policy)
 	assertBudgetHold(t, err, "invalid_selector_market_set")
+	// A sample whose observation is past its quoting window reads nothing.
 	o.ObservedAt = o.ObservedAt.Add(-time.Minute)
-	_, _, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, in.Markets, in.Policy)
-	assertBudgetHold(t, err, "selector_live_snapshot_unavailable")
+	if _, _, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, in.Markets, in.Policy); !errors.Is(err, errConfirmedObservationUnavailable) {
+		t.Fatalf("a stale sample quoted: %v", err)
+	}
 }
 
 func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {

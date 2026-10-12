@@ -5,38 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"time"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
-
-// A complete move includes the existing source exit and destination entry.
-// Its evidence authorizes no transaction; runtime still reserves and rebuilds
-// each leg against actual balances. A destination is reselected after unwind.
-func observeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, market LaneEconomics, requestedEquity, idleBuffer uint64) (MoveQuote, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	var empty MoveQuote
-	if o.ObservedAt.IsZero() || !freshAt(time.Now().UTC(), o.ObservedAt, 30*time.Second) || requestedEquity == 0 || requestedEquity > strategyTwoBridgeLegCapRaw {
-		return empty, budgetHold("invalid_selector_move")
-	}
-	source, err := observeSelectorSource(ctx, rpc, view, client, m, o)
-	if err != nil {
-		return empty, err
-	}
-	if source.MinimumIdleRaw <= idleBuffer {
-		return empty, budgetHold("selector_move_has_no_entry_cash")
-	}
-	equity := min(requestedEquity, source.MinimumIdleRaw-idleBuffer)
-	if equity == 0 {
-		return empty, budgetHold("selector_move_has_no_entry_cash")
-	}
-	destination, err := observeSelectorDestinationForecast(ctx, rpc, view, client, m, o.policies, market, equity, o.Snapshot.Slot, false)
-	if err != nil {
-		return empty, err
-	}
-	return composeSelectorMove(ctx, view, o, source, destination)
-}
 
 // copyDebtPrice deep-copies observed price evidence so a composed quote owns
 // an immutable snapshot: later mutation of the destination's observation can

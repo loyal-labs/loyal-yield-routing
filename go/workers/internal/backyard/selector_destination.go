@@ -125,7 +125,7 @@ func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) erro
 
 func selectorDestinationAccounts(ctx context.Context, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
-	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, view, route, minimumSlot)
+	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, route, minimumSlot)
 	if err != nil {
 		return 0, nil, empty, err
 	}
@@ -142,11 +142,13 @@ func selectorDestinationAccounts(ctx context.Context, rpc *chain.Client, view *V
 	return slot, accounts, position, nil
 }
 
-// observeSelectorDestinationBatch fetches the full destination batch and the
-// lane position, tolerating an absent optional
-// obligation/farm, and retries once against the closed unsigned
-// reserve-refresh simulation when stale.
-func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+// observeSelectorDestinationBatch is the destination lane's batch and
+// position, valued like the tick's: one bank captured after the lane's
+// reserve refreshes (an unsigned simulation, never a broadcast), tolerating
+// an absent optional obligation or farm. bridgeDelegate's captured lamports
+// differ by the simulated fee; every freshness, ownership, capacity and
+// funding check still runs fail-closed on it.
+func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
 	addresses := []string{route.Kamino.Market, route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve,
 		route.Kamino.CollateralMint, route.Kamino.DebtMint, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply,
@@ -154,22 +156,11 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, vie
 		route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm,
 		budgetClockAddress, bridgeVault, bridgeDelegate, bridgeStrategy, reportTicketPDA}
 	optional := uniqueNonzero([]string{route.Kamino.Obligation, route.ObligationCollateralFarm, route.ObligationDebtFarm})
-	slot, accounts, err := view.read(ctx, uniqueNonzero(addresses), minimumSlot, optional...)
+	slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, rpc, []string{route.Lane}, uniqueNonzero(addresses), optional, minimumSlot)
 	if err != nil {
 		return 0, nil, empty, err
 	}
-	// Idle reserves only advance through the permissionless refresh the
-	// production prefix already carries, so a stale read is re-observed
-	// against its closed unsigned simulation — never a broadcast — over the
-	// full original batch. bridgeDelegate's captured lamports differ by the
-	// simulated fee; this snapshot is unsigned evidence, and every freshness,
-	// ownership, capacity and funding check below still runs fail-closed on
-	// it as-is.
-	var position KaminoPosition
-	slot, accounts, err = judgeAsRefreshed(ctx, rpc, route.Lane, uniqueNonzero(addresses), optional, slot, accounts, func(slot int64, accounts []ConfirmedAccount) (err error) {
-		position, err = observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
-		return err
-	})
+	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if err != nil {
 		return 0, nil, empty, err
 	}

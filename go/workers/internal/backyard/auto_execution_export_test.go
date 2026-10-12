@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 
+	lanepolicy "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
+
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -129,7 +131,7 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addMessage("initializer", "initializeObligation", autoInitialize, nil, initializerRequest, initializerMessage)
+	addMessage("initializer", "initializeObligation", lanepolicy.LoopInitialize, nil, initializerRequest, initializerMessage)
 
 	// The export must carry exactly the ten worker-generated messages — no
 	// silent omission of a leg or direction, no duplication.

@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -102,7 +103,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	addresses := routeFixedAddresses(manifest)
+	addresses := routeFixedAddresses()
 	slot, accounts, receipts, err := runtime.read(ctx, addresses, runtime.minSlot)
 	if err != nil {
 		return Observation{}, nil, err
@@ -136,13 +137,27 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	// Reserve refresh changes valuation inputs only. Capture the complete
-	// bank again so custody, obligations, receipts and Clock are coherent
-	// with those refreshed inputs, including after a landed swap.
+	// One valuation: every value is the refreshed simulation's. The batch is
+	// one bank captured after refreshing every valued lane's reserves (and
+	// the overflow lane of any of them, whose room a source moves into), so
+	// custody, obligations, receipts and Clock are coherent with the refreshed
+	// prices, and the batch's freshness is its slot.
+	if runtime.refreshValuation == nil {
+		return Observation{}, nil, fmt.Errorf("route observation has no valuation refresh")
+	}
 	refreshExhausted := false
-	if routesStale(slot, accounts, routes) && runtime.refreshValuation != nil {
-		captureAddresses := selectorValuationAddresses(routes, addresses)
-		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, routes, captureAddresses, slot)
+	{
+		refreshRoutes := withOverflowRoutes(routes)
+		captureAddresses := selectorValuationAddresses(refreshRoutes, addresses)
+		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, refreshRoutes, captureAddresses, slot)
+		if refreshSimulationFailed(refreshErr) && len(refreshRoutes) > len(routes) {
+			// Kamino refuses to refresh an overflow lane nothing holds: only
+			// its room is unknown (applyOverflowRoom). The valued lanes'
+			// capture stands without it, and its refusal never counts toward
+			// the vault's latch.
+			captureAddresses = selectorValuationAddresses(routes, addresses)
+			refreshedSlot, refreshedAccounts, refreshErr = runtime.refreshValuation(ctx, routes, captureAddresses, slot)
+		}
 		if refreshErr == nil {
 			refreshSimulationFailures.Store(0)
 			if err := validateRouteValuationCapture(refreshedSlot, refreshedAccounts, captureAddresses, slot); err != nil {
@@ -188,14 +203,12 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 				refreshSimulationFailures.Add(1) < refreshSimulationLatchAfter {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh rejected, retrying: %w", refreshErr))
 			}
-			// Already rejected that many times in a row: latch now, without a
-			// second streak on the health hold below.
+			// Already rejected that many times in a row: the raw batch's
+			// health hold latches (an empty lane still values as cash);
+			// carry this cause into its alert.
 			refreshExhausted = true
-			// The health hold below latches; carry this cause into its alert.
 			backyardEvents.noteCause(holdDetail(refreshErr))
 		}
-		// On unavailable refresh, cash-only accounting still works. Any
-		// noncash exposure retains the original fail-closed health hold.
 	}
 	views := make([]Observation, 0, len(viewLanes))
 	for _, lane := range viewLanes {
@@ -240,17 +253,19 @@ func flatViewLane(preferred string, in targetInputs) string {
 	return preferred
 }
 
-// routesStale reports whether a valued lane's reserves, or the USDC reference
-// its NAV reads, are past the Kamino age limit, so the one refreshed bank
-// must cover them. Other decode faults are left to the NAV.
-func routesStale(slot int64, accounts []ConfirmedAccount, routes []RuntimeRoute) bool {
+// withOverflowRoutes is routes plus the overflow lane of each, once.
+func withOverflowRoutes(routes []RuntimeRoute) []RuntimeRoute {
+	out := append([]RuntimeRoute(nil), routes...)
 	for _, route := range routes {
-		_, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
-		if errors.Is(err, errKaminoReserveStale) || (err == nil && navUSDCReferenceStale(slot, accounts, route)) {
-			return true
+		lane, ok := overflowLaneOf(route.Lane)
+		if !ok || slices.ContainsFunc(out, func(r RuntimeRoute) bool { return r.Lane == lane }) {
+			continue
+		}
+		if overflow, err := runtimeRoute(lane); err == nil {
+			out = append(out, overflow)
 		}
 	}
-	return false
+	return out
 }
 
 // observeLaneView is one lane's view of the bank: its position, custody and
@@ -366,7 +381,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if earnHeldLane(route.Lane) && position.DebtRaw > 0 {
 		// Include NAV -> release -> NAV -> funding -> NAV -> payoff in
 		// planning. Each actual wire still has its own short freshness gate.
-		bound, err := decodeKaminoPayoffWindow(accounts, route, slot, 6)
+		bound, err := decodeKaminoPayoffWindow(accounts, route, slot, kaminoPayoffSteps)
 		if err != nil {
 			return Observation{}, nil, err
 		}
@@ -413,7 +428,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 	base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
 	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
-		if err := applyOverflowRoom(ctx, &base.Snapshot, slot, route, runtime.refreshValuation); err != nil {
+		if err := applyOverflowRoom(&base.Snapshot, accounts, route); err != nil {
 			fmt.Fprintf(os.Stderr, "backyard-rwa-worker: overflow room unknown lane=%s: %v\n", route.Lane, err)
 		}
 	}
@@ -463,47 +478,16 @@ func receiptIntegrityObservation(slot int64, route RuntimeRoute) Observation {
 	}}
 }
 
-func routeFixedAddresses(manifest RouteManifest) []string {
-	route, err := manifest.activeRuntimeRoute()
-	if err != nil {
-		return nil
+// routeFixedAddresses is every account a tick reads: the bridge's, and each
+// registry lane's position, custody, reserves and market, with the Clock.
+func routeFixedAddresses() []string {
+	addresses := []string{reportTicketPDA, budgetClockAddress}
+	for _, l := range earnLanes {
+		r := l.route
+		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(r)...), r.Kamino.Market, r.Kamino.CollateralReserve, r.Kamino.DebtReserve,
+			r.CollateralLiquiditySupply, r.DebtLiquiditySupply, r.DebtFeeReceiver, r.Kamino.Obligation, r.CollateralCustody)
 	}
-	addressSet := map[string]struct{}{reportTicketPDA: {}, route.Kamino.CollateralReserve: {}, route.Kamino.DebtReserve: {}, kaminoPrimeLiquiditySupply: {}, kaminoUSDCLiquiditySupply: {}, kaminoCollateralReserve: {}, kaminoDebtReserve: {}, kaminoPrimeCustody: {}, kaminoPrimeUSDCObligation: {}}
-	for _, lane := range earnLaneIDs(true) {
-		other, _ := runtimeRoute(lane)
-		for _, address := range pinnedRouteNAVAddressesForRoute(other) {
-			addressSet[address] = struct{}{}
-		}
-		for _, address := range []string{other.Kamino.Market, other.CollateralLiquiditySupply, other.DebtLiquiditySupply, other.DebtFeeReceiver, other.Kamino.Obligation, other.CollateralCustody} {
-			addressSet[address] = struct{}{}
-		}
-	}
-
-	// All deposit rounding bounds use the Clock from the same custody/reserve
-	// batch, including retained PRIME/Maple consumers.
-	addressSet[budgetClockAddress] = struct{}{}
-	// The selected Phase 2 route can still require a legacy PRIME cutover
-	// drain. That observer now validates PRIME's lending market as part of the
-	// same confirmed batch, so pin the legacy market even when Maple is active.
-	if legacy, err := pinnedKaminoObservationConfig(); err == nil {
-		addressSet[legacy.Market] = struct{}{}
-	}
-	addressSet[route.DebtFeeReceiver] = struct{}{}
-	if catalogJupiterRoute(route.Lane) {
-		addressSet[route.CollateralLiquiditySupply] = struct{}{}
-		addressSet[route.DebtLiquiditySupply] = struct{}{}
-	}
-	if route.Lane == SelectedRouteID {
-		addressSet[mapleSyrupUSDCUSDC.CollateralLiquiditySupply] = struct{}{}
-		addressSet[mapleSyrupUSDCUSDC.DebtLiquiditySupply] = struct{}{}
-	}
-	for _, address := range pinnedRouteNAVAddressesForRoute(route) {
-		addressSet[address] = struct{}{}
-	}
-	addresses := make([]string, 0, len(addressSet))
-	for address := range addressSet {
-		addresses = append(addresses, address)
-	}
+	addresses = uniqueNonzero(addresses)
 	sort.Strings(addresses)
 	return addresses
 }
@@ -629,10 +613,7 @@ func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount
 		}
 		return position.EntryCapacityRaw, nil
 	}
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return 0, err
-	}
+	reference := usdcReference
 	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
 	if err != nil {
 		return 0, err
@@ -657,9 +638,7 @@ func topupDepositRoomUSDC(accounts []ConfirmedAccount, route RuntimeRoute) (uint
 	}
 	usdcReserve, usdcConfig := route.Kamino.DebtReserve, route.Kamino
 	if route.Kamino.DebtMint != bridgeUSDC {
-		if usdcConfig, err = pinnedKaminoObservationConfig(); err != nil {
-			return 0, err
-		}
+		usdcConfig = usdcReference
 		usdcReserve = usdcConfig.DebtReserve
 	}
 	usdc, err := decodeKaminoReserve(accountAt(accounts, usdcReserve), bridgeUSDC, usdcConfig)
@@ -814,36 +793,20 @@ func staleHealthRetry(hold Observation, err error, refreshExhausted bool) error 
 	return confirmedObservationUnavailable(fmt.Errorf("kamino health hold, retrying: %w", err))
 }
 
-// navUSDCReferenceStale reports a non-USDC lane whose pinned USDC reference
-// reserve (read by the NAV, not by the position check) is past the Kamino
-// reserve age limit. Decode faults are left to the NAV itself.
-func navUSDCReferenceStale(slot int64, accounts []ConfirmedAccount, route RuntimeRoute) bool {
-	if route.Kamino.DebtMint == "" || route.Kamino.DebtMint == bridgeUSDC {
-		return false
-	}
-	reference, err := pinnedKaminoObservationConfig()
-	if err != nil {
-		return false
-	}
-	reserve, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
-	return err == nil && reserve.refreshedSlot <= slot && slot-reserve.refreshedSlot > kaminoMaxReserveAgeSlots
-}
-
 func refreshSimulationFailed(err error) bool {
 	var hold *BudgetHold
-	return errors.As(err, &hold) && hold.Reason == "price_refresh_simulation_failed"
+	return errors.As(err, &hold) && holdCause(hold) == "price_refresh_simulation_failed"
 }
 
 func transientValuationRefreshFailure(err error) bool {
 	var hold *BudgetHold
 	if errors.As(err, &hold) {
-		switch hold.Reason {
-		case "price_refresh_blockhash_unavailable", "price_refresh_simulation_unavailable", "price_refresh_lookup_unavailable":
+		if holdCause(hold) == "price_refresh_simulation_unavailable" {
 			return true
 		}
 		// BlockhashNotFound: the simulating RPC node did not know our fresh
 		// blockhash, so Kamino never evaluated the refresh (09-26 23:18:51).
-		return hold.Reason == "price_refresh_simulation_failed" && strings.Trim(holdTransactionError(err), `"`) == "BlockhashNotFound"
+		return holdCause(hold) == "price_refresh_simulation_failed" && strings.Trim(holdTransactionError(err), `"`) == "BlockhashNotFound"
 	}
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errConfirmedObservationUnavailable)
 }

@@ -10,18 +10,6 @@ type ExecutableDebit struct {
 	Raw          uint64 `json:"raw"`
 }
 
-// MeasureExecutableDebit shares the production compilers and custody graph.
-// It cannot accept an arbitrary caller-supplied action-to-value mapping.
-// A withdrawal's wire amount may be receipt units: charge its underlying
-// liquidity debit from the checked effect graph, not that receipt amount.
-func MeasureExecutableDebit(request any, effects ExpectedEffects) (ExecutableDebit, error) {
-	m, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return ExecutableDebit{}, err
-	}
-	return m.measureExecutableDebit(request, effects)
-}
-
 // The manifest-aware form exists only for the internal recipe-pricing path:
 // retained selector payoff inputs compile against the SAME manifest that
 // produced them (existing lanes and exact AUTO). Every other caller keeps the
@@ -90,11 +78,7 @@ func (m RouteManifest) measureExecutableDebit(request any, effects ExpectedEffec
 		if err != nil {
 			return ExecutableDebit{}, err
 		}
-		lane := r.RouteLane
-		if lane == "" {
-			lane = RouteID
-		}
-		route, err := runtimeRoute(lane)
+		route, err := runtimeRoute(r.RouteLane)
 		if err != nil {
 			return ExecutableDebit{}, err
 		}

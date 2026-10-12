@@ -63,7 +63,7 @@ func TestEveryMessageCarriesItsBudgetInItsConfig(t *testing.T) {
 	if again, err := compileKaminoMessageForDelegate(request, delegate); err != nil || !bytes.Equal(auto, again) {
 		t.Fatal("AUTO Kamino compile is not deterministic")
 	}
-	installed, err := compileKaminoMessageForDelegate(kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit), delegate)
+	installed, err := compileKaminoMessageForDelegate(kaminoTestRequest(OpenRouteStep, kaminoLegDeposit), delegate)
 	if err != nil {
 		t.Fatal(err)
 	}

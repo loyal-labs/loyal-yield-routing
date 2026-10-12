@@ -176,7 +176,7 @@ func (st stepState) stepWithdrawReceipts() (uint64, error) {
 	if err != nil {
 		// Only outside cash can repay now: the target's no_room, counted on
 		// /metrics where its alert lives.
-		return 0, &BudgetHold{Reason: holdNoRoom, Details: map[string]string{"cause": "step_no_withdraw_room"}, cause: err}
+		return 0, roomHold("step_no_withdraw_room", err)
 	}
 	return min(receipts, stepLegCap(st.route)), nil
 }
@@ -271,11 +271,14 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	}
 	if up {
 		borrow := uint64(decision.AmountRaw)
-		if decision.Reason == termKeepAliveReason {
-			err = validateTermKeepAliveBorrow(st.position, accounts, route, borrow)
-		} else if capped, capErr := capacitySizedBorrow(st.position, accounts, route, int64(leverageUpLevel(s)*100)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
-			err = budgetHoldFrom(capErr, "borrow_capacity_shrank")
-		} else {
+		// The keep-alive is the minimum up step: target() found its room in
+		// this batch, and the chain refuses it past the term or the room.
+		if decision.Reason != termKeepAliveReason {
+			if capped, capErr := capacitySizedBorrow(st.position, accounts, route, int64(leverageUpLevel(s)*100)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
+				err = budgetHoldFrom(capErr, "borrow_capacity_shrank")
+			}
+		}
+		if err == nil {
 			// A split policy caps each KLend leg: the borrow, and the deposit
 			// of its conversion, stay a tenth under the cap.
 			borrow, err = stepUpBorrowWithinCap(st, borrow)
@@ -294,13 +297,6 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	// conversion's excess; the step then repeats while debt remains.
 	if limit := stepLegCap(route); repay > limit-limit/10 {
 		repay, full = limit-limit/10, false
-	}
-	if full {
-		bound, _, err := observeRawFullPayoff(ctx, view, route, s.Slot)
-		if err != nil {
-			return Observation{}, StepExecutionEvidence{}, err
-		}
-		repay = max(repay, bound.UpperDebtRaw)
 	}
 	receipts, convert, err := planDownStep(s, decision, st, repay)
 	if err != nil {
@@ -481,7 +477,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	receipts := min(uint64(max(overflowReleaseReceipts(s, decision.AmountRaw), 0)), limit, st.position.CollateralDepositedRaw-1)
 	liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
 	if err != nil || receipts == 0 || liquidity == 0 {
-		return StepExecutionEvidence{}, budgetHoldFrom(err, holdNoRoom)
+		return StepExecutionEvidence{}, roomHold("overflow_move_no_withdraw_room", err)
 	}
 	deposit := st.heldCollateral + liquidity
 	if receipts > stepLegCap(route) || deposit > stepLegCap(destination) {

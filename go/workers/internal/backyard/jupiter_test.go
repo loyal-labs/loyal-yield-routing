@@ -37,7 +37,7 @@ func fixtureHTTP(client *jupiter.Client) *http.Client {
 // jupiterTestInstruction is the PRIME/USDC route's swap of action in the
 // shape the swap API returns (v2TestInstruction).
 func jupiterTestInstruction(action Action, amount, out uint64) JupiterSwapInstruction {
-	return v2TestInstruction(RouteID, action, amount, out, 0)
+	return v2TestInstruction(PhaseOneLaneID, action, amount, out, 0)
 }
 
 // v2TestInstruction is lane's shared_accounts_route_v2 of action as the swap
@@ -85,12 +85,12 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 		action Action
 		policy string
 	}{
-		{SwapUSDCToPrimeStep, "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG"},
-		{SwapPrimeToUSDCStep, "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx"},
+		{SwapStableToCollateralStep, "FZjjJScy689WWSwhwr2HZPy2aevZukq75niD6gW3b1TG"},
+		{SwapCollateralToStableStep, "Fks3YBQWBYA1d6ZZKEAEunjhVMXZA9gY7vfWUWWbQtDx"},
 	} {
 		request := JupiterSwapRequest{Action: test.action, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
 			Policy:      test.policy,
-			Instruction: jupiterTestInstruction(test.action, 1_000_000, 990_000), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 2}
+			Instruction: jupiterTestInstruction(test.action, 1_000_000, 990_000), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 2, RouteLane: PhaseOneLaneID}
 		signed, err := buildAndSignJupiterTransactionForDelegate(request, key, delegate)
 		if err != nil {
 			t.Fatal(err)
@@ -114,26 +114,26 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 
 func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T) {
 	t.Parallel()
-	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
-	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err != nil {
+	instruction := jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
+	if _, err := validateJupiterInstructionForRoute(instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err != nil {
 		t.Fatal(err)
 	}
 	instruction.Accounts[2].Pubkey = previousBackyardVault
-	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err == nil {
+	if _, err := validateJupiterInstructionForRoute(instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err == nil {
 		t.Fatal("accepted drifted/prior custody")
 	}
-	instruction = jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
+	instruction = jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
 	data, _ := base64.StdEncoding.DecodeString(instruction.Data)
 	data[0] ^= 1
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
-	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 99, 98, RouteID); err == nil {
+	if _, err := validateJupiterInstructionForRoute(instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err == nil {
 		t.Fatal("accepted arbitrary Jupiter dialect")
 	}
 }
 
 func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) {
 	t.Parallel()
-	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 99)
+	instruction := jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
 	companion := false
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var response string
@@ -142,7 +142,7 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 			if r.URL.Query().Get("maxAccounts") != "32" || r.URL.Query().Get("slippageBps") != "50" || r.URL.Query().Get("instructionVersion") != "V2" {
 				t.Error("quote bounds drifted")
 			}
-			response = `{"inputMint":"` + bridgeUSDC + `","outputMint":"` + kaminoPrimeMint + `","inAmount":"100","outAmount":"99","otherAmountThreshold":"98","swapMode":"ExactIn","slippageBps":50,"platformFee":null,"routePlan":[{}]}`
+			response = `{"inputMint":"` + bridgeUSDC + `","outputMint":"` + primePRIMEUSDC.Kamino.CollateralMint + `","inAmount":"100","outAmount":"99","otherAmountThreshold":"98","swapMode":"ExactIn","slippageBps":50,"platformFee":null,"routePlan":[{}]}`
 		case "/swap-instructions":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -167,22 +167,22 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := freshSwapForRoute(context.Background(), client, RouteID, SwapUSDCToPrimeStep, 100, 32); err != nil {
+	if _, _, err := freshSwapForRoute(context.Background(), client, PhaseOneLaneID, SwapStableToCollateralStep, 100, 32); err != nil {
 		t.Fatal(err)
 	}
 	companion = true
-	if _, _, err := freshSwapForRoute(context.Background(), client, RouteID, SwapUSDCToPrimeStep, 100, 32); err == nil {
+	if _, _, err := freshSwapForRoute(context.Background(), client, PhaseOneLaneID, SwapStableToCollateralStep, 100, 32); err == nil {
 		t.Fatal("accepted a setup instruction outside the policy contract")
 	}
 }
 
 func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
 	t.Parallel()
-	instruction := jupiterTestInstruction(SwapUSDCToPrimeStep, 100, 95)
+	instruction := jupiterTestInstruction(SwapStableToCollateralStep, 100, 95)
 	instruction.Accounts = append(instruction.Accounts, jupiter.AccountMeta{
 		Pubkey: "11111111111111111111111111111111",
 	})
-	if _, err := validateJupiterInstructionForRoute(instruction, SwapUSDCToPrimeStep, 100, 95, 94, RouteID); err != nil {
+	if _, err := validateJupiterInstructionForRoute(instruction, SwapStableToCollateralStep, 100, 95, 94, PhaseOneLaneID); err != nil {
 		t.Fatal(err)
 	}
 	key, err := decodeKey("11111111111111111111111111111111")

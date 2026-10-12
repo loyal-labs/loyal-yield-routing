@@ -41,21 +41,8 @@ type KaminoPrimeUSDCRequest struct {
 }
 
 const (
-	kaminoPrimeMarket             = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
-	kaminoPrimeMarketAuthority    = "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM"
-	kaminoPrimeReserve            = "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh"
-	kaminoUSDCReserve             = "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu"
-	kaminoPrimeUSDCCollateralMint = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
-	kaminoPrimeLiquiditySupply    = "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352"
-	kaminoPrimeReceiptMint        = "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW"
-	kaminoPrimeReceiptSupply      = "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN"
-	kaminoUSDCLiquiditySupply     = "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC"
-	kaminoUSDCFeeVault            = "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6"
-	kaminoPrimeCustody            = "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct"
-	kaminoScopePrices             = "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH"
-	mapleDebtFarm                 = "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y"
-	mapleObligationDebtFarm       = "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr"
-	kaminoInstructions            = "Sysvar1nstructions1111111111111111111111111"
+	kaminoScopePrices  = "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH"
+	kaminoInstructions = "Sysvar1nstructions1111111111111111111111111"
 )
 
 type kaminoPrimeUSDCLeg byte
@@ -67,16 +54,8 @@ const (
 	kaminoLegWithdraw
 )
 
-func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
-	return compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
-}
-
 func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
-	lane := request.RouteLane
-	if lane == "" {
-		lane = RouteID
-	}
-	route, err := runtimeRoute(lane)
+	route, err := runtimeRoute(request.RouteLane)
 	if err != nil {
 		return nil, err
 	}
@@ -149,9 +128,6 @@ func kaminoPrimeUSDCInstruction(request KaminoPrimeUSDCRequest) (compiledInstruc
 }
 
 func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
-	if lane == "" {
-		lane = RouteID
-	}
 	route, err := runtimeRoute(lane)
 	if err != nil {
 		return compiledInstruction{}, 0, err
@@ -191,14 +167,14 @@ func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route Runtim
 func matchesKaminoStepForResolvedRoute(action Action, discriminator []byte, accounts []accountMeta, route RuntimeRoute) (kaminoPrimeUSDCLeg, bool) {
 	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	switch action {
-	case OpenRouteStep, OpenPrimeUSDCStep:
+	case OpenRouteStep:
 		if bytesEqual(discriminator, kamino.DepositV2Discriminator[:]) && exactKaminoMetas(accounts, deposit) {
 			return kaminoLegDeposit, true
 		}
 		if bytesEqual(discriminator, kamino.BorrowV2Discriminator[:]) && exactKaminoMetas(accounts, borrow) {
 			return kaminoLegBorrow, true
 		}
-	case DeleverRouteStep, DeleverPrimeUSDCStep:
+	case DeleverRouteStep:
 		if bytesEqual(discriminator, kamino.RepayV2Discriminator[:]) && exactKaminoMetas(accounts, repay) {
 			return kaminoLegRepay, true
 		}
@@ -226,11 +202,7 @@ func kaminoPrimeUSDCRefreshInstructionsForRoute(leg kaminoPrimeUSDCLeg, lane str
 }
 
 func kaminoPrimeUSDCRefreshInstructionsForRequest(leg kaminoPrimeUSDCLeg, request KaminoPrimeUSDCRequest) []compiledInstruction {
-	lane := request.RouteLane
-	if lane == "" {
-		lane = RouteID
-	}
-	route, err := runtimeRoute(lane)
+	route, err := runtimeRoute(request.RouteLane)
 	if err != nil {
 		return nil
 	}

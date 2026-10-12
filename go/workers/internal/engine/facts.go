@@ -110,7 +110,7 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 			Name: "loyal_backyard_step_no_room_total", Help: "Backyard ticks whose step held because the chain had no room for the move its target wants, by lane and target rule.",
 		}, []string{"lane", "rule"}),
 		hold: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "loyal_backyard_hold", Help: "Why the last Backyard tick did not move the vault: 1 for its lane and hold reason (at_target, no_room, stale, manual_recovery); no series while it acts.",
+			Name: "loyal_backyard_hold", Help: "Why the last Backyard tick did not move the vault: 1 for its lane and hold reason (at_target, no_room, stale, chain_refused, stopped); no series while it acts.",
 		}, []string{"lane", "reason"}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,

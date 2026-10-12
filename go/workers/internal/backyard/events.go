@@ -340,28 +340,30 @@ func holdTransactionError(err error) string {
 	return sanitizedDetail(hold.Details["transactionError"])
 }
 
-// holdDetail is a BudgetHold's reason plus its transaction error, if any.
+// holdDetail is a BudgetHold's cause plus its transaction error, if any.
 func holdDetail(err error) string {
 	var hold *BudgetHold
 	if !errors.As(err, &hold) {
 		return ""
 	}
 	if te := holdTransactionError(err); te != "" {
-		return sanitizedDetail(hold.Reason + " transactionError=" + te)
+		return sanitizedDetail(holdCause(hold) + " transactionError=" + te)
 	}
-	return hold.Reason
+	return sanitizedDetail(holdCause(hold))
 }
 
 // errorCode maps a tick error to a closed, stable snake_case code.
 func errorCode(err error) string {
 	var hold *BudgetHold
-	var blocker *RuntimeBlocker
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.As(err, &hold):
+		// The check that held names the failure; its reason (stale,
+		// no_room, chain_refused) alone would not.
+		if cause := holdCause(hold); hold.Details["cause"] != "" {
+			return cause
+		}
 		return hold.Reason
-	case errors.As(err, &blocker):
-		return blocker.Code
 	case errors.Is(err, errConfirmedObservationUnavailable):
 		return "confirmed_observation_unavailable"
 	case errors.Is(err, context.DeadlineExceeded):

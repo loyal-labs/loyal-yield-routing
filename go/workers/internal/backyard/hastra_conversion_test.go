@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	lanepolicy "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -63,7 +64,7 @@ var hastraTestPrice, _ = new(big.Int).SetString("1023948000000000000", 10)
 // every conversion on the installed catalog policies it always used.
 func TestConversionVenueSplitsTheWYLDSLaneAndLeavesPYUSD(t *testing.T) {
 	t.Parallel()
-	wylds := map[Action]byte{SwapDebtToCollateralStep: hastraStakeDepositLeg, SwapCollateralToDebtStep: hastraStakeRedeemLeg, SwapUSDCToDebtStep: hastraMintDepositLeg}
+	wylds := map[Action]byte{SwapDebtToCollateralStep: lanepolicy.HastraStakeDeposit, SwapCollateralToDebtStep: lanepolicy.HastraStakeRedeem, SwapUSDCToDebtStep: lanepolicy.HastraMintDeposit}
 	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
 		leg, hastraVenue := hastraConversionLeg(action, autoAUTOWYLDSLane)
 		want, wantHastra := wylds[action]
@@ -140,7 +141,7 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 		t.Run(string(action), func(t *testing.T) {
 			leg, _ := hastraConversionLeg(action, autoAUTOWYLDSLane)
 			request := HastraConversionRequest{Action: action, AmountRaw: 1_000_000, Policy: policy, RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99, RouteLane: autoAUTOWYLDSLane}
-			if leg != hastraMintDepositLeg {
+			if leg != lanepolicy.HastraMintDeposit {
 				request.Price, request.PriceScale, request.PriceTimestamp = price.Price.String(), price.Scale, price.Timestamp
 			}
 			if request.OutputRaw, err = hastraOutput(leg, price, request.AmountRaw); err != nil {
@@ -168,7 +169,7 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 					t.Errorf("constraint %d admits leg %d: %t", index, leg, admits)
 				}
 			}
-			destination := map[byte]int{hastraStakeDepositLeg: 9, hastraStakeRedeemLeg: 6, hastraMintDepositLeg: 7}[leg]
+			destination := map[byte]int{lanepolicy.HastraStakeDeposit: 9, lanepolicy.HastraStakeRedeem: 6, lanepolicy.HastraMintDeposit: 7}[leg]
 			changed := squads.Instruction{ProgramID: ix.ProgramID, Accounts: slices.Clone(ix.Accounts), Data: ix.Data}
 			changed.Accounts[destination].PublicKey = solanaKey(bridgeDelegate)
 			for index, constraint := range literal.Constraints {

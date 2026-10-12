@@ -89,8 +89,8 @@ func TestAbsentObligationKeepsAccountingLegsLive(t *testing.T) {
 func flattenObligation(accounts []ConfirmedAccount) []ConfirmedAccount {
 	flattened := append([]ConfirmedAccount(nil), accounts...)
 	for index := range flattened {
-		if flattened[index].Address == kaminoPrimeUSDCObligation {
-			flattened[index] = ConfirmedAccount{Address: kaminoPrimeUSDCObligation}
+		if flattened[index].Address == primePRIMEUSDC.Kamino.Obligation {
+			flattened[index] = ConfirmedAccount{Address: primePRIMEUSDC.Kamino.Obligation}
 		}
 	}
 	return flattened
@@ -112,7 +112,7 @@ func TestObligationPresenceIsObservedNotAssumed(t *testing.T) {
 		return position
 	}
 	batch := routeNAVFixture(t, 77)
-	for _, address := range []string{kaminoCollateralReserve, kaminoDebtReserve} {
+	for _, address := range []string{primePRIMEUSDC.Kamino.CollateralReserve, primePRIMEUSDC.Kamino.DebtReserve} {
 		putKey(t, accountAt(batch, address).Data[5112:5144], kaminoScopePrices)
 	}
 	nav, err := ComputeRouteNAV(77, batch, manifest, nil)

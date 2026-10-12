@@ -85,23 +85,6 @@ func composeSelectorExpectedExpense(source, destination selectorRecipe) (int64, 
 	return budgetSum(expected(source), expected(destination))
 }
 
-// Price every compiled message, including repeated NAV reports. Share only
-// observed prices within this bounded sample; fees still bind exact messages.
-// The production build/send path keeps its actual custody/prestate validators.
-func priceSelectorRecipe(ctx context.Context, rpc *chain.Client, view *View, lane string, inputs []*phase3BuildInput, minimumSlot int64) (selectorRecipe, error) {
-	return priceSelectorRecipeWithFloor(ctx, rpc, view, lane, inputs, minimumSlot, minimumSlot)
-}
-
-// Keep the sample start fixed while later prerequisites advance the minimum
-// slot accepted for fees/prices and final collection.
-func priceSelectorRecipeWithFloor(ctx context.Context, rpc *chain.Client, view *View, lane string, inputs []*phase3BuildInput, minimumSlot, observationFloor int64) (selectorRecipe, error) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return selectorRecipe{Inputs: inputs}, err
-	}
-	return manifest.priceSelectorRecipeWithFloor(ctx, rpc, view, lane, inputs, minimumSlot, observationFloor)
-}
-
 // The manifest-aware form prices retained recipe inputs against the SAME
 // manifest that produced them, for any registry lane: source exits of held
 // lanes and entries into active ones.

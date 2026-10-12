@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math/big"
 	"regexp"
 	"sort"
 
@@ -50,24 +49,6 @@ func DecodeTokenCustody(programOwner string, data []byte, expectedMint, expected
 		return DecodedTokenCustody{}, err
 	}
 	return DecodedTokenCustody{Raw: held.Amount, TokenProgram: programOwner}, nil
-}
-
-// ValueRawUSDC converts token raw units at a micro-dollar price. Assets round
-// down and liabilities round up, so rounding can never inflate NAV.
-func ValueRawUSDC(raw uint64, tokenDecimals uint8, priceMicros uint64, liability bool) (int64, error) {
-	if tokenDecimals > 18 || priceMicros == 0 {
-		return 0, fmt.Errorf("invalid valuation input")
-	}
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(tokenDecimals)), nil)
-	numerator := new(big.Int).Mul(new(big.Int).SetUint64(raw), new(big.Int).SetUint64(priceMicros))
-	if liability && numerator.Sign() > 0 {
-		numerator.Add(numerator, new(big.Int).Sub(scale, big.NewInt(1)))
-	}
-	value := numerator.Div(numerator, scale)
-	if !value.IsInt64() || value.Sign() < 0 {
-		return 0, fmt.Errorf("valuation overflow")
-	}
-	return value.Int64(), nil
 }
 
 type NAVComponent struct {

@@ -38,7 +38,7 @@ func autoDebtPriceFixture(t *testing.T, tokenPriceScale int64) (RuntimeRoute, Bu
 	}
 	if price.Mint != route.Kamino.DebtMint || price.TokenProgram != token2022Program || price.Decimals != 6 ||
 		price.ObservedSlot != 42 || price.ValidThroughSlot != 42+budgetMaxObservationLagSlots ||
-		price.Source != "confirmed-chain-accounts" || len(price.EvidenceSHA256) != 64 || price.Credit == nil {
+		price.Source != routeRefreshValuationSource || len(price.EvidenceSHA256) != 64 || price.Credit == nil {
 		t.Fatalf("price identity: %+v", price)
 	}
 	return route, price, rpc
@@ -430,19 +430,6 @@ func TestExitOnlyLaneNeverReachesFeedEconomics(t *testing.T) {
 	usdcSample := SelectOpportunity(selectorFixture(), SelectorState{})
 	if _, sampled := usdcSample.State.Advantages["OnRe/ONyc/USDC"]; !sampled {
 		t.Fatalf("active lane persistence regressed: %+v", usdcSample.State)
-	}
-}
-
-// Pair capacity is registry authority: a route outside the registry (the
-// legacy PRIME/USDC alias) fails closed instead of being read as capacity.
-func TestPairCapacityFailsClosedOutsideTheRegistry(t *testing.T) {
-	t.Parallel()
-	route, err := runtimeRoute(RouteID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := kaminoPairEntryCapacity(KaminoPosition{EntryCapacityRaw: 6600}, nil, route); err == nil || got != 0 || !strings.Contains(err.Error(), "pair_capacity_lane_unreviewed") {
-		t.Fatalf("lane outside the registry produced capacity: %d %v", got, err)
 	}
 }
 

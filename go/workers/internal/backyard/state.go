@@ -9,15 +9,9 @@ import (
 type Action string
 
 const (
-	Hold                  Action = "HOLD"
-	RecoverTransaction    Action = "RECOVER_TRANSACTION"
-	VoltrAllocateToSquads Action = "VOLTR_ALLOCATE_TO_SQUADS"
-	SwapUSDCToPrimeStep   Action = "SWAP_USDC_TO_PRIME_STEP"
-	SwapPrimeToUSDCStep   Action = "SWAP_PRIME_TO_USDC_STEP"
-	OpenPrimeUSDCStep     Action = "OPEN_PRIME_USDC_STEP"
-	DeleverPrimeUSDCStep  Action = "DELEVER_PRIME_USDC_STEP"
-	// Typed routes use these canonical actions. The PRIME names above remain
-	// accepted for historical journal and signed-wire recovery.
+	Hold                       Action = "HOLD"
+	RecoverTransaction         Action = "RECOVER_TRANSACTION"
+	VoltrAllocateToSquads      Action = "VOLTR_ALLOCATE_TO_SQUADS"
 	SwapStableToCollateralStep Action = "SWAP_STABLE_TO_COLLATERAL_STEP"
 	SwapCollateralToStableStep Action = "SWAP_COLLATERAL_TO_STABLE_STEP"
 	OpenRouteStep              Action = "OPEN_ROUTE_STEP"
@@ -260,45 +254,26 @@ func (d Decision) Validate() error {
 	if d.Reason == "" || d.IdempotencyKey == "" || d.AmountRaw < 0 {
 		return fmt.Errorf("incomplete decision")
 	}
-	if d.Action == InitializeKaminoObligation {
-		return validateSelectorInitializerDecision(d)
-	}
-	neutral := d.Action == SwapStableToCollateralStep || d.Action == SwapCollateralToStableStep || d.Action == OpenRouteStep || d.Action == DeleverRouteStep
-	catalog := false
-	basic := false
-	if route, err := runtimeRoute(d.StrategyKey); err == nil {
-		catalog = route.Kamino.DebtMint != bridgeUSDC && catalogJupiterRoute(route.Lane)
-		basic = route.BasicPolicy
-	}
-	if neutral && d.StrategyKey != SelectedRouteID && !catalog && !basic {
-		return fmt.Errorf("route-neutral action requires the selected Phase 2 strategy")
-	}
-	if d.StrategyKey != "" && d.StrategyKey != RouteID && d.StrategyKey != PhaseOneLaneID && d.StrategyKey != SelectedRouteID && !basic && !catalog && d.Action != HoldManualRecovery {
-		return fmt.Errorf("decision strategy is not installed")
-	}
-	if d.Action == SwapDebtToCollateralStep || d.Action == SwapCollateralToDebtStep {
-		if !catalog && !basic {
-			return fmt.Errorf("collateral/debt conversion requires an exact runtime binding")
-		}
-		return nil
-	}
-	if d.Action == SwapUSDCToDebtStep || d.Action == SwapDebtToUSDCStep {
-		if !catalog {
-			return fmt.Errorf("debt conversion requires an exact non-USDC runtime binding")
-		}
-		return nil
-	}
 	switch d.Action {
-	case Hold, RecoverTransaction, VoltrAllocateToSquads, SwapUSDCToPrimeStep,
-		SwapPrimeToUSDCStep, OpenPrimeUSDCStep,
-		DeleverPrimeUSDCStep, SwapStableToCollateralStep,
-		SwapCollateralToStableStep, OpenRouteStep, DeleverRouteStep,
-		StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV,
-		HoldManualRecovery:
+	case InitializeKaminoObligation:
+		return validateSelectorInitializerDecision(d)
+	case Hold, HoldManualRecovery, RecoverTransaction, VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
+		if d.StrategyKey != "" && !earnHeldLane(d.StrategyKey) && d.Action != HoldManualRecovery {
+			return fmt.Errorf("decision strategy is not installed")
+		}
 		return nil
-	default:
-		return fmt.Errorf("unknown decision action")
+	case SwapStableToCollateralStep, SwapCollateralToStableStep, OpenRouteStep, DeleverRouteStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep:
+		if !earnHeldLane(d.StrategyKey) {
+			return fmt.Errorf("lane action requires a registry lane")
+		}
+		return nil
+	case SwapUSDCToDebtStep, SwapDebtToUSDCStep:
+		if !catalogJupiterRoute(d.StrategyKey) || sharedUSDCDebt(d.StrategyKey) {
+			return fmt.Errorf("debt conversion requires a non-USDC debt lane")
+		}
+		return nil
 	}
+	return fmt.Errorf("unknown decision action")
 }
 
 // Observation is one coherent bank read. Principal is chain state; reserve

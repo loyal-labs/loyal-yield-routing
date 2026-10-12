@@ -33,13 +33,13 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 	var metas []accountMeta
 	switch leg {
 	case kaminoLegDeposit:
-		discriminator, metas = kamino.DepositV2Discriminator[:], kaminoTestMetas(kaminoLegDeposit, RouteID)
+		discriminator, metas = kamino.DepositV2Discriminator[:], kaminoTestMetas(kaminoLegDeposit, PhaseOneLaneID)
 	case kaminoLegBorrow:
-		discriminator, metas = kamino.BorrowV2Discriminator[:], kaminoTestMetas(kaminoLegBorrow, RouteID)
+		discriminator, metas = kamino.BorrowV2Discriminator[:], kaminoTestMetas(kaminoLegBorrow, PhaseOneLaneID)
 	case kaminoLegRepay:
-		discriminator, metas = kamino.RepayV2Discriminator[:], kaminoTestMetas(kaminoLegRepay, RouteID)
+		discriminator, metas = kamino.RepayV2Discriminator[:], kaminoTestMetas(kaminoLegRepay, PhaseOneLaneID)
 	case kaminoLegWithdraw:
-		discriminator, metas = kamino.WithdrawV2Discriminator[:], kaminoTestMetas(kaminoLegWithdraw, RouteID)
+		discriminator, metas = kamino.WithdrawV2Discriminator[:], kaminoTestMetas(kaminoLegWithdraw, PhaseOneLaneID)
 	default:
 		panic("unknown test leg")
 	}
@@ -49,13 +49,13 @@ func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCReq
 		// Synthetic fixture address, frozen literal: independent of the Voltr
 		// bridge policy rollover.
 		Action: action, AmountRaw: 1_000_000, Policy: "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh",
-		Accounts: manifestAccounts(metas), Data: data, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
+		Accounts: manifestAccounts(metas), Data: data, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99, RouteLane: PhaseOneLaneID,
 	}
 }
 
 func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 	t.Parallel()
-	route, err := runtimeRoute(RouteID)
+	route, err := runtimeRoute(PhaseOneLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,11 +70,11 @@ func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 	if borrow[10].key != mustKey(token2022Program) || repay[7].key != mustKey(token2022Program) {
 		t.Fatal("debt transfer used the wrong token program")
 	}
-	installed, err := runtimeRoute(RouteID)
+	installed, err := runtimeRoute(PhaseOneLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := matchesKaminoStepForResolvedRoute(OpenPrimeUSDCStep, kamino.DepositV2Discriminator[:], deposit, installed); ok {
+	if _, ok := matchesKaminoStepForResolvedRoute(OpenRouteStep, kamino.DepositV2Discriminator[:], deposit, installed); ok {
 		t.Fatal("caller mutation changed an installed lane's token program")
 	}
 }
@@ -90,10 +90,10 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 		wireSHA256    string
 		packetBytes   int
 	}{
-		{"deposit", OpenPrimeUSDCStep, kaminoLegDeposit, 17, "0faa7b0899cb4c364463b6b1a2bad3e96a3d8a2df587f25e6f57082012e477ab", "96668df352391fa1dd9a33db96370d9274041377b576a3fbdb9099810d0df72d", 855},
-		{"borrow", OpenPrimeUSDCStep, kaminoLegBorrow, 15, "7cb728c8c1afd585fedb1d6c3e73503c40c4260fe60bd3b72380c208188cb262", "97b5b09f2b6b2a8df24ee1503ff207ea0bcd0fe9ba0aaa22f2e8a0d358769c07", 821},
-		{"repay", DeleverPrimeUSDCStep, kaminoLegRepay, 13, "1e766f799a6a3d0b861e9a50d2d861a1bb6f730aed30853abedb34b63bfc7246", "996cbb849aa1da60fadf4a237b32f0e5fee6e5905ebf8ba78cb773d31f5f5b34", 787},
-		{"withdraw", DeleverPrimeUSDCStep, kaminoLegWithdraw, 17, "248c8b0110b87c2590b21d6caf074c99f1e2544b9e1ffd13bdb91713ca572396", "124cfce252dc27e0918a8d7606e735c7614677d594201fe8376d8709d347b382", 856},
+		{"deposit", OpenRouteStep, kaminoLegDeposit, 17, "0faa7b0899cb4c364463b6b1a2bad3e96a3d8a2df587f25e6f57082012e477ab", "96668df352391fa1dd9a33db96370d9274041377b576a3fbdb9099810d0df72d", 855},
+		{"borrow", OpenRouteStep, kaminoLegBorrow, 15, "7cb728c8c1afd585fedb1d6c3e73503c40c4260fe60bd3b72380c208188cb262", "97b5b09f2b6b2a8df24ee1503ff207ea0bcd0fe9ba0aaa22f2e8a0d358769c07", 821},
+		{"repay", DeleverRouteStep, kaminoLegRepay, 13, "4a695b9b2faffffaaf6ead209b3c35cdf8a595a75db6d63da64daf2d5013e0aa", "d96bd8c8105519881c0c3dbfe1980d02a4ac2393d9ddd51a5cf9a69f3618ffee", 787},
+		{"withdraw", DeleverRouteStep, kaminoLegWithdraw, 17, "4fd91c12a98f1cc3a21737c8f0071eae965143d58e07a0c3329b4b928bacffb7", "b53482d3e6bb6e8f3f30a9f0a266d65337ed8e5b595466298a0ca44d290efe91", 856},
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
@@ -107,7 +107,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if leg != test.leg || inner.program != publicKey(kamino.ProgramID) || len(inner.accounts) != test.count {
 				t.Fatal("did not build the pinned Kamino PRIME/USDC leg")
 			}
-			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(leg, RouteID)
+			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(leg, PhaseOneLaneID)
 			if len(refresh) != 3 || !bytes.Equal(refresh[0].data, kamino.RefreshReserveDiscriminator[:]) ||
 				!bytes.Equal(refresh[1].data, kamino.RefreshReserveDiscriminator[:]) || !bytes.Equal(refresh[2].data, kamino.RefreshObligationDiscriminator[:]) {
 				t.Fatal("canonical KLend refresh prefix drifted")
@@ -205,36 +205,36 @@ func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
 
 func TestKaminoPrimeUSDCBuilderFailsClosedOnEveryAuthorityBoundary(t *testing.T) {
 	t.Parallel()
-	request := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
+	request := kaminoTestRequest(OpenRouteStep, kaminoLegDeposit)
 	request.Accounts[2].Address = bridgeSettings
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("wrong lending market accepted")
 	}
-	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
+	request = kaminoTestRequest(OpenRouteStep, kaminoLegDeposit)
 	request.Accounts[16].Address = kamino.ProgramID.String()
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("wrong farms program accepted")
 	}
-	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
+	request = kaminoTestRequest(OpenRouteStep, kaminoLegDeposit)
 	request.Accounts[9].Writable = false
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("wrong custody role accepted")
 	}
-	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
+	request = kaminoTestRequest(OpenRouteStep, kaminoLegDeposit)
 	request.Data[8]++
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("amount mutation accepted")
 	}
-	request = kaminoTestRequest(DeleverPrimeUSDCStep, kaminoLegDeposit)
+	request = kaminoTestRequest(DeleverRouteStep, kaminoLegDeposit)
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("open deposit accepted as delever")
 	}
-	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
+	request = kaminoTestRequest(OpenRouteStep, kaminoLegDeposit)
 	request.Data[0] = 129
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("historical non-v2 discriminator accepted")
 	}
-	request = kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
+	request = kaminoTestRequest(OpenRouteStep, kaminoLegDeposit)
 	request.Policy = ""
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
