@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 
@@ -62,9 +61,8 @@ type BridgeBuildRequest struct {
 	LastValidBlockHeight int64
 }
 
-// SignedTransaction is one exact signed wire (message, then signature). It is
-// suitable for sig-verified RPC simulation, but cannot be persisted as a
-// BuildResult until that simulation returns its slot.
+// SignedTransaction is one exact signed wire (message, then signature): what
+// the build simulates and persists before any send.
 type SignedTransaction struct {
 	message              []byte
 	signedWire           []byte
@@ -91,25 +89,6 @@ func signMessage(executor ed25519.PrivateKey, expectedDelegate publicKey, messag
 	}
 	return SignedTransaction{message: message, signedWire: wire, messageSHA256: sha256Bytes(message), signedWireSHA256: sha256Bytes(wire),
 		transactionSignature: encodeBase58(signature), recentBlockhash: blockhash, lastValidBlockHeight: height}, nil
-}
-
-// BuildResult attaches the only post-signing datum: the slot returned from
-// simulating this exact wire.  This prevents callers from accidentally
-// persisting an unsigned, re-built, or differently simulated transaction.
-func (s SignedTransaction) BuildResult(simulationSlot int64) (BuildResult, error) {
-	if simulationSlot <= 0 || len(s.signedWire) == 0 || s.transactionSignature == "" {
-		return BuildResult{}, fmt.Errorf("exact signed transaction was not simulated")
-	}
-	result := BuildResult{
-		MessageSHA256:        s.messageSHA256,
-		SignedWire:           append([]byte(nil), s.signedWire...),
-		SignedWireSHA256:     s.signedWireSHA256,
-		TransactionSignature: s.transactionSignature,
-		RecentBlockhash:      s.recentBlockhash,
-		LastValidBlockHeight: s.lastValidBlockHeight,
-		SimulationSlot:       simulationSlot,
-	}
-	return result, result.Validate()
 }
 
 // Route identities are copied from the checked-in v4 RWA manifest/route spec.
@@ -158,14 +137,6 @@ const (
 	strategyTwoBridgeLegCapRaw uint64 = 200_000_000_000
 )
 
-// BuildAndSignBridgeTransaction builds exactly one policy-wrapped bridge
-// operation. Capital/NAV payloads contain the atomic ArmReport -> Voltr pair;
-// staging remains one SPL instruction. The only top-level signer is the pinned
-// delegated executor and the Squads vault is signer only for inner execution.
-func BuildAndSignBridgeTransaction(request BridgeBuildRequest, executor ed25519.PrivateKey) (SignedTransaction, error) {
-	return buildAndSignBridgeTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
-}
-
 // CompileBridgeMessage uses the exact signing path without accessing a key.
 // Fee/cap admission therefore measures the message before signing is possible.
 func CompileBridgeMessage(request BridgeBuildRequest) ([]byte, error) {
@@ -197,18 +168,6 @@ func compileBridgeMessageForDelegate(request BridgeBuildRequest, delegate public
 		return nil, err
 	}
 	return checkedUnsignedMessage(message)
-}
-
-// buildAndSignBridgeTransactionForDelegate exists solely so package tests can
-// verify Solana wire encoding with deterministic non-production key material.
-// Production always calls BuildAndSignBridgeTransaction, which pins the real
-// delegated executor above.
-func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
-	message, err := compileBridgeMessageForDelegate(request, expectedDelegate)
-	if err != nil {
-		return SignedTransaction{}, err
-	}
-	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
 func bridgeInstruction(request BridgeBuildRequest) (compiledInstruction, error) {
@@ -475,37 +434,6 @@ func encodeBase58(value []byte) string {
 	}
 	return string(out)
 }
-func (b BuildResult) Validate() error {
-	return b.validateForDelegate(publicKey{})
-}
-
-// validateForDelegate additionally pins the sole top-level signer when a
-// nonzero expectedDelegate is supplied. PersistSigned uses the production
-// delegate; tests may use deterministic local keys to exercise the codec.
-func (b BuildResult) validateForDelegate(expectedDelegate publicKey) error {
-	if len(b.SignedWire) == 0 || b.TransactionSignature == "" || b.RecentBlockhash == "" ||
-		b.LastValidBlockHeight <= 0 || b.SimulationSlot <= 0 {
-		return fmt.Errorf("incomplete simulated signed transaction")
-	}
-	wireHash := sha256.Sum256(b.SignedWire)
-	if b.SignedWireSHA256 != hex.EncodeToString(wireHash[:]) || len(b.MessageSHA256) != 64 {
-		return fmt.Errorf("transaction hash mismatch")
-	}
-	signature, message, recentBlockhash, signer, err := decodeExactWire(b.SignedWire)
-	if err != nil || !ed25519.Verify(signer[:], message, signature) ||
-		b.TransactionSignature != encodeBase58(signature) || b.RecentBlockhash != encodeBase58(recentBlockhash[:]) {
-		return fmt.Errorf("signed transaction wire does not match persisted evidence")
-	}
-	if expectedDelegate != (publicKey{}) && signer != expectedDelegate {
-		return fmt.Errorf("signed transaction does not use the pinned delegated executor")
-	}
-	messageHash := sha256.Sum256(message)
-	if b.MessageSHA256 != hex.EncodeToString(messageHash[:]) {
-		return fmt.Errorf("message hash does not match signed wire")
-	}
-	return nil
-}
-
 func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
 	switch leg {
 	case kaminoLegDeposit:
@@ -519,21 +447,4 @@ func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
 	default:
 		return nil
 	}
-}
-
-func decodeShortVec(data []byte, offset *int) (int, error) {
-	value, shift := 0, 0
-	for count := 0; count < 5; count++ {
-		if *offset >= len(data) {
-			return 0, fmt.Errorf("truncated shortvec")
-		}
-		byteValue := data[*offset]
-		*offset++
-		value |= int(byteValue&0x7f) << shift
-		if byteValue&0x80 == 0 {
-			return value, nil
-		}
-		shift += 7
-	}
-	return 0, fmt.Errorf("shortvec overflow")
 }

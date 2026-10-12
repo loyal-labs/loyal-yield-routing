@@ -63,13 +63,13 @@ func TestVoltrApprovedFeeTupleAndEveryTermDrift(t *testing.T) {
 			w := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 				observe:         func(context.Context) (Observation, error) { return tickObservation(s), nil },
-				recordManualRecovery: func(_ context.Context, _ string, _ Observation, d Decision, _ string) (DecisionRecord, error) {
-					recorded = d.Action == HoldManualRecovery && d.Reason == "voltr_fee_terms_unapproved"
-					return DecisionRecord{Status: ManualRecovery}, nil
+				latch: func(_ context.Context, _ string, latch ManualRecoveryLatch) error {
+					recorded = latch.Reason == "voltr_fee_terms_unapproved"
+					return nil
 				},
 			}}
 			if err := w.Tick(context.Background()); err != nil || !recorded {
-				t.Fatalf("fee drift did not reach durable manual-recovery recorder: %v recorded=%t", err, recorded)
+				t.Fatalf("fee drift did not reach the manual-recovery latch: %v recorded=%t", err, recorded)
 			}
 		})
 	}

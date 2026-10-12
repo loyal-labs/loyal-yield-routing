@@ -25,6 +25,7 @@ import (
 //	loyal_backyard_leverage_reaction_seconds             first observed room to the leverage_up borrow landing
 //	loyal_backyard_leverage_decision_outages_total{reason} leverage samples that could not be decided, by sanitized cause
 //	loyal_backyard_term_debt_days_to_maturity{lane}      a held lane's days to its term debt's maturity
+//	loyal_backyard_hold{lane,reason}                     1 for the hold the last tick ended in; no series while it acts
 type Facts struct {
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec
@@ -45,6 +46,7 @@ type Facts struct {
 	leverageOutages     *prometheus.CounterVec
 	termDebtDays        *prometheus.GaugeVec
 	stepNoRoom          *prometheus.CounterVec
+	hold                *prometheus.GaugeVec
 }
 
 func NewFacts(registerer prometheus.Registerer) *Facts {
@@ -107,9 +109,12 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		stepNoRoom: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_backyard_step_no_room_total", Help: "Backyard ticks whose step held because the chain had no room for the move its target wants, by lane and target rule.",
 		}, []string{"lane", "rule"}),
+		hold: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_hold", Help: "Why the last Backyard tick did not move the vault: 1 for its lane and hold reason (at_target, no_room, stale, manual_recovery); no series while it acts.",
+		}, []string{"lane", "reason"}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
-		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom)
+		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold)
 	return f
 }
 
@@ -149,6 +154,15 @@ func (f *Facts) BackyardLeverageOutage(reason string) {
 // BackyardStepNoRoom counts a step held for lack of chain room.
 func (f *Facts) BackyardStepNoRoom(lane, rule string) {
 	f.stepNoRoom.WithLabelValues(lane, rule).Inc()
+}
+
+// BackyardHold sets the hold the last tick ended in, or clears it (reason "")
+// while the tick acts.
+func (f *Facts) BackyardHold(lane, reason string) {
+	f.hold.Reset()
+	if reason != "" {
+		f.hold.WithLabelValues(lane, reason).Set(1)
+	}
 }
 
 // BackyardTermDebtDays sets a held lane's days to its term debt's maturity;

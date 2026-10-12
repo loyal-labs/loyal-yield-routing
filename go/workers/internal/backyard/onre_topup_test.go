@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"testing"
 )
 
@@ -79,26 +78,5 @@ func TestTopupKeepsSafetyPriorityAndFollowsTheRegistry(t *testing.T) {
 	maple.SquadsIdleRaw, maple.VoltrIdleRaw = 0, 1_295_000_000
 	if got := Decide(targeted(maple)); got.Reason != topupAllocationReason {
 		t.Fatalf("Maple did not top up its Voltr idle: %+v", got)
-	}
-}
-
-// The OnRe top-up swap of Squads USDC beside the debt-free position passes
-// its build/send prestate on the lane's real Jupiter exports and the
-// shared-cash USDC custody.
-func TestOnReTopupSwapPrestateAcceptsTheDebtFreePosition(t *testing.T) {
-	t.Parallel()
-	o, m, rpc, client, accounts := usdcReturnFixtureForLane(t, onreONycUSDC)
-	route, _ := runtimeRoute(onreONycUSDC)
-	clear(accountAt(accounts, route.Kamino.Obligation).Data[1208:1408])
-	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.PayoffDebtRaw, o.Snapshot.DebtIdleRaw = 0, 0, 0, 0
-	ctx := context.Background()
-	swap := Decision{Action: SwapStableToCollateralStep, StrategyKey: onreONycUSDC, AmountRaw: 11_000, Reason: topupSwapReason}
-	e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, m, testPolicies(t), swap, 11_000, 0, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.Request.EntryReturnReserved, e.Request.TopupReturnReserved = true, true
-	if _, err := m.validateRequestPrestate(ctx, rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
-		t.Fatalf("OnRe top-up swap refused: %v", err)
 	}
 }

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,64 +12,40 @@ import (
 
 const productionRouteKey = "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
 
-// leaseOwnerPattern is the shared engine instance identity
-// (engine.InstanceOwner): fixed Backyard scope, unique instance, immutable
-// release. Authority comes from the database fencing token, never this text.
-var leaseOwnerPattern = regexp.MustCompile(`^worker:backyard:[a-zA-Z0-9_-]{1,80}:sha-[0-9a-f]{40}$`)
-
-// ValidLeaseOwner reports whether owner is a deployment identity this runtime
-// accepts; any other string is rejected before it can reach the database.
-func ValidLeaseOwner(owner string) bool { return leaseOwnerPattern.MatchString(owner) }
-
 var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
 type Worker struct {
-	wake         chan struct{}
-	routeKey     string
-	interval     time.Duration
-	manifest     RouteManifest
-	runtime      tickRuntime
-	leaseHandoff startupLeaseHandoffRuntime
-	// noRoom reports a no_room hold: always on /metrics, hourly in the log.
-	noRoom noRoomLog
-}
-
-type startupLeaseHandoffRuntime struct {
-	now  func() time.Time
-	wait func(context.Context, time.Duration) error
+	wake     chan struct{}
+	routeKey string
+	interval time.Duration
+	manifest RouteManifest
+	runtime  tickRuntime
+	// holds reports why a tick did not move the vault: a gauge on /metrics
+	// and a log line when it changes; a hold is never a journal row.
+	holds holdLog
 }
 
 type tickRuntime struct {
-	withdrawalHealth                 func(context.Context, WithdrawalHealth) error
-	observeWithdrawalHealth          func(context.Context) (Observation, error)
-	prepareInitialization            func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error)
-	buildInitialization              func(context.Context, string, KaminoInitializationRequest) error
-	loadNonterminal                  func(context.Context, string) (*PersistedOperation, error)
-	advance                          func(context.Context, PersistedOperation) error
-	observe                          func(context.Context) (Observation, error)
-	loadLatch                        func(context.Context, string) (ManualRecoveryLatch, bool, error)
-	recordManualRecovery             func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
-	recordManualRecoveryAtGeneration func(context.Context, string, Observation, Decision, string, int64) (DecisionRecord, error)
-	beforeRecordLatchedHold          func(context.Context, ManualRecoveryLatch) error
-	prepareBridge                    func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
-	prepareKamino                    func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
-	prepareJupiter                   func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
-	prepareHastra                    func(context.Context, Decision, Observation) (Observation, HastraExecutionEvidence, error)
+	withdrawalHealth        func(context.Context, WithdrawalHealth) error
+	observeWithdrawalHealth func(context.Context) (Observation, error)
+	prepareInitialization   func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error)
+	loadNonterminal         func(context.Context, string) (*PersistedOperation, error)
+	advance                 func(context.Context, PersistedOperation) error
+	observe                 func(context.Context) (Observation, error)
+	loadLatch               func(context.Context, string) (ManualRecoveryLatch, bool, error)
+	// latch writes the operator's stop for a HOLD_MANUAL_RECOVERY decision.
+	latch          func(context.Context, string, ManualRecoveryLatch) error
+	prepareBridge  func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
+	prepareKamino  func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
+	prepareJupiter func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
+	prepareHastra  func(context.Context, Decision, Observation) (Observation, HastraExecutionEvidence, error)
 	// prepareStep builds an atomic step (stepDecision) from the tick's batch.
 	prepareStep    func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
 	recordDecision func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
-	// bind persists the decided operation's integrity record before build.
-	bind                  func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
-	buildBridge           func(context.Context, string, BridgeExecutionEvidence) error
-	buildKamino           func(context.Context, string, KaminoExecutionEvidence) error
-	buildJupiter          func(context.Context, string, JupiterExecutionEvidence) error
-	buildHastra           func(context.Context, string, HastraExecutionEvidence) error
-	buildStep             func(context.Context, string, StepExecutionEvidence) error
-	custodyOwnershipProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
-	// prefetchCustodyProof starts the pre-decision custody journal read while
-	// the spend is prepared; nil keeps the serial custodyOwnershipProof.
-	prefetchCustodyProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig) custodyProofFinisher
-	recordBudgetHold     func(context.Context, string, *BudgetHold) error
+	// build signs the decided operation's request, simulates that exact wire
+	// and persists it with its expected effects before anything sends it.
+	build            func(context.Context, string, any, ExpectedEffects) error
+	recordBudgetHold func(context.Context, string, *BudgetHold) error
 	// watchRoom hands the account view the reserves this tick waits on
 	// (leverage_room_watch.go); nil without a streaming view.
 	watchRoom func([]roomWatch, func(roomUpdate))
@@ -111,17 +85,6 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	// Integrity or health failures carry no decodable valuation. Preserve the
 	// last good position projection; the hold decision is the durable record.
 	if observation.Snapshot.StrategyReceiptIntegrityFault || observation.Snapshot.ManualReason != "" {
-		if observation.planning != nil {
-			reader, ok := p.journal.(interface {
-				validateRoutePlanningState(context.Context, string, *routePlanningState) error
-			})
-			if !ok {
-				return Observation{}, fmt.Errorf("planning generation reader unavailable")
-			}
-			if err := reader.validateRoutePlanningState(ctx, p.routeKey, observation.planning); err != nil {
-				return Observation{}, err
-			}
-		}
 		return observation, nil
 	}
 	if err := p.journal.RecordPositionSnapshot(ctx, p.routeKey, observation); err != nil {
@@ -194,7 +157,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		journal: database,
 		batch: func(ctx context.Context) (Observation, error) {
 			refreshObservationLagSlots(ctx, rpc)
-			planning, err := database.readRoutePlanningStateOnManifest(ctx, manifest, productionRouteKey, true)
+			planning, err := database.readRoutePlanningState(ctx, productionRouteKey)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -219,22 +182,18 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			return o, err
 		},
 		watchRoom: view.WatchRoom,
-		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision) (Observation, KaminoInitializationRequest, error) {
-			return prepareKaminoInitialization(ctx, rpc, view, m, d, state.observe)
-		},
-		buildInitialization: func(ctx context.Context, id string, r KaminoInitializationRequest) error {
-			return BuildSimulateAndPersistKaminoInitialization(ctx, database, rpc, view, id, manifest, r, credentials)
+		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision, o Observation) (Observation, KaminoInitializationRequest, error) {
+			return prepareKaminoInitialization(ctx, rpc, m, d, o)
 		},
 		loadNonterminal: func(ctx context.Context, routeKey string) (*PersistedOperation, error) {
 			return database.LoadNonterminal(ctx, routeKey)
 		},
 		advance: func(ctx context.Context, operation PersistedOperation) error {
-			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, view, operation)
+			return advanceNonterminalWithManifest(ctx, manifest, database, rpc, operation)
 		},
-		observe:                          state.observe,
-		loadLatch:                        database.ManualRecoveryLatch,
-		recordManualRecovery:             database.RecordManualRecovery,
-		recordManualRecoveryAtGeneration: database.RecordManualRecoveryAtGeneration,
+		observe:   state.observe,
+		loadLatch: database.ManualRecoveryLatch,
+		latch:     database.LatchManualRecovery,
 		prepareBridge: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 			return prepareBridgeFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
@@ -253,30 +212,9 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 		},
-		prefetchCustodyProof: func(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig) custodyProofFinisher {
-			return database.prefetchSharedCustodyOwnershipProof(ctx, manifest, cfg, rpc)
-		},
-		custodyOwnershipProof: func(ctx context.Context, manifest RouteManifest, cfg sharedCustodyAttributionConfig, expected ExpectedEffects, observedRaw uint64, observedSlot int64) (sharedCustodyAdmissionProof, error) {
-			return database.ObserveSharedCustodyOwnershipProofWithRPC(ctx, manifest, cfg, expected, observedRaw, observedSlot, rpc)
-		},
 		recordBudgetHold: database.RecordPhase3BudgetHold,
-		bind: func(ctx context.Context, operationID string, observation Observation, decision Decision, request any, effects ExpectedEffects) error {
-			return database.bindOperation(ctx, rpc, view, manifest, operationID, observation, decision, request, effects)
-		},
-		buildBridge: func(ctx context.Context, operationID string, evidence BridgeExecutionEvidence) error {
-			return BuildSimulateAndPersistBridge(ctx, database, rpc, view, operationID, evidence, credentials)
-		},
-		buildKamino: func(ctx context.Context, operationID string, evidence KaminoExecutionEvidence) error {
-			return BuildSimulateAndPersistKamino(ctx, database, rpc, view, operationID, evidence, credentials)
-		},
-		buildJupiter: func(ctx context.Context, operationID string, evidence JupiterExecutionEvidence) error {
-			return BuildSimulateAndPersistJupiter(ctx, database, rpc, view, operationID, evidence, credentials)
-		},
-		buildHastra: func(ctx context.Context, operationID string, evidence HastraExecutionEvidence) error {
-			return BuildSimulateAndPersistHastra(ctx, database, rpc, view, operationID, evidence, credentials)
-		},
-		buildStep: func(ctx context.Context, operationID string, evidence StepExecutionEvidence) error {
-			return BuildSimulateAndPersistStep(ctx, database, rpc, view, operationID, evidence, credentials)
+		build: func(ctx context.Context, operationID string, request any, effects ExpectedEffects) error {
+			return buildSimulatePersist(ctx, database, rpc, manifest, operationID, request, effects, credentials)
 		},
 	}
 }
@@ -292,7 +230,7 @@ func confirmedObservationUnavailable(err error) error {
 // capability is injected, validated here, and never derivable from a
 // decision, observation, or recovery input.
 func NewWorker(database *Database, rpc *chain.Client, view *View, config Config, credentials Credentials) (*Worker, error) {
-	if database == nil || database.pool == nil || rpc == nil || view == nil || config.validateLease() != nil {
+	if database == nil || database.pool == nil || rpc == nil || view == nil || config.PollInterval <= 0 {
 		return nil, fmt.Errorf("invalid concrete worker configuration")
 	}
 	key, err := credentials.signer()
@@ -313,9 +251,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	var healthObservation Observation
 	var healthDecision Decision
 	defer func() { w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr) }()
-	// The manual recovery latch is re-read before anything else in the tick, so
-	// a healthy batch, a restart, or a new worker state object can never resume
-	// execution behind a durable stop.
+	// The manual recovery latch is read before anything else in the tick, so
+	// a healthy batch or a restart can never resume execution behind the
+	// operator's stop. A latched tick writes nothing.
 	if w.runtime.loadLatch != nil {
 		latch, latched, err := w.runtime.loadLatch(ctx, w.routeKey)
 		if err != nil {
@@ -324,7 +262,8 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		backyardEvents.noteLatch(latched, latch.Reason)
 		if latched {
 			healthDecision = Decision{Action: HoldManualRecovery}
-			return w.recordLatchedHold(ctx, latch)
+			w.holds.note(Snapshot{}, "", holdManualRecovery, latch.Reason)
+			return nil
 		}
 	}
 	operation, err := w.runtime.loadNonterminal(ctx, w.routeKey)
@@ -334,6 +273,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	backyardEvents.inflight(operation != nil)
 	if operation != nil {
 		healthDecision = Decision{Action: RecoverTransaction}
+		w.holds.note(Snapshot{}, operation.StrategyKey, "", "")
 		backyardEvents.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
 			if operation.BroadcastIntentRecorded || !preBroadcastStatus(operation.Status) {
@@ -356,7 +296,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	decision := Decide(observation.Snapshot)
 	healthDecision = decision
-	w.noRoom.note(time.Now(), observation.Snapshot, decision)
 	// Decide maps every observation-level hold to one generic reason. The
 	// observer records the audited Kamino health reason on the snapshot, so it
 	// is carried into the durable decision instead of being discarded.
@@ -368,88 +307,26 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	healthDecision = decision
 	backyardEvents.noteAction(decision.Action)
-	if decision.Action == Hold || decision.Action == HoldManualRecovery {
-		healthDecision = decision
-		if decision.Action == HoldManualRecovery {
-			return w.recordManualRecoveryDecision(ctx, observation, decision)
-		}
-		if _, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256); err != nil {
-			return err
-		}
+	switch decision.Action {
+	case Hold:
+		w.holds.note(observation.Snapshot, decision.StrategyKey, decision.Reason, "")
 		return nil
+	case HoldManualRecovery:
+		w.holds.note(observation.Snapshot, decision.StrategyKey, holdManualRecovery, decision.Reason)
+		return w.latchManualRecovery(ctx, observation, decision)
 	}
+	w.holds.note(observation.Snapshot, decision.StrategyKey, "", "")
 	if blocker := w.manifest.executionBlocker(); blocker != nil {
 		return blocker
 	}
 	logStage("observe_decide", tickStart)
-	var initializationRequest KaminoInitializationRequest
-	var bridgeEvidence BridgeExecutionEvidence
-	var kaminoEvidence KaminoExecutionEvidence
-	var jupiterEvidence JupiterExecutionEvidence
-	var hastraEvidence HastraExecutionEvidence
-	var stepEvidence StepExecutionEvidence
-	preparedDecision := decision
 	executionDecision, err := fixedRouteAction(decision.Action, decision.StrategyKey)
 	if err != nil {
 		return err
 	}
-	wireDecision := decision
-	wireDecision.Action = executionDecision
-	// A conversion executes through Hastra or Jupiter by its lane and action
-	// (hastraConversionLeg); every case below splits on it.
-	hastraConversion := conversionVenueHastra(wireDecision)
-	// A leverage move executes as one atomic step (step.go).
-	_, atomic := stepDecision(observation.Snapshot, wireDecision)
-	// The custody journal read of a PYUSD spend does not depend on the
-	// prepared wire, so it runs while preparation re-observes the chain.
-	var prefetchedCustody custodyProofFinisher
-	if w.runtime.prefetchCustodyProof != nil && custodyProofPrefetchAction(decision, observation.Snapshot) {
-		if route, err := runtimeRoute(decision.StrategyKey); err == nil {
-			prefetchedCustody = w.runtime.prefetchCustodyProof(ctx, w.manifest, autoSharedPYUSDAttributionConfig(route, w.routeKey))
-		}
-	}
-	decided := observation.Snapshot
-	switch executionDecision {
-	case InitializeKaminoObligation:
-		if w.runtime.prepareInitialization == nil {
-			return budgetHold("initializer_preparation_unavailable")
-		}
-		observation, initializationRequest, err = w.runtime.prepareInitialization(ctx, w.manifest, wireDecision)
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		if atomic {
-			if w.runtime.prepareStep == nil {
-				return budgetHold("step_preparation_unavailable")
-			}
-			observation, stepEvidence, err = w.runtime.prepareStep(ctx, w.manifest, wireDecision, observation)
-		} else {
-			observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
-		}
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		if hastraConversion {
-			if w.runtime.prepareHastra == nil {
-				return budgetHold("hastra_preparation_unavailable")
-			}
-			observation, hastraEvidence, err = w.runtime.prepareHastra(ctx, wireDecision, observation)
-		} else {
-			observation, jupiterEvidence, err = w.runtime.prepareJupiter(ctx, w.manifest, wireDecision, observation)
-		}
-	default:
-		return fmt.Errorf("action %s is not dispatchable", decision.Action)
-	}
-	if observation.Validate() == nil && observation.Snapshot.Fresh && observation.Snapshot.ManualReason == "" && !observation.Snapshot.StrategyReceiptIntegrityFault {
-		healthObservation = observation
-	}
-	// Construction refreshes the same confirmed inputs that will be sent. A
-	// refreshed manual-recovery decision is a new durable stop, not ordinary
-	// decision drift, and must be recorded before the tick returns.
-	if ok, persistErr := w.persistRefreshedManualRecovery(ctx, observation); ok {
-		healthDecision = Decision{Action: HoldManualRecovery}
-		if persistErr != nil {
-			return persistErr
-		}
-		return nil
+	request, effects, prepared, err := w.prepare(ctx, decision, executionDecision, observation)
+	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.ManualReason == "" && !prepared.Snapshot.StrategyReceiptIntegrityFault {
+		healthObservation = prepared
 	}
 	logStage("prepare", tickStart)
 	if err != nil {
@@ -457,140 +334,82 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		// target's no_room, counted like Decide's.
 		var hold *BudgetHold
 		if errors.As(err, &hold) && hold.Reason == holdNoRoom {
-			w.noRoom.note(time.Now(), decided, Decision{Action: Hold, Reason: holdNoRoom, StrategyKey: decision.StrategyKey})
+			w.holds.note(observation.Snapshot, decision.StrategyKey, holdNoRoom, "")
 		}
 		return err
 	}
-	decision = Decide(observation.Snapshot)
-	healthDecision = decision
-	if err := decision.Validate(); err != nil {
-		return err
-	}
-	// Drift is a new state: nothing is recorded yet, so retry the leg on the
-	// next tick instead of stopping the worker.
-	if !decisionsEqual(decision, preparedDecision) {
-		return confirmedObservationUnavailable(fmt.Errorf("prepared evidence does not match the refreshed decision: decided %s/%s/%d, refreshed %s/%s/%d",
-			preparedDecision.Action, preparedDecision.Reason, preparedDecision.AmountRaw, decision.Action, decision.Reason, decision.AmountRaw))
-	}
-	// Strict pre-decision shared-custody ownership proof (doc 26): a prepared
-	// AUTO-PYUSD spend is proofed against the prepared evidence's exact
-	// effects BEFORE the row exists, and the proof rides this observation into
-	// RecordDecision and the locked bind. Zero-spend and other lanes are
-	// untouched.
-	switch executionDecision {
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, bridgeEvidence.ExpectedEffects, prefetchedCustody)
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		effects := kaminoEvidence.ExpectedEffects
-		if atomic {
-			effects = stepEvidence.ExpectedEffects
-		}
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, effects, prefetchedCustody)
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		effects := jupiterEvidence.ExpectedEffects
-		if hastraConversion {
-			effects = hastraEvidence.ExpectedEffects
-		}
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, effects, prefetchedCustody)
-	}
-	if err != nil {
-		return err
-	}
-	logStage("custody_proof", tickStart)
 	record, err := w.runtime.recordDecision(ctx, w.routeKey, observation, decision, w.manifest.SHA256)
 	if err != nil {
 		return err
 	}
-	logStage("record_decision", tickStart)
 	if record.Status != Decided || record.OperationID == "" {
 		return fmt.Errorf("actionable decision was not durably recorded as decided")
 	}
-	var request any
-	var effects ExpectedEffects
-	switch executionDecision {
-	case InitializeKaminoObligation:
-		request, effects = initializationRequest, kaminoInitializationEffects(initializationRequest)
-	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-		request, effects = bridgeEvidence.Request, bridgeEvidence.ExpectedEffects
-	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		request, effects = kaminoEvidence.Request, kaminoEvidence.ExpectedEffects
-		if atomic {
-			request, effects = stepEvidence.Request, stepEvidence.ExpectedEffects
-		}
-	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		request, effects = jupiterEvidence.Request, jupiterEvidence.ExpectedEffects
-		if hastraConversion {
-			request, effects = hastraEvidence.Request, hastraEvidence.ExpectedEffects
-		}
-	default:
-		return fmt.Errorf("prepared evidence no longer matches an actionable decision")
-	}
-	if w.runtime.bind == nil {
-		err = budgetHold("bind_unavailable")
+	if w.runtime.build == nil {
+		err = budgetHold("build_unavailable")
 	} else {
-		err = w.runtime.bind(ctx, record.OperationID, observation, decision, request, effects)
-	}
-	logStage("bind", tickStart)
-	if err == nil {
-		switch executionDecision {
-		case InitializeKaminoObligation:
-			err = w.runtime.buildInitialization(ctx, record.OperationID, initializationRequest)
-		case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
-			err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
-		case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-			if atomic {
-				if w.runtime.buildStep == nil {
-					err = budgetHold("step_build_unavailable")
-				} else {
-					err = w.runtime.buildStep(ctx, record.OperationID, stepEvidence)
-				}
-			} else {
-				err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
-			}
-		default:
-			if hastraConversion {
-				if w.runtime.buildHastra == nil {
-					err = budgetHold("hastra_build_unavailable")
-				} else {
-					err = w.runtime.buildHastra(ctx, record.OperationID, hastraEvidence)
-				}
-			} else {
-				err = w.runtime.buildJupiter(ctx, record.OperationID, jupiterEvidence)
-			}
-		}
+		err = w.runtime.build(ctx, record.OperationID, request, effects)
 	}
 	logStage("build_sign", tickStart)
 	if err != nil {
 		return w.journalTickError(ctx, record.OperationID, err)
 	}
-	// A newly signed report has only 32 slots to land. Persisting the wire is
-	// the recovery boundary; waiting a polling interval adds no safety and
-	// can expire it. Reload durable state and use the normal send/recovery
-	// path immediately, with the same fresh manual-stop check as a new tick.
-	if w.runtime.loadLatch != nil {
-		latch, latched, err := w.runtime.loadLatch(ctx, w.routeKey)
-		if err != nil {
-			return err
-		}
-		if latched {
-			healthDecision = Decision{Action: HoldManualRecovery}
-			return w.recordLatchedHold(ctx, latch)
-		}
-	}
+	// The signed wire is persisted: send it now through the same path a
+	// restart takes. A newly signed report has only 32 slots to land.
 	pending, err := w.runtime.loadNonterminal(ctx, w.routeKey)
-	if err != nil {
+	if err != nil || pending == nil {
 		return err
 	}
-	if pending != nil {
-		if pending.ID != record.OperationID {
-			return fmt.Errorf("operation changed after durable build")
-		}
-		if pending.Status == Signed {
-			defer logStage("final_check_send", tickStart)
-			return w.runtime.advance(ctx, *pending)
-		}
+	if pending.ID != record.OperationID {
+		return fmt.Errorf("operation changed after durable build")
 	}
-	return nil
+	if pending.Status != Signed {
+		return nil
+	}
+	defer logStage("send", tickStart)
+	return w.runtime.advance(ctx, *pending)
+}
+
+// prepare builds the decided action's request from the tick's batch: the one
+// transaction this tick will sign. It never decides again.
+func (w *Worker) prepare(ctx context.Context, decision Decision, executionDecision Action, observation Observation) (any, ExpectedEffects, Observation, error) {
+	wireDecision := decision
+	wireDecision.Action = executionDecision
+	switch executionDecision {
+	case InitializeKaminoObligation:
+		if w.runtime.prepareInitialization == nil {
+			return nil, ExpectedEffects{}, observation, budgetHold("initializer_preparation_unavailable")
+		}
+		prepared, r, err := w.runtime.prepareInitialization(ctx, w.manifest, wireDecision, observation)
+		return r, kaminoInitializationEffects(r), prepared, err
+	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
+		prepared, e, err := w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
+		return e.Request, e.ExpectedEffects, prepared, err
+	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
+		// A leverage move executes as one atomic step (step.go).
+		if _, atomic := stepDecision(observation.Snapshot, wireDecision); atomic {
+			if w.runtime.prepareStep == nil {
+				return nil, ExpectedEffects{}, observation, budgetHold("step_preparation_unavailable")
+			}
+			prepared, e, err := w.runtime.prepareStep(ctx, w.manifest, wireDecision, observation)
+			return e.Request, e.ExpectedEffects, prepared, err
+		}
+		prepared, e, err := w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
+		return e.Request, e.ExpectedEffects, prepared, err
+	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
+		// A conversion executes through Hastra or Jupiter by its lane and
+		// action (hastraConversionLeg).
+		if conversionVenueHastra(wireDecision) {
+			if w.runtime.prepareHastra == nil {
+				return nil, ExpectedEffects{}, observation, budgetHold("hastra_preparation_unavailable")
+			}
+			prepared, e, err := w.runtime.prepareHastra(ctx, wireDecision, observation)
+			return e.Request, e.ExpectedEffects, prepared, err
+		}
+		prepared, e, err := w.runtime.prepareJupiter(ctx, w.manifest, wireDecision, observation)
+		return e.Request, e.ExpectedEffects, prepared, err
+	}
+	return nil, ExpectedEffects{}, observation, fmt.Errorf("action %s is not dispatchable", decision.Action)
 }
 
 // journalTickError journals a pre-send hold for the tick's operation once.
@@ -605,7 +424,7 @@ func (w *Worker) journalTickError(ctx context.Context, operationID string, err e
 		return err
 	}
 	// An endpoint that could not answer says nothing about the operation: it
-	// stays decided and the next tick builds it again.
+	// stays decided; the next tick fails it and decides again.
 	if errors.Is(hold, chain.ErrUnavailable) {
 		return confirmedObservationUnavailable(err)
 	}
@@ -615,137 +434,18 @@ func (w *Worker) journalTickError(ctx context.Context, operationID string, err e
 	return err
 }
 
-// recordLatchedHold re-records the same durable hold identity on every latched
-// tick. The observation identity comes from the latch itself, so the recorded
-// evidence stays byte-identical across ticks and restarts and the journal keeps
-// showing the stop without anything touching the chain.
-func (w *Worker) recordLatchedHold(ctx context.Context, latch ManualRecoveryLatch) error {
-	if latch.Reason == "" || latch.ObservationID == "" || latch.ObservationSlot <= 0 || latch.Generation < 0 {
-		return fmt.Errorf("latched manual recovery identity is incomplete")
+// latchManualRecovery writes the operator's stop for a manual recovery
+// decision; the next tick reads it and does nothing until clear-hold.
+func (w *Worker) latchManualRecovery(ctx context.Context, observation Observation, decision Decision) error {
+	if w.runtime.latch == nil {
+		return fmt.Errorf("manual recovery latch runtime is unavailable")
 	}
-	if w.runtime.beforeRecordLatchedHold != nil {
-		if err := w.runtime.beforeRecordLatchedHold(ctx, latch); err != nil {
-			return err
-		}
-	}
-	observation := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{
-		ObservationID: latch.ObservationID, Slot: latch.ObservationSlot,
-		RouteKind: RouteKind, Fresh: true, MonitorsArmed: true,
-	}}
-	decision := Decision{
-		Action:         HoldManualRecovery,
-		Reason:         "latched:" + latch.Reason,
-		AmountRaw:      0,
-		IdempotencyKey: fmt.Sprintf("%s:latched:%s", latch.ObservationID, latch.Reason),
-	}
-	if err := decision.Validate(); err != nil {
+	latch := ManualRecoveryLatch{Reason: decision.Reason, ObservationID: observation.Snapshot.ObservationID, ObservationSlot: observation.Snapshot.Slot}
+	if err := w.runtime.latch(ctx, w.routeKey, latch); err != nil {
 		return err
 	}
-	if w.runtime.recordManualRecoveryAtGeneration != nil {
-		if _, err := w.runtime.recordManualRecoveryAtGeneration(ctx, w.routeKey, observation, decision, w.manifest.SHA256, latch.Generation); err != nil {
-			if errors.Is(err, errManualRecoveryLatchGenerationChanged) && w.runtime.loadLatch != nil {
-				_, _, rereadErr := w.runtime.loadLatch(ctx, w.routeKey)
-				return rereadErr
-			}
-			return err
-		}
-		return nil
-	}
-	return w.recordManualRecoveryDecision(ctx, observation, decision)
-}
-
-func (w *Worker) recordManualRecoveryDecision(ctx context.Context, observation Observation, decision Decision) error {
-	if w.runtime.recordManualRecovery == nil {
-		return fmt.Errorf("manual recovery persistence runtime is unavailable")
-	}
-	if _, err := w.runtime.recordManualRecovery(ctx, w.routeKey, observation, decision, w.manifest.SHA256); err != nil {
-		return err
-	}
-	// A "latched:" reason is the per-tick re-record of an existing stop.
-	if !strings.HasPrefix(decision.Reason, "latched:") {
-		backyardEvents.latched(decision.Reason)
-	}
+	backyardEvents.latched(decision.Reason)
 	return nil
-}
-
-func (w *Worker) persistRefreshedManualRecovery(ctx context.Context, observation Observation) (bool, error) {
-	if observation.Snapshot.ObservationID == "" || observation.Snapshot.Slot <= 0 {
-		return false, nil
-	}
-	decision := Decide(observation.Snapshot)
-	if decision.Action != HoldManualRecovery {
-		return false, nil
-	}
-	return true, w.recordManualRecoveryDecision(ctx, observation, decision)
-}
-
-type routeLeaser interface {
-	AcquireRouteLease(context.Context, string, string, time.Duration) (RouteLease, error)
-	RefreshRouteLease(context.Context, time.Duration) (RouteLease, error)
-	ReleaseRouteLease(context.Context) (bool, error)
-}
-
-func (r startupLeaseHandoffRuntime) acquire(ctx context.Context, leases routeLeaser, routeKey, owner string, ttl time.Duration) error {
-	now := r.now
-	if now == nil {
-		now = time.Now
-	}
-	wait := r.wait
-	if wait == nil {
-		wait = func(ctx context.Context, delay time.Duration) error {
-			timer := time.NewTimer(delay)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-timer.C:
-				return nil
-			}
-		}
-	}
-	window := 2 * ttl
-	cadence := ttl / 10
-	if cadence < 10*time.Millisecond {
-		cadence = 10 * time.Millisecond
-	}
-	if cadence > time.Second {
-		cadence = time.Second
-	}
-	deadline := now().Add(window)
-	lastUnavailable := ErrRouteLeaseUnavailable
-	for {
-		remaining := deadline.Sub(now())
-		if remaining <= 0 {
-			return lastUnavailable
-		}
-		attemptCtx, cancel := context.WithTimeout(ctx, remaining)
-		_, err := leases.AcquireRouteLease(attemptCtx, routeKey, owner, ttl)
-		cancel()
-		if err == nil {
-			return nil
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return lastUnavailable
-		}
-		if !errors.Is(err, ErrRouteLeaseUnavailable) {
-			return err
-		}
-		lastUnavailable = err
-		remaining = deadline.Sub(now())
-		if remaining <= 0 {
-			return lastUnavailable
-		}
-		delay := cadence
-		if remaining < delay {
-			delay = remaining
-		}
-		if err := wait(ctx, delay); err != nil {
-			return err
-		}
-	}
 }
 
 // afterBroadcastError marks a tick error from advancing an operation whose
@@ -803,16 +503,10 @@ func (w *Worker) notifySelectorCommit(action string) {
 	}
 }
 
-func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick func(context.Context) error) error {
+func (w *Worker) runTicks(ctx context.Context, tick func(context.Context) error) error {
 	for {
 		err := tick(ctx)
 		if err != nil {
-			select {
-			case leaseErr := <-leaseErrors:
-				backyardEvents.tickResult(leaseErr, true)
-				return leaseErr
-			default:
-			}
 			// Confirmed-observation gaps and pre-send holds (the journaled
 			// spending-limit refusal among them) skip this tick's leg and retry
 			// on the next interval; anything else - including a hold joined
@@ -828,10 +522,6 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 		backyardEvents.tickResult(err, false)
 		timer := time.NewTimer(w.interval)
 		select {
-		case err := <-leaseErrors:
-			timer.Stop()
-			backyardEvents.tickResult(err, true)
-			return err
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
@@ -842,63 +532,12 @@ func (w *Worker) runTicks(ctx context.Context, leaseErrors <-chan error, tick fu
 	}
 }
 
-// Run acquires the route fence before the first observation, refreshes it on a
-// bounded cadence, and cancels the active tick immediately if ownership is
-// lost. Release is compare-and-clear on the exact fencing token, so a stale
-// process can never clear its successor's lease.
-func (w *Worker) Run(ctx context.Context, leases routeLeaser, owner string, config Config) (runErr error) {
-	if w == nil || leases == nil || !ValidLeaseOwner(owner) || config.validateLease() != nil {
-		return fmt.Errorf("invalid leased worker runtime")
+// Run serializes lifecycle ticks until ctx ends. The process holds
+// Backyard's one-writer lock (the family advisory lock) for its whole life;
+// losing it cancels ctx.
+func (w *Worker) Run(ctx context.Context) error {
+	if w == nil {
+		return fmt.Errorf("invalid worker runtime")
 	}
-	if err := w.leaseHandoff.acquire(ctx, leases, w.routeKey, owner, config.LeaseTTL); err != nil {
-		return err
-	}
-	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, err := leases.ReleaseRouteLease(releaseCtx)
-		if err != nil {
-			if runErr == nil || errors.Is(runErr, context.Canceled) {
-				runErr = err
-			} else {
-				runErr = errors.Join(runErr, fmt.Errorf("release route lease: %w", err))
-			}
-		}
-	}()
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	leaseErrors := make(chan error, 1)
-	refreshStopped := make(chan struct{})
-	go func() {
-		defer close(refreshStopped)
-		ticker := time.NewTicker(config.LeaseRefreshInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-runCtx.Done():
-				return
-			case <-ticker.C:
-				if _, err := leases.RefreshRouteLease(runCtx, config.LeaseTTL); err != nil {
-					select {
-					case leaseErrors <- err:
-					default:
-					}
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-	runErr = w.runTicks(runCtx, leaseErrors, w.Tick)
-	cancel()
-	<-refreshStopped
-	select {
-	case leaseErr := <-leaseErrors:
-		if leaseErr != nil {
-			runErr = leaseErr
-		}
-	default:
-	}
-	return runErr
+	return w.runTicks(ctx, w.Tick)
 }

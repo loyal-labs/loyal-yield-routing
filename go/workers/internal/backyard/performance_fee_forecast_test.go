@@ -351,7 +351,7 @@ func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 		if canary {
 			in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("unarmed-canary")), Lane: in.Markets[0].Lane, EquityRaw: 10_000_000, ExpiresAt: in.Now.Add(time.Minute)}
 		}
-		_, err := (&Database{}).RecordSelectorEvaluation(context.Background(), productionRouteKey, in, in.Snapshot.Slot, 1)
+		_, err := (&Database{}).RecordSelectorEvaluation(context.Background(), productionRouteKey, in, in.Snapshot.Slot)
 		assertBudgetHold(t, err, "selector_fee_evidence_unavailable")
 	}
 }

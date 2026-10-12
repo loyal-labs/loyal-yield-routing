@@ -22,7 +22,8 @@ import (
 
 // runBackyard is LOYAL_WORKER_SCOPE=backyard: the separately credentialed
 // Backyard family. BACKYARD_DATABASE_URL must be the direct (non-pooler) DSN:
-// it also holds the family lock.
+// it also holds the family lock, Backyard's one-writer lock. A second process
+// waits for it before it reads or writes anything; nothing below re-checks it.
 func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics engine.Lane) error {
 	cfg, err := backyardRuntimeConfig()
 	if err != nil {
@@ -48,7 +49,8 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if laserstream.APIKey, err = engine.Credential("BACKYARD_HELIUS_API_KEY"); err != nil {
 		return err
 	}
-	lost, err := engine.HoldFamily(ctx, cfg.DatabaseURL, engine.FamilyBackyard)
+	_, _ = fmt.Fprintln(os.Stdout, "backyard-rwa-worker: waiting for the Backyard writer lock")
+	lost, err := engine.WaitFamily(ctx, cfg.DatabaseURL, engine.FamilyBackyard)
 	if err != nil {
 		return err
 	}

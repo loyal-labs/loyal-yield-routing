@@ -76,9 +76,6 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			VALUES($1,$2,'submitted','{}',$3,clock_timestamp())`, id, routeKey, testSignature); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.AcquireRouteLease(ctx, routeKey, "failure-lifecycle-writer", time.Minute); err != nil {
-			t.Fatal(err)
-		}
 		return routeKey, id
 	}
 	// A wire whose signature is testSignature, as an older binary left a
@@ -115,7 +112,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			t.Fatalf("unexpected RPC during failure recovery: %s", body)
 			return nil, fmt.Errorf("unexpected RPC")
 		})
-		tickErr := AdvanceNonterminal(landCtx, db, rpc, nil, op)
+		tickErr := advanceNonterminalWithManifest(landCtx, embeddedTestManifest(t), db, rpc, op)
 		var status, reason string
 		if err := db.pool.QueryRow(ctx, `SELECT status,COALESCE(recovery_reason,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, op.ID).Scan(&status, &reason); err != nil {
 			t.Fatal(err)
@@ -217,13 +214,12 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			id := seedBoundOperation(t, ctx, db, routeKey, "failure-lifecycle-writer", ReportNAV, "OnRe/ONyc/USDC", request, effects)
+			id := seedDecidedOperation(t, ctx, db, routeKey, ReportNAV, "OnRe/ONyc/USDC", effects)
 			message, err := CompileBridgeMessage(request)
 			if err != nil {
 				t.Fatal(err)
 			}
 			wire := signedWire(message, bytes.Repeat([]byte{3}, 64))
-			bindTestWire(t, ctx, db, id, sha256Bytes(wire))
 			evidence := `{"decision":{"observationSlot":42}}`
 			if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status=$2,signed_wire=$3,expected_effects=expected_effects||$4::jsonb,
 				broadcast_intent_at=CASE WHEN $2='signed' THEN NULL ELSE clock_timestamp() END WHERE operation_id=$1`, id, tc.from, wire, evidence); err != nil {
@@ -265,7 +261,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 				t.Errorf("unexpected RPC while landing: %s", body)
 				return nil, fmt.Errorf("unexpected RPC")
 			}))
-			if err := AdvanceNonterminal(ctx, db, rpc, nil, operation); err != nil {
+			if err := advanceNonterminalWithManifest(ctx, embeddedTestManifest(t), db, rpc, operation); err != nil {
 				t.Fatal(err)
 			}
 			var status, reason string

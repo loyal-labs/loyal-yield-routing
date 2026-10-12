@@ -3,7 +3,6 @@ package backyard
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -236,40 +235,6 @@ func TestHastraEffectsQuoteTheProgramRounding(t *testing.T) {
 		if err != nil || debit.Source != row.source || debit.Raw != 1_000_003 {
 			t.Fatalf("%s debit %+v (%v)", row.action, debit, err)
 		}
-	}
-}
-
-// A stake price within the wire's landing window of its staleness limit, or
-// one Hastra has replaced since the quote, holds the conversion: it is never
-// an error and never quoted. A mint deposit reads no price.
-func TestHastraStalePriceHolds(t *testing.T) {
-	t.Parallel()
-	rpc := hastraTestChain(t)
-	policies, _ := hastraTestPolicies()
-	decision := Decision{Action: SwapDebtToCollateralStep, AmountRaw: 1_000_000, StrategyKey: autoAUTOWYLDSLane}
-	for age, holds := range map[int64]bool{60: false, 3600 - hastraPriceLandingSeconds: false, 3600 - hastraPriceLandingSeconds + 1: true, 3601: true} {
-		view := hastraTestView(42, hastraPriceAccount(hastraTestPrice, kaminoFixtureUnix-age), clockFixture())
-		_, err := prepareHastraQuoteEvidence(context.Background(), rpc, view, policies, decision, 1_000_000, 0, 42)
-		var hold *BudgetHold
-		if held := errors.As(err, &hold) && hold.Reason == "hastra_price_stale"; held != holds || (!holds && err != nil) {
-			t.Errorf("price %d s old: %v, want hold %t", age, err, holds)
-		}
-	}
-	view := hastraTestView(42, hastraPriceAccount(hastraTestPrice, kaminoFixtureUnix-60), clockFixture())
-	evidence, err := prepareHastraQuoteEvidence(context.Background(), rpc, view, policies, decision, 1_000_000, 0, 42)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := validateHastraPrice(context.Background(), view, evidence.Request, 42); err != nil {
-		t.Fatal("the quoted price failed its own revalidation:", err)
-	}
-	pushed := hastraTestView(42, hastraPriceAccount(new(big.Int).Add(hastraTestPrice, big.NewInt(1)), kaminoFixtureUnix-1), clockFixture())
-	if _, err := validateHastraPrice(context.Background(), pushed, evidence.Request, 42); err == nil || err.Error() != budgetHold("hastra_price_moved").Error() {
-		t.Fatalf("a newer price push was sent at the old quote: %v", err)
-	}
-	mint := Decision{Action: SwapUSDCToDebtStep, AmountRaw: 1_000_000, StrategyKey: autoAUTOWYLDSLane}
-	if _, err := prepareHastraQuoteEvidence(context.Background(), rpc, hastraTestView(42, clockFixture()), policies, mint, 1_000_000, 0, 42); err != nil {
-		t.Fatal("a mint deposit read the stake price:", err)
 	}
 }
 

@@ -74,11 +74,6 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, accountView(t, 110, nil), m, decision, o); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatal("expired slot admitted", err)
 	}
-	changed := decision
-	changed.AmountRaw++
-	if _, _, err := prepareBridgeFromTickObservation(context.Background(), client, view, m, changed, o); !errors.Is(err, errConfirmedObservationUnavailable) {
-		t.Fatal("ordinary decision drift is not retryable", err)
-	}
 	uninstalled = true
 	_, _, err = prepareBridgeFromTickObservation(context.Background(), client, view, m, decision, o)
 	assertBudgetHold(t, err, "REPORT_NAV policy not installed")
@@ -96,7 +91,7 @@ func TestSelectorWakeWaitsForActiveTickAndCoalesces(t *testing.T) {
 	started, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	var calls atomic.Int32
 	go func() {
-		done <- w.runTicks(ctx, make(chan error), func(context.Context) error {
+		done <- w.runTicks(ctx, func(context.Context) error {
 			n := calls.Add(1)
 			if n == 1 {
 				close(started)

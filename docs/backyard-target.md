@@ -56,12 +56,15 @@ capital to another lane.
 `Decide` returns the next atomic transaction (`docs/backyard-atomic-step.md`,
 Voltr allocate/stage/restore, a conversion, a report) or a hold:
 
+A hold is not a journal row: it is `loyal_backyard_hold{lane,reason}` on
+/metrics and one log line when it changes (`docs/backyard-one-writer.md`).
+
 | Hold | Meaning |
 |---|---|
 | `at_target` | the vault is where the target says |
 | `no_room` | the target wants a move the chain has no room for: a full debt reserve, no withdraw room, a release a lane cannot make; counted on `loyal_backyard_step_no_room_total{lane,rule}` |
 | `stale` | an input is not current: an expired entry quote, an unknown term end, an absent obligation awaiting its initializer |
-| `chain_refused` | the step's signed simulation failed: the row is journaled failed with the simulation error and never sent; the next tick decides again |
+| `chain_refused` | the transaction's signed simulation failed: the row is journaled failed with the simulation error and never sent; the next tick decides again |
 
 ## Operator exit
 
@@ -85,8 +88,9 @@ credential directory like the other operator commands.
   ignores the tables.
 - The new binary ignores the old route-state keys. Its first selector sample
   decides each lane's approval again.
-- Migration 0104 (on its own branch, `p2/drop-move-machine-state`) removes the
-  old keys once the new binary is live.
+- Migration 0105 (shipped with the one-writer binary,
+  `docs/backyard-one-writer.md`) removes the old keys once that binary is
+  live.
 - Deploy with no Backyard operation in flight.
 
 On the live book (`TestLiveStateRestartComputesTheCurrentState`, read at

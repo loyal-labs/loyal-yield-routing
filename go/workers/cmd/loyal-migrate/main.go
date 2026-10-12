@@ -3,8 +3,9 @@
 // wrote: version, name and the lowercase hex SHA-256 of the file bytes, in
 // loyal_yield.schema_migrations and loyal.timescale_schema_migrations.
 //
-//	loyal-migrate -db yield status   # read-only: applied, pending, checksum drift
-//	loyal-migrate -db yield up       # apply pending migrations in version order
+//	loyal-migrate -db yield status          # read-only: applied, pending, checksum drift
+//	loyal-migrate -db yield up              # apply pending migrations in version order
+//	loyal-migrate -db yield -to 104 up      # apply pending migrations up to version 104
 //
 // The URL comes from NEON_DATABASE_URL (yield) or TIMESCALEDB_URL (timescale).
 package main
@@ -201,7 +202,10 @@ func apply(ctx context.Context, conn *pgx.Conn, db database, m migration) error 
 	})
 }
 
-func up(ctx context.Context, conn *pgx.Conn, db database, files []migration, out io.Writer) error {
+// up applies the pending migrations in version order, those at or below
+// through when it is positive: a release applies its pre-deploy migrations
+// first and the ones that need the new binary live after it.
+func up(ctx context.Context, conn *pgx.Conn, db database, files []migration, through int64, out io.Writer) error {
 	schema, _, _ := strings.Cut(db.ledger, ".")
 	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+schema+"; CREATE TABLE IF NOT EXISTS "+db.ledger+
 		" (version BIGINT PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"); err != nil {
@@ -212,12 +216,16 @@ func up(ctx context.Context, conn *pgx.Conn, db database, files []migration, out
 		return err
 	}
 	for _, m := range p.Pending {
+		if through > 0 && m.Version > through {
+			fmt.Fprintf(out, "left pending %04d_%s (above -to %d)\n", m.Version, m.Name, through)
+			continue
+		}
 		fmt.Fprintf(out, "applying %04d_%s\n", m.Version, m.Name)
 		if err := apply(ctx, conn, db, m); err != nil {
 			return fmt.Errorf("%04d_%s: %w", m.Version, m.Name, err)
 		}
 	}
-	fmt.Fprintf(out, "%s up to date\n", db.ledger)
+	fmt.Fprintf(out, "%s applied\n", db.ledger)
 	return nil
 }
 
@@ -245,12 +253,13 @@ func run(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("loyal-migrate", flag.ContinueOnError)
 	name := flags.String("db", "yield", "yield or timescale")
 	dir := flags.String("dir", "", "migration directory (default: nearest migrations/<db>)")
+	through := flags.Int64("to", 0, "up applies pending migrations only up to this version (default: all)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	db, ok := databases[*name]
 	if !ok || flags.NArg() != 1 || (flags.Arg(0) != "status" && flags.Arg(0) != "up") {
-		return errors.New("usage: loyal-migrate [-db yield|timescale] [-dir path] status|up")
+		return errors.New("usage: loyal-migrate [-db yield|timescale] [-dir path] [-to version] status|up")
 	}
 	if *dir == "" {
 		*dir = defaultDir(*name)
@@ -274,7 +283,7 @@ func run(args []string, out io.Writer) error {
 		_, err = status(ctx, conn, db, files, out)
 		return err
 	}
-	return up(ctx, conn, db, files, out)
+	return up(ctx, conn, db, files, *through, out)
 }
 
 func main() {

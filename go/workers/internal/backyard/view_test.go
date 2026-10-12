@@ -246,9 +246,6 @@ func fillAccounts(base http.RoundTripper, accounts map[string]ConfirmedAccount) 
 	})
 }
 
-// fence is a persisted operation decided at slot 0.
-var fence = PersistedOperation{ExpectedEffects: []byte(`{"decision":{"observationSlot":0}}`)}
-
 func usdcAmount(account ConfirmedAccount, raw uint64) ConfirmedAccount {
 	account.Data = slices.Clone(account.Data)
 	binary.LittleEndian.PutUint64(account.Data[64:72], raw)
@@ -303,27 +300,6 @@ func TestViewIsCompleteThroughThePreviousConfirmedSlot(t *testing.T) {
 	}
 	if held := view.accounts[bridgeSquadsATA]; held.slot != 15 || held.Lamports != 3 {
 		t.Fatalf("slot 15 resolved to %+v, want the later session's write", held)
-	}
-}
-
-// A transaction's writes at S+1 are invisible together until S+1 is complete,
-// then visible together.
-func TestViewShowsATransactionOnlyWhenItsSlotIsComplete(t *testing.T) {
-	t.Parallel()
-	view, _, connector := streamView(t)
-	batch := viewRouteBatch(t, nil)
-	connector.send(t, view, true, slotFrame(80), slotFrame(81),
-		accountFrame(usdcAmount(accountAt(batch, bridgeIdleATA), 404), 82, 1, viewAccountsFilter),
-		accountFrame(usdcAmount(accountAt(batch, bridgeSquadsATA), 606), 82, 2, viewAccountsFilter),
-		slotFrame(82))
-	before, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence)
-	if err != nil || before.Snapshot.Slot != 81 || before.Snapshot.VoltrIdleRaw == 404 || before.Snapshot.SquadsIdleRaw == 606 {
-		t.Fatalf("slot 82 leaked into the view at %d: idle %d squads %d %v", before.Snapshot.Slot, before.Snapshot.VoltrIdleRaw, before.Snapshot.SquadsIdleRaw, err)
-	}
-	connector.send(t, view, true, slotFrame(83))
-	after, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence)
-	if err != nil || after.Snapshot.Slot != 82 || after.Snapshot.VoltrIdleRaw != 404 || after.Snapshot.SquadsIdleRaw != 606 {
-		t.Fatalf("slot 82 is not whole at %d: idle %d squads %d %v", after.Snapshot.Slot, after.Snapshot.VoltrIdleRaw, after.Snapshot.SquadsIdleRaw, err)
 	}
 }
 
@@ -396,9 +372,24 @@ func TestViewStreamPlansAtS(t *testing.T) {
 	}
 }
 
-// A receipt found by the discovery filter is handed off into the by-address
-// filter; until promotion the view is incomplete. After promotion its close
-// arrives through the by-address filter and the demand is gone.
+func TestViewShowsATransactionOnlyWhenItsSlotIsComplete(t *testing.T) {
+	t.Parallel()
+	view, _, connector := streamView(t)
+	batch := viewRouteBatch(t, nil)
+	connector.send(t, view, true, slotFrame(80), slotFrame(81),
+		accountFrame(usdcAmount(accountAt(batch, bridgeIdleATA), 404), 82, 1, viewAccountsFilter),
+		accountFrame(usdcAmount(accountAt(batch, bridgeSquadsATA), 606), 82, 2, viewAccountsFilter),
+		slotFrame(82))
+	before, err := bridgeCustodyRead(context.Background(), view)
+	if err != nil || before.Snapshot.Slot != 81 || before.Snapshot.VoltrIdleRaw == 404 || before.Snapshot.SquadsIdleRaw == 606 {
+		t.Fatalf("slot 82 leaked into the view at %d: idle %d squads %d %v", before.Snapshot.Slot, before.Snapshot.VoltrIdleRaw, before.Snapshot.SquadsIdleRaw, err)
+	}
+	connector.send(t, view, true, slotFrame(83))
+	after, err := bridgeCustodyRead(context.Background(), view)
+	if err != nil || after.Snapshot.Slot != 82 || after.Snapshot.VoltrIdleRaw != 404 || after.Snapshot.SquadsIdleRaw != 606 {
+		t.Fatalf("slot 82 is not whole at %d: idle %d squads %d %v", after.Snapshot.Slot, after.Snapshot.VoltrIdleRaw, after.Snapshot.SquadsIdleRaw, err)
+	}
+}
 func TestViewReceiptDiscoveredThenClosed(t *testing.T) {
 	t.Parallel()
 	view, _, connector := streamView(t)
@@ -407,14 +398,14 @@ func TestViewReceiptDiscoveredThenClosed(t *testing.T) {
 	connector.send(t, view, true, slotFrame(80), slotFrame(81), accountFrame(receipt, 82, 1, viewReceiptsFilter), slotFrame(82), slotFrame(83))
 	done := make(chan Observation, 1)
 	go func() {
-		observation, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence)
+		observation, err := bridgeCustodyRead(context.Background(), view)
 		if err != nil {
 			t.Error(err)
 		}
 		done <- observation
 	}()
 	waitFor(t, func() bool { return connector.opened() == 2 })
-	if _, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, err := bridgeCustodyRead(context.Background(), view); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("the view planned before the receipt handoff promoted: %v", err)
 	}
 	if _, _, err := view.read(context.Background(), []string{bridgeIdleATA}, 0); err != nil {
@@ -428,8 +419,30 @@ func TestViewReceiptDiscoveredThenClosed(t *testing.T) {
 		t.Fatalf("discovered receipt demand: %+v", observation.Snapshot)
 	}
 	connector.send(t, view, true, accountFrame(ConfirmedAccount{Address: address}, 90, 1, viewAccountsFilter), slotFrame(90), slotFrame(91))
-	observation, err := ObserveConfirmedBridgeSnapshot(context.Background(), view, fence)
+	observation, err := bridgeCustodyRead(context.Background(), view)
 	if err != nil || observation.Snapshot.WithdrawalDemandRaw != 0 || observation.Snapshot.Slot != 90 {
 		t.Fatalf("closed receipt still owed: %+v %v", observation.Snapshot, err)
 	}
+}
+
+// bridgeCustodyRead is the three USDC custodies and the withdrawal receipts
+// at one view slot.
+func bridgeCustodyRead(ctx context.Context, view *View) (Observation, error) {
+	slot, accounts, receipts, err := view.readWithReceipts(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, 0)
+	if err != nil {
+		return Observation{}, err
+	}
+	idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
+	if err != nil {
+		return Observation{}, err
+	}
+	squads, err := decodePinnedUSDC(accountAt(accounts, bridgeSquadsATA), bridgeVault)
+	if err != nil {
+		return Observation{}, err
+	}
+	demand, _, err := decodeConfirmedWithdrawalDemand(receipts)
+	if err != nil {
+		return Observation{}, err
+	}
+	return Observation{Snapshot: Snapshot{Slot: slot, VoltrIdleRaw: int64(idle.Raw), SquadsIdleRaw: int64(squads.Raw), WithdrawalDemandRaw: demand}}, nil
 }

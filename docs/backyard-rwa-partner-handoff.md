@@ -50,7 +50,7 @@ money-moving executor in this release.
 
 Use the read-only Backyard vault integration page for AUM/NAV, current custody,
 position, route state, deposits, withdrawals, and operation history. Operational
-health requires one active route lease, zero competing writers, and no operation
+health requires the one writer holding the Backyard family lock, and no operation
 remaining nonterminal beyond the worker's reconciliation window.
 
 For a nonterminal operation, inspect its persisted wire/signature first. Never

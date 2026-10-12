@@ -29,12 +29,27 @@ var ErrFamilyHeld = errors.New("family is held by another process")
 // be direct, not a transaction pooler: a pooler hands the session to strangers.
 // done is closed when the hold is lost; the caller must stop writing then.
 func HoldFamily(ctx context.Context, directDSN string, family Family) (done <-chan struct{}, err error) {
+	return holdFamily(ctx, directDSN, family, false)
+}
+
+// WaitFamily is HoldFamily that waits for the lock instead of refusing it: a
+// second process blocks here until the holder's session ends.
+func WaitFamily(ctx context.Context, directDSN string, family Family) (done <-chan struct{}, err error) {
+	return holdFamily(ctx, directDSN, family, true)
+}
+
+func holdFamily(ctx context.Context, directDSN string, family Family, wait bool) (<-chan struct{}, error) {
 	conn, err := pgx.Connect(ctx, directDSN)
 	if err != nil {
 		return nil, err
 	}
-	var held bool
-	if err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended('loyal-family:'||$1, 0))`, string(family)).Scan(&held); err != nil {
+	held := true
+	if wait {
+		_, err = conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended('loyal-family:'||$1, 0))`, string(family))
+	} else {
+		err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended('loyal-family:'||$1, 0))`, string(family)).Scan(&held)
+	}
+	if err != nil {
 		_ = conn.Close(context.Background())
 		return nil, err
 	}

@@ -1,14 +1,9 @@
 package backyard
 
 import (
-	"context"
 	"crypto/ed25519"
-	"errors"
 	"fmt"
 	"math"
-	"time"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 // StepRequest is one leverage step of a lane as one transaction, from one
@@ -280,80 +275,4 @@ func stepEffects(up bool, collateral, debt ExpectedAccountEffect) ExpectedEffect
 		accounts[1] = minimum(debt)
 	}
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "atomic-step", Conserved: false, Accounts: accounts}
-}
-
-// BuildSimulateAndPersistStep is the step's build: the bound intent, the
-// prestate, then sign, simulate and persist the one wire.
-func BuildSimulateAndPersistStep(ctx context.Context, database *Database, rpc *chain.Client, view *View, operationID string, evidence StepExecutionEvidence, credentials Credentials) error {
-	if database == nil || rpc == nil || operationID == "" {
-		return fmt.Errorf("step runtime dependencies are required")
-	}
-	effects, err := jsonMarshalExpectedEffects(evidence.ExpectedEffects)
-	if err != nil {
-		return err
-	}
-	if _, err := DecodeExpectedEffects(effects); err != nil {
-		return err
-	}
-	buildStart := time.Now()
-	if err := database.requireBoundIntent(ctx, operationID, evidence.Request, effects); err != nil {
-		return err
-	}
-	if err := validateBuildPrestate(ctx, rpc, view, evidence.Request, evidence.ExpectedEffects); err != nil {
-		return err
-	}
-	signer, err := credentials.signer()
-	if err != nil {
-		return err
-	}
-	build, err := signStep(evidence.Request, signer)
-	if err != nil {
-		return err
-	}
-	if err := database.MarkBuilt(ctx, operationID, build.MessageSHA256, effects); err != nil {
-		return err
-	}
-	simulation, err := simulateSigned(ctx, rpc, build.SignedWire)
-	if err != nil {
-		return stepSimulationHold(err)
-	}
-	logStage("step_build_simulate", buildStart)
-	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {
-		return err
-	}
-	if simulation.Slot <= 0 {
-		return fmt.Errorf("exact signed step was not simulated")
-	}
-	build.SimulationSlot = simulation.Slot
-	return database.PersistSigned(ctx, operationID, build)
-}
-
-// signStep signs the step's message as the pinned delegate.
-func signStep(r StepRequest, executor ed25519.PrivateKey) (BuildResult, error) {
-	delegate := mustKey(bridgeDelegate)
-	if len(executor) != ed25519.PrivateKeySize || publicKeyFromBytes(executor.Public().(ed25519.PublicKey)) != delegate {
-		return BuildResult{}, fmt.Errorf("executor is not the pinned Squads delegate")
-	}
-	message, err := compileStepMessageForDelegate(r, delegate)
-	if err != nil {
-		return BuildResult{}, err
-	}
-	signed, err := signMessage(executor, delegate, message, r.Open.RecentBlockhash, r.Open.LastValidBlockHeight)
-	if err != nil {
-		return BuildResult{}, err
-	}
-	return BuildResult{MessageSHA256: signed.messageSHA256, SignedWire: signed.signedWire, SignedWireSHA256: signed.signedWireSHA256,
-		TransactionSignature: signed.transactionSignature, RecentBlockhash: signed.recentBlockhash, LastValidBlockHeight: signed.lastValidBlockHeight}, nil
-}
-
-// stepSimulationHold is a step the chain refuses in simulation: the
-// target's chain_refused hold, journaled on the never-sent operation with the
-// simulation's error; the next tick decides again. An unavailable endpoint
-// and the Squads spending-limit refusal keep their own paths.
-func stepSimulationHold(err error) error {
-	var limit *SquadsSpendingLimitError
-	if errors.Is(err, errConfirmedObservationUnavailable) || errors.As(err, &limit) {
-		return err
-	}
-	return &BudgetHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
 }

@@ -37,22 +37,6 @@ func TestValuationPersistencePreservesLegacyReplayAndProjectedSource(t *testing.
 	if projection.ValuationSource != routeRefreshValuationSource || projection.ValuationSlot != 123 || projected.ValuationSource != routeRefreshValuationSource {
 		t.Fatal("projected provenance dropped")
 	}
-	later := projected
-	later.ObservationSlot = 124
-	later.ValuationSlot = 124
-	if !sameDecisionEvidence(projected, later) || !sameDecisionEvidence(old, later) {
-		t.Fatal("later slot or missing historical metadata broke replay")
-	}
-	changed := later
-	changed.Reason = "changed"
-	if sameDecisionEvidence(old, changed) {
-		t.Fatal("legacy replay accepted different decision")
-	}
-	changed = later
-	changed.ValuationSource = "confirmed"
-	if sameDecisionEvidence(projected, changed) {
-		t.Fatal("explicit provenance changed on replay")
-	}
 	o.Snapshot.ValuationSlot = 122
 	if _, err := newRouteObservationProjection(o); err == nil {
 		t.Fatal("mixed bank provenance accepted")

@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -144,7 +143,6 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 	fee.Address, fee.Data = route.DebtFeeReceiver, append([]byte(nil), fee.Data...)
 	binary.LittleEndian.PutUint64(fee.Data[64:72], 5)
 	accounts = append(accounts, fee)
-	_, _, _, _, rpc, _ := debtResidueAdmissionFixture(t, 20_000, accounts...)
 	r, err := m.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 1000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
@@ -156,16 +154,6 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 	if e.Accounts[2].AfterRaw != 9 {
 		t.Fatal("rounding omitted fee")
 	}
-	if _, err := m.validateRequestPrestate(context.Background(), rpc, fixtureView(t, rpc), r, e); err != nil {
-		t.Fatal(err)
-	}
-	// The shared fee receiver's balance moves with other borrowers' fees:
-	// only this borrow's fee delta is bound (live 2026-09-29).
-	binary.LittleEndian.PutUint64(fee.Data[64:72], 6)
-	if _, err := m.validateRequestPrestate(context.Background(), rpc, fixtureView(t, rpc), r, e); err != nil {
-		t.Fatal("shared fee receiver balance move refused the borrow", err)
-	}
-	binary.LittleEndian.PutUint64(fee.Data[64:72], 5)
 	for _, variant := range []string{"omit_fee", "destination", "fee_authority", "conservation", "deposit"} {
 		copy := e
 		copy.Accounts = append([]ExpectedAccountEffect(nil), e.Accounts...)

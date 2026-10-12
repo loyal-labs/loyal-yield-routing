@@ -85,37 +85,17 @@ func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 const targetInputsSQL = `COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('level', level, 'upApproved', up_approved)) FROM loyal_yield.backyard_lane_levels WHERE route_key = $1), '{}'::jsonb),
 	COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('equityZero', equity_zero)) FROM loyal_yield.backyard_lane_exits WHERE route_key = $1), '{}'::jsonb)`
 
-// RecordLaneLevel stores one lane's level under the route fence. The selector
-// sample loop is its only writer; it changes no money by itself.
+// RecordLaneLevel stores one lane's level. The selector sample loop is its
+// only writer; it changes no money by itself.
 func (d *Database) RecordLaneLevel(ctx context.Context, routeKey, lane string, level laneLevel) error {
 	if !earnActiveLane(lane) || !validLevel(level.Level) || (level.UpApproved && level.Level <= 1) {
 		return fmt.Errorf("invalid_lane_level")
 	}
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	if lease.RouteKey != routeKey {
-		return fmt.Errorf("lane_level_route_lease_mismatch")
-	}
-	// A changed level is a new target input: the route generation advances
-	// with it, so a tick planned on the old level re-reads.
-	tag, err := d.pool.Exec(ctx, `WITH route AS (
-			UPDATE loyal_yield.multiply_route_states
-			SET state_version = state_version + 1, state = jsonb_set(state, '{generation}', to_jsonb(state_version + 1)), updated_at = clock_timestamp()
-			WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp()
-			RETURNING route_key)
-		INSERT INTO loyal_yield.backyard_lane_levels (route_key, lane, level, up_approved, decided_at)
-		SELECT route_key, $4, $5, $6, clock_timestamp() FROM route
+	_, err := d.pool.Exec(ctx, `INSERT INTO loyal_yield.backyard_lane_levels (route_key, lane, level, up_approved, decided_at)
+		VALUES ($1, $2, $3, $4, clock_timestamp())
 		ON CONFLICT (route_key, lane) DO UPDATE SET level = EXCLUDED.level, up_approved = EXCLUDED.up_approved, decided_at = EXCLUDED.decided_at`,
-		routeKey, lease.Owner, lease.FencingToken, lane, level.Level, level.UpApproved)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return ErrRouteLeaseLost
-	}
-	return nil
+		routeKey, lane, level.Level, level.UpApproved)
+	return err
 }
 
 // LaneExitRequest is one `loyal-engine backyard exit-lane` call.

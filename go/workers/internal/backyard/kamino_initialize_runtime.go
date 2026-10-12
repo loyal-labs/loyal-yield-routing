@@ -30,31 +30,15 @@ func initializationSnapshotReady(s Snapshot) bool {
 	return t.Rule == ruleEntry && t.EntryRaw > 0 && t.EntryRaw <= min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s) > TargetLTVBPS
 }
 
-// initializationAuthorized: the decision initializes the view's own entry
-// lane, or the overflow lane the view's next move deposits into.
-func initializationAuthorized(s Snapshot, d Decision) bool {
-	if d.StrategyKey == s.RouteLane {
-		return initializationSnapshotReady(s)
-	}
-	lane, ok := overflowLaneOf(s.RouteLane)
-	return ok && lane == d.StrategyKey && s.Target.MoveTo == lane && s.Target.MoveRaw > 0 && !s.OverflowObligationPresent && earnInitializerLane(lane)
-}
-
-// This prepares only an empty account before allocating user principal.
-func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observe func(context.Context) (Observation, error)) (Observation, KaminoInitializationRequest, error) {
+// This prepares only an empty account before allocating user principal: the
+// initializer the tick decided, from the tick's own observation.
+func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, o Observation) (Observation, KaminoInitializationRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	if rpc == nil || observe == nil || decision.Action != InitializeKaminoObligation || decision.Validate() != nil {
-		return Observation{}, KaminoInitializationRequest{}, budgetHold("invalid_initializer_preparation")
+	if rpc == nil || decision.Action != InitializeKaminoObligation || decision.Validate() != nil {
+		return o, KaminoInitializationRequest{}, budgetHold("invalid_initializer_preparation")
 	}
-	o, err := observe(ctx)
-	if err != nil {
-		return o, KaminoInitializationRequest{}, err
-	}
-	if !decisionsEqual(Decide(o.Snapshot), decision) || !initializationAuthorized(o.Snapshot, decision) {
-		return o, KaminoInitializationRequest{}, budgetHold("initializer_decision_changed")
-	}
-	if err = manifest.validateBindings(); err != nil {
+	if err := manifest.validateBindings(); err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
 	rent, err := rpc.RentExempt(ctx, kamino.ObligationSize)
@@ -81,9 +65,6 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, view *V
 	r.MaximumFeeLamports, err = chain.MessageFee(message)
 	if err != nil {
 		return o, r, budgetHoldFrom(err, "message_fee_unpriced")
-	}
-	if _, err = manifest.validateKaminoInitializationPrestate(ctx, view, r, o.Snapshot.Slot); err != nil {
-		return o, r, err
 	}
 	return o, r, nil
 }

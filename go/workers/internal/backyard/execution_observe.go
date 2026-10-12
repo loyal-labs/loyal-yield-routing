@@ -80,16 +80,6 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	refreshedDecision := Decide(observation.Snapshot)
-	if refreshedDecision.Action == HoldManualRecovery {
-		// The refresh itself discovered a safety fault. Return the coherent
-		// observation so Worker.Tick can durably record the hold and latch it;
-		// treating this as ordinary drift would discard the stop.
-		return observation, BridgeExecutionEvidence{}, nil
-	}
-	if !decisionsEqual(refreshedDecision, decision) {
-		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("actionable decision changed before construction"))
-	}
 	route, err := runtimeRoute(decision.StrategyKey)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err

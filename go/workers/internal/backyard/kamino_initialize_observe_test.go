@@ -1,13 +1,10 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"maps"
 	"math"
-	"net/http"
 	"slices"
 	"testing"
 
@@ -91,48 +88,10 @@ func TestInitializationPrestateRequiresAbsentTargetAndFundedExactGraph(t *testin
 			case "rent_nan":
 				change(rentAddress, func(a *ConfirmedAccount) { binary.LittleEndian.PutUint64(a.Data[8:16], math.Float64bits(math.NaN())) })
 			}
-			slot, err := validateKaminoInitializationPrestate(context.Background(), accountView(t, 78, slices.Collect(maps.Values(accounts))), r, 77)
+			slot, err := embeddedTestManifest(t).validateKaminoInitializationPrestate(context.Background(), accountView(t, 78, slices.Collect(maps.Values(accounts))), r, 77)
 			if (err == nil) != (drift == "") || (err == nil && slot != 78) {
 				t.Fatalf("drift=%s slot=%d err=%v", drift, slot, err)
 			}
 		})
 	}
-}
-
-func TestInitializationMissingPrerequisiteKeepsValidatedExpiryRecovery(t *testing.T) {
-	t.Parallel()
-	e, _ := initializationReconcileFixture(t)
-	r := *e.Initialization
-	raw, _ := json.Marshal(e)
-	input, err := encodePhase3BuildInput(r, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	message, err := CompileKaminoInitializationMessage(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wire := signedWire(message, bytes.Repeat([]byte{9}, 64))
-	digest, err := Phase3IntentDigest(r, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	op := PersistedOperation{Operation: Operation{Decision: Decision{Action: InitializeKaminoObligation, StrategyKey: r.RouteLane, Reason: "multiply_obligation_missing", IdempotencyKey: "initializer-controlled"}}, Status: Signed, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wireSig(wire)), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
-	auth := phase3OperationAuthorization{IntentSHA256: digest, SignedWireSHA256: op.SignedWireSHA256, BuildInput: input}
-	rpc := newFakeChain(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
-		t.Fatal("the prestate read RPC")
-		return nil, nil
-	}))
-	// The final send proves the persisted wire first; only then is a missing
-	// policy a prestate hold of that proven wire.
-	m := embeddedTestManifest(t)
-	request, effects, err := m.validateSignedIdentity(auth, op)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = m.validateRequestPrestate(context.Background(), rpc, accountView(t, 78, nil), request, effects)
-	assertBudgetHold(t, err, "initializer_prestate_unavailable")
-	op.SignedWireSHA256 = sha256Bytes([]byte("other"))
-	_, _, err = m.validateSignedIdentity(auth, op)
-	assertBudgetHold(t, err, "persisted_signature_or_expiry_mismatch")
 }

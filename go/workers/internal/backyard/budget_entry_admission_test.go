@@ -27,34 +27,3 @@ func entrySwapAdmissionFixture(t *testing.T) (Observation, Decision, JupiterExec
 	e.Request.EntryReturnReserved = true
 	return o, d, e, manifest, rpc, client, accounts
 }
-
-// The build and final-send prestate of an entry swap: the persisted entry
-// passes against its own chain state and refuses an unaccounted position,
-// changed custody or a changed output bound.
-func TestEntrySwapPrestateRefusesUnaccountedPositionAndCustodyDrift(t *testing.T) {
-	t.Parallel()
-	_, _, e, _, rpc, _, _ := entrySwapAdmissionFixture(t)
-	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
-		t.Fatal(err)
-	}
-	for _, variant := range []string{"position", "collateral", "debt", "source", "output"} {
-		t.Run(variant, func(t *testing.T) {
-			_, _, e, _, rpc, _, accounts := entrySwapAdmissionFixture(t)
-			switch variant {
-			case "position":
-				binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.Kamino.Obligation).Data[128:136], 1)
-			case "collateral":
-				binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.CollateralCustody).Data[64:72], 1)
-			case "debt":
-				binary.LittleEndian.PutUint64(accountAt(accounts, ethenaUSDePYUSD.DebtCustody).Data[64:72], 1)
-			case "source":
-				binary.LittleEndian.PutUint64(accountAt(accounts, bridgeSquadsATA).Data[64:72], 20_001)
-			case "output":
-				e.ExpectedEffects.Accounts[1].AfterRaw++
-			}
-			if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err == nil {
-				t.Fatal("changed entry passed the build and send prestate")
-			}
-		})
-	}
-}

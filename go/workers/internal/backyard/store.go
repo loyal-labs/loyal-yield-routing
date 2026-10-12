@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,24 +17,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // OperationInsert is the only execution journal shape. The SQL uses the existing
 // multiply_operations table; callers must insert it before any transaction work.
 const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, strategy_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8, $9)`
-
-const RouteStateForUpdate = `SELECT state_version, state FROM loyal_yield.multiply_route_states WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() FOR UPDATE`
-
-const AcquireRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_owner = $2, lease_expires_at = clock_timestamp() + ($3 * interval '1 millisecond'), fencing_token = fencing_token + 1, updated_at = clock_timestamp()
-	WHERE route_key = $1 AND (lease_owner IS NULL OR lease_expires_at <= clock_timestamp()) RETURNING fencing_token, lease_expires_at`
-
-const RefreshRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_expires_at = clock_timestamp() + ($4 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at`
-
-const ReleaseRouteLeaseSQL = `UPDATE loyal_yield.multiply_route_states SET lease_owner = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3`
-
-const AssertRouteLeaseSQL = `SELECT lease_expires_at FROM loyal_yield.multiply_route_states WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp()`
-
-const OperationRouteForLeaseSQL = `SELECT operation.route_key FROM loyal_yield.multiply_operations operation JOIN loyal_yield.multiply_route_states route ON route.route_key = operation.route_key WHERE operation.operation_id = $1 AND route.lease_owner = $2 AND route.fencing_token = $3 AND route.lease_expires_at > clock_timestamp() FOR UPDATE OF route`
 
 // strategyJournalHead opens the journal CTE over one route's operations.
 const strategyJournalHead = "WITH strategy_journal AS (\n SELECT * FROM loyal_yield.multiply_operations WHERE route_key = $1 AND "
@@ -87,30 +74,23 @@ const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.m
  AND expected_effects->'manualResolution'->>'evidenceSha256' ~ '^[0-9a-f]{64}$'
  AND length(expected_effects->'manualResolution'->>'evidencePath')>0,false))`
 
-const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7, updated_at = now() WHERE operation_id = $1 AND status = 'simulated'`
+// PersistSignedUpdate is the write-ahead record of a tick's transaction: the
+// exact signed wire, its simulation and the effects reconcile checks, in one
+// statement, before anything sends it.
+const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7,
+ simulation_slot = $8, simulation_result = $9::jsonb, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $10::jsonb), updated_at = now() WHERE operation_id = $1 AND status = 'decided'`
 
 const PersistBroadcastIntentUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'broadcast_intent', broadcast_intent_at = now(), updated_at = now() WHERE operation_id = $1 AND status = 'signed' AND signed_wire IS NOT NULL`
 
-const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET state = jsonb_set(state, '{observation}', $4::jsonb, true), updated_at = clock_timestamp() WHERE route_key = $1 AND lease_owner = $2 AND fencing_token = $3 AND lease_expires_at > clock_timestamp() AND (state -> 'observation' ->> 'observedSlot' IS NULL OR (state -> 'observation' ->> 'observedSlot')::bigint <= $5)`
+const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET state = jsonb_set(state, '{observation}', $2::jsonb, true), updated_at = clock_timestamp() WHERE route_key = $1 AND (state -> 'observation' ->> 'observedSlot' IS NULL OR (state -> 'observation' ->> 'observedSlot')::bigint <= $3) RETURNING state_version`
 
 const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, forecast_apy_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
 
-var (
-	ErrRouteLeaseUnavailable = errors.New("route lease is held by another worker")
-	ErrRouteLeaseLost        = errors.New("route lease was lost or expired")
-)
-
-type RouteLease struct {
-	RouteKey     string
-	Owner        string
-	FencingToken int64
-	ExpiresAt    time.Time
-}
-
+// Database is Backyard's store. The process that writes through it holds the
+// family advisory lock (cmd/loyal-engine), so no write here re-checks who
+// the writer is.
 type Database struct {
-	pool    *pgxpool.Pool
-	leaseMu sync.RWMutex
-	lease   *RouteLease
+	pool *pgxpool.Pool
 }
 
 func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
@@ -128,149 +108,23 @@ func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
 	return &Database{pool: pool}, nil
 }
 
+// holdWriterLock takes Backyard's one-writer lock (the family advisory lock
+// the engine holds) for a one-shot operator write. It refuses while the
+// worker runs; release ends the hold.
+func holdWriterLock(ctx context.Context, databaseURL string) (release func(), err error) {
+	lockCtx, cancel := context.WithCancel(ctx)
+	lost, err := engine.HoldFamily(lockCtx, databaseURL, engine.FamilyBackyard)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return func() { cancel(); <-lost }, nil
+}
+
 func (d *Database) Close() {
 	if d != nil && d.pool != nil {
 		d.pool.Close()
 	}
-}
-
-func durationMilliseconds(duration time.Duration) (int64, error) {
-	if duration <= 0 || duration%time.Millisecond != 0 {
-		return 0, fmt.Errorf("lease duration must be a positive whole number of milliseconds")
-	}
-	milliseconds := duration.Milliseconds()
-	if milliseconds <= 0 {
-		return 0, fmt.Errorf("lease duration is too small")
-	}
-	return milliseconds, nil
-}
-
-func (d *Database) setLease(lease *RouteLease) {
-	d.leaseMu.Lock()
-	defer d.leaseMu.Unlock()
-	if lease == nil {
-		d.lease = nil
-		return
-	}
-	copy := *lease
-	d.lease = &copy
-}
-
-func (d *Database) currentLease() (RouteLease, error) {
-	if d == nil || d.pool == nil {
-		return RouteLease{}, fmt.Errorf("database is not configured")
-	}
-	d.leaseMu.RLock()
-	defer d.leaseMu.RUnlock()
-	if d.lease == nil {
-		return RouteLease{}, ErrRouteLeaseLost
-	}
-	return *d.lease, nil
-}
-
-// AcquireRouteLease never treats an unexpired lease as re-entrant, even when
-// its owner text is identical. A rolling deploy can briefly overlap two
-// instances; only an absent or expired row may increment the fencing token.
-func (d *Database) AcquireRouteLease(ctx context.Context, routeKey, owner string, ttl time.Duration) (RouteLease, error) {
-	if d == nil || d.pool == nil || routeKey == "" || owner == "" {
-		return RouteLease{}, fmt.Errorf("database, route key, and lease owner are required")
-	}
-	milliseconds, err := durationMilliseconds(ttl)
-	if err != nil {
-		return RouteLease{}, err
-	}
-	var lease RouteLease
-	lease.RouteKey, lease.Owner = routeKey, owner
-	err = d.pool.QueryRow(ctx, AcquireRouteLeaseSQL, routeKey, owner, milliseconds).
-		Scan(&lease.FencingToken, &lease.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return RouteLease{}, ErrRouteLeaseUnavailable
-	}
-	if err != nil {
-		return RouteLease{}, fmt.Errorf("acquire route lease: %w", err)
-	}
-	if lease.FencingToken <= 0 || lease.ExpiresAt.IsZero() {
-		return RouteLease{}, fmt.Errorf("database returned an invalid route lease")
-	}
-	d.setLease(&lease)
-	return lease, nil
-}
-
-func (d *Database) RefreshRouteLease(ctx context.Context, ttl time.Duration) (RouteLease, error) {
-	lease, err := d.currentLease()
-	if err != nil {
-		return RouteLease{}, err
-	}
-	milliseconds, err := durationMilliseconds(ttl)
-	if err != nil {
-		return RouteLease{}, err
-	}
-	err = d.pool.QueryRow(ctx, RefreshRouteLeaseSQL, lease.RouteKey, lease.Owner, lease.FencingToken, milliseconds).
-		Scan(&lease.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		d.setLease(nil)
-		return RouteLease{}, ErrRouteLeaseLost
-	}
-	if err != nil {
-		return RouteLease{}, fmt.Errorf("refresh route lease: %w", err)
-	}
-	d.setLease(&lease)
-	return lease, nil
-}
-
-// ReleaseRouteLease clears only the exact owner/fencing pair. A zero-row result
-// means ownership already changed and must never be overwritten by shutdown.
-func (d *Database) ReleaseRouteLease(ctx context.Context) (bool, error) {
-	lease, err := d.currentLease()
-	if errors.Is(err, ErrRouteLeaseLost) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	result, err := d.pool.Exec(ctx, ReleaseRouteLeaseSQL, lease.RouteKey, lease.Owner, lease.FencingToken)
-	if err != nil {
-		return false, fmt.Errorf("release route lease: %w", err)
-	}
-	d.setLease(nil)
-	return result.RowsAffected() == 1, nil
-}
-
-func (d *Database) AssertRouteLease(ctx context.Context, routeKey string) error {
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	if lease.RouteKey != routeKey {
-		return ErrRouteLeaseLost
-	}
-	var expiresAt time.Time
-	err = d.pool.QueryRow(ctx, AssertRouteLeaseSQL, lease.RouteKey, lease.Owner, lease.FencingToken).Scan(&expiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		d.setLease(nil)
-		return ErrRouteLeaseLost
-	}
-	if err != nil {
-		return fmt.Errorf("assert route lease: %w", err)
-	}
-	return nil
-}
-
-func (d *Database) lockOperationLease(ctx context.Context, tx pgx.Tx, operationID string) error {
-	lease, err := d.currentLease()
-	if err != nil {
-		return err
-	}
-	var routeKey string
-	err = tx.QueryRow(ctx, OperationRouteForLeaseSQL, operationID, lease.Owner, lease.FencingToken).Scan(&routeKey)
-	if errors.Is(err, pgx.ErrNoRows) || routeKey != lease.RouteKey {
-		d.setLease(nil)
-		return ErrRouteLeaseLost
-	}
-	if err != nil {
-		return fmt.Errorf("lock operation lease: %w", err)
-	}
-	return nil
 }
 
 type DecisionRecord struct {
@@ -283,23 +137,10 @@ func durableDecisionIdempotencyKey(routeKey, operationEpoch string, decision Dec
 	if routeKey == "" || decision.IdempotencyKey == "" {
 		return "", fmt.Errorf("decision idempotency identity is incomplete")
 	}
-	if decision.Action == Hold || decision.Action == HoldManualRecovery {
-		return routeKey + ":" + decision.IdempotencyKey, nil
-	}
 	if operationEpoch == "" {
 		return "", fmt.Errorf("durable operation epoch is empty")
 	}
 	return routeKey + ":" + operationEpoch + ":" + decision.IdempotencyKey, nil
-}
-
-// holdBoundIdempotencyKey namespaces a terminal hold's audit-only identity by
-// the manifest it was decided under: holds carry no epoch, so an unchanged
-// observation after a rollover reused the historical row's identity and failed
-// the evidence comparison every tick. The suffix is collision-free (a
-// validated 64-hex hash, fixed segment absent from executable epochs);
-// executable epoch identities stay untouched.
-func holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256 string) string {
-	return persistedIdempotencyKey + ":hold-binding:" + manifestSHA256
 }
 
 type decisionEvidence struct {
@@ -344,20 +185,10 @@ func newDecisionEvidence(observation Observation, decision Decision, manifestSHA
 	}
 }
 
-func initialDecisionStatus(decision Decision) (OperationStatus, any) {
-	if decision.Action == Hold {
-		return Held, nil
-	}
-	if decision.Action == HoldManualRecovery {
-		return ManualRecovery, decision.Reason
-	}
-	return Decided, nil
-}
-
-// RecordDecision serializes on the existing route row and relies on the
-// existing one-nonterminal partial unique index as the final concurrency gate.
-// HOLD and HOLD_MANUAL_RECOVERY are persisted as terminal journal decisions;
-// neither can accidentally occupy the transaction execution slot.
+// RecordDecision journals the tick's transaction as a decided operation. Only
+// transactions get rows: a hold is a gauge (holdLog) and a manual stop is the
+// latch row. The one-nonterminal partial unique index keeps one operation in
+// flight.
 func (d *Database) RecordDecision(
 	ctx context.Context,
 	routeKey string,
@@ -383,8 +214,8 @@ func (d *Database) RecordDecisionOnManifest(
 	decision Decision,
 	manifestSHA256 string,
 ) (DecisionRecord, error) {
-	if decision.Action == HoldManualRecovery {
-		return d.RecordManualRecovery(ctx, routeKey, observation, decision, manifestSHA256)
+	if decision.Action == Hold || decision.Action == HoldManualRecovery {
+		return DecisionRecord{}, fmt.Errorf("a hold is not a journal row")
 	}
 	if err := validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256); err != nil {
 		return DecisionRecord{}, err
@@ -425,32 +256,6 @@ func persistedValuationMetadata(o Observation) (string, int64, error) {
 	return source, slot, nil
 }
 
-// Keep the first persisted slot when the same economic decision is observed
-// again. Old rows did not record provenance: their economic identity remains
-// authoritative, and they must not be rewritten or made unrecoverable.
-func sameDecisionEvidence(existing, candidate decisionEvidence) bool {
-	candidate.ObservationSlot = existing.ObservationSlot
-	candidate.ValuationSlot = existing.ValuationSlot
-	if existing.ValuationSource == "" {
-		candidate.ValuationSource = ""
-	}
-	return existing == candidate
-}
-
-func validateDecisionPersistence(
-	d *Database,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-) error {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	return validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256)
-}
-
 func validateDecisionPersistenceOnManifest(
 	d *Database,
 	manifest RouteManifest,
@@ -481,157 +286,6 @@ func validateDecisionPersistenceOnManifest(
 	return nil
 }
 
-// RecordManualRecovery persists the terminal hold and its route latch in the
-// same transaction. A committed HOLD_MANUAL_RECOVERY can therefore never be
-// observed without the stop that protects the next tick.
-func (d *Database) RecordManualRecovery(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, nil, nil)
-}
-
-// RecordManualRecoveryAtGeneration re-records a latched hold only if the
-// physical latch still has the generation read at the top of the tick. A clear
-// increments that generation, so a stale tick rolls back its journal attempt
-// instead of re-arming the route.
-func (d *Database) RecordManualRecoveryAtGeneration(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-	generation int64,
-) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, &generation, nil)
-}
-
-// recordManualRecovery keeps the failure hook package-private so the database
-// test can force an error after the hold insert and prove that the transaction
-// rolls back both durable facts together.
-func (d *Database) recordManualRecovery(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-	afterInsert func() error,
-) (DecisionRecord, error) {
-	return d.recordManualRecoveryWithGeneration(ctx, routeKey, observation, decision, manifestSHA256, nil, afterInsert)
-}
-
-func (d *Database) recordManualRecoveryWithGeneration(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-	expectedGeneration *int64,
-	afterInsert func() error,
-) (DecisionRecord, error) {
-	if decision.Action != HoldManualRecovery {
-		return DecisionRecord{}, fmt.Errorf("manual recovery persistence requires HOLD_MANUAL_RECOVERY")
-	}
-	if err := validateDecisionPersistence(d, routeKey, observation, decision, manifestSHA256); err != nil {
-		return DecisionRecord{}, err
-	}
-	latch := ManualRecoveryLatch{
-		Reason:          decision.Reason,
-		ObservationID:   observation.Snapshot.ObservationID,
-		ObservationSlot: observation.Snapshot.Slot,
-	}
-	if err := validateManualRecoveryLatch(latch); err != nil {
-		return DecisionRecord{}, err
-	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return DecisionRecord{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256)
-	if err != nil {
-		return DecisionRecord{}, err
-	}
-	var generation int64
-	if expectedGeneration != nil {
-		if err := compareAndSetManualRecoveryGeneration(ctx, tx, routeKey, *expectedGeneration); err != nil {
-			return DecisionRecord{}, err
-		}
-		generation = *expectedGeneration
-	} else {
-		generation, err = currentManualRecoveryGeneration(ctx, tx, routeKey)
-		if err != nil {
-			return DecisionRecord{}, err
-		}
-	}
-	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations
-		SET expected_effects = expected_effects || jsonb_build_object('latchGeneration', $2::bigint)
-		WHERE operation_id = $1`, record.OperationID, generation); err != nil {
-		return DecisionRecord{}, fmt.Errorf("record manual recovery generation: %w", err)
-	}
-	if afterInsert != nil {
-		if err := afterInsert(); err != nil {
-			return DecisionRecord{}, err
-		}
-	}
-	if _, err := tx.Exec(ctx, latchManualRecoverySQL, routeKey, manualRecoveryLatchReason(latch.Reason), latch.ObservationID, latch.ObservationSlot, generation); err != nil {
-		return DecisionRecord{}, fmt.Errorf("latch manual recovery: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return DecisionRecord{}, err
-	}
-	return record, nil
-}
-
-func currentManualRecoveryGeneration(ctx context.Context, tx pgx.Tx, routeKey string) (int64, error) {
-	var generation int64
-	err := tx.QueryRow(ctx,
-		`SELECT generation FROM loyal_yield.backyard_manual_recovery_latches WHERE route_key = $1 FOR UPDATE`, routeKey).
-		Scan(&generation)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// A derived legacy latch has no physical row to carry the generation.
-		// Continue the sequence from the journal so a new physical latch cannot
-		// reset the route's fence after an operator clear.
-		err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(
-			CASE
-				WHEN expected_effects ->> 'latchGeneration' ~ '^[0-9]+$'
-				THEN (expected_effects ->> 'latchGeneration')::bigint
-				ELSE 0
-			END
-		), 0)
-		FROM loyal_yield.multiply_operations
-		WHERE route_key = $1 AND status = 'manual_recovery'
-		  AND action IN ('HOLD_MANUAL_RECOVERY', 'HOLD_CLEARED')`, routeKey).Scan(&generation)
-		if err != nil {
-			return 0, fmt.Errorf("read journal manual recovery generation: %w", err)
-		}
-		return generation, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("read manual recovery generation: %w", err)
-	}
-	return generation, nil
-}
-
-func compareAndSetManualRecoveryGeneration(ctx context.Context, tx pgx.Tx, routeKey string, expected int64) error {
-	var generation int64
-	err := tx.QueryRow(ctx,
-		`UPDATE loyal_yield.backyard_manual_recovery_latches
-		 SET generation = generation
-		 WHERE route_key = $1 AND cleared_at IS NULL AND generation = $2
-		 RETURNING generation`, routeKey, expected).Scan(&generation)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errManualRecoveryLatchGenerationChanged
-	}
-	if err != nil {
-		return fmt.Errorf("compare manual recovery latch generation: %w", err)
-	}
-	return nil
-}
-
 func (d *Database) recordDecisionTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -640,90 +294,28 @@ func (d *Database) recordDecisionTx(
 	decision Decision,
 	manifestSHA256 string,
 ) (DecisionRecord, error) {
-	lease, err := d.currentLease()
-	if err != nil || lease.RouteKey != routeKey {
-		return DecisionRecord{}, ErrRouteLeaseLost
+	var unresolvedCapitalRecovery bool
+	if err := tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, routeKey).Scan(&unresolvedCapitalRecovery); err != nil {
+		return DecisionRecord{}, fmt.Errorf("read unresolved capital recovery: %w", err)
 	}
-	var stateVersion int64
-	var routeState []byte
-	if err := tx.QueryRow(ctx, RouteStateForUpdate, routeKey, lease.Owner, lease.FencingToken).Scan(&stateVersion, &routeState); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			d.setLease(nil)
-			return DecisionRecord{}, ErrRouteLeaseLost
-		}
-		return DecisionRecord{}, fmt.Errorf("lock route: %w", err)
+	if unresolvedCapitalRecovery {
+		return DecisionRecord{}, fmt.Errorf("unresolved capital-moving manual recovery blocks execution")
 	}
-	if stateVersion <= 0 || len(routeState) == 0 {
-		return DecisionRecord{}, fmt.Errorf("invalid locked route state")
-	}
-	var setupState map[string]json.RawMessage
-	if json.Unmarshal(routeState, &setupState) != nil {
-		return DecisionRecord{}, budgetHold("invalid_setup_route_state")
-	}
-	operationEpoch := ""
-	if decision.Action != Hold && decision.Action != HoldManualRecovery {
-		var unresolvedCapitalRecovery bool
-		if err := tx.QueryRow(ctx, UnresolvedCapitalRecoverySQL, routeKey).Scan(&unresolvedCapitalRecovery); err != nil {
-			return DecisionRecord{}, fmt.Errorf("read unresolved capital recovery: %w", err)
-		}
-		if unresolvedCapitalRecovery {
-			return DecisionRecord{}, fmt.Errorf("unresolved capital-moving manual recovery blocks execution")
-		}
-		// Economic observations intentionally exclude slot. Namespace executable
-		// decisions by the last completed lifecycle mutation so retries before
-		// reconciliation dedupe, while a genuinely later cycle can execute the
-		// same economic decision again. HOLD dedupes per manifest and policy
-		// catalog binding.
-		if err := tx.QueryRow(ctx, LatestDecisionEpochSQL, routeKey).Scan(&operationEpoch); err != nil {
-			return DecisionRecord{}, fmt.Errorf("read durable operation epoch: %w", err)
-		}
+	// Economic observations intentionally exclude slot. Namespace the
+	// operation by the last completed lifecycle mutation, so a later cycle
+	// can execute the same economic decision again.
+	var operationEpoch string
+	if err := tx.QueryRow(ctx, LatestDecisionEpochSQL, routeKey).Scan(&operationEpoch); err != nil {
+		return DecisionRecord{}, fmt.Errorf("read durable operation epoch: %w", err)
 	}
 	persistedIdempotencyKey, err := durableDecisionIdempotencyKey(routeKey, operationEpoch, decision)
 	if err != nil {
 		return DecisionRecord{}, err
 	}
-	if decision.Action == Hold || decision.Action == HoldManualRecovery {
-		persistedIdempotencyKey = holdBoundIdempotencyKey(persistedIdempotencyKey, manifestSHA256)
-	}
-	var existing DecisionRecord
-	var existingAction string
-	var existingEffects []byte
-	err = tx.QueryRow(ctx, `SELECT operation_id, cycle, status, action, expected_effects FROM loyal_yield.multiply_operations WHERE idempotency_key = $1`, persistedIdempotencyKey).
-		Scan(&existing.OperationID, &existing.Cycle, &existing.Status, &existingAction, &existingEffects)
-	if err == nil {
-		if existingAction != string(decision.Action) {
-			return DecisionRecord{}, fmt.Errorf("idempotency identity has a different action")
-		}
-		var existingEnvelope struct {
-			Decision decisionEvidence `json:"decision"`
-		}
-		if json.Unmarshal(existingEffects, &existingEnvelope) != nil {
-			return DecisionRecord{}, fmt.Errorf("idempotency identity has invalid decision evidence")
-		}
-		candidate := newDecisionEvidence(observation, decision, manifestSHA256)
-		// An identical economic state may be confirmed again at a later slot.
-		// Preserve the first durable observation slot while treating the later
-		// read as the same decision identity.
-		if !sameDecisionEvidence(existingEnvelope.Decision, candidate) {
-			return DecisionRecord{}, fmt.Errorf("idempotency identity has different decision evidence")
-		}
-		return existing, nil
-	}
-	if err != pgx.ErrNoRows {
-		return DecisionRecord{}, fmt.Errorf("read duplicate decision: %w", err)
-	}
 	var cycle int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE((state ->> 'cycle')::bigint, 1) FROM loyal_yield.multiply_route_states WHERE route_key = $1`, routeKey).Scan(&cycle); err != nil {
 		return DecisionRecord{}, fmt.Errorf("read route cycle: %w", err)
 	}
-	var active bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status IN ('prepared','signed_persisted','broadcast_intent','confirmed','reconciliation_pending','decided','built','simulated','signed','submitted','reconciling'))`, routeKey).Scan(&active); err != nil {
-		return DecisionRecord{}, fmt.Errorf("read active operation: %w", err)
-	}
-	if active {
-		return DecisionRecord{}, fmt.Errorf("one nonterminal operation already exists")
-	}
-
 	expected, err := json.Marshal(map[string]any{
 		"schema":                "loyal-backyard-rwa-operation-evidence/v1",
 		"journalStrategyConfig": bridgeStrategy,
@@ -735,21 +327,20 @@ func (d *Database) recordDecisionTx(
 	}
 	idHash := sha256.Sum256([]byte(persistedIdempotencyKey))
 	operationID := hex.EncodeToString(idHash[:])
-	status, recoveryReason := initialDecisionStatus(decision)
 	strategyKey := decision.StrategyKey
 	if strategyKey == "" {
 		strategyKey = RouteID
 	}
-	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(status), persistedIdempotencyKey, strategyKey, string(expected), recoveryReason); err != nil {
+	if _, err := tx.Exec(ctx, OperationInsert, operationID, routeKey, cycle, string(decision.Action), string(Decided), persistedIdempotencyKey, strategyKey, string(expected), nil); err != nil {
 		return DecisionRecord{}, fmt.Errorf("insert decision: %w", err)
 	}
-	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: status}, nil
+	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: Decided}, nil
 }
 
 const nonterminalStatusSQL = `'decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling'`
 
 // CountNonterminal counts the route's operations a restart would resume. It
-// is the release gate's read: it takes no route lease, so it runs beside the
+// is the release gate's read: it takes no writer lock, so it runs beside the
 // live worker.
 func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, error) {
 	database, err := OpenDatabase(ctx, databaseURL)
@@ -768,9 +359,6 @@ func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, e
 func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*PersistedOperation, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return nil, fmt.Errorf("database is not configured")
-	}
-	if err := d.AssertRouteLease(ctx, routeKey); err != nil {
-		return nil, err
 	}
 	row := d.pool.QueryRow(ctx, `SELECT operation_id, route_key, cycle, action, status, idempotency_key, COALESCE(strategy_key, ''),
 		expected_effects, COALESCE(signed_wire, ''::bytea), COALESCE(signed_wire_sha256, ''), COALESCE(transaction_signature, ''),
@@ -811,9 +399,6 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 	if d == nil || d.pool == nil || routeKey == "" {
 		return false, fmt.Errorf("database is not configured")
 	}
-	if err := d.AssertRouteLease(ctx, routeKey); err != nil {
-		return false, err
-	}
 	var required bool
 	if err := d.pool.QueryRow(ctx, PostMutationNAVRequiredSQL, routeKey).Scan(&required); err != nil {
 		return false, fmt.Errorf("read post-mutation NAV requirement: %w", err)
@@ -851,7 +436,7 @@ type ReconciledBridgeJournalState struct {
 }
 
 // ReconciledBridgeJournalSQL reads every journal fact the fail-closed monitors
-// arm from in one lease-guarded round trip. Rows are reconciled only; the
+// arm from in one round trip. Rows are reconciled only; the
 // ticket-consuming list deliberately excludes STAGE_SQUADS_TO_VOLTR, and every
 // subquery shares one ordering so "after" means the same thing everywhere. The
 // ordering rows additionally return their tie-break columns so the Go side can
@@ -958,14 +543,9 @@ func (d *Database) ReconciledBridgeJournal(ctx context.Context, routeKey string)
 	if d == nil || d.pool == nil || routeKey == "" {
 		return ReconciledBridgeJournalState{}, fmt.Errorf("database is not configured")
 	}
-	if err := d.AssertRouteLease(ctx, routeKey); err != nil {
-		return ReconciledBridgeJournalState{}, err
-	}
 	return d.readReconciledBridgeJournal(ctx, routeKey)
 }
 
-// Read-only inspection shares journal decoding without acquiring an execution
-// lease. Execution callers must use ReconciledBridgeJournal above.
 func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error) {
 	var sequence, staged, stageSlot, ticketSlot, mutationSlot, reportSlot pgtype.Int8
 	var stageUpdated, ticketUpdated, mutationUpdated, reportUpdated pgtype.Timestamptz
@@ -1104,7 +684,7 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 }
 
 // RecordPositionSnapshot atomically persists the confirmed route projection and
-// its current position shape under the same live lease fence as decisions. Flat
+// its current position shape. Flat
 // and collateral-only rows are retained so the admin view cannot fall back to a
 // stale leveraged snapshot. APY remains unknown for positions; confirmed idle
 // capital has an exact zero forecast rather than an invented protocol yield.
@@ -1121,39 +701,21 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 	if err != nil {
 		return fmt.Errorf("encode route observation projection: %w", err)
 	}
-	lease, err := d.currentLease()
-	if err != nil || lease.RouteKey != routeKey {
-		return ErrRouteLeaseLost
-	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var generation int64
-	var state []byte
-	if err := tx.QueryRow(ctx, RouteStateForUpdate, routeKey, lease.Owner, lease.FencingToken).Scan(&generation, &state); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			d.setLease(nil)
-			return ErrRouteLeaseLost
-		}
-		return fmt.Errorf("lock route for position snapshot: %w", err)
-	}
-	if err := observation.planning.validateGeneration(routeKey, lease, generation); err != nil {
-		return err
-	}
 	if snapshot.SquadsIdleRaw > math.MaxInt64-snapshot.VoltrStrategyIdleRaw {
 		return fmt.Errorf("position snapshot idle claim overflows")
 	}
 	claimRaw := snapshot.SquadsIdleRaw + snapshot.VoltrStrategyIdleRaw
-	result, err := tx.Exec(ctx, RouteProjectionUpdate,
-		routeKey, lease.Owner, lease.FencingToken, projectionJSON, snapshot.Slot,
-	)
-	if err != nil {
+	var generation int64
+	if err := tx.QueryRow(ctx, RouteProjectionUpdate, routeKey, projectionJSON, snapshot.Slot).Scan(&generation); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("route observation projection regressed")
+		}
 		return fmt.Errorf("persist route observation projection: %w", err)
-	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("route observation projection lost its lease or regressed")
 	}
 	var strategyKey *string
 	var forecastAPYBPS *int64
@@ -1185,50 +747,17 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 	if d == nil || d.pool == nil || operationID == "" || !CanTransition(from, to) {
 		return fmt.Errorf("invalid durable transition %s -> %s", from, to)
 	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
 	query := `UPDATE loyal_yield.multiply_operations SET status = $2, updated_at = now()` + suffix + ` WHERE operation_id = $1 AND status = $3`
 	parameters := []any{operationID, string(to), string(from)}
 	parameters = append(parameters, args...)
-	result, err := tx.Exec(ctx, query, parameters...)
+	result, err := d.pool.Exec(ctx, query, parameters...)
 	if err != nil {
 		return fmt.Errorf("persist transition %s -> %s: %w", from, to, err)
 	}
 	if result.RowsAffected() != 1 {
-		return fmt.Errorf("transition %s -> %s lost serialization", from, to)
+		return fmt.Errorf("transition %s -> %s found no %s operation", from, to, from)
 	}
-	return tx.Commit(ctx)
-}
-
-func (d *Database) MarkBuilt(ctx context.Context, operationID, messageSHA256 string, expectedEffects []byte) error {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
-	return d.markBuiltOnManifest(ctx, manifest, operationID, messageSHA256, expectedEffects)
-}
-
-// markBuiltOnManifest is the shared build-persistence body: identical checks
-// and SQL, with the effect decode resolved through the explicit reviewed
-// manifest so a candidate AUTO build persists against the same binding that
-// compiled it. The public wrapper above loads the embedded reviewed manifest.
-func (d *Database) markBuiltOnManifest(ctx context.Context, manifest RouteManifest, operationID, messageSHA256 string, expectedEffects []byte) error {
-	if !sha256Pattern.MatchString(messageSHA256) || !json.Valid(expectedEffects) {
-		return fmt.Errorf("invalid built transaction evidence")
-	}
-	if _, err := decodeExpectedEffectsWithManifest(manifest, expectedEffects); err != nil {
-		return err
-	}
-	// Preserve the pre-construction decision envelope and merge only the
-	// independently checked execution-effect fields.
-	return d.transition(ctx, operationID, Decided, Built,
-		`, message_sha256 = $4, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $5::jsonb)`, messageSHA256, string(expectedEffects))
+	return nil
 }
 
 // MarkPreBroadcastFailed releases the one-nonterminal invariant only for
@@ -1257,166 +786,65 @@ func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID stri
 	return nil
 }
 
-func (d *Database) MarkSimulated(ctx context.Context, operationID string, simulation SimulationResult) error {
-	if simulation.Slot <= 0 {
-		return fmt.Errorf("invalid simulation evidence")
+// PersistSigned records the tick's exact signed wire with its simulation and
+// expected effects. Nothing is sent before it commits.
+func (d *Database) PersistSigned(ctx context.Context, operationID string, signed SignedTransaction, simulation SimulationResult, effects []byte) error {
+	if simulation.Slot <= 0 || !json.Valid(effects) {
+		return fmt.Errorf("invalid signed transaction evidence")
 	}
-	encoded, err := json.Marshal(simulation)
+	result, err := simulationJSON(simulation)
 	if err != nil {
 		return err
 	}
-	return d.transition(ctx, operationID, Built, Simulated,
-		`, simulation_slot = $4, simulation_result = $5::jsonb`, simulation.Slot, string(encoded))
-}
-
-func (d *Database) PersistSigned(ctx context.Context, operationID string, build BuildResult) error {
-	if err := build.validateForDelegate(mustKey(bridgeDelegate)); err != nil {
-		// Nothing was persisted or sent: the refused wire exists only in
-		// memory. A typed hold fails this never-submitted row and retries on
-		// the next tick instead of stopping the worker (live 2026-09-28).
-		return &BudgetHold{Reason: "signed_wire_shape_refused", Details: map[string]string{"error": err.Error()}}
-	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
-	if err := bindSignedWireTx(ctx, tx, operationID, build.SignedWireSHA256); err != nil {
-		return err
-	}
-	result, err := tx.Exec(ctx, PersistSignedUpdate, operationID, build.MessageSHA256, build.SignedWire,
-		build.SignedWireSHA256, build.TransactionSignature, build.RecentBlockhash, build.LastValidBlockHeight)
+	tag, err := d.pool.Exec(ctx, PersistSignedUpdate, operationID, signed.messageSHA256, signed.signedWire, signed.signedWireSHA256,
+		signed.transactionSignature, signed.recentBlockhash, signed.lastValidBlockHeight, simulation.Slot, result, string(effects))
 	if err != nil {
 		return fmt.Errorf("persist exact signed wire: %w", err)
 	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("persist signed wire lost serialization")
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("persist signed wire found no decided operation")
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
-// markBroadcastIntentOnManifest records broadcast intent under the operation
-// lock, after the custody, debt-clear and selector-entry fences pass.
-func (d *Database) markBroadcastIntentOnManifest(ctx context.Context, manifest RouteManifest, operationID string, request any, bound phase3OperationAuthorization) error {
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
-	// Shared broadcast-intent custody seam (doc 26 §4): the bound custody
-	// proof is re-validated under THIS transaction's route lock against the
-	// PERSISTED built effects before broadcast intent can be recorded.
-	if err := validateSharedCustodySendProofOnBroadcastTx(ctx, tx, manifest, operationID, bound.CustodyProof); err != nil {
-		return err
-	}
-	if err := d.authorizeSendTx(ctx, manifest, tx, operationID, request, bound); err != nil {
-		return err
-	}
-	result, err := tx.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
+// MarkBroadcastIntent records that the signed wire may now be sent.
+func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) error {
+	tag, err := d.pool.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
 	if err != nil {
 		return fmt.Errorf("persist broadcast intent: %w", err)
 	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("broadcast intent lost serialization")
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("broadcast intent found no signed operation")
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (d *Database) MarkConfirmed(ctx context.Context, operationID string, from OperationStatus, slot int64) error {
 	if slot <= 0 || (from != BroadcastIntent && from != Submitted) {
 		return fmt.Errorf("invalid confirmation")
 	}
-	if from == BroadcastIntent {
-		// Landing confirms the broadcast_intent row directly; submitted is only
-		// left on rows an older binary wrote.
-		tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-			return err
-		}
-		result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'confirmed', confirmed_slot = $2, confirmation_status = 'confirmed', updated_at = now() WHERE operation_id = $1 AND status = 'broadcast_intent'`, operationID, slot)
-		if err != nil {
-			return fmt.Errorf("persist recovered confirmation: %w", err)
-		}
-		if result.RowsAffected() != 1 {
-			return fmt.Errorf("persist recovered confirmation lost serialization")
-		}
-		return tx.Commit(ctx)
-	}
-	return d.transition(ctx, operationID, Submitted, Confirmed,
-		`, confirmed_slot = $4, confirmation_status = 'confirmed'`, slot)
-}
-
-func (d *Database) MarkReconciling(ctx context.Context, operationID string) error {
-	return d.transition(ctx, operationID, Confirmed, Reconciling, ``)
-}
-
-func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
-	manifest, err := loadEmbeddedRouteManifest()
+	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'confirmed', confirmed_slot = $2, confirmation_status = 'confirmed', updated_at = now() WHERE operation_id = $1 AND status = $3`, operationID, slot, string(from))
 	if err != nil {
-		return err
+		return fmt.Errorf("persist confirmation: %w", err)
 	}
-	return d.markReconciledOnManifest(ctx, manifest, operationID, reconciliation, effects, receipt)
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("confirmation found no %s operation", from)
+	}
+	return nil
 }
 
-// markReconciledOnManifest is the shared locked-settlement body: identical
-// lease and identity SQL in one transaction, with the journal
-// decode and reconciliation resolved through the explicit reviewed manifest.
-// The public wrapper above loads the embedded reviewed manifest.
-func (d *Database) markReconciledOnManifest(ctx context.Context, manifest RouteManifest, operationID string, reconciliation Reconciliation, effects []byte, receipt ConfirmedTransactionEvidence) error {
-	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) || !receipt.Finalized || receipt.Slot != reconciliation.ConfirmedSlot {
+// MarkReconciled settles a landed operation whose finalized receipt matched
+// its persisted effects.
+func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte) error {
+	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) {
 		return fmt.Errorf("invalid reconciliation evidence")
 	}
-	if _, err := d.currentLease(); err != nil {
-		return err
-	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status IN ('confirmed','reconciling')`, operationID, reconciliation.EffectsSHA256, string(effects))
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err = d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
-	var signature string
-	var slot int64
-	var expectedBytes []byte
-	var signedWireHash string
-	if err = tx.QueryRow(ctx, `SELECT transaction_signature,confirmed_slot,expected_effects,COALESCE(signed_wire_sha256,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1 AND status='reconciling'`, operationID).Scan(&signature, &slot, &expectedBytes, &signedWireHash); err != nil {
-		return err
-	}
-	if signature != receipt.Signature || slot != receipt.Slot {
-		return fmt.Errorf("finalized receipt does not match journal identity")
-	}
-	expected, err := decodeExpectedEffectsWithManifest(manifest, expectedBytes)
-	if err != nil {
-		return err
-	}
-	if expected.Initialization != nil && (receipt.Initialization == nil || signedWireHash == "" || receipt.Initialization.SignedWireSHA256 != signedWireHash) {
-		return fmt.Errorf("initializer finalized wire does not match journal identity")
-	}
-	checked, checkedEffects, err := manifest.ReconcileConfirmedTransaction(expected, receipt)
-	if err != nil || checked != reconciliation || sha256Bytes(checkedEffects) != sha256Bytes(effects) {
-		return fmt.Errorf("finalized effects do not match journal contract")
-	}
-	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciled',confirmation_status='finalized',reconciliation_sha256=$2,reconciled_effects=$3::jsonb,updated_at=clock_timestamp() WHERE operation_id=$1 AND status='reconciling'`, operationID, reconciliation.EffectsSHA256, string(effects))
-	if err != nil {
-		return err
-	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("finalized reconciliation lost serialization")
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return err
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("reconciliation found no landed operation")
 	}
 	d.eventReconciled(ctx, operationID)
 	return nil
@@ -1426,23 +854,12 @@ func (d *Database) MarkManualRecovery(ctx context.Context, operationID string, f
 	if reason == "" || !IsNonterminal(from) {
 		return fmt.Errorf("manual recovery reason and nonterminal source are required")
 	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := d.lockOperationLease(ctx, tx, operationID); err != nil {
-		return err
-	}
-	result, err := tx.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'manual_recovery', recovery_reason = $2, updated_at = now() WHERE operation_id = $1 AND status = $3`, operationID, reason, string(from))
+	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'manual_recovery', recovery_reason = $2, updated_at = now() WHERE operation_id = $1 AND status = $3`, operationID, reason, string(from))
 	if err != nil {
 		return fmt.Errorf("persist manual recovery: %w", err)
 	}
-	if result.RowsAffected() != 1 {
-		return fmt.Errorf("persist manual recovery lost serialization")
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("manual recovery found no %s operation", from)
 	}
 	d.eventFailedAfterSend(ctx, operationID, reason)
 	return nil

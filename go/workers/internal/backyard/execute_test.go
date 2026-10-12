@@ -34,18 +34,3 @@ func TestNonterminalSetExcludesPersistedHolds(t *testing.T) {
 		}
 	}
 }
-
-func TestWithdrawalPreemptsEveryOpenPreBroadcastState(t *testing.T) {
-	t.Parallel()
-	for _, status := range []OperationStatus{Decided, Built, Simulated, Signed} {
-		if !WithdrawalPreemptsOpenLoop(OpenPrimeUSDCStep, status, 1) {
-			t.Fatalf("withdrawal did not preempt OPEN in %s", status)
-		}
-	}
-	if WithdrawalPreemptsOpenLoop(OpenPrimeUSDCStep, Submitted, 1) {
-		t.Fatal("ambiguous submitted OPEN must recover its exact signature")
-	}
-	if WithdrawalPreemptsOpenLoop(DeleverPrimeUSDCStep, Signed, 1) {
-		t.Fatal("withdrawal must not cancel a risk-reducing action")
-	}
-}

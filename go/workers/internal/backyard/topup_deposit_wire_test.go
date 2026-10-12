@@ -2,9 +2,7 @@ package backyard
 
 import (
 	"bytes"
-	"context"
 	"crypto/ed25519"
-	"errors"
 	"testing"
 )
 
@@ -38,16 +36,5 @@ func TestTopupDepositWirePassesThePersistedWireGate(t *testing.T) {
 		if err := signedTestBuildResult(t, delegateKey, message).validateForDelegate(delegate); err != nil {
 			t.Errorf("%s: PersistSigned gate refused: %v", name, err)
 		}
-	}
-}
-
-// A wire the persisted gate refuses is a retryable hold before any write or
-// send, never a worker exit.
-func TestPersistSignedRefusalIsARetryableHold(t *testing.T) {
-	t.Parallel()
-	err := (&Database{}).PersistSigned(context.Background(), "op", BuildResult{SignedWire: []byte{1}})
-	var hold *BudgetHold
-	if !errors.As(err, &hold) || hold.Reason != "signed_wire_shape_refused" || !isPreSendHold(err) {
-		t.Fatalf("refused wire is not a pre-send hold: %v", err)
 	}
 }

@@ -119,12 +119,9 @@ the one v1 compiler (`message_v1.go`).
 - The binding limit is the 64 keys, not the bytes: a step's Jupiter route is
   quoted with `maxAccounts` = 64 minus the keys the step's KLend legs, refreshes
   and Squads executes already use, so the route always fits.
-- Wires persisted by an older binary (legacy or v0, count-prefixed signature)
-  still split, so a row already in broadcast intent keeps resending its exact
-  bytes and settles by its receipt. A row signed but not yet sent fails the
-  recompile comparison and expires unsent; an old initializer or failed
-  report row that needs recompiling holds. All of these fail closed; deploy
-  with no Backyard row in flight.
+- A wire persisted by an older binary (legacy or v0) is landed as its exact
+  bytes and settles by its receipt, like any persisted wire
+  (`docs/backyard-one-writer.md`); deploy with no Backyard row in flight.
 
 ## Keys and bytes per lane
 

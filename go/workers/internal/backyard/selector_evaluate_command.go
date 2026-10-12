@@ -2,26 +2,17 @@ package backyard
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
-
-// ErrSelectorEvaluationCommittedReleaseUnconfirmed reports that the locked
-// evaluation committed a selector action (ENTER/CANARY_ENTER/SWITCH) and only
-// the command's own lease release could not be confirmed. The report with the
-// committed action is already on the output; never treat the action as unsent.
-var ErrSelectorEvaluationCommittedReleaseUnconfirmed = errors.New("selector_evaluate_committed_lease_release_unconfirmed")
 
 // selectorEvaluateFeed is the feed surface the command needs. The production
 // EconomicFeed satisfies it unchanged; tests substitute a stub.
@@ -54,9 +45,8 @@ type selectorEvaluateDeps struct {
 //     explicit canary-request report. It never consumes the request, collects
 //     no quotes, and is a ranking diagnostic only, never an executable canary
 //     preflight.
-//   - --execute: feed refresh, one snapshot, one locked evaluateSelector call
-//     under its own short route lease (the locked persistence filters every
-//     write on the lease owner/fencing token), released before exit.
+//   - --execute: feed refresh, one snapshot, one evaluateSelector call under
+//     Backyard's writer lock, which it refuses while the worker runs.
 //
 // The canary request stays the operator authorization either way: expiring,
 // single-use, bounded, and validated through the same manifest both here and
@@ -95,7 +85,7 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 }
 
 // runSelectorEvaluate is bounded end to end (a stalled feed cannot hold the
-// route lease past its TTL or hang the command), refuses an execute run
+// writer lock or hang the command), refuses an execute run
 // without a present valid canary request before anything connects, and maps
 // every stage failure to a fixed sanitized error: raw feed, RPC, SQL and
 // configuration errors can carry credential paths or DSNs.
@@ -171,30 +161,13 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 // to this command. Membership is the only thing the failure diagnostic echoes;
 // any other reason collapses to the generic code.
 var selectorEvaluateAdmissionHoldCodes = map[string]bool{
-	"duplicate_move_quote":                    true,
-	"invalid_pilot_canary_request":            true,
-	"invalid_selector_route_state":            true,
-	"pilot_canary_history_full":               true,
-	"pilot_canary_request_id_reused":          true,
-	"selector_entry_allocation_bind_failed":   true,
-	"selector_entry_allocation_not_bound":     true,
-	"selector_entry_already_allocated":        true,
-	"selector_entry_authority_mismatch":       true,
-	"selector_entry_borrow_fee_exceeded":      true,
-	"selector_entry_borrow_mismatch":          true,
-	"selector_entry_borrow_unavailable":       true,
-	"selector_entry_cash_changed":             true,
-	"selector_entry_lane_deferred":            true,
-	"selector_entry_quote_expired":            true,
-	"selector_entry_quote_missing":            true,
-	"selector_entry_requires_reconciled_idle": true,
-	"selector_evaluation_not_current":         true,
-	"selector_finish_current_work_first":      true,
-	"selector_fee_evidence_unavailable":       true,
-	"selector_manual_recovery_active":         true,
-	"selector_resolve_capital_recovery_first": true,
-	"selector_state_changed_during_quote":     true,
-	"selector_unwind_quote_missing":           true,
+	"duplicate_move_quote":              true,
+	"invalid_pilot_canary_request":      true,
+	"invalid_selector_route_state":      true,
+	"pilot_canary_history_full":         true,
+	"pilot_canary_request_id_reused":    true,
+	"selector_evaluation_not_current":   true,
+	"selector_fee_evidence_unavailable": true,
 }
 
 // sanitizedSelectorEvaluateFailure maps one evaluator error to a single fixed
@@ -215,29 +188,22 @@ func sanitizedSelectorEvaluateFailure(err error) string {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
-		case "55P03": // lock_not_available: the admission record lock timed out
-			return "selector_evaluate_lock_timeout"
 		case "57014": // query_canceled
 			return "selector_evaluate_query_cancelled"
 		}
 		return "selector_evaluate_unavailable"
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		// The lease-fenced state row vanished between the lease and the
-		// version read: the route fence is unavailable.
-		return "selector_evaluate_route_fence_unavailable"
 	}
 	return "selector_evaluate_unavailable"
 }
 
 // selectorEvaluateExecute is exactly one iteration of Run's live sample body
 // (worker.go live-mode branch): feed refresh, one snapshot, one locked
-// evaluation — plus the route lease that the worker process contributes in the
-// continuous form and this command must contribute itself. The live loop's
+// evaluation — under the writer lock the worker process holds in the
+// continuous form and this command must take itself. The live loop's
 // notifySelectorCommit only queues a wake on its own worker's tick channel;
 // there is no tick loop here, and the committed entry is durable route state
 // that the next worker start reads from the journal.
-func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) (err error) {
+func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
 	database, err := OpenDatabase(ctx, deps.databaseURL)
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_database_unavailable")
@@ -247,32 +213,11 @@ func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEv
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_feed_unavailable")
 	}
-	// Unique owner: AcquireRouteLease never treats an unexpired lease as
-	// re-entrant even for identical owner text, and the release below clears
-	// exactly this owner/fencing pair.
-	var nonce [16]byte
-	if _, err = rand.Read(nonce[:]); err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_owner_unavailable")
+	release, err := holdWriterLock(ctx, deps.databaseURL)
+	if err != nil {
+		return budgetHoldFrom(err, "selector_evaluate_writer_lock_unavailable")
 	}
-	if _, err = database.AcquireRouteLease(ctx, productionRouteKey, "selector-evaluate:"+hex.EncodeToString(nonce[:]), 45*time.Second); err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_lease_unavailable")
-	}
-	committed := false
-	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		released, releaseErr := database.ReleaseRouteLease(releaseCtx)
-		// The named result carries the already-printed report past this
-		// cleanup: a committed selector action stays visible and is never
-		// implied unsent.
-		if err == nil && (releaseErr != nil || !released) {
-			if committed {
-				err = ErrSelectorEvaluationCommittedReleaseUnconfirmed
-			} else {
-				err = budgetHold("selector_evaluate_lease_release_unconfirmed")
-			}
-		}
-	}()
+	defer release()
 	attemptStart := time.Now().UTC()
 	feedErr := feed.Refresh(ctx)
 	markets, _ := feed.Snapshot()
@@ -294,7 +239,6 @@ func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEv
 		}{"locked_execute_failure", time.Since(attemptStart).Seconds(), feedFailure, sanitizedSelectorEvaluateFailure(evalErr)})
 		return budgetHold("selector_evaluate_unavailable")
 	}
-	committed = result.Action == "ENTER" || result.Action == "CANARY_ENTER" || result.Action == "SWITCH"
 	report := struct {
 		Mode        string         `json:"mode"`
 		FeedFailure string         `json:"feedFailure,omitempty"`

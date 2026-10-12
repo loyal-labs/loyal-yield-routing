@@ -82,9 +82,6 @@ func TestReconciledBridgeJournalAgainstDatabase(t *testing.T) {
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1}')`, routeKey); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.AcquireRouteLease(ctx, routeKey, "journal-facts-writer", time.Minute); err != nil {
-		t.Fatal(err)
-	}
 	// insertOperation writes one journal row; later updates sort before earlier
 	// ones because the offset shifts clock_timestamp() backwards.
 	insertOperation := func(t *testing.T, suffix, status, action string, slot int64, effects string, ageSeconds int) {

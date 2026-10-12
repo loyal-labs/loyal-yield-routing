@@ -207,11 +207,6 @@ func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
 			if strings.HasPrefix(drift, "mint_") && drift != "classic_extensionless_debt" {
 				assertBudgetHold(t, err, "initializer_seed_mint_unavailable")
 			}
-			// The public prestate still refuses the candidate lane outright —
-			// no manifest, no admission — with the installed typed hold, so
-			// retry-vs-fatal handling never changes per lane.
-			_, publicErr := validateKaminoInitializationPrestate(context.Background(), autoInitializerView(t, accounts), r, 77)
-			assertBudgetHold(t, publicErr, "initializer_prestate_unavailable")
 		})
 	}
 }

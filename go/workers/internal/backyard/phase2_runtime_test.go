@@ -273,22 +273,3 @@ func TestRouteNeutralActionRequiresSelectedStrategy(t *testing.T) {
 		t.Fatalf("selected route-neutral action was rejected: %v", err)
 	}
 }
-
-func TestPreparedDecisionEqualityUsesRefreshedIdentityButPinsSemantics(t *testing.T) {
-	t.Parallel()
-	prepared := Decision{Action: OpenRouteStep, Reason: "prime_collateral_ready", AmountRaw: 1_000_000, IdempotencyKey: "old-observation", StrategyKey: SelectedRouteID}
-	refreshed := prepared
-	refreshed.IdempotencyKey = "new-accrued-observation"
-	if !decisionsEqual(prepared, refreshed) {
-		t.Fatal("unchanged selected-lane execution semantics were rejected after a refreshed observation")
-	}
-	refreshed.StrategyKey = RouteID
-	if decisionsEqual(prepared, refreshed) {
-		t.Fatal("decision equality accepted a different runtime lane")
-	}
-	refreshed = prepared
-	refreshed.AmountRaw--
-	if decisionsEqual(prepared, refreshed) {
-		t.Fatal("decision equality accepted a changed amount")
-	}
-}

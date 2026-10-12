@@ -4,17 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"reflect"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func initializationPlanningFixture(lane string) Observation {
@@ -95,82 +92,26 @@ func initializationView(t *testing.T, accounts map[string]ConfirmedAccount) *Vie
 	return fixtureView(t, budgetBuildRPCWithAccounts(t, 5000, 42, slices.Collect(maps.Values(accounts))))
 }
 
-func TestInitializerPreparationMeasuresNativeFundingAndRefusesAccountRace(t *testing.T) {
+func TestInitializerPreparationMeasuresNativeFunding(t *testing.T) {
 	t.Parallel()
-	rpc, m, template, accounts := initializationRuntimeRPC(t)
+	rpc, m, template, _ := initializationRuntimeRPC(t)
 	o := initializationPlanningFixture(template.RouteLane)
 	o.policies = testPolicies(t)
 	d := Decide(o.Snapshot)
-	observe := func(context.Context) (Observation, error) { return o, nil }
-	got, r, err := prepareKaminoInitialization(context.Background(), rpc, initializationView(t, accounts), m, d, observe)
-	if err != nil || !reflect.DeepEqual(got, o) || r.RentLamports != template.RentLamports || r.MaximumFeeLamports != 5000 {
+	got, r, err := prepareKaminoInitialization(context.Background(), rpc, m, d, o)
+	if err != nil || !reflect.DeepEqual(got.Snapshot, o.Snapshot) || r.RentLamports != template.RentLamports || r.MaximumFeeLamports != 5000 {
 		t.Fatalf("unmeasured initialization: %+v %v", r, err)
 	}
-	route, _ := runtimeRoute(r.RouteLane)
-	accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1}
-	_, _, err = prepareKaminoInitialization(context.Background(), rpc, initializationView(t, accounts), m, d, observe)
-	assertBudgetHold(t, err, "initializer_obligation_already_present")
-	delete(accounts, route.Kamino.Obligation)
-	o.Snapshot.WithdrawalDemandRaw = 1
-	_, _, err = prepareKaminoInitialization(context.Background(), rpc, initializationView(t, accounts), m, d, observe)
-	assertBudgetHold(t, err, "initializer_decision_changed")
 }
 
-// The initializer binds its exact measured request, a second bind of the same
-// operation is refused, and the bound intent gates the signer.
-func TestInitializerBindIsExactAndOnce(t *testing.T) {
-	ctx, cancel, db, _ := openManualRecoveryTestDatabase(t, 30*time.Second)
-	defer cancel()
-	defer db.Close()
-	key := fmt.Sprintf("initializer-admission-%d", time.Now().UnixNano())
-	id := key + "-op"
-	rpc, m, template, accounts := initializationRuntimeRPC(t)
-	view := initializationView(t, accounts)
-	o := initializationPlanningFixture(template.RouteLane)
-	d := Decide(o.Snapshot)
-	_, r, err := prepareKaminoInitialization(ctx, rpc, view, m, d, func(context.Context) (Observation, error) { return o, nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":2}',2)`, key); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := json.Marshal(map[string]any{"decision": newDecisionEvidence(o, d, m.SHA256)})
-	if _, err = db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects) VALUES($1,$2,'decided',$3,$4,$5)`, id, key, d.Action, d.StrategyKey, raw); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.AcquireRouteLease(ctx, key, "initializer-admission", time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	defer db.ReleaseRouteLease(ctx)
-	if err = db.bindOperation(ctx, rpc, view, m, id, o, d, r, kaminoInitializationEffects(r)); err != nil {
-		t.Fatal(err)
-	}
-	var encodedAuth []byte
-	if err = db.pool.QueryRow(ctx, `SELECT expected_effects->'phase3' FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&encodedAuth); err != nil {
-		t.Fatal(err)
-	}
-	var auth phase3OperationAuthorization
-	if json.Unmarshal(encodedAuth, &auth) != nil || auth.BuildInput == nil {
-		t.Fatal("decode")
-	}
-	if bound, _, _, err := auth.BuildInput.decodeWithManifest(m); err != nil || bound != r {
-		t.Fatal("bind changed the measured initializer", err)
-	}
-	assertBudgetHold(t, db.bindOperation(ctx, rpc, view, m, id, o, d, r, kaminoInitializationEffects(r)), "bind_journal_mismatch")
-	if err = db.requireBoundIntent(ctx, id, r, auth.BuildInput.Effects); err != nil {
-		t.Fatal("pre-signing gate", err)
-	}
-}
-
-func TestWorkerDispatchesInitializationOnlyAfterPersistedBind(t *testing.T) {
+func TestWorkerDispatchesInitializationAfterTheRecord(t *testing.T) {
 	o := initializationPlanningFixture(SelectedRouteID)
 	d := Decide(o.Snapshot)
 	m := readyWorkerManifest(t)
 	var order []string
 	w := &Worker{routeKey: productionRouteKey, manifest: m, runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil }, observe: func(context.Context) (Observation, error) { return o, nil },
-		prepareInitialization: func(context.Context, RouteManifest, Decision) (Observation, KaminoInitializationRequest, error) {
+		prepareInitialization: func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error) {
 			order = append(order, "prepare")
 			return o, KaminoInitializationRequest{RouteLane: SelectedRouteID}, nil
 		},
@@ -181,14 +122,10 @@ func TestWorkerDispatchesInitializationOnlyAfterPersistedBind(t *testing.T) {
 			order = append(order, "record")
 			return DecisionRecord{OperationID: "init", Status: Decided}, nil
 		},
-		bind: func(_ context.Context, _ string, _ Observation, _ Decision, request any, _ ExpectedEffects) error {
-			if _, ok := request.(KaminoInitializationRequest); !ok {
-				t.Fatal("bind received another request")
+		build: func(_ context.Context, _ string, request any, effects ExpectedEffects) error {
+			if _, ok := request.(KaminoInitializationRequest); !ok || effects.Initialization == nil {
+				t.Fatal("build received another request")
 			}
-			order = append(order, "bind")
-			return nil
-		},
-		buildInitialization: func(context.Context, string, KaminoInitializationRequest) error {
 			order = append(order, "build")
 			return nil
 		},
@@ -196,21 +133,17 @@ func TestWorkerDispatchesInitializationOnlyAfterPersistedBind(t *testing.T) {
 	if err := w.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(order, []string{"prepare", "record", "bind", "build"}) {
+	if !reflect.DeepEqual(order, []string{"prepare", "record", "build"}) {
 		t.Fatal(order)
 	}
-	w.runtime.bind = func(context.Context, string, Observation, Decision, any, ExpectedEffects) error {
+	w.runtime.build = func(context.Context, string, any, ExpectedEffects) error {
 		return budgetHold("initializer_native_funding_unavailable")
-	}
-	w.runtime.buildInitialization = func(context.Context, string, KaminoInitializationRequest) error {
-		t.Fatal("unbound native creation reached signer")
-		return nil
 	}
 	journaled := false
 	w.runtime.recordBudgetHold = func(context.Context, string, *BudgetHold) error { journaled = true; return nil }
 	assertBudgetHold(t, w.Tick(context.Background()), "initializer_native_funding_unavailable")
 	if !journaled {
-		t.Fatal("bind hold not recorded")
+		t.Fatal("build hold not recorded")
 	}
 }
 
