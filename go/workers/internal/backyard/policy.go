@@ -181,10 +181,6 @@ func (p installedPolicies) account(key policyKey) (string, error) {
 	}
 }
 
-// bridgePolicyKeys are the Voltr bridge's four policies, which every lane
-// with a bridge exit leaves through.
-var bridgePolicyKeys = []policyKey{{action: VoltrAllocateToSquads}, {action: StageSquadsToVoltr}, {action: VoltrRestoreIdle}, {action: ReportNAV}}
-
 // kaminoPolicyLeg is the policy a route executes leg through and the leg's
 // constraint there: the AUTO lane's KLend policy, a basic family, or the
 // route's split policy for the leg.

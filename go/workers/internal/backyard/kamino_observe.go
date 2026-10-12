@@ -23,11 +23,6 @@ const (
 	kaminoRequiredPriceStatus = 0x3f
 	kaminoReserveConfigOffset = 4856
 
-	// LendingMarket: 8-byte discriminator + size_of::<LendingMarket>() == 4656
-	// in the pinned klend-interface 23b9f2b. emergency_mode follows version,
-	// bump_seed, the two owner keys, quote_currency, and referral_fee_bps.
-	kaminoMarketEmergencyModeOffset = 122
-
 	// ReserveConfig.status (0 = Active) sits at the config base, and its
 	// emergency_mode follows status, asset_tier padding, host_fixed_interest_
 	// rate_bps, min_deleveraging_bonus_bps, block_ctoken_usage, and early_
@@ -35,9 +30,6 @@ const (
 	// already-decoded cross-check for this base.
 	kaminoReserveStatusOffset        = kaminoReserveConfigOffset
 	kaminoReserveEmergencyModeOffset = kaminoReserveConfigOffset + 8
-	// ReserveLiquidity.market_price_last_updated_ts: i64 unix seconds between
-	// market_price_sf (248) and mint_decimals (272, already decoded as u64).
-	kaminoMarketPriceLastUpdatedTSOffset = 264
 
 	// Audit U5 / monitor M5: a reserve that has not refreshed within the
 	// adaptor's report window (adaptorMaxReportAgeSlots), a paused reserve,

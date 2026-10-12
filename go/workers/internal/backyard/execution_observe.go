@@ -318,8 +318,6 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 	return 0, 0, 0, fmt.Errorf("Kamino position is not in a supported next-leg state")
 }
 
-const unwindLTVBPS uint64 = 4_500
-
 func withdrawExcessAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, uint64, error) {
 	if ltvBPS == 0 || ltvBPS >= 10_000 {
 		return 0, 0, fmt.Errorf("invalid repayment release LTV")

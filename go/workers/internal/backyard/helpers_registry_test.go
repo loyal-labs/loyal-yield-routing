@@ -154,3 +154,13 @@ func observeSelectorMove(ctx context.Context, rpc *chain.Client, view *View, cli
 	}
 	return composeSelectorMove(ctx, view, o, source, destination)
 }
+
+// Account layout offsets the fixtures write: LendingMarket.emergency_mode, and
+// ReserveLiquidity.market_price_last_updated_ts.
+const (
+	kaminoMarketEmergencyModeOffset      = 122
+	kaminoMarketPriceLastUpdatedTSOffset = 264
+)
+
+// bridgePolicyKeys are the Voltr bridge's four policies.
+var bridgePolicyKeys = []policyKey{{action: VoltrAllocateToSquads}, {action: StageSquadsToVoltr}, {action: VoltrRestoreIdle}, {action: ReportNAV}}

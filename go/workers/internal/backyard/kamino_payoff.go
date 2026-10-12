@@ -27,17 +27,14 @@ type KaminoPayoffBound struct {
 	AccountsSHA256     string `json:"accountsSha256"`
 }
 
-// Each not-yet-executed funding/NAV/payoff step needs an accrual window.
-// This extends the cost estimate only; current-wire freshness stays one window.
-// kaminoPayoffMaxWindowSteps: the installed longest prefix is 7 steps; a
-// B2 1.75x exit adds 3 per cycle (release, swap, partial repay), at most 2.
-const kaminoPayoffMaxWindowSteps = 7 + 3*leverageExitMaxCycles
+// kaminoPayoffSteps is how many observation windows past its batch a debt's
+// payoff upper bound covers: a down step that repays all of it is sized on
+// that bound, decided, prepared, signed and landed within them.
+const kaminoPayoffSteps = 6
 
 func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64) (KaminoPayoffBound, error) {
 	var bound KaminoPayoffBound
-	// Borrow -> NAV -> release -> NAV -> funding -> NAV -> payoff is the
-	// longest admitted prefix. Current-wire freshness is still only one window.
-	if steps < 1 || steps > kaminoPayoffMaxWindowSteps {
+	if steps < 1 || steps > kaminoPayoffSteps {
 		return bound, budgetHold("invalid_payoff_execution_window")
 	}
 	clock := accountAt(accounts, budgetClockAddress)

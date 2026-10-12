@@ -373,7 +373,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if earnHeldLane(route.Lane) && position.DebtRaw > 0 {
 		// Include NAV -> release -> NAV -> funding -> NAV -> payoff in
 		// planning. Each actual wire still has its own short freshness gate.
-		bound, err := decodeKaminoPayoffWindow(accounts, route, slot, 6)
+		bound, err := decodeKaminoPayoffWindow(accounts, route, slot, kaminoPayoffSteps)
 		if err != nil {
 			return Observation{}, nil, err
 		}
