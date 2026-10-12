@@ -205,12 +205,8 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != wantBorrow {
 			t.Fatalf("%s finish borrow: %+v", lane, d)
 		}
-		s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = (10_000 * scale), (10_000 * scale), (10_000 * scale)
-		if d = Decide(s); d.Action != SwapDebtToCollateralStep || d.AmountRaw != (10_000*scale) {
-			t.Fatalf("%s borrowed cash: %+v", lane, d)
-		}
-		if err := d.Validate(); err != nil {
-			t.Fatalf("%s worker rejects its borrowed-cash decision: %v", lane, err)
+		if up, ok := stepDecision(s, d); !ok || !up {
+			t.Fatalf("%s borrow is not an up step: %+v", lane, d)
 		}
 		for _, action := range []Action{SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
 			invalid := d
@@ -219,41 +215,31 @@ func TestUSDCPartialCapacityKeepsRemainderInVoltr(t *testing.T) {
 				t.Fatal("USDC self-swap admitted", lane, action)
 			}
 		}
-		s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, (10_000 * scale), (10_000 * scale)
-		if d = Decide(s); d.Action != OpenRouteStep || d.Reason != "single_loop_redeposit" {
-			t.Fatalf("%s finish redeposit: %+v", lane, d)
-		}
-		s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 0
-		if d = Decide(s); d.Action != Hold || d.Reason != "single_loop_position_ready" || s.VoltrIdleRaw != (80_000*scale) {
+		// The up step lands borrow, conversion and deposit at once; the
+		// position then holds at its level and idle stays in Voltr.
+		s.PositionDebtRaw, s.PositionDebtValueRaw = (10_000 * scale), (10_000 * scale)
+		s.PositionCollateralRaw, s.PositionCollateralValueRaw = (30_000 * scale), (30_000 * scale)
+		s.LTVBPS = 3333
+		if d = Decide(s); d.Action != Hold || s.VoltrIdleRaw != (80_000*scale) {
 			t.Fatalf("%s idle remains separate: %+v", lane, d)
 		}
 	}
 }
 
-func TestUSDCHardLTVRequiresExecutablePayoff(t *testing.T) {
+func TestUSDCHardLTVIsOneDownStep(t *testing.T) {
 	t.Parallel()
 	s := base()
-	s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw, s.PayoffDebtRaw, s.LTVBPS = true, 200, 100, 101, 6000
-	for _, cash := range []int64{1, 99, 100, 101, 102} {
-		s.SquadsIdleRaw = cash
-		d := Decide(s)
-		if cash < 101 {
-			if d.Action != DeleverRouteStep || d.Reason != "hard_ltv_partial_repay" || d.AmountRaw != min(cash, 99) {
-				t.Fatalf("partial repayment: %+v", d)
-			}
-		} else if d.Action != DeleverRouteStep || d.AmountRaw != 100 {
-			t.Fatalf("funded full payoff: %+v", d)
-		}
-	}
-	for _, lane := range basicLaneIDs() {
+	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 200, 100
+	for _, lane := range append(basicLaneIDs(), SelectedRouteID) {
 		s.RouteLane, s.StrategyKey = lane, lane
-		s.SquadsIdleRaw = 0
-		s.PositionDebtValueRaw = 100
-		s.CollateralIdleRaw, s.CollateralIdleValueRaw = 200, 200
-		d := Decide(s)
-		if d.Action != SwapCollateralToDebtStep || d.Validate() != nil {
-			t.Fatalf("worker rejects admitted risk funding for %s: %+v (%v)", lane, d, d.Validate())
+		// Whatever cash or collateral sits idle, the step funds its own repay.
+		for _, cash := range []int64{0, 99, 101} {
+			s.SquadsIdleRaw, s.CollateralIdleRaw, s.CollateralIdleValueRaw = cash, cash, cash
+			d := Decide(s)
+			if d.Action != DeleverRouteStep || d.Reason != hardLTVDeleverReason || d.Validate() != nil {
+				t.Fatalf("%s hard LTV with %d idle: %+v (%v)", lane, cash, d, d.Validate())
+			}
 		}
 	}
 }

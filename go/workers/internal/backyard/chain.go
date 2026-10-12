@@ -122,11 +122,6 @@ func readAccounts(ctx context.Context, c *chain.Client, commitment rpc.Commitmen
 	return int64(slot), accounts, nil
 }
 
-// confirmedAccounts is readAccounts at confirmed.
-func confirmedAccounts(ctx context.Context, c *chain.Client, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
-	return readAccounts(ctx, c, rpc.CommitmentConfirmed, addresses, minSlot, optional...)
-}
-
 // finalizedAccounts is readAccounts at finalized.
 func finalizedAccounts(ctx context.Context, c *chain.Client, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
 	return readAccounts(ctx, c, rpc.CommitmentFinalized, addresses, minSlot, optional...)

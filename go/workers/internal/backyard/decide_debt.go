@@ -2,18 +2,14 @@ package backyard
 
 import (
 	"fmt"
-	"math/big"
 )
 
 // Journaled reasons of the top-up tranche (plan B3). Admissions and the
 // selector fence key on these exact reasons, never on a balance.
 const (
-	debtResidueSwapReason = "debt_residue_to_usdc"
 	topupSwapReason       = "topup_usdc_requires_collateral"
 	topupAllocationReason = "topup_voltr_idle"
 	topupDepositReason    = "topup_collateral_deposit"
-	// A wYLDS lane's payoff residue stakes to collateral (debtToUSDCConvertible).
-	debtResidueStakeReason = "debt_residue_to_collateral"
 )
 
 const onreONycUSDC = "OnRe/ONyc/USDC"
@@ -43,33 +39,23 @@ func laneSwap(lane string, action Action) bool {
 	return err == nil
 }
 
-// topupStep is the plan B3 sequence beside a funded position: convert a
-// payoff debt residue to USDC, swap Squads cash to collateral, deposit that
-// collateral, then move idle Voltr cash into Squads. Beside debt, idle debt
-// cash and idle collateral stay with the existing leverage legs (the
-// collateral-only single_loop_redeposit), so no top-up leg borrows or repays.
-// It runs before any borrow, so a later borrow levers the whole collateral.
-// Every withdrawal, hard-LTV, unwind and report rule has already run.
+// topupStep is the plan B3 sequence beside a funded position: swap Squads
+// cash to collateral, deposit that collateral, then move idle Voltr cash into
+// Squads. No top-up leg borrows or repays, and debt residue beside the
+// position waits for the next down step's repay. It runs before any borrow,
+// so a later borrow levers the whole collateral. Every withdrawal, hard-LTV,
+// unwind and report rule has already run.
 func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (Decision, bool) {
 	if !s.HasPosition || s.PositionCollateralRaw <= 0 || hard <= TargetLTVBPS ||
-		(s.PositionDebtRaw != 0 && (!debtTopupLane(s.RouteLane) || s.PositionDebtValueRaw <= 0 || s.DebtIdleRaw != 0 || s.CollateralIdleRaw != 0)) ||
+		(s.PositionDebtRaw != 0 && (!debtTopupLane(s.RouteLane) || s.PositionDebtValueRaw <= 0)) ||
 		s.WithdrawalDemandRaw != 0 || s.Unwind || s.CutoverDrain || s.UnwindRefreshRequired || s.VoltrStrategyIdleRaw != 0 {
 		return Decision{}, false
-	}
-	if s.DebtIdleRaw > 0 {
-		if !debtToUSDCConvertible(s.RouteLane) {
-			return d(SwapDebtToCollateralStep, debtResidueStakeReason, s.DebtIdleRaw), true
-		}
-		return d(SwapDebtToUSDCStep, debtResidueSwapReason, s.DebtIdleRaw), true
 	}
 	// An overflow lane takes no new capital: top-ups go to its source lane,
 	// whose next overflow tranche moves them on. Its own residue and
 	// collateral still redeposit above and below.
 	_, overflow := overflowSourceOf(s.RouteLane)
 	if s.SquadsIdleRaw > 0 && !overflow {
-		if s.CollateralIdleRaw != 0 {
-			return d(Hold, "topup_cash_beside_collateral_residue", 0), true
-		}
 		return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw), true
 	}
 	// Swapped collateral joins the existing obligation. No borrow comes with
@@ -87,38 +73,6 @@ func topupStep(s Snapshot, hard int64, d func(Action, string, int64) Decision) (
 		return Decision{}, false
 	}
 	return d(VoltrAllocateToSquads, topupAllocationReason, amount), true
-}
-
-// Select without assuming equal token decimals or a stablecoin peg. Values
-// already use the NAV's floor(asset)/ceil(liability) rounding; apply the existing
-// two-sided pricing margin too. This is planning, never quote authorization.
-func payoffFundingSource(s Snapshot, upperDebt uint64) (Action, int64) {
-	if debtCashRaw(s) < 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || uint64(debtCashRaw(s)) >= upperDebt {
-		return "", 0
-	}
-	need := new(big.Int).SetUint64(upperDebt - uint64(debtCashRaw(s)))
-	need.Mul(need, big.NewInt(s.PositionDebtValueRaw))
-	need.Mul(need, big.NewInt(int64(10_000+budgetPriceMarginBPS)))
-	for _, source := range []struct {
-		action        Action
-		amount, value int64
-	}{
-		{SwapCollateralToDebtStep, s.CollateralIdleRaw, s.CollateralIdleValueRaw},
-		{SwapUSDCToDebtStep, s.SquadsIdleRaw, s.SquadsIdleRaw},
-	} {
-		if !laneSwap(s.RouteLane, source.action) {
-			continue
-		}
-		if source.amount <= 0 || source.value <= 0 {
-			continue
-		}
-		available := new(big.Int).Mul(big.NewInt(source.value), big.NewInt(s.PositionDebtRaw))
-		available.Mul(available, big.NewInt(int64(10_000-budgetPriceMarginBPS)))
-		if available.Cmp(need) >= 0 {
-			return source.action, source.amount
-		}
-	}
-	return "", 0
 }
 
 // The same single-loop lifecycle as the retained routes, with debt custody
@@ -157,17 +111,12 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	if s.HasPosition && (s.LiquidationThresholdBPS <= 1500 || hard <= TargetLTVBPS) {
 		return d(HoldManualRecovery, "invalid_hard_ltv", 0)
 	}
+	// Hard LTV: one down step back to the stored level, before anything else.
 	if s.HasPosition && s.LTVBPS >= hard {
-		if s.PositionDebtRaw > 0 && s.DebtIdleRaw > 0 {
-			return d(DeleverRouteStep, "hard_ltv_repay", min(s.PositionDebtRaw, s.DebtIdleRaw))
+		if s.PositionDebtRaw > 0 {
+			return d(DeleverRouteStep, hardLTVDeleverReason, stepDownMarker)
 		}
-		if s.PositionDebtRaw > 0 && s.CollateralIdleRaw > 0 {
-			return d(SwapCollateralToDebtStep, "hard_ltv_buffer_swap", s.CollateralIdleRaw)
-		}
-		if s.PositionDebtRaw > 0 && s.SquadsIdleRaw > 0 && laneSwap(s.RouteLane, SwapUSDCToDebtStep) {
-			return d(SwapUSDCToDebtStep, "hard_ltv_usdc_repayment_buffer", s.SquadsIdleRaw)
-		}
-		return d(HoldManualRecovery, "hard_ltv_without_repayment_buffer", 0)
+		return d(HoldManualRecovery, "hard_ltv_without_debt", 0)
 	}
 	// An admitted unwind whose sizing evidence went stale re-admits before any
 	// further leg; only the recovery holds and the hard-LTV safety above it
@@ -239,27 +188,9 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		if !s.Unwind && !s.CutoverDrain && s.PositionDebtRaw > 0 {
 			return d(Hold, "withdrawal_full_exit_unproven", 0)
 		}
-		// B2 1.75x exit: repay the cycle's funding before another release.
-		if action, reason, amount, ok := exitCycleStep(s); ok {
-			return d(action, reason, amount)
-		}
+		// A drain repays the whole debt with down steps first.
 		if s.PositionDebtRaw > 0 {
-			// A normal drain needs a full payoff. A principal-only or partial
-			// buffer can fail the interest bound or KLend's residual-debt floor;
-			// keep funding instead of repeatedly selecting that rejected repay.
-			if s.DebtIdleRaw >= max(s.PositionDebtRaw, s.PayoffDebtRaw) {
-				return d(DeleverRouteStep, "withdrawal_repay_debt", s.PositionDebtRaw)
-			}
-			action, amount := payoffFundingSource(s, uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)))
-			if action == SwapCollateralToDebtStep {
-				return d(action, "withdrawal_swap_repayment_buffer", amount)
-			}
-			if action == SwapUSDCToDebtStep {
-				return d(action, "withdrawal_usdc_repayment_buffer", amount)
-			}
-			// This is the existing builder's transition marker; it computes a
-			// safe receipt withdrawal from current prices/LTV, not one raw unit.
-			return d(DeleverRouteStep, "withdrawal_release_repayment_collateral", 1)
+			return d(DeleverRouteStep, withdrawalDeleverReason, stepDownMarker)
 		}
 		if s.PositionCollateralRaw > 0 {
 			return d(DeleverRouteStep, "withdrawal_withdraw_collateral", 0)
@@ -304,13 +235,6 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		}
 		return d(ReportNAV, "nav_due", 0)
 	}
-	// A debt buffer larger than the whole debt can only be left over from an
-	// exit whose demand went away (a borrow never receives more than it owes).
-	// Pay the debt off with it: the funded full-payoff admission needs no
-	// collateral release, so this also works at an LTV where no release is safe.
-	if s.PositionDebtRaw > 0 && s.DebtIdleRaw > s.PositionDebtRaw && s.DebtIdleRaw >= s.PayoffDebtRaw {
-		return d(DeleverRouteStep, "idle_debt_repay", s.PositionDebtRaw)
-	}
 	// B2 down move to 1x: repay the position before any top-up or borrow.
 	if action, reason, amount, ok := leverageDownStep(s); ok {
 		return d(action, reason, amount)
@@ -341,11 +265,9 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 	if action, reason, amount, ok := leverageBorrowStep(s, hard); ok {
 		return d(action, reason, amount)
 	}
-	// The pause blocks new entries; a B2 leveraged loop on its own lane still
-	// swaps and redeposits its borrowed cash (no entry authority is needed),
-	// and an overflow lane takes over its source's freed collateral under
-	// the overflow tranche's authority.
-	if s.SelectorEntryPaused && !leverageLoopInProgress(s) && !overflowDestinationEntry(s) {
+	// The pause blocks new entries; an overflow lane takes over its source's
+	// freed collateral under the overflow tranche's authority.
+	if s.SelectorEntryPaused && !overflowDestinationEntry(s) {
 		return d(Hold, "selector_entry_requires_fresh_admission", 0)
 	}
 	// Same prerequisite as the fixed lane: a deposit into a missing obligation
@@ -361,13 +283,9 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 		return d(Hold, "deposit_rounding_window_unavailable", 0)
 	}
 	depositReady := s.CollateralIdleRaw > 0 && s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
+	// A levered position moves only by atomic steps; residue beside it waits
+	// for the next step to sweep it.
 	if s.PositionDebtRaw > 0 {
-		if s.DebtIdleRaw > 0 {
-			return d(SwapDebtToCollateralStep, "borrowed_debt_requires_collateral_buffer", s.DebtIdleRaw)
-		}
-		if depositReady {
-			return d(OpenRouteStep, "single_loop_redeposit", s.CollateralIdleRaw)
-		}
 		return d(Hold, "single_loop_position_ready", 0)
 	}
 	if depositReady {
@@ -378,10 +296,8 @@ func decideNonUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision
 			action, reason, amount := leverageDebtFreeStep(s)
 			return d(action, reason, amount)
 		}
-		if s.BorrowUtilizationBlocked {
-			return d(Hold, "debt_reserve_utilization_blocks_borrow", 0)
-		}
-		return d(OpenRouteStep, "collateral_requires_borrow", 1)
+		// An exit-only lane is never levered.
+		return d(Hold, "single_loop_position_ready", 0)
 	}
 	if s.CollateralIdleRaw > 0 {
 		return d(Hold, "collateral_below_deposit_rounding_window", 0)

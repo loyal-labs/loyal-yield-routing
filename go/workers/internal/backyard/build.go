@@ -475,24 +475,6 @@ func encodeBase58(value []byte) string {
 	}
 	return string(out)
 }
-func encodeShortVec(value int) []byte {
-	if value < 0 {
-		panic("negative shortvec")
-	}
-	out := []byte{}
-	for {
-		b := byte(value & 0x7f)
-		value >>= 7
-		if value != 0 {
-			b |= 0x80
-		}
-		out = append(out, b)
-		if value == 0 {
-			return out
-		}
-	}
-}
-
 func (b BuildResult) Validate() error {
 	return b.validateForDelegate(publicKey{})
 }

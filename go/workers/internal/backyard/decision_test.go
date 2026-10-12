@@ -154,19 +154,14 @@ func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
 	if got := Decide(entry); got.Action != OpenPrimeUSDCStep || got.Reason != "prime_collateral_ready" {
 		t.Fatal(got)
 	}
+	// The legacy route never levers: a 1x position is finished. Leverage
+	// moves only as atomic steps on registry lanes.
 	entry.PrimeIdleRaw, entry.HasPosition, entry.PositionCollateralRaw = 0, true, 99
-	if got := Decide(entry); got.Action != OpenPrimeUSDCStep || got.Reason != "prime_collateral_requires_borrow" {
+	if got := Decide(entry); got.Action != Hold {
 		t.Fatal(got)
 	}
-	entry.PositionDebtRaw, entry.SquadsIdleRaw, entry.LTVBPS = 40, 40, TargetLTVBPS
-	if got := Decide(entry); got.Action != SwapUSDCToPrimeStep || got.Reason != "borrowed_usdc_requires_prime_buffer" {
-		t.Fatal(got)
-	}
-	entry.SquadsIdleRaw, entry.PrimeIdleRaw = 0, 39
-	if got := Decide(entry); got.Action != OpenPrimeUSDCStep || got.Reason != "single_loop_redeposit" || got.AmountRaw != 39 {
-		t.Fatal(got)
-	}
-	entry.PrimeIdleRaw, entry.PositionCollateralRaw = 0, 138
+	entry.PositionDebtRaw, entry.LTVBPS, entry.PositionCollateralRaw = 40, TargetLTVBPS, 138
+	entry.PositionCollateralValueRaw, entry.PositionDebtValueRaw, entry.PayoffDebtRaw = 138, 40, 41
 	if got := Decide(entry); got.Action != Hold || got.Reason != "single_loop_position_ready" {
 		t.Fatal(got)
 	}
@@ -177,22 +172,10 @@ func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
 		t.Fatal(got)
 	}
 	withdraw.Unwind = true // Full-chain planning remains scoped to explicit unwind.
-	if got := Decide(withdraw); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_release_repayment_collateral" {
+	if got := Decide(withdraw); got.Action != DeleverPrimeUSDCStep || got.Reason != withdrawalDeleverReason {
 		t.Fatal(got)
 	}
-	withdraw.PrimeIdleRaw, withdraw.PositionCollateralRaw = 28, 110
-	if got := Decide(withdraw); got.Action != SwapPrimeToUSDCStep || got.Reason != "withdrawal_swap_repayment_buffer" || got.AmountRaw != 28 {
-		t.Fatal(got)
-	}
-	withdraw.PrimeIdleRaw, withdraw.SquadsIdleRaw = 0, 28
-	if got := Decide(withdraw); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_repay_debt" || got.AmountRaw != 28 {
-		t.Fatal(got)
-	}
-	withdraw.PositionDebtRaw, withdraw.SquadsIdleRaw = 12, 0
-	if got := Decide(withdraw); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_release_repayment_collateral" {
-		t.Fatal(got)
-	}
-	// The same release→swap→repay loop repeats until debt is exactly zero.
+	// Down steps repeat until debt is exactly zero; then collateral leaves.
 	withdraw.PositionDebtRaw, withdraw.SquadsIdleRaw = 0, 0
 	if got := Decide(withdraw); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_withdraw_collateral" {
 		t.Fatal(got)
@@ -214,7 +197,7 @@ func TestSingleLoopEntryAndFullWithdrawalPrecedence(t *testing.T) {
 	release := base()
 	release.Unwind = true
 	release.WithdrawalDemandRaw, release.HasPosition, release.PositionCollateralRaw, release.PositionDebtRaw = 99, true, 99, 40
-	if got := Decide(release); got.Action != DeleverPrimeUSDCStep || got.Reason != "withdrawal_release_repayment_collateral" {
+	if got := Decide(release); got.Action != DeleverPrimeUSDCStep || got.Reason != withdrawalDeleverReason {
 		t.Fatal(got)
 	}
 }

@@ -47,54 +47,6 @@ func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client
 	return o, m, rpc, client, accounts, route
 }
 
-// Step 4: the pricer plans one cycle at 1.75x (release -> swap -> partial
-// repay of the swap's MINIMUM) before the final release -> payoff, over the
-// longer 7+3 window, and the repay never pays the whole debt.
-func TestLeverageExitPricerPricesOneCycleAt175x(t *testing.T) {
-	t.Parallel()
-	o, m, rpc, client, _, route := leverage175Fixture(t)
-	_, rows, err := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route), 42)
-	if err != nil {
-		t.Fatal(err)
-	}
-	need, err := leverageExitNeedsCycles(context.Background(), rpc, nil, client, m, testPolicies(t), route, o.Snapshot, rows)
-	if err != nil || !need {
-		t.Fatalf("1.75x needs cycles: %v %v", need, err)
-	}
-	legs, post, cash, steps, first, err := priceLeverageExitCycles(context.Background(), rpc, nil, client, m, testPolicies(t), route, o.Snapshot, rows, 42, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(legs) != 3 || legs[0].Action != DeleverRouteStep || legs[1].Action != SwapCollateralToDebtStep || legs[2].Action != DeleverRouteStep || steps != 10 || cash != 0 || first == nil {
-		t.Fatalf("cycle legs %d steps %d cash %d", len(legs), steps, cash)
-	}
-	repayRequest, repayEffects, _, err := legs[2].Template.decode()
-	if err != nil {
-		t.Fatal(err)
-	}
-	swapRequest, _, _, _ := legs[1].Template.decode()
-	repay, swap := repayRequest.(KaminoPrimeUSDCRequest), swapRequest.(JupiterSwapRequest)
-	if repay.AmountRaw != swap.MinimumOutputRaw || repay.AmountRaw >= first.ObservedDebtRaw || repay.FullPayoff || repayEffects.Repayment == nil || repayEffects.Repayment.MaximumDebitRaw != repay.AmountRaw {
-		t.Fatalf("partial repay %d vs swap minimum %d / debt %d", repay.AmountRaw, swap.MinimumOutputRaw, first.ObservedDebtRaw)
-	}
-	// Post-cycle: less collateral, less debt, lower LTV; one release now pays off.
-	before, _ := decodeKaminoObligation(accountAt(rows, route.Kamino.Obligation), route.Kamino)
-	after, _ := decodeKaminoObligation(accountAt(post, route.Kamino.Obligation), route.Kamino)
-	if after.collateralDepositedRaw >= before.collateralDepositedRaw || after.debtRaw >= before.debtRaw || after.debtRaw == 0 {
-		t.Fatalf("projection %+v -> %+v", before, after)
-	}
-	s := o.Snapshot
-	need, err = leverageExitNeedsCycles(context.Background(), rpc, nil, client, m, testPolicies(t), route, s, post)
-	if err != nil || need {
-		t.Fatalf("post-cycle still needs cycles: %v %v", need, err)
-	}
-	// The observed accounts were never mutated.
-	orig, _ := decodeKaminoObligation(accountAt(rows, route.Kamino.Obligation), route.Kamino)
-	if orig.debtRaw != 42_857_142 {
-		t.Fatal("pricer mutated observed accounts")
-	}
-}
-
 // The admission-level pricer: a NAV at 1.75x reserves the complete
 // multi-cycle exit (cycle legs + final release -> swap -> payoff ->
 // withdraw -> return), binding the FIRST cycle's payoff window and release
@@ -129,7 +81,7 @@ func TestLeverageExitAdmissionReservesTheMultiCycleExit(t *testing.T) {
 		if step.Action == DeleverRouteStep && step.Template != nil {
 			if r, _, _, err := step.Template.decode(); err == nil {
 				if k, ok := r.(KaminoPrimeUSDCRequest); ok {
-					if _, leg, _ := kaminoPrimeUSDCInstruction(k); leg == kaminoLegRepay && !k.FullPayoff && step.Amount < uint64(o.Snapshot.PositionDebtRaw) && plan.Payoff != nil && step.Amount < plan.Payoff.ObservedDebtRaw {
+					if _, leg, _ := kaminoPrimeUSDCInstruction(k); leg == kaminoLegRepay && step.Amount < uint64(o.Snapshot.PositionDebtRaw) && plan.Payoff != nil && step.Amount < plan.Payoff.ObservedDebtRaw {
 						cycleRepays++
 					}
 				}
@@ -207,9 +159,6 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 	if _, err, ok := priceLeverageExitFromCurrent(context.Background(), rpc, fixtureView(t, rpc), broken, m, o, d, BridgeBuildRequest{}, ExpectedEffects{}, route, rows); ok || err != nil {
 		t.Fatalf("1.5x NAV left the installed path: ok=%t err=%v", ok, err)
 	}
-	if _, err, ok := priceLeverageExitAfterRelease(context.Background(), rpc, fixtureView(t, rpc), broken, m, o, d, KaminoPrimeUSDCRequest{RouteLane: route.Lane}, ExpectedEffects{}, KaminoReleaseBound{}, rows); ok || err != nil {
-		t.Fatalf("1.5x release left the installed path: ok=%t err=%v", ok, err)
-	}
 	if leverageExitAccountsMayNeedCycles(rows, route, o.Snapshot) {
 		t.Fatal("1.5x accounts flagged for cycles")
 	}
@@ -222,41 +171,6 @@ func TestLeverageExitPreCheckSkipsQuotesAt15x(t *testing.T) {
 	_, rows175, _ := confirmedAccounts(context.Background(), rpc175, payoffWindowAddresses(route), 42)
 	if !leverageExitAccountsMayNeedCycles(rows175, route, o175.Snapshot) {
 		t.Fatal("1.75x accounts skipped the cycle check")
-	}
-}
-
-// Step 5 admission: the sized 1.75x -> 1.5x release is priced from its
-// poststate (complete remaining exit), never as a payoff funding.
-func TestDownPartialReleaseAdmissionPricesFromItsPoststate(t *testing.T) {
-	t.Parallel()
-	o, m, rpc, client, _, route := leverage175Fixture(t)
-	o.Snapshot.LeverageTargetLevel = 1.5
-	_, rows, _ := confirmedAccounts(context.Background(), rpc, payoffWindowAddresses(route), 42)
-	bound, err := m.decodeKaminoRepaymentReleaseForMode(rows, route, 42, 5, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, receipts, ok := leverageDownPartialStepAt(o.Snapshot, true)
-	if !ok || uint64(receipts) > bound.ReceiptRaw {
-		t.Fatalf("partial release %d vs safe %d", receipts, bound.ReceiptRaw)
-	}
-	d := Decision{Action: DeleverRouteStep, StrategyKey: route.Lane, Reason: leverageDownPartialReleaseReason, AmountRaw: receipts}
-	r, err := m.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, uint64(receipts), LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	r.RepaymentRelease, r.PilotRepaymentRelease = true, true
-	reserve, _ := decodeKaminoReserve(accountAt(rows, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
-	liquidity, _ := reserve.redeemLiquidityRaw(uint64(receipts))
-	source, destination := kaminoLegCustodiesForRoute(kaminoLegWithdraw, route)
-	effects, err := exactKaminoTokenEffects(rows, source, destination, liquidity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan, err, ok := priceLeverageExitAfterRelease(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, r, effects, bound, rows)
-	if !ok || err != nil || plan.ExitAfterMicros <= 0 || plan.PayoffRepayment == nil || plan.Payoff == nil {
-		t.Fatalf("ok=%t err=%v plan=%+v", ok, err, plan.Payoff)
 	}
 }
 

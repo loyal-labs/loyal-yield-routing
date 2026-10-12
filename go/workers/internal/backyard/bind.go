@@ -51,6 +51,8 @@ func encodePhase3BuildInput(request any, effects []byte) (*phase3BuildInput, err
 		input.Kind = "jupiter"
 	case HastraConversionRequest:
 		input.Kind = "hastra"
+	case StepRequest:
+		input.Kind = "step"
 	default:
 		return nil, budgetHold("unmapped_economic_action")
 	}
@@ -95,6 +97,8 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 		target = &JupiterSwapRequest{}
 	case "hastra":
 		target = &HastraConversionRequest{}
+	case "step":
+		target = &StepRequest{}
 	default:
 		return nil, ExpectedEffects{}, nil, budgetHold("invalid_persisted_build_input")
 	}
@@ -122,6 +126,9 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 	case *HastraConversionRequest:
 		request = *r
 		message, err = compileHastraMessageForDelegate(*r, mustKey(bridgeDelegate))
+	case *StepRequest:
+		request = *r
+		message, err = compileStepMessageForDelegate(*r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
 		return nil, ExpectedEffects{}, nil, budgetHoldFrom(err, "persisted_build_no_longer_compiles")
@@ -203,13 +210,6 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *V
 		return err
 	}
 	plan := debtClearPlan{Snapshot: o.Snapshot, Decision: decision}
-	if r, ok := request.(KaminoPrimeUSDCRequest); ok && partialRepaymentReason(decision.Reason) {
-		projection, err := observePartialRepaymentProjection(ctx, rpc, view, m, o.Snapshot, decision, r, effects)
-		if err != nil {
-			return err
-		}
-		plan.Repayment = &projection
-	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -350,6 +350,8 @@ func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization,
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case HastraConversionRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case StepRequest:
+		blockhash, height = r.Open.RecentBlockhash, r.Open.LastValidBlockHeight
 	}
 	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(signature) {
 		return nil, ExpectedEffects{}, budgetHold("persisted_signature_or_expiry_mismatch")

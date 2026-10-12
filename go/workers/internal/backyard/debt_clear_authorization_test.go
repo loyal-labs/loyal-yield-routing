@@ -24,7 +24,6 @@ func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutio
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.FullPayoff = true
 	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
 	effects, err := boundedKaminoRepaymentEffects(accounts, source, destination, 1000, 1001)
@@ -37,7 +36,6 @@ func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutio
 func TestDebtClearClassifiesWholeFlowBeforeFirstCapitalLeg(t *testing.T) {
 	t.Parallel()
 	_, _, evidence, m, _, plan := debtClearPayoffFixture(t)
-	evidence.Request.FullPayoff = false // The actual repay amount, not this flag, controls consent.
 	required, err := debtClearRequired(m, evidence.Request, evidence.ExpectedEffects, plan, debtClearRouteState{})
 	if err != nil || !required {
 		t.Fatal("whole-debt repayment escaped confirmation", err)
@@ -390,14 +388,13 @@ func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionE
 	o.Snapshot.ValuationSource, o.Snapshot.ValuationSlot = o.ValuationSource, o.ValuationSlot
 	o.routeBatch = &routeObservationBatch{Slot: o.Snapshot.Slot, ObservationID: o.Snapshot.ObservationID, ManifestSHA256: m.SHA256, Accounts: accounts}
 	decision := Decide(o.Snapshot)
-	if decision.Reason != "hard_ltv_repay" {
+	if decision.Reason != hardLTVDeleverReason {
 		t.Fatal("fixture not real hard risk", decision)
 	}
 	request, err := m.kaminoPacketForRoute(testPolicies(t), decision.Action, kaminoLegRepay, 1001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.FullPayoff = true
 	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
 	effects, err := boundedKaminoRepaymentEffects(accounts, source, destination, 1000, 1001)
@@ -456,7 +453,7 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 	if err := applyUnwindIntent(&o.Snapshot, &old); err != nil {
 		t.Fatal("amount growth became global integrity failure", err)
 	}
-	if !o.Snapshot.UnwindRefreshRequired || Decide(o.Snapshot).Reason != "hard_ltv_repay" {
+	if !o.Snapshot.UnwindRefreshRequired || Decide(o.Snapshot).Reason != hardLTVDeleverReason {
 		t.Fatal("ordinary amount envelope blocked fresh risk")
 	}
 	below := o.Snapshot

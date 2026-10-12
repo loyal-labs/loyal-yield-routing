@@ -152,12 +152,10 @@ func (d *Database) commitDebtClearConfirmationTx(ctx context.Context, tx pgx.Tx,
 }
 
 // debtClearPlan is the decision context the debt-clear fence classifies at
-// bind: the observed snapshot, the decision, and for a partial repayment the
-// simulated poststate proving debt remains.
+// bind: the observed snapshot and the decision.
 type debtClearPlan struct {
-	Snapshot  Snapshot
-	Decision  Decision
-	Repayment *phase3KaminoProjection
+	Snapshot Snapshot
+	Decision Decision
 }
 
 // This classifies the executable leg AND its intended continuation. Unknown
@@ -165,6 +163,8 @@ type debtClearPlan struct {
 // a partial flow.
 func debtClearRequired(m RouteManifest, request any, effects ExpectedEffects, plan debtClearPlan, state debtClearRouteState) (bool, error) {
 	switch r := request.(type) {
+	case StepRequest:
+		return stepDebtClearRequired(r, plan, state)
 	case KaminoInitializationRequest:
 		return false, nil
 	case BridgeBuildRequest:
@@ -204,19 +204,9 @@ func debtClearRequired(m RouteManifest, request any, effects ExpectedEffects, pl
 		if err != nil {
 			return false, err
 		}
+		// Every repay is an atomic step's; a lone repay leg fails closed.
 		if leg == kaminoLegRepay {
-			if effects.Repayment == nil || effects.Repayment.MaximumDebitRaw != r.AmountRaw {
-				return false, budgetHold("debt_clear_classification_unavailable")
-			}
-			if r.AmountRaw >= uint64(s.PositionDebtRaw) || r.FullPayoff {
-				return true, nil
-			}
-			if plan.Repayment == nil {
-				return false, budgetHold("debt_clear_partial_proof_required")
-			}
-			if _, err := validatePartialRepaymentProjection(r, effects, s, *plan.Repayment); err != nil {
-				return false, err
-			}
+			return true, nil
 		}
 	}
 	if state.Unwind != nil || s.Unwind || s.CutoverDrain || s.LeverageTargetLevel == 1 || leverageTargetFor(state.Targets, s.RouteLane) != nil && state.Targets[s.RouteLane].Level == 1 {
@@ -227,10 +217,38 @@ func debtClearRequired(m RouteManifest, request any, effects ExpectedEffects, pl
 	matches := func(a Action, reason string, amount int64, ok bool) bool {
 		return ok && decision.Action == a && decision.Reason == reason && decision.AmountRaw == amount
 	}
-	if matches(partialWithdrawalStep(s)) || matches(leverageDownPartialStep(s)) {
+	if matches(partialWithdrawalStep(s)) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// stepDebtClearRequired classifies an atomic step. An up step opens debt,
+// which no debt-clearing flow may. A down step needs the consent when it
+// repays the whole debt, or belongs to a flow that does (the full down move,
+// a full exit, an unwind); its repay is at most Close, and KLend repays at
+// most what is owed, so a Close under the debt leaves debt.
+func stepDebtClearRequired(r StepRequest, plan debtClearPlan, state debtClearRouteState) (bool, error) {
+	route, err := runtimeRoute(r.Open.RouteLane)
+	if err != nil {
+		return false, err
+	}
+	up, err := stepUp(r.Open, route)
+	if err != nil {
+		return false, err
+	}
+	if up {
+		if state.Authority != nil {
+			return false, budgetHold("debt_clear_flow_forbids_new_position")
+		}
+		return false, nil
+	}
+	s, decision := plan.Snapshot, plan.Decision
+	if s.PositionDebtRaw <= 0 || !s.Fresh || s.RouteLane != decision.StrategyKey || s.Slot <= 0 {
+		return false, budgetHold("debt_clear_classification_unavailable")
+	}
+	full := r.Close.AmountRaw >= uint64(s.PositionDebtRaw) || decision.Reason == leverageDownReason || decision.Reason == withdrawalDeleverReason
+	return full || state.Unwind != nil || s.Unwind || s.CutoverDrain, nil
 }
 
 // Emergency origin is accepted only from the observer's private coherent
@@ -368,6 +386,9 @@ func (d *Database) authorizeDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteM
 		// The scope covers the observed payoff window and, when the origin
 		// leg is the repay itself, its exact repay amount.
 		maxDebt := max(s.PositionDebtRaw, s.PayoffDebtRaw)
+		if r, ok := request.(StepRequest); ok && r.Close.AmountRaw <= math.MaxInt64 {
+			maxDebt = max(maxDebt, int64(r.Close.AmountRaw))
+		}
 		if r, ok := request.(KaminoPrimeUSDCRequest); ok {
 			if _, leg, err := kaminoPrimeUSDCInstruction(r); err == nil && leg == kaminoLegRepay {
 				if r.AmountRaw > math.MaxInt64 {
@@ -406,6 +427,11 @@ func (d *Database) authorizeDebtClearTx(ctx context.Context, tx pgx.Tx, m RouteM
 		if leg == kaminoLegRepay && r.AmountRaw > uint64(a.Origin.MaxDebtRaw) {
 			return budgetHold("debt_clear_scope_changed")
 		}
+	}
+	// A step's repay clears at most the debt owed, which the scope bounds
+	// above; its Close may exceed that by the conversion's slack.
+	if r, ok := request.(StepRequest); ok && min(r.Close.AmountRaw, uint64(max(plan.Snapshot.PositionDebtRaw, plan.Snapshot.PayoffDebtRaw))) > uint64(a.Origin.MaxDebtRaw) {
+		return budgetHold("debt_clear_scope_changed")
 	}
 	if err = debtClearAuthorityLiveTx(ctx, tx, m, routeKey, operationID, *a, state, now); err != nil {
 		return err

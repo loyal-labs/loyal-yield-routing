@@ -337,8 +337,6 @@ func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return observation, evidence, err
 	}
-	evidence.Request.PositionReturnReserved = positionReturnConversion(decision)
-	evidence.Request.FullPayoffFunding = payoffFundingConversion(decision, observation.Snapshot)
 	return observation, evidence, nil
 }
 

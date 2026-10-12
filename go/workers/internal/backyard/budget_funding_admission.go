@@ -177,49 +177,6 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 	var futureRelease bool
 	steps := int64(2) // current NAV -> payoff
 	switch r := request.(type) {
-	case KaminoPrimeUSDCRequest:
-		if !r.RepaymentRelease || r.Action != DeleverRouteStep || decision.Action != r.Action || !repaymentReleaseReason(decision.Reason) || r.RouteLane != s.RouteLane || r.AmountRaw >= uint64(s.PositionCollateralRaw) || r.ReleaseDebtIdleRaw != uint64(debtCashRaw(s)) {
-			return phase3BridgeAdmission{}, budgetHold("release_return_intent_mismatch")
-		}
-		var err error
-		releaseBound, releaseAccounts, err = manifest.validateRepaymentReleaseRequest(ctx, view, r, effects, s.Slot)
-		if err != nil {
-			return phase3BridgeAdmission{}, err
-		}
-		// B2 1.75x: a release that cannot fund the payoff is a cycle's first
-		// leg; price the multi-cycle exit from its projected poststate.
-		if earnActiveLane(s.RouteLane) {
-			if plan, err, ok := priceLeverageExitAfterRelease(ctx, rpc, view, client, manifest, observation, decision, r, effects, releaseBound, releaseAccounts); ok {
-				return plan, err
-			}
-		}
-		if decision.Reason == leverageDownPartialReleaseReason {
-			// The 1.75x -> 1.5x release never funds a payoff; its complete
-			// exit is priced from its poststate above.
-			return phase3BridgeAdmission{}, budgetHold("leverage_down_partial_release_requires_cycle_pricing")
-		}
-		route, _ := runtimeRoute(s.RouteLane)
-		obligation, err := decodeKaminoObligation(accountAt(releaseAccounts, route.Kamino.Obligation), route.Kamino)
-		if err != nil || obligation.collateralDepositedRaw != uint64(s.PositionCollateralRaw) {
-			return phase3BridgeAdmission{}, budgetHoldFrom(err, "release_position_snapshot_changed")
-		}
-		debit, err := manifest.measureExecutableDebit(r, effects)
-		if err != nil || debit.Raw > uint64(math.MaxInt64-s.CollateralIdleRaw) || effects.Accounts[1].BeforeRaw != uint64(s.CollateralIdleRaw) {
-			return phase3BridgeAdmission{}, budgetHoldFrom(err, "release_custody_snapshot_changed")
-		}
-		release = &KaminoExecutionEvidence{r, effects}
-		steps = 5
-	case JupiterSwapRequest, HastraConversionRequest:
-		current := conversionEvidence{r, effects}
-		c := current.intent()
-		amount := s.CollateralIdleRaw
-		if c.Action == SwapUSDCToDebtStep {
-			amount = s.SquadsIdleRaw
-		}
-		if !c.FullPayoffFunding || !isPayoffFundingAction(c.Action) || decision.Action != c.Action || c.RouteLane != s.RouteLane || amount <= 0 || decision.AmountRaw != amount || c.AmountRaw != uint64(amount) {
-			return phase3BridgeAdmission{}, budgetHold("funding_return_intent_mismatch")
-		}
-		funding, currentSwap, steps = &current, true, 3
 	case BridgeBuildRequest:
 		if r.Action != ReportNAV || decision.Action != ReportNAV || r.AmountRaw != 0 || decision.AmountRaw != 0 || r.Report.ObservedSlot != uint64(s.Slot) || r.Report.Sequence != uint64(s.Slot) {
 			return phase3BridgeAdmission{}, budgetHold("funding_nav_intent_mismatch")
@@ -465,4 +422,34 @@ func observePhase3FundingAdmission(ctx context.Context, rpc *chain.Client, view 
 		return plan, budgetHold("stale_funding_exit_admission")
 	}
 	return plan, nil
+}
+
+// payoffFundingSource is the custody that funds a full payoff of upperDebt
+// beside the debt cash, without assuming equal token decimals or a stablecoin
+// peg: idle collateral, then Squads USDC, each valued with the two-sided
+// pricing margin. This is exit pricing, never quote authorization.
+func payoffFundingSource(s Snapshot, upperDebt uint64) (Action, int64) {
+	if debtCashRaw(s) < 0 || s.PositionDebtRaw <= 0 || s.PositionDebtValueRaw <= 0 || uint64(debtCashRaw(s)) >= upperDebt {
+		return "", 0
+	}
+	need := new(big.Int).SetUint64(upperDebt - uint64(debtCashRaw(s)))
+	need.Mul(need, big.NewInt(s.PositionDebtValueRaw))
+	need.Mul(need, big.NewInt(int64(10_000+budgetPriceMarginBPS)))
+	for _, source := range []struct {
+		action        Action
+		amount, value int64
+	}{
+		{SwapCollateralToDebtStep, s.CollateralIdleRaw, s.CollateralIdleValueRaw},
+		{SwapUSDCToDebtStep, s.SquadsIdleRaw, s.SquadsIdleRaw},
+	} {
+		if !laneSwap(s.RouteLane, source.action) || source.amount <= 0 || source.value <= 0 {
+			continue
+		}
+		available := new(big.Int).Mul(big.NewInt(source.value), big.NewInt(s.PositionDebtRaw))
+		available.Mul(available, big.NewInt(int64(10_000-budgetPriceMarginBPS)))
+		if available.Cmp(need) >= 0 {
+			return source.action, source.amount
+		}
+	}
+	return "", 0
 }

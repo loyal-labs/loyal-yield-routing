@@ -230,43 +230,6 @@ func priceLeverageExitFromCurrent(ctx context.Context, rpc *chain.Client, view *
 	return plan, err, true
 }
 
-// priceLeverageExitAfterRelease prices the rest of a multi-cycle exit after
-// the current repayment release, from its cost-only projected poststate.
-func priceLeverageExitAfterRelease(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, d Decision, r KaminoPrimeUSDCRequest, effects ExpectedEffects, bound KaminoReleaseBound, accounts []ConfirmedAccount) (phase3BridgeAdmission, error, bool) {
-	route, err := runtimeRoute(r.RouteLane)
-	if err != nil {
-		return phase3BridgeAdmission{}, err, true
-	}
-	// The 1.75x -> 1.5x partial release always prices from its poststate:
-	// it is a de-levering step, never a payoff funding.
-	if d.Reason != leverageDownPartialReleaseReason {
-		need, err := leverageExitNeedsCycles(ctx, rpc, view, client, m, o.policies, route, o.Snapshot, accounts)
-		if err != nil || !need {
-			return phase3BridgeAdmission{}, err, err != nil
-		}
-	}
-	current, err := m.observePhase3KnownBuildCost(ctx, rpc, view, r, effects)
-	if err != nil {
-		return phase3BridgeAdmission{}, err, true
-	}
-	debit, err := m.measureExecutableDebit(r, effects)
-	if err != nil {
-		return phase3BridgeAdmission{}, err, true
-	}
-	release := KaminoReleaseBound{Payoff: bound.Payoff, ReceiptRaw: r.AmountRaw, LiquidityRaw: debit.Raw}
-	// Receipts leave the obligation; the released liquidity lands in
-	// collateral custody. No debt change yet.
-	post, err := projectLeverageExitRelease(accounts, route, release, effects)
-	if err != nil {
-		return phase3BridgeAdmission{}, err, true
-	}
-	plan, err := pricePhase3ProjectedPositionReturn(ctx, rpc, view, client, m, o, d, r, effects, current, phase3KaminoProjection{Slot: bound.Payoff.ObservedSlot, Accounts: post})
-	if err == nil {
-		plan.Snapshot = o.Snapshot
-	}
-	return plan, err, true
-}
-
 // leverageExitNeedsCycles: one safe release plus idle collateral, swapped at
 // its quote minimum, cannot fund the full payoff.
 func leverageExitNeedsCycles(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, policies installedPolicies, route RuntimeRoute, s Snapshot, accounts []ConfirmedAccount) (bool, error) {
@@ -293,36 +256,6 @@ func leverageExitNeedsCycles(ctx context.Context, rpc *chain.Client, view *View,
 		return false, err
 	}
 	return cash+probe.intent().MinimumOutputRaw < limit.Payoff.UpperDebtRaw, nil
-}
-
-// projectLeverageExitRelease applies only a release to cost-only copies.
-func projectLeverageExitRelease(accounts []ConfirmedAccount, route RuntimeRoute, release KaminoReleaseBound, effects ExpectedEffects) ([]ConfirmedAccount, error) {
-	out := append([]ConfirmedAccount(nil), accounts...)
-	obligation, err := decodeKaminoObligation(accountAt(out, route.Kamino.Obligation), route.Kamino)
-	if err != nil || obligation.collateralDepositedRaw <= release.ReceiptRaw || len(effects.Accounts) != 2 {
-		return nil, budgetHoldFrom(err, "leverage_exit_projection_unavailable")
-	}
-	for i := range out {
-		if out[i].Address == route.Kamino.Obligation || out[i].Address == route.Kamino.CollateralReserve {
-			out[i].Data = append([]byte(nil), out[i].Data...)
-		}
-	}
-	o := accountAt(out, route.Kamino.Obligation).Data
-	for i := 0; i < 8; i++ {
-		off := 96 + i*136
-		if sameKey(o[off:off+32], route.Kamino.CollateralReserve) && binary.LittleEndian.Uint64(o[off+32:off+40]) > 0 {
-			binary.LittleEndian.PutUint64(o[off+32:off+40], obligation.collateralDepositedRaw-release.ReceiptRaw)
-		}
-	}
-	c := accountAt(out, route.Kamino.CollateralReserve).Data
-	available, supply := binary.LittleEndian.Uint64(c[224:232]), binary.LittleEndian.Uint64(c[2592:2600])
-	if available < release.LiquidityRaw || supply <= release.ReceiptRaw {
-		return nil, budgetHold("leverage_exit_projection_unavailable")
-	}
-	binary.LittleEndian.PutUint64(c[224:232], available-release.LiquidityRaw)
-	binary.LittleEndian.PutUint64(c[2592:2600], supply-release.ReceiptRaw)
-	out = patchConfirmedTokenRaw(out, route.CollateralLiquiditySupply, effects.Accounts[0].AfterRaw)
-	return patchConfirmedTokenRaw(out, route.CollateralCustody, effects.Accounts[1].AfterRaw), nil
 }
 
 // leverageExitMayNeedCycles runs the step-1 planner on snapshot values with

@@ -195,7 +195,7 @@ func termKeepAliveBypassesEntryFence(request any, journaledReason string, unwind
 	if journaledReason != termKeepAliveReason {
 		return false, nil
 	}
-	r, ok := request.(KaminoPrimeUSDCRequest)
+	r, ok := stepBorrow(request)
 	if !ok {
 		return false, budgetHold("term_keepalive_authority_mismatch")
 	}

@@ -57,9 +57,8 @@ func TestPhase2WithdrawalDemandRequiresExplicitDrain(t *testing.T) {
 	}
 	snapshot.Unwind = true
 	decision = Decide(snapshot)
-	// This buffer is not proven to cover all debt plus interest; release more
-	// collateral before quoting a bounded full-payoff funding swap.
-	if decision.Action != DeleverRouteStep || decision.Reason != "withdrawal_release_repayment_collateral" || decision.AmountRaw != 1 {
+	// The drain repays the whole debt by down steps, each funding its own repay.
+	if decision.Action != DeleverRouteStep || decision.Reason != withdrawalDeleverReason || decision.AmountRaw != stepDownMarker {
 		t.Fatalf("selected-lane withdrawal did not begin full conservative drain: %+v", decision)
 	}
 	if decision.StrategyKey != SelectedRouteID {

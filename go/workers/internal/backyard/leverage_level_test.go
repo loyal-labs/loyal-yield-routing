@@ -72,7 +72,7 @@ func TestOneXByChoiceIsAFinishedPosition(t *testing.T) {
 	legacy := base()
 	legacy.RouteLane, legacy.StrategyKey = RouteID, RouteID
 	legacy.HasPosition, legacy.PositionCollateralRaw = true, 100
-	if got := Decide(legacy); got.Action != OpenPrimeUSDCStep {
-		t.Fatalf("legacy route changed: %+v", got)
+	if got := Decide(legacy); got.Action != Hold || got.Reason == leverageUpReason {
+		t.Fatalf("legacy route levered: %+v", got)
 	}
 }

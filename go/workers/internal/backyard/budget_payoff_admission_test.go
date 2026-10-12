@@ -79,7 +79,6 @@ func payoffAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts ...Co
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.FullPayoff = true
 	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
 	effects, err := boundedKaminoRepaymentEffects(accounts, source, destination, 1_000, 1_001)
@@ -118,21 +117,6 @@ func TestPostPayoffNAVPricesTheDebtFreeReturn(t *testing.T) {
 	if _, err := pricePhase3PositionReturn(context.Background(), rpc, fixtureView(t, rpc), client, m, o, d, request, effects, false); err == nil {
 		t.Fatal("nonzero debt became a debt-free NAV")
 	}
-}
-
-// The full-payoff condition runs on the persisted signed bytes at build and
-// send: a changed rate is not grandfathered by yesterday's sufficient wire.
-func TestFullPayoffPrestateRefusesUnderfundingBeforeSigner(t *testing.T) {
-	t.Parallel()
-	_, _, e, _, rpc, _, a := payoffAdmissionFixture(t, 20_000)
-	if err := validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects); err != nil {
-		t.Fatal(err)
-	}
-	reserve := accountAt(a, ethenaUSDePYUSD.Kamino.DebtReserve)
-	for i := 0; i < 11; i++ {
-		binary.LittleEndian.PutUint32(reserve.Data[kaminoReserveConfigOffset+68+i*8:], 1_000_000_000)
-	}
-	assertBudgetHold(t, validateBuildPrestate(context.Background(), rpc, fixtureView(t, rpc), e.Request, e.ExpectedEffects), "full_payoff_request_underfunded")
 }
 
 func TestPayoffBoundUsesAccrualBasisAndUnroundedDebt(t *testing.T) {

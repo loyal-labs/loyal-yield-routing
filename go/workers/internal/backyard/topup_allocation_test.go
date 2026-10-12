@@ -62,7 +62,6 @@ func TestTopupAllocationSizingAndPriority(t *testing.T) {
 		"nonterminal":      func(s *Snapshot) { s.Nonterminal = Built },
 		"no room":          func(s *Snapshot) { s.TopupDepositRoomRaw = 0 },
 		"dust":             func(s *Snapshot) { s.VoltrIdleRaw = topupMinimumRaw - 1 },
-		"borrowed debt":    func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw, s.DebtIdleRaw = 1, 1, 1 },
 		"unvalued debt":    func(s *Snapshot) { s.PositionDebtRaw, s.PositionDebtValueRaw = 1, 0 },
 		"flat":             func(s *Snapshot) { s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = false, 0, 0 },
 	} {
@@ -85,7 +84,7 @@ func liveDebtTopupSnapshot() Snapshot {
 }
 
 // The top-up runs beside a debt-bearing AUTO position: allocate, swap, then
-// a collateral-only redeposit into the same obligation, then hold. No leg
+// a collateral-only deposit into the same obligation, then hold. No leg
 // borrows or repays; re-levering stays with the leverage rules.
 func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 	t.Parallel()
@@ -100,7 +99,7 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 		{func(s *Snapshot) { s.VoltrIdleRaw, s.SquadsIdleRaw = 5_000_000, 100_005_000_000 }, SwapStableToCollateralStep, topupSwapReason, 100_005_000_000},
 		{func(s *Snapshot) {
 			s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 0, 97_900_000_000, 97_900_000_000, 99_900_000_000
-		}, OpenRouteStep, "single_loop_redeposit", 97_900_000_000},
+		}, OpenRouteStep, topupDepositReason, 97_900_000_000},
 		{func(s *Snapshot) {
 			s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 0, 0, 0
 			s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.LTVBPS = 99_958_000_000, 102_000_000_000, 88
@@ -119,19 +118,20 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 	if got := Decide(room); got.Reason != topupAllocationReason || got.AmountRaw != 700_000_000 {
 		t.Fatalf("deposit-limit room ignored beside debt: %+v", got)
 	}
-	// Idle collateral beside debt is the leverage loop's: it is redeposited
-	// before any Squads cash is swapped.
+	// Idle collateral beside debt joins the top-up: Squads cash swaps first,
+	// then one deposit takes both.
 	loop := liveDebtTopupSnapshot()
 	loop.SquadsIdleRaw, loop.CollateralIdleRaw, loop.PrimeIdleRaw = 1_000_000, 35_000_000, 35_000_000
-	if got := Decide(loop); got.Action != OpenRouteStep || got.Reason != "single_loop_redeposit" || got.AmountRaw != 35_000_000 {
-		t.Fatalf("loop collateral beside top-up cash: %+v", got)
+	if got := Decide(loop); got.Action != SwapStableToCollateralStep || got.Reason != topupSwapReason || got.AmountRaw != 1_000_000 {
+		t.Fatalf("collateral beside top-up cash: %+v", got)
 	}
 	for name, c := range map[string]struct {
 		mutate func(*Snapshot)
 		reason string
 	}{
-		// Borrowed PYUSD is the leverage loop's, never a top-up.
-		"debt idle": {func(s *Snapshot) { s.DebtIdleRaw = s.PositionDebtRaw }, "borrowed_debt_requires_collateral_buffer"},
+		// Idle PYUSD waits for the next down step's repay; it never blocks
+		// nor joins the top-up.
+		"debt idle": {func(s *Snapshot) { s.DebtIdleRaw = s.PositionDebtRaw }, topupAllocationReason},
 		// Ethena is no leverage lane: debt keeps the installed hold.
 		"non-leverage lane": {func(s *Snapshot) { s.RouteLane, s.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane }, "single_loop_position_ready"},
 	} {
@@ -141,12 +141,12 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 			t.Fatalf("%s: %+v", name, got)
 		}
 	}
-	// OnRe debt is Squads USDC: borrowed cash there still goes to the
-	// leverage swap, never the top-up swap.
+	// OnRe debt is Squads USDC: cash there beside debt starts no leg (no
+	// top-up beside shared USDC debt, no lone swap).
 	onre := liveDebtTopupSnapshot()
 	onre.RouteLane, onre.StrategyKey, onre.SquadsIdleRaw = onreONycUSDC, onreONycUSDC, 1_000_000
-	if got := Decide(onre); got.Action != SwapDebtToCollateralStep || got.Reason != "borrowed_usdc_requires_prime_buffer" {
-		t.Fatalf("OnRe borrowed cash became a top-up: %+v", got)
+	if got := Decide(onre); got.Action == SwapDebtToCollateralStep || got.Action == SwapStableToCollateralStep {
+		t.Fatalf("OnRe cash beside debt was swapped: %+v", got)
 	}
 }
 

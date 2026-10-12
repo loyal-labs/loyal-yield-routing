@@ -30,7 +30,7 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 		t.Fatal(err)
 	}
 	e.Request.PositionReturnReserved = true
-	_, before, err := observeKaminoPayoffWindow(context.Background(), fixtureView(t, rpc), route, 42, 3)
+	_, before, err := observeKaminoPayoffWindowAccounts(context.Background(), fixtureView(t, rpc), route, 42, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

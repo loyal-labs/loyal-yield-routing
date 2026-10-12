@@ -29,24 +29,17 @@ func TestDepositRemainderDoesNotRestartEntryLoop(t *testing.T) {
 	if got := Decide(s); got.Action != ReportNAV {
 		t.Fatal("deposit bypassed NAV", got)
 	}
+	// Exit-only Ethena never levers: the residue beside its position holds.
 	s.PostMutationNAVRequired = false
-	if got := Decide(s); got.Reason != "collateral_requires_borrow" {
-		t.Fatal("rounding residue blocked borrowing", got)
+	if got := Decide(s); got.Reason != "single_loop_position_ready" {
+		t.Fatal("rounding residue restarted the loop", got)
 	}
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.DebtIdleRaw = 1004, 2008, 1000
-	if got := Decide(s); got.Action != SwapDebtToCollateralStep {
-		t.Fatal(got)
-	}
-	s.DebtIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 1_000_000, 1_000_000
-	if got := Decide(s); got.Reason != "single_loop_redeposit" {
-		t.Fatal("real reinvestment buffer skipped", got)
-	}
-	s.CollateralIdleRaw, s.PrimeIdleRaw = 1, 1
 	if got := Decide(s); got.Reason != "single_loop_position_ready" {
-		t.Fatal("rounding residue restarted redeposit", got)
+		t.Fatal("debt residue converted outside a step", got)
 	}
 	s.CutoverDrain = true
-	if got := Decide(s); got.Reason != "withdrawal_release_repayment_collateral" {
+	if got := Decide(s); got.Reason != withdrawalDeleverReason {
 		t.Fatal("rounding rule blocked exit", got)
 	}
 	s.CutoverDrain, s.MinimumCollateralDepositRaw = false, 0
@@ -80,16 +73,11 @@ func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != want {
 				t.Fatal("deposit remainder blocked borrowing", got)
 			}
-			s.PositionDebtRaw, s.PositionDebtValueRaw, s.SquadsIdleRaw = 50_000_000, 50_000_000, 50_000_000
-			if got := Decide(s); got.Action != SwapDebtToCollateralStep {
-				t.Fatal("remainder stranded borrowed cash", got)
-			}
-			s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 50_000_001, 50_000_001
-			if got := Decide(s); got.Action != OpenRouteStep || got.Reason != "single_loop_redeposit" {
-				t.Fatal("redeposit buffer skipped", got)
-			}
-			s.CollateralIdleRaw, s.PrimeIdleRaw = 1, 1
-			if got := Decide(s); got.Action != Hold || got.Reason != "single_loop_position_ready" {
+			// At the target level the remainder beside debt starts no leg:
+			// the next step's deposit sweeps it.
+			s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 33_000_000, 33_000_000, 33_000_001
+			s.LTVBPS = s.PositionDebtValueRaw * 10_000 / s.PositionCollateralValueRaw
+			if got := Decide(s); got.Action != Hold {
 				t.Fatal("remainder restarted finished loop", got)
 			}
 			s.Unwind = true

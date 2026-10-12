@@ -62,13 +62,16 @@ type tickRuntime struct {
 	prepareKamino                    func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
 	prepareJupiter                   func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
 	prepareHastra                    func(context.Context, Decision, Observation) (Observation, HastraExecutionEvidence, error)
-	recordDecision                   func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
+	// prepareStep builds an atomic step (stepDecision) from the tick's batch.
+	prepareStep    func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
+	recordDecision func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
 	// bind persists the decided operation's integrity record before build.
 	bind                  func(context.Context, string, Observation, Decision, any, ExpectedEffects) error
 	buildBridge           func(context.Context, string, BridgeExecutionEvidence) error
 	buildKamino           func(context.Context, string, KaminoExecutionEvidence) error
 	buildJupiter          func(context.Context, string, JupiterExecutionEvidence) error
 	buildHastra           func(context.Context, string, HastraExecutionEvidence) error
+	buildStep             func(context.Context, string, StepExecutionEvidence) error
 	custodyOwnershipProof func(context.Context, RouteManifest, sharedCustodyAttributionConfig, ExpectedEffects, uint64, int64) (sharedCustodyAdmissionProof, error)
 	// prefetchCustodyProof starts the pre-decision custody journal read while
 	// the spend is prepared; nil keeps the serial custodyOwnershipProof.
@@ -357,6 +360,9 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		prepareHastra: func(ctx context.Context, decision Decision, observation Observation) (Observation, HastraExecutionEvidence, error) {
 			return prepareHastraFromTickObservation(ctx, rpc, view, decision, observation)
 		},
+		prepareStep: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, StepExecutionEvidence, error) {
+			return prepareStepFromTickObservation(ctx, rpc, view, manifest, productionJupiter, decision, observation)
+		},
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 		},
@@ -381,6 +387,9 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 		},
 		buildHastra: func(ctx context.Context, operationID string, evidence HastraExecutionEvidence) error {
 			return BuildSimulateAndPersistHastra(ctx, database, rpc, view, operationID, evidence, credentials)
+		},
+		buildStep: func(ctx context.Context, operationID string, evidence StepExecutionEvidence) error {
+			return BuildSimulateAndPersistStep(ctx, database, rpc, view, operationID, evidence, credentials)
 		},
 	}
 }
@@ -521,6 +530,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	var kaminoEvidence KaminoExecutionEvidence
 	var jupiterEvidence JupiterExecutionEvidence
 	var hastraEvidence HastraExecutionEvidence
+	var stepEvidence StepExecutionEvidence
 	preparedDecision := decision
 	executionDecision, err := fixedRouteAction(decision.Action, decision.StrategyKey)
 	if err != nil {
@@ -531,6 +541,8 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	// A conversion executes through Hastra or Jupiter by its lane and action
 	// (hastraConversionLeg); every case below splits on it.
 	hastraConversion := conversionVenueHastra(wireDecision)
+	// A leverage move executes as one atomic step (step.go).
+	_, atomic := stepDecision(observation.Snapshot, wireDecision)
 	// The custody journal read of a PYUSD spend does not depend on the
 	// prepared wire, so it runs while preparation re-observes the chain.
 	var prefetchedCustody custodyProofFinisher
@@ -548,7 +560,14 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		observation, bridgeEvidence, err = w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
+		if atomic {
+			if w.runtime.prepareStep == nil {
+				return budgetHold("step_preparation_unavailable")
+			}
+			observation, stepEvidence, err = w.runtime.prepareStep(ctx, w.manifest, wireDecision, observation)
+		} else {
+			observation, kaminoEvidence, err = w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
+		}
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		if hastraConversion {
 			if w.runtime.prepareHastra == nil {
@@ -598,7 +617,11 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, bridgeEvidence.ExpectedEffects, prefetchedCustody)
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, kaminoEvidence.ExpectedEffects, prefetchedCustody)
+		effects := kaminoEvidence.ExpectedEffects
+		if atomic {
+			effects = stepEvidence.ExpectedEffects
+		}
+		err = w.observePreDecisionCustodyOwnershipProof(ctx, &observation, decision, effects, prefetchedCustody)
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		effects := jupiterEvidence.ExpectedEffects
 		if hastraConversion {
@@ -627,6 +650,9 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		request, effects = bridgeEvidence.Request, bridgeEvidence.ExpectedEffects
 	case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
 		request, effects = kaminoEvidence.Request, kaminoEvidence.ExpectedEffects
+		if atomic {
+			request, effects = stepEvidence.Request, stepEvidence.ExpectedEffects
+		}
 	case SwapUSDCToPrimeStep, SwapPrimeToUSDCStep, SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		request, effects = jupiterEvidence.Request, jupiterEvidence.ExpectedEffects
 		if hastraConversion {
@@ -648,7 +674,15 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
 			err = w.runtime.buildBridge(ctx, record.OperationID, bridgeEvidence)
 		case OpenPrimeUSDCStep, DeleverPrimeUSDCStep, OpenRouteStep, DeleverRouteStep:
-			err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
+			if atomic {
+				if w.runtime.buildStep == nil {
+					err = budgetHold("step_build_unavailable")
+				} else {
+					err = w.runtime.buildStep(ctx, record.OperationID, stepEvidence)
+				}
+			} else {
+				err = w.runtime.buildKamino(ctx, record.OperationID, kaminoEvidence)
+			}
 		default:
 			if hastraConversion {
 				if w.runtime.buildHastra == nil {

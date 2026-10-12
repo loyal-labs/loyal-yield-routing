@@ -96,9 +96,7 @@ func observePhase3CollateralReturnAdmission(ctx context.Context, rpc *chain.Clie
 	s := observation.Snapshot
 	// A payoff residue converted beside a debt-free position (plan B3) keeps
 	// that position; its complete return is priced after the swap below.
-	residue := decision.Reason == debtResidueSwapReason && decision.Action == SwapDebtToUSDCStep && s.HasPosition &&
-		s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && s.PositionDebtValueRaw == 0 && s.CollateralIdleRaw == 0 &&
-		s.WithdrawalDemandRaw == 0 && !s.Unwind && !s.CutoverDrain
+	residue := false
 	if !s.Fresh || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind ||
 		s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.RouteLane != s.StrategyKey || decision.StrategyKey != s.RouteLane ||
 		!earnHeldLane(s.RouteLane) || (!residue && (s.HasPosition || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 ||

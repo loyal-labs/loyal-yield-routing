@@ -23,6 +23,11 @@ const (
 )
 
 const (
+	// stepDownMarker is the amount of every down step's decision but a
+	// partial withdrawal's (which carries its equity, stable): prepare sizes
+	// the repay from the same snapshot (stepDownRepay), so re-deciding on a
+	// refreshed snapshot keeps the decision equal.
+	stepDownMarker = 1
 	// stepSwapLossBPS is the margin a down step converts over the debt it
 	// means to repay: the swap's slippage and the prices' drift.
 	stepSwapLossBPS = 100
@@ -45,7 +50,9 @@ func stepDecision(s Snapshot, d Decision) (up bool, ok bool) {
 		case hardLTVDeleverReason, leverageDownReason, leverageDownPartialReason, withdrawalDeleverReason:
 			return false, true
 		case partialReleaseReason:
-			return false, !overflowSourceHalf(s)
+			// Beside no debt it is one withdrawal; an overflow source's release
+			// repays nothing.
+			return false, !overflowSourceHalf(s) && s.PositionDebtRaw > 0
 		}
 	}
 	return false, false
@@ -69,6 +76,23 @@ func stepDebtToLTVRaw(s Snapshot, ltvBPS int64) int64 {
 		return s.PositionDebtRaw
 	}
 	return min(raw.Int64(), s.PositionDebtRaw)
+}
+
+// stepDownRepay is the debt a down step of reason repays, from the snapshot
+// it was decided on: to the stored level's LTV after hard LTV, to 1.5x for
+// the partial down move, all of it (full, sized on the payoff bound) for the
+// down move to 1x and a drain. A partial withdrawal repays its debt share
+// (planDownStep).
+func stepDownRepay(s Snapshot, reason string) (uint64, bool) {
+	switch reason {
+	case leverageDownReason, withdrawalDeleverReason:
+		return uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)), true
+	case hardLTVDeleverReason:
+		return uint64(max(stepDebtToLTVRaw(s, hardLTVTargetBPS(s)), 0)), false
+	case leverageDownPartialReason:
+		return uint64(max(stepDebtToLTVRaw(s, leverageLevelLTVBPS(1.5)), 0)), false
+	}
+	return 0, false
 }
 
 // stepState is what a step is sized from: the tick's batch for its lane.
@@ -243,11 +267,11 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		if err != nil {
 			return Observation{}, StepExecutionEvidence{}, err
 		}
-		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, true, min(borrow, stepLegCap(route)), borrow, s.Slot)
+		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, true, borrow, borrow, s.Slot)
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
-	repay, full := uint64(decision.AmountRaw), uint64(decision.AmountRaw) >= uint64(s.PositionDebtRaw)
+	repay, full := stepDownRepay(s, decision.Reason)
 	if full {
 		bound, _, err := observeRawFullPayoff(ctx, view, route, s.Slot)
 		if err != nil {
@@ -301,6 +325,9 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 			return StepExecutionEvidence{}, 0, err
 		}
 		openLiquidity = liquidity
+	}
+	if openRaw > stepLegCap(route) {
+		return StepExecutionEvidence{}, 0, budgetHold("step_over_policy_cap")
 	}
 	if openRaw == 0 || convertRaw == 0 || convertRaw > math.MaxInt64 || sourceHeld > math.MaxUint64-openLiquidity || convertRaw > sourceHeld+openLiquidity {
 		return StepExecutionEvidence{}, 0, budgetHold("step_amounts_invalid")

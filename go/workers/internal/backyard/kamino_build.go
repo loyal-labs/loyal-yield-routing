@@ -37,11 +37,8 @@ type KaminoPrimeUSDCRequest struct {
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 	RouteLane            string
-	// FullPayoff requires a fresh finite interest-window bound at build/send.
-	// It changes no instruction bytes and never asserts terminal debt by itself.
-	FullPayoff         bool   `json:"fullPayoff,omitempty"`
-	RepaymentRelease   bool   `json:"repaymentRelease,omitempty"`
-	ReleaseDebtIdleRaw uint64 `json:"releaseDebtIdleRaw,omitempty"`
+	RepaymentRelease     bool   `json:"repaymentRelease,omitempty"`
+	ReleaseDebtIdleRaw   uint64 `json:"releaseDebtIdleRaw,omitempty"`
 	// This selects the reviewed pilot release model, never authority. The
 	// locked budget must authorize pilot mode at admission, build and send.
 	PilotRepaymentRelease bool `json:"pilotRepaymentRelease,omitempty"`
@@ -105,7 +102,7 @@ func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate pu
 // shared byte builder. Keeping resolution outside permits offline SDK/SBF parity
 // tests without registering candidate routes or changing production authority.
 func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
-	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff || !earnHeldLane(request.RouteLane)) {
+	if request.PilotRepaymentRelease && (!request.RepaymentRelease || !earnHeldLane(request.RouteLane)) {
 		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
 	return compileReviewedKaminoMessage(request, delegate, route)
@@ -114,7 +111,7 @@ func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 // compileReviewedKaminoMessage is the checked byte builder. The pilot release
 // must be a withdrawal-only repayment release.
 func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
-	if request.PilotRepaymentRelease && (!request.RepaymentRelease || request.FullPayoff) {
+	if request.PilotRepaymentRelease && !request.RepaymentRelease {
 		return nil, budgetHold("invalid_pilot_repayment_release")
 	}
 	if request.LastValidBlockHeight <= 0 {

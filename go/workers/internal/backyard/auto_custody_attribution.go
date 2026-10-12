@@ -218,19 +218,15 @@ func (r custodyAttributionUnknownRow) signedWireExcludesCustody(cfg sharedCustod
 // legacy transaction's. Any other shape, including a v0 message, which may
 // load accounts through lookup tables, is a refusal, never a "no touch".
 func signedWireKeys(wire []byte) ([]byte, []byte, []publicKey, error) {
-	if len(wire) > 0 && wire[0] == 0x81 {
-		message, signature, err := splitSignedWire(wire)
-		if err != nil {
-			return nil, nil, nil, err
-		}
+	message, signature, err := splitSignedWire(wire)
+	if err != nil {
+		return nil, nil, nil, budgetHoldFrom(err, "custody_attribution_malformed_record")
+	}
+	if message[0] == 0x81 {
 		keys, err := messageKeys(message)
 		return message, signature, keys, err
 	}
-	if len(wire) <= 65+4 || wire[0] != 1 {
-		return nil, nil, nil, budgetHold("custody_attribution_malformed_record")
-	}
-	message := wire[65:]
-	if message[0] != 1 || message[1] != 0 {
+	if len(message) < 4 || message[0] != 1 || message[1] != 0 {
 		return nil, nil, nil, budgetHold("custody_attribution_malformed_record")
 	}
 	offset := 3
@@ -242,7 +238,7 @@ func signedWireKeys(wire []byte) ([]byte, []byte, []publicKey, error) {
 	for index := range keys {
 		copy(keys[index][:], message[offset+index*32:])
 	}
-	return message, wire[1:65], keys, nil
+	return message, signature, keys, nil
 }
 
 // resolveSharedCustodyUnknownRecords excuses the bounded unknown candidates
@@ -638,6 +634,10 @@ func isProvenZeroStartEdge(row custodyAttributionRow, cfg sharedCustodyAttributi
 		return supply.Address == cfg.BorrowEdgeSource && supply.Mint == cfg.Mint && supply.Owner == cfg.Owner && supply.Authority == cfg.BorrowEdgeAuthority &&
 			custodyFromZero(expected.Accounts[1]) &&
 			fee.Address == cfg.BorrowEdgeFeeReceiver && fee.Mint == cfg.Mint && fee.Owner == cfg.Owner && fee.Authority == cfg.BorrowEdgeAuthority
+	case (row.Action == string(OpenRouteStep) || row.Action == string(DeleverRouteStep)) && expected.Kind == "atomic-step" && len(expected.Accounts) == 2:
+		// An atomic step of this lane that found the shared custody empty:
+		// whatever it leaves there is its own conversion's output.
+		return custodyFromZero(expected.Accounts[1])
 	default:
 		return false
 	}

@@ -70,18 +70,9 @@ func TestFundingContinuationPreservesFundedAndUSDCResiduePaths(t *testing.T) {
 			if fundingSwap == nil || len(plan.Exit) != 14 {
 				t.Fatal("USDC funding omitted")
 			}
-			r, effects, _, err := fundingSwap.decode()
+			r, _, _, err := fundingSwap.decode()
 			if err != nil || r.(JupiterSwapRequest).Action != SwapUSDCToDebtStep {
 				t.Fatal("dust selected ahead of sufficient USDC", err)
-			}
-			s := o.Snapshot
-			s.PostMutationNAVRequired, s.CapitalMutated = false, false
-			decision := Decide(s)
-			if decision.Action != SwapUSDCToDebtStep {
-				t.Fatal(decision)
-			}
-			if _, err := observePhase3FundingAdmission(context.Background(), rpc, fixtureView(t, rpc), client, m, o, decision, r, effects); err != nil {
-				t.Fatal("actual USDC funding rejected collateral remainder", err)
 			}
 		}
 		_, effects, _, err := withdrawal.decode()

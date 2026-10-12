@@ -118,9 +118,7 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 		wire, effect uint64
 	}{
 		{"deposit", Decision{Action: OpenPrimeUSDCStep, AmountRaw: 10}, KaminoPosition{}, kaminoLegDeposit, 10, 10},
-		{"borrow", Decision{Action: OpenPrimeUSDCStep, AmountRaw: 99}, borrowPosition, kaminoLegBorrow, 3, 3},
-		{"single redeposit", Decision{Action: OpenPrimeUSDCStep, Reason: "single_loop_redeposit", AmountRaw: 4}, KaminoPosition{CollateralDepositedRaw: 9, DebtRaw: 4}, kaminoLegDeposit, 4, 4},
-		{"repay", Decision{Action: DeleverPrimeUSDCStep, AmountRaw: 0}, KaminoPosition{CollateralDepositedRaw: 9, DebtRaw: 4}, kaminoLegRepay, 4, 4},
+		{"topup deposit", Decision{Action: OpenPrimeUSDCStep, Reason: topupDepositReason, AmountRaw: 4}, borrowPosition, kaminoLegDeposit, 4, 4},
 		{"withdraw", Decision{Action: DeleverPrimeUSDCStep, AmountRaw: 5}, KaminoPosition{CollateralDepositedRaw: 9, RedeemablePrimeRaw: 8}, kaminoLegWithdraw, 9, 8},
 	}
 	for _, test := range tests {
@@ -131,8 +129,18 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 			}
 		})
 	}
-	if _, _, _, err := selectKaminoLeg(Decision{Action: OpenPrimeUSDCStep, Reason: "prime_collateral_ready", AmountRaw: 1}, KaminoPosition{CollateralDepositedRaw: 1, DebtRaw: 1}); err == nil {
-		t.Fatal("complete position accepted without the exact one-redeposit reason")
+	// Borrow, repay and a withdrawal beside debt run only inside atomic steps.
+	for _, lone := range []struct {
+		decision Decision
+		position KaminoPosition
+	}{
+		{Decision{Action: OpenPrimeUSDCStep, AmountRaw: 99}, borrowPosition},
+		{Decision{Action: OpenPrimeUSDCStep, Reason: "prime_collateral_ready", AmountRaw: 1}, KaminoPosition{CollateralDepositedRaw: 1, DebtRaw: 1}},
+		{Decision{Action: DeleverPrimeUSDCStep, AmountRaw: 4}, KaminoPosition{CollateralDepositedRaw: 9, RedeemablePrimeRaw: 8, DebtRaw: 4}},
+	} {
+		if leg, _, _, err := selectKaminoLeg(lone.decision, lone.position); err == nil {
+			t.Fatalf("a lone leg %d was selected for %+v", leg, lone.decision)
+		}
 	}
 }
 
@@ -144,11 +152,5 @@ func TestUnwindWithdrawsOnlyConservativeCollateralExcess(t *testing.T) {
 	receipt, prime, err := withdrawExcessForRepayment(position)
 	if err != nil || receipt != 38 || prime != 38 {
 		t.Fatalf("receipt=%d prime=%d err=%v", receipt, prime, err)
-	}
-	leg, wire, effect, err := selectKaminoLeg(Decision{Action: DeleverPrimeUSDCStep, Reason: "withdrawal_release_repayment_collateral", AmountRaw: 1},
-		position,
-	)
-	if err != nil || leg != kaminoLegWithdraw || wire != receipt || effect != prime {
-		t.Fatalf("leg=%d wire=%d effect=%d err=%v", leg, wire, effect, err)
 	}
 }

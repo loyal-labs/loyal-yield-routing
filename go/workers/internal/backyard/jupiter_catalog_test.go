@@ -61,7 +61,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 }
 
 func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testing.T) {
-	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
+	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToUSDCStep} {
 		t.Run(string(action), func(t *testing.T) {
 			s := base()
 			s.RouteLane = "AUTO/AUTO/PYUSD"
@@ -71,25 +71,6 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 			case SwapCollateralToStableStep:
 				s.CutoverDrain = true
 				s.CollateralIdleRaw = 5
-			case SwapDebtToCollateralStep:
-				s.HasPosition = true
-				s.PositionCollateralRaw = 10
-				s.PositionDebtRaw = 5
-				s.DebtIdleRaw = 5
-			case SwapCollateralToDebtStep:
-				s.CutoverDrain = true
-				s.HasPosition = true
-				s.PositionCollateralRaw = 10
-				s.PositionDebtRaw = 5
-				s.CollateralIdleRaw = 5
-				s.PositionDebtValueRaw, s.CollateralIdleValueRaw = 5, 6
-			case SwapUSDCToDebtStep:
-				s.RouteLane = ethenaUSDePYUSD.Lane // AUTO has no USDC->PYUSD edge
-				s.CutoverDrain = true
-				s.HasPosition = true
-				s.PositionCollateralRaw = 10
-				s.PositionDebtRaw = 5
-				s.PositionDebtValueRaw, s.SquadsIdleRaw = 5, 6
 			case SwapDebtToUSDCStep:
 				s.CutoverDrain = true
 				s.DebtIdleRaw = 5
@@ -150,8 +131,9 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 // collateral and USDC conversions to Jupiter, carrying each decided
 // conversion's identity unchanged through prepare, record, bind and build;
 // AUTO/AUTO/PYUSD keeps dispatching every conversion to Jupiter (above).
-// (Collateral into debt is a funding or exit leg whose decision needs a
-// payoff; TestEveryHastraLegExecutesAtItsOwnConstraint builds it.)
+// (Borrowed wYLDS stakes inside an atomic step; collateral into debt is a
+// down step's conversion; TestEveryHastraLegExecutesAtItsOwnConstraint builds
+// both.)
 func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 	t.Parallel()
 	for action, venue := range map[Action]string{SwapStableToCollateralStep: "jupiter", SwapCollateralToStableStep: "jupiter",
@@ -166,9 +148,8 @@ func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 				s.CutoverDrain = true
 				s.CollateralIdleRaw = 5
 			case SwapDebtToCollateralStep:
-				s.HasPosition = true
-				s.PositionCollateralRaw = 10
-				s.PositionDebtRaw = 5
+				// A drain's wYLDS residue stakes to AUTO.
+				s.CutoverDrain = true
 				s.DebtIdleRaw = 5
 			}
 			o := tickObservation(s)

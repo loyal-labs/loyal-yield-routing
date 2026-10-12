@@ -4,9 +4,9 @@ import "testing"
 
 // Live 2026-09-29 blocker: decide and the prepare-time refresh differed by
 // a few raw units (interest, oracle), so every tick failed decisionsEqual.
-// Every partial-withdrawal and exit-cycle decision now carries a stable
-// amount (USDC target, custody balances, a marker); the exact wire is sized
-// in prepare. Re-deciding with debt accrued (+1 raw .. +0.01%) and the
+// Every partial-withdrawal and down-step decision carries a stable amount
+// (USDC target, custody balances, a marker); the exact wire is sized in
+// prepare. Re-deciding with debt accrued (+1 raw .. +0.01%) and the
 // collateral price moved +/-1 bp must give an equal decision.
 func TestPartialAndExitDecisionsAreStableAcrossRefresh(t *testing.T) {
 	t.Parallel()
@@ -31,19 +31,20 @@ func TestPartialAndExitDecisionsAreStableAcrossRefresh(t *testing.T) {
 			s = applyPartialLeg(t, s, d, 1.0209)
 		}
 	}
-	// 1.75x exit cycle and down move legs.
+	// The down steps: hard LTV, a drain, the move to 1x and to 1.5x.
 	for _, lane := range []string{autoAUTOPYUSD.Lane, onreONycUSDC} {
-		c := leverageExitSnapshot(lane)
-		c.Unwind = true
-		c.PositionCollateralRaw, c.PositionCollateralValueRaw, c.LTVBPS = 1_360_000_000, 1_360_000_000, 5500
-		c.CollateralIdleRaw, c.PrimeIdleRaw, c.CollateralIdleValueRaw = 390_000_000, 390_000_000, 390_000_000
-		legs = append(legs, leg{lane + " exit_cycle_swap", c})
-		c.CollateralIdleRaw, c.PrimeIdleRaw, c.CollateralIdleValueRaw = 0, 0, 0
-		setDebtCash(&c, 386_000_000)
-		legs = append(legs, leg{lane + " exit_partial_repay", c})
-		down := leverageSnapshot(1.75)
-		down.RouteLane, down.StrategyKey, down.LeverageTargetLevel = lane, lane, 1.5
-		legs = append(legs, leg{lane + " leverage_down_partial_release(gated)", down})
+		hard := leverageExitSnapshot(lane)
+		hard.LTVBPS = 6000
+		legs = append(legs, leg{lane + " hard_ltv_delever", hard})
+		drain := leverageExitSnapshot(lane)
+		drain.Unwind = true
+		legs = append(legs, leg{lane + " withdrawal_delever", drain})
+		down := leverageExitSnapshot(lane)
+		down.LeverageTargetLevel = 1
+		legs = append(legs, leg{lane + " leverage_down", down})
+		partial := leverageSnapshot(1.75)
+		partial.RouteLane, partial.StrategyKey, partial.LeverageTargetLevel = lane, lane, 1.5
+		legs = append(legs, leg{lane + " leverage_down_partial", partial})
 	}
 	for _, l := range legs {
 		d := Decide(l.snap)
@@ -82,29 +83,26 @@ func applyPartialLeg(t *testing.T, s Snapshot, d Decision, price float64) Snapsh
 	switch d.Reason {
 	case partialReleaseReason:
 		value := int64(float64(d.AmountRaw) * price)
+		left := value
+		if s.PositionDebtRaw > 0 {
+			// One down step: the debt share (+1%) converts at a 1% loss and
+			// repays; the rest of the withdrawal waits as collateral.
+			share := value * s.PositionDebtValueRaw / max(s.PositionCollateralValueRaw, 1) * 101 / 100
+			repay := share * 99 / 100
+			s.PositionDebtRaw -= repay
+			s.PositionDebtValueRaw, s.PayoffDebtRaw = s.PositionDebtRaw, s.PositionDebtRaw+130_000
+			left -= share
+		}
 		s.PositionCollateralRaw -= d.AmountRaw
 		s.PositionCollateralValueRaw -= value
-		s.CollateralIdleRaw += d.AmountRaw
+		s.CollateralIdleRaw += int64(float64(left) / price)
 		s.PrimeIdleRaw = s.CollateralIdleRaw
-		s.CollateralIdleValueRaw += value
-		s.LTVBPS = s.PositionDebtValueRaw * 10_000 / max(s.PositionCollateralValueRaw, 1)
-	case partialSwapToDebtReason:
-		value := int64(float64(d.AmountRaw) * price)
-		s.CollateralIdleRaw -= d.AmountRaw
-		s.PrimeIdleRaw = s.CollateralIdleRaw
-		s.CollateralIdleValueRaw = int64(float64(s.CollateralIdleRaw) * price)
-		setDebtCash(&s, debtCashOf(s)+value*99/100)
-	case exitPartialRepayReason:
-		setDebtCash(&s, debtCashOf(s)-d.AmountRaw)
-		s.PositionDebtRaw -= d.AmountRaw
-		s.PositionDebtValueRaw, s.PayoffDebtRaw = s.PositionDebtRaw, s.PositionDebtRaw+130_000
+		s.CollateralIdleValueRaw += left
 		s.LTVBPS = s.PositionDebtValueRaw * 10_000 / max(s.PositionCollateralValueRaw, 1)
 	case partialSwapToUSDCReason:
 		value := int64(float64(d.AmountRaw) * price)
 		s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 0, 0, 0
 		s.SquadsIdleRaw += value * 99 / 100
-	case partialDebtToUSDCReason:
-		s.DebtIdleRaw, s.SquadsIdleRaw = 0, s.SquadsIdleRaw+d.AmountRaw*99/100
 	case partialStageReason:
 		s.SquadsIdleRaw -= d.AmountRaw
 		s.VoltrStrategyIdleRaw += d.AmountRaw

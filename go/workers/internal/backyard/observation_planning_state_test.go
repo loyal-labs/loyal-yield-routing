@@ -76,11 +76,10 @@ func TestRoutePlanningStateSharesValidatedAuthorityAndSelectors(t *testing.T) {
 				t.Fatalf("invalid entry retained planning authority: %+v %v", planning, err)
 			}
 			snapshot := initializationPlanningFixture(entry.Lane).Snapshot
-			snapshot.SelectorBorrowRaw = 1
 			if err = applySelectorEntry(&snapshot, planning.entry, time.Now().UTC()); err != nil {
 				t.Fatal(err)
 			}
-			if !snapshot.SelectorEntryPaused || snapshot.SelectorEntryEquityRaw != 0 || snapshot.SelectorBorrowRaw != 0 || admittedEntryAllocationReady(snapshot) {
+			if !snapshot.SelectorEntryPaused || snapshot.SelectorEntryEquityRaw != 0 || admittedEntryAllocationReady(snapshot) {
 				t.Fatalf("invalid entry authorized allocation: %+v", snapshot)
 			}
 			if decision := Decide(snapshot); decision.Action == InitializeKaminoObligation || decision.Action == VoltrAllocateToSquads {

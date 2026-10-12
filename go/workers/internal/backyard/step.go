@@ -58,6 +58,12 @@ type stepMessage struct {
 	WireBytes, Keys int
 }
 
+// stepBorrow is the borrow an up step opens with.
+func stepBorrow(request any) (KaminoPrimeUSDCRequest, bool) {
+	r, ok := request.(StepRequest)
+	return r.Open, ok
+}
+
 // stepUp reports the step's direction from its Open leg.
 func stepUp(open KaminoPrimeUSDCRequest, route RuntimeRoute) (bool, error) {
 	_, leg, err := kaminoResolvedRouteInstruction(open, route)

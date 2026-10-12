@@ -9,7 +9,9 @@ import (
 )
 
 // Controlled snapshots exercise production decisions, not executed transfers.
-func TestNonUSDCDrainFundsInterestShortfallBeforePayoff(t *testing.T) {
+// A drain beside debt is one down step whatever buffer sits idle: the step
+// funds its own repay, so no funding swap or partial repay is decided.
+func TestNonUSDCDrainRepaysByDownSteps(t *testing.T) {
 	t.Parallel()
 	_, _, _, _, _, _, accounts := payoffAdmissionFixture(t, 20_000)
 	bound, err := decodeKaminoPayoffBound(accounts, ethenaUSDePYUSD, 42)
@@ -20,36 +22,24 @@ func TestNonUSDCDrainFundsInterestShortfallBeforePayoff(t *testing.T) {
 	s.RouteLane, s.CutoverDrain, s.HasPosition = ethenaUSDePYUSD.Lane, true, true
 	s.PositionCollateralRaw, s.PositionDebtRaw = 100_000_000, int64(bound.ObservedDebtRaw)
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 100_000, 2_000
-	s.PayoffDebtRaw, s.DebtIdleRaw = int64(bound.UpperDebtRaw), 1_000
-	for _, cash := range []int64{1, 999, 1_000} {
-		s.DebtIdleRaw = cash
-		got := Decide(s)
-		if got.Action != DeleverRouteStep || got.Reason != "withdrawal_release_repayment_collateral" {
-			t.Fatal("insufficient buffer selected a repeated/dust repayment", cash, got)
+	s.PayoffDebtRaw = int64(bound.UpperDebtRaw)
+	for _, buffer := range []func(*Snapshot){
+		func(s *Snapshot) { s.DebtIdleRaw = 1 },
+		func(s *Snapshot) { s.DebtIdleRaw = 1_001 },
+		func(s *Snapshot) { s.SquadsIdleRaw = 10 },
+		func(s *Snapshot) { s.CollateralIdleRaw, s.CollateralIdleValueRaw = 10, 10 },
+	} {
+		c := s
+		buffer(&c)
+		if got := Decide(c); got.Action != DeleverRouteStep || got.Reason != withdrawalDeleverReason || got.AmountRaw != stepDownMarker {
+			t.Fatal("a drain beside debt is not one down step", got)
 		}
 	}
-	s.SquadsIdleRaw = 10
-	if got := Decide(s); got.Action != SwapUSDCToDebtStep {
-		t.Fatal("available USDC funding ignored", got)
-	}
-	// AUTO top-up cash beside debt (live Oct 9: 10k allocated) cannot fund the
-	// payoff: the policy has no USDC->PYUSD edge, so collateral is released.
+	// NAV exit pricing never chooses AUTO's missing USDC->PYUSD edge.
 	auto := s
 	auto.RouteLane, auto.SquadsIdleRaw = autoAUTOPYUSD.Lane, 10_000
-	if got := Decide(auto); got.Action != DeleverRouteStep || got.Reason != "withdrawal_release_repayment_collateral" {
-		t.Fatal("AUTO payoff funded through a missing USDC->PYUSD edge", got)
-	}
 	if action, _ := payoffFundingSource(auto, uint64(auto.PayoffDebtRaw)); action != "" {
 		t.Fatal("NAV exit pricing chose a missing AUTO edge", action)
-	}
-	s.CollateralIdleRaw = 10
-	s.CollateralIdleValueRaw = 10
-	if got := Decide(s); got.Action != SwapCollateralToDebtStep {
-		t.Fatal("available collateral funding ignored", got)
-	}
-	s.DebtIdleRaw = 1_001
-	if got := Decide(s); got.Action != DeleverRouteStep || got.Reason != "withdrawal_repay_debt" || got.AmountRaw != 1_000 {
-		t.Fatal("funded payoff not selected", got)
 	}
 	s.PayoffDebtRaw = -1
 	if got := Decide(s); got.Action != HoldManualRecovery {
@@ -85,16 +75,12 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 				armLeverageCapacityFixture(&s)
 				check(OpenRouteStep, int64(s.LeverageApprovedBorrowRaw))
 			} else {
-				check(OpenRouteStep, 1)
+				check(Hold, 0) // exit-only: never levers
 			}
-			s.PositionDebtRaw, s.DebtIdleRaw = 40000000, 40000000
-			s.PositionDebtValueRaw = 80000000
+			// An up step lands borrow, conversion and deposit at once.
+			s.PositionDebtRaw, s.PositionDebtValueRaw, s.PositionCollateralRaw = 40000000, 80000000, 125000000
 			// An unrelated USDC residue cannot be treated as borrowed PYUSD.
 			s.SquadsIdleRaw = 3000000
-			check(SwapDebtToCollateralStep, 40000000)
-			s.DebtIdleRaw, s.CollateralIdleRaw = 0, 35000000
-			check(OpenRouteStep, 35000000)
-			s.CollateralIdleRaw, s.PositionCollateralRaw = 0, 125000000
 			if debtTopupLane(lane) {
 				// Plan B3 beside debt: the USDC residue tops the position up
 				// as collateral; it never repays or joins the PYUSD debt cash.
@@ -104,16 +90,9 @@ func TestNonUSDCLifecycleDecisionsKeepDebtAndBridgeCashSeparate(t *testing.T) {
 			}
 			// Even ample Voltr USDC must not short-circuit a canary drain.
 			s.CutoverDrain, s.WithdrawalDemandRaw, s.VoltrIdleRaw = true, 1, 200000000
-			check(DeleverRouteStep, 1) // 3000000 USDC raw cannot fund 40000000 debt raw at $2
-			s.SquadsIdleRaw, s.DebtIdleRaw = 0, 2
-			check(DeleverRouteStep, 1)
-			s.DebtIdleRaw, s.PositionDebtRaw = 0, 38000000
-			check(DeleverRouteStep, 1)
-			s.CollateralIdleRaw = 45000000
-			s.CollateralIdleValueRaw = 100000000
-			check(SwapCollateralToDebtStep, 45000000)
-			s.CollateralIdleRaw, s.DebtIdleRaw = 0, 39000000
-			check(DeleverRouteStep, 38000000)
+			check(DeleverRouteStep, stepDownMarker)
+			s.SquadsIdleRaw, s.DebtIdleRaw, s.PositionDebtRaw = 0, 2, 38000000
+			check(DeleverRouteStep, stepDownMarker)
 			s.PositionDebtRaw, s.DebtIdleRaw = 0, 1
 			check(DeleverRouteStep, 0)
 			s.PositionCollateralRaw, s.HasPosition, s.CollateralIdleRaw = 0, false, 80000000
@@ -142,16 +121,12 @@ func TestNonUSDCLifecycleSafetyPrecedence(t *testing.T) {
 	s.RouteLane = "AUTO/AUTO/PYUSD"
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw = true, 100, 40
 	s.LTVBPS, s.DebtIdleRaw, s.SquadsIdleRaw, s.PostMutationNAVRequired = 6000, 5, 100, true
-	if got := Decide(s); got.Action != DeleverRouteStep || got.AmountRaw != 5 {
+	if got := Decide(s); got.Action != DeleverRouteStep || got.Reason != hardLTVDeleverReason {
 		t.Fatal(got)
 	}
-	// AUTO's policy has no USDC->PYUSD edge: Squads cash is no repayment buffer.
+	// No buffer is needed: the down step funds its own repay.
 	s.DebtIdleRaw = 0
-	if got := Decide(s); got.Action != HoldManualRecovery || got.Reason != "hard_ltv_without_repayment_buffer" {
-		t.Fatal(got)
-	}
-	s.RouteLane = ethenaUSDePYUSD.Lane
-	if got := Decide(s); got.Action != SwapUSDCToDebtStep || got.AmountRaw != 100 {
+	if got := Decide(s); got.Action != DeleverRouteStep || got.Reason != hardLTVDeleverReason {
 		t.Fatal(got)
 	}
 	s.RouteLane, s.LTVBPS = "AUTO/AUTO/PYUSD", 4000
@@ -207,12 +182,6 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 	}
 	if _, _, err = withdrawExcessForRepayment(position); err == nil {
 		t.Fatal("released collateral above the unwind LTV")
-	}
-	position.DebtRaw = 5
-	leg, receipts, collateral, err := selectKaminoLeg(Decision{Action: DeleverRouteStep,
-		StrategyKey: "AUTO/AUTO/PYUSD", Reason: "withdrawal_release_repayment_collateral", AmountRaw: 1}, position)
-	if err != nil || leg != kaminoLegWithdraw || receipts != 2000 || collateral != 4000 {
-		t.Fatalf("cross-decimal exit exceeded safe collateral release: leg=%d receipt=%d collateral=%d err=%v", leg, receipts, collateral, err)
 	}
 	position.EntryCapacityRaw = 123
 	capacity, err := routeEntryCapacityUSDC(position, accounts, route)

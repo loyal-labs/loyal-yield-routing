@@ -137,12 +137,9 @@ func TestOverflowMovesAUTOIntoTheWYLDSLaneWhenPYUSDHasNoRoom(t *testing.T) {
 	if got := Decide(funded); got.Action != OpenRouteStep || got.Reason != leverageUpReason || got.StrategyKey != autoAUTOWYLDSLane {
 		t.Fatalf("leverage_up did not run on wYLDS: %+v", got)
 	}
-	// The borrowed wYLDS stakes to AUTO through Hastra, then redeposits.
-	borrowed := leverageSnapshot(1.5)
-	borrowed.RouteLane, borrowed.StrategyKey = autoAUTOWYLDSLane, autoAUTOWYLDSLane
-	borrowed.DebtIdleRaw = 100_000_000
-	if got := Decide(borrowed); got.Action != SwapDebtToCollateralStep || !conversionVenueHastra(Decision{Action: got.Action, StrategyKey: got.StrategyKey}) {
-		t.Fatalf("borrowed wYLDS not staked through Hastra: %+v", got)
+	// The up step stakes the borrowed wYLDS to AUTO through Hastra inside it.
+	if up, ok := stepDecision(funded, Decide(funded)); !ok || !up || !conversionVenueHastra(Decision{Action: SwapDebtToCollateralStep, StrategyKey: autoAUTOWYLDSLane}) {
+		t.Fatal("the wYLDS up step does not stake through Hastra")
 	}
 }
 
@@ -213,27 +210,25 @@ func TestTermKeepAliveFiresInsideThreeDaysOnly(t *testing.T) {
 	}
 }
 
-// Under a day with no room (or past maturity) the lane delevers fully
-// through the down chain: a release first, then Hastra redeem and repay.
+// Under a day with no room (or past maturity) the lane delevers fully by
+// atomic down steps (withdraw, Hastra redeem, repay) sized on the payoff.
 func TestTermDeleverUnderOneDayWithoutRoom(t *testing.T) {
 	t.Parallel()
 	s := termLane(12 * time.Hour)
 	s.AdditionalDebtRoomRaw = 0
 	got := Decide(s)
-	if got.Action != DeleverRouteStep || got.Reason != leverageDownReleaseReason || got.StrategyKey != autoAUTOWYLDSLane {
+	if got.Action != DeleverRouteStep || got.Reason != leverageDownReason || got.StrategyKey != autoAUTOWYLDSLane || got.AmountRaw != stepDownMarker {
 		t.Fatalf("no delever at 0.5 days without room: %+v", got)
 	}
-	released := s
-	released.CollateralIdleRaw, released.CollateralIdleValueRaw = 900_000_000, 900_000_000
-	if got := Decide(released); got.Action != SwapCollateralToDebtStep || !conversionVenueHastra(Decision{Action: got.Action, StrategyKey: got.StrategyKey}) {
-		t.Fatalf("released AUTO did not redeem to wYLDS: %+v", got)
+	if up, ok := stepDecision(s, got); !ok || up {
+		t.Fatalf("the delever is not a down step: %+v", got)
 	}
 	// With room, the same 12 hours keeps the lane alive instead.
 	if got := Decide(termLane(12 * time.Hour)); got.Reason != termKeepAliveReason {
 		t.Fatalf("keep-alive lost to delever while room existed: %+v", got)
 	}
 	// Matured: KLend refuses the borrow whatever the room; delever.
-	if got := Decide(termLane(-time.Hour)); got.Reason != leverageDownReleaseReason {
+	if got := Decide(termLane(-time.Hour)); got.Reason != leverageDownReason {
 		t.Fatalf("matured term debt did not delever: %+v", got)
 	}
 	// The selector moves the working lane to a held lane inside keep-alive
@@ -251,27 +246,27 @@ func TestTermDeleverUnderOneDayWithoutRoom(t *testing.T) {
 	}
 }
 
-// No wYLDS leftover converts to USDC: payoff residue, a partial
-// withdrawal's leftover debt cash and a drain's residue all stake to AUTO.
+// No wYLDS leftover converts to USDC: debt residue beside a position waits
+// for the next down step, and a drain's residue stakes to AUTO.
 func TestNoDebtToUSDCForWYLDS(t *testing.T) {
 	t.Parallel()
 	if debtToUSDCConvertible(autoAUTOWYLDSLane) || !debtToUSDCConvertible(autoAUTOPYUSD.Lane) || laneSwap(autoAUTOWYLDSLane, SwapDebtToUSDCStep) {
 		t.Fatal("wYLDS debt is convertible to USDC")
 	}
-	// Payoff residue beside a debt-free position (topup residue leg).
+	// Payoff residue beside a debt-free position stays idle.
 	residue := leverageSnapshot(1)
 	residue.RouteLane, residue.StrategyKey = autoAUTOWYLDSLane, autoAUTOWYLDSLane
 	residue.DebtIdleRaw = 5_000
-	if got := Decide(residue); got.Action != SwapDebtToCollateralStep || got.Reason != debtResidueStakeReason {
-		t.Fatalf("payoff residue: %+v", got)
+	if got := Decide(residue); got.Action == SwapDebtToCollateralStep || got.Action == SwapDebtToUSDCStep {
+		t.Fatalf("payoff residue converted: %+v", got)
 	}
-	// A partial withdrawal's leftover debt cash.
+	// A partial withdrawal's leftover debt cash is no leg of its own.
 	partial := termLane(20 * 24 * time.Hour)
 	partial.WithdrawalDemandRaw, partial.VoltrIdleRaw = 100_000_000, 0
 	partial.DebtIdleRaw = 5_000
 	partial.PartialWithdrawalOperationID, partial.PartialWithdrawalLTVBPS = "op", partial.LTVBPS
-	if a, r, _, ok := partialWithdrawalStep(partial); !ok || a == SwapDebtToUSDCStep || (a == SwapDebtToCollateralStep && r != partialDebtToCollateralReason) {
-		t.Fatalf("partial leftover debt: %s %s %t", a, r, ok)
+	if a, _, _, ok := partialWithdrawalStep(partial); ok && (a == SwapDebtToUSDCStep || a == SwapDebtToCollateralStep) {
+		t.Fatalf("partial leftover debt converted: %s", a)
 	}
 	// A drain's residue after the payoff.
 	drain := base()
@@ -371,7 +366,7 @@ func TestWYLDSLanePastHardLTVIsProtectedFirst(t *testing.T) {
 	}
 	s.MonitorsArmed = false
 	d := Decide(s)
-	if d.StrategyKey != autoAUTOWYLDSLane || d.Reason != "hard_ltv_buffer_swap" || d.Action != SwapCollateralToDebtStep || !conversionVenueHastra(Decision{Action: d.Action, StrategyKey: d.StrategyKey}) {
+	if d.StrategyKey != autoAUTOWYLDSLane || d.Reason != hardLTVDeleverReason || d.Action != DeleverRouteStep || d.AmountRaw <= 0 {
 		t.Fatalf("risky wYLDS lane did not get the hard-LTV decision: %+v", d)
 	}
 }

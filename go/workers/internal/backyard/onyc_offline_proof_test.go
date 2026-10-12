@@ -188,7 +188,7 @@ func TestExportONycOfflineProof(t *testing.T) {
 		target, ok := partialWithdrawalTargetLTVBPS(snapshot)
 		if ok {
 			result["partialTargetLTVBPS"] = target
-			result["partialRepayRaw"] = partialWithdrawalRepayRaw(snapshot, target)
+			result["partialRepayRaw"] = stepDebtToLTVRaw(snapshot, target)
 		}
 		if in.Operation == "partial" {
 			if in.Amount > 100_000_000_000 {

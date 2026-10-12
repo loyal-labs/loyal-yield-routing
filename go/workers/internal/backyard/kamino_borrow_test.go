@@ -170,7 +170,7 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 		t.Fatal("shared fee receiver balance move refused the borrow", err)
 	}
 	binary.LittleEndian.PutUint64(fee.Data[64:72], 5)
-	for _, variant := range []string{"omit_fee", "destination", "fee_authority", "conservation", "payoff", "deposit"} {
+	for _, variant := range []string{"omit_fee", "destination", "fee_authority", "conservation", "deposit"} {
 		copy := e
 		copy.Accounts = append([]ExpectedAccountEffect(nil), e.Accounts...)
 		request := r
@@ -183,8 +183,6 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 			copy.Accounts[2].Authority = bridgeVault
 		case "conservation":
 			copy.Accounts[0].AfterRaw++
-		case "payoff":
-			request.FullPayoff = true
 		case "deposit":
 			copy.Deposit = &ExpectedDeposit{1, 1000}
 		}

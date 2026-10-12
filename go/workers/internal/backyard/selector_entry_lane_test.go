@@ -58,10 +58,6 @@ func TestFundedDeferredTrancheCompletes(t *testing.T) {
 	if d := Decide(s); d.Action != SwapStableToCollateralStep {
 		t.Fatal("funded deferred tranche cannot complete", d)
 	}
-	borrow, err := selectorBorrowAmount(s, entry.Quote.BorrowReceiveRaw)
-	if err != nil || borrow != entry.Quote.BorrowReceiveRaw {
-		t.Fatal("funded deferred borrow lost reviewed amount", borrow, err)
-	}
 }
 
 func TestSelectorEntryFenceRejectsExitOnlyLaneEntry(t *testing.T) {
