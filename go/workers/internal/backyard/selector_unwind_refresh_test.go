@@ -21,14 +21,14 @@ func TestExpiredUnwindDebtRequiresReadmissionWithoutBlockingRisk(t *testing.T) {
 		t.Fatal(d)
 	}
 	s.LTVBPS, s.SquadsIdleRaw = 6000, 52
-	if d := Decide(s); d.Action != DeleverRouteStep || d.Reason != "hard_ltv_repay" {
+	if d := Decide(s); d.Action != DeleverRouteStep || d.Reason != hardLTVDeleverReason {
 		t.Fatal("renewal blocked risk reduction", d)
 	}
 	s.PositionCollateralRaw++
 	if err := applyUnwindIntent(&s, &intent); err != nil || !s.UnwindRefreshRequired {
 		t.Fatal("collateral envelope growth became integrity latch", err)
 	}
-	if d := Decide(s); d.Action != DeleverRouteStep || d.Reason != "hard_ltv_repay" {
+	if d := Decide(s); d.Action != DeleverRouteStep || d.Reason != hardLTVDeleverReason {
 		t.Fatal("collateral envelope blocked risk", d)
 	}
 	s.LTVBPS = 3400

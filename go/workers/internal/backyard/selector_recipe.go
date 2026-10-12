@@ -304,12 +304,6 @@ func selectorSwapObservationFloor(r JupiterSwapRequest, sampleSlot, floor int64)
 	if sampleSlot <= 0 || sampleSlot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || floor < sampleSlot {
 		return 0, budgetHold("selector_recipe_observation_expired")
 	}
-	for _, table := range r.LookupTables {
-		if table.ObservedSlot < sampleSlot {
-			return 0, budgetHold("selector_recipe_observation_expired")
-		}
-		floor = max(floor, table.ObservedSlot)
-	}
 	if floor > sampleSlot+observationLagSlots() {
 		return 0, budgetHold("selector_recipe_observation_expired")
 	}
@@ -323,31 +317,18 @@ func selectorSwapObservationFloor(r JupiterSwapRequest, sampleSlot, floor int64)
 // same reason and Details recording the exact uncovered interval.
 func selectorPayoffObservationFloor(sampleSlot, floor int64, legs ...JupiterExecutionEvidence) (int64, error) {
 	for i, leg := range legs {
-		observed, stale := floor, int64(0)
-		for _, table := range leg.Request.LookupTables {
-			observed = max(observed, table.ObservedSlot)
-			if table.ObservedSlot < sampleSlot && (stale == 0 || table.ObservedSlot < stale) {
-				stale = table.ObservedSlot
-			}
-		}
 		legFloor, err := selectorSwapObservationFloor(leg.Request, sampleSlot, floor)
 		if err == nil {
 			floor = legFloor
 			continue
 		}
 		if hold, ok := err.(*BudgetHold); ok {
-			details := map[string]string{
-				"legIndex":         strconv.FormatInt(int64(i), 10),
-				"legObservedFloor": strconv.FormatInt(observed, 10),
+			hold.Details = map[string]string{
+				"legIndex":           strconv.FormatInt(int64(i), 10),
+				"legObservedFloor":   strconv.FormatInt(floor, 10),
+				"coveredThroughSlot": strconv.FormatInt(sampleSlot+observationLagSlots(), 10),
+				"uncoveredSlots":     strconv.FormatInt(floor-(sampleSlot+observationLagSlots()), 10),
 			}
-			if stale > 0 {
-				details["coveredThroughSlot"] = strconv.FormatInt(stale, 10)
-				details["uncoveredSlots"] = strconv.FormatInt(sampleSlot-stale, 10)
-			} else {
-				details["coveredThroughSlot"] = strconv.FormatInt(sampleSlot+observationLagSlots(), 10)
-				details["uncoveredSlots"] = strconv.FormatInt(observed-(sampleSlot+observationLagSlots()), 10)
-			}
-			hold.Details = details
 		}
 		return 0, err
 	}

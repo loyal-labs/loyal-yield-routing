@@ -15,9 +15,7 @@ const (
 	// Smallest leverage_up borrow in debt raw units (six-decimal stables).
 	leverageMinimumBorrowRaw = 10_000_000
 	leverageSwapLossBPS      = 100
-	// leverageMaxLiveLevel caps live levels. 1.75x needs the multi-cycle exit
-	// (one release at 55% frees ~0.39 of 0.75 debt), priced by
-	// leverage_exit_pricer.go and decided by exitCycleStep.
+	// leverageMaxLiveLevel caps live levels.
 	leverageMaxLiveLevel = 1.75
 )
 
@@ -45,14 +43,13 @@ func leverageUpLevel(s Snapshot) float64 {
 	return 0
 }
 
-// leverageBorrowStep is the B2 borrow step for a settled funded active registry position
-// with no working cash beside it. It runs before the selector-entry pause
-// (an up move adds to the current lane; it is not a new entry) and replaces
-// both the installed first-loop borrow and the single-loop ready hold.
+// leverageBorrowStep is the B2 up step (an atomic borrow, conversion and
+// deposit) for a funded active registry position. It runs before the
+// selector-entry pause (an up move adds to the current lane; it is not a new
+// entry). Collateral residue beside the position needs no leg of its own: the
+// step deposits it with the conversion's output.
 func leverageBorrowStep(s Snapshot, hard int64) (Action, string, int64, bool) {
-	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || s.DebtIdleRaw != 0 || s.SquadsIdleRaw != 0 ||
-		(s.CollateralIdleRaw > 0 && (s.MinimumCollateralDepositRaw <= 0 || s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw)) ||
-		hard <= TargetLTVBPS {
+	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 || hard <= TargetLTVBPS {
 		return "", "", 0, false
 	}
 	if s.PositionDebtRaw == 0 {
@@ -185,7 +182,7 @@ func leverageUpBypassesEntryFence(request any, journaledReason string, unwinding
 	if journaledReason != leverageUpReason {
 		return false, nil
 	}
-	r, ok := request.(KaminoPrimeUSDCRequest)
+	r, ok := stepBorrow(request)
 	if !ok {
 		return false, budgetHold("leverage_up_authority_mismatch")
 	}
@@ -198,23 +195,10 @@ func leverageUpBypassesEntryFence(request any, journaledReason string, unwinding
 	return true, nil
 }
 
-// leverageLoopInProgress: an active registry position with debt whose borrowed or
-// collateral cash still has to finish the loop.
-func leverageLoopInProgress(s Snapshot) bool {
-	return earnActiveLane(s.RouteLane) && s.HasPosition && s.PositionDebtRaw > 0 && (debtCashRaw(s) > 0 || s.CollateralIdleRaw > 0)
-}
-
-// B2 down move to 1x: a stored 1x target below a leveraged active registry
-// position repays it in full through the existing release -> funding swap ->
-// full payoff legs (the withdrawal-shaped chain), under its own reasons. Leftover debt/USDC cash then returns to the
-// position through the plan B3 residue and top-up legs.
-const (
-	leverageDownReleaseReason = "leverage_down_release"
-	leverageDownSwapReason    = "leverage_down_swap"
-	leverageDownRepayReason   = "leverage_down_repay"
-)
-
-// A term lane it cannot keep alive (decide_term.go) delevers the same way.
+// B2 down moves, each an atomic down step (withdraw, convert, repay): to 1x
+// (a stored 1x target, or a term lane it cannot keep alive, decide_term.go)
+// the step repays the whole debt, sized on its payoff bound, and repeats while
+// a withdrawal limit leaves debt; 1.75x -> 1.5x repays to the 1.5x LTV.
 func leverageDownPending(s Snapshot) bool {
 	return earnActiveLane(s.RouteLane) && (s.LeverageTargetLevel == 1 || termDeleverDue(s)) && s.HasPosition && s.PositionDebtRaw > 0
 }
@@ -223,157 +207,24 @@ func leverageDownStep(s Snapshot) (Action, string, int64, bool) {
 	if !leverageDownPending(s) {
 		return "", "", 0, false
 	}
-	payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
-	if debtCashRaw(s) >= payoff {
-		return DeleverRouteStep, leverageDownRepayReason, s.PositionDebtRaw, true
-	}
-	if action, reason, amount, ok := exitCycleStep(s); ok {
-		return action, reason, amount, true
-	}
-	switch action, amount := payoffFundingSource(s, uint64(payoff)); action {
-	case SwapCollateralToDebtStep:
-		return action, leverageDownSwapReason, amount, true
-	case "":
-		// The builder sizes the safe release; 1 is only the state marker.
-		return DeleverRouteStep, leverageDownReleaseReason, 1, true
-	default:
-		// Bridge USDC beside a down move is not part of this chain.
-		return Hold, "leverage_down_unexpected_cash", 0, true
-	}
+	return DeleverRouteStep, leverageDownReason, stepDownMarker, true
 }
 
-// Reason groups shared by the withdrawal chain and the B2 down move.
-func repaymentReleaseReason(reason string) bool {
-	return reason == "withdrawal_release_repayment_collateral" || reason == leverageDownReleaseReason || reason == leverageDownPartialReleaseReason
-}
-
-// exitCycleStep is the B2 1.75x exit cycle inside every full-payoff chain
-// (withdrawal, unwind/SWITCH, down move): when debt cash is below the payoff
-// and no more collateral can be released safely (the position already sits
-// at the release ceiling after a release+swap), repay what the cash covers
-// instead of releasing again. ok=false keeps the installed next leg.
-// The caller has already run hard-LTV safety, which preempts every cycle.
-func exitCycleStep(s Snapshot) (Action, string, int64, bool) {
-	if !earnActiveLane(s.RouteLane) || s.PositionDebtRaw <= 1 || s.LTVBPS < leverageExitCycleLTVBPS {
-		return "", "", 0, false
-	}
-	payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
-	cash := debtCashRaw(s)
-	if cash < 0 || cash >= payoff {
-		return "", "", 0, false
-	}
-	if s.CollateralIdleRaw > 0 {
-		// Released collateral that cannot fund the whole payoff is swapped
-		// for a partial repay; enough collateral keeps the full-funding swap.
-		if _, amount := payoffFundingSource(s, uint64(payoff)); amount > 0 {
-			return "", "", 0, false
-		}
-		return SwapCollateralToDebtStep, exitCycleSwapReason, s.CollateralIdleRaw, true
-	}
-	// Leave either no debt (the installed full payoff) or a remainder at or
-	// above the residual floor, never a dust debt a later payoff or release
-	// could trip on.
-	// The decision carries the (stable) debt cash; prepare sizes the exact
-	// repay with exitPartialRepayWireRaw.
-	if min(cash, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw)) <= 0 {
-		return "", "", 0, false
-	}
-	return DeleverRouteStep, exitPartialRepayReason, cash, true
-}
-
-// exitCycleSwapReason swaps a cycle's released collateral to debt; its
-// admission prices the rest of the multi-cycle exit.
-const exitCycleSwapReason = "exit_cycle_swap"
-
-// exitCycleResidualFloor is the smallest debt a partial repay leaves: 10% of
-// the debt (at least 1 raw). A cycle repays about half of a 1.75x debt, so
-// the floor never binds there; it stops cash that is just short of the
-// payoff from leaving dust debt, which the installed release -> full payoff
-// then clears instead.
-// ponytail: proportional floor; KLend's repay path has no minimum-debt check
-// in the worker's model (the market minimum-remaining value applies to
-// collateral withdrawals, which the release sizing already enforces).
-func exitCycleResidualFloor(debt int64) int64 {
-	return max(debt/10, 1)
-}
-
-// A release leaves the position at the release ceiling (55%). Debt cash
-// that cannot pay off the debt at or above this LTV is a cycle's funding.
-const leverageExitCycleLTVBPS int64 = 5000
-
-// B2 1.75x -> 1.5x down move: one exit cycle sized to land at the 1.5x LTV.
-// Release R = (3D - C)/2 of value (so (D-R)/(C-R) = 1/3), swap it, repay
-// the proceeds (never the whole debt), then stop: the position snaps to
-// 1.5x. The swap and repay reuse the exit-cycle legs and admissions.
-const leverageDownPartialReleaseReason = "leverage_down_partial_release"
-
-// leverageDownPartialEnabled keeps the step inert until live levels reach
-// 1.75x (a drifted 1.5x position is not de-levered by this path).
-const leverageDownPartialEnabled = leverageMaxLiveLevel > 1.5
-
-// allInLTVBPS is the position's LTV with its custody (idle collateral and
-// debt cash, valued at the obligation's debt price) counted as assets. The
-// caller has checked that the debt and its value are positive.
-func allInLTVBPS(s Snapshot, cash int64) int64 {
-	assets := float64(s.PositionCollateralValueRaw) + float64(max(s.CollateralIdleValueRaw, 0)) +
-		float64(cash)*float64(s.PositionDebtValueRaw)/float64(s.PositionDebtRaw)
-	return int64(float64(s.PositionDebtValueRaw) / assets * 10_000)
-}
-
+// leverageDownPartialStep is the 1.75x -> 1.5x step: a stored 1.5x target
+// below a position above the 1.5x band (an unknown LTV never moves).
 func leverageDownPartialStep(s Snapshot) (Action, string, int64, bool) {
-	return leverageDownPartialStepAt(s, leverageDownPartialEnabled)
+	band := leverageLevelLTVBPS(1.5)
+	if !earnActiveLane(s.RouteLane) || s.LeverageTargetLevel != 1.5 || !s.HasPosition || s.PositionDebtRaw <= 0 || s.LTVBPS <= band+leverageUpNearBPS {
+		return "", "", 0, false
+	}
+	if stepDebtToLTVRaw(s, band) <= 0 {
+		return "", "", 0, false
+	}
+	return DeleverRouteStep, leverageDownPartialReason, stepDownMarker, true
 }
 
-func leverageDownPartialStepAt(s Snapshot, enabled bool) (Action, string, int64, bool) {
-	if !enabled || !earnActiveLane(s.RouteLane) || s.LeverageTargetLevel != 1.5 || !s.HasPosition || s.PositionDebtRaw <= 1 ||
-		s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw <= 0 {
-		return "", "", 0, false
-	}
-	cash := debtCashRaw(s)
-	if cash < 0 {
-		return "", "", 0, false
-	}
-	// Finish a started cycle first: swap released collateral, repay cash.
-	// Only while the move is running: position still above the 1.5x band
-	// (an unknown LTV never starts or continues the move), judged with the
-	// cycle's custody counted as assets. The obligation LTV alone reads an
-	// up move's borrow waiting to be staked as a cycle's repay cash
-	// (2026-10-11: the first AUTO/wYLDS 1x->1.5x borrow, D/C 50%, was repaid
-	// as exit_partial_repay); counted all in, that borrow sits at the band.
-	band := leverageLevelLTVBPS(1.5) + leverageUpNearBPS
-	if s.LTVBPS <= band || allInLTVBPS(s, cash) <= band {
-		return "", "", 0, false
-	}
-	if s.CollateralIdleRaw > 0 {
-		return SwapCollateralToDebtStep, exitCycleSwapReason, s.CollateralIdleRaw, true
-	}
-	if cash > 0 {
-		if min(cash, s.PositionDebtRaw-exitCycleResidualFloor(s.PositionDebtRaw)) <= 0 {
-			return "", "", 0, false
-		}
-		return DeleverRouteStep, exitPartialRepayReason, cash, true
-	}
-	if currentLeverageBand(s) != 1.75 || s.PositionCollateralRaw <= 0 {
-		return "", "", 0, false
-	}
-	// The decision carries a marker (1, stable); prepare sizes the release
-	// from its own snapshot with leverageDownPartialReceipts.
-	if leverageDownPartialReceipts(s) <= 0 {
-		return "", "", 0, false
-	}
-	return DeleverRouteStep, leverageDownPartialReleaseReason, 1, true
-}
-
-// leverageDownPartialReceipts: R = (3D - C)/2 of value, as receipts.
-func leverageDownPartialReceipts(s Snapshot) int64 {
-	releaseValue := (3*s.PositionDebtValueRaw - s.PositionCollateralValueRaw) / 2
-	if releaseValue <= 0 || s.PositionCollateralValueRaw <= 0 {
-		return 0
-	}
-	receipts := new(big.Int).Mul(big.NewInt(s.PositionCollateralRaw), big.NewInt(releaseValue))
-	receipts.Quo(receipts, big.NewInt(s.PositionCollateralValueRaw))
-	if !receipts.IsInt64() || receipts.Sign() <= 0 || receipts.Int64() >= s.PositionCollateralRaw {
-		return 0
-	}
-	return receipts.Int64()
+// hardLTVTargetBPS is the LTV a hard-LTV step brings the position to: its
+// stored level's, between 1.5x and the live cap.
+func hardLTVTargetBPS(s Snapshot) int64 {
+	return leverageLevelLTVBPS(min(max(s.LeverageTargetLevel, 1.5), leverageMaxLiveLevel))
 }

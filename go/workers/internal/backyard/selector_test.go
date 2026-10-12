@@ -210,7 +210,7 @@ func TestEconomicOutageDoesNotBlockSafetyWithdrawalOrExactRecovery(t *testing.T)
 	s.PositionDebtRaw = 100
 	s.SquadsIdleRaw = 100
 	s.LTVBPS = 6000
-	if got := Decide(s); got.Action != DeleverRouteStep || got.Reason != "hard_ltv_repay" {
+	if got := Decide(s); got.Action != DeleverRouteStep || got.Reason != hardLTVDeleverReason {
 		t.Fatal(got)
 	}
 	s = in.Snapshot
@@ -349,7 +349,7 @@ func TestTypedUSDCRepaymentUsesCanonicalExecutionContract(t *testing.T) {
 		s.DebtIdleRaw = 0 // Same USDC account must not be counted twice.
 		d := Decide(s)
 		action, err := fixedRouteAction(d.Action, lane)
-		if err != nil || (lane == RouteID && action != DeleverPrimeUSDCStep) || (lane != RouteID && action != DeleverRouteStep) || d.AmountRaw != 5 {
+		if err != nil || (lane == RouteID && action != DeleverPrimeUSDCStep) || (lane != RouteID && action != DeleverRouteStep) || d.Reason != withdrawalDeleverReason {
 			t.Fatal(lane, d, action, err)
 		}
 	}

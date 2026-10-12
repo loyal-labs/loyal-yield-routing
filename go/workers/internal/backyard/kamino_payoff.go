@@ -29,14 +29,6 @@ type KaminoPayoffBound struct {
 	AccountsSHA256     string `json:"accountsSha256"`
 }
 
-func observeKaminoPayoffBound(ctx context.Context, view *View, route RuntimeRoute, minimumSlot int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	return observeKaminoPayoffWindow(ctx, view, route, minimumSlot, 1)
-}
-
-func observeKaminoPayoffWindow(ctx context.Context, view *View, route RuntimeRoute, minimumSlot, steps int64) (KaminoPayoffBound, []ConfirmedAccount, error) {
-	return observeKaminoPayoffWindowAccounts(ctx, view, route, minimumSlot, steps)
-}
-
 // payoffWindowAddresses pins the payoff window capture set: obligation, both
 // reserves, both custodies, both liquidity supplies, the Clock, and every
 // registry lane's lending market (its release risk model reads it).
@@ -217,27 +209,6 @@ func upperKaminoCompoundedDebtSF(debtSF *big.Int, annualBPS, elapsed, unitsPerYe
 		return 0, budgetHold("payoff_interest_overflow")
 	}
 	return upper.Uint64(), nil
-}
-
-// The manifest-aware form keeps every payoff-window, funding and custody check
-// unchanged and only lets the candidate AUTO source path measure its request
-// through the SAME reviewed manifest that produced it.
-func (m RouteManifest) validateFullPayoffRequest(ctx context.Context, view *View, request KaminoPrimeUSDCRequest, effects ExpectedEffects, minimumSlot int64) (KaminoPayoffBound, error) {
-	if _, err := m.measureExecutableDebit(request, effects); err != nil {
-		return KaminoPayoffBound{}, err
-	}
-	route, err := runtimeRoute(request.RouteLane)
-	if err != nil {
-		return KaminoPayoffBound{}, err
-	}
-	bound, _, err := observeKaminoPayoffBound(ctx, view, route, minimumSlot)
-	if err != nil {
-		return bound, err
-	}
-	if !request.FullPayoff || effects.Repayment == nil || request.AmountRaw < bound.UpperDebtRaw || effects.Repayment.MinimumDebitRaw > bound.ObservedDebtRaw {
-		return bound, budgetHold("full_payoff_request_underfunded")
-	}
-	return bound, nil
 }
 
 // sameAccruingDebt reports whether a snapshot's debt and a later capture's

@@ -147,7 +147,7 @@ func validateRepaymentReleaseRequest(ctx context.Context, view *View, request Ka
 // through the SAME reviewed manifest that produced it.
 func (m RouteManifest) validateRepaymentReleaseRequest(ctx context.Context, view *View, request KaminoPrimeUSDCRequest, effects ExpectedEffects, slot int64) (KaminoReleaseBound, []ConfirmedAccount, error) {
 	var result KaminoReleaseBound
-	if !request.RepaymentRelease || request.FullPayoff {
+	if !request.RepaymentRelease {
 		return result, nil, budgetHold("invalid_repayment_release_intent")
 	}
 	if _, err := m.measureExecutableDebit(request, effects); err != nil {

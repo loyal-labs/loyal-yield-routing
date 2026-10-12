@@ -45,7 +45,6 @@ func hasWorkingCapital(s Snapshot) bool {
 
 func applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error {
 	s.SelectorEntryEquityRaw = 0
-	s.SelectorBorrowRaw = 0
 	if entry == nil {
 		s.SelectorEntryPaused = true
 		return nil
@@ -72,7 +71,6 @@ func applySelectorEntry(s *Snapshot, entry *SelectorEntry, now time.Time) error 
 		return nil
 	}
 	s.SelectorEntryEquityRaw = entry.EquityRaw
-	s.SelectorBorrowRaw = entry.Quote.BorrowReceiveRaw
 	return nil
 }
 
@@ -351,6 +349,12 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 		amount = r.AmountRaw
 	case KaminoInitializationRequest:
 		requestedLane = r.RouteLane
+	case StepRequest:
+		// A down step opens nothing; an up step borrows like a borrow leg.
+		if _, leg, err := kaminoPrimeUSDCInstruction(r.Open); err != nil || leg != kaminoLegBorrow {
+			return err
+		}
+		requestedLane, amount, borrow = r.Open.RouteLane, r.Open.AmountRaw, true
 	case KaminoPrimeUSDCRequest:
 		_, leg, err := kaminoPrimeUSDCInstruction(r)
 		if err != nil {
@@ -446,13 +450,4 @@ func (d *Database) authorizeSelectorEntryTxOnManifest(ctx context.Context, manif
 func topupAllocationBypassesEntryFence(request any, journaledReason string, unwinding bool) bool {
 	r, ok := request.(BridgeBuildRequest)
 	return ok && r.Action == VoltrAllocateToSquads && journaledReason == topupAllocationReason && !unwinding
-}
-
-// Hold when the reviewed amount is no longer supportable. Do not silently
-// change the swap input or origination fee used by the complete move forecast.
-func selectorBorrowAmount(s Snapshot, currentTarget uint64) (uint64, error) {
-	if s.SelectorBorrowRaw == 0 || s.SelectorBorrowRaw > currentTarget || s.SelectorEntryPaused || s.Unwind || s.CutoverDrain || s.WithdrawalDemandRaw > 0 {
-		return 0, budgetHold("selector_entry_borrow_unavailable")
-	}
-	return s.SelectorBorrowRaw, nil
 }

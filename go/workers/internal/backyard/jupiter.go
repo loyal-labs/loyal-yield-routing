@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -22,16 +21,48 @@ const (
 	jupiterMaxRoutePlanLeg = 4
 )
 
-// jupiterMaxAccounts is the route size a swap is quoted at: 32 where its packet
-// can take the swap API's lookup tables, and 16 where it must fit a legacy
-// packet (about 40 accounts in all). Jupiter treats maxAccounts as a hint: at
-// 24 a 5,000 USDC USDC->PRIME quote came back as a 43-account two-step route;
-// at 16 every sampled route on those lanes was one step of at most 28.
-func jupiterMaxAccounts(lane string, action Action) int {
-	if acceptsJupiterLookupHints(lane, action) {
-		return 32
+// jupiterMaxAccounts is the route size a swap is quoted at: the key budget a
+// v1 transaction has left for the route's venue accounts once the rest of it
+// (other, which names the swap's twelve fixed accounts) is counted. Jupiter
+// treats maxAccounts as a hint; a route over the budget fails to compile.
+func jupiterMaxAccounts(other []compiledInstruction) int {
+	return max(maxTransactionKeys-distinctKeys(mustKey(bridgeDelegate), other), 0)
+}
+
+// jupiterSwapMaxAccounts is a standalone swap's: its one Squads execute.
+func jupiterSwapMaxAccounts(lane string, action Action) (int, error) {
+	skeleton, err := jupiterSkeletonExecute(lane, action)
+	if err != nil {
+		return 0, err
 	}
-	return 16
+	return jupiterMaxAccounts([]compiledInstruction{skeleton}), nil
+}
+
+// jupiterSkeletonExecute is the Squads execute of action's swap on lane with
+// only its twelve fixed accounts, through program authority 0, at a stand-in
+// policy: what a swap names before its venue accounts.
+func jupiterSkeletonExecute(lane string, action Action) (compiledInstruction, error) {
+	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
+	if err != nil {
+		return compiledInstruction{}, err
+	}
+	sourceProgram, destinationProgram, err := jupiterTokenPrograms(action, lane)
+	if err != nil {
+		return compiledInstruction{}, err
+	}
+	program := func(mint, tokenProgram, custody string) accountMeta {
+		if mint == autoAUTOPYUSD.Kamino.DebtMint {
+			return accountMeta{key: mustKey(custody), writable: true}
+		}
+		return accountMeta{key: publicKey(jupiter.AuthorityTokenAccounts(1, kaminoKey(mint), kaminoKey(tokenProgram))[0]), writable: true}
+	}
+	ro := func(key string) accountMeta { return accountMeta{key: mustKey(key)} }
+	inner := compiledInstruction{program: publicKey(jupiter.ProgramID), data: jupiter.SharedAccountsRouteV2Discriminator[:], accounts: []accountMeta{
+		{key: publicKey(jupiter.ProgramAuthority(0))}, {key: mustKey(bridgeVault), signer: true}, {key: mustKey(sourceATA), writable: true},
+		program(sourceMint, sourceProgram, sourceATA), program(destinationMint, destinationProgram, destinationATA), {key: mustKey(destinationATA), writable: true},
+		ro(sourceMint), ro(destinationMint), ro(sourceProgram), ro(destinationProgram), {key: publicKey(jupiter.EventAuthority)}, {key: publicKey(jupiter.ProgramID)}}}
+	// The swap's policy is an account of its own, named by no other leg.
+	return wrapSquadsPolicy(publicKey(sha256.Sum256([]byte("jupiter swap policy stand-in"))), mustKey(bridgeDelegate), []byte{0}, inner)
 }
 
 // JupiterSwapInstruction is the swap instruction as journaled in the request.
@@ -39,9 +70,6 @@ type JupiterSwapInstruction struct {
 	ProgramID string                `json:"programId"`
 	Accounts  []jupiter.AccountMeta `json:"accounts"`
 	Data      string                `json:"data"`
-	// Quote metadata, not instruction bytes or authority. Tables must be read
-	// from chain and may only encode accounts already present above.
-	LookupTableAddresses []string `json:"lookupTableAddresses,omitempty"`
 }
 
 type JupiterSwapRequest struct {
@@ -55,10 +83,9 @@ type JupiterSwapRequest struct {
 	RecentBlockhash        string
 	LastValidBlockHeight   int64
 	RouteLane              string
-	LookupTables           []LookupTableSnapshot `json:",omitempty"`
-	FullPayoffFunding      bool                  `json:"fullPayoffFunding,omitempty"`
-	EntryReturnReserved    bool                  `json:"entryReturnReserved,omitempty"`
-	PositionReturnReserved bool                  `json:"positionReturnReserved,omitempty"`
+	FullPayoffFunding      bool `json:"fullPayoffFunding,omitempty"`
+	EntryReturnReserved    bool `json:"entryReturnReserved,omitempty"`
+	PositionReturnReserved bool `json:"positionReturnReserved,omitempty"`
 	// TopupReturnReserved marks an entry swap beside a funded debt-free
 	// position (plan B3). It is set only for the journaled top-up reason and
 	// always together with EntryReturnReserved.
@@ -111,8 +138,8 @@ func jupiterEdgeForRoute(action Action, lane string) (sourceMint, destinationMin
 	}
 }
 
-func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string, action Action, amount uint64) (jupiter.Quote, JupiterSwapInstruction, error) {
-	if client == nil || amount == 0 {
+func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string, action Action, amount uint64, maxAccounts int) (jupiter.Quote, JupiterSwapInstruction, error) {
+	if client == nil || amount == 0 || maxAccounts <= 0 {
 		return jupiter.Quote{}, JupiterSwapInstruction{}, fmt.Errorf("invalid Jupiter quote request")
 	}
 	sourceMint, destinationMint, _, _, err := jupiterEdgeForRoute(action, lane)
@@ -122,7 +149,7 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 	// Every swap policy admits shared_accounts_route_v2 only, which the API
 	// returns for a V2 quote with shared accounts.
 	request := jupiter.QuoteRequest{InputMint: sourceMint, OutputMint: destinationMint, Amount: amount, SlippageBPS: jupiterMaxSlippageBPS,
-		MaxAccounts: jupiterMaxAccounts(lane, action), InstructionVersion: "V2"}
+		MaxAccounts: maxAccounts, InstructionVersion: "V2"}
 	if lane == SelectedRouteID {
 		// The selected RWA representative was reviewed against Manifest. Keep
 		// Jupiter's optimizer inside that one venue family instead of accepting
@@ -148,12 +175,6 @@ func freshSwapForRoute(ctx context.Context, client *jupiter.Client, lane string,
 	instruction := JupiterSwapInstruction{ProgramID: swap.ProgramID, Accounts: swap.Accounts, Data: swap.Data}
 	if _, err := validateJupiterInstructionForRoute(instruction, action, amount, out, minimum, lane); err != nil {
 		return jupiter.Quote{}, JupiterSwapInstruction{}, err
-	}
-	if acceptsJupiterLookupHints(lane, action) {
-		instruction.LookupTableAddresses = response.AddressLookupTableAddresses
-		if err := validateJupiterLookupCandidates(response.AddressLookupTableAddresses); err != nil {
-			return jupiter.Quote{}, JupiterSwapInstruction{}, err
-		}
 	}
 	return quote, instruction, nil
 }
@@ -271,14 +292,7 @@ func jupiterValidateAutoRetainedMinimum(request JupiterSwapRequest) error {
 	return nil
 }
 
-type SignedJupiterTransaction struct {
-	message, signedWire                                   []byte
-	messageSHA256, signedWireSHA256, transactionSignature string
-	recentBlockhash                                       string
-	lastValidBlockHeight                                  int64
-}
-
-func BuildAndSignJupiterTransaction(request JupiterSwapRequest, executor ed25519.PrivateKey) (SignedJupiterTransaction, error) {
+func BuildAndSignJupiterTransaction(request JupiterSwapRequest, executor ed25519.PrivateKey) (SignedTransaction, error) {
 	return buildAndSignJupiterTransactionForDelegate(request, executor, mustKey(bridgeDelegate))
 }
 
@@ -294,73 +308,44 @@ func compileJupiterMessageForDelegate(request JupiterSwapRequest, delegate publi
 	if err != nil {
 		return nil, err
 	}
-	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
+	outer, err := jupiterPolicyExecute(request, delegate)
 	if err != nil {
 		return nil, err
 	}
-	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
-		return nil, err
-	}
-	_, index, err := jupiterPolicyLeg(request.RouteLane, request.Action)
-	if err != nil {
-		return nil, err
-	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) {
-		return nil, fmt.Errorf("Jupiter request names no installed policy")
-	}
-	outer, err := wrapSquadsJupiterPolicy(policy, delegate, delegate, index, inner)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateJupiterLookupIdentities(request); err != nil {
-		return nil, err
-	}
-	var message []byte
-	if autoCollateralLane(request.RouteLane) {
-		// An AUTO lane carries the canonical ComputeBudget heap frame plus the
-		// canonical compute-unit frame ahead of its policy outer — the live
-		// default CU meter ran out mid-swap. The v0 path keeps
-		// lookup snapshots and gains both instructions directly; the legacy path
-		// goes through the closed AUTO swap resource wrapper because
-		// compileLegacyMessage still admits exactly one payload instruction.
-		// The initializer and Kamino legs keep the heap-only wrappers.
-		if len(request.LookupTables) > 0 {
-			message, err = compileV0Message(delegate, blockhash, withAutoSwapExecutionResources([]compiledInstruction{outer}), request.LookupTables)
-		} else {
-			message, err = compileAutoSwapResourceLegacyMessage(delegate, blockhash, outer)
-		}
-	} else if len(request.LookupTables) > 0 {
-		message, err = compileV0Message(delegate, blockhash, []compiledInstruction{outer}, request.LookupTables)
-	} else {
-		message, err = compileLegacyMessage(delegate, blockhash, []compiledInstruction{outer})
-	}
+	message, err := compileV1Message(delegate, blockhash, []compiledInstruction{outer}, executionBudget(request.RouteLane, 1))
 	if err != nil {
 		return nil, err
 	}
 	return checkedUnsignedMessage(message)
 }
 
-func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedJupiterTransaction, error) {
-	if len(executor) != ed25519.PrivateKeySize || request.AmountRaw == 0 || request.LastValidBlockHeight <= 0 {
-		return SignedJupiterTransaction{}, fmt.Errorf("invalid Jupiter signing material")
+// jupiterPolicyExecute is the request's swap as the Squads execute of its
+// validated instruction at its policy's edge constraint.
+func jupiterPolicyExecute(request JupiterSwapRequest, delegate publicKey) (compiledInstruction, error) {
+	inner, err := validateJupiterInstructionForRoute(request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
+	if err != nil {
+		return compiledInstruction{}, err
 	}
-	feePayer := publicKeyFromBytes(executor.Public().(ed25519.PublicKey))
-	if feePayer != expectedDelegate {
-		return SignedJupiterTransaction{}, fmt.Errorf("executor is not the pinned Squads delegate")
+	if err := jupiterValidateAutoRetainedMinimum(request); err != nil {
+		return compiledInstruction{}, err
 	}
+	_, index, err := jupiterPolicyLeg(request.RouteLane, request.Action)
+	if err != nil {
+		return compiledInstruction{}, err
+	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) {
+		return compiledInstruction{}, fmt.Errorf("Jupiter request names no installed policy")
+	}
+	return wrapSquadsJupiterPolicy(policy, delegate, delegate, index, inner)
+}
+
+func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
 	message, err := compileJupiterMessageForDelegate(request, expectedDelegate)
 	if err != nil {
-		return SignedJupiterTransaction{}, err
+		return SignedTransaction{}, err
 	}
-	signature := ed25519.Sign(executor, message)
-	wire := append(encodeShortVec(1), signature...)
-	wire = append(wire, message...)
-	if len(wire) > solanaPacketBytes {
-		return SignedJupiterTransaction{}, fmt.Errorf("Jupiter packet is %d bytes, exceeds %d", len(wire), solanaPacketBytes)
-	}
-	messageHash, wireHash := sha256.Sum256(message), sha256.Sum256(wire)
-	return SignedJupiterTransaction{message: message, signedWire: wire, messageSHA256: hex.EncodeToString(messageHash[:]), signedWireSHA256: hex.EncodeToString(wireHash[:]), transactionSignature: encodeBase58(signature), recentBlockhash: request.RecentBlockhash, lastValidBlockHeight: request.LastValidBlockHeight}, nil
+	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
 func wrapSquadsJupiterPolicy(policy, executor, expectedDelegate publicKey, constraintIndex byte, inner compiledInstruction) (compiledInstruction, error) {
@@ -368,13 +353,6 @@ func wrapSquadsJupiterPolicy(policy, executor, expectedDelegate publicKey, const
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads Jupiter policy or delegate")
 	}
 	return wrapSquadsPolicy(policy, executor, []byte{constraintIndex}, inner)
-}
-
-func (s SignedJupiterTransaction) BuildResult(simulationSlot int64) (BuildResult, error) {
-	if simulationSlot <= 0 || len(s.signedWire) == 0 {
-		return BuildResult{}, fmt.Errorf("exact signed Jupiter transaction was not simulated")
-	}
-	return BuildResult{MessageSHA256: s.messageSHA256, SignedWire: append([]byte(nil), s.signedWire...), SignedWireSHA256: s.signedWireSHA256, TransactionSignature: s.transactionSignature, RecentBlockhash: s.recentBlockhash, LastValidBlockHeight: s.lastValidBlockHeight, SimulationSlot: simulationSlot}, nil
 }
 
 func BuildSimulateAndPersistJupiter(ctx context.Context, database *Database, rpc *chain.Client, view *View, operationID string, evidence JupiterExecutionEvidence, credentials Credentials) error {

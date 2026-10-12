@@ -72,27 +72,7 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 		evidence.Request.EntryReturnReserved = true
 		evidence.Request.TopupReturnReserved = decision.Reason == topupSwapReason
 	}
-	if err == nil && positionReturnConversion(decision) {
-		evidence.Request.PositionReturnReserved = true
-	}
-	if err == nil && payoffFundingConversion(decision, observation.Snapshot) {
-		evidence.Request.FullPayoffFunding = true
-	}
 	return observation, evidence, err
-}
-
-// positionReturnConversion reports a leverage conversion: borrowed debt into
-// collateral on a held lane, whatever venue converts it.
-func positionReturnConversion(decision Decision) bool {
-	return decision.Action == SwapDebtToCollateralStep && earnHeldLane(decision.StrategyKey)
-}
-
-// payoffFundingConversion reports a conversion into debt that funds a payoff
-// of a held lane's position, whatever venue converts it.
-func payoffFundingConversion(decision Decision, s Snapshot) bool {
-	funding := (decision.Action == SwapCollateralToDebtStep && (decision.Reason == "withdrawal_swap_repayment_buffer" || decision.Reason == "hard_ltv_buffer_swap" || decision.Reason == leverageDownSwapReason)) ||
-		(decision.Action == SwapUSDCToDebtStep && decision.Reason == "withdrawal_usdc_repayment_buffer")
-	return funding && s.PositionDebtRaw > 0 && earnHeldLane(decision.StrategyKey)
 }
 
 // jupiterTokenPrograms is the token program of the swap's source and
@@ -112,6 +92,16 @@ func jupiterTokenPrograms(action Action, lane string) (string, string, error) {
 // Exit costing may also quote prospective balances, but must never treat that
 // estimate as current-state simulation or promote its wire to execution.
 func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
+	maxAccounts, err := jupiterSwapMaxAccounts(decision.StrategyKey, decision.Action)
+	if err != nil {
+		return JupiterExecutionEvidence{}, err
+	}
+	return prepareJupiterQuoteEvidenceAt(ctx, rpc, client, policies, decision, sourceRaw, destinationRaw, slot, maxAccounts)
+}
+
+// prepareJupiterQuoteEvidenceAt quotes decision's swap at a route size of at
+// most maxAccounts venue accounts.
+func prepareJupiterQuoteEvidenceAt(ctx context.Context, rpc *chain.Client, client *jupiter.Client, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64, maxAccounts int) (JupiterExecutionEvidence, error) {
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
@@ -131,7 +121,7 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 	var blockhash LatestBlockhash
 	var blockhashErr error
 	err = concurrentReads(ctx, func(ctx context.Context) (err error) {
-		quote, instruction, err = freshSwapForRoute(ctx, client, decision.StrategyKey, decision.Action, amount)
+		quote, instruction, err = freshSwapForRoute(ctx, client, decision.StrategyKey, decision.Action, amount, maxAccounts)
 		return err
 	}, func(ctx context.Context) error {
 		blockhash, blockhashErr = latestBlockhash(ctx, rpc)
@@ -180,10 +170,6 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 		return JupiterExecutionEvidence{}, blockhashErr
 	}
 	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: policy, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
-	request, err = manifest.prepareJupiterLookupTables(ctx, rpc, request, slot)
-	if err != nil {
-		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
-	}
 	return JupiterExecutionEvidence{
 		Request: request,
 		ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Conserved: false, Accounts: []ExpectedAccountEffect{

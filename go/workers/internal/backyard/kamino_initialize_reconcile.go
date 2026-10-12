@@ -84,15 +84,15 @@ func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt Confirmed
 	if err != nil || n.MessageSHA256 != sha256Bytes(message) {
 		return Reconciliation{}, nil, fmt.Errorf("native initialization message differs")
 	}
-	offset := 3
-	count, err := decodeShortVec(message, &offset)
-	if err != nil || count < 3 || offset+count*32 > len(message) || len(n.PreBalances) != count || len(n.PostBalances) != count {
+	keys, err := messageKeys(message)
+	count := len(keys)
+	if err != nil || count < 3 || len(n.PreBalances) != count || len(n.PostBalances) != count {
 		return Reconciliation{}, nil, fmt.Errorf("native initialization balances are incomplete")
 	}
 	route, _ := runtimeRoute(r.RouteLane)
 	seenPayer, seenVault, seenObligation := false, false, false
 	for i := 0; i < count; i++ {
-		address := keyString(message[offset+i*32 : offset+(i+1)*32])
+		address := encodeBase58(keys[i][:])
 		before, after := n.PreBalances[i], n.PostBalances[i]
 		switch address {
 		case bridgeDelegate:
@@ -147,7 +147,8 @@ func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context,
 		return out, err
 	}
 	wire := op.SignedWire
-	if len(wire) <= 65 || wire[0] != 1 || allZero(wire[1:65]) || !bytes.Equal(wire[65:], message) || sha256Bytes(wire) != op.SignedWireSHA256 || encodeBase58(wire[1:65]) != op.TransactionSignature ||
+	signed, signature, err := splitSignedWire(wire)
+	if err != nil || allZero(signature) || !bytes.Equal(signed, message) || sha256Bytes(wire) != op.SignedWireSHA256 || encodeBase58(signature) != op.TransactionSignature ||
 		op.RecentBlockhash != r.RecentBlockhash || op.LastValidBlockHeight != r.LastValidBlockHeight {
 		return out, fmt.Errorf("initializer persisted wire differs")
 	}

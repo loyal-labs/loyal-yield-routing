@@ -171,15 +171,14 @@ func TestInitializerBindSendFenceAndExpiryRetirement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
+	wire := signedWire(message, make([]byte, 64))
 	hash := sha256Bytes(wire)
 	auth.SignedWireSHA256 = hash
 	encodedAuth, _ = json.Marshal(auth)
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='signed',signed_wire=$2,expected_effects=jsonb_set(expected_effects,'{phase3}',$3) WHERE operation_id=$1`, id, wire, encodedAuth); err != nil {
 		t.Fatal(err)
 	}
-	op := PersistedOperation{Operation: Operation{ID: id, Decision: d}, Status: Signed, SignedWire: wire, SignedWireSHA256: hash, TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
+	op := PersistedOperation{Operation: Operation{ID: id, Decision: d}, Status: Signed, SignedWire: wire, SignedWireSHA256: hash, TransactionSignature: encodeBase58(wireSig(wire)), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 	if err = db.pool.QueryRow(ctx, `SELECT expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&op.ExpectedEffects); err != nil {
 		t.Fatal(err)
 	}

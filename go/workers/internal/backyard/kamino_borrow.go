@@ -54,32 +54,6 @@ func kaminoBorrowFeeAtRate(rate, receive uint64) (uint64, error) {
 	return fee.Uint64(), nil
 }
 
-func kaminoBorrowEffects(accounts []ConfirmedAccount, route RuntimeRoute, receive uint64) (ExpectedEffects, error) {
-	fee, err := kaminoBorrowFee(accounts, route, receive)
-	if err != nil {
-		return ExpectedEffects{}, err
-	}
-	source, destination := kaminoLegCustodiesForRoute(kaminoLegBorrow, route)
-	effects, err := exactKaminoTokenEffects(accounts, source, destination, receive)
-	if err != nil {
-		return effects, err
-	}
-	if effects.Accounts[0].AfterRaw < fee {
-		return effects, budgetHold("borrow_supply_cannot_cover_fee")
-	}
-	a := accountAt(accounts, route.DebtFeeReceiver)
-	mint, _ := decodeBase58PublicKey(route.Kamino.DebtMint)
-	authority, _ := decodeBase58PublicKey(route.Kamino.MarketAuthority)
-	custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
-	if err != nil || a.Owner != route.DebtTokenProgram || a.Lamports == 0 || a.Executable || custody.Raw > math.MaxUint64-fee {
-		return effects, budgetHoldFrom(err, "invalid_borrow_fee_custody")
-	}
-	effects.Kind = "kamino-borrow"
-	effects.Accounts[0].AfterRaw -= fee
-	effects.Accounts = append(effects.Accounts, ExpectedAccountEffect{Address: a.Address, Owner: a.Owner, Mint: route.Kamino.DebtMint, Authority: route.Kamino.MarketAuthority, BeforeRaw: custody.Raw, AfterRaw: custody.Raw + fee})
-	return effects, nil
-}
-
 // Fresh capacity and loop-risk validation runs at build and persisted-input
 // send. Fee and reserve custody are the receipt's: reconciliation checks our
 // custody exactly and conservation fixes the shared reserve accounts.
@@ -122,7 +96,7 @@ func validateBorrowRequest(ctx context.Context, rpc *chain.Client, view *View, r
 }
 
 func measureBorrowDebit(r KaminoPrimeUSDCRequest, e ExpectedEffects, route RuntimeRoute) (ExecutableDebit, error) {
-	if r.FullPayoff || r.RepaymentRelease || e.Kind != "kamino-borrow" || !e.Conserved || len(e.Accounts) != 3 || e.Deposit != nil || e.Repayment != nil || e.ReturnData != nil {
+	if r.RepaymentRelease || e.Kind != "kamino-borrow" || !e.Conserved || len(e.Accounts) != 3 || e.Deposit != nil || e.Repayment != nil || e.ReturnData != nil {
 		return ExecutableDebit{}, budgetHold("invalid_borrow_effect_graph")
 	}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegBorrow, route)

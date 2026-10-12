@@ -27,7 +27,7 @@ func TestNonUSDCCoveredWithdrawalDoesNotUnwind(t *testing.T) {
 	}
 	hard := s
 	hard.LTVBPS, hard.DebtIdleRaw = 6000, 1
-	if got := Decide(hard); got.Reason != "hard_ltv_repay" {
+	if got := Decide(hard); got.Reason != hardLTVDeleverReason {
 		t.Fatalf("hard LTV lost priority: %+v", got)
 	}
 }

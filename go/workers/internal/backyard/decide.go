@@ -150,29 +150,11 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 			return decision(HoldManualRecovery, "invalid_hard_ltv", 0)
 		}
 		if s.LTVBPS >= hard {
-			if earnHeldLane(s.RouteLane) {
-				payoff := max(s.PositionDebtRaw, s.PayoffDebtRaw)
-				if s.PositionDebtRaw > 0 && debtCashRaw(s) >= payoff {
-					return decision(DeleverRouteStep, "hard_ltv_repay", s.PositionDebtRaw)
-				}
-				if s.PositionDebtRaw > 1 && debtCashRaw(s) > 0 {
-					return decision(DeleverRouteStep, "hard_ltv_partial_repay", min(debtCashRaw(s), s.PositionDebtRaw-1))
-				}
-				if s.PositionDebtRaw > 0 {
-					action, amount := payoffFundingSource(s, uint64(payoff))
-					if amount > 0 {
-						return decision(action, "hard_ltv_buffer_swap", amount)
-					}
-				}
-				return decision(HoldManualRecovery, "hard_ltv_partial_repayment_requires_admission", 0)
+			// One down step back to the stored level, before anything else.
+			if s.PositionDebtRaw > 0 {
+				return decision(DeleverRouteStep, hardLTVDeleverReason, stepDownMarker)
 			}
-			if s.PositionDebtRaw > 0 && s.SquadsIdleRaw > 0 {
-				return decision(DeleverRouteStep, "hard_ltv_repay", min(s.PositionDebtRaw, s.SquadsIdleRaw))
-			}
-			if s.PositionDebtRaw > 0 && s.CollateralIdleRaw > 0 {
-				return decision(SwapCollateralToDebtStep, "hard_ltv_buffer_swap", s.CollateralIdleRaw)
-			}
-			return decision(HoldManualRecovery, "hard_ltv_without_repayment_buffer", s.PositionDebtRaw)
+			return decision(HoldManualRecovery, "hard_ltv_without_debt", 0)
 		}
 	}
 	if s.UnwindRefreshRequired {
@@ -237,30 +219,10 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		if !s.Unwind && !s.CutoverDrain && s.PositionDebtRaw > 0 {
 			return decision(Hold, "withdrawal_full_exit_unproven", 0)
 		}
-		// B2 1.75x exit: repay the cycle's funding before another release.
-		if action, reason, amount, ok := exitCycleStep(s); ok {
-			return decision(action, reason, amount)
-		}
-		// Fully flatten Kamino before any Squads USDC is staged to Voltr. The
-		// single-loop borrowed PRIME is the repayment buffer.
+		// Fully flatten Kamino, by down steps, before any Squads USDC is staged
+		// to Voltr.
 		if s.PositionDebtRaw > 0 {
-			if earnHeldLane(s.RouteLane) {
-				if debtCashRaw(s) >= max(s.PositionDebtRaw, s.PayoffDebtRaw) {
-					return decision(DeleverRouteStep, "withdrawal_repay_debt", s.PositionDebtRaw)
-				}
-				action, amount := payoffFundingSource(s, uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)))
-				if amount > 0 {
-					return decision(action, "withdrawal_swap_repayment_buffer", amount)
-				}
-				return decision(DeleverRouteStep, "withdrawal_release_repayment_collateral", 1)
-			}
-			if s.SquadsIdleRaw > 0 {
-				return decision(DeleverRouteStep, "withdrawal_repay_debt", min(s.PositionDebtRaw, s.SquadsIdleRaw))
-			}
-			if s.CollateralIdleRaw > 0 {
-				return decision(SwapCollateralToDebtStep, "withdrawal_swap_repayment_buffer", s.CollateralIdleRaw)
-			}
-			return decision(DeleverRouteStep, "withdrawal_release_repayment_collateral", 1)
+			return decision(DeleverRouteStep, withdrawalDeleverReason, stepDownMarker)
 		}
 		if s.PositionCollateralRaw > 0 {
 			amount := int64(0)
@@ -344,9 +306,8 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if action, reason, amount, ok := leverageBorrowStep(s, hard); ok {
 		return decision(action, reason, amount)
 	}
-	// The pause blocks new entries; a B2 leveraged loop on its own lane still
-	// swaps and redeposits its borrowed cash (no entry authority is needed).
-	if s.SelectorEntryPaused && !leverageLoopInProgress(s) {
+	// The pause blocks new entries.
+	if s.SelectorEntryPaused {
 		return decision(Hold, "selector_entry_requires_fresh_admission", 0)
 	}
 	if hold, absent := obligationPrerequisiteHold(s, initializationReady); absent {
@@ -381,12 +342,15 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 		// same reserve-derived builder bound already refuses.
 		depositReady = s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
 	}
+	// A levered position moves only by atomic steps. The excess a step's
+	// conversion leaves joins the position: Squads cash beside the USDC debt
+	// converts to collateral (stepResidueReason), and collateral deposits.
 	if s.PositionDebtRaw > 0 {
-		if s.SquadsIdleRaw > 0 {
-			return decision(SwapDebtToCollateralStep, "borrowed_usdc_requires_prime_buffer", s.SquadsIdleRaw)
+		if earnActiveLane(s.RouteLane) && s.SquadsIdleRaw > 0 {
+			return decision(SwapDebtToCollateralStep, stepResidueReason, s.SquadsIdleRaw)
 		}
-		if depositReady {
-			return decision(OpenRouteStep, "single_loop_redeposit", s.CollateralIdleRaw)
+		if earnActiveLane(s.RouteLane) && depositReady {
+			return decision(OpenRouteStep, topupDepositReason, s.CollateralIdleRaw)
 		}
 		return decision(Hold, "single_loop_position_ready", 0)
 	}
@@ -420,13 +384,6 @@ func decideUSDC(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 && earnActiveLane(s.RouteLane) {
 		action, reason, amount := leverageDebtFreeStep(s)
 		return decision(action, reason, amount)
-	}
-	// A collateral-only intermediate state needs the borrow leg even though no
-	// idle token amount drives that instruction. The builder computes its exact
-	// amount from the refreshed reserve prices; AmountRaw=1 is only the durable
-	// state-transition marker and is never used as the borrow wire amount.
-	if s.PositionCollateralRaw > 0 && s.PositionDebtRaw == 0 {
-		return decision(OpenRouteStep, "prime_collateral_requires_borrow", 1)
 	}
 	return decision(Hold, "no_eligible_action", 0)
 }

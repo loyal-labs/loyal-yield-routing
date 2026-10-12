@@ -40,7 +40,7 @@ func TestHourlyRoutineNAVKeepsUrgentReportsAndSafety(t *testing.T) {
 			if lane == autoAUTOPYUSD.Lane {
 				s.SquadsIdleRaw, s.DebtIdleRaw = 0, 6
 			}
-			if got := Decide(s); got.Reason != "hard_ltv_repay" {
+			if got := Decide(s); got.Reason != hardLTVDeleverReason {
 				t.Fatal("risk repayment lost priority", got)
 			}
 		})

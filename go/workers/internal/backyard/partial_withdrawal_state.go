@@ -91,7 +91,7 @@ func (d *Database) LoadPartialWithdrawal(ctx context.Context, key, lane string) 
 }
 
 func partialWithdrawalInFlight(s Snapshot) bool {
-	return s.PartialWithdrawalOperationID != "" && (s.CollateralIdleRaw > partialWithdrawalDustRaw || debtCashRaw(s) > partialWithdrawalDustRaw || s.SquadsIdleRaw > partialWithdrawalDustRaw || s.VoltrStrategyIdleRaw > 0)
+	return s.PartialWithdrawalOperationID != "" && (s.CollateralIdleRaw > partialWithdrawalDustRaw || s.SquadsIdleRaw > partialWithdrawalDustRaw || s.VoltrStrategyIdleRaw > 0)
 }
 
 func partialWithdrawalTerminal(s Snapshot) bool {

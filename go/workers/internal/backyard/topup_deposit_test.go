@@ -34,10 +34,11 @@ func TestTopupDepositDecisionJoinsDebtFreePosition(t *testing.T) {
 			t.Fatalf("%s lost priority to the top-up deposit: %+v", name, got)
 		}
 	}
-	// With debt the existing redeposit keeps its own reason (B3 stays off).
+	// Beside AUTO's PYUSD debt the same deposit joins the position (it only
+	// lowers LTV).
 	debt := s
 	debt.PositionDebtRaw, debt.PositionDebtValueRaw, debt.LTVBPS = 100_000_000, 100_000_000, 3000
-	if got := Decide(debt); got.Reason != "single_loop_redeposit" {
-		t.Fatalf("leveraged position used the top-up deposit: %+v", got)
+	if got := Decide(debt); got.Reason != topupDepositReason || got.AmountRaw != debt.CollateralIdleRaw {
+		t.Fatalf("collateral beside debt was not deposited: %+v", got)
 	}
 }

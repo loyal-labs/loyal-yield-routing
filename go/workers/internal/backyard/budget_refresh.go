@@ -12,8 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-const routeValuationLookupTable = "HSmmBwB7ZRWEsWf4q47w65hXfmqNrfP67KDtpuVrHK7T"
-
 // budgetReserveRefreshInstructions pins the closed instruction set: the lane's
 // two refreshes plus the Prime USDC reference refresh, deduplicated.
 func budgetReserveRefreshInstructions(lane string) ([]compiledInstruction, error) {
@@ -143,30 +141,16 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		seenCapture[key] = true
 		capture = append(capture, key)
 	}
-	message, err := encodeLegacyMessage(feePayer, hash, instructions, capture...)
+	message, err := compileV1Message(feePayer, hash, instructions, v1Budget{units: maxComputeUnits}, capture...)
 	if err != nil {
 		return 0, nil, err
 	}
 	if _, err = checkedUnsignedMessage(message); err != nil {
-		// Reuse the existing partner lookup table only as an address encoding
-		// hint. The compiler resolves exact keys from this closed refresh and
-		// capture set; table contents cannot introduce an instruction or signer.
-		tables, lookupErr := observeJupiterLookupTables(ctx, c, []string{routeValuationLookupTable}, minimumSlot)
-		if lookupErr != nil {
-			return 0, nil, budgetHoldFrom(lookupErr, "price_refresh_lookup_unavailable")
-		}
-		message, err = compileV0Message(feePayer, hash, instructions, tables, capture...)
-		if err != nil {
-			return 0, nil, err
-		}
-		if _, err = checkedUnsignedMessage(message); err != nil {
-			return 0, nil, err
-		}
+		return 0, nil, err
 	}
 	// All-zero placeholder signature; sigVerify is explicitly false. These
 	// bytes cannot be broadcast successfully and are never persisted as signed.
-	wire := append([]byte{1}, make([]byte, 64)...)
-	wire = append(wire, message...)
+	wire := signedWire(message, make([]byte, 64))
 	keys, err := publicKeys(addresses)
 	if err != nil {
 		return 0, nil, err

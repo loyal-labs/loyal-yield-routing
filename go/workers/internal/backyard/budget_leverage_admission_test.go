@@ -30,7 +30,7 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 		t.Fatal(err)
 	}
 	e.Request.PositionReturnReserved = true
-	_, before, err := observeKaminoPayoffWindow(context.Background(), fixtureView(t, rpc), route, 42, 3)
+	_, before, err := observeKaminoPayoffWindowAccounts(context.Background(), fixtureView(t, rpc), route, 42, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func leverageAdmissionFixture(t *testing.T, output uint64, variant string) (Obse
 			addresses = append(addresses, a.Address)
 		}
 		want := map[string]any{"encoding": "base64", "commitment": "confirmed", "minContextSlot": float64(42), "accounts": map[string]any{"encoding": "base64", "addresses": addresses}}
-		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || !bytes.Equal(wire[65:], message) || !reflect.DeepEqual(options, want) {
+		if err != nil || len(wire) <= 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || !bytes.Equal(wireMsg(wire), message) || !reflect.DeepEqual(options, want) {
 			t.Fatal("changed unsigned simulation wire/options")
 		}
 		var rows []any

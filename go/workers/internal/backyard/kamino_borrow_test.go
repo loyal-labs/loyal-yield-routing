@@ -73,8 +73,7 @@ func TestPhase3BorrowFeesMatchProduction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
+	wire := signedWire(message, make([]byte, 64))
 	for i, probe := range result.BorrowFeeProbes {
 		if probe.OverrideAccount != route.Kamino.DebtReserve || probe.OverrideOffset != kaminoReserveConfigOffset+40 || probe.WireSHA256 != sha256Bytes(wire) || probe.WireSHA256 != plan.LendingPrelude.Steps[1].WireSHA256 || probe.FeeRaw != []uint64{1, 4}[i] {
 			t.Fatal("fee probe changed the intended wire or override")
@@ -171,7 +170,7 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 		t.Fatal("shared fee receiver balance move refused the borrow", err)
 	}
 	binary.LittleEndian.PutUint64(fee.Data[64:72], 5)
-	for _, variant := range []string{"omit_fee", "destination", "fee_authority", "conservation", "payoff", "deposit"} {
+	for _, variant := range []string{"omit_fee", "destination", "fee_authority", "conservation", "deposit"} {
 		copy := e
 		copy.Accounts = append([]ExpectedAccountEffect(nil), e.Accounts...)
 		request := r
@@ -184,8 +183,6 @@ func TestBorrowFeesValueTheGrossDebitAndRejectWrongGraph(t *testing.T) {
 			copy.Accounts[2].Authority = bridgeVault
 		case "conservation":
 			copy.Accounts[0].AfterRaw++
-		case "payoff":
-			request.FullPayoff = true
 		case "deposit":
 			copy.Deposit = &ExpectedDeposit{1, 1000}
 		}

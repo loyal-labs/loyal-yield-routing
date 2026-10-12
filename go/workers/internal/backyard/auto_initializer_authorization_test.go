@@ -34,8 +34,7 @@ func autoInitializerAuthorizationFixture(t *testing.T) autoInitializerRecoveryFi
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.wire = append([]byte{1}, bytes.Repeat([]byte{9}, 64)...)
-	f.wire = append(f.wire, f.message...)
+	f.wire = signedWire(f.message, bytes.Repeat([]byte{9}, 64))
 	return f
 }
 
@@ -216,7 +215,7 @@ func TestAutoInitializerSignedTransitionThroughReviewedManifest(t *testing.T) {
 		}
 		return PersistedOperation{Operation: Operation{ID: id, RouteKey: key, StrategyKey: f.request.RouteLane, Decision: decision},
 			Status: Signed, ExpectedEffects: f.raw, SignedWire: f.wire, SignedWireSHA256: hash,
-			TransactionSignature: encodeBase58(f.wire[1:65]), RecentBlockhash: f.request.RecentBlockhash, LastValidBlockHeight: f.request.LastValidBlockHeight}
+			TransactionSignature: encodeBase58(wireSig(f.wire)), RecentBlockhash: f.request.RecentBlockhash, LastValidBlockHeight: f.request.LastValidBlockHeight}
 	}
 	op := signedOperation("auto-initializer-send-"+time.Now().Format("150405.000000000"),
 		Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: f.request.RouteLane, IdempotencyKey: "controlled-init"})

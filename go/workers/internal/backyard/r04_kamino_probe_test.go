@@ -77,8 +77,7 @@ func TestExportPhase3KaminoReleaseProbe(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wire := append(make([]byte, 65), message...)
-		wire[0] = 1
+		wire := signedWire(message, make([]byte, 64))
 		rows = append(rows, map[string]any{"amount": amount, "request": request,
 			"wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)})
 	}
@@ -147,7 +146,7 @@ func TestPhase3KaminoReleaseProbeMatchesProduction(t *testing.T) {
 		}
 		message, err := CompileKaminoMessage(probe.Request)
 		wire, decodeErr := base64.StdEncoding.Strict().DecodeString(probe.WireBase64)
-		if err != nil || decodeErr != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != probe.WireSHA256 || !bytes.Equal(message, wire[65:]) {
+		if err != nil || decodeErr != nil || len(wire) <= 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != probe.WireSHA256 || !bytes.Equal(message, wireMsg(wire)) {
 			t.Fatal("executed release differs from current compiler", err, decodeErr)
 		}
 		before, after := decode(probe.Before), decode(probe.After)
@@ -347,7 +346,7 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 			t.Fatal(err)
 		}
 		wire, err := base64.StdEncoding.Strict().DecodeString(probe.WireBase64)
-		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != probe.WireSHA256 || !bytes.Equal(wire[65:], message) {
+		if err != nil || len(wire) <= 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != probe.WireSHA256 || !bytes.Equal(wireMsg(wire), message) {
 			t.Fatal("executed repayment does not match current production compiler", err)
 		}
 		effects, err := boundedKaminoRepaymentEffects(before, source, destination, minimum, maximum)
@@ -425,11 +424,11 @@ func TestPhase3KaminoProbeMatchesProduction(t *testing.T) {
 			t.Fatal("probe action order or identity changed")
 		}
 		wire, err := base64.StdEncoding.Strict().DecodeString(s.WireBase64)
-		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != s.WireSHA256 {
+		if err != nil || len(wire) <= 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != s.WireSHA256 {
 			t.Fatal("probe wire is not an exact unsigned local fixture")
 		}
 		message, err := CompileKaminoMessage(s.Request)
-		if err != nil || !bytes.Equal(message, wire[65:]) {
+		if err != nil || !bytes.Equal(message, wireMsg(wire)) {
 			t.Fatal("probe message differs from current production compiler", err)
 		}
 	}
@@ -480,8 +479,7 @@ func TestExportPhase3KaminoControlledProbe(t *testing.T) {
 		for i := 0; i < int(message[3]); i++ {
 			addresses[encodeBase58(message[4+32*i:4+32*(i+1)])] = true
 		}
-		wire := append(make([]byte, 65), message...)
-		wire[0] = 1
+		wire := signedWire(message, make([]byte, 64))
 		rows = append(rows, map[string]any{"leg": step.name, "amount": step.amount, "request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)})
 		key, _ := kaminoPolicyLeg(route, step.leg)
 		policies[r.Policy] = key.String()

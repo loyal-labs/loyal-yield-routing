@@ -222,7 +222,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wire := append(append([]byte{1}, bytes.Repeat([]byte{3}, 64)...), message...)
+			wire := signedWire(message, bytes.Repeat([]byte{3}, 64))
 			bindTestWire(t, ctx, db, id, sha256Bytes(wire))
 			evidence := `{"decision":{"observationSlot":42}}`
 			if _, err := db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status=$2,signed_wire=$3,expected_effects=expected_effects||$4::jsonb,
@@ -232,7 +232,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			operation := PersistedOperation{
 				Operation: Operation{ID: id, RouteKey: routeKey, Decision: Decision{Action: ReportNAV}}, Status: OperationStatus(tc.from),
 				ExpectedEffects: []byte(evidence), SignedWire: wire, SignedWireSHA256: sha256Bytes(wire),
-				TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10,
+				TransactionSignature: encodeBase58(wireSig(wire)), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: 10,
 			}
 			sends := 0
 			rpc := newFakeChain(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {

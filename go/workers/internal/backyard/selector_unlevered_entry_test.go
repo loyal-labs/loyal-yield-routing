@@ -275,9 +275,9 @@ func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
 			swaps++
 			var decodeErr error
 			if message[0] == 0x80 {
-				_, _, _, _, decodeErr = decodeExactV0Wire(signTestWire(t, key, message))
+				_, _, _, _, decodeErr = decodeExactWire(signTestWire(t, key, message))
 			} else {
-				_, _, _, _, decodeErr = decodeExactLegacyWire(signTestWire(t, key, message))
+				_, _, _, _, decodeErr = decodeExactWire(signTestWire(t, key, message))
 			}
 			if decodeErr != nil {
 				t.Fatalf("swap %s wire refused: %v", r.Action, decodeErr)

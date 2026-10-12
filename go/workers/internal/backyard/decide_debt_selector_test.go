@@ -122,7 +122,7 @@ func TestAUTOSelectorNonUSDCLifecycle(t *testing.T) {
 		s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 100_000, 2_000
 		s.LTVBPS = 6000 // hard := min(8000-1500, 6000)
 		s.DebtIdleRaw = 5
-		check(t, s, DeleverRouteStep, 5, "hard_ltv_repay")
+		check(t, s, DeleverRouteStep, stepDownMarker, hardLTVDeleverReason)
 
 		// Below hard LTV the stale-unwind hold precedes every ordinary leg.
 		s.LTVBPS = 4000

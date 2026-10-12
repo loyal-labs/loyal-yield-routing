@@ -140,7 +140,7 @@ func TestSelectorEntryEnrichesPreparationAndRefusesCorruptState(t *testing.T) {
 	// returns an error that would stop the worker (live 2026-09-29).
 	entry.Lane = "unapproved"
 	o.Snapshot.SelectorEntryPaused = false
-	if err := state.mergeJournal(context.Background(), &o); err != nil || !o.Snapshot.SelectorEntryPaused || o.Snapshot.SelectorEntryEquityRaw != 0 || o.Snapshot.SelectorBorrowRaw != 0 {
+	if err := state.mergeJournal(context.Background(), &o); err != nil || !o.Snapshot.SelectorEntryPaused || o.Snapshot.SelectorEntryEquityRaw != 0 {
 		t.Fatalf("corrupt durable choice not paused: err=%v paused=%t", err, o.Snapshot.SelectorEntryPaused)
 	}
 }
@@ -341,31 +341,6 @@ func TestSelectorEntryAllocationIsOneAttemptUnderRouteLock(t *testing.T) {
 	err = db.authorizeSelectorEntryTxOnManifest(ctx, manifest, tx, key+"-second", request, ExpectedEffects{}, entry.Quote.ValidThroughSlot+1, true)
 	_ = tx.Rollback(ctx)
 	assertBudgetHold(t, err, "selector_entry_quote_expired")
-}
-
-func TestSelectorBorrowUsesReviewedAmountAfterQuoteExpiry(t *testing.T) {
-	t.Parallel()
-	entry := selectorEntryFixture(time.Now().Add(-time.Minute), SelectedRouteID, 1_000_000)
-	entry.AllocationOperationID = "funded"
-	s := Snapshot{RouteLane: entry.Lane, HasPosition: true, PositionCollateralRaw: 1_000_000, Slot: 1000}
-	if err := applySelectorEntry(&s, &entry, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	got, err := selectorBorrowAmount(s, 600_000)
-	if err != nil || got != 500_000 {
-		t.Fatal("borrow silently grew with actual collateral", got, err)
-	}
-	_, err = selectorBorrowAmount(s, 499_999)
-	assertBudgetHold(t, err, "selector_entry_borrow_unavailable")
-	for _, change := range []func(*Snapshot){
-		func(s *Snapshot) { s.SelectorBorrowRaw = 0 }, func(s *Snapshot) { s.SelectorEntryPaused = true },
-		func(s *Snapshot) { s.Unwind = true }, func(s *Snapshot) { s.WithdrawalDemandRaw = 1 },
-	} {
-		changed := s
-		change(&changed)
-		_, err = selectorBorrowAmount(changed, 600_000)
-		assertBudgetHold(t, err, "selector_entry_borrow_unavailable")
-	}
 }
 
 func TestSelectorBorrowAuthorizationPersistsAcrossRestart(t *testing.T) {

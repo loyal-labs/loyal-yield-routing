@@ -3,8 +3,6 @@ package backyard
 import (
 	"bytes"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -20,18 +18,28 @@ func manifestAccounts(metas []accountMeta) KaminoPrimeUSDCAccounts {
 	return accounts
 }
 
+// kaminoTestMetas is lane's SDK v2 account layout for leg.
+func kaminoTestMetas(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		panic(err)
+	}
+	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
+	return map[kaminoPrimeUSDCLeg][]accountMeta{kaminoLegDeposit: deposit, kaminoLegBorrow: borrow, kaminoLegRepay: repay, kaminoLegWithdraw: withdraw}[leg]
+}
+
 func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCRequest {
 	var discriminator []byte
 	var metas []accountMeta
 	switch leg {
 	case kaminoLegDeposit:
-		discriminator, metas = kamino.DepositV2Discriminator[:], kaminoLegMetasForRoute(kaminoLegDeposit, RouteID)
+		discriminator, metas = kamino.DepositV2Discriminator[:], kaminoTestMetas(kaminoLegDeposit, RouteID)
 	case kaminoLegBorrow:
-		discriminator, metas = kamino.BorrowV2Discriminator[:], kaminoLegMetasForRoute(kaminoLegBorrow, RouteID)
+		discriminator, metas = kamino.BorrowV2Discriminator[:], kaminoTestMetas(kaminoLegBorrow, RouteID)
 	case kaminoLegRepay:
-		discriminator, metas = kamino.RepayV2Discriminator[:], kaminoLegMetasForRoute(kaminoLegRepay, RouteID)
+		discriminator, metas = kamino.RepayV2Discriminator[:], kaminoTestMetas(kaminoLegRepay, RouteID)
 	case kaminoLegWithdraw:
-		discriminator, metas = kamino.WithdrawV2Discriminator[:], kaminoLegMetasForRoute(kaminoLegWithdraw, RouteID)
+		discriminator, metas = kamino.WithdrawV2Discriminator[:], kaminoTestMetas(kaminoLegWithdraw, RouteID)
 	default:
 		panic("unknown test leg")
 	}
@@ -82,10 +90,10 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 		wireSHA256    string
 		packetBytes   int
 	}{
-		{"deposit", OpenPrimeUSDCStep, kaminoLegDeposit, 17, "8e3cd010c11a0dcb3ac892b97e820c07abb74462ab711115b12dadefc66d117b", "c84d63de9987d2acddc364c80dd17cfce7b38445faded2a83cec5a80ce71ed9e", 839},
-		{"borrow", OpenPrimeUSDCStep, kaminoLegBorrow, 15, "d832174c74963a10bdda5b41d5cdb555bdd9ec0a94d21104118c1042d521905c", "12bab96e691d3466c066c3880fdee5ec4a98c13bb82a19e799c2c158a7154bd6", 805},
-		{"repay", DeleverPrimeUSDCStep, kaminoLegRepay, 13, "fd3dc6d6026201813d85c140021c8a4c1426e7c36e2789f93f7ae898b040d06f", "b540a163ce17d978d5aa2af67bea39434e50448919e6bdba6f2afb013c736119", 771},
-		{"withdraw", DeleverPrimeUSDCStep, kaminoLegWithdraw, 17, "1365481d948495951b194b769628197247270e302f567c858b2af6443cea8963", "c70fcf7d95a6f396d156f5890aaef093fd94cf3f8b74f51d149d6d88327e6107", 840},
+		{"deposit", OpenPrimeUSDCStep, kaminoLegDeposit, 17, "0faa7b0899cb4c364463b6b1a2bad3e96a3d8a2df587f25e6f57082012e477ab", "96668df352391fa1dd9a33db96370d9274041377b576a3fbdb9099810d0df72d", 855},
+		{"borrow", OpenPrimeUSDCStep, kaminoLegBorrow, 15, "7cb728c8c1afd585fedb1d6c3e73503c40c4260fe60bd3b72380c208188cb262", "97b5b09f2b6b2a8df24ee1503ff207ea0bcd0fe9ba0aaa22f2e8a0d358769c07", 821},
+		{"repay", DeleverPrimeUSDCStep, kaminoLegRepay, 13, "1e766f799a6a3d0b861e9a50d2d861a1bb6f730aed30853abedb34b63bfc7246", "996cbb849aa1da60fadf4a237b32f0e5fee6e5905ebf8ba78cb773d31f5f5b34", 787},
+		{"withdraw", DeleverPrimeUSDCStep, kaminoLegWithdraw, 17, "248c8b0110b87c2590b21d6caf074c99f1e2544b9e1ffd13bdb91713ca572396", "124cfce252dc27e0918a8d7606e735c7614677d594201fe8376d8709d347b382", 856},
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
@@ -112,7 +120,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if err != nil || !bytes.Equal(unsigned, signed.message) {
 				t.Fatalf("unsigned Kamino fee message differs: %v", err)
 			}
-			if len(signed.signedWire) > solanaPacketBytes || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, signed.signedWire[1:1+ed25519.SignatureSize]) {
+			if len(signed.signedWire) > maxTransactionBytes || !ed25519.Verify(key.Public().(ed25519.PublicKey), signed.message, wireSig(signed.signedWire)) {
 				t.Fatal("Kamino exact wire signature or packet boundary is invalid")
 			}
 			if signed.messageSHA256 != test.messageSHA256 || signed.signedWireSHA256 != test.wireSHA256 || len(signed.signedWire) != test.packetBytes {
@@ -192,140 +200,6 @@ func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
 	}
 	if err := result.validateForDelegate(delegate); err != nil {
 		t.Fatalf("debt-bearing collateral-withdraw wire was rejected: %v", err)
-	}
-}
-
-type kaminoInstructionLayout struct {
-	start, end, program, accounts, data int
-}
-
-func kaminoInstructionLayouts(t *testing.T, message []byte) (int, []kaminoInstructionLayout) {
-	t.Helper()
-	offset := 3
-	accountCount, err := decodeShortVec(message, &offset)
-	if err != nil || accountCount == 0 {
-		t.Fatal("invalid fixture account vector")
-	}
-	offset += accountCount*32 + 32
-	countOffset := offset
-	instructionCount, err := decodeShortVec(message, &offset)
-	if err != nil || instructionCount != 4 || offset != countOffset+1 {
-		t.Fatal("fixture is not the exact four-instruction Kamino message")
-	}
-	layouts := make([]kaminoInstructionLayout, instructionCount)
-	for index := range layouts {
-		start := offset
-		program := offset
-		offset++
-		accountCount := int(message[offset])
-		offset++
-		accounts := offset
-		offset += accountCount
-		dataLength, err := decodeShortVec(message, &offset)
-		if err != nil || offset+dataLength > len(message) {
-			t.Fatal("invalid fixture instruction")
-		}
-		data := offset
-		offset += dataLength
-		layouts[index] = kaminoInstructionLayout{start: start, end: offset, program: program, accounts: accounts, data: data}
-	}
-	if offset != len(message) {
-		t.Fatal("fixture has trailing bytes")
-	}
-	return countOffset, layouts
-}
-
-func kaminoResultForMessage(message []byte, key ed25519.PrivateKey) BuildResult {
-	signature := ed25519.Sign(key, message)
-	wire := append(encodeShortVec(1), signature...)
-	wire = append(wire, message...)
-	messageHash := sha256.Sum256(message)
-	wireHash := sha256.Sum256(wire)
-	return BuildResult{
-		MessageSHA256: hex.EncodeToString(messageHash[:]), SignedWire: wire,
-		SignedWireSHA256: hex.EncodeToString(wireHash[:]), TransactionSignature: encodeBase58(signature),
-		RecentBlockhash: bridgeVault, LastValidBlockHeight: 99, SimulationSlot: 123,
-	}
-}
-
-func TestPersistedKaminoWireRejectsMutatedEnvelope(t *testing.T) {
-	t.Parallel()
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize))
-	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	signed, err := buildAndSignKaminoPrimeUSDCTransactionForDelegate(
-		kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit), key, delegate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	countOffset, layouts := kaminoInstructionLayouts(t, signed.message)
-	clone := func() []byte { return append([]byte(nil), signed.message...) }
-
-	wrongCount := clone()
-	wrongCount[countOffset] = 3
-	wrongOrder := append([]byte(nil), signed.message[:layouts[0].start]...)
-	wrongOrder = append(wrongOrder, signed.message[layouts[1].start:layouts[1].end]...)
-	wrongOrder = append(wrongOrder, signed.message[layouts[0].start:layouts[0].end]...)
-	wrongOrder = append(wrongOrder, signed.message[layouts[1].end:]...)
-	wrongProgram := clone()
-	wrongProgram[layouts[0].program] = wrongProgram[layouts[3].program]
-	wrongData := clone()
-	wrongData[layouts[0].data] ^= 1
-	wrongAccount := clone()
-	wrongAccount[layouts[0].accounts] = 0
-	wrongOuterByte := clone()
-	wrongOuterByte[layouts[3].data+8] ^= 1
-	wrongOuterAccount := clone()
-	wrongOuterAccount[layouts[3].accounts+1] = 0
-	trailingTransactionByte := append(clone(), 0)
-
-	for name, message := range map[string][]byte{
-		"count": wrongCount, "order": wrongOrder, "program": wrongProgram,
-		"data": wrongData, "accounts": wrongAccount, "outer-byte": wrongOuterByte,
-		"outer-account": wrongOuterAccount, "transaction-suffix": trailingTransactionByte,
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := kaminoResultForMessage(message, key).validateForDelegate(delegate); err == nil {
-				t.Fatal("mutated Kamino envelope passed persisted-wire validation")
-			}
-		})
-	}
-
-	depositRefresh := kaminoPrimeUSDCRefreshInstructionsForRoute(kaminoLegDeposit, RouteID)
-	borrowRequest := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegBorrow)
-	borrowInner, _, err := kaminoPrimeUSDCInstruction(borrowRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	borrowOuter, err := wrapSquadsKaminoPolicy(mustKey(borrowRequest.Policy), delegate, delegate, splitLeg, borrowInner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	crossLegMessage, err := compileKaminoLegacyMessage(delegate, mustKey(bridgeVault),
-		append(depositRefresh, borrowOuter))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := kaminoResultForMessage(crossLegMessage, key).validateForDelegate(delegate); err == nil {
-		t.Fatal("borrow inner instruction was accepted with the deposit refresh prefix")
-	}
-
-	depositRequest := kaminoTestRequest(OpenPrimeUSDCStep, kaminoLegDeposit)
-	depositInner, _, err := kaminoPrimeUSDCInstruction(depositRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	depositOuter, err := wrapSquadsKaminoPolicy(mustKey(depositRequest.Policy), delegate, delegate, splitLeg, depositInner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	depositOuter.data = append(depositOuter.data, 0)
-	outerSuffixMessage, err := compileKaminoLegacyMessage(delegate, mustKey(bridgeVault),
-		append(kaminoPrimeUSDCRefreshInstructionsForRoute(kaminoLegDeposit, RouteID), depositOuter))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := kaminoResultForMessage(outerSuffixMessage, key).validateForDelegate(delegate); err == nil {
-		t.Fatal("arbitrary Squads payload suffix passed persisted-wire validation")
 	}
 }
 

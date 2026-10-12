@@ -44,9 +44,8 @@ func TestExportPhase3RedepositProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	if len(wire) > 1232 {
+	wire := signedWire(message, make([]byte, 64))
+	if len(wire) > maxTransactionBytes {
 		t.Fatal("redeposit does not fit")
 	}
 	encoded, err := json.Marshal(map[string]any{"request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire), "planSha256": sha256Bytes(data), "broadcast": false, "signatureProof": false})
@@ -96,7 +95,7 @@ func TestPhase3RedepositMatchesProduction(t *testing.T) {
 	p := result.RedepositProbe
 	message, err := CompileKaminoMessage(r)
 	wire, wireErr := base64.StdEncoding.Strict().DecodeString(p.WireBase64)
-	if err != nil || wireErr != nil || len(wire) <= 65 || len(wire) > 1232 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != p.WireSHA256 || !bytes.Equal(message, wire[65:]) {
+	if err != nil || wireErr != nil || len(wire) <= 65 || len(wire) > maxTransactionBytes || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != p.WireSHA256 || !bytes.Equal(message, wireMsg(wire)) {
 		t.Fatal("redeposit did not execute current Go wire", err)
 	}
 	route := ethenaUSDePYUSD

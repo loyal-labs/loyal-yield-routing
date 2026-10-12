@@ -19,8 +19,7 @@ func TestExportClientReportMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
+	wire := signedWire(message, make([]byte, 64))
 	data, err := json.MarshalIndent(map[string]any{"schema": "client-report-compiler-vector/v1", "proofLevel": "UNSIGNED_COMPILER_VECTOR_NOT_CONSUMED_REPORT", "request": request, "wireBase64": base64.StdEncoding.EncodeToString(wire), "messageSHA256": sha256Bytes(message)}, "", "  ")
 	if err != nil {
 		t.Fatal(err)

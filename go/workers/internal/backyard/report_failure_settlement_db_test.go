@@ -84,7 +84,7 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 		t.Fatal("migration rewrote historical operation")
 	}
 	receipt, wire, delegate, effects := failureSettlementFixture(t)
-	wireHash, messageHash, signature := sha256Bytes(wire), sha256Bytes(wire[65:]), encodeBase58(wire[1:65])
+	wireHash, messageHash, signature := sha256Bytes(wire), sha256Bytes(wireMsg(wire)), encodeBase58(wireSig(wire))
 	if err = validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, delegate, effects); err != nil {
 		t.Fatal(err)
 	}

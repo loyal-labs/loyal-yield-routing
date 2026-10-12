@@ -123,8 +123,7 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 				addresses[encodeBase58(a.key[:])] = true
 			}
 		}
-		wire := append(make([]byte, 65), message...)
-		wire[0] = 1
+		wire := signedWire(message, make([]byte, 64))
 		rows = append(rows, map[string]any{"request": request, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)})
 	}
 	keys := []string{}

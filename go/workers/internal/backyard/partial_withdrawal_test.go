@@ -19,7 +19,7 @@ func livePartialSnapshot() Snapshot {
 }
 
 // Simulate each leg at the live prices (AUTO $1.0209, PYUSD $1, 1% swap
-// loss) and return the sequence of decisions.
+// loss) with applyPartialLeg and return the sequence of decisions.
 func runPartialWithdrawal(t *testing.T, s Snapshot, price float64) (Snapshot, []Decision) {
 	t.Helper()
 	var legs []Decision
@@ -34,47 +34,17 @@ func runPartialWithdrawal(t *testing.T, s Snapshot, price float64) (Snapshot, []
 		if wire, sized := partialWithdrawalWireAmount(s, d); sized {
 			d.AmountRaw = wire
 		}
-		switch {
-		case d.Reason == partialReleaseReason:
-			value := int64(float64(d.AmountRaw) * price)
-			s.PositionCollateralRaw -= d.AmountRaw
-			s.PositionCollateralValueRaw -= value
-			s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = s.CollateralIdleRaw+d.AmountRaw, s.PrimeIdleRaw+d.AmountRaw, s.CollateralIdleValueRaw+value
-			s.LTVBPS = s.PositionDebtValueRaw * 10_000 / max(s.PositionCollateralValueRaw, 1)
-			if s.LTVBPS > leverageExitReleaseCeilingBPS {
-				t.Fatalf("release lifted LTV to %d (> ceiling)", s.LTVBPS)
-			}
+		if d.Reason == partialReleaseReason {
 			if hard := s; true {
 				hard.LTVBPS = 6000
-				if got := Decide(hard); got.Reason == partialSwapToDebtReason || got.Reason == partialReleaseReason {
+				if got := Decide(hard); got.Reason == partialReleaseReason {
 					t.Fatalf("hard LTV did not preempt mid-chain: %+v", got)
 				}
 			}
-		case d.Reason == partialSwapToDebtReason:
-			value := int64(float64(d.AmountRaw) * price)
-			s.CollateralIdleRaw -= d.AmountRaw
-			s.PrimeIdleRaw = s.CollateralIdleRaw
-			s.CollateralIdleValueRaw = int64(float64(s.CollateralIdleRaw) * price)
-			setDebtCash(&s, debtCashOf(s)+value*99/100)
-		case d.Reason == exitPartialRepayReason:
-			setDebtCash(&s, debtCashOf(s)-d.AmountRaw)
-			s.PositionDebtRaw -= d.AmountRaw
-			s.PositionDebtValueRaw, s.PayoffDebtRaw = s.PositionDebtRaw, s.PositionDebtRaw+130_000
-			s.LTVBPS = s.PositionDebtValueRaw * 10_000 / max(s.PositionCollateralValueRaw, 1)
-		case d.Reason == partialSwapToUSDCReason:
-			value := int64(float64(d.AmountRaw) * price)
-			s.CollateralIdleRaw, s.PrimeIdleRaw, s.CollateralIdleValueRaw = 0, 0, 0
-			s.SquadsIdleRaw += value * 99 / 100
-		case d.Reason == partialDebtToUSDCReason:
-			s.DebtIdleRaw, s.SquadsIdleRaw = 0, s.SquadsIdleRaw+d.AmountRaw*99/100
-		case d.Reason == partialStageReason:
-			s.SquadsIdleRaw -= d.AmountRaw
-			s.VoltrStrategyIdleRaw += d.AmountRaw
-			s.StagedAmountRaw, s.StagedAmountKnown, s.StageTransient = s.VoltrStrategyIdleRaw, true, true
-		case d.Reason == "withdrawal_staged":
-			s.VoltrStrategyIdleRaw -= d.AmountRaw
-			s.VoltrIdleRaw += d.AmountRaw
-			s.StagedAmountRaw, s.StageTransient = 0, false
+		}
+		switch d.Reason {
+		case partialReleaseReason, partialSwapToUSDCReason, partialStageReason, "withdrawal_staged":
+			s = applyPartialLeg(t, s, d, price)
 		default:
 			return s, legs
 		}
@@ -101,7 +71,7 @@ func reasons(legs []Decision) []string {
 func TestPartialWithdrawalLive15xAUTO(t *testing.T) {
 	t.Parallel()
 	s, legs := runPartialWithdrawal(t, livePartialSnapshot(), 1.0209)
-	want := []string{partialReleaseReason, partialSwapToDebtReason, exitPartialRepayReason, partialSwapToUSDCReason}
+	want := []string{partialReleaseReason, partialSwapToUSDCReason, partialStageReason}
 	got := reasons(legs)
 	for i, r := range want {
 		if i >= len(got) || got[i] != r {
@@ -142,7 +112,7 @@ func TestPartialWithdrawalDebtFree1xAndOnRe15x(t *testing.T) {
 	onre.RouteLane, onre.StrategyKey = onreONycUSDC, onreONycUSDC
 	after, legs = runPartialWithdrawal(t, onre, 1.0209)
 	got = reasons(legs)
-	if got[0] != partialReleaseReason || got[1] != partialSwapToUSDCReason || got[2] != exitPartialRepayReason || after.VoltrIdleRaw < after.WithdrawalDemandRaw || after.LTVBPS < 3200 || after.LTVBPS > 3450 || after.PositionDebtRaw <= 0 {
+	if got[0] != partialReleaseReason || got[1] != partialSwapToUSDCReason || got[2] != partialStageReason || after.VoltrIdleRaw < after.WithdrawalDemandRaw || after.LTVBPS < 3200 || after.LTVBPS > 3450 || after.PositionDebtRaw <= 0 {
 		t.Fatalf("OnRe chain %v LTV %d", got, after.LTVBPS)
 	}
 }

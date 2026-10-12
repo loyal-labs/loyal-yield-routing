@@ -80,8 +80,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 		for i := 0; i < int(message[3]); i++ {
 			addresses[encodeBase58(message[4+32*i:4+32*(i+1)])] = true
 		}
-		wire := append(make([]byte, 65), message...)
-		wire[0] = 1
+		wire := signedWire(message, make([]byte, 64))
 		rows = append(rows, map[string]any{"leg": step.name, "amount": step.amount, "request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)})
 		key, _ := kaminoPolicyLeg(route, step.leg)
 		policies[r.Policy] = key.String()
@@ -170,8 +169,7 @@ func TestExportSelectorProtocolRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
+	wire := signedWire(message, make([]byte, 64))
 	out, err := json.MarshalIndent(map[string]any{"schema": "selector-kamino-release-probe/v1", "lane": route.Lane, "sourceResultSHA256": sha256Bytes(raw), "bound": bound, "request": r, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -203,11 +201,11 @@ func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
 	verify := func(r record) {
 		t.Helper()
 		wire, err := base64.StdEncoding.Strict().DecodeString(r.WireBase64)
-		if err != nil || len(wire) <= 65 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != r.WireSHA256 {
+		if err != nil || len(wire) <= 65 || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != r.WireSHA256 {
 			t.Fatal("invalid retained unsigned wire")
 		}
 		message, err := CompileKaminoMessage(r.Request)
-		if err != nil || !bytes.Equal(wire[65:], message) {
+		if err != nil || !bytes.Equal(wireMsg(wire), message) {
 			t.Fatal("retained wire differs from current compiler", err)
 		}
 	}
@@ -236,7 +234,7 @@ func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
 	verify(release)
 	if data, err = os.ReadFile(dir + "/partial-plan.json"); err == nil {
 		var partial record
-		if json.Unmarshal(data, &partial) != nil || partial.Request.RouteLane != SelectedRouteID || partial.Request.FullPayoff || partial.Request.RepaymentRelease || partial.Request.Action != DeleverRouteStep || partial.Request.AmountRaw != 1_000_000 {
+		if json.Unmarshal(data, &partial) != nil || partial.Request.RouteLane != SelectedRouteID || partial.Request.RepaymentRelease || partial.Request.Action != DeleverRouteStep || partial.Request.AmountRaw != 1_000_000 {
 			t.Fatal("partial repayment mode drift")
 		}
 		_, leg, err := kaminoPrimeUSDCInstruction(partial.Request)
@@ -245,61 +243,6 @@ func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
 		}
 		verify(partial)
 	} else if !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-}
-
-// A bounded debt-reduction branch, not production admission authorization.
-func TestExportSelectorProtocolPartialRepayment(t *testing.T) {
-	dir := os.Getenv("SELECTOR_PROTOCOL_DIR")
-	if dir == "" {
-		t.Skip("explicit retained protocol evidence required")
-	}
-	raw, err := os.ReadFile(dir + "/position-result.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var report struct{ FourLegsPassed bool }
-	if json.Unmarshal(raw, &report) != nil || !report.FourLegsPassed {
-		t.Fatal("incomplete position witness")
-	}
-	m, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	route, err := runtimeRoute(SelectedRouteID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decision := Decision{Action: DeleverRouteStep, Reason: "hard_ltv_repay", StrategyKey: SelectedRouteID, AmountRaw: 1_000_000}
-	leg, amount, effect, err := selectKaminoLeg(decision, KaminoPosition{DebtRaw: 5_000_000})
-	if err != nil || leg != kaminoLegRepay || amount != 1_000_000 || effect != amount {
-		t.Fatal("partial repayment selection", err)
-	}
-	r, err := m.kaminoPacketForRoute(testPolicies(t), decision.Action, leg, amount, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	message, err := CompileKaminoMessage(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wire := append(make([]byte, 65), message...)
-	wire[0] = 1
-	output, err := json.MarshalIndent(map[string]any{"schema": "selector-kamino-partial-probe/v1", "sourceResultSHA256": sha256Bytes(raw), "request": r, "amountRaw": amount, "wireBase64": base64.StdEncoding.EncodeToString(wire), "wireSha256": sha256Bytes(wire)}, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.OpenFile(dir+"/partial-plan.json", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = f.Write(output); err != nil {
-		f.Close()
-		t.Fatal(err)
-	}
-	if err = f.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

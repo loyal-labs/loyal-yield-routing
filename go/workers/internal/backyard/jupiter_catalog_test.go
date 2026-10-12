@@ -30,14 +30,11 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 			seen[key] = true
 			t.Run(lane+"/"+key, func(t *testing.T) {
 				request := fixtureSwapRequest(t, lane, action)
-				if hinted := len(request.Instruction.LookupTableAddresses) > 0; hinted != acceptsJupiterLookupHints(lane, action) {
-					t.Fatalf("lookup hints kept %v outside their lanes", hinted)
-				}
 				if _, index, err := jupiterPolicyLeg(lane, action); err != nil || index != leg {
 					t.Fatal("policy selector drift", err)
 				}
-				message, tables := compileTestSwap(t, request)
-				packetEvidence, _ := json.Marshal(map[string]any{"lane": lane, "edge": key, "packetBytes": len(message) + 65, "v0": len(tables) > 0})
+				message := compileTestSwap(t, request)
+				packetEvidence, _ := json.Marshal(map[string]any{"lane": lane, "edge": key, "transactionBytes": len(message) + 64})
 				t.Logf("PHASE3_JUPITER_PACKET %s", packetEvidence)
 				data, err := base64.StdEncoding.Strict().DecodeString(request.Instruction.Data)
 				if err != nil {
@@ -52,23 +49,6 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 						t.Fatal("accepted another amount or quote", offset)
 					}
 				}
-				if len(tables) == 0 || !strings.HasPrefix(lane, "Prime/") {
-					return
-				}
-				request.LookupTables = tables
-				rpc, reads := lookupRPC(t, tables, nil, false)
-				unprepared := request
-				unprepared.LookupTables = nil
-				prepared, err := embeddedTestManifest(t).prepareJupiterLookupTables(context.Background(), rpc, unprepared, tables[0].ObservedSlot)
-				if err != nil || *reads != 1 {
-					t.Fatal("Prime preparation did not load the hinted chain tables", err)
-				}
-				if preparedMessage, err := CompileJupiterMessage(prepared); err != nil || !bytesEqual(message, preparedMessage) {
-					t.Fatal("fresh preparation changed Prime packet", err)
-				}
-				rpc, _ = lookupRPC(t, tables, func(s *LookupTableSnapshot) { s.Data[56] ^= 1 }, false)
-				err = revalidateJupiterLookupTables(context.Background(), rpc, request, tables[0].ObservedSlot)
-				assertBudgetHold(t, err, "lookup_mapping_changed")
 			})
 		}
 	}
@@ -81,7 +61,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 }
 
 func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testing.T) {
-	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
+	for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToUSDCStep} {
 		t.Run(string(action), func(t *testing.T) {
 			s := base()
 			s.RouteLane = "AUTO/AUTO/PYUSD"
@@ -91,25 +71,6 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 			case SwapCollateralToStableStep:
 				s.CutoverDrain = true
 				s.CollateralIdleRaw = 5
-			case SwapDebtToCollateralStep:
-				s.HasPosition = true
-				s.PositionCollateralRaw = 10
-				s.PositionDebtRaw = 5
-				s.DebtIdleRaw = 5
-			case SwapCollateralToDebtStep:
-				s.CutoverDrain = true
-				s.HasPosition = true
-				s.PositionCollateralRaw = 10
-				s.PositionDebtRaw = 5
-				s.CollateralIdleRaw = 5
-				s.PositionDebtValueRaw, s.CollateralIdleValueRaw = 5, 6
-			case SwapUSDCToDebtStep:
-				s.RouteLane = ethenaUSDePYUSD.Lane // AUTO has no USDC->PYUSD edge
-				s.CutoverDrain = true
-				s.HasPosition = true
-				s.PositionCollateralRaw = 10
-				s.PositionDebtRaw = 5
-				s.PositionDebtValueRaw, s.SquadsIdleRaw = 5, 6
 			case SwapDebtToUSDCStep:
 				s.CutoverDrain = true
 				s.DebtIdleRaw = 5
@@ -170,8 +131,9 @@ func TestWorkerDispatchesNonUSDCConversionsWithoutChangingTheirIdentity(t *testi
 // collateral and USDC conversions to Jupiter, carrying each decided
 // conversion's identity unchanged through prepare, record, bind and build;
 // AUTO/AUTO/PYUSD keeps dispatching every conversion to Jupiter (above).
-// (Collateral into debt is a funding or exit leg whose decision needs a
-// payoff; TestEveryHastraLegExecutesAtItsOwnConstraint builds it.)
+// (Borrowed wYLDS stakes inside an atomic step; collateral into debt is a
+// down step's conversion; TestEveryHastraLegExecutesAtItsOwnConstraint builds
+// both.)
 func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 	t.Parallel()
 	for action, venue := range map[Action]string{SwapStableToCollateralStep: "jupiter", SwapCollateralToStableStep: "jupiter",
@@ -186,9 +148,8 @@ func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 				s.CutoverDrain = true
 				s.CollateralIdleRaw = 5
 			case SwapDebtToCollateralStep:
-				s.HasPosition = true
-				s.PositionCollateralRaw = 10
-				s.PositionDebtRaw = 5
+				// A drain's wYLDS residue stakes to AUTO.
+				s.CutoverDrain = true
 				s.DebtIdleRaw = 5
 			}
 			o := tickObservation(s)

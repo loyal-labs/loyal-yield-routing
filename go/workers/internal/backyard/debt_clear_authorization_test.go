@@ -24,7 +24,6 @@ func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutio
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.FullPayoff = true
 	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
 	effects, err := boundedKaminoRepaymentEffects(accounts, source, destination, 1000, 1001)
@@ -37,7 +36,6 @@ func debtClearPayoffFixture(t *testing.T) (Observation, Decision, KaminoExecutio
 func TestDebtClearClassifiesWholeFlowBeforeFirstCapitalLeg(t *testing.T) {
 	t.Parallel()
 	_, _, evidence, m, _, plan := debtClearPayoffFixture(t)
-	evidence.Request.FullPayoff = false // The actual repay amount, not this flag, controls consent.
 	required, err := debtClearRequired(m, evidence.Request, evidence.ExpectedEffects, plan, debtClearRouteState{})
 	if err != nil || !required {
 		t.Fatal("whole-debt repayment escaped confirmation", err)
@@ -225,8 +223,7 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wire := append(make([]byte, 65), message...)
-			wire[0] = 1
+			wire := signedWire(message, make([]byte, 64))
 			origin := UnwindIntent{SourceLane: o.Snapshot.RouteLane, Reason: "economic_rotation", ObservationID: o.Snapshot.ObservationID, MaxCollateralRaw: o.Snapshot.PositionCollateralRaw, MaxDebtRaw: 2000, EvidenceID: strings.Repeat("e", 64), CreatedAt: time.Now().UTC()}
 			revoked, err := newDebtClearAuthority(m, key, strings.Repeat("c", 64), origin)
 			if err != nil {
@@ -241,7 +238,7 @@ func TestDebtClearRevokedSignedDenialRetiresOnlyExpiredAbsent(t *testing.T) {
 			if err = db.pool.QueryRow(ctx, `SELECT expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&envelope); err != nil {
 				t.Fatal(err)
 			}
-			operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, Decision: decision}, Status: Signed, ExpectedEffects: envelope, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wire[1:65]), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
+			operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: key, Decision: decision}, Status: Signed, ExpectedEffects: envelope, SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), TransactionSignature: encodeBase58(wireSig(wire)), RecentBlockhash: e.Request.RecentBlockhash, LastValidBlockHeight: e.Request.LastValidBlockHeight}
 			height := int64(99)
 			sends := 0
 			chainReads := rpcOf(base).Transport
@@ -391,14 +388,13 @@ func debtClearRiskFixture(t *testing.T) (Observation, Decision, KaminoExecutionE
 	o.Snapshot.ValuationSource, o.Snapshot.ValuationSlot = o.ValuationSource, o.ValuationSlot
 	o.routeBatch = &routeObservationBatch{Slot: o.Snapshot.Slot, ObservationID: o.Snapshot.ObservationID, ManifestSHA256: m.SHA256, Accounts: accounts}
 	decision := Decide(o.Snapshot)
-	if decision.Reason != "hard_ltv_repay" {
+	if decision.Reason != hardLTVDeleverReason {
 		t.Fatal("fixture not real hard risk", decision)
 	}
 	request, err := m.kaminoPacketForRoute(testPolicies(t), decision.Action, kaminoLegRepay, 1001, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.FullPayoff = true
 	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)
 	effects, err := boundedKaminoRepaymentEffects(accounts, source, destination, 1000, 1001)
@@ -457,7 +453,7 @@ func TestDebtClearEmergencySupersedesOldBoundsAndRequiresReconciledOrigin(t *tes
 	if err := applyUnwindIntent(&o.Snapshot, &old); err != nil {
 		t.Fatal("amount growth became global integrity failure", err)
 	}
-	if !o.Snapshot.UnwindRefreshRequired || Decide(o.Snapshot).Reason != "hard_ltv_repay" {
+	if !o.Snapshot.UnwindRefreshRequired || Decide(o.Snapshot).Reason != hardLTVDeleverReason {
 		t.Fatal("ordinary amount envelope blocked fresh risk")
 	}
 	below := o.Snapshot

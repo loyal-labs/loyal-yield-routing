@@ -28,7 +28,7 @@ func TestManifestPacketTemplatePatchesOnlyTheV2Amount(t *testing.T) {
 	}
 	data := append(append([]byte(nil), kamino.DepositV2Discriminator[:]...), make([]byte, 8)...)
 	overlay, err := json.Marshal(map[string]any{"packets": []any{map[string]any{
-		"action": OpenPrimeUSDCStep, "accounts": manifestAccounts(kaminoLegMetasForRoute(kaminoLegDeposit, RouteID)),
+		"action": OpenPrimeUSDCStep, "accounts": manifestAccounts(kaminoTestMetas(kaminoLegDeposit, RouteID)),
 		"dataBase64": base64.StdEncoding.EncodeToString(data),
 	}}})
 	if err != nil || json.Unmarshal(overlay, &manifest.RuntimeBindings.PrimeUSDC) != nil {

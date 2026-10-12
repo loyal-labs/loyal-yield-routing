@@ -221,8 +221,8 @@ func runCapacityPartialRestart(t *testing.T, lane string) {
 		if wire, sized := partialWithdrawalWireAmount(s, d); sized {
 			d.AmountRaw = wire
 		}
-		if d.Reason == exitPartialRepayReason {
-			sawRepay = true
+		if d.Reason == partialReleaseReason {
+			sawRepay = true // the release's down step repays the debt share
 		}
 		if d.Reason == partialStageReason {
 			sawStage = true

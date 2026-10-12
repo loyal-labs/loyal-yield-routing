@@ -1,8 +1,6 @@
 package backyard
 
 import (
-	"bytes"
-	"crypto/ed25519"
 	"encoding/binary"
 	"testing"
 	"time"
@@ -29,10 +27,10 @@ func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 		} else {
 			// The PYUSD quote needs bound price evidence to validate; set
 			// what applySelectorEntry stamps for a funded position.
-			s.SelectorEntryEquityRaw, s.SelectorBorrowRaw = entry.EquityRaw, entry.Quote.BorrowReceiveRaw
+			s.SelectorEntryEquityRaw = entry.EquityRaw
 		}
-		if s.SelectorEntryPaused || s.SelectorBorrowRaw != 189_873_681 {
-			t.Fatalf("%s: fixture is not the live shape: paused=%t borrow=%d", lane, s.SelectorEntryPaused, s.SelectorBorrowRaw)
+		if s.SelectorEntryPaused || entry.Quote.BorrowReceiveRaw != 189_873_681 {
+			t.Fatalf("%s: fixture is not the live shape: paused=%t borrow=%d", lane, s.SelectorEntryPaused, entry.Quote.BorrowReceiveRaw)
 		}
 		if got := Decide(s); got.Action != Hold || got.Reason != "leverage_target_required" {
 			t.Fatalf("%s: no target must hold, got %+v", lane, got)
@@ -44,10 +42,8 @@ func TestStaleEntryDebtFreeReopenUsesTheTargetNeverTheQuote(t *testing.T) {
 			t.Fatalf("%s: target 1.5x must borrow through leverage_up, got %+v", lane, got)
 		}
 		// Sizing: 50% of collateral value (the target), not the entry quote.
-		position := leverageTestPosition(1_676_000_000, 0)
-		leg, wire, _, err := selectKaminoLeg(got, position)
-		if err != nil || leg != kaminoLegBorrow || wire != 837_162_000 || wire == entry.Quote.BorrowReceiveRaw {
-			t.Fatalf("%s: leverage_up sized %d (leg %d, err %v), want 837162000", lane, wire, leg, err)
+		if up, ok := stepDecision(s, got); !ok || !up || uint64(got.AmountRaw) == entry.Quote.BorrowReceiveRaw {
+			t.Fatalf("%s: leverage_up is not an up step sized on the target: %+v", lane, got)
 		}
 	}
 }
@@ -180,7 +176,7 @@ func TestLeverageUpSizingAndCaps(t *testing.T) {
 }
 
 // The borrow-authority exception is exactly: journaled reason leverage_up,
-// a borrow leg, same AUTO/OnRe lane, no unwind, a stored target above 1x.
+// a step opening with a borrow, same AUTO/OnRe lane, no unwind, a stored target above 1x.
 func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
 	t.Parallel()
 	manifest := embeddedTestManifest(t)
@@ -193,10 +189,11 @@ func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := []byte(`{"lane":"OnRe/ONyc/USDC","level":1.5,"borrowRaw":10000000,"operationId":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","spreadBps":150,"decidedAt":"2026-09-28T12:00:00Z"}`)
-	if ok, err := leverageUpBypassesEntryFence(borrow, leverageUpReason, false, onreONycUSDC, target, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); !ok || err != nil {
+	step := StepRequest{Open: borrow, Close: deposit}
+	if ok, err := leverageUpBypassesEntryFence(step, leverageUpReason, false, onreONycUSDC, target, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); !ok || err != nil {
 		t.Fatalf("valid leverage_up refused: %v", err)
 	}
-	if ok, err := leverageUpBypassesEntryFence(borrow, "prime_collateral_requires_borrow", false, onreONycUSDC, target, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); ok || err != nil {
+	if ok, err := leverageUpBypassesEntryFence(step, "prime_collateral_requires_borrow", false, onreONycUSDC, target, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); ok || err != nil {
 		t.Fatal("other reasons must keep the entry fence")
 	}
 	for name, c := range map[string]struct {
@@ -205,64 +202,16 @@ func TestLeverageUpEntryFenceExceptionIsNarrow(t *testing.T) {
 		lane    string
 		target  string
 	}{
-		"deposit leg":       {deposit, false, onreONycUSDC, string(target)},
-		"unwinding":         {borrow, true, onreONycUSDC, string(target)},
-		"other op lane":     {borrow, false, autoAUTOPYUSD.Lane, string(target)},
-		"no target":         {borrow, false, onreONycUSDC, "null"},
-		"1x target":         {borrow, false, onreONycUSDC, `{"lane":"OnRe/ONyc/USDC","level":1,"spreadBps":0,"decidedAt":"2026-09-28T12:00:00Z"}`},
-		"other lane target": {borrow, false, onreONycUSDC, `{"lane":"AUTO/AUTO/PYUSD","level":1.5,"spreadBps":0,"decidedAt":"2026-09-28T12:00:00Z"}`},
+		"lone borrow leg":   {borrow, false, onreONycUSDC, string(target)},
+		"deposit-led step":  {StepRequest{Open: deposit, Close: deposit}, false, onreONycUSDC, string(target)},
+		"unwinding":         {step, true, onreONycUSDC, string(target)},
+		"other op lane":     {step, false, autoAUTOPYUSD.Lane, string(target)},
+		"no target":         {step, false, onreONycUSDC, "null"},
+		"1x target":         {step, false, onreONycUSDC, `{"lane":"OnRe/ONyc/USDC","level":1,"spreadBps":0,"decidedAt":"2026-09-28T12:00:00Z"}`},
+		"other lane target": {step, false, onreONycUSDC, `{"lane":"AUTO/AUTO/PYUSD","level":1.5,"spreadBps":0,"decidedAt":"2026-09-28T12:00:00Z"}`},
 	} {
 		if ok, err := leverageUpBypassesEntryFence(c.request, leverageUpReason, c.unwind, c.lane, []byte(c.target)); ok || err == nil {
 			t.Fatalf("%s: leverage_up bypassed the fence", name)
-		}
-	}
-}
-
-// The 1.5x->1.75x borrow refreshes both reserves (debt already open). The
-// real compiler's wire must pass the persisted-wire gate for AUTO and OnRe,
-// and stay refused for Maple and Prime.
-func TestLeverageUpBorrowWithDebtPassesThePersistedWireGate(t *testing.T) {
-	t.Parallel()
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{61}, ed25519.SeedSize))
-	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	for _, c := range []struct {
-		lane     string
-		manifest RouteManifest
-		accepted bool
-	}{
-		{autoAUTOPYUSD.Lane, embeddedTestManifest(t), true},
-		{onreONycUSDC, embeddedTestManifest(t), true},
-		{SelectedRouteID, embeddedTestManifest(t), true},
-		{PhaseOneLaneID, embeddedTestManifest(t), true},
-		{primePRIMEPYUSD.Lane, embeddedTestManifest(t), true},
-		{primePRIMEUSDS.Lane, embeddedTestManifest(t), true},
-		{ethenaUSDePYUSD.Lane, embeddedTestManifest(t), false},
-	} {
-		route, err := runtimeRoute(c.lane)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for name, reserves := range map[string][]string{
-			"first borrow (collateral)":     {route.Kamino.CollateralReserve},
-			"leverage_up (collateral+debt)": {route.Kamino.CollateralReserve, route.Kamino.DebtReserve},
-		} {
-			request, err := c.manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 250_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, c.lane)
-			if err != nil {
-				t.Fatalf("%s %s: packet: %v", c.lane, name, err)
-			}
-			request.ObligationReserves = reserves
-			message, err := compileKaminoMessageForDelegate(request, delegate)
-			if err != nil {
-				t.Fatalf("%s %s: compile: %v", c.lane, name, err)
-			}
-			err = signedTestBuildResult(t, key, message).validateForDelegate(delegate)
-			want := c.accepted || len(reserves) == 1
-			if want && err != nil {
-				t.Errorf("%s %s: PersistSigned gate refused: %v", c.lane, name, err)
-			}
-			if !want && err == nil {
-				t.Errorf("%s %s: gate accepted a leverage_up topology on an exit-only lane", c.lane, name)
-			}
 		}
 	}
 }

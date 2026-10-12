@@ -3,8 +3,6 @@ package backyard
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"math/big"
@@ -183,7 +181,7 @@ func CompileHastraMessage(request HastraConversionRequest) ([]byte, error) {
 	return compileHastraMessageForDelegate(request, mustKey(bridgeDelegate))
 }
 
-// compileHastraMessageForDelegate is the conversion's legacy message: the
+// compileHastraMessageForDelegate is the conversion's message: the
 // canonical heap frame (the Hastra policy is as large as AUTO's KLend policy,
 // which the deployed Squads ELF parses only under the 64 KiB heap) and the
 // Squads execute of the one Hastra instruction at its policy leg.
@@ -195,42 +193,38 @@ func compileHastraMessageForDelegate(request HastraConversionRequest, delegate p
 	if err != nil {
 		return nil, err
 	}
-	inner, leg, err := hastraInstruction(request)
+	outer, err := hastraPolicyExecute(request, delegate)
 	if err != nil {
 		return nil, err
 	}
-	policy, err := decodeKey(request.Policy)
-	if err != nil || policy == (publicKey{}) {
-		return nil, fmt.Errorf("Hastra request names no installed policy")
-	}
-	outer, err := wrapSquadsPolicy(policy, delegate, []byte{leg}, inner)
-	if err != nil {
-		return nil, err
-	}
-	message, err := compileAutoResourceLegacyMessage(delegate, blockhash, outer)
+	message, err := compileV1Message(delegate, blockhash, []compiledInstruction{outer}, executionBudget(request.RouteLane, 1))
 	if err != nil {
 		return nil, err
 	}
 	return checkedUnsignedMessage(message)
 }
 
-// signHastraConversion signs the request's message as the pinned delegate.
-func signHastraConversion(request HastraConversionRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (BuildResult, error) {
-	if len(executor) != ed25519.PrivateKeySize || publicKeyFromBytes(executor.Public().(ed25519.PublicKey)) != expectedDelegate {
-		return BuildResult{}, fmt.Errorf("executor is not the pinned Squads delegate")
+// hastraPolicyExecute is the request's conversion as the Squads execute of
+// its Hastra instruction at the Hastra policy's leg.
+func hastraPolicyExecute(request HastraConversionRequest, delegate publicKey) (compiledInstruction, error) {
+	inner, leg, err := hastraInstruction(request)
+	if err != nil {
+		return compiledInstruction{}, err
 	}
+	policy, err := decodeKey(request.Policy)
+	if err != nil || policy == (publicKey{}) {
+		return compiledInstruction{}, fmt.Errorf("Hastra request names no installed policy")
+	}
+	return wrapSquadsPolicy(policy, delegate, []byte{leg}, inner)
+}
+
+// signHastraConversion signs the request's message as the pinned delegate.
+func signHastraConversion(request HastraConversionRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
 	message, err := compileHastraMessageForDelegate(request, expectedDelegate)
 	if err != nil {
-		return BuildResult{}, err
+		return SignedTransaction{}, err
 	}
-	signature := ed25519.Sign(executor, message)
-	wire := append(append(encodeShortVec(1), signature...), message...)
-	if len(wire) > solanaPacketBytes {
-		return BuildResult{}, fmt.Errorf("Hastra packet is %d bytes, exceeds %d", len(wire), solanaPacketBytes)
-	}
-	messageHash, wireHash := sha256.Sum256(message), sha256.Sum256(wire)
-	return BuildResult{MessageSHA256: hex.EncodeToString(messageHash[:]), SignedWire: wire, SignedWireSHA256: hex.EncodeToString(wireHash[:]),
-		TransactionSignature: encodeBase58(signature), RecentBlockhash: request.RecentBlockhash, LastValidBlockHeight: request.LastValidBlockHeight}, nil
+	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
 // hastraPriceAt reads the stake price and the chain clock at a view slot no
@@ -343,8 +337,6 @@ func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return observation, evidence, err
 	}
-	evidence.Request.PositionReturnReserved = positionReturnConversion(decision)
-	evidence.Request.FullPayoffFunding = payoffFundingConversion(decision, observation.Snapshot)
 	return observation, evidence, nil
 }
 
@@ -427,14 +419,14 @@ func BuildSimulateAndPersistHastra(ctx context.Context, database *Database, rpc 
 	if err != nil {
 		return err
 	}
-	build, err := signHastraConversion(evidence.Request, signer, mustKey(bridgeDelegate))
+	signed, err := signHastraConversion(evidence.Request, signer, mustKey(bridgeDelegate))
 	if err != nil {
 		return err
 	}
-	if err := database.MarkBuilt(ctx, operationID, build.MessageSHA256, effects); err != nil {
+	if err := database.MarkBuilt(ctx, operationID, signed.messageSHA256, effects); err != nil {
 		return err
 	}
-	simulation, err := simulateSigned(ctx, rpc, build.SignedWire)
+	simulation, err := simulateSigned(ctx, rpc, signed.signedWire)
 	if err != nil {
 		return err
 	}
@@ -442,10 +434,10 @@ func BuildSimulateAndPersistHastra(ctx context.Context, database *Database, rpc 
 	if err := database.MarkSimulated(ctx, operationID, simulation); err != nil {
 		return err
 	}
-	if simulation.Slot <= 0 {
-		return fmt.Errorf("exact signed Hastra transaction was not simulated")
+	build, err := signed.BuildResult(simulation.Slot)
+	if err != nil {
+		return err
 	}
-	build.SimulationSlot = simulation.Slot
 	return database.PersistSigned(ctx, operationID, build)
 }
 

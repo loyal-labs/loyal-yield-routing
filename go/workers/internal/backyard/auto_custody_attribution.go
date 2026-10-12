@@ -52,9 +52,11 @@ package backyard
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -184,15 +186,14 @@ type custodyAttributionUnknownRow struct {
 // could never touch the shared custody, from its signed wire alone. The
 // persisted row must carry the COMPLETE signed-wire evidence the production
 // signing persistence writes, the production validator must verify it against
-// the pinned delegate, and the wire must be a legacy message whose static
-// account keys — for a legacy message, every account the transaction can
-// load, so no instruction or CPI can reach any other — do not include the
-// custody. That holds whatever the row's action or the compiler that built
+// the pinned delegate, and every account the message can load (a v1 or a
+// legacy message's keys), so no instruction or CPI can reach any other, must
+// exclude the custody. That holds whatever the row's action or the compiler that built
 // it, so the classification is action-agnostic and never recompiles: a
 // report signed by an older compiler is judged by the bytes it signed
 // (2026-10-11: ~780 failed NAV reports no longer recompiled byte for byte
-// and overflowed the unknown bound). A v0 wire may load accounts through
-// lookup tables its static keys do not show, so it is never recognized; a
+// and overflowed the unknown bound). A v0 wire, which may load accounts
+// through lookup tables its keys do not show, is never recognized; a
 // missing field, digest drift, or custody match is a refusal to recognize —
 // never a pass — and leaves the record to the expiry classification, which
 // fails closed.
@@ -200,44 +201,44 @@ func (r custodyAttributionUnknownRow) signedWireExcludesCustody(cfg sharedCustod
 	if !r.SignedWirePresent {
 		return false
 	}
-	evidence := BuildResult{
-		MessageSHA256: r.MessageSHA256, SignedWire: r.SignedWire, SignedWireSHA256: r.SignedWireSHA256,
-		TransactionSignature: r.TransactionSignature, RecentBlockhash: r.RecentBlockhash,
-		LastValidBlockHeight: r.LastValidBlockHeight, SimulationSlot: r.SimulationSlot,
-	}
-	if evidence.validateForDelegate(cfg.Delegate) != nil {
+	// The row's own complete evidence, whichever compiler signed it: the wire
+	// it hashed, one signature by the pinned delegate over the message it
+	// hashed.
+	message, signature, keys, err := signedWireKeys(r.SignedWire)
+	if err != nil || sha256Bytes(r.SignedWire) != r.SignedWireSHA256 || sha256Bytes(message) != r.MessageSHA256 || encodeBase58(signature) != r.TransactionSignature ||
+		r.RecentBlockhash == "" || r.LastValidBlockHeight <= 0 || r.SimulationSlot <= 0 || keys[0] != cfg.Delegate || !ed25519.Verify(cfg.Delegate[:], message, signature) {
 		return false
 	}
 	custody, err := decodeKey(cfg.Custody)
-	if err != nil {
-		return false
-	}
-	// The validator admitted exactly one signature (a one-byte shortvec and
-	// 64 signature bytes), so the message starts at byte 65.
-	touches, err := legacyMessageNamesCustody(r.SignedWire[65:], custody)
-	return err == nil && !touches
+	return err == nil && !slices.Contains(keys, custody)
 }
 
-// legacyMessageNamesCustody reports whether a legacy message's static
-// account-key list contains the pinned custody key. Any other shape,
-// including a v0 message, is a refusal, never a "no touch".
-func legacyMessageNamesCustody(message []byte, custody publicKey) (bool, error) {
+// signedWireKeys is a one-signature wire's message, signature and every
+// account the message can load: a v1 transaction's keys, or a historical
+// legacy transaction's. Any other shape, including a v0 message, which may
+// load accounts through lookup tables, is a refusal, never a "no touch".
+func signedWireKeys(wire []byte) ([]byte, []byte, []publicKey, error) {
+	message, signature, err := splitSignedWire(wire)
+	if err != nil {
+		return nil, nil, nil, budgetHoldFrom(err, "custody_attribution_malformed_record")
+	}
+	if message[0] == 0x81 {
+		keys, err := messageKeys(message)
+		return message, signature, keys, err
+	}
 	if len(message) < 4 || message[0] != 1 || message[1] != 0 {
-		return false, budgetHold("custody_attribution_malformed_record")
+		return nil, nil, nil, budgetHold("custody_attribution_malformed_record")
 	}
 	offset := 3
 	count, err := decodeShortVec(message, &offset)
 	if err != nil || count <= 0 || count > 256 || len(message)-offset < count*32+32 {
-		return false, budgetHoldFrom(err, "custody_attribution_malformed_record")
+		return nil, nil, nil, budgetHoldFrom(err, "custody_attribution_malformed_record")
 	}
-	for index := 0; index < count; index++ {
-		var key publicKey
-		copy(key[:], message[offset+index*32:])
-		if key == custody {
-			return true, nil
-		}
+	keys := make([]publicKey, count)
+	for index := range keys {
+		copy(keys[index][:], message[offset+index*32:])
 	}
-	return false, nil
+	return message, signature, keys, nil
 }
 
 // resolveSharedCustodyUnknownRecords excuses the bounded unknown candidates
@@ -633,6 +634,10 @@ func isProvenZeroStartEdge(row custodyAttributionRow, cfg sharedCustodyAttributi
 		return supply.Address == cfg.BorrowEdgeSource && supply.Mint == cfg.Mint && supply.Owner == cfg.Owner && supply.Authority == cfg.BorrowEdgeAuthority &&
 			custodyFromZero(expected.Accounts[1]) &&
 			fee.Address == cfg.BorrowEdgeFeeReceiver && fee.Mint == cfg.Mint && fee.Owner == cfg.Owner && fee.Authority == cfg.BorrowEdgeAuthority
+	case (row.Action == string(OpenRouteStep) || row.Action == string(DeleverRouteStep)) && expected.Kind == "atomic-step" && len(expected.Accounts) == 2:
+		// An atomic step of this lane that found the shared custody empty:
+		// whatever it leaves there is its own conversion's output.
+		return custodyFromZero(expected.Accounts[1])
 	default:
 		return false
 	}

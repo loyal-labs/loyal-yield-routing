@@ -51,6 +51,8 @@ func encodePhase3BuildInput(request any, effects []byte) (*phase3BuildInput, err
 		input.Kind = "jupiter"
 	case HastraConversionRequest:
 		input.Kind = "hastra"
+	case StepRequest:
+		input.Kind = "step"
 	default:
 		return nil, budgetHold("unmapped_economic_action")
 	}
@@ -95,6 +97,8 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 		target = &JupiterSwapRequest{}
 	case "hastra":
 		target = &HastraConversionRequest{}
+	case "step":
+		target = &StepRequest{}
 	default:
 		return nil, ExpectedEffects{}, nil, budgetHold("invalid_persisted_build_input")
 	}
@@ -122,6 +126,9 @@ func (input *phase3BuildInput) decodeWithManifest(m RouteManifest) (any, Expecte
 	case *HastraConversionRequest:
 		request = *r
 		message, err = compileHastraMessageForDelegate(*r, mustKey(bridgeDelegate))
+	case *StepRequest:
+		request = *r
+		message, err = compileStepMessageForDelegate(*r, mustKey(bridgeDelegate))
 	}
 	if err != nil {
 		return nil, ExpectedEffects{}, nil, budgetHoldFrom(err, "persisted_build_no_longer_compiles")
@@ -203,13 +210,6 @@ func (d *Database) bindOperation(ctx context.Context, rpc *chain.Client, view *V
 		return err
 	}
 	plan := debtClearPlan{Snapshot: o.Snapshot, Decision: decision}
-	if r, ok := request.(KaminoPrimeUSDCRequest); ok && partialRepaymentReason(decision.Reason) {
-		projection, err := observePartialRepaymentProjection(ctx, rpc, view, m, o.Snapshot, decision, r, effects)
-		if err != nil {
-			return err
-		}
-		plan.Repayment = &projection
-	}
 	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
@@ -322,7 +322,8 @@ func bindSignedWireTx(ctx context.Context, tx pgx.Tx, operationID, wireSHA256 st
 // expiry and signature are the row's.
 func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization, operation PersistedOperation) (any, ExpectedEffects, error) {
 	wire := operation.SignedWire
-	if len(wire) <= 65 || wire[0] != 1 || auth.SignedWireSHA256 != sha256Bytes(wire) {
+	signed, signature, err := splitSignedWire(wire)
+	if err != nil || auth.SignedWireSHA256 != sha256Bytes(wire) {
 		return nil, ExpectedEffects{}, budgetHold("signed_wire_binding_mismatch")
 	}
 	request, effects, message, err := auth.BuildInput.decodeWithManifest(m)
@@ -330,7 +331,7 @@ func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization,
 		return nil, ExpectedEffects{}, err
 	}
 	digest, err := Phase3IntentDigest(request, auth.BuildInput.Effects)
-	if err != nil || digest != auth.IntentSHA256 || !bytes.Equal(message, wire[65:]) {
+	if err != nil || digest != auth.IntentSHA256 || !bytes.Equal(message, signed) {
 		return nil, ExpectedEffects{}, budgetHoldFrom(err, "persisted_build_intent_mismatch")
 	}
 	var blockhash string
@@ -349,8 +350,10 @@ func (m RouteManifest) validateSignedIdentity(auth phase3OperationAuthorization,
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case HastraConversionRequest:
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
+	case StepRequest:
+		blockhash, height = r.Open.RecentBlockhash, r.Open.LastValidBlockHeight
 	}
-	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(wire[1:65]) {
+	if operation.SignedWireSHA256 != auth.SignedWireSHA256 || operation.RecentBlockhash != blockhash || operation.LastValidBlockHeight != height || operation.TransactionSignature != encodeBase58(signature) {
 		return nil, ExpectedEffects{}, budgetHold("persisted_signature_or_expiry_mismatch")
 	}
 	return request, effects, nil

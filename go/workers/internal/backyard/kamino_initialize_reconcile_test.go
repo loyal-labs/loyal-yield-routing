@@ -25,10 +25,9 @@ func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			wire := append([]byte{1}, bytes.Repeat([]byte{9}, 64)...)
-			wire = append(wire, message...)
+			wire := signedWire(message, bytes.Repeat([]byte{9}, 64))
 			op := PersistedOperation{Operation: Operation{Decision: Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: r.RouteLane, IdempotencyKey: "controlled-init"}},
-				ConfirmedSlot: 77, TransactionSignature: encodeBase58(wire[1:65]), SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
+				ConfirmedSlot: 77, TransactionSignature: encodeBase58(wireSig(wire)), SignedWire: wire, SignedWireSHA256: sha256Bytes(wire), RecentBlockhash: r.RecentBlockhash, LastValidBlockHeight: r.LastValidBlockHeight}
 			if drift == "journal_action" {
 				op.Decision.Action = ReportNAV
 			}
@@ -117,15 +116,15 @@ func initializationReconcileFixture(t *testing.T) (ExpectedEffects, ConfirmedTra
 	if err != nil {
 		t.Fatal(err)
 	}
-	offset := 3
-	count, err := decodeShortVec(message, &offset)
+	keys, err := messageKeys(message)
+	count := len(keys)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pre, post := make([]uint64, count), make([]uint64, count)
 	for i := 0; i < count; i++ {
 		pre[i], post[i] = 1, 1
-		switch keyString(message[offset+i*32 : offset+(i+1)*32]) {
+		switch encodeBase58(keys[i][:]) {
 		case bridgeDelegate:
 			pre[i], post[i] = 1_000_000, 995_000
 		case bridgeVault:

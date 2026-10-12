@@ -49,7 +49,7 @@ func TestPhase3LinkedLendingMessagesMatchGo(t *testing.T) {
 		}
 		message, err := CompileKaminoMessage(step.Request)
 		wire, decodeErr := base64.StdEncoding.Strict().DecodeString(step.WireBase64)
-		if err != nil || decodeErr != nil || len(wire) <= 65 || len(wire) > 1232 || wire[0] != 1 || !allZero(wire[1:65]) || sha256Bytes(wire) != step.WireSHA256 || !bytes.Equal(message, wire[65:]) {
+		if err != nil || decodeErr != nil || len(wire) <= 65 || len(wire) > maxTransactionBytes || wire[0] != 0x81 || !allZero(wireSig(wire)) || sha256Bytes(wire) != step.WireSHA256 || !bytes.Equal(message, wireMsg(wire)) {
 			t.Fatal("executed lending wire differs from production Go compiler", err, decodeErr)
 		}
 	}

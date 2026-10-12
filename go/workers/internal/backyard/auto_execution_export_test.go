@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"testing"
+
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 // TestExportAutoExecutionMessages writes the exact unsigned AUTO execution
@@ -32,7 +34,15 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 	messages := make([]map[string]any, 0, 10)
 
 	addMessage := func(kind, leg string, constraintIndex byte, amountRaw any, request any, message []byte) {
-		keys, instructions := decodeResourceTestMessage(t, message)
+		tx, err := solana.TransactionFromBytes(signedWire(message, make([]byte, 64)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var keys []string
+		for _, key := range tx.Message.AccountKeys {
+			keys = append(keys, key.String())
+		}
+		instructions := tx.Message.Instructions
 		messages = append(messages, map[string]any{
 			"kind":                    kind,
 			"leg":                     leg,

@@ -32,7 +32,7 @@ func TestTopupDepositWirePassesThePersistedWireGate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: compile: %v", name, err)
 		}
-		if _, _, _, _, err := decodeExactLegacyWire(signTestWire(t, delegateKey, message)); err != nil {
+		if _, _, _, _, err := decodeExactWire(signTestWire(t, delegateKey, message)); err != nil {
 			t.Errorf("%s: persisted-wire decode refused: %v", name, err)
 		}
 		if err := signedTestBuildResult(t, delegateKey, message).validateForDelegate(delegate); err != nil {

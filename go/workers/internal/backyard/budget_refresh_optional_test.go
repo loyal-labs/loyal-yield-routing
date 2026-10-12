@@ -105,78 +105,6 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 	}
 }
 
-// Capture keys are read-only non-signing static accounts. The header must stay
-// a single-fee-payer message with canonical roles, deduplicated keys, valid
-// instruction indexes, and no lowered privilege for instruction accounts.
-func TestEncodeLegacyMessageCaptureAccountsStayReadOnly(t *testing.T) {
-	t.Parallel()
-	feePayer := mustKey(bridgeDelegate)
-	hash := mustKey(bridgeUSDC)
-	instruction := compiledInstruction{
-		program: publicKey(kamino.ProgramID),
-		accounts: []accountMeta{
-			{key: mustKey(bridgeUSDC), writable: true},
-			{key: mustKey(budgetClockAddress), writable: true},
-		},
-		data: []byte{1, 2, 3},
-	}
-	// bridgeUSDC repeats an instruction account (must stay writable, not be
-	// duplicated); the rest are capture-only read-only keys.
-	capture := []publicKey{mustKey(bridgeVault), mustKey(bridgeUSDC), mustKey(bridgeStrategy), mustKey(bridgeVault)}
-	message, err := encodeLegacyMessage(feePayer, hash, []compiledInstruction{instruction}, capture...)
-	if err != nil {
-		t.Fatalf("encodeLegacyMessage: %v", err)
-	}
-	if message[0] != 1 || message[1] != 0 {
-		t.Fatalf("expected exactly one writable signer: header=%v", message[:3])
-	}
-	numAccounts := int(message[3])
-	if numAccounts != 6 || message[2] != 3 {
-		t.Fatalf("unexpected key count/header: header=%v", message[:4])
-	}
-	keys := make([]publicKey, numAccounts)
-	seen := map[publicKey]bool{}
-	for i := range keys {
-		copy(keys[i][:], message[4+32*i:36+32*i])
-		if seen[keys[i]] {
-			t.Fatalf("duplicate message key at %d", i)
-		}
-		seen[keys[i]] = true
-	}
-	if keys[0] != feePayer {
-		t.Fatalf("fee payer lost canonical position: %v", keys[0])
-	}
-	indexOf := func(key publicKey) int {
-		for i := range keys {
-			if keys[i] == key {
-				return i
-			}
-		}
-		return -1
-	}
-	usdcIndex, vaultIndex := indexOf(mustKey(bridgeUSDC)), indexOf(mustKey(bridgeVault))
-	// Writable instruction accounts sort into the writable band ahead of
-	// read-only capture keys; a capture duplicate never demotes them.
-	if usdcIndex < 0 || vaultIndex < 0 || usdcIndex > vaultIndex {
-		t.Fatalf("instruction privilege was lowered or key lost: usdc=%d vault=%d", usdcIndex, vaultIndex)
-	}
-	// Read the single instruction record and validate its account indexes.
-	// Layout: keys, blockhash, shortvec instruction count, then the record.
-	offset := 4 + 32*numAccounts + 32 + 1
-	if int(message[offset]) != indexOf(publicKey(kamino.ProgramID)) {
-		t.Fatalf("program index invalid")
-	}
-	count := int(message[offset+1])
-	if count != 2 {
-		t.Fatalf("unexpected instruction account count %d", count)
-	}
-	for i := 0; i < count; i++ {
-		if int(message[offset+2+i]) >= numAccounts {
-			t.Fatalf("instruction account index out of range")
-		}
-	}
-}
-
 // The live RPC only returns accounts named in the message, rejecting the rest
 // with -32602. The compiled refresh message must therefore carry every
 // requested capture address so one simulation returns the full batch.
@@ -213,12 +141,13 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode wire: %v", err)
 		}
-		body := raw[1+64:] // version byte + all-zero placeholder signature
-		numAccounts := int(body[3])
+		keys, err := messageKeys(wireMsg(raw)) // the message, then its all-zero placeholder signature
+		if err != nil {
+			t.Fatal(err)
+		}
+		numAccounts := len(keys)
 		messageKeys := map[publicKey]bool{}
-		for i := 0; i < numAccounts; i++ {
-			var key publicKey
-			copy(key[:], body[4+32*i:36+32*i])
+		for _, key := range keys {
 			messageKeys[key] = true
 		}
 		for _, address := range config.Accounts.Addresses {
@@ -283,34 +212,14 @@ func TestTwoAUTOLaneValuationRefreshSimulatesEveryReserve(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode wire: %v", err)
 		}
-		body := raw[1+64:]
-		offset := 3
-		keyCount, err := decodeShortVec(body, &offset)
-		if err != nil {
-			t.Fatal(err)
-		}
-		keys := make([]publicKey, keyCount)
-		for i := range keys {
-			copy(keys[i][:], body[offset+32*i:])
-		}
-		offset += 32*keyCount + 32
-		count, err := decodeShortVec(body, &offset)
-		if err != nil {
-			t.Fatal(err)
-		}
+		instructions := decodeTestInstructions(t, wireMsg(raw))
+		count := len(instructions)
 		refreshed := map[publicKey]bool{}
-		for i := 0; i < count; i++ {
-			program := keys[body[offset]]
-			offset++
-			accounts, _ := decodeShortVec(body, &offset)
-			first := keys[body[offset]]
-			offset += accounts
-			size, _ := decodeShortVec(body, &offset)
-			if program != publicKey(kamino.ProgramID) || !bytesEqual(body[offset:offset+size], kamino.RefreshReserveDiscriminator[:]) {
+		for i, ix := range instructions {
+			if ix.ProgramID != kamino.ProgramID || !bytesEqual(ix.Data, kamino.RefreshReserveDiscriminator[:]) {
 				t.Fatalf("instruction %d is not a reserve refresh", i)
 			}
-			offset += size
-			refreshed[first] = true
+			refreshed[publicKey(ix.Accounts[0].PublicKey)] = true
 		}
 		if count != len(reserves) || len(refreshed) != len(reserves) {
 			t.Fatalf("refreshed %d reserves in %d instructions, want each of %d once", len(refreshed), count, len(reserves))
