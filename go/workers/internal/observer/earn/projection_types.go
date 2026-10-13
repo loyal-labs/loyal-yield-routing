@@ -179,6 +179,8 @@ type EarnDepositMutation struct {
 	ReserveState        []EarnReserveMutation   `json:"reserve_state"`
 	IdleState           []EarnIdleTokenMutation `json:"idle_state"`
 	ObservedAt          *time.Time              `json:"observed_at"`
+	// VaultEmpty is the read's finding that the vault holds nothing.
+	VaultEmpty bool `json:"vault_empty,omitempty"`
 }
 
 type EarnWithdrawalMutation struct {
@@ -196,6 +198,7 @@ type EarnWithdrawalMutation struct {
 	ReserveState        []EarnReserveMutation   `json:"reserve_state"`
 	IdleState           []EarnIdleTokenMutation `json:"idle_state"`
 	ObservedAt          *time.Time              `json:"observed_at"`
+	VaultEmpty          bool                    `json:"vault_empty,omitempty"`
 }
 
 // EarnBalancesMutation is a vault's complete holdings after a transaction
@@ -209,6 +212,7 @@ type EarnBalancesMutation struct {
 	ReserveState []EarnReserveMutation   `json:"reserve_state"`
 	IdleState    []EarnIdleTokenMutation `json:"idle_state"`
 	ObservedAt   *time.Time              `json:"observed_at"`
+	VaultEmpty   bool                    `json:"vault_empty,omitempty"`
 }
 
 type EarnCleanupMutation struct {

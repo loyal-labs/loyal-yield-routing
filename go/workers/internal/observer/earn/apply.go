@@ -130,6 +130,9 @@ func (s *Store) DeadLetterJob(ctx context.Context, jobID int64, owner, message s
 // ReconciliationContext is the vault's projected route and setup policy.
 type ReconciliationContext struct {
 	RoutePolicy, SetupPolicy *PolicyMatchInput
+	// ObservedSlot is the slot of the vault's current balances, zero when
+	// none were observed.
+	ObservedSlot uint64
 }
 
 func (s *Store) LoadContext(ctx context.Context, settings string, vaultIndex uint8, vaultPubkey string) (ReconciliationContext, error) {
@@ -145,6 +148,12 @@ func (s *Store) LoadContext(ctx context.Context, settings string, vaultIndex uin
 	if !ready {
 		return out, errors.New("canonical Loyal App Earn tables are required for direct reconciliation")
 	}
+	var observed int64
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(max(snapshot.observed_slot), 0) FROM loyal_yield.vault_position_snapshots snapshot JOIN loyal_yield.managed_vaults vault ON vault.id = snapshot.vault_id
+            WHERE vault.settings = $1 AND vault.vault_index = $2 AND vault.vault_pubkey = $3 AND snapshot.is_current`, settings, int16(vaultIndex), vaultPubkey).Scan(&observed); err != nil {
+		return out, err
+	}
+	out.ObservedSlot = uint64(max(observed, 0))
 	rows, err := s.pool.Query(ctx, `
             SELECT policy.settings, policy.authority, policy.policy_seed,
                    policy.policy_account, policy.vault_index, policy.vault_pubkey,
@@ -539,7 +548,7 @@ func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
 	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.user_yield_positions SET last_holding_event_id = $2 WHERE id = $1`, positionID, holdingID); err != nil {
 		return err
 	}
-	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, observedSlot, observedAt)
+	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, m.VaultEmpty, observedSlot, observedAt)
 }
 
 // applyBalances publishes a managed vault's observed holdings.
@@ -556,19 +565,25 @@ func applyBalances(ctx context.Context, tx pgx.Tx, m EarnBalancesMutation) error
 	if err != nil {
 		return err
 	}
-	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, slot, observedOrNow(m.ObservedAt))
+	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, m.VaultEmpty, slot, observedOrNow(m.ObservedAt))
 }
 
 // applyObservedBalances makes the vault's current positions and idle balances
 // the observation's, unless a newer observation is already current. A vault
-// whose observation holds nothing closes its users' active positions.
-func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, reserves []EarnReserveMutation, idles []EarnIdleTokenMutation, observedSlot int64, observedAt time.Time) error {
-	var current int64
-	err := tx.QueryRow(ctx, `SELECT observed_slot FROM loyal_yield.vault_position_snapshots WHERE vault_id = $1 AND is_current FOR UPDATE`, vault.id).Scan(&current)
+// whose observation holds nothing closes its users' active positions; so does
+// an older observation applied after a newer one that found the vault empty,
+// since a position it touched was opened or changed before the funds left.
+func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, reserves []EarnReserveMutation, idles []EarnIdleTokenMutation, empty bool, observedSlot int64, observedAt time.Time) error {
+	var current, currentID int64
+	var currentEmpty bool
+	err := tx.QueryRow(ctx, `SELECT observed_slot, id, COALESCE((context->>'vault_empty')::boolean, false) FROM loyal_yield.vault_position_snapshots WHERE vault_id = $1 AND is_current FOR UPDATE`, vault.id).Scan(&current, &currentID, &currentEmpty)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
 	if err == nil && current > observedSlot {
+		if currentEmpty {
+			return closeEmptyVaultPositions(ctx, tx, vault.id, currentID)
+		}
 		return nil
 	}
 	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.vault_position_snapshots SET is_current = FALSE WHERE vault_id = $1 AND is_current`, vault.id); err != nil {
@@ -578,8 +593,8 @@ func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, r
 	if err := tx.QueryRow(ctx, `
         INSERT INTO loyal_yield.vault_position_snapshots
             (vault_id, policy_id, observed_slot, observed_at, chain_slot, context)
-        VALUES ($1, $2, $3, $4, $3, jsonb_build_object('kind', 'earn_laserstream_direct'))
-        RETURNING id`, vault.id, vault.activePolicyID, observedSlot, observedAt).Scan(&snapshotID); err != nil {
+        VALUES ($1, $2, $3, $4, $3, jsonb_build_object('kind', 'earn_laserstream_direct', 'vault_empty', $5::boolean))
+        RETURNING id`, vault.id, vault.activePolicyID, observedSlot, observedAt, empty).Scan(&snapshotID); err != nil {
 		return err
 	}
 	observedReserves := make([]string, 0, len(reserves))
@@ -645,14 +660,6 @@ func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, r
 			return err
 		}
 	}
-	// An observation that read no account says nothing about the vault.
-	empty := len(reserves)+len(idles) > 0
-	for _, reserve := range reserves {
-		empty = empty && reserve.AmountRaw == 0
-	}
-	for _, idle := range idles {
-		empty = empty && idle.AmountRaw == 0
-	}
 	if empty {
 		if err := closeEmptyVaultPositions(ctx, tx, vault.id, snapshotID); err != nil {
 			return err
@@ -687,19 +694,12 @@ func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, r
 }
 
 // closeEmptyVaultPositions closes the vault's active app positions observed
-// at or before the snapshot: with no deposited collateral and no idle cash
-// the funds left the vault. A vault holding anything closes nothing.
+// at or before the snapshot, which found no deposit and no idle cash: the
+// funds left the vault.
 func closeEmptyVaultPositions(ctx context.Context, tx pgx.Tx, vaultID, snapshotID int64) error {
 	var ready bool
 	if err := tx.QueryRow(ctx, `SELECT to_regclass('loyal_yield.user_yield_positions') IS NOT NULL AND to_regclass('loyal_yield.user_yield_position_holding_events') IS NOT NULL`).Scan(&ready); err != nil || !ready {
 		return err
-	}
-	var total int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount_raw), 0)::bigint FROM loyal_yield.vault_reserve_positions_current WHERE vault_id = $1`, vaultID).Scan(&total); err != nil {
-		return err
-	}
-	if total > 0 {
-		return nil
 	}
 	_, err := tx.Exec(ctx, `
 WITH vault AS (
@@ -898,7 +898,7 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 		confirmedSlot, holdingID); err != nil {
 		return err
 	}
-	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, observedSlot, observedAt)
+	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, m.VaultEmpty, observedSlot, observedAt)
 }
 
 func applyRefund(ctx context.Context, tx pgx.Tx, m EarnRefundMutation) error {

@@ -490,6 +490,10 @@ type vaultSnapshot struct {
 	observedSlot uint64
 	reserves     []EarnReserveMutation
 	idles        []EarnIdleTokenMutation
+	// empty says the read found the vault's obligations or idle accounts
+	// and nothing in any of them: no deposit in any reserve, listed by the
+	// route policy or not, and no idle cash.
+	empty bool
 }
 
 func keySetOf(values []string) (map[solana.PublicKey]struct{}, error) {
@@ -525,7 +529,8 @@ func balancesMutation(ctx context.Context, rpc *chain.Client, update NormalizedU
 			holding = true
 		}
 	}
-	if !holding {
+	// Balances already observed at or after the update hold its effect.
+	if !holding || context.ObservedSlot >= update.Slot {
 		return EarnMutation{}, nil
 	}
 	snapshot, err := readVaultSnapshot(ctx, rpc, vault, *context.RoutePolicy, update.Slot)
@@ -533,7 +538,7 @@ func balancesMutation(ctx context.Context, rpc *chain.Client, update NormalizedU
 		return EarnMutation{}, err
 	}
 	return EarnMutation{Balances: &EarnBalancesMutation{Settings: vault.Settings, VaultIndex: vault.VaultIndex, VaultPubkey: vault.Vault,
-		ObservedSlot: snapshot.observedSlot, ReserveState: snapshot.reserves, IdleState: snapshot.idles}}, nil
+		ObservedSlot: snapshot.observedSlot, ReserveState: snapshot.reserves, IdleState: snapshot.idles, VaultEmpty: snapshot.empty}}, nil
 }
 
 // readVaultSnapshot is read_complete_vault_snapshot.
@@ -612,6 +617,7 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 		return vaultSnapshot{}, err
 	}
 	snapshot := vaultSnapshot{observedSlot: slot}
+	read, holds := false, false
 	for _, account := range accounts[:len(obligations)] {
 		if account == nil || account.Owner != kamino.ProgramID {
 			continue
@@ -620,7 +626,14 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 		if err != nil {
 			return vaultSnapshot{}, fmt.Errorf("decode canonical Earn obligation: %w", err)
 		}
-		if _, allowed := markets[obligation.LendingMarket]; obligation.Owner != vaultKey || !allowed {
+		if obligation.Owner != vaultKey {
+			continue
+		}
+		read = true
+		for _, deposit := range obligation.Deposits {
+			holds = holds || !deposit.Reserve.IsZero() && deposit.DepositedAmount > 0
+		}
+		if _, allowed := markets[obligation.LendingMarket]; !allowed {
 			continue
 		}
 		for _, deposit := range obligation.Deposits {
@@ -662,9 +675,11 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 		if held.Owner != vaultKey {
 			return vaultSnapshot{}, fmt.Errorf("Earn idle account %s belongs to %s, expected %s", address, held.Owner, vaultKey)
 		}
+		read, holds = true, holds || held.Amount > 0
 		snapshot.idles = append(snapshot.idles, EarnIdleTokenMutation{Mint: held.Mint.String(), AmountRaw: held.Amount, Owner: held.Owner.String(),
 			TokenAccount: address.String(), ObservedSlot: slot, SourceCommitment: confirmedCommitment})
 	}
+	snapshot.empty = read && !holds
 	return snapshot, nil
 }
 
@@ -803,10 +818,10 @@ func readCashFlowProof(ctx context.Context, rpc *chain.Client, update Normalized
 		return EarnMutation{Deposit: &EarnDepositMutation{RoutePolicy: route, SetupPolicy: setup, DepositSignature: signature,
 			DepositSlot: update.Slot, ObservedSlot: snapshot.observedSlot, DepositMint: flow.mint, PrincipalAmountRaw: flow.amount,
 			TargetReserve: target.Reserve, Market: target.Market, LiquidityMint: flow.mint, TargetSupplyAPYBPS: target.SupplyAPYBPS,
-			Wallet: vault.Wallet, SmartAccountAddress: vault.Vault, ReserveState: snapshot.reserves, IdleState: snapshot.idles}}, nil
+			Wallet: vault.Wallet, SmartAccountAddress: vault.Vault, ReserveState: snapshot.reserves, IdleState: snapshot.idles, VaultEmpty: snapshot.empty}}, nil
 	}
 	return EarnMutation{Withdrawal: &EarnWithdrawalMutation{RoutePolicy: route, WithdrawalSignature: signature, ConfirmedSlot: update.Slot,
 		ObservedSlot: snapshot.observedSlot, Wallet: vault.Wallet, VaultPubkey: vault.Vault, TargetReserve: target.Reserve, Market: target.Market,
 		LiquidityMint: flow.mint, WithdrawnAmountRaw: flow.amount, RemainingAmountRaw: remaining, ReserveState: snapshot.reserves,
-		IdleState: snapshot.idles}}, nil
+		IdleState: snapshot.idles, VaultEmpty: snapshot.empty}}, nil
 }
