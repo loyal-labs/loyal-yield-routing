@@ -419,7 +419,7 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 		fixtureKey(t, table.Data, 56+32*i, key)
 	}
 	accounts[providerTable] = table
-	sharedSet := map[string]bool{kamino.FarmsProgramID.String(): true, instructionsSysvar: true, tokenProgram: true, solana.SysVarRentPubkey.String(): true}
+	sharedSet := map[string]bool{kamino.FarmsProgramID.String(): true, instructionsSysvar: true, tokenProgram: true, solana.SysVarRentPubkey.String(): true, solana.SystemProgramID.String(): true}
 	for _, p := range positions {
 		for _, key := range []string{p.Reserve, p.Market, p.MarketAuthority, p.LiquidityMint, p.CollateralMint, p.LiquiditySupply, p.CollateralSupply} {
 			sharedSet[key] = true
