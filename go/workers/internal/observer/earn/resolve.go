@@ -437,7 +437,10 @@ func resolveMutation(ctx context.Context, rpc *chain.Client, update NormalizedUp
 			CleanupSignature: signature, ConfirmedSlot: update.Slot}}, nil
 	}
 	if update.Signature == nil {
-		return EarnMutation{}, nil
+		// An unsigned update is a confirmed-state read, the stream's
+		// recovery after a gap past its replay window: it names no
+		// transaction, so it is an observation of the vault's balances.
+		return balancesMutation(ctx, rpc, update, vault, context)
 	}
 	signature := *update.Signature
 	transaction, err := readEarnTransaction(ctx, rpc, signature)
@@ -508,10 +511,10 @@ func metadata(kind string, slot uint64) json.RawMessage {
 	return encoded
 }
 
-// balancesMutation publishes the vault's holdings after a transaction that
-// changed one of its obligations or idle token accounts without moving the
-// wallet's cash: a fleet move, or a Kamino deposit of idle cash. Any other
-// update of such a transaction changes nothing.
+// balancesMutation publishes the vault's holdings after an update of one of
+// its obligations or idle token accounts that moved no wallet cash: a fleet
+// move, a Kamino deposit of idle cash, or the confirmed state read after a
+// stream gap. Any other such update changes nothing.
 func balancesMutation(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, context ReconciliationContext) (EarnMutation, error) {
 	if context.RoutePolicy == nil || update.AccountPubkey == nil {
 		return EarnMutation{}, nil
