@@ -74,8 +74,9 @@ func TestWriterIsOneSession(t *testing.T) {
 	if held := lockSessions(true); len(held) != 1 || held[0] != firstPID {
 		t.Fatalf("lock holders %v, want the writer session %d", held, firstPID)
 	}
-	if _, err := holdWriterLock(ctx, url); !errors.Is(err, engine.ErrFamilyHeld) {
-		t.Fatalf("an operator write took the lock beside the writer: %v", err)
+	if operator, err := openOperatorWriter(ctx, url); !errors.Is(err, engine.ErrFamilyHeld) {
+		operator.Close()
+		t.Fatalf("an operator writer opened beside the writer: %v", err)
 	}
 
 	// (2) A second writer waits for it.
@@ -299,4 +300,118 @@ func TestWriterSessionSurvivesCallerDeadlines(t *testing.T) {
 		t.Fatalf("a transaction past its deadline committed: %v", err)
 	}
 	sameSession("deadline before commit")
+}
+
+// A one-shot operator write is the same one-session writer, refused instead
+// of waiting: it opens nothing while the engine holds the lock, and its Close
+// leaves the lock free the moment it returns, for the engine's writer too.
+// Its session ending ends its writes: the pool does not open another.
+func TestOperatorWriterRefusesBesideTheEngineAndFreesTheLockOnClose(t *testing.T) {
+	ctx, cancel, admin, url := openManualRecoveryTestDatabase(t, 30*time.Second)
+	defer cancel()
+	defer admin.Close()
+	tryLock := func() bool {
+		t.Helper()
+		conn, err := admin.pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Release()
+		var free bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended('loyal-family:backyard', 0))`).Scan(&free); err != nil {
+			t.Fatal(err)
+		}
+		if free {
+			if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended('loyal-family:backyard', 0))`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return free
+	}
+	waiters := func() int {
+		t.Helper()
+		var n int
+		if err := admin.pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+			AND (classid::bigint << 32 | objid::bigint) = hashtextextended('loyal-family:backyard', 0)`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// The engine holds the lock: the operator writer refuses and leaves
+	// nothing behind, and the selector command reports the refusal.
+	writer, err := OpenDatabase(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operator, err := openOperatorWriter(ctx, url); !errors.Is(err, engine.ErrFamilyHeld) {
+		operator.Close()
+		t.Fatalf("the operator writer opened beside the engine: %v", err)
+	}
+	if n := waiters(); n != 0 {
+		t.Fatalf("the refused operator writer waits on the lock (%d waiters)", n)
+	}
+	err = selectorEvaluateExecute(ctx, io.Discard, selectorEvaluateDeps{
+		manifest: embeddedTestManifest(t), databaseURL: url,
+		newFeed: func(context.Context, RouteManifest) (selectorEvaluateFeed, error) {
+			t.Error("the refused command built its feed")
+			return &stubSelectorEvaluateFeed{}, nil
+		},
+		evaluate: func(context.Context, *Database, []LaneEconomics) (SelectorResult, error) {
+			t.Error("the refused command evaluated")
+			return SelectorResult{}, nil
+		},
+	})
+	var hold *BudgetHold
+	if !errors.As(err, &hold) || holdCause(hold) != "selector_evaluate_writer_lock_unavailable" {
+		t.Fatalf("the selector command beside the engine: %v", err)
+	}
+
+	// The engine's Close frees the lock before it returns.
+	writer.Close()
+	if !tryLock() {
+		t.Fatal("the lock was still held when the engine writer's Close returned")
+	}
+
+	// The operator writer holds the lock on its one session while open, and
+	// frees it before its Close returns.
+	operator, err := openOperatorWriter(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := operator.pool.Exec(ctx, `SELECT 1`); err != nil {
+		t.Fatal(err)
+	}
+	if tryLock() {
+		t.Fatal("the operator writer does not hold the lock")
+	}
+	operator.Close()
+	if !tryLock() {
+		t.Fatal("the lock was still held when the operator writer's Close returned")
+	}
+
+	// An operator writer whose session ends writes nothing more, and its
+	// Close returns with the lock free.
+	lost, err := openOperatorWriter(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int32
+	if err := lost.pool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	var terminated bool
+	if err := admin.pool.QueryRow(ctx, `SELECT pg_terminate_backend($1, 5000)`, pid).Scan(&terminated); err != nil || !terminated {
+		t.Fatalf("terminate the operator writer session: %v", err)
+	}
+	if _, err := lost.pool.Exec(ctx, `SELECT 1`); err == nil {
+		t.Fatal("a writer without its session ran a statement")
+	}
+	if _, err := lost.pool.Exec(ctx, `SELECT 1`); !errors.Is(err, errWriterSessionLost) {
+		t.Fatalf("the lost operator writer reconnected or failed otherwise: %v", err)
+	}
+	lost.Close()
+	if !tryLock() {
+		t.Fatal("the lock is held after the lost operator writer closed")
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // selectorEvaluateFeed is the feed surface the command needs. The production
@@ -198,13 +199,17 @@ func sanitizedSelectorEvaluateFailure(err error) string {
 
 // selectorEvaluateExecute is exactly one iteration of Run's live sample body
 // (worker.go live-mode branch): feed refresh, one snapshot, one locked
-// evaluation — under the writer lock the worker process holds in the
-// continuous form and this command must take itself. The live loop's
+// evaluation — through the writer the worker process holds in the
+// continuous form: one session that holds the writer lock, which this command
+// opens without waiting, so it refuses while the worker runs. The live loop's
 // notifySelectorCommit only queues a wake on its own worker's tick channel;
 // there is no tick loop here, and the committed entry is durable route state
 // that the next worker start reads from the journal.
 func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
-	database, err := openOperatorDatabase(ctx, deps.databaseURL)
+	database, err := openOperatorWriter(ctx, deps.databaseURL)
+	if errors.Is(err, engine.ErrFamilyHeld) {
+		return budgetHoldFrom(err, "selector_evaluate_writer_lock_unavailable")
+	}
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_database_unavailable")
 	}
@@ -213,11 +218,6 @@ func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEv
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_feed_unavailable")
 	}
-	release, err := holdWriterLock(ctx, deps.databaseURL)
-	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_writer_lock_unavailable")
-	}
-	defer release()
 	attemptStart := time.Now().UTC()
 	feedErr := feed.Refresh(ctx)
 	markets, _ := feed.Snapshot()
