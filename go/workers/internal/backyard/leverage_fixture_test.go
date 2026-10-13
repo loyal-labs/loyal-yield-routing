@@ -52,7 +52,7 @@ func targeted(s Snapshot) Snapshot {
 // targetedWith is targeted with explicit exits and selector result; the
 // snapshot's level fields stay its level unless in sets one.
 func targetedWith(s Snapshot, in targetInputs) Snapshot {
-	if s.HeldLanes == "" && (s.HasPosition || s.CollateralIdleRaw > 0 || s.DebtIdleRaw > 0) {
+	if s.HeldLanes == "" && (s.HasPosition || s.CollateralIdleRaw > 0) {
 		s.HeldLanes = s.RouteLane
 	}
 	levels := map[string]laneLevel{}

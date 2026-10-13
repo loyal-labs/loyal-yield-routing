@@ -123,9 +123,13 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	case VoltrRestoreIdle:
 		postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
 	}
-	// The report values the whole book: every other held lane of this
-	// observation is valued beside the working lane's poststate.
-	routes, err := navRoutes(route, observation.Snapshot.heldLanes())
+	// The report values the whole book: every other lane the observation
+	// valued beside the working lane's poststate.
+	valued, err := navLanes(accounts, observation.Snapshot.heldLanes())
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
+	routes, err := navRoutes(route, valued)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}

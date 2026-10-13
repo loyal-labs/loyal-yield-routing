@@ -56,7 +56,8 @@ type Snapshot struct {
 	WithdrawalDemandRaw    int64
 	SquadsIdleRaw          int64
 	PrimeIdleRaw           int64
-	// CollateralIdleRaw is the observed lane's idle collateral amount.
+	// CollateralIdleRaw is the vault's custody of the lane's collateral mint,
+	// the whole account (lanes that share it see the same balance).
 	// PrimeIdleRaw is retained for historical snapshot compatibility.
 	CollateralIdleRaw int64
 	// Same-batch, rounded-down bridge-USDC NAV value, used only to select a
@@ -65,8 +66,9 @@ type Snapshot struct {
 	// Smallest input admitted by the current reserve-derived rounding bound.
 	// Remainders below this stay in custody for exit, not repeated deposits.
 	MinimumCollateralDepositRaw int64
-	// DebtIdleRaw is in the selected debt mint's raw units. SquadsIdleRaw
-	// remains bridge USDC, even when the lane borrows PYUSD/USDG/USDS.
+	// DebtIdleRaw is the vault's custody of the lane's debt mint, the whole
+	// account, in that mint's raw units. SquadsIdleRaw remains bridge USDC,
+	// even when the lane borrows PYUSD/USDG/USDS.
 	DebtIdleRaw int64
 	// PayoffDebtRaw includes the current finite interest window for typed
 	// debt lanes, including shared USDC. Observation and final-send validation independently recompute it.
@@ -75,10 +77,8 @@ type Snapshot struct {
 	StrategyKey   string
 	// HeldLanes is every lane holding exposure in this batch, in registry
 	// order and comma separated ("" when none). RouteLane is the working
-	// lane: the one lane this per-lane view describes. OtherLanesNAVRaw is
-	// the part of StrategyNAVRaw the other held lanes carry.
-	HeldLanes        string `json:",omitempty"`
-	OtherLanesNAVRaw int64  `json:",omitempty"`
+	// lane: the one lane this per-lane view describes.
+	HeldLanes string `json:",omitempty"`
 	// OverflowRoom* is, on a lane that has an overflow lane, that lane's
 	// debt reserve borrow room this batch (raw debt units, and its bridge
 	// USDC value, floored); unknown unless Known.
@@ -224,12 +224,6 @@ func (s Snapshot) heldLanes() []string {
 		return nil
 	}
 	return strings.Split(s.HeldLanes, ",")
-}
-
-// laneNAVRaw is the working lane's own share of StrategyNAVRaw: its
-// position, custodies and the Squads cash it works with.
-func laneNAVRaw(s Snapshot) int64 {
-	return s.StrategyNAVRaw - s.OtherLanesNAVRaw
 }
 
 type Decision struct {

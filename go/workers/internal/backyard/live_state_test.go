@@ -189,3 +189,71 @@ func TestSharedCustodyIsTheEntryLanes(t *testing.T) {
 		t.Fatalf("shared PRIME custody held by %v (%v)", held, err)
 	}
 }
+
+// withPYUSDResidue is the capture with raw PYUSD in the vault's one PYUSD
+// custody, in every read and refresh: a step's conversion residue.
+func withPYUSDResidue(c liveCapture, raw uint64) liveCapture {
+	fund := func(reads []liveRead) []liveRead {
+		out := make([]liveRead, len(reads))
+		for i, r := range reads {
+			out[i] = r
+			out[i].Accounts = append([]ConfirmedAccount(nil), r.Accounts...)
+			for j := range out[i].Accounts {
+				if out[i].Accounts[j].Address == pyusdCustody {
+					out[i].Accounts[j].Data = append([]byte(nil), out[i].Accounts[j].Data...)
+					binary.LittleEndian.PutUint64(out[i].Accounts[j].Data[64:72], raw)
+				}
+			}
+		}
+		return out
+	}
+	c.Reads, c.Refreshes = fund(c.Reads), fund(c.Refreshes)
+	return c
+}
+
+// Custody is vault cash. PYUSD residue beside AUTO/AUTO/PYUSD, which owes
+// PYUSD and sits at its target, is counted once in NAV and moves nothing:
+// no lane changes, no step, no manual hold. The lane's next step takes the
+// whole account. A 1-raw residue is the same.
+func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
+	t.Parallel()
+	c := loadLiveCapture(t, "testdata/live_state_2026-10-12.json.gz")
+	in := liveInputs(true)
+	base := observeLiveAtRest(t, c, in).Snapshot
+	if base.TotalVaultNAVRaw != liveTotalVaultNAVRaw || base.StrategyNAVRaw != liveStrategyNAVRaw || base.ObservationID != liveObservationID {
+		t.Fatalf("live book changed: total %d strategy %d identity %s", base.TotalVaultNAVRaw, base.StrategyNAVRaw, base.ObservationID)
+	}
+	for _, residue := range []uint64{25_000_000, 1} {
+		o := observeLiveAtRest(t, withPYUSDResidue(c, residue), in)
+		s := o.Snapshot
+		if s.HeldLanes != base.HeldLanes || len(o.lanes) != 2 || s.Target != base.Target || s.RouteLane != base.RouteLane {
+			t.Fatalf("residue %d moved the target: held %q views %d target %+v", residue, s.HeldLanes, len(o.lanes), s.Target)
+		}
+		if d := Decide(s); d.Action != Hold || d.Reason != holdAtTarget {
+			t.Fatalf("residue %d: %+v", residue, d)
+		}
+		// Counted once: every view's NAV grows by the residue's value (PYUSD
+		// near par, floored), never twice.
+		for _, view := range o.lanes {
+			grew, slack := uint64(view.StrategyNAVRaw-base.StrategyNAVRaw), residue/100+1
+			if view.StrategyNAVRaw != s.StrategyNAVRaw || grew > residue+slack || grew+slack < residue {
+				t.Fatalf("residue %d: %s NAV grew %d", residue, view.RouteLane, grew)
+			}
+			if want := map[bool]int64{true: int64(residue), false: 0}[view.RouteLane == autoAUTOPYUSD.Lane]; view.DebtIdleRaw != want {
+				t.Fatalf("%s reads PYUSD custody %d", view.RouteLane, view.DebtIdleRaw)
+			}
+		}
+		st, err := readStepState(o.routeBatch.Accounts, autoAUTOPYUSD, s.Slot)
+		if err != nil || st.heldDebt != residue || st.debtBalance != residue {
+			t.Fatalf("AUTO/AUTO/PYUSD's step does not take the whole account: held %d (%v)", st.heldDebt, err)
+		}
+	}
+}
+
+// The live capture's vault NAV and approved-level observation identity, as
+// origin/main 84d0bb70 computed them.
+const (
+	liveTotalVaultNAVRaw = 101_250_158_835
+	liveStrategyNAVRaw   = 101_249_158_835
+	liveObservationID    = "0a991f1fdbcc3d9a81a67955c8c24214b48a1bd75b047b7b1b8d366e3bee74ba"
+)

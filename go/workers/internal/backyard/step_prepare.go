@@ -118,10 +118,10 @@ func readStepState(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) 
 		return stepState{}, err
 	}
 	st := stepState{route: route, position: position, collateral: collateral, obligation: obligation, slot: uint64(slot)}
-	if st.heldCollateral, err = stepCustodyRaw(accounts, route.CollateralCustody, route.Kamino.CollateralMint); err != nil {
+	if st.heldCollateral, err = vaultCustodyRaw(accounts, route.CollateralCustody, route.Kamino.CollateralMint, route.CollateralTokenProgram); err != nil {
 		return stepState{}, err
 	}
-	if st.debtBalance, err = stepCustodyRaw(accounts, route.DebtCustody, route.Kamino.DebtMint); err != nil {
+	if st.debtBalance, err = vaultCustodyRaw(accounts, route.DebtCustody, route.Kamino.DebtMint, route.DebtTokenProgram); err != nil {
 		return stepState{}, err
 	}
 	st.collateralBalance, st.heldDebt = st.heldCollateral, st.debtBalance
@@ -135,16 +135,6 @@ func readStepState(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) 
 		st.topology = append(st.topology, route.Kamino.DebtReserve)
 	}
 	return st, nil
-}
-
-// stepCustodyRaw is the vault's balance in its custody of mint.
-func stepCustodyRaw(accounts []ConfirmedAccount, address, mint string) (uint64, error) {
-	account := accountAt(accounts, address)
-	custody, err := DecodeTokenCustody(account.Owner, account.Data, mustKey(mint), mustKey(bridgeVault))
-	if err != nil {
-		return 0, fmt.Errorf("custody %s: %w", address, err)
-	}
-	return custody.Raw, nil
 }
 
 // stepLegCap is the most a KLend leg of route may carry: a split policy caps

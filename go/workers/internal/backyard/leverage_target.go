@@ -28,8 +28,9 @@ type leverageDecision struct {
 
 // decideLeverageTarget applies the option-1 rule to one funded lane's view,
 // the level setting target() reads (backyard_lane_levels). It runs only on a
-// settled lane: nothing nonterminal, no withdrawal, no custody in flight, and
-// the selector itself chose KEEP. An up move needs the
+// settled lane: nothing nonterminal, no withdrawal or bridge cash in flight,
+// and the selector itself chose KEEP. Custody beside the position is vault
+// cash its next step takes whole; it changes no level. An up move needs the
 // level's spread (1% to 1.5x, 2% to 1.75x) and a positive gain over KEEP
 // after the move's own cost and the performance fee on the extra income. It
 // does not need the selector's MinimumBenefit, which is SWITCH hysteresis
@@ -67,8 +68,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	out.TermDays, out.TermKnown = termDays(s)
 	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
 		selector.Action != "KEEP" || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
-		s.SquadsIdleRaw != 0 || s.DebtIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 ||
-		(s.CollateralIdleRaw > 0 && s.MinimumCollateralDepositRaw > 0 && s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw) {
+		s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
 		return out, false
 	}
 	var market *LaneEconomics
@@ -148,7 +148,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		out.Next, out.Reason = out.Current, "fee_terms_unavailable"
 		return out, true
 	}
-	if p.validate() != nil || s.CollateralIdleRaw > 0 || s.PositionDebtValueRaw < 0 || !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
+	if p.validate() != nil || s.PositionDebtValueRaw < 0 || !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
 		out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
 		return out, true
 	}

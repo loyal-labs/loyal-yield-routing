@@ -28,15 +28,3 @@ func sharedUSDCDebt(lane string) bool {
 	route, err := runtimeRoute(lane)
 	return err == nil && route.Kamino.DebtMint == bridgeUSDC && route.DebtCustody == bridgeSquadsATA
 }
-
-// USDC debt cash and bridge cash are one account. Never copy that balance into
-// DebtIdleRaw: NAV would count it twice. Other debt mints have distinct custody.
-func debtCashRaw(s Snapshot) int64 {
-	if sharedUSDCDebt(s.RouteLane) {
-		if s.DebtIdleRaw != 0 {
-			return -1
-		}
-		return s.SquadsIdleRaw
-	}
-	return s.DebtIdleRaw
-}

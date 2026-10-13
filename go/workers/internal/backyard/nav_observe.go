@@ -103,12 +103,8 @@ type RouteNAVSnapshot struct {
 	LPSupplyRaw       uint64
 	SnapshotDigest    string
 	Report            BridgeReport
-	// OtherLanesNAVRaw is the value the other held lanes add to
-	// StrategyNAVRaw: their obligations and every custody of theirs the
-	// working lane does not share. Zero when one lane is held.
-	OtherLanesNAVRaw int64
-	// OtherLanesState is the other held lanes' economic state (lane,
-	// collateral, debt and counted custody raws), "" when one lane is held.
+	// OtherLanesState is the other valued lanes' economic state (lane,
+	// collateral, debt and counted custody raws), "" when one lane is valued.
 	OtherLanesState string
 }
 
@@ -356,8 +352,9 @@ func navInputFingerprintForRoutes(slot int64, accounts []ConfirmedAccount, custo
 
 // ComputeRouteNAVForRoutes values the whole vault book over one coherent
 // batch: the working lane (routes[0], whose custodies the override may
-// replace) plus every other held lane. A custody shared by several lanes is
-// counted once; the Squads USDC ATA is always the bridge cash.
+// replace) plus every other valued lane. Custody is the vault's: each
+// account is counted once, whichever lanes name it; the Squads USDC ATA is
+// always the bridge cash.
 func ComputeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, routes []RuntimeRoute) (RouteNAVSnapshot, error) {
 	return computeRouteNAVForRoutes(slot, accounts, manifest, override, routes)
 }
@@ -519,7 +516,6 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if kaminoConfig.DebtMint != bridgeUSDC {
 		counted[route.DebtCustody] = true
 	}
-	var otherNAV int64
 	otherState := make([]string, 0, len(routes)-1)
 	for _, other := range routes[1:] {
 		value, err := valueHeldLane(slot, accounts, other, counted)
@@ -527,10 +523,6 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 			return RouteNAVSnapshot{}, fmt.Errorf("value held lane %s: %w", other.Lane, err)
 		}
 		components = append(components, value.components...)
-		if (value.netRaw > 0 && otherNAV > math.MaxInt64-value.netRaw) || (value.netRaw < 0 && otherNAV < math.MinInt64-value.netRaw) {
-			return RouteNAVSnapshot{}, fmt.Errorf("held lane NAV overflows")
-		}
-		otherNAV += value.netRaw
 		otherState = append(otherState, value.state)
 	}
 	nav, err := ComputeNAV(NAVSnapshotContext{
@@ -554,54 +546,37 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		DebtIdleValueRaw:  debtIdleValue,
 		ObligationPresent: obligationAccount.Lamports != 0,
 		Receipt:           receipt, Voltr: vault, LPSupplyRaw: lpSupply,
-		SnapshotDigest:   nav.SnapshotDigest,
-		Report:           BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
-		OtherLanesNAVRaw: otherNAV, OtherLanesState: strings.Join(otherState, "|"),
+		SnapshotDigest:  nav.SnapshotDigest,
+		Report:          BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
+		OtherLanesState: strings.Join(otherState, "|"),
 	}, nil
 }
 
-// heldLaneValue is one non-working held lane's share of the vault NAV.
+// heldLaneValue is one non-working valued lane's NAV components.
 type heldLaneValue struct {
 	components []NAVComponent
-	netRaw     int64
 	state      string
 }
 
-// valueHeldLane values one non-working held lane from the same batch: its
-// obligation, and each of its custodies no earlier lane has counted. A
-// custody shared with an earlier lane (PRIME, PYUSD, Squads USDC) is that
-// lane's component already and is never counted twice. A lane with no
-// position and no counted custody balance contributes nothing and needs no
+// valueHeldLane values one non-working valued lane from the same batch: its
+// obligation, and each custody account it names that no earlier lane has
+// counted (the vault's custody is counted once, never per lane). A lane with
+// no position and no counted custody balance contributes nothing and needs no
 // market valuation; any exposure keeps the reserve health gate.
 func valueHeldLane(slot int64, accounts []ConfirmedAccount, route RuntimeRoute, counted map[string]bool) (heldLaneValue, error) {
 	config := route.Kamino
-	authority, err := decodeBase58PublicKey(bridgeVault)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
-	custody := func(address, mint, program string) (uint64, error) {
-		account := accountAt(accounts, address)
-		if account.Address != address || account.Owner != program || account.Executable || account.Lamports == 0 {
-			return 0, fmt.Errorf("held lane custody envelope drifted")
-		}
-		key, err := decodeBase58PublicKey(mint)
-		if err != nil {
-			return 0, err
-		}
-		decoded, err := DecodeTokenCustody(account.Owner, account.Data, key, authority)
-		return decoded.Raw, err
-	}
 	var collateralIdle, debtIdle uint64
+	var err error
 	countCollateral := !counted[route.CollateralCustody]
 	if countCollateral {
-		if collateralIdle, err = custody(route.CollateralCustody, config.CollateralMint, route.CollateralTokenProgram); err != nil {
+		if collateralIdle, err = vaultCustodyRaw(accounts, route.CollateralCustody, config.CollateralMint, route.CollateralTokenProgram); err != nil {
 			return heldLaneValue{}, err
 		}
 	}
 	nonUSDC := config.DebtMint != bridgeUSDC
 	countDebt := nonUSDC && route.DebtCustody != "" && route.DebtCustody != bridgeSquadsATA && !counted[route.DebtCustody]
 	if countDebt {
-		if debtIdle, err = custody(route.DebtCustody, config.DebtMint, route.DebtTokenProgram); err != nil {
+		if debtIdle, err = vaultCustodyRaw(accounts, route.DebtCustody, config.DebtMint, route.DebtTokenProgram); err != nil {
 			return heldLaneValue{}, err
 		}
 	}
@@ -686,7 +661,7 @@ func valueHeldLane(slot int64, accounts []ConfirmedAccount, route RuntimeRoute, 
 			return heldLaneValue{}, fmt.Errorf("NAV component exceeds signed range")
 		}
 	}
-	out := heldLaneValue{state: state, netRaw: int64(collateralValue) + int64(collateralIdleValue) + int64(debtIdleValue) - int64(debtValue)}
+	out := heldLaneValue{state: state}
 	out.components = append(out.components,
 		NAVComponent{Account: config.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(collateralValue), Slot: slot, Known: true},
 		NAVComponent{Account: config.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(debtValue), Slot: slot, Known: true, Liability: true})

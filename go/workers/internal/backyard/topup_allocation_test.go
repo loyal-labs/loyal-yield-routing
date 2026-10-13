@@ -122,9 +122,9 @@ func TestTopupBesideDebtAllocatesSwapsRedepositsThenHolds(t *testing.T) {
 		mutate func(*Snapshot)
 		reason string
 	}{
-		// Idle PYUSD beside debt is a step's conversion excess: it converts
-		// to collateral before any top-up.
-		"debt idle": {func(s *Snapshot) { s.DebtIdleRaw = s.PositionDebtRaw }, stepResidueReason},
+		// Idle PYUSD beside debt is vault cash the lane's next step takes
+		// whole: the top-up does not wait for it.
+		"debt idle": {func(s *Snapshot) { s.DebtIdleRaw = s.PositionDebtRaw }, topupAllocationReason},
 		// Ethena is no leverage lane: debt keeps the installed hold.
 		"non-leverage lane": {func(s *Snapshot) { s.RouteLane, s.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane }, holdAtTarget},
 	} {

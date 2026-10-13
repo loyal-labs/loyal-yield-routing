@@ -80,6 +80,13 @@ func TestLeverageDecisionRunsOnlyOnASettledLane(t *testing.T) {
 	if _, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, markets, p, twentyBPSStepCost); !ok {
 		t.Fatal("settled KEEP position gave no leverage decision")
 	}
+	// Custody beside the position is vault cash its next step takes: a
+	// step's residue, even 1 raw, freezes no level.
+	residue := s
+	residue.DebtIdleRaw, residue.CollateralIdleRaw, residue.MinimumCollateralDepositRaw = 1, 1, 1
+	if got, ok := decideLeverageTarget(residue, SelectorResult{Action: "KEEP"}, markets, p, twentyBPSStepCost); !ok || got.outage() {
+		t.Fatalf("residue froze the level decision: %+v %v", got, ok)
+	}
 	for name, c := range map[string]struct {
 		result SelectorResult
 		mutate func(*Snapshot)
@@ -88,7 +95,6 @@ func TestLeverageDecisionRunsOnlyOnASettledLane(t *testing.T) {
 		"nonterminal":      {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.Nonterminal = Signed }},
 		"withdrawal":       {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.WithdrawalDemandRaw = 1 }},
 		"idle squads cash": {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.SquadsIdleRaw = 1 }},
-		"idle debt cash":   {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.DebtIdleRaw = 1 }},
 		"maple":            {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID }},
 	} {
 		c2 := s

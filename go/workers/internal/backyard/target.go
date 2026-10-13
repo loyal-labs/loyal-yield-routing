@@ -23,8 +23,10 @@ import (
 //     room, the keep-alive borrow (the minimum up step) restarts the term;
 //  3. the operator exit row: debt 0, and with equity_zero the collateral
 //     returns to Voltr too;
-//  4. withdrawal demand: Voltr idle must cover the queue; custody in flight
-//     leaves toward Voltr, and the largest lane frees the rest at its level;
+//  4. custody in flight: collateral waiting for a held lane's next leg goes
+//     first, and debt-mint cash no held lane owes converts toward Voltr;
+//     withdrawal demand: Voltr idle must cover the queue, and the largest
+//     lane frees the rest at its level;
 //  5. the selector's allocation: an overflow lane takes the collateral its
 //     source cannot lever (one atomic move); new cash tops up the home lane;
 //     a flat vault enters the selector's chosen lane;
@@ -118,10 +120,24 @@ func economicLevel(level float64) float64 {
 	return level
 }
 
-// laneInFlight reports idle lane custody the next step moves: collateral a
-// deposit or conversion can take, or debt residue above dust.
+// laneInFlight reports collateral above dust in the lane's custody: a
+// deposit or conversion takes it next.
 func laneInFlight(s Snapshot) bool {
-	return s.CollateralIdleRaw > partialWithdrawalDustRaw || s.DebtIdleRaw > partialWithdrawalDustRaw
+	return s.CollateralIdleRaw > partialWithdrawalDustRaw
+}
+
+// debtCashOwed reports a held lane that owes, or holds as collateral, the
+// mint of s's debt custody and steps: its next step takes that cash whole.
+func debtCashOwed(lanes []targetLane, s Snapshot) bool {
+	route, err := runtimeRoute(s.RouteLane)
+	for _, l := range lanes {
+		other, otherErr := runtimeRoute(l.s.RouteLane)
+		if err == nil && otherErr == nil && l.held && earnActiveLane(other.Lane) &&
+			((l.s.PositionDebtRaw > 0 && other.DebtCustody == route.DebtCustody) || other.CollateralCustody == route.DebtCustody) {
+			return true
+		}
+	}
+	return false
 }
 
 // targetLane is one candidate lane's view and its stored inputs.
@@ -195,14 +211,18 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 			return i, LaneTarget{Rule: ruleOperatorExit, Level: 1, EquityZero: l.exit.EquityZero, Outbound: l.exit.EquityZero}
 		}
 	}
-	// 4a. Custody in flight finishes first, in its direction. A custody two
-	// lanes share belongs to the first of them in registry order.
+	// 4a. Custody in flight finishes first, in its direction: collateral a
+	// held lane's next leg takes, and debt-mint cash above dust no held lane
+	// owes, which leaves toward Voltr (cash a held lane owes waits for its
+	// next step).
 	for i, l := range lanes {
-		if !l.held || !laneInFlight(l.s) {
+		inFlight := l.held && laneInFlight(l.s)
+		loose := !inFlight && l.s.DebtIdleRaw > partialWithdrawalDustRaw && !debtCashOwed(lanes, l.s)
+		if !inFlight && !loose {
 			continue
 		}
 		t := stored(l)
-		t.Rule, t.Outbound = ruleCustody, outbound || (l.exit != nil && l.exit.EquityZero)
+		t.Rule, t.Outbound = ruleCustody, outbound || loose || (l.exit != nil && l.exit.EquityZero)
 		return i, t
 	}
 	home := homeLane(lanes)
@@ -579,13 +599,6 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	}
 	if hard <= TargetLTVBPS && (s.HasPosition || s.CollateralIdleRaw > 0 || s.SquadsIdleRaw > 0) {
 		return d(HoldManualRecovery, "invalid_entry_ltv", 0)
-	}
-	// Debt residue beside the position converts to collateral.
-	if s.DebtIdleRaw > partialWithdrawalDustRaw {
-		if s.PositionDebtRaw > 0 && earnActiveLane(s.RouteLane) {
-			return d(SwapDebtToCollateralStep, stepResidueReason, s.DebtIdleRaw)
-		}
-		return d(HoldManualRecovery, "unattributed_idle_debt_before_entry", 0)
 	}
 	// Squads cash is the top-up's or the entry's: it converts to this lane's
 	// collateral. Beside a USDC debt it is a step's excess.
