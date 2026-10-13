@@ -33,9 +33,9 @@ func entryTargeted(t *testing.T, s Snapshot, lane string) Snapshot {
 	s.RouteLane, s.StrategyKey, s.Slot = lane, lane, 42
 	q := entryQuoteFixture(time.Now().UTC(), lane, 4)
 	if lane == autoAUTOPYUSD.Lane {
-		_, price, _ := autoDebtPriceFixture(t, 1_000_000)
-		q = autoEntryQuoteFixture(time.Now().UTC(), 4, &price)
+		q = autoEntryQuoteFixture(time.Now().UTC(), 4)
 		q.BorrowFeeRaw = 0
+		q = parBorrow(q)
 	}
 	return targetedWith(s, targetInputs{Entry: &SelectorResult{Action: "ENTER", DestinationLane: lane, SelectedQuote: &q}})
 }

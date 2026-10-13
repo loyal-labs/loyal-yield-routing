@@ -10,10 +10,9 @@ import (
 )
 
 // leverageStepCost is the expected cost of one leverage up step, in USDC
-// micros at central observed prices: what the vault's capital loses by
-// taking the step, from the same evidence the selector's recipe pricer uses.
-// Execution bounds (swap minOut, recipe limits) stay on the legs themselves;
-// none of them is a cost.
+// micros at the batch's central prices: what the vault's capital loses by
+// taking the step (lanePricer.priceStep). Execution bounds (the conversion's
+// minimum output) stay on the step itself; none of them is a cost.
 //
 // The step is eventually repaid, so its unwind is charged at entry: release
 // the increment's collateral, sell it back to debt, repay. An up step that
@@ -32,9 +31,9 @@ type leverageStepCost struct {
 // error is an unknown cost, never zero.
 type leverageStepPricer func(borrowRaw uint64) (leverageStepCost, error)
 
-// leverageStepLegs is one step's observed evidence: the swap quotes in both
-// directions at the step's size, and the central values and network fees of
-// its six transactions (borrow, swap, deposit; release, swap, repay).
+// leverageStepLegs is one step's priced evidence: the conversion quotes of
+// the up step and of the down step that unwinds it, at central values, and
+// the two transactions' network fees.
 type leverageStepLegs struct {
 	BorrowFeeMicros int64
 	// Entry: BorrowRaw debt in, its quoted collateral out.
@@ -44,9 +43,8 @@ type leverageStepLegs struct {
 	NetworkMicros               int64
 }
 
-// cost is the step's expected cost. A swap that quotes above the central
-// price is not a credit: the recipe pricer floors each swap's expected loss
-// at zero, and so does this.
+// cost is the step's expected cost. A conversion that quotes above the
+// central price is not a credit: each swap's expected loss floors at zero.
 func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	out := leverageStepCost{BorrowFeeMicros: l.BorrowFeeMicros, NetworkMicros: l.NetworkMicros,
 		EntrySwapLossMicros: max(l.EntryInMicros-l.EntryOutMicros, 0), ExitSwapLossMicros: max(l.ExitInMicros-l.ExitOutMicros, 0)}
@@ -64,7 +62,7 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 // leverageCostStages is the closed set of pricing stages an outage names.
 // The cause in a log line or metric label is one of these, never raw RPC,
 // HTTP or URL text.
-var leverageCostStages = map[string]bool{"inputs": true, "policies": true, "blockhash": true, "entry_quote": true, "exit_quote": true, "price": true, "network_fee": true, "deadline": true}
+var leverageCostStages = map[string]bool{"inputs": true, "policies": true, "entry_quote": true, "exit_quote": true, "step_build": true, "price": true, "network_fee": true, "deadline": true}
 
 // leverageCostOutage is a step that could not be priced, at one stage.
 type leverageCostOutage struct {
@@ -100,143 +98,27 @@ func leverageCostOutageReason(err error) string {
 // approval revoked as leverage_cost_unavailable).
 const leverageStepPriceTimeout = 15 * time.Second
 
-// productionLeverageStepPricer quotes the working lane's step live: Jupiter
-// debt->collateral at the step's size and collateral->debt at the quoted
-// output, the reserves' and SOL's observed prices from the account view, the
-// KLend origination fee at the reserve's rate, and each of the six compiled
-// transactions' fee (chain.MessageFee).
-func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, s Snapshot) leverageStepPricer {
+// productionLeverageStepPricer prices a held lane's step from o's batch:
+// the up and down steps the executor would assemble for it (priceStep).
+func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, s Snapshot) leverageStepPricer {
 	return func(borrowRaw uint64) (leverageStepCost, error) {
 		ctx, cancel := context.WithTimeout(ctx, leverageStepPriceTimeout)
 		defer cancel()
-		legs, err := observeLeverageStepLegs(ctx, rpc, view, client, m, s, borrowRaw)
+		route, err := runtimeRoute(s.RouteLane)
+		if err != nil || o.routeBatch == nil {
+			return leverageStepCost{}, costOutage("inputs", budgetHold("leverage_cost_unavailable"))
+		}
+		pricer, err := newLanePricer(ctx, rpc, view, client, m, s.Slot)
 		if err != nil {
 			return leverageStepCost{}, err
 		}
-		c, err := legs.cost()
-		if err != nil {
-			return c, costOutage("inputs", err)
+		var topology []string
+		if s.PositionCollateralRaw > 0 {
+			topology = append(topology, route.Kamino.CollateralReserve)
 		}
-		return c, nil
-	}
-}
-
-func observeLeverageStepLegs(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, s Snapshot, borrowRaw uint64) (leverageStepLegs, error) {
-	var out leverageStepLegs
-	route, err := runtimeRoute(s.RouteLane)
-	if err != nil || rpc == nil || view == nil || client == nil || borrowRaw == 0 || s.Slot <= 0 {
-		return out, costOutage("inputs", budgetHold("leverage_cost_unavailable"))
-	}
-	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, borrowRaw)
-	if err != nil {
-		return out, costOutage("inputs", err)
-	}
-	var policies installedPolicies
-	var blockhash LatestBlockhash
-	if err := concurrentReads(ctx, func(ctx context.Context) (err error) {
-		if policies, err = observeInstalledPolicies(ctx, rpc, s.Slot); err != nil {
-			return costOutage("policies", err)
+		if s.PositionDebtRaw > 0 {
+			topology = append(topology, route.Kamino.DebtReserve)
 		}
-		return nil
-	}, func(ctx context.Context) (err error) {
-		if blockhash, err = latestBlockhash(ctx, rpc); err != nil {
-			return costOutage("blockhash", err)
-		}
-		return nil
-	}); err != nil {
-		return out, err
+		return pricer.priceStep(ctx, o.routeBatch.Accounts, route, topology, s.Slot, borrowRaw)
 	}
-	// Each conversion on its lane's venue: Jupiter, or Hastra's stake
-	// deposit and redeem for a wYLDS lane (no swap loss beyond its rounding).
-	entry, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, m, policies, Decision{Action: SwapDebtToCollateralStep, StrategyKey: route.Lane, AmountRaw: int64(borrowRaw)}, borrowRaw, 0, s.Slot)
-	if err != nil {
-		return out, costOutage("entry_quote", err)
-	}
-	collateralRaw := entry.quotedOutputRaw()
-	exit, err := prepareConversionQuoteEvidence(ctx, rpc, view, client, m, policies, Decision{Action: SwapCollateralToDebtStep, StrategyKey: route.Lane, AmountRaw: int64(collateralRaw)}, collateralRaw, 0, s.Slot)
-	if err != nil {
-		return out, costOutage("exit_quote", err)
-	}
-	debt := ExecutableDebit{Source: route.DebtCustody, Mint: route.Kamino.DebtMint, TokenProgram: route.DebtTokenProgram, Raw: borrowRaw}
-	collateral := ExecutableDebit{Source: route.CollateralCustody, Mint: route.Kamino.CollateralMint, TokenProgram: route.CollateralTokenProgram, Raw: collateralRaw}
-	var debtPrice, collateralPrice, sol BudgetPrice
-	if err := concurrentReads(ctx, func(ctx context.Context) (err error) {
-		debtPrice, err = ObserveBudgetTokenPrice(ctx, rpc, view, route.Lane, debt, s.Slot)
-		return err
-	}, func(ctx context.Context) (err error) {
-		collateralPrice, err = ObserveBudgetTokenPrice(ctx, rpc, view, route.Lane, collateral, s.Slot)
-		return err
-	}, func(ctx context.Context) (err error) {
-		sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, view, s.Slot)
-		return err
-	}); err != nil {
-		return out, costOutage("price", err)
-	}
-	slot := max(debtPrice.ObservedSlot, collateralPrice.ObservedSlot, sol.ObservedSlot)
-	central := func(p BudgetPrice, d ExecutableDebit, raw uint64) (int64, error) {
-		if raw == 0 {
-			return 0, nil
-		}
-		return selectorMidpointPriceValue(p, raw, d.Mint, d.TokenProgram, slot)
-	}
-	for _, v := range []struct {
-		into  *int64
-		price BudgetPrice
-		debit ExecutableDebit
-		raw   uint64
-	}{
-		{&out.BorrowFeeMicros, debtPrice, debt, fee},
-		{&out.EntryInMicros, debtPrice, debt, borrowRaw},
-		{&out.EntryOutMicros, collateralPrice, collateral, collateralRaw},
-		{&out.ExitInMicros, collateralPrice, collateral, collateralRaw},
-		{&out.ExitOutMicros, debtPrice, debt, exit.quotedOutputRaw()},
-	} {
-		if *v.into, err = central(v.price, v.debit, v.raw); err != nil {
-			return out, costOutage("price", err)
-		}
-	}
-	// The six transactions' fees. Each Kamino leg refreshes both reserves of
-	// the levered obligation, as the worker's own legs do.
-	var messages [][]byte
-	for _, leg := range []struct {
-		action Action
-		leg    kaminoPrimeUSDCLeg
-		amount uint64
-	}{{OpenRouteStep, kaminoLegBorrow, borrowRaw}, {OpenRouteStep, kaminoLegDeposit, entry.intent().MinimumOutputRaw}, {DeleverRouteStep, kaminoLegWithdraw, collateralRaw}, {DeleverRouteStep, kaminoLegRepay, exit.intent().MinimumOutputRaw}} {
-		r, err := m.kaminoPacketForRoute(policies, leg.action, leg.leg, leg.amount, blockhash, route.Lane)
-		if err != nil {
-			return out, costOutage("network_fee", err)
-		}
-		r.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-		message, err := compileKaminoMessageForDelegate(r, mustKey(bridgeDelegate))
-		if err != nil {
-			return out, costOutage("network_fee", err)
-		}
-		messages = append(messages, message)
-	}
-	for _, conversion := range []conversionEvidence{entry, exit} {
-		var message []byte
-		switch r := conversion.Request.(type) {
-		case JupiterSwapRequest:
-			message, err = compileJupiterMessageForDelegate(r, mustKey(bridgeDelegate))
-		case HastraConversionRequest:
-			message, err = compileHastraMessageForDelegate(r, mustKey(bridgeDelegate))
-		default:
-			err = budgetHold("leverage_cost_unavailable")
-		}
-		if err != nil {
-			return out, costOutage("network_fee", err)
-		}
-		messages = append(messages, message)
-	}
-	for _, message := range messages {
-		cost, err := ValueTransactionCost(message, ExecutableDebit{}, 0, BudgetPrice{}, sol, slot)
-		if err != nil {
-			return out, costOutage("network_fee", err)
-		}
-		if out.NetworkMicros, err = budgetSum(out.NetworkMicros, cost.NetworkFeeMicros); err != nil {
-			return out, costOutage("network_fee", err)
-		}
-	}
-	return out, nil
 }

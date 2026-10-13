@@ -46,9 +46,9 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 			return budgetHold("selector_evaluation_not_current")
 		}
 		input.Now = now
-		// The source observation may precede the final fee/price collection. Use
-		// the caller's latest confirmed slot as well as that source slot; a fresh
-		// timestamp alone cannot extend any component of the economic recipe.
+		// The sample's observation may precede the final quote collection. Use
+		// the caller's latest confirmed slot as well as the sample's slot; a
+		// fresh timestamp alone cannot extend a quote's window.
 		currentQuotes := make([]MoveQuote, 0, len(input.Quotes))
 		for _, q := range input.Quotes {
 			if q.currentAtSlot(confirmedSlot) {

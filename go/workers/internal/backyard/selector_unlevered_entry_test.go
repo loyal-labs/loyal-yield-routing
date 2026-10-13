@@ -1,11 +1,8 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
-	"crypto/ed25519"
 	"math/big"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -25,54 +22,17 @@ func blockDebtUtilization(t *testing.T, lane string) func([]ConfirmedAccount) {
 	}
 }
 
-func selectorRecipeActions(t *testing.T, q selectorDestinationQuote) []Action {
-	t.Helper()
-	var actions []Action
-	for _, input := range q.Recipe.Inputs {
-		r, _, _, err := input.decode()
-		if err != nil {
-			t.Fatal(err)
-		}
-		switch r := r.(type) {
-		case BridgeBuildRequest:
-			actions = append(actions, r.Action)
-		case JupiterSwapRequest:
-			actions = append(actions, r.Action)
-		case KaminoPrimeUSDCRequest:
-			actions = append(actions, r.Action)
-		}
-	}
-	return actions
-}
-
-// (a) A blocked OnRe debt reserve prices a debt-free 1x entry: allocate ->
-// swap -> deposit, exit = withdraw -> swap back -> stage -> restore. No
-// borrow, no leverage swap, no redeposit.
+// (a) A blocked OnRe debt reserve prices a debt-free 1x entry: the entry
+// swap and its sale back, no up step.
 func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 1_000_000, 42, true)
+	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 1_000_000), leveredTestMarket(onreONycUSDC), 1_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Action{VoltrAllocateToSquads, ReportNAV, SwapStableToCollateralStep, ReportNAV, OpenRouteStep, ReportNAV,
-		DeleverRouteStep, ReportNAV, SwapCollateralToStableStep, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV}
-	if got := selectorRecipeActions(t, q); !reflect.DeepEqual(got, want) {
-		t.Fatalf("1x recipe %v", got)
-	}
-	if !q.Unlevered || q.BorrowReceiveRaw != 0 || q.BorrowFeeRaw != 0 || q.PayoffUpperRaw != 0 || q.Recipe.CostRaw <= 0 || q.Recipe.CostRaw >= 1_000_000 || q.PayoffReturnAmountRaw == 0 {
+	if !q.Unlevered || q.SpreadUnlevered || q.BorrowReceiveRaw != 0 || q.BorrowFeeRaw != 0 || q.BorrowValueRaw != 0 || q.Cost.Step != (leverageStepCost{}) || q.CostRaw <= 0 || q.CostRaw >= 1_000_000 || !q.validBorrow() {
 		t.Fatalf("1x quote %+v", q)
-	}
-	// Every Kamino leg keeps an existing wire topology: flat deposit, and a
-	// collateral-only withdrawal.
-	for _, input := range q.Recipe.Inputs {
-		r, _, _, _ := input.decode()
-		if k, ok := r.(KaminoPrimeUSDCRequest); ok {
-			_, leg, _ := kaminoPrimeUSDCInstruction(k)
-			if (leg == kaminoLegDeposit && len(k.ObligationReserves) != 0) || (leg == kaminoLegWithdraw && len(k.ObligationReserves) != 1) || leg == kaminoLegBorrow || leg == kaminoLegRepay {
-				t.Fatalf("unexpected Kamino leg %d reserves %v", leg, k.ObligationReserves)
-			}
-		}
 	}
 }
 
@@ -81,15 +41,15 @@ func TestBlockedDestinationPricesAnUnleveredEntry(t *testing.T) {
 func TestUnblockedLaneKeepsTheLeveragedEntryAndBlockedMapleTakes1x(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, nil)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 100_000_000, 42, true)
+	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(onreONycUSDC), 100_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if q.Unlevered || q.BorrowReceiveRaw == 0 {
+	if q.Unlevered || q.BorrowReceiveRaw == 0 || q.Cost.Step.TotalMicros <= 0 {
 		t.Fatalf("unblocked OnRe lost its leveraged entry: %+v", q)
 	}
 	m, rpc, client, _ = selectorDestinationFixtureForLane(t, SelectedRouteID, blockDebtUtilization(t, SelectedRouteID))
-	q, err = observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 1_000_000, 42, true)
+	q, err = testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 1_000_000), leveredTestMarket(SelectedRouteID), 1_000_000)
 	if err != nil || !q.Unlevered || q.BorrowReceiveRaw != 0 {
 		t.Fatalf("blocked Maple did not price the 1x entry: %+v %v", q, err)
 	}
@@ -110,8 +70,7 @@ func unleveredSwitchFixtureAt(cost int64, onreAPY float64) SelectorInput {
 	curve := []BorrowCurvePoint{{0, 400}, {9000, 1200}, {10000, 10000}}
 	auto := LaneEconomics{Lane: autoAUTOPYUSD.Lane, EvidenceID: "auto", ObservedAt: now, NativeObservedAt: now, NativeAPY: .0948, CurrentBorrowAPY: .12, BorrowCurve: curve, DebtSupplyRaw: 1e12, DebtBorrowRaw: .926e12, EntryCapacity: Capacity{Known: true}}
 	onre := LaneEconomics{Lane: onreONycUSDC, EvidenceID: "onre", ObservedAt: now, NativeObservedAt: now, NativeAPY: onreAPY, CurrentBorrowAPY: .12, BorrowCurve: curve, DebtSupplyRaw: 1e12, DebtBorrowRaw: .926e12, EntryCapacity: Capacity{Known: true, Raw: 1_677_000_000}}
-	q := MoveQuote{Unlevered: true, MinimumIdleRaw: 1_677_000_000, SourceLane: s.RouteLane, DestinationLane: onreONycUSDC, ObservationID: s.ObservationID, EquityRaw: 1_677_000_000, CostRaw: cost, ObservedAt: now, EvidenceID: "complete-1x-sequence", SampleSlot: s.Slot, ValidThroughSlot: s.Slot + 32,
-		SourceExit: &selectorExitBound{MaxCollateralRaw: s.PositionCollateralRaw}}
+	q := MoveQuote{Unlevered: true, MinimumIdleRaw: 1_677_000_000, SourceLane: s.RouteLane, DestinationLane: onreONycUSDC, ObservationID: s.ObservationID, EquityRaw: 1_677_000_000, CostRaw: cost, ObservedAt: now, EvidenceID: "complete-1x-sequence", SampleSlot: s.Slot, ValidThroughSlot: s.Slot + 32}
 	return SelectorInput{Now: now, Snapshot: s, Markets: []LaneEconomics{auto, onre}, Quotes: []MoveQuote{q}, Policy: p}
 }
 
@@ -153,7 +112,7 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 1_677_000_000, 1_677_000_000
 	s.MinimumCollateralDepositRaw = 1
 	q := entryQuoteFixture(time.Now().UTC(), onreONycUSDC, 1_677_000_000)
-	q.Unlevered, q.BorrowReceiveRaw = true, 0
+	q.Unlevered, q.BorrowReceiveRaw, q.BorrowValueRaw, q.ProceedsValueRaw = true, 0, 0, 0
 	in := targetInputs{Entry: &SelectorResult{Action: "ENTER", DestinationLane: onreONycUSDC, SelectedQuote: &q}}
 	check := func(action Action, reason string) {
 		t.Helper()
@@ -179,51 +138,4 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	s.BorrowUtilizationBlocked, s.LeverageTargetLevel = false, 1.5
 	armLeverageCapacityFixture(&s)
 	check(OpenRouteStep, leverageUpReason)
-}
-
-// (e) Every Kamino and Jupiter wire the 1x entry and its exit use, compiled
-// by the real compiler from the priced recipe, passes the persisted-wire gate.
-func TestUnleveredEntryRecipeWiresPassThePersistedWireGate(t *testing.T) {
-	t.Parallel()
-	m, rpc, client, _ := selectorDestinationFixtureForLane(t, onreONycUSDC, blockDebtUtilization(t, onreONycUSDC))
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(onreONycUSDC), 1_000_000, 42, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{71}, ed25519.SeedSize))
-	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	kamino, swaps := 0, 0
-	for _, input := range q.Recipe.Inputs {
-		r, _, message, err := input.decode()
-		if err != nil {
-			t.Fatal(err)
-		}
-		switch r := r.(type) {
-		case KaminoPrimeUSDCRequest:
-			kamino++
-			// The persisted-evidence fixture pins this blockhash/height.
-			r.RecentBlockhash, r.LastValidBlockHeight = bridgeSettings, 99
-			compiled, err := compileKaminoMessageForDelegate(r, delegate)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := signedTestBuildResult(t, key, compiled).validateForDelegate(delegate); err != nil {
-				t.Fatalf("Kamino %s wire refused: %v", r.Action, err)
-			}
-		case JupiterSwapRequest:
-			swaps++
-			var decodeErr error
-			if message[0] == 0x80 {
-				_, _, _, _, decodeErr = decodeExactWire(signTestWire(t, key, message))
-			} else {
-				_, _, _, _, decodeErr = decodeExactWire(signTestWire(t, key, message))
-			}
-			if decodeErr != nil {
-				t.Fatalf("swap %s wire refused: %v", r.Action, decodeErr)
-			}
-		}
-	}
-	if kamino != 2 || swaps != 2 {
-		t.Fatalf("recipe legs kamino=%d swaps=%d", kamino, swaps)
-	}
 }

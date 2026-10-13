@@ -5,11 +5,11 @@ import (
 	"time"
 )
 
-// fundedAutoFixture builds a pilot-sized Maple→AUTO candidate with real bound
-// PYUSD debt and AUTO collateral price evidence: the exact priced quote shape
-// entry admission and the priced persistence window consume. The quote is
-// fresh at the fixture's slot and re-freshed by advanceSelectorFixture.
-func fundedAutoFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) SelectorInput {
+// fundedAutoFixture builds a pilot-sized flat-vault AUTO candidate whose
+// PYUSD borrow is valued at par: the priced quote shape entry admission and
+// the priced persistence window consume. The quote is fresh at the fixture's
+// slot and re-freshed by advanceSelectorFixture.
+func fundedAutoFixture(t *testing.T) SelectorInput {
 	t.Helper()
 	in := selectorFixture()
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
@@ -19,15 +19,13 @@ func fundedAutoFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) Sel
 	market.Lane = testAutoLane
 	market.EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
 	in.Markets = []LaneEconomics{market}
-	debt, collateral := debtPrice, collateralPrice
 	quote := MoveQuote{
 		MinimumIdleRaw: uint64(in.Snapshot.TotalVaultNAVRaw), BorrowReceiveRaw: 5_000_000, BorrowFeeRaw: 10_000,
-		DebtPrice: &debt, CollateralAssetPrice: &collateral, RedepositCollateralRaw: 5_000_000,
 		SourceLane: in.Snapshot.RouteLane, DestinationLane: testAutoLane, ObservationID: in.Snapshot.ObservationID,
 		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
 		EvidenceID: sha256Bytes([]byte("auto-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + budgetMaxObservationLagSlots,
 	}
-	in.Quotes = []MoveQuote{quote}
+	in.Quotes = []MoveQuote{parBorrow(quote)}
 	return in
 }
 
@@ -38,9 +36,7 @@ func fundedAutoFixture(t *testing.T, debtPrice, collateralPrice BudgetPrice) Sel
 // there is no separate embedded closure to compare against.
 func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
 	t.Parallel()
-	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
-	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
-	in := fundedAutoFixture(t, debtPrice, collateralPrice)
+	in := fundedAutoFixture(t)
 	result := SelectOpportunity(in, SelectorState{})
 	if result.Action != "KEEP" || result.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("first profitable sample must hold for persistence", result)
@@ -75,8 +71,6 @@ func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
 // accumulating any persistence: only a complete priced quote samples.
 func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testing.T) {
 	t.Parallel()
-	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
-	collateralPrice := autoCollateralPriceFixture(t, 1_000_000)
 	cases := []struct {
 		name    string
 		mutate  func(*SelectorInput)
@@ -85,11 +79,11 @@ func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testin
 		{"full", func(in *SelectorInput) { in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 0} }, "entry_closed"},
 		{"unknown", func(in *SelectorInput) { in.Markets[0].EntryCapacity = Capacity{} }, "pair_capacity_unknown"},
 		{"deferred", func(in *SelectorInput) { in.Markets[0].EntryBlockedReason = "lane_entry_deferred" }, "lane_entry_deferred"},
-		{"unpriced", func(in *SelectorInput) { in.Quotes[0].DebtPrice = nil }, "bounded_borrow_unavailable"},
+		{"unpriced", func(in *SelectorInput) { in.Quotes[0].BorrowValueRaw = 0 }, "bounded_borrow_unavailable"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			in := fundedAutoFixture(t, debtPrice, collateralPrice)
+			in := fundedAutoFixture(t)
 			tc.mutate(&in)
 			result := SelectOpportunity(in, SelectorState{})
 			if result.Action != "KEEP" || result.Reason != "no_worthwhile_executable_move" {
@@ -109,7 +103,7 @@ func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testin
 			}
 		})
 	}
-	in := fundedAutoFixture(t, debtPrice, collateralPrice)
+	in := fundedAutoFixture(t)
 	// The installed state: the embedded manifest's complete installed binding
 	// opens the same persistence window the reviewed initializer fixture does.
 	installedResult := SelectOpportunity(in, SelectorState{})

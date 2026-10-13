@@ -54,14 +54,15 @@ type leverageDecision struct {
 // debt reserve could fund (live 2026-10-10: AUTO held 1.01x under a 1.75x
 // target while PYUSD had $3k-$5k of room for five hours).
 //
-// The cost is the step's expected cost (leverage_step_cost.go): the KLend
-// origination fee, the expected swap loss in and out at the step's size from
-// live quotes, and the six transactions' network fees, all at central
-// prices. It was 2 x UncertaintyBPS of the borrowed amount: a haircut that
-// bounds execution, not what capital loses, and at AUTO's realized spread
-// (~2.9 pts) it refused every up step whatever the room. Uncertainty stays
-// where it bounds execution: the swap minimums and the recipe limits. The
-// income forecast values the borrow and its proceeds at central prices too.
+// The cost is the step's expected cost (lanePricer.priceStep): the KLend
+// origination fee and the expected conversion loss of the up step the
+// executor would assemble and of the down step that unwinds it, with the two
+// transactions' network fees, all at the batch's central prices. It was 2 x
+// UncertaintyBPS of the borrowed amount: a haircut that bounds execution,
+// not what capital loses, and at AUTO's realized spread (~2.9 pts) it
+// refused every up step whatever the room. Uncertainty stays where it bounds
+// execution: the step's minimum output. The income forecast values the
+// borrow and its proceeds at central prices too.
 // An unpriced step is leverage_cost_unavailable, never free.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}

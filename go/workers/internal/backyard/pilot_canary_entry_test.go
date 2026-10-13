@@ -20,6 +20,7 @@ func pilotCanaryFixture() SelectorInput {
 	in.Quotes[0].EquityRaw = 1_000_000
 	in.Quotes[0].MinimumIdleRaw = 1_000_000
 	in.Quotes[0].BorrowReceiveRaw = 500_000
+	in.Quotes[0] = parBorrow(in.Quotes[0])
 	in.Quotes[0].EvidenceID = sha256Bytes([]byte("actual-complete-quote-fixture"))
 	in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("one-acceptance")), Lane: in.Markets[0].Lane, EquityRaw: 1_000_000, ExpiresAt: in.Now.Add(10 * time.Minute)}
 	return in

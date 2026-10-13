@@ -581,7 +581,6 @@ func autoSourceReleasedBatch(route RuntimeRoute) func([]ConfirmedAccount) {
 		autoSourceFundedBatch(route)(accounts)
 		binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 0)
 		accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset] = 60
-		binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Market).Data[kaminoGlobalBorrowValueOffset:], 1_000_000_000)
 	}
 }
 

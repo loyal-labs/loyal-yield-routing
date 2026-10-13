@@ -2,11 +2,8 @@ package backyard
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
-	"maps"
 	"math"
-	"slices"
 	"strings"
 	"testing"
 
@@ -96,11 +93,6 @@ func token2022DebtMintImage(variant string) []byte {
 	return data
 }
 
-func autoInitializerView(t *testing.T, accounts map[string]ConfirmedAccount) *View {
-	t.Helper()
-	return accountView(t, 78, slices.Collect(maps.Values(accounts)))
-}
-
 // The AUTO initializer message wraps the initializer at the AUTO policy's
 // initializer leg, through the installed AUTO policy — and the public
 // compiler must still refuse the lane outright.
@@ -153,62 +145,6 @@ func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
 	resolved, err := manifest.initializationRequest(testPolicies(t), autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, r.RentLamports, r.MaximumFeeLamports)
 	if err != nil || resolved.Policy != installedAutoPolicyKey() || manifest.validateInitializationRequest(resolved) != nil {
 		t.Fatalf("bound request builder drifted: %v %+v", err, resolved)
-	}
-}
-
-// Absent-only admission for the candidate lane, with the Token-2022 debt mint
-// admitted through the reviewed extension parser and every malformed or
-// unsupported variant refused.
-func TestAutoInitializerPrestateAbsentObligationAndToken2022Mint(t *testing.T) {
-	t.Parallel()
-	for _, drift := range []string{"", "target_exists", "mint_program", "mint_uninitialized", "mint_unsupported_extension", "mint_transfer_fee_enabled", "mint_truncated_tlv", "classic_extensionless_debt", "rent_changed"} {
-		t.Run(drift, func(t *testing.T) {
-			manifest, r := autoInitializerRequestFixture(t)
-			accounts := autoInitializerPrestateAccounts(t, r)
-			route, err := runtimeRoute(r.RouteLane)
-			if err != nil {
-				t.Fatal(err)
-			}
-			change := func(address string, fn func(*ConfirmedAccount)) {
-				a := accounts[address]
-				fn(&a)
-				accounts[address] = a
-			}
-			switch drift {
-			case "target_exists":
-				accounts[route.Kamino.Obligation] = ConfirmedAccount{Address: route.Kamino.Obligation, Owner: "11111111111111111111111111111111", Lamports: 1}
-			case "mint_program":
-				change(route.Kamino.DebtMint, func(a *ConfirmedAccount) { a.Owner = classicTokenProgram })
-			case "mint_uninitialized":
-				change(route.Kamino.DebtMint, func(a *ConfirmedAccount) { a.Data[45] = 0 })
-			case "mint_unsupported_extension":
-				change(route.Kamino.DebtMint, func(a *ConfirmedAccount) { a.Data = token2022DebtMintImage("unsupported") })
-			case "mint_transfer_fee_enabled":
-				change(route.Kamino.DebtMint, func(a *ConfirmedAccount) { a.Data = token2022DebtMintImage("fee_enabled") })
-			case "mint_truncated_tlv":
-				change(route.Kamino.DebtMint, func(a *ConfirmedAccount) { a.Data = token2022DebtMintImage("truncated") })
-			case "classic_extensionless_debt":
-				// An extensionless 82-byte Token-2022 mint is admitted by the
-				// reviewed parser exactly as on the execution path; the
-				// extension-bearing "valid" fixture above is what proves the
-				// candidate PYUSD is not waved through a synthetic shortcut.
-			case "rent_changed":
-				change("SysvarRent111111111111111111111111111111111", func(a *ConfirmedAccount) { binary.LittleEndian.PutUint64(a.Data, 5081) })
-			}
-			slot, err := manifest.validateKaminoInitializationPrestate(context.Background(), autoInitializerView(t, accounts), r, 77)
-			// An extensionless 82-byte Token-2022 mint is admitted by the same
-			// reviewed parser the execution path uses; only real drift holds.
-			pass := drift == "" || drift == "classic_extensionless_debt"
-			if (err == nil) != pass || (err == nil && slot != 78) {
-				t.Fatalf("drift=%s slot=%d err=%v", drift, slot, err)
-			}
-			if drift == "target_exists" {
-				assertBudgetHold(t, err, "initializer_obligation_already_present")
-			}
-			if strings.HasPrefix(drift, "mint_") && drift != "classic_extensionless_debt" {
-				assertBudgetHold(t, err, "initializer_seed_mint_unavailable")
-			}
-		})
 	}
 }
 

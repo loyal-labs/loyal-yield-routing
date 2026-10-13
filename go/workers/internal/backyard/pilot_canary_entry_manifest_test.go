@@ -8,23 +8,17 @@ import (
 
 // autoCanaryFixtureAt retargets the installed canary fixture onto the
 // candidate AUTO lane: the same snapshot guards, quote identity, equity and
-// expiry, with only the requested destination lane moved. The quote carries a
-// real observed PYUSD debt price through the established budget valuation
-// path — the bound evidence the installed non-USDC borrow check requires —
-// with the quote's slot window lifted into the price evidence window. debtScale
-// is millionths times parity (1e6 == 1 PYUSD/USDC), so values above 2e6 depeg
-// the borrow receive above equity.
+// expiry, with only the requested destination lane moved. Its PYUSD borrow is
+// valued at debtScale millionths of parity (1e6 == 1 PYUSD/USDC), so values
+// above 2e6 value the borrow above equity.
 func autoCanaryFixtureAt(t *testing.T, debtScale int64) SelectorInput {
 	t.Helper()
 	in := pilotCanaryFixture()
 	in.Markets[0].Lane = autoAUTOPYUSD.Lane
 	in.Quotes[0].DestinationLane = autoAUTOPYUSD.Lane
-	_, price, _ := autoDebtPriceFixture(t, debtScale)
-	in.Snapshot.Slot = price.ObservedSlot
 	quote := in.Quotes[0]
-	quote.SampleSlot = price.ObservedSlot
-	quote.ValidThroughSlot = price.ValidThroughSlot
-	quote.DebtPrice = copyDebtPrice(&price)
+	quote.BorrowValueRaw = (quote.BorrowReceiveRaw + quote.BorrowFeeRaw) * uint64(debtScale) / 1_000_000
+	quote.ProceedsValueRaw = quote.BorrowReceiveRaw * uint64(debtScale) / 1_000_000
 	in.Quotes[0] = quote
 	in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("auto-one-acceptance")), Lane: autoAUTOPYUSD.Lane, EquityRaw: 1_000_000, ExpiresAt: in.Now.Add(10 * time.Minute)}
 	return in
@@ -114,24 +108,17 @@ func TestPilotCanarySelectOnRegistry(t *testing.T) {
 	if err != nil || accepted.Action != "CANARY_ENTER" || accepted.SelectedQuote == nil || receipt == nil {
 		t.Fatalf("complete binding refused the canary acceptance: %+v %v %v", accepted, receipt, err)
 	}
-	// The installed non-USDC borrow checks gate the candidate lane exactly as
-	// shipped: missing debt price evidence, a depegged price that values the
-	// borrow above equity, and a stale price each refuse the constructed entry.
+	// The borrow checks gate the candidate lane: an unvalued borrow, and a
+	// depegged price that values the borrow above equity, each refuse the
+	// constructed entry.
 	missing := autoCanaryFixtureAt(t, 1_100_000)
-	missing.Quotes[0].DebtPrice = nil
+	missing.Quotes[0].BorrowValueRaw = 0
 	if _, _, err := selectPilotCanaryEntry(missing, result, nil); err == nil || err.Error() != "invalid_selector_entry" {
-		t.Fatalf("missing debt price did not refuse the entry exactly: %v", err)
+		t.Fatalf("an unvalued borrow did not refuse the entry exactly: %v", err)
 	}
 	depegged := autoCanaryFixtureAt(t, 3_000_000)
 	if _, _, err := selectPilotCanaryEntry(depegged, result, nil); err == nil || err.Error() != "invalid_selector_entry" {
 		t.Fatalf("depegged debt price did not refuse the entry exactly: %v", err)
-	}
-	stale := autoCanaryFixtureAt(t, 1_100_000)
-	stalePrice := copyDebtPrice(stale.Quotes[0].DebtPrice)
-	stalePrice.ObservedSlot = stale.Quotes[0].SampleSlot - 1
-	stale.Quotes[0].DebtPrice = stalePrice
-	if _, _, err := selectPilotCanaryEntry(stale, result, nil); err == nil || err.Error() != "invalid_selector_entry" {
-		t.Fatalf("stale debt price did not refuse the entry exactly: %v", err)
 	}
 	if receipt.Request != *in.canaryRequest || receipt.QuoteEvidenceID != in.Quotes[0].EvidenceID || receipt.AcceptedAt != in.Now {
 		t.Fatalf("receipt identity drifted: %+v", receipt)

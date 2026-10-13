@@ -28,10 +28,8 @@ const (
 // borrowing evidence itself validates — unknown is not a zero loan.
 //
 // The returned equity is DEBT-denominated raw units. That equals USDC equity
-// only when the debt mint is bridgeUSDC. For any other debt lane the caller
-// must convert it explicitly through the established BudgetPrice valuation
-// (selectorDestinationDebtPrice / ObserveBudgetTokenPrice) — same decimals
-// never imply price parity.
+// only when the debt mint is bridgeUSDC — same decimals never imply price
+// parity.
 func kaminoPairEntryCapacity(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	if !earnActiveLane(route.Lane) {
 		return 0, fmt.Errorf("pair_capacity_lane_unreviewed")

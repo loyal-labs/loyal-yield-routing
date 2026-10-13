@@ -123,10 +123,6 @@ func bytesEqual(left, right []byte) bool {
 	return true
 }
 
-func kaminoPrimeUSDCInstruction(request KaminoPrimeUSDCRequest) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
-	return kaminoRouteInstruction(request, request.RouteLane)
-}
-
 func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
 	route, err := runtimeRoute(lane)
 	if err != nil {

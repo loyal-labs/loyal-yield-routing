@@ -25,23 +25,13 @@ func (f *stubSelectorEvaluateFeed) Snapshot() ([]LaneEconomics, string) {
 	return f.markets, ""
 }
 
-// canaryFixtureInput is the priced AUTO candidate at the canary equity: the
-// same admitted 0.9x price evidence the non-par review proved selectable, with
-// the operator request installed. The quote equity equals the request equity,
-// as the locked canary admission requires.
+// canaryFixtureInput is the priced AUTO candidate at the canary equity, with
+// the operator request installed. The quote equity equals the request
+// equity, as the locked canary admission requires.
 func canaryFixtureInput(t *testing.T) SelectorInput {
 	t.Helper()
-	route, price09, _ := autoDebtPriceFixture(t, 900_000)
-	_, price11, _ := autoDebtPriceFixture(t, 1_100_000)
-	coll10 := autoCollateralPriceFixture(t, 1_000_000)
-	validThrough := int64(42 + budgetMaxObservationLagSlots)
-	upper09, _ := nonParBounds(t, &price09, &coll10, route, validThrough)
-	upper11, _ := nonParBounds(t, &price11, &coll10, route, validThrough)
-	if upper09 >= nonParBorrowRaw || nonParBorrowRaw >= upper11 {
-		t.Fatalf("price margins left no discriminator band: %d/%d around %d", upper09, upper11, nonParBorrowRaw)
-	}
-	equity := nonParBorrowRaw + (upper11-nonParBorrowRaw)/2
-	in := nonParReviewFixture(t, &price09, &coll10, equity)
+	in := fundedAutoFixture(t)
+	equity := in.Quotes[0].EquityRaw
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	in.canaryRequest = &pilotCanaryEntryRequest{
 		ID: sha256Bytes([]byte("selector-evaluate-command")), Lane: testAutoLane,
@@ -223,7 +213,7 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	// The shared manifest predicates keep the reviewed candidate visible, and
 	// the missing quote collection is exactly why it holds unexecutable: this
 	// is the diagnostic's honest shape, not a preflight.
-	if c := nonParCandidate(t, dry.Selection); c.Lane != testAutoLane || c.CostsKnown || c.BlockedReason != "bounded_move_cost_unavailable" {
+	if c := laneCandidate(t, dry.Selection, testAutoLane); c.Lane != testAutoLane || c.CostsKnown || c.BlockedReason != "bounded_move_cost_unavailable" {
 		t.Fatalf("dry-run diagnostic lost the truthful no-quote shape: %+v", c)
 	}
 	assertNoCanaryOperations(t, ctx, db, key)
@@ -310,4 +300,16 @@ func TestSelectorEvaluateCommandCanaryBehavior(t *testing.T) {
 	}
 	assertNoCanaryOperations(t, ctx, db, key)
 	assertWriterLockFree(t, ctx, db)
+}
+
+// laneCandidate is result's candidate for lane.
+func laneCandidate(t *testing.T, result SelectorResult, lane string) *CandidateForecast {
+	t.Helper()
+	for i := range result.Candidates {
+		if result.Candidates[i].Lane == lane {
+			return &result.Candidates[i]
+		}
+	}
+	t.Fatal("candidate missing from", result.Candidates)
+	return nil
 }

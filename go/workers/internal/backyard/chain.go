@@ -140,11 +140,6 @@ func latestBlockhash(ctx context.Context, c *chain.Client) (LatestBlockhash, err
 	return LatestBlockhash{Blockhash: hash.String(), LastValidBlockHeight: int64(lastValid)}, nil
 }
 
-type MessageFeeObservation struct {
-	MessageSHA256 string `json:"messageSha256"`
-	Lamports      uint64 `json:"lamports"`
-}
-
 // simulateSigned verifies the exact signed bytes that would later be
 // persisted, with signature checks and the wire's own blockhash.
 func simulateSigned(ctx context.Context, c *chain.Client, signedWire []byte) (SimulationResult, error) {

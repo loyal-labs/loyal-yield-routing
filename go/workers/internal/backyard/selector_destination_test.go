@@ -5,10 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
-	"reflect"
 	"strconv"
 	"testing"
 
@@ -64,9 +64,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		add(a)
 	}
 	add(ConfirmedAccount{Address: kaminoScopePrices, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}})
-	market := marketFixture(t, route.Kamino.Market)
-	binary.LittleEndian.PutUint64(market.Data[kaminoGlobalBorrowValueOffset:], 1_000_000)
-	add(market)
+	add(marketFixture(t, route.Kamino.Market))
 	o := obligationFixture(t, 42, 0, 0)
 	o.Address = route.Kamino.Obligation
 	putKey(t, o.Data[32:64], route.Kamino.Market)
@@ -112,9 +110,6 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 	add(u)
 	captured := basicJupiterRequest(t, route.Lane, "USDC->"+route.CollateralSymbol)
 	reverse := basicJupiterRequest(t, route.Lane, route.CollateralSymbol+"->USDC")
-	for index := range 24 {
-		reverse.Instruction.Accounts = append(reverse.Instruction.Accounts, jupiter.AccountMeta{Pubkey: autoVenueKey(byte(index))})
-	}
 	if tweak != nil {
 		tweak(accounts)
 	}
@@ -154,41 +149,29 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 	return m, rpc, client, accounts
 }
 
-func TestSelectorDestinationPricesCompleteEntryWithoutMutatingAccounts(t *testing.T) {
+// A flat vault's entry is priced from the legs the executor builds, on the
+// lane's own refreshed batch, and reads it without changing it: the entry
+// swap, the deposit, the up step to 1.5x and their unwind.
+func TestEntryPricesTheExecutorsLegsWithoutMutatingAccounts(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	before := hashConfirmedAccounts(accounts)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 100_000_000, 42, false)
+	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(SelectedRouteID), 100_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before != hashConfirmedAccounts(accounts) || q.AccountSlot != 42 || q.Recipe.ValidThroughSlot != 74 || q.Recipe.SetupLamports != 0 || q.Recipe.CostRaw <= 0 || q.Recipe.CostRaw >= 100_000_000 {
-		t.Fatal("invalid entry economics", q)
+	if before != hashConfirmedAccounts(accounts) || q.SampleSlot != 42 || q.ValidThroughSlot != 74 || !q.currentAtSlot(42) || !sha256Pattern.MatchString(q.EvidenceID) {
+		t.Fatal("invalid entry window or evidence", q)
 	}
-	if q.PayoffUpperRaw < q.BorrowReceiveRaw+q.BorrowFeeRaw || q.PayoffSwap.Request.MinimumOutputRaw < q.PayoffUpperRaw {
-		t.Fatal("repayment not covered", q)
+	// Maple's USDC debt values at par: the up step owes its receive (a zero
+	// fee here) and converts all of it. The fixture's swaps quote at par, so
+	// only network fees cost: four lane legs and the two steps.
+	if q.Unlevered || q.BorrowReceiveRaw != 49_700_250 || q.BorrowValueRaw != q.BorrowReceiveRaw || q.ProceedsValueRaw != q.BorrowReceiveRaw || q.EquityRaw != 100_000_000 || !q.validBorrow() {
+		t.Fatal("entry borrow", q)
 	}
-	var actions []Action
-	for _, input := range q.Recipe.Inputs {
-		r, _, _, err := input.decode()
-		if err != nil {
-			t.Fatal(err)
-		}
-		switch r := r.(type) {
-		case BridgeBuildRequest:
-			actions = append(actions, r.Action)
-		case JupiterSwapRequest:
-			actions = append(actions, r.Action)
-		case KaminoPrimeUSDCRequest:
-			actions = append(actions, r.Action)
-		}
-	}
-	want := []Action{VoltrAllocateToSquads, ReportNAV, SwapStableToCollateralStep, ReportNAV, OpenRouteStep, ReportNAV, OpenRouteStep, ReportNAV, SwapDebtToCollateralStep, ReportNAV, OpenRouteStep, ReportNAV}
-	// Maple is a B2 lane (registry): the borrow is capacity-sized at 1.5x, and
-	// a tranche whose borrow is below the B2 minimum would price 1x, so the
-	// leveraged entry is priced at $100.
-	if !reflect.DeepEqual(actions, want) || q.Recipe.NetworkLamports != 60_000 || q.InitialCollateralMinimumRaw != 99_500_000 || q.BorrowReceiveRaw != 49_700_249 || q.Unlevered {
-		t.Fatal("incomplete entry", actions, q.BorrowReceiveRaw)
+	if q.Cost.EntrySwapLossMicros != 0 || q.Cost.ExitSwapLossMicros != 0 || q.Cost.NetworkMicros <= 0 || q.Cost.Step.NetworkMicros <= 0 ||
+		q.CostRaw != q.Cost.NetworkMicros+q.Cost.Step.TotalMicros || q.Cost.TotalMicros != q.CostRaw {
+		t.Fatalf("entry cost %+v", q.Cost)
 	}
 }
 
@@ -216,7 +199,7 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 			case "capacity":
 				binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoOutsideBorrowLimitOffset:], 0)
 			}
-			q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 100_000_000, 42, false)
+			q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(SelectedRouteID), 100_000_000)
 			if kind == "capacity" {
 				// Maple is a B2 lane (registry): a closed borrow limit prices
 				// the debt-free 1x entry instead of refusing the lane.
@@ -232,75 +215,31 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 	}
 }
 
-func TestSelectorDestinationRejectsUnfundableProtocolExit(t *testing.T) {
-	t.Parallel()
-	for _, kind := range []string{"global_cap", "release_ceiling", "minimum_collateral", "repayment_quote"} {
-		t.Run(kind, func(t *testing.T) {
-			m, rpc, client, accounts := selectorDestinationFixture(t)
-			route, _ := runtimeRoute(SelectedRouteID)
-			switch kind {
-			case "global_cap":
-				binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Market).Data[kaminoGlobalBorrowValueOffset:], 1)
-			case "release_ceiling":
-				accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset] = 55
-				accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoReserveConfigOffset+17] = 75
-			case "minimum_collateral":
-				minimum := new(big.Int).Lsh(big.NewInt(2000), 60)
-				raw := minimum.Bytes()
-				dst := accountAt(accounts, route.Kamino.Market).Data[kaminoMinRemainingValueOffset : kaminoMinRemainingValueOffset+16]
-				for i, b := range raw {
-					dst[len(raw)-1-i] = b
-				}
-			case "repayment_quote":
-				original := fixtureHTTP(client).Transport
-				fixtureHTTP(client).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-					if req.URL.Path == "/quote" && req.URL.Query().Get("inputMint") != bridgeUSDC {
-						amount, _ := strconv.ParseUint(req.URL.Query().Get("amount"), 10, 64)
-						raw, _ := json.Marshal(jupiter.Quote{InputMint: route.Kamino.CollateralMint, OutputMint: bridgeUSDC, InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(amount / 2), OtherAmountThreshold: fmt.Sprint((amount / 2) * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}})
-						return response(string(raw)), nil
-					}
-					return original.RoundTrip(req)
-				})
-			}
-			if _, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 100_000_000, 42, false); err == nil {
-				t.Fatal("unfundable destination quoted")
-			}
-		})
-	}
-}
-
-func TestSelectorDestinationFullPilotTrancheHasQuotedPayoff(t *testing.T) {
-	t.Parallel()
-	m, rpc, client, _ := selectorDestinationFixture(t)
-	q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), leveredTestMarket(SelectedRouteID), 10_000_000, 42, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if q.PayoffSwap.Request.MinimumOutputRaw < q.PayoffUpperRaw || q.Recipe.CostRaw >= 10_000_000 || len(q.Recipe.Inputs) != 12 {
-		t.Fatal("incomplete full tranche forecast", q)
-	}
-}
-
-func TestSelectorReceiptBoundIncludesPreBorrowInterest(t *testing.T) {
+// One price age holds every valuation: a reserve price past the oracle age
+// prices nothing, the USDC reference's included.
+func TestLanePricesRefuseAStalePrice(t *testing.T) {
 	t.Parallel()
 	_, _, _, accounts := selectorDestinationFixture(t)
 	route, _ := runtimeRoute(SelectedRouteID)
-	a := accountAt(accounts, route.Kamino.CollateralReserve)
-	binary.LittleEndian.PutUint64(a.Data[224:232], 999_994_000)
-	for i := 0; i < 11; i++ {
-		binary.LittleEndian.PutUint32(a.Data[kaminoReserveConfigOffset+68+i*8:], 10_000)
-	}
-	reserve, err := decodeKaminoReserve(a, route.Kamino.CollateralMint, route.Kamino)
-	if err != nil {
+	if _, err := batchLanePrices(accounts, route); err != nil {
 		t.Fatal(err)
 	}
-	pool := new(big.Int).Add(reserve.totalLiquiditySF, new(big.Int).Lsh(big.NewInt(2), 60))
-	old, err := selectorProspectiveUpper(accounts, route, 42, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, pool, selectorPayoffWindows)
-	if err != nil || old > reserve.collateralMintSupply {
-		t.Fatal("fixture not below first receipt boundary", old, err)
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.DebtReserve).Data[264:272], uint64(1000-kaminoOracleMaxAgeSecs-1))
+	if _, err := batchLanePrices(accounts, route); !errors.Is(err, errKaminoOracleStale) {
+		t.Fatalf("a stale USDC price valued the lane: %v", err)
 	}
-	got, err := selectorReceiptRounding(accounts, route, 42)
-	if err != nil || got != 2 {
-		t.Fatal("sample-to-payoff interest omitted", got, err)
+}
+
+// A step the executor cannot assemble at this size is named step_build, not
+// a quote outage.
+func TestStepBuildRefusalsAreNamed(t *testing.T) {
+	t.Parallel()
+	for cause, want := range map[string]string{"step_does_not_compile": "step_build", "step_over_policy_cap": "step_build", "jupiter_auto_wire_floor_zero": "entry_quote"} {
+		if got := stepStage("entry_quote", budgetHold(cause)); got != want {
+			t.Fatalf("%s: %s", cause, got)
+		}
+	}
+	if got := leverageCostOutageReason(costOutage(stepStage("exit_quote", budgetHold("step_over_policy_cap")), budgetHold("step_over_policy_cap"))); got != "leverage_cost_unavailable(step_build)" {
+		t.Fatal(got)
 	}
 }

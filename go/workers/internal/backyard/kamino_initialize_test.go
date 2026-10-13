@@ -108,8 +108,6 @@ func TestMultiplyInitializerAndCapacitySDKParity(t *testing.T) {
 		"outsideLimit": kaminoOutsideBorrowLimitOffset, "disableCross": kaminoDisableCrossCollateralOffset,
 		"debtWithdrawalCap": kaminoDebtWithdrawalCapOffset, "borrowFactor": kaminoBorrowFactorOffset,
 		"loanToValue": kaminoLoanToValueOffset, "queuedCollateral": kaminoQueuedCollateralOffset,
-		"globalBorrowValue":     kaminoGlobalBorrowValueOffset,
-		"minimumRemainingValue": kaminoMinRemainingValueOffset,
 	}
 	if !reflect.DeepEqual(offsets, vectors.Offsets) {
 		t.Fatal("capacity offsets differ from SDK layouts", offsets, vectors.Offsets)

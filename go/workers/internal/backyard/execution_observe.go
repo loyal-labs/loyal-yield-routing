@@ -403,16 +403,3 @@ func exactKaminoTokenEffects(accounts []ConfirmedAccount, source, destination ka
 		{Address: destination.Address, Owner: program, Mint: destination.Mint, Authority: destination.Authority, BeforeRaw: destinationRaw, AfterRaw: destinationRaw + amount},
 	}}, nil
 }
-
-func boundedKaminoRepaymentEffects(accounts []ConfirmedAccount, source, destination kaminoCustodyBoundary, minimum, maximum uint64) (ExpectedEffects, error) {
-	effects, err := exactKaminoTokenEffects(accounts, source, destination, maximum)
-	if err != nil {
-		return ExpectedEffects{}, err
-	}
-	effects.Kind = "kamino-repay"
-	effects.Repayment = &ExpectedRepayment{MinimumDebitRaw: minimum, MaximumDebitRaw: maximum}
-	if err := validateRepaymentEffects(effects); err != nil {
-		return ExpectedEffects{}, err
-	}
-	return effects, nil
-}

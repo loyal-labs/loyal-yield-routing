@@ -22,7 +22,6 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 	}
 	reference := usdcReference
 	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: budgetSOLMarket}
-	debit := ExecutableDebit{Mint: budgetWrappedSOLMint, TokenProgram: classicTokenProgram, Raw: 1}
 	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}
 	// The reserves' oracles come from the view; the price is the refreshed
 	// simulation's, like every value.
@@ -54,7 +53,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 	if err != nil {
 		return BudgetPrice{}, err
 	}
-	price, err := decodeBudgetTokenPrice(slot, accounts, config, reference, budgetSOLReserve, debit)
+	price, err := decodeBudgetTokenPrice(slot, accounts, config, reference, budgetSOLReserve, budgetWrappedSOLMint, classicTokenProgram)
 	if err != nil {
 		return BudgetPrice{}, err
 	}

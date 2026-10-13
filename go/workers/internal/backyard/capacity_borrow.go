@@ -279,9 +279,9 @@ func capacityBorrowCentralValue(s Snapshot, amount uint64, liability bool) (uint
 	return valueBetweenTokenRaw(amount, s.BorrowDebtDecimals, 6, s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, liability)
 }
 
-// Match ObserveBudgetTokenPrice: bridge USDC is par; non-USDC debt and
-// reference prices use the existing budgetPriceMarginBPS interval on each
-// side. This is valuation evidence, not another transaction-expense charge.
+// capacityBorrowValue bounds a borrow's USDC value: bridge USDC is par;
+// non-USDC debt and reference prices use the budgetPriceMarginBPS interval
+// on each side. This is valuation evidence, not a transaction expense.
 func capacityBorrowValue(s Snapshot, amount uint64, liability bool) (uint64, error) {
 	route, err := runtimeRoute(s.RouteLane)
 	if err != nil {

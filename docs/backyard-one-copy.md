@@ -40,10 +40,42 @@ Every value is the refreshed simulation's. The tick's batch is one bank
 captured after refreshing every valued lane's reserves and each one's overflow
 lane (`withOverflowRoutes`), so NAV, LTV, the payoff bound a full repay is
 sized on and the overflow room read the same capture; its freshness is its
-slot, within the observation window of the view. The selector's destination
-batch and budget token prices value from the same kind of capture. One price
-age holds every valuation (`kaminoOracleMaxAgeSecs`); the reserve health
-window is the adaptor's report window (`adaptorMaxReportAgeSlots`).
+slot, within the observation window of the view. The selector values a
+destination from the same kind of capture of that lane (its refreshed
+reserves and the USDC reference), and a held lane's step from the tick's
+own batch; only network fees read a price elsewhere, SOL's. One price age
+holds every valuation (`kaminoOracleMaxAgeSecs`); the reserve health window
+is the adaptor's report window (`adaptorMaxReportAgeSlots`).
+
+## Selector pricing
+
+The selector prices a lane from the transactions the executor would send
+(`selector_price.go`), never from a model of them:
+
+- a leverage step is the up step `assembleStep` builds (borrow, convert,
+  deposit in one transaction) and the down step that unwinds it; its cost is
+  the origination fee, each conversion's quoted loss at the batch's prices
+  and the two transactions' fees (`lanePricer.priceStep`). The level decision
+  prices an up step this way;
+- a flat vault's entry is the entry swap step's own quote, the deposit, the
+  up step to 1.5x when the live spread rule levers the lane (the level
+  decision still judges that step's gain against its cost), and the
+  unwind: the down step and the atomic exit step that withdraws the
+  collateral and sells it to USDC (`lanePricer.priceEntry`). Its cost is
+  one expected figure (`MoveQuote.CostRaw`); execution bounds (a conversion's
+  minimum output) stay on the transactions, simulated before they are sent.
+  The entry is sized by the deposit room the tick's observation gives the
+  lane (`topupDepositRoomUSDC`), and a lane whose obligation is absent
+  without an initializer is no entry.
+- a step the executor cannot assemble at the priced size (key budget, a
+  policy leg cap) is `leverage_cost_unavailable(step_build)`, an outage that
+  keeps the stored approval like any other.
+
+Gone: the multi-leg entry recipe (twenty-odd separately priced messages with
+receipt-rounding and debt-accrual windows), the six-transaction step pricer,
+the per-token budget price observations and their reconstructed midpoints,
+the bound and expected costs side by side, and the empty "source" recipe of a
+flat vault.
 
 A refresh the node could not run retries next tick; one Kamino rejects three
 times in a row falls to the raw batch, whose health hold latches (an empty

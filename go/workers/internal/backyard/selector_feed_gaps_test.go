@@ -109,13 +109,13 @@ func TestLeverageWatchPricesSpreadForNonSourcePYUSDLane(t *testing.T) {
 // one below the 1% minimum; at the minimum it levers.
 func TestSelectorDestinationLeversOnlyAtTheLiveSpreadMinimum(t *testing.T) {
 	t.Parallel()
-	quote := func(market LaneEconomics, closeBorrowing bool) selectorDestinationQuote {
+	quote := func(market LaneEconomics, closeBorrowing bool) MoveQuote {
 		t.Helper()
 		m, rpc, client, accounts := selectorDestinationFixture(t)
 		if closeBorrowing {
 			binary.LittleEndian.PutUint64(accountAt(accounts, mapleSyrupUSDCUSDC.Kamino.DebtReserve).Data[kaminoOutsideBorrowLimitOffset:], 0)
 		}
-		q, err := observeSelectorDestinationForecast(context.Background(), rpc, fixtureView(t, rpc), client, m, capturedTestPolicies(), market, 100_000_000, 42, false)
+		q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), market, 100_000_000)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,11 +156,10 @@ func TestSelectorDestinationLeversOnlyAtTheLiveSpreadMinimum(t *testing.T) {
 func TestSelectorForecastCountsMoveCostOnce(t *testing.T) {
 	t.Parallel()
 	const amount, expected = int64(100_000_000), int64(60_000_000)
-	exp := expected
-	q := MoveQuote{DestinationLane: SelectedRouteID, EquityRaw: amount, CostRaw: 90_000_000, ExpectedCostRaw: &exp, BorrowReceiveRaw: 20_000_000, BorrowFeeRaw: 20_000}
+	q := parBorrow(MoveQuote{DestinationLane: SelectedRouteID, EquityRaw: amount, CostRaw: expected, BorrowReceiveRaw: 20_000_000, BorrowFeeRaw: 20_000})
 	market := leverageMarket(SelectedRouteID, 0.12, math.Log1p(0.06))
 	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
-	invested := float64(amount - q.selectorEconomicCostRaw())
+	invested := float64(amount - q.CostRaw)
 	e, blocked := pilotQuoteEconomics(q, market, invested, years)
 	if blocked != "" {
 		t.Fatal(blocked)

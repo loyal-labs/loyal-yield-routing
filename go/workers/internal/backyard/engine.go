@@ -176,7 +176,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 			// B2 option 1: each held lane's level, target()'s level input. It
 			// changes no money by itself.
 			for _, lane := range observed.lanes {
-				decision, ok := decideLeverageTarget(lane, result, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, productionJupiter, worker.manifest, lane))
+				decision, ok := decideLeverageTarget(lane, result, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, productionJupiter, worker.manifest, observed, lane))
 				if !ok {
 					continue
 				}

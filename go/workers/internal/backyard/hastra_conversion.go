@@ -10,7 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -336,70 +335,9 @@ func prepareHastraQuoteEvidence(ctx context.Context, rpc *chain.Client, view *Vi
 	}, nil
 }
 
-// conversionIntent is what the swap admissions read of a debt/collateral
-// conversion, whichever venue converts it: its action, lane, exact input,
-// the least output its venue guarantees, and the reservation it carries.
-type conversionIntent struct {
-	Action                                   Action
-	RouteLane                                string
-	AmountRaw, MinimumOutputRaw              uint64
-	EntryReturnReserved, TopupReturnReserved bool
-}
-
-func (r JupiterSwapRequest) intent() conversionIntent {
-	return conversionIntent{Action: r.Action, RouteLane: r.RouteLane, AmountRaw: r.AmountRaw, MinimumOutputRaw: r.MinimumOutputRaw,
-		EntryReturnReserved: r.EntryReturnReserved, TopupReturnReserved: r.TopupReturnReserved}
-}
-
-func (r HastraConversionRequest) intent() conversionIntent {
-	return conversionIntent{Action: r.Action, RouteLane: r.RouteLane, AmountRaw: r.AmountRaw, MinimumOutputRaw: r.OutputRaw}
-}
-
 // conversionVenueHastra reports a decided conversion that executes through
 // Hastra rather than Jupiter.
 func conversionVenueHastra(decision Decision) bool {
 	_, ok := hastraConversionLeg(decision.Action, decision.StrategyKey)
 	return ok
-}
-
-// conversionEvidence is one priced conversion of either venue: Request is a
-// JupiterSwapRequest or a HastraConversionRequest. The exit and funding
-// pricers carry it so a lane's funding leg is its own venue's.
-type conversionEvidence struct {
-	Request         any
-	ExpectedEffects ExpectedEffects
-}
-
-func (c conversionEvidence) intent() conversionIntent {
-	switch r := c.Request.(type) {
-	case JupiterSwapRequest:
-		return r.intent()
-	case HastraConversionRequest:
-		return r.intent()
-	}
-	return conversionIntent{}
-}
-
-// quotedOutputRaw is the conversion's quoted output: Jupiter's quote, or
-// Hastra's output at the quoted price.
-func (c conversionEvidence) quotedOutputRaw() uint64 {
-	switch r := c.Request.(type) {
-	case JupiterSwapRequest:
-		return r.QuotedOutputRaw
-	case HastraConversionRequest:
-		return r.OutputRaw
-	}
-	return 0
-}
-
-// prepareConversionQuoteEvidence quotes decision's conversion on its venue:
-// Hastra for a Hastra lane's debt conversions (hastraConversionLeg), Jupiter
-// for every other.
-func prepareConversionQuoteEvidence(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (conversionEvidence, error) {
-	if conversionVenueHastra(decision) {
-		e, err := prepareHastraQuoteEvidence(ctx, rpc, view, policies, decision, sourceRaw, destinationRaw, slot)
-		return conversionEvidence{e.Request, e.ExpectedEffects}, err
-	}
-	e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, policies, decision, sourceRaw, destinationRaw, slot)
-	return conversionEvidence{e.Request, e.ExpectedEffects}, err
 }

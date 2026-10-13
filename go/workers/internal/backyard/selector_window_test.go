@@ -16,7 +16,7 @@ func autoWindowFixture() SelectorInput {
 	s.RouteLane, s.StrategyKey = onreONycUSDC, onreONycUSDC
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.StrategyNAVRaw = false, 0, 0, 0
 	s.VoltrIdleRaw, s.TotalVaultNAVRaw = 1_677_000_000, 1_677_000_000
-	in.Quotes[0].SourceLane, in.Quotes[0].SourceExit = s.RouteLane, nil
+	in.Quotes[0].SourceLane = s.RouteLane
 	in.Markets = []LaneEconomics{in.Markets[1]}
 	return in
 }

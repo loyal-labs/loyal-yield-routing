@@ -94,12 +94,3 @@ func kaminoBorrowFee(accounts []ConfirmedAccount, route RuntimeRoute, receive ui
 	rate := binary.LittleEndian.Uint64(reserve.Data[kaminoReserveConfigOffset+40:])
 	return kaminoBorrowFeeAtRate(rate, receive)
 }
-
-// decode is decodeWithManifest over the embedded manifest.
-func (input *phase3BuildInput) decode() (any, ExpectedEffects, []byte, error) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return nil, ExpectedEffects{}, nil, err
-	}
-	return input.decodeWithManifest(manifest)
-}

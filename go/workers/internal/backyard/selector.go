@@ -155,68 +155,45 @@ func (p SelectorPolicy) validate() error {
 	return nil
 }
 
-// MoveQuote values the entire proposed source exit + destination entry, including
-// setup, swap losses, origination and transaction fees for the full recipe.
-// Returned principal is not a cost.
-// It is bound to actual equity, source state, destination and exact policy set.
-// selectorExitBound is the source position an unwind may clear. It creates no
-// spending authority.
-type selectorExitBound struct {
-	MaxCollateralRaw int64 `json:"maxCollateralRaw"`
-	MaxDebtRaw       int64 `json:"maxDebtRaw"`
-}
-
+// MoveQuote is a flat vault's entry into one lane, priced by priceEntry from
+// the transactions the executor would send: what it enters, the up step it
+// levers with (none at 1x) and what that costs the vault's capital. It
+// creates no spending authority: target() reads only its lane, equity and
+// window, and every leg is built and simulated again when it executes.
 type MoveQuote struct {
-	SourceExit *selectorExitBound `json:"sourceExit,omitempty"`
-	// Whole-vault USDC available after the source exit at enforced swap minima.
+	// MinimumIdleRaw is the flat cash the entry draws on: Voltr idle plus the
+	// Squads cash an entry already allocated.
 	MinimumIdleRaw uint64 `json:"minimumIdleRaw"`
-	// Exact one-pass borrow sized from conservative initial collateral. Execution
-	// may receive more collateral, but may not silently increase this borrow.
-	// Quantities stay in raw debt-mint units; only DebtPrice gives them a USDC
-	// meaning, recomputed from the bound evidence at every use.
+	// BorrowReceiveRaw and BorrowFeeRaw are the up step the entry levers with,
+	// in raw debt units: the capacity-sized borrow of the funded position.
 	BorrowReceiveRaw uint64 `json:"borrowReceiveRaw"`
 	BorrowFeeRaw     uint64 `json:"borrowFeeRaw"`
-	// Unlevered is a B2 1x entry: no borrow (receive and fee are zero), scored
-	// at the lane's 1x yield, and persisted in its own advantage window. It is
-	// quoted while the destination debt reserve blocks borrowing, or
-	// (SpreadUnlevered) while borrowing is open but the lane's spread at the
-	// 1.5x borrow is below the live leverage rule's 1.5x minimum.
+	// Unlevered is a 1x entry: no up step (receive and fee are zero), scored
+	// at the lane's 1x yield and persisted in its own advantage window. It is
+	// quoted while the debt reserve has no room for the minimum borrow, or
+	// (SpreadUnlevered) while the lane's spread at that borrow is below the
+	// live leverage rule's 1.5x minimum.
 	Unlevered       bool `json:"unlevered,omitempty"`
 	SpreadUnlevered bool `json:"spreadUnlevered,omitempty"`
-	// DebtPrice is nil for USDC-debt lanes (raw==USDC parity, old JSON decodes
-	// unchanged). A non-USDC debt quote without this evidence is invalid:
-	// missing price evidence is rejected, never waivered. The observation is
-	// copied immutably at compose time and its window bounds the quote's own.
-	// It prices the LIABILITY side only.
-	DebtPrice *BudgetPrice `json:"debtPrice,omitempty"`
-	// CollateralAssetUSDCRaw is the doc-12 asset-side correction for non-USDC
-	// debt lanes: the two bounded collateral purchase outputs (entry and
-	// leverage swap minima) valued at the observed collateral price LOWER
-	// bound. The debt price never lifts the asset side, and nil stays the
-	// USDC-parity meaning of every raw USDC field.
-	CollateralAssetUSDCRaw *uint64 `json:"collateralAssetUsdcRaw,omitempty"`
-	// CollateralAssetPrice is the retained observed collateral price evidence
-	// behind CollateralAssetUSDCRaw; RedepositCollateralRaw is the bounded
-	// leverage swap minimum it revalues for production economics. Its window
-	// intersects the quote's exactly like the debt price's.
-	CollateralAssetPrice   *BudgetPrice `json:"collateralAssetPrice,omitempty"`
-	RedepositCollateralRaw uint64       `json:"redepositCollateralRaw,omitempty"`
-	// DebtRoomUSDCRaw is the destination debt reserve's borrow room valued in
-	// USDC at the quote's debt price lower bound: display only, never sizing.
+	// DebtRoomUSDCRaw is the debt reserve's borrow room in USDC: display only.
 	DebtRoomUSDCRaw *uint64 `json:"debtRoomUsdcRaw,omitempty"`
-	SourceLane      string  `json:"sourceLane"`
-	DestinationLane string  `json:"destinationLane"`
-	ObservationID   string  `json:"observationId"`
-	EquityRaw       int64   `json:"equityRaw"`
-	CostRaw         int64   `json:"costRaw"`
-	// ExpectedCostRaw is the forecast economic expense at central observed
-	// prices; nil on quotes predating the forecast. The selector's equity
-	// bound keeps the conservative CostRaw upper exposure bound.
-	ExpectedCostRaw *int64    `json:"expectedCostRaw,omitempty"`
-	ObservedAt      time.Time `json:"observedAt"`
-	EvidenceID      string    `json:"evidenceId"`
-	// SampleSlot is captured before constructing any recipe input. Fresh fee
-	// observations cannot extend older quote/reserve evidence past this window.
+	// BorrowValueRaw and ProceedsValueRaw are the up step valued at the lane
+	// batch's prices: the liability (receive plus fee) and the principal the
+	// step converts into collateral.
+	BorrowValueRaw   uint64 `json:"borrowValueRaw,omitempty"`
+	ProceedsValueRaw uint64 `json:"proceedsValueRaw,omitempty"`
+	SourceLane       string `json:"sourceLane"`
+	DestinationLane  string `json:"destinationLane"`
+	ObservationID    string `json:"observationId"`
+	EquityRaw        int64  `json:"equityRaw"`
+	// CostRaw is Cost's total: what the entry and its unwind are expected to
+	// cost the vault's capital.
+	CostRaw    int64     `json:"costRaw"`
+	Cost       entryCost `json:"cost"`
+	ObservedAt time.Time `json:"observedAt"`
+	EvidenceID string    `json:"evidenceId"`
+	// SampleSlot is the sample's batch slot; the quote is current through
+	// ValidThroughSlot, one observation window later.
 	SampleSlot       int64 `json:"sampleSlot"`
 	ValidThroughSlot int64 `json:"validThroughSlot"`
 }
@@ -226,7 +203,7 @@ type MoveQuote struct {
 // re-measured (48/49 slots) and a quote stored under 49 must stay a valid
 // record when it later reads 48 (live 2026-09-29: the worker exited on
 // invalid_selector_entry). Freshness for new spending is still
-// currentAtSlot at the current slot, in applySelectorEntry and admission.
+// currentAtSlot at the current slot, in target() and the canary.
 func (q MoveQuote) storedWindowValid() bool {
 	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot && q.ValidThroughSlot-q.SampleSlot <= budgetMaxObservationLagCeilingSlots
 }
@@ -235,17 +212,6 @@ func (q MoveQuote) currentAtSlot(slot int64) bool {
 	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot &&
 		q.ValidThroughSlot-q.SampleSlot <= observationLagSlots() &&
 		slot >= q.SampleSlot && slot <= q.ValidThroughSlot
-}
-
-// selectorEconomicCostRaw is the expected economic expense when a forecast is
-// present; old or opaque quotes fall back conservatively to the bounded
-// CostRaw. Only the net-yield comparison consumes this — admission, spending
-// bounds and history stay on CostRaw.
-func (q MoveQuote) selectorEconomicCostRaw() int64 {
-	if q.ExpectedCostRaw != nil && *q.ExpectedCostRaw >= 0 && *q.ExpectedCostRaw <= q.CostRaw {
-		return *q.ExpectedCostRaw
-	}
-	return q.CostRaw
 }
 
 type SelectorInput struct {
@@ -318,41 +284,33 @@ func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR
 	return (collateral-supplied)*math.Expm1(math.Log1p(e.NativeAPY)*years) + supplied*math.Expm1((math.Log1p(e.NativeAPY)+math.Log1p(e.SupplyAPY))*years) - debt*math.Expm1(borrowAPR*years)
 }
 
-// pilotEconomics is one bounded move's projected economics. DebtRaw stays in
-// raw debt-mint units; Debt and Proceeds are USDC valuations of the same
-// borrowing on opposite sides of the bound price interval.
+// pilotEconomics is one entry's projected economics. DebtRaw stays in raw
+// debt-mint units (the reserve's projected utilization); Debt and Proceeds
+// are the same borrow valued in USDC at the lane batch's prices.
 type pilotEconomics struct {
 	DebtRaw, Debt, Proceeds, APR, Gain    float64
 	PositiveIncome, InitialNAV, EndingNAV float64
 }
 
-// pilotQuoteEconomics projects a candidate from its bound quote. Reserve
-// utilization is projected in RAW debt units, while the forecast values the
-// liability on the conservative upper side of the quote's price evidence and
-// the redeposited proceeds on the lower side of the same independently
-// observed interval. One price never serves both directions, and raw debt
-// units never pass for USDC. A non-empty second return blocks the candidate.
+// pilotQuoteEconomics projects a candidate from its quote: the liability the
+// up step owes (receive plus fee) and the principal it converts into
+// collateral, at the quote's central values. Its cost is charged once, in
+// Gain. A non-empty second return blocks the candidate.
 func pilotQuoteEconomics(quote MoveQuote, m LaneEconomics, invested, years float64) (pilotEconomics, string) {
-	if quote.Unlevered {
-		// B2 1x entry: all invested equity is supplied collateral, no debt.
-		if !quote.validBorrow() {
-			return pilotEconomics{}, "bounded_borrow_unavailable"
-		}
-		return pilotForecastEconomics(pilotEconomics{}, invested, m, years, quote.selectorEconomicCostRaw()), ""
-	}
-	raw, rawOK := quote.borrowRawWithFee()
-	borrowed, borrowedOK := quote.borrowDebtUSDCRaw()
-	redeployed, proceedsOK := quote.borrowProceedsUSDCRaw()
-	if !rawOK || !borrowedOK || !proceedsOK {
+	if !quote.validBorrow() {
 		return pilotEconomics{}, "bounded_borrow_unavailable"
 	}
-	e := pilotEconomics{DebtRaw: float64(raw), Debt: float64(borrowed), Proceeds: float64(redeployed)}
+	if quote.Unlevered {
+		// 1x entry: all invested equity is supplied collateral, no debt.
+		return pilotForecastEconomics(pilotEconomics{}, invested, m, years, quote.CostRaw), ""
+	}
+	e := pilotEconomics{DebtRaw: float64(quote.BorrowReceiveRaw) + float64(quote.BorrowFeeRaw), Debt: float64(quote.BorrowValueRaw), Proceeds: float64(quote.ProceedsValueRaw)}
 	apr, err := projectedBorrowAPR(m, e.DebtRaw)
 	if err != nil {
 		return pilotEconomics{}, err.Error()
 	}
 	e.APR = apr
-	return pilotForecastEconomics(e, invested, m, years, quote.selectorEconomicCostRaw()), ""
+	return pilotForecastEconomics(e, invested, m, years, quote.CostRaw), ""
 }
 
 // selectorSampleLine is the held-sample diagnostic: every candidate with its
@@ -590,9 +548,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 		quotes[lane] = *quote
 		c.CostsKnown = true
-		// CostRaw is the worst-case execution bound (swap minima, recipe
-		// limits); the capital a move actually loses is its expected expense.
-		c.InvestedRaw = amount - quote.selectorEconomicCostRaw()
+		// The capital the entry loses before anything earns.
+		c.InvestedRaw = amount - quote.CostRaw
 		c.IdleRaw = s.TotalVaultNAVRaw - amount
 		economics, blocked := pilotQuoteEconomics(*quote, m, float64(c.InvestedRaw), years)
 		if blocked != "" {
@@ -678,7 +635,6 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 var selectorAvailabilityReasons = map[string]bool{
 	"economic_evidence_unavailable":      true,
 	"complete_entry_quote_unavailable":   true,
-	"complete_move_quote_unavailable":    true,
 	"bounded_move_cost_unavailable":      true,
 	"pair_capacity_unknown":              true,
 	"selector_source_quote_unavailable":  true,
@@ -718,85 +674,14 @@ func sampleAdvantageWindow(out *SelectorResult, previous SelectorState, lane str
 	out.State.Advantages[lane] = window
 }
 
+// validBorrow: a 1x quote borrows nothing; a levered one borrows within the
+// equity it enters with, and converts no more principal than it owes.
 func (q MoveQuote) validBorrow() bool {
+	if q.EquityRaw <= 0 || !earnActiveLane(q.DestinationLane) {
+		return false
+	}
 	if q.Unlevered {
-		return q.EquityRaw > 0 && q.BorrowReceiveRaw == 0 && q.BorrowFeeRaw == 0 && earnActiveLane(q.DestinationLane)
+		return q.BorrowReceiveRaw == 0 && q.BorrowFeeRaw == 0 && q.BorrowValueRaw == 0
 	}
-	if q.EquityRaw <= 0 || q.BorrowReceiveRaw <= 0 {
-		return false
-	}
-	route, err := runtimeRoute(q.DestinationLane)
-	if err != nil {
-		return false
-	}
-	if route.Kamino.DebtMint == bridgeUSDC {
-		// USDC debt: raw units are USDC by identity, exactly as every persisted
-		// pre-revision quote assumed. A carried price never relaxes this.
-		return q.BorrowReceiveRaw <= uint64(q.EquityRaw) && q.BorrowFeeRaw <= uint64(q.EquityRaw)-q.BorrowReceiveRaw
-	}
-	// Non-USDC debt: raw units have no USDC meaning. The bound price evidence
-	// is required, must cover the quote's whole window, and must value
-	// receive+fee inside the same equity.
-	debt, ok := q.borrowDebtUSDCRaw()
-	return ok && debt <= uint64(q.EquityRaw)
-}
-
-// borrowDebtUSDCRaw values BorrowReceiveRaw+BorrowFeeRaw in USDC. USDC-debt
-// quotes keep the exact raw identity every existing consumer relied on;
-// otherwise the bound BudgetPrice is revalidated against the route identity
-// and the conversion recomputed at its conservative upper bound.
-func (q MoveQuote) borrowDebtUSDCRaw() (uint64, bool) {
-	receive, ok := q.borrowRawWithFee()
-	if !ok {
-		return 0, false
-	}
-	route, err := runtimeRoute(q.DestinationLane)
-	if err != nil {
-		return 0, false
-	}
-	if route.Kamino.DebtMint == bridgeUSDC {
-		return receive, true
-	}
-	if q.DebtPrice == nil || q.DebtPrice.ObservedSlot < q.SampleSlot {
-		return 0, false
-	}
-	value, err := q.DebtPrice.valueUpper(receive, route.Kamino.DebtMint, route.DebtTokenProgram, q.ValidThroughSlot)
-	if err != nil || value <= 0 {
-		return 0, false
-	}
-	return uint64(value), true
-}
-
-// borrowProceedsUSDCRaw is the borrowed principal's USDC-value floor. Only
-// the principal is redeposited (the origination fee is consumed), and the
-// actual redeposit stays bound to the leverage swap's enforced output
-// minimum; this floor feeds the economics forecast only. On a non-USDC debt
-// lane the redeposit is COLLATERAL raw, so it is valued on the lower side of
-// the retained collateral asset price over that actual bounded purchase
-// output — the debt price never lifts the asset side (doc 12).
-func (q MoveQuote) borrowProceedsUSDCRaw() (uint64, bool) {
-	route, err := runtimeRoute(q.DestinationLane)
-	if err != nil {
-		return 0, false
-	}
-	if route.Kamino.DebtMint == bridgeUSDC {
-		receive, ok := q.borrowRawWithFee()
-		return receive, ok
-	}
-	if q.DebtPrice == nil || q.DebtPrice.ObservedSlot < q.SampleSlot || q.BorrowFeeRaw > q.BorrowReceiveRaw ||
-		q.CollateralAssetPrice == nil || q.CollateralAssetPrice.ObservedSlot < q.SampleSlot || q.RedepositCollateralRaw == 0 {
-		return 0, false
-	}
-	value, err := q.CollateralAssetPrice.valueLower(q.RedepositCollateralRaw, route.Kamino.CollateralMint, route.CollateralTokenProgram, q.ValidThroughSlot)
-	if err != nil || value < 0 {
-		return 0, false
-	}
-	return uint64(value), true
-}
-
-func (q MoveQuote) borrowRawWithFee() (uint64, bool) {
-	if q.BorrowFeeRaw > math.MaxUint64-q.BorrowReceiveRaw {
-		return 0, false
-	}
-	return q.BorrowReceiveRaw + q.BorrowFeeRaw, true
+	return q.BorrowReceiveRaw > 0 && q.BorrowValueRaw > 0 && q.BorrowValueRaw <= uint64(q.EquityRaw) && q.ProceedsValueRaw <= q.BorrowValueRaw
 }

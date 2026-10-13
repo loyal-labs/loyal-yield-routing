@@ -105,6 +105,7 @@ func coherentFeeSelectorFixture(t *testing.T, wealth, supply uint64, hwm *big.In
 	in.Quotes[0].ObservationID = in.Snapshot.ObservationID
 	in.Quotes[0].EquityRaw, in.Quotes[0].MinimumIdleRaw = int64(wealth), wealth
 	in.Quotes[0].BorrowReceiveRaw = wealth / 2
+	in.Quotes[0] = parBorrow(in.Quotes[0])
 	in.Quotes[0].CostRaw = 0
 	in.Quotes[0].SampleSlot, in.Quotes[0].ValidThroughSlot = in.Snapshot.Slot, in.Snapshot.Slot+32
 	return in
@@ -124,7 +125,7 @@ func TestPerformanceFeeMoneyBoundCoversPinnedDilutionAndRounding(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
-			in.Quotes[0].Unlevered, in.Quotes[0].BorrowReceiveRaw = true, 0
+			in.Quotes[0].Unlevered, in.Quotes[0].BorrowReceiveRaw, in.Quotes[0].BorrowValueRaw, in.Quotes[0].ProceedsValueRaw = true, 0, 0, 0
 			in.Policy.Horizon = 365 * 24 * time.Hour
 			in.Markets[0].NativeAPY = math.Expm1(math.Log1p(tc.gross/1_000_000) * (365.25 / 365))
 			got := SelectOpportunity(in, SelectorState{})
@@ -337,6 +338,7 @@ func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 	advanceSelectorFixture(&in, time.Now().UTC().Sub(in.Now))
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 10_000_000}
 	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 10_000_000, 5_000_000
+	in.Quotes[0] = parBorrow(in.Quotes[0])
 	in.Quotes[0].EvidenceID = sha256Bytes([]byte("unarmed-quoted-projection"))
 	previous := SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{
 		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now.Add(-time.Second)},
@@ -408,9 +410,7 @@ func armFeeAuthorityFixture(t *testing.T, s *Snapshot) {
 
 func TestPerformanceFeeArmedAdmissionFixturesHaveProvableCandidates(t *testing.T) {
 	t.Parallel()
-	_, debt, _ := autoDebtPriceFixture(t, 1_000_000)
-	collateral := autoCollateralPriceFixture(t, 1_000_000)
-	in := fundedAutoFixture(t, debt, collateral)
+	in := fundedAutoFixture(t)
 	in.Markets[0].NativeAPY = 2
 	armFeeAuthorityFixture(t, &in.Snapshot)
 	first := SelectOpportunity(in, SelectorState{})

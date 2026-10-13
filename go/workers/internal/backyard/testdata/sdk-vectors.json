@@ -216,9 +216,7 @@
    "debtWithdrawalCap": 5448,
    "borrowFactor": 5008,
    "loanToValue": 4872,
-   "queuedCollateral": 6968,
-   "globalBorrowValue": 152,
-   "minimumRemainingValue": 3224
+   "queuedCollateral": 6968
   }
  }
 }
