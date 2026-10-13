@@ -121,12 +121,18 @@ func initializationReconcileFixture(t *testing.T) (ExpectedEffects, ConfirmedTra
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The delegate also pays the rent of the farm user state the obligation
+	// registers (Maple's debt farm).
+	const farmRent = 5_323_840
+	farms := obligationFarms(route)
 	pre, post := make([]uint64, count), make([]uint64, count)
 	for i := 0; i < count; i++ {
 		pre[i], post[i] = 1, 1
-		switch encodeBase58(keys[i][:]) {
+		switch address := encodeBase58(keys[i][:]); address {
+		case route.ObligationDebtFarm:
+			pre[i], post[i] = 0, farmRent
 		case bridgeDelegate:
-			pre[i], post[i] = 1_000_000, 995_000
+			pre[i], post[i] = 10_000_000, 10_000_000-5000-uint64(len(farms))*farmRent
 		case bridgeVault:
 			pre[i], post[i] = 100_000_000, 100_000_000-r.RentLamports
 		case route.Kamino.Obligation:

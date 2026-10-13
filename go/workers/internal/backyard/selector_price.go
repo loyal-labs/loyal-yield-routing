@@ -9,6 +9,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // The selector prices a lane from the transactions the executor would send,
@@ -53,10 +54,50 @@ func (p lanePricer) networkMicros(message []byte) (int64, error) {
 	if err != nil {
 		return 0, budgetHoldFrom(err, "message_fee_unpriced")
 	}
+	return p.lamportsMicros(fee)
+}
+
+// lamportsMicros is native SOL in USDC micros.
+func (p lanePricer) lamportsMicros(lamports uint64) (int64, error) {
 	if p.sol.Decimals != 9 {
 		return 0, budgetHold("native_sol_decimal_mismatch")
 	}
-	return p.sol.valueUpper(fee, nativeSOLBudgetAsset, "11111111111111111111111111111111", p.sol.ObservedSlot)
+	return p.sol.valueUpper(lamports, nativeSOLBudgetAsset, "11111111111111111111111111111111", p.sol.ObservedSlot)
+}
+
+// setupMicros is what creating route's obligation costs, the initializer
+// the executor sends before the entry: the obligation's rent, its farm user
+// states' rent and the initializer's network fee.
+func (p lanePricer) setupMicros(ctx context.Context, route RuntimeRoute, blockhash LatestBlockhash) (int64, error) {
+	rent, err := p.rpc.RentExempt(ctx, kamino.ObligationSize)
+	if err != nil {
+		return 0, budgetHoldFrom(err, "initializer_rent_unavailable")
+	}
+	lamports := rent
+	if farms := uint64(len(obligationFarms(route))); farms > 0 {
+		farmRent, err := p.rpc.RentExempt(ctx, kamino.FarmUserStateSize)
+		if err != nil {
+			return 0, budgetHoldFrom(err, "initializer_rent_unavailable")
+		}
+		lamports += farms * farmRent
+	}
+	r, err := p.manifest.initializationRequest(p.policies, route.Lane, blockhash, rent, 1)
+	if err != nil {
+		return 0, err
+	}
+	message, err := p.manifest.compileKaminoInitializationMessage(r)
+	if err != nil {
+		return 0, err
+	}
+	fee, err := p.networkMicros(message)
+	if err != nil {
+		return 0, err
+	}
+	value, err := p.lamportsMicros(lamports)
+	if err != nil {
+		return 0, err
+	}
+	return budgetSum(fee, value)
 }
 
 // lanePrices are a lane's reserve market prices in one refreshed batch:
@@ -221,13 +262,15 @@ func stepStage(quote string, err error) string {
 // entryCost is what a flat vault's entry into a lane is expected to cost its
 // capital: the entry conversion's loss, the sale's loss when the collateral
 // returns to USDC, the network fees of the lane's own transactions (entry
-// swap, deposit, exit step), and the up step the entry levers with, with its
-// unwind (zero at 1x). Voltr's allocate, stage and restore move the
-// same cash for every lane and are not lane costs.
+// swap, deposit, exit step), the up step the entry levers with, with its
+// unwind (zero at 1x), and the creation of an absent obligation (setupMicros).
+// Voltr's allocate, stage and restore move the same cash for every lane and
+// are not lane costs.
 type entryCost struct {
 	EntrySwapLossMicros int64            `json:"entrySwapLossMicros"`
 	ExitSwapLossMicros  int64            `json:"exitSwapLossMicros"`
 	NetworkMicros       int64            `json:"networkMicros"`
+	SetupMicros         int64            `json:"setupMicros,omitempty"`
 	Step                leverageStepCost `json:"step"`
 	TotalMicros         int64            `json:"totalMicros"`
 }
@@ -254,8 +297,10 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 	if err != nil {
 		return q, err
 	}
-	// An absent obligation is created by the lane's initializer before the
-	// entry allocates; a lane without one holds there, so it is no entry.
+	// An absent obligation is a flat position the lane's initializer creates
+	// before the entry allocates (target's obligationPrerequisiteHold), at
+	// the setup cost the entry carries; a lane without one holds there, so
+	// it is no entry.
 	if !position.ObligationPresent && !earnInitializerLane(lane) {
 		return q, budgetHold("selector_destination_obligation_absent")
 	}
@@ -397,7 +442,12 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 			return q, err
 		}
 	}
-	if cost.TotalMicros, err = budgetSum(cost.EntrySwapLossMicros, cost.ExitSwapLossMicros, cost.NetworkMicros, cost.Step.TotalMicros); err != nil {
+	if !position.ObligationPresent {
+		if cost.SetupMicros, err = p.setupMicros(ctx, route, blockhash); err != nil {
+			return q, err
+		}
+	}
+	if cost.TotalMicros, err = budgetSum(cost.EntrySwapLossMicros, cost.ExitSwapLossMicros, cost.NetworkMicros, cost.SetupMicros, cost.Step.TotalMicros); err != nil {
 		return q, err
 	}
 	q.Cost, q.CostRaw = cost, cost.TotalMicros

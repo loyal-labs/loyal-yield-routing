@@ -62,16 +62,30 @@ func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt 
 		return Reconciliation{}, nil, fmt.Errorf("native initialization balances are incomplete")
 	}
 	route, _ := m.route(r.RouteLane)
-	seenPayer, seenVault, seenObligation := false, false, false
+	// The delegate pays the fee and the rent of each farm user state the
+	// obligation registers.
+	farms := map[string]bool{}
+	for _, f := range obligationFarms(route) {
+		farms[f.accounts.ObligationFarmUserState.String()] = true
+	}
+	seenPayer, seenVault, seenObligation, seenFarms := false, false, false, 0
+	var paid, farmRent uint64
 	for i := 0; i < count; i++ {
 		address := encodeBase58(keys[i][:])
 		before, after := n.PreBalances[i], n.PostBalances[i]
+		if farms[address] {
+			if before != 0 || after == 0 {
+				return Reconciliation{}, nil, fmt.Errorf("initializer farm user state rent credit differs")
+			}
+			farmRent, seenFarms = farmRent+after, seenFarms+1
+			continue
+		}
 		switch address {
 		case bridgeDelegate:
-			if i != 0 || before < after || before-after != n.FeeLamports {
+			if i != 0 || before < after {
 				return Reconciliation{}, nil, fmt.Errorf("initializer network fee differs")
 			}
-			seenPayer = true
+			paid, seenPayer = before-after, true
 		case m.vault.squads:
 			if before < after || before-after != r.RentLamports {
 				return Reconciliation{}, nil, fmt.Errorf("initializer vault rent debit differs")
@@ -88,8 +102,11 @@ func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt 
 			}
 		}
 	}
-	if !seenPayer || !seenVault || !seenObligation {
+	if !seenPayer || !seenVault || !seenObligation || seenFarms != len(farms) {
 		return Reconciliation{}, nil, fmt.Errorf("initializer native graph differs")
+	}
+	if paid != n.FeeLamports+farmRent {
+		return Reconciliation{}, nil, fmt.Errorf("initializer network fee differs")
 	}
 	if err = m.validateInitializedKaminoObligation(r, n.Obligation); err != nil {
 		return Reconciliation{}, nil, err

@@ -201,9 +201,11 @@ func messageKeys(message []byte) ([]publicKey, error) {
 	return keys, nil
 }
 
-// decodeExactWire decodes the one wire shape Backyard signs: one signature
-// after a v1 message with one writable required signer and a Squads policy
-// execute by that signer last. The bytes themselves are proven by
+// decodeExactWire decodes a wire whose last instruction is a Squads policy
+// execute (every Backyard wire but a farmed lane's initializer, which
+// registers the obligation's farms after it): one signature after a v1
+// message with one writable required signer and a Squads policy execute by
+// that signer last. The bytes themselves are proven by
 // recompiling the bound build input (validateSignedIdentity).
 func decodeExactWire(wire []byte) ([]byte, []byte, publicKey, publicKey, error) {
 	message, signature, err := splitSignedWire(wire)

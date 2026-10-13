@@ -175,6 +175,35 @@ func TestEntryPricesTheExecutorsLegsWithoutMutatingAccounts(t *testing.T) {
 	}
 }
 
+// A lane whose obligation does not exist yet (a new vault) is a flat
+// position: its entry prices, carrying the initializer that creates the
+// obligation and registers its farm (live 2026-10-13: the looping vault's
+// every lane refused, so it never entered).
+func TestEntryIntoAnAbsentObligationCarriesItsSetup(t *testing.T) {
+	t.Parallel()
+	route, _ := runtimeRoute(SelectedRouteID)
+	m, rpc, client, _ := selectorDestinationFixtureForLane(t, SelectedRouteID, func(accounts []ConfirmedAccount) {
+		for i := range accounts {
+			if a := &accounts[i]; a.Address == route.Kamino.Obligation || a.Address == route.ObligationDebtFarm {
+				a.Lamports, a.Data = 0, nil
+			}
+		}
+	})
+	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(SelectedRouteID), 100_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The vault pays the obligation's rent and the delegate the farm user
+	// state's, both above any network fee.
+	rent := uint64((128+kamino.ObligationSize)*3480*2 + (128+kamino.FarmUserStateSize)*3480*2)
+	if q.Cost.SetupMicros <= 0 || q.CostRaw != q.Cost.NetworkMicros+q.Cost.SetupMicros+q.Cost.Step.TotalMicros {
+		t.Fatalf("entry cost %+v", q.Cost)
+	}
+	if rentOnly, err := testLanePricer(t, rpc, client, m, 42).lamportsMicros(rent); err != nil || q.Cost.SetupMicros <= rentOnly {
+		t.Fatalf("setup %d does not carry the rent %d: %v", q.Cost.SetupMicros, rentOnly, err)
+	}
+}
+
 func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"farm_missing", "farm_frozen", "foreign_user", "foreign_delegate", "reserve_farm", "receipt_authority", "nonflat", "capacity"} {
