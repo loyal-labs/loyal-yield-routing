@@ -18,7 +18,11 @@ import (
 
 // UserState/FarmState fields match farms-sdk 3.2.14 Borsh layouts, including
 // discriminators. A token-loop quote cannot silently assume manual farm setup.
+// An absent obligation has no registration yet: the lane's initializer
+// creates the obligation and registers it with these farms in one
+// transaction (compileKaminoInitializationMessage).
 func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAccount) error {
+	obligationPresent := accountAt(accounts, route.Kamino.Obligation).Lamports != 0
 	for _, pair := range [][2]string{{route.CollateralFarm, route.ObligationCollateralFarm}, {route.DebtFarm, route.ObligationDebtFarm}} {
 		if pair[0] == "" && pair[1] == "" {
 			continue
@@ -31,6 +35,9 @@ func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAcc
 		if farm.Owner != kamino.FarmsProgramID.String() || farm.Executable || farm.Lamports == 0 || len(farm.Data) != 8336 || !bytes.Equal(farm.Data[:8], []byte{198, 102, 216, 74, 63, 66, 163, 190}) ||
 			!sameKey(farm.Data[7328:7360], route.Kamino.MarketAuthority) || farm.Data[7361] != 0 || farm.Data[7362] != 1 {
 			return budgetHold("selector_farm_unavailable")
+		}
+		if !obligationPresent {
+			continue
 		}
 		if state, err := kamino.DecodeFarmUserState(chainAccount(user, user.Address)); err != nil || !sameKey(state.FarmState[:], pair[0]) ||
 			!sameKey(state.Owner[:], v.squads) || !state.IsFarmDelegated || !sameKey(state.Delegatee[:], route.Kamino.Obligation) {

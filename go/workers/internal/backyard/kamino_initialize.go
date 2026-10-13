@@ -22,7 +22,7 @@ type KaminoInitializationRequest struct {
 // compileKaminoInitializationMessage is the initializer of a lane whose
 // obligation Backyard creates (earnInitializerLane): the basic lanes'
 // split initializer policies and the AUTO lanes' KLend policy initializer
-// leg. Any other lane holds.
+// leg, then the obligation's farm registrations. Any other lane holds.
 func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
 	v := m.vault
 	if !earnInitializerLane(r.RouteLane) {
@@ -52,9 +52,15 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	if err != nil {
 		return nil, err
 	}
+	// The created obligation registers with its reserves' farms in the same
+	// transaction: KLend refuses a leg on a farmed reserve without it.
+	instructions := []compiledInstruction{outer}
+	for _, f := range obligationFarms(route) {
+		instructions = append(instructions, kaminoCompiled(kamino.InitObligationFarmsForReserve(f.accounts, f.mode)))
+	}
 	// The eight-constraint installed policy needs the reviewed 64 KiB heap frame
 	// during execute as well as during create (executionBudget).
-	message, err := compileV1Message(mustKey(bridgeDelegate), blockhash, []compiledInstruction{outer}, executionBudget(r.RouteLane, 1))
+	message, err := compileV1Message(mustKey(bridgeDelegate), blockhash, instructions, executionBudget(r.RouteLane, len(instructions)))
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +91,34 @@ func validateInitializedObligationOnRoute(route RuntimeRoute, r KaminoInitializa
 		return fmt.Errorf("initialized obligation state differs from admitted empty Multiply account")
 	}
 	return nil
+}
+
+// obligationFarm is one farm the lane's obligation registers with: its
+// reserve's farm in mode 0 (collateral) or 1 (debt), and the obligation's
+// user state in it.
+type obligationFarm struct {
+	accounts kamino.ObligationFarmsInitAccounts
+	mode     uint8
+}
+
+// obligationFarms are the farms of route's reserves, collateral first. The
+// registration is permissionless: the delegate pays the user state's rent,
+// outside the vault's policy.
+func obligationFarms(route RuntimeRoute) []obligationFarm {
+	k := route.Kamino
+	var out []obligationFarm
+	for _, f := range []struct {
+		reserve, farm, user string
+		mode                uint8
+	}{{k.CollateralReserve, route.CollateralFarm, route.ObligationCollateralFarm, 0}, {k.DebtReserve, route.DebtFarm, route.ObligationDebtFarm, 1}} {
+		if f.farm == "" {
+			continue
+		}
+		out = append(out, obligationFarm{mode: f.mode, accounts: kamino.ObligationFarmsInitAccounts{Payer: kaminoKey(bridgeDelegate), Owner: kaminoKey(k.Vault),
+			Obligation: kaminoKey(k.Obligation), LendingMarketAuthority: kaminoKey(k.MarketAuthority), Reserve: kaminoKey(f.reserve),
+			ReserveFarmState: kaminoKey(f.farm), ObligationFarmUserState: kaminoKey(f.user), LendingMarket: kaminoKey(k.Market)}})
+	}
+	return out
 }
 
 // kaminoRouteInitializer is the lane-independent core: the identical

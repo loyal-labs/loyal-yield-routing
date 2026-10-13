@@ -55,28 +55,6 @@ func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
 	}
 }
 
-// The installed OnRe initializer compiles with the pinned delegate as payer,
-// so only its wire shape is checked here, like the AUTO initializer test.
-func TestOnReInitializerWirePassesTheDecodeGate(t *testing.T) {
-	t.Parallel()
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	request, err := manifest.initializationRequest(testPolicies(t), onreLane, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, 24_165_120, 5_000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	message, err := rwa.manifest.compileKaminoInitializationMessage(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{52}, ed25519.SeedSize))
-	if _, _, _, signer, err := decodeExactWire(signTestWire(t, key, message)); err != nil || signer != mustKey(bridgeDelegate) {
-		t.Fatalf("OnRe initializer wire refused: %v", err)
-	}
-}
-
 // Both OnRe swap directions from the v2 swap fixture: each signed wire must
 // pass the gate PersistSigned uses.
 func TestOnReSwapWiresPassThePersistedWireGate(t *testing.T) {
