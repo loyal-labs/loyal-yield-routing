@@ -62,7 +62,7 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 // leverageCostStages is the closed set of pricing stages an outage names.
 // The cause in a log line or metric label is one of these, never raw RPC,
 // HTTP or URL text.
-var leverageCostStages = map[string]bool{"inputs": true, "policies": true, "blockhash": true, "entry_quote": true, "exit_quote": true, "price": true, "network_fee": true, "deadline": true}
+var leverageCostStages = map[string]bool{"inputs": true, "policies": true, "entry_quote": true, "exit_quote": true, "step_build": true, "price": true, "network_fee": true, "deadline": true}
 
 // leverageCostOutage is a step that could not be priced, at one stage.
 type leverageCostOutage struct {
@@ -99,10 +99,8 @@ func leverageCostOutageReason(err error) string {
 const leverageStepPriceTimeout = 15 * time.Second
 
 // productionLeverageStepPricer prices a held lane's step from o's batch:
-// the up and down steps the executor would assemble for it (priceStep), with
-// the policies and SOL price read once, on the first step it prices.
+// the up and down steps the executor would assemble for it (priceStep).
 func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, s Snapshot) leverageStepPricer {
-	var pricer *lanePricer
 	return func(borrowRaw uint64) (leverageStepCost, error) {
 		ctx, cancel := context.WithTimeout(ctx, leverageStepPriceTimeout)
 		defer cancel()
@@ -110,12 +108,9 @@ func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *
 		if err != nil || o.routeBatch == nil {
 			return leverageStepCost{}, costOutage("inputs", budgetHold("leverage_cost_unavailable"))
 		}
-		if pricer == nil {
-			p, err := newLanePricer(ctx, rpc, view, client, m, s.Slot)
-			if err != nil {
-				return leverageStepCost{}, err
-			}
-			pricer = &p
+		pricer, err := newLanePricer(ctx, rpc, view, client, m, s.Slot)
+		if err != nil {
+			return leverageStepCost{}, err
 		}
 		var topology []string
 		if s.PositionCollateralRaw > 0 {

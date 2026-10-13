@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"math"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -83,6 +84,10 @@ func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrice
 	if usdc.mintDecimals != 6 {
 		return lanePrices{}, budgetHold("usdc_reference_metadata_mismatch")
 	}
+	// One price age holds every valuation, the USDC reference's included.
+	if err := validateKaminoOracleAge(clockUnixTimestamp(accounts), collateral, debt, usdc); err != nil {
+		return lanePrices{}, err
+	}
 	return lanePrices{collateral: collateral.marketPriceSF, debt: debt.marketPriceSF, usdc: usdc.marketPriceSF,
 		collateralDecimals: collateral.mintDecimals, debtDecimals: debt.mintDecimals}, nil
 }
@@ -150,7 +155,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 	st := stepState{route: route, collateral: collateral, slot: uint64(slot), topology: topology}
 	up, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, true, borrowRaw, borrowRaw, slot)
 	if err != nil {
-		return leverageStepCost{}, costOutage("entry_quote", err)
+		return leverageStepCost{}, costOutage(stepStage("entry_quote", err), err)
 	}
 	bought := conversionQuotedOutput(up.Request)
 	receipts, err := payoffReceiptsForLiquidity(collateral.totalLiquiditySF, collateral.collateralMintSupply, bought)
@@ -160,7 +165,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 	st.topology = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 	down, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, false, receipts, bought, slot)
 	if err != nil {
-		return leverageStepCost{}, costOutage("exit_quote", err)
+		return leverageStepCost{}, costOutage(stepStage("exit_quote", err), err)
 	}
 	var legs leverageStepLegs
 	for _, v := range []struct {
@@ -198,6 +203,21 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 	return c, nil
 }
 
+// stepStage names a step pricing failure: step_build when the step the
+// executor would assemble at this size does not build (it does not compile
+// within the key budget, or exceeds a policy leg cap), else the quote's own
+// stage.
+func stepStage(quote string, err error) string {
+	var hold *BudgetHold
+	if errors.As(err, &hold) {
+		switch holdCause(hold) {
+		case "step_does_not_compile", "step_over_policy_cap", "step_amounts_invalid", "step_over_key_limit":
+			return "step_build"
+		}
+	}
+	return quote
+}
+
 // entryCost is what a flat vault's entry into a lane is expected to cost its
 // capital: the entry conversion's loss, the sale's loss when the collateral
 // returns to USDC, the network fees of the lane's own legs (entry swap,
@@ -233,6 +253,11 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 	slot, accounts, position, err := selectorDestinationAccounts(ctx, p.rpc, p.view, route, s.Slot)
 	if err != nil {
 		return q, err
+	}
+	// An absent obligation is created by the lane's initializer before the
+	// entry allocates; a lane without one holds there, so it is no entry.
+	if !position.ObligationPresent && !earnInitializerLane(lane) {
+		return q, budgetHold("selector_destination_obligation_absent")
 	}
 	if slot > q.ValidThroughSlot {
 		return q, budgetHold("selector_quote_observation_expired")

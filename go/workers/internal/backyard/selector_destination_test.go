@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -211,5 +212,34 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 				t.Fatal("unready lane priced")
 			}
 		})
+	}
+}
+
+// One price age holds every valuation: a reserve price past the oracle age
+// prices nothing, the USDC reference's included.
+func TestLanePricesRefuseAStalePrice(t *testing.T) {
+	t.Parallel()
+	_, _, _, accounts := selectorDestinationFixture(t)
+	route, _ := runtimeRoute(SelectedRouteID)
+	if _, err := batchLanePrices(accounts, route); err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.DebtReserve).Data[264:272], uint64(1000-kaminoOracleMaxAgeSecs-1))
+	if _, err := batchLanePrices(accounts, route); !errors.Is(err, errKaminoOracleStale) {
+		t.Fatalf("a stale USDC price valued the lane: %v", err)
+	}
+}
+
+// A step the executor cannot assemble at this size is named step_build, not
+// a quote outage.
+func TestStepBuildRefusalsAreNamed(t *testing.T) {
+	t.Parallel()
+	for cause, want := range map[string]string{"step_does_not_compile": "step_build", "step_over_policy_cap": "step_build", "jupiter_auto_wire_floor_zero": "entry_quote"} {
+		if got := stepStage("entry_quote", budgetHold(cause)); got != want {
+			t.Fatalf("%s: %s", cause, got)
+		}
+	}
+	if got := leverageCostOutageReason(costOutage(stepStage("exit_quote", budgetHold("step_over_policy_cap")), budgetHold("step_over_policy_cap"))); got != "leverage_cost_unavailable(step_build)" {
+		t.Fatal(got)
 	}
 }

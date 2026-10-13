@@ -203,7 +203,7 @@ type MoveQuote struct {
 // re-measured (48/49 slots) and a quote stored under 49 must stay a valid
 // record when it later reads 48 (live 2026-09-29: the worker exited on
 // invalid_selector_entry). Freshness for new spending is still
-// currentAtSlot at the current slot, in applySelectorEntry and admission.
+// currentAtSlot at the current slot, in target() and the canary.
 func (q MoveQuote) storedWindowValid() bool {
 	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot && q.ValidThroughSlot-q.SampleSlot <= budgetMaxObservationLagCeilingSlots
 }

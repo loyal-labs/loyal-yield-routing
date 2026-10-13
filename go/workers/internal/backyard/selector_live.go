@@ -137,7 +137,9 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 					sufficient = true
 					break
 				}
-				size = selectorNextLadderSize(size, uint64(max(q.Cost.EntrySwapLossMicros, 0)))
+				// The quote may be clamped below size (deposit room): the next
+				// rung steps down from what was actually priced.
+				size = selectorNextLadderSize(min(size, uint64(q.EquityRaw)), uint64(max(q.Cost.EntrySwapLossMicros, 0)))
 			}
 			if collected, refusal = selectorLadderOutcome(collected, sufficient, smallerUnavailable, refusal); len(collected) > 0 {
 				laddered[i] = collected

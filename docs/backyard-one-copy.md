@@ -58,12 +58,17 @@ The selector prices a lane from the transactions the executor would send
   and the two transactions' fees (`lanePricer.priceStep`). The level decision
   prices an up step this way;
 - a flat vault's entry is the entry swap step's own quote, the deposit, the
-  level rule's up step to 1.5x when the spread rule levers the lane, and the
+  up step to 1.5x when the live spread rule levers the lane (the level
+  decision still judges that step's gain against its cost), and the
   sale of the collateral back to USDC (`lanePricer.priceEntry`). Its cost is
   one expected figure (`MoveQuote.CostRaw`); execution bounds (a conversion's
   minimum output) stay on the transactions, simulated before they are sent.
   The entry is sized by the deposit room the tick's observation gives the
-  lane (`topupDepositRoomUSDC`).
+  lane (`topupDepositRoomUSDC`), and a lane whose obligation is absent
+  without an initializer is no entry.
+- a step the executor cannot assemble at the priced size (key budget, a
+  policy leg cap) is `leverage_cost_unavailable(step_build)`, an outage that
+  keeps the stored approval like any other.
 
 Gone: the multi-leg entry recipe (twenty-odd separately priced messages with
 receipt-rounding and debt-accrual windows), the six-transaction step pricer,
