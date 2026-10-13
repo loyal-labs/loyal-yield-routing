@@ -29,7 +29,7 @@ func newFreshScenario(t *testing.T, suffix string, idleRaw int64) freshScenario 
 	seeded := seedIntegrationTarget(t, store, suffix)
 	seedProjectedSurplus(t, store, seeded, 1, 9_000_000)
 	reserve := suffix + "-reserve"
-	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET recurring_delegation='itest-delegation' WHERE id=$1`, seeded.TargetID); err != nil {
+	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET recurring_delegation='itest-delegation',recurring_delegation_nonce=1 WHERE id=$1`, seeded.TargetID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.pool.Exec(ctx, `

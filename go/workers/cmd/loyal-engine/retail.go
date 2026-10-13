@@ -381,9 +381,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Autodeposit worker", err)
 	}
-	artifactReader := &autodeposit.ArtifactProofReader{Wires: wires, History: cluster}
-	artifacts := &autodeposit.ArtifactReconciler{Store: aStore, Reader: artifactReader}
-	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, Artifacts: artifacts, OnError: func(err error) {
+	control := &autodeposit.ControlReconciler{Store: aStore, Reader: wires, OnError: func(err error) {
 		slog.Error("retail lane tick failed", "family", engine.FamilyAutodeposit, "lane", "autodeposit_control", "error", engine.ErrorText(err))
 	}, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
 	cConfig := cfg.fleetConfig()

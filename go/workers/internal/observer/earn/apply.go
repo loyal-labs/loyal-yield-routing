@@ -440,8 +440,9 @@ func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
 	if err != nil {
 		return err
 	}
-	// The position identity is unique across repeated Earn lifecycles; a
-	// closed row is reactivated rather than colliding with the initial index.
+	// A vault has one position: its one active row (a unique index), else its
+	// latest closed row, reactivated rather than colliding with the initial
+	// index.
 	var existing struct {
 		id                   int64
 		reserve, mint        string
@@ -454,10 +455,9 @@ func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
                    current_amount_raw, current_observed_slot, current_observed_at
             FROM loyal_yield.user_yield_positions
             WHERE settings = $1 AND vault_index = $2
-              AND wallet_address = $3 AND vault_pubkey = $4
-            ORDER BY updated_at DESC, id DESC
+            ORDER BY status = 'active' DESC, updated_at DESC, id DESC
             LIMIT 1
-            FOR UPDATE`, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.Wallet, m.RoutePolicy.VaultPubkey).
+            FOR UPDATE`, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex)).
 		Scan(&existing.id, &existing.reserve, &existing.market, &existing.mint, &existing.amount, &existing.observedSlot, &existing.observedAt)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err

@@ -7,8 +7,7 @@ import (
 func TestTopUpRecoveryClassification(t *testing.T) {
 	holds := AttemptConfirmed
 	failed := AttemptFailed
-	unknown := AttemptUnknown
-	ambiguous := AttemptAmbiguous
+	submitted := AttemptSubmitted
 	five, three, four := int64(5_000_000), int64(3_000_000), int64(4_000_000)
 
 	cases := []struct {
@@ -21,8 +20,7 @@ func TestTopUpRecoveryClassification(t *testing.T) {
 		want     TopUpRecoveryAction
 	}{
 		{"live attempt owns the deposit even when the balance looks short", &holds, 0, four, ptrInt64(1_000_000), 0, TopUpReconcilePersisted},
-		{"ambiguous attempt is reconciled, never re-prepared", &ambiguous, 0, four, nil, 0, TopUpReconcilePersisted},
-		{"unknown attempt is reconciled, not replaced", &unknown, 0, four, nil, 0, TopUpReconcilePersisted},
+		{"submitted attempt is reconciled, not replaced", &submitted, 0, four, nil, 0, TopUpReconcilePersisted},
 		{"vault below the planned amount cannot be explained", &failed, three, four, nil, 0, TopUpEffectAmbiguous},
 		{"vault short of the snapshot with no sibling deposit is ambiguous", &failed, three, four, ptrInt64(five), 0, TopUpEffectAmbiguous},
 		{"a confirmed sibling deposit explains the missing snapshot balance", &failed, three, three, ptrInt64(five), 2_000_000, TopUpPrepareOrRequeue},

@@ -33,21 +33,13 @@ func TestUnknownOutcomeNeverProvesCompletion(t *testing.T) {
 	}
 }
 
-func TestClaimHoldingAndRecoverableAttemptStates(t *testing.T) {
+func TestClaimHoldingAttemptStates(t *testing.T) {
 	// A confirmed pull has already moved funds out of the wallet, so the claim
-	// must survive a restart; ambiguous is claim-holding but never auto-retried.
-	for _, state := range []AttemptState{AttemptPrepared, AttemptSubmitted, AttemptConfirmed, AttemptUnknown, AttemptAmbiguous} {
-		if !AttemptHoldsClaim(state) {
+	// must survive a restart and a restarted worker resumes it.
+	for _, state := range []AttemptState{AttemptPrepared, AttemptSubmitted, AttemptConfirmed} {
+		if !AttemptHoldsClaim(state) || !containsState(ClaimHoldingPullAttemptStates, string(state)) {
 			t.Fatalf("attempt state %q must hold the claim", state)
 		}
-	}
-	for _, state := range []AttemptState{AttemptPrepared, AttemptSubmitted, AttemptConfirmed, AttemptUnknown} {
-		if !containsState(AutomaticPullRecoveryStates, string(state)) {
-			t.Fatalf("attempt state %q must be automatically recoverable after a restart", state)
-		}
-	}
-	if containsState(AutomaticPullRecoveryStates, string(AttemptAmbiguous)) {
-		t.Fatal("ambiguous broadcast must require an operator, never an automatic resend")
 	}
 	for _, state := range []AttemptState{AttemptFailed, AttemptExpired} {
 		if AttemptHoldsClaim(state) {
@@ -55,14 +47,6 @@ func TestClaimHoldingAndRecoverableAttemptStates(t *testing.T) {
 		}
 		if !AttemptAllowsSafeRequeue(state) {
 			t.Fatalf("conclusive state %q must allow a fresh attempt", state)
-		}
-	}
-	if AlertForAttemptState(AttemptAmbiguous) == nil {
-		t.Fatal("ambiguous effect must alert for reconciliation")
-	}
-	for _, state := range []AttemptState{AttemptConfirmed, AttemptFailed, AttemptExpired, AttemptUnknown, AttemptPrepared} {
-		if AlertForAttemptState(state) != nil {
-			t.Fatalf("attempt state %q must not page", state)
 		}
 	}
 }

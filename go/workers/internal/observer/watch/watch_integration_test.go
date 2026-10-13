@@ -33,7 +33,6 @@ func TestLoaderRegisteredYieldCompleteWatchCoverage(t *testing.T) {
 	delegation := f.key("delegation")
 	pausedATA := f.autodeposit(f.identity(), false, "pending", "mainnet-beta", nil, &delegation)
 	closedATA := f.autodeposit(f.identity(), false, "closed", "mainnet-beta", nil, nil)
-	devnetATA := f.autodeposit(devnetOwner, true, "active", "devnet", nil, nil)
 	max := f.earnMax()
 	set, err := NewLoader(f.yield, "mainnet-beta").Load(f.ctx)
 	if err != nil {
@@ -51,7 +50,7 @@ func TestLoaderRegisteredYieldCompleteWatchCoverage(t *testing.T) {
 	if len(set.ATAs) != 1 || set.ATAs[activeATA.walletATA].ID != activeATA.id {
 		t.Fatalf("enabled ATA coverage: %#v", set.ATAs)
 	}
-	for _, omitted := range []string{pausedATA.walletATA, closedATA.walletATA, devnetATA.walletATA} {
+	for _, omitted := range []string{pausedATA.walletATA, closedATA.walletATA} {
 		if slices.Contains(set.Channels[BalanceSweepWalletATAs], omitted) {
 			t.Fatal("nonenabled ATA entered pull channel")
 		}

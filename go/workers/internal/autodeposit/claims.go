@@ -56,7 +56,7 @@ func SweepDecisionReason(decision SweepAmountDecision) string {
 // concurrent claim on another worker sees them gone. The claim row, its lot
 // items, the decremented lots, the residual slot and the selected slot commit
 // atomically: custody is never half-taken.
-func (s *Store) ClaimEligibleLotsOnce(ctx context.Context, targetID int64, claimToken string, scheduledSlotID *int64, walletBalanceRaw, walletBalanceFloorRaw int64, maxAmountPerPeriodRaw, remainingAllowanceRaw *int64) (ClaimOutcome, error) {
+func (s *Store) ClaimEligibleLotsOnce(ctx context.Context, targetID int64, claimToken string, scheduledSlotID int64, walletBalanceRaw, walletBalanceFloorRaw int64, maxAmountPerPeriodRaw, remainingAllowanceRaw *int64) (ClaimOutcome, error) {
 	var outcome ClaimOutcome
 	if s == nil || s.pool == nil {
 		return outcome, errors.New("autodeposit store has no database pool")
@@ -130,15 +130,13 @@ SELECT EXISTS (
 			return nil
 		}
 
-		if scheduledSlotID != nil {
-			available, err := lockExecutableSlot(ctx, tx, targetID, *scheduledSlotID)
-			if err != nil {
-				return err
-			}
-			if !available {
-				outcome = noopClaim(targetID, "scheduled_slot_not_available")
-				return nil
-			}
+		available, err := lockExecutableSlot(ctx, tx, targetID, scheduledSlotID)
+		if err != nil {
+			return err
+		}
+		if !available {
+			outcome = noopClaim(targetID, "scheduled_slot_not_available")
+			return nil
 		}
 
 		openLots, err := lockEligibleLots(ctx, tx, targetID, scheduledSlotID)
@@ -217,10 +215,13 @@ WHERE id = $1
 			}
 		}
 
-		if err := moveResidualOpenLotsToNextSlot(ctx, tx, scheduledSlotID); err != nil {
-			return err
+		if _, err := tx.Exec(ctx, `
+UPDATE loyal_yield.balance_sweep_scheduled_slots
+SET status = 'selected', claim_token = $2, last_error = NULL, idle_blocked_since = NULL, updated_at = now()
+WHERE id = $1`, scheduledSlotID, claimToken); err != nil {
+			return fmt.Errorf("mark autodeposit slot selected: %w", err)
 		}
-		if err := markSlotSelected(ctx, tx, scheduledSlotID, claimToken); err != nil {
+		if err := moveResidualOpenLots(ctx, tx, targetID, scheduledSlotID); err != nil {
 			return err
 		}
 
@@ -325,7 +326,7 @@ type lockedLot struct {
 	RemainingAmountRaw int64
 }
 
-func lockEligibleLots(ctx context.Context, tx pgx.Tx, targetID int64, scheduledSlotID *int64) ([]lockedLot, error) {
+func lockEligibleLots(ctx context.Context, tx pgx.Tx, targetID, scheduledSlotID int64) ([]lockedLot, error) {
 	rows, err := tx.Query(ctx, `
 SELECT lot.id, lot.remaining_amount_raw
 FROM loyal_yield.balance_sweep_surplus_lots AS lot
@@ -338,8 +339,7 @@ WHERE lot.target_id = $1
   AND target.token_mint = $2
   AND lot.status = 'open'
   AND lot.remaining_amount_raw > 0
-  AND ($3::bigint IS NOT NULL OR lot.eligible_after <= now())
-  AND ($3::bigint IS NULL OR lot.scheduled_slot_id = $3::bigint)
+  AND lot.scheduled_slot_id = $3
 ORDER BY lot.eligible_after ASC, lot.created_at ASC, lot.id ASC
 FOR UPDATE SKIP LOCKED`, targetID, USDCMint, scheduledSlotID)
 	if err != nil {
@@ -357,73 +357,28 @@ FOR UPDATE SKIP LOCKED`, targetID, USDCMint, scheduledSlotID)
 	return lots, rows.Err()
 }
 
-// moveResidualOpenLotsToNextSlot keeps unswept open lots schedulable in a fresh
-// slot once their slot is taken by a claim, so a partial sweep never strands the
-// remainder behind a selected slot.
-func moveResidualOpenLotsToNextSlot(ctx context.Context, tx pgx.Tx, scheduledSlotID *int64) error {
-	if scheduledSlotID == nil {
+// moveResidualOpenLots keeps unswept open lots schedulable on the target's
+// one open slot once their slot is taken by a claim, so a partial sweep never
+// strands the remainder behind a selected slot.
+func moveResidualOpenLots(ctx context.Context, tx pgx.Tx, targetID, selectedSlotID int64) error {
+	var due *time.Time
+	if err := tx.QueryRow(ctx, `
+SELECT MAX(eligible_after) FROM loyal_yield.balance_sweep_surplus_lots
+WHERE scheduled_slot_id = $1 AND status = 'open' AND remaining_amount_raw > 0`, selectedSlotID).Scan(&due); err != nil {
+		return fmt.Errorf("read residual autodeposit lots: %w", err)
+	}
+	if due == nil {
 		return nil
 	}
-	tag, err := tx.Exec(ctx, `
-WITH residual AS (
-    SELECT
-        slot.target_id,
-        slot.token_mint,
-        MAX(lot.eligible_after) AS eligible_after
-    FROM loyal_yield.balance_sweep_scheduled_slots AS slot
-    JOIN loyal_yield.balance_sweep_surplus_lots AS lot
-      ON lot.scheduled_slot_id = slot.id
-    WHERE slot.id = $1
-      AND lot.status = 'open'
-      AND lot.remaining_amount_raw > 0
-    GROUP BY slot.target_id, slot.token_mint
-),
-inserted_slot AS (
-    INSERT INTO loyal_yield.balance_sweep_scheduled_slots
-        (target_id, token_mint, eligible_after, status)
-    SELECT target_id, token_mint, eligible_after, 'scheduled'
-    FROM residual
-    RETURNING id
-)
-UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
-SET scheduled_slot_id = inserted_slot.id,
-    updated_at = now()
-FROM inserted_slot
-WHERE lot.scheduled_slot_id = $1
-  AND lot.status = 'open'
-  AND lot.remaining_amount_raw > 0`, *scheduledSlotID)
+	slotID, err := openSlotFor(ctx, tx, targetID, *due)
 	if err != nil {
-		return fmt.Errorf("reschedule residual autodeposit lots: %w", err)
+		return err
 	}
-	_ = tag
-	return nil
-}
-
-func markSlotSelected(ctx context.Context, tx pgx.Tx, scheduledSlotID *int64, claimToken string) error {
-	_, err := tx.Exec(ctx, `
-UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
-SET status = 'selected',
-    claim_token = $2,
-    last_error = NULL,
-    updated_at = now()
-WHERE (
-      $1::bigint IS NOT NULL
-      AND slot.id = $1::bigint
-      AND slot.status IN ('scheduled', 'requested')
-)
-   OR (
-      $1::bigint IS NULL
-      AND slot.id IN (
-          SELECT DISTINCT lot.scheduled_slot_id
-          FROM loyal_yield.balance_sweep_lot_claim_items AS item
-          JOIN loyal_yield.balance_sweep_surplus_lots AS lot
-            ON lot.id = item.lot_id
-          WHERE item.claim_token = $2
-            AND lot.scheduled_slot_id IS NOT NULL
-      )
-   )`, scheduledSlotID, claimToken)
-	if err != nil {
-		return fmt.Errorf("mark autodeposit slot selected: %w", err)
+	if _, err := tx.Exec(ctx, `
+UPDATE loyal_yield.balance_sweep_surplus_lots
+SET scheduled_slot_id = $2, updated_at = now()
+WHERE scheduled_slot_id = $1 AND status = 'open' AND remaining_amount_raw > 0`, selectedSlotID, slotID); err != nil {
+		return fmt.Errorf("reschedule residual autodeposit lots: %w", err)
 	}
 	return nil
 }
@@ -666,57 +621,11 @@ WHERE claim.claim_token = $1`, claimToken, leaseToken, ClaimHoldingPullAttemptSt
 		if !unspent {
 			return fmt.Errorf("%w: claim %s has a holding pull attempt or execution", ErrClaimCustodyHeld, claimToken)
 		}
-		if len(outcome.Lots) == 0 {
-			outcome.Reason = "claim_has_no_supported_lots"
-			return nil
-		}
-		tag, err := tx.Exec(ctx, `
-WITH matched_items AS (
-    SELECT item.lot_id, item.amount_raw
-    FROM loyal_yield.balance_sweep_lot_claim_items AS item
-    JOIN loyal_yield.balance_sweep_surplus_lots AS lot
-      ON lot.id = item.lot_id
-    JOIN loyal_yield.balance_sweep_wallet_balance_events AS event
-      ON event.event_id = lot.source_event_id
-    JOIN loyal_yield.balance_sweep_lot_claims AS claim
-      ON claim.claim_token = item.claim_token
-    JOIN loyal_yield.balance_sweep_targets AS target
-      ON target.id = claim.target_id
-    WHERE item.claim_token = $1
-      AND lot.target_id = claim.target_id
-      AND event.mint = target.token_mint
-      AND target.token_mint = $2
-),
-restored AS (
-    UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
-    SET remaining_amount_raw = LEAST(
-            lot.original_amount_raw,
-            lot.remaining_amount_raw + item.amount_raw
-        ),
-        status = 'open',
-        eligible_after = GREATEST(lot.eligible_after, now() + $3 * interval '1 second'),
-        updated_at = now()
-    FROM matched_items AS item
-    WHERE lot.id = item.lot_id
-    RETURNING lot.id
-)
-UPDATE loyal_yield.balance_sweep_lot_claims
-SET status = 'released',
-	autodeposit_executor_lease_token = NULL,
-	autodeposit_executor_lease_expires_at = NULL,
-    updated_at = now()
-WHERE claim_token = $1
-  AND status = 'selected'
-  AND EXISTS (SELECT 1 FROM restored)`, claimToken, USDCMint, int64(PreSendRetryDelay/time.Second))
+		released, err := releaseClaimCustody(ctx, tx, claimToken, PreSendRetryDelay)
 		if err != nil {
-			return fmt.Errorf("release autodeposit claim: %w", err)
+			return err
 		}
-		if tag.RowsAffected() > 0 {
-			if err := rescheduleReleasedSlot(ctx, tx, claimToken); err != nil {
-				return err
-			}
-		}
-		if tag.RowsAffected() == 0 {
+		if !released {
 			outcome.Reason = "claim_has_no_supported_lots"
 			return nil
 		}
@@ -729,64 +638,94 @@ WHERE claim_token = $1
 	return outcome, nil
 }
 
-// rescheduleReleasedSlot undoes the claim's slot split: the open lots that
-// moveResidualOpenLotsToNextSlot put on a fresh slot return to the claimed
-// slot, the untouched fresh slot is canceled, and the claimed slot is
-// scheduled again after PreSendRetryDelay. Failing the slot instead left one
-// dead slot per attempt and an undelayed residual, so a target blocked at
-// preflight grew ~540 slots a day and retried every other poll (target 7940,
-// Oct 2026).
-func rescheduleReleasedSlot(ctx context.Context, tx pgx.Tx, claimToken string) error {
-	var slotID int64
-	err := tx.QueryRow(ctx, `
-SELECT id FROM loyal_yield.balance_sweep_scheduled_slots
+// releaseClaimCustody returns an unspent claim's lots to the open pool, ends
+// the claim and schedules its slot again, neither eligible before delay. The
+// target's other open slot, which took inflows and the claim's residual lots
+// while the claim held its slot, merges back into it (and hands over a user
+// request), so the target keeps one open slot. Failing the slot instead left
+// one dead slot per attempt and stranded its lots, so a target blocked at
+// preflight grew ~540 slots a day (target 7940, Oct 2026).
+func releaseClaimCustody(ctx context.Context, tx pgx.Tx, claimToken string, delay time.Duration) (bool, error) {
+	seconds := int64(delay / time.Second)
+	tag, err := tx.Exec(ctx, `
+WITH restored AS (
+    UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
+    SET remaining_amount_raw = LEAST(lot.original_amount_raw, lot.remaining_amount_raw + item.amount_raw),
+        status = 'open',
+        eligible_after = GREATEST(lot.eligible_after, now() + $2 * interval '1 second'),
+        updated_at = now()
+    FROM loyal_yield.balance_sweep_lot_claim_items AS item
+    JOIN loyal_yield.balance_sweep_lot_claims AS claim ON claim.claim_token = item.claim_token
+    WHERE item.claim_token = $1
+      AND lot.id = item.lot_id
+      AND lot.target_id = claim.target_id
+    RETURNING lot.id
+)
+UPDATE loyal_yield.balance_sweep_lot_claims
+SET status = 'released',
+    autodeposit_executor_lease_token = NULL,
+    autodeposit_executor_lease_expires_at = NULL,
+    updated_at = now()
 WHERE claim_token = $1
-FOR UPDATE`, claimToken).Scan(&slotID)
+  AND status = 'selected'
+  AND EXISTS (SELECT 1 FROM restored)`, claimToken, seconds)
+	if err != nil {
+		return false, fmt.Errorf("release autodeposit claim: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	var slotID, targetID int64
+	err = tx.QueryRow(ctx, `
+SELECT id, target_id FROM loyal_yield.balance_sweep_scheduled_slots
+WHERE claim_token = $1
+FOR UPDATE`, claimToken).Scan(&slotID, &targetID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return true, nil
 	}
 	if err != nil {
-		return fmt.Errorf("lock released autodeposit slot: %w", err)
+		return false, fmt.Errorf("lock released autodeposit slot: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-WITH residual AS (
-    UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
-    SET status = 'canceled',
-        last_error = 'merged back into released slot ' || $2::bigint,
-        updated_at = now()
-    FROM loyal_yield.balance_sweep_lot_claims AS claim
-    -- The residual slot is inserted in the claim's transaction, so both rows
-    -- carry the same now(); it may hold lots the claim never touched.
-    WHERE claim.claim_token = $1
-      AND slot.target_id = claim.target_id
-      AND slot.created_at = claim.created_at
-      AND slot.id <> $2
-      AND slot.status = 'scheduled'
-      AND slot.request_source IS NULL
-      AND slot.claim_token IS NULL
-      AND slot.execution_id IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
-        WHERE attempt.scheduled_slot_id = slot.id)
-    RETURNING slot.id
+	// While the claim held its slot, inflows and its residual lots went to the
+	// target's one other open slot; it merges back here.
+	var otherID int64
+	var otherRequested bool
+	var otherSource *string
+	var otherRequestedAt, otherDue *time.Time
+	err = tx.QueryRow(ctx, `
+SELECT id, status = 'requested', request_source, requested_at, eligible_after
+FROM loyal_yield.balance_sweep_scheduled_slots
+WHERE target_id = $2 AND id <> $1 AND status IN ('scheduled', 'requested')
+FOR UPDATE`, slotID, targetID).Scan(&otherID, &otherRequested, &otherSource, &otherRequestedAt, &otherDue)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("lock open autodeposit slot after release: %w", err)
+	}
+	if err == nil {
+		if _, err := tx.Exec(ctx, `
+WITH merged_lots AS (
+    UPDATE loyal_yield.balance_sweep_surplus_lots
+    SET scheduled_slot_id = $1, updated_at = now()
+    WHERE scheduled_slot_id = $2 AND status = 'open'
 )
-UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
-SET scheduled_slot_id = $2, updated_at = now()
-WHERE lot.scheduled_slot_id IN (SELECT id FROM residual)
-  AND lot.status = 'open'`, claimToken, slotID); err != nil {
-		return fmt.Errorf("merge residual autodeposit slot after release: %w", err)
+UPDATE loyal_yield.balance_sweep_scheduled_slots
+SET status = 'canceled', last_error = 'merged back into released slot ' || $1::bigint, updated_at = now()
+WHERE id = $2`, slotID, otherID); err != nil {
+			return false, fmt.Errorf("merge open autodeposit slot after release: %w", err)
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_scheduled_slots
-SET status = 'scheduled',
+SET status = CASE WHEN $3 THEN 'requested'::loyal_yield.balance_sweep_scheduled_slot_status ELSE 'scheduled' END,
+    request_source = COALESCE($4, request_source),
+    requested_at = COALESCE($5, requested_at),
     claim_token = NULL,
-    eligible_after = GREATEST(eligible_after, now() + $2 * interval '1 second'),
+    eligible_after = GREATEST(eligible_after, now() + $2 * interval '1 second', $6),
     last_error = 'claim released before autodeposit pull',
     updated_at = now()
-WHERE id = $1`, slotID, int64(PreSendRetryDelay/time.Second)); err != nil {
-		return fmt.Errorf("reschedule autodeposit slot after release: %w", err)
+WHERE id = $1`, slotID, seconds, otherRequested, otherSource, otherRequestedAt, otherDue); err != nil {
+		return false, fmt.Errorf("reschedule autodeposit slot after release: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // ErrClaimCustodyHeld distinguishes a financial hold from executor ownership.

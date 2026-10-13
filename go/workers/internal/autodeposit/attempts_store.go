@@ -267,8 +267,7 @@ type PreparedAttempt struct {
 // transaction. An existing active attempt always wins: it may already be in
 // flight, and a second wire for the same operation would create two competing
 // spends. A new row is inserted only while this executor still owns the claim
-// lease and — for pulls — while no fleet idle-deposit decision is concurrently
-// moving the same vault balance.
+// lease and the target's route policy is active.
 func (s *Store) PersistPreparedAttempt(ctx context.Context, prepared PreparedAttempt, leaseToken string) (DurableAttempt, error) {
 	if prepared.AmountRaw <= 0 || prepared.Signature == "" || prepared.SignedTransactionBase64 == "" {
 		return DurableAttempt{}, errors.New("prepared autodeposit attempt is missing its signed wire")
@@ -309,22 +308,20 @@ WHERE target.id = $1`, prepared.TargetID)
 		}
 		// Serialize user control changes with new signed pull publication. The
 		// fresh checks apply only to inserted wire, never adoption/recovery.
-		var admissionActive, namespaceKnown bool
+		var admissionActive bool
 		var floor, maximum *int64
-		if err := tx.QueryRow(ctx, `SELECT desired_active AND chain_status='active',wallet_balance_floor_raw,max_amount_per_period,COALESCE(cluster='mainnet-beta',false)
- FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, prepared.TargetID).Scan(&admissionActive, &floor, &maximum, &namespaceKnown); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT desired_active AND chain_status='active',wallet_balance_floor_raw,max_amount_per_period
+ FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, prepared.TargetID).Scan(&admissionActive, &floor, &maximum); err != nil {
 			return fmt.Errorf("lock autodeposit pull controls: %w", err)
 		}
 		pullAllowed := prepared.OperationKind != OperationPull || (admissionActive && floor != nil && prepared.ProtectionFloorRaw != nil &&
 			*floor == *prepared.ProtectionFloorRaw && prepared.SourcePreBalanceRaw-prepared.AmountRaw >= *floor &&
 			(maximum == nil || prepared.AmountRaw <= *maximum))
-		policyScoped := true
-		if err := lockMainnetPolicy(ctx, tx, prepared.TargetID); errors.Is(err, ErrChainNamespace) {
-			policyScoped = false
-		} else if err != nil {
+		policyScoped, err := lockRoutePolicy(ctx, tx, prepared.TargetID)
+		if err != nil {
 			return err
 		}
-		pullAllowed = pullAllowed && namespaceKnown && policyScoped
+		pullAllowed = pullAllowed && policyScoped
 		rows, err := tx.Query(ctx, `
 WITH guarded_claim AS (
   UPDATE loyal_yield.balance_sweep_lot_claims
@@ -344,7 +341,7 @@ existing_active AS (
   FROM loyal_yield.balance_sweep_transaction_attempts
   WHERE claim_token = $1
     AND operation_kind = $4
-    AND attempt_state IN ('prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous')
+    AND attempt_state IN ('prepared', 'submitted', 'confirmed')
   ORDER BY attempt_number DESC
   LIMIT 1
 ),
@@ -369,20 +366,6 @@ inserted AS (
   CROSS JOIN guarded_claim
   WHERE NOT EXISTS (SELECT 1 FROM existing_active)
     AND $15::boolean
-    AND ($4 <> 'pull' OR NOT EXISTS (
-      SELECT 1
-      FROM loyal_yield.balance_sweep_targets AS target
-      JOIN loyal_yield.managed_vaults AS vault
-        ON vault.settings = target.settings
-       AND vault.vault_index = target.vault_index
-       AND vault.vault_pubkey = target.vault_pubkey
-      JOIN loyal_yield.rebalance_decisions AS fleet_decision
-        ON fleet_decision.vault_id = vault.id
-       AND fleet_decision.liquidity_mint = target.token_mint
-       AND fleet_decision.status::text IN ('planned', 'simulating', 'ready', 'submitted', 'confirming')
-       AND fleet_decision.execution_plan ->> 'kind' = 'idle_vault_deposit'
-      WHERE target.id = $2
-    ))
   ON CONFLICT DO NOTHING
   RETURNING id, claim_token, operation_kind, attempt_number, execution_id, amount_raw,
          source_pre_balance_raw, destination_pre_balance_raw, signature,
@@ -407,8 +390,8 @@ LIMIT 1`,
 			return err
 		}
 		if attempt == nil {
-			if !namespaceKnown || !policyScoped {
-				return ErrChainNamespace
+			if !policyScoped {
+				return ErrRoutePolicyMissing
 			}
 			return fmt.Errorf("%w: could not acquire idle ownership for durable %s attempt on claim %s", ErrOwnershipLost, prepared.OperationKind, prepared.ClaimToken)
 		}
@@ -436,7 +419,7 @@ SET attempt_state = 'submitted',
 WHERE id = $1
   AND signature = $2
   AND signed_transaction_sha256 = $3
-  AND attempt_state IN ('prepared', 'submitted', 'unknown', 'ambiguous')
+  AND attempt_state IN ('prepared', 'submitted')
   AND EXISTS (
     SELECT 1
     FROM loyal_yield.balance_sweep_lot_claims AS claim
@@ -489,7 +472,7 @@ SET attempt_state = $2,
 WHERE id = $1
   AND signature = $5
   AND signed_transaction_sha256 = $6
-  AND attempt_state IN ('prepared', 'submitted', 'unknown', 'ambiguous')
+  AND attempt_state IN ('prepared', 'submitted')
   AND EXISTS (
     SELECT 1
     FROM loyal_yield.balance_sweep_lot_claims AS claim
@@ -557,7 +540,7 @@ WHERE attempt.claim_token = $1
   AND attempt.target_id = $2
   AND attempt.scheduled_slot_id = $3
   AND attempt.operation_kind = 'pull'
-  AND attempt.attempt_state IN ('prepared', 'submitted', 'confirmed', 'unknown', 'ambiguous')
+  AND attempt.attempt_state IN ('prepared', 'submitted', 'confirmed')
 ORDER BY attempt.attempt_number DESC
 LIMIT 1`, claimToken, targetID, scheduledSlotID)
 	if err != nil {
@@ -617,4 +600,24 @@ WHERE target_id = $1
 		return 0, fmt.Errorf("load confirmed sibling autodeposit top-ups: %w", err)
 	}
 	return total, nil
+}
+
+// ErrRoutePolicyMissing refuses a new wire for a target whose vault has no
+// active mainnet same_mint_kamino route policy. Signed wires stay recoverable.
+var ErrRoutePolicyMissing = errors.New("autodeposit target has no active same_mint_kamino route policy")
+
+// lockRoutePolicy locks the target's active route policy, called after the
+// target lock and before inserting a new packet.
+func lockRoutePolicy(ctx context.Context, tx pgx.Tx, id int64) (bool, error) {
+	var policy int64
+	err := tx.QueryRow(ctx, `SELECT rp.id FROM loyal_yield.balance_sweep_targets target
+JOIN loyal_yield.managed_vaults mv ON mv.settings=target.settings AND mv.vault_index=target.vault_index AND mv.vault_pubkey=target.vault_pubkey AND mv.active
+JOIN loyal_yield.route_policies rp ON rp.id=mv.active_policy_id AND rp.active AND rp.cluster='mainnet-beta'
+AND rp.authority=target.authority AND rp.settings=target.settings AND rp.vault_index=target.vault_index AND rp.vault_pubkey=target.vault_pubkey
+WHERE target.id=$1 AND 'same_mint_kamino'=ANY(rp.route_modes)
+FOR SHARE OF mv,rp`, id).Scan(&policy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }

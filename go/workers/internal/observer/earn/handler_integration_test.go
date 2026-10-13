@@ -34,8 +34,8 @@ func TestHandlerAtomicallyEnqueuesJobsAutodepositAndCursor(t *testing.T) {
 	err = pool.QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_targets
         (settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,wallet,
          wallet_usdc_ata,vault_usdc_ata,wallet_token_ata,vault_token_ata,token_mint,threshold,
-         max_amount_per_period,desired_active,chain_status,last_seen_slot,last_seen_signature)
-        VALUES($1,$1,1,$3,1,$2,$1,$1,$2,$1,$2,$4,1,1000,true,'active',1,'fixture') RETURNING id`,
+         max_amount_per_period,desired_active,chain_status,last_seen_slot,last_seen_signature,cluster)
+        VALUES($1,$1,1,$3,1,$2,$1,$1,$2,$1,$2,$4,1,1000,true,'active',1,'fixture','mainnet-beta') RETURNING id`,
 		settings.String(), vault.String(), account.String(), "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").Scan(&targetID)
 	if err != nil {
 		t.Fatal(err)

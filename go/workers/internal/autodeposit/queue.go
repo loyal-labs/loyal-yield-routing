@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -12,7 +13,8 @@ import (
 
 // FailStaleRequestedSlots closes requested slots that no worker picked up within
 // the legacy selection window. A request that silently stays requested forever
-// hides a dead consumer behind an apparently pending ask.
+// hides a dead consumer behind an apparently pending ask. The request fails;
+// its lots stay owed and move to the target's one open slot.
 func (s *Store) FailStaleRequestedSlots(ctx context.Context, limit int64) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("autodeposit store has no database pool")
@@ -20,17 +22,18 @@ func (s *Store) FailStaleRequestedSlots(ctx context.Context, limit int64) (int64
 	if limit <= 0 {
 		return 0, nil
 	}
-	tag, err := s.pool.Exec(ctx, `
+	var failed int64
+	err := WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
 WITH stale_slots AS (
     SELECT slot.id
-    FROM loyal_yield.balance_sweep_targets AS target
-    JOIN loyal_yield.balance_sweep_scheduled_slots AS slot ON slot.target_id=target.id
-    WHERE target.cluster='mainnet-beta' AND slot.status = 'requested'
+    FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+    WHERE slot.status = 'requested'
       AND COALESCE(slot.requested_at, slot.updated_at)
             < now() - ($1::bigint * interval '1 second')
     ORDER BY COALESCE(slot.requested_at, slot.updated_at) ASC, slot.id ASC
     LIMIT $2
-    FOR UPDATE OF target,slot SKIP LOCKED
+    FOR UPDATE SKIP LOCKED
 )
 UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
 SET status = 'failed',
@@ -39,19 +42,61 @@ SET status = 'failed',
     updated_at = now()
 FROM stale_slots AS stale
 WHERE slot.id = stale.id
-  AND slot.status = 'requested'
-RETURNING slot.id`, int64(StaleRequestedSlotSeconds), limit, RequestedSlotTimeoutError)
-	if err != nil {
-		return 0, fmt.Errorf("fail stale autodeposit requested slots: %w", err)
+RETURNING slot.id, slot.target_id, slot.eligible_after`, int64(StaleRequestedSlotSeconds), limit, RequestedSlotTimeoutError)
+		if err != nil {
+			return fmt.Errorf("fail stale autodeposit requested slots: %w", err)
+		}
+		type staleSlot struct {
+			id, targetID int64
+			due          time.Time
+		}
+		var stale []staleSlot
+		for rows.Next() {
+			var slot staleSlot
+			if err := rows.Scan(&slot.id, &slot.targetID, &slot.due); err != nil {
+				rows.Close()
+				return err
+			}
+			stale = append(stale, slot)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, slot := range stale {
+			if err := moveOpenLots(ctx, tx, slot.targetID, slot.id, slot.due); err != nil {
+				return err
+			}
+		}
+		failed = int64(len(stale))
+		return nil
+	})
+	return failed, err
+}
+
+// moveOpenLots files a closed slot's open lots onto the target's one open slot.
+func moveOpenLots(ctx context.Context, tx pgx.Tx, targetID, fromSlotID int64, due time.Time) error {
+	var open bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots WHERE scheduled_slot_id = $1 AND status = 'open' AND remaining_amount_raw > 0)`, fromSlotID).Scan(&open); err != nil || !open {
+		return err
 	}
-	return tag.RowsAffected(), nil
+	slotID, err := openSlotFor(ctx, tx, targetID, due)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+UPDATE loyal_yield.balance_sweep_surplus_lots
+SET scheduled_slot_id = $2, updated_at = now()
+WHERE scheduled_slot_id = $1 AND status = 'open' AND remaining_amount_raw > 0`, fromSlotID, slotID)
+	return err
 }
 
 // ReleaseStaleSelectedClaims restores lots from selected claims that never
 // reached a pull. Restoration is deliberately conservative: a claim is stale
 // only when its lot value is still in the wallet, the projection has caught up
 // with the wallet's event history, and no pull attempt exists that could have
-// moved the funds. Anything else is recovery work, not reclaimable stock.
+// moved the funds. Anything else is recovery work, not reclaimable stock. The
+// released claim's slot is scheduled again, as an executor's release does.
 func (s *Store) ReleaseStaleSelectedClaims(ctx context.Context, staleSelectedClaimSeconds, limit int64) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("autodeposit store has no database pool")
@@ -61,91 +106,68 @@ func (s *Store) ReleaseStaleSelectedClaims(ctx context.Context, staleSelectedCla
 	}
 	var released int64
 	err := WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, `
-WITH stale_claims AS (
-    SELECT claim.claim_token
-    FROM loyal_yield.balance_sweep_lot_claims AS claim
-    JOIN loyal_yield.balance_sweep_targets AS target
-      ON target.id = claim.target_id
-    JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
-      ON balance.target_id = target.id
-     AND balance.mint = target.token_mint
-    WHERE claim.status = 'selected'
-      AND claim.execution_id IS NULL
-      AND (claim.autodeposit_executor_lease_expires_at IS NULL
-           OR claim.autodeposit_executor_lease_expires_at <= now())
-      AND NOT EXISTS (
-          SELECT 1
-          FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
-          WHERE attempt.claim_token = claim.claim_token
-            AND (attempt.execution_id IS NOT NULL
-                 OR (attempt.operation_kind = 'pull'
-                     AND attempt.attempt_state = ANY($5::text[])))
-      )
-      AND target.token_mint = $3
-      AND target.cluster = 'mainnet-beta'
-      AND target.wallet_balance_floor_raw IS NOT NULL
-      AND balance.amount_raw - target.wallet_balance_floor_raw >= claim.amount_raw
-      AND COALESCE((
-          SELECT offset_row.last_event_id
-          FROM loyal_yield.projection_offsets AS offset_row
-          WHERE offset_row.consumer_name = $4
-      ), 0) >= (
-          SELECT COALESCE(MAX(event.event_id), 0)
-          FROM loyal_yield.balance_sweep_wallet_balance_events AS event
-          WHERE event.target_id = claim.target_id
-            AND event.mint = target.token_mint
-      )
-      AND claim.updated_at < now() - ($1::bigint * interval '1 second')
-    ORDER BY claim.updated_at ASC, claim.claim_token ASC
-    LIMIT $2
-    FOR UPDATE SKIP LOCKED
-),
-matched_items AS (
-    SELECT item.lot_id, item.amount_raw
-    FROM loyal_yield.balance_sweep_lot_claim_items AS item
-    JOIN stale_claims
-      ON stale_claims.claim_token = item.claim_token
-),
-restored_lots AS (
-    UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
-    SET remaining_amount_raw = LEAST(
-            lot.original_amount_raw,
-            lot.remaining_amount_raw + item.amount_raw
-        ),
-        status = 'open',
-        eligible_after = now(),
-        updated_at = now()
-    FROM matched_items AS item
-    WHERE lot.id = item.lot_id
-    RETURNING lot.scheduled_slot_id
-),
-released_claims AS (
-    UPDATE loyal_yield.balance_sweep_lot_claims AS claim
-    SET status = 'released',
-        updated_at = now()
-    WHERE claim.claim_token IN (SELECT claim_token FROM stale_claims)
-      AND EXISTS (SELECT 1 FROM restored_lots)
-    RETURNING claim.claim_token
-),
-failed_slots AS (
-    UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
-    SET status = 'failed',
-        claim_token = NULL,
-        last_error = 'stale selected claim released by autodeposit worker',
-        updated_at = now()
-    WHERE slot.claim_token IN (SELECT claim_token FROM released_claims)
-       OR slot.id IN (
-          SELECT scheduled_slot_id
-          FROM restored_lots
-          WHERE scheduled_slot_id IS NOT NULL
-       )
-    RETURNING slot.id
-)
-SELECT COALESCE((SELECT COUNT(*) FROM released_claims), 0)::bigint AS released_claim_count`,
+		rows, err := tx.Query(ctx, `
+SELECT claim.claim_token
+FROM loyal_yield.balance_sweep_lot_claims AS claim
+JOIN loyal_yield.balance_sweep_targets AS target
+  ON target.id = claim.target_id
+JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
+  ON balance.target_id = target.id
+ AND balance.mint = target.token_mint
+WHERE claim.status = 'selected'
+  AND claim.execution_id IS NULL
+  AND (claim.autodeposit_executor_lease_expires_at IS NULL
+       OR claim.autodeposit_executor_lease_expires_at <= now())
+  AND NOT EXISTS (
+      SELECT 1
+      FROM loyal_yield.balance_sweep_transaction_attempts AS attempt
+      WHERE attempt.claim_token = claim.claim_token
+        AND (attempt.execution_id IS NOT NULL
+             OR (attempt.operation_kind = 'pull'
+                 AND attempt.attempt_state = ANY($5::text[])))
+  )
+  AND target.token_mint = $3
+  AND target.wallet_balance_floor_raw IS NOT NULL
+  AND balance.amount_raw - target.wallet_balance_floor_raw >= claim.amount_raw
+  AND COALESCE((
+      SELECT offset_row.last_event_id
+      FROM loyal_yield.projection_offsets AS offset_row
+      WHERE offset_row.consumer_name = $4
+  ), 0) >= (
+      SELECT COALESCE(MAX(event.event_id), 0)
+      FROM loyal_yield.balance_sweep_wallet_balance_events AS event
+      WHERE event.target_id = claim.target_id
+        AND event.mint = target.token_mint
+  )
+  AND claim.updated_at < now() - ($1::bigint * interval '1 second')
+ORDER BY claim.updated_at ASC, claim.claim_token ASC
+LIMIT $2
+FOR UPDATE OF claim SKIP LOCKED`,
 			staleSelectedClaimSeconds, limit, USDCMint, ConsumerName, ClaimHoldingPullAttemptStates)
-		if err := row.Scan(&released); err != nil {
-			return fmt.Errorf("release stale autodeposit claims: %w", err)
+		if err != nil {
+			return fmt.Errorf("select stale autodeposit claims: %w", err)
+		}
+		var tokens []string
+		for rows.Next() {
+			var token string
+			if err := rows.Scan(&token); err != nil {
+				rows.Close()
+				return err
+			}
+			tokens = append(tokens, token)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, token := range tokens {
+			ok, err := releaseClaimCustody(ctx, tx, token, 0)
+			if err != nil {
+				return err
+			}
+			if ok {
+				released++
+			}
 		}
 		return nil
 	})
@@ -213,9 +235,8 @@ WHERE claim.status='selected'
                        WHERE attempt.claim_token=claim.claim_token AND attempt.operation_kind='pull'))
   )
   AND target.token_mint = $2
-  AND target.cluster = 'mainnet-beta'
 ORDER BY claim.claim_token, claim.updated_at ASC
-LIMIT $1`, limit, USDCMint, AutomaticPullRecoveryStates)
+LIMIT $1`, limit, USDCMint, ClaimHoldingPullAttemptStates)
 	if err != nil {
 		return nil, fmt.Errorf("load autodeposit pull recovery targets: %w", err)
 	}
@@ -246,7 +267,6 @@ JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
 WHERE target.desired_active = true
   AND target.chain_status = 'active'
   AND target.token_mint = $2
-  AND target.cluster = 'mainnet-beta'
   AND target.wallet_balance_floor_raw IS NOT NULL
   AND balance.amount_raw > target.wallet_balance_floor_raw
   AND slot.token_mint = target.token_mint

@@ -11,16 +11,16 @@ import (
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-const controlTargetColumns = `id,setup_generation,policy_seed,settings,wallet,wallet_token_ata,vault_pubkey,COALESCE(vault_token_ata,vault_usdc_ata,''),token_mint,policy_account,subscription_authority,recurring_delegation,recurring_delegation_nonce,max_amount_per_period,start_timestamp,COALESCE(cluster,'')`
+const controlTargetColumns = `id,setup_generation,policy_seed,settings,wallet,wallet_token_ata,vault_pubkey,vault_token_ata,token_mint,policy_account,subscription_authority,recurring_delegation,recurring_delegation_nonce,max_amount_per_period,start_timestamp`
 
 func scanControlTarget(row pgx.Row) (ControlTarget, error) {
 	var t ControlTarget
-	err := row.Scan(&t.TargetID, &t.SetupGeneration, &t.PolicySeed, &t.Settings, &t.Wallet, &t.WalletTokenATA, &t.Vault, &t.VaultTokenATA, &t.Mint, &t.Policy, &t.SubscriptionAuthority, &t.RecurringDelegation, &t.Nonce, &t.MaxAmountPerPeriod, &t.StartTimestamp, &t.Cluster)
+	err := row.Scan(&t.TargetID, &t.SetupGeneration, &t.PolicySeed, &t.Settings, &t.Wallet, &t.WalletTokenATA, &t.Vault, &t.VaultTokenATA, &t.Mint, &t.Policy, &t.SubscriptionAuthority, &t.RecurringDelegation, &t.Nonce, &t.MaxAmountPerPeriod, &t.StartTimestamp)
 	return t, err
 }
 
 func (s *Store) LoadControlTarget(ctx context.Context, targetID int64) (*ControlTarget, error) {
-	t, err := scanControlTarget(s.pool.QueryRow(ctx, `SELECT `+controlTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 AND cluster='mainnet-beta' AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL AND recurring_delegation_nonce IS NOT NULL AND max_amount_per_period>0`, targetID))
+	t, err := scanControlTarget(s.pool.QueryRow(ctx, `SELECT `+controlTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL AND max_amount_per_period>0`, targetID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -53,9 +53,6 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 			return ErrOwnershipLost
 		} else if err != nil {
 			return err
-		}
-		if target.Cluster != mainnetCluster {
-			return ErrChainNamespace
 		}
 		if !reflect.DeepEqual(target, o.Target) {
 			return errors.New("control target generation or identity changed during observation")

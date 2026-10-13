@@ -107,7 +107,7 @@ func TestDelegationBindsSubscriptionAuthorityAndNonce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := DelegationIdentity{Account: base58Key(address[:]), Delegator: wallet, Delegatee: vault, Mint: USDCMint, Nonce: &nonce}
+	identity := DelegationIdentity{Account: base58Key(address[:]), Delegator: wallet, Delegatee: vault, Mint: USDCMint, Nonce: nonce}
 	data := testDelegationData(wallet, vault, USDCMint, 10, 2)
 	if amount, err := RemainingDelegationAllowance(SubscriptionsProgramID, data, identity); err != nil || amount != 8 {
 		t.Fatalf("valid frozen delegation %d %v", amount, err)
@@ -118,8 +118,7 @@ func TestDelegationBindsSubscriptionAuthorityAndNonce(t *testing.T) {
 		t.Fatal("foreign subscription authority passed")
 	}
 	data = testDelegationData(wallet, vault, USDCMint, 10, 2)
-	otherNonce := uint64(8)
-	identity.Nonce = &otherNonce
+	identity.Nonce = 8
 	if _, err = RemainingDelegationAllowance(SubscriptionsProgramID, data, identity); err == nil {
 		t.Fatal("another delegation nonce authorized this target")
 	}

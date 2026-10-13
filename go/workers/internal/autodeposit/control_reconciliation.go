@@ -21,11 +21,10 @@ import (
 // 0059. Missing wallet-authorized artifacts remain pending; this reconciler
 // never creates a delegation or changes the user's desired enablement/floor.
 type ControlTarget struct {
-	Cluster                                                      string
-	TargetID, SetupGeneration, PolicySeed                        int64
+	TargetID, SetupGeneration, PolicySeed, Nonce                 int64
 	Settings, Wallet, WalletTokenATA, Vault, VaultTokenATA, Mint string
 	Policy, SubscriptionAuthority, RecurringDelegation           string
-	Nonce, MaxAmountPerPeriod, StartTimestamp                    *int64
+	MaxAmountPerPeriod, StartTimestamp                           *int64
 }
 
 type ControlObservation struct {
@@ -53,11 +52,8 @@ func (o ControlObservation) status() string {
 // a target. All four accounts come from one confirmed RPC context.
 func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTarget, minimumSlot int64) (ControlObservation, error) {
 	o := ControlObservation{Target: target}
-	if target.Cluster != mainnetCluster {
-		return o, ErrChainNamespace
-	}
-	if target.Nonce == nil || *target.Nonce < 0 || target.MaxAmountPerPeriod == nil || *target.MaxAmountPerPeriod <= 0 {
-		return o, errors.New("control target lacks confirmed delegation nonce or budget")
+	if target.MaxAmountPerPeriod == nil || *target.MaxAmountPerPeriod <= 0 {
+		return o, errors.New("control target lacks a delegation budget")
 	}
 	for _, value := range []string{target.Settings, target.Wallet, target.WalletTokenATA, target.Vault, target.VaultTokenATA, target.Policy, target.SubscriptionAuthority, target.RecurringDelegation} {
 		if _, err := solana.PublicKeyFromBase58(value); err != nil {
@@ -77,7 +73,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 	if base58Key(authority[:]) != target.SubscriptionAuthority {
 		return o, errors.New("control subscription authority differs from canonical PDA")
 	}
-	delegation, err := delegationAccountKey(authority[:], wallet[:], vault[:], uint64(*target.Nonce))
+	delegation, err := delegationAccountKey(authority[:], wallet[:], vault[:], uint64(target.Nonce))
 	if err != nil {
 		return o, err
 	}
@@ -143,8 +139,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		o.AuthorityValid = true
 	}
 	if o.DelegationExists {
-		nonce := uint64(*target.Nonce)
-		if _, err = RemainingDelegationAllowance(accounts[2].Owner.String(), accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: &nonce}); err != nil {
+		if _, err = RemainingDelegationAllowance(accounts[2].Owner.String(), accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: uint64(target.Nonce)}); err != nil {
 			return o, err
 		}
 		if binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:]) != uint64(*target.MaxAmountPerPeriod) {
@@ -172,16 +167,9 @@ type ControlReader interface {
 // ControlReconciler consumes the existing coalesced high-water outbox. One
 // bounded Tick owns one existing lease; cancellation never invents a retry
 // transaction. Run is composed by the root runtime alongside the same family.
-// ControlArtifactReconciler verifies creator history under the same outbox
-// ownership before current account state can acknowledge a reconciliation ask.
-type ControlArtifactReconciler interface {
-	ReconcileArtifacts(context.Context, ReconciliationRequest, string) error
-}
-
 type ControlReconciler struct {
 	Store                       *Store
 	Reader                      ControlReader
-	Artifacts                   ControlArtifactReconciler
 	OnError                     func(error)
 	PollInterval, LeaseDuration time.Duration
 }
@@ -212,18 +200,14 @@ func (r *ControlReconciler) Tick(ctx context.Context) (bool, error) {
 	defer cancel()
 	target, err := r.Store.LoadControlTarget(work, request.TargetID)
 	if err == nil && target == nil {
-		return true, r.Store.AwaitAutodepositSetupReconciliationRequest(work, request.TargetID, owner, 3600)
+		// No delegation yet: there is no control to observe. Attaching one
+		// raises the next ask (observer attachRecurringDelegation).
+		_, err = r.Store.CompleteAutodepositReconciliationRequest(work, request.TargetID, owner, request.RequestedSlot)
+		return true, err
 	}
 	if err == nil {
 		var observation ControlObservation
 		observation, err = r.Reader.ObserveControl(work, *target, request.RequestedSlot)
-		if err == nil && observation.status() == "active" && r.Artifacts != nil {
-			// Known close/cancel state does not require creation history.
-			// Active state requires creator proof before acknowledgement.
-			// Backfill changes creator metadata only; ApplyControlObservation
-			// rechecks the complete generation and control binding under lock.
-			err = r.Artifacts.ReconcileArtifacts(work, *request, owner)
-		}
 		if err == nil {
 			err = r.Store.ApplyControlObservation(work, *request, owner, observation)
 		}

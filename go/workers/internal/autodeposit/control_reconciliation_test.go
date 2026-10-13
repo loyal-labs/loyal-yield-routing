@@ -31,7 +31,7 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	delegation, _ := delegationAccountKey(authority[:], wallet[:], vault[:], uint64(nonce))
 	event, _ := subscriptionEventAuthorityKey()
 	policy, bump, _ := squads.PolicyAddress(settings, 9)
-	target := ControlTarget{Cluster: mainnetCluster, TargetID: 1, SetupGeneration: 1, PolicySeed: 9, Settings: settings.String(), Wallet: wallet.String(), WalletTokenATA: walletATA, Vault: vault.String(), VaultTokenATA: vaultATA, Mint: USDCMint, Policy: policy.String(), SubscriptionAuthority: base58Key(authority[:]), RecurringDelegation: base58Key(delegation[:]), Nonce: &nonce, MaxAmountPerPeriod: &budget}
+	target := ControlTarget{TargetID: 1, SetupGeneration: 1, PolicySeed: 9, Settings: settings.String(), Wallet: wallet.String(), WalletTokenATA: walletATA, Vault: vault.String(), VaultTokenATA: vaultATA, Mint: USDCMint, Policy: policy.String(), SubscriptionAuthority: base58Key(authority[:]), RecurringDelegation: base58Key(delegation[:]), Nonce: nonce, MaxAmountPerPeriod: &budget}
 	data := make([]byte, 73)
 	data[0] = 5
 	binary.LittleEndian.PutUint64(data[1:9], uint64(budget))

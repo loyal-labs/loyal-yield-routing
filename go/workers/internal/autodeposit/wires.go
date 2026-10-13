@@ -322,26 +322,14 @@ func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan,
 // the wrapped transaction's only signer. Token balances are never treated as
 // Kamino proof; the wire itself is the proof, and the receipt is checked
 // against it separately.
-func (b *SweepWireBuilder) ProveTopUpWire(plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
+func (b *SweepWireBuilder) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
 	tx, err := persistedWireTransaction(attempt)
 	if err != nil {
 		return err
 	}
-	message, err := decodeSignedWireMessageTransaction(tx)
-	if err != nil {
-		return err
-	}
-	return b.proveTopUpDecoded(plan, attempt, route, message, tx.Message.Signers())
-}
-
-// Historical TypeScript attempts can be v0 packets with an independent fee
-// payer. Adoption resolves only their pinned lookups and verifies every
-// signature; it never rebuilds or resigns the recorded message.
-func (b *SweepWireBuilder) ProveTopUpWireContext(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
-	tx, err := persistedWireTransaction(attempt)
-	if err != nil {
-		return err
-	}
+	// Historical TypeScript attempts can be v0 packets with an independent fee
+	// payer. Adoption resolves only their pinned lookups and verifies every
+	// signature; it never rebuilds or resigns the recorded message.
 	if err = b.resolvePersistedLookups(ctx, tx); err != nil {
 		return err
 	}

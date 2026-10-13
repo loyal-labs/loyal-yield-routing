@@ -154,13 +154,9 @@ const ConsumerName = "balance_sweep_autodeposit_trigger"
 const USDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 // Claim-holding pull attempt states: an attempt in one of these states means
-// funds may already have moved out of the wallet, so the claim stays owned.
-var ClaimHoldingPullAttemptStates = []string{"prepared", "submitted", "confirmed", "unknown", "ambiguous"}
-
-// AutomaticPullRecoveryStates are the states a restarted worker resumes on its
-// own. Ambiguous is excluded on purpose: an ambiguous broadcast requires an
-// operator, never an automatic resend.
-var AutomaticPullRecoveryStates = []string{"prepared", "submitted", "confirmed", "unknown"}
+// funds may already have moved out of the wallet, so the claim stays owned and
+// a restarted worker resumes it.
+var ClaimHoldingPullAttemptStates = []string{"prepared", "submitted", "confirmed"}
 
 // RequestedSlotTimeoutReason is written to a slot whose request was never
 // picked up before the legacy 15-minute selection deadline.

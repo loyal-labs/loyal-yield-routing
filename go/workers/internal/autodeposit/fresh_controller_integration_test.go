@@ -21,7 +21,7 @@ func seedFreshControllerTarget(t *testing.T, store *Store, name string) (integra
 		_, _ = store.pool.Exec(context.Background(), `UPDATE loyal_yield.projection_offsets SET last_event_id=$2 WHERE consumer_name=$1`, ConsumerName, previousOffset)
 	})
 	seedProjectedSurplus(t, store, seeded, previousOffset+1, 9_000_000)
-	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET recurring_delegation='itest-fresh-delegation' WHERE id=$1`, seeded.TargetID); err != nil {
+	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET recurring_delegation='itest-fresh-delegation',recurring_delegation_nonce=1 WHERE id=$1`, seeded.TargetID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.pool.Exec(ctx, `
@@ -177,6 +177,10 @@ type refusingSetupWires struct {
 	refusal error
 }
 
+func (w refusingSetupWires) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
+	return w.scriptedControllerWires.ProveTopUpWire(ctx, plan, attempt, route)
+}
+
 func (w refusingSetupWires) InspectDestinationSetup(context.Context, DepositPlan) (*DestinationSetupPlan, error) {
 	return nil, w.refusal
 }
@@ -330,10 +334,11 @@ VALUES ($1, $2, 'itest-wallet', 'itest-wallet-ata', 'itest-wallet-ata', 7000000,
 }
 
 // A fleet rebalance moves the vault's holding without touching the position
-// pointer (production: 238 active positions named a reserve the vault no
-// longer held). The TS executor redirected a fresh claim to the one live
-// reserve and wrote the pointer back; the port deposited into the stale one.
-func TestControllerRedirectsStalePointerToLiveReserve(t *testing.T) {
+// row (production: 238 active positions named a reserve the vault no longer
+// held). The destination is the vault's one live reserve, and finalization
+// keyed on (settings, vault_index, initial_reserve) inserted a second active
+// row for it (147 vaults, 309 rows).
+func TestControllerDepositsIntoTheLiveReserveAndKeepsOnePosition(t *testing.T) {
 	store := integrationStore(t)
 	ctx := context.Background()
 	seeded, slot := seedFreshControllerTarget(t, store, "moved")
@@ -368,17 +373,25 @@ func TestControllerRedirectsStalePointerToLiveReserve(t *testing.T) {
 	if code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot}); err != nil || code != ResultCompleted {
 		t.Fatalf("moved controller outcome=%v error=%v", code, err)
 	}
-	var planReserve, pointer string
+	var planReserve, current, initial string
+	var positions, principal, holding int64
 	if err := store.pool.QueryRow(ctx, `
-SELECT claim.autodeposit_deposit_plan->>'reserve', yp.current_reserve
+SELECT claim.autodeposit_deposit_plan->>'reserve', yp.current_reserve, yp.initial_reserve, yp.principal_amount_raw, yp.current_amount_raw,
+       (SELECT count(*) FROM loyal_yield.user_yield_positions AS all_rows WHERE all_rows.settings = target.settings AND all_rows.vault_index = target.vault_index)
 FROM loyal_yield.balance_sweep_lot_claims AS claim
 JOIN loyal_yield.balance_sweep_targets AS target ON target.id = claim.target_id
-JOIN loyal_yield.user_yield_positions AS yp ON yp.settings = target.settings AND yp.wallet_address = target.wallet AND yp.status = 'active'
-WHERE claim.target_id=$1`, seeded.TargetID).Scan(&planReserve, &pointer); err != nil {
+JOIN loyal_yield.user_yield_positions AS yp ON yp.settings = target.settings AND yp.vault_index = target.vault_index AND yp.status = 'active'
+WHERE claim.target_id=$1`, seeded.TargetID).Scan(&planReserve, &current, &initial, &principal, &holding, &positions); err != nil {
 		t.Fatal(err)
 	}
-	if planReserve != "moved-reserve" || pointer != "moved-reserve" {
-		t.Fatalf("deposit planned into %q with pointer %q, want the live moved-reserve", planReserve, pointer)
+	if planReserve != "moved-reserve" {
+		t.Fatalf("deposit planned into %q, want the live moved-reserve", planReserve)
+	}
+	// Finalization after the reserve change updates the vault's one position:
+	// its holding moves to the new reserve, its principal grows by the deposit,
+	// and no second row is inserted for the new reserve.
+	if positions != 1 || current != "moved-reserve" || initial != "fresh-reserve" || principal != 5_000_001 || holding != 12_000_000 {
+		t.Fatalf("positions=%d current=%s initial=%s principal=%d holding=%d, want one row moved to moved-reserve", positions, current, initial, principal, holding)
 	}
 }
 

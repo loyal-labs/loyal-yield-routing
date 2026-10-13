@@ -73,7 +73,7 @@ WHERE slot.target_id = $1`, seeded.TargetID).Scan(&slotID, &lotID, &lotRemaining
 	// Consume: 5M claim of the 5M surplus (9M balance - 4M floor).
 	claimToken := "itest-claim-consume"
 	spendCap := int64(100_000_000)
-	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claimToken, &slotID, 9_000_000, 4_000_000, &spendCap, &spendCap)
+	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claimToken, slotID, 9_000_000, 4_000_000, &spendCap, &spendCap)
 	if err != nil {
 		t.Fatalf("claim eligible lots: %v", err)
 	}
@@ -170,7 +170,7 @@ SELECT id FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id = $1`, 
 	allowance := int64(2_000_000)
 	for attempt := 1; attempt <= 2; attempt++ {
 		claimToken := fmt.Sprintf("itest-partial-release-%d", attempt)
-		outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claimToken, &slotID, 9_000_000, 4_000_000, &allowance, &allowance)
+		outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claimToken, slotID, 9_000_000, 4_000_000, &allowance, &allowance)
 		if err != nil || outcome.Status != ClaimSelected || outcome.AmountRaw != allowance {
 			t.Fatalf("attempt %d: partial claim %+v err=%v, want selected %d", attempt, outcome, err, allowance)
 		}
@@ -228,7 +228,7 @@ WHERE slot.target_id = $1`, seeded.TargetID).Scan(&slotID); err != nil {
 	}
 	claimToken := "itest-claim-immutable"
 	spendCap := int64(100_000_000)
-	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claimToken, &slotID, 9_000_000, 4_000_000, &spendCap, &spendCap)
+	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claimToken, slotID, 9_000_000, 4_000_000, &spendCap, &spendCap)
 	if err != nil || outcome.Status != ClaimSelected {
 		t.Fatalf("claim outcome %+v err=%v, want selected", outcome, err)
 	}
@@ -370,6 +370,7 @@ type scriptedControllerChain struct {
 	positions    map[string][2]int64
 	// lamports scripts account balances; an unscripted payer holds one SOL.
 	lamports     map[string]uint64
+	allowanceErr error
 	simulateErr  error
 	broadcastErr error
 	// The scripted cluster: sent signatures, the last one asked about, and the
@@ -395,6 +396,9 @@ func (s *scriptedControllerChain) ConfirmedLamports(_ context.Context, address s
 }
 
 func (s *scriptedControllerChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegation string, identity DelegationIdentity) (int64, error) {
+	if s.allowanceErr != nil {
+		return 0, s.allowanceErr
+	}
 	return 1 << 40, nil
 }
 
@@ -493,8 +497,21 @@ func (s *scriptedControllerWires) BuildTopUp(ctx context.Context, request TopUpW
 
 func (s *scriptedControllerWires) FeePayer() string { return "itest-fee-payer" }
 
-func (s *scriptedControllerWires) ProveTopUpWire(plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
+func (s *scriptedControllerWires) ProveTopUpWire(_ context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
 	return s.proofError
+}
+
+// The scripted destination is already set up: no stage remains.
+func (s *scriptedControllerWires) InspectDestinationSetup(context.Context, DepositPlan) (*DestinationSetupPlan, error) {
+	return nil, nil
+}
+
+func (s *scriptedControllerWires) BuildDestinationSetup(context.Context, DepositPlan, DestinationSetupPlan, string, int64) (BuiltWire, error) {
+	return BuiltWire{}, errors.New("scripted destination needs no setup")
+}
+
+func (s *scriptedControllerWires) ReadbackDestinationSetup(context.Context, DepositPlan, DestinationSetupPlan, int64) error {
+	return errors.New("scripted destination needs no setup")
 }
 
 // seedRecoveryClaim installs a selected claim, slot, frozen plan and prepared

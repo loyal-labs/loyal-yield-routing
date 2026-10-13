@@ -367,3 +367,24 @@ VALUES ($1, 'itest-wallet', 'itest-wallet-usdc', 'itest-wallet-usdc', 9000000, $
 		t.Fatalf("second tick reprocessed %+v", second.Projection)
 	}
 }
+
+// elapseReleaseDelay moves a target's released work to the end of its retry
+// delay, as waiting PreSendRetryDelay would.
+func elapseReleaseDelay(t *testing.T, s *Store, targetID int64) {
+	t.Helper()
+	for _, table := range []string{"balance_sweep_surplus_lots", "balance_sweep_scheduled_slots"} {
+		if _, err := s.pool.Exec(t.Context(), `UPDATE loyal_yield.`+table+` SET eligible_after = LEAST(eligible_after, now()) WHERE target_id=$1`, targetID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// openSlot is the target's one open (scheduled or requested) slot.
+func openSlot(t *testing.T, s *Store, targetID int64) int64 {
+	t.Helper()
+	var id int64
+	if err := s.pool.QueryRow(t.Context(), `SELECT id FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id=$1 AND status IN ('scheduled','requested')`, targetID).Scan(&id); err != nil {
+		t.Fatalf("target %d open slot: %v", targetID, err)
+	}
+	return id
+}

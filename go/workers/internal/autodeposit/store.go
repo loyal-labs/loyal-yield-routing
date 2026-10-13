@@ -278,59 +278,68 @@ func insertPositiveDeltaLot(ctx context.Context, tx pgx.Tx, event walletBalanceE
 		"wallet balance increase scheduled for autodeposit after one hour")
 }
 
-// insertScheduledLot files the new lot into the target's current open scheduled
-// slot, coalescing the slot deadline to the later of the two. A batch due date
-// never moves earlier because a newer lot arrived.
+// insertScheduledLot files a new lot onto the target's one open slot. A slot
+// is touched only for a lot that was actually inserted: a replayed event
+// inserts nothing.
 func insertScheduledLot(ctx context.Context, tx pgx.Tx, event walletBalanceEventRow, amountRaw int64, confidence, reason string) (bool, error) {
 	eligibleAfter := ScheduledEligibleAfter(event.ObservedAt)
-	rows, err := tx.Query(ctx, `
-WITH current_slot AS (
-    SELECT id
-    FROM loyal_yield.balance_sweep_scheduled_slots
-    WHERE target_id = $1
-      AND token_mint = $9
-      AND status = 'scheduled'
-    ORDER BY eligible_after ASC, id ASC
-    LIMIT 1
-    FOR UPDATE
-),
-updated_current_slot AS (
-    UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
-    SET eligible_after = GREATEST(slot.eligible_after, $6),
-        updated_at = now()
-    WHERE slot.id IN (SELECT id FROM current_slot)
-    RETURNING slot.id
-),
-inserted_slot AS (
-    INSERT INTO loyal_yield.balance_sweep_scheduled_slots
-        (target_id, token_mint, eligible_after, status)
-    SELECT $1, $9, $6, 'scheduled'
-    WHERE NOT EXISTS (SELECT 1 FROM updated_current_slot)
-    RETURNING id
-),
-selected_slot AS (
-    SELECT id FROM updated_current_slot
-    UNION ALL
-    SELECT id FROM inserted_slot
-    LIMIT 1
-)
+	var lotID int64
+	err := tx.QueryRow(ctx, `
 INSERT INTO loyal_yield.balance_sweep_surplus_lots
     (target_id, source_event_id, source_signature, original_amount_raw,
-     remaining_amount_raw, classification, eligible_after, status, confidence, reason,
-     scheduled_slot_id)
-SELECT $1, $2, $3, $4, $4, $5::loyal_yield.balance_sweep_surplus_classification,
-       $6, 'open', $7, $8, selected_slot.id
-FROM selected_slot
+     remaining_amount_raw, classification, eligible_after, status, confidence, reason)
+VALUES ($1, $2, $3, $4, $4, $5::loyal_yield.balance_sweep_surplus_classification, $6, 'open', $7, $8)
 ON CONFLICT (source_event_id) DO NOTHING
-RETURNING id`,
-		event.TargetID, event.EventID, event.TxnSignature, amountRaw,
-		SurplusLotClassificationDBValue, eligibleAfter, confidence, reason, USDCMint)
-	if err != nil {
-		return false, fmt.Errorf("schedule autodeposit surplus lot for event %d: %w", event.EventID, err)
+RETURNING id`, event.TargetID, event.EventID, event.TxnSignature, amountRaw,
+		SurplusLotClassificationDBValue, eligibleAfter, confidence, reason).Scan(&lotID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
 	}
-	defer rows.Close()
-	created := rows.Next()
-	return created, rows.Err()
+	if err != nil {
+		return false, fmt.Errorf("insert autodeposit surplus lot for event %d: %w", event.EventID, err)
+	}
+	slotID, err := openSlotFor(ctx, tx, event.TargetID, eligibleAfter)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.balance_sweep_surplus_lots SET scheduled_slot_id = $2 WHERE id = $1`, lotID, slotID); err != nil {
+		return false, fmt.Errorf("schedule autodeposit surplus lot %d: %w", lotID, err)
+	}
+	return true, nil
+}
+
+// openSlotFor returns the target's one open slot (scheduled or requested;
+// a unique index allows no second), its due date pushed to at least
+// eligibleAfter, or creates it. An open slot whose lots all drained is
+// canceled first rather than reused: drained work's idle block and deferral
+// never carry over to new lots.
+func openSlotFor(ctx context.Context, tx pgx.Tx, targetID int64, eligibleAfter time.Time) (int64, error) {
+	if _, err := tx.Exec(ctx, `
+UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+SET status = 'canceled', last_error = 'its lots drained before new lots arrived', updated_at = now()
+WHERE slot.target_id = $1
+  AND slot.status IN ('scheduled', 'requested')
+  AND NOT EXISTS (
+      SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots AS lot
+      WHERE lot.scheduled_slot_id = slot.id AND lot.status = 'open' AND lot.remaining_amount_raw > 0)`, targetID); err != nil {
+		return 0, fmt.Errorf("cancel drained autodeposit slot of target %d: %w", targetID, err)
+	}
+	var slotID int64
+	err := tx.QueryRow(ctx, `
+UPDATE loyal_yield.balance_sweep_scheduled_slots
+SET eligible_after = GREATEST(eligible_after, $2), updated_at = now()
+WHERE target_id = $1 AND status IN ('scheduled', 'requested')
+RETURNING id`, targetID, eligibleAfter).Scan(&slotID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `
+INSERT INTO loyal_yield.balance_sweep_scheduled_slots (target_id, token_mint, eligible_after, status)
+VALUES ($1, $3, $2, 'scheduled')
+RETURNING id`, targetID, eligibleAfter, USDCMint).Scan(&slotID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("open autodeposit slot of target %d: %w", targetID, err)
+	}
+	return slotID, nil
 }
 
 // depleteLotsNewestFirst applies an externally observed outflow to open lots.

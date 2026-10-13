@@ -87,7 +87,7 @@ func TestInactiveSweepTargetRetainsSelectedClaimOwnership(t *testing.T) {
 	state, topology := runtimeFixtureRoute(t, store)
 	ctx := context.Background()
 	var targetID int64
-	if err := store.Pool().QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_targets(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,wallet,wallet_token_ata,vault_token_ata,token_mint,threshold,max_amount_per_period,desired_active,chain_status,last_seen_slot,last_seen_signature) VALUES($1,$2,123,$3,$4,$5,$2,$6,$7,$8,1,1000,false,'closed',500,'fixture') RETURNING id`, state.Settings, fixtureKey(95).String(), fixtureKey(96).String(), topology.VaultIndex, topology.Vault.String(), fixtureKey(97).String(), topology.ClaimCustody.String(), USDCMint).Scan(&targetID); err != nil {
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_targets(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,wallet,wallet_token_ata,vault_token_ata,token_mint,threshold,max_amount_per_period,desired_active,chain_status,last_seen_slot,last_seen_signature,cluster) VALUES($1,$2,123,$3,$4,$5,$2,$6,$7,$8,1,1000,false,'closed',500,'fixture','mainnet-beta') RETURNING id`, state.Settings, fixtureKey(95).String(), fixtureKey(96).String(), topology.VaultIndex, topology.Vault.String(), fixtureKey(97).String(), topology.ClaimCustody.String(), USDCMint).Scan(&targetID); err != nil {
 		t.Fatal(err)
 	}
 	token := state.RouteKey + ":selected"
@@ -116,7 +116,7 @@ func TestInactiveSweepTargetRetainsSelectedClaimOwnership(t *testing.T) {
 	// it is not used as a successful financial execution receipt.
 	signed := signedWireFixture(t, false)
 	var attemptID int64
-	if err := store.Pool().QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_transaction_attempts(claim_token,target_id,operation_kind,amount_raw,source_pre_balance_raw,destination_pre_balance_raw,signature,signed_transaction_base64,signed_transaction_sha256,recent_blockhash,last_valid_block_height,attempt_state) VALUES($1,$2,'pull',100,1000,0,$3,$4,$5,$6,$7,'unknown') RETURNING id`, token, targetID, signed.TransactionSignature, base64.StdEncoding.EncodeToString(signed.Wire), signed.WireSHA256, signed.RecentBlockhash, signed.LastValidBlockHeight).Scan(&attemptID); err != nil {
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_transaction_attempts(claim_token,target_id,operation_kind,amount_raw,source_pre_balance_raw,destination_pre_balance_raw,signature,signed_transaction_base64,signed_transaction_sha256,recent_blockhash,last_valid_block_height,attempt_state) VALUES($1,$2,'pull',100,1000,0,$3,$4,$5,$6,$7,'submitted') RETURNING id`, token, targetID, signed.TransactionSignature, base64.StdEncoding.EncodeToString(signed.Wire), signed.WireSHA256, signed.RecentBlockhash, signed.LastValidBlockHeight).Scan(&attemptID); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

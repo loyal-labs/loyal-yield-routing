@@ -283,7 +283,6 @@ func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event Balance
 			sets = append(sets, newer(column))
 		}
 		var targetID int64
-		var inserted bool
 		err = tx.QueryRow(ctx, `
             INSERT INTO loyal_yield.balance_sweep_targets
                 (cluster, settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
@@ -294,10 +293,6 @@ func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event Balance
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), NULLIF($10, ''), $11, $12, $13, $14, $15, $16,
                 TRUE, 'pending', $17, NULL, $17, $18)
             ON CONFLICT (policy_account) DO UPDATE SET
-                cluster = COALESCE(
-                    loyal_yield.balance_sweep_targets.cluster,
-                    EXCLUDED.cluster
-                ),
                 `+strings.Join(sets, ",\n                ")+`,
                 chain_status = CASE
                     WHEN EXCLUDED.last_seen_slot > loyal_yield.balance_sweep_targets.last_seen_slot
@@ -320,14 +315,15 @@ func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event Balance
                     THEN EXCLUDED.last_seen_signature
                     ELSE loyal_yield.balance_sweep_targets.last_seen_signature
                 END
-            RETURNING id, xmax = 0`,
+            RETURNING id`,
 			event.Cluster, event.Settings, event.Authority, seed, event.PolicyAccount, int16(event.VaultIndex), event.VaultPubkey,
 			event.Wallet, event.WalletUSDCATA, event.VaultUSDCATA, event.TokenMint, event.WalletTokenATA,
-			event.VaultTokenATA, strings0(event.DelegatedSigners), int32(event.Threshold), maxAmount, slot, event.Signature).Scan(&targetID, &inserted)
-		if err != nil || !inserted {
+			event.VaultTokenATA, strings0(event.DelegatedSigners), int32(event.Threshold), maxAmount, slot, event.Signature).Scan(&targetID)
+		if err != nil {
 			return err
 		}
-		// A delegation the stream recorded before this policy attaches now.
+		// Every policy observation attaches the latest delegation the stream
+		// recorded, including one that landed before the policy or its vault.
 		authority, err := subscriptionAuthority(event.Wallet, event.TokenMint)
 		if err != nil {
 			return err
@@ -696,20 +692,19 @@ func deactivateCrossMintSwapPolicy(ctx context.Context, tx pgx.Tx, event PolicyR
 	return err
 }
 
+// upsertAutodepositReconciliationRequest asks for one more control
+// observation after an attach. The target's control identity changed, so the
+// ask stands even when the delegation's slot precedes an observation already
+// processed: the reconciler skipped that one, the target had no delegation.
 func upsertAutodepositReconciliationRequest(ctx context.Context, tx pgx.Tx, targetID, requestedSlot int64) error {
 	_, err := tx.Exec(ctx, `
-        INSERT INTO loyal_yield.autodeposit_reconciliation_requests
+        INSERT INTO loyal_yield.autodeposit_reconciliation_requests AS request
             (target_id, requested_slot)
         VALUES ($1, $2)
         ON CONFLICT (target_id) DO UPDATE SET
-            requested_slot = EXCLUDED.requested_slot,
-            next_attempt_at = LEAST(
-                loyal_yield.autodeposit_reconciliation_requests.next_attempt_at,
-                NOW()
-            ),
-            updated_at = NOW()
-        WHERE EXCLUDED.requested_slot
-            >= loyal_yield.autodeposit_reconciliation_requests.requested_slot`, targetID, requestedSlot)
+            requested_slot = GREATEST(request.requested_slot, request.processed_slot + 1, EXCLUDED.requested_slot),
+            next_attempt_at = LEAST(request.next_attempt_at, NOW()),
+            updated_at = NOW()`, targetID, requestedSlot)
 	return err
 }
 
@@ -727,23 +722,15 @@ func subscriptionAuthority(wallet, mint string) (string, error) {
 }
 
 // RecordRecurringDelegation records one confirmed Subscriptions recurring
-// delegation to a managed vault, whether or not its Autodeposit target exists
-// yet, and attaches it to the wallet's targets on that vault whose mint the
-// subscription authority is for. It returns why bytes that are not ours were
-// skipped; an error is only ever a storage failure.
+// delegation, whether or not its vault or Autodeposit target exists yet, and
+// attaches it to the wallet's targets on that vault whose mint the
+// subscription authority is for. A delegation that lands before its vault is
+// projected stays recorded until a policy observation attaches it. It returns
+// why bytes that cannot be stored were skipped; an error is only ever a
+// storage failure.
 func (s *Store) RecordRecurringDelegation(ctx context.Context, input RecurringDelegationObserved) (string, error) {
 	skipped := ""
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		var ours bool
-		if err := tx.QueryRow(ctx, `
-            SELECT EXISTS (SELECT 1 FROM loyal_yield.managed_vaults WHERE vault_pubkey = $1)
-                OR EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE vault_pubkey = $1)`, input.VaultPubkey).Scan(&ours); err != nil {
-			return err
-		}
-		if !ours {
-			skipped = "the delegatee is not a managed vault"
-			return nil
-		}
 		for _, value := range []uint64{input.Nonce, input.AmountPerPeriod, input.PeriodLengthSeconds, input.Slot} {
 			if value > math.MaxInt64 {
 				skipped = "a delegation value exceeds BIGINT"
@@ -817,9 +804,9 @@ func (s *Store) RecordDelegationRevoked(ctx context.Context, delegation string, 
 	return err
 }
 
-// attachRecurringDelegation sets a target's delegation to the latest live
-// recorded one of its wallet, vault and subscription authority, unless the target
-// already holds a later one, and requests reconciliation.
+// attachRecurringDelegation sets an open target's delegation to the latest
+// live recorded one of its wallet, vault and subscription authority, unless
+// the target already holds it or a later one, and requests reconciliation.
 func attachRecurringDelegation(ctx context.Context, tx pgx.Tx, targetID int64, wallet, vault, authority string) error {
 	var status string
 	var slot int64
@@ -855,9 +842,12 @@ func attachRecurringDelegation(ctx context.Context, tx pgx.Tx, targetID int64, w
             ORDER BY slot DESC, recurring_delegation DESC
             LIMIT 1
         ) AS fact
-        WHERE target.id = $1 AND fact.slot >= COALESCE(target.recurring_delegation_confirmed_slot, 0)
+        WHERE target.id = $1 AND target.chain_status <> 'closed'
+          AND fact.slot >= COALESCE(target.recurring_delegation_confirmed_slot, 0)
+          AND (target.recurring_delegation, target.recurring_delegation_nonce)
+              IS DISTINCT FROM (fact.recurring_delegation, fact.nonce)
         RETURNING target.chain_status, fact.slot`, targetID, wallet, vault, authority).Scan(&status, &slot)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && status == "closed" {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {

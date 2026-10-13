@@ -33,7 +33,7 @@ func svmWire(t *testing.T, attempt DurableAttempt) []byte {
 func svmObserve(ctx context.Context, cluster chain.LandChain, attempt DurableAttempt) (AttemptObservation, error) {
 	state, err := cluster.SignatureState(ctx, attempt.Signature)
 	if err != nil || !state.Found || state.Commitment < chain.Confirmed {
-		return AttemptObservation{State: AttemptUnknown}, err
+		return AttemptObservation{State: AttemptSubmitted}, err
 	}
 	if state.Err != "" {
 		return AttemptObservation{State: AttemptFailed}, nil

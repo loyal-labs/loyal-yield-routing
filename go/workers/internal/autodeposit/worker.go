@@ -204,9 +204,6 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 	for range staleClaims {
 		w.failed("autodeposit_stale_claim_released", nil)
 	}
-	if err := w.store.RepairUnsignedSchedules(ctx, w.releaseBatchLimit); err != nil {
-		return report, w.failed("autodeposit_execution_queue_preparation_failed", err)
-	}
 
 	// One payer pays setup, pull and top-up. It is read once per pass, before
 	// any claim: a payer that cannot finish a deposit starts none (04e792e0).
@@ -374,36 +371,34 @@ func (w *Worker) Run(ctx context.Context) error {
 // (OVERDUE_AUTODEPOSIT_WORK_SQL): a selected claim's created_at, and an
 // idle-blocked slot's first-blocked time. Neither moves on retry, unlike
 // eligible_after. Lots that are due but legitimately wait (a capped period
-// allowance, an expired delegation) write nothing and are not counted. An
-// idle-blocked slot counts only as Rust's did: deferred three times, the
-// wallet still above its floor, and no claim owning the target. Lots the
-// wallet no longer backs are owed nothing; their September markers read as
-// 26 days overdue without the floor.
+// allowance, an expired delegation) are not idle-blocked and not counted. An
+// idle-blocked slot counts only while it holds open lots, the wallet is still
+// above its floor and no claim owns the target: lots the wallet no longer
+// backs are owed nothing.
 func (w *Worker) passFacts(ctx context.Context) error {
 	var inflight int
 	var oldest float64
 	err := w.store.pool.QueryRow(ctx, `
 SELECT
   (SELECT count(*) FROM loyal_yield.balance_sweep_transaction_attempts
-   WHERE attempt_state IN ('prepared','submitted','unknown','ambiguous')),
+   WHERE attempt_state IN ('prepared','submitted')),
   COALESCE(EXTRACT(EPOCH FROM now() - LEAST(
     (SELECT min(created_at) FROM loyal_yield.balance_sweep_lot_claims WHERE status = 'selected'),
-    (SELECT min(to_timestamp(substring(slot.last_error FROM $1)::double precision))
+    (SELECT min(slot.idle_blocked_since)
      FROM loyal_yield.balance_sweep_targets AS target
-     JOIN loyal_yield.balance_sweep_surplus_lots AS lot
-       ON lot.target_id = target.id AND lot.status = 'open' AND lot.remaining_amount_raw > 0
-     JOIN loyal_yield.balance_sweep_scheduled_slots AS slot ON slot.id = lot.scheduled_slot_id
+     JOIN loyal_yield.balance_sweep_scheduled_slots AS slot
+       ON slot.target_id = target.id AND slot.status IN ('scheduled', 'requested')
      JOIN loyal_yield.balance_sweep_wallet_balances_current AS balance
        ON balance.target_id = target.id AND balance.mint = target.token_mint
-     WHERE target.token_mint = $2 AND target.desired_active AND target.chain_status = 'active'
-       AND slot.status IN ('scheduled', 'requested') AND slot.last_error LIKE $3
-       AND substring(slot.last_error FROM $4)::bigint >= 3
+     WHERE target.token_mint = $1 AND target.desired_active AND target.chain_status = 'active'
+       AND slot.idle_blocked_since IS NOT NULL
+       AND EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots AS lot
+                   WHERE lot.scheduled_slot_id = slot.id AND lot.status = 'open' AND lot.remaining_amount_raw > 0)
        AND target.wallet_balance_floor_raw IS NOT NULL
        AND balance.amount_raw > target.wallet_balance_floor_raw
        AND NOT EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_lot_claims AS owned
                        WHERE owned.target_id = target.id AND owned.status = 'selected'))
-  ))::float8, 0)`, idleBlockedSincePattern,
-		USDCMint, idleDeferralPrefix+"%", idleDeferralsPattern).Scan(&inflight, &oldest)
+  ))::float8, 0)`, USDCMint).Scan(&inflight, &oldest)
 	if err != nil {
 		return w.failed("autodeposit_progress_check_failed", err)
 	}
