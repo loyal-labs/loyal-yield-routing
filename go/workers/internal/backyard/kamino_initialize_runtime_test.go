@@ -140,11 +140,11 @@ func TestWorkerDispatchesInitializationAfterTheRecord(t *testing.T) {
 		t.Fatal(order)
 	}
 	w.runtime.build = func(context.Context, string, any, ExpectedEffects) error {
-		return budgetHold("initializer_native_funding_unavailable")
+		return budgetHold("initializer_build_refused")
 	}
 	journaled := false
 	w.runtime.recordBudgetHold = func(context.Context, string, *BudgetHold) error { journaled = true; return nil }
-	assertBudgetHold(t, w.Tick(context.Background()), "initializer_native_funding_unavailable")
+	assertBudgetHold(t, w.Tick(context.Background()), "initializer_build_refused")
 	if !journaled {
 		t.Fatal("build hold not recorded")
 	}

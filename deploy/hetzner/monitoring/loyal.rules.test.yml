@@ -743,8 +743,6 @@ tests:
     values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="fresh_build_cost_exceeds_reservation"}
     values: 0+1x16
-  - series: loyal_family_failed_total{family="backyard",code="initializer_native_funding_unavailable"}
-    values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="invalid_pilot_canary_request"}
     values: 0+1x16
   - series: loyal_family_failed_total{family="backyard",code="invalid_selector_route_state"}
@@ -886,16 +884,6 @@ tests:
         impact: A cost, capital, policy or reservation guard rejected the attempted work.
         recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
         summary: 'backyard failure incident: fresh_build_cost_exceeds_reservation'
-        trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
-    - exp_labels:
-        family: backyard
-        code: initializer_native_funding_unavailable
-        severity: page
-      exp_annotations:
-        action: Check the initializer payer SOL balance, rent and fee estimate, and funding configuration. Obtain approval for any required funding; do not raise policy or cost limits to bypass the guard.
-        impact: Account initialization cannot proceed because required native funding is unavailable.
-        recovery: The failure condition stayed clear for 30 minutes. Verify fresh telemetry and successful work before closing the incident; missing metrics or an expired counter window alone does not prove the cause is fixed.
-        summary: 'backyard failure incident: initializer_native_funding_unavailable'
         trigger: Opens after a failure-counter increase of at least 3 in 15 minutes persists for 5 minutes. Stays open until the condition remains clear for 30 minutes; this recovery hold can include periods when the worker is already recovering.
     - exp_labels:
         family: backyard
