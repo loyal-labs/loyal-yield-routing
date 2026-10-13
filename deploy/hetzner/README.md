@@ -295,7 +295,7 @@ The alerts are:
 | LoyalBackyardWithdrawalHealthUnavailable | Observation older than 5m or missing health metrics, sustained for 1m |
 | LoyalAutodepositOverdue | A selected Autodeposit claim, or a slot blocked by vault idle above `AUTODEPOSIT_IDLE_TOLERANCE_RAW`, is over 1h old |
 | LoyalFeePayerLow | A fee payer has been below 0.55 SOL for 5m (warning) |
-| LoyalFeePayerExhausted | A fee payer is below 0.05 SOL: Autodeposit starts nothing |
+| LoyalFeePayerExhausted | A fee payer is below 0.05 SOL: Autodeposit starts nothing. Alertmanager inhibits Autodeposit's LoyalFamilyProgressStale on the same unit while it fires, so the one cause pages once |
 | LoyalLaneStalled | A lane (lookup planner or writer; fleet planner, position sweep or executor) has had no tick finish without error for 15m. Its clock starts when the lane starts; transient errors that clear do not page. One opportunity or submission failing is recorded on its row and does not fail the executor tick |
 | LoyalInflightStuck | Work in flight with no landed or failed outcome for 3m, twice the blockhash expiry |
 | LoyalWorkerDown | A Go unit that systemd is running does not serve `/metrics` for 2m |
