@@ -29,10 +29,16 @@ authority.
    the keep-alive borrow (the minimum up step); an unfunded withdrawal goes
    first until the term's last day. A term whose end is unknown holds
    `stale`.
-3. **Operator exit.** Debt 0; with `--equity-zero` the collateral returns to
-   Voltr too.
+3. **Operator exit.** Debt 0; with `--equity-zero` the collateral then leaves
+   as USDC: one atomic step withdraws it and swaps it to USDC in the Squads
+   bridge account, so none of it waits in a custody another lane shares.
+   That USDC is vault cash: a withdrawal stages it to Voltr, otherwise rule 5
+   tops up the home lane with it. A deposit left at or under dust is
+   rounding residue, not a leg: the exit is done.
 4. **Custody in flight** finishes first: collateral a held lane's next leg
-   takes (in the withdrawal's or an exit's direction when there is one), and
+   takes (above dust and, for a deposit, at least the one collateral receipt
+   KLend mints; less is vault cash its next step takes whole), in the
+   withdrawal's or an exit's direction when there is one, and
    debt-mint cash above dust that a withdrawal needs or no held lane that
    steps owes, which converts toward Voltr (wYLDS stakes to AUTO collateral).
    Custody is vault cash; debt-mint cash makes no lane held.
@@ -80,8 +86,8 @@ loyal-engine backyard exit-lane --lane AUTO/AUTO/wYLDS --clear                  
 ```
 
 The row is the whole authority: the worker delevers the lane by atomic down
-steps on its next ticks and, with `--equity-zero`, returns the collateral to
-Voltr. Clearing the row stops it at whatever state the chain is in; the
+steps on its next ticks and, with `--equity-zero`, withdraws the collateral
+and swaps it to USDC in one more step (rule 3). Clearing the row stops it at whatever state the chain is in; the
 level rule then applies again. The command reads `NEON_DATABASE_URL` from the
 credential directory like the other operator commands.
 

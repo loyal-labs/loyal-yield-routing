@@ -16,6 +16,11 @@ executes (the vault signs nothing at top level):
 | up | refresh reserves + obligation, `Squads{borrow}`, `Squads{swap \| Hastra stake}`, refresh, `Squads{deposit}` |
 | down | refresh reserves + obligation, `Squads{withdraw}`, `Squads{swap \| Hastra redeem}`, refresh, `Squads{repay}` |
 | move | refresh source reserves + obligation, `Squads{withdraw}` (source), refresh overflow reserves + obligation, `Squads{deposit}` (overflow) |
+| exit | refresh reserves + obligation, `Squads{withdraw}`, `Squads{swap}` to USDC in the Squads bridge account |
+
+An exit is any withdrawal beside no debt: what it withdraws, with the held
+collateral custody, converts to USDC in the same transaction, so none of it
+waits in a custody other lanes share.
 
 A move carries collateral from an overflow source to its overflow lane
 (AUTO/AUTO/PYUSD to AUTO/AUTO/wYLDS share the AUTO reserve and custody): no
@@ -75,7 +80,9 @@ Every decision is one step toward the tick's target (`docs/backyard-target.md`).
 | `debt_zero` | down | the whole debt (payoff upper bound), repeated while a withdrawal limit leaves debt: term maturity or an operator exit |
 | `leverage_down_partial` | down | debt down to the 1.5x LTV |
 | `withdrawal_release` beside debt | down | the freed equity's debt share, LTV unchanged |
+| `withdrawal_release` beside no debt | exit | none: the freed equity's collateral to USDC |
 | `overflow_move` | move | none: collateral to the overflow lane |
+| `exit_withdraw_collateral` | exit | none: an equity-zero exit's collateral to USDC |
 
 Down decisions carry a fixed marker amount; prepare sizes the repay from the
 same snapshot, so a refreshed snapshot re-decides to an equal decision.
@@ -169,7 +176,9 @@ the step leaves. A route one account larger does not compile.
 | AUTO/AUTO/wYLDS | up | Hastra | 31 | 1454 |
 | AUTO/AUTO/wYLDS | down | Hastra | 29 | 1386 |
 
-Every lane and direction fits; the largest step is 2,615 of 4,096 bytes.
+Every lane and direction fits; the largest step is 2,615 of 4,096 bytes. An
+exit step needs at most 41 keys at its fixture route and 2,474 bytes at its
+largest.
 
 Split-policy lanes cap each KLend leg at `1e12` raw (the installed policy
 literal). For 6-decimal stables that is $1M per step; for Ethena's 9-decimal

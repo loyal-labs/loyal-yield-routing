@@ -119,7 +119,6 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 	}{
 		{"deposit", Decision{Action: OpenRouteStep, AmountRaw: 10}, KaminoPosition{}, kaminoLegDeposit, 10, 10},
 		{"topup deposit", Decision{Action: OpenRouteStep, Reason: topupDepositReason, AmountRaw: 4}, borrowPosition, kaminoLegDeposit, 4, 4},
-		{"withdraw", Decision{Action: DeleverRouteStep, AmountRaw: 5}, KaminoPosition{CollateralDepositedRaw: 9, RedeemablePrimeRaw: 8}, kaminoLegWithdraw, 9, 8},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -129,7 +128,8 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 			}
 		})
 	}
-	// Borrow, repay and a withdrawal beside debt run only inside atomic steps.
+	// Borrow, repay, a withdrawal beside debt and an exit's withdrawal run
+	// only inside atomic steps.
 	for _, lone := range []struct {
 		decision Decision
 		position KaminoPosition
@@ -137,6 +137,7 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 		{Decision{Action: OpenRouteStep, AmountRaw: 99}, borrowPosition},
 		{Decision{Action: OpenRouteStep, Reason: "prime_collateral_ready", AmountRaw: 1}, KaminoPosition{CollateralDepositedRaw: 1, DebtRaw: 1}},
 		{Decision{Action: DeleverRouteStep, AmountRaw: 4}, KaminoPosition{CollateralDepositedRaw: 9, RedeemablePrimeRaw: 8, DebtRaw: 4}},
+		{Decision{Action: DeleverRouteStep, Reason: exitWithdrawReason, AmountRaw: 1}, KaminoPosition{CollateralDepositedRaw: 9, RedeemablePrimeRaw: 8}},
 	} {
 		if leg, _, _, err := selectKaminoLeg(lone.decision, lone.position); err == nil {
 			t.Fatalf("a lone leg %d was selected for %+v", leg, lone.decision)

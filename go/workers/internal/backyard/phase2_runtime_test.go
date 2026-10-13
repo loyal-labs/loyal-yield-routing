@@ -35,9 +35,9 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 	}
 
 	snapshot.SquadsIdleRaw = 0
-	snapshot.CollateralIdleRaw = 25
+	snapshot.CollateralIdleRaw = 25_000
 	decision = Decide(snapshot)
-	if decision.Action != OpenRouteStep || decision.AmountRaw != 25 {
+	if decision.Action != OpenRouteStep || decision.AmountRaw != 25_000 {
 		t.Fatalf("selected lane did not open from collateral custody: %+v", decision)
 	}
 }

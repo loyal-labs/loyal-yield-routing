@@ -219,7 +219,7 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 // prepareKaminoFromTickObservation builds from the tick's own view batch, as
 // the bridge does; it reads only the policies it executes through, at its slot.
 func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
-	if rpc == nil || observation.routeBatch == nil || (decision.Action != OpenRouteStep && decision.Action != DeleverRouteStep) {
+	if rpc == nil || observation.routeBatch == nil || decision.Action != OpenRouteStep {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
 	}
 	prepareStart, accounts := time.Now(), observation.routeBatch.Accounts
@@ -235,17 +235,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}
-	// A release beside no debt is one withdrawal of its equity's collateral
-	// share, sized from this prepared snapshot.
-	legDecision := decision
-	if decision.Reason == releaseReason {
-		receipts := partialWithdrawalReleaseReceipts(observation.Snapshot, decision.AmountRaw)
-		if receipts <= 0 {
-			return Observation{}, KaminoExecutionEvidence{}, budgetHold("release_leg_unavailable")
-		}
-		legDecision.AmountRaw = receipts
-	}
-	leg, wireAmount, effectAmount, err := selectKaminoLeg(legDecision, position)
+	leg, wireAmount, _, err := selectKaminoLeg(decision, position)
 	if err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}
@@ -267,13 +257,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 		}
 		request.ObligationReserves = append(request.ObligationReserves, route.Kamino.DebtReserve)
 	}
-	source, destination := kaminoLegCustodiesForRoute(leg, route)
-	var effects ExpectedEffects
-	if leg == kaminoLegDeposit {
-		effects, err = boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)
-	} else {
-		effects, err = exactKaminoTokenEffects(accounts, source, destination, effectAmount)
-	}
+	effects, err := boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)
 	if err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}
@@ -296,27 +280,6 @@ func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSD
 		}
 		if position.CollateralDepositedRaw > 0 && position.DebtRaw > 0 && decision.Reason == topupDepositReason && earnActiveLane(decision.StrategyKey) {
 			return kaminoLegDeposit, uint64(decision.AmountRaw), uint64(decision.AmountRaw), nil
-		}
-	case DeleverRouteStep:
-		if position.DebtRaw == 0 && decision.Reason == releaseReason && decision.AmountRaw > 0 && uint64(decision.AmountRaw) < position.CollateralDepositedRaw && position.RedeemablePrimeRaw > 0 {
-			// Debt-free release: withdraw the collateral share.
-			primeRaw := new(big.Int).Mul(big.NewInt(decision.AmountRaw), new(big.Int).SetUint64(position.RedeemablePrimeRaw))
-			primeRaw.Quo(primeRaw, new(big.Int).SetUint64(position.CollateralDepositedRaw))
-			if !primeRaw.IsUint64() || primeRaw.Sign() <= 0 {
-				return 0, 0, 0, fmt.Errorf("partial withdrawal rounds to zero")
-			}
-			return kaminoLegWithdraw, uint64(decision.AmountRaw), primeRaw.Uint64(), nil
-		}
-		// Beside debt every withdrawal is a step's; beside none, an exit
-		// withdraws all of it.
-		if position.DebtRaw == 0 && position.CollateralDepositedRaw > 0 && position.RedeemablePrimeRaw > 0 {
-			receiptRaw := position.CollateralDepositedRaw
-			primeRaw := new(big.Int).Mul(new(big.Int).SetUint64(receiptRaw), new(big.Int).SetUint64(position.RedeemablePrimeRaw))
-			primeRaw.Quo(primeRaw, new(big.Int).SetUint64(position.CollateralDepositedRaw))
-			if !primeRaw.IsUint64() || primeRaw.Sign() <= 0 {
-				return 0, 0, 0, fmt.Errorf("partial collateral withdrawal rounds to zero")
-			}
-			return kaminoLegWithdraw, receiptRaw, primeRaw.Uint64(), nil
 		}
 	}
 	return 0, 0, 0, fmt.Errorf("Kamino position is not in a supported next-leg state")

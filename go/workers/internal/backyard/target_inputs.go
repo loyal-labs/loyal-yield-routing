@@ -123,16 +123,9 @@ func RunLaneExit(ctx context.Context, databaseURL string, request LaneExitReques
 	return database.recordLaneExit(ctx, productionRouteKey, request)
 }
 
-// bumpRouteGenerationSQL advances route $1's generation: an exit is a new
-// target input, so a tick planned before it re-reads.
-const bumpRouteGenerationSQL = `UPDATE loyal_yield.multiply_route_states
-	SET state_version = state_version + 1, state = jsonb_set(state, '{generation}', to_jsonb(state_version + 1)), updated_at = clock_timestamp()
-	WHERE route_key = $1 RETURNING route_key`
-
 func (d *Database) recordLaneExit(ctx context.Context, routeKey string, request LaneExitRequest) (string, error) {
 	if request.Clear {
-		tag, err := d.pool.Exec(ctx, `WITH route AS (`+bumpRouteGenerationSQL+`)
-			DELETE FROM loyal_yield.backyard_lane_exits e USING route WHERE e.route_key = route.route_key AND e.lane = $2`, routeKey, request.Lane)
+		tag, err := d.pool.Exec(ctx, `DELETE FROM loyal_yield.backyard_lane_exits WHERE route_key = $1 AND lane = $2`, routeKey, request.Lane)
 		if err != nil {
 			return "", err
 		}
@@ -142,9 +135,8 @@ func (d *Database) recordLaneExit(ctx context.Context, routeKey string, request 
 		return fmt.Sprintf("lane %s exit cleared", request.Lane), nil
 	}
 	var at time.Time
-	err := d.pool.QueryRow(ctx, `WITH route AS (`+bumpRouteGenerationSQL+`)
-		INSERT INTO loyal_yield.backyard_lane_exits (route_key, lane, equity_zero, requested_by)
-		SELECT route_key, $2, $3, $4 FROM route
+	err := d.pool.QueryRow(ctx, `INSERT INTO loyal_yield.backyard_lane_exits (route_key, lane, equity_zero, requested_by)
+		SELECT route_key, $2, $3, $4 FROM loyal_yield.multiply_route_states WHERE route_key = $1
 		ON CONFLICT (route_key, lane) DO UPDATE SET equity_zero = EXCLUDED.equity_zero, requested_by = EXCLUDED.requested_by, requested_at = clock_timestamp()
 		RETURNING requested_at`, routeKey, request.Lane, request.EquityZero, request.RequestedBy).Scan(&at)
 	if err == pgx.ErrNoRows {

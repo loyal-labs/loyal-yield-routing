@@ -29,8 +29,7 @@ generation. The one-shot operator writes (`selector-evaluate --execute`,
 refuse while the worker runs, and every read and write of the command goes
 through the session that holds the lock. `exit-lane` and `clear-hold` are
 operator inputs the worker reads on its next tick, and run beside it without
-the lock: each is one statement on its own row (`backyard_lane_exits`, which
-also bumps the route state's `state_version`, and
+the lock: each is one statement on its own row (`backyard_lane_exits` and
 `backyard_manual_recovery_latches`), and the worker's writes to those rows are
 single statements or `FOR UPDATE` reads, so neither loses the other's write.
 `in-flight` and the dry runs only read.

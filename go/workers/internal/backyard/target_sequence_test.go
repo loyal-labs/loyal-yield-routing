@@ -150,15 +150,21 @@ func (b *book) apply(t *testing.T, s Snapshot, d Decision) {
 		case releaseReason:
 			// A release frees equity E at the position's own level: it
 			// withdraws C*E/(C-D), repays the debt share, and the rest (E)
-			// waits as idle collateral.
+			// waits as idle collateral; beside no debt the step converts E
+			// to USDC itself.
 			withdrawn := int64(float64(d.AmountRaw) * float64(l.coll) / float64(l.coll-l.debt))
 			repay := withdrawn - d.AmountRaw
 			l.coll -= withdrawn
+			if l.debt == 0 {
+				b.squads += d.AmountRaw
+			} else {
+				l.idle += d.AmountRaw
+			}
 			l.debt -= repay
-			l.idle += d.AmountRaw
 		case exitWithdrawReason:
-			l.idle += l.coll
-			l.coll = 0
+			// The withdrawal and the custody convert to USDC inside the step.
+			b.squads += l.coll + l.idle
+			l.coll, l.idle = 0, 0
 		default:
 			repay, _ := stepDownRepay(s, d.Reason)
 			r := min(int64(repay), l.debt)
@@ -326,18 +332,35 @@ func TestTargetOperatorExit(t *testing.T) {
 	if l := b.lane(SelectedRouteID); l.debt != 0 || l.coll != 100_000_000_000 {
 		t.Fatalf("debt-0 exit left debt %d collateral %d", l.debt, l.coll)
 	}
-	// Equity 0 as well: withdraw, convert, stage; the cash ends in Voltr.
+	// Equity 0 as well: withdraw and convert in one step, stage; the cash
+	// ends in Voltr.
 	b = mapleBook(1.5, false)
 	b.in.Exits = map[string]laneExit{SelectedRouteID: {EquityZero: true}}
 	wantSteps(t, b.walk(t, 8),
 		"DELEVER_ROUTE_STEP:"+debtZeroReason,
 		"DELEVER_ROUTE_STEP:"+exitWithdrawReason,
-		"SWAP_COLLATERAL_TO_STABLE_STEP:"+outboundCollateralReason,
 		// Flat, the vault's Squads cash returns to Voltr.
 		"STAGE_SQUADS_TO_VOLTR:"+returnCashReason,
 		"HOLD:"+holdAtTarget)
 	if b.voltr != 100_000_000_000 || b.equity() != 0 {
 		t.Fatalf("equity-0 exit left Voltr %d equity %d", b.voltr, b.equity())
+	}
+	// A deposit a capped exit step left at dust is residue, not a leg: the
+	// exit is done.
+	b = mapleBook(1.5, false)
+	b.in.Exits = map[string]laneExit{SelectedRouteID: {EquityZero: true}}
+	l := b.lane(SelectedRouteID)
+	l.coll, l.debt = partialWithdrawalDustRaw, 0
+	wantSteps(t, b.walk(t, 3), "HOLD:"+holdAtTarget)
+	// A withdrawal from a lane at debt 0 releases straight to USDC: release,
+	// stage.
+	b = mapleBook(1.5, false)
+	b.in.Exits = map[string]laneExit{SelectedRouteID: {}}
+	b.walk(t, 5)
+	b.in.Exits, b.demand = nil, 10_000_000_000
+	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+releaseReason, "STAGE_SQUADS_TO_VOLTR:"+outboundStageReason, "HOLD:"+holdAtTarget)
+	if l := b.lane(SelectedRouteID); b.voltr < b.demand || l.idle != 0 || l.debt != 0 {
+		t.Fatalf("debt-free release left Voltr %d idle %d debt %d", b.voltr, l.idle, l.debt)
 	}
 }
 
