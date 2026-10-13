@@ -22,7 +22,7 @@ import (
 //     keep-alive borrow (or past it) goes to debt 0; under three days with
 //     room, the keep-alive borrow (the minimum up step) restarts the term;
 //  3. the operator exit row: debt 0, and with equity_zero the collateral
-//     returns to Voltr too;
+//     leaves as USDC (one exit step: withdraw and swap);
 //  4. custody in flight: collateral waiting for a held lane's next leg goes
 //     first, and debt-mint cash no held lane owes converts toward Voltr;
 //     withdrawal demand: Voltr idle must cover the queue, and the largest
@@ -85,7 +85,7 @@ type LaneTarget struct {
 	Level      float64 `json:"level,omitempty"`
 	UpApproved bool    `json:"upApproved,omitempty"`
 	KeepAlive  bool    `json:"keepAlive,omitempty"`
-	// EquityZero returns the lane's collateral to Voltr after its debt.
+	// EquityZero withdraws the lane's collateral as USDC after its debt.
 	EquityZero bool `json:"equityZero,omitempty"`
 	// Outbound sends the lane's idle custody and Squads cash toward Voltr.
 	Outbound bool `json:"outbound,omitempty"`
@@ -120,10 +120,12 @@ func economicLevel(level float64) float64 {
 	return level
 }
 
-// laneInFlight reports collateral above dust in the lane's custody: a
-// deposit or conversion takes it next.
+// laneInFlight reports collateral custody the lane's next leg takes: above
+// dust, and at least the deposit KLend accepts (one collateral receipt) when
+// that leg is a deposit. Less is vault cash, counted in NAV, that the lane's
+// next step takes whole.
 func laneInFlight(s Snapshot) bool {
-	return s.CollateralIdleRaw > partialWithdrawalDustRaw
+	return s.CollateralIdleRaw > partialWithdrawalDustRaw && s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
 }
 
 // debtCashOwed reports a held lane that steps and owes the mint of s's debt
@@ -206,7 +208,7 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		if l.exit == nil || !l.held {
 			continue
 		}
-		if s.PositionDebtRaw > 0 || (l.exit.EquityZero && (s.PositionCollateralRaw > 0 || laneInFlight(s))) {
+		if s.PositionDebtRaw > 0 || (l.exit.EquityZero && s.PositionCollateralRaw > 0) {
 			return i, LaneTarget{Rule: ruleOperatorExit, Level: 1, EquityZero: l.exit.EquityZero, Outbound: l.exit.EquityZero}
 		}
 	}
@@ -561,7 +563,9 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		return d(StageSquadsToVoltr, outboundStageReason, s.SquadsIdleRaw), true
 	}
 	if t.EquityZero && s.PositionDebtRaw == 0 && s.PositionCollateralRaw > 0 {
-		return d(DeleverRouteStep, exitWithdrawReason, 0), true
+		// One step withdraws and converts it to USDC: none of it waits in a
+		// custody other lanes share.
+		return d(DeleverRouteStep, exitWithdrawReason, stepDownMarker), true
 	}
 	if t.ReleaseRaw > 0 {
 		// A release never empties a lane: 90% of its equity or more is the
@@ -588,7 +592,7 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	// A flat vault's Squads cash is an entry's allocation. It returns to
 	// Voltr when the lane cannot take all of it; without a current entry it
 	// waits for the selector (a withdrawal stages it).
-	if !s.HasPosition && s.CollateralIdleRaw == 0 && s.SquadsIdleRaw > 0 {
+	if !s.HasPosition && !laneInFlight(s) && s.SquadsIdleRaw > 0 {
 		if min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= TargetLTVBPS {
 			return d(StageSquadsToVoltr, returnCashReason, s.SquadsIdleRaw)
 		}
@@ -612,17 +616,15 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 			return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw)
 		}
 	}
-	// Collateral beside the position deposits.
-	if s.CollateralIdleRaw > 0 {
+	// Collateral a deposit takes deposits beside the position.
+	if laneInFlight(s) {
 		if s.MinimumCollateralDepositRaw <= 0 {
 			return d(Hold, holdStale, 0)
 		}
-		if s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw {
-			if s.HasPosition {
-				return d(OpenRouteStep, topupDepositReason, s.CollateralIdleRaw)
-			}
-			return d(OpenRouteStep, entryDepositReason, s.CollateralIdleRaw)
+		if s.HasPosition {
+			return d(OpenRouteStep, topupDepositReason, s.CollateralIdleRaw)
 		}
+		return d(OpenRouteStep, entryDepositReason, s.CollateralIdleRaw)
 	}
 	if t.KeepAlive {
 		return d(OpenRouteStep, termKeepAliveReason, int64(termKeepAliveBorrowRaw))
@@ -633,7 +635,7 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	if t.TopupRaw > 0 && s.HasPosition && s.SquadsIdleRaw == 0 {
 		return d(VoltrAllocateToSquads, topupAllocationReason, t.TopupRaw)
 	}
-	if t.Rule == ruleEntry && !s.HasPosition && s.SquadsIdleRaw == 0 && s.CollateralIdleRaw == 0 {
+	if t.Rule == ruleEntry && !s.HasPosition && s.SquadsIdleRaw == 0 && !laneInFlight(s) {
 		if t.EntryRaw <= 0 {
 			return d(Hold, holdStale, 0)
 		}
@@ -685,7 +687,7 @@ const obligationAbsentHoldReason = "obligation_absent"
 // flat vault's entry deposits into it; any other deposit into an absent
 // obligation holds (Kamino would refuse it).
 func obligationPrerequisiteHold(s Snapshot, initializationReady func(Snapshot) bool) (Decision, bool) {
-	if !s.ObligationPresenceKnown || s.ObligationPresent || (s.Target.Rule != ruleEntry && s.Target.Rule != ruleCustody && s.Target.Rule != ruleTopup && s.CollateralIdleRaw == 0) {
+	if !s.ObligationPresenceKnown || s.ObligationPresent || (s.Target.Rule != ruleEntry && s.Target.Rule != ruleCustody && s.Target.Rule != ruleTopup && !laneInFlight(s)) {
 		return Decision{}, false
 	}
 	if initializationReady(s) {

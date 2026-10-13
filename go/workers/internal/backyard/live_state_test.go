@@ -190,25 +190,44 @@ func TestSharedCustodyIsTheEntryLanes(t *testing.T) {
 	}
 }
 
-// withPYUSDResidue is the capture with raw PYUSD in the vault's one PYUSD
-// custody, in every read and refresh: a step's conversion residue.
-func withPYUSDResidue(c liveCapture, raw uint64) liveCapture {
-	fund := func(reads []liveRead) []liveRead {
+// withAccount is the capture with edit applied to address's data in every
+// read and refresh.
+func withAccount(c liveCapture, address string, edit func(data []byte)) liveCapture {
+	apply := func(reads []liveRead) []liveRead {
 		out := make([]liveRead, len(reads))
 		for i, r := range reads {
 			out[i] = r
 			out[i].Accounts = append([]ConfirmedAccount(nil), r.Accounts...)
 			for j := range out[i].Accounts {
-				if out[i].Accounts[j].Address == pyusdCustody {
+				if out[i].Accounts[j].Address == address {
 					out[i].Accounts[j].Data = append([]byte(nil), out[i].Accounts[j].Data...)
-					binary.LittleEndian.PutUint64(out[i].Accounts[j].Data[64:72], raw)
+					edit(out[i].Accounts[j].Data)
 				}
 			}
 		}
 		return out
 	}
-	c.Reads, c.Refreshes = fund(c.Reads), fund(c.Refreshes)
+	c.Reads, c.Refreshes = apply(c.Reads), apply(c.Refreshes)
 	return c
+}
+
+// tokenBalance sets a token account's amount: raw residue in a custody.
+func tokenBalance(raw uint64) func([]byte) {
+	return func(data []byte) { binary.LittleEndian.PutUint64(data[64:72], raw) }
+}
+
+// emptyObligation clears a KLend obligation's borrows (its debt repaid) and,
+// with deposits, its deposits too (its collateral withdrawn).
+func emptyObligation(deposits bool) func([]byte) {
+	return func(data []byte) {
+		clear(data[1208 : 1208+5*200])
+		clear(data[2208:2240])
+		if deposits {
+			clear(data[96 : 96+8*136])
+			clear(data[1192:1208])
+			clear(data[2240:2272])
+		}
+	}
 }
 
 // Custody is vault cash. PYUSD residue beside AUTO/AUTO/PYUSD, which owes
@@ -224,7 +243,7 @@ func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
 		t.Fatalf("live book changed: total %d strategy %d identity %s", base.TotalVaultNAVRaw, base.StrategyNAVRaw, base.ObservationID)
 	}
 	for _, residue := range []uint64{25_000_000, 1} {
-		o := observeLiveAtRest(t, withPYUSDResidue(c, residue), in)
+		o := observeLiveAtRest(t, withAccount(c, pyusdCustody, tokenBalance(residue)), in)
 		s := o.Snapshot
 		if s.HeldLanes != base.HeldLanes || len(o.lanes) != 2 || s.Target != base.Target || s.RouteLane != base.RouteLane {
 			t.Fatalf("residue %d moved the target: held %q views %d target %+v", residue, s.HeldLanes, len(o.lanes), s.Target)
@@ -257,3 +276,112 @@ const (
 	liveStrategyNAVRaw   = 101_249_158_835
 	liveObservationID    = "0a991f1fdbcc3d9a81a67955c8c24214b48a1bd75b047b7b1b8d366e3bee74ba"
 )
+
+// Collateral custody is vault cash; rule 4a claims it for a lane only when
+// that lane's next leg takes it. On the live book that leg is the AUTO
+// deposit, which KLend refuses only below one collateral receipt (3 raw AUTO
+// here), far under dust: every residue above dust deposits whole, and toward
+// a withdrawal it converts whole. Collateral the leg would refuse is vault
+// cash the lane's next step takes whole: it does not hold the top-up.
+func TestLiveCollateralResidueGoesWhereItsNextLegTakesIt(t *testing.T) {
+	t.Parallel()
+	c := loadLiveCapture(t, "testdata/live_state_2026-10-12.json.gz")
+	in := liveInputs(true)
+	for _, residue := range []uint64{uint64(partialWithdrawalDustRaw), uint64(partialWithdrawalDustRaw) + 1, 25_000_000} {
+		o := observeLiveAtRest(t, withAccount(c, autoAUTOPYUSD.CollateralCustody, tokenBalance(residue)), in)
+		s := o.Snapshot
+		views := slices.Clone(o.lanes)
+		for _, view := range views {
+			if view.CollateralIdleRaw != int64(residue) || view.MinimumCollateralDepositRaw != 3 {
+				t.Fatalf("%s reads AUTO custody %d, deposit minimum %d", view.RouteLane, view.CollateralIdleRaw, view.MinimumCollateralDepositRaw)
+			}
+		}
+		d := Decide(s)
+		if residue == uint64(partialWithdrawalDustRaw) {
+			if s.Target.Rule != holdAtTarget || d.Action != Hold || d.Reason != holdAtTarget {
+				t.Fatalf("dust moved: %+v %+v", s.Target, d)
+			}
+			continue
+		}
+		if s.RouteLane != autoAUTOPYUSD.Lane || s.Target.Rule != ruleCustody || d.Action != OpenRouteStep || d.Reason != topupDepositReason || d.AmountRaw != int64(residue) {
+			t.Fatalf("residue %d: %s %+v %+v", residue, s.RouteLane, s.Target, d)
+		}
+		// Toward a withdrawal the same custody converts to USDC, whole.
+		for i := range views {
+			views[i].WithdrawalDemandRaw, views[i].MinimumCollateralDepositRaw = views[i].VoltrIdleRaw+50_000_000, 0
+		}
+		i, tgt := target(views, in)
+		out := s
+		out.WithdrawalDemandRaw, out.MinimumCollateralDepositRaw, out.Target = views[i].WithdrawalDemandRaw, 0, tgt
+		if d := Decide(out); views[i].RouteLane != s.RouteLane || tgt.Rule != ruleCustody || !tgt.Outbound || d.Action != SwapCollateralToStableStep || d.AmountRaw != int64(residue) {
+			t.Fatalf("residue %d toward a withdrawal: %+v %+v", residue, tgt, d)
+		}
+		// Below the deposit KLend accepts, the residue is vault cash: the
+		// top-up of new Voltr cash goes first, and its deposit takes the
+		// custody whole.
+		for i := range views {
+			views[i].WithdrawalDemandRaw, views[i].MinimumCollateralDepositRaw, views[i].VoltrIdleRaw = 0, int64(residue)+1, 50_000_000_000
+		}
+		if i, tgt = target(views, in); tgt.Rule != ruleTopup || tgt.TopupRaw <= 0 || views[i].RouteLane != autoAUTOPYUSD.Lane {
+			t.Fatalf("residue %d below the deposit minimum held the top-up: %+v", residue, tgt)
+		}
+	}
+}
+
+// An equity-zero exit returns the lane's equity as USDC: its last step
+// withdraws the collateral and swaps it to USDC in one transaction, so none
+// of it waits in the AUTO custody AUTO/AUTO/PYUSD shares. On the live book,
+// with AUTO/AUTO/wYLDS's debt repaid: the exit's step is that atomic step on
+// the wYLDS lane; once it lands no AUTO is left for AUTO/AUTO/PYUSD, whose
+// position is untouched. The custody a separate withdrawal left (the shape
+// this replaces) was deposited into AUTO/AUTO/PYUSD instead.
+func TestLiveEquityZeroExitLeavesNoCollateralForTheSharingLane(t *testing.T) {
+	t.Parallel()
+	c := loadLiveCapture(t, "testdata/live_state_2026-10-12.json.gz")
+	in := liveInputs(true)
+	in.Exits = map[string]laneExit{autoAUTOWYLDSLane: {EquityZero: true}}
+	base := observeLiveAtRest(t, c, liveInputs(true)).lanes
+	wylds, err := runtimeRoute(autoAUTOWYLDSLane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaid := withAccount(c, wylds.Kamino.Obligation, emptyObligation(false))
+	o := observeLiveAtRest(t, repaid, in)
+	s := o.Snapshot
+	d := Decide(s)
+	if s.RouteLane != autoAUTOWYLDSLane || s.Target.Rule != ruleOperatorExit || !s.Target.EquityZero || s.PositionDebtRaw != 0 || s.PositionCollateralRaw == 0 {
+		t.Fatalf("exit target %s %+v", s.RouteLane, s.Target)
+	}
+	if up, atomic := stepDecision(s, d); d.Action != DeleverRouteStep || d.Reason != exitWithdrawReason || d.StrategyKey != autoAUTOWYLDSLane || up || !atomic {
+		t.Fatalf("exit step %+v", d)
+	}
+	// The step landed: the wYLDS obligation is empty, the AUTO custody as it
+	// was, and the swap's USDC in the Squads bridge account.
+	landed := withAccount(withAccount(c, wylds.Kamino.Obligation, emptyObligation(true)), bridgeSquadsATA, tokenBalance(33_718_911_211))
+	after := observeLiveAtRest(t, landed, in)
+	if after.Snapshot.HeldLanes != autoAUTOPYUSD.Lane {
+		t.Fatalf("held after the exit: %q", after.Snapshot.HeldLanes)
+	}
+	for _, view := range after.lanes {
+		if view.CollateralIdleRaw != 0 || laneInFlight(view) {
+			t.Fatalf("%s sees AUTO custody %d after the exit", view.RouteLane, view.CollateralIdleRaw)
+		}
+		if view.RouteLane == autoAUTOPYUSD.Lane && (view.PositionCollateralRaw != base[0].PositionCollateralRaw || view.PositionDebtRaw != base[0].PositionDebtRaw) {
+			t.Fatalf("AUTO/AUTO/PYUSD moved: %+v", view)
+		}
+	}
+	if tgt := after.Snapshot.Target; tgt.Rule == ruleCustody || tgt.Rule == ruleOperatorExit {
+		t.Fatalf("after the exit: %+v", tgt)
+	}
+	// That USDC is vault cash: with no withdrawal, rule 5 tops up the home
+	// lane with it, as it would new Voltr cash.
+	if d := Decide(after.Snapshot); d.Action != SwapStableToCollateralStep || d.Reason != topupSwapReason || d.StrategyKey != autoAUTOPYUSD.Lane {
+		t.Fatalf("the exit's USDC: %+v", d)
+	}
+	// The replaced shape: a lone withdrawal left the wYLDS lane's AUTO in the
+	// shared custody, and AUTO/AUTO/PYUSD's custody rule deposited it.
+	parked := withAccount(withAccount(c, wylds.Kamino.Obligation, emptyObligation(true)), autoAUTOPYUSD.CollateralCustody, tokenBalance(32_918_240_839))
+	if p := observeLiveAtRest(t, parked, in).Snapshot; p.RouteLane != autoAUTOPYUSD.Lane || Decide(p).Reason != topupDepositReason {
+		t.Fatalf("parked AUTO: %s %+v %+v", p.RouteLane, p.Target, Decide(p))
+	}
+}

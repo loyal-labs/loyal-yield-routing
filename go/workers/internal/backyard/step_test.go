@@ -71,25 +71,104 @@ func stepTestBuild(t *testing.T, lane string, up bool, venue int) (StepRequest, 
 		}
 		step.Hastra, request = &r, r
 	} else {
-		r := fixtureSwapRequest(t, lane, conversion)
-		if venue >= 0 {
-			r.Instruction.Accounts = append([]jupiter.AccountMeta{}, r.Instruction.Accounts[:12]...)
-			for i := range venue {
-				key := sha256.Sum256(fmt.Appendf(nil, "venue %s %d", lane, i))
-				r.Instruction.Accounts = append(r.Instruction.Accounts, jupiter.AccountMeta{Pubkey: encodeBase58(key[:]), IsWritable: i%2 == 0})
-			}
-		}
+		r := stepTestSwap(t, lane, conversion, venue)
 		step.Swap, request = &r, r
 	}
 	closeRaw, err := stepCloseAmount(0, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if step.Close, err = manifest.kaminoPacketForRoute(policies, action, closeLeg, closeRaw, blockhash, lane); err != nil {
+	closing, err := manifest.kaminoPacketForRoute(policies, action, closeLeg, closeRaw, blockhash, lane)
+	if err != nil {
 		t.Fatal(err)
 	}
+	step.Close = &closing
 	message, err := buildStepMessage(step, mustKey(bridgeDelegate))
 	return step, message, err
+}
+
+// stepTestSwap is the fixture's Jupiter swap of lane's conversion, with venue
+// synthetic venue accounts behind its twelve fixed ones (venue < 0 keeps the
+// fixture route).
+func stepTestSwap(t *testing.T, lane string, conversion Action, venue int) JupiterSwapRequest {
+	t.Helper()
+	r := fixtureSwapRequest(t, lane, conversion)
+	if venue >= 0 {
+		r.Instruction.Accounts = append([]jupiter.AccountMeta{}, r.Instruction.Accounts[:12]...)
+		for i := range venue {
+			key := sha256.Sum256(fmt.Appendf(nil, "venue %s %d", lane, i))
+			r.Instruction.Accounts = append(r.Instruction.Accounts, jupiter.AccountMeta{Pubkey: encodeBase58(key[:]), IsWritable: i%2 == 0})
+		}
+	}
+	return r
+}
+
+// stepTestExit compiles lane's exit step through the captured policies: the
+// whole 1,000,000 raw deposit withdrawn beside no debt and swapped to USDC.
+func stepTestExit(t *testing.T, lane string, venue int) (StepRequest, stepMessage, error) {
+	t.Helper()
+	route, err := runtimeRoute(lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policies, _, _ := stepTestPolicies(t)
+	open, err := embeddedTestManifest(t).kaminoPacketForRoute(policies, DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, lane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open.ObligationReserves = []string{route.Kamino.CollateralReserve}
+	swap := stepTestSwap(t, lane, SwapCollateralToStableStep, venue)
+	step := StepRequest{Open: open, Swap: &swap}
+	message, err := buildStepMessage(step, mustKey(bridgeDelegate))
+	return step, message, err
+}
+
+// An equity-zero exit's last step is one v1 message that closes nothing:
+// the refresh prefix, the withdrawal and its swap to USDC into the Squads
+// bridge account, each at the one constraint of its installed literal that
+// admits it. A close leg on it does not compile.
+func TestExitStepWithdrawsAndSwapsToUSDCInOneMessage(t *testing.T) {
+	t.Parallel()
+	_, byAccount, literals := stepTestPolicies(t)
+	for _, lane := range []string{autoAUTOWYLDSLane, autoAUTOPYUSD.Lane, mapleSyrupUSDCUSDC.Lane} {
+		step, message, err := stepTestExit(t, lane, -1)
+		if err != nil {
+			t.Fatalf("%s: %v", lane, err)
+		}
+		instructions := decodeTestInstructions(t, message.Message)
+		last := len(instructions) - 1
+		withdraw, swap := instructions[last-1], instructions[last]
+		for i, ix := range []squads.Instruction{withdraw, swap} {
+			execution, err := squads.DecodeExecuteTransactionSyncV2(ix)
+			if ix.ProgramID != squads.ProgramID || err != nil || len(execution.Inner) != 1 {
+				t.Fatalf("%s: instruction %d is not one Squads execute: %v", lane, last-1+i, err)
+			}
+			inner, key := execution.Inner[0], byAccount[execution.Policy]
+			if i == 0 && (inner.ProgramID != kamino.ProgramID || [8]byte(inner.Data[:8]) != kamino.WithdrawV2Discriminator) {
+				t.Fatalf("%s: the exit does not open with the KLend withdrawal", lane)
+			}
+			if i == 1 && inner.ProgramID != jupiter.ProgramID {
+				t.Fatalf("%s: the exit does not end with the Jupiter swap", lane)
+			}
+			var admitting []int
+			for index, constraint := range literals[key].Constraints {
+				if squads.Admits(constraint, inner, vaultObligation) {
+					admitting = append(admitting, index)
+				}
+			}
+			if fmt.Sprint(admitting) != fmt.Sprint([]int{int(execution.ConstraintIndexes[0])}) {
+				t.Errorf("%s: %s executes at constraint %d, but constraints %v admit it", lane, key, execution.ConstraintIndexes[0], admitting)
+			}
+		}
+		if _, _, _, to, err := jupiterEdgeForRoute(SwapCollateralToStableStep, lane); err != nil || to != bridgeSquadsATA {
+			t.Fatalf("%s: the exit swaps into %s (%v), not the Squads bridge account", lane, to, err)
+		}
+		closing := step.Open
+		step.Close = &closing
+		if _, err := buildStepMessage(step, mustKey(bridgeDelegate)); err == nil {
+			t.Fatalf("%s: a closing withdrawal compiled into an exit", lane)
+		}
+	}
 }
 
 // An atomic step is one v1 message: each KLend execute directly behind its
@@ -220,6 +299,22 @@ func TestEveryEarnStepFitsOneV1Transaction(t *testing.T) {
 			if _, _, err := stepTestBuild(t, lane, up, venue+1); err == nil {
 				t.Errorf("%s up=%t: a route one account past its size compiled", lane, up)
 			}
+		}
+		request, _, _ := stepTestExit(t, lane, 0)
+		venue, err := stepSwapMaxAccounts(request, SwapCollateralToStableStep)
+		if err != nil || venue < 16 {
+			t.Fatalf("%s exit: route size %d: %v", lane, venue, err)
+		}
+		for _, variant := range []int{-1, venue} {
+			_, step, err := stepTestExit(t, lane, variant)
+			name := map[bool]string{true: "fixture", false: fmt.Sprintf("max %d", venue)}[variant < 0]
+			if err != nil || step.Keys > maxTransactionKeys || step.WireBytes > maxTransactionBytes {
+				t.Errorf("%s exit %s: %d keys, %d bytes: %v", lane, name, step.Keys, step.WireBytes, err)
+			}
+			fmt.Fprintf(&table, "%-20s %-4s %-12s %5d %5d\n", lane, "exit", name, step.Keys, step.WireBytes)
+		}
+		if _, _, err := stepTestExit(t, lane, venue+1); err == nil {
+			t.Errorf("%s exit: a route one account past its size compiled", lane)
 		}
 	}
 	t.Log("\n" + table.String())

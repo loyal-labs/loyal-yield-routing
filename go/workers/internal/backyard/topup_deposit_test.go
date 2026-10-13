@@ -17,10 +17,12 @@ func TestTopupDepositDecisionJoinsDebtFreePosition(t *testing.T) {
 	if got := Decide(targeted(s)); got.Reason != topupDepositReason {
 		t.Fatalf("allocation jumped ahead of the pending deposit: %+v", got)
 	}
+	// Collateral KLend would refuse to deposit is vault cash: the top-up
+	// goes on, and its deposit takes that custody whole.
 	below := s
 	below.MinimumCollateralDepositRaw = below.CollateralIdleRaw + 1
-	if got := Decide(targeted(below)); got.Reason == topupDepositReason || got.Reason == topupAllocationReason {
-		t.Fatalf("deposit below the rounding window or allocation beside it: %+v", got)
+	if got := Decide(targeted(below)); got.Action != VoltrAllocateToSquads || got.Reason != topupAllocationReason {
+		t.Fatalf("collateral below the deposit minimum held the top-up: %+v", got)
 	}
 	for name, mutate := range map[string]func(*Snapshot){
 		"demand":     func(s *Snapshot) { s.WithdrawalDemandRaw = 1 },

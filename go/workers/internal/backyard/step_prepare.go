@@ -14,7 +14,8 @@ import (
 
 // The hard-LTV down step's reason. A leverage_up or term_keepalive borrow is
 // an up step; debt_zero, leverage_down_partial and (beside debt)
-// withdrawal_release are down steps; overflow_move is a move.
+// withdrawal_release are down steps; overflow_move is a move;
+// exit_withdraw_collateral and a release beside no debt are exits.
 const hardLTVDeleverReason = "hard_ltv_delever"
 
 const (
@@ -32,7 +33,8 @@ const (
 )
 
 // stepDecision reports whether d is an atomic step of s's lane, and whether
-// it is an up step. An overflow move is a step that is not up.
+// it is an up step. An overflow move and an exit are steps that are not up;
+// every DeleverRouteStep is a step.
 func stepDecision(s Snapshot, d Decision) (up bool, ok bool) {
 	if !earnHeldLane(d.StrategyKey) {
 		return false, false
@@ -42,11 +44,8 @@ func stepDecision(s Snapshot, d Decision) (up bool, ok bool) {
 		return true, d.Reason == leverageUpReason || d.Reason == termKeepAliveReason
 	case DeleverRouteStep:
 		switch d.Reason {
-		case hardLTVDeleverReason, debtZeroReason, leverageDownPartialReason, overflowMoveReason:
+		case hardLTVDeleverReason, debtZeroReason, leverageDownPartialReason, overflowMoveReason, exitWithdrawReason, releaseReason:
 			return false, true
-		case releaseReason:
-			// Beside no debt a release is one withdrawal.
-			return false, s.PositionDebtRaw > 0
 		}
 	}
 	return false, false
@@ -98,7 +97,8 @@ type stepState struct {
 	// The custody balances the step's effects start from. They equal the
 	// held amounts except on a shared-USDC-debt lane, whose debt custody is
 	// the Squads bridge account: its cash is the bridge's, never a step's.
-	collateralBalance, debtBalance uint64
+	// cash is that account, where an exit's swap pays (exits only).
+	collateralBalance, debtBalance, cash uint64
 	// topology is the obligation's reserves before the step, as its first
 	// refresh names them.
 	topology []string
@@ -259,6 +259,26 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
+	if !up && st.position.DebtRaw == 0 {
+		// An exit withdraws the deposit, a release its equity's share, and
+		// converts it with the held collateral to USDC: nothing it withdraws
+		// waits in a custody other lanes may share.
+		receipts := st.position.CollateralDepositedRaw
+		if decision.Reason == releaseReason {
+			receipts = uint64(max(partialWithdrawalReleaseReceipts(s, decision.AmountRaw), 0))
+		}
+		receipts = min(receipts, stepLegCap(route))
+		liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
+		if err != nil || receipts == 0 || liquidity == 0 {
+			return Observation{}, StepExecutionEvidence{}, budgetHoldFrom(err, "release_leg_unavailable")
+		}
+		if st.cash, err = vaultCustodyRaw(accounts, bridgeSquadsATA, bridgeUSDC, bridgeTokenProgram); err != nil {
+			return Observation{}, StepExecutionEvidence{}, err
+		}
+		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapCollateralToStableStep, receipts, liquidity+st.heldCollateral, s.Slot)
+		logStage("prepare_step", prepareStart)
+		return observation, evidence, err
+	}
 	if up {
 		borrow := uint64(decision.AmountRaw)
 		// The keep-alive is the minimum up step: target() found its room in
@@ -278,7 +298,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		}
 		// The conversion also takes the lane's held borrowed token, the
 		// excess a previous step's conversion left.
-		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, true, borrow, borrow+st.heldDebt, s.Slot)
+		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapDebtToCollateralStep, borrow, borrow+st.heldDebt, s.Slot)
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
@@ -292,7 +312,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	if err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}
-	evidence, guaranteed, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, false, receipts, convert, s.Slot)
+	evidence, guaranteed, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapCollateralToDebtStep, receipts, convert, s.Slot)
 	if err == nil && full && st.heldDebt+guaranteed < repay {
 		// Scale the conversion by its own quote to cover the payoff, within
 		// the withdrawal limit, and quote once more.
@@ -305,7 +325,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 				if more = min(more, limit, st.position.CollateralDepositedRaw-1); more > receipts {
 					liquidity, redeemErr := st.collateral.redeemLiquidityRaw(more)
 					if redeemErr == nil && liquidity > 0 {
-						evidence, _, err = assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, false, more, liquidity+st.heldCollateral, s.Slot)
+						evidence, _, err = assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapCollateralToDebtStep, more, liquidity+st.heldCollateral, s.Slot)
 					}
 				}
 			}
@@ -315,18 +335,21 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	return observation, evidence, err
 }
 
-// assembleStep is one step of st's lane: Open borrows (up) or withdraws
-// (down) openRaw, the conversion converts convertRaw at the route size the
-// step's other accounts leave, and Close deposits or repays the held
-// destination custody plus the conversion's guaranteed output, which it
-// returns. Every leg carries the conversion's blockhash.
-func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, st stepState, up bool, openRaw, convertRaw uint64, slot int64) (StepExecutionEvidence, uint64, error) {
+// assembleStep is one step of st's lane converting by conversion: Open
+// borrows (up) or withdraws openRaw, the conversion converts convertRaw at
+// the route size the step's other accounts leave, and Close deposits (up) or
+// repays (down) the held destination custody plus the conversion's
+// guaranteed output, which it returns. An exit (collateral to USDC) closes
+// nothing: the output stays in the Squads bridge account. Every leg carries
+// the conversion's blockhash.
+func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, st stepState, conversion Action, openRaw, convertRaw uint64, slot int64) (StepExecutionEvidence, uint64, error) {
 	route := st.route
 	lane := route.Lane
-	action, conversion, openLeg, closeLeg := DeleverRouteStep, SwapCollateralToDebtStep, kaminoLegWithdraw, kaminoLegRepay
+	up, exit := conversion == SwapDebtToCollateralStep, conversion == SwapCollateralToStableStep
+	action, openLeg, closeLeg := DeleverRouteStep, kaminoLegWithdraw, kaminoLegRepay
 	sourceHeld, destinationHeld, openLiquidity := st.heldCollateral, st.heldDebt, uint64(0)
 	if up {
-		action, conversion, openLeg, closeLeg = OpenRouteStep, SwapDebtToCollateralStep, kaminoLegBorrow, kaminoLegDeposit
+		action, openLeg, closeLeg = OpenRouteStep, kaminoLegBorrow, kaminoLegDeposit
 		sourceHeld, destinationHeld, openLiquidity = st.heldDebt, st.heldCollateral, openRaw
 	} else {
 		liquidity, err := st.collateral.redeemLiquidityRaw(openRaw)
@@ -335,13 +358,16 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		}
 		openLiquidity = liquidity
 	}
+	if exit {
+		destinationHeld = st.cash
+	}
 	if openRaw > stepLegCap(route) {
 		return StepExecutionEvidence{}, 0, budgetHold("step_over_policy_cap")
 	}
 	if openRaw == 0 || convertRaw == 0 || convertRaw > math.MaxInt64 || sourceHeld > math.MaxUint64-openLiquidity || convertRaw > sourceHeld+openLiquidity {
 		return StepExecutionEvidence{}, 0, budgetHold("step_amounts_invalid")
 	}
-	// The route size: the key budget the two KLend legs and the swap's fixed
+	// The route size: the key budget the KLend legs and the swap's fixed
 	// accounts leave.
 	placeholder := LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 1}
 	open, err := manifest.kaminoPacketForRoute(policies, action, openLeg, openRaw, placeholder, lane)
@@ -349,11 +375,14 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		return StepExecutionEvidence{}, 0, err
 	}
 	open.ObligationReserves = st.topology
-	closing, err := manifest.kaminoPacketForRoute(policies, action, closeLeg, 1, placeholder, lane)
-	if err != nil {
-		return StepExecutionEvidence{}, 0, err
+	request := StepRequest{Open: open}
+	var closing KaminoPrimeUSDCRequest
+	if !exit {
+		if closing, err = manifest.kaminoPacketForRoute(policies, action, closeLeg, 1, placeholder, lane); err != nil {
+			return StepExecutionEvidence{}, 0, err
+		}
+		request.Close = &closing
 	}
-	request := StepRequest{Open: open, Close: closing}
 	decision := Decision{Action: conversion, AmountRaw: int64(convertRaw), StrategyKey: lane}
 	var conversionRequest any
 	if conversionVenueHastra(decision) {
@@ -381,7 +410,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 	if err != nil {
 		return StepExecutionEvidence{}, 0, err
 	}
-	if closeRaw > stepLegCap(route) {
+	if closeRaw > stepLegCap(route) && !exit {
 		return StepExecutionEvidence{}, 0, budgetHold("step_over_policy_cap")
 	}
 	hash, height := stepConversionBlockhash(conversionRequest)
@@ -390,8 +419,10 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		return StepExecutionEvidence{}, 0, err
 	}
 	request.Open.ObligationReserves = st.topology
-	if request.Close, err = manifest.kaminoPacketForRoute(policies, action, closeLeg, closeRaw, blockhash, lane); err != nil {
-		return StepExecutionEvidence{}, 0, err
+	if !exit {
+		if closing, err = manifest.kaminoPacketForRoute(policies, action, closeLeg, closeRaw, blockhash, lane); err != nil {
+			return StepExecutionEvidence{}, 0, err
+		}
 	}
 	if _, err := compileStepMessageForDelegate(request, mustKey(bridgeDelegate)); err != nil {
 		return StepExecutionEvidence{}, 0, budgetHoldFrom(err, "step_does_not_compile")
@@ -402,12 +433,16 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 	// Up: the borrow and the held debt convert exactly, and the deposit takes
 	// the held collateral plus the minimum output. Down: the withdrawal less
 	// the conversion stays as collateral, and the repay takes the held debt
-	// plus the minimum output. Conversion excess stays beside them.
+	// plus the minimum output; an exit's bridge account gains at least the
+	// minimum output. Conversion excess stays beside them.
 	collateral := effect(route.CollateralCustody, route.Kamino.CollateralMint, route.CollateralTokenProgram, st.collateralBalance, st.collateralBalance-st.heldCollateral)
 	debt := effect(route.DebtCustody, route.Kamino.DebtMint, route.DebtTokenProgram, st.debtBalance, st.debtBalance+openLiquidity-convertRaw)
 	if !up {
 		collateral.AfterRaw = st.collateralBalance + openLiquidity - convertRaw
 		debt.AfterRaw = st.debtBalance - st.heldDebt
+	}
+	if exit {
+		debt = effect(bridgeSquadsATA, bridgeUSDC, bridgeTokenProgram, st.cash, closeRaw)
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: stepEffects(up, collateral, debt)}, guaranteed, nil
 }
@@ -504,7 +539,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 		return StepExecutionEvidence{}, err
 	}
 	closing.ObligationReserves = topology
-	request := StepRequest{Open: open, Close: closing}
+	request := StepRequest{Open: open, Close: &closing}
 	if _, err := compileStepMessageForDelegate(request, mustKey(bridgeDelegate)); err != nil {
 		return StepExecutionEvidence{}, budgetHoldFrom(err, "step_does_not_compile")
 	}
