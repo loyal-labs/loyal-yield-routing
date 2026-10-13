@@ -70,7 +70,8 @@ Custody is vault cash (`docs/backyard-atomic-step.md`): the vault's one
 PYUSD account, shared by AUTO/AUTO/PYUSD, Ethena/USDe/PYUSD and
 Prime/PRIME/PYUSD, is counted once in NAV and belongs to no lane. A step's
 conversion excess left there is taken whole by the next step of a lane that
-owes PYUSD; when no lane that steps owes it, it converts to USDC.
+owes PYUSD; when a withdrawal needs it or no lane that steps owes it, it
+converts to USDC.
 
 A safety step (debt 0, maturity, hard LTV) the chain has no withdraw room for
 holds `no_room` and keeps the lane's other rules waiting. The withdraw room

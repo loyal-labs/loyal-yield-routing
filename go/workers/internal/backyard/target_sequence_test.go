@@ -527,4 +527,15 @@ func TestTargetDebtCashNoLaneOwesConvertsToUSDC(t *testing.T) {
 	if d := Decide(targeted(topup)); d.Action != SwapDebtToUSDCStep || d.AmountRaw != 25_000_000 {
 		t.Fatalf("PYUSD beside a debt-free lane: %+v", d)
 	}
+	// PYUSD its lane owes waits for that lane's step, unless a withdrawal
+	// needs it: then it converts before any lane releases.
+	owed := topup
+	owed.PositionDebtRaw, owed.PositionDebtValueRaw, owed.PayoffDebtRaw, owed.LTVBPS = 300_000_000, 300_000_000, 300_000_000, 3000
+	if d := Decide(targeted(owed)); d.Action != Hold || d.Reason != holdAtTarget {
+		t.Fatalf("owed PYUSD moved: %+v", d)
+	}
+	owed.WithdrawalDemandRaw, owed.VoltrIdleRaw = 20_000_000, 0
+	if d := Decide(targeted(owed)); d.Action != SwapDebtToUSDCStep || d.AmountRaw != 25_000_000 {
+		t.Fatalf("owed PYUSD beside a withdrawal: %+v", d)
+	}
 }

@@ -126,14 +126,13 @@ func laneInFlight(s Snapshot) bool {
 	return s.CollateralIdleRaw > partialWithdrawalDustRaw
 }
 
-// debtCashOwed reports a held lane that owes, or holds as collateral, the
-// mint of s's debt custody and steps: its next step takes that cash whole.
+// debtCashOwed reports a held lane that steps and owes the mint of s's debt
+// custody: its next step takes that cash whole.
 func debtCashOwed(lanes []targetLane, s Snapshot) bool {
 	route, err := runtimeRoute(s.RouteLane)
 	for _, l := range lanes {
 		other, otherErr := runtimeRoute(l.s.RouteLane)
-		if err == nil && otherErr == nil && l.held && earnActiveLane(other.Lane) &&
-			((l.s.PositionDebtRaw > 0 && other.DebtCustody == route.DebtCustody) || other.CollateralCustody == route.DebtCustody) {
+		if err == nil && otherErr == nil && l.held && earnActiveLane(other.Lane) && l.s.PositionDebtRaw > 0 && other.DebtCustody == route.DebtCustody {
 			return true
 		}
 	}
@@ -212,12 +211,12 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		}
 	}
 	// 4a. Custody in flight finishes first, in its direction: collateral a
-	// held lane's next leg takes, and debt-mint cash above dust no held lane
-	// owes, which leaves toward Voltr (cash a held lane owes waits for its
-	// next step).
+	// held lane's next leg takes, and debt-mint cash above dust that a
+	// withdrawal needs or no held lane owes, which leaves toward Voltr (cash
+	// a held lane owes otherwise waits for its next step).
 	for i, l := range lanes {
 		inFlight := l.held && laneInFlight(l.s)
-		loose := !inFlight && l.s.DebtIdleRaw > partialWithdrawalDustRaw && !debtCashOwed(lanes, l.s)
+		loose := !inFlight && l.s.DebtIdleRaw > partialWithdrawalDustRaw && (outbound || !debtCashOwed(lanes, l.s))
 		if !inFlight && !loose {
 			continue
 		}

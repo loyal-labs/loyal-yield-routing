@@ -41,9 +41,11 @@ conversion, no debt leg, the source's LTV rises to the live cap at most.
   cash beside USDC debt converts to collateral (`step_residue_to_collateral`);
   neither leg borrows or repays. Borrowed-token excess waits as counted vault
   cash for the next step of a lane that owes that token, which converts or
-  repays it with the step's own amount. When no lane that steps owes it (after
-  a debt-zero exit, or when only the exit-only Ethena lane owes PYUSD), it
-  converts to USDC above dust (`outbound_debt_residue`).
+  repays it with the step's own amount. When a withdrawal needs it, or no
+  lane that steps owes it (after a debt-zero exit, or when only the exit-only
+  Ethena lane owes PYUSD), it converts above dust (`outbound_debt_residue`):
+  to USDC, or for wYLDS, which never redeems to USDC, staked to AUTO
+  collateral that an AUTO lane then deposits.
 - A split-policy lane caps each KLend leg at the installed `1e12` raw: a down
   step repays at most nine tenths of it, leaving room for the conversion's
   excess, and repeats while debt remains; an up step borrows at most what

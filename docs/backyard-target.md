@@ -33,8 +33,9 @@ authority.
    Voltr too.
 4. **Custody in flight** finishes first: collateral a held lane's next leg
    takes (in the withdrawal's or an exit's direction when there is one), and
-   debt-mint cash above dust that no held lane that steps owes, which
-   converts to USDC. Custody is vault cash; debt-mint cash makes no lane held.
+   debt-mint cash above dust that a withdrawal needs or no held lane that
+   steps owes, which converts toward Voltr (wYLDS stakes to AUTO collateral).
+   Custody is vault cash; debt-mint cash makes no lane held.
    Then **withdrawal demand** beyond Voltr idle: Squads cash stages, and the
    held lane with the most equity (an overflow lane included) releases the
    rest plus 1% (at least $1) at its own LTV, up to under 90% of its equity;
