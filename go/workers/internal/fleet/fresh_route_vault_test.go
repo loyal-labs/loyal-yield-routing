@@ -74,6 +74,7 @@ func TestFreshRouteTopsUpWhatTheClosedSourceDoesNotReturn(t *testing.T) {
 		}, rent},
 		"a borrow keeps it open": {func(a *chain.Account) { fixtureKey(t, a.Data, 1208, testIdentity(9)) }, rent},
 		"closed below the rent":  {func(a *chain.Account) { a.Lamports = rent - 1_000 }, 1_000},
+		"closed leaving dust":    {func(a *chain.Account) { a.Lamports = rent + 1_000 }, emptyAccountRent - 1_000},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, lease := fixtureFreshRouteObligation(t, 2_000_000_000_000, nil, c.obligation)
@@ -187,10 +188,14 @@ func fixtureFreshRouteObligation(t *testing.T, collateralSupply uint64, mutate f
 		case "getMinimumBalanceForRentExemption":
 			var size int
 			_ = json.Unmarshal(call.Params[0], &size)
-			if size != kamino.ObligationSize {
+			switch size {
+			case kamino.ObligationSize:
+				result = rent
+			case 0:
+				result = emptyAccountRent
+			default:
 				t.Errorf("rent asked for %d bytes", size)
 			}
-			result = rent
 		case "getMultipleAccounts":
 			var addresses []string
 			_ = json.Unmarshal(call.Params[0], &addresses)
@@ -212,6 +217,9 @@ func fixtureFreshRouteObligation(t *testing.T, collateralSupply uint64, mutate f
 	return r, lease
 }
 
+// emptyAccountRent is the rent-exempt minimum of an account with no data.
+const emptyAccountRent = uint64(890_880)
+
 // A setup route pays rent, so it never goes to a fee-only payer (b1ad5b1a).
 func TestSetupRouteIsNeverFeeOnly(t *testing.T) {
 	r := &Revalidator{signer: testIdentity(6), feeOnlyPayers: []string{testIdentity(7)}}
@@ -222,13 +230,22 @@ func TestSetupRouteIsNeverFeeOnly(t *testing.T) {
 
 // The payer funds exactly the vault's rent deficit, and never more than the
 // retained cap.
+// A vault left between 1 lamport and its rent-exempt minimum fails the
+// transaction (InsufficientFundsForRent), so the payer lifts it to the minimum.
 func TestVaultRentTopUp(t *testing.T) {
-	for _, c := range []struct{ rent, vault, want uint64 }{{23_942_400, 0, 23_942_400}, {23_942_400, 1_000_000, 22_942_400}, {23_942_400, 23_942_400, 0}, {23_942_400, 30_000_000, 0}} {
-		if got, err := vaultRentTopUp(c.rent, c.vault); err != nil || got != c.want {
+	for _, c := range []struct{ rent, vault, want uint64 }{
+		{23_942_400, 0, 23_942_400}, {23_942_400, 1_000_000, 22_942_400}, {23_942_400, 23_942_400, 0}, {23_942_400, 30_000_000, 0},
+		{23_942_400, 23_942_401, emptyAccountRent - 1}, {23_942_400, 23_942_400 + emptyAccountRent - 1, 1}, {23_942_400, 23_942_400 + emptyAccountRent, 0},
+	} {
+		got, err := vaultRentTopUp(c.rent, emptyAccountRent, c.vault)
+		if err != nil || got != c.want {
 			t.Fatalf("top-up(%d,%d)=%d %v", c.rent, c.vault, got, err)
 		}
+		if left := c.vault + got - c.rent; left != 0 && left < emptyAccountRent {
+			t.Fatalf("vault left at %d lamports", left)
+		}
 	}
-	if _, err := vaultRentTopUp(maxObligationRentLamports+1, 0); err == nil {
+	if _, err := vaultRentTopUp(maxObligationRentLamports+1, emptyAccountRent, 0); err == nil {
 		t.Fatal("rent above the cap was funded")
 	}
 }

@@ -122,7 +122,7 @@ func goldenSameMintBody(r sameMintGoldenRequest) ([]RouteInstruction, error) {
 	signer := encodeBase58(key[32:])
 	var topUp uint64
 	if !r.Target.ObligationExists {
-		if topUp, err = vaultRentTopUp(r.RentLamports, r.VaultLamports); err != nil {
+		if topUp, err = vaultRentTopUp(r.RentLamports, emptyAccountRent, r.VaultLamports); err != nil {
 			return nil, err
 		}
 	}
