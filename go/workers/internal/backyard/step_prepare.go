@@ -543,10 +543,15 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	if _, err := compileStepMessageForDelegate(request, mustKey(bridgeDelegate)); err != nil {
 		return StepExecutionEvidence{}, budgetHoldFrom(err, "step_does_not_compile")
 	}
-	// The shared custody gives up what it held: the withdrawal arrives and
-	// leaves in the same transaction.
-	after := st.collateralBalance - st.heldCollateral
+	return StepExecutionEvidence{Request: request, ExpectedEffects: moveEffects(route, st.collateralBalance, st.heldCollateral)}, nil
+}
+
+// moveEffects bounds a move's one custody: the shared collateral custody gives
+// up what it held (the withdrawal arrives and leaves in the same transaction),
+// so it keeps at least balance - held.
+func moveEffects(route RuntimeRoute, balance, held uint64) ExpectedEffects {
+	after := balance - held
 	collateral := ExpectedAccountEffect{Address: route.CollateralCustody, Owner: route.CollateralTokenProgram, Mint: route.Kamino.CollateralMint, Authority: bridgeVault,
-		BeforeRaw: st.collateralBalance, AfterRaw: after, MinimumAfterRaw: &after}
-	return StepExecutionEvidence{Request: request, ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "atomic-step", Conserved: false, Accounts: []ExpectedAccountEffect{collateral}}}, nil
+		BeforeRaw: balance, AfterRaw: after, MinimumAfterRaw: &after}
+	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "atomic-step", Conserved: false, Accounts: []ExpectedAccountEffect{collateral}}
 }
