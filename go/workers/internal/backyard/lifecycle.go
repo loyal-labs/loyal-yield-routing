@@ -143,7 +143,7 @@ func (d *Database) reconcile(ctx context.Context, manifest RouteManifest, rpc *c
 	if !status.Finalized {
 		return nil
 	}
-	expected, err := decodeExpectedEffectsWithManifest(manifest, operation.ExpectedEffects)
+	expected, err := DecodeExpectedEffects(manifest.vault, operation.ExpectedEffects)
 	if err != nil {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "invalid_expected_effects")
 	}
@@ -159,7 +159,7 @@ func (d *Database) reconcile(ctx context.Context, manifest RouteManifest, rpc *c
 	if receipt.Slot != operation.ConfirmedSlot {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "confirmed_transaction_slot_mismatch")
 	}
-	reconciliation, effects, err := manifest.ReconcileConfirmedTransaction(expected, receipt)
+	reconciliation, effects, err := ReconcileConfirmedTransaction(manifest.vault, expected, receipt)
 	if err != nil {
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "exact_effect_reconciliation_failed")
 	}

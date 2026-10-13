@@ -74,7 +74,7 @@ func TestConversionVenueSplitsTheWYLDSLaneAndLeavesPYUSD(t *testing.T) {
 		if _, pyusdHastra := hastraConversionLeg(action, autoAUTOPYUSD.Lane); pyusdHastra {
 			t.Errorf("AUTO/PYUSD %s converts through Hastra", action)
 		}
-		key, index, err := jupiterPolicyLeg(autoAUTOWYLDSLane, action)
+		key, index, err := jupiterPolicyLeg(rwa, autoAUTOWYLDSLane, action)
 		switch action {
 		case SwapStableToCollateralStep, SwapCollateralToStableStep:
 			if err != nil || key.swaps != "USDC->AUTO/AUTO->USDC/AUTO->PYUSD" || index != map[Action]byte{SwapStableToCollateralStep: 0, SwapCollateralToStableStep: 1}[action] {
@@ -91,12 +91,12 @@ func TestConversionVenueSplitsTheWYLDSLaneAndLeavesPYUSD(t *testing.T) {
 		SwapCollateralToDebtStep: "USDC->AUTO/AUTO->USDC/AUTO->PYUSD", SwapDebtToCollateralStep: "PYUSD->AUTO/PYUSD->USDe",
 		SwapDebtToUSDCStep: "PYUSD->USDC/PYUSD->USDS",
 	} {
-		key, _, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, action)
+		key, _, err := jupiterPolicyLeg(rwa, autoAUTOPYUSD.Lane, action)
 		if err != nil || key.swaps != swaps || testPolicies(t)[key].matches != 1 {
 			t.Errorf("AUTO/PYUSD %s swaps through %+v (%v), want the installed %s", action, key, err, swaps)
 		}
 	}
-	if _, _, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, SwapUSDCToDebtStep); err == nil {
+	if _, _, err := jupiterPolicyLeg(rwa, autoAUTOPYUSD.Lane, SwapUSDCToDebtStep); err == nil {
 		t.Error("AUTO/PYUSD gained a USDC into PYUSD edge")
 	}
 	if !autoCollateralLane(autoAUTOWYLDSLane) || !autoCollateralLane(autoAUTOPYUSD.Lane) || autoCollateralLane(primePRIMEPYUSD.Lane) {
@@ -129,7 +129,7 @@ func TestHastraLiteralConvertsBetweenBackyardCustodies(t *testing.T) {
 // destination no constraint admits it.
 func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 	t.Parallel()
-	literal, err := hastraPolicy()
+	literal, err := hastraPolicy(rwa)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 			if request.OutputRaw, err = hastraOutput(leg, price, request.AmountRaw); err != nil {
 				t.Fatal(err)
 			}
-			message, err := compileHastraMessageForDelegate(request, delegate)
+			message, err := compileHastraMessageForDelegate(rwa, request, delegate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -179,7 +179,7 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 			}
 			mismatch := request
 			mismatch.OutputRaw++
-			if _, err := compileHastraMessageForDelegate(mismatch, delegate); err == nil {
+			if _, err := compileHastraMessageForDelegate(rwa, mismatch, delegate); err == nil {
 				t.Fatal("an output other than the program's at the quoted price compiled")
 			}
 		})
@@ -211,7 +211,7 @@ func TestHastraEffectsQuoteTheProgramRounding(t *testing.T) {
 		{SwapUSDCToDebtStep, bridgeSquadsATA, autoAUTOWYLDS.DebtCustody, bridgeUSDC, hastra.WYLDSMint.String(), 1_000_003},
 	} {
 		decision := Decision{Action: row.action, AmountRaw: 1_000_003, StrategyKey: autoAUTOWYLDSLane}
-		evidence, err := prepareHastraQuoteEvidence(context.Background(), rpc, view, policies, decision, 5_000_000, 7, 42)
+		evidence, err := prepareHastraQuoteEvidence(context.Background(), rwa, rpc, view, policies, decision, 5_000_000, 7, 42)
 		if err != nil {
 			t.Fatal(row.action, err)
 		}
@@ -219,7 +219,7 @@ func TestHastraEffectsQuoteTheProgramRounding(t *testing.T) {
 		if r.OutputRaw != row.want || r.Policy != policy || r.RecentBlockhash != bridgeSettings || (row.action == SwapUSDCToDebtStep) != (r.Price == "") {
 			t.Fatalf("%s request %+v, want output %d", row.action, r, row.want)
 		}
-		if _, err := DecodeExpectedEffects(mustMarshalEffects(t, e)); err != nil {
+		if _, err := DecodeExpectedEffects(rwa, mustMarshalEffects(t, e)); err != nil {
 			t.Fatal(err)
 		}
 		source, destination := e.Accounts[0], e.Accounts[1]

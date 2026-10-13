@@ -172,7 +172,7 @@ func TestNonterminalAutoInitializerRestores(t *testing.T) {
 func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, map[string]ConfirmedAccount) {
 	e, _ := initializationReconcileFixture(t)
 	r := *e.Initialization
-	inner, err := kaminoMultiplyInitializer(r.RouteLane)
+	inner, err := kaminoRouteInitializer(rwaRoute(r.RouteLane))
 	if err != nil {
 		t.Fatal(err)
 	}

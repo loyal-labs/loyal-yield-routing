@@ -38,7 +38,7 @@ func newLanePricer(ctx context.Context, rpc *chain.Client, view *View, client *j
 		return p, costOutage("inputs", budgetHold("leverage_cost_unavailable"))
 	}
 	var err error
-	if p.policies, err = observeInstalledPolicies(ctx, rpc, slot); err != nil {
+	if p.policies, err = observeInstalledPolicies(ctx, rpc, m.vault, slot); err != nil {
 		return p, costOutage("policies", err)
 	}
 	if p.sol, err = ObserveNativeSOLBudgetPrice(ctx, rpc, view, slot); err != nil {
@@ -184,7 +184,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		}
 	}
 	for _, step := range []StepRequest{up.Request, down.Request} {
-		message, err := compileStepMessageForDelegate(step, mustKey(bridgeDelegate))
+		message, err := compileStepMessageForDelegate(p.manifest.vault, step, mustKey(bridgeDelegate))
 		if err != nil {
 			return leverageStepCost{}, costOutage("network_fee", err)
 		}
@@ -246,11 +246,11 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 	if !selectorDestinationLane(lane) || equity == 0 || equity > strategyTwoBridgeLegCapRaw || equity > q.MinimumIdleRaw || s.Slot <= 0 || o.ObservedAt.IsZero() {
 		return q, budgetHold("invalid_selector_destination")
 	}
-	route, err := runtimeRoute(lane)
+	route, err := p.manifest.route(lane)
 	if err != nil {
 		return q, err
 	}
-	slot, accounts, position, err := selectorDestinationAccounts(ctx, p.rpc, p.view, route, s.Slot)
+	slot, accounts, position, err := selectorDestinationAccounts(ctx, p.manifest.vault, p.rpc, p.view, route, s.Slot)
 	if err != nil {
 		return q, err
 	}
@@ -376,10 +376,14 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 	}
 	for _, compile := range []func() ([]byte, error){
 		func() ([]byte, error) {
-			return compileJupiterMessageForDelegate(entry.Request, mustKey(bridgeDelegate))
+			return compileJupiterMessageForDelegate(p.manifest.vault, entry.Request, mustKey(bridgeDelegate))
 		},
-		func() ([]byte, error) { return compileKaminoMessageForDelegate(deposit, mustKey(bridgeDelegate)) },
-		func() ([]byte, error) { return compileStepMessageForDelegate(exit.Request, mustKey(bridgeDelegate)) },
+		func() ([]byte, error) {
+			return compileKaminoMessageForDelegate(p.manifest.vault, deposit, mustKey(bridgeDelegate))
+		},
+		func() ([]byte, error) {
+			return compileStepMessageForDelegate(p.manifest.vault, exit.Request, mustKey(bridgeDelegate))
+		},
 	} {
 		message, err := compile()
 		if err != nil {

@@ -4,7 +4,7 @@
 route:
   receiver: telegram
   # Keep distinct causes/resources in separate bounded Telegram messages.
-  group_by: [alertname, family, route, code, lane, name, unit, job, instance, payer]
+  group_by: [alertname, family, route, code, vault, lane, name, unit, job, instance, payer]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h

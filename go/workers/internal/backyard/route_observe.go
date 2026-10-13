@@ -11,7 +11,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -24,20 +23,22 @@ import (
 //
 // minSlot is the highest slot the route's own operations landed at: nothing
 // plans from a view that has not seen its own transactions.
-func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, minSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
+func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, minSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil || view == nil {
 		return Observation{}, nil, fmt.Errorf("RPC client and account view are required")
 	}
+	v := manifest.vault
 	return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
 		minSlot: minSlot,
 		inputs:  inputs,
+		state:   state,
 		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 			// A null strategy receipt must reach the integrity classifier
 			// instead of failing the batch as a required absent account.
-			return view.readWithReceipts(ctx, addresses, minSlot, append(optionalLifecycleObligations(addresses), bridgeStrategyReceipt)...)
+			return view.readWithReceipts(ctx, v, addresses, minSlot, append(optionalLifecycleObligations(v, addresses), v.strategyReceipt)...)
 		},
 		refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
-			return simulateRouteValuationRefresh(ctx, rpc, routes, addresses, minSlot)
+			return simulateRouteValuationRefresh(ctx, v, rpc, routes, addresses, minSlot)
 		},
 		now: func() time.Time { return time.Now().UTC() },
 	})
@@ -56,14 +57,14 @@ func applyProgramIdentityObservation(observation *Observation, identity programI
 // lane's obligation (the legacy PRIME/USDC route shares Prime/PRIME/USDC's)
 // is optional in a read: a closed one must not block terminal custody swaps.
 // Registry order puts the selected Phase 2 obligation first.
-func optionalLifecycleObligations(addresses []string) []string {
+func optionalLifecycleObligations(v *Vault, addresses []string) []string {
 	present := map[string]bool{}
 	for _, address := range addresses {
 		present[address] = true
 	}
 	var optional []string
 	for _, lane := range earnLaneIDs(true) {
-		route, err := runtimeRoute(lane)
+		route, err := v.route(lane)
 		if err == nil && present[route.Kamino.Obligation] {
 			optional = append(optional, route.Kamino.Obligation)
 		}
@@ -89,6 +90,9 @@ type routeObservationRuntime struct {
 	now     func() time.Time
 	// inputs are target()'s stored inputs, read with the planning state.
 	inputs targetInputs
+	// state is the vault's in-process state: its events and the refusal
+	// streaks that retry before a latch.
+	state *vaultState
 }
 
 // observeConfirmedRouteSnapshotWithAccounts reads one coherent bank, builds
@@ -96,31 +100,32 @@ type routeObservationRuntime struct {
 // cash enters), computes target() over them and returns the working lane's
 // view with its target. Every view carries the same vault facts.
 func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime) (Observation, []ConfirmedAccount, error) {
-	if runtime.read == nil || runtime.now == nil {
+	if runtime.read == nil || runtime.now == nil || runtime.state == nil {
 		return Observation{}, nil, fmt.Errorf("route observation runtime is incomplete")
 	}
+	v := manifest.vault
 	selectedRoute, err := manifest.activeRuntimeRoute()
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	addresses := routeFixedAddresses()
+	addresses := routeFixedAddresses(v)
 	slot, accounts, receipts, err := runtime.read(ctx, addresses, runtime.minSlot)
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	demand, fingerprint, err := decodeConfirmedWithdrawalDemand(receipts)
+	demand, fingerprint, err := decodeConfirmedWithdrawalDemand(v, receipts)
 	if err != nil {
 		return Observation{}, nil, err
 	}
 	// A strategy receipt that is absent, foreign-owned or the wrong length
 	// is an observed integrity failure, not a transport fault.
-	if strategyReceiptIntegrityFault(accountAt(accounts, bridgeStrategyReceipt)) {
+	if strategyReceiptIntegrityFault(accountAt(accounts, v.strategyReceipt)) {
 		return receiptIntegrityObservation(slot, selectedRoute), accounts, nil
 	}
 	// Collateral several lanes share, with no position yet, is the entry's:
 	// the selector's entry lane, else the manifest's.
 	preferred := flatViewLane(selectedRoute.Lane, runtime.inputs)
-	held, valued, err := observedLanes(accounts, preferred)
+	held, valued, err := observedLanes(v, accounts, preferred)
 	if err != nil {
 		return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 	}
@@ -129,12 +134,12 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if len(held) == 0 {
 		viewLanes = append([]string{preferred}, slices.DeleteFunc(slices.Clone(valued), func(l string) bool { return l == preferred })...)
 	}
-	first, err := runtimeRoute(viewLanes[0])
+	first, err := v.route(viewLanes[0])
 	if err != nil {
 		return Observation{}, nil, err
 	}
 	// Every valued lane is in the same NAV, from the same bank.
-	routes, err := navRoutes(first, valued)
+	routes, err := navRoutes(v, first, valued)
 	if err != nil {
 		return Observation{}, nil, err
 	}
@@ -148,28 +153,28 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	}
 	refreshExhausted := false
 	{
-		refreshRoutes := withOverflowRoutes(routes)
-		captureAddresses := selectorValuationAddresses(refreshRoutes, addresses)
+		refreshRoutes := withOverflowRoutes(v, routes)
+		captureAddresses := selectorValuationAddresses(v, refreshRoutes, addresses)
 		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, refreshRoutes, captureAddresses, slot)
 		if refreshSimulationFailed(refreshErr) && len(refreshRoutes) > len(routes) {
 			// Kamino refuses to refresh an overflow lane nothing holds: only
 			// its room is unknown (applyOverflowRoom). The valued lanes'
 			// capture stands without it, and its refusal never counts toward
 			// the vault's latch.
-			captureAddresses = selectorValuationAddresses(routes, addresses)
+			captureAddresses = selectorValuationAddresses(v, routes, addresses)
 			refreshedSlot, refreshedAccounts, refreshErr = runtime.refreshValuation(ctx, routes, captureAddresses, slot)
 		}
 		if refreshErr == nil {
-			refreshSimulationFailures.Store(0)
+			runtime.state.refreshFailures.Store(0)
 			if err := validateRouteValuationCapture(refreshedSlot, refreshedAccounts, captureAddresses, slot); err != nil {
 				return Observation{}, nil, err
 			}
 			// A capture that disagrees with the view on the receipt or the
 			// held set proves nothing; the next tick reads again.
-			if strategyReceiptIntegrityFault(accountAt(refreshedAccounts, bridgeStrategyReceipt)) {
+			if strategyReceiptIntegrityFault(accountAt(refreshedAccounts, v.strategyReceipt)) {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture breaks the strategy receipt"))
 			}
-			freshHeld, freshValued, heldErr := observedLanes(refreshedAccounts, preferred)
+			freshHeld, freshValued, heldErr := observedLanes(v, refreshedAccounts, preferred)
 			if heldErr != nil || strings.Join(freshHeld, ",") != strings.Join(held, ",") || strings.Join(freshValued, ",") != strings.Join(valued, ",") {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture moved the held lanes"))
 			}
@@ -180,7 +185,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			if _, _, receipts, err = runtime.read(ctx, nil, slot); err != nil {
 				return Observation{}, nil, err
 			}
-			if demand, fingerprint, err = decodeConfirmedWithdrawalDemand(receipts); err != nil {
+			if demand, fingerprint, err = decodeConfirmedWithdrawalDemand(v, receipts); err != nil {
 				return Observation{}, nil, err
 			}
 		} else {
@@ -201,19 +206,19 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			// ticks and selector samples share the count, so it latches sooner,
 			// never later).
 			if refreshSimulationFailed(refreshErr) &&
-				refreshSimulationFailures.Add(1) < refreshSimulationLatchAfter {
+				runtime.state.refreshFailures.Add(1) < refreshSimulationLatchAfter {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh rejected, retrying: %w", refreshErr))
 			}
 			// Already rejected that many times in a row: the raw batch's
 			// health hold latches (an empty lane still values as cash);
 			// carry this cause into its alert.
 			refreshExhausted = true
-			backyardEvents.noteCause(holdDetail(refreshErr))
+			runtime.state.events.noteCause(holdDetail(refreshErr))
 		}
 	}
 	views := make([]Observation, 0, len(viewLanes))
 	for _, lane := range viewLanes {
-		route, err := runtimeRoute(lane)
+		route, err := v.route(lane)
 		if err != nil {
 			return Observation{}, nil, err
 		}
@@ -255,24 +260,24 @@ func flatViewLane(preferred string, in targetInputs) string {
 }
 
 // observedLanes is the batch's held lanes and every lane its NAV values.
-func observedLanes(accounts []ConfirmedAccount, preferred string) ([]string, []string, error) {
-	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), preferred)
+func observedLanes(v *Vault, accounts []ConfirmedAccount, preferred string) ([]string, []string, error) {
+	held, err := observedSelectorHeldLanes(v, accounts, earnLaneIDs(true), preferred)
 	if err != nil {
 		return nil, nil, err
 	}
-	valued, err := navLanes(accounts, held)
+	valued, err := navLanes(v, accounts, held)
 	return held, valued, err
 }
 
 // withOverflowRoutes is routes plus the overflow lane of each, once.
-func withOverflowRoutes(routes []RuntimeRoute) []RuntimeRoute {
+func withOverflowRoutes(v *Vault, routes []RuntimeRoute) []RuntimeRoute {
 	out := append([]RuntimeRoute(nil), routes...)
 	for _, route := range routes {
 		lane, ok := overflowLaneOf(route.Lane)
 		if !ok || slices.ContainsFunc(out, func(r RuntimeRoute) bool { return r.Lane == lane }) {
 			continue
 		}
-		if overflow, err := runtimeRoute(lane); err == nil {
+		if overflow, err := v.route(lane); err == nil {
 			out = append(out, overflow)
 		}
 	}
@@ -284,15 +289,16 @@ func withOverflowRoutes(routes []RuntimeRoute) []RuntimeRoute {
 // valued with this lane first. A Kamino health fault is a hold observation,
 // not an error.
 func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, held, valued []string, demand int64, fingerprint string, refreshExhausted bool) (Observation, *Observation, error) {
+	v := manifest.vault
 	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if err != nil {
-		position, err = observeKaminoWithCashFallback(slot, accounts, route)
+		position, err = observeKaminoWithCashFallback(v, slot, accounts, route)
 	}
 	healthHold := func(err error, lane string) (*Observation, error) {
 		// A stale, paused, or emergency Kamino state is a decision input,
 		// not a broken observer: the tick holds with the audited reason.
-		if hold, ok := kaminoHealthHold(err, slot, runtime.now(), lane); ok {
-			if retry := staleHealthRetry(hold, err, refreshExhausted); retry != nil {
+		if hold, ok := kaminoHealthHold(runtime.state, err, slot, runtime.now(), lane); ok {
+			if retry := staleHealthRetry(runtime.state, hold, err, refreshExhausted); retry != nil {
 				return nil, retry
 			}
 			return &hold, nil
@@ -303,11 +309,11 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
 	}
-	routes, err := navRoutes(route, valued)
+	routes, err := navRoutes(v, route, valued)
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	navAccounts, err := selectRouteNAVAccountsForRoutes(accounts, routes)
+	navAccounts, err := selectRouteNAVAccountsForRoutes(v, accounts, routes)
 	if err != nil {
 		return Observation{}, nil, err
 	}
@@ -316,12 +322,12 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
 	}
-	kaminoStaleHolds.Store(0)
+	runtime.state.staleHolds.Store(0)
 	collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	authority, err := decodeBase58PublicKey(bridgeVault)
+	authority, err := decodeBase58PublicKey(v.squads)
 	if err != nil {
 		return Observation{}, nil, err
 	}
@@ -332,19 +338,19 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if prime.Raw > math.MaxInt64 || position.CollateralDepositedRaw > math.MaxInt64 || position.DebtRaw > math.MaxInt64 {
 		return Observation{}, nil, fmt.Errorf("PRIME/USDC state exceeds signed decision range")
 	}
-	idle, err := decodePinnedUSDC(accountAt(accounts, bridgeIdleATA), bridgeIdleAuthority)
+	idle, err := decodePinnedUSDC(accountAt(accounts, v.idleATA), v.idleAuth)
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	strategy, err := decodePinnedUSDC(accountAt(accounts, bridgeStrategyATA), bridgeStrategyAuth)
+	strategy, err := decodePinnedUSDC(accountAt(accounts, v.strategyATA), v.strategyAuth)
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	squads, err := decodePinnedUSDC(accountAt(accounts, bridgeSquadsATA), bridgeVault)
+	squads, err := decodePinnedUSDC(accountAt(accounts, v.cash), v.squads)
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	ticket, ticketErr := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
+	ticket, ticketErr := decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
 	if ticketErr != nil {
 		return Observation{}, nil, fmt.Errorf("decode report ticket: %w", ticketErr)
 	}
@@ -439,7 +445,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 	base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
 	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
-		if err := applyOverflowRoom(&base.Snapshot, accounts, route); err != nil {
+		if err := applyOverflowRoom(v, &base.Snapshot, accounts, route); err != nil {
 			fmt.Fprintf(os.Stderr, "backyard-rwa-worker: overflow room unknown lane=%s: %v\n", route.Lane, err)
 		}
 	}
@@ -491,11 +497,10 @@ func receiptIntegrityObservation(slot int64, route RuntimeRoute) Observation {
 
 // routeFixedAddresses is every account a tick reads: the bridge's, and each
 // registry lane's position, custody, reserves and market, with the Clock.
-func routeFixedAddresses() []string {
+func routeFixedAddresses(v *Vault) []string {
 	addresses := []string{reportTicketPDA, budgetClockAddress}
-	for _, l := range earnLanes {
-		r := l.route
-		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(r)...), r.Kamino.Market, r.Kamino.CollateralReserve, r.Kamino.DebtReserve,
+	for _, r := range v.routes {
+		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(v, r)...), r.Kamino.Market, r.Kamino.CollateralReserve, r.Kamino.DebtReserve,
 			r.CollateralLiquiditySupply, r.DebtLiquiditySupply, r.DebtFeeReceiver, r.Kamino.Obligation, r.CollateralCustody)
 	}
 	addresses = uniqueNonzero(addresses)
@@ -506,7 +511,7 @@ func routeFixedAddresses() []string {
 // Market unavailability closes entry, but cannot invalidate independently
 // observed USDC. This fallback is restricted to a structurally valid, empty
 // USDC lane. Every nonzero collateral/debt holding retains the original hold.
-func observeKaminoWithCashFallback(slot int64, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPosition, error) {
+func observeKaminoWithCashFallback(v *Vault, slot int64, accounts []ConfirmedAccount, route RuntimeRoute) (KaminoPosition, error) {
 	position, originalErr := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if originalErr == nil {
 		return position, nil
@@ -518,7 +523,7 @@ func observeKaminoWithCashFallback(slot int64, accounts []ConfirmedAccount, rout
 	if _, health := kaminoHealthReason(originalErr); !health {
 		return KaminoPosition{}, originalErr
 	}
-	custodies, err := decodeRouteNAVCustodiesForRoute(accounts, route)
+	custodies, err := decodeRouteNAVCustodiesForRoute(v, accounts, route)
 	if err != nil {
 		return KaminoPosition{}, err
 	}
@@ -773,32 +778,24 @@ func observedLTVBPS(position KaminoPosition) (int64, error) {
 // evidence. Kamino rejection and malformed captures keep the health hold.
 // kaminoHealthHold is KaminoHealthHoldObservation plus the verdict text (which
 // reserve or oracle, how old) on stderr and in the latch alert.
-func kaminoHealthHold(err error, slot int64, now time.Time, lane string) (Observation, bool) {
+func kaminoHealthHold(state *vaultState, err error, slot int64, now time.Time, lane string) (Observation, bool) {
 	hold, ok := KaminoHealthHoldObservation(err, slot, now)
 	if ok {
 		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: kamino health hold lane=%s: %v\n", lane, err)
-		backyardEvents.noteCause(err.Error())
+		state.events.noteCause(err.Error())
 	}
 	return hold, ok
 }
 
-// refreshSimulationFailures counts consecutive reserve refreshes Kamino
-// rejected. ponytail: process-wide; the worker observes one route.
-var refreshSimulationFailures atomic.Int64
-
+// refreshSimulationLatchAfter is how many refreshes Kamino rejects in a row,
+// and kamino_stale health holds in a row, before they latch
+// (vaultState).
 const refreshSimulationLatchAfter = 3
-
-// kaminoStaleHolds counts consecutive kamino_stale health holds. One-off
-// stale reads latched on 09-26 (21:52 AUTO reserve 345 slots old; 23:19 230
-// slots old): the first two retry, the third in a row latches as before, and
-// a passed health check resets it. Paused/emergency reserves still latch at
-// once. ponytail: process-wide like refreshSimulationFailures.
-var kaminoStaleHolds atomic.Int64
 
 // staleHealthRetry returns the retry error for a kamino_stale hold that has
 // not yet been seen refreshSimulationLatchAfter times in a row, else nil.
-func staleHealthRetry(hold Observation, err error, refreshExhausted bool) error {
-	if hold.Snapshot.ManualReason != "kamino_stale" || refreshExhausted || kaminoStaleHolds.Add(1) >= refreshSimulationLatchAfter {
+func staleHealthRetry(state *vaultState, hold Observation, err error, refreshExhausted bool) error {
+	if hold.Snapshot.ManualReason != "kamino_stale" || refreshExhausted || state.staleHolds.Add(1) >= refreshSimulationLatchAfter {
 		return nil
 	}
 	return confirmedObservationUnavailable(fmt.Errorf("kamino health hold, retrying: %w", err))

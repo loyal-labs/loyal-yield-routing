@@ -14,14 +14,14 @@ import (
 
 // budgetReserveRefreshInstructions pins the closed instruction set: the lane's
 // two refreshes plus the USDC reference reserve's, deduplicated.
-func budgetReserveRefreshInstructions(lane string) ([]compiledInstruction, error) {
-	if _, err := runtimeRoute(lane); err != nil {
+func budgetReserveRefreshInstructions(v *Vault, lane string) ([]compiledInstruction, error) {
+	if _, err := v.route(lane); err != nil {
 		return nil, err
 	}
 	seen := map[publicKey]bool{}
 	var instructions []compiledInstruction
 	for _, id := range []string{lane, PhaseOneLaneID} {
-		prefix := kaminoPrimeUSDCRefreshInstructionsForRoute(kaminoLegDeposit, id)
+		prefix := kaminoPrimeUSDCRefreshInstructionsForRoute(v, kaminoLegDeposit, id)
 		if len(prefix) != 3 {
 			return nil, budgetHold("price_refresh_binding_unavailable")
 		}
@@ -39,11 +39,11 @@ func budgetReserveRefreshInstructions(lane string) ([]compiledInstruction, error
 // budgetReserveRefreshInstructionsForLanes is the same closed set over
 // several lanes, each reserve refreshed once: a multi-lane NAV values every
 // held lane from one refreshed bank.
-func budgetReserveRefreshInstructionsForLanes(lanes []string) ([]compiledInstruction, error) {
+func budgetReserveRefreshInstructionsForLanes(v *Vault, lanes []string) ([]compiledInstruction, error) {
 	seen := map[publicKey]bool{}
 	var instructions []compiledInstruction
 	for _, lane := range lanes {
-		laneInstructions, err := budgetReserveRefreshInstructions(lane)
+		laneInstructions, err := budgetReserveRefreshInstructions(v, lane)
 		if err != nil {
 			return nil, err
 		}
@@ -58,8 +58,8 @@ func budgetReserveRefreshInstructionsForLanes(lanes []string) ([]compiledInstruc
 	return instructions, nil
 }
 
-func simulateLanesReserveRefreshOptional(ctx context.Context, c *chain.Client, lanes []string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
-	instructions, err := budgetReserveRefreshInstructionsForLanes(lanes)
+func simulateLanesReserveRefreshOptional(ctx context.Context, v *Vault, c *chain.Client, lanes []string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+	instructions, err := budgetReserveRefreshInstructionsForLanes(v, lanes)
 	if err != nil {
 		return 0, nil, err
 	}

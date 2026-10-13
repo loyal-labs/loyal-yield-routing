@@ -16,16 +16,16 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 	if rpc == nil || client == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter evidence request")
 	}
-	prepareStart, accounts := time.Now(), observation.routeBatch.Accounts
+	prepareStart, accounts, v := time.Now(), observation.routeBatch.Accounts, manifest.vault
 	var err error
-	if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
+	if observation.policies, err = observeInstalledPolicies(ctx, rpc, v, observation.Snapshot.Slot); err != nil {
 		return Observation{}, JupiterExecutionEvidence{}, err
 	}
-	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
+	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(v, decision.Action, decision.StrategyKey)
 	if err != nil {
 		return Observation{}, JupiterExecutionEvidence{}, err
 	}
-	sourceProgram, destinationProgram, err := jupiterTokenPrograms(decision.Action, decision.StrategyKey)
+	sourceProgram, destinationProgram, err := jupiterTokenPrograms(v, decision.Action, decision.StrategyKey)
 	if err != nil {
 		return Observation{}, JupiterExecutionEvidence{}, err
 	}
@@ -34,7 +34,7 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 		if err != nil {
 			return 0, err
 		}
-		authority, err := decodeBase58PublicKey(bridgeVault)
+		authority, err := decodeBase58PublicKey(v.squads)
 		if err != nil {
 			return 0, err
 		}
@@ -69,10 +69,10 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 // jupiterTokenPrograms is the token program of the swap's source and
 // destination custody: a catalog edge's assets, and the classic program for
 // every USDC-only lane.
-func jupiterTokenPrograms(action Action, lane string) (string, string, error) {
+func jupiterTokenPrograms(v *Vault, action Action, lane string) (string, string, error) {
 	switch {
 	case catalogJupiterRoute(lane):
-		edge, err := catalogConversion(action, lane)
+		edge, err := catalogConversion(v, action, lane)
 		return edge.from.program.String(), edge.to.program.String(), err
 	default:
 		return bridgeTokenProgram, bridgeTokenProgram, nil
@@ -83,21 +83,22 @@ func jupiterTokenPrograms(action Action, lane string) (string, string, error) {
 // Exit costing may also quote prospective balances, but must never treat that
 // estimate as current-state simulation or promote its wire to execution.
 func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
-	maxAccounts, err := jupiterSwapMaxAccounts(decision.StrategyKey, decision.Action)
+	v := manifest.vault
+	maxAccounts, err := jupiterSwapMaxAccounts(v, decision.StrategyKey, decision.Action)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
 	}
-	return prepareJupiterQuoteEvidenceAt(ctx, rpc, client, policies, decision, sourceRaw, destinationRaw, slot, maxAccounts)
+	return prepareJupiterQuoteEvidenceAt(ctx, v, rpc, client, policies, decision, sourceRaw, destinationRaw, slot, maxAccounts)
 }
 
 // prepareJupiterQuoteEvidenceAt quotes decision's swap at a route size of at
 // most maxAccounts venue accounts.
-func prepareJupiterQuoteEvidenceAt(ctx context.Context, rpc *chain.Client, client *jupiter.Client, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64, maxAccounts int) (JupiterExecutionEvidence, error) {
-	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(decision.Action, decision.StrategyKey)
+func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Client, client *jupiter.Client, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64, maxAccounts int) (JupiterExecutionEvidence, error) {
+	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(v, decision.Action, decision.StrategyKey)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
 	}
-	sourceProgram, destinationProgram, err := jupiterTokenPrograms(decision.Action, decision.StrategyKey)
+	sourceProgram, destinationProgram, err := jupiterTokenPrograms(v, decision.Action, decision.StrategyKey)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
 	}
@@ -112,7 +113,7 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, rpc *chain.Client, clien
 	var blockhash LatestBlockhash
 	var blockhashErr error
 	err = concurrentReads(ctx, func(ctx context.Context) (err error) {
-		quote, instruction, err = freshSwapForRoute(ctx, client, decision.StrategyKey, decision.Action, amount, maxAccounts)
+		quote, instruction, err = freshSwapForRoute(ctx, v, client, decision.StrategyKey, decision.Action, amount, maxAccounts)
 		return err
 	}, func(ctx context.Context) error {
 		blockhash, blockhashErr = latestBlockhash(ctx, rpc)
@@ -125,7 +126,7 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, rpc *chain.Client, clien
 		// serialized loop request a fresh quote on its next bounded tick.
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 	}
-	key, _, err := jupiterPolicyLeg(decision.StrategyKey, decision.Action)
+	key, _, err := jupiterPolicyLeg(v, decision.StrategyKey, decision.Action)
 	if err != nil {
 		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
 	}
@@ -133,7 +134,7 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, rpc *chain.Client, clien
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
 	}
-	out, minimum, err := validateJupiterQuoteForRoute(quote, decision.Action, amount, decision.StrategyKey)
+	out, minimum, err := validateJupiterQuoteForRoute(v, quote, decision.Action, amount, decision.StrategyKey)
 	if err != nil || destinationRaw > math.MaxUint64-minimum {
 		return JupiterExecutionEvidence{}, fmt.Errorf("Jupiter destination threshold overflows")
 	}
@@ -164,8 +165,8 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, rpc *chain.Client, clien
 	return JupiterExecutionEvidence{
 		Request: request,
 		ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Conserved: false, Accounts: []ExpectedAccountEffect{
-			{Address: sourceATA, Owner: sourceProgram, Mint: sourceMint, Authority: bridgeVault, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
-			{Address: destinationATA, Owner: destinationProgram, Mint: destinationMint, Authority: bridgeVault, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
+			{Address: sourceATA, Owner: sourceProgram, Mint: sourceMint, Authority: v.squads, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
+			{Address: destinationATA, Owner: destinationProgram, Mint: destinationMint, Authority: v.squads, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
 		}},
 	}, nil
 }

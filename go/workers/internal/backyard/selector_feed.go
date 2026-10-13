@@ -281,16 +281,14 @@ func NewEconomicFeed(view *View) (*EconomicFeed, error) {
 	return &EconomicFeed{view: view, client: &http.Client{Timeout: 5 * time.Second}, routes: routes, realized: map[string]realizedReserve{}}, nil
 }
 
-// earnFeedRoutes are the active registry lanes' routes, in registry order.
+// earnFeedRoutes are the active registry lanes' templates, in registry
+// order: a lane's economics are its market's, whichever vault holds it.
 func earnFeedRoutes() ([]RuntimeRoute, error) {
-	lanes := earnLaneIDs(false)
-	routes := make([]RuntimeRoute, 0, len(lanes))
-	for _, lane := range lanes {
-		r, err := runtimeRoute(lane)
-		if err != nil {
-			return nil, err
+	var routes []RuntimeRoute
+	for _, l := range earnLanes {
+		if !l.exitOnly {
+			routes = append(routes, l.route)
 		}
-		routes = append(routes, r)
 	}
 	return routes, nil
 }

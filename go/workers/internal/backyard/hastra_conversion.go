@@ -33,8 +33,8 @@ func hastraLane(route RuntimeRoute) bool {
 // redeem is an admin queue of 43 to 82 minutes), and its collateral and USDC
 // convert through Jupiter's catalog edges.
 func hastraConversionLeg(action Action, lane string) (byte, bool) {
-	route, err := runtimeRoute(lane)
-	if err != nil || !hastraLane(route) {
+	l, ok := findEarnLane(lane)
+	if !ok || !hastraLane(l.route) {
 		return 0, false
 	}
 	switch action {
@@ -55,18 +55,18 @@ type hastraEdge struct {
 	source, sourceMint, destination, destinationMint string
 }
 
-func hastraEdgeForRoute(action Action, lane string) (hastraEdge, error) {
+func hastraEdgeForRoute(v *Vault, action Action, lane string) (hastraEdge, error) {
 	leg, ok := hastraConversionLeg(action, lane)
 	if !ok {
 		return hastraEdge{}, fmt.Errorf("lane %q converts %s through no Hastra edge", lane, action)
 	}
-	route, err := runtimeRoute(lane)
+	route, err := v.route(lane)
 	if err != nil {
 		return hastraEdge{}, err
 	}
 	debt := [2]string{route.DebtCustody, route.Kamino.DebtMint}
 	collateral := [2]string{route.CollateralCustody, route.Kamino.CollateralMint}
-	from, to := [2]string{bridgeSquadsATA, bridgeUSDC}, debt // mint deposit
+	from, to := [2]string{v.cash, bridgeUSDC}, debt // mint deposit
 	switch leg {
 	case policy.HastraStakeDeposit:
 		from, to = debt, collateral
@@ -131,8 +131,8 @@ func hastraOutput(leg byte, price hastra.StakePrice, amount uint64) (uint64, err
 
 // hastraInstruction is the request's Hastra instruction and its policy leg.
 // The quote must be the program's own output at the carried price.
-func hastraInstruction(r HastraConversionRequest) (compiledInstruction, byte, error) {
-	edge, err := hastraEdgeForRoute(r.Action, r.RouteLane)
+func hastraInstruction(v *Vault, r HastraConversionRequest) (compiledInstruction, byte, error) {
+	edge, err := hastraEdgeForRoute(v, r.Action, r.RouteLane)
 	if err != nil {
 		return compiledInstruction{}, 0, err
 	}
@@ -150,7 +150,7 @@ func hastraInstruction(r HastraConversionRequest) (compiledInstruction, byte, er
 	if out, err := hastraOutput(edge.leg, price, r.AmountRaw); err != nil || out != r.OutputRaw {
 		return compiledInstruction{}, 0, fmt.Errorf("Hastra output is not the program's at the quoted price: %w", err)
 	}
-	vault := kaminoKey(bridgeVault)
+	vault := kaminoKey(v.squads)
 	stake, err := hastra.OwnStake(vault)
 	if err != nil {
 		return compiledInstruction{}, 0, err
@@ -175,7 +175,7 @@ func hastraInstruction(r HastraConversionRequest) (compiledInstruction, byte, er
 // canonical heap frame (the Hastra policy is as large as AUTO's KLend policy,
 // which the deployed Squads ELF parses only under the 64 KiB heap) and the
 // Squads execute of the one Hastra instruction at its policy leg.
-func compileHastraMessageForDelegate(request HastraConversionRequest, delegate publicKey) ([]byte, error) {
+func compileHastraMessageForDelegate(v *Vault, request HastraConversionRequest, delegate publicKey) ([]byte, error) {
 	if request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Hastra request")
 	}
@@ -183,7 +183,7 @@ func compileHastraMessageForDelegate(request HastraConversionRequest, delegate p
 	if err != nil {
 		return nil, err
 	}
-	outer, err := hastraPolicyExecute(request, delegate)
+	outer, err := hastraPolicyExecute(v, request, delegate)
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +196,8 @@ func compileHastraMessageForDelegate(request HastraConversionRequest, delegate p
 
 // hastraPolicyExecute is the request's conversion as the Squads execute of
 // its Hastra instruction at the Hastra policy's leg.
-func hastraPolicyExecute(request HastraConversionRequest, delegate publicKey) (compiledInstruction, error) {
-	inner, leg, err := hastraInstruction(request)
+func hastraPolicyExecute(v *Vault, request HastraConversionRequest, delegate publicKey) (compiledInstruction, error) {
+	inner, leg, err := hastraInstruction(v, request)
 	if err != nil {
 		return compiledInstruction{}, err
 	}
@@ -205,7 +205,7 @@ func hastraPolicyExecute(request HastraConversionRequest, delegate publicKey) (c
 	if err != nil || policy == (publicKey{}) {
 		return compiledInstruction{}, fmt.Errorf("Hastra request names no installed policy")
 	}
-	return wrapSquadsPolicy(policy, delegate, []byte{leg}, inner)
+	return wrapSquadsPolicy(v, policy, delegate, []byte{leg}, inner)
 }
 
 // hastraPriceAt reads the stake price and the chain clock at a view slot no
@@ -240,20 +240,20 @@ func landable(price hastra.StakePrice, now int64) bool {
 // prepareHastraFromTickObservation builds a Hastra conversion from the tick's
 // own view batch, as the Jupiter path does: the vault's two custodies of the
 // edge, the installed Hastra policy, the stake price and a blockhash.
-func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, decision Decision, observation Observation) (Observation, HastraExecutionEvidence, error) {
+func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, HastraExecutionEvidence, error) {
 	if rpc == nil || view == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, HastraExecutionEvidence{}, fmt.Errorf("invalid Hastra evidence request")
 	}
-	prepareStart, accounts := time.Now(), observation.routeBatch.Accounts
+	prepareStart, accounts, v := time.Now(), observation.routeBatch.Accounts, manifest.vault
 	var err error
-	if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
+	if observation.policies, err = observeInstalledPolicies(ctx, rpc, v, observation.Snapshot.Slot); err != nil {
 		return Observation{}, HastraExecutionEvidence{}, err
 	}
-	edge, err := hastraEdgeForRoute(decision.Action, decision.StrategyKey)
+	edge, err := hastraEdgeForRoute(v, decision.Action, decision.StrategyKey)
 	if err != nil {
 		return Observation{}, HastraExecutionEvidence{}, err
 	}
-	authority, err := decodeBase58PublicKey(bridgeVault)
+	authority, err := decodeBase58PublicKey(v.squads)
 	if err != nil {
 		return Observation{}, HastraExecutionEvidence{}, err
 	}
@@ -277,7 +277,7 @@ func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return Observation{}, HastraExecutionEvidence{}, err
 	}
-	evidence, err := prepareHastraQuoteEvidence(ctx, rpc, view, observation.policies, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
+	evidence, err := prepareHastraQuoteEvidence(ctx, v, rpc, view, observation.policies, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 	logStage("prepare_hastra_quote", prepareStart)
 	if err != nil {
 		return observation, evidence, err
@@ -290,8 +290,8 @@ func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 // debited exactly the amount and the destination credited at least the
 // program's output at that price. A stake price that would go stale before
 // the wire lands holds.
-func prepareHastraQuoteEvidence(ctx context.Context, rpc *chain.Client, view *View, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (HastraExecutionEvidence, error) {
-	edge, err := hastraEdgeForRoute(decision.Action, decision.StrategyKey)
+func prepareHastraQuoteEvidence(ctx context.Context, v *Vault, rpc *chain.Client, view *View, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (HastraExecutionEvidence, error) {
+	edge, err := hastraEdgeForRoute(v, decision.Action, decision.StrategyKey)
 	if err != nil {
 		return HastraExecutionEvidence{}, err
 	}
@@ -329,8 +329,8 @@ func prepareHastraQuoteEvidence(ctx context.Context, rpc *chain.Client, view *Vi
 	return HastraExecutionEvidence{
 		Request: request,
 		ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Conserved: false, Accounts: []ExpectedAccountEffect{
-			{Address: edge.source, Owner: classicTokenProgram, Mint: edge.sourceMint, Authority: bridgeVault, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
-			{Address: edge.destination, Owner: classicTokenProgram, Mint: edge.destinationMint, Authority: bridgeVault, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
+			{Address: edge.source, Owner: classicTokenProgram, Mint: edge.sourceMint, Authority: v.squads, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
+			{Address: edge.destination, Owner: classicTokenProgram, Mint: edge.destinationMint, Authority: v.squads, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
 		}},
 	}, nil
 }

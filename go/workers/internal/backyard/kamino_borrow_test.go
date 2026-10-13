@@ -104,7 +104,7 @@ func TestPhase3BorrowFeesMatchProduction(t *testing.T) {
 				}
 			}
 		}
-		if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err != nil {
+		if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); err != nil {
 			t.Fatal("real fee transfer rejected", err)
 		}
 		obligation, err := decodeKaminoObligation(accountAt(after, route.Kamino.Obligation), route.Kamino)
@@ -117,11 +117,11 @@ func TestPhase3BorrowFeesMatchProduction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := ReconcileConfirmedTransaction(old, receipt); err == nil {
+		if _, _, err := ReconcileConfirmedTransaction(rwa, old, receipt); err == nil {
 			t.Fatal("old principal-only graph did not reject actual fee debit")
 		}
 		receipt.PostTokenBalances[2].Raw++
-		if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err == nil {
+		if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); err == nil {
 			t.Fatal("changed fee receipt reconciled")
 		}
 		t.Logf("PHASE3_BORROW_FEE receive=%d fee=%d grossDebit=%d", request.AmountRaw, probe.FeeRaw, request.AmountRaw+probe.FeeRaw)

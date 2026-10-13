@@ -20,14 +20,15 @@ const policyUsage = `usage: loyal-engine policy apply|check klend --settings <se
        loyal-engine policy apply|check swap --settings <settings> --from <mint> --to <mint> --amount <raw> [flags]
        loyal-engine policy apply|check klend-loop --settings <settings> --collateral-reserve <reserve> --debt-reserve <reserve> [flags]
        loyal-engine policy apply|check hastra --settings <settings> [flags]
-       loyal-engine policy apply backyard --settings <settings> --literal <name> [flags]
+       loyal-engine policy apply backyard --settings <settings> --vault <vault> --literal <name> [flags]
        loyal-engine policy remove --settings <settings> --policies <a,b,...> [--send]
        loyal-engine policy addresses --settings <settings> [--vault-index N] [--mint <mint> ...]
   apply: install the product's policy (simulates; --send lands it). Needs --delegate and
          credential POLICY_SETTINGS_SIGNER, the Settings' one signer, who pays.
   check: run each op (or --op N) through the installed policy (simulates; --send lands them in order).
          Needs credential POLICY_DELEGATE, the policy's delegate, who pays.
-         backyard: the Backyard policy the runtime holds as <name> (a hold's name), from its literal.
+         backyard: the policy the vault's runtime holds as <name> (a hold's name), from its literal,
+         spending limits included.
   klend-loop: the vault's lane obligation (tag 1, seeds the two mints) on a collateral and a debt
          reserve, ops 0 deposit, 1 withdraw, 2 borrow, 3 repay, 4 init obligation (Backyard's AUTO
          lane order). Amounts are raw liquidity; --withdraw and --repay take 18446744073709551615
@@ -64,6 +65,7 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	fromFlag := flags.String("from", "", "swap: the mint the vault pays")
 	toFlag := flags.String("to", "", "swap: the mint the vault receives")
 	literalFlag := flags.String("literal", "", "backyard: the policy's name, as a hold gives it")
+	vaultFlag := flags.String("vault", "", "backyard: the vault whose policy it is (rwa, looping)")
 	collateralReserveFlag := flags.String("collateral-reserve", "", "klend-loop: the collateral reserve")
 	debtReserveFlag := flags.String("debt-reserve", "", "klend-loop: the debt reserve")
 	var loop policy.LoopAmounts
@@ -160,14 +162,11 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 			return policy.Swap(c, backyardJupiter(optionalCredential("JUPITER_API_KEY")), settings, uint8(*vaultIndex), from, to, payer, *amount)
 		}
 	case "backyard":
-		literal, err := backyard.PolicyLiteral(*literalFlag)
+		literal, err := backyard.PolicyLiteral(*vaultFlag, *literalFlag)
 		if err != nil {
 			return err
 		}
-		if len(literal.SpendingLimits) > 0 {
-			return fmt.Errorf("%s has spending limits, which apply does not install", *literalFlag)
-		}
-		product := policy.Product{Name: *literalFlag, VaultIndex: literal.VaultIndex}
+		product := policy.Product{Name: *vaultFlag + " " + *literalFlag, VaultIndex: literal.VaultIndex, SpendingLimits: literal.SpendingLimits}
 		for i, constraint := range literal.Constraints {
 			product.Ops = append(product.Ops, policy.Op{Name: fmt.Sprintf("constraint %d", i), Allowed: constraint})
 		}

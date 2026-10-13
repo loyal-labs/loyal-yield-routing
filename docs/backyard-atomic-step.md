@@ -203,7 +203,7 @@ verified and reached the borrow instruction.
 Reproduce one with the operator command (read-only, no key material):
 
 ```sh
-loyal-engine backyard simulate-step --lane AUTO/AUTO/wYLDS --dir up --amount-raw 10000000
+loyal-engine backyard simulate-step --vault rwa --lane AUTO/AUTO/wYLDS --dir up --amount-raw 10000000
 ```
 
 It reads `BACKYARD_SOLANA_RPC_URL` from `CREDENTIALS_DIRECTORY`; point it at a

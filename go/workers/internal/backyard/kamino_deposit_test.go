@@ -101,7 +101,7 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 		if receipt.PreTokenBalances[0].Raw-receipt.PostTokenBalances[0].Raw != probe.ActualDebitRaw {
 			t.Fatal("reported deposit debit differs from actual custody")
 		}
-		if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err != nil {
+		if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); err != nil {
 			t.Fatal("real rounded deposit rejected", err)
 		}
 		bad := receipt
@@ -109,7 +109,7 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 		outside := effects.Deposit.MinimumDebitRaw - 1
 		bad.PostTokenBalances[0].Raw = receipt.PreTokenBalances[0].Raw - outside
 		bad.PostTokenBalances[1].Raw = receipt.PreTokenBalances[1].Raw + outside
-		if _, _, err := ReconcileConfirmedTransaction(effects, bad); err == nil {
+		if _, _, err := ReconcileConfirmedTransaction(rwa, effects, bad); err == nil {
 			t.Fatal("conserved but out-of-bound debit reconciled")
 		}
 		if i == 0 {
@@ -118,7 +118,7 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 			}
 			exact := effects
 			exact.Kind, exact.Deposit = "", nil
-			if _, _, err := ReconcileConfirmedTransaction(exact, receipt); err == nil {
+			if _, _, err := ReconcileConfirmedTransaction(rwa, exact, receipt); err == nil {
 				t.Fatal("old exact-debit assumption did not reject negative control")
 			}
 		}
@@ -177,18 +177,18 @@ func TestDepositReconcilesFromTheReceiptAndRejectsMalformedEffects(t *testing.T)
 		effects.Accounts[0].Address: {effects.Accounts[0].BeforeRaw, effects.Accounts[0].AfterRaw + 3},
 		supply:                      {effects.Accounts[1].BeforeRaw + 7_000, effects.Accounts[1].AfterRaw + 7_000 - 3},
 	})
-	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err != nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); err != nil {
 		t.Fatal("a landed deposit beside third-party reserve moves failed reconciliation", err)
 	}
 	receipt = receiptFor(effects, map[string][2]uint64{effects.Accounts[0].Address: {effects.Accounts[0].BeforeRaw + 1, effects.Accounts[0].AfterRaw + 1}})
-	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err != nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); err != nil {
 		t.Fatal("a transfer into our collateral custody before landing failed reconciliation", err)
 	}
 	receipt = receiptFor(effects, map[string][2]uint64{
 		effects.Accounts[0].Address: {effects.Accounts[0].BeforeRaw, effects.Accounts[0].BeforeRaw},
 		supply:                      {effects.Accounts[1].BeforeRaw, effects.Accounts[1].BeforeRaw},
 	})
-	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); err == nil {
 		t.Fatal("a deposit that moved nothing reconciled")
 	}
 }

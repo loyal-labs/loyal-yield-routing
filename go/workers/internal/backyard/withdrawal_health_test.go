@@ -11,7 +11,7 @@ import (
 func TestWithdrawalHealthPreservesAttentionUntilCurrentRecovery(t *testing.T) {
 	t.Parallel()
 	o := Observation{ObservedAt: time.Unix(1000, 0).UTC(), Snapshot: livePartialSnapshot()}
-	h, ok := assessWithdrawalHealth(o, Decision{Action: HoldManualRecovery, Reason: "custody_mismatch"}, nil)
+	h, ok := assessWithdrawalHealth(rwa, o, Decision{Action: HoldManualRecovery, Reason: "custody_mismatch"}, nil)
 	if !ok || h.Status != "operator_attention" {
 		t.Fatalf("known blocker: %+v", h)
 	}
@@ -25,29 +25,29 @@ func TestWithdrawalHealthPreservesAttentionUntilCurrentRecovery(t *testing.T) {
 	o.ObservedAt = o.ObservedAt.Add(time.Minute)
 	o.Snapshot.Slot++
 	for _, d := range []Decision{{Action: ReportNAV}, {Action: RecoverTransaction}, {Action: Hold}} {
-		unknown, _ := assessWithdrawalHealth(o, d, nil)
+		unknown, _ := assessWithdrawalHealth(rwa, o, d, nil)
 		kept := mergeWithdrawalHealth(&previous, unknown)
 		if kept.Status != "operator_attention" || !kept.ObservedAt.Equal(previous.ObservedAt) || !kept.BlockedSince.Equal(*previous.BlockedSince) {
 			t.Fatalf("non-funding evidence erased attention: %+v", kept)
 		}
 	}
-	unknown, _ := assessWithdrawalHealth(o, Decision{}, errors.New("RPC failed"))
+	unknown, _ := assessWithdrawalHealth(rwa, o, Decision{}, errors.New("RPC failed"))
 	if kept := mergeWithdrawalHealth(&previous, unknown); kept.Status != "operator_attention" {
 		t.Fatal("read error recovered")
 	}
 	o.Snapshot.VoltrIdleRaw = o.Snapshot.WithdrawalDemandRaw
-	covered, _ := assessWithdrawalHealth(o, Decision{}, nil)
+	covered, _ := assessWithdrawalHealth(rwa, o, Decision{}, nil)
 	covered = mergeWithdrawalHealth(&previous, covered)
 	if covered.Status != "waiting" || covered.Reason != "withdrawal_covered" || covered.BlockedSince != nil {
 		t.Fatalf("covered: %+v", covered)
 	}
 	o.Snapshot.WithdrawalDemandRaw = 0
-	none, _ := assessWithdrawalHealth(o, Decision{}, nil)
+	none, _ := assessWithdrawalHealth(rwa, o, Decision{}, nil)
 	if none.Status != "none" {
 		t.Fatalf("no demand: %+v", none)
 	}
 	o.Snapshot.Fresh = false
-	if _, ok := assessWithdrawalHealth(o, Decision{}, nil); ok {
+	if _, ok := assessWithdrawalHealth(rwa, o, Decision{}, nil); ok {
 		t.Fatal("unknown zero demand became recovery")
 	}
 }
@@ -55,7 +55,7 @@ func TestWithdrawalHealthPreservesAttentionUntilCurrentRecovery(t *testing.T) {
 func TestWithdrawalHealthCurrentHoldBeforeOperationExists(t *testing.T) {
 	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
 	var stored WithdrawalHealth
-	w := Worker{runtime: tickRuntime{withdrawalHealth: func(_ context.Context, h WithdrawalHealth) error { stored = h; return nil }}}
+	w := Worker{manifest: rwa.manifest, runtime: tickRuntime{withdrawalHealth: func(_ context.Context, h WithdrawalHealth) error { stored = h; return nil }}}
 	// Prepare may return no observation or operation ID. The tick retains its
 	// earlier coherent snapshot and projects the current refusal, which the
 	// next tick may clear: unavailable, not yet the operator's.
@@ -78,7 +78,7 @@ func TestWithdrawalHealthPersistenceDoesNotChangeAuthority(t *testing.T) {
 	defer db.Close()
 	resetManualRecoveryProductionRoute(t, ctx, db, "withdrawal-health-worker")
 	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: targeted(livePartialSnapshot())}
-	h, _ := assessWithdrawalHealth(o, Decision{Action: HoldManualRecovery, Reason: "custody_mismatch"}, nil)
+	h, _ := assessWithdrawalHealth(rwa, o, Decision{Action: HoldManualRecovery, Reason: "custody_mismatch"}, nil)
 	if err := db.RecordWithdrawalHealth(ctx, h); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 
 func TestWithdrawalHealthDoesNotObserveDuringRecoveryOrReadFailure(t *testing.T) {
 	reads, writes := 0, 0
-	w := Worker{runtime: tickRuntime{
+	w := Worker{manifest: rwa.manifest, runtime: tickRuntime{
 		observeWithdrawalHealth: func(context.Context) (Observation, error) {
 			reads++
 			return Observation{ObservedAt: time.Now().UTC(), Snapshot: livePartialSnapshot()}, nil

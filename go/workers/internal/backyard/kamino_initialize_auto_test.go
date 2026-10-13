@@ -133,14 +133,6 @@ func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
 	foreign.RouteLane = "Ethena/USDe/PYUSD"
 	_, err = manifest.compileKaminoInitializationMessage(foreign)
 	assertBudgetHold(t, err, "initializer_lane_unreviewed")
-	// The public production compiler and post-state validator refuse AUTO.
-	if _, err := CompileKaminoInitializationMessage(r); err == nil || !strings.Contains(err.Error(), "unreviewed Multiply initializer lane") {
-		t.Fatalf("public compiler admitted AUTO: %v", err)
-	}
-	funded := ConfirmedAccount{Lamports: r.RentLamports, Data: make([]byte, kamino.ObligationSize)}
-	if err := validateInitializedKaminoObligation(r, funded); err == nil || !strings.Contains(err.Error(), "unreviewed initialized obligation") {
-		t.Fatalf("public initialized validator admitted AUTO: %v", err)
-	}
 	// The request builder resolves the installed AUTO policy's account.
 	resolved, err := manifest.initializationRequest(testPolicies(t), autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, r.RentLamports, r.MaximumFeeLamports)
 	if err != nil || resolved.Policy != installedAutoPolicyKey() || manifest.validateInitializationRequest(resolved) != nil {
@@ -160,15 +152,10 @@ func TestAutoInitializationEffectsValidateThroughTheManifest(t *testing.T) {
 	if err := manifest.validateInitializationEffects(valid); err != nil {
 		t.Fatalf("bound AUTO effect refused by the manifest validator: %v", err)
 	}
-	// The public form refuses the candidate lane outright and stays byte-identical
-	// for installed selector effects.
-	if err := validateInitializationEffects(valid); err == nil || !strings.Contains(err.Error(), "unreviewed Multiply initializer lane") {
-		t.Fatalf("public effects validator did not plainly refuse the AUTO candidate: %v", err)
-	}
 	installed := r
 	installed.RouteLane = PhaseOneLaneID
 	installed.Policy = testPolicyAccount(policyKey{lane: PhaseOneLaneID, action: InitializeKaminoObligation})
-	if err := validateInitializationEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &installed}); err != nil {
+	if err := manifest.validateInitializationEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &installed}); err != nil {
 		t.Fatalf("installed selector effect refused after the shared-shape refactor: %v", err)
 	}
 
@@ -183,9 +170,6 @@ func TestAutoInitializationEffectsValidateThroughTheManifest(t *testing.T) {
 		{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &r, ReturnData: &ExpectedReturnData{}},
 	}
 	for index, effects := range malformed {
-		if err := validateInitializationEffects(effects); err == nil || !strings.Contains(err.Error(), "invalid native initialization effects") {
-			t.Fatalf("public form accepted malformed effect %d as %v", index, err)
-		}
 		if err := manifest.validateInitializationEffects(effects); err == nil || !strings.Contains(err.Error(), "invalid native initialization effects") {
 			t.Fatalf("manifest form accepted malformed effect %d as %v", index, err)
 		}

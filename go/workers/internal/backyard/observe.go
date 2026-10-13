@@ -41,10 +41,10 @@ func decodePinnedUSDC(account ConfirmedAccount, authority string) (DecodedTokenC
 	return DecodeTokenCustody(account.Owner, account.Data, mint, owner)
 }
 
-func decodeConfirmedWithdrawalDemand(receipts []programAccount) (int64, string, error) {
+func decodeConfirmedWithdrawalDemand(v *Vault, receipts []programAccount) (int64, string, error) {
 	decoded := make([]VoltrWithdrawalReceipt, 0, len(receipts))
 	for _, receipt := range receipts {
-		value, err := DecodeVoltrWithdrawalReceipt(receipt.Account, receipt.Address, bridgeVoltrVault, bridgeCapRaw)
+		value, err := DecodeVoltrWithdrawalReceipt(receipt.Account, receipt.Address, v.VoltrVault, bridgeCapRaw)
 		if err != nil {
 			return 0, "", fmt.Errorf("decode withdrawal receipt: %w", err)
 		}

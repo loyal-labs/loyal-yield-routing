@@ -19,13 +19,13 @@ import (
 //	loyal_fleet_capacity_replans_total{reason}           moves dropped at execution because they no longer fit
 //	loyal_fleet_simulation_failures_total{stage}         execution simulations that failed; the move retries
 //	loyal_fleet_movable_capital_usd{reserve}             capital in a reserve with an eligible move this cycle
-//	loyal_backyard_leverage_borrow_room_usd{lane}        a held lane's debt reserve borrow room, at its oracle price
-//	loyal_backyard_leverage_gap{lane}                    a held lane's stored leverage target minus its leverage
-//	loyal_backyard_leverage_up_landed_total{lane}        leverage_up borrows that landed
-//	loyal_backyard_leverage_reaction_seconds             first observed room to the leverage_up borrow landing
-//	loyal_backyard_leverage_decision_outages_total{reason} leverage samples that could not be decided, by sanitized cause
-//	loyal_backyard_term_debt_days_to_maturity{lane}      a held lane's days to its term debt's maturity
-//	loyal_backyard_hold{lane,reason}                     1 for the hold the last tick ended in; no series while it acts
+//	loyal_backyard_leverage_borrow_room_usd{vault,lane}  a held lane's debt reserve borrow room, at its oracle price
+//	loyal_backyard_leverage_gap{vault,lane}              a held lane's stored leverage target minus its leverage
+//	loyal_backyard_leverage_up_landed_total{vault,lane}  leverage_up borrows that landed
+//	loyal_backyard_leverage_reaction_seconds{vault}      first observed room to the leverage_up borrow landing
+//	loyal_backyard_leverage_decision_outages_total{vault,reason} leverage samples that could not be decided, by sanitized cause
+//	loyal_backyard_term_debt_days_to_maturity{vault,lane} a held lane's days to its term debt's maturity
+//	loyal_backyard_hold{vault,lane,reason}               1 for the hold the last tick ended in; no series while it acts
 type Facts struct {
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec
@@ -42,7 +42,7 @@ type Facts struct {
 	leverageRoom        *prometheus.GaugeVec
 	leverageGap         *prometheus.GaugeVec
 	leverageLanded      *prometheus.CounterVec
-	leverageReaction    prometheus.Histogram
+	leverageReaction    *prometheus.HistogramVec
 	leverageOutages     *prometheus.CounterVec
 	termDebtDays        *prometheus.GaugeVec
 	stepNoRoom          *prometheus.CounterVec
@@ -89,29 +89,29 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		}, []string{"reserve"}),
 		leverageRoom: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_leverage_borrow_room_usd", Help: "A held Earn Max lane's debt reserve borrow room in USD at the reserve's oracle price, recomputed on every reserve update.",
-		}, []string{"lane"}),
+		}, []string{"vault", "lane"}),
 		leverageGap: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_leverage_gap", Help: "A held Earn Max lane's stored leverage target minus its actual leverage (0 at or above target).",
-		}, []string{"lane"}),
+		}, []string{"vault", "lane"}),
 		leverageLanded: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_backyard_leverage_up_landed_total", Help: "Earn Max leverage_up borrows that landed and reconciled.",
-		}, []string{"lane"}),
-		leverageReaction: prometheus.NewHistogram(prometheus.HistogramOpts{
+		}, []string{"vault", "lane"}),
+		leverageReaction: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "loyal_backyard_leverage_reaction_seconds", Help: "From the first observed borrow room at or above the minimum, on a lane below its leverage target, to its leverage_up borrow landing.",
 			Buckets: []float64{1, 2, 5, 10, 15, 30, 60, 120, 300, 900, 3600},
-		}),
+		}, []string{"vault"}),
 		leverageOutages: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_backyard_leverage_decision_outages_total", Help: "Earn Max leverage samples that could not be decided (the stored target and approval carry), by sanitized cause.",
-		}, []string{"reason"}),
+		}, []string{"vault", "reason"}),
 		termDebtDays: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_term_debt_days_to_maturity", Help: "A held Earn Max lane's days from the chain clock to its term debt's maturity (negative once matured); no series without term debt.",
-		}, []string{"lane"}),
+		}, []string{"vault", "lane"}),
 		stepNoRoom: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_backyard_step_no_room_total", Help: "Backyard ticks whose step held because the chain had no room for the move its target wants, by lane and target rule.",
-		}, []string{"lane", "rule"}),
+		}, []string{"vault", "lane", "rule"}),
 		hold: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_hold", Help: "Why the last Backyard tick did not move the vault: 1 for its lane and hold reason (at_target, no_room, stale, chain_refused, stopped); no series while it acts.",
-		}, []string{"lane", "reason"}),
+		}, []string{"vault", "lane", "reason"}),
 	}
 	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
 		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold)
@@ -131,63 +131,63 @@ func (f *Facts) FleetMovableCapital(reserve string, usd float64) {
 	f.fleetMovable.WithLabelValues(reserve).Set(usd)
 }
 
-// BackyardLeverageRoom sets a held lane's borrow room in USD.
-func (f *Facts) BackyardLeverageRoom(lane string, usd float64) {
-	f.leverageRoom.WithLabelValues(lane).Set(usd)
+// BackyardLeverageRoom sets a vault's held lane's borrow room in USD.
+func (f *Facts) BackyardLeverageRoom(vault, lane string, usd float64) {
+	f.leverageRoom.WithLabelValues(vault, lane).Set(usd)
 }
 
-// BackyardLeverageGap sets a held lane's leverage gap; a lane without a
-// stored target has no gap series (not 0).
-func (f *Facts) BackyardLeverageGap(lane string, gap float64, targeted bool) {
+// BackyardLeverageGap sets a vault's held lane's leverage gap; a lane
+// without a stored target has no gap series (not 0).
+func (f *Facts) BackyardLeverageGap(vault, lane string, gap float64, targeted bool) {
 	if !targeted {
-		f.leverageGap.DeleteLabelValues(lane)
+		f.leverageGap.DeleteLabelValues(vault, lane)
 		return
 	}
-	f.leverageGap.WithLabelValues(lane).Set(gap)
+	f.leverageGap.WithLabelValues(vault, lane).Set(gap)
 }
 
 // BackyardLeverageOutage counts a leverage sample that could not be decided.
-func (f *Facts) BackyardLeverageOutage(reason string) {
-	f.leverageOutages.WithLabelValues(reason).Inc()
+func (f *Facts) BackyardLeverageOutage(vault, reason string) {
+	f.leverageOutages.WithLabelValues(vault, reason).Inc()
 }
 
 // BackyardStepNoRoom counts a step held for lack of chain room.
-func (f *Facts) BackyardStepNoRoom(lane, rule string) {
-	f.stepNoRoom.WithLabelValues(lane, rule).Inc()
+func (f *Facts) BackyardStepNoRoom(vault, lane, rule string) {
+	f.stepNoRoom.WithLabelValues(vault, lane, rule).Inc()
 }
 
-// BackyardHold sets the hold the last tick ended in, or clears it (reason "")
-// while the tick acts.
-func (f *Facts) BackyardHold(lane, reason string) {
-	f.hold.Reset()
+// BackyardHold sets the hold a vault's last tick ended in, or clears it
+// (reason "") while the tick acts.
+func (f *Facts) BackyardHold(vault, lane, reason string) {
+	f.hold.DeletePartialMatch(prometheus.Labels{"vault": vault})
 	if reason != "" {
-		f.hold.WithLabelValues(lane, reason).Set(1)
+		f.hold.WithLabelValues(vault, lane, reason).Set(1)
 	}
 }
 
 // BackyardTermDebtDays sets a held lane's days to its term debt's maturity;
 // a lane without term debt has no series.
-func (f *Facts) BackyardTermDebtDays(lane string, days float64, owed bool) {
+func (f *Facts) BackyardTermDebtDays(vault, lane string, days float64, owed bool) {
 	if !owed {
-		f.termDebtDays.DeleteLabelValues(lane)
+		f.termDebtDays.DeleteLabelValues(vault, lane)
 		return
 	}
-	f.termDebtDays.WithLabelValues(lane).Set(days)
+	f.termDebtDays.WithLabelValues(vault, lane).Set(days)
 }
 
-// BackyardLeverageLaneGone removes a lane that is no longer held.
-func (f *Facts) BackyardLeverageLaneGone(lane string) {
-	f.leverageGap.DeleteLabelValues(lane)
-	f.leverageRoom.DeleteLabelValues(lane)
-	f.termDebtDays.DeleteLabelValues(lane)
+// BackyardLeverageLaneGone removes a vault's lane that is no longer held.
+func (f *Facts) BackyardLeverageLaneGone(vault, lane string) {
+	f.leverageGap.DeleteLabelValues(vault, lane)
+	f.leverageRoom.DeleteLabelValues(vault, lane)
+	f.termDebtDays.DeleteLabelValues(vault, lane)
 }
 
 // BackyardLeverageUpLanded counts a landed leverage_up borrow and, when the
 // room it used was observed opening, its reaction time.
-func (f *Facts) BackyardLeverageUpLanded(lane string, reaction time.Duration, known bool) {
-	f.leverageLanded.WithLabelValues(lane).Inc()
+func (f *Facts) BackyardLeverageUpLanded(vault, lane string, reaction time.Duration, known bool) {
+	f.leverageLanded.WithLabelValues(vault, lane).Inc()
 	if known {
-		f.leverageReaction.Observe(reaction.Seconds())
+		f.leverageReaction.WithLabelValues(vault).Observe(reaction.Seconds())
 	}
 }
 
@@ -212,6 +212,12 @@ func (f *Facts) Failed(family Family, code string) {
 
 func (f *Facts) Inflight(family Family, n int) {
 	f.inflight.WithLabelValues(string(family)).Set(float64(n))
+}
+
+// InflightAdd moves a family's in-flight count by delta, for a family whose
+// lanes each report their own operations (Backyard's vaults).
+func (f *Facts) InflightAdd(family Family, delta int) {
+	f.inflight.WithLabelValues(string(family)).Add(float64(delta))
 }
 
 func (f *Facts) Progress(family Family) {

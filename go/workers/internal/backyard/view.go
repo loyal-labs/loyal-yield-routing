@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,12 +67,8 @@ type View struct {
 	replaying  bool
 	late       int
 
-	// The worker's room watches (leverage_room_watch.go): reserve address
-	// to watches, each watch's last open state by lane|reserve, and the
-	// callback every recomputation reports to.
-	roomWatches map[string][]roomWatch
-	roomOpen    map[string]bool
-	onRoom      func(roomUpdate)
+	// Each worker's room watches (leverage_room_watch.go), by its vault.
+	rooms map[*Vault]*roomSet
 }
 
 type viewAccount struct {
@@ -99,9 +96,9 @@ const (
 	// Receipts are discovered by owner and memcmp. Those filters never match a
 	// closed account (owner System, no data), so every known receipt is also
 	// in the by-address filter, which delivers its close.
-	viewAccountsFilter = "backyard_accounts"
-	viewReceiptsFilter = "backyard_voltr_receipts"
-	viewSlotsFilter    = "backyard_slots"
+	viewAccountsFilter       = "backyard_accounts"
+	viewReceiptsFilterPrefix = "backyard_voltr_receipts:"
+	viewSlotsFilter          = "backyard_slots"
 	// Chain time at S trails the wall clock by confirmation, the one-slot lag
 	// and the stream: a few seconds. 10s leaves room for Clock drift while a
 	// view tens of slots behind stops planning.
@@ -130,23 +127,25 @@ func OpenView(ctx context.Context, client *chain.Client, connector stream.Connec
 	return v, v.subscribe(v.seedLow + 1)
 }
 
-// viewAddresses is every fixed account a route-catalog lane observes, prices,
-// builds or admits against, plus the pinned program identity accounts. The
-// stream bills by the byte, so no oracle or AMM pool is among them.
+// viewAddresses is every fixed account a vault's route-catalog lane observes,
+// prices, builds or admits against, for every vault, plus the pinned program
+// identity accounts. The stream bills by the byte, so no oracle or AMM pool
+// is among them.
 func viewAddresses() []string {
-	metadata, _ := kamino.UserMetadataAddress(kaminoKey(bridgeVault))
-	addresses := []string{reportTicketPDA, budgetClockAddress, voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress,
-		bridgeVault, bridgeDelegate, metadata.String(), solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(),
-		bridgeUSDC, budgetSOLReserve, budgetWrappedSOLMint}
-	for _, l := range earnLanes {
-		route := l.route
-		addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(route)...),
-			route.Kamino.Market, route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
-			route.CollateralReceiptMint, route.CollateralReceiptSupply, route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm)
-		if hastraLane(route) {
-			// A Hastra conversion is quoted at, and revalidated against, the
-			// stake price (validateHastraPrice).
-			addresses = append(addresses, hastra.StakePriceConfig.String())
+	addresses := []string{reportTicketPDA, budgetClockAddress, voltr.ProgramID.String(), fsj27Program, voltrProgramDataAddress, adaptorProgramDataAddress,
+		bridgeDelegate, solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(), bridgeUSDC, budgetSOLReserve, budgetWrappedSOLMint}
+	for _, v := range vaults {
+		metadata, _ := kamino.UserMetadataAddress(kaminoKey(v.squads))
+		addresses = append(addresses, v.Adaptor, v.squads, metadata.String())
+		for _, route := range v.routes {
+			addresses = append(append(addresses, pinnedRouteNAVAddressesForRoute(v, route)...),
+				route.Kamino.Market, route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
+				route.CollateralReceiptMint, route.CollateralReceiptSupply, route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm)
+			if hastraLane(route) {
+				// A Hastra conversion is quoted at, and revalidated against, the
+				// stake price (validateHastraPrice).
+				addresses = append(addresses, hastra.StakePriceConfig.String())
+			}
 		}
 	}
 	return uniqueNonzero(addresses)
@@ -180,17 +179,21 @@ func (v *View) seed(ctx context.Context) error {
 			}
 		}
 	}
-	vault := solana.MustPublicKeyFromBase58(bridgeVoltrVault)
-	slot, read, err := v.rpc.ProgramAccounts(ctx, voltr.ProgramID, voltr.WithdrawalReceiptFilters(vault), rpc.CommitmentFinalized, 0)
-	if err != nil {
-		return unavailable(err)
-	}
-	for _, account := range read {
-		held(confirmedAccount(account.Key.String(), &account), slot)
-		v.receipts[account.Key.String()] = 0
+	for _, vault := range vaults {
+		slot, read, err := v.rpc.ProgramAccounts(ctx, voltr.ProgramID, voltr.WithdrawalReceiptFilters(solanaKey(vault.VoltrVault)), rpc.CommitmentFinalized, 0)
+		if err != nil {
+			return unavailable(err)
+		}
+		for _, account := range read {
+			held(confirmedAccount(account.Key.String(), &account), slot)
+			v.receipts[account.Key.String()] = 0
+		}
 	}
 	return nil
 }
+
+// viewReceiptsFilter names the stream filter of vault's withdrawal receipts.
+func viewReceiptsFilter(vault *Vault) string { return viewReceiptsFilterPrefix + vault.Name }
 
 // request subscribes the fixed accounts and known receipts by address, new
 // receipts by owner and memcmp, and confirmed slots.
@@ -202,15 +205,21 @@ func (v *View) request(from uint64) *pb.SubscribeRequest {
 	}
 	v.mu.Unlock()
 	slices.Sort(addresses)
-	discovery := &pb.SubscribeRequestFilterAccounts{Owner: []string{voltr.ProgramID.String()}}
-	for _, filter := range voltr.WithdrawalReceiptFilters(solana.MustPublicKeyFromBase58(bridgeVoltrVault)) {
-		discovery.Filters = append(discovery.Filters, &pb.SubscribeRequestFilterAccountsFilter{Filter: &pb.SubscribeRequestFilterAccountsFilter_Memcmp{
-			Memcmp: &pb.SubscribeRequestFilterAccountsFilterMemcmp{Offset: filter.Memcmp.Offset, Data: &pb.SubscribeRequestFilterAccountsFilterMemcmp_Bytes{Bytes: filter.Memcmp.Bytes}},
-		}})
+	accounts := map[string]*pb.SubscribeRequestFilterAccounts{viewAccountsFilter: {Account: addresses}}
+	for _, vault := range vaults {
+		// A filter's memcmps all hold: each vault's receipts are a filter of
+		// their own.
+		discovery := &pb.SubscribeRequestFilterAccounts{Owner: []string{voltr.ProgramID.String()}}
+		for _, filter := range voltr.WithdrawalReceiptFilters(solanaKey(vault.VoltrVault)) {
+			discovery.Filters = append(discovery.Filters, &pb.SubscribeRequestFilterAccountsFilter{Filter: &pb.SubscribeRequestFilterAccountsFilter_Memcmp{
+				Memcmp: &pb.SubscribeRequestFilterAccountsFilterMemcmp{Offset: filter.Memcmp.Offset, Data: &pb.SubscribeRequestFilterAccountsFilterMemcmp_Bytes{Bytes: filter.Memcmp.Bytes}},
+			}})
+		}
+		accounts[viewReceiptsFilter(vault)] = discovery
 	}
 	byCommitment, confirmed := true, pb.CommitmentLevel_CONFIRMED
 	return &pb.SubscribeRequest{
-		Accounts:   map[string]*pb.SubscribeRequestFilterAccounts{viewAccountsFilter: {Account: addresses}, viewReceiptsFilter: discovery},
+		Accounts:   accounts,
 		Slots:      map[string]*pb.SubscribeRequestFilterSlots{viewSlotsFilter: {FilterByCommitment: &byCommitment}},
 		Commitment: &confirmed,
 		FromSlot:   &from,
@@ -268,7 +277,7 @@ func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
 		account = ConfirmedAccount{Address: address, Owner: solana.PublicKeyFromBytes(info.Owner).String(), Lamports: info.Lamports, Data: info.Data, Executable: info.Executable}
 	}
 	// Discovery is recorded on arrival so the handoff starts at once.
-	if _, known := v.receipts[address]; !known && slices.Contains(update.Filters, viewReceiptsFilter) {
+	if _, known := v.receipts[address]; !known && slices.ContainsFunc(update.Filters, func(f string) bool { return strings.HasPrefix(f, viewReceiptsFilterPrefix) }) {
 		v.receipts[address], v.pending = write.Slot, v.pending+1
 	}
 	held := viewAccount{account, write.Slot, info.WriteVersion, v.session}
@@ -286,8 +295,10 @@ func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
 func (v *View) apply(write viewAccount) {
 	if held, ok := v.accounts[write.Address]; !ok || write.supersedes(held) {
 		v.accounts[write.Address] = write
-		if ws := v.roomWatches[write.Address]; len(ws) > 0 {
-			v.observeRoom(ws, write, true)
+		for _, set := range v.rooms {
+			if ws := set.watches[write.Address]; len(ws) > 0 {
+				v.observeRoom(set, ws, write, true)
+			}
 		}
 	}
 }
@@ -356,18 +367,20 @@ var errViewReplayGap = errors.New("account view stream gap exceeds the provider 
 // longer than a live view's chain time may trail. Only an optional address
 // may be absent; an address outside the view is an error, never an absence.
 func (v *View) read(ctx context.Context, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
-	slot, accounts, _, err := v.readAt(ctx, false, addresses, minSlot, optional...)
+	slot, accounts, _, err := v.readAt(ctx, nil, addresses, minSlot, optional...)
 	return slot, accounts, err
 }
 
-// readWithReceipts is read plus the vault's open withdrawal receipts. Only it
+// readWithReceipts is read plus vault's open withdrawal receipts. Only it
 // waits out a receipt handoff: until a discovered receipt is in the
 // by-address filter, its close could be missed.
-func (v *View) readWithReceipts(ctx context.Context, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
-	return v.readAt(ctx, true, addresses, minSlot, optional...)
+func (v *View) readWithReceipts(ctx context.Context, vault *Vault, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
+	return v.readAt(ctx, vault, addresses, minSlot, optional...)
 }
 
-func (v *View) readAt(ctx context.Context, withReceipts bool, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
+// readAt reads addresses and, with receiptsOf, that vault's receipts.
+func (v *View) readAt(ctx context.Context, receiptsOf *Vault, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
+	withReceipts := receiptsOf != nil
 	if v == nil {
 		return 0, nil, nil, fmt.Errorf("account view is required")
 	}
@@ -414,7 +427,9 @@ func (v *View) readAt(ctx context.Context, withReceipts bool, addresses []string
 	}
 	var receipts []programAccount
 	for address := range v.receipts {
-		if held := v.accounts[address]; held.Lamports > 0 {
+		// A receipt names its Voltr vault at offset 8
+		// (voltr.WithdrawalReceiptFilters).
+		if held := v.accounts[address]; withReceipts && held.Lamports > 0 && len(held.Data) >= 40 && sameKey(held.Data[8:40], receiptsOf.VoltrVault) {
 			receipts = append(receipts, programAccount{Address: address, Account: held.ConfirmedAccount})
 		}
 	}

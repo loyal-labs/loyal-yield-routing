@@ -10,6 +10,15 @@ when it connects. Every read and write of the process goes through it. A
 second process waits for the lock before it reads or writes anything; when the
 holder's session ends it takes over.
 
+The engine runs one worker per vault (`vaults` in
+`go/workers/internal/backyard/vault.go`): each ticks its own route row
+(`route_key`), its own Squads vault and its own operations, as one
+`engine.Run` lane each, through this one session. A vault is data (its Voltr
+vault, strategy, adaptor, Squads index and route key); every other address
+is derived from it, and every lane template (`earnLanes`) takes its custody
+and obligation accounts from the vault's Squads vault. Operator commands name
+the vault (`--vault rwa`); `in-flight` counts every vault's operations.
+
 The pool never opens a second session: a connect after the first is refused
 (`writer session lost`). A caller's deadline cancels its statement on the
 server, not the session, and a transaction begins, commits and rolls back on
@@ -84,7 +93,7 @@ pages.
 
 A manual recovery stop is the latch row alone: the decision writes it, a
 latched tick reads it and writes nothing, `loyal-engine backyard clear-hold
---reason "<text>"` clears it and keeps the reason on the row. The previous
+--vault <vault> --reason "<text>"` clears it and keeps the reason on the row. The previous
 binary also derived a stop from the journal's newest `HOLD_MANUAL_RECOVERY`
 and `HOLD_CLEARED` rows when no latch row was active; this binary reads only
 the latch row (0076 backfilled it).

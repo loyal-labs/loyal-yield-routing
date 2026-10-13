@@ -111,7 +111,7 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		inner, _, e := ticketedBridgeInstructions(request)
+		inner, _, e := ticketedBridgeInstructions(rwa, request)
 		if e != nil {
 			t.Fatal(e)
 		}

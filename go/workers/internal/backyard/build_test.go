@@ -46,7 +46,7 @@ func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
 			amount = 0
 		}
 		request := bridgeTestRequest(action, amount)
-		unsigned, err := compileBridgeMessageForDelegate(request, delegate)
+		unsigned, err := compileBridgeMessageForDelegate(rwa, request, delegate)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestUnsignedBridgeMessageEqualsSignedMessage(t *testing.T) {
 func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	t.Parallel()
 	request := bridgeTestRequest(VoltrAllocateToSquads, 1_000_000)
-	inner, err := bridgeInstruction(request)
+	inner, err := bridgeInstruction(rwa, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,14 +86,14 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 		t.Fatalf("allocation adaptor CPI wire drifted: %s", hex.EncodeToString(forwarded))
 	}
 
-	stage, err := bridgeInstruction(bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
+	stage, err := bridgeInstruction(rwa, bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stage.program != mustKey(bridgeTokenProgram) || hex.EncodeToString(stage.data) != "0c40420f000000000006" {
 		t.Fatalf("staging template drifted")
 	}
-	withdraw, err := bridgeInstruction(bridgeTestRequest(VoltrRestoreIdle, 1_000_000))
+	withdraw, err := bridgeInstruction(rwa, bridgeTestRequest(VoltrRestoreIdle, 1_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 		binary.LittleEndian.Uint32(forwardedWithdraw[17:21]) != 57 || forwardedWithdraw[21] != 1 {
 		t.Fatalf("withdraw adaptor CPI wire drifted: %s", hex.EncodeToString(forwardedWithdraw))
 	}
-	nav, err := bridgeInstruction(bridgeTestRequest(ReportNAV, 0))
+	nav, err := bridgeInstruction(rwa, bridgeTestRequest(ReportNAV, 0))
 	if err != nil || !bytes.Equal(nav.data[:8], voltr.DepositStrategyDiscriminator[:]) {
 		t.Fatalf("NAV refresh template drifted: %v", err)
 	}
@@ -142,11 +142,11 @@ func TestBridgeTransactionSignsExactWireAndPersistsOnlyAfterSimulation(t *testin
 	// The exact ProgramInteraction Borsh envelope carries the NAV policy's
 	// arm and capital legs.
 	request := bridgeTestRequest(ReportNAV, 0)
-	inner, constraints, err := ticketedBridgeInstructions(request)
+	inner, constraints, err := ticketedBridgeInstructions(rwa, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer, err := wrapSquadsPolicyForDelegate(mustKey(request.Policy), delegate, delegate, constraints, inner)
+	outer, err := wrapSquadsPolicyForDelegate(rwa, mustKey(request.Policy), delegate, delegate, constraints, inner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,12 +190,12 @@ func TestBridgeTransactionSignsExactWireAndPersistsOnlyAfterSimulation(t *testin
 func TestBridgeBuilderRejectsCapitalAndReportMutations(t *testing.T) {
 	t.Parallel()
 	bad := bridgeTestRequest(ReportNAV, 1)
-	if _, err := bridgeInstruction(bad); err == nil {
+	if _, err := bridgeInstruction(rwa, bad); err == nil {
 		t.Fatal("NAV refresh capital movement accepted")
 	}
 	bad = bridgeTestRequest(VoltrAllocateToSquads, 1)
 	bad.Report.Sequence = 0
-	if _, err := bridgeInstruction(bad); err == nil {
+	if _, err := bridgeInstruction(rwa, bad); err == nil {
 		t.Fatal("zero report sequence accepted")
 	}
 	bad = bridgeTestRequest(VoltrAllocateToSquads, 1)
@@ -205,15 +205,15 @@ func TestBridgeBuilderRejectsCapitalAndReportMutations(t *testing.T) {
 	}
 	bad = bridgeTestRequest(VoltrRestoreIdle, 1)
 	bad.Report.SnapshotDigest = "00" + bad.Report.SnapshotDigest[2:]
-	if _, err := bridgeInstruction(bad); err != nil {
+	if _, err := bridgeInstruction(rwa, bad); err != nil {
 		t.Fatal("nonzero digest was rejected")
 	}
 	bad.Report.SnapshotDigest = strings.Repeat("00", 32)
-	if _, err := bridgeInstruction(bad); err == nil {
+	if _, err := bridgeInstruction(rwa, bad); err == nil {
 		t.Fatal("zero digest accepted")
 	}
 	bad = bridgeTestRequest(StageSquadsToVoltr, bridgeCapRaw+1)
-	if _, err := bridgeInstruction(bad); err == nil {
+	if _, err := bridgeInstruction(rwa, bad); err == nil {
 		t.Fatal("over-cap staging accepted")
 	}
 }

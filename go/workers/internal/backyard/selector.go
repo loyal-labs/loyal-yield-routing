@@ -477,8 +477,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		//
 		// The gross display forecast compares RAW debt units with a USDC
 		// allocation — exact only for USDC-debt lanes, so it stays USDC-only.
-		route, routeErr := runtimeRoute(lane)
-		unpricedDebt := routeErr != nil || route.Kamino.DebtMint != bridgeUSDC
+		l, known := findEarnLane(lane)
+		unpricedDebt := !known || l.route.Kamino.DebtMint != bridgeUSDC
 		amount, known := m.EntryCapacity.amount(allocation)
 		displayAmount := amount
 		if !known {

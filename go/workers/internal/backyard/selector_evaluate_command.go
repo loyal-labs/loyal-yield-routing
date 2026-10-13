@@ -52,15 +52,15 @@ type selectorEvaluateDeps struct {
 // The canary request stays the operator authorization either way: expiring,
 // single-use, bounded, and validated through the same manifest both here and
 // inside the evaluation.
-func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfig, execute bool) error {
-	productionJupiter = config.Jupiter
+func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfig, vault string, execute bool) error {
 	if config.RPCURL == "" || config.DatabaseURL == "" {
 		return fmt.Errorf("BACKYARD_SOLANA_RPC_URL and BACKYARD_DATABASE_URL are required for selector evaluation")
 	}
-	manifest, err := loadEmbeddedRouteManifest()
+	v, err := findVault(vault)
 	if err != nil {
 		return err
 	}
+	manifest, state := v.manifest, &vaultState{}
 	rpc, err := chain.New(config.RPCURL, 15*time.Second)
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_rpc_unavailable")
@@ -77,10 +77,10 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 			return NewEconomicFeed(view)
 		},
 		observe: func(ctx context.Context, db *Database, manifest RouteManifest) (Observation, error) {
-			return observeSelectorShadow(ctx, db, rpc, view, manifest, newProgramIdentityWatcher(viewProgramIdentity(view)).observe)
+			return observeSelectorShadow(ctx, db, rpc, view, manifest, state, newProgramIdentityWatcher(viewProgramIdentity(view)).observe)
 		},
 		evaluate: func(ctx context.Context, db *Database, markets []LaneEconomics) (SelectorResult, error) {
-			return db.evaluateSelector(ctx, rpc, view, manifest, markets, newProgramIdentityWatcher(viewProgramIdentity(view)).observe, DefaultSelectorPolicy())
+			return db.evaluateSelector(ctx, rpc, view, config.Jupiter, manifest, state, markets, newProgramIdentityWatcher(viewProgramIdentity(view)).observe, DefaultSelectorPolicy())
 		},
 	})
 }

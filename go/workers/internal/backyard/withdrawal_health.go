@@ -29,15 +29,15 @@ type WithdrawalHealth struct {
 	BlockedSince      *time.Time `json:"blockedSince"`
 }
 
-func assessWithdrawalHealth(o Observation, decision Decision, tickErr error) (WithdrawalHealth, bool) {
+func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr error) (WithdrawalHealth, bool) {
 	s := o.Snapshot
 	// Health-hold snapshots carry no decoded custody/demand; zero is not evidence.
 	if o.Validate() != nil || !s.Fresh || s.ManualReason != "" || s.StrategyReceiptIntegrityFault ||
 		s.WithdrawalDemandRaw < 0 || s.VoltrIdleRaw < 0 {
 		return WithdrawalHealth{}, false
 	}
-	h := WithdrawalHealth{Version: 1, Cluster: "mainnet-beta", Vault: bridgeVoltrVault,
-		Program: voltr.ProgramID.String(), RouteKey: productionRouteKey,
+	h := WithdrawalHealth{Version: 1, Cluster: "mainnet-beta", Vault: v.VoltrVault,
+		Program: voltr.ProgramID.String(), RouteKey: v.RouteKey,
 		ObservedAt: o.ObservedAt.UTC(), ObservedSlot: s.Slot}
 	switch {
 	case s.WithdrawalDemandRaw == 0:
@@ -81,8 +81,9 @@ func mergeWithdrawalHealth(previous *WithdrawalHealth, next WithdrawalHealth) Wi
 // RecordWithdrawalHealth stores this display projection under the route row
 // lock. It changes no money.
 func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHealth) error {
-	if next.RouteKey != productionRouteKey || next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != bridgeVoltrVault || next.Program != voltr.ProgramID.String() {
-		return fmt.Errorf("withdrawal health is not the production route's")
+	v, err := vaultOfRoute(next.RouteKey)
+	if err != nil || next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != v.VoltrVault || next.Program != voltr.ProgramID.String() {
+		return fmt.Errorf("withdrawal health is not a Backyard vault route's")
 	}
 	if err := d.inTx(ctx, func(tx pgx.Tx) error {
 		var raw []byte
@@ -105,7 +106,7 @@ func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHe
 	}); err != nil {
 		return err
 	}
-	backyardEvents.withdrawalHealthStored(next)
+	d.events[next.RouteKey].withdrawalHealthStored(next)
 	return nil
 }
 
@@ -128,7 +129,7 @@ func (w *Worker) publishWithdrawalHealth(ctx context.Context, o Observation, dec
 			return
 		}
 	}
-	if h, ok := assessWithdrawalHealth(o, decision, tickErr); ok {
+	if h, ok := assessWithdrawalHealth(w.manifest.vault, o, decision, tickErr); ok {
 		_ = w.runtime.withdrawalHealth(ctx, h)
 	}
 }

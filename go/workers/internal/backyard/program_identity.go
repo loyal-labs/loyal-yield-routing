@@ -39,7 +39,7 @@ type pinnedProgramIdentity struct {
 var pinnedProgramIdentities = []pinnedProgramIdentity{
 	{program: voltr.ProgramID.String(), programData: voltrProgramDataAddress,
 		deploySlot: voltrProgramDeploySlot, dataSHA256: voltrProgramDataSHA256},
-	{program: bridgeAdaptorProgram, programData: adaptorProgramDataAddress,
+	{program: fsj27Program, programData: adaptorProgramDataAddress,
 		deploySlot: adaptorProgramDeploySlot, dataSHA256: adaptorProgramDataSHA256},
 }
 
@@ -50,7 +50,7 @@ type programIdentityReader func(ctx context.Context) ([]ConfirmedAccount, error)
 // viewProgramIdentity reads the pinned identity accounts from the view.
 func viewProgramIdentity(view *View) programIdentityReader {
 	return func(ctx context.Context) ([]ConfirmedAccount, error) {
-		addresses := []string{voltr.ProgramID.String(), bridgeAdaptorProgram, voltrProgramDataAddress, adaptorProgramDataAddress}
+		addresses := []string{voltr.ProgramID.String(), fsj27Program, voltrProgramDataAddress, adaptorProgramDataAddress}
 		_, accounts, err := view.read(ctx, addresses, 0, addresses...)
 		return accounts, err
 	}
@@ -107,7 +107,7 @@ func (w *programIdentityWatcher) observe(ctx context.Context) (programIdentityOb
 		switch pin.program {
 		case voltr.ProgramID.String():
 			observation.VoltrProgramDeploySlot = slot
-		case bridgeAdaptorProgram:
+		case fsj27Program:
 			observation.AdaptorProgramDeploySlot = slot
 		}
 		if w.lastVerified[pin.program] != slot {

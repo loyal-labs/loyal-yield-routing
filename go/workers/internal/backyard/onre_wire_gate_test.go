@@ -41,7 +41,7 @@ func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
 			t.Fatalf("%s: packet: %v", c.name, err)
 		}
 		request.ObligationReserves = c.reserves
-		message, err := compileKaminoMessageForDelegate(request, delegate)
+		message, err := compileKaminoMessageForDelegate(rwa, request, delegate)
 		if err != nil {
 			t.Errorf("%s: compile: %v", c.name, err)
 			continue
@@ -67,7 +67,7 @@ func TestOnReInitializerWirePassesTheDecodeGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	message, err := CompileKaminoInitializationMessage(request)
+	message, err := rwa.manifest.compileKaminoInitializationMessage(request)
 	if err != nil {
 		t.Fatal(err)
 	}

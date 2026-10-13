@@ -97,7 +97,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 	}
 	// The counter carries the cause.
 	registry := prometheus.NewRegistry()
-	e := newEvents(slog.New(slog.NewJSONHandler(io.Discard, nil)), engine.NewFacts(registry))
+	e := newEvents(slog.New(slog.NewJSONHandler(io.Discard, nil)), engine.NewFacts(registry), "rwa")
 	e.leverageDecisionOutage("leverage_cost_unavailable(deadline)")
 	families, _ := registry.Gather()
 	counted := false

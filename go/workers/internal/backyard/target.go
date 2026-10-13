@@ -129,12 +129,14 @@ func laneInFlight(s Snapshot) bool {
 }
 
 // debtCashOwed reports a held lane that steps and owes the mint of s's debt
-// custody: its next step takes that cash whole.
+// custody (the vault's one account of that mint): its next step takes that
+// cash whole.
 func debtCashOwed(lanes []targetLane, s Snapshot) bool {
-	route, err := runtimeRoute(s.RouteLane)
+	lane, ok := findEarnLane(s.RouteLane)
 	for _, l := range lanes {
-		other, otherErr := runtimeRoute(l.s.RouteLane)
-		if err == nil && otherErr == nil && l.held && earnActiveLane(other.Lane) && l.s.PositionDebtRaw > 0 && other.DebtCustody == route.DebtCustody {
+		other, otherOK := findEarnLane(l.s.RouteLane)
+		if ok && otherOK && l.held && !other.exitOnly && l.s.PositionDebtRaw > 0 &&
+			other.route.Kamino.DebtMint == lane.route.Kamino.DebtMint && other.route.DebtTokenProgram == lane.route.DebtTokenProgram {
 			return true
 		}
 	}

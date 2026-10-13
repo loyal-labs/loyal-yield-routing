@@ -80,9 +80,9 @@ A hold is not a journal row: it is `loyal_backyard_hold{lane,reason}` on
 ## Operator exit
 
 ```sh
-loyal-engine backyard exit-lane --lane AUTO/AUTO/wYLDS --by "<operator>"                 # debt 0
-loyal-engine backyard exit-lane --lane AUTO/AUTO/wYLDS --by "<operator>" --equity-zero   # debt 0, equity 0
-loyal-engine backyard exit-lane --lane AUTO/AUTO/wYLDS --clear                          # remove the exit
+loyal-engine backyard exit-lane --vault rwa --lane AUTO/AUTO/wYLDS --by "<operator>"                 # debt 0
+loyal-engine backyard exit-lane --vault rwa --lane AUTO/AUTO/wYLDS --by "<operator>" --equity-zero   # debt 0, equity 0
+loyal-engine backyard exit-lane --vault rwa --lane AUTO/AUTO/wYLDS --clear                          # remove the exit
 ```
 
 The row is the whole authority: the worker delevers the lane by atomic down

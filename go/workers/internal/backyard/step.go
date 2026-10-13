@@ -88,8 +88,8 @@ func stepUp(open KaminoPrimeUSDCRequest, route RuntimeRoute) (bool, error) {
 // buildStepMessage compiles step into one v1 message paid by delegate. It
 // refuses more than maxTransactionKeys keys (step_over_key_limit); WireBytes
 // is the signed size, which checkedUnsignedMessage bounds.
-func buildStepMessage(step StepRequest, delegate publicKey) (stepMessage, error) {
-	route, err := runtimeRoute(step.Open.RouteLane)
+func buildStepMessage(v *Vault, step StepRequest, delegate publicKey) (stepMessage, error) {
+	route, err := v.route(step.Open.RouteLane)
 	if err != nil {
 		return stepMessage{}, err
 	}
@@ -117,7 +117,7 @@ func buildStepMessage(step StepRequest, delegate publicKey) (stepMessage, error)
 		if up {
 			return stepMessage{}, fmt.Errorf("a move opens with a withdrawal")
 		}
-		if closeRoute, err = runtimeRoute(closeRequest.RouteLane); err != nil {
+		if closeRoute, err = v.route(closeRequest.RouteLane); err != nil {
 			return stepMessage{}, err
 		}
 		closeLeg = kaminoLegDeposit
@@ -134,20 +134,20 @@ func buildStepMessage(step StepRequest, delegate publicKey) (stepMessage, error)
 	if err != nil {
 		return stepMessage{}, err
 	}
-	open, _, err := kaminoPolicyInstructions(step.Open, delegate, route)
+	open, _, err := kaminoPolicyInstructions(v, step.Open, delegate, route)
 	if err != nil {
 		return stepMessage{}, err
 	}
 	instructions := append([]compiledInstruction{}, open...)
 	if !step.move() {
-		convert, err := stepConversionExecute(step, route.Lane, conversion, delegate)
+		convert, err := stepConversionExecute(v, step, route.Lane, conversion, delegate)
 		if err != nil {
 			return stepMessage{}, err
 		}
 		instructions = append(instructions, convert)
 	}
 	if !step.exit() {
-		closing, leg, err := kaminoPolicyInstructions(closeRequest, delegate, closeRoute)
+		closing, leg, err := kaminoPolicyInstructions(v, closeRequest, delegate, closeRoute)
 		if err != nil {
 			return stepMessage{}, err
 		}
@@ -170,17 +170,17 @@ func buildStepMessage(step StepRequest, delegate publicKey) (stepMessage, error)
 // stepSwapMaxAccounts is the route size a step's swap is quoted at: the key
 // budget the step's legs leave (jupiterMaxAccounts), with the swap counted
 // by its fixed accounts.
-func stepSwapMaxAccounts(step StepRequest, action Action) (int, error) {
-	route, err := runtimeRoute(step.Open.RouteLane)
+func stepSwapMaxAccounts(v *Vault, step StepRequest, action Action) (int, error) {
+	route, err := v.route(step.Open.RouteLane)
 	if err != nil {
 		return 0, err
 	}
 	delegate := mustKey(bridgeDelegate)
-	open, _, err := kaminoPolicyInstructions(step.Open, delegate, route)
+	open, _, err := kaminoPolicyInstructions(v, step.Open, delegate, route)
 	if err != nil {
 		return 0, err
 	}
-	skeleton, err := jupiterSkeletonExecute(route.Lane, action)
+	skeleton, err := jupiterSkeletonExecute(v, route.Lane, action)
 	if err != nil {
 		return 0, err
 	}
@@ -188,7 +188,7 @@ func stepSwapMaxAccounts(step StepRequest, action Action) (int, error) {
 	if !step.exit() {
 		closeRequest := *step.Close
 		closeRequest.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-		closing, _, err := kaminoPolicyInstructions(closeRequest, delegate, route)
+		closing, _, err := kaminoPolicyInstructions(v, closeRequest, delegate, route)
 		if err != nil {
 			return 0, err
 		}
@@ -199,7 +199,7 @@ func stepSwapMaxAccounts(step StepRequest, action Action) (int, error) {
 
 // compileStepMessageForDelegate is the step's signed message: every leg on
 // the step's one blockhash, within the packet.
-func compileStepMessageForDelegate(r StepRequest, delegate publicKey) ([]byte, error) {
+func compileStepMessageForDelegate(v *Vault, r StepRequest, delegate publicKey) ([]byte, error) {
 	blockhash, height := r.Open.RecentBlockhash, r.Open.LastValidBlockHeight
 	cb, ch := blockhash, height
 	if !r.move() {
@@ -212,7 +212,7 @@ func compileStepMessageForDelegate(r StepRequest, delegate publicKey) ([]byte, e
 	if height <= 0 || (!r.exit() && (r.Close.RecentBlockhash != blockhash || r.Close.LastValidBlockHeight != height)) || cb != blockhash || ch != height {
 		return nil, fmt.Errorf("step legs do not share one blockhash")
 	}
-	step, err := buildStepMessage(r, delegate)
+	step, err := buildStepMessage(v, r, delegate)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +231,7 @@ func stepConversionBlockhash(conversion any) (string, int64) {
 
 // stepConversionExecute is the conversion's Squads execute, through its own
 // venue's producer, on lane in the step's direction.
-func stepConversionExecute(step StepRequest, lane string, action Action, delegate publicKey) (compiledInstruction, error) {
+func stepConversionExecute(v *Vault, step StepRequest, lane string, action Action, delegate publicKey) (compiledInstruction, error) {
 	conversion, err := step.conversion()
 	if err != nil {
 		return compiledInstruction{}, err
@@ -241,12 +241,12 @@ func stepConversionExecute(step StepRequest, lane string, action Action, delegat
 		if r.RouteLane != lane || r.Action != action {
 			return compiledInstruction{}, fmt.Errorf("step swap is not %s on %s", action, lane)
 		}
-		return jupiterPolicyExecute(r, delegate)
+		return jupiterPolicyExecute(v, r, delegate)
 	case HastraConversionRequest:
 		if r.RouteLane != lane || r.Action != action {
 			return compiledInstruction{}, fmt.Errorf("step conversion is not %s on %s", action, lane)
 		}
-		return hastraPolicyExecute(r, delegate)
+		return hastraPolicyExecute(v, r, delegate)
 	}
 	return compiledInstruction{}, fmt.Errorf("step conversion %T is neither a Jupiter swap nor a Hastra conversion", conversion)
 }

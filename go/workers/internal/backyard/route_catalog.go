@@ -1,8 +1,6 @@
 package backyard
 
 import (
-	"fmt"
-
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -23,7 +21,9 @@ const (
 )
 
 // earnLane is one Earn Max loop Backyard holds installed on-chain policies
-// for: its chain facts (route) and how it may be used.
+// for: its chain facts (route) and how it may be used. The route is a
+// template: market, reserves, mints and programs, with no account of a vault;
+// routeFor fills in the accounts one Squads vault owns.
 type earnLane struct {
 	route  RuntimeRoute
 	policy lanePolicy
@@ -48,7 +48,8 @@ type earnLane struct {
 	overflowOf string
 }
 
-// earnLanes is the one list of Backyard's lanes and their chain facts. Every
+// earnLanes is the one list of Backyard's lanes and their chain facts, which
+// every vault shares (owner decision 2026-10-13). Every
 // lane predicate (scored, entered, funded, levered, observed, exited), the
 // account view, the policy literals and the observer's pinned reserves read
 // it. Registry order matters: a custody two lanes share belongs to the first
@@ -57,21 +58,21 @@ type earnLane struct {
 // economics decide, not a hand list (owner decision 2026-10-10: every
 // policy-covered loop is checked).
 var earnLanes = []earnLane{
-	{route: mapleSyrupUSDCUSDC, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest", initializer: true},
-	{route: onreONycUSDCRoute, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true},
-	{route: autoAUTOPYUSD, policy: policyAuto, initializer: true},
-	{route: primePRIMEUSDC, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true},
-	{route: primePRIMEPYUSD, policy: policySplit},
-	{route: primePRIMEUSDS, policy: policySplit},
+	{route: mapleSyrupUSDCUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest", initializer: true},
+	{route: onreONycUSDCRouteTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true},
+	{route: autoAUTOPYUSDTemplate, policy: policyAuto, initializer: true},
+	{route: primePRIMEUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true},
+	{route: primePRIMEPYUSDTemplate, policy: policySplit},
+	{route: primePRIMEUSDSTemplate, policy: policySplit},
 	// Ethena is exit-only. Kamino's yield feed reports ~4.75% underlyingApy for
 	// USDe, but USDe's price does not grow, so a holder never earns it; and
 	// both its debt reserves sit at borrowLimit 0. Its installed policies stay
 	// installed so a held position stays observable and exitable.
-	{route: ethenaUSDePYUSD, policy: policySplit, exitOnly: true},
+	{route: ethenaUSDePYUSDTemplate, policy: policySplit, exitOnly: true},
 	// AUTO's overflow lane (owner decision 2026-10-11): when AUTO/AUTO/PYUSD
 	// has no PYUSD borrow room, AUTO moves into this second obligation and
 	// levers with wYLDS, converted through Hastra.
-	{route: autoAUTOWYLDS, policy: policyAuto, initializer: true, overflowOf: autoAUTOPYUSD.Lane},
+	{route: autoAUTOWYLDSTemplate, policy: policyAuto, initializer: true, overflowOf: autoAUTOPYUSDTemplate.Lane},
 }
 
 func findEarnLane(lane string) (earnLane, bool) {
@@ -83,13 +84,32 @@ func findEarnLane(lane string) (earnLane, bool) {
 	return earnLane{}, false
 }
 
-// runtimeRoute is lane's chain facts from the registry.
-func runtimeRoute(lane string) (RuntimeRoute, error) {
-	l, ok := findEarnLane(lane)
-	if !ok {
-		return RuntimeRoute{}, fmt.Errorf("runtime lane %q is not installed", lane)
+// routeFor is the lane's chain facts with the accounts owner, a Squads
+// vault, holds on it: its custody of each mint (an associated token account)
+// and its one Multiply obligation (tag 1, id 0, seeded by the two mints) with
+// that obligation's farm states.
+func (l earnLane) routeFor(owner solana.PublicKey) RuntimeRoute {
+	r := l.route
+	k := &r.Kamino
+	k.Vault = owner.String()
+	k.Obligation = mustDerive(kamino.ObligationAddress(1, 0, owner, kaminoKey(k.Market), kaminoKey(k.CollateralMint), kaminoKey(k.DebtMint)))
+	r.CollateralCustody = mustDerive(spl.AssociatedTokenAddress(owner, kaminoKey(k.CollateralMint), kaminoKey(r.CollateralTokenProgram)))
+	r.DebtCustody = mustDerive(spl.AssociatedTokenAddress(owner, kaminoKey(k.DebtMint), kaminoKey(r.DebtTokenProgram)))
+	if r.CollateralFarm != "" {
+		r.ObligationCollateralFarm = mustDerive(kamino.ObligationFarmUserState(kaminoKey(r.CollateralFarm), kaminoKey(k.Obligation)))
 	}
-	return l.route, nil
+	if r.DebtFarm != "" {
+		r.ObligationDebtFarm = mustDerive(kamino.ObligationFarmUserState(kaminoKey(r.DebtFarm), kaminoKey(k.Obligation)))
+	}
+	return r
+}
+
+// mustDerive is a derived address of a checked-in identity.
+func mustDerive(key solana.PublicKey, err error) string {
+	if err != nil {
+		panic("derive Backyard address: " + err.Error())
+	}
+	return key.String()
 }
 
 // earnActiveLane reports a lane the selector scores and may enter, fund and
@@ -125,13 +145,12 @@ func earnLaneIDs(held bool) []string {
 	return out
 }
 
-// lanesWithPolicy are the registry routes authorized by policy, in registry
-// order.
-func lanesWithPolicy(policy lanePolicy) []RuntimeRoute {
+// lanesWithPolicy are v's routes authorized by policy, in registry order.
+func lanesWithPolicy(v *Vault, policy lanePolicy) []RuntimeRoute {
 	var out []RuntimeRoute
-	for _, l := range earnLanes {
+	for i, l := range earnLanes {
 		if l.policy == policy {
-			out = append(out, l.route)
+			out = append(out, v.routes[i])
 		}
 	}
 	return out
@@ -184,68 +203,58 @@ func ObservationReserves() []ObservationReserve {
 
 // usdcReference is the KLend USDC reserve Backyard prices USDC by: the
 // Prime/PRIME/USDC lane's debt reserve.
-var usdcReference = primePRIMEUSDC.Kamino
+var usdcReference = primePRIMEUSDCTemplate.Kamino
 
-var mapleSyrupUSDCUSDC = RuntimeRoute{
+var mapleSyrupUSDCUSDCTemplate = RuntimeRoute{
 	Lane: SelectedRouteID, Protocol: "Maple", CollateralSymbol: "syrupUSDC", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Vault: bridgeVault,
+		Program:           kamino.ProgramID.String(),
 		Market:            "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
 		MarketAuthority:   "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
-		Obligation:        "Gtwj2FNuiPoV2mGLC5SpHZ9PCmDrHHKaHXtacRaqm8vT",
 		CollateralReserve: "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
 		CollateralMint:    "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
 		DebtReserve:       "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
 		DebtMint:          bridgeUSDC,
 	},
-	CollateralCustody:         "CYwM28WSoYp85HrQGuaVpWy2JhKH6JJah4m65DSWUNiN",
-	DebtCustody:               bridgeSquadsATA,
 	CollateralLiquiditySupply: "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
 	CollateralReceiptMint:     "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
 	CollateralReceiptSupply:   "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58",
 	DebtLiquiditySupply:       "BBcwMNSMyhhBnYE9pevEvkxKHGzTafMP9v3j7Kk7nAWM",
 	DebtFeeReceiver:           "HH7GLnRcGHJrdkEueVVj7mccNUjnSeWobDmtu9cHLkJV",
 	CollateralTokenProgram:    classicTokenProgram, DebtTokenProgram: classicTokenProgram,
-	DebtFarm:           "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",
-	ObligationDebtFarm: "CcUorNoacydFVu7SHmhsA1qi9CcEu8K5YFvuS8unAzgr",
+	DebtFarm: "87gUNr8LwYJCT25HjPEHnrfBBjwEMAjfqCfnKcJNqy9Y",
 }
 
-var onreONycUSDCRoute = RuntimeRoute{
+var onreONycUSDCRouteTemplate = RuntimeRoute{
 	Lane: onreONycUSDC, Protocol: "OnRe", CollateralSymbol: "ONyc", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Vault: bridgeVault,
+		Program:           kamino.ProgramID.String(),
 		Market:            "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
 		MarketAuthority:   "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
-		Obligation:        "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
 		CollateralReserve: "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
 		CollateralMint:    "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
 		DebtReserve:       "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
 		DebtMint:          bridgeUSDC,
 	},
-	CollateralCustody:         "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3",
-	DebtCustody:               bridgeSquadsATA,
 	CollateralLiquiditySupply: "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG",
 	CollateralReceiptMint:     "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd",
 	CollateralReceiptSupply:   "2c42iUaea3QVLvSPQHUBZBwqdvpiQo5vmeMePq9qx8eo",
 	DebtLiquiditySupply:       "8BkQTZsT8ssKMU643De4iiV5Wf3pENdUFTsdtHPueKjB",
 	DebtFeeReceiver:           "5iLRav31Y7DJwM6bZ7s92jqvV3zd1wZMcp4mYeKXh8cj",
 	CollateralTokenProgram:    classicTokenProgram, DebtTokenProgram: classicTokenProgram,
-	DebtFarm:           "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF",
-	ObligationDebtFarm: "nMqFZFPQsNwot49QAD1B76LxNV7qRG1tnbkXyTjbUAD",
+	DebtFarm: "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF",
 }
 
 // The Prime market's PRIME collateral reserve and custody are shared by its
 // three debt lanes.
-var primePRIMEUSDC = RuntimeRoute{
+var primePRIMEUSDCTemplate = RuntimeRoute{
 	Lane: PhaseOneLaneID, Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Vault: bridgeVault,
-		Market: "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
-		Obligation:        "9suFBUhW7D7jN141mKR49Hn1WYDHEsRnPiGhxxm7RFkv",
+		Program: kamino.ProgramID.String(),
+		Market:  "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
 		CollateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", CollateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
 		DebtReserve: "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu", DebtMint: bridgeUSDC,
 	},
-	CollateralCustody: "DnBnX19kFyCP3Kdhkq7uEJ6juCYEaiS6jZMSXbfCXzct", DebtCustody: bridgeSquadsATA,
 	CollateralLiquiditySupply: "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352", CollateralReceiptMint: "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
 	CollateralReceiptSupply: "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN", DebtLiquiditySupply: "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",
 	DebtFeeReceiver: "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6", CollateralTokenProgram: classicTokenProgram, DebtTokenProgram: classicTokenProgram,
@@ -253,47 +262,38 @@ var primePRIMEUSDC = RuntimeRoute{
 
 // Finalized account review at slot 444525169 matches all four installed
 // policy vectors for each Prime sibling, with no farm substitution.
-var primePRIMEPYUSD = func() RuntimeRoute {
-	r := primePRIMEUSDC
+var primePRIMEPYUSDTemplate = func() RuntimeRoute {
+	r := primePRIMEUSDCTemplate
 	r.Lane, r.DebtSymbol = "Prime/PRIME/PYUSD", "PYUSD"
-	r.Kamino.Obligation = "GAnakFSJAhNMrH3B8PRLxHcEtWVL21xyALRiWx3baS5t"
 	r.Kamino.DebtReserve, r.Kamino.DebtMint = "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5", pyusdMint
-	r.DebtCustody, r.DebtTokenProgram = pyusdCustody, token2022Program
+	r.DebtTokenProgram = token2022Program
 	r.DebtLiquiditySupply, r.DebtFeeReceiver = "4LF3i8grZPRbk8d6gXvzRux4rYjGd5AmqrpLLYFpPKKt", "4b9U55muKtwx9RimJSuztvyZaKWkmaoferVexgvxrYJr"
 	return r
 }()
 
-var primePRIMEUSDS = func() RuntimeRoute {
-	r := primePRIMEUSDC
+var primePRIMEUSDSTemplate = func() RuntimeRoute {
+	r := primePRIMEUSDCTemplate
 	r.Lane, r.DebtSymbol = "Prime/PRIME/USDS", "USDS"
-	r.Kamino.Obligation = "6aqRhAxxjxdoAzgsEMrCCKCEEYMoLDLRKTu5t8nRuyYu"
 	r.Kamino.DebtReserve, r.Kamino.DebtMint = "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
-	r.DebtCustody = "5LR9AdS7XwJjQXWkKNBXNibGNkFXqe7T2JXU2oBBwknV"
 	r.DebtLiquiditySupply, r.DebtFeeReceiver = "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5", "DjmdtvsvctUXCZ32y6UGdCEvXPTds6Ci7LFnVhw5HaQY"
 	return r
 }()
 
-// pyusdMint and pyusdCustody are PYUSD and the vault's one PYUSD account,
-// shared by every PYUSD-debt lane.
-const (
-	pyusdMint    = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
-	pyusdCustody = "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
-)
+// pyusdMint is PYUSD, which every PYUSD-debt lane borrows into the vault's
+// one PYUSD account.
+const pyusdMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 
-var autoAUTOPYUSD = RuntimeRoute{
+var autoAUTOPYUSDTemplate = RuntimeRoute{
 	Lane: "AUTO/AUTO/PYUSD", Protocol: "AUTO", CollateralSymbol: "AUTO", DebtSymbol: "PYUSD",
 	Kamino: KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Vault: bridgeVault,
+		Program:           kamino.ProgramID.String(),
 		Market:            "Btu8835QDYgdTnMJJBSidbfQhrZzryZbMhCpty6h6Xdk",
 		MarketAuthority:   "2eyLWowHqsWNuRavNc5g6e8NZiypgJTHEvW2hMum3BNS",
-		Obligation:        "DJhTPmvAh5xf4X3Cwfchn43psfCgXozRoNXUMJAiDS41",
 		CollateralReserve: "G85AgoBdW8zSQBq5i4E8aBLCDdRYGgK44CzU1d1NdBzX",
 		CollateralMint:    "GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm",
 		DebtReserve:       "6A8D3ExQ4CdiZTBmij7MScUeKsgs6mSHksYzJbiY61FM",
 		DebtMint:          pyusdMint,
 	},
-	CollateralCustody:         "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
-	DebtCustody:               pyusdCustody,
 	CollateralLiquiditySupply: "7W7sahTJjE7D4UPqmp8i4fd6AUm1hFjnUqNSjY78sN5F",
 	CollateralReceiptMint:     "Cjh2wuFnuSiFH6j6Q8f8YvkrHgt3LYhAZhz6JbtN7xfQ",
 	CollateralReceiptSupply:   "8no8zpNDwCXLjhPr5Gb9UWHfEMUxmNFUHAjbR1WDDdvc",
@@ -302,28 +302,20 @@ var autoAUTOPYUSD = RuntimeRoute{
 	CollateralTokenProgram:    classicTokenProgram, DebtTokenProgram: token2022Program,
 }
 
-// autoAUTOWYLDS shares AUTO/AUTO/PYUSD's market, collateral reserve and
+// autoAUTOWYLDSTemplate shares AUTO/AUTO/PYUSD's market, collateral reserve and
 // collateral custody (the vault holds one AUTO account for both lanes) and
 // borrows wYLDS from reserve 34GJ…, a classic SPL Token mint with no farms.
 // Its obligation (tag 1, seeds AUTO and wYLDS), its debt custody (the vault's
 // wYLDS associated token account) and the reserve's liquidity supply and fee
 // vault are PDAs, derived here rather than written down.
-var autoAUTOWYLDS = func() RuntimeRoute {
-	r := autoAUTOPYUSD
+var autoAUTOWYLDSTemplate = func() RuntimeRoute {
+	r := autoAUTOPYUSDTemplate
 	r.Lane, r.DebtSymbol = autoAUTOWYLDSLane, "wYLDS"
 	r.Kamino.DebtReserve, r.Kamino.DebtMint = "34GJjXf7jGTdNL8Yw1HtqWSVvfX6JTsft3UsuFFUL7VU", hastra.WYLDSMint.String()
 	r.DebtTokenProgram = classicTokenProgram
-	vault, market, reserve := kaminoKey(bridgeVault), kaminoKey(r.Kamino.Market), kaminoKey(r.Kamino.DebtReserve)
-	derive := func(key solana.PublicKey, err error) string {
-		if err != nil {
-			panic(err)
-		}
-		return key.String()
-	}
-	r.Kamino.Obligation = derive(kamino.ObligationAddress(1, 0, vault, market, kaminoKey(r.Kamino.CollateralMint), hastra.WYLDSMint))
-	r.DebtCustody = derive(spl.AssociatedTokenAddress(vault, hastra.WYLDSMint, solana.TokenProgramID))
-	r.DebtLiquiditySupply = derive(kamino.ReserveLiquiditySupply(reserve))
-	r.DebtFeeReceiver = derive(kamino.ReserveFeeVault(reserve))
+	reserve := kaminoKey(r.Kamino.DebtReserve)
+	r.DebtLiquiditySupply = mustDerive(kamino.ReserveLiquiditySupply(reserve))
+	r.DebtFeeReceiver = mustDerive(kamino.ReserveFeeVault(reserve))
 	return r
 }()
 
@@ -334,20 +326,17 @@ const onreONycUSDC = "OnRe/ONyc/USDC"
 // wYLDS term debt in AUTO's market, through its own obligation.
 const autoAUTOWYLDSLane = "AUTO/AUTO/wYLDS"
 
-var ethenaUSDePYUSD = RuntimeRoute{
+var ethenaUSDePYUSDTemplate = RuntimeRoute{
 	Lane: "Ethena/USDe/PYUSD", Protocol: "Ethena", CollateralSymbol: "USDe", DebtSymbol: "PYUSD",
 	Kamino: KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Vault: bridgeVault,
+		Program:           kamino.ProgramID.String(),
 		Market:            "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF",
 		MarketAuthority:   "GuWEkEJb5bh8Ai2gaYmZWMTUq8MrFeoaDZ89BrQfB1FZ",
-		Obligation:        "5CDZVkkC9wH3FTo4xy679qorb4xMt5cHf2nhsRcTUsQr",
 		CollateralReserve: "2erD9GTGcaQbLsVSQweg3HvMpfKxScmz95raWv8H4iPN",
 		CollateralMint:    "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
 		DebtReserve:       "EDf6dGbVnCCABbNhE3mp5i1jV2JhDAVmTWb1ztij1Yhs",
 		DebtMint:          pyusdMint,
 	},
-	CollateralCustody:         "6wSE9RKCReDiDiW4tSRiieFHSaVS2gTMFCVBB8mimtVk",
-	DebtCustody:               pyusdCustody,
 	CollateralLiquiditySupply: "BcqeM19i3njWEVPmQse2NAZGnTsTVdfuNYXWfmujoLff",
 	CollateralReceiptMint:     "8DQhJtZVPLLSqFkaQqZDoRFRPD68xeHQkEQ69Gz7VMaK",
 	CollateralReceiptSupply:   "2KHE9hunJFBhkjT355cBDfXZmptk1mx2W5NUgc27N68k",

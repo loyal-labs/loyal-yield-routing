@@ -122,29 +122,34 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate [--execute] | clear-hold --reason "<text>" | exit-lane --lane <lane> (--by <operator> [--equity-zero] | --clear) | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear) | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
 // runBackyardOperator is the one-shot operator surface of the Backyard
 // family. It reads the same BACKYARD_* credentials as the engine.
 func runBackyardOperator(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 1 && args[0] == "in-flight" {
 		// The release gate (deploy/hetzner/activate.sh): prints the
-		// number of operations a restart would resume. Needs only the DB.
+		// number of operations a restart would resume, over every vault.
+		// Needs only the DB.
 		url, err := engine.Credential("BACKYARD_DATABASE_URL")
 		if err != nil {
 			return err
 		}
-		count, err := backyard.CountNonterminal(ctx, url, backyard.FixedRouteKey)
-		if err != nil {
-			return err
+		total := 0
+		for _, routeKey := range backyard.RouteKeys() {
+			count, err := backyard.CountNonterminal(ctx, url, routeKey)
+			if err != nil {
+				return err
+			}
+			total += count
 		}
-		_, err = fmt.Fprintln(out, count)
+		_, err = fmt.Fprintln(out, total)
 		return err
 	}
 	if len(args) > 0 && args[0] == "simulate-step" {
 		// Read-only: builds one atomic leverage step from live chain state and
 		// simulates it unsigned. Needs only the RPC (and Jupiter for a swap).
-		lane, up, amount, err := parseSimulateStepFlags(args[1:])
+		vault, lane, up, amount, err := parseSimulateStepFlags(args[1:])
 		if err != nil {
 			return err
 		}
@@ -152,7 +157,7 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		if err != nil {
 			return err
 		}
-		return backyard.RunSimulateStep(ctx, out, url, backyardJupiter(optionalCredential("JUPITER_API_KEY")), lane, up, amount)
+		return backyard.RunSimulateStep(ctx, out, url, backyardJupiter(optionalCredential("JUPITER_API_KEY")), vault, lane, up, amount)
 	}
 	cfg, err := backyardRuntimeConfig()
 	if err != nil {
@@ -168,16 +173,20 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		return errors.New(backyardUsage)
 	}
 	switch command, rest := args[0], args[1:]; {
-	case command == "selector-evaluate" && (len(rest) == 0 || len(rest) == 1 && rest[0] == "--execute"):
+	case command == "selector-evaluate" && len(rest) >= 2 && rest[0] == "--vault" && (len(rest) == 2 || len(rest) == 3 && rest[2] == "--execute"):
 		// --execute performs exactly one locked evaluation under its own
 		// short route lease; the committed entry is durable route state.
-		return backyard.RunSelectorEvaluate(ctx, out, cfg, len(rest) == 1)
+		return backyard.RunSelectorEvaluate(ctx, out, cfg, rest[1], len(rest) == 3)
 	case command == "clear-hold":
 		// The only operator path that lifts a durable manual recovery stop.
-		if len(rest) != 2 || rest[0] != "--reason" || rest[1] == "" {
-			return errors.New(`usage: loyal-engine backyard clear-hold --reason "<text>"`)
+		if len(rest) != 4 || rest[0] != "--vault" || rest[2] != "--reason" || rest[3] == "" {
+			return errors.New(`usage: loyal-engine backyard clear-hold --vault <vault> --reason "<text>"`)
 		}
-		result, err := backyard.ClearManualRecoveryHold(ctx, cfg.DatabaseURL, backyard.FixedRouteKey, rest[1])
+		routeKey, err := backyard.RouteKey(rest[1])
+		if err != nil {
+			return err
+		}
+		result, err := backyard.ClearManualRecoveryHold(ctx, cfg.DatabaseURL, routeKey, rest[3])
 		if err != nil {
 			return err
 		}
@@ -212,35 +221,37 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 	return errors.New(backyardUsage)
 }
 
-const simulateStepUsage = `usage: loyal-engine backyard simulate-step --lane <lane> --dir up|down --amount-raw <n>`
+const simulateStepUsage = `usage: loyal-engine backyard simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n>`
 
-// parseSimulateStepFlags is syntactic only; the lane and amount are checked
-// where the step is built.
-func parseSimulateStepFlags(args []string) (lane string, up bool, amount uint64, err error) {
+// parseSimulateStepFlags is syntactic only; the vault, lane and amount are
+// checked where the step is built.
+func parseSimulateStepFlags(args []string) (vault, lane string, up bool, amount uint64, err error) {
 	dir := ""
 	for index := 0; index < len(args); index++ {
 		if index+1 >= len(args) {
-			return "", false, 0, fmt.Errorf("simulate-step: %s requires a value\n%s", args[index], simulateStepUsage)
+			return "", "", false, 0, fmt.Errorf("simulate-step: %s requires a value\n%s", args[index], simulateStepUsage)
 		}
 		value := args[index+1]
 		switch args[index] {
+		case "--vault":
+			vault = value
 		case "--lane":
 			lane = value
 		case "--dir":
 			dir = value
 		case "--amount-raw":
 			if amount, err = strconv.ParseUint(value, 10, 64); err != nil {
-				return "", false, 0, fmt.Errorf("simulate-step: --amount-raw requires an integer\n%s", simulateStepUsage)
+				return "", "", false, 0, fmt.Errorf("simulate-step: --amount-raw requires an integer\n%s", simulateStepUsage)
 			}
 		default:
-			return "", false, 0, fmt.Errorf("simulate-step: unexpected argument %q\n%s", args[index], simulateStepUsage)
+			return "", "", false, 0, fmt.Errorf("simulate-step: unexpected argument %q\n%s", args[index], simulateStepUsage)
 		}
 		index++
 	}
-	if lane == "" || (dir != "up" && dir != "down") || amount == 0 {
-		return "", false, 0, fmt.Errorf("simulate-step: --lane, --dir up|down and a positive --amount-raw are required\n%s", simulateStepUsage)
+	if vault == "" || lane == "" || (dir != "up" && dir != "down") || amount == 0 {
+		return "", "", false, 0, fmt.Errorf("simulate-step: --vault, --lane, --dir up|down and a positive --amount-raw are required\n%s", simulateStepUsage)
 	}
-	return lane, dir == "up", amount, nil
+	return vault, lane, dir == "up", amount, nil
 }
 
 // parseSettleManualRestoreFlags is syntactic only; every authority check
@@ -273,7 +284,7 @@ func parseSettleManualRestoreFlags(args []string) (backyard.ManualRestoreReproce
 	return request, execute, nil
 }
 
-const exitLaneUsage = `usage: loyal-engine backyard exit-lane --lane <lane> (--by <operator> [--equity-zero] | --clear)`
+const exitLaneUsage = `usage: loyal-engine backyard exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear)`
 
 // parseExitLaneFlags is syntactic only; the lane is checked where the row is
 // written.
@@ -287,22 +298,18 @@ func parseExitLaneFlags(args []string) (backyard.LaneExitRequest, error) {
 		case "--clear":
 			request.Clear = true
 			continue
-		case "--lane", "--by":
+		case "--vault", "--lane", "--by":
 			if index+1 >= len(args) {
 				return request, fmt.Errorf("exit-lane: %s requires a value\n%s", args[index], exitLaneUsage)
 			}
-			if args[index] == "--lane" {
-				request.Lane = args[index+1]
-			} else {
-				request.RequestedBy = args[index+1]
-			}
+			*map[string]*string{"--vault": &request.Vault, "--lane": &request.Lane, "--by": &request.RequestedBy}[args[index]] = args[index+1]
 			index++
 		default:
 			return request, fmt.Errorf("exit-lane: unexpected argument %q\n%s", args[index], exitLaneUsage)
 		}
 	}
-	if request.Lane == "" || request.Clear == (request.RequestedBy != "") || (request.Clear && request.EquityZero) {
-		return request, fmt.Errorf("exit-lane: --lane and either --by or --clear are required\n%s", exitLaneUsage)
+	if request.Vault == "" || request.Lane == "" || request.Clear == (request.RequestedBy != "") || (request.Clear && request.EquityZero) {
+		return request, fmt.Errorf("exit-lane: --vault, --lane and either --by or --clear are required\n%s", exitLaneUsage)
 	}
 	return request, nil
 }

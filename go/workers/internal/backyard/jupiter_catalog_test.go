@@ -21,15 +21,15 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 	seen := map[string]bool{}
 	for _, lane := range []string{ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {
 		for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
-			edges, leg, err := catalogEdge(action, lane)
+			conversions, leg, err := catalogEdge(action, lane)
 			if err != nil {
 				t.Fatal(err)
 			}
-			key := edges[leg].from.symbol + "->" + edges[leg].to.symbol
+			key := conversions[leg].from + "->" + conversions[leg].to
 			seen[key] = true
 			t.Run(lane+"/"+key, func(t *testing.T) {
 				request := fixtureSwapRequest(t, lane, action)
-				if _, index, err := jupiterPolicyLeg(lane, action); err != nil || index != leg {
+				if _, index, err := jupiterPolicyLeg(rwa, lane, action); err != nil || index != leg {
 					t.Fatal("policy selector drift", err)
 				}
 				message := compileTestSwap(t, request)
@@ -44,7 +44,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 					changed := append([]byte(nil), data...)
 					changed[offset] ^= 1
 					mutant.Data = base64.StdEncoding.EncodeToString(changed)
-					if _, err := validateJupiterInstructionForRoute(mutant, action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, lane); err == nil {
+					if _, err := validateJupiterInstructionForRoute(rwa, mutant, action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, lane); err == nil {
 						t.Fatal("accepted another amount or quote", offset)
 					}
 				}
@@ -54,7 +54,7 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 	if len(seen) != 14 {
 		t.Fatal("missing conversion coverage", len(seen))
 	}
-	if _, _, _, _, err := jupiterEdgeForRoute(SwapStableToCollateralStep, "unknown/asset/debt"); err == nil {
+	if _, _, _, _, err := jupiterEdgeForRoute(rwa, SwapStableToCollateralStep, "unknown/asset/debt"); err == nil {
 		t.Fatal("unknown lane inherited Prime edge")
 	}
 }
@@ -145,7 +145,7 @@ func TestWorkerDispatchesWYLDSDebtConversionsToHastra(t *testing.T) {
 					order = append(order, "jupiter")
 					return o, JupiterExecutionEvidence{Request: JupiterSwapRequest{Action: d.Action, RouteLane: d.StrategyKey}}, nil
 				},
-				prepareHastra: func(_ context.Context, d Decision, _ Observation) (Observation, HastraExecutionEvidence, error) {
+				prepareHastra: func(_ context.Context, _ RouteManifest, d Decision, _ Observation) (Observation, HastraExecutionEvidence, error) {
 					if d != want {
 						t.Fatal("conversion identity changed")
 					}

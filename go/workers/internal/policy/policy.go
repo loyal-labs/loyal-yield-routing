@@ -38,17 +38,19 @@ type Op struct {
 	Done bool
 }
 
-// A Product is a smart account's ops in policy order.
+// A Product is a smart account's ops in policy order, and the spending limits
+// its policy carries.
 type Product struct {
-	Name       string
-	VaultIndex uint8
-	Ops        []Op
+	Name           string
+	VaultIndex     uint8
+	Ops            []Op
+	SpendingLimits []squads.SpendingLimitView
 }
 
-// Policy is the product's policy: its ops' constraints on its vault, with no
-// spending limits (PolicyApply installs none).
+// Policy is the product's policy: its ops' constraints on its vault and its
+// spending limits.
 func (p Product) Policy() squads.Policy {
-	out := squads.Policy{VaultIndex: p.VaultIndex, Constraints: make([]squads.InstructionConstraintView, len(p.Ops))}
+	out := squads.Policy{VaultIndex: p.VaultIndex, Constraints: make([]squads.InstructionConstraintView, len(p.Ops)), SpendingLimits: p.SpendingLimits}
 	for i, op := range p.Ops {
 		out.Constraints[i] = op.Allowed
 	}
@@ -107,7 +109,7 @@ func Apply(ctx context.Context, c *chain.Client, out io.Writer, settings solana.
 		return err
 	}
 	apply := squads.PolicyApply{Settings: settings, RentPayer: signer.PublicKey(), Signer: signer.PublicKey(), Delegate: delegate,
-		Seed: squads.NextPolicySeed(state), VaultIndex: want.VaultIndex, Constraints: constraints, Replace: replace}
+		Seed: squads.NextPolicySeed(state), VaultIndex: want.VaultIndex, Constraints: constraints, SpendingLimits: want.SpendingLimits, Replace: replace}
 	ix, err := apply.Instruction()
 	if err != nil {
 		return err

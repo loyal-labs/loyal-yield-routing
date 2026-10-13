@@ -163,13 +163,13 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 		if receipt.PreTokenBalances[0].Raw-receipt.PostTokenBalances[0].Raw != probe.ActualDebitRaw {
 			t.Fatal("reported debit differs from captured custody")
 		}
-		if _, _, err := ReconcileConfirmedTransaction(effects, receipt); (err == nil) != (probe.Error == nil) {
+		if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); (err == nil) != (probe.Error == nil) {
 			t.Fatal("clipped repayment rejected or failed partial repayment reconciled", err)
 		}
 		if maximum == 1_010 {
 			exact := effects
 			exact.Kind, exact.Repayment = "", nil
-			if _, _, err := ReconcileConfirmedTransaction(exact, receipt); err == nil {
+			if _, _, err := ReconcileConfirmedTransaction(rwa, exact, receipt); err == nil {
 				t.Fatal("negative control: exact-request reconciliation should reject debt-clipped debit")
 			}
 		}

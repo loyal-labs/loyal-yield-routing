@@ -51,7 +51,7 @@ func TestEveryMessageCarriesItsBudgetInItsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	auto, err := compileKaminoMessageForDelegate(request, delegate)
+	auto, err := compileKaminoMessageForDelegate(rwa, request, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,16 +60,16 @@ func TestEveryMessageCarriesItsBudgetInItsConfig(t *testing.T) {
 		t.Fatalf("AUTO Kamino leg programs %v", programs)
 	}
 	assertBudget(t, "AUTO Kamino leg", config, 800_000, autoExecutionHeapBytes)
-	if again, err := compileKaminoMessageForDelegate(request, delegate); err != nil || !bytes.Equal(auto, again) {
+	if again, err := compileKaminoMessageForDelegate(rwa, request, delegate); err != nil || !bytes.Equal(auto, again) {
 		t.Fatal("AUTO Kamino compile is not deterministic")
 	}
-	installed, err := compileKaminoMessageForDelegate(kaminoTestRequest(OpenRouteStep, kaminoLegDeposit), delegate)
+	installed, err := compileKaminoMessageForDelegate(rwa, kaminoTestRequest(OpenRouteStep, kaminoLegDeposit), delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, config = v1Read(t, installed)
 	assertBudget(t, "installed Kamino leg", config, 800_000, 0)
-	swap, err := compileJupiterMessageForDelegate(autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 0), delegate)
+	swap, err := compileJupiterMessageForDelegate(rwa, autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 0), delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestEveryMessageCarriesItsBudgetInItsConfig(t *testing.T) {
 	assertBudget(t, "AUTO initializer", config, autoSwapComputeUnits, autoExecutionHeapBytes)
 	initializer.RouteLane = PhaseOneLaneID
 	initializer.Policy = testPolicyAccount(policyKey{lane: PhaseOneLaneID, action: InitializeKaminoObligation})
-	if message, err = CompileKaminoInitializationMessage(initializer); err != nil {
+	if message, err = rwa.manifest.compileKaminoInitializationMessage(initializer); err != nil {
 		t.Fatal(err)
 	}
 	_, config = v1Read(t, message)

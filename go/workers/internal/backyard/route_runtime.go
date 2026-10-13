@@ -24,7 +24,8 @@ type RuntimeRoute struct {
 	ObligationDebtFarm        string
 }
 
+// sharedUSDCDebt reports a lane that borrows USDC into the vault's cash.
 func sharedUSDCDebt(lane string) bool {
-	route, err := runtimeRoute(lane)
-	return err == nil && route.Kamino.DebtMint == bridgeUSDC && route.DebtCustody == bridgeSquadsATA
+	l, ok := findEarnLane(lane)
+	return ok && l.route.Kamino.DebtMint == bridgeUSDC && l.route.DebtTokenProgram == classicTokenProgram
 }

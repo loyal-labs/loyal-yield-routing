@@ -9,16 +9,16 @@ import (
 func TestMultiplyInitializerPinnedTopology(t *testing.T) {
 	t.Parallel()
 	for _, lane := range basicLaneIDs() {
-		ix, err := kaminoMultiplyInitializer(lane)
+		route, _ := runtimeRoute(lane)
+		ix, err := kaminoRouteInitializer(route)
 		if err != nil {
 			t.Fatal(err)
 		}
-		route, _ := runtimeRoute(lane)
 		if len(ix.accounts) != 9 || ix.accounts[2].key != mustKey(route.Kamino.Obligation) ||
 			ix.accounts[6].key != mustKey("78e2ZY7pcpQjhimGg9DUn8cipXaFPdpHEkd2YkMDNEr1") {
 			t.Fatal("PDA differs from captured initializer", lane)
 		}
-		outer, err := wrapSquadsKaminoPolicy(mustKey(bridgeSettings), mustKey(bridgeDelegate), mustKey(bridgeDelegate), 0, ix)
+		outer, err := wrapSquadsKaminoPolicy(rwa, mustKey(bridgeSettings), mustKey(bridgeDelegate), mustKey(bridgeDelegate), 0, ix)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -30,9 +30,6 @@ func TestMultiplyInitializerPinnedTopology(t *testing.T) {
 			t.Fatal("initializer exceeds wire boundary", err)
 		}
 	}
-	if _, err := kaminoMultiplyInitializer("Ethena/USDe/PYUSD"); err == nil {
-		t.Fatal("unreviewed lane admitted")
-	}
 }
 
 // Every registry lane either creates its obligation through an installed
@@ -41,7 +38,7 @@ func TestMultiplyInitializerPinnedTopology(t *testing.T) {
 // exactly the set of lanes with an initializer literal.
 func TestEveryRegistryLaneHasAnInitializerPolicyOrAnExistingObligation(t *testing.T) {
 	t.Parallel()
-	literals, err := backyardPolicies()
+	literals, err := backyardPolicies(rwa)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +78,7 @@ func TestMultiplyInitializerAndCapacitySDKParity(t *testing.T) {
 		t.Fatal("SDK initializer vectors do not cover every basic lane")
 	}
 	for _, lane := range basicLaneIDs() {
-		ix, err := kaminoMultiplyInitializer(lane)
+		ix, err := kaminoRouteInitializer(rwaRoute(lane))
 		if err != nil {
 			t.Fatal(err)
 		}

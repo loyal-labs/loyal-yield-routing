@@ -54,23 +54,23 @@ const (
 	kaminoLegWithdraw
 )
 
-func compileKaminoMessageForDelegate(request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
-	route, err := runtimeRoute(request.RouteLane)
+func compileKaminoMessageForDelegate(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
+	route, err := v.route(request.RouteLane)
 	if err != nil {
 		return nil, err
 	}
-	return compileResolvedKaminoMessage(request, delegate, route)
+	return compileResolvedKaminoMessage(v, request, delegate, route)
 }
 
 // The public compiler and signer resolve installed routes before entering this
 // shared byte builder. Keeping resolution outside permits offline SDK/SBF parity
 // tests without registering candidate routes or changing production authority.
-func compileResolvedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
-	return compileReviewedKaminoMessage(request, delegate, route)
+func compileResolvedKaminoMessage(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
+	return compileReviewedKaminoMessage(v, request, delegate, route)
 }
 
 // compileReviewedKaminoMessage is the checked byte builder.
-func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
+func compileReviewedKaminoMessage(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
 	if request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Kamino blockhash lifetime")
 	}
@@ -78,7 +78,7 @@ func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 	if err != nil {
 		return nil, err
 	}
-	instructions, _, err := kaminoPolicyInstructions(request, delegate, route)
+	instructions, _, err := kaminoPolicyInstructions(v, request, delegate, route)
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +94,7 @@ func compileReviewedKaminoMessage(request KaminoPrimeUSDCRequest, delegate publi
 // over request's topology) followed by the leg's Squads execute at its
 // policy constraint. KLend's check_refresh counts back from the top-level
 // execute, so the prefix must sit directly in front of it.
-func kaminoPolicyInstructions(request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]compiledInstruction, kaminoPrimeUSDCLeg, error) {
+func kaminoPolicyInstructions(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]compiledInstruction, kaminoPrimeUSDCLeg, error) {
 	inner, leg, err := kaminoResolvedRouteInstruction(request, route)
 	if err != nil {
 		return nil, 0, err
@@ -104,7 +104,7 @@ func kaminoPolicyInstructions(request KaminoPrimeUSDCRequest, delegate publicKey
 		return nil, 0, fmt.Errorf("Kamino request names no installed policy")
 	}
 	_, index := kaminoPolicyLeg(route, leg)
-	outer, err := wrapSquadsKaminoPolicy(policy, delegate, delegate, index, inner)
+	outer, err := wrapSquadsKaminoPolicy(v, policy, delegate, delegate, index, inner)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -123,8 +123,8 @@ func bytesEqual(left, right []byte) bool {
 	return true
 }
 
-func kaminoRouteInstruction(request KaminoPrimeUSDCRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
-	route, err := runtimeRoute(lane)
+func kaminoRouteInstruction(v *Vault, request KaminoPrimeUSDCRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+	route, err := v.route(lane)
 	if err != nil {
 		return compiledInstruction{}, 0, err
 	}
@@ -193,12 +193,12 @@ func exactKaminoMetas(got, want []accountMeta) bool {
 	return true
 }
 
-func kaminoPrimeUSDCRefreshInstructionsForRoute(leg kaminoPrimeUSDCLeg, lane string) []compiledInstruction {
-	return kaminoPrimeUSDCRefreshInstructionsForRequest(leg, KaminoPrimeUSDCRequest{RouteLane: lane})
+func kaminoPrimeUSDCRefreshInstructionsForRoute(v *Vault, leg kaminoPrimeUSDCLeg, lane string) []compiledInstruction {
+	return kaminoPrimeUSDCRefreshInstructionsForRequest(v, leg, KaminoPrimeUSDCRequest{RouteLane: lane})
 }
 
-func kaminoPrimeUSDCRefreshInstructionsForRequest(leg kaminoPrimeUSDCLeg, request KaminoPrimeUSDCRequest) []compiledInstruction {
-	route, err := runtimeRoute(request.RouteLane)
+func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, leg kaminoPrimeUSDCLeg, request KaminoPrimeUSDCRequest) []compiledInstruction {
+	route, err := v.route(request.RouteLane)
 	if err != nil {
 		return nil
 	}
@@ -291,11 +291,11 @@ func kaminoCompiled(ix *solana.GenericInstruction) compiledInstruction {
 	return out
 }
 
-func wrapSquadsKaminoPolicy(policy, executor, expectedDelegate publicKey, constraintIndex byte, inner compiledInstruction) (compiledInstruction, error) {
+func wrapSquadsKaminoPolicy(v *Vault, policy, executor, expectedDelegate publicKey, constraintIndex byte, inner compiledInstruction) (compiledInstruction, error) {
 	if executor != expectedDelegate || inner.program != publicKey(kamino.ProgramID) {
 		return compiledInstruction{}, fmt.Errorf("unrecognized Squads Kamino policy or delegate")
 	}
-	return wrapSquadsPolicy(policy, executor, []byte{constraintIndex}, inner)
+	return wrapSquadsPolicy(v, policy, executor, []byte{constraintIndex}, inner)
 }
 
 // KaminoExecutionEvidence is intentionally explicit. The observer supplies a

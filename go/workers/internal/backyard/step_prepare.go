@@ -104,7 +104,7 @@ type stepState struct {
 	topology []string
 }
 
-func readStepState(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (stepState, error) {
+func readStepState(v *Vault, accounts []ConfirmedAccount, route RuntimeRoute, slot int64) (stepState, error) {
 	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if err != nil {
 		return stepState{}, err
@@ -118,10 +118,10 @@ func readStepState(accounts []ConfirmedAccount, route RuntimeRoute, slot int64) 
 		return stepState{}, err
 	}
 	st := stepState{route: route, position: position, collateral: collateral, obligation: obligation, slot: uint64(slot)}
-	if st.heldCollateral, err = vaultCustodyRaw(accounts, route.CollateralCustody, route.Kamino.CollateralMint, route.CollateralTokenProgram); err != nil {
+	if st.heldCollateral, err = vaultCustodyRaw(v, accounts, route.CollateralCustody, route.Kamino.CollateralMint, route.CollateralTokenProgram); err != nil {
 		return stepState{}, err
 	}
-	if st.debtBalance, err = vaultCustodyRaw(accounts, route.DebtCustody, route.Kamino.DebtMint, route.DebtTokenProgram); err != nil {
+	if st.debtBalance, err = vaultCustodyRaw(v, accounts, route.DebtCustody, route.Kamino.DebtMint, route.DebtTokenProgram); err != nil {
 		return stepState{}, err
 	}
 	st.collateralBalance, st.heldDebt = st.heldCollateral, st.debtBalance
@@ -242,15 +242,15 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	if !ok || rpc == nil || view == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, StepExecutionEvidence{}, fmt.Errorf("invalid step evidence request")
 	}
-	prepareStart, s, accounts := time.Now(), observation.Snapshot, observation.routeBatch.Accounts
-	route, err := runtimeRoute(decision.StrategyKey)
+	prepareStart, s, accounts, v := time.Now(), observation.Snapshot, observation.routeBatch.Accounts, manifest.vault
+	route, err := v.route(decision.StrategyKey)
 	if err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}
-	if observation.policies, err = observeInstalledPolicies(ctx, rpc, s.Slot); err != nil {
+	if observation.policies, err = observeInstalledPolicies(ctx, rpc, v, s.Slot); err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}
-	st, err := readStepState(accounts, route, s.Slot)
+	st, err := readStepState(v, accounts, route, s.Slot)
 	if err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}
@@ -272,7 +272,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		if err != nil || receipts == 0 || liquidity == 0 {
 			return Observation{}, StepExecutionEvidence{}, budgetHoldFrom(err, "release_leg_unavailable")
 		}
-		if st.cash, err = vaultCustodyRaw(accounts, bridgeSquadsATA, bridgeUSDC, bridgeTokenProgram); err != nil {
+		if st.cash, err = vaultCustodyRaw(v, accounts, v.cash, bridgeUSDC, bridgeTokenProgram); err != nil {
 			return Observation{}, StepExecutionEvidence{}, err
 		}
 		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapCollateralToStableStep, receipts, liquidity+st.heldCollateral, s.Slot)
@@ -343,6 +343,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 // nothing: the output stays in the Squads bridge account. Every leg carries
 // the conversion's blockhash.
 func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, st stepState, conversion Action, openRaw, convertRaw uint64, slot int64) (StepExecutionEvidence, uint64, error) {
+	v := manifest.vault
 	route := st.route
 	lane := route.Lane
 	up, exit := conversion == SwapDebtToCollateralStep, conversion == SwapCollateralToStableStep
@@ -369,7 +370,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 	}
 	// The route size: the key budget the KLend legs and the swap's fixed
 	// accounts leave.
-	placeholder := LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 1}
+	placeholder := LatestBlockhash{Blockhash: v.squads, LastValidBlockHeight: 1}
 	open, err := manifest.kaminoPacketForRoute(policies, action, openLeg, openRaw, placeholder, lane)
 	if err != nil {
 		return StepExecutionEvidence{}, 0, err
@@ -386,17 +387,17 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 	decision := Decision{Action: conversion, AmountRaw: int64(convertRaw), StrategyKey: lane}
 	var conversionRequest any
 	if conversionVenueHastra(decision) {
-		e, err := prepareHastraQuoteEvidence(ctx, rpc, view, policies, decision, sourceHeld+openLiquidity, destinationHeld, slot)
+		e, err := prepareHastraQuoteEvidence(ctx, v, rpc, view, policies, decision, sourceHeld+openLiquidity, destinationHeld, slot)
 		if err != nil {
 			return StepExecutionEvidence{}, 0, err
 		}
 		request.Hastra, conversionRequest = &e.Request, e.Request
 	} else {
-		maxAccounts, err := stepSwapMaxAccounts(request, conversion)
+		maxAccounts, err := stepSwapMaxAccounts(v, request, conversion)
 		if err != nil {
 			return StepExecutionEvidence{}, 0, err
 		}
-		e, err := prepareJupiterQuoteEvidenceAt(ctx, rpc, client, policies, decision, sourceHeld+openLiquidity, destinationHeld, slot, maxAccounts)
+		e, err := prepareJupiterQuoteEvidenceAt(ctx, v, rpc, client, policies, decision, sourceHeld+openLiquidity, destinationHeld, slot, maxAccounts)
 		if err != nil {
 			return StepExecutionEvidence{}, 0, err
 		}
@@ -424,11 +425,11 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 			return StepExecutionEvidence{}, 0, err
 		}
 	}
-	if _, err := compileStepMessageForDelegate(request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileStepMessageForDelegate(v, request, mustKey(bridgeDelegate)); err != nil {
 		return StepExecutionEvidence{}, 0, budgetHoldFrom(err, "step_does_not_compile")
 	}
 	effect := func(custody, mint, program string, before, after uint64) ExpectedAccountEffect {
-		return ExpectedAccountEffect{Address: custody, Owner: program, Mint: mint, Authority: bridgeVault, BeforeRaw: before, AfterRaw: after}
+		return ExpectedAccountEffect{Address: custody, Owner: program, Mint: mint, Authority: v.squads, BeforeRaw: before, AfterRaw: after}
 	}
 	// Up: the borrow and the held debt convert exactly, and the deposit takes
 	// the held collateral plus the minimum output. Down: the withdrawal less
@@ -442,7 +443,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		debt.AfterRaw = st.debtBalance - st.heldDebt
 	}
 	if exit {
-		debt = effect(bridgeSquadsATA, bridgeUSDC, bridgeTokenProgram, st.cash, closeRaw)
+		debt = effect(v.cash, bridgeUSDC, bridgeTokenProgram, st.cash, closeRaw)
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: stepEffects(up, collateral, debt)}, guaranteed, nil
 }
@@ -483,12 +484,13 @@ func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
 // collateral already in the shared custody, into the overflow lane's
 // obligation, in one transaction.
 func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest, policies installedPolicies, accounts []ConfirmedAccount, st stepState, s Snapshot, decision Decision) (StepExecutionEvidence, error) {
+	v := manifest.vault
 	route := st.route
 	lane, ok := overflowLaneOf(route.Lane)
 	if !ok {
 		return StepExecutionEvidence{}, fmt.Errorf("lane %s has no overflow lane", route.Lane)
 	}
-	destination, err := runtimeRoute(lane)
+	destination, err := v.route(lane)
 	if err != nil {
 		return StepExecutionEvidence{}, err
 	}
@@ -540,7 +542,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	}
 	closing.ObligationReserves = topology
 	request := StepRequest{Open: open, Close: &closing}
-	if _, err := compileStepMessageForDelegate(request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileStepMessageForDelegate(v, request, mustKey(bridgeDelegate)); err != nil {
 		return StepExecutionEvidence{}, budgetHoldFrom(err, "step_does_not_compile")
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: moveEffects(route, st.collateralBalance, st.heldCollateral)}, nil
@@ -551,7 +553,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 // so it keeps at least balance - held.
 func moveEffects(route RuntimeRoute, balance, held uint64) ExpectedEffects {
 	after := balance - held
-	collateral := ExpectedAccountEffect{Address: route.CollateralCustody, Owner: route.CollateralTokenProgram, Mint: route.Kamino.CollateralMint, Authority: bridgeVault,
+	collateral := ExpectedAccountEffect{Address: route.CollateralCustody, Owner: route.CollateralTokenProgram, Mint: route.Kamino.CollateralMint, Authority: route.Kamino.Vault,
 		BeforeRaw: balance, AfterRaw: after, MinimumAfterRaw: &after}
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "atomic-step", Conserved: false, Accounts: []ExpectedAccountEffect{collateral}}
 }

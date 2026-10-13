@@ -147,6 +147,7 @@ type PolicyApply struct {
 	Seed                                  uint64
 	VaultIndex                            uint8
 	Constraints                           []InstructionConstraintView
+	SpendingLimits                        []SpendingLimitView
 	Replace                               []solana.PublicKey
 }
 
@@ -182,7 +183,7 @@ func (p PolicyApply) Instruction() (Instruction, error) {
 		if err != nil {
 			return Instruction{}, err
 		}
-		if data, err = appendLegacyPolicyCreate(data, p.Seed, p.VaultIndex, p.Constraints, p.Delegate); err != nil {
+		if data, err = appendLegacyPolicyCreate(data, p.Seed, p.VaultIndex, p.Constraints, p.SpendingLimits, p.Delegate); err != nil {
 			return Instruction{}, err
 		}
 		accounts = append(accounts, solana.AccountMeta{PublicKey: policy, IsWritable: true})

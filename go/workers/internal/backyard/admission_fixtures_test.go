@@ -349,14 +349,14 @@ func bridgeAdmissionFixture(t *testing.T, action Action, amount, idle, strategy,
 	d := Decision{Action: action, AmountRaw: amount, StrategyKey: s.RouteLane, Reason: "bridge-admission-test", IdempotencyKey: "bridge-admission-test"}
 	r := bridgeTestRequest(action, uint64(amount))
 	r.Report.ObservedSlot, r.Report.Sequence = 42, 42
-	effects, _, afterSquads, err := bridgeExpectedEffects(d, uint64(idle), uint64(strategy), uint64(squads))
+	effects, _, afterSquads, err := bridgeExpectedEffects(rwa, d, uint64(idle), uint64(strategy), uint64(squads))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.Report.NAVAfterRaw = afterSquads
 	effects.Kind = "bridge"
 	if action != StageSquadsToVoltr {
-		effects.ReturnData = expectedAdaptorReturnData(r.Report.NAVAfterRaw)
+		effects.ReturnData = expectedAdaptorReturnData(rwa, r.Report.NAVAfterRaw)
 	}
 	return tickObservation(s), d, BridgeExecutionEvidence{r, effects}
 }
@@ -562,11 +562,11 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 	}
 	r := bridgeTestRequest(d.Action, uint64(d.AmountRaw))
 	r.Report = BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(s.StrategyNAVRaw), SnapshotDigest: s.ReportSnapshotDigest}
-	effects, _, _, err := bridgeExpectedEffects(d, uint64(s.VoltrIdleRaw), uint64(s.VoltrStrategyIdleRaw), uint64(s.SquadsIdleRaw))
+	effects, _, _, err := bridgeExpectedEffects(rwa, d, uint64(s.VoltrIdleRaw), uint64(s.VoltrStrategyIdleRaw), uint64(s.SquadsIdleRaw))
 	if err != nil {
 		t.Fatal(err)
 	}
-	effects.Kind, effects.ReturnData = "bridge", expectedAdaptorReturnData(r.Report.NAVAfterRaw)
+	effects.Kind, effects.ReturnData = "bridge", expectedAdaptorReturnData(rwa, r.Report.NAVAfterRaw)
 	return o, d, BridgeExecutionEvidence{r, effects}, m, rpc, client, accounts
 }
 

@@ -38,12 +38,12 @@ type observedReportTicket struct {
 	Armed                bool
 }
 
-func decodeObservedReportTicket(account ConfirmedAccount) (observedReportTicket, error) {
-	if account.Address != reportTicketPDA || account.Owner != bridgeAdaptorProgram || account.Executable ||
+func decodeObservedReportTicket(v *Vault, account ConfirmedAccount) (observedReportTicket, error) {
+	if account.Address != reportTicketPDA || account.Owner != v.Adaptor || account.Executable ||
 		account.Lamports == 0 || len(account.Data) != reportTicketStateLength ||
 		!bytes.Equal(account.Data[:8], reportTicketStateDiscriminator) || account.Data[8] != reportTicketVersion ||
 		account.Data[9] != reportTicketBump || account.Data[10] > 1 || !allZero(account.Data[11:16]) ||
-		!sameKey(account.Data[16:48], bridgeStrategy) {
+		!sameKey(account.Data[16:48], v.Strategy) {
 		return observedReportTicket{}, fmt.Errorf("report ticket identity or layout drifted")
 	}
 	lastConsumed := binary.LittleEndian.Uint64(account.Data[48:56])
@@ -59,22 +59,22 @@ func decodeObservedReportTicket(account ConfirmedAccount) (observedReportTicket,
 
 // ticketedBridgeInstructions is the bridge action's inner instructions and
 // the leg each executes under.
-func ticketedBridgeInstructions(request BridgeBuildRequest) ([]compiledInstruction, []byte, error) {
-	capital, err := bridgeInstruction(request)
+func ticketedBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compiledInstruction, []byte, error) {
+	capital, err := bridgeInstruction(v, request)
 	if err != nil {
 		return nil, nil, err
 	}
 	if request.Action == StageSquadsToVoltr {
 		return []compiledInstruction{capital}, []byte{bridgeStageLeg}, nil
 	}
-	arm, err := armReportInstruction(request.Action, capital.data)
+	arm, err := armReportInstruction(v, request.Action, capital.data)
 	if err != nil {
 		return nil, nil, err
 	}
 	return []compiledInstruction{arm, capital}, []byte{bridgeArmLeg, bridgeCapitalLeg}, nil
 }
 
-func armReportInstruction(action Action, voltrData []byte) (compiledInstruction, error) {
+func armReportInstruction(v *Vault, action Action, voltrData []byte) (compiledInstruction, error) {
 	operation := byte(0xff)
 	switch action {
 	case VoltrAllocateToSquads, ReportNAV:
@@ -91,9 +91,9 @@ func armReportInstruction(action Action, voltrData []byte) (compiledInstruction,
 	data := append([]byte(nil), armReportDiscriminator...)
 	data = append(data, operation)
 	data = append(data, tail...)
-	adaptor := solanaKey(bridgeAdaptorProgram)
-	accounts := squads.Metas(adaptor, armReportSlots(armReport[solana.PublicKey]{Strategy: solanaKey(bridgeStrategy), Ticket: solanaKey(reportTicketPDA),
-		Settings: solanaKey(bridgeSettings), Vault: solanaKey(bridgeVault)}, squads.ProgramID))
+	adaptor := solanaKey(v.Adaptor)
+	accounts := squads.Metas(adaptor, armReportSlots(armReport[solana.PublicKey]{Strategy: solanaKey(v.Strategy), Ticket: solanaKey(reportTicketPDA),
+		Settings: solanaKey(bridgeSettings), Vault: solanaKey(v.squads)}, squads.ProgramID))
 	return sdkInstruction(solana.NewInstruction(adaptor, accounts, data)), nil
 }
 
@@ -121,8 +121,8 @@ const (
 // armReportAllowed admits ArmReport of operation over the allowed accounts,
 // with data predicates after its discriminator and operation. The Squads
 // program slot is free: the adaptor checks it.
-func armReportAllowed(a armReport[squads.Slot], operation byte, data ...squads.DataConstraintView) squads.InstructionConstraintView {
-	adaptor := solanaKey(bridgeAdaptorProgram)
+func armReportAllowed(v *Vault, a armReport[squads.Slot], operation byte, data ...squads.DataConstraintView) squads.InstructionConstraintView {
+	adaptor := solanaKey(v.Adaptor)
 	leading := append(append([]byte(nil), armReportDiscriminator...), operation)
 	return squads.Allow(adaptor, append([]squads.DataConstraintView{squads.DataBytes(0, leading)}, data...), squads.Slots(adaptor, armReportSlots(a, squads.Any)))
 }

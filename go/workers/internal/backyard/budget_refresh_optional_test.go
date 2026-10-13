@@ -39,7 +39,7 @@ func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing
 		}
 	})
 	addresses := []string{budgetClockAddress, bridgeVault, bridgeStrategy}
-	slot, accounts, err := simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
+	slot, accounts, err := simulateLanesReserveRefreshOptional(context.Background(), rwa, client, []string{PhaseOneLaneID}, addresses, []string{budgetClockAddress, bridgeStrategy}, 41)
 	if err != nil || slot != 43 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}
@@ -93,9 +93,9 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 			addresses := []string{budgetClockAddress, bridgeVault}
 			var captureErr error
 			if testCase.optional {
-				_, _, captureErr = simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, addresses, []string{budgetClockAddress}, 41)
+				_, _, captureErr = simulateLanesReserveRefreshOptional(context.Background(), rwa, client, []string{PhaseOneLaneID}, addresses, []string{budgetClockAddress}, 41)
 			} else {
-				_, _, captureErr = simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, addresses, nil, 41)
+				_, _, captureErr = simulateLanesReserveRefreshOptional(context.Background(), rwa, client, []string{PhaseOneLaneID}, addresses, nil, 41)
 			}
 			var hold *BudgetHold
 			if !errors.As(captureErr, &hold) || holdCause(hold) != "price_refresh_capture_incomplete" {
@@ -163,7 +163,7 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 		body2 := `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":{"err":null,"accounts":[` + populated + `,null]}}}`
 		return response(body2), nil
 	})
-	slot, accounts, err := simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
+	slot, accounts, err := simulateLanesReserveRefreshOptional(context.Background(), rwa, client, []string{PhaseOneLaneID}, []string{bridgeVault, budgetClockAddress}, []string{budgetClockAddress}, 41)
 	if err != nil || slot != 43 {
 		t.Fatalf("slot=%d err=%v", slot, err)
 	}
@@ -236,7 +236,7 @@ func TestTwoAUTOLaneValuationRefreshSimulatesEveryReserve(t *testing.T) {
 		}
 		return response(result + `]}}}`), nil
 	})
-	slot, accounts, err := simulateRouteValuationRefresh(context.Background(), client, routes, addresses, 41)
+	slot, accounts, err := simulateRouteValuationRefresh(context.Background(), rwa, client, routes, addresses, 41)
 	if err != nil || slot != 43 || len(accounts) != len(addresses) {
 		t.Fatalf("two-lane refresh: slot=%d accounts=%d err=%v", slot, len(accounts), err)
 	}

@@ -46,7 +46,7 @@ func TestBoundedKaminoRepaymentReconcilesActualDebitWithoutClaimingPayoff(t *tes
 	for _, amount := range []uint64{1_000, 1_005, 1_010, 0, 999, 1_011} {
 		receipt.PostTokenBalances[0].Raw = receipt.PreTokenBalances[0].Raw - amount
 		receipt.PostTokenBalances[1].Raw = receipt.PreTokenBalances[1].Raw + amount
-		_, body, err := ReconcileConfirmedTransaction(effects, receipt)
+		_, body, err := ReconcileConfirmedTransaction(rwa, effects, receipt)
 		if want := amount >= 1_000 && amount <= 1_010; (err == nil) != want {
 			t.Fatalf("amount=%d err=%v", amount, err)
 		}
@@ -59,7 +59,7 @@ func TestBoundedKaminoRepaymentReconcilesActualDebitWithoutClaimingPayoff(t *tes
 	}
 	receipt.PostTokenBalances[0].Raw = 2_000
 	receipt.PostTokenBalances[1].Raw = 8_001 // individually in bounds, but not conserved
-	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, effects, receipt); err == nil {
 		t.Fatal("unequal in-range debit and credit accepted")
 	}
 	receipt.PostTokenBalances[1].Raw = 8_000
@@ -77,7 +77,7 @@ func TestBoundedKaminoRepaymentReconcilesActualDebitWithoutClaimingPayoff(t *tes
 		bad.PreTokenBalances = append([]TransactionTokenBalance(nil), receipt.PreTokenBalances...)
 		bad.PostTokenBalances = append([]TransactionTokenBalance(nil), receipt.PostTokenBalances...)
 		mutate(&bad)
-		if _, _, err := ReconcileConfirmedTransaction(effects, bad); err == nil {
+		if _, _, err := ReconcileConfirmedTransaction(rwa, effects, bad); err == nil {
 			t.Fatal("repayment identity, precondition or direction drift accepted")
 		}
 	}

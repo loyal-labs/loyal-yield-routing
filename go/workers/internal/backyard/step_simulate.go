@@ -27,18 +27,19 @@ import (
 // converts the liquidity it redeems at the observed rate and the held
 // collateral into debt, and repays held debt plus the conversion's
 // guaranteed output.
-func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, lane string, up bool, amountRaw uint64) error {
-	route, err := runtimeRoute(lane)
+func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, vault, lane string, up bool, amountRaw uint64) error {
+	v, err := findVault(vault)
+	if err != nil {
+		return err
+	}
+	route, err := v.route(lane)
 	if err != nil || !earnHeldLane(lane) {
 		return fmt.Errorf("lane %q is no earn lane", lane)
 	}
 	if amountRaw == 0 || amountRaw > math.MaxInt64 {
 		return fmt.Errorf("amount must be a positive raw amount")
 	}
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return err
-	}
+	manifest := v.manifest
 	cluster, err := chain.New(rpcURL, 15*time.Second)
 	if err != nil {
 		return err
@@ -53,11 +54,11 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, cluster, route, viewSlot)
+	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, v, cluster, route, viewSlot)
 	if err != nil {
 		return err
 	}
-	st, err := readStepState(accounts, route, slot)
+	st, err := readStepState(v, accounts, route, slot)
 	if err != nil {
 		return err
 	}
@@ -65,7 +66,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	policies, err := observeInstalledPolicies(ctx, cluster, viewSlot)
+	policies, err := observeInstalledPolicies(ctx, cluster, v, viewSlot)
 	if err != nil {
 		return err
 	}
@@ -81,7 +82,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	step, err := buildStepMessage(evidence.Request, mustKey(bridgeDelegate))
+	step, err := buildStepMessage(v, evidence.Request, mustKey(bridgeDelegate))
 	if err != nil {
 		return err
 	}

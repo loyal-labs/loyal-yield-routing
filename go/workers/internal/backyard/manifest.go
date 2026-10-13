@@ -8,34 +8,32 @@ import (
 	"fmt"
 )
 
-// RouteManifest is the fact set a decision is taken on: the earnLanes
-// registry, identified by SHA256 (the hash of every lane's chain facts, which
-// binds decision evidence and NAV report digests to it), and the lane a flat
+// RouteManifest is the fact set a decision is taken on: one vault's routes,
+// identified by SHA256 (the hash of every lane's chain facts, which binds
+// decision evidence and NAV report digests to it), and the lane a flat
 // vault's view describes before any selector entry orients it (the
 // registry's first lane).
 type RouteManifest struct {
 	RuntimeActivation RuntimeActivation
 	SHA256            string
+	vault             *Vault
 }
 
 type RuntimeActivation struct {
 	SelectedLane string
 }
 
-func loadEmbeddedRouteManifest() (RouteManifest, error) { return manifestOf(earnLanes) }
-
-func manifestOf(lanes []earnLane) (RouteManifest, error) {
-	routes := make([]RuntimeRoute, len(lanes))
-	for i, l := range lanes {
-		routes[i] = l.route
-	}
-	facts, err := json.Marshal(routes)
+func manifestOf(v *Vault) (RouteManifest, error) {
+	facts, err := json.Marshal(v.routes)
 	if err != nil {
 		return RouteManifest{}, err
 	}
 	hash := sha256.Sum256(facts)
-	return RouteManifest{RuntimeActivation: RuntimeActivation{SelectedLane: lanes[0].route.Lane}, SHA256: hex.EncodeToString(hash[:])}, nil
+	return RouteManifest{RuntimeActivation: RuntimeActivation{SelectedLane: v.routes[0].Lane}, SHA256: hex.EncodeToString(hash[:]), vault: v}, nil
 }
+
+// route is lane's chain facts in the manifest's vault.
+func (m RouteManifest) route(lane string) (RuntimeRoute, error) { return m.vault.route(lane) }
 
 var errKaminoPacketUnavailable = fmt.Errorf("Kamino packet unavailable")
 
@@ -45,7 +43,7 @@ func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action A
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
 		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
 	}
-	route, err := runtimeRoute(lane)
+	route, err := m.route(lane)
 	if err != nil {
 		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
 	}
@@ -67,12 +65,12 @@ func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action A
 	data := binary.LittleEndian.AppendUint64(append([]byte(nil), discriminator...), amount)
 	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: policy, Accounts: accounts, Data: data,
 		RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
-	if _, observedLeg, err := kaminoRouteInstruction(request, lane); err != nil || observedLeg != leg {
+	if _, observedLeg, err := kaminoRouteInstruction(m.vault, request, lane); err != nil || observedLeg != leg {
 		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
 	}
 	return request, nil
 }
 
 func (m RouteManifest) activeRuntimeRoute() (RuntimeRoute, error) {
-	return runtimeRoute(m.RuntimeActivation.SelectedLane)
+	return m.route(m.RuntimeActivation.SelectedLane)
 }

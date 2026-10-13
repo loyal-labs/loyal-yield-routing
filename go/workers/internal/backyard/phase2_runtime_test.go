@@ -59,7 +59,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 
 func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
 	t.Parallel()
-	addresses := routeFixedAddresses()
+	addresses := routeFixedAddresses(rwa)
 	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
@@ -123,7 +123,7 @@ func TestPhase2MapleKaminoPacketUsesPinnedGraph(t *testing.T) {
 	if request.RouteLane != SelectedRouteID || request.Policy != mustBasicPolicy(t, BasicCollateralLifecycle) || len(request.Accounts) != 17 {
 		t.Fatalf("unexpected Maple Kamino packet: %+v", request)
 	}
-	if _, leg, err := kaminoRouteInstruction(request, SelectedRouteID); err != nil || leg != kaminoLegDeposit {
+	if _, leg, err := kaminoRouteInstruction(rwa, request, SelectedRouteID); err != nil || leg != kaminoLegDeposit {
 		t.Fatalf("Maple packet did not validate as deposit: %v, %v", err, leg)
 	}
 	borrow, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
@@ -189,7 +189,7 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 			if request.Policy != mustBasicPolicy(t, test.family) {
 				t.Fatalf("%s %v resolved to policy=%s", lane, test.leg, request.Policy)
 			}
-			if _, got, err := kaminoRouteInstruction(request, lane); err != nil || got != test.leg {
+			if _, got, err := kaminoRouteInstruction(rwa, request, lane); err != nil || got != test.leg {
 				t.Fatalf("%s %v did not validate: %v, %v", lane, test.leg, err, got)
 			}
 		}
@@ -200,7 +200,7 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 			{SwapStableToCollateralStep, BasicSwapRoutesA},
 			{SwapCollateralToStableStep, BasicSwapRoutesB},
 		} {
-			key, leg, err := jupiterPolicyLeg(lane, test.action)
+			key, leg, err := jupiterPolicyLeg(rwa, lane, test.action)
 			if err != nil {
 				t.Fatalf("%s %s: %v", lane, test.action, err)
 			}
@@ -217,11 +217,11 @@ func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 
 func TestPhase2JupiterBindingsUseDirectionSpecificInstalledPrefixes(t *testing.T) {
 	t.Parallel()
-	entry, entryLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapStableToCollateralStep)
+	entry, entryLeg, err := jupiterPolicyLeg(rwa, SelectedRouteID, SwapStableToCollateralStep)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exit, exitLeg, err := jupiterPolicyLeg(SelectedRouteID, SwapCollateralToStableStep)
+	exit, exitLeg, err := jupiterPolicyLeg(rwa, SelectedRouteID, SwapCollateralToStableStep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,11 +239,11 @@ func TestPhase2JupiterQuotePinsManifestVenue(t *testing.T) {
 		SwapMode: "ExactIn", SlippageBPS: 50, PlatformFee: json.RawMessage("null"),
 		RoutePlan: []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"Manifest"}}`)},
 	}
-	if _, _, err := validateJupiterQuoteForRoute(quote, SwapStableToCollateralStep, 1_000_000, SelectedRouteID); err != nil {
+	if _, _, err := validateJupiterQuoteForRoute(rwa, quote, SwapStableToCollateralStep, 1_000_000, SelectedRouteID); err != nil {
 		t.Fatalf("basic quote rejected: %v", err)
 	}
 	quote.RoutePlan = []json.RawMessage{json.RawMessage(`{"swapInfo":{"label":"AlphaQ"}}`)}
-	if _, _, err := validateJupiterQuoteForRoute(quote, SwapStableToCollateralStep, 1_000_000, SelectedRouteID); err != nil {
+	if _, _, err := validateJupiterQuoteForRoute(rwa, quote, SwapStableToCollateralStep, 1_000_000, SelectedRouteID); err != nil {
 		t.Fatalf("basic quote with recorded route plan rejected: %v", err)
 	}
 }

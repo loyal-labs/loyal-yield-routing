@@ -19,7 +19,7 @@ import (
 func stepTestPolicies(t testing.TB) (installedPolicies, map[solana.PublicKey]policyKey, map[policyKey]squads.Policy) {
 	t.Helper()
 	policies := testPolicies(t)
-	literals, err := backyardPolicies()
+	literals, err := backyardPolicies(rwa)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func stepTestBuild(t *testing.T, lane string, up bool, venue int) (StepRequest, 
 		t.Fatal(err)
 	}
 	step.Close = &closing
-	message, err := buildStepMessage(step, mustKey(bridgeDelegate))
+	message, err := buildStepMessage(rwa, step, mustKey(bridgeDelegate))
 	return step, message, err
 }
 
@@ -119,7 +119,7 @@ func stepTestExit(t *testing.T, lane string, venue int) (StepRequest, stepMessag
 	open.ObligationReserves = []string{route.Kamino.CollateralReserve}
 	swap := stepTestSwap(t, lane, SwapCollateralToStableStep, venue)
 	step := StepRequest{Open: open, Swap: &swap}
-	message, err := buildStepMessage(step, mustKey(bridgeDelegate))
+	message, err := buildStepMessage(rwa, step, mustKey(bridgeDelegate))
 	return step, message, err
 }
 
@@ -160,12 +160,12 @@ func TestExitStepWithdrawsAndSwapsToUSDCInOneMessage(t *testing.T) {
 				t.Errorf("%s: %s executes at constraint %d, but constraints %v admit it", lane, key, execution.ConstraintIndexes[0], admitting)
 			}
 		}
-		if _, _, _, to, err := jupiterEdgeForRoute(SwapCollateralToStableStep, lane); err != nil || to != bridgeSquadsATA {
+		if _, _, _, to, err := jupiterEdgeForRoute(rwa, SwapCollateralToStableStep, lane); err != nil || to != bridgeSquadsATA {
 			t.Fatalf("%s: the exit swaps into %s (%v), not the Squads bridge account", lane, to, err)
 		}
 		closing := step.Open
 		step.Close = &closing
-		if _, err := buildStepMessage(step, mustKey(bridgeDelegate)); err == nil {
+		if _, err := buildStepMessage(rwa, step, mustKey(bridgeDelegate)); err == nil {
 			t.Fatalf("%s: a closing withdrawal compiled into an exit", lane)
 		}
 	}
@@ -281,7 +281,7 @@ func TestEveryEarnStepFitsOneV1Transaction(t *testing.T) {
 				continue
 			}
 			request, _, _ := stepTestBuild(t, lane, up, 0)
-			venue, err := stepSwapMaxAccounts(request, conversion)
+			venue, err := stepSwapMaxAccounts(rwa, request, conversion)
 			if err != nil || venue < 16 {
 				t.Fatalf("%s up=%t: route size %d: %v", lane, up, venue, err)
 			}
@@ -301,7 +301,7 @@ func TestEveryEarnStepFitsOneV1Transaction(t *testing.T) {
 			}
 		}
 		request, _, _ := stepTestExit(t, lane, 0)
-		venue, err := stepSwapMaxAccounts(request, SwapCollateralToStableStep)
+		venue, err := stepSwapMaxAccounts(rwa, request, SwapCollateralToStableStep)
 		if err != nil || venue < 16 {
 			t.Fatalf("%s exit: route size %d: %v", lane, venue, err)
 		}
