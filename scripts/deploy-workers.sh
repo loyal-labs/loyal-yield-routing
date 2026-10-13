@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bun run deploy backyard|retail [sha] [--migrations-applied]
+# bun run deploy backyard|retail|observer [sha] [--migrations-applied] [--stopped]
 #
 # Builds the engine from a clean snapshot of an origin/main commit, uploads
 # it to the workers host as /opt/loyal/releases/<family>/<sha>/ and switches
@@ -8,25 +8,30 @@
 # back if the new release does not come up. Then
 # deploy/hetzner/install-rules.sh installs the commit's Prometheus rules,
 # unless the host's come from a commit that is not its ancestor. A sha that
-# already runs only gets the rules step. Production: owner's go-ahead.
+# already runs only gets the rules step. --stopped deploys to a unit the
+# operator stopped on purpose (to apply migrations) and starts it on the new
+# release. Production: owner's go-ahead.
 #
 # The host is the ssh alias in LOYAL_WORKERS_SSH (default loyal-workers); it
 # must log in as root.
 # shellcheck disable=SC2029 # the remote commands are built here on purpose
 set -euo pipefail
 
-usage="usage: bun run deploy backyard|retail [sha] [--migrations-applied]"
+usage="usage: bun run deploy backyard|retail|observer [sha] [--migrations-applied] [--stopped]"
 family=${1:-}
 [[ $# -gt 0 ]] && shift
-if [[ $family != backyard && $family != retail ]]; then
-  echo "$usage" >&2
-  exit 2
-fi
+case $family in
+  backyard | retail) binary_name=loyal-engine ;;
+  observer) binary_name=loyal-observer ;;
+  *) echo "$usage" >&2; exit 2 ;;
+esac
 target=origin/main
 migrations_applied=no
+mode=running
 for arg in "$@"; do
   case $arg in
     --migrations-applied) migrations_applied=yes ;;
+    --stopped) mode=stopped ;;
     -*) echo "$usage" >&2; exit 2 ;;
     *) target=$arg ;;
   esac
@@ -65,7 +70,7 @@ case $arch in
   aarch64) goarch=arm64 ;;
   *) echo "unsupported host architecture $arch" >&2; exit 1 ;;
 esac
-running=$(sed -n "s|^ExecStart=$releases/\([0-9a-f]\{40\}\)/loyal-engine\$|\1|p" <<<"$facts")
+running=$(sed -n "s|^ExecStart=$releases/\([0-9a-f]\{40\}\)/$binary_name\$|\1|p" <<<"$facts")
 if [[ ${#running} -ne 40 ]]; then
   echo "cannot read the running release from $host:$dropin" >&2
   exit 1
@@ -81,7 +86,7 @@ if [[ -n $rules_sha ]] && ! git merge-base --is-ancestor "$rules_sha" "$sha" 2>/
   echo "host rules come from $rules_sha, which is not an ancestor of $sha; leaving them"
 fi
 
-if [[ $running == "$sha" ]]; then
+if [[ $running == "$sha" && $mode == running ]]; then
   state=$(ssh "$host" systemctl is-active "$unit" || true)
   echo "$unit already runs $sha ($state); the engine is unchanged"
   if [[ $state != active ]]; then
@@ -118,29 +123,29 @@ if [[ ! -f $build/deploy/hetzner/activate.sh || ! -f $build/deploy/hetzner/insta
   exit 1
 fi
 
-if [[ $running != "$sha" ]]; then
+if [[ $running != "$sha" || $mode == stopped ]]; then
   GOFLAGS=-buildvcs=false make -C "$build/go/workers" release RELEASE="sha-$sha" GOARCH="$goarch"
-  binary=$build/go/workers/bin/loyal-engine
+  binary=$build/go/workers/bin/$binary_name
   if ! LC_ALL=C grep -qa "sha-$sha" "$binary"; then
     echo "built binary does not carry sha-$sha" >&2
     exit 1
   fi
   sum=$(shasum -a 256 "$binary" | cut -d' ' -f1)
-  echo "built loyal-engine sha-$sha sha256 $sum"
+  echo "built $binary_name sha-$sha sha256 $sum"
 
   dir=$releases/$sha
   ssh "$host" "mkdir -p $dir"
-  scp -q "$binary" "$host:$dir/loyal-engine.tmp"
+  scp -q "$binary" "$host:$dir/$binary_name.tmp"
   scp -q "$build/deploy/hetzner/activate.sh" "$host:$dir/activate.sh.tmp"
-  ssh "$host" "chmod 555 $dir/loyal-engine.tmp $dir/activate.sh.tmp &&
-    mv -f $dir/loyal-engine.tmp $dir/loyal-engine &&
+  ssh "$host" "chmod 555 $dir/$binary_name.tmp $dir/activate.sh.tmp &&
+    mv -f $dir/$binary_name.tmp $dir/$binary_name &&
     mv -f $dir/activate.sh.tmp $dir/activate.sh"
 
   # A transient unit, so the swap finishes even if this ssh session drops; its
   # log is also at /var/log/loyal-deploy/<family>-<sha>.log on the host.
   set +e
   ssh "$host" "systemd-run --unit=loyal-deploy-$family-${sha:0:12} --quiet --wait --pipe --collect \
-    /bin/sh $dir/activate.sh $family $sha $sum"
+    /bin/sh $dir/activate.sh $family $sha $sum $mode"
   status=$?
   set -e
   if [[ $status -ne 0 ]]; then

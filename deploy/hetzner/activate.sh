@@ -1,31 +1,38 @@
 #!/bin/sh
-# activate.sh <family> <sha> <sha256> — switch loyal-<family> (backyard or
-# retail) to an uploaded release. Runs on the host as root, started by
-# scripts/deploy-workers.sh as a transient unit (systemd-run --wait --pipe),
-# so a dropped ssh session cannot cut it off mid-swap. One deploy at a time,
-# any family: it holds the host's deploy lock.
+# activate.sh <family> <sha> <sha256> [stopped] — switch loyal-<family>
+# (backyard, retail or observer) to an uploaded release. Runs on the host as
+# root, started by scripts/deploy-workers.sh as a transient unit
+# (systemd-run --wait --pipe), so a dropped ssh session cannot cut it off
+# mid-swap. One deploy at a time, any family: it holds the host's deploy lock.
 #
-# Backyard stops only when no operation is in flight. Retail has no such
-# gate: a stop leaves its signed rows on their operation rows and the next
-# start lands them. Either way the new release starts from the
-# verified-release drop-in, and the previous drop-in comes back if the new
+# Backyard stops only when no operation is in flight. Retail and the observer
+# have no such gate: a stop leaves retail's signed rows on their operation
+# rows and the next start lands them. Either way the new release starts from
+# the verified-release drop-in, and the previous drop-in comes back if the new
 # release does not come up.
+#
+# A running unit is the normal case. "stopped" says the operator stopped the
+# unit on purpose (to apply migrations): it must be inactive, the deploy
+# starts it on the new release, and a rollback leaves it stopped on the
+# previous drop-in.
 set -eu
 
 family=${1:-}
 sha=${2:-}
 want=${3:-}
-case $family in backyard | retail) ;; *) family=bad ;; esac
+mode=${4:-running}
+case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; *) family=bad ;; esac
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
 case $want in *[!0-9a-f]* | '') want=bad ;; esac
-if [ "$family" = bad ] || [ ${#sha} -ne 40 ] || [ ${#want} -ne 64 ]; then
-	echo "usage: activate.sh backyard|retail <40-hex commit sha> <64-hex sha256>" >&2
+case $mode in running | stopped) ;; *) mode=bad ;; esac
+if [ "$family" = bad ] || [ ${#sha} -ne 40 ] || [ ${#want} -ne 64 ] || [ "$mode" = bad ]; then
+	echo "usage: activate.sh backyard|retail|observer <40-hex commit sha> <64-hex sha256> [stopped]" >&2
 	exit 2
 fi
 unit=loyal-$family
 dropin=/etc/systemd/system/$unit.service.d/40-verified-release.conf
 releases=/opt/loyal/releases/$family
-bin=$releases/$sha/loyal-engine
+bin=$releases/$sha/$binary
 
 # A dropped ssh session closes the pipe to the driver; the swap must go on.
 # Only tee writes to that pipe, and tee -p keeps writing the log without it.
@@ -63,28 +70,32 @@ got=$(sha256sum "$bin" | cut -d' ' -f1)
 [ "$got" = "$want" ] || fail "$bin sha256 is $got, expected $want"
 
 [ -f "$dropin" ] || fail "$dropin is missing; the first install is manual (deploy/hetzner/README.md)"
-prev=$(sed -n "s|^ExecStart=$releases/\([0-9a-f]\{40\}\)/loyal-engine\$|\1|p" "$dropin")
+prev=$(sed -n "s|^ExecStart=$releases/\([0-9a-f]\{40\}\)/$binary\$|\1|p" "$dropin")
 [ ${#prev} -eq 40 ] || fail "cannot read the running release from $dropin"
 state=$(systemctl is-active "$unit" || true)
 if [ "$prev" = "$sha" ] && [ "$state" = active ]; then
 	say "already running $sha"
 	exit 0
 fi
-if [ "$state" != active ]; then
-	fail "$unit is $state before the deploy: someone stopped it on purpose. Start it (or find out why it is down) first."
+if [ "$mode" = running ] && [ "$state" != active ]; then
+	fail "$unit is $state before the deploy: someone stopped it on purpose. Start it (or find out why it is down) first, or deploy with --stopped."
+fi
+if [ "$mode" = stopped ] && [ "$state" = active ]; then
+	fail "--stopped, but $unit is active; nothing changed"
 fi
 
 # Backyard's gate is the new release's own read of the in-flight rows, under
 # the unit's own database credential (its path read from the unit, not here).
 # `systemctl show` prints encrypted credentials as "[unprintable]", so read
-# the unit's own lines. Retail has no gate: in_flight prints 0.
+# the unit's own lines. Retail and the observer have no gate: in_flight
+# prints 0.
 if [ "$family" = backyard ]; then
 	dbcred=$(systemctl cat "$unit" |
 		sed -n 's/^LoadCredentialEncrypted=\(BACKYARD_DATABASE_URL:[^ ]*\)$/\1/p' | tail -n 1)
 	[ -n "$dbcred" ] || fail "no BACKYARD_DATABASE_URL in $unit's LoadCredentialEncrypted"
 fi
 in_flight() {
-	if [ "$family" = retail ]; then
+	if [ "$family" != backyard ]; then
 		echo 0
 		return
 	fi
@@ -93,7 +104,7 @@ in_flight() {
 		"$bin" backyard in-flight </dev/null
 }
 
-if [ "$family" = backyard ]; then
+if [ "$family" = backyard ] && [ "$mode" = running ]; then
 	say "previous release $prev; waiting for no in-flight operation (up to 120 s)"
 	deadline=$(($(date +%s) + 120))
 	while :; do
@@ -108,15 +119,17 @@ else
 	say "previous release $prev"
 fi
 
-say "stopping $unit ($prev)"
-if ! systemctl stop "$unit"; then
-	systemctl start "$unit" || true
-	fail "systemctl stop failed; started $prev again"
+if [ "$mode" = running ]; then
+	say "stopping $unit ($prev)"
+	if ! systemctl stop "$unit"; then
+		systemctl start "$unit" || true
+		fail "systemctl stop failed; started $prev again"
+	fi
 fi
 count=$(in_flight || echo error)
 if [ "$count" != 0 ]; then
-	systemctl start "$unit" || true
-	fail "in-flight after stop is '$count'; restarted $prev"
+	[ "$mode" = stopped ] || systemctl start "$unit" || true
+	fail "in-flight after stop is '$count'; $unit left on $prev ($mode before the deploy)"
 fi
 
 backup=/root/$unit-40-verified-release.conf.$prev.bak
@@ -129,7 +142,11 @@ rollback() {
 	if [ "$count" != 0 ]; then
 		fail "$1; $unit stopped on $sha with '$count' operation(s) in flight; start $sha again to land them before rolling back to $prev"
 	fi
-	if cp -p "$backup" "$dropin" && systemctl daemon-reload && systemctl restart "$unit"; then
+	if [ "$mode" = stopped ]; then
+		if cp -p "$backup" "$dropin" && systemctl daemon-reload; then
+			fail "$1; rolled back to $prev, left stopped as before the deploy"
+		fi
+	elif cp -p "$backup" "$dropin" && systemctl daemon-reload && systemctl restart "$unit"; then
 		fail "$1; rolled back to $prev"
 	fi
 	fail "$1; ROLLBACK TO $prev FAILED, $unit needs a hand now"
@@ -145,8 +162,8 @@ systemctl start "$unit" || true
 
 # Backyard is up when this start logged its worker start under the new
 # release and has not restarted (an explicit start resets NRestarts).
-# Retail logs no release, so it is up when it is still active with no
-# restart 20 s after the start.
+# Retail and the observer are up when they are still active with no restart
+# 20 s after the start.
 started=no
 if [ "$family" = backyard ]; then
 	deadline=$(($(date +%s) + 60))
