@@ -64,22 +64,23 @@ func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool
 // (level-1) x the spread at that level. The single source for the leverage
 // watch summary ('apy 1.75x=') and the published currentApy, so the
 // dashboard and the app never disagree.
-func leverageLevelAPY(m LaneEconomics, level float64, equityRaw int64, source bool, observed ...Snapshot) (float64, bool) {
+func leverageLevelAPY(m LaneEconomics, level float64, equityRaw int64, source bool, feeBPS int64, observed ...Snapshot) (float64, bool) {
 	spread, ok := leverageSpread(m, level, equityRaw, source, observed...)
 	if !ok {
 		return 0, false
 	}
-	return performanceFeeForecast(m.NativeAPY + m.SupplyAPY + (level-1)*spread), true
+	return performanceFeeForecast(m.NativeAPY+m.SupplyAPY+(level-1)*spread, feeBPS), true
 }
 
-// performanceFeeForecast estimates continuous fee-paying annual growth, not
-// realized fees or a universal HWM bound. Losses never receive a fee rebate.
-// Money selection uses a separate asset/fee-LP rounding reserve.
-func performanceFeeForecast(apy float64) float64 {
-	if apy <= 0 {
+// performanceFeeForecast estimates continuous fee-paying annual growth at
+// the vault's admin performance fee, not realized fees or a universal HWM
+// bound. Losses never receive a fee rebate, and no fee leaves the APY as it
+// is. Money selection uses a separate asset/fee-LP rounding reserve.
+func performanceFeeForecast(apy float64, feeBPS int64) float64 {
+	if apy <= 0 || feeBPS == 0 {
 		return apy
 	}
-	return math.Expm1((1 - float64(approvedAdminPerformanceFeeBPS)/10_000) * math.Log1p(apy))
+	return math.Expm1((1 - float64(feeBPS)/10_000) * math.Log1p(apy))
 }
 
 // nextLeverageLevel applies at most one step from the current level.
@@ -127,7 +128,7 @@ type leverageWatchLane struct {
 
 // observe returns one line per virtual move and, when summary is set, one
 // line with each lane's spread and APY by level.
-func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equityRaw int64, summary bool, observed ...Snapshot) []string {
+func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equityRaw int64, summary bool, feeBPS int64, observed ...Snapshot) []string {
 	if w.levels == nil {
 		w.levels = map[string]float64{}
 	}
@@ -167,7 +168,7 @@ func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equi
 			}
 			parts := []string{}
 			for _, level := range leverageWatchLevels {
-				if apy, ok := leverageLevelAPY(m, level, equityRaw, source, observed...); ok {
+				if apy, ok := leverageLevelAPY(m, level, equityRaw, source, feeBPS, observed...); ok {
 					bps := int64(math.Round(apy * 10_000))
 					lane.APYBPS[fmt.Sprintf("%.2f", level)] = bps
 					parts = append(parts, fmt.Sprintf("%.2fx=%.2f", level, float64(bps)/100))

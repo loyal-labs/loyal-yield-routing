@@ -51,11 +51,16 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 			return e.Gain, true
 		}
 		wealth := float64(s.TotalVaultNAVRaw)
-		return wealth * performanceFeeForecast(e.Gain/wealth), true // projection only
+		return wealth * performanceFeeForecast(e.Gain/wealth, s.ApprovedAdminPerformanceFeeBPS), true // projection only
 	}
 	if horizon <= 0 || !selectorFeeBaselineKnown(s) || !finite(idle) || idle < 0 ||
 		!finite(e.PositiveIncome) || e.PositiveIncome < 0 || e.InitialNAV <= 0 {
 		return 0, false
+	}
+	// A vault approved at no fee crystallizes nothing: no fee, no rounding,
+	// no fee LP, so nothing is reserved.
+	if s.ApprovedAdminPerformanceFeeBPS == 0 {
+		return e.Gain, true
 	}
 	initial, ending := idle+e.InitialNAV, idle+e.EndingNAV
 	maxNAV := math.Ceil(math.Nextafter(max(float64(s.TotalVaultNAVRaw), initial+e.PositiveIncome), math.Inf(1)))
@@ -75,7 +80,7 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 	}
 	eligible := new(big.Int).Add(big.NewInt(int64(income)), dustRaw)
 	eligible.Add(eligible, big.NewInt(max(s.TotalVaultNAVRaw-s.VoltrTotalValueRaw, 0)))
-	fee := new(big.Rat).SetFrac(new(big.Int).Mul(eligible, big.NewInt(approvedAdminPerformanceFeeBPS)), big.NewInt(10_000))
+	fee := new(big.Rat).SetFrac(new(big.Int).Mul(eligible, big.NewInt(s.ApprovedAdminPerformanceFeeBPS)), big.NewInt(10_000))
 	unit := new(big.Rat).SetFrac(big.NewInt(int64(maxNAV)), big.NewInt(s.LPSupplyInclFeesRaw))
 	// HWM truncation can leave <S/2^48 eligible asset raw after EACH
 	// report, not just the baseline. Bootstrap S <= 2*S0*maxNAV/minNAV:
@@ -84,7 +89,7 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 	dustPerReport := new(big.Rat).SetFrac(
 		new(big.Int).Mul(new(big.Int).Lsh(big.NewInt(s.LPSupplyInclFeesRaw), 1), big.NewInt(int64(maxNAV))),
 		new(big.Int).Mul(big.NewInt(int64(minNAV)), scale))
-	dustPerReport.Mul(dustPerReport, big.NewRat(approvedAdminPerformanceFeeBPS, 10_000))
+	dustPerReport.Mul(dustPerReport, big.NewRat(s.ApprovedAdminPerformanceFeeBPS, 10_000))
 	unit.Add(unit, big.NewRat(1, 1)).Add(unit, dustPerReport).Mul(unit, big.NewRat(selectorFeeReportBound(horizon), 1))
 	fee.Add(fee, unit).Mul(fee, new(big.Rat).SetFrac(big.NewInt(int64(maxNAV)), big.NewInt(int64(minNAV))))
 	reserve := new(big.Int).Add(fee.Num(), new(big.Int).Sub(fee.Denom(), big.NewInt(1)))

@@ -25,7 +25,7 @@ func TestCapacityReviewBenchmarkMissingPriceAndUSDC(t *testing.T) {
 		t.Fatal("non-par benchmark silently assumed parity")
 	}
 	var watch leverageWatch
-	watch.observe([]LaneEconomics{m}, m.Lane, 100_000_000, true)
+	watch.observe([]LaneEconomics{m}, m.Lane, 100_000_000, true, rwa.AdminPerformanceFeeBPS)
 	if len(watch.summary) != 1 || watch.summary[0].SpreadBPS != nil {
 		t.Fatal("missing price persisted a numeric hypothetical spread")
 	}
@@ -35,7 +35,7 @@ func TestCapacityReviewBenchmarkMissingPriceAndUSDC(t *testing.T) {
 	if _, present := watch.summary[0].APYBPS["1.00"]; !present {
 		t.Fatal("missing price removed unaffected 1x benchmark")
 	}
-	if _, ok := leverageLevelAPY(m, 1, 100_000_000, false); !ok {
+	if _, ok := leverageLevelAPY(m, 1, 100_000_000, false, rwa.AdminPerformanceFeeBPS); !ok {
 		t.Fatal("debt-free benchmark needs no conversion")
 	}
 	s := Snapshot{RouteLane: autoAUTOPYUSD.Lane, HasPosition: true, PositionCollateralValueRaw: 140_000_000, PositionDebtValueRaw: 40_000_000, PositionDebtRaw: 50_000_000}

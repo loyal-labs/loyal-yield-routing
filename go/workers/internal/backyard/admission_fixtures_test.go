@@ -532,7 +532,7 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 		// staging has not yet changed Voltr's book or consumed its ticket.
 		upsertConfirmedAccount(&accounts, strategyReceiptFixture(t, 94_000_000))
 		upsertConfirmedAccount(&accounts, voltrVaultFixture(t, 94_000_000))
-		binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[514:516], uint16(approvedAdminPerformanceFeeBPS))
+		binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[514:516], uint16(rwa.AdminPerformanceFeeBPS))
 		upsertConfirmedAccount(&accounts, exactReportTicketAccount(t, 40))
 		var err error
 		o, _, err = autoObservationForAccounts(m, 42, accounts)(context.Background())

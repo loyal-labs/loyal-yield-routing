@@ -17,7 +17,7 @@ func monitorSnapshot(t *testing.T, mutate func(accounts []ConfirmedAccount, s *S
 	accounts := routeNAVFixture(t, 77)
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeVoltrVault).Data[168:176], 53)
-	binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[514:516], uint16(approvedAdminPerformanceFeeBPS))
+	binary.LittleEndian.PutUint16(accountAt(accounts, bridgeVoltrVault).Data[514:516], uint16(rwa.AdminPerformanceFeeBPS))
 	nav, err := ComputeRouteNAV(77, accounts, readyWorkerManifest(t), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +26,8 @@ func monitorSnapshot(t *testing.T, mutate func(accounts []ConfirmedAccount, s *S
 		RouteLane: PhaseOneLaneID, StrategyKey: PhaseOneLaneID,
 		VoltrIdleRaw: int64(nav.Custodies.VoltrIdleRaw), VoltrStrategyIdleRaw: int64(nav.Custodies.StrategyUSDCraw),
 		SquadsIdleRaw: int64(nav.Custodies.SquadsUSDCraw), PrimeIdleRaw: int64(nav.Custodies.SquadsPRIMEraw),
-		CollateralIdleRaw: int64(nav.Custodies.SquadsPRIMEraw), StrategyNAVRaw: int64(nav.StrategyNAVRaw)}
+		CollateralIdleRaw: int64(nav.Custodies.SquadsPRIMEraw), StrategyNAVRaw: int64(nav.StrategyNAVRaw),
+		ApprovedAdminPerformanceFeeBPS: rwa.AdminPerformanceFeeBPS}
 	if err := applyRouteNAVSnapshot(&s, nav, time.Now()); err != nil {
 		t.Fatal(err)
 	}
