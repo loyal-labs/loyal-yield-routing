@@ -1,6 +1,8 @@
 -- Every Autodeposit target is a mainnet target: no row has a NULL cluster,
 -- and the workers only ever ran against mainnet. A NULL or devnet cluster was
 -- a case every reader had to refuse.
+SET LOCAL lock_timeout = '5s';
+
 ALTER TABLE loyal_yield.balance_sweep_targets
     DROP CONSTRAINT balance_sweep_targets_cluster_check,
     ALTER COLUMN cluster SET NOT NULL,

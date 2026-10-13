@@ -28,36 +28,36 @@ type LiveVaultPosition struct {
 }
 
 // resolveDepositReserve picks a fresh claim's destination from the vault's
-// observed holdings, the observer's one projection of them: the one reserve
-// that holds a position. A fleet rebalance moves the whole holding, so the
-// deposit follows it and never recreates a position the fleet drains again
-// (ASK-2051). A vault that holds nothing takes the default reserve; a vault
-// that holds more than one reserve, or a reserve in another mint, refuses the
-// pull. A user who withdrew everything never reaches this on automatic work
-// (see VaultWithdrawn); only their explicit request deposits again.
+// observed holdings, the observer's one projection of them, with no stored
+// pointer: of the reserves in the deposit's mint that hold a position, the
+// largest, ties broken by reserve address. A fleet rebalance moves the
+// holding, so the deposit follows it and never recreates a position the fleet
+// drains again (ASK-2051); a vault split across reserves (85 production
+// vaults) deposits where most of it already is. A vault that holds nothing in
+// the deposit's mint takes the default reserve, which exists for USDC only. A
+// user who withdrew everything never reaches this on automatic work (see
+// VaultWithdrawn); only their explicit request deposits again.
 func resolveDepositReserve(tokenMint string, positions []LiveVaultPosition) (*LiveVaultPosition, error) {
-	var live []LiveVaultPosition
-	var liveReserves []string
-	for _, position := range positions {
-		if position.AmountRaw > 0 {
-			live = append(live, position)
-			liveReserves = append(liveReserves, position.Reserve)
+	var best *LiveVaultPosition
+	for i := range positions {
+		position := &positions[i]
+		if position.AmountRaw <= 0 || position.LiquidityMint != tokenMint {
+			continue
+		}
+		if best == nil || position.AmountRaw > best.AmountRaw || position.AmountRaw == best.AmountRaw && position.Reserve < best.Reserve {
+			best = position
 		}
 	}
 	refuse := func(reason string) (*LiveVaultPosition, error) {
-		detail, _ := json.Marshal(map[string]any{"reason": reason, "tokenMint": tokenMint, "liveReserves": liveReserves})
+		detail, _ := json.Marshal(map[string]any{"reason": reason, "tokenMint": tokenMint})
 		return nil, fmt.Errorf("%w; refusing to pull. resolution=%s", ErrUnresolvedCurrentReserve, detail)
 	}
 	switch {
-	case len(live) > 1:
-		return refuse("multiple_live_positions")
-	case len(live) == 1 && live[0].LiquidityMint != tokenMint:
-		return refuse("liquidity_mint_mismatch")
-	case len(live) == 1 && live[0].Market == "":
+	case best != nil && best.Market == "":
 		// The TS loader threw on a row without its market.
 		return refuse("missing_market")
-	case len(live) == 1:
-		return &live[0], nil
+	case best != nil:
+		return best, nil
 	case tokenMint != USDCMint:
 		return refuse("default_reserve_mint_mismatch")
 	}

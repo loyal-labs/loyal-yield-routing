@@ -334,11 +334,10 @@ VALUES ($1, $2, 'itest-wallet', 'itest-wallet-ata', 'itest-wallet-ata', 7000000,
 }
 
 // A fleet rebalance moves the vault's holding without touching the position
-// row (production: 238 active positions named a reserve the vault no longer
-// held). The destination is the vault's one live reserve, and finalization
-// keyed on (settings, vault_index, initial_reserve) inserted a second active
-// row for it (147 vaults, 309 rows).
-func TestControllerDepositsIntoTheLiveReserveAndKeepsOnePosition(t *testing.T) {
+// pointer (production: 238 active positions named a reserve the vault no
+// longer held). The destination is the vault's live reserve, read from the
+// observed holdings; the pointer is neither read nor written.
+func TestControllerDepositsIntoTheLiveReserve(t *testing.T) {
 	store := integrationStore(t)
 	ctx := context.Background()
 	seeded, slot := seedFreshControllerTarget(t, store, "moved")
@@ -373,48 +372,60 @@ func TestControllerDepositsIntoTheLiveReserveAndKeepsOnePosition(t *testing.T) {
 	if code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot}); err != nil || code != ResultCompleted {
 		t.Fatalf("moved controller outcome=%v error=%v", code, err)
 	}
-	var planReserve, current, initial string
-	var positions, principal, holding int64
-	if err := store.pool.QueryRow(ctx, `
-SELECT claim.autodeposit_deposit_plan->>'reserve', yp.current_reserve, yp.initial_reserve, yp.principal_amount_raw, yp.current_amount_raw,
-       (SELECT count(*) FROM loyal_yield.user_yield_positions AS all_rows WHERE all_rows.settings = target.settings AND all_rows.vault_index = target.vault_index)
-FROM loyal_yield.balance_sweep_lot_claims AS claim
-JOIN loyal_yield.balance_sweep_targets AS target ON target.id = claim.target_id
-JOIN loyal_yield.user_yield_positions AS yp ON yp.settings = target.settings AND yp.vault_index = target.vault_index AND yp.status = 'active'
-WHERE claim.target_id=$1`, seeded.TargetID).Scan(&planReserve, &current, &initial, &principal, &holding, &positions); err != nil {
+	var planReserve string
+	if err := store.pool.QueryRow(ctx, `SELECT autodeposit_deposit_plan->>'reserve' FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1`, seeded.TargetID).Scan(&planReserve); err != nil {
 		t.Fatal(err)
 	}
 	if planReserve != "moved-reserve" {
 		t.Fatalf("deposit planned into %q, want the live moved-reserve", planReserve)
 	}
-	// Finalization after the reserve change updates the vault's one position:
-	// its holding moves to the new reserve, its principal grows by the deposit,
-	// and no second row is inserted for the new reserve.
-	if positions != 1 || current != "moved-reserve" || initial != "fresh-reserve" || principal != 5_000_001 || holding != 12_000_000 {
-		t.Fatalf("positions=%d current=%s initial=%s principal=%d holding=%d, want one row moved to moved-reserve", positions, current, initial, principal, holding)
-	}
 }
 
-// Without one fresh live position there is no destination to trust: the
-// claim is released before any pull wire exists.
-func TestControllerRefusesPullWhenLiveReserveIsAmbiguous(t *testing.T) {
+// A vault split across reserves (85 production vaults) deposits into its
+// largest live reserve in the deposit's mint; it does not refuse.
+func TestControllerDepositsIntoTheLargestOfTwoLiveReserves(t *testing.T) {
 	store := integrationStore(t)
 	ctx := context.Background()
-	seeded, slot := seedFreshControllerTarget(t, store, "ambiguous")
+	seeded, slot := seedFreshControllerTarget(t, store, "split")
 	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.vault_reserve_positions_current SET amount_raw=0, has_value=false WHERE vault_id=$1 AND reserve='fresh-reserve'`, seeded.ManagedVaultID); err != nil {
 		t.Fatal(err)
 	}
 	seedLiveVaultPosition(t, store, seeded, "live-a", "market-a", 3_000_000, time.Now())
 	seedLiveVaultPosition(t, store, seeded, "live-b", "market-b", 4_000_000, time.Now())
-	chain := &scriptedControllerChain{balances: map[string]int64{"itest-wallet-usdc-ambiguous": 9_000_000, "itest-vault-usdc-ambiguous": 0}}
-	wires := &scriptedControllerWires{suffix: "-ambiguous"}
+	wallet, custody := "itest-wallet-usdc-split", "itest-vault-usdc-split"
+	pull, topup := "itest-controller-pull-sig-split", "itest-controller-topup-sig-split"
+	chain := &scriptedControllerChain{
+		balances: map[string]int64{wallet: 9_000_000, custody: 0},
+		observations: map[string]AttemptObservation{
+			pull:  {State: AttemptConfirmed, ConfirmedSlot: ptrInt64(870_301)},
+			topup: {State: AttemptConfirmed, ConfirmedSlot: ptrInt64(870_302)},
+		},
+		receipts: map[string]ReceiptEvidence{
+			pull: {Signature: pull, Slot: 870_301, Effects: []ReceiptEffect{
+				{TokenAccount: wallet, Mint: USDCMint, PreRaw: 9_000_000, PostRaw: 4_000_000},
+				{TokenAccount: custody, Mint: USDCMint, PreRaw: 0, PostRaw: 5_000_000},
+			}},
+			topup: {Signature: topup, Slot: 870_302, Effects: []ReceiptEffect{
+				{TokenAccount: custody, Mint: USDCMint, PreRaw: 5_000_000, PostRaw: 0},
+				{TokenAccount: "itest-liquidity-supply", Mint: USDCMint, PreRaw: 10, PostRaw: 5_000_010},
+			}},
+		},
+		positions: map[string][2]int64{"live-b": {9_000_000, 870_302}},
+	}
+	wires := &scriptedControllerWires{suffix: "-split"}
 	controller, err := NewController(ControllerDependencies{Store: store, Chain: chain, Wires: wires, Facts: testFacts()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot})
-	if code != ResultPreflightBlocked || !errors.Is(err, ErrUnresolvedCurrentReserve) || len(wires.built) != 0 {
-		t.Fatalf("ambiguous reserve outcome=%v error=%v wires=%v, want released before any wire", code, err, wires.built)
+	if code, err := controller.Execute(ctx, ExecutableTarget{TargetID: seeded.TargetID, ScheduledSlotID: slot}); err != nil || code != ResultCompleted {
+		t.Fatalf("split vault outcome=%v error=%v", code, err)
+	}
+	var planReserve string
+	if err := store.pool.QueryRow(ctx, `SELECT autodeposit_deposit_plan->>'reserve' FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1`, seeded.TargetID).Scan(&planReserve); err != nil {
+		t.Fatal(err)
+	}
+	if planReserve != "live-b" {
+		t.Fatalf("deposit planned into %q, want the larger live-b", planReserve)
 	}
 }
 

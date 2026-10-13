@@ -89,13 +89,10 @@ func TestKLendGoldenParityWithRustProxy(t *testing.T) {
 	if err = json.Unmarshal(raw, &cases); err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) < 30 {
+	if len(cases) < 28 {
 		t.Fatalf("golden record has only %d cases", len(cases))
 	}
 	for _, c := range cases {
-		if c.Operation == "buildCanonicalSubscriptionPolicy" {
-			continue // autodeposit owns this builder; see its golden test.
-		}
 		t.Run(c.Name, func(t *testing.T) {
 			route, err := buildKLendGolden(c.Operation, c.Request)
 			if c.Error != "" {

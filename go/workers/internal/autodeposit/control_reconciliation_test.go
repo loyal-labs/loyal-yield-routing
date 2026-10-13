@@ -2,85 +2,31 @@ package autodeposit
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/binary"
 	"testing"
 	"time"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
-	"github.com/solana-foundation/solana-go/v2"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 	ctx := context.Background()
-	settings, wallet, mint := mustKey(fixedKey("control-settings")), mustKey(fixedKey("control-wallet")), mustKey(USDCMint)
-	vault, _, err := squads.SmartAccountAddress(settings, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	walletKey, _ := spl.AssociatedTokenAddress(wallet, mint, solana.TokenProgramID)
-	vaultKey, _ := spl.AssociatedTokenAddress(vault, mint, solana.TokenProgramID)
-	walletATA, vaultATA := walletKey.String(), vaultKey.String()
-	authority, _ := subscriptionAuthorityKey(wallet[:], mint[:])
-	nonce := int64(7)
-	budget := int64(5_000_000)
-	delegation, _ := delegationAccountKey(authority[:], wallet[:], vault[:], uint64(nonce))
-	event, _ := subscriptionEventAuthorityKey()
-	policy, bump, _ := squads.PolicyAddress(settings, 9)
-	target := ControlTarget{TargetID: 1, SetupGeneration: 1, PolicySeed: 9, Settings: settings.String(), Wallet: wallet.String(), WalletTokenATA: walletATA, Vault: vault.String(), VaultTokenATA: vaultATA, Mint: USDCMint, Policy: policy.String(), SubscriptionAuthority: base58Key(authority[:]), RecurringDelegation: base58Key(delegation[:]), Nonce: nonce, MaxAmountPerPeriod: &budget}
-	data := make([]byte, 73)
-	data[0] = 5
-	binary.LittleEndian.PutUint64(data[1:9], uint64(budget))
-	copy(data[9:41], wallet[:])
-	copy(data[41:], mint[:])
-	inner := fleet.RouteInstruction{Program: SubscriptionsProgramID, Data: data, Accounts: []fleet.InstructionAccount{{Address: target.RecurringDelegation, Writable: true}, {Address: target.SubscriptionAuthority}, {Address: walletATA, Writable: true}, {Address: vaultATA, Writable: true}, {Address: USDCMint}, {Address: splTokenID}, {Address: target.Vault, Signer: true}, {Address: base58Key(event[:])}, {Address: SubscriptionsProgramID}}}
-	key := ed25519.NewKeyFromSeed(make([]byte, 32))
-	policyData, err := fleet.BuildExactPolicyFixture(target.Settings, solana.PrivateKey(key).PublicKey().String(), 1, []fleet.RouteInstruction{inner})
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary.LittleEndian.PutUint64(policyData[40:48], 9)
-	policyData[48] = bump
-	tokenData := make([]byte, 165)
-	copy(tokenData[:32], mint[:])
-	copy(tokenData[32:64], wallet[:])
-	binary.LittleEndian.PutUint64(tokenData[64:72], 9_000_000)
-	binary.LittleEndian.PutUint32(tokenData[72:76], 1)
-	copy(tokenData[76:108], authority[:])
-	tokenData[108] = 1
-	accounts := []testAccount{{Address: target.Policy, Owner: squads.ProgramID.String(), Data: policyData}, {Address: target.SubscriptionAuthority, Owner: SubscriptionsProgramID}, {Address: target.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(target.Wallet, target.Vault, USDCMint, uint64(budget), 0)}, {Address: walletATA, Owner: splTokenID, Data: tokenData}}
-	builder, err := NewSweepWireBuilder(key, func(_ context.Context, minSlot int64, _ []string, _ ...string) (int64, []*chain.Account, error) {
-		if minSlot > 100 {
-			return 0, nil, chain.ErrBehind
-		}
-		out := make([]*chain.Account, len(accounts))
-		for i, account := range accounts {
-			out[i] = account.chainAccount()
-		}
-		return 100, out, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	observation, err := builder.ObserveControl(ctx, target, 100)
+	f, target, builder := controlFixture(t)
+	accounts := installControlSnapshot(t, f, builder, uint64(f.MaxAmountPerPeriod))
+	observation, err := builder.ObserveControl(ctx, target, 200)
 	if err != nil || observation.status() != "active" || observation.WalletBalanceRaw != 9_000_000 {
 		t.Fatalf("actual artifacts observation=%+v err=%v", observation, err)
 	}
-	if _, err = builder.ObserveControl(ctx, target, 101); err == nil {
+	if _, err = builder.ObserveControl(ctx, target, 201); err == nil {
 		t.Fatal("RPC below minimum slot accepted")
 	}
-	accounts[3].Data[76] ^= 1
-	observation, err = builder.ObserveControl(ctx, target, 100)
+	accounts[f.WalletATA].Data[76] ^= 1
+	observation, err = builder.ObserveControl(ctx, target, 200)
 	if err != nil || observation.status() != "inconsistent" {
 		t.Fatalf("foreign token delegate observation=%+v err=%v", observation, err)
 	}
-	accounts[3].Data[76] ^= 1
-	accounts[0].Owner = systemProgramZero
-	if _, err = builder.ObserveControl(ctx, target, 100); err == nil {
+	accounts[f.WalletATA].Data[76] ^= 1
+	policy := accounts[f.Policy]
+	policy.Owner = systemProgramZero
+	accounts[f.Policy] = policy
+	if _, err = builder.ObserveControl(ctx, target, 200); err == nil {
 		t.Fatal("foreign policy activated target")
 	}
 }

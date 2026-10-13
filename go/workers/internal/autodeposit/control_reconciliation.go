@@ -112,6 +112,8 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 	}
 	o.PolicyExists = accounts[0] != nil
 	o.DelegationExists = accounts[2] != nil
+	var policyCap uint64
+	var capped bool
 	if o.PolicyExists {
 		if accounts[0].Owner != squads.ProgramID {
 			return o, errors.New("control policy has foreign owner")
@@ -130,6 +132,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		if _, err = fleet.BuildPolicyEnvelope(target.Policy, target.Settings, b.delegate.String(), accounts[0], []fleet.RouteInstruction{inner}); err != nil {
 			return o, err
 		}
+		policyCap, capped = policyBudgetCap(decoded.Constraints)
 		o.PolicyValid = true
 	}
 	if accounts[1] != nil {
@@ -146,6 +149,12 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 			return o, errors.New("control delegation budget differs from target")
 		}
 		o.DelegationValid = true
+		// The envelope match ignores account-data constraints, so the policy's
+		// per-period cap is checked here, chain against chain: a policy that
+		// cannot authorize the delegation's whole budget cannot run its pulls.
+		if o.PolicyExists && (!capped || policyCap < binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:])) {
+			o.PolicyValid = false
+		}
 	}
 	if accounts[3] != nil {
 		held, err := usdcTokenAccount(accounts[3], target.Wallet)
@@ -158,6 +167,25 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		o.TokenDelegateValid = held.Delegate != nil && held.Delegate.String() == target.SubscriptionAuthority
 	}
 	return o, nil
+}
+
+// policyBudgetCap is the per-period amount the Autodeposit policy lets a
+// transfer_recurring draw: its "at most" constraint on the delegation
+// account's per-period field.
+func policyBudgetCap(constraints []squads.InstructionConstraintView) (uint64, bool) {
+	for _, instruction := range constraints {
+		if instruction.ProgramID.String() != SubscriptionsProgramID {
+			continue
+		}
+		for _, account := range instruction.AccountConstraints {
+			for _, data := range account.AccountData {
+				if account.AccountIndex == 0 && data.DataOffset == delegationPerPeriodOffset && data.DataValue.Kind == 3 && data.Operator == squads.OpLessThanOrEqualTo {
+					return data.DataValue.U64, true
+				}
+			}
+		}
+	}
+	return 0, false
 }
 
 type ControlReader interface {

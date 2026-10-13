@@ -358,7 +358,7 @@ FOR UPDATE SKIP LOCKED`, targetID, USDCMint, scheduledSlotID)
 }
 
 // moveResidualOpenLots keeps unswept open lots schedulable on the target's
-// one open slot once their slot is taken by a claim, so a partial sweep never
+// one scheduled slot once their slot is taken by a claim, so a partial sweep never
 // strands the remainder behind a selected slot.
 func moveResidualOpenLots(ctx context.Context, tx pgx.Tx, targetID, selectedSlotID int64) error {
 	var due *time.Time
@@ -640,9 +640,9 @@ WHERE claim.claim_token = $1`, claimToken, leaseToken, ClaimHoldingPullAttemptSt
 
 // releaseClaimCustody returns an unspent claim's lots to the open pool, ends
 // the claim and schedules its slot again, neither eligible before delay. The
-// target's other open slot, which took inflows and the claim's residual lots
-// while the claim held its slot, merges back into it (and hands over a user
-// request), so the target keeps one open slot. Failing the slot instead left
+// target's scheduled slot, which took inflows and the claim's residual lots
+// while the claim held its slot, merges back into it, so the target keeps one
+// scheduled slot. A requested slot is left alone. Failing the slot instead left
 // one dead slot per attempt and stranded its lots, so a target blocked at
 // preflight grew ~540 slots a day (target 7940, Oct 2026).
 func releaseClaimCustody(ctx context.Context, tx pgx.Tx, claimToken string, delay time.Duration) (bool, error) {
@@ -687,42 +687,31 @@ FOR UPDATE`, claimToken).Scan(&slotID, &targetID)
 		return false, fmt.Errorf("lock released autodeposit slot: %w", err)
 	}
 	// While the claim held its slot, inflows and its residual lots went to the
-	// target's one other open slot; it merges back here.
-	var otherID int64
-	var otherRequested bool
-	var otherSource *string
-	var otherRequestedAt, otherDue *time.Time
-	err = tx.QueryRow(ctx, `
-SELECT id, status = 'requested', request_source, requested_at, eligible_after
-FROM loyal_yield.balance_sweep_scheduled_slots
-WHERE target_id = $2 AND id <> $1 AND status IN ('scheduled', 'requested')
-FOR UPDATE`, slotID, targetID).Scan(&otherID, &otherRequested, &otherSource, &otherRequestedAt, &otherDue)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return false, fmt.Errorf("lock open autodeposit slot after release: %w", err)
-	}
-	if err == nil {
-		if _, err := tx.Exec(ctx, `
-WITH merged_lots AS (
+	// target's scheduled slot; it merges back here, first, so the released
+	// slot is never a second scheduled one.
+	var mergedDue *time.Time
+	if err := tx.QueryRow(ctx, `
+WITH other AS (
+    UPDATE loyal_yield.balance_sweep_scheduled_slots
+    SET status = 'canceled', last_error = 'merged back into released slot ' || $1::bigint, updated_at = now()
+    WHERE target_id = $2 AND id <> $1 AND status = 'scheduled'
+    RETURNING id, eligible_after
+), merged_lots AS (
     UPDATE loyal_yield.balance_sweep_surplus_lots
     SET scheduled_slot_id = $1, updated_at = now()
-    WHERE scheduled_slot_id = $2 AND status = 'open'
+    WHERE scheduled_slot_id IN (SELECT id FROM other) AND status = 'open'
 )
-UPDATE loyal_yield.balance_sweep_scheduled_slots
-SET status = 'canceled', last_error = 'merged back into released slot ' || $1::bigint, updated_at = now()
-WHERE id = $2`, slotID, otherID); err != nil {
-			return false, fmt.Errorf("merge open autodeposit slot after release: %w", err)
-		}
+SELECT max(eligible_after) FROM other`, slotID, targetID).Scan(&mergedDue); err != nil {
+		return false, fmt.Errorf("merge scheduled autodeposit slot after release: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_scheduled_slots
-SET status = CASE WHEN $3 THEN 'requested'::loyal_yield.balance_sweep_scheduled_slot_status ELSE 'scheduled' END,
-    request_source = COALESCE($4, request_source),
-    requested_at = COALESCE($5, requested_at),
+SET status = 'scheduled',
     claim_token = NULL,
-    eligible_after = GREATEST(eligible_after, now() + $2 * interval '1 second', $6),
+    eligible_after = GREATEST(eligible_after, now() + $2 * interval '1 second', $3),
     last_error = 'claim released before autodeposit pull',
     updated_at = now()
-WHERE id = $1`, slotID, seconds, otherRequested, otherSource, otherRequestedAt, otherDue); err != nil {
+WHERE id = $1`, slotID, seconds, mergedDue); err != nil {
 		return false, fmt.Errorf("reschedule autodeposit slot after release: %w", err)
 	}
 	return true, nil

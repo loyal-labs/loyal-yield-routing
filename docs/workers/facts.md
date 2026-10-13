@@ -59,7 +59,7 @@ These need no change:
 - `realtime_events`: written by triggers (rule 5); `realtime_configuration` is the config those triggers read.
 
 These change:
-- **`user_yield_positions` and `user_yield_position_holding_events`:** the observer becomes the only writer. Deleted are writes from `fleetexec/position_sweep_store.go:279,287`, `finalize_confirmed_autodeposit` and app routes. Done: Autodeposit no longer reads or writes the position's reserve pointer (its destination is `vault_reserve_positions_current`), and a vault has one active row (0109: unique on `(settings, vault_index) WHERE status = 'active'`; finalize and the observer key on it).
+- **`user_yield_positions` and `user_yield_position_holding_events`:** the observer becomes the only writer. Deleted are writes from `fleetexec/position_sweep_store.go:279,287`, `finalize_confirmed_autodeposit` and app routes. Done: Autodeposit neither reads nor writes the position's reserve pointer; its destination is `vault_reserve_positions_current`.
 - **`earn_reconciliation_jobs`:** today an observer queue with claim leases, retries and dead-lettering. It is deleted; the observer applies stream events idempotently by slot.
 
 ### Infrastructure (kept)

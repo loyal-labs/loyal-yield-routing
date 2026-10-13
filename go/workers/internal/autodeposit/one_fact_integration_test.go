@@ -30,33 +30,6 @@ func TestDelegationWithoutNonceIsRefused(t *testing.T) {
 	requireConstraint(t, err, "23514")
 }
 
-// A vault has one position: a second active row for the same (settings,
-// vault_index) is refused whatever reserve it names.
-func TestOneActivePositionPerVault(t *testing.T) {
-	s := integrationStore(t)
-	target := seedIntegrationTarget(t, s, "one-position")
-	insert := func(reserve, status string) error {
-		_, err := s.pool.Exec(t.Context(), `
-INSERT INTO loyal_yield.user_yield_positions (
- wallet_address, smart_account_address, settings, vault_index, vault_pubkey,
- policy_id, policy_account, policy_seed, initial_reserve, initial_market, initial_liquidity_mint,
- deposit_mint, principal_amount_raw, current_reserve, current_market, current_liquidity_mint,
- current_amount_raw, current_observed_slot, current_observed_at,
- first_deposit_signature, last_deposit_signature, last_confirmed_slot, status, created_at, updated_at)
-SELECT wallet, vault_pubkey, settings, vault_index, vault_pubkey, 7, policy_account, 7, $2, 'market', $3,
- $3, 1, $2, 'market', $3, 1, 1, now(), $2, $2, 1, $4::text::loyal_yield.yield_position_status, now(), now()
-FROM loyal_yield.balance_sweep_targets WHERE id=$1`, target.TargetID, reserve, USDCMint, status)
-		return err
-	}
-	if err := insert("reserve-a", "active"); err != nil {
-		t.Fatal(err)
-	}
-	if err := insert("reserve-closed", "closed"); err != nil {
-		t.Fatal(err)
-	}
-	requireConstraint(t, insert("reserve-b", "active"), "23505")
-}
-
 // A slot whose lots all drained is not reused: the next lot opens a fresh
 // slot, so an old idle block or deferral never applies to new money.
 func TestNewLotOnDrainedSlotOpensAFreshSlot(t *testing.T) {
@@ -86,6 +59,35 @@ func TestNewLotOnDrainedSlotOpensAFreshSlot(t *testing.T) {
 	}
 	if fresh == old || oldStatus != "canceled" || blocked != nil || lotSlot != fresh {
 		t.Fatalf("new lot inherited the drained slot: old=%d (%s) fresh=%d blocked=%v lot slot=%d", old, oldStatus, fresh, blocked, lotSlot)
+	}
+}
+
+// A requested slot is a "Deposit now" being executed, not a place for new
+// lots: an inflow opens the target's scheduled slot beside it and leaves the
+// request's due date alone, so the request is neither pushed nor timed out.
+func TestNewLotBesideARequestedSlotOpensTheScheduledSlot(t *testing.T) {
+	s := integrationStore(t)
+	ctx := t.Context()
+	seeded := seedIntegrationTarget(t, s, "requested-beside")
+	seedProjectedSurplus(t, s, seeded, 9_810_001, 9_000_000)
+	requested := openSlot(t, s, seeded.TargetID)
+	due := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
+	if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET status='requested',request_source='web_execute_now',requested_at=now(),eligible_after=$2 WHERE id=$1`, requested, due); err != nil {
+		t.Fatal(err)
+	}
+	s.insertIntegrationEvent(t, seeded.TargetID, 9_810_002, 11_000_000, ptrInt64(2_000_000), time.Now())
+	if _, err := s.ProjectSurplusLotsOnce(ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := openSlot(t, s, seeded.TargetID)
+	var status string
+	var stillDue time.Time
+	var lotSlot int64
+	if err := s.pool.QueryRow(ctx, `SELECT status::text, eligible_after, (SELECT scheduled_slot_id FROM loyal_yield.balance_sweep_surplus_lots WHERE source_event_id=9810002) FROM loyal_yield.balance_sweep_scheduled_slots WHERE id=$1`, requested).Scan(&status, &stillDue, &lotSlot); err != nil {
+		t.Fatal(err)
+	}
+	if scheduled == requested || status != "requested" || !stillDue.Equal(due) || lotSlot != scheduled {
+		t.Fatalf("requested %d (%s, due %s) scheduled %d lot on %d", requested, status, stillDue, scheduled, lotSlot)
 	}
 }
 

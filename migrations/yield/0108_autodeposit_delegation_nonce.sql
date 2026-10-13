@@ -5,6 +5,8 @@
 -- row below is that target's confirmed create_recurring instruction, decoded
 -- from chain: nonce, start, expiry, signature and slot. Start and period equal
 -- the stored values wherever one was stored; target 26 had no start.
+SET LOCAL lock_timeout = '5s';
+
 WITH observed (id, recurring_delegation, nonce, start_timestamp, expiry_timestamp, signature, slot) AS (
     VALUES
     (26, '9r5XsVedFjudTqFvw3htG8TRTdZGWcJvNKQ51fo7VAz1', 1781059957588, 1781059959, 0, '369ESfEM4FKfRwoAACuoYt42byreoQKxLRmNqd8ggFiB8vHwAxGLTuAgU1LadTHmUqKf77mqvQdkwq2MNBg2Qjqw', 425458482),

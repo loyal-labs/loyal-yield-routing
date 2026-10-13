@@ -56,9 +56,10 @@ func goldenHex(t *testing.T, s string) []byte {
 	return v
 }
 
-// installControlSnapshot serves the golden policy, delegation and a wallet
-// token account approving the subscription authority.
-func installControlSnapshot(t *testing.T, f controlGolden, b *SweepWireBuilder) {
+// installControlSnapshot serves the golden policy, a delegation with the
+// given per-period budget and a wallet token account approving the
+// subscription authority.
+func installControlSnapshot(t *testing.T, f controlGolden, b *SweepWireBuilder, perPeriod uint64) map[string]testAccount {
 	t.Helper()
 	token := make([]byte, 165)
 	mint, wallet, authority := mustKey(USDCMint), mustKey(f.Wallet), mustKey(f.SubscriptionAuthority)
@@ -68,8 +69,9 @@ func installControlSnapshot(t *testing.T, f controlGolden, b *SweepWireBuilder) 
 	binary.LittleEndian.PutUint64(token[64:72], 9_000_000)
 	binary.LittleEndian.PutUint32(token[72:76], 1)
 	copy(token[76:108], authority[:])
-	accounts := map[string]testAccount{f.Settings: {Address: f.Settings, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: SubscriptionsProgramID}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, uint64(f.MaxAmountPerPeriod), 0)}, f.WalletATA: {Address: f.WalletATA, Owner: splTokenID, Data: token}}
+	accounts := map[string]testAccount{f.Settings: {Address: f.Settings, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.SettingsDataHex)}, f.Policy: {Address: f.Policy, Owner: squads.ProgramID.String(), Data: goldenHex(t, f.PolicyDataHex)}, f.SubscriptionAuthority: {Address: f.SubscriptionAuthority, Owner: SubscriptionsProgramID}, f.RecurringDelegation: {Address: f.RecurringDelegation, Owner: SubscriptionsProgramID, Data: testDelegationData(f.Wallet, f.Vault, USDCMint, perPeriod, 0)}, f.WalletATA: {Address: f.WalletATA, Owner: splTokenID, Data: token}}
 	b.read = fixtureReader(200, accounts)
+	return accounts
 }
 
 type countingControlReader struct {
@@ -87,7 +89,7 @@ func (r *countingControlReader) ObserveControl(ctx context.Context, t ControlTar
 func seedControlRuntime(t *testing.T, s *Store) (int64, *countingControlReader) {
 	t.Helper()
 	f, target, b := controlFixture(t)
-	installControlSnapshot(t, f, b)
+	installControlSnapshot(t, f, b, uint64(f.MaxAmountPerPeriod))
 	seeded := seedIntegrationTarget(t, s, "control")
 	target.TargetID = seeded.TargetID
 	seedProjectedSurplus(t, s, seeded, 1, 9_000_000)
@@ -103,4 +105,23 @@ func seedControlRuntime(t *testing.T, s *Store) (int64, *countingControlReader) 
 	}
 	seedTargetLiveReserve(t, s, target.TargetID, "control-reserve", "control-market", 1, time.Now())
 	return target.TargetID, &countingControlReader{reader: b}
+}
+
+// The policy's per-period cap is an account-data constraint, which the
+// envelope match ignores. A delegation whose budget exceeds it is a pull the
+// policy refuses on chain, so the control is not active.
+func TestControlRequiresThePolicyCapToCoverTheDelegationBudget(t *testing.T) {
+	f, target, b := controlFixture(t)
+	installControlSnapshot(t, f, b, uint64(f.MaxAmountPerPeriod))
+	o, err := b.ObserveControl(t.Context(), target, 1)
+	if err != nil || o.status() != "active" {
+		t.Fatalf("delegation within the policy cap: %+v %v", o, err)
+	}
+	over := f.MaxAmountPerPeriod + 1
+	installControlSnapshot(t, f, b, uint64(over))
+	target.MaxAmountPerPeriod = &over
+	o, err = b.ObserveControl(t.Context(), target, 1)
+	if err != nil || o.PolicyValid || o.status() != "inconsistent" {
+		t.Fatalf("delegation above the policy cap observed as %+v %v", o, err)
+	}
 }

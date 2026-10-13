@@ -379,11 +379,11 @@ func elapseReleaseDelay(t *testing.T, s *Store, targetID int64) {
 	}
 }
 
-// openSlot is the target's one open (scheduled or requested) slot.
+// openSlot is the target's one scheduled slot.
 func openSlot(t *testing.T, s *Store, targetID int64) int64 {
 	t.Helper()
 	var id int64
-	if err := s.pool.QueryRow(t.Context(), `SELECT id FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id=$1 AND status IN ('scheduled','requested')`, targetID).Scan(&id); err != nil {
+	if err := s.pool.QueryRow(t.Context(), `SELECT id FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id=$1 AND status = 'scheduled'`, targetID).Scan(&id); err != nil {
 		t.Fatalf("target %d open slot: %v", targetID, err)
 	}
 	return id

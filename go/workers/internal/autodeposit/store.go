@@ -278,7 +278,7 @@ func insertPositiveDeltaLot(ctx context.Context, tx pgx.Tx, event walletBalanceE
 		"wallet balance increase scheduled for autodeposit after one hour")
 }
 
-// insertScheduledLot files a new lot onto the target's one open slot. A slot
+// insertScheduledLot files a new lot onto the target's one scheduled slot. A slot
 // is touched only for a lot that was actually inserted: a replayed event
 // inserts nothing.
 func insertScheduledLot(ctx context.Context, tx pgx.Tx, event walletBalanceEventRow, amountRaw int64, confidence, reason string) (bool, error) {
@@ -308,17 +308,18 @@ RETURNING id`, event.TargetID, event.EventID, event.TxnSignature, amountRaw,
 	return true, nil
 }
 
-// openSlotFor returns the target's one open slot (scheduled or requested;
-// a unique index allows no second), its due date pushed to at least
-// eligibleAfter, or creates it. An open slot whose lots all drained is
-// canceled first rather than reused: drained work's idle block and deferral
-// never carry over to new lots.
+// openSlotFor returns the target's one scheduled slot (a unique index allows
+// no second), its due date pushed to at least eligibleAfter, or creates it.
+// A requested slot is one being executed now, not a place for new lots: it is
+// never chosen here and its due date never moves. A scheduled slot whose lots
+// all drained is canceled first rather than reused: drained work's idle block
+// and deferral never carry over to new lots.
 func openSlotFor(ctx context.Context, tx pgx.Tx, targetID int64, eligibleAfter time.Time) (int64, error) {
 	if _, err := tx.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
 SET status = 'canceled', last_error = 'its lots drained before new lots arrived', updated_at = now()
 WHERE slot.target_id = $1
-  AND slot.status IN ('scheduled', 'requested')
+  AND slot.status = 'scheduled'
   AND NOT EXISTS (
       SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots AS lot
       WHERE lot.scheduled_slot_id = slot.id AND lot.status = 'open' AND lot.remaining_amount_raw > 0)`, targetID); err != nil {
@@ -328,7 +329,7 @@ WHERE slot.target_id = $1
 	err := tx.QueryRow(ctx, `
 UPDATE loyal_yield.balance_sweep_scheduled_slots
 SET eligible_after = GREATEST(eligible_after, $2), updated_at = now()
-WHERE target_id = $1 AND status IN ('scheduled', 'requested')
+WHERE target_id = $1 AND status = 'scheduled'
 RETURNING id`, targetID, eligibleAfter).Scan(&slotID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `

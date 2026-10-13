@@ -123,8 +123,8 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 							eligible = start
 						}
 					}
-					var slotID int64
-					if err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_scheduled_slots(target_id,token_mint,eligible_after,status)VALUES($1,$2,$3,'scheduled')RETURNING id`, target.TargetID, target.Mint, eligible).Scan(&slotID); err != nil {
+					slotID, err := openSlotFor(ctx, tx, target.TargetID, eligible)
+					if err != nil {
 						return err
 					}
 					if _, err = tx.Exec(ctx, `INSERT INTO loyal_yield.balance_sweep_surplus_lots(target_id,scheduled_slot_id,source_event_id,original_amount_raw,remaining_amount_raw,classification,eligible_after,status,confidence,reason)VALUES($1,$2,$3,$4,$4,'initial_surplus',$5,'open','confirmed_snapshot','initial Autodeposit surplus observed by Go reconciliation')`, target.TargetID, slotID, eventID, o.WalletBalanceRaw-*floor, eligible); err != nil {
