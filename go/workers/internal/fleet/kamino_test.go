@@ -123,8 +123,9 @@ func TestDecodeKaminoReserveRejectsIdentityAndLayoutDrift(t *testing.T) {
 	}
 	account = reserveFixture(identity, 1_000_000, 1_000_000)
 	binary.LittleEndian.PutUint64(account.Data[16:24], 1_001)
-	if _, err := DecodeKaminoReserve(&account, identity, 1_000, 2.5); err == nil {
-		t.Fatal("future economic evidence was accepted")
+	refreshed, err := DecodeKaminoReserve(&account, identity, 1_000, 2.5)
+	if err != nil || refreshed.Slot != 1_001 || refreshed.EconomicSlotLag != 0 || refreshed.EconomicLifetimeMillis != 600_000 {
+		t.Fatalf("a reserve refreshed after the context slot is read at its refresh slot: state=%+v err=%v", refreshed, err)
 	}
 	binary.LittleEndian.PutUint64(account.Data[16:24], 1)
 	expiring, err := DecodeKaminoReserve(&account, identity, 2_400, 2.5)

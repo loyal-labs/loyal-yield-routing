@@ -5,12 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
-	"time"
 
 	solana "github.com/solana-foundation/solana-go/v2"
 
@@ -18,7 +16,7 @@ import (
 )
 
 // Real RPC serialization/decoding and reserve decoding, with controlled complete
-// batches. Record every request so retries cannot silently lower the slot fence.
+// batches. Record every request's slot floor.
 func observationTestWorker(t *testing.T, batch func(int) (int64, []chain.Account)) (*Worker, []string, map[string]ReserveIdentity, *[]int64) {
 	t.Helper()
 	a := ReserveIdentity{Address: testIdentity(3), Market: testIdentity(40), Mint: USDCMint}
@@ -47,7 +45,7 @@ func observationTestWorker(t *testing.T, batch func(int) (int64, []chain.Account
 		}
 		json.Unmarshal(req.Params[1], &opts)
 		if req.Method != "getMultipleAccounts" || opts.Commitment != "confirmed" || !reflect.DeepEqual(requested, addresses) {
-			t.Error("retry changed the catalog or confirmation requirement")
+			t.Error("observation changed the catalog or confirmation requirement")
 		}
 		floors = append(floors, opts.Min)
 		slot, accounts := batch(len(floors))
@@ -68,64 +66,35 @@ func observationAccounts() []chain.Account {
 	}
 }
 
-func TestReserveObservationReplacesWholeInconsistentBatch(t *testing.T) {
-	w, addresses, identities, floors := observationTestWorker(t, func(attempt int) (int64, []chain.Account) {
+// getMultipleAccounts returns one bank's state: a reserve refreshed after the
+// response's context slot is valid evidence at its own refresh slot, read once.
+func TestReserveObservationAcceptsReserveRefreshedAfterContextSlot(t *testing.T) {
+	w, addresses, identities, floors := observationTestWorker(t, func(int) (int64, []chain.Account) {
 		accounts := observationAccounts()
-		if attempt == 1 {
-			binary.LittleEndian.PutUint64(accounts[1].Data[16:24], 1002)
-			return 1000, accounts
-		}
-		// Change even the previously valid account: its old bytes must not survive.
-		binary.LittleEndian.PutUint64(accounts[0].Data[224:232], 40_000_000_000_000)
 		binary.LittleEndian.PutUint64(accounts[1].Data[16:24], 1002)
-		return 1003, accounts
+		return 1000, accounts
 	})
 	snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities, 999)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(*floors, []int64{999, 1002}) {
-		t.Fatalf("slot floors: %v", *floors)
+	if !reflect.DeepEqual(*floors, []int64{999}) || snapshot.Slot != 1000 || len(snapshot.Reserves) != 2 {
+		t.Fatalf("observation: floors=%v snapshot=%+v", *floors, snapshot)
 	}
-	if len(snapshot.Reserves) != 2 || snapshot.Slot != 1003 {
-		t.Fatalf("incomplete snapshot: %+v", snapshot)
+	if held := snapshot.Reserves[addresses[0]]; held.Slot != 1000 || held.LastUpdateSlot != 900 || held.EconomicSlotLag != 100 {
+		t.Fatalf("context-slot reserve: %+v", held)
 	}
-	for _, state := range snapshot.Reserves {
-		if state.Slot != 1003 {
-			t.Fatal("mixed observation slots")
-		}
-	}
-	if snapshot.Reserves[addresses[0]].TotalSupplyUSDMicros != 90_000_000_000_000 {
-		t.Fatal("reused account economics from rejected batch")
+	ahead := snapshot.Reserves[addresses[1]]
+	if ahead.Slot != 1002 || ahead.LastUpdateSlot != 1002 || ahead.EconomicSlotLag != 0 || ahead.EconomicLifetimeMillis <= 0 {
+		t.Fatalf("refreshed reserve must be read at its own refresh slot: %+v", ahead)
 	}
 }
 
-func TestReserveObservationPersistentMismatchFailsClosed(t *testing.T) {
-	w, addresses, identities, floors := observationTestWorker(t, func(attempt int) (int64, []chain.Account) {
-		a := observationAccounts()
-		slot := int64(999 + attempt)
-		binary.LittleEndian.PutUint64(a[0].Data[16:24], uint64(slot+1))
-		return slot, a
-	})
-	snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities, 1000)
-	var mismatch *ReserveSlotOrderMismatch
-	if !errors.As(err, &mismatch) || len(snapshot.Reserves) != 0 || snapshot.Slot != 0 {
-		t.Fatalf("accepted inconsistent evidence: %+v %v", snapshot, err)
-	}
-	if !reflect.DeepEqual(*floors, []int64{1000, 1001, 1002}) {
-		t.Fatalf("retry bound/floor violated: %v", *floors)
-	}
-	if mismatch.ContextSlot != 1002 || mismatch.LastUpdateSlot != 1003 {
-		t.Fatalf("missing diagnostic slots: %+v", mismatch)
-	}
-}
-
-func TestReserveObservationDoesNotRetryOtherInvalidEvidence(t *testing.T) {
+func TestReserveObservationRejectsInvalidEvidence(t *testing.T) {
 	for _, failure := range []string{"identity", "layout", "obsolete", "below_minimum_slot"} {
 		t.Run(failure, func(t *testing.T) {
 			w, addresses, identities, floors := observationTestWorker(t, func(int) (int64, []chain.Account) {
 				a := observationAccounts()
-				binary.LittleEndian.PutUint64(a[0].Data[16:24], 1002)
 				switch failure {
 				case "identity":
 					a[1].Owner = solana.SystemProgramID
@@ -140,22 +109,8 @@ func TestReserveObservationDoesNotRetryOtherInvalidEvidence(t *testing.T) {
 			})
 			snapshot, err := w.observeConfirmedReserveCatalog(context.Background(), addresses, identities, 999)
 			if err == nil || len(snapshot.Reserves) != 0 || len(*floors) != 1 {
-				t.Fatalf("invalid evidence was accepted or retried: %v %v", *floors, err)
+				t.Fatalf("invalid evidence was accepted or re-read: %v %v", *floors, err)
 			}
 		})
-	}
-}
-
-func TestReserveObservationCancellationStopsBackoff(t *testing.T) {
-	w, addresses, identities, floors := observationTestWorker(t, func(int) (int64, []chain.Account) {
-		a := observationAccounts()
-		binary.LittleEndian.PutUint64(a[0].Data[16:24], 1001)
-		return 1000, a
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	snapshot, err := w.observeConfirmedReserveCatalog(ctx, addresses, identities, 1000)
-	if !errors.Is(err, context.DeadlineExceeded) || len(*floors) != 1 || len(snapshot.Reserves) != 0 {
-		t.Fatalf("cancellation ignored: %v %v", *floors, err)
 	}
 }
