@@ -1,16 +1,14 @@
 package backyard
 
-// Scoped operator seam for one class of already-manual failures: a
-// VOLTR_RESTORE_IDLE wire whose finalization landed past the adaptor's report
-// age and was refused with ReportSlot before the Voltr CPI. The automatic walk
-// classifies that refusal correctly but the previous binary's action gate
-// forced the row into manual recovery, which capital-stops the whole route
-// through UnresolvedCapitalRecoverySQL. Reprocessing runs the SAME finalized
-// failure settlement as the automatic path (settleFinalizedReportFailure): the
-// receipt must prove the exact persisted wire rolled back, and the single
-// guarded UPDATE moves manual_recovery -> failed. There is no SQL reset and no
-// re-send; every
-// other manual recovery row is untouched — the worker's
+// Scoped operator seam for one class of already-manual failures: a landed,
+// failed wire that a previous binary latched into manual recovery with the
+// unclassified marker (confirmed_transaction_error) because its action or
+// error code was not on a list, which capital-stops the whole route through
+// UnresolvedCapitalRecoverySQL. Reprocessing runs the SAME finalized failure
+// settlement as the automatic path (settleFinalizedFailure): the receipt must
+// prove the exact persisted wire rolled back, and the single guarded UPDATE
+// moves manual_recovery -> failed. There is no SQL reset and no re-send;
+// every other manual recovery row is untouched — the worker's
 // UnresolvedCapitalRecoverySQL continues to block them for new capital.
 //
 // Operator output never carries raw database, RPC, or provider error text:
@@ -71,45 +69,45 @@ func sanitizedStage(stage string) error {
 	return errors.New("settle-manual-restore blocked at stage " + stage)
 }
 
-// loadManualRestoreOperation reads exactly one manual_recovery row by ID and
-// restores its decision through the same persisted-decision validation every
-// recovery path uses.
-func (d *Database) loadManualRestoreOperation(ctx context.Context, operationID string) (PersistedOperation, string, error) {
+// loadManualRestoreOperation reads exactly one manual_recovery row by ID, with
+// its recovery reason and message hash, and restores its decision through the
+// same persisted-decision validation every recovery path uses.
+func (d *Database) loadManualRestoreOperation(ctx context.Context, operationID string) (PersistedOperation, string, string, error) {
 	if d == nil || d.pool == nil || operationID == "" {
-		return PersistedOperation{}, "", fmt.Errorf("database is not configured")
+		return PersistedOperation{}, "", "", fmt.Errorf("database is not configured")
 	}
 	row := d.pool.QueryRow(ctx, `SELECT operation_id, route_key, cycle, action, status, idempotency_key, COALESCE(strategy_key, ''),
 		expected_effects, COALESCE(signed_wire, ''::bytea), COALESCE(signed_wire_sha256, ''), COALESCE(transaction_signature, ''),
 		COALESCE(recent_blockhash, ''), COALESCE(last_valid_block_height, 0),
-		broadcast_intent_at IS NOT NULL, COALESCE(confirmed_slot, 0), COALESCE(recovery_reason, '')
+		broadcast_intent_at IS NOT NULL, COALESCE(confirmed_slot, 0), COALESCE(recovery_reason, ''), COALESCE(message_sha256, '')
 		FROM loyal_yield.multiply_operations
 		WHERE operation_id = $1 AND status = 'manual_recovery'`, operationID)
 	var operation PersistedOperation
-	var action, idempotencyKey, strategyKey, recoveryReason string
+	var action, idempotencyKey, strategyKey, recoveryReason, messageHash string
 	if err := row.Scan(
 		&operation.ID, &operation.RouteKey, &operation.Cycle, &action, &operation.Status,
 		&idempotencyKey, &strategyKey, &operation.ExpectedEffects, &operation.SignedWire, &operation.SignedWireSHA256,
 		&operation.TransactionSignature, &operation.RecentBlockhash,
 		&operation.LastValidBlockHeight, &operation.BroadcastIntentRecorded,
-		&operation.ConfirmedSlot, &recoveryReason,
+		&operation.ConfirmedSlot, &recoveryReason, &messageHash,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return PersistedOperation{}, "", fmt.Errorf("operation is not in manual_recovery")
+			return PersistedOperation{}, "", "", fmt.Errorf("operation is not in manual_recovery")
 		}
-		return PersistedOperation{}, "", fmt.Errorf("load manual restore operation: %w", err)
+		return PersistedOperation{}, "", "", fmt.Errorf("load manual restore operation: %w", err)
 	}
 	decision, err := restorePersistedDecision(operation.ExpectedEffects, Action(action), idempotencyKey, strategyKey)
 	if err != nil {
-		return PersistedOperation{}, "", fmt.Errorf("loaded manual decision is invalid: %w", err)
+		return PersistedOperation{}, "", "", fmt.Errorf("loaded manual decision is invalid: %w", err)
 	}
 	operation.Decision = decision
-	return operation, recoveryReason, nil
+	return operation, recoveryReason, messageHash, nil
 }
 
 // RunManualRestoreReprocess validates, and with execute writes, the exact
-// already-manual restore failure. Validation is total before the write: the
-// row identity, the stored unclassified marker, and the finalized refusal
-// classification gate the dry-run; the execute path runs on Backyard's writer
+// already-manual landed failure. Validation is total before the write: the
+// row identity, the stored unclassified marker and the finalized receipt's
+// rollback proof gate the dry-run; the execute path runs on Backyard's writer
 // (one session that holds the writer lock, refused while the worker runs),
 // re-checks route activity on it, and runs the same settlement the automatic
 // walk uses.
@@ -140,7 +138,7 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		result.Stage = "open_rpc"
 		return result, sanitizedStage(result.Stage)
 	}
-	operation, recoveryReason, err := db.loadManualRestoreOperation(ctx, request.OperationID)
+	operation, recoveryReason, messageHash, err := db.loadManualRestoreOperation(ctx, request.OperationID)
 	if err != nil {
 		result.Stage = "load_operation"
 		return result, sanitizedStage(result.Stage)
@@ -151,23 +149,23 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	result.Status = string(operation.Status)
 	result.RecoveryReason = recoveryReason
 	result.Signature = operation.TransactionSignature
-	if operation.Decision.Action != VoltrRestoreIdle || recoveryReason != unclassifiedTransactionErrReason || operation.TransactionSignature != request.Signature {
+	if recoveryReason != unclassifiedTransactionErrReason || operation.TransactionSignature != request.Signature {
 		result.Stage = "row_shape"
-		return result, errors.New("settle-manual-restore: operation does not match the reprocessable restore failure shape")
+		return result, errors.New("settle-manual-restore: operation does not match the reprocessable landed failure shape")
 	}
-	// The same refusal classification the automatic walk uses, from the one
-	// finalized receipt the settlement below proves.
+	// The one finalized receipt the settlement below proves, and the reason
+	// the automatic walk records from it.
 	receipt, err := readFailureReceipt(ctx, rpc, operation.TransactionSignature)
 	if err != nil {
 		result.Stage = "read_receipt"
 		return result, sanitizedStage(result.Stage)
 	}
-	classification := ClassifyConfirmedReportFailure(receipt.Meta.Err, receipt.Meta.LogMessages)
-	result.Classification = classification.Reason
+	reason := confirmedFailureReason(receipt.Meta.Err, receipt.Meta.LogMessages)
+	result.Classification = reason
 	result.LandingSlot = receipt.Slot
-	if !classification.Retryable || classification.Reason != adaptorReportSlotRefusedReason {
-		result.Stage = "classification"
-		return result, errors.New("settle-manual-restore: failure receipt does not classify as " + adaptorReportSlotRefusedReason)
+	if validateFinalizedFailureReceipt(receipt, operation.SignedWire, operation.TransactionSignature, operation.SignedWireSHA256, messageHash, mustKey(bridgeDelegate)) != nil {
+		result.Stage = "unproven_finalized_failure_receipt"
+		return result, sanitizedStage(result.Stage)
 	}
 	result.Executable = true
 	if !execute {
@@ -181,7 +179,11 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		if blocked {
 			return errors.New("route still has a nonterminal operation")
 		}
-		return db.settleFinalizedReportFailure(ctx, operation, receipt, adaptorReportSlotRefusedReason, true)
+		settled, err := db.settleFinalizedFailure(ctx, operation, receipt, reason, mustKey(bridgeDelegate))
+		if err == nil && !settled {
+			err = budgetHold("unproven_finalized_failure_receipt")
+		}
+		return err
 	}()
 	if settleErr != nil {
 		result.Stage = "settlement"
@@ -201,8 +203,8 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	}
 	var terminalStatus string
 	if err := db.pool.QueryRow(ctx, `SELECT status FROM loyal_yield.multiply_operations
-		WHERE operation_id=$1 AND status='failed' AND action=$2 AND transaction_signature=$3 AND confirmation_status='finalized'`,
-		operation.ID, string(VoltrRestoreIdle), operation.TransactionSignature).Scan(&terminalStatus); err != nil {
+		WHERE operation_id=$1 AND status='failed' AND transaction_signature=$2 AND confirmation_status='finalized'`,
+		operation.ID, operation.TransactionSignature).Scan(&terminalStatus); err != nil {
 		result.Stage = "verify_failed"
 		return result, sanitizedStage(result.Stage)
 	}

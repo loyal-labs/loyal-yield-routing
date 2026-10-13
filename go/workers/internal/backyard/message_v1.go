@@ -8,8 +8,6 @@ import (
 	"sort"
 
 	"github.com/solana-foundation/solana-go/v2"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 // Every Backyard transaction is one shape: a v1 message (SIMD-0385) with the
@@ -199,30 +197,4 @@ func messageKeys(message []byte) ([]publicKey, error) {
 		keys[i] = publicKey(key)
 	}
 	return keys, nil
-}
-
-// decodeExactWire decodes a wire whose last instruction is a Squads policy
-// execute (every Backyard wire but a farmed lane's initializer, which
-// registers the obligation's farms after it): one signature after a v1
-// message with one writable required signer and a Squads policy execute by
-// that signer last. The bytes themselves are proven by
-// recompiling the bound build input (validateSignedIdentity).
-func decodeExactWire(wire []byte) ([]byte, []byte, publicKey, publicKey, error) {
-	message, signature, err := splitSignedWire(wire)
-	if err != nil {
-		return nil, nil, publicKey{}, publicKey{}, err
-	}
-	m, err := decodeV1Message(message)
-	if err != nil || m.Header.NumRequiredSignatures != 1 || m.Header.NumReadonlySignedAccounts != 0 || len(m.Instructions) == 0 {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid v1 transaction message: %v", err)
-	}
-	signer := publicKey(m.AccountKeys[0])
-	outer := m.Instructions[len(m.Instructions)-1]
-	key := func(i uint16) publicKey { return publicKey(m.AccountKeys[i]) }
-	if key(outer.ProgramIDIndex) != publicKey(squads.ProgramID) || len(outer.Accounts) < 3 || key(outer.Accounts[0]) == (publicKey{}) ||
-		key(outer.Accounts[1]) != publicKey(squads.ProgramID) || key(outer.Accounts[2]) != signer ||
-		!bytes.HasPrefix(outer.Data, squads.ExecuteTransactionSyncV2Discriminator[:]) {
-		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("v1 transaction is not an exact Squads policy envelope")
-	}
-	return append([]byte(nil), signature...), message, publicKey(m.RecentBlockhash), signer, nil
 }
