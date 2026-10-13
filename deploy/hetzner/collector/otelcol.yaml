@@ -1,5 +1,7 @@
 # OpenTelemetry Collector (contrib): journald for the Go units -> ClickStack.
 # The workers write slog JSON to stdout; nothing in the app exports telemetry.
+# xstock-bot's units (its own repo, same host) write plain text: body is the
+# line as is, with no severity.
 # Endpoint and ingestion key are systemd credentials of this unit
 # (see otelcol-contrib.service.d/loyal.conf); their values are not here.
 extensions:
@@ -8,7 +10,13 @@ extensions:
 
 receivers:
   journald:
-    units: [loyal-observer.service, loyal-retail.service, loyal-backyard.service]
+    units:
+      - loyal-observer.service
+      - loyal-retail.service
+      - loyal-backyard.service
+      - xstock-bot.service
+      - xstock-pools.service
+      - xstock-rank.service
     priority: info
     start_at: end
     # Resume from the last shipped cursor after a collector restart.
@@ -20,7 +28,7 @@ processors:
     log_statements:
       - context: log
         statements:
-          # One service per unit: loyal-observer, loyal-retail, loyal-backyard.
+          # One service per unit (SYSLOG_IDENTIFIER), e.g. loyal-retail, xstock-bot.
           - set(log.attributes["service.name"], log.body["SYSLOG_IDENTIFIER"])
           - set(log.attributes["systemd.unit"], log.body["_SYSTEMD_UNIT"])
           - set(log.attributes["process.pid"], log.body["_PID"])

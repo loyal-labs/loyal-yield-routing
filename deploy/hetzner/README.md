@@ -312,9 +312,13 @@ All files are in `monitoring/`. Everything listens on loopback.
 - `prometheus.yml` → `/etc/prometheus/prometheus.yml`
 - `loyal.rules.yml` → `/etc/prometheus/loyal.rules.yml`
 - node_exporter flags: `--collector.systemd
-  --collector.systemd.unit-include='loyal-.+\.service'
+  --collector.systemd.unit-include='(loyal|xstock)-.+\.service'
   --collector.systemd.enable-restarts-metrics
   --web.listen-address=127.0.0.1:9100`.
+- xstock-bot runs on this host too. Prometheus scrapes `xstock-bot` (9111)
+  and `xstock-pools` (9112) as job `xstock`; its rules,
+  `/etc/prometheus/xstock.rules.yml`, live in the xstock-bot repo.
+  `prometheus.yml` loads them by glob, so it works before they are installed.
 - `alertmanager.yml` → `/etc/prometheus/alertmanager.yml`. Replace the
   placeholder `chat_id` with the alerts chat id.
   `alertmanager.service.d/telegram.conf` →
@@ -419,10 +423,11 @@ these files.
 `collector/otelcol.yaml` → `/etc/otelcol-contrib/loyal.yaml`.
 `collector/otelcol-contrib.service.d/loyal.conf` →
 `/etc/systemd/system/otelcol-contrib.service.d/`. The collector reads the
-three units from journald and keeps its cursor across restarts. It sets
-`service.name` from each unit's syslog identifier (`loyal-observer`,
-`loyal-retail`, `loyal-backyard`), lifts the slog fields into attributes,
-and exports OTLP/HTTP to ClickStack.
+three units, plus xstock-bot's `xstock-bot`, `xstock-pools` and
+`xstock-rank` (plain text, no severity), from journald and keeps its cursor
+across restarts. It sets `service.name` from each unit's syslog identifier
+(`loyal-observer`, `loyal-retail`, `loyal-backyard`, ...), lifts the slog
+fields into attributes, and exports OTLP/HTTP to ClickStack.
 
 ### Backyard alert response
 
