@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
@@ -232,28 +234,45 @@ func TestSameMintReconciliationPublishesActualSubsetAndRetainsOtherReserves(t *t
 			if state != "reconciled" {
 				t.Fatalf("submission state %s", state)
 			}
-			var decision, opportunity, capacity string
+			var decision, opportunity string
 			var snapshot int64
-			if err := pool.QueryRow(ctx, `SELECT d.status::text,d.post_snapshot_id,o.opportunity_state,r.reservation_state FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id JOIN loyal_yield.target_capacity_reservations r ON r.opportunity_id=o.id WHERE d.id=$1`, b.DecisionID).Scan(&decision, &snapshot, &opportunity, &capacity); err != nil {
+			var current bool
+			if err := pool.QueryRow(ctx, `SELECT d.status::text,d.post_snapshot_id,o.opportunity_state,s.is_current FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id JOIN loyal_yield.vault_position_snapshots s ON s.id=d.post_snapshot_id WHERE d.id=$1`, b.DecisionID).Scan(&decision, &snapshot, &opportunity, &current); err != nil {
 				t.Fatal(err)
 			}
-			if decision != "confirmed" || opportunity != "completed" || capacity != "awaiting_telemetry" {
-				t.Fatalf("custody closure %s %s %s", decision, opportunity, capacity)
+			// The move's effect is history: the observer alone writes current
+			// holdings.
+			if decision != "confirmed" || opportunity != "completed" || current {
+				t.Fatalf("custody closure %s %s current=%v", decision, opportunity, current)
 			}
 			var amount int64
 			if err := pool.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1 AND reserve='unobserved'`, vaultID).Scan(&amount); err != nil || amount != 17 {
 				t.Fatalf("unobserved reserve overwritten: %d %v", amount, err)
 			}
+			var written int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1 AND reserve IN ($2,$3)`, vaultID, source, target).Scan(&written); err != nil || written != 0 {
+				t.Fatalf("reconciliation wrote current holdings: %d %v", written, err)
+			}
+			position := func(reserve string) (int64, string) {
+				t.Helper()
+				var amount int64
+				var idle string
+				err := pool.QueryRow(ctx, `SELECT amount_raw,planning_metadata->>'idle_vault_liquidity_amount_raw' FROM loyal_yield.vault_position_snapshot_positions WHERE snapshot_id=$1 AND reserve=$2`, snapshot, reserve).Scan(&amount, &idle)
+				if errors.Is(err, pgx.ErrNoRows) {
+					return 0, ""
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return amount, idle
+			}
+			deposited, idle := position(target)
+			if deposited != 60 || idle != "11" {
+				t.Fatalf("target history %d idle %s, want deposited 60 beside idle 11", deposited, idle)
+			}
 			if sourceKind == "reserve_position" {
-				if err := pool.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1 AND reserve=$2`, vaultID, source).Scan(&amount); err != nil || amount != residual {
-					t.Fatalf("source position %d, want %d: %v", amount, residual, err)
-				}
-				if err := pool.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1 AND reserve=$2`, vaultID, target).Scan(&amount); err != nil || amount != 60 {
-					t.Fatalf("target position %d, want deposited 60: %v", amount, err)
-				}
-			} else {
-				if err := pool.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.vault_idle_token_balances_current WHERE vault_id=$1 AND mint=$2`, vaultID, fleet.USDCMint).Scan(&amount); err != nil || amount != 11 {
-					t.Fatalf("idle surplus erased: %d %v", amount, err)
+				if residualAmount, _ := position(source); residualAmount != residual {
+					t.Fatalf("source history %d, want %d", residualAmount, residual)
 				}
 			}
 		})

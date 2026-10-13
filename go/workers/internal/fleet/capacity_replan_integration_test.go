@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// Durable re-plan: a vault holding two reserves loads as two holdings; an
+// Durable re-plan: a vault holding two reserves plans as two holdings; an
 // admission whose source is already paying out an admitted move fails as a
 // capacity re-plan inside the locked transaction; the re-plan ends the
 // opportunity as stale/capacity_replan exactly once and the vault is planned
-// again on the next load.
+// again on the next tick.
 func TestReplanIntegrationEndsTheMoveAndFreesItsVault(t *testing.T) {
 	databaseURL := os.Getenv("FLEET_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -35,31 +35,52 @@ func TestReplanIntegrationEndsTheMoveAndFreesItsVault(t *testing.T) {
 	target := ReserveIdentity{Address: testIdentity(48), Market: market, Mint: USDCMint}
 	first := seedWorkerVault(t, ctx, store, suffix+"-a", market, source.Address)
 	second := seedWorkerVault(t, ctx, store, suffix+"-b", market, source.Address)
-	// The second vault also holds a smaller secondary reserve.
-	if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.vault_reserve_positions_current(vault_id,reserve,market,liquidity_mint,amount_raw,has_value,supply_apy_bps,snapshot_id,observed_slot,observed_at,planning_metadata)
-SELECT vault_id,$2,market,liquidity_mint,90000000000,true,50,snapshot_id,observed_slot,clock_timestamp(),'{"amount_semantics":"kamino_obligation_collateral_deposited_amount","redeemable_source_liquidity_amount_raw":"100000000000"}'
-FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1`, second, secondary.Address); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	snapshot := MarketSnapshot{Cluster: cluster, Slot: 1000, ObservedAt: now, Reserves: map[string]ReserveState{
-		source.Address:    {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)},
-		secondary.Address: {ReserveIdentity: secondary, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 50, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("c", 64)},
-		target.Address:    {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)},
-	}}
-	ampleCapacity(snapshot)
-	epoch := testImmutableMarketEpoch(t, snapshot, source, secondary, target)
-	snapshot.Hash, snapshot.ExpiresAt = epoch.Fingerprint, epoch.ExpiresAt
-	snapshot.MintExpiresAt = map[string]time.Time{USDCMint: epoch.OptimizerEnvelopeExpiresAt()}
-	holdings := func() map[int64][]VaultPosition {
+	catalog := []ReserveIdentity{source, secondary, target}
+	reserves := []ReserveState{testReserve(source, 1000, 100), testReserve(secondary, 1000, 50), testReserve(target, 1000, 900)}
+	// planned is one tick: the registry, the chain's holdings (the second
+	// vault also holds a smaller secondary reserve) and the moves in flight.
+	planned := func() ([]FleetVault, FleetPlan, Snapshot) {
 		t.Helper()
-		fleet, err := store.LoadMigratedFleet(ctx, cluster, epoch)
+		registry, err := store.LoadRegistry(ctx, cluster, FleetLoadOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
+		holders := map[*RegisteredVault]ReserveIdentity{}
+		for _, id := range []int64{first, second} {
+			if v := registeredVault(t, registry, id); v != nil {
+				holders[v] = source
+			}
+		}
+		snapshot := testSnapshot(1000, reserves, "", holders, 1_000_000_000_000)
+		for v := range holders {
+			if v.VaultID == second {
+				facts := snapshot.Vaults[v.VaultPubkey]
+				facts.Holdings = append(facts.Holdings, Holding{Reserve: secondary.Address, Market: market, Mint: USDCMint, CollateralRaw: 100_000_000_000, LiquidityRaw: 100_000_000_000})
+				snapshot.Vaults[v.VaultPubkey] = facts
+			}
+		}
+		inflow, outflow, err := InflightFlows(ctx, store.pool, cluster, 1000, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vaults, err := PlanningVaults(snapshot, catalog, registry, inflow, outflow, FleetLoadOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := PlanFleet(snapshot.Market("replan"), vaults)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return vaults, plan, snapshot
+	}
+	holdings := func() map[int64][]VaultPosition {
+		t.Helper()
+		vaults, _, _ := planned()
 		out := map[int64][]VaultPosition{}
-		for _, vault := range fleet {
-			out[vault.Position.VaultID] = append(out[vault.Position.VaultID], vault.Position)
+		for _, vault := range vaults {
+			if vault.Position.VaultID == first || vault.Position.VaultID == second {
+				out[vault.Position.VaultID] = append(out[vault.Position.VaultID], vault.Position)
+			}
 		}
 		return out
 	}
@@ -67,43 +88,28 @@ FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1`, second, sec
 	if got := loaded[second]; len(got) != 2 || got[0].SourceReserve != source.Address || got[1].SourceReserve != secondary.Address {
 		t.Fatalf("two-holding vault loaded as %+v", got)
 	}
-	if _, err = store.pool.Exec(ctx, `INSERT INTO loyal_yield.target_capacity_frontiers(cluster,target_reserve,liquidity_mint,observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros,telemetry_version) VALUES($1,$2,$3,$4,1000,$5,1)`, cluster, target.Address, USDCMint, int64(1_000_000_000_000_000), int64(20_000_000_000_000)); err != nil {
-		t.Fatal(err)
-	}
-	// publishAndClaim plans the loaded fleet, publishes vault's move and
-	// claims it for fused admission.
+	// publishAndClaim plans one tick, publishes the plan and claims vault's
+	// move for admission.
 	publishAndClaim := func(vault int64) (*RevalidationLease, Decision) {
 		t.Helper()
-		fleet, err := store.LoadMigratedFleet(ctx, cluster, epoch)
-		if err != nil {
-			t.Fatal(err)
+		_, plan, snapshot := planned()
+		var move *PlannedOpportunity
+		for i := range plan.Opportunities {
+			if plan.Opportunities[i].Decision.VaultID == vault {
+				move = &plan.Opportunities[i]
+			}
 		}
-		plan, err := PlanFleet(snapshot, fleet)
-		if err != nil {
-			t.Fatal(err)
+		if move == nil {
+			t.Fatalf("vault %d has no planned move: %v", vault, plan.Rejections)
 		}
-		for _, opportunity := range plan.Opportunities {
-			if opportunity.Decision.VaultID != vault {
-				continue
-			}
-			var position VaultPosition
-			for _, holding := range fleet {
-				if holding.Position.VaultID == vault && holding.Position.SourceReserve == opportunity.Decision.SourceReserve {
-					position = holding.Position
-				}
-			}
-			published, err := store.Publish(ctx, cluster, epoch, position, opportunity.Decision)
-			if err != nil || !published.Inserted {
-				t.Fatalf("publish vault %d: %+v %v", vault, published, err)
-			}
-			lease, err := store.ClaimRevalidation(ctx, cluster, "replan-owner", time.Minute, false, false)
-			if err != nil || lease == nil || lease.VaultID != vault {
-				t.Fatalf("claim vault %d: %+v %v", vault, lease, err)
-			}
-			return lease, opportunity.Decision
+		if _, err := store.PublishPlan(ctx, cluster, snapshot, FleetPlan{Opportunities: []PlannedOpportunity{*move}}); err != nil {
+			t.Fatalf("publish vault %d: %v", vault, err)
 		}
-		t.Fatalf("vault %d has no planned move: %v", vault, plan.Rejections)
-		return nil, Decision{}
+		lease, err := store.ClaimRevalidation(ctx, cluster, "replan-owner", time.Minute, false, false)
+		if err != nil || lease == nil || lease.VaultID != vault {
+			t.Fatalf("claim vault %d: %+v %v", vault, lease, err)
+		}
+		return lease, move.Decision
 	}
 	commit := func(lease *RevalidationLease, sourceAvailable, targetRoom int64) error {
 		wireHash := strings.Repeat("f", 64)
@@ -111,7 +117,7 @@ FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1`, second, sec
 		if err := preserveCanonicalPlan(lease.ExecutionPlan, prepared, "prepared_transaction"); err != nil {
 			t.Fatal(err)
 		}
-		return store.commitRevalidation(ctx, *lease, RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + lease.VaultPubkey}, ExpectedEpochFingerprint: epoch.Fingerprint, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000, SourceAvailableLiquidityRaw: &sourceAvailable, TargetDepositRoomRaw: &targetRoom}, nil)
+		return store.commitRevalidation(ctx, *lease, RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + lease.VaultPubkey}, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: 100, ObservedTargetAPYBPS: 900, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000, SourceAvailableLiquidityRaw: &sourceAvailable, TargetDepositRoomRaw: &targetRoom}, nil)
 	}
 	const ample = int64(1_000_000_000_000_000)
 	firstLease, firstMove := publishAndClaim(first)

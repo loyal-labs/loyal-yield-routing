@@ -59,7 +59,8 @@ func (a *kaminoMetricsAPI) ServeHTTP(w http.ResponseWriter, request *http.Reques
 // 01:50:14.95; at 01:49:14.95 its remaining lifetime fell under the planner's
 // 60 s minimum, no mint stayed complete, the optimizer envelope collapsed to
 // its observation time and the Rust planner died at 01:49:18. The observer
-// must own that renewal, as the Rust monitor did.
+// owns that renewal, as the Rust monitor did; the Go planner reads only the
+// reserve identities from it and so never expires with it.
 func TestObserverRenewsSupportedReserveCatalogThePlannerAdmits(t *testing.T) {
 	databaseURL := os.Getenv("OBSERVER_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -106,15 +107,14 @@ CREATE TABLE %[1]s.reserve_updates(
 	if _, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s.reserve_updates VALUES(1,$1,$2,999,'laserstream_grpc','confirmed',$3,$4,'Main Market',$5,'USDC',6,998,false,0,1800000000000,200000000000,2000000000000,1,1700000000,.1,.01,.008,'{"deposit_limit":3000000000000}')`, schema), strings.Repeat("a", 64), now, catalogTestReserve, catalogTestMainMarket, catalogTestUSDC); err != nil {
 		t.Fatal(err)
 	}
-	planner, err := fleet.NewMarketEvidenceStoreFromPool(pool, schema)
+	planner, err := fleet.NewCatalogStoreFromPool(pool, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := planner.SetEnabledMints([]string{catalogTestUSDC}); err != nil {
-		t.Fatal(err)
-	}
-	if epoch, loadErr := planner.LoadImmutableMarketEpoch(ctx); loadErr == nil && epoch.Validate() == nil {
-		t.Fatalf("a catalog with 50 s left produced a usable epoch: %+v", epoch.MintCoverage)
+	// The planner reads reserve identities from the listing and everything
+	// else from the chain, so an aged listing still routes.
+	if catalog, loadErr := planner.LoadCatalog(ctx); loadErr != nil || len(catalog) != 1 || catalog[0].Address != catalogTestReserve {
+		t.Fatalf("aged catalog: %+v %v", catalog, loadErr)
 	}
 
 	api := &kaminoMetricsAPI{}
@@ -143,7 +143,7 @@ CREATE TABLE %[1]s.reserve_updates(
 		t.Fatal(err)
 	}
 	if !fetchedAt.After(now.Add(-time.Second)) {
-		t.Fatalf("observer left the catalog at fetched_at=%s; the planner admits it only until %s", fetchedAt, fetchedAt.Add(300*time.Second))
+		t.Fatalf("observer left the catalog at fetched_at=%s", fetchedAt)
 	}
 	var active int
 	var reserve, symbol, source string
@@ -154,15 +154,8 @@ CREATE TABLE %[1]s.reserve_updates(
 	if active != 1 || reserve != catalogTestReserve || symbol != "USDC" || source != "kamino-api" || strings.Join(baskets, ",") != "safe,medium,aggressive" {
 		t.Fatalf("renewed catalog changed identity: active=%d reserve=%s symbol=%s source=%s baskets=%v", active, reserve, symbol, source, baskets)
 	}
-	epoch, err := planner.LoadImmutableMarketEpoch(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := epoch.Validate(); err != nil {
-		t.Fatalf("planner rejected the renewed catalog: %v (%+v)", err, epoch.MintCoverage)
-	}
-	if lifetime := epoch.OptimizerEnvelopeExpiresAt().Sub(epoch.CapturedAt); lifetime < 5*time.Minute-5*time.Second {
-		t.Fatalf("optimizer envelope lifetime = %s, want the catalog-bound ~300 s", lifetime)
+	if catalog, err := planner.LoadCatalog(ctx); err != nil || len(catalog) != 1 || catalog[0] != (fleet.ReserveIdentity{Address: catalogTestReserve, Market: catalogTestMainMarket, Mint: catalogTestUSDC}) {
+		t.Fatalf("planner did not read the renewed catalog: %+v %v", catalog, err)
 	}
 
 	// A topology change is the operator's explicit sync, never a silent

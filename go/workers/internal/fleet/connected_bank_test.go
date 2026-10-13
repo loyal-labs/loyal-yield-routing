@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"sort"
-	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -195,11 +194,13 @@ type ConnectedBank struct {
 	RPCURL, Cluster                 string
 	OpportunityID, EpochID, VaultID int64
 	Vault, Settings, SetupPolicy    string
-	Signer                          ed25519.PrivateKey
-	Source, Target                  KaminoPositionAccounts
-	buildURL                        string
-	buildTransport                  http.RoundTripper
-	sends, lostResponses            atomic.Int64
+	// Market is the reserves the bank's move was planned from.
+	Market               MarketSnapshot
+	Signer               ed25519.PrivateKey
+	Source, Target       KaminoPositionAccounts
+	buildURL             string
+	buildTransport       http.RoundTripper
+	sends, lostResponses atomic.Int64
 }
 
 // Sends counts sendTransaction calls; LostResponses those executed by the
@@ -209,12 +210,12 @@ func (b *ConnectedBank) LostResponses() int64 { return b.lostResponses.Load() }
 
 // Revalidator is the Go route preparation bound to this bank's RPC and to a
 // Jupiter client that trusts only the bank's TLS fixture.
-func (b *ConnectedBank) Revalidator(owner string, fused bool) (*Revalidator, error) {
+func (b *ConnectedBank) Revalidator(owner string) (*Revalidator, error) {
 	client, err := chain.New(b.RPCURL, 15*time.Second)
 	if err != nil {
 		return nil, err
 	}
-	r, err := NewRevalidator(b.Store, client, RevalidatorConfig{Owner: owner, FusedExecute: fused, DelegatedSigner: encodeBase58(b.Signer.Public().(ed25519.PublicKey)), LeaseTTL: time.Minute, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: b.buildURL, Metrics: engine.NewFacts(prometheus.NewRegistry())})
+	r, err := NewRevalidator(b.Store, client, RevalidatorConfig{Owner: owner, DelegatedSigner: encodeBase58(b.Signer.Public().(ed25519.PublicKey)), LeaseTTL: time.Minute, CrossMintEnabled: true, CrossMintMaxValueLossBPS: 50, CrossMintMaxSlippageBPS: 50, JupiterBuildURL: b.buildURL, Metrics: engine.NewFacts(prometheus.NewRegistry())})
 	if err != nil {
 		return nil, err
 	}
@@ -563,11 +564,6 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	}
 	exec(`UPDATE loyal_yield.route_policies SET settings=$2,authority=$3,policy_account=$4,vault_pubkey=$5,delegated_signers=ARRAY[$3]::text[],cluster=$6,source_commitment='finalized',finalized_eligible=true,vault_index=$11,stable_mints=ARRAY[$7,$8]::text[],kamino_markets=ARRAY[$9,$10]::text[],kamino_liquidity_mints=ARRAY[$7,$8]::text[] WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, vaultID, settings, signer, earnPolicy, vault, cluster, USDCMint, USDTMint, source.Market, target.Market, int16(vaultIndex))
 	exec(`UPDATE loyal_yield.managed_vaults SET settings=$2,vault_pubkey=$3,vault_index=$4 WHERE id=$1`, vaultID, settings, vault, int16(vaultIndex))
-	exec(`UPDATE loyal_yield.vault_reserve_positions_current SET amount_raw=$2,planning_metadata=jsonb_build_object('amount_semantics','kamino_obligation_collateral_deposited_amount','redeemable_source_liquidity_amount_raw',$3::text,'idle_vault_liquidity_amount_raw','0') WHERE vault_id=$1`, vaultID, int64(amount), strconv.FormatUint(amount, 10))
-	if kind != ConnectedSameMintSetup {
-		// The finalized snapshot includes the empty target obligation the chain holds.
-		exec(`INSERT INTO loyal_yield.vault_reserve_positions_current(vault_id,reserve,market,liquidity_mint,amount_raw,has_value,supply_apy_bps,snapshot_id,observed_slot,observed_at,planning_metadata) SELECT vault_id,$2,$3,$4,0,false,$5,snapshot_id,observed_slot,observed_at,'{"amount_semantics":"kamino_obligation_collateral_deposited_amount","redeemable_source_liquidity_amount_raw":"0"}'::jsonb FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1 AND reserve=$6`, vaultID, target.Address, target.Market, target.Mint, states[target.Address].SupplyAPYBPS, source.Address)
-	}
 	if kind == ConnectedSameMintSetup {
 		// Earn records init authority as the vault's separate setup policy.
 		var setupID int64
@@ -591,19 +587,12 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	}
 	seedConnectedLookupTable(t, ctx, store, cluster, signer, vaultID, sharedTable, sharedAddresses, "shared_market", "shared_market")
 	seedConnectedLookupTable(t, ctx, store, cluster, signer, vaultID, vaultTable, vaultAddresses, "vault_shards", "vault_shard")
-	position, err := store.LoadVaultPosition(ctx, cluster, vaultID, source, target)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The holding the planner reads from the chain: the source collateral.
+	position := loadTestPosition(t, ctx, store, vaultID, source)
+	position.AmountRaw, position.SourceCollateralAmountRaw = int64(amount), int64(amount)
 	now := time.Now().UTC()
-	snapshot := MarketSnapshot{Cluster: cluster, Slot: 1000, ObservedAt: now, Reserves: states}
+	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Hash: "connected-" + suffix, Reserves: states}
 	ampleCapacity(snapshot)
-	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
-	snapshot.Hash, snapshot.ExpiresAt = epoch.Fingerprint, epoch.ExpiresAt
-	snapshot.MintExpiresAt = map[string]time.Time{USDCMint: epoch.OptimizerEnvelopeExpiresAt(), USDTMint: epoch.OptimizerEnvelopeExpiresAt()}
-	if snapshot.OptimizerEpochID, err = store.EnsureOptimizerEpoch(ctx, cluster, epoch); err != nil {
-		t.Fatal(err)
-	}
 	fleetVault := FleetVault{Position: position, CrossMintTargets: map[string]CrossMintPolicyBindings{target.Address: binding}, CrossMintMaxValueLossBPS: 50}
 	if sameMint {
 		fleetVault.CrossMintTargets, fleetVault.AllowedTargets = nil, []string{target.Address}
@@ -612,14 +601,14 @@ func NewConnectedBank(t *testing.T, kind ConnectedKind) *ConnectedBank {
 	if err != nil || len(plan.Opportunities) != 1 {
 		t.Fatalf("plan: %+v %v", plan, err)
 	}
-	published, err := store.Publish(ctx, cluster, epoch, position, plan.Opportunities[0].Decision)
-	if err != nil || !published.Inserted {
-		t.Fatalf("publish: %+v %v", published, err)
+	bank.Market = snapshot
+	summary, err := store.PublishPlan(ctx, cluster, Snapshot{Slot: snapshot.Slot, ObservedAt: snapshot.ObservedAt, Reserves: snapshot.Reserves}, plan)
+	if err != nil || summary.Published != 1 {
+		t.Fatalf("publish: %+v %v", summary, err)
 	}
-	if err = store.RefreshTargetCapacity(ctx, cluster, target.Address, target.Mint, states[target.Address].TotalSupplyUSDMicros, 1000); err != nil {
+	if err := store.pool.QueryRow(ctx, `SELECT id,optimizer_epoch_id FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND vault_id=$2`, cluster, vaultID).Scan(&bank.OpportunityID, &bank.EpochID); err != nil {
 		t.Fatal(err)
 	}
-	bank.OpportunityID, bank.EpochID = published.OpportunityID, published.EpochID
 	return bank
 }
 

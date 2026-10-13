@@ -23,7 +23,7 @@ import (
 // Rust's schedule (twelve one-second attempts, then doubling to a minute)
 // instead of on every claim, keeps its custody, and is reported exactly once
 // when it reaches sixty attempts (Oct 8: submission 44943 failed silently for
-// 14h while its capacity reservation starved the target reserve).
+// 14h while it held the target reserve's in-flight room).
 func TestPersistentReconciliationFailureBacksOffAndReportsStall(t *testing.T) {
 	store, pool := integrationStore(t)
 	ctx := context.Background()
@@ -91,13 +91,6 @@ func TestPersistentReconciliationFailureBacksOffAndReportsStall(t *testing.T) {
 	tick()
 	expect(61, time.Minute, 1)
 
-	var reservation string
-	if err := pool.QueryRow(ctx, `SELECT reservation_state FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, baseline.OpportunityID).Scan(&reservation); err != nil {
-		t.Fatal(err)
-	}
-	if reservation != "active" {
-		t.Fatalf("failing reconciliation released capacity: %s", reservation)
-	}
 }
 
 // A claimed opportunity that cannot be admitted (here its fresh evidence
@@ -129,7 +122,7 @@ func TestIneligibleOpportunityIsRecordedAndDoesNotFailTheTick(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	revalidator, err := fleet.NewRevalidator(routes, client, fleet.RevalidatorConfig{Owner: "owner-isolation", DelegatedSigner: signer, LeaseTTL: 30 * time.Second, FusedExecute: true, Metrics: engine.NewFacts(prometheus.NewRegistry())})
+	revalidator, err := fleet.NewRevalidator(routes, client, fleet.RevalidatorConfig{Owner: "owner-isolation", DelegatedSigner: signer, LeaseTTL: 30 * time.Second, Metrics: engine.NewFacts(prometheus.NewRegistry())})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,46 +195,6 @@ func TestVaultWithActiveDecisionIsNotClaimed(t *testing.T) {
 	}
 	if lease, err := routes.ClaimRevalidation(ctx, cluster, "owner-active-decision", time.Minute, true, false, signer); err != nil || lease == nil || lease.OpportunityID != busy {
 		t.Fatalf("settled vault was not claimed: %+v %v", lease, err)
-	}
-}
-
-// Rust's claim only took a submission whose retained conflict set still
-// matched; one submission missing a retained row must not fail the claim of
-// every other submission (the whole executor tick returned before landing).
-func TestMismatchedConflictSetDoesNotBlockOtherClaims(t *testing.T) {
-	store, pool := integrationStore(t)
-	ctx := context.Background()
-	suffix := fmt.Sprint(time.Now().UnixNano())
-	broken := seedBaseline(t, ctx, pool, suffix+"-broken")
-	healthy := seedBaseline(t, ctx, pool, suffix+"-healthy", broken.Cluster)
-	brokenWire, _ := integrationWire(t, 51)
-	brokenID, _, err := store.PersistSignedRoute(ctx, fixturePersistInput(t, ctx, pool, broken, brokenWire))
-	if err != nil {
-		t.Fatal(err)
-	}
-	healthyWire, _ := integrationWire(t, 51)
-	healthyID, _, err := store.PersistSignedRoute(ctx, fixturePersistInput(t, ctx, pool, healthy, healthyWire))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tag, err := pool.Exec(ctx, `DELETE FROM loyal_yield.route_account_conflict_leases WHERE submission_id=$1 AND writable_account_key LIKE 'shared-lane:%'`, brokenID); err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("remove retained row: %v", err)
-	}
-	leases, err := store.ClaimRecoveryWork(ctx, broken.Cluster, "owner-conflict", time.Minute, 8)
-	if err != nil {
-		t.Fatalf("one mismatched submission failed the whole claim: %v", err)
-	}
-	if len(leases) != 1 || leases[0].Submission.ID != healthyID {
-		t.Fatalf("claimed %d leases, want only submission %d", len(leases), healthyID)
-	}
-	// The mismatched row stays leased to this owner, so it is not reworked
-	// before its lease lapses.
-	var owner *string
-	if err := pool.QueryRow(ctx, `SELECT confirmation_lease_owner FROM loyal_yield.signed_route_submissions WHERE id=$1`, brokenID).Scan(&owner); err != nil {
-		t.Fatal(err)
-	}
-	if owner == nil || *owner != "owner-conflict" {
-		t.Fatalf("mismatched submission lease owner = %v", owner)
 	}
 }
 

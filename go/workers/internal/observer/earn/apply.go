@@ -273,6 +273,9 @@ func (s *Store) CompleteJob(ctx context.Context, jobID int64, owner string, muta
 		case mutation.Cleanup != nil:
 			applied = 1
 			return applyCleanup(ctx, tx, *mutation.Cleanup)
+		case mutation.Balances != nil:
+			applied = 1
+			return applyBalances(ctx, tx, *mutation.Balances)
 		case mutation.Refund != nil:
 			r := *mutation.Refund
 			if primary {
@@ -539,6 +542,26 @@ func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
 	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, observedSlot, observedAt)
 }
 
+// applyBalances publishes a managed vault's observed holdings.
+func applyBalances(ctx context.Context, tx pgx.Tx, m EarnBalancesMutation) error {
+	var vault managedVault
+	err := tx.QueryRow(ctx, `SELECT id, active_policy_id FROM loyal_yield.managed_vaults WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3 AND active`, m.Settings, int16(m.VaultIndex), m.VaultPubkey).Scan(&vault.id, &vault.activePolicyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	slot, err := slotBigint(m.ObservedSlot)
+	if err != nil {
+		return err
+	}
+	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, slot, observedOrNow(m.ObservedAt))
+}
+
+// applyObservedBalances makes the vault's current positions and idle balances
+// the observation's, unless a newer observation is already current. A vault
+// whose observation holds nothing closes its users' active positions.
 func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, reserves []EarnReserveMutation, idles []EarnIdleTokenMutation, observedSlot int64, observedAt time.Time) error {
 	var current int64
 	err := tx.QueryRow(ctx, `SELECT observed_slot FROM loyal_yield.vault_position_snapshots WHERE vault_id = $1 AND is_current FOR UPDATE`, vault.id).Scan(&current)
@@ -622,6 +645,19 @@ func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, r
 			return err
 		}
 	}
+	// An observation that read no account says nothing about the vault.
+	empty := len(reserves)+len(idles) > 0
+	for _, reserve := range reserves {
+		empty = empty && reserve.AmountRaw == 0
+	}
+	for _, idle := range idles {
+		empty = empty && idle.AmountRaw == 0
+	}
+	if empty {
+		if err := closeEmptyVaultPositions(ctx, tx, vault.id, snapshotID); err != nil {
+			return err
+		}
+	}
 	for _, idle := range idles {
 		amount, err := amountBigint(idle.AmountRaw)
 		if err != nil {
@@ -648,6 +684,50 @@ func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, r
 		}
 	}
 	return nil
+}
+
+// closeEmptyVaultPositions closes the vault's active app positions observed
+// at or before the snapshot: with no deposited collateral and no idle cash
+// the funds left the vault. A vault holding anything closes nothing.
+func closeEmptyVaultPositions(ctx context.Context, tx pgx.Tx, vaultID, snapshotID int64) error {
+	var ready bool
+	if err := tx.QueryRow(ctx, `SELECT to_regclass('loyal_yield.user_yield_positions') IS NOT NULL AND to_regclass('loyal_yield.user_yield_position_holding_events') IS NOT NULL`).Scan(&ready); err != nil || !ready {
+		return err
+	}
+	var total int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount_raw), 0)::bigint FROM loyal_yield.vault_reserve_positions_current WHERE vault_id = $1`, vaultID).Scan(&total); err != nil {
+		return err
+	}
+	if total > 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+WITH vault AS (
+    SELECT v.settings, v.vault_index, v.vault_pubkey, s.observed_slot, s.observed_at
+    FROM loyal_yield.managed_vaults v JOIN loyal_yield.vault_position_snapshots s ON s.vault_id = v.id
+    WHERE v.id = $1 AND s.id = $2
+), active_positions AS (
+    SELECT p.id, p.current_reserve, p.current_market, p.current_liquidity_mint, p.current_amount_raw, p.principal_amount_raw
+    FROM loyal_yield.user_yield_positions p, vault
+    WHERE p.settings = vault.settings AND p.vault_index = vault.vault_index AND p.vault_pubkey = vault.vault_pubkey
+      AND p.status::text = 'active' AND p.current_observed_slot <= vault.observed_slot
+    FOR UPDATE OF p
+), inserted_events AS (
+    INSERT INTO loyal_yield.user_yield_position_holding_events (
+        position_id, event_type, reserve, market, liquidity_mint, amount_raw,
+        principal_delta_raw, holding_delta_raw, observed_slot, observed_at, source_snapshot_id, created_at)
+    SELECT a.id, 'snapshot_reconciled'::loyal_yield.user_yield_holding_event_type, a.current_reserve, a.current_market,
+           a.current_liquidity_mint, 0, -a.principal_amount_raw, -a.current_amount_raw, vault.observed_slot, vault.observed_at, $2, now()
+    FROM active_positions a, vault
+    RETURNING id, position_id
+)
+UPDATE loyal_yield.user_yield_positions p
+SET smart_account_address = vault.vault_pubkey, principal_amount_raw = 0, current_amount_raw = 0,
+    current_observed_slot = vault.observed_slot, current_observed_at = vault.observed_at,
+    last_holding_event_id = inserted_events.id, status = 'closed'::loyal_yield.yield_position_status, updated_at = now()
+FROM inserted_events, vault
+WHERE p.id = inserted_events.position_id`, vaultID, snapshotID)
+	return err
 }
 
 func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) error {

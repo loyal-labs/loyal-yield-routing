@@ -115,10 +115,10 @@ func TestCrossMintExternalAppendPreservesManagedLeasesAndSchemaHold(t *testing.T
 					}
 				}
 				var signed, usage int
-				var state string
+				var inFlight bool
 				var version int64
-				if queryErr := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE decision_id=d.id),(SELECT count(*) FROM loyal_yield.lookup_table_usage_leases WHERE reference_key=$2),d.custody_version,r.reservation_state FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE d.id=$1`, m.DecisionID, crossMintSemantic(m.DecisionID, LegWithdraw, 1)).Scan(&signed, &usage, &version, &state); queryErr != nil || signed != 0 || usage != 0 || version != 0 || state != "active" {
-					t.Fatalf("failed external admission had partial effects: signed=%d usage=%d version=%d capacity=%s err=%v", signed, usage, version, state, queryErr)
+				if queryErr := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE decision_id=d.id),(SELECT count(*) FROM loyal_yield.lookup_table_usage_leases WHERE reference_key=$2),d.custody_version,d.status::text IN ('planned','simulating','ready','submitted','confirming') FROM loyal_yield.rebalance_decisions d WHERE d.id=$1`, m.DecisionID, crossMintSemantic(m.DecisionID, LegWithdraw, 1)).Scan(&signed, &usage, &version, &inFlight); queryErr != nil || signed != 0 || usage != 0 || version != 0 || !inFlight {
+					t.Fatalf("failed external admission had partial effects: signed=%d usage=%d version=%d inFlight=%v err=%v", signed, usage, version, inFlight, queryErr)
 				}
 				return
 			}
@@ -137,10 +137,10 @@ func TestCrossMintExternalAppendPreservesManagedLeasesAndSchemaHold(t *testing.T
 			if err != nil || len(snapshots) != 1 || snapshots[0].Address != external.Address || !sameStrings(order, p.Preparation.Transaction.LookupTables) {
 				t.Fatalf("durable source proof incomplete: %v %v %v", snapshots, order, err)
 			}
-			var state string
+			var inFlight bool
 			var version int64
-			if err = pool.QueryRow(ctx, `SELECT r.reservation_state,d.custody_version FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE d.id=$1`, m.DecisionID).Scan(&state, &version); err != nil || state != "active" || version != 0 {
-				t.Fatalf("signing inferred a custody effect or released capacity: %s %d %v", state, version, err)
+			if err = pool.QueryRow(ctx, `SELECT d.status::text IN ('planned','simulating','ready','submitted','confirming'),d.custody_version FROM loyal_yield.rebalance_decisions d WHERE d.id=$1`, m.DecisionID).Scan(&inFlight, &version); err != nil || !inFlight || version != 0 {
+				t.Fatalf("signing inferred a custody effect or ended the movement: %v %d %v", inFlight, version, err)
 			}
 		})
 	}

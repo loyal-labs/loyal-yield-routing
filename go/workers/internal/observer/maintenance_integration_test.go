@@ -2,16 +2,25 @@ package observer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
+	"github.com/solana-foundation/solana-go/v2"
+	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
 func maintenanceTestPool(t *testing.T) *pgxpool.Pool {
@@ -146,57 +155,122 @@ func TestSharePriceOlderOverlappingObserverCannotOverwriteState(t *testing.T) {
 		t.Fatalf("stale publication won: %v %d %v", price, slot, actual)
 	}
 }
-func TestTelemetrySelectsCompleteSourceAndForwardAllocationClock(t *testing.T) {
+
+// telemetryChain serves accounts by address at one slot, as getMultipleAccounts
+// would.
+type telemetryChain struct {
+	slot     uint64
+	accounts map[string]chain.Account
+}
+
+func (telemetryChain) BlockTime(context.Context, uint64) (time.Time, error) {
+	return time.Time{}, errors.New("telemetry reads no block time")
+}
+
+func (c telemetryChain) Accounts(_ context.Context, keys []solana.PublicKey, _ rpc.CommitmentType, _ uint64) (uint64, []*chain.Account, error) {
+	out := make([]*chain.Account, len(keys))
+	for i, key := range keys {
+		if account, ok := c.accounts[key.String()]; ok {
+			out[i] = &account
+		}
+	}
+	return c.slot, out, nil
+}
+
+type telemetryCatalog []fleet.ReserveIdentity
+
+func (c telemetryCatalog) LoadCatalog(context.Context) ([]fleet.ReserveIdentity, error) {
+	return c, nil
+}
+
+func telemetryKey(label string) solana.PublicKey {
+	sum := sha256.Sum256([]byte(label))
+	return solana.PublicKeyFromBytes(sum[:])
+}
+
+// The hourly allocation is what the chain holds at the hour: each vault's
+// obligation collateral, what it redeems at the reserve's exchange rate, and
+// its idle Earn cash. A vault the chain cannot name is missing, not empty.
+func TestTelemetryReadsHoldingsFromTheChainAndForwardAllocationClock(t *testing.T) {
 	pool := maintenanceTestPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
 	cluster := "readmodel-allocation-" + suffix
 	now := time.Now().UTC().Truncate(time.Second)
-	observed := now.Add(-20 * time.Minute)
-	reserve := "readmodel-reserve-" + suffix
-	m := &Maintenance{yield: pool, cluster: cluster, timeout: 10 * time.Second, maxVaults: 10000}
-	var policy, vault int64
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_reserve_share_prices WHERE cluster=$1`, cluster)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_fleet_allocations_hourly WHERE cluster=$1`, cluster)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.vault_position_snapshots WHERE vault_id=$1`, vault)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.managed_vaults WHERE id=$1`, vault)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.route_policies WHERE id=$1`, policy)
-	})
-	if err := pool.QueryRow(ctx, `INSERT INTO loyal_yield.route_policies(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,threshold,last_seen_slot,last_seen_signature) VALUES($1,$1,1,$2,1,$3,1,100,$1) RETURNING id`, "readmodel-"+suffix, "readmodel-policy-"+suffix, "readmodel-vault-"+suffix).Scan(&policy); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `INSERT INTO loyal_yield.managed_vaults(settings,vault_index,vault_pubkey,active_policy_id,first_seen_at) VALUES($1,1,$2,$3,$4) RETURNING id`, "readmodel-"+suffix, "readmodel-vault-"+suffix, policy, now.Add(-time.Hour)).Scan(&vault); err != nil {
-		t.Fatal(err)
-	}
-	var snapshot int64
-	if err := pool.QueryRow(ctx, `INSERT INTO loyal_yield.vault_position_snapshots(vault_id,policy_id,observed_slot,observed_at,is_current,context) VALUES($1,$2,100,$3,false,'{"publication_scope":"complete_product_vault","idle_vault_liquidity_amount_raw":"0"}') RETURNING id`, vault, policy, observed).Scan(&snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.vault_position_snapshot_positions(snapshot_id,reserve,market,liquidity_mint,amount_raw,has_value,planning_metadata) VALUES($1,$2,$3,$4,1000000000,true,'{"amountSemantics":"kamino_obligation_collateral_deposited_amount","redeemable_liquidity_amount_raw":"1200000000"}')`, snapshot, reserve, benchmarkMarket, USDCMint); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.vault_position_snapshots(vault_id,policy_id,observed_slot,observed_at,is_current,context) VALUES($1,$2,101,$3,false,'{"publication_scope":"partial_product_vault","idle_vault_liquidity_amount_raw":"9999999999"}')`, vault, policy, now.Add(-time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	sample, _, err := m.RecordTelemetry(ctx, now)
+	vaultKey, reserveKey, market := telemetryKey("vault"+suffix), telemetryKey("reserve"+suffix), solana.MustPublicKeyFromBase58(benchmarkMarket)
+	reserve := reserveKey.String()
+	usdc := solana.MustPublicKeyFromBase58(USDCMint)
+	// 1,000 collateral over 1,200 liquidity: one unit redeems 1.2.
+	reserveData := make([]byte, kamino.ReserveSize)
+	copy(reserveData, kamino.ReserveDiscriminator[:])
+	binary.LittleEndian.PutUint64(reserveData[8:16], 1)
+	copy(reserveData[32:64], market[:])
+	copy(reserveData[128:160], usdc[:])
+	binary.LittleEndian.PutUint64(reserveData[224:232], 1_200_000_000_000)
+	binary.LittleEndian.PutUint64(reserveData[2592:2600], 1_000_000_000_000)
+	obligation, err := kamino.VanillaObligation(vaultKey, market)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sample.ReserveAmounts[reserve] != "1200000000" {
-		t.Fatalf("partial replaced complete/units: %+v", sample)
+	obligationData := make([]byte, kamino.ObligationSize)
+	copy(obligationData, kamino.ObligationDiscriminator[:])
+	copy(obligationData[32:64], market[:])
+	copy(obligationData[64:96], vaultKey[:])
+	copy(obligationData[96:128], reserveKey[:])
+	binary.LittleEndian.PutUint64(obligationData[128:136], 1_000_000_000)
+	idle, err := spl.AssociatedTokenAddress(vaultKey, usdc, solana.TokenProgramID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idleData := make([]byte, 165)
+	copy(idleData[0:32], usdc[:])
+	copy(idleData[32:64], vaultKey[:])
+	binary.LittleEndian.PutUint64(idleData[64:72], 7_000_000)
+	idleData[108] = 1
+	node := telemetryChain{slot: 4_000, accounts: map[string]chain.Account{
+		reserve:             {Key: reserveKey, Owner: kamino.ProgramID, Lamports: 1, Data: reserveData},
+		obligation.String(): {Key: obligation, Owner: kamino.ProgramID, Lamports: 1, Data: obligationData},
+		idle.String():       {Key: idle, Owner: solana.TokenProgramID, Lamports: 1, Data: idleData},
+	}}
+	m := &Maintenance{yield: pool, cluster: cluster, timeout: 10 * time.Second, maxVaults: 10000, rpc: node, catalog: telemetryCatalog{{Address: reserve, Market: benchmarkMarket, Mint: USDCMint}}}
+	var policy int64
+	var vaults []int64
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_reserve_share_prices WHERE cluster=$1`, cluster)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_fleet_allocations_hourly WHERE cluster=$1`, cluster)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.managed_vaults WHERE id=ANY($1)`, vaults)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.route_policies WHERE id=$1`, policy)
+	})
+	if err := pool.QueryRow(ctx, `INSERT INTO loyal_yield.route_policies(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,threshold,last_seen_slot,last_seen_signature) VALUES($1,$1,1,$2,1,$3,1,100,$1) RETURNING id`, "readmodel-"+suffix, "readmodel-policy-"+suffix, vaultKey.String()).Scan(&policy); err != nil {
+		t.Fatal(err)
+	}
+	for i, pubkey := range []string{vaultKey.String(), "readmodel-unnamed-" + suffix} {
+		var vault int64
+		if err := pool.QueryRow(ctx, `INSERT INTO loyal_yield.managed_vaults(settings,vault_index,vault_pubkey,active_policy_id,first_seen_at) VALUES($1,1,$2,$3,$4) RETURNING id`, fmt.Sprintf("readmodel-%s-%d", suffix, i), pubkey, policy, now.Add(-time.Hour)).Scan(&vault); err != nil {
+			t.Fatal(err)
+		}
+		vaults = append(vaults, vault)
+	}
+	sample, prices, err := m.RecordTelemetry(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sample.ReserveAmounts[reserve] != "1200000000" || sample.IdleAmountRaw != "7000000" || sample.Included < 1 || sample.Missing < 1 || prices != 1 {
+		t.Fatalf("chain holdings not aggregated: %+v prices=%d", sample, prices)
 	}
 	var actual, priceAt time.Time
 	var amount string
+	var price float64
+	var slot int64
 	if err = pool.QueryRow(ctx, `SELECT observed_at,reserve_amounts->>$3 FROM loyal_yield.earn_fleet_allocations_hourly WHERE cluster=$1 AND observed_hour=$2`, cluster, now.Truncate(time.Hour), reserve).Scan(&actual, &amount); err != nil {
 		t.Fatal(err)
 	}
 	if !actual.Equal(now) || amount != "1200000000" {
 		t.Fatalf("allocation forward clock lost: %v %s", actual, amount)
 	}
-	if err = pool.QueryRow(ctx, `SELECT observed_at FROM loyal_yield.earn_reserve_share_prices WHERE cluster=$1 AND reserve=$2`, cluster, reserve).Scan(&priceAt); err != nil || !priceAt.Equal(observed) {
-		t.Fatalf("source shareprice clock lost: %v %v", priceAt, err)
+	if err = pool.QueryRow(ctx, `SELECT observed_at,share_price,slot FROM loyal_yield.earn_reserve_share_prices WHERE cluster=$1 AND reserve=$2`, cluster, reserve).Scan(&priceAt, &price, &slot); err != nil || !priceAt.Equal(now) || price != 1.2 || slot != 4_000 {
+		t.Fatalf("share price is not the chain's at the read: %v %v %d %v", priceAt, price, slot, err)
 	}
 	if _, _, err = m.RecordTelemetry(ctx, now.Add(-time.Second)); err != nil {
 		t.Fatal(err)
@@ -205,13 +279,8 @@ func TestTelemetrySelectsCompleteSourceAndForwardAllocationClock(t *testing.T) {
 		t.Fatalf("older overlapping allocation overwrote: %v %v", actual, err)
 	}
 	// maxVaults=0 is a deliberate under-bound read, not publication permission.
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
 	m.maxVaults = 0
-	if _, err = m.loadVaults(ctx, tx, now); err == nil || !strings.Contains(fmt.Sprint(err), "refusing partial allocation") {
+	if _, err = m.loadVaults(ctx, now); err == nil || !strings.Contains(fmt.Sprint(err), "refusing partial allocation") {
 		t.Fatalf("bounded partial fleet admitted: %v", err)
 	}
 }

@@ -115,7 +115,7 @@ type CrossMintController struct {
 	accounts       fleet.AccountReader
 	history        historyReader
 	chain          *chain.Client
-	marketEvidence fleet.MarketEpochSource
+	reserves       fleet.ReserveSource
 }
 
 // The controller only signs and journals. Broadcast, finalized receipt proof,
@@ -170,14 +170,16 @@ func (c *CrossMintController) ContinueOne(ctx context.Context) (int64, bool, err
 	if err = c.verifyIdleCustody(workCtx, lease.Movement); err != nil {
 		return 0, true, err
 	}
-	var targetEpoch fleet.ImmutableMarketEpoch
+	var targets fleet.MarketSnapshot
 	if lease.Movement.Phase == CrossMintTargetIdle {
-		targetEpoch, err = c.loadFallbackEpoch(workCtx, lease.Movement)
-		if err != nil {
+		if c.reserves == nil {
+			return 0, true, errors.New("target continuation requires a reserve source")
+		}
+		if targets, err = c.reserves.ReadReserves(workCtx); err != nil {
 			return 0, true, err
 		}
-		if !crossMintActiveTargetEligible(targetEpoch, lease.Movement) {
-			return 0, true, c.rebindFallback(workCtx, *lease, targetEpoch)
+		if !crossMintActiveTargetEligible(targets, lease.Movement) {
+			return 0, true, c.rebindFallback(workCtx, *lease, targets)
 		}
 	}
 	request.ContinuationOwner, request.ContinuationFencingToken, request.ControlGeneration, request.ExpiresAt = lease.Owner, lease.FencingToken, lease.ControlGeneration, lease.ExpiresAt
@@ -187,7 +189,7 @@ func (c *CrossMintController) ContinueOne(ctx context.Context) (int64, bool, err
 	}
 	prepared, err := c.factory.PrepareCrossMintLeg(workCtx, request)
 	if errors.Is(err, ErrCrossMintTargetUnavailable) && lease.Movement.Phase == CrossMintTargetIdle && workCtx.Err() == nil {
-		return 0, true, c.rebindFallback(workCtx, *lease, targetEpoch)
+		return 0, true, c.rebindFallback(workCtx, *lease, targets)
 	}
 	if errors.Is(err, ErrCrossMintSwapUnavailable) && request.Leg == LegSwap && workCtx.Err() == nil {
 		request.Leg, request.Purpose = LegDeposit, PurposeRecoverSource

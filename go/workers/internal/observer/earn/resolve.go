@@ -459,7 +459,7 @@ func resolveMutation(ctx context.Context, rpc *chain.Client, update NormalizedUp
 		return EarnMutation{}, err
 	}
 	if flow == nil {
-		return EarnMutation{}, nil
+		return balancesMutation(ctx, rpc, update, vault, context)
 	}
 	if flow.kind == cashRefund {
 		proof, err := readCleanupProof(ctx, rpc, vault, update.Slot)
@@ -501,9 +501,36 @@ func keySetOf(values []string) (map[solana.PublicKey]struct{}, error) {
 	return out, nil
 }
 
+// metadata describes an observed reserve row: its amount_raw is the
+// liquidity its collateral redeems.
 func metadata(kind string, slot uint64) json.RawMessage {
-	encoded, _ := json.Marshal(map[string]any{"kind": kind, "slot": slot})
+	encoded, _ := json.Marshal(map[string]any{"kind": kind, "slot": slot, "amount_semantics": "redeemable_liquidity_amount"})
 	return encoded
+}
+
+// balancesMutation publishes the vault's holdings after a transaction that
+// changed one of its obligations or idle token accounts without moving the
+// wallet's cash: a fleet move, or a Kamino deposit of idle cash. Any other
+// update of such a transaction changes nothing.
+func balancesMutation(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, context ReconciliationContext) (EarnMutation, error) {
+	if context.RoutePolicy == nil || update.AccountPubkey == nil {
+		return EarnMutation{}, nil
+	}
+	holding := false
+	for _, binding := range vault.Accounts {
+		if binding.Pubkey == *update.AccountPubkey && (binding.Role == "obligation" || binding.Role == "idle_token") {
+			holding = true
+		}
+	}
+	if !holding {
+		return EarnMutation{}, nil
+	}
+	snapshot, err := readVaultSnapshot(ctx, rpc, vault, *context.RoutePolicy, update.Slot)
+	if err != nil {
+		return EarnMutation{}, err
+	}
+	return EarnMutation{Balances: &EarnBalancesMutation{Settings: vault.Settings, VaultIndex: vault.VaultIndex, VaultPubkey: vault.Vault,
+		ObservedSlot: snapshot.observedSlot, ReserveState: snapshot.reserves, IdleState: snapshot.idles}}, nil
 }
 
 // readVaultSnapshot is read_complete_vault_snapshot.

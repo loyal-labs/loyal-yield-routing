@@ -170,7 +170,7 @@ func revalidatorCrossMintContracts(e CrossMintExpectedEffect, a CrossMintBalance
 func revalidatorCrossMintActivationAdmission(p fleet.CrossMintActivationPreparation, now time.Time) (*CrossMintActivationAdmission, error) {
 	l, capacity := p.Lease, p.Capacity
 	fee := p.InitialWithdrawalPreparation.Preparation.Transaction.FeeLamports
-	if p.WaitingALT || p.InitialWithdrawalPreparation.WaitingALT || p.ControlGeneration < 0 || l.LiquidityAmountRaw == 0 || l.LiquidityAmountRaw > math.MaxInt64 || fee == 0 || fee > math.MaxInt64 || fee > uint64(l.FeeCapLamports) || l.FeeCapLamports <= 0 || !l.ExpiresAt.After(now.Add(5*time.Second)) || p.ObservedAt.IsZero() || p.ObservedAt.After(now) || now.Sub(p.ObservedAt) > 15*time.Second || capacity.Cluster != l.Cluster || capacity.TargetReserve != l.TargetReserve || capacity.LiquidityMint != l.TargetLiquidityMint || capacity.ObservedSlot != p.ObservedSlot || capacity.ObservedSlot <= 0 || capacity.ObservedSupplyUSDMicros != p.TargetObservedSupplyUSDMicros || capacity.ObservedSupplyUSDMicros < 0 || capacity.MaximumInflightUSDMicros <= 0 || capacity.TelemetryVersion < 0 {
+	if p.WaitingALT || p.InitialWithdrawalPreparation.WaitingALT || p.ControlGeneration < 0 || l.LiquidityAmountRaw == 0 || l.LiquidityAmountRaw > math.MaxInt64 || fee == 0 || fee > math.MaxInt64 || fee > uint64(l.FeeCapLamports) || l.FeeCapLamports <= 0 || !l.ExpiresAt.After(now.Add(5*time.Second)) || p.ObservedAt.IsZero() || p.ObservedAt.After(now) || now.Sub(p.ObservedAt) > 15*time.Second || capacity.Cluster != l.Cluster || capacity.TargetReserve != l.TargetReserve || capacity.LiquidityMint != l.TargetLiquidityMint || capacity.ObservedSlot != p.ObservedSlot || capacity.ObservedSlot <= 0 || capacity.ObservedSupplyUSDMicros != p.TargetObservedSupplyUSDMicros || capacity.ObservedSupplyUSDMicros < 0 {
 		return nil, errors.New("source activation lacks live exact capacity and independently compiled withdrawal")
 	}
 	certificate, err := json.Marshal(p.Certificate)
@@ -183,7 +183,7 @@ func revalidatorCrossMintActivationAdmission(p fleet.CrossMintActivationPreparat
 	}
 	return &CrossMintActivationAdmission{Lease: l, Activation: CrossMintActivation{
 		SourceControlGeneration:            p.ControlGeneration,
-		Capacity:                           CrossMintCapacityProjection{Cluster: capacity.Cluster, TargetReserve: capacity.TargetReserve, LiquidityMint: capacity.LiquidityMint, ObservedSupplyUSDMicros: capacity.ObservedSupplyUSDMicros, ObservedSlot: capacity.ObservedSlot, MaximumInflightUSDMicros: capacity.MaximumInflightUSDMicros, TelemetryVersion: capacity.TelemetryVersion},
+		Capacity:                           CrossMintCapacityProjection{Cluster: capacity.Cluster, TargetReserve: capacity.TargetReserve, LiquidityMint: capacity.LiquidityMint, ObservedSupplyUSDMicros: capacity.ObservedSupplyUSDMicros, ObservedSlot: capacity.ObservedSlot},
 		InitialWithdrawCompiledFeeLamports: int64(fee), PreflightCertification: certificate,
 	}}, nil
 }

@@ -737,7 +737,7 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 	if r.jupiter == nil || b.Swap.MaxSlippageBPS == 0 || b.Swap.MaxSlippageBPS > 10_000 || uint64(m.CustodyAmountRaw) > b.Swap.DailySourceMintSpendingCap || r.crossMintMaxSlippageBPS == 0 || r.crossMintMaxValueLossBPS == 0 {
 		return nil, effect, anchors, errors.New("cross-mint swap policy or local limits are invalid")
 	}
-	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.TotalSupplyUSDMicros <= minimumReserveSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
+	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.TotalSupplyUSDMicros <= minimumSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
 		return nil, effect, anchors, errors.New("cross-mint intended target is no longer economically eligible")
 	}
 	amount := uint64(m.CustodyAmountRaw)

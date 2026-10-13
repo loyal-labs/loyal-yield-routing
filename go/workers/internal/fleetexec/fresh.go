@@ -110,8 +110,8 @@ func admitFeeOnlySpend(ctx context.Context, tx pgx.Tx, cluster, payer, semantic 
 
 // PersistFreshAdmission mirrors the registered execute-opportunity trigger:
 // insert signed submission with decision=NULL, insert decision (links the
-// opportunity and submission), then bind capacity/conflicts/ALT usage, and
-// perform the final publication lifetime check before commit.
+// opportunity and submission), then bind conflicts/ALT usage, and perform
+// the final publication lifetime check before commit.
 func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmission, wire WireIdentity, balance *FeePayerBalance) (int64, error) {
 	sum := sha256.Sum256(wire.SignedTransaction)
 	if hex.EncodeToString(sum[:]) != wire.SignedTransactionHash || wire.MessageHash != a.Preparation.Transaction.MessageSHA256 || wire.LastValidBlockHeight != a.LastValidBlockHeight {
@@ -178,14 +178,6 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
 		if !reflect.DeepEqual(snapshot, l.SourceSnapshotID) || !sameJSON(actualPlan, p.ExecutionPlan) {
 			return errors.New("fresh admission snapshot/plan differs from execute opportunity")
 		}
-		var capacityID int64
-		if err = tx.QueryRow(ctx, `SELECT id FROM loyal_yield.target_capacity_reservations
-   WHERE id=$1 AND opportunity_id=$2 AND cluster=$3 AND target_reserve=$4 AND liquidity_mint=$5
-    AND reservation_state='active' AND decision_id IS NULL AND signed_submission_id IS NULL
-    AND reservation_generation=$6 AND reservation_fencing_token=$7 AND principal_usd_micros=$8
-   FOR UPDATE`, a.CapacityReservationID, l.OpportunityID, l.Cluster, l.TargetReserve, l.LiquidityMint, a.ReservationGeneration, a.CapacityFencingToken, l.PrincipalUSDMicros).Scan(&capacityID); err != nil {
-			return fmt.Errorf("capacity admission changed: %w", err)
-		}
 		rows, err := tx.Query(ctx, `SELECT writable_account_key FROM loyal_yield.route_account_conflict_leases
    WHERE cluster=$1 AND opportunity_id=$2 AND lease_owner=$3 AND fencing_token=$4 AND submission_id IS NULL AND expires_at>clock_timestamp()
    ORDER BY writable_account_key FOR UPDATE`, l.Cluster, l.OpportunityID, l.Owner, l.FencingToken)
@@ -235,12 +227,7 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
    FROM loyal_yield.rebalance_opportunities WHERE id=$1 RETURNING id`, l.OpportunityID, semantic, p.Simulation.Slot).Scan(&decisionID); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.target_capacity_reservations SET decision_id=$2,signed_submission_id=$3,updated_at=clock_timestamp()
-   WHERE id=$1 AND decision_id IS NULL AND signed_submission_id IS NULL AND reservation_state='active'`, capacityID, decisionID, submissionID)
-		if err != nil || tag.RowsAffected() != 1 {
-			return errors.New("capacity signed handoff fenced")
-		}
-		tag, err = tx.Exec(ctx, `UPDATE loyal_yield.route_account_conflict_leases SET submission_id=$5,expires_at=GREATEST(expires_at,clock_timestamp()+interval '10 minutes'),updated_at=clock_timestamp()
+		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.route_account_conflict_leases SET submission_id=$5,expires_at=GREATEST(expires_at,clock_timestamp()+interval '10 minutes'),updated_at=clock_timestamp()
    WHERE cluster=$1 AND opportunity_id=$2 AND lease_owner=$3 AND fencing_token=$4 AND writable_account_key=ANY($6) AND submission_id IS NULL AND expires_at>clock_timestamp()`, l.Cluster, l.OpportunityID, l.Owner, l.FencingToken, submissionID, keys)
 		if err != nil || tag.RowsAffected() != int64(len(keys)) {
 			return ErrConflictLeaseHeld

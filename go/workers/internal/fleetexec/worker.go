@@ -57,7 +57,6 @@ type Worker struct {
 	// BatchSize run at once. Run joins them before returning.
 	landing atomic.Int64
 	wg      sync.WaitGroup
-	stalls  stallLatch
 }
 
 // NewWorker composes the executor from its concrete dependencies.
@@ -284,7 +283,6 @@ const (
 	reconciliationMinRetry          = time.Second
 	reconciliationMaxRetry          = time.Minute
 	reconciliationStallAttempts     = 60
-	maxLatchedReconciliationStalls  = 1024
 )
 
 // reconciliationRetryDelay is reconciliation_retry_delay_seconds. A confirmed
@@ -299,40 +297,19 @@ func reconciliationRetryDelay(attempts int) time.Duration {
 }
 
 // deferReconciliation is Rust's deferred_reconciliation_poll_at: the failed
-// attempt is durably rescheduled, and a submission still failing after
-// reconciliationStallAttempts claims is reported once per process.
+// attempt is durably rescheduled, and a submission whose durable attempt count
+// reaches reconciliationStallAttempts is reported, once.
 func (w *Worker) deferReconciliation(ctx context.Context, lease SubmissionLease, cause error) error {
 	attempts := lease.Submission.AttemptCount
 	detail := fleet.LogErrorText(cause)
 	if err := w.store.DeferSubmission(ctx, lease, reconciliationRetryDelay(attempts), detail); err != nil {
 		return fmt.Errorf("reconciliation defer failed after %s: %w", detail, err)
 	}
-	if attempts >= reconciliationStallAttempts && w.stalls.claim(lease.Submission.ID) {
+	if attempts == reconciliationStallAttempts {
 		w.config.Facts.Failed(engine.FamilyFleet, "fleet_reconciliation_stalled")
 		slog.Error("fleet_reconciliation_stalled", "submissionId", lease.Submission.ID, "attemptCount", attempts, "retryDelay", reconciliationRetryDelay(attempts).String(), "reason", detail)
 	}
 	return fmt.Errorf("reconciliation deferred: %w", cause)
-}
-
-// stallLatch is Rust's ReconciliationStallLatch: one report per submission
-// per process. A restart re-arms it; reaching the bound clears it rather than
-// silencing new stalls.
-type stallLatch struct {
-	mu       sync.Mutex
-	reported map[int64]bool
-}
-
-func (l *stallLatch) claim(id int64) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.reported[id] {
-		return false
-	}
-	if l.reported == nil || len(l.reported) >= maxLatchedReconciliationStalls {
-		l.reported = map[int64]bool{}
-	}
-	l.reported[id] = true
-	return true
 }
 
 func int64Ptr(v int64) *int64 { return &v }

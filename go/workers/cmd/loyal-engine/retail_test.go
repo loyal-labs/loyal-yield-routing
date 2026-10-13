@@ -114,12 +114,8 @@ func TestRetailCrossMintRequiresScopedAuthorityAndBoundedEconomics(t *testing.T)
 
 func TestRetailConfigurationIsScopedBoundedAndSecretSafe(t *testing.T) {
 	configureRetailForTest(t)
-	cfg, err := loadRetailConfig()
-	if err != nil {
+	if _, err := loadRetailConfig(); err != nil {
 		t.Fatal(err)
-	}
-	if !cfg.fleetConfig().FusedExecute {
-		t.Fatal("fused preparation drifted")
 	}
 	cases := []struct{ name, value string }{{"RETAIL_TIMESCALE_SCHEMA", "kamino;test-secret"}, {"RETAIL_SOLANA_RPC_URL", "test-secret"}, {"RETAIL_DELEGATE_KEYPAIR", "test-secret"}, {"RETAIL_CROSS_MINT_ENABLED", "test-secret"}}
 	for _, tc := range cases {

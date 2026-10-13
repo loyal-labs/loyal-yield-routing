@@ -51,14 +51,6 @@ const (
 	PurposeFallbackTarget = "fallback_target"
 )
 
-func legalLegPurpose(purpose string) bool {
-	switch purpose {
-	case PurposeOptimizeYield, PurposeRecoverSource, PurposeFallbackTarget:
-		return true
-	}
-	return false
-}
-
 var (
 	// ErrStaleOwner means the caller lost the confirmation lease or its
 	// fencing token is behind; the row must be re-claimed, never re-advanced.

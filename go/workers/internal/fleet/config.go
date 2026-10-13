@@ -14,18 +14,14 @@ type Config struct {
 	RPCURL                             string
 	Cluster                            string
 	PollInterval                       time.Duration
-	RevalidatorEnabled                 bool
 	DelegatedSigner, RevalidationOwner string
 	RevalidationLeaseTTL               time.Duration
-	RevalidationPollInterval           time.Duration
-	RevalidationConcurrency            int
 	RevalidationComputeLimit           uint64
 	CrossMintEnabled                   bool
 	CrossMintMaxValueLossBPS           uint16
 	CrossMintMaxSlippageBPS            uint16
 	JupiterBuildURL, JupiterAPIKey     string
 	EnabledStableMints                 []string
-	FusedExecute                       bool
 }
 
 func (c Config) Validate() error {
@@ -79,14 +75,6 @@ func (c Config) Validate() error {
 		}
 		if _, err := decodePublicKey(c.DelegatedSigner); err != nil {
 			return fmt.Errorf("invalid cross-mint delegated signer: %w", err)
-		}
-	}
-	if c.RevalidatorEnabled {
-		if c.DelegatedSigner == "" || c.RevalidationOwner == "" || c.RevalidationLeaseTTL < time.Second || c.RevalidationPollInterval <= 0 || c.RevalidationConcurrency <= 0 || c.RevalidationConcurrency > 256 || c.RevalidationComputeLimit == 0 || c.RevalidationComputeLimit > defaultComputeLimit {
-			return fmt.Errorf("revalidator requires a delegated signer, owner, valid lease, concurrency, poll interval, and compute limit")
-		}
-		if _, err := decodePublicKey(c.DelegatedSigner); err != nil {
-			return fmt.Errorf("invalid revalidator delegated signer: %w", err)
 		}
 	}
 	return nil

@@ -54,7 +54,6 @@ func (s *Store) loadPostContract(ctx context.Context, r SubmissionRecord) (sameM
 		return c, errors.New("same-mint post-state requires linked confirmed route")
 	}
 	var source *string
-	var currentSlot int64
 	var plan struct {
 		RouteKind  string `json:"route_kind"`
 		SourceKind string `json:"source_kind"`
@@ -63,16 +62,13 @@ func (s *Store) loadPostContract(ctx context.Context, r SubmissionRecord) (sameM
 		VaultIndex int16  `json:"vault_index"`
 		IdleATA    string `json:"idle_token_account"`
 	}
-	err := s.pool.QueryRow(ctx, `SELECT v.id,v.active_policy_id,v.vault_pubkey,v.settings,v.vault_index,o.source_reserve,o.target_reserve,o.liquidity_mint,o.execution_plan,
- GREATEST(COALESCE((SELECT max(observed_slot) FROM loyal_yield.vault_position_snapshots WHERE vault_id=v.id AND is_current),0),
- COALESCE((SELECT max(observed_slot) FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=v.id),0),
- COALESCE((SELECT max(observed_slot) FROM loyal_yield.vault_idle_token_balances_current WHERE vault_id=v.id),0))
+	err := s.pool.QueryRow(ctx, `SELECT v.id,v.active_policy_id,v.vault_pubkey,v.settings,v.vault_index,o.source_reserve,o.target_reserve,o.liquidity_mint,o.execution_plan
  FROM loyal_yield.rebalance_opportunities o JOIN loyal_yield.rebalance_decisions d ON d.id=o.decision_id
  JOIN loyal_yield.managed_vaults v ON v.id=o.vault_id JOIN loyal_yield.route_policies p ON p.id=v.active_policy_id
  WHERE o.id=$1 AND o.decision_id=$2 AND d.vault_id=v.id AND o.cluster=$3 AND v.active AND p.active
  AND d.movement_route<>'cross_mint_jupiter' AND d.status::text='confirming' AND d.signature=$4
  AND d.source_reserve IS NOT DISTINCT FROM o.source_reserve AND d.target_reserve=o.target_reserve AND d.liquidity_mint=o.liquidity_mint
- AND d.execution_plan=o.execution_plan`, r.OpportunityID, *r.DecisionID, r.Cluster, r.Signature).Scan(&c.vaultID, &c.policyID, &c.vault, &c.settings, &c.vaultIndex, &source, &c.target, &c.mint, &c.plan, &currentSlot)
+ AND d.execution_plan=o.execution_plan`, r.OpportunityID, *r.DecisionID, r.Cluster, r.Signature).Scan(&c.vaultID, &c.policyID, &c.vault, &c.settings, &c.vaultIndex, &source, &c.target, &c.mint, &c.plan)
 	if err != nil {
 		return c, err
 	}
@@ -99,13 +95,7 @@ func (s *Store) loadPostContract(ctx context.Context, r SubmissionRecord) (sameM
 	default:
 		return c, errors.New("unsupported same-mint source protocol")
 	}
-	if currentSlot == math.MaxInt64 {
-		return c, errors.New("post-state observation frontier exceeds bound")
-	}
-	c.minimumSlot = currentSlot + 1
-	if c.minimumSlot < *r.ConfirmedSlot {
-		c.minimumSlot = *r.ConfirmedSlot
-	}
+	c.minimumSlot = *r.ConfirmedSlot
 	return c, nil
 }
 
@@ -289,31 +279,13 @@ func (s *Store) publishSameMintPost(ctx context.Context, lease SubmissionLease, 
 		if err != nil {
 			return err
 		}
-		err = tx.QueryRow(ctx, `SELECT v.id FROM loyal_yield.managed_vaults v JOIN loyal_yield.route_policies p ON p.id=v.active_policy_id WHERE v.id=$1 AND v.active_policy_id=$2 AND v.vault_pubkey=$3 AND v.settings=$4 AND v.vault_index=$5 AND v.active AND p.active FOR UPDATE OF v FOR SHARE OF p`, c.vaultID, c.policyID, c.vault, c.settings, c.vaultIndex).Scan(&id)
-		if err != nil {
-			return err
-		}
-		var currentSlot int64
-		// All projectors serialize on the managed-vault row. Require a strictly
-		// newer snapshot; equal-slot concurrent observations retry instead of
-		// silently replacing a conflicting publication.
-		err = tx.QueryRow(ctx, `SELECT GREATEST(COALESCE((SELECT max(observed_slot) FROM loyal_yield.vault_position_snapshots WHERE vault_id=$1 AND is_current),0),COALESCE((SELECT max(observed_slot) FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=$1),0),COALESCE((SELECT max(observed_slot) FROM loyal_yield.vault_idle_token_balances_current WHERE vault_id=$1),0))`, c.vaultID).Scan(&currentSlot)
-		if err != nil {
-			return err
-		}
-		if currentSlot >= proof.slot {
-			return errors.New("post-state publication was overtaken by current snapshot")
-		}
-		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.vault_position_snapshots SET is_current=false WHERE vault_id=$1 AND is_current`, c.vaultID); err != nil {
-			return err
-		}
 		var snapshot int64
-		err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.vault_position_snapshots(vault_id,policy_id,observed_slot,observed_at,chain_slot,is_current,context) VALUES($1,$2,$3,$4,$3,true,$5) RETURNING id`, c.vaultID, c.policyID, proof.slot, proof.observedAt, contextJSON).Scan(&snapshot)
+		err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.vault_position_snapshots(vault_id,policy_id,observed_slot,observed_at,chain_slot,is_current,context) VALUES($1,$2,$3,$4,$3,false,$5) RETURNING id`, c.vaultID, c.policyID, proof.slot, proof.observedAt, contextJSON).Scan(&snapshot)
 		if err != nil {
 			return err
 		}
 		for _, p := range proof.positions {
-			metadata, e := json.Marshal(map[string]any{"amount_semantics": "kamino_obligation_collateral_deposited_amount", "source_collateral_amount_raw": fmt.Sprint(p.amount), "redeemable_source_liquidity_amount_raw": fmt.Sprint(p.redeemable), "redeemable_liquidity_amount_raw": fmt.Sprint(p.redeemable), "obligation": p.obligation, "obligation_exists": p.exists, "vault_liquidity_ata": proof.idleATA, "vault_liquidity_ata_exists": proof.idleATAExists, "idle_vault_liquidity_amount_raw": fmt.Sprint(proof.idleAmount), "vault_liquidity_amount_raw": fmt.Sprint(proof.idleAmount), "collateral_mint": p.collateralMint, "liquidity_token_program": proof.tokenProgram})
+			metadata, e := json.Marshal(map[string]any{"amount_semantics": "kamino_obligation_collateral_deposited_amount", "source_collateral_amount_raw": fmt.Sprint(p.amount), "redeemable_source_liquidity_amount_raw": fmt.Sprint(p.redeemable), "obligation": p.obligation, "obligation_exists": p.exists, "vault_liquidity_ata": proof.idleATA, "vault_liquidity_ata_exists": proof.idleATAExists, "idle_vault_liquidity_amount_raw": fmt.Sprint(proof.idleAmount), "collateral_mint": p.collateralMint, "liquidity_token_program": proof.tokenProgram})
 			if e != nil {
 				return e
 			}
@@ -321,17 +293,6 @@ func (s *Store) publishSameMintPost(ctx context.Context, lease SubmissionLease, 
 				if _, err = tx.Exec(ctx, `INSERT INTO loyal_yield.vault_position_snapshot_positions(snapshot_id,reserve,market,liquidity_mint,amount_raw,supply_apy_bps,borrow_apy_bps,has_value,planning_metadata) VALUES($1,$2,$3,$4,$5,$6,NULL,true,$7)`, snapshot, p.reserve, p.market, p.mint, p.amount, p.supplyAPY, metadata); err != nil {
 					return err
 				}
-			}
-			_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.vault_reserve_positions_current(vault_id,reserve,market,liquidity_mint,amount_raw,has_value,supply_apy_bps,borrow_apy_bps,snapshot_id,observed_slot,observed_at,planning_metadata) VALUES($1,$2,$3,$4,$5::bigint,$5::bigint>0,$6,NULL,$7,$8,$9,$10)
-   ON CONFLICT(vault_id,reserve) DO UPDATE SET market=EXCLUDED.market,liquidity_mint=EXCLUDED.liquidity_mint,amount_raw=EXCLUDED.amount_raw,has_value=EXCLUDED.has_value,supply_apy_bps=EXCLUDED.supply_apy_bps,borrow_apy_bps=EXCLUDED.borrow_apy_bps,snapshot_id=EXCLUDED.snapshot_id,observed_slot=EXCLUDED.observed_slot,observed_at=EXCLUDED.observed_at,planning_metadata=EXCLUDED.planning_metadata`, c.vaultID, p.reserve, p.market, p.mint, p.amount, p.supplyAPY, snapshot, proof.slot, proof.observedAt, metadata)
-			if err != nil {
-				return err
-			}
-		}
-		if c.sourceKind == "idle_vault_usdc" {
-			_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.vault_idle_token_balances_current(vault_id,mint,amount_raw,owner,token_account,observed_slot,observed_at,source_commitment,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,'finalized',clock_timestamp()) ON CONFLICT(vault_id,mint) DO UPDATE SET amount_raw=EXCLUDED.amount_raw,owner=EXCLUDED.owner,token_account=EXCLUDED.token_account,observed_slot=EXCLUDED.observed_slot,observed_at=EXCLUDED.observed_at,source_commitment=EXCLUDED.source_commitment,updated_at=clock_timestamp() WHERE loyal_yield.vault_idle_token_balances_current.observed_slot<EXCLUDED.observed_slot`, c.vaultID, c.mint, proof.idleAmount, c.vault, proof.idleATA, proof.slot, proof.observedAt)
-			if err != nil {
-				return err
 			}
 		}
 		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.rebalance_decisions SET status='confirmed',signature=$2,submitted_slot=COALESCE(submitted_slot,$3),confirmed_slot=$4,post_snapshot_id=$5,updated_at=clock_timestamp() WHERE id=$1`, *r.DecisionID, r.Signature, r.SubmittedSlot, *r.ConfirmedSlot, snapshot); err != nil {

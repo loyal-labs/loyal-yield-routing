@@ -17,13 +17,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-func TestFusedCycleCannotBypassTypedAdmission(t *testing.T) {
-	r := &Revalidator{fusedExecute: true}
-	if claimed, err := r.Cycle(context.Background(), "mainnet-beta"); err == nil || claimed {
-		t.Fatalf("untyped fused path accepted: claimed=%v error=%v", claimed, err)
-	}
-}
-
 func TestFreshVaultTokenCustodyChecksProgramAndState(t *testing.T) {
 	owner := testIdentity(60)
 	for _, mint := range []string{USDCMint, PYUSDMint} {

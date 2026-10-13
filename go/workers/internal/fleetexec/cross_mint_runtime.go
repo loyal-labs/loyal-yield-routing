@@ -352,12 +352,6 @@ func (s *Store) ClaimCrossMintRecoveryWork(ctx context.Context, cluster, owner s
 		}
 		err = rows.Err()
 		rows.Close()
-		if err != nil {
-			return err
-		}
-		var dropped []SubmissionLease
-		leases, dropped, err = renewConflictSet(ctx, tx, leases)
-		logDroppedConflictSets(dropped)
 		return err
 	})
 	return leases, err
@@ -588,7 +582,7 @@ func (s *Store) recordCrossMintBroadcastIntent(ctx context.Context, l Submission
 		}
 		for _, key := range l.Submission.ConflictAccountKeys {
 			var retained bool
-			if err = tx.QueryRow(ctx, `SELECT submission_id=$3 AND expires_at>clock_timestamp() FROM loyal_yield.route_account_conflict_leases WHERE cluster=$1 AND writable_account_key=$2 FOR UPDATE`, m.Cluster, key, id).Scan(&retained); err != nil {
+			if err = tx.QueryRow(ctx, `SELECT submission_id=$3 FROM loyal_yield.route_account_conflict_leases WHERE cluster=$1 AND writable_account_key=$2 FOR UPDATE`, m.Cluster, key, id).Scan(&retained); err != nil {
 				return err
 			}
 			if !retained {

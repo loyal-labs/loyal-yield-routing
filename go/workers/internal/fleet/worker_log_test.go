@@ -39,17 +39,15 @@ func TestRejectionCountsSummarizesFleetWithoutVaultIDs(t *testing.T) {
 	}
 }
 
-type failingEpochSource struct{ err error }
+type failingCatalog struct{ err error }
 
-func (f failingEpochSource) LoadImmutableMarketEpoch(context.Context) (ImmutableMarketEpoch, error) {
-	return ImmutableMarketEpoch{}, f.err
-}
+func (f failingCatalog) LoadCatalog(context.Context) ([]ReserveIdentity, error) { return nil, f.err }
 
 // A failed planning cycle names its cause. The one secret an error can carry,
 // the RPC URL with its API key, is reduced to the operation and cause.
 func TestPlanningCycleFailureLogsItsCauseWithoutTheRPCURL(t *testing.T) {
 	cause := &url.Error{Op: "Post", URL: "https://rpc.example/?api-key=SECRET", Err: errors.New("dial tcp: connection refused")}
-	out := LogErrorText(fmt.Errorf("load market epoch: %w", cause))
+	out := LogErrorText(fmt.Errorf("read chain snapshot: %w", cause))
 	if !strings.Contains(out, "dial tcp: connection refused") {
 		t.Fatalf("planning failure logged without its cause: %s", out)
 	}
@@ -84,13 +82,13 @@ func plannerLaneSucceededAt(t *testing.T, registry *prometheus.Registry) float64
 }
 
 // The executor marks fleet progress every tick, so a planner failing every
-// cycle (stale market evidence) is visible only as a planner lane that never
-// succeeds; LoyalLaneStalled pages on it.
+// cycle is visible only as a planner lane that never succeeds;
+// LoyalLaneStalled pages on it.
 func TestFailedPlanningCycleDoesNotAdvanceThePlannerLane(t *testing.T) {
 	log.SetOutput(&bytes.Buffer{})
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	registry := prometheus.NewRegistry()
-	w := &Worker{config: Config{}, marketEvidence: failingEpochSource{errors.New("frontier is incomplete")}, facts: engine.NewFacts(registry)}
+	w := &Worker{config: Config{}, catalog: failingCatalog{errors.New("catalog unavailable")}, facts: engine.NewFacts(registry)}
 	w.runtimeCycle(context.Background())
 	if at := plannerLaneSucceededAt(t, registry); at != 0 {
 		t.Fatalf("failed planning cycle recorded planner lane success at %v", at)

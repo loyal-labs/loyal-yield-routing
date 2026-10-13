@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	workersdb "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -36,6 +38,7 @@ type Maintenance struct {
 	maxVaults, maxRows int
 	timeout            time.Duration
 	rpc                ReservePriceRPC
+	catalog            fleet.ReserveCatalog
 	poll, observation  time.Duration
 	mu                 sync.Mutex
 	pricesHour         time.Time
@@ -101,7 +104,11 @@ func NewMaintenance(yield, timescale *pgxpool.Pool, c MaintenanceConfig) (*Maint
 			return nil, errors.New("invalid mainnet medium market identity")
 		}
 	}
-	return &Maintenance{yield: yield, timescale: timescale, cluster: c.Cluster, markets: markets, maxVaults: c.MaxVaults, maxRows: c.MaxModelRows, timeout: c.Timeout, rpc: c.PriceRPC, poll: c.RecoveryPoll, observation: c.HealthObservation, logger: c.Logger, onError: c.OnError, retryInterval: c.RetryInterval, validateNamespace: c.ValidateNamespace}, nil
+	catalog, err := fleet.NewCatalogStoreFromPool(timescale, "kamino")
+	if err != nil {
+		return nil, err
+	}
+	return &Maintenance{yield: yield, timescale: timescale, cluster: c.Cluster, markets: markets, maxVaults: c.MaxVaults, maxRows: c.MaxModelRows, timeout: c.Timeout, rpc: c.PriceRPC, catalog: catalog, poll: c.RecoveryPoll, observation: c.HealthObservation, logger: c.Logger, onError: c.OnError, retryInterval: c.RetryInterval, validateNamespace: c.ValidateNamespace}, nil
 }
 
 type MaintenanceReport struct {
@@ -228,64 +235,89 @@ func (m *Maintenance) Tick(ctx context.Context, now time.Time) (MaintenanceRepor
 	return r, nil
 }
 
-func (m *Maintenance) loadVaults(ctx context.Context, tx pgx.Tx, now time.Time) ([]FleetVault, error) {
-	rows, err := tx.Query(ctx, `
-SELECT vault.id, snapshot.observed_at, snapshot.observed_slot, snapshot.context_idle,
- COALESCE((SELECT jsonb_agg(jsonb_build_object('reserve',position.reserve,'market',COALESCE(position.market,''),'liquidityMint',position.liquidity_mint,'amountRaw',position.amount_raw::text,'metadata',position.planning_metadata)) FROM (SELECT * FROM loyal_yield.vault_position_snapshot_positions WHERE snapshot_id=snapshot.id AND has_value=true ORDER BY reserve LIMIT 129) AS position),'[]'::jsonb),
- COALESCE((SELECT jsonb_agg(jsonb_build_object('mint',idle.mint,'amountRaw',idle.amount_raw::text,'slot',idle.observed_slot)) FROM (SELECT * FROM loyal_yield.vault_idle_token_balances_current WHERE vault_id=vault.id ORDER BY mint LIMIT 129) AS idle),'[]'::jsonb)
-FROM loyal_yield.managed_vaults AS vault
-LEFT JOIN LATERAL (
- SELECT source.id,source.observed_at,source.observed_slot,source.context->>'idle_vault_liquidity_amount_raw' AS context_idle
- FROM loyal_yield.vault_position_snapshots AS source
- WHERE source.vault_id=vault.id AND source.observed_at <= $1
- AND source.context->>'publication_scope'='complete_product_vault'
- ORDER BY source.observed_at DESC,source.observed_slot DESC,source.id DESC LIMIT 1
-) AS snapshot ON true
-WHERE vault.vault_index=1 AND vault.active=true AND vault.first_seen_at <= $1
-ORDER BY vault.id LIMIT $2`, now, m.maxVaults+1)
+// loadVaults reads every active Earn vault's holdings from the chain in one
+// snapshot: its vanilla obligation in each catalog market and its Earn token
+// accounts. A vault whose address is not a public key has no snapshot.
+func (m *Maintenance) loadVaults(ctx context.Context, now time.Time) ([]FleetVault, error) {
+	rows, err := m.yield.Query(ctx, `SELECT id, vault_pubkey FROM loyal_yield.managed_vaults WHERE vault_index=1 AND active=true AND first_seen_at <= $1 ORDER BY id LIMIT $2`, now, m.maxVaults+1)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var result []FleetVault
-	for rows.Next() {
-		var v FleetVault
-		var observed *time.Time
-		var slot *int64
-		var idle *string
-		var positions, current []byte
-		if err = rows.Scan(&v.ID, &observed, &slot, &idle, &positions, &current); err != nil {
-			return nil, err
-		}
-		if err = json.Unmarshal(current, &v.CurrentIdle); err != nil {
-			return nil, err
-		}
-		if observed != nil {
-			if slot == nil {
-				return nil, errors.New("complete snapshot has no slot")
-			}
-			s := &FleetSnapshot{ObservedAt: *observed, Slot: *slot, ContextIdle: idle}
-			if err = json.Unmarshal(positions, &s.Positions); err != nil {
-				return nil, err
-			}
-			v.Snapshot = s
-		}
-		result = append(result, v)
+	type entry struct {
+		id     int64
+		pubkey string
 	}
+	var entries []entry
+	for rows.Next() {
+		var e entry
+		if err = rows.Scan(&e.id, &e.pubkey); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	rows.Close()
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(result) > m.maxVaults {
+	if len(entries) > m.maxVaults {
 		return nil, errors.New("fleet exceeds configured telemetry bound; refusing partial allocation")
+	}
+	catalog, err := m.catalog.LoadCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	markets := []string{}
+	for _, identity := range catalog {
+		markets = append(markets, identity.Market)
+	}
+	request := fleet.SnapshotRequest{Catalog: catalog, Idle: true}
+	for _, e := range entries {
+		if _, err := solana.PublicKeyFromBase58(e.pubkey); err == nil {
+			request.Vaults = append(request.Vaults, fleet.SnapshotVault{Pubkey: e.pubkey, Markets: markets})
+		}
+	}
+	snapshot := fleet.Snapshot{}
+	if len(request.Vaults) > 0 {
+		if snapshot, err = fleet.ReadSnapshot(ctx, m.rpc, request); err != nil {
+			return nil, fmt.Errorf("read vault holdings: %w", err)
+		}
+	}
+	result := make([]FleetVault, 0, len(entries))
+	for _, e := range entries {
+		facts, read := snapshot.Vaults[e.pubkey]
+		if !read {
+			result = append(result, FleetVault{ID: e.id})
+			continue
+		}
+		idle := new(big.Int)
+		for _, amount := range facts.Idle {
+			idle.Add(idle, new(big.Int).SetUint64(amount))
+		}
+		total := idle.String()
+		s := &FleetSnapshot{ObservedAt: now, Slot: snapshot.Slot, ContextIdle: &total}
+		for _, h := range facts.Holdings {
+			metadata, err := json.Marshal(map[string]string{"amount_semantics": "kamino_obligation_collateral_deposited_amount", "redeemable_source_liquidity_amount_raw": strconv.FormatUint(h.LiquidityRaw, 10)})
+			if err != nil {
+				return nil, err
+			}
+			s.Positions = append(s.Positions, FleetPosition{Reserve: h.Reserve, Market: h.Market, Mint: h.Mint, AmountRaw: strconv.FormatUint(h.CollateralRaw, 10), Metadata: metadata})
+		}
+		result = append(result, FleetVault{ID: e.id, Snapshot: s})
 	}
 	return result, nil
 }
+
 func (m *Maintenance) RecordTelemetry(ctx context.Context, now time.Time) (AllocationSample, int, error) {
 	var sample AllocationSample
 	prices := 0
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
-	err := workersdb.WithTx(ctx, m.yield, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
+	vaults, err := m.loadVaults(ctx, now)
+	if err != nil {
+		return sample, 0, err
+	}
+	err = workersdb.WithTx(ctx, m.yield, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
 		var acquired bool
 		if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('earn-hourly-telemetry:' || $1,0))`, m.cluster).Scan(&acquired); err != nil {
 			return err
@@ -293,10 +325,7 @@ func (m *Maintenance) RecordTelemetry(ctx context.Context, now time.Time) (Alloc
 		if !acquired {
 			return errors.New("another hourly telemetry observer owns this pass")
 		}
-		vaults, err := m.loadVaults(ctx, tx, now)
-		if err != nil {
-			return err
-		}
+		var err error
 		sample, err = AggregateAllocation(vaults, now)
 		if err != nil {
 			return err

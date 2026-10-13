@@ -233,7 +233,9 @@ func parseRetailKey(material string) (ed25519.PrivateKey, error) {
 }
 
 func (c retailConfig) fleetConfig() fleet.Config {
-	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", PollInterval: time.Second, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationPollInterval: 250 * time.Millisecond, RevalidationConcurrency: 16, RevalidationComputeLimit: 1_400_000, RevalidatorEnabled: true, FusedExecute: true, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
+	// A tick reads every planned vault's obligations and policy over RPC
+	// (about a hundred getMultipleAccounts calls for the 2026-10 fleet).
+	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", PollInterval: 15 * time.Second, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationComputeLimit: 1_400_000, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
 }
 
 // The outer diagnostic retains error identity for cancellation and inspection
@@ -334,9 +336,9 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("fleet store", err)
 	}
-	evidence, err := fleet.NewMarketEvidenceStoreFromPool(marketPool, cfg.timescaleSchema)
+	catalog, err := fleet.NewCatalogStoreFromPool(marketPool, cfg.timescaleSchema)
 	if err != nil {
-		return retailError("market evidence", err)
+		return retailError("reserve catalog", err)
 	}
 	dStore := fleetexec.NewStore(yieldPool)
 	gStore, err := multiply.NewStoreFromPool(startup, yieldPool)
@@ -386,21 +388,17 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	}, PollInterval: time.Second, LeaseDuration: 120 * time.Second}
 	cConfig := cfg.fleetConfig()
 	cConfig.RevalidationOwner = owner
-	planner, err := fleet.NewWorker(cConfig, cStore, cluster, facts)
+	planner, err := fleet.NewWorker(cConfig, cStore, cluster, catalog, facts)
 	if err != nil {
 		return retailError("fleet planner", err)
 	}
-	if err := planner.SetMarketEvidence(evidence); err != nil {
-		return retailError("fleet evidence binding", err)
-	}
 	// Compilation/verification remains available for recovery with rollout off.
 	// Only the planner and D controller receive fresh cross-mint enablement.
-	revalidator, err := fleet.NewRevalidator(cStore, cluster, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, FusedExecute: true, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys(), Metrics: facts})
+	revalidator, err := fleet.NewRevalidator(cStore, cluster, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys(), Metrics: facts})
 	if err != nil {
 		return retailError("fused fleet preparation", err)
 	}
-	// Fused preparation belongs to the executor. C.SetRevalidator would run the
-	// incompatible durable Cycle path and must never be installed here.
+	// Preparation belongs to the executor.
 	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, cluster, cluster, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
 	if err != nil {
 		return retailError("fleet executor", err)
@@ -408,18 +406,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err := executor.SetFreshRevalidator(revalidator); err != nil {
 		return retailError("fleet fresh execution binding", err)
 	}
-	// Rust's reconciler refreshed every managed vault's positions on this
-	// cadence (render.yaml: --concurrency 64 --position-sweep-interval-seconds
-	// 300); the sweep matches the planner's routing universe.
-	sweepMints := cConfig.EnabledStableMints
-	if len(sweepMints) == 0 {
-		sweepMints = fleet.EarnStableMints()
-	}
-	positionSweep, err := fleetexec.NewPositionSweep(fleetexec.PositionSweepConfig{Cluster: cConfig.Cluster, DelegatedSigner: cConfig.DelegatedSigner, EnabledMints: sweepMints, Interval: 300 * time.Second, Concurrency: 64, Facts: facts}, dStore, cluster)
-	if err != nil {
-		return retailError("fleet position sweep", err)
-	}
-	crossMint, err := composeRetailCrossMint(startup, cfg, owner, dStore, revalidator, cluster, evidence, facts)
+	crossMint, err := composeRetailCrossMint(startup, cfg, owner, dStore, revalidator, cluster, fleet.ChainReserves{Catalog: catalog, RPC: cluster}, facts)
 	if err != nil {
 		return retailError("cross-mint runtime", err)
 	}
@@ -438,10 +425,9 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		case engine.FamilyAutodeposit:
 			lanes = append(lanes, control, aWorker)
 		case engine.FamilyFleet:
-			facts.LaneSucceeded(family, "position_sweep")
 			facts.LaneSucceeded(family, "planner")
 			facts.LaneSucceeded(family, "executor")
-			lanes = append(lanes, planner, executor, crossMint, positionSweep)
+			lanes = append(lanes, planner, executor, crossMint)
 		case engine.FamilyLookup:
 			// Each lane's success clock starts when it starts.
 			facts.LaneSucceeded(family, "lookup_planner")

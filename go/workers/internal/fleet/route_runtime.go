@@ -2,9 +2,7 @@ package fleet
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,8 +26,6 @@ const altProgram = "AddressLookupTab1e1111111111111111111111111"
 type revalidationStore interface {
 	ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, delegatedSigner ...string) (*RevalidationLease, error)
 	CheckRevalidationLease(ctx context.Context, lease RevalidationLease) error
-	RefreshTargetCapacity(ctx context.Context, cluster, reserve, mint string, supply, slot int64) error
-	TargetCapacitySlot(ctx context.Context, cluster, reserve, mint string) (int64, error)
 	LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error)
 	CommitRevalidation(ctx context.Context, lease RevalidationLease, input RevalidationCommit) error
 	EligibleFeePayerShards(ctx context.Context, cluster, policySigner string, mounted []string) ([]FeePayerShard, error)
@@ -42,7 +38,6 @@ type Revalidator struct {
 	signer                   string
 	leaseTTL                 time.Duration
 	computeLimit             uint64
-	fusedExecute             bool
 	crossMintEnabled         bool
 	crossMintMaxValueLossBPS uint16
 	crossMintMaxSlippageBPS  uint16
@@ -55,7 +50,6 @@ type RevalidatorConfig struct {
 	Owner, DelegatedSigner   string
 	LeaseTTL                 time.Duration
 	ComputeLimit             uint64
-	FusedExecute             bool
 	CrossMintEnabled         bool
 	CrossMintMaxValueLossBPS uint16
 	CrossMintMaxSlippageBPS  uint16
@@ -94,51 +88,10 @@ func newRevalidator(store revalidationStore, client *chain.Client, config Revali
 			return nil, err
 		}
 	}
-	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, fusedExecute: config.FusedExecute, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...), metrics: config.Metrics}, nil
+	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...), metrics: config.Metrics}, nil
 }
 
-// Cycle claims at most one row. Claim, fresh-chain preparation, and commit are
-// deliberately separate transactions; CommitRevalidation rechecks every
-// mutable identity, lease, epoch, conflict, and capacity fence atomically.
-func (r *Revalidator) Cycle(ctx context.Context, cluster string) (bool, error) {
-	if r.fusedExecute {
-		return false, errors.New("fused execution requires PrepareExecution and atomic signed publication")
-	}
-	lease, err := r.store.ClaimRevalidation(ctx, cluster, r.owner, r.leaseTTL, r.fusedExecute, r.crossMintEnabled, r.signer)
-	if err != nil || lease == nil {
-		return false, err
-	}
-	ctx, cancel := context.WithDeadline(ctx, lease.ExpiresAt.Add(-5*time.Second))
-	defer cancel()
-	if !contains(lease.DelegatedSigners, r.signer) {
-		return true, errors.New("claimed policy no longer delegates to configured signer")
-	}
-	if lease.RouteKind == "cross_mint_jupiter" {
-		return true, r.cycleCrossMint(ctx, *lease)
-	}
-	prepared, _, err := r.prepareSameMint(ctx, cluster, *lease, func(evidence FreshRouteEvidence) error {
-		if r.fusedExecute {
-			if err := r.store.RefreshTargetCapacity(ctx, cluster, lease.TargetReserve, lease.LiquidityMint, evidence.TargetObservedSupplyUSDMicros, evidence.Slot); err != nil {
-				return fmt.Errorf("refresh fused target capacity: %w", err)
-			}
-		}
-		return r.store.CheckRevalidationLease(ctx, *lease)
-	})
-	if err != nil {
-		return true, err
-	}
-	if prepared.WaitingALT {
-		return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: "waiting_alt", Preparation: &prepared.Preparation, MissingAddresses: prepared.Missing, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey})
-	}
-	evidence := prepared.Evidence
-	disposition := "ready"
-	if r.fusedExecute {
-		disposition = "fused_execute"
-	}
-	return true, r.store.CommitRevalidation(ctx, *lease, RevalidationCommit{Disposition: disposition, Preparation: &prepared.Preparation, ConflictKeys: prepared.Preparation.Transaction.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: evidence.ObservedSourceAPYBPS, ObservedTargetAPYBPS: evidence.ObservedTargetAPYBPS, TargetObservedSupplyUSDMicros: evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: evidence.Slot})
-}
-
-// sameMintPreparation is everything Cycle needs to commit.
+// sameMintPreparation is everything an admission needs to commit.
 type sameMintPreparation struct {
 	LastValidBlockHeight int64
 	Evidence             FreshRouteEvidence
@@ -189,16 +142,11 @@ func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease Revali
 
 // prepareSameMint runs the read-only same-mint preparation from fresh chain
 // evidence through the final simulated route. afterEvidence runs once between
-// loadFreshRoute and proxy build; the durable path uses it for the fused
-// capacity refresh and lease check. The returned stage names the failing step.
+// loadFreshRoute and proxy build: the lease check. The returned stage names
+// the failing step.
 func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease RevalidationLease, afterEvidence func(FreshRouteEvidence) error) (sameMintPreparation, string, error) {
 	var out sameMintPreparation
-	// The route's bank may not be older than the target's durable telemetry.
-	floor, err := r.store.TargetCapacitySlot(ctx, cluster, lease.TargetReserve, lease.LiquidityMint)
-	if err != nil {
-		return out, "load_fresh_route", err
-	}
-	fresh, err := r.loadFreshRoute(ctx, lease, floor)
+	fresh, err := r.loadFreshRoute(ctx, lease)
 	if err != nil {
 		return out, "load_fresh_route", err
 	}
@@ -244,8 +192,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	}
 	if len(missing) > 0 || len(preview.LookupTables) == 0 {
 		preparation := waitingALTPreparation(missing, r.computeLimit)
-		preparation.RouteFingerprint = retainedSameMintRouteFingerprint(lease)
-		preparation.RequirementsFingerprint = manifest.Fingerprint
+		preparation.RouteFingerprint, preparation.RequirementsFingerprint = manifest.Fingerprint, manifest.Fingerprint
 		preparation.Manifest = &manifest
 		if err := preserveCanonicalPlan(lease.ExecutionPlan, &preparation, "alt_readiness"); err != nil {
 			return out, "compile", err
@@ -309,8 +256,7 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	if err != nil {
 		return out, "prepare_route", err
 	}
-	preparation.RouteFingerprint = retainedSameMintRouteFingerprint(lease)
-	preparation.RequirementsFingerprint = manifest.Fingerprint
+	preparation.RouteFingerprint, preparation.RequirementsFingerprint = manifest.Fingerprint, manifest.Fingerprint
 	preparation.Manifest = &manifest
 	if err := preserveCanonicalPlan(lease.ExecutionPlan, &preparation, "prepared_transaction"); err != nil {
 		return out, "prepare_route", err
@@ -473,19 +419,6 @@ func RouteInstructionOf(step string, ix *solana.GenericInstruction) RouteInstruc
 	return out
 }
 
-// Match the retained executor's stable_fingerprint identity contract. Exact
-// account requirements are fenced separately by the typed manifest hash.
-func retainedSameMintRouteFingerprint(lease RevalidationLease) string {
-	hash := sha256.New()
-	for _, part := range []string{"same_mint_kamino", lease.Cluster, fmt.Sprint(lease.VaultID), lease.SourceReserve, lease.TargetReserve} {
-		var size [8]byte
-		binary.LittleEndian.PutUint64(size[:], uint64(len(part)))
-		hash.Write(size[:])
-		hash.Write([]byte(part))
-	}
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
 func waitingALTPreparation(missing []string, compute uint64) RoutePreparation {
 	plan, _ := json.Marshal(struct {
 		Kind    string   `json:"kind"`
@@ -531,7 +464,7 @@ func vaultRentTopUp(rent, emptyRent, vaultLamports uint64) (uint64, error) {
 	return 0, nil
 }
 
-func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease, floor int64) (freshSameMint, error) {
+func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease) (freshSameMint, error) {
 	var f freshSameMint
 	_, preliminary, err := ReadAccounts(ctx, r.rpc, []string{lease.SourceReserve, lease.TargetReserve}, rpc.CommitmentConfirmed, 0)
 	if err != nil {
@@ -561,7 +494,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 			addresses = append(addresses, position.FarmUser)
 		}
 	}
-	slot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentConfirmed, floor)
+	slot, accounts, err := ReadAccounts(ctx, r.rpc, addresses, rpc.CommitmentConfirmed, 0)
 	if err != nil {
 		return f, err
 	}

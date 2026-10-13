@@ -139,9 +139,29 @@ func crossMintDeltaSQL(d *CrossMintTokenAmount) (any, any, any) {
 	return d.Mint, d.TokenAccount, d.AmountRaw
 }
 
+// CrossMintCapacityProjection is a target reserve as a fresh read observed
+// it: the supply its 2% frontier and the move's dilution are priced on.
 type CrossMintCapacityProjection struct {
-	Cluster, TargetReserve, LiquidityMint                                             string
-	ObservedSupplyUSDMicros, ObservedSlot, MaximumInflightUSDMicros, TelemetryVersion int64
+	Cluster, TargetReserve, LiquidityMint string
+	ObservedSupplyUSDMicros, ObservedSlot int64
+}
+
+// crossMintTargetFits checks, under the target's reserve lock, that principal
+// fits its 2% frontier after every other move in flight into it, and returns
+// the inflow those moves commit.
+func crossMintTargetFits(ctx context.Context, tx pgx.Tx, p CrossMintCapacityProjection, opportunity, principal int64) (int64, error) {
+	if err := fleet.LockReserves(ctx, tx, p.Cluster, p.TargetReserve); err != nil {
+		return 0, err
+	}
+	inflow, _, err := fleet.InflightFlows(ctx, tx, p.Cluster, p.ObservedSlot, opportunity)
+	if err != nil {
+		return 0, err
+	}
+	committed, frontier := inflow[p.TargetReserve], max(p.ObservedSupplyUSDMicros/50, 4_000_000)
+	if principal <= 0 || committed > frontier-principal {
+		return 0, errors.New("target capacity exhausted")
+	}
+	return committed, nil
 }
 
 type CrossMintActivation struct {
@@ -206,21 +226,6 @@ func (s *Store) cancelUntouchedCrossMint(ctx context.Context, l CrossMintContinu
 		if authority != crossMintControlRevoked && authority != crossMintRolloutDisabled || m.Phase != CrossMintSourceReserve || m.CustodyVersion != 0 || attempts != 0 || authority == crossMintControlRevoked && g.StartNewMovements && activation != nil && *activation == g.Generation {
 			return errors.New("cancellation requires untouched custody and revoked initial authority")
 		}
-		var reserve, mint string
-		var reservation, generation int64
-		if err = tx.QueryRow(ctx, `SELECT id,target_reserve,liquidity_mint,reservation_generation FROM loyal_yield.target_capacity_reservations WHERE decision_id=$1 AND reservation_state<>'released'`, m.DecisionID).Scan(&reservation, &reserve, &mint, &generation); err != nil {
-			return err
-		}
-		if _, err = tx.Exec(ctx, `SELECT 1 FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 FOR UPDATE`, m.Cluster, reserve, mint); err != nil {
-			return err
-		}
-		var lockedGeneration int64
-		if err = tx.QueryRow(ctx, `SELECT reservation_generation FROM loyal_yield.target_capacity_reservations WHERE id=$1 AND target_reserve=$2 AND liquidity_mint=$3 AND reservation_state<>'released' FOR UPDATE`, reservation, reserve, mint).Scan(&lockedGeneration); err != nil {
-			return err
-		}
-		if generation != lockedGeneration {
-			return ErrStaleOwner
-		}
 		reason := "start_authority_revoked_before_withdraw"
 		if authority == crossMintRolloutDisabled {
 			reason = "rollout_disabled"
@@ -240,24 +245,17 @@ func (s *Store) cancelUntouchedCrossMint(ctx context.Context, l CrossMintContinu
 		if updated.RowsAffected() != 1 {
 			return ErrStaleOwner
 		}
-		updated, err = tx.Exec(ctx, `UPDATE loyal_yield.target_capacity_reservations SET reservation_state='released',released_at=clock_timestamp(),release_reason='cancelled_before_withdraw',state_version=state_version+1,updated_at=clock_timestamp() WHERE id=$1 AND reservation_state<>'released'`, reservation)
-		if err != nil {
-			return err
-		}
-		if updated.RowsAffected() != 1 {
-			return ErrStaleOwner
-		}
 		return nil
 	})
 }
 
-// ActivateCrossMintMovement freezes certified intent and reserves capacity
-// before custody can leave the reserve. A crash before signed publication is
+// ActivateCrossMintMovement freezes certified intent once the target has
+// room for it, before custody can leave the reserve. A crash before signed publication is
 // recovered by the existing continuation claim rather than a new opportunity.
 func (s *Store) ActivateCrossMintMovement(ctx context.Context, l fleet.RevalidationLease, input CrossMintActivation) (CrossMintMovement, error) {
 	var result CrossMintMovement
 	p := input.Capacity
-	if l.OpportunityID <= 0 || l.Owner == "" || l.FencingToken <= 0 || l.Cluster == "" || l.PrincipalUSDMicros <= 0 || input.InitialWithdrawCompiledFeeLamports <= 0 || !nonemptyCrossMintObject(input.PreflightCertification) || p.Cluster != l.Cluster || p.TargetReserve != l.TargetReserve || p.LiquidityMint != l.TargetLiquidityMint || p.ObservedSupplyUSDMicros < 0 || p.ObservedSlot <= 0 || p.MaximumInflightUSDMicros <= 0 || p.TelemetryVersion < 0 {
+	if l.OpportunityID <= 0 || l.Owner == "" || l.FencingToken <= 0 || l.Cluster == "" || l.PrincipalUSDMicros <= 0 || input.InitialWithdrawCompiledFeeLamports <= 0 || !nonemptyCrossMintObject(input.PreflightCertification) || p.Cluster != l.Cluster || p.TargetReserve != l.TargetReserve || p.LiquidityMint != l.TargetLiquidityMint || p.ObservedSupplyUSDMicros < 0 || p.ObservedSlot <= 0 {
 		return result, errors.New("activation lacks certified fee, fenced opportunity or target projection")
 	}
 	b, err := crossMintBindings(l.ExecutionPlan)
@@ -313,33 +311,16 @@ func (s *Store) ActivateCrossMintMovement(ctx context.Context, l fleet.Revalidat
 		if active {
 			return ErrRouteContended
 		}
-		var supply, slot, maximum, telemetry int64
-		if err = tx.QueryRow(ctx, `SELECT observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros,telemetry_version FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 FOR UPDATE`, p.Cluster, p.TargetReserve, p.LiquidityMint).Scan(&supply, &slot, &maximum, &telemetry); err != nil {
+		committed, err := crossMintTargetFits(ctx, tx, p, opportunity, principal)
+		if err != nil {
 			return err
 		}
-		if supply != p.ObservedSupplyUSDMicros || slot != p.ObservedSlot || maximum != p.MaximumInflightUSDMicros || telemetry != p.TelemetryVersion {
-			return errors.New("target telemetry changed before activation")
-		}
-		var committed int64
-		if err = tx.QueryRow(ctx, `SELECT COALESCE(sum(principal_usd_micros),0)::bigint FROM loyal_yield.target_capacity_reservations WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 AND reservation_state<>'released'`, p.Cluster, p.TargetReserve, p.LiquidityMint).Scan(&committed); err != nil {
-			return err
-		}
-		if committed > math.MaxInt64-principal || committed+principal > maximum {
-			return errors.New("target capacity exhausted before activation")
-		}
-		economics, err := fleet.ComputeReservationEconomics(l, plan, supply, committed)
+		economics, err := fleet.ComputeAdmissionEconomics(l, plan, p.ObservedSupplyUSDMicros, committed)
 		if err != nil {
 			return err
 		}
 		if input.InitialWithdrawCompiledFeeLamports > economics.FeeCapLamports || input.InitialWithdrawCompiledFeeLamports > cost {
-			return errors.New("withdraw fee exceeds locked-frontier or immutable movement budget")
-		}
-		var generation, reservation int64
-		if err = tx.QueryRow(ctx, `UPDATE loyal_yield.target_capacity_frontiers SET reservation_generation=reservation_generation+1,updated_at=clock_timestamp() WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 RETURNING reservation_generation`, p.Cluster, p.TargetReserve, p.LiquidityMint).Scan(&generation); err != nil {
-			return err
-		}
-		if err = tx.QueryRow(ctx, crossMintReserveCapacitySQL, p.Cluster, p.TargetReserve, p.LiquidityMint, opportunity, principal, supply, slot, maximum, telemetry, generation, economics.ObservedTargetAPYBPS, economics.ProjectedTargetAPYBPS, economics.SourceAPYBPS, economics.EdgeBPS, economics.NetGainUSDMicros, economics.FeeCapLamports, l.FencingToken).Scan(&reservation); err != nil {
-			return err
+			return errors.New("withdraw fee exceeds the admission or immutable movement budget")
 		}
 		h := sha256.New()
 		_, _ = h.Write([]byte("cross-mint-movement-v1"))
@@ -355,44 +336,20 @@ func (s *Store) ActivateCrossMintMovement(ctx context.Context, l fleet.Revalidat
 		if err = tx.QueryRow(ctx, crossMintLinkOpportunitySQL, opportunity, decision, l.Owner, l.FencingToken).Scan(&opportunity); err != nil {
 			return err
 		}
-		attached, err := tx.Exec(ctx, crossMintAttachCapacitySQL, reservation, decision)
-		if err != nil {
-			return err
-		}
-		if attached.RowsAffected() != 1 {
-			return ErrStaleOwner
-		}
 		result, err = readCrossMintMovement(ctx, tx, decision)
 		return err
 	})
 	return result, err
 }
 
-// RebindCrossMintFallbackCapacity retains the movement-owned claim, locks old
-// and new frontiers in reserve order, and invalidates the old continuation
-// lease. The caller must reclaim and prepare against the new durable binding.
-func (s *Store) refreshCrossMintFallbackProjection(ctx context.Context, m CrossMintMovement, r fleet.MarketEpochReserve) (CrossMintCapacityProjection, error) {
-	p := CrossMintCapacityProjection{Cluster: m.Cluster, TargetReserve: r.Reserve, LiquidityMint: m.TargetMint}
-	shared, err := fleet.NewStoreFromPool(s.pool)
-	if err != nil {
-		return p, err
+// RebindCrossMintFallbackCapacity binds the movement to the fallback target
+// once that reserve has room for it, and invalidates the old continuation
+// lease. The caller must reclaim and prepare against the new binding.
+func (s *Store) RebindCrossMintFallbackCapacity(ctx context.Context, l CrossMintContinuationLease, p CrossMintCapacityProjection) error {
+	if p.Cluster != l.Movement.Cluster || p.LiquidityMint != l.Movement.TargetMint || p.TargetReserve == "" || p.ObservedSupplyUSDMicros < 0 || p.ObservedSlot <= 0 {
+		return errors.New("fallback projection is not current target-mint capacity")
 	}
-	if err = shared.RefreshTargetCapacity(ctx, m.Cluster, r.Reserve, m.TargetMint, r.TotalSupplyUSDMicros, r.Slot); err != nil {
-		return p, err
-	}
-	err = s.pool.QueryRow(ctx, `SELECT observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros,telemetry_version FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, m.Cluster, r.Reserve, m.TargetMint).Scan(&p.ObservedSupplyUSDMicros, &p.ObservedSlot, &p.MaximumInflightUSDMicros, &p.TelemetryVersion)
-	if err == nil && (p.ObservedSupplyUSDMicros != r.TotalSupplyUSDMicros || p.ObservedSlot != r.Slot) {
-		err = errors.New("fallback capacity advanced beyond selected reserve evidence")
-	}
-	return p, err
-}
-
-func (s *Store) RebindCrossMintFallbackCapacity(ctx context.Context, l CrossMintContinuationLease, p CrossMintCapacityProjection) (int64, error) {
-	if p.Cluster != l.Movement.Cluster || p.LiquidityMint != l.Movement.TargetMint || p.TargetReserve == "" || p.ObservedSupplyUSDMicros < 0 || p.ObservedSlot <= 0 || p.MaximumInflightUSDMicros <= 0 || p.TelemetryVersion < 0 {
-		return 0, errors.New("fallback projection is not current target-mint capacity")
-	}
-	var generation int64
-	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		if err := lockCrossMintControl(ctx, tx, p.Cluster); err != nil {
 			return err
 		}
@@ -410,44 +367,12 @@ func (s *Store) RebindCrossMintFallbackCapacity(ctx context.Context, l CrossMint
 		if m.Phase != CrossMintTargetIdle || m.ActiveTargetReserve != m.IntendedTargetReserve || p.TargetReserve == m.ActiveTargetReserve {
 			return errors.New("fallback requires idle target custody and permits only one new target binding")
 		}
-		var current string
-		var oldGeneration, principal int64
-		if err = tx.QueryRow(ctx, `SELECT target_reserve,reservation_generation,principal_usd_micros FROM loyal_yield.target_capacity_reservations WHERE decision_id=$1 AND reservation_state='active'`, m.DecisionID).Scan(&current, &oldGeneration, &principal); err != nil {
+		var principal int64
+		if err = tx.QueryRow(ctx, `SELECT principal_usd_micros FROM loyal_yield.rebalance_opportunities WHERE id=$1 AND decision_id=$2`, m.OpportunityID, m.DecisionID).Scan(&principal); err != nil {
 			return err
 		}
-		reserves := []string{current, p.TargetReserve}
-		sort.Strings(reserves)
-		for _, reserve := range reserves {
-			var actual CrossMintCapacityProjection
-			if err = tx.QueryRow(ctx, `SELECT observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros,telemetry_version FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 FOR UPDATE`, p.Cluster, reserve, p.LiquidityMint).Scan(&actual.ObservedSupplyUSDMicros, &actual.ObservedSlot, &actual.MaximumInflightUSDMicros, &actual.TelemetryVersion); err != nil {
-				return err
-			}
-			if reserve == p.TargetReserve && (actual.ObservedSupplyUSDMicros != p.ObservedSupplyUSDMicros || actual.ObservedSlot != p.ObservedSlot || actual.MaximumInflightUSDMicros != p.MaximumInflightUSDMicros || actual.TelemetryVersion != p.TelemetryVersion) {
-				return errors.New("fallback telemetry changed; reselect from current projection")
-			}
-		}
-		var lockedCurrent string
-		var lockedGeneration int64
-		if err = tx.QueryRow(ctx, `SELECT target_reserve,reservation_generation FROM loyal_yield.target_capacity_reservations WHERE decision_id=$1 AND reservation_state='active' FOR UPDATE`, m.DecisionID).Scan(&lockedCurrent, &lockedGeneration); err != nil {
-			return err
-		}
-		if current != lockedCurrent || oldGeneration != lockedGeneration {
-			return ErrStaleOwner
-		}
-		var committed int64
-		// NULL decision IDs are unattached but already consume target capacity.
-		if err = tx.QueryRow(ctx, `SELECT COALESCE(sum(principal_usd_micros),0)::bigint FROM loyal_yield.target_capacity_reservations WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3 AND reservation_state<>'released' AND decision_id IS DISTINCT FROM $4`, p.Cluster, p.TargetReserve, p.LiquidityMint, m.DecisionID).Scan(&committed); err != nil {
-			return err
-		}
-		if principal <= 0 || committed > math.MaxInt64-principal || committed+principal > p.MaximumInflightUSDMicros {
-			return errors.New("fallback target capacity exhausted")
-		}
-		if err = tx.QueryRow(ctx, crossMintFallbackGenerationSQL, p.Cluster, p.TargetReserve, p.LiquidityMint, oldGeneration).Scan(&generation); err != nil {
-			return err
-		}
-		var reservation int64
-		if err = tx.QueryRow(ctx, crossMintRebindCapacitySQL, m.DecisionID, p.TargetReserve, p.ObservedSupplyUSDMicros, p.ObservedSlot, p.MaximumInflightUSDMicros, p.TelemetryVersion, generation).Scan(&reservation); err != nil {
-			return err
+		if _, err = crossMintTargetFits(ctx, tx, p, m.OpportunityID, principal); err != nil {
+			return fmt.Errorf("fallback: %w", err)
 		}
 		updated, err := tx.Exec(ctx, crossMintRebindDecisionSQL, m.DecisionID, p.TargetReserve, l.Owner, l.FencingToken)
 		if err != nil {
@@ -458,7 +383,6 @@ func (s *Store) RebindCrossMintFallbackCapacity(ctx context.Context, l CrossMint
 		}
 		return nil
 	})
-	return generation, err
 }
 
 const crossMintMovementSQL = `SELECT d.id,o.id,o.optimizer_epoch_id,o.cluster,d.vault_id,v.vault_pubkey,d.source_snapshot_id,
@@ -1371,15 +1295,6 @@ WHERE id = $1
   AND lease_expires_at > clock_timestamp()
 RETURNING id`
 
-const crossMintAttachCapacitySQL = `UPDATE loyal_yield.target_capacity_reservations
-SET decision_id = $2,
-    state_version = state_version + 1,
-    updated_at = clock_timestamp()
-WHERE id = $1
-  AND decision_id IS NULL
-  AND signed_submission_id IS NULL
-  AND reservation_state = 'active'`
-
 const crossMintAdvanceCustodySQL = `UPDATE loyal_yield.rebalance_decisions
 SET custody_mint = $2,
     custody_amount_raw = $3,
@@ -1432,28 +1347,6 @@ WHERE id = $1
   AND confirmation_lease_owner = $2
   AND confirmation_fencing_token = $3
   AND confirmation_lease_expires_at > clock_timestamp()
-RETURNING id`
-
-const crossMintFallbackGenerationSQL = `UPDATE loyal_yield.target_capacity_frontiers
-SET reservation_generation = GREATEST(
-        reservation_generation,
-        $4
-    ) + 1,
-    updated_at = clock_timestamp()
-WHERE cluster = $1 AND target_reserve = $2 AND liquidity_mint = $3
-RETURNING reservation_generation`
-
-const crossMintRebindCapacitySQL = `UPDATE loyal_yield.target_capacity_reservations
-SET target_reserve = $2,
-    admitted_observed_supply_usd_micros = $3,
-    admitted_observed_slot = $4,
-    admitted_maximum_inflight_usd_micros = $5,
-    admitted_telemetry_version = $6,
-    reservation_generation = $7,
-    state_version = state_version + 1,
-    updated_at = clock_timestamp()
-WHERE decision_id = $1
-  AND reservation_state = 'active'
 RETURNING id`
 
 const crossMintRebindDecisionSQL = `UPDATE loyal_yield.rebalance_decisions
@@ -1519,16 +1412,3 @@ const crossMintPolicyPayerSQL = `SELECT EXISTS (
           )
       )
 )`
-
-const crossMintReserveCapacitySQL = `INSERT INTO loyal_yield.target_capacity_reservations
-    (cluster, target_reserve, liquidity_mint, opportunity_id,
-     principal_usd_micros, admitted_observed_supply_usd_micros,
-     admitted_observed_slot, admitted_maximum_inflight_usd_micros,
-     admitted_telemetry_version, reservation_generation,
-     admitted_observed_target_apy_bps,
-     admitted_projected_target_apy_bps, admitted_source_apy_bps,
-     admitted_edge_bps, admitted_net_holding_gain_usd_micros,
-     admitted_fee_cap_lamports, reservation_fencing_token)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-        $13, $14, $15, $16, $17)
-RETURNING id`
