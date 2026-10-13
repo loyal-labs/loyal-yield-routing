@@ -67,7 +67,7 @@ func fundLane(t *testing.T, accounts *[]ConfirmedAccount, lane string, collatera
 
 func observeMultiLane(t *testing.T, manifest RouteManifest, accounts []ConfirmedAccount) Observation {
 	t.Helper()
-	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState,
 		read:             fixtureBatchRuntime(77, accounts),
 		refreshValuation: fixtureRefresh(77, accounts),
 		now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
@@ -97,7 +97,7 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 	}
 	// The same batch through the single-route calculator gives the same
 	// report bytes: the union namespace of one lane is its own namespace.
-	_, refreshed, _ := fixtureRefresh(77, accounts)(context.Background(), nil, routeFixedAddresses(), 77)
+	_, refreshed, _ := fixtureRefresh(77, accounts)(context.Background(), nil, routeFixedAddresses(rwa), 77)
 	navAccounts, err := selectRouteNAVAccountsForRoute(refreshed, autoAUTOPYUSD)
 	if err != nil {
 		t.Fatal(err)
@@ -161,11 +161,11 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 		t.Fatalf("shared PYUSD custody counted twice or lost: strategy %d", s.StrategyNAVRaw)
 	}
 	// The bridge report built for this observation values the same book.
-	routes, err := navRoutes(autoAUTOPYUSD, s.heldLanes())
+	routes, err := navRoutes(rwa, autoAUTOPYUSD, s.heldLanes())
 	if err != nil {
 		t.Fatal(err)
 	}
-	navAccounts, err := selectRouteNAVAccountsForRoutes(accounts, routes)
+	navAccounts, err := selectRouteNAVAccountsForRoutes(rwa, accounts, routes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,13 +202,13 @@ func TestSharedCustodyBalanceAttribution(t *testing.T) {
 		fundLane(t, accounts, primePRIMEPYUSD.Lane, 5_000_000, 1_000_000)
 		upsertConfirmedAccount(accounts, tokenAccountFixture(t, primePRIMEUSDC.CollateralCustody, primePRIMEUSDC.Kamino.CollateralMint, bridgeVault, 1))
 	})
-	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
+	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
 	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+primePRIMEPYUSD.Lane {
 		t.Fatalf("PRIME balance beside one positioned Prime lane: %v %v", held, err)
 	}
 	route, _ := runtimeRoute(PhaseOneLaneID)
 	upsertConfirmedAccount(&accounts, kaminoObligationImage(t, route, 77, 1_000_000, 0))
-	held, err = observedSelectorHeldLanes(accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
+	held, err = observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
 	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+PhaseOneLaneID+","+primePRIMEPYUSD.Lane {
 		t.Fatalf("PRIME balance beside two positioned Prime lanes: %v %v", held, err)
 	}

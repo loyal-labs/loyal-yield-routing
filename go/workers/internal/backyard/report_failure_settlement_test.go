@@ -17,7 +17,7 @@ func failureSettlementFixture(t *testing.T) (finalizedFailureReceipt, []byte, pu
 	if err != nil {
 		t.Fatal(err)
 	}
-	effects, _, _, err := bridgeExpectedEffects(Decision{Action: ReportNAV}, 1214944, 0, 0)
+	effects, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: ReportNAV}, 1214944, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,13 +101,13 @@ func TestFinalizedReportFailureRequiresCompleteExactRollbackReceipt(t *testing.T
 			var r finalizedFailureReceipt
 			_ = json.Unmarshal(raw, &r)
 			tc.mutate(&r)
-			err := validateFinalizedFailureReceipt(r, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), delegate, effects)
+			err := validateFinalizedFailureReceipt(rwa, r, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), delegate, effects)
 			if (err == nil) != (tc.name == "valid") {
 				t.Fatal("incorrect proof result", err)
 			}
 		})
 	}
-	if err := validateFinalizedFailureReceipt(base, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), mustKey(bridgeDelegate), effects); err == nil {
+	if err := validateFinalizedFailureReceipt(rwa, base, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), mustKey(bridgeDelegate), effects); err == nil {
 		t.Fatal("wrong signer admitted")
 	}
 }

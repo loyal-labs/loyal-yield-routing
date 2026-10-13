@@ -63,7 +63,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		t.Fatal("probe slot unavailable")
 	}
 	addresses := map[string]bool{budgetClockAddress: true}
-	installed, err := observeInstalledPolicies(ctx, rpc, slot)
+	installed, err := observeInstalledPolicies(ctx, rpc, rwa, slot)
 	if err != nil {
 		t.Fatal("probe policies unavailable")
 	}
@@ -76,8 +76,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		client, _ := jupiter.NewClient(jupiter.LiteBase, "", &http.Client{Timeout: 20 * time.Second, Transport: transport})
 		e, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, installed, d, amount, 0, slot)
 		if err != nil {
-			bindingEdges, bindingLeg, _ := catalogEdge(action, ethenaUSDePYUSD.Lane)
-			binding := bindingEdges[bindingLeg]
+			binding, _ := catalogConversion(rwa, action, ethenaUSDePYUSD.Lane)
 			data, _ := base64.StdEncoding.DecodeString(transport.lastInstruction.Data)
 			t.Logf("public layout diagnostic: bytes=%d instructionData=%x binding=%+v", len(data), data, binding)
 			// RPC transport errors can contain endpoint credentials. Keep only
@@ -117,12 +116,11 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		for _, a := range e.Request.Instruction.Accounts {
 			addresses[a.Pubkey] = true
 		}
-		bindingEdges, bindingLeg, err := catalogEdge(action, ethenaUSDePYUSD.Lane)
+		binding, err := catalogConversion(rwa, action, ethenaUSDePYUSD.Lane)
 		if err != nil {
 			t.Fatal(err)
 		}
-		binding := bindingEdges[bindingLeg]
-		key, _, err := jupiterPolicyLeg(ethenaUSDePYUSD.Lane, action)
+		key, _, err := jupiterPolicyLeg(rwa, ethenaUSDePYUSD.Lane, action)
 		if err != nil {
 			t.Fatal(err)
 		}

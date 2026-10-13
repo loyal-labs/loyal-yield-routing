@@ -113,7 +113,7 @@ func TestWriterIsOneSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := bridgeTestRequest(VoltrAllocateToSquads, uint64(decision.AmountRaw))
-	effects, _, _, err := bridgeExpectedEffects(decision, 7, 0, 0)
+	effects, _, _, err := bridgeExpectedEffects(rwa, decision, 7, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestWriterIsOneSession(t *testing.T) {
 	}
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{43}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
-	message, err := compileBridgeMessageForDelegate(request, delegate)
+	message, err := compileBridgeMessageForDelegate(rwa, request, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}

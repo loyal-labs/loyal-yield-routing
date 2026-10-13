@@ -88,15 +88,15 @@ func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) 
 	if err != nil || reconciled.Validate() != nil || reconciled.ConfirmedSlot != 77 || !json.Valid(body) {
 		t.Fatalf("bound reconciliation failed: %+v %v", reconciled, err)
 	}
-	viaDispatch, _, err := f.manifest.ReconcileConfirmedTransaction(f.effects, f.receipt)
+	viaDispatch, _, err := ReconcileConfirmedTransaction(f.manifest.vault, f.effects, f.receipt)
 	if err != nil || viaDispatch != reconciled {
 		t.Fatalf("manifest reconciliation dispatch drifted: %+v %v", viaDispatch, err)
 	}
-	decoded, err := decodeExpectedEffectsWithManifest(f.manifest, f.raw)
+	decoded, err := DecodeExpectedEffects(f.manifest.vault, f.raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = f.manifest.ReconcileConfirmedTransaction(decoded, f.receipt); err != nil {
+	if _, _, err = ReconcileConfirmedTransaction(f.manifest.vault, decoded, f.receipt); err != nil {
 		t.Fatalf("decoded AUTO effects refused through the same manifest: %v", err)
 	}
 
@@ -139,17 +139,10 @@ func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) 
 		t.Run(drift.name, func(t *testing.T) {
 			mutated := newAutoInitializerRecoveryFixture(t)
 			drift.mutate(&mutated)
-			if _, _, err := mutated.manifest.ReconcileConfirmedTransaction(mutated.effects, mutated.receipt); err == nil {
+			if _, _, err := ReconcileConfirmedTransaction(mutated.manifest.vault, mutated.effects, mutated.receipt); err == nil {
 				t.Fatal("drifted AUTO initializer reconciled")
 			}
 		})
-	}
-	// The installed-only public reconciler keeps refusing the candidate lane.
-	if _, _, err := reconcileKaminoInitialization(f.effects, f.receipt); err == nil || !strings.Contains(err.Error(), "unreviewed Multiply initializer lane") {
-		t.Fatalf("public reconciler admitted AUTO: %v", err)
-	}
-	if _, _, err := ReconcileConfirmedTransaction(f.effects, f.receipt); err == nil {
-		t.Fatal("public reconciliation dispatch admitted AUTO")
 	}
 }
 
@@ -286,7 +279,7 @@ func TestAutoInitializerObserveBindsPersistedWireThroughManifest(t *testing.T) {
 			})
 			got, err := f.manifest.observeFinalizedKaminoInitialization(context.Background(), rpc, f.request, op)
 			if err == nil {
-				_, _, err = f.manifest.ReconcileConfirmedTransaction(f.effects, got)
+				_, _, err = ReconcileConfirmedTransaction(f.manifest.vault, f.effects, got)
 			}
 			if (err == nil) != (drift == "") {
 				t.Fatalf("drift=%s err=%v", drift, err)

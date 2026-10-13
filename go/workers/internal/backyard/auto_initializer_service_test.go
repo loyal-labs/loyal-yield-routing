@@ -431,7 +431,7 @@ func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]Confirme
 func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	t.Parallel()
 	requested := map[string]bool{}
-	for _, address := range routeFixedAddresses() {
+	for _, address := range routeFixedAddresses(rwa) {
 		requested[address] = true
 	}
 	if !requested[autoAUTOPYUSD.Kamino.Obligation] || !requested[autoAUTOPYUSD.CollateralCustody] {
@@ -456,7 +456,7 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	}
 	// Candidate-only ownership holds the candidate lane even with a Maple
 	// preference.
-	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), SelectedRouteID)
+	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), SelectedRouteID)
 	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane {
 		t.Fatalf("candidate ownership was not held: %v %v", held, err)
 	}
@@ -466,7 +466,7 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	upsertConfirmedAccount(&accounts, kaminoObligationImage(t, mapleRoute, 77, autoFixtureDepositReceiptRaw, autoFixtureDebtRaw))
-	held, err = observedSelectorHeldLanes(accounts, earnLaneIDs(true), SelectedRouteID)
+	held, err = observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), SelectedRouteID)
 	if err != nil || strings.Join(held, ",") != SelectedRouteID+","+autoAUTOPYUSD.Lane {
 		t.Fatalf("combined candidate and Maple exposure: held %v err %v", held, err)
 	}
@@ -598,7 +598,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 			if err != nil {
 				return Observation{}, err
 			}
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, planning.landedSlot, planning.inputs)
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, testVaultState, planning.landedSlot, planning.inputs)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -610,7 +610,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	// productionTickRuntime wiring for every closure the tick uses; only the
 	// observe-bound wrappers and the build gate bind to the seams reported
 	// above — build stops at the pinned-signer boundary, never a broadcast.
-	rt := productionTickRuntime(db, rpc, view, manifest, Credentials{})
+	rt := productionTickRuntime(db, rpc, view, nil, testVaultState, manifest, Credentials{})
 	rt.observe = state.observe
 	rt.prepareInitialization = func(ctx context.Context, m RouteManifest, dec Decision, obs Observation) (Observation, KaminoInitializationRequest, error) {
 		return prepareKaminoInitialization(ctx, rpc, m, dec, obs)

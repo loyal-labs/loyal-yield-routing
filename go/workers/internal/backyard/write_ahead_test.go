@@ -38,7 +38,7 @@ func TestCrashBetweenPersistAndSendLandsThePersistedWire(t *testing.T) {
 		t.Fatalf("fixture is not actionable: %+v", decision)
 	}
 	request := bridgeTestRequest(VoltrAllocateToSquads, uint64(decision.AmountRaw))
-	effects, _, _, err := bridgeExpectedEffects(decision, 7, 0, 0)
+	effects, _, _, err := bridgeExpectedEffects(rwa, decision, 7, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestCrashBetweenPersistAndSendLandsThePersistedWire(t *testing.T) {
 		// The production build with a test signer: compile, sign, simulate
 		// (here: a fixed slot), persist the exact wire.
 		build: func(ctx context.Context, id string, r any, e ExpectedEffects) error {
-			message, err := compileBridgeMessageForDelegate(r.(BridgeBuildRequest), delegate)
+			message, err := compileBridgeMessageForDelegate(rwa, r.(BridgeBuildRequest), delegate)
 			if err != nil {
 				return err
 			}

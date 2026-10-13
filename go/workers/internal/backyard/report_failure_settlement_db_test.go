@@ -86,7 +86,7 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 	}
 	receipt, wire, delegate, effects := failureSettlementFixture(t)
 	wireHash, messageHash, signature := sha256Bytes(wire), sha256Bytes(wireMsg(wire)), encodeBase58(wireSig(wire))
-	if err = validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, delegate, effects); err != nil {
+	if err = validateFinalizedFailureReceipt(rwa, receipt, wire, signature, wireHash, messageHash, delegate, effects); err != nil {
 		t.Fatal(err)
 	}
 	migrate("0083_backyard_rwa_finalized_restore_failure.sql")

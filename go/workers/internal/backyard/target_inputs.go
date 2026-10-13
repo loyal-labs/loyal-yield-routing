@@ -100,6 +100,7 @@ func (d *Database) RecordLaneLevel(ctx context.Context, routeKey, lane string, l
 
 // LaneExitRequest is one `loyal-engine backyard exit-lane` call.
 type LaneExitRequest struct {
+	Vault       string
 	Lane        string
 	EquityZero  bool
 	Clear       bool
@@ -113,6 +114,10 @@ func RunLaneExit(ctx context.Context, databaseURL string, request LaneExitReques
 	if !earnHeldLane(request.Lane) || (!request.Clear && (request.RequestedBy == "" || len(request.RequestedBy) > 256)) {
 		return "", fmt.Errorf("exit-lane: a registry lane and --by <operator> (at most 256 characters) are required")
 	}
+	v, err := findVault(request.Vault)
+	if err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	database, err := openOperatorDatabase(ctx, databaseURL)
@@ -120,7 +125,7 @@ func RunLaneExit(ctx context.Context, databaseURL string, request LaneExitReques
 		return "", err
 	}
 	defer database.Close()
-	return database.recordLaneExit(ctx, productionRouteKey, request)
+	return database.recordLaneExit(ctx, v.RouteKey, request)
 }
 
 func (d *Database) recordLaneExit(ctx context.Context, routeKey string, request LaneExitRequest) (string, error) {

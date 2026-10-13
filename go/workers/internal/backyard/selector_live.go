@@ -248,16 +248,16 @@ var selectorQuoteCollectionHoldCodes = map[string]bool{
 	"selector_source_unavailable":        true,
 }
 
-func (d *Database) evaluateSelector(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, error) {
-	result, _, err := d.evaluateSelectorObserved(ctx, rpc, view, manifest, markets, identity, policy)
+func (d *Database) evaluateSelector(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, vault *vaultState, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, error) {
+	result, _, err := d.evaluateSelectorObserved(ctx, rpc, view, client, manifest, vault, markets, identity, policy)
 	return result, err
 }
 
 // evaluateSelectorObserved also returns the observation the result was
 // decided from, so the B2 leverage decision uses the same snapshot and
 // planning inputs.
-func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, Observation, error) {
-	o, err := observeSelectorShadow(ctx, d, rpc, view, manifest, identity)
+func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, vault *vaultState, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, Observation, error) {
+	o, err := observeSelectorShadow(ctx, d, rpc, view, manifest, vault, identity)
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}
@@ -271,7 +271,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 		maximum = []uint64{uint64(request.EquityRaw)}
 		onlyLane = request.Lane
 	}
-	enriched, quotes, quoteErr := collectSelectorQuotes(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, maximum...)
+	enriched, quotes, quoteErr := collectSelectorQuotes(ctx, rpc, view, client, manifest, o, markets, policy, onlyLane, maximum...)
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter.
@@ -294,6 +294,6 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if err != nil {
 		return SelectorResult{}, Observation{}, err
 	}
-	result, err := d.RecordSelectorEvaluation(ctx, productionRouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot)
+	result, err := d.RecordSelectorEvaluation(ctx, manifest.vault.RouteKey, SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: enriched, Quotes: quotes, Policy: policy, canaryRequest: request}, slot)
 	return result, o, err
 }

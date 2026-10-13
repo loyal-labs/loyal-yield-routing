@@ -181,7 +181,7 @@ func TestStepNeverSpendsBridgeCash(t *testing.T) {
 	for offset, value := range map[int]int64{1192: 1750, 2208: 750, 2224: 750, 2240: 1155} {
 		putScaledFraction(obligation[offset:offset+16], new(big.Int).Lsh(big.NewInt(value), 60))
 	}
-	st, err := readStepState(append(accounts, clockFixture()), route, 42)
+	st, err := readStepState(rwa, append(accounts, clockFixture()), route, 42)
 	if err != nil {
 		t.Fatal(err)
 	}

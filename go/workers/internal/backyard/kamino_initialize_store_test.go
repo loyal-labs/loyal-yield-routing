@@ -28,7 +28,7 @@ func TestInitializationDatabaseSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected, receipt := initializationReconcileFixture(t)
-	message, err := CompileKaminoInitializationMessage(*expected.Initialization)
+	message, err := rwa.manifest.compileKaminoInitializationMessage(*expected.Initialization)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestInitializationDatabaseSettlement(t *testing.T) {
 		case "unfinalized":
 			candidate.Finalized = false
 		}
-		checked, effects, reconcileErr := ReconcileConfirmedTransaction(expected, candidate)
+		checked, effects, reconcileErr := ReconcileConfirmedTransaction(rwa, expected, candidate)
 		if reconcileErr == nil {
 			reconcileErr = db.MarkReconciled(ctx, id, checked, effects)
 		}

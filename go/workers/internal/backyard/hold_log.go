@@ -12,6 +12,7 @@ import (
 // loyal_backyard_step_no_room_total counter the safety alert pages on.
 type holdLog struct {
 	out          io.Writer
+	events       *events
 	lane, reason string
 }
 
@@ -20,9 +21,9 @@ type holdLog struct {
 // cause or simulation error.
 func (l *holdLog) note(s Snapshot, lane, reason, detail string) {
 	if reason == holdNoRoom {
-		backyardEvents.stepNoRoom(lane, s.Target.Rule)
+		l.events.stepNoRoom(lane, s.Target.Rule)
 	}
-	backyardEvents.hold(lane, reason)
+	l.events.hold(lane, reason)
 	if lane == l.lane && reason == l.reason {
 		return
 	}

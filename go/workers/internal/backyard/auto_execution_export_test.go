@@ -85,7 +85,7 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 			t.Fatalf("%s: %v", item.kind, err)
 		}
 		_, index := kaminoPolicyLeg(autoAUTOPYUSD, item.leg)
-		message, err := compileKaminoMessageForDelegate(request, delegate)
+		message, err := compileKaminoMessageForDelegate(rwa, request, delegate)
 		if err != nil {
 			t.Fatalf("%s: %v", item.kind, err)
 		}
@@ -111,11 +111,11 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 	}
 	for _, item := range swaps {
 		jupiter := autoJupiterTestRequest(t, item.action, item.amount, item.out, 0)
-		_, index, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, item.action)
+		_, index, err := jupiterPolicyLeg(rwa, autoAUTOPYUSD.Lane, item.action)
 		if err != nil {
 			t.Fatal(err)
 		}
-		message, err := compileJupiterMessageForDelegate(jupiter, delegate)
+		message, err := compileJupiterMessageForDelegate(rwa, jupiter, delegate)
 		if err != nil {
 			t.Fatalf("%s: %v", item.kind, err)
 		}

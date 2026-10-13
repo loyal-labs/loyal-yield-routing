@@ -19,8 +19,7 @@ type KaminoInitializationReceipt struct {
 	Obligation       ConfirmedAccount `json:"obligation"`
 }
 
-// validateInitializationEffectsShape is the exact structural check both effect
-// validators share: only a conserved native kamino-initialize effect with no
+// validateInitializationEffectsShape is the structural check: only a conserved native kamino-initialize effect with no
 // side accounts, deposits, repayments or return data is admissible.
 func validateInitializationEffectsShape(e ExpectedEffects) error {
 	if e.Schema != "loyal-backyard-rwa-expected-effects/v1" || e.Kind != "kamino-initialize" ||
@@ -30,19 +29,8 @@ func validateInitializationEffectsShape(e ExpectedEffects) error {
 	return nil
 }
 
-func validateInitializationEffects(e ExpectedEffects) error {
-	if err := validateInitializationEffectsShape(e); err != nil {
-		return err
-	}
-	_, err := CompileKaminoInitializationMessage(*e.Initialization)
-	return err
-}
-
-// validateInitializationEffectsOnRoute is the manifest-aware form: identical
-// structural checks, but the embedded admission request is recompiled through
-// the manifest compiler, which admits the AUTO lane. Installed selector lanes
-// keep the exact public
-// path; reconcile.go keeps calling the public function unchanged.
+// validateInitializationEffects checks the shape and recompiles the
+// embedded admission request.
 func (m RouteManifest) validateInitializationEffects(e ExpectedEffects) error {
 	if err := validateInitializationEffectsShape(e); err != nil {
 		return err
@@ -51,27 +39,11 @@ func (m RouteManifest) validateInitializationEffects(e ExpectedEffects) error {
 	return err
 }
 
-func reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
-	return reconcileKaminoInitializationAdmission(e, receipt, validateInitializationEffects, CompileKaminoInitializationMessage, validateInitializedKaminoObligation)
-}
-
-// reconcileKaminoInitialization is the manifest-aware variant: the exact
-// installed reconciler body with only the three admission calls swapped to the
-// explicit reviewed manifest, so a candidate AUTO effect reconciles through
-// the compiler that produced it. The public form above is unchanged.
+// reconcileKaminoInitialization reconciles a native initializer through the
+// manifest that compiled it: the effect revalidated, the message recompiled
+// and the created obligation checked empty.
 func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
-	return reconcileKaminoInitializationAdmission(e, receipt, m.validateInitializationEffects, m.compileKaminoInitializationMessage, m.validateInitializedKaminoObligation)
-}
-
-// reconcileKaminoInitializationAdmission is the shared initializer reconciler
-// body; the installed and manifest forms differ only in the three functions
-// that revalidate the effect, recompile the message and check the poststate.
-func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt ConfirmedTransactionEvidence,
-	validate func(ExpectedEffects) error,
-	compile func(KaminoInitializationRequest) ([]byte, error),
-	validateObligation func(KaminoInitializationRequest, ConfirmedAccount) error,
-) (Reconciliation, []byte, error) {
-	if err := validate(e); err != nil {
+	if err := m.validateInitializationEffects(e); err != nil {
 		return Reconciliation{}, nil, err
 	}
 	r, n := *e.Initialization, receipt.Initialization
@@ -80,7 +52,7 @@ func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt Confirmed
 		n.AccountReadSlot < receipt.Slot || n.FeeLamports == 0 || n.FeeLamports > r.MaximumFeeLamports || !validSHA256(n.SignedWireSHA256) {
 		return Reconciliation{}, nil, fmt.Errorf("native initialization receipt is incomplete")
 	}
-	message, err := compile(r)
+	message, err := m.compileKaminoInitializationMessage(r)
 	if err != nil || n.MessageSHA256 != sha256Bytes(message) {
 		return Reconciliation{}, nil, fmt.Errorf("native initialization message differs")
 	}
@@ -89,7 +61,7 @@ func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt Confirmed
 	if err != nil || count < 3 || len(n.PreBalances) != count || len(n.PostBalances) != count {
 		return Reconciliation{}, nil, fmt.Errorf("native initialization balances are incomplete")
 	}
-	route, _ := runtimeRoute(r.RouteLane)
+	route, _ := m.route(r.RouteLane)
 	seenPayer, seenVault, seenObligation := false, false, false
 	for i := 0; i < count; i++ {
 		address := encodeBase58(keys[i][:])
@@ -100,7 +72,7 @@ func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt Confirmed
 				return Reconciliation{}, nil, fmt.Errorf("initializer network fee differs")
 			}
 			seenPayer = true
-		case bridgeVault:
+		case m.vault.squads:
 			if before < after || before-after != r.RentLamports {
 				return Reconciliation{}, nil, fmt.Errorf("initializer vault rent debit differs")
 			}
@@ -119,7 +91,7 @@ func reconcileKaminoInitializationAdmission(e ExpectedEffects, receipt Confirmed
 	if !seenPayer || !seenVault || !seenObligation {
 		return Reconciliation{}, nil, fmt.Errorf("initializer native graph differs")
 	}
-	if err = validateObligation(r, n.Obligation); err != nil {
+	if err = m.validateInitializedKaminoObligation(r, n.Obligation); err != nil {
 		return Reconciliation{}, nil, err
 	}
 	evidence, err := json.Marshal(map[string]any{"schema": "loyal-backyard-rwa-reconciled-effects/v1", "kind": "kamino-initialize",
@@ -165,7 +137,7 @@ func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context,
 	if !bytes.Equal(receipt.Wire, wire) {
 		return out, fmt.Errorf("initializer finalized wire differs")
 	}
-	route, _ := runtimeRoute(r.RouteLane)
+	route, _ := m.route(r.RouteLane)
 	slot, accounts, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.Obligation}, int64(receipt.Slot))
 	if err != nil {
 		return out, err

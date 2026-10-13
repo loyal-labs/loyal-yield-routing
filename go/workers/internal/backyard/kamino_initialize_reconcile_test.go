@@ -21,7 +21,7 @@ func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *t
 		t.Run(drift, func(t *testing.T) {
 			e, receipt := initializationReconcileFixture(t)
 			r := *e.Initialization
-			message, err := CompileKaminoInitializationMessage(r)
+			message, err := rwa.manifest.compileKaminoInitializationMessage(r)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,7 +97,7 @@ func TestInitializationRPCBindsThePersistedWireAndRejectsUnexpectedMetadata(t *t
 			})
 			got, err := embeddedTestManifest(t).observeFinalizedKaminoInitialization(context.Background(), rpc, r, op)
 			if err == nil {
-				_, _, err = ReconcileConfirmedTransaction(e, got)
+				_, _, err = ReconcileConfirmedTransaction(rwa, e, got)
 			}
 			if (err == nil) != (drift == "") {
 				t.Fatalf("drift=%s error=%v", drift, err)
@@ -112,7 +112,7 @@ func initializationReconcileFixture(t *testing.T) (ExpectedEffects, ConfirmedTra
 	key, _ := initializerPolicyLeg(route.Lane)
 	r := KaminoInitializationRequest{RouteLane: route.Lane, Policy: testPolicyAccount(key),
 		RecentBlockhash: bridgeVault, LastValidBlockHeight: 100, RentLamports: 17_637_760, MaximumFeeLamports: 5000}
-	message, err := CompileKaminoInitializationMessage(r)
+	message, err := rwa.manifest.compileKaminoInitializationMessage(r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +147,11 @@ func TestInitializationConservesNativeRentAndPreservesTokenContract(t *testing.T
 	t.Parallel()
 	e, receipt := initializationReconcileFixture(t)
 	raw, _ := json.Marshal(e)
-	decoded, err := DecodeExpectedEffects(raw)
+	decoded, err := DecodeExpectedEffects(rwa, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	reconciled, body, err := ReconcileConfirmedTransaction(decoded, receipt)
+	reconciled, body, err := ReconcileConfirmedTransaction(rwa, decoded, receipt)
 	if err != nil || reconciled.Validate() != nil || !json.Valid(body) {
 		t.Fatal("native conservation", reconciled, err)
 	}
@@ -159,21 +159,21 @@ func TestInitializationConservesNativeRentAndPreservesTokenContract(t *testing.T
 		bad := e
 		bad.Kind = kind
 		raw, _ = json.Marshal(bad)
-		if _, err := DecodeExpectedEffects(raw); err == nil {
+		if _, err := DecodeExpectedEffects(rwa, raw); err == nil {
 			t.Fatal("native creation masquerades as token transfer", kind)
 		}
-		if _, _, err := ReconcileConfirmedTransaction(bad, receipt); err == nil {
+		if _, _, err := ReconcileConfirmedTransaction(rwa, bad, receipt); err == nil {
 			t.Fatal("native effects bypass kind validation", kind)
 		}
 	}
 	bad := e
 	bad.Accounts = []ExpectedAccountEffect{{Address: bridgeSquadsATA}}
-	if _, _, err := ReconcileConfirmedTransaction(bad, receipt); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, bad, receipt); err == nil {
 		t.Fatal("initializer mixes token effects")
 	}
 	bad = e
 	bad.Initialization = nil
-	if _, _, err := ReconcileConfirmedTransaction(bad, receipt); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, bad, receipt); err == nil {
 		t.Fatal("native contract omitted")
 	}
 }
@@ -209,7 +209,7 @@ func TestInitializationRejectsNativeAndCreatedStateDrift(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			e, r := initializationReconcileFixture(t)
 			row.mutate(&r)
-			if _, _, err := ReconcileConfirmedTransaction(e, r); err == nil {
+			if _, _, err := ReconcileConfirmedTransaction(rwa, e, r); err == nil {
 				t.Fatal("drift admitted")
 			}
 		})

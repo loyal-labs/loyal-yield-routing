@@ -25,7 +25,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	policies := testPolicies(t)
-	literals, err := backyardPolicies()
+	literals, err := backyardPolicies(rwa)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,16 +197,16 @@ func jupiterV2Fixture(t testing.TB, lane string, action Action) jupiterV2Row {
 	if err != nil || json.Unmarshal(raw, &fixture) != nil {
 		t.Fatal("v2 swap fixture unavailable", err)
 	}
-	from, to, _, _, err := jupiterEdgeForRoute(action, lane)
+	from, to, _, _, err := jupiterEdgeForRoute(rwa, action, lane)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := routeSwapAssets()
+	a, err := routeSwapAssets(rwa)
 	if err != nil {
 		t.Fatal(err)
 	}
 	symbol := map[string]string{}
-	for _, asset := range []swapAsset{a.usdc, a.prime, a.usds, a.pyusd, a.auto, a.usde, a.syrup, a.onyc, a.usdg} {
+	for _, asset := range a {
 		symbol[asset.mint.String()] = asset.symbol
 	}
 	key := symbol[from] + "->" + symbol[to]
@@ -254,15 +254,15 @@ func fixtureSwapRequest(t *testing.T, lane string, action Action) JupiterSwapReq
 	if err != nil {
 		t.Fatal(err)
 	}
-	maxAccounts, err := jupiterSwapMaxAccounts(lane, action)
+	maxAccounts, err := jupiterSwapMaxAccounts(rwa, lane, action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	quote, instruction, err := freshSwapForRoute(context.Background(), client, lane, action, amount, maxAccounts)
+	quote, instruction, err := freshSwapForRoute(context.Background(), rwa, client, lane, action, amount, maxAccounts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := validateJupiterQuoteForRoute(quote, action, amount, lane)
+	out, _, err := validateJupiterQuoteForRoute(rwa, quote, action, amount, lane)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func fixtureSwapRequest(t *testing.T, lane string, action Action) JupiterSwapReq
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, _, err := jupiterPolicyLeg(lane, action)
+	key, _, err := jupiterPolicyLeg(rwa, lane, action)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,21 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
-
-const productionRouteKey = "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
 
 var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
+// Worker runs one vault's ticks: its route row, its manifest (the vault's
+// routes) and its events.
 type Worker struct {
 	wake     chan struct{}
 	routeKey string
 	interval time.Duration
 	manifest RouteManifest
 	runtime  tickRuntime
+	events   *events
 	// holds reports why a tick did not move the vault: a gauge on /metrics
 	// and a log line when it changes; a hold is never a journal row.
 	holds holdLog
@@ -38,7 +41,7 @@ type tickRuntime struct {
 	prepareBridge  func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
 	prepareKamino  func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
 	prepareJupiter func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
-	prepareHastra  func(context.Context, Decision, Observation) (Observation, HastraExecutionEvidence, error)
+	prepareHastra  func(context.Context, RouteManifest, Decision, Observation) (Observation, HastraExecutionEvidence, error)
 	// prepareStep builds an atomic step (stepDecision) from the tick's batch.
 	prepareStep    func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
 	recordDecision func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
@@ -151,17 +154,18 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 	return nil
 }
 
-func productionTickRuntime(database *Database, rpc *chain.Client, view *View, manifest RouteManifest, credentials Credentials) tickRuntime {
+func productionTickRuntime(database *Database, rpc *chain.Client, view *View, jupiterClient *jupiter.Client, vault *vaultState, manifest RouteManifest, credentials Credentials) tickRuntime {
+	v := manifest.vault
 	state := productionObserveState{
-		manifest: manifest, routeKey: productionRouteKey,
+		manifest: manifest, routeKey: v.RouteKey,
 		journal: database,
 		batch: func(ctx context.Context) (Observation, error) {
 			refreshObservationLagSlots(ctx, rpc)
-			planning, err := database.readRoutePlanningState(ctx, productionRouteKey)
+			planning, err := database.readRoutePlanningState(ctx, v.RouteKey)
 			if err != nil {
 				return Observation{}, err
 			}
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, planning.landedSlot, planning.inputs)
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, vault, planning.landedSlot, planning.inputs)
 			if err != nil {
 				return Observation{}, err
 			}
@@ -181,7 +185,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			}
 			return o, err
 		},
-		watchRoom: view.WatchRoom,
+		watchRoom: func(watches []roomWatch, on func(roomUpdate)) { view.WatchRoom(v, watches, on) },
 		prepareInitialization: func(ctx context.Context, m RouteManifest, d Decision, o Observation) (Observation, KaminoInitializationRequest, error) {
 			return prepareKaminoInitialization(ctx, rpc, m, d, o)
 		},
@@ -201,13 +205,13 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ma
 			return prepareKaminoFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
 		prepareJupiter: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, JupiterExecutionEvidence, error) {
-			return prepareJupiterFromTickObservation(ctx, rpc, manifest, decision, productionJupiter, observation)
+			return prepareJupiterFromTickObservation(ctx, rpc, manifest, decision, jupiterClient, observation)
 		},
-		prepareHastra: func(ctx context.Context, decision Decision, observation Observation) (Observation, HastraExecutionEvidence, error) {
-			return prepareHastraFromTickObservation(ctx, rpc, view, decision, observation)
+		prepareHastra: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, HastraExecutionEvidence, error) {
+			return prepareHastraFromTickObservation(ctx, rpc, view, manifest, decision, observation)
 		},
 		prepareStep: func(ctx context.Context, manifest RouteManifest, decision Decision, observation Observation) (Observation, StepExecutionEvidence, error) {
-			return prepareStepFromTickObservation(ctx, rpc, view, manifest, productionJupiter, decision, observation)
+			return prepareStepFromTickObservation(ctx, rpc, view, manifest, jupiterClient, decision, observation)
 		},
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
@@ -226,28 +230,22 @@ func confirmedObservationUnavailable(err error) error {
 	return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 }
 
-// NewWorker constructs the single serialized lifecycle worker. The signing
+// NewWorker constructs vault's serialized lifecycle worker. The signing
 // capability is injected, validated here, and never derivable from a
 // decision, observation, or recovery input.
-func NewWorker(database *Database, rpc *chain.Client, view *View, config Config, credentials Credentials) (*Worker, error) {
-	if database == nil || database.pool == nil || rpc == nil || view == nil || config.PollInterval <= 0 {
+func NewWorker(database *Database, rpc *chain.Client, view *View, jupiterClient *jupiter.Client, config Config, credentials Credentials, v *Vault, state *vaultState) (*Worker, error) {
+	if database == nil || database.pool == nil || rpc == nil || view == nil || v == nil || state == nil || config.PollInterval <= 0 {
 		return nil, fmt.Errorf("invalid concrete worker configuration")
 	}
 	key, err := credentials.signer()
 	if err != nil {
 		return nil, err
 	}
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return nil, err
-	}
-	return &Worker{wake: make(chan struct{}, 1), routeKey: productionRouteKey, interval: config.PollInterval, manifest: manifest, runtime: productionTickRuntime(database, rpc, view, manifest, Credentials{PolicyKey: key})}, nil
+	return &Worker{wake: make(chan struct{}, 1), routeKey: v.RouteKey, interval: config.PollInterval, manifest: v.manifest, events: state.events, holds: holdLog{events: state.events},
+		runtime: productionTickRuntime(database, rpc, view, jupiterClient, state, v.manifest, Credentials{PolicyKey: key})}, nil
 }
 
 func (w *Worker) Tick(ctx context.Context) (tickErr error) {
-	if w == nil || w.routeKey != productionRouteKey {
-		return fmt.Errorf("worker route is not the fixed production route")
-	}
 	var healthObservation Observation
 	var healthDecision Decision
 	defer func() { w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr) }()
@@ -259,7 +257,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		if err != nil {
 			return err
 		}
-		backyardEvents.noteLatch(latched, latch.Reason)
+		w.events.noteLatch(latched, latch.Reason)
 		if latched {
 			healthDecision = Decision{Action: HoldManualRecovery}
 			w.holds.note(Snapshot{}, "", holdStopped, latch.Reason)
@@ -270,11 +268,11 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	if err != nil {
 		return err
 	}
-	backyardEvents.inflight(operation != nil)
+	w.events.inflight(operation != nil)
 	if operation != nil {
 		healthDecision = Decision{Action: RecoverTransaction}
 		w.holds.note(Snapshot{}, operation.StrategyKey, "", "")
-		backyardEvents.noteAction(operation.Decision.Action)
+		w.events.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
 			if operation.BroadcastIntentRecorded || !preBroadcastStatus(operation.Status) {
 				return &afterBroadcastError{err}
@@ -289,8 +287,8 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return err
 	}
 	healthObservation = observation
-	backyardEvents.noteSnapshot(observation.Snapshot)
-	backyardEvents.leverageObserved(heldLaneLeverage(observation))
+	w.events.noteSnapshot(observation.Snapshot)
+	w.events.leverageObserved(heldLaneLeverage(observation))
 	if w.runtime.watchRoom != nil {
 		w.runtime.watchRoom(leverageRoomWatches(observation), w.roomObserved)
 	}
@@ -306,7 +304,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return err
 	}
 	healthDecision = decision
-	backyardEvents.noteAction(decision.Action)
+	w.events.noteAction(decision.Action)
 	switch decision.Action {
 	case Hold:
 		w.holds.note(observation.Snapshot, decision.StrategyKey, decision.Reason, "")
@@ -391,7 +389,7 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 			if w.runtime.prepareHastra == nil {
 				return nil, ExpectedEffects{}, observation, budgetHold("hastra_preparation_unavailable")
 			}
-			prepared, e, err := w.runtime.prepareHastra(ctx, wireDecision, observation)
+			prepared, e, err := w.runtime.prepareHastra(ctx, w.manifest, wireDecision, observation)
 			return e.Request, e.ExpectedEffects, prepared, err
 		}
 		prepared, e, err := w.runtime.prepareJupiter(ctx, w.manifest, wireDecision, observation)
@@ -436,7 +434,7 @@ func (w *Worker) latchManualRecovery(ctx context.Context, observation Observatio
 	if err := w.runtime.latch(ctx, w.routeKey, latch); err != nil {
 		return err
 	}
-	backyardEvents.latched(decision.Reason)
+	w.events.latched(decision.Reason)
 	return nil
 }
 
@@ -506,12 +504,12 @@ func (w *Worker) runTicks(ctx context.Context, tick func(context.Context) error)
 			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPreSendHold(err) {
 				// A SIGTERM cancellation is a normal stop, not an alert.
 				if ctx.Err() == nil {
-					backyardEvents.tickResult(err, true)
+					w.events.tickResult(err, true)
 				}
 				return err
 			}
 		}
-		backyardEvents.tickResult(err, false)
+		w.events.tickResult(err, false)
 		timer := time.NewTimer(w.interval)
 		select {
 		case <-ctx.Done():
@@ -533,4 +531,17 @@ func (w *Worker) Run(ctx context.Context) error {
 		return fmt.Errorf("invalid worker runtime")
 	}
 	return w.runTicks(ctx, w.Tick)
+}
+
+// vaultState is one vault's in-process state, shared by its worker and its
+// selector samples: its events, and the streaks that retry before a latch.
+// refreshFailures counts consecutive reserve refreshes Kamino rejected;
+// staleHolds counts consecutive kamino_stale health holds. One-off stale
+// reads latched on 09-26 (21:52 AUTO reserve 345 slots old; 23:19 230 slots
+// old): the first two retry, the third in a row latches as before, and a
+// passed health check resets it. Paused/emergency reserves still latch at
+// once.
+type vaultState struct {
+	events                      *events
+	refreshFailures, staleHolds atomic.Int64
 }

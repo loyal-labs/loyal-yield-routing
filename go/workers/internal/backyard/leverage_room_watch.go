@@ -100,11 +100,11 @@ func leverageRoomWatches(o Observation) []roomWatch {
 	var out []roomWatch
 	index := map[string]int{}
 	add := func(lane string, debt, leverage, wakes bool) {
-		route, err := runtimeRoute(lane)
-		if err != nil || !earnActiveLane(lane) {
+		l, ok := findEarnLane(lane)
+		if !ok || l.exitOnly {
 			return
 		}
-		w := roomWatch{lane: lane, route: route, debt: debt, leverage: leverage, wakes: wakes}
+		w := roomWatch{lane: lane, route: l.route, debt: debt, leverage: leverage, wakes: wakes}
 		key := lane + "|" + w.reserve()
 		if i, seen := index[key]; seen {
 			out[i].leverage, out[i].wakes = out[i].leverage || leverage, out[i].wakes || wakes
@@ -159,7 +159,7 @@ func heldLaneLeverage(o Observation) []laneLeverage {
 // roomObserved is the view's room callback: the gauges and reaction clock,
 // and a wake when a watched reserve's room opens.
 func (w *Worker) roomObserved(u roomUpdate) {
-	backyardEvents.roomObserved(u)
+	w.events.roomObserved(u)
 	if u.opened {
 		w.notifyRoomOpened()
 	}
@@ -174,24 +174,37 @@ func (w *Worker) notifyRoomOpened() {
 	}
 }
 
-// WatchRoom replaces the reserves the view recomputes room for, and the
-// callback it reports each recomputation to (under the view lock: the
-// callback must not block or read the view). Registering reports each
-// watched reserve's current room without an edge: the registering tick
+// roomSet is one vault's watches: reserve address to watches, each watch's
+// last open state by lane|reserve, and the callback every recomputation
+// reports to.
+type roomSet struct {
+	watches map[string][]roomWatch
+	open    map[string]bool
+	on      func(roomUpdate)
+}
+
+// WatchRoom replaces the reserves the view recomputes room for on vault's
+// behalf, and the callback it reports each recomputation to (under the view
+// lock: the callback must not block or read the view). Registering reports
+// each watched reserve's current room without an edge: the registering tick
 // already planned from it. Only a later stream write can wake.
-func (v *View) WatchRoom(watches []roomWatch, on func(roomUpdate)) {
+func (v *View) WatchRoom(vault *Vault, watches []roomWatch, on func(roomUpdate)) {
 	if v == nil {
 		return
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.roomWatches, v.roomOpen, v.onRoom = map[string][]roomWatch{}, map[string]bool{}, on
-	for _, w := range watches {
-		v.roomWatches[w.reserve()] = append(v.roomWatches[w.reserve()], w)
+	set := &roomSet{watches: map[string][]roomWatch{}, open: map[string]bool{}, on: on}
+	if v.rooms == nil {
+		v.rooms = map[*Vault]*roomSet{}
 	}
-	for reserve, ws := range v.roomWatches {
+	v.rooms[vault] = set
+	for _, w := range watches {
+		set.watches[w.reserve()] = append(set.watches[w.reserve()], w)
+	}
+	for reserve, ws := range set.watches {
 		if held, ok := v.accounts[reserve]; ok {
-			v.observeRoom(ws, held, false)
+			v.observeRoom(set, ws, held, false)
 		}
 	}
 }
@@ -202,7 +215,7 @@ func (v *View) clockUnix() int64 {
 
 // observeRoom recomputes a watched reserve's room from an applied write and
 // reports it; edges wake only when edges is set (a stream write).
-func (v *View) observeRoom(ws []roomWatch, write viewAccount, edges bool) {
+func (v *View) observeRoom(set *roomSet, ws []roomWatch, write viewAccount, edges bool) {
 	now := v.clockUnix()
 	for _, w := range ws {
 		room, usd, open, ok := roomOf(w, write.ConfirmedAccount, now)
@@ -210,10 +223,10 @@ func (v *View) observeRoom(ws []roomWatch, write viewAccount, edges bool) {
 			continue
 		}
 		key := w.lane + "|" + w.reserve()
-		opened := edges && w.wakes && open && !v.roomOpen[key]
-		v.roomOpen[key] = open
-		if v.onRoom != nil {
-			v.onRoom(roomUpdate{watch: w, roomRaw: room, roomUSD: usd, open: open, opened: opened, slot: write.slot, at: v.now()})
+		opened := edges && w.wakes && open && !set.open[key]
+		set.open[key] = open
+		if set.on != nil {
+			set.on(roomUpdate{watch: w, roomRaw: room, roomUSD: usd, open: open, opened: opened, slot: write.slot, at: v.now()})
 		}
 	}
 }

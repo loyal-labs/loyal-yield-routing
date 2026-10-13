@@ -26,7 +26,7 @@ func TestTopupDepositWirePassesThePersistedWireGate(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.ObligationReserves = reserves
-		message, err := compileKaminoMessageForDelegate(request, delegate)
+		message, err := compileKaminoMessageForDelegate(rwa, request, delegate)
 		if err != nil {
 			t.Fatalf("%s: compile: %v", name, err)
 		}

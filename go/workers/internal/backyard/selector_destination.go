@@ -18,7 +18,7 @@ import (
 
 // UserState/FarmState fields match farms-sdk 3.2.14 Borsh layouts, including
 // discriminators. A token-loop quote cannot silently assume manual farm setup.
-func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) error {
+func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAccount) error {
 	for _, pair := range [][2]string{{route.CollateralFarm, route.ObligationCollateralFarm}, {route.DebtFarm, route.ObligationDebtFarm}} {
 		if pair[0] == "" && pair[1] == "" {
 			continue
@@ -33,7 +33,7 @@ func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) erro
 			return budgetHold("selector_farm_unavailable")
 		}
 		if state, err := kamino.DecodeFarmUserState(chainAccount(user, user.Address)); err != nil || !sameKey(state.FarmState[:], pair[0]) ||
-			!sameKey(state.Owner[:], bridgeVault) || !state.IsFarmDelegated || !sameKey(state.Delegatee[:], route.Kamino.Obligation) {
+			!sameKey(state.Owner[:], v.squads) || !state.IsFarmDelegated || !sameKey(state.Delegatee[:], route.Kamino.Obligation) {
 			return budgetHold("selector_farm_registration_unavailable")
 		}
 	}
@@ -42,16 +42,16 @@ func validateSelectorFarms(route RuntimeRoute, accounts []ConfirmedAccount) erro
 
 // selectorDestinationAccounts is a flat destination's refreshed batch, its
 // position, and every check its entry's legs depend on.
-func selectorDestinationAccounts(ctx context.Context, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+func selectorDestinationAccounts(ctx context.Context, v *Vault, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
-	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, rpc, route, minimumSlot)
+	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, v, rpc, route, minimumSlot)
 	if err != nil {
 		return 0, nil, empty, err
 	}
 	if position.HasPosition || position.CollateralDepositedRaw != 0 || position.DebtRaw != 0 {
 		return 0, nil, empty, budgetHold("selector_destination_not_flat")
 	}
-	custody, err := validateSelectorDestinationCommon(route, slot, accounts, position)
+	custody, err := validateSelectorDestinationCommon(v, route, slot, accounts, position)
 	if err != nil {
 		return 0, nil, empty, err
 	}
@@ -67,15 +67,15 @@ func selectorDestinationAccounts(ctx context.Context, rpc *chain.Client, view *V
 // an absent optional obligation or farm. bridgeDelegate's captured lamports
 // differ by the simulated fee; every freshness, ownership, capacity and
 // funding check still runs fail-closed on it.
-func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
+func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.Client, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
 	addresses := []string{route.Kamino.Market, route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve,
 		route.Kamino.CollateralMint, route.Kamino.DebtMint, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply,
 		route.DebtLiquiditySupply, route.DebtFeeReceiver, route.CollateralReceiptMint, route.CollateralReceiptSupply,
 		route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm,
-		budgetClockAddress, bridgeVault, bridgeDelegate, bridgeStrategy, reportTicketPDA, usdcReference.DebtReserve}
+		budgetClockAddress, v.squads, bridgeDelegate, v.Strategy, reportTicketPDA, usdcReference.DebtReserve}
 	optional := uniqueNonzero([]string{route.Kamino.Obligation, route.ObligationCollateralFarm, route.ObligationDebtFarm})
-	slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, rpc, []string{route.Lane}, uniqueNonzero(addresses), optional, minimumSlot)
+	slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, v, rpc, []string{route.Lane}, uniqueNonzero(addresses), optional, minimumSlot)
 	if err != nil {
 		return 0, nil, empty, err
 	}
@@ -89,15 +89,15 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, rou
 // validateSelectorDestinationCommon runs every destination check that does not
 // depend on flatness, and returns the observed collateral custody balance so
 // each caller applies its own flatness contract.
-func validateSelectorDestinationCommon(route RuntimeRoute, slot int64, accounts []ConfirmedAccount, position KaminoPosition) (uint64, error) {
-	if _, err := decodeObservedAdaptorConfig(accountAt(accounts, bridgeStrategy)); err != nil {
+func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64, accounts []ConfirmedAccount, position KaminoPosition) (uint64, error) {
+	if _, err := decodeObservedAdaptorConfig(v, accountAt(accounts, v.Strategy)); err != nil {
 		return 0, err
 	}
-	ticket, err := decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
+	ticket, err := decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
 	if err != nil || ticket.Armed || ticket.LastConsumedSequence >= uint64(slot) {
 		return 0, budgetHoldFrom(err, "selector_destination_ticket_unavailable")
 	}
-	if err = validateSelectorFarms(route, accounts); err != nil {
+	if err = validateSelectorFarms(v, route, accounts); err != nil {
 		return 0, err
 	}
 	for _, side := range []struct {
@@ -134,8 +134,8 @@ func validateSelectorDestinationCommon(route RuntimeRoute, slot int64, accounts 
 	}
 	collateralCustody := uint64(0)
 	for _, b := range []struct{ address, mint, authority, program string }{
-		{route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault, route.CollateralTokenProgram},
-		{route.DebtCustody, route.Kamino.DebtMint, bridgeVault, route.DebtTokenProgram},
+		{route.CollateralCustody, route.Kamino.CollateralMint, v.squads, route.CollateralTokenProgram},
+		{route.DebtCustody, route.Kamino.DebtMint, v.squads, route.DebtTokenProgram},
 		{route.CollateralLiquiditySupply, route.Kamino.CollateralMint, route.Kamino.MarketAuthority, route.CollateralTokenProgram},
 		{route.DebtLiquiditySupply, route.Kamino.DebtMint, route.Kamino.MarketAuthority, route.DebtTokenProgram},
 		{route.DebtFeeReceiver, route.Kamino.DebtMint, route.Kamino.MarketAuthority, route.DebtTokenProgram},

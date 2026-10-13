@@ -34,7 +34,7 @@ func TestConfirmedTransactionReconciliationUsesReceiptDeltasAndAdaptorReturn(t *
 		},
 		ReturnData: &ProgramReturnData{ProgramID: bridgeAdaptorProgram, DataBase64: expected.ReturnData.DataBase64},
 	}
-	reconciliation, evidence, err := ReconcileConfirmedTransaction(expected, receipt)
+	reconciliation, evidence, err := ReconcileConfirmedTransaction(rwa, expected, receipt)
 	if err != nil || reconciliation.ConfirmedSlot != 77 || !reconciliation.Conserved ||
 		!strings.Contains(string(evidence), `"source":"confirmed-transaction-meta"`) ||
 		!strings.Contains(string(evidence), `"signature":"persisted-signature"`) {
@@ -43,7 +43,7 @@ func TestConfirmedTransactionReconciliationUsesReceiptDeltasAndAdaptorReturn(t *
 	// A concurrent later account mutation is deliberately not an input to this
 	// API; the immutable receipt remains sufficient and deterministic.
 	receipt.PostTokenBalances[0].Raw = 5
-	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt); err == nil {
 		t.Fatal("receipt postcondition drift was accepted")
 	}
 }
@@ -63,7 +63,7 @@ func TestConfirmedTransactionReconciliationRejectsReturnDataDrift(t *testing.T) 
 		PostTokenBalances: []TransactionTokenBalance{{Address: address, OwnerProgram: classicTokenProgram, Mint: mint, Authority: authority, Raw: 1}},
 		ReturnData:        &ProgramReturnData{ProgramID: testPublicKey(3), DataBase64: encoded},
 	}
-	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt); err == nil {
 		t.Fatal("wrong adaptor return-data program was accepted")
 	}
 }
@@ -83,16 +83,16 @@ func TestConfirmedTransactionReconciliationAcceptsExactRuntimeReturnLog(t *testi
 		PostTokenBalances: []TransactionTokenBalance{{Address: address, OwnerProgram: classicTokenProgram, Mint: mint, Authority: authority, Raw: 1}},
 		Logs:              []string{"Program return: " + bridgeAdaptorProgram + " " + encoded},
 	}
-	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err != nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt); err != nil {
 		t.Fatal(err)
 	}
 	receipt.ReturnData = &ProgramReturnData{ProgramID: bridgeAdaptorProgram, DataBase64: base64.StdEncoding.EncodeToString([]byte("different"))}
-	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt); err == nil {
 		t.Fatal("matching runtime log overrode contradictory metadata return data")
 	}
 	receipt.ReturnData = nil
 	receipt.Logs[0] = "Program log: Program return: " + bridgeAdaptorProgram + " " + encoded
-	if _, _, err := ReconcileConfirmedTransaction(expected, receipt); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt); err == nil {
 		t.Fatal("spoofable program log was accepted as runtime return data")
 	}
 }
@@ -105,11 +105,11 @@ func TestDecodeExpectedEffectsFromOperationEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := DecodeExpectedEffects(encoded)
+	decoded, err := DecodeExpectedEffects(rwa, encoded)
 	if err != nil || len(decoded.Accounts) != 1 || decoded.Accounts[0].Address != address {
 		t.Fatalf("decoded=%+v err=%v", decoded, err)
 	}
-	if _, err := DecodeExpectedEffects([]byte(`{"schema":"loyal-backyard-rwa-operation-evidence/v1","expectedEffects":null}`)); err == nil {
+	if _, err := DecodeExpectedEffects(rwa, []byte(`{"schema":"loyal-backyard-rwa-operation-evidence/v1","expectedEffects":null}`)); err == nil {
 		t.Fatal("unbuilt operation accepted as reconcilable effects")
 	}
 }
@@ -129,7 +129,7 @@ func TestOverflowMoveEffectsDecodeAndReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected, err := DecodeExpectedEffects(encoded)
+	expected, err := DecodeExpectedEffects(rwa, encoded)
 	if err != nil {
 		t.Fatalf("a move's effects do not decode: %v", err)
 	}
@@ -139,10 +139,10 @@ func TestOverflowMoveEffectsDecodeAndReconcile(t *testing.T) {
 		}
 		return ConfirmedTransactionEvidence{Signature: "move", Slot: 1, PreTokenBalances: custody(balance), PostTokenBalances: custody(post)}
 	}
-	if _, _, err := ReconcileConfirmedTransaction(expected, receipt(balance-held)); err != nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt(balance-held)); err != nil {
 		t.Fatalf("landed move did not reconcile: %v", err)
 	}
-	if _, _, err := ReconcileConfirmedTransaction(expected, receipt(balance-held-1)); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt(balance-held-1)); err == nil {
 		t.Fatal("a move that took more than the custody held reconciled")
 	}
 
@@ -159,7 +159,7 @@ func TestOverflowMoveEffectsDecodeAndReconcile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := DecodeExpectedEffects(data); err == nil {
+		if _, err := DecodeExpectedEffects(rwa, data); err == nil {
 			t.Fatalf("%s decoded", name)
 		}
 	}
@@ -190,19 +190,19 @@ func TestReconciliationChecksEachAccountsTransactionDelta(t *testing.T) {
 			}}
 	}
 	// The incident: observed 95,387,976; a 5 USDC deposit landed first.
-	if _, _, err := ReconcileConfirmedTransaction(effects(95_387_976, 95_387_976), receipt(100_387_976, 100_387_976, 0, 0)); err != nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, effects(95_387_976, 95_387_976), receipt(100_387_976, 100_387_976, 0, 0)); err != nil {
 		t.Fatalf("zero-delta report after a concurrent user deposit was rejected: %v", err)
 	}
 	// The report itself must still not move idle.
-	if _, _, err := ReconcileConfirmedTransaction(effects(95_387_976, 95_387_976), receipt(100_387_976, 100_387_975, 0, 0)); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, effects(95_387_976, 95_387_976), receipt(100_387_976, 100_387_975, 0, 0)); err == nil {
 		t.Fatal("idle moved by the transaction itself was accepted")
 	}
 	// A capital move keeps its exact delta even when the base drifted.
-	if _, _, err := ReconcileConfirmedTransaction(effects(10, 7), receipt(15, 12, 0, 0)); err == nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, effects(10, 7), receipt(15, 12, 0, 0)); err == nil {
 		t.Fatal("non-conserved allocation delta was accepted") // strategy did not receive the 3
 	}
 	// Our own custody is reconciled the same way: its delta, not its base.
-	if _, _, err := ReconcileConfirmedTransaction(effects(95_387_976, 95_387_976), receipt(95_387_976, 95_387_976, 1, 1)); err != nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, effects(95_387_976, 95_387_976), receipt(95_387_976, 95_387_976, 1, 1)); err != nil {
 		t.Fatalf("strategy custody drift with the planned zero delta was rejected: %v", err)
 	}
 }

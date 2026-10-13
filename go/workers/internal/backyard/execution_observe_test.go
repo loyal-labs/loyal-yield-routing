@@ -11,7 +11,7 @@ import (
 
 func TestStageExpectedEffectsMatchDirectTransferReceipt(t *testing.T) {
 	t.Parallel()
-	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(
+	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(rwa,
 		Decision{Action: StageSquadsToVoltr, AmountRaw: 119}, 0, 0, 1_792_877,
 	)
 	if err != nil {
@@ -50,23 +50,23 @@ func exactAdaptorConfigAccount(t *testing.T) ConfirmedAccount {
 func TestExecutionObserverDecodesOnlyExactAdaptorV2Bindings(t *testing.T) {
 	t.Parallel()
 	account := exactAdaptorConfigAccount(t)
-	if _, err := decodeObservedAdaptorConfig(account); err != nil {
+	if _, err := decodeObservedAdaptorConfig(rwa, account); err != nil {
 		t.Fatal(err)
 	}
 	account.Data[176] ^= 1
-	if _, err := decodeObservedAdaptorConfig(account); err == nil {
+	if _, err := decodeObservedAdaptorConfig(rwa, account); err == nil {
 		t.Fatal("drifted Squads Settings binding was accepted")
 	}
 	account = exactAdaptorConfigAccount(t)
 	account.Data[416] = 1
-	if _, err := decodeObservedAdaptorConfig(account); err == nil {
+	if _, err := decodeObservedAdaptorConfig(rwa, account); err == nil {
 		t.Fatal("mutable report state appeared in immutable adaptor config")
 	}
 }
 
 func TestBridgeExpectedEffectsAreExactAndConserved(t *testing.T) {
 	t.Parallel()
-	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(
+	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(rwa,
 		Decision{Action: VoltrAllocateToSquads, AmountRaw: 4}, 10, 7, 3,
 	)
 	if err != nil || strategyAfter != 7 || squadsAfter != 7 || len(effects.Accounts) != 3 {
@@ -75,14 +75,14 @@ func TestBridgeExpectedEffectsAreExactAndConserved(t *testing.T) {
 	if effects.Accounts[0].AfterRaw != 6 || effects.Accounts[1].AfterRaw != 7 || effects.Accounts[2].AfterRaw != 7 {
 		t.Fatal("allocation effect graph drifted")
 	}
-	if _, _, _, err := bridgeExpectedEffects(Decision{Action: VoltrRestoreIdle, AmountRaw: 8}, 10, 7, 3); err == nil {
+	if _, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: VoltrRestoreIdle, AmountRaw: 8}, 10, 7, 3); err == nil {
 		t.Fatal("bridge observer accepted an underfunded restore")
 	}
 }
 
 func TestExpectedAdaptorReturnDataIsExactNAVLittleEndian(t *testing.T) {
 	t.Parallel()
-	expected := expectedAdaptorReturnData(0x0807060504030201)
+	expected := expectedAdaptorReturnData(rwa, 0x0807060504030201)
 	decoded, err := base64.StdEncoding.DecodeString(expected.DataBase64)
 	if err != nil || expected.ProgramID != bridgeAdaptorProgram ||
 		len(decoded) != 8 || binary.LittleEndian.Uint64(decoded) != 0x0807060504030201 {
@@ -100,7 +100,7 @@ func TestExpectedAdaptorReturnDataIsExactNAVLittleEndian(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DecodeExpectedEffects(encoded); err != nil {
+	if _, err := DecodeExpectedEffects(rwa, encoded); err != nil {
 		t.Fatalf("production bridge return contract was rejected: %v", err)
 	}
 }

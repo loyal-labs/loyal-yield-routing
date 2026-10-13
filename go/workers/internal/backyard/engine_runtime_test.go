@@ -233,7 +233,7 @@ func directEngine(t *testing.T, owner string) *Engine {
 	t.Helper()
 	manifest := readyWorkerManifest(t)
 	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest}
-	return &Engine{worker: worker, owner: owner, out: io.Discard, config: Config{PollInterval: time.Millisecond}}
+	return &Engine{workers: []*Worker{worker}, states: []*vaultState{{}}, owner: owner, out: io.Discard, config: Config{PollInterval: time.Millisecond}}
 }
 
 func holdTickRuntime(events *runtimeEvents, cancel context.CancelFunc) tickRuntime {
@@ -261,7 +261,7 @@ func TestEngineRunsInjectedRuntimeAndJoinsOnCancellation(t *testing.T) {
 	events := &runtimeEvents{}
 	engine := directEngine(t, journal.LeaseOwner)
 	engine.out = out
-	engine.worker.runtime = holdTickRuntime(events, cancel)
+	engine.workers[0].runtime = holdTickRuntime(events, cancel)
 	if err := engine.Run(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("engine did not join on cancellation: %v", err)
 	}

@@ -129,7 +129,7 @@ func TestSelectorObservesPriorCustodyAndHoldsEveryExposedLane(t *testing.T) {
 			accounts[i] = tokenAccountFixture(t, source.CollateralCustody, source.Kamino.CollateralMint, bridgeVault, 1)
 		}
 	}
-	got, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), SelectedRouteID)
+	got, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), SelectedRouteID)
 	if err != nil || strings.Join(got, ",") != source.Lane {
 		t.Fatalf("old custody hidden: %v %v", got, err)
 	}
@@ -140,7 +140,7 @@ func TestSelectorObservesPriorCustodyAndHoldsEveryExposedLane(t *testing.T) {
 		}
 	}
 	// Two exposed lanes are one held set, never silently reduced to one.
-	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), SelectedRouteID)
+	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), SelectedRouteID)
 	if err != nil || strings.Join(held, ",") != SelectedRouteID+","+source.Lane {
 		t.Fatalf("two exposed lanes: held %v err %v", held, err)
 	}

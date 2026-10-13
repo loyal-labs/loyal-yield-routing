@@ -13,7 +13,7 @@ const routeRefreshValuationSource = "unsigned-reserve-refresh-simulation"
 // permissionless reserve refreshes. Custody, obligation, receipt and policy
 // accounts are read-only to these instructions. The simulation fee payer is
 // excluded: its virtual fee must never become observed operational spending.
-func simulateRouteValuationRefresh(ctx context.Context, c *chain.Client, routes []RuntimeRoute, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
+func simulateRouteValuationRefresh(ctx context.Context, v *Vault, c *chain.Client, routes []RuntimeRoute, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	lanes := make([]string, 0, len(routes))
 	for _, route := range routes {
 		lanes = append(lanes, route.Lane)
@@ -23,7 +23,7 @@ func simulateRouteValuationRefresh(ctx context.Context, c *chain.Client, routes 
 			return 0, nil, fmt.Errorf("valuation capture includes simulated fee payer")
 		}
 	}
-	instructions, err := budgetReserveRefreshInstructionsForLanes(lanes)
+	instructions, err := budgetReserveRefreshInstructionsForLanes(v, lanes)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -34,9 +34,9 @@ func simulateRouteValuationRefresh(ctx context.Context, c *chain.Client, routes 
 			}
 		}
 	}
-	optional := optionalLifecycleObligations(addresses)
-	optional = append(optional, bridgeStrategyReceipt)
-	slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, c, lanes, addresses, optional, minimumSlot)
+	optional := optionalLifecycleObligations(v, addresses)
+	optional = append(optional, v.strategyReceipt)
+	slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, v, c, lanes, addresses, optional, minimumSlot)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -71,9 +71,9 @@ func validateRouteValuationCapture(slot int64, accounts []ConfirmedAccount, addr
 // valuation/execution inputs and every lane's ownership accounts. Unowned
 // lanes' exclusive economic caches cannot affect this NAV and need not
 // consume simulation packet space.
-func selectorValuationAddresses(routes []RuntimeRoute, addresses []string) []string {
+func selectorValuationAddresses(v *Vault, routes []RuntimeRoute, addresses []string) []string {
 	protected := map[string]bool{}
-	for _, address := range pinnedRouteNAVAddressesForRoutes(routes) {
+	for _, address := range pinnedRouteNAVAddressesForRoutes(v, routes) {
 		protected[address] = true
 	}
 	economics := func(r RuntimeRoute) []string {
@@ -88,7 +88,7 @@ func selectorValuationAddresses(routes []RuntimeRoute, addresses []string) []str
 	}
 	discard := map[string]bool{}
 	for _, lane := range earnLaneIDs(true) {
-		other, err := runtimeRoute(lane)
+		other, err := v.route(lane)
 		if err != nil {
 			return addresses
 		}

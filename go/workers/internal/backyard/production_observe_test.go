@@ -110,7 +110,7 @@ func productionConfirmedBatchForManifest(t *testing.T, manifest RouteManifest, s
 	manifest = primeFixtureManifest(manifest)
 	return func(ctx context.Context) (Observation, error) {
 		accounts := productionRouteBatchAccounts(t, slot, mutate)
-		observation, _, err := observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
+		observation, _, err := observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{state: testVaultState,
 			read:             fixtureBatchRuntime(slot, accounts),
 			refreshValuation: fixtureRefresh(slot, accounts),
 			now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },

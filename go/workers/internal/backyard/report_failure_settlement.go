@@ -91,7 +91,7 @@ type finalizedFailureSettlement struct {
 	Receipt                 finalizedFailureReceipt `json:"receipt"`
 }
 
-func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byte, signature, wireHash, messageHash string, expectedDelegate publicKey, effects ExpectedEffects) error {
+func validateFinalizedFailureReceipt(v *Vault, receipt finalizedFailureReceipt, wire []byte, signature, wireHash, messageHash string, expectedDelegate publicKey, effects ExpectedEffects) error {
 	fail := func() error { return budgetHold("unproven_finalized_failure_receipt") }
 	if receipt.Slot <= 0 || receipt.Meta == nil || receipt.Meta.Fee == nil || *receipt.Meta.Fee == 0 ||
 		len(receipt.Transaction) != 2 || receipt.Transaction[1] != "base64" || sha256Bytes(wire) != wireHash {
@@ -130,7 +130,7 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 	if len(effects.Accounts) != 3 || len(receipt.Meta.PreTokenBalances) != 3 || len(receipt.Meta.PostTokenBalances) != 3 {
 		return fail()
 	}
-	canonical := map[string]string{bridgeIdleATA: bridgeIdleAuthority, bridgeStrategyATA: bridgeStrategyAuth, bridgeSquadsATA: bridgeVault}
+	canonical := map[string]string{v.idleATA: v.idleAuth, v.strategyATA: v.strategyAuth, v.cash: v.squads}
 	want := make(map[int]ExpectedAccountEffect, 3)
 	for _, effect := range effects.Accounts {
 		if canonical[effect.Address] == "" || effect.Authority != canonical[effect.Address] || effect.Owner != bridgeTokenProgram || effect.Mint != bridgeUSDC || effect.BeforeRaw != effect.AfterRaw {
@@ -208,6 +208,10 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 	} else if operation.Status != Submitted && operation.Status != BroadcastIntent {
 		return fmt.Errorf("invalid finalized failure settlement")
 	}
+	v, err := vaultOfRoute(operation.RouteKey)
+	if err != nil {
+		return err
+	}
 	var wire []byte
 	var signature, wireHash, messageHash, action, status, recoveryReason string
 	var expected []byte
@@ -232,7 +236,7 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 	if action != string(ReportNAV) && !restore || restore && reason != adaptorReportSlotRefusedReason {
 		return budgetHold("failed_settlement_requires_exact_report")
 	}
-	effects, err := DecodeExpectedEffects(expected)
+	effects, err := DecodeExpectedEffects(v, expected)
 	if err != nil {
 		return budgetHoldFrom(err, "failed_settlement_requires_exact_report")
 	}
@@ -249,7 +253,7 @@ func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation P
 		}
 		receiptEffects.Accounts = rollback
 	}
-	if err = validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, mustKey(bridgeDelegate), receiptEffects); err != nil {
+	if err = validateFinalizedFailureReceipt(v, receipt, wire, signature, wireHash, messageHash, mustKey(bridgeDelegate), receiptEffects); err != nil {
 		return err
 	}
 	proof := finalizedFailureSettlement{Schema: "backyard-finalized-failure/v1", Signature: signature, SignedWireSHA256: wireHash, MessageSHA256: messageHash, Slot: receipt.Slot, Reason: reason, AtomicNoCapitalMovement: true, FeeLamports: *receipt.Meta.Fee, Receipt: receipt}

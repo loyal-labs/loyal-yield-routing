@@ -26,28 +26,29 @@ func (r shadowJournal) RecordPositionSnapshot(context.Context, string, Observati
 
 // This observer enriches a separate snapshot without projecting NAV or taking
 // an execution lease. Broader ownership failures stay confined to shadow output.
-func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.Client, view *View, manifest RouteManifest, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
-	planning, err := database.readRoutePlanningState(ctx, productionRouteKey)
+func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.Client, view *View, manifest RouteManifest, vault *vaultState, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
+	v := manifest.vault
+	planning, err := database.readRoutePlanningState(ctx, v.RouteKey)
 	if err != nil {
 		return Observation{}, err
 	}
-	observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, planning.landedSlot, planning.inputs)
+	observation, _, err := ObserveConfirmedRouteSnapshot(ctx, rpc, view, manifest, vault, planning.landedSlot, planning.inputs)
 	if err != nil {
 		return Observation{}, fmt.Errorf("shadow confirmed observation unavailable: %w", err)
 	}
 	observation.planning = planning
-	state := productionObserveState{routeKey: productionRouteKey, journal: shadowJournal{database}, identity: identity, manifest: manifest}
+	state := productionObserveState{routeKey: v.RouteKey, journal: shadowJournal{database}, identity: identity, manifest: manifest}
 	if err = state.enrich(ctx, &observation); err != nil {
 		return Observation{}, fmt.Errorf("shadow journal or identity unavailable: %w", err)
 	}
 	var pending string
-	err = database.pool.QueryRow(ctx, `SELECT COALESCE((SELECT status FROM loyal_yield.multiply_operations WHERE route_key=$1 AND status IN (`+nonterminalStatusSQL+`) ORDER BY created_at,operation_id LIMIT 1),'')`, productionRouteKey).Scan(&pending)
+	err = database.pool.QueryRow(ctx, `SELECT COALESCE((SELECT status FROM loyal_yield.multiply_operations WHERE route_key=$1 AND status IN (`+nonterminalStatusSQL+`) ORDER BY created_at,operation_id LIMIT 1),'')`, v.RouteKey).Scan(&pending)
 	if err != nil {
 		return Observation{}, fmt.Errorf("shadow pending transaction unavailable")
 	}
 	observation.Snapshot.Nonterminal = OperationStatus(pending)
 
-	if _, latched, err := database.ManualRecoveryLatch(ctx, productionRouteKey); err != nil {
+	if _, latched, err := database.ManualRecoveryLatch(ctx, v.RouteKey); err != nil {
 		return Observation{}, fmt.Errorf("shadow recovery hold unavailable")
 	} else if latched {
 		observation.Snapshot.ManualReason = "durable_manual_recovery"

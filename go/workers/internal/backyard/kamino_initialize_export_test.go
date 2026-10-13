@@ -16,7 +16,7 @@ func TestExportKaminoInitializationMessages(t *testing.T) {
 	messages := make([]map[string]any, 0, 3)
 	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		r := KaminoInitializationRequest{RouteLane: lane, Policy: testPolicyAccount(policyKey{lane: lane, action: InitializeKaminoObligation}), RecentBlockhash: bridgeVault, LastValidBlockHeight: 100, RentLamports: 17637760, MaximumFeeLamports: 5000}
-		message, err := CompileKaminoInitializationMessage(r)
+		message, err := rwa.manifest.compileKaminoInitializationMessage(r)
 		if err != nil {
 			t.Fatal(err)
 		}

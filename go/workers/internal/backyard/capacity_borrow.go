@@ -273,8 +273,8 @@ func leverageBorrowCeiling(s Snapshot, level float64) uint64 {
 // reserve prices, without capacityBorrowValue's margins: an expectation for
 // the income forecast, never a bound. liability rounds up.
 func capacityBorrowCentralValue(s Snapshot, amount uint64, liability bool) (uint64, error) {
-	if _, err := runtimeRoute(s.RouteLane); err != nil {
-		return 0, err
+	if !earnHeldLane(s.RouteLane) {
+		return 0, fmt.Errorf("runtime lane %q is not installed", s.RouteLane)
 	}
 	return valueBetweenTokenRaw(amount, s.BorrowDebtDecimals, 6, s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, liability)
 }
@@ -283,12 +283,13 @@ func capacityBorrowCentralValue(s Snapshot, amount uint64, liability bool) (uint
 // non-USDC debt and reference prices use the budgetPriceMarginBPS interval
 // on each side. This is valuation evidence, not a transaction expense.
 func capacityBorrowValue(s Snapshot, amount uint64, liability bool) (uint64, error) {
-	route, err := runtimeRoute(s.RouteLane)
-	if err != nil {
-		return 0, err
+	l, ok := findEarnLane(s.RouteLane)
+	if !ok {
+		return 0, fmt.Errorf("runtime lane %q is not installed", s.RouteLane)
 	}
 	token, usdc := s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF
-	if route.Kamino.DebtMint != bridgeUSDC {
+	var err error
+	if l.route.Kamino.DebtMint != bridgeUSDC {
 		if liability {
 			token, err = UpperPriceMargin(token, budgetPriceMarginBPS)
 			if err != nil {

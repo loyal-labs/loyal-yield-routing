@@ -97,6 +97,9 @@ type Database struct {
 	pool *pgxpool.Pool
 	// writer: the pool's one session holds the lock, and Close releases it.
 	writer bool
+	// events are each route's events, by route key, set by the engine
+	// before its workers start.
+	events map[string]*events
 }
 
 // errWriterSessionLost: the writer's one session ended, and the lock with it.
@@ -317,27 +320,10 @@ func newDecisionEvidence(observation Observation, decision Decision, manifestSHA
 	}
 }
 
-// RecordDecision journals the tick's transaction as a decided operation. Only
+// RecordDecisionOnManifest journals the tick's transaction as a decided operation. Only
 // transactions get rows: a hold is a gauge (holdLog) and a manual stop is the
 // latch row. The one-nonterminal partial unique index keeps one operation in
 // flight.
-func (d *Database) RecordDecision(
-	ctx context.Context,
-	routeKey string,
-	observation Observation,
-	decision Decision,
-	manifestSHA256 string,
-) (DecisionRecord, error) {
-	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil {
-		return DecisionRecord{}, err
-	}
-	return d.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
-}
-
-// RecordDecisionOnManifest is the identical locked decision persistence with
-// the decision validation resolved through the same manifest: the candidate
-// AUTO initializer decision is admitted through it.
 func (d *Database) RecordDecisionOnManifest(
 	ctx context.Context,
 	manifest RouteManifest,
@@ -354,7 +340,7 @@ func (d *Database) RecordDecisionOnManifest(
 	}
 	var record DecisionRecord
 	err := d.inTx(ctx, func(tx pgx.Tx) (err error) {
-		record, err = d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256)
+		record, err = d.recordDecisionTx(ctx, tx, manifest.vault.Strategy, routeKey, observation, decision, manifestSHA256)
 		return err
 	})
 	if err != nil {
@@ -417,6 +403,7 @@ func validateDecisionPersistenceOnManifest(
 func (d *Database) recordDecisionTx(
 	ctx context.Context,
 	tx pgx.Tx,
+	strategy string,
 	routeKey string,
 	observation Observation,
 	decision Decision,
@@ -446,7 +433,7 @@ func (d *Database) recordDecisionTx(
 	}
 	expected, err := json.Marshal(map[string]any{
 		"schema":                "loyal-backyard-rwa-operation-evidence/v1",
-		"journalStrategyConfig": bridgeStrategy,
+		"journalStrategyConfig": strategy,
 		"decision":              newDecisionEvidence(observation, decision, manifestSHA256),
 		"expectedEffects":       nil,
 	})

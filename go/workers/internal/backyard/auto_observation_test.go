@@ -187,7 +187,7 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 // open withdrawal receipts, chain time equal to the fixture's Clock instant.
 func autoObservationForAccounts(manifest RouteManifest, slot int64, accounts []ConfirmedAccount) func(context.Context) (Observation, []ConfirmedAccount, error) {
 	return func(ctx context.Context) (Observation, []ConfirmedAccount, error) {
-		return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
+		return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{state: testVaultState,
 			read:             fixtureBatchRuntime(slot, accounts),
 			refreshValuation: fixtureRefresh(slot, accounts),
 			now:              func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
@@ -367,7 +367,7 @@ func TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash(t *testing.T) {
 	}
 	// The same batch cannot fall back to cash-only accounting either: a
 	// non-USDC debt lane with any reserve-health fault keeps its original error.
-	position, fallbackErr := observeKaminoWithCashFallback(77, accounts, route)
+	position, fallbackErr := observeKaminoWithCashFallback(rwa, 77, accounts, route)
 	if !errors.Is(fallbackErr, errKaminoReserveStale) {
 		t.Fatalf("the AUTO cash fallback accepted a stale reserve: %+v, %v", position, fallbackErr)
 	}
@@ -424,12 +424,12 @@ func TestAutoEmptyLaneStaleReserveFallsBackToCash(t *testing.T) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	_, route, accounts := autoObservationBatch(t, 77, stale)
-	position, err := observeKaminoWithCashFallback(77, accounts, route)
+	position, err := observeKaminoWithCashFallback(rwa, 77, accounts, route)
 	if err != nil || position.HasPosition || position.DebtRaw != 0 || position.CollateralDepositedRaw != 0 || !position.BorrowUtilizationBlocked {
 		t.Fatalf("empty stale AUTO lane did not fall back to cash: %+v, %v", position, err)
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 1)
-	if _, err := observeKaminoWithCashFallback(77, accounts, route); !errors.Is(err, errKaminoReserveStale) {
+	if _, err := observeKaminoWithCashFallback(rwa, 77, accounts, route); !errors.Is(err, errKaminoReserveStale) {
 		t.Fatalf("PYUSD custody was valued as cash on a stale reserve: %v", err)
 	}
 }
@@ -489,7 +489,7 @@ func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	})
 	refreshCalls := 0
-	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
+	_, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState,
 		read: fixtureBatchRuntime(77, accounts),
 		now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 		refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {

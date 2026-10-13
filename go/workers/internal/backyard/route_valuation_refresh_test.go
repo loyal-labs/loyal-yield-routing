@@ -36,7 +36,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 			}
 		})
 		refreshCalls, read, readSlots := 0, fixtureBatchRuntime(77, initial), []int64{}
-		o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
+		o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState,
 			read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
 				readSlots = append(readSlots, minSlot)
 				return read(ctx, addresses, minSlot)
@@ -149,15 +149,15 @@ func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
 
 func TestSelectorValuationCaptureRetainsNAVAndOwnership(t *testing.T) {
 	t.Parallel()
-	all := routeFixedAddresses()
+	all := routeFixedAddresses(rwa)
 	for _, lane := range earnLaneIDs(true) {
 		route, _ := runtimeRoute(lane)
-		selected := selectorValuationAddresses([]RuntimeRoute{route}, all)
+		selected := selectorValuationAddresses(rwa, []RuntimeRoute{route}, all)
 		kept := map[string]bool{}
 		for _, address := range selected {
 			kept[address] = true
 		}
-		for _, address := range pinnedRouteNAVAddressesForRoute(route) {
+		for _, address := range pinnedRouteNAVAddressesForRoute(rwa, route) {
 			if !kept[address] {
 				t.Fatal("lost active NAV", lane, address)
 			}
@@ -208,7 +208,7 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
 			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], 1)
 		})
-		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState,
 			read: fixtureBatchRuntime(77, initial),
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
@@ -247,7 +247,7 @@ func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 	kaminoStaleHolds.Store(refreshSimulationLatchAfter - 1)
 	for _, malformed := range []bool{false, true} {
 		for i := 0; i <= refreshSimulationLatchAfter; i++ {
-			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
+			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState,
 				read: fixtureBatchRuntime(77, initial),
 				now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 				refreshValuation: func(_ context.Context, _ []RuntimeRoute, addresses []string, min int64) (int64, []ConfirmedAccount, error) {
@@ -293,7 +293,7 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 	})
 	rejected := true
 	observe := func() (Observation, error) {
-		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState,
 			read: fixtureBatchRuntime(77, initial),
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {

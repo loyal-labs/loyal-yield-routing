@@ -43,7 +43,7 @@ func TestReserveUpdateThatOpensRoomWakesATickThatBorrowsIt(t *testing.T) {
 	worker := &Worker{wake: make(chan struct{}, 1)}
 	var reports []roomUpdate
 	watch := roomWatch{lane: route.Lane, route: route, debt: true, leverage: true, wakes: true}
-	view.WatchRoom([]roomWatch{watch}, func(u roomUpdate) { reports = append(reports, u); worker.roomObserved(u) })
+	view.WatchRoom(rwa, []roomWatch{watch}, func(u roomUpdate) { reports = append(reports, u); worker.roomObserved(u) })
 	woke := func() bool {
 		select {
 		case <-worker.wake:
@@ -79,7 +79,7 @@ func TestReserveUpdateThatOpensRoomWakesATickThatBorrowsIt(t *testing.T) {
 		t.Fatal("room that stayed open woke the worker again")
 	}
 	// Re-registering on the next tick is not an edge either.
-	view.WatchRoom([]roomWatch{watch}, worker.roomObserved)
+	view.WatchRoom(rwa, []roomWatch{watch}, worker.roomObserved)
 	write(193, room)
 	if woke() {
 		t.Fatal("re-registration faked an opening")
@@ -93,7 +93,7 @@ func TestReserveUpdateThatOpensRoomWakesATickThatBorrowsIt(t *testing.T) {
 	// A held lane at its target is watched for the gauge only.
 	gauge := watch
 	gauge.leverage, gauge.wakes = false, false
-	view.WatchRoom([]roomWatch{gauge}, worker.roomObserved)
+	view.WatchRoom(rwa, []roomWatch{gauge}, worker.roomObserved)
 	write(196, 0)
 	write(197, room)
 	if woke() {
@@ -143,7 +143,7 @@ func TestLeverageReactionIsMeasuredFromTheRoomOpening(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
 	registry := prometheus.NewRegistry()
-	e := newEvents(slog.New(slog.NewJSONHandler(&out, nil)), engine.NewFacts(registry))
+	e := newEvents(slog.New(slog.NewJSONHandler(&out, nil)), engine.NewFacts(registry), "rwa")
 	now := time.Unix(kaminoFixtureUnix, 0)
 	e.now = func() time.Time { return now }
 	route, err := runtimeRoute(autoAUTOPYUSD.Lane)

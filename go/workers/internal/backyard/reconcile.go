@@ -71,7 +71,7 @@ func (r Reconciliation) Validate() error {
 	return nil
 }
 
-func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
+func DecodeExpectedEffects(v *Vault, data []byte) (ExpectedEffects, error) {
 	var envelope struct {
 		Schema          string          `json:"schema"`
 		ExpectedEffects json.RawMessage `json:"expectedEffects"`
@@ -90,7 +90,7 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 		return ExpectedEffects{}, fmt.Errorf("decode expected effects: %w", err)
 	}
 	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
-		if err := validateInitializationEffects(expected); err != nil {
+		if err := v.manifest.validateInitializationEffects(expected); err != nil {
 			return ExpectedEffects{}, err
 		}
 		return expected, nil
@@ -140,7 +140,7 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 	}
 	if expected.ReturnData != nil {
 		data, err := base64.StdEncoding.DecodeString(expected.ReturnData.DataBase64)
-		if expected.Kind != "bridge" || expected.ReturnData.ProgramID != bridgeAdaptorProgram || err != nil || len(data) != 8 {
+		if expected.Kind != "bridge" || expected.ReturnData.ProgramID != v.Adaptor || err != nil || len(data) != 8 {
 			return ExpectedEffects{}, fmt.Errorf("invalid expected adaptor return data")
 		}
 	}
@@ -187,9 +187,9 @@ func validateRepaymentEffects(expected ExpectedEffects) error {
 // for the exact persisted signature. A later account read is intentionally not
 // accepted: unrelated deposits and claims can mutate the same custodies after
 // this transaction confirms.
-func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
+func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
 	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
-		return reconcileKaminoInitialization(expected, receipt)
+		return v.manifest.reconcileKaminoInitialization(expected, receipt)
 	}
 	if err := validateRepaymentEffects(expected); err != nil {
 		return Reconciliation{}, nil, err
@@ -287,17 +287,6 @@ func ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTr
 	}
 	hash := sha256.Sum256(evidence)
 	return Reconciliation{ConfirmedSlot: receipt.Slot, EffectsSHA256: hex.EncodeToString(hash[:]), Conserved: true}, evidence, nil
-}
-
-// ReconcileConfirmedTransaction is the manifest-aware dispatch: only the
-// native initializer branch differs — it reconciles through the explicit
-// reviewed manifest — and every other kind delegates to the public reconciler
-// unchanged.
-func (m RouteManifest) ReconcileConfirmedTransaction(expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
-	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
-		return m.reconcileKaminoInitialization(expected, receipt)
-	}
-	return ReconcileConfirmedTransaction(expected, receipt)
 }
 
 func transactionBalancesByAddress(balances []TransactionTokenBalance) (map[string]TransactionTokenBalance, error) {

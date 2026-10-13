@@ -44,16 +44,16 @@ func jupiterTestInstruction(action Action, amount, out uint64) JupiterSwapInstru
 // API shapes it: the twelve fixed accounts through program authority 0, then
 // filler venue accounts, and one Manifest step at the worker's slippage bound.
 func v2TestInstruction(lane string, action Action, amount, out uint64, filler int) JupiterSwapInstruction {
-	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(action, lane)
+	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(rwa, action, lane)
 	if err != nil {
 		panic(err)
 	}
 	program := func(mint string) solana.PublicKey {
-		a, err := routeSwapAssets()
+		a, err := routeSwapAssets(rwa)
 		if err != nil {
 			panic(err)
 		}
-		for _, asset := range []swapAsset{a.usdc, a.prime, a.usds, a.pyusd, a.auto, a.usde, a.syrup, a.onyc, a.usdg} {
+		for _, asset := range a {
 			if asset.mint.String() == mint {
 				return asset.program
 			}
@@ -95,7 +95,7 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		unsigned, err := compileJupiterMessageForDelegate(request, delegate)
+		unsigned, err := compileJupiterMessageForDelegate(rwa, request, delegate)
 		if err != nil || !bytes.Equal(unsigned, signed.message) {
 			t.Fatalf("unsigned Jupiter fee message differs: %v", err)
 		}
@@ -115,18 +115,18 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T) {
 	t.Parallel()
 	instruction := jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
-	if _, err := validateJupiterInstructionForRoute(instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err != nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err != nil {
 		t.Fatal(err)
 	}
 	instruction.Accounts[2].Pubkey = previousBackyardVault
-	if _, err := validateJupiterInstructionForRoute(instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err == nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err == nil {
 		t.Fatal("accepted drifted/prior custody")
 	}
 	instruction = jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
 	data, _ := base64.StdEncoding.DecodeString(instruction.Data)
 	data[0] ^= 1
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
-	if _, err := validateJupiterInstructionForRoute(instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err == nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err == nil {
 		t.Fatal("accepted arbitrary Jupiter dialect")
 	}
 }
@@ -167,11 +167,11 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := freshSwapForRoute(context.Background(), client, PhaseOneLaneID, SwapStableToCollateralStep, 100, 32); err != nil {
+	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PhaseOneLaneID, SwapStableToCollateralStep, 100, 32); err != nil {
 		t.Fatal(err)
 	}
 	companion = true
-	if _, _, err := freshSwapForRoute(context.Background(), client, PhaseOneLaneID, SwapStableToCollateralStep, 100, 32); err == nil {
+	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PhaseOneLaneID, SwapStableToCollateralStep, 100, 32); err == nil {
 		t.Fatal("accepted a setup instruction outside the policy contract")
 	}
 }
@@ -182,7 +182,7 @@ func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
 	instruction.Accounts = append(instruction.Accounts, jupiter.AccountMeta{
 		Pubkey: "11111111111111111111111111111111",
 	})
-	if _, err := validateJupiterInstructionForRoute(instruction, SwapStableToCollateralStep, 100, 95, 94, PhaseOneLaneID); err != nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 95, 94, PhaseOneLaneID); err != nil {
 		t.Fatal(err)
 	}
 	key, err := decodeKey("11111111111111111111111111111111")

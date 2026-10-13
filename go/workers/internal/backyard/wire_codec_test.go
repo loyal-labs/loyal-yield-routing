@@ -13,7 +13,7 @@ import (
 // signMessage) without the pinned delegate's secret.
 
 func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
-	message, err := compileBridgeMessageForDelegate(request, expectedDelegate)
+	message, err := compileBridgeMessageForDelegate(rwa, request, expectedDelegate)
 	if err != nil {
 		return SignedTransaction{}, err
 	}
@@ -21,7 +21,7 @@ func buildAndSignBridgeTransactionForDelegate(request BridgeBuildRequest, execut
 }
 
 func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
-	message, err := compileJupiterMessageForDelegate(request, expectedDelegate)
+	message, err := compileJupiterMessageForDelegate(rwa, request, expectedDelegate)
 	if err != nil {
 		return SignedTransaction{}, err
 	}
@@ -29,7 +29,7 @@ func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, execu
 }
 
 func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
-	message, err := compileKaminoMessageForDelegate(request, expectedDelegate)
+	message, err := compileKaminoMessageForDelegate(rwa, request, expectedDelegate)
 	if err != nil {
 		return SignedTransaction{}, err
 	}

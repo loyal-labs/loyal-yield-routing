@@ -67,12 +67,12 @@ func simulatedCapture(t testing.TB, params []json.RawMessage, slot int64, lookup
 // CompileBridgeMessage compiles a bridge request on the exact signing path
 // without a key.
 func CompileBridgeMessage(request BridgeBuildRequest) ([]byte, error) {
-	return compileBridgeMessageForDelegate(request, mustKey(bridgeDelegate))
+	return compileBridgeMessageForDelegate(rwa, request, mustKey(bridgeDelegate))
 }
 
 // kaminoPrimeUSDCInstruction is a Kamino leg's instruction on its own lane.
 func kaminoPrimeUSDCInstruction(request KaminoPrimeUSDCRequest) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
-	return kaminoRouteInstruction(request, request.RouteLane)
+	return kaminoRouteInstruction(rwa, request, request.RouteLane)
 }
 
 // boundedKaminoRepaymentEffects is a single-leg repay's effects: the debit
@@ -91,15 +91,15 @@ func boundedKaminoRepaymentEffects(accounts []ConfirmedAccount, source, destinat
 }
 
 func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
-	return compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate))
+	return compileJupiterMessageForDelegate(rwa, request, mustKey(bridgeDelegate))
 }
 
 func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
-	return compileKaminoMessageForDelegate(request, mustKey(bridgeDelegate))
+	return compileKaminoMessageForDelegate(rwa, request, mustKey(bridgeDelegate))
 }
 
 func selectRouteNAVAccountsForRoute(accounts []ConfirmedAccount, route RuntimeRoute) ([]ConfirmedAccount, error) {
-	return selectRouteNAVAccountsForRoutes(accounts, []RuntimeRoute{route})
+	return selectRouteNAVAccountsForRoutes(rwa, accounts, []RuntimeRoute{route})
 }
 
 // Account layout offsets the fixtures write: LendingMarket.emergency_mode, and

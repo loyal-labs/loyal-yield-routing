@@ -67,17 +67,17 @@ func cadenceArmedIdentity(s *Snapshot) {
 func TestOptionalLifecycleObligationPrefersSelectedPhase2Close(t *testing.T) {
 	t.Parallel()
 	selected := mapleSyrupUSDCUSDC.Kamino.Obligation
-	if got := optionalLifecycleObligations([]string{primePRIMEUSDC.Kamino.Obligation, selected}); len(got) != 2 || got[0] != selected || got[1] != primePRIMEUSDC.Kamino.Obligation {
+	if got := optionalLifecycleObligations(rwa, []string{primePRIMEUSDC.Kamino.Obligation, selected}); len(got) != 2 || got[0] != selected || got[1] != primePRIMEUSDC.Kamino.Obligation {
 		t.Fatalf("both closed lifecycle obligations must be optional: %v", got)
 	}
-	if got := optionalLifecycleObligations([]string{primePRIMEUSDC.Kamino.Obligation}); len(got) != 1 || got[0] != primePRIMEUSDC.Kamino.Obligation {
+	if got := optionalLifecycleObligations(rwa, []string{primePRIMEUSDC.Kamino.Obligation}); len(got) != 1 || got[0] != primePRIMEUSDC.Kamino.Obligation {
 		t.Fatalf("Phase 1 obligation fallback drifted: %v", got)
 	}
-	if got := optionalLifecycleObligations([]string{bridgeSquadsATA}); len(got) != 0 {
+	if got := optionalLifecycleObligations(rwa, []string{bridgeSquadsATA}); len(got) != 0 {
 		t.Fatalf("unrelated account became optional: %v", got)
 	}
 	for _, obligation := range []string{primePRIMEPYUSD.Kamino.Obligation, primePRIMEUSDS.Kamino.Obligation} {
-		if got := optionalLifecycleObligations([]string{bridgeSquadsATA, obligation}); len(got) != 1 || got[0] != obligation {
+		if got := optionalLifecycleObligations(rwa, []string{bridgeSquadsATA, obligation}); len(got) != 1 || got[0] != obligation {
 			t.Fatalf("closed Prime sibling obligation blocks terminal observation: %v", got)
 		}
 	}
@@ -210,7 +210,7 @@ func TestRouteNAVCadenceRejectsMixedSlotsAndBoundsFutureClockSkew(t *testing.T) 
 
 func TestRouteFixedAddressesIncludeEveryMutableConstructionInput(t *testing.T) {
 	t.Parallel()
-	addresses := routeFixedAddresses()
+	addresses := routeFixedAddresses(rwa)
 	wanted := map[string]bool{bridgeIdleATA: false, bridgeStrategyATA: false, bridgeSquadsATA: false, bridgeVoltrVault: false, bridgeLPMint: false, primePRIMEUSDC.CollateralCustody: false, primePRIMEUSDC.Kamino.Obligation: false, primePRIMEUSDC.Kamino.CollateralReserve: false, primePRIMEUSDC.Kamino.DebtReserve: false, primePRIMEUSDC.CollateralLiquiditySupply: false, primePRIMEUSDC.DebtLiquiditySupply: false, reportTicketPDA: false}
 	for _, address := range addresses {
 		if _, ok := wanted[address]; ok {
@@ -231,7 +231,7 @@ func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
 	for _, address := range viewAddresses() {
 		held[address] = true
 	}
-	for _, address := range routeFixedAddresses() {
+	for _, address := range routeFixedAddresses(rwa) {
 		if !held[address] {
 			t.Fatalf("the observation reads %s outside the view", address)
 		}

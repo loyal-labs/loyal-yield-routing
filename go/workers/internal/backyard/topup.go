@@ -32,6 +32,9 @@ func laneSwap(lane string, action Action) bool {
 	if action == SwapDebtToUSDCStep && !debtToUSDCConvertible(lane) {
 		return false
 	}
-	_, _, _, _, err := jupiterEdgeForRoute(action, lane)
-	return err == nil
+	if catalogJupiterRoute(lane) {
+		_, _, err := catalogEdge(action, lane)
+		return err == nil
+	}
+	return basicLane(lane) && basicSwapAction(action)
 }

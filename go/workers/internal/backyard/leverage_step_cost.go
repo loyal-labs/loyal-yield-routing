@@ -104,7 +104,7 @@ func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *
 	return func(borrowRaw uint64) (leverageStepCost, error) {
 		ctx, cancel := context.WithTimeout(ctx, leverageStepPriceTimeout)
 		defer cancel()
-		route, err := runtimeRoute(s.RouteLane)
+		route, err := m.route(s.RouteLane)
 		if err != nil || o.routeBatch == nil {
 			return leverageStepCost{}, costOutage("inputs", budgetHold("leverage_cost_unavailable"))
 		}

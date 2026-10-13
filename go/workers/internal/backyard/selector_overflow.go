@@ -59,8 +59,8 @@ const overflowLaneBlockedReason = "overflow_lane_entered_by_overflow_only"
 // admin-settled queue (hastraConversionLeg), which Backyard never uses, so
 // its leftovers stake to collateral instead.
 func debtToUSDCConvertible(lane string) bool {
-	route, err := runtimeRoute(lane)
-	return err != nil || !hastraLane(route)
+	l, ok := findEarnLane(lane)
+	return !ok || !hastraLane(l.route)
 }
 
 // overflowSourceLTVBPS is the LTV an overflow source releases to: the live
@@ -115,13 +115,13 @@ func overflowReleaseReceipts(s Snapshot, free int64) int64 {
 // valued lanes' (nobody but us borrows from the wYLDS reserve, so its raw
 // state is far past the health age). Only a source holding a position that
 // cannot borrow reads it.
-func applyOverflowRoom(s *Snapshot, accounts []ConfirmedAccount, route RuntimeRoute) error {
+func applyOverflowRoom(v *Vault, s *Snapshot, accounts []ConfirmedAccount, route RuntimeRoute) error {
 	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown, s.OverflowObligationPresent = 0, 0, false, false
 	lane, ok := overflowLaneOf(route.Lane)
 	if !ok || !s.HasPosition || !overflowSourceBorrowClosed(*s) {
 		return nil
 	}
-	overflow, err := runtimeRoute(lane)
+	overflow, err := v.route(lane)
 	if err != nil {
 		return err
 	}

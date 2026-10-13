@@ -43,28 +43,28 @@ func TestOverflowRoomIsJudgedOnTheRefreshedBatch(t *testing.T) {
 	closed := Snapshot{HasPosition: true, BorrowCapacityKnown: true, BorrowUtilizationBlocked: true}
 
 	s := Snapshot{BorrowCapacityKnown: true, AdditionalDebtRoomRaw: 1_000_000_000_000, OverflowRoomKnown: true}
-	if err := applyOverflowRoom(&s, fresh, autoAUTOPYUSD); err != nil || s.OverflowRoomKnown {
+	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOPYUSD); err != nil || s.OverflowRoomKnown {
 		t.Fatalf("source with room: %+v %v", s, err)
 	}
 	s = closed
-	if err := applyOverflowRoom(&s, fresh, autoAUTOPYUSD); err != nil || !s.OverflowRoomKnown || s.OverflowRoomRaw != wantRaw || s.OverflowRoomValueRaw != wantValue {
+	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOPYUSD); err != nil || !s.OverflowRoomKnown || s.OverflowRoomRaw != wantRaw || s.OverflowRoomValueRaw != wantValue {
 		t.Fatalf("room was not judged on the batch: %+v %v", s, err)
 	}
 	s = closed
 	s.OverflowRoomKnown, s.OverflowRoomRaw = true, 1
-	if err := applyOverflowRoom(&s, stale, autoAUTOPYUSD); !errors.Is(err, errKaminoReserveStale) || s.OverflowRoomKnown || s.OverflowRoomRaw != 0 {
+	if err := applyOverflowRoom(rwa, &s, stale, autoAUTOPYUSD); !errors.Is(err, errKaminoReserveStale) || s.OverflowRoomKnown || s.OverflowRoomRaw != 0 {
 		t.Fatalf("stale batch: %+v %v", s, err)
 	}
 	s = Snapshot{OverflowRoomKnown: true}
-	if err := applyOverflowRoom(&s, fresh, autoAUTOWYLDS); err != nil || s.OverflowRoomKnown {
+	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOWYLDS); err != nil || s.OverflowRoomKnown {
 		t.Fatalf("non-source lane: %+v %v", s, err)
 	}
 	// The batch refreshes the overflow lane with its source even while the
 	// overflow lane holds nothing.
-	if got := withOverflowRoutes([]RuntimeRoute{autoAUTOPYUSD}); len(got) != 2 || got[1].Lane != autoAUTOWYLDS.Lane {
+	if got := withOverflowRoutes(rwa, []RuntimeRoute{autoAUTOPYUSD}); len(got) != 2 || got[1].Lane != autoAUTOWYLDS.Lane {
 		t.Fatalf("overflow lane not refreshed with its source: %+v", got)
 	}
-	if got := withOverflowRoutes([]RuntimeRoute{autoAUTOPYUSD, autoAUTOWYLDS}); len(got) != 2 {
+	if got := withOverflowRoutes(rwa, []RuntimeRoute{autoAUTOPYUSD, autoAUTOWYLDS}); len(got) != 2 {
 		t.Fatalf("overflow lane refreshed twice: %+v", got)
 	}
 }
@@ -79,7 +79,7 @@ func TestUnheldOverflowRefreshRefusalNeverLatches(t *testing.T) {
 	valued := fixtureRefresh(77, accounts)
 	calls := 0
 	for i := 0; i < refreshSimulationLatchAfter+1; i++ {
-		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState,
 			read: fixtureBatchRuntime(77, accounts),
 			refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 				calls++

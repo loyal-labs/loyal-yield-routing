@@ -177,7 +177,7 @@ func ClassifyConfirmedReportFailure(rawErr json.RawMessage, logs []string) Confi
 	if rawErr == nil || len(rawErr) == 0 || string(rawErr) == "null" {
 		return ConfirmedFailureClassification{Reason: "confirmed_transaction_error"}
 	}
-	if code, ok := decodeInstructionErrorCustom(rawErr); ok && failingProgramFromLogs(logs) == bridgeAdaptorProgram {
+	if code, ok := decodeInstructionErrorCustom(rawErr); ok && failingProgramFromLogs(logs) == fsj27Program {
 		switch code {
 		case adaptorErrorReportSlot:
 			return ConfirmedFailureClassification{Retryable: true, Reason: adaptorReportSlotRefusedReason}

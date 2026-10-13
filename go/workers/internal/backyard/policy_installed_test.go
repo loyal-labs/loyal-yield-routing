@@ -62,7 +62,7 @@ var installedLiteralSHA256 = map[string]string{
 
 func TestPolicyLiteralsAreTheInstalledOnes(t *testing.T) {
 	t.Parallel()
-	literals, err := backyardPolicies()
+	literals, err := backyardPolicies(rwa)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestPolicyLiteralsAreTheInstalledOnes(t *testing.T) {
 func TestAutoRoutesAreTheirPolicysAccounts(t *testing.T) {
 	t.Parallel()
 	vault := kaminoKey(bridgeVault)
-	for _, route := range lanesWithPolicy(policyAuto) {
+	for _, route := range lanesWithPolicy(rwa, policyAuto) {
 		k := route.Kamino
 		obligation, err := kamino.ObligationAddress(1, 0, vault, kaminoKey(k.Market), kaminoKey(k.CollateralMint), kaminoKey(k.DebtMint))
 		if err != nil {

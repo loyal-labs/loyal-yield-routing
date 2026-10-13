@@ -20,7 +20,7 @@ import (
 // NAV report literal admits no capital movement.
 func TestLiteralsAreDistinctAndNAVMovesNoCapital(t *testing.T) {
 	t.Parallel()
-	literals, err := backyardPolicies()
+	literals, err := backyardPolicies(rwa)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestLiteralsAreDistinctAndNAVMovesNoCapital(t *testing.T) {
 		}
 	}
 	nav := literals[policyKey{action: ReportNAV}]
-	inner, _, err := ticketedBridgeInstructions(bridgeTestRequest(VoltrAllocateToSquads, 1_000_000))
+	inner, _, err := ticketedBridgeInstructions(rwa, bridgeTestRequest(VoltrAllocateToSquads, 1_000_000))
 	if err != nil || squads.Admits(nav.Constraints[bridgeArmLeg], inner[0].squads(), nil) || squads.Admits(nav.Constraints[bridgeCapitalLeg], inner[1].squads(), nil) {
 		t.Fatal("the NAV literal admits an allocation")
 	}
@@ -78,7 +78,7 @@ func installedAutoPolicyKey() string { return testPolicyAccount(policyKey{lane: 
 // that holds exactly the literals finds. The chain's own policies are the
 // live read's (observeInstalledPolicies), never a checked-in copy.
 var testInstalled = sync.OnceValues(func() ([]testPolicyAccountData, error) {
-	literals, err := backyardPolicies()
+	literals, err := backyardPolicies(rwa)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ var loadTestPolicies = sync.OnceValues(func() (installedPolicies, error) {
 	if err != nil {
 		return nil, err
 	}
-	return findInstalledPolicies(installed)
+	return findInstalledPolicies(rwa, installed)
 })
 
 func testPolicies(t testing.TB) installedPolicies {

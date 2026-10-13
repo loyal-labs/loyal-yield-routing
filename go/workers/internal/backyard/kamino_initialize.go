@@ -19,41 +19,12 @@ type KaminoInitializationRequest struct {
 	MaximumFeeLamports   uint64 `json:"maximumFeeLamports"`
 }
 
-func CompileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
-	if r.LastValidBlockHeight <= 0 || r.RentLamports == 0 || r.MaximumFeeLamports == 0 {
-		return nil, fmt.Errorf("incomplete Multiply initialization admission")
-	}
-	policy, err := decodeKey(r.Policy)
-	if err != nil {
-		return nil, err
-	}
-	blockhash, err := decodeKey(r.RecentBlockhash)
-	if err != nil {
-		return nil, err
-	}
-	inner, err := kaminoMultiplyInitializer(r.RouteLane)
-	if err != nil {
-		return nil, err
-	}
-	_, index := initializerPolicyLeg(r.RouteLane)
-	outer, err := wrapSquadsKaminoPolicy(policy, mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
-	if err != nil {
-		return nil, err
-	}
-	message, err := compileV1Message(mustKey(bridgeDelegate), blockhash, []compiledInstruction{outer}, executionBudget(r.RouteLane, 1))
-	if err != nil {
-		return nil, err
-	}
-	return checkedUnsignedMessage(message)
-}
-
-// compileKaminoInitializationMessage is the form that also admits the AUTO
-// lane, which initializes under its KLend policy's initializer leg. Installed
-// selector lanes keep the exact public path above. Any other lane holds.
+// compileKaminoInitializationMessage is the initializer of a lane whose
+// obligation Backyard creates (earnInitializerLane): the basic lanes'
+// split initializer policies and the AUTO lanes' KLend policy initializer
+// leg. Any other lane holds.
 func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
-	if basicLane(r.RouteLane) {
-		return CompileKaminoInitializationMessage(r)
-	}
+	v := m.vault
 	if !earnInitializerLane(r.RouteLane) {
 		return nil, budgetHold("initializer_lane_unreviewed")
 	}
@@ -68,7 +39,7 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	if err != nil {
 		return nil, err
 	}
-	route, err := runtimeRoute(r.RouteLane)
+	route, err := v.route(r.RouteLane)
 	if err != nil {
 		return nil, err
 	}
@@ -77,14 +48,12 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 		return nil, err
 	}
 	_, index := initializerPolicyLeg(r.RouteLane)
-	outer, err := wrapSquadsKaminoPolicy(policy, mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
+	outer, err := wrapSquadsKaminoPolicy(v, policy, mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
 	if err != nil {
 		return nil, err
 	}
 	// The eight-constraint installed policy needs the reviewed 64 KiB heap frame
-	// during execute as well as during create, so the AUTO initializer leg goes
-	// through the closed resource wrapper; the public compiler above keeps the
-	// exact installed selector-lane bytes.
+	// during execute as well as during create (executionBudget).
 	message, err := compileV1Message(mustKey(bridgeDelegate), blockhash, []compiledInstruction{outer}, executionBudget(r.RouteLane, 1))
 	if err != nil {
 		return nil, err
@@ -92,24 +61,13 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	return checkedUnsignedMessage(message)
 }
 
-func validateInitializedKaminoObligation(r KaminoInitializationRequest, a ConfirmedAccount) error {
-	route, err := runtimeRoute(r.RouteLane)
-	if err != nil || !basicLane(route.Lane) {
-		return fmt.Errorf("unreviewed initialized obligation")
-	}
-	return validateInitializedObligationOnRoute(route, r, a)
-}
-
-// validateInitializedKaminoObligation is the form that also admits the AUTO
-// lane; the empty-state checks below are the exact installed checks.
+// validateInitializedKaminoObligation checks a created obligation is the
+// admitted empty Multiply account.
 func (m RouteManifest) validateInitializedKaminoObligation(r KaminoInitializationRequest, a ConfirmedAccount) error {
-	if basicLane(r.RouteLane) {
-		return validateInitializedKaminoObligation(r, a)
-	}
 	if !earnInitializerLane(r.RouteLane) {
 		return budgetHold("initializer_lane_unreviewed")
 	}
-	route, err := runtimeRoute(r.RouteLane)
+	route, err := m.route(r.RouteLane)
 	if err != nil {
 		return err
 	}
@@ -129,27 +87,12 @@ func validateInitializedObligationOnRoute(route RuntimeRoute, r KaminoInitializa
 	return nil
 }
 
-// Construct only the three reviewed Multiply PDAs. Policy installation, rent
-// admission and journal execution are separate; this function grants no authority.
-func kaminoMultiplyInitializer(lane string) (compiledInstruction, error) {
-	route, err := runtimeRoute(lane)
-	if err != nil || !basicLane(route.Lane) || route.Kamino.DebtMint != bridgeUSDC {
-		return compiledInstruction{}, fmt.Errorf("unreviewed Multiply initializer lane")
-	}
-	return kaminoRouteInitializer(route)
-}
-
-// kaminoRouteInitializer is the lane-independent checked core: the identical
-// nine-account topology with the route's own debt mint, and the obligation PDA
-// re-derived from the route identities and compared to the reviewed route
-// obligation, so a candidate lane can never drift to a synthetic authority.
+// kaminoRouteInitializer is the lane-independent core: the identical
+// nine-account topology with the route's own debt mint and its obligation, a
+// PDA of the vault and the route identities (earnLane.routeFor).
 func kaminoRouteInitializer(route RuntimeRoute) (compiledInstruction, error) {
-	owner, market := kaminoKey(bridgeVault), kaminoKey(route.Kamino.Market)
+	owner, market, obligation := kaminoKey(route.Kamino.Vault), kaminoKey(route.Kamino.Market), kaminoKey(route.Kamino.Obligation)
 	collateral, debt := kaminoKey(route.Kamino.CollateralMint), kaminoKey(route.Kamino.DebtMint)
-	obligation, err := kamino.ObligationAddress(1, 0, owner, market, collateral, debt)
-	if err != nil || obligation.String() != route.Kamino.Obligation {
-		return compiledInstruction{}, fmt.Errorf("Multiply obligation PDA drifted")
-	}
 	metadata, err := kamino.UserMetadataAddress(owner)
 	if err != nil {
 		return compiledInstruction{}, err

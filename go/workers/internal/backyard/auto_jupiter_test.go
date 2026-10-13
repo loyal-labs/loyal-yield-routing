@@ -28,7 +28,7 @@ func autoJupiterTestInstruction(t *testing.T, action Action, amount, out uint64,
 // autoSwapKey is the policy the AUTO lane swaps action through.
 func autoSwapKey(t *testing.T, action Action) policyKey {
 	t.Helper()
-	key, _, err := jupiterPolicyLeg(autoAUTOPYUSD.Lane, action)
+	key, _, err := jupiterPolicyLeg(rwa, autoAUTOPYUSD.Lane, action)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 	if destination.Address != route.CollateralCustody || destination.AfterRaw != 985_050 {
 		t.Fatalf("destination effect drifted: %+v", destination)
 	}
-	if _, err := compileJupiterMessageForDelegate(request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileJupiterMessageForDelegate(rwa, request, mustKey(bridgeDelegate)); err != nil {
 		t.Fatalf("quote-path request did not compile through the installed policy: %v", err)
 	}
 	// The same decision without its swap policy installed holds by name.

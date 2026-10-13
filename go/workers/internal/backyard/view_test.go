@@ -166,7 +166,7 @@ func seedChain(t *testing.T, slot int64, accounts []ConfirmedAccount, receipts .
 func viewRouteBatch(t *testing.T, mutate func([]ConfirmedAccount)) []ConfirmedAccount {
 	t.Helper()
 	accounts := productionRouteBatchAccounts(t, 77, mutate)
-	for _, address := range routeFixedAddresses() {
+	for _, address := range routeFixedAddresses(rwa) {
 		if accountAt(accounts, address).Address == "" && address != bridgeStrategyReceipt {
 			accounts = append(accounts, ConfirmedAccount{Address: address, Owner: squads.ProgramID.String(), Lamports: 1, Data: bytes.Repeat([]byte{7}, 96)})
 		}
@@ -340,11 +340,11 @@ func TestViewStreamPlansAtS(t *testing.T) {
 	})
 	request, _ := connector.last()
 	if request.GetFromSlot() != 78 || !slices.Contains(request.Accounts[viewAccountsFilter].Account, bridgeSquadsATA) ||
-		request.Accounts[viewReceiptsFilter].Owner[0] != voltr.ProgramID.String() || request.GetCommitment() != pb.CommitmentLevel_CONFIRMED {
+		request.Accounts[viewReceiptsFilter(rwa)].Owner[0] != voltr.ProgramID.String() || request.GetCommitment() != pb.CommitmentLevel_CONFIRMED {
 		t.Fatalf("subscription does not start after the start-up read: %v", request)
 	}
 	manifest := readyWorkerManifest(t)
-	if _, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, 0, targetInputs{}); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, testVaultState, 0, targetInputs{}); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("a view without confirmed slots planned: %v", err)
 	}
 	squadsUSDC := accountAt(viewRouteBatch(t, nil), bridgeSquadsATA)
@@ -357,7 +357,7 @@ func TestViewStreamPlansAtS(t *testing.T) {
 		accountFrame(usdcAmount(squadsUSDC, 111), 79, 9, viewAccountsFilter),
 		accountFrame(usdcAmount(squadsUSDC, 222), 80, 4, viewAccountsFilter),
 		slotFrame(80), slotFrame(81))
-	observation, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, 0, targetInputs{})
+	observation, _, err := ObserveConfirmedRouteSnapshot(context.Background(), client, view, manifest, testVaultState, 0, targetInputs{})
 	if err != nil || observation.Snapshot.Slot != 80 || observation.Snapshot.SquadsIdleRaw != 900 {
 		t.Fatalf("observed slot %d squads USDC %d, want 80 and 900: %v", observation.Snapshot.Slot, observation.Snapshot.SquadsIdleRaw, err)
 	}
@@ -375,7 +375,7 @@ func TestViewStreamPlansAtS(t *testing.T) {
 	view.now = func() time.Time { return time.Unix(kaminoFixtureUnix+60, 0) }
 	state := productionObserveState{routeKey: productionRouteKey, manifest: manifest, journal: &stubProductionJournal{journal: reconciledJournal()}, identity: pinnedIdentityObservation,
 		batch: func(ctx context.Context) (Observation, error) {
-			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, client, view, manifest, 0, targetInputs{})
+			observation, _, err := ObserveConfirmedRouteSnapshot(ctx, client, view, manifest, testVaultState, 0, targetInputs{})
 			return observation, err
 		}}
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
@@ -424,7 +424,7 @@ func TestViewReceiptDiscoveredThenClosed(t *testing.T) {
 	view, _, connector := streamView(t)
 	address, data := receiptFixture(t, bridgeVoltrVault, testPublicKey(44), 7, 5<<48)
 	receipt := ConfirmedAccount{Address: address, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}
-	connector.send(t, view, true, slotFrame(80), slotFrame(81), accountFrame(receipt, 82, 1, viewReceiptsFilter), slotFrame(82), slotFrame(83))
+	connector.send(t, view, true, slotFrame(80), slotFrame(81), accountFrame(receipt, 82, 1, viewReceiptsFilter(rwa)), slotFrame(82), slotFrame(83))
 	done := make(chan Observation, 1)
 	go func() {
 		observation, err := bridgeCustodyRead(context.Background(), view)
@@ -457,7 +457,7 @@ func TestViewReceiptDiscoveredThenClosed(t *testing.T) {
 // bridgeCustodyRead is the three USDC custodies and the withdrawal receipts
 // at one view slot.
 func bridgeCustodyRead(ctx context.Context, view *View) (Observation, error) {
-	slot, accounts, receipts, err := view.readWithReceipts(ctx, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, 0)
+	slot, accounts, receipts, err := view.readWithReceipts(ctx, rwa, []string{bridgeIdleATA, bridgeStrategyATA, bridgeSquadsATA}, 0)
 	if err != nil {
 		return Observation{}, err
 	}
@@ -469,7 +469,7 @@ func bridgeCustodyRead(ctx context.Context, view *View) (Observation, error) {
 	if err != nil {
 		return Observation{}, err
 	}
-	demand, _, err := decodeConfirmedWithdrawalDemand(receipts)
+	demand, _, err := decodeConfirmedWithdrawalDemand(rwa, receipts)
 	if err != nil {
 		return Observation{}, err
 	}

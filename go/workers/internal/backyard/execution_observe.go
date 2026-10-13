@@ -21,17 +21,17 @@ var adaptorConfigDiscriminator = []byte{46, 154, 12, 115, 203, 165, 199, 235}
 
 type observedAdaptorConfig struct{}
 
-func decodeObservedAdaptorConfig(account ConfirmedAccount) (observedAdaptorConfig, error) {
-	if account.Address != bridgeStrategy || account.Owner != bridgeAdaptorProgram || account.Executable ||
+func decodeObservedAdaptorConfig(v *Vault, account ConfirmedAccount) (observedAdaptorConfig, error) {
+	if account.Address != v.Strategy || account.Owner != v.Adaptor || account.Executable ||
 		account.Lamports == 0 || len(account.Data) != adaptorConfigLength ||
 		!bytes.Equal(account.Data[:8], adaptorConfigDiscriminator) || account.Data[8] != 2 ||
 		account.Data[9] != 0 || !allZero(account.Data[10:16]) {
 		return observedAdaptorConfig{}, fmt.Errorf("adaptor config envelope or version drifted")
 	}
 	bindings := []string{
-		voltr.ProgramID.String(), bridgeVoltrVault, bridgeStrategy, bridgeStrategyAuth,
-		squads.ProgramID.String(), bridgeSettings, bridgeSettingsSigner, bridgeVault,
-		bridgeUSDC, bridgeTokenProgram, bridgeSquadsATA, "",
+		voltr.ProgramID.String(), v.VoltrVault, v.Strategy, v.strategyAuth,
+		squads.ProgramID.String(), bridgeSettings, bridgeSettingsSigner, v.squads,
+		bridgeUSDC, bridgeTokenProgram, v.cash, "",
 	}
 	for index, binding := range bindings {
 		field := account.Data[16+index*32 : 48+index*32]
@@ -69,7 +69,7 @@ func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation exceeded slot freshness"))
 	}
 	// The policies this build executes through: one read, at its slot.
-	if observation.policies, err = observeInstalledPolicies(ctx, rpc, batch.Slot); err != nil {
+	if observation.policies, err = observeInstalledPolicies(ctx, rpc, manifest.vault, batch.Slot); err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
 	return prepareBridgeFromObservedAccounts(ctx, rpc, manifest, decision, observation, batch.Accounts)
@@ -80,7 +80,8 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	route, err := runtimeRoute(decision.StrategyKey)
+	v := manifest.vault
+	route, err := v.route(decision.StrategyKey)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -93,7 +94,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	}
 	var ticket observedReportTicket
 	if ticketRequired {
-		ticket, err = decodeObservedReportTicket(accountAt(accounts, reportTicketPDA))
+		ticket, err = decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
 		if err != nil {
 			return Observation{}, BridgeExecutionEvidence{}, err
 		}
@@ -101,7 +102,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 			return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket is already armed")
 		}
 	}
-	custodies, err := decodeRouteNAVCustodiesForRoute(accounts, route)
+	custodies, err := decodeRouteNAVCustodiesForRoute(v, accounts, route)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -110,7 +111,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		uint64(observation.Snapshot.SquadsIdleRaw) != custodies.SquadsUSDCraw {
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge custody changed inside confirmed construction snapshot")
 	}
-	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(decision, custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw)
+	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(v, decision, custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -125,15 +126,15 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	}
 	// The report values the whole book: every other lane the observation
 	// valued beside the working lane's poststate.
-	valued, err := navLanes(accounts, observation.Snapshot.heldLanes())
+	valued, err := navLanes(v, accounts, observation.Snapshot.heldLanes())
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	routes, err := navRoutes(route, valued)
+	routes, err := navRoutes(v, route, valued)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	navAccounts, err := selectRouteNAVAccountsForRoutes(accounts, routes)
+	navAccounts, err := selectRouteNAVAccountsForRoutes(v, accounts, routes)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -146,7 +147,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	}
 	effects.Kind = "bridge"
 	if decision.Action != StageSquadsToVoltr {
-		effects.ReturnData = expectedAdaptorReturnData(nav.Report.NAVAfterRaw)
+		effects.ReturnData = expectedAdaptorReturnData(v, nav.Report.NAVAfterRaw)
 	}
 	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
@@ -156,20 +157,20 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		Request: BridgeBuildRequest{
 			Action: decision.Action, AmountRaw: uint64(decision.AmountRaw),
 			Report: nav.Report, Policy: policy,
-			AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
+			AdaptorConfig: v.Strategy, Settings: bridgeSettings,
 			RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
 		},
 		ExpectedEffects: effects,
 	}, nil
 }
 
-func expectedAdaptorReturnData(navAfterRaw uint64) *ExpectedReturnData {
+func expectedAdaptorReturnData(v *Vault, navAfterRaw uint64) *ExpectedReturnData {
 	data := make([]byte, 8)
 	binary.LittleEndian.PutUint64(data, navAfterRaw)
-	return &ExpectedReturnData{ProgramID: bridgeAdaptorProgram, DataBase64: base64.StdEncoding.EncodeToString(data)}
+	return &ExpectedReturnData{ProgramID: v.Adaptor, DataBase64: base64.StdEncoding.EncodeToString(data)}
 }
 
-func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (ExpectedEffects, uint64, uint64, error) {
+func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads uint64) (ExpectedEffects, uint64, uint64, error) {
 	if decision.AmountRaw < 0 {
 		return ExpectedEffects{}, 0, 0, fmt.Errorf("negative bridge amount")
 	}
@@ -203,9 +204,9 @@ func bridgeExpectedEffects(decision Decision, idle, strategy, squads uint64) (Ex
 		return ExpectedEffects{}, 0, 0, fmt.Errorf("unsupported bridge action")
 	}
 	accounts := []ExpectedAccountEffect{
-		{Address: bridgeIdleATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: bridgeIdleAuthority, BeforeRaw: idle, AfterRaw: idleAfter},
-		{Address: bridgeStrategyATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: bridgeStrategyAuth, BeforeRaw: strategy, AfterRaw: strategyAfter},
-		{Address: bridgeSquadsATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: bridgeVault, BeforeRaw: squads, AfterRaw: squadsAfter},
+		{Address: v.idleATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.idleAuth, BeforeRaw: idle, AfterRaw: idleAfter},
+		{Address: v.strategyATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.strategyAuth, BeforeRaw: strategy, AfterRaw: strategyAfter},
+		{Address: v.cash, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.squads, BeforeRaw: squads, AfterRaw: squadsAfter},
 	}
 	// Staging is a direct Squads-authorized SPL transfer. It does not invoke the
 	// adaptor and its receipt therefore contains only the strategy and Squads
@@ -224,10 +225,10 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	}
 	prepareStart, accounts := time.Now(), observation.routeBatch.Accounts
 	var err error
-	if observation.policies, err = observeInstalledPolicies(ctx, rpc, observation.Snapshot.Slot); err != nil {
+	if observation.policies, err = observeInstalledPolicies(ctx, rpc, manifest.vault, observation.Snapshot.Slot); err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}
-	route, err := runtimeRoute(decision.StrategyKey)
+	route, err := manifest.route(decision.StrategyKey)
 	if err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}

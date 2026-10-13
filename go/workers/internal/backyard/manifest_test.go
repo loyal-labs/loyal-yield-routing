@@ -10,9 +10,10 @@ func TestManifestIdentityIsTheRegistrysFacts(t *testing.T) {
 	if err != nil || !sha256Pattern.MatchString(manifest.SHA256) || manifest.RuntimeActivation.SelectedLane != SelectedRouteID {
 		t.Fatalf("%+v %v", manifest, err)
 	}
-	lanes := append([]earnLane(nil), earnLanes...)
-	lanes[0].route.Kamino.Obligation = bridgeVault
-	if changed, _ := manifestOf(lanes); changed.SHA256 == manifest.SHA256 {
+	changed := *rwa
+	changed.routes = append([]RuntimeRoute(nil), rwa.routes...)
+	changed.routes[0].Kamino.Obligation = bridgeVault
+	if changed, _ := manifestOf(&changed); changed.SHA256 == manifest.SHA256 {
 		t.Fatal("a changed lane fact kept the manifest identity")
 	}
 }

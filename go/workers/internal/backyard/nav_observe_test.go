@@ -392,19 +392,19 @@ func TestComputeRouteNAVRejectsOverflowNegativeNAVAndReceiptDrift(t *testing.T) 
 func TestStrategyTwoReceiptVersionAndTrackedCustody(t *testing.T) {
 	t.Parallel()
 	a := strategyReceiptWithCustodyFixture(t, 500, 100)
-	r, err := decodeStrategyReceipt(a)
+	r, err := decodeStrategyReceipt(rwa, a)
 	if err != nil || r.PositionValueRaw != 500 || r.CustodyTrackedRaw != 100 {
 		t.Fatalf("version2 custody: %+v %v", r, err)
 	}
 	for _, version := range []byte{0, 1, 3, 255} {
 		a.Data[120] = version
-		if _, err := decodeStrategyReceipt(a); err == nil {
+		if _, err := decodeStrategyReceipt(rwa, a); err == nil {
 			t.Fatalf("unreviewed receipt version %d", version)
 		}
 	}
 	a.Data[120] = 2
 	a.Data[136] = 1
-	if _, err := decodeStrategyReceipt(a); err == nil {
+	if _, err := decodeStrategyReceipt(rwa, a); err == nil {
 		t.Fatal("unknown reserved field accepted")
 	}
 }

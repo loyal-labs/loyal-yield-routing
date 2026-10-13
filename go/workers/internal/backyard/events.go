@@ -17,22 +17,24 @@ import (
 
 // Backyard writes its operational events as structured slog JSON on stdout,
 // which journald ships to ClickStack, and its health as engine facts on
-// /metrics. Alert thresholds (LTV, waiting withdrawals, repeated failures)
-// are rules over these fields in Alertmanager/ClickStack, not decisions here.
+// /metrics, each labelled with its vault. Alert thresholds (LTV, waiting
+// withdrawals, repeated failures) are rules over these fields in
+// Alertmanager/ClickStack, not decisions here.
 //
-// backyardEvents is set once by Engine.Run before any goroutine starts; every
-// method is nil-safe, so tests and one-shot commands emit nothing.
-var backyardEvents *events
+// A vault's events are its worker's (vaultState); every method is nil-safe,
+// so tests and one-shot commands emit nothing.
 
 const heartbeatInterval = time.Minute
 
 type events struct {
 	log   *slog.Logger
 	facts *engine.Facts
+	vault string
 	now   func() time.Time
 
 	mu            sync.Mutex
 	action        Action
+	inflightOpen  bool
 	manual        bool
 	latchReason   string
 	cause         string
@@ -49,11 +51,11 @@ type events struct {
 	heldLanes    map[string]bool
 }
 
-func newEvents(log *slog.Logger, facts *engine.Facts) *events {
+func newEvents(log *slog.Logger, facts *engine.Facts, vault string) *events {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &events{log: log.With("family", string(engine.FamilyBackyard)), facts: facts, now: time.Now}
+	return &events{log: log.With("family", string(engine.FamilyBackyard), "vault", vault), facts: facts, vault: vault, now: time.Now}
 }
 
 func (e *events) withdrawalHealthStored(h WithdrawalHealth) {
@@ -119,16 +121,22 @@ func (e *events) noteLatch(latched bool, reason string) {
 	}
 }
 
-// inflight reports the route's one nonterminal operation, if any.
+// inflight reports the route's one nonterminal operation, if any: the
+// family's gauge is the sum over its vaults.
 func (e *events) inflight(open bool) {
 	if e == nil || e.facts == nil {
 		return
 	}
-	n := 0
-	if open {
-		n = 1
+	e.mu.Lock()
+	changed := open != e.inflightOpen
+	e.inflightOpen = open
+	e.mu.Unlock()
+	switch {
+	case changed && open:
+		e.facts.InflightAdd(engine.FamilyBackyard, 1)
+	case changed:
+		e.facts.InflightAdd(engine.FamilyBackyard, -1)
 	}
-	e.facts.Inflight(engine.FamilyBackyard, n)
 }
 
 func (e *events) noteAction(action Action) {
@@ -180,6 +188,7 @@ func (e *events) tickResult(err error, fatal bool) {
 	// progressing, so the stale-progress alert pages until clear-hold.
 	if err == nil && !manual && e.facts != nil {
 		e.facts.Progress(engine.FamilyBackyard)
+		e.facts.LaneSucceeded(engine.FamilyBackyard, e.vault)
 	}
 	if heartbeat {
 		e.log.Info("backyard_heartbeat", "lane", s.RouteLane, "ltv_bps", s.LTVBPS, "nav_raw", s.StrategyNAVRaw, "manual", manual,
@@ -270,26 +279,26 @@ type eventOperationFacts struct {
 	broadcast            bool
 }
 
-func (d *Database) eventOperation(ctx context.Context, operationID string) (eventOperationFacts, bool) {
+func (d *Database) eventOperation(ctx context.Context, operationID string) (eventOperationFacts, *events, bool) {
 	var f eventOperationFacts
-	if backyardEvents == nil || d == nil || d.pool == nil {
-		return f, false
+	if d == nil || d.pool == nil || len(d.events) == 0 {
+		return f, nil, false
 	}
-	var name string
-	err := d.pool.QueryRow(ctx, `SELECT action, COALESCE(transaction_signature,''), broadcast_intent_at IS NOT NULL,
+	var name, routeKey string
+	err := d.pool.QueryRow(ctx, `SELECT route_key, action, COALESCE(transaction_signature,''), broadcast_intent_at IS NOT NULL,
 		COALESCE(CASE WHEN expected_effects->'decision'->>'amountRaw' ~ '^[0-9]+$' THEN (expected_effects->'decision'->>'amountRaw')::bigint END, 0),
 		COALESCE(expected_effects->'expectedEffects'->'returnData'->>'dataBase64',''),
 		COALESCE(expected_effects->'decision'->>'reason',''), COALESCE(strategy_key,'')
-		FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&name, &f.signature, &f.broadcast, &f.amountRaw, &f.navBase64, &f.reason, &f.lane)
+		FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operationID).Scan(&routeKey, &name, &f.signature, &f.broadcast, &f.amountRaw, &f.navBase64, &f.reason, &f.lane)
 	f.action = Action(name)
-	return f, err == nil
+	return f, d.events[routeKey], err == nil
 }
 
 // eventFailedAfterSend reports an operation that ended failed or in manual
 // recovery, only if it was broadcast; pre-send refusals are not reported.
 func (d *Database) eventFailedAfterSend(ctx context.Context, operationID, reason string) {
-	if f, ok := d.eventOperation(ctx, operationID); ok && f.broadcast {
-		backyardEvents.operationFailedAfterSend(f.action, reason, f.signature)
+	if f, e, ok := d.eventOperation(ctx, operationID); ok && f.broadcast {
+		e.operationFailedAfterSend(f.action, reason, f.signature)
 	}
 }
 
@@ -297,13 +306,13 @@ func (d *Database) eventFailedAfterSend(ctx context.Context, operationID, reason
 // its adaptor return data armed; a landed leverage_up borrow also reports
 // its lane, size and reaction time.
 func (d *Database) eventReconciled(ctx context.Context, operationID string) {
-	f, ok := d.eventOperation(ctx, operationID)
+	f, e, ok := d.eventOperation(ctx, operationID)
 	if !ok {
 		return
 	}
 	action, amountRaw, signature, navBase64 := f.action, f.amountRaw, f.signature, f.navBase64
 	if f.action == OpenRouteStep && f.reason == leverageUpReason {
-		backyardEvents.leverageUpLanded(f.lane, f.amountRaw, f.signature)
+		e.leverageUpLanded(f.lane, f.amountRaw, f.signature)
 	}
 	raw, err := base64.StdEncoding.DecodeString(navBase64)
 	navKnown := err == nil && len(raw) == 8 && int64(binary.LittleEndian.Uint64(raw)) >= 0
@@ -311,7 +320,7 @@ func (d *Database) eventReconciled(ctx context.Context, operationID string) {
 	if navKnown {
 		nav = int64(binary.LittleEndian.Uint64(raw))
 	}
-	backyardEvents.operationReconciled(action, amountRaw, signature, nav, navKnown)
+	e.operationReconciled(action, amountRaw, signature, nav, navKnown)
 }
 
 var (
@@ -381,7 +390,7 @@ func (e *events) roomObserved(u roomUpdate) {
 		return
 	}
 	if u.watch.debt && e.facts != nil && !math.IsNaN(u.roomUSD) {
-		e.facts.BackyardLeverageRoom(u.watch.lane, u.roomUSD)
+		e.facts.BackyardLeverageRoom(e.vault, u.watch.lane, u.roomUSD)
 	}
 	if !u.watch.debt {
 		return
@@ -411,8 +420,8 @@ func (e *events) leverageObserved(lanes []laneLeverage) {
 	held := map[string]bool{}
 	for _, l := range lanes {
 		held[l.lane] = true
-		e.facts.BackyardLeverageGap(l.lane, l.gap, l.targeted)
-		e.facts.BackyardTermDebtDays(l.lane, l.termDays, l.termOwed)
+		e.facts.BackyardLeverageGap(e.vault, l.lane, l.gap, l.targeted)
+		e.facts.BackyardTermDebtDays(e.vault, l.lane, l.termDays, l.termOwed)
 	}
 	e.mu.Lock()
 	previous := e.heldLanes
@@ -420,7 +429,7 @@ func (e *events) leverageObserved(lanes []laneLeverage) {
 	e.mu.Unlock()
 	for lane := range previous {
 		if !held[lane] {
-			e.facts.BackyardLeverageLaneGone(lane)
+			e.facts.BackyardLeverageLaneGone(e.vault, lane)
 		}
 	}
 }
@@ -444,7 +453,7 @@ func (e *events) leverageUpLanded(lane string, borrowedRaw int64, signature stri
 		e.log.Info("backyard_leverage_up_landed", "lane", lane, "borrowed_raw", borrowedRaw, "room_raw", room, "reaction_seconds", "unknown", "signature", signature)
 	}
 	if e.facts != nil {
-		e.facts.BackyardLeverageUpLanded(lane, reaction, known)
+		e.facts.BackyardLeverageUpLanded(e.vault, lane, reaction, known)
 	}
 }
 
@@ -453,7 +462,7 @@ func (e *events) hold(lane, reason string) {
 	if e == nil || e.facts == nil {
 		return
 	}
-	e.facts.BackyardHold(lane, reason)
+	e.facts.BackyardHold(e.vault, lane, reason)
 }
 
 // stepNoRoom counts a step that holds for lack of chain room, by lane and
@@ -462,7 +471,7 @@ func (e *events) stepNoRoom(lane, rule string) {
 	if e == nil || e.facts == nil {
 		return
 	}
-	e.facts.BackyardStepNoRoom(lane, rule)
+	e.facts.BackyardStepNoRoom(e.vault, lane, rule)
 }
 
 // leverageDecisionOutage counts a leverage sample that could not be decided,
@@ -471,5 +480,5 @@ func (e *events) leverageDecisionOutage(reason string) {
 	if e == nil || e.facts == nil {
 		return
 	}
-	e.facts.BackyardLeverageOutage(reason)
+	e.facts.BackyardLeverageOutage(e.vault, reason)
 }

@@ -48,7 +48,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifes
 	}
 	// MaximumFeeLamports is not part of the wire; one is a compile-only
 	// placeholder, replaced by the RPC fee for these exact message bytes.
-	if o.policies, err = observeInstalledPolicies(ctx, rpc, o.Snapshot.Slot); err != nil {
+	if o.policies, err = observeInstalledPolicies(ctx, rpc, manifest.vault, o.Snapshot.Slot); err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
 	r, err := manifest.initializationRequest(o.policies, decision.StrategyKey, blockhash, rent, 1)

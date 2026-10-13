@@ -64,7 +64,7 @@ func observeLive(t *testing.T, c liveCapture, in targetInputs) Observation {
 		t.Fatal(err)
 	}
 	reads := 0
-	runtime := routeObservationRuntime{
+	runtime := routeObservationRuntime{state: testVaultState,
 		inputs: in,
 		read: func(_ context.Context, _ []string, _ int64) (int64, []ConfirmedAccount, []programAccount, error) {
 			if reads >= len(c.Reads) {
@@ -184,7 +184,7 @@ func TestSharedCustodyIsTheEntryLanes(t *testing.T) {
 	in.Entry = &SelectorResult{Action: "ENTER", DestinationLane: route.Lane}
 	// The observer's preferred lane for the batch.
 	preferred := flatViewLane(manifest.RuntimeActivation.SelectedLane, in)
-	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), preferred)
+	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), preferred)
 	if err != nil || !slices.Contains(held, route.Lane) || slices.Contains(held, PhaseOneLaneID) {
 		t.Fatalf("shared PRIME custody held by %v (%v)", held, err)
 	}
@@ -262,7 +262,7 @@ func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
 				t.Fatalf("%s reads PYUSD custody %d", view.RouteLane, view.DebtIdleRaw)
 			}
 		}
-		st, err := readStepState(o.routeBatch.Accounts, autoAUTOPYUSD, s.Slot)
+		st, err := readStepState(rwa, o.routeBatch.Accounts, autoAUTOPYUSD, s.Slot)
 		if err != nil || st.heldDebt != residue || st.debtBalance != residue {
 			t.Fatalf("AUTO/AUTO/PYUSD's step does not take the whole account: held %d (%v)", st.heldDebt, err)
 		}

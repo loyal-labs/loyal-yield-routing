@@ -107,7 +107,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if leg != test.leg || inner.program != publicKey(kamino.ProgramID) || len(inner.accounts) != test.count {
 				t.Fatal("did not build the pinned Kamino PRIME/USDC leg")
 			}
-			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(leg, PhaseOneLaneID)
+			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(rwa, leg, PhaseOneLaneID)
 			if len(refresh) != 3 || !bytes.Equal(refresh[0].data, kamino.RefreshReserveDiscriminator[:]) ||
 				!bytes.Equal(refresh[1].data, kamino.RefreshReserveDiscriminator[:]) || !bytes.Equal(refresh[2].data, kamino.RefreshObligationDiscriminator[:]) {
 				t.Fatal("canonical KLend refresh prefix drifted")
@@ -116,7 +116,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			unsigned, err := compileKaminoMessageForDelegate(request, delegate)
+			unsigned, err := compileKaminoMessageForDelegate(rwa, request, delegate)
 			if err != nil || !bytes.Equal(unsigned, signed.message) {
 				t.Fatalf("unsigned Kamino fee message differs: %v", err)
 			}
@@ -150,7 +150,7 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 		t.Fatal(err)
 	}
 	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	refresh := kaminoPrimeUSDCRefreshInstructionsForRequest(kaminoLegDeposit, request)
+	refresh := kaminoPrimeUSDCRefreshInstructionsForRequest(rwa, kaminoLegDeposit, request)
 	if len(refresh) != 3 || len(refresh[2].accounts) != 4 ||
 		encodeBase58(refresh[2].accounts[2].key[:]) != route.Kamino.CollateralReserve ||
 		encodeBase58(refresh[2].accounts[3].key[:]) != route.Kamino.DebtReserve {
@@ -170,7 +170,7 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 		t.Fatalf("confirmed-topology re-deposit wire was rejected: %v", err)
 	}
 	request.ObligationReserves = []string{route.Kamino.DebtReserve}
-	if got := kaminoPrimeUSDCRefreshInstructionsForRequest(kaminoLegDeposit, request); got != nil {
+	if got := kaminoPrimeUSDCRefreshInstructionsForRequest(rwa, kaminoLegDeposit, request); got != nil {
 		t.Fatal("non-canonical obligation reserve order was accepted")
 	}
 }

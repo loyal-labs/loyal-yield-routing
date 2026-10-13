@@ -40,11 +40,11 @@ func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool
 		return 0, false
 	}
 	if debt > 0 {
-		route, err := runtimeRoute(m.Lane)
-		if err != nil {
+		l, ok := findEarnLane(m.Lane)
+		if !ok {
 			return 0, false
 		}
-		if route.Kamino.DebtMint != bridgeUSDC {
+		if l.route.Kamino.DebtMint != bridgeUSDC {
 			if !finite(m.DebtRawPerUSDCRaw) || m.DebtRawPerUSDCRaw <= 0 {
 				return 0, false
 			}

@@ -36,19 +36,19 @@ func exactReportTicketAccount(t *testing.T, lastConsumed uint64) ConfirmedAccoun
 func TestReportTicketObservationRejectsArmedAndLayoutDrift(t *testing.T) {
 	t.Parallel()
 	account := exactReportTicketAccount(t, 100)
-	ticket, err := decodeObservedReportTicket(account)
+	ticket, err := decodeObservedReportTicket(rwa, account)
 	if err != nil || ticket.Armed || ticket.LastConsumedSequence != 100 {
 		t.Fatalf("ticket=%+v err=%v", ticket, err)
 	}
 	account.Data[10] = 1
 	binary.LittleEndian.PutUint64(account.Data[56:64], 101)
 	account.Data[64] = 1
-	ticket, err = decodeObservedReportTicket(account)
+	ticket, err = decodeObservedReportTicket(rwa, account)
 	if err != nil || !ticket.Armed {
 		t.Fatalf("coherent armed ticket was not decoded: ticket=%+v err=%v", ticket, err)
 	}
 	account.Data[11] = 1
-	if _, err := decodeObservedReportTicket(account); err == nil {
+	if _, err := decodeObservedReportTicket(rwa, account); err == nil {
 		t.Fatal("ticket with nonzero reserved byte was accepted")
 	}
 }
@@ -66,7 +66,7 @@ func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(string(test.action), func(t *testing.T) {
-			instructions, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(test.action, test.amount))
+			instructions, constraints, err := ticketedBridgeInstructions(rwa, bridgeTestRequest(test.action, test.amount))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,7 +110,7 @@ func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
 
 func TestStageRemainsSingleInstructionWithoutTicket(t *testing.T) {
 	t.Parallel()
-	instructions, constraints, err := ticketedBridgeInstructions(bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
+	instructions, constraints, err := ticketedBridgeInstructions(rwa, bridgeTestRequest(StageSquadsToVoltr, 1_000_000))
 	if err != nil {
 		t.Fatal(err)
 	}
