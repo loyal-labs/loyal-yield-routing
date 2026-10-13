@@ -413,9 +413,17 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	final := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey}, ExpectedOpportunityKey: finalLease.IdempotencyKey, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000, SourceAvailableLiquidityRaw: &ampleRaw, TargetDepositRoomRaw: &ampleRaw}
 	admission := make(chan error, 1)
 	go func() { admission <- store.commitRevalidation(ctx, *finalLease, final, nil) }()
-	for waiting := 0; waiting == 0; {
-		if err = store.pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted`).Scan(&waiting); err != nil {
+	lockKey := "loyal-yield-fleet-reserve:" + cluster + ":" + target.Address
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var waiting bool
+		if err = store.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND ((classid::bigint<<32)|objid::bigint)=hashtextextended($1,0))`, lockKey).Scan(&waiting); err != nil {
 			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the admission never waited on the target's lock")
 		}
 	}
 	if err = rival.Commit(ctx); err != nil {
