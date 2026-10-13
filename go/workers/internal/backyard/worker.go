@@ -101,6 +101,11 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 // this callback prevents a refresh from receiving a raw NAV snapshot while
 // the outer tick sees a verified program image.
 func (p productionObserveState) enrich(ctx context.Context, observation *Observation) error {
+	// A Trustful vault's receipt is its report: no journal or program
+	// identity arms its decisions.
+	if observation != nil && observation.Snapshot.Trustful {
+		return nil
+	}
 	var journalErr, identityErr error
 	var identity programIdentityObservation
 	var reads sync.WaitGroup

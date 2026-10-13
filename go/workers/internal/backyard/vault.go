@@ -27,8 +27,11 @@ type Vault struct {
 	protocol, idleAuth, idleATA, lpMint        string
 	strategyAuth, strategyATA, strategyReceipt string
 	adaptorReceipt                             string
-	routes                                     []RuntimeRoute
-	manifest                                   RouteManifest
+	// A Trustful vault's withdrawal is paid from its holding authority's
+	// USDC account.
+	holdingAuth, holding string
+	routes               []RuntimeRoute
+	manifest             RouteManifest
 }
 
 // The rwa vault: Backyard's first vault, on its own FSj27 report adaptor.
@@ -36,8 +39,14 @@ var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPk
 	Strategy: "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", Adaptor: fsj27Program, SquadsIndex: 0,
 	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"})
 
+// The looping vault, on Voltr's Trustful adaptor: Squads vault index 2 is
+// its book.
+var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
+	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
+	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY"})
+
 // vaults are the vaults the engine runs, a Worker each.
-var vaults = []*Vault{rwa}
+var vaults = []*Vault{rwa, looping}
 
 // fsj27Program is the rwa vault's report adaptor. Its strategy-two config's
 // key is the Voltr strategy key, derived offline from the setup admin over
@@ -89,6 +98,10 @@ func newVault(v Vault) *Vault {
 	v.strategyATA = usdcATA(v.strategyAuth)
 	v.strategyReceipt = pda([]byte("strategy_init_receipt"), vault[:], strategy[:])
 	v.adaptorReceipt = pda([]byte("adaptor_add_receipt"), vault[:], key(v.Adaptor).Bytes())
+	if v.trustful() {
+		v.holdingAuth = must(voltr.TrustfulHoldingAuthority(key(v.strategyAuth), strategy))
+		v.holding = usdcATA(v.holdingAuth)
+	}
 	for _, l := range earnLanes {
 		v.routes = append(v.routes, l.routeFor(squadsVault))
 	}
@@ -99,6 +112,12 @@ func newVault(v Vault) *Vault {
 	v.manifest = manifest
 	return &v
 }
+
+// trustful reports a vault on Voltr's Trustful adaptor: its NAV is the
+// strategy receipt, reported by deposit_strategy's end value, and a
+// withdrawal is one transaction through the holding account. Every other
+// vault is on the FSj27 report adaptor (report_ticket.go).
+func (v *Vault) trustful() bool { return v.Adaptor == voltr.TrustfulProgramID.String() }
 
 // route is lane's chain facts in v: the lane's template with the accounts v's
 // Squads vault owns.

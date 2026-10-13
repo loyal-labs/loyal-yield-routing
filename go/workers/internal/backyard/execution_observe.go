@@ -76,7 +76,7 @@ func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 }
 
 func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation, accounts []ConfirmedAccount) (Observation, BridgeExecutionEvidence, error) {
-	policy, err := observation.policies.account(policyKey{action: decision.Action})
+	policy, err := observation.policies.account(bridgePolicyKey(manifest.vault, decision.Action))
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -85,8 +85,8 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	ticketRequired := decision.Action != StageSquadsToVoltr
-	if earnHeldLane(route.Lane) {
+	ticketRequired := !v.trustful() && decision.Action != StageSquadsToVoltr
+	if !v.trustful() && earnHeldLane(route.Lane) {
 		// Reserve the entire bridge exit, including a report after staging:
 		// the existing ticket must be present in this same observation;
 		// admission cannot authorize setup.
@@ -123,6 +123,12 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		postCustodies.VoltrIdleRaw -= uint64(decision.AmountRaw)
 	case VoltrRestoreIdle:
 		postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
+	case StageSquadsToVoltr:
+		if v.trustful() {
+			// Voltr's withdraw_strategy sweeps the holding account into idle
+			// in the same transaction.
+			postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
+		}
 	}
 	// The report values the whole book: every other lane the observation
 	// valued beside the working lane's poststate.
@@ -146,6 +152,9 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("report ticket sequence is not fresh")
 	}
 	effects.Kind = "bridge"
+	// FSj27 returns the NAV each report-bearing leg arms; Trustful's
+	// deposit_strategy returns its end value. A Trustful withdrawal returns
+	// nothing.
 	if decision.Action != StageSquadsToVoltr {
 		effects.ReturnData = expectedAdaptorReturnData(v, nav.Report.NAVAfterRaw)
 	}
@@ -187,6 +196,15 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 		}
 		idleAfter, squadsAfter = idle-amount, squads+amount
 	case StageSquadsToVoltr:
+		if v.trustful() {
+			// Squads cash reaches idle through the holding account in one
+			// transaction; the strategy custody is untouched.
+			if squads < amount || idle > math.MaxUint64-amount {
+				return ExpectedEffects{}, 0, 0, fmt.Errorf("withdrawal effects overflow or underflow")
+			}
+			squadsAfter, idleAfter = squads-amount, idle+amount
+			break
+		}
 		if squads < amount || strategy > math.MaxUint64-amount {
 			return ExpectedEffects{}, 0, 0, fmt.Errorf("staging effects overflow or underflow")
 		}
@@ -211,7 +229,7 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 	// Staging is a direct Squads-authorized SPL transfer. It does not invoke the
 	// adaptor and its receipt therefore contains only the strategy and Squads
 	// token accounts, not the unrelated unchanged vault-idle account.
-	if decision.Action == StageSquadsToVoltr {
+	if decision.Action == StageSquadsToVoltr && !v.trustful() {
 		accounts = accounts[1:]
 	}
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, strategyAfter, squadsAfter, nil

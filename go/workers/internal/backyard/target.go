@@ -448,11 +448,18 @@ func Decide(s Snapshot) Decision {
 }
 
 func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decision {
-	if hold, blocked := custodyDiscipline(s); blocked {
-		return hold
-	}
-	if hold, blocked := bridgeMonitorHold(s); blocked {
-		return hold
+	if s.Trustful {
+		// The receipt is the fact: it must be the strategy's.
+		if s.MonitorsArmed && s.Nonterminal == "" && s.StrategyReceiptIntegrityFault {
+			return monitorHold(s, "strategy_receipt_integrity")
+		}
+	} else {
+		if hold, blocked := custodyDiscipline(s); blocked {
+			return hold
+		}
+		if hold, blocked := bridgeMonitorHold(s); blocked {
+			return hold
+		}
 	}
 	d := func(action Action, reason string, amount int64) Decision {
 		return Decision{Action: action, Reason: reason, AmountRaw: amount, StrategyKey: s.RouteLane,
@@ -496,13 +503,14 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		return d(Hold, holdStale, 0)
 	}
 	// A journal-explained stage finishes before anything reads Voltr idle.
-	if s.VoltrStrategyIdleRaw > 0 {
+	// (A Trustful withdrawal is one transaction: it stages nothing.)
+	if !s.Trustful && s.VoltrStrategyIdleRaw > 0 {
 		return d(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
 	}
 	// Strategy custody is empty here (restored above), so a report observes
 	// it empty.
 	report := func(reason string) Decision { return d(ReportNAV, reason, 0) }
-	if s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
+	if !s.Trustful && s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
 		return report("post_mutation_nav_due")
 	}
 	// Debt 0: term maturity or the operator exit.
@@ -511,7 +519,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	}
 	// Voltr idle already pays the queue: keep the report current for claims.
 	if s.WithdrawalDemandRaw > 0 && s.WithdrawalDemandRaw <= s.VoltrIdleRaw {
-		if s.CapitalMutated || s.LastReportAgeSeconds >= 60 {
+		if s.Trustful && trustfulReportDue(s) || !s.Trustful && (s.CapitalMutated || s.LastReportAgeSeconds >= 60) {
 			return report("withdrawal_covered_nav_due")
 		}
 		return d(Hold, holdAtTarget, 0)
@@ -521,11 +529,17 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 			return next
 		}
 	}
-	if hold, drifted := unexplainedNAVDriftHold(s); drifted {
-		return hold
-	}
-	if capitalMutationReports(s) || (scheduledNAVReportDue(s) && !(t.Rule == ruleEntry && t.EntryRaw > 0)) {
-		return report("nav_due")
+	if s.Trustful {
+		if trustfulReportDue(s) {
+			return report("nav_due")
+		}
+	} else {
+		if hold, drifted := unexplainedNAVDriftHold(s); drifted {
+			return hold
+		}
+		if capitalMutationReports(s) || (scheduledNAVReportDue(s) && !(t.Rule == ruleEntry && t.EntryRaw > 0)) {
+			return report("nav_due")
+		}
 	}
 	if levelDownDue(s, t) {
 		return d(DeleverRouteStep, leverageDownPartialReason, stepDownMarker)

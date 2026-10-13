@@ -561,6 +561,57 @@ const (
 	bridgeStageLegs
 )
 
+// bridgePolicyKey is the policy v's bridge executes action through: a
+// Trustful NAV report is a deposit of nothing, under the Deposit policy.
+func bridgePolicyKey(v *Vault, action Action) policyKey {
+	if v.trustful() && action == ReportNAV {
+		action = VoltrAllocateToSquads
+	}
+	return policyKey{action: action}
+}
+
+// trustfulBridgePolicies are a Trustful vault's two bridge policies, by the
+// action each is looked up by: Deposit (VoltrAllocateToSquads, and NAV
+// reports) and Withdraw (StageSquadsToVoltr). Every leg pins the vault's
+// Squads vault, the Voltr vault and strategy, the Trustful program, the
+// strategy custody and the vault's USDC accounts it moves; it bounds the
+// amount by the per-leg cap and the reported end value by the vault's max.
+// Voltr and the adaptor check the rest. Each also spends at most the daily
+// USDC cap, as the FSj27 bridge's do.
+func trustfulBridgePolicies(v *Vault) map[Action]squads.Policy {
+	pin, free := squads.Pin, squads.Any
+	vault, usdc, custody := solanaKey(v.squads), solanaKey(bridgeUSDC), solanaKey(v.cash)
+	limits := []squads.SpendingLimitView{{Mint: usdc, Period: 1 /* daily */, MaxPerPeriod: 200_000_000_000 /* 200k USDC */}}
+	policy := func(legs ...squads.InstructionConstraintView) squads.Policy {
+		out := vaultPolicy(v, legs...)
+		out.SpendingLimits = limits
+		return out
+	}
+	accounts := voltr.StrategyAllowed{Manager: pin(vault), Protocol: free, Vault: pin(solanaKey(v.VoltrVault)), Strategy: pin(solanaKey(v.Strategy)),
+		AdaptorAddReceipt: free, StrategyInitReceipt: free, VaultAssetIdleAuth: free, VaultStrategyAuth: free, AssetMint: pin(usdc),
+		LPMint: free, VaultAssetIdleATA: free, VaultStrategyAssetATA: pin(solanaKey(v.strategyATA)), AssetTokenProgram: pin(solana.TokenProgramID),
+		AdaptorProgram: pin(voltr.TrustfulProgramID)}
+	data := func(discriminator [8]byte, minimum uint64) []squads.DataConstraintView {
+		amount := []squads.DataConstraintView{squads.DataU64(voltr.StrategyAmountOffset, squads.OpLessThanOrEqualTo, strategyTwoBridgeLegCapRaw)}
+		if minimum > 0 {
+			amount = append(amount, squads.DataU64(voltr.StrategyAmountOffset, squads.OpGreaterThanOrEqualTo, minimum))
+		}
+		return append(amount, squads.DataBytes(voltr.StrategyAdaptorCallOffset, voltr.TrustfulCall(discriminator)),
+			squads.DataU64(voltr.TrustfulEndValueOffset, squads.OpLessThanOrEqualTo, bridgeMaxNAV))
+	}
+	var deposit [trustfulDepositLegs]squads.InstructionConstraintView
+	deposit[trustfulDepositLeg] = voltr.DepositStrategyAllowed(accounts, []squads.AccountSlot[squads.Slot]{squads.Writable(pin(custody))},
+		data(voltr.TrustfulDepositDiscriminator, 0)...)
+	var withdraw [trustfulWithdrawLegs]squads.InstructionConstraintView
+	withdraw[trustfulHoldLeg] = spl.TransferCheckedAllowed(solana.TokenProgramID, spl.TransferAllowed{Source: pin(custody), Mint: pin(usdc),
+		Destination: pin(solanaKey(v.holding)), Authority: pin(vault)}, 6,
+		squads.DataU64(spl.TransferCheckedAmountOffset, squads.OpGreaterThan, 0), squads.DataU64(spl.TransferCheckedAmountOffset, squads.OpLessThanOrEqualTo, strategyTwoBridgeLegCapRaw))
+	withdraw[trustfulWithdrawLeg] = voltr.WithdrawStrategyAllowed(accounts,
+		[]squads.AccountSlot[squads.Slot]{squads.ReadOnly(pin(solanaKey(v.holdingAuth))), squads.Writable(pin(solanaKey(v.holding)))},
+		data(voltr.TrustfulWithdrawDiscriminator, 1)...)
+	return map[Action]squads.Policy{VoltrAllocateToSquads: policy(deposit[:]...), StageSquadsToVoltr: policy(withdraw[:]...)}
+}
+
 // bridgePolicies are the Voltr bridge's four policies, by the action each
 // authorizes. Every leg pins the vault, the strategy-two config and the
 // report ticket it touches, bounds its amount by the per-leg cap (exactly
@@ -568,6 +619,9 @@ const (
 // the adaptor check the rest. Each policy also spends at most the daily USDC
 // cap, a plain limit: no accumulation, per-use cap or exact quantity.
 func bridgePolicies(v *Vault) map[Action]squads.Policy {
+	if v.trustful() {
+		return trustfulBridgePolicies(v)
+	}
 	pin, free := squads.Pin, squads.Any
 	vault, settings, strategy, ticket := solanaKey(v.squads), solanaKey(bridgeSettings), solanaKey(v.Strategy), solanaKey(reportTicketPDA)
 	usdc, custody, strategyATA := solanaKey(bridgeUSDC), solanaKey(v.cash), solanaKey(v.strategyATA)

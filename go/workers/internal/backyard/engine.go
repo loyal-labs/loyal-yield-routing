@@ -134,11 +134,12 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 	out := e.out
 	feedCtx, cancelFeed := context.WithCancel(ctx)
 	feedDone := make(chan struct{})
-	shadowIdentity := newProgramIdentityWatcher(viewProgramIdentity(e.view)).observe
 	lastUnavailable := ""
 	samplers := make([]*selectorSampler, len(e.workers))
 	for i, worker := range e.workers {
-		samplers[i] = &selectorSampler{engine: e, worker: worker, state: e.states[i], identity: shadowIdentity,
+		// Each vault samples concurrently, so each watches the program
+		// identity itself.
+		samplers[i] = &selectorSampler{engine: e, worker: worker, state: e.states[i], identity: newProgramIdentityWatcher(viewProgramIdentity(e.view)).observe,
 			levWatch: &leverageWatch{}, levDecisionLog: &leverageDecisionLog{}, apyThrottle: &currentAPYThrottle{}}
 	}
 	// Economic collection stays off the transaction loop. Live acceptance
