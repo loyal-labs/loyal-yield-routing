@@ -20,7 +20,12 @@ monitoring=${4:-}
 case $family in backyard | retail) ;; *) family=bad ;; esac
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
 case $want in *[!0-9a-f]* | '') want=bad ;; esac
-case $monitoring in /tmp/loyal-monitoring.*/monitoring) ;; *) monitoring=bad ;; esac
+# finish removes the monitoring dir's parent: exactly one mktemp dir.
+case $monitoring in
+*/../* | /tmp/loyal-monitoring.*/*/*) monitoring=bad ;;
+/tmp/loyal-monitoring.*/monitoring) ;;
+*) monitoring=bad ;;
+esac
 if [ "$family" = bad ] || [ ${#sha} -ne 40 ] || [ ${#want} -ne 64 ] || [ "$monitoring" = bad ]; then
 	echo "usage: activate.sh backyard|retail <40-hex commit sha> <64-hex sha256> /tmp/loyal-monitoring.*/monitoring" >&2
 	exit 2
