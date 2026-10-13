@@ -503,7 +503,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		// baseline: nothing has been consumed since.
 		binary.LittleEndian.PutUint64(accountAt(batch, bridgeIdleATA).Data[64:72], 2_000_000)
 		binary.LittleEndian.PutUint64(accountAt(batch, bridgeVoltrVault).Data[168:176], 53-11+2_000_000)
-		binary.LittleEndian.PutUint16(accountAt(batch, bridgeVoltrVault).Data[514:516], uint16(approvedAdminPerformanceFeeBPS))
+		binary.LittleEndian.PutUint16(accountAt(batch, bridgeVoltrVault).Data[514:516], uint16(rwa.AdminPerformanceFeeBPS))
 		binary.LittleEndian.PutUint64(accountAt(batch, bridgeSquadsATA).Data[64:72], 0)
 		binary.LittleEndian.PutUint64(accountAt(batch, reportTicketPDA).Data[48:56], 0)
 		// The strategy receipt reports the just-now book the real chain books at

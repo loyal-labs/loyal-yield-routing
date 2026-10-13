@@ -20,6 +20,10 @@ type Vault struct {
 	SquadsIndex                   uint8
 	// RouteKey names the vault's route row; rwa keeps its original key.
 	RouteKey string
+	// AdminPerformanceFeeBPS is the vault's approved Voltr admin performance
+	// fee. M7 holds unless the chain's term is exactly this; every other
+	// Voltr fee term is zero.
+	AdminPerformanceFeeBPS int64
 
 	// Derived: the Squads vault that manages it and its USDC account (the
 	// vault's cash), and Voltr's accounts of the vault and its strategy.
@@ -37,13 +41,13 @@ type Vault struct {
 // The rwa vault: Backyard's first vault, on its own FSj27 report adaptor.
 var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
 	Strategy: "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", Adaptor: fsj27Program, SquadsIndex: 0,
-	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"})
+	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 2000})
 
 // The looping vault, on Voltr's Trustful adaptor: Squads vault index 2 is
 // its book.
 var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
-	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY"})
+	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 0})
 
 // vaults are the vaults the engine runs, a Worker each.
 var vaults = []*Vault{rwa, looping}

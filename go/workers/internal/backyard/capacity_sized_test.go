@@ -40,7 +40,7 @@ func TestCapacitySizedActualCarry(t *testing.T) {
 	m := LaneEconomics{Lane: s.RouteLane, NativeAPY: .10, SupplyAPY: .01, CurrentBorrowAPY: .05,
 		BorrowCurve: []BorrowCurvePoint{{0, 500}, {10_000, 500}}, DebtSupplyRaw: 1e12, DebtBorrowRaw: 1e11}
 	got, ok := currentPositionAPY(s, []LaneEconomics{m})
-	want := int64(math.Round(performanceFeeForecast(1.36*.11-.36*.05) * 10_000))
+	want := int64(math.Round(performanceFeeForecast(1.36*.11-.36*.05, rwa.AdminPerformanceFeeBPS) * 10_000))
 	if !ok || got.APYBPS != want || got.Level != 1.36 {
 		t.Fatalf("carry=%+v want=%d", got, want)
 	}

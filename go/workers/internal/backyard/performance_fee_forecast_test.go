@@ -20,7 +20,7 @@ func TestPerformanceFeeAPYUsesNetProfit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := LaneEconomics{NativeAPY: tc.native, BorrowCurve: []BorrowCurvePoint{{0, 0}, {10000, 0}}, DebtSupplyRaw: 1e12}
-			got, ok := leverageLevelAPY(m, 1, 1_000_000, false)
+			got, ok := leverageLevelAPY(m, 1, 1_000_000, false, rwa.AdminPerformanceFeeBPS)
 			if !ok || math.Abs(got-tc.want) > 1e-12 {
 				t.Fatalf("fee-paying APY=%v ok=%t, want %v", got, ok, tc.want)
 			}
@@ -365,7 +365,7 @@ func TestPerformanceFeeUnarmedCannotProduceEconomicUP(t *testing.T) {
 	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
 	s.VoltrTotalValueRaw, s.TotalVaultNAVRaw, s.LPSupplyInclFeesRaw = 1_000_000_000, 1_000_000_000, 1_000_000_000
 	s.VoltrHighWaterMarkBits, s.VoltrHighWaterMarkKnown = in.Snapshot.VoltrHighWaterMarkBits, true
-	s.AdminPerformanceFeeBPS = approvedAdminPerformanceFeeBPS
+	s.AdminPerformanceFeeBPS = rwa.AdminPerformanceFeeBPS
 	m := leverageMarket(s.RouteLane, .60, math.Log1p(.06))
 	m.CurrentBorrowAPY = .06
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), twentyBPSStepCost)

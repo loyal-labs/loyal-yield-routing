@@ -155,7 +155,7 @@ func navDriftOutsideTolerance(observed, reported uint64) bool {
 }
 
 func approvedVoltrFeeTerms(s Snapshot) bool {
-	return s.AdminPerformanceFeeBPS == approvedAdminPerformanceFeeBPS &&
+	return s.AdminPerformanceFeeBPS == s.ApprovedAdminPerformanceFeeBPS &&
 		s.ManagerPerformanceFeeBPS == 0 && s.ManagerManagementFeeBPS == 0 && s.AdminManagementFeeBPS == 0 &&
 		s.RedemptionFeeBPS == 0 && s.IssuanceFeeBPS == 0 && s.ProtocolPerformanceFeeBPS == 0 && s.ProtocolManagementFeeBPS == 0
 }

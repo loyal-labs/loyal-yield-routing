@@ -177,7 +177,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		return out, true
 	}
 	if extra > 0 {
-		extra *= 1 - float64(approvedAdminPerformanceFeeBPS)/10_000
+		extra *= 1 - float64(s.ApprovedAdminPerformanceFeeBPS)/10_000
 	}
 	out.GainRaw = extra - cost
 	if out.GainRaw <= 0 {

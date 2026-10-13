@@ -5,7 +5,8 @@ import "testing"
 // base is a fresh, coherent, flat Maple view: no position, no cash.
 func base() Snapshot {
 	return Snapshot{ObservationID: "o", Slot: 9, RouteKind: RouteKind, Fresh: true, RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID,
-		LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, MinimumCollateralDepositRaw: 1}
+		LiquidationThresholdBPS: 8000, CapacityRaw: 7, PolicyLimitRaw: 10, MaxTargetLTVEntryRaw: 7, MinimumCollateralDepositRaw: 1,
+		ApprovedAdminPerformanceFeeBPS: rwa.AdminPerformanceFeeBPS}
 }
 
 func TestDecisionPrecedenceAndOneAction(t *testing.T) {

@@ -153,6 +153,10 @@ type Snapshot struct {
 	// strategy receipt is its report, so none of the FSj27 monitors, journal
 	// or ticket fields below arm its decisions.
 	Trustful bool `json:",omitempty"`
+	// ApprovedAdminPerformanceFeeBPS is the vault's approved admin performance
+	// fee (Vault.AdminPerformanceFeeBPS): M7 pins AdminPerformanceFeeBPS to it,
+	// and every fee forecast charges it.
+	ApprovedAdminPerformanceFeeBPS int64 `json:",omitempty"`
 	// Phase 2 monitor inputs. MonitorsArmed is set only when the serialized
 	// worker merged a coherent confirmed route NAV batch, so hand-built unit
 	// snapshots keep their existing decisions. The journal, ticket, and

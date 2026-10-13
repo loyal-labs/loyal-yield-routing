@@ -48,7 +48,7 @@ func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) 
 	if !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 || s.PositionDebtValueRaw < 0 {
 		return out, false
 	}
-	apy := performanceFeeForecast((collateral*market.NativeAPY + float64(s.PositionCollateralValueRaw)*market.SupplyAPY - float64(s.PositionDebtValueRaw)*market.CurrentBorrowAPY) / float64(equityRaw))
+	apy := performanceFeeForecast((collateral*market.NativeAPY+float64(s.PositionCollateralValueRaw)*market.SupplyAPY-float64(s.PositionDebtValueRaw)*market.CurrentBorrowAPY)/float64(equityRaw), s.ApprovedAdminPerformanceFeeBPS)
 	ok := true
 	if !ok || !finite(apy) {
 		return out, false

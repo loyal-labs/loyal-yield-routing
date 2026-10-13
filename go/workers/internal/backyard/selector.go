@@ -357,14 +357,14 @@ func nativeFeedText(native float64, feed *float64) string {
 // quoteLeverageAndNetAPY is a quote's executable leverage and the position's
 // annual net APY at it after the performance fee, move costs excluded:
 // display only.
-func quoteLeverageAndNetAPY(e pilotEconomics, invested float64, m LaneEconomics) (float64, float64) {
+func quoteLeverageAndNetAPY(e pilotEconomics, invested float64, m LaneEconomics, feeBPS int64) (float64, float64) {
 	equity := invested + e.Proceeds - e.Debt
 	if invested <= 0 || equity <= 0 {
 		return 0, 0
 	}
 	collateral := invested + e.Proceeds
 	gross := (collateral*math.Expm1(math.Log1p(m.NativeAPY)+math.Log1p(m.SupplyAPY)) - e.Debt*math.Expm1(e.APR)) / equity
-	return collateral / equity, performanceFeeForecast(gross)
+	return collateral / equity, performanceFeeForecast(gross, feeBPS)
 }
 
 // All candidate collateral is supplied. A nonnegative asset exponential minus
@@ -559,7 +559,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			continue
 		}
 		c.BorrowAPR = economics.APR
-		c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m)
+		c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m, s.ApprovedAdminPerformanceFeeBPS)
 		c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered && !quote.SpreadUnlevered, quote.DebtRoomUSDCRaw
 		var feeKnown bool
 		c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))

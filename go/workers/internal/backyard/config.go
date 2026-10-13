@@ -46,9 +46,6 @@ const (
 	// route stops instead of reporting.
 	navDriftToleranceBPS = int64(50)
 	navDriftFloorRaw     = int64(1_000)
-	// M7 pins the intentional admin performance fee exactly; every other
-	// performance, management, issuance and redemption term remains zero.
-	approvedAdminPerformanceFeeBPS = int64(2000)
 	// Batch routine fee-bearing reports to avoid whole-LP rounding consuming
 	// small pilot gains. Withdrawal and post-mutation reporting keep priority.
 	routineNAVReportInterval = time.Hour
