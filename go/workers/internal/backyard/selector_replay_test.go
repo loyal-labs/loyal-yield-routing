@@ -272,8 +272,8 @@ func decideEntry(t *testing.T, s Snapshot, market LaneEconomics, q MoveQuote) en
 // recipe's one-raw receipt-rounding term). The cost is lower: the old recipe
 // charged the fees of about twenty messages (NAV reports and Voltr legs
 // included) and the receipt-rounding windows of its separate legs; the one
-// pricer charges the lane's own legs and the two steps, at most $0.01 apart
-// here. The benefit is higher by that, and, on PYUSD debt, by valuing the
+// pricer charges the entry swap, the deposit, the up and down steps and the
+// atomic exit step, at most $0.01 apart here. The benefit is higher by that, and, on PYUSD debt, by valuing the
 // borrow at central prices: the old recipe valued the liability at the
 // price interval's top and the proceeds at its bottom, 1% each way (within
 // 3% of the benefit).

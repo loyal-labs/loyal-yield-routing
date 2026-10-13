@@ -153,7 +153,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		return leverageStepCost{}, costOutage("price", err)
 	}
 	st := stepState{route: route, collateral: collateral, slot: uint64(slot), topology: topology}
-	up, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, true, borrowRaw, borrowRaw, slot)
+	up, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, SwapDebtToCollateralStep, borrowRaw, borrowRaw, slot)
 	if err != nil {
 		return leverageStepCost{}, costOutage(stepStage("entry_quote", err), err)
 	}
@@ -163,7 +163,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		return leverageStepCost{}, costOutage("exit_quote", err)
 	}
 	st.topology = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	down, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, false, receipts, bought, slot)
+	down, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, SwapCollateralToDebtStep, receipts, bought, slot)
 	if err != nil {
 		return leverageStepCost{}, costOutage(stepStage("exit_quote", err), err)
 	}
@@ -220,9 +220,9 @@ func stepStage(quote string, err error) string {
 
 // entryCost is what a flat vault's entry into a lane is expected to cost its
 // capital: the entry conversion's loss, the sale's loss when the collateral
-// returns to USDC, the network fees of the lane's own legs (entry swap,
-// deposit, withdrawal, exit swap), and the up step the entry levers with,
-// with its unwind (zero at 1x). Voltr's allocate, stage and restore move the
+// returns to USDC, the network fees of the lane's own transactions (entry
+// swap, deposit, exit step), and the up step the entry levers with, with its
+// unwind (zero at 1x). Voltr's allocate, stage and restore move the
 // same cash for every lane and are not lane costs.
 type entryCost struct {
 	EntrySwapLossMicros int64            `json:"entrySwapLossMicros"`
@@ -236,7 +236,7 @@ type entryCost struct {
 // o's sample, as the executor makes it: the entry swap step's own quote, the
 // deposit, then the level rule's up step to 1.5x when the spread rule levers
 // the lane (the capacity-sized borrow the funded position would take), and
-// the unwind of both. The lane's batch is one refreshed capture of its
+// the unwind of both: the down step and the atomic exit step. The lane's batch is one refreshed capture of its
 // reserves; every value is at its prices.
 func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEconomics, equity uint64) (MoveQuote, error) {
 	s := o.Snapshot
@@ -346,18 +346,8 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 		}
 		q.BorrowReceiveRaw, q.BorrowFeeRaw, q.BorrowValueRaw, q.ProceedsValueRaw = borrow, fee, uint64(debt), uint64(proceeds)
 	}
-	exit, err := prepareJupiterQuoteEvidence(ctx, p.rpc, p.client, p.manifest, p.policies, Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(bought), StrategyKey: lane}, bought, 0, slot)
-	if err != nil {
-		return q, err
-	}
-	boughtValue, err := prices.collateralValue(bought)
-	if err != nil {
-		return q, err
-	}
-	cost.EntrySwapLossMicros = max(int64(equity)-boughtValue, 0)
-	cost.ExitSwapLossMicros = max(boughtValue-int64(exit.Request.QuotedOutputRaw), 0)
-	// The lane's own legs besides the step: the entry swap, the deposit of
-	// its guaranteed output, the withdrawal of the collateral and its sale.
+	// The unwind's last step is the executor's atomic exit: withdraw the
+	// collateral and sell it to USDC in one transaction.
 	reserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil {
 		return q, err
@@ -366,32 +356,35 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 	if err != nil {
 		return q, err
 	}
+	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, stepState{route: route, collateral: reserve, slot: uint64(slot), topology: []string{route.Kamino.CollateralReserve}},
+		SwapCollateralToStableStep, receipts, bought, slot)
+	if err != nil {
+		return q, err
+	}
+	boughtValue, err := prices.collateralValue(bought)
+	if err != nil {
+		return q, err
+	}
+	cost.EntrySwapLossMicros = max(int64(equity)-boughtValue, 0)
+	cost.ExitSwapLossMicros = max(boughtValue-int64(conversionQuotedOutput(exit.Request)), 0)
+	// The lane's own transactions besides the up step: the entry swap, the
+	// deposit of its guaranteed output and the exit step.
 	blockhash := LatestBlockhash{Blockhash: entry.Request.RecentBlockhash, LastValidBlockHeight: entry.Request.LastValidBlockHeight}
 	deposit, err := p.manifest.kaminoPacketForRoute(p.policies, OpenRouteStep, kaminoLegDeposit, guaranteed, blockhash, lane)
 	if err != nil {
 		return q, err
 	}
-	withdraw, err := p.manifest.kaminoPacketForRoute(p.policies, DeleverRouteStep, kaminoLegWithdraw, receipts, blockhash, lane)
-	if err != nil {
-		return q, err
-	}
-	withdraw.ObligationReserves = []string{route.Kamino.CollateralReserve}
-	var messages [][]byte
 	for _, compile := range []func() ([]byte, error){
 		func() ([]byte, error) {
 			return compileJupiterMessageForDelegate(entry.Request, mustKey(bridgeDelegate))
 		},
 		func() ([]byte, error) { return compileKaminoMessageForDelegate(deposit, mustKey(bridgeDelegate)) },
-		func() ([]byte, error) { return compileKaminoMessageForDelegate(withdraw, mustKey(bridgeDelegate)) },
-		func() ([]byte, error) { return compileJupiterMessageForDelegate(exit.Request, mustKey(bridgeDelegate)) },
+		func() ([]byte, error) { return compileStepMessageForDelegate(exit.Request, mustKey(bridgeDelegate)) },
 	} {
 		message, err := compile()
 		if err != nil {
 			return q, err
 		}
-		messages = append(messages, message)
-	}
-	for _, message := range messages {
 		micros, err := p.networkMicros(message)
 		if err != nil {
 			return q, err

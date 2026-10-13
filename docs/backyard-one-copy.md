@@ -60,7 +60,8 @@ The selector prices a lane from the transactions the executor would send
 - a flat vault's entry is the entry swap step's own quote, the deposit, the
   up step to 1.5x when the live spread rule levers the lane (the level
   decision still judges that step's gain against its cost), and the
-  sale of the collateral back to USDC (`lanePricer.priceEntry`). Its cost is
+  unwind: the down step and the atomic exit step that withdraws the
+  collateral and sells it to USDC (`lanePricer.priceEntry`). Its cost is
   one expected figure (`MoveQuote.CostRaw`); execution bounds (a conversion's
   minimum output) stay on the transactions, simulated before they are sent.
   The entry is sized by the deposit room the tick's observation gives the
