@@ -99,7 +99,10 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 		return ExpectedEffects{}, fmt.Errorf("incomplete expected effects")
 	}
 	minimums := expected.Kind == "cross-mint-swap" || expected.Kind == "atomic-step"
-	if !expected.Conserved && (!minimums || len(expected.Accounts) != 2) {
+	// A cross-mint swap and a conversion step touch two custodies; a move (an
+	// atomic step that converts nothing) touches only the shared collateral one.
+	accounts := len(expected.Accounts) == 2 || (expected.Kind == "atomic-step" && len(expected.Accounts) == 1)
+	if !expected.Conserved && (!minimums || !accounts) {
 		return ExpectedEffects{}, fmt.Errorf("unsupported non-conserved expected effects")
 	}
 	seen := make(map[string]struct{}, len(expected.Accounts))
@@ -125,7 +128,8 @@ func DecodeExpectedEffects(data []byte) (ExpectedEffects, error) {
 	if err := validateRepaymentEffects(expected); err != nil {
 		return ExpectedEffects{}, err
 	}
-	if expected.Kind == "atomic-step" && (expected.Conserved || expected.Accounts[0].Mint == expected.Accounts[1].Mint || expected.Accounts[0].MinimumAfterRaw == nil) {
+	if expected.Kind == "atomic-step" && (expected.Conserved || expected.Accounts[0].MinimumAfterRaw == nil ||
+		(len(expected.Accounts) == 2 && expected.Accounts[0].Mint == expected.Accounts[1].Mint)) {
 		return ExpectedEffects{}, fmt.Errorf("invalid atomic step postconditions")
 	}
 	if expected.Kind == "cross-mint-swap" {
