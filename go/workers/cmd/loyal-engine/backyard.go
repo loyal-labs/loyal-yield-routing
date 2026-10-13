@@ -22,8 +22,9 @@ import (
 
 // runBackyard is LOYAL_WORKER_SCOPE=backyard: the separately credentialed
 // Backyard family. BACKYARD_DATABASE_URL must be the direct (non-pooler) DSN:
-// it also holds the family lock, Backyard's one-writer lock. A second process
-// waits for it before it reads or writes anything; nothing below re-checks it.
+// the engine's one database session holds the family lock, Backyard's
+// one-writer lock (backyard.OpenDatabase). A second process waits for it
+// before it reads or writes anything; nothing below re-checks it.
 func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics engine.Lane) error {
 	cfg, err := backyardRuntimeConfig()
 	if err != nil {
@@ -49,20 +50,11 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if laserstream.APIKey, err = engine.Credential("BACKYARD_HELIUS_API_KEY"); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "backyard-rwa-worker: waiting for the Backyard writer lock")
-	lost, err := engine.WaitFamily(ctx, cfg.DatabaseURL, engine.FamilyBackyard)
+	database, err := backyard.OpenDatabase(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	go func() {
-		select {
-		case <-lost:
-			cancel(errBackyardLockLost)
-		case <-ctx.Done():
-		}
-	}()
+	defer database.Close()
 	cluster, err := chain.New(cfg.RPCURL, 15*time.Second)
 	if err != nil {
 		return err
@@ -71,11 +63,6 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if err != nil {
 		return err
 	}
-	database, err := backyard.OpenDatabase(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-	defer database.Close()
 	lane, err := backyard.NewEngine(backyard.EngineConfig{
 		Database: database, RPC: cluster, View: view, Credentials: credentials, Config: backyard.DefaultConfig(), Owner: owner,
 		Out: os.Stdout, Logger: slog.Default(), Facts: facts, Jupiter: cfg.Jupiter,
@@ -84,16 +71,8 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if err != nil {
 		return err
 	}
-	err = engine.Run(ctx, lane, metrics)
-	if cause := context.Cause(ctx); errors.Is(cause, errBackyardLockLost) {
-		return cause
-	}
-	return err
+	return engine.Run(ctx, lane, metrics)
 }
-
-// errBackyardLockLost: another holder may now own the family; this process
-// must exit with an error so its supervisor restarts it into the lock wait.
-var errBackyardLockLost = errors.New("backyard family lock lost")
 
 // backyardRuntimeConfig reads the Backyard database and RPC credentials shared
 // by the engine and the one-shot operator commands.

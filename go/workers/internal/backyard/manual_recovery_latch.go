@@ -82,7 +82,7 @@ func ClearManualRecoveryHold(ctx context.Context, databaseURL, routeKey, reason 
 	if reason == "" {
 		return "", fmt.Errorf("an explicit non-empty reason is required to clear a manual recovery hold")
 	}
-	database, err := OpenDatabase(ctx, databaseURL)
+	database, err := openOperatorDatabase(ctx, databaseURL)
 	if err != nil {
 		return "", err
 	}

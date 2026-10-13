@@ -67,9 +67,9 @@ cleanup packets require active mode and independently fenced writer admission.
 
 Backyard (`LOYAL_WORKER_SCOPE=backyard`) is the production Voltr/Kamino RWA
 line ported from `origin/feat/voltr-rwa-selector`. It requires the credentials
-`BACKYARD_DATABASE_URL` (the direct, non-pooler DSN: it also holds the family
-lock, Backyard's one-writer lock, which a second process waits for;
-`docs/backyard-one-writer.md`), `BACKYARD_SOLANA_RPC_URL` and `BACKYARD_POLICY_KEYPAIR`; an optional
+`BACKYARD_DATABASE_URL` (the direct, non-pooler DSN: the engine's one session
+on it holds the family lock, Backyard's one-writer lock, which a second process
+waits for; `docs/backyard-one-writer.md`), `BACKYARD_SOLANA_RPC_URL` and `BACKYARD_POLICY_KEYPAIR`; an optional
 `JUPITER_API_KEY` credential selects the keyed Jupiter API. The selector
 collector is off by default; `BACKYARD_RWA_SELECTOR_LIVE=1` enables it; it reads lane reserves
 from Backyard's own account view. `BACKYARD_RWA_PILOT_CANARY_ENTRY`

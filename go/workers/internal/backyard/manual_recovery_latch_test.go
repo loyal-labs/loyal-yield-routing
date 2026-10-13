@@ -30,7 +30,8 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	db, err := OpenDatabase(ctx, url)
+	// The test's own handle takes no lock; reopened below is the worker's.
+	db, err := openOperatorDatabase(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +200,8 @@ func openManualRecoveryTestDatabase(t *testing.T, timeout time.Duration) (contex
 		t.Fatal("refusing non-disposable database")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	db, err := OpenDatabase(ctx, url)
+	// The fixture's handle takes no lock: a test opens the writer itself.
+	db, err := openOperatorDatabase(ctx, url)
 	if err != nil {
 		cancel()
 		t.Fatal(err)

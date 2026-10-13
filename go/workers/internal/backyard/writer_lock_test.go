@@ -1,104 +1,225 @@
 package backyard
 
 import (
-	"bufio"
-	"context"
+	"bytes"
+	"crypto/ed25519"
 	"errors"
-	"os"
-	"os/exec"
+	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// writerLockHelperEnv runs this test binary as a second Backyard process: it
-// waits for the writer lock, says so, and exits (releasing it).
-const writerLockHelperEnv = "BACKYARD_WRITER_LOCK_HELPER_URL"
-
-func TestWriterLockHelperProcess(t *testing.T) {
-	url := os.Getenv(writerLockHelperEnv)
-	if url == "" {
-		t.Skip("helper process only")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+// The writer is one session. It takes Backyard's one-writer lock when it
+// opens; a second writer waits for it; a one-shot operator write refuses
+// beside it. Once the first session ends, the second takes the lock, and the
+// first can neither write, nor reconnect, nor send a signed row: the worker
+// stops on its next read.
+func TestWriterIsOneSession(t *testing.T) {
+	ctx, cancel, admin, url := openManualRecoveryTestDatabase(t, 60*time.Second)
 	defer cancel()
-	if _, err := engine.WaitFamily(ctx, url, engine.FamilyBackyard); err != nil {
-		os.Stdout.WriteString("error " + err.Error() + "\n")
-		os.Exit(1)
+	defer admin.Close()
+	if _, err := admin.pool.Exec(ctx, `ALTER TABLE loyal_yield.multiply_operations
+		ADD COLUMN IF NOT EXISTS message_sha256 text, ADD COLUMN IF NOT EXISTS signed_wire_sha256 text,
+		ADD COLUMN IF NOT EXISTS recent_blockhash text, ADD COLUMN IF NOT EXISTS last_valid_block_height bigint,
+		ADD COLUMN IF NOT EXISTS simulation_slot bigint, ADD COLUMN IF NOT EXISTS simulation_result jsonb,
+		ADD COLUMN IF NOT EXISTS confirmation_status text`); err != nil {
+		t.Fatal(err)
 	}
-	os.Stdout.WriteString("locked\n")
-}
+	resetManualRecoveryProductionRoute(t, ctx, admin, "writer-session")
+	lockSessions := func(granted bool) []int32 {
+		t.Helper()
+		rows, err := admin.pool.Query(ctx, `SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted = $1
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND (classid::bigint << 32 | objid::bigint) = hashtextextended('loyal-family:backyard', 0) ORDER BY pid`, granted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pids []int32
+		for rows.Next() {
+			var pid int32
+			if err := rows.Scan(&pid); err != nil {
+				t.Fatal(err)
+			}
+			pids = append(pids, pid)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return pids
+	}
+	backendPID := func(d *Database) int32 {
+		t.Helper()
+		var pid int32
+		if err := d.pool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+			t.Fatal(err)
+		}
+		return pid
+	}
 
-// Two Backyard processes: the second blocks on the writer lock until the
-// first one's session ends, and a one-shot operator write refuses while a
-// worker holds it.
-func TestSecondBackyardProcessBlocksOnTheWriterLock(t *testing.T) {
-	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("requires isolated PHASE3_TEST_DATABASE_URL")
-	}
-	config, err := pgxpool.ParseConfig(url)
-	if err != nil || !strings.HasPrefix(config.ConnConfig.Host, "/private/tmp/backyard-phase3-pg.") || config.ConnConfig.Database != "phase3_budget_test" {
-		t.Fatal("refusing non-disposable database")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	firstCtx, stopFirst := context.WithCancel(ctx)
-	defer stopFirst()
-	firstLost, err := engine.WaitFamily(firstCtx, url, engine.FamilyBackyard)
+	// (1) The writer's session holds the lock.
+	first, err := OpenDatabase(ctx, url)
 	if err != nil {
 		t.Fatal(err)
+	}
+	defer first.Close()
+	firstPID := backendPID(first)
+	if held := lockSessions(true); len(held) != 1 || held[0] != firstPID {
+		t.Fatalf("lock holders %v, want the writer session %d", held, firstPID)
 	}
 	if _, err := holdWriterLock(ctx, url); !errors.Is(err, engine.ErrFamilyHeld) {
-		t.Fatalf("an operator write took the lock beside the worker: %v", err)
+		t.Fatalf("an operator write took the lock beside the writer: %v", err)
 	}
 
-	second := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestWriterLockHelperProcess$", "-test.count=1")
-	second.Env = append(os.Environ(), writerLockHelperEnv+"="+url)
-	stdout, err := second.StdoutPipe()
+	// (2) A second writer waits for it.
+	type opened struct {
+		database *Database
+		err      error
+	}
+	secondOpened := make(chan opened, 1)
+	go func() {
+		database, err := OpenDatabase(ctx, url)
+		secondOpened <- opened{database, err}
+	}()
+	for deadline := time.Now().Add(10 * time.Second); len(lockSessions(false)) == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the second writer never waited on the lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case result := <-secondOpened:
+		t.Fatalf("the second writer opened beside the first: %v", result.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// A decided operation and the exact wire a tick would persist for it.
+	manifest := readyWorkerManifest(t)
+	observation := tickObservation(Snapshot{ObservationID: "writer-session", Slot: 10, RouteKind: RouteKind, Fresh: true, VoltrIdleRaw: 7})
+	decision := Decide(observation.Snapshot)
+	if decision.Action != VoltrAllocateToSquads {
+		t.Fatalf("fixture is not actionable: %+v", decision)
+	}
+	record, err := first.RecordDecisionOnManifest(ctx, manifest, productionRouteKey, observation, decision, manifest.SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = second.Start(); err != nil {
+	request := bridgeTestRequest(VoltrAllocateToSquads, uint64(decision.AmountRaw))
+	effects, _, _, err := bridgeExpectedEffects(decision, 7, 0, 0)
+	if err != nil {
 		t.Fatal(err)
 	}
-	lines := make(chan string, 8)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			lines <- scanner.Text()
-		}
-		close(lines)
-	}()
-	select {
-	case line := <-lines:
-		t.Fatalf("the second process did not block on the writer lock: %q", line)
-	case <-time.After(time.Second):
+	encodedEffects, err := jsonMarshalExpectedEffects(effects)
+	if err != nil {
+		t.Fatal(err)
 	}
-	stopFirst()
-	<-firstLost
-	deadline := time.After(15 * time.Second)
-	for {
-		select {
-		case line, ok := <-lines:
-			if !ok {
-				t.Fatal("the second process exited without the lock")
-			}
-			if line == "locked" {
-				if err := second.Wait(); err != nil {
-					t.Fatal(err)
-				}
-				return
-			}
-			if strings.HasPrefix(line, "error") {
-				t.Fatal(line)
-			}
-		case <-deadline:
-			t.Fatal("the second process never took the released lock")
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{43}, ed25519.SeedSize))
+	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
+	message, err := compileBridgeMessageForDelegate(request, delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signMessage(key, delegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := func() (status string, wire []byte, intent bool) {
+		t.Helper()
+		if err := admin.pool.QueryRow(ctx, `SELECT status, signed_wire, broadcast_intent_at IS NOT NULL FROM loyal_yield.multiply_operations WHERE operation_id = $1`,
+			record.OperationID).Scan(&status, &wire, &intent); err != nil {
+			t.Fatal(err)
 		}
+		return status, wire, intent
+	}
+
+	// (3) The first session ends; the second writer takes the lock.
+	var terminated bool
+	if err := admin.pool.QueryRow(ctx, `SELECT pg_terminate_backend($1)`, firstPID).Scan(&terminated); err != nil || !terminated {
+		t.Fatalf("terminate the first writer session: %v", err)
+	}
+	var second *Database
+	select {
+	case result := <-secondOpened:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		second = result.database
+	case <-time.After(15 * time.Second):
+		t.Fatal("the second writer never took the released lock")
+	}
+	defer second.Close()
+	secondPID := backendPID(second)
+	if held := lockSessions(true); len(held) != 1 || held[0] != secondPID {
+		t.Fatalf("lock holders %v, want the second writer session %d", held, secondPID)
+	}
+
+	// (4) The first writer's write fails, and so does every later one: its
+	// pool does not open another session.
+	if err := first.PersistSigned(ctx, record.OperationID, signed, SimulationResult{Slot: 11}, encodedEffects); err == nil {
+		t.Fatal("a writer without its session persisted a signed wire")
+	}
+	if err := first.PersistSigned(ctx, record.OperationID, signed, SimulationResult{Slot: 11}, encodedEffects); !errors.Is(err, errWriterSessionLost) {
+		t.Fatalf("the lost writer reconnected or failed otherwise: %v", err)
+	}
+	if conns := first.pool.Stat().TotalConns(); conns != 0 {
+		t.Fatalf("the lost writer holds %d connections", conns)
+	}
+	if status, wire, _ := row(); status != string(Decided) || len(wire) != 0 {
+		t.Fatalf("the lost writer changed the row: status=%s", status)
+	}
+	if held := lockSessions(true); len(held) != 1 || held[0] != secondPID {
+		t.Fatalf("lock holders %v after the lost writer's writes", held)
+	}
+
+	// (6) The second writer writes.
+	if err := second.PersistSigned(ctx, record.OperationID, signed, SimulationResult{Slot: 11}, encodedEffects); err != nil {
+		t.Fatal(err)
+	}
+	if status, wire, intent := row(); status != string(Signed) || !bytes.Equal(wire, signed.signedWire) || intent {
+		t.Fatalf("the second writer's signed row: status=%s intent=%v", status, intent)
+	}
+
+	// (5) The first writer's land on that signed row sends nothing: broadcast
+	// intent is written before a first send, and it cannot write.
+	operation, err := second.LoadNonterminal(ctx, productionRouteKey)
+	if err != nil || operation == nil || operation.Status != Signed {
+		t.Fatalf("load the signed row: %+v %v", operation, err)
+	}
+	sends := 0
+	rpc := newFakeChain(t, roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(string(body), `"method":"sendTransaction"`):
+			sends++
+			return response(`{"jsonrpc":"2.0","id":1,"result":"` + encodeBase58(wireSig(signed.signedWire)) + `"}`), nil
+		case strings.Contains(string(body), `"method":"getEpochInfo"`):
+			return response(finalizedEpochJSON(5)), nil
+		case strings.Contains(string(body), `"method":"getSignatureStatuses"`):
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":5000},"value":[null]}}`), nil
+		}
+		t.Errorf("unexpected RPC: %s", body)
+		return nil, fmt.Errorf("unexpected RPC")
+	}))
+	if err := first.land(ctx, rpc, *operation); !errors.Is(err, errWriterSessionLost) {
+		t.Fatalf("the lost writer's land: %v", err)
+	}
+	if sends != 0 {
+		t.Fatalf("the lost writer sent the signed wire %d times", sends)
+	}
+	if status, _, intent := row(); status != string(Signed) || intent {
+		t.Fatalf("the lost writer moved the row: status=%s intent=%v", status, intent)
+	}
+
+	// The lost writer's worker stops on its next tick instead of running on.
+	worker := &Worker{routeKey: productionRouteKey, interval: time.Millisecond, manifest: manifest, runtime: tickRuntime{
+		loadLatch:       first.ManualRecoveryLatch,
+		loadNonterminal: first.LoadNonterminal,
+	}}
+	if err := worker.Run(ctx); !errors.Is(err, errWriterSessionLost) {
+		t.Fatalf("the lost writer's worker did not stop: %v", err)
 	}
 }

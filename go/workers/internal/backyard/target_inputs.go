@@ -115,7 +115,7 @@ func RunLaneExit(ctx context.Context, databaseURL string, request LaneExitReques
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	database, err := OpenDatabase(ctx, databaseURL)
+	database, err := openOperatorDatabase(ctx, databaseURL)
 	if err != nil {
 		return "", err
 	}
