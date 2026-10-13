@@ -472,17 +472,17 @@ SELECT count(*) FROM superseded`, cluster, held).Scan(&summary.Superseded)
 }
 
 // recordSnapshot stores the tick's reserves once; the same snapshot read
-// twice is one row.
+// twice is one row. The lookup is its own statement: a conflicting insert
+// waits for the other writer's commit, and only a later statement's snapshot
+// sees that row.
 func (s *Store) recordSnapshot(ctx context.Context, cluster string, record snapshotRecord) (int64, error) {
 	var id int64
 	err := s.pool.QueryRow(ctx, `
-WITH inserted AS (
-  INSERT INTO loyal_yield.optimizer_epochs(cluster,epoch_key,market_slot,observed_at,expires_at,market_state)
-  VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,epoch_key) DO NOTHING RETURNING id)
-SELECT id FROM inserted
-UNION ALL
-SELECT id FROM loyal_yield.optimizer_epochs WHERE cluster=$1 AND epoch_key=$2 AND NOT EXISTS(SELECT 1 FROM inserted)
-LIMIT 1`, cluster, record.Key, record.Slot, record.ObservedAt, record.ExpiresAt, record.State).Scan(&id)
+INSERT INTO loyal_yield.optimizer_epochs(cluster,epoch_key,market_slot,observed_at,expires_at,market_state)
+VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,epoch_key) DO NOTHING RETURNING id`, cluster, record.Key, record.Slot, record.ObservedAt, record.ExpiresAt, record.State).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.pool.QueryRow(ctx, `SELECT id FROM loyal_yield.optimizer_epochs WHERE cluster=$1 AND epoch_key=$2`, cluster, record.Key).Scan(&id)
+	}
 	return id, err
 }
 
