@@ -23,11 +23,13 @@ import (
 // deposit in one transaction). The same read must also tolerate an unfunded
 // vault PDA (rehearsal shadow-approved-account-diagnostic-20261004T0009Z): a
 // Squads vault is a system account only while it holds lamports.
+//
+// The withdraw empties the source obligation, so KLend closes it and pays its
+// rent to the vault before init_obligation: the payer tops up nothing.
 func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
-	const rent = uint64(23_942_400)
 	fresh, r := loadFixtureFreshRoute(t, 2_000_000_000_000)
 	in := fresh.input
-	if !in.TargetObligationMissing || in.VaultRentTopUpLamports != rent || in.Payer != r.signer || in.SourceFarmUserMissing || in.TargetFarmUserMissing || fresh.evidence.Anchors.TargetCollateralRaw != 0 {
+	if !in.TargetObligationMissing || in.VaultRentTopUpLamports != 0 || in.Payer != r.signer || in.SourceFarmUserMissing || in.TargetFarmUserMissing || fresh.evidence.Anchors.TargetCollateralRaw != 0 {
 		t.Fatalf("setup facts not read from chain: %+v", in)
 	}
 	// The route is observed at its own read's context slot (the second read).
@@ -46,7 +48,7 @@ func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
 		}
 		steps = append(steps, step)
 	}
-	want := []string{"kamino_refresh_reserve", "kamino_refresh_reserve", "kamino_refresh_obligation", "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2*", "system_transfer_vault_rent_top_up", "kamino_init_obligation*", "kamino_refresh_obligation", "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2*"}
+	want := []string{"kamino_refresh_reserve", "kamino_refresh_reserve", "kamino_refresh_obligation", "kamino_withdraw_obligation_collateral_and_redeem_reserve_collateral_v2*", "kamino_init_obligation*", "kamino_refresh_obligation", "kamino_deposit_reserve_liquidity_and_obligation_collateral_v2*"}
 	if len(steps) != len(want) {
 		t.Fatalf("route %v, want %v", steps, want)
 	}
@@ -54,6 +56,35 @@ func TestFreshRouteSetsUpAMissingTargetObligationInsideTheRoute(t *testing.T) {
 		if steps[i] != want[i] {
 			t.Fatalf("route %v, want %v", steps, want)
 		}
+	}
+}
+
+// The payer funds only what the vault lacks once the source obligation's rent
+// is back: all of it when the withdraw leaves the obligation open, the
+// difference when the closed obligation held less than the new one's rent.
+func TestFreshRouteTopsUpWhatTheClosedSourceDoesNotReturn(t *testing.T) {
+	const rent = uint64(23_942_400)
+	for name, c := range map[string]struct {
+		obligation func(*chain.Account)
+		want       uint64
+	}{
+		"another deposit keeps it open": {func(a *chain.Account) {
+			fixtureKey(t, a.Data, 96+136, testIdentity(9))
+			binary.LittleEndian.PutUint64(a.Data[96+136+32:], 1)
+		}, rent},
+		"a borrow keeps it open": {func(a *chain.Account) { fixtureKey(t, a.Data, 1208, testIdentity(9)) }, rent},
+		"closed below the rent":  {func(a *chain.Account) { a.Lamports = rent - 1_000 }, 1_000},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, lease := fixtureFreshRouteObligation(t, 2_000_000_000_000, nil, c.obligation)
+			fresh, err := r.loadFreshRoute(context.Background(), lease, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fresh.input.VaultRentTopUpLamports != c.want {
+				t.Fatalf("top-up %d, want %d", fresh.input.VaultRentTopUpLamports, c.want)
+			}
+		})
 	}
 }
 
@@ -74,6 +105,13 @@ func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint
 // reading it with the route's lease. mutate, when set, edits the source and
 // target reserve accounts before they are served.
 func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source, target *chain.Account)) (*Revalidator, RevalidationLease) {
+	t.Helper()
+	return fixtureFreshRouteObligation(t, collateralSupply, mutate, nil)
+}
+
+// fixtureFreshRouteObligation is fixtureFreshRoute whose source obligation,
+// which holds its rent and only the moved deposit, obligation may edit.
+func fixtureFreshRouteObligation(t *testing.T, collateralSupply uint64, mutate func(source, target *chain.Account), obligation func(*chain.Account)) (*Revalidator, RevalidationLease) {
 	t.Helper()
 	vault := testIdentity(4)
 	source := ReserveIdentity{Address: testIdentity(1), Market: testIdentity(40), Mint: USDCMint}
@@ -102,13 +140,16 @@ func fixtureFreshRoute(t *testing.T, collateralSupply uint64, mutate func(source
 		mutate(&sourceAccount, &targetAccount)
 		held[source.Address], held[target.Address] = sourceAccount, targetAccount
 	}
-	obligation := fixtureAccount(sourcePosition.Obligation, kamino.ProgramID.String(), 1, make([]byte, kamino.ObligationSize))
-	copy(obligation.Data, kamino.ObligationDiscriminator[:])
-	fixtureKey(t, obligation.Data, 32, source.Market)
-	fixtureKey(t, obligation.Data, 64, vault)
-	fixtureKey(t, obligation.Data, 96, source.Address)
-	binary.LittleEndian.PutUint64(obligation.Data[128:136], amount)
-	held[sourcePosition.Obligation] = obligation
+	sourceObligation := fixtureAccount(sourcePosition.Obligation, kamino.ProgramID.String(), rent, make([]byte, kamino.ObligationSize))
+	copy(sourceObligation.Data, kamino.ObligationDiscriminator[:])
+	fixtureKey(t, sourceObligation.Data, 32, source.Market)
+	fixtureKey(t, sourceObligation.Data, 64, vault)
+	fixtureKey(t, sourceObligation.Data, 96, source.Address)
+	binary.LittleEndian.PutUint64(sourceObligation.Data[128:136], amount)
+	if obligation != nil {
+		obligation(&sourceObligation)
+	}
+	held[sourcePosition.Obligation] = sourceObligation
 	ata := fixtureAccount(sourcePosition.Position.VaultLiquidityATA, tokenProgram, 1, make([]byte, 165))
 	fixtureKey(t, ata.Data, 0, USDCMint)
 	fixtureKey(t, ata.Data, 32, vault)

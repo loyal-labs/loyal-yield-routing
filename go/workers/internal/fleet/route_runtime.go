@@ -658,6 +658,12 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 		if accounts[6] != nil {
 			vaultLamports = accounts[6].Lamports
 		}
+		// KLend's withdraw closes the obligation it leaves with no active
+		// deposit and no borrow and pays its lamports to the owner, the vault,
+		// before init_obligation runs in this transaction.
+		if deposits := sourceObligation.DepositReserves(); len(deposits) == 1 && deposits[0] == accounts[0].Key && len(sourceObligation.BorrowReserves()) == 0 {
+			vaultLamports += accounts[2].Lamports
+		}
 		if topUp, err = vaultRentTopUp(rent, vaultLamports); err != nil {
 			return f, err
 		}
