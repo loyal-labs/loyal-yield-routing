@@ -63,58 +63,83 @@ Then run `systemctl daemon-reload`.
 
 ## Upgrade
 
-```sh
-install -m 0555 bin/loyal-engine /opt/loyal/bin/loyal-engine
-systemctl restart loyal-retail
-```
+Backyard and retail deploy with `bun run deploy` (next section). The
+observer runs `/opt/loyal/releases/observer/<sha>/loyal-observer` through
+the same kind of `40-verified-release.conf` drop-in, but `bun run deploy`
+does not cover it: upload the binary there, point the drop-in at it, then
+`systemctl daemon-reload && systemctl restart loyal-observer`.
 
 On a restart, signed and sent rows stay on their operation rows, and the
 next start lands them (`land()`). Restart one unit at a time. Only one writer
 per family runs: with `HoldFamily`, a second process exits and restarts until
 the first one stops.
 
-## Backyard release
+## Release (Backyard and retail)
 
-Backyard deploys with one command from a Mac clone, and only with the
-owner's go-ahead (implementation lanes never deploy):
+Backyard and retail deploy with one command from a Mac clone, and only with
+the owner's go-ahead (implementation lanes never deploy):
 
 ```sh
-bun run deploy backyard [sha]     # sha defaults to origin/main
+bun run deploy backyard [sha] [--migrations-applied]   # sha defaults to origin/main
+bun run deploy retail [sha] [--migrations-applied]
 ```
 
 `scripts/deploy-workers.sh` reaches the host through the ssh alias in
 `LOYAL_WORKERS_SSH` (default `loyal-workers`, logging in as root). It
 refuses a commit that is not on origin/main, and it refuses when
 `migrations/` differs between the running release and the target: apply
-them first, then rerun with `--migrations-applied`. It builds `make release`
+them first, then rerun with `--migrations-applied`. A target that is already
+running (and active) is a no-op, rules included. It builds `make release`
 from a `git archive` snapshot of the commit in a fresh `~/.loyal/deploy-build.*` dir,
-uploads the binary and `activate-backyard.sh` from that snapshot to
-`/opt/loyal/releases/backyard/<sha>/`, and runs the script there as a
+uploads the binary and `activate.sh` from that snapshot to
+`/opt/loyal/releases/<family>/<sha>/` and the snapshot's `monitoring/` to a
+fresh `/tmp/loyal-monitoring.*` dir, and runs `activate.sh` there as a
 transient unit (`systemd-run --wait --pipe`), so a dropped ssh session
 cannot cut the swap short. The host log is
-`/var/log/loyal-deploy/backyard-<sha>.log`.
+`/var/log/loyal-deploy/<family>-<sha>.log`.
 
-`activate-backyard.sh` on the host:
+`activate.sh <family> <sha> <sha256> <monitoring dir>` on the host:
 
-1. Takes `/run/lock/loyal-deploy-backyard.lock` (waits up to 300 s): one
-   Backyard deploy at a time, whichever session starts it.
+1. Takes `/run/lock/loyal-deploy.lock` (waits up to 300 s): one deploy at a
+   time on the host, any family, whichever session starts it.
 2. Checks the binary's sha256 and reads the running release from
-   `/etc/systemd/system/loyal-backyard.service.d/40-verified-release.conf`.
-   The same release already active is a no-op. A unit that is not active
-   stops the deploy: someone stopped it on purpose.
-3. Gates on `loyal-engine backyard in-flight` of the new release, run under
-   the unit's own `BACKYARD_DATABASE_URL` credential: the count of
-   operations a restart would resume. It waits up to 120 s for 0, stops the
-   unit, and checks again; a nonzero count starts the previous release.
-4. Backs the drop-in up to `/root/40-verified-release.conf.<prev>.bak`,
-   points it at the new release and starts the unit. The release counts as
-   up when, within 60 s, the unit is active, `NRestarts` is 0 and the
-   journal shows `backyard_worker_start` with lease owner `…sha-<sha>`.
-   Otherwise it restores the backup and restarts the previous release.
+   `/etc/systemd/system/loyal-<family>.service.d/40-verified-release.conf`.
+   The same release already active only installs the rules (step 6). A unit
+   that is not active stops the deploy: someone stopped it on purpose.
+3. Backyard only: gates on `loyal-engine backyard in-flight` of the new
+   release, run under the unit's own `BACKYARD_DATABASE_URL` credential: the
+   count of operations a restart would resume. It waits up to 120 s for 0,
+   stops the unit, and checks again; a nonzero count starts the previous
+   release. Retail has no gate: a stop leaves its signed rows on their
+   operation rows and the next start lands them.
+4. Backs the drop-in up to
+   `/root/loyal-<family>-40-verified-release.conf.<prev>.bak`, points it at
+   the new release and starts the unit.
+5. Backyard counts as up when, within 60 s, the unit is active, `NRestarts`
+   is 0 and the journal shows `backyard_worker_start` with lease owner
+   `…sha-<sha>`. Retail logs no release, so it counts as up when it is
+   active with `NRestarts` 0 for 20 s. Otherwise the backup comes back and
+   the previous release restarts (Backyard: only with nothing in flight).
+6. Installs `monitoring/loyal.rules.yml` to `/etc/prometheus/loyal.rules.yml`
+   unless the two are byte-identical. In the uploaded dir it first runs
+   `promtool check rules loyal.rules.yml`, `promtool test rules
+   loyal.rules.test.yml` and `python3 verify-alert-messages.py`; any failure
+   leaves the host file as it was. It then replaces the file atomically,
+   runs `systemctl reload prometheus` and reads Prometheus on
+   `127.0.0.1:9090`: a successful config reload after the install, and the
+   rule count `promtool` reported served from that file. Otherwise it puts
+   the previous file back and reloads. A rules failure after a successful
+   swap leaves the new release running and exits nonzero.
 
-Roll back with `bun run deploy backyard <prev-sha>`. Only commits that
-contain `activate-backyard.sh` and the `in-flight` command can be deployed
-this way; an older release goes back by hand through the drop-in.
+The deploy does not install `alertmanager.yml`: the host's copy carries the
+real alerts `chat_id` in place of the repo's placeholder, which the repo does
+not capture. Install an `alertmanager.yml` change by hand: replace the
+placeholder, `amtool check-config`, then `systemctl reload
+prometheus-alertmanager`.
+
+Roll back with `bun run deploy <family> <prev-sha>`. Only commits that
+contain `activate.sh` (and, for Backyard, the `in-flight` command) can be
+deployed this way; an older release goes back by hand through the drop-in.
 
 ## Realtime (Rust)
 

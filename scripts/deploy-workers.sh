@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# bun run deploy backyard [sha] [--migrations-applied]
+# bun run deploy backyard|retail [sha] [--migrations-applied]
 #
-# Builds the Backyard engine from a clean snapshot of an origin/main commit,
-# uploads it to the workers host as /opt/loyal/releases/backyard/<sha>/ and
-# switches loyal-backyard to it with deploy/hetzner/activate-backyard.sh,
-# which holds the host's deploy lock, waits for no in-flight operation and
-# rolls back if the new release does not come up. Production: owner's go-ahead.
+# Builds the engine from a clean snapshot of an origin/main commit, uploads
+# it to the workers host as /opt/loyal/releases/<family>/<sha>/ and switches
+# loyal-<family> to it with deploy/hetzner/activate.sh, which holds the
+# host's deploy lock, waits for no in-flight Backyard operation, rolls back
+# if the new release does not come up, and then installs the commit's
+# Prometheus rules (deploy/hetzner/monitoring). Production: owner's go-ahead.
 #
 # The host is the ssh alias in LOYAL_WORKERS_SSH (default loyal-workers); it
 # must log in as root.
 # shellcheck disable=SC2029 # the remote commands are built here on purpose
 set -euo pipefail
 
-usage="usage: bun run deploy backyard [sha] [--migrations-applied]"
+usage="usage: bun run deploy backyard|retail [sha] [--migrations-applied]"
 family=${1:-}
 [[ $# -gt 0 ]] && shift
-if [[ $family != backyard ]]; then
+if [[ $family != backyard && $family != retail ]]; then
   echo "$usage" >&2
-  echo "only the backyard family deploys with this command (got '${family}')" >&2
   exit 2
 fi
 target=origin/main
@@ -31,8 +31,9 @@ for arg in "$@"; do
 done
 
 host=${LOYAL_WORKERS_SSH:-loyal-workers}
-dropin=/etc/systemd/system/loyal-backyard.service.d/40-verified-release.conf
-releases=/opt/loyal/releases/backyard
+unit=loyal-$family
+dropin=/etc/systemd/system/$unit.service.d/40-verified-release.conf
+releases=/opt/loyal/releases/$family
 
 cd "$(dirname "$0")/.."
 git fetch -q origin main
@@ -67,8 +68,8 @@ if [[ ${#running} -ne 40 ]]; then
 fi
 echo "host $host runs $running; deploying $sha"
 if [[ $running == "$sha" ]]; then
-  state=$(ssh "$host" systemctl is-active loyal-backyard || true)
-  echo "loyal-backyard already runs $sha ($state); nothing to deploy"
+  state=$(ssh "$host" systemctl is-active "$unit" || true)
+  echo "$unit already runs $sha ($state); nothing to deploy"
   if [[ $state != active ]]; then
     exit 1
   fi
@@ -96,8 +97,8 @@ mkdir -p "$HOME/.loyal"
 build=$(mktemp -d "$HOME/.loyal/deploy-build.XXXXXX")
 trap 'rm -rf "$build"' EXIT
 git archive "$sha" go/workers deploy/hetzner | tar -x -C "$build"
-if [[ ! -f $build/deploy/hetzner/activate-backyard.sh ]]; then
-  echo "$sha predates activate-backyard.sh; it cannot be deployed with this command" >&2
+if [[ ! -f $build/deploy/hetzner/activate.sh ]]; then
+  echo "$sha predates deploy/hetzner/activate.sh; it cannot be deployed with this command" >&2
   exit 1
 fi
 GOFLAGS=-buildvcs=false make -C "$build/go/workers" release RELEASE="sha-$sha" GOARCH="$goarch"
@@ -112,19 +113,23 @@ echo "built loyal-engine sha-$sha sha256 $sum"
 dir=$releases/$sha
 ssh "$host" "mkdir -p $dir"
 scp -q "$binary" "$host:$dir/loyal-engine.tmp"
-scp -q "$build/deploy/hetzner/activate-backyard.sh" "$host:$dir/activate-backyard.sh.tmp"
-ssh "$host" "chmod 555 $dir/loyal-engine.tmp $dir/activate-backyard.sh.tmp &&
+scp -q "$build/deploy/hetzner/activate.sh" "$host:$dir/activate.sh.tmp"
+ssh "$host" "chmod 555 $dir/loyal-engine.tmp $dir/activate.sh.tmp &&
   mv -f $dir/loyal-engine.tmp $dir/loyal-engine &&
-  mv -f $dir/activate-backyard.sh.tmp $dir/activate-backyard.sh"
+  mv -f $dir/activate.sh.tmp $dir/activate.sh"
+# The commit's monitoring files go to a fresh host temp dir that activate.sh
+# checks, installs from and removes.
+monitoring=$(ssh "$host" "mktemp -d /tmp/loyal-monitoring.XXXXXX")
+scp -q -r "$build/deploy/hetzner/monitoring" "$host:$monitoring/"
 
 # A transient unit, so the swap finishes even if this ssh session drops; its
-# log is also at /var/log/loyal-deploy/backyard-<sha>.log on the host.
+# log is also at /var/log/loyal-deploy/<family>-<sha>.log on the host.
 set +e
-ssh "$host" "systemd-run --unit=loyal-deploy-backyard-${sha:0:12} --quiet --wait --pipe --collect \
-  /bin/sh $dir/activate-backyard.sh $sha $sum"
+ssh "$host" "systemd-run --unit=loyal-deploy-$family-${sha:0:12} --quiet --wait --pipe --collect \
+  /bin/sh $dir/activate.sh $family $sha $sum $monitoring/monitoring"
 status=$?
 set -e
 if [[ $status -ne 0 ]]; then
-  echo "activate exited $status; see $host:/var/log/loyal-deploy/backyard-$sha.log" >&2
+  echo "activate exited $status; see $host:/var/log/loyal-deploy/$family-$sha.log" >&2
 fi
 exit "$status"
