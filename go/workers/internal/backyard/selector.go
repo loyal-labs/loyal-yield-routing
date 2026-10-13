@@ -305,11 +305,12 @@ type SelectorResult struct {
 	SelectedQuote *MoveQuote `json:"selectedQuote,omitempty"`
 }
 
-// laneExposure: the vault holds a lane's position or custody. Only a flat
-// vault (cash in Voltr or Squads) enters a lane on the selector's choice; held
-// lanes keep their capital, and an operator exit row moves it.
+// laneExposure: the vault holds a lane's position or collateral. Only a flat
+// vault (cash in Voltr, Squads or debt-mint custody) enters a lane on the
+// selector's choice; held lanes keep their capital, and an operator exit row
+// moves it.
 func laneExposure(s Snapshot) bool {
-	return s.HasPosition || s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0 || s.CollateralIdleRaw > 0 || s.PrimeIdleRaw > 0 || s.DebtIdleRaw > 0 || s.OtherLanesNAVRaw != 0 || s.HeldLanes != ""
+	return s.HasPosition || s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0 || s.CollateralIdleRaw > 0 || s.PrimeIdleRaw > 0 || s.HeldLanes != ""
 }
 
 func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR, years float64) float64 {

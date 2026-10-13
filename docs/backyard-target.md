@@ -31,11 +31,16 @@ authority.
    `stale`.
 3. **Operator exit.** Debt 0; with `--equity-zero` the collateral returns to
    Voltr too.
-4. **Withdrawal demand** beyond Voltr idle. Custody in flight finishes first
-   in the withdrawal's direction, Squads cash stages, and the held lane with
-   the most equity (an overflow lane included) releases the rest plus 1% (at
-   least $1) at its own LTV, up to under 90% of its equity; the next lane
-   frees what is still missing. 90% of a lane or more is the operator's exit.
+4. **Custody in flight** finishes first: collateral a held lane's next leg
+   takes (in the withdrawal's or an exit's direction when there is one), and
+   debt-mint cash above dust that a withdrawal needs or no held lane that
+   steps owes, which converts toward Voltr (wYLDS stakes to AUTO collateral).
+   Custody is vault cash; debt-mint cash makes no lane held.
+   Then **withdrawal demand** beyond Voltr idle: Squads cash stages, and the
+   held lane with the most equity (an overflow lane included) releases the
+   rest plus 1% (at least $1) at its own LTV, up to under 90% of its equity;
+   the next lane frees what is still missing. 90% of a lane or more is the
+   operator's exit.
 5. **Selector choices.** An overflow source (AUTO/AUTO/PYUSD) below its level
    with its own borrowing closed moves the collateral it can release down to
    the live cap's LTV into its overflow lane, when that lane's level is

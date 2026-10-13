@@ -76,10 +76,12 @@ binary also derived a stop from the journal's newest `HOLD_MANUAL_RECOVERY`
 and `HOLD_CLEARED` rows when no latch row was active; this binary reads only
 the latch row (0076 backfilled it).
 
-Lanes that share one PYUSD debt custody (AUTO/AUTO/PYUSD, Ethena/USDe/PYUSD,
-Prime/PRIME/PYUSD) see its whole balance: a step's conversion excess left
-there converts on whichever of those lanes works next. Vault value is
-conserved; per-lane attribution of that residue is not.
+Custody is vault cash (`docs/backyard-atomic-step.md`): the vault's one
+PYUSD account, shared by AUTO/AUTO/PYUSD, Ethena/USDe/PYUSD and
+Prime/PRIME/PYUSD, is counted once in NAV and belongs to no lane. A step's
+conversion excess left there is taken whole by the next step of a lane that
+owes PYUSD; when a withdrawal needs it or no lane that steps owes it, it
+converts to USDC.
 
 A safety step (debt 0, maturity, hard LTV) the chain has no withdraw room for
 holds `no_room` and keeps the lane's other rules waiting. The withdraw room

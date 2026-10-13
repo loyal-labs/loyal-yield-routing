@@ -33,12 +33,19 @@ conversion, no debt leg, the source's LTV rises to the live cap at most.
   is the Squads bridge account; its cash belongs to the bridge flows
   (withdrawals, stages, top-ups), so a step never counts it as held. Its
   balance only starts the step's expected effects.
-- A Jupiter conversion usually delivers more than its minimum. That excess
-  joins the position by the next tick: borrowed-token excess beside debt above
-  dust, and Squads cash beside USDC debt, convert to collateral
-  (`step_residue_to_collateral`), and collateral beside debt deposits
-  (`topup_collateral_deposit`). Neither leg borrows or repays; each only
-  lowers LTV. A lane's next up step also converts its held borrowed token.
+- Custody is vault cash; steps consume it whole. A custody account belongs to
+  the vault, not to a lane: NAV counts it once, and the lanes that name it
+  (the PYUSD, PRIME and AUTO accounts are shared) all see its whole balance.
+- A Jupiter conversion usually delivers more than its minimum. Collateral
+  excess deposits by the next tick (`topup_collateral_deposit`), and Squads
+  cash beside USDC debt converts to collateral (`step_residue_to_collateral`);
+  neither leg borrows or repays. Borrowed-token excess waits as counted vault
+  cash for the next step of a lane that owes that token, which converts or
+  repays it with the step's own amount. When a withdrawal needs it, or no
+  lane that steps owes it (after a debt-zero exit, or when only the exit-only
+  Ethena lane owes PYUSD), it converts above dust (`outbound_debt_residue`):
+  to USDC, or for wYLDS, which never redeems to USDC, staked to AUTO
+  collateral that an AUTO lane then deposits.
 - A split-policy lane caps each KLend leg at the installed `1e12` raw: a down
   step repays at most nine tenths of it, leaving room for the conversion's
   excess, and repeats while debt remains; an up step borrows at most what

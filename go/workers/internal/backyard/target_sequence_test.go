@@ -69,7 +69,7 @@ func (b *book) views() []Snapshot {
 			CollateralIdleRaw: l.idle, CollateralIdleValueRaw: l.idle,
 			HasPosition: l.coll > 0 || l.debt > 0, PositionCollateralRaw: l.coll, PositionCollateralValueRaw: l.coll,
 			PositionDebtRaw: l.debt, PositionDebtValueRaw: l.debt, PayoffDebtRaw: l.debt,
-			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr, OtherLanesNAVRaw: nav - (l.coll + l.idle - l.debt) - b.squads,
+			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr,
 			ChainUnix: b.now, BorrowCapacityKnown: true, BorrowUtilizationBlocked: l.blocked, AdditionalDebtRoomRaw: uint64(l.room),
 			ObligationPresenceKnown: true, ObligationPresent: true}
 		copy(s.BorrowDebtPriceSF[:], leverageTestPriceBytes())
@@ -486,5 +486,56 @@ func TestTargetKeepAliveWaitsForAWithdrawalUntilTheLastDay(t *testing.T) {
 	b.demand = 5_000_000_000
 	if s, d := b.next(); s.Target.Rule != ruleTermKeepAlive || d.Reason != termKeepAliveReason {
 		t.Fatalf("20 hours left: %+v %+v", s.Target, d)
+	}
+}
+
+// Debt-mint cash no held lane owes leaves toward Voltr on the lane that
+// names its custody, before a flat vault's entry, and makes no lane held;
+// dust is nothing.
+func TestTargetDebtCashNoLaneOwesConvertsToUSDC(t *testing.T) {
+	t.Parallel()
+	b := &book{now: bookNow, voltr: 50_000_000_000}
+	flat := b.views()[0]
+	pyusd := flat
+	pyusd.RouteLane, pyusd.StrategyKey = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane
+	for _, residue := range []int64{25_000_000, partialWithdrawalDustRaw} {
+		pyusd.DebtIdleRaw = residue
+		views := []Snapshot{flat, pyusd}
+		i, tgt := target(views, b.in)
+		s := views[i]
+		s.Target = tgt
+		d := Decide(s)
+		if residue == partialWithdrawalDustRaw {
+			if tgt.Rule == ruleCustody || d.Action != Hold {
+				t.Fatalf("dust moved: %+v %+v", tgt, d)
+			}
+			continue
+		}
+		if s.HeldLanes != "" || tgt.Rule != ruleCustody || !tgt.Outbound || d.Action != SwapDebtToUSDCStep || d.StrategyKey != autoAUTOPYUSD.Lane || d.AmountRaw != residue || d.Validate() != nil {
+			t.Fatalf("loose PYUSD: held %q target %+v decision %+v", s.HeldLanes, tgt, d)
+		}
+	}
+	// Beside collateral its held lane deposits next, the collateral goes
+	// first; a lane at debt 0 owes nothing, so its PYUSD converts after.
+	topup := pyusd
+	topup.HeldLanes, topup.DebtIdleRaw, topup.CollateralIdleRaw, topup.MinimumCollateralDepositRaw = autoAUTOPYUSD.Lane, 25_000_000, 5_000_000, 1
+	topup.HasPosition, topup.PositionCollateralRaw, topup.PositionCollateralValueRaw = true, 1_000_000_000, 1_000_000_000
+	if d := Decide(targeted(topup)); d.Action != OpenRouteStep || d.Reason != topupDepositReason {
+		t.Fatalf("collateral in flight: %+v", d)
+	}
+	topup.CollateralIdleRaw = 0
+	if d := Decide(targeted(topup)); d.Action != SwapDebtToUSDCStep || d.AmountRaw != 25_000_000 {
+		t.Fatalf("PYUSD beside a debt-free lane: %+v", d)
+	}
+	// PYUSD its lane owes waits for that lane's step, unless a withdrawal
+	// needs it: then it converts before any lane releases.
+	owed := topup
+	owed.PositionDebtRaw, owed.PositionDebtValueRaw, owed.PayoffDebtRaw, owed.LTVBPS = 300_000_000, 300_000_000, 300_000_000, 3000
+	if d := Decide(targeted(owed)); d.Action != Hold || d.Reason != holdAtTarget {
+		t.Fatalf("owed PYUSD moved: %+v", d)
+	}
+	owed.WithdrawalDemandRaw, owed.VoltrIdleRaw = 20_000_000, 0
+	if d := Decide(targeted(owed)); d.Action != SwapDebtToUSDCStep || d.AmountRaw != 25_000_000 {
+		t.Fatalf("owed PYUSD beside a withdrawal: %+v", d)
 	}
 }

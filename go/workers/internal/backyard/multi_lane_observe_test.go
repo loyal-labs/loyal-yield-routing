@@ -89,8 +89,8 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 	manifest, accounts := multiLaneFixture(t, nil)
 	o := observeMultiLane(t, manifest, accounts)
 	s := o.Snapshot
-	if s.RouteLane != autoAUTOPYUSD.Lane || s.HeldLanes != autoAUTOPYUSD.Lane || s.OtherLanesNAVRaw != 0 {
-		t.Fatalf("one held lane is not the working lane alone: %q %q %d", s.RouteLane, s.HeldLanes, s.OtherLanesNAVRaw)
+	if s.RouteLane != autoAUTOPYUSD.Lane || s.HeldLanes != autoAUTOPYUSD.Lane {
+		t.Fatalf("one held lane is not the working lane alone: %q %q", s.RouteLane, s.HeldLanes)
 	}
 	if s.StrategyNAVRaw != 32_000_010 || s.TotalVaultNAVRaw != 32_000_021 {
 		t.Fatalf("one-lane NAV drifted: %d/%d", s.StrategyNAVRaw, s.TotalVaultNAVRaw)
@@ -137,8 +137,8 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 	if s.RouteLane != autoAUTOPYUSD.Lane || s.HeldLanes != onreONycUSDC+","+autoAUTOPYUSD.Lane {
 		t.Fatalf("held set or working lane wrong: %q %q", s.RouteLane, s.HeldLanes)
 	}
-	if s.OtherLanesNAVRaw != 8_000_000 || s.StrategyNAVRaw != 32_000_010+8_000_000 || s.TotalVaultNAVRaw != 32_000_021+8_000_000 {
-		t.Fatalf("two-lane NAV: other %d strategy %d total %d", s.OtherLanesNAVRaw, s.StrategyNAVRaw, s.TotalVaultNAVRaw)
+	if s.StrategyNAVRaw != 32_000_010+8_000_000 || s.TotalVaultNAVRaw != 32_000_021+8_000_000 {
+		t.Fatalf("two-lane NAV: strategy %d total %d", s.StrategyNAVRaw, s.TotalVaultNAVRaw)
 	}
 	// The working lane's per-lane view is unchanged by the other lane.
 	if s.PositionCollateralValueRaw != 30_000_000 || s.PositionDebtValueRaw != 7_000_000 || s.SquadsIdleRaw != 6 || s.DebtIdleRaw != int64(autoFixtureDebtIdleRaw) {
@@ -148,9 +148,8 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 		t.Fatal("another held lane left the observation identity unchanged")
 	}
 
-	// AUTO and Prime/PYUSD share the PYUSD custody: its 9_000_000 idle PYUSD
-	// is the working lane's, counted once. Prime/PYUSD adds 5_000_000 -
-	// 1_000_000.
+	// AUTO and Prime/PYUSD name the vault's one PYUSD custody: its 9_000_000
+	// idle PYUSD is counted once. Prime/PYUSD adds 5_000_000 - 1_000_000.
 	manifest, accounts = multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
 		fundLane(t, accounts, primePRIMEPYUSD.Lane, 5_000_000, 1_000_000)
 	})
@@ -158,8 +157,8 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 	if s.HeldLanes != autoAUTOPYUSD.Lane+","+primePRIMEPYUSD.Lane || s.RouteLane != autoAUTOPYUSD.Lane {
 		t.Fatalf("PYUSD-sharing held set wrong: %q %q", s.RouteLane, s.HeldLanes)
 	}
-	if s.OtherLanesNAVRaw != 4_000_000 || s.StrategyNAVRaw != 32_000_010+4_000_000 {
-		t.Fatalf("shared PYUSD custody counted twice or lost: other %d strategy %d", s.OtherLanesNAVRaw, s.StrategyNAVRaw)
+	if s.StrategyNAVRaw != 32_000_010+4_000_000 {
+		t.Fatalf("shared PYUSD custody counted twice or lost: strategy %d", s.StrategyNAVRaw)
 	}
 	// The bridge report built for this observation values the same book.
 	routes, err := navRoutes(autoAUTOPYUSD, s.heldLanes())
@@ -212,5 +211,42 @@ func TestSharedCustodyBalanceAttribution(t *testing.T) {
 	held, err = observedSelectorHeldLanes(accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
 	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+PhaseOneLaneID+","+primePRIMEPYUSD.Lane {
 		t.Fatalf("PRIME balance beside two positioned Prime lanes: %v %v", held, err)
+	}
+}
+
+// Debt-mint custody is vault cash: it makes no lane held, is counted once,
+// and with no lane that steps owing PYUSD (a flat vault, or only exit-only
+// Ethena owing it) converts to USDC. Nothing waits for an operator.
+func TestPYUSDNoLaneOwesIsCountedOnceAndConverts(t *testing.T) {
+	flatten := func(accounts *[]ConfirmedAccount) {
+		upsertConfirmedAccount(accounts, ConfirmedAccount{Address: autoAUTOPYUSD.Kamino.Obligation})
+		custody := tokenAccountFixture(t, autoAUTOPYUSD.CollateralCustody, autoAUTOPYUSD.Kamino.CollateralMint, bridgeVault, 0)
+		custody.Owner = autoAUTOPYUSD.CollateralTokenProgram
+		upsertConfirmedAccount(accounts, custody)
+	}
+	for name, c := range map[string]struct {
+		mutate   func(*[]ConfirmedAccount)
+		held     string
+		strategy int64
+	}{
+		// Squads 6 + 9_000_000 idle PYUSD.
+		"flat vault": {flatten, "", 9_000_006},
+		// ... + Ethena's 10_000_000 collateral - 2_000_000 PYUSD debt.
+		"only Ethena": {func(a *[]ConfirmedAccount) {
+			flatten(a)
+			fundLane(t, a, ethenaUSDePYUSD.Lane, 10_000_000, 2_000_000)
+		}, ethenaUSDePYUSD.Lane, 17_000_006},
+	} {
+		manifest, accounts := multiLaneFixture(t, c.mutate)
+		s := observeMultiLane(t, manifest, accounts).Snapshot
+		if s.HeldLanes != c.held || s.StrategyNAVRaw != c.strategy || s.DebtIdleRaw != int64(autoFixtureDebtIdleRaw) {
+			t.Fatalf("%s: held %q NAV %d PYUSD %d", name, s.HeldLanes, s.StrategyNAVRaw, s.DebtIdleRaw)
+		}
+		// The bridge monitors read journal facts this batch-only fixture
+		// lacks; the conversion itself is the per-lane Decide.
+		s.MonitorsArmed = false
+		if d := Decide(s); s.Target.Rule != ruleCustody || !s.Target.Outbound || d.Action != SwapDebtToUSDCStep || d.AmountRaw != int64(autoFixtureDebtIdleRaw) || d.Validate() != nil {
+			t.Fatalf("%s: target %+v decision %+v", name, s.Target, d)
+		}
 	}
 }

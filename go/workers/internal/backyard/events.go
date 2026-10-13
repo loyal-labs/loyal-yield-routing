@@ -182,9 +182,8 @@ func (e *events) tickResult(err error, fatal bool) {
 		e.facts.Progress(engine.FamilyBackyard)
 	}
 	if heartbeat {
-		// mid_move: borrowed cash or withdrawn collateral not yet redeposited.
 		e.log.Info("backyard_heartbeat", "lane", s.RouteLane, "ltv_bps", s.LTVBPS, "nav_raw", s.StrategyNAVRaw, "manual", manual,
-			"has_position", s.HasPosition, "mid_move", debtCashRaw(s) > 0 || s.CollateralIdleRaw > 0, "target_rule", s.Target.Rule,
+			"has_position", s.HasPosition, "target_rule", s.Target.Rule,
 			"withdrawal_demand_raw", s.WithdrawalDemandRaw, "voltr_idle_raw", s.VoltrIdleRaw, "withdrawal_waiting_seconds", waiting,
 			"fee_accumulator_raw", s.FeeAccumulatorRaw, "lp_supply_incl_fees_raw", s.LPSupplyInclFeesRaw,
 			"fee_accumulator_warning", s.MonitorsArmed && s.Nonterminal == "" && approvedVoltrFeeTerms(s) && s.FeeAccumulatorRaw >= 0 && s.LPSupplyInclFeesRaw >= s.FeeAccumulatorRaw && feeAccumulatorNeedsWarning(uint64(s.FeeAccumulatorRaw), uint64(s.LPSupplyInclFeesRaw)))

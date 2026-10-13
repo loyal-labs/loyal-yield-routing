@@ -117,23 +117,24 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if strategyReceiptIntegrityFault(accountAt(accounts, bridgeStrategyReceipt)) {
 		return receiptIntegrityObservation(slot, selectedRoute), accounts, nil
 	}
-	// Custody several lanes share, with no position yet, is the entry's: the
-	// selector's entry lane, else the manifest's.
+	// Collateral several lanes share, with no position yet, is the entry's:
+	// the selector's entry lane, else the manifest's.
 	preferred := flatViewLane(selectedRoute.Lane, runtime.inputs)
-	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), preferred)
+	held, valued, err := observedLanes(accounts, preferred)
 	if err != nil {
 		return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 	}
-	viewLanes := held
+	// A view per valued lane; a flat vault's first is the lane its cash enters.
+	viewLanes := valued
 	if len(held) == 0 {
-		viewLanes = []string{preferred}
+		viewLanes = append([]string{preferred}, slices.DeleteFunc(slices.Clone(valued), func(l string) bool { return l == preferred })...)
 	}
 	first, err := runtimeRoute(viewLanes[0])
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	// Every held lane is valued in the same NAV, from the same bank.
-	routes, err := navRoutes(first, held)
+	// Every valued lane is in the same NAV, from the same bank.
+	routes, err := navRoutes(first, valued)
 	if err != nil {
 		return Observation{}, nil, err
 	}
@@ -168,8 +169,8 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			if strategyReceiptIntegrityFault(accountAt(refreshedAccounts, bridgeStrategyReceipt)) {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture breaks the strategy receipt"))
 			}
-			freshHeld, heldErr := observedSelectorHeldLanes(refreshedAccounts, earnLaneIDs(true), preferred)
-			if heldErr != nil || strings.Join(freshHeld, ",") != strings.Join(held, ",") {
+			freshHeld, freshValued, heldErr := observedLanes(refreshedAccounts, preferred)
+			if heldErr != nil || strings.Join(freshHeld, ",") != strings.Join(held, ",") || strings.Join(freshValued, ",") != strings.Join(valued, ",") {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("valuation capture moved the held lanes"))
 			}
 			slot, accounts = refreshedSlot, refreshedAccounts
@@ -216,7 +217,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 		if err != nil {
 			return Observation{}, nil, err
 		}
-		view, hold, err := observeLaneView(ctx, manifest, runtime, slot, accounts, route, held, demand, fingerprint, refreshExhausted)
+		view, hold, err := observeLaneView(ctx, manifest, runtime, slot, accounts, route, held, valued, demand, fingerprint, refreshExhausted)
 		if err != nil || hold != nil {
 			if hold != nil {
 				return *hold, accounts, nil
@@ -253,6 +254,16 @@ func flatViewLane(preferred string, in targetInputs) string {
 	return preferred
 }
 
+// observedLanes is the batch's held lanes and every lane its NAV values.
+func observedLanes(accounts []ConfirmedAccount, preferred string) ([]string, []string, error) {
+	held, err := observedSelectorHeldLanes(accounts, earnLaneIDs(true), preferred)
+	if err != nil {
+		return nil, nil, err
+	}
+	valued, err := navLanes(accounts, held)
+	return held, valued, err
+}
+
 // withOverflowRoutes is routes plus the overflow lane of each, once.
 func withOverflowRoutes(routes []RuntimeRoute) []RuntimeRoute {
 	out := append([]RuntimeRoute(nil), routes...)
@@ -268,10 +279,11 @@ func withOverflowRoutes(routes []RuntimeRoute) []RuntimeRoute {
 	return out
 }
 
-// observeLaneView is one lane's view of the bank: its position, custody and
-// capacity, and the whole vault's NAV valued with this lane first. A Kamino
-// health fault is a hold observation, not an error.
-func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, held []string, demand int64, fingerprint string, refreshExhausted bool) (Observation, *Observation, error) {
+// observeLaneView is one lane's view of the bank: its position, the vault's
+// custody of the lane's mints and its capacity, and the whole vault's NAV
+// valued with this lane first. A Kamino health fault is a hold observation,
+// not an error.
+func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeObservationRuntime, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, held, valued []string, demand int64, fingerprint string, refreshExhausted bool) (Observation, *Observation, error) {
 	position, err := observeKaminoFromFixedAccounts(slot, accounts, route.Kamino)
 	if err != nil {
 		position, err = observeKaminoWithCashFallback(slot, accounts, route)
@@ -291,7 +303,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
 	}
-	routes, err := navRoutes(route, held)
+	routes, err := navRoutes(route, valued)
 	if err != nil {
 		return Observation{}, nil, err
 	}
@@ -364,7 +376,6 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.RouteLane = route.Lane
 	base.Snapshot.StrategyKey = route.Lane
 	base.Snapshot.HeldLanes = strings.Join(held, ",")
-	base.Snapshot.OtherLanesNAVRaw = nav.OtherLanesNAVRaw
 	base.Snapshot.TicketLastConsumedSequenceRaw = int64(ticket.LastConsumedSequence)
 	base.Snapshot.HasPosition = position.HasPosition
 	// The position view and the NAV view decode the obligation independently

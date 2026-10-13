@@ -126,8 +126,9 @@ func TestWorkerDispatchesAtomicStep(t *testing.T) {
 }
 
 // A step's close moves its conversion's minimum; the excess beside the
-// position joins it: borrowed-token excess (above dust) and Squads cash
-// beside USDC debt convert to collateral, and collateral deposits.
+// position joins it: borrowed-token excess is vault cash the lane's next
+// step takes whole, Squads cash beside USDC debt converts to collateral,
+// and collateral deposits.
 func TestStepConversionExcessJoinsThePosition(t *testing.T) {
 	t.Parallel()
 	pyusd := leverageSnapshot(1.5)
@@ -138,12 +139,8 @@ func TestStepConversionExcessJoinsThePosition(t *testing.T) {
 	}
 	excess := pyusd
 	excess.DebtIdleRaw = 2_500_000
-	if got := Decide(targeted(excess)); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 {
-		t.Fatalf("PYUSD excess: %+v", got)
-	}
-	excess.DebtIdleRaw = partialWithdrawalDustRaw
-	if got := Decide(targeted(excess)); got.Action != Hold {
-		t.Fatalf("dust started a leg: %+v", got)
+	if got := Decide(targeted(excess)); got.Action != Hold || got.Reason != holdAtTarget {
+		t.Fatalf("PYUSD excess beside its debt started a leg: %+v", got)
 	}
 	excess.DebtIdleRaw, excess.CollateralIdleRaw, excess.PrimeIdleRaw = 0, 2_400_000, 2_400_000
 	if got := Decide(targeted(excess)); got.Action != OpenRouteStep || got.Reason != topupDepositReason || got.AmountRaw != 2_400_000 {
