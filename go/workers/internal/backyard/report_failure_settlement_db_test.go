@@ -3,6 +3,8 @@ package backyard
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,7 +14,101 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
+
+// The looping vault's one-transaction withdrawal (Squads cash to the holding
+// account, then Voltr withdraw_strategy through the Trustful adaptor) lands
+// and Voltr refuses it. Its finalized receipt proves the rollback, so the row
+// ends failed on the migrated schema and the next tick plans again, instead
+// of latching manual recovery and stopping the route's withdrawals.
+func TestLoopingWithdrawRefusedByVoltrSettlesFailed(t *testing.T) {
+	url := os.Getenv("BACKYARD_RWA_TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("requires the migrated BACKYARD_RWA_TEST_DATABASE_URL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := OpenDatabase(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, ed25519.SeedSize))
+	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
+	request := bridgeTestRequest(StageSquadsToVoltr, 25_000_000)
+	request.AdaptorConfig, request.Report.NAVAfterRaw = looping.Strategy, 75_000_000
+	message, err := compileBridgeMessageForDelegate(looping, request, delegate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signMessage(key, delegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := messageKeys(signed.message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre := make([]uint64, len(keys))
+	for i := range pre {
+		pre[i] = 1_000_000_000
+	}
+	post := append([]uint64(nil), pre...)
+	post[0] -= 5000
+	owners := map[string]string{looping.cash: looping.squads, looping.holding: looping.holdingAuth, looping.idleATA: looping.idleAuth}
+	var tokens []json.RawMessage
+	for i, k := range keys {
+		if owner := owners[encodeBase58(k[:])]; owner != "" {
+			row, _ := json.Marshal(map[string]any{"accountIndex": i, "mint": bridgeUSDC, "owner": owner, "programId": bridgeTokenProgram,
+				"uiTokenAmount": map[string]any{"amount": "25000000", "decimals": 6}})
+			tokens = append(tokens, row)
+		}
+	}
+	if len(tokens) != len(owners) {
+		t.Fatalf("the withdrawal names %d of its custodies", len(tokens))
+	}
+	program, fee := voltr.ProgramID.String(), uint64(5000)
+	receipt := finalizedFailureReceipt{Slot: 900, Transaction: []string{base64.StdEncoding.EncodeToString(signed.signedWire), "base64"}, Meta: &finalizedFailureMeta{
+		Err: json.RawMessage(`{"InstructionError":[0,{"Custom":6004}]}`), Fee: &fee, PreBalances: pre, PostBalances: post,
+		PreTokenBalances: tokens, PostTokenBalances: tokens,
+		LogMessages: []string{
+			"Program " + squads.ProgramID.String() + " invoke [1]",
+			"Program " + program + " invoke [2]",
+			"Program " + program + " failed: custom program error: 0x1774",
+			"Program " + squads.ProgramID.String() + " failed: custom program error: 0x1774",
+		},
+	}}
+
+	id := fmt.Sprintf("looping-withdraw-failure-%d", time.Now().UnixNano())
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,cycle,engine_version,action,status,idempotency_key,expected_effects,
+		signed_wire,signed_wire_sha256,message_sha256,transaction_signature,recent_blockhash,last_valid_block_height,simulation_slot,simulation_result,broadcast_intent_at)
+		VALUES($1,$2,1,'backyard_rwa_v1','STAGE_SQUADS_TO_VOLTR','broadcast_intent',$1,'{}',$3,$4,$5,$6,$7,$8,800,'{}',clock_timestamp())`,
+		id, looping.RouteKey, signed.signedWire, signed.signedWireSHA256, signed.messageSHA256, signed.transactionSignature, signed.recentBlockhash, signed.lastValidBlockHeight); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.pool.Exec(context.Background(), `DELETE FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id)
+	}()
+
+	operation := PersistedOperation{Operation: Operation{ID: id, RouteKey: looping.RouteKey, Decision: Decision{Action: StageSquadsToVoltr}},
+		Status: BroadcastIntent, SignedWire: signed.signedWire, SignedWireSHA256: signed.signedWireSHA256, TransactionSignature: signed.transactionSignature}
+	settled, err := db.settleFinalizedFailure(ctx, operation, receipt, confirmedFailureReason(receipt.Meta.Err, receipt.Meta.LogMessages), delegate)
+	if err != nil || !settled {
+		t.Fatalf("a proven rolled-back withdrawal did not settle: settled=%t err=%v", settled, err)
+	}
+	var status, reason string
+	var slot int64
+	if err := db.pool.QueryRow(ctx, `SELECT status,recovery_reason,confirmed_slot FROM loyal_yield.multiply_operations WHERE operation_id=$1`, id).Scan(&status, &reason, &slot); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" || reason != "program_error:"+program+":6004" || slot != 900 {
+		t.Fatalf("settled row: status=%s reason=%q slot=%d", status, reason, slot)
+	}
+}
 
 // Real PostgreSQL checks the shipped lifecycle SQL and proof persistence,
 // through 0099, which stops requiring booked-cost fields, and 0104, which
@@ -84,9 +180,9 @@ func TestFinalizedReportFailureMigrationAndAtomicSettlement(t *testing.T) {
 	if !bytes.Equal(historicalBefore, historicalAfter) {
 		t.Fatal("migration rewrote historical operation")
 	}
-	receipt, wire, delegate, effects := failureSettlementFixture(t)
+	receipt, wire, delegate := failureSettlementFixture(t)
 	wireHash, messageHash, signature := sha256Bytes(wire), sha256Bytes(wireMsg(wire)), encodeBase58(wireSig(wire))
-	if err = validateFinalizedFailureReceipt(rwa, receipt, wire, signature, wireHash, messageHash, delegate, effects); err != nil {
+	if err = validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, delegate); err != nil {
 		t.Fatal(err)
 	}
 	migrate("0083_backyard_rwa_finalized_restore_failure.sql")

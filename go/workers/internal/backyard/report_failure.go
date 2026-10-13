@@ -1,9 +1,13 @@
 package backyard
 
-// Audit U4 (docs/plans/backyard-rwa-adaptor-strategy2-audit-2026-09-08.md): a
-// report whose transaction lands after the adaptor's age limit fails on chain.
-// Instruction effects roll back atomically; its network fee still gets paid.
-// Exact finalized fee settlement allows the next observation without manual edits.
+// A Backyard transaction that lands and fails moved nothing: Solana rolls back
+// every instruction effect of a failed transaction and debits only the fee
+// payer's fee (a Backyard wire carries a recent blockhash, never a durable
+// nonce, whose advance would survive the failure).
+// The finalized receipt proves that for the exact persisted wire
+// (validateFinalizedFailureReceipt), whatever program or code refused it, so a
+// proven failure ends `failed` and the next tick plans from a fresh
+// observation. The decoded error is only the row's recorded reason.
 
 import (
 	"context"
@@ -16,8 +20,8 @@ import (
 )
 
 // Adaptor error numbers are copied from
-// crates/loyal-voltr-rwa-nav-adaptor/src/error.rs (AdaptorError). A renumbering
-// there is a protocol change and must be re-reviewed here, not guessed.
+// crates/loyal-voltr-rwa-nav-adaptor/src/error.rs (AdaptorError); they name
+// the reason a failed rwa bridge wire records.
 const (
 	// ReportSlot: the report's observed slot is older than the adaptor's
 	// maximum report age at landing, so the report was refused unconsumed.
@@ -25,33 +29,21 @@ const (
 	// TicketReplay: this slot's report was already consumed, so the refused
 	// transaction cannot have armed a second report for the same slot.
 	adaptorErrorTicketReplay uint32 = 18
-
-	// adaptorReportSlotRefusedReason is the classification reason for the
-	// ReportSlot refusal. Naming it once keeps the classifier and the two
-	// settlement gates from drifting apart.
-	adaptorReportSlotRefusedReason = "adaptor_report_slot_refused"
 )
 
 // squadsSpendingLimitReason marks a Squads spending-limit refusal: a
-// specific, non-retryable HOLD reason - never a generic simulation failure and
-// never manual recovery, because nothing moved and the limit self-heals at its
-// next period boundary.
+// specific HOLD reason in simulation, and the recorded reason of a landed
+// refusal.
 const squadsSpendingLimitReason = "squads_spending_limit_exceeded"
 
 // adaptorMaxReportAgeSlots is the deployed adaptor config's max report age.
+// unclassifiedTransactionErrReason is the reason of a failed transaction no
+// program error names, and the manual-recovery marker of a failure whose
+// receipt does not prove the rollback.
 const (
 	adaptorMaxReportAgeSlots         = int64(32)
 	unclassifiedTransactionErrReason = "confirmed_transaction_error"
 )
-
-// ConfirmedFailureClassification is the recovery outcome of one failed
-// on-chain transaction. Retryable failures terminate the row in `failed`, so
-// LatestDecisionEpochSQL advances the durable epoch and the next tick takes a
-// fresh observation; capital stops keep manual recovery.
-type ConfirmedFailureClassification struct {
-	Retryable bool
-	Reason    string
-}
 
 // decodeInstructionErrorCustom returns the innermost InstructionError custom
 // code. CPI failures nest as another InstructionError frame inside the error
@@ -128,7 +120,7 @@ func programSuccessLogLine(line string) (string, bool) {
 // An AnchorError without such a line is attributed only when it appears inside
 // the innermost frame that is still open at that point. Open frames alone
 // prove nothing: logs that end without any error line - truncated, missing, or
-// simply exhausted - return the empty result, which is a capital stop, never a
+// simply exhausted - return the empty result, an unattributed failure, never a
 // guess about whichever frame happened to remain open.
 func failingProgramFromLogs(logs []string) string {
 	var stack []string
@@ -167,72 +159,42 @@ func failingProgramFromLogs(logs []string) string {
 	return anchorProgram
 }
 
-// ClassifyConfirmedReportFailure maps one failed transaction's RPC error and
-// logs to its recovery outcome. Only a custom error from the pinned adaptor
-// program that proves the report was refused unconsumed (ReportSlot,
-// TicketReplay) is retryable. Everything else - including a Voltr MathOverflow
-// or any token-program error - stays a capital stop, because the failure
-// receipt alone cannot prove that no instruction side effect settled.
-func ClassifyConfirmedReportFailure(rawErr json.RawMessage, logs []string) ConfirmedFailureClassification {
-	if rawErr == nil || len(rawErr) == 0 || string(rawErr) == "null" {
-		return ConfirmedFailureClassification{Reason: "confirmed_transaction_error"}
-	}
-	if code, ok := decodeInstructionErrorCustom(rawErr); ok && failingProgramFromLogs(logs) == fsj27Program {
-		switch code {
-		case adaptorErrorReportSlot:
-			return ConfirmedFailureClassification{Retryable: true, Reason: adaptorReportSlotRefusedReason}
-		case adaptorErrorTicketReplay:
-			return ConfirmedFailureClassification{Retryable: true, Reason: "adaptor_report_ticket_replayed"}
-		}
-	}
-	if squadsSpendingLimitExceeded(rawErr, logs) {
-		// The policy refused capital movement, but its network fee still needs
-		// exact finalized settlement before a report-only row can terminate.
-		// Other action families retain their existing manual recovery hold.
-		return ConfirmedFailureClassification{Retryable: true, Reason: squadsSpendingLimitReason}
-	}
-	return ConfirmedFailureClassification{Reason: "confirmed_transaction_error"}
-}
-
-// squadsSpendingLimitExceeded reports whether a failed transaction was
-// refused by the pinned Squads program because the policy's embedded
-// spending limit is exhausted for its current period. Attribution reuses the
-// same log-stack walk as the adaptor errors: an unattributed 6073 stays a
-// capital stop.
-func squadsSpendingLimitExceeded(rawErr json.RawMessage, logs []string) bool {
+// confirmedFailureReason is the reason a failed transaction's row records,
+// from its RPC error and logs: the rwa adaptor's report refusals and the
+// Squads spending limit by name, any other custom error attributed to its
+// program as program_error:<program>:<code>, and confirmed_transaction_error
+// when no program error is attributable. It labels the failure; whether the
+// row settles is the receipt proof's alone.
+func confirmedFailureReason(rawErr json.RawMessage, logs []string) string {
 	code, ok := decodeInstructionErrorCustom(rawErr)
-	return ok && code == squads.ErrSpendingLimitExceeded && failingProgramFromLogs(logs) == squads.ProgramID.String()
+	program := failingProgramFromLogs(logs)
+	switch {
+	case !ok || program == "":
+		return unclassifiedTransactionErrReason
+	case program == fsj27Program && code == adaptorErrorReportSlot:
+		return "adaptor_report_slot_refused"
+	case program == fsj27Program && code == adaptorErrorTicketReplay:
+		return "adaptor_report_ticket_replayed"
+	case program == squads.ProgramID.String() && code == squads.ErrSpendingLimitExceeded:
+		return squadsSpendingLimitReason
+	}
+	return "program_error:" + program + ":" + strconv.FormatUint(uint64(code), 10)
 }
 
 // recoverConfirmedFailure settles one failed broadcast from its finalized
-// receipt, read once. A classified refusal of a report-bearing wire
-// terminates in `failed`, so the next tick plans again from fresh state;
-// UnresolvedCapitalRecoverySQL never sees it. Every other failure latches
-// manual recovery. A receipt that is not finalized yet leaves the row in its
-// submission state, and the next tick lands it again.
+// receipt, read once. A receipt that proves the exact persisted wire rolled
+// back terminates the row in `failed`, so the next tick plans again from
+// fresh state and UnresolvedCapitalRecoverySQL never sees it; a receipt that
+// does not latches manual recovery. A receipt that is not finalized yet
+// leaves the row in its submission state, and the next tick lands it again.
 func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
 	receipt, err := readFailureReceipt(ctx, rpc, operation.TransactionSignature)
 	if err != nil {
 		return err
 	}
-	classification := ClassifyConfirmedReportFailure(receipt.Meta.Err, receipt.Meta.LogMessages)
-	if !classification.Retryable || !isSettleableReportFailure(operation.Decision.Action, classification.Reason) {
-		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
+	settled, err := d.settleFinalizedFailure(ctx, operation, receipt, confirmedFailureReason(receipt.Meta.Err, receipt.Meta.LogMessages), mustKey(bridgeDelegate))
+	if err != nil || settled {
+		return err
 	}
-	return d.settleFinalizedReportFailure(ctx, operation, receipt, classification.Reason, false)
-}
-
-// isSettleableReportFailure scopes automatic finalized-fee settlement to the
-// report-bearing bridge wires whose refusal receipt alone proves nothing was
-// consumed and no capital moved: the report-only NAV refresh for every
-// retryable adaptor refusal, and — restricted to the adaptor's report-age
-// refusal — the VOLTR_RESTORE_IDLE wire that pulls staged custody back. A
-// failed restore carries capital in its amount, so only the narrow ReportSlot
-// classification (the report was refused before the Voltr CPI) admits it;
-// every other action family and classification keeps its manual recovery hold.
-func isSettleableReportFailure(action Action, reason string) bool {
-	if action == ReportNAV {
-		return true
-	}
-	return action == VoltrRestoreIdle && reason == adaptorReportSlotRefusedReason
+	return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
 }

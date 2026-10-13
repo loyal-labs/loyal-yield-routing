@@ -16,10 +16,9 @@ import (
 )
 
 // This is a finalized, exact-wire failed transaction receipt, not an estimate
-// of effects from logs. Failed instruction execution rolls back atomically;
-// additionally verify the complete native/token balance vector, including the
-// fee payer's sole permitted debit. The signed legacy envelope excludes nonce
-// advancement and pins the worker's Squads execution program.
+// of effects from logs. Failed execution rolls back atomically; additionally
+// verify the complete native/token balance vector, including the fee payer's
+// sole permitted debit.
 type finalizedFailureReceipt struct {
 	Slot        int64                 `json:"slot"`
 	Transaction []string              `json:"transaction"`
@@ -91,9 +90,17 @@ type finalizedFailureSettlement struct {
 	Receipt                 finalizedFailureReceipt `json:"receipt"`
 }
 
-func validateFinalizedFailureReceipt(v *Vault, receipt finalizedFailureReceipt, wire []byte, signature, wireHash, messageHash string, expectedDelegate publicKey, effects ExpectedEffects) error {
+// validateFinalizedFailureReceipt proves a finalized failed receipt moved
+// nothing but the fee: it is the exact persisted wire, signed by the delegate
+// at key 0 under the persisted hashes; it carries an error; the fee payer was
+// debited exactly the fee; every other account's lamports are unchanged; and
+// the complete token balance rows after equal those before. It holds for any
+// action and any error: a landed failure rolls back every instruction effect,
+// and the balances are the evidence.
+func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byte, signature, wireHash, messageHash string, expectedDelegate publicKey) error {
 	fail := func() error { return budgetHold("unproven_finalized_failure_receipt") }
 	if receipt.Slot <= 0 || receipt.Meta == nil || receipt.Meta.Fee == nil || *receipt.Meta.Fee == 0 ||
+		len(receipt.Meta.Err) == 0 || string(receipt.Meta.Err) == "null" ||
 		len(receipt.Transaction) != 2 || receipt.Transaction[1] != "base64" || sha256Bytes(wire) != wireHash {
 		return fail()
 	}
@@ -101,20 +108,22 @@ func validateFinalizedFailureReceipt(v *Vault, receipt finalizedFailureReceipt, 
 	if err != nil || !bytes.Equal(landed, wire) {
 		return fail()
 	}
-	sig, message, _, signer, err := decodeExactWire(wire)
-	if err != nil || !ed25519.Verify(signer[:], message, sig) || encodeBase58(sig) != signature || sha256Bytes(message) != messageHash || signer != expectedDelegate {
+	message, sig, err := splitSignedWire(wire)
+	if err != nil {
 		return fail()
 	}
-	var instructionError struct {
-		InstructionError []json.RawMessage `json:"InstructionError"`
-	}
-	if json.Unmarshal(receipt.Meta.Err, &instructionError) != nil || len(instructionError.InstructionError) != 2 {
+	m, err := decodeV1Message(message)
+	if err != nil || m.Header.NumRequiredSignatures != 1 || len(m.AccountKeys) == 0 {
 		return fail()
 	}
-	// Every account key of the exact wire must have balance metadata.
-	keys, err := messageKeys(message)
-	count := len(keys)
-	if err != nil || len(receipt.Meta.PreBalances) != count || len(receipt.Meta.PostBalances) != count {
+	signer := publicKey(m.AccountKeys[0])
+	if signer != expectedDelegate || !ed25519.Verify(signer[:], message, sig) || encodeBase58(sig) != signature || sha256Bytes(message) != messageHash {
+		return fail()
+	}
+	// Every account key of the exact wire (a v1 message loads no others) has
+	// balance metadata.
+	count := len(m.AccountKeys)
+	if len(receipt.Meta.PreBalances) != count || len(receipt.Meta.PostBalances) != count {
 		return fail()
 	}
 	for i, pre := range receipt.Meta.PreBalances {
@@ -127,51 +136,6 @@ func validateFinalizedFailureReceipt(v *Vault, receipt finalizedFailureReceipt, 
 			return fail()
 		}
 	}
-	if len(effects.Accounts) != 3 || len(receipt.Meta.PreTokenBalances) != 3 || len(receipt.Meta.PostTokenBalances) != 3 {
-		return fail()
-	}
-	canonical := map[string]string{v.idleATA: v.idleAuth, v.strategyATA: v.strategyAuth, v.cash: v.squads}
-	want := make(map[int]ExpectedAccountEffect, 3)
-	for _, effect := range effects.Accounts {
-		if canonical[effect.Address] == "" || effect.Authority != canonical[effect.Address] || effect.Owner != bridgeTokenProgram || effect.Mint != bridgeUSDC || effect.BeforeRaw != effect.AfterRaw {
-			return fail()
-		}
-		delete(canonical, effect.Address)
-		found := -1
-		for i := 0; i < count; i++ {
-			if encodeBase58(keys[i][:]) == effect.Address {
-				found = i
-				break
-			}
-		}
-		if found < 0 {
-			return fail()
-		}
-		want[found] = effect
-	}
-	for _, raw := range receipt.Meta.PreTokenBalances {
-		var token struct {
-			AccountIndex int    `json:"accountIndex"`
-			Mint         string `json:"mint"`
-			Owner        string `json:"owner"`
-			ProgramID    string `json:"programId"`
-			UI           struct {
-				Amount   string `json:"amount"`
-				Decimals int    `json:"decimals"`
-			} `json:"uiTokenAmount"`
-		}
-		if json.Unmarshal(raw, &token) != nil {
-			return fail()
-		}
-		effect, ok := want[token.AccountIndex]
-		if !ok || token.Mint != effect.Mint || token.Owner != effect.Authority || token.ProgramID != effect.Owner || token.UI.Decimals != 6 || token.UI.Amount != strconv.FormatUint(effect.BeforeRaw, 10) {
-			return fail()
-		}
-		delete(want, token.AccountIndex)
-	}
-	if len(want) != 0 {
-		return fail()
-	}
 	// Compare parsed complete rows, so ordering of JSON object keys is harmless,
 	// while owner, mint, account index, token amount and decimals all stay bound.
 	var pre, post any
@@ -183,91 +147,48 @@ func validateFinalizedFailureReceipt(v *Vault, receipt finalizedFailureReceipt, 
 	return nil
 }
 
-// settleFinalizedReportFailure terminates one classified report-bearing
-// failure with the exact finalized receipt: the landed wire is byte-identical
-// to the persisted wire and moved no capital, and the terminal `failed` row
-// lets the next tick re-observe. Both
-// report-bearing bridge wires are admitted: the report-only NAV refresh in
-// every retryable state, and the VOLTR_RESTORE_IDLE wire only for the
-// adaptor's report-age refusal — in the automatic walk's broadcast states and,
-// through the scoped operator entrypoint (manualRecovery=true), in the
-// explicit manual state for rows the previous binary's action gate forced
-// into manual recovery with the unclassified marker. Same receipt proof, one
-// guarded status transition per source state.
-func (d *Database) settleFinalizedReportFailure(ctx context.Context, operation PersistedOperation, receipt finalizedFailureReceipt, reason string, manualRecovery bool) error {
-	if d == nil || d.pool == nil || operation.ID == "" {
-		return fmt.Errorf("invalid finalized failure settlement")
-	}
-	if manualRecovery {
-		// The operator path admits exactly the restore rows this package
-		// itself forced into manual recovery (recoverConfirmedFailure's old
-		// action gate); recovery_reason is re-verified from the row below.
-		if operation.Status != ManualRecovery || operation.Decision.Action != VoltrRestoreIdle {
-			return fmt.Errorf("invalid manual report failure settlement")
-		}
-	} else if operation.Status != Submitted && operation.Status != BroadcastIntent {
-		return fmt.Errorf("invalid finalized failure settlement")
-	}
-	v, err := vaultOfRoute(operation.RouteKey)
-	if err != nil {
-		return err
+// settleFinalizedFailure terminates one failed broadcast with its exact
+// finalized receipt: when the receipt proves the persisted wire moved nothing
+// but its fee, the row ends `failed` with that proof and the next tick
+// re-observes. It reports false, changing nothing, when the receipt does not
+// prove it. The automatic walk settles a row in its broadcast states; the
+// operator's settle-manual-restore settles a manual row this package latched
+// for a landed failure before the proof alone decided. delegate is the
+// wire's signer: the pinned bridgeDelegate in production.
+func (d *Database) settleFinalizedFailure(ctx context.Context, operation PersistedOperation, receipt finalizedFailureReceipt, reason string, delegate publicKey) (bool, error) {
+	if d == nil || d.pool == nil || operation.ID == "" || reason == "" ||
+		operation.Status != Submitted && operation.Status != BroadcastIntent && operation.Status != ManualRecovery {
+		return false, fmt.Errorf("invalid finalized failure settlement")
 	}
 	var wire []byte
-	var signature, wireHash, messageHash, action, status, recoveryReason string
-	var expected []byte
-	if err := d.pool.QueryRow(ctx, `SELECT signed_wire,transaction_signature,signed_wire_sha256,message_sha256,action,status,COALESCE(recovery_reason,''),expected_effects FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.ID).Scan(&wire, &signature, &wireHash, &messageHash, &action, &status, &recoveryReason, &expected); err != nil {
-		return err
+	var signature, wireHash, messageHash, status, recoveryReason string
+	if err := d.pool.QueryRow(ctx, `SELECT signed_wire,COALESCE(transaction_signature,''),COALESCE(signed_wire_sha256,''),COALESCE(message_sha256,''),status,COALESCE(recovery_reason,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.ID).Scan(&wire, &signature, &wireHash, &messageHash, &status, &recoveryReason); err != nil {
+		return false, err
 	}
 	if status != string(operation.Status) || signature != operation.TransactionSignature {
-		return budgetHold("failed_settlement_journal_changed")
+		return false, budgetHold("failed_settlement_journal_changed")
 	}
-	// Only a row the old binary stamped with the bare unclassified marker —
-	// a classified retryable refusal that the action gate then forced manual —
-	// may leave manual recovery through this settlement. Any other recovery
-	// reason is a different incident and stays manual.
-	if manualRecovery && recoveryReason != unclassifiedTransactionErrReason {
-		return budgetHold("failed_settlement_requires_exact_report")
+	// A manual row leaves through this settlement only when this package
+	// latched it for a landed failure; any other recovery reason is a
+	// different incident and stays manual.
+	if status == string(ManualRecovery) && recoveryReason != unclassifiedTransactionErrReason {
+		return false, budgetHold("failed_settlement_requires_landed_failure")
 	}
-	// Scope fee settlement to the two report-bearing bridge wires: the
-	// report-only NAV refresh, and the restore — the latter only for the
-	// adaptor's report-age refusal, whose receipt proves the report was
-	// refused before the Voltr CPI and therefore that no capital moved.
-	restore := action == string(VoltrRestoreIdle)
-	if action != string(ReportNAV) && !restore || restore && reason != adaptorReportSlotRefusedReason {
-		return budgetHold("failed_settlement_requires_exact_report")
-	}
-	effects, err := DecodeExpectedEffects(v, expected)
-	if err != nil {
-		return budgetHoldFrom(err, "failed_settlement_requires_exact_report")
-	}
-	// The restore's persisted effects predict successful capital movement
-	// (custody down, idle up). The receipt must instead prove the exact wire
-	// rolled back, so validate against their rollback form — every AfterRaw
-	// replaced by its own BeforeRaw.
-	receiptEffects := effects
-	if restore {
-		rollback := make([]ExpectedAccountEffect, len(effects.Accounts))
-		for index, account := range effects.Accounts {
-			account.AfterRaw = account.BeforeRaw
-			rollback[index] = account
-		}
-		receiptEffects.Accounts = rollback
-	}
-	if err = validateFinalizedFailureReceipt(v, receipt, wire, signature, wireHash, messageHash, mustKey(bridgeDelegate), receiptEffects); err != nil {
-		return err
+	if validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, delegate) != nil {
+		return false, nil
 	}
 	proof := finalizedFailureSettlement{Schema: "backyard-finalized-failure/v1", Signature: signature, SignedWireSHA256: wireHash, MessageSHA256: messageHash, Slot: receipt.Slot, Reason: reason, AtomicNoCapitalMovement: true, FeeLamports: *receipt.Meta.Fee, Receipt: receipt}
 	encoded, err := json.Marshal(proof)
 	if err != nil {
-		return err
+		return false, err
 	}
 	result, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='failed',confirmation_status='finalized',confirmed_slot=$3,reconciliation_sha256=$4,reconciled_effects=$5::jsonb,recovery_reason=$6,updated_at=clock_timestamp() WHERE operation_id=$1 AND status=$2`, operation.ID, status, receipt.Slot, sha256Bytes(encoded), string(encoded), reason)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if result.RowsAffected() != 1 {
-		return fmt.Errorf("failed settlement found no %s operation", status)
+		return false, fmt.Errorf("failed settlement found no %s operation", status)
 	}
 	d.eventFailedAfterSend(ctx, operation.ID, reason)
-	return nil
+	return true, nil
 }

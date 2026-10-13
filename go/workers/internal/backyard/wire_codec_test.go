@@ -1,12 +1,40 @@
 package backyard
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
+
+// decodeExactWire decodes a wire whose last instruction is a Squads policy
+// execute (every Backyard wire but a farmed lane's initializer, which
+// registers the obligation's farms after it): one signature after a v1
+// message with one writable required signer and a Squads policy execute by
+// that signer last.
+func decodeExactWire(wire []byte) ([]byte, []byte, publicKey, publicKey, error) {
+	message, signature, err := splitSignedWire(wire)
+	if err != nil {
+		return nil, nil, publicKey{}, publicKey{}, err
+	}
+	m, err := decodeV1Message(message)
+	if err != nil || m.Header.NumRequiredSignatures != 1 || m.Header.NumReadonlySignedAccounts != 0 || len(m.Instructions) == 0 {
+		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("invalid v1 transaction message: %v", err)
+	}
+	signer := publicKey(m.AccountKeys[0])
+	outer := m.Instructions[len(m.Instructions)-1]
+	key := func(i uint16) publicKey { return publicKey(m.AccountKeys[i]) }
+	if key(outer.ProgramIDIndex) != publicKey(squads.ProgramID) || len(outer.Accounts) < 3 || key(outer.Accounts[0]) == (publicKey{}) ||
+		key(outer.Accounts[1]) != publicKey(squads.ProgramID) || key(outer.Accounts[2]) != signer ||
+		!bytes.HasPrefix(outer.Data, squads.ExecuteTransactionSyncV2Discriminator[:]) {
+		return nil, nil, publicKey{}, publicKey{}, fmt.Errorf("v1 transaction is not an exact Squads policy envelope")
+	}
+	return append([]byte(nil), signature...), message, publicKey(m.RecentBlockhash), signer, nil
+}
 
 // The builders below sign with deterministic test keys, so codec tests can
 // prove the exact wire the production build signs (compileRequest, then

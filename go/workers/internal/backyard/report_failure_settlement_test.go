@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func failureSettlementFixture(t *testing.T) (finalizedFailureReceipt, []byte, publicKey, ExpectedEffects) {
+func failureSettlementFixture(t *testing.T) (finalizedFailureReceipt, []byte, publicKey) {
 	t.Helper()
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{37}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
@@ -54,12 +54,12 @@ func failureSettlementFixture(t *testing.T) (finalizedFailureReceipt, []byte, pu
 	if err = json.Unmarshal(raw, &receipt); err != nil {
 		t.Fatal(err)
 	}
-	return receipt, signed.signedWire, delegate, effects
+	return receipt, signed.signedWire, delegate
 }
 
 func TestFinalizedReportFailureRequiresCompleteExactRollbackReceipt(t *testing.T) {
 	t.Parallel()
-	base, wire, delegate, effects := failureSettlementFixture(t)
+	base, wire, delegate := failureSettlementFixture(t)
 	for _, tc := range []struct {
 		name   string
 		mutate func(*finalizedFailureReceipt)
@@ -67,7 +67,6 @@ func TestFinalizedReportFailureRequiresCompleteExactRollbackReceipt(t *testing.T
 		{"valid", func(*finalizedFailureReceipt) {}},
 		{"missing meta", func(r *finalizedFailureReceipt) { r.Meta = nil }},
 		{"success", func(r *finalizedFailureReceipt) { r.Meta.Err = json.RawMessage(`null`) }},
-		{"status only error", func(r *finalizedFailureReceipt) { r.Meta.Err = json.RawMessage(`"BlockhashNotFound"`) }},
 		{"changed wire", func(r *finalizedFailureReceipt) {
 			r.Transaction[0] = base64.StdEncoding.EncodeToString(append(wire, 0))
 		}},
@@ -78,22 +77,6 @@ func TestFinalizedReportFailureRequiresCompleteExactRollbackReceipt(t *testing.T
 			r.Meta.PreBalances = r.Meta.PreBalances[:1]
 			r.Meta.PostBalances = r.Meta.PostBalances[:1]
 		}},
-		{"empty tokens", func(r *finalizedFailureReceipt) {
-			r.Meta.PreTokenBalances = []json.RawMessage{}
-			r.Meta.PostTokenBalances = []json.RawMessage{}
-		}},
-		{"missing matching token", func(r *finalizedFailureReceipt) {
-			r.Meta.PreTokenBalances = r.Meta.PreTokenBalances[1:]
-			r.Meta.PostTokenBalances = r.Meta.PostTokenBalances[1:]
-		}},
-		{"duplicate matching token", func(r *finalizedFailureReceipt) {
-			r.Meta.PreTokenBalances[1] = r.Meta.PreTokenBalances[0]
-			r.Meta.PostTokenBalances[1] = r.Meta.PostTokenBalances[0]
-		}},
-		{"unknown token identity", func(r *finalizedFailureReceipt) {
-			r.Meta.PreTokenBalances[0] = json.RawMessage(`{"accountIndex":0}`)
-			r.Meta.PostTokenBalances[0] = r.Meta.PreTokenBalances[0]
-		}},
 		{"token effect", func(r *finalizedFailureReceipt) { r.Meta.PostTokenBalances[0] = json.RawMessage(`{"accountIndex":0}`) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,13 +84,13 @@ func TestFinalizedReportFailureRequiresCompleteExactRollbackReceipt(t *testing.T
 			var r finalizedFailureReceipt
 			_ = json.Unmarshal(raw, &r)
 			tc.mutate(&r)
-			err := validateFinalizedFailureReceipt(rwa, r, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), delegate, effects)
+			err := validateFinalizedFailureReceipt(r, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), delegate)
 			if (err == nil) != (tc.name == "valid") {
 				t.Fatal("incorrect proof result", err)
 			}
 		})
 	}
-	if err := validateFinalizedFailureReceipt(rwa, base, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), mustKey(bridgeDelegate), effects); err == nil {
+	if err := validateFinalizedFailureReceipt(base, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), mustKey(bridgeDelegate)); err == nil {
 		t.Fatal("wrong signer admitted")
 	}
 }

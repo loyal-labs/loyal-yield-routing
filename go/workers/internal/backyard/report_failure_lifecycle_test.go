@@ -58,7 +58,8 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS strategy_key text;
 	ALTER TABLE loyal_yield.multiply_operations ADD COLUMN IF NOT EXISTS transaction_signature text,
 	 ADD COLUMN IF NOT EXISTS confirmed_slot bigint,ADD COLUMN IF NOT EXISTS confirmation_status text,
-	 ADD COLUMN IF NOT EXISTS reconciliation_sha256 text,ADD COLUMN IF NOT EXISTS reconciled_effects jsonb;
+	 ADD COLUMN IF NOT EXISTS reconciliation_sha256 text,ADD COLUMN IF NOT EXISTS reconciled_effects jsonb,
+	 ADD COLUMN IF NOT EXISTS signed_wire_sha256 text,ADD COLUMN IF NOT EXISTS message_sha256 text;
 	CREATE UNIQUE INDEX IF NOT EXISTS multiply_operations_one_nonterminal_per_route
 	 ON loyal_yield.multiply_operations(route_key) WHERE status IN ('decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling');`)
 	if err != nil {
@@ -145,18 +146,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		}
 	})
 
-	t.Run("finalized adaptor logs still require exact wire and fee evidence", func(t *testing.T) {
-		routeKey, id := newSubmittedOperation(t, "adaptor")
-		op := submittedOperation(id, routeKey)
-		receipt := `{"slot":500,"meta":{"err":{"InstructionError":[0,{"Custom":9}]},"logMessages":` +
-			mustJSONLogs(t, adaptorFailureLogs(bridgeAdaptorProgram, 9)) + `}}`
-		status, reason, _, err := advance(t, ctx, op, finalizedFailure, receipt)
-		if status != "submitted" || reason != "" || err == nil {
-			t.Fatalf("logs-only refusal settled without fee and wire proof: %s %q", status, reason)
-		}
-	})
-
-	t.Run("unattributable and non-adaptor errors stay capital stops", func(t *testing.T) {
+	t.Run("a receipt that does not prove the rollback stays a capital stop", func(t *testing.T) {
 		routeKey, id := newSubmittedOperation(t, "unattributable")
 		op := submittedOperation(id, routeKey)
 		status, reason, _, err := advance(t, ctx, op, finalizedFailure,
