@@ -204,11 +204,17 @@ type MoveQuote struct {
 	// DebtRoomUSDCRaw is the destination debt reserve's borrow room valued in
 	// USDC at the quote's debt price lower bound: display only, never sizing.
 	DebtRoomUSDCRaw *uint64 `json:"debtRoomUsdcRaw,omitempty"`
-	SourceLane      string  `json:"sourceLane"`
-	DestinationLane string  `json:"destinationLane"`
-	ObservationID   string  `json:"observationId"`
-	EquityRaw       int64   `json:"equityRaw"`
-	CostRaw         int64   `json:"costRaw"`
+	// BorrowValueRaw and ProceedsValueRaw are the entry's up step valued at
+	// its lane batch's prices: the liability (receive plus fee) and the
+	// principal the step converts into collateral.
+	BorrowValueRaw   uint64    `json:"borrowValueRaw,omitempty"`
+	ProceedsValueRaw uint64    `json:"proceedsValueRaw,omitempty"`
+	Cost             entryCost `json:"cost"`
+	SourceLane       string    `json:"sourceLane"`
+	DestinationLane  string    `json:"destinationLane"`
+	ObservationID    string    `json:"observationId"`
+	EquityRaw        int64     `json:"equityRaw"`
+	CostRaw          int64     `json:"costRaw"`
 	// ExpectedCostRaw is the forecast economic expense at central observed
 	// prices; nil on quotes predating the forecast. The selector's equity
 	// bound keeps the conservative CostRaw upper exposure bound.
@@ -725,6 +731,9 @@ func (q MoveQuote) validBorrow() bool {
 	if q.EquityRaw <= 0 || q.BorrowReceiveRaw <= 0 {
 		return false
 	}
+	if q.BorrowValueRaw > 0 {
+		return earnActiveLane(q.DestinationLane) && q.BorrowValueRaw <= uint64(q.EquityRaw) && q.ProceedsValueRaw <= q.BorrowValueRaw
+	}
 	route, err := runtimeRoute(q.DestinationLane)
 	if err != nil {
 		return false
@@ -746,6 +755,9 @@ func (q MoveQuote) validBorrow() bool {
 // otherwise the bound BudgetPrice is revalidated against the route identity
 // and the conversion recomputed at its conservative upper bound.
 func (q MoveQuote) borrowDebtUSDCRaw() (uint64, bool) {
+	if q.BorrowValueRaw > 0 {
+		return q.BorrowValueRaw, true
+	}
 	receive, ok := q.borrowRawWithFee()
 	if !ok {
 		return 0, false
@@ -775,6 +787,9 @@ func (q MoveQuote) borrowDebtUSDCRaw() (uint64, bool) {
 // the retained collateral asset price over that actual bounded purchase
 // output — the debt price never lifts the asset side (doc 12).
 func (q MoveQuote) borrowProceedsUSDCRaw() (uint64, bool) {
+	if q.BorrowValueRaw > 0 {
+		return q.ProceedsValueRaw, true
+	}
 	route, err := runtimeRoute(q.DestinationLane)
 	if err != nil {
 		return 0, false

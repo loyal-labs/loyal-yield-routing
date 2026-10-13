@@ -154,7 +154,7 @@ func observeSelectorDestinationBatch(ctx context.Context, rpc *chain.Client, rou
 		route.Kamino.CollateralMint, route.Kamino.DebtMint, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply,
 		route.DebtLiquiditySupply, route.DebtFeeReceiver, route.CollateralReceiptMint, route.CollateralReceiptSupply,
 		route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm,
-		budgetClockAddress, bridgeVault, bridgeDelegate, bridgeStrategy, reportTicketPDA}
+		budgetClockAddress, bridgeVault, bridgeDelegate, bridgeStrategy, reportTicketPDA, usdcReference.DebtReserve}
 	optional := uniqueNonzero([]string{route.Kamino.Obligation, route.ObligationCollateralFarm, route.ObligationDebtFarm})
 	slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, rpc, []string{route.Lane}, uniqueNonzero(addresses), optional, minimumSlot)
 	if err != nil {
