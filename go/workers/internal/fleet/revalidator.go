@@ -562,6 +562,14 @@ func validateDelegatedInstructions(p DecodedSquadsPolicy, delegatedSigner string
 	return p, nil
 }
 
+// Authorizes reports whether the deployed policy lets delegatedSigner run
+// exactly the protected instructions: the matcher BuildPolicyEnvelope uses,
+// without wrapping. A non-nil error is a fact about the policy's contents.
+func (p DecodedSquadsPolicy) Authorizes(delegatedSigner string, protected []RouteInstruction) error {
+	_, err := validateDelegatedInstructions(p, delegatedSigner, protected)
+	return err
+}
+
 // BuildPolicyEnvelope validates the actual deployed policy before wrapping its
 // exact protected instructions. Autodeposit and fleet share this ABI and the
 // constraint matcher; their journals and recovery protocols remain separate.

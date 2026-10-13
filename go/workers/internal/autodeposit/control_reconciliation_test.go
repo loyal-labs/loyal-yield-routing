@@ -1,6 +1,7 @@
 package autodeposit
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -23,6 +24,19 @@ func TestControlSnapshotProvesActualArtifacts(t *testing.T) {
 		t.Fatalf("foreign token delegate observation=%+v err=%v", observation, err)
 	}
 	accounts[f.WalletATA].Data[76] ^= 1
+	// A policy whose constraints no longer allow the pull is observed, not
+	// retried forever as an unprovable target.
+	subscriptions := mustKey(SubscriptionsProgramID)
+	at := bytes.Index(accounts[f.Policy].Data, subscriptions[:])
+	if at < 0 {
+		t.Fatal("fixture policy lacks the subscriptions program constraint")
+	}
+	accounts[f.Policy].Data[at] ^= 1
+	observation, err = builder.ObserveControl(ctx, target, 200)
+	if err != nil || observation.PolicyValid || observation.status() != "inconsistent" {
+		t.Fatalf("policy without the pull observation=%+v err=%v", observation, err)
+	}
+	accounts[f.Policy].Data[at] ^= 1
 	policy := accounts[f.Policy]
 	policy.Owner = systemProgramZero
 	accounts[f.Policy] = policy

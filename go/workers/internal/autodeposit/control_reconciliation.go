@@ -129,11 +129,12 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		if err != nil {
 			return o, err
 		}
-		if _, err = fleet.BuildPolicyEnvelope(target.Policy, target.Settings, b.delegate.String(), accounts[0], []fleet.RouteInstruction{inner}); err != nil {
-			return o, err
+		// A policy that does not allow this pull is an observed fact, like the
+		// cap check below: the target is inconsistent, not unprovable.
+		if decoded.Authorizes(b.delegate.String(), []fleet.RouteInstruction{inner}) == nil {
+			policyCap, capped = policyBudgetCap(decoded.Constraints)
+			o.PolicyValid = true
 		}
-		policyCap, capped = policyBudgetCap(decoded.Constraints)
-		o.PolicyValid = true
 	}
 	if accounts[1] != nil {
 		if accounts[1].Owner.String() != SubscriptionsProgramID {
