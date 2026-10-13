@@ -19,6 +19,17 @@ is derived from it, and every lane template (`earnLanes`) takes its custody
 and obligation accounts from the vault's Squads vault. Operator commands name
 the vault (`--vault rwa`); `in-flight` counts every vault's operations.
 
+rwa reports through its own FSj27 adaptor (report tickets, journal monitors).
+looping (Voltr GrHZD…, Squads index 2) runs on Voltr's Trustful adaptor,
+where the strategy receipt is the report: an allocation is
+`deposit_strategy(amount, book after)` paying the Squads vault's USDC
+account, a NAV report is `deposit_strategy(0, book)` when the book differs
+from the receipt by more than 50 bps or the receipt is an hour old, and a
+withdrawal is one transaction (Squads cash to the Trustful holding account,
+then `withdraw_strategy(amount, book after)`). Its two bridge policies are
+`VOLTR_ALLOCATE_TO_SQUADS` (deposits and reports) and `STAGE_SQUADS_TO_VOLTR`
+(withdrawals).
+
 The pool never opens a second session: a connect after the first is refused
 (`writer session lost`). A caller's deadline cancels its statement on the
 server, not the session, and a transaction begins, commits and rolls back on

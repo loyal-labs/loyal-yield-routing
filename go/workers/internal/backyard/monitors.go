@@ -132,6 +132,15 @@ func scheduledNAVReportDue(s Snapshot) bool {
 		(s.CapitalMutated && s.LastReportAgeSeconds >= 60)
 }
 
+// trustfulReportDue is when a Trustful vault reports its book: the receipt
+// differs from it beyond the drift bound, or the receipt is the routine
+// interval old. Both are chain reads; every deposit and withdrawal already
+// reports the book after it.
+func trustfulReportDue(s Snapshot) bool {
+	return navDriftOutsideTolerance(uint64(s.StrategyNAVRaw), uint64(s.PriorReportedNAVRaw)) ||
+		s.LastReportAgeSeconds >= int64(routineNAVReportInterval.Seconds())
+}
+
 // navDriftOutsideTolerance compares the independently observed NAV with the
 // last reported NAV using max(bps of reported, floor) raw units.
 func navDriftOutsideTolerance(observed, reported uint64) bool {

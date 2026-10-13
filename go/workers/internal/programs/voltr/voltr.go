@@ -263,3 +263,50 @@ func zero(data []byte) bool {
 	}
 	return true
 }
+
+// TrustfulProgramID is Voltr's Trustful adaptor: deposit_arbitrary sends a
+// deposit_strategy's amount from the strategy custody to the destination its
+// manager names, withdraw_arbitrary returns a withdraw_strategy's amount from
+// its holding account, and both report the manager's end value as the
+// strategy's position.
+var TrustfulProgramID = solana.MustPublicKeyFromBase58("3pnpK9nrs1R65eMV1wqCXkDkhSgN18xb1G5pgYPwoZjJ")
+
+// Trustful instruction discriminators (voltrxyz/trustful-scripts IDL).
+var (
+	TrustfulDepositDiscriminator  = [8]byte{117, 73, 131, 148, 12, 99, 191, 180}
+	TrustfulWithdrawDiscriminator = [8]byte{35, 58, 217, 109, 98, 184, 147, 14}
+)
+
+// TrustfulEndValueOffset is where a Trustful deposit_strategy or
+// withdraw_strategy carries its end value: after the amount, Some(adaptor
+// discriminator) and the Some(u32 length) of its additional args.
+const TrustfulEndValueOffset = StrategyAdaptorCallOffset + 1 + 4 + 8 + 1 + 4
+
+// TrustfulCall is the adaptor call and args a Trustful deposit_strategy or
+// withdraw_strategy carries from StrategyAdaptorCallOffset up to its end
+// value: Some(discriminator) then the Some(Vec) length of its 8-byte args.
+func TrustfulCall(discriminator [8]byte) []byte {
+	call := append(binary.LittleEndian.AppendUint32([]byte{1}, 8), discriminator[:]...)
+	return binary.LittleEndian.AppendUint32(append(call, 1), 8)
+}
+
+// TrustfulHoldingAuthority is the Trustful PDA [strategyAuth, strategy] whose
+// token account a withdrawal is paid from.
+func TrustfulHoldingAuthority(strategyAuth, strategy solana.PublicKey) (solana.PublicKey, error) {
+	key, _, err := solana.FindProgramAddress([][]byte{strategyAuth[:], strategy[:]}, TrustfulProgramID)
+	return key, err
+}
+
+// TrustfulDeposit is deposit_strategy through Trustful: amount of the vault's
+// idle asset goes to destination, and endValue is the strategy's position
+// after it.
+func TrustfulDeposit(a StrategyAccounts, amount, endValue uint64, destination solana.PublicKey) *solana.GenericInstruction {
+	return DepositStrategy(a, amount, TrustfulDepositDiscriminator[:], binary.LittleEndian.AppendUint64(nil, endValue), squads.Writable(destination))
+}
+
+// TrustfulWithdraw is withdraw_strategy through Trustful: amount comes back
+// to idle from the holding account of holdingAuthority, and endValue is the
+// strategy's position after it.
+func TrustfulWithdraw(a StrategyAccounts, amount, endValue uint64, holdingAuthority, holding solana.PublicKey) *solana.GenericInstruction {
+	return WithdrawStrategy(a, amount, TrustfulWithdrawDiscriminator[:], binary.LittleEndian.AppendUint64(nil, endValue), squads.ReadOnly(holdingAuthority), squads.Writable(holding))
+}

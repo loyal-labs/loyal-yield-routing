@@ -73,7 +73,13 @@ func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.C
 		route.Kamino.CollateralMint, route.Kamino.DebtMint, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply,
 		route.DebtLiquiditySupply, route.DebtFeeReceiver, route.CollateralReceiptMint, route.CollateralReceiptSupply,
 		route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm,
-		budgetClockAddress, v.squads, bridgeDelegate, v.Strategy, reportTicketPDA, usdcReference.DebtReserve}
+		budgetClockAddress, v.squads, bridgeDelegate}
+	if !v.trustful() {
+		// The FSj27 config and report ticket the destination checks
+		// (validateSelectorDestinationCommon).
+		addresses = append(addresses, v.Strategy, reportTicketPDA)
+	}
+	addresses = append(addresses, usdcReference.DebtReserve)
 	optional := uniqueNonzero([]string{route.Kamino.Obligation, route.ObligationCollateralFarm, route.ObligationDebtFarm})
 	slot, accounts, err := simulateLanesReserveRefreshOptional(ctx, v, rpc, []string{route.Lane}, uniqueNonzero(addresses), optional, minimumSlot)
 	if err != nil {
@@ -90,13 +96,16 @@ func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.C
 // depend on flatness, and returns the observed collateral custody balance so
 // each caller applies its own flatness contract.
 func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64, accounts []ConfirmedAccount, position KaminoPosition) (uint64, error) {
-	if _, err := decodeObservedAdaptorConfig(v, accountAt(accounts, v.Strategy)); err != nil {
-		return 0, err
+	if !v.trustful() {
+		if _, err := decodeObservedAdaptorConfig(v, accountAt(accounts, v.Strategy)); err != nil {
+			return 0, err
+		}
+		ticket, err := decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
+		if err != nil || ticket.Armed || ticket.LastConsumedSequence >= uint64(slot) {
+			return 0, budgetHoldFrom(err, "selector_destination_ticket_unavailable")
+		}
 	}
-	ticket, err := decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
-	if err != nil || ticket.Armed || ticket.LastConsumedSequence >= uint64(slot) {
-		return 0, budgetHoldFrom(err, "selector_destination_ticket_unavailable")
-	}
+	var err error
 	if err = validateSelectorFarms(v, route, accounts); err != nil {
 		return 0, err
 	}

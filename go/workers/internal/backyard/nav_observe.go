@@ -109,8 +109,12 @@ type RouteNAVSnapshot struct {
 }
 
 func pinnedRouteNAVAddressesForRoute(v *Vault, route RuntimeRoute) []string {
-	addresses := []string{
-		v.Strategy,
+	// FSj27's strategy key is its config account; Trustful's is no account.
+	var config []string
+	if !v.trustful() {
+		config = []string{v.Strategy}
+	}
+	addresses := append(config,
 		v.strategyReceipt,
 		v.idleATA,
 		v.strategyATA,
@@ -127,7 +131,7 @@ func pinnedRouteNAVAddressesForRoute(v *Vault, route RuntimeRoute) []string {
 		// the fail-closed monitors never compare values from different slots.
 		v.VoltrVault,
 		v.lpMint,
-	}
+	)
 	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
 		addresses = append(addresses, route.DebtCustody, usdcReference.DebtReserve)
 	}
@@ -377,8 +381,10 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if len(accounts) != len(pinnedRouteNAVAddressesForRoutes(v, routes)) {
 		return RouteNAVSnapshot{}, fmt.Errorf("NAV account namespace contains unsupported custody")
 	}
-	if _, err := decodeObservedAdaptorConfig(v, accountAt(accounts, v.Strategy)); err != nil {
-		return RouteNAVSnapshot{}, err
+	if !v.trustful() {
+		if _, err := decodeObservedAdaptorConfig(v, accountAt(accounts, v.Strategy)); err != nil {
+			return RouteNAVSnapshot{}, err
+		}
 	}
 	receipt, err := decodeStrategyReceipt(v, accountAt(accounts, v.strategyReceipt))
 	if err != nil {

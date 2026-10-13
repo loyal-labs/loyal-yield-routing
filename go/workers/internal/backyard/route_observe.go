@@ -120,7 +120,9 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	// A strategy receipt that is absent, foreign-owned or the wrong length
 	// is an observed integrity failure, not a transport fault.
 	if strategyReceiptIntegrityFault(accountAt(accounts, v.strategyReceipt)) {
-		return receiptIntegrityObservation(slot, selectedRoute), accounts, nil
+		o := receiptIntegrityObservation(slot, selectedRoute)
+		o.Snapshot.Trustful = v.trustful()
+		return o, accounts, nil
 	}
 	// Collateral several lanes share, with no position yet, is the entry's:
 	// the selector's entry lane, else the manifest's.
@@ -350,9 +352,12 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	ticket, ticketErr := decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
-	if ticketErr != nil {
-		return Observation{}, nil, fmt.Errorf("decode report ticket: %w", ticketErr)
+	var ticket observedReportTicket
+	if !v.trustful() {
+		var ticketErr error
+		if ticket, ticketErr = decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA)); ticketErr != nil {
+			return Observation{}, nil, fmt.Errorf("decode report ticket: %w", ticketErr)
+		}
 	}
 	if nav.Custodies.VoltrIdleRaw != idle.Raw || nav.Custodies.StrategyUSDCraw != strategy.Raw || nav.Custodies.SquadsUSDCraw != squads.Raw || nav.Custodies.SquadsPRIMEraw != prime.Raw {
 		return Observation{}, nil, fmt.Errorf("route NAV custody differs inside fixed confirmed account batch")
@@ -365,7 +370,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 		return Observation{}, nil, err
 	}
 	stateHash := sha256.Sum256([]byte(fmt.Sprintf("%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d", fingerprint, idle.Raw, strategy.Raw, squads.Raw)))
-	base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw)}}
+	base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw), Trustful: v.trustful()}}
 	base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 	base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
 	if (route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane)) && prime.Raw > 0 && demand == 0 {

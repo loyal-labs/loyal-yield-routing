@@ -149,6 +149,10 @@ type Snapshot struct {
 	// exactly this amount out of custody; anything else is a custody mismatch.
 	StagedAmountRaw   int64
 	StagedAmountKnown bool
+	// Trustful is a vault on Voltr's Trustful adaptor (Vault.trustful): its
+	// strategy receipt is its report, so none of the FSj27 monitors, journal
+	// or ticket fields below arm its decisions.
+	Trustful bool `json:",omitempty"`
 	// Phase 2 monitor inputs. MonitorsArmed is set only when the serialized
 	// worker merged a coherent confirmed route NAV batch, so hand-built unit
 	// snapshots keep their existing decisions. The journal, ticket, and

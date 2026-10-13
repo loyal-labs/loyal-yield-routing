@@ -129,7 +129,11 @@ func compileBridgeMessageForDelegate(v *Vault, request BridgeBuildRequest, deleg
 	if err != nil {
 		return nil, err
 	}
-	inner, indexes, err := ticketedBridgeInstructions(v, request)
+	bridgeInstructions := ticketedBridgeInstructions
+	if v.trustful() {
+		bridgeInstructions = trustfulBridgeInstructions
+	}
+	inner, indexes, err := bridgeInstructions(v, request)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +229,48 @@ func encodeBridgeReport(report BridgeReport) ([]byte, error) {
 	data = appendU64(data, report.ObservedSlot)
 	data = appendU64(data, report.NAVAfterRaw)
 	return append(data, digest...), nil
+}
+
+// The Trustful bridge's legs: deposit_strategy is its Deposit policy's one
+// leg (an allocation, or a NAV report of nothing); a withdrawal is its
+// Withdraw policy's two, the Squads cash into the holding account, then
+// withdraw_strategy.
+const (
+	trustfulDepositLeg = iota
+	trustfulDepositLegs
+)
+
+const (
+	trustfulHoldLeg = iota
+	trustfulWithdrawLeg
+	trustfulWithdrawLegs
+)
+
+// trustfulBridgeInstructions is a Trustful vault's bridge action and the
+// leg each instruction executes under. Every one reports the book after it
+// (the request's NAV) as the strategy's end value.
+func trustfulBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compiledInstruction, []byte, error) {
+	book := request.Report.NAVAfterRaw
+	if book > bridgeMaxNAV {
+		return nil, nil, fmt.Errorf("Trustful end value exceeds the vault cap")
+	}
+	accounts := v.strategyAccounts()
+	switch request.Action {
+	case VoltrAllocateToSquads, ReportNAV:
+		if (request.Action == ReportNAV) != (request.AmountRaw == 0) || request.AmountRaw > strategyTwoBridgeLegCapRaw {
+			return nil, nil, fmt.Errorf("invalid Trustful deposit amount")
+		}
+		deposit := voltr.TrustfulDeposit(accounts, request.AmountRaw, book, solanaKey(v.cash))
+		return []compiledInstruction{sdkInstruction(deposit)}, []byte{trustfulDepositLeg}, nil
+	case StageSquadsToVoltr:
+		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
+			return nil, nil, fmt.Errorf("invalid Trustful withdrawal amount")
+		}
+		hold := spl.TransferChecked(solana.TokenProgramID, solanaKey(v.cash), solanaKey(bridgeUSDC), solanaKey(v.holding), solanaKey(v.squads), request.AmountRaw, 6)
+		withdraw := voltr.TrustfulWithdraw(accounts, request.AmountRaw, book, solanaKey(v.holdingAuth), solanaKey(v.holding))
+		return []compiledInstruction{sdkInstruction(hold), sdkInstruction(withdraw)}, []byte{trustfulHoldLeg, trustfulWithdrawLeg}, nil
+	}
+	return nil, nil, fmt.Errorf("action %s has no Trustful bridge transaction", request.Action)
 }
 
 func stageInstruction(v *Vault, amount uint64) compiledInstruction {
