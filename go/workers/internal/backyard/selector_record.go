@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // RecordSelectorEvaluation consumes a complete economic quote, never a shadow
@@ -25,70 +27,68 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	if input.Now.After(now) || now.Sub(input.Now) > 5*time.Second || input.Snapshot.Slot <= 0 || confirmedSlot < input.Snapshot.Slot || confirmedSlot-input.Snapshot.Slot > observationLagSlots() {
 		return result, budgetHold("selector_evaluation_not_current")
 	}
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
-		return result, err
-	}
-	defer tx.Rollback(ctx)
-	var raw []byte
-	if err = tx.QueryRow(ctx, `SELECT state FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, routeKey).Scan(&raw); err != nil {
-		return result, err
-	}
-	var state struct {
-		CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
-		Selector      struct {
-			Result SelectorResult `json:"result"`
-		} `json:"selector"`
-	}
-	if json.Unmarshal(raw, &state) != nil {
-		return result, budgetHold("invalid_selector_route_state")
-	}
-	now = time.Now().UTC()
-	if now.Sub(input.Now) > 5*time.Second {
-		return result, budgetHold("selector_evaluation_not_current")
-	}
-	input.Now = now
-	// The source observation may precede the final fee/price collection. Use
-	// the caller's latest confirmed slot as well as that source slot; a fresh
-	// timestamp alone cannot extend any component of the economic recipe.
-	currentQuotes := make([]MoveQuote, 0, len(input.Quotes))
-	for _, q := range input.Quotes {
-		if q.currentAtSlot(confirmedSlot) {
-			currentQuotes = append(currentQuotes, q)
+	err := d.inTx(ctx, func(tx pgx.Tx) (err error) {
+		var raw []byte
+		if err = tx.QueryRow(ctx, `SELECT state FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, routeKey).Scan(&raw); err != nil {
+			return err
 		}
-	}
-	input.Quotes = currentQuotes
-	result = SelectOpportunity(input, state.Selector.Result.State)
-	var canaryReceipt *pilotCanaryEntryReceipt
-	result, canaryReceipt, err = selectPilotCanaryEntry(input, result, state.CanaryHistory)
-	if err != nil {
-		return result, err
-	}
-	encoded, err := json.Marshal(map[string]any{"mode": "live", "observationId": input.Snapshot.ObservationID, "slot": input.Snapshot.Slot, "result": result})
-	if err != nil {
-		return result, err
-	}
-	var updated map[string]json.RawMessage
-	if err = json.Unmarshal(raw, &updated); err != nil {
-		return result, err
-	}
-	updated["selector"] = encoded
-	if canaryReceipt != nil {
-		if state.CanaryHistory == nil {
-			state.CanaryHistory = make(map[string]pilotCanaryEntryReceipt)
+		var state struct {
+			CanaryHistory map[string]pilotCanaryEntryReceipt `json:"pilotCanaryEntries"`
+			Selector      struct {
+				Result SelectorResult `json:"result"`
+			} `json:"selector"`
 		}
-		state.CanaryHistory[canaryReceipt.Request.ID] = *canaryReceipt
-		updated["pilotCanaryEntries"], err = json.Marshal(state.CanaryHistory)
+		if json.Unmarshal(raw, &state) != nil {
+			return budgetHold("invalid_selector_route_state")
+		}
+		now = time.Now().UTC()
+		if now.Sub(input.Now) > 5*time.Second {
+			return budgetHold("selector_evaluation_not_current")
+		}
+		input.Now = now
+		// The source observation may precede the final fee/price collection. Use
+		// the caller's latest confirmed slot as well as that source slot; a fresh
+		// timestamp alone cannot extend any component of the economic recipe.
+		currentQuotes := make([]MoveQuote, 0, len(input.Quotes))
+		for _, q := range input.Quotes {
+			if q.currentAtSlot(confirmedSlot) {
+				currentQuotes = append(currentQuotes, q)
+			}
+		}
+		input.Quotes = currentQuotes
+		result = SelectOpportunity(input, state.Selector.Result.State)
+		var canaryReceipt *pilotCanaryEntryReceipt
+		result, canaryReceipt, err = selectPilotCanaryEntry(input, result, state.CanaryHistory)
 		if err != nil {
-			return result, err
+			return err
 		}
-	}
-	stateJSON, err := json.Marshal(updated)
-	if err != nil {
-		return result, err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=$2::jsonb,updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(stateJSON)); err != nil {
-		return result, err
-	}
-	return result, tx.Commit(ctx)
+		encoded, err := json.Marshal(map[string]any{"mode": "live", "observationId": input.Snapshot.ObservationID, "slot": input.Snapshot.Slot, "result": result})
+		if err != nil {
+			return err
+		}
+		var updated map[string]json.RawMessage
+		if err = json.Unmarshal(raw, &updated); err != nil {
+			return err
+		}
+		updated["selector"] = encoded
+		if canaryReceipt != nil {
+			if state.CanaryHistory == nil {
+				state.CanaryHistory = make(map[string]pilotCanaryEntryReceipt)
+			}
+			state.CanaryHistory[canaryReceipt.Request.ID] = *canaryReceipt
+			updated["pilotCanaryEntries"], err = json.Marshal(state.CanaryHistory)
+			if err != nil {
+				return err
+			}
+		}
+		stateJSON, err := json.Marshal(updated)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=$2::jsonb,updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(stateJSON)); err != nil {
+			return err
+		}
+		return nil
+	})
+	return result, err
 }

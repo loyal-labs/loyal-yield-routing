@@ -204,7 +204,7 @@ func sanitizedSelectorEvaluateFailure(err error) string {
 // there is no tick loop here, and the committed entry is durable route state
 // that the next worker start reads from the journal.
 func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
-	database, err := OpenDatabase(ctx, deps.databaseURL)
+	database, err := openOperatorDatabase(ctx, deps.databaseURL)
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_database_unavailable")
 	}

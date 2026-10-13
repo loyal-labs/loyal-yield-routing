@@ -10,9 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -86,19 +90,109 @@ const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET stat
 
 const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, forecast_apy_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
 
-// Database is Backyard's store. The process that writes through it holds the
-// family advisory lock (cmd/loyal-engine), so no write here re-checks who
-// the writer is.
+// Database is Backyard's store. The engine's Database is the writer
+// (OpenDatabase): one session that holds the family advisory lock, so no
+// write here re-checks who the writer is.
 type Database struct {
 	pool *pgxpool.Pool
 }
 
+// errWriterSessionLost: the writer's one session ended, and the lock with it.
+var errWriterSessionLost = errors.New("writer session lost")
+
+// OpenDatabase opens the Backyard writer: one database session that takes
+// Backyard's one-writer lock (the family advisory lock) when it connects,
+// waiting while another process holds it, and keeps it for the session's life.
+// Every read and write of the engine goes through that session. The pool
+// never opens a second one: once the session ends, every later call fails with
+// errWriterSessionLost, the engine exits, and its supervisor restarts it into
+// a fresh wait. databaseURL must be the direct (non-pooler) DSN: a pooler
+// hands the session to strangers.
 func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
 	if databaseURL == "" {
 		return nil, fmt.Errorf("database URL is required")
 	}
-	// pgxpool's own floor: the tick loop, custody prefetch and the selector
-	// collector share this pool.
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, errors.New("invalid Backyard database configuration")
+	}
+	// The tick loop and the selector collector take turns on the one
+	// session; the pool never retires it on its own.
+	config.MaxConns, config.MinConns, config.MinIdleConns = 1, 0, 0
+	config.MaxConnLifetime, config.MaxConnIdleTime = math.MaxInt64, math.MaxInt64
+	// A caller's deadline cancels its statement on the server and keeps the
+	// session; pgx's default closes the socket, which would end the writer.
+	// A server that does not answer the cancel still loses the session.
+	config.ConnConfig.BuildContextWatcherHandler = func(conn *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: 10 * time.Second}
+	}
+	// A failed checkout ping destroys the session; a dead one fails its next
+	// statement anyway.
+	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return false }
+	var dialed atomic.Bool
+	config.BeforeConnect = func(context.Context, *pgx.ConnConfig) error {
+		if dialed.Swap(true) {
+			return errWriterSessionLost
+		}
+		return nil
+	}
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended('loyal-family:'||$1, 0))`, string(engine.FamilyBackyard))
+		return err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("open Backyard database: %w", err)
+	}
+	_, _ = fmt.Fprintln(os.Stdout, "backyard-rwa-worker: waiting for the Backyard writer lock")
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("open Backyard database: %w", err)
+	}
+	return &Database{pool: pool}, nil
+}
+
+// inTx runs fn in one transaction. ctx bounds fn's statements; begin, commit
+// and rollback each get their own short context, because pgx closes a
+// connection whose begin, commit or rollback fails, and the writer has one
+// session. A ctx that ended during fn rolls back.
+func (d *Database) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	bounded := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	}
+	begin, cancel := bounded()
+	tx, err := conn.Begin(begin)
+	cancel()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		end, cancel := bounded()
+		defer cancel()
+		_ = tx.Rollback(end)
+	}()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	end, cancel := bounded()
+	defer cancel()
+	return tx.Commit(end)
+}
+
+// openOperatorDatabase is the one-shot operator commands' store: a plain pool
+// that takes no lock. A command that writes takes holdWriterLock itself.
+func openOperatorDatabase(ctx context.Context, databaseURL string) (*Database, error) {
+	if databaseURL == "" {
+		return nil, fmt.Errorf("database URL is required")
+	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	pool, err := db.Open(startup, databaseURL, 4)
@@ -220,16 +314,12 @@ func (d *Database) RecordDecisionOnManifest(
 	if err := validateDecisionPersistenceOnManifest(d, manifest, routeKey, observation, decision, manifestSHA256); err != nil {
 		return DecisionRecord{}, err
 	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	var record DecisionRecord
+	err := d.inTx(ctx, func(tx pgx.Tx) (err error) {
+		record, err = d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256)
+		return err
+	})
 	if err != nil {
-		return DecisionRecord{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	record, err := d.recordDecisionTx(ctx, tx, routeKey, observation, decision, manifestSHA256)
-	if err != nil {
-		return DecisionRecord{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return DecisionRecord{}, err
 	}
 	return record, nil
@@ -339,7 +429,7 @@ const nonterminalStatusSQL = `'decided','built','simulated','signed','broadcast_
 // is the release gate's read: it takes no writer lock, so it runs beside the
 // live worker.
 func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, error) {
-	database, err := OpenDatabase(ctx, databaseURL)
+	database, err := openOperatorDatabase(ctx, databaseURL)
 	if err != nil {
 		return 0, err
 	}
@@ -697,22 +787,10 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 	if err != nil {
 		return fmt.Errorf("encode route observation projection: %w", err)
 	}
-	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	if snapshot.SquadsIdleRaw > math.MaxInt64-snapshot.VoltrStrategyIdleRaw {
 		return fmt.Errorf("position snapshot idle claim overflows")
 	}
 	claimRaw := snapshot.SquadsIdleRaw + snapshot.VoltrStrategyIdleRaw
-	var generation int64
-	if err := tx.QueryRow(ctx, RouteProjectionUpdate, routeKey, projectionJSON, snapshot.Slot).Scan(&generation); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("route observation projection regressed")
-		}
-		return fmt.Errorf("persist route observation projection: %w", err)
-	}
 	var strategyKey *string
 	var forecastAPYBPS *int64
 	if snapshot.HasPosition {
@@ -726,14 +804,23 @@ func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, 
 	if valuationSource == "" {
 		valuationSource, valuationSlot = "backyard_rwa_v1_onchain_route", snapshot.Slot
 	}
-	if _, err := tx.Exec(ctx, PositionSnapshotInsert,
-		routeKey, generation, snapshot.Slot, observation.ObservedAt.UTC(), strategyKey, claimRaw,
-		snapshot.PositionCollateralRaw, snapshot.PositionDebtRaw, snapshot.StrategyNAVRaw,
-		snapshot.PositionCollateralValueRaw, snapshot.PositionDebtValueRaw, snapshot.LTVBPS, forecastAPYBPS, valuationSource, valuationSlot,
-	); err != nil {
-		return fmt.Errorf("persist route position snapshot: %w", err)
-	}
-	return tx.Commit(ctx)
+	return d.inTx(ctx, func(tx pgx.Tx) error {
+		var generation int64
+		if err := tx.QueryRow(ctx, RouteProjectionUpdate, routeKey, projectionJSON, snapshot.Slot).Scan(&generation); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("route observation projection regressed")
+			}
+			return fmt.Errorf("persist route observation projection: %w", err)
+		}
+		if _, err := tx.Exec(ctx, PositionSnapshotInsert,
+			routeKey, generation, snapshot.Slot, observation.ObservedAt.UTC(), strategyKey, claimRaw,
+			snapshot.PositionCollateralRaw, snapshot.PositionDebtRaw, snapshot.StrategyNAVRaw,
+			snapshot.PositionCollateralValueRaw, snapshot.PositionDebtValueRaw, snapshot.LTVBPS, forecastAPYBPS, valuationSource, valuationSlot,
+		); err != nil {
+			return fmt.Errorf("persist route position snapshot: %w", err)
+		}
+		return nil
+	})
 }
 
 func (d *Database) transition(ctx context.Context, operationID string, from, to OperationStatus, suffix string, args ...any) error {

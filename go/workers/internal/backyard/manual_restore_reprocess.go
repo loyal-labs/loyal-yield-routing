@@ -119,7 +119,7 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	if request.OperationID == "" || request.Signature == "" {
 		return result, errors.New("settle-manual-restore: --operation and --signature are required")
 	}
-	db, err := OpenDatabase(ctx, databaseURL)
+	db, err := openOperatorDatabase(ctx, databaseURL)
 	if err != nil {
 		result.Stage = "open_database"
 		return result, sanitizedStage(result.Stage)

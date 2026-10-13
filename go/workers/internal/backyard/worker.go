@@ -524,9 +524,10 @@ func (w *Worker) runTicks(ctx context.Context, tick func(context.Context) error)
 	}
 }
 
-// Run serializes lifecycle ticks until ctx ends. The process holds
-// Backyard's one-writer lock (the family advisory lock) for its whole life;
-// losing it cancels ctx.
+// Run serializes lifecycle ticks until ctx ends. Every read and write goes
+// through the writer session that holds Backyard's one-writer lock (the
+// family advisory lock); once that session is lost they fail, and the
+// tick's store error stops the worker.
 func (w *Worker) Run(ctx context.Context) error {
 	if w == nil {
 		return fmt.Errorf("invalid worker runtime")

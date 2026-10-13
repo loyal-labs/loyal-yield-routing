@@ -87,8 +87,8 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	return &Engine{worker: worker, database: config.Database, rpc: config.RPC, view: config.View, owner: config.Owner, config: config.Config, out: config.Out, runtime: config}, nil
 }
 
-// Run starts the selector collector and serializes lifecycle ticks. The
-// caller holds Backyard's one-writer lock for the process. Cancellation surfaces as context.Canceled so the owning process runtime can
+// Run starts the selector collector and serializes lifecycle ticks. Its
+// Database is the writer session that holds Backyard's one-writer lock. Cancellation surfaces as context.Canceled so the owning process runtime can
 // join the lane without recording a failure.
 func (e *Engine) Run(ctx context.Context) error {
 	if e == nil || e.worker == nil {

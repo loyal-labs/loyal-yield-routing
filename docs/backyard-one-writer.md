@@ -2,12 +2,24 @@
 
 ## One writer
 
-Backyard has one writer: the `loyal-engine` process that holds the family
-advisory lock (`pg_advisory_lock(hashtextextended('loyal-family:backyard', 0))`)
-on `BACKYARD_DATABASE_URL`, a direct session for the life of the process. A
+Backyard has one writer, and the writer is one session. `loyal-engine`
+opens one direct session on `BACKYARD_DATABASE_URL` (`backyard.OpenDatabase`:
+a pool of at most one connection, never recycled), and that session takes the
+family advisory lock (`pg_advisory_lock(hashtextextended('loyal-family:backyard', 0))`)
+when it connects. Every read and write of the process goes through it. A
 second process waits for the lock before it reads or writes anything; when the
-holder's session ends it takes over. Losing the session cancels the process,
-which exits so its supervisor restarts it into the wait.
+holder's session ends it takes over.
+
+The pool never opens a second session: a connect after the first is refused
+(`writer session lost`). A caller's deadline cancels its statement on the
+server, not the session, and a transaction begins, commits and rolls back on
+its own short context, so a timeout is not a lost session. A session that ends (a terminated backend, a FATAL,
+a reset, a database restart, a partition once it surfaces as an error) takes
+the lock with it, and every later read or write of that process fails; the
+tick's store error stops the worker, the process exits, and its supervisor
+restarts it into the wait. A process that lost its lock cannot commit
+anything, so it cannot persist a signed row, and `land` sends only persisted
+rows: broadcast intent is written before every first send.
 
 Nothing below the lock checks who the writer is: there is no route lease,
 fencing token, lease expiry, `state_version` compare-and-swap or planning
@@ -16,14 +28,12 @@ generation. The one-shot operator writes (`selector-evaluate --execute`,
 while the worker runs. `exit-lane` and `clear-hold` write their own rows
 (`backyard_lane_exits`, `backyard_manual_recovery_latches`) and need no lock.
 
-What the lock does not cover: a session the database drops while the
-process has not noticed yet (a silent network partition; a terminated
-backend notifies the client and cancels the process). The one-nonterminal
-partial unique index still keeps one operation in flight, every status
-transition is a compare on the row's status, and a signed wire resent by two
-processes is the same transaction; but once that operation is terminal the
-unaware process could decide a fresh one from its own observation. Writes do
-not go through the lock's session.
+There is no gap between holding the lock and writing: the writes go through
+the session that holds it. A partitioned process cannot reach the database
+with anything; the lock is released only when that session ends, and from
+then on the old process's writes fail. A row it had already moved to
+broadcast intent may be resent by the new writer; those are the same bytes,
+the same transaction, and cannot spend twice.
 
 ## The tick
 
