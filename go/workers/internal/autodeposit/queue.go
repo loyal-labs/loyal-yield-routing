@@ -26,14 +26,16 @@ func (s *Store) FailStaleRequestedSlots(ctx context.Context, limit int64) (int64
 	err := WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
 WITH stale_slots AS (
+    -- The target's turn first, as every slot writer takes it (openSlotFor).
     SELECT slot.id
-    FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+    FROM loyal_yield.balance_sweep_targets AS target
+    JOIN loyal_yield.balance_sweep_scheduled_slots AS slot ON slot.target_id = target.id
     WHERE slot.status = 'requested'
       AND COALESCE(slot.requested_at, slot.updated_at)
             < now() - ($1::bigint * interval '1 second')
     ORDER BY COALESCE(slot.requested_at, slot.updated_at) ASC, slot.id ASC
     LIMIT $2
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE OF target, slot SKIP LOCKED
 )
 UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
 SET status = 'failed',

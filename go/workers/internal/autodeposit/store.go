@@ -314,7 +314,14 @@ RETURNING id`, event.TargetID, event.EventID, event.TxnSignature, amountRaw,
 // never chosen here and its due date never moves. A scheduled slot whose lots
 // all drained is canceled first rather than reused: drained work's idle block
 // and deferral never carry over to new lots.
+//
+// Every writer that makes a slot scheduled (this, a claim's residual move, a
+// release) locks the target row first, so they take turns per target; the
+// insert itself is the conflict-safe write on the partial index.
 func openSlotFor(ctx context.Context, tx pgx.Tx, targetID int64, eligibleAfter time.Time) (int64, error) {
+	if err := lockTarget(ctx, tx, targetID); err != nil {
+		return 0, err
+	}
 	if _, err := tx.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
 SET status = 'canceled', last_error = 'its lots drained before new lots arrived', updated_at = now()
@@ -326,21 +333,24 @@ WHERE slot.target_id = $1
 		return 0, fmt.Errorf("cancel drained autodeposit slot of target %d: %w", targetID, err)
 	}
 	var slotID int64
-	err := tx.QueryRow(ctx, `
-UPDATE loyal_yield.balance_sweep_scheduled_slots
-SET eligible_after = GREATEST(eligible_after, $2), updated_at = now()
-WHERE target_id = $1 AND status = 'scheduled'
-RETURNING id`, targetID, eligibleAfter).Scan(&slotID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `
-INSERT INTO loyal_yield.balance_sweep_scheduled_slots (target_id, token_mint, eligible_after, status)
+	if err := tx.QueryRow(ctx, `
+INSERT INTO loyal_yield.balance_sweep_scheduled_slots AS slot (target_id, token_mint, eligible_after, status)
 VALUES ($1, $3, $2, 'scheduled')
-RETURNING id`, targetID, eligibleAfter, USDCMint).Scan(&slotID)
-	}
-	if err != nil {
+ON CONFLICT (target_id) WHERE status = 'scheduled' DO UPDATE
+SET eligible_after = GREATEST(slot.eligible_after, EXCLUDED.eligible_after), updated_at = now()
+RETURNING id`, targetID, eligibleAfter, USDCMint).Scan(&slotID); err != nil {
 		return 0, fmt.Errorf("open autodeposit slot of target %d: %w", targetID, err)
 	}
 	return slotID, nil
+}
+
+// lockTarget takes the target row, the per-target turn every slot and lot
+// writer takes before touching the target's slots or lots.
+func lockTarget(ctx context.Context, tx pgx.Tx, targetID int64) error {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE id = $1 FOR UPDATE`, targetID); err != nil {
+		return fmt.Errorf("lock autodeposit target %d: %w", targetID, err)
+	}
+	return nil
 }
 
 // depleteLotsNewestFirst applies an externally observed outflow to open lots.
@@ -350,6 +360,9 @@ RETURNING id`, targetID, eligibleAfter, USDCMint).Scan(&slotID)
 func depleteLotsNewestFirst(ctx context.Context, tx pgx.Tx, targetID, outflowAmountRaw int64) (int64, error) {
 	if outflowAmountRaw == 0 {
 		return 0, nil
+	}
+	if err := lockTarget(ctx, tx, targetID); err != nil {
+		return 0, err
 	}
 	rows, err := tx.Query(ctx, `
 SELECT lot.id, lot.remaining_amount_raw

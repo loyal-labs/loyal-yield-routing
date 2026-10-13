@@ -11,16 +11,11 @@ SET LOCAL lock_timeout = '5s';
 -- trigger runs for every status change (it notifies only on 'requested',
 -- which nothing here writes). Both are disabled for this transaction only and
 -- enabled again before commit, so no other session ever writes a slot
--- without them.
+-- without them. Disabling them takes a SHARE ROW EXCLUSIVE lock: slot reads
+-- go on, slot writes wait for the commit.
 ALTER TABLE loyal_yield.balance_sweep_scheduled_slots
     DISABLE TRIGGER balance_sweep_scheduled_slots_realtime_event,
     DISABLE TRIGGER balance_sweep_scheduled_slots_autodeposit_wakeup;
-
--- When idle vault custody first blocked the slot's pull; cleared when a claim
--- selects the slot. A drained slot is never reused, so the time never carries
--- over to new lots. Replaces the "[idle_blocked_since=...]" text in last_error.
-ALTER TABLE loyal_yield.balance_sweep_scheduled_slots
-    ADD COLUMN idle_blocked_since TIMESTAMPTZ;
 
 CREATE TEMP TABLE slot_open_lots ON COMMIT DROP AS
 SELECT DISTINCT scheduled_slot_id AS slot_id
@@ -103,7 +98,15 @@ WHERE stranded_slot.id = lot.scheduled_slot_id
   AND scheduled.target_id = lot.target_id
   AND scheduled.status = 'scheduled';
 
--- 4. The idle block recorded in last_error becomes the column.
+-- 4. The column change, its backfill and the index come last, so the
+--    exclusive lock they take is held only for this short end of the
+--    transaction, not for the bulk cancel and merges above.
+-- When idle vault custody first blocked the slot's pull; cleared when a claim
+-- selects the slot. A drained slot is never reused, so the time never carries
+-- over to new lots. Replaces the "[idle_blocked_since=...]" text in last_error.
+ALTER TABLE loyal_yield.balance_sweep_scheduled_slots
+    ADD COLUMN idle_blocked_since TIMESTAMPTZ;
+
 UPDATE loyal_yield.balance_sweep_scheduled_slots
 SET idle_blocked_since = to_timestamp(substring(last_error FROM 'idle_blocked_since=([0-9]{1,12})')::bigint)
 WHERE status IN ('scheduled', 'requested')

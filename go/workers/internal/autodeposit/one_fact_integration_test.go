@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -115,5 +116,111 @@ func TestDeferredSlotWaitsForItsDueDate(t *testing.T) {
 	third, err := worker.Tick(t.Context())
 	if err != nil || third.Outcome.ExecutionsCompleted != 1 {
 		t.Fatalf("readable allowance did not complete: %+v %v", third.Outcome, err)
+	}
+}
+
+// Two writers that each need the target's scheduled slot (the projector
+// filing a lot, a release returning its slot) take turns on the target row and
+// end on one slot; neither fails on the unique index and rolls back its batch.
+func TestConcurrentScheduledSlotWritersShareOneSlot(t *testing.T) {
+	s := integrationStore(t)
+	ctx := t.Context()
+	race := func(t *testing.T, targetID int64, first func(pgx.Tx) (int64, error)) {
+		t.Helper()
+		a, err := s.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer a.Rollback(ctx)
+		want, err := first(a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		type result struct {
+			id  int64
+			err error
+		}
+		done := make(chan result, 1)
+		go func() {
+			b, err := s.pool.Begin(ctx)
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			id, err := openSlotFor(ctx, b, targetID, time.Now())
+			if err == nil {
+				err = b.Commit(ctx)
+			} else {
+				_ = b.Rollback(ctx)
+			}
+			done <- result{id, err}
+		}()
+		select {
+		case r := <-done:
+			t.Fatalf("second writer did not wait for the first: %+v", r)
+		case <-time.After(200 * time.Millisecond):
+		}
+		if err := a.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		r := <-done
+		if r.err != nil || r.id != want {
+			t.Fatalf("second writer got slot %d (%v), want the first writer's %d", r.id, r.err, want)
+		}
+		var scheduled int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.balance_sweep_scheduled_slots WHERE target_id=$1 AND status='scheduled'`, targetID).Scan(&scheduled); err != nil || scheduled != 1 {
+			t.Fatalf("scheduled slots=%d %v", scheduled, err)
+		}
+	}
+	t.Run("two projector inserts", func(t *testing.T) {
+		target := seedIntegrationTarget(t, s, "race-insert")
+		s.insertIntegrationEvent(t, target.TargetID, 9_820_001, 9_000_000, nil, time.Now())
+		// The first projector files its lot on the slot it opens.
+		race(t, target.TargetID, func(tx pgx.Tx) (int64, error) {
+			id, err := openSlotFor(ctx, tx, target.TargetID, time.Now())
+			if err != nil {
+				return 0, err
+			}
+			_, err = tx.Exec(ctx, `INSERT INTO loyal_yield.balance_sweep_surplus_lots (target_id, source_event_id, original_amount_raw, remaining_amount_raw, classification, eligible_after, status, confidence, reason, scheduled_slot_id)
+VALUES ($1, 9820001, 5000000, 5000000, 'unknown', now(), 'open', 'derived', 'race', $2)`, target.TargetID, id)
+			return id, err
+		})
+	})
+	t.Run("release against a projector insert", func(t *testing.T) {
+		target, claim, slot := selectedReleaseClaim(t, s, "race-release", 9_000_000)
+		race(t, target.TargetID, func(tx pgx.Tx) (int64, error) {
+			released, err := releaseClaimCustody(ctx, tx, claim, 0)
+			if err == nil && !released {
+				err = errors.New("claim was not released")
+			}
+			return slot, err
+		})
+	})
+}
+
+// A released "Deposit now" slot becomes the target's scheduled slot, so it is
+// automatic work again: the user's request does not outlive its execution and
+// a withdrawn user's skip ends it.
+func TestReleasedRequestIsAutomaticWorkAgain(t *testing.T) {
+	s := integrationStore(t)
+	ctx := t.Context()
+	_, claim, slot := selectedReleaseClaim(t, s, "released-request", 9_000_000)
+	if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET request_source='web_execute_now', requested_at=now() WHERE id=$1`, slot); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, err := s.ReleaseClaimOnce(ctx, claim, "lease-current"); err != nil || outcome.Status != ClaimReleased {
+		t.Fatalf("release=%+v %v", outcome, err)
+	}
+	var status string
+	var source *string
+	var requestedAt *time.Time
+	if err := s.pool.QueryRow(ctx, `SELECT status::text, request_source, requested_at FROM loyal_yield.balance_sweep_scheduled_slots WHERE id=$1`, slot).Scan(&status, &source, &requestedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "scheduled" || source != nil || requestedAt != nil {
+		t.Fatalf("released slot %s source=%v requested_at=%v, want automatic scheduled work", status, source, requestedAt)
+	}
+	if skipped, err := s.SkipWithdrawnScheduledSlot(ctx, slot); err != nil || !skipped {
+		t.Fatalf("withdrawn skip=%v %v", skipped, err)
 	}
 }

@@ -33,14 +33,17 @@ type LiveVaultPosition struct {
 // largest, ties broken by reserve address. A fleet rebalance moves the
 // holding, so the deposit follows it and never recreates a position the fleet
 // drains again (ASK-2051); a vault split across reserves (85 production
-// vaults) deposits where most of it already is. A vault that holds nothing in
-// the deposit's mint takes the default reserve, which exists for USDC only. A
+// vaults) deposits where most of it already is. A vault that holds nothing at
+// all takes the default reserve, which exists for USDC only; one that holds
+// only other mints refuses, as the TS executor did. A
 // user who withdrew everything never reaches this on automatic work (see
 // VaultWithdrawn); only their explicit request deposits again.
 func resolveDepositReserve(tokenMint string, positions []LiveVaultPosition) (*LiveVaultPosition, error) {
 	var best *LiveVaultPosition
+	live := false
 	for i := range positions {
 		position := &positions[i]
+		live = live || position.AmountRaw > 0
 		if position.AmountRaw <= 0 || position.LiquidityMint != tokenMint {
 			continue
 		}
@@ -58,6 +61,10 @@ func resolveDepositReserve(tokenMint string, positions []LiveVaultPosition) (*Li
 		return refuse("missing_market")
 	case best != nil:
 		return best, nil
+	case live:
+		// The vault holds other mints only: the default reserve would be a
+		// second position its obligation may refuse (wires.go), so no guess.
+		return refuse("liquidity_mint_mismatch")
 	case tokenMint != USDCMint:
 		return refuse("default_reserve_mint_mismatch")
 	}

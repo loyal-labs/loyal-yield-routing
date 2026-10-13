@@ -647,6 +647,16 @@ WHERE claim.claim_token = $1`, claimToken, leaseToken, ClaimHoldingPullAttemptSt
 // preflight grew ~540 slots a day (target 7940, Oct 2026).
 func releaseClaimCustody(ctx context.Context, tx pgx.Tx, claimToken string, delay time.Duration) (bool, error) {
 	seconds := int64(delay / time.Second)
+	// The released slot becomes the target's scheduled slot: take the target's
+	// turn before any lot or slot, as every writer of a scheduled slot does
+	// (openSlotFor).
+	var targetID int64
+	if err := tx.QueryRow(ctx, `SELECT target_id FROM loyal_yield.balance_sweep_lot_claims WHERE claim_token = $1`, claimToken).Scan(&targetID); err != nil {
+		return false, fmt.Errorf("read released autodeposit claim: %w", err)
+	}
+	if err := lockTarget(ctx, tx, targetID); err != nil {
+		return false, err
+	}
 	tag, err := tx.Exec(ctx, `
 WITH restored AS (
     UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
@@ -675,16 +685,15 @@ WHERE claim_token = $1
 	if tag.RowsAffected() == 0 {
 		return false, nil
 	}
-	var slotID, targetID int64
+	var slotID int64
 	err = tx.QueryRow(ctx, `
-SELECT id, target_id FROM loyal_yield.balance_sweep_scheduled_slots
-WHERE claim_token = $1
-FOR UPDATE`, claimToken).Scan(&slotID, &targetID)
+SELECT id FROM loyal_yield.balance_sweep_scheduled_slots
+WHERE claim_token = $1`, claimToken).Scan(&slotID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return true, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("lock released autodeposit slot: %w", err)
+		return false, fmt.Errorf("find released autodeposit slot: %w", err)
 	}
 	// While the claim held its slot, inflows and its residual lots went to the
 	// target's scheduled slot; it merges back here, first, so the released
@@ -708,6 +717,10 @@ SELECT max(eligible_after) FROM other`, slotID, targetID).Scan(&mergedDue); err 
 UPDATE loyal_yield.balance_sweep_scheduled_slots
 SET status = 'scheduled',
     claim_token = NULL,
+    -- A released "Deposit now" is no longer a user request: as the target's
+    -- scheduled slot it is automatic work again (see skipAutomaticSlots).
+    request_source = NULL,
+    requested_at = NULL,
     eligible_after = GREATEST(eligible_after, now() + $2 * interval '1 second', $3),
     last_error = 'claim released before autodeposit pull',
     updated_at = now()
