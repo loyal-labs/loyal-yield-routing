@@ -5,6 +5,9 @@ global:
 
 rule_files:
   - /etc/prometheus/loyal.rules.yml
+  # xstock.rules.yml, owned by the xstock-bot repo (deploy/xstock.rules.yml).
+  # A glob, so the config loads before that file is installed.
+  - /etc/prometheus/xstock*.rules.yml
 
 alerting:
   alertmanagers:
@@ -23,8 +26,16 @@ scrape_configs:
       - targets: ["127.0.0.1:9103"]
         labels: {unit: loyal-backyard.service}
 
+  # xstock-bot (its own repo, same host): the bot and its pools recorder.
+  - job_name: xstock
+    static_configs:
+      - targets: ["127.0.0.1:9111"]
+        labels: {unit: xstock-bot.service}
+      - targets: ["127.0.0.1:9112"]
+        labels: {unit: xstock-pools.service}
+
   # node_exporter with the systemd collector: unit state and restart counts
-  # for every loyal-* unit, Go and Rust alike.
+  # for every loyal-* and xstock-* unit.
   - job_name: node
     static_configs:
       - targets: ["127.0.0.1:9100"]
