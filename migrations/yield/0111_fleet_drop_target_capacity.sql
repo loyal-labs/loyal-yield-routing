@@ -13,6 +13,7 @@
 -- the opportunity stays unclaimed; nothing is signed. Its signed submissions
 -- land and reconcile as before: the triggers dropped here only moved
 -- reservations. The app and the Rust services do not read these tables.
+SET LOCAL lock_timeout = '5s';
 DROP TRIGGER IF EXISTS signed_route_submission_requires_target_capacity ON loyal_yield.signed_route_submissions;
 DROP TRIGGER IF EXISTS signed_route_submission_advances_target_capacity ON loyal_yield.signed_route_submissions;
 DROP FUNCTION IF EXISTS loyal_yield.require_target_capacity_reservation_link();
