@@ -3,15 +3,18 @@ package backyard
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 func initializationPlanningFixture(lane string) Observation {
@@ -164,4 +167,40 @@ func TestNonterminalAutoInitializerRestores(t *testing.T) {
 	if _, err := restorePersistedDecision(siblingEffects, sibling.Action, sibling.IdempotencyKey, sibling.StrategyKey); err == nil {
 		t.Fatal("a lane without an initializer policy restored an initializer decision")
 	}
+}
+
+func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, map[string]ConfirmedAccount) {
+	e, _ := initializationReconcileFixture(t)
+	r := *e.Initialization
+	inner, err := kaminoMultiplyInitializer(r.RouteLane)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, _ := runtimeRoute(r.RouteLane)
+	metadataAddress := encodeBase58(inner.accounts[6].key[:])
+	rentAddress := "SysvarRent111111111111111111111111111111111"
+	system := "11111111111111111111111111111111"
+	accounts := map[string]ConfirmedAccount{}
+	for _, meta := range inner.accounts {
+		address := encodeBase58(meta.key[:])
+		accounts[address] = ConfirmedAccount{Address: address, Owner: system, Lamports: 1}
+	}
+	delete(accounts, route.Kamino.Obligation)
+	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
+	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
+	m := ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
+	copy(m.Data, kamino.UserMetadataDiscriminator[:])
+	putKey(t, m.Data[80:112], bridgeVault)
+	accounts[metadataAddress] = m
+	accounts[route.Kamino.Market] = marketFixture(t, route.Kamino.Market)
+	for _, mint := range []string{route.Kamino.CollateralMint, bridgeUSDC} {
+		a := ConfirmedAccount{Address: mint, Owner: classicTokenProgram, Lamports: 1, Data: make([]byte, 82)}
+		a.Data[44], a.Data[45] = 6, 1
+		accounts[mint] = a
+	}
+	rent := ConfirmedAccount{Address: rentAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 17)}
+	binary.LittleEndian.PutUint64(rent.Data, 5080)
+	binary.LittleEndian.PutUint64(rent.Data[8:16], math.Float64bits(1))
+	accounts[rentAddress] = rent
+	return r, accounts
 }

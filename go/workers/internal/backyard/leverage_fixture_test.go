@@ -22,7 +22,6 @@ func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client
 	// Align the Kamino debt price ($1) with the Jupiter mock's ONyc->USDC
 	// rate (1 ONyc = 1 USDC).
 	putScaledFraction(accountAt(accounts, route.Kamino.DebtReserve).Data[248:264], new(big.Int).Lsh(big.NewInt(1), 60))
-	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.Market).Data[kaminoGlobalBorrowValueOffset:], 1<<40)
 	// 100 ONyc (1e11 raw at 9 dp) = $100; debt 42.857% = 42_857_142 USDC-6.
 	obligation := accountAt(accounts, route.Kamino.Obligation).Data
 	binary.LittleEndian.PutUint64(obligation[128:136], 100_000_000_000)

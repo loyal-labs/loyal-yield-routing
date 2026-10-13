@@ -177,11 +177,6 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 					t.Errorf("constraint %d admits a foreign destination", index)
 				}
 			}
-			// The persisted build input recompiles to the same message.
-			input, err := encodePhase3BuildInput(request, []byte(`{}`))
-			if err != nil || input.Kind != "hastra" {
-				t.Fatal(input, err)
-			}
 			mismatch := request
 			mismatch.OutputRaw++
 			if _, err := compileHastraMessageForDelegate(mismatch, delegate); err == nil {
@@ -231,10 +226,6 @@ func TestHastraEffectsQuoteTheProgramRounding(t *testing.T) {
 		if source.Address != row.source || source.Mint != row.sourceMint || source.BeforeRaw != 5_000_000 || source.AfterRaw != 5_000_000-1_000_003 ||
 			destination.Address != row.destination || destination.Mint != row.destinationM || destination.BeforeRaw != 7 || *destination.MinimumAfterRaw != 7+row.want {
 			t.Fatalf("%s effects %+v", row.action, e)
-		}
-		debit, err := MeasureExecutableDebit(r, e)
-		if err != nil || debit.Source != row.source || debit.Raw != 1_000_003 {
-			t.Fatalf("%s debit %+v (%v)", row.action, debit, err)
 		}
 	}
 }

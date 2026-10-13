@@ -20,38 +20,14 @@ import (
 // entries reached the worker with too few slots left to allocate.
 const selectorLadderBudget = 3 * time.Second
 
-// collectSelectorQuotesForLane prices only onlyLane when it is set: while an
-// operator canary is installed the pure selector's economic choice is always
-// suppressed, so other lanes' destination quotes are never used and only
-// delay the canary's own quote. Those lanes keep their market economics and
-// are published as blocked without a quote.
-func collectSelectorQuotesForLane(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
-	return collectSelectorQuotesWithSource(ctx, rpc, view, client, manifest, o, markets, policy, onlyLane, nil, canaryMaximum...)
-}
-
-// selectorQuoteCapture is what one sample's quote collection priced beyond
-// its whole-move quotes: the source quote, the policies it read, and every
-// destination recipe its ladders priced.
-type selectorQuoteCapture struct {
-	source       selectorSourceQuote
-	policies     installedPolicies
-	mu           sync.Mutex
-	destinations []selectorDestinationQuote
-}
-
-func (c *selectorQuoteCapture) addDestination(d selectorDestinationQuote) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.destinations = append(c.destinations, d)
-}
-
-// collectSelectorQuotesWithSource is collectSelectorQuotesForLane that also
-// hands back what it priced. Only a flat vault is quoted: held lanes keep
-// their capital.
-func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, capture *selectorQuoteCapture, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
+// collectSelectorQuotes prices a flat vault's entry into each candidate
+// lane (priceEntry), at most selectorLadderRungs exact sizes per lane. It
+// prices only onlyLane when it is set: while an operator canary is installed
+// the pure selector's economic choice is always suppressed, so other lanes'
+// quotes are never used and only delay the canary's own quote. Those lanes
+// keep their market economics and are published as blocked without a quote.
+// Only a flat vault is quoted: held lanes keep their capital.
+func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, onlyLane string, canaryMaximum ...uint64) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()
 	if err := policy.validate(); err != nil {
@@ -74,39 +50,23 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 	if laneExposure(s) {
 		return out, nil, budgetHold("held_lanes_keep_their_capital")
 	}
-	// The policies every quote of this sample is priced through: one read,
-	// at the sample's slot.
-	policies, err := observeInstalledPolicies(ctx, rpc, s.Slot)
-	if err != nil {
-		return out, nil, err
+	// The entry's cash is the flat vault's: Voltr idle and the Squads cash an
+	// entry already allocated, on a settled book.
+	if !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" ||
+		s.WithdrawalDemandRaw != 0 || s.VoltrStrategyIdleRaw != 0 || s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 {
+		return out, nil, budgetHold("selector_source_unavailable")
 	}
-	o.policies = policies
-	if capture != nil {
-		capture.policies = policies
-	}
-	// A catalog lane's source quote (non-USDC debt) comes from the candidate
-	// producer through the durable planning observation manifest: idle cash
-	// prices the OBSERVED_IDLE_NO_EXIT source there, and funded capital prices
-	// the same finite exit the basic lanes get, with its debt residue requoted
-	// at the guaranteed funding remainder.
-	observeSource := observeSelectorSource
-	if catalogJupiterRoute(s.RouteLane) {
-		if o.planning == nil {
-			return out, nil, budgetHold("selector_source_unavailable")
-		}
-		observeSource = observeAutoSelectorSource
-	}
-	source, err := observeSource(ctx, rpc, view, client, manifest, o)
-	if err != nil {
-		return out, nil, err
-	}
-	if capture != nil {
-		capture.source = source
-	}
-	if source.MinimumIdleRaw <= uint64(policy.IdleBufferRaw) {
+	idle := uint64(s.VoltrIdleRaw) + uint64(s.SquadsIdleRaw)
+	if idle <= uint64(policy.IdleBufferRaw) {
 		return out, nil, budgetHold("selector_move_has_no_entry_cash")
 	}
-	maximum := min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-policy.IdleBufferRaw), source.MinimumIdleRaw-uint64(policy.IdleBufferRaw))
+	// The policies and the SOL price every quote of this sample is priced
+	// through: one read each, at the sample's slot.
+	pricer, err := newLanePricer(ctx, rpc, view, client, manifest, s.Slot)
+	if err != nil {
+		return out, nil, err
+	}
+	maximum := min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-policy.IdleBufferRaw), idle-uint64(policy.IdleBufferRaw))
 	if len(canaryMaximum) > 0 {
 		maximum = min(maximum, canaryMaximum[0])
 	}
@@ -132,30 +92,23 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			price := func(size uint64) (MoveQuote, uint64, string, bool, error) {
-				destination, err := observeSelectorDestinationForecast(ctx, rpc, view, client, manifest, o.policies, out[i], size, s.Slot, true)
-				if err != nil {
-					_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
-					return MoveQuote{}, 0, "complete_entry_quote_unavailable", false, err
+			price := func(size uint64) (MoveQuote, string, bool, error) {
+				q, err := pricer.priceEntry(ctx, o, out[i], size)
+				if err == nil {
+					return q, "", false, nil
 				}
-				capture.addDestination(destination)
-				loss := destinationEntrySwapLoss(destination.Recipe)
-				q, err := composeSelectorMove(ctx, view, o, source, destination)
-				if err != nil {
-					// Cost beyond equity is an economic outcome smaller sizes can
-					// repair; every other refusal is terminal for this lane.
-					var hold *BudgetHold
-					if errors.As(err, &hold) && holdCause(hold) == "selector_move_cost_exceeds_equity" {
-						return MoveQuote{}, loss, "selector_move_cost_exceeds_equity", true, err
-					}
-					return MoveQuote{}, loss, "complete_move_quote_unavailable", false, err
+				_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable lane=%s size=%d: %v\n", out[i].Lane, size, err)
+				// Cost beyond equity is an economic outcome smaller sizes can
+				// repair; every other refusal is terminal for this lane.
+				var hold *BudgetHold
+				if errors.As(err, &hold) && holdCause(hold) == "selector_move_cost_exceeds_equity" {
+					return q, "selector_move_cost_exceeds_equity", true, err
 				}
-				return q, loss, "", false, nil
+				return q, "complete_entry_quote_unavailable", false, err
 			}
-			// Biggest-first sizing ladder: when the largest tranche cannot clear
-			// the existing selector benefit under its expected expense, reprice
-			// at most two smaller exact sizes. Every leg stays inside the caller's
-			// existing collection deadline; no deadline is ever extended.
+			// Biggest-first sizing ladder: when the largest size cannot clear
+			// the selector benefit under its expected cost, price at most two
+			// smaller exact sizes, inside the collection deadline.
 			var collected []MoveQuote
 			// The largest size's refusal labels the lane when nothing collects:
 			// economic failures keep probing smaller sizes, while network,
@@ -167,7 +120,7 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 				if size == 0 || (j > 0 && (ctx.Err() != nil || time.Since(o.ObservedAt) > selectorLadderBudget)) {
 					break
 				}
-				q, loss, unavailable, economic, err := price(size)
+				q, unavailable, economic, err := price(size)
 				if err != nil {
 					if j == 0 {
 						refusal = unavailable
@@ -180,11 +133,11 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 					continue
 				}
 				collected = append(collected, q)
-				if j < selectorLadderRungs-1 && selectorQuoteSizeSufficient(manifest, o, markets, out[i].Lane, policy, q) {
+				if j < selectorLadderRungs-1 && selectorQuoteSizeSufficient(o, markets, out[i].Lane, policy, q) {
 					sufficient = true
 					break
 				}
-				size = selectorNextLadderSize(size, loss)
+				size = selectorNextLadderSize(size, uint64(max(q.Cost.EntrySwapLossMicros, 0)))
 			}
 			if collected, refusal = selectorLadderOutcome(collected, sufficient, smallerUnavailable, refusal); len(collected) > 0 {
 				laddered[i] = collected
@@ -195,10 +148,10 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 		}(i)
 	}
 	wg.Wait()
-	// Keep the best quote per lane; the locked pure selector owns cross-lane
-	// competition and persistence. Profitable quotes are published as
-	// executable capacity. Without any profitable size, the best bound-valid quote stays published
-	// for evidence — pure SelectOpportunity then decides KEEP from its own math.
+	// Keep the best quote per lane; the pure selector owns cross-lane
+	// competition and persistence. Without any profitable size, the best
+	// valid quote stays published for evidence: SelectOpportunity then
+	// decides KEEP from its own math.
 	result := make([]MoveQuote, 0, len(out))
 	for i := range out {
 		if len(laddered[i]) == 0 {
@@ -206,7 +159,7 @@ func collectSelectorQuotesWithSource(ctx context.Context, rpc *chain.Client, vie
 		}
 		best, bestProfitable, bestBenefit := 0, false, math.Inf(-1)
 		for j, q := range laddered[i] {
-			benefit, admissible := selectorMoveQuoteBenefit(manifest, o, markets, out[i].Lane, policy, q)
+			benefit, admissible := selectorMoveQuoteBenefit(o, markets, out[i].Lane, policy, q)
 			profitable := admissible && benefit > float64(policy.MinimumBenefitRaw)
 			if j == 0 || profitable && !bestProfitable || profitable == bestProfitable && benefit > bestBenefit {
 				best, bestProfitable, bestBenefit = j, profitable, benefit
@@ -239,17 +192,6 @@ func selectorNextLadderSize(size, entrySwapLoss uint64) uint64 {
 	return next
 }
 
-// destinationEntrySwapLoss is the entry swap's bound loss in a destination
-// recipe: the first swap that debits bridge USDC.
-func destinationEntrySwapLoss(recipe selectorRecipe) uint64 {
-	for _, cost := range recipe.Costs {
-		if cost.Debit.Mint == bridgeUSDC && cost.ExecutionCost != nil && cost.ExecutionCost.SwapLossMicros > 0 {
-			return uint64(cost.ExecutionCost.SwapLossMicros)
-		}
-	}
-	return 0
-}
-
 // selectorLadderOutcome publishes a lane's collected rungs, except when none
 // clears the benefit threshold and a smaller rung failed for availability:
 // that smaller rung could have been the profitable one, so the lane is an
@@ -265,15 +207,15 @@ func selectorLadderOutcome(collected []MoveQuote, sufficient, smallerUnavailable
 // selectorQuoteSizeSufficient reports whether an already-collected quote
 // clears the existing selector benefit under its expected expense, so no
 // smaller ladder size is priced.
-func selectorQuoteSizeSufficient(manifest RouteManifest, o Observation, markets []LaneEconomics, lane string, policy SelectorPolicy, q MoveQuote) bool {
-	benefit, admissible := selectorMoveQuoteBenefit(manifest, o, markets, lane, policy, q)
+func selectorQuoteSizeSufficient(o Observation, markets []LaneEconomics, lane string, policy SelectorPolicy, q MoveQuote) bool {
+	benefit, admissible := selectorMoveQuoteBenefit(o, markets, lane, policy, q)
 	return admissible && benefit > float64(policy.MinimumBenefitRaw)
 }
 
 // selectorMoveQuoteBenefit reuses the pure SelectOpportunity evaluator on one
 // exact quote rather than duplicating any financial formula. It reports the
 // candidate's BenefitRaw and whether the quote is admissible at all.
-func selectorMoveQuoteBenefit(manifest RouteManifest, o Observation, markets []LaneEconomics, lane string, policy SelectorPolicy, q MoveQuote) (float64, bool) {
+func selectorMoveQuoteBenefit(o Observation, markets []LaneEconomics, lane string, policy SelectorPolicy, q MoveQuote) (float64, bool) {
 	eval := append([]LaneEconomics(nil), markets...)
 	for i := range eval {
 		if eval[i].Lane == lane {
@@ -327,7 +269,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 		maximum = []uint64{uint64(request.EquityRaw)}
 		onlyLane = request.Lane
 	}
-	enriched, quotes, quoteErr := collectSelectorQuotesForLane(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, maximum...)
+	enriched, quotes, quoteErr := collectSelectorQuotes(ctx, rpc, view, productionJupiter, manifest, o, markets, policy, onlyLane, maximum...)
 	if quoteErr != nil {
 		// No fabricated executable capacity on an outage. Current economic evidence
 		// can still maintain persistence, while pure selection cannot enter.

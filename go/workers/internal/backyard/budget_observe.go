@@ -1,54 +1,18 @@
 package backyard
 
 import (
-	"context"
 	"encoding/binary"
 	"math"
 	"strconv"
-
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
 const budgetClockAddress = "SysvarC1ock11111111111111111111111111111111"
 const budgetPriceMarginBPS uint16 = 100
 
-// ObserveBudgetTokenPrice reads the bound token reserve and the USDC
-// reference in one coherent batch with both mints and chain Clock, valued like
-// the tick's batch: captured after their refreshes (an unsigned simulation).
-// This is valuation-only: it does not broaden execution routes or authority.
-// Native SOL fees need a separate reviewed price observation and cannot fall
-// back to an assumed dollar price when this token observer does not cover them.
-func ObserveBudgetTokenPrice(ctx context.Context, rpc *chain.Client, view *View, lane string, debit ExecutableDebit, minimumSlot int64) (BudgetPrice, error) {
-	if rpc == nil || minimumSlot <= 0 || debit.Raw == 0 {
-		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
-	}
-	route, err := runtimeRoute(lane)
-	if err != nil {
-		return BudgetPrice{}, err
-	}
-	reference := usdcReference
-	reserveAddress := reference.DebtReserve
-	config := reference
-	switch debit.Mint {
-	case bridgeUSDC:
-	case route.Kamino.CollateralMint:
-		reserveAddress = route.Kamino.CollateralReserve
-		config = route.Kamino
-	case route.Kamino.DebtMint:
-		reserveAddress = route.Kamino.DebtReserve
-		config = route.Kamino
-	default:
-		return BudgetPrice{}, budgetHold("unbound_valuation_mint")
-	}
-	addresses := uniqueNonzero([]string{reserveAddress, reference.DebtReserve, debit.Mint, bridgeUSDC, budgetClockAddress})
-	slot, accounts, err := simulateBudgetReserveRefresh(ctx, rpc, lane, addresses, minimumSlot)
-	if err != nil {
-		return BudgetPrice{}, err
-	}
-	return decodeBudgetTokenPrice(slot, accounts, config, reference, reserveAddress, debit)
-}
-
-func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, reference KaminoObservationConfig, reserveAddress string, debit ExecutableDebit) (BudgetPrice, error) {
+// decodeBudgetTokenPrice is tokenMint's price in USDC from one refreshed
+// capture of its reserve and the pinned USDC reference reserve, with
+// budgetPriceMarginBPS on each side.
+func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, reference KaminoObservationConfig, reserveAddress, tokenMint, tokenProgram string) (BudgetPrice, error) {
 	if slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_slot")
 	}
@@ -61,7 +25,7 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 		return BudgetPrice{}, budgetHold("invalid_valuation_clock")
 	}
 	tokenAccount, referenceAccount := accountAt(accounts, reserveAddress), accountAt(accounts, reference.DebtReserve)
-	token, err := decodeKaminoReserve(tokenAccount, debit.Mint, config)
+	token, err := decodeKaminoReserve(tokenAccount, tokenMint, config)
 	if err != nil {
 		return BudgetPrice{}, err
 	}
@@ -75,16 +39,16 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 			return BudgetPrice{}, &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "reserve_price", "reserve": account.Address, "chainUnix": strconv.FormatInt(now, 10), "priceUpdatedUnix": strconv.FormatInt(updated, 10)}}
 		}
 	}
-	mint := accountAt(accounts, debit.Mint)
+	mint := accountAt(accounts, tokenMint)
 	usdcMint := accountAt(accounts, bridgeUSDC)
-	if err := validateExecutionMint(mint, debit.TokenProgram, token.mintDecimals); err != nil {
+	if err := validateExecutionMint(mint, tokenProgram, token.mintDecimals); err != nil {
 		return BudgetPrice{}, err
 	}
 	if validateExecutionMint(usdcMint, classicTokenProgram, 6) != nil || usdc.mintDecimals != 6 {
 		return BudgetPrice{}, budgetHold("usdc_reference_metadata_mismatch")
 	}
 	upper, lower := token.marketPriceSF, usdc.marketPriceSF
-	if debit.Mint != bridgeUSDC {
+	if tokenMint != bridgeUSDC {
 		upper, err = UpperPriceMargin(upper, budgetPriceMarginBPS)
 		if err != nil {
 			return BudgetPrice{}, err
@@ -94,16 +58,5 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 			return BudgetPrice{}, err
 		}
 	}
-	tokenLower, usdcUpper := token.marketPriceSF, usdc.marketPriceSF
-	if debit.Mint != bridgeUSDC {
-		tokenLower, err = lowerPriceMargin(tokenLower, budgetPriceMarginBPS)
-		if err != nil {
-			return BudgetPrice{}, err
-		}
-		usdcUpper, err = UpperPriceMargin(usdcUpper, budgetPriceMarginBPS)
-		if err != nil {
-			return BudgetPrice{}, err
-		}
-	}
-	return BudgetPrice{Credit: &BudgetCreditBounds{tokenLower, usdcUpper}, Source: routeRefreshValuationSource, Mint: debit.Mint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + observationLagSlots(), EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
+	return BudgetPrice{Source: routeRefreshValuationSource, Mint: tokenMint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + observationLagSlots(), EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
 }

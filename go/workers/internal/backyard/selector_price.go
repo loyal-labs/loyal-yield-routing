@@ -48,8 +48,14 @@ func newLanePricer(ctx context.Context, rpc *chain.Client, view *View, client *j
 
 // networkMicros is a compiled message's network fee in USDC micros.
 func (p lanePricer) networkMicros(message []byte) (int64, error) {
-	cost, err := ValueTransactionCost(message, ExecutableDebit{}, 0, BudgetPrice{}, p.sol, p.sol.ObservedSlot)
-	return cost.NetworkFeeMicros, err
+	fee, err := chain.MessageFee(message)
+	if err != nil {
+		return 0, budgetHoldFrom(err, "message_fee_unpriced")
+	}
+	if p.sol.Decimals != 9 {
+		return 0, budgetHold("native_sol_decimal_mismatch")
+	}
+	return p.sol.valueUpper(fee, nativeSOLBudgetAsset, "11111111111111111111111111111111", p.sol.ObservedSlot)
 }
 
 // lanePrices are a lane's reserve market prices in one refreshed batch:
@@ -229,29 +235,29 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 		return q, err
 	}
 	if slot > q.ValidThroughSlot {
-		return q, budgetHold("selector_recipe_observation_expired")
+		return q, budgetHold("selector_quote_observation_expired")
 	}
 	prices, err := batchLanePrices(accounts, route)
 	if err != nil {
 		return q, err
 	}
-	// Entry capacity and borrow room are debt-denominated: valued in USDC at
-	// the batch's prices.
-	capacity, err := kaminoPairEntryCapacity(position, accounts, route)
+	// The entry takes at most the collateral reserve's deposit room, the
+	// capacity the tick's observation gives the lane (topupDepositRoomUSDC):
+	// one derivation, so a quote never asks more than the step allocates.
+	// The borrowing evidence validates first; unknown is not a zero loan.
+	room, err := kaminoAdditionalDebtRoom(accounts, route)
 	if err != nil {
 		return q, err
 	}
-	capacityUSDC, err := prices.debtValue(capacity)
+	if value, err := prices.debtValue(room); err == nil {
+		display := uint64(value)
+		q.DebtRoomUSDCRaw = &display
+	}
+	capacity, err := topupDepositRoomUSDC(accounts, route)
 	if err != nil {
 		return q, err
 	}
-	if room, err := kaminoAdditionalDebtRoom(accounts, route); err == nil {
-		if value, err := prices.debtValue(room); err == nil {
-			display := uint64(value)
-			q.DebtRoomUSDCRaw = &display
-		}
-	}
-	equity = min(equity, uint64(capacityUSDC))
+	equity = min(equity, capacity)
 	if equity == 0 || min(position.LiquidationThresholdBPS-1500, 6000) <= TargetLTVBPS {
 		return q, budgetHold("selector_destination_capacity_unavailable")
 	}
@@ -373,7 +379,11 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 		return q, err
 	}
 	q.Cost, q.CostRaw = cost, cost.TotalMicros
-	if q.CostRaw >= q.EquityRaw || !q.validBorrow() {
+	if !q.validBorrow() {
+		return q, budgetHold("selector_entry_borrow_invalid")
+	}
+	// An economic outcome a smaller size can repair (the ladder's).
+	if q.CostRaw >= q.EquityRaw {
 		return q, budgetHold("selector_move_cost_exceeds_equity")
 	}
 	raw, err := json.Marshal(struct {

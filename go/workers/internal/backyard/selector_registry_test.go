@@ -1,45 +1,10 @@
 package backyard
 
 import (
-	"math"
 	"strings"
 	"testing"
 	"time"
 )
-
-// A move's worst-case CostRaw (swap minima, recipe limits) is an execution
-// bound, not lost capital. Live 2026-10-10 an ONyc switch quoted CostRaw ~12%
-// of equity while its expected expense was ~$340; scoring it must use the
-// expected expense, so the bound alone never changes the candidate's benefit.
-func TestOnReSwitchScoresItsExpectedCostNotItsBound(t *testing.T) {
-	t.Parallel()
-	const equity = int64(100_000_000_000) // $100k
-	const expected = int64(340_000_000)   // $340
-	score := func(costRaw int64) CandidateForecast {
-		in := selectorFixture()
-		in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = equity, equity
-		q := &in.Quotes[0]
-		q.MinimumIdleRaw, q.EquityRaw, q.BorrowReceiveRaw = uint64(equity), equity, uint64(equity/2)
-		q.CostRaw = costRaw
-		cost := expected
-		q.ExpectedCostRaw = &cost
-		for _, c := range SelectOpportunity(in, SelectorState{}).Candidates {
-			if c.Lane == onreONycUSDC && c.CostsKnown {
-				return c
-			}
-		}
-		t.Fatal("ONyc candidate not priced")
-		return CandidateForecast{}
-	}
-	bounded := score(equity * 12 / 100)
-	tight := score(expected)
-	if bounded.InvestedRaw != equity-expected || tight.InvestedRaw != equity-expected {
-		t.Fatalf("invested capital withheld the bound: %d %d", bounded.InvestedRaw, tight.InvestedRaw)
-	}
-	if bounded.BlockedReason != "" || math.Abs(bounded.BenefitRaw-tight.BenefitRaw) > 1e-6 || bounded.BenefitRaw <= 0 {
-		t.Fatalf("worst-case bound changed the true benefit: %v vs %v (%s)", bounded.BenefitRaw, tight.BenefitRaw, bounded.BlockedReason)
-	}
-}
 
 // Persistence is sampled only from an executable quote. A lane whose debt
 // reserve sits above its utilization block has no leveraged quote, so however
@@ -64,7 +29,7 @@ func TestBlockedDebtReserveNeverAccruesLeveragedPersistence(t *testing.T) {
 	unlevered := selectorFixture()
 	unlevered.Markets[0].NativeAPY = .5
 	q := &unlevered.Quotes[0]
-	q.Unlevered, q.BorrowReceiveRaw, q.BorrowFeeRaw = true, 0, 0
+	q.Unlevered, q.BorrowReceiveRaw, q.BorrowFeeRaw, q.BorrowValueRaw, q.ProceedsValueRaw = true, 0, 0, 0, 0
 	result := SelectOpportunity(unlevered, SelectorState{})
 	if _, ok := result.State.Advantages[lane]; ok {
 		t.Fatal("1x quote accrued the leveraged window", result.State)
@@ -75,26 +40,14 @@ func TestBlockedDebtReserveNeverAccruesLeveragedPersistence(t *testing.T) {
 }
 
 // primePYUSDQuote is an executable Prime/PRIME/PYUSD entry from idle Maple
-// cash with bound PYUSD debt and PRIME collateral price evidence.
-func primePYUSDQuote(t *testing.T, in SelectorInput, debtPrice BudgetPrice) MoveQuote {
-	t.Helper()
-	debt := debtPrice
-	collateral := sfIntervalPrice(primePRIMEPYUSD.Kamino.CollateralMint, primePRIMEPYUSD.CollateralTokenProgram, 6, in.Snapshot.Slot)
-	collateral.ValidThroughSlot = debt.ValidThroughSlot
-	q := MoveQuote{
+// cash, its PYUSD borrow valued at par.
+func primePYUSDQuote(in SelectorInput) MoveQuote {
+	return parBorrow(MoveQuote{
 		MinimumIdleRaw: uint64(in.Snapshot.TotalVaultNAVRaw), BorrowReceiveRaw: 5_000_000, BorrowFeeRaw: 10_000,
-		DebtPrice: &debt, CollateralAssetPrice: &collateral, RedepositCollateralRaw: 5_000_000,
 		SourceLane: in.Snapshot.RouteLane, DestinationLane: primePRIMEPYUSD.Lane, ObservationID: in.Snapshot.ObservationID,
 		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
-		EvidenceID: sha256Bytes([]byte("prime-pyusd-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: debt.ValidThroughSlot,
-	}
-	asset, err := collateral.valueLower(10_000_000, primePRIMEPYUSD.Kamino.CollateralMint, primePRIMEPYUSD.CollateralTokenProgram, q.ValidThroughSlot)
-	if err != nil || asset <= 0 {
-		t.Fatal("collateral asset estimate", asset, err)
-	}
-	assetRaw := uint64(asset)
-	q.CollateralAssetUSDCRaw = &assetRaw
-	return q
+		EvidenceID: sha256Bytes([]byte("prime-pyusd-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + budgetMaxObservationLagSlots,
+	})
 }
 
 // The owner's goal: with AUTO's PYUSD reserve full (no leveraged quote, its
@@ -102,14 +55,13 @@ func primePYUSDQuote(t *testing.T, in SelectorInput, debtPrice BudgetPrice) Move
 // and, once persistent, enters Prime/PRIME/PYUSD.
 func TestSelectorRanksPrimePYUSDWhenAUTOIsBlocked(t *testing.T) {
 	t.Parallel()
-	_, debtPrice, _ := autoDebtPriceFixture(t, 1_000_000)
-	in := fundedAutoFixture(t, debtPrice, autoCollateralPriceFixture(t, 1_000_000))
+	in := fundedAutoFixture(t)
 	auto := in.Markets[0]
 	auto.EntryCapacity, auto.EntryBlockedReason = Capacity{Known: true}, "no_borrow_room"
 	prime := in.Markets[0]
 	prime.Lane = primePRIMEPYUSD.Lane
 	in.Markets = []LaneEconomics{auto, prime}
-	in.Quotes = []MoveQuote{primePYUSDQuote(t, in, debtPrice)}
+	in.Quotes = []MoveQuote{primePYUSDQuote(in)}
 	first := SelectOpportunity(in, SelectorState{})
 	var ranked, blocked bool
 	for _, c := range first.Candidates {

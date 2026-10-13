@@ -59,7 +59,7 @@ func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 	if !ok || gain < -300_000 || gain >= 0 {
 		t.Fatalf("rounding budget=%f known=%t", -gain, ok)
 	}
-	in.Quotes[0].Unlevered, in.Quotes[0].BorrowReceiveRaw = true, 0
+	in.Quotes[0].Unlevered, in.Quotes[0].BorrowReceiveRaw, in.Quotes[0].BorrowValueRaw, in.Quotes[0].ProceedsValueRaw = true, 0, 0, 0
 	in.Quotes[0].CostRaw = 100_000
 	in.Markets[0].NativeAPY = .10
 	in.Markets[0].CurrentBorrowAPY = 0

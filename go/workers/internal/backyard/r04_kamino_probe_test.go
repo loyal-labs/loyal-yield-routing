@@ -12,7 +12,7 @@ import (
 )
 
 // Feed actual deployed-program token poststates through the production
-// compiler, amount selector, economic debit measurement and reconciliation.
+// compiler, amount selector and reconciliation.
 // These are local SVM transitions, not confirmed RPC receipts or signer proof.
 func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 	t.Parallel()
@@ -141,10 +141,6 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 		effects, err := boundedKaminoRepaymentEffects(before, source, destination, minimum, maximum)
 		if err != nil {
 			t.Fatal(err)
-		}
-		debit, err := MeasureExecutableDebit(request, effects)
-		if err != nil || debit.Raw != maximum {
-			t.Fatal("production did not reserve the maximum executable debit", debit, err)
 		}
 		receipt := ConfirmedTransactionEvidence{Signature: "local-svm-not-signed:" + probe.WireSHA256, Slot: result.Slot}
 		for _, boundary := range []kaminoCustodyBoundary{source, destination} {

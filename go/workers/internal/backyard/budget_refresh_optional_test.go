@@ -95,7 +95,7 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 			if testCase.optional {
 				_, _, captureErr = simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, addresses, []string{budgetClockAddress}, 41)
 			} else {
-				_, _, captureErr = simulateBudgetReserveRefresh(context.Background(), client, PhaseOneLaneID, addresses, 41)
+				_, _, captureErr = simulateLanesReserveRefreshOptional(context.Background(), client, []string{PhaseOneLaneID}, addresses, nil, 41)
 			}
 			var hold *BudgetHold
 			if !errors.As(captureErr, &hold) || holdCause(hold) != "price_refresh_capture_incomplete" {

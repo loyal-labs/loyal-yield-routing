@@ -19,7 +19,7 @@ func selectorFixture() SelectorInput {
 	p.MinimumBenefitRaw = 1
 	p.UncertaintyBPS = 0
 	market := LaneEconomics{Lane: "OnRe/ONyc/USDC", EvidenceID: "rates", ObservedAt: now, NativeObservedAt: now, NativeAPY: .15, SupplyAPY: 0, CurrentBorrowAPY: .04, BorrowCurve: []BorrowCurvePoint{{0, 400}, {8000, 400}, {10000, 10000}}, DebtSupplyRaw: 1e15, DebtBorrowRaw: 1e14, EntryCapacity: Capacity{Known: true, Unlimited: true}}
-	quote := MoveQuote{MinimumIdleRaw: uint64(s.TotalVaultNAVRaw), BorrowReceiveRaw: uint64(s.TotalVaultNAVRaw / 2), SourceLane: s.RouteLane, DestinationLane: market.Lane, ObservationID: s.ObservationID, EquityRaw: s.TotalVaultNAVRaw, CostRaw: 10_000, ObservedAt: now, EvidenceID: "complete-sequence", SampleSlot: s.Slot, ValidThroughSlot: s.Slot + 32}
+	quote := parBorrow(MoveQuote{MinimumIdleRaw: uint64(s.TotalVaultNAVRaw), BorrowReceiveRaw: uint64(s.TotalVaultNAVRaw / 2), SourceLane: s.RouteLane, DestinationLane: market.Lane, ObservationID: s.ObservationID, EquityRaw: s.TotalVaultNAVRaw, CostRaw: 10_000, ObservedAt: now, EvidenceID: "complete-sequence", SampleSlot: s.Slot, ValidThroughSlot: s.Slot + 32})
 	return SelectorInput{Now: now, Snapshot: s, Markets: []LaneEconomics{market}, Quotes: []MoveQuote{quote}, Policy: p}
 }
 func advanceSelectorFixture(in *SelectorInput, d time.Duration) {
@@ -237,6 +237,7 @@ func TestSelectorPartialAllocationCanBecomePersistent(t *testing.T) {
 	in.Markets[0].BorrowCurve = []BorrowCurvePoint{{0, 100}, {10000, 100}}
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 200_000_000}
 	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 200_000_000, 100_000_000
+	in.Quotes[0] = parBorrow(in.Quotes[0])
 	first := SelectOpportunity(in, SelectorState{})
 	advanceSelectorFixture(&in, time.Minute)
 	got := SelectOpportunity(in, first.State)
@@ -272,6 +273,7 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 	in.Snapshot.VoltrIdleRaw, in.Snapshot.TotalVaultNAVRaw = 100_000_000, 100_000_000
 	in.Quotes[0].EquityRaw = 10_000_000
 	in.Quotes[0].BorrowReceiveRaw = 10_000_000 / 2
+	in.Quotes[0] = parBorrow(in.Quotes[0])
 	in.Quotes[0].CostRaw = 100
 	in.Policy.IdleBufferRaw = 2_000_000
 	got := SelectOpportunity(in, SelectorState{})
@@ -290,6 +292,7 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Raw: 3_000_000}
 	in.Quotes[0].EquityRaw = 3_000_000
 	in.Quotes[0].BorrowReceiveRaw = 3_000_000 / 2
+	in.Quotes[0] = parBorrow(in.Quotes[0])
 	partial := SelectOpportunity(in, SelectorState{}).Candidates[0]
 	if !partial.CostsKnown || partial.InvestedRaw != 2_999_900 || partial.IdleRaw != 17_000_000 || partial.GainRaw >= c.GainRaw {
 		t.Fatal("partial capacity did not reduce deployment", partial)
@@ -297,6 +300,7 @@ func TestPilotSelectorForecastsOnlyExecutableTrancheAndRetainsWholeVaultIdle(t *
 	in.Policy.IdleBufferRaw = 19_000_000
 	in.Quotes[0].EquityRaw = 1_000_000
 	in.Quotes[0].BorrowReceiveRaw = 1_000_000 / 2
+	in.Quotes[0] = parBorrow(in.Quotes[0])
 	buffered := SelectOpportunity(in, SelectorState{}).Candidates[0]
 	if !buffered.CostsKnown || buffered.InvestedRaw != 999_900 || buffered.IdleRaw != 19_000_000 {
 		t.Fatal("idle buffer omitted from whole-vault forecast", buffered)
@@ -315,9 +319,12 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 	in.Quotes[0].EquityRaw = 10_000_000
 	in.Quotes[0].BorrowReceiveRaw = 3_000_000
 	in.Quotes[0].BorrowFeeRaw = 100
+	in.Quotes[0] = parBorrow(in.Quotes[0])
 	got := SelectOpportunity(in, SelectorState{}).Candidates[0]
+	// The step owes its receive plus the fee; only the receive converts into
+	// collateral (the fee is charged in the cost).
 	debt := float64(3_000_100)
-	collateral := float64(10_000_000-in.Quotes[0].CostRaw) + debt
+	collateral := float64(10_000_000-in.Quotes[0].CostRaw) + 3_000_000
 	apr, err := projectedBorrowAPR(in.Markets[0], debt)
 	if err != nil {
 		t.Fatal(err)

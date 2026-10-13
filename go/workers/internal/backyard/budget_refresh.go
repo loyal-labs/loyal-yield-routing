@@ -58,17 +58,6 @@ func budgetReserveRefreshInstructionsForLanes(lanes []string) ([]compiledInstruc
 	return instructions, nil
 }
 
-// This price-only simulation has no signer or send boundary. Its instruction
-// set is closed over the same permissionless reserve refreshes already in the
-// production transaction prefix. Account overrides are not used.
-func simulateBudgetReserveRefresh(ctx context.Context, c *chain.Client, lane string, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
-	instructions, err := budgetReserveRefreshInstructions(lane)
-	if err != nil {
-		return 0, nil, err
-	}
-	return simulateBudgetRefreshInstructions(ctx, c, instructions, addresses, minimumSlot)
-}
-
 func simulateLanesReserveRefreshOptional(ctx context.Context, c *chain.Client, lanes []string, addresses, optional []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	instructions, err := budgetReserveRefreshInstructionsForLanes(lanes)
 	if err != nil {

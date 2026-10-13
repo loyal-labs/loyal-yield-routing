@@ -20,13 +20,19 @@ func selectorFeeBaselineKnown(s Snapshot) bool {
 	return littleInt(s.VoltrHighWaterMarkBits[:]).Cmp(floor) >= 0
 }
 
+// selectorEntryReportBound bounds the fee-bearing NAV reports an entry and
+// its unwind can add beyond the routine ones: one after each capital
+// mutation (allocate, swap, deposit, up steps; down steps, withdraw, swap,
+// stage, restore), well under it.
+const selectorEntryReportBound = 64
+
 // selectorFeeReportBound covers hourly routine reports plus every possible
-// fee-bearing step in the bounded source-exit and destination-entry recipes.
-// Initial/pending and terminal reports each get an additional slot. Polls and
-// selector wakeups do not accrue fees. Like the route forecast, this assumes
-// one modeled move, no later capital flows, safety events or foreign cranks.
+// fee-bearing report of the entry and its unwind. Initial/pending and
+// terminal reports each get an additional slot. Polls and selector wakeups
+// do not accrue fees. Like the route forecast, this assumes one modeled
+// move, no later capital flows, safety events or foreign cranks.
 func selectorFeeReportBound(horizon time.Duration) int64 {
-	return int64((horizon-1)/routineNAVReportInterval+1) + 2*maxSelectorRecipeSteps + 2
+	return int64((horizon-1)/routineNAVReportInterval+1) + selectorEntryReportBound + 2
 }
 
 // selectorFeeReservedGain is a conditional lower estimate under the existing

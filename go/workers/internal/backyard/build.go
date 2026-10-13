@@ -137,12 +137,6 @@ const (
 	strategyTwoBridgeLegCapRaw uint64 = 200_000_000_000
 )
 
-// CompileBridgeMessage uses the exact signing path without accessing a key.
-// Fee/cap admission therefore measures the message before signing is possible.
-func CompileBridgeMessage(request BridgeBuildRequest) ([]byte, error) {
-	return compileBridgeMessageForDelegate(request, mustKey(bridgeDelegate))
-}
-
 func compileBridgeMessageForDelegate(request BridgeBuildRequest, delegate publicKey) ([]byte, error) {
 	if request.LastValidBlockHeight <= 0 || request.AdaptorConfig != bridgeStrategy || request.Settings != bridgeSettings || request.Report.Sequence != request.Report.ObservedSlot {
 		return nil, fmt.Errorf("bridge config or report is not bound to confirmed state")

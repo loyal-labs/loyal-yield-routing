@@ -307,12 +307,12 @@ func openInitializerAutoScopeServiceDatabase(t *testing.T, name string, timeout 
 // seedAutoInitializerPilotRoute seeds a test-owned route key whose selector
 // result enters the AUTO lane — and deliberately no operation row: it must
 // come from the real producer and the real bind below.
-func seedAutoInitializerPilotRoute(t *testing.T, ctx context.Context, db *Database, key string, price *BudgetPrice, equity int64) {
+func seedAutoInitializerPilotRoute(t *testing.T, ctx context.Context, db *Database, key string, equity int64) {
 	t.Helper()
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state,state_version) VALUES($1,'{"generation":2}',2)`, key); err != nil {
 		t.Fatal(err)
 	}
-	storeTestSelectorEnter(t, ctx, db, key, autoEntryQuoteFixture(time.Now().UTC(), equity, price))
+	storeTestSelectorEnter(t, ctx, db, key, autoEntryQuoteFixture(time.Now().UTC(), equity))
 }
 
 func upsertConfirmedAccount(accounts *[]ConfirmedAccount, account ConfirmedAccount) {
@@ -561,11 +561,10 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	rpc, prestate, _, _ := autoInitializerServiceRPC(t)
 	ctx, cancel, db := openInitializerAutoScopeServiceDatabase(t, "phase3_doc23_service_test", 120*time.Second)
 	defer cancel()
-	_, price, _ := autoDebtPriceFixture(t, 1_000_000)
 	// The primary candidate route: real pilot activation, real lease, real
 	// persisted entry — and deliberately no operation row and no reservation:
 	// both must come from the production producers below.
-	seedAutoInitializerPilotRoute(t, ctx, db, productionRouteKey, &price, candidateEquity)
+	seedAutoInitializerPilotRoute(t, ctx, db, productionRouteKey, candidateEquity)
 	embedded, err := loadEmbeddedRouteManifest()
 	if err != nil {
 		t.Fatal(err)

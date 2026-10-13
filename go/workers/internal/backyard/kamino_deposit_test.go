@@ -80,10 +80,6 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		debit, err := MeasureExecutableDebit(r, effects)
-		if err != nil || debit.Raw != r.AmountRaw {
-			t.Fatal("rounded deposit reduced cap debit", err)
-		}
 		receipt := ConfirmedTransactionEvidence{Signature: "local-zero-signature-deposit-proof", Slot: result.Slot}
 		for j, accounts := range [][]ConfirmedAccount{before, after} {
 			for _, effect := range effects.Accounts {
@@ -144,7 +140,7 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 		if n.Quo(n, refreshed).Uint64() != probe.ReceiptRaw {
 			t.Fatal("deployed receipt rounding differs from refreshed-rate equation")
 		}
-		t.Logf("PHASE3_DEPOSIT_ROUNDING requested=%d actual=%d minimum=%d receipts=%d capDebit=%d", r.AmountRaw, probe.ActualDebitRaw, effects.Deposit.MinimumDebitRaw, probe.ReceiptRaw, debit.Raw)
+		t.Logf("PHASE3_DEPOSIT_ROUNDING requested=%d actual=%d minimum=%d receipts=%d", r.AmountRaw, probe.ActualDebitRaw, effects.Deposit.MinimumDebitRaw, probe.ReceiptRaw)
 	}
 }
 
@@ -194,20 +190,5 @@ func TestDepositReconcilesFromTheReceiptAndRejectsMalformedEffects(t *testing.T)
 	})
 	if _, _, err := ReconcileConfirmedTransaction(effects, receipt); err == nil {
 		t.Fatal("a deposit that moved nothing reconciled")
-	}
-	for _, mutate := range []func(*ExpectedEffects){
-		func(e *ExpectedEffects) { e.Kind = "kamino-repay" },
-		func(e *ExpectedEffects) { e.Repayment = &ExpectedRepayment{1, 1_000_000} },
-		func(e *ExpectedEffects) { e.Deposit.MinimumDebitRaw = 0 },
-		func(e *ExpectedEffects) { e.Accounts[1].AfterRaw++ },
-	} {
-		copy := effects
-		d := *effects.Deposit
-		copy.Deposit = &d
-		copy.Accounts = append([]ExpectedAccountEffect(nil), effects.Accounts...)
-		mutate(&copy)
-		if _, err := MeasureExecutableDebit(r, copy); err == nil {
-			t.Fatal("invalid deposit effect accepted")
-		}
 	}
 }
