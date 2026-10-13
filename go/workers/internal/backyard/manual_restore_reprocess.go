@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // ManualRestoreReprocessRequest pins the exact row: both fields are required
@@ -108,9 +109,10 @@ func (d *Database) loadManualRestoreOperation(ctx context.Context, operationID s
 // RunManualRestoreReprocess validates, and with execute writes, the exact
 // already-manual restore failure. Validation is total before the write: the
 // row identity, the stored unclassified marker, and the finalized refusal
-// classification gate the dry-run; the execute path additionally takes
-// Backyard's writer lock (refused while the worker runs), re-checks route
-// activity under it, and runs the same settlement the automatic walk uses.
+// classification gate the dry-run; the execute path runs on Backyard's writer
+// (one session that holds the writer lock, refused while the worker runs),
+// re-checks route activity on it, and runs the same settlement the automatic
+// walk uses.
 func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, request ManualRestoreReprocessRequest, execute bool) (ManualRestoreFailureResult, error) {
 	result := ManualRestoreFailureResult{Schema: "backyard-manual-restore-reprocess/v1"}
 	if databaseURL == "" || rpcURL == "" {
@@ -119,9 +121,17 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	if request.OperationID == "" || request.Signature == "" {
 		return result, errors.New("settle-manual-restore: --operation and --signature are required")
 	}
-	db, err := openOperatorDatabase(ctx, databaseURL)
+	// The execute path writes: it runs on the writer, opened before it reads.
+	open := openOperatorDatabase
+	if execute {
+		open = openOperatorWriter
+	}
+	db, err := open(ctx, databaseURL)
 	if err != nil {
 		result.Stage = "open_database"
+		if errors.Is(err, engine.ErrFamilyHeld) {
+			result.Stage = "writer_lock"
+		}
 		return result, sanitizedStage(result.Stage)
 	}
 	defer db.Close()
@@ -163,11 +173,6 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	if !execute {
 		return result, nil
 	}
-	release, err := holdWriterLock(ctx, databaseURL)
-	if err != nil {
-		result.Stage = "writer_lock"
-		return result, sanitizedStage(result.Stage)
-	}
 	settleErr := func() error {
 		var blocked bool
 		if err := db.pool.QueryRow(ctx, manualRestoreNoNonterminalSQL, operation.RouteKey).Scan(&blocked); err != nil {
@@ -178,7 +183,6 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		}
 		return db.settleFinalizedReportFailure(ctx, operation, receipt, adaptorReportSlotRefusedReason, true)
 	}()
-	release()
 	if settleErr != nil {
 		result.Stage = "settlement"
 		var pgErr *pgconn.PgError

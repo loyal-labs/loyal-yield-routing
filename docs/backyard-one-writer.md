@@ -24,9 +24,23 @@ rows: broadcast intent is written before every first send.
 Nothing below the lock checks who the writer is: there is no route lease,
 fencing token, lease expiry, `state_version` compare-and-swap or planning
 generation. The one-shot operator writes (`selector-evaluate --execute`,
-`settle-manual-restore`) take the same lock without waiting, so they refuse
-while the worker runs. `exit-lane` and `clear-hold` write their own rows
-(`backyard_lane_exits`, `backyard_manual_recovery_latches`) and need no lock.
+`settle-manual-restore --execute`) use the same one-session writer
+(`openOperatorWriter`): try instead of wait (`pg_try_advisory_lock`), so they
+refuse while the worker runs, and every read and write of the command goes
+through the session that holds the lock. `exit-lane` and `clear-hold` are
+operator inputs the worker reads on its next tick, and run beside it without
+the lock: each is one statement on its own row (`backyard_lane_exits`, which
+also bumps the route state's `state_version`, and
+`backyard_manual_recovery_latches`), and the worker's writes to those rows are
+single statements or `FOR UPDATE` reads, so neither loses the other's write.
+`in-flight` and the dry runs only read.
+
+A writer's `Close` takes its session out of the pool, unlocks on it
+(`pg_advisory_unlock`) and then closes it. Postgres frees a session's lock only
+once its backend exits, which happens after the client has gone; with the
+explicit unlock the lock is free when `Close` returns (unless the session was
+already lost), so a worker started right after an operator command does not
+find it held.
 
 There is no gap between holding the lock and writing: the writes go through
 the session that holds it. A partitioned process cannot reach the database

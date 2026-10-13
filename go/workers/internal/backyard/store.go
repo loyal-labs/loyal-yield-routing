@@ -95,10 +95,16 @@ const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapsh
 // write here re-checks who the writer is.
 type Database struct {
 	pool *pgxpool.Pool
+	// writer: the pool's one session holds the lock, and Close releases it.
+	writer bool
 }
 
 // errWriterSessionLost: the writer's one session ended, and the lock with it.
 var errWriterSessionLost = errors.New("writer session lost")
+
+// writerLockKey is Backyard's one-writer lock, the family advisory lock; $1 is
+// the family.
+const writerLockKey = `hashtextextended('loyal-family:'||$1, 0)`
 
 // OpenDatabase opens the Backyard writer: one database session that takes
 // Backyard's one-writer lock (the family advisory lock) when it connects,
@@ -109,6 +115,19 @@ var errWriterSessionLost = errors.New("writer session lost")
 // a fresh wait. databaseURL must be the direct (non-pooler) DSN: a pooler
 // hands the session to strangers.
 func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
+	return openWriter(ctx, databaseURL, true)
+}
+
+// openOperatorWriter is the writer of a one-shot operator write: the same one
+// session, but it refuses with engine.ErrFamilyHeld instead of waiting while
+// another process holds the lock, so it refuses while the engine runs.
+func openOperatorWriter(ctx context.Context, databaseURL string) (*Database, error) {
+	return openWriter(ctx, databaseURL, false)
+}
+
+// openWriter opens the one-session writer; wait chooses waiting for the lock
+// over refusing it.
+func openWriter(ctx context.Context, databaseURL string, wait bool) (*Database, error) {
 	if databaseURL == "" {
 		return nil, fmt.Errorf("database URL is required")
 	}
@@ -136,20 +155,33 @@ func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
 		}
 		return nil
 	}
+	family := string(engine.FamilyBackyard)
 	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		_, err := conn.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended('loyal-family:'||$1, 0))`, string(engine.FamilyBackyard))
-		return err
+		if wait {
+			_, err := conn.Exec(ctx, `SELECT pg_advisory_lock(`+writerLockKey+`)`, family)
+			return err
+		}
+		var held bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(`+writerLockKey+`)`, family).Scan(&held); err != nil {
+			return err
+		}
+		if !held {
+			return fmt.Errorf("%s: %w", family, engine.ErrFamilyHeld)
+		}
+		return nil
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Backyard database: %w", err)
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "backyard-rwa-worker: waiting for the Backyard writer lock")
+	if wait {
+		_, _ = fmt.Fprintln(os.Stdout, "backyard-rwa-worker: waiting for the Backyard writer lock")
+	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("open Backyard database: %w", err)
 	}
-	return &Database{pool: pool}, nil
+	return &Database{pool: pool, writer: true}, nil
 }
 
 // inTx runs fn in one transaction. ctx bounds fn's statements; begin, commit
@@ -187,8 +219,10 @@ func (d *Database) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return tx.Commit(end)
 }
 
-// openOperatorDatabase is the one-shot operator commands' store: a plain pool
-// that takes no lock. A command that writes takes holdWriterLock itself.
+// openOperatorDatabase is a plain pool that takes no lock, for the one-shot
+// operator commands that run beside the engine: the reads (in-flight) and the
+// operator inputs the engine reads on its next tick (exit-lane, clear-hold).
+// A command that writes the engine's own rows opens openOperatorWriter.
 func openOperatorDatabase(ctx context.Context, databaseURL string) (*Database, error) {
 	if databaseURL == "" {
 		return nil, fmt.Errorf("database URL is required")
@@ -202,23 +236,27 @@ func openOperatorDatabase(ctx context.Context, databaseURL string) (*Database, e
 	return &Database{pool: pool}, nil
 }
 
-// holdWriterLock takes Backyard's one-writer lock (the family advisory lock
-// the engine holds) for a one-shot operator write. It refuses while the
-// worker runs; release ends the hold.
-func holdWriterLock(ctx context.Context, databaseURL string) (release func(), err error) {
-	lockCtx, cancel := context.WithCancel(ctx)
-	lost, err := engine.HoldFamily(lockCtx, databaseURL, engine.FamilyBackyard)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	return func() { cancel(); <-lost }, nil
-}
-
+// Close closes the store. The writer first releases the lock on its own
+// session: Postgres frees a session's lock only once its backend exits, after
+// the client has gone, so without the unlock the lock could still be held when
+// Close returns. The session leaves the pool before it unlocks (the pool never
+// dials another), so nothing writes through it without the lock.
 func (d *Database) Close() {
-	if d != nil && d.pool != nil {
-		d.pool.Close()
+	if d == nil || d.pool == nil {
+		return
 	}
+	if d.writer {
+		// Acquire waits for a caller still on the session, as pool.Close
+		// would; a lost session fails it at once (the pool dials no other).
+		if conn, err := d.pool.Acquire(context.Background()); err == nil {
+			session := conn.Hijack()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, _ = session.Exec(ctx, `SELECT pg_advisory_unlock(`+writerLockKey+`)`, string(engine.FamilyBackyard))
+			_ = session.Close(ctx)
+			cancel()
+		}
+	}
+	d.pool.Close()
 }
 
 type DecisionRecord struct {
