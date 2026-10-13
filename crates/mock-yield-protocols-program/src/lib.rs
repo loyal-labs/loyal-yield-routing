@@ -52,6 +52,7 @@ const KAMINO_RESERVE_COLLATERAL_MINT_OFFSET: usize = 2560;
 const KAMINO_RESERVE_COLLATERAL_SUPPLY_OFFSET: usize = 2600;
 const KAMINO_OBLIGATION_FIRST_DEPOSIT_RESERVE_OFFSET: usize = 96;
 const KAMINO_OBLIGATION_FIRST_DEPOSIT_AMOUNT_OFFSET: usize = 128;
+const KAMINO_OBLIGATION_FIRST_BORROW_RESERVE_OFFSET: usize = 1208;
 
 entrypoint!(process_instruction);
 
@@ -679,7 +680,38 @@ fn process_kamino_withdraw(
             kamino.lending_market.key.as_ref(),
         ],
     )?;
-    adjust_kamino_obligation(kamino.obligation, kamino.reserve.key, amount, false)
+    adjust_kamino_obligation(kamino.obligation, kamino.reserve.key, amount, false)?;
+    close_emptied_kamino_obligation(kamino.obligation, kamino.owner)
+}
+
+// KLend's withdrawal closes the obligation it leaves with no active deposit
+// and no active borrow and pays its lamports to the owner
+// (handler_withdraw_obligation_collateral_and_redeem_reserve_collateral.rs).
+fn close_emptied_kamino_obligation(obligation: &AccountInfo, owner: &AccountInfo) -> ProgramResult {
+    {
+        let data = obligation.try_borrow_data()?;
+        if data.len() < KAMINO_OBLIGATION_FIRST_BORROW_RESERVE_OFFSET + 5 * 200 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        let active = |offset: usize| data[offset..offset + 32].iter().any(|byte| *byte != 0);
+        if (0..8).any(|i| active(KAMINO_OBLIGATION_FIRST_DEPOSIT_RESERVE_OFFSET + i * 136))
+            || (0..5).any(|i| active(KAMINO_OBLIGATION_FIRST_BORROW_RESERVE_OFFSET + i * 200))
+        {
+            return Ok(());
+        }
+    }
+    if !owner.is_writable {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let lamports = owner
+        .lamports()
+        .checked_add(obligation.lamports())
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    **owner.try_borrow_mut_lamports()? = lamports;
+    **obligation.try_borrow_mut_lamports()? = 0;
+    obligation.resize(0)?;
+    obligation.assign(&solana_program::system_program::ID);
+    Ok(())
 }
 
 // Narrow fixed-price, zero-interest/fee Multiply bank model. It executes SPL
@@ -1173,7 +1205,6 @@ fn adjust_kamino_obligation(
     if current_reserve != Pubkey::default() && current_reserve != *reserve {
         return Err(ProgramError::InvalidAccountData);
     }
-    data[reserve_range].copy_from_slice(reserve.as_ref());
     let amount_range = KAMINO_OBLIGATION_FIRST_DEPOSIT_AMOUNT_OFFSET
         ..KAMINO_OBLIGATION_FIRST_DEPOSIT_AMOUNT_OFFSET + 8;
     let current_amount = read_u64(&data[amount_range.clone()])?;
@@ -1186,6 +1217,13 @@ fn adjust_kamino_obligation(
             .checked_sub(amount)
             .ok_or(ProgramError::InsufficientFunds)?
     };
+    // KLend's Obligation::withdraw frees the deposit slot on a full withdrawal.
+    let slot_reserve = if next_amount == 0 && !deposit {
+        Pubkey::default()
+    } else {
+        *reserve
+    };
+    data[reserve_range].copy_from_slice(slot_reserve.as_ref());
     data[amount_range].copy_from_slice(&next_amount.to_le_bytes());
     Ok(())
 }

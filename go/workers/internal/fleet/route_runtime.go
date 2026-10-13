@@ -515,15 +515,20 @@ type freshSameMint struct {
 const maxObligationRentLamports = 25_000_000
 
 // vaultRentTopUp is the payer's transfer that lets the vault pay its new
-// obligation's rent from inside its policy: exactly the vault's deficit.
-func vaultRentTopUp(rent, vaultLamports uint64) (uint64, error) {
+// obligation's rent from inside its policy: exactly what leaves the vault,
+// a system account with no data, at 0 or at its rent-exempt minimum
+// emptyRent or more. Between those the runtime refuses the transaction.
+func vaultRentTopUp(rent, emptyRent, vaultLamports uint64) (uint64, error) {
 	if rent > maxObligationRentLamports {
 		return 0, fmt.Errorf("route_setup_rent_cap_exceeded: obligation rent %d exceeds %d lamports", rent, maxObligationRentLamports)
 	}
-	if vaultLamports >= rent {
-		return 0, nil
+	if vaultLamports < rent {
+		return rent - vaultLamports, nil
 	}
-	return rent - vaultLamports, nil
+	if left := vaultLamports - rent; left > 0 && left < emptyRent {
+		return emptyRent - left, nil
+	}
+	return 0, nil
 }
 
 func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLease, floor int64) (freshSameMint, error) {
@@ -654,11 +659,21 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 		if err != nil {
 			return f, err
 		}
+		emptyRent, err := r.rpc.RentExempt(ctx, 0)
+		if err != nil {
+			return f, err
+		}
 		vaultLamports := uint64(0)
 		if accounts[6] != nil {
 			vaultLamports = accounts[6].Lamports
 		}
-		if topUp, err = vaultRentTopUp(rent, vaultLamports); err != nil {
+		// KLend's withdraw closes the obligation it leaves with no active
+		// deposit and no borrow and pays its lamports to the owner, the vault,
+		// before init_obligation runs in this transaction.
+		if deposits := sourceObligation.DepositReserves(); len(deposits) == 1 && deposits[0] == accounts[0].Key && len(sourceObligation.BorrowReserves()) == 0 {
+			vaultLamports += accounts[2].Lamports
+		}
+		if topUp, err = vaultRentTopUp(rent, emptyRent, vaultLamports); err != nil {
 			return f, err
 		}
 	}

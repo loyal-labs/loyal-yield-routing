@@ -30,8 +30,9 @@ func TestConnectedSameMintExecution(t *testing.T) {
 }
 
 // The target market has no obligation and the vault holds no lamports: the
-// same transaction withdraws, funds the vault's obligation rent, initializes
-// the obligation under the setup policy, and deposits.
+// same transaction withdraws, which closes the emptied source obligation and
+// pays its lamports to the vault, initializes the target obligation from them
+// under the setup policy, and deposits. The payer funds no rent.
 func TestConnectedSameMintSetupExecution(t *testing.T) {
 	runConnectedSameMint(t, fleet.ConnectedSameMintSetup)
 }
@@ -98,13 +99,17 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 		t.Fatalf("terminal state: broadcasts=%d sends=%d lost=%d %s/%s source=%d target=%d", broadcasts, bank.Sends(), bank.LostResponses(), opportunity, decision, sourceRaw, targetRaw)
 	}
 	// Independently of Go's reconciliation, the chain holds the collateral in
-	// the target obligation the route created or reused.
+	// the target obligation the route created or reused, and the withdrawal
+	// closed the emptied source obligation.
 	_, obligations, err := fleet.ReadAccounts(ctx, land, []string{bank.Source.Obligation, bank.Target.Obligation}, rpc.CommitmentFinalized, 1001)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if source, target := obligationCollateral(t, obligations[0], bank.Vault), obligationCollateral(t, obligations[1], bank.Vault); source != 0 || int64(target) != targetRaw {
-		t.Fatalf("chain collateral source=%d target=%d, published target=%d", source, target, targetRaw)
+	if obligations[0] != nil {
+		t.Fatal("the emptied source obligation is still open")
+	}
+	if target := obligationCollateral(t, obligations[1], bank.Vault); int64(target) != targetRaw {
+		t.Fatalf("chain collateral target=%d, published target=%d", target, targetRaw)
 	}
 }
 
@@ -286,7 +291,8 @@ func verifySameMintWire(t *testing.T, ctx context.Context, bank *fleet.Connected
 	want := []string{route, route}
 	if kind == fleet.ConnectedSameMintSetup {
 		want = []string{route, bank.SetupPolicy, route}
-		if transfers != 1 {
+		// The closed source obligation's lamports pay the new one's rent.
+		if transfers != 0 {
 			t.Fatalf("setup route funded the vault %d times", transfers)
 		}
 	}

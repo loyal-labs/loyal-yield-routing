@@ -128,7 +128,7 @@ const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step -
 // family. It reads the same BACKYARD_* credentials as the engine.
 func runBackyardOperator(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 1 && args[0] == "in-flight" {
-		// The release gate (deploy/hetzner/activate-backyard.sh): prints the
+		// The release gate (deploy/hetzner/activate.sh): prints the
 		// number of operations a restart would resume. Needs only the DB.
 		url, err := engine.Credential("BACKYARD_DATABASE_URL")
 		if err != nil {

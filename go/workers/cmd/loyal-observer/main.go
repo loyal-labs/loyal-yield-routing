@@ -83,6 +83,9 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	// The release the linker stamped (make release); deploys verify the build
+	// by it, as for loyal-engine.
+	slog.Info("observer_start", "release", engine.Release)
 	if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("observer failed", "error", err)
 		os.Exit(1)

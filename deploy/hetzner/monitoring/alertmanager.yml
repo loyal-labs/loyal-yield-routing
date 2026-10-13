@@ -22,6 +22,10 @@ inhibit_rules:
   - source_matchers: [alertname="LoyalWorkerDown"]
     target_matchers: [alertname=~"LoyalFamilyProgressStale|LoyalInflightStuck"]
     equal: [unit]
+  # An exhausted fee payer is why Autodeposit starts nothing: one page.
+  - source_matchers: [alertname="LoyalFeePayerExhausted"]
+    target_matchers: [alertname="LoyalFamilyProgressStale", family="autodeposit"]
+    equal: [unit]
 
 receivers:
   - name: telegram

@@ -17,21 +17,9 @@ const (
 	minimumPublicationLifetime = 70 * time.Second
 )
 
-// ReserveSlotOrderMismatch means the returned account was updated after the
-// RPC response's context slot. It is not usable evidence; callers may re-read
-// the complete catalog, but must never clamp either slot or reuse these bytes.
-type ReserveSlotOrderMismatch struct {
-	Reserve        string
-	ContextSlot    int64
-	LastUpdateSlot int64
-}
-
-func (e *ReserveSlotOrderMismatch) Error() string {
-	return fmt.Sprintf("reserve %s economic slot order is invalid: contextSlot=%d lastUpdateSlot=%d", e.Reserve, e.ContextSlot, e.LastUpdateSlot)
-}
-
-// DecodeKaminoReserve reads a reserve at contextSlot; slotsPerSecond is the
-// chain's measured slot rate (chain.Client.SlotsPerSecond).
+// DecodeKaminoReserve reads a reserve returned at contextSlot; its slot is the
+// later of contextSlot and its own last update. slotsPerSecond is the chain's
+// measured slot rate (chain.Client.SlotsPerSecond).
 func DecodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotsPerSecond float64) (ReserveState, error) {
 	return decodeKaminoReserve(account, identity, contextSlot, slotsPerSecond)
 }
@@ -58,10 +46,11 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 		return ReserveState{}, fmt.Errorf("reserve %s has no bounded last update", identity.Address)
 	}
 	lastUpdateSlot := int64(reserve.LastUpdateSlot)
-	lag := contextSlot - lastUpdateSlot
-	if lag < 0 {
-		return ReserveState{}, &ReserveSlotOrderMismatch{Reserve: identity.Address, ContextSlot: contextSlot, LastUpdateSlot: lastUpdateSlot}
-	}
+	// getMultipleAccounts returns one bank's state, so the bytes are valid chain
+	// state. contextSlot is a floor (chain.Client.Accounts reports its first
+	// call's slot); a reserve refreshed later was read at or after that refresh.
+	slot := max(contextSlot, lastUpdateSlot)
+	lag := slot - lastUpdateSlot
 	remainingSlots := maximumEconomicSlotLag - lag
 	if remainingSlots < 0 {
 		remainingSlots = 0
@@ -108,7 +97,7 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 	depositLimit := reserve.DepositLimit
 	return ReserveState{
 		AvailableLiquidityRaw: availableRaw, DepositLimitRaw: &depositLimit,
-		ReserveIdentity: identity, Slot: contextSlot, LastUpdateSlot: lastUpdateSlot,
+		ReserveIdentity: identity, Slot: slot, LastUpdateSlot: lastUpdateSlot,
 		LastUpdateStale:        reserve.LastUpdateStale,
 		EconomicSlotLag:        lag,
 		SupplyAPYBPS:           int64(math.Round(supplyAPY * 10_000)),

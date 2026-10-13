@@ -105,7 +105,7 @@ guess it; the page is the answer, and only outside cash can repay then.
 ## Deploying
 
 Deploy with no Backyard operation in flight (`loyal-engine backyard
-in-flight` prints 0); `deploy/hetzner/activate-backyard.sh` waits for that,
+in-flight` prints 0); `deploy/hetzner/activate.sh` waits for that,
 stops the old process, then starts the new one.
 
 1. Before the new binary starts: `loyal-migrate -db yield -to 104 up`

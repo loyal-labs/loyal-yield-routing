@@ -25,6 +25,23 @@ for group in yaml.safe_load((root / "loyal.rules.test.yml").read_text())["tests"
         if test["alertname"] == "LoyalFamilyFailing":
             cases.extend({"labels": {"alertname": test["alertname"], **a["exp_labels"]}, "annotations": a["exp_annotations"]} for a in test.get("exp_alerts", []))
 assert {"code", "lane", "instance", "payer"} <= set(config["route"]["group_by"])
+# amtool cannot test inhibition. Each inhibit rule must at least match labels
+# the rules really carry: some source and target alert the promtool fixtures
+# expect that agree on its equal labels.
+fixture_alerts = [{"alertname": test["alertname"], **a["exp_labels"]}
+                  for group in yaml.safe_load((root / "loyal.rules.test.yml").read_text())["tests"]
+                  for test in group.get("alert_rule_test", []) for a in test.get("exp_alerts", [])]
+def matches(matchers, labels):
+    for matcher in matchers:
+        name, op, value = re.fullmatch(r'(\w+)(=~|!~|!=|=)"(.*)"', matcher).groups()
+        hit = re.fullmatch(value, labels.get(name, "")) is not None if "~" in op else labels.get(name, "") == value
+        if hit == op.startswith("!"):
+            return False
+    return True
+for inhibit in config["inhibit_rules"]:
+    assert any(matches(inhibit["source_matchers"], source) and matches(inhibit["target_matchers"], target)
+               and all(source.get(label) == target.get(label) for label in inhibit["equal"])
+               for source in fixture_alerts for target in fixture_alerts), f"inhibit rule matches no fixture alert pair: {inhibit}"
 message = next(r for r in config["receivers"] if r["name"] == "telegram")["telegram_configs"][0]["message"]
 assert "GeneratorURL" not in message and "ExternalURL" not in message
 alerts = []
