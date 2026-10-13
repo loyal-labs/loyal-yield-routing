@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
@@ -175,7 +178,7 @@ func TestWriterIsOneSession(t *testing.T) {
 		t.Fatalf("lock holders %v after the lost writer's writes", held)
 	}
 
-	// (6) The second writer writes.
+	// (5) The second writer writes.
 	if err := second.PersistSigned(ctx, record.OperationID, signed, SimulationResult{Slot: 11}, encodedEffects); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +186,7 @@ func TestWriterIsOneSession(t *testing.T) {
 		t.Fatalf("the second writer's signed row: status=%s intent=%v", status, intent)
 	}
 
-	// (5) The first writer's land on that signed row sends nothing: broadcast
+	// (6) The first writer's land on that signed row sends nothing: broadcast
 	// intent is written before a first send, and it cannot write.
 	operation, err := second.LoadNonterminal(ctx, productionRouteKey)
 	if err != nil || operation == nil || operation.Status != Signed {
@@ -222,4 +225,78 @@ func TestWriterIsOneSession(t *testing.T) {
 	if err := worker.Run(ctx); !errors.Is(err, errWriterSessionLost) {
 		t.Fatalf("the lost writer's worker did not stop: %v", err)
 	}
+}
+
+// A caller's deadline cancels its statement and keeps the writer session,
+// and the lock with it: a timeout is not a lost session.
+func TestWriterSessionSurvivesCallerDeadlines(t *testing.T) {
+	ctx, cancel, admin, url := openManualRecoveryTestDatabase(t, 30*time.Second)
+	defer cancel()
+	defer admin.Close()
+	writer, err := OpenDatabase(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	var pid int32
+	if err := writer.pool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	sameSession := func(step string) {
+		t.Helper()
+		var now int32
+		if err := writer.pool.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&now); err != nil || now != pid {
+			t.Fatalf("%s: writer session %d, want %d: %v", step, now, pid, err)
+		}
+		var held bool
+		if err := admin.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted AND pid = $1
+			AND (classid::bigint << 32 | objid::bigint) = hashtextextended('loyal-family:backyard', 0))`, pid).Scan(&held); err != nil || !held {
+			t.Fatalf("%s: the writer session lost the lock: %v", step, err)
+		}
+	}
+
+	// A deadline during a statement.
+	short, stop := context.WithTimeout(ctx, 200*time.Millisecond)
+	_, err = writer.pool.Exec(short, `SELECT pg_sleep(2)`)
+	stop()
+	if err == nil {
+		t.Fatal("the statement outlived its deadline")
+	}
+	sameSession("statement deadline")
+
+	// A deadline between two statements of a transaction, and one during a
+	// statement in it.
+	for _, between := range []bool{true, false} {
+		short, stop := context.WithTimeout(ctx, 200*time.Millisecond)
+		err = writer.inTx(short, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(short, `SELECT 1`); err != nil {
+				return err
+			}
+			if between {
+				<-short.Done()
+				_, err := tx.Exec(short, `SELECT 1`)
+				return err
+			}
+			_, err := tx.Exec(short, `SELECT pg_sleep(2)`)
+			return err
+		})
+		stop()
+		if err == nil {
+			t.Fatal("the transaction outlived its deadline")
+		}
+		sameSession(fmt.Sprintf("transaction deadline (between statements %v)", between))
+	}
+
+	// A deadline that ends the body after its last statement rolls back.
+	short, stop = context.WithTimeout(ctx, 200*time.Millisecond)
+	err = writer.inTx(short, func(tx pgx.Tx) error {
+		_, err := tx.Exec(short, `SELECT 1`)
+		<-short.Done()
+		return err
+	})
+	stop()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a transaction past its deadline committed: %v", err)
+	}
+	sameSession("deadline before commit")
 }

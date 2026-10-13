@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
@@ -82,30 +84,25 @@ func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHe
 	if next.RouteKey != productionRouteKey || next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != bridgeVoltrVault || next.Program != voltr.ProgramID.String() {
 		return fmt.Errorf("withdrawal health is not the production route's")
 	}
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var raw []byte
-	if err = tx.QueryRow(ctx, `SELECT state->'withdrawalHealth' FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, next.RouteKey).Scan(&raw); err != nil {
-		return err
-	}
-	var previous *WithdrawalHealth
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &previous); err != nil {
+	if err := d.inTx(ctx, func(tx pgx.Tx) error {
+		var raw []byte
+		if err := tx.QueryRow(ctx, `SELECT state->'withdrawalHealth' FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, next.RouteKey).Scan(&raw); err != nil {
 			return err
 		}
-	}
-	next = mergeWithdrawalHealth(previous, next)
-	raw, err = json.Marshal(next)
-	if err != nil {
+		var previous *WithdrawalHealth
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &previous); err != nil {
+				return err
+			}
+		}
+		next = mergeWithdrawalHealth(previous, next)
+		raw, err := json.Marshal(next)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{withdrawalHealth}',$2::jsonb,true), updated_at=clock_timestamp() WHERE route_key=$1`, next.RouteKey, string(raw))
 		return err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{withdrawalHealth}',$2::jsonb,true), updated_at=clock_timestamp() WHERE route_key=$1`, next.RouteKey, string(raw)); err != nil {
-		return err
-	}
-	if err = tx.Commit(ctx); err != nil {
+	}); err != nil {
 		return err
 	}
 	backyardEvents.withdrawalHealthStored(next)

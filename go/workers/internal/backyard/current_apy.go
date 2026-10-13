@@ -6,6 +6,8 @@ import (
 	"math"
 	"sort"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // CurrentAPY is the vault position's fee-paying APY estimate, published for the
@@ -151,30 +153,25 @@ func mergeLeverageWatch(previous *LeverageWatchSummary, next LeverageWatchSummar
 // state.leverageWatch. The per-lane merge reads the stored value under the
 // statement's row lock.
 func (d *Database) RecordLeverageWatch(ctx context.Context, routeKey string, summary LeverageWatchSummary) error {
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var raw []byte
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(state->'leverageWatch','null'::jsonb) FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, routeKey).Scan(&raw); err != nil {
-		return err
-	}
-	var previous *LeverageWatchSummary
-	if len(raw) > 0 && string(raw) != "null" {
-		var stored LeverageWatchSummary
-		if json.Unmarshal(raw, &stored) == nil {
-			previous = &stored
+	return d.inTx(ctx, func(tx pgx.Tx) error {
+		var raw []byte
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(state->'leverageWatch','null'::jsonb) FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, routeKey).Scan(&raw); err != nil {
+			return err
 		}
-	}
-	merged, err := json.Marshal(mergeLeverageWatch(previous, summary))
-	if err != nil {
+		var previous *LeverageWatchSummary
+		if len(raw) > 0 && string(raw) != "null" {
+			var stored LeverageWatchSummary
+			if json.Unmarshal(raw, &stored) == nil {
+				previous = &stored
+			}
+		}
+		merged, err := json.Marshal(mergeLeverageWatch(previous, summary))
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{leverageWatch}',$2::jsonb,true),updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(merged))
 		return err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=jsonb_set(state,'{leverageWatch}',$2::jsonb,true),updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(merged)); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	})
 }
 
 // publishLeverageWatch stores the summary the watch just printed. Every

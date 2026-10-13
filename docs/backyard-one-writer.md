@@ -11,7 +11,9 @@ second process waits for the lock before it reads or writes anything; when the
 holder's session ends it takes over.
 
 The pool never opens a second session: a connect after the first is refused
-(`writer session lost`). A session that ends (a terminated backend, a FATAL,
+(`writer session lost`). A caller's deadline cancels its statement on the
+server, not the session, and a transaction begins, commits and rolls back on
+its own short context, so a timeout is not a lost session. A session that ends (a terminated backend, a FATAL,
 a reset, a database restart, a partition once it surfaces as an error) takes
 the lock with it, and every later read or write of that process fails; the
 tick's store error stops the worker, the process exits, and its supervisor
