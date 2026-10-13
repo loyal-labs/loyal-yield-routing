@@ -437,7 +437,10 @@ func resolveMutation(ctx context.Context, rpc *chain.Client, update NormalizedUp
 			CleanupSignature: signature, ConfirmedSlot: update.Slot}}, nil
 	}
 	if update.Signature == nil {
-		return EarnMutation{}, nil
+		// An unsigned update is a confirmed-state read, the stream's
+		// recovery after a gap past its replay window: it names no
+		// transaction, so it is an observation of the vault's balances.
+		return balancesMutation(ctx, rpc, update, vault, context)
 	}
 	signature := *update.Signature
 	transaction, err := readEarnTransaction(ctx, rpc, signature)
@@ -459,7 +462,7 @@ func resolveMutation(ctx context.Context, rpc *chain.Client, update NormalizedUp
 		return EarnMutation{}, err
 	}
 	if flow == nil {
-		return EarnMutation{}, nil
+		return balancesMutation(ctx, rpc, update, vault, context)
 	}
 	if flow.kind == cashRefund {
 		proof, err := readCleanupProof(ctx, rpc, vault, update.Slot)
@@ -487,6 +490,10 @@ type vaultSnapshot struct {
 	observedSlot uint64
 	reserves     []EarnReserveMutation
 	idles        []EarnIdleTokenMutation
+	// empty says the read found the vault's obligations or idle accounts
+	// and nothing in any of them: no deposit in any reserve, listed by the
+	// route policy or not, and no idle cash.
+	empty bool
 }
 
 func keySetOf(values []string) (map[solana.PublicKey]struct{}, error) {
@@ -501,9 +508,37 @@ func keySetOf(values []string) (map[solana.PublicKey]struct{}, error) {
 	return out, nil
 }
 
+// metadata describes an observed reserve row: its amount_raw is the
+// liquidity its collateral redeems.
 func metadata(kind string, slot uint64) json.RawMessage {
-	encoded, _ := json.Marshal(map[string]any{"kind": kind, "slot": slot})
+	encoded, _ := json.Marshal(map[string]any{"kind": kind, "slot": slot, "amount_semantics": "redeemable_liquidity_amount"})
 	return encoded
+}
+
+// balancesMutation publishes the vault's holdings after an update of one of
+// its obligations or idle token accounts that moved no wallet cash: a fleet
+// move, a Kamino deposit of idle cash, or the confirmed state read after a
+// stream gap. Any other such update changes nothing.
+func balancesMutation(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, context ReconciliationContext) (EarnMutation, error) {
+	if context.RoutePolicy == nil || update.AccountPubkey == nil {
+		return EarnMutation{}, nil
+	}
+	holding := false
+	for _, binding := range vault.Accounts {
+		if binding.Pubkey == *update.AccountPubkey && (binding.Role == "obligation" || binding.Role == "idle_token") {
+			holding = true
+		}
+	}
+	// Balances already observed at or after the update hold its effect.
+	if !holding || context.ObservedSlot >= update.Slot {
+		return EarnMutation{}, nil
+	}
+	snapshot, err := readVaultSnapshot(ctx, rpc, vault, *context.RoutePolicy, update.Slot)
+	if err != nil {
+		return EarnMutation{}, err
+	}
+	return EarnMutation{Balances: &EarnBalancesMutation{Settings: vault.Settings, VaultIndex: vault.VaultIndex, VaultPubkey: vault.Vault,
+		ObservedSlot: snapshot.observedSlot, ReserveState: snapshot.reserves, IdleState: snapshot.idles, VaultEmpty: snapshot.empty}}, nil
 }
 
 // readVaultSnapshot is read_complete_vault_snapshot.
@@ -582,6 +617,7 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 		return vaultSnapshot{}, err
 	}
 	snapshot := vaultSnapshot{observedSlot: slot}
+	read, holds := false, false
 	for _, account := range accounts[:len(obligations)] {
 		if account == nil || account.Owner != kamino.ProgramID {
 			continue
@@ -590,7 +626,14 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 		if err != nil {
 			return vaultSnapshot{}, fmt.Errorf("decode canonical Earn obligation: %w", err)
 		}
-		if _, allowed := markets[obligation.LendingMarket]; obligation.Owner != vaultKey || !allowed {
+		if obligation.Owner != vaultKey {
+			continue
+		}
+		read = true
+		for _, deposit := range obligation.Deposits {
+			holds = holds || !deposit.Reserve.IsZero() && deposit.DepositedAmount > 0
+		}
+		if _, allowed := markets[obligation.LendingMarket]; !allowed {
 			continue
 		}
 		for _, deposit := range obligation.Deposits {
@@ -632,9 +675,11 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 		if held.Owner != vaultKey {
 			return vaultSnapshot{}, fmt.Errorf("Earn idle account %s belongs to %s, expected %s", address, held.Owner, vaultKey)
 		}
+		read, holds = true, holds || held.Amount > 0
 		snapshot.idles = append(snapshot.idles, EarnIdleTokenMutation{Mint: held.Mint.String(), AmountRaw: held.Amount, Owner: held.Owner.String(),
 			TokenAccount: address.String(), ObservedSlot: slot, SourceCommitment: confirmedCommitment})
 	}
+	snapshot.empty = read && !holds
 	return snapshot, nil
 }
 
@@ -773,10 +818,10 @@ func readCashFlowProof(ctx context.Context, rpc *chain.Client, update Normalized
 		return EarnMutation{Deposit: &EarnDepositMutation{RoutePolicy: route, SetupPolicy: setup, DepositSignature: signature,
 			DepositSlot: update.Slot, ObservedSlot: snapshot.observedSlot, DepositMint: flow.mint, PrincipalAmountRaw: flow.amount,
 			TargetReserve: target.Reserve, Market: target.Market, LiquidityMint: flow.mint, TargetSupplyAPYBPS: target.SupplyAPYBPS,
-			Wallet: vault.Wallet, SmartAccountAddress: vault.Vault, ReserveState: snapshot.reserves, IdleState: snapshot.idles}}, nil
+			Wallet: vault.Wallet, SmartAccountAddress: vault.Vault, ReserveState: snapshot.reserves, IdleState: snapshot.idles, VaultEmpty: snapshot.empty}}, nil
 	}
 	return EarnMutation{Withdrawal: &EarnWithdrawalMutation{RoutePolicy: route, WithdrawalSignature: signature, ConfirmedSlot: update.Slot,
 		ObservedSlot: snapshot.observedSlot, Wallet: vault.Wallet, VaultPubkey: vault.Vault, TargetReserve: target.Reserve, Market: target.Market,
 		LiquidityMint: flow.mint, WithdrawnAmountRaw: flow.amount, RemainingAmountRaw: remaining, ReserveState: snapshot.reserves,
-		IdleState: snapshot.idles}}, nil
+		IdleState: snapshot.idles, VaultEmpty: snapshot.empty}}, nil
 }

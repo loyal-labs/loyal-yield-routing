@@ -23,15 +23,14 @@ import (
 // executor must recheck these identities while publishing its immutable wire;
 // receiving this value alone is never permission to broadcast.
 type ExecutionAdmission struct {
-	Lease                                                              RevalidationLease
-	Preparation                                                        RoutePreparation
-	LastValidBlockHeight                                               int64
-	CapacityReservationID, ReservationGeneration, CapacityFencingToken int64
-	SelectedALTs                                                       []ExecutionALT
-	AltSelectionFingerprint                                            string
-	ConflictKeys                                                       []string
-	Evidence                                                           FreshRouteEvidence
-	Anchors                                                            ExecutionBalanceAnchors
+	Lease                   RevalidationLease
+	Preparation             RoutePreparation
+	LastValidBlockHeight    int64
+	SelectedALTs            []ExecutionALT
+	AltSelectionFingerprint string
+	ConflictKeys            []string
+	Evidence                FreshRouteEvidence
+	Anchors                 ExecutionBalanceAnchors
 	// FeePayer is the policy signer or the vault's fee-only shard.
 	FeePayer string
 }
@@ -56,7 +55,6 @@ type ExecutionBalanceAnchors struct {
 
 type executionAdmissionStore interface {
 	CommitExecutionAdmission(context.Context, RevalidationLease, RevalidationCommit, *ExecutionAdmission) error
-	RecoverUnsignedExecutionAdmissions(context.Context, string, int) (int64, error)
 	DeferRevalidation(context.Context, RevalidationLease, string) (bool, error)
 	ReleaseRevalidationNotYet(context.Context, RevalidationLease) error
 	ReplanRevalidation(context.Context, RevalidationLease) (bool, error)
@@ -106,11 +104,8 @@ var simulationStages = map[string]bool{"baseline_simulation": true, "prepare_rou
 // as Rust's revalidate-lane Retry. Neither is an error of the caller's tick.
 func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*ExecutionAdmission, bool, error) {
 	store, ok := r.store.(executionAdmissionStore)
-	if !ok || !r.fusedExecute {
-		return nil, false, errors.New("fresh execution requires fused admission store")
-	}
-	if _, err := store.RecoverUnsignedExecutionAdmissions(ctx, cluster, 32); err != nil {
-		return nil, false, err
+	if !ok {
+		return nil, false, errors.New("fresh execution requires the admission store")
 	}
 	lease, err := r.store.ClaimRevalidation(ctx, cluster, r.owner, r.leaseTTL, true, false, r.signer)
 	if err != nil || lease == nil {
@@ -154,18 +149,15 @@ func (r *Revalidator) prepareExecution(ctx context.Context, store executionAdmis
 	if lease.RouteKind != "same_mint" || !contains(lease.DelegatedSigners, r.signer) {
 		return nil, "lease", errors.New("same-mint execution policy identity changed")
 	}
-	prepared, stage, err := r.prepareSameMint(ctx, cluster, lease, func(e FreshRouteEvidence) error {
-		if err := r.store.RefreshTargetCapacity(ctx, cluster, lease.TargetReserve, lease.LiquidityMint, e.TargetObservedSupplyUSDMicros, e.Slot); err != nil {
-			return err
-		}
+	prepared, stage, err := r.prepareSameMint(ctx, cluster, lease, func(FreshRouteEvidence) error {
 		return r.store.CheckRevalidationLease(ctx, lease)
 	})
 	if err != nil {
 		return nil, stage, err
 	}
 	commit := RevalidationCommit{Disposition: "fused_execute", Preparation: &prepared.Preparation,
-		ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey,
-		FreshEconomics: true, ObservedSourceAPYBPS: prepared.Evidence.ObservedSourceAPYBPS,
+		ExpectedOpportunityKey: lease.IdempotencyKey,
+		FreshEconomics:         true, ObservedSourceAPYBPS: prepared.Evidence.ObservedSourceAPYBPS,
 		ObservedTargetAPYBPS:          prepared.Evidence.ObservedTargetAPYBPS,
 		TargetObservedSupplyUSDMicros: prepared.Evidence.TargetObservedSupplyUSDMicros, TargetObservedSlot: prepared.Evidence.Slot,
 		SourceAvailableLiquidityRaw: &prepared.Evidence.SourceAvailableLiquidityRaw, TargetDepositRoomRaw: &prepared.Evidence.TargetDepositRoomRaw}

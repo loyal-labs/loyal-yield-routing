@@ -179,6 +179,8 @@ type EarnDepositMutation struct {
 	ReserveState        []EarnReserveMutation   `json:"reserve_state"`
 	IdleState           []EarnIdleTokenMutation `json:"idle_state"`
 	ObservedAt          *time.Time              `json:"observed_at"`
+	// VaultEmpty is the read's finding that the vault holds nothing.
+	VaultEmpty bool `json:"vault_empty,omitempty"`
 }
 
 type EarnWithdrawalMutation struct {
@@ -196,6 +198,21 @@ type EarnWithdrawalMutation struct {
 	ReserveState        []EarnReserveMutation   `json:"reserve_state"`
 	IdleState           []EarnIdleTokenMutation `json:"idle_state"`
 	ObservedAt          *time.Time              `json:"observed_at"`
+	VaultEmpty          bool                    `json:"vault_empty,omitempty"`
+}
+
+// EarnBalancesMutation is a vault's complete holdings after a transaction
+// that moved no wallet cash: a fleet move between reserves or a Kamino
+// deposit of idle cash.
+type EarnBalancesMutation struct {
+	Settings     string                  `json:"settings"`
+	VaultIndex   uint8                   `json:"vault_index"`
+	VaultPubkey  string                  `json:"vault_pubkey"`
+	ObservedSlot uint64                  `json:"observed_slot"`
+	ReserveState []EarnReserveMutation   `json:"reserve_state"`
+	IdleState    []EarnIdleTokenMutation `json:"idle_state"`
+	ObservedAt   *time.Time              `json:"observed_at"`
+	VaultEmpty   bool                    `json:"vault_empty,omitempty"`
 }
 
 type EarnCleanupMutation struct {
@@ -228,6 +245,7 @@ type EarnMutation struct {
 	Withdrawal *EarnWithdrawalMutation `json:"Withdrawal,omitempty"`
 	Cleanup    *EarnCleanupMutation    `json:"Cleanup,omitempty"`
 	Refund     *EarnRefundMutation     `json:"Refund,omitempty"`
+	Balances   *EarnBalancesMutation   `json:"Balances,omitempty"`
 }
 
 func (m EarnMutation) MarshalJSON() ([]byte, error) {

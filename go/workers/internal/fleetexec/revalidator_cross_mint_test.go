@@ -115,17 +115,17 @@ func revalidatorCrossMintActivationFixture(t *testing.T) fleet.CrossMintActivati
 		return fleet.CrossMintCertificatePolicy{PolicyAccount: account, ContextSlot: 110, DataSHA256: hash}
 	}
 	c := fleet.CrossMintPreflightCertificate{Kind: "cross_mint_preflight", CertifiedAt: time.Now(), Cluster: l.Cluster, SourceMint: l.SourceLiquidityMint, TargetMint: l.TargetLiquidityMint, InputAmountRaw: "999", MinimumOutputAmountRaw: "998", EffectiveSlippageBPS: 1, EffectiveMaximumValueLossBPS: 50, FinalizedPolicyReadbacks: fleet.CrossMintCertificatePolicies{Withdraw: policy(b.Withdraw.PolicyAccount), Deposit: policy(b.Deposit.PolicyAccount), Swap: fleet.CrossMintCertificateSwapPolicy{CrossMintCertificatePolicy: policy(b.Swap.PolicyAccount), PolicySeed: "3", SourceShard: "classic", ManifestFingerprint: hash, Dialect: "route_v2", DailySourceMintSpendingCap: "9999"}}, JupiterBuild: fleet.CrossMintCertificateJupiter{ResponseSHA256: hash, RouteStepCount: 1, QuotedOutputAmountRaw: "999", LookupTables: []string{key(7)}, ComputeUnitLimit: 200000, PacketSizeBytes: 512, PacketDataSizeBytes: fleet.SolanaPacketLimit, FitsPacketDataSize: true, MessageSHA256: hash, LastValidBlockHeight: 500, ObservedBlockHeight: 400, InputPreBalanceRaw: "1", OutputPreBalanceRaw: "0", SimulationAttempted: true, SimulationUnits: 100000, SimulationTopology: "withdraw_then_swap_atomic_preflight_only", SimulationLookupTables: []string{key(7)}, TargetDepositPolicyValidated: true, TargetReserve: l.TargetReserve, TargetObligation: key(8)}}
-	return fleet.CrossMintActivationPreparation{Lease: l, Certificate: c, InitialWithdrawalPreparation: fleet.CrossMintLegPreparation{Preparation: fleet.RoutePreparation{Transaction: fleet.PreparedTransaction{FeeLamports: 5000}}}, ObservedAt: time.Now(), ObservedSlot: 110, TargetObservedSupplyUSDMicros: 9000000, Capacity: fleet.CrossMintActivationCapacity{Cluster: l.Cluster, TargetReserve: l.TargetReserve, LiquidityMint: l.TargetLiquidityMint, ObservedSupplyUSDMicros: 9000000, ObservedSlot: 110, MaximumInflightUSDMicros: 4000000, TelemetryVersion: 0}}
+	return fleet.CrossMintActivationPreparation{Lease: l, Certificate: c, InitialWithdrawalPreparation: fleet.CrossMintLegPreparation{Preparation: fleet.RoutePreparation{Transaction: fleet.PreparedTransaction{FeeLamports: 5000}}}, ObservedAt: time.Now(), ObservedSlot: 110, TargetObservedSupplyUSDMicros: 9000000, Capacity: fleet.CrossMintActivationCapacity{Cluster: l.Cluster, TargetReserve: l.TargetReserve, LiquidityMint: l.TargetLiquidityMint, ObservedSupplyUSDMicros: 9000000, ObservedSlot: 110}}
 }
 
-func TestRevalidatorCrossMintActivationBindsConcreteFrontierAndSourceCertificate(t *testing.T) {
+func TestRevalidatorCrossMintActivationBindsObservedTargetAndSourceCertificate(t *testing.T) {
 	p := revalidatorCrossMintActivationFixture(t)
 	got, err := revalidatorCrossMintActivationAdmission(p, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	expectedCertificate, err := json.Marshal(p.Certificate)
-	if err != nil || !bytes.Equal(got.Activation.PreflightCertification, expectedCertificate) || !reflect.DeepEqual(got.Lease, p.Lease) || got.Activation.SourceControlGeneration != p.ControlGeneration || got.Activation.Capacity.TelemetryVersion != 0 || got.Activation.Capacity.ObservedSlot != p.Capacity.ObservedSlot || got.Activation.Capacity.MaximumInflightUSDMicros != p.Capacity.MaximumInflightUSDMicros || got.Activation.InitialWithdrawCompiledFeeLamports != 5000 {
+	if err != nil || !bytes.Equal(got.Activation.PreflightCertification, expectedCertificate) || !reflect.DeepEqual(got.Lease, p.Lease) || got.Activation.SourceControlGeneration != p.ControlGeneration || got.Activation.Capacity.ObservedSlot != p.Capacity.ObservedSlot || got.Activation.Capacity.ObservedSupplyUSDMicros != p.Capacity.ObservedSupplyUSDMicros || got.Activation.InitialWithdrawCompiledFeeLamports != 5000 {
 		t.Fatal("activation lost source certificate, zero generation or concrete capacity")
 	}
 	for name, mutate := range map[string]func(*fleet.CrossMintActivationPreparation){

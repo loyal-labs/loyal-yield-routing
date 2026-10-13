@@ -141,7 +141,6 @@ func crossMintRuntimeFixture(t *testing.T) (*CrossMintRuntime, *pgxpool.Pool, in
 		{`UPDATE loyal_yield.route_policies SET vault_pubkey=$2 WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, []any{a.Lease.VaultID, a.Lease.VaultPubkey}},
 		{`UPDATE loyal_yield.cross_mint_swap_policies SET vault_pubkey=$2 WHERE cluster=$1`, []any{a.Lease.Cluster, a.Lease.VaultPubkey}},
 		{`UPDATE loyal_yield.cross_mint_vault_opt_ins SET vault_pubkey=$2 WHERE cluster=$1`, []any{a.Lease.Cluster, a.Lease.VaultPubkey}},
-		{`UPDATE loyal_yield.target_capacity_frontiers SET target_reserve=$2 WHERE cluster=$1`, []any{a.Lease.Cluster, a.Lease.TargetReserve}},
 		{`UPDATE loyal_yield.rebalance_opportunities SET source_reserve=$2,target_reserve=$3,execution_plan=$4 WHERE id=$1`, []any{a.Lease.OpportunityID, a.Lease.SourceReserve, a.Lease.TargetReserve, a.Lease.ExecutionPlan}},
 		{`UPDATE loyal_yield.route_account_conflict_leases SET writable_account_key=$3 WHERE cluster=$1 AND writable_account_key=$2`, []any{a.Lease.Cluster, oldConflict, a.ConflictKeys[0]}},
 	} {
@@ -256,9 +255,9 @@ func TestCrossMintRuntimeLandsExactWireAcrossDroppedForwards(t *testing.T) {
 	if l.Submission.BroadcastCount != 3 || l.Submission.State != StateReconciliationPending {
 		t.Fatalf("landing state %s count %d", l.Submission.State, l.Submission.BroadcastCount)
 	}
-	var reservation string
-	if err := pool.QueryRow(context.Background(), `SELECT reservation_state FROM loyal_yield.target_capacity_reservations WHERE signed_submission_id=$1 OR decision_id=(SELECT decision_id FROM loyal_yield.signed_route_submissions WHERE id=$1)`, id).Scan(&reservation); err != nil || reservation != "active" {
-		t.Fatalf("landing released capacity before the receipt: %s %v", reservation, err)
+	var inFlight bool
+	if err := pool.QueryRow(context.Background(), `SELECT `+"d.status::text IN ('planned','simulating','ready','submitted','confirming')"+` FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.signed_route_submissions s ON s.decision_id=d.id WHERE s.id=$1`, id).Scan(&inFlight); err != nil || !inFlight {
+		t.Fatalf("landing ended the movement before the receipt: %v", err)
 	}
 }
 
@@ -367,9 +366,10 @@ func runtimeFinalizeWithdrawal(t *testing.T, r *CrossMintRuntime, pool *pgxpool.
 	if actual.Phase != CrossMintSourceIdle || actual.CustodyVersion != 1 || actual.CustodyAmountRaw != m.PlannedAmountRaw || actual.CustodyObservedBalanceRaw == nil || *actual.CustodyObservedBalanceRaw != int64(after) || actual.CustodyReconciledSlot == nil || *actual.CustodyReconciledSlot != 1010 {
 		t.Fatalf("receipt did not atomically advance attributable custody: %+v", actual)
 	}
-	var state, reservation string
-	if err = pool.QueryRow(ctx, `SELECT s.submission_state,r.reservation_state FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=s.decision_id WHERE s.id=$1`, id).Scan(&state, &reservation); err != nil || state != "reconciled" || reservation != "active" {
-		t.Fatalf("intermediate receipt released capacity: %s %s %v", state, reservation, err)
+	var state string
+	var inFlight bool
+	if err = pool.QueryRow(ctx, `SELECT s.submission_state,d.status::text IN ('planned','simulating','ready','submitted','confirming') FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&state, &inFlight); err != nil || state != "reconciled" || !inFlight {
+		t.Fatalf("intermediate receipt ended the movement: %s %v %v", state, inFlight, err)
 	}
 	if r.chain.(*runtimeSend).calls != 0 {
 		t.Fatal("receipt recovery rebuilt or resent finalized wire")
@@ -495,12 +495,13 @@ func TestCrossMintRuntimeExpiryPublishesConcreteNoEffectOnlyAfterKnownAnchorAndL
 				t.Fatalf("mode=%s error=%v", mode, err)
 			}
 			var receipts, version int64
-			var state, reservation string
-			if err = pool.QueryRow(context.Background(), `SELECT s.submission_state,(SELECT count(*) FROM loyal_yield.cross_mint_no_effect_receipts WHERE submission_id=s.id),d.custody_version,r.reservation_state FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE s.id=$1`, id).Scan(&state, &receipts, &version, &reservation); err != nil {
+			var state string
+			var inFlight bool
+			if err = pool.QueryRow(context.Background(), `SELECT s.submission_state,(SELECT count(*) FROM loyal_yield.cross_mint_no_effect_receipts WHERE submission_id=s.id),d.custody_version,d.status::text IN ('planned','simulating','ready','submitted','confirming') FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&state, &receipts, &version, &inFlight); err != nil {
 				t.Fatal(err)
 			}
-			if version != 1 || reservation != "active" || r.chain.(*runtimeSend).calls != 0 {
-				t.Fatal("expiry changed custody, released capacity or broadcast")
+			if version != 1 || !inFlight || r.chain.(*runtimeSend).calls != 0 {
+				t.Fatal("expiry changed custody, ended the movement or broadcast")
 			}
 			if mode == "known_absent" {
 				if state != "expired" || receipts != 1 {
@@ -583,9 +584,10 @@ func TestCrossMintRuntimeDisabledRolloutCancelsOnlyUnsignedSourceCustodyAndSkips
 	if factory.calls != 0 || admission.calls != 0 || calls.Load() != 1 {
 		t.Fatalf("disabled configuration invoked financial work: factory=%d admission=%d slot=%d", factory.calls, admission.calls, calls.Load())
 	}
-	var reason, basis, state string
-	if err = pool.QueryRow(ctx, `SELECT d.terminal_reason,d.terminal_evidence->>'basis',r.reservation_state FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE d.id=$1`, b.DecisionID).Scan(&reason, &basis, &state); err != nil || reason != "start_authority_revoked_before_withdraw" || basis != "rollout_disabled" || state != "released" {
-		t.Fatalf("rollout reason or release incorrect: %s %s %s %v", reason, basis, state, err)
+	var reason, basis string
+	var inFlight bool
+	if err = pool.QueryRow(ctx, `SELECT d.terminal_reason,d.terminal_evidence->>'basis',d.status::text IN ('planned','simulating','ready','submitted','confirming') FROM loyal_yield.rebalance_decisions d WHERE d.id=$1`, b.DecisionID).Scan(&reason, &basis, &inFlight); err != nil || reason != "start_authority_revoked_before_withdraw" || basis != "rollout_disabled" || inFlight {
+		t.Fatalf("rollout reason or release incorrect: %s %s %v %v", reason, basis, inFlight, err)
 	}
 	// ANY durable signed attempt vetoes the same local configuration authority.
 	b = seedCrossMintMovement(t, ctx, pool)
@@ -599,8 +601,8 @@ func TestCrossMintRuntimeDisabledRolloutCancelsOnlyUnsignedSourceCustodyAndSkips
 		t.Fatal("local disabled config revoked existing signed bytes")
 	}
 	var outcome *string
-	if err = pool.QueryRow(ctx, `SELECT d.terminal_outcome,r.reservation_state FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE d.id=$1`, b.DecisionID).Scan(&outcome, &state); err != nil || outcome != nil || state != "active" {
-		t.Fatalf("signed custody release: %v %s %v", outcome, state, err)
+	if err = pool.QueryRow(ctx, `SELECT d.terminal_outcome,d.status::text IN ('planned','simulating','ready','submitted','confirming') FROM loyal_yield.rebalance_decisions d WHERE d.id=$1`, b.DecisionID).Scan(&outcome, &inFlight); err != nil || outcome != nil || !inFlight {
+		t.Fatalf("signed custody release: %v %v %v", outcome, inFlight, err)
 	}
 }
 

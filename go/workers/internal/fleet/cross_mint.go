@@ -974,9 +974,9 @@ func (r *Revalidator) cycleCrossMint(ctx context.Context, lease RevalidationLeas
 		return err
 	}
 	if out.WaitingALT {
-		return r.store.CommitRevalidation(ctx, lease, RevalidationCommit{CrossMintControlGeneration: &generation, Disposition: "waiting_alt", Preparation: &out.PreflightPreparation, MissingAddresses: out.MissingAddresses, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey})
+		return r.store.CommitRevalidation(ctx, lease, RevalidationCommit{CrossMintControlGeneration: &generation, Disposition: "waiting_alt", Preparation: &out.PreflightPreparation, MissingAddresses: out.MissingAddresses, ExpectedOpportunityKey: lease.IdempotencyKey})
 	}
-	return r.store.CommitRevalidation(ctx, lease, RevalidationCommit{CrossMintControlGeneration: &generation, Disposition: "ready", Preparation: &out.PreflightPreparation, ConflictKeys: out.PreflightPreparation.Transaction.WritableAccounts, ExpectedEpochFingerprint: lease.OptimizerEpochKey, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: out.SourceAPYBPS, ObservedTargetAPYBPS: out.TargetAPYBPS, TargetObservedSupplyUSDMicros: out.TargetObservedSupplyUSDMicros, TargetObservedSlot: out.ObservedSlot})
+	return r.store.CommitRevalidation(ctx, lease, RevalidationCommit{CrossMintControlGeneration: &generation, Disposition: "ready", Preparation: &out.PreflightPreparation, ConflictKeys: out.PreflightPreparation.Transaction.WritableAccounts, ExpectedOpportunityKey: lease.IdempotencyKey, FreshEconomics: true, ObservedSourceAPYBPS: out.SourceAPYBPS, ObservedTargetAPYBPS: out.TargetAPYBPS, TargetObservedSupplyUSDMicros: out.TargetObservedSupplyUSDMicros, TargetObservedSlot: out.ObservedSlot})
 }
 
 func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease RevalidationLease, activation bool) (out CrossMintActivationPreparation, err error) {
@@ -1012,7 +1012,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	if err != nil {
 		return out, err
 	}
-	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.TotalSupplyUSDMicros <= minimumReserveSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
+	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.TotalSupplyUSDMicros <= minimumSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
 		return out, errors.New("finalized cross-mint target is no longer eligible")
 	}
 	profitableOutput, err := minimumProfitableCrossMintOutput(lease.ExecutionPlan, plan.Amount, bank.sourceEconomics.SupplyAPYBPS, bank.targetEconomics.SupplyAPYBPS)

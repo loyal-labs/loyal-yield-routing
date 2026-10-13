@@ -64,22 +64,28 @@ func TestCrossMintActivationClaimKeepsFamilyAndLeaseOwnership(t *testing.T) {
 	now := time.Now().UTC()
 	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Hash: suffix, Reserves: map[string]ReserveState{source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}, target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
 	ampleCapacity(snapshot)
-	epoch := testImmutableMarketEpoch(t, snapshot, source, target)
-	seed := func(name string) (PublishResult, VaultPosition) {
+	type published struct{ OpportunityID int64 }
+	var planned []PlannedOpportunity
+	seed := func(name string) (published, VaultPosition) {
 		id := seedWorkerVault(t, ctx, store, suffix+name, source.Market, source.Address)
-		position, err := store.LoadVaultPosition(ctx, cluster, id, source, target)
-		if err != nil {
-			t.Fatal(err)
-		}
+		position := loadTestPosition(t, ctx, store, id, source)
 		decision := Plan(snapshot, position, source.Address, target.Address)
 		if !decision.Eligible {
 			t.Fatal(decision.Reason)
 		}
-		published, err := store.Publish(ctx, cluster, epoch, position, decision)
-		if err != nil || !published.Inserted {
-			t.Fatalf("publish=%+v err=%v", published, err)
+		plan, err := canonicalExecutionPlan(snapshot, FleetVault{Position: position}, decision)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return published, position
+		planned = append(planned, PlannedOpportunity{Decision: decision, ExecutionPlan: plan})
+		if summary, err := store.PublishPlan(ctx, cluster, Snapshot{Slot: snapshot.Slot, ObservedAt: snapshot.ObservedAt, Reserves: snapshot.Reserves}, FleetPlan{Opportunities: planned}); err != nil || summary.Published != 1 {
+			t.Fatalf("publish=%+v err=%v", summary, err)
+		}
+		var p published
+		if err := store.pool.QueryRow(ctx, `SELECT id FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND vault_id=$2 AND opportunity_state='revalidate'`, cluster, id).Scan(&p.OpportunityID); err != nil {
+			t.Fatal(err)
+		}
+		return p, position
 	}
 	same, _ := seed("same")
 	cross, position := seed("cross")
@@ -114,7 +120,7 @@ func TestCrossMintActivationClaimKeepsFamilyAndLeaseOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := claim("first")
-	if l == nil || l.OpportunityID != cross.OpportunityID || l.RouteKind != "cross_mint_jupiter" || l.SourceLiquidityMint != USDCMint || l.TargetLiquidityMint != USDTMint || l.SourceSnapshotID == nil {
+	if l == nil || l.OpportunityID != cross.OpportunityID || l.RouteKind != "cross_mint_jupiter" || l.SourceLiquidityMint != USDCMint || l.TargetLiquidityMint != USDTMint {
 		t.Fatalf("incorrect dedicated claim: %+v", l)
 	}
 	if got := claim("competitor"); got != nil {
@@ -136,7 +142,8 @@ func TestCrossMintActivationClaimKeepsFamilyAndLeaseOwnership(t *testing.T) {
 		t.Fatal("foreign owner passed source execute guard")
 	}
 	changed = *l
-	changed.SourceSnapshotID = nil
+	substituted := int64(1)
+	changed.SourceSnapshotID = &substituted
 	if _, err := store.CheckCrossMintActivationLease(ctx, changed); err == nil {
 		t.Fatal("substituted source snapshot passed guard")
 	}
@@ -166,7 +173,7 @@ func TestCrossMintActivationClaimKeepsFamilyAndLeaseOwnership(t *testing.T) {
 		t.Fatalf("actual preflight lease guard: generation=%d err=%v", generation, err)
 	}
 	oldGeneration := int64(3)
-	commit := RevalidationCommit{CrossMintControlGeneration: &oldGeneration, Disposition: "ready", Preparation: &RoutePreparation{}, ExpectedOpportunityKey: revalidated.IdempotencyKey, ExpectedEpochFingerprint: revalidated.OptimizerEpochKey}
+	commit := RevalidationCommit{CrossMintControlGeneration: &oldGeneration, Disposition: "ready", Preparation: &RoutePreparation{}, ExpectedOpportunityKey: revalidated.IdempotencyKey}
 	if err := store.CommitRevalidation(ctx, *revalidated, commit); err == nil || !strings.Contains(err.Error(), "control generation changed") {
 		t.Fatalf("old control generation reached capacity or source ready publication: %v", err)
 	}

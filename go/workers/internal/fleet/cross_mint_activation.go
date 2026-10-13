@@ -35,11 +35,11 @@ type CrossMintActivationPreparation struct {
 	SharedAddresses, VaultAddresses []ALTManifestAddress
 }
 
-// Capacity is the concrete frontier refreshed from this preparation's actual
-// finalized reserve bank. The executor still locks and compares the row.
+// CrossMintActivationCapacity is the target reserve as this preparation's
+// finalized bank observed it; activation checks the in-flight moves against it.
 type CrossMintActivationCapacity struct {
-	Cluster, TargetReserve, LiquidityMint                                             string
-	ObservedSupplyUSDMicros, ObservedSlot, MaximumInflightUSDMicros, TelemetryVersion int64
+	Cluster, TargetReserve, LiquidityMint string
+	ObservedSupplyUSDMicros, ObservedSlot int64
 }
 
 type crossMintActivationStore interface {
@@ -121,16 +121,10 @@ func (r *Revalidator) PrepareCrossMintActivation(ctx context.Context, lease Reva
 		return CrossMintActivationPreparation{}, err
 	}
 	if !out.WaitingALT {
-		// This private path is reached only from the complete source producer;
-		// callers cannot supply an arbitrary DTO to publish telemetry.
-		concrete, ok := r.store.(*Store)
-		if !ok || concrete.pool == nil {
-			return CrossMintActivationPreparation{}, errors.New("cross-mint activation requires concrete capacity store")
-		}
-		out.Capacity, err = concrete.captureCrossMintActivationCapacity(ctx, out, lease)
-		if err != nil {
+		if err := validateCrossMintActivationObservation(out, lease, time.Now()); err != nil {
 			return CrossMintActivationPreparation{}, err
 		}
+		out.Capacity = CrossMintActivationCapacity{Cluster: lease.Cluster, TargetReserve: lease.TargetReserve, LiquidityMint: lease.TargetLiquidityMint, ObservedSupplyUSDMicros: out.TargetObservedSupplyUSDMicros, ObservedSlot: out.ObservedSlot}
 	}
 	current, err := store.CheckCrossMintActivationLease(ctx, lease)
 	if err != nil || current != generation || ctx.Err() != nil {
@@ -155,26 +149,6 @@ func validateCrossMintActivationObservation(out CrossMintActivationPreparation, 
 		return errors.New("fresh activation reserve economics differ from immutable epoch or evidence expired")
 	}
 	return nil
-}
-
-// Only the private completed source producer calls this method in production.
-// It does not certify arbitrary preparation DTOs or grant execution authority.
-func (s *Store) captureCrossMintActivationCapacity(ctx context.Context, out CrossMintActivationPreparation, lease RevalidationLease) (CrossMintActivationCapacity, error) {
-	var p CrossMintActivationCapacity
-	if err := validateCrossMintActivationObservation(out, lease, time.Now()); err != nil {
-		return p, err
-	}
-	if err := s.RefreshTargetCapacity(ctx, lease.Cluster, lease.TargetReserve, lease.TargetLiquidityMint, out.TargetObservedSupplyUSDMicros, out.ObservedSlot); err != nil {
-		return p, err
-	}
-	p = CrossMintActivationCapacity{Cluster: lease.Cluster, TargetReserve: lease.TargetReserve, LiquidityMint: lease.TargetLiquidityMint}
-	if err := s.pool.QueryRow(ctx, `SELECT observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros,telemetry_version FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, p.Cluster, p.TargetReserve, p.LiquidityMint).Scan(&p.ObservedSupplyUSDMicros, &p.ObservedSlot, &p.MaximumInflightUSDMicros, &p.TelemetryVersion); err != nil {
-		return CrossMintActivationCapacity{}, err
-	}
-	if p.ObservedSupplyUSDMicros != out.TargetObservedSupplyUSDMicros || p.ObservedSlot != out.ObservedSlot || p.MaximumInflightUSDMicros <= 0 || p.TelemetryVersion < 0 {
-		return CrossMintActivationCapacity{}, errors.New("capacity telemetry changed after finalized observation")
-	}
-	return p, nil
 }
 
 func (s *Store) CheckCrossMintActivationLease(ctx context.Context, l RevalidationLease) (int64, error) {

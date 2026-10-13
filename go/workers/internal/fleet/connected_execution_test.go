@@ -42,7 +42,7 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 	defer cancel()
 	owner := "connected-same-mint"
-	revalidator, err := bank.Revalidator(owner, true)
+	revalidator, err := bank.Revalidator(owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,8 +90,8 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 	var opportunity, decision string
 	var sourceRaw, targetRaw int64
 	if err := bank.Pool.QueryRow(ctx, `SELECT s.signed_transaction,s.broadcast_count,o.opportunity_state,d.status::text,
- (SELECT amount_raw FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=o.vault_id AND reserve=o.source_reserve),
- (SELECT amount_raw FROM loyal_yield.vault_reserve_positions_current WHERE vault_id=o.vault_id AND reserve=o.target_reserve)
+ COALESCE((SELECT amount_raw FROM loyal_yield.vault_position_snapshot_positions WHERE snapshot_id=d.post_snapshot_id AND reserve=o.source_reserve),0),
+ COALESCE((SELECT amount_raw FROM loyal_yield.vault_position_snapshot_positions WHERE snapshot_id=d.post_snapshot_id AND reserve=o.target_reserve),0)
  FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_opportunities o ON o.id=s.opportunity_id JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&finalWire, &broadcasts, &opportunity, &decision, &sourceRaw, &targetRaw); err != nil {
 		t.Fatal(err)
 	}
@@ -113,10 +113,10 @@ func runConnectedSameMint(t *testing.T, kind fleet.ConnectedKind) {
 	}
 }
 
-type publishedEpoch struct{ epoch fleet.ImmutableMarketEpoch }
+type plannedReserves struct{ market fleet.MarketSnapshot }
 
-func (s publishedEpoch) LoadImmutableMarketEpoch(ctx context.Context) (fleet.ImmutableMarketEpoch, error) {
-	return s.epoch, ctx.Err()
+func (s plannedReserves) ReadReserves(ctx context.Context) (fleet.MarketSnapshot, error) {
+	return s.market, ctx.Err()
 }
 
 // Go activates, signs and persists each leg before its send, lands the
@@ -127,7 +127,7 @@ func TestConnectedCrossMintExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
 	defer cancel()
 	owner := "connected-cross-mint"
-	revalidator, err := bank.Revalidator(owner, false)
+	revalidator, err := bank.Revalidator(owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,15 +145,7 @@ func TestConnectedCrossMintExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var epochJSON []byte
-	var epoch fleet.ImmutableMarketEpoch
-	if err := bank.Pool.QueryRow(ctx, `SELECT market_state FROM loyal_yield.optimizer_epochs WHERE id=$1`, bank.EpochID).Scan(&epochJSON); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(epochJSON, &epoch); err != nil {
-		t.Fatal(err)
-	}
-	controller.SetMarketEpochSource(publishedEpoch{epoch})
+	controller.SetReserveSource(plannedReserves{bank.Market})
 	runtime, err := fleetexec.NewCrossMintRuntime(ctx, config, store, controller, client, adapters)
 	if err != nil {
 		t.Fatal(err)

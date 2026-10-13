@@ -42,9 +42,8 @@ type FleetVault struct {
 }
 
 type PlannedOpportunity struct {
-	Decision       Decision        `json:"decision"`
-	ExecutionPlan  json.RawMessage `json:"executionPlan"`
-	IdempotencyKey string          `json:"idempotencyKey"`
+	Decision      Decision        `json:"decision"`
+	ExecutionPlan json.RawMessage `json:"executionPlan"`
 }
 
 type FleetPlan struct {
@@ -300,26 +299,7 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		if err != nil {
 			return FleetPlan{}, err
 		}
-		expires := snapshot.ExpiresAt
-		if mintExpiry, ok := snapshot.MintExpiresAt[d.SourceMint]; ok {
-			expires = mintExpiry
-		}
-		if mintExpiry, ok := snapshot.MintExpiresAt[d.TargetMint]; ok && (expires.IsZero() || mintExpiry.Before(expires)) {
-			expires = mintExpiry
-		}
-		if expires.IsZero() {
-			expires = snapshot.ObservedAt.Add(5 * time.Minute)
-		}
-		epochID := snapshot.OptimizerEpochID
-		if epochID <= 0 {
-			epochID = snapshot.Slot
-		}
-		cluster := snapshot.Cluster
-		if cluster == "" {
-			cluster = "mainnet-beta"
-		}
-		key := opportunityIdentity(cluster, epochID, d, plan, expires)
-		out.Opportunities = append(out.Opportunities, PlannedOpportunity{d, plan, key})
+		out.Opportunities = append(out.Opportunities, PlannedOpportunity{d, plan})
 	}
 	// Preserve visibility of unvisited candidates when the wave count fills;
 	// selected vaults (including fee-fenced publications) keep their outcome.
@@ -460,7 +440,7 @@ func optionalPositiveInt64(value int64) any {
 }
 
 func opportunityIdentity(cluster string, optimizerEpochID int64, d Decision, plan []byte, expires time.Time) string {
-	values := []string{"loyal-rebalance-opportunity-v1", cluster, fmt.Sprint(d.VaultID), fmt.Sprint(d.SourceSnapshotID), fmt.Sprint(optimizerEpochID), "", "", d.SourceReserve, d.TargetReserve, d.Mint, fmt.Sprint(d.AmountRaw), fmt.Sprint(d.PrincipalUSDMicros), fmt.Sprint(d.SourceAPYBPS), fmt.Sprint(d.TargetAPYBPS), fmt.Sprint(d.EdgeBPS), fmt.Sprint(d.EstimatedCostLamports), fmt.Sprint(d.AnnualYieldGainUSDMicros), fmt.Sprint(d.ExpectedNetGainUSDMicros), fmt.Sprint(d.EconomicPriority), "lost-yield-service-net-reserve-capacity-v3", "yield_optimization", "", string(plan), rustRFC3339(expires), ""}
+	values := []string{"loyal-rebalance-opportunity-v1", cluster, fmt.Sprint(d.VaultID), "", fmt.Sprint(optimizerEpochID), "", "", d.SourceReserve, d.TargetReserve, d.Mint, fmt.Sprint(d.AmountRaw), fmt.Sprint(d.PrincipalUSDMicros), fmt.Sprint(d.SourceAPYBPS), fmt.Sprint(d.TargetAPYBPS), fmt.Sprint(d.EdgeBPS), fmt.Sprint(d.EstimatedCostLamports), fmt.Sprint(d.AnnualYieldGainUSDMicros), fmt.Sprint(d.ExpectedNetGainUSDMicros), fmt.Sprint(d.EconomicPriority), "lost-yield-service-net-reserve-capacity-v3", "yield_optimization", "", string(plan), rustRFC3339(expires), ""}
 	h := sha256.New()
 	var length [8]byte
 	for _, s := range values {

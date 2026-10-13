@@ -1,7 +1,6 @@
 package fleet
 
 import (
-	"encoding/json"
 	"math"
 	"time"
 )
@@ -61,178 +60,19 @@ func (r ReserveState) DepositRoomRaw() (room int64, known bool) {
 	return int64(limit - supply), true
 }
 
+// TargetEligible reports whether a move may deposit into r now: refreshed
+// economics with the publication lifetime left, the planner's minimum supply
+// and an APY in bounds.
+func (r ReserveState) TargetEligible() bool {
+	return !r.LastUpdateStale && r.EconomicLifetimeMillis >= minimumPublicationLifetime.Milliseconds() &&
+		r.TotalSupplyUSDMicros >= minimumSupplyUSDMicros && r.SupplyAPYBPS >= 0 && r.SupplyAPYBPS < 5_000
+}
+
 type MarketSnapshot struct {
-	Cluster          string                  `json:"-"`
-	OptimizerEpochID int64                   `json:"optimizerEpochId"`
-	ExpiresAt        time.Time               `json:"expiresAt"`
-	MintExpiresAt    map[string]time.Time    `json:"-"`
-	Slot             int64                   `json:"slot"`
-	ObservedAt       time.Time               `json:"observedAt"`
-	Hash             string                  `json:"hash"`
-	Reserves         map[string]ReserveState `json:"reserves"`
-}
-
-// MarketEpochReserve is the retired Rust MarketEpochReserve contract plus the
-// reserve's deposit limit. The state identity comes from the observer's latest
-// confirmed reserve_updates row; it is never synthesized from a direct RPC
-// read.
-type MarketEpochReserve struct {
-	StateEventID             int64     `json:"stateEventId"`
-	AccountDataHash          string    `json:"accountDataHash"`
-	StateObservedAt          time.Time `json:"stateObservedAt"`
-	StateSlot                int64     `json:"stateSlot"`
-	VerificationCommitment   string    `json:"verificationCommitment"`
-	Reserve                  string    `json:"reserve"`
-	Market                   *string   `json:"market"`
-	LiquidityMint            string    `json:"liquidityMint"`
-	MintDecimals             uint8     `json:"mintDecimals"`
-	MarketPriceUSDMicros     int64     `json:"marketPriceUsdMicros"`
-	ReserveLastUpdateSlot    int64     `json:"reserveLastUpdateSlot"`
-	EconomicSlotLag          int64     `json:"economicSlotLag"`
-	EconomicExpiresAt        time.Time `json:"economicExpiresAt"`
-	ReserveLastUpdateStale   bool      `json:"reserveLastUpdateStale"`
-	ReservePriceStatus       int16     `json:"reservePriceStatus"`
-	MarketPriceLastUpdatedTS int64     `json:"marketPriceLastUpdatedTs"`
-	AvailableAmountRaw       string    `json:"availableAmountRaw"`
-	BorrowedAmountRaw        string    `json:"borrowedAmountRaw"`
-	TotalSupplyAmountRaw     string    `json:"totalSupplyAmountRaw"`
-	// DepositLimitRaw is the reserve config's deposit_limit as a decimal
-	// integer, nil when the observation did not carry it.
-	DepositLimitRaw      *string   `json:"depositLimitRaw"`
-	UtilizationPPM       int64     `json:"utilizationPpm"`
-	BorrowAPYBPS         int64     `json:"borrowApyBps"`
-	ObservedAt           time.Time `json:"observedAt"`
-	Slot                 int64     `json:"slot"`
-	SupplyAPYBPS         int64     `json:"supplyApyBps"`
-	TotalSupplyUSDMicros int64     `json:"totalSupplyUsdMicros"`
-	TargetEligible       bool      `json:"targetEligible"`
-}
-
-func (r MarketEpochReserve) MarshalJSON() ([]byte, error) {
-	type alias MarketEpochReserve
-	return json.Marshal(struct {
-		alias
-		StateObservedAt   rustJSONTime `json:"stateObservedAt"`
-		EconomicExpiresAt rustJSONTime `json:"economicExpiresAt"`
-		ObservedAt        rustJSONTime `json:"observedAt"`
-	}{alias: alias(r), StateObservedAt: rustJSONTime(r.StateObservedAt), EconomicExpiresAt: rustJSONTime(r.EconomicExpiresAt), ObservedAt: rustJSONTime(r.ObservedAt)})
-}
-
-type MarketMintBlocker struct {
-	Code    string  `json:"code"`
-	Reserve *string `json:"reserve"`
-	Detail  string  `json:"detail"`
-}
-
-type MarketMintCoverage struct {
-	Mint                       string              `json:"mint"`
-	CatalogReserveCount        int                 `json:"catalogReserveCount"`
-	VerifiedReserveCount       int                 `json:"verifiedReserveCount"`
-	EligibleTargetReserveCount int                 `json:"eligibleTargetReserveCount"`
-	Complete                   bool                `json:"complete"`
-	ExpiresAt                  *time.Time          `json:"expiresAt"`
-	Blockers                   []MarketMintBlocker `json:"blockers"`
-}
-
-// ImmutableMarketEpoch mirrors the Rust serde camelCase contract exactly.
-func (c MarketMintCoverage) MarshalJSON() ([]byte, error) {
-	type alias MarketMintCoverage
-	var expiresAt *rustJSONTime
-	if c.ExpiresAt != nil {
-		value := rustJSONTime(*c.ExpiresAt)
-		expiresAt = &value
-	}
-	return json.Marshal(struct {
-		alias
-		ExpiresAt *rustJSONTime `json:"expiresAt"`
-	}{alias: alias(c), ExpiresAt: expiresAt})
-}
-
-type ImmutableMarketEpoch struct {
-	OptimizerEpochID       int64                `json:"optimizerEpochId"`
-	Fingerprint            string               `json:"fingerprint"`
-	CatalogFingerprint     string               `json:"catalogFingerprint"`
-	CapturedAt             time.Time            `json:"capturedAt"`
-	ExpiresAt              time.Time            `json:"expiresAt"`
-	CatalogExpiresAt       time.Time            `json:"catalogExpiresAt"`
-	CatalogReserveCount    int                  `json:"catalogReserveCount"`
-	OldestMarketObservedAt *time.Time           `json:"oldestMarketObservedAt"`
-	NewestMarketObservedAt *time.Time           `json:"newestMarketObservedAt"`
-	MinimumMarketSlot      *int64               `json:"minimumMarketSlot"`
-	MaximumMarketSlot      *int64               `json:"maximumMarketSlot"`
-	MintCoverage           []MarketMintCoverage `json:"mintCoverage"`
-	Reserves               []MarketEpochReserve `json:"reserves"`
-	// StreamFrontierSlot is the newest slot among the reserves' latest stream
-	// rows; planning refuses the epoch once it trails the chain.
-	StreamFrontierSlot int64 `json:"-"`
-}
-
-func (e ImmutableMarketEpoch) MarshalJSON() ([]byte, error) {
-	type alias ImmutableMarketEpoch
-	var oldest, newest *rustJSONTime
-	if e.OldestMarketObservedAt != nil {
-		value := rustJSONTime(*e.OldestMarketObservedAt)
-		oldest = &value
-	}
-	if e.NewestMarketObservedAt != nil {
-		value := rustJSONTime(*e.NewestMarketObservedAt)
-		newest = &value
-	}
-	return json.Marshal(struct {
-		alias
-		CapturedAt             rustJSONTime  `json:"capturedAt"`
-		ExpiresAt              rustJSONTime  `json:"expiresAt"`
-		CatalogExpiresAt       rustJSONTime  `json:"catalogExpiresAt"`
-		OldestMarketObservedAt *rustJSONTime `json:"oldestMarketObservedAt"`
-		NewestMarketObservedAt *rustJSONTime `json:"newestMarketObservedAt"`
-	}{alias: alias(e), CapturedAt: rustJSONTime(e.CapturedAt), ExpiresAt: rustJSONTime(e.ExpiresAt), CatalogExpiresAt: rustJSONTime(e.CatalogExpiresAt), OldestMarketObservedAt: oldest, NewestMarketObservedAt: newest})
-}
-
-type rustJSONTime time.Time
-
-func (value rustJSONTime) MarshalJSON() ([]byte, error) {
-	timestamp := time.Time(value).UTC()
-	layout := "2006-01-02T15:04:05Z"
-	nanoseconds := timestamp.Nanosecond()
-	if nanoseconds != 0 {
-		switch {
-		case nanoseconds%1_000_000 == 0:
-			layout = "2006-01-02T15:04:05.000Z"
-		case nanoseconds%1_000 == 0:
-			layout = "2006-01-02T15:04:05.000000Z"
-		default:
-			layout = "2006-01-02T15:04:05.000000000Z"
-		}
-	}
-	return json.Marshal(timestamp.Format(layout))
-}
-
-func (e ImmutableMarketEpoch) OptimizerEnvelopeExpiresAt() time.Time {
-	result := e.ExpiresAt
-	for _, coverage := range e.MintCoverage {
-		if coverage.Complete && coverage.ExpiresAt != nil && coverage.ExpiresAt.After(result) {
-			result = *coverage.ExpiresAt
-		}
-	}
-	return result
-}
-
-func (e ImmutableMarketEpoch) MintExpiresAt(mint string) (time.Time, bool) {
-	for _, coverage := range e.MintCoverage {
-		if coverage.Complete && coverage.Mint == mint && coverage.ExpiresAt != nil {
-			return *coverage.ExpiresAt, true
-		}
-	}
-	return time.Time{}, false
-}
-
-func (e ImmutableMarketEpoch) Reserve(address string) (MarketEpochReserve, bool) {
-	for _, reserve := range e.Reserves {
-		if reserve.Reserve == address {
-			return reserve, true
-		}
-	}
-	return MarketEpochReserve{}, false
+	Slot       int64                   `json:"slot"`
+	ObservedAt time.Time               `json:"observedAt"`
+	Hash       string                  `json:"hash"`
+	Reserves   map[string]ReserveState `json:"reserves"`
 }
 
 // submissionTerminalStates are the signed_route_submissions states that no
@@ -291,7 +131,6 @@ type VaultPosition struct {
 	SourceCollateralAmountRaw       int64
 	SourceAmountSemantics           string
 	IdleVaultLiquidityAmountRaw     *int64
-	SnapshotID                      int64
 	ObservedSlot                    int64
 	ObservedAt                      time.Time
 	BlockedReason                   string
@@ -306,7 +145,6 @@ type Decision struct {
 	RouteKind                string
 	Reason                   string
 	VaultID                  int64
-	SourceSnapshotID         int64
 	MarketSlot               int64
 	SourceReserve            string
 	TargetReserve            string
@@ -330,11 +168,4 @@ type Decision struct {
 	TargetCapacityUSDMicros  int64
 	SnapshotHash             string
 	ObservedAt               time.Time
-}
-
-type PublishResult struct {
-	Inserted      bool
-	OpportunityID int64
-	EpochID       int64
-	Reason        string
 }

@@ -55,7 +55,7 @@ func seedFresh(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (fleet.Exe
 	mh, wh := sha256.Sum256(message), sha256.Sum256(unsigned)
 	plan := json.RawMessage(`{"kind":"same_mint","route_kind":"same_mint","source_kind":"reserve_position","route_amount_semantics":"redeemable_source_liquidity","source_amount_semantics":"kamino_obligation_collateral_deposited_amount"}`)
 	routeFP, reqFP := strings.Repeat("a", 64), strings.Repeat("b", 64)
-	var snapshot, vault, capacity int64
+	var snapshot, vault int64
 	var expires time.Time
 	if err := pool.QueryRow(ctx, `SELECT source_snapshot_id,vault_id FROM loyal_yield.rebalance_opportunities WHERE id=$1`, b.OpportunityID).Scan(&snapshot, &vault); err != nil {
 		t.Fatal(err)
@@ -63,20 +63,14 @@ func seedFresh(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (fleet.Exe
 	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.rebalance_decisions SET status='skipped' WHERE id=$1`, b.DecisionID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.target_capacity_reservations SET decision_id=NULL WHERE opportunity_id=$1`, b.OpportunityID); err != nil {
-		t.Fatal(err)
-	}
 	err = pool.QueryRow(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='leased',decision_id=NULL,lease_kind='execute',lease_owner='fresh-owner',lease_expires_at=clock_timestamp()+interval '2 minutes',fencing_token=1,route_fingerprint=$2,requirements_fingerprint=$3,source_reserve='source-fresh',source_liquidity_mint=liquidity_mint,target_liquidity_mint=liquidity_mint,execution_plan=$4 WHERE id=$1 RETURNING lease_expires_at`, b.OpportunityID, routeFP, reqFP, plan).Scan(&expires)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT id FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, b.OpportunityID).Scan(&capacity); err != nil {
 		t.Fatal(err)
 	}
 	a := fleet.ExecutionAdmission{
 		Lease:                fleet.RevalidationLease{OpportunityID: b.OpportunityID, OptimizerEpochID: b.EpochID, SourceSnapshotID: &snapshot, IdempotencyKey: "opportunity:" + suffix, Owner: "fresh-owner", FencingToken: 1, ExpiresAt: expires, Cluster: b.Cluster, VaultID: vault, VaultPubkey: "vault:" + suffix, SourceReserve: "source-fresh", TargetReserve: b.Reserve, LiquidityMint: b.Mint, RouteKind: "same_mint", LiquidityAmountRaw: 1000000, PrincipalUSDMicros: 1000000, FeeCapLamports: 10000, OptimizerEpochKey: "epoch:" + suffix, ExecutionPlan: plan},
 		Preparation:          fleet.RoutePreparation{RouteFingerprint: routeFP, RequirementsFingerprint: reqFP, ExecutionPlan: plan, Transaction: fleet.PreparedTransaction{Message: message, UnsignedWire: unsigned, MessageSHA256: hex.EncodeToString(mh[:]), WireSHA256: hex.EncodeToString(wh[:]), PacketBytes: len(unsigned), LookupTables: []string{tableAddress}, WritableAccounts: []string{input.FeePayer, member}, FeeLamports: 5000, ComputeLimit: 200000}, Simulation: fleet.SimulationEvidence{Succeeded: true, Slot: 1000, WireSHA256: hex.EncodeToString(wh[:]), UnitsConsumed: 10000}},
-		LastValidBlockHeight: 4000, CapacityReservationID: capacity, ReservationGeneration: 1, CapacityFencingToken: 1, SelectedALTs: []fleet.ExecutionALT{{TableID: tableID, FamilyID: familyID, MutationEpoch: 0, Generation: 1, Address: tableAddress, Addresses: []string{member}}}, AltSelectionFingerprint: strings.Repeat("c", 64), ConflictKeys: []string{"vault-write:" + "vault:" + suffix, fmt.Sprintf("fleet-shared-write-lane:%02d", vault%64)}, Evidence: fleet.FreshRouteEvidence{Slot: 1000, ObservedAt: time.Now()},
+		LastValidBlockHeight: 4000, SelectedALTs: []fleet.ExecutionALT{{TableID: tableID, FamilyID: familyID, MutationEpoch: 0, Generation: 1, Address: tableAddress, Addresses: []string{member}}}, AltSelectionFingerprint: strings.Repeat("c", 64), ConflictKeys: []string{"vault-write:" + "vault:" + suffix, fmt.Sprintf("fleet-shared-write-lane:%02d", vault%64)}, Evidence: fleet.FreshRouteEvidence{Slot: 1000, ObservedAt: time.Now()},
 	}
 	identityJSON, _ := json.Marshal(a.SelectedALTs)
 	selectionHash := sha256.Sum256(identityJSON)
@@ -108,13 +102,13 @@ func TestFreshPublicationBindsRegisteredHandoffAndFirstSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decision, capacitySubmission int64
+	var decision int64
 	var opState string
-	if err := pool.QueryRow(ctx, `SELECT s.decision_id,o.opportunity_state,r.signed_submission_id FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_opportunities o ON o.id=s.opportunity_id JOIN loyal_yield.target_capacity_reservations r ON r.opportunity_id=o.id WHERE s.id=$1`, id).Scan(&decision, &opState, &capacitySubmission); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT s.decision_id,o.opportunity_state FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_opportunities o ON o.id=s.opportunity_id WHERE s.id=$1`, id).Scan(&decision, &opState); err != nil {
 		t.Fatal(err)
 	}
-	if decision <= 0 || capacitySubmission != id || opState != "decision_created" {
-		t.Fatalf("handoff not bound: %d %d %s", decision, capacitySubmission, opState)
+	if decision <= 0 || opState != "decision_created" {
+		t.Fatalf("handoff not bound: %d %s", decision, opState)
 	}
 	lease := claimOne(t, ctx, store, a.Lease.Cluster, "fresh-owner")
 	if err := store.RecordBroadcastIntent(ctx, lease); err != nil {
@@ -133,14 +127,12 @@ func TestFreshPublicationBindsRegisteredHandoffAndFirstSend(t *testing.T) {
 }
 
 func TestFreshPublicationRejectsChangedCustodyFencesWithoutSignedRows(t *testing.T) {
-	for _, change := range []string{"capacity", "alt_epoch", "alt_membership", "conflict", "snapshot", "lease"} {
+	for _, change := range []string{"alt_epoch", "alt_membership", "conflict", "snapshot", "lease"} {
 		t.Run(change, func(t *testing.T) {
 			store, pool := integrationStore(t)
 			ctx := context.Background()
 			a, signer := seedFresh(t, ctx, pool)
 			switch change {
-			case "capacity":
-				_, _ = pool.Exec(ctx, `UPDATE loyal_yield.target_capacity_reservations SET reservation_fencing_token=2 WHERE id=$1`, a.CapacityReservationID)
 			case "alt_epoch":
 				_, _ = pool.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables SET mutation_epoch=1 WHERE id=$1`, a.SelectedALTs[0].TableID)
 			case "alt_membership":

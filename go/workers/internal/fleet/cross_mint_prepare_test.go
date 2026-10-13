@@ -332,7 +332,7 @@ func TestCrossMintTransportFailureDoesNotAuthorizeRecovery(t *testing.T) {
 	q.Leg, q.Movement.Phase, q.Movement.CustodyVersion = "swap", "source_idle", 1
 	amount, slot := int64(1200), int64(999)
 	q.Movement.CustodyObservedBalanceRaw, q.Movement.CustodyReconciledSlot = &amount, &slot
-	bank.targetEconomics = ReserveState{SupplyAPYBPS: 400, TotalSupplyUSDMicros: minimumReserveSupplyUSDMicros + 1, EconomicLifetimeMillis: 1000}
+	bank.targetEconomics = ReserveState{SupplyAPYBPS: 400, TotalSupplyUSDMicros: minimumSupplyUSDMicros + 1, EconomicLifetimeMillis: 1000}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(q.Movement.ExecutionPlan, &fields); err != nil {
 		t.Fatal(err)

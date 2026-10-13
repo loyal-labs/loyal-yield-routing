@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +21,7 @@ func packingReserve(address string, apy, supply, available int64, depositLimit u
 
 func packingSnapshot(reserves ...ReserveState) MarketSnapshot {
 	now := time.Now().UTC()
-	snapshot := MarketSnapshot{Slot: 500, ObservedAt: now, ExpiresAt: now.Add(10 * time.Minute), Hash: "packing", Reserves: map[string]ReserveState{}}
+	snapshot := MarketSnapshot{Slot: 500, ObservedAt: now, Hash: "packing", Reserves: map[string]ReserveState{}}
 	for _, reserve := range reserves {
 		snapshot.Reserves[reserve.Address] = reserve
 	}
@@ -33,7 +32,7 @@ func packingHolding(snapshot MarketSnapshot, vault int64, source string, amount 
 	r := snapshot.Reserves[source]
 	return FleetVault{Position: VaultPosition{VaultID: vault, PolicyID: vault, VaultPubkey: fmt.Sprintf("vault-%d", vault), PolicyAuthority: fmt.Sprintf("tenant-%d", vault),
 		SourceReserve: source, Market: r.Market, Mint: r.Mint, AmountRaw: amount, SourceCollateralAmountRaw: amount,
-		SourceAmountSemantics: amountSemanticsRedeemableLiquidity, SnapshotID: 7, ObservedSlot: 499, ObservedAt: snapshot.ObservedAt}, AllowedTargets: targets}
+		SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited, ObservedSlot: 499, ObservedAt: snapshot.ObservedAt}, AllowedTargets: targets}
 }
 
 // moves is each selected move as vault:source>target:amount, in wave order.
@@ -199,34 +198,6 @@ func TestUnknownCapacityEvidenceIsNotPlannable(t *testing.T) {
 	if d := Plan(snapshot, position, "source", "target"); d.Reason != "target_deposit_limit_unknown" {
 		t.Fatalf("unknown deposit limit planned as %s", d.Reason)
 	}
-
-	market := testIdentity(40)
-	liquid := packingReserve(testIdentity(1), 100, 1_000_000_000_000, 400_000_000_000, 5_000_000_000_000)
-	closed := packingReserve(testIdentity(2), 900, 1_000_000_000_000, 1_000_000_000_000, 0)
-	liquid.Market, liquid.DataHash = market, strings.Repeat("a", 64)
-	closed.Market, closed.DataHash = market, strings.Repeat("b", 64)
-	identities := []ReserveIdentity{liquid.ReserveIdentity, closed.ReserveIdentity}
-	evidence := packingSnapshot(liquid, closed)
-	epoch := testImmutableMarketEpoch(t, evidence, identities...)
-	loaded, err := marketSnapshotFromEpoch(epoch, identities[0].Address, identities[1].Address)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := loaded.Reserves[identities[0].Address]; got.AvailableLiquidityRaw == nil || *got.AvailableLiquidityRaw != 400_000_000_000 || got.DepositLimitRaw == nil || *got.DepositLimitRaw != 5_000_000_000_000 {
-		t.Fatalf("epoch dropped capacity evidence: %+v", got)
-	}
-	if room, known := loaded.Reserves[identities[1].Address].DepositRoomRaw(); !known || room != 0 {
-		t.Fatalf("a zero deposit limit read as room %d known=%v", room, known)
-	}
-	// Remove the limit from the evidence: the epoch says unknown, not zero.
-	for i := range epoch.Reserves {
-		epoch.Reserves[i].DepositLimitRaw = nil
-	}
-	epoch.Fingerprint = epochFingerprint(epoch.Reserves, sortedUnique(coverageMints(epoch.MintCoverage)), epoch.CatalogFingerprint, epoch.MintCoverage)
-	epoch.OptimizerEpochID = positiveEpochID(epoch.Fingerprint)
-	if loaded, err = marketSnapshotFromEpoch(epoch, identities[0].Address); err != nil || loaded.Reserves[identities[0].Address].DepositLimitRaw != nil {
-		t.Fatalf("absent deposit limit loaded as %v (%v)", loaded.Reserves[identities[0].Address].DepositLimitRaw, err)
-	}
 }
 
 // A vault holding two reserves plans both. Its secondary holding only
@@ -290,12 +261,6 @@ func (s *replanStore) ClaimRevalidation(context.Context, string, string, time.Du
 	return &lease, nil
 }
 func (s *replanStore) CheckRevalidationLease(context.Context, RevalidationLease) error { return nil }
-func (s *replanStore) RefreshTargetCapacity(context.Context, string, string, string, int64, int64) error {
-	return nil
-}
-func (s *replanStore) TargetCapacitySlot(context.Context, string, string, string) (int64, error) {
-	return 0, nil
-}
 func (s *replanStore) ReleaseRevalidationNotYet(context.Context, RevalidationLease) error {
 	return errors.New("not reached")
 }
@@ -310,9 +275,6 @@ func (s *replanStore) EligibleFeePayerShards(context.Context, string, string, []
 }
 func (s *replanStore) CommitExecutionAdmission(context.Context, RevalidationLease, RevalidationCommit, *ExecutionAdmission) error {
 	return errors.New("not reached")
-}
-func (s *replanStore) RecoverUnsignedExecutionAdmissions(context.Context, string, int) (int64, error) {
-	return 0, nil
 }
 func (s *replanStore) DeferRevalidation(context.Context, RevalidationLease, string) (bool, error) {
 	s.retried++
@@ -362,7 +324,7 @@ func TestExecutionCapacityFailureReplansInsteadOfRetrying(t *testing.T) {
 			}
 			store := &replanStore{lease: lease}
 			metrics := &countingMetrics{replans: map[string]int{}, simulations: map[string]int{}}
-			r.store, r.fusedExecute, r.metrics, r.owner, r.leaseTTL = store, true, metrics, "owner", time.Minute
+			r.store, r.metrics, r.owner, r.leaseTTL = store, metrics, "owner", time.Minute
 			admission, claimed, err := r.PrepareExecution(context.Background(), "localnet")
 			if err != nil || !claimed || admission != nil {
 				t.Fatalf("admission=%v claimed=%v err=%v", admission, claimed, err)
@@ -396,7 +358,7 @@ func TestLockedCapacityCountsAdmittedMovesInFlight(t *testing.T) {
 	// The dilution-priced economics the 609 prod deferrals failed on are a
 	// re-plan too, not a retry.
 	plan := json.RawMessage(`{"observed_target_apy_bps":100,"source_apy_bps":99,"confidence_ppm":950000,"holding_horizon_seconds":2592000,"estimated_execution_cost_usd_micros":100000}`)
-	_, err := recomputeReservationEconomics(RevalidationLease{PrincipalUSDMicros: 9_000_000_000, ExecutionPlan: plan}, plan, 1_000_000_000, 20_000_000)
+	_, err := ComputeAdmissionEconomics(RevalidationLease{PrincipalUSDMicros: 9_000_000_000, ExecutionPlan: plan}, plan, 1_000_000_000, 20_000_000)
 	if !errors.As(err, &replan) || replan.Reason != "target_capacity_economics" {
 		t.Fatalf("lost economics are not a re-plan: %v", err)
 	}
@@ -410,10 +372,6 @@ func TestCapacityReportNamesTheBestDestinationAndItsRoom(t *testing.T) {
 	snapshot := packingSnapshot(
 		packingReserve("source", 100, 1_000_000_000_000_000, 1_000_000_000_000_000, unlimited),
 		packingReserve("target", 900, 1_000_000_000_000, 1_000_000_000_000, uint64(1_000_000_000_000)+12_000_000_000))
-	epoch := ImmutableMarketEpoch{Reserves: []MarketEpochReserve{
-		{Reserve: "source", LiquidityMint: USDCMint, SupplyAPYBPS: 100, TargetEligible: true},
-		{Reserve: "target", LiquidityMint: USDCMint, SupplyAPYBPS: 900, TargetEligible: true},
-	}}
 	vaults := []FleetVault{packingHolding(snapshot, 1, "source", 10_000_000_000, "target"), packingHolding(snapshot, 2, "source", 5_000_000_000, "target")}
 	vaults[0].CommittedInflows = map[string]int64{"target": 1_000_000_000}
 	vaults[1].CommittedInflows = vaults[0].CommittedInflows
@@ -421,7 +379,7 @@ func TestCapacityReportNamesTheBestDestinationAndItsRoom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report := capacityReport(epoch, snapshot, vaults, plan)
+	report := capacityReport(snapshot, vaults, vaults[0].CommittedInflows, plan)
 	if len(report) != 1 {
 		t.Fatalf("report %+v", report)
 	}

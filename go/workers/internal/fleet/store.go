@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
+	"math"
+	"sort"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -80,157 +80,40 @@ WHERE cluster=$1`, cluster)
 	return nil
 }
 
-// SweepExpiredOpportunities mirrors the retained Rust planner's bounded expiry
-// sweep. A live lease, decision, or nonterminal signed submission keeps ownership
-// of the route: expiry is never permission to discard an unresolved chain effect.
-func (s *Store) SweepExpiredOpportunities(ctx context.Context, cluster string, limit int) (int64, error) {
-	if s == nil || s.pool == nil || cluster == "" || cluster != strings.TrimSpace(cluster) || limit < 1 || limit > 10_000 {
-		return 0, errors.New("opportunity expiry sweep requires canonical cluster and limit in 1..=10000")
-	}
-	var swept int64
-	err := s.pool.QueryRow(ctx, `
-WITH candidate AS (
- SELECT o.id FROM loyal_yield.rebalance_opportunities o
- WHERE o.cluster=$1 AND o.expires_at<=now()
-   AND o.opportunity_state IN ('waiting_alt','revalidate','ready','leased')
-   AND (o.opportunity_state<>'leased' OR o.lease_expires_at<=now())
-   AND o.decision_id IS NULL
-   AND NOT EXISTS (
-     SELECT 1 FROM loyal_yield.signed_route_submissions submission
-     WHERE submission.opportunity_id=o.id
-       AND submission.submission_state NOT IN ('reconciled','expired','failed'))
- ORDER BY o.expires_at,o.id
- FOR UPDATE OF o SKIP LOCKED LIMIT $2
-), stale AS (
- UPDATE loyal_yield.rebalance_opportunities o
- SET opportunity_state='stale',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,
-     terminal_reason='optimizer_epoch_expired',updated_at=now()
- FROM candidate WHERE o.id=candidate.id RETURNING o.id
-), released_conflicts AS (
- DELETE FROM loyal_yield.route_account_conflict_leases conflict USING stale
- WHERE conflict.opportunity_id=stale.id AND conflict.submission_id IS NULL
- RETURNING conflict.opportunity_id
-)
-SELECT count(*)::bigint FROM stale`, cluster, limit).Scan(&swept)
-	if err != nil {
-		return 0, fmt.Errorf("sweep expired opportunities: %w", err)
-	}
-	return swept, nil
-}
-
-func (s *Store) LoadVaultPosition(ctx context.Context, cluster string, vaultID int64, source, target ReserveIdentity) (VaultPosition, error) {
-	var position VaultPosition
-	position.VaultID = vaultID
-	var metadata json.RawMessage
-	var projectedAmountRaw int64
-	err := s.pool.QueryRow(ctx, `
-SELECT vault.settings, vault.vault_index, vault.vault_pubkey,
-       policy.id, policy.policy_account,
-       position.reserve, position.market, position.liquidity_mint,
-       position.amount_raw, position.snapshot_id, position.observed_slot,
-       position.observed_at, position.planning_metadata,
-       CASE
-         WHEN NOT vault.active OR NOT policy.active THEN 'inactive_vault_or_policy'
-         WHEN NOT ('same_mint_kamino'=ANY(policy.route_modes)) THEN 'route_mode_not_allowed'
-         WHEN NOT ($4=ANY(policy.stable_mints) AND $4=ANY(policy.kamino_liquidity_mints)) THEN 'mint_not_allowed'
-         WHEN NOT ($3=ANY(policy.kamino_markets) AND $7=ANY(policy.kamino_markets)) THEN 'market_not_allowed'
-         -- 5 minutes = one fleet sweep interval; see docs/vault-position-snapshot-contract.md rule 3
-         WHEN position.observed_at < clock_timestamp()-interval '5 minutes' THEN 'stale_vault_position'
-         WHEN EXISTS (SELECT 1 FROM loyal_yield.rebalance_opportunities opportunity WHERE opportunity.cluster=$5 AND opportunity.vault_id=vault.id AND opportunity.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')) THEN 'active_opportunity'
-         WHEN EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions decision WHERE decision.vault_id=vault.id AND decision.status::text IN ('planned','simulating','ready','submitted','confirming')) THEN 'active_decision'
-         WHEN EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions decision WHERE decision.vault_id=vault.id AND decision.status::text='confirmed' AND decision.source_reserve=$2 AND decision.updated_at>=clock_timestamp()-interval '5 minutes') THEN 'cooldown'
-         ELSE ''
-       END AS blocked_reason,
-       COALESCE((SELECT sum(opportunity.principal_usd_micros) FROM loyal_yield.rebalance_opportunities opportunity WHERE opportunity.cluster=$5 AND opportunity.target_reserve=$2 AND opportunity.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')),0),
-       COALESCE((SELECT sum(opportunity.principal_usd_micros) FROM loyal_yield.rebalance_opportunities opportunity WHERE opportunity.cluster=$5 AND opportunity.source_reserve=$2 AND opportunity.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')),0),
-       COALESCE((SELECT sum(opportunity.principal_usd_micros) FROM loyal_yield.rebalance_opportunities opportunity WHERE opportunity.cluster=$5 AND opportunity.target_reserve=$1 AND opportunity.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')),0),
-       COALESCE((SELECT sum(opportunity.principal_usd_micros) FROM loyal_yield.rebalance_opportunities opportunity WHERE opportunity.cluster=$5 AND opportunity.source_reserve=$1 AND opportunity.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')),0)
-FROM loyal_yield.managed_vaults vault
-JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id
-JOIN loyal_yield.vault_reserve_positions_current position ON position.vault_id=vault.id AND position.reserve=$2
-WHERE vault.id=$6 AND position.has_value AND position.amount_raw>0
-`, target.Address, source.Address, source.Market, source.Mint, cluster, vaultID, target.Market).Scan(
-		&position.Settings, &position.VaultIndex, &position.VaultPubkey, &position.PolicyID, &position.PolicyAccount,
-		&position.SourceReserve, &position.Market, &position.Mint, &projectedAmountRaw, &position.SnapshotID,
-		&position.ObservedSlot, &position.ObservedAt, &metadata, &position.BlockedReason,
-		&position.SourceCommittedInflowUSDMicros, &position.SourceCommittedOutflowUSDMicros,
-		&position.TargetCommittedInflowUSDMicros, &position.TargetCommittedOutflowUSDMicros)
-	if err != nil {
-		return VaultPosition{}, fmt.Errorf("load fixed cohort vault: %w", err)
-	}
-	var evidence struct {
-		AmountSemantics  string          `json:"amount_semantics"`
-		Redeemable       json.RawMessage `json:"redeemable_source_liquidity_amount_raw"`
-		RedeemableLegacy json.RawMessage `json:"redeemable_liquidity_amount_raw"`
-		SourceCollateral json.RawMessage `json:"source_collateral_amount_raw"`
-		IdleLiquidity    json.RawMessage `json:"idle_vault_liquidity_amount_raw"`
-		IdleLegacy       json.RawMessage `json:"vault_liquidity_amount_raw"`
-	}
-	if err := json.Unmarshal(metadata, &evidence); err != nil {
-		return VaultPosition{}, fmt.Errorf("decode route amount evidence: %w", err)
-	}
-	position.SourceAmountSemantics = evidence.AmountSemantics
-	switch evidence.AmountSemantics {
-	case amountSemanticsKaminoCollateralDeposited:
-		position.SourceCollateralAmountRaw = projectedAmountRaw
-		position.AmountRaw, err = jsonInt64(evidence.Redeemable)
-		if err != nil {
-			position.AmountRaw, err = jsonInt64(evidence.RedeemableLegacy)
-		}
-	case amountSemanticsRedeemableLiquidity:
-		// The projection's amount_raw is authoritative for this semantic. The
-		// collateral alias is optional planning evidence and is re-observed from
-		// the obligation before route construction.
-		position.AmountRaw = projectedAmountRaw
-		position.SourceCollateralAmountRaw = 0
-		if raw, parseErr := jsonInt64(evidence.SourceCollateral); parseErr == nil {
-			position.SourceCollateralAmountRaw = raw
-		}
-	default:
-		err = fmt.Errorf("unsupported amount semantics")
-	}
-	if err != nil || position.AmountRaw <= 0 || (position.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && position.SourceCollateralAmountRaw <= 0) {
-		return VaultPosition{}, fmt.Errorf("fixed cohort requires executable route amount evidence")
-	}
-	idleLiquidity, idleErr := jsonInt64(evidence.IdleLiquidity)
-	if idleErr != nil {
-		idleLiquidity, idleErr = jsonInt64(evidence.IdleLegacy)
-	}
-	if idleErr == nil && idleLiquidity >= 0 {
-		position.IdleVaultLiquidityAmountRaw = &idleLiquidity
-	}
-	return position, nil
-}
-
 type FleetLoadOptions struct {
 	DelegatedSigner          string
 	EnableCrossMint          bool
 	CrossMintMaxValueLossBPS uint16
-	OptimizerEpochID         int64
 }
 
-// LoadMigratedFleet reads every active Kamino vault and each reserve it holds
-// in one repeatable-read snapshot: one FleetVault per held reserve, largest
-// first. A vault with an open opportunity or decision is left out whole, so a
-// vault still moves one holding at a time. Exact finalized Earn and Jupiter
-// policy bindings are loaded in that same snapshot for cross-mint candidates.
-func (s *Store) LoadMigratedFleet(ctx context.Context, cluster string, epoch ImmutableMarketEpoch, optional ...FleetLoadOptions) ([]FleetVault, error) {
-	options := FleetLoadOptions{}
-	if len(optional) > 0 {
-		options = optional[0]
+// RegisteredVault is one vault enrolled for same-mint routing: our record of
+// it and of its active route policy, which names the markets and mints it may
+// hold. Its holdings are read from the chain each tick.
+type RegisteredVault struct {
+	VaultID                        int64
+	Settings                       string
+	VaultIndex                     int16
+	VaultPubkey                    string
+	PolicyID                       int64
+	PolicyAccount, PolicyAuthority string
+	Markets, StableMints           []string
+	KaminoMints, DelegatedSigners  []string
+	// The finalized Earn and swap policies a cross-mint move would bind.
+	EarnPolicies, SwapPolicies json.RawMessage
+}
+
+// LoadRegistry reads the active vaults the planner may move: enrolled for
+// same-mint routing under a finalized policy that delegates to the signer,
+// with no claimed opportunity and no decision still moving money. A vault
+// whose last move is unclaimed is planned again; the plan replaces it.
+func (s *Store) LoadRegistry(ctx context.Context, cluster string, options FleetLoadOptions) ([]RegisteredVault, error) {
+	if cluster == "" {
+		return nil, errors.New("cluster is required")
 	}
-	if cluster == "" || len(epoch.Reserves) < 2 {
-		return nil, fmt.Errorf("cluster and complete reserve epoch are required")
-	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `
+	rows, err := s.pool.Query(ctx, `
 SELECT vault.id, vault.settings, vault.vault_index, vault.vault_pubkey,
-       policy.id, policy.policy_account, policy.kamino_markets,
-       policy.authority, policy.delegated_signers,
+       policy.id, policy.policy_account, policy.authority, policy.kamino_markets,
+       policy.stable_mints, policy.kamino_liquidity_mints, policy.delegated_signers,
        COALESCE((SELECT jsonb_agg(jsonb_build_object(
           'policy_account',ep.policy_account,'observed_slot',ep.last_seen_slot,
           'observed_signature',ep.last_seen_signature,'source_commitment',ep.source_commitment,
@@ -263,185 +146,42 @@ SELECT vault.id, vault.settings, vault.vault_index, vault.vault_pubkey,
           AND sp.max_slippage_bps=oi.max_slippage_bps
           AND sp.daily_source_mint_spending_cap=oi.daily_source_mint_spending_cap
           AND ((sp.source_shard='classic' AND sp.policy_account=oi.classic_policy_account AND sp.policy_seed=oi.classic_policy_seed)
-            OR (sp.source_shard='token_2022' AND sp.policy_account=oi.token_2022_policy_account AND sp.policy_seed=oi.token_2022_policy_seed))), '[]'::jsonb),
-       position.reserve, position.market, position.liquidity_mint,
-       position.amount_raw, position.snapshot_id, position.observed_slot,
-       position.observed_at, position.planning_metadata
+            OR (sp.source_shard='token_2022' AND sp.policy_account=oi.token_2022_policy_account AND sp.policy_seed=oi.token_2022_policy_seed))), '[]'::jsonb)
 FROM loyal_yield.managed_vaults vault
 JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id
-JOIN loyal_yield.vault_reserve_positions_current position ON position.vault_id=vault.id
 WHERE vault.active AND policy.active
   AND ($2='' OR (policy.cluster=$1 AND policy.source_commitment='finalized'
        AND policy.finalized_eligible AND $2=ANY(policy.delegated_signers)))
   AND 'same_mint_kamino'=ANY(policy.route_modes)
-  AND position.has_value AND position.amount_raw>0
-  AND position.liquidity_mint=ANY(policy.stable_mints)
-  AND position.liquidity_mint=ANY(policy.kamino_liquidity_mints)
-  AND position.market=ANY(policy.kamino_markets)
   AND NOT EXISTS (
     SELECT 1 FROM loyal_yield.rebalance_opportunities o
     WHERE o.cluster=$1 AND o.vault_id=vault.id
-      AND o.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
-      AND NOT (
-        o.opportunity_state='waiting_alt' AND o.optimizer_epoch_id=$4
-        AND EXISTS (
-          SELECT 1
-          FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
-          JOIN loyal_yield.lookup_table_provisioning_requests request
-            ON request.id=consumer.provisioning_request_id
-          WHERE consumer.opportunity_id=o.id
-            AND request.cluster=o.cluster
-            AND request.request_status='satisfied'
-            AND request.sealed_at IS NOT NULL
-            AND request.requirements_fingerprint=o.requirements_fingerprint
-        )
-      )
-  )
+      AND (o.opportunity_state='decision_created'
+        OR (o.opportunity_state='leased' AND o.lease_expires_at>clock_timestamp())))
   AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.vault_id=vault.id AND d.status::text IN ('planned','simulating','ready','submitted','confirming'))
-  AND NOT EXISTS (SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.vault_id=vault.id AND d.status::text='confirmed' AND d.source_reserve=position.reserve AND d.updated_at>=clock_timestamp()-interval '5 minutes')
-ORDER BY vault.id, position.amount_raw DESC, position.reserve`, cluster, options.DelegatedSigner, options.EnableCrossMint, options.OptimizerEpochID)
+ORDER BY vault.id`, cluster, options.DelegatedSigner, options.EnableCrossMint)
 	if err != nil {
-		return nil, fmt.Errorf("load migrated fleet: %w", err)
+		return nil, fmt.Errorf("load fleet registry: %w", err)
 	}
 	defer rows.Close()
-	var fleet []FleetVault
+	var registry []RegisteredVault
 	for rows.Next() {
-		var p VaultPosition
-		var projectedAmountRaw int64
-		var metadata, earnPolicyJSON, swapPolicyJSON json.RawMessage
-		var markets, delegatedSigners []string
-		var authority string
-		if err := rows.Scan(&p.VaultID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.PolicyID, &p.PolicyAccount, &markets, &authority, &delegatedSigners, &earnPolicyJSON, &swapPolicyJSON, &p.SourceReserve, &p.Market, &p.Mint, &projectedAmountRaw, &p.SnapshotID, &p.ObservedSlot, &p.ObservedAt, &metadata); err != nil {
+		var v RegisteredVault
+		if err := rows.Scan(&v.VaultID, &v.Settings, &v.VaultIndex, &v.VaultPubkey, &v.PolicyID, &v.PolicyAccount, &v.PolicyAuthority, &v.Markets, &v.StableMints, &v.KaminoMints, &v.DelegatedSigners, &v.EarnPolicies, &v.SwapPolicies); err != nil {
 			return nil, err
 		}
-		p.PolicyAuthority = authority
-		var evidence struct {
-			AmountSemantics  string          `json:"amount_semantics"`
-			Redeemable       json.RawMessage `json:"redeemable_source_liquidity_amount_raw"`
-			RedeemableLegacy json.RawMessage `json:"redeemable_liquidity_amount_raw"`
-			SourceCollateral json.RawMessage `json:"source_collateral_amount_raw"`
-			Idle             json.RawMessage `json:"idle_vault_liquidity_amount_raw"`
-		}
-		if json.Unmarshal(metadata, &evidence) != nil {
-			p.BlockedReason = "invalid_source_planning_metadata"
-			fleet = append(fleet, FleetVault{Position: p})
-			continue
-		}
-		// Amount validation is per source, not a failure of the whole fleet.
-		// Reset the row-local parse error before handling explicit semantics.
-		err = nil
-		p.SourceAmountSemantics = evidence.AmountSemantics
-		switch evidence.AmountSemantics {
-		case amountSemanticsKaminoCollateralDeposited:
-			p.SourceCollateralAmountRaw = projectedAmountRaw
-			if p.AmountRaw, err = jsonInt64(evidence.Redeemable); err != nil {
-				p.AmountRaw, err = jsonInt64(evidence.RedeemableLegacy)
-			}
-		case amountSemanticsRedeemableLiquidity:
-			// Keep the projected position amount as the redeemable route amount.
-			// Metadata aliases are optional under this explicit semantic.
-			p.AmountRaw = projectedAmountRaw
-			p.SourceCollateralAmountRaw = 0
-			if raw, e := jsonInt64(evidence.SourceCollateral); e == nil {
-				p.SourceCollateralAmountRaw = raw
-			}
-		default:
-			err = fmt.Errorf("unsupported amount semantics")
-		}
-		if idle, e := jsonInt64(evidence.Idle); e == nil {
-			p.IdleVaultLiquidityAmountRaw = &idle
-		}
-		if err != nil || p.AmountRaw <= 0 || (p.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && p.SourceCollateralAmountRaw <= 0) {
-			p.BlockedReason = "unsupported_source_amount_evidence"
-			fleet = append(fleet, FleetVault{Position: p})
-			continue
-		}
-		allowed := sameMintTargets(epoch, p.Mint, markets)
-		crossTargets, err := crossMintTargets(epoch, p, authority, delegatedSigners, options, earnPolicyJSON, swapPolicyJSON)
-		if err != nil {
-			return nil, fmt.Errorf("vault %d cross-mint policy evidence: %w", p.VaultID, err)
-		}
-		fleet = append(fleet, FleetVault{Position: p, AllowedTargets: canonicalStrings(allowed), CrossMintTargets: crossTargets, CrossMintMaxValueLossBPS: options.CrossMintMaxValueLossBPS})
+		registry = append(registry, v)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	return registry, rows.Err()
+}
+
+// SnapshotVaults are the accounts the registry's holdings are read from.
+func SnapshotVaults(registry []RegisteredVault) []SnapshotVault {
+	out := make([]SnapshotVault, len(registry))
+	for i, v := range registry {
+		out[i] = SnapshotVault{Pubkey: v.VaultPubkey, PolicyAccount: v.PolicyAccount, Markets: v.Markets}
 	}
-	rows.Close()
-	committedInflow, committedOutflow := map[string]int64{}, map[string]int64{}
-	commitRows, err := tx.Query(ctx, `
-WITH active_opportunities AS (
- SELECT opportunity.id,opportunity.source_reserve,opportunity.target_reserve,
-        opportunity.principal_usd_micros
- FROM loyal_yield.rebalance_opportunities opportunity
- WHERE opportunity.cluster=$1
-   AND opportunity.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
-   AND NOT (opportunity.opportunity_state='waiting_alt' AND opportunity.optimizer_epoch_id=$2 AND EXISTS (
-     SELECT 1
-     FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
-     JOIN loyal_yield.lookup_table_provisioning_requests request
-       ON request.id=consumer.provisioning_request_id
-     WHERE consumer.opportunity_id=opportunity.id
-       AND request.cluster=opportunity.cluster
-       AND request.request_status='satisfied'
-       AND request.sealed_at IS NOT NULL
-       AND request.requirements_fingerprint=opportunity.requirements_fingerprint))
-), live_capacity_reservations AS (
- -- A reservation remains authoritative after its queue row becomes terminal
- -- until strictly newer telemetry proves that the landed movement is visible.
- SELECT reservation.opportunity_id,opportunity.source_reserve,
-        reservation.target_reserve,reservation.principal_usd_micros
- FROM loyal_yield.target_capacity_reservations reservation
- JOIN loyal_yield.rebalance_opportunities opportunity
-   ON opportunity.id=reservation.opportunity_id
- WHERE reservation.cluster=$1 AND reservation.reservation_state<>'released'
-), committed_route_flows AS (
- SELECT source_reserve,target_reserve,principal_usd_micros
- FROM live_capacity_reservations
- UNION ALL
- -- Pre-admission intent consumes planner headroom only when no live
- -- reservation already represents that exact opportunity.
- SELECT opportunity.source_reserve,opportunity.target_reserve,
-        opportunity.principal_usd_micros
- FROM active_opportunities opportunity
- LEFT JOIN live_capacity_reservations reservation
-   ON reservation.opportunity_id=opportunity.id
- WHERE reservation.opportunity_id IS NULL
-)
-SELECT reserve,sum(inflow),sum(outflow) FROM (
- SELECT target_reserve AS reserve,principal_usd_micros AS inflow,0::bigint AS outflow
- FROM committed_route_flows
- UNION ALL
- SELECT source_reserve AS reserve,0::bigint,principal_usd_micros
- FROM committed_route_flows WHERE source_reserve IS NOT NULL
-) committed GROUP BY reserve`, cluster, options.OptimizerEpochID)
-	if err != nil {
-		return nil, fmt.Errorf("load committed reserve frontier: %w", err)
-	}
-	for commitRows.Next() {
-		var reserve string
-		var inflow, outflow int64
-		if err := commitRows.Scan(&reserve, &inflow, &outflow); err != nil {
-			commitRows.Close()
-			return nil, err
-		}
-		if inflow < 0 || outflow < 0 {
-			commitRows.Close()
-			return nil, errors.New("negative committed reserve frontier")
-		}
-		committedInflow[reserve], committedOutflow[reserve] = inflow, outflow
-	}
-	if err := commitRows.Err(); err != nil {
-		commitRows.Close()
-		return nil, err
-	}
-	commitRows.Close()
-	for i := range fleet {
-		fleet[i].CommittedInflows, fleet[i].CommittedOutflows = committedInflow, committedOutflow
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return fleet, nil
+	return out
 }
 
 type observedEarnPolicy struct {
@@ -467,34 +207,88 @@ type observedSwapPolicy struct {
 	ManifestFingerprint        string `json:"manifest_fingerprint"`
 }
 
-// sameMintTargets are the epoch's target-eligible reserves of mint in markets.
-// Planning and Publish both read this one epoch flag, so a reserve the stream
-// evidence makes ineligible is never planned as a target, whatever its direct
-// read says.
-func sameMintTargets(epoch ImmutableMarketEpoch, mint string, markets []string) []string {
-	allowed := []string{}
-	for _, reserve := range epoch.Reserves {
-		if reserve.LiquidityMint == mint && reserve.Market != nil && contains(markets, *reserve.Market) && reserve.TargetEligible {
-			allowed = append(allowed, reserve.Reserve)
+// PlanningVaults is the fleet Plan reads: one FleetVault per catalog holding
+// a vault's live policy permits, largest first. A vault whose route policy
+// on chain does not delegate exclusively to the signer plans nothing; its
+// holdings carry the reason. inflow and outflow are the moves in flight.
+func PlanningVaults(snapshot Snapshot, catalog []ReserveIdentity, registry []RegisteredVault, inflow, outflow map[string]int64, options FleetLoadOptions) ([]FleetVault, error) {
+	var fleet []FleetVault
+	for _, v := range registry {
+		facts := snapshot.Vaults[v.VaultPubkey]
+		blocked := ""
+		switch p := facts.Policy; {
+		case p == nil:
+			blocked = "route_policy_unreadable"
+		case p.Settings != v.Settings || int16(p.AccountIndex) != v.VaultIndex:
+			blocked = "route_policy_identity_mismatch"
+		case options.DelegatedSigner != "" && (len(p.DelegatedSigners) != 1 || p.DelegatedSigners[0] != options.DelegatedSigner):
+			blocked = "route_policy_not_delegated"
+		}
+		holdings := append([]Holding(nil), facts.Holdings...)
+		sortHoldings(holdings)
+		for _, h := range holdings {
+			if !contains(v.Markets, h.Market) || !contains(v.StableMints, h.Mint) || !contains(v.KaminoMints, h.Mint) {
+				continue
+			}
+			if h.LiquidityRaw > math.MaxInt64 || h.CollateralRaw > math.MaxInt64 {
+				return nil, fmt.Errorf("vault %d holding in %s exceeds int64", v.VaultID, h.Reserve)
+			}
+			p := VaultPosition{
+				VaultID: v.VaultID, Settings: v.Settings, VaultIndex: v.VaultIndex, VaultPubkey: v.VaultPubkey,
+				PolicyID: v.PolicyID, PolicyAuthority: v.PolicyAuthority, PolicyAccount: v.PolicyAccount,
+				SourceReserve: h.Reserve, Market: h.Market, Mint: h.Mint,
+				AmountRaw: int64(h.LiquidityRaw), SourceCollateralAmountRaw: int64(h.CollateralRaw),
+				SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited,
+				ObservedSlot:          snapshot.Slot, ObservedAt: snapshot.ObservedAt, BlockedReason: blocked,
+			}
+			if blocked != "" || p.AmountRaw <= 0 {
+				if p.BlockedReason == "" {
+					p.BlockedReason = "unsupported_source_amount_evidence"
+				}
+				fleet = append(fleet, FleetVault{Position: p})
+				continue
+			}
+			allowed := []string{}
+			for _, identity := range catalog {
+				if identity.Mint == h.Mint && contains(v.Markets, identity.Market) {
+					allowed = append(allowed, identity.Address)
+				}
+			}
+			crossTargets, err := crossMintTargets(snapshot, catalog, p, v, options)
+			if err != nil {
+				return nil, fmt.Errorf("vault %d cross-mint policy evidence: %w", v.VaultID, err)
+			}
+			fleet = append(fleet, FleetVault{Position: p, AllowedTargets: canonicalStrings(allowed), CrossMintTargets: crossTargets, CrossMintMaxValueLossBPS: options.CrossMintMaxValueLossBPS, CommittedInflows: inflow, CommittedOutflows: outflow})
 		}
 	}
-	return allowed
+	return fleet, nil
 }
 
-func crossMintTargets(epoch ImmutableMarketEpoch, position VaultPosition, authority string, delegated []string, options FleetLoadOptions, earnRaw, swapRaw json.RawMessage) (map[string]CrossMintPolicyBindings, error) {
+// sortHoldings orders a vault's holdings largest first, ties by reserve.
+func sortHoldings(holdings []Holding) {
+	sort.Slice(holdings, func(i, j int) bool {
+		if holdings[i].LiquidityRaw != holdings[j].LiquidityRaw {
+			return holdings[i].LiquidityRaw > holdings[j].LiquidityRaw
+		}
+		return holdings[i].Reserve < holdings[j].Reserve
+	})
+}
+
+// crossMintTargets binds each target-eligible reserve of another Earn mint
+// to the vault's exact finalized Earn and swap policies.
+func crossMintTargets(snapshot Snapshot, catalog []ReserveIdentity, position VaultPosition, v RegisteredVault, options FleetLoadOptions) (map[string]CrossMintPolicyBindings, error) {
 	result := map[string]CrossMintPolicyBindings{}
-	if !options.EnableCrossMint || options.DelegatedSigner == "" || !contains(delegated, options.DelegatedSigner) {
+	if !options.EnableCrossMint || options.DelegatedSigner == "" || !contains(v.DelegatedSigners, options.DelegatedSigner) {
 		return result, nil
 	}
 	var earn []observedEarnPolicy
 	var swaps []observedSwapPolicy
-	if err := json.Unmarshal(earnRaw, &earn); err != nil {
+	if err := json.Unmarshal(v.EarnPolicies, &earn); err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(swapRaw, &swaps); err != nil {
+	if err := json.Unmarshal(v.SwapPolicies, &swaps); err != nil {
 		return nil, err
 	}
-	_ = authority // SQL exact-matches this immutable base-policy field.
 	if len(swaps) != 2 || position.VaultIndex < 0 || position.VaultIndex > 255 {
 		return result, nil
 	}
@@ -517,7 +311,7 @@ func crossMintTargets(epoch ImmutableMarketEpoch, position VaultPosition, author
 		return result, nil
 	}
 	swap := classic
-	if position.Mint == CashMint || position.Mint == USDGMint || position.Mint == PYUSDMint {
+	if earnTokenProgram(position.Mint) != earnTokenProgram(USDCMint) {
 		swap = token2022
 	}
 	exactEarn := func(mint, market string) (observedEarnPolicy, bool) {
@@ -533,11 +327,12 @@ func crossMintTargets(epoch ImmutableMarketEpoch, position VaultPosition, author
 	if !ok {
 		return result, nil
 	}
-	for _, target := range epoch.Reserves {
-		if !target.TargetEligible || target.Market == nil || target.LiquidityMint == position.Mint || !isEarnStableMint(target.LiquidityMint) {
+	for _, target := range catalog {
+		state, routable := snapshot.Reserves[target.Address]
+		if !routable || !state.TargetEligible() || target.Mint == position.Mint || !isEarnStableMint(target.Mint) {
 			continue
 		}
-		deposit, ok := exactEarn(target.LiquidityMint, *target.Market)
+		deposit, ok := exactEarn(target.Mint, target.Market)
 		if !ok {
 			continue
 		}
@@ -550,216 +345,242 @@ func crossMintTargets(epoch ImmutableMarketEpoch, position VaultPosition, author
 		if bindings.Withdraw.PolicyAccount == bindings.Swap.PolicyAccount || bindings.Deposit.PolicyAccount == bindings.Swap.PolicyAccount {
 			continue
 		}
-		result[target.Reserve] = bindings
+		result[target.Address] = bindings
 	}
 	return result, nil
 }
 
-func jsonInt64(raw json.RawMessage) (int64, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return 0, fmt.Errorf("amount is absent")
-	}
-	var number int64
-	if err := json.Unmarshal(raw, &number); err == nil {
-		return number, nil
-	}
-	var text string
-	if err := json.Unmarshal(raw, &text); err != nil {
-		return 0, err
-	}
-	number, parseErr := strconv.ParseInt(text, 10, 64)
-	return number, parseErr
+// Querier is a pool or a transaction.
+type Querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// EnsureOptimizerEpoch resolves the database-assigned epoch identity before
-// planning. Rust includes this ID in the opportunity key, so publication plans
-// must not use a synthetic fingerprint-derived ID.
-func (s *Store) EnsureOptimizerEpoch(ctx context.Context, cluster string, epoch ImmutableMarketEpoch) (int64, error) {
-	if cluster == "" {
-		return 0, fmt.Errorf("cluster is required")
-	}
-	if err := epoch.Validate(); err != nil {
-		return 0, err
-	}
-	durable := epoch.DurableEvidence()
-	marketState, err := json.Marshal(durable)
+// inflightFlowsSQL lists the moves the chain does not show yet at slot $2:
+// claimed for execution; decided with no route or deposit leg confirmed at
+// or before that slot; or confirmed by a leg that landed after it. A leg
+// confirmed by the slot is in the snapshot; a failed one ended its decision.
+// $3 names an opportunity left out.
+const inflightFlowsSQL = `
+SELECT o.source_reserve, COALESCE(d.active_target_reserve, o.target_reserve), o.principal_usd_micros
+FROM loyal_yield.rebalance_opportunities o
+LEFT JOIN loyal_yield.rebalance_decisions d ON d.id=o.decision_id
+WHERE o.cluster=$1 AND o.id<>$3
+  AND ((o.opportunity_state='leased' AND o.lease_expires_at>clock_timestamp())
+    OR (o.decision_id IS NOT NULL
+        AND (d.status::text IN ('planned','simulating','ready','submitted','confirming')
+          OR (d.status::text='confirmed' AND d.id IN (SELECT s.decision_id FROM loyal_yield.signed_route_submissions s
+                WHERE s.movement_leg IN ('route','deposit') AND s.confirmed_slot>$2)))
+        AND NOT EXISTS (SELECT 1 FROM loyal_yield.signed_route_submissions s
+          WHERE s.decision_id=d.id AND s.movement_leg IN ('route','deposit')
+            AND s.confirmed_slot IS NOT NULL AND s.confirmed_slot<=$2)))`
+
+// InflightFlows sums the principal in flight into and out of each reserve,
+// as the chain at slot does not show it yet.
+func InflightFlows(ctx context.Context, q Querier, cluster string, slot, exclude int64) (inflow, outflow map[string]int64, err error) {
+	rows, err := q.Query(ctx, inflightFlowsSQL, cluster, slot, exclude)
 	if err != nil {
-		return 0, err
+		return nil, nil, fmt.Errorf("in-flight moves: %w", err)
 	}
-	var epochID int64
-	var evidenceMatches bool
+	defer rows.Close()
+	inflow, outflow = map[string]int64{}, map[string]int64{}
+	for rows.Next() {
+		var source *string
+		var target string
+		var principal int64
+		if err := rows.Scan(&source, &target, &principal); err != nil {
+			return nil, nil, err
+		}
+		var ok bool
+		if inflow[target], ok = sumInt64(inflow[target], principal); !ok || principal < 0 {
+			return nil, nil, errors.New("in-flight inflow overflow")
+		}
+		if source != nil {
+			if outflow[*source], ok = sumInt64(outflow[*source], principal); !ok {
+				return nil, nil, errors.New("in-flight outflow overflow")
+			}
+		}
+	}
+	return inflow, outflow, rows.Err()
+}
+
+// PublishSummary counts what one tick did to the queue.
+type PublishSummary struct {
+	EpochID                                 int64
+	Published, Kept, Readmitted, Superseded int64
+	ActiveWork                              int64
+}
+
+// unclaimedSQL is an opportunity no executor holds: never claimed, done
+// preparing, or claimed under a lease that ended without a decision.
+const unclaimedSQL = `o.decision_id IS NULL AND (o.opportunity_state IN ('revalidate','waiting_alt','ready')
+  OR (o.opportunity_state='leased' AND o.lease_expires_at<=clock_timestamp()))`
+
+// keepMargin is the life an unclaimed move must have left for the next tick
+// to keep it rather than replace it.
+const keepMargin = "75 seconds"
+
+// PublishPlan records the tick's snapshot and makes the queue the plan. A
+// planned move an unclaimed row of its vault already holds keeps that row;
+// any other planned move replaces its vault's unclaimed rows; every
+// unclaimed row the plan does not hold is superseded. Claimed work is never
+// touched.
+func (s *Store) PublishPlan(ctx context.Context, cluster string, snapshot Snapshot, plan FleetPlan) (PublishSummary, error) {
+	var summary PublishSummary
+	record, err := recordOf(snapshot)
+	if err != nil {
+		return summary, err
+	}
+	if summary.EpochID, err = s.recordSnapshot(ctx, cluster, record); err != nil {
+		return summary, fmt.Errorf("record snapshot: %w", err)
+	}
+	held := []int64{}
+	for _, opportunity := range plan.Opportunities {
+		id, outcome, err := s.publishOne(ctx, cluster, summary.EpochID, record, opportunity)
+		if err != nil {
+			return summary, fmt.Errorf("publish vault %d: %w", opportunity.Decision.VaultID, err)
+		}
+		switch outcome {
+		case "published":
+			summary.Published++
+		case "kept":
+			summary.Kept++
+		case "alt_readmitted":
+			summary.Readmitted++
+		case "active_work":
+			summary.ActiveWork++
+		}
+		if id > 0 {
+			held = append(held, id)
+		}
+		logEvent(map[string]any{"event": "kamino_fleet_planner_opportunity", "vaultId": opportunity.Decision.VaultID, "sourceReserve": opportunity.Decision.SourceReserve, "targetReserve": opportunity.Decision.TargetReserve, "publishReason": outcome, "opportunityId": id})
+	}
 	err = s.pool.QueryRow(ctx, `
-WITH inserted AS (
-  INSERT INTO loyal_yield.optimizer_epochs (cluster,epoch_key,market_slot,observed_at,expires_at,market_state)
-  VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (cluster,epoch_key) DO NOTHING
-  RETURNING id,market_slot,observed_at,expires_at,market_state
-), candidate AS (
-  SELECT id,market_slot,observed_at,expires_at,market_state FROM inserted
-  UNION ALL
-  SELECT id,market_slot,observed_at,expires_at,market_state FROM loyal_yield.optimizer_epochs
-  WHERE cluster=$1 AND epoch_key=$2 AND NOT EXISTS (SELECT 1 FROM inserted)
+WITH superseded AS (
+ UPDATE loyal_yield.rebalance_opportunities o
+ SET opportunity_state='superseded',terminal_reason='replanned',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
+ WHERE o.cluster=$1 AND NOT (o.id=ANY($2::bigint[])) AND `+unclaimedSQL+`
+ RETURNING o.id
+), released AS (
+ DELETE FROM loyal_yield.route_account_conflict_leases conflict USING superseded
+ WHERE conflict.opportunity_id=superseded.id AND conflict.submission_id IS NULL
 )
-SELECT id, market_slot=$3 AND observed_at=$4 AND expires_at=$5 AND market_state=$6::jsonb
-FROM candidate LIMIT 1`, cluster, durable.Fingerprint, *durable.MaximumMarketSlot, durable.CapturedAt, durable.OptimizerEnvelopeExpiresAt(), marketState).Scan(&epochID, &evidenceMatches)
+SELECT count(*) FROM superseded`, cluster, held).Scan(&summary.Superseded)
 	if err != nil {
-		return 0, err
+		return summary, fmt.Errorf("supersede unplanned moves: %w", err)
 	}
-	if !evidenceMatches {
-		return 0, fmt.Errorf("optimizer epoch key is stored under different immutable evidence")
-	}
-	return epochID, nil
+	return summary, nil
 }
 
-func (s *Store) Publish(ctx context.Context, cluster string, epoch ImmutableMarketEpoch, position VaultPosition, decision Decision) (PublishResult, error) {
-	if cluster == "" {
-		return PublishResult{}, fmt.Errorf("cluster is required")
+// recordSnapshot stores the tick's reserves once; the same snapshot read
+// twice is one row. The lookup is its own statement: a conflicting insert
+// waits for the other writer's commit, and only a later statement's snapshot
+// sees that row.
+func (s *Store) recordSnapshot(ctx context.Context, cluster string, record snapshotRecord) (int64, error) {
+	var id int64
+	err := s.pool.QueryRow(ctx, `
+INSERT INTO loyal_yield.optimizer_epochs(cluster,epoch_key,market_slot,observed_at,expires_at,market_state)
+VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,epoch_key) DO NOTHING RETURNING id`, cluster, record.Key, record.Slot, record.ObservedAt, record.ExpiresAt, record.State).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.pool.QueryRow(ctx, `SELECT id FROM loyal_yield.optimizer_epochs WHERE cluster=$1 AND epoch_key=$2`, cluster, record.Key).Scan(&id)
 	}
-	if err := decision.Validate(); err != nil {
-		return PublishResult{}, err
+	return id, err
+}
+
+// publishOne keeps, readmits or replaces one vault's move under the vault's
+// row lock, the same lock the claim's decision handoff serializes on.
+func (s *Store) publishOne(ctx context.Context, cluster string, epochID int64, record snapshotRecord, planned PlannedOpportunity) (int64, string, error) {
+	d := planned.Decision
+	if err := d.Validate(); err != nil {
+		return 0, "", err
 	}
-	if err := epoch.Validate(); err != nil {
-		return PublishResult{}, err
-	}
-	sourceMint, targetMint := decision.SourceMint, decision.TargetMint
-	if sourceMint == "" {
-		sourceMint = decision.Mint
-	}
-	if targetMint == "" {
-		targetMint = decision.Mint
-	}
-	sourceExpires, sourceComplete := epoch.MintExpiresAt(sourceMint)
-	targetExpires, targetComplete := epoch.MintExpiresAt(targetMint)
-	epochExpires := sourceExpires
-	if targetExpires.Before(epochExpires) {
-		epochExpires = targetExpires
-	}
-	if !sourceComplete || !targetComplete || time.Until(epochExpires) < minimumPublicationLifetime {
-		return PublishResult{Reason: "epoch_lifetime_too_short"}, nil
-	}
-	sourceEvidence, sourcePresent := epoch.Reserve(decision.SourceReserve)
-	targetEvidence, targetPresent := epoch.Reserve(decision.TargetReserve)
-	if !sourcePresent || !targetPresent || !targetEvidence.TargetEligible || sourceEvidence.LiquidityMint != sourceMint || targetEvidence.LiquidityMint != targetMint {
-		return PublishResult{}, fmt.Errorf("opportunity reserves are not covered by the complete immutable mint frontier")
-	}
-	durableEpoch := epoch.DurableEvidence()
-	marketState, err := json.Marshal(durableEpoch)
-	if err != nil {
-		return PublishResult{}, err
-	}
-	var planJSON json.RawMessage
-	if decision.RouteKind == "cross_mint_jupiter" {
-		planJSON, err = canonicalCrossMintExecutionPlan(position, decision, sourceEvidence.SupplyAPYBPS, targetEvidence.SupplyAPYBPS, targetEvidence.Slot, targetEvidence.ObservedAt)
-	} else {
-		planJSON, err = canonicalSameMintExecutionPlan(position, decision, sourceEvidence.SupplyAPYBPS, targetEvidence.SupplyAPYBPS, targetEvidence.Slot, targetEvidence.ObservedAt)
-	}
-	if err != nil {
-		return PublishResult{}, err
-	}
-	epochKey := durableEpoch.Fingerprint
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return PublishResult{}, err
+		return 0, "", err
 	}
 	defer tx.Rollback(ctx)
-	// This is the same per-vault publication mutex used by the Rust queue API.
-	// The cutover still requires stop-then-start singleton operation, while this
-	// row lock, economic idempotency key, and active-opportunity slot make each
-	// durable admission atomic without planner-specific persistence.
 	var vaultActive bool
-	err = tx.QueryRow(ctx, `SELECT active FROM loyal_yield.managed_vaults WHERE id=$1 FOR UPDATE`, decision.VaultID).Scan(&vaultActive)
+	err = tx.QueryRow(ctx, `SELECT active FROM loyal_yield.managed_vaults WHERE id=$1 FOR UPDATE`, d.VaultID).Scan(&vaultActive)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && !vaultActive {
-		return PublishResult{}, fmt.Errorf("cannot queue opportunity for missing or inactive vault %d", decision.VaultID)
+		return 0, "inactive_vault", tx.Commit(ctx)
 	}
 	if err != nil {
-		return PublishResult{}, err
+		return 0, "", err
 	}
-	var epochID int64
-	var evidenceMatches bool
-	if err := tx.QueryRow(ctx, `
-WITH inserted AS (
-  INSERT INTO loyal_yield.optimizer_epochs (cluster,epoch_key,market_slot,observed_at,expires_at,market_state)
-  VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (cluster,epoch_key) DO NOTHING
-  RETURNING id,market_slot,observed_at,expires_at,market_state
-), candidate AS (
-  SELECT id,market_slot,observed_at,expires_at,market_state FROM inserted
-  UNION ALL
-  SELECT id,market_slot,observed_at,expires_at,market_state
-  FROM loyal_yield.optimizer_epochs
-  WHERE cluster=$1 AND epoch_key=$2 AND NOT EXISTS (SELECT 1 FROM inserted)
-)
-SELECT id, market_slot=$3 AND observed_at=$4 AND expires_at=$5 AND market_state=$6::jsonb
-FROM candidate LIMIT 1`, cluster, epochKey, *durableEpoch.MaximumMarketSlot, durableEpoch.CapturedAt, durableEpoch.OptimizerEnvelopeExpiresAt(), marketState).Scan(&epochID, &evidenceMatches); err != nil {
-		return PublishResult{}, err
+	type row struct {
+		id                    int64
+		state, source, target string
+		routeKind             string
+		unclaimed, fresh, alt bool
 	}
-	if !evidenceMatches {
-		return PublishResult{}, fmt.Errorf("optimizer epoch key is stored under different immutable evidence")
-	}
-	key := opportunityIdentity(cluster, epochID, decision, planJSON, epochExpires)
-	var existingID int64
-	var existingState string
-	var altSatisfied bool
-	err = tx.QueryRow(ctx, `
-SELECT opportunity.id,opportunity.opportunity_state,
+	rows, err := tx.Query(ctx, `
+SELECT o.id,o.opportunity_state,COALESCE(o.source_reserve,''),o.target_reserve,COALESCE(o.execution_plan->>'route_kind',''),
+       `+unclaimedSQL+`, o.expires_at>clock_timestamp()+interval '`+keepMargin+`',
        EXISTS (
-         SELECT 1
-         FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
-         JOIN loyal_yield.lookup_table_provisioning_requests request
-           ON request.id=consumer.provisioning_request_id
-         WHERE consumer.opportunity_id=opportunity.id
-           AND request.cluster=opportunity.cluster
-           AND request.request_status='satisfied'
-           AND request.sealed_at IS NOT NULL
-           AND request.requirements_fingerprint=opportunity.requirements_fingerprint
-       )
-FROM loyal_yield.rebalance_opportunities opportunity
-WHERE opportunity.idempotency_key=$1
-FOR UPDATE`, key).Scan(&existingID, &existingState, &altSatisfied)
-	if err == nil {
-		reason := "rust_identity_duplicate"
-		// ALT completion is only a wakeup. This exact planner wave must select the
-		// same immutable opportunity identity before it becomes claimable again.
-		if existingState == "waiting_alt" && altSatisfied {
-			command, updateErr := tx.Exec(ctx, `
-UPDATE loyal_yield.rebalance_opportunities
-SET opportunity_state='revalidate',available_at=clock_timestamp(),
-    lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,terminal_reason=NULL,
-    updated_at=clock_timestamp()
-WHERE id=$1 AND opportunity_state='waiting_alt' AND optimizer_epoch_id=$2
-  AND expires_at>=clock_timestamp()+interval '60 seconds'`, existingID, epochID)
-			if updateErr != nil {
-				return PublishResult{}, updateErr
+         SELECT 1 FROM loyal_yield.lookup_table_provisioning_request_consumers consumer
+         JOIN loyal_yield.lookup_table_provisioning_requests request ON request.id=consumer.provisioning_request_id
+         WHERE consumer.opportunity_id=o.id AND request.cluster=o.cluster AND request.request_status='satisfied'
+           AND request.sealed_at IS NOT NULL AND request.requirements_fingerprint=o.requirements_fingerprint)
+FROM loyal_yield.rebalance_opportunities o
+WHERE o.cluster=$1 AND o.vault_id=$2 AND o.opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')
+FOR UPDATE OF o`, cluster, d.VaultID)
+	if err != nil {
+		return 0, "", err
+	}
+	var existing []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.state, &r.source, &r.target, &r.routeKind, &r.unclaimed, &r.fresh, &r.alt); err != nil {
+			rows.Close()
+			return 0, "", err
+		}
+		existing = append(existing, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, "", err
+	}
+	var deciding bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions WHERE vault_id=$1 AND status::text IN ('planned','simulating','ready','submitted','confirming'))`, d.VaultID).Scan(&deciding); err != nil {
+		return 0, "", err
+	}
+	stale := []int64{}
+	for _, r := range existing {
+		if !r.unclaimed {
+			deciding = true
+			continue
+		}
+		if r.fresh && r.source == d.SourceReserve && r.target == d.TargetReserve && r.routeKind == d.RouteKind {
+			outcome := "kept"
+			if r.state == "waiting_alt" && r.alt {
+				if _, err := tx.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',available_at=clock_timestamp(),terminal_reason=NULL,updated_at=clock_timestamp() WHERE id=$1`, r.id); err != nil {
+					return 0, "", err
+				}
+				outcome = "alt_readmitted"
 			}
-			if command.RowsAffected() == 1 {
-				reason = "alt_readmitted"
-			}
+			return r.id, outcome, tx.Commit(ctx)
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return PublishResult{}, err
+		stale = append(stale, r.id)
+	}
+	if deciding {
+		return 0, "active_work", tx.Commit(ctx)
+	}
+	if len(stale) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='superseded',terminal_reason='replanned',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=ANY($1::bigint[])`, stale); err != nil {
+			return 0, "", err
 		}
-		return PublishResult{OpportunityID: existingID, EpochID: epochID, Reason: reason}, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return PublishResult{}, err
-	}
-	var active bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.rebalance_opportunities WHERE cluster=$1 AND vault_id=$2 AND opportunity_state IN ('waiting_alt','revalidate','ready','leased','decision_created')) OR EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions WHERE vault_id=$2 AND status::text IN ('planned','simulating','ready','submitted','confirming'))`, cluster, decision.VaultID).Scan(&active); err != nil {
-		return PublishResult{}, err
-	}
-	if active {
-		if err := tx.Commit(ctx); err != nil {
-			return PublishResult{}, err
+		if _, err := tx.Exec(ctx, `DELETE FROM loyal_yield.route_account_conflict_leases WHERE opportunity_id=ANY($1::bigint[]) AND submission_id IS NULL`, stale); err != nil {
+			return 0, "", err
 		}
-		return PublishResult{EpochID: epochID, Reason: "active_work"}, nil
 	}
-	var opportunityID int64
+	sourceMint, targetMint := d.SourceMint, d.TargetMint
+	key := opportunityIdentity(cluster, epochID, d, planned.ExecutionPlan, record.ExpiresAt)
+	var id int64
 	err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.rebalance_opportunities
 (cluster,idempotency_key,rediscovery_key,attempt_generation,vault_id,source_snapshot_id,optimizer_epoch_id,source_reserve,target_reserve,liquidity_mint,source_liquidity_mint,target_liquidity_mint,amount_raw,principal_usd_micros,source_apy_bps,target_apy_bps,estimated_edge_bps,estimated_cost_lamports,annual_yield_gain_usd_micros,expected_net_gain_usd_micros,economic_priority,priority_version,operation_class,opportunity_state,execution_plan,available_at,expires_at)
-VALUES ($1,$2,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'lost-yield-service-net-reserve-capacity-v3','yield_optimization','revalidate',$20,clock_timestamp(),$21) RETURNING id`, cluster, key, decision.VaultID, decision.SourceSnapshotID, epochID, decision.SourceReserve, decision.TargetReserve, targetMint, sourceMint, targetMint, decision.AmountRaw, decision.PrincipalUSDMicros, decision.SourceAPYBPS, decision.TargetAPYBPS, decision.EdgeBPS, decision.EstimatedCostLamports, decision.AnnualYieldGainUSDMicros, decision.ExpectedNetGainUSDMicros, decision.EconomicPriority, planJSON, epochExpires).Scan(&opportunityID)
+VALUES ($1,$2,$2,1,$3,NULL,$4,$5,$6,$7,$8,$7,$9,$10,$11,$12,$13,$14,$15,$16,$17,'lost-yield-service-net-reserve-capacity-v3','yield_optimization','revalidate',$18,clock_timestamp(),$19) RETURNING id`,
+		cluster, key, d.VaultID, epochID, d.SourceReserve, d.TargetReserve, targetMint, sourceMint, d.AmountRaw, d.PrincipalUSDMicros, d.SourceAPYBPS, d.TargetAPYBPS, d.EdgeBPS, d.EstimatedCostLamports, d.AnnualYieldGainUSDMicros, d.ExpectedNetGainUSDMicros, d.EconomicPriority, planned.ExecutionPlan, record.ExpiresAt).Scan(&id)
 	if err != nil {
-		return PublishResult{}, err
+		return 0, "", err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return PublishResult{}, err
-	}
-	return PublishResult{Inserted: true, OpportunityID: opportunityID, EpochID: epochID, Reason: "published"}, nil
+	return id, "published", tx.Commit(ctx)
 }

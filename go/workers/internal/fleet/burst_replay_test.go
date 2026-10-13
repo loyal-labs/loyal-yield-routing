@@ -5,22 +5,68 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
+	"sort"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
 )
 
 // replayFixture is a recorded production planning input: one Rust-era
-// optimizer epoch and the vaults Rust published moves for from it.
+// optimizer epoch's USDC reserves and the 128 vaults Rust published moves
+// for from it.
 type replayFixture struct {
-	Provenance      string               `json:"provenance"`
-	SourceReserve   string               `json:"sourceReserve"`
-	TargetReserve   string               `json:"targetReserve"`
-	AmountSemantics string               `json:"amountSemantics"`
-	PolicyMarkets   []string             `json:"policyMarkets"`
-	Epoch           ImmutableMarketEpoch `json:"epoch"`
+	SourceReserve string   `json:"sourceReserve"`
+	TargetReserve string   `json:"targetReserve"`
+	PolicyMarkets []string `json:"policyMarkets"`
+	Epoch         struct {
+		Reserves []struct {
+			Reserve                string  `json:"reserve"`
+			Market                 string  `json:"market"`
+			LiquidityMint          string  `json:"liquidityMint"`
+			Slot                   int64   `json:"slot"`
+			ReserveLastUpdateSlot  int64   `json:"reserveLastUpdateSlot"`
+			EconomicSlotLag        int64   `json:"economicSlotLag"`
+			ReserveLastUpdateStale bool    `json:"reserveLastUpdateStale"`
+			SupplyAPYBPS           int64   `json:"supplyApyBps"`
+			TotalSupplyUSDMicros   int64   `json:"totalSupplyUsdMicros"`
+			AvailableAmountRaw     string  `json:"availableAmountRaw"`
+			DepositLimitRaw        *string `json:"depositLimitRaw"`
+			AccountDataHash        string  `json:"accountDataHash"`
+		} `json:"reserves"`
+	} `json:"epoch"`
 	// Positions are [amount_raw, source observed slot, Rust planning cycle].
 	Positions [][3]int64 `json:"positions"`
+}
+
+type replayGolden struct {
+	Cycles []struct {
+		Cycle     int64            `json:"cycle"`
+		Decisions []replayDecision `json:"decisions"`
+		// Rejections and Movable are what the durable-epoch path reported.
+		Rejections map[string]int   `json:"rejectionCounts"`
+		Movable    map[string]int64 `json:"movable"`
+	} `json:"cycles"`
+}
+
+type replayDecision struct {
+	VaultID                  int64  `json:"vaultId"`
+	RouteKind                string `json:"routeKind"`
+	SourceReserve            string `json:"sourceReserve"`
+	TargetReserve            string `json:"targetReserve"`
+	Mint                     string `json:"mint"`
+	AmountRaw                int64  `json:"amountRaw"`
+	PrincipalUSDMicros       int64  `json:"principalUsdMicros"`
+	SourceAPYBPS             int64  `json:"sourceApyBps"`
+	TargetAPYBPS             int64  `json:"targetApyBps"`
+	EdgeBPS                  int64  `json:"edgeBps"`
+	AnnualYieldGainUSDMicros int64  `json:"annualYieldGainUsdMicros"`
+	ExpectedNetGainUSDMicros int64  `json:"expectedNetGainUsdMicros"`
+	EconomicPriority         int64  `json:"economicPriority"`
+	EstimatedCostLamports    int64  `json:"estimatedCostLamports"`
+	TargetCapacityUSDMicros  int64  `json:"targetCapacityUsdMicros"`
 }
 
 func syntheticPubkey(kind string, n int) string {
@@ -29,12 +75,14 @@ func syntheticPubkey(kind string, n int) string {
 }
 
 // On 2026-10-07 at 23:47:58Z the Rust planner published 128 moves from
-// AYL4LM to D6q6wu (source 18.72% vs target 33.34% supply APY) in two cycles
-// of 64, the per-reserve writable-conflict limit. Planning the same epoch and
-// vaults through Go must select the same direction and count, cycle by cycle;
-// a Go planner that stays silent on this input is a planning regression, not
-// a quiet market.
-func TestPlanFleetReplaysBurst20261007(t *testing.T) {
+// AYL4LM to D6q6wu (18.72% vs 33.34% supply APY) in two cycles of 64, the
+// per-reserve writable-conflict limit. The durable-epoch Go path planned the
+// same moves; its decisions are recorded in burst-2026-10-07.decisions.json.
+// The same facts, as one snapshot holds them (each reserve's state as its
+// account decodes at the recorded slot, each vault's collateral in its
+// obligation, a policy delegating to the planner), must plan exactly those
+// decisions through the registry and snapshot path.
+func TestSnapshotPlannerReplaysTheDurableEpochDecisions(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/fleet/burst-2026-10-07.json")
 	if err != nil {
 		t.Fatal(err)
@@ -43,78 +91,96 @@ func TestPlanFleetReplaysBurst20261007(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	epoch := fixture.Epoch
-	if err := epoch.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	addresses, err := epoch.RoutableReserveAddresses()
+	raw, err = os.ReadFile("../../testdata/fleet/burst-2026-10-07.decisions.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := marketSnapshotFromEpoch(epoch, addresses...)
-	if err != nil {
+	var golden replayGolden
+	if err := json.Unmarshal(raw, &golden); err != nil {
 		t.Fatal(err)
 	}
-	snapshot.ExpiresAt = epoch.ExpiresAt
-	source, ok := epoch.Reserve(fixture.SourceReserve)
-	if !ok || source.Market == nil {
-		t.Fatal("source reserve is absent from the epoch")
-	}
-	// Allowed targets as LoadMigratedFleet derives them from the policy.
-	var allowed []string
-	for _, reserve := range epoch.Reserves {
-		if reserve.LiquidityMint == source.LiquidityMint && reserve.Market != nil && contains(fixture.PolicyMarkets, *reserve.Market) && reserve.TargetEligible {
-			allowed = append(allowed, reserve.Reserve)
-		}
-	}
-	vaults := make([]FleetVault, 0, len(fixture.Positions))
-	rustCycle := map[int64]int64{}
-	for i, p := range fixture.Positions {
-		n := i + 1
-		rustCycle[int64(n)] = p[2]
-		vaults = append(vaults, FleetVault{
-			Position: VaultPosition{
-				VaultID: int64(n), Settings: syntheticPubkey("settings", n), VaultIndex: 1, VaultPubkey: syntheticPubkey("vault", n),
-				PolicyID: int64(n), PolicyAuthority: syntheticPubkey("authority", n), PolicyAccount: syntheticPubkey("policy", n),
-				SourceReserve: source.Reserve, Market: *source.Market, Mint: source.LiquidityMint,
-				AmountRaw: p[0], SourceCollateralAmountRaw: p[0], SourceAmountSemantics: fixture.AmountSemantics,
-				SnapshotID: int64(1000 + n), ObservedSlot: p[1], ObservedAt: epoch.CapturedAt,
-			},
-			AllowedTargets: allowed,
-		})
-	}
-	// LoadMigratedFleet withholds a vault with a live opportunity, so the
-	// second cycle plans the vaults the first left behind.
-	selected := 0
-	for cycle := int64(1); cycle <= 2; cycle++ {
-		plan, err := PlanFleet(snapshot, vaults)
+	const slotsPerSecond, signer = 2.5, "planner-signer"
+	snapshot := Snapshot{ObservedAt: time.Now().UTC(), Reserves: map[string]ReserveState{}, Vaults: map[string]VaultFacts{}}
+	var catalog []ReserveIdentity
+	for _, r := range fixture.Epoch.Reserves {
+		identity := ReserveIdentity{Address: r.Reserve, Market: r.Market, Mint: r.LiquidityMint}
+		catalog = append(catalog, identity)
+		available, err := strconv.ParseInt(r.AvailableAmountRaw, 10, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
+		state := ReserveState{ReserveIdentity: identity, Slot: r.Slot, ObservedAt: snapshot.ObservedAt, LastUpdateSlot: r.ReserveLastUpdateSlot,
+			LastUpdateStale: r.ReserveLastUpdateStale, EconomicSlotLag: r.EconomicSlotLag, SupplyAPYBPS: r.SupplyAPYBPS,
+			TotalSupplyUSDMicros: r.TotalSupplyUSDMicros, DataHash: r.AccountDataHash, AvailableLiquidityRaw: &available}
+		// DecodeKaminoReserve's lifetime: the slots left of the 1500-slot lag.
+		state.EconomicLifetimeMillis = int64(float64(max(maximumEconomicSlotLag-r.EconomicSlotLag, 0)) / slotsPerSecond * 1000)
+		if r.DepositLimitRaw != nil {
+			limit, err := strconv.ParseUint(*r.DepositLimitRaw, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.DepositLimitRaw = &limit
+		}
+		snapshot.Reserves[r.Reserve] = state
+		snapshot.Slot = max(snapshot.Slot, r.Slot)
+	}
+	source := snapshot.Reserves[fixture.SourceReserve]
+	var registry []RegisteredVault
+	for i, p := range fixture.Positions {
+		n := i + 1
+		v := RegisteredVault{VaultID: int64(n), Settings: syntheticPubkey("settings", n), VaultPubkey: syntheticPubkey("vault", n),
+			PolicyID: int64(n), PolicyAuthority: syntheticPubkey("authority", n), PolicyAccount: syntheticPubkey("policy", n),
+			Markets: fixture.PolicyMarkets, StableMints: []string{USDCMint}, KaminoMints: []string{USDCMint}}
+		registry = append(registry, v)
+		// The recorded amount is both the collateral and what it redeems.
+		snapshot.Vaults[v.VaultPubkey] = VaultFacts{Policy: &DecodedSquadsPolicy{Settings: v.Settings, DelegatedSigners: []string{signer}},
+			Holdings: []Holding{{Reserve: source.Address, Market: source.Market, Mint: source.Mint, CollateralRaw: uint64(p[0]), LiquidityRaw: uint64(p[0])}}}
+	}
+	if len(golden.Cycles) != 2 {
+		t.Fatalf("golden has %d cycles", len(golden.Cycles))
+	}
+	options := FleetLoadOptions{DelegatedSigner: signer}
+	record, err := recordOf(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range golden.Cycles {
+		vaults, err := PlanningVaults(snapshot, catalog, registry, nil, nil, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := PlanFleet(snapshot.Market(record.Key), vaults)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []replayDecision
 		chosen := map[int64]bool{}
 		for _, o := range plan.Opportunities {
 			d := o.Decision
-			if d.SourceReserve != fixture.SourceReserve || d.TargetReserve != fixture.TargetReserve || d.RouteKind != "same_mint" {
-				t.Fatalf("cycle %d vault %d moves %s -> %s (%s), Rust moved %s -> %s", cycle, d.VaultID, d.SourceReserve, d.TargetReserve, d.RouteKind, fixture.SourceReserve, fixture.TargetReserve)
-			}
-			if rustCycle[d.VaultID] != cycle {
-				t.Errorf("cycle %d selected vault %d, which Rust published in cycle %d", cycle, d.VaultID, rustCycle[d.VaultID])
-			}
 			chosen[d.VaultID] = true
+			got = append(got, replayDecision{d.VaultID, d.RouteKind, d.SourceReserve, d.TargetReserve, d.Mint, d.AmountRaw, d.PrincipalUSDMicros, d.SourceAPYBPS, d.TargetAPYBPS, d.EdgeBPS, d.AnnualYieldGainUSDMicros, d.ExpectedNetGainUSDMicros, d.EconomicPriority, d.EstimatedCostLamports, d.TargetCapacityUSDMicros})
 		}
-		if len(chosen) != 64 {
-			t.Fatalf("cycle %d selected %d moves, Rust published 64; rejections %v", cycle, len(chosen), rejectionCounts(plan.Rejections))
+		sort.Slice(got, func(i, j int) bool { return got[i].VaultID < got[j].VaultID })
+		if !reflect.DeepEqual(got, want.Decisions) {
+			t.Fatalf("cycle %d: snapshot planner decided\n%+v\ndurable-epoch path decided\n%+v", want.Cycle, got, want.Decisions)
 		}
-		selected += len(chosen)
-		remaining := vaults[:0:0]
-		for _, vault := range vaults {
-			if !chosen[vault.Position.VaultID] {
-				remaining = append(remaining, vault)
+		if counts := rejectionCounts(plan.Rejections); !reflect.DeepEqual(counts, want.Rejections) {
+			t.Fatalf("cycle %d rejections %v, durable-epoch path %v", want.Cycle, counts, want.Rejections)
+		}
+		if !reflect.DeepEqual(plan.Movable, want.Movable) {
+			t.Fatalf("cycle %d movable %v, durable-epoch path %v", want.Cycle, plan.Movable, want.Movable)
+		}
+		// The executor holds the chosen vaults' moves; the next cycle plans
+		// the rest.
+		remaining := registry[:0:0]
+		for _, v := range registry {
+			if !chosen[v.VaultID] {
+				remaining = append(remaining, v)
 			}
 		}
-		vaults = remaining
+		registry = remaining
 	}
-	if selected != len(fixture.Positions) {
-		t.Fatalf("Go selected %d moves over two cycles, Rust published %d", selected, len(fixture.Positions))
+	if len(registry) != 0 {
+		t.Fatalf("%d vaults were never moved; Rust moved all %d", len(registry), len(fixture.Positions))
 	}
 }

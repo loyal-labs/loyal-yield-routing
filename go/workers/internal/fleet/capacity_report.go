@@ -35,12 +35,10 @@ type ReserveCapacity struct {
 }
 
 // capacityReport builds the per-reserve capacity lines, ordered by reserve.
-func capacityReport(epoch ImmutableMarketEpoch, snapshot MarketSnapshot, vaults []FleetVault, plan FleetPlan) []ReserveCapacity {
+func capacityReport(snapshot MarketSnapshot, vaults []FleetVault, inflight map[string]int64, plan FleetPlan) []ReserveCapacity {
 	committed := map[string]int64{}
-	if len(vaults) > 0 {
-		for reserve, value := range vaults[0].CommittedInflows {
-			committed[reserve] = value
-		}
+	for reserve, value := range inflight {
+		committed[reserve] = value
 	}
 	for _, opportunity := range plan.Opportunities {
 		committed[opportunity.Decision.TargetReserve] += opportunity.Decision.PrincipalUSDMicros
@@ -61,12 +59,12 @@ func capacityReport(epoch ImmutableMarketEpoch, snapshot MarketSnapshot, vaults 
 	}
 	report := make([]ReserveCapacity, 0, len(lines))
 	for _, line := range lines {
-		for _, candidate := range epoch.Reserves {
-			if !candidate.TargetEligible || candidate.LiquidityMint != line.Mint || candidate.Reserve == line.Reserve || candidate.SupplyAPYBPS <= line.APYBPS {
+		for _, candidate := range snapshot.Reserves {
+			if !candidate.TargetEligible() || candidate.Mint != line.Mint || candidate.Address == line.Reserve || candidate.SupplyAPYBPS <= line.APYBPS {
 				continue
 			}
-			if line.Best == "" || candidate.SupplyAPYBPS > line.BestAPYBPS || candidate.SupplyAPYBPS == line.BestAPYBPS && candidate.Reserve < line.Best {
-				line.Best, line.BestAPYBPS = candidate.Reserve, candidate.SupplyAPYBPS
+			if line.Best == "" || candidate.SupplyAPYBPS > line.BestAPYBPS || candidate.SupplyAPYBPS == line.BestAPYBPS && candidate.Address < line.Best {
+				line.Best, line.BestAPYBPS = candidate.Address, candidate.SupplyAPYBPS
 			}
 		}
 		if state, ok := snapshot.Reserves[line.Best]; ok {

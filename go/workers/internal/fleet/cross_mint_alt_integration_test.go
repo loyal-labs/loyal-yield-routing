@@ -7,9 +7,54 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func crossMintCapacityFixtureStore(t *testing.T) (*Store, context.Context) {
+	t.Helper()
+	dsn := os.Getenv("FLEET_TEST_CROSS_MINT_CAPTURE_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("requires root-registered disposable cross-mint capture database")
+	}
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme != "postgresql" || u.Hostname() != "127.0.0.1" || !registeredFleetFixturePort(u.Port()) || u.Path != "/fleet_cross_mint_capture" || u.User == nil || u.User.Username() != "workers_v2" || u.Fragment != "" {
+		t.Fatal("requires registered loopback workers_v2 /fleet_cross_mint_capture before connecting")
+	}
+	if _, present := u.User.Password(); present {
+		t.Fatal("disposable fixture cannot contain credentials")
+	}
+	for key, values := range u.Query() {
+		if key != "sslmode" || len(values) != 1 || values[0] != "disable" {
+			t.Fatal("unregistered database connection option")
+		}
+	}
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 2
+	config.ConnConfig.RuntimeParams["statement_timeout"] = "10000"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err = pool.Ping(ctx); err != nil {
+		t.Fatal("configured registered capture database unavailable:", err)
+	}
+	store, err := NewStoreFromPool(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, ctx
+}
 
 // Registered SQL proof only: the typed source builder and concrete reader use
 // synthetic chain account bytes. No SVM, provider or finalized-chain claim.

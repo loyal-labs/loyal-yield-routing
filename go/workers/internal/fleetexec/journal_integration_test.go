@@ -84,7 +84,7 @@ func integrationStore(t *testing.T) (*Store, *pgxpool.Pool) {
 
 // seededBaseline is the actual registered baseline relationship chain one
 // signed submission hangs from: policy → vault → snapshot → optimizer epoch
-// → opportunity → decision → capacity frontier + reservation.
+// → opportunity → decision.
 type seededBaseline struct {
 	Cluster       string
 	SemanticKey   string
@@ -138,7 +138,7 @@ func rotateSeed(seed byte, offset byte) []byte {
 
 func seedBaseline(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix string, clusters ...string) seededBaseline {
 	t.Helper()
-	var policyID, vaultID, snapshotID, epochID, opportunityID, decisionID, reservationID int64
+	var policyID, vaultID, snapshotID, epochID, opportunityID, decisionID int64
 	err := pool.QueryRow(ctx, `INSERT INTO loyal_yield.route_policies(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,delegated_signers,threshold,route_modes,stable_mints,kamino_markets,kamino_liquidity_mints,swap_lanes,active,last_seen_slot,last_seen_signature) VALUES($1,$2,1,$3,0,$4,ARRAY[$2]::text[],1,ARRAY['same_mint_kamino']::text[],ARRAY['usdc']::text[],ARRAY[$6]::text[],ARRAY['usdc']::text[],'[]',true,999,$5) RETURNING id`,
 		"settings:"+suffix, "authority:"+suffix, "policy:"+suffix, "vault:"+suffix, "signature:"+suffix, "market:"+suffix).Scan(&policyID)
 	if err != nil {
@@ -165,14 +165,6 @@ func seedBaseline(t *testing.T, ctx context.Context, pool *pgxpool.Pool, suffix 
 		cluster, "opportunity:"+suffix, vaultID, snapshotID, epochID, reserve, mint, decisionID).Scan(&opportunityID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.target_capacity_frontiers(cluster,target_reserve,liquidity_mint,observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros) VALUES($1,$2,$3,1000000000,500,900000000) ON CONFLICT (cluster,target_reserve,liquidity_mint) DO NOTHING`, cluster, reserve, mint); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `INSERT INTO loyal_yield.target_capacity_reservations(cluster,target_reserve,liquidity_mint,opportunity_id,decision_id,principal_usd_micros,admitted_observed_supply_usd_micros,admitted_observed_slot,admitted_maximum_inflight_usd_micros,admitted_telemetry_version,reservation_generation,admitted_observed_target_apy_bps,admitted_projected_target_apy_bps,admitted_source_apy_bps,admitted_edge_bps,admitted_net_holding_gain_usd_micros,admitted_fee_cap_lamports,reservation_fencing_token) VALUES($1,$2,$3,$4,$5,1000000,1000000000,500,900000000,1,1,900,800,100,700,100,1000,1) RETURNING id`,
-		cluster, reserve, mint, opportunityID, decisionID).Scan(&reservationID); err != nil {
-		t.Fatal(err)
-	}
-	_ = reservationID
 	return seededBaseline{
 		Cluster: cluster, SemanticKey: "semantic:" + suffix,
 		OpportunityID: opportunityID, DecisionID: decisionID, EpochID: epochID,
@@ -450,14 +442,15 @@ func TestExpiredRouteIsTerminalAndReleasesItsReservations(t *testing.T) {
 	if state != string(StateExpired) || count != 1 || height == nil || *height != 4_001 || effectSlot != nil {
 		t.Fatalf("expired row state = %s count = %d height = %v slot = %v", state, count, height, effectSlot)
 	}
-	var reservation, opportunity, decision string
+	var opportunity, decision string
 	var conflicts int
-	if err := pool.QueryRow(ctx, `SELECT r.reservation_state,o.opportunity_state,d.status::text,(SELECT count(*) FROM loyal_yield.route_account_conflict_leases WHERE submission_id=$2)
- FROM loyal_yield.target_capacity_reservations r JOIN loyal_yield.rebalance_opportunities o ON o.id=r.opportunity_id JOIN loyal_yield.rebalance_decisions d ON d.id=o.decision_id WHERE r.opportunity_id=$1`, baseline.OpportunityID, id).Scan(&reservation, &opportunity, &decision, &conflicts); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT o.opportunity_state,d.status::text,(SELECT count(*) FROM loyal_yield.route_account_conflict_leases WHERE submission_id=$2)
+ FROM loyal_yield.rebalance_opportunities o JOIN loyal_yield.rebalance_decisions d ON d.id=o.decision_id WHERE o.id=$1`, baseline.OpportunityID, id).Scan(&opportunity, &decision, &conflicts); err != nil {
 		t.Fatal(err)
 	}
-	if reservation != "released" || opportunity != "failed" || decision != "failed" || conflicts != 0 {
-		t.Fatalf("expiry kept work alive: reservation=%s opportunity=%s decision=%s conflicts=%d", reservation, opportunity, decision, conflicts)
+	// The expired move is out of flight: its decision failed.
+	if opportunity != "failed" || decision != "failed" || conflicts != 0 {
+		t.Fatalf("expiry kept work alive: opportunity=%s decision=%s conflicts=%d", opportunity, decision, conflicts)
 	}
 }
 
@@ -556,47 +549,6 @@ func TestExpiryRequiresHeightBeyondBlockhashAndTelemetryIsStrictlyNewer(t *testi
 	if state != string(StateSigned) {
 		t.Fatalf("refused expiry changed state: %s", state)
 	}
-
-	// A reconciled movement's capacity waits for strictly newer telemetry:
-	// the slot-unit frontier observation gates the release, never a
-	// height/slot mix.
-	baseline2 := seedBaseline(t, ctx, pool, suffix+"-recon")
-	wire2, _ := integrationWire(t, 10)
-	input2 := fixturePersistInput(t, ctx, pool, baseline2, wire2)
-	input2.ConflictAccountKeys = []string{"vault-exclusive:" + suffix + "-recon", "fleet-shared-write-lane:" + suffix + "-recon"}
-	id2, _, err := store.PersistSignedRoute(ctx, input2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.rebalance_decisions SET status='confirmed',signature=$2,confirmed_slot=600,post_snapshot_id=source_snapshot_id WHERE id=$1`, baseline2.DecisionID, wire2.TransactionSignature); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET submission_state='reconciled', confirmed_slot=600, reconciled_slot=600, finalized_slot=600, finalized_at=clock_timestamp(),effect_credit_amount_raw=1000000,reconciled_effect='{"signature":"proof"}' WHERE id=$1`, id2); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.target_capacity_frontiers SET observed_slot=600 WHERE cluster=$1`, baseline2.Cluster); err != nil {
-		t.Fatal(err)
-	}
-	released, err := store.ReleaseTelemetryReflectedCapacity(ctx, baseline2.Cluster)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if released != 0 {
-		t.Fatalf("equal-slot telemetry released capacity early: %d", released)
-	}
-	var movementReserved bool
-	if err := pool.QueryRow(ctx, `SELECT reservation_state='awaiting_telemetry' FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, baseline2.OpportunityID).Scan(&movementReserved); err != nil {
-		t.Fatal(err)
-	}
-	if !movementReserved {
-		t.Fatalf("movement capacity must stay reserved until strictly newer telemetry")
-	}
-	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.target_capacity_frontiers SET observed_slot=601 WHERE cluster=$1`, baseline2.Cluster); err != nil {
-		t.Fatal(err)
-	}
-	if released, err = store.ReleaseTelemetryReflectedCapacity(ctx, baseline2.Cluster); err != nil || released != 1 {
-		t.Fatalf("strictly newer telemetry must release: released=%d err=%v", released, err)
-	}
 }
 
 func TestReceiptMismatchRetainsCustody(t *testing.T) {
@@ -625,13 +577,6 @@ func TestReceiptMismatchRetainsCustody(t *testing.T) {
 	if state != string(StateReconciliationPending) {
 		t.Fatalf("mismatch released custody: %s", state)
 	}
-	var reservation string
-	if err := pool.QueryRow(ctx, `SELECT reservation_state FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, baseline.OpportunityID).Scan(&reservation); err != nil {
-		t.Fatal(err)
-	}
-	if reservation != "active" {
-		t.Fatalf("mismatch released capacity: %s", reservation)
-	}
 }
 
 // finalizedStatus is a cluster whose finalized history holds receipt.
@@ -645,3 +590,43 @@ func (f *finalizedStatus) Receipt(context.Context, sdk.Signature, rpc.Commitment
 
 var _ = fleet.PreparedTransaction{}
 var _ = pgx.ErrNoRows
+
+// A signed move is in flight into its target until a snapshot slot holds
+// its route: a read before the confirmed slot must still count it, whatever
+// the decision's status is by the time the planner asks.
+func TestSignedMoveLeavesFlightAtItsConfirmedSlot(t *testing.T) {
+	store, pool := integrationStore(t)
+	ctx := context.Background()
+	b := seedBaseline(t, ctx, pool, fmt.Sprint(time.Now().UnixNano()))
+	wire, _ := integrationWire(t, 61)
+	id, _, err := store.PersistSignedRoute(ctx, fixturePersistInput(t, ctx, pool, b, wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inflight := func(slot, exclude int64) int64 {
+		t.Helper()
+		inflow, _, err := fleet.InflightFlows(ctx, pool, b.Cluster, slot, exclude)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return inflow[b.Reserve]
+	}
+	if got := inflight(1_000, 0); got != 1_000_000 {
+		t.Fatalf("signed move in flight %d, want its principal", got)
+	}
+	if got := inflight(1_000, b.OpportunityID); got != 0 {
+		t.Fatalf("excluded move counted: %d", got)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.rebalance_decisions SET status='confirmed',signature=$2,confirmed_slot=1005,post_snapshot_id=source_snapshot_id WHERE id=$1`, b.DecisionID, wire.TransactionSignature); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET submission_state='reconciled',confirmed_slot=1005,reconciled_slot=1005,finalized_slot=1005,finalized_at=clock_timestamp(),effect_credit_amount_raw=1000000,reconciled_effect='{"signature":"proof"}' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := inflight(1_004, 0); got != 1_000_000 {
+		t.Fatalf("a read before the confirmed slot lost the move: %d", got)
+	}
+	if got := inflight(1_005, 0); got != 0 {
+		t.Fatalf("a read holding the route still counts it: %d", got)
+	}
+}

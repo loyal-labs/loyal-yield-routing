@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -43,41 +44,38 @@ func TestLookupRequestSatisfiedOnlyByCurrentPublishedActualBanks(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	var position fleet.VaultPosition
-	position.VaultID = request.VaultID
-	if err = pool.QueryRow(ctx, `SELECT settings,vault_pubkey,active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1`, request.VaultID).Scan(&position.Settings, &position.VaultPubkey, &position.PolicyID); err != nil {
-		t.Fatal(err)
-	}
-	if err = pool.QueryRow(ctx, `INSERT INTO loyal_yield.vault_position_snapshots(vault_id,policy_id,observed_slot,observed_at,is_current,context) VALUES($1,$2,1000,$3,true,'{}') RETURNING id`, request.VaultID, position.PolicyID, now).Scan(&position.SnapshotID); err != nil {
-		t.Fatal(err)
-	}
-	position.ObservedAt, position.ObservedSlot = now, 1000
-	position.SourceAmountSemantics = "redeemable_liquidity_amount"
 	market := f.Addresses[2]
-	var catalog []fleet.SupportedReserveCatalogRow
-	var states []fleet.SupportedReserveStateRow
+	snapshot := fleet.Snapshot{Slot: 1000, ObservedAt: now, Reserves: map[string]fleet.ReserveState{}}
 	for n, reserve := range f.Addresses[:2] {
-		catalog = append(catalog, fleet.SupportedReserveCatalogRow{Market: market, LiquidityMint: fleet.USDCMint, Reserve: reserve, RiskBaskets: []string{"safe"}, Source: "kamino-api", FetchedAt: now})
-		states = append(states, fleet.SupportedReserveStateRow{StateEventID: int64(n + 1), AccountDataHash: strings.Repeat(string(rune('a'+n)), 64), StateObservedAt: now, StateSlot: 1000, Source: "laserstream_grpc", SourceCommitment: "confirmed", Reserve: reserve, Market: &market, LiquidityMint: fleet.USDCMint, MintDecimals: 6, ReserveLastUpdateSlot: 1000, AvailableAmount: 1e15, TotalSupplyAmount: 1e15, MarketPriceUSD: 1, SupplyAPY: float64(n+1) / 100})
+		snapshot.Reserves[reserve] = fleet.ReserveState{ReserveIdentity: fleet.ReserveIdentity{Address: reserve, Market: market, Mint: fleet.USDCMint}, Slot: 1000, ObservedAt: now, LastUpdateSlot: 1000,
+			SupplyAPYBPS: int64(n+1) * 100, TotalSupplyUSDMicros: 1e15, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat(string(rune('a'+n)), 64)}
 	}
-	epoch, err := fleet.BuildImmutableMarketEpoch(fleet.SupportedReserveMarketSnapshot{CapturedAt: now, Catalog: catalog, ReserveStates: states}, []string{fleet.USDCMint})
-	if err != nil {
+	decision := fleet.Decision{Eligible: true, RouteKind: "same_mint", VaultID: request.VaultID, MarketSlot: 1000, SourceReserve: f.Addresses[0], TargetReserve: f.Addresses[1], Mint: fleet.USDCMint, SourceMint: fleet.USDCMint, TargetMint: fleet.USDCMint, AmountRaw: 1000000, PrincipalUSDMicros: 1000000, SourceAPYBPS: 100, TargetAPYBPS: 200, EdgeBPS: 100, AnnualYieldGainUSDMicros: 10000, ExpectedNetGainUSDMicros: 1000, EconomicPriority: 1, EstimatedCostLamports: 5000, EstimatedCostUSDMicros: 100, HoldingHorizonSeconds: 2592000, ConfidencePPM: 1000000, SnapshotHash: "snapshot", ObservedAt: now}
+	planned := fleet.FleetPlan{Opportunities: []fleet.PlannedOpportunity{{Decision: decision, ExecutionPlan: json.RawMessage(`{"route_kind":"same_mint","source_kind":"reserve_position"}`)}}}
+	publish := func() (int64, fleet.PublishSummary) {
+		t.Helper()
+		summary, err := cStore.PublishPlan(ctx, "localnet", snapshot, planned)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var id int64
+		if err = pool.QueryRow(ctx, `SELECT id FROM loyal_yield.rebalance_opportunities WHERE cluster='localnet' AND vault_id=$1 AND opportunity_state IN ('revalidate','waiting_alt')`, request.VaultID).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id, summary
+	}
+	opportunity, first := publish()
+	if first.Published != 1 {
+		t.Fatal("initial publication", first)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='waiting_alt',requirements_fingerprint=$2,route_fingerprint=$2 WHERE id=$1`, opportunity, request.Fingerprint); err != nil {
 		t.Fatal(err)
 	}
-	decision := fleet.Decision{Eligible: true, RouteKind: "same_mint", VaultID: request.VaultID, SourceSnapshotID: position.SnapshotID, MarketSlot: 1000, SourceReserve: f.Addresses[0], TargetReserve: f.Addresses[1], Mint: fleet.USDCMint, AmountRaw: 1000000, PrincipalUSDMicros: 1000000, SourceAPYBPS: 100, TargetAPYBPS: 200, EdgeBPS: 100, AnnualYieldGainUSDMicros: 10000, ExpectedNetGainUSDMicros: 1000, EconomicPriority: 1, EstimatedCostLamports: 5000, EstimatedCostUSDMicros: 100, HoldingHorizonSeconds: 2592000, ConfidencePPM: 1000000, SnapshotHash: epoch.Fingerprint, ObservedAt: now}
-	opportunity, err := cStore.Publish(ctx, "localnet", epoch, position, decision)
-	if err != nil || !opportunity.Inserted {
-		t.Fatal("initial C publication", opportunity, err)
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='waiting_alt',requirements_fingerprint=$2,route_fingerprint=$2 WHERE id=$1`, opportunity.OpportunityID, request.Fingerprint); err != nil {
+	if _, err = pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_provisioning_request_consumers(opportunity_id,provisioning_request_id) VALUES($1,$2)`, opportunity, requestID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_provisioning_request_consumers(opportunity_id,provisioning_request_id) VALUES($1,$2)`, opportunity.OpportunityID, requestID); err != nil {
-		t.Fatal(err)
-	}
-	before, err := cStore.Publish(ctx, "localnet", epoch, position, decision)
-	if err != nil || before.OpportunityID != opportunity.OpportunityID || before.Reason == "alt_readmitted" {
-		t.Fatal("C woke before actual ALT satisfaction", before, err)
+	if before, summary := publish(); before != opportunity || summary.Kept != 1 || summary.Readmitted != 0 {
+		t.Fatal("planner woke the move before actual ALT satisfaction", before, summary)
 	}
 	planner, err := NewLookupPlanner(store, svm.rpc, LookupPlannerConfig{Cluster: "localnet", Owner: "satisfaction-plan", LeaseTTL: time.Minute, TickDeadline: 25 * time.Second, PollInterval: time.Second, CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16, Facts: testFacts()})
 	if err != nil {
@@ -117,12 +115,14 @@ func TestLookupRequestSatisfiedOnlyByCurrentPublishedActualBanks(t *testing.T) {
 	if status != "satisfied" {
 		t.Fatal("actual published catalog and binding did not satisfy request", status)
 	}
-	after, err := cStore.Publish(ctx, "localnet", epoch, position, decision)
-	if err != nil || after.OpportunityID != opportunity.OpportunityID || after.Reason != "alt_readmitted" {
-		t.Fatal("C did not wake identical opportunity after actual ALT satisfaction", after, err)
+	snapshot.ObservedAt = time.Now().UTC()
+	decision.ObservedAt = snapshot.ObservedAt
+	planned.Opportunities[0].Decision = decision
+	if after, summary := publish(); after != opportunity || summary.Readmitted != 1 {
+		t.Fatal("planner did not wake the identical move after actual ALT satisfaction", after, summary)
 	}
 	var awakened string
-	if err = pool.QueryRow(ctx, `SELECT opportunity_state FROM loyal_yield.rebalance_opportunities WHERE id=$1`, opportunity.OpportunityID).Scan(&awakened); err != nil || awakened != "revalidate" {
+	if err = pool.QueryRow(ctx, `SELECT opportunity_state FROM loyal_yield.rebalance_opportunities WHERE id=$1`, opportunity).Scan(&awakened); err != nil || awakened != "revalidate" {
 		t.Fatal("C wakeup state", awakened, err)
 	}
 	plan.OperationID = 0

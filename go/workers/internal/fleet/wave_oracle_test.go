@@ -243,7 +243,7 @@ func (w oracleWave) globalBest() ([]oracleMove, *big.Int, int) {
 
 func oracleSnapshot() MarketSnapshot {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
-	return MarketSnapshot{Slot: 500, ObservedAt: now, ExpiresAt: now.Add(10 * time.Minute), Hash: "oracle-bank", MintExpiresAt: map[string]time.Time{USDCMint: now.Add(10 * time.Minute), USDTMint: now.Add(10 * time.Minute)}, Reserves: map[string]ReserveState{}}
+	return MarketSnapshot{Slot: 500, ObservedAt: now, Hash: "oracle-bank", Reserves: map[string]ReserveState{}}
 }
 
 func oracleReserve(snapshot *MarketSnapshot, address, mint string, apy, supply int64) {
@@ -253,7 +253,7 @@ func oracleReserve(snapshot *MarketSnapshot, address, mint string, apy, supply i
 
 func oracleVault(snapshot MarketSnapshot, id int64, source string, amount int64, targets ...string) FleetVault {
 	r := snapshot.Reserves[source]
-	return FleetVault{Position: VaultPosition{VaultID: id, PolicyID: id, Settings: fmt.Sprintf("settings:%d", id), VaultPubkey: fmt.Sprintf("vault:%d", id), PolicyAuthority: fmt.Sprintf("tenant:%d", id%2), SourceReserve: source, Market: r.Market, Mint: r.Mint, AmountRaw: amount, SourceCollateralAmountRaw: amount, SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited, SnapshotID: 7, ObservedSlot: 499, ObservedAt: snapshot.ObservedAt}, AllowedTargets: targets}
+	return FleetVault{Position: VaultPosition{VaultID: id, PolicyID: id, Settings: fmt.Sprintf("settings:%d", id), VaultPubkey: fmt.Sprintf("vault:%d", id), PolicyAuthority: fmt.Sprintf("tenant:%d", id%2), SourceReserve: source, Market: r.Market, Mint: r.Mint, AmountRaw: amount, SourceCollateralAmountRaw: amount, SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited, ObservedSlot: 499, ObservedAt: snapshot.ObservedAt}, AllowedTargets: targets}
 }
 
 func checkWaveOracle(t *testing.T, w oracleWave) []oracleMove {

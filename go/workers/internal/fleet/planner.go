@@ -37,7 +37,7 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 		position, anchored = crossMintRecoveryAnchoredPosition(position)
 	}
 	decision := Decision{
-		Reason: "ineligible", RouteKind: routeKind, VaultID: position.VaultID, SourceSnapshotID: position.SnapshotID,
+		Reason: "ineligible", RouteKind: routeKind, VaultID: position.VaultID,
 		MarketSlot: snapshot.Slot, SourceReserve: sourceAddress, TargetReserve: targetAddress,
 		Mint: targetMint, SourceMint: position.Mint, TargetMint: targetMint, AmountRaw: position.AmountRaw, PrincipalUSDMicros: position.AmountRaw,
 		SnapshotHash: snapshot.Hash, ObservedAt: snapshot.ObservedAt,
@@ -56,9 +56,8 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 		source.Mint != position.Mint || !isEarnStableMint(source.Mint) {
 		return ineligible("identity_mismatch")
 	}
-	if position.VaultID <= 0 || position.AmountRaw <= 0 || position.SnapshotID <= 0 ||
-		(position.SourceAmountSemantics == amountSemanticsKaminoCollateralDeposited && position.SourceCollateralAmountRaw <= 0) ||
-		position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited && position.SourceAmountSemantics != amountSemanticsRedeemableLiquidity {
+	if position.VaultID <= 0 || position.AmountRaw <= 0 || position.SourceCollateralAmountRaw <= 0 ||
+		position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited {
 		return ineligible("unsupported_source_amount_evidence")
 	}
 	if position.AmountRaw < minimumNotionalUSDMicros {
@@ -348,7 +347,7 @@ func (d Decision) Validate() error {
 	if targetMint == "" {
 		targetMint = d.Mint
 	}
-	if d.VaultID <= 0 || d.SourceSnapshotID <= 0 || d.MarketSlot <= 0 || d.SourceReserve == "" || d.TargetReserve == "" || d.SourceReserve == d.TargetReserve ||
+	if d.VaultID <= 0 || d.MarketSlot <= 0 || d.SourceReserve == "" || d.TargetReserve == "" || d.SourceReserve == d.TargetReserve ||
 		!isEarnStableMint(sourceMint) || !isEarnStableMint(targetMint) || d.Mint != targetMint || d.AmountRaw <= 0 || d.PrincipalUSDMicros <= 0 || d.EdgeBPS <= 0 || d.ExpectedNetGainUSDMicros <= 0 || d.EconomicPriority <= 0 || d.SnapshotHash == "" || d.ObservedAt.IsZero() {
 		return fmt.Errorf("eligible decision evidence is incomplete")
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,9 +13,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
+
+type staticReserves struct{ market fleet.MarketSnapshot }
+
+func (s staticReserves) ReadReserves(context.Context) (fleet.MarketSnapshot, error) {
+	return s.market, nil
+}
 
 type fallbackFactory struct {
 	calls int
@@ -63,17 +67,18 @@ func crossMintFallbackFixture(t *testing.T, primaryEligible bool) (*CrossMintCon
 		primary.Data[24] = 1
 	}
 	bank.accounts[m.ActiveTargetReserve] = primary
-	var rows []fleet.MarketEpochReserve
+	reserves := fleet.MarketSnapshot{Slot: 1016, Reserves: map[string]fleet.ReserveState{}}
 	for i, a := range []chain.Account{primary, account} {
 		market, _, _, _, err := reservePostIdentity(&a, m.TargetMint, m.VaultPubkey)
 		if err != nil {
 			t.Fatal(err)
 		}
-		hash := sha256.Sum256(a.Data)
-		rows = append(rows, fleet.MarketEpochReserve{Reserve: a.Key.String(), Market: &market, LiquidityMint: m.TargetMint, SupplyAPYBPS: int64(100 + i*100), TargetEligible: i == 1 || primaryEligible, Slot: 1016, StateSlot: 1016, AccountDataHash: hex.EncodeToString(hash[:])})
+		eligible := i == 1 || primaryEligible
+		reserves.Reserves[a.Key.String()] = fleet.ReserveState{ReserveIdentity: fleet.ReserveIdentity{Address: a.Key.String(), Market: market, Mint: m.TargetMint}, Slot: 1016, LastUpdateSlot: 1016, LastUpdateStale: !eligible,
+			SupplyAPYBPS: int64(100 + i*100), TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 600_000}
 	}
 	c := &CrossMintController{store: r.store, factory: &fallbackFactory{err: ErrCrossMintTargetUnavailable}, cluster: m.Cluster, owner: r.config.Owner, ttl: time.Minute, accounts: bank, history: addressHistory{pages: map[string][]chain.Signed{ata: {{Signature: sdk.MustSignatureFromBase58(l.Submission.Signature), Slot: 1015}}}}}
-	c.SetMarketEpochSource(&fallbackEpochSource{epoch: fallbackEpochFixture(t, time.Now().UTC(), rows)})
+	c.SetReserveSource(staticReserves{reserves})
 	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.cross_mint_movement_controls SET start_new_movements=false,generation=generation+1 WHERE cluster=$1`, m.Cluster); err != nil {
 		t.Fatal(err)
 	}
@@ -96,14 +101,14 @@ func TestCrossMintAutomaticFallbackRebindsOnceWithStartsDisabledAndFreshFence(t 
 	if c.factory.(*fallbackFactory).calls != 0 {
 		t.Fatal("ineligible primary attempted signing preparation")
 	}
-	var reservation string
-	var reserve string
-	var principal int64
-	if err = pool.QueryRow(ctx, `SELECT reservation_state,target_reserve,principal_usd_micros FROM loyal_yield.target_capacity_reservations WHERE decision_id=$1`, m.DecisionID).Scan(&reservation, &reserve, &principal); err != nil || reservation != "active" || reserve != fallback || principal != 1000000000 {
-		t.Fatalf("capacity detached or economics reapplied: %s %s %d %v", reservation, reserve, principal, err)
+	// The fallback's room counts the movement's principal: it is in flight
+	// into the bound target until its deposit confirms.
+	inflow, _, err := fleet.InflightFlows(ctx, pool, m.Cluster, 1016, 0)
+	if err != nil || inflow[fallback] != 1000000000 || inflow[m.ActiveTargetReserve] != 0 {
+		t.Fatalf("bound target not in flight: %v %v", inflow, err)
 	}
 	// A new claim observes the bound target. Deterministic preparation failure
-	// holds there rather than oscillating capacity to another reserve.
+	// holds there rather than oscillating to another reserve.
 	if _, worked, err := c.ContinueOne(ctx); !worked || err == nil || !strings.Contains(err.Error(), "cannot rebind again") {
 		t.Fatalf("second fallback: %v %v", worked, err)
 	}
@@ -112,24 +117,14 @@ func TestCrossMintAutomaticFallbackRebindsOnceWithStartsDisabledAndFreshFence(t 
 	}
 }
 
-func TestCrossMintFallbackTransientPreparationAndChangedBankRetainOriginalCapacity(t *testing.T) {
-	for _, change := range []string{"transport", "reserve_hash", "external_custody_history"} {
+func TestCrossMintFallbackTransientPreparationAndChangedCustodyRetainTheTarget(t *testing.T) {
+	for _, change := range []string{"transport", "external_custody_history"} {
 		t.Run(change, func(t *testing.T) {
-			c, pool, m, _ := crossMintFallbackFixture(t, change == "transport")
+			c, _, m, _ := crossMintFallbackFixture(t, change == "transport")
 			ctx := context.Background()
 			switch change {
 			case "transport":
 				c.factory.(*fallbackFactory).err = errors.New("provider timeout")
-			case "reserve_hash":
-				bank := c.accounts.(fixtureAccounts)
-				for k, a := range bank.accounts {
-					if k != m.ActiveTargetReserve && a.Owner.String() == kamino.ProgramID.String() && len(a.Data) == 8624 {
-						a.Data = append([]byte(nil), a.Data...)
-						a.Data[224] ^= 1
-						bank.accounts[k] = a
-					}
-				}
-				c.accounts = bank
 			case "external_custody_history":
 				h := c.history.(addressHistory)
 				h.pages[m.CustodyAccount] = append([]chain.Signed{signed("external", 1016)}, h.pages[m.CustodyAccount]...)
@@ -141,10 +136,6 @@ func TestCrossMintFallbackTransientPreparationAndChangedBankRetainOriginalCapaci
 			actual, err := c.store.CrossMintMovement(ctx, m.DecisionID)
 			if err != nil || actual.ActiveTargetReserve != m.ActiveTargetReserve || actual.CustodyVersion != m.CustodyVersion {
 				t.Fatalf("failed proof changed movement: %+v %v", actual, err)
-			}
-			var reserve, state string
-			if err = pool.QueryRow(ctx, `SELECT target_reserve,reservation_state FROM loyal_yield.target_capacity_reservations WHERE decision_id=$1`, m.DecisionID).Scan(&reserve, &state); err != nil || reserve != m.ActiveTargetReserve || state != "active" {
-				t.Fatalf("failed proof released/rebound capacity: %s %s %v", reserve, state, err)
 			}
 		})
 	}
@@ -160,10 +151,6 @@ func TestCrossMintActivationRejectsUpgradedProofGenerationAndPreservesGeneration
 				initial = 0
 			}
 			a, _, input := seedCrossMintActivationWithControlGeneration(t, ctx, pool, initial)
-			var before int64
-			if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, a.Lease.OpportunityID).Scan(&before); err != nil {
-				t.Fatal(err)
-			}
 			if generation != 0 {
 				if _, err := pool.Exec(ctx, `UPDATE loyal_yield.cross_mint_movement_controls SET start_new_movements=false,generation=2 WHERE cluster=$1`, a.Lease.Cluster); err != nil {
 					t.Fatal(err)
@@ -183,9 +170,8 @@ func TestCrossMintActivationRejectsUpgradedProofGenerationAndPreservesGeneration
 				t.Fatal("revoked generation one proof upgraded to reenabled authority")
 			}
 			var decision *int64
-			var after int64
-			if err = pool.QueryRow(ctx, `SELECT decision_id,(SELECT count(*) FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=o.id) FROM loyal_yield.rebalance_opportunities o WHERE id=$1`, a.Lease.OpportunityID).Scan(&decision, &after); err != nil || decision != nil || after != before {
-				t.Fatalf("stale proof partially activated: %v %d %d %v", decision, before, after, err)
+			if err = pool.QueryRow(ctx, `SELECT decision_id FROM loyal_yield.rebalance_opportunities o WHERE id=$1`, a.Lease.OpportunityID).Scan(&decision); err != nil || decision != nil {
+				t.Fatalf("stale proof partially activated: %v %v", decision, err)
 			}
 		})
 	}

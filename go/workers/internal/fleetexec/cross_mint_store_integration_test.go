@@ -86,12 +86,6 @@ func seedCrossMintActivationWithControlGeneration(t *testing.T, ctx context.Cont
 	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.managed_vaults SET settings=$2 WHERE id=$1`, l.VaultID, settings); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Exec(ctx, `DELETE FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1 AND decision_id IS NULL AND signed_submission_id IS NULL`, l.OpportunityID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.target_capacity_frontiers SET liquidity_mint=$2,observed_supply_usd_micros=1000000000000,maximum_inflight_usd_micros=20000000000 WHERE cluster=$1`, l.Cluster, l.TargetLiquidityMint); err != nil {
-		t.Fatal(err)
-	}
 	if _, err = tx.Exec(ctx, `UPDATE loyal_yield.route_policies SET cluster=$2,source_commitment='finalized',finalized_eligible=true,stable_mints=ARRAY[$3,$4]::text[],kamino_liquidity_mints=ARRAY[$3,$4]::text[],settings=$5,policy_account=$6 WHERE id=(SELECT active_policy_id FROM loyal_yield.managed_vaults WHERE id=$1)`, l.VaultID, l.Cluster, l.SourceLiquidityMint, l.TargetLiquidityMint, settings, policy); err != nil {
 		t.Fatal(err)
 	}
@@ -116,11 +110,7 @@ func seedCrossMintActivationWithControlGeneration(t *testing.T, ctx context.Cont
 	if err = tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var projection CrossMintCapacityProjection
-	projection.Cluster, projection.TargetReserve, projection.LiquidityMint = l.Cluster, l.TargetReserve, l.TargetLiquidityMint
-	if err = pool.QueryRow(ctx, `SELECT observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros,telemetry_version FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, projection.Cluster, projection.TargetReserve, projection.LiquidityMint).Scan(&projection.ObservedSupplyUSDMicros, &projection.ObservedSlot, &projection.MaximumInflightUSDMicros, &projection.TelemetryVersion); err != nil {
-		t.Fatal(err)
-	}
+	projection := CrossMintCapacityProjection{Cluster: l.Cluster, TargetReserve: l.TargetReserve, LiquidityMint: l.TargetLiquidityMint, ObservedSupplyUSDMicros: 1_000_000_000_000, ObservedSlot: 999}
 	// The structurally complete certificate is deliberately fixture evidence.
 	// Hashes and simulation fields are not represented as chain verification.
 	policyProof := fleet.CrossMintCertificatePolicy{PolicyAccount: policy, ContextSlot: 999, DataSHA256: strings.Repeat("b", 64)}
@@ -148,9 +138,9 @@ func TestCrossMintActivationAndSignedPublicationRetainExistingFences(t *testing.
 	if _, err := store.ActivateCrossMintMovement(ctx, a.Lease, badCertificate); err == nil {
 		t.Fatal("activation accepted an incomplete certificate")
 	}
-	var premature int64
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.target_capacity_reservations WHERE opportunity_id=$1`, a.Lease.OpportunityID).Scan(&premature); err != nil || premature != 0 {
-		t.Fatalf("failed certification reserved capacity: %d %v", premature, err)
+	var premature *int64
+	if err := pool.QueryRow(ctx, `SELECT decision_id FROM loyal_yield.rebalance_opportunities WHERE id=$1`, a.Lease.OpportunityID).Scan(&premature); err != nil || premature != nil {
+		t.Fatalf("failed certification created a movement: %v %v", premature, err)
 	}
 	m, err := store.ActivateCrossMintMovement(ctx, a.Lease, input)
 	if err != nil {
@@ -189,12 +179,12 @@ func TestCrossMintActivationAndSignedPublicationRetainExistingFences(t *testing.
 		t.Fatal(err)
 	}
 	var saved []byte
-	var leg, required, reservation string
+	var leg, required string
 	var owner *string
-	if err = pool.QueryRow(ctx, `SELECT s.signed_transaction,s.movement_leg,s.required_commitment,r.reservation_state,d.continuation_lease_owner FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE s.id=$1`, id).Scan(&saved, &leg, &required, &reservation, &owner); err != nil {
+	if err = pool.QueryRow(ctx, `SELECT s.signed_transaction,s.movement_leg,s.required_commitment,d.continuation_lease_owner FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&saved, &leg, &required, &owner); err != nil {
 		t.Fatal(err)
 	}
-	if string(saved) != string(wire.SignedTransaction) || leg != LegWithdraw || required != "finalized" || reservation != "active" || owner != nil {
+	if string(saved) != string(wire.SignedTransaction) || leg != LegWithdraw || required != "finalized" || owner != nil {
 		t.Fatal("signed movement publication lost bytes, finality or ownership")
 	}
 	if _, err = store.AppendCrossMintLeg(ctx, *l, r, p, wire); !errors.Is(err, ErrStaleOwner) {
@@ -248,12 +238,11 @@ func TestCrossMintSignedAppendRejectsChangedAdmissionWithoutPartialPublication(t
 				t.Fatalf("changed %s published", change)
 			}
 			var count, version int64
-			var state string
-			if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE decision_id=d.id),d.custody_version,r.reservation_state FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE d.id=$1`, m.DecisionID).Scan(&count, &version, &state); err != nil {
+			if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE decision_id=d.id),d.custody_version FROM loyal_yield.rebalance_decisions d WHERE d.id=$1`, m.DecisionID).Scan(&count, &version); err != nil {
 				t.Fatal(err)
 			}
-			if count != 0 || version != 0 || state != "active" {
-				t.Fatalf("partial failed append: signed=%d custody=%d capacity=%s", count, version, state)
+			if count != 0 || version != 0 {
+				t.Fatalf("partial failed append: signed=%d custody=%d", count, version)
 			}
 			if err = pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.lookup_table_usage_leases WHERE reference_key=$1`, crossMintSemantic(m.DecisionID, LegWithdraw, 1)).Scan(&count); err != nil || count != 0 {
 				t.Fatalf("failed append retained a new prepared ALT lease: %d %v", count, err)
@@ -373,17 +362,22 @@ func TestCrossMintUntouchedCancellationRequiresRevocationAndCannotReleaseSignedC
 			if (err == nil) != tc.allow {
 				t.Fatalf("allow=%v err=%v", tc.allow, err)
 			}
-			var reservation, opportunity string
+			var opportunity string
 			var outcome *string
-			if err := pool.QueryRow(ctx, `SELECT r.reservation_state,o.opportunity_state,d.terminal_outcome FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=d.id WHERE d.id=$1`, b.DecisionID).Scan(&reservation, &opportunity, &outcome); err != nil {
+			if err := pool.QueryRow(ctx, `SELECT o.opportunity_state,d.terminal_outcome FROM loyal_yield.rebalance_decisions d JOIN loyal_yield.rebalance_opportunities o ON o.decision_id=d.id WHERE d.id=$1`, b.DecisionID).Scan(&opportunity, &outcome); err != nil {
+				t.Fatal(err)
+			}
+			// A cancelled movement leaves flight; a refused cancel stays in it.
+			inflow, _, err := fleet.InflightFlows(ctx, pool, b.Cluster, 501, 0)
+			if err != nil {
 				t.Fatal(err)
 			}
 			if tc.allow {
-				if reservation != "released" || opportunity != "completed" || outcome == nil || *outcome != "cancelled_before_withdraw" {
-					t.Fatalf("incomplete atomic cancellation: %s %s %v", reservation, opportunity, outcome)
+				if inflow[l.Movement.ActiveTargetReserve] != 0 || opportunity != "completed" || outcome == nil || *outcome != "cancelled_before_withdraw" {
+					t.Fatalf("incomplete atomic cancellation: %v %s %v", inflow, opportunity, outcome)
 				}
-			} else if reservation != "active" || opportunity != "decision_created" || outcome != nil {
-				t.Fatalf("failed cancellation released authority: %s %s %v", reservation, opportunity, outcome)
+			} else if inflow[l.Movement.ActiveTargetReserve] == 0 || opportunity != "decision_created" || outcome != nil {
+				t.Fatalf("failed cancellation released authority: %v %s %v", inflow, opportunity, outcome)
 			}
 		})
 	}
@@ -416,12 +410,14 @@ func TestCrossMintFinalizedReceiptAdvancesCustodyAtomicallyAndRejectsStaleOwner(
 	if m.Phase != CrossMintSourceIdle || m.CustodyVersion != 1 || m.CustodyAmountRaw != 995 || m.CustodyObservedBalanceRaw == nil || *m.CustodyObservedBalanceRaw != 1045 {
 		t.Fatalf("receipt attribution mismatch: %+v", m)
 	}
-	var state, reservation string
-	if err = pool.QueryRow(ctx, `SELECT s.submission_state,r.reservation_state FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.target_capacity_reservations r ON r.decision_id=s.decision_id WHERE s.id=$1`, l.Submission.ID).Scan(&state, &reservation); err != nil {
+	var state string
+	if err = pool.QueryRow(ctx, `SELECT submission_state FROM loyal_yield.signed_route_submissions WHERE id=$1`, l.Submission.ID).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
-	if state != "reconciled" || reservation != "active" {
-		t.Fatalf("intermediate receipt released custody capacity: %s %s", state, reservation)
+	// A confirmed withdrawal leaves the movement in flight to its target.
+	inflow, _, err := fleet.InflightFlows(ctx, pool, b.Cluster, 10, 0)
+	if err != nil || state != "reconciled" || inflow[m.ActiveTargetReserve] == 0 {
+		t.Fatalf("intermediate receipt left flight: %s %v %v", state, inflow, err)
 	}
 	if next, err := store.ClaimCrossMintContinuation(ctx, b.Cluster, "swap-owner", time.Minute); err != nil || next == nil || next.Movement.CustodyAmountRaw != 995 {
 		t.Fatalf("committed receipt did not expose actual next custody: %+v %v", next, err)
@@ -508,19 +504,20 @@ func TestCrossMintThreeFinalizedLegsKeepCapacityUntilNewerTargetTelemetry(t *tes
 	if m.CustodyVersion != 3 || m.Phase != CrossMintTargetReserve || m.CustodyAmountRaw != 0 || m.CustodyAccount != b.Reserve || m.TerminalOutcome == nil || *m.TerminalOutcome != "completed_target" {
 		t.Fatalf("three receipts did not complete target: %+v", m)
 	}
-	var state string
-	if err = pool.QueryRow(ctx, `SELECT reservation_state FROM loyal_yield.target_capacity_reservations WHERE decision_id=$1`, b.DecisionID).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
-	if state != "awaiting_telemetry" {
-		t.Fatalf("terminal movement released capacity before reflected observation: %s", state)
+	// The deposit is in the target at its slot: a snapshot read at or after
+	// it holds the deposit, so the movement is no longer in flight there.
+	for slot, want := range map[int64]int64{1019: 1, 1020: 0} {
+		inflow, _, err := fleet.InflightFlows(ctx, pool, b.Cluster, slot, 0)
+		if err != nil || (inflow[b.Reserve] > 0) != (want > 0) {
+			t.Fatalf("slot %d in flight %v, want %d: %v", slot, inflow, want, err)
+		}
 	}
 	if next, err := store.ClaimCrossMintContinuation(ctx, b.Cluster, "late-owner", time.Minute); err != nil || next != nil {
 		t.Fatalf("terminal movement reactivated: %+v %v", next, err)
 	}
 }
 
-func TestCrossMintFallbackIncludesUnattachedCapacityAndInvalidatesOldLease(t *testing.T) {
+func TestCrossMintFallbackCountsInflightMovesAndInvalidatesOldLease(t *testing.T) {
 	store, pool := integrationStore(t)
 	ctx := context.Background()
 	b := seedCrossMintMovement(t, ctx, pool)
@@ -529,24 +526,19 @@ func TestCrossMintFallbackIncludesUnattachedCapacityAndInvalidatesOldLease(t *te
 	if err != nil || l == nil {
 		t.Fatalf("claim: %v", err)
 	}
+	// Another vault's move into the fallback, still in flight, fills it.
 	other := seedBaseline(t, ctx, pool, fmt.Sprint(time.Now().UnixNano()), b.Cluster)
-	if _, err = pool.Exec(ctx, `INSERT INTO loyal_yield.target_capacity_frontiers(cluster,target_reserve,liquidity_mint,observed_supply_usd_micros,observed_slot,maximum_inflight_usd_micros) VALUES($1,$2,$3,1000000000,500,900000000)`, b.Cluster, other.Reserve, b.Mint); err != nil {
+	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET principal_usd_micros=$2 WHERE id=$1`, other.OpportunityID, int64(1_000_000_000)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.target_capacity_reservations SET decision_id=NULL,liquidity_mint=$2,principal_usd_micros=900000000 WHERE opportunity_id=$1`, other.OpportunityID, b.Mint); err != nil {
+	p := CrossMintCapacityProjection{Cluster: b.Cluster, TargetReserve: other.Reserve, LiquidityMint: b.Mint, ObservedSupplyUSDMicros: 50_000_000_000, ObservedSlot: 500}
+	if err = store.RebindCrossMintFallbackCapacity(ctx, *l, p); err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("in-flight move was not counted: %v", err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.rebalance_decisions SET status='skipped' WHERE id=$1`, other.DecisionID); err != nil {
 		t.Fatal(err)
 	}
-	p := CrossMintCapacityProjection{Cluster: b.Cluster, TargetReserve: other.Reserve, LiquidityMint: b.Mint, ObservedSupplyUSDMicros: 1000000000, ObservedSlot: 500, MaximumInflightUSDMicros: 900000000, TelemetryVersion: 1}
-	if err = pool.QueryRow(ctx, `SELECT telemetry_version FROM loyal_yield.target_capacity_frontiers WHERE cluster=$1 AND target_reserve=$2 AND liquidity_mint=$3`, p.Cluster, p.TargetReserve, p.LiquidityMint).Scan(&p.TelemetryVersion); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = store.RebindCrossMintFallbackCapacity(ctx, *l, p); err == nil || !strings.Contains(err.Error(), "capacity exhausted") {
-		t.Fatalf("NULL decision capacity was not counted: %v", err)
-	}
-	if _, err = pool.Exec(ctx, `UPDATE loyal_yield.target_capacity_reservations SET reservation_state='released',released_at=clock_timestamp(),release_reason='fixture-no-spend' WHERE opportunity_id=$1`, other.OpportunityID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = store.RebindCrossMintFallbackCapacity(ctx, *l, p); err != nil {
+	if err = store.RebindCrossMintFallbackCapacity(ctx, *l, p); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err = store.CrossMintLegBudget(ctx, *l, LegDeposit); !errors.Is(err, ErrStaleOwner) {
@@ -556,7 +548,7 @@ func TestCrossMintFallbackIncludesUnattachedCapacityAndInvalidatesOldLease(t *te
 	if err != nil || newLease == nil || newLease.Movement.ActiveTargetReserve != other.Reserve {
 		t.Fatalf("fallback did not expose new binding: %+v %v", newLease, err)
 	}
-	if _, err = store.RebindCrossMintFallbackCapacity(ctx, *newLease, p); err == nil {
+	if err = store.RebindCrossMintFallbackCapacity(ctx, *newLease, p); err == nil {
 		t.Fatal("fallback rebound repeatedly")
 	}
 }

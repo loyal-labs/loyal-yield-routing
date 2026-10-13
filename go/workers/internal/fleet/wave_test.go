@@ -105,7 +105,7 @@ func dilutionPosition(id int64, source string, now time.Time) VaultPosition {
 		SourceReserve: source, Market: "market", Mint: USDCMint,
 		AmountRaw: 10_000_000_000, SourceCollateralAmountRaw: 10_000_000_000,
 		SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited,
-		SnapshotID:            7, ObservedSlot: 499, ObservedAt: now, PolicyAuthority: "tenant"}
+		ObservedSlot:          499, ObservedAt: now, PolicyAuthority: "tenant"}
 }
 
 func TestWaveRescoresCandidatesWhosePriorityImprovesAfterSelection(t *testing.T) {

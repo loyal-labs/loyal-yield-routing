@@ -78,7 +78,7 @@ func TestFreshRouteTopsUpWhatTheClosedSourceDoesNotReturn(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, lease := fixtureFreshRouteObligation(t, 2_000_000_000_000, nil, c.obligation)
-			fresh, err := r.loadFreshRoute(context.Background(), lease, 0)
+			fresh, err := r.loadFreshRoute(context.Background(), lease)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +95,7 @@ func TestFreshRouteTopsUpWhatTheClosedSourceDoesNotReturn(t *testing.T) {
 func loadFixtureFreshRoute(t *testing.T, collateralSupply uint64) (freshSameMint, *Revalidator) {
 	t.Helper()
 	r, lease := fixtureFreshRoute(t, collateralSupply, nil)
-	fresh, err := r.loadFreshRoute(context.Background(), lease, 0)
+	fresh, err := r.loadFreshRoute(context.Background(), lease)
 	if err != nil {
 		t.Fatalf("fresh read refused a route whose target obligation the route creates: %v", err)
 	}
