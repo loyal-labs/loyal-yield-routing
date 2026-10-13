@@ -50,7 +50,7 @@ func selectedReleaseClaim(t *testing.T, store *Store, suffix string, firstCap ..
 	if len(firstCap) != 0 {
 		cap = firstCap[0]
 	}
-	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claim, &slot, 9_000_000, 4_000_000, &cap, &cap)
+	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, claim, slot, 9_000_000, 4_000_000, &cap, &cap)
 	if err != nil || outcome.Status != ClaimSelected {
 		t.Fatalf("claim: %+v %v", outcome, err)
 	}
@@ -149,7 +149,7 @@ func TestSelectedClaimBlocksAnotherClaimTokenOnSameTarget(t *testing.T) {
 	store := releaseContextStore(t)
 	seeded, firstClaim, _ := selectedReleaseClaim(t, store, "exclusive-target", 1_000_000)
 	cap := int64(100_000_000)
-	outcome, err := store.ClaimEligibleLotsOnce(context.Background(), seeded.TargetID, "second-independent-claim", nil, 9_000_000, 4_000_000, &cap, &cap)
+	outcome, err := store.ClaimEligibleLotsOnce(context.Background(), seeded.TargetID, "second-independent-claim", openSlot(t, store, seeded.TargetID), 9_000_000, 4_000_000, &cap, &cap)
 	if err != nil || outcome.Status != ClaimNoopStatus() || outcome.Reason != "target_has_selected_claim" {
 		t.Fatalf("independent claim did not respect selected custody: %+v %v", outcome, err)
 	}
@@ -176,7 +176,7 @@ func TestClaimRechecksFloorAndCurrentPeriodCapUnderTargetLock(t *testing.T) {
 	}
 	elapseReleaseDelay(t, store, seeded.TargetID)
 	callerCap := int64(100_000_000)
-	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, "stale-floor-claim", nil, 9_000_000, 0, &callerCap, &callerCap)
+	outcome, err := store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, "stale-floor-claim", openSlot(t, store, seeded.TargetID), 9_000_000, 0, &callerCap, &callerCap)
 	if err != nil || outcome.Status != ClaimNoopStatus() || outcome.Reason != "wallet_balance_floor_changed" {
 		t.Fatalf("stale lower floor authorized a claim: %+v %v", outcome, err)
 	}
@@ -193,16 +193,16 @@ func TestClaimRechecksFloorAndCurrentPeriodCapUnderTargetLock(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET max_amount_per_period = 1000000 WHERE id = $1`, seeded.TargetID); err != nil {
 		t.Fatal(err)
 	}
-	outcome, err = store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, "current-period-claim", nil, 9_000_000, 4_000_000, &callerCap, &callerCap)
+	outcome, err = store.ClaimEligibleLotsOnce(ctx, seeded.TargetID, "current-period-claim", openSlot(t, store, seeded.TargetID), 9_000_000, 4_000_000, &callerCap, &callerCap)
 	if err != nil || outcome.Status != ClaimSelected || outcome.AmountRaw != 1_000_000 {
 		t.Fatalf("stale high caller cap overrode current target cap: %+v %v", outcome, err)
 	}
 }
 
-func TestTargetContextRefusesUnknownFloorAndSelectsMatchingMint(t *testing.T) {
+func TestTargetContextRefusesUnknownFloor(t *testing.T) {
 	store := releaseContextStore(t)
 	ctx := context.Background()
-	seeded := seedIntegrationTarget(t, store, "context-mint")
+	seeded := seedIntegrationTarget(t, store, "context-floor")
 	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET wallet_balance_floor_raw = NULL WHERE id = $1`, seeded.TargetID); err != nil {
 		t.Fatal(err)
 	}
@@ -212,27 +212,8 @@ func TestTargetContextRefusesUnknownFloorAndSelectsMatchingMint(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET wallet_balance_floor_raw = 0 WHERE id = $1`, seeded.TargetID); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = store.pool.Exec(context.Background(), `DELETE FROM loyal_yield.user_yield_positions WHERE settings = 'itest-settings-context-mint'`)
-	})
-	for _, position := range []struct{ reserve, mint string }{{"context-usdc", USDCMint}, {"context-other-newer", "other-mint"}} {
-		if _, err := store.pool.Exec(ctx, `
-INSERT INTO loyal_yield.user_yield_positions (
- wallet_address, smart_account_address, settings, vault_index, vault_pubkey,
- policy_id, policy_account, policy_seed, initial_reserve, initial_market, initial_liquidity_mint,
- deposit_mint, principal_amount_raw, current_reserve, current_market, current_liquidity_mint,
- current_amount_raw, current_observed_slot, current_observed_at,
- first_deposit_signature, last_deposit_signature, last_confirmed_slot, status, created_at, updated_at)
-SELECT wallet, vault_pubkey, settings, vault_index, vault_pubkey,
- 1, policy_account, policy_seed, $2, 'context-market', $3, $3, 1, $2, 'context-market', $3,
- 1, 1, now(), $2, $2, 1, 'active', now(), now()
-FROM loyal_yield.balance_sweep_targets WHERE id = $1`, seeded.TargetID, position.reserve, position.mint); err != nil {
-			t.Fatal(err)
-		}
-	}
-	target, err := store.LoadTargetExecutionContext(ctx, seeded.TargetID)
-	if err != nil || target == nil || target.WalletBalanceFloorRaw != 0 || target.CurrentReserve == nil || *target.CurrentReserve != "context-usdc" {
-		t.Fatalf("zero floor or matching mint context lost: %+v %v", target, err)
+	if target, err := store.LoadTargetExecutionContext(ctx, seeded.TargetID); err != nil || target == nil || target.WalletBalanceFloorRaw != 0 {
+		t.Fatalf("zero floor context lost: %+v %v", target, err)
 	}
 }
 

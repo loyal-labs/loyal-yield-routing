@@ -48,11 +48,16 @@ type routedAutodeposit struct {
 
 func seedRoutedAutodeposit(t *testing.T, pool *pgxpool.Pool) routedAutodeposit {
 	t.Helper()
+	return seedRoutedAutodepositOn(t, pool, solana.NewWallet().PublicKey().String())
+}
+
+func seedRoutedAutodepositOn(t *testing.T, pool *pgxpool.Pool, vault string) routedAutodeposit {
+	t.Helper()
 	ctx := context.Background()
 	f := routedAutodeposit{
 		settings:    solana.NewWallet().PublicKey().String(),
 		authority:   solana.NewWallet().PublicKey().String(),
-		vault:       solana.NewWallet().PublicKey().String(),
+		vault:       vault,
 		routePolicy: solana.NewWallet().PublicKey().String(),
 	}
 	var routeID, setupID int64
@@ -70,18 +75,26 @@ func seedRoutedAutodeposit(t *testing.T, pool *pgxpool.Pool) routedAutodeposit {
         VALUES ($1, 1, $2, $3, $4, true)`, f.settings, f.vault, routeID, setupID); err != nil {
 		t.Fatal(err)
 	}
+	f.targetID = addVaultTarget(t, pool, f)
+	return f
+}
+
+// addVaultTarget is another wallet's active Autodeposit target on the vault.
+func addVaultTarget(t *testing.T, pool *pgxpool.Pool, f routedAutodeposit) int64 {
+	t.Helper()
+	var targetID int64
 	wallet := solana.NewWallet().PublicKey().String()
-	if err := pool.QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_targets
+	if err := pool.QueryRow(context.Background(), `INSERT INTO loyal_yield.balance_sweep_targets
         (settings, authority, policy_seed, policy_account, vault_index, vault_pubkey,
          wallet, wallet_usdc_ata, vault_usdc_ata, wallet_token_ata, vault_token_ata, token_mint, threshold,
          max_amount_per_period, desired_active, chain_status, wallet_balance_floor_raw,
          last_seen_slot, last_seen_signature, cluster)
         VALUES ($1, $2, 9, $3, 1, $4, $5, $5, $4, $5, $4, $6, 1, 1000000000, true, 'active', 100000,
                 1, 'itest', 'mainnet-beta') RETURNING id`,
-		f.settings, f.authority, solana.NewWallet().PublicKey().String(), f.vault, wallet, itestUSDCMint).Scan(&f.targetID); err != nil {
+		f.settings, f.authority, solana.NewWallet().PublicKey().String(), f.vault, wallet, itestUSDCMint).Scan(&targetID); err != nil {
 		t.Fatal(err)
 	}
-	return f
+	return targetID
 }
 
 var itestEventID atomic.Int64
@@ -133,13 +146,15 @@ type autodepositWork struct {
 
 // seedVaultWork lays out every shape of work a retired route meets: automatic
 // slots that must end, and requested, claimed or attempted ones that must not.
+// A target holds one open slot, so each shape is another wallet's target on
+// the vault.
 func seedVaultWork(t *testing.T, pool *pgxpool.Pool, f routedAutodeposit) []autodepositWork {
 	t.Helper()
 	ctx := context.Background()
 	requested := "web_execute_now"
 	var work []autodepositWork
 	add := func(name, status string, source *string, wantSlot, wantLot string) *autodepositWork {
-		slot, lot := seedSlotWithLot(t, pool, f.targetID, status, source)
+		slot, lot := seedSlotWithLot(t, pool, addVaultTarget(t, pool, f), status, source)
 		work = append(work, autodepositWork{name: name, slot: slot, lot: lot, wantSlotStatus: wantSlot, wantLotStatus: wantLot, wantSkipMessage: wantSlot == "canceled"})
 		return &work[len(work)-1]
 	}
@@ -147,7 +162,7 @@ func seedVaultWork(t *testing.T, pool *pgxpool.Pool, f routedAutodeposit) []auto
 	add("failed unheld", "failed", nil, "canceled", "suppressed")
 	add("user requested", "scheduled", &requested, "scheduled", "open")
 	claimed := add("claimed", "scheduled", nil, "scheduled", "open")
-	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET claim_token = $2 WHERE id = $1`, claimed.slot, seedClaim(t, pool, f.targetID)); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET claim_token = $2 WHERE id = $1`, claimed.slot, seedClaim(t, pool, slotTarget(t, pool, claimed.slot))); err != nil {
 		t.Fatal(err)
 	}
 	attempted := add("attempted", "failed", nil, "failed", "open")
@@ -156,11 +171,20 @@ func seedVaultWork(t *testing.T, pool *pgxpool.Pool, f routedAutodeposit) []auto
          destination_pre_balance_raw, signature, signed_transaction_base64, signed_transaction_sha256,
          recent_blockhash, last_valid_block_height, attempt_state)
         VALUES ($1, $2, $3, 'pull', 5000000, 5100000, 0, $4, 'AA==', $5, 'blockhash', 1, 'failed')`,
-		seedClaim(t, pool, f.targetID), f.targetID, attempted.slot, solana.NewWallet().PublicKey().String(),
+		seedClaim(t, pool, slotTarget(t, pool, attempted.slot)), slotTarget(t, pool, attempted.slot), attempted.slot, solana.NewWallet().PublicKey().String(),
 		"0000000000000000000000000000000000000000000000000000000000000000"); err != nil {
 		t.Fatal(err)
 	}
 	return work
+}
+
+func slotTarget(t *testing.T, pool *pgxpool.Pool, slot int64) int64 {
+	t.Helper()
+	var target int64
+	if err := pool.QueryRow(context.Background(), `SELECT target_id FROM loyal_yield.balance_sweep_scheduled_slots WHERE id = $1`, slot).Scan(&target); err != nil {
+		t.Fatal(err)
+	}
+	return target
 }
 
 func assertVaultWork(t *testing.T, pool *pgxpool.Pool, f routedAutodeposit, work []autodepositWork) {
@@ -368,6 +392,60 @@ func TestDelegationBeforeItsPolicyReachesTheTarget(t *testing.T) {
 	}
 }
 
+// A wallet can create its delegation before the observer projects its vault:
+// the delegation is recorded anyway and attached when the policy arrives.
+func TestDelegationBeforeItsVaultReachesTheTarget(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	vault, wallet, delegation := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
+	if err := streamApplication(t, pool).HandlePolicyTransaction(ctx, createRecurringUpdate(t, streamSlot, wallet, vault, delegation, 5, 9_000_000, 3_600)); err != nil {
+		t.Fatal(err)
+	}
+	f := seedRoutedAutodepositOn(t, pool, vault)
+	targetID := sweepPolicy(t, pool, f, wallet, streamSlot+1)
+	if got := targetDelegation(t, pool, targetID); got != (delegationRow{delegation, "pending", 5, 9_000_000, 3_600, streamSlot, streamSlot}) {
+		t.Fatalf("target delegation = %+v", got)
+	}
+}
+
+// Every observation of a policy attaches the latest recorded delegation, not
+// only the one that inserts its target.
+func TestPolicyReobservationAttachesARecordedDelegation(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	f := seedRoutedAutodeposit(t, pool)
+	wallet, delegation := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
+	policy := solana.NewWallet().PublicKey().String()
+	observe := func(slot uint64) {
+		if err := NewStore(pool).RecordBalanceSweepPolicyMatch(ctx, BalanceSweepPolicyMatchInput{Signature: solana.NewWallet().PublicKey().String(), Slot: slot,
+			Cluster: "mainnet-beta", Settings: f.settings, Authority: f.authority, PolicySeed: 11, PolicyAccount: policy, VaultIndex: 1, VaultPubkey: f.vault,
+			Wallet: wallet, WalletUSDCATA: wallet, VaultUSDCATA: f.vault, TokenMint: itestUSDCMint, WalletTokenATA: wallet, VaultTokenATA: f.vault,
+			DelegatedSigners: []string{f.authority}, Threshold: 1, MaxAmountPerPeriod: 9_000_000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observe(streamSlot)
+	authority, err := subscriptionAuthority(wallet, itestUSDCMint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recorded while its attach did not run (a stream replay ordering).
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.recurring_delegation_observations
+        (recurring_delegation, wallet, vault_pubkey, subscription_authority, nonce, amount_per_period,
+         period_length_seconds, start_timestamp, expiry_timestamp, signature, slot)
+        VALUES ($1, $2, $3, $4, 6, 9000000, 3600, 0, 0, 'recorded', $5)`, delegation, wallet, f.vault, authority, int64(streamSlot)+1); err != nil {
+		t.Fatal(err)
+	}
+	observe(streamSlot + 2)
+	var targetID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE policy_account = $1`, policy).Scan(&targetID); err != nil {
+		t.Fatal(err)
+	}
+	if held := heldDelegation(t, pool, targetID); held != delegation {
+		t.Fatalf("target holds %q, want the recorded delegation", held)
+	}
+}
+
 // Disabling Autodeposit revokes D1; re-enabling lands the new policy before
 // D2. The new target waits for D2 instead of taking the dead D1, and a
 // replayed create of D1 does not revive it.
@@ -425,24 +503,26 @@ func TestOnlyTheNewestDelegationOfTheTargetMintAttaches(t *testing.T) {
 }
 
 // Anyone can call the Subscriptions program or write a memo: bytes that are
-// not ours, or that are out of range, never stop the stream.
+// not ours, or that are out of range, never stop the stream. A delegation to
+// a vault not projected yet is kept for when it is; one out of range is not.
 func TestOutsideBytesNeverStopTheStream(t *testing.T) {
 	pool := observerPool(t)
 	ctx := context.Background()
 	f := seedRoutedAutodeposit(t, pool)
 	app := streamApplication(t, pool)
-	wallet, delegation := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
+	wallet, early := solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String()
 	for name, update := range map[string]*pb.SubscribeUpdate{
-		"out of range delegation to a managed vault": createRecurringUpdate(t, streamSlot, wallet, f.vault, delegation, 1<<63, 1, 1),
-		"delegation to an unknown vault":             createRecurringUpdate(t, streamSlot, wallet, solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String(), 1, 1, 1),
+		"out of range delegation to a managed vault": createRecurringUpdate(t, streamSlot, wallet, f.vault, solana.NewWallet().PublicKey().String(), 1<<63, 1, 1),
+		"delegation to an unknown vault":             createRecurringUpdate(t, streamSlot, early, solana.NewWallet().PublicKey().String(), solana.NewWallet().PublicKey().String(), 1, 1, 1),
 	} {
 		if err := app.HandlePolicyTransaction(ctx, update); err != nil {
 			t.Fatalf("%s stopped the stream: %v", name, err)
 		}
 	}
-	var recorded bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.recurring_delegation_observations WHERE wallet = $1)`, wallet).Scan(&recorded); err != nil || recorded {
-		t.Fatalf("outside delegation was recorded: %v", err)
+	var outOfRange, kept bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.recurring_delegation_observations WHERE wallet = $1),
+        EXISTS (SELECT 1 FROM loyal_yield.recurring_delegation_observations WHERE wallet = $2)`, wallet, early).Scan(&outOfRange, &kept); err != nil || outOfRange || !kept {
+		t.Fatalf("out of range recorded=%v, early delegation kept=%v: %v", outOfRange, kept, err)
 	}
 	settings := solana.NewWallet().PublicKey()
 	vault := squadsVault(settings, 0)

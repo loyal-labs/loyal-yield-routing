@@ -124,9 +124,6 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 		return 0, fmt.Errorf("%w: delegation address %q is not a public key", ErrAllowanceUnknown, delegation)
 	}
 	identity.Account = delegation
-	if identity.Nonce == nil || identity.WalletTokenAccount == "" {
-		return 0, fmt.Errorf("%w: confirmed delegation nonce and wallet token account required", ErrAllowanceUnknown)
-	}
 	_, accounts, err := c.ReadAccounts(ctx, 0, []string{delegation, identity.WalletTokenAccount})
 	if err != nil {
 		return 0, fmt.Errorf("%w: read delegation %s: %v", ErrAllowanceUnknown, delegation, err)

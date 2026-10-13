@@ -107,12 +107,25 @@ func testDelegationData(delegator, delegatee, mint string, perPeriod, pulled uin
 	return data
 }
 
+// testDelegationIdentity is the delegation PDA of wallet, vault and nonce.
+func testDelegationIdentity(t *testing.T, wallet, vault string, nonce uint64) DelegationIdentity {
+	t.Helper()
+	walletKey, vaultKey, mintKey := mustKey(wallet), mustKey(vault), mustKey(USDCMint)
+	authority, err := subscriptionAuthorityKey(walletKey[:], mintKey[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := delegationAccountKey(authority[:], walletKey[:], vaultKey[:], nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return DelegationIdentity{Account: base58Key(account[:]), Delegator: wallet, Delegatee: vault, Mint: USDCMint, Nonce: nonce}
+}
+
 func TestRemainingDelegationAllowanceDecodesOfficialLayout(t *testing.T) {
 	wallet, vault := fixedKey("wallet"), fixedKey("vault")
 	data := testDelegationData(wallet, vault, USDCMint, 5_000_000, 1_200_000)
-	allowance, err := RemainingDelegationAllowance(SubscriptionsProgramID, data, DelegationIdentity{
-		Account: "delegation", Delegator: wallet, Delegatee: vault, Mint: USDCMint,
-	})
+	allowance, err := RemainingDelegationAllowance(SubscriptionsProgramID, data, testDelegationIdentity(t, wallet, vault, 7))
 	if err != nil {
 		t.Fatalf("decode official delegation: %v", err)
 	}
@@ -123,8 +136,11 @@ func TestRemainingDelegationAllowanceDecodesOfficialLayout(t *testing.T) {
 
 func TestRemainingDelegationAllowanceRejectsForeignAccounts(t *testing.T) {
 	wallet, vault, foreign := fixedKey("wallet"), fixedKey("vault"), fixedKey("foreign-wallet")
-	identity := DelegationIdentity{Account: "delegation", Delegator: wallet, Delegatee: vault, Mint: USDCMint}
+	identity := testDelegationIdentity(t, wallet, vault, 7)
 	data := testDelegationData(wallet, vault, USDCMint, 5_000_000, 0)
+	if _, err := RemainingDelegationAllowance(SubscriptionsProgramID, data, identity); err != nil {
+		t.Fatalf("the unaltered delegation must decode: %v", err)
+	}
 
 	// A wrong program owner is never readable as an allowance.
 	if _, err := RemainingDelegationAllowance(fixedKey("some-program"), data, identity); err == nil {

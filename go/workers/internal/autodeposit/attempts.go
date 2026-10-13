@@ -22,8 +22,6 @@ const (
 	AttemptConfirmed AttemptState = "confirmed"
 	AttemptFailed    AttemptState = "failed"
 	AttemptExpired   AttemptState = "expired"
-	AttemptUnknown   AttemptState = "unknown"
-	AttemptAmbiguous AttemptState = "ambiguous"
 )
 
 // DurableAttempt is one persisted signed transaction. Its wire identity —
@@ -70,7 +68,7 @@ func (e *EffectAmbiguousError) Error() string {
 // funds: the wire may already have landed, so the custody cannot be re-claimed.
 func AttemptHoldsClaim(state AttemptState) bool {
 	switch state {
-	case AttemptPrepared, AttemptSubmitted, AttemptConfirmed, AttemptUnknown, AttemptAmbiguous:
+	case AttemptPrepared, AttemptSubmitted, AttemptConfirmed:
 		return true
 	default:
 		return false
@@ -82,19 +80,6 @@ func AttemptHoldsClaim(state AttemptState) bool {
 // prepared.
 func AttemptAllowsSafeRequeue(state AttemptState) bool {
 	return state == AttemptFailed || state == AttemptExpired
-}
-
-// AlertForAttemptState is the only attempt state that pages: an ambiguous
-// effect survives blockhash expiry and no code can clear it.
-func AlertForAttemptState(state AttemptState) *ExecutorFailureAlert {
-	if state != AttemptAmbiguous {
-		return nil
-	}
-	return &ExecutorFailureAlert{
-		Code:      "autodeposit_transaction_effect_ambiguous",
-		Operation: "reconcile_autodeposit_transaction",
-		Summary:   "autodeposit transaction effect remains ambiguous after blockhash expiry",
-	}
 }
 
 // Settlement is the outcome of landing one persisted attempt.

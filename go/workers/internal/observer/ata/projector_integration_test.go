@@ -435,7 +435,8 @@ func TestProjectorLocksExactTargetCustodyIdentity(t *testing.T) {
 	p, ctx := projectorFixture(t)
 	// Each case captures a fact before a target identity change. None may
 	// write an event or current balance under the stale captured identity.
-	for _, field := range []string{"cluster", "wallet", "wallet_token_ata", "vault_pubkey", "vault_token_ata", "token_mint"} {
+	// cluster is pinned to mainnet-beta by a CHECK, so it cannot change.
+	for _, field := range []string{"wallet", "wallet_token_ata", "vault_pubkey", "vault_token_ata", "token_mint"} {
 		t.Run(field, func(t *testing.T) {
 			a := seedProjectionTarget(t, ctx, p)
 			before, err := p.readOffset(ctx)
@@ -447,10 +448,7 @@ func TestProjectorLocksExactTargetCustodyIdentity(t *testing.T) {
 			if err := p.yield.QueryRow(ctx, `SELECT `+field+` FROM loyal_yield.balance_sweep_targets WHERE id=$1`, a.ID).Scan(&original); err != nil {
 				t.Fatal(err)
 			}
-			var changed any = solana.NewWallet().PublicKey().String()
-			if field == "cluster" {
-				changed = nil
-			}
+			changed := solana.NewWallet().PublicKey().String()
 			if _, err := p.yield.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET `+field+`=$2 WHERE id=$1`, a.ID, changed); err != nil {
 				t.Fatal(err)
 			}

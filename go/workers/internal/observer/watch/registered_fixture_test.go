@@ -158,7 +158,7 @@ func (f *registeredFixture) autodeposit(i watchIdentity, desired bool, status, c
 		f.t.Fatal(err)
 	}
 	a := watchATA{walletATA: walletATA, vault: vault}
-	if err := f.yield.QueryRow(f.ctx, `INSERT INTO loyal_yield.balance_sweep_targets(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,wallet,wallet_usdc_ata,vault_usdc_ata,wallet_token_ata,vault_token_ata,token_mint,threshold,max_amount_per_period,desired_active,chain_status,last_seen_slot,last_seen_signature,cluster,subscription_authority,recurring_delegation) VALUES($1,$2,$3,$4,1,$5,$2,$6,$7,$6,$7,$8,1,1000000,$9,$10,200,'watch-fixture',$11,$12,$13) RETURNING id`, i.settings, i.wallet, p.seed, p.account, vault, walletATA, vaultATA, stablecoins[3].Mint.String(), desired, status, cluster, authority, delegation).Scan(&a.id); err != nil {
+	if err := f.yield.QueryRow(f.ctx, `INSERT INTO loyal_yield.balance_sweep_targets(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,wallet,wallet_usdc_ata,vault_usdc_ata,wallet_token_ata,vault_token_ata,token_mint,threshold,max_amount_per_period,desired_active,chain_status,last_seen_slot,last_seen_signature,cluster,subscription_authority,recurring_delegation,recurring_delegation_nonce) VALUES($1,$2,$3,$4,1,$5,$2,$6,$7,$6,$7,$8,1,1000000,$9,$10,200,'watch-fixture',$11,$12,$13::text,CASE WHEN $13::text IS NULL THEN NULL ELSE 1 END) RETURNING id`, i.settings, i.wallet, p.seed, p.account, vault, walletATA, vaultATA, stablecoins[3].Mint.String(), desired, status, cluster, authority, delegation).Scan(&a.id); err != nil {
 		f.t.Fatal(err)
 	}
 	return a

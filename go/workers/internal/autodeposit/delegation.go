@@ -45,7 +45,7 @@ type DelegationIdentity struct {
 	Delegator          string
 	Delegatee          string
 	Mint               string
-	Nonce              *uint64
+	Nonce              uint64
 	WalletTokenAccount string
 }
 
@@ -88,15 +88,13 @@ func RemainingDelegationAllowance(owner string, data []byte, identity Delegation
 	if base58Key(data[delegationAuthorityOffset:delegationAuthorityOffset+32]) != base58Key(authority[:]) {
 		return 0, errors.New("delegation subscription authority differs from frozen wallet and mint")
 	}
-	if identity.Nonce != nil {
-		vault, err := solana.PublicKeyFromBase58(identity.Delegatee)
-		if err != nil {
-			return 0, err
-		}
-		delegation, err := delegationAccountKey(authority[:], wallet[:], vault[:], *identity.Nonce)
-		if err != nil || base58Key(delegation[:]) != identity.Account {
-			return 0, errors.New("delegation PDA differs from frozen nonce and identity")
-		}
+	vault, err := solana.PublicKeyFromBase58(identity.Delegatee)
+	if err != nil {
+		return 0, err
+	}
+	delegation, err := delegationAccountKey(authority[:], wallet[:], vault[:], identity.Nonce)
+	if err != nil || base58Key(delegation[:]) != identity.Account {
+		return 0, errors.New("delegation PDA differs from frozen nonce and identity")
 	}
 	perPeriod := binary.LittleEndian.Uint64(data[delegationPerPeriodOffset : delegationPerPeriodOffset+8])
 	pulled := binary.LittleEndian.Uint64(data[delegationAmountPulledOffset : delegationAmountPulledOffset+8])

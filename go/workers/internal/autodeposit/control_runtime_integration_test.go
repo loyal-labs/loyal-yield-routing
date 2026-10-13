@@ -38,7 +38,7 @@ func seedRuntimeHealthyTarget(t *testing.T, store *Store, suffix string) Control
 }
 
 func TestSignedCustodyCannotBeAdoptedByRepeatedTicks(t *testing.T) {
-	for _, state := range []AttemptState{AttemptPrepared, AttemptUnknown, AttemptAmbiguous} {
+	for _, state := range []AttemptState{AttemptPrepared, AttemptSubmitted} {
 		t.Run(string(state), func(t *testing.T) {
 			s := integrationStore(t)
 			seeded, claim, _, _ := seedRecoveryClaim(t, s, "runtime-unknown")
@@ -51,18 +51,11 @@ func TestSignedCustodyCannotBeAdoptedByRepeatedTicks(t *testing.T) {
 				t.Fatalf("attempt=%v error=%v", before, err)
 			}
 			if state != AttemptPrepared {
-				const owner = "runtime-census-owner"
-				owned, err := s.AcquireClaimLease(ctx, claim, seeded.TargetID, owner)
-				if err != nil || !owned {
-					t.Fatalf("lease=%v error=%v", owned, err)
-				}
-				recorded, err := s.RecordAttemptObservation(ctx, *before, AttemptObservation{State: state}, owner)
-				if err != nil {
+				if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_transaction_attempts SET attempt_state=$2,broadcast_count=1 WHERE claim_token=$1`, claim, string(state)); err != nil {
 					t.Fatal(err)
 				}
-				before = &recorded
-				if err := s.ReleaseClaimLease(ctx, claim, owner); err != nil {
-					t.Fatal(err)
+				if before, err = s.LoadLatestAttempt(ctx, claim, OperationPull); err != nil || before == nil {
+					t.Fatalf("attempt=%v error=%v", before, err)
 				}
 			}
 			// Each fresh worker models a restart; none may adopt the signed intent.
@@ -83,12 +76,6 @@ func TestSignedCustodyCannotBeAdoptedByRepeatedTicks(t *testing.T) {
 	}
 }
 
-type runtimeArtifacts func(context.Context, ReconciliationRequest, string) error
-
-func (f runtimeArtifacts) ReconcileArtifacts(ctx context.Context, r ReconciliationRequest, owner string) error {
-	return f(ctx, r, owner)
-}
-
 func TestControlPersistsRetryAndRecovers(t *testing.T) {
 	s := integrationStore(t)
 	ctx := context.Background()
@@ -97,23 +84,19 @@ func TestControlPersistsRetryAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	enqueueReconciliationRequest(t, s, target.TargetID, 200)
-	artifactCalls, readerCalls := 0, 0
+	readerCalls := 0
 	r := &ControlReconciler{Store: s}
-	r.Artifacts = runtimeArtifacts(func(context.Context, ReconciliationRequest, string) error {
-		artifactCalls++
-		if artifactCalls == 1 {
-			return errors.New("private provider URL must not reach runtime logs")
-		}
-		return nil
-	})
 	r.Reader = runtimeControlReader(func(_ context.Context, target ControlTarget, min int64) (ControlObservation, error) {
 		readerCalls++
+		if readerCalls == 1 {
+			return ControlObservation{}, errors.New("private provider URL must not reach runtime logs")
+		}
 		return ControlObservation{Target: target, ObservedSlot: min + 1,
 			PolicyExists: true, DelegationExists: true, PolicyValid: true, AuthorityValid: true, DelegationValid: true, TokenDelegateValid: true,
 			WalletBalanceRaw: 4_000_000, WalletAccountDataSHA256: strings.Repeat("a", 64)}, nil
 	})
 	if worked, err := r.Tick(ctx); !worked || err == nil {
-		t.Fatalf("failed creator proof acknowledged: worked=%v err=%v", worked, err)
+		t.Fatalf("failed control read acknowledged: worked=%v err=%v", worked, err)
 	}
 	var requested, processed int64
 	var owner, lastError *string
@@ -121,7 +104,7 @@ func TestControlPersistsRetryAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if requested <= processed || owner != nil || lastError == nil || *lastError != "control reconciliation proof unavailable" || readerCalls != 1 {
-		t.Fatalf("failed creator proof acknowledged or skipped retry: requested=%d processed=%d owner=%v lastError=%v reader=%d", requested, processed, owner, lastError, readerCalls)
+		t.Fatalf("failed control read acknowledged or skipped retry: requested=%d processed=%d owner=%v lastError=%v reader=%d", requested, processed, owner, lastError, readerCalls)
 	}
 	// Advance the durable retry clock explicitly; no sleep or omitted backoff.
 	if _, err := s.pool.Exec(ctx, `UPDATE loyal_yield.autodeposit_reconciliation_requests SET next_attempt_at=now() WHERE target_id=$1`, target.TargetID); err != nil {
@@ -133,12 +116,12 @@ func TestControlPersistsRetryAndRecovers(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT requested_slot,processed_slot FROM loyal_yield.autodeposit_reconciliation_requests WHERE target_id=$1`, target.TargetID).Scan(&requested, &processed); err != nil || processed < requested {
 		t.Fatalf("retry not acknowledged: requested=%d processed=%d err=%v", requested, processed, err)
 	}
-	if artifactCalls != 2 || readerCalls != 2 {
-		t.Fatalf("artifact=%d reader=%d", artifactCalls, readerCalls)
+	if readerCalls != 2 {
+		t.Fatalf("reader=%d", readerCalls)
 	}
 }
 
-func TestRuntimeControlKnownClosedDoesNotDemandCreatorHistory(t *testing.T) {
+func TestRuntimeControlAppliesKnownClosed(t *testing.T) {
 	s := integrationStore(t)
 	target := seedRuntimeHealthyTarget(t, s, "runtime-closed")
 	ctx := context.Background()
@@ -149,10 +132,6 @@ func TestRuntimeControlKnownClosedDoesNotDemandCreatorHistory(t *testing.T) {
 	r := &ControlReconciler{Store: s,
 		Reader: runtimeControlReader(func(_ context.Context, target ControlTarget, min int64) (ControlObservation, error) {
 			return ControlObservation{Target: target, ObservedSlot: min + 1}, nil
-		}),
-		Artifacts: runtimeArtifacts(func(context.Context, ReconciliationRequest, string) error {
-			t.Error("known closed state required creator history")
-			return ErrArtifactCreationProofPending
 		}),
 	}
 	if worked, err := r.Tick(ctx); err != nil || !worked {

@@ -21,8 +21,8 @@ func TestPassFactsCountRowsAndAgeOwnedWork(t *testing.T) {
 	if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_lot_claims SET created_at = now() - interval '2 hours' WHERE claim_token=$1`, claim); err != nil {
 		t.Fatal(err)
 	}
-	stale := seedIntegrationTarget(t, store, "stale-requests")
-	for range 2 {
+	for i := range 2 {
+		stale := seedIntegrationTarget(t, store, fmt.Sprintf("stale-requests-%d", i))
 		if _, err := store.pool.Exec(ctx, `INSERT INTO loyal_yield.balance_sweep_scheduled_slots (target_id, token_mint, eligible_after, status, requested_at) VALUES ($1, $2, now(), 'requested', now() - interval '1 hour')`, stale.TargetID, USDCMint); err != nil {
 			t.Fatal(err)
 		}
@@ -47,9 +47,9 @@ func TestPassFactsCountRowsAndAgeOwnedWork(t *testing.T) {
 }
 
 // Rust's overdue check counted an idle-blocked slot only while the wallet was
-// above its floor, after three deferrals, with no claim owning the target. The
-// port dropped those, so September markers on lots the wallet no longer backs
-// paged as 26 days overdue.
+// above its floor, with no claim owning the target. The port dropped those,
+// so September markers on lots the wallet no longer backs paged as 26 days
+// overdue. A slot whose lots drained owes nothing either.
 func TestPassFactsCountIdleBlockedWorkOnlyWhileTheWalletOwesIt(t *testing.T) {
 	store := releaseContextStore(t)
 	ctx := t.Context()
@@ -59,7 +59,7 @@ func TestPassFactsCountIdleBlockedWorkOnlyWhileTheWalletOwesIt(t *testing.T) {
 	if err := store.pool.QueryRow(ctx, `SELECT scheduled_slot_id FROM loyal_yield.balance_sweep_surplus_lots WHERE target_id=$1`, seeded.TargetID).Scan(&slotID); err != nil {
 		t.Fatal(err)
 	}
-	blockedSince := time.Now().Add(-3 * time.Hour).Unix()
+	blockedSince := time.Now().Add(-3 * time.Hour)
 	registry := prometheus.NewRegistry()
 	worker, err := NewWorker(WorkerDependencies{Store: store, Executor: &scriptedExecutor{}, Facts: engine.NewFacts(registry), FeePayer: fundedPayer{}})
 	if err != nil {
@@ -67,17 +67,19 @@ func TestPassFactsCountIdleBlockedWorkOnlyWhileTheWalletOwesIt(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name           string
-		deferrals      int
+		lotStatus      string
 		walletRaw      int64
 		wantThreeHours bool
 	}{
-		{"owed", 3, 10_000_000, true},
-		{"wallet-at-floor", 3, 4_000_000, false},
-		{"two-deferrals", 2, 10_000_000, false},
+		{"owed", "open", 10_000_000, true},
+		{"wallet-at-floor", "open", 4_000_000, false},
+		{"lots-drained", "depleted", 10_000_000, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			marker := fmt.Sprintf("%s25000001 [idle_blocked_since=%d; idle_deferrals=%d]", idleDeferralPrefix, blockedSince, tc.deferrals)
-			if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET last_error=$2 WHERE id=$1`, slotID, marker); err != nil {
+			if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET idle_blocked_since=$2 WHERE id=$1`, slotID, blockedSince); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_surplus_lots SET status=$2::loyal_yield.balance_sweep_surplus_lot_status WHERE scheduled_slot_id=$1`, slotID, tc.lotStatus); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_wallet_balances_current SET amount_raw=$2 WHERE target_id=$1`, seeded.TargetID, tc.walletRaw); err != nil {

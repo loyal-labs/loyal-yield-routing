@@ -28,8 +28,7 @@ func (s *Store) ClaimAutodepositReconciliationRequest(ctx context.Context, claim
 WITH candidate AS (
     SELECT target_id
     FROM loyal_yield.autodeposit_reconciliation_requests
-    WHERE EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets target WHERE target.id=target_id AND target.cluster='mainnet-beta')
-      AND processed_slot < requested_slot
+    WHERE processed_slot < requested_slot
       AND next_attempt_at <= NOW()
       AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
     ORDER BY requested_slot, target_id
@@ -122,30 +121,6 @@ func (s *Store) RescheduleAutodepositReconciliationRequest(ctx context.Context, 
 		return fmt.Errorf("autodeposit reconciliation request %d lost claim before rescheduling", targetID)
 	}
 	return err
-}
-
-// AwaitAutodepositSetupReconciliationRequest parks an incomplete user setup
-// without burning retry budget: policy discovery can legitimately precede
-// recurring-delegation creation, so the request sleeps instead of failing.
-func (s *Store) AwaitAutodepositSetupReconciliationRequest(ctx context.Context, targetID int64, claimOwner string, retryAfterSeconds int64) error {
-	tag, err := s.pool.Exec(ctx, `
-UPDATE loyal_yield.autodeposit_reconciliation_requests
-SET claim_owner = NULL,
-    claim_expires_at = NULL,
-    attempt_count = 0,
-    next_attempt_at = NOW() + make_interval(secs => $3::double precision),
-    last_error = NULL,
-    updated_at = NOW()
-WHERE target_id = $1
-  AND claim_owner = $2
-  AND claim_expires_at > NOW()`, targetID, claimOwner, retryAfterSeconds)
-	if err != nil {
-		return fmt.Errorf("park autodeposit setup reconciliation request: %w", err)
-	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("autodeposit reconciliation request %d lost claim before parking", targetID)
-	}
-	return nil
 }
 
 // ReconciliationRetryBackoffSeconds widens the consumer's base retry delay

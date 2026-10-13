@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Root cause (04e792e0, 6557c221): on 2026-08-07 the shared signer fell to
@@ -122,39 +122,35 @@ func TestIdleResidueRidesBesideThePull(t *testing.T) {
 }
 
 // The Go port claimed, then released idle-blocked slots: the slot went failed
-// with generic text and schedule repair cleared last_error, so the Rust
-// trigger's overdue check (which reads the TS marker) could never see a stuck
-// deposit after a fallback. The deferral now happens before any claim, as
-// the TS executor's deferIdleVaultScheduledSlot does; the gauge reads the
-// marker's first-blocked clock.
-func TestIdleAboveToleranceDefersBeforeClaimingWithADurableMarker(t *testing.T) {
+// with generic text and schedule repair cleared last_error, so the overdue
+// check could never see a stuck deposit after a fallback. The deferral now
+// happens before any claim, as the TS executor's deferIdleVaultScheduledSlot
+// does; the gauge reads the slot's first-blocked time.
+func TestIdleAboveToleranceDefersBeforeClaimingWithADurableBlock(t *testing.T) {
 	owned := newFreshScenario(t, "owned-idle", 25_000_001)
 	ctx := t.Context()
 	worker, registry := owned.worker(t, ControllerDependencies{IdleToleranceRaw: 25_000_000}, nil)
-	marker := func() (status, lastError string, waits bool) {
+	block := func() (status, lastError string, waits bool, since time.Time) {
 		t.Helper()
-		if err := owned.store.pool.QueryRow(ctx, `SELECT status::text, last_error, eligible_after > now() + interval '4 minutes' FROM loyal_yield.balance_sweep_scheduled_slots WHERE id=$1`, owned.slot).Scan(&status, &lastError, &waits); err != nil {
+		if err := owned.store.pool.QueryRow(ctx, `SELECT status::text, last_error, eligible_after > now() + interval '4 minutes', idle_blocked_since FROM loyal_yield.balance_sweep_scheduled_slots WHERE id=$1`, owned.slot).Scan(&status, &lastError, &waits, &since); err != nil {
 			t.Fatal(err)
 		}
-		return status, lastError, waits
+		return status, lastError, waits, since
 	}
-	var since string
+	var first time.Time
 	for deferral := 1; deferral <= 3; deferral++ {
 		report, err := worker.Tick(ctx)
 		if err != nil || report.Outcome.ExecutionsDeferred != 1 || len(report.Alerts) != 0 || len(owned.wires.built) != 0 || report.settled() {
 			t.Fatalf("deferral %d: outcome %+v alerts %v built %v: %v", deferral, report.Outcome, report.Alerts, owned.wires.built, err)
 		}
-		status, lastError, waits := marker()
-		prefix := "existing idle vault balance must drain before direct autodeposit: 25000001 [idle_blocked_since="
-		suffix := "; idle_deferrals=" + strconv.Itoa(deferral) + "]"
-		if status != "scheduled" || !waits || !strings.HasPrefix(lastError, prefix) || !strings.HasSuffix(lastError, suffix) {
+		status, lastError, waits, since := block()
+		if status != "scheduled" || !waits || lastError != idleDeferralPrefix+"25000001" {
 			t.Fatalf("deferral %d left slot %s %q (waits %v)", deferral, status, lastError, waits)
 		}
-		blocked := strings.TrimSuffix(strings.TrimPrefix(lastError, prefix), suffix)
-		if since != "" && blocked != since {
-			t.Fatalf("first-blocked time moved from %s to %s", since, blocked)
+		if !first.IsZero() && !since.Equal(first) {
+			t.Fatalf("first-blocked time moved from %s to %s", first, since)
 		}
-		since = blocked
+		first = since
 		elapseReleaseDelay(t, owned.store, owned.target.TargetID)
 	}
 	var claims int
@@ -165,8 +161,8 @@ func TestIdleAboveToleranceDefersBeforeClaimingWithADurableMarker(t *testing.T) 
 		t.Fatal("a deferral was counted as a failure")
 	}
 
-	// Blocked for two hours: the gauge reads the marker's first-blocked clock.
-	if _, err := owned.store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET last_error = regexp_replace(last_error, 'idle_blocked_since=[0-9]+', 'idle_blocked_since=' || (extract(epoch FROM now())::bigint - 7200)) WHERE id=$1`, owned.slot); err != nil {
+	// Blocked for two hours: the gauge reads the first-blocked time.
+	if _, err := owned.store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET idle_blocked_since = now() - interval '2 hours' WHERE id=$1`, owned.slot); err != nil {
 		t.Fatal(err)
 	}
 	if err := worker.passFacts(ctx); err != nil {

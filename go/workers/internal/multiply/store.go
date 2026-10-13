@@ -1016,7 +1016,7 @@ func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteStat
 	}
 	// Inactive targets may still own previously signed or selected attempts.
 	var sweep bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets target WHERE target.vault_pubkey=$1 AND target.vault_index=$2 AND ((target.desired_active AND target.chain_status='active') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims claim WHERE claim.target_id=target.id AND claim.status='selected') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts attempt WHERE attempt.target_id=target.id AND (attempt.attempt_state IN ('prepared','submitted','unknown','ambiguous') OR (attempt.attempt_state='confirmed' AND EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims unresolved WHERE unresolved.claim_token=attempt.claim_token AND unresolved.status<>'executed'))))))`, route.Vault, route.VaultIndex).Scan(&sweep); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets target WHERE target.vault_pubkey=$1 AND target.vault_index=$2 AND ((target.desired_active AND target.chain_status='active') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims claim WHERE claim.target_id=target.id AND claim.status='selected') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts attempt WHERE attempt.target_id=target.id AND (attempt.attempt_state IN ('prepared','submitted') OR (attempt.attempt_state='confirmed' AND EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims unresolved WHERE unresolved.claim_token=attempt.claim_token AND unresolved.status<>'executed'))))))`, route.Vault, route.VaultIndex).Scan(&sweep); err != nil {
 		return err
 	}
 	if sweep {

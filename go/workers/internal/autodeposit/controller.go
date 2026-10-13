@@ -37,9 +37,12 @@ type WireBuilder interface {
 	BuildTopUp(ctx context.Context, request TopUpWireRequest) (BuiltWire, error)
 	// ProveTopUpWire verifies a persisted top-up attempt's immutable wire
 	// byte-for-byte against the frozen plan and confirmed route.
-	ProveTopUpWire(plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error
+	ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error
 	// FeePayer is the account that pays for every wire this builder signs.
 	FeePayer() string
+	// The destination's account setup, inspected, built and read back before
+	// any pull: a stage the chain already holds returns no plan.
+	DestinationSetupBuilder
 }
 
 // PullWireRequest freezes every input of one pull wire.
@@ -153,9 +156,6 @@ func (c *Controller) release(scope executionScope, claimToken string, result Exe
 // Execute resolves one dispatchable target and reports its end state through
 // a typed family outcome. Errors retain the outcome reached before the failure.
 func (c *Controller) Execute(ctx context.Context, target ExecutableTarget) (ExecutorResult, error) {
-	if err := c.store.requireMainnetTarget(ctx, target.TargetID); err != nil {
-		return ResultRecoveryPending, err
-	}
 	if target.isRecovery() {
 		return c.executeRecovery(ctx, target)
 	}
@@ -193,9 +193,6 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 	}
 	if attempt.State == AttemptConfirmed || attempt.State == AttemptFailed || attempt.State == AttemptExpired {
 		return Settlement{Attempt: attempt}, nil
-	}
-	if err := c.store.requireMainnetClaim(scope.ctx, attempt.ClaimToken); err != nil {
-		return Settlement{}, err
 	}
 	wire, err := base64StdDecode(attempt.SignedTransactionBase64)
 	if err != nil {
@@ -281,13 +278,9 @@ func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarge
 		}
 		return ResultDependencyUnavailable, err
 	}
-	if alert := AlertForAttemptState(settlement.Attempt.State); alert != nil {
-		return ResultTransactionEffectAmbig, nil
-	}
-	if settlement.Attempt.State == AttemptUnknown || settlement.Attempt.State == AttemptSubmitted ||
-		settlement.Attempt.State == AttemptPrepared {
-		// Unknown is never released and never retried generically: only the
-		// settlement protocol may resolve it.
+	if settlement.Attempt.State == AttemptSubmitted || settlement.Attempt.State == AttemptPrepared {
+		// A wire that may still land is never released and never retried
+		// generically: only the settlement protocol may resolve it.
 		return ResultRecoveryPending, nil
 	}
 	if !AttemptAllowsSafeRequeue(settlement.Attempt.State) {
@@ -341,6 +334,11 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	}
 	remainingAllowance, err := c.readRemainingAllowance(ctx, targetContext)
 	if err != nil {
+		// An unreadable allowance does not clear within one poll; the slot
+		// waits like an idle-blocked one instead of being due every pass.
+		if _, deferErr := c.store.DeferScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID, err.Error(), false); deferErr != nil {
+			return ResultDependencyUnavailable, errors.Join(err, deferErr)
+		}
 		return ResultDeferred, err
 	}
 	// Rust fleet same-mint routes withdraw all source collateral but deposit
@@ -359,7 +357,7 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 		return ResultDependencyUnavailable, err
 	}
 	if custody > c.idleToleranceRaw && walletBalance > targetContext.WalletBalanceFloorRaw && *remainingAllowance > 0 {
-		deferred, err := c.store.DeferIdleScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID, custody)
+		deferred, err := c.store.DeferScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID, fmt.Sprintf("%s%d", idleDeferralPrefix, custody), true)
 		if err != nil {
 			return ResultDependencyUnavailable, err
 		}
@@ -372,7 +370,7 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	if err != nil {
 		return ResultUnknown, err
 	}
-	claim, err := c.store.ClaimEligibleLotsOnce(ctx, target.TargetID, claimToken, &target.ScheduledSlotID,
+	claim, err := c.store.ClaimEligibleLotsOnce(ctx, target.TargetID, claimToken, target.ScheduledSlotID,
 		walletBalance, targetContext.WalletBalanceFloorRaw, targetContext.MaxAmountPerPeriodRaw, remainingAllowance)
 	if err != nil {
 		return ResultClaimTransitionFailed, err
@@ -390,11 +388,8 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	// Freeze amount and destination before any pull wire exists. No fleet move
 	// updates the position pointer; the vault's observed holding is the
 	// destination. Only a fresh claim may redirect: a frozen plan is immutable.
-	if err := c.store.ResolveDepositReserve(scope.ctx, targetContext, time.Now()); err != nil {
+	if err := c.store.ResolveDepositReserve(scope.ctx, targetContext); err != nil {
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
-	}
-	if !targetContext.hasReserveIdentity() {
-		return c.release(scope, claimToken, ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no observed reserve identity", target.TargetID))
 	}
 	plan := targetContext.depositPlan(claim.AmountRaw)
 	frozen, err := c.store.FreezeDepositPlan(scope.ctx, claimToken, scope.leaseToken, plan)
@@ -433,7 +428,8 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	}
 	allowance, err := c.readRemainingAllowance(scope.ctx, targetContext)
 	if err != nil {
-		return ResultDeferred, err
+		// Nothing moved: release, so the slot waits PreSendRetryDelay.
+		return c.release(scope, claimToken, ResultDeferred, err)
 	}
 	if walletBalance < frozen.AmountRaw || targetContext.WalletBalanceFloorRaw < 0 || walletBalance-frozen.AmountRaw < targetContext.WalletBalanceFloorRaw || *allowance < frozen.AmountRaw || (targetContext.MaxAmountPerPeriodRaw != nil && *targetContext.MaxAmountPerPeriodRaw < frozen.AmountRaw) {
 		return c.release(scope, claimToken, ResultDeferred, nil)
@@ -519,13 +515,7 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 }
 
 func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken string, plan DepositPlan) (bool, error) {
-	if err := c.store.requireMainnetTarget(scope.ctx, plan.Target.ID); err != nil {
-		return false, err
-	}
-	builder, ok := c.wires.(DestinationSetupBuilder)
-	if !ok {
-		return true, nil
-	} // Existing exact-route test adapters have no setup capability.
+	builder := c.wires
 	for stage := 0; stage < 4; stage++ {
 		current, err := c.store.LoadTargetExecutionContext(scope.ctx, plan.Target.ID)
 		if err != nil {
@@ -622,9 +612,6 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 			}
 			return ResultDependencyUnavailable, err
 		}
-		if alert := AlertForAttemptState(settlement.Attempt.State); alert != nil {
-			return ResultTransactionEffectAmbig, nil
-		}
 		if settlement.Attempt.State != AttemptConfirmed {
 			return ResultRecoveryPending, nil
 		}
@@ -678,11 +665,8 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 			}
 			return ResultDependencyUnavailable, err
 		}
-		if alert := AlertForAttemptState(settlement.Attempt.State); alert != nil {
-			return ResultTransactionEffectAmbig, nil
-		}
 		if settlement.Attempt.State != AttemptConfirmed {
-			// Unknown or submitted custody stays claimed; it is never released.
+			// Prepared or submitted custody stays claimed; it is never released.
 			return ResultRecoveryPending, nil
 		}
 		pull = settlement
@@ -700,15 +684,7 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	if err != nil {
 		return ResultKaminoTopUpFailed, err
 	}
-	var proofErr error
-	if contextual, ok := c.wires.(interface {
-		ProveTopUpWireContext(context.Context, DepositPlan, DurableAttempt, TopUpRoute) error
-	}); ok {
-		proofErr = contextual.ProveTopUpWireContext(scope.ctx, plan, pull.Attempt, route)
-	} else {
-		proofErr = c.wires.ProveTopUpWire(plan, pull.Attempt, route)
-	}
-	if err := proofErr; err != nil {
+	if err := c.wires.ProveTopUpWire(scope.ctx, plan, pull.Attempt, route); err != nil {
 		return unanswered(ResultTransactionEffectAmbig, err)
 	}
 	if err := c.verifyTopUpEffects(scope.ctx, plan, route, pull); err != nil {
@@ -816,9 +792,6 @@ func (c *Controller) verifyTopUpEffects(ctx context.Context, plan DepositPlan, r
 // custody credited exactly the planned amount, in the frozen mint, at a slot
 // that does not precede the recorded confirmation.
 func (c *Controller) verifyPullEffects(ctx context.Context, plan DepositPlan, attempt DurableAttempt) error {
-	if err := c.store.requireMainnetTarget(ctx, plan.Target.ID); err != nil {
-		return err
-	}
 	if attempt.State != AttemptConfirmed {
 		return fmt.Errorf("pull %s is %s, not confirmed; its effects cannot be verified", attempt.Signature, attempt.State)
 	}
@@ -866,14 +839,6 @@ func validatePullReceipt(plan DepositPlan, attempt DurableAttempt, receipt Recei
 // frozen identity. Unknown is deferred, never a zero cap; a conclusive zero is
 // a hard stop.
 func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *TargetExecutionContext) (*int64, error) {
-	var nonce *uint64
-	if targetContext.RecurringDelegationNonce != nil {
-		if *targetContext.RecurringDelegationNonce < 0 {
-			return nil, ErrAllowanceUnknown
-		}
-		value := uint64(*targetContext.RecurringDelegationNonce)
-		nonce = &value
-	}
 	now := time.Now().Unix()
 	if targetContext.PeriodLengthSeconds != nil && *targetContext.PeriodLengthSeconds <= 0 {
 		return nil, ErrAllowanceUnknown
@@ -890,7 +855,7 @@ func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *
 		Delegator:          targetContext.Wallet,
 		Delegatee:          targetContext.VaultPubkey,
 		Mint:               targetContext.TokenMint,
-		Nonce:              nonce,
+		Nonce:              targetContext.RecurringDelegationNonce,
 		WalletTokenAccount: targetContext.WalletUsdcAta,
 	})
 	if err != nil {
@@ -950,12 +915,6 @@ func (c *Controller) holdClaimLease(parent context.Context, claimToken string, t
 }
 
 func (t *TargetExecutionContext) hasRouteIdentity() bool { return t.RoutePolicy != nil }
-
-func (t *TargetExecutionContext) hasReserveIdentity() bool {
-	return t.CurrentReserve != nil && *t.CurrentReserve != "" &&
-		t.CurrentMarket != nil && *t.CurrentMarket != "" &&
-		t.CurrentLiquidityMint != nil && *t.CurrentLiquidityMint != ""
-}
 
 // depositPlan freezes the sweep into the immutable plan shape. The frozen
 // identity comes from the observed context at freeze time; recovery never

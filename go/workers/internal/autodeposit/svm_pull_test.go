@@ -273,25 +273,17 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e != nil {
 		t.Fatalf("destination must be executable before the wallet pull: %v", e)
 	}
-	// The producer's canonical creator actually executed through real SBF. These
-	// balances/signature are its real metadata, not a controlled RPC success.
-	creatorWire, e := base64.StdEncoding.DecodeString(f.PolicyCreator.WireBase64)
-	if e != nil {
-		t.Fatal(e)
+	// The control reconciler accepts the actual policy, delegation and token
+	// approval the canonical source created through real SBF.
+	target := ControlTarget{TargetID: 1, SetupGeneration: 1, PolicySeed: f.PolicySeed, Nonce: f.Nonce, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, MaxAmountPerPeriod: &f.BudgetRaw, StartTimestamp: &f.StartTimestamp}
+	if observation, e := builder.ObserveControl(t.Context(), target, 1000); e != nil || observation.status() != "active" {
+		t.Fatalf("actual canonical source authorization accounts: %+v %v", observation, e)
 	}
-	target := ArtifactTarget{ControlTarget: ControlTarget{Cluster: mainnetCluster, TargetID: 1, SetupGeneration: 1, PolicySeed: f.PolicySeed, Settings: f.Settings, Wallet: f.Wallet, WalletTokenATA: f.WalletATA, Vault: f.Vault, VaultTokenATA: f.VaultATA, Mint: USDCMint, Policy: f.Policy, SubscriptionAuthority: f.SubscriptionAuthority, RecurringDelegation: f.RecurringDelegation, Nonce: &f.Nonce, MaxAmountPerPeriod: &f.BudgetRaw, StartTimestamp: &f.StartTimestamp}, RootAuthority: f.Wallet, PeriodLength: &f.PeriodLength, ExpiryTimestamp: &f.ExpiryTimestamp}
-	if e = builder.proveArtifactAccounts(t.Context(), target, 1000); e != nil {
-		t.Fatalf("actual canonical source authorization accounts: %v", e)
-	}
-	if _, e = builder.verifyArtifactCreator(t.Context(), target, ArtifactPolicy, solana.MustSignatureFromBase58(f.PolicyCreator.Signature), chain.Receipt{Slot: uint64(f.PolicyCreator.Slot), Wire: creatorWire, PreLamports: f.PolicyCreator.PreLamports, PostLamports: f.PolicyCreator.PostLamports}); e != nil {
-		t.Fatalf("actual canonical creator receipt: %v", e)
-	}
-	nonce := uint64(f.Nonce)
-	identity := DelegationIdentity{Account: f.RecurringDelegation, Delegator: f.Wallet, Delegatee: f.Vault, Mint: USDCMint, Nonce: &nonce, WalletTokenAccount: f.WalletATA}
+	identity := DelegationIdentity{Account: f.RecurringDelegation, Delegator: f.Wallet, Delegatee: f.Vault, Mint: USDCMint, Nonce: uint64(f.Nonce), WalletTokenAccount: f.WalletATA}
 	if allowance, err := rpcChain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); err != nil || allowance != f.BudgetRaw {
 		t.Fatalf("actual allowance=%d err=%v", allowance, err)
 	}
-	nonce++
+	identity.Nonce++
 	if _, e = rpcChain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); e == nil {
 		t.Fatal("frozen nonce mismatch admitted")
 	}
@@ -425,7 +417,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e != nil || tx.Signatures[0].String() != wire.Signature {
 		t.Fatal("actual signed wire identity lost")
 	}
-	nonce = uint64(f.Nonce)
+	identity.Nonce = uint64(f.Nonce)
 	if allowance, err := rpcChain.RemainingDelegationAllowanceRaw(t.Context(), f.RecurringDelegation, identity); err != nil || allowance != f.BudgetRaw-f.AmountRaw {
 		t.Fatalf("actual post-pull allowance=%d err=%v", allowance, err)
 	}
@@ -435,7 +427,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	}
 	top := svmDurablePull(topWire, f.AmountRaw)
 	top.OperationKind = OperationTopUp
-	if e = builder.ProveTopUpWireContext(t.Context(), plan, top, route); e != nil {
+	if e = builder.ProveTopUpWire(t.Context(), plan, top, route); e != nil {
 		t.Fatalf("immutable official top-up wire: %v", e)
 	}
 	if e = rpcChain.SimulateExact(t.Context(), top); e != nil {

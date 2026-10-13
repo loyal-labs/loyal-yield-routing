@@ -26,20 +26,20 @@ type TargetExecutionContext struct {
 	// the target has no recurring delegation: a pull can never be authorized,
 	// which is a quarantine condition, not a zero allowance.
 	RecurringDelegation      string
+	RecurringDelegationNonce uint64
 	WalletBalanceFloorRaw    int64
 	MaxAmountPerPeriodRaw    *int64
 	PeriodLengthSeconds      *int64
 	StartTimestamp           *int64
-	RecurringDelegationNonce *int64
 	ExpiryTimestamp          *int64
 	// RoutePolicy identifies the active same_mint_kamino policy the fresh
 	// loader already demanded. A nil RoutePolicy on a recovery row means the
 	// policy changed under a claim holding custody: recovery still runs, but
 	// the frozen plan, not the live policy, decides the destination.
 	RoutePolicy *RoutePolicyContext
-	// CurrentReserve/Market/LiquidityMint come from the latest active
-	// user_yield_positions row. All three are required before a NEW plan may
-	// be frozen; recovery reads the plan it already has.
+	// CurrentReserve/Market/LiquidityMint are the destination a fresh claim
+	// resolves from the vault's observed holdings (ResolveDepositReserve);
+	// recovery reads the plan it already has.
 	CurrentReserve       *string
 	CurrentMarket        *string
 	CurrentLiquidityMint *string
@@ -68,9 +68,9 @@ SELECT
     target.settings,
     target.vault_index,
     target.wallet,
-    COALESCE(target.wallet_usdc_ata, target.wallet_token_ata, ''),
+    target.wallet_token_ata,
     target.vault_pubkey,
-    COALESCE(target.vault_usdc_ata, target.vault_token_ata, ''),
+    target.vault_token_ata,
     target.token_mint,
     COALESCE(target.recurring_delegation, ''),
     target.wallet_balance_floor_raw,
@@ -85,10 +85,7 @@ SELECT
     policy.policy_account,
     policy.policy_seed,
     policy.managed_vault_id,
-    policy.last_seen_slot,
-    position.current_reserve,
-    position.current_market,
-    position.current_liquidity_mint
+    policy.last_seen_slot
 FROM loyal_yield.balance_sweep_targets AS target
 LEFT JOIN loyal_yield.managed_vaults AS setup_vault
   ON setup_vault.settings=target.settings
@@ -122,19 +119,7 @@ LEFT JOIN LATERAL (
       AND mv.active = true
     LIMIT 1
 ) AS policy ON TRUE
-LEFT JOIN LATERAL (
-    SELECT yp.current_reserve, yp.current_market, yp.current_liquidity_mint
-    FROM loyal_yield.user_yield_positions AS yp
-    WHERE yp.settings = target.settings
-      AND yp.vault_index = target.vault_index
-      AND yp.wallet_address = target.wallet
-      AND yp.status = 'active'
-      AND yp.current_liquidity_mint = target.token_mint
-    ORDER BY yp.updated_at DESC, yp.id DESC
-    LIMIT 1
-) AS position ON TRUE
 WHERE target.id = $1
-  AND target.cluster = 'mainnet-beta'
   AND target.token_mint = $2`, targetID, USDCMint)
 	if err != nil {
 		return nil, fmt.Errorf("load autodeposit target context %d: %w", targetID, err)
@@ -149,6 +134,7 @@ WHERE target.id = $1
 	var context TargetExecutionContext
 	var (
 		floor         *int64
+		nonce         *int64
 		policyID      *int64
 		policyAccount *string
 		policySeed    *int64
@@ -161,10 +147,9 @@ WHERE target.id = $1
 		&context.WalletUsdcAta, &context.VaultPubkey, &context.VaultUsdcAta,
 		&context.TokenMint, &context.RecurringDelegation, &floor,
 		&context.MaxAmountPerPeriodRaw, &context.PeriodLengthSeconds, &context.StartTimestamp,
-		&context.RecurringDelegationNonce, &context.ExpiryTimestamp,
+		&nonce, &context.ExpiryTimestamp,
 		&context.FreshActionable, &setupPolicy,
 		&policyID, &policyAccount, &policySeed, &vaultID, &lastSeen,
-		&context.CurrentReserve, &context.CurrentMarket, &context.CurrentLiquidityMint,
 	); err != nil {
 		return nil, fmt.Errorf("scan autodeposit target context %d: %w", targetID, err)
 	}
@@ -175,6 +160,11 @@ WHERE target.id = $1
 		return nil, fmt.Errorf("autodeposit target %d has no configured wallet balance floor", targetID)
 	}
 	context.WalletBalanceFloorRaw = *floor
+	// A delegation always carries its nonce (balance_sweep_targets CHECK); a
+	// target without one has neither.
+	if nonce != nil {
+		context.RecurringDelegationNonce = uint64(*nonce)
+	}
 	if setupPolicy != nil {
 		context.SetupPolicyAccount = *setupPolicy
 	}
