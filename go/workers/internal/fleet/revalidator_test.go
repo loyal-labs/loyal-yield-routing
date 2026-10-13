@@ -390,19 +390,39 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	if err != nil || finalLease == nil {
 		t.Fatalf("ready recovery claim: %+v %v", finalLease, err)
 	}
-	// Another vault's admitted move fills the target's 2% frontier: this
-	// admission re-plans instead of exceeding it.
+	// Another vault's move into the target is admitted while this admission
+	// waits on the target's lock, and fills its 2% frontier: once it holds
+	// the lock, this admission sees that move and re-plans instead of
+	// exceeding the frontier.
 	otherSuffix := suffix + "-frontier"
 	otherVault := seedWorkerVault(t, ctx, store, otherSuffix, market, source.Address)
 	other := loadTestPosition(t, ctx, store, otherVault, source)
 	other.AmountRaw, other.SourceCollateralAmountRaw = 20_000_000_000_000, 20_000_000_000_000
 	otherID, _ := publishTestMove(t, ctx, store, cluster, snapshot, other, target.Address)
-	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='leased',lease_kind='execute',lease_owner='other-executor',lease_expires_at=clock_timestamp()+interval '1 minute',route_fingerprint='route',requirements_fingerprint='requirements' WHERE id=$1`, otherID); err != nil {
+	rival, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rival.Rollback(ctx)
+	if err = LockReserves(ctx, rival, cluster, target.Address); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = rival.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='leased',lease_kind='execute',lease_owner='other-executor',lease_expires_at=clock_timestamp()+interval '1 minute',route_fingerprint='route',requirements_fingerprint='requirements' WHERE id=$1`, otherID); err != nil {
 		t.Fatal(err)
 	}
 	final := RevalidationCommit{Disposition: "fused_execute", Preparation: prepared, ConflictKeys: []string{"vault:" + position.VaultPubkey}, ExpectedOpportunityKey: finalLease.IdempotencyKey, TargetObservedSupplyUSDMicros: 1_000_000_000_000_000, TargetObservedSlot: 1000, SourceAvailableLiquidityRaw: &ampleRaw, TargetDepositRoomRaw: &ampleRaw}
+	admission := make(chan error, 1)
+	go func() { admission <- store.commitRevalidation(ctx, *finalLease, final, nil) }()
+	for waiting := 0; waiting == 0; {
+		if err = store.pool.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = rival.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	var replan *CapacityReplan
-	if err = store.commitRevalidation(ctx, *finalLease, final, nil); !errors.As(err, &replan) || replan.Reason != "target_capacity_exhausted" {
+	if err = <-admission; !errors.As(err, &replan) || replan.Reason != "target_capacity_exhausted" {
 		t.Fatalf("an admission past the target frontier was accepted: %v", err)
 	}
 	if _, err = store.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET created_at=created_at-interval '1 minute',lease_expires_at=clock_timestamp()-interval '1 second' WHERE vault_id=$1`, otherVault); err != nil {

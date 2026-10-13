@@ -398,7 +398,12 @@ func (s *Store) commitRevalidation(ctx context.Context, lease RevalidationLease,
 	if input.Preparation == nil {
 		return errors.New("every disposition requires exact route and requirements evidence")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	// Read committed, as cross-mint activation is: every fence below is a row
+	// lock, an advisory lock or a guarded write, and admission must read the
+	// moves committed while it waited on the reserve locks. A serializable
+	// snapshot is taken at the first statement, before those locks, and would
+	// miss them.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
