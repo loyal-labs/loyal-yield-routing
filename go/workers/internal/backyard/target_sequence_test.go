@@ -345,6 +345,13 @@ func TestTargetOperatorExit(t *testing.T) {
 	if b.voltr != 100_000_000_000 || b.equity() != 0 {
 		t.Fatalf("equity-0 exit left Voltr %d equity %d", b.voltr, b.equity())
 	}
+	// A deposit a capped exit step left at dust is residue, not a leg: the
+	// exit is done.
+	b = mapleBook(1.5, false)
+	b.in.Exits = map[string]laneExit{SelectedRouteID: {EquityZero: true}}
+	l := b.lane(SelectedRouteID)
+	l.coll, l.debt = partialWithdrawalDustRaw, 0
+	wantSteps(t, b.walk(t, 3), "HOLD:"+holdAtTarget)
 	// A withdrawal from a lane at debt 0 releases straight to USDC: release,
 	// stage.
 	b = mapleBook(1.5, false)

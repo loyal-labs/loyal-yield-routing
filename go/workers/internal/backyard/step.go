@@ -47,7 +47,8 @@ type StepExecutionEvidence struct {
 // move reports a step that converts nothing: an overflow move.
 func (r StepRequest) move() bool { return r.Swap == nil && r.Hastra == nil }
 
-// exit reports a step that closes nothing: an equity-zero exit's last step.
+// exit reports a step that closes nothing: a withdrawal beside no debt (an
+// equity-zero exit's last step, a debt-free release).
 func (r StepRequest) exit() bool { return r.Close == nil }
 
 // conversion is the step's conversion request, whichever venue converts it.

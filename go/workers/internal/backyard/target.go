@@ -208,7 +208,7 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		if l.exit == nil || !l.held {
 			continue
 		}
-		if s.PositionDebtRaw > 0 || (l.exit.EquityZero && s.PositionCollateralRaw > 0) {
+		if s.PositionDebtRaw > 0 || (l.exit.EquityZero && s.PositionCollateralRaw > partialWithdrawalDustRaw) {
 			return i, LaneTarget{Rule: ruleOperatorExit, Level: 1, EquityZero: l.exit.EquityZero, Outbound: l.exit.EquityZero}
 		}
 	}
@@ -562,7 +562,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 	if s.SquadsIdleRaw > 0 {
 		return d(StageSquadsToVoltr, outboundStageReason, s.SquadsIdleRaw), true
 	}
-	if t.EquityZero && s.PositionDebtRaw == 0 && s.PositionCollateralRaw > 0 {
+	if t.EquityZero && s.PositionDebtRaw == 0 && s.PositionCollateralRaw > partialWithdrawalDustRaw {
 		// One step withdraws and converts it to USDC: none of it waits in a
 		// custody other lanes share.
 		return d(DeleverRouteStep, exitWithdrawReason, stepDownMarker), true

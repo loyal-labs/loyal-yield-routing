@@ -33,7 +33,8 @@ authority.
    as USDC: one atomic step withdraws it and swaps it to USDC in the Squads
    bridge account, so none of it waits in a custody another lane shares.
    That USDC is vault cash: a withdrawal stages it to Voltr, otherwise rule 5
-   tops up the home lane with it (with none, it returns to Voltr).
+   tops up the home lane with it. A deposit left at or under dust is
+   rounding residue, not a leg: the exit is done.
 4. **Custody in flight** finishes first: collateral a held lane's next leg
    takes (above dust and, for a deposit, at least the one collateral receipt
    KLend mints; less is vault cash its next step takes whole), in the

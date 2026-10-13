@@ -259,7 +259,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
-	if !up && st.position.DebtRaw == 0 {
+	if decision.Reason == exitWithdrawReason || (decision.Reason == releaseReason && st.position.DebtRaw == 0) {
 		// An exit withdraws the deposit, a release its equity's share, and
 		// converts it with the held collateral to USDC: nothing it withdraws
 		// waits in a custody other lanes may share.
