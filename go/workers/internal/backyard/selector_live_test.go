@@ -273,3 +273,15 @@ func TestLiveSelectorLadderStopsAfterQuoteWindowBudget(t *testing.T) {
 		t.Fatal("ladder priced smaller sizes after its budget", err, quotes, legs)
 	}
 }
+
+func TestCanaryQuotedBelowGainCeiling(t *testing.T) {
+	t.Parallel()
+	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
+	// No size's gain ceiling clears this minimum, yet an operator canary skips
+	// the benefit check, so its size is still quoted.
+	policy.MinimumBenefitRaw = 1_000_000_000
+	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, SelectedRouteID, "", 10_000_000)
+	if err != nil || len(quotes) != 1 || quotes[0].EquityRaw != 10_000_000 {
+		t.Fatal("canary size not quoted below the gain ceiling", err, quotes)
+	}
+}

@@ -126,7 +126,7 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 		wg.Add(1)
 		go func(j int) {
 			defer wg.Done()
-			laddered[j], refusals[j] = pricer.ladder(ctx, o, markets, policy, out[jobs[j].i], jobs[j].source, jobs[j].maximum)
+			laddered[j], refusals[j] = pricer.ladder(ctx, o, markets, policy, out[jobs[j].i], jobs[j].source, jobs[j].maximum, len(canaryMaximum) > 0)
 		}(j)
 	}
 	wg.Wait()
@@ -163,8 +163,9 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 // ladder prices one move into market's lane, of cash or of source's
 // tranche, at up to selectorLadderRungs exact sizes from maximum down, and
 // returns the collected quotes, or the refusal that labels the move when
-// none collects.
-func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEconomics, policy SelectorPolicy, market LaneEconomics, source *Snapshot, maximum uint64) ([]MoveQuote, string) {
+// none collects. An operator canary skips the benefit check, so its sizes
+// are quoted whatever their gain ceiling.
+func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEconomics, policy SelectorPolicy, market LaneEconomics, source *Snapshot, maximum uint64, canary bool) ([]MoveQuote, string) {
 	from := "cash"
 	if source != nil {
 		from = source.RouteLane
@@ -211,7 +212,7 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 		}
 		// A size whose gain ceiling cannot clear MinimumBenefit is not
 		// quoted, nor is any smaller one.
-		if moveGainCeiling(source, ms, market, int64(min(size, math.MaxInt64)), policy) <= float64(policy.MinimumBenefitRaw) {
+		if !canary && moveGainCeiling(source, ms, market, int64(min(size, math.MaxInt64)), policy) <= float64(policy.MinimumBenefitRaw) {
 			if j == 0 {
 				refusal = gainBelowMinimumBenefit
 			}
