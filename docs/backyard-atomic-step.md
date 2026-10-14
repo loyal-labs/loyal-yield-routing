@@ -126,8 +126,11 @@ the one v1 compiler (`message_v1.go`).
 
 - The compute budget lives in the v1 message config, not in ComputeBudget
   instructions: the CU limit is always set (200,000 per instruction, at most
-  1,400,000), AUTO-collateral lanes request a 64 KiB heap, and loaded account
-  data is capped at 64 MiB. The config's priority fee (a lamport total, not a
+  1,400,000), every transaction requests a 64 KiB heap (what Squads allocates
+  to execute a policy grows with the policy and the inner instruction's
+  accounts: the looping vault's first Maple entry swap overran the default
+  32 KiB on mainnet on 2026-10-14), and loaded account data is capped at
+  64 MiB. The config's priority fee (a lamport total, not a
   per-CU price) is left unset, as Backyard set none before.
 - RPC reads ask for `maxSupportedTransactionVersion` of at least 1.
 - The binding limit is the 64 keys, not the bytes: a step's Jupiter route is

@@ -128,12 +128,7 @@ func readStepState(v *Vault, accounts []ConfirmedAccount, route RuntimeRoute, sl
 	if sharedUSDCDebt(route.Lane) {
 		st.heldDebt = 0
 	}
-	if position.CollateralDepositedRaw > 0 {
-		st.topology = append(st.topology, route.Kamino.CollateralReserve)
-	}
-	if position.DebtRaw > 0 {
-		st.topology = append(st.topology, route.Kamino.DebtReserve)
-	}
+	st.topology = obligationTopology(obligation)
 	return st, nil
 }
 
@@ -516,16 +511,12 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	if account.Address != destination.Kamino.Obligation || account.Lamports == 0 {
 		return StepExecutionEvidence{}, budgetHold("overflow_obligation_absent")
 	}
-	obligation, err := decodeKaminoObligation(account, destination.Kamino)
-	if err != nil {
+	if _, err := decodeKaminoObligation(account, destination.Kamino); err != nil {
 		return StepExecutionEvidence{}, err
 	}
-	topology := []string{}
-	if obligation.collateralDepositedRaw > 0 {
-		topology = append(topology, destination.Kamino.CollateralReserve)
-	}
-	if obligation.debtRaw > 0 {
-		topology = append(topology, destination.Kamino.DebtReserve)
+	topology, err := observedObligationTopology(accounts, destination)
+	if err != nil {
+		return StepExecutionEvidence{}, err
 	}
 	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {

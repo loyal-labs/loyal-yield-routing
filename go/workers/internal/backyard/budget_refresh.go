@@ -21,7 +21,7 @@ func budgetReserveRefreshInstructions(v *Vault, lane string) ([]compiledInstruct
 	seen := map[publicKey]bool{}
 	var instructions []compiledInstruction
 	for _, id := range []string{lane, PhaseOneLaneID} {
-		prefix := kaminoPrimeUSDCRefreshInstructionsForRoute(v, kaminoLegDeposit, id)
+		prefix := kaminoPrimeUSDCRefreshInstructionsForRoute(v, id)
 		if len(prefix) != 3 {
 			return nil, budgetHold("price_refresh_binding_unavailable")
 		}

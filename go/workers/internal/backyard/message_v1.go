@@ -28,10 +28,15 @@ const (
 	// what a transaction loads is mostly program code, which changes with
 	// every upgrade, so a measured limit would fail after one.
 	loadedAccountsDataBytes = 64 << 20
-	// autoExecutionHeapBytes is the heap the deployed Squads ELF needs to
-	// parse and execute the AUTO lanes' eight-constraint KLend policy and
-	// the Hastra policy (32 KiB failed in LiteSVM, 64 KiB is the tested value).
-	autoExecutionHeapBytes = 64 * 1024
+	// squadsExecutionHeapBytes is the heap the deployed Squads ELF needs to
+	// execute a policy: what it allocates grows with the policy and with the
+	// inner instruction's accounts, so the runtime's default 32 KiB fits some
+	// transactions and not others. It failed the AUTO lanes' eight-constraint
+	// KLend policy and the Hastra policy in LiteSVM, and on mainnet the
+	// looping vault's first Maple entry swap through SwapRoutesA (2026-10-14:
+	// Squads wrote 2,992 bytes at heap offset 31,188 after Jupiter returned,
+	// 34,180 > 32,768). 64 KiB is the tested value.
+	squadsExecutionHeapBytes = 64 * 1024
 	// autoSwapComputeUnits: the live AUTO swap consumed 202,842 units, past
 	// one instruction's default meter.
 	autoSwapComputeUnits = 300_000
@@ -44,14 +49,15 @@ type v1Budget struct {
 
 // executionBudget is the budget of a lane's transaction of n instructions:
 // the meter a legacy transaction had (200,000 a instruction, at most the
-// runtime ceiling), at least an AUTO swap's need on the AUTO lanes, whose
-// policies also need the larger heap.
+// runtime ceiling), at least an AUTO swap's need on the AUTO lanes, and the
+// heap Squads needs: every Backyard transaction executes through a Squads
+// policy.
 func executionBudget(lane string, n int) v1Budget {
 	units := uint32(min(maxComputeUnits, instructionComputeUnits*max(n, 1)))
-	if !autoCollateralLane(lane) {
-		return v1Budget{units: units}
+	if autoCollateralLane(lane) {
+		units = max(units, autoSwapComputeUnits)
 	}
-	return v1Budget{units: max(units, autoSwapComputeUnits), heap: autoExecutionHeapBytes}
+	return v1Budget{units: units, heap: squadsExecutionHeapBytes}
 }
 
 // compileV1Message compiles instructions into the one message shape, payer

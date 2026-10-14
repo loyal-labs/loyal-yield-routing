@@ -266,15 +266,8 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if err != nil {
 		return Observation{}, KaminoExecutionEvidence{}, err
 	}
-	request.ObligationReserves = []string{}
-	if position.CollateralDepositedRaw > 0 {
-		request.ObligationReserves = append(request.ObligationReserves, route.Kamino.CollateralReserve)
-	}
-	if position.DebtRaw > 0 {
-		if position.CollateralDepositedRaw == 0 {
-			return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("Kamino obligation has debt without the pinned collateral reserve")
-		}
-		request.ObligationReserves = append(request.ObligationReserves, route.Kamino.DebtReserve)
+	if request.ObligationReserves, err = observedObligationTopology(accounts, route); err != nil {
+		return Observation{}, KaminoExecutionEvidence{}, err
 	}
 	effects, err := boundedKaminoDepositEffects(accounts, route, observation.Snapshot.Slot, wireAmount)
 	if err != nil {

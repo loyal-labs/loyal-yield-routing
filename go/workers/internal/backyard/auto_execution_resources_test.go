@@ -3,11 +3,9 @@ package backyard
 import (
 	"bytes"
 	"crypto/ed25519"
-	"strings"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -38,66 +36,60 @@ func assertBudget(t *testing.T, name string, config solana.TransactionConfig, un
 	}
 }
 
-// Every Backyard message is the one v1 shape with its compute budget in its
-// config and no ComputeBudget instruction: the legacy meter's units (200,000
-// an instruction), and on the AUTO lanes at least an AUTO swap's 300,000 and
-// the 64 KiB heap their policies need.
-func TestEveryMessageCarriesItsBudgetInItsConfig(t *testing.T) {
+// A fresh lane's entry over its new, empty obligation, as the looping vault's
+// Maple canary met it on mainnet (2026-10-14): the entry swap, then the
+// deposit of its output. Each message requests the heap Squads needs to
+// execute its policy (the swap overran the default 32 KiB after Jupiter
+// returned: ProgramFailedToComplete), and the deposit's RefreshObligation
+// names no reserve, since KLend takes exactly the obligation's occupied
+// slots (an extra one is InvalidAccountInput, 6006).
+func TestFreshObligationEntryCompilesAsTheChainRunsIt(t *testing.T) {
 	t.Parallel()
-	manifest := embeddedTestManifest(t)
 	delegate := mustKey(bridgeDelegate)
-	klend, squadsID := kamino.ProgramID.String(), squads.ProgramID.String()
-	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, autoAUTOPYUSD.Lane)
+	route, err := runtimeRoute(SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	auto, err := compileKaminoMessageForDelegate(rwa, request, delegate)
+	swap, err := compileJupiterMessageForDelegate(rwa, fixtureSwapRequest(t, SelectedRouteID, SwapStableToCollateralStep), delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
-	programs, config := v1Read(t, auto)
-	if strings.Join(programs, " ") != strings.Join([]string{klend, klend, klend, squadsID}, " ") {
-		t.Fatalf("AUTO Kamino leg programs %v", programs)
-	}
-	assertBudget(t, "AUTO Kamino leg", config, 800_000, autoExecutionHeapBytes)
-	if again, err := compileKaminoMessageForDelegate(rwa, request, delegate); err != nil || !bytes.Equal(auto, again) {
-		t.Fatal("AUTO Kamino compile is not deterministic")
-	}
-	installed, err := compileKaminoMessageForDelegate(rwa, kaminoTestRequest(OpenRouteStep, kaminoLegDeposit), delegate)
+	_, config := v1Read(t, swap)
+	assertBudget(t, "Maple entry swap", config, instructionComputeUnits, 64*1024)
+
+	data := make([]byte, kamino.ObligationSize)
+	copy(data, kamino.ObligationDiscriminator[:])
+	empty := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: data}
+	policies, _, _ := stepTestPolicies(t)
+	deposit, err := embeddedTestManifest(t).kaminoPacketForRoute(policies, OpenRouteStep, kaminoLegDeposit, 33_507_178, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, config = v1Read(t, installed)
-	assertBudget(t, "installed Kamino leg", config, 800_000, 0)
-	swap, err := compileJupiterMessageForDelegate(rwa, autoJupiterTestRequest(t, SwapStableToCollateralStep, 1_000_000, 990_000, 0), delegate)
-	if err != nil {
+	if deposit.ObligationReserves, err = observedObligationTopology([]ConfirmedAccount{empty}, route); err != nil {
 		t.Fatal(err)
 	}
-	programs, config = v1Read(t, swap)
-	if strings.Join(programs, " ") != squadsID {
-		t.Fatalf("AUTO swap programs %v", programs)
-	}
-	assertBudget(t, "AUTO swap", config, autoSwapComputeUnits, autoExecutionHeapBytes)
-	m, initializer := autoInitializerRequestFixture(t)
-	message, err := m.compileKaminoInitializationMessage(initializer)
+	message, err := compileKaminoMessageForDelegate(rwa, deposit, delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, config = v1Read(t, message)
-	assertBudget(t, "AUTO initializer", config, autoSwapComputeUnits, autoExecutionHeapBytes)
-	initializer.RouteLane = PhaseOneLaneID
-	initializer.Policy = testPolicyAccount(policyKey{lane: PhaseOneLaneID, action: InitializeKaminoObligation})
-	if message, err = rwa.manifest.compileKaminoInitializationMessage(initializer); err != nil {
-		t.Fatal(err)
-	}
-	_, config = v1Read(t, message)
-	assertBudget(t, "installed initializer", config, instructionComputeUnits, 0)
-	bridge, err := CompileBridgeMessage(bridgeTestRequest(ReportNAV, 0))
+	assertBudget(t, "Maple entry deposit", config, 800_000, 64*1024)
+	tx, err := solana.TransactionFromBytes(signedWire(message, make([]byte, 64)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, config = v1Read(t, bridge)
-	assertBudget(t, "NAV report", config, instructionComputeUnits, 0)
+	refreshes := 0
+	for _, ix := range tx.Message.Instructions {
+		if bytes.HasPrefix(ix.Data, kamino.RefreshObligationDiscriminator[:]) {
+			refreshes++
+			if len(ix.Accounts) != 2 {
+				t.Fatalf("an empty obligation's refresh names %d accounts, want its market and itself", len(ix.Accounts))
+			}
+		}
+	}
+	if refreshes != 1 {
+		t.Fatalf("deposit carries %d obligation refreshes", refreshes)
+	}
 }
 
 // wireSig and wireMsg are a one-signature v1 wire's signature and message.

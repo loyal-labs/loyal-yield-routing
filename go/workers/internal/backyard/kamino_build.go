@@ -35,9 +35,40 @@ type KaminoPrimeUSDCRequest struct {
 	LastValidBlockHeight int64
 	RouteLane            string
 	// ObligationReserves is the exact confirmed deposit-then-borrow reserve
-	// sequence currently present in the obligation. RefreshObligation requires
-	// this live topology; deriving it from the mutation leg breaks re-deposits.
+	// sequence currently present in the obligation (obligationTopology); an
+	// empty obligation has none. RefreshObligation takes exactly these as its
+	// remaining accounts; deriving them from the mutation leg breaks
+	// re-deposits and a fresh obligation's first deposit.
 	ObligationReserves []string
+}
+
+// obligationTopology is what RefreshObligation names after the obligation:
+// the reserve of each occupied deposit slot, then of each occupied borrow
+// slot, in slot order, as KLend counts and checks them (none for an empty
+// obligation).
+func obligationTopology(o kamino.Obligation) []string {
+	topology := []string{}
+	for _, reserve := range append(o.DepositReserves(), o.BorrowReserves()...) {
+		topology = append(topology, reserve.String())
+	}
+	return topology
+}
+
+// observedObligationTopology is the topology of route's obligation in
+// accounts: none while the account does not exist yet.
+func observedObligationTopology(accounts []ConfirmedAccount, route RuntimeRoute) ([]string, error) {
+	account := accountAt(accounts, route.Kamino.Obligation)
+	if account.Address != route.Kamino.Obligation {
+		return nil, fmt.Errorf("Kamino obligation %s is not in the batch", route.Kamino.Obligation)
+	}
+	if account.Lamports == 0 {
+		return []string{}, nil
+	}
+	obligation, err := kamino.DecodeObligation(chainAccount(account, route.Kamino.Obligation))
+	if err != nil {
+		return nil, err
+	}
+	return obligationTopology(obligation), nil
 }
 
 const (
@@ -108,7 +139,11 @@ func kaminoPolicyInstructions(v *Vault, request KaminoPrimeUSDCRequest, delegate
 	if err != nil {
 		return nil, 0, err
 	}
-	return append(kaminoRefreshInstructionsForResolvedRoute(leg, request, route), outer), leg, nil
+	refresh := kaminoRefreshInstructionsForResolvedRoute(request, route)
+	if refresh == nil {
+		return nil, 0, fmt.Errorf("Kamino obligation topology %v is not the lane's", request.ObligationReserves)
+	}
+	return append(refresh, outer), leg, nil
 }
 
 func bytesEqual(left, right []byte) bool {
@@ -193,34 +228,29 @@ func exactKaminoMetas(got, want []accountMeta) bool {
 	return true
 }
 
-func kaminoPrimeUSDCRefreshInstructionsForRoute(v *Vault, leg kaminoPrimeUSDCLeg, lane string) []compiledInstruction {
-	return kaminoPrimeUSDCRefreshInstructionsForRequest(v, leg, KaminoPrimeUSDCRequest{RouteLane: lane})
+// kaminoPrimeUSDCRefreshInstructionsForRoute is lane's refresh prefix over
+// an empty obligation.
+func kaminoPrimeUSDCRefreshInstructionsForRoute(v *Vault, lane string) []compiledInstruction {
+	return kaminoPrimeUSDCRefreshInstructionsForRequest(v, KaminoPrimeUSDCRequest{RouteLane: lane})
 }
 
-func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, leg kaminoPrimeUSDCLeg, request KaminoPrimeUSDCRequest) []compiledInstruction {
+func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, request KaminoPrimeUSDCRequest) []compiledInstruction {
 	route, err := v.route(request.RouteLane)
 	if err != nil {
 		return nil
 	}
-	return kaminoRefreshInstructionsForResolvedRoute(leg, request, route)
+	return kaminoRefreshInstructionsForResolvedRoute(request, route)
 }
 
-func kaminoRefreshInstructionsForResolvedRoute(leg kaminoPrimeUSDCLeg, request KaminoPrimeUSDCRequest, route RuntimeRoute) []compiledInstruction {
+// kaminoRefreshInstructionsForResolvedRoute is route's refresh prefix over
+// request's topology (ObligationReserves; nil is an empty obligation), or
+// nil when that topology is not one of the lane's.
+func kaminoRefreshInstructionsForResolvedRoute(request KaminoPrimeUSDCRequest, route RuntimeRoute) []compiledInstruction {
 	market := kaminoKey(route.Kamino.Market)
 	refreshReserve := func(reserve string) compiledInstruction {
 		return kaminoCompiled(kamino.RefreshReserve(kamino.RefreshReserveAccounts{Reserve: kaminoKey(reserve), LendingMarket: market, Scope: kaminoKey(kaminoScopePrices)}))
 	}
 	remaining := request.ObligationReserves
-	if remaining == nil {
-		switch leg {
-		case kaminoLegBorrow:
-			remaining = []string{route.Kamino.CollateralReserve}
-		case kaminoLegRepay:
-			remaining = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-		case kaminoLegWithdraw:
-			remaining = []string{route.Kamino.CollateralReserve}
-		}
-	}
 	allowed := [][]string{{}, {route.Kamino.CollateralReserve}, {route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
 	valid := false
 	for _, candidate := range allowed {

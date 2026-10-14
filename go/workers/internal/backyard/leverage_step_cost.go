@@ -112,12 +112,9 @@ func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *
 		if err != nil {
 			return leverageStepCost{}, err
 		}
-		var topology []string
-		if s.PositionCollateralRaw > 0 {
-			topology = append(topology, route.Kamino.CollateralReserve)
-		}
-		if s.PositionDebtRaw > 0 {
-			topology = append(topology, route.Kamino.DebtReserve)
+		topology, err := observedObligationTopology(o.routeBatch.Accounts, route)
+		if err != nil {
+			return leverageStepCost{}, costOutage("inputs", err)
 		}
 		return pricer.priceStep(ctx, o.routeBatch.Accounts, route, topology, s.Slot, borrowRaw)
 	}
