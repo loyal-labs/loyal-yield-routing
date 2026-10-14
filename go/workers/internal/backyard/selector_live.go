@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -168,19 +169,31 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 	if source != nil {
 		from = source.RouteLane
 	}
+	var ms LaneEconomics
+	for _, m := range markets {
+		if source != nil && m.Lane == source.RouteLane {
+			ms = m
+		}
+	}
 	price := func(size uint64) (MoveQuote, string, bool, error) {
 		q, err := p.priceMove(ctx, o, source, market, size)
 		if err == nil {
 			return q, "", false, nil
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable from=%s lane=%s size=%d: %v\n", from, market.Lane, size, err)
-		// Cost beyond equity is an economic outcome smaller sizes can
-		// repair; every other refusal is terminal for this move.
+		// A smaller size may repair a cost beyond equity or a step quote
+		// the leveraged route cannot fill at this size (exit_quote at the
+		// 90% tranche, Oct 14); Jupiter's rate limit and every other
+		// refusal stop the move.
 		var hold *BudgetHold
 		if errors.As(err, &hold) && holdCause(hold) == "selector_move_cost_exceeds_equity" {
 			return q, "selector_move_cost_exceeds_equity", true, err
 		}
-		return q, "complete_entry_quote_unavailable", false, err
+		var status *jupiter.StatusError
+		var outage *leverageCostOutage
+		sized := errors.As(err, &outage) && (outage.stage == "entry_quote" || outage.stage == "exit_quote") &&
+			!(errors.As(err, &status) && status.Code == http.StatusTooManyRequests)
+		return q, "complete_entry_quote_unavailable", sized, err
 	}
 	// Biggest-first sizing ladder: when the largest size cannot clear the
 	// selector benefit under its expected cost, price at most two smaller
@@ -194,6 +207,14 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 	size := maximum
 	for j := 0; j < selectorLadderRungs; j++ {
 		if size == 0 || (j > 0 && (ctx.Err() != nil || time.Since(o.ObservedAt) > selectorLadderBudget)) {
+			break
+		}
+		// A size whose gain ceiling cannot clear MinimumBenefit is not
+		// quoted, nor is any smaller one.
+		if moveGainCeiling(source, ms, market, int64(min(size, math.MaxInt64)), policy) <= float64(policy.MinimumBenefitRaw) {
+			if j == 0 {
+				refusal = gainBelowMinimumBenefit
+			}
 			break
 		}
 		q, unavailable, economic, err := price(size)

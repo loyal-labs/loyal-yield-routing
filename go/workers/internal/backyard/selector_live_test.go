@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -238,25 +237,24 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	}
 }
 
-func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) {
+func TestLiveSelectorLadderFallsThroughRefusedStepQuote(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
-	policy.MinimumBenefitRaw = 1_000_000_000_000
-	var legs []uint64
-	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, math.MaxUint64, 1)
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", "", 10_000_000)
-	if err != nil || len(quotes) != 1 {
-		t.Fatal("bound-valid diagnostic quote dropped", err, quotes, observed)
-	}
-	if observed[0].EntryBlockedReason != "" || observed[0].EntryCapacity.Raw != quotes[0].EquityRaw {
-		t.Fatal("unprofitable diagnostic mislabeled", observed[0])
-	}
-	if len(legs) != 3 {
-		t.Fatal("insufficient largest quote must ladder down", legs)
-	}
-	in := SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: observed, Quotes: quotes, Policy: policy}
-	if got := SelectOpportunity(in, SelectorState{}); got.Action != "KEEP" || got.Reason != "no_worthwhile_executable_move" {
-		t.Fatal("pure selector must keep on unprofitable diagnostics", got)
+	lever := leveredTestMarket(SelectedRouteID)
+	market.CurrentBorrowAPY, market.BorrowCurve, market.DebtSupplyRaw, market.DebtBorrowRaw = lever.CurrentBorrowAPY, lever.BorrowCurve, lever.DebtSupplyRaw, lever.DebtBorrowRaw
+	route, _ := runtimeRoute(SelectedRouteID)
+	base := fixtureHTTP(client).Transport
+	// Jupiter has no route for the largest rung's 1.5x down step (exit_quote,
+	// a plain 400); the 10 USDC rung borrows below the minimum and needs none.
+	fixtureHTTP(client).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/quote" && req.URL.Query().Get("inputMint") == route.Kamino.CollateralMint && req.URL.Query().Get("amount") == "49700250" {
+			return &http.Response{StatusCode: http.StatusBadRequest, Body: http.NoBody, Header: make(http.Header)}, nil
+		}
+		return base.RoundTrip(req)
+	})
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", "", 100_000_000)
+	if err != nil || len(quotes) != 1 || quotes[0].EquityRaw != 10_000_000 || quotes[0].CostRaw <= 0 || observed[0].EntryBlockedReason != "" {
+		t.Fatal("refused step quote ended the ladder", err, quotes, observed)
 	}
 }
 
