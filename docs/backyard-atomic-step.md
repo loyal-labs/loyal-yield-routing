@@ -81,6 +81,8 @@ Every decision is one step toward the tick's target (`docs/backyard-target.md`).
 | `leverage_down_partial` | down | debt down to the 1.5x LTV |
 | `withdrawal_release` beside debt | down | the freed equity's debt share, LTV unchanged |
 | `withdrawal_release` beside no debt | exit | none: the freed equity's collateral to USDC |
+| `rotate_repay` | down | a rotation's debt share (the decision's amount) |
+| `rotate_withdraw` | exit | none: a rotation's collateral share (the decision's receipts) to USDC |
 | `overflow_move` | move | none: collateral to the overflow lane |
 | `exit_withdraw_collateral` | exit | none: an equity-zero exit's collateral to USDC |
 

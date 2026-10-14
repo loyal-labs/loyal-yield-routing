@@ -504,12 +504,16 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 
 // releaseMicros is the network fee of the legs a rotation's release of
 // equity from source sends, built from the tick's batch as the executor
-// builds them: the release step (releaseLeg) and, beside debt, the swap of
-// the collateral it leaves in custody to USDC (target rule 4a). Their swap
-// loss is the source's exit, which staying would pay later: it is not the
-// move's cost. Building them bounds the release at this size.
+// builds them (target rule 5r): beside debt the repay of its share, then the
+// withdrawal of its collateral share as USDC. Their swap loss is the
+// source's exit, which staying would pay later: it is not the move's cost.
+// Building them bounds the release at this size.
 func (p lanePricer) releaseMicros(ctx context.Context, o Observation, source Snapshot, equity uint64) (int64, error) {
 	if o.routeBatch == nil || equity > math.MaxInt64 {
+		return 0, budgetHold("selector_release_unpriced")
+	}
+	rel := newSourceRelease(source, int64(equity))
+	if rel == nil {
 		return 0, budgetHold("selector_release_unpriced")
 	}
 	route, err := p.manifest.route(source.RouteLane)
@@ -520,32 +524,42 @@ func (p lanePricer) releaseMicros(ctx context.Context, o Observation, source Sna
 	if err != nil {
 		return 0, err
 	}
-	d := Decision{Action: DeleverRouteStep, Reason: releaseReason, AmountRaw: int64(equity), StrategyKey: source.RouteLane}
-	step, left, err := releaseLeg(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, o.routeBatch.Accounts, st, source, d)
+	var steps []StepRequest
+	if rel.DebtRaw > rel.DebtTargetRaw {
+		d := Decision{Action: DeleverRouteStep, Reason: rotateRepayReason, AmountRaw: rel.DebtRaw - rel.DebtTargetRaw, StrategyKey: source.RouteLane}
+		repay, _ := stepDownRepay(source, d)
+		if limit := stepLegCap(route); repay > limit-limit/10 {
+			repay = limit - limit/10
+		}
+		receipts, convert, err := planDownStep(source, d, st, repay)
+		if err != nil {
+			return 0, err
+		}
+		step, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, SwapCollateralToDebtStep, receipts, convert, source.Slot)
+		if err != nil {
+			return 0, err
+		}
+		steps = append(steps, step.Request)
+	}
+	d := Decision{Action: DeleverRouteStep, Reason: rotateWithdrawReason, AmountRaw: rel.CollateralRaw - rel.CollateralTargetRaw, StrategyKey: source.RouteLane}
+	step, _, err := releaseLeg(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, o.routeBatch.Accounts, st, source, d)
 	if err != nil {
 		return 0, err
 	}
-	message, err := compileStepMessageForDelegate(p.manifest.vault, step.Request, mustKey(bridgeDelegate))
-	if err != nil {
-		return 0, err
+	steps = append(steps, step.Request)
+	total := int64(0)
+	for _, request := range steps {
+		message, err := compileStepMessageForDelegate(p.manifest.vault, request, mustKey(bridgeDelegate))
+		if err != nil {
+			return 0, err
+		}
+		micros, err := p.networkMicros(message)
+		if err != nil {
+			return 0, err
+		}
+		if total, err = budgetSum(total, micros); err != nil {
+			return 0, err
+		}
 	}
-	total, err := p.networkMicros(message)
-	if err != nil || left <= uint64(partialWithdrawalDustRaw) {
-		return total, err
-	}
-	if !laneSwap(source.RouteLane, SwapCollateralToStableStep) {
-		return 0, budgetHold("selector_release_swap_unavailable")
-	}
-	swap, err := prepareJupiterQuoteEvidence(ctx, p.rpc, p.client, p.manifest, p.policies, Decision{Action: SwapCollateralToStableStep, AmountRaw: int64(left), StrategyKey: source.RouteLane}, left, 0, source.Slot)
-	if err != nil {
-		return 0, err
-	}
-	if message, err = compileJupiterMessageForDelegate(p.manifest.vault, swap.Request, mustKey(bridgeDelegate)); err != nil {
-		return 0, err
-	}
-	micros, err := p.networkMicros(message)
-	if err != nil {
-		return 0, err
-	}
-	return budgetSum(total, micros)
+	return total, nil
 }

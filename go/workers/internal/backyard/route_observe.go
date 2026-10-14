@@ -135,10 +135,15 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	// enters. A held vault also views the lane the selector moves cash or a
 	// rotation into, when it holds nothing there.
 	viewLanes := valued
+	var destination []RuntimeRoute
 	if len(held) == 0 {
 		viewLanes = append([]string{preferred}, slices.DeleteFunc(slices.Clone(valued), func(l string) bool { return l == preferred })...)
 	} else if lane := selectorDestination(runtime.inputs); lane != "" && !slices.Contains(valued, lane) {
-		viewLanes = append(slices.Clone(valued), lane)
+		route, err := v.route(lane)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		destination = []RuntimeRoute{route}
 	}
 	first, err := v.route(viewLanes[0])
 	if err != nil {
@@ -160,14 +165,19 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	}
 	refreshExhausted := false
 	{
-		refreshRoutes := withOverflowRoutes(v, routes)
+		refreshRoutes := withOverflowRoutes(v, append(slices.Clone(routes), destination...))
 		captureAddresses := selectorValuationAddresses(v, refreshRoutes, addresses)
 		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, refreshRoutes, captureAddresses, slot)
+		if len(destination) > 0 && refreshErr == nil {
+			// The selector's destination is viewed only when refreshed.
+			viewLanes = append(slices.Clone(valued), destination[0].Lane)
+		}
 		if refreshSimulationFailed(refreshErr) && len(refreshRoutes) > len(routes) {
-			// Kamino refuses to refresh an overflow lane nothing holds: only
-			// its room is unknown (applyOverflowRoom). The valued lanes'
-			// capture stands without it, and its refusal never counts toward
-			// the vault's latch.
+			// Kamino refuses to refresh an overflow lane or a selector
+			// destination nothing holds: only that lane is unknown (an
+			// overflow's room, applyOverflowRoom; a destination has no view,
+			// so no cash enters it). The valued lanes' capture stands without
+			// it, and its refusal never counts toward the vault's latch.
 			captureAddresses = selectorValuationAddresses(v, routes, addresses)
 			refreshedSlot, refreshedAccounts, refreshErr = runtime.refreshValuation(ctx, routes, captureAddresses, slot)
 		}

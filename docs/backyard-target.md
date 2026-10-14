@@ -33,8 +33,7 @@ authority.
    as USDC: one atomic step withdraws it and swaps it to USDC in the Squads
    bridge account, so none of it waits in a custody another lane shares.
    That USDC is vault cash: a withdrawal stages it to Voltr, otherwise rule 5
-   enters it in the selector's current destination, or it returns to Voltr,
-   where the selector prices it as cash. A deposit left at or under dust is
+   enters it in the selector's current destination, or it waits for one. A deposit left at or under dust is
    rounding residue, not a leg: the exit is done.
 4. **Custody in flight** finishes first: collateral a held lane's next leg
    takes (above dust and, for a deposit, at least the one collateral receipt
@@ -42,8 +41,6 @@ authority.
    withdrawal's or an exit's direction when there is one, and
    debt-mint cash above dust that a withdrawal needs or no held lane that
    steps owes, which converts toward Voltr (wYLDS stakes to AUTO collateral).
-   Collateral a current rotation's source released (its custody, or one it
-   shares) converts to USDC that stays in the Squads account for rule 5.
    Custody is vault cash; debt-mint cash makes no lane held.
    Then **withdrawal demand** beyond Voltr idle: Squads cash stages, and the
    held lane with the most equity (an overflow lane included) releases the
@@ -60,16 +57,22 @@ authority.
    beside a position is a top-up. A flat vault's view is that lane's; its
    allocated cash waits for the selector while no entry is current, and
    returns to Voltr when the lane cannot take it. Beside held lanes, Squads
-   cash with no destination returns to Voltr, except a USDC-debt lane's step
-   excess, which joins its position.
-   **5r. Rotation:** while the latest result is `ROTATE` (or `CANARY_ROTATE`),
-   current, from the source position it priced (`sourceCollateralRaw`), and
-   neither lane is exiting, the source releases the tranche (`ReleaseRaw`,
-   under 90% of its equity) at its own LTV as USDC that stays in the Squads
-   account; the cash rule then enters it in the destination. Nothing about
-   the rotation is stored: once the release moves the source, the next
-   sample decides the next tranche, and released cash follows the selector's
-   next choice.
+   cash with no destination waits (`stale`) for the selector's next choice,
+   except a USDC-debt home lane's step excess, which joins its position.
+   **5r. Rotation** comes before the overflow move: while the latest result
+   is `ROTATE` (or `CANARY_ROTATE`), current within `MaxSampleGap`, its
+   destination is viewed and not exiting, and the source holds no more
+   collateral than the position it priced, the source releases its tranche
+   (`sourceRelease`: the equity's share of its debt and of its collateral
+   receipts, under 90% of its equity) at its own LTV in two steps: one
+   repays the debt share (`rotate_repay`), one withdraws the collateral share
+   and sells it to USDC in the Squads account (`rotate_withdraw`). No
+   collateral waits in custody, so no rule reads the selector for a custody's
+   direction; the cash rule then enters the USDC in the destination. While a
+   release is left the selector records no sample, and a sample that holds
+   for recovery or safety records nothing either: the release finishes from
+   the result that started it. Every lane's level stays frozen while the
+   latest result is not `KEEP`.
 6. **Level.** Down to a stored 1.5 from above it; up toward the stored level
    when the selector approved the step and the reserve has room.
 
@@ -77,8 +80,9 @@ Only rules 1 to 3 ever set debt 0. A stored level of 1 is economic: the lane
 holds at 1.5.
 
 The selector scores every move over the same 30-day horizon, 30-minute
-persistence, $0.25 minimum benefit and 10 bps uncertainty (on the amount
-moved): cash entering a lane earns its fee-reserved gain against nothing;
+persistence, $0.25 minimum benefit and 10 bps uncertainty (on the vault's
+investable equity for cash, on the tranche for a rotation): cash entering a
+lane earns its fee-reserved gain against nothing;
 a held lane's tranche rotating earns the destination's fee-reserved gain on
 what the move leaves, against the tranche's gross gain where it is. A move's
 cost is the destination's signed round trip (a collateral bought under its
@@ -86,7 +90,12 @@ mark gains what its sale loses), its up step, the network fees, an absent
 obligation's rent and, on a rotation, the network fees of the source's
 release; the source's own swap loss is its exit, which staying pays later.
 Cash outranks a rotation. Pairs sharing a collateral custody (the overflow
-pair, Prime's) never rotate.
+pair, Prime's) never rotate. Each sample prices a held source's tranche
+into one destination only: the one whose forward APY beats the source's by
+the most (`forward_apy_not_best` labels the others). A selector destination
+nothing holds is refreshed beside the valued lanes; when Kamino refuses it,
+only that lane goes unviewed and the refusal never counts toward the
+vault's refresh latch.
 
 ## Steps
 

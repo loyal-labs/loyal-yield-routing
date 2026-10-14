@@ -105,14 +105,14 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 		} else {
 			jobs = append(jobs, job{i: i, maximum: canary(min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-policy.IdleBufferRaw), idle-uint64(policy.IdleBufferRaw)))})
 		}
-		// Each held lane's tranche, released, enters this lane when its
-		// forward APY beats the source's (a canary prices its pair anyway).
+		// Each held lane's tranche, released, enters this lane when it is
+		// the source's best destination by forward APY (a canary prices
+		// its pair anyway).
 		held := s.heldLanes()
 		for k := range o.lanes {
 			source := o.lanes[k]
-			ms, known := seen[source.RouteLane]
 			if !rotationSource(held, source) || !rotationPair(source.RouteLane, market.Lane) || (onlySource != "" && source.RouteLane != onlySource) ||
-				onlySource == "" && (!known || !rotationForwardEdge(source, ms, market)) {
+				onlySource == "" && rotationDestination(source, seen, time.Now().UTC(), policy) != market.Lane {
 				continue
 			}
 			jobs = append(jobs, job{i: i, source: &source, maximum: canary(min(strategyTwoBridgeLegCapRaw, uint64(laneReleaseLimitRaw(source))))})

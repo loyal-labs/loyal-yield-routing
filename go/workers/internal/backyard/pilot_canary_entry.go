@@ -25,9 +25,9 @@ type pilotCanaryEntryReceipt struct {
 	Request         pilotCanaryEntryRequest `json:"request"`
 	AcceptedAt      time.Time               `json:"acceptedAt"`
 	QuoteEvidenceID string                  `json:"quoteEvidenceId"`
-	// SourceCollateralRaw is a rotation's source collateral when first
-	// accepted: its one release (target rule 5r) is from that position.
-	SourceCollateralRaw int64 `json:"sourceCollateralRaw,omitempty"`
+	// SourceRelease is a rotation's release, sized from the source position
+	// first accepted: target rule 5r releases from that position.
+	SourceRelease *SourceRelease `json:"sourceRelease,omitempty"`
 }
 
 // readPilotCanaryEntryRequest reads the operator acceptance request: an active
@@ -80,7 +80,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	// Always suppress economic entry while an acceptance request is installed.
 	// Worker recovery, NAV, risk and withdrawal actions run independently first.
 	result.Action, result.Reason, result.DestinationLane, result.SelectedQuote = "KEEP", "operator_canary_waiting", "", nil
-	result.SourceLane, result.SourceCollateralRaw = input.Snapshot.RouteLane, 0
+	result.SourceLane, result.SourceRelease = input.Snapshot.RouteLane, nil
 	if prior, exists := history[request.ID]; exists && prior.Request != *request {
 		return result, nil, budgetHold("pilot_canary_request_id_reused")
 	} else if !exists && len(history) >= pilotCanaryReceiptCapacity {
@@ -143,9 +143,9 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 
 // selectPilotCanaryRotation rotates the request's equity from its held
 // source lane into its lane: CANARY_ROTATE, re-issued with a fresh quote each
-// sample until the lane holds a position. target() releases the source once,
-// from the position first accepted (SourceCollateralRaw), and enters the
-// released cash.
+// sample until the lane holds a position. target() releases the source
+// from the position first accepted (SourceRelease), and enters the released
+// cash.
 func selectPilotCanaryRotation(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, error) {
 	request, s := input.canaryRequest, input.Snapshot
 	held := s.heldLanes()
@@ -183,12 +183,12 @@ func selectPilotCanaryRotation(input SelectorInput, result SelectorResult, histo
 	if chosen.CostRaw < 0 || chosen.CostRaw >= chosen.EquityRaw || chosen.MinimumIdleRaw < uint64(chosen.EquityRaw) || !chosen.validBorrow() || !chosen.storedWindowValid() || !sha256Pattern.MatchString(chosen.EvidenceID) {
 		return result, nil, fmt.Errorf("invalid_selector_entry")
 	}
-	receipt := pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, SourceCollateralRaw: source.PositionCollateralRaw}
+	receipt := pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, SourceRelease: newSourceRelease(*source, request.EquityRaw)}
 	if prior, accepted := history[request.ID]; accepted {
 		receipt = prior
 	}
 	receipt.QuoteEvidenceID = chosen.EvidenceID
 	result.Action, result.Reason, result.SourceLane, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ROTATE", "operator_acceptance_not_economic_recommendation", request.SourceLane, request.Lane, request.EquityRaw, chosen
-	result.SourceCollateralRaw = receipt.SourceCollateralRaw
+	result.SourceRelease = receipt.SourceRelease
 	return result, &receipt, nil
 }

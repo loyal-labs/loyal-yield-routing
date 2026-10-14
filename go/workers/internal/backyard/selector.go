@@ -287,10 +287,9 @@ type SelectorResult struct {
 	// SampledAt is when the selector decided this result: a rotation
 	// releases only while it is within the policy's MaxSampleGap.
 	SampledAt time.Time `json:"sampledAt,omitempty"`
-	// SourceCollateralRaw is the rotation source's deposited collateral the
-	// release is sized from. A release that lands changes it, so one result
-	// releases at most once; the next sample decides the next tranche.
-	SourceCollateralRaw int64 `json:"sourceCollateralRaw,omitempty"`
+	// SourceRelease is the rotation source's position the release is sized
+	// from and the position it leaves (target rule 5r).
+	SourceRelease *SourceRelease `json:"sourceRelease,omitempty"`
 }
 
 func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR, years float64) float64 {
@@ -568,7 +567,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			continue
 		}
 		// Cash earns nothing where it is (KeepGainRaw).
-		scoreMove(&c, s, p, m, *quote, out.KeepGainRaw, years)
+		scoreMove(&c, s, p, m, *quote, equity, out.KeepGainRaw, years)
 		sample(c, lane, *quote)
 		out.Candidates = append(out.Candidates, c)
 		quotes[len(out.Candidates)-1] = *quote
@@ -585,6 +584,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			continue
 		}
 		ms, sourceKnown := markets[source.RouteLane]
+		destination := rotationDestination(source, markets, in.Now, p)
 		for _, lane := range lanes {
 			if !rotationPair(source.RouteLane, lane) {
 				continue
@@ -610,11 +610,14 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 				}
 			}
 			if quote == nil {
-				// The collector prices a pair only when the destination's
-				// forward APY beats the source's: below it no quote could pay.
+				// The collector prices only the source's best destination
+				// (rotationDestination): below the source's forward APY no
+				// quote could pay.
 				c.BlockedReason = "bounded_move_cost_unavailable"
-				if !rotationForwardEdge(source, ms, m) {
+				if _, edge := rotationForwardAPY(source, ms, m); !edge {
 					c.BlockedReason = "forward_apy_not_higher"
+				} else if lane != destination {
+					c.BlockedReason = "forward_apy_not_best"
 				}
 				carryAdvantageWindows(&out, previous, key, c.BlockedReason)
 				out.Candidates = append(out.Candidates, c)
@@ -626,7 +629,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 				out.Candidates = append(out.Candidates, c)
 				continue
 			}
-			scoreMove(&c, s, p, m, *quote, keep, years)
+			scoreMove(&c, s, p, m, *quote, quote.EquityRaw, keep, years)
 			sample(c, key, *quote)
 			out.Candidates = append(out.Candidates, c)
 			quotes[len(out.Candidates)-1], sources[len(out.Candidates)-1] = *quote, source
@@ -678,7 +681,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			quote, source := quotes[bestRotation], sources[bestRotation]
 			out.Action, out.Reason = "ROTATE", "persistent_net_benefit"
 			out.SourceLane, out.DestinationLane, out.EquityRaw = source.RouteLane, chosen.Lane, quote.EquityRaw
-			out.SourceCollateralRaw, out.SelectedQuote = source.PositionCollateralRaw, &quote
+			out.SourceRelease, out.SelectedQuote = newSourceRelease(source, quote.EquityRaw), &quote
 		}
 	}
 	return out
@@ -687,8 +690,9 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 // scoreMove prices one executable quote into m's lane: the capital its
 // cost leaves earning there over the horizon, with the performance fee
 // reserved (selectorFeeReservedGain), against keepGain, what the same
-// equity earns where it is, less the uncertainty share of the equity moved.
-func scoreMove(c *CandidateForecast, s Snapshot, p SelectorPolicy, m LaneEconomics, quote MoveQuote, keepGain, years float64) {
+// equity earns where it is, less the uncertainty share of uncertain: the
+// vault's investable equity for an entry, the equity moved for a rotation.
+func scoreMove(c *CandidateForecast, s Snapshot, p SelectorPolicy, m LaneEconomics, quote MoveQuote, uncertain int64, keepGain, years float64) {
 	amount := quote.EquityRaw
 	if quote.CostRaw >= amount {
 		c.BlockedReason = "cost_exceeds_allocation"
@@ -714,7 +718,7 @@ func scoreMove(c *CandidateForecast, s Snapshot, p SelectorPolicy, m LaneEconomi
 	c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))
 	// The candidate pays the repeated-fee reserve; KEEP gets its gross
 	// return. Deduct uncertainty after that money edge.
-	c.BenefitRaw = c.GainRaw - keepGain - float64(amount)*float64(p.UncertaintyBPS)/10_000
+	c.BenefitRaw = c.GainRaw - keepGain - float64(uncertain)*float64(p.UncertaintyBPS)/10_000
 	if !feeKnown {
 		c.BlockedReason = "fee_forecast_unavailable"
 	} else if !finite(c.GainRaw) || !finite(c.BenefitRaw) {
@@ -725,7 +729,7 @@ func scoreMove(c *CandidateForecast, s Snapshot, p SelectorPolicy, m LaneEconomi
 // rotationSource reports a held lane whose equity the selector may rotate:
 // a positioned registry lane that can release a tranche.
 func rotationSource(held []string, s Snapshot) bool {
-	return containsLane(held, s.RouteLane) && s.HasPosition && earnHeldLane(s.RouteLane) && laneReleaseLimitRaw(s) > 0
+	return containsLane(held, s.RouteLane) && s.HasPosition && earnHeldLane(s.RouteLane) && laneSwap(s.RouteLane, SwapCollateralToStableStep) && laneReleaseLimitRaw(s) > 0
 }
 
 // rotationPair reports a destination a source's equity may rotate into:
@@ -748,14 +752,14 @@ func sameCollateralCustody(a, b string) bool {
 	return !okA || !okB || x.route.Kamino.CollateralMint == y.route.Kamino.CollateralMint && x.route.CollateralTokenProgram == y.route.CollateralTokenProgram
 }
 
-// rotationForwardEdge is the market-level test a pair is priced on: the
+// rotationForwardAPY is the market-level test a pair is priced on: the
 // destination's forward APY at its entry leverage (1.5x where the spread
-// rule levers it, else 1x) beats the source position's at its own leverage,
-// both before fees. Below it no quote could pay its cost.
-func rotationForwardEdge(source Snapshot, ms, md LaneEconomics) bool {
+// rule levers it, else 1x), and whether it beats the source position's at
+// its own leverage, both before fees. Below it no quote could pay its cost.
+func rotationForwardAPY(source Snapshot, ms, md LaneEconomics) (float64, bool) {
 	equity := laneEquityRaw(source)
 	if equity <= 0 {
-		return false
+		return 0, false
 	}
 	held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, source)
 	level := 1.0
@@ -763,7 +767,28 @@ func rotationForwardEdge(source Snapshot, ms, md LaneEconomics) bool {
 		level = 1.5
 	}
 	entered, okD := leverageLevelAPY(md, level, laneReleaseLimitRaw(source), false, 0)
-	return ok && okD && entered > held
+	return entered, ok && okD && entered > held
+}
+
+// rotationDestination is the one destination a held source's tranche is
+// priced into each sample: among the valid markets it may rotate into, the
+// highest forward APY that beats the source's ("" without one).
+func rotationDestination(source Snapshot, markets map[string]LaneEconomics, now time.Time, p SelectorPolicy) string {
+	ms, ok := markets[source.RouteLane]
+	if !ok || ms.validate(now, p) != nil {
+		return ""
+	}
+	best, bestAPY := "", 0.0
+	for _, lane := range earnLaneIDs(true) {
+		md, ok := markets[lane]
+		if !ok || !rotationPair(source.RouteLane, lane) || md.validate(now, p) != nil {
+			continue
+		}
+		if apy, edge := rotationForwardAPY(source, ms, md); edge && (best == "" || apy > bestAPY) {
+			best, bestAPY = lane, apy
+		}
+	}
+	return best
 }
 
 // heldTrancheGain is what equity of the source's position earns where it is

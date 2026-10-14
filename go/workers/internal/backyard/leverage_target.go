@@ -29,9 +29,9 @@ type leverageDecision struct {
 // decideLeverageTarget applies the option-1 rule to one funded lane's view,
 // the level setting target() reads (backyard_lane_levels). It runs only on a
 // settled lane: nothing nonterminal, no withdrawal or bridge cash in flight,
-// and the selector itself chose KEEP, or to rotate another lane's equity.
-// Custody beside the position is vault
-// cash its next step takes whole; it changes no level. An up move needs the
+// and the selector itself chose KEEP (a rotation freezes every lane's level
+// until it settles). Custody beside the position is vault cash its next
+// step takes whole; it changes no level. An up move needs the
 // level's spread (1% to 1.5x, 2% to 1.75x) and a positive gain over KEEP
 // after the move's own cost and the performance fee on the extra income. It
 // does not need the selector's MinimumBenefit, which is SWITCH hysteresis
@@ -69,7 +69,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	out.TermDays, out.TermKnown = termDays(s)
 	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
-		!(selector.Action == "KEEP" || selectorRotates(selector) && selector.SourceLane != s.RouteLane) || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
+		selector.Action != "KEEP" || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
 		s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
 		return out, false
 	}
