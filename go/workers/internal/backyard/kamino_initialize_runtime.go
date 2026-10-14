@@ -11,8 +11,9 @@ import (
 
 // initializationSnapshotReady reports a flat lane whose obligation is known
 // absent and is created through an installed initializer policy, while the
-// target enters it with a current selector quote. A lane whose obligation
-// pre-exists has no initializer: its absence holds.
+// target enters it: the Voltr idle a current selector quote allocates and the
+// vault's Squads cash (a rotation's release), all of which the lane takes. A
+// lane whose obligation pre-exists has no initializer: its absence holds.
 func initializationSnapshotReady(s Snapshot) bool {
 	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
@@ -20,14 +21,15 @@ func initializationSnapshotReady(s Snapshot) bool {
 	if !earnInitializerLane(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
 		return false
 	}
-	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
+	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
 		return false
 	}
 	if s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || s.WithdrawalDemandRaw != 0 {
 		return false
 	}
 	t := s.Target
-	return t.Rule == ruleEntry && t.EntryRaw > 0 && t.EntryRaw <= min(s.VoltrIdleRaw, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s) > TargetLTVBPS
+	funding := t.EntryRaw + s.SquadsIdleRaw
+	return t.Rule == ruleEntry && t.EntryRaw >= 0 && funding > 0 && t.EntryRaw <= s.VoltrIdleRaw && funding <= min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s) > TargetLTVBPS
 }
 
 // This prepares only an empty account before allocating user principal: the

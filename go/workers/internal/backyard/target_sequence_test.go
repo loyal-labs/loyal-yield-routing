@@ -19,6 +19,7 @@ type bookLane struct {
 	blocked           bool  // the debt reserve's utilization closes borrowing
 	room              int64 // the debt reserve's fee-inclusive borrow room
 	obligationPresent bool
+	uninitialized     bool // the lane's own obligation does not exist yet
 }
 
 type book struct {
@@ -78,7 +79,7 @@ func (b *book) views() []Snapshot {
 			PositionDebtRaw: l.debt, PositionDebtValueRaw: l.debt, PayoffDebtRaw: l.debt,
 			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr,
 			ChainUnix: b.now, BorrowCapacityKnown: true, BorrowUtilizationBlocked: l.blocked, AdditionalDebtRoomRaw: uint64(l.room),
-			ObligationPresenceKnown: true, ObligationPresent: true}
+			ObligationPresenceKnown: true, ObligationPresent: !l.uninitialized}
 		copy(s.BorrowDebtPriceSF[:], leverageTestPriceBytes())
 		s.BorrowUSDCPriceSF, s.BorrowDebtDecimals = s.BorrowDebtPriceSF, 6
 		if l.coll > 0 {
@@ -132,7 +133,7 @@ func (b *book) apply(t *testing.T, s Snapshot, d Decision) {
 	l := b.lane(d.StrategyKey)
 	switch d.Action {
 	case InitializeKaminoObligation:
-		l.obligationPresent = true
+		l.obligationPresent, l.uninitialized = true, false
 	case OpenRouteStep:
 		switch d.Reason {
 		case leverageUpReason, termKeepAliveReason:
@@ -599,5 +600,38 @@ func TestTargetRotationReleaseLeavesUSDCInSquads(t *testing.T) {
 	b.in.Entry = &SelectorResult{Action: "KEEP", SourceLane: auto}
 	if _, d := b.next(); d.Action != Hold {
 		t.Fatalf("a KEEP sample moved the released cash: %+v", d)
+	}
+}
+
+// Looping, 2026-10-14: a rotation from a USDC-debt source is current until
+// its released cash leaves Squads. The sample after the release records
+// nothing, and the cash enters the destination (its obligation first), never
+// the source.
+func TestRotationCashFromUSDCDebtSourceEntersTheDestination(t *testing.T) {
+	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{SelectedRouteID: {Level: 1.5}}}}
+	l := b.lane(SelectedRouteID)
+	l.coll, l.debt, l.obligationPresent = 28_420_000, 9_420_000, true
+	b.lane(onreONycUSDC).uninitialized = true
+	rotate := SelectorResult{Action: "CANARY_ROTATE", SourceLane: SelectedRouteID, DestinationLane: onreONycUSDC, EquityRaw: 15_000_000,
+		SelectedQuote: &MoveQuote{RotateFrom: SelectedRouteID, DestinationLane: onreONycUSDC, EquityRaw: 15_000_000},
+		SampledAt:     time.Unix(bookNow, 0), SourceRelease: newSourceRelease(b.views()[0], 15_000_000)}
+	b.in.Entry = &rotate
+	for _, want := range []string{rotateRepayReason, rotateWithdrawReason} {
+		s, d := b.next()
+		if d.Reason != want {
+			t.Fatalf("decided %+v, want %s", d, want)
+		}
+		b.apply(t, s, d)
+	}
+	views := b.views()
+	sample := views[0]
+	sample.MonitorsArmed = true
+	if got, _, record, _ := selectorSample(SelectorInput{Now: time.Unix(bookNow, 0), Snapshot: sample, Lanes: views, Policy: DefaultSelectorPolicy()}, rotate, nil); record || got.Action != rotate.Action {
+		t.Fatalf("a sample replaced the rotation while its cash waits in Squads: %+v", got)
+	}
+	wantSteps(t, b.walk(t, 5), "INITIALIZE_KAMINO_OBLIGATION:multiply_obligation_missing", "SWAP_STABLE_TO_COLLATERAL_STEP:usdc_requires_collateral",
+		"OPEN_ROUTE_STEP:collateral_ready", "HOLD:at_target")
+	if dest := b.lane(onreONycUSDC); dest.coll != 15_000_000 || l.coll+l.idle != 28_420_000-15_000_000-(9_420_000-l.debt) {
+		t.Fatalf("ONyc holds %d, Maple %d+%d", dest.coll, l.coll, l.idle)
 	}
 }

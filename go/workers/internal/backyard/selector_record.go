@@ -15,8 +15,9 @@ import (
 // manual stop does not refuse it: the tick reads the choice as an input.
 // Two samples record nothing and leave the previous result and its windows:
 // one that holds for recovery or safety (it observed nothing to decide on),
-// and any sample while the previous rotation's release is left on its source
-// (target rule 5r finishes it from the result that started it).
+// and any sample while the previous rotation is left: its release on its
+// source, or its released cash in Squads (target rules 5r and 5 finish it
+// from the result that started it).
 func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string, input SelectorInput, confirmedSlot int64) (SelectorResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -60,21 +61,10 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 			}
 		}
 		input.Quotes = currentQuotes
-		previous := state.Selector.Result
-		for _, l := range input.Lanes {
-			if repay, withdraw := rotationReleaseStep(&previous, l); repay > 0 || withdraw > 0 {
-				result = previous
-				return nil
-			}
-		}
-		result = SelectOpportunity(input, previous.State)
-		if result.Reason == "execution_recovery_or_safety_first" {
-			result = previous
-			return nil
-		}
 		var canaryReceipt *pilotCanaryEntryReceipt
-		result, canaryReceipt, err = selectPilotCanaryEntry(input, result, state.CanaryHistory)
-		if err != nil {
+		var record bool
+		result, canaryReceipt, record, err = selectorSample(input, state.Selector.Result, state.CanaryHistory)
+		if err != nil || !record {
 			return err
 		}
 		encoded, err := json.Marshal(map[string]any{"mode": "live", "observationId": input.Snapshot.ObservationID, "slot": input.Snapshot.Slot, "result": result})
@@ -106,4 +96,19 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 		return nil
 	})
 	return result, err
+}
+
+// selectorSample is one sample's result over the previous one and whether it
+// is recorded: a rotation left on the vault, or a sample that holds for
+// recovery or safety, keeps the previous result unrecorded.
+func selectorSample(input SelectorInput, previous SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, bool, error) {
+	if rotationLeft(&previous, input.Snapshot, input.Lanes) {
+		return previous, nil, false, nil
+	}
+	result := SelectOpportunity(input, previous.State)
+	if result.Reason == "execution_recovery_or_safety_first" {
+		return previous, nil, false, nil
+	}
+	result, receipt, err := selectPilotCanaryEntry(input, result, history)
+	return result, receipt, true, err
 }
