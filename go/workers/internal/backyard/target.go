@@ -33,7 +33,9 @@ import (
 //     source cannot lever (one atomic move); the vault's cash enters the
 //     selector's current destination, a held lane included; a rotation
 //     releases its tranche from the source as Squads cash, which that rule
-//     then enters;
+//     then enters (the selector records no new result until it has); with
+//     no destination named, a USDC-debt home lane's step excess joins its
+//     position;
 //  6. the level setting: each lane steps toward its stored level.
 //
 // An ordinary economic target never goes to debt 0: a stored level of 1 is
@@ -283,11 +285,20 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 	}
 	// 5. Cash: the vault's Squads cash, and the Voltr idle a current entry
 	// quote allocates, enter the selector's current destination, a held lane
-	// included. A flat vault's view is that lane's.
+	// included. A flat vault's view is that lane's. The Squads cash is the
+	// destination's while the selector names one, viewed or not; with none,
+	// a USDC-debt home lane's step excess joins its position, and any other
+	// cash waits for the selector.
 	if i, raw := entryLane(lanes, in); i >= 0 && (vault.SquadsIdleRaw > 0 || raw > 0 || !anyHeld(lanes)) {
 		t := stored(lanes[i])
 		t.Rule, t.EntryRaw = ruleEntry, raw
 		return i, t
+	}
+	if home := homeLane(lanes); home >= 0 && vault.SquadsIdleRaw > 0 && selectorDestination(in) == "" &&
+		sharedUSDCDebt(lanes[home].s.RouteLane) && lanes[home].s.PositionDebtRaw > 0 {
+		t := stored(lanes[home])
+		t.Rule = ruleEntry
+		return home, t
 	}
 	// 6. Levels: down to the stored level, or up toward it with approval and
 	// room.
@@ -453,12 +464,11 @@ func newSourceRelease(s Snapshot, e int64) *SourceRelease {
 // (RecordSelectorEvaluation), so a release finishes from the result that
 // started it.
 func rotationReleaseStep(r *SelectorResult, s Snapshot) (repay, withdraw int64) {
-	if r == nil || !selectorRotates(*r) || r.SelectedQuote == nil || r.SourceRelease == nil || r.SampledAt.IsZero() ||
-		s.RouteLane != r.SourceLane || !s.HasPosition || s.ChainUnix <= 0 {
+	if !rotationCurrent(r, s) || s.RouteLane != r.SourceLane || !s.HasPosition {
 		return 0, 0
 	}
-	gap, rel := DefaultSelectorPolicy().MaxSampleGap, r.SourceRelease
-	if age := time.Unix(s.ChainUnix, 0).Sub(r.SampledAt); age < -gap || age > gap || s.PositionCollateralRaw > rel.CollateralRaw {
+	rel := r.SourceRelease
+	if s.PositionCollateralRaw > rel.CollateralRaw {
 		return 0, 0
 	}
 	if s.PositionDebtRaw-rel.DebtTargetRaw > partialWithdrawalDustRaw+(rel.DebtRaw-rel.DebtTargetRaw)/100 {
@@ -468,6 +478,32 @@ func rotationReleaseStep(r *SelectorResult, s Snapshot) (repay, withdraw int64) 
 		return 0, s.PositionCollateralRaw - rel.CollateralTargetRaw
 	}
 	return 0, 0
+}
+
+// rotationCurrent reports a rotation r sampled within MaxSampleGap of s's
+// chain time.
+func rotationCurrent(r *SelectorResult, s Snapshot) bool {
+	if r == nil || !selectorRotates(*r) || r.SelectedQuote == nil || r.SourceRelease == nil || r.SampledAt.IsZero() || s.ChainUnix <= 0 {
+		return false
+	}
+	gap := DefaultSelectorPolicy().MaxSampleGap
+	age := time.Unix(s.ChainUnix, 0).Sub(r.SampledAt)
+	return age >= -gap && age <= gap
+}
+
+// rotationLeft reports a current rotation r that has not finished on the
+// vault: its release is left on its source, or Squads cash (the release's
+// USDC) waits for the cash rule to enter it in r's destination. The selector
+// records no new result while one is left (RecordSelectorEvaluation), so the
+// cash enters the destination the release was for, and no next tranche is
+// released while this one's cash is idle.
+func rotationLeft(r *SelectorResult, vault Snapshot, lanes []Snapshot) bool {
+	for _, l := range lanes {
+		if repay, withdraw := rotationReleaseStep(r, l); repay > 0 || withdraw > 0 {
+			return true
+		}
+	}
+	return rotationCurrent(r, vault) && vault.SquadsIdleRaw > 0
 }
 
 // levelDownDue: a stored level below the position's band, with debt.
@@ -702,10 +738,9 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	if hard <= TargetLTVBPS && (s.HasPosition || s.CollateralIdleRaw > 0 || s.SquadsIdleRaw > 0) {
 		return d(HoldManualRecovery, "invalid_entry_ltv", 0)
 	}
-	// Squads cash is the entry's: it converts to this lane's collateral.
-	// Beside a USDC debt it is a step's excess, which joins the position
-	// whatever the selector chose.
-	if residue := sharedUSDCDebt(s.RouteLane) && s.PositionDebtRaw > 0 && t.Rule == ruleHold; s.SquadsIdleRaw > 0 && (t.Rule == ruleEntry || t.Rule == ruleCustody || residue) {
+	// Squads cash the target gives this lane (rule 5) converts to its
+	// collateral; beside a USDC debt, through the debt-to-collateral leg.
+	if s.SquadsIdleRaw > 0 && (t.Rule == ruleEntry || t.Rule == ruleCustody) {
 		if sharedUSDCDebt(s.RouteLane) && s.PositionDebtRaw > 0 {
 			return d(SwapDebtToCollateralStep, stepResidueReason, s.SquadsIdleRaw)
 		}

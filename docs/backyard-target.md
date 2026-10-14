@@ -56,9 +56,13 @@ authority.
    destination (an `ENTER`'s lane or a `ROTATE`'s), held or not: an entry
    beside a position is a top-up. A flat vault's view is that lane's; its
    allocated cash waits for the selector while no entry is current, and
-   returns to Voltr when the lane cannot take it. Beside held lanes, Squads
-   cash with no destination waits (`stale`) for the selector's next choice,
-   except a USDC-debt home lane's step excess, which joins its position.
+   returns to Voltr when the lane cannot take it. Squads cash is the
+   destination's whenever the selector names one, viewed or not (unviewed,
+   it waits). Beside held lanes, Squads cash with no destination named waits
+   (`stale`) for the selector's next choice, except a USDC-debt home lane's
+   step excess, which joins its position. A destination whose obligation is
+   absent initializes it first, for an entry's allocation or a rotation's
+   Squads cash alike.
    **5r. Rotation** comes before the overflow move: while the latest result
    is `ROTATE` (or `CANARY_ROTATE`), current within `MaxSampleGap`, its
    destination is viewed and not exiting, and the source holds no more
@@ -68,11 +72,16 @@ authority.
    repays the debt share (`rotate_repay`), one withdraws the collateral share
    and sells it to USDC in the Squads account (`rotate_withdraw`). No
    collateral waits in custody, so no rule reads the selector for a custody's
-   direction; the cash rule then enters the USDC in the destination. While a
-   release is left the selector records no sample, and a sample that holds
-   for recovery or safety records nothing either: the release finishes from
-   the result that started it. Every lane's level stays frozen while the
-   latest result is not `KEEP`.
+   direction; the cash rule then enters the USDC in the destination. A
+   rotation is left while its release is left on the source or, current
+   within `MaxSampleGap`, Squads holds cash; while one is left the selector
+   records no sample, and a sample that holds for recovery or safety records
+   nothing either: the release and its cash's entry finish from the result
+   that started them, and no next tranche is released while this one's cash
+   is idle (Looping, 2026-10-14: a KEEP recorded right after the release let
+   the residue rule put the USDC back into Maple, and the canary released
+   again). Every lane's level stays frozen while the latest result is not
+   `KEEP`.
 6. **Level.** Down to a stored 1.5 from above it; up toward the stored level
    when the selector approved the step and the reserve has room.
 
