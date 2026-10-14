@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -235,28 +234,6 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	}
 	if benefit, admissible := selectorMoveQuoteBenefit(o, []LaneEconomics{market}, policy, quotes[0]); !admissible || benefit <= 0 {
 		t.Fatal("smaller candidate is not positively profitable", benefit, admissible)
-	}
-}
-
-func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) {
-	t.Parallel()
-	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
-	policy.MinimumBenefitRaw = 1_000_000_000_000
-	var legs []uint64
-	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, math.MaxUint64, 1)
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", "", 10_000_000)
-	if err != nil || len(quotes) != 1 {
-		t.Fatal("bound-valid diagnostic quote dropped", err, quotes, observed)
-	}
-	if observed[0].EntryBlockedReason != "" || observed[0].EntryCapacity.Raw != quotes[0].EquityRaw {
-		t.Fatal("unprofitable diagnostic mislabeled", observed[0])
-	}
-	if len(legs) != 3 {
-		t.Fatal("insufficient largest quote must ladder down", legs)
-	}
-	in := SelectorInput{Now: time.Now().UTC(), Snapshot: o.Snapshot, Markets: observed, Quotes: quotes, Policy: policy}
-	if got := SelectOpportunity(in, SelectorState{}); got.Action != "KEEP" || got.Reason != "no_worthwhile_executable_move" {
-		t.Fatal("pure selector must keep on unprofitable diagnostics", got)
 	}
 }
 

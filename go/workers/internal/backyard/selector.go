@@ -618,6 +618,8 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 					c.BlockedReason = "forward_apy_not_higher"
 				} else if lane != destination {
 					c.BlockedReason = "forward_apy_not_best"
+				} else if moveGainCeiling(&source, ms, m, min(int64(strategyTwoBridgeLegCapRaw), laneReleaseLimitRaw(source)), p) <= float64(p.MinimumBenefitRaw) {
+					c.BlockedReason = gainBelowMinimumBenefit
 				}
 				carryAdvantageWindows(&out, previous, key, c.BlockedReason)
 				out.Candidates = append(out.Candidates, c)
@@ -789,6 +791,36 @@ func rotationDestination(source Snapshot, markets map[string]LaneEconomics, now 
 		}
 	}
 	return best
+}
+
+const gainBelowMinimumBenefit = "gain_below_minimum_benefit"
+
+// moveGainCeiling is the most a move of size into md's lane could gain over
+// the horizon, before costs and fees: size at the destination's forward APY
+// (its entry leverage), less the source's at its own leverage for a
+// rotation. A move whose ceiling cannot exceed MinimumBenefit is not quoted
+// (gain_below_minimum_benefit). +Inf when an APY is unknown: quote it.
+func moveGainCeiling(source *Snapshot, ms, md LaneEconomics, size int64, p SelectorPolicy) float64 {
+	level := 1.0
+	if _, levered := leverageUpAllowed(md, 1.5, 0); levered {
+		level = 1.5
+	}
+	apy, ok := leverageLevelAPY(md, level, size, false, 0)
+	if !ok {
+		return math.Inf(1)
+	}
+	if source != nil {
+		equity := laneEquityRaw(*source)
+		if equity <= 0 {
+			return math.Inf(1)
+		}
+		held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, *source)
+		if !ok {
+			return math.Inf(1)
+		}
+		apy -= held
+	}
+	return float64(size) * apy * p.Horizon.Hours() / (365.25 * 24)
 }
 
 // heldTrancheGain is what equity of the source's position earns where it is

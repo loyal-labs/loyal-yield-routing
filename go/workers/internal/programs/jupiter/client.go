@@ -198,7 +198,15 @@ func (c *Client) do(request *http.Request) (json.RawMessage, error) {
 		return nil, errors.New("Jupiter response exceeds bounded body")
 	}
 	if response.StatusCode != http.StatusOK || !json.Valid(data) {
-		return nil, fmt.Errorf("Jupiter returned invalid HTTP %d response", response.StatusCode)
+		return nil, &StatusError{Code: response.StatusCode}
 	}
 	return data, nil
+}
+
+// StatusError is a Jupiter response that is not a valid 200: Code 429 is
+// the shared key's rate limit.
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("Jupiter returned invalid HTTP %d response", e.Code)
 }
