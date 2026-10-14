@@ -13,6 +13,10 @@ import (
 // vault enters the lane of its latest ENTER). Nothing here writes a
 // transaction or any spending authority, so an operation in flight or a
 // manual stop does not refuse it: the tick reads the choice as an input.
+// Two samples record nothing and leave the previous result and its windows:
+// one that holds for recovery or safety (it observed nothing to decide on),
+// and any sample while the previous rotation's release is left on its source
+// (target rule 5r finishes it from the result that started it).
 func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string, input SelectorInput, confirmedSlot int64) (SelectorResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -56,7 +60,18 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 			}
 		}
 		input.Quotes = currentQuotes
-		result = SelectOpportunity(input, state.Selector.Result.State)
+		previous := state.Selector.Result
+		for _, l := range input.Lanes {
+			if repay, withdraw := rotationReleaseStep(&previous, l); repay > 0 || withdraw > 0 {
+				result = previous
+				return nil
+			}
+		}
+		result = SelectOpportunity(input, previous.State)
+		if result.Reason == "execution_recovery_or_safety_first" {
+			result = previous
+			return nil
+		}
 		var canaryReceipt *pilotCanaryEntryReceipt
 		result, canaryReceipt, err = selectPilotCanaryEntry(input, result, state.CanaryHistory)
 		if err != nil {

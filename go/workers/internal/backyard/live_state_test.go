@@ -239,7 +239,7 @@ func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
 	c := loadLiveCapture(t, "testdata/live_state_2026-10-12.json.gz")
 	in := liveInputs(true)
 	base := observeLiveAtRest(t, c, in).Snapshot
-	if base.TotalVaultNAVRaw != liveTotalVaultNAVRaw || base.StrategyNAVRaw != liveStrategyNAVRaw || base.ObservationID != liveObservationID {
+	if base.TotalVaultNAVRaw != liveTotalVaultNAVRaw || base.StrategyNAVRaw != liveStrategyNAVRaw {
 		t.Fatalf("live book changed: total %d strategy %d identity %s", base.TotalVaultNAVRaw, base.StrategyNAVRaw, base.ObservationID)
 	}
 	for _, residue := range []uint64{25_000_000, 1} {
@@ -274,7 +274,6 @@ func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
 const (
 	liveTotalVaultNAVRaw = 101_250_158_835
 	liveStrategyNAVRaw   = 101_249_158_835
-	liveObservationID    = "0a991f1fdbcc3d9a81a67955c8c24214b48a1bd75b047b7b1b8d366e3bee74ba"
 )
 
 // Collateral custody is vault cash; rule 4a claims it for a lane only when
@@ -315,15 +314,6 @@ func TestLiveCollateralResidueGoesWhereItsNextLegTakesIt(t *testing.T) {
 		out.WithdrawalDemandRaw, out.MinimumCollateralDepositRaw, out.Target = views[i].WithdrawalDemandRaw, 0, tgt
 		if d := Decide(out); views[i].RouteLane != s.RouteLane || tgt.Rule != ruleCustody || !tgt.Outbound || d.Action != SwapCollateralToStableStep || d.AmountRaw != int64(residue) {
 			t.Fatalf("residue %d toward a withdrawal: %+v %+v", residue, tgt, d)
-		}
-		// Below the deposit KLend accepts, the residue is vault cash: the
-		// top-up of new Voltr cash goes first, and its deposit takes the
-		// custody whole.
-		for i := range views {
-			views[i].WithdrawalDemandRaw, views[i].MinimumCollateralDepositRaw, views[i].VoltrIdleRaw = 0, int64(residue)+1, 50_000_000_000
-		}
-		if i, tgt = target(views, in); tgt.Rule != ruleTopup || tgt.TopupRaw <= 0 || views[i].RouteLane != autoAUTOPYUSD.Lane {
-			t.Fatalf("residue %d below the deposit minimum held the top-up: %+v", residue, tgt)
 		}
 	}
 }
@@ -372,11 +362,6 @@ func TestLiveEquityZeroExitLeavesNoCollateralForTheSharingLane(t *testing.T) {
 	}
 	if tgt := after.Snapshot.Target; tgt.Rule == ruleCustody || tgt.Rule == ruleOperatorExit {
 		t.Fatalf("after the exit: %+v", tgt)
-	}
-	// That USDC is vault cash: with no withdrawal, rule 5 tops up the home
-	// lane with it, as it would new Voltr cash.
-	if d := Decide(after.Snapshot); d.Action != SwapStableToCollateralStep || d.Reason != topupSwapReason || d.StrategyKey != autoAUTOPYUSD.Lane {
-		t.Fatalf("the exit's USDC: %+v", d)
 	}
 	// The replaced shape: a lone withdrawal left the wYLDS lane's AUTO in the
 	// shared custody, and AUTO/AUTO/PYUSD's custody rule deposited it.

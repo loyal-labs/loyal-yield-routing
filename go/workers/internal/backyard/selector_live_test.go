@@ -45,7 +45,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	unavailable.Lane = "OnRe/ONyc/USDC"
 	unavailable.EntryBlockedReason = "reserve_inactive_or_emergency"
 	markets := []LaneEconomics{market, unavailable}
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, markets, in.Policy, "")
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, markets, in.Policy, "", "")
 	if err != nil || len(quotes) != 1 {
 		t.Fatal(err, quotes, observed)
 	}
@@ -69,7 +69,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 		t.Fatal("collected partial quote not usable by selector", result)
 	}
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoReserveConfigOffset+160:], deposited)
-	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, markets, in.Policy, "")
+	observed, quotes, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, markets, in.Policy, "", "")
 	if err != nil || len(quotes) != 0 || observed[0].EntryCapacity.Raw != 0 || observed[0].EntryBlockedReason == "" {
 		t.Fatal("capacity closure retained stale quote", err, quotes, observed)
 	}
@@ -84,11 +84,11 @@ func TestLiveSelectorRejectsDuplicateMarketFanoutAndStaleSource(t *testing.T) {
 	o := tickObservation(in.Snapshot)
 	o.ObservedAt = time.Now().UTC()
 	market := in.Markets[0]
-	_, _, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market, market}, in.Policy, "")
+	_, _, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market, market}, in.Policy, "", "")
 	assertBudgetHold(t, err, "invalid_selector_market_set")
 	// A sample whose observation is past its quoting window reads nothing.
 	o.ObservedAt = o.ObservedAt.Add(-time.Minute)
-	if _, _, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, in.Markets, in.Policy, ""); !errors.Is(err, errConfirmedObservationUnavailable) {
+	if _, _, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, in.Markets, in.Policy, "", ""); !errors.Is(err, errConfirmedObservationUnavailable) {
 		t.Fatalf("a stale sample quoted: %v", err)
 	}
 }
@@ -121,7 +121,7 @@ func TestLiveSelectorCancelsSlowSiblingAndRetainsCompletedQuote(t *testing.T) {
 		return original.RoundTrip(req)
 	})
 	start := time.Now()
-	markets, quotes, err := collectSelectorQuotes(context.Background(), rpc, view, client, m, o, []LaneEconomics{market, slow}, in.Policy, "")
+	markets, quotes, err := collectSelectorQuotes(context.Background(), rpc, view, client, m, o, []LaneEconomics{market, slow}, in.Policy, "", "")
 	if err != nil || len(quotes) != 1 || quotes[0].DestinationLane != SelectedRouteID || time.Since(start) > 3*time.Second || markets[1].EntryBlockedReason == "" {
 		t.Fatal("slow sibling suppressed valid quote", err, quotes, markets, time.Since(start))
 	}
@@ -142,11 +142,11 @@ func TestCanaryQuoteCollectionSkipsOtherLanes(t *testing.T) {
 	market := in.Markets[0]
 	market.Lane = SelectedRouteID
 	// Control: without a canary lane the fundable lane is priced.
-	if _, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, in.Policy, ""); err != nil || len(quotes) != 1 {
+	if _, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, in.Policy, "", ""); err != nil || len(quotes) != 1 {
 		t.Fatal("control quote missing", err, quotes)
 	}
 	// A canary for another lane leaves this lane unpriced and not executable.
-	markets, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, in.Policy, autoAUTOPYUSD.Lane)
+	markets, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, in.Policy, autoAUTOPYUSD.Lane, "")
 	if err != nil || len(quotes) != 0 || markets[0].EntryBlockedReason != "operator_canary_lane_only" || markets[0].EntryCapacity.Raw != 0 {
 		t.Fatal("canary collection priced another lane", err, quotes, markets[0])
 	}
@@ -220,7 +220,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	// The ladder continues past that refused largest size and stops at the
 	// smaller profitable 1M quote.
 	legs = nil
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", 10_000_000)
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", "", 10_000_000)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal("smaller profitable size not probed after economic failure", err, quotes, observed)
 	}
@@ -233,7 +233,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	if quotes[0].CostRaw <= 0 || quotes[0].CostRaw != quotes[0].Cost.TotalMicros {
 		t.Fatal("published quote lost its expected cost", quotes[0].Cost)
 	}
-	if benefit, admissible := selectorMoveQuoteBenefit(o, []LaneEconomics{market}, market.Lane, policy, quotes[0]); !admissible || benefit <= 0 {
+	if benefit, admissible := selectorMoveQuoteBenefit(o, []LaneEconomics{market}, policy, quotes[0]); !admissible || benefit <= 0 {
 		t.Fatal("smaller candidate is not positively profitable", benefit, admissible)
 	}
 }
@@ -244,7 +244,7 @@ func TestLiveSelectorUnprofitableSizesStillPublishBestDiagnostics(t *testing.T) 
 	policy.MinimumBenefitRaw = 1_000_000_000_000
 	var legs []uint64
 	fixtureHTTP(client).Transport = quoteLegsTransport(t, fixtureHTTP(client).Transport, &legs, math.MaxUint64, 1)
-	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", 10_000_000)
+	observed, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", "", 10_000_000)
 	if err != nil || len(quotes) != 1 {
 		t.Fatal("bound-valid diagnostic quote dropped", err, quotes, observed)
 	}
@@ -270,7 +270,7 @@ func TestLiveSelectorLadderStopsAfterQuoteWindowBudget(t *testing.T) {
 	// past the ladder budget: only the largest size is priced, so no smaller
 	// quote can arrive with too few slots left to allocate.
 	o.ObservedAt = time.Now().UTC().Add(-selectorLadderBudget - time.Second)
-	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", 10_000_000)
+	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, "", "", 10_000_000)
 	if err != nil || len(quotes) != 0 || len(legs) != 1 || legs[0] != 10_000_000 {
 		t.Fatal("ladder priced smaller sizes after its budget", err, quotes, legs)
 	}

@@ -29,8 +29,9 @@ type leverageDecision struct {
 // decideLeverageTarget applies the option-1 rule to one funded lane's view,
 // the level setting target() reads (backyard_lane_levels). It runs only on a
 // settled lane: nothing nonterminal, no withdrawal or bridge cash in flight,
-// and the selector itself chose KEEP. Custody beside the position is vault
-// cash its next step takes whole; it changes no level. An up move needs the
+// and the selector itself chose KEEP (a rotation freezes every lane's level
+// until it settles). Custody beside the position is vault cash its next
+// step takes whole; it changes no level. An up move needs the
 // level's spread (1% to 1.5x, 2% to 1.75x) and a positive gain over KEEP
 // after the move's own cost and the performance fee on the extra income. It
 // does not need the selector's MinimumBenefit, which is SWITCH hysteresis
@@ -158,7 +159,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		return out, true
 	}
 	stepCost, costErr := price(raw)
-	if costErr != nil || stepCost.TotalMicros <= 0 || stepCost.TotalMicros > 1<<53 {
+	if costErr != nil || stepCost.TotalMicros < 0 || stepCost.TotalMicros > 1<<53 {
 		out.Next, out.Reason = out.Current, leverageCostOutageReason(costErr)
 		return out, true
 	}

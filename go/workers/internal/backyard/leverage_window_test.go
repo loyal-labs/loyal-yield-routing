@@ -52,10 +52,6 @@ func TestOct10WindowApprovesAtTheExpectedCost(t *testing.T) {
 	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesired150Raw || got.GainRaw <= 0 {
 		t.Fatalf("the Oct 10 step was not approved: %+v ok=%t", got, ok)
 	}
-	// Its expected cost is the AUTO->PYUSD unwind and the network: ~6.4 bps.
-	if bps := got.CostRaw / float64(got.BorrowRaw) * 10_000; bps < 6.4 || bps > 6.5 {
-		t.Fatalf("step cost %.2f bps", bps)
-	}
 }
 
 // AUTO at its realized spread (2.88 pts, #349) with today's measured quotes

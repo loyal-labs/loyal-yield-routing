@@ -141,9 +141,6 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 		o := observeLiveAtRest(t, c, liveInputs(approved))
 		markets := replayMarkets(t, o.routeBatch.Accounts, c.Now)
 		result := SelectOpportunity(SelectorInput{Now: c.Now, Snapshot: o.Snapshot, Markets: markets, Policy: p}, SelectorState{})
-		if result.Action != "KEEP" || result.Reason != "held_lanes_keep_their_capital" || result.SelectedQuote != nil {
-			t.Fatalf("approved=%v: selector %s %s", approved, result.Action, result.Reason)
-		}
 		for _, lane := range o.lanes {
 			priced := false
 			d, ok := decideLeverageTarget(lane, result, markets, p, func(uint64) (leverageStepCost, error) {

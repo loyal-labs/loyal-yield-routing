@@ -2,8 +2,10 @@ package backyard
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A small book the table tests walk: every lane's position at par (one raw
@@ -60,7 +62,12 @@ func (b *book) views() []Snapshot {
 	}
 	nav := b.equity()
 	var views []Snapshot
-	for _, id := range held {
+	// A held vault also views the lane the selector moves cash into.
+	viewed := held
+	if r := b.in.Entry; r != nil && len(held) > 0 && r.DestinationLane != "" && !slices.Contains(held, r.DestinationLane) {
+		viewed = append(slices.Clone(held), r.DestinationLane)
+	}
+	for _, id := range viewed {
 		l := b.lane(id)
 		s := Snapshot{ObservationID: "book", Slot: 100, RouteKind: RouteKind, Fresh: true, RouteLane: id, StrategyKey: id,
 			HeldLanes: strings.Join(held, ","), LiquidationThresholdBPS: 8000, MinimumCollateralDepositRaw: 1,
@@ -161,12 +168,16 @@ func (b *book) apply(t *testing.T, s Snapshot, d Decision) {
 				l.idle += d.AmountRaw
 			}
 			l.debt -= repay
+		case rotateWithdrawReason:
+			// The withdrawal converts to USDC inside the step.
+			l.coll -= d.AmountRaw
+			b.squads += d.AmountRaw
 		case exitWithdrawReason:
 			// The withdrawal and the custody convert to USDC inside the step.
 			b.squads += l.coll + l.idle
 			l.coll, l.idle = 0, 0
 		default:
-			repay, _ := stepDownRepay(s, d.Reason)
+			repay, _ := stepDownRepay(s, d)
 			r := min(int64(repay), l.debt)
 			l.debt -= r
 			l.coll -= r
@@ -560,5 +571,33 @@ func TestTargetDebtCashNoLaneOwesConvertsToUSDC(t *testing.T) {
 	owed.WithdrawalDemandRaw, owed.VoltrIdleRaw = 20_000_000, 0
 	if d := Decide(targeted(owed)); d.Action != SwapDebtToUSDCStep || d.AmountRaw != 25_000_000 {
 		t.Fatalf("owed PYUSD beside a withdrawal: %+v", d)
+	}
+}
+
+// A rotation's release lands as USDC in the Squads account: a KEEP sample
+// after it leaves that cash waiting, never back in the source.
+func TestTargetRotationReleaseLeavesUSDCInSquads(t *testing.T) {
+	const auto = "AUTO/AUTO/PYUSD"
+	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{auto: {Level: 1.5}}}}
+	l := b.lane(auto)
+	l.coll, l.debt, l.obligationPresent = 150_000_000_000, 50_000_000_000, true
+	views := b.views()
+	rotate := SelectorResult{Action: "ROTATE", SourceLane: auto, DestinationLane: onreONycUSDC, EquityRaw: 50_000_000_000,
+		SelectedQuote: &MoveQuote{RotateFrom: auto, DestinationLane: onreONycUSDC, EquityRaw: 50_000_000_000},
+		SampledAt:     time.Unix(bookNow, 0), SourceRelease: newSourceRelease(views[0], 50_000_000_000)}
+	b.in.Entry = &rotate
+	for _, want := range []string{rotateRepayReason, rotateWithdrawReason} {
+		s, d := b.next()
+		if d.Action != DeleverRouteStep || d.Reason != want || d.StrategyKey != auto {
+			t.Fatalf("decided %+v, want %s", d, want)
+		}
+		b.apply(t, s, d)
+	}
+	if l.idle != 0 || b.squads < 49_000_000_000 || ltvOf(l) > 3_400 {
+		t.Fatalf("release left custody %d, Squads %d, LTV %d", l.idle, b.squads, ltvOf(l))
+	}
+	b.in.Entry = &SelectorResult{Action: "KEEP", SourceLane: auto}
+	if _, d := b.next(); d.Action != Hold {
+		t.Fatalf("a KEEP sample moved the released cash: %+v", d)
 	}
 }

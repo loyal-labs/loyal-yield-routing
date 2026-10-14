@@ -51,7 +51,7 @@ func TestLeverageMovesDecideAtomicSteps(t *testing.T) {
 			if c.reason == releaseReason {
 				continue
 			}
-			repay, full := stepDownRepay(c.s, c.reason)
+			repay, full := stepDownRepay(c.s, got)
 			if full != c.full || repay == 0 || repay > uint64(max(c.s.PositionDebtRaw, c.s.PayoffDebtRaw)) {
 				t.Fatalf("%s %s: repay %d full %t", lane, c.reason, repay, full)
 			}

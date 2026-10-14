@@ -43,19 +43,21 @@ type leverageStepLegs struct {
 	NetworkMicros               int64
 }
 
-// cost is the step's expected cost. A conversion that quotes above the
-// central price is not a credit: each swap's expected loss floors at zero.
+// cost is the step's expected cost. Each swap's loss is signed, against
+// the batch's central price: a collateral the up step buys under its mark
+// gains there what the down step's sale loses. The round trip never costs
+// less than zero.
 func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	out := leverageStepCost{BorrowFeeMicros: l.BorrowFeeMicros, NetworkMicros: l.NetworkMicros,
-		EntrySwapLossMicros: max(l.EntryInMicros-l.EntryOutMicros, 0), ExitSwapLossMicros: max(l.ExitInMicros-l.ExitOutMicros, 0)}
+		EntrySwapLossMicros: l.EntryInMicros - l.EntryOutMicros, ExitSwapLossMicros: l.ExitInMicros - l.ExitOutMicros}
 	if l.BorrowFeeMicros < 0 || l.NetworkMicros <= 0 || l.EntryInMicros <= 0 || l.EntryOutMicros <= 0 || l.ExitInMicros <= 0 || l.ExitOutMicros <= 0 {
 		return out, budgetHold("leverage_cost_unavailable")
 	}
-	var err error
-	out.TotalMicros, err = budgetSum(out.BorrowFeeMicros, out.EntrySwapLossMicros, out.ExitSwapLossMicros, out.NetworkMicros)
+	fees, err := budgetSum(out.BorrowFeeMicros, out.NetworkMicros)
 	if err != nil {
 		return out, budgetHoldFrom(err, "leverage_cost_unavailable")
 	}
+	out.TotalMicros = max(fees+out.EntrySwapLossMicros+out.ExitSwapLossMicros, 0)
 	return out, nil
 }
 

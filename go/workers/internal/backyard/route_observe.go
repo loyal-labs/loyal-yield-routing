@@ -131,17 +131,27 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 	}
-	// A view per valued lane; a flat vault's first is the lane its cash enters.
+	// A view per valued lane; a flat vault's first is the lane its cash
+	// enters. A held vault also views the lane the selector moves cash or a
+	// rotation into, when it holds nothing there.
 	viewLanes := valued
+	var destination []RuntimeRoute
 	if len(held) == 0 {
 		viewLanes = append([]string{preferred}, slices.DeleteFunc(slices.Clone(valued), func(l string) bool { return l == preferred })...)
+	} else if lane := selectorDestination(runtime.inputs); lane != "" && !slices.Contains(valued, lane) {
+		route, err := v.route(lane)
+		if err != nil {
+			return Observation{}, nil, err
+		}
+		destination = []RuntimeRoute{route}
 	}
 	first, err := v.route(viewLanes[0])
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	// Every valued lane is in the same NAV, from the same bank.
-	routes, err := navRoutes(v, first, valued)
+	// Every viewed lane is refreshed from the same bank; the valued ones are
+	// the NAV.
+	routes, err := navRoutes(v, first, viewLanes)
 	if err != nil {
 		return Observation{}, nil, err
 	}
@@ -155,14 +165,19 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	}
 	refreshExhausted := false
 	{
-		refreshRoutes := withOverflowRoutes(v, routes)
+		refreshRoutes := withOverflowRoutes(v, append(slices.Clone(routes), destination...))
 		captureAddresses := selectorValuationAddresses(v, refreshRoutes, addresses)
 		refreshedSlot, refreshedAccounts, refreshErr := runtime.refreshValuation(ctx, refreshRoutes, captureAddresses, slot)
+		if len(destination) > 0 && refreshErr == nil {
+			// The selector's destination is viewed only when refreshed.
+			viewLanes = append(slices.Clone(valued), destination[0].Lane)
+		}
 		if refreshSimulationFailed(refreshErr) && len(refreshRoutes) > len(routes) {
-			// Kamino refuses to refresh an overflow lane nothing holds: only
-			// its room is unknown (applyOverflowRoom). The valued lanes'
-			// capture stands without it, and its refusal never counts toward
-			// the vault's latch.
+			// Kamino refuses to refresh an overflow lane or a selector
+			// destination nothing holds: only that lane is unknown (an
+			// overflow's room, applyOverflowRoom; a destination has no view,
+			// so no cash enters it). The valued lanes' capture stands without
+			// it, and its refusal never counts toward the vault's latch.
 			captureAddresses = selectorValuationAddresses(v, routes, addresses)
 			refreshedSlot, refreshedAccounts, refreshErr = runtime.refreshValuation(ctx, routes, captureAddresses, slot)
 		}
@@ -251,14 +266,23 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 }
 
 // flatViewLane is the lane a flat vault's view describes: the selector's
-// latest entry lane, else the preferred lane.
+// latest destination, else the preferred lane.
 func flatViewLane(preferred string, in targetInputs) string {
-	if r := in.Entry; r != nil && (r.Action == "ENTER" || r.Action == "CANARY_ENTER") && earnActiveLane(r.DestinationLane) {
+	if lane := selectorDestination(in); lane != "" {
+		return lane
+	}
+	return preferred
+}
+
+// selectorDestination is the lane the selector's latest result moves cash
+// or a rotation into, unless it is exiting; "" without one.
+func selectorDestination(in targetInputs) string {
+	if r := in.Entry; r != nil && (r.Action == "ENTER" || r.Action == "CANARY_ENTER" || selectorRotates(*r)) && earnActiveLane(r.DestinationLane) {
 		if _, exiting := in.Exits[r.DestinationLane]; !exiting {
 			return r.DestinationLane
 		}
 	}
-	return preferred
+	return ""
 }
 
 // observedLanes is the batch's held lanes and every lane its NAV values.

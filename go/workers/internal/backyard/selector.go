@@ -183,9 +183,12 @@ type MoveQuote struct {
 	BorrowValueRaw   uint64 `json:"borrowValueRaw,omitempty"`
 	ProceedsValueRaw uint64 `json:"proceedsValueRaw,omitempty"`
 	SourceLane       string `json:"sourceLane"`
-	DestinationLane  string `json:"destinationLane"`
-	ObservationID    string `json:"observationId"`
-	EquityRaw        int64  `json:"equityRaw"`
+	// RotateFrom is a rotation's source: the held lane whose release funds
+	// the entry, in place of cash. Empty on a cash entry.
+	RotateFrom      string `json:"rotateFrom,omitempty"`
+	DestinationLane string `json:"destinationLane"`
+	ObservationID   string `json:"observationId"`
+	EquityRaw       int64  `json:"equityRaw"`
 	// CostRaw is Cost's total: what the entry and its unwind are expected to
 	// cost the vault's capital.
 	CostRaw    int64     `json:"costRaw"`
@@ -218,9 +221,12 @@ type SelectorInput struct {
 	canaryRequest *pilotCanaryEntryRequest
 	Now           time.Time
 	Snapshot      Snapshot
-	Markets       []LaneEconomics
-	Quotes        []MoveQuote
-	Policy        SelectorPolicy
+	// Lanes is every lane's view of the same batch (Observation.lanes): the
+	// held lanes a rotation releases from.
+	Lanes   []Snapshot
+	Markets []LaneEconomics
+	Quotes  []MoveQuote
+	Policy  SelectorPolicy
 }
 
 // Only economic persistence lives here; forecasts do not manufacture
@@ -229,14 +235,22 @@ type AdvantageWindow struct {
 	Since      time.Time `json:"since"`
 	LastSample time.Time `json:"lastSample"`
 }
+
+// Advantages are keyed by the move: a cash entry by its lane, a rotation by
+// source->destination (rotationAdvantageKey), a 1x quote with "|1x".
 type SelectorState struct {
-	SourceLane string                     `json:"sourceLane,omitempty"`
 	Advantages map[string]AdvantageWindow `json:"advantages,omitempty"`
 }
 
 type CandidateForecast struct {
-	Lane          string  `json:"lane"`
-	InvestedRaw   int64   `json:"investedRaw"`
+	// SourceLane is a rotation's source; empty for cash entering Lane.
+	SourceLane  string `json:"sourceLane,omitempty"`
+	Lane        string `json:"lane"`
+	InvestedRaw int64  `json:"investedRaw"`
+	// CostRaw is the priced move's whole cost (its quote's), and KeepGainRaw
+	// what a rotation's equity earns where it is over the horizon.
+	CostRaw       int64   `json:"costRaw,omitempty"`
+	KeepGainRaw   float64 `json:"keepGainRaw,omitempty"`
 	IdleRaw       int64   `json:"idleRaw"`
 	GrossGainRaw  float64 `json:"grossGainRaw"`
 	GainRaw       float64 `json:"gainRaw"`
@@ -266,17 +280,16 @@ type SelectorResult struct {
 	KeepGainRaw     float64             `json:"keepGainRaw"`
 	Candidates      []CandidateForecast `json:"candidates"`
 	State           SelectorState       `json:"state"`
-	// The exact quote selected for ENTER, copied from the validated
-	// candidate. Net equity alone cannot identify its gross input or costs.
+	// The exact quote selected for ENTER or ROTATE, copied from the
+	// validated candidate. Net equity alone cannot identify its gross input
+	// or costs.
 	SelectedQuote *MoveQuote `json:"selectedQuote,omitempty"`
-}
-
-// laneExposure: the vault holds a lane's position or collateral. Only a flat
-// vault (cash in Voltr, Squads or debt-mint custody) enters a lane on the
-// selector's choice; held lanes keep their capital, and an operator exit row
-// moves it.
-func laneExposure(s Snapshot) bool {
-	return s.HasPosition || s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0 || s.CollateralIdleRaw > 0 || s.PrimeIdleRaw > 0 || s.HeldLanes != ""
+	// SampledAt is when the selector decided this result: a rotation
+	// releases only while it is within the policy's MaxSampleGap.
+	SampledAt time.Time `json:"sampledAt,omitempty"`
+	// SourceRelease is the rotation source's position the release is sized
+	// from and the position it leaves (target rule 5r).
+	SourceRelease *SourceRelease `json:"sourceRelease,omitempty"`
 }
 
 func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR, years float64) float64 {
@@ -326,7 +339,8 @@ func selectorSampleLine(result SelectorResult) (key, line string) {
 	for _, c := range result.Candidates {
 		lev, net, borrow, room, benefit, reason := "-", "-", "-", "-", "-", c.BlockedReason
 		if c.CostsKnown {
-			lev, net, benefit = fmt.Sprintf("%.2fx", c.Leverage), fmt.Sprintf("%.2f%%", c.NetAPY*100), usd(c.BenefitRaw)
+			lev, net = fmt.Sprintf("%.2fx", c.Leverage), fmt.Sprintf("%.2f%%", c.NetAPY*100)
+			benefit = fmt.Sprintf("%s size=%s cost=%s gain=%s keep=%s", usd(c.BenefitRaw), usd(float64(c.InvestedRaw+c.CostRaw)), usd(float64(c.CostRaw)), usd(c.GainRaw), usd(c.KeepGainRaw))
 			borrow = "open"
 			if c.BorrowBlocked {
 				borrow = "blocked"
@@ -339,8 +353,12 @@ func selectorSampleLine(result SelectorResult) (key, line string) {
 			reason = "-"
 		}
 		roomOpen := c.DebtRoomUSDCRaw != nil && *c.DebtRoomUSDCRaw > 0
-		keys = append(keys, fmt.Sprintf("%s:%s:%s:%s:%t", c.Lane, reason, borrow, lev, roomOpen))
-		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s %s borrow=%s room=%s benefit=%s reason=%s)", c.Lane, lev, net, nativeFeedText(c.NativeAPY, c.FeedNativeAPY), borrow, room, benefit, reason))
+		name := c.Lane
+		if c.SourceLane != "" {
+			name = rotationAdvantageKey(c.SourceLane, c.Lane)
+		}
+		keys = append(keys, fmt.Sprintf("%s:%s:%s:%s:%t", name, reason, borrow, lev, roomOpen))
+		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s %s borrow=%s room=%s benefit=%s reason=%s)", name, lev, net, nativeFeedText(c.NativeAPY, c.FeedNativeAPY), borrow, room, benefit, reason))
 	}
 	return strings.Join(keys, "|"), fmt.Sprintf("backyard-rwa-worker: selector sample action=%s reason=%s source=%s candidates=%s", result.Action, result.Reason, result.SourceLane, strings.Join(parts, " "))
 }
@@ -396,15 +414,20 @@ func pilotForecastEconomics(e pilotEconomics, invested float64, m LaneEconomics,
 	return e
 }
 
-// SelectOpportunity never creates a transaction. It chooses the lane a flat
-// vault's cash enters (ENTER), with the persistence and net benefit of an
-// executable quote; target() reads its latest result. A vault that holds a
-// lane keeps it: an ordinary economic choice never repays a lane's debt to
-// move it (the operator exit row does). Markets are the active registry lanes
-// the selector scores.
+// SelectOpportunity never creates a transaction. It chooses where the
+// vault's money goes next, and target() reads its latest result:
+//
+//   - cash (Voltr idle and Squads cash) enters the lane with the best
+//     persistent net benefit (ENTER), a held lane included;
+//   - a held lane's equity rotates to another lane (ROTATE) when a tranche's
+//     forward gain there, net of the move's full round trip, beats what it
+//     earns where it is, over the same horizon and persistence as an entry.
+//
+// Cash outranks a rotation: it needs no release. Markets are the active
+// registry lanes the selector scores.
 func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult {
 	s, p := in.Snapshot, in.Policy
-	out := SelectorResult{Action: "KEEP", Reason: "no_worthwhile_move", SourceLane: s.RouteLane}
+	out := SelectorResult{Action: "KEEP", Reason: "no_worthwhile_move", SourceLane: s.RouteLane, SampledAt: in.Now}
 	hold := func(reason string) SelectorResult { out.Reason = reason; out.State = SelectorState{}; return out }
 	if err := p.validate(); err != nil || in.Now.IsZero() {
 		return hold("invalid_selector_policy")
@@ -415,9 +438,6 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	base := Decide(s)
 	if base.Action == RecoverTransaction || base.Action == HoldManualRecovery || s.Nonterminal != "" {
 		return hold("execution_recovery_or_safety_first")
-	}
-	if laneExposure(s) {
-		return hold("held_lanes_keep_their_capital")
 	}
 	if s.WithdrawalDemandRaw > 0 || s.VoltrStrategyIdleRaw > 0 {
 		return hold("withdrawal_or_accounting_first")
@@ -451,13 +471,26 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		lanes = append(lanes, lane)
 	}
 	sort.Strings(lanes)
-	out.State.SourceLane = s.RouteLane
-	if previous.SourceLane != s.RouteLane {
-		previous = SelectorState{}
-	}
 	out.State.Advantages = map[string]AdvantageWindow{}
+	// sample records a priced candidate's persistence: its executable
+	// quote's benefit, at the same MinimumBenefit threshold; an unprofitable
+	// sample drops the window. A 1x quote persists in its own window: a
+	// leveraged advantage never counts toward it, nor the reverse.
+	sample := func(c CandidateForecast, move string, q MoveQuote) {
+		if c.BlockedReason == "fee_forecast_unavailable" {
+			delete(out.State.Advantages, move)
+			delete(out.State.Advantages, unleveredAdvantageKey(move))
+		}
+		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
+			key := move
+			if q.Unlevered {
+				key = unleveredAdvantageKey(move)
+			}
+			sampleAdvantageWindow(&out, previous, key, in.Now, p)
+		}
+	}
 	best := -1
-	quotes := make(map[string]MoveQuote)
+	quotes := make(map[int]MoveQuote)
 	for _, lane := range lanes {
 		m := markets[lane]
 		c := CandidateForecast{Lane: lane, NativeAPY: m.NativeAPY, FeedNativeAPY: m.FeedNativeAPY}
@@ -516,7 +549,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		var quote *MoveQuote
 		for i := range in.Quotes {
 			q := &in.Quotes[i]
-			if q.MinimumIdleRaw == 0 || q.MinimumIdleRaw > math.MaxInt64 {
+			if q.RotateFrom != "" || q.MinimumIdleRaw == 0 || q.MinimumIdleRaw > math.MaxInt64 {
 				continue
 			}
 			quoteAmount := min(amount, max(int64(0), int64(q.MinimumIdleRaw)-p.IdleBufferRaw))
@@ -533,67 +566,82 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
-		amount = quote.EquityRaw
-		if quote.CostRaw >= amount {
-			c.BlockedReason = "cost_exceeds_allocation"
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
-			out.Candidates = append(out.Candidates, c)
-			continue
-		}
-		if !quote.validBorrow() {
-			c.BlockedReason = "bounded_borrow_unavailable"
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
-			out.Candidates = append(out.Candidates, c)
-			continue
-		}
-		quotes[lane] = *quote
-		c.CostsKnown = true
-		// The capital the entry loses before anything earns.
-		c.InvestedRaw = amount - quote.CostRaw
-		c.IdleRaw = s.TotalVaultNAVRaw - amount
-		economics, blocked := pilotQuoteEconomics(*quote, m, float64(c.InvestedRaw), years)
-		if blocked != "" {
-			c.BlockedReason = blocked
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
-			out.Candidates = append(out.Candidates, c)
-			continue
-		}
-		c.BorrowAPR = economics.APR
-		c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m, s.ApprovedAdminPerformanceFeeBPS)
-		c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered && !quote.SpreadUnlevered, quote.DebtRoomUSDCRaw
-		var feeKnown bool
-		c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))
-		// Candidate pays the repeated-fee reserve; KEEP gets the upper return
-		// from a single terminal fee. Deduct uncertainty after that money edge.
-		c.BenefitRaw = c.GainRaw - out.KeepGainRaw - float64(equity)*float64(p.UncertaintyBPS)/10_000
-		if !feeKnown {
-			c.BlockedReason = "fee_forecast_unavailable"
-			delete(out.State.Advantages, lane)
-			delete(out.State.Advantages, unleveredAdvantageKey(lane))
-		} else if !finite(c.GainRaw) || !finite(c.BenefitRaw) {
-			c.BlockedReason = "invalid_candidate_forecast"
-		}
-		// Every lane's persistence sample is its executable quote's priced
-		// benefit, at the same MinimumBenefit threshold; an unprofitable tick
-		// drops the window. A 1x quote persists in its own window: a leveraged
-		// advantage never counts toward it, nor the reverse.
-		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
-			key := lane
-			if quote.Unlevered {
-				key = unleveredAdvantageKey(lane)
-			}
-			sampleAdvantageWindow(&out, previous, key, in.Now, p)
-		}
+		// Cash earns nothing where it is (KeepGainRaw).
+		scoreMove(&c, s, p, m, *quote, equity, out.KeepGainRaw, years)
+		sample(c, lane, *quote)
 		out.Candidates = append(out.Candidates, c)
+		quotes[len(out.Candidates)-1] = *quote
 		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) && (best < 0 || c.BenefitRaw > out.Candidates[best].BenefitRaw) {
 			best = len(out.Candidates) - 1
+		}
+	}
+	// Held capital: every held lane's equity is scored against every other
+	// destination, one tranche at a time.
+	bestRotation, sources := -1, map[int]Snapshot{}
+	held := s.heldLanes()
+	for _, source := range in.Lanes {
+		if !rotationSource(held, source) {
+			continue
+		}
+		ms, sourceKnown := markets[source.RouteLane]
+		destination := rotationDestination(source, markets, in.Now, p)
+		for _, lane := range lanes {
+			if !rotationPair(source.RouteLane, lane) {
+				continue
+			}
+			m := markets[lane]
+			key := rotationAdvantageKey(source.RouteLane, lane)
+			c := CandidateForecast{SourceLane: source.RouteLane, Lane: lane, NativeAPY: m.NativeAPY, FeedNativeAPY: m.FeedNativeAPY}
+			if !sourceKnown || ms.validate(in.Now, p) != nil || m.validate(in.Now, p) != nil {
+				c.BlockedReason = "economic_evidence_unavailable"
+				carryAdvantageWindows(&out, previous, key, c.BlockedReason)
+				out.Candidates = append(out.Candidates, c)
+				continue
+			}
+			var quote *MoveQuote
+			for i := range in.Quotes {
+				q := &in.Quotes[i]
+				if q.RotateFrom == source.RouteLane && q.DestinationLane == lane && q.ObservationID == s.ObservationID && freshAt(in.Now, q.ObservedAt, p.QuoteMaxAge) && q.currentAtSlot(s.Slot) && q.CostRaw >= 0 && q.EvidenceID != "" &&
+					q.EquityRaw <= laneReleaseLimitRaw(source) {
+					if quote != nil {
+						return hold("duplicate_move_quote")
+					}
+					quote = q
+				}
+			}
+			if quote == nil {
+				// The collector prices only the source's best destination
+				// (rotationDestination): below the source's forward APY no
+				// quote could pay.
+				c.BlockedReason = "bounded_move_cost_unavailable"
+				if _, edge := rotationForwardAPY(source, ms, m); !edge {
+					c.BlockedReason = "forward_apy_not_higher"
+				} else if lane != destination {
+					c.BlockedReason = "forward_apy_not_best"
+				}
+				carryAdvantageWindows(&out, previous, key, c.BlockedReason)
+				out.Candidates = append(out.Candidates, c)
+				continue
+			}
+			keep, ok := heldTrancheGain(source, ms, quote.EquityRaw, years)
+			if !ok {
+				c.BlockedReason = "held_forecast_unavailable"
+				out.Candidates = append(out.Candidates, c)
+				continue
+			}
+			scoreMove(&c, s, p, m, *quote, quote.EquityRaw, keep, years)
+			sample(c, key, *quote)
+			out.Candidates = append(out.Candidates, c)
+			quotes[len(out.Candidates)-1], sources[len(out.Candidates)-1] = *quote, source
+			if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) && (bestRotation < 0 || c.BenefitRaw > out.Candidates[bestRotation].BenefitRaw) {
+				bestRotation = len(out.Candidates) - 1
+			}
 		}
 	}
 	// A lane whose economics are missing from this sample (feed gap) keeps
 	// its windows unchanged too; MaxSampleGap bounds how long.
 	for key, window := range previous.Advantages {
-		lane := strings.TrimSuffix(key, "|1x")
-		if _, present := markets[lane]; !present {
+		if _, present := markets[advantageKeyLane(key)]; !present {
 			if _, sampled := out.State.Advantages[key]; !sampled {
 				out.State.Advantages[key] = window
 			}
@@ -603,27 +651,178 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		out.Reason = "accounting_first"
 		return out
 	}
-	if best < 0 {
+	if best < 0 && bestRotation < 0 {
 		out.Reason = "no_worthwhile_executable_move"
 		return out
 	}
-	chosen := out.Candidates[best]
-	out.DestinationLane = chosen.Lane
-	out.EquityRaw = chosen.InvestedRaw
-	windowKey := chosen.Lane
-	if quotes[chosen.Lane].Unlevered {
-		windowKey = unleveredAdvantageKey(chosen.Lane)
+	persistent := func(i int, key string) bool {
+		if quotes[i].Unlevered {
+			key = unleveredAdvantageKey(key)
+		}
+		window, stable := out.State.Advantages[key]
+		return stable && in.Now.Sub(window.Since) >= p.Persistence
 	}
-	window, stable := out.State.Advantages[windowKey]
-	if !stable || in.Now.Sub(window.Since) < p.Persistence {
-		out.Reason = "advantage_not_yet_persistent"
-		return out
+	out.Reason = "advantage_not_yet_persistent"
+	if best >= 0 {
+		chosen := out.Candidates[best]
+		out.DestinationLane = chosen.Lane
+		out.EquityRaw = chosen.InvestedRaw
+		if persistent(best, chosen.Lane) {
+			quote := quotes[best]
+			out.SelectedQuote = &quote
+			out.Action = "ENTER"
+			out.Reason = "persistent_net_benefit"
+			return out
+		}
 	}
-	quote := quotes[chosen.Lane]
-	out.SelectedQuote = &quote
-	out.Action = "ENTER"
-	out.Reason = "persistent_net_benefit"
+	if bestRotation >= 0 {
+		chosen := out.Candidates[bestRotation]
+		if persistent(bestRotation, rotationAdvantageKey(chosen.SourceLane, chosen.Lane)) {
+			quote, source := quotes[bestRotation], sources[bestRotation]
+			out.Action, out.Reason = "ROTATE", "persistent_net_benefit"
+			out.SourceLane, out.DestinationLane, out.EquityRaw = source.RouteLane, chosen.Lane, quote.EquityRaw
+			out.SourceRelease, out.SelectedQuote = newSourceRelease(source, quote.EquityRaw), &quote
+		}
+	}
 	return out
+}
+
+// scoreMove prices one executable quote into m's lane: the capital its
+// cost leaves earning there over the horizon, with the performance fee
+// reserved (selectorFeeReservedGain), against keepGain, what the same
+// equity earns where it is, less the uncertainty share of uncertain: the
+// vault's investable equity for an entry, the equity moved for a rotation.
+func scoreMove(c *CandidateForecast, s Snapshot, p SelectorPolicy, m LaneEconomics, quote MoveQuote, uncertain int64, keepGain, years float64) {
+	amount := quote.EquityRaw
+	if quote.CostRaw >= amount {
+		c.BlockedReason = "cost_exceeds_allocation"
+		return
+	}
+	if !quote.validBorrow() {
+		c.BlockedReason = "bounded_borrow_unavailable"
+		return
+	}
+	c.CostsKnown, c.CostRaw, c.KeepGainRaw = true, quote.CostRaw, keepGain
+	// The capital the move loses before anything earns.
+	c.InvestedRaw = amount - quote.CostRaw
+	c.IdleRaw = s.TotalVaultNAVRaw - amount
+	economics, blocked := pilotQuoteEconomics(quote, m, float64(c.InvestedRaw), years)
+	if blocked != "" {
+		c.BlockedReason = blocked
+		return
+	}
+	c.BorrowAPR = economics.APR
+	c.Leverage, c.NetAPY = quoteLeverageAndNetAPY(economics, float64(c.InvestedRaw), m, s.ApprovedAdminPerformanceFeeBPS)
+	c.BorrowBlocked, c.DebtRoomUSDCRaw = quote.Unlevered && !quote.SpreadUnlevered, quote.DebtRoomUSDCRaw
+	var feeKnown bool
+	c.GainRaw, feeKnown = selectorFeeReservedGain(s, p.Horizon, economics, float64(c.IdleRaw))
+	// The candidate pays the repeated-fee reserve; KEEP gets its gross
+	// return. Deduct uncertainty after that money edge.
+	c.BenefitRaw = c.GainRaw - keepGain - float64(uncertain)*float64(p.UncertaintyBPS)/10_000
+	if !feeKnown {
+		c.BlockedReason = "fee_forecast_unavailable"
+	} else if !finite(c.GainRaw) || !finite(c.BenefitRaw) {
+		c.BlockedReason = "invalid_candidate_forecast"
+	}
+}
+
+// rotationSource reports a held lane whose equity the selector may rotate:
+// a positioned registry lane that can release a tranche.
+func rotationSource(held []string, s Snapshot) bool {
+	return containsLane(held, s.RouteLane) && s.HasPosition && earnHeldLane(s.RouteLane) && laneSwap(s.RouteLane, SwapCollateralToStableStep) && laneReleaseLimitRaw(s) > 0
+}
+
+// rotationPair reports a destination a source's equity may rotate into:
+// another lane the selector enters (never an overflow lane) with its own
+// collateral. Lanes sharing a collateral custody hold one collateral, and
+// an overflow lane's moves with its source are overflow moves.
+func rotationPair(source, destination string) bool {
+	if source == destination || !selectorDestinationLane(destination) {
+		return false
+	}
+	return !sameCollateralCustody(source, destination)
+}
+
+// sameCollateralCustody reports two registry lanes whose collateral the
+// vault holds in one account: the same mint under the same token program.
+// An unknown lane shares with everything.
+func sameCollateralCustody(a, b string) bool {
+	x, okA := findEarnLane(a)
+	y, okB := findEarnLane(b)
+	return !okA || !okB || x.route.Kamino.CollateralMint == y.route.Kamino.CollateralMint && x.route.CollateralTokenProgram == y.route.CollateralTokenProgram
+}
+
+// rotationForwardAPY is the market-level test a pair is priced on: the
+// destination's forward APY at its entry leverage (1.5x where the spread
+// rule levers it, else 1x), and whether it beats the source position's at
+// its own leverage, both before fees. Below it no quote could pay its cost.
+func rotationForwardAPY(source Snapshot, ms, md LaneEconomics) (float64, bool) {
+	equity := laneEquityRaw(source)
+	if equity <= 0 {
+		return 0, false
+	}
+	held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, source)
+	level := 1.0
+	if _, levered := leverageUpAllowed(md, 1.5, 0); levered {
+		level = 1.5
+	}
+	entered, okD := leverageLevelAPY(md, level, laneReleaseLimitRaw(source), false, 0)
+	return entered, ok && okD && entered > held
+}
+
+// rotationDestination is the one destination a held source's tranche is
+// priced into each sample: among the valid markets it may rotate into, the
+// highest forward APY that beats the source's ("" without one).
+func rotationDestination(source Snapshot, markets map[string]LaneEconomics, now time.Time, p SelectorPolicy) string {
+	ms, ok := markets[source.RouteLane]
+	if !ok || ms.validate(now, p) != nil {
+		return ""
+	}
+	best, bestAPY := "", 0.0
+	for _, lane := range earnLaneIDs(true) {
+		md, ok := markets[lane]
+		if !ok || !rotationPair(source.RouteLane, lane) || md.validate(now, p) != nil {
+			continue
+		}
+		if apy, edge := rotationForwardAPY(source, ms, md); edge && (best == "" || apy > bestAPY) {
+			best, bestAPY = lane, apy
+		}
+	}
+	return best
+}
+
+// heldTrancheGain is what equity of the source's position earns where it is
+// over the horizon: its share of the position's collateral and debt at the
+// source's current borrow rate, before fees (KEEP's upper return).
+func heldTrancheGain(source Snapshot, m LaneEconomics, equity int64, years float64) (float64, bool) {
+	total := laneEquityRaw(source)
+	if total <= 0 || equity <= 0 || equity > total || source.PositionDebtValueRaw < 0 {
+		return 0, false
+	}
+	debt := float64(source.PositionDebtValueRaw) * float64(equity) / float64(total)
+	apr, err := projectedBorrowAPR(m, 0)
+	if err != nil {
+		return 0, false
+	}
+	e := pilotForecastEconomics(pilotEconomics{Debt: debt, Proceeds: debt, APR: apr}, float64(equity), m, years, 0)
+	return e.Gain, finite(e.Gain)
+}
+
+// selectorRotates reports a result that rotates a held lane's equity.
+func selectorRotates(r SelectorResult) bool {
+	return r.Action == "ROTATE" || r.Action == "CANARY_ROTATE"
+}
+
+// rotationAdvantageKey is a rotation's persistence window.
+func rotationAdvantageKey(source, destination string) string { return source + "->" + destination }
+
+// advantageKeyLane is the destination lane a persistence window is for.
+func advantageKeyLane(key string) string {
+	key = strings.TrimSuffix(key, "|1x")
+	if i := strings.Index(key, "->"); i >= 0 {
+		return key[i+2:]
+	}
+	return key
 }
 
 // selectorAvailabilityReasons are candidate refusals that say nothing about
@@ -642,14 +841,14 @@ var selectorAvailabilityReasons = map[string]bool{
 	"selector_live_snapshot_unavailable": true,
 }
 
-// carryAdvantageWindows keeps the lane's leveraged and 1x windows exactly
-// as they were (same Since and LastSample) when this sample could not price
-// the lane for an availability reason.
-func carryAdvantageWindows(out *SelectorResult, previous SelectorState, lane, reason string) {
+// carryAdvantageWindows keeps a move's leveraged and 1x windows (a lane's,
+// or a rotation's) exactly as they were (same Since and LastSample) when
+// this sample could not price it for an availability reason.
+func carryAdvantageWindows(out *SelectorResult, previous SelectorState, move, reason string) {
 	if !selectorAvailabilityReasons[reason] {
 		return
 	}
-	for _, key := range []string{lane, unleveredAdvantageKey(lane)} {
+	for _, key := range []string{move, unleveredAdvantageKey(move)} {
 		if _, sampled := out.State.Advantages[key]; sampled {
 			continue
 		}
@@ -659,8 +858,8 @@ func carryAdvantageWindows(out *SelectorResult, previous SelectorState, lane, re
 	}
 }
 
-// unleveredAdvantageKey is the persistence window of a lane's 1x entry.
-func unleveredAdvantageKey(lane string) string { return lane + "|1x" }
+// unleveredAdvantageKey is the persistence window of a move's 1x entry.
+func unleveredAdvantageKey(move string) string { return move + "|1x" }
 
 // sampleAdvantageWindow records one persistence sample for lane with the
 // installed hysteresis: a fresh window starts at now, and a prior window keeps

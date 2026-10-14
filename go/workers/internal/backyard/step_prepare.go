@@ -44,7 +44,7 @@ func stepDecision(s Snapshot, d Decision) (up bool, ok bool) {
 		return true, d.Reason == leverageUpReason || d.Reason == termKeepAliveReason
 	case DeleverRouteStep:
 		switch d.Reason {
-		case hardLTVDeleverReason, debtZeroReason, leverageDownPartialReason, overflowMoveReason, exitWithdrawReason, releaseReason:
+		case hardLTVDeleverReason, debtZeroReason, leverageDownPartialReason, overflowMoveReason, exitWithdrawReason, releaseReason, rotateRepayReason, rotateWithdrawReason:
 			return false, true
 		}
 	}
@@ -74,9 +74,12 @@ func stepDebtToLTVRaw(s Snapshot, ltvBPS int64) int64 {
 // stepDownRepay is the debt a down step of reason repays, from the snapshot
 // it was decided on: to the stored level's LTV after hard LTV, to 1.5x for
 // the partial down move, all of it (full, sized on the payoff bound) for
-// debt 0. A release repays its debt share (planDownStep).
-func stepDownRepay(s Snapshot, reason string) (uint64, bool) {
-	switch reason {
+// debt 0, the decision's amount for a rotation's repay. A release repays its
+// debt share (planDownStep).
+func stepDownRepay(s Snapshot, d Decision) (uint64, bool) {
+	switch d.Reason {
+	case rotateRepayReason:
+		return uint64(max(min(d.AmountRaw, s.PositionDebtRaw), 0)), false
 	case debtZeroReason:
 		return uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)), true
 	case hardLTVDeleverReason:
@@ -254,23 +257,8 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
-	if decision.Reason == exitWithdrawReason || (decision.Reason == releaseReason && st.position.DebtRaw == 0) {
-		// An exit withdraws the deposit, a release its equity's share, and
-		// converts it with the held collateral to USDC: nothing it withdraws
-		// waits in a custody other lanes may share.
-		receipts := st.position.CollateralDepositedRaw
-		if decision.Reason == releaseReason {
-			receipts = uint64(max(partialWithdrawalReleaseReceipts(s, decision.AmountRaw), 0))
-		}
-		receipts = min(receipts, stepLegCap(route))
-		liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
-		if err != nil || receipts == 0 || liquidity == 0 {
-			return Observation{}, StepExecutionEvidence{}, budgetHoldFrom(err, "release_leg_unavailable")
-		}
-		if st.cash, err = vaultCustodyRaw(v, accounts, v.cash, bridgeUSDC, bridgeTokenProgram); err != nil {
-			return Observation{}, StepExecutionEvidence{}, err
-		}
-		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapCollateralToStableStep, receipts, liquidity+st.heldCollateral, s.Slot)
+	if decision.Reason == exitWithdrawReason || decision.Reason == releaseReason || decision.Reason == rotateWithdrawReason {
+		evidence, _, err := releaseLeg(ctx, rpc, view, client, manifest, observation.policies, accounts, st, s, decision)
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
@@ -297,7 +285,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
-	repay, full := stepDownRepay(s, decision.Reason)
+	repay, full := stepDownRepay(s, decision)
 	// Under a split policy's leg cap a repay leaves a tenth for the
 	// conversion's excess; the step then repeats while debt remains.
 	if limit := stepLegCap(route); repay > limit-limit/10 {
@@ -328,6 +316,45 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	}
 	logStage("prepare_step", prepareStart)
 	return observation, evidence, err
+}
+
+// releaseLeg is the step an exit or a release of decision sends, and the
+// collateral it leaves in the lane's custody. An exit withdraws the
+// deposit, a release without debt its equity's share, a rotation's withdraw
+// the decision's receipts, and converts it with the held collateral to USDC:
+// nothing it withdraws waits in a custody other lanes may share. A release
+// beside debt withdraws its share and repays the debt's share; what it
+// leaves in custody the custody rule (target rule 4a) sends toward Voltr.
+func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, accounts []ConfirmedAccount, st stepState, s Snapshot, decision Decision) (StepExecutionEvidence, uint64, error) {
+	if decision.Reason == releaseReason && st.position.DebtRaw > 0 {
+		receipts, convert, err := planDownStep(s, decision, st, 0)
+		if err != nil {
+			return StepExecutionEvidence{}, 0, err
+		}
+		liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
+		if err != nil {
+			return StepExecutionEvidence{}, 0, err
+		}
+		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, SwapCollateralToDebtStep, receipts, convert, s.Slot)
+		return evidence, liquidity + st.heldCollateral - convert, err
+	}
+	receipts := st.position.CollateralDepositedRaw
+	switch decision.Reason {
+	case releaseReason:
+		receipts = uint64(max(partialWithdrawalReleaseReceipts(s, decision.AmountRaw), 0))
+	case rotateWithdrawReason:
+		receipts = min(uint64(max(decision.AmountRaw, 0)), receipts)
+	}
+	receipts = min(receipts, stepLegCap(st.route))
+	liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
+	if err != nil || receipts == 0 || liquidity == 0 {
+		return StepExecutionEvidence{}, 0, budgetHoldFrom(err, "release_leg_unavailable")
+	}
+	if st.cash, err = vaultCustodyRaw(manifest.vault, accounts, manifest.vault.cash, bridgeUSDC, bridgeTokenProgram); err != nil {
+		return StepExecutionEvidence{}, 0, err
+	}
+	evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, SwapCollateralToStableStep, receipts, liquidity+st.heldCollateral, s.Slot)
+	return evidence, 0, err
 }
 
 // assembleStep is one step of st's lane converting by conversion: Open
