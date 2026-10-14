@@ -131,17 +131,22 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	if err != nil {
 		return Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: sha256Bytes([]byte(fmt.Sprintf("selector-ownership:%d:%s", slot, err.Error()))), Slot: slot, RouteKind: RouteKind, RouteLane: selectedRoute.Lane, ManualReason: err.Error()}}, accounts, nil
 	}
-	// A view per valued lane; a flat vault's first is the lane its cash enters.
+	// A view per valued lane; a flat vault's first is the lane its cash
+	// enters. A held vault also views the lane the selector moves cash or a
+	// rotation into, when it holds nothing there.
 	viewLanes := valued
 	if len(held) == 0 {
 		viewLanes = append([]string{preferred}, slices.DeleteFunc(slices.Clone(valued), func(l string) bool { return l == preferred })...)
+	} else if lane := selectorDestination(runtime.inputs); lane != "" && !slices.Contains(valued, lane) {
+		viewLanes = append(slices.Clone(valued), lane)
 	}
 	first, err := v.route(viewLanes[0])
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	// Every valued lane is in the same NAV, from the same bank.
-	routes, err := navRoutes(v, first, valued)
+	// Every viewed lane is refreshed from the same bank; the valued ones are
+	// the NAV.
+	routes, err := navRoutes(v, first, viewLanes)
 	if err != nil {
 		return Observation{}, nil, err
 	}
@@ -251,14 +256,23 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 }
 
 // flatViewLane is the lane a flat vault's view describes: the selector's
-// latest entry lane, else the preferred lane.
+// latest destination, else the preferred lane.
 func flatViewLane(preferred string, in targetInputs) string {
-	if r := in.Entry; r != nil && (r.Action == "ENTER" || r.Action == "CANARY_ENTER") && earnActiveLane(r.DestinationLane) {
+	if lane := selectorDestination(in); lane != "" {
+		return lane
+	}
+	return preferred
+}
+
+// selectorDestination is the lane the selector's latest result moves cash
+// or a rotation into, unless it is exiting; "" without one.
+func selectorDestination(in targetInputs) string {
+	if r := in.Entry; r != nil && (r.Action == "ENTER" || r.Action == "CANARY_ENTER" || selectorRotates(*r)) && earnActiveLane(r.DestinationLane) {
 		if _, exiting := in.Exits[r.DestinationLane]; !exiting {
 			return r.DestinationLane
 		}
 	}
-	return preferred
+	return ""
 }
 
 // observedLanes is the batch's held lanes and every lane its NAV values.

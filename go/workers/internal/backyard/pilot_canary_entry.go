@@ -12,17 +12,22 @@ import (
 // An explicit, expiring acceptance request uses the real selector quote and
 // ordinary execution admission. It is not an economic recommendation. The
 // immutable request ID is consumed under the route lock before any allocation;
-// restarting the same deployment never authorizes another attempt.
+// restarting the same deployment never authorizes another attempt. With a
+// sourceLane it rotates equityRaw of that held lane into lane.
 type pilotCanaryEntryRequest struct {
-	ID        string    `json:"id"`
-	Lane      string    `json:"lane"`
-	EquityRaw int64     `json:"equityRaw"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	ID         string    `json:"id"`
+	Lane       string    `json:"lane"`
+	SourceLane string    `json:"sourceLane,omitempty"`
+	EquityRaw  int64     `json:"equityRaw"`
+	ExpiresAt  time.Time `json:"expiresAt"`
 }
 type pilotCanaryEntryReceipt struct {
 	Request         pilotCanaryEntryRequest `json:"request"`
 	AcceptedAt      time.Time               `json:"acceptedAt"`
 	QuoteEvidenceID string                  `json:"quoteEvidenceId"`
+	// SourceCollateralRaw is a rotation's source collateral when first
+	// accepted: its one release (target rule 5r) is from that position.
+	SourceCollateralRaw int64 `json:"sourceCollateralRaw,omitempty"`
 }
 
 // readPilotCanaryEntryRequest reads the operator acceptance request: an active
@@ -51,7 +56,8 @@ func readPilotCanaryEntryRequest(now time.Time) (*pilotCanaryEntryRequest, error
 // Failing here ends this selector sample and retains the prior durable
 // selector authority; it does not enable ordinary switching on this tick.
 func (r pilotCanaryEntryRequest) validate(now time.Time) error {
-	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !earnActiveLane(r.Lane) || r.EquityRaw <= 0 || uint64(r.EquityRaw) > strategyTwoBridgeLegCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) {
+	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !earnActiveLane(r.Lane) || r.EquityRaw <= 0 || uint64(r.EquityRaw) > strategyTwoBridgeLegCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) ||
+		r.SourceLane != "" && (!earnHeldLane(r.SourceLane) || !rotationPair(r.SourceLane, r.Lane)) {
 		return budgetHold("invalid_pilot_canary_request")
 	}
 	return nil
@@ -74,17 +80,25 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	// Always suppress economic entry while an acceptance request is installed.
 	// Worker recovery, NAV, risk and withdrawal actions run independently first.
 	result.Action, result.Reason, result.DestinationLane, result.SelectedQuote = "KEEP", "operator_canary_waiting", "", nil
+	result.SourceLane, result.SourceCollateralRaw = input.Snapshot.RouteLane, 0
 	if prior, exists := history[request.ID]; exists && prior.Request != *request {
 		return result, nil, budgetHold("pilot_canary_request_id_reused")
 	} else if !exists && len(history) >= pilotCanaryReceiptCapacity {
 		return result, nil, budgetHold("pilot_canary_history_full")
 	}
+	s := input.Snapshot
+	if !s.Fresh || s.WithdrawalDemandRaw != 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.VoltrStrategyIdleRaw != 0 {
+		return result, nil, nil
+	}
+	if request.SourceLane != "" {
+		return selectPilotCanaryRotation(input, result, history)
+	}
 	// The request enters a flat vault. It keeps its lane, with a fresh quote
 	// each sample, until the cash it allocated reaches the lane: target()
 	// reads the latest result for the vault's Squads cash. A new allocation
-	// needs a quiet book.
-	s := input.Snapshot
-	if !s.Fresh || laneExposure(s) || s.WithdrawalDemandRaw != 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.VoltrStrategyIdleRaw != 0 {
+	// needs a quiet book. Capital anywhere in a lane, its entry's collateral
+	// in flight included, spends the request.
+	if s.HasPosition || s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0 || s.CollateralIdleRaw > 0 || s.PrimeIdleRaw > 0 || s.HeldLanes != "" {
 		return result, nil, nil
 	}
 	// Squads cash is this request's allocation in flight; any other request
@@ -100,7 +114,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	// explicitly and exclusively for this one operator-funded acceptance attempt.
 	valid := false
 	for _, candidate := range result.Candidates {
-		if candidate.Lane == request.Lane && candidate.CostsKnown && candidate.BlockedReason == "" {
+		if candidate.SourceLane == "" && candidate.Lane == request.Lane && candidate.CostsKnown && candidate.BlockedReason == "" {
 			valid = true
 		}
 	}
@@ -110,7 +124,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	var chosen *MoveQuote
 	for i := range input.Quotes {
 		q := input.Quotes[i]
-		if q.DestinationLane == request.Lane && q.SourceLane == s.RouteLane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
+		if q.DestinationLane == request.Lane && q.SourceLane == s.RouteLane && q.RotateFrom == "" && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
 			if chosen != nil {
 				return result, nil, budgetHold("duplicate_move_quote")
 			}
@@ -125,4 +139,56 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	}
 	result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ENTER", "operator_acceptance_not_economic_recommendation", request.Lane, request.EquityRaw, chosen
 	return result, &pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, QuoteEvidenceID: chosen.EvidenceID}, nil
+}
+
+// selectPilotCanaryRotation rotates the request's equity from its held
+// source lane into its lane: CANARY_ROTATE, re-issued with a fresh quote each
+// sample until the lane holds a position. target() releases the source once,
+// from the position first accepted (SourceCollateralRaw), and enters the
+// released cash.
+func selectPilotCanaryRotation(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, error) {
+	request, s := input.canaryRequest, input.Snapshot
+	held := s.heldLanes()
+	if !containsLane(held, request.SourceLane) || containsLane(held, request.Lane) || Decide(s).Action == ReportNAV {
+		return result, nil, nil
+	}
+	valid := false
+	for _, candidate := range result.Candidates {
+		if candidate.SourceLane == request.SourceLane && candidate.Lane == request.Lane && candidate.CostsKnown && candidate.BlockedReason == "" {
+			valid = true
+		}
+	}
+	var source *Snapshot
+	for i := range input.Lanes {
+		if input.Lanes[i].RouteLane == request.SourceLane {
+			source = &input.Lanes[i]
+		}
+	}
+	if !valid || source == nil {
+		return result, nil, nil
+	}
+	var chosen *MoveQuote
+	for i := range input.Quotes {
+		q := input.Quotes[i]
+		if q.RotateFrom == request.SourceLane && q.DestinationLane == request.Lane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
+			if chosen != nil {
+				return result, nil, budgetHold("duplicate_move_quote")
+			}
+			chosen = &q
+		}
+	}
+	if chosen == nil {
+		return result, nil, nil
+	}
+	if chosen.CostRaw < 0 || chosen.CostRaw >= chosen.EquityRaw || chosen.MinimumIdleRaw < uint64(chosen.EquityRaw) || !chosen.validBorrow() || !chosen.storedWindowValid() || !sha256Pattern.MatchString(chosen.EvidenceID) {
+		return result, nil, fmt.Errorf("invalid_selector_entry")
+	}
+	receipt := pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, SourceCollateralRaw: source.PositionCollateralRaw}
+	if prior, accepted := history[request.ID]; accepted {
+		receipt = prior
+	}
+	receipt.QuoteEvidenceID = chosen.EvidenceID
+	result.Action, result.Reason, result.SourceLane, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ROTATE", "operator_acceptance_not_economic_recommendation", request.SourceLane, request.Lane, request.EquityRaw, chosen
+	result.SourceCollateralRaw = receipt.SourceCollateralRaw
+	return result, &receipt, nil
 }

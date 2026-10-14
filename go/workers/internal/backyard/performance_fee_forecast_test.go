@@ -142,7 +142,7 @@ func TestPerformanceFeeMoneyBoundCoversPinnedDilutionAndRounding(t *testing.T) {
 func TestPerformanceFeeLegacyHWMBlocksOnlyEconomicSelector(t *testing.T) {
 	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 47))
-	previous := SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{
+	previous := SelectorState{Advantages: map[string]AdvantageWindow{
 		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now},
 	}}
 	got := SelectOpportunity(in, previous)
@@ -193,7 +193,7 @@ func TestPerformanceFeeQ48FloorKnownAndUnknownBaseline(t *testing.T) {
 	if got := SelectOpportunity(in, SelectorState{}); got.Reason == "fee_hwm_baseline_unavailable" {
 		t.Fatal("ordinary unreported NAV starved the baseline", got)
 	}
-	previous := SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{
+	previous := SelectorState{Advantages: map[string]AdvantageWindow{
 		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now},
 	}}
 	in.Snapshot.VoltrHighWaterMarkKnown = false
@@ -340,7 +340,7 @@ func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 10_000_000, 5_000_000
 	in.Quotes[0] = parBorrow(in.Quotes[0])
 	in.Quotes[0].EvidenceID = sha256Bytes([]byte("unarmed-quoted-projection"))
-	previous := SelectorState{SourceLane: in.Snapshot.RouteLane, Advantages: map[string]AdvantageWindow{
+	previous := SelectorState{Advantages: map[string]AdvantageWindow{
 		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now.Add(-time.Second)},
 	}}
 	// A diagnostic model can have a persistent, fully formed selected quote.

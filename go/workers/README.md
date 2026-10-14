@@ -73,7 +73,9 @@ waits for; `docs/backyard-one-writer.md`), `BACKYARD_SOLANA_RPC_URL` and `BACKYA
 `JUPITER_API_KEY` credential selects the keyed Jupiter API. The selector
 collector is off by default; `BACKYARD_RWA_SELECTOR_LIVE=1` enables it; it reads lane reserves
 from Backyard's own account view. `BACKYARD_RWA_PILOT_CANARY_ENTRY`
-keeps its existing meaning. One-shot operator commands run as
+keeps its existing meaning; with a `sourceLane` the request rotates its
+`equityRaw` from that held lane into `lane` (`CANARY_ROTATE`) until `lane`
+holds a position, releasing the source once. One-shot operator commands run as
 `loyal-engine backyard <command>` (for example `clear-hold --reason "<text>"`)
 with the same credentials.
 

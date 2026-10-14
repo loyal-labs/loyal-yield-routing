@@ -128,10 +128,6 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 0
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.StrategyNAVRaw = true, 1_670_000_000, 1_670_000_000, 1_670_000_000
 	check(Hold, holdAtTarget)
-	// Held, the vault keeps its lane: no selector entry, no re-entry loop.
-	if !laneExposure(s) {
-		t.Fatal("a funded 1x position is not exposure")
-	}
 	s.LeverageTargetLevel = 1
 	check(Hold, holdAtTarget)
 	// Pool reopens with an approved 1.5x level: B2 levers through leverage_up.

@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -80,44 +79,5 @@ func TestSelectorRanksPrimePYUSDWhenAUTOIsBlocked(t *testing.T) {
 	entered := SelectOpportunity(in, first.State)
 	if entered.Action != "ENTER" || entered.DestinationLane != primePRIMEPYUSD.Lane || entered.SelectedQuote == nil {
 		t.Fatalf("persistent Prime/PRIME/PYUSD advantage did not enter: %+v", entered)
-	}
-}
-
-// The held-sample line lists every candidate with leverage, net APY, borrow
-// state, borrow room and benefit in USDC; its change key ignores drifting
-// numbers but not a reserve opening.
-func TestSelectorSampleLineListsEveryCandidate(t *testing.T) {
-	t.Parallel()
-	room, closed, feed := uint64(12_345_670_000), uint64(0), .1084
-	result := SelectorResult{Action: "KEEP", Reason: "no_worthwhile_executable_move", SourceLane: autoAUTOPYUSD.Lane, Candidates: []CandidateForecast{
-		{Lane: SelectedRouteID, CostsKnown: true, Leverage: 1.5, NetAPY: .0512, BenefitRaw: 420_000, DebtRoomUSDCRaw: &room},
-		{Lane: onreONycUSDC, BlockedReason: "complete_entry_quote_unavailable"},
-		{Lane: autoAUTOPYUSD.Lane, CostsKnown: true, Leverage: 1, NetAPY: .07, BorrowBlocked: true, BenefitRaw: -1, DebtRoomUSDCRaw: &closed, NativeAPY: .0885, FeedNativeAPY: &feed},
-		{Lane: PhaseOneLaneID, BlockedReason: "entry_closed"},
-		{Lane: primePRIMEPYUSD.Lane, BlockedReason: "pair_capacity_unknown"},
-		{Lane: primePRIMEUSDS.Lane, BlockedReason: "economic_evidence_unavailable"},
-	}}
-	key, line := selectorSampleLine(result)
-	for _, want := range []string{
-		"Maple/syrupUSDC/USDC(lev=1.50x net=5.12% native=0.00% feed=unavailable borrow=open room=$12345.67 benefit=$0.42 reason=-)",
-		// The realized native APY the forecast used, the feed's, and the gap.
-		"AUTO/AUTO/PYUSD(lev=1.00x net=7.00% native=8.85% feed=10.84% gap=-1.99 borrow=blocked room=$0.00 benefit=$-0.00 reason=-)",
-		"OnRe/ONyc/USDC(lev=- net=- native=0.00% feed=unavailable borrow=- room=- benefit=- reason=complete_entry_quote_unavailable)",
-		"Prime/PRIME/USDS(", "Prime/PRIME/PYUSD(", "Prime/PRIME/USDC(",
-	} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("line misses %q:\n%s", want, line)
-		}
-	}
-	drift := result
-	drift.Candidates = append([]CandidateForecast(nil), result.Candidates...)
-	drift.Candidates[0].NetAPY, drift.Candidates[0].BenefitRaw = .06, 1
-	if driftKey, _ := selectorSampleLine(drift); driftKey != key {
-		t.Fatal("drifting numbers changed the change key")
-	}
-	opened := uint64(3_400_000_000)
-	drift.Candidates[2].DebtRoomUSDCRaw = &opened
-	if openKey, _ := selectorSampleLine(drift); openKey == key {
-		t.Fatal("a reserve opening did not change the change key")
 	}
 }

@@ -135,7 +135,7 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 		return budgetHoldFrom(err, "selector_evaluate_observation_unavailable")
 	}
 	markets, _ := feed.Snapshot()
-	selection := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{})
+	selection := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Lanes: observation.lanes, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{})
 	request, requestErr := readPilotCanaryEntryRequest(time.Now().UTC())
 	report := struct {
 		Mode                string         `json:"mode"`
