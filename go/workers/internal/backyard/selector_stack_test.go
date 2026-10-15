@@ -35,7 +35,6 @@ func autoPayoffBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccount)) 
 		reserve := accountAt(accounts, route.Kamino.CollateralReserve)
 		binary.LittleEndian.PutUint64(reserve.Data[224:232], 100_000_000_000)
 		binary.LittleEndian.PutUint64(reserve.Data[2592:2600], 50_000_000)
-		reserve.Data[kaminoLoanToValueOffset] = 78
 		reserve.Data[kaminoReserveConfigOffset+17] = 90
 		if mutate != nil {
 			mutate(accounts)

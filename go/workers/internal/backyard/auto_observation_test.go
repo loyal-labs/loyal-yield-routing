@@ -74,7 +74,8 @@ func putKaminoBorrowCurve(data []byte) {
 
 // kaminoReserveImage extends the shared reserve fixture with the fields the
 // route observer validates beyond plain NAV: the reserve's own market, its
-// mint decimals, one configured oracle, an 80% liquidation threshold, a valid
+// mint decimals, one configured oracle, a 78% max LTV and an 80% liquidation
+// threshold (AUTO's), a valid
 // borrow curve, and the borrowed-liquidity scaled fraction so the pool's
 // available + borrowed accounting is internally consistent with the balances
 // the obligation and the supply vaults report.
@@ -85,6 +86,7 @@ func kaminoReserveImage(t *testing.T, market, address, mint string, slot int64, 
 	binary.LittleEndian.PutUint64(reserve.Data[272:280], uint64(decimals))
 	putScaledFraction(reserve.Data[232:248], new(big.Int).Lsh(new(big.Int).SetUint64(borrowedRaw), 60))
 	putKey(t, reserve.Data[5112:5144], primePRIMEUSDC.Kamino.CollateralMint)
+	reserve.Data[kaminoLoanToValueOffset] = 78
 	reserve.Data[kaminoReserveConfigOffset+17] = 80
 	putKaminoBorrowCurve(reserve.Data)
 	return reserve

@@ -58,9 +58,7 @@ func fundLane(t *testing.T, accounts *[]ConfirmedAccount, lane string, collatera
 		t.Fatal(err)
 	}
 	peg := new(big.Int).Lsh(big.NewInt(1), 60)
-	collateral := kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6)
-	collateral.Data[kaminoLoanToValueOffset] = 78
-	upsertConfirmedAccount(accounts, collateral)
+	upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
 	upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, route.Kamino.DebtMint, 77, peg, 1_000_000_000-debtRaw, debtRaw, 1_000_000_000, 6))
 	upsertConfirmedAccount(accounts, marketFixture(t, route.Kamino.Market))
 	upsertConfirmedAccount(accounts, kaminoObligationImage(t, route, 77, collateralRaw, debtRaw))
@@ -123,9 +121,11 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 // multi-lane observation, origin/main 877b297e) gave this test's batch; the
 // digest binds the manifest, which P4 made the hash of the lane registry,
 // and both bind the valuation's refresh provenance, which every batch carries.
+// The digest binds the reserve's bytes: re-pinned when the reserve image
+// gained its max LTV.
 const (
 	oneLaneAUTOObservationID = "ccb310d607d6fb7d6764ef809ebb38167a6e2bee50443b0c1bccda92651f7177"
-	oneLaneAUTOReportDigest  = "c41775a8090c7b9c59fc5d2e0b5590788d59941e5c4a87e5d4762b085e54cb97"
+	oneLaneAUTOReportDigest  = "5e470717e7be8784149694a73c5cff3ebab05e995042266c059c7724e459eee0"
 )
 
 // Two held lanes are one book: the working lane's view plus every other held
@@ -184,11 +184,6 @@ func TestHeldLanePastHardLTVIsProtectedFirst(t *testing.T) {
 		// 80% liquidation threshold, 78% max LTV: hard LTV 7000;
 		// 7_000_000/10_000_000 = 70%.
 		fundLane(t, accounts, onreONycUSDC, 10_000_000, 7_000_000)
-		for i := range *accounts {
-			if (*accounts)[i].Address == autoAUTOPYUSD.Kamino.CollateralReserve {
-				(*accounts)[i].Data[kaminoLoanToValueOffset] = 78
-			}
-		}
 	})
 	s := observeMultiLane(t, manifest, accounts).Snapshot
 	if s.RouteLane != onreONycUSDC || s.Target.Rule != ruleHardLTV || s.LTVBPS < 6000 {
