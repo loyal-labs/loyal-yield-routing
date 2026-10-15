@@ -68,19 +68,25 @@ type earnLane struct {
 // economics decide, not a hand list (owner decision 2026-10-10: every
 // policy-covered loop is checked).
 var earnLanes = laneCapsOnLadder([]earnLane{
-	// Maple: 88% max LTV, ~90% liquidation; its USDC borrow pool is thin and
-	// its spread often negative, so 1.5x (33.3%).
-	{route: mapleSyrupUSDCUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest", initializer: true, maxLevel: 1.5},
+	// Each cap is the highest level whose LTV sits under the lane's hard LTV
+	// (owner decision 2026-10-15: every lane to its most reasonable point);
+	// lender limits read from the reserves on 2026-10-15. The spread rule, not
+	// the cap, keeps a thin or negative-spread lane low.
+	// Maple: 88% max LTV, 90% liquidation (hard LTV 80%); 3x = 66.7%. Its
+	// USDC borrow pool is thin and its spread often under 2.5 pts, so the
+	// rule rarely takes it past 1.75x.
+	{route: mapleSyrupUSDCUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest", initializer: true, maxLevel: 3},
 	// OnRe: 66% max LTV, 75% liquidation (hard LTV 63%, where a down step
-	// still has withdraw room); 2.5x = 60%.
+	// still has withdraw room); 2.5x = 60%. 3x (66.7%) sits over the hard
+	// LTV, so 2.5x is its ceiling.
 	{route: onreONycUSDCRouteTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true, maxLevel: 2.5},
-	// AUTO: 78% max LTV, 80% liquidation (hard LTV 70%); 2.5x = 60%, 3x
-	// (66.7%) once a few weeks of data support it.
-	{route: autoAUTOPYUSDTemplate, policy: policyAuto, initializer: true, maxLevel: 2.5},
-	// Prime: not researched past today's 1.75x.
-	{route: primePRIMEUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true, maxLevel: 1.75},
-	{route: primePRIMEPYUSDTemplate, policy: policySplit, maxLevel: 1.75},
-	{route: primePRIMEUSDSTemplate, policy: policySplit, maxLevel: 1.75},
+	// AUTO: 78% max LTV, 80% liquidation (hard LTV 70%); 3x = 66.7%.
+	{route: autoAUTOPYUSDTemplate, policy: policyAuto, initializer: true, maxLevel: 3},
+	// Prime: 88% max LTV, 91% liquidation (hard LTV 81%); 3x = 66.7%. Its
+	// spreads sit near or under zero, so the rule holds it at 1x.
+	{route: primePRIMEUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true, maxLevel: 3},
+	{route: primePRIMEPYUSDTemplate, policy: policySplit, maxLevel: 3},
+	{route: primePRIMEUSDSTemplate, policy: policySplit, maxLevel: 3},
 	// Ethena is exit-only. Kamino's yield feed reports ~4.75% underlyingApy for
 	// USDe, but USDe's price does not grow, so a holder never earns it; and
 	// both its debt reserves sit at borrowLimit 0. Its installed policies stay
@@ -88,9 +94,9 @@ var earnLanes = laneCapsOnLadder([]earnLane{
 	{route: ethenaUSDePYUSDTemplate, policy: policySplit, exitOnly: true, maxLevel: 1.75},
 	// AUTO's overflow lane (owner decision 2026-10-11): when AUTO/AUTO/PYUSD
 	// has no PYUSD borrow room, AUTO moves into this second obligation and
-	// levers with wYLDS, converted through Hastra.
-	// Its cap stays at today's 1.75x.
-	{route: autoAUTOWYLDSTemplate, policy: policyAuto, initializer: true, overflowOf: autoAUTOPYUSDTemplate.Lane, maxLevel: 1.75},
+	// levers with wYLDS, converted through Hastra. Same collateral reserve
+	// and hard LTV as AUTO/AUTO/PYUSD, so the same 3x.
+	{route: autoAUTOWYLDSTemplate, policy: policyAuto, initializer: true, overflowOf: autoAUTOPYUSDTemplate.Lane, maxLevel: 3},
 })
 
 // laneCapsOnLadder is lanes, each cap a level of the ladder above 1; any

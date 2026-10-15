@@ -17,11 +17,12 @@ import (
 // deposit; nothing waits in the shared custody), and the overflow lane then
 // levers toward its own level by ordinary up steps.
 //
-// E is sized so the vault's whole level heads to the caps: the source lands
+// E is sized so the vault's whole level heads to its levels: the source lands
 // at most at its cap's LTV, and E is at most what the overflow reserve's
-// room levers to the overflow lane's cap. While the source has room its own up
-// step wins and nothing moves; the overflow lane is never a selector
-// destination of its own.
+// room levers to the overflow lane's stored level, the level its up steps
+// take the move to. While the source has room its own up step wins and
+// nothing moves; the overflow lane is never a selector destination of its
+// own.
 
 // overflowSourceOf is the lane an overflow lane overflows.
 func overflowSourceOf(lane string) (string, bool) {
@@ -71,15 +72,16 @@ func overflowSourceBorrowClosed(s Snapshot) bool {
 }
 
 // overflowEquityRaw sizes E: the source's release limit, what the overflow
-// reserve's room levers to the overflow lane's cap L (room = (L-1) E), and
-// the tranche cap. Zero below the smallest E that levers with at least the
+// reserve's room levers to the overflow lane's stored level L (room =
+// (L-1) E; its cap would undersize the move whenever the level sits under
+// it, and the walk would move the remainder round after round), and the
+// tranche cap. Zero below the smallest E that levers with at least the
 // minimum borrow.
-func overflowEquityRaw(s Snapshot) int64 {
-	lane, ok := overflowLaneOf(s.RouteLane)
-	if !ok || !s.OverflowRoomKnown || s.OverflowRoomValueRaw <= 0 {
+func overflowEquityRaw(s Snapshot, level float64) int64 {
+	if _, ok := overflowLaneOf(s.RouteLane); !ok || !s.OverflowRoomKnown || s.OverflowRoomValueRaw <= 0 {
 		return 0
 	}
-	levered := laneMaxLevel(lane) - 1
+	levered := level - 1
 	if levered <= 0 {
 		return 0
 	}

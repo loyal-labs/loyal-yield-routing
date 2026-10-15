@@ -392,7 +392,7 @@ func overflowMove(lanes []targetLane, i int, in targetInputs) (string, int64) {
 		dest.Level < 1.5 || !dest.UpApproved {
 		return "", 0
 	}
-	e := overflowEquityRaw(s)
+	e := overflowEquityRaw(s, dest.Level)
 	if e <= 0 || overflowReleaseReceipts(s, e) <= 0 {
 		return "", 0
 	}

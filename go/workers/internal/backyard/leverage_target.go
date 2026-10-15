@@ -240,7 +240,8 @@ func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPol
 	if !ok || !source.HasPosition || !overflowSourceBorrowClosed(source) || !source.OverflowRoomKnown || containsLane(source.heldLanes(), lane) {
 		return "", laneLevel{}, false
 	}
-	e := overflowEquityRaw(source)
+	maxLevel := laneMaxLevel(lane)
+	e := overflowEquityRaw(source, maxLevel)
 	if e <= 0 {
 		return "", laneLevel{}, false
 	}
@@ -250,7 +251,6 @@ func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPol
 		}
 		// The step's projected utilization: its whole borrow, in the debt
 		// reserve's raw units (forecast only).
-		maxLevel := laneMaxLevel(lane)
 		_, allowed := leverageUpAllowed(m, maxLevel, float64(e)*(maxLevel-1)*m.DebtRawPerUSDCRaw)
 		return lane, laneLevel{Level: maxLevel, UpApproved: allowed}, true
 	}
