@@ -768,15 +768,14 @@ func sameCollateralCustody(a, b string) bool {
 // rotationForwardAPY is the market-level test a pair is priced on: the
 // destination's forward APY at the most the source's releasable tranche
 // could settle at there (sizeSettledLevel), and whether it beats the source
-// position's at the most it could settle at where it is
-// (heldSettledLevel), both before fees: each side where the spread rule
-// could take it.
+// position's at its current level, both before fees. Staying earns at least
+// that (its priced keep never settles lower), so the test is a ceiling.
 func rotationForwardAPY(source Snapshot, ms, md LaneEconomics) (float64, bool) {
 	equity := laneEquityRaw(source)
 	if equity <= 0 {
 		return 0, false
 	}
-	held, ok := leverageLevelAPY(ms, heldSettledLevel(source, ms), equity, true, 0, source)
+	held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, source)
 	size := laneReleaseLimitRaw(source)
 	entered, okD := leverageLevelAPY(md, sizeSettledLevel(md, size), size, false, 0)
 	return entered, ok && okD && entered > held
@@ -808,8 +807,8 @@ const gainBelowMinimumBenefit = "gain_below_minimum_benefit"
 // moveGainCeiling is the most a move of size into md's lane could gain over
 // the horizon, before costs and fees: size at the destination's forward APY
 // (at the most size could settle at there), less, for a rotation, the
-// source's at the most it could settle at where it is: both sides by the
-// spread rule alone, as rotationForwardAPY. A move whose ceiling cannot
+// source's at its current level, the least staying earns, as
+// rotationForwardAPY. A move whose ceiling cannot
 // exceed MinimumBenefit is not quoted (gain_below_minimum_benefit). +Inf
 // when an APY is unknown: quote it.
 func moveGainCeiling(source *Snapshot, ms, md LaneEconomics, size int64, p SelectorPolicy) float64 {
@@ -822,7 +821,7 @@ func moveGainCeiling(source *Snapshot, ms, md LaneEconomics, size int64, p Selec
 		if equity <= 0 {
 			return math.Inf(1)
 		}
-		held, ok := leverageLevelAPY(ms, heldSettledLevel(*source, ms), equity, true, 0, *source)
+		held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, *source)
 		if !ok {
 			return math.Inf(1)
 		}

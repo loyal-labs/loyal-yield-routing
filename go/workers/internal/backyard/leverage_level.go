@@ -197,15 +197,3 @@ func heldRungDebt(s Snapshot, level float64) (float64, bool) {
 func heldFromLevel(s Snapshot) float64 {
 	return min(currentLeverageBand(s), laneMaxLevel(s.RouteLane))
 }
-
-// heldSettledLevel is the most a held position could settle at from where
-// it is (heldRungDebt per rung, the spread rule alone, as sizeSettledLevel
-// for an entry); its own level (collateral over equity) when the rule takes
-// it no higher.
-func heldSettledLevel(s Snapshot, m LaneEconomics) float64 {
-	from := heldFromLevel(s)
-	if level := settledLevel(m, from, func(level float64) (float64, bool) { return heldRungDebt(s, level) }, nil); level > from {
-		return level
-	}
-	return float64(s.PositionCollateralValueRaw) / float64(laneEquityRaw(s))
-}

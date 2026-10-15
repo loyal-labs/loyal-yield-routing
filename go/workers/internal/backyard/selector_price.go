@@ -595,8 +595,10 @@ type heldSettlement struct {
 // settleHeld walks a held source's position up from its band as the live
 // rule takes it (decideLeverageTarget): each rung's whole step from the
 // position (heldRungDebt) under the spread rule, and each step, the part of
-// it the steps before have not borrowed, taken only where it pays its own
-// priceStep cost on the position the steps before it left (upStepGain).
+// it the steps before have not borrowed within the debt reserve room they
+// left (the batch's kaminoAdditionalDebtRoom, as the destination walk's),
+// taken only where it pays its own priceStep cost on the position the steps
+// before it left (upStepGain). A step with no room stops the walk.
 // Without the vault's fee terms the rule takes no step. A step that cannot
 // be priced leaves what staying earns unknown: an error, never no step.
 func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m LaneEconomics) (heldSettlement, error) {
@@ -612,6 +614,7 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
 	collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
 	var taken uint64
+	roomLeft := s.AdditionalDebtRoomRaw
 	var rateDebt float64
 	var cost leverageStepCost
 	var walkErr error
@@ -621,7 +624,10 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 		if desired < taken+leverageMinimumBorrowRaw {
 			return false
 		}
-		raw := desired - taken
+		raw := min(desired-taken, kaminoReceiveWithinRoom(roomLeft, s.BorrowFeeRate))
+		if raw < leverageMinimumBorrowRaw {
+			return false
+		}
 		fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
 		if err != nil {
 			return false
@@ -661,7 +667,7 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 			return false
 		}
 		collateral, debt = collateral+float64(proceeds), debt+float64(liability)
-		taken, rateDebt = desired, rung
+		taken, roomLeft, rateDebt = taken+raw, roomLeft-min(raw+fee, roomLeft), rung
 		return true
 	})
 	if walkErr != nil {
