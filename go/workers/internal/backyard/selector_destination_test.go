@@ -166,7 +166,7 @@ func TestEntryPricesTheExecutorsLegsWithoutMutatingAccounts(t *testing.T) {
 	// Maple's USDC debt values at par: the up step owes its receive (a zero
 	// fee here) and converts all of it. The fixture's swaps quote at par, so
 	// only network fees cost: four lane legs and the two steps.
-	if q.Unlevered || q.BorrowReceiveRaw != 49_445_603 || q.BorrowValueRaw != q.BorrowReceiveRaw || q.ProceedsValueRaw != q.BorrowReceiveRaw || q.EquityRaw != 100_000_000 || !q.validBorrow() {
+	if q.Unlevered || q.BorrowReceiveRaw != 49_749_999 || q.BorrowValueRaw != q.BorrowReceiveRaw || q.ProceedsValueRaw != q.BorrowReceiveRaw || q.EquityRaw != 100_000_000 || !q.validBorrow() {
 		t.Fatal("entry borrow", q)
 	}
 	if q.Cost.EntrySwapLossMicros != 0 || q.Cost.ExitSwapLossMicros != 0 || q.Cost.NetworkMicros <= 0 || q.Cost.Step.NetworkMicros <= 0 ||

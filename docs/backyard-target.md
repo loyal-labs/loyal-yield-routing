@@ -117,12 +117,17 @@ allowed borrow value over its deposits, the number it enforces, also the down
 step's withdraw room) bounds the borrow before the redeposit, so a step to a high level may take more than
 one transaction.
 
+Each cap is the highest level whose LTV sits under the lane's brake (owner
+decision 2026-10-15); the spread rule, not the cap, keeps a thin or
+negative-spread lane low. Lender limits as read from the reserves on
+2026-10-15:
+
 | Lane | Cap | Liquidation | Max LTV | Brake |
 |---|---|---|---|---|
-| AUTO/AUTO/PYUSD | 2.5x (3x is a one-literal change) | 80% | 78% | 70% |
-| OnRe/ONyc/USDC | 2.5x | 75% | 66% | 63% |
-| Maple/syrupUSDC/USDC | 1.5x (thin borrow pool) | 90% | 88% | 80% |
-| Prime lanes, AUTO/AUTO/wYLDS | 1.75x | reserve's | reserve's | lower of threshold - 10 pts, max LTV - 3 pts |
+| AUTO/AUTO/PYUSD, AUTO/AUTO/wYLDS | 3x (66.7%) | 80% | 78% | 70% |
+| OnRe/ONyc/USDC | 2.5x (60%; 3x sits over the brake) | 75% | 66% | 63% |
+| Maple/syrupUSDC/USDC | 3x (66.7%) | 90% | 88% | 80% |
+| Prime lanes | 3x (66.7%) | 91% | 88% | 81% |
 
 Migration 0114 widens `backyard_lane_levels`' CHECK to the ladder; it applies
 before the binary that writes the new levels. Rolling the binary back past

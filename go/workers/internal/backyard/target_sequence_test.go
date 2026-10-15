@@ -381,8 +381,8 @@ func TestTargetOperatorExit(t *testing.T) {
 // release down to its cap's LTV into the wYLDS obligation in one
 // transaction, and the wYLDS lane levers it to 1.75 by two up steps: four
 // transactions (with the obligation's initializer) where the move machine
-// took thirteen. The end state: AUTO/AUTO/PYUSD at 2.5x (~$33.7k equity),
-// AUTO/AUTO/wYLDS at 1.75x (~$67.5k).
+// took thirteen. The end state: AUTO/AUTO/PYUSD at its 3x cap (~$25.3k
+// equity), AUTO/AUTO/wYLDS at 1.75x (~$75.9k).
 func TestTargetOverflowReplaysOctoberEleventhInFourTransactions(t *testing.T) {
 	t.Parallel()
 	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{
@@ -403,13 +403,13 @@ func TestTargetOverflowReplaysOctoberEleventhInFourTransactions(t *testing.T) {
 	if len(steps)-1 != 4 {
 		t.Fatalf("%d transactions", len(steps)-1)
 	}
-	if ltv := ltvOf(pyusd); ltv < 5990 || ltv > 6000 {
+	if ltv, cap := ltvOf(pyusd), leverageLevelLTVBPS(laneMaxLevel(autoAUTOPYUSD.Lane)); ltv < cap-10 || ltv > cap {
 		t.Fatalf("%s ended at LTV %d", pyusd.lane, ltv)
 	}
 	if ltv := ltvOf(wylds); ltv < 4270 || ltv > 4286 {
 		t.Fatalf("%s ended at LTV %d", wylds.lane, ltv)
 	}
-	if e := wylds.coll - wylds.debt; e < 67_000_000_000 || e > 68_000_000_000 {
+	if e := wylds.coll - wylds.debt; e < 75_500_000_000 || e > 76_500_000_000 {
 		t.Fatalf("moved equity %d", e)
 	}
 	// Restarted on that end state the target is the state: no more moves.
