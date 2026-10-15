@@ -85,15 +85,18 @@ type KaminoPosition struct {
 	// ObligationPresent is false only when the observer saw the lane's
 	// obligation account absent from its confirmed batch. A flat decode of a
 	// missing account must never be mistaken for an observed flat position.
-	ObligationPresent        bool
-	CollateralDepositedRaw   uint64
-	DebtRaw                  uint64
-	RedeemablePrimeRaw       uint64
-	CollateralPriceSF        [16]byte
-	DebtPriceSF              [16]byte
-	CollateralDecimals       uint8
-	DebtDecimals             uint8
-	LiquidationThresholdBPS  int64
+	ObligationPresent       bool
+	CollateralDepositedRaw  uint64
+	DebtRaw                 uint64
+	RedeemablePrimeRaw      uint64
+	CollateralPriceSF       [16]byte
+	DebtPriceSF             [16]byte
+	CollateralDecimals      uint8
+	DebtDecimals            uint8
+	LiquidationThresholdBPS int64
+	// MaxLTVBPS is the collateral reserve's loan-to-value: the most KLend
+	// lets the obligation borrow against it.
+	MaxLTVBPS                int64
 	EntryCapacityRaw         uint64
 	BorrowUtilizationBlocked bool
 	Oracles                  []string
@@ -121,6 +124,7 @@ type decodedKaminoReserve struct {
 	totalLiquiditySF         *big.Int
 	collateralMintSupply     uint64
 	liquidationThresholdPct  byte
+	loanToValuePct           byte
 	depositLimitRaw          uint64
 	borrowLimitRaw           uint64
 	borrowedRaw              uint64
@@ -210,6 +214,7 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 		mintDecimals:             uint8(reserve.MintDecimals),
 		totalLiquiditySF:         totalLiquidity, collateralMintSupply: reserve.CollateralMintTotalSupply,
 		liquidationThresholdPct: reserve.LiquidationThresholdPct,
+		loanToValuePct:          reserve.LoanToValuePct,
 		depositLimitRaw:         reserve.DepositLimit,
 		borrowLimitRaw:          reserve.BorrowLimit,
 		borrowedRaw:             borrowedRaw,

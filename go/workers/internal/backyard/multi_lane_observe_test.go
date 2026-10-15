@@ -58,7 +58,9 @@ func fundLane(t *testing.T, accounts *[]ConfirmedAccount, lane string, collatera
 		t.Fatal(err)
 	}
 	peg := new(big.Int).Lsh(big.NewInt(1), 60)
-	upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6))
+	collateral := kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, peg, 1_000_000_000, 0, 1_000_000_000, 6)
+	collateral.Data[kaminoLoanToValueOffset] = 78
+	upsertConfirmedAccount(accounts, collateral)
 	upsertConfirmedAccount(accounts, kaminoReserveImage(t, route.Kamino.Market, route.Kamino.DebtReserve, route.Kamino.DebtMint, 77, peg, 1_000_000_000-debtRaw, debtRaw, 1_000_000_000, 6))
 	upsertConfirmedAccount(accounts, marketFixture(t, route.Kamino.Market))
 	upsertConfirmedAccount(accounts, kaminoObligationImage(t, route, 77, collateralRaw, debtRaw))
@@ -179,8 +181,14 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 // is that lane's and its step repays it.
 func TestHeldLanePastHardLTVIsProtectedFirst(t *testing.T) {
 	manifest, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
-		// 80% liquidation threshold: hard LTV 6000; 7_000_000/10_000_000 = 70%.
+		// 80% liquidation threshold, 78% max LTV: hard LTV 7000;
+		// 7_000_000/10_000_000 = 70%.
 		fundLane(t, accounts, onreONycUSDC, 10_000_000, 7_000_000)
+		for i := range *accounts {
+			if (*accounts)[i].Address == autoAUTOPYUSD.Kamino.CollateralReserve {
+				(*accounts)[i].Data[kaminoLoanToValueOffset] = 78
+			}
+		}
 	})
 	s := observeMultiLane(t, manifest, accounts).Snapshot
 	if s.RouteLane != onreONycUSDC || s.Target.Rule != ruleHardLTV || s.LTVBPS < 6000 {

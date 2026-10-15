@@ -89,7 +89,8 @@ Every decision is one step toward the tick's target (`docs/backyard-target.md`).
 Down decisions carry a fixed marker amount; prepare sizes the repay from the
 same snapshot, so a refreshed snapshot re-decides to an equal decision.
 
-Hard LTV is `liquidationThresholdBPS - 1000` bps, per lane; the
+Hard LTV is the lower of `liquidationThresholdBPS - 1000` and the
+collateral reserve's max LTV - `stepWithdrawMarginBPS` bps, per lane; the
 step no longer needs an idle repayment buffer, so the old
 `hard_ltv_without_repayment_buffer` manual stop is gone. Held custody that
 already covers part of a repay shortens the conversion but never refuses the

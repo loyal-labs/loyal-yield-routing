@@ -349,7 +349,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		return q, err
 	}
 	equity = min(equity, capacity)
-	if equity == 0 || hardLTVBPS(position.LiquidationThresholdBPS) <= laneCeilingLTVBPS(route.Lane) {
+	if equity == 0 || hardLTVBPS(position.LiquidationThresholdBPS, position.MaxLTVBPS) <= laneCeilingLTVBPS(route.Lane) {
 		return q, budgetHold("selector_destination_capacity_unavailable")
 	}
 	q.EquityRaw = int64(equity)

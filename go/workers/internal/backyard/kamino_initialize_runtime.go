@@ -29,7 +29,7 @@ func initializationSnapshotReady(s Snapshot) bool {
 	}
 	t := s.Target
 	funding := t.EntryRaw + s.SquadsIdleRaw
-	return t.Rule == ruleEntry && t.EntryRaw >= 0 && funding > 0 && t.EntryRaw <= s.VoltrIdleRaw && funding <= min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s.LiquidationThresholdBPS) > laneCeilingLTVBPS(s.RouteLane)
+	return t.Rule == ruleEntry && t.EntryRaw >= 0 && funding > 0 && t.EntryRaw <= s.VoltrIdleRaw && funding <= min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) > laneCeilingLTVBPS(s.RouteLane)
 }
 
 // This prepares only an empty account before allocating user principal: the

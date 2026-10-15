@@ -49,9 +49,9 @@ type earnLane struct {
 	// maxLevel is the lane's cap: the highest leverage level it may hold
 	// (leverage_level.go), set per lane from its lender limits and its
 	// borrow pool (owner decision 2026-10-14). Its LTV must sit under the
-	// lane's hard LTV (liquidation threshold - 10 points), which the reserve
-	// gives at observation: a lane whose hard LTV is not above its cap's LTV
-	// holds for recovery (target.go).
+	// lane's hard LTV (hardLTVBPS, from the reserve at observation): a lane
+	// whose hard LTV is not above its cap's LTV holds for recovery
+	// (target.go).
 	maxLevel float64
 }
 
@@ -68,7 +68,8 @@ var earnLanes = []earnLane{
 	// Maple: 88% max LTV, ~90% liquidation; its USDC borrow pool is thin and
 	// its spread often negative, so 1.5x (33.3%).
 	{route: mapleSyrupUSDCUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest", initializer: true, maxLevel: 1.5},
-	// OnRe: 66% max LTV, 75% liquidation (hard LTV 65%); 2.5x = 60%.
+	// OnRe: 66% max LTV, 75% liquidation (hard LTV 63%, where a down step
+	// still has withdraw room); 2.5x = 60%.
 	{route: onreONycUSDCRouteTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true, maxLevel: 2.5},
 	// AUTO: 78% max LTV, 80% liquidation (hard LTV 70%); 2.5x = 60%, 3x
 	// (66.7%) once a few weeks of data support it.

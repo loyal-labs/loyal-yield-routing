@@ -18,8 +18,8 @@ import (
 // says where that lane should be, and it names the one lane the next step
 // moves. Its rules, in priority order:
 //
-//  1. hard LTV: a lane at or past its liquidation threshold - 10 points goes
-//     back to its level's LTV;
+//  1. hard LTV: a lane at or past the lower of its liquidation threshold -
+//     10 points and its max LTV - 3 points goes back to its level's LTV;
 //  2. term maturity: term debt under a day from maturity without room for the
 //     keep-alive borrow (or past it) goes to debt 0; under three days with
 //     room, the keep-alive borrow (the minimum up step) restarts the term;
@@ -117,11 +117,12 @@ type LaneTarget struct {
 	EntryRaw int64 `json:"entryRaw,omitempty"`
 }
 
-// hardLTVBPS is a lane's hard LTV, the brake: its reserve's liquidation
-// threshold less 10 points (owner decision 2026-10-14). The lane's cap sits
-// under it.
-func hardLTVBPS(liquidationThresholdBPS int64) int64 {
-	return liquidationThresholdBPS - 1000
+// hardLTVBPS is a lane's hard LTV, the brake (owner decisions 2026-10-14):
+// the lower of its collateral reserve's liquidation threshold less 10
+// points and its loan-to-value less stepWithdrawMarginBPS, where a down step
+// still has withdraw room. The lane's cap sits under it.
+func hardLTVBPS(liquidationThresholdBPS, maxLTVBPS int64) int64 {
+	return min(liquidationThresholdBPS-1000, maxLTVBPS-stepWithdrawMarginBPS)
 }
 
 // laneEquityRaw is the lane position's own equity in bridge USDC.
@@ -183,7 +184,7 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 	worst, excess := -1, int64(-1)
 	for i, l := range lanes {
 		s := l.s
-		if hard := hardLTVBPS(s.LiquidationThresholdBPS); l.held && s.HasPosition && s.PositionDebtRaw > 0 && s.LTVBPS >= hard && s.LTVBPS-hard > excess {
+		if hard := hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS); l.held && s.HasPosition && s.PositionDebtRaw > 0 && s.LTVBPS >= hard && s.LTVBPS-hard > excess {
 			worst, excess = i, s.LTVBPS-hard
 		}
 	}
@@ -582,12 +583,12 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		return Decision{Action: HoldManualRecovery, Reason: "unsupported_runtime_lane", StrategyKey: s.RouteLane,
 			IdempotencyKey: fmt.Sprintf("%s:%s", s.ObservationID, "unsupported_runtime_lane")}
 	}
-	if s.ManualReason != "" || s.RouteKind != RouteKind || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.LiquidationThresholdBPS > 10_000 {
+	if s.ManualReason != "" || s.RouteKind != RouteKind || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.LiquidationThresholdBPS > 10_000 || s.MaxLTVBPS > 10_000 {
 		return d(HoldManualRecovery, "invalid_or_incoherent_snapshot", 0)
 	}
 	for _, value := range []int64{s.WithdrawalDemandRaw, s.SquadsIdleRaw, s.CollateralIdleRaw, s.CollateralIdleValueRaw, s.MinimumCollateralDepositRaw, s.DebtIdleRaw, s.PayoffDebtRaw,
 		s.VoltrStrategyIdleRaw, s.VoltrIdleRaw, s.PositionCollateralRaw, s.PositionDebtRaw, s.PositionCollateralValueRaw, s.PositionDebtValueRaw,
-		s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.LTVBPS, s.LiquidationThresholdBPS, s.LastReportAgeSeconds, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw} {
+		s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.LTVBPS, s.LiquidationThresholdBPS, s.MaxLTVBPS, s.LastReportAgeSeconds, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw} {
 		if value < 0 {
 			return d(HoldManualRecovery, "invalid_or_incoherent_snapshot", 0)
 		}
@@ -595,7 +596,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if s.HasPosition != (s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0) {
 		return d(HoldManualRecovery, "position_presence_mismatch", 0)
 	}
-	hard := hardLTVBPS(s.LiquidationThresholdBPS)
+	hard := hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS)
 	if s.HasPosition && hard <= laneCeilingLTVBPS(s.RouteLane) {
 		return d(HoldManualRecovery, "invalid_hard_ltv", 0)
 	}

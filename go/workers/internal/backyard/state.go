@@ -185,11 +185,14 @@ type Snapshot struct {
 	AdaptorProgramDeploySlot      int64
 	LTVBPS                        int64
 	LiquidationThresholdBPS       int64
-	Fresh                         bool
-	CapacityRaw                   int64
-	PolicyLimitRaw                int64
-	MaxTargetLTVEntryRaw          int64
-	BorrowUtilizationBlocked      bool
+	// MaxLTVBPS is the collateral reserve's loan-to-value (KLend's borrow
+	// limit); with the liquidation threshold it sets the hard LTV.
+	MaxLTVBPS                int64
+	Fresh                    bool
+	CapacityRaw              int64
+	PolicyLimitRaw           int64
+	MaxTargetLTVEntryRaw     int64
+	BorrowUtilizationBlocked bool
 	// LeverageTargetLevel is the lane's stored level (a level on the ladder,
 	// leverage_level.go; 0 when none is stored) and LeverageUpApproved
 	// whether the selector's economics approve the up step toward it:

@@ -22,9 +22,11 @@ authority.
 
 ## Rules, in priority
 
-1. **Hard LTV.** A held lane at or past its reserve's
-   `liquidationThresholdBPS - 1000` bps (the brake) steps down to its level's
-   LTV. A lane whose brake is not above its cap's LTV holds for recovery.
+1. **Hard LTV.** A held lane at or past its brake steps down to its level's
+   LTV. The brake is the lower of the collateral reserve's
+   `liquidationThresholdBPS - 1000` and its max LTV - 300 bps
+   (`stepWithdrawMarginBPS`), so a down step at the brake still has withdraw
+   room. A lane whose brake is not above its cap's LTV holds for recovery.
 2. **Term maturity** (wYLDS, 30-day term). Under 1 day left without room for
    the keep-alive borrow, or past maturity: debt 0. Under 3 days with room:
    the keep-alive borrow (the minimum up step); an unfunded withdrawal goes
@@ -111,12 +113,12 @@ the borrow fee, within the cap's LTV; KLend's own loan-to-value bounds the
 borrow before the redeposit, so a step to a high level may take more than
 one transaction.
 
-| Lane | Cap | Liquidation | Brake |
-|---|---|---|---|
-| AUTO/AUTO/PYUSD | 2.5x (3x is a one-literal change) | 80% | 70% |
-| OnRe/ONyc/USDC | 2.5x | 75% | 65% |
-| Maple/syrupUSDC/USDC | 1.5x (thin borrow pool) | 90% | 80% |
-| Prime lanes, AUTO/AUTO/wYLDS | 1.75x | reserve's | threshold - 10 pts |
+| Lane | Cap | Liquidation | Max LTV | Brake |
+|---|---|---|---|---|
+| AUTO/AUTO/PYUSD | 2.5x (3x is a one-literal change) | 80% | 78% | 70% |
+| OnRe/ONyc/USDC | 2.5x | 75% | 66% | 63% |
+| Maple/syrupUSDC/USDC | 1.5x (thin borrow pool) | 90% | 88% | 80% |
+| Prime lanes, AUTO/AUTO/wYLDS | 1.75x | reserve's | reserve's | lower of threshold - 10 pts, max LTV - 3 pts |
 
 Migration 0114 widens `backyard_lane_levels`' CHECK to the ladder; it applies
 before the binary that writes the new levels. Lowering a cap delevers a lane

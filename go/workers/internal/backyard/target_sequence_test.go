@@ -71,7 +71,7 @@ func (b *book) views() []Snapshot {
 	for _, id := range viewed {
 		l := b.lane(id)
 		s := Snapshot{ObservationID: "book", Slot: 100, RouteKind: RouteKind, Fresh: true, RouteLane: id, StrategyKey: id,
-			HeldLanes: strings.Join(held, ","), LiquidationThresholdBPS: 8000, MinimumCollateralDepositRaw: 1,
+			HeldLanes: strings.Join(held, ","), LiquidationThresholdBPS: 8000, MaxLTVBPS: 8000, MinimumCollateralDepositRaw: 1,
 			CapacityRaw: 1 << 50, PolicyLimitRaw: 1 << 50, MaxTargetLTVEntryRaw: 1 << 50, TopupDepositRoomRaw: 1 << 50,
 			VoltrIdleRaw: b.voltr, SquadsIdleRaw: b.squads, WithdrawalDemandRaw: b.demand,
 			CollateralIdleRaw: l.idle, CollateralIdleValueRaw: l.idle,
@@ -106,7 +106,7 @@ func (b *book) views() []Snapshot {
 	}
 	if len(views) == 0 {
 		views = append(views, Snapshot{ObservationID: "book", Slot: 100, RouteKind: RouteKind, Fresh: true, RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID,
-			LiquidationThresholdBPS: 8000, VoltrIdleRaw: b.voltr, SquadsIdleRaw: b.squads, WithdrawalDemandRaw: b.demand, ChainUnix: b.now,
+			LiquidationThresholdBPS: 8000, MaxLTVBPS: 8000, VoltrIdleRaw: b.voltr, SquadsIdleRaw: b.squads, WithdrawalDemandRaw: b.demand, ChainUnix: b.now,
 			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr})
 	}
 	return views
