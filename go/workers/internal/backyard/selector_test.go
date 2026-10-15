@@ -127,9 +127,6 @@ func TestSelectorPricesOneBorrowPassAtProjectedUtilization(t *testing.T) {
 	if len(got.Candidates) != 1 || got.Candidates[0].BorrowAPR <= .9 || got.Action != "KEEP" {
 		t.Fatal(got)
 	}
-	if singlePassLeverage != 1.5 {
-		t.Fatal("selector differs from the executor's one-pass leverage")
-	}
 }
 func TestWithdrawalDemandRemainsTruthfulAcrossTypedLanes(t *testing.T) {
 	t.Parallel()

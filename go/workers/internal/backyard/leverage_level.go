@@ -136,3 +136,32 @@ func leverageUpAllowed(m LaneEconomics, level, debtRaw float64) (float64, bool) 
 	spread, ok := leverageBorrowSpread(m, debtRaw)
 	return spread, ok && spread >= leverageLadder[i].up
 }
+
+// settledLevel is the level a lane entered at 1x settles at: the ladder
+// climbed one rung at a time, as the live rule climbs it one sample at a
+// time, while each rung's up rule holds at the cumulative raw debt reaching
+// it (leverageUpAllowed), up to the lane's cap. debtTo is that debt; false
+// where the step to the rung cannot be taken today, which stops the climb.
+func settledLevel(m LaneEconomics, debtTo func(level float64) (float64, bool)) float64 {
+	level := 1.0
+	for _, r := range leverageLadder[1:] {
+		if r.level > laneMaxLevel(m.Lane) {
+			break
+		}
+		debt, ok := debtTo(r.level)
+		if !ok {
+			break
+		}
+		if _, up := leverageUpAllowed(m, r.level, debt); !up {
+			break
+		}
+		level = r.level
+	}
+	return level
+}
+
+// sizeSettledLevel is the level equityRaw settles at in today's market, each
+// rung's debt its share of the equity (levelDebtRaw).
+func sizeSettledLevel(m LaneEconomics, equityRaw int64) float64 {
+	return settledLevel(m, func(level float64) (float64, bool) { return levelDebtRaw(m, level, equityRaw) })
+}

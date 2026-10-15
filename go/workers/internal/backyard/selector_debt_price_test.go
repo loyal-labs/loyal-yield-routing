@@ -79,7 +79,6 @@ func TestQuoteBorrowIsValuedWithinEquity(t *testing.T) {
 	}
 	for name, change := range map[string]func(*MoveQuote){
 		"unvalued":          func(q *MoveQuote) { q.BorrowValueRaw = 0 },
-		"above equity":      func(q *MoveQuote) { q.BorrowValueRaw = uint64(q.EquityRaw) + 1 },
 		"proceeds over owe": func(q *MoveQuote) { q.ProceedsValueRaw = q.BorrowValueRaw + 1 },
 		"no borrow":         func(q *MoveQuote) { q.BorrowReceiveRaw = 0 },
 		"inactive lane":     func(q *MoveQuote) { q.DestinationLane = ethenaUSDePYUSD.Lane },

@@ -136,9 +136,15 @@ persistence, $0.25 minimum benefit and 10 bps uncertainty (on the vault's
 investable equity for cash, on the tranche for a rotation): cash entering a
 lane earns its fee-reserved gain against nothing;
 a held lane's tranche rotating earns the destination's fee-reserved gain on
-what the move leaves, against the tranche's gross gain where it is. A move's
+what the move leaves, against the tranche's gross gain where it is. A
+destination is priced at the level the move settles it at: the ladder
+climbed from 1x while each rung's up rule holds at the cumulative borrow
+reaching it, up to the lane's cap, stopping where a step has no room today
+(`settledLevel`); the entry's own transaction still levers to 1.5x and the
+live rule takes the later steps one sample at a time. A move's
 cost is the destination's signed round trip (a collateral bought under its
-mark gains what its sale loses), its up step, the network fees, an absent
+mark gains what its sale loses), its first up step, each later step's Kamino
+fee and network fees, the network fees, an absent
 obligation's rent and, on a rotation, the network fees of the source's
 release; the source's own swap loss is its exit, which staying pays later.
 Cash outranks a rotation. Pairs sharing a collateral custody (the overflow

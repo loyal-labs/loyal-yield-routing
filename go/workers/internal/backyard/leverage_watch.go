@@ -20,6 +20,22 @@ import (
 // USDC value and becomes raw debt units at the lane's own verified reserve
 // prices (DebtRawPerUSDCRaw); a lane without that price omits the column.
 func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool, observed ...Snapshot) (float64, bool) {
+	debt, ok := levelDebtRaw(m, level, equityRaw)
+	if !ok {
+		return 0, false
+	}
+	if source && len(observed) == 1 && observed[0].RouteLane == m.Lane {
+		if observed[0].PositionDebtRaw < 0 {
+			return 0, false
+		}
+		debt -= float64(observed[0].PositionDebtRaw)
+	}
+	return leverageBorrowSpread(m, max(debt, 0))
+}
+
+// levelDebtRaw is the debt equityRaw holds at level, (level-1) x equity, in
+// the lane's raw debt units.
+func levelDebtRaw(m LaneEconomics, level float64, equityRaw int64) (float64, bool) {
 	debt := (level - 1) * float64(equityRaw)
 	if !finite(debt) || debt < 0 || debt > 1<<53 {
 		return 0, false
@@ -36,13 +52,7 @@ func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool
 			debt = math.Ceil(debt * m.DebtRawPerUSDCRaw)
 		}
 	}
-	if source && len(observed) == 1 && observed[0].RouteLane == m.Lane {
-		if observed[0].PositionDebtRaw < 0 {
-			return 0, false
-		}
-		debt -= float64(observed[0].PositionDebtRaw)
-	}
-	return leverageBorrowSpread(m, max(debt, 0))
+	return debt, true
 }
 
 // leverageLevelAPY is the lane's APY at a leverage level: token yield plus

@@ -263,7 +263,9 @@ func stepStage(quote string, err error) string {
 // capital: the entry conversion's loss, the sale's loss when the collateral
 // returns to USDC, the network fees of the lane's own transactions (entry
 // swap, deposit, exit step), the up step the entry levers with, with its
-// unwind (zero at 1x), the creation of an absent obligation (setupMicros) and,
+// unwind (zero at 1x), the later up steps to the level it settles at, each
+// its Kamino fee and its transactions' network fees (settleMicros), the
+// creation of an absent obligation (setupMicros) and,
 // on a rotation, its source's release (releaseMicros). The swap losses are
 // signed, against the batch's mark: a collateral bought under its mark gains
 // on entry what it loses on exit. Voltr's allocate, stage and restore move
@@ -275,6 +277,7 @@ type entryCost struct {
 	SetupMicros         int64            `json:"setupMicros,omitempty"`
 	ReleaseMicros       int64            `json:"releaseMicros,omitempty"`
 	Step                leverageStepCost `json:"step"`
+	SettleMicros        int64            `json:"settleMicros,omitempty"`
 	TotalMicros         int64            `json:"totalMicros"`
 }
 
@@ -287,8 +290,9 @@ func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEc
 // priceMove prices an entry of equity into market's lane at o's sample, as
 // the executor makes it: the entry swap step's own quote, the deposit, then
 // the level rule's up step to 1.5x when the spread rule levers the lane (the
-// capacity-sized borrow the funded position would take), and the unwind of
-// both: the down step and the atomic exit step. The entry sits beside the
+// capacity-sized borrow the funded position would take) and the later steps
+// to the level the lane settles at, and the unwind of both: the down step
+// and the atomic exit step. The entry sits beside the
 // lane's position when it holds one. The lane's batch is one refreshed
 // capture of its reserves; every value is at its prices.
 //
@@ -361,15 +365,16 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if guaranteed <= 1 {
 		return q, budgetHold("selector_destination_below_deposit_minimum")
 	}
-	// The level rule's up step once the entry's guaranteed collateral is
-	// deposited: the capacity-sized borrow of that funded position, within the
-	// collateral reserve's deposit room left after the entry's own deposit.
+	// The level rule's up steps once the entry's guaranteed collateral is
+	// deposited, walked to the level the lane settles at (settledLevel): each
+	// the capacity-sized borrow of the position the step before it left,
+	// within the debt reserve's room and the collateral reserve's deposit
+	// room the entry and the earlier steps have not used, its fee included in
+	// the cumulative borrow the rung's up rule is applied at. The first is
+	// the entry's own transaction; the later ones are the live rule's later
+	// decisions.
 	funded := position
 	funded.CollateralDepositedRaw, funded.RedeemablePrimeRaw, funded.DebtRaw = 1, guaranteed-1, 0
-	borrow, err := capacitySizedBorrow(funded, accounts, route, leverageLadder[1].level)
-	if err != nil {
-		return q, err
-	}
 	depositRoom, err := unleveredEntryCapacityDebtRaw(position, accounts, route)
 	if err != nil {
 		return q, err
@@ -378,30 +383,66 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	if deposited >= depositRoom {
-		borrow = 0
-	}
-	borrow = min(borrow, depositRoom-min(deposited, depositRoom))
-	if borrow < leverageMinimumBorrowRaw {
-		borrow = 0
-	}
-	var fee uint64
-	if borrow > 0 {
-		if fee, err = kaminoBorrowFeeAtRate(binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:]), borrow); err != nil {
-			return q, err
+	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
+	debtLeft, depositLeft := room, depositRoom-min(deposited, depositRoom)
+	var borrows, borrowFees []uint64
+	var walkErr error
+	level := settledLevel(market, func(level float64) (float64, bool) {
+		if n := len(borrows); n > 0 {
+			// The previous step's borrow, converted and redeposited.
+			bought, err := valueBetweenTokenRaw(borrows[n-1], position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, false)
+			if err != nil {
+				walkErr = err
+				return 0, false
+			}
+			funded.RedeemablePrimeRaw += bought
+			funded.DebtRaw += borrows[n-1] + borrowFees[n-1]
 		}
-		// The entry levers only where the live spread rule levers the funded
-		// lane: the spread at this borrow (fee included) must reach the first
-		// level's.
-		if _, levered := leverageUpAllowed(market, leverageLadder[1].level, float64(borrow+fee)); !levered {
-			borrow, fee, q.SpreadUnlevered = 0, 0, true
+		borrow, err := capacitySizedBorrow(funded, accounts, route, level)
+		if err != nil {
+			walkErr = err
+			return 0, false
 		}
+		if borrow = min(borrow, kaminoReceiveWithinRoom(debtLeft, rate), depositLeft); borrow < leverageMinimumBorrowRaw {
+			return 0, false
+		}
+		fee, err := kaminoBorrowFeeAtRate(rate, borrow)
+		if err != nil {
+			walkErr = err
+			return 0, false
+		}
+		debtLeft, depositLeft = debtLeft-min(borrow+fee, debtLeft), depositLeft-borrow
+		borrows, borrowFees = append(borrows, borrow), append(borrowFees, fee)
+		return float64(funded.DebtRaw + borrow + fee), true
+	})
+	if walkErr != nil {
+		return q, walkErr
 	}
-	q.Unlevered = borrow == 0
+	// A step the walk took whose rung the up rule refused is not taken: the
+	// entry levers only where the live spread rule levers the funded lane.
+	steps, _ := leverageRungIndex(level)
+	q.SpreadUnlevered = steps == 0 && len(borrows) > 0
+	q.Unlevered = steps == 0
 	var cost entryCost
-	if borrow > 0 {
-		if cost.Step, err = p.priceStep(ctx, accounts, route, []string{route.Kamino.CollateralReserve}, slot, borrow); err != nil {
+	if steps > 0 {
+		if cost.Step, err = p.priceStep(ctx, accounts, route, []string{route.Kamino.CollateralReserve}, slot, borrows[0]); err != nil {
 			return q, err
+		}
+		var borrow, fee uint64
+		for i := range steps {
+			borrow, fee = borrow+borrows[i], fee+borrowFees[i]
+			if i == 0 {
+				continue
+			}
+			// A later step costs its own Kamino fee and the network fees of
+			// its transactions, the first step's.
+			feeValue, err := prices.debtValue(borrowFees[i])
+			if err != nil {
+				return q, err
+			}
+			if cost.SettleMicros, err = budgetSum(cost.SettleMicros, feeValue, cost.Step.NetworkMicros); err != nil {
+				return q, err
+			}
 		}
 		debt, err := prices.debtValue(borrow + fee)
 		if err != nil {
@@ -476,7 +517,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	}
 	// The round trip's swap result is signed; the move's cost is never below
 	// zero, the fees it pays whatever the venue.
-	fees, err := budgetSum(cost.NetworkMicros, cost.SetupMicros, cost.ReleaseMicros, cost.Step.TotalMicros)
+	fees, err := budgetSum(cost.NetworkMicros, cost.SetupMicros, cost.ReleaseMicros, cost.Step.TotalMicros, cost.SettleMicros)
 	if err != nil {
 		return q, err
 	}
