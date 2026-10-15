@@ -39,12 +39,8 @@ type targetInputs struct {
 }
 
 func validLevel(level float64) bool {
-	for _, l := range leverageLevels {
-		if level == l {
-			return true
-		}
-	}
-	return false
+	_, ok := leverageRungIndex(level)
+	return ok
 }
 
 // decodeTargetInputs decodes the planning read's level and exit aggregates.

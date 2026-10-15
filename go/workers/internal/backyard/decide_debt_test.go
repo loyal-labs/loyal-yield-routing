@@ -12,15 +12,15 @@ func TestFixedAccountObservationPreservesDecimalsAndUSDCEntryCapacity(t *testing
 	t.Parallel()
 	route, accounts := nonUSDCDebtNAVFixture(t)
 	// Feed the production fixed-account decoder a configured oracle, and 9/6
-	// decimal assets. At 1.5/2 prices, 20,000 collateral raw units support
-	// floor(20,000/1e9 * 1.5/2 * .5 * 1e6) = 7 debt raw units.
+	// decimal assets. At 1.5/2 prices, 20,000 collateral raw units are worth
+	// 15 debt raw units, 14 after KLend's scaled-fraction rounding.
 	putKey(t, accountAt(accounts, route.Kamino.CollateralReserve).Data[5112:5144], kaminoScopePrices)
 	position, err := observeKaminoFromFixedAccounts(77, append(append([]ConfirmedAccount{}, accounts...), clockFixture()), route.Kamino)
 	if err != nil {
 		t.Fatal(err)
 	}
-	borrow, err := position.targetLTVBorrowRaw()
-	if err != nil || borrow != 7 {
+	borrow, err := position.collateralValueDebtRaw()
+	if err != nil || borrow != 14 {
 		t.Fatalf("lost decimal scale in real observation: borrow=%d err=%v", borrow, err)
 	}
 	ltv, err := observedLTVBPS(position)

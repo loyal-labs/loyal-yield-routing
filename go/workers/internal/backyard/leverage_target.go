@@ -32,7 +32,7 @@ type leverageDecision struct {
 // and the selector itself chose KEEP (a rotation freezes every lane's level
 // until it settles). Custody beside the position is vault cash its next
 // step takes whole; it changes no level. An up move needs the
-// level's spread (1% to 1.5x, 2% to 1.75x) and a positive gain over KEEP
+// level's spread (leverageLadder) and a positive gain over KEEP
 // after the move's own cost and the performance fee on the extra income. It
 // does not need the selector's MinimumBenefit, which is SWITCH hysteresis
 // against a full unwind, not a cost of borrowing more in place.
@@ -87,12 +87,11 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	// position has not reached yet (borrowing blocked) is still the decided
 	// level, so re-deciding from the position flipped it (live 2026-09-28:
 	// 1.5x <-> 1x writes, each bumping the generation). Without a stored
-	// target the position level is the base. Live levels stop at
-	// leverageMaxLiveLevel (see leverage_up.go).
-	positionLevel := min(currentLeverageBand(s), leverageMaxLiveLevel)
-	out.Current = positionLevel
+	// target the position level is the base. Levels stop at the lane's cap.
+	maxLevel := laneMaxLevel(s.RouteLane)
+	out.Current = min(currentLeverageBand(s), maxLevel)
 	if s.LeverageTargetLevel > 0 {
-		out.Current = min(s.LeverageTargetLevel, leverageMaxLiveLevel)
+		out.Current = min(s.LeverageTargetLevel, maxLevel)
 	}
 	// Down rules use current borrowing cost even when new capacity is unknown.
 	currentSpread := market.NativeAPY + market.SupplyAPY - market.CurrentBorrowAPY
@@ -110,7 +109,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		}
 		return leverageBorrowSpread(*market, float64(leverageRateDebtRaw(s, raw+fee)))
 	}
-	out.Next = min(nextLiveLeverageLevel(out.Current, spreadAt), leverageMaxLiveLevel)
+	out.Next = nextLeverageLevel(out.Current, maxLevel, spreadAt)
 	out.SpreadBPS = int64(currentSpread * 10_000)
 	out.Reason = "spread_rule"
 	if out.Next < out.Current {
@@ -220,7 +219,7 @@ func (d leverageDecision) storeChanges(s Snapshot) bool {
 }
 
 // decideOverflowLevel is the level an overflow lane its source cannot lever
-// into takes before it holds anything: the live cap, approved while the
+// into takes before it holds anything: its cap, approved while the
 // overflow lane's spread at the borrow its room would make clears the
 // level's rule. Once the overflow lane holds a position its own view decides.
 func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPolicy, now time.Time) (string, laneLevel, bool) {
@@ -238,8 +237,9 @@ func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPol
 		}
 		// The step's projected utilization: its whole borrow, in the debt
 		// reserve's raw units (forecast only).
-		_, allowed := leverageUpAllowed(m, leverageMaxLiveLevel, float64(e)*(leverageMaxLiveLevel-1)*m.DebtRawPerUSDCRaw)
-		return lane, laneLevel{Level: leverageMaxLiveLevel, UpApproved: allowed}, true
+		maxLevel := laneMaxLevel(lane)
+		_, allowed := leverageUpAllowed(m, maxLevel, float64(e)*(maxLevel-1)*m.DebtRawPerUSDCRaw)
+		return lane, laneLevel{Level: maxLevel, UpApproved: allowed}, true
 	}
 	return "", laneLevel{}, false
 }

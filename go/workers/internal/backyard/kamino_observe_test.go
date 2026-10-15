@@ -105,12 +105,12 @@ func TestTargetBorrowRespectsNineDecimalCollateral(t *testing.T) {
 	p := KaminoPosition{CollateralDepositedRaw: 1_000_000_000, RedeemablePrimeRaw: 1_000_000_000, CollateralDecimals: 9, DebtDecimals: 6}
 	binary.LittleEndian.PutUint64(p.CollateralPriceSF[:8], uint64(1)<<60)
 	binary.LittleEndian.PutUint64(p.DebtPriceSF[:8], uint64(1)<<60)
-	got, err := p.targetLTVBorrowRaw()
-	if err != nil || got != 500_000 {
+	got, err := p.collateralValueDebtRaw()
+	if err != nil || got != 1_000_000 {
 		t.Fatalf("nine-decimal collateral allowed debt=%d err=%v", got, err)
 	}
 	p.CollateralDecimals = 19
-	if _, err = p.targetLTVBorrowRaw(); err == nil {
+	if _, err = p.collateralValueDebtRaw(); err == nil {
 		t.Fatal("unsupported decimal scale accepted")
 	}
 }

@@ -10,8 +10,9 @@ import (
 
 // Capital amounts are raw USDC (six decimals). Forecasts are estimates only;
 // transaction amounts, reservations and reconciliation keep integer arithmetic.
-// The current executor deposits equity, borrows 50% once, then redeposits it.
-const singlePassLeverage = 1 + float64(TargetLTVBPS)/10_000
+// An entry deposits equity, then its first up step levers it to the ladder's
+// first level (1.5x); later levels are later decisions.
+var singlePassLeverage = leverageLadder[1].level
 
 // Capacity distinguishes unknown, a closed entry, and an explicitly unlimited
 // limit. It is equity capacity for the exact pair and execution recipe, not a

@@ -247,7 +247,7 @@ func TestLiveSelectorLadderFallsThroughRefusedStepQuote(t *testing.T) {
 	// Jupiter has no route for the largest rung's 1.5x down step (exit_quote,
 	// a plain 400); the 10 USDC rung borrows below the minimum and needs none.
 	fixtureHTTP(client).Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path == "/quote" && req.URL.Query().Get("inputMint") == route.Kamino.CollateralMint && req.URL.Query().Get("amount") == "49700250" {
+		if req.URL.Path == "/quote" && req.URL.Query().Get("inputMint") == route.Kamino.CollateralMint && req.URL.Query().Get("amount") == "49445603" {
 			return &http.Response{StatusCode: http.StatusBadRequest, Body: http.NoBody, Header: make(http.Header)}, nil
 		}
 		return base.RoundTrip(req)

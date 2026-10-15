@@ -47,13 +47,13 @@ func TestDecideLeverageTargetStepsAtEachLevel(t *testing.T) {
 		{"1.5x down below 0", 1.5, 0.05, math.Log1p(0.06), 1, "spread_rule"},
 		{"1.75x stays in the gap", 1.75, 0.10, math.Log1p(0.085), 1.75, "spread_rule"},
 		{"1.75x down below 1 pt", 1.75, 0.10, math.Log1p(0.095), 1.5, "spread_rule"},
-		{"1.75x never above", 1.75, 0.20, math.Log1p(0.01), 1.75, "spread_rule"},
+		{"1.75x up one level", 1.75, 0.20, math.Log1p(0.01), 2, "up_move_approved"},
 	} {
 		s := leverageSnapshot(tc.level)
 		s.TotalVaultNAVRaw, s.StrategyNAVRaw = 1_000_000_000, 1_000_000_000
 		armFeeAuthorityFixture(t, &s)
 		got, ok := decideLeverageTarget(s, keep, []LaneEconomics{leverageMarket(s.RouteLane, tc.yield, tc.apr)}, p, twentyBPSStepCost)
-		if !ok || got.Current != min(tc.level, leverageMaxLiveLevel) || got.Next != tc.want || got.Reason != tc.wantReason {
+		if !ok || got.Current != min(tc.level, laneMaxLevel(s.RouteLane)) || got.Next != tc.want || got.Reason != tc.wantReason {
 			t.Fatalf("%s: %+v ok=%t", tc.name, got, ok)
 		}
 	}
@@ -180,7 +180,7 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 	if d, ok := decideLeverageTarget(s, keep, []LaneEconomics{neg}, p, twentyBPSStepCost); !ok || d.Next != 1 || !levelChanges(d, 1.5) {
 		t.Fatalf("negative spread did not step down: %+v", d)
 	}
-	if levelChanges(leverageDecision{Current: 1.75, Next: 1.75}, 1.75) {
+	if levelChanges(leverageDecision{Lane: autoAUTOPYUSD.Lane, Current: 1.75, Next: 1.75}, 1.75) {
 		t.Fatal("stored 1.75x rewritten")
 	}
 	if !levelChanges(leverageDecision{Current: 1, Next: 1.5}, 0) {
@@ -191,7 +191,7 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 func leverageTestPriceBytes() []byte { return []byte{0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0} }
 
 func armLeverageCapacityFixture(s *Snapshot) {
-	s.LeverageBorrow150Raw, s.LeverageBorrow175Raw = 0, 0
+	s.LeverageBorrowRaw, s.LeverageDesiredRaw = [len(leverageLadder)]uint64{}, [len(leverageLadder)]uint64{}
 	s.BorrowCapacityKnown = true
 	s.AdditionalDebtRoomRaw = 1_000_000_000
 	s.BorrowUtilizationHeadroomRaw = math.MaxUint64
@@ -199,21 +199,23 @@ func armLeverageCapacityFixture(s *Snapshot) {
 	copy(s.BorrowDebtPriceSF[:], leverageTestPriceBytes())
 	s.BorrowUSDCPriceSF = s.BorrowDebtPriceSF
 	position := leverageTestPosition(uint64(s.PositionCollateralRaw), uint64(s.PositionDebtRaw))
-	if n, err := position.leverageUpBorrowRaw(150); err == nil {
-		s.LeverageBorrow150Raw, _ = leverageUpCapFee(position, n, func(uint64) (uint64, error) { return 0, nil })
+	for i, r := range leverageLadder[1:] {
+		if r.level > laneMaxLevel(s.RouteLane) {
+			break
+		}
+		if n, err := position.leverageUpBorrowRaw(r.level); err == nil {
+			s.LeverageBorrowRaw[i+1], _ = leverageUpCapFee(position, laneCeilingLTVBPS(s.RouteLane), n, func(uint64) (uint64, error) { return 0, nil })
+		}
 	}
-	if n, err := position.leverageUpBorrowRaw(175); err == nil {
-		s.LeverageBorrow175Raw, _ = leverageUpCapFee(position, n, func(uint64) (uint64, error) { return 0, nil })
-	}
-	s.LeverageDesired150Raw, s.LeverageDesired175Raw = s.LeverageBorrow150Raw, s.LeverageBorrow175Raw
+	s.LeverageDesiredRaw = s.LeverageBorrowRaw
 	s.LeverageUpApproved = true
 }
 
 // levelChanges reports whether storing d changes the stored level in effect
-// (a stored level above the live cap counts as the cap).
+// (a stored level above the lane's cap counts as the cap).
 func levelChanges(d leverageDecision, stored float64) bool {
 	if stored > 0 {
-		stored = min(stored, leverageMaxLiveLevel)
+		stored = min(stored, laneMaxLevel(d.Lane))
 	}
 	return d.Next != stored
 }

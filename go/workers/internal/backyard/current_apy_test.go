@@ -179,10 +179,10 @@ func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 	}
 	for _, lane := range watch.summary {
 		parts := []string{}
-		for _, level := range leverageWatchLevels {
-			key := fmt.Sprintf("%.2f", level)
+		for _, r := range leverageLadder {
+			key := fmt.Sprintf("%.2f", r.level)
 			if bps, ok := lane.APYBPS[key]; ok {
-				parts = append(parts, fmt.Sprintf("%.2fx=%.2f", level, float64(bps)/100))
+				parts = append(parts, fmt.Sprintf("%.2fx=%.2f", r.level, float64(bps)/100))
 			}
 		}
 		entry := "no"
@@ -197,7 +197,7 @@ func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 		if lane.FeedNativeBPS != nil {
 			native = fmt.Sprintf("native=%.2f%% feed=%.2f%% gap=%+.2f", float64(lane.NativeBPS)/100, float64(*lane.FeedNativeBPS)/100, float64(lane.NativeBPS-*lane.FeedNativeBPS)/100)
 		}
-		rebuilt := fmt.Sprintf("%s(spread=%s %s enterable=%s apy %s levels 1/2/3=%.2f/%.2f/%.2f)", lane.Lane, spread, native, entry, strings.Join(parts, " "), lane.Levels[0], lane.Levels[1], lane.Levels[2])
+		rebuilt := fmt.Sprintf("%s(spread=%s %s enterable=%s apy %s)", lane.Lane, spread, native, entry, strings.Join(parts, " "))
 		if !strings.Contains(summary, rebuilt) {
 			t.Fatalf("stored lane %q not in the printed line %q", rebuilt, summary)
 		}
@@ -263,8 +263,8 @@ func TestRecordLeverageWatchWrite(t *testing.T) {
 	}
 	old := time.Date(2026, 9, 30, 10, 0, 0, 0, time.UTC)
 	both := LeverageWatchSummary{ObservedAt: old, Lanes: []leverageWatchLane{
-		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: watchSpreadFixture(100), APYBPS: map[string]int64{"1.00": 968}, Levels: []float64{1.5, 1.5, 1.5}},
-		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: watchSpreadFixture(200), APYBPS: map[string]int64{"1.00": 1102}, Levels: []float64{1, 1, 1}},
+		{Lane: autoAUTOPYUSD.Lane, ObservedAt: old, SpreadBPS: watchSpreadFixture(100), APYBPS: map[string]int64{"1.00": 968}},
+		{Lane: onreONycUSDC, ObservedAt: old, SpreadBPS: watchSpreadFixture(200), APYBPS: map[string]int64{"1.00": 1102}},
 	}}
 	if err := db.RecordLeverageWatch(ctx, key, both); err != nil {
 		t.Fatal(err)

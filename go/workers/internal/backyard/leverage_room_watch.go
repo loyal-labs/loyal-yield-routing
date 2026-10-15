@@ -147,7 +147,7 @@ func heldLaneLeverage(o Observation) []laneLeverage {
 			l.termDays, l.termOwed = float64(s.DebtTermEndUnix-s.ChainUnix)/86_400, true
 		}
 		if s.LeverageTargetLevel > 0 {
-			l.targeted, l.target = true, min(s.LeverageTargetLevel, leverageMaxLiveLevel)
+			l.targeted, l.target = true, min(s.LeverageTargetLevel, laneMaxLevel(s.RouteLane))
 			l.gap = max(l.target-l.current, 0)
 		}
 		out = append(out, l)

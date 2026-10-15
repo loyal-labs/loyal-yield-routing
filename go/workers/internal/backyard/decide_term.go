@@ -61,7 +61,8 @@ func termDebtUnknown(s Snapshot) bool {
 // termKeepAliveRoom reports whether the keep-alive borrow fits this batch:
 // the debt reserve's fee-inclusive room, a maturity still ahead (KLend
 // refuses a borrow at or past it), and an instant LTV, the borrow and its
-// fee valued with the liability margin, within the leverage cap.
+// fee valued with the liability margin, within the lane cap's LTV band (a
+// position within leverageUpNearBPS of a level is at it).
 func termKeepAliveRoom(s Snapshot) bool {
 	left, ok := termSecondsLeft(s)
 	if !ok || left <= 0 || !s.BorrowCapacityKnown || kaminoReceiveWithinRoom(s.AdditionalDebtRoomRaw, s.BorrowFeeRate) < termKeepAliveBorrowRaw ||
@@ -78,7 +79,7 @@ func termKeepAliveRoom(s Snapshot) bool {
 	}
 	after := new(big.Int).Add(big.NewInt(s.PositionDebtValueRaw), new(big.Int).SetUint64(added))
 	after.Mul(after, big.NewInt(10_000))
-	return after.Cmp(new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(leverageMaxLTVBPS))) <= 0
+	return after.Cmp(new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(laneCeilingLTVBPS(s.RouteLane)+leverageUpNearBPS))) <= 0
 }
 
 // termDeleverDue: the lane owes term debt it can no longer keep alive (under

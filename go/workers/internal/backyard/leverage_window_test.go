@@ -27,10 +27,10 @@ func oct10WindowSnapshot(t *testing.T, roomRaw uint64) (Snapshot, LaneEconomics)
 	armLeverageCapacityFixture(&s)
 	s.LeverageUpApproved = false
 	s.AdditionalDebtRoomRaw, s.BorrowUtilizationHeadroomRaw = roomRaw, roomRaw
-	s.LeverageBorrow150Raw = min(s.LeverageDesired150Raw, roomRaw)
-	s.LeverageBorrow175Raw = min(s.LeverageDesired175Raw, roomRaw)
+	s.LeverageBorrowRaw[1] = min(s.LeverageDesiredRaw[1], roomRaw)
+	s.LeverageBorrowRaw[2] = min(s.LeverageDesiredRaw[2], roomRaw)
 	if roomRaw < leverageMinimumBorrowRaw {
-		s.LeverageBorrow150Raw, s.LeverageBorrow175Raw = 0, 0
+		s.LeverageBorrowRaw[1], s.LeverageBorrowRaw[2] = 0, 0
 	}
 	m := LaneEconomics{Lane: s.RouteLane, NativeAPY: 0.0947,
 		BorrowCurve:   []BorrowCurvePoint{{0, 458}, {8000, 580}, {9000, 580}, {9500, 662}, {10_000, 905}},
@@ -49,7 +49,7 @@ func TestOct10WindowApprovesAtTheExpectedCost(t *testing.T) {
 	t.Parallel()
 	s, m := oct10WindowSnapshot(t, 3_300_000_000)
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0))
-	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesired150Raw || got.GainRaw <= 0 {
+	if !ok || got.Next != 2 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesiredRaw[1] || got.GainRaw <= 0 {
 		t.Fatalf("the Oct 10 step was not approved: %+v ok=%t", got, ok)
 	}
 }
@@ -66,7 +66,7 @@ func TestRealizedAUTOSpreadApprovesTheStepsTo1_75x(t *testing.T) {
 	}
 	s, m := oct10WindowSnapshot(t, 3_300_000_000)
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), measuredStepCost(0))
-	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesired150Raw || got.GainRaw <= 0 {
+	if !ok || got.Next != 2 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesiredRaw[1] || got.GainRaw <= 0 {
 		t.Fatalf("1.01x -> 1.5x at 2.88 pts: %+v ok=%t", got, ok)
 	}
 	// The same lane at 1.5x: the step to 1.75x.
@@ -78,7 +78,7 @@ func TestRealizedAUTOSpreadApprovesTheStepsTo1_75x(t *testing.T) {
 	at15.LeverageUpApproved = false
 	at15.BorrowUtilizationHeadroomRaw = 3_300_000_000
 	got, ok = decideLeverageTarget(at15, SelectorResult{Action: "KEEP"}, []LaneEconomics{realized(m, 0.0288)}, DefaultSelectorPolicy(), measuredStepCost(0))
-	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != at15.LeverageDesired175Raw || got.GainRaw <= 0 {
+	if !ok || got.Next != 2 || got.Reason != "up_move_approved" || got.BorrowRaw != at15.LeverageDesiredRaw[2] || got.GainRaw <= 0 {
 		t.Fatalf("1.5x -> 1.75x at 2.88 pts: %+v ok=%t", got, ok)
 	}
 	// Under the 1.75x step's 2 pt rule: no approval, whatever the cost.
@@ -98,14 +98,14 @@ func TestLeverageUpApprovesTheStepAndBorrowsTheRoom(t *testing.T) {
 	const room = 3_300_000_000
 	s, m := oct10WindowSnapshot(t, room)
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), measuredStepCost(0))
-	if !ok || got.Next != 1.75 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesired150Raw || got.GainRaw <= 0 || !got.level().UpApproved {
+	if !ok || got.Next != 2 || got.Reason != "up_move_approved" || got.BorrowRaw != s.LeverageDesiredRaw[1] || got.GainRaw <= 0 || !got.level().UpApproved {
 		t.Fatalf("a profitable step got no approval: %+v ok=%t", got, ok)
 	}
 	if !got.storeChanges(s) {
 		t.Fatal("a new approval was not stored")
 	}
 	// The worker borrows this tick's room, not the whole approved step.
-	s.LeverageUpApproved = got.level().UpApproved
+	s.LeverageTargetLevel, s.LeverageUpApproved = got.Next, got.level().UpApproved
 	if d := Decide(targeted(s)); d.Action != OpenRouteStep || d.Reason != leverageUpReason || d.AmountRaw != room {
 		t.Fatalf("the approved step did not borrow the room: %+v", d)
 	}

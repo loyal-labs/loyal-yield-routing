@@ -18,7 +18,6 @@ const (
 	// are journaled, quoted, signed, or broadcast.
 	Phase2TransactionCapRaw int64 = 1_000_000
 	OneNonterminalInvariant       = "one_nonterminal_operation_per_route"
-	TargetLTVBPS                  = int64(5000)
 )
 
 // Phase 2 monitor knobs. They are code constants on purpose: loosening a

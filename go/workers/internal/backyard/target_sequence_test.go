@@ -89,17 +89,12 @@ func (b *book) views() []Snapshot {
 			s.DebtTermEndUnix = l.termEnd
 		}
 		equity := l.coll - l.debt
-		for _, level := range []float64{1.5, 1.75} {
-			borrow := max(int64(float64(equity)*(level-1))-l.debt, 0)
+		for i, r := range leverageLadder[1:] {
+			borrow := max(int64(float64(equity)*(r.level-1))-l.debt, 0)
 			if l.blocked {
 				borrow = 0
 			}
-			borrow = min(borrow, l.room)
-			if level == 1.5 {
-				s.LeverageBorrow150Raw = uint64(borrow)
-			} else {
-				s.LeverageBorrow175Raw = uint64(borrow)
-			}
+			s.LeverageBorrowRaw[i+1] = uint64(min(borrow, l.room))
 		}
 		if overflow, ok := overflowLaneOf(id); ok && s.HasPosition && overflowSourceBorrowClosed(s) {
 			o := b.lane(overflow)
@@ -236,8 +231,12 @@ func ltvOf(l *bookLane) int64 { return l.debt * 10_000 / l.coll }
 
 // mapleBook is one Maple lane with $100k equity at its stored level.
 func mapleBook(level float64, approved bool) *book {
-	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{SelectedRouteID: {Level: level, UpApproved: approved}}}}
-	l := b.lane(SelectedRouteID)
+	return laneBook(SelectedRouteID, level, approved)
+}
+
+func laneBook(lane string, level float64, approved bool) *book {
+	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{lane: {Level: level, UpApproved: approved}}}}
+	l := b.lane(lane)
 	l.coll, l.debt, l.obligationPresent = 150_000_000_000, 50_000_000_000, true
 	return b
 }
@@ -262,36 +261,36 @@ func TestTargetWithdrawalFreesExactlyTheDemand(t *testing.T) {
 func TestTargetLevelOneSevenFiveStepsUpOnceApproved(t *testing.T) {
 	t.Parallel()
 	// Unapproved: the stored level alone moves nothing.
-	b := mapleBook(1.75, false)
+	b := laneBook(onreONycUSDC, 1.75, false)
 	wantSteps(t, b.walk(t, 5), "HOLD:"+holdAtTarget)
-	b.in.Levels[SelectedRouteID] = laneLevel{Level: 1.75, UpApproved: true}
+	b.in.Levels[onreONycUSDC] = laneLevel{Level: 1.75, UpApproved: true}
 	wantSteps(t, b.walk(t, 5), "OPEN_ROUTE_STEP:"+leverageUpReason, "HOLD:"+holdAtTarget)
-	if l := b.lane(SelectedRouteID); ltvOf(l) < 4280 || ltvOf(l) > 4286 {
+	if l := b.lane(onreONycUSDC); ltvOf(l) < 4280 || ltvOf(l) > 4286 {
 		t.Fatalf("1.75 step left LTV %d", ltvOf(l))
 	}
 	// The stored level falls to 1.5: one partial down step, never debt 0.
-	b.in.Levels[SelectedRouteID] = laneLevel{Level: 1.5}
+	b.in.Levels[onreONycUSDC] = laneLevel{Level: 1.5}
 	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+leverageDownPartialReason, "HOLD:"+holdAtTarget)
-	if l := b.lane(SelectedRouteID); l.debt == 0 || ltvOf(l) > 3334 {
+	if l := b.lane(onreONycUSDC); l.debt == 0 || ltvOf(l) > 3334 {
 		t.Fatalf("1.5 down step left debt %d LTV %d", l.debt, ltvOf(l))
 	}
 	// Level 1 is economic: it holds at 1.5, not at debt 0.
-	b.in.Levels[SelectedRouteID] = laneLevel{Level: 1}
+	b.in.Levels[onreONycUSDC] = laneLevel{Level: 1}
 	wantSteps(t, b.walk(t, 5), "HOLD:"+holdAtTarget)
 }
 
 func TestTargetHardLTVStepsDownOrHoldsNoRoom(t *testing.T) {
 	t.Parallel()
-	b := mapleBook(1.75, true)
-	l := b.lane(SelectedRouteID)
-	l.debt = 92_000_000_000 // LTV 6133 > hard 6000
+	b := laneBook(onreONycUSDC, 1.75, true)
+	l := b.lane(onreONycUSDC)
+	l.debt = 107_000_000_000 // LTV 7133 > hard 7000
 	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+hardLTVDeleverReason, "HOLD:"+holdAtTarget)
-	if ltvOf(l) >= 6000 || l.debt == 0 {
+	if ltvOf(l) >= 7000 || l.debt == 0 {
 		t.Fatalf("hard LTV step left LTV %d debt %d", ltvOf(l), l.debt)
 	}
 	// With no withdraw room the prepared step holds no_room (step_prepare);
 	// the target stays the down step.
-	l.debt = 92_000_000_000
+	l.debt = 107_000_000_000
 	views := b.views()
 	if _, tgt := target(views, b.in); tgt.Rule != ruleHardLTV {
 		t.Fatalf("hard LTV target %+v", tgt)
@@ -376,17 +375,18 @@ func TestTargetOperatorExit(t *testing.T) {
 	}
 }
 
-// The Oct 11 overflow, replayed: AUTO/AUTO/PYUSD at 1.5x (LTV 3333) with
-// its stored level 1.75 and PYUSD borrowing closed; the wYLDS reserve has
-// room. The target moves the collateral the source can release down to the
-// 1.75 LTV into the wYLDS obligation in one transaction, and the wYLDS lane
-// levers it to 1.75 by two up steps: four transactions (with the
-// obligation's initializer) where the move machine took thirteen. The end
-// state is the live book (both lanes at 1.75x, ~$67.5k / ~$33.7k equity).
+// The Oct 11 overflow, replayed at AUTO's cap: AUTO/AUTO/PYUSD at 1.5x
+// (LTV 3333) with its stored level at its cap and PYUSD borrowing closed;
+// the wYLDS reserve has room. The target moves the collateral the source can
+// release down to its cap's LTV into the wYLDS obligation in one
+// transaction, and the wYLDS lane levers it to 1.75 by two up steps: four
+// transactions (with the obligation's initializer) where the move machine
+// took thirteen. The end state: AUTO/AUTO/PYUSD at 2.5x (~$33.7k equity),
+// AUTO/AUTO/wYLDS at 1.75x (~$67.5k).
 func TestTargetOverflowReplaysOctoberEleventhInFourTransactions(t *testing.T) {
 	t.Parallel()
 	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{
-		autoAUTOPYUSD.Lane: {Level: 1.75, UpApproved: true},
+		autoAUTOPYUSD.Lane: {Level: laneMaxLevel(autoAUTOPYUSD.Lane), UpApproved: true},
 		autoAUTOWYLDSLane:  {Level: 1.75, UpApproved: true},
 	}}}
 	pyusd := b.lane(autoAUTOPYUSD.Lane)
@@ -403,12 +403,13 @@ func TestTargetOverflowReplaysOctoberEleventhInFourTransactions(t *testing.T) {
 	if len(steps)-1 != 4 {
 		t.Fatalf("%d transactions", len(steps)-1)
 	}
-	for _, l := range []*bookLane{pyusd, wylds} {
-		if ltv := ltvOf(l); ltv < 4270 || ltv > 4286 {
-			t.Fatalf("%s ended at LTV %d", l.lane, ltv)
-		}
+	if ltv := ltvOf(pyusd); ltv < 5990 || ltv > 6000 {
+		t.Fatalf("%s ended at LTV %d", pyusd.lane, ltv)
 	}
-	if e := wylds.coll - wylds.debt; e < 33_000_000_000 || e > 34_500_000_000 {
+	if ltv := ltvOf(wylds); ltv < 4270 || ltv > 4286 {
+		t.Fatalf("%s ended at LTV %d", wylds.lane, ltv)
+	}
+	if e := wylds.coll - wylds.debt; e < 67_000_000_000 || e > 68_000_000_000 {
 		t.Fatalf("moved equity %d", e)
 	}
 	// Restarted on that end state the target is the state: no more moves.
@@ -490,7 +491,7 @@ func TestTargetWithdrawalSpansLanes(t *testing.T) {
 func TestTargetOverflowMovesOnlyWhatTheRoomLevers(t *testing.T) {
 	t.Parallel()
 	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{
-		autoAUTOPYUSD.Lane: {Level: 1.75, UpApproved: true},
+		autoAUTOPYUSD.Lane: {Level: laneMaxLevel(autoAUTOPYUSD.Lane), UpApproved: true},
 		autoAUTOWYLDSLane:  {Level: 1.75, UpApproved: true},
 	}}}
 	pyusd := b.lane(autoAUTOPYUSD.Lane)

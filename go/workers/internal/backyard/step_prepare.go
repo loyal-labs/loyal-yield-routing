@@ -82,10 +82,8 @@ func stepDownRepay(s Snapshot, d Decision) (uint64, bool) {
 		return uint64(max(min(d.AmountRaw, s.PositionDebtRaw), 0)), false
 	case debtZeroReason:
 		return uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)), true
-	case hardLTVDeleverReason:
-		return uint64(max(stepDebtToLTVRaw(s, hardLTVTargetBPS(s)), 0)), false
-	case leverageDownPartialReason:
-		return uint64(max(stepDebtToLTVRaw(s, leverageLevelLTVBPS(1.5)), 0)), false
+	case hardLTVDeleverReason, leverageDownPartialReason:
+		return uint64(max(stepDebtToLTVRaw(s, heldLevelLTVBPS(s)), 0)), false
 	}
 	return 0, false
 }
@@ -267,7 +265,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		// The keep-alive is the minimum up step: target() found its room in
 		// this batch, and the chain refuses it past the term or the room.
 		if decision.Reason != termKeepAliveReason {
-			if capped, capErr := capacitySizedBorrow(st.position, accounts, route, int64(leverageUpLevel(s)*100)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
+			if capped, capErr := capacitySizedBorrow(st.position, accounts, route, leverageUpLevel(s)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
 				err = budgetHoldFrom(capErr, "borrow_capacity_shrank")
 			}
 		}
@@ -501,7 +499,7 @@ func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
 }
 
 // assembleMove is an overflow move of st's lane: it withdraws the receipts
-// worth the decision's equity (within the live cap's LTV and the
+// worth the decision's equity (within its cap's LTV and the
 // obligation's withdraw room) and deposits what they redeem, with any
 // collateral already in the shared custody, into the overflow lane's
 // obligation, in one transaction.
