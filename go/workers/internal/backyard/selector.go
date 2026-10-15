@@ -185,7 +185,14 @@ type MoveQuote struct {
 	// steps convert into collateral.
 	BorrowValueRaw   uint64 `json:"borrowValueRaw,omitempty"`
 	ProceedsValueRaw uint64 `json:"proceedsValueRaw,omitempty"`
-	SourceLane       string `json:"sourceLane"`
+	// DepositValueRaw is the entry's guaranteed collateral (the entry swap's
+	// minimum output) valued at the lane batch's prices: what the up steps
+	// borrow against.
+	DepositValueRaw uint64 `json:"depositValueRaw,omitempty"`
+	// Keep is a rotation's source position where the live rule settles it
+	// (lanePricer.settleHeld): what the tranche earns if it stays.
+	Keep       *heldSettlement `json:"keep,omitempty"`
+	SourceLane string          `json:"sourceLane"`
 	// RotateFrom is a rotation's source: the held lane whose release funds
 	// the entry, in place of cash. Empty on a cash entry.
 	RotateFrom      string `json:"rotateFrom,omitempty"`
@@ -629,7 +636,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 				out.Candidates = append(out.Candidates, c)
 				continue
 			}
-			keep, ok := heldTrancheGain(source, ms, quote.EquityRaw, years)
+			keep, ok := heldTrancheGain(source, ms, quote.Keep, quote.EquityRaw, years)
 			if !ok {
 				c.BlockedReason = "held_forecast_unavailable"
 				out.Candidates = append(out.Candidates, c)
@@ -759,16 +766,17 @@ func sameCollateralCustody(a, b string) bool {
 }
 
 // rotationForwardAPY is the market-level test a pair is priced on: the
-// destination's forward APY at the level the source's releasable tranche
-// settles at there (sizeSettledLevel), and whether it beats the source
-// position's at its own leverage, both before fees. Below it no quote could
-// pay its cost.
+// destination's forward APY at the most the source's releasable tranche
+// could settle at there (sizeSettledLevel), and whether it beats the source
+// position's at the most it could settle at where it is
+// (heldSettledLevel), both before fees: each side where the spread rule
+// could take it.
 func rotationForwardAPY(source Snapshot, ms, md LaneEconomics) (float64, bool) {
 	equity := laneEquityRaw(source)
 	if equity <= 0 {
 		return 0, false
 	}
-	held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, source)
+	held, ok := leverageLevelAPY(ms, heldSettledLevel(source, ms), equity, true, 0, source)
 	size := laneReleaseLimitRaw(source)
 	entered, okD := leverageLevelAPY(md, sizeSettledLevel(md, size), size, false, 0)
 	return entered, ok && okD && entered > held
@@ -799,10 +807,11 @@ const gainBelowMinimumBenefit = "gain_below_minimum_benefit"
 
 // moveGainCeiling is the most a move of size into md's lane could gain over
 // the horizon, before costs and fees: size at the destination's forward APY
-// (at the level size settles at there), less the source's at its own
-// leverage for a rotation. A move whose ceiling cannot exceed MinimumBenefit
-// is not quoted (gain_below_minimum_benefit). +Inf when an APY is unknown:
-// quote it.
+// (at the most size could settle at there), less, for a rotation, the
+// source's at the most it could settle at where it is: both sides by the
+// spread rule alone, as rotationForwardAPY. A move whose ceiling cannot
+// exceed MinimumBenefit is not quoted (gain_below_minimum_benefit). +Inf
+// when an APY is unknown: quote it.
 func moveGainCeiling(source *Snapshot, ms, md LaneEconomics, size int64, p SelectorPolicy) float64 {
 	apy, ok := leverageLevelAPY(md, sizeSettledLevel(md, size), size, false, 0)
 	if !ok {
@@ -813,7 +822,7 @@ func moveGainCeiling(source *Snapshot, ms, md LaneEconomics, size int64, p Selec
 		if equity <= 0 {
 			return math.Inf(1)
 		}
-		held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, *source)
+		held, ok := leverageLevelAPY(ms, heldSettledLevel(*source, ms), equity, true, 0, *source)
 		if !ok {
 			return math.Inf(1)
 		}
@@ -823,19 +832,26 @@ func moveGainCeiling(source *Snapshot, ms, md LaneEconomics, size int64, p Selec
 }
 
 // heldTrancheGain is what equity of the source's position earns where it is
-// over the horizon: its share of the position's collateral and debt at the
-// source's current borrow rate, before fees (KEEP's upper return).
-func heldTrancheGain(source Snapshot, m LaneEconomics, equity int64, years float64) (float64, bool) {
+// over the horizon: its share of the position the live rule settles it at
+// (keep, priced by the rotation's quote; nil is the position as it is) at
+// the borrow rate its steps leave, less its share of their cost, before
+// fees (KEEP's upper return).
+func heldTrancheGain(source Snapshot, m LaneEconomics, keep *heldSettlement, equity int64, years float64) (float64, bool) {
 	total := laneEquityRaw(source)
 	if total <= 0 || equity <= 0 || equity > total || source.PositionDebtValueRaw < 0 {
 		return 0, false
 	}
-	debt := float64(source.PositionDebtValueRaw) * float64(equity) / float64(total)
-	apr, err := projectedBorrowAPR(m, 0)
-	if err != nil {
+	settled := heldSettlement{CollateralValueRaw: source.PositionCollateralValueRaw, DebtValueRaw: source.PositionDebtValueRaw}
+	if keep != nil {
+		settled = *keep
+	}
+	share := float64(equity) / float64(total)
+	apr, err := projectedBorrowAPR(m, settled.RateDebtRaw)
+	if err != nil || settled.DebtValueRaw < 0 || settled.CollateralValueRaw < settled.DebtValueRaw || settled.CostRaw < 0 {
 		return 0, false
 	}
-	e := pilotForecastEconomics(pilotEconomics{Debt: debt, Proceeds: debt, APR: apr}, float64(equity), m, years, 0)
+	debt := float64(settled.DebtValueRaw) * share
+	e := pilotForecastEconomics(pilotEconomics{Debt: debt, Proceeds: float64(settled.CollateralValueRaw)*share - float64(equity), APR: apr}, float64(equity), m, years, int64(math.Ceil(float64(settled.CostRaw)*share)))
 	return e.Gain, finite(e.Gain)
 }
 
@@ -904,9 +920,10 @@ func sampleAdvantageWindow(out *SelectorResult, previous SelectorState, lane str
 	out.State.Advantages[lane] = window
 }
 
-// validBorrow: a 1x quote borrows nothing; a levered one owes less than the
-// collateral its equity holds at the lane's cap, and converts no more
-// principal than it owes.
+// validBorrow: a 1x quote borrows nothing; a levered one converts no more
+// principal than it owes, and owes no more than the lane cap's LTV
+// (1 - 1/cap) of the collateral it holds: the entry's guaranteed deposit and
+// the steps' proceeds.
 func (q MoveQuote) validBorrow() bool {
 	if q.EquityRaw <= 0 || !earnActiveLane(q.DestinationLane) {
 		return false
@@ -914,5 +931,7 @@ func (q MoveQuote) validBorrow() bool {
 	if q.Unlevered {
 		return q.BorrowReceiveRaw == 0 && q.BorrowFeeRaw == 0 && q.BorrowValueRaw == 0
 	}
-	return q.BorrowReceiveRaw > 0 && q.BorrowValueRaw > 0 && float64(q.BorrowValueRaw) < laneMaxLevel(q.DestinationLane)*float64(q.EquityRaw) && q.ProceedsValueRaw <= q.BorrowValueRaw
+	capLevel := laneMaxLevel(q.DestinationLane)
+	return q.BorrowReceiveRaw > 0 && q.BorrowValueRaw > 0 && q.ProceedsValueRaw <= q.BorrowValueRaw &&
+		float64(q.BorrowValueRaw)*capLevel <= (capLevel-1)*(float64(q.DepositValueRaw)+float64(q.ProceedsValueRaw))
 }

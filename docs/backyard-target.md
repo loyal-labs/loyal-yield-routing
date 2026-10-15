@@ -136,15 +136,19 @@ persistence, $0.25 minimum benefit and 10 bps uncertainty (on the vault's
 investable equity for cash, on the tranche for a rotation): cash entering a
 lane earns its fee-reserved gain against nothing;
 a held lane's tranche rotating earns the destination's fee-reserved gain on
-what the move leaves, against the tranche's gross gain where it is. A
-destination is priced at the level the move settles it at: the ladder
-climbed from 1x while each rung's up rule holds at the cumulative borrow
-reaching it, up to the lane's cap, stopping where a step has no room today
-(`settledLevel`); the entry's own transaction still levers to 1.5x and the
-live rule takes the later steps one sample at a time. A move's
-cost is the destination's signed round trip (a collateral bought under its
-mark gains what its sale loses), its first up step, each later step's Kamino
-fee and network fees, the network fees, an absent
+what the move leaves, against the tranche's gross gain where it is. Both
+sides are priced where the live leverage rule settles them (`settledLevel`):
+the ladder climbed one rung at a time up to the lane's cap, each rung taken
+when its step has room today, the spread rule holds at the cumulative borrow
+reaching it, and the step's horizon gain covers its own priced cost
+(`upStepGain`, the rule's own test). The destination climbs from 1x in its
+quote, whose first step is the entry's own transaction to 1.5x; a source
+climbs from where it is (`settleHeld`), and staying earns its share of that
+position less its share of the steps' cost. The market-level screens
+(forward APY, gain ceiling) price no step, so they walk the spread rule
+alone. A move's cost is the destination's signed round trip (a collateral
+bought under its mark gains what its sale loses), its up steps with their
+unwinds, the network fees, an absent
 obligation's rent and, on a rotation, the network fees of the source's
 release; the source's own swap loss is its exit, which staying pays later.
 Cash outranks a rotation. Pairs sharing a collateral custody (the overflow

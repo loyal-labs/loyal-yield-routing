@@ -19,6 +19,7 @@ func autoCanaryFixtureAt(t *testing.T, debtScale int64) SelectorInput {
 	quote := in.Quotes[0]
 	quote.BorrowValueRaw = (quote.BorrowReceiveRaw + quote.BorrowFeeRaw) * uint64(debtScale) / 1_000_000
 	quote.ProceedsValueRaw = quote.BorrowReceiveRaw * uint64(debtScale) / 1_000_000
+	quote.DepositValueRaw = uint64(quote.EquityRaw)
 	in.Quotes[0] = quote
 	in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("auto-one-acceptance")), Lane: autoAUTOPYUSD.Lane, EquityRaw: 1_000_000, ExpiresAt: in.Now.Add(10 * time.Minute)}
 	return in

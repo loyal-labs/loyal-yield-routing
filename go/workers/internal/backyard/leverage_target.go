@@ -99,15 +99,11 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		if level <= out.Current {
 			return currentSpread, finite(currentSpread) && market.CurrentBorrowAPY >= 0
 		}
-		raw := leverageDesiredRaw(s, level)
-		if raw < leverageMinimumBorrowRaw {
+		debt, ok := heldRungDebt(s, level)
+		if !ok {
 			return 0, false
 		}
-		fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
-		if err != nil {
-			return 0, false
-		}
-		return leverageBorrowSpread(*market, float64(leverageRateDebtRaw(s, raw+fee)))
+		return leverageBorrowSpread(*market, debt)
 	}
 	out.Next = nextLeverageLevel(out.Current, maxLevel, spreadAt)
 	out.SpreadBPS = int64(currentSpread * 10_000)
@@ -171,22 +167,12 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	}
 	out.Cost, out.CostRaw = stepCost, float64(stepCost.TotalMicros)
 	years := p.Horizon.Hours() / (365.25 * 24)
-	collateral, debt := float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw)
-	keepGross := forecastGain(collateral, collateral, debt, *market, math.Log1p(market.CurrentBorrowAPY), years)
-	// The held collateral is not reduced by the move; its cost is. Pass the
-	// collateral the move leaves earning, net of that cost; the candidate's
-	// income is its gain before the cost is charged.
-	cost := math.Ceil(out.CostRaw)
-	candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + float64(liability), Proceeds: moved, APR: apr}, collateral-cost, *market, years, int64(cost))
-	extra := candidate.Gain + cost - keepGross
-	if !finite(extra) || !finite(keepGross) {
-		out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
+	out.GainRaw = upStepGain(*market, float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), float64(liability), moved,
+		math.Log1p(market.CurrentBorrowAPY), apr, out.CostRaw, years, s.ApprovedAdminPerformanceFeeBPS)
+	if !finite(out.GainRaw) {
+		out.Next, out.Reason, out.GainRaw = out.Current, "fee_forecast_unavailable", 0
 		return out, true
 	}
-	if extra > 0 {
-		extra *= 1 - float64(s.ApprovedAdminPerformanceFeeBPS)/10_000
-	}
-	out.GainRaw = extra - cost
 	if out.GainRaw <= 0 {
 		out.Next, out.Reason = out.Current, "up_move_not_worth_cost"
 	} else {
@@ -194,6 +180,26 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 		out.BorrowRaw = raw
 	}
 	return out, true
+}
+
+// upStepGain is the live rule's gain of one up step over the horizon: a
+// position of collateral and debt (USDC) borrowing liability more, proceeds
+// of it converted into collateral, every debt at apr after the step, against
+// KEEP's gross income with its debt at keepAPR; the performance fee is taken
+// on a positive difference (a vault below its high-water mark pays less,
+// never more), then the step's cost. The step pays when it is positive.
+func upStepGain(m LaneEconomics, collateral, debt, liability, proceeds, keepAPR, apr, cost, years float64, feeBPS int64) float64 {
+	keepGross := forecastGain(collateral, collateral, debt, m, keepAPR, years)
+	// The held collateral is not reduced by the move; its cost is. Pass the
+	// collateral the move leaves earning, net of that cost; the candidate's
+	// income is its gain before the cost is charged.
+	cost = math.Ceil(cost)
+	candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + liability, Proceeds: proceeds, APR: apr}, collateral-cost, m, years, int64(cost))
+	extra := candidate.Gain + cost - keepGross
+	if extra > 0 {
+		extra *= 1 - float64(feeBPS)/10_000
+	}
+	return extra - cost
 }
 
 // level is the decision as the lane's stored level: the level, and whether

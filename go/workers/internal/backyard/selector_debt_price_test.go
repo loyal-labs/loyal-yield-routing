@@ -13,6 +13,7 @@ func autoMoveQuote(debtScale int64) MoveQuote {
 	q := MoveQuote{MinimumIdleRaw: 1_000_000_000, BorrowReceiveRaw: 499_000_000, BorrowFeeRaw: 1_000_000, SourceLane: SelectedRouteID, DestinationLane: testAutoLane, ObservationID: "obs", EquityRaw: 1_000_000_000, CostRaw: 10_000, SampleSlot: 42, ValidThroughSlot: 74}
 	q.BorrowValueRaw = (q.BorrowReceiveRaw + q.BorrowFeeRaw) * uint64(debtScale) / 1_000_000
 	q.ProceedsValueRaw = q.BorrowReceiveRaw * uint64(debtScale) / 1_000_000
+	q.DepositValueRaw = uint64(q.EquityRaw)
 	return q
 }
 

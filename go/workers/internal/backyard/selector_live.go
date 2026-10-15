@@ -176,8 +176,20 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 			ms = m
 		}
 	}
+	// A rotation's source is settled once, on the first size priced: what
+	// staying earns does not depend on the tranche.
+	var keep *heldSettlement
 	price := func(size uint64) (MoveQuote, string, bool, error) {
-		q, err := p.priceMove(ctx, o, source, market, size)
+		var err error
+		if source != nil && keep == nil {
+			var settled heldSettlement
+			if settled, err = p.settleHeld(ctx, o, *source, ms); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector source settlement unavailable from=%s lane=%s: %v\n", from, market.Lane, err)
+				return MoveQuote{}, "complete_entry_quote_unavailable", false, err
+			}
+			keep = &settled
+		}
+		q, err := p.priceMove(ctx, o, source, keep, market, size)
 		if err == nil {
 			return q, "", false, nil
 		}
