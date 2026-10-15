@@ -1,6 +1,8 @@
 package backyard
 
 import (
+	"fmt"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -48,10 +50,11 @@ type earnLane struct {
 	overflowOf string
 	// maxLevel is the lane's cap: the highest leverage level it may hold
 	// (leverage_level.go), set per lane from its lender limits and its
-	// borrow pool (owner decision 2026-10-14). Its LTV must sit under the
-	// lane's hard LTV (hardLTVBPS, from the reserve at observation): a lane
-	// whose hard LTV is not above its cap's LTV holds for recovery
-	// (target.go).
+	// borrow pool (owner decision 2026-10-14); a level of the ladder above 1,
+	// checked when the list is built. Its LTV must sit under the lane's hard
+	// LTV (hardLTVBPS, from the chain at observation): a lane whose hard LTV
+	// is not above its cap's LTV neither enters nor levers up, and still
+	// delevers at its hard LTV (target.go).
 	maxLevel float64
 }
 
@@ -64,7 +67,7 @@ type earnLane struct {
 // positions and moves to whichever lane gives the best achievable net APY;
 // economics decide, not a hand list (owner decision 2026-10-10: every
 // policy-covered loop is checked).
-var earnLanes = []earnLane{
+var earnLanes = laneCapsOnLadder([]earnLane{
 	// Maple: 88% max LTV, ~90% liquidation; its USDC borrow pool is thin and
 	// its spread often negative, so 1.5x (33.3%).
 	{route: mapleSyrupUSDCUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest", initializer: true, maxLevel: 1.5},
@@ -88,6 +91,17 @@ var earnLanes = []earnLane{
 	// levers with wYLDS, converted through Hastra.
 	// Its cap stays at today's 1.75x.
 	{route: autoAUTOWYLDSTemplate, policy: policyAuto, initializer: true, overflowOf: autoAUTOPYUSDTemplate.Lane, maxLevel: 1.75},
+})
+
+// laneCapsOnLadder is lanes, each cap a level of the ladder above 1; any
+// other cap is a programming error and stops the binary at start.
+func laneCapsOnLadder(lanes []earnLane) []earnLane {
+	for _, l := range lanes {
+		if i, ok := leverageRungIndex(l.maxLevel); !ok || i == 0 {
+			panic(fmt.Sprintf("earn lane %s: cap %v is not a leverage level above 1", l.route.Lane, l.maxLevel))
+		}
+	}
+	return lanes
 }
 
 func findEarnLane(lane string) (earnLane, bool) {

@@ -19,7 +19,8 @@ import (
 // moves. Its rules, in priority order:
 //
 //  1. hard LTV: a lane at or past the lower of its liquidation threshold -
-//     10 points and its max LTV - 3 points goes back to its level's LTV;
+//     10 points and its max LTV - 3 points goes back to its level's LTV
+//     (under the brake, when the brake fell to the level);
 //  2. term maturity: term debt under a day from maturity without room for the
 //     keep-alive borrow (or past it) goes to debt 0; under three days with
 //     room, the keep-alive borrow (the minimum up step) restarts the term;
@@ -119,8 +120,10 @@ type LaneTarget struct {
 
 // hardLTVBPS is a lane's hard LTV, the brake (owner decisions 2026-10-14):
 // the lower of its collateral reserve's liquidation threshold less 10
-// points and its loan-to-value less stepWithdrawMarginBPS, where a down step
-// still has withdraw room. The lane's cap sits under it.
+// points and its obligation's borrow limit (KaminoPosition.MaxLTVBPS) less
+// stepWithdrawMarginBPS, where a down step still has withdraw room. The
+// lane's cap sits under it for entries and up steps; a down step at it runs
+// whatever the cap.
 func hardLTVBPS(liquidationThresholdBPS, maxLTVBPS int64) int64 {
 	return min(liquidationThresholdBPS-1000, maxLTVBPS-stepWithdrawMarginBPS)
 }
@@ -597,9 +600,6 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		return d(HoldManualRecovery, "position_presence_mismatch", 0)
 	}
 	hard := hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS)
-	if s.HasPosition && hard <= laneCeilingLTVBPS(s.RouteLane) {
-		return d(HoldManualRecovery, "invalid_hard_ltv", 0)
-	}
 	t := s.Target
 	// Risk first: one down step back to the level's LTV.
 	// (LTV is 0 without debt.)

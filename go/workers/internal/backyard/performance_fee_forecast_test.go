@@ -327,7 +327,7 @@ func TestLeverageUPNeedsOnlySpreadAndPositiveGain(t *testing.T) {
 	full := s
 	full.LeverageTargetLevel = 1.75
 	full.LeverageBorrowRaw[1], full.LeverageBorrowRaw[2], full.AdditionalDebtRoomRaw = 0, 0, 0
-	if got := decide(full, .12); got.Next != 2 || got.BorrowRaw != full.LeverageDesiredRaw[1] || got.Reason != "up_move_approved" || got.RoomRaw != 0 {
+	if got := decide(full, .12); got.Next != 1.75 || got.BorrowRaw != full.LeverageDesiredRaw[1] || got.Reason != "up_move_approved" || got.RoomRaw != 0 {
 		t.Fatalf("a full debt reserve withheld the approval: %+v", got)
 	}
 }

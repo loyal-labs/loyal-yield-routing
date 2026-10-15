@@ -4,6 +4,12 @@
 -- higher than its own cap. Additive: every stored row stays valid, and the
 -- old binary never writes a level it did not know. Apply before the binary
 -- that writes the new levels.
+--
+-- Rollback: the previous binary rejects a stored 2, 2.5 or 3 and holds the
+-- whole vault (invalid_lane_levels, the brake included). Before rolling the
+-- binary back, run
+--   UPDATE loyal_yield.backyard_lane_levels SET level = 1.75 WHERE level > 1.75;
+-- the constraint can stay.
 SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE loyal_yield.backyard_lane_levels

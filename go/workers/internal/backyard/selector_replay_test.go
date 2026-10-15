@@ -210,7 +210,7 @@ func TestSelectorReplayLiveStepCost(t *testing.T) {
 	below.LTVBPS, below.LeverageDesiredRaw[2], below.LeverageDesiredRaw[3] = leverageLevelLTVBPS(1.5), borrow, borrow
 	d, ok := decideLeverageTarget(below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, below))
 	t.Log(d.logLine())
-	if !ok || d.Reason != "up_move_approved" || d.Next != 2 || d.BorrowRaw != borrow || d.CostRaw != float64(got.TotalMicros) ||
+	if !ok || d.Reason != "up_move_approved" || d.Next != 1.75 || d.BorrowRaw != borrow || d.CostRaw != float64(got.TotalMicros) ||
 		d.GainRaw < replayOldLiveStepGain || d.GainRaw-replayOldLiveStepGain > 1.01*float64(old.TotalMicros-got.TotalMicros) {
 		t.Fatalf("live level decision moved: %+v", d)
 	}

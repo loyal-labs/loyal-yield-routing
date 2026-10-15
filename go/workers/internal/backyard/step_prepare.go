@@ -72,9 +72,10 @@ func stepDebtToLTVRaw(s Snapshot, ltvBPS int64) int64 {
 }
 
 // stepDownRepay is the debt a down step of reason repays, from the snapshot
-// it was decided on: to the stored level's LTV after hard LTV, to 1.5x for
-// the partial down move, all of it (full, sized on the payoff bound) for
-// debt 0, the decision's amount for a rotation's repay. A release repays its
+// it was decided on: to hardLTVStepLTVBPS after hard LTV (all of it, as for
+// debt 0, under 1.5x's), to the held level's LTV for the partial down move,
+// all of it (full, sized on the payoff bound) for debt 0, the decision's
+// amount for a rotation's repay. A release repays its
 // debt share (planDownStep).
 func stepDownRepay(s Snapshot, d Decision) (uint64, bool) {
 	switch d.Reason {
@@ -82,7 +83,12 @@ func stepDownRepay(s Snapshot, d Decision) (uint64, bool) {
 		return uint64(max(min(d.AmountRaw, s.PositionDebtRaw), 0)), false
 	case debtZeroReason:
 		return uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)), true
-	case hardLTVDeleverReason, leverageDownPartialReason:
+	case hardLTVDeleverReason:
+		if ltv := hardLTVStepLTVBPS(s); ltv > 0 {
+			return uint64(max(stepDebtToLTVRaw(s, ltv), 0)), false
+		}
+		return uint64(max(s.PositionDebtRaw, s.PayoffDebtRaw)), true
+	case leverageDownPartialReason:
 		return uint64(max(stepDebtToLTVRaw(s, heldLevelLTVBPS(s)), 0)), false
 	}
 	return 0, false
@@ -143,22 +149,14 @@ func stepLegCap(route RuntimeRoute) uint64 {
 }
 
 // stepWithdrawReceipts is the most a down step may withdraw: the
-// obligation's own borrow limit (its allowed borrow value over its deposits,
-// read back to plain debt through its borrow factors, elevation group
-// included) less stepWithdrawMarginBPS, as receipts at the batch's prices.
+// obligation's own borrow limit (kaminoBorrowLimitBPS) less
+// stepWithdrawMarginBPS, as receipts at the batch's prices.
 func (st stepState) stepWithdrawReceipts() (uint64, error) {
-	o := st.obligation
-	deposited, allowed := littleInt(o.DepositedValueSF[:]), littleInt(o.AllowedBorrowValueSF[:])
-	adjusted, plain := littleInt(o.BorrowFactorAdjustedDebtValueSF[:]), littleInt(o.BorrowedAssetsMarketValueSF[:])
-	if deposited.Sign() <= 0 || adjusted.Sign() <= 0 || plain.Sign() <= 0 || allowed.Sign() <= 0 {
+	ceiling, ok := kaminoBorrowLimitBPS(st.obligation)
+	if !ok || ceiling <= stepWithdrawMarginBPS {
 		return 0, budgetHold("step_withdraw_limit_unavailable")
 	}
-	ceiling := new(big.Int).Mul(allowed, plain)
-	ceiling.Mul(ceiling, big.NewInt(10_000)).Quo(ceiling, new(big.Int).Mul(deposited, adjusted))
-	if !ceiling.IsInt64() || ceiling.Int64() <= stepWithdrawMarginBPS {
-		return 0, budgetHold("step_withdraw_limit_unavailable")
-	}
-	receipts, _, err := withdrawExcessAtLTV(st.position, uint64(ceiling.Int64()-stepWithdrawMarginBPS))
+	receipts, _, err := withdrawExcessAtLTV(st.position, uint64(ceiling-stepWithdrawMarginBPS))
 	if err != nil {
 		// Only outside cash can repay now: the target's no_room, counted on
 		// /metrics where its alert lives.

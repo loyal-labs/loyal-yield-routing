@@ -94,8 +94,10 @@ type KaminoPosition struct {
 	CollateralDecimals      uint8
 	DebtDecimals            uint8
 	LiquidationThresholdBPS int64
-	// MaxLTVBPS is the collateral reserve's loan-to-value: the most KLend
-	// lets the obligation borrow against it.
+	// MaxLTVBPS is the obligation's borrow limit (kaminoBorrowLimitBPS):
+	// the most KLend lets it borrow, as an LTV. Before a deposit it is the
+	// collateral reserve's LTV, the limit a cross-mode obligation's first
+	// deposit gets.
 	MaxLTVBPS                int64
 	EntryCapacityRaw         uint64
 	BorrowUtilizationBlocked bool
@@ -112,6 +114,8 @@ type decodedKaminoObligation struct {
 	// debtBorrow is the debt reserve's borrow slot, whose last borrow time
 	// starts its debt term (debtTermEnd); zero without debt.
 	debtBorrow kamino.ObligationLiquidity
+	// borrowLimitBPS is kaminoBorrowLimitBPS; zero before a deposit.
+	borrowLimitBPS int64
 }
 type decodedKaminoReserve struct {
 	refreshedSlot            int64
@@ -174,11 +178,35 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 	if deposits > 1 || borrows > 1 {
 		return decodedKaminoObligation{}, fmt.Errorf("Kamino obligation topology is unsupported")
 	}
+	limit, _ := kaminoBorrowLimitBPS(obligation)
 	return decodedKaminoObligation{
 		refreshedSlot: int64(obligation.LastUpdateSlot), hasPosition: deposits > 0 || borrows > 0,
 		collateralDepositedRaw: collateralRaw, debtRaw: debtRaw,
 		debtAmountSF: debtAmountSF, cumulativeBorrowRate: cumulativeBorrowRate, debtBorrow: debtBorrow,
+		borrowLimitBPS: limit,
 	}, nil
+}
+
+// kaminoBorrowLimitBPS is the obligation's borrow limit as an LTV of plain
+// debt, the number KLend enforces on a borrow and a withdrawal: its allowed
+// borrow value (each deposit at its reserve's LTV, or its elevation group's)
+// over its deposited value, read back to plain debt through its borrow
+// factors (100% without debt). False before a deposit.
+func kaminoBorrowLimitBPS(o kamino.Obligation) (int64, bool) {
+	deposited, allowed := littleInt(o.DepositedValueSF[:]), littleInt(o.AllowedBorrowValueSF[:])
+	adjusted, plain := littleInt(o.BorrowFactorAdjustedDebtValueSF[:]), littleInt(o.BorrowedAssetsMarketValueSF[:])
+	if deposited.Sign() <= 0 || allowed.Sign() <= 0 {
+		return 0, false
+	}
+	limit := new(big.Int).Mul(allowed, big.NewInt(10_000))
+	if adjusted.Sign() > 0 && plain.Sign() > 0 {
+		limit.Mul(limit, plain).Quo(limit, adjusted)
+	}
+	limit.Quo(limit, deposited)
+	if !limit.IsInt64() {
+		return 0, false
+	}
+	return limit.Int64(), true
 }
 
 func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservationConfig) (decodedKaminoReserve, error) {

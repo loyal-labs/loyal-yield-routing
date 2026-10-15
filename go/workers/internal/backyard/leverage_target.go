@@ -120,6 +120,13 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	candidateSnapshot := s
 	candidateSnapshot.LeverageTargetLevel = out.Next
 	level := leverageUpLevel(candidateSnapshot)
+	// The stored level advances no further than the step priced here, one
+	// level above the position: an approval pays for that step alone, and
+	// the next is priced when it is the next. It never falls back to the
+	// position (see above).
+	if level > 0 && level < out.Next {
+		out.Next = max(level, out.Current)
+	}
 	raw := leverageDesiredRaw(s, level)
 	if raw < leverageMinimumBorrowRaw {
 		if level > 0 && !s.BorrowCapacityKnown {

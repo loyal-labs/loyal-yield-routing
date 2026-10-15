@@ -125,6 +125,19 @@ func heldLevelLTVBPS(s Snapshot) int64 {
 	return leverageLevelLTVBPS(heldLevel(s.RouteLane, max(s.LeverageTargetLevel, 1.5)))
 }
 
+// hardLTVStepLTVBPS is the LTV a hard-LTV step brings the lane to: its held
+// level's, or, when the brake has fallen to or under that, the highest
+// level's under the brake (debt 0 under 1.5x's).
+func hardLTVStepLTVBPS(s Snapshot) int64 {
+	hard, ltv := hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS), int64(0)
+	for _, r := range leverageLadder {
+		if l := leverageLevelLTVBPS(r.level); l < hard {
+			ltv = l
+		}
+	}
+	return min(heldLevelLTVBPS(s), ltv)
+}
+
 // leverageDownPartialReason is the down step to the held level's LTV (a
 // stored level, or the lane's cap, below a position above that level's
 // band).

@@ -145,9 +145,9 @@ func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route Ru
 	return leverageStepWithinRisk(p, accounts, route, min(receive, desired, depositRoom), rate)
 }
 
-// leverageStepWithinRisk caps a receive at the lane's protocol collateral LTV
-// before the redeposit (KLend checks the borrow on its own, with the same
-// 0.1% price-refresh margin) and at the lane's ceiling after it
+// leverageStepWithinRisk caps a receive at the obligation's borrow limit
+// before the redeposit (KLend checks the borrow on its own; a 0.1%
+// price-refresh margin) and at the lane's ceiling after it
 // (leverageUpCapFee), the borrow fee included; zero below the minimum
 // borrow.
 func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, receive, rate uint64) (uint64, error) {
@@ -155,9 +155,11 @@ func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route
 	if err != nil {
 		return 0, err
 	}
-	ltv := uint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset])
-	protocol := new(big.Int).Mul(new(big.Int).SetUint64(collateral), new(big.Int).SetUint64(ltv))
-	protocol.Quo(protocol, big.NewInt(100))
+	if p.MaxLTVBPS <= 0 {
+		return 0, nil
+	}
+	protocol := new(big.Int).Mul(new(big.Int).SetUint64(collateral), big.NewInt(p.MaxLTVBPS))
+	protocol.Quo(protocol, big.NewInt(10_000))
 	protocol.Sub(protocol, new(big.Int).Quo(protocol, big.NewInt(1000)))
 	if !protocol.IsUint64() || protocol.Uint64() <= p.DebtRaw {
 		return 0, nil

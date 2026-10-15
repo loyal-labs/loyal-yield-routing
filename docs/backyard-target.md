@@ -24,9 +24,11 @@ authority.
 
 1. **Hard LTV.** A held lane at or past its brake steps down to its level's
    LTV. The brake is the lower of the collateral reserve's
-   `liquidationThresholdBPS - 1000` and its max LTV - 300 bps
-   (`stepWithdrawMarginBPS`), so a down step at the brake still has withdraw
-   room. A lane whose brake is not above its cap's LTV holds for recovery.
+   `liquidationThresholdBPS - 1000` and the obligation's borrow limit (max
+   LTV; the reserve's before a deposit) - 300 bps (`stepWithdrawMarginBPS`),
+   so a down step at the brake still has withdraw room. A brake at or under the cap's LTV (a lender cut) stops entries and
+   up steps on the lane, never this step: it then steps down to the highest
+   level under the brake, and repays all of it under 1.5x's.
 2. **Term maturity** (wYLDS, 30-day term). Under 1 day left without room for
    the keep-alive borrow, or past maturity: debt 0. Under 3 days with room:
    the keep-alive borrow (the minimum up step); an unfunded withdrawal goes
@@ -97,7 +99,8 @@ holds at 1.5.
 One ladder (`leverageLadder`, `leverage_level.go`) holds every level and the
 spread rule at it. The spread is the lane's token yield less the borrow APY
 once the step is borrowed (up) or at today's borrowing (down); a lane moves at
-most one level per selector decision.
+most one level per selector decision, and its stored level advances no
+further than the up step that decision priced, one level above the position.
 
 | Level | LTV | Up to it at spread | Down from it under |
 |---|---|---|---|
@@ -109,8 +112,9 @@ most one level per selector decision.
 
 Each lane climbs no higher than its cap (`maxLevel`, `route_catalog.go`;
 owner decision 2026-10-14). An up step lands, after a 1% conversion loss and
-the borrow fee, within the cap's LTV; KLend's own loan-to-value bounds the
-borrow before the redeposit, so a step to a high level may take more than
+the borrow fee, within the cap's LTV; the obligation's borrow limit (KLend's
+allowed borrow value over its deposits, the number it enforces, also the down
+step's withdraw room) bounds the borrow before the redeposit, so a step to a high level may take more than
 one transaction.
 
 | Lane | Cap | Liquidation | Max LTV | Brake |
@@ -121,7 +125,10 @@ one transaction.
 | Prime lanes, AUTO/AUTO/wYLDS | 1.75x | reserve's | reserve's | lower of threshold - 10 pts, max LTV - 3 pts |
 
 Migration 0114 widens `backyard_lane_levels`' CHECK to the ladder; it applies
-before the binary that writes the new levels. Lowering a cap delevers a lane
+before the binary that writes the new levels. Rolling the binary back past
+the ladder needs the stored levels back on the old one first, or the old
+binary holds the whole vault on `invalid_lane_levels`, the brake included:
+`UPDATE loyal_yield.backyard_lane_levels SET level = 1.75 WHERE level > 1.75`. Lowering a cap delevers a lane
 held above it by rule 6 (Maple at 1.75x steps down to 1.5x).
 
 The selector scores every move over the same 30-day horizon, 30-minute

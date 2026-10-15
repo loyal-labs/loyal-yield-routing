@@ -76,7 +76,7 @@ Every decision is one step toward the tick's target (`docs/backyard-target.md`).
 |---|---|---|
 | `leverage_up` | up | capacity-sized borrow toward the stored level, landing within the lane cap's LTV |
 | `term_keepalive` | up | the keep-alive borrow |
-| `hard_ltv_delever` | down | debt down to the stored level's LTV |
+| `hard_ltv_delever` | down | debt down to the stored level's LTV, or the highest level's under a brake that fell to it (all of it under 1.5x's) |
 | `debt_zero` | down | the whole debt (payoff upper bound), repeated while a withdrawal limit leaves debt: term maturity or an operator exit |
 | `leverage_down_partial` | down | debt down to the stored level's LTV (at most the lane's cap) |
 | `withdrawal_release` beside debt | down | the freed equity's debt share, LTV unchanged |
@@ -90,7 +90,7 @@ Down decisions carry a fixed marker amount; prepare sizes the repay from the
 same snapshot, so a refreshed snapshot re-decides to an equal decision.
 
 Hard LTV is the lower of `liquidationThresholdBPS - 1000` and the
-collateral reserve's max LTV - `stepWithdrawMarginBPS` bps, per lane; the
+obligation's borrow limit - `stepWithdrawMarginBPS` bps, per lane; the
 step no longer needs an idle repayment buffer, so the old
 `hard_ltv_without_repayment_buffer` manual stop is gone. Held custody that
 already covers part of a repay shortens the conversion but never refuses the
