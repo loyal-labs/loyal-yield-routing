@@ -32,6 +32,9 @@ BEGIN
         IF TG_TABLE_NAME = 'vault_position_snapshot_positions' AND
            (old_item->'snapshot_id', old_item->'reserve', old_item->'liquidity_mint', old_item->'amount_raw', old_item->'has_value') IS NOT DISTINCT FROM
            (new_item->'snapshot_id', new_item->'reserve', new_item->'liquidity_mint', new_item->'amount_raw', new_item->'has_value') THEN RETURN NULL; END IF;
+        IF TG_TABLE_NAME = 'managed_vaults' AND
+           (old_item->'settings', old_item->'vault_index', old_item->'vault_pubkey') IS NOT DISTINCT FROM
+           (new_item->'settings', new_item->'vault_index', new_item->'vault_pubkey') THEN RETURN NULL; END IF;
         IF TG_TABLE_NAME = 'user_yield_positions' AND
            (old_item->'settings', old_item->'vault_index', old_item->'vault_pubkey', old_item->'initial_reserve', old_item->'initial_market', old_item->'initial_liquidity_mint') IS NOT DISTINCT FROM
            (new_item->'settings', new_item->'vault_index', new_item->'vault_pubkey', new_item->'initial_reserve', new_item->'initial_market', new_item->'initial_liquidity_mint') THEN RETURN NULL; END IF;
@@ -58,7 +61,7 @@ BEGIN
             scope_settings := item->>'settings';
             scope_index := (item->>'vault_index')::smallint;
             -- Position metadata can affect the entire accounting history.
-            affected_at := CASE WHEN TG_TABLE_NAME = 'user_yield_positions'
+            affected_at := CASE WHEN TG_TABLE_NAME IN ('user_yield_positions', 'managed_vaults')
                 THEN '1970-01-01Z'::timestamptz ELSE (item->>'confirmed_at')::timestamptz END;
         END IF;
         IF scope_settings IS NOT NULL AND scope_index IS NOT NULL AND affected_at IS NOT NULL THEN
@@ -91,4 +94,7 @@ CREATE TRIGGER earn_history_day_revision AFTER INSERT OR UPDATE OR DELETE ON loy
 FOR EACH ROW EXECUTE FUNCTION loyal_yield.bump_earn_history_day();
 
 CREATE TRIGGER earn_history_day_revision AFTER INSERT OR UPDATE OR DELETE ON loyal_yield.vault_idle_token_balances_current
+FOR EACH ROW EXECUTE FUNCTION loyal_yield.bump_earn_history_day();
+
+CREATE TRIGGER earn_history_day_revision AFTER INSERT OR UPDATE OR DELETE ON loyal_yield.managed_vaults
 FOR EACH ROW EXECUTE FUNCTION loyal_yield.bump_earn_history_day();

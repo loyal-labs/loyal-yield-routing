@@ -35,11 +35,13 @@ DO $$ DECLARE before_revision bigint; BEGIN
  UPDATE loyal_yield.vault_position_snapshots SET vault_id=2;
  ASSERT EXISTS(SELECT 1 FROM loyal_yield.earn_history_day_revisions WHERE settings='wallet-b' AND history_day='2026-01-01'), 'scope move invalidates destination';
  UPDATE loyal_yield.user_yield_positions SET initial_reserve='corrected';
- ASSERT (SELECT revision FROM loyal_yield.earn_history_day_revisions WHERE settings='wallet-a' AND history_day='1970-01-01') = 2, 'initial metadata invalidates all history';
+ ASSERT (SELECT revision FROM loyal_yield.earn_history_day_revisions WHERE settings='wallet-a' AND history_day='1970-01-01') = 3, 'initial metadata invalidates all history';
  INSERT INTO loyal_yield.vault_idle_token_balances_current VALUES (1, 'USDC', '2026-01-03Z', 100);
  UPDATE loyal_yield.vault_idle_token_balances_current SET observed_at='2026-01-04Z';
  ASSERT (SELECT revision FROM loyal_yield.earn_history_day_revisions WHERE settings='wallet-a' AND history_day='2026-01-03') = 2, 'idle seed changes invalidate old day';
  ASSERT (SELECT revision FROM loyal_yield.earn_history_day_revisions WHERE settings='wallet-a' AND history_day='2026-01-04') = 1, 'new day tracked independently';
+ DELETE FROM loyal_yield.managed_vaults WHERE id=2;
+ ASSERT (SELECT revision FROM loyal_yield.earn_history_day_revisions WHERE settings='wallet-b' AND history_day='1970-01-01') = 2, 'parent deletion invalidates even after cascades lose their scope';
 END $$;
 ROLLBACK;
 \echo 'PASS: inserts, corrections, deletes, date and scope moves, metadata and bookkeeping isolation'
