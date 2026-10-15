@@ -80,3 +80,5 @@ Deletions that change no reader land first:
 - uncalled writers (`EnqueueAutodepositReconciliationRequest`).
 
 Every other row above lands with the family that reads it, in the family's PR (observer → lookup tables → multiply → retail → backyard → cross-mint). That PR moves the decision readers to the chain, deletes the duplicate writers, and drops the tables in a delete-only migration.
+
+Earn withdrawals reduce principal by at most the remaining principal; withdrawn yield never creates negative principal or reduces a later deposit. The position update must apply the same capped principal delta recorded in the holding event.
