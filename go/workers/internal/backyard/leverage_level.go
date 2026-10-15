@@ -136,3 +136,64 @@ func leverageUpAllowed(m LaneEconomics, level, debtRaw float64) (float64, bool) 
 	spread, ok := leverageBorrowSpread(m, debtRaw)
 	return spread, ok && spread >= leverageLadder[i].up
 }
+
+// settledLevel is the level a lane at from settles at: the ladder climbed
+// one rung at a time, as the live rule (decideLeverageTarget) climbs it one
+// sample at a time, up to the lane's cap. A rung is taken when its step can
+// be taken today (debtTo: the cumulative rate debt reaching it; false stops
+// the climb), the spread rule holds at that debt (leverageUpAllowed) and the
+// step pays its own cost (pays: the live rule's gain test, upStepGain, on
+// the step's priceStep cost). A nil pays is the spread rule alone: the most
+// the live rule could take the lane to, where no step can be priced.
+func settledLevel(m LaneEconomics, from float64, debtTo func(level float64) (float64, bool), pays func(level, debt float64) bool) float64 {
+	level := from
+	for _, r := range leverageLadder[1:] {
+		if r.level <= from {
+			continue
+		}
+		if r.level > laneMaxLevel(m.Lane) {
+			break
+		}
+		debt, ok := debtTo(r.level)
+		if !ok {
+			break
+		}
+		if _, up := leverageUpAllowed(m, r.level, debt); !up {
+			break
+		}
+		if pays != nil && !pays(r.level, debt) {
+			break
+		}
+		level = r.level
+	}
+	return level
+}
+
+// sizeSettledLevel is the most equityRaw entering a lane at 1x could settle
+// at in today's market, each rung's debt its share of the equity
+// (levelDebtRaw): the spread rule alone, since a market forecast prices no
+// step. Its APY is a ceiling the priced quote's walk never exceeds.
+func sizeSettledLevel(m LaneEconomics, equityRaw int64) float64 {
+	return settledLevel(m, 1, func(level float64) (float64, bool) { return levelDebtRaw(m, level, equityRaw) }, nil)
+}
+
+// heldRungDebt is the live rule's rate debt for the whole step from s's
+// position to level: its desired borrow and Kamino fee, capped at the debt
+// reserve's utilization limit (leverageRateDebtRaw).
+func heldRungDebt(s Snapshot, level float64) (float64, bool) {
+	raw := leverageDesiredRaw(s, level)
+	if raw < leverageMinimumBorrowRaw {
+		return 0, false
+	}
+	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
+	if err != nil {
+		return 0, false
+	}
+	return float64(leverageRateDebtRaw(s, raw+fee)), true
+}
+
+// heldFromLevel is the rung a held position's walk starts from: its band,
+// never above the lane's cap.
+func heldFromLevel(s Snapshot) float64 {
+	return min(currentLeverageBand(s), laneMaxLevel(s.RouteLane))
+}

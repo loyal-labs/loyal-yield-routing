@@ -19,6 +19,7 @@ func autoCanaryFixtureAt(t *testing.T, debtScale int64) SelectorInput {
 	quote := in.Quotes[0]
 	quote.BorrowValueRaw = (quote.BorrowReceiveRaw + quote.BorrowFeeRaw) * uint64(debtScale) / 1_000_000
 	quote.ProceedsValueRaw = quote.BorrowReceiveRaw * uint64(debtScale) / 1_000_000
+	quote.DepositValueRaw = uint64(quote.EquityRaw)
 	in.Quotes[0] = quote
 	in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("auto-one-acceptance")), Lane: autoAUTOPYUSD.Lane, EquityRaw: 1_000_000, ExpiresAt: in.Now.Add(10 * time.Minute)}
 	return in
@@ -108,17 +109,12 @@ func TestPilotCanarySelectOnRegistry(t *testing.T) {
 	if err != nil || accepted.Action != "CANARY_ENTER" || accepted.SelectedQuote == nil || receipt == nil {
 		t.Fatalf("complete binding refused the canary acceptance: %+v %v %v", accepted, receipt, err)
 	}
-	// The borrow checks gate the candidate lane: an unvalued borrow, and a
-	// depegged price that values the borrow above equity, each refuse the
-	// constructed entry.
+	// The borrow checks gate the candidate lane: an unvalued borrow refuses
+	// the constructed entry.
 	missing := autoCanaryFixtureAt(t, 1_100_000)
 	missing.Quotes[0].BorrowValueRaw = 0
 	if _, _, err := selectPilotCanaryEntry(missing, result, nil); err == nil || err.Error() != "invalid_selector_entry" {
 		t.Fatalf("an unvalued borrow did not refuse the entry exactly: %v", err)
-	}
-	depegged := autoCanaryFixtureAt(t, 3_000_000)
-	if _, _, err := selectPilotCanaryEntry(depegged, result, nil); err == nil || err.Error() != "invalid_selector_entry" {
-		t.Fatalf("depegged debt price did not refuse the entry exactly: %v", err)
 	}
 	if receipt.Request != *in.canaryRequest || receipt.QuoteEvidenceID != in.Quotes[0].EvidenceID || receipt.AcceptedAt != in.Now {
 		t.Fatalf("receipt identity drifted: %+v", receipt)

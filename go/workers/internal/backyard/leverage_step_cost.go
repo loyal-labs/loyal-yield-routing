@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"errors"
+	"math"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -58,6 +59,27 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 		return out, budgetHoldFrom(err, "leverage_cost_unavailable")
 	}
 	out.TotalMicros = max(fees+out.EntrySwapLossMicros+out.ExitSwapLossMicros, 0)
+	return out, nil
+}
+
+// plus is two steps' costs together: the cost of taking both.
+func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
+	var out leverageStepCost
+	for _, v := range []struct {
+		into *int64
+		a, b int64
+	}{
+		{&out.BorrowFeeMicros, c.BorrowFeeMicros, d.BorrowFeeMicros},
+		{&out.EntrySwapLossMicros, c.EntrySwapLossMicros, d.EntrySwapLossMicros},
+		{&out.ExitSwapLossMicros, c.ExitSwapLossMicros, d.ExitSwapLossMicros},
+		{&out.NetworkMicros, c.NetworkMicros, d.NetworkMicros},
+		{&out.TotalMicros, c.TotalMicros, d.TotalMicros},
+	} {
+		if v.a > 0 && v.b > math.MaxInt64-v.a || v.a < 0 && v.b < math.MinInt64-v.a {
+			return out, budgetHold("leverage_cost_unavailable")
+		}
+		*v.into = v.a + v.b
+	}
 	return out, nil
 }
 

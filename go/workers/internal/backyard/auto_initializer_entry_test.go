@@ -16,7 +16,7 @@ func entryQuoteFixture(now time.Time, lane string, amount int64) MoveQuote {
 // parBorrow values q's up step at par: its liability is receive plus fee and
 // its proceeds the receive, as a USDC-priced debt values them.
 func parBorrow(q MoveQuote) MoveQuote {
-	q.BorrowValueRaw, q.ProceedsValueRaw = q.BorrowReceiveRaw+q.BorrowFeeRaw, q.BorrowReceiveRaw
+	q.BorrowValueRaw, q.ProceedsValueRaw, q.DepositValueRaw = q.BorrowReceiveRaw+q.BorrowFeeRaw, q.BorrowReceiveRaw, uint64(q.EquityRaw)
 	return q
 }
 
