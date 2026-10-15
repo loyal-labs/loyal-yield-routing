@@ -24,7 +24,7 @@ waits in a custody other lanes share.
 
 A move carries collateral from an overflow source to its overflow lane
 (AUTO/AUTO/PYUSD to AUTO/AUTO/wYLDS share the AUTO reserve and custody): no
-conversion, no debt leg, the source's LTV rises to the live cap at most.
+conversion, no debt leg, the source's LTV rises to its cap's LTV at most.
 
 - The open leg's amount is decided before the quote: the capacity-sized borrow
   (up), or the collateral receipts the down step withdraws.
@@ -74,11 +74,11 @@ Every decision is one step toward the tick's target (`docs/backyard-target.md`).
 
 | Decision reason | Direction | Repay / borrow |
 |---|---|---|
-| `leverage_up` | up | capacity-sized borrow toward the stored level |
+| `leverage_up` | up | capacity-sized borrow toward the stored level, landing within the lane cap's LTV |
 | `term_keepalive` | up | the keep-alive borrow |
-| `hard_ltv_delever` | down | debt down to the stored level's LTV |
+| `hard_ltv_delever` | down | debt down to the stored level's LTV, or the highest level's under a brake that fell to it (all of it under 1.5x's) |
 | `debt_zero` | down | the whole debt (payoff upper bound), repeated while a withdrawal limit leaves debt: term maturity or an operator exit |
-| `leverage_down_partial` | down | debt down to the 1.5x LTV |
+| `leverage_down_partial` | down | debt down to the stored level's LTV (at most the lane's cap) |
 | `withdrawal_release` beside debt | down | the freed equity's debt share, LTV unchanged |
 | `withdrawal_release` beside no debt | exit | none: the freed equity's collateral to USDC |
 | `rotate_repay` | down | a rotation's debt share (the decision's amount) |
@@ -89,7 +89,8 @@ Every decision is one step toward the tick's target (`docs/backyard-target.md`).
 Down decisions carry a fixed marker amount; prepare sizes the repay from the
 same snapshot, so a refreshed snapshot re-decides to an equal decision.
 
-Hard LTV is `min(6000, liquidationThresholdBPS - 1500)` bps as before; the
+Hard LTV is the lower of `liquidationThresholdBPS - 1000` and the
+obligation's borrow limit - `stepWithdrawMarginBPS` bps, per lane; the
 step no longer needs an idle repayment buffer, so the old
 `hard_ltv_without_repayment_buffer` manual stop is gone. Held custody that
 already covers part of a repay shortens the conversion but never refuses the

@@ -17,9 +17,9 @@ import (
 // deposit; nothing waits in the shared custody), and the overflow lane then
 // levers toward its own level by ordinary up steps.
 //
-// E is sized so the vault's whole level heads to the live cap: the source
-// lands at most at the live cap's LTV, and E is at most what the overflow
-// reserve's room levers to that level. While the source has room its own up
+// E is sized so the vault's whole level heads to the caps: the source lands
+// at most at its cap's LTV, and E is at most what the overflow reserve's
+// room levers to the overflow lane's cap. While the source has room its own up
 // step wins and nothing moves; the overflow lane is never a selector
 // destination of its own.
 
@@ -63,15 +63,6 @@ func debtToUSDCConvertible(lane string) bool {
 	return !ok || !hastraLane(l.route)
 }
 
-// overflowSourceLTVBPS is the LTV an overflow source releases to: the live
-// cap's level (1.75x = 42.85%), below the 45% leverage cap and the release
-// ceiling, so no release round is needed.
-var overflowSourceLTVBPS = leverageLevelLTVBPS(leverageMaxLiveLevel)
-
-// overflowMinimumEquityRaw is the smallest E: one that levers to the live cap
-// with at least the minimum borrow (borrow = (L-1) E).
-var overflowMinimumEquityRaw = int64(math.Ceil(float64(leverageMinimumBorrowRaw) / (leverageMaxLiveLevel - 1)))
-
 // overflowSourceBorrowClosed is the source lane's own borrow room known and
 // under the minimum borrow: the only state in which the overflow room is
 // read, so the only one in which observation captures it.
@@ -80,15 +71,21 @@ func overflowSourceBorrowClosed(s Snapshot) bool {
 }
 
 // overflowEquityRaw sizes E: the source's release limit, what the overflow
-// reserve's room levers to the live cap (room = (L-1) E), and the tranche
-// cap. Zero below the minimum.
+// reserve's room levers to the overflow lane's cap L (room = (L-1) E), and
+// the tranche cap. Zero below the smallest E that levers with at least the
+// minimum borrow.
 func overflowEquityRaw(s Snapshot) int64 {
-	if !s.OverflowRoomKnown || s.OverflowRoomValueRaw <= 0 {
+	lane, ok := overflowLaneOf(s.RouteLane)
+	if !ok || !s.OverflowRoomKnown || s.OverflowRoomValueRaw <= 0 {
 		return 0
 	}
-	byRoom := int64(math.Floor(float64(s.OverflowRoomValueRaw) / (leverageMaxLiveLevel - 1)))
+	levered := laneMaxLevel(lane) - 1
+	if levered <= 0 {
+		return 0
+	}
+	byRoom := int64(math.Floor(float64(s.OverflowRoomValueRaw) / levered))
 	e := min(overflowReleaseValueRaw(s), byRoom, int64(strategyTwoBridgeLegCapRaw))
-	if e < overflowMinimumEquityRaw {
+	if e < int64(math.Ceil(float64(leverageMinimumBorrowRaw)/levered)) {
 		return 0
 	}
 	return e

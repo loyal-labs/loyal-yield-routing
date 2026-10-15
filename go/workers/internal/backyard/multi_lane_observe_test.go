@@ -121,9 +121,11 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 // multi-lane observation, origin/main 877b297e) gave this test's batch; the
 // digest binds the manifest, which P4 made the hash of the lane registry,
 // and both bind the valuation's refresh provenance, which every batch carries.
+// The digest binds the reserve's bytes: re-pinned when the reserve image
+// gained its max LTV.
 const (
 	oneLaneAUTOObservationID = "ccb310d607d6fb7d6764ef809ebb38167a6e2bee50443b0c1bccda92651f7177"
-	oneLaneAUTOReportDigest  = "c41775a8090c7b9c59fc5d2e0b5590788d59941e5c4a87e5d4762b085e54cb97"
+	oneLaneAUTOReportDigest  = "5e470717e7be8784149694a73c5cff3ebab05e995042266c059c7724e459eee0"
 )
 
 // Two held lanes are one book: the working lane's view plus every other held
@@ -179,7 +181,8 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 // is that lane's and its step repays it.
 func TestHeldLanePastHardLTVIsProtectedFirst(t *testing.T) {
 	manifest, accounts := multiLaneFixture(t, func(accounts *[]ConfirmedAccount) {
-		// 80% liquidation threshold: hard LTV 6000; 7_000_000/10_000_000 = 70%.
+		// 80% liquidation threshold, 78% max LTV: hard LTV 7000;
+		// 7_000_000/10_000_000 = 70%.
 		fundLane(t, accounts, onreONycUSDC, 10_000_000, 7_000_000)
 	})
 	s := observeMultiLane(t, manifest, accounts).Snapshot

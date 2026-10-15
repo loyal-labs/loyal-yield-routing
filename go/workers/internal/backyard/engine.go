@@ -238,7 +238,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 			}
 		}
 	}
-	// An overflow lane its source cannot lever into takes the live cap
+	// An overflow lane its source cannot lever into takes its cap
 	// before it holds anything.
 	for _, source := range observed.lanes {
 		if lane, level, ok := decideOverflowLevel(source, markets, DefaultSelectorPolicy(), time.Now().UTC()); ok && observed.planning != nil && observed.planning.inputs.Levels[lane] != level {

@@ -85,15 +85,20 @@ type KaminoPosition struct {
 	// ObligationPresent is false only when the observer saw the lane's
 	// obligation account absent from its confirmed batch. A flat decode of a
 	// missing account must never be mistaken for an observed flat position.
-	ObligationPresent        bool
-	CollateralDepositedRaw   uint64
-	DebtRaw                  uint64
-	RedeemablePrimeRaw       uint64
-	CollateralPriceSF        [16]byte
-	DebtPriceSF              [16]byte
-	CollateralDecimals       uint8
-	DebtDecimals             uint8
-	LiquidationThresholdBPS  int64
+	ObligationPresent       bool
+	CollateralDepositedRaw  uint64
+	DebtRaw                 uint64
+	RedeemablePrimeRaw      uint64
+	CollateralPriceSF       [16]byte
+	DebtPriceSF             [16]byte
+	CollateralDecimals      uint8
+	DebtDecimals            uint8
+	LiquidationThresholdBPS int64
+	// MaxLTVBPS is the obligation's borrow limit (kaminoBorrowLimitBPS):
+	// the most KLend lets it borrow, as an LTV. Before a deposit it is the
+	// collateral reserve's LTV, the limit a cross-mode obligation's first
+	// deposit gets.
+	MaxLTVBPS                int64
 	EntryCapacityRaw         uint64
 	BorrowUtilizationBlocked bool
 	Oracles                  []string
@@ -109,6 +114,8 @@ type decodedKaminoObligation struct {
 	// debtBorrow is the debt reserve's borrow slot, whose last borrow time
 	// starts its debt term (debtTermEnd); zero without debt.
 	debtBorrow kamino.ObligationLiquidity
+	// borrowLimitBPS is kaminoBorrowLimitBPS; zero before a deposit.
+	borrowLimitBPS int64
 }
 type decodedKaminoReserve struct {
 	refreshedSlot            int64
@@ -121,6 +128,7 @@ type decodedKaminoReserve struct {
 	totalLiquiditySF         *big.Int
 	collateralMintSupply     uint64
 	liquidationThresholdPct  byte
+	loanToValuePct           byte
 	depositLimitRaw          uint64
 	borrowLimitRaw           uint64
 	borrowedRaw              uint64
@@ -170,11 +178,35 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 	if deposits > 1 || borrows > 1 {
 		return decodedKaminoObligation{}, fmt.Errorf("Kamino obligation topology is unsupported")
 	}
+	limit, _ := kaminoBorrowLimitBPS(obligation)
 	return decodedKaminoObligation{
 		refreshedSlot: int64(obligation.LastUpdateSlot), hasPosition: deposits > 0 || borrows > 0,
 		collateralDepositedRaw: collateralRaw, debtRaw: debtRaw,
 		debtAmountSF: debtAmountSF, cumulativeBorrowRate: cumulativeBorrowRate, debtBorrow: debtBorrow,
+		borrowLimitBPS: limit,
 	}, nil
+}
+
+// kaminoBorrowLimitBPS is the obligation's borrow limit as an LTV of plain
+// debt, the number KLend enforces on a borrow and a withdrawal: its allowed
+// borrow value (each deposit at its reserve's LTV, or its elevation group's)
+// over its deposited value, read back to plain debt through its borrow
+// factors (100% without debt). False before a deposit.
+func kaminoBorrowLimitBPS(o kamino.Obligation) (int64, bool) {
+	deposited, allowed := littleInt(o.DepositedValueSF[:]), littleInt(o.AllowedBorrowValueSF[:])
+	adjusted, plain := littleInt(o.BorrowFactorAdjustedDebtValueSF[:]), littleInt(o.BorrowedAssetsMarketValueSF[:])
+	if deposited.Sign() <= 0 || allowed.Sign() <= 0 {
+		return 0, false
+	}
+	limit := new(big.Int).Mul(allowed, big.NewInt(10_000))
+	if adjusted.Sign() > 0 && plain.Sign() > 0 {
+		limit.Mul(limit, plain).Quo(limit, adjusted)
+	}
+	limit.Quo(limit, deposited)
+	if !limit.IsInt64() {
+		return 0, false
+	}
+	return limit.Int64(), true
 }
 
 func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservationConfig) (decodedKaminoReserve, error) {
@@ -210,6 +242,7 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 		mintDecimals:             uint8(reserve.MintDecimals),
 		totalLiquiditySF:         totalLiquidity, collateralMintSupply: reserve.CollateralMintTotalSupply,
 		liquidationThresholdPct: reserve.LiquidationThresholdPct,
+		loanToValuePct:          reserve.LoanToValuePct,
 		depositLimitRaw:         reserve.DepositLimit,
 		borrowLimitRaw:          reserve.BorrowLimit,
 		borrowedRaw:             borrowedRaw,
@@ -368,34 +401,28 @@ func (r decodedKaminoReserve) redeemLiquidityRaw(collateralRaw uint64) (uint64, 
 	return kamino.CollateralToLiquidity(r.totalLiquiditySF, r.collateralMintSupply, collateralRaw)
 }
 
-func (p KaminoPosition) targetLTVBorrowRaw() (uint64, error) {
+// collateralValueDebtRaw is the position's collateral valued in raw debt
+// units at the batch's reserve prices: the C every leverage size is a share
+// of.
+func (p KaminoPosition) collateralValueDebtRaw() (uint64, error) {
 	if p.CollateralDepositedRaw == 0 || p.RedeemablePrimeRaw == 0 {
 		return 0, fmt.Errorf("Kamino collateral value is unavailable")
 	}
-	return targetBorrowForCollateralRaw(p.RedeemablePrimeRaw, p.CollateralDecimals, p.DebtDecimals, p.CollateralPriceSF, p.DebtPriceSF)
-}
-
-// Shared integer sizing for an observed position or an explicitly hypothetical
-// entry amount. Forecasting does not manufacture a position/account to use it.
-func targetBorrowForCollateralRaw(underlying uint64, collateralDecimals, debtDecimals uint8, collateralPriceSF, debtPriceSF [16]byte) (uint64, error) {
-	collateralPrice := littleInt(collateralPriceSF[:])
-	debtPrice := littleInt(debtPriceSF[:])
+	collateralPrice := littleInt(p.CollateralPriceSF[:])
+	debtPrice := littleInt(p.DebtPriceSF[:])
 	if collateralPrice.Sign() <= 0 || debtPrice.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino market price is zero")
 	}
-	if collateralDecimals > 18 || debtDecimals > 18 {
+	if p.CollateralDecimals > 18 || p.DebtDecimals > 18 {
 		return 0, fmt.Errorf("Kamino mint decimals exceed supported scale")
 	}
-	// Preserve the existing conservative KLend scaled-fraction rounding at
-	// each step, replacing only the former implicit six-decimal scales.
-	valueSF := new(big.Int).Mul(new(big.Int).SetUint64(underlying), collateralPrice)
-	valueSF.Div(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(collateralDecimals)), nil))
-	valueSF.Mul(valueSF, big.NewInt(TargetLTVBPS))
-	valueSF.Div(valueSF, big.NewInt(10_000))
-	valueSF.Mul(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(debtDecimals)), nil))
+	// KLend's conservative scaled-fraction rounding at each step.
+	valueSF := new(big.Int).Mul(new(big.Int).SetUint64(p.RedeemablePrimeRaw), collateralPrice)
+	valueSF.Div(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(p.CollateralDecimals)), nil))
+	valueSF.Mul(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(p.DebtDecimals)), nil))
 	raw := valueSF.Div(valueSF, debtPrice)
 	if !raw.IsUint64() || raw.Sign() <= 0 {
-		return 0, fmt.Errorf("Kamino target-LTV borrow is outside u64")
+		return 0, fmt.Errorf("Kamino collateral value is outside u64")
 	}
 	return raw.Uint64(), nil
 }

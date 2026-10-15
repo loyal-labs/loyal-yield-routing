@@ -25,7 +25,7 @@ func TestPhase2SelectedLaneUsesRouteNeutralLifecycleActions(t *testing.T) {
 		ObservationID: "maple-state", Slot: 42, RouteKind: RouteKind, RouteLane: SelectedRouteID,
 		StrategyKey: SelectedRouteID, Fresh: true, SquadsIdleRaw: 100,
 		CollateralIdleRaw: 0, MinimumCollateralDepositRaw: 1, CapacityRaw: 100, PolicyLimitRaw: 100, MaxTargetLTVEntryRaw: 100,
-		LiquidationThresholdBPS: 9000,
+		LiquidationThresholdBPS: 9000, MaxLTVBPS: 9000,
 		// The selector's entry into this lane already allocated the cash.
 		Target: LaneTarget{Rule: ruleEntry},
 	}
@@ -49,7 +49,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 		RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID, Fresh: true,
 		WithdrawalDemandRaw: 1, StrategyNAVRaw: 2_793_180,
 		VoltrIdleRaw: 2_793_180, CollateralIdleRaw: 0,
-		LiquidationThresholdBPS: 8_000}
+		LiquidationThresholdBPS: 8_000, MaxLTVBPS: 8_000}
 
 	decision := Decide(snapshot)
 	if decision.Action != Hold || decision.Reason != holdAtTarget || decision.AmountRaw != 0 {

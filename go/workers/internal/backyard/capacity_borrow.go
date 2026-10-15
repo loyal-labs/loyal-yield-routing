@@ -124,7 +124,7 @@ func kaminoReceiveWithinRoom(room, rate uint64) uint64 {
 	return n.Uint64()
 }
 
-func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level int64) (uint64, error) {
+func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level float64) (uint64, error) {
 	room, err := kaminoAdditionalDebtRoom(accounts, route)
 	if err != nil {
 		return 0, err
@@ -145,22 +145,27 @@ func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route Ru
 	return leverageStepWithinRisk(p, accounts, route, min(receive, desired, depositRoom), rate)
 }
 
-// leverageStepWithinRisk caps a receive at the lane's protocol collateral LTV
-// (which can be stricter than pilot 50%) and at 50% instant LTV including the
-// borrow fee; zero below the minimum borrow.
+// leverageStepWithinRisk caps a receive at the obligation's borrow limit
+// before the redeposit (KLend checks the borrow on its own; a 0.1%
+// price-refresh margin) and at the lane's ceiling after it
+// (leverageUpCapFee), the borrow fee included; zero below the minimum
+// borrow.
 func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, receive, rate uint64) (uint64, error) {
-	half, err := p.targetLTVBorrowRaw()
+	collateral, err := p.collateralValueDebtRaw()
 	if err != nil {
 		return 0, err
 	}
-	ltv := uint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[kaminoLoanToValueOffset])
-	protocol := new(big.Int).Mul(new(big.Int).SetUint64(half), new(big.Int).SetUint64(ltv))
-	protocol.Quo(protocol, big.NewInt(50))
+	if p.MaxLTVBPS <= 0 {
+		return 0, nil
+	}
+	protocol := new(big.Int).Mul(new(big.Int).SetUint64(collateral), big.NewInt(p.MaxLTVBPS))
+	protocol.Quo(protocol, big.NewInt(10_000))
+	protocol.Sub(protocol, new(big.Int).Quo(protocol, big.NewInt(1000)))
 	if !protocol.IsUint64() || protocol.Uint64() <= p.DebtRaw {
 		return 0, nil
 	}
 	receive = min(receive, kaminoReceiveWithinRoom(protocol.Uint64()-p.DebtRaw, rate))
-	receive, err = leverageUpCapFee(p, receive, func(n uint64) (uint64, error) { return kaminoBorrowFeeAtRate(rate, n) })
+	receive, err = leverageUpCapFee(p, laneCeilingLTVBPS(route.Lane), receive, func(n uint64) (uint64, error) { return kaminoBorrowFeeAtRate(rate, n) })
 	if err != nil {
 		return 0, nil
 	}
@@ -172,7 +177,7 @@ func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route
 // collateral reserve's deposit room. It is what an up move is priced at: no
 // executable borrow is larger, so none pays a higher rate. The worker borrows
 // this tick's capacity-sized part of it.
-func desiredLeverageBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level int64) (uint64, error) {
+func desiredLeverageBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level float64) (uint64, error) {
 	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
 	if rate >= uint64(1)<<60 {
 		return 0, nil
@@ -192,21 +197,19 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 	if err != nil {
 		return
 	} // new borrowing holds; urgent exits remain live
-	a, err := capacitySizedBorrow(p, accounts, route, 150)
-	if err != nil {
-		return
-	}
-	b, err := capacitySizedBorrow(p, accounts, route, 175)
-	if err != nil {
-		return
-	}
-	wanted150, err := desiredLeverageBorrow(p, accounts, route, 150)
-	if err != nil {
-		return
-	}
-	wanted175, err := desiredLeverageBorrow(p, accounts, route, 175)
-	if err != nil {
-		return
+	// Every level above 1 up to the lane's cap: the stored level a decision
+	// steps to may be past the position's next one.
+	var borrow, desired [len(leverageLadder)]uint64
+	for i, r := range leverageLadder[1:] {
+		if r.level > laneMaxLevel(route.Lane) {
+			break
+		}
+		if borrow[i+1], err = capacitySizedBorrow(p, accounts, route, r.level); err != nil {
+			return
+		}
+		if desired[i+1], err = desiredLeverageBorrow(p, accounts, route, r.level); err != nil {
+			return
+		}
 	}
 	debtReserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
 	if err != nil {
@@ -228,8 +231,7 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 	s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, s.BorrowDebtDecimals = p.DebtPriceSF, usdc.marketPriceSF, p.DebtDecimals
 	s.BorrowFeeRate = binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
 	s.BorrowCapacityKnown, s.AdditionalDebtRoomRaw = true, room
-	s.LeverageBorrow150Raw, s.LeverageBorrow175Raw = a, b
-	s.LeverageDesired150Raw, s.LeverageDesired175Raw = wanted150, wanted175
+	s.LeverageBorrowRaw, s.LeverageDesiredRaw = borrow, desired
 	s.BorrowUtilizationHeadroomRaw = utilizationHeadroom
 }
 
@@ -242,31 +244,22 @@ func leverageRateDebtRaw(s Snapshot, debtRaw uint64) uint64 {
 }
 
 // leverageDesiredRaw is the whole step to level (see desiredLeverageBorrow);
-// zero when capacity is unknown.
+// zero when capacity is unknown or level is off the ladder.
 func leverageDesiredRaw(s Snapshot, level float64) uint64 {
-	if !s.BorrowCapacityKnown {
+	i, ok := leverageRungIndex(level)
+	if !s.BorrowCapacityKnown || !ok {
 		return 0
 	}
-	if level == 1.5 {
-		return s.LeverageDesired150Raw
-	}
-	if level == 1.75 {
-		return s.LeverageDesired175Raw
-	}
-	return 0
+	return s.LeverageDesiredRaw[i]
 }
 
+// leverageBorrowCeiling is this batch's capacity-sized borrow toward level.
 func leverageBorrowCeiling(s Snapshot, level float64) uint64 {
-	if !s.BorrowCapacityKnown {
+	i, ok := leverageRungIndex(level)
+	if !s.BorrowCapacityKnown || !ok {
 		return 0
 	}
-	if level == 1.5 {
-		return s.LeverageBorrow150Raw
-	}
-	if level == 1.75 {
-		return s.LeverageBorrow175Raw
-	}
-	return 0
+	return s.LeverageBorrowRaw[i]
 }
 
 // capacityBorrowCentralValue values debt raw in USDC at the snapshot's central

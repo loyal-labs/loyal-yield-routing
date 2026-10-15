@@ -153,7 +153,7 @@ func TestTickHoldsUtilizationWithoutPreparingBorrow(t *testing.T) {
 	observation := tickObservation(Snapshot{
 		ObservationID: "utilization-blocked", Slot: 10, RouteKind: RouteKind, Fresh: true,
 		HasPosition: true, PositionCollateralRaw: 99_000_000, PositionCollateralValueRaw: 99_000_000, BorrowUtilizationBlocked: true,
-		LiquidationThresholdBPS: 8000, LeverageTargetLevel: 1.5, LeverageUpApproved: true,
+		LiquidationThresholdBPS: 8000, MaxLTVBPS: 8000, LeverageTargetLevel: 1.5, LeverageUpApproved: true,
 		CapacityRaw: 99_000_000, PolicyLimitRaw: 99_000_000,
 	})
 	recorded := false
@@ -182,7 +182,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 	openObservation := tickObservation(Snapshot{
 		ObservationID: "open", Slot: 10, RouteKind: RouteKind, Fresh: true,
 		CollateralIdleRaw: 5_000, MinimumCollateralDepositRaw: 1, CapacityRaw: 5_000, PolicyLimitRaw: 5_000,
-		MaxTargetLTVEntryRaw: 5_000, LiquidationThresholdBPS: 8000,
+		MaxTargetLTVEntryRaw: 5_000, LiquidationThresholdBPS: 8000, MaxLTVBPS: 8000,
 	})
 	order := []string{}
 	worker := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{

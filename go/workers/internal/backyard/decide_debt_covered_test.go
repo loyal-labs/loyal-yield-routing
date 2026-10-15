@@ -24,7 +24,7 @@ func TestNonUSDCCoveredWithdrawalDoesNotUnwind(t *testing.T) {
 		t.Fatalf("operator exit was held: %+v", got)
 	}
 	hard := s
-	hard.LTVBPS, hard.DebtIdleRaw = 6000, 1
+	hard.LTVBPS, hard.DebtIdleRaw = 7000, 1
 	if got := Decide(targeted(hard)); got.Reason != hardLTVDeleverReason {
 		t.Fatalf("hard LTV lost priority: %+v", got)
 	}

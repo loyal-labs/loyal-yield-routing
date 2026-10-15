@@ -173,7 +173,7 @@ func TestEconomicOutageDoesNotBlockSafetyWithdrawalOrExactRecovery(t *testing.T)
 	s.HasPosition = true
 	s.PositionDebtRaw = 100
 	s.SquadsIdleRaw = 100
-	s.LTVBPS = 6000
+	s.LTVBPS = 7000
 	if got := Decide(s); got.Action != DeleverRouteStep || got.Reason != hardLTVDeleverReason {
 		t.Fatal(got)
 	}
@@ -200,7 +200,7 @@ func TestSelectorNeverPreemptsExecutableRiskReduction(t *testing.T) {
 	in.Snapshot.HasPosition = true
 	in.Snapshot.PositionDebtRaw = 100
 	in.Snapshot.SquadsIdleRaw = 100
-	in.Snapshot.LTVBPS = 6000
+	in.Snapshot.LTVBPS = 7000
 	got := SelectOpportunity(in, SelectorState{})
 	if got.Action != "KEEP" || got.SelectedQuote != nil {
 		t.Fatal(got)

@@ -349,7 +349,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		return q, err
 	}
 	equity = min(equity, capacity)
-	if equity == 0 || min(position.LiquidationThresholdBPS-1500, 6000) <= TargetLTVBPS {
+	if equity == 0 || hardLTVBPS(position.LiquidationThresholdBPS, position.MaxLTVBPS) <= laneCeilingLTVBPS(route.Lane) {
 		return q, budgetHold("selector_destination_capacity_unavailable")
 	}
 	q.EquityRaw = int64(equity)
@@ -366,7 +366,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	// collateral reserve's deposit room left after the entry's own deposit.
 	funded := position
 	funded.CollateralDepositedRaw, funded.RedeemablePrimeRaw, funded.DebtRaw = 1, guaranteed-1, 0
-	borrow, err := capacitySizedBorrow(funded, accounts, route, 150)
+	borrow, err := capacitySizedBorrow(funded, accounts, route, leverageLadder[1].level)
 	if err != nil {
 		return q, err
 	}
@@ -391,8 +391,9 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 			return q, err
 		}
 		// The entry levers only where the live spread rule levers the funded
-		// lane: the spread at this borrow (fee included) must reach 1.5x's.
-		if _, levered := leverageUpAllowed(market, 1.5, float64(borrow+fee)); !levered {
+		// lane: the spread at this borrow (fee included) must reach the first
+		// level's.
+		if _, levered := leverageUpAllowed(market, leverageLadder[1].level, float64(borrow+fee)); !levered {
 			borrow, fee, q.SpreadUnlevered = 0, 0, true
 		}
 	}

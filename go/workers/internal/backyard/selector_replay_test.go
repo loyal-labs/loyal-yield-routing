@@ -129,11 +129,11 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 	}
 	want := map[bool]map[string]laneDecision{
 		false: {
-			autoAUTOPYUSD.Lane: {next: 1.75, reason: "spread_rule", level: laneLevel{Level: 1.75}},
+			autoAUTOPYUSD.Lane: {next: 1.75, reason: "leverage_cost_unavailable(inputs)", level: laneLevel{Level: 1.75}},
 			autoAUTOWYLDSLane:  {next: 1.75, reason: "spread_rule", level: laneLevel{Level: 1.75}},
 		},
 		true: {
-			autoAUTOPYUSD.Lane: {next: 1.75, reason: "spread_rule", level: laneLevel{Level: 1.75}},
+			autoAUTOPYUSD.Lane: {next: 1.75, reason: "leverage_cost_unavailable(inputs)", level: laneLevel{Level: 1.75}},
 			autoAUTOWYLDSLane:  {next: 1.75, reason: "spread_rule", level: laneLevel{Level: 1.75}},
 		},
 	}
@@ -149,7 +149,8 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 			})
 			got := laneDecision{next: d.Next, reason: d.Reason, borrowRaw: d.BorrowRaw, level: d.level()}
 			t.Logf("approved=%v %s: %.2fx->%.2fx spread=%d bps reason=%s store=%v", approved, lane.RouteLane, d.Current, d.Next, d.SpreadBPS, d.Reason, d.storeChanges(lane))
-			if !ok || priced || got != want[approved][lane.RouteLane] {
+			// AUTO's cap is 2.5x: its spread prices the step to 2x.
+			if !ok || priced != (lane.RouteLane == autoAUTOPYUSD.Lane) || got != want[approved][lane.RouteLane] {
 				t.Fatalf("approved=%v %s: decided %+v (priced %v)", approved, lane.RouteLane, got, priced)
 			}
 			if overflow, level, decided := decideOverflowLevel(lane, markets, p, c.Now); decided {
@@ -206,7 +207,7 @@ func TestSelectorReplayLiveStepCost(t *testing.T) {
 	// on that capital).
 	markets := replayMarkets(t, o.routeBatch.Accounts, c.Now)
 	below := lane
-	below.LTVBPS, below.LeverageDesired175Raw = leverageLevelLTVBPS(1.5), borrow
+	below.LTVBPS, below.LeverageDesiredRaw[2], below.LeverageDesiredRaw[3] = leverageLevelLTVBPS(1.5), borrow, borrow
 	d, ok := decideLeverageTarget(below, SelectorResult{Action: "KEEP"}, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(context.Background(), rpc, view, client, m, o, below))
 	t.Log(d.logLine())
 	if !ok || d.Reason != "up_move_approved" || d.Next != 1.75 || d.BorrowRaw != borrow || d.CostRaw != float64(got.TotalMicros) ||
@@ -284,7 +285,7 @@ func TestSelectorReplayFlatEntry(t *testing.T) {
 		build  func(t *testing.T) (RouteManifest, *chain.Client, *jupiter.Client)
 	}
 	old := map[string]entryReplay{
-		"maple/levered":        {borrow: 49_700_249, cost: 6_138, benefit: 1_638_930.34, action: "ENTER", entered: 100_000_000},
+		"maple/levered":        {borrow: 49_445_603, cost: 6_138, benefit: 1_638_930.34, action: "ENTER", entered: 100_000_000},
 		"maple/unlevered":      {unlevered: true, cost: 6_137, benefit: 502_045.13, action: "ENTER", entered: 100_000_000},
 		"auto/levered":         {borrow: 93_000_000, cost: 11_825, benefit: 3_188_127.53, action: "ENTER", entered: 200_000_000},
 		"auto/unlevered":       {unlevered: true, cost: 6_138, benefit: 1_009_023.99, action: "ENTER", entered: 200_000_000},

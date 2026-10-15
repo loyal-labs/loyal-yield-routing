@@ -17,7 +17,7 @@ func TestLeverageMovesDecideAtomicSteps(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{autoAUTOPYUSD.Lane, autoAUTOWYLDSLane, onreONycUSDC} {
 		hard := targeted(leverageExitSnapshot(lane))
-		hard.LTVBPS = 6000
+		hard.LTVBPS = 7000
 		hard = targeted(hard)
 		exit := targetedWith(leverageExitSnapshot(lane), targetInputs{Exits: map[string]laneExit{lane: {}}})
 		partialDown := leverageSnapshot(1.75)
@@ -67,7 +67,7 @@ func TestLeverageMovesDecideAtomicSteps(t *testing.T) {
 func TestStepDebtToLTVLandsOnTheTarget(t *testing.T) {
 	t.Parallel()
 	s := leverageSnapshot(1.75)
-	for _, target := range []int64{hardLTVTargetBPS(s), leverageLevelLTVBPS(1.5), 2000} {
+	for _, target := range []int64{heldLevelLTVBPS(s), leverageLevelLTVBPS(1.5), 2000} {
 		r := stepDebtToLTVRaw(s, target)
 		if r <= 0 || r >= s.PositionDebtRaw {
 			t.Fatalf("target %d: repay %d of %d", target, r, s.PositionDebtRaw)
@@ -86,7 +86,7 @@ func TestStepDebtToLTVLandsOnTheTarget(t *testing.T) {
 // (the StepRequest), never through the single-leg Kamino path.
 func TestWorkerDispatchesAtomicStep(t *testing.T) {
 	s := leverageExitSnapshot(autoAUTOPYUSD.Lane)
-	s.LTVBPS = 6000
+	s.LTVBPS = 7000
 	o := tickObservation(s)
 	want := Decide(s)
 	if want.Reason != hardLTVDeleverReason {

@@ -126,7 +126,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 func TestUSDCHardLTVIsOneDownStep(t *testing.T) {
 	t.Parallel()
 	s := base()
-	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw, s.PayoffDebtRaw, s.LTVBPS = true, 200, 100, 101, 6000
+	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw, s.PayoffDebtRaw, s.LTVBPS = true, 200, 100, 101, 7000
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 200, 100
 	for _, lane := range append(basicLaneIDs(), SelectedRouteID) {
 		s.RouteLane, s.StrategyKey = lane, lane

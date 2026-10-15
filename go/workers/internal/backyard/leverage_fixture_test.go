@@ -37,7 +37,7 @@ func leverage175Fixture(t *testing.T) (Observation, RouteManifest, *chain.Client
 	o.Snapshot.HasPosition = true
 	o.Snapshot.PositionCollateralRaw, o.Snapshot.PositionCollateralValueRaw = 100_000_000_000, 100_000_000
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw = int64(debt), int64(debt)
-	o.Snapshot.SquadsIdleRaw, o.Snapshot.LTVBPS, o.Snapshot.LiquidationThresholdBPS = 0, 4285, 7500
+	o.Snapshot.SquadsIdleRaw, o.Snapshot.LTVBPS, o.Snapshot.LiquidationThresholdBPS, o.Snapshot.MaxLTVBPS = 0, 4285, 7500, 7500
 	return o, m, rpc, client, accounts, route
 }
 

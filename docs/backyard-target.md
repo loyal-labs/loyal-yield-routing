@@ -13,7 +13,7 @@ chain.
 | The chain | one confirmed batch: every registry lane's obligation and custody, the reserves, Voltr | the view |
 | Withdrawal demand | Voltr's withdrawal receipts in the same batch | vault users |
 | The rates | the selector's latest result (`state.selector.result`): the lane the vault's cash enters (`ENTER`), on a quote current at the batch, or a held lane's tranche to rotate into another (`ROTATE`), sampled within `MaxSampleGap` of the batch | the selector sample |
-| A lane's level | `loyal_yield.backyard_lane_levels`: 1, 1.5 or 1.75, and whether the up step toward it is worth its cost at the last sample | the selector sample |
+| A lane's level | `loyal_yield.backyard_lane_levels`: 1, 1.5, 1.75, 2, 2.5 or 3, never above the lane's cap, and whether the up step toward it is worth its cost at the last sample | the selector sample |
 | An operator exit | `loyal_yield.backyard_lane_exits`: lane X target debt 0, optionally equity 0 | `loyal-engine backyard exit-lane` |
 
 Nothing else about a move is stored: no unwind intent, tranche,
@@ -22,8 +22,13 @@ authority.
 
 ## Rules, in priority
 
-1. **Hard LTV.** A held lane at or past `min(6000, liquidationThresholdBPS -
-   1500)` bps steps down to its level's LTV.
+1. **Hard LTV.** A held lane at or past its brake steps down to its level's
+   LTV. The brake is the lower of the collateral reserve's
+   `liquidationThresholdBPS - 1000` and the obligation's borrow limit (max
+   LTV; the reserve's before a deposit) - 300 bps (`stepWithdrawMarginBPS`),
+   so a down step at the brake still has withdraw room. A brake at or under the cap's LTV (a lender cut) stops entries and
+   up steps on the lane, never this step: it then steps down to the highest
+   level under the brake, and repays all of it under 1.5x's.
 2. **Term maturity** (wYLDS, 30-day term). Under 1 day left without room for
    the keep-alive borrow, or past maturity: debt 0. Under 3 days with room:
    the keep-alive borrow (the minimum up step); an unfunded withdrawal goes
@@ -49,7 +54,7 @@ authority.
    operator's exit.
 5. **Selector choices.** An overflow source (AUTO/AUTO/PYUSD) below its level
    with its own borrowing closed moves the collateral it can release down to
-   the live cap's LTV into its overflow lane, when that lane's level is
+   its cap's LTV into its overflow lane, when that lane's level is
    approved, its reserve has room and it has levered the previous move.
    **Cash:** the vault's Squads cash, and the Voltr idle beyond the queue an
    `ENTER` quote current at the batch allocates, enter the selector's latest
@@ -82,11 +87,49 @@ authority.
    the residue rule put the USDC back into Maple, and the canary released
    again). Every lane's level stays frozen while the latest result is not
    `KEEP`.
-6. **Level.** Down to a stored 1.5 from above it; up toward the stored level
-   when the selector approved the step and the reserve has room.
+6. **Level.** Down to the stored level (or the lane's cap, when lower) from
+   above its band; up toward the stored level when the selector approved the
+   step and the reserve has room.
 
 Only rules 1 to 3 ever set debt 0. A stored level of 1 is economic: the lane
 holds at 1.5.
+
+## Levels and caps
+
+One ladder (`leverageLadder`, `leverage_level.go`) holds every level and the
+spread rule at it. The spread is the lane's token yield less the borrow APY
+once the step is borrowed (up) or at today's borrowing (down); a lane moves at
+most one level per selector decision, and its stored level advances no
+further than the up step that decision priced, one level above the position.
+
+| Level | LTV | Up to it at spread | Down from it under |
+|---|---|---|---|
+| 1.5x | 33.3% | 1 pt | 0 |
+| 1.75x | 42.9% | 2 pts | 1 pt |
+| 2x | 50% | 2.5 pts | 1.5 pts |
+| 2.5x | 60% | 2.5 pts | 1.5 pts |
+| 3x | 66.7% | 2.5 pts | 1.5 pts |
+
+Each lane climbs no higher than its cap (`maxLevel`, `route_catalog.go`;
+owner decision 2026-10-14). An up step lands, after a 1% conversion loss and
+the borrow fee, within the cap's LTV; the obligation's borrow limit (KLend's
+allowed borrow value over its deposits, the number it enforces, also the down
+step's withdraw room) bounds the borrow before the redeposit, so a step to a high level may take more than
+one transaction.
+
+| Lane | Cap | Liquidation | Max LTV | Brake |
+|---|---|---|---|---|
+| AUTO/AUTO/PYUSD | 2.5x (3x is a one-literal change) | 80% | 78% | 70% |
+| OnRe/ONyc/USDC | 2.5x | 75% | 66% | 63% |
+| Maple/syrupUSDC/USDC | 1.5x (thin borrow pool) | 90% | 88% | 80% |
+| Prime lanes, AUTO/AUTO/wYLDS | 1.75x | reserve's | reserve's | lower of threshold - 10 pts, max LTV - 3 pts |
+
+Migration 0114 widens `backyard_lane_levels`' CHECK to the ladder; it applies
+before the binary that writes the new levels. Rolling the binary back past
+the ladder needs the stored levels back on the old one first, or the old
+binary holds the whole vault on `invalid_lane_levels`, the brake included:
+`UPDATE loyal_yield.backyard_lane_levels SET level = 1.75 WHERE level > 1.75`. Lowering a cap delevers a lane
+held above it by rule 6 (Maple at 1.75x steps down to 1.5x).
 
 The selector scores every move over the same 30-day horizon, 30-minute
 persistence, $0.25 minimum benefit and 10 bps uncertainty (on the vault's

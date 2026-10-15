@@ -69,9 +69,10 @@ func productionRouteBatchAccounts(t *testing.T, slot int64, mutate func([]Confir
 		}
 		binary.LittleEndian.PutUint32(debt[offset+4:], 500)
 	}
-	// A live reserve carries an 80% liquidation threshold; the decision engine
-	// refuses to plan around a position without one.
-	accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data[kaminoReserveConfigOffset+17] = 80
+	// A live reserve carries a max LTV and an 80% liquidation threshold; the
+	// decision engine brakes below both.
+	collateral := accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data
+	collateral[kaminoLoanToValueOffset], collateral[kaminoReserveConfigOffset+17] = 78, 80
 	withFlatLanes(t, &accounts)
 	if mutate != nil {
 		mutate(accounts)

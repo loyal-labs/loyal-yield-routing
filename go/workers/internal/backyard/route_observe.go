@@ -1,6 +1,7 @@
 package backyard
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -440,7 +441,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.PositionDebtValueRaw = int64(nav.PositionDebtValue)
 	base.Snapshot.StrategyNAVRaw = int64(nav.StrategyNAVRaw)
 	base.Snapshot.LTVBPS = ltv
-	base.Snapshot.LiquidationThresholdBPS = position.LiquidationThresholdBPS
+	base.Snapshot.LiquidationThresholdBPS, base.Snapshot.MaxLTVBPS = position.LiquidationThresholdBPS, position.MaxLTVBPS
 	entryUSDC, err := routeEntryCapacityUSDC(position, accounts, route)
 	if err != nil {
 		return Observation{}, nil, err
@@ -642,7 +643,7 @@ func observeKaminoFromFixedAccounts(slot int64, accounts []ConfirmedAccount, con
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, ObligationPresent: obligationAccount.Lamports != 0, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, ObligationPresent: obligationAccount.Lamports != 0, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, MaxLTVBPS: cmp.Or(obligation.borrowLimitBPS, int64(collateral.loanToValuePct)*100), EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
 }
 
 // Capacity is originally debt-denominated. The entry planner spends bridge

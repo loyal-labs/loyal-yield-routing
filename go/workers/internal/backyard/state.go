@@ -185,31 +185,34 @@ type Snapshot struct {
 	AdaptorProgramDeploySlot      int64
 	LTVBPS                        int64
 	LiquidationThresholdBPS       int64
-	Fresh                         bool
-	CapacityRaw                   int64
-	PolicyLimitRaw                int64
-	MaxTargetLTVEntryRaw          int64
-	BorrowUtilizationBlocked      bool
-	// LeverageTargetLevel is the lane's stored level (1, 1.5 or 1.75; 0 when
-	// none is stored) and LeverageUpApproved whether the selector's
-	// economics approve the up step toward it: target()'s level inputs.
+	// MaxLTVBPS is the collateral reserve's loan-to-value (KLend's borrow
+	// limit); with the liquidation threshold it sets the hard LTV.
+	MaxLTVBPS                int64
+	Fresh                    bool
+	CapacityRaw              int64
+	PolicyLimitRaw           int64
+	MaxTargetLTVEntryRaw     int64
+	BorrowUtilizationBlocked bool
+	// LeverageTargetLevel is the lane's stored level (a level on the ladder,
+	// leverage_level.go; 0 when none is stored) and LeverageUpApproved
+	// whether the selector's economics approve the up step toward it:
+	// target()'s level inputs.
 	LeverageTargetLevel float64
 	LeverageUpApproved  bool
-	// Same-batch exact receive ceilings for the next 1.5x/1.75x step.
+	// Same-batch exact receive ceilings for the step to each ladder level
+	// up to the lane's cap, by ladder index (0 above the cap).
 	// Zero known room holds borrowing, never targets repayment of existing debt.
 	BorrowCapacityKnown   bool
 	AdditionalDebtRoomRaw uint64
-	LeverageBorrow150Raw  uint64
+	LeverageBorrowRaw     [len(leverageLadder)]uint64
 	BorrowDebtPriceSF     [16]byte
 	BorrowUSDCPriceSF     [16]byte
 	BorrowDebtDecimals    uint8
 	BorrowFeeRate         uint64
-	LeverageBorrow175Raw  uint64
-	// LeverageDesired150Raw/175Raw are the whole step to the level inside
-	// the position's risk limits, not bounded by reserve room: the size an
-	// up move is priced and approved at.
-	LeverageDesired150Raw uint64
-	LeverageDesired175Raw uint64
+	// LeverageDesiredRaw is the whole step to each level inside the
+	// position's risk limits, not bounded by reserve room: the size an up
+	// move is priced and approved at.
+	LeverageDesiredRaw [len(leverageLadder)]uint64
 	// BorrowUtilizationHeadroomRaw is the debt reserve's room to its
 	// utilization borrow limit (MaxUint64 without a limit).
 	BorrowUtilizationHeadroomRaw uint64

@@ -35,7 +35,7 @@ func TestHourlyRoutineNAVKeepsUrgentReportsAndSafety(t *testing.T) {
 				t.Fatal("post-transaction reporting delayed", got)
 			}
 			s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 10, 10
-			s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS = 6, 6, 6, 6000
+			s.PositionDebtRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw, s.LTVBPS = 6, 6, 6, 7000
 			s.SquadsIdleRaw, s.DebtIdleRaw = 6, 0
 			if lane == autoAUTOPYUSD.Lane {
 				s.SquadsIdleRaw, s.DebtIdleRaw = 0, 6
