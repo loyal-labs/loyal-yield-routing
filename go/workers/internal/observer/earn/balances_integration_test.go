@@ -280,3 +280,42 @@ func TestADepositReplayedAfterAnEmptyRecoveryStaysClosed(t *testing.T) {
 		t.Fatalf("a deposit older than the empty observation left the position %s", status)
 	}
 }
+
+func TestWithdrawalBeyondPrincipalDoesNotReduceLaterDeposit(t *testing.T) {
+	v := newRecoveryVault(t)
+	ctx := context.Background()
+	reconciliation, err := NewStore(v.pool).LoadContext(ctx, v.settings, 0, v.vaultPubkey)
+	if err != nil || reconciliation.RoutePolicy == nil {
+		t.Fatalf("route policy: %v", err)
+	}
+	market := v.markets[0].String()
+	reserve := solana.NewWallet().PublicKey().String()
+	wallet := "wallet:" + v.settings[len("settings:"):]
+	withdrawal := EarnWithdrawalMutation{RoutePolicy: *reconciliation.RoutePolicy,
+		WithdrawalSignature: "withdraw:" + v.settings, ConfirmedSlot: 200, ObservedSlot: 200,
+		Wallet: wallet, VaultPubkey: v.vaultPubkey, TargetReserve: reserve, Market: &market,
+		LiquidityMint: itestUSDCMint, WithdrawnAmountRaw: 1200, RemainingAmountRaw: 50,
+		ReserveState: []EarnReserveMutation{{Reserve: reserve, Market: &market, LiquidityMint: itestUSDCMint, AmountRaw: 50, HasValue: true}}}
+	for range 2 {
+		v.apply(t, func(tx pgx.Tx) error { return applyWithdrawal(ctx, tx, withdrawal) })
+	}
+	var principal, delta int64
+	if err := v.pool.QueryRow(ctx, `SELECT p.principal_amount_raw, h.principal_delta_raw FROM loyal_yield.user_yield_positions p JOIN loyal_yield.user_yield_position_holding_events h ON h.id=p.last_holding_event_id WHERE p.id=$1`, v.positionID).Scan(&principal, &delta); err != nil {
+		t.Fatal(err)
+	}
+	if principal != 0 || delta != -1000 {
+		t.Fatalf("withdrawal principal=%d delta=%d", principal, delta)
+	}
+	deposit := EarnDepositMutation{RoutePolicy: *reconciliation.RoutePolicy,
+		DepositSignature: "topup:" + v.settings, DepositSlot: 300, ObservedSlot: 300,
+		DepositMint: itestUSDCMint, PrincipalAmountRaw: 500, TargetReserve: reserve, Market: &market,
+		LiquidityMint: itestUSDCMint, Wallet: wallet, SmartAccountAddress: v.vaultPubkey,
+		ReserveState: []EarnReserveMutation{{Reserve: reserve, Market: &market, LiquidityMint: itestUSDCMint, AmountRaw: 550, HasValue: true}}}
+	v.apply(t, func(tx pgx.Tx) error { return applyDeposit(ctx, tx, deposit) })
+	if err := v.pool.QueryRow(ctx, `SELECT principal_amount_raw FROM loyal_yield.user_yield_positions WHERE id=$1`, v.positionID).Scan(&principal); err != nil {
+		t.Fatal(err)
+	}
+	if principal != 500 {
+		t.Fatalf("later deposit principal=%d, want 500", principal)
+	}
+}

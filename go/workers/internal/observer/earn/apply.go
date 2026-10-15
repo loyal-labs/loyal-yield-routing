@@ -855,10 +855,8 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 		return err
 	}
 	principalDelta := -min(position.principal, withdrawn)
-	nextPrincipal := position.principal - withdrawn
-	if position.principal < withdrawn && nextPrincipal > position.principal {
-		nextPrincipal = -1 << 63 // saturating_sub at the BIGINT floor
-	}
+	// Yield withdrawn beyond principal must not reduce later deposits.
+	nextPrincipal := position.principal + principalDelta
 	current := observedSlot >= position.observedSlot
 	resulting, eventSlot := position.amount, position.observedSlot
 	if current {

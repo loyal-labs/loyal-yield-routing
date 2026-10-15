@@ -32,6 +32,22 @@
     "use": "Historical application-owned starting schema for isolated fixtures only; not a migration runner"
   },
   {
+    "file": "0011_add_packed_withdrawal_reserve_metadata.sql",
+    "source_repo": "loyal-app",
+    "source_commit": "f14e74fe87344ea5fc7234680de2e856d3d4359d",
+    "source_path": "apps/web/src/lib/yield-optimization/migrations/0011_add_packed_withdrawal_reserve_metadata.sql",
+    "sha256": "d223847c0a727ea5c5b6225d34977a0f4a43ba6e61103d14cf57c918fdfc3078",
+    "use": "Historical application-owned withdrawal schema for isolated fixtures only; not a migration runner"
+  },
+  {
+    "file": "0012_add_withdrawal_source_metadata.sql",
+    "source_repo": "loyal-app",
+    "source_commit": "f14e74fe87344ea5fc7234680de2e856d3d4359d",
+    "source_path": "apps/web/src/lib/yield-optimization/migrations/0012_add_withdrawal_source_metadata.sql",
+    "sha256": "c9fe441dfa23c96a9c24746cc42dd468099002e68c0e66ad86ab08209e870697",
+    "use": "Historical application-owned withdrawal schema for isolated fixtures only; not a migration runner"
+  },
+  {
     "file": "0013_add_earn_deposit_onboarding_attempts.sql",
     "source_repo": "loyal-apps",
     "source_commit": "81b5c0256317c46e4fa9fdac49d6c0b347530b03",
