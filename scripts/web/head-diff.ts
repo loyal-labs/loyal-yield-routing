@@ -62,7 +62,7 @@ async function vercelHead(origin: string, path: string): Promise<HeadSnapshot> {
     const attrs = extractAttributes(tag[0]);
     if (tag[1] === "meta") {
       const key = attrs.get("name") ?? attrs.get("property");
-      if (key) push(metas, key, attrs.get("content") ?? "");
+      if (key && key !== "next-size-adjust") push(metas, key, attrs.get("content") ?? "");
     } else {
       const rel = attrs.get("rel") ?? "";
       if (COMPARED_LINK_RELS.has(rel)) {
