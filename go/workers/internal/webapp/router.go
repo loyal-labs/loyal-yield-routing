@@ -1,11 +1,13 @@
 // Package webapp is loyal-web's HTTP surface: the embedded web app, the /api
-// routes Go owns, and a forward of every other /api path to the Next
-// deployment that still owns it.
+// routes Go owns, and a forward of every other /api and /ingest path to the
+// Next deployment that still owns it.
 package webapp
 
 import (
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -16,32 +18,77 @@ import (
 
 type Config struct {
 	Addr     string
-	Upstream *url.URL // the Next deployment that answers /api paths Go does not
-	PostHog  *url.URL // /ingest/* goes here
+	Upstream *url.URL // the Next deployment that answers the /api and /ingest paths Go does not
 	AppHost  string   // requests for this host at / go to /app, as apps/web middleware.ts does
 	Release  string
+	// Ready reports whether the embedded web build is servable; nil means
+	// webserve.Ready. Tests inject a fake.
+	Ready func() bool
 }
 
-func New(cfg Config) http.Handler {
+func New(cfg Config, deps Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(headers(cfg))
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.Get("/readyz", ready(cfg.ready()))
 
 	api := humachi.New(r, apiConfig())
-	RegisterAPI(api, Deps{})
-	r.Handle("/api/*", forward(cfg.Upstream))
-	r.Handle("/ingest/*", ingest(cfg.PostHog))
+	RegisterAPI(api, deps)
+	proxied := forward(cfg.Upstream)
+	r.Handle("/api/*", proxied)
+	r.Handle("/ingest/*", proxied)
+	r.Handle("/*", site(cfg))
+	return r
+}
 
-	app := webserve.Handler()
-	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if cfg.AppHost != "" && req.Host == cfg.AppHost && req.URL.Path == "/" {
-			http.Redirect(w, req, "/app", http.StatusFound)
+func (cfg Config) ready() func() bool {
+	if cfg.Ready != nil {
+		return cfg.Ready
+	}
+	return webserve.Ready
+}
+
+// ready answers 200 only when the embedded web build is servable.
+func ready(ok func() bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if !ok() {
+			http.Error(w, "web build missing", http.StatusServiceUnavailable)
 			return
 		}
-		app.ServeHTTP(w, req)
-	}))
-	return r
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+// site serves the SPA, with the host routing apps/web's middleware does
+// (middleware.ts:7-22): the app host sends "/" to /app and never
+// locale-redirects; every other host is a site host.
+func site(cfg Config) http.Handler {
+	app := webserve.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if cfg.AppHost != "" && requestHost(r) == cfg.AppHost {
+			if r.URL.Path == "/" {
+				http.Redirect(w, r, "/app", http.StatusFound)
+				return
+			}
+			app.ServeHTTP(w, r)
+			return
+		}
+		// The middleware matcher skips paths with a dot (middleware.ts:25),
+		// so static files never locale-redirect.
+		if !strings.Contains(r.URL.Path, ".") && localeRedirect(w, r) {
+			return
+		}
+		app.ServeHTTP(w, r)
+	})
+}
+
+// requestHost is the Host header without its port, as middleware.ts:8 reads
+// the hostname.
+func requestHost(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.Host); err == nil {
+		return host
+	}
+	return r.Host
 }
 
 func apiConfig() huma.Config {
