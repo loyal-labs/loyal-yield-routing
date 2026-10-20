@@ -1,7 +1,7 @@
 # Loyal web (Go). One static binary serving both sites: the Vite build of
 # web/apps/loyal is embedded in it, and every /api path it does not answer is
-# forwarded to the Next deployment. Caddy proxies next.askloyal.com to
-# 127.0.0.1:10080. Releases ship in /opt/loyal/releases/web/<sha>/loyal-web
+# forwarded to the Next deployment. The Cloudflare tunnel loyal-workers
+# carries next.askloyal.com to 127.0.0.1:10080. Releases ship in /opt/loyal/releases/web/<sha>/loyal-web
 # and are switched by scripts/deploy-workers.sh through the
 # 40-verified-release.conf drop-in, as the other units are.
 # Secrets: none in this phase — the proxy needs no credentials. The API pilot
