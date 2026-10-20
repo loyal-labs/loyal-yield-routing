@@ -1,4 +1,7 @@
 import type { NextFont } from "./font-google";
 
-// Seed body: the class name only. G1 loads the face and defines --font-geist-sans.
-export const GeistSans: NextFont = { className: "", variable: "font-geist-sans", style: { fontFamily: "Geist, sans-serif" } };
+import "./fonts.css";
+
+// The face is declared in fonts.css from the geist package's variable woff2;
+// this class only defines the variable globals.css reads.
+export const GeistSans: NextFont = { className: "", variable: "font-geist-sans", style: { fontFamily: "'Geist Sans', sans-serif" } };

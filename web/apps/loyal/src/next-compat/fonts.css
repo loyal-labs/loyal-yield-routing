@@ -1,0 +1,71 @@
+/*
+ * Self-hosted faces for the next/font adapters. Next loads Geist and IBM Plex
+ * Sans through its font loader with preloaded woff2; here the same faces are
+ * plain @font-face rules. No third-party font CDN is referenced: the CSP this
+ * app ships (font-src 'self' data:, style-src 'self' 'unsafe-inline') forbids
+ * fonts.googleapis.com, so the IBM Plex files are vendored in ./fonts next to
+ * their OFL license, and the Geist files come from the geist package.
+ *
+ * The classes mirror next/font's `variable` classes: they only define the CSS
+ * variable the app's stylesheets read (globals.css wires --font-sans and
+ * --font-mono to the Geist variables). The browser fetches a face only when a
+ * rendered element actually uses it.
+ */
+
+@font-face {
+  font-family: "Geist Sans";
+  src: url("../../../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Sans";
+  src: url("../../../../node_modules/geist/dist/fonts/geist-sans/Geist-Italic[wght].woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../../../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("./fonts/IBMPlexSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("./fonts/IBMPlexSans-Italic.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+.font-geist-sans {
+  --font-geist-sans: "Geist Sans";
+}
+
+.font-geist-mono {
+  --font-geist-mono: "Geist Mono";
+}
+
+.font-ibm-plex-sans {
+  --font-ibm-plex-sans: "IBM Plex Sans";
+}
