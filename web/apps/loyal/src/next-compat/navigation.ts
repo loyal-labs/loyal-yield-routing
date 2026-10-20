@@ -1,5 +1,7 @@
 import { notFound as routerNotFound, useLocation, useRouter as useTanstackRouter } from "@tanstack/react-router";
 
+type TanstackRouter = ReturnType<typeof useTanstackRouter>;
+
 export type AppRouter = {
   push(href: string, options?: { scroll?: boolean }): void;
   replace(href: string, options?: { scroll?: boolean }): void;
@@ -9,24 +11,44 @@ export type AppRouter = {
   prefetch(href: string): void;
 };
 
+// redirect() can fire from any component, including ones that never call the
+// hooks; the module keeps the router the last hook call saw. Every consumer
+// of next/navigation here renders under RouterProvider, so it is set.
+let activeRouter: TanstackRouter | undefined;
+
+function navigate(router: TanstackRouter, href: string, replace: boolean, scroll?: boolean): void {
+  // TTo pinned to string so href alone is a valid NavigateOptions (see link.tsx).
+  router
+    .navigate<typeof router, string>({ href, replace, resetScroll: scroll === false ? false : undefined })
+    .catch(() => {});
+}
+
 export function usePathname(): string {
-  return useLocation().pathname;
+  const location = useLocation();
+  activeRouter = useTanstackRouter();
+  return location.pathname;
 }
 
 export function useSearchParams(): URLSearchParams {
-  return new URLSearchParams(useLocation().searchStr);
+  const location = useLocation();
+  activeRouter = useTanstackRouter();
+  // Rebuilt from the location on every navigation; treat it as read-only, as
+  // Next's ReadonlyURLSearchParams does.
+  return new URLSearchParams(location.searchStr);
 }
 
-// Seed body: history-level navigation. G1 decides preload and refresh semantics.
 export function useRouter(): AppRouter {
   const router = useTanstackRouter();
+  activeRouter = router;
   return {
-    push: (href) => router.history.push(href),
-    replace: (href) => router.history.replace(href),
+    push: (href, options) => navigate(router, href, false, options?.scroll),
+    replace: (href, options) => navigate(router, href, true, options?.scroll),
     back: () => router.history.back(),
     forward: () => router.history.forward(),
     refresh: () => void router.invalidate(),
-    prefetch: () => undefined,
+    prefetch: (href) => {
+      router.preloadRoute<string, string>({ href }).catch(() => {});
+    },
   };
 }
 
@@ -34,7 +56,13 @@ export function notFound(): never {
   throw routerNotFound();
 }
 
+// Next's redirect replaces the history entry and throws NEXT_REDIRECT, which
+// its runtime swallows; here the navigation starts and the tagged error marks
+// the aborted render.
 export function redirect(href: string): never {
-  window.location.assign(href);
-  throw new Error(`redirect to ${href}`);
+  const router = activeRouter;
+  if (router) navigate(router, href, true);
+  const error = new Error(`NEXT_REDIRECT;replace;${href};`);
+  (error as Error & { digest?: string }).digest = `NEXT_REDIRECT;replace;${href};`;
+  throw error;
 }
