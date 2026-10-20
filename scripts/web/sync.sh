@@ -24,16 +24,6 @@ if git -C "$root" merge-base --is-ancestor refs/import/loyal-app HEAD; then
 	echo "loyal-app $ref@$sha: already merged"
 	exit 0
 fi
-msg="chore(web): sync loyal-app $ref@$sha"
-if ! git -C "$root" merge -q --no-edit --allow-unrelated-histories -m "$msg" refs/import/loyal-app; then
-	# web/apps/loyal is the one workspace member loyal-app does not have, so
-	# web/bun.lock is the one file both sides write: take loyal-app's and
-	# let bun add the member back. Any other conflict is for a human.
-	conflicts=$(git -C "$root" diff --name-only --diff-filter=U)
-	[ "$conflicts" = "web/bun.lock" ] || { echo "sync: unexpected conflicts:" >&2; echo "$conflicts" >&2; exit 1; }
-	git -C "$root" checkout --theirs web/bun.lock
-	(cd "$root/web" && bun install >/dev/null)
-	git -C "$root" add web/bun.lock
-	git -C "$root" commit -q --no-edit -m "$msg"
-fi
+git -C "$root" merge -q --no-edit --allow-unrelated-histories \
+	-m "chore(web): sync loyal-app $ref@$sha" refs/import/loyal-app
 echo "loyal-app $ref@$sha -> $(git -C "$root" rev-parse refs/import/loyal-app)"
