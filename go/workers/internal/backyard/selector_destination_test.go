@@ -204,6 +204,26 @@ func TestEntryIntoAnAbsentObligationCarriesItsSetup(t *testing.T) {
 	}
 }
 
+// A held lane is a destination too: cash or a rotation's tranche enters
+// beside its position (docs/backyard-target.md rule 5). Live 2026-10-20:
+// every lane worth entering was held, so Prime's tranche never priced.
+func TestEntryBesideAHeldPositionPrices(t *testing.T) {
+	t.Parallel()
+	route, _ := runtimeRoute(SelectedRouteID)
+	m, rpc, client, _ := selectorDestinationFixtureForLane(t, SelectedRouteID, func(accounts []ConfirmedAccount) {
+		o := accountAt(accounts, route.Kamino.Obligation)
+		putKey(t, o.Data[96:128], route.Kamino.CollateralReserve)
+		binary.LittleEndian.PutUint64(o.Data[128:136], 100_000_000)
+		putKey(t, o.Data[1208:1240], route.Kamino.DebtReserve)
+		putScaledFraction(o.Data[1240:1272], new(big.Int).Lsh(big.NewInt(1), 60))
+		putScaledFraction(o.Data[1296:1312], new(big.Int).Lsh(big.NewInt(40_000_000), 60))
+	})
+	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(SelectedRouteID), 100_000_000)
+	if err != nil || q.EquityRaw != 100_000_000 {
+		t.Fatalf("held destination did not price: %+v %v", q, err)
+	}
+}
+
 func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"farm_missing", "farm_frozen", "foreign_user", "foreign_delegate", "reserve_farm", "receipt_authority", "nonflat", "capacity"} {
