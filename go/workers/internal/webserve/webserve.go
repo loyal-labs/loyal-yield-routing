@@ -29,7 +29,9 @@ func Handler() http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
-		if _, err := fs.Stat(dist, name); err != nil {
+		// public/ has folders (agents/, landing/) that share a name with a
+		// client route; a folder is never served, the route is.
+		if info, err := fs.Stat(dist, name); err != nil || info.IsDir() {
 			if path.Ext(name) != "" {
 				http.NotFound(w, r)
 				return
