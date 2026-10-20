@@ -1,6 +1,7 @@
 // Package webauth answers "who is calling" for loyal-web's /api routes, the
-// same two ways apps/web does: a Privy access token, or the loyal_email_session
-// cookie apps/web issues (features/identity/server/session-token.ts).
+// same two ways apps/web does: a Privy access token, or the wallet session
+// cookie apps/web issues (features/identity/server/session-cookie.ts,
+// session-token.ts).
 package webauth
 
 import (
@@ -18,9 +19,18 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
 
-const SessionCookie = "loyal_email_session"
+// The session cookie names of apps/web: getSessionCookieName
+// (session-cookie.ts:294-298) picks the Cherry cookie when the Cherry embed
+// context cookie is "1" (cherry-session-cookie.ts:3-4,33-40), else the wallet
+// cookie. Its preview-host name never applies here: Vercel sees every proxied
+// request on the production host.
+const (
+	WalletSessionCookie      = "loyal_wallet_session"
+	CherrySessionCookie      = "__Host-loyal_cherry_session"
+	CherryEmbedContextCookie = "__Host-loyal_cherry_embed"
+)
 
-// Session is the claims apps/web puts in loyal_email_session
+// Session is the claims apps/web puts in the session cookie
 // (packages/auth-core/src/session.ts authSessionTokenClaimsSchema).
 type Session struct {
 	AuthMethod          string `json:"authMethod"`
@@ -33,18 +43,28 @@ type Session struct {
 	SettingsPDA         string `json:"settingsPda,omitempty"`
 }
 
+// Principal is a wallet session with a provisioned smart account: what
+// apps/web's resolveAuthenticatedPrincipalFromRequest returns
+// (features/identity/server/auth-session.ts).
+type Principal struct {
+	WalletAddress       string
+	SmartAccountAddress string
+	SettingsPDA         string
+}
+
 type Config struct {
 	PrivyAppID string
-	// One of these signs loyal_email_session, as in apps/web: AUTH_JWT_SECRET
-	// (HS256 keyed by its SHA-256) or AUTH_JWT_RS256 (PEM public key).
-	SessionSecret    string
+	// What verifies the session cookie, in the order apps/web's
+	// verifyAuthSessionTokenMulti tries them (session-token.ts:104-121): the
+	// RS256 public key (PEM), then AUTH_JWT_SECRET (HS256 keyed by its SHA-256).
 	SessionPublicKey string
+	SessionSecret    string
 }
 
 type Verifier struct {
 	privy   *privyKeys
 	appID   string
-	session jwt.ParseOption
+	session []jwt.ParseOption
 }
 
 func New(cfg Config) (*Verifier, error) {
@@ -52,29 +72,46 @@ func New(cfg Config) (*Verifier, error) {
 	if cfg.PrivyAppID != "" {
 		v.privy = &privyKeys{url: fmt.Sprintf("https://api.privy.io/v1/apps/%s/jwks.json", cfg.PrivyAppID)}
 	}
-	switch {
-	case cfg.SessionPublicKey != "":
+	if cfg.SessionPublicKey != "" {
 		key, err := jwk.ParseKey([]byte(cfg.SessionPublicKey), jwk.WithPEM(true))
 		if err != nil {
 			return nil, fmt.Errorf("session public key: %w", err)
 		}
-		v.session = jwt.WithKey(jwa.RS256, key)
-	case cfg.SessionSecret != "":
+		v.session = append(v.session, jwt.WithKey(jwa.RS256, key))
+	}
+	if cfg.SessionSecret != "" {
 		sum := sha256.Sum256([]byte(cfg.SessionSecret))
-		v.session = jwt.WithKey(jwa.HS256, sum[:])
+		v.session = append(v.session, jwt.WithKey(jwa.HS256, sum[:]))
 	}
 	return v, nil
 }
 
-var ErrUnauthenticated = errors.New("unauthenticated")
+var (
+	ErrUnauthenticated = errors.New("unauthenticated")
+	// ErrNotWalletPrincipal is a valid session that is not a provisioned
+	// Solana wallet (apps/web's AuthGatewayError, status 403).
+	ErrNotWalletPrincipal = errors.New("not a wallet principal")
+)
 
-// Session verifies the loyal_email_session cookie and returns its claims.
+func sessionCookieName(r *http.Request) string {
+	if c, err := r.Cookie(CherryEmbedContextCookie); err == nil && c.Value == "1" {
+		return CherrySessionCookie
+	}
+	return WalletSessionCookie
+}
+
+// Session verifies the session cookie and returns its claims.
 func (v *Verifier) Session(r *http.Request) (Session, error) {
-	cookie, err := r.Cookie(SessionCookie)
-	if err != nil || v.session == nil {
+	cookie, err := r.Cookie(sessionCookieName(r))
+	if err != nil || len(v.session) == 0 {
 		return Session{}, ErrUnauthenticated
 	}
-	token, err := jwt.Parse([]byte(cookie.Value), v.session, jwt.WithValidate(true))
+	var token jwt.Token
+	for _, key := range v.session {
+		if token, err = jwt.Parse([]byte(cookie.Value), key, jwt.WithValidate(true)); err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return Session{}, fmt.Errorf("%w: %v", ErrUnauthenticated, err)
 	}
@@ -93,6 +130,27 @@ func (v *Verifier) Session(r *http.Request) (Session, error) {
 		return Session{}, fmt.Errorf("%w: incomplete session claims", ErrUnauthenticated)
 	}
 	return s, nil
+}
+
+// Principal verifies the session and requires what apps/web's
+// mapAuthSessionUserToAuthenticatedPrincipal requires: a Solana wallet
+// session whose subject is its wallet, with a smart account and settings PDA.
+func (v *Verifier) Principal(r *http.Request) (Principal, error) {
+	s, err := v.Session(r)
+	if err != nil {
+		return Principal{}, err
+	}
+	switch {
+	case s.AuthMethod != "wallet":
+		return Principal{}, fmt.Errorf("%w: auth method %q", ErrNotWalletPrincipal, s.AuthMethod)
+	case s.Provider != "" && s.Provider != "solana":
+		return Principal{}, fmt.Errorf("%w: provider %q", ErrNotWalletPrincipal, s.Provider)
+	case s.WalletAddress == "" || s.SubjectAddress != s.WalletAddress:
+		return Principal{}, fmt.Errorf("%w: subject is not the wallet", ErrNotWalletPrincipal)
+	case s.SmartAccountAddress == "" || s.SettingsPDA == "":
+		return Principal{}, fmt.Errorf("%w: no smart account", ErrNotWalletPrincipal)
+	}
+	return Principal{WalletAddress: s.WalletAddress, SmartAccountAddress: s.SmartAccountAddress, SettingsPDA: s.SettingsPDA}, nil
 }
 
 // PrivyUser verifies a Privy access token (Authorization bearer or the
