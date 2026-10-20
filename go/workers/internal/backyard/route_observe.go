@@ -832,8 +832,13 @@ func staleHealthRetry(state *vaultState, hold Observation, err error, refreshExh
 	if hold.Snapshot.ManualReason != "kamino_stale" || refreshExhausted {
 		return nil
 	}
-	state.staleSince.CompareAndSwap(0, now.UnixNano())
-	if now.Sub(time.Unix(0, state.staleSince.Load())) >= kaminoStaleLatchWindow {
+	since := now.UnixNano()
+	if !state.staleSince.CompareAndSwap(0, since) {
+		if v := state.staleSince.Load(); v != 0 {
+			since = v
+		}
+	}
+	if now.Sub(time.Unix(0, since)) >= kaminoStaleLatchWindow {
 		return nil
 	}
 	return confirmedObservationUnavailable(fmt.Errorf("kamino health hold, retrying: %w", err))
