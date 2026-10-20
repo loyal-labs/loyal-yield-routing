@@ -1,0 +1,55 @@
+{
+  "name": "@loyal-labs/shared",
+  "version": "0.1.1",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "default": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./analytics": {
+      "import": "./dist/analytics.js",
+      "default": "./dist/analytics.js",
+      "types": "./dist/analytics.d.ts"
+    },
+    "./analytics-server": {
+      "import": "./dist/analytics-server.js",
+      "default": "./dist/analytics-server.js",
+      "types": "./dist/analytics-server.d.ts"
+    },
+    "./expo-push": {
+      "import": "./dist/expo-push.js",
+      "default": "./dist/expo-push.js",
+      "types": "./dist/expo-push.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "mixpanel": "^0.20.0",
+    "mixpanel-browser": "^2.74.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/loyal-labs/loyal-app.git",
+    "directory": "packages/shared"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,139 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# local-only config
+.superset/
+.planning/
+.mcp.json
+claude-report-second.md
+
+# dependencies
+/apps/telegram/node_modules
+/apps/telegram/.next
+/apps/dashboard/node_modules
+/node_modules
+/apps/telegram/node_modules
+/.pnp
+/apps/telegram/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+/apps/telegram/coverage
+
+# next.js
+/.next/
+/out/
+/apps/telegram/.next/
+/apps/telegram/out/
+/apps/admin/.next/
+/apps/admin/out/
+/apps/dashboard/.next/
+/apps/dashboard/out/
+/apps/web/.next/
+/apps/web/out/
+/apps/privy-showcase/.next/
+
+# production
+/build
+/apps/telegram/build
+
+# misc
+.DS_Store
+._*
+*.pem
+/apps/web/refs/
+.claude/
+.codex/
+/scripts/.state/
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files
+.env*
+/apps/web/.env*
+!/apps/dashboard/.env.example
+!/apps/privy-showcase/.env.example
+
+# vercel
+/apps/telegram/.vercel
+/apps/admin/.vercel
+/apps/dashboard/.vercel
+/apps/web/.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+!/apps/dashboard/next-env.d.ts
+!/apps/privy-showcase/next-env.d.ts
+
+.anchor
+DS_Store
+target/*
+!target/idl/
+!target/types/
+**/*.rs.bk
+node_modules
+test-ledger
+.yarn
+my-ledger-1/
+test-ledger-magicblock/
+packages/private-transactions/.cache/devnet-mint.json
+packages/private-transactions/tests/.auth-token-cache.json
+packages/private-transactions/tests/.mint-cache.json
+
+/apps/telegram/testing.ts
+.vercel
+
+CHANGELOG-*.md
+
+CLAUDE.md
+!/apps/mobile/CLAUDE.md
+
+docs/plans
+docs/scopes
+
+.entire/
+
+# Mobile
+/apps/mobile/.expo/
+/apps/mobile/node_modules/
+/apps/mobile/ios/
+/apps/mobile/android/
+
+# userbot worker local storage overrides
+/.data/userbot/
+/apps/userbot/.data/
+/apps/userbot/node_modules/
+
+# turbo
+.turbo/
+
+# internal workspace package build outputs
+/packages/*/dist/
+
+report.md
+skills-lock**
+ss_claude_**
+second-report**
+
+docs/superpowers
+
+.superpowers
+
+.agents/**
+!.agents/skills/
+!.agents/skills/loyal-observability/
+!.agents/skills/loyal-observability/**
+# Track shared Charlie daemon config (must live on the default branch to be ingested)
+!.agents/daemons/
+!.agents/daemons/**
+AGENTS.override.md

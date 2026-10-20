@@ -1,0 +1,726 @@
+# AGENTS.md
+
+This file provides guidance to coding agents when working with code in this repository.
+
+!! Never run build on frontend locally for testing purposes !!
+
+## Secrets
+
+Use the 1Password Environment `loyal-frontend-devnet` for local frontend devnet secrets. The environment is mounted at `.env.1password`, which is ignored by Git through `.env*`.
+
+Do not write plaintext secrets to `.env` files, source files, command arguments, logs, or chat. When a command needs environment variables, use the 1Password CLI with the mounted env file:
+
+```sh
+op run --env-file=.env.1password -- sh -c '<command>'
+```
+
+Keep shell variable expansion inside the `sh -c` subprocess so `op run` injects values before the command reads them.
+
+## Project Overview
+
+Loyal is a Solana wallet product family: the askloyal.com web app (wallet, swap, Earn), a mobile app, a browser extension, an internal admin dashboard, and a Telegram bot for community summaries. The legacy Telegram mini-app is sunset and serves only a wallet-key export page.
+# failed: overview still described the sunset private-transfer product after ASK-2239 removed it (2026-08-31)
+# outcome: rewritten to match the shipped apps
+# recurred: 1
+
+## Working Agreements
+
+Repo-wide agreements for all coding agents. Directory-specific rules live in that
+directory's own `CLAUDE.md` (e.g. `apps/mobile/CLAUDE.md`).
+
+### Verify before claiming done
+
+- File writes can succeed without the code being correct. Before reporting a task
+  complete, run the relevant check for the code you touched and confirm it passes:
+  - JS/TS app code: `cd <pkg> && bun lint` (or `npx expo lint` for `apps/mobile/`).
+  - Add a type-check (`tsc --noEmit`) only when types were part of the change or
+    the package is set up for it.
+- Scope checks to what you changed. Don't run repo-wide type-checks/lint on every
+  task — lint/format only the files you touched. Pre-existing errors in untouched
+  files are not yours to fix; note them and move on.
+
+### Make changes safely
+
+- When renaming or changing a function/type/variable, grep for all of: direct
+  references, type-level references, string literals, dynamic imports, re-exports/
+  barrels, and tests/mocks. One grep rarely catches everything.
+- Re-read a file before editing it if you're unsure it matches your last view of it
+  (e.g. after a long gap or external changes). You don't need to re-read files you
+  just edited — the edit tools fail loudly on a mismatch.
+
+### Code quality
+
+- Write the minimum code that solves the problem; nothing speculative. Touch only
+  what the task requires, and clean up only your own mess.
+- Follow existing patterns, conventions, and libraries already in the area you're
+  working in before introducing new ones.
+- If the architecture is genuinely flawed (duplicated state, inconsistent patterns),
+  call it out and propose a fix rather than silently working around it — but don't
+  expand scope without flagging it first.
+- When a change alters documented behavior, update the relevant doc (`AGENTS.md`,
+  directory `CLAUDE.md`, `docs/`, README) in the same commit — code ships with its
+  spec; a closed task with a stale doc is not done.
+
+### Scale effort to the task
+
+- Match ceremony to the work: a small UI tweak is one focused pass, not a multi-phase
+  plan. Reserve phased execution and parallel sub-agents for genuinely large,
+  multi-file changes where they actually save time.
+
+## Commands
+
+### Telegram Mini-App Frontend (run from `/apps/telegram`)
+
+```bash
+bun dev                    # Run mini-app dev server (turbopack)
+bun run build              # Production build (Next.js)
+bun lint                   # ESLint
+bun db:generate            # Generate Drizzle migrations from schema
+bun db:migrate             # Apply migrations
+bun db:studio              # Open Drizzle Studio GUI
+```
+
+### Loyal Web Frontend (run from `/apps/web`)
+
+```bash
+bun dev                    # Run Loyal web dev server (turbopack)
+bun run build              # Production build (Next.js)
+bun run lint               # Next.js lint
+bun run ultracite          # Biome/Ultracite checks
+```
+
+### Mobile App (run from `/apps/mobile`)
+
+```bash
+npx expo start --clear     # Start Expo dev server (requires dev client)
+npx expo lint              # ESLint
+npm test                   # Jest tests
+npx eas build --profile development-simulator --platform ios  # Build dev client (iOS sim)
+npx eas build --profile development --platform ios            # Build dev client (device)
+npx eas build --profile preview --platform android            # Preview APK
+npx eas build --profile production --platform all             # Production build
+```
+
+### Admin Dashboard (run from `/apps/admin`)
+
+```bash
+bun dev                    # Run admin dev server (turbopack)
+bun run build              # Production build (Next.js)
+bun lint                   # Next.js lint
+```
+
+## Test Design Guardrails
+
+Default to no new TypeScript unit tests. Prefer typecheck, lint, focused
+verifier scripts, manual smoke checks, or live read-only probes over `bun:test`,
+Jest, Vitest, `*.test.ts(x)`, `*.spec.ts(x)`, or `__tests__/` coverage.
+
+Keep or add a TypeScript test only when it protects an external contract or
+invariant that would still compile while broken: money movement,
+auth/session boundaries, confirmed-chain writes, generated SDK or wire-format
+parity, public API discriminants, webhook retry behavior, DB
+ownership/idempotency/conflict behavior, signer/secret/storage boundaries,
+config parsing, or dangerous pure calculations.
+
+Implement the core logic requested first. Only add or update tests after the
+behavior exists, and only when the test still passes this rubric:
+
+A test earns `+1` when it protects an external contract or invariant static
+checks can miss, `+1` when it asserts an observable side effect or invariant,
+and `+1` when TypeScript, lint, or a manual smoke check would not catch the
+failure. Observable checks include write/no-write behavior, ordering, rejection
+before mutation, retry/backoff, persisted state transitions, balance or amount
+calculation, and instruction/account ordering.
+
+Subtract `1` when the test mostly mirrors fields, defaults, copy, route
+strings, source strings, `Object.keys(...)`, `typeof ...`, or third-party
+library behavior. Subtract `1` when it mainly asserts mocked JSON, Drizzle call
+order, every `.values()` field, a full response body, or that a mocked
+dependency received the same mock data.
+
+Keep only tests scoring at least `2`. For mixed files, delete or compress the
+low-scoring blocks and keep only the contract/invariant checks.
+
+Delete or compress tests that restate implementation shape. Do not keep tests
+whose main value is asserting every mocked JSON field, every Drizzle `.values()`
+field, object defaults, route-string builders, source substrings, copy that is
+not a product or ops contract, `typeof ... === "function"`, `Object.keys(...)`
+mirrors, or third-party library behavior.
+
+Route tests should assert status codes, branch discriminants, caller-consumed
+fields, and side effects only. Repository tests should assert persistence rules,
+conflict/idempotency behavior, ownership boundaries, and state transitions.
+Schema tests are allowed only for migrations, ownership boundaries, unique
+constraints, conflict behavior, or cross-database routing.
+
+Live RPC/devnet tests must be opt-in smoke tests with explicit environment
+requirements and no checked-in key material. They must not run in default
+`bun test` suites.
+
+### Root Level
+
+```bash
+bun run lint               # prettier --check
+bun run lint:fix           # prettier -w
+bun run build:auth-packages  # build auth workspace packages
+bun run build:db-packages  # build shared DB workspace packages
+bun run typecheck:auth-packages  # typecheck auth workspace packages
+bun run typecheck:db-packages  # typecheck shared DB workspace packages
+bun run guard:shared-boundaries  # ensure shared packages stay app-env agnostic
+bun run guard:admin-shared-schema  # prevent admin-local schema duplication
+bun run admin:dev          # run admin dev server from repo root
+bun run admin:lint         # lint admin workspace from repo root
+bun run admin:build        # build admin workspace from repo root
+bun run frontend:dev       # run loyal web frontend from repo root
+bun run frontend:lint      # lint loyal web frontend from repo root
+bun run frontend:build     # build loyal web frontend from repo root
+```
+
+### Git Hooks
+
+```bash
+./scripts/setup-git-hooks.sh
+```
+
+- Run once per clone/worktree to enable repo hooks.
+- Hooks enforce commit message format (`commit-msg`) and run lint+build for the telegram, admin, and web apps before push.
+- Temporary bypass (only when necessary): `SKIP_VERIFY=1 git push`
+- CI note: app builds are intentionally not run in GitHub Actions; Vercel is the build/deploy gate.
+
+## Architecture
+
+### Directory Structure
+
+| Path                     | Purpose                                                                                             |
+| ------------------------ | --------------------------------------------------------------------------------------------------- |
+| `/apps/telegram`         | Next.js 15 Telegram mini-app frontend and API routes.                                               |
+| `/apps/web`              | Next.js 15 Loyal web frontend.                                                                      |
+| `/apps/mobile`           | Expo React Native mobile app.                                                                       |
+| `/apps/admin`            | Next.js 15 internal admin dashboard.                                                                |
+| `/packages`              | Internal shared workspace packages such as `db-core`, `db-adapter-neon`, `auth-core`, and `shared`. |
+| `/apps/userbot`          | Telegram userbot worker service.                                                                    |
+| `/docs` and `/user-docs` | Internal engineering docs and Mintlify-hosted user-facing docs.                                     |
+
+### Vertical Slice Architecture (Current Implementation + Required Direction)
+
+The current `/apps/telegram/src` architecture is a hybrid vertical-slice implementation. Feature boundaries are primarily expressed by route segments and feature-scoped component folders:
+
+- Route slices: `/apps/telegram/src/app/telegram/*` and `/apps/telegram/src/app/api/*`
+- UI slices: `/apps/telegram/src/components/wallet`, `/apps/telegram/src/components/summaries`, `/apps/telegram/src/components/telegram`
+- Shared cross-slice hooks/types: `/apps/telegram/src/hooks`, `/apps/telegram/src/types`
+- Shared integration/domain modules: `/apps/telegram/src/lib/*`
+
+Current slice mapping:
+
+| Slice             | Current files                                                                                                                                                                                                               |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wallet            | `/apps/telegram/src/app/telegram/wallet/page.tsx`, `/apps/telegram/src/components/wallet/*`, and Solana/Telegram wallet integrations in `/apps/telegram/src/lib/solana/*` and `/apps/telegram/src/lib/telegram/mini-app/*`. |
+| Summaries         | `/apps/telegram/src/app/telegram/summaries/*`, `/apps/telegram/src/components/summaries/*`, and `/apps/telegram/src/app/api/summaries/route.ts`.                                                                            |
+| Telegram platform | `/apps/telegram/src/app/telegram/layout.tsx`, `/apps/telegram/src/components/telegram/*`, bot/API modules in `/apps/telegram/src/lib/telegram/*`, and `/apps/telegram/src/app/api/telegram/*`.                              |
+
+Rules for all new feature work:
+
+- Organize by feature first; do not introduce new horizontal folders by technical layer.
+- Extend an existing slice in-place when behavior belongs to wallet/summaries/telegram/profile flows.
+- Keep route handlers and page files as orchestration layers; move reusable business logic out of route/page files and into slice-owned modules.
+- Avoid deep imports across slices (for example, wallet internals imported from summaries).
+- Shared code must be stable and reused by multiple slices before promotion to `/apps/telegram/src/lib`.
+
+For net-new, substantial features, prefer creating an explicit slice root:
+
+```text
+/apps/telegram/src/features/<feature-name>/
+  index.ts                 # public entrypoints only
+  ui/
+  server/
+  domain/
+  data/
+  integrations/
+  types.ts
+```
+
+### Shared Platform Libraries (`/apps/telegram/src/lib`)
+
+Use `/apps/telegram/src/lib` for cross-slice infrastructure and integration primitives. Existing shared modules include:
+
+| Module                 | Purpose                                                             |
+| ---------------------- | ------------------------------------------------------------------- |
+| `core/`                | HTTP utilities, Neon PostgreSQL + Drizzle ORM                       |
+| `solana/rpc/`          | RPC connections (Helius for mainnet/devnet, localhost for localnet) |
+| `solana/wallet/`       | Keypair management via Telegram Cloud Storage                       |
+| `solana/deposits/`     | Deposit/claim/refund logic with PDAs                                |
+| `solana/verification/` | On-chain Telegram signature verification                            |
+| `telegram/mini-app/`   | Client-side SDK wrappers, Cloud Storage, auth                       |
+| `telegram/bot-api/`    | Server-side bot API (grammy)                                        |
+| `telegram/`            | User service, bot thread service, bot API handlers                  |
+| `magicblock/`          | SOL/USD price feed via Pyth oracle                                  |
+| `redpill/`             | AI chat summaries                                                   |
+
+- New feature-specific behavior should stay in its owning slice unless it is clearly shared.
+- Promote code into `/apps/telegram/src/lib` only after it is proven reusable across multiple slices.
+- Refactor incrementally by slice (wallet, summaries, telegram, etc.), not by file type alone.
+
+### Mobile App-Specific Guardrails (`/apps/mobile`)
+
+These complement the command list above and mirror guidance in `apps/mobile/CLAUDE.md`.
+
+Routes live in `apps/mobile/app` through Expo Router. Reusable UI plus hook/service
+logic lives in `apps/mobile/src`. Keep network calls centralized in
+`apps/mobile/src/services/api.ts`, use the `@/` alias for imports under
+`apps/mobile/src`, and keep shared cross-app summary types in `@loyal-labs/shared`.
+
+Prepare mobile Earn deposit, withdrawal, autodeposit, and cleanup transactions
+on-device with the shared SDK. Backend mobile endpoints should return
+authenticated prepare contexts only; server-prepared transaction routes are
+legacy fallbacks for older app versions.
+
+Client-exposed mobile env vars must use the `EXPO_PUBLIC_` prefix. For cloud
+builds, `eas.json` is the source of truth; `.env` is local-only. Keep fallback
+behavior in `apps/mobile/src/config/env.ts` aligned with production API
+expectations.
+
+Maintain the Metro monorepo and SVG transformer settings in
+`apps/mobile/metro.config.js`. Keep typed routes and New Architecture settings
+compatible with the pinned Expo SDK/React Native versions.
+
+For validation, lint mobile changes with `cd apps/mobile && npx expo lint`. Run
+`cd apps/mobile && npm test` when touching shared mobile logic. Do not start the Expo
+dev server unless the user explicitly requests it.
+
+### Admin Guardrails (`/apps/admin`)
+
+Admin DB code must use only `@loyal-labs/db-core/schema` and
+`@loyal-labs/db-adapter-neon`. Keep admin DB wiring in
+`apps/admin/src/lib/core/database.ts`. Do not introduce `apps/admin/src/lib/generated/*`,
+`apps/admin/drizzle.config.ts`, or `/apps/admin/schema`; prefer shared schema/docs
+references. Run `bun run guard:admin-shared-schema` for admin DB/schema
+refactors.
+
+For Vercel monorepo deploys, the admin Root Directory is `apps/admin` (see
+`apps/admin/vercel.json`) and the Loyal web frontend Root Directory is `apps/web`
+(see `apps/web/vercel.json`).
+
+### Key Patterns
+
+User keypairs belong in Telegram Cloud Storage, never `localStorage`.
+`NEXT_PUBLIC_SOLANA_ENV` selects the RPC environment (`mainnet`, `devnet`, or
+`localnet`).
+
+### Database Patterns
+
+### Database Ownership
+
+This repo reads from or writes to three database surfaces. Keep their purposes separate:
+
+| Database surface                     | Runtime owner                    | Code entrypoint                                                                                                                     | Responsibility                                                                                                                                |
+| ------------------------------------ | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| App Neon database                    | App/admin product plane          | `/apps/telegram/src/lib/core/database.ts`, `/apps/web/src/lib/core/database.ts`, shared schema in `/packages/db-core/src/schema.ts` | Users, Telegram communities/messages/summaries, app wallet auth, smart-account records, sponsorship analytics, admin-readable app state       |
+| Yield Neon database (`loyal_yield`)  | Yield optimization control plane | `/apps/web/src/lib/yield-optimization/yield-neon-client.server.ts`                                                                  | Yield route policies, managed vault metadata, vault/reserve snapshots, rebalance decisions, confirmed user yield positions and deposit events |
+| Kamino Timescale database (`kamino`) | Market data/read model           | `/apps/web/src/lib/kamino/timescale-reserve-client.server.ts`                                                                       | Read-only Kamino reserve history/latest reserve updates used to choose or forecast safe/no-fee earn targets                                   |
+
+Rules:
+
+App/product tables belong in `@loyal-labs/db-core/schema` and use the app-local
+`getDatabase()` wrapper. Yield optimizer tables in `loyal_yield` are not
+app-product tables; keep their Drizzle models and repository methods under
+`/apps/web/src/lib/yield-optimization`. Kamino Timescale is read-only from this
+app, so do not write user, policy, vault, or app state into Timescale.
+
+Confirmed yield deposits and withdrawals are written only after chain
+confirmation. Persist route policy/vault metadata in
+`loyal_yield.route_policies` and `loyal_yield.managed_vaults`, then record
+immutable deposit/withdrawal events and aggregate user positions in
+`loyal_yield.user_yield_position_deposits`,
+`loyal_yield.user_yield_position_withdrawals`, and
+`loyal_yield.user_yield_positions`. Keep cross-database joins out of app code;
+fetch from each database through its owning server module and join in typed
+application code only when needed.
+
+### Loyal Web Earn Flow
+
+The Loyal web Earn UI lives under
+`/apps/web/src/components/wallet-workspace/facelift/` (mounted via
+`/apps/web/src/app/app/app-workspace-shell.tsx`) and
+`/apps/web/src/components/wallet-sidebar/earn-detail-view.tsx`.
+The desktop Earn rail stays mounted across auth states and Earn action screens,
+with the chart, How Earn works, and Loyal Stats in that order. Action-specific
+help and transaction details open as overlays. Earn and invited Earn MAX users
+without deposits share the coin-icon first-deposit screen and compact animated
+Deposit button; logged-out screens retain their marketing illustration.
+User-initiated Earn uses smart-account vault `accountIndex = 1` and the
+canonical Kamino USDC reserve. Older auto-yield planning docs may discuss
+agent-managed vault `0`; that is a separate flow.
+
+`packages/smart-account-vaults` is the instruction-building boundary. Use
+`prepareEarnUsdcDeposit` and `prepareEarnUsdcWithdraw`; do not duplicate Kamino
+or Squads policy instruction shape in React. First Earn deposits initialize the
+yield-routing `ProgramInteraction` policy. Top-up deposits must call
+`prepareEarnUsdcDeposit` with `initializeYieldRoutingPolicy: false` once
+overview policies show an existing Earn policy (`state === "ProgramInteraction"`,
+`accountIndex === 1`). The Earn vault index is always `1`, but the policy seed
+is the actual Squads policy seed returned by policy creation or persistence; do
+not assume policy seed `1`.
+
+After wallet confirmation, the frontend posts to
+`/api/smart-accounts/yield-optimization/deposits/confirm` or
+`/api/smart-accounts/yield-optimization/withdrawals/confirm`. Those routes
+validate authenticated wallet/session ownership, configured cluster
+(`NEXT_PUBLIC_SOLANA_ENV`, devnet or mainnet/mainnet-beta), canonical
+policy/vault/reserve metadata, confirmed signature status, and slot before
+writing Yield Neon state.
+
+The active Earn position read endpoint is
+`/api/smart-accounts/yield-optimization/position`. It returns the active
+aggregate position from `loyal_yield.user_yield_positions` for the authenticated
+wallet, configured cluster, vault index `1`, and canonical target reserve. The
+workspace uses it to decide whether to show the active Earn view, set the
+displayed principal, and cap partial/full withdrawals.
+
+### Earn MAX invite gate
+
+Earn MAX is invite-only. Valid codes are six uppercase letters/digits and
+live only as comma-separated SHA-256 hex hashes in the server env var
+`EARN_MAX_INVITE_CODE_HASHES` (unset = nobody gets in). The plain codes are
+never committed. `GET`/`POST /api/smart-accounts/earn-max/invite` reads or
+redeems a code for the authenticated wallet; the App Neon table
+`earn_max_invite_redemptions` crosses codes out (unique per code and per
+wallet). Earn MAX data routes must refuse wallets without a redemption.
+
+### Earn MAX (Voltr)
+
+Invited users see only the pooled Voltr RWA vault `HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA` (switch: `EARN_MAX_BACKEND` in `apps/web/src/features/earn-max/constants.ts`; old per-user Earn MAX on vault index `0` stays unused). Smart-account vault `accountIndex = 2` is the Voltr `userTransferAuthority`: deposits go wallet -> vault-2 USDC ATA -> Voltr in one sync execution; withdrawals request LP (600 s wait), then claim and sweep USDC to the wallet. Voltr instructions are hand-encoded in `features/earn-max/voltr/` because `@voltr/vault-sdk` needs `@solana/kit` 6 (apps/web uses 8). APY is the vault share-price growth (end-of-day TVL / LP from Voltr's public `dailyStats`, plus the live `/share-price`), compounded over the last 7 days (or since launch while younger) and annualized, in `features/earn-max/voltr/apy.server.ts` (cached 5 min server-side). Voltr's own 1-day figure swings with each NAV report on a small vault, so it is not used. No data shows a dash. The empty/logged-out desktop rail is a Strategies card (this APY) over the shared live `EarnStatsPanel`. History (transactions list, earned chart, lifetime earned) is read from chain in `features/earn-max/voltr/activity.server.ts`: the authority's last 100 signatures, decoded Voltr deposit / request_withdraw / claim instructions (claim amount = the vault idle ATA's USDC outflow), cached per authority until a new signature appears; negative earned under 1 cent (Voltr deposit rounding) shows as 0. ClickStack lifecycle flows: `earn_max.invite` (redeem; never the code) and `earn_max.vault` (deposit / request_withdrawal / claim: intent -> prepare -> wallet_submit_confirm -> ui_commit); a failed send or a 5xx invite pages through the Errors alert, a wrong code or a wallet cancel stays INFO.
+# failed: Voltr SDK cannot be added to apps/web (kit 6 vs 8), 2026-09-25
+# outcome: wire format pinned by voltr/program.test.ts plus a mainnet simulation
+# recurred: 1
+
+Schema conventions used in `/packages/db-core/src/schema.ts`:
+
+| Convention   | Rule                                                                                                       |
+| ------------ | ---------------------------------------------------------------------------------------------------------- |
+| Primary keys | Use UUIDs with `defaultRandom()` for all tables.                                                           |
+| Telegram IDs | Use `bigint` with `{ mode: "bigint" }` for Telegram user/chat IDs.                                         |
+| Timestamps   | Use `timestamp("...", { withTimezone: true })` with `.defaultNow().notNull()`.                             |
+| Relations    | Define relations separately from tables with `relations()` so `with:` queries stay type-safe.              |
+| Type exports | Export both `Table` select types and `InsertTable` insert types through `$inferSelect` and `$inferInsert`. |
+| Indexes      | Use `uniqueIndex` for unique constraints and `index` for query optimization.                               |
+
+For typed JSONB columns, use `.$type<T>()`:
+
+```typescript
+topics: jsonb("topics").$type<{ title: string; content: string }[]>().notNull();
+encryptedContent: jsonb("encrypted_content")
+  .$type<EncryptedMessageContent>()
+  .notNull();
+```
+
+Service layer patterns:
+
+Use `onConflictDoNothing` for race-condition-safe idempotent operations:
+
+```typescript
+const result = await db
+  .insert(table)
+  .values({ ... })
+  .onConflictDoNothing()
+  .returning({ id: table.id });
+if (result.length === 0) {
+  /* query existing record */
+}
+```
+
+Check `/apps/telegram/src/lib/core/database.ts` before choosing advanced DB APIs. The
+current app uses `drizzle-orm/neon-http`, which does not support
+`db.transaction()`. For atomic multi-statement writes, use `db.batch([...])`.
+Use `db.transaction()` only if the project moves to a driver that supports it.
+Prefer `db.query.table.findFirst()` with `with:` for relations over raw SQL.
+
+In app code, import schema from `@loyal-labs/db-core/schema`. Keep Neon driver
+wiring and env access in app code (`/apps/telegram/src/lib/core/database.ts`). Shared
+packages must not import app-only server config modules. Preserve Neon HTTP
+semantics, including `db.batch` for atomic multi-write flows.
+
+### Code Patterns
+
+Use `@/lib/encryption` for sensitive data such as bot messages and personal
+information:
+
+```typescript
+import { encrypt, decrypt } from "@/lib/encryption";
+const encrypted = await encrypt(JSON.stringify(data)); // returns { ciphertext, iv }
+const decrypted = await decrypt(encrypted); // returns plaintext or null
+```
+
+Use the Drizzle query builder for typed reads:
+
+```typescript
+const user = await db.query.users.findFirst({
+  where: eq(users.telegramId, telegramId),
+  with: { communityMemberships: true },
+});
+```
+
+Use `onConflictDoNothing` or `onConflictDoUpdate` to handle duplicate inserts.
+
+Server/client boundaries are strict. Never import
+`@/lib/core/config/server` from client code or shared barrels consumed by client
+code. Keep server-only entrypoints isolated in dedicated modules such as
+`server.ts` or `*.server.ts`, and import them only from server contexts. For
+dual-use modules, keep `index.ts` client-safe and expose server-only helpers via
+a separate server entrypoint. Components imported by `apps/telegram/src/app/layout.tsx`
+and other root wrappers must be SSR-safe. Browser-only SDKs and browser globals
+must stay behind Client Components, dynamic client wrappers, `useEffect`, or
+runtime guards.
+
+After any change to `apps/telegram/src/app/layout.tsx`, `/apps/telegram/src/app/**/layout.tsx`, or
+global provider trees, run `cd apps/telegram && bun run build`. Verify production
+build/`_not-found` prerender succeeds without `ReferenceError: window is not
+defined`, and check changed modules for top-level browser API usage.
+
+### Troubleshooting
+
+If logs or stack traces reference code that no longer matches current file
+contents, restart the local dev server or worker process. Stale processes can
+keep executing old code after edits.
+
+### Webhook + Drizzle Reliability Guardrails
+
+Never detach Drizzle or SDK methods that may rely on `this`, including
+`db.query.*.findFirst`, `findMany`, and SDK instance methods. Prefer direct
+calls from the owning object, such as `db.query.communities.findFirst({...})`.
+If extraction is unavoidable, bind the method explicitly and add a regression
+test that would fail without the binding.
+
+Classify webhook handler work as either `critical` or `best-effort`. Critical
+failures in ingest/storage/auth paths must bubble so upstream systems can
+retry. Best-effort side effects such as reactions or analytics must not block
+webhook acknowledgment; use fire-and-catch with structured logs.
+
+Error logs should include structured context (`chatId`, `messageId`,
+`telegramUserId`, `updateId`) without message text. Include normalized error
+fields (`errorName`, `errorMessage`) plus stack/raw error data for debugging.
+Tests should cover context-sensitive ORM mocks, ingest retry/idempotency after a
+partial write failure, and non-blocking best-effort side effects.
+
+After webhook or ingest changes, run `cd apps/telegram && bun lint`, run targeted tests
+for touched modules, run `cd apps/telegram && bun run build`, and do a Telegram canary
+that confirms new `messages` rows are written.
+
+If cron summary stats suddenly show high `skippedNotEnoughMessages` for
+historically active communities, assume an ingest regression until disproven.
+Check webhook errors and message freshness first. Useful SQL:
+
+```sql
+-- Freshness by active community
+SELECT c.chat_title, c.chat_id, MAX(m.created_at) AS latest_message_at, COUNT(m.id) AS total_messages
+FROM communities c
+LEFT JOIN messages m ON m.community_id = c.id
+WHERE c.is_active = true
+GROUP BY c.id, c.chat_title, c.chat_id
+ORDER BY latest_message_at DESC NULLS LAST;
+```
+
+```sql
+-- 24h ingest volume by active community
+SELECT c.chat_title, c.chat_id, COUNT(m.id) AS messages_24h
+FROM communities c
+LEFT JOIN messages m
+  ON m.community_id = c.id
+ AND m.created_at >= NOW() - INTERVAL '24 hours'
+WHERE c.is_active = true
+GROUP BY c.id, c.chat_title, c.chat_id
+ORDER BY messages_24h DESC;
+```
+
+### Telegram SDK + Cloud Storage Guardrails
+
+Keep `apps/telegram/src/app/layout.tsx` free of Telegram SDK/UI imports. Telegram
+wrappers and providers belong under the `apps/telegram/src/app/telegram/*` route scope.
+Do not top-level import `@telegram-apps/sdk` or `@telegram-apps/sdk-react` from
+modules that can enter server/root graphs such as `/`, `/_not-found`, metadata,
+or shared root providers. If shared utilities need Telegram SDK access, load it
+lazily inside runtime functions and guard with `typeof window !== "undefined"`.
+`next/dynamic(..., { ssr: false })` is valid only in a Client Component.
+
+Wallet key material must stay in Telegram Cloud Storage, with no local/session
+fallback. Cloud storage readiness can race during early app boot, so critical
+writes such as wallet keypair persistence need bounded retry/backoff before
+throwing.
+
+After changing the files below, run `cd apps/telegram && bun run build` and confirm no
+prerender failures on `/`, `/_not-found`, or `/telegram`.
+
+| File area                                                     | Why it is sensitive                                            |
+| ------------------------------------------------------------- | -------------------------------------------------------------- |
+| `apps/telegram/src/app/layout.tsx`                            | Root graph can pull browser-only code into prerender.          |
+| `apps/telegram/src/app/telegram/layout.tsx`                   | Telegram route scope owns Telegram SDK wrappers.               |
+| `apps/telegram/src/lib/telegram/mini-app/cloud-storage.ts`    | Wallet keypair persistence depends on Cloud Storage readiness. |
+| `apps/telegram/src/components/telegram/*`                     | Components often touch Telegram browser APIs.                  |
+| `apps/telegram/src/lib/solana/wallet/wallet-keypair-logic.ts` | Keypair persistence must remain Cloud Storage-only.            |
+
+Manual smoke check after SDK/cloud-storage changes: open wallet in the Telegram
+mini-app and confirm keypair persistence succeeds without
+`Failed to persist generated wallet keypair`.
+
+## Git Worktree Workflow
+
+### Branch Naming Convention
+
+All branches MUST follow the Linear format: `<issue-number-title>`
+
+Example: `ask-328-fix-wrong-token-history-processing`
+
+To find the correct branch name for a Linear issue, use the issue identifier (e.g., ASK-123).
+
+### Creating a Worktree
+
+When asked to work on a new issue/branch:
+
+1. Create the worktree from the repo root:
+
+```bash
+git worktree add ../loyal-app-ASK-123 -b ASK-123-short-description main
+```
+
+- Worktrees live as sibling directories to the main repo
+- Always branch from `main` (or ask if unclear)
+
+2. `cd` into the new worktree directory before doing any work
+
+### Listing Worktrees
+
+```bash
+git worktree list
+```
+
+### Removing a Worktree
+
+When done with a branch:
+
+```bash
+git worktree remove ../loyal-app-ASK-123
+```
+
+Or if already deleted the directory:
+
+```bash
+git worktree prune
+```
+
+### Important Rules
+
+- NEVER switch branches in the main worktree to work on issues — always create a new worktree
+- Each tmux session / Claude Code instance should operate in its own worktree
+- Run `git worktree list` if unsure which worktrees exist
+- After merging a PR, clean up the worktree
+
+## Linear MCP Defaults
+
+For every new Linear issue created through MCP, set status to `Todo`, choose an
+explicit priority (`Urgent`, `High`, `Normal`, or `Low`), assign a concrete
+owner, attach the current team cycle, and attach the most appropriate project.
+Descriptions should be short but ready for implementation: include the
+goal/context, key implementation ideas, key files/paths, and any docs, PRs, or
+issues needed for follow-up work.
+
+## Commit Conventions
+
+This project enforces [Conventional Commits](https://www.conventionalcommits.org/) via `commitlint` with `@commitlint/config-conventional`. A CI workflow (`.github/workflows/commit-style.yml`) validates all commit messages in a PR and the PR title itself.
+
+### Format
+
+```
+type(scope): description
+```
+
+**Allowed types**: `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `revert`
+
+**Scope** is optional but encouraged — use the area of the codebase being changed (e.g., `wallet`, `ui`, `og`, `sdk`, `ci`, `telegram`).
+
+### Examples
+
+```
+feat(wallet): show SPL token transfers in activity
+fix(sdk): restore delegation PDA helpers
+chore(ci): enforce conventional commit style with commitlint
+docs(sdk): refresh README for PER + auth usage
+refactor(ui): extract pill button component
+```
+
+### Rules
+
+- NEVER add `Co-Authored-By` trailers or any co-author attribution to commits
+- Keep the subject line under 100 characters
+- Use imperative mood in the description ("add", not "added" or "adds")
+- Do not end the subject line with a period
+- Validate locally before pushing:
+  - `bun run commitlint:head`
+  - `cd apps/telegram && bun run lint`
+
+## Pull Requests
+
+PR titles must follow the same conventional commit format:
+`type(scope): description`. Keep the PR body to a one- or two-sentence summary;
+do not add templates or checklists. Merge only after the Vercel build/check is
+successful, and use squash-and-merge. For monorepo deployments, configure the
+admin Vercel Root Directory as `apps/admin` and the Loyal web frontend Root Directory
+as `apps/web`.
+
+## Tooling
+
+| Tool            | Version or rule                                                       |
+| --------------- | --------------------------------------------------------------------- |
+| Package manager | Bun preferred                                                         |
+| Solana          | 2.1.0                                                                 |
+| ESLint          | Enforces alphabetical imports with `eslint-plugin-simple-import-sort` |
+
+## Environment Variables
+
+Required for Telegram mini-app frontend (in `/apps/telegram/.env.local`):
+
+```env
+NEXT_PUBLIC_TELEGRAM_BOT_ID=<bot_id>
+NEXT_PUBLIC_SOLANA_ENV=devnet  # mainnet, devnet, or localnet
+ASKLOYAL_TGBOT_KEY=<bot_token>  # Telegram Bot API token only
+TELEGRAM_SETUP_SECRET=<route_secret>  # Bearer token for /api/telegram/setup-commands
+REDPILL_AI_API_KEY=<api_key>
+DATABASE_URL=postgresql://...
+MESSAGE_ENCRYPTION_KEY=<base64-32-bytes>  # For encrypted bot messages
+```
+
+Optional:
+
+- `NEXT_PUBLIC_SERVER_HOST` - API base URL
+- `DEPLOYMENT_PK` - Gasless transaction keypair (base58)
+- `NEXT_PUBLIC_GAS_PUBLIC_KEY` - Gasless payer public key
+
+### Cloudflare R2/CDN (feature-specific)
+
+Core clients live in `/apps/telegram/src/lib/core`:
+
+- `r2-upload.ts` (server-only): `getCloudflareR2UploadClientFromEnv()`
+- `cdn-url.ts`: `getCloudflareCdnUrlClientFromEnv()`
+
+Required for R2 upload:
+
+- `CLOUDFLARE_R2_ACCOUNT_ID`
+- `CLOUDFLARE_R2_ACCESS_KEY_ID`
+- `CLOUDFLARE_R2_SECRET_ACCESS_KEY`
+- `CLOUDFLARE_R2_BUCKET_NAME`
+
+Set at least one CDN base URL:
+
+- `CLOUDFLARE_CDN_BASE_URL` (preferred)
+- `NEXT_PUBLIC_CLOUDFLARE_CDN_BASE_URL`
+- `CLOUDFLARE_R2_PUBLIC_DEV_URL` (dev fallback)
+
+Optional:
+
+- `CLOUDFLARE_R2_S3_ENDPOINT`
+- `CLOUDFLARE_R2_UPLOAD_PREFIX`
+
+Run targeted tests:
+
+```bash
+cd apps/telegram
+bun test src/lib/core/__tests__/object-path.test.ts src/lib/core/__tests__/cdn-url.test.ts src/lib/core/__tests__/r2-upload.test.ts
+```
