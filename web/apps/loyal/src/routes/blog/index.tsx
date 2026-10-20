@@ -19,6 +19,15 @@ function parsePage(value: string | undefined): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
+// The router JSON-parses search values, so `?page=2` arrives as the number 2
+// while `?page=abc` stays a string; Next's searchParams would always be a
+// string. Accept both and normalise to the string the loader parses.
+function rawPage(value: unknown): string | undefined {
+  return typeof value === "number" || typeof value === "string"
+    ? String(value)
+    : undefined;
+}
+
 // apps/web src/app/blog/page.tsx generateMetadata, on loader data instead of a
 // resolved searchParams promise.
 function blogMetadata(pageNumber: number): Metadata {
@@ -141,7 +150,7 @@ function BlogIndexRoute() {
 
 export const Route = createFileRoute("/blog/")({
   validateSearch: (search: Record<string, unknown>): { page?: string } => ({
-    page: typeof search.page === "string" ? search.page : undefined,
+    page: rawPage(search.page),
   }),
   loaderDeps: ({ search }) => ({ page: search.page }),
   loader: ({ deps }) => getBlogPosts({ page: parsePage(deps.page) }),
