@@ -309,8 +309,9 @@ in the journal under `loyal-realtime`.
 
 `loyal-web.service` runs `loyal-web`, the Go binary that serves both Loyal
 sites: the Vite build of `web/apps/loyal` is embedded in it, and every `/api`
-path it does not answer is forwarded to the Next deployment. Caddy proxies
-`next.askloyal.com` to `127.0.0.1:10080`. The unit holds no credentials —
+path it does not answer is forwarded to the Next deployment. The Cloudflare
+tunnel `loyal-workers` carries `next.askloyal.com` to `127.0.0.1:10080`
+("Cloudflare tunnel" below); Caddy is not in its path. The unit holds no credentials —
 the proxy phase needs none; the API pilot adds Neon/auth credentials through
 `LoadCredentialEncrypted` drop-ins. Prometheus covers it only through
 `LoyalUnitDown`/`LoyalUnitRestartLoop`; there is no `/metrics` scrape, and
@@ -395,22 +396,43 @@ The differences:
 Roll back with `bun run deploy web <prev-sha>`. The host log is
 `/var/log/loyal-deploy/web-<sha>.log`.
 
-### Caddy and DNS (first deploy)
+### Cloudflare tunnel
 
-Add the site block from `deploy/hetzner/caddy/loyal-web.caddy` to
-`/etc/caddy/Caddyfile`, next to `realtime.askloyal.com`'s (back the file up
-first). The block disables the TLS-ALPN challenge like realtime's and sets
-`flush_interval -1`, so the Go proxy's SSE streams are not buffered. Then:
+`next.askloyal.com` is served the way robinx.trade is: a proxied Cloudflare
+record and a locally managed tunnel, `loyal-workers`, in the Cloudflare
+account that holds askloyal.com. Cloudflare terminates TLS, compresses and
+caches the immutable `/assets/*`; `cloudflared.service` connects out from
+the host and hands requests to loyal-web on loopback. Some networks reach
+Hetzner Ashburn at well under 100 KB/s directly; through Cloudflare the same
+page loads in about a second.
+
+| File in the repo | On the host |
+|---|---|
+| `deploy/hetzner/cloudflared/config.yml` | `/etc/cloudflared/config.yml` |
+| `deploy/hetzner/systemd/cloudflared.service` | `/etc/systemd/system/cloudflared.service` |
+| (from `cloudflared tunnel create`, never in git) | `/etc/cloudflared/loyal-workers.json`, root 0600 |
+
+`cloudflared` comes from Cloudflare's apt repository
+(`deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared noble main`),
+as on robinx-prod. After a config change:
 
 ```sh
-caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
-curl -fsS https://realtime.askloyal.com/readyz    # the neighbour site still answers
+scp -q deploy/hetzner/cloudflared/config.yml loyal-workers:/etc/cloudflared/config.yml.tmp
+ssh loyal-workers 'cloudflared tunnel --config /etc/cloudflared/config.yml.tmp ingress validate &&
+  mv /etc/cloudflared/config.yml.tmp /etc/cloudflared/config.yml && systemctl restart cloudflared'
 curl -fsS -D- https://next.askloyal.com/readyz    # 200, X-Loyal-Release: <sha>
 ```
 
-The owner adds the DNS-only A record `next.askloyal.com` → the workers host
-(like `realtime.askloyal.com`) and `https://next.askloyal.com` to the Privy
-app's allowed origins.
+Managing the tunnel itself (create, route DNS, delete) needs an origin
+certificate for the askloyal.com zone, from `cloudflared tunnel login` with
+askloyal.com picked; keep it apart from robinx's `~/.cloudflared/cert.pem`
+and pass it with `--origincert`. To recreate: `tunnel delete loyal-workers`,
+`tunnel create loyal-workers`, install the new credentials file, update the
+id in `config.yml`, then `tunnel route dns --overwrite-dns loyal-workers
+next.askloyal.com`.
+
+The owner adds `https://next.askloyal.com` to the Privy app's allowed
+origins; until then sign-in on the test host fails.
 
 ## Monitoring
 

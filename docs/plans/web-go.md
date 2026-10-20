@@ -43,8 +43,9 @@ open and test. No DNS flip, no move off Vercel in this phase.
 - Vercel overwrites `x-forwarded-host`: Next sets the session cookie with
   `Domain=askloyal.com` whatever host fronts it (checked through the proxy on
   /api/auth/logout). The test host must be under askloyal.com:
-  `next.askloyal.com`, a DNS-only A record to loyal-workers like
-  `realtime.askloyal.com`. Caddy fronts the host (no cloudflared).
+  `next.askloyal.com`, served through the Cloudflare tunnel `loyal-workers`
+  as robinx.trade is (a DNS-only record to the host loaded at ~70 KB/s from
+  some networks; deploy/hetzner/README.md, "Cloudflare tunnel").
 - `/api/observability/events` checks `Origin` against its own URL; the proxy
   must present a same-origin request's Origin as the upstream origin.
 - `web/` packages ship from `dist/`: the app's build runs `build:packages`
