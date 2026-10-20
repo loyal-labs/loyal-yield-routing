@@ -31,7 +31,7 @@ jobs:
         run: sh scripts/web/check-untouched.sh "origin/${{ github.base_ref }}"
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.2.17
+          bun-version-file: web/package.json
       - uses: actions/setup-go@v5
         with:
           go-version-file: go/workers/go.mod
