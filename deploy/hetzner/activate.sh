@@ -1,6 +1,6 @@
 #!/bin/sh
 # activate.sh <family> <sha> <sha256> [stopped] — switch loyal-<family>
-# (backyard, retail or observer) to an uploaded release. Runs on the host as
+# (backyard, retail, observer or web) to an uploaded release. Runs on the host as
 # root, started by scripts/deploy-workers.sh as a transient unit
 # (systemd-run --wait --pipe), so a dropped ssh session cannot cut it off
 # mid-swap. One deploy at a time, any family: it holds the host's deploy lock.
@@ -15,18 +15,22 @@
 # unit on purpose (to apply migrations): it must be inactive, the deploy
 # starts it on the new release, and a rollback leaves it stopped on the
 # previous drop-in.
+#
+# web (loyal-web) is up when it has stayed active without restarting for 20 s
+# and then /readyz on the unit's LOYAL_WEB_ADDRESS returns 200 naming
+# X-Loyal-Release: <sha>.
 set -eu
 
 family=${1:-}
 sha=${2:-}
 want=${3:-}
 mode=${4:-running}
-case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; *) family=bad ;; esac
+case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; web) binary=loyal-web ;; *) family=bad ;; esac
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
 case $want in *[!0-9a-f]* | '') want=bad ;; esac
 case $mode in running | stopped) ;; *) mode=bad ;; esac
 if [ "$family" = bad ] || [ ${#sha} -ne 40 ] || [ ${#want} -ne 64 ] || [ "$mode" = bad ]; then
-	echo "usage: activate.sh backyard|retail|observer <40-hex commit sha> <64-hex sha256> [stopped]" >&2
+	echo "usage: activate.sh backyard|retail|observer|web <40-hex commit sha> <64-hex sha256> [stopped]" >&2
 	exit 2
 fi
 unit=loyal-$family
@@ -93,6 +97,13 @@ if [ "$family" = backyard ]; then
 	dbcred=$(systemctl cat "$unit" |
 		sed -n 's/^LoadCredentialEncrypted=\(BACKYARD_DATABASE_URL:[^ ]*\)$/\1/p' | tail -n 1)
 	[ -n "$dbcred" ] || fail "no BACKYARD_DATABASE_URL in $unit's LoadCredentialEncrypted"
+fi
+if [ "$family" = web ]; then
+	# The up check talks to the unit itself; its address comes from the unit's
+	# own lines, as the Backyard credential above.
+	webaddr=$(systemctl cat "$unit" |
+		sed -n 's/^Environment=LOYAL_WEB_ADDRESS=\([^ ]*\)$/\1/p' | tail -n 1)
+	[ -n "$webaddr" ] || fail "no LOYAL_WEB_ADDRESS in $unit; cannot check /readyz"
 fi
 in_flight() {
 	if [ "$family" != backyard ]; then
@@ -190,6 +201,26 @@ else
 	done
 	[ "$(systemctl is-active "$unit" || true)" = active ] || started=no
 	up="stay active without restarting for 20 s"
+fi
+
+# web answers for itself: the binary must serve /readyz with its own release,
+# not just stay up (an old release that never restarts stays up too).
+if [ "$family" = web ] && [ "$started" = yes ]; then
+	say "waiting for http://$webaddr/readyz to name $sha (up to 30 s)"
+	deadline=$(($(date +%s) + 30))
+	ready=no
+	while [ "$(date +%s)" -lt "$deadline" ]; do
+		if curl -fsS -o /dev/null -D- "http://$webaddr/readyz" 2>/dev/null |
+			grep -i "^x-loyal-release: $sha"; then
+			ready=yes
+			break
+		fi
+		sleep 2
+	done
+	if [ "$ready" != yes ]; then
+		started=no
+		up="serve /readyz with X-Loyal-Release: $sha"
+	fi
 fi
 if [ "$started" != yes ]; then
 	say "new release did not come up; last journal lines:"
