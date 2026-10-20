@@ -81,9 +81,6 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			result = map[string]any{"context": map[string]int64{"slot": finalSlot}, "value": fee}
 		case "getProgramAccounts":
 			result = map[string]any{"context": map[string]int{"slot": 42}, "value": []any{}} // no withdrawal receipts
-			if squadsProgramAccounts(body.Params) {
-				result = capturedPolicyProgramAccounts(42)
-			}
 		case "getEpochInfo":
 			result = finalizedEpoch(10) // A signed HOLD at this height is not expired in the DB fixture.
 		case "simulateTransaction":
@@ -103,6 +100,10 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 			}
 			values := make([]any, 0, len(addresses))
 			for _, address := range addresses {
+				if captured, ok := capturedPolicyAccount(address); ok {
+					values = append(values, captured)
+					continue
+				}
 				a, ok := accounts[address]
 				if !ok || a.Lamports == 0 {
 					values = append(values, nil)
