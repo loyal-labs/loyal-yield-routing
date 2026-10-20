@@ -38,7 +38,7 @@ const FrontmatterSchema = z.object({
  * below keeps when two posts share a date — the order Vercel's listing shows.
  */
 const rawPosts = import.meta.glob<string>(
-  "../../../../web/public/blog/*/post.md",
+  "../../../web/public/blog/*/post.md",
   { query: "?raw", import: "default", eager: true },
 );
 
