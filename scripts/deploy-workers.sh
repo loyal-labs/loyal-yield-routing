@@ -193,11 +193,13 @@ if [[ $family == web ]]; then
   trap 'git worktree remove --force "$build/src" >/dev/null 2>&1 || true; rm -rf "$build"' EXIT
   git worktree add --detach --quiet "$build/src" "$sha"
   (cd "$build/src/web" && bun install --frozen-lockfile >/dev/null)
+  tree=$build/src
 else
   trap 'rm -rf "$build"' EXIT
   git archive "$sha" go/workers deploy/hetzner | tar -x -C "$build"
+  tree=$build
 fi
-if [[ ! -f $build/deploy/hetzner/activate.sh || ! -f $build/deploy/hetzner/install-rules.sh ]]; then
+if [[ ! -f $tree/deploy/hetzner/activate.sh || ! -f $tree/deploy/hetzner/install-rules.sh ]]; then
   echo "$sha predates deploy/hetzner/activate.sh and install-rules.sh; it cannot be deployed with this command" >&2
   exit 1
 fi
@@ -225,7 +227,7 @@ if [[ $running != "$sha" || $mode == stopped ]]; then
   dir=$releases/$sha
   ssh "$host" "mkdir -p $dir"
   scp -q "$binary" "$host:$dir/$binary_name.tmp"
-  scp -q "$build/deploy/hetzner/activate.sh" "$host:$dir/activate.sh.tmp"
+  scp -q "$tree/deploy/hetzner/activate.sh" "$host:$dir/activate.sh.tmp"
   ssh "$host" "chmod 555 $dir/$binary_name.tmp $dir/activate.sh.tmp &&
     mv -f $dir/$binary_name.tmp $dir/$binary_name &&
     mv -f $dir/activate.sh.tmp $dir/activate.sh"
@@ -249,7 +251,7 @@ fi
 # The commit's monitoring files and install-rules.sh go to a fresh host temp
 # dir, which install-rules.sh checks, installs from and removes.
 upload=$(ssh "$host" "mktemp -d /tmp/loyal-monitoring.XXXXXX")
-scp -q -r "$build/deploy/hetzner/monitoring" "$build/deploy/hetzner/install-rules.sh" "$host:$upload/"
+scp -q -r "$tree/deploy/hetzner/monitoring" "$tree/deploy/hetzner/install-rules.sh" "$host:$upload/"
 set +e
 ssh "$host" "systemd-run --unit=loyal-deploy-rules-${sha:0:12} --quiet --wait --pipe --collect \
   /bin/sh $upload/install-rules.sh $sha ${rules_sha:-none} $upload"
