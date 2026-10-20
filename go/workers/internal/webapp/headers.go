@@ -42,9 +42,9 @@ var securityPolicy = strings.Join([]string{
 func headers(cfg Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("X-Loyal-Release", cfg.Release)
 			secure := &securityResponse{
 				ResponseWriter: w,
+				release:        cfg.Release,
 				path:           r.URL.Path,
 				versioned:      r.URL.Query().Has("v"),
 			}
@@ -59,13 +59,19 @@ func headers(cfg Config) func(http.Handler) http.Handler {
 // header map.
 type securityResponse struct {
 	http.ResponseWriter
+	release   string
 	path      string
 	versioned bool
 	applied   bool
 }
 
 func (s *securityResponse) WriteHeader(status int) {
-	s.apply()
+	// An informational response (103 Early Hints from the upstream) is not
+	// the response: net/http clears the header map after sending it, so the
+	// headers go on the final status.
+	if status >= 200 {
+		s.apply()
+	}
 	s.ResponseWriter.WriteHeader(status)
 }
 
@@ -84,6 +90,7 @@ func (s *securityResponse) apply() {
 	}
 	s.applied = true
 	h := s.Header()
+	h.Set("X-Loyal-Release", s.release)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	h.Set("Content-Security-Policy-Report-Only", securityPolicy)
