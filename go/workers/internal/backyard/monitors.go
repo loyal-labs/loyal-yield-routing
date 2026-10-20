@@ -98,7 +98,7 @@ func bridgeMonitorHold(s Snapshot) (Decision, bool) {
 // cannot pay the queue. This blocks a decision instead of holding the route,
 // because the admissible legs remain safe to execute.
 func withdrawalIdleUnderfunded(s Snapshot) bool {
-	return s.MonitorsArmed && s.WithdrawalDemandRaw > s.VoltrIdleRaw
+	return s.MonitorsArmed && withdrawalShortfallRaw(s) > 0
 }
 
 // unexplainedNAVDriftHold is S1. When the independently observed NAV has moved

@@ -71,3 +71,15 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 		t.Fatalf("exit-only Ethena levered up: %+v", got)
 	}
 }
+
+// Live 2026-10-17..20: a funded $157 claim (demand 156963448 <= Voltr idle
+// 157949522) held Earn Max at target for three days.
+func TestCoveredWithdrawalStillLeversUp(t *testing.T) {
+	t.Parallel()
+	s := leverageSnapshot(1)
+	s.LeverageTargetLevel, s.LeverageUpApproved = 1.5, true
+	s.WithdrawalDemandRaw, s.VoltrIdleRaw = 156_963_448, 157_949_522
+	if got := Decide(targeted(s)); got.Action != OpenRouteStep || got.Reason != leverageUpReason || got.AmountRaw != 500_000_000 {
+		t.Fatalf("covered withdrawal froze the up step: %+v", got)
+	}
+}

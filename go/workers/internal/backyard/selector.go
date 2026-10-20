@@ -449,14 +449,15 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	if base.Action == RecoverTransaction || base.Action == HoldManualRecovery || s.Nonterminal != "" {
 		return hold("execution_recovery_or_safety_first")
 	}
-	if s.WithdrawalDemandRaw > 0 || s.VoltrStrategyIdleRaw > 0 {
+	if withdrawalShortfallRaw(s) > 0 || s.VoltrStrategyIdleRaw > 0 {
 		return hold("withdrawal_or_accounting_first")
 	}
 	if !s.Fresh || s.SquadsIdleRaw < 0 || s.TotalVaultNAVRaw > 1<<53 || s.TotalVaultNAVRaw < 0 || s.PositionCollateralValueRaw < 0 || s.PositionDebtValueRaw < 0 || s.CollateralIdleValueRaw < 0 {
 		return hold("invalid_holdings")
 	}
-	// USDC stays idle; borrowed cash is already offset by observed debt in NAV.
-	equity := s.TotalVaultNAVRaw - p.IdleBufferRaw
+	// USDC stays idle and covered demand stays reserved; borrowed cash is
+	// already offset by observed debt in NAV.
+	equity := s.TotalVaultNAVRaw - s.WithdrawalDemandRaw - p.IdleBufferRaw
 	if equity <= 0 {
 		return hold("no_investable_equity")
 	}

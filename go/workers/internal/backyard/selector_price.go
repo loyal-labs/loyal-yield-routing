@@ -303,7 +303,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	s := o.Snapshot
 	lane := market.Lane
 	q := MoveQuote{SourceLane: s.RouteLane, DestinationLane: lane, ObservationID: s.ObservationID, ObservedAt: o.ObservedAt, SampleSlot: s.Slot,
-		MinimumIdleRaw: uint64(max(s.VoltrIdleRaw, 0)) + uint64(max(s.SquadsIdleRaw, 0)), ValidThroughSlot: s.Slot + observationLagSlots()}
+		MinimumIdleRaw: uint64(max(s.VoltrIdleRaw-s.WithdrawalDemandRaw, 0)) + uint64(max(s.SquadsIdleRaw, 0)), ValidThroughSlot: s.Slot + observationLagSlots()}
 	if source != nil {
 		q.RotateFrom, q.MinimumIdleRaw, q.Keep = source.RouteLane, uint64(laneReleaseLimitRaw(*source)), keep
 		if !rotationPair(source.RouteLane, lane) || keep == nil {
