@@ -713,7 +713,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 	}{
 		{"unknown-obligation", func(s *Snapshot) { s.ObligationPresenceKnown = false }},
 		{"present-obligation", func(s *Snapshot) { s.ObligationPresent = true }},
-		{"withdrawal-demand", func(s *Snapshot) { s.WithdrawalDemandRaw = 1 }},
+		{"withdrawal-shortfall", func(s *Snapshot) { s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1 }},
 		{"non-flat-state", func(s *Snapshot) { s.PositionDebtRaw = 1 }},
 		{"pending-operation", func(s *Snapshot) { s.Nonterminal = Signed }},
 		{"stale-observation", func(s *Snapshot) { s.Fresh = false }},

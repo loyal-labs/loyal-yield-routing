@@ -398,7 +398,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw), Trustful: v.trustful(), ApprovedAdminPerformanceFeeBPS: v.AdminPerformanceFeeBPS}}
 	base.Snapshot.PrimeIdleRaw = int64(prime.Raw)
 	base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
-	if (route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane)) && prime.Raw > 0 && demand == 0 {
+	if (route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane)) && prime.Raw > 0 && withdrawalShortfallRaw(base.Snapshot) == 0 {
 		minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
 		if err != nil && !basicLane(route.Lane) {
 			return Observation{}, nil, err
