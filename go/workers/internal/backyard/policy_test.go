@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -151,27 +150,35 @@ func testPolicyAccount(key policyKey) string {
 	return account
 }
 
-// capturedPolicyProgramAccounts is getProgramAccounts' answer for the
-// policies on Backyard's Settings: testInstalled, at slot.
-func capturedPolicyProgramAccounts(slot int64) map[string]any {
+// capturedPolicyAccount is getMultipleAccounts' answer for address when it is
+// Backyard's Settings (with a PolicySeed past every testInstalled seed) or a
+// policy of testInstalled.
+func capturedPolicyAccount(address string) (map[string]any, bool) {
 	accounts, err := testInstalled()
 	if err != nil {
 		panic(err)
 	}
-	values := make([]any, 0, len(accounts))
-	for _, a := range accounts {
-		values = append(values, map[string]any{"pubkey": a.address.String(), "account": map[string]any{
-			"data": []string{base64.StdEncoding.EncodeToString(a.data), "base64"}, "owner": squads.ProgramID.String(),
-			"lamports": 1, "executable": false, "rentEpoch": 0, "space": len(a.data)}})
+	value := func(data []byte) map[string]any {
+		return map[string]any{"data": []string{base64.StdEncoding.EncodeToString(data), "base64"}, "owner": squads.ProgramID.String(),
+			"lamports": 1, "executable": false, "rentEpoch": 0, "space": len(data)}
 	}
-	return map[string]any{"context": map[string]int64{"slot": slot}, "value": values}
-}
-
-// squadsProgramAccounts reports whether a getProgramAccounts request reads
-// the Squads program: the policy read, not a Voltr receipt read.
-func squadsProgramAccounts(params []json.RawMessage) bool {
-	var program string
-	return len(params) > 0 && json.Unmarshal(params[0], &program) == nil && program == squads.ProgramID.String()
+	if address == bridgeSettings {
+		data := append([]byte(nil), squads.SettingsDiscriminator[:]...)
+		data = append(data, make([]byte, 16+32)...)
+		data = append(data, 1, 0, 0, 0, 0, 0)
+		data = append(data, make([]byte, 16)...)
+		data = append(data, 0)
+		data = append(data, make([]byte, 8)...)
+		data = append(data, 255, 0, 0, 0, 0, 0, 1)
+		data = binary.LittleEndian.AppendUint64(data, uint64(100+len(accounts)))
+		return value(append(data, 0)), true
+	}
+	for _, a := range accounts {
+		if a.address.String() == address {
+			return value(a.data), true
+		}
+	}
+	return nil, false
 }
 
 type testPolicyAccountData struct {

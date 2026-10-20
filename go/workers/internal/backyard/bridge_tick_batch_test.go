@@ -29,19 +29,26 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	uninstalled := false
 	rpcOf(client).Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		var request struct {
-			Method string `json:"method"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
 		requests[request.Method]++
 		switch request.Method {
-		case "getProgramAccounts":
-			result := capturedPolicyProgramAccounts(78)
-			if uninstalled {
-				result["value"] = []any{}
+		case "getMultipleAccounts":
+			var params []json.RawMessage
+			var addresses []string
+			_ = json.Unmarshal(request.Params, &params)
+			_ = json.Unmarshal(params[0], &addresses)
+			values := make([]any, len(addresses))
+			for i, address := range addresses {
+				if captured, ok := capturedPolicyAccount(address); ok && (!uninstalled || address == bridgeSettings) {
+					values[i] = captured
+				}
 			}
-			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
+			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"context": map[string]int{"slot": 78}, "value": values}})
 			return response(string(raw)), nil
 		case "getLatestBlockhash":
 			return response(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":78},"value":{"blockhash":%q,"lastValidBlockHeight":999}}}`, bridgeVault)), nil
@@ -54,7 +61,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.routeBatch != o.routeBatch || evidence.Request.Action != ReportNAV || len(evidence.ExpectedEffects.Accounts) == 0 || requests["getProgramAccounts"] != 1 || requests["getLatestBlockhash"] != 1 {
+	if prepared.routeBatch != o.routeBatch || evidence.Request.Action != ReportNAV || len(evidence.ExpectedEffects.Accounts) == 0 || requests["getMultipleAccounts"] != 3 || requests["getLatestBlockhash"] != 1 {
 		t.Fatal("lost shared batch or unexpected preparation reads", requests)
 	}
 	withBatch, _ := json.Marshal(o)

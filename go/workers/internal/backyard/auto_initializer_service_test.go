@@ -388,6 +388,10 @@ func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]Confirme
 			}
 			values := make([]any, len(addresses))
 			for index, address := range addresses {
+				if captured, ok := capturedPolicyAccount(address); ok {
+					values[index] = captured
+					continue
+				}
 				if account, ok := prestate[address]; ok && !(account.Owner == "" && account.Lamports == 0 && len(account.Data) == 0) {
 					values[index] = map[string]any{"owner": account.Owner, "lamports": account.Lamports, "executable": account.Executable,
 						"data": []string{base64.StdEncoding.EncodeToString(account.Data), "base64"}}
@@ -398,9 +402,6 @@ func autoInitializerServiceRPC(t *testing.T) (*chain.Client, map[string]Confirme
 			sends++
 			return &http.Response{StatusCode: 500, Body: io.NopCloser(bytes.NewReader([]byte(`{}`))), Header: make(http.Header)}, nil
 		case "getProgramAccounts":
-			if squadsProgramAccounts(body.Params) {
-				return serve(capturedPolicyProgramAccounts(42)), nil
-			}
 			// No open Voltr withdrawal receipts in this fixture chain.
 			return serve(map[string]any{"context": map[string]int{"slot": 42}, "value": []any{}}), nil
 		case "getSignatureStatuses":

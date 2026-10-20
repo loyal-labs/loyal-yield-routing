@@ -211,19 +211,43 @@ type Installed struct {
 }
 
 // Policies lists every policy account installed on settings, read at a slot
-// no older than minSlot (none when zero).
+// no older than minSlot (none when zero). It reads the Settings account, then
+// the policy at each seed up to its PolicySeed by derived address, pinned to
+// the Settings read's slot. A seed whose account is gone, or holds anything
+// but a Squads policy of settings, is skipped; a policy at a seed above
+// PolicySeed is not seen.
 func Policies(ctx context.Context, c *chain.Client, settings solana.PublicKey, minSlot uint64) ([]Installed, error) {
-	_, accounts, err := c.ProgramAccounts(ctx, ProgramID, []rpc.RPCFilter{
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: PolicyDiscriminator[:]}},
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 8, Bytes: settings[:]}},
-	}, rpc.CommitmentConfirmed, minSlot)
+	slot, read, err := c.Accounts(ctx, []solana.PublicKey{settings}, rpc.CommitmentConfirmed, minSlot)
+	if err != nil {
+		return nil, err
+	}
+	decoded, err := DecodeSettings(read[0])
+	if err != nil {
+		return nil, fmt.Errorf("settings %s: %w", settings, err)
+	}
+	if decoded.PolicySeed == nil || *decoded.PolicySeed == 0 {
+		return nil, nil
+	}
+	addresses := make([]solana.PublicKey, 0, *decoded.PolicySeed)
+	for seed := uint64(1); seed <= *decoded.PolicySeed; seed++ {
+		address, _, err := PolicyAddress(settings, seed)
+		if err != nil {
+			return nil, err
+		}
+		addresses = append(addresses, address)
+	}
+	_, accounts, err := c.Accounts(ctx, addresses, rpc.CommitmentConfirmed, slot)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Installed, 0, len(accounts))
-	for i := range accounts {
-		view, _ := DecodeCanonicalPolicy(&accounts[i])
-		out = append(out, Installed{Account: accounts[i].Key, View: view})
+	for _, account := range accounts {
+		if account == nil || account.Owner != ProgramID || len(account.Data) < 40 ||
+			!bytes.Equal(account.Data[:8], PolicyDiscriminator[:]) || !bytes.Equal(account.Data[8:40], settings[:]) {
+			continue
+		}
+		view, _ := DecodeCanonicalPolicy(account)
+		out = append(out, Installed{Account: account.Key, View: view})
 	}
 	return out, nil
 }
