@@ -89,8 +89,9 @@ if [[ $family == web ]]; then
   [[ -n ${NEXT_PUBLIC_PRIVY_APP_ID:-} ]] || missing+=("NEXT_PUBLIC_PRIVY_APP_ID")
   [[ -n ${NEXT_PUBLIC_APP_ENVIRONMENT:-} ]] || missing+=("NEXT_PUBLIC_APP_ENVIRONMENT")
   if [[ ${#missing[@]} -gt 0 ]]; then
-    echo "the web bundle inlines NEXT_PUBLIC_* from this environment; set: ${missing[*]}" >&2
-    echo "run the deploy under: op run --env-file=.env.1password -- bun run deploy web [sha]" >&2
+    echo "the web bundle inlines NEXT_PUBLIC_* from this environment; missing: ${missing[*]}" >&2
+    echo "add them to the 1Password Environment loyal-noncritical-env (mounted at .env.1password)," >&2
+    echo "then run the deploy under: op run --env-file=.env.1password -- bun run deploy web [sha]" >&2
     exit 1
   fi
   export NEXT_PUBLIC_GIT_COMMIT_HASH=$sha NEXT_PUBLIC_GIT_BRANCH=main
