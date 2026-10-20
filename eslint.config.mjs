@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // loyal-app, linted by its own config.
+    "web/**",
   ]),
 ]);
 
