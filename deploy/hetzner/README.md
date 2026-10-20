@@ -305,6 +305,112 @@ cleanly for a while.
 `/metrics`, and the collector does not ship its logs, which are plain text
 in the journal under `loyal-realtime`.
 
+## Web (loyal-web)
+
+`loyal-web.service` runs `loyal-web`, the Go binary that serves both Loyal
+sites: the Vite build of `web/apps/loyal` is embedded in it, and every `/api`
+path it does not answer is forwarded to the Next deployment. Caddy proxies
+`next.askloyal.com` to `127.0.0.1:10080`. The unit holds no credentials —
+the proxy phase needs none; the API pilot adds Neon/auth credentials through
+`LoadCredentialEncrypted` drop-ins. Prometheus covers it only through
+`LoyalUnitDown`/`LoyalUnitRestartLoop`; there is no `/metrics` scrape, and
+its slog JSON logs stay in the journal under `loyal-web`.
+
+| Unit | Binary | Release |
+|---|---|---|
+| `loyal-web.service` | `loyal-web` | `/opt/loyal/releases/web/<sha>/loyal-web` |
+
+The unit pins what the proxy needs: `LOYAL_WEB_ADDRESS=127.0.0.1:10080` and
+`LOYAL_WEB_UPSTREAM=https://app.askloyal.com`. `LOYAL_WEB_APP_HOST` is
+deliberately unset (the test host serves both sites from one hostname); a
+drop-in sets it if the sites split onto separate hostnames.
+
+### First install (once)
+
+`activate.sh` reads the running release from the
+`40-verified-release.conf` drop-in, and the deploy refuses to run without
+one, so the first release is installed by hand. Build the linux binary from
+a checkout at `<sha>`: the bundle inlines `NEXT_PUBLIC_*` from the build
+environment (as Next does), so run it under
+`op run --env-file=.env.1password --` with at least
+`NEXT_PUBLIC_PRIVY_APP_ID` and `NEXT_PUBLIC_APP_ENVIRONMENT` set. Values are
+never echoed. The deploy always sets `NEXT_PUBLIC_GIT_COMMIT_HASH=<sha>` and
+`NEXT_PUBLIC_GIT_BRANCH=main` itself.
+
+```sh
+git worktree add --detach /tmp/loyal-web-install <sha>
+cd /tmp/loyal-web-install/web && bun install --frozen-lockfile && cd ..
+op run --env-file=.env.1password -- env \
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-ldflags=-X=main.stamp=<sha> \
+  sh scripts/web/build.sh /tmp/loyal-web-bin
+grep -qa <sha> /tmp/loyal-web-bin   # the binary must carry the sha
+cd - >/dev/null   # leave the worktree before removing it
+git worktree remove --force /tmp/loyal-web-install
+```
+
+Upload it, install the unit, write the first drop-in by hand, enable:
+
+```sh
+ssh loyal-workers 'install -d -m 0755 /opt/loyal/releases/web/<sha>'
+scp -q /tmp/loyal-web-bin \
+  loyal-workers:/opt/loyal/releases/web/<sha>/loyal-web.tmp
+scp -q deploy/hetzner/systemd/loyal-web.service loyal-workers:/etc/systemd/system/
+ssh loyal-workers 'chmod 555 /opt/loyal/releases/web/<sha>/loyal-web.tmp &&
+  mv /opt/loyal/releases/web/<sha>/loyal-web.tmp /opt/loyal/releases/web/<sha>/loyal-web &&
+  install -d -m 0755 /etc/systemd/system/loyal-web.service.d &&
+  printf "[Service]\nExecStart=\nExecStart=/opt/loyal/releases/web/<sha>/loyal-web\n" \
+    > /etc/systemd/system/loyal-web.service.d/40-verified-release.conf &&
+  systemctl daemon-reload && systemctl enable --now loyal-web'
+ssh loyal-workers 'curl -fsS -D- http://127.0.0.1:10080/readyz'   # 200, X-Loyal-Release: <sha>
+```
+
+### Deploy and roll back
+
+```sh
+op run --env-file=.env.1password -- bun run deploy web [<sha>]   # sha defaults to origin/main
+```
+
+Same shape as the engine families: it refuses a sha that is not on
+origin/main, reads the running release from the drop-in, builds, uploads the
+binary and `activate.sh` to `/opt/loyal/releases/web/<sha>/`, and swaps under
+the host's deploy lock (`/run/lock/loyal-deploy.lock`) as a transient unit.
+The differences:
+
+- It builds in a throwaway `git worktree` of the commit (the Vite build
+  needs the whole checkout and a fresh `bun install`, not a `git archive` of
+  two dirs), for the host's architecture, and refuses a binary that does not
+  carry the sha. `LOYAL_DEPLOY_DRY_RUN=1` does everything up to and
+  including the linux build, prints the binary's sha256 and the release
+  string in it, and stops before any ssh.
+- `--migrations-applied` and `--stopped` are rejected, there is no migrations
+  check, and there is no Prometheus rules step: redeploying the sha that
+  already runs (and is active) is a no-op.
+- `activate.sh` counts web as up when the unit has stayed active with
+  `NRestarts` 0 for 20 s **and** `GET http://127.0.0.1:10080/readyz` returns
+  200 naming `X-Loyal-Release: <sha>` (30 s grace) — an old release also
+  stays up, so the release header is the real gate. Otherwise the previous
+  drop-in comes back and the previous release restarts.
+
+Roll back with `bun run deploy web <prev-sha>`. The host log is
+`/var/log/loyal-deploy/web-<sha>.log`.
+
+### Caddy and DNS (first deploy)
+
+Add the site block from `deploy/hetzner/caddy/loyal-web.caddy` to
+`/etc/caddy/Caddyfile`, next to `realtime.askloyal.com`'s (back the file up
+first). The block disables the TLS-ALPN challenge like realtime's and sets
+`flush_interval -1`, so the Go proxy's SSE streams are not buffered. Then:
+
+```sh
+caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
+curl -fsS https://realtime.askloyal.com/readyz    # the neighbour site still answers
+curl -fsS -D- https://next.askloyal.com/readyz    # 200, X-Loyal-Release: <sha>
+```
+
+The owner adds the DNS-only A record `next.askloyal.com` → the workers host
+(like `realtime.askloyal.com`) and `https://next.askloyal.com` to the Privy
+app's allowed origins.
+
 ## Monitoring
 
 All files are in `monitoring/`. Everything listens on loopback.
