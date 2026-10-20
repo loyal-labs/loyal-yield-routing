@@ -41,7 +41,7 @@ func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *test
 		}
 		for _, mutate := range []func(*Snapshot){
 			func(s *Snapshot) { s.ObligationPresenceKnown = false }, func(s *Snapshot) { s.ObligationPresent = true },
-			func(s *Snapshot) { s.Nonterminal = Signed }, func(s *Snapshot) { s.WithdrawalDemandRaw = 1 }, func(s *Snapshot) { s.Target = LaneTarget{Rule: ruleHold} }, func(s *Snapshot) { s.Target.EntryRaw = 0 },
+			func(s *Snapshot) { s.Nonterminal = Signed }, func(s *Snapshot) { s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1 }, func(s *Snapshot) { s.Target = LaneTarget{Rule: ruleHold} }, func(s *Snapshot) { s.Target.EntryRaw = 0 },
 			func(s *Snapshot) { s.SquadsIdleRaw = 1 }, func(s *Snapshot) { s.CollateralIdleRaw = 1 }, func(s *Snapshot) { s.PositionDebtRaw = 1 }, func(s *Snapshot) { s.CapacityRaw = 0 }, func(s *Snapshot) { s.LiquidationThresholdBPS = laneCeilingLTVBPS(s.RouteLane) + 1000 },
 		} {
 			s := o.Snapshot

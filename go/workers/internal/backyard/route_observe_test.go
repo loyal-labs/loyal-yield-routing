@@ -237,3 +237,40 @@ func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
 		}
 	}
 }
+
+// Review of #396: an entry that started while the queue was covered swapped
+// its cash to collateral, then held stale with that collateral undeposited
+// until the queue was claimed.
+func TestCoveredDemandObservationDepositsSwappedCollateral(t *testing.T) {
+	m := primeFixtureManifest(readyWorkerManifest(t))
+	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	accounts := productionRouteBatchAccounts(t, 77, func(accounts []ConfirmedAccount) {
+		clear(accountAt(accounts, primePRIMEUSDC.Kamino.Obligation).Data[1208:2208])
+		binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], 77)
+		reserve := accountAt(accounts, primePRIMEUSDC.Kamino.CollateralReserve).Data
+		for i := 1; i < 11; i++ {
+			binary.LittleEndian.PutUint32(reserve[kaminoReserveConfigOffset+64+i*8:], 10_000)
+		}
+		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.CollateralCustody).Data[64:72], 4_000)
+	})
+	address, data := receiptFixture(t, m.vault.VoltrVault, testPublicKey(44), 5, 5<<48)
+	read := fixtureBatchRuntime(77, accounts)
+	o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState,
+		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
+			slot, observed, _, err := read(ctx, addresses, minSlot)
+			return slot, observed, []programAccount{{Address: address, Account: ConfirmedAccount{Address: address, Owner: voltr.ProgramID.String(), Lamports: 1, Data: data}}}, err
+		},
+		refreshValuation: fixtureRefresh(77, accounts),
+		now:              func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := base()
+	s.RouteLane, s.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
+	s.WithdrawalDemandRaw, s.VoltrIdleRaw = o.Snapshot.WithdrawalDemandRaw, o.Snapshot.VoltrIdleRaw
+	s.CollateralIdleRaw, s.MinimumCollateralDepositRaw = o.Snapshot.CollateralIdleRaw, o.Snapshot.MinimumCollateralDepositRaw
+	if got := Decide(targeted(s)); s.WithdrawalDemandRaw != 5 || s.VoltrIdleRaw < 5 || got.Action != OpenRouteStep || got.AmountRaw != 4_000 {
+		t.Fatalf("covered demand %d of idle %d left collateral undeposited: %+v", s.WithdrawalDemandRaw, s.VoltrIdleRaw, got)
+	}
+}

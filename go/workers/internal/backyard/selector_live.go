@@ -50,13 +50,13 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 	if s.TotalVaultNAVRaw <= policy.IdleBufferRaw {
 		return out, nil, budgetHold("selector_live_snapshot_unavailable")
 	}
-	// Moves are priced on a settled book: Voltr idle and the Squads cash
-	// an entry already allocated, no withdrawal waiting.
+	// Moves are priced on a settled book: Voltr idle beyond the withdrawal
+	// queue and the Squads cash an entry already allocated, no shortfall.
 	if !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" ||
-		s.WithdrawalDemandRaw != 0 || s.VoltrStrategyIdleRaw != 0 || s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 {
+		withdrawalShortfallRaw(s) != 0 || s.VoltrStrategyIdleRaw != 0 || s.WithdrawalDemandRaw < 0 || s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 {
 		return out, nil, budgetHold("selector_source_unavailable")
 	}
-	idle := uint64(s.VoltrIdleRaw) + uint64(s.SquadsIdleRaw)
+	idle := uint64(s.VoltrIdleRaw-s.WithdrawalDemandRaw) + uint64(s.SquadsIdleRaw)
 	// Without cash beyond the buffer no lane is entered with cash; a
 	// rotation canary prices its own pair only.
 	cashBlocked := ""

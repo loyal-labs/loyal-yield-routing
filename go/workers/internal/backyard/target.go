@@ -164,6 +164,12 @@ type targetLane struct {
 	exit  *laneExit
 }
 
+// withdrawalShortfallRaw is the part of the withdrawal queue Voltr idle does
+// not cover. Covered demand stays reserved in Voltr idle and freezes nothing.
+func withdrawalShortfallRaw(s Snapshot) int64 {
+	return max(s.WithdrawalDemandRaw-s.VoltrIdleRaw, 0)
+}
+
 // target computes the vault's target over the tick's per-lane views (one per
 // held lane, plus the candidates an overflow or entry may move into, in
 // registry order) and returns the index of the working lane and its target.
@@ -196,7 +202,7 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		t.Rule, t.Level = ruleHardLTV, heldLevel(lanes[worst].s.RouteLane, max(lanes[worst].level.Level, 1.5))
 		return worst, t
 	}
-	shortfall := vault.WithdrawalDemandRaw - vault.VoltrIdleRaw
+	shortfall := withdrawalShortfallRaw(vault)
 	outbound := shortfall > 0
 	// 2. Term maturity. The keep-alive waits for an unfunded withdrawal until
 	// the term's last day.
@@ -625,11 +631,9 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		return d(DeleverRouteStep, debtZeroReason, stepDownMarker)
 	}
 	// Voltr idle already pays the queue: keep the report current for claims.
-	if s.WithdrawalDemandRaw > 0 && s.WithdrawalDemandRaw <= s.VoltrIdleRaw {
-		if s.Trustful && trustfulReportDue(s) || !s.Trustful && (s.CapitalMutated || s.LastReportAgeSeconds >= 60) {
-			return report("withdrawal_covered_nav_due")
-		}
-		return d(Hold, holdAtTarget, 0)
+	if s.WithdrawalDemandRaw > 0 && withdrawalShortfallRaw(s) == 0 &&
+		(s.Trustful && trustfulReportDue(s) || !s.Trustful && (s.CapitalMutated || s.LastReportAgeSeconds >= 60)) {
+		return report("withdrawal_covered_nav_due")
 	}
 	if t.Outbound {
 		if next, ok := outboundStep(s, t, d); ok {
@@ -706,10 +710,10 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		}
 		return d(DeleverRouteStep, releaseReason, t.ReleaseRaw), true
 	}
-	if t.Rule == ruleWithdrawal && s.WithdrawalDemandRaw > s.VoltrIdleRaw {
+	if shortfall := withdrawalShortfallRaw(s); t.Rule == ruleWithdrawal && shortfall > 0 {
 		// Nothing the target may touch is left to free.
 		if s.StrategyNAVRaw == 0 {
-			return d(HoldManualRecovery, "withdrawal_conservation_shortfall", s.WithdrawalDemandRaw-s.VoltrIdleRaw), true
+			return d(HoldManualRecovery, "withdrawal_conservation_shortfall", shortfall), true
 		}
 		return d(Hold, holdNoRoom, 0), true
 	}

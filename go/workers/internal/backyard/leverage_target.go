@@ -69,7 +69,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	out.TermDays, out.TermKnown = termDays(s)
 	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
-		selector.Action != "KEEP" || s.Nonterminal != "" || s.WithdrawalDemandRaw != 0 ||
+		selector.Action != "KEEP" || s.Nonterminal != "" || withdrawalShortfallRaw(s) != 0 ||
 		s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
 		return out, false
 	}
