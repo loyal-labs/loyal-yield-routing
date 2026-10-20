@@ -1,0 +1,5 @@
+# React, Privy and every other package the reused components import resolve
+# from web/node_modules, so this app must not install its own copies of
+# peers like react; two Reacts break hooks.
+[install]
+peer = false

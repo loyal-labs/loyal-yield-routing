@@ -56,3 +56,11 @@ AGENTS.override.md
 
 # personal linked worktrees
 /.infra-personal-clickhouse/
+
+# loyal-web build outputs (scripts/web/build.sh)
+/bin/
+/go/workers/internal/webserve/dist/*
+!/go/workers/internal/webserve/dist/.keep
+/web/apps/loyal/dist/
+/web/apps/loyal/node_modules/
+/web/apps/loyal/src/routeTree.gen.ts
