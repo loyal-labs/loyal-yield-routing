@@ -198,17 +198,6 @@ export const Route = createFileRoute("/blog/$slug/")({
     }
     return { post, morePosts: await getMoreArticles(post.slug, 3) };
   },
-  head: ({ loaderData }) => {
-    const head = headFromMetadata(postMetadata(loaderData?.post));
-    // Next renders openGraph.publishedTime as article:published_time (observed
-    // on Vercel's post pages); the shared headFromMetadata mapper does not map
-    // it yet, so emit the one tag here. apps/web never sets modifiedTime, so
-    // Vercel has no article:modified_time to match.
-    const post = loaderData?.post;
-    if (post) {
-      head.meta.push({ property: "article:published_time", content: post.date });
-    }
-    return head;
-  },
+  head: ({ loaderData }) => headFromMetadata(postMetadata(loaderData?.post)),
   component: BlogPostRoute,
 });

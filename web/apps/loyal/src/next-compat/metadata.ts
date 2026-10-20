@@ -39,6 +39,8 @@ type OpenGraphView = {
   siteName?: string | string[];
   locale?: string;
   images?: Array<string | URL | MetaImage> | string | URL;
+  publishedTime?: string | Date;
+  modifiedTime?: string | Date;
 };
 
 type TwitterView = {
@@ -123,6 +125,9 @@ function fullHead(merged: MergedMetadata): Head {
       if (image.alt) meta.push({ property: "og:image:alt", content: image.alt });
     }
     if (og.type) meta.push({ property: "og:type", content: og.type });
+    // Next renders an article's times after og:type.
+    if (og.publishedTime) meta.push({ property: "article:published_time", content: isoTime(og.publishedTime) });
+    if (og.modifiedTime) meta.push({ property: "article:modified_time", content: isoTime(og.modifiedTime) });
   }
 
   const twitter = merged.twitter;
@@ -211,6 +216,10 @@ function pushIcons(links: Head["links"], icons: IconsView | undefined | null): v
 // Next absolutizes metadata URLs against metadataBase and trims an
 // origin-only result to the bare origin: canonical "/" and og:url
 // "https://askloyal.com/" both render as "https://askloyal.com".
+function isoTime(value: string | Date): string {
+  return typeof value === "string" ? value : value.toISOString();
+}
+
 function resolveUrl(value: string | URL | null | undefined, base: URL): string | undefined {
   if (value === null || value === undefined || value === "") return undefined;
   const resolved = new URL(value instanceof URL ? value.toString() : value, base);
