@@ -286,7 +286,7 @@ func compileJupiterMessageForDelegate(v *Vault, request JupiterSwapRequest, dele
 	if err != nil {
 		return nil, err
 	}
-	message, err := compileV1Message(delegate, blockhash, []compiledInstruction{outer}, executionBudget(request.RouteLane, 1))
+	message, err := compileV1Message(delegate, blockhash, []compiledInstruction{outer}, swapBudget())
 	if err != nil {
 		return nil, err
 	}

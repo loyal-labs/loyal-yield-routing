@@ -40,6 +40,12 @@ const (
 	// autoSwapComputeUnits: the live AUTO swap consumed 202,842 units, past
 	// one instruction's default meter.
 	autoSwapComputeUnits = 300_000
+	// jupiterSwapComputeUnits is a Jupiter swap transaction's meter on every
+	// lane: what a swap needs is its route's, which Jupiter picks per quote
+	// (2026-10-20: the ONyc top-up's two-hop route ran out at 200,000, Squads
+	// having used ~82,000 before Jupiter). No priority fee is set, so the
+	// limit costs nothing.
+	jupiterSwapComputeUnits = 600_000
 )
 
 // v1Budget is a transaction's compute budget, carried in its message config.
@@ -58,6 +64,11 @@ func executionBudget(lane string, n int) v1Budget {
 		units = max(units, autoSwapComputeUnits)
 	}
 	return v1Budget{units: units, heap: squadsExecutionHeapBytes}
+}
+
+// swapBudget is a Jupiter swap transaction's budget.
+func swapBudget() v1Budget {
+	return v1Budget{units: jupiterSwapComputeUnits, heap: squadsExecutionHeapBytes}
 }
 
 // compileV1Message compiles instructions into the one message shape, payer

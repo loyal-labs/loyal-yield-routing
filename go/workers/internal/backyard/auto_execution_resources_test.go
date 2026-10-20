@@ -55,7 +55,9 @@ func TestFreshObligationEntryCompilesAsTheChainRunsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, config := v1Read(t, swap)
-	assertBudget(t, "Maple entry swap", config, instructionComputeUnits, 64*1024)
+	// A swap's need is its route's, not its lane's: live 2026-10-20 the ONyc
+	// top-up swap ran out at 200,000 with Jupiter mid-route.
+	assertBudget(t, "Maple entry swap", config, 600_000, 64*1024)
 
 	data := make([]byte, kamino.ObligationSize)
 	copy(data, kamino.ObligationDiscriminator[:])
