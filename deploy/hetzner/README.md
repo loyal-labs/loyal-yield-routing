@@ -332,9 +332,10 @@ drop-in sets it if the sites split onto separate hostnames.
 one, so the first release is installed by hand. Build the linux binary from
 a checkout at `<sha>`: the bundle inlines `NEXT_PUBLIC_*` from the build
 environment (as Next does), so run it under
-`op run --env-file=.env.1password --` with at least
-`NEXT_PUBLIC_PRIVY_APP_ID` and `NEXT_PUBLIC_APP_ENVIRONMENT` set. Values are
-never echoed. The deploy always sets `NEXT_PUBLIC_GIT_COMMIT_HASH=<sha>` and
+`op run --env-file=.env.1password --`, which carries the `NEXT_PUBLIC_*` set
+Vercel production inlines (`NEXT_PUBLIC_PRIVY_APP_ID` is required;
+`NEXT_PUBLIC_APP_ENVIRONMENT` stays unset, as on Vercel, and means prod).
+Values are never echoed. The deploy always sets `NEXT_PUBLIC_GIT_COMMIT_HASH=<sha>` and
 `NEXT_PUBLIC_GIT_BRANCH=main` itself.
 
 ```sh

@@ -15,9 +15,10 @@
 # web deploys loyal-web the same way, minus the migrations check and the
 # rules step: it builds the Vite app and the Go server from a throwaway git
 # worktree (the Vite build needs the whole checkout, not a two-dir archive)
-# with NEXT_PUBLIC_PRIVY_APP_ID and NEXT_PUBLIC_APP_ENVIRONMENT from the
-# environment (run it under `op run --env-file=.env.1password --`; values are
-# never echoed). LOYAL_DEPLOY_DRY_RUN=1 builds the linux binary and stops
+# with the NEXT_PUBLIC_* set Vercel production inlines, from the environment
+# (run it under `op run --env-file=.env.1password --`; values are never
+# echoed). NEXT_PUBLIC_APP_ENVIRONMENT is unset on Vercel production, which
+# apps/web reads as "prod". LOYAL_DEPLOY_DRY_RUN=1 builds the linux binary and stops
 # before any ssh.
 #
 # The host is the ssh alias in LOYAL_WORKERS_SSH (default loyal-workers); it
@@ -84,14 +85,12 @@ fi
 if [[ $family == web ]]; then
   # The bundle inlines NEXT_PUBLIC_* from the environment, as Next does: the
   # operator runs the deploy under `op run --env-file=.env.1password --`.
-  # Fail before building, naming what is missing; never echo values.
-  missing=()
-  [[ -n ${NEXT_PUBLIC_PRIVY_APP_ID:-} ]] || missing+=("NEXT_PUBLIC_PRIVY_APP_ID")
-  [[ -n ${NEXT_PUBLIC_APP_ENVIRONMENT:-} ]] || missing+=("NEXT_PUBLIC_APP_ENVIRONMENT")
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    echo "the web bundle inlines NEXT_PUBLIC_* from this environment; missing: ${missing[*]}" >&2
-    echo "add them to the 1Password Environment loyal-noncritical-env (mounted at .env.1password)," >&2
-    echo "then run the deploy under: op run --env-file=.env.1password -- bun run deploy web [sha]" >&2
+  # Without the Privy app id nothing signs in; fail before building, naming
+  # where it lives; never echo values.
+  if [[ -z ${NEXT_PUBLIC_PRIVY_APP_ID:-} ]]; then
+    echo "the web bundle inlines NEXT_PUBLIC_* from this environment; missing: NEXT_PUBLIC_PRIVY_APP_ID" >&2
+    echo "it lives in the 1Password Environment loyal-noncritical-env (mounted at .env.1password);" >&2
+    echo "run the deploy under: op run --env-file=.env.1password -- bun run deploy web [sha]" >&2
     exit 1
   fi
   export NEXT_PUBLIC_GIT_COMMIT_HASH=$sha NEXT_PUBLIC_GIT_BRANCH=main
