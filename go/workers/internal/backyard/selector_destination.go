@@ -11,8 +11,10 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// A destination is a flat lane a flat vault's entry would go to. Its batch is
-// one refreshed capture of its reserves (observeSelectorDestinationBatch),
+// A destination is a lane an entry or a rotation's tranche would go to, held
+// or not: an entry beside a position is a top-up (docs/backyard-target.md
+// rule 5). Its batch is one refreshed capture of its reserves
+// (observeSelectorDestinationBatch),
 // the same kind of capture the tick values from, and these checks are the
 // chain facts its legs' builders take as given.
 
@@ -47,23 +49,21 @@ func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAcc
 	return nil
 }
 
-// selectorDestinationAccounts is a flat destination's refreshed batch, its
-// position, and every check its entry's legs depend on.
+// selectorDestinationAccounts is a destination's refreshed batch, its
+// position, and every check its entry's legs depend on. Collateral waiting in
+// its custody is a leg in flight (target rule 4), not a destination.
 func selectorDestinationAccounts(ctx context.Context, v *Vault, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
 	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, v, rpc, route, minimumSlot)
 	if err != nil {
 		return 0, nil, empty, err
 	}
-	if position.HasPosition || position.CollateralDepositedRaw != 0 || position.DebtRaw != 0 {
-		return 0, nil, empty, budgetHold("selector_destination_not_flat")
-	}
 	custody, err := validateSelectorDestinationCommon(v, route, slot, accounts, position)
 	if err != nil {
 		return 0, nil, empty, err
 	}
 	if custody != 0 {
-		return 0, nil, empty, budgetHold("selector_destination_not_flat")
+		return 0, nil, empty, budgetHold("selector_destination_custody_in_flight")
 	}
 	return slot, accounts, position, nil
 }
@@ -99,9 +99,8 @@ func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.C
 	return slot, accounts, position, nil
 }
 
-// validateSelectorDestinationCommon runs every destination check that does not
-// depend on flatness, and returns the observed collateral custody balance so
-// each caller applies its own flatness contract.
+// validateSelectorDestinationCommon runs every destination check and returns
+// the observed collateral custody balance.
 func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64, accounts []ConfirmedAccount, position KaminoPosition) (uint64, error) {
 	if !v.trustful() {
 		if _, err := decodeObservedAdaptorConfig(v, accountAt(accounts, v.Strategy)); err != nil {
