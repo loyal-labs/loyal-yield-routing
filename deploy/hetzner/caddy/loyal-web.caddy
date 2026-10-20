@@ -1,0 +1,16 @@
+# Loyal web (loyal-web.service) behind Caddy. Paste this site block into
+# /etc/caddy/Caddyfile next to realtime.askloyal.com's, then follow
+# deploy/hetzner/README.md, "Web (loyal-web)": validate, reload, recheck the
+# neighbour site.
+next.askloyal.com {
+	tls {
+		issuer acme {
+			# As on realtime.askloyal.com.
+			disable_tlsalpn_challenge
+		}
+	}
+	reverse_proxy 127.0.0.1:10080 {
+		# The Go proxy forwards SSE streams; never buffer them.
+		flush_interval -1
+	}
+}

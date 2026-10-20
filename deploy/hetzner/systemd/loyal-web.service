@@ -1,0 +1,74 @@
+# Loyal web (Go). One static binary serving both sites: the Vite build of
+# web/apps/loyal is embedded in it, and every /api path it does not answer is
+# forwarded to the Next deployment. Caddy proxies next.askloyal.com to
+# 127.0.0.1:10080. Releases ship in /opt/loyal/releases/web/<sha>/loyal-web
+# and are switched by scripts/deploy-workers.sh through the
+# 40-verified-release.conf drop-in, as the other units are.
+# Secrets: none in this phase — the proxy needs no credentials. The API pilot
+# adds Neon/auth credentials later through LoadCredentialEncrypted drop-ins.
+[Unit]
+Description=Loyal web (Go)
+Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting; restart loops are an alert, not a stop.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+# Placeholder release path; the verified-release drop-in overrides it, as on
+# the other units (see loyal-observer.service).
+ExecStart=/opt/loyal/bin/loyal-web
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=60s
+
+Environment=LOYAL_WEB_ADDRESS=127.0.0.1:10080
+# The Next deployment the proxy forwards unowned /api paths to.
+Environment=LOYAL_WEB_UPSTREAM=https://app.askloyal.com
+# LOYAL_WEB_APP_HOST is deliberately unset: the test host serves the
+# marketing site and /app from one hostname, so the app-host routing is
+# unused. Set it in a drop-in if the sites split onto separate hostnames.
+
+DynamicUser=yes
+User=loyal-web
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loyal-web
+
+MemoryMax=384M
+CPUQuota=100%
+Nice=10
+TasksMax=256
+LimitCORE=0
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
