@@ -354,9 +354,9 @@ func TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash(t *testing.T) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	manifest, route, accounts := autoObservationBatch(t, 77, stale)
-	// Pin the third stale hold in a row, the one that latches.
-	kaminoStaleHolds.Store(refreshSimulationLatchAfter - 1)
-	t.Cleanup(func() { kaminoStaleHolds.Store(0) })
+	// Pin staleness older than the latch window.
+	kaminoStaleSince.Store(1)
+	t.Cleanup(func() { kaminoStaleSince.Store(0) })
 	observation, _, err := autoObservationForAccounts(manifest, 77, accounts)(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -436,36 +436,41 @@ func TestAutoEmptyLaneStaleReserveFallsBackToCash(t *testing.T) {
 	}
 }
 
-// A6 (09-26 21:52 and 23:19 one-off latches): a kamino_stale health hold
-// retries twice and latches on the third in a row; a passed health check
-// resets the streak.
-func TestKaminoStaleHealthHoldLatchesOnlyOnThirdInARow(t *testing.T) {
-	kaminoStaleHolds.Store(0)
-	t.Cleanup(func() { kaminoStaleHolds.Store(0) })
+// Three stale reads inside seconds are one outage, not persistence: a
+// kamino_stale hold retries until staleness has lasted kaminoStaleLatchWindow
+// since the first stale read, and a passed health check restarts that window.
+func TestKaminoStaleHealthHoldLatchesOnlyAfterWindow(t *testing.T) {
+	kaminoStaleSince.Store(0)
+	t.Cleanup(func() { kaminoStaleSince.Store(0) })
 	stale := func(accounts []ConfirmedAccount) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, autoAUTOPYUSD.Kamino.CollateralReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	}
 	manifest, _, staleAccounts := autoObservationBatch(t, 77, stale)
 	_, _, freshAccounts := autoObservationBatch(t, 77, nil)
+	clock := time.Unix(kaminoFixtureUnix, 0).UTC()
 	observe := func(accounts []ConfirmedAccount) (Observation, error) {
-		o, _, err := autoObservationForAccounts(manifest, 77, accounts)(context.Background())
+		o, _, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), manifest, routeObservationRuntime{state: testVaultState,
+			read:             fixtureBatchRuntime(77, accounts),
+			refreshValuation: fixtureRefresh(77, accounts),
+			now:              func() time.Time { return clock },
+		})
 		return o, err
 	}
-	for i := 1; i <= 2; i++ {
+	for i := 0; i < 3; i++ {
 		if o, err := observe(staleAccounts); !errors.Is(err, errConfirmedObservationUnavailable) || o.Snapshot.ManualReason != "" {
-			t.Fatalf("stale hold %d latched instead of retrying: %v %q", i, err, o.Snapshot.ManualReason)
+			t.Fatalf("stale hold %d within 5s latched instead of retrying: %v %q", i+1, err, o.Snapshot.ManualReason)
 		}
+		clock = clock.Add(2 * time.Second)
 	}
-	if o, err := observe(freshAccounts); err != nil || o.Snapshot.ManualReason != "" || kaminoStaleHolds.Load() != 0 {
-		t.Fatalf("a passed health check did not reset the streak: %v %q %d", err, o.Snapshot.ManualReason, kaminoStaleHolds.Load())
-	}
-	for i := 1; i <= 2; i++ {
-		if _, err := observe(staleAccounts); !errors.Is(err, errConfirmedObservationUnavailable) {
-			t.Fatalf("stale hold %d after reset latched: %v", i, err)
-		}
-	}
+	clock = clock.Add(kaminoStaleLatchWindow)
 	if o, err := observe(staleAccounts); err != nil || o.Snapshot.ManualReason != "kamino_stale" {
-		t.Fatalf("third stale hold in a row did not latch: %v %q", err, o.Snapshot.ManualReason)
+		t.Fatalf("stale hold after the window did not latch: %v %q", err, o.Snapshot.ManualReason)
+	}
+	if o, err := observe(freshAccounts); err != nil || o.Snapshot.ManualReason != "" {
+		t.Fatalf("a passed health check did not clear the stale window: %v %q", err, o.Snapshot.ManualReason)
+	}
+	if _, err := observe(staleAccounts); !errors.Is(err, errConfirmedObservationUnavailable) {
+		t.Fatalf("stale hold after a passed check latched: %v", err)
 	}
 }
 
@@ -484,9 +489,9 @@ func TestRefreshBlockhashNotFoundIsTransient(t *testing.T) {
 // reserve, which the position check never reads. A stale reference with the
 // lane's own reserves fresh now tries the reserve refresh before any hold.
 func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
-	kaminoStaleHolds.Store(0)
+	kaminoStaleSince.Store(0)
 	refreshSimulationFailures.Store(0)
-	t.Cleanup(func() { kaminoStaleHolds.Store(0); refreshSimulationFailures.Store(0) })
+	t.Cleanup(func() { kaminoStaleSince.Store(0); refreshSimulationFailures.Store(0) })
 	manifest, _, accounts := autoObservationBatch(t, 77, func(accounts []ConfirmedAccount) {
 		binary.LittleEndian.PutUint64(accountAt(accounts, primePRIMEUSDC.Kamino.DebtReserve).Data[16:24], uint64(77-adaptorMaxReportAgeSlots-8))
 	})

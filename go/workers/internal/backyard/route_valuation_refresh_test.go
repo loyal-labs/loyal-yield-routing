@@ -10,10 +10,10 @@ import (
 )
 
 func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T) {
-	t.Cleanup(func() { kaminoStaleHolds.Store(0) })
+	t.Cleanup(func() { kaminoStaleSince.Store(0) })
 	for _, staleOracle := range []bool{false, true} {
-		// Pin the third stale hold in a row, the one that latches.
-		kaminoStaleHolds.Store(refreshSimulationLatchAfter - 1)
+		// Pin staleness older than the latch window.
+		kaminoStaleSince.Store(1)
 		m := readyWorkerManifest(t)
 		m.RuntimeActivation.SelectedLane = PhaseOneLaneID
 		initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
@@ -233,7 +233,7 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 	t.Cleanup(func() {
 		refreshSimulationFailures.Store(0)
-		kaminoStaleHolds.Store(0)
+		kaminoStaleSince.Store(0)
 	})
 	m := readyWorkerManifest(t)
 	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
@@ -244,7 +244,7 @@ func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 	})
 	// Even near both latch thresholds, aged evidence must not count as bad health.
 	refreshSimulationFailures.Store(refreshSimulationLatchAfter - 1)
-	kaminoStaleHolds.Store(refreshSimulationLatchAfter - 1)
+	kaminoStaleSince.Store(1)
 	for _, malformed := range []bool{false, true} {
 		for i := 0; i <= refreshSimulationLatchAfter; i++ {
 			o, accounts, err := observeConfirmedRouteSnapshotWithAccounts(context.Background(), m, routeObservationRuntime{state: testVaultState,
@@ -274,7 +274,7 @@ func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 			if !errors.Is(err, errConfirmedObservationUnavailable) || o.Snapshot.ManualReason != "" || o.Snapshot.Fresh || len(accounts) != 0 {
 				t.Fatal("aged capture latched or escaped retry", i, o.Snapshot, err)
 			}
-			if refreshSimulationFailures.Load() != refreshSimulationLatchAfter-1 || kaminoStaleHolds.Load() != refreshSimulationLatchAfter-1 {
+			if refreshSimulationFailures.Load() != refreshSimulationLatchAfter-1 || kaminoStaleSince.Load() != 1 {
 				t.Fatal("aged capture changed a health failure streak")
 			}
 		}

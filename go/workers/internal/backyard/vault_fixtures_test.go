@@ -43,5 +43,5 @@ func loadEmbeddedRouteManifest() (RouteManifest, error) { return rwa.manifest, n
 var (
 	testVaultState            = &vaultState{}
 	refreshSimulationFailures = &testVaultState.refreshFailures
-	kaminoStaleHolds          = &testVaultState.staleHolds
+	kaminoStaleSince          = &testVaultState.staleSince
 )

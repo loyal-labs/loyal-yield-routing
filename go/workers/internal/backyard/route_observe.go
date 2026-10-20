@@ -324,8 +324,9 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	healthHold := func(err error, lane string) (*Observation, error) {
 		// A stale, paused, or emergency Kamino state is a decision input,
 		// not a broken observer: the tick holds with the audited reason.
-		if hold, ok := kaminoHealthHold(runtime.state, err, slot, runtime.now(), lane); ok {
-			if retry := staleHealthRetry(runtime.state, hold, err, refreshExhausted); retry != nil {
+		now := runtime.now()
+		if hold, ok := kaminoHealthHold(runtime.state, err, slot, now, lane); ok {
+			if retry := staleHealthRetry(runtime.state, hold, err, refreshExhausted, now); retry != nil {
 				return nil, retry
 			}
 			return &hold, nil
@@ -349,7 +350,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
 	}
-	runtime.state.staleHolds.Store(0)
+	runtime.state.staleSince.Store(0)
 	collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
 	if err != nil {
 		return Observation{}, nil, err
@@ -817,15 +818,27 @@ func kaminoHealthHold(state *vaultState, err error, slot int64, now time.Time, l
 	return hold, ok
 }
 
-// refreshSimulationLatchAfter is how many refreshes Kamino rejects in a row,
-// and kamino_stale health holds in a row, before they latch
-// (vaultState).
+// refreshSimulationLatchAfter is how many refreshes Kamino rejects in a row
+// before they latch (vaultState).
 const refreshSimulationLatchAfter = 3
 
-// staleHealthRetry returns the retry error for a kamino_stale hold that has
-// not yet been seen refreshSimulationLatchAfter times in a row, else nil.
-func staleHealthRetry(state *vaultState, hold Observation, err error, refreshExhausted bool) error {
-	if hold.Snapshot.ManualReason != "kamino_stale" || refreshExhausted || state.staleHolds.Add(1) >= refreshSimulationLatchAfter {
+// kaminoStaleLatchWindow is how long kamino_stale holds must persist, from the
+// first stale read, before they latch.
+const kaminoStaleLatchWindow = 15 * time.Minute
+
+// staleHealthRetry returns the retry error for a kamino_stale hold whose
+// staleness began less than kaminoStaleLatchWindow before now, else nil.
+func staleHealthRetry(state *vaultState, hold Observation, err error, refreshExhausted bool, now time.Time) error {
+	if hold.Snapshot.ManualReason != "kamino_stale" || refreshExhausted {
+		return nil
+	}
+	since := now.UnixNano()
+	if !state.staleSince.CompareAndSwap(0, since) {
+		if v := state.staleSince.Load(); v != 0 {
+			since = v
+		}
+	}
+	if now.Sub(time.Unix(0, since)) >= kaminoStaleLatchWindow {
 		return nil
 	}
 	return confirmedObservationUnavailable(fmt.Errorf("kamino health hold, retrying: %w", err))

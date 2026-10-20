@@ -541,12 +541,13 @@ func (w *Worker) Run(ctx context.Context) error {
 // vaultState is one vault's in-process state, shared by its worker and its
 // selector samples: its events, and the streaks that retry before a latch.
 // refreshFailures counts consecutive reserve refreshes Kamino rejected;
-// staleHolds counts consecutive kamino_stale health holds. One-off stale
-// reads latched on 09-26 (21:52 AUTO reserve 345 slots old; 23:19 230 slots
-// old): the first two retry, the third in a row latches as before, and a
-// passed health check resets it. Paused/emergency reserves still latch at
-// once.
+// staleSince is the unix nanos of the first kamino_stale health hold since the
+// last passed health check, 0 when none. One-off stale reads latched on 09-26
+// (21:52 AUTO reserve 345 slots old; 23:19 230 slots old) and three reads
+// within 5 s latched the looping vault: stale holds retry until they have
+// lasted kaminoStaleLatchWindow. Paused/emergency reserves still latch at
+// once, and a restart restarts the window.
 type vaultState struct {
 	events                      *events
-	refreshFailures, staleHolds atomic.Int64
+	refreshFailures, staleSince atomic.Int64
 }
