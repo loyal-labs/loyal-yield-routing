@@ -7,6 +7,14 @@
 //   llms.txt        apps/web src/app/llms.txt/route.ts (GET)
 //   llms-full.txt   apps/web src/app/llms-full.txt/route.ts (GET)
 //
+// It also drops the SPA shell into the directories the copied public/blog
+// tree puts under dist/blog/: webserve's seed handler serves a directory
+// listing for an existing path, which would otherwise shadow the /blog and
+// /blog/<slug> client routes with an index of post media. Same workaround
+// apps/web itself made on Vercel, which is why the post body is not
+// index.md (see features/blog/data.ts): keep an index.* out of the shadowed
+// URL by putting the page there instead.
+
 // Both llms handlers and the sitemap read the blog archive through apps/web's
 // own loader, so their output here is by construction what Vercel serves. The
 // script imports those modules under bun, which needs two shims: their import
@@ -15,7 +23,7 @@
 // src/next-compat stubs the Vite build aliases in, registered as a runtime
 // plugin before the imports. apps/web resolves public/blog relative to its own
 // cwd, so the script runs from there; the dist argument is resolved first.
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "../..");
@@ -107,6 +115,14 @@ writeFileSync(join(dist, "sitemap.xml"), serializeSitemap(await sitemap()));
 for (const name of ["llms.txt", "llms-full.txt"]) {
   const route = await import(join(webApp, `src/app/${name}/route.ts`));
   writeFileSync(join(dist, name), await (await route.GET()).text());
+}
+
+// The SPA shell, byte-for-byte, at the paths the blog asset tree shadows.
+const { getAllBlogSlugs } = await import(join(webApp, "src/features/blog"));
+const shell = readFileSync(join(dist, "index.html"));
+writeFileSync(join(dist, "blog/index.html"), shell);
+for (const slug of await getAllBlogSlugs()) {
+  writeFileSync(join(dist, "blog", slug, "index.html"), shell);
 }
 
 console.log(`static files written to ${dist}`);
