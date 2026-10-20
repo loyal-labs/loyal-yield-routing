@@ -37,10 +37,13 @@ for (const row of routes.filter((r) => r.kind === "page")) {
   const errors: string[] = [];
   page.removeAllListeners("pageerror");
   page.on("pageerror", (error) => errors.push(error.message));
-  const response = await page.goto(url, { waitUntil: "networkidle", timeout: 60_000 }).catch((error: Error) => {
+  const response = await page.goto(url, { waitUntil: "load", timeout: 60_000 }).catch((error: Error) => {
     errors.push(error.message);
     return null;
   });
+  // The app pages poll and stream for as long as they are open, so network
+  // idle is a best-effort settle before the screenshot, never a gate.
+  await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => undefined);
   const name = path === "/" ? "index" : path.slice(1).replaceAll("/", "__");
   await page.screenshot({ path: join(out, `${name}.png`), fullPage: true }).catch(() => undefined);
   const status = response?.status() ?? 0;
