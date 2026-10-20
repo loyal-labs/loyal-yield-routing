@@ -21,6 +21,10 @@ export function classifyHref(href: LinkProps["href"], origin: string): { kind: H
   if (url === "" || url.startsWith("#")) return { kind: "external", url };
   const absolute = new URL(url, origin);
   if (absolute.origin !== origin) return { kind: "external", url };
+  // ?lang= is the language switch's request to the locale middleware (now
+  // go/workers/internal/webapp/locale.go) to remember a choice; Next runs
+  // middleware on Link navigations, here only a page load reaches it.
+  if (absolute.searchParams.has("lang")) return { kind: "external", url };
   return { kind: "internal", url: `${absolute.pathname}${absolute.search}${absolute.hash}` };
 }
 
