@@ -1,0 +1,17 @@
+{
+  "name": "@loyal-labs/web-vite",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "bun run --cwd ../.. build:packages && vite build",
+    "typecheck": "tsc --noEmit -p .",
+    "routes:check": "bun ../../../scripts/web/gen-routes.ts --check"
+  },
+  "devDependencies": {
+    "@tanstack/react-router": "^1.170.32",
+    "@tanstack/router-plugin": "^1.168.35",
+    "@vitejs/plugin-react": "^6.1.0",
+    "vite": "^8.2.2"
+  }
+}

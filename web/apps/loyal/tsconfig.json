@@ -1,0 +1,78 @@
+{
+  "extends": "../web/tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "incremental": false,
+    "plugins": [],
+    "types": [
+      "vite/client"
+    ],
+    "paths": {
+      "@loyal-labs/actions": [
+        "../../packages/loyal-actions/src/index.ts"
+      ],
+      "@loyal-labs/actions/constants": [
+        "../../packages/loyal-actions/src/constants.ts"
+      ],
+      "@loyal-labs/actions/types": [
+        "../../packages/loyal-actions/src/types.ts"
+      ],
+      "@loyal-labs/shared": [
+        "../../packages/shared/src/index.ts"
+      ],
+      "@loyal-labs/shared/analytics": [
+        "../../packages/shared/src/analytics.ts"
+      ],
+      "@loyal-labs/shared/analytics-server": [
+        "../../packages/shared/src/analytics-server.ts"
+      ],
+      "@loyal-labs/smart-account-vaults": [
+        "../../packages/smart-account-vaults/src/index.ts"
+      ],
+      "@loyal-labs/solana-instruction-decoder": [
+        "../../packages/solana-instruction-decoder/src/index.ts"
+      ],
+      "@loyal-labs/solana-rpc": [
+        "../../packages/solana-rpc/src/index.ts"
+      ],
+      "@loyal-labs/solana-wallet": [
+        "../../packages/solana-wallet/src/index.ts"
+      ],
+      "@/*": [
+        "../web/src/*"
+      ],
+      "next/link": [
+        "./src/next-compat/link.tsx"
+      ],
+      "next/image": [
+        "./src/next-compat/image.tsx"
+      ],
+      "next/navigation": [
+        "./src/next-compat/navigation.ts"
+      ],
+      "next/dynamic": [
+        "./src/next-compat/dynamic.tsx"
+      ],
+      "next/font/google": [
+        "./src/next-compat/font-google.ts"
+      ],
+      "geist/font/sans": [
+        "./src/next-compat/geist-sans.ts"
+      ],
+      "geist/font/mono": [
+        "./src/next-compat/geist-mono.ts"
+      ],
+      "server-only": [
+        "./src/next-compat/server-only.ts"
+      ]
+    }
+  },
+  "include": [
+    "src",
+    "../web/src/types/**/*.d.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
+}

@@ -1,0 +1,49 @@
+name: loyal-web
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - web/**
+      - go/workers/cmd/loyal-web/**
+      - go/workers/internal/webapp/**
+      - go/workers/internal/webauth/**
+      - go/workers/internal/webserve/**
+      - scripts/web/**
+      - .github/workflows/web-go.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loyal-web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: loyal-app files untouched
+        run: sh scripts/web/check-untouched.sh "origin/${{ github.base_ref }}"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/package.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/workers/go.mod
+          cache-dependency-path: go/workers/go.sum
+      - name: install web
+        run: cd web && bun install --frozen-lockfile
+      - name: every Next page has a route
+        run: bun scripts/web/gen-routes.ts --check
+      - name: build
+        run: sh scripts/web/build.sh
+      - name: go
+        working-directory: go/workers
+        run: |
+          go vet ./cmd/loyal-web ./internal/webapp ./internal/webauth ./internal/webserve
+          go test -race ./cmd/loyal-web ./internal/webapp ./internal/webauth ./internal/webserve
