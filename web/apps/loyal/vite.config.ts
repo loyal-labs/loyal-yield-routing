@@ -45,6 +45,12 @@ const publicEnv = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => key.startsWith("NEXT_PUBLIC_")),
 );
 
+// layout.tsx tints the favicon by VERCEL_ENV, which Next reads on the server.
+// Here the build stands in for the server: a prod build is Vercel's production.
+const vercelEnv =
+  process.env.VERCEL_ENV ??
+  ((process.env.NEXT_PUBLIC_APP_ENVIRONMENT ?? "prod") === "prod" ? "production" : "development");
+
 const apiOrigin = process.env.LOYAL_WEB_ORIGIN || "http://127.0.0.1:8080";
 
 export default defineConfig({
@@ -62,7 +68,7 @@ export default defineConfig({
     postcss: { plugins: [tailwindcss({ base: nextApp })] },
   },
   define: {
-    "process.env": JSON.stringify({ ...publicEnv, NODE_ENV: process.env.NODE_ENV ?? "production" }),
+    "process.env": JSON.stringify({ ...publicEnv, VERCEL_ENV: vercelEnv, NODE_ENV: process.env.NODE_ENV ?? "production" }),
   },
   publicDir: here("../web/public"),
   build: {

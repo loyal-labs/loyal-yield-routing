@@ -1,35 +1,54 @@
 package webapp
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 )
 
-// forward sends a request to the Next deployment unchanged except for Host.
+// forward sends a request to the Next deployment that still owns the path
+// (every /api and /ingest path Go does not answer; /ingest is not a rewrite —
+// apps/web has no rewrites, it is a route handler of Next's,
+// web/apps/web/src/app/ingest/[...path]/route.ts).
 //
-// Seed body. G5 owns the contract: method, body, query and cookies pass
-// through; Set-Cookie comes back with no Domain rewrite; SSE streams flush.
+// The contract, checked by proxy_scratch_test.go:
+//
+//   - method, body, query and cookies pass through;
+//   - the outbound Host is the upstream's host (Vercel routes by it);
+//   - X-Forwarded-For/Host/Proto describe the inbound request;
+//   - an Origin whose host equals the inbound Host is presented as the
+//     upstream origin: /api/observability/events rejects an Origin that is
+//     not its own URL origin, which through the proxy means the upstream's;
+//   - Set-Cookie comes back untouched, Domain=askloyal.com and all;
+//   - SSE streams flush immediately;
+//   - upstream failures are a logged 502, never a panic.
 func forward(upstream *url.URL) http.Handler {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(upstream)
 			r.SetXForwarded()
+			presentOrigin(r, upstream)
 		},
 		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			slog.Error("loyal-web proxy", "error", err, "method", r.Method, "path", r.URL.Path)
+			http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+		},
 	}
 	return proxy
 }
 
-// ingest forwards PostHog's /ingest/* to PostHog, as apps/web's rewrite does.
-//
-// Seed body. G5 maps /ingest/static/* to the assets host as next.config.ts does.
-func ingest(posthog *url.URL) http.Handler {
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(posthog)
-			r.Out.URL.Path = r.In.URL.Path[len("/ingest"):]
-		},
+// presentOrigin rewrites a same-host Origin to the upstream origin and leaves
+// a foreign one alone.
+func presentOrigin(r *httputil.ProxyRequest, upstream *url.URL) {
+	origin := r.Out.Header.Get("Origin")
+	if origin == "" {
+		return
 	}
-	return proxy
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" || parsed.Host != r.In.Host {
+		return
+	}
+	r.Out.Header.Set("Origin", upstream.Scheme+"://"+upstream.Host)
 }

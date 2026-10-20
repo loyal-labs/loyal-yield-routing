@@ -30,9 +30,6 @@ func config() (webapp.Config, error) {
 	if cfg.Upstream, err = parseOrigin("LOYAL_WEB_UPSTREAM", "https://app.askloyal.com"); err != nil {
 		return cfg, err
 	}
-	if cfg.PostHog, err = parseOrigin("LOYAL_WEB_POSTHOG", "https://us.i.posthog.com"); err != nil {
-		return cfg, err
-	}
 	return cfg, nil
 }
 
@@ -51,9 +48,16 @@ func parseOrigin(name, fallback string) (*url.URL, error) {
 	return origin, nil
 }
 
+// stamp is the commit set at link time for builds without VCS info, by
+// -ldflags=-X=main.stamp=<sha>. release prefers it over the build info.
+var stamp string
+
 // release is the commit the binary was built from; a build from a dirty tree
 // names no commit.
 func release() string {
+	if stamp != "" {
+		return stamp
+	}
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "unknown"
@@ -80,7 +84,7 @@ func run(ctx context.Context) error {
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           webapp.New(cfg),
+		Handler:           webapp.New(cfg, webapp.Deps{}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
