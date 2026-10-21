@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -210,10 +211,22 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	working := views[index]
 	working.Snapshot.Target = laneTarget
 	working.Snapshot.TargetInputs = targetSummary(snapshots, runtime.inputs)
-	working.Snapshot.ObservationID = sha256Bytes([]byte(fmt.Sprintf("%s|target:%+v|inputs:%s", working.Snapshot.ObservationID, laneTarget, working.Snapshot.TargetInputs)))
+	observationID, err := targetObservationID(working.Snapshot.ObservationID, laneTarget, working.Snapshot.TargetInputs)
+	if err != nil {
+		return Observation{}, nil, err
+	}
+	working.Snapshot.ObservationID = observationID
 	working.routeBatch.ObservationID = working.Snapshot.ObservationID
 	working.lanes = snapshots
 	return working, accounts, nil
+}
+
+func targetObservationID(prior string, target LaneTarget, inputs string) (string, error) {
+	encoded, err := json.Marshal(target)
+	if err != nil {
+		return "", fmt.Errorf("encode lane target for observation id: %w", err)
+	}
+	return sha256Bytes([]byte(fmt.Sprintf("%s|target:%s|inputs:%s", prior, encoded, inputs))), nil
 }
 
 func flatViewLane(preferred string, in targetInputs) string {
