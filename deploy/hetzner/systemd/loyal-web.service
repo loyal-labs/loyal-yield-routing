@@ -4,8 +4,8 @@
 # carries next.askloyal.com to 127.0.0.1:10080. Releases ship in /opt/loyal/releases/web/<sha>/loyal-web
 # and are switched by scripts/deploy-workers.sh through the
 # 40-verified-release.conf drop-in, as the other units are.
-# Secrets: none in this phase — the proxy needs no credentials. The API pilot
-# adds Neon/auth credentials later through LoadCredentialEncrypted drop-ins.
+# The proxy needs no credentials. An optional WEB_APP_DATABASE_URL encrypted
+# credential enables the public Earn stats reader (see README).
 [Unit]
 Description=Loyal web (Go)
 Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner

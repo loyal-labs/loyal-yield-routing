@@ -9,6 +9,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
@@ -19,6 +20,7 @@ type Config struct {
 	AppHost  string
 	Release  string
 	Ready    func() bool
+	AppDB    *pgxpool.Pool
 }
 
 func New(cfg Config) http.Handler {
@@ -28,7 +30,9 @@ func New(cfg Config) http.Handler {
 	r.Get("/readyz", ready(cfg.ready()))
 
 	api := humachi.New(r, apiConfig())
-	RegisterAPI(api)
+	if cfg.AppDB != nil {
+		RegisterAPI(api, cfg.AppDB)
+	}
 	proxied := forward(cfg.Upstream)
 	r.Handle("/api/*", proxied)
 	r.Handle("/ingest/*", proxied)
@@ -82,11 +86,13 @@ func apiConfig() huma.Config {
 	config := huma.DefaultConfig("Loyal API", "1.0.0")
 	config.DocsPath = ""
 	config.OpenAPIPath = "/api/openapi"
+	// Next's JSON contract has no Huma $schema field.
+	config.CreateHooks = nil
 	return config
 }
 
 func OpenAPI() *huma.OpenAPI {
 	api := humachi.New(chi.NewRouter(), apiConfig())
-	RegisterAPI(api)
+	RegisterAPI(api, nil)
 	return api.OpenAPI()
 }
