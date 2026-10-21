@@ -12,7 +12,7 @@ import (
 // apps/web has no rewrites, it is a route handler of Next's,
 // web/apps/web/src/app/ingest/[...path]/route.ts).
 //
-// The contract, checked by proxy_scratch_test.go:
+// The contract:
 //
 //   - method, body, query and cookies pass through;
 //   - the outbound Host is the upstream's host (Vercel routes by it);
