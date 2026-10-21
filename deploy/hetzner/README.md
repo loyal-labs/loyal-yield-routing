@@ -506,7 +506,7 @@ The alerts are:
 | LoyalFamilyFailing | At least 3 failed-attempt samples with one code in 15m, sustained for 5m; then held until the condition stays clear for 30m. Selector evaluations are not distinct transactions |
 | LoyalBackyardWithdrawalAttention | Persisted withdrawal attention for a stable family/route, sustained for 1m |
 | LoyalBackyardWithdrawalHealthUnavailable | Observation older than 5m or missing health metrics, sustained for 1m |
-| LoyalBackyardNAVReportStale | No reconciled REPORT_NAV for 3h on a route, or no report time exported at all, sustained for 5m |
+| LoyalBackyardNAVReportStale | No NAV report landed for 3h on a route whose vault holds value (an empty vault exports no series), or no report time exported at all, sustained for 5m |
 | LoyalAutodepositOverdue | A selected Autodeposit claim, or a slot blocked by custody another family holds open on the vault USDC account, is over 1h old |
 | LoyalFeePayerLow | A fee payer has been below 0.55 SOL for 5m (warning) |
 | LoyalFeePayerExhausted | A fee payer is below 0.05 SOL: Autodeposit starts nothing. Alertmanager inhibits Autodeposit's LoyalFamilyProgressStale on the same unit while it fires, so the one cause pages once |
