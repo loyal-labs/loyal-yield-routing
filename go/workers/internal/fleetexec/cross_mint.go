@@ -25,11 +25,10 @@ const (
 	CrossMintManualIntervention CrossMintPhase = "manual_intervention"
 )
 
-// These aliases preserve the retained Rust receipt JSON contract. A token
-// delta and a complete account balance share a layout, but not a meaning.
-type CrossMintTokenAmount = crossMintTokenAnchor
-type CrossMintPositionAnchor = crossMintPositionAnchor
-type CrossMintBalanceAnchors = crossMintAnchors
+// A token delta and a complete account balance share a layout, but not a meaning.
+type CrossMintTokenAmount = fleet.CrossMintTokenAmount
+type CrossMintPositionAnchor = fleet.CrossMintPositionAnchor
+type CrossMintBalanceAnchors = fleet.CrossMintAnchors
 
 type CrossMintExpectedEffect struct {
 	Debit                  *CrossMintTokenAmount `json:"debit"`
@@ -228,9 +227,7 @@ func (c *CrossMintController) verifyIdleCustody(ctx context.Context, m CrossMint
 	return verifyCrossMintIdleCustody(ctx, m, c.accounts, c.history, recognized)
 }
 
-// This proof is shared by the two signing checks; recognized signatures must
-// come from this movement's reconciled durable journal, never an RPC allowlist.
-func verifyCrossMintIdleCustody(ctx context.Context, m CrossMintMovement, reader fleet.AccountReader, history historyReader, recognized map[string]bool) error {
+func verifyCrossMintIdleCustody(ctx context.Context, m CrossMintMovement, reader fleet.AccountReader, history historyReader, recognized journalSignatures) error {
 	if m.Phase != CrossMintSourceIdle && m.Phase != CrossMintTargetIdle || m.CustodyReconciledSlot == nil || *m.CustodyReconciledSlot <= 0 || m.CustodyObservedBalanceRaw == nil || m.CustodyAmountRaw <= 0 || *m.CustodyObservedBalanceRaw < m.CustodyAmountRaw || reader == nil || history == nil {
 		return errors.New("idle custody lacks finalized historical anchor or proof owner")
 	}

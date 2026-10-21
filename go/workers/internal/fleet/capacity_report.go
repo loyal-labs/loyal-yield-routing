@@ -7,24 +7,28 @@ import (
 	"time"
 )
 
-const capacityHeartbeat = time.Hour
+const (
+	capacityHeartbeat    = time.Hour
+	capacityBucketMicros = 10_000_000_000
+	apyBucketBPS         = 50
+)
 
 // ReserveCapacity is one reserve's line in kamino_fleet_capacity: the capital
 // the planned holdings keep in it, what it pays, and the best same-mint
 // destination with the room that destination has left this cycle. Vaults
 // with an open opportunity or decision are not planned, so their capital is
-// not in Held. Amounts are USD micros (raw units of a six-decimal stable).
+// not in Held.
 type ReserveCapacity struct {
-	Reserve    string `json:"reserve"`
-	Mint       string `json:"mint"`
-	Holdings   int    `json:"holdings"`
-	Held       int64  `json:"heldUsdMicros"`
-	Movable    int64  `json:"movableUsdMicros"`
-	APYBPS     int64  `json:"apyBps"`
-	Available  *int64 `json:"availableLiquidityUsdMicros"`
-	Best       string `json:"bestDestination,omitempty"`
-	BestAPYBPS int64  `json:"bestDestinationApyBps,omitempty"`
-	BestRoom   *int64 `json:"bestDestinationRoomUsdMicros"`
+	Reserve                     string `json:"reserve"`
+	Mint                        string `json:"mint"`
+	Holdings                    int    `json:"holdings"`
+	HeldUSDMicros               int64  `json:"heldUsdMicros"`
+	MovableUSDMicros            int64  `json:"movableUsdMicros"`
+	APYBPS                      int64  `json:"apyBps"`
+	AvailableLiquidityUSDMicros *int64 `json:"availableLiquidityUsdMicros"`
+	Best                        string `json:"bestDestination,omitempty"`
+	BestAPYBPS                  int64  `json:"bestDestinationApyBps,omitempty"`
+	BestRoomUSDMicros           *int64 `json:"bestDestinationRoomUsdMicros"`
 }
 
 func capacityReport(snapshot MarketSnapshot, vaults []FleetVault, inflight map[string]int64, plan FleetPlan) []ReserveCapacity {
@@ -40,14 +44,14 @@ func capacityReport(snapshot MarketSnapshot, vaults []FleetVault, inflight map[s
 		p := vault.Position
 		line := lines[p.SourceReserve]
 		if line == nil {
-			line = &ReserveCapacity{Reserve: p.SourceReserve, Mint: p.Mint, Movable: plan.Movable[p.SourceReserve]}
+			line = &ReserveCapacity{Reserve: p.SourceReserve, Mint: p.Mint, MovableUSDMicros: plan.Movable[p.SourceReserve]}
 			if state, ok := snapshot.Reserves[p.SourceReserve]; ok {
-				line.APYBPS, line.Available = state.SupplyAPYBPS, state.AvailableLiquidityRaw
+				line.APYBPS, line.AvailableLiquidityUSDMicros = state.SupplyAPYBPS, state.AvailableLiquidityRaw
 			}
 			lines[p.SourceReserve] = line
 		}
 		line.Holdings++
-		line.Held += p.AmountRaw
+		line.HeldUSDMicros += p.AmountRaw
 	}
 	report := make([]ReserveCapacity, 0, len(lines))
 	for _, line := range lines {
@@ -60,7 +64,7 @@ func capacityReport(snapshot MarketSnapshot, vaults []FleetVault, inflight map[s
 			}
 		}
 		if state, ok := snapshot.Reserves[line.Best]; ok {
-			line.BestRoom = destinationRoom(state, committed[line.Best])
+			line.BestRoomUSDMicros = destinationRoom(state, committed[line.Best])
 		}
 		report = append(report, *line)
 	}
@@ -73,23 +77,20 @@ func destinationRoom(target ReserveState, committedInflow int64) *int64 {
 	if !known {
 		return nil
 	}
-	room := minInt64(maxInt64(target.TotalSupplyUSDMicros/50, 4_000_000), deposit)
+	room := minInt64(maxInt64(target.SupplyUSDMicros()/50, 4_000_000), deposit)
 	room = maxInt64(room-committedInflow, 0)
 	return &room
 }
 
-// capacityChangeKey is the report coarsened to what an operator acts on, so
-// accrual and basis-point drift do not re-log it every cycle: capital and
-// room to $10k, APYs to 50 bps, the destination identity and holding counts.
 func capacityChangeKey(report []ReserveCapacity) string {
 	var key strings.Builder
-	bucket := func(micros int64) int64 { return micros / 10_000_000_000 }
+	bucket := func(micros int64) int64 { return micros / capacityBucketMicros }
 	for _, line := range report {
 		room := "unknown"
-		if line.BestRoom != nil {
-			room = fmt.Sprint(bucket(*line.BestRoom))
+		if line.BestRoomUSDMicros != nil {
+			room = fmt.Sprint(bucket(*line.BestRoomUSDMicros))
 		}
-		fmt.Fprintf(&key, "%s:%d:%d:%d:%d:%s:%d:%s;", line.Reserve, line.Holdings, bucket(line.Held), bucket(line.Movable), line.APYBPS/50, line.Best, line.BestAPYBPS/50, room)
+		fmt.Fprintf(&key, "%s:%d:%d:%d:%d:%s:%d:%s;", line.Reserve, line.Holdings, bucket(line.HeldUSDMicros), bucket(line.MovableUSDMicros), line.APYBPS/apyBucketBPS, line.Best, line.BestAPYBPS/apyBucketBPS, room)
 	}
 	return key.String()
 }

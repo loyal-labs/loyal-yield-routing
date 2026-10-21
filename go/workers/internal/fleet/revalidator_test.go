@@ -33,9 +33,9 @@ const (
 func TestPlanFleetCapacityAwareWave(t *testing.T) {
 	now := time.Now().UTC()
 	snapshot := MarketSnapshot{Slot: 100, ObservedAt: now, Hash: strings.Repeat("a", 64), Reserves: map[string]ReserveState{
-		testSource: {ReserveIdentity: ReserveIdentity{testSource, testMarket, USDCMint}, Slot: 100, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
-		testTarget: {ReserveIdentity: ReserveIdentity{testTarget, testALT, USDCMint}, Slot: 100, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
-		testPolicy: {ReserveIdentity: ReserveIdentity{testPolicy, testVault, USDCMint}, Slot: 100, SupplyAPYBPS: 500, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
+		testSource: {ReserveIdentity: ReserveIdentity{testSource, testMarket, USDCMint}, Slot: 100, SupplyAPYBPS: 100, TotalSupplyRaw: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
+		testTarget: {ReserveIdentity: ReserveIdentity{testTarget, testALT, USDCMint}, Slot: 100, SupplyAPYBPS: 900, TotalSupplyRaw: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
+		testPolicy: {ReserveIdentity: ReserveIdentity{testPolicy, testVault, USDCMint}, Slot: 100, SupplyAPYBPS: 500, TotalSupplyRaw: 1_000_000_000_000, EconomicLifetimeMillis: 120000},
 	}}
 	ampleCapacity(snapshot)
 	vaults := make([]FleetVault, 3)
@@ -282,7 +282,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 	manifestSettings, _, _ := bindWaitingFixtureVault(t, ctx, store, vaultID, suffix)
 	position := loadTestPosition(t, ctx, store, vaultID, source)
 	now := time.Now().UTC()
-	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Hash: "revalidation-" + suffix, Reserves: map[string]ReserveState{source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}, target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
+	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Hash: "revalidation-" + suffix, Reserves: map[string]ReserveState{source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyRaw: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}, target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyRaw: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
 	ampleCapacity(snapshot)
 	opportunityID, decision := publishTestMove(t, ctx, store, cluster, snapshot, position, target.Address)
 	lease, err := store.ClaimRevalidation(ctx, cluster, "go-revalidator", time.Minute, false, false)

@@ -13,7 +13,7 @@ import (
 func ampleCapacity(snapshot MarketSnapshot) MarketSnapshot {
 	for address, reserve := range snapshot.Reserves {
 		if reserve.AvailableLiquidityRaw == nil {
-			available := reserve.TotalSupplyUSDMicros
+			available := reserve.TotalSupplyRaw
 			reserve.AvailableLiquidityRaw = &available
 		}
 		if reserve.DepositLimitRaw == nil {
@@ -27,8 +27,8 @@ func ampleCapacity(snapshot MarketSnapshot) MarketSnapshot {
 
 func eligibleFixture() (MarketSnapshot, VaultPosition) {
 	now := time.Now().UTC()
-	source := ReserveState{ReserveIdentity: ReserveIdentity{Address: "source", Market: "market", Mint: USDCMint}, Slot: 500, SupplyAPYBPS: 200, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: "a"}
-	target := ReserveState{ReserveIdentity: ReserveIdentity{Address: "target", Market: "market", Mint: USDCMint}, Slot: 500, SupplyAPYBPS: 700, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: "b"}
+	source := ReserveState{ReserveIdentity: ReserveIdentity{Address: "source", Market: "market", Mint: USDCMint}, Slot: 500, SupplyAPYBPS: 200, TotalSupplyRaw: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: "a"}
+	target := ReserveState{ReserveIdentity: ReserveIdentity{Address: "target", Market: "market", Mint: USDCMint}, Slot: 500, SupplyAPYBPS: 700, TotalSupplyRaw: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: "b"}
 	snapshot := ampleCapacity(MarketSnapshot{Slot: 500, ObservedAt: now, Hash: "snapshot", Reserves: map[string]ReserveState{"source": source, "target": target}})
 	position := VaultPosition{VaultID: 1, SourceReserve: "source", Market: "market", Mint: USDCMint, AmountRaw: 1_000_000_000_000, SourceCollateralAmountRaw: 900_000_000_000, SourceAmountSemantics: amountSemanticsKaminoCollateralDeposited, ObservedSlot: 499, ObservedAt: now}
 	return snapshot, position
@@ -61,14 +61,14 @@ func TestPlanFailsClosed(t *testing.T) {
 		{"active work", func(_ *MarketSnapshot, p *VaultPosition) { p.BlockedReason = "active_opportunity" }, "active_opportunity"},
 		{"missing amount evidence", func(_ *MarketSnapshot, p *VaultPosition) { p.SourceAmountSemantics = "" }, "unsupported_source_amount_evidence"},
 		{"capacity exhausted", func(s *MarketSnapshot, p *VaultPosition) {
-			p.TargetCommittedInflowUSDMicros = s.Reserves["target"].TotalSupplyUSDMicros / 50
+			p.TargetCommittedInflowUSDMicros = s.Reserves["target"].TotalSupplyRaw / 50
 		}, "target_capacity_exhausted"},
 		{"amount exceeds capacity", func(s *MarketSnapshot, p *VaultPosition) {
-			p.AmountRaw = s.Reserves["target"].TotalSupplyUSDMicros/50 + 1
+			p.AmountRaw = s.Reserves["target"].TotalSupplyRaw/50 + 1
 		}, "target_capacity_exhausted"},
 		{"projection overflow", func(s *MarketSnapshot, p *VaultPosition) {
 			reserve := s.Reserves["source"]
-			reserve.TotalSupplyUSDMicros = int64(^uint64(0) >> 1)
+			reserve.TotalSupplyRaw = int64(^uint64(0) >> 1)
 			s.Reserves["source"] = reserve
 			p.SourceCommittedInflowUSDMicros = 1
 		}, "capacity_arithmetic_overflow"},

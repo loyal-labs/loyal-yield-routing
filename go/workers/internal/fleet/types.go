@@ -34,27 +34,19 @@ type ReserveState struct {
 	LastUpdateStale        bool      `json:"lastUpdateStale"`
 	EconomicSlotLag        int64     `json:"economicSlotLag"`
 	SupplyAPYBPS           int64     `json:"supplyApyBps"`
-	TotalSupplyUSDMicros   int64     `json:"totalSupplyUsdMicros"`
+	TotalSupplyRaw         int64     `json:"totalSupplyUsdMicros"`
 	EconomicLifetimeMillis int64     `json:"economicLifetimeMillis"`
 	DataHash               string    `json:"dataHash"`
-	// Capacity evidence in the reserve's protocol raw units, which equal USD
-	// micros for the six-decimal Earn stablecoins at their code-owned $1
-	// valuation. AvailableLiquidityRaw is what KLend can pay out now;
-	// DepositLimitRaw is the reserve's total-supply ceiling (0 blocks deposits).
-	// nil is unknown evidence: never zero, never unlimited.
-	AvailableLiquidityRaw *int64  `json:"availableLiquidityRaw"`
-	DepositLimitRaw       *uint64 `json:"depositLimitRaw"`
+	AvailableLiquidityRaw  *int64    `json:"availableLiquidityRaw"`
+	DepositLimitRaw        *uint64   `json:"depositLimitRaw"`
 }
 
-// DepositRoomRaw is how much more KLend accepts before total supply reaches
-// the deposit limit: deposit_limit - total supply, at least 0. A limit beyond
-// int64 saturates, since no amount the fleet moves can reach it. known is
-// false when the limit was not observed.
+// DepositRoomRaw is the supply the deposit limit still admits; known is false when the limit was not observed.
 func (r ReserveState) DepositRoomRaw() (room int64, known bool) {
-	if r.DepositLimitRaw == nil || r.TotalSupplyUSDMicros < 0 {
+	if r.DepositLimitRaw == nil || r.TotalSupplyRaw < 0 {
 		return 0, false
 	}
-	limit, supply := *r.DepositLimitRaw, uint64(r.TotalSupplyUSDMicros)
+	limit, supply := *r.DepositLimitRaw, uint64(r.TotalSupplyRaw)
 	if limit <= supply {
 		return 0, true
 	}
@@ -64,9 +56,11 @@ func (r ReserveState) DepositRoomRaw() (room int64, known bool) {
 	return int64(limit - supply), true
 }
 
+func (r ReserveState) SupplyUSDMicros() int64 { return r.TotalSupplyRaw }
+
 func (r ReserveState) TargetEligible() bool {
 	return !r.LastUpdateStale && r.EconomicLifetimeMillis >= minimumPublicationLifetime.Milliseconds() &&
-		r.TotalSupplyUSDMicros >= minimumSupplyUSDMicros && r.SupplyAPYBPS >= 0 && r.SupplyAPYBPS < 5_000
+		r.SupplyUSDMicros() >= minimumSupplyUSDMicros && r.SupplyAPYBPS >= 0 && r.SupplyAPYBPS < 5_000
 }
 
 type MarketSnapshot struct {

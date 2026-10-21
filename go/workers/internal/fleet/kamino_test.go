@@ -53,7 +53,7 @@ func TestDecodeKaminoReserveMatchesFrozenLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Slot != 1_000 || state.LastUpdateSlot != 900 || state.TotalSupplyUSDMicros != 100_000_000_000_000 {
+	if state.Slot != 1_000 || state.LastUpdateSlot != 900 || state.TotalSupplyRaw != 100_000_000_000_000 {
 		t.Fatalf("unexpected state: %+v", state)
 	}
 	if state.SupplyAPYBPS < 570 || state.SupplyAPYBPS > 590 {
@@ -91,14 +91,12 @@ func TestDecodeKaminoReserveStatusAdmission(t *testing.T) {
 			account := reserveFixture(identity, 50_000_000_000_000, 50_000_000_000_000)
 			account.Data[4856] = tc.status
 			account.Data[4856+8] = tc.emergency
-			for _, decode := range []func(*chain.Account, ReserveIdentity, int64, float64) (ReserveState, error){DecodeKaminoReserve, DecodeKaminoSourceReserve} {
-				state, err := decode(&account, identity, 1_000, 2.5)
-				if (err == nil) != tc.allowed {
-					t.Fatalf("allowed=%v, error=%v", tc.allowed, err)
-				}
-				if tc.allowed && (state.TotalSupplyUSDMicros != 100_000_000_000_000 || state.Slot != 1_000 || state.DataHash == "") {
-					t.Fatalf("admitted reserve lost its verified economics: %+v", state)
-				}
+			state, err := DecodeKaminoReserve(&account, identity, 1_000, 2.5)
+			if (err == nil) != tc.allowed {
+				t.Fatalf("allowed=%v, error=%v", tc.allowed, err)
+			}
+			if tc.allowed && (state.TotalSupplyRaw != 100_000_000_000_000 || state.Slot != 1_000 || state.DataHash == "") {
+				t.Fatalf("admitted reserve lost its verified economics: %+v", state)
 			}
 		})
 	}
@@ -116,10 +114,6 @@ func TestDecodeKaminoReserveRejectsIdentityAndLayoutDrift(t *testing.T) {
 	staleTarget, err := DecodeKaminoReserve(&account, identity, 1_000, 2.5)
 	if err != nil || !staleTarget.LastUpdateStale {
 		t.Fatalf("structurally valid stale target evidence was not decoded: state=%+v err=%v", staleTarget, err)
-	}
-	staleSource, err := DecodeKaminoSourceReserve(&account, identity, 1_000, 2.5)
-	if err != nil || !staleSource.LastUpdateStale {
-		t.Fatalf("explicitly stale source-only reserve was rejected: state=%+v err=%v", staleSource, err)
 	}
 	account = reserveFixture(identity, 1_000_000, 1_000_000)
 	binary.LittleEndian.PutUint64(account.Data[16:24], 1_001)

@@ -62,7 +62,7 @@ func TestCrossMintActivationClaimKeepsFamilyAndLeaseOwnership(t *testing.T) {
 	source := ReserveIdentity{Address: testIdentity(43), Market: testIdentity(42), Mint: USDCMint}
 	target := ReserveIdentity{Address: testIdentity(44), Market: source.Market, Mint: USDCMint}
 	now := time.Now().UTC()
-	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Hash: suffix, Reserves: map[string]ReserveState{source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}, target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyUSDMicros: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
+	snapshot := MarketSnapshot{Slot: 1000, ObservedAt: now, Hash: suffix, Reserves: map[string]ReserveState{source.Address: {ReserveIdentity: source, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 100, TotalSupplyRaw: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}, target.Address: {ReserveIdentity: target, Slot: 1000, LastUpdateSlot: 1000, SupplyAPYBPS: 900, TotalSupplyRaw: 1_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("b", 64)}}}
 	ampleCapacity(snapshot)
 	type published struct{ OpportunityID int64 }
 	var planned []PlannedOpportunity

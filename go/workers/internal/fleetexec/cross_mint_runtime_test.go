@@ -84,7 +84,7 @@ func TestCrossMintPostBankUsesOneSlotAndSourceMinimumDepositDecoder(t *testing.T
 	pre := CrossMintBalanceAnchors{Credit: &CrossMintTokenAmount{Mint: c.mint, TokenAccount: ata, AmountRaw: 50}, Position: &CrossMintPositionAnchor{Reserve: c.source, Market: market, Obligation: obligation, ObligationExists: true, CollateralRaw: 1001}}
 	m := CrossMintMovement{VaultPubkey: c.vault, Phase: CrossMintSourceReserve, SourceMint: c.mint, CustodyMint: c.mint}
 	history := addressHistory{pages: map[string][]chain.Signed{ata: {signed("receipt", 1000)}, obligation: {signed("receipt", 1000)}}}
-	post, slot, err := observeCrossMintBank(context.Background(), reader, history, m, pre, 1000, 1000, recognizedSignatures("receipt"), true)
+	post, slot, err := observeCrossMintBank(context.Background(), reader, history, m, pre, 1000, 1000, recognizedSignatures("receipt"), anchorEveryToken)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestCrossMintPostBankUsesOneSlotAndSourceMinimumDepositDecoder(t *testing.T
 		t.Fatalf("incoherent bank/conversion: slot=%d %+v", slot, post)
 	}
 	// A later policy/ALT floor does not move the historical attribution anchor.
-	if _, _, err = observeCrossMintBank(context.Background(), reader, history, m, pre, 1005, 1000, recognizedSignatures("receipt"), true); err != nil {
+	if _, _, err = observeCrossMintBank(context.Background(), reader, history, m, pre, 1005, 1000, recognizedSignatures("receipt"), anchorEveryToken); err != nil {
 		t.Fatalf("source anchor shifted to current policy slot: %v", err)
 	}
 	for _, change := range []string{"stale_bank", "external_restoration", "missing_anchor", "noncanonical_ata", "wrong_obligation", "negative_fee_value"} {
@@ -128,7 +128,7 @@ func TestCrossMintPostBankUsesOneSlotAndSourceMinimumDepositDecoder(t *testing.T
 				binary.LittleEndian.PutUint64(a.Data[352:360], ^uint64(0))
 				fresh.accounts[c.source] = a
 			}
-			if _, _, err = observeCrossMintBank(context.Background(), fresh, pages, m, anchors, 1000, 1000, recognizedSignatures("receipt"), true); err == nil {
+			if _, _, err = observeCrossMintBank(context.Background(), fresh, pages, m, anchors, 1000, 1000, recognizedSignatures("receipt"), anchorEveryToken); err == nil {
 				t.Fatalf("changed %s accepted", change)
 			}
 		})
@@ -158,7 +158,7 @@ func TestCrossMintPostBankRecordsClosedSourceObligation(t *testing.T) {
 		reader := postFixture(t, c, 1005, 0, 1051)
 		delete(reader.accounts, obligation)
 		delete(reader.accounts, missing)
-		post, _, err := observeCrossMintBank(context.Background(), reader, history, m, pre, 1000, 1000, recognizedSignatures("receipt"), true)
+		post, _, err := observeCrossMintBank(context.Background(), reader, history, m, pre, 1000, 1000, recognizedSignatures("receipt"), anchorEveryToken)
 		if missing != obligation {
 			if err == nil {
 				t.Fatalf("absent required account %s accepted", missing)

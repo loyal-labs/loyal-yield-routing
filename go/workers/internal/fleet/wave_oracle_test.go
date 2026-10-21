@@ -247,7 +247,7 @@ func oracleSnapshot() MarketSnapshot {
 }
 
 func oracleReserve(snapshot *MarketSnapshot, address, mint string, apy, supply int64) {
-	snapshot.Reserves[address] = ReserveState{ReserveIdentity: ReserveIdentity{Address: address, Market: "oracle-market", Mint: mint}, Slot: snapshot.Slot, LastUpdateSlot: snapshot.Slot, SupplyAPYBPS: apy, TotalSupplyUSDMicros: supply, EconomicLifetimeMillis: 600_000, DataHash: "hash:" + address}
+	snapshot.Reserves[address] = ReserveState{ReserveIdentity: ReserveIdentity{Address: address, Market: "oracle-market", Mint: mint}, Slot: snapshot.Slot, LastUpdateSlot: snapshot.Slot, SupplyAPYBPS: apy, TotalSupplyRaw: supply, EconomicLifetimeMillis: 600_000, DataHash: "hash:" + address}
 	ampleCapacity(*snapshot)
 }
 

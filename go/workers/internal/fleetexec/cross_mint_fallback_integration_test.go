@@ -75,7 +75,7 @@ func crossMintFallbackFixture(t *testing.T, primaryEligible bool) (*CrossMintCon
 		}
 		eligible := i == 1 || primaryEligible
 		reserves.Reserves[a.Key.String()] = fleet.ReserveState{ReserveIdentity: fleet.ReserveIdentity{Address: a.Key.String(), Market: market, Mint: m.TargetMint}, Slot: 1016, LastUpdateSlot: 1016, LastUpdateStale: !eligible,
-			SupplyAPYBPS: int64(100 + i*100), TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 600_000}
+			SupplyAPYBPS: int64(100 + i*100), TotalSupplyRaw: 1_000_000_000_000, EconomicLifetimeMillis: 600_000}
 	}
 	c := &CrossMintController{store: r.store, factory: &fallbackFactory{err: ErrCrossMintTargetUnavailable}, cluster: m.Cluster, owner: r.config.Owner, ttl: time.Minute, accounts: bank, history: addressHistory{pages: map[string][]chain.Signed{ata: {{Signature: sdk.MustSignatureFromBase58(l.Submission.Signature), Slot: 1015}}}}}
 	c.SetReserveSource(staticReserves{reserves})

@@ -33,8 +33,6 @@ func (h waveCandidates) Less(i, j int) bool {
 	if a.d.EconomicPriority != b.d.EconomicPriority {
 		return a.d.EconomicPriority > b.d.EconomicPriority
 	}
-	// Annual gain is exactly lost-yield/hour * 8760 in Plan. Rust uses that
-	// lost-yield tie-break before net holding gain, not after it.
 	if a.d.AnnualYieldGainUSDMicros != b.d.AnnualYieldGainUSDMicros {
 		return a.d.AnnualYieldGainUSDMicros > b.d.AnnualYieldGainUSDMicros
 	}

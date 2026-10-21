@@ -413,24 +413,24 @@ func (s *Store) CrossMintMovement(ctx context.Context, id int64) (CrossMintMovem
 	return readCrossMintMovement(ctx, s.pool, id)
 }
 
-func (s *Store) crossMintRecognizedSignatures(ctx context.Context, decision, anchor int64) (map[string]bool, error) {
+func (s *Store) crossMintRecognizedSignatures(ctx context.Context, decision, anchor int64) (journalSignatures, error) {
 	rows, err := s.pool.Query(ctx, `SELECT transaction_signature FROM loyal_yield.signed_route_submissions WHERE decision_id=$1 AND submission_state='reconciled' AND finalized_slot>=$2 ORDER BY finalized_slot,id LIMIT 10001`, decision, anchor)
 	if err != nil {
-		return nil, err
+		return journalSignatures{}, err
 	}
 	defer rows.Close()
 	known := map[string]bool{}
 	for rows.Next() {
 		var signature string
 		if err = rows.Scan(&signature); err != nil {
-			return nil, err
+			return journalSignatures{}, err
 		}
 		known[signature] = true
 		if len(known) > 10000 {
-			return nil, errors.New("recognized movement history exceeds bounded proof window")
+			return journalSignatures{}, errors.New("recognized movement history exceeds bounded proof window")
 		}
 	}
-	return known, rows.Err()
+	return journalSignatures{known}, rows.Err()
 }
 
 func nonemptyCrossMintObject(raw []byte) bool {

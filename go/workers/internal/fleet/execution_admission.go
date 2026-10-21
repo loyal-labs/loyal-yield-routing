@@ -38,8 +38,6 @@ type ExecutionALT struct {
 	Addresses                                    []string
 }
 
-// Amounts are protocol raw units, not USD or interchangeable collateral mints.
-// The executor checks SQL BIGINT boundaries before persisting them.
 type ExecutionBalanceAnchors struct {
 	SourceObligation, TargetObligation, VaultLiquidityATA             string
 	SourceReserve, TargetReserve, SourceMarket, TargetMarket          string

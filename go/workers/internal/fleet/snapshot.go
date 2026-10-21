@@ -112,9 +112,8 @@ type Snapshot struct {
 type SnapshotRequest struct {
 	Catalog []ReserveIdentity
 	Vaults  []SnapshotVault
-	// SlotsPerSecond is the measured slot rate reserve APYs are priced with;
-	// zero reads holdings only and leaves Reserves empty.
-	SlotsPerSecond float64
+	// SlotsPerSecond is the measured slot rate; nil reads holdings only.
+	SlotsPerSecond *float64
 	Idle           bool
 }
 
@@ -150,10 +149,10 @@ func ReadSnapshot(ctx context.Context, reader AccountReader, request SnapshotReq
 			continue
 		}
 		decoded[identity.Address] = reserve
-		if request.SlotsPerSecond == 0 {
+		if request.SlotsPerSecond == nil {
 			continue
 		}
-		state, err := DecodeKaminoReserve(account, identity, out.Slot, request.SlotsPerSecond)
+		state, err := DecodeKaminoReserve(account, identity, out.Slot, *request.SlotsPerSecond)
 		if err != nil {
 			out.Unroutable[identity.Address] = err.Error()
 			continue
@@ -360,7 +359,7 @@ type recordedReserve struct {
 	LastUpdateSlot        int64     `json:"lastUpdateSlot"`
 	LastUpdateStale       bool      `json:"lastUpdateStale"`
 	SupplyAPYBPS          int64     `json:"supplyApyBps"`
-	TotalSupplyUSDMicros  int64     `json:"totalSupplyUsdMicros"`
+	TotalSupplyRaw        int64     `json:"totalSupplyUsdMicros"`
 	AvailableLiquidityRaw *int64    `json:"availableLiquidityRaw"`
 	DepositLimitRaw       *uint64   `json:"depositLimitRaw"`
 }
@@ -368,7 +367,7 @@ type recordedReserve struct {
 func recordOf(snapshot Snapshot) (snapshotRecord, error) {
 	reserves := make([]recordedReserve, 0, len(snapshot.Reserves))
 	for _, r := range snapshot.Reserves {
-		reserves = append(reserves, recordedReserve{r.Address, r.Market, r.Mint, r.Slot, r.ObservedAt, r.LastUpdateSlot, r.LastUpdateStale, r.SupplyAPYBPS, r.TotalSupplyUSDMicros, r.AvailableLiquidityRaw, r.DepositLimitRaw})
+		reserves = append(reserves, recordedReserve{r.Address, r.Market, r.Mint, r.Slot, r.ObservedAt, r.LastUpdateSlot, r.LastUpdateStale, r.SupplyAPYBPS, r.TotalSupplyRaw, r.AvailableLiquidityRaw, r.DepositLimitRaw})
 	}
 	sort.Slice(reserves, func(i, j int) bool { return reserves[i].Reserve < reserves[j].Reserve })
 	state, err := json.Marshal(struct {
@@ -408,7 +407,7 @@ func (c ChainReserves) ReadReserves(ctx context.Context) (MarketSnapshot, error)
 	if err != nil {
 		return MarketSnapshot{}, fmt.Errorf("measured slot rate: %w", err)
 	}
-	snapshot, err := ReadSnapshot(ctx, c.RPC, SnapshotRequest{Catalog: catalog, SlotsPerSecond: slotsPerSecond})
+	snapshot, err := ReadSnapshot(ctx, c.RPC, SnapshotRequest{Catalog: catalog, SlotsPerSecond: &slotsPerSecond})
 	if err != nil {
 		return MarketSnapshot{}, err
 	}

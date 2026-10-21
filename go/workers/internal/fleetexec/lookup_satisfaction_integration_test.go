@@ -48,7 +48,7 @@ func TestLookupRequestSatisfiedOnlyByCurrentPublishedActualBanks(t *testing.T) {
 	snapshot := fleet.Snapshot{Slot: 1000, ObservedAt: now, Reserves: map[string]fleet.ReserveState{}}
 	for n, reserve := range f.Addresses[:2] {
 		snapshot.Reserves[reserve] = fleet.ReserveState{ReserveIdentity: fleet.ReserveIdentity{Address: reserve, Market: market, Mint: fleet.USDCMint}, Slot: 1000, ObservedAt: now, LastUpdateSlot: 1000,
-			SupplyAPYBPS: int64(n+1) * 100, TotalSupplyUSDMicros: 1e15, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat(string(rune('a'+n)), 64)}
+			SupplyAPYBPS: int64(n+1) * 100, TotalSupplyRaw: 1e15, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat(string(rune('a'+n)), 64)}
 	}
 	decision := fleet.Decision{Eligible: true, RouteKind: "same_mint", VaultID: request.VaultID, MarketSlot: 1000, SourceReserve: f.Addresses[0], TargetReserve: f.Addresses[1], Mint: fleet.USDCMint, SourceMint: fleet.USDCMint, TargetMint: fleet.USDCMint, AmountRaw: 1000000, PrincipalUSDMicros: 1000000, SourceAPYBPS: 100, TargetAPYBPS: 200, EdgeBPS: 100, AnnualYieldGainUSDMicros: 10000, ExpectedNetGainUSDMicros: 1000, EconomicPriority: 1, EstimatedCostLamports: 5000, EstimatedCostUSDMicros: 100, HoldingHorizonSeconds: 2592000, ConfidencePPM: 1000000, SnapshotHash: "snapshot", ObservedAt: now}
 	planned := fleet.FleetPlan{Opportunities: []fleet.PlannedOpportunity{{Decision: decision, ExecutionPlan: json.RawMessage(`{"route_kind":"same_mint","source_kind":"reserve_position"}`)}}}

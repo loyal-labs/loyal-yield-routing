@@ -35,7 +35,7 @@ func TestCrossMintFirstSendRequiresActualCustodyAnchorWithoutInventingDestinatio
 	if err != nil || slot != 1005 || !sameCrossMintAnchorAmounts(observed, pre) {
 		t.Fatalf("untouched destination required fabricated history: %v %d %v", observed, slot, err)
 	}
-	if _, _, err := observeCrossMintBank(context.Background(), reader, history, movement, pre, 1005, 1000, known, true); err == nil {
+	if _, _, err := observeCrossMintBank(context.Background(), reader, history, movement, pre, 1005, 1000, known, anchorEveryToken); err == nil {
 		t.Fatal("strict receipt/expiry all-account history policy weakened")
 	}
 	for _, change := range []string{"missing custody anchor", "destination external activity", "source external activity", "wrong custody identity"} {

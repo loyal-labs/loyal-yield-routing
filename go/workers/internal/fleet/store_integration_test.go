@@ -43,7 +43,7 @@ func testSnapshot(slot int64, reserves []ReserveState, signer string, holdings m
 
 func testReserve(identity ReserveIdentity, slot, apy int64) ReserveState {
 	ample, limit := int64(2_000_000_000_000_000), uint64(1<<62)
-	return ReserveState{ReserveIdentity: identity, Slot: slot, LastUpdateSlot: slot, SupplyAPYBPS: apy, TotalSupplyUSDMicros: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64), AvailableLiquidityRaw: &ample, DepositLimitRaw: &limit}
+	return ReserveState{ReserveIdentity: identity, Slot: slot, LastUpdateSlot: slot, SupplyAPYBPS: apy, TotalSupplyRaw: 2_000_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64), AvailableLiquidityRaw: &ample, DepositLimitRaw: &limit}
 }
 
 func registeredVault(t *testing.T, registry []RegisteredVault, vaultID int64) *RegisteredVault {

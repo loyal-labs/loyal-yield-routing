@@ -74,7 +74,7 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("measured slot rate: %w", err)
 	}
-	snapshot, err := ReadSnapshot(ctx, w.rpc, SnapshotRequest{Catalog: catalog, Vaults: SnapshotVaults(registry), SlotsPerSecond: slotsPerSecond})
+	snapshot, err := ReadSnapshot(ctx, w.rpc, SnapshotRequest{Catalog: catalog, Vaults: SnapshotVaults(registry), SlotsPerSecond: &slotsPerSecond})
 	if err != nil {
 		return fmt.Errorf("read chain snapshot: %w", err)
 	}

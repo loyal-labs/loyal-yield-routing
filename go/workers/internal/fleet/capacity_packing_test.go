@@ -15,7 +15,7 @@ import (
 // packingReserve is a same-mint USDC reserve with explicit capacity evidence.
 func packingReserve(address string, apy, supply, available int64, depositLimit uint64) ReserveState {
 	return ReserveState{ReserveIdentity: ReserveIdentity{Address: address, Market: "market", Mint: USDCMint}, Slot: 500, LastUpdateSlot: 500,
-		SupplyAPYBPS: apy, TotalSupplyUSDMicros: supply, EconomicLifetimeMillis: 600_000, DataHash: "hash:" + address,
+		SupplyAPYBPS: apy, TotalSupplyRaw: supply, EconomicLifetimeMillis: 600_000, DataHash: "hash:" + address,
 		AvailableLiquidityRaw: &available, DepositLimitRaw: &depositLimit}
 }
 
@@ -96,7 +96,7 @@ func TestPackingFillsTargetRoomAndTheNextVaultWaitsForTheNextCycle(t *testing.T)
 	// Next cycle: the two moves landed and telemetry reflects them; vaults
 	// with landed work are planned from their new reserve, not this source.
 	target := snapshot.Reserves["target"]
-	target.TotalSupplyUSDMicros += admitted
+	target.TotalSupplyRaw += admitted
 	snapshot.Reserves["target"] = target
 	next, err := PlanFleet(snapshot, vaults[:1])
 	if err != nil {
@@ -341,9 +341,9 @@ func TestCapacityReportNamesTheBestDestinationAndItsRoom(t *testing.T) {
 	if got := moves(plan); !sameMoves(got, []string{"2:source>target:5000000000"}) || plan.Rejections[1] != "target_deposit_limit" {
 		t.Fatalf("wave %v rejections %v", got, plan.Rejections)
 	}
-	if line.Reserve != "source" || line.Holdings != 2 || line.Held != 15_000_000_000 || line.Movable != 15_000_000_000 || line.APYBPS != 100 ||
-		line.Best != "target" || line.BestAPYBPS != 900 || line.BestRoom == nil || *line.BestRoom != 6_000_000_000 {
-		t.Fatalf("capacity line %+v room %v", line, line.BestRoom)
+	if line.Reserve != "source" || line.Holdings != 2 || line.HeldUSDMicros != 15_000_000_000 || line.MovableUSDMicros != 15_000_000_000 || line.APYBPS != 100 ||
+		line.Best != "target" || line.BestAPYBPS != 900 || line.BestRoomUSDMicros == nil || *line.BestRoomUSDMicros != 6_000_000_000 {
+		t.Fatalf("capacity line %+v room %v", line, line.BestRoomUSDMicros)
 	}
 	var log capacityLog
 	start := time.Now()
