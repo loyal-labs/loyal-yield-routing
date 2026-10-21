@@ -13,31 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestJournalOrderAfterCompositeIdentity pins the Go side of the journal
-// ordering: rows confirmed in one slot are ordered by exactly the tie-break
-// columns the SQL ordering uses, so "latest" never depends on which row the
-// database happens to scan first.
-func TestJournalOrderAfterCompositeIdentity(t *testing.T) {
-	t.Parallel()
-	early := time.Unix(1_700_000_000, 0)
-	later := early.Add(time.Second)
-	if !journalOrderAfter(journalOrderKey{slot: 200, updatedAt: later, operationID: "b"}, journalOrderKey{slot: 200, updatedAt: early, operationID: "a"}) {
-		t.Fatal("a later tie-break in the same slot was not the latest")
-	}
-	if journalOrderAfter(journalOrderKey{slot: 200, updatedAt: early, operationID: "a"}, journalOrderKey{slot: 200, updatedAt: later, operationID: "b"}) {
-		t.Fatal("an earlier tie-break in the same slot was treated as latest")
-	}
-	if !journalOrderAfter(journalOrderKey{slot: 200, updatedAt: early, operationID: "b"}, journalOrderKey{slot: 200, updatedAt: early, operationID: "a"}) {
-		t.Fatal("an equal-time tie was not resolved by the operation id")
-	}
-	if !journalOrderAfter(journalOrderKey{slot: 201, updatedAt: early, operationID: "a"}, journalOrderKey{slot: 200, updatedAt: later, operationID: "b"}) {
-		t.Fatal("a higher confirmed slot was not the latest")
-	}
-	if journalOrderAfter(journalOrderKey{slot: 200, updatedAt: later, operationID: "b"}, journalOrderKey{}) {
-		t.Fatal("a row without a confirmed slot was treated as latest")
-	}
-}
-
 func TestReconciledBridgeJournalAgainstDatabase(t *testing.T) {
 	url := os.Getenv("PHASE3_TEST_DATABASE_URL")
 	if url == "" {

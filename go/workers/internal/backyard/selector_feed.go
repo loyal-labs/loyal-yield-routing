@@ -169,8 +169,8 @@ func decodeReserveEconomics(account ConfirmedAccount, measured func() float64) (
 	}
 	accrual, _ := reserve.AccrualPerCurve(slotsPerSecond)
 	r := reserveEconomics{Reserve: account.Address, Market: reserve.LendingMarket.String(), Mint: reserve.LiquidityMint.String(), Hash: sha256Bytes(account.Data),
-		SupplyAPY: rates.SupplyAPY, SupplyRaw: scaledFloat(total), BorrowRaw: scaledFloat(kamino.U128(reserve.BorrowedAmountSF)), HostBPS: float64(reserve.HostFixedInterestRateBPS) * accrual,
-		Status: reserve.Status, Emergency: reserve.EmergencyMode, PriceUSD: scaledFloat(kamino.U128(reserve.MarketPriceSF)), Decimals: int(reserve.MintDecimals)}
+		SupplyAPY: rates.SupplyAPY, SupplyRaw: scaledFloat(total), BorrowRaw: scaledFloat(reserve.BorrowedAmountSF.Int()), HostBPS: float64(reserve.HostFixedInterestRateBPS) * accrual,
+		Status: reserve.Status, Emergency: reserve.EmergencyMode, PriceUSD: scaledFloat(reserve.MarketPriceSF.Int()), Decimals: int(reserve.MintDecimals)}
 	for _, point := range reserve.BorrowRateCurve {
 		r.Curve = append(r.Curve, BorrowCurvePoint{float64(point.UtilizationRateBPS), float64(point.BorrowRateBPS) * accrual})
 	}

@@ -96,7 +96,7 @@ func (d *Database) land(ctx context.Context, rpc *chain.Client, operation Persis
 	}
 	switch {
 	case out.Kind == chain.Expired:
-		return d.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status)
+		return d.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status, out)
 	case operation.Status == Signed:
 		return d.MarkManualRecovery(ctx, operation.ID, Signed, "signed_signature_found_before_broadcast_intent")
 	case out.Kind == chain.Failed:
@@ -110,10 +110,11 @@ func (d *Database) reconcile(ctx context.Context, manifest RouteManifest, rpc *c
 	if err != nil {
 		return err
 	}
-	if status.Failed {
+	switch status {
+	case signatureFailed:
 		return d.MarkManualRecovery(ctx, operation.ID, operation.Status, "finalization_transaction_error")
-	}
-	if !status.Finalized {
+	case signatureFinalized:
+	default:
 		return nil
 	}
 	expected, err := DecodeExpectedEffects(manifest.vault, operation.ExpectedEffects)

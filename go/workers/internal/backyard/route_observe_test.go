@@ -106,20 +106,25 @@ func TestRouteNAVCadenceDoesNotSpamUnchangedFreshReports(t *testing.T) {
 	}
 }
 
+func testEconomicID(bridge string, prime, collateral, debt uint64, blocked bool, strategyNAV, reportedNAV, capacity uint64) string {
+	return routeEconomicState{primeRaw: prime, collateralRaw: collateral, debtRaw: debt, borrowUtilizationBlocked: blocked,
+		strategyNAVRaw: strategyNAV, priorReportedNAVRaw: reportedNAV, pairCapacityRaw: capacity}.observationID(bridge)
+}
+
 func TestRouteEconomicObservationIdentityExcludesReportSlot(t *testing.T) {
 	t.Parallel()
-	first := routeEconomicObservationID("bridge-state", 10, 20, 7, false, 42, 41, 100)
+	first := testEconomicID("bridge-state", 10, 20, 7, false, 42, 41, 100)
 	// The report slot/sequence is intentionally not an input to this helper. Two
 	// coherent observations with the same economics therefore remain identical.
-	second := routeEconomicObservationID("bridge-state", 10, 20, 7, false, 42, 41, 100)
+	second := testEconomicID("bridge-state", 10, 20, 7, false, 42, 41, 100)
 	if first != second {
 		t.Fatalf("unchanged economic observation changed identity: %s != %s", first, second)
 	}
-	changed := routeEconomicObservationID("bridge-state", 10, 21, 7, false, 42, 41, 100)
+	changed := testEconomicID("bridge-state", 10, 21, 7, false, 42, 41, 100)
 	if changed == first {
 		t.Fatal("changed collateral aliased to the prior economic observation")
 	}
-	utilizationBlocked := routeEconomicObservationID("bridge-state", 10, 20, 7, true, 42, 41, 100)
+	utilizationBlocked := testEconomicID("bridge-state", 10, 20, 7, true, 42, 41, 100)
 	if utilizationBlocked == first {
 		t.Fatal("changed debt-reserve utilization admission aliased to the prior economic observation")
 	}

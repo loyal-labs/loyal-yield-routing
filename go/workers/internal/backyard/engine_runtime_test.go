@@ -177,7 +177,7 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 		Database:    &Database{pool: &pgxpool.Pool{}},
 		RPC:         &chain.Client{},
 		View:        &View{},
-		Credentials: Credentials{PolicyKey: unpinned},
+		Credentials: Credentials{key: unpinned},
 		Config:      DefaultConfig(),
 		Owner:       validOwner,
 	}
@@ -197,7 +197,7 @@ func TestNewEngineFailsClosedWithoutInjectedDependencies(t *testing.T) {
 		"missing rpc":          {func(c *EngineConfig) { c.RPC = nil }, ""},
 		"missing view":         {func(c *EngineConfig) { c.View = nil }, ""},
 		"missing credentials":  {func(c *EngineConfig) { c.Credentials = Credentials{} }, ""},
-		"truncated capability": {func(c *EngineConfig) { c.Credentials = Credentials{PolicyKey: unpinned[:ed25519.SeedSize]} }, ""},
+		"truncated capability": {func(c *EngineConfig) { c.Credentials = Credentials{key: unpinned[:ed25519.SeedSize]} }, ""},
 		"unknown selector":     {func(c *EngineConfig) { c.Selector = "both" }, "unknown Backyard selector mode"},
 		"missing owner":        {func(c *EngineConfig) { c.Owner = "" }, "instance identity"},
 		"invalid poll config":  {func(c *EngineConfig) { c.Config = Config{PollInterval: 0} }, ""},

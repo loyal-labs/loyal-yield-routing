@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -20,23 +22,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, strategy_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8, $9)`
 
-const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
+var (
+	retiredRouteActions    = []Action{"SWAP_USDC_TO_PRIME_STEP", "SWAP_PRIME_TO_USDC_STEP", "OPEN_PRIME_USDC_STEP", "DELEVER_PRIME_USDC_STEP"}
+	routeMutationActions   = slices.Concat(retiredRouteActions, []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep, OpenRouteStep, DeleverRouteStep})
+	bridgeMutationActions  = []Action{VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle}
+	ticketConsumingActions = []Action{VoltrAllocateToSquads, VoltrRestoreIdle, ReportNAV}
+)
 
-// LatestDecisionEpochSQL advances after a fully reconciled mutation or an
-// explicitly terminal pre-broadcast failure. A confirmed report-only operation
-// that reached manual recovery is also safe to supersede: its immutable wire
-// cannot move capital, while capital-moving manual recovery remains a hard
-// automatic stop. This lets a corrected reconciler publish a fresh NAV report
-// without making ambiguous money movement retryable.
-const LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_yield.multiply_operations WHERE route_key = $1 AND (status IN ('reconciled','failed') OR (status = 'manual_recovery' AND action = 'REPORT_NAV')) ORDER BY updated_at DESC, operation_id DESC LIMIT 1), 'genesis')`
+func actionsSQL(groups ...[]Action) string {
+	quoted := []string{}
+	for _, action := range slices.Concat(groups...) {
+		quoted = append(quoted, "'"+string(action)+"'")
+	}
+	return strings.Join(quoted, ",")
+}
 
-const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP'))`
+var PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN (` + actionsSQL(routeMutationActions) + `) FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN (` + actionsSQL(routeMutationActions, bridgeMutationActions, []Action{ReportNAV}) + `) ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
+
+var LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_yield.multiply_operations WHERE route_key = $1 AND (status IN ('reconciled','failed') OR (status = 'manual_recovery' AND action = '` + string(ReportNAV) + `')) ORDER BY updated_at DESC, operation_id DESC LIMIT 1), 'genesis')`
+
+var UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN (` + actionsSQL(bridgeMutationActions, routeMutationActions) + `))`
 
 const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7,
  simulation_slot = $8, simulation_result = $9::jsonb, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $10::jsonb), updated_at = now() WHERE operation_id = $1 AND status = 'decided'`
@@ -438,12 +450,6 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 }
 
 type ReconciledBridgeJournalState struct {
-	// Ticket-consuming evidence. Only VOLTR_ALLOCATE_TO_SQUADS,
-	// VOLTR_RESTORE_IDLE, and REPORT_NAV consume the report ticket, and each of
-	// those transactions ends in the adaptor's report instruction, whose return
-	// data is the NAV the worker armed. STAGE_SQUADS_TO_VOLTR moves Squads cash
-	// into strategy custody without invoking Voltr: it consumes no ticket and
-	// returns nothing, so counting it deadlocked the sequence monitor.
 	TicketSequenceKnown       bool
 	TicketSequenceRaw         int64
 	ArmedNAVKnown             bool
@@ -456,104 +462,32 @@ type ReconciledBridgeJournalState struct {
 	MutationAfterReport       bool
 }
 
-// ReconciledBridgeJournalSQL reads every journal fact the fail-closed monitors
-// arm from in one round trip. Rows are reconciled only; the
-// ticket-consuming list deliberately excludes STAGE_SQUADS_TO_VOLTR, and every
-// subquery shares one ordering so "after" means the same thing everywhere. The
-// ordering rows additionally return their tie-break columns so the Go side can
-// compare a composite identity (see journalOrderKey) instead of a bare slot.
-// Every lookup below reads the latest reconciled row of a group of these four
-// actions, which is always one action's own latest row. The journal holds a
-// HOLD row about every ten seconds and over 17k reconciled reports: ranking
-// narrow columns first and fetching at most four full rows keeps this read
-// out of the NAV report window (it took five seconds).
-const ReconciledBridgeJournalSQL = `WITH latest_per_action AS (
+const journalOrderSQL = `confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC`
+
+func journalLatestOfSQL(name string, actions []Action) string {
+	return name + ` AS (SELECT * FROM strategy_journal WHERE action IN (` + actionsSQL(actions) + `) ORDER BY ` + journalOrderSQL + ` LIMIT 1)`
+}
+
+func journalAfterSQL(later, earlier string) string {
+	return `COALESCE((SELECT l.confirmed_slot > 0 AND e.confirmed_slot > 0 AND
+   (l.confirmed_slot, l.updated_at, l.operation_id COLLATE "C") > (e.confirmed_slot, e.updated_at, e.operation_id COLLATE "C")
+  FROM ` + later + ` l, ` + earlier + ` e), false)`
+}
+
+var ReconciledBridgeJournalSQL = `WITH latest_per_action AS (
  SELECT DISTINCT ON (action) operation_id FROM loyal_yield.multiply_operations
- WHERE route_key = $1 AND status = 'reconciled'
-   AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE','STAGE_SQUADS_TO_VOLTR')
- ORDER BY action, confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC
+ WHERE route_key = $1 AND status = 'reconciled' AND action IN (` + actionsSQL(bridgeMutationActions, []Action{ReportNAV}) + `)
+ ORDER BY action, ` + journalOrderSQL + `
 ), strategy_journal AS (
  SELECT * FROM loyal_yield.multiply_operations WHERE operation_id IN (SELECT operation_id FROM latest_per_action)
-) SELECT
- (SELECT (expected_effects->'decision'->>'observationSlot')::bigint FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled'
-     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT expected_effects->'expectedEffects'->'returnData'->>'dataBase64' FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled'
-     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT (expected_effects->'decision'->>'amountRaw')::bigint FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT confirmed_slot FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT confirmed_slot FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled'
-     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT confirmed_slot FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled'
-     AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT confirmed_slot FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT updated_at FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT operation_id FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled' AND action = 'STAGE_SQUADS_TO_VOLTR'
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT updated_at FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled'
-     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT operation_id FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled'
-     AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE')
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT updated_at FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled'
-     AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT operation_id FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled'
-     AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE')
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT updated_at FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1),
- (SELECT operation_id FROM strategy_journal
-   WHERE route_key = $1 AND status = 'reconciled' AND action = 'REPORT_NAV'
-   ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC LIMIT 1)`
-
-// journalOrderKey is the composite ordering identity of one journal row: the
-// confirmed slot plus exactly the tie-break columns the SQL ordering uses, so
-// two operations confirmed in the same slot still have one deterministic
-// latest row.
-type journalOrderKey struct {
-	slot        int64
-	updatedAt   time.Time
-	operationID string
-}
-
-// journalOrderAfter reports whether a sorts strictly newer than b under the
-// SQL ordering: confirmed_slot DESC, then updated_at DESC, then operation_id
-// DESC under its byte-wise C collation.
-func journalOrderAfter(a, b journalOrderKey) bool {
-	if a.slot <= 0 || b.slot <= 0 {
-		return false
-	}
-	if a.slot != b.slot {
-		return a.slot > b.slot
-	}
-	if !a.updatedAt.Equal(b.updatedAt) {
-		return a.updatedAt.After(b.updatedAt)
-	}
-	return a.operationID > b.operationID
-}
+), ` + journalLatestOfSQL("ticket", ticketConsumingActions) + `, ` + journalLatestOfSQL("mutation", bridgeMutationActions) + `,
+` + journalLatestOfSQL("stage", []Action{StageSquadsToVoltr}) + `, ` + journalLatestOfSQL("report", []Action{ReportNAV}) + `
+SELECT
+ (SELECT (expected_effects->'decision'->>'observationSlot')::bigint FROM ticket),
+ (SELECT expected_effects->'expectedEffects'->'returnData'->>'dataBase64' FROM ticket),
+ (SELECT (expected_effects->'decision'->>'amountRaw')::bigint FROM stage),
+ ` + journalAfterSQL("stage", "ticket") + `,
+ ` + journalAfterSQL("mutation", "report")
 
 func (d *Database) ReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
@@ -563,16 +497,12 @@ func (d *Database) ReconciledBridgeJournal(ctx context.Context, routeKey string)
 }
 
 func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error) {
-	var sequence, staged, stageSlot, ticketSlot, mutationSlot, reportSlot pgtype.Int8
-	var stageUpdated, ticketUpdated, mutationUpdated, reportUpdated pgtype.Timestamptz
-	var armed, stageOp, ticketOp, mutationOp, reportOp pgtype.Text
-	err := d.pool.QueryRow(ctx, ReconciledBridgeJournalSQL, routeKey).
-		Scan(&sequence, &armed, &staged, &stageSlot, &ticketSlot, &mutationSlot, &reportSlot,
-			&stageUpdated, &stageOp, &ticketUpdated, &ticketOp, &mutationUpdated, &mutationOp, &reportUpdated, &reportOp)
-	if err != nil {
+	var sequence, staged pgtype.Int8
+	var armed pgtype.Text
+	state := ReconciledBridgeJournalState{}
+	if err := d.pool.QueryRow(ctx, ReconciledBridgeJournalSQL, routeKey).Scan(&sequence, &armed, &staged, &state.StageAfterTicket, &state.MutationAfterReport); err != nil {
 		return ReconciledBridgeJournalState{}, fmt.Errorf("read reconciled bridge journal: %w", err)
 	}
-	state := ReconciledBridgeJournalState{}
 	if sequence.Valid {
 		state.TicketSequenceKnown, state.TicketSequenceRaw = true, sequence.Int64
 	}
@@ -592,28 +522,6 @@ func (d *Database) readReconciledBridgeJournal(ctx context.Context, routeKey str
 	}
 	if staged.Valid {
 		state.StagedAmountKnown, state.StagedAmountRaw = true, staged.Int64
-	}
-	stage := journalOrderKey{updatedAt: stageUpdated.Time, operationID: stageOp.String}
-	if stageSlot.Valid {
-		stage.slot = stageSlot.Int64
-	}
-	ticket := journalOrderKey{updatedAt: ticketUpdated.Time, operationID: ticketOp.String}
-	if ticketSlot.Valid {
-		ticket.slot = ticketSlot.Int64
-	}
-	mutation := journalOrderKey{updatedAt: mutationUpdated.Time, operationID: mutationOp.String}
-	if mutationSlot.Valid {
-		mutation.slot = mutationSlot.Int64
-	}
-	report := journalOrderKey{updatedAt: reportUpdated.Time, operationID: reportOp.String}
-	if reportSlot.Valid {
-		report.slot = reportSlot.Int64
-	}
-	if journalOrderAfter(stage, ticket) {
-		state.StageAfterTicket = true
-	}
-	if journalOrderAfter(mutation, report) {
-		state.MutationAfterReport = true
 	}
 	return state, nil
 }
@@ -772,12 +680,8 @@ func (d *Database) MarkPreBroadcastFailed(ctx context.Context, operationID strin
 	return d.transition(ctx, operationID, from, Failed, `, recovery_reason = $4`, reason)
 }
 
-// MarkExpiredAbsentFailed releases the one-nonterminal invariant only after
-// lifecycle recovery has independently proved both facts that make a landing
-// impossible: the persisted signature is absent and its blockhash is expired.
-// Found, ambiguous, or failed-on-chain signatures must remain recovery stops.
-func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID string, from OperationStatus) error {
-	if !from.signedUnlanded() {
+func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID string, from OperationStatus, landed chain.Outcome) error {
+	if landed.Kind != chain.Expired || !from.signedUnlanded() {
 		return fmt.Errorf("expired-absent failure requires a signed source")
 	}
 	if err := d.transition(ctx, operationID, from, Failed,
