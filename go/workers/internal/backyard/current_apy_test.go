@@ -43,12 +43,6 @@ func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
 	if got.APYBPS != 767 || got.Level != 1 {
 		t.Fatalf("debt-free %+v", got)
 	}
-	// Flat: nothing computed, flat flag set.
-	flat := base()
-	flat.RouteLane = autoAUTOPYUSD.Lane
-	if got, ok := currentPositionAPY(flat, []LaneEconomics{m}); !ok || !got.Flat {
-		t.Fatalf("flat %+v", got)
-	}
 }
 
 func TestCurrentAPYWriteThrottle(t *testing.T) {

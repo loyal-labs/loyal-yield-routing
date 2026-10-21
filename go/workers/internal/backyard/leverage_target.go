@@ -28,8 +28,9 @@ type leverageDecision struct {
 	BorrowRaw     uint64
 	RoomRaw       uint64
 	Cost          leverageStepCost
-	TermDays      float64
-	TermKnown     bool
+	// TermDays is the lane's days to its term debt's maturity, when it owes term debt (decide_term.go).
+	TermDays  float64
+	TermKnown bool
 }
 
 func (d leverageDecision) held(reason string) leverageDecision {
@@ -43,7 +44,7 @@ func leverageSettled(s Snapshot, selector SelectorResult) bool {
 		s.SquadsIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0
 }
 
-// decideLeverageTarget applies the option-1 rule to one settled lane: the level setting target() reads.
+// decideLeverageTarget sets the level target() reads for one settled lane.
 // An up move needs the level's spread (leverageLadder) and a positive gain over KEEP after the move's priced cost; an unpriced step is leverage_cost_unavailable, never free.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
