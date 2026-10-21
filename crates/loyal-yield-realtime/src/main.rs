@@ -1135,13 +1135,13 @@ fn parse_retention_cleanup_enabled(value: Result<String, env::VarError>) -> Resu
     }
 }
 
+// Unset binds every interface (the container image relies on it). An invalid
+// value is an error, never a silent fallback to 0.0.0.0.
 fn parse_bind_address(value: Result<String, env::VarError>) -> Result<IpAddr, BoxError> {
     match value {
         Err(env::VarError::NotPresent) => Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
         Ok(value) => value
             .parse()
-// Unset binds every interface (the container image relies on it). An invalid
-// value is an error, never a silent fallback to 0.0.0.0.
             .map_err(|_| "REALTIME_BIND_ADDRESS must be an IP address such as 127.0.0.1".into()),
         Err(env::VarError::NotUnicode(_)) => {
             Err("REALTIME_BIND_ADDRESS must be an IP address such as 127.0.0.1".into())

@@ -55,6 +55,9 @@ impl WorkflowMetrics {
         }
     }
 
+    /// Records one completed workflow operation and its duration.
+    ///
+    /// `workflow` and `operation` must be stable names rather than runtime IDs.
     pub fn record_execution(
         &self,
         workflow: &'static str,
@@ -66,9 +69,6 @@ impl WorkflowMetrics {
             KeyValue::new("loyal.workflow.name", workflow),
             KeyValue::new("loyal.workflow.operation", operation),
             KeyValue::new("loyal.workflow.outcome", outcome.as_str()),
-    /// Records one completed workflow operation and its duration.
-    ///
-    /// `workflow` and `operation` must be stable names rather than runtime IDs.
         ];
 
         if let Some(executions) = &self.executions {

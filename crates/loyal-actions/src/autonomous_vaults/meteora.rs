@@ -123,10 +123,10 @@ pub fn create_meteora_policies(
 
     let vault_loyal = derive_vault_token_account(vault, METEORA_LOYAL_MINT);
     let vault_usdc = derive_vault_token_account(vault, USDC_MINT);
-    Ok(AutonomousMeteoraPolicies {
     // The approved base PositionV2 can use either of two adjacent BinArray
     // windows. Squads pins each suffix slot to its candidate set; DLMM then
     // enforces that the selected lower/upper pair matches the dynamic range.
+    Ok(AutonomousMeteoraPolicies {
         add_liquidity: policy_plan(
             settings,
             authority,
