@@ -23,19 +23,17 @@ type Intent struct {
 }
 
 type WithdrawAmount struct {
-	raw uint64
-	max bool
+	exact bool
+	raw   uint64
 }
 
-var MaxWithdrawal = WithdrawAmount{max: true}
-
-func ExactWithdrawal(raw uint64) WithdrawAmount { return WithdrawAmount{raw: raw} }
+func exactWithdrawal(raw uint64) WithdrawAmount { return WithdrawAmount{exact: true, raw: raw} }
 
 func (a WithdrawAmount) resolve(equityUSDCRaw uint64) uint64 {
-	if a.max {
-		return equityUSDCRaw
+	if a.exact {
+		return a.raw
 	}
-	return a.raw
+	return equityUSDCRaw
 }
 
 func (s *Store) pendingIntents(ctx context.Context, settings, vault string) ([]Intent, error) {
@@ -56,13 +54,12 @@ func (s *Store) pendingIntents(ctx context.Context, settings, vault string) ([]I
 		if err := rows.Scan(&intent.Signature, &intent.InstructionIndex, &intent.Kind, &intent.RequestID, &amount, &intent.Destination, &slot, &intent.ObservedAt); err != nil {
 			return nil, err
 		}
-		intent.Amount = MaxWithdrawal
 		if amount != nil {
 			value, err := strconv.ParseUint(*amount, 10, 64)
 			if err != nil {
 				return nil, err
 			}
-			intent.Amount = ExactWithdrawal(value)
+			intent.Amount = exactWithdrawal(value)
 		}
 		intent.Slot = uint64(slot)
 		intents = append(intents, intent)
@@ -169,15 +166,14 @@ func (s *Store) ApplyPendingIntents(ctx context.Context, lease *Lease, route *Ro
 	if err != nil || len(intents) == 0 {
 		return false, err
 	}
-	equityMicros, err := strconv.ParseUint(equityUSDMicros, 10, 64)
+	equityUSDCRaw, err := strconv.ParseUint(equityUSDMicros, 10, 64)
 	if err != nil {
 		return false, fmt.Errorf("route equity does not fit u64: %w", err)
 	}
-	equity := usdcRawFromUSDMicros(equityMicros)
 	next, moved := *route, false
 	for _, intent := range intents {
 		candidate := next
-		action, evidence, reason := candidate.decideIntent(intent, equity)
+		action, evidence, reason := candidate.decideIntent(intent, equityUSDCRaw)
 		if reason != "" {
 			if err := s.refuseIntent(ctx, intent, reason); err != nil {
 				return moved, err

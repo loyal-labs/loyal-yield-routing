@@ -635,7 +635,6 @@ func TestVerifyExpectedEffectsRules(t *testing.T) {
 	topology := testTopology(t)
 	key := SyrupUsdcUsdc
 	config := topology.Strategies[key]
-	before, _ := activeObserved(topology, key, 0, 0, 1, 1, 1)
 	after, afterPosition := activeObserved(topology, key, 0, 0, 1, 1, 1)
 	setCollateralAmount := func(observed *ObservedRoute, raw uint64) {
 		for index := range observed.CollateralCustodies {
@@ -650,7 +649,6 @@ func TestVerifyExpectedEffectsRules(t *testing.T) {
 		Account: config.CollateralCustody.String(), Mint: config.CollateralMint, AmountRaw: 5_000,
 	}}}
 	// Undershoot below the persisted spend must fail.
-	setCollateralAmount(before, 5_000)
 	setCollateralAmount(after, 4_900)
 	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, after, topology); err == nil {
 		t.Fatal("undershoot was accepted")
@@ -694,7 +692,6 @@ func TestVerifyExpectedEffectsRules(t *testing.T) {
 			}
 		}
 	}
-	setObservedRaw(before, debtConfig.DebtCustody.String(), 1_000)
 	setObservedRaw(after, debtConfig.DebtCustody.String(), 100)
 	after.Position(debtKey).DebtRaw = 1
 	if err := VerifyExpectedEffects(effects, ActionRepayDebt, after, topology); err == nil {

@@ -870,7 +870,7 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 	}
 	input.CoverageStartAt = &coverageStart
 	if active == nil {
-		input.EquityUSDMicros = formatUint(usdMicrosFromUSDCRaw(observed.Claim.AmountRaw))
+		input.EquityUSDMicros = formatUint(observed.Claim.AmountRaw)
 		input.CollateralValueUSDMicros = "0"
 		input.DebtValueUSDMicros = "0"
 		return input, nil
@@ -880,7 +880,7 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 	}
 	collateralValue := toUSDMicros(active.CollateralValueSF)
 	debtValue := toUSDMicros(active.DebtValueSF)
-	claimMicros := new(big.Int).SetUint64(usdMicrosFromUSDCRaw(observed.Claim.AmountRaw))
+	claimMicros := new(big.Int).SetUint64(observed.Claim.AmountRaw)
 	equity := new(big.Int).Add(claimMicros, collateralValue)
 	equity.Sub(equity, debtValue)
 	if equity.Sign() < 0 {
@@ -940,10 +940,6 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 	}
 	return input, nil
 }
-
-func usdMicrosFromUSDCRaw(raw uint64) uint64 { return raw }
-
-func usdcRawFromUSDMicros(micros uint64) uint64 { return micros }
 
 func formatUint(value uint64) string {
 	return new(big.Int).SetUint64(value).String()
