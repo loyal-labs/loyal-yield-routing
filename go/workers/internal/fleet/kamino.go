@@ -21,13 +21,6 @@ func DecodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 	return decodeKaminoReserve(account, identity, contextSlot, slotsPerSecond)
 }
 
-// DecodeKaminoSourceReserve names the source-only call site. Structurally valid
-// stale economics are decoded for both roles; Plan excludes them as targets,
-// while the route revalidator refreshes a stale source before withdraw.
-func DecodeKaminoSourceReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotsPerSecond float64) (ReserveState, error) {
-	return decodeKaminoReserve(account, identity, contextSlot, slotsPerSecond)
-}
-
 func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotsPerSecond float64) (ReserveState, error) {
 	reserve, err := kamino.DecodeReserve(account)
 	if err != nil || account.Key.String() != identity.Address {
@@ -95,7 +88,7 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 		LastUpdateStale:        reserve.LastUpdateStale,
 		EconomicSlotLag:        lag,
 		SupplyAPYBPS:           int64(math.Round(supplyAPY * 10_000)),
-		TotalSupplyUSDMicros:   int64(math.Round(totalSupply)),
+		TotalSupplyRaw:         int64(math.Round(totalSupply)),
 		EconomicLifetimeMillis: economicLifetime.Milliseconds(),
 		DataHash:               hex.EncodeToString(hash[:]),
 	}, nil

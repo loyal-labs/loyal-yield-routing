@@ -1003,7 +1003,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	if err != nil {
 		return out, err
 	}
-	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.TotalSupplyUSDMicros <= minimumSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
+	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.SupplyUSDMicros() <= minimumSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
 		return out, errors.New("finalized cross-mint target is no longer eligible")
 	}
 	profitableOutput, err := minimumProfitableCrossMintOutput(lease.ExecutionPlan, plan.Amount, bank.sourceEconomics.SupplyAPYBPS, bank.targetEconomics.SupplyAPYBPS)
@@ -1178,18 +1178,13 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 		}
 	}
 	required = filtered
-	var managed []LookupTable
-	// Finalized Jupiter tables can already cover every withdrawal address.
-	// The managed-table query intentionally rejects an empty requirements set.
-	if len(required) > 0 {
-		managed, err = r.store.LoadReusableLookupTables(ctx, lease.Cluster, lease.VaultID, slot, required)
-		if err != nil {
-			return out, err
-		}
-		managed, err = r.verifyFinalizedLookupTables(ctx, managed, slot)
-		if err != nil {
-			return out, err
-		}
+	managed, err := r.store.LoadReusableLookupTables(ctx, lease.Cluster, lease.VaultID, slot, required)
+	if err != nil {
+		return out, err
+	}
+	managed, err = r.verifyFinalizedLookupTables(ctx, managed, slot)
+	if err != nil {
+		return out, err
 	}
 	instructions := append([]RouteInstruction{}, computeBudgetInstructions(uint32(r.computeLimit), validated.UnitPrice)...)
 	instructions = append(instructions, route.Public[:firstObligation+1]...)
@@ -1268,7 +1263,7 @@ func (r *Revalidator) prepareCrossMintPreflight(ctx context.Context, lease Reval
 	}
 	out.ObservedAt, out.ObservedSlot = bank.observedAt, bank.slot
 	out.SourceAPYBPS, out.TargetAPYBPS = bank.sourceEconomics.SupplyAPYBPS, bank.targetEconomics.SupplyAPYBPS
-	out.TargetObservedSupplyUSDMicros = bank.targetEconomics.TotalSupplyUSDMicros
+	out.TargetObservedSupplyUSDMicros = bank.targetEconomics.SupplyUSDMicros()
 	out.SharedAddresses, out.VaultAddresses = manifest.SharedAddresses, manifest.VaultAddresses
 	if activation {
 		withdrawalTables, e := r.store.LoadReusableLookupTables(ctx, lease.Cluster, lease.VaultID, bank.slot, requiredLookupTableAddresses(managedInstructions))

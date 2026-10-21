@@ -219,32 +219,32 @@ type crossMintPreparationStore interface {
 	CheckCrossMintPreparation(context.Context, CrossMintPreparationRequest) error
 }
 
-type crossMintPreparationToken struct {
+type CrossMintTokenAmount struct {
 	Mint         string `json:"mint"`
 	TokenAccount string `json:"tokenAccount"`
 	AmountRaw    int64  `json:"amountRaw"`
 }
 
-// Retained Rust JSON tags are an external receipt contract, including nulls.
-type crossMintPreparationPosition struct {
-	Reserve          string `json:"reserve"`
-	Market           string `json:"market"`
-	Obligation       string `json:"obligation"`
-	ObligationExists bool   `json:"obligationExists"`
-	CollateralRaw    int64  `json:"depositedCollateralAmountRaw"`
+type CrossMintPositionAnchor struct {
+	Reserve                 string `json:"reserve"`
+	Market                  string `json:"market"`
+	Obligation              string `json:"obligation"`
+	ObligationExists        bool   `json:"obligationExists"`
+	CollateralRaw           int64  `json:"depositedCollateralAmountRaw"`
+	MinimumDepositAmountRaw *int64 `json:"minimumDepositAmountRaw,omitempty"`
 }
 
 type crossMintPreparationEffect struct {
-	Debit         *crossMintPreparationToken `json:"debit"`
-	CreditMint    *string                    `json:"creditMint"`
-	CreditAccount *string                    `json:"creditTokenAccount"`
-	MinimumCredit *int64                     `json:"minimumCreditAmountRaw"`
+	Debit         *CrossMintTokenAmount `json:"debit"`
+	CreditMint    *string               `json:"creditMint"`
+	CreditAccount *string               `json:"creditTokenAccount"`
+	MinimumCredit *int64                `json:"minimumCreditAmountRaw"`
 }
 
-type crossMintPreparationAnchors struct {
-	Debit    *crossMintPreparationToken    `json:"debit"`
-	Credit   *crossMintPreparationToken    `json:"credit"`
-	Position *crossMintPreparationPosition `json:"kaminoPosition"`
+type CrossMintAnchors struct {
+	Debit    *CrossMintTokenAmount    `json:"debit"`
+	Credit   *CrossMintTokenAmount    `json:"credit"`
+	Position *CrossMintPositionAnchor `json:"kaminoPosition,omitempty"`
 }
 
 func validateCrossMintPreparationRequest(q CrossMintPreparationRequest, signer, owner string, now time.Time) (crossMintPlan, error) {
@@ -335,7 +335,7 @@ func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPrepar
 	}
 	var instructions []RouteInstruction
 	var effect crossMintPreparationEffect
-	var anchors crossMintPreparationAnchors
+	var anchors CrossMintAnchors
 	if q.Leg == "swap" {
 		instructions, effect, anchors, err = r.prepareCrossMintSwapInstructions(ctx, q, plan, &bank)
 		out.PolicyAccount = plan.Bindings.Swap.PolicyAccount
@@ -630,9 +630,9 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 	return bank, err
 }
 
-func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q CrossMintPreparationRequest, plan crossMintPlan, bank crossMintPreparationBank) ([]RouteInstruction, crossMintPreparationEffect, crossMintPreparationAnchors, string, error) {
+func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q CrossMintPreparationRequest, plan crossMintPlan, bank crossMintPreparationBank) ([]RouteInstruction, crossMintPreparationEffect, CrossMintAnchors, string, error) {
 	var effect crossMintPreparationEffect
-	var anchors crossMintPreparationAnchors
+	var anchors CrossMintAnchors
 	m, b := q.Movement, plan.Bindings
 	position, collateral, binding, index := bank.active, bank.activeCollateral, b.Deposit, b.Deposit.ConstraintIndex
 	if q.Leg == "withdraw" || q.Purpose == "recover_source" {
@@ -677,7 +677,7 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 		route.Public, route.Protected = route.Public[:last+1], route.Protected[:1]
 		mint, ata, minimum := m.SourceMint, position.Position.VaultLiquidityATA, int64(1)
 		effect.CreditMint, effect.CreditAccount, effect.MinimumCredit = &mint, &ata, &minimum
-		anchors.Credit = &crossMintPreparationToken{mint, ata, int64(binary.LittleEndian.Uint64(bank.accounts[ata].Data[64:72]))}
+		anchors.Credit = &CrossMintTokenAmount{mint, ata, int64(binary.LittleEndian.Uint64(bank.accounts[ata].Data[64:72]))}
 	} else {
 		if position.Position.VaultLiquidityATA != m.CustodyAccount || position.Position.LiquidityMint != m.CustodyMint {
 			return nil, effect, anchors, "", errors.New("deposit destination differs from attributed custody")
@@ -686,10 +686,10 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 		if err != nil {
 			return nil, effect, anchors, "", err
 		}
-		effect.Debit = &crossMintPreparationToken{m.CustodyMint, m.CustodyAccount, m.CustodyAmountRaw}
-		anchors.Debit = &crossMintPreparationToken{m.CustodyMint, m.CustodyAccount, *m.CustodyObservedBalanceRaw}
+		effect.Debit = &CrossMintTokenAmount{m.CustodyMint, m.CustodyAccount, m.CustodyAmountRaw}
+		anchors.Debit = &CrossMintTokenAmount{m.CustodyMint, m.CustodyAccount, *m.CustodyObservedBalanceRaw}
 	}
-	anchors.Position = &crossMintPreparationPosition{position.Position.Reserve, position.Position.Market, position.Obligation, true, int64(collateral)}
+	anchors.Position = &CrossMintPositionAnchor{Reserve: position.Position.Reserve, Market: position.Position.Market, Obligation: position.Obligation, ObligationExists: true, CollateralRaw: int64(collateral)}
 	policyAccount := bank.accounts[binding.PolicyAccount]
 	policy, err := DecodeSquadsPolicy(&policyAccount)
 	if err != nil {
@@ -709,14 +709,14 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 	return append(append([]RouteInstruction{}, route.Public...), wrapped), effect, anchors, binding.PolicyAccount, nil
 }
 
-func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q CrossMintPreparationRequest, plan crossMintPlan, bank *crossMintPreparationBank) ([]RouteInstruction, crossMintPreparationEffect, crossMintPreparationAnchors, error) {
+func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q CrossMintPreparationRequest, plan crossMintPlan, bank *crossMintPreparationBank) ([]RouteInstruction, crossMintPreparationEffect, CrossMintAnchors, error) {
 	var effect crossMintPreparationEffect
-	var anchors crossMintPreparationAnchors
+	var anchors CrossMintAnchors
 	m, b := q.Movement, plan.Bindings
 	if r.jupiter == nil || b.Swap.MaxSlippageBPS == 0 || b.Swap.MaxSlippageBPS > 10_000 || uint64(m.CustodyAmountRaw) > b.Swap.DailySourceMintSpendingCap || r.crossMintMaxSlippageBPS == 0 || r.crossMintMaxValueLossBPS == 0 {
 		return nil, effect, anchors, errors.New("cross-mint swap policy or local limits are invalid")
 	}
-	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.TotalSupplyUSDMicros <= minimumSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
+	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.SupplyUSDMicros() <= minimumSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 {
 		return nil, effect, anchors, errors.New("cross-mint intended target is no longer economically eligible")
 	}
 	amount := uint64(m.CustodyAmountRaw)
@@ -812,8 +812,8 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 		return nil, effect, anchors, errors.New("cross-mint swap credit exceeds SQL custody range")
 	}
 	mint, ata, minimumRaw := m.TargetMint, bank.target.Position.VaultLiquidityATA, int64(validated.MinimumOutput)
-	effect = crossMintPreparationEffect{Debit: &crossMintPreparationToken{m.CustodyMint, m.CustodyAccount, m.CustodyAmountRaw}, CreditMint: &mint, CreditAccount: &ata, MinimumCredit: &minimumRaw}
-	anchors = crossMintPreparationAnchors{Debit: &crossMintPreparationToken{m.CustodyMint, m.CustodyAccount, *m.CustodyObservedBalanceRaw}, Credit: &crossMintPreparationToken{mint, ata, int64(binary.LittleEndian.Uint64(bank.accounts[ata].Data[64:72]))}}
+	effect = crossMintPreparationEffect{Debit: &CrossMintTokenAmount{m.CustodyMint, m.CustodyAccount, m.CustodyAmountRaw}, CreditMint: &mint, CreditAccount: &ata, MinimumCredit: &minimumRaw}
+	anchors = CrossMintAnchors{Debit: &CrossMintTokenAmount{m.CustodyMint, m.CustodyAccount, *m.CustodyObservedBalanceRaw}, Credit: &CrossMintTokenAmount{mint, ata, int64(binary.LittleEndian.Uint64(bank.accounts[ata].Data[64:72]))}}
 	bank.swap = &validated.Swap
 	bank.externalTables = externalTables
 	return []RouteInstruction{wrapped}, effect, anchors, nil

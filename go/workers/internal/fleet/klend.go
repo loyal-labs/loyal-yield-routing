@@ -239,11 +239,10 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 	return route, nil
 }
 
-// initObligation creates the vault's vanilla (tag 0, id 0) obligation. The
-// vault is owner and rent payer: inside a Squads policy only the vault signs.
+// The vault is owner and rent payer: inside a Squads policy only the vault signs.
 func initObligation(owner solana.PublicKey, t klendPosition, metadata solana.PublicKey) RouteInstruction {
 	return RouteInstructionOf("kamino_init_obligation", kamino.InitObligation(kamino.ObligationInitAccounts{Owner: owner, FeePayer: owner, Obligation: t.Obligation,
-		LendingMarket: t.LendingMarket, OwnerUserMetadata: metadata}, 0, 0))
+		LendingMarket: t.LendingMarket, OwnerUserMetadata: metadata}, kamino.VanillaObligationTag, kamino.DefaultObligationID))
 }
 
 func initObligationFarm(payer string, t klendPosition) (RouteInstruction, error) {
@@ -254,7 +253,7 @@ func initObligationFarm(payer string, t klendPosition) (RouteInstruction, error)
 	return RouteInstructionOf("kamino_init_obligation_farms_for_reserve", kamino.InitObligationFarmsForReserve(kamino.ObligationFarmsInitAccounts{
 		Payer: key, Owner: t.Owner, Obligation: t.Obligation, LendingMarketAuthority: t.LendingMarketAuthority, Reserve: t.Reserve,
 		ReserveFarmState: t.ReserveFarmState, ObligationFarmUserState: t.ObligationFarmUserState, LendingMarket: t.LendingMarket,
-	}, 0)), nil
+	}, kamino.FarmCollateral)), nil
 }
 
 type klendPosition struct {

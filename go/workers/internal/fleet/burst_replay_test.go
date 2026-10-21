@@ -31,7 +31,7 @@ type replayFixture struct {
 			EconomicSlotLag        int64   `json:"economicSlotLag"`
 			ReserveLastUpdateStale bool    `json:"reserveLastUpdateStale"`
 			SupplyAPYBPS           int64   `json:"supplyApyBps"`
-			TotalSupplyUSDMicros   int64   `json:"totalSupplyUsdMicros"`
+			TotalSupplyRaw         int64   `json:"totalSupplyUsdMicros"`
 			AvailableAmountRaw     string  `json:"availableAmountRaw"`
 			DepositLimitRaw        *string `json:"depositLimitRaw"`
 			AccountDataHash        string  `json:"accountDataHash"`
@@ -111,7 +111,7 @@ func TestSnapshotPlannerReplaysTheDurableEpochDecisions(t *testing.T) {
 		}
 		state := ReserveState{ReserveIdentity: identity, Slot: r.Slot, ObservedAt: snapshot.ObservedAt, LastUpdateSlot: r.ReserveLastUpdateSlot,
 			LastUpdateStale: r.ReserveLastUpdateStale, EconomicSlotLag: r.EconomicSlotLag, SupplyAPYBPS: r.SupplyAPYBPS,
-			TotalSupplyUSDMicros: r.TotalSupplyUSDMicros, DataHash: r.AccountDataHash, AvailableLiquidityRaw: &available}
+			TotalSupplyRaw: r.TotalSupplyRaw, DataHash: r.AccountDataHash, AvailableLiquidityRaw: &available}
 		// DecodeKaminoReserve's lifetime: the slots left of the 1500-slot lag.
 		state.EconomicLifetimeMillis = int64(float64(max(maximumEconomicSlotLag-r.EconomicSlotLag, 0)) / slotsPerSecond * 1000)
 		if r.DepositLimitRaw != nil {

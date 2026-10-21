@@ -27,7 +27,7 @@ func fallbackReserves(states ...fleet.ReserveState) fleet.MarketSnapshot {
 
 func fallbackReserve(address, mint string, apy int64, eligible bool) fleet.ReserveState {
 	return fleet.ReserveState{ReserveIdentity: fleet.ReserveIdentity{Address: address, Market: "market", Mint: mint}, Slot: 1000, LastUpdateSlot: 1000, LastUpdateStale: !eligible,
-		SupplyAPYBPS: apy, TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}
+		SupplyAPYBPS: apy, TotalSupplyRaw: 1_000_000_000_000, EconomicLifetimeMillis: 600_000, DataHash: strings.Repeat("a", 64)}
 }
 
 func TestCrossMintFallbackRanksSameMintEligibleReservesDeterministically(t *testing.T) {

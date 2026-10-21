@@ -63,7 +63,7 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if position.AmountRaw < minimumNotionalUSDMicros {
 		return ineligible("below_minimum_notional")
 	}
-	if source.TotalSupplyUSDMicros < minimumSupplyUSDMicros || target.TotalSupplyUSDMicros < minimumSupplyUSDMicros {
+	if source.SupplyUSDMicros() < minimumSupplyUSDMicros || target.SupplyUSDMicros() < minimumSupplyUSDMicros {
 		return ineligible("below_minimum_reserve_supply")
 	}
 	if target.LastUpdateStale {
@@ -80,7 +80,7 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 		position.SourceCommittedInflowUSDMicros < 0 || position.SourceCommittedOutflowUSDMicros < 0 {
 		return ineligible("invalid_capacity_projection")
 	}
-	capacity := target.TotalSupplyUSDMicros / 50
+	capacity := target.SupplyUSDMicros() / 50
 	if capacity < 4_000_000 {
 		capacity = 4_000_000
 	}
@@ -96,14 +96,14 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if !hasCapacity {
 		return ineligible("target_capacity_exhausted")
 	}
-	sourceProjectedSupply, valid := sumInt64(source.TotalSupplyUSDMicros, position.SourceCommittedInflowUSDMicros, -position.SourceCommittedOutflowUSDMicros)
+	sourceProjectedSupply, valid := sumInt64(source.SupplyUSDMicros(), position.SourceCommittedInflowUSDMicros, -position.SourceCommittedOutflowUSDMicros)
 	if !valid {
 		return ineligible("capacity_arithmetic_overflow")
 	}
 	if sourceProjectedSupply <= 0 {
 		return ineligible("invalid_capacity_projection")
 	}
-	sourceAPY, valid := mulDivInt64(source.SupplyAPYBPS, source.TotalSupplyUSDMicros, sourceProjectedSupply)
+	sourceAPY, valid := mulDivInt64(source.SupplyAPYBPS, source.SupplyUSDMicros(), sourceProjectedSupply)
 	if !valid {
 		return ineligible("capacity_arithmetic_overflow")
 	}
@@ -192,10 +192,10 @@ func capacityAdjustedTargetAPY(target ReserveState, committedInflow, committedOu
 		return 0, false, false
 	}
 	ceilings := []int64{
-		target.TotalSupplyUSDMicros / 1_000,
-		target.TotalSupplyUSDMicros / 200,
-		target.TotalSupplyUSDMicros / 100,
-		maxInt64(target.TotalSupplyUSDMicros/50, 4_000_000),
+		target.SupplyUSDMicros() / 1_000,
+		target.SupplyUSDMicros() / 200,
+		target.SupplyUSDMicros() / 100,
+		maxInt64(target.SupplyUSDMicros()/50, 4_000_000),
 	}
 	if committedInflow > ceilings[len(ceilings)-1] {
 		ceilings[len(ceilings)-1] = committedInflow
@@ -204,11 +204,11 @@ func capacityAdjustedTargetAPY(target ReserveState, committedInflow, committedOu
 		if cumulativeInflow > ceiling {
 			continue
 		}
-		bandSupply, ok := sumInt64(target.TotalSupplyUSDMicros, ceiling)
+		bandSupply, ok := sumInt64(target.SupplyUSDMicros(), ceiling)
 		if !ok {
 			return 0, false, false
 		}
-		bandAPY, ok := mulDivInt64(target.SupplyAPYBPS, target.TotalSupplyUSDMicros, bandSupply)
+		bandAPY, ok := mulDivInt64(target.SupplyAPYBPS, target.SupplyUSDMicros(), bandSupply)
 		if !ok {
 			return 0, false, false
 		}

@@ -421,7 +421,7 @@ func validateCrossMintSignedSwap(ix RouteInstruction, index uint8, plan crossMin
 	if e != nil {
 		return e
 	}
-	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.TotalSupplyUSDMicros <= minimumSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 || thresholdFor(quoted, slippage) < max(minimum, profitable) {
+	if bank.targetEconomics.LastUpdateStale || bank.targetEconomics.EconomicLifetimeMillis <= 0 || bank.targetEconomics.SupplyUSDMicros() <= minimumSupplyUSDMicros || bank.targetEconomics.SupplyAPYBPS < 0 || bank.targetEconomics.SupplyAPYBPS >= 5000 || thresholdFor(quoted, slippage) < max(minimum, profitable) {
 		return fmt.Errorf("first-send unchanged signed swap no longer meets finalized economics")
 	}
 	return nil

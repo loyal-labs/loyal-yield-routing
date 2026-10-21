@@ -25,21 +25,15 @@ const (
 	CrossMintManualIntervention CrossMintPhase = "manual_intervention"
 )
 
-// These aliases preserve the retained Rust receipt JSON contract. A token
-// delta and a complete account balance share a layout, but not a meaning.
-type CrossMintTokenAmount = crossMintTokenAnchor
-type CrossMintPositionAnchor = crossMintPositionAnchor
-type CrossMintBalanceAnchors = crossMintAnchors
-
 type CrossMintExpectedEffect struct {
-	Debit                  *CrossMintTokenAmount `json:"debit"`
-	CreditMint             *string               `json:"creditMint"`
-	CreditTokenAccount     *string               `json:"creditTokenAccount"`
-	MinimumCreditAmountRaw *int64                `json:"minimumCreditAmountRaw"`
+	Debit                  *fleet.CrossMintTokenAmount `json:"debit"`
+	CreditMint             *string                     `json:"creditMint"`
+	CreditTokenAccount     *string                     `json:"creditTokenAccount"`
+	MinimumCreditAmountRaw *int64                      `json:"minimumCreditAmountRaw"`
 }
 type CrossMintEffect struct {
-	Debit  *CrossMintTokenAmount `json:"debit"`
-	Credit *CrossMintTokenAmount `json:"credit"`
+	Debit  *fleet.CrossMintTokenAmount `json:"debit"`
+	Credit *fleet.CrossMintTokenAmount `json:"credit"`
 }
 
 type CrossMintMovement struct {
@@ -82,7 +76,7 @@ type CrossMintPreparedLeg struct {
 	LastValidBlockHeight            int64
 	PolicyAccount                   string
 	ExpectedEffect                  CrossMintExpectedEffect
-	BalanceAnchors                  CrossMintBalanceAnchors
+	BalanceAnchors                  fleet.CrossMintAnchors
 	ConflictKeys                    []string
 	SelectedALTs                    []fleet.ExecutionALT
 	ExternalALTs                    []CrossMintExternalALT
@@ -228,9 +222,7 @@ func (c *CrossMintController) verifyIdleCustody(ctx context.Context, m CrossMint
 	return verifyCrossMintIdleCustody(ctx, m, c.accounts, c.history, recognized)
 }
 
-// This proof is shared by the two signing checks; recognized signatures must
-// come from this movement's reconciled durable journal, never an RPC allowlist.
-func verifyCrossMintIdleCustody(ctx context.Context, m CrossMintMovement, reader fleet.AccountReader, history historyReader, recognized map[string]bool) error {
+func verifyCrossMintIdleCustody(ctx context.Context, m CrossMintMovement, reader fleet.AccountReader, history historyReader, recognized journalSignatures) error {
 	if m.Phase != CrossMintSourceIdle && m.Phase != CrossMintTargetIdle || m.CustodyReconciledSlot == nil || *m.CustodyReconciledSlot <= 0 || m.CustodyObservedBalanceRaw == nil || m.CustodyAmountRaw <= 0 || *m.CustodyObservedBalanceRaw < m.CustodyAmountRaw || reader == nil || history == nil {
 		return errors.New("idle custody lacks finalized historical anchor or proof owner")
 	}
@@ -288,7 +280,7 @@ func validateCrossMintPrepared(r CrossMintLegRequest, p CrossMintPreparedLeg) er
 	return validateCrossMintLeg(r, p.ExpectedEffect, p.BalanceAnchors)
 }
 
-func validateCrossMintLeg(r CrossMintLegRequest, e CrossMintExpectedEffect, a CrossMintBalanceAnchors) error {
+func validateCrossMintLeg(r CrossMintLegRequest, e CrossMintExpectedEffect, a fleet.CrossMintAnchors) error {
 	m := r.Movement
 	allowed := m.Phase == CrossMintSourceReserve && r.Leg == LegWithdraw && r.Purpose == PurposeOptimizeYield || m.Phase == CrossMintSourceIdle && (r.Leg == LegSwap && r.Purpose == PurposeOptimizeYield || r.Leg == LegDeposit && r.Purpose == PurposeRecoverSource) || m.Phase == CrossMintTargetIdle && r.Leg == LegDeposit && (r.Purpose == PurposeOptimizeYield || r.Purpose == PurposeFallbackTarget)
 	if !allowed || m.TerminalOutcome != nil {
@@ -332,11 +324,11 @@ func validateCrossMintLeg(r CrossMintLegRequest, e CrossMintExpectedEffect, a Cr
 	}
 	return nil
 }
-func validCrossMintDelta(a *CrossMintTokenAmount) bool {
+func validCrossMintDelta(a *fleet.CrossMintTokenAmount) bool {
 	return a != nil && a.Mint != "" && a.TokenAccount != "" && a.AmountRaw > 0
 }
-func validateCrossMintAnchors(a CrossMintBalanceAnchors) error {
-	for _, t := range []*CrossMintTokenAmount{a.Debit, a.Credit} {
+func validateCrossMintAnchors(a fleet.CrossMintAnchors) error {
+	for _, t := range []*fleet.CrossMintTokenAmount{a.Debit, a.Credit} {
 		if t != nil && (t.Mint == "" || t.TokenAccount == "" || t.AmountRaw < 0) {
 			return errors.New("invalid token balance anchor")
 		}
@@ -359,7 +351,7 @@ type crossMintNextCustody struct {
 	terminalSlot    *int64
 }
 
-func crossMintReceiptTransition(m CrossMintMovement, leg MovementLeg, purpose LegPurpose, expected CrossMintExpectedEffect, pre CrossMintBalanceAnchors, actual CrossMintEffect, post CrossMintBalanceAnchors, slot int64) (crossMintNextCustody, error) {
+func crossMintReceiptTransition(m CrossMintMovement, leg MovementLeg, purpose LegPurpose, expected CrossMintExpectedEffect, pre fleet.CrossMintAnchors, actual CrossMintEffect, post fleet.CrossMintAnchors, slot int64) (crossMintNextCustody, error) {
 	var next crossMintNextCustody
 	if slot <= 0 || m.CustodyReconciledSlot != nil && slot < *m.CustodyReconciledSlot {
 		return next, errors.New("receipt precedes custody or lacks finalized slot")

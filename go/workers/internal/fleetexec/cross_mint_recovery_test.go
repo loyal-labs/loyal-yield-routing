@@ -32,10 +32,10 @@ func signed(name string, slot uint64) chain.Signed {
 	return chain.Signed{Signature: testSignature(name), Slot: slot}
 }
 
-func recognizedSignatures(names ...string) map[string]bool {
-	out := map[string]bool{}
+func recognizedSignatures(names ...string) journalSignatures {
+	out := journalSignatures{map[string]bool{}}
 	for _, name := range names {
-		out[testSignature(name).String()] = true
+		out.set[testSignature(name).String()] = true
 	}
 	return out
 }
@@ -46,12 +46,12 @@ func TestCrossMintCustodyHistoryRequiresRecognizedAnchorAndRejectsRestoredBalanc
 	for _, tc := range []struct {
 		name       string
 		statuses   []chain.Signed
-		recognized map[string]bool
+		recognized journalSignatures
 		allow      bool
 	}{
 		{"recognized anchor", []chain.Signed{signed("known", 100)}, recognizedSignatures("known"), true},
-		{"empty history", nil, map[string]bool{}, false},
-		{"anchor pruned", []chain.Signed{signed("old", 99)}, map[string]bool{}, false},
+		{"empty history", nil, recognizedSignatures(), false},
+		{"anchor pruned", []chain.Signed{signed("old", 99)}, recognizedSignatures(), false},
 		{"external restored balance", []chain.Signed{signed("external", 101), signed("known", 100)}, recognizedSignatures("known"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,7 +67,7 @@ func TestCrossMintCustodyHistoryRequiresRecognizedAnchorAndRejectsRestoredBalanc
 	recognized := recognizedSignatures("anchor")
 	for i := range page {
 		page[i] = signed(fmt.Sprint(i), uint64(1100-i))
-		recognized[page[i].Signature.String()] = true
+		recognized.set[page[i].Signature.String()] = true
 	}
 	h := &historyPages{pages: [][]chain.Signed{page, {signed("anchor", 100), signed("older", 99)}}}
 	if _, err := verifyCustodyHistory(context.Background(), h, account, 100, 1200, recognized, true); err != nil || h.calls != 2 {

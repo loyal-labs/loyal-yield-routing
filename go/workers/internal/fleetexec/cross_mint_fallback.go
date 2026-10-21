@@ -50,7 +50,7 @@ func (c *CrossMintController) rebindFallback(ctx context.Context, l CrossMintCon
 	if err = c.verifyFallbackBank(ctx, m, candidate); err != nil {
 		return err
 	}
-	err = c.store.RebindCrossMintFallbackCapacity(ctx, l, CrossMintCapacityProjection{Cluster: m.Cluster, TargetReserve: candidate.Address, LiquidityMint: m.TargetMint, ObservedSupplyUSDMicros: candidate.TotalSupplyUSDMicros, ObservedSlot: candidate.Slot})
+	err = c.store.RebindCrossMintFallbackCapacity(ctx, l, CrossMintCapacityProjection{Cluster: m.Cluster, TargetReserve: candidate.Address, LiquidityMint: m.TargetMint, ObservedSupplyUSDMicros: candidate.SupplyUSDMicros(), ObservedSlot: candidate.Slot})
 	return err
 }
 

@@ -46,10 +46,10 @@ func crossMintFallbackFixture(t *testing.T, primaryEligible bool) (*CrossMintCon
 	}
 	b := seededBaseline{Cluster: m.Cluster, DecisionID: m.DecisionID, OpportunityID: m.OpportunityID, EpochID: m.OptimizerEpochID}
 	credit := int64(999000000)
-	e := CrossMintExpectedEffect{Debit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: m.CustodyAmountRaw}, CreditMint: crossString(m.TargetMint), CreditTokenAccount: crossString(ata), MinimumCreditAmountRaw: &credit}
-	pre := CrossMintBalanceAnchors{Debit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: *m.CustodyObservedBalanceRaw}, Credit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: 7}}
-	effect := CrossMintEffect{Debit: e.Debit, Credit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: credit}}
-	post := CrossMintBalanceAnchors{Debit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: 50}, Credit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: credit + 7}}
+	e := CrossMintExpectedEffect{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: m.CustodyAmountRaw}, CreditMint: crossString(m.TargetMint), CreditTokenAccount: crossString(ata), MinimumCreditAmountRaw: &credit}
+	pre := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: *m.CustodyObservedBalanceRaw}, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: 7}}
+	effect := CrossMintEffect{Debit: e.Debit, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: credit}}
+	post := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: 50}, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: credit + 7}}
 	l := seedCrossMintReceiptAttempt(t, ctx, pool, b, LegSwap, PurposeOptimizeYield, e, pre, 1015)
 	m, err = r.store.ReconcileCrossMintLeg(ctx, l, CrossMintReconciliation{FinalizedSlot: 1015, Effect: effect, BalanceAnchors: post})
 	if err != nil {
@@ -75,7 +75,7 @@ func crossMintFallbackFixture(t *testing.T, primaryEligible bool) (*CrossMintCon
 		}
 		eligible := i == 1 || primaryEligible
 		reserves.Reserves[a.Key.String()] = fleet.ReserveState{ReserveIdentity: fleet.ReserveIdentity{Address: a.Key.String(), Market: market, Mint: m.TargetMint}, Slot: 1016, LastUpdateSlot: 1016, LastUpdateStale: !eligible,
-			SupplyAPYBPS: int64(100 + i*100), TotalSupplyUSDMicros: 1_000_000_000_000, EconomicLifetimeMillis: 600_000}
+			SupplyAPYBPS: int64(100 + i*100), TotalSupplyRaw: 1_000_000_000_000, EconomicLifetimeMillis: 600_000}
 	}
 	c := &CrossMintController{store: r.store, factory: &fallbackFactory{err: ErrCrossMintTargetUnavailable}, cluster: m.Cluster, owner: r.config.Owner, ttl: time.Minute, accounts: bank, history: addressHistory{pages: map[string][]chain.Signed{ata: {{Signature: sdk.MustSignatureFromBase58(l.Submission.Signature), Slot: 1015}}}}}
 	c.SetReserveSource(staticReserves{reserves})

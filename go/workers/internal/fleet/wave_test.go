@@ -85,7 +85,7 @@ func dilutionRescoreFixture() (MarketSnapshot, []FleetVault) {
 		reserves[r.key] = ReserveState{
 			ReserveIdentity: ReserveIdentity{Address: r.key, Market: "market", Mint: USDCMint},
 			Slot:            500, SupplyAPYBPS: r.apy,
-			TotalSupplyUSDMicros:   1_000_000_000_000,
+			TotalSupplyRaw:         1_000_000_000_000,
 			EconomicLifetimeMillis: 600_000, DataHash: r.hash,
 		}
 	}
@@ -155,7 +155,7 @@ func TestWaveReconsidersInitiallyUneconomicPermittedTarget(t *testing.T) {
 func TestLargeReserveCapacityBoundary(t *testing.T) {
 	snapshot, position := eligibleFixture()
 	target := snapshot.Reserves["target"]
-	target.TotalSupplyUSDMicros = 1_000_000_000_000_000 // $1B, $20M frontier.
+	target.TotalSupplyRaw = 1_000_000_000_000_000 // $1B, $20M frontier.
 	snapshot.Reserves["target"] = target
 	for _, tc := range []struct {
 		amount int64

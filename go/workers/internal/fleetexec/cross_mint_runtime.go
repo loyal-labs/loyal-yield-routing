@@ -221,7 +221,7 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 	if m.CustodyReconciledSlot != nil {
 		historyAnchor = *m.CustodyReconciledSlot
 	}
-	known := map[string]bool{}
+	known := journalSignatures{}
 	if m.CustodyReconciledSlot != nil {
 		known, err = r.store.crossMintRecognizedSignatures(workCtx, m.DecisionID, historyAnchor)
 		if err != nil {
@@ -337,6 +337,19 @@ func (s *Store) ClaimCrossMintRecoveryWork(ctx context.Context, cluster, owner s
 	return leases, err
 }
 
+func deferredSubmissionState(sub SubmissionRecord, expiryObserved, ambiguous bool) SubmissionState {
+	unsent := sub.State == StateSigned && sub.BroadcastCount == 0
+	switch {
+	case expiryObserved:
+		return StateExpiryCheckPending
+	case ambiguous && sub.State != StateReconciliationPending && !unsent:
+		return StateEffectAmbiguous
+	case !ambiguous && sub.State == StateSigned && sub.BroadcastCount > 0:
+		return StateSubmitted
+	}
+	return sub.State
+}
+
 func (s *Store) deferCrossMintStatus(ctx context.Context, l SubmissionLease, floor, height *int64, reason string, ambiguous bool) error {
 	if floor != nil && *floor <= 0 || height != nil && *height <= l.Submission.LastValidBlockHeight {
 		return errors.New("expiry observation lacks positive slot or expired height")
@@ -344,16 +357,7 @@ func (s *Store) deferCrossMintStatus(ctx context.Context, l SubmissionLease, flo
 	if len(reason) > 512 {
 		return errors.New("cross-mint operational reason exceeds bound")
 	}
-	next := l.Submission.State
-	if floor != nil {
-		next = StateExpiryCheckPending
-	} else if ambiguous && l.Submission.State != StateReconciliationPending && !(l.Submission.State == StateSigned && l.Submission.BroadcastCount == 0) {
-		next = StateEffectAmbiguous
-	} else if !ambiguous && l.Submission.State == StateSigned && l.Submission.BroadcastCount > 0 {
-		next = StateSubmitted
-	}
-	// A first-send policy failure keeps signed bytes unsent, but eligible only
-	// for recovery status; ambiguous custody never becomes a resend permission.
+	next := deferredSubmissionState(l.Submission, floor != nil, ambiguous)
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions s SET submission_state=$4,error_detail=$5,effect_check_slot=COALESCE($6,effect_check_slot),expiry_observed_block_height=COALESCE($7,expiry_observed_block_height),submitted_at=CASE WHEN $4='submitted' THEN COALESCE(submitted_at,clock_timestamp()) ELSE submitted_at END,last_status_checked_at=clock_timestamp(),confirmation_available_at=clock_timestamp()+interval '5 seconds',confirmation_lease_owner=NULL,confirmation_lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=$1 AND confirmation_lease_owner=$2 AND confirmation_fencing_token=$3 AND confirmation_lease_expires_at>clock_timestamp() AND transaction_signature=$8 AND submission_state=$9 AND movement_leg IN ('withdraw','swap','deposit') AND EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions d WHERE d.id=s.decision_id AND d.movement_route='cross_mint_jupiter' AND d.terminal_outcome IS NULL)`, l.Submission.ID, l.Owner, l.FencingToken, string(next), reason, floor, height, l.Submission.Signature, string(l.Submission.State))
 		if err != nil {
@@ -585,8 +589,8 @@ func sameCrossMintCustody(a, b CrossMintMovement) bool {
 func equalCrossMintInt(a, b *int64) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
-func sameCrossMintAnchorAmounts(a, b CrossMintBalanceAnchors) bool {
-	for _, pair := range [][2]*CrossMintTokenAmount{{a.Debit, b.Debit}, {a.Credit, b.Credit}} {
+func sameCrossMintAnchorAmounts(a, b fleet.CrossMintAnchors) bool {
+	for _, pair := range [][2]*fleet.CrossMintTokenAmount{{a.Debit, b.Debit}, {a.Credit, b.Credit}} {
 		if (pair[0] == nil) != (pair[1] == nil) {
 			return false
 		}
@@ -604,37 +608,47 @@ func sameCrossMintAnchorAmounts(a, b CrossMintBalanceAnchors) bool {
 	return true
 }
 
-func observeCrossMintBank(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool) (CrossMintBalanceAnchors, int64, error) {
-	return observeCrossMintBankWithAnchorPolicy(ctx, reader, history, m, expected, floor, historyAnchor, recognized, requireTokenAnchor, "")
+type anchorPolicy struct {
+	history bool
+	custody string
 }
 
-// A fresh swap has not yet touched its destination ATA. Its existing custody
-// account must retain the reconciled receipt anchor; other exact token anchors
-// must have no unrecognized activity, but need no invented prior receipt.
-// Receipt and expiry proofs retain the stricter all-account anchor policy.
-func observeCrossMintFirstSendBank(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool) (CrossMintBalanceAnchors, int64, error) {
+var (
+	anchorNoHistory  = anchorPolicy{}
+	anchorEveryToken = anchorPolicy{history: true}
+)
+
+func anchorCustodyToken(account string) anchorPolicy {
+	return anchorPolicy{history: true, custody: account}
+}
+
+func (p anchorPolicy) requiresReceipt(account string) bool {
+	return p.custody == "" || account == p.custody
+}
+
+func observeCrossMintFirstSendBank(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected fleet.CrossMintAnchors, floor, historyAnchor int64, recognized journalSignatures) (fleet.CrossMintAnchors, int64, error) {
 	if m.CustodyReconciledSlot == nil {
-		return observeCrossMintBank(ctx, reader, history, m, expected, floor, historyAnchor, recognized, false)
+		return observeCrossMintBank(ctx, reader, history, m, expected, floor, historyAnchor, recognized, anchorNoHistory)
 	}
 	bound := false
-	for _, anchor := range []*CrossMintTokenAmount{expected.Debit, expected.Credit} {
+	for _, anchor := range []*fleet.CrossMintTokenAmount{expected.Debit, expected.Credit} {
 		if anchor != nil && anchor.TokenAccount == m.CustodyAccount && anchor.Mint == m.CustodyMint {
 			bound = true
 		}
 	}
 	if !bound || m.CustodyAccount == "" || (m.Phase != CrossMintSourceIdle && m.Phase != CrossMintTargetIdle) {
-		return CrossMintBalanceAnchors{}, 0, errors.New("first-send history lacks the attributable idle custody account")
+		return fleet.CrossMintAnchors{}, 0, errors.New("first-send history lacks the attributable idle custody account")
 	}
-	return observeCrossMintBankWithAnchorPolicy(ctx, reader, history, m, expected, floor, historyAnchor, recognized, true, m.CustodyAccount)
+	return observeCrossMintBank(ctx, reader, history, m, expected, floor, historyAnchor, recognized, anchorCustodyToken(m.CustodyAccount))
 }
 
-func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool, custodyOnly string) (CrossMintBalanceAnchors, int64, error) {
-	var out CrossMintBalanceAnchors
-	if reader == nil || history == nil || floor <= 0 || requireTokenAnchor && (historyAnchor <= 0 || historyAnchor > floor) {
+func observeCrossMintBank(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected fleet.CrossMintAnchors, floor, historyAnchor int64, recognized journalSignatures, policy anchorPolicy) (fleet.CrossMintAnchors, int64, error) {
+	var out fleet.CrossMintAnchors
+	if reader == nil || history == nil || floor <= 0 || policy.history && (historyAnchor <= 0 || historyAnchor > floor) {
 		return out, 0, errors.New("cross-mint bank needs finalized proof dependencies and positive floor")
 	}
 	keys := []string{}
-	for _, a := range []*CrossMintTokenAmount{expected.Debit, expected.Credit} {
+	for _, a := range []*fleet.CrossMintTokenAmount{expected.Debit, expected.Credit} {
 		if a != nil {
 			keys = append(keys, a.TokenAccount)
 		}
@@ -659,7 +673,7 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader fleet.Acco
 		}
 		byKey[keys[i]] = a
 	}
-	for i, a := range []*CrossMintTokenAmount{expected.Debit, expected.Credit} {
+	for i, a := range []*fleet.CrossMintTokenAmount{expected.Debit, expected.Credit} {
 		if a == nil {
 			continue
 		}
@@ -675,14 +689,14 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader fleet.Acco
 		if e != nil || canonical != a.TokenAccount {
 			return out, 0, errors.New("signed token anchor is not canonical vault ATA")
 		}
-		anchor := &CrossMintTokenAmount{Mint: a.Mint, TokenAccount: a.TokenAccount, AmountRaw: amount}
+		anchor := &fleet.CrossMintTokenAmount{Mint: a.Mint, TokenAccount: a.TokenAccount, AmountRaw: amount}
 		if i == 0 {
 			out.Debit = anchor
 		} else {
 			out.Credit = anchor
 		}
-		if requireTokenAnchor {
-			if _, e = verifyCustodyHistory(ctx, history, a.TokenAccount, historyAnchor, slot, recognized, custodyOnly == "" || a.TokenAccount == custodyOnly); e != nil {
+		if policy.history {
+			if _, e = verifyCustodyHistory(ctx, history, a.TokenAccount, historyAnchor, slot, recognized, policy.requiresReceipt(a.TokenAccount)); e != nil {
 				return out, 0, e
 			}
 		}
@@ -715,8 +729,8 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader fleet.Acco
 		if e != nil || minimum == 0 || minimum > math.MaxInt64 {
 			return out, 0, errors.New("finalized minimum-deposit conversion is unknown or out of range")
 		}
-		out.Position = &CrossMintPositionAnchor{Reserve: p.Reserve, Market: p.Market, Obligation: p.Obligation, ObligationExists: exists, CollateralRaw: collateral, MinimumDepositAmountRaw: crossRuntimeInt(int64(minimum))}
-		if requireTokenAnchor {
+		out.Position = &fleet.CrossMintPositionAnchor{Reserve: p.Reserve, Market: p.Market, Obligation: p.Obligation, ObligationExists: exists, CollateralRaw: collateral, MinimumDepositAmountRaw: crossRuntimeInt(int64(minimum))}
+		if policy.history {
 			if _, e = verifyCustodyHistory(ctx, history, p.Obligation, historyAnchor, slot, recognized, false); e != nil {
 				return out, 0, e
 			}
@@ -727,10 +741,10 @@ func observeCrossMintBankWithAnchorPolicy(ctx context.Context, reader fleet.Acco
 
 func crossRuntimeInt(v int64) *int64 { return &v }
 
-func crossMintReceiptEffects(receipt chain.Receipt, m CrossMintMovement, pre CrossMintBalanceAnchors) (CrossMintEffect, CrossMintBalanceAnchors, error) {
+func crossMintReceiptEffects(receipt chain.Receipt, m CrossMintMovement, pre fleet.CrossMintAnchors) (CrossMintEffect, fleet.CrossMintAnchors, error) {
 	var effect CrossMintEffect
-	var post CrossMintBalanceAnchors
-	for i, anchor := range []*CrossMintTokenAmount{pre.Debit, pre.Credit} {
+	var post fleet.CrossMintAnchors
+	for i, anchor := range []*fleet.CrossMintTokenAmount{pre.Debit, pre.Credit} {
 		if anchor == nil {
 			continue
 		}
@@ -749,8 +763,8 @@ func crossMintReceiptEffects(receipt chain.Receipt, m CrossMintMovement, pre Cro
 		if amount <= 0 {
 			return effect, post, errors.New("receipt did not perform positive signed directional effect")
 		}
-		delta := &CrossMintTokenAmount{Mint: anchor.Mint, TokenAccount: anchor.TokenAccount, AmountRaw: amount}
-		balance := &CrossMintTokenAmount{Mint: anchor.Mint, TokenAccount: anchor.TokenAccount, AmountRaw: after}
+		delta := &fleet.CrossMintTokenAmount{Mint: anchor.Mint, TokenAccount: anchor.TokenAccount, AmountRaw: amount}
+		balance := &fleet.CrossMintTokenAmount{Mint: anchor.Mint, TokenAccount: anchor.TokenAccount, AmountRaw: after}
 		if i == 0 {
 			effect.Debit, post.Debit = delta, balance
 		} else {
@@ -794,8 +808,8 @@ func (r *CrossMintRuntime) reconcile(ctx context.Context, l SubmissionLease) err
 	if err != nil {
 		return err
 	}
-	known[l.Submission.Signature] = true
-	bank, _, err := observeCrossMintBank(ctx, r.accounts, r.history, m, pre, slot, slot, known, true)
+	known.set[l.Submission.Signature] = true
+	bank, _, err := observeCrossMintBank(ctx, r.accounts, r.history, m, pre, slot, slot, known, anchorEveryToken)
 	if err != nil {
 		return r.hold(ctx, l, "finalized_custody_history_unproven", err)
 	}
@@ -849,23 +863,17 @@ func (s *Store) verifyCrossMintReceiptLoadedAccounts(ctx context.Context, record
 	for _, key := range tx.Message.AccountKeys {
 		keys = append(keys, key.String())
 	}
-	for _, writable := range []bool{true, false} {
-		for _, lookup := range tx.Message.AddressTableLookups {
-			members, ok := byAddress[lookup.AccountKey.String()]
-			if !ok {
-				return errors.New("receipt lookup has no persisted registered identity")
-			}
-			indexes := lookup.ReadonlyIndexes
-			if writable {
-				indexes = lookup.WritableIndexes
-			}
-			for _, index := range indexes {
-				if int(index) >= len(members) {
-					return errors.New("receipt lookup index exceeds original members")
-				}
-				keys = append(keys, members[index])
-			}
+	for _, lookup := range tx.Message.AddressTableLookups {
+		if _, ok := byAddress[lookup.AccountKey.String()]; !ok {
+			return errors.New("receipt lookup has no persisted registered identity")
 		}
+	}
+	for _, slot := range fleet.LoadedLookupSlots(tx.Message.AddressTableLookups) {
+		members := byAddress[slot.Table.String()]
+		if int(slot.Index) >= len(members) {
+			return errors.New("receipt lookup index exceeds original members")
+		}
+		keys = append(keys, members[slot.Index])
 	}
 	if len(receipt.Keys) != len(keys) {
 		return errors.New("receipt account list differs from durable account index evidence")

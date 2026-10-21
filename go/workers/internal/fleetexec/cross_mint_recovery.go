@@ -22,24 +22,9 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-type crossMintTokenAnchor struct {
-	Mint         string `json:"mint"`
-	TokenAccount string `json:"tokenAccount"`
-	AmountRaw    int64  `json:"amountRaw"`
-}
-type crossMintPositionAnchor struct {
-	Reserve                 string `json:"reserve"`
-	Market                  string `json:"market"`
-	Obligation              string `json:"obligation"`
-	ObligationExists        bool   `json:"obligationExists"`
-	CollateralRaw           int64  `json:"depositedCollateralAmountRaw"`
-	MinimumDepositAmountRaw *int64 `json:"minimumDepositAmountRaw,omitempty"`
-}
-type crossMintAnchors struct {
-	Debit    *crossMintTokenAnchor    `json:"debit"`
-	Credit   *crossMintTokenAnchor    `json:"credit"`
-	Position *crossMintPositionAnchor `json:"kaminoPosition,omitempty"`
-}
+type journalSignatures struct{ set map[string]bool }
+
+func (j journalSignatures) has(signature string) bool { return j.set[signature] }
 
 type historyReader interface {
 	History(ctx context.Context, address sdk.PublicKey, limit int, before sdk.Signature, commitment rpc.CommitmentType, minContextSlot uint64) ([]chain.Signed, error)
@@ -63,8 +48,8 @@ type crossMintNoEffectProof struct {
 	observedAt                                                    time.Time
 }
 
-func parseCrossMintAnchors(raw []byte) (crossMintAnchors, error) {
-	var a crossMintAnchors
+func parseCrossMintAnchors(raw []byte) (fleet.CrossMintAnchors, error) {
+	var a fleet.CrossMintAnchors
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return a, err
 	}
@@ -72,7 +57,7 @@ func parseCrossMintAnchors(raw []byte) (crossMintAnchors, error) {
 		return a, errors.New("cross-mint no-effect proof has no token custody anchors")
 	}
 	seen := map[string]bool{}
-	for _, anchor := range []*crossMintTokenAnchor{a.Debit, a.Credit} {
+	for _, anchor := range []*fleet.CrossMintTokenAmount{a.Debit, a.Credit} {
 		if anchor == nil {
 			continue
 		}
@@ -122,7 +107,7 @@ func custodyTokenAmount(a *chain.Account, mint, owner string) (int64, error) {
 	return int64(held.Amount), nil
 }
 
-func verifyCustodyHistory(ctx context.Context, history historyReader, address string, anchor, floor int64, recognized map[string]bool, requireAnchor bool) ([]chain.Signed, error) {
+func verifyCustodyHistory(ctx context.Context, history historyReader, address string, anchor, floor int64, recognized journalSignatures, requireAnchor bool) ([]chain.Signed, error) {
 	key, err := sdk.PublicKeyFromBase58(address)
 	if err != nil {
 		return nil, err
@@ -149,7 +134,7 @@ func verifyCustodyHistory(ctx context.Context, history historyReader, address st
 				reachedOld = true
 				break
 			}
-			if !recognized[s.Signature.String()] {
+			if !recognized.has(s.Signature.String()) {
 				return nil, errors.New("custody history contains external signature")
 			}
 			observed = append(observed, s)
@@ -201,9 +186,9 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 	if err != nil {
 		return nil, err
 	}
-	tokenAnchors := []*crossMintTokenAnchor{}
+	tokenAnchors := []*fleet.CrossMintTokenAmount{}
 	addresses := []string{}
-	for _, a := range []*crossMintTokenAnchor{anchors.Debit, anchors.Credit} {
+	for _, a := range []*fleet.CrossMintTokenAmount{anchors.Debit, anchors.Credit} {
 		if a != nil {
 			tokenAnchors = append(tokenAnchors, a)
 			addresses = append(addresses, a.TokenAccount)
@@ -220,7 +205,7 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 		if e != nil || amount != a.AmountRaw {
 			return nil, errors.New("cross-mint token custody binding or amount changed")
 		}
-		statuses, e := verifyCustodyHistory(ctx, v.history, a.TokenAccount, *anchor, slot, recognized, true)
+		statuses, e := verifyCustodyHistory(ctx, v.history, a.TokenAccount, *anchor, slot, journalSignatures{recognized}, true)
 		if e != nil {
 			return nil, e
 		}
@@ -250,7 +235,7 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 		if exists != p.ObligationExists || amount != p.CollateralRaw {
 			return nil, errors.New("cross-mint obligation collateral changed")
 		}
-		statuses, e := verifyCustodyHistory(ctx, v.history, p.Obligation, *anchor, observed, recognized, false)
+		statuses, e := verifyCustodyHistory(ctx, v.history, p.Obligation, *anchor, observed, journalSignatures{recognized}, false)
 		if e != nil {
 			return nil, e
 		}

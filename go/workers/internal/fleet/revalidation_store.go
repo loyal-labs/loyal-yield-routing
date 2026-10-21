@@ -250,8 +250,11 @@ WHERE o.id=$1 AND o.opportunity_state='leased' AND o.lease_kind='revalidate'
 
 func (s *Store) LoadReusableLookupTables(ctx context.Context, cluster string, vaultID, minimumSlot int64, requiredAddresses []string) ([]LookupTable, error) {
 	requiredAddresses = canonicalStrings(requiredAddresses)
-	if s == nil || s.pool == nil || cluster == "" || vaultID <= 0 || minimumSlot <= 0 || len(requiredAddresses) == 0 {
+	if s == nil || s.pool == nil || cluster == "" || vaultID <= 0 || minimumSlot <= 0 {
 		return nil, errors.New("invalid reusable ALT query")
+	}
+	if len(requiredAddresses) == 0 {
+		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx, `
 SELECT route_table.id,route_table.mutation_epoch,route_table.family_id,route_table.generation,

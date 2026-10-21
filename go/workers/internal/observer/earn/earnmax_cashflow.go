@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	"github.com/solana-foundation/solana-go/v2"
@@ -57,30 +58,19 @@ func readCustodyTransfer(ctx context.Context, rpc *chain.Client, signature strin
 	transaction, keys := read.Transaction, read.Keys
 	loaded := keys[len(transaction.Message.AccountKeys):]
 	tables := map[solana.PublicKey]solana.PublicKeySlice{}
-	// Rebuild each table's addressed slots from the ordered loaded keys:
-	// every table's writable indexes, then every table's readonly indexes.
-	next := 0
-	for _, readonly := range []bool{false, true} {
-		for _, lookup := range transaction.Message.AddressTableLookups {
-			indexes := lookup.WritableIndexes
-			if readonly {
-				indexes = lookup.ReadonlyIndexes
-			}
-			for _, index := range indexes {
-				if next >= len(loaded) {
-					return nil, errors.New("Earn MAX cash-flow loaded addresses do not cover the lookups")
-				}
-				slice := tables[lookup.AccountKey]
-				for len(slice) <= int(index) {
-					slice = append(slice, solana.PublicKey{})
-				}
-				slice[index] = loaded[next]
-				tables[lookup.AccountKey] = slice
-				next++
-			}
-		}
+	slots := fleet.LoadedLookupSlots(transaction.Message.AddressTableLookups)
+	if len(slots) > len(loaded) {
+		return nil, errors.New("Earn MAX cash-flow loaded addresses do not cover the lookups")
 	}
-	if next != len(loaded) {
+	for i, slot := range slots {
+		slice := tables[slot.Table]
+		for len(slice) <= int(slot.Index) {
+			slice = append(slice, solana.PublicKey{})
+		}
+		slice[slot.Index] = loaded[i]
+		tables[slot.Table] = slice
+	}
+	if len(slots) != len(loaded) {
 		return nil, errors.New("Earn MAX cash-flow loaded addresses do not match the lookups")
 	}
 	claimIndex := -1
