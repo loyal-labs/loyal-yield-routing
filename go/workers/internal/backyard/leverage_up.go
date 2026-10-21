@@ -5,20 +5,14 @@ import (
 	"math/big"
 )
 
-// B2 up moves. The desired target bounds a same-batch capacity-sized loan.
-// One economically approved raw receive is journal-bound to one operation.
-// The uncapped desired amount is (L-1)*C - L*D in debt units (1x->1.5x:
-// C/2; 1.5x->1.75x: equity/4; 2x->2.5x: equity/2). The step is one
-// transaction (docs/backyard-atomic-step.md): the borrow plus its fee lands,
-// after the conversion's 1% swap loss and the redeposit, within the lane
-// cap's LTV, and KLend's own loan-to-value bounds the borrow before the
-// redeposit.
 const (
 	leverageUpReason  = "leverage_up"
 	leverageUpNearBPS = 200
 	// Smallest leverage_up borrow in debt raw units (six-decimal stables).
-	leverageMinimumBorrowRaw = 10_000_000
-	leverageSwapLossBPS      = 100
+	leverageMinimumBorrowRaw   = 10_000_000
+	leverageSwapLossBPS        = 100
+	leverageUpRefreshMarginBPS = 10
+	leverageUpKeepScale        = 100_000_000
 )
 
 // leverageUpLevel is the next level above the position (at most one step),
@@ -65,10 +59,7 @@ func (p KaminoPosition) leverageUpBorrowRaw(level float64) (uint64, error) {
 	return b.Uint64(), nil
 }
 
-// leverageUpCapFee keeps the step's landing within ceilingBPS: debt +
-// receive + fee over collateral + receive less the swap loss, with a 0.1%
-// margin across the prepare-to-simulation price refresh. It refuses a borrow
-// below the minimum.
+// leverageUpCapFee caps receive so the step lands within ceilingBPS after the swap loss; below the minimum borrow it refuses.
 func leverageUpCapFee(p KaminoPosition, ceilingBPS int64, receive uint64, fee func(uint64) (uint64, error)) (uint64, error) {
 	collateral, err := p.collateralValueDebtRaw()
 	if err != nil {
@@ -76,21 +67,29 @@ func leverageUpCapFee(p KaminoPosition, ceilingBPS int64, receive uint64, fee fu
 	}
 	ceiling := new(big.Int).Mul(new(big.Int).SetUint64(collateral), big.NewInt(ceilingBPS))
 	ceiling.Quo(ceiling, big.NewInt(10_000))
-	// x is what debt may still grow by before the redeposit counts: the
-	// ceiling, less the debt and the margin.
-	x := new(big.Int).Sub(ceiling, new(big.Int).SetUint64(p.DebtRaw))
-	x.Sub(x, new(big.Int).Quo(ceiling, big.NewInt(1000)))
-	if x.Sign() <= 0 {
+	refreshMargin := new(big.Int).Mul(ceiling, big.NewInt(leverageUpRefreshMarginBPS))
+	refreshMargin.Quo(refreshMargin, big.NewInt(10_000))
+	debtGrowthRoom := new(big.Int).Sub(ceiling, new(big.Int).SetUint64(p.DebtRaw))
+	debtGrowthRoom.Sub(debtGrowthRoom, refreshMargin)
+	if debtGrowthRoom.Sign() <= 0 {
 		return 0, budgetHold("leverage_up_no_ltv_room")
 	}
-	// Each received unit adds itself to debt and (1 - loss) of itself, at
-	// the ceiling's LTV, to the room: r*(1-k) + fee <= x.
-	const scale = 100_000_000
-	keep := big.NewInt(scale - ceilingBPS*(10_000-leverageSwapLossBPS))
+	keep := big.NewInt(leverageUpKeepScale - ceilingBPS*(10_000-leverageSwapLossBPS))
 	if keep.Sign() <= 0 {
 		return 0, budgetHold("leverage_up_no_ltv_room")
 	}
-	room := new(big.Int).Mul(x, big.NewInt(scale))
+	receive, err = receiveWithinGrowthRoom(receive, debtGrowthRoom, keep, fee)
+	if err != nil {
+		return 0, err
+	}
+	if receive < leverageMinimumBorrowRaw {
+		return 0, budgetHold("leverage_up_below_minimum_borrow")
+	}
+	return receive, nil
+}
+
+func receiveWithinGrowthRoom(receive uint64, debtGrowthRoom, keep *big.Int, fee func(uint64) (uint64, error)) (uint64, error) {
+	room := new(big.Int).Mul(debtGrowthRoom, big.NewInt(leverageUpKeepScale))
 	room.Quo(room, keep)
 	if room.IsUint64() {
 		receive = min(receive, room.Uint64())
@@ -100,24 +99,21 @@ func leverageUpCapFee(p KaminoPosition, ceilingBPS int64, receive uint64, fee fu
 		return 0, err
 	}
 	used := new(big.Int).Mul(new(big.Int).SetUint64(receive), keep)
-	used.Quo(used, big.NewInt(scale))
+	used.Quo(used, big.NewInt(leverageUpKeepScale))
 	used.Add(used, new(big.Int).SetUint64(f))
-	if used.Cmp(x) > 0 {
-		left := new(big.Int).Sub(x, new(big.Int).SetUint64(f))
+	if used.Cmp(debtGrowthRoom) > 0 {
+		left := new(big.Int).Sub(debtGrowthRoom, new(big.Int).SetUint64(f))
 		if left.Sign() <= 0 {
 			return 0, budgetHold("leverage_up_no_ltv_room")
 		}
-		left.Mul(left, big.NewInt(scale)).Quo(left, keep)
+		left.Mul(left, big.NewInt(leverageUpKeepScale)).Quo(left, keep)
 		receive = min(receive, left.Uint64())
-	}
-	if receive < leverageMinimumBorrowRaw {
-		return 0, budgetHold("leverage_up_below_minimum_borrow")
 	}
 	return receive, nil
 }
 
 func heldLevelLTVBPS(s Snapshot) int64 {
-	return leverageLevelLTVBPS(heldLevel(s.RouteLane, max(s.LeverageTargetLevel, 1.5)))
+	return leverageLevelLTVBPS(heldLevel(s.RouteLane, max(s.LeverageTargetLevel, firstLeveredLevel)))
 }
 
 func hardLTVStepLTVBPS(s Snapshot) int64 {

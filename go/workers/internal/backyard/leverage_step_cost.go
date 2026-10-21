@@ -47,11 +47,11 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	out := leverageStepCost{BorrowFeeMicros: l.BorrowFeeMicros, NetworkMicros: l.NetworkMicros,
 		EntrySwapLossMicros: l.EntryInMicros - l.EntryOutMicros, ExitSwapLossMicros: l.ExitInMicros - l.ExitOutMicros}
 	if l.BorrowFeeMicros < 0 || l.NetworkMicros <= 0 || l.EntryInMicros <= 0 || l.EntryOutMicros <= 0 || l.ExitInMicros <= 0 || l.ExitOutMicros <= 0 {
-		return out, budgetHold("leverage_cost_unavailable")
+		return out, budgetHold(leverageReasonCostUnavailable)
 	}
 	fees, err := budgetSum(out.BorrowFeeMicros, out.NetworkMicros)
 	if err != nil {
-		return out, budgetHoldFrom(err, "leverage_cost_unavailable")
+		return out, budgetHoldFrom(err, leverageReasonCostUnavailable)
 	}
 	out.TotalMicros = max(fees+out.EntrySwapLossMicros+out.ExitSwapLossMicros, 0)
 	return out, nil
@@ -70,7 +70,7 @@ func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 		{&out.TotalMicros, c.TotalMicros, d.TotalMicros},
 	} {
 		if v.a > 0 && v.b > math.MaxInt64-v.a || v.a < 0 && v.b < math.MinInt64-v.a {
-			return out, budgetHold("leverage_cost_unavailable")
+			return out, budgetHold(leverageReasonCostUnavailable)
 		}
 		*v.into = v.a + v.b
 	}
@@ -87,7 +87,9 @@ type leverageCostOutage struct {
 	err   error
 }
 
-func (e *leverageCostOutage) Error() string { return "leverage_cost_unavailable(" + e.stage + ")" }
+func (e *leverageCostOutage) Error() string {
+	return leverageReasonCostUnavailable + "(" + e.stage + ")"
+}
 func (e *leverageCostOutage) Unwrap() error { return e.err }
 
 func costOutage(stage string, err error) error {
@@ -100,16 +102,11 @@ func costOutage(stage string, err error) error {
 func leverageCostOutageReason(err error) string {
 	var outage *leverageCostOutage
 	if errors.As(err, &outage) && leverageCostStages[outage.stage] {
-		return "leverage_cost_unavailable(" + outage.stage + ")"
+		return leverageReasonCostUnavailable + "(" + outage.stage + ")"
 	}
-	return "leverage_cost_unavailable"
+	return leverageReasonCostUnavailable
 }
 
-// leverageStepPriceTimeout is the step pricer's own deadline. It runs after
-// the selector's evaluation, which may use most of the 30 s sample deadline
-// on its quote ladders (selector_evaluate_timeout several times an hour), so
-// sharing that deadline starved the pricer (live 2026-10-11 04:58:55: an
-// approval revoked as leverage_cost_unavailable).
 const leverageStepPriceTimeout = 15 * time.Second
 
 func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, s Snapshot) leverageStepPricer {
@@ -118,7 +115,7 @@ func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *
 		defer cancel()
 		route, err := m.route(s.RouteLane)
 		if err != nil || o.routeBatch == nil {
-			return leverageStepCost{}, costOutage("inputs", budgetHold("leverage_cost_unavailable"))
+			return leverageStepCost{}, costOutage("inputs", budgetHold(leverageReasonCostUnavailable))
 		}
 		pricer, err := newLanePricer(ctx, rpc, view, client, m, s.Slot)
 		if err != nil {

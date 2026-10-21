@@ -3,6 +3,7 @@ package backyard
 import (
 	"fmt"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -36,14 +37,11 @@ type earnLane struct {
 }
 
 // earnLanes is the one list of Backyard's lanes and their chain facts, which
-// every vault shares (owner decision 2026-10-13). Every
-// lane predicate (scored, entered, funded, levered, observed, exited), the
-// account view, the policy literals and the observer's pinned reserves read
-// it. Registry order matters: a custody two lanes share belongs to the first
-// of them, and a flat vault's view prefers the earliest lane. Earn Max holds
-// positions and moves to whichever lane gives the best achievable net APY;
-// economics decide, not a hand list (owner decision 2026-10-10: every
-// policy-covered loop is checked).
+// every vault shares. Every lane predicate (scored, entered, funded, levered,
+// observed, exited), the account view, the policy literals and the observer's
+// pinned reserves read it. Registry order matters: a custody two lanes share
+// belongs to the first of them, and a flat vault's view prefers the earliest
+// lane.
 var earnLanes = laneCapsOnLadder([]earnLane{
 	// Each cap is the highest level whose LTV sits under the lane's hard LTV
 	// (owner decision 2026-10-15: every lane to its most reasonable point);
@@ -92,10 +90,7 @@ func findEarnLane(lane string) (earnLane, bool) {
 	return earnLane{}, false
 }
 
-// routeFor is the lane's chain facts with the accounts owner, a Squads
-// vault, holds on it: its custody of each mint (an associated token account)
-// and its one Multiply obligation (seeded by the two mints) with
-// that obligation's farm states.
+// routeFor is the lane's chain facts with the accounts owner holds on it.
 func (l earnLane) routeFor(owner solana.PublicKey) RuntimeRoute {
 	r := l.route
 	k := &r.Kamino
@@ -193,7 +188,7 @@ var mapleSyrupUSDCUSDCTemplate = RuntimeRoute{
 	Lane: SelectedRouteID, Protocol: "Maple", CollateralSymbol: "syrupUSDC", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
 		Program:           kamino.ProgramID.String(),
-		Market:            "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
+		Market:            fleet.KaminoMapleMarket,
 		MarketAuthority:   "6QbtpY2jDNcncRFmVf343NThnCdaY8gCAsYATPnYQR9g",
 		CollateralReserve: "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
 		CollateralMint:    "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
@@ -213,7 +208,7 @@ var onreONycUSDCRouteTemplate = RuntimeRoute{
 	Lane: onreONycUSDC, Protocol: "OnRe", CollateralSymbol: "ONyc", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
 		Program:           kamino.ProgramID.String(),
-		Market:            "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
+		Market:            fleet.KaminoOnReMarket,
 		MarketAuthority:   "FsvTiXTUFDc4aLbrov4PrvDTjXCWCniL1dxTUkZ1T2ss",
 		CollateralReserve: "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
 		CollateralMint:    "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
@@ -233,7 +228,7 @@ var primePRIMEUSDCTemplate = RuntimeRoute{
 	Lane: PhaseOneLaneID, Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
 		Program: kamino.ProgramID.String(),
-		Market:  "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
+		Market:  fleet.KaminoFigureMarket, MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
 		CollateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", CollateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
 		DebtReserve: "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu", DebtMint: bridgeUSDC,
 	},
@@ -254,12 +249,12 @@ var primePRIMEPYUSDTemplate = func() RuntimeRoute {
 var primePRIMEUSDSTemplate = func() RuntimeRoute {
 	r := primePRIMEUSDCTemplate
 	r.Lane, r.DebtSymbol = "Prime/PRIME/USDS", "USDS"
-	r.Kamino.DebtReserve, r.Kamino.DebtMint = "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
+	r.Kamino.DebtReserve, r.Kamino.DebtMint = "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", fleet.USDSMint
 	r.DebtLiquiditySupply, r.DebtFeeReceiver = "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5", "DjmdtvsvctUXCZ32y6UGdCEvXPTds6Ci7LFnVhw5HaQY"
 	return r
 }()
 
-const pyusdMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+const pyusdMint = fleet.PYUSDMint
 
 var autoAUTOPYUSDTemplate = RuntimeRoute{
 	Lane: "AUTO/AUTO/PYUSD", Protocol: "AUTO", CollateralSymbol: "AUTO", DebtSymbol: "PYUSD",

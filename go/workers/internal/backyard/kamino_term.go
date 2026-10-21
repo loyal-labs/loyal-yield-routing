@@ -12,11 +12,11 @@ func kaminoReserveTermOpen(reserve decodedKaminoReserve, now int64) bool {
 	return t.SupportedInterestTerms() == nil && (t.DebtMaturityTimestamp == 0 || now >= 0 && uint64(now) < t.DebtMaturityTimestamp)
 }
 
-// debtTermEnd is the one derivation of an obligation's borrow maturity on
-// reserve: its own term end (last borrow plus the reserve's debt term), or
-// the reserve's market-wide maturity when that is earlier. Zero when it owes
-// nothing there or the reserve has no term; termMaturityUnknown when term
-// debt carries no borrow time.
+// debtTermEnd is an obligation's borrow maturity on reserve: its own term end
+// (last borrow plus the reserve's debt term), or the reserve's market-wide
+// maturity when that is earlier. Zero when it owes nothing there or the
+// reserve has no term; termMaturityUnknown when term debt carries no borrow
+// time.
 func debtTermEnd(obligation decodedKaminoObligation, reserve decodedKaminoReserve) int64 {
 	terms := reserve.terms
 	if obligation.debtRaw == 0 || terms.DebtTermSeconds == 0 && terms.DebtMaturityTimestamp == 0 {

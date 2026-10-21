@@ -20,25 +20,16 @@ type CurrentAPY struct {
 	Flat       bool      `json:"flat"`
 }
 
-// currentPositionAPY publishes the leverage watch's own APY figure for the
-// route lane at its actual collateral/equity ratio and current debt cost,
-// from the same LaneEconomics the
-// selector sample loads (no RPC). ok=false: flat, or no economics for the
-// lane. Level is the actual collateral/equity (2 decimals).
+// currentPositionAPY is the route lane's APY at its actual collateral/equity ratio and current debt cost; a flat position comes back Flat.
 func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) {
 	out := CurrentAPY{Lane: s.RouteLane}
 	collateral := float64(s.PositionCollateralValueRaw) + float64(max(s.CollateralIdleValueRaw, 0))
 	equityRaw := s.PositionCollateralValueRaw + max(s.CollateralIdleValueRaw, 0) - s.PositionDebtValueRaw
 	if !s.HasPosition || s.PositionCollateralValueRaw <= 0 || equityRaw <= 0 {
 		out.Flat = true
-		return out, false
+		return out, true
 	}
-	var market *LaneEconomics
-	for i := range markets {
-		if markets[i].Lane == s.RouteLane {
-			market = &markets[i]
-		}
-	}
+	market := economicsOf(markets, s.RouteLane)
 	if market == nil {
 		return out, false
 	}
@@ -47,8 +38,7 @@ func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) 
 		return out, false
 	}
 	apy := performanceFeeForecast((collateral*market.NativeAPY+float64(s.PositionCollateralValueRaw)*market.SupplyAPY-float64(s.PositionDebtValueRaw)*market.CurrentBorrowAPY)/float64(equityRaw), s.ApprovedAdminPerformanceFeeBPS)
-	ok := true
-	if !ok || !finite(apy) {
+	if !finite(apy) {
 		return out, false
 	}
 	out.APYBPS = int64(math.Round(apy * 10_000))
@@ -99,7 +89,7 @@ func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYT
 		return
 	}
 	value, ok := currentPositionAPY(observed.Snapshot, markets)
-	if !ok && !value.Flat {
+	if !ok {
 		return
 	}
 	value.ObservedAt = now.UTC()
