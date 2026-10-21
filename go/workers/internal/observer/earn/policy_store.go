@@ -186,6 +186,9 @@ func (s *Store) RecordPolicyMatch(ctx context.Context, event PolicyMatchInput) e
 // RecordSetupPolicyMatch attaches a setup policy to its existing vault.
 func (s *Store) RecordSetupPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+			return err
+		}
 		id, err := upsertPolicy(ctx, tx, event)
 		if err != nil {
 			return err

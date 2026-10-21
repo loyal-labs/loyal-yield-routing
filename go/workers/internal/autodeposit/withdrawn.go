@@ -142,9 +142,6 @@ func (s *Store) SkipWithdrawnScheduledSlot(ctx context.Context, scheduledSlotID 
 // and would otherwise never select, skip or close the slot. The targets stay
 // active; a later inflow schedules new work and is decided again.
 func SkipUnroutedVaultSlots(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) (int64, error) {
-	if err := LockVaultTargets(ctx, tx, settings, vaultIndex, vaultPubkey); err != nil {
-		return 0, err
-	}
 	var slotIDs []int64
 	if err := tx.QueryRow(ctx, `
 SELECT COALESCE(array_agg(slot.id ORDER BY slot.id), '{}')
@@ -167,9 +164,6 @@ WHERE target.settings = $1
 // itself. A slot left without lots is reused by the next inflow, as any
 // scheduled slot is.
 func SuppressWithdrawalLots(ctx context.Context, tx pgx.Tx, signature, settings string, vaultIndex int16, vaultPubkey string) error {
-	if err := LockVaultTargets(ctx, tx, settings, vaultIndex, vaultPubkey); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
 SET status = 'suppressed', updated_at = now()
