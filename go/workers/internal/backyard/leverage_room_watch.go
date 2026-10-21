@@ -18,10 +18,11 @@ type roomWatch struct {
 	route    RuntimeRoute
 	debt     bool
 	leverage bool
-	// wakes: an opening wakes the tick loop (a lane below its target);
-	// other held lanes are watched for the gauge.
-	wakes bool
 }
+
+type roomKey struct{ lane, reserve string }
+
+func (w roomWatch) key() roomKey { return roomKey{w.lane, w.reserve()} }
 
 func (w roomWatch) reserve() string {
 	if w.debt {
@@ -80,24 +81,23 @@ func reserveUSD(raw uint64, r decodedKaminoReserve) float64 {
 
 func leverageRoomWatches(o Observation) []roomWatch {
 	var out []roomWatch
-	index := map[string]int{}
-	add := func(lane string, debt, leverage, wakes bool) {
+	index := map[roomKey]int{}
+	add := func(lane string, debt, leverage bool) {
 		l, ok := findEarnLane(lane)
 		if !ok || l.exitOnly {
 			return
 		}
-		w := roomWatch{lane: lane, route: l.route, debt: debt, leverage: leverage, wakes: wakes}
-		key := lane + "|" + w.reserve()
-		if i, seen := index[key]; seen {
-			out[i].leverage, out[i].wakes = out[i].leverage || leverage, out[i].wakes || wakes
+		w := roomWatch{lane: lane, route: l.route, debt: debt, leverage: leverage}
+		if i, seen := index[w.key()]; seen {
+			out[i].leverage = out[i].leverage || leverage
 			return
 		}
-		index[key] = len(out)
+		index[w.key()] = len(out)
 		out = append(out, w)
 	}
 	for _, lane := range heldLaneLeverage(o) {
 		below := lane.targeted && lane.gap > 0
-		add(lane.lane, true, below, below)
+		add(lane.lane, true, below)
 	}
 	return out
 }
@@ -107,10 +107,8 @@ type laneLeverage struct {
 	targeted        bool
 	target, current float64
 	gap             float64
-	// termDays is the lane's days to its term debt's maturity, when it owes
-	// term debt of known maturity.
-	termDays float64
-	termOwed bool
+	termDays        float64
+	termOwed        bool
 }
 
 func heldLaneLeverage(o Observation) []laneLeverage {
@@ -121,9 +119,7 @@ func heldLaneLeverage(o Observation) []laneLeverage {
 			continue
 		}
 		l := laneLeverage{lane: s.RouteLane, current: float64(s.PositionCollateralValueRaw) / float64(equity)}
-		if s.PositionDebtRaw > 0 && s.DebtTermEndUnix > 0 && s.ChainUnix > 0 {
-			l.termDays, l.termOwed = float64(s.DebtTermEndUnix-s.ChainUnix)/86_400, true
-		}
+		l.termDays, l.termOwed = termDays(s)
 		if s.LeverageTargetLevel > 0 {
 			l.targeted, l.target = true, min(s.LeverageTargetLevel, laneMaxLevel(s.RouteLane))
 			l.gap = max(l.target-l.current, 0)
@@ -150,27 +146,22 @@ func (w *Worker) notifyRoomOpened() {
 	}
 }
 
-// roomSet is one vault's watches: reserve address to watches, each watch's
-// last open state by lane|reserve, and the callback every recomputation
-// reports to.
 type roomSet struct {
 	watches map[string][]roomWatch
-	open    map[string]bool
+	open    map[roomKey]bool
 	on      func(roomUpdate)
 }
 
-// WatchRoom replaces the reserves the view recomputes room for on vault's
-// behalf, and the callback it reports each recomputation to (under the view
-// lock: the callback must not block or read the view). Registering reports
-// each watched reserve's current room without an edge: the registering tick
-// already planned from it. Only a later stream write can wake.
+// WatchRoom replaces vault's room watches. on runs under the view lock so
+// registrations land in order with stream writes: it must not block or read
+// the view.
 func (v *View) WatchRoom(vault *Vault, watches []roomWatch, on func(roomUpdate)) {
 	if v == nil {
 		return
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	set := &roomSet{watches: map[string][]roomWatch{}, open: map[string]bool{}, on: on}
+	set := &roomSet{watches: map[string][]roomWatch{}, open: map[roomKey]bool{}, on: on}
 	if v.rooms == nil {
 		v.rooms = map[*Vault]*roomSet{}
 	}
@@ -180,7 +171,7 @@ func (v *View) WatchRoom(vault *Vault, watches []roomWatch, on func(roomUpdate))
 	}
 	for reserve, ws := range set.watches {
 		if held, ok := v.accounts[reserve]; ok {
-			v.observeRoom(set, ws, held, false)
+			v.deliverRoomLocked(set, ws, held, false)
 		}
 	}
 }
@@ -189,16 +180,15 @@ func (v *View) clockUnix() int64 {
 	return clockUnixTimestamp([]ConfirmedAccount{v.accounts[budgetClockAddress].ConfirmedAccount})
 }
 
-func (v *View) observeRoom(set *roomSet, ws []roomWatch, write viewAccount, edges bool) {
+func (v *View) deliverRoomLocked(set *roomSet, ws []roomWatch, write viewAccount, edges bool) {
 	now := v.clockUnix()
 	for _, w := range ws {
 		room, usd, open, ok := roomOf(w, write.ConfirmedAccount, now)
 		if !ok {
 			continue
 		}
-		key := w.lane + "|" + w.reserve()
-		opened := edges && w.wakes && open && !set.open[key]
-		set.open[key] = open
+		opened := edges && w.leverage && open && !set.open[w.key()]
+		set.open[w.key()] = open
 		if set.on != nil {
 			set.on(roomUpdate{watch: w, roomRaw: room, roomUSD: usd, open: open, opened: opened, slot: write.slot, at: v.now()})
 		}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	solanago "github.com/solana-foundation/solana-go/v2"
 )
@@ -34,8 +35,8 @@ func TestReplayStartOutsideProviderWindowIsClampedAndReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := streamPlan{requested: requested, from: clampToReplayWindow(requested, current)}
-	if plan.from != current-laserStreamReplaySlots || plan.requested != current-1_051_874 || !plan.gap() {
-		t.Fatalf("plan = %+v, want window edge %d with the unreplayable start reported", plan, current-laserStreamReplaySlots)
+	if plan.from != current-stream.ProviderReplaySlots || plan.requested != current-1_051_874 || !plan.gap() {
+		t.Fatalf("plan = %+v, want window edge %d with the unreplayable start reported", plan, current-stream.ProviderReplaySlots)
 	}
 }
 
@@ -74,8 +75,8 @@ func TestReconnectWithoutSeedFollowsDurableCursors(t *testing.T) {
 // the window must still request a replayable slot.
 func TestHandoffBindingAnchorIsClampedIntoProviderWindow(t *testing.T) {
 	const current = 449_073_607
-	if got := clampToReplayWindow(1_000, current); got != current-laserStreamReplaySlots {
-		t.Fatalf("ancient binding anchor = %d, want window edge %d", got, current-laserStreamReplaySlots)
+	if got := clampToReplayWindow(1_000, current); got != current-stream.ProviderReplaySlots {
+		t.Fatalf("ancient binding anchor = %d, want window edge %d", got, current-stream.ProviderReplaySlots)
 	}
 	if got := clampToReplayWindow(current-10, current); got != current-10 {
 		t.Fatalf("recent binding anchor moved to %d", got)

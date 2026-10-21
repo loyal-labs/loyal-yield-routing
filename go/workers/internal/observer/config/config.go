@@ -15,21 +15,18 @@ import (
 )
 
 type Config struct {
-	LaserStreamEndpoint  string
-	HeliusAPIKey         string
-	EarnMaxDelegate      string
-	SolanaRPCURL         string
-	NeonDatabaseURL      string
-	TimescaleDatabaseURL string
-	KaminoAPIBase        string
-	Cluster              string
-	ATAStream            string
-	APYRiskProfiles      []string
-	ReplayOverlapSlots   uint64
-	WatchRefresh         time.Duration
-	// CatalogRefresh renews the supported reserve catalog the planners read
-	// (Rust KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS, default 120, at
-	// most 180 so a fetched_at stays inside the planners' 300 s age bound).
+	LaserStreamEndpoint   string
+	HeliusAPIKey          string
+	EarnMaxDelegate       string
+	SolanaRPCURL          string
+	NeonDatabaseURL       string
+	TimescaleDatabaseURL  string
+	KaminoAPIBase         string
+	Cluster               string
+	ATAStream             string
+	APYRiskProfiles       []string
+	ReplayOverlapSlots    uint64
+	WatchRefresh          time.Duration
 	CatalogRefresh        time.Duration
 	ProgressTimeout       time.Duration
 	HandoffTimeout        time.Duration
@@ -93,8 +90,8 @@ func FromEnv() (Config, error) {
 	if cfg.ReplayOverlapSlots == 0 || cfg.WatchRefresh <= 0 || cfg.ProgressTimeout <= 0 {
 		return Config{}, errors.New("LaserStream intervals and replay overlap must be positive")
 	}
-	if cfg.CatalogRefresh <= 0 || cfg.CatalogRefresh > 180*time.Second {
-		return Config{}, errors.New("KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECONDS must be between 1 and 180")
+	if cfg.CatalogRefresh <= 0 {
+		return Config{}, errors.New("KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECONDS must be positive")
 	}
 	switch strings.TrimSpace(os.Getenv("DISABLE_EARN_APY_REFRESH")) {
 	case "", "false":
