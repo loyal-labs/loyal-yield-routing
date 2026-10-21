@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -203,9 +202,7 @@ func PlanningVaults(snapshot Snapshot, catalog []ReserveIdentity, registry []Reg
 		case options.DelegatedSigner != "" && (len(p.DelegatedSigners) != 1 || p.DelegatedSigners[0] != options.DelegatedSigner):
 			blocked = "route_policy_not_delegated"
 		}
-		holdings := append([]Holding(nil), facts.Holdings...)
-		sortHoldings(holdings)
-		for _, h := range holdings {
+		for _, h := range facts.Holdings {
 			if !contains(v.Markets, h.Market) || !contains(v.StableMints, h.Mint) || !contains(v.KaminoMints, h.Mint) {
 				continue
 			}
@@ -241,16 +238,6 @@ func PlanningVaults(snapshot Snapshot, catalog []ReserveIdentity, registry []Reg
 		}
 	}
 	return fleet, nil
-}
-
-// sortHoldings orders a vault's holdings largest first, ties by reserve.
-func sortHoldings(holdings []Holding) {
-	sort.Slice(holdings, func(i, j int) bool {
-		if holdings[i].LiquidityRaw != holdings[j].LiquidityRaw {
-			return holdings[i].LiquidityRaw > holdings[j].LiquidityRaw
-		}
-		return holdings[i].Reserve < holdings[j].Reserve
-	})
 }
 
 func crossMintTargets(snapshot Snapshot, catalog []ReserveIdentity, position VaultPosition, v RegisteredVault, options FleetLoadOptions) (map[string]CrossMintPolicyBindings, error) {

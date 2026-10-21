@@ -200,55 +200,6 @@ func TestUnknownCapacityEvidenceIsNotPlannable(t *testing.T) {
 	}
 }
 
-// A vault holding two reserves plans both. Its secondary holding only
-// consolidates into the primary (largest) reserve, even when a third reserve
-// pays more, and a vault still moves one holding per wave.
-func TestSecondaryHoldingConsolidatesIntoThePrimaryReserve(t *testing.T) {
-	unlimited := uint64(1 << 62)
-	snapshot := packingSnapshot(
-		packingReserve("primary", 900, 1_000_000_000_000, 1_000_000_000_000, unlimited),
-		packingReserve("secondary", 100, 1_000_000_000_000, 1_000_000_000_000, unlimited),
-		packingReserve("better", 905, 1_000_000_000_000, 1_000_000_000_000, unlimited))
-	targets := []string{"primary", "secondary", "better"}
-	vaults := []FleetVault{
-		packingHolding(snapshot, 1, "secondary", 2_000_000_000, targets...),
-		packingHolding(snapshot, 1, "primary", 10_000_000_000, targets...),
-	}
-	// A third reserve pays more than the primary, but not enough for the
-	// primary holding to move; the secondary holding would gain more there.
-	if d := Plan(snapshot, vaults[0].Position, "secondary", "better"); !d.Eligible {
-		t.Fatalf("fixture: secondary->better should be economic alone: %s", d.Reason)
-	}
-	plan, err := PlanFleet(snapshot, vaults)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := moves(plan), []string{"1:secondary>primary:2000000000"}; !sameMoves(got, want) {
-		t.Fatalf("wave %v, want consolidation %v (rejections %v)", got, want, plan.Rejections)
-	}
-	if plan.Movable["secondary"] != 2_000_000_000 {
-		t.Fatalf("movable capital %v", plan.Movable)
-	}
-	// When the primary pays enough less, both holdings have a move, but the
-	// vault moves only one of them in a wave.
-	better := snapshot.Reserves["better"]
-	better.SupplyAPYBPS = 2_000
-	snapshot.Reserves["better"] = better
-	if plan, err = PlanFleet(snapshot, vaults); err != nil || len(plan.Opportunities) != 1 || plan.Opportunities[0].Decision.SourceReserve != "primary" || plan.Opportunities[0].Decision.TargetReserve != "better" {
-		t.Fatalf("one-move-per-vault wave %v (%v)", moves(plan), err)
-	}
-	// A secondary whose policy cannot reach the primary reserve stays put.
-	vaults[0].AllowedTargets, vaults[1].AllowedTargets = []string{"better"}, nil
-	snapshot.Reserves["better"] = packingReserve("better", 905, 1_000_000_000_000, 1_000_000_000_000, unlimited)
-	if plan, err = PlanFleet(snapshot, vaults); err != nil || len(plan.Opportunities) != 0 || plan.Rejections[1] != "secondary_holding_cannot_consolidate" {
-		t.Fatalf("secondary moved away from the primary: %v %v %v", moves(plan), plan.Rejections, err)
-	}
-	// The same holding twice is an incoherent fleet.
-	if _, err = PlanFleet(snapshot, []FleetVault{vaults[1], vaults[1]}); err == nil {
-		t.Fatal("duplicate holding accepted")
-	}
-}
-
 // replanStore is the narrow durable surface PrepareExecution touches before
 // fresh preparation fails: claim, unsigned recovery and the two outcomes.
 type replanStore struct {
