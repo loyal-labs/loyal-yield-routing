@@ -3,6 +3,7 @@ package backyard
 import (
 	"encoding/hex"
 	"fmt"
+	"slices"
 
 	"github.com/solana-foundation/solana-go/v2"
 
@@ -119,9 +120,9 @@ func kaminoPolicyInstructions(v *Vault, request KaminoPrimeUSDCRequest, delegate
 	if err != nil {
 		return nil, 0, err
 	}
-	refresh := kaminoRefreshInstructionsForResolvedRoute(request, route)
-	if refresh == nil {
-		return nil, 0, fmt.Errorf("Kamino obligation topology %v is not the lane's", request.ObligationReserves)
+	refresh, err := kaminoRefreshInstructionsForResolvedRoute(request, route)
+	if err != nil {
+		return nil, 0, err
 	}
 	return append(refresh, outer), leg, nil
 }
@@ -209,45 +210,27 @@ func exactKaminoMetas(got, want []accountMeta) bool {
 }
 
 func kaminoPrimeUSDCRefreshInstructionsForRoute(v *Vault, lane string) []compiledInstruction {
-	return kaminoPrimeUSDCRefreshInstructionsForRequest(v, KaminoPrimeUSDCRequest{RouteLane: lane})
+	refresh, _ := kaminoPrimeUSDCRefreshInstructionsForRequest(v, KaminoPrimeUSDCRequest{RouteLane: lane})
+	return refresh
 }
 
-func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, request KaminoPrimeUSDCRequest) []compiledInstruction {
+func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, request KaminoPrimeUSDCRequest) ([]compiledInstruction, error) {
 	route, err := v.route(request.RouteLane)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	return kaminoRefreshInstructionsForResolvedRoute(request, route)
 }
 
-// kaminoRefreshInstructionsForResolvedRoute is route's refresh prefix over
-// request's topology (ObligationReserves; nil is an empty obligation), or
-// nil when that topology is not one of the lane's.
-func kaminoRefreshInstructionsForResolvedRoute(request KaminoPrimeUSDCRequest, route RuntimeRoute) []compiledInstruction {
+func kaminoRefreshInstructionsForResolvedRoute(request KaminoPrimeUSDCRequest, route RuntimeRoute) ([]compiledInstruction, error) {
 	market := kaminoKey(route.Kamino.Market)
 	refreshReserve := func(reserve string) compiledInstruction {
 		return kaminoCompiled(kamino.RefreshReserve(kamino.RefreshReserveAccounts{Reserve: kaminoKey(reserve), LendingMarket: market, Scope: kaminoKey(kaminoScopePrices)}))
 	}
 	remaining := request.ObligationReserves
-	allowed := [][]string{{}, {route.Kamino.CollateralReserve}, {route.Kamino.CollateralReserve, route.Kamino.DebtReserve}}
-	valid := false
-	for _, candidate := range allowed {
-		if len(candidate) != len(remaining) {
-			continue
-		}
-		valid = true
-		for i := range candidate {
-			if candidate[i] != remaining[i] {
-				valid = false
-				break
-			}
-		}
-		if valid {
-			break
-		}
-	}
-	if !valid {
-		return nil
+	topology := []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
+	if len(remaining) > len(topology) || !slices.Equal(remaining, topology[:len(remaining)]) {
+		return nil, fmt.Errorf("Kamino obligation topology %v is not the lane's", request.ObligationReserves)
 	}
 	reserves := make([]solana.PublicKey, len(remaining))
 	for i, reserve := range remaining {
@@ -256,7 +239,7 @@ func kaminoRefreshInstructionsForResolvedRoute(request KaminoPrimeUSDCRequest, r
 	return []compiledInstruction{
 		refreshReserve(route.Kamino.CollateralReserve), refreshReserve(route.Kamino.DebtReserve),
 		kaminoCompiled(kamino.RefreshObligation(market, kaminoKey(route.Kamino.Obligation), reserves...)),
-	}
+	}, nil
 }
 
 func kaminoMetasForRoute(r RuntimeRoute) (deposit, borrow, repay, withdraw []accountMeta) {

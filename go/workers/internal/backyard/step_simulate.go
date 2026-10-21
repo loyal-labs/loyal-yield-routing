@@ -68,13 +68,13 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	convert := amountRaw + st.heldDebt
+	convert := amountRaw + st.heldDebt()
 	if !up {
 		liquidity, err := st.collateral.redeemLiquidityRaw(amountRaw)
 		if err != nil {
 			return err
 		}
-		convert = liquidity + st.heldCollateral
+		convert = liquidity + st.collateralBalance
 	}
 	evidence, guaranteed, err := assembleStep(ctx, cluster, view, client, manifest, policies, st, map[bool]Action{true: SwapDebtToCollateralStep, false: SwapCollateralToDebtStep}[up], amountRaw, convert, viewSlot)
 	if err != nil {
@@ -116,7 +116,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 		}
 		after[i] = confirmedAccount(capture[i].String(), account)
 	}
-	ltvAfter, err := stepLTVBPS(after, route)
+	ltvAfter, err := stepLTVBPS(stepLTVAccounts{obligation: after[0], collateralReserve: after[1], debtReserve: after[2]}, route)
 	if err != nil {
 		return fmt.Errorf("LTV after: %w", err)
 	}
@@ -124,19 +124,20 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	return err
 }
 
-// stepLTVBPS is the obligation's LTV over the simulation's own refreshed
-// reserves: accounts are the obligation, then its collateral and debt
-// reserves.
-func stepLTVBPS(accounts []ConfirmedAccount, route RuntimeRoute) (int64, error) {
-	obligation, err := decodeKaminoObligation(accounts[0], route.Kamino)
+type stepLTVAccounts struct {
+	obligation, collateralReserve, debtReserve ConfirmedAccount
+}
+
+func stepLTVBPS(accounts stepLTVAccounts, route RuntimeRoute) (int64, error) {
+	obligation, err := decodeKaminoObligation(accounts.obligation, route.Kamino)
 	if err != nil {
 		return 0, err
 	}
-	collateral, err := decodeKaminoReserve(accounts[1], route.Kamino.CollateralMint, route.Kamino)
+	collateral, err := decodeKaminoReserve(accounts.collateralReserve, route.Kamino.CollateralMint, route.Kamino)
 	if err != nil {
 		return 0, err
 	}
-	debt, err := decodeKaminoReserve(accounts[2], route.Kamino.DebtMint, route.Kamino)
+	debt, err := decodeKaminoReserve(accounts.debtReserve, route.Kamino.DebtMint, route.Kamino)
 	if err != nil {
 		return 0, err
 	}

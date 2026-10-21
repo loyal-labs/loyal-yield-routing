@@ -32,7 +32,7 @@ type ExpectedAccountEffect struct {
 
 type ExpectedEffects struct {
 	Schema         string                       `json:"schema"`
-	Kind           string                       `json:"kind,omitempty"`
+	Kind           effectsKind                  `json:"kind,omitempty"`
 	Conserved      bool                         `json:"conserved"`
 	Accounts       []ExpectedAccountEffect      `json:"accounts"`
 	ReturnData     *ExpectedReturnData          `json:"returnData,omitempty"`
@@ -40,6 +40,21 @@ type ExpectedEffects struct {
 	Deposit        *ExpectedDeposit             `json:"deposit,omitempty"`
 	Initialization *KaminoInitializationRequest `json:"initialization,omitempty"`
 }
+
+type effectsKind string
+
+const (
+	effectsCrossMintSwap    effectsKind = "cross-mint-swap"
+	effectsAtomicStep       effectsKind = "atomic-step"
+	effectsKaminoDeposit    effectsKind = "kamino-deposit"
+	effectsKaminoRepay      effectsKind = "kamino-repay"
+	effectsKaminoInitialize effectsKind = "kamino-initialize"
+	effectsBridge           effectsKind = "bridge"
+)
+
+func (k effectsKind) minimums() bool { return k == effectsCrossMintSwap || k == effectsAtomicStep }
+
+func (k effectsKind) custodies(n int) bool { return n == 2 || (k == effectsAtomicStep && n == 1) }
 
 // Deposits round down to whole receipts and may debit less than the requested
 // liquidity. Bounds describe only conserved token movement, not minted receipts.
@@ -88,7 +103,7 @@ func DecodeExpectedEffects(v *Vault, data []byte) (ExpectedEffects, error) {
 	if err := json.Unmarshal(data, &expected); err != nil {
 		return ExpectedEffects{}, fmt.Errorf("decode expected effects: %w", err)
 	}
-	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
+	if expected.Kind == effectsKaminoInitialize || expected.Initialization != nil {
 		if err := v.manifest.validateInitializationEffects(expected); err != nil {
 			return ExpectedEffects{}, err
 		}
@@ -97,11 +112,8 @@ func DecodeExpectedEffects(v *Vault, data []byte) (ExpectedEffects, error) {
 	if expected.Schema != "loyal-backyard-rwa-expected-effects/v1" || len(expected.Accounts) == 0 {
 		return ExpectedEffects{}, fmt.Errorf("incomplete expected effects")
 	}
-	minimums := expected.Kind == "cross-mint-swap" || expected.Kind == "atomic-step"
-	// A cross-mint swap and a conversion step touch two custodies; a move (an
-	// atomic step that converts nothing) touches only the shared collateral one.
-	accounts := len(expected.Accounts) == 2 || (expected.Kind == "atomic-step" && len(expected.Accounts) == 1)
-	if !expected.Conserved && (!minimums || !accounts) {
+	minimums := expected.Kind.minimums()
+	if !expected.Conserved && (!minimums || !expected.Kind.custodies(len(expected.Accounts))) {
 		return ExpectedEffects{}, fmt.Errorf("unsupported non-conserved expected effects")
 	}
 	seen := make(map[string]struct{}, len(expected.Accounts))
@@ -127,11 +139,11 @@ func DecodeExpectedEffects(v *Vault, data []byte) (ExpectedEffects, error) {
 	if err := validateRepaymentEffects(expected); err != nil {
 		return ExpectedEffects{}, err
 	}
-	if expected.Kind == "atomic-step" && (expected.Conserved || expected.Accounts[0].MinimumAfterRaw == nil ||
+	if expected.Kind == effectsAtomicStep && (expected.Conserved || expected.Accounts[0].MinimumAfterRaw == nil ||
 		(len(expected.Accounts) == 2 && expected.Accounts[0].Mint == expected.Accounts[1].Mint)) {
 		return ExpectedEffects{}, fmt.Errorf("invalid atomic step postconditions")
 	}
-	if expected.Kind == "cross-mint-swap" {
+	if expected.Kind == effectsCrossMintSwap {
 		if expected.Accounts[0].Mint == expected.Accounts[1].Mint || expected.Accounts[0].MinimumAfterRaw != nil ||
 			expected.Accounts[1].MinimumAfterRaw == nil || *expected.Accounts[1].MinimumAfterRaw != expected.Accounts[1].AfterRaw {
 			return ExpectedEffects{}, fmt.Errorf("invalid cross-mint swap postconditions")
@@ -139,7 +151,7 @@ func DecodeExpectedEffects(v *Vault, data []byte) (ExpectedEffects, error) {
 	}
 	if expected.ReturnData != nil {
 		data, err := base64.StdEncoding.DecodeString(expected.ReturnData.DataBase64)
-		if expected.Kind != "bridge" || expected.ReturnData.ProgramID != v.Adaptor || err != nil || len(data) != 8 {
+		if expected.Kind != effectsBridge || expected.ReturnData.ProgramID != v.Adaptor || err != nil || len(data) != 8 {
 			return ExpectedEffects{}, fmt.Errorf("invalid expected adaptor return data")
 		}
 	}
@@ -147,27 +159,21 @@ func DecodeExpectedEffects(v *Vault, data []byte) (ExpectedEffects, error) {
 }
 
 func validateRepaymentEffects(expected ExpectedEffects) error {
-	if expected.Deposit != nil {
-		if expected.Kind != "kamino-deposit" || expected.Repayment != nil {
+	bounds := expected.Repayment
+	switch {
+	case expected.Deposit != nil:
+		if expected.Kind != effectsKaminoDeposit || expected.Repayment != nil {
 			return fmt.Errorf("deposit bounds require only a Kamino deposit")
 		}
-		// Share conservation/finite-range validation, without changing the
-		// serialized operation kind or treating a deposit as repayment.
-		copy := expected
-		copy.Kind, copy.Deposit = "kamino-repay", nil
-		copy.Repayment = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
-		return validateRepaymentEffects(copy)
-	}
-	if expected.Kind == "kamino-deposit" {
+		bounds = &ExpectedRepayment{expected.Deposit.MinimumDebitRaw, expected.Deposit.MaximumDebitRaw}
+	case expected.Kind == effectsKaminoDeposit:
 		return fmt.Errorf("missing finite Kamino deposit bounds")
-	}
-	if expected.Kind != "kamino-repay" {
+	case expected.Kind != effectsKaminoRepay:
 		if expected.Repayment != nil {
 			return fmt.Errorf("repayment bounds require a Kamino repayment")
 		}
 		return nil
 	}
-	bounds := expected.Repayment
 	if bounds == nil || !expected.Conserved || len(expected.Accounts) != 2 || expected.ReturnData != nil ||
 		bounds.MinimumDebitRaw == 0 || bounds.MinimumDebitRaw > bounds.MaximumDebitRaw || bounds.MaximumDebitRaw == ^uint64(0) {
 		return fmt.Errorf("invalid finite Kamino repayment bounds")
@@ -183,7 +189,7 @@ func validateRepaymentEffects(expected ExpectedEffects) error {
 }
 
 func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
-	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
+	if expected.Kind == effectsKaminoInitialize || expected.Initialization != nil {
 		return v.manifest.reconcileKaminoInitialization(expected, receipt)
 	}
 	if err := validateRepaymentEffects(expected); err != nil {

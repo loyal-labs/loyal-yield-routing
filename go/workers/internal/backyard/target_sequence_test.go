@@ -424,7 +424,7 @@ func TestUpStepOverTheLegCapSizesToTheCap(t *testing.T) {
 	var st stepState
 	for _, lane := range earnLaneIDs(false) {
 		route, err := runtimeRoute(lane)
-		if err == nil && stepLegCap(route) != ^uint64(0) {
+		if err == nil && stepLegCap(route).capped {
 			st.route = route
 			break
 		}
@@ -432,19 +432,19 @@ func TestUpStepOverTheLegCapSizesToTheCap(t *testing.T) {
 	if st.route.Lane == "" {
 		t.Skip("no split-policy lane is installed")
 	}
-	limit := stepLegCap(st.route) - stepLegCap(st.route)/10
+	limit := stepLegCap(st.route).headroom().raw
 	st.position = leverageTestPosition(3*limit, limit)
 	if got, err := stepUpBorrowWithinCap(st, 2*limit); err != nil || got != limit {
 		t.Fatalf("over-cap borrow sized %d (%v), want the cap %d", got, err, limit)
 	}
-	st.heldCollateral = limit / 4
+	st.collateralBalance = limit / 4
 	if got, err := stepUpBorrowWithinCap(st, 2*limit); err != nil || got != limit-limit/4 {
 		t.Fatalf("held collateral not counted: %d (%v)", got, err)
 	}
 	if got, err := stepUpBorrowWithinCap(st, limit/2); err != nil || got != limit/2 {
 		t.Fatalf("an in-cap borrow changed: %d (%v)", got, err)
 	}
-	st.heldCollateral = limit
+	st.collateralBalance = limit
 	if _, err := stepUpBorrowWithinCap(st, 2*limit); err == nil {
 		t.Fatal("a full cap borrowed")
 	}

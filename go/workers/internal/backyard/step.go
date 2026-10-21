@@ -263,5 +263,5 @@ func stepEffects(up bool, collateral, debt ExpectedAccountEffect) ExpectedEffect
 	if !up {
 		accounts[1] = minimum(debt)
 	}
-	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "atomic-step", Conserved: false, Accounts: accounts}
+	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: effectsAtomicStep, Conserved: false, Accounts: accounts}
 }

@@ -161,7 +161,7 @@ func TestInitializationConservesNativeRentAndPreservesTokenContract(t *testing.T
 	if err != nil || reconciled.Validate() != nil || !json.Valid(body) {
 		t.Fatal("native conservation", reconciled, err)
 	}
-	for _, kind := range []string{"", "kamino-borrow", "bridge", "cross-mint-swap"} {
+	for _, kind := range []effectsKind{"", "kamino-borrow", "bridge", "cross-mint-swap"} {
 		bad := e
 		bad.Kind = kind
 		raw, _ = json.Marshal(bad)

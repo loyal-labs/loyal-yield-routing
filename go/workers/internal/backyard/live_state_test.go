@@ -263,8 +263,8 @@ func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
 			}
 		}
 		st, err := readStepState(rwa, o.routeBatch.Accounts, autoAUTOPYUSD, s.Slot)
-		if err != nil || st.heldDebt != residue || st.debtBalance != residue {
-			t.Fatalf("AUTO/AUTO/PYUSD's step does not take the whole account: held %d (%v)", st.heldDebt, err)
+		if err != nil || st.heldDebt() != residue || st.debtBalance != residue {
+			t.Fatalf("AUTO/AUTO/PYUSD's step does not take the whole account: held %d (%v)", st.heldDebt(), err)
 		}
 	}
 }

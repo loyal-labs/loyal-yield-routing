@@ -124,8 +124,8 @@ func TestOverflowMoveEffectsDecodeAndReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const balance, held = 5_000_000, 4_000_000
-	encoded, err := json.Marshal(map[string]any{"schema": "loyal-backyard-rwa-operation-evidence/v1", "expectedEffects": moveEffects(route, balance, held)})
+	const balance = 5_000_000
+	encoded, err := json.Marshal(map[string]any{"schema": "loyal-backyard-rwa-operation-evidence/v1", "expectedEffects": moveEffects(route, balance)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,18 +139,15 @@ func TestOverflowMoveEffectsDecodeAndReconcile(t *testing.T) {
 		}
 		return ConfirmedTransactionEvidence{Signature: "move", Slot: 1, PreTokenBalances: custody(balance), PostTokenBalances: custody(post)}
 	}
-	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt(balance-held)); err != nil {
+	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt(0)); err != nil {
 		t.Fatalf("landed move did not reconcile: %v", err)
-	}
-	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt(balance-held-1)); err == nil {
-		t.Fatal("a move that took more than the custody held reconciled")
 	}
 
 	// One account is a move's shape only: it still needs its minimum, and a
 	// conversion still needs two custodies of different mints.
-	bare := moveEffects(route, balance, held)
+	bare := moveEffects(route, balance)
 	bare.Accounts[0].MinimumAfterRaw = nil
-	same := moveEffects(route, balance, held)
+	same := moveEffects(route, balance)
 	other := same.Accounts[0]
 	other.Address = testPublicKey(9)
 	same.Accounts = append(same.Accounts, other)

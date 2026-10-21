@@ -185,13 +185,7 @@ func TestStepNeverSpendsBridgeCash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.debtBalance != 50_000_000 || st.heldDebt != 0 || st.heldCollateral != st.collateralBalance {
-		t.Fatalf("OnRe step state: balance %d held %d", st.debtBalance, st.heldDebt)
-	}
-	// Held debt covering the repay shortens the conversion, never refuses it.
-	st.heldDebt = 10_000
-	s := leverageSnapshot(1.5)
-	if _, convert, err := planDownStep(s, Decision{Reason: hardLTVDeleverReason}, st, 5_000); err != nil || convert == 0 {
-		t.Fatalf("held debt over the repay refused the step: %d %v", convert, err)
+	if st.debtBalance != 50_000_000 || st.heldDebt() != 0 {
+		t.Fatalf("OnRe step state: balance %d held %d", st.debtBalance, st.heldDebt())
 	}
 }

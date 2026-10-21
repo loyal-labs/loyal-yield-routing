@@ -611,14 +611,14 @@ func (p lanePricer) releaseMicros(ctx context.Context, o Observation, source Sna
 	if rel.DebtRaw > rel.DebtTargetRaw {
 		d := Decision{Action: DeleverRouteStep, Reason: rotateRepayReason, AmountRaw: rel.DebtRaw - rel.DebtTargetRaw, StrategyKey: source.RouteLane}
 		repay, _ := stepDownRepay(source, d)
-		if limit := stepLegCap(route); repay > limit-limit/10 {
-			repay = limit - limit/10
+		if headroom := stepLegCap(route).headroom(); headroom.exceeded(repay) {
+			repay = headroom.raw
 		}
-		receipts, convert, err := planDownStep(source, d, st, repay)
+		plan, err := planDownStep(source, d, st, repay)
 		if err != nil {
 			return 0, err
 		}
-		step, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, SwapCollateralToDebtStep, receipts, convert, source.Slot)
+		step, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, SwapCollateralToDebtStep, plan.withdrawReceiptsRaw, plan.convertCollateralRaw, source.Slot)
 		if err != nil {
 			return 0, err
 		}

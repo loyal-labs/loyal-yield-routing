@@ -103,14 +103,10 @@ type LaneTarget struct {
 	EntryRaw    int64  `json:"entryRaw,omitempty"`
 }
 
-// hardLTVBPS is a lane's hard LTV, the brake (owner decisions 2026-10-14):
-// the lower of its collateral reserve's liquidation threshold less 10
-// points and its obligation's borrow limit (KaminoPosition.MaxLTVBPS) less
-// stepWithdrawMarginBPS, where a down step still has withdraw room. The
-// lane's cap sits under it for entries and up steps; a down step at it runs
-// whatever the cap.
+const hardLTVLiquidationBufferBPS = 1000
+
 func hardLTVBPS(liquidationThresholdBPS, maxLTVBPS int64) int64 {
-	return min(liquidationThresholdBPS-1000, maxLTVBPS-stepWithdrawMarginBPS)
+	return min(liquidationThresholdBPS-hardLTVLiquidationBufferBPS, maxLTVBPS-stepWithdrawMarginBPS)
 }
 
 func laneEquityRaw(s Snapshot) int64 {
@@ -216,7 +212,7 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 	if outbound {
 		if gap := shortfall - vault.SquadsIdleRaw; gap > 0 {
 			if i := releaseLane(lanes); i >= 0 {
-				free := gap + max(gap*partialWithdrawalBufferBPS/10_000, partialWithdrawalMinimumBuffer)
+				free := gap + max(gap*partialWithdrawalBufferBPS/10_000, partialWithdrawalMinimumBufferRaw)
 				t := stored(lanes[i])
 				t.Rule, t.Outbound, t.ReleaseRaw = ruleWithdrawal, true, min(free, laneReleaseLimitRaw(lanes[i].s))
 				return i, t
@@ -309,14 +305,7 @@ func laneReleaseLimitRaw(s Snapshot) int64 {
 	return max((laneEquityRaw(s)*partialWithdrawalFullExitBPS-1)/10_000, 0)
 }
 
-// overflowMove is the overflow lane a held source i moves collateral to, and
-// how much (bridge USDC value): the source is below its stored level with no
-// borrow room of its own, its overflow lane's reserve has room and its stored
-// level approves levering there, and neither lane is exiting or near its term.
-// The source's stored level is its cap, whose LTV the move releases to, and the
-// overflow lane levers what an earlier move brought before the next move:
-// each move is sized by the room the overflow reserve still has.
-func overflowMove(lanes []targetLane, i int, in targetInputs) (string, int64) {
+func overflowMove(lanes []targetLane, i int, in targetInputs) (lane string, moveValueRaw int64) {
 	l := lanes[i]
 	s := l.s
 	lane, ok := overflowLaneOf(s.RouteLane)
@@ -386,9 +375,10 @@ func newSourceRelease(s Snapshot, e int64) *SourceRelease {
 		CollateralTargetRaw: s.PositionCollateralRaw - receipts, DebtTargetRaw: s.PositionDebtRaw - repay.Int64()}
 }
 
+const rotationRepayInterestSlackDivisor = 100
+
 // rotationReleaseStep is the release r's rotation has left on s, its
-// source: the debt still above its target (repaid first; a hundredth of the
-// planned repay absorbs interest), then the collateral receipts above
+// source: the debt still above its target, then the collateral receipts above
 // theirs. Nothing once the release is done, when r is not current within
 // MaxSampleGap of s's chain time, or when s holds more collateral than the
 // position r priced. The selector records no new result while one is left
@@ -402,7 +392,7 @@ func rotationReleaseStep(r *SelectorResult, s Snapshot) (repay, withdraw int64) 
 	if s.PositionCollateralRaw > rel.CollateralRaw {
 		return 0, 0
 	}
-	if s.PositionDebtRaw-rel.DebtTargetRaw > partialWithdrawalDustRaw+(rel.DebtRaw-rel.DebtTargetRaw)/100 {
+	if s.PositionDebtRaw-rel.DebtTargetRaw > partialWithdrawalDustRaw+(rel.DebtRaw-rel.DebtTargetRaw)/rotationRepayInterestSlackDivisor {
 		return s.PositionDebtRaw - rel.DebtTargetRaw, 0
 	}
 	if s.PositionCollateralRaw-rel.CollateralTargetRaw > partialWithdrawalDustRaw {
@@ -538,7 +528,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	}
 	// Voltr idle already pays the queue: keep the report current for claims.
 	if s.WithdrawalDemandRaw > 0 && withdrawalShortfallRaw(s) == 0 &&
-		(s.Trustful && trustfulReportDue(s) || !s.Trustful && (s.CapitalMutated || s.LastReportAgeSeconds >= 60)) {
+		(s.Trustful && trustfulReportDue(s) || !s.Trustful && (s.CapitalMutated || s.LastReportAgeSeconds >= capitalMutationReportAgeSeconds)) {
 		return report("withdrawal_covered_nav_due")
 	}
 	if t.Outbound {
