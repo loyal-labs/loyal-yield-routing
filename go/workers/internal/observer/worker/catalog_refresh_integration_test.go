@@ -53,14 +53,6 @@ func (a *kaminoMetricsAPI) ServeHTTP(w http.ResponseWriter, request *http.Reques
 	_ = json.NewEncoder(w).Encode(metrics)
 }
 
-// Production 2026-10-08: Rust renewed kamino.supported_reserves.fetched_at
-// every 120 s (last at 01:45:14.95). The Go observer only read the catalog,
-// so after the 01:46:15 swap every reserve's catalog expiry froze at
-// 01:50:14.95; at 01:49:14.95 its remaining lifetime fell under the planner's
-// 60 s minimum, no mint stayed complete, the optimizer envelope collapsed to
-// its observation time and the Rust planner died at 01:49:18. The observer
-// owns that renewal, as the Rust monitor did; the Go planner reads only the
-// reserve identities from it and so never expires with it.
 func TestObserverRenewsSupportedReserveCatalogThePlannerAdmits(t *testing.T) {
 	databaseURL := os.Getenv("OBSERVER_TEST_DATABASE_URL")
 	if databaseURL == "" {

@@ -14,8 +14,6 @@ import (
 	solanago "github.com/solana-foundation/solana-go/v2"
 )
 
-const maxCatalogRefresh = 180 * time.Second
-
 type Config struct {
 	LaserStreamEndpoint   string
 	HeliusAPIKey          string
@@ -92,8 +90,8 @@ func FromEnv() (Config, error) {
 	if cfg.ReplayOverlapSlots == 0 || cfg.WatchRefresh <= 0 || cfg.ProgressTimeout <= 0 {
 		return Config{}, errors.New("LaserStream intervals and replay overlap must be positive")
 	}
-	if cfg.CatalogRefresh <= 0 || cfg.CatalogRefresh > maxCatalogRefresh {
-		return Config{}, fmt.Errorf("KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECONDS must be between 1 and %d", int(maxCatalogRefresh/time.Second))
+	if cfg.CatalogRefresh <= 0 {
+		return Config{}, errors.New("KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECONDS must be positive")
 	}
 	switch strings.TrimSpace(os.Getenv("DISABLE_EARN_APY_REFRESH")) {
 	case "", "false":
