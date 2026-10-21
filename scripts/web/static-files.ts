@@ -63,8 +63,6 @@ function xmlEscape(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
-// Serialises entries the way Next renders an app-router sitemap: one unindented
-// <url> block per entry, loc, then the hreflang alternates, then lastmod.
 function serializeSitemap(entries: SitemapEntry[]): string {
   const urls = entries.map((entry) => {
     const lines = [`<url>`, `<loc>${xmlEscape(entry.url)}</loc>`];

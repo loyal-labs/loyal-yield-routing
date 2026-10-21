@@ -11,13 +11,14 @@ export type AppRouter = {
   prefetch(href: string): void;
 };
 
-// redirect() can fire from any component, including ones that never call the
-// hooks; the module keeps the router the last hook call saw. Every consumer
-// of next/navigation here renders under RouterProvider, so it is set.
 let activeRouter: TanstackRouter | undefined;
 
-function navigate(router: TanstackRouter, href: string, replace: boolean, scroll?: boolean): void {
-  // TTo pinned to string so href alone is a valid NavigateOptions (see link.tsx).
+export function registerRouter(router: TanstackRouter): void {
+  activeRouter = router;
+}
+
+export function navigate(router: TanstackRouter, href: string, replace: boolean, scroll?: boolean): void {
+  // TTo pinned to string so href alone is a valid NavigateOptions.
   router
     .navigate<typeof router, string>({ href, replace, resetScroll: scroll === false ? false : undefined })
     .catch(() => {});
@@ -25,19 +26,16 @@ function navigate(router: TanstackRouter, href: string, replace: boolean, scroll
 
 export function usePathname(): string {
   const location = useLocation();
-  activeRouter = useTanstackRouter();
   return location.pathname;
 }
 
 export function useSearchParams(): URLSearchParams {
   const location = useLocation();
-  activeRouter = useTanstackRouter();
   return new URLSearchParams(location.searchStr);
 }
 
 export function useRouter(): AppRouter {
   const router = useTanstackRouter();
-  activeRouter = router;
   return {
     push: (href, options) => navigate(router, href, false, options?.scroll),
     replace: (href, options) => navigate(router, href, true, options?.scroll),

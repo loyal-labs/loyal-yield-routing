@@ -73,33 +73,46 @@ func release() string {
 	return revision
 }
 
+func openAppDB(ctx context.Context) (*pgxpool.Pool, error) {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	if dir == "" {
+		return nil, nil
+	}
+	_, err := os.Stat(filepath.Join(dir, "WEB_APP_DATABASE_URL"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.New("cannot inspect web app database credential")
+	}
+	dsn, err := engine.Credential("WEB_APP_DATABASE_URL")
+	if err != nil {
+		return nil, err
+	}
+	poolConfig, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, errors.New("invalid web app database credential")
+	}
+	poolConfig.MaxConns = 4
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		return nil, errors.New("cannot open web app database pool")
+	}
+	return pool, nil
+}
+
 func run(ctx context.Context) error {
 	cfg, err := config()
 	if err != nil {
 		return err
 	}
-	// Installing this credential opts the test host into the Go stats reader.
-	if dir := os.Getenv("CREDENTIALS_DIRECTORY"); dir != "" {
-		_, err := os.Stat(filepath.Join(dir, "WEB_APP_DATABASE_URL"))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return errors.New("cannot inspect web app database credential")
-		}
-		if err == nil {
-			dsn, err := engine.Credential("WEB_APP_DATABASE_URL")
-			if err != nil {
-				return err
-			}
-			poolConfig, err := pgxpool.ParseConfig(dsn)
-			if err != nil {
-				return errors.New("invalid web app database credential")
-			}
-			poolConfig.MaxConns = 4
-			cfg.AppDB, err = pgxpool.NewWithConfig(ctx, poolConfig)
-			if err != nil {
-				return errors.New("cannot open web app database pool")
-			}
-			defer cfg.AppDB.Close()
-		}
+	appDB, err := openAppDB(ctx)
+	if err != nil {
+		return err
+	}
+	if appDB != nil {
+		defer appDB.Close()
+		cfg.AppDB = appDB
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,

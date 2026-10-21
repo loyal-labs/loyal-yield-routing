@@ -6,7 +6,7 @@ import { LandingHeader } from "@/components/landing-header";
 import { LandingScrollAnimations } from "@/components/landing-scroll-animations";
 import { BlogCard, BlogPagination, getBlogPosts } from "@/features/blog";
 
-import { headFromMetadata } from "../../next-compat/metadata";
+import { pageHead } from "../../next-compat/metadata";
 
 const PAGE_TITLE = "Blog | Loyal";
 const PAGE_DESCRIPTION =
@@ -28,8 +28,6 @@ function rawPage(value: unknown): string | undefined {
 }
 
 function blogMetadata(pageNumber: number): Metadata {
-  // Each paginated page self-canonicalizes (page 2 -> /blog?page=2), the
-  // SEO-correct pattern for a series, never canonicalized back to /blog.
   const canonical = pageNumber > 1 ? `/blog?page=${pageNumber}` : "/blog";
   const title = pageNumber > 1 ? `Blog – Page ${pageNumber} | Loyal` : PAGE_TITLE;
 
@@ -147,6 +145,6 @@ export const Route = createFileRoute("/blog/")({
   }),
   loaderDeps: ({ search }) => ({ page: search.page }),
   loader: ({ deps }) => getBlogPosts({ page: parsePage(deps.page) }),
-  head: ({ loaderData }) => headFromMetadata(blogMetadata(loaderData?.page ?? 1)),
+  head: ({ loaderData }) => pageHead(blogMetadata(loaderData?.page ?? 1)),
   component: BlogIndexRoute,
 });
