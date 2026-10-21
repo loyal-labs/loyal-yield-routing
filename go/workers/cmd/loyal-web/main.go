@@ -10,10 +10,13 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 )
 
@@ -74,6 +77,29 @@ func run(ctx context.Context) error {
 	cfg, err := config()
 	if err != nil {
 		return err
+	}
+	// Installing this credential opts the test host into the Go stats reader.
+	if dir := os.Getenv("CREDENTIALS_DIRECTORY"); dir != "" {
+		_, err := os.Stat(filepath.Join(dir, "WEB_APP_DATABASE_URL"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return errors.New("cannot inspect web app database credential")
+		}
+		if err == nil {
+			dsn, err := engine.Credential("WEB_APP_DATABASE_URL")
+			if err != nil {
+				return err
+			}
+			poolConfig, err := pgxpool.ParseConfig(dsn)
+			if err != nil {
+				return errors.New("invalid web app database credential")
+			}
+			poolConfig.MaxConns = 4
+			cfg.AppDB, err = pgxpool.NewWithConfig(ctx, poolConfig)
+			if err != nil {
+				return errors.New("cannot open web app database pool")
+			}
+			defer cfg.AppDB.Close()
+		}
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,

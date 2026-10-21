@@ -10,6 +10,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
+const (
+	SourceGrowthReservation  = 8
+	SourceMaximumVaultCohort = 16
+)
+
 type LookupPlannerConfig struct {
 	Cluster, Owner                                        string
 	LeaseTTL, TickDeadline, PollInterval, CatalogInterval time.Duration
@@ -65,6 +70,15 @@ func (p *LookupPlanner) Run(ctx context.Context) error {
 	}
 }
 
+// A permanently malformed planning request must not strand rent forever.
+func (p *LookupPlanner) retireIndependentlyOfPlanning(ctx context.Context, bank int64) (bool, error) {
+	if p.config.ReconcileOnly {
+		return false, nil
+	}
+	worked, _, err := p.cleanupTick(ctx, bank)
+	return worked, err
+}
+
 func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, p.config.TickDeadline)
 	defer cancel()
@@ -85,14 +99,9 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	// Independent retirement gets a bounded turn before request/catalog errors.
-	// A permanently malformed planning request must not strand rent forever.
-	if !p.config.ReconcileOnly {
-		cleanupWorked, _, e := p.cleanupTick(ctx, bank)
-		worked = cleanupWorked
-		if e != nil {
-			return worked, e
-		}
+	worked, e := p.retireIndependentlyOfPlanning(ctx, bank)
+	if e != nil {
+		return worked, e
 	}
 	if !time.Now().Before(p.nextCatalog) {
 		catalogWorked, _, e := p.reconcileLookupCatalog(ctx, bank)

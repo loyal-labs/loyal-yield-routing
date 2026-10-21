@@ -14,7 +14,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	landResendEvery, landWindow = time.Millisecond, 200*time.Millisecond
+	chain.LandResendEvery, landWindow = time.Millisecond, 200*time.Millisecond
 	os.Exit(m.Run())
 }
 

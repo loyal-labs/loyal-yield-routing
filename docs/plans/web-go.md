@@ -6,7 +6,7 @@ marketing) are built with Vite + TanStack Router and served by the Go binary
 `loyal-web` on the loyal-workers host, at a test hostname, for the owner to
 open and test. No DNS flip, no move off Vercel in this phase.
 
-## Done
+## Acceptance criteria
 
 1. `web/` holds loyal-app with its history; `scripts/web/sync.sh` re-run on an
    unchanged loyal-app reports "already merged". (Done: #399.)
@@ -35,7 +35,10 @@ open and test. No DNS flip, no move off Vercel in this phase.
   the `/api` routes Go owns (`internal/webapp`, huma on chi), and forwards
   every other `/api/*` to the Next deployment (`LOYAL_WEB_UPSTREAM`, default
   `https://app.askloyal.com`).
-- `bun run web:build` builds it all into `bin/loyal-web`.
+- `bun run web:build` builds it all into `bin/loyal-web`, including the normalized
+  frontend app environment. Go serves `/500` with HTTP 500 and the disabled
+  `/dev/txv1` page with HTTP 404 in production; both retain the SPA shell and
+  use `Cache-Control: no-store`. Development/local builds keep the probe at 200.
 
 ## Facts the seed established
 
@@ -65,6 +68,22 @@ open and test. No DNS flip, no move off Vercel in this phase.
 Shared files (`routes.table.ts`, `__root.tsx`, `main.tsx`, `vite.config.ts`,
 `index.html`, `go.mod`, `internal/webapp/api.go`) belong
 to the foreman: a lane asks, the foreman edits on `web-go/seed`.
+
+## First API pilot: public Earn statistics
+
+`GET /api/earn/stats` reads the existing App Neon snapshot in Go, preserving
+the Next JSON fields, cache policy, freshness limit, and unavailable error.
+It is opt-in through the `WEB_APP_DATABASE_URL` systemd credential; without
+that credential the route still proxies. Activation and rollback are in
+`deploy/hetzner/README.md`. `scripts/web/api-diff.ts` verifies equal JSON at
+the same snapshot timestamp and rejects a comparison against a proxy response.
+Implementation alone does not satisfy criterion 5: activation and live parity
+verification remain deployment steps. No generated client is introduced for
+this pilot; existing frontend callers keep the same URL and response contract.
+
+Mobile feature work can proceed against the existing backend. New mobile
+Earn MAX backend/shared SDK changes from loyal-app must be synced here before
+porting those API families; they are outside this public read pilot.
 
 ## Later, not in this phase
 

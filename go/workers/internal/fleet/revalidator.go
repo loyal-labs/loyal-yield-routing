@@ -21,7 +21,7 @@ import (
 
 const (
 	SolanaPacketLimit   = 1232
-	defaultComputeLimit = uint64(1_400_000)
+	DefaultComputeLimit = uint64(1_400_000)
 )
 
 type FleetVault struct {
@@ -613,44 +613,6 @@ func policyValueBytes(value squads.DataValueView) []byte {
 	return nil
 }
 
-// BuildExactPolicyFixture is exported only to deterministic verification. It
-// emits the same deployed legacy layout decoded above.
-func BuildExactPolicyFixture(settings, signer string, accountIndex uint8, instructions []RouteInstruction) ([]byte, error) {
-	s, err := decodePublicKey(settings)
-	if err != nil {
-		return nil, err
-	}
-	sg, err := decodePublicKey(signer)
-	if err != nil {
-		return nil, err
-	}
-	b := append([]byte(nil), squads.PolicyDiscriminator[:]...)
-	b = append(b, s[:]...)
-	b = append(b, make([]byte, 8+1+8+8)...)
-	b = appendU32x(b, 1)
-	b = append(b, sg[:]...)
-	b = append(b, 7)
-	b = appendU16x(b, 1)
-	b = appendU32x(b, 0)
-	b = append(b, 3, accountIndex)
-	b = appendU32x(b, uint32(len(instructions)))
-	for _, ix := range instructions {
-		p, e := decodePublicKey(ix.Program)
-		if e != nil {
-			return nil, e
-		}
-		b = append(b, p[:]...)
-		b = appendU32x(b, 0)
-		b = appendU32x(b, 1)
-		b = appendU64x(b, 0)
-		b = append(b, 5)
-		b = appendU32x(b, uint32(len(ix.Data)))
-		b = append(b, ix.Data...)
-		b = append(b, 0)
-	}
-	return b, nil
-}
-
 type txMeta struct {
 	key                       string
 	signer, writable, program bool
@@ -691,7 +653,7 @@ type RoutePreparation struct {
 }
 
 func prepareRoute(instructions []RouteInstruction, payer string, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error), kind string) (RoutePreparation, error) {
-	if feeLamports == 0 || computeLimit == 0 || computeLimit > defaultComputeLimit {
+	if feeLamports == 0 || computeLimit == 0 || computeLimit > DefaultComputeLimit {
 		return RoutePreparation{}, errors.New("fee or compute limit is invalid")
 	}
 	tx, missing, err := compileV0Transaction(payer, recentBlockhash, instructions, tables, feeLamports, computeLimit)

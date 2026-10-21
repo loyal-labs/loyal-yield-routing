@@ -53,7 +53,7 @@ if [[ $family == web && ( $migrations_applied == yes || $mode == stopped ) ]]; t
 fi
 
 build_web_release() {
-  GOOS=linux GOARCH=$1 CGO_ENABLED=0 GOFLAGS=-ldflags=-X=main.stamp=$sha \
+  GOOS=linux GOARCH=$1 CGO_ENABLED=0 \
     sh "$build/src/scripts/web/build.sh" "$build/loyal-web" >/dev/null
   binary=$build/loyal-web
 }

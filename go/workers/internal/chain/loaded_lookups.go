@@ -1,10 +1,11 @@
-package fleet
+package chain
 
 import "github.com/solana-foundation/solana-go/v2"
 
 type LoadedLookupSlot struct {
-	Table solana.PublicKey
-	Index uint8
+	Table    solana.PublicKey
+	Index    uint8
+	Readonly bool
 }
 
 // LoadedLookupSlots lists a v0 message's lookup slots in loaded-address order: every table's writable indexes, then every table's readonly indexes.
@@ -17,7 +18,7 @@ func LoadedLookupSlots(lookups solana.MessageAddressTableLookupSlice) []LoadedLo
 				indexes = lookup.ReadonlyIndexes
 			}
 			for _, index := range indexes {
-				slots = append(slots, LoadedLookupSlot{lookup.AccountKey, index})
+				slots = append(slots, LoadedLookupSlot{lookup.AccountKey, index, readonly})
 			}
 		}
 	}

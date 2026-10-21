@@ -132,7 +132,7 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 		return errors.New("first-send budget topology is not the retained two-instruction prefix")
 	}
 	compute := uint64(binary.LittleEndian.Uint32(actual[0].Data[1:]))
-	if compute == 0 || compute > defaultComputeLimit {
+	if compute == 0 || compute > DefaultComputeLimit {
 		return errors.New("first-send compute limit exceeds retained bound")
 	}
 	var expected []RouteInstruction

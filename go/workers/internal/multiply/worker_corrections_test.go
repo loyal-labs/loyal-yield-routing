@@ -40,12 +40,12 @@ func TestPlannerDebtCustodyThreshold(t *testing.T) {
 		amount uint64
 		debt   uint64
 		action MultiplyAction
-		mode   AmountMode
+		want   PlannedAmount
 	}{
-		{"dust_partial", 1, 100_000, ActionRepayDebt, "exact"},
-		{"boundary_partial", 50_000, 100_000, ActionRepayDebt, "exact"},
-		{"boundary_all", 50_000, 50_000, ActionRepayDebt, "all"},
-		{"swap_above_boundary", 50_001, 100_000, ActionSwapDebtToCollateral, "exact"},
+		{"dust_partial", 1, 100_000, ActionRepayDebt, AmountExact(1)},
+		{"boundary_partial", 50_000, 100_000, ActionRepayDebt, AmountExact(50_000)},
+		{"boundary_all", 50_000, 50_000, ActionRepayDebt, AmountAll},
+		{"swap_above_boundary", 50_001, 100_000, ActionSwapDebtToCollateral, AmountExact(50_001)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			observed := idleObserved(topology)
@@ -54,11 +54,8 @@ func TestPlannerDebtCustodyThreshold(t *testing.T) {
 			position.DebtRaw = test.debt
 			observed.DebtCustody(SyrupUsdcPyusd).AmountRaw = test.amount
 			decision := planUp(observed, SyrupUsdcPyusd, topology)
-			if decision.Kind != "execute" || decision.Plan.Action != test.action || decision.Plan.Amount.Mode != test.mode {
+			if decision.Kind != "execute" || decision.Plan.Action != test.action || decision.Plan.Amount != test.want {
 				t.Fatalf("unexpected decision %+v", decision)
-			}
-			if test.mode == "exact" && decision.Plan.Amount.Exactly != test.amount {
-				t.Fatalf("amount %d, want %d", decision.Plan.Amount.Exactly, test.amount)
 			}
 		})
 	}

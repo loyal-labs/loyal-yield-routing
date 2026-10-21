@@ -11,6 +11,9 @@ import (
 //go:embed all:dist
 var embedded embed.FS
 
+// appEnvironment is set from the frontend build environment by build.sh.
+var appEnvironment = "prod"
+
 var (
 	dist    fs.FS
 	distErr error
@@ -39,9 +42,35 @@ func Handler() http.Handler {
 	if distErr != nil {
 		panic(distErr)
 	}
+	return handler(dist, appEnvironment)
+}
+
+func handler(dist fs.FS, environment string) http.Handler {
 	files := http.FileServerFS(dist)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		pagePath := path.Clean(r.URL.Path)
+		status := 0
+		switch {
+		case pagePath == "/500":
+			status = http.StatusInternalServerError
+		case pagePath == "/dev/txv1" && environment == "prod":
+			status = http.StatusNotFound
+		}
+		if status != 0 {
+			w.Header().Set("Cache-Control", noStore)
+			body, err := fs.ReadFile(dist, "index.html")
+			if err != nil {
+				http.Error(w, "web build missing", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(status)
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(body)
+			}
+			return
+		}
+		name := strings.TrimPrefix(pagePath, "/")
 		if name == "" {
 			name = "index.html"
 		}

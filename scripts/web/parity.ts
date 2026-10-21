@@ -437,6 +437,14 @@ async function main(): Promise<number> {
       ...(await compareHeaders(origin)),
       ...(await pool(cases, 32, (c) => compareLocale(origin, c))),
     ];
+    const expectedRelease = process.env.NEXT_PUBLIC_GIT_COMMIT_HASH;
+    if (expectedRelease) {
+      const response = await fetch(`${origin}/readyz`);
+      const actualRelease = response.headers.get("x-loyal-release");
+      if (response.status !== 200 || actualRelease !== expectedRelease) {
+        failures.push({ what: "built binary readiness and release stamp", expected: { status: 200, release: expectedRelease }, actual: { status: response.status, release: actualRelease } });
+      }
+    }
     const floor = LOCALES.length * TRANSLATED_PATHS.length;
     if (cases.length < floor) failures.push({ what: "too few locale cases ran", expected: `>= ${floor}`, actual: cases.length });
     if (redirects < floor) failures.push({ what: "too few locale redirects expected by Next", expected: `>= ${floor}`, actual: redirects });
