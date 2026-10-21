@@ -274,7 +274,7 @@ func compactSameMintLeg(accounts map[uint8]squads.AccountConstraintView, vault s
 	}
 	for _, mint := range mints {
 		supported := false
-		for _, stable := range watch.Stablecoins {
+		for _, stable := range watch.Stablecoins() {
 			supported = supported || stable.Mint == mint
 		}
 		if !supported {
@@ -686,7 +686,7 @@ func detectCrossMintPolicy(instruction squads.Instruction) (CrossMintSwapPolicyM
 			return CrossMintSwapPolicyManifestInput{}, false
 		}
 		var expected []solana.PublicKey
-		for _, stable := range watch.Stablecoins {
+		for _, stable := range watch.Stablecoins() {
 			expected = append(expected, associatedToken(candidate, stable.Mint, stable.TokenProgram))
 		}
 		if len(uniqueKeys(output.Pubkeys)) != len(output.Pubkeys) || !sameKeySet(uniqueKeys(output.Pubkeys), uniqueKeys(expected)) {
@@ -714,7 +714,7 @@ func detectCrossMintPolicy(instruction squads.Instruction) (CrossMintSwapPolicyM
 		program solana.PublicKey
 	}{{"classic", tokenProgram}, {"token_2022", token2022Program}} {
 		var mints []solana.PublicKey
-		for _, stable := range watch.Stablecoins {
+		for _, stable := range watch.Stablecoins() {
 			if stable.TokenProgram == candidate.program {
 				mints = append(mints, stable.Mint)
 			}
@@ -742,7 +742,7 @@ func detectCrossMintPolicy(instruction squads.Instruction) (CrossMintSwapPolicyM
 		return CrossMintSwapPolicyManifestInput{}, false
 	}
 	var sourceMints []string
-	for _, stable := range watch.Stablecoins {
+	for _, stable := range watch.Stablecoins() {
 		if stable.TokenProgram == sourceProgram {
 			sourceMints = append(sourceMints, stable.Mint.String())
 		}

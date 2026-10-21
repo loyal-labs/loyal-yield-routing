@@ -215,7 +215,7 @@ func classifyCashFlow(t earnTransaction, update NormalizedUpdate, vault watch.Va
 		return nil, nil
 	}
 	var result *cashFlow
-	for _, stable := range watch.Stablecoins {
+	for _, stable := range watch.Stablecoins() {
 		delta := t.ownerTokenDelta(stable.Mint, vault.Wallet)
 		if delta.Sign() == 0 {
 			continue
@@ -254,7 +254,7 @@ func bindingKeys(vault watch.Vault, role string) ([]solana.PublicKey, error) {
 type cleanupProof struct{ balancesZero, policiesClosed bool }
 
 func knownStable(mint solana.PublicKey) bool {
-	for _, stable := range watch.Stablecoins {
+	for _, stable := range watch.Stablecoins() {
 		if stable.Mint == mint {
 			return true
 		}
@@ -358,7 +358,7 @@ func blockingTokenInventory(ctx context.Context, rpc *chain.Client, vault solana
 				continue
 			}
 			productIdle := false
-			for _, stable := range watch.Stablecoins {
+			for _, stable := range watch.Stablecoins() {
 				if stable.TokenProgram == program && stable.Mint == held.Mint && associatedToken(vault, stable.Mint, stable.TokenProgram) == address {
 					productIdle = true
 				}

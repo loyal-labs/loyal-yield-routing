@@ -7,7 +7,6 @@ import (
 	"math/big"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -18,7 +17,7 @@ var (
 	StakeProgramID = solana.MustPublicKeyFromBase58("5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK")
 	MintProgramID  = solana.MustPublicKeyFromBase58("9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV")
 
-	USDCMint  = solana.MustPublicKeyFromBase58(fleet.USDCMint)
+	usdcMint  = solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
 	WYLDSMint = solana.MustPublicKeyFromBase58("8fr7WGTVFszfyNWRMXj6fRjZZAnDwmXwEpCrtzmUkdih")
 	AUTOMint  = solana.MustPublicKeyFromBase58("GNE6oDS6jHrfaV3GQVVCCp37fDnT7PiPuewMKBj2bqNm")
 )
@@ -75,7 +74,7 @@ func OwnStake(owner solana.PublicKey) (StakeAccounts, error) {
 }
 
 func OwnMint(owner solana.PublicKey) (MintAccounts, error) {
-	usdc, err := spl.AssociatedTokenAddress(owner, USDCMint, solana.TokenProgramID)
+	usdc, err := spl.AssociatedTokenAddress(owner, usdcMint, solana.TokenProgramID)
 	if err != nil {
 		return MintAccounts{}, err
 	}
