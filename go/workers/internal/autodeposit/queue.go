@@ -169,7 +169,7 @@ FOR UPDATE OF claim SKIP LOCKED`,
 }
 
 // LoadExecutableTargets returns one scan's dispatch list: pull recovery rows
-// first, then fresh scheduled slots, prioritized for execution.
+// first, then at most one fresh scheduled slot per target, hinted slots first.
 //
 // Recovery precedes fresh work even for a paused target: a claim whose pull
 // already holds wallet custody must be resolved regardless of desired
@@ -195,13 +195,7 @@ func (s *Store) LoadExecutableTargets(ctx context.Context, limit int64, hintedSl
 			return nil, err
 		}
 	}
-	combined := make([]ExecutableTarget, 0, len(recovery)+len(fresh))
-	combined = append(combined, recovery...)
-	combined = append(combined, fresh...)
-	if len(hintedSlotIDs) == 0 && len(fresh) == len(combined) {
-		return fresh, nil
-	}
-	return PrioritizeExecutableTargets(combined, hintedSlotIDs, int(limit)), nil
+	return append(recovery, fresh...), nil
 }
 
 func (s *Store) loadPullRecoveryTargets(ctx context.Context, limit int64) ([]ExecutableTarget, error) {
@@ -245,10 +239,18 @@ LIMIT $1`, limit, USDCMint, ClaimHoldingPullAttemptStates)
 
 func (s *Store) loadFreshTargets(ctx context.Context, limit int64, hintedSlotIDs []int64) ([]ExecutableTarget, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT
+SELECT target_id, scheduled_slot_id, wallet
+FROM (
+SELECT DISTINCT ON (target.id)
     target.id AS target_id,
     slot.id AS scheduled_slot_id,
-    target.wallet
+    target.wallet,
+    CASE WHEN slot.id = ANY($3::bigint[]) THEN 0 ELSE 1 END AS hint_rank,
+    array_position($3::bigint[], slot.id) AS hint_position,
+    CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END AS requested_rank,
+    slot.requested_at,
+    slot.eligible_after,
+    balance.updated_at AS balance_updated_at
 FROM loyal_yield.balance_sweep_scheduled_slots AS slot
 JOIN loyal_yield.balance_sweep_targets AS target
   ON target.id = slot.target_id
@@ -282,17 +284,22 @@ WHERE target.desired_active = true
         AND claim.status = 'selected'
   )
 ORDER BY
-    CASE WHEN slot.id = ANY($3::bigint[]) THEN 0 ELSE 1 END,
-    CASE
-        WHEN slot.id = ANY($3::bigint[])
-        THEN array_position($3::bigint[], slot.id)
-    END ASC NULLS LAST,
-    CASE WHEN slot.status = 'requested' THEN 0 ELSE 1 END,
+    target.id ASC,
+    hint_rank,
+    hint_position ASC NULLS LAST,
+    requested_rank,
     slot.requested_at DESC NULLS LAST,
     slot.eligible_after ASC,
-    balance.updated_at ASC,
-    target.id ASC,
     slot.id ASC
+) AS best_slot
+ORDER BY
+    hint_rank,
+    hint_position ASC NULLS LAST,
+    requested_rank,
+    requested_at DESC NULLS LAST,
+    eligible_after ASC,
+    balance_updated_at ASC,
+    target_id ASC
 LIMIT $1`, limit, USDCMint, hintedSlotIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load fresh autodeposit targets: %w", err)
