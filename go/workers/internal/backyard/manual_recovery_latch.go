@@ -83,13 +83,12 @@ func ClearManualRecoveryHold(ctx context.Context, databaseURL, routeKey, reason 
 		latched, routeKey, clearedAt.UTC().Format(time.RFC3339)), nil
 }
 
-// clearManualRecoveryLatch clears the active latch. The generation step is
-// the previous binary's clear counter.
+// clearManualRecoveryLatch clears the active latch.
 func (d *Database) clearManualRecoveryLatch(ctx context.Context, routeKey, reason string) (time.Time, string, error) {
 	var clearedAt time.Time
 	var latched string
 	err := d.pool.QueryRow(ctx,
-		`UPDATE loyal_yield.backyard_manual_recovery_latches SET cleared_at = clock_timestamp(), cleared_reason = $2, generation = generation + 1
+		`UPDATE loyal_yield.backyard_manual_recovery_latches SET cleared_at = clock_timestamp(), cleared_reason = $2
 		 WHERE route_key = $1 AND cleared_at IS NULL RETURNING cleared_at, reason`, routeKey, reason).Scan(&clearedAt, &latched)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, "", fmt.Errorf("route %s has no active manual recovery latch", routeKey)

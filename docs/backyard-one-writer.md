@@ -43,11 +43,10 @@ rows: broadcast intent is written before every first send.
 
 Nothing below the lock checks who the writer is: there is no route lease,
 fencing token, lease expiry, `state_version` compare-and-swap or planning
-generation. The one-shot operator writes (`selector-evaluate --execute`,
-`settle-manual-restore --execute`) use the same one-session writer
-(`openOperatorWriter`): try instead of wait (`pg_try_advisory_lock`), so they
-refuse while the worker runs, and every read and write of the command goes
-through the session that holds the lock. `exit-lane` and `clear-hold` are
+generation. The one-shot operator write (`selector-evaluate --execute`) uses the same
+one-session writer (`openOperatorWriter`): try instead of wait
+(`pg_try_advisory_lock`), so it refuses while the worker runs, and every read
+and write of the command goes through the session that holds the lock. `exit-lane` and `clear-hold` are
 operator inputs the worker reads on its next tick, and run beside it without
 the lock: each is one statement on its own row (`backyard_lane_exits` and
 `backyard_manual_recovery_latches`), and the worker's writes to those rows are

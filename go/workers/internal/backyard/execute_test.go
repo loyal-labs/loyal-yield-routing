@@ -6,14 +6,14 @@ func TestTransitions(t *testing.T) {
 	t.Parallel()
 	if !CanTransition(Signed, BroadcastIntent) || !CanTransition(Confirmed, Reconciling) ||
 		CanTransition(Confirmed, Reconciled) || CanTransition(Held, Decided) ||
-		CanTransition(Failed, Decided) || CanTransition(Submitted, Signed) {
+		CanTransition(Failed, Decided) {
 		t.Fatal("invalid transition rules")
 	}
 }
 
 func TestExpiredAbsentSubmissionCanTerminateWithoutResend(t *testing.T) {
 	t.Parallel()
-	if !CanTransition(BroadcastIntent, Failed) || !CanTransition(Submitted, Failed) {
+	if !CanTransition(BroadcastIntent, Failed) {
 		t.Fatal("expired absent submission cannot reach its migration-backed terminal state")
 	}
 	if CanTransition(Confirmed, Failed) || CanTransition(Reconciling, Failed) {
@@ -23,7 +23,7 @@ func TestExpiredAbsentSubmissionCanTerminateWithoutResend(t *testing.T) {
 
 func TestNonterminalSetExcludesPersistedHolds(t *testing.T) {
 	t.Parallel()
-	for _, status := range []OperationStatus{Decided, Built, Simulated, Signed, BroadcastIntent, Submitted, Confirmed, Reconciling} {
+	for _, status := range []OperationStatus{Decided, Built, Simulated, Signed, BroadcastIntent, Confirmed, Reconciling} {
 		if !IsNonterminal(status) {
 			t.Fatalf("expected %s to be nonterminal", status)
 		}

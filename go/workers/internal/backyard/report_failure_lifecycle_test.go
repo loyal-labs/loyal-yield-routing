@@ -61,12 +61,12 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	 ADD COLUMN IF NOT EXISTS reconciliation_sha256 text,ADD COLUMN IF NOT EXISTS reconciled_effects jsonb,
 	 ADD COLUMN IF NOT EXISTS signed_wire_sha256 text,ADD COLUMN IF NOT EXISTS message_sha256 text;
 	CREATE UNIQUE INDEX IF NOT EXISTS multiply_operations_one_nonterminal_per_route
-	 ON loyal_yield.multiply_operations(route_key) WHERE status IN ('decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling');`)
+	 ON loyal_yield.multiply_operations(route_key) WHERE status IN ('decided','built','simulated','signed','broadcast_intent','confirmed','reconciling');`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	newSubmittedOperation := func(t *testing.T, suffix string) (string, string) {
+	newBroadcastOperation := func(t *testing.T, suffix string) (string, string) {
 		t.Helper()
 		routeKey := fmt.Sprintf("failure-lifecycle-%d-%s", time.Now().UnixNano(), suffix)
 		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_route_states(route_key,state) VALUES($1,'{"generation":1}')`, routeKey); err != nil {
@@ -74,19 +74,17 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		}
 		id := routeKey + "-op"
 		if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,expected_effects,transaction_signature,broadcast_intent_at)
-			VALUES($1,$2,'submitted','{}',$3,clock_timestamp())`, id, routeKey, testSignature); err != nil {
+			VALUES($1,$2,'broadcast_intent','{}',$3,clock_timestamp())`, id, routeKey, testSignature); err != nil {
 			t.Fatal(err)
 		}
 		return routeKey, id
 	}
-	// A wire whose signature is testSignature, as an older binary left a
-	// submitted row.
 	signature := solana.Signature{5}
-	submittedWire := append(append([]byte{1}, signature[:]...), 7)
-	submittedOperation := func(id, routeKey string) PersistedOperation {
+	broadcastWire := append([]byte{0x81, 1, 0, 0, 7}, signature[:]...)
+	broadcastOperation := func(id, routeKey string) PersistedOperation {
 		return PersistedOperation{
-			Operation: Operation{ID: id, RouteKey: routeKey, Decision: Decision{Action: ReportNAV}}, Status: Submitted,
-			SignedWire: submittedWire, SignedWireSHA256: sha256Bytes(submittedWire), TransactionSignature: testSignature,
+			Operation: Operation{ID: id, RouteKey: routeKey, Decision: Decision{Action: ReportNAV}}, Status: BroadcastIntent,
+			SignedWire: broadcastWire, SignedWireSHA256: sha256Bytes(broadcastWire), TransactionSignature: testSignature,
 			RecentBlockhash: bridgeVault, LastValidBlockHeight: 10,
 		}
 	}
@@ -123,39 +121,39 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	finalizedFailure := `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"finalized"}`
 
 	t.Run("a processed-only failure keeps observing without a resend", func(t *testing.T) {
-		routeKey, id := newSubmittedOperation(t, "processed")
-		op := submittedOperation(id, routeKey)
+		routeKey, id := newBroadcastOperation(t, "processed")
+		op := broadcastOperation(id, routeKey)
 		waiting, stop := context.WithTimeout(ctx, 200*time.Millisecond)
 		defer stop()
 		status, reason, receiptReads, _ := advance(t, waiting, op,
 			`{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"processed"}`,
 			`{"slot":45,"meta":{"err":null,"logMessages":[]}}`)
-		if status != "submitted" || reason != "" || receiptReads != 0 {
+		if status != "broadcast_intent" || reason != "" || receiptReads != 0 {
 			t.Fatalf("a forked-away failure transitioned the journal: status=%s reason=%q receiptReads=%d", status, reason, receiptReads)
 		}
 	})
 
 	t.Run("an unreadable or contradictory receipt keeps the submission state", func(t *testing.T) {
-		routeKey, id := newSubmittedOperation(t, "unreadable")
-		op := submittedOperation(id, routeKey)
+		routeKey, id := newBroadcastOperation(t, "unreadable")
+		op := broadcastOperation(id, routeKey)
 		for _, receipt := range []string{transactionResult(t, 45, nil, map[string]any{"err": nil, "logMessages": []string{}}), "RPC_ERROR"} {
 			status, reason, _, err := advance(t, ctx, op, finalizedFailure, receipt)
-			if status != "submitted" || reason != "" || !errors.Is(err, errConfirmedObservationUnavailable) {
+			if status != "broadcast_intent" || reason != "" || !errors.Is(err, errConfirmedObservationUnavailable) {
 				t.Fatalf("receipt %s left the submission state or stopped the worker: %s %q %v", receipt, status, reason, err)
 			}
 		}
 	})
 
 	t.Run("a receipt that does not prove the rollback stays a capital stop", func(t *testing.T) {
-		routeKey, id := newSubmittedOperation(t, "unattributable")
-		op := submittedOperation(id, routeKey)
+		routeKey, id := newBroadcastOperation(t, "unattributable")
+		op := broadcastOperation(id, routeKey)
 		status, reason, _, err := advance(t, ctx, op, finalizedFailure,
 			transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 9}}}, "logMessages": []string{}}))
 		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason || err != nil {
 			t.Fatalf("truncated failure logs lost the capital stop: %s %q %v", status, reason, err)
 		}
-		otherRoute, otherID := newSubmittedOperation(t, "voltr")
-		other := submittedOperation(otherID, otherRoute)
+		otherRoute, otherID := newBroadcastOperation(t, "voltr")
+		other := broadcastOperation(otherID, otherRoute)
 		otherReceipt := transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 6004}}},
 			"logMessages": adaptorFailureLogs(voltr.ProgramID.String(), 6004)})
 		status, reason, _, err = advance(t, ctx, other, finalizedFailure, otherReceipt)
@@ -165,8 +163,8 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 	})
 
 	t.Run("a settled success is never classified", func(t *testing.T) {
-		routeKey, id := newSubmittedOperation(t, "success")
-		op := submittedOperation(id, routeKey)
+		routeKey, id := newBroadcastOperation(t, "success")
+		op := broadcastOperation(id, routeKey)
 		status, reason, receiptReads, err := advance(t, ctx, op, `{"slot":45,"err":null,"confirmationStatus":"confirmed"}`, "RPC_ERROR")
 		if status != "confirmed" || reason != "" || receiptReads != 0 || err != nil {
 			t.Fatalf("a successful receipt was classified as a failure: status=%s reason=%q receiptReads=%d", status, reason, receiptReads)

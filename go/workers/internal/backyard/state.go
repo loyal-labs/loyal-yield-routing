@@ -35,7 +35,6 @@ const (
 	Simulated       OperationStatus = "simulated"
 	Signed          OperationStatus = "signed"
 	BroadcastIntent OperationStatus = "broadcast_intent"
-	Submitted       OperationStatus = "submitted"
 	Confirmed       OperationStatus = "confirmed"
 	Reconciled      OperationStatus = "reconciled"
 	Failed          OperationStatus = "failed"

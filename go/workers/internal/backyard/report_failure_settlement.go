@@ -132,25 +132,19 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 // finalized receipt: when the receipt proves the persisted wire moved nothing
 // but its fee, the row ends `failed` with that proof and the next tick
 // re-observes. It reports false, changing nothing, when the receipt does not
-// prove it. The automatic walk settles a row in its broadcast states; the
-// operator's settle-manual-restore settles a manual row this package latched
-// for a landed failure before the proof alone decided. delegate is the
-// wire's signer: the pinned bridgeDelegate in production.
+// prove it. delegate is the wire's signer: the pinned bridgeDelegate in
+// production.
 func (d *Database) settleFinalizedFailure(ctx context.Context, operation PersistedOperation, receipt finalizedFailureReceipt, reason string, delegate publicKey) (bool, error) {
-	if d == nil || d.pool == nil || operation.ID == "" || reason == "" ||
-		operation.Status != Submitted && operation.Status != BroadcastIntent && operation.Status != ManualRecovery {
+	if d == nil || d.pool == nil || operation.ID == "" || reason == "" || operation.Status != BroadcastIntent {
 		return false, fmt.Errorf("invalid finalized failure settlement")
 	}
 	var wire []byte
-	var signature, wireHash, messageHash, status, recoveryReason string
-	if err := d.pool.QueryRow(ctx, `SELECT signed_wire,COALESCE(transaction_signature,''),COALESCE(signed_wire_sha256,''),COALESCE(message_sha256,''),status,COALESCE(recovery_reason,'') FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.ID).Scan(&wire, &signature, &wireHash, &messageHash, &status, &recoveryReason); err != nil {
+	var signature, wireHash, messageHash, status string
+	if err := d.pool.QueryRow(ctx, `SELECT signed_wire,COALESCE(transaction_signature,''),COALESCE(signed_wire_sha256,''),COALESCE(message_sha256,''),status FROM loyal_yield.multiply_operations WHERE operation_id=$1`, operation.ID).Scan(&wire, &signature, &wireHash, &messageHash, &status); err != nil {
 		return false, err
 	}
 	if status != string(operation.Status) || signature != operation.TransactionSignature {
 		return false, budgetHold("failed_settlement_journal_changed")
-	}
-	if status == string(ManualRecovery) && recoveryReason != unclassifiedTransactionErrReason {
-		return false, budgetHold("failed_settlement_requires_landed_failure")
 	}
 	if validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, delegate) != nil {
 		return false, nil

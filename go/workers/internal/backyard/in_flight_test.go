@@ -62,7 +62,7 @@ func TestCountNonterminalAgainstDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(0)
-	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES('in-flight-open',$1,'submitted','OPEN_ROUTE_STEP','{}')`, routeKey); err != nil {
+	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,expected_effects) VALUES('in-flight-open',$1,'broadcast_intent','OPEN_ROUTE_STEP','{}')`, routeKey); err != nil {
 		t.Fatal(err)
 	}
 	expect(1)

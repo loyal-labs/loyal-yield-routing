@@ -58,9 +58,7 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 	switch operation.Status {
 	case Decided, Built, Simulated:
 		return database.MarkPreBroadcastFailed(ctx, operation.ID, operation.Status, "prebroadcast_restart_reobserve_required")
-	case Signed, BroadcastIntent, Submitted:
-		// Submitted is no longer written; rows an older binary left in it
-		// resume exactly like broadcast_intent.
+	case Signed, BroadcastIntent:
 		return database.land(ctx, rpc, operation)
 	case Confirmed, Reconciling:
 		return database.reconcile(ctx, manifest, rpc, operation)
