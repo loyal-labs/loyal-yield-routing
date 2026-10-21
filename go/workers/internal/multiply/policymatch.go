@@ -205,11 +205,11 @@ func uniqueKeys(keys []solana.PublicKey) []solana.PublicKey {
 
 func CurrentPolicyMatches(account *chain.Account, policy PolicyConfig, delegate solana.PublicKey, expected []squads.InstructionConstraintView, expectedVaultIndex uint8) (bool, error) {
 	current, err := squads.DecodeCanonicalPolicy(account)
+	if errors.Is(err, squads.ErrNotCanonical) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
-	}
-	if current == nil {
-		return false, nil
 	}
 	return current.PolicySeed == policy.Seed &&
 		current.PolicyAccount == policy.Account &&

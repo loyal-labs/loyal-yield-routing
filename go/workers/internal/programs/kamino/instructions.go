@@ -128,10 +128,9 @@ func RepayV2Allowed(a LiquidityAllowed, fixed func(solana.PublicKey) squads.Slot
 }
 
 func OwnedObligation(owner solana.PublicKey) squads.Slot {
-	program := ProgramID
-	return squads.Slot{Owner: &program, Data: []squads.DataConstraintView{{
+	return squads.Match(ProgramID, squads.DataConstraintView{
 		DataOffset: obligationOwnerOffset, DataValue: squads.DataValueView{Kind: squads.ValueBytes, Bytes: owner.Bytes()}, Operator: squads.OpEquals,
-	}}}
+	})
 }
 
 // OwnCollateralAllowed is a deposit or withdrawal by owner on any obligation
