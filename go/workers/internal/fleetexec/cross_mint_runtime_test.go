@@ -47,7 +47,7 @@ func TestCrossMintReceiptRequiresActualPrePostOwnerAndCanonicalProgram(t *testin
 				case "unknown_post":
 					delete(receipt.Post, account)
 				}
-				pre := CrossMintBalanceAnchors{Debit: &CrossMintTokenAmount{Mint: mint, TokenAccount: f.SecondaryAccount, AmountRaw: 1000}}
+				pre := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: mint, TokenAccount: f.SecondaryAccount, AmountRaw: 1000}}
 				effect, post, err := crossMintReceiptEffects(receipt, CrossMintMovement{VaultPubkey: f.FeePayer}, pre)
 				if (err == nil) != (change == "valid") {
 					t.Fatalf("change=%s error=%v", change, err)
@@ -81,7 +81,7 @@ func TestCrossMintPostBankUsesOneSlotAndSourceMinimumDepositDecoder(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	pre := CrossMintBalanceAnchors{Credit: &CrossMintTokenAmount{Mint: c.mint, TokenAccount: ata, AmountRaw: 50}, Position: &CrossMintPositionAnchor{Reserve: c.source, Market: market, Obligation: obligation, ObligationExists: true, CollateralRaw: 1001}}
+	pre := fleet.CrossMintAnchors{Credit: &fleet.CrossMintTokenAmount{Mint: c.mint, TokenAccount: ata, AmountRaw: 50}, Position: &fleet.CrossMintPositionAnchor{Reserve: c.source, Market: market, Obligation: obligation, ObligationExists: true, CollateralRaw: 1001}}
 	m := CrossMintMovement{VaultPubkey: c.vault, Phase: CrossMintSourceReserve, SourceMint: c.mint, CustodyMint: c.mint}
 	history := addressHistory{pages: map[string][]chain.Signed{ata: {signed("receipt", 1000)}, obligation: {signed("receipt", 1000)}}}
 	post, slot, err := observeCrossMintBank(context.Background(), reader, history, m, pre, 1000, 1000, recognizedSignatures("receipt"), anchorEveryToken)
@@ -151,7 +151,7 @@ func TestCrossMintPostBankRecordsClosedSourceObligation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pre := CrossMintBalanceAnchors{Credit: &CrossMintTokenAmount{Mint: c.mint, TokenAccount: ata, AmountRaw: 50}, Position: &CrossMintPositionAnchor{Reserve: c.source, Market: market, Obligation: obligation, ObligationExists: true, CollateralRaw: 1001}}
+	pre := fleet.CrossMintAnchors{Credit: &fleet.CrossMintTokenAmount{Mint: c.mint, TokenAccount: ata, AmountRaw: 50}, Position: &fleet.CrossMintPositionAnchor{Reserve: c.source, Market: market, Obligation: obligation, ObligationExists: true, CollateralRaw: 1001}}
 	m := CrossMintMovement{VaultPubkey: c.vault, Phase: CrossMintSourceReserve, SourceMint: c.mint, CustodyMint: c.mint}
 	history := addressHistory{pages: map[string][]chain.Signed{ata: {signed("receipt", 1000)}, obligation: {signed("receipt", 1000)}}}
 	for _, missing := range []string{obligation, c.source, ata} {

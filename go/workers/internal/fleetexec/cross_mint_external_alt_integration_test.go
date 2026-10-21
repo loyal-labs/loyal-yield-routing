@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -34,7 +35,7 @@ func TestCrossMintExternalAppendPreservesManagedLeasesAndSchemaHold(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			p := CrossMintPreparedLeg{Preparation: a.Preparation, LastValidBlockHeight: a.LastValidBlockHeight, PolicyAccount: bindings.Withdraw.PolicyAccount, ExpectedEffect: CrossMintExpectedEffect{CreditMint: crossString(m.SourceMint), CreditTokenAccount: crossString("source-ata"), MinimumCreditAmountRaw: crossInt(m.PlannedAmountRaw - 10)}, BalanceAnchors: CrossMintBalanceAnchors{Credit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: "source-ata", AmountRaw: 50}, Position: &CrossMintPositionAnchor{Reserve: m.SourceReserve, Market: "market", Obligation: "obligation", ObligationExists: true, CollateralRaw: 1001}}, ConflictKeys: a.ConflictKeys, SelectedALTs: a.SelectedALTs}
+			p := CrossMintPreparedLeg{Preparation: a.Preparation, LastValidBlockHeight: a.LastValidBlockHeight, PolicyAccount: bindings.Withdraw.PolicyAccount, ExpectedEffect: CrossMintExpectedEffect{CreditMint: crossString(m.SourceMint), CreditTokenAccount: crossString("source-ata"), MinimumCreditAmountRaw: crossInt(m.PlannedAmountRaw - 10)}, BalanceAnchors: fleet.CrossMintAnchors{Credit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: "source-ata", AmountRaw: 50}, Position: &fleet.CrossMintPositionAnchor{Reserve: m.SourceReserve, Market: "market", Obligation: "obligation", ObligationExists: true, CollateralRaw: 1001}}, ConflictKeys: a.ConflictKeys, SelectedALTs: a.SelectedALTs}
 			tx, err := sdk.TransactionFromBytes(p.Preparation.Transaction.UnsignedWire)
 			if err != nil {
 				t.Fatal(err)

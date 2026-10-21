@@ -163,7 +163,7 @@ func TestCrossMintActivationAndSignedPublicationRetainExistingFences(t *testing.
 		t.Fatal(err)
 	}
 	e := CrossMintExpectedEffect{CreditMint: crossString(m.SourceMint), CreditTokenAccount: crossString("source-ata"), MinimumCreditAmountRaw: crossInt(m.PlannedAmountRaw - 10)}
-	anchors := CrossMintBalanceAnchors{Credit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: "source-ata", AmountRaw: 50}, Position: &CrossMintPositionAnchor{Reserve: m.SourceReserve, Market: "market", Obligation: "source-obligation", ObligationExists: true, CollateralRaw: 1001}}
+	anchors := fleet.CrossMintAnchors{Credit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: "source-ata", AmountRaw: 50}, Position: &fleet.CrossMintPositionAnchor{Reserve: m.SourceReserve, Market: "market", Obligation: "source-obligation", ObligationExists: true, CollateralRaw: 1001}}
 	p := CrossMintPreparedLeg{Preparation: a.Preparation, LastValidBlockHeight: a.LastValidBlockHeight, PolicyAccount: b.Withdraw.PolicyAccount, ExpectedEffect: e, BalanceAnchors: anchors, ConflictKeys: a.ConflictKeys, SelectedALTs: a.SelectedALTs, AltSelectionFingerprint: a.AltSelectionFingerprint}
 	wire, err := signer.SignPreparedRoute(p.Preparation.Transaction, p.LastValidBlockHeight)
 	if err != nil {
@@ -212,7 +212,7 @@ func TestCrossMintSignedAppendRejectsChangedAdmissionWithoutPartialPublication(t
 				t.Fatal(err)
 			}
 			r := CrossMintLegRequest{Movement: l.Movement, Leg: LegWithdraw, Purpose: PurposeOptimizeYield, Generation: 1, RemainingFeeLamports: 50000}
-			p := CrossMintPreparedLeg{Preparation: a.Preparation, LastValidBlockHeight: a.LastValidBlockHeight, PolicyAccount: b.Withdraw.PolicyAccount, ExpectedEffect: CrossMintExpectedEffect{CreditMint: crossString(m.SourceMint), CreditTokenAccount: crossString("source-ata"), MinimumCreditAmountRaw: crossInt(m.PlannedAmountRaw - 10)}, BalanceAnchors: CrossMintBalanceAnchors{Credit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: "source-ata", AmountRaw: 50}, Position: &CrossMintPositionAnchor{Reserve: m.SourceReserve, Market: "market", Obligation: "obligation", ObligationExists: true, CollateralRaw: 1001}}, ConflictKeys: a.ConflictKeys, SelectedALTs: a.SelectedALTs, AltSelectionFingerprint: a.AltSelectionFingerprint}
+			p := CrossMintPreparedLeg{Preparation: a.Preparation, LastValidBlockHeight: a.LastValidBlockHeight, PolicyAccount: b.Withdraw.PolicyAccount, ExpectedEffect: CrossMintExpectedEffect{CreditMint: crossString(m.SourceMint), CreditTokenAccount: crossString("source-ata"), MinimumCreditAmountRaw: crossInt(m.PlannedAmountRaw - 10)}, BalanceAnchors: fleet.CrossMintAnchors{Credit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: "source-ata", AmountRaw: 50}, Position: &fleet.CrossMintPositionAnchor{Reserve: m.SourceReserve, Market: "market", Obligation: "obligation", ObligationExists: true, CollateralRaw: 1001}}, ConflictKeys: a.ConflictKeys, SelectedALTs: a.SelectedALTs, AltSelectionFingerprint: a.AltSelectionFingerprint}
 			wire, err := signer.SignPreparedRoute(p.Preparation.Transaction, p.LastValidBlockHeight)
 			if err != nil {
 				t.Fatal(err)
@@ -252,7 +252,7 @@ func TestCrossMintSignedAppendRejectsChangedAdmissionWithoutPartialPublication(t
 	}
 }
 
-func seedCrossMintReceiptAttempt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, b seededBaseline, leg MovementLeg, purpose LegPurpose, e CrossMintExpectedEffect, pre CrossMintBalanceAnchors, slot int64) SubmissionLease {
+func seedCrossMintReceiptAttempt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, b seededBaseline, leg MovementLeg, purpose LegPurpose, e CrossMintExpectedEffect, pre fleet.CrossMintAnchors, slot int64) SubmissionLease {
 	t.Helper()
 	wire, _ := integrationWire(t, 123)
 	var bound PersistRouteInput
@@ -391,7 +391,7 @@ func TestCrossMintFinalizedReceiptAdvancesCustodyAtomicallyAndRejectsStaleOwner(
 	e, pre, actual, post := crossWithdrawContract()
 	l := seedCrossMintReceiptAttempt(t, ctx, pool, b, LegWithdraw, PurposeOptimizeYield, e, pre, 10)
 	bad := post
-	bad.Credit = &CrossMintTokenAmount{Mint: "source-mint", TokenAccount: "source-ata", AmountRaw: 1046}
+	bad.Credit = &fleet.CrossMintTokenAmount{Mint: "source-mint", TokenAccount: "source-ata", AmountRaw: 1046}
 	if _, err := store.ReconcileCrossMintLeg(ctx, l, CrossMintReconciliation{FinalizedSlot: 10, Effect: actual, BalanceAnchors: bad}); err == nil {
 		t.Fatal("incorrect balance receipt committed")
 	}
@@ -476,10 +476,10 @@ func advanceCrossMintFixtureToTargetIdle(t *testing.T, ctx context.Context, stor
 	if err != nil {
 		t.Fatal(err)
 	}
-	e = CrossMintExpectedEffect{Debit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: m.CustodyAmountRaw}, CreditMint: crossString(m.TargetMint), CreditTokenAccount: crossString("target-ata"), MinimumCreditAmountRaw: crossInt(990)}
-	pre = CrossMintBalanceAnchors{Debit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: *m.CustodyObservedBalanceRaw}, Credit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: "target-ata", AmountRaw: 7}}
-	actual = CrossMintEffect{Debit: e.Debit, Credit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: "target-ata", AmountRaw: 990}}
-	post = CrossMintBalanceAnchors{Debit: &CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: 50}, Credit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: "target-ata", AmountRaw: 997}}
+	e = CrossMintExpectedEffect{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: m.CustodyAmountRaw}, CreditMint: crossString(m.TargetMint), CreditTokenAccount: crossString("target-ata"), MinimumCreditAmountRaw: crossInt(990)}
+	pre = fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: *m.CustodyObservedBalanceRaw}, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: "target-ata", AmountRaw: 7}}
+	actual = CrossMintEffect{Debit: e.Debit, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: "target-ata", AmountRaw: 990}}
+	post = fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: 50}, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: "target-ata", AmountRaw: 997}}
 	l = seedCrossMintReceiptAttempt(t, ctx, pool, b, LegSwap, PurposeOptimizeYield, e, pre, 1010)
 	m, err = store.ReconcileCrossMintLeg(ctx, l, CrossMintReconciliation{FinalizedSlot: 1010, Effect: actual, BalanceAnchors: post})
 	if err != nil {
@@ -493,10 +493,10 @@ func TestCrossMintThreeFinalizedLegsKeepCapacityUntilNewerTargetTelemetry(t *tes
 	ctx := context.Background()
 	b := seedCrossMintMovement(t, ctx, pool)
 	m := advanceCrossMintFixtureToTargetIdle(t, ctx, store, pool, b)
-	e := CrossMintExpectedEffect{Debit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: m.CustodyAccount, AmountRaw: m.CustodyAmountRaw}}
-	pre := CrossMintBalanceAnchors{Debit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: m.CustodyAccount, AmountRaw: 997}, Position: &CrossMintPositionAnchor{Reserve: m.ActiveTargetReserve, Market: "market", Obligation: "target-obligation", ObligationExists: true, CollateralRaw: 10}}
+	e := CrossMintExpectedEffect{Debit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: m.CustodyAccount, AmountRaw: m.CustodyAmountRaw}}
+	pre := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: m.CustodyAccount, AmountRaw: 997}, Position: &fleet.CrossMintPositionAnchor{Reserve: m.ActiveTargetReserve, Market: "market", Obligation: "target-obligation", ObligationExists: true, CollateralRaw: 10}}
 	actual := CrossMintEffect{Debit: e.Debit}
-	post := CrossMintBalanceAnchors{Debit: &CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: m.CustodyAccount, AmountRaw: 7}, Position: &CrossMintPositionAnchor{Reserve: m.ActiveTargetReserve, Market: "market", Obligation: "target-obligation", ObligationExists: true, CollateralRaw: 1000}}
+	post := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: m.CustodyAccount, AmountRaw: 7}, Position: &fleet.CrossMintPositionAnchor{Reserve: m.ActiveTargetReserve, Market: "market", Obligation: "target-obligation", ObligationExists: true, CollateralRaw: 1000}}
 	l := seedCrossMintReceiptAttempt(t, ctx, pool, b, LegDeposit, PurposeOptimizeYield, e, pre, 1020)
 	m, err := store.ReconcileCrossMintLeg(ctx, l, CrossMintReconciliation{FinalizedSlot: 1020, Effect: actual, BalanceAnchors: post})
 	if err != nil {

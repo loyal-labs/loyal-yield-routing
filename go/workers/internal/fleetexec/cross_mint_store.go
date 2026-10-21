@@ -63,7 +63,7 @@ type crossMintQuerier interface {
 type CrossMintReconciliation struct {
 	FinalizedSlot  int64
 	Effect         CrossMintEffect
-	BalanceAnchors CrossMintBalanceAnchors
+	BalanceAnchors fleet.CrossMintAnchors
 }
 
 func (s *Store) ReconcileCrossMintLeg(ctx context.Context, l SubmissionLease, input CrossMintReconciliation) (CrossMintMovement, error) {
@@ -100,7 +100,7 @@ AND confirmation_lease_expires_at>clock_timestamp() FOR UPDATE`
 			return err
 		}
 		var expected CrossMintExpectedEffect
-		var pre CrossMintBalanceAnchors
+		var pre fleet.CrossMintAnchors
 		if err = json.Unmarshal(expectedJSON, &expected); err != nil {
 			return err
 		}
@@ -131,7 +131,7 @@ AND confirmation_lease_expires_at>clock_timestamp() FOR UPDATE`
 	})
 	return result, err
 }
-func crossMintDeltaSQL(d *CrossMintTokenAmount) (any, any, any) {
+func crossMintDeltaSQL(d *fleet.CrossMintTokenAmount) (any, any, any) {
 	if d == nil {
 		return nil, nil, nil
 	}

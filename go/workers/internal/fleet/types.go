@@ -37,8 +37,9 @@ type ReserveState struct {
 	TotalSupplyRaw         int64     `json:"totalSupplyUsdMicros"`
 	EconomicLifetimeMillis int64     `json:"economicLifetimeMillis"`
 	DataHash               string    `json:"dataHash"`
-	AvailableLiquidityRaw  *int64    `json:"availableLiquidityRaw"`
-	DepositLimitRaw        *uint64   `json:"depositLimitRaw"`
+	// KLend capacity: nil is unknown evidence, never zero and never unlimited; a deposit limit of 0 blocks deposits.
+	AvailableLiquidityRaw *int64  `json:"availableLiquidityRaw"`
+	DepositLimitRaw       *uint64 `json:"depositLimitRaw"`
 }
 
 // DepositRoomRaw is the supply the deposit limit still admits; known is false when the limit was not observed.
@@ -56,6 +57,7 @@ func (r ReserveState) DepositRoomRaw() (room int64, known bool) {
 	return int64(limit - supply), true
 }
 
+// SupplyUSDMicros holds because Earn reserves are six-decimal stablecoins valued at a code-owned $1.
 func (r ReserveState) SupplyUSDMicros() int64 { return r.TotalSupplyRaw }
 
 func (r ReserveState) TargetEligible() bool {

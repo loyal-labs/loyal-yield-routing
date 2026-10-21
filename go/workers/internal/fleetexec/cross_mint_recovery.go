@@ -48,8 +48,8 @@ type crossMintNoEffectProof struct {
 	observedAt                                                    time.Time
 }
 
-func parseCrossMintAnchors(raw []byte) (CrossMintBalanceAnchors, error) {
-	var a CrossMintBalanceAnchors
+func parseCrossMintAnchors(raw []byte) (fleet.CrossMintAnchors, error) {
+	var a fleet.CrossMintAnchors
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return a, err
 	}
@@ -57,7 +57,7 @@ func parseCrossMintAnchors(raw []byte) (CrossMintBalanceAnchors, error) {
 		return a, errors.New("cross-mint no-effect proof has no token custody anchors")
 	}
 	seen := map[string]bool{}
-	for _, anchor := range []*CrossMintTokenAmount{a.Debit, a.Credit} {
+	for _, anchor := range []*fleet.CrossMintTokenAmount{a.Debit, a.Credit} {
 		if anchor == nil {
 			continue
 		}
@@ -186,9 +186,9 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 	if err != nil {
 		return nil, err
 	}
-	tokenAnchors := []*CrossMintTokenAmount{}
+	tokenAnchors := []*fleet.CrossMintTokenAmount{}
 	addresses := []string{}
-	for _, a := range []*CrossMintTokenAmount{anchors.Debit, anchors.Credit} {
+	for _, a := range []*fleet.CrossMintTokenAmount{anchors.Debit, anchors.Credit} {
 		if a != nil {
 			tokenAnchors = append(tokenAnchors, a)
 			addresses = append(addresses, a.TokenAccount)
