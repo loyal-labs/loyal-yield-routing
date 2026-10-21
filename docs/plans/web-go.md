@@ -35,7 +35,10 @@ open and test. No DNS flip, no move off Vercel in this phase.
   the `/api` routes Go owns (`internal/webapp`, huma on chi), and forwards
   every other `/api/*` to the Next deployment (`LOYAL_WEB_UPSTREAM`, default
   `https://app.askloyal.com`).
-- `bun run web:build` builds it all into `bin/loyal-web`.
+- `bun run web:build` builds it all into `bin/loyal-web`, including the normalized
+  frontend app environment. Go serves `/500` with HTTP 500 and the disabled
+  `/dev/txv1` page with HTTP 404 in production; both retain the SPA shell and
+  use `Cache-Control: no-store`. Development/local builds keep the probe at 200.
 
 ## Facts the seed established
 
