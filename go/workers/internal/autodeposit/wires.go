@@ -242,8 +242,8 @@ func depositRoom(reserve kamino.Reserve) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	supplied := new(big.Int).Add(total, big.NewInt(1<<60-1))
-	supplied.Rsh(supplied, 60)
+	supplied := new(big.Int).Add(total, big.NewInt(1<<kamino.FractionBits-1))
+	supplied.Rsh(supplied, kamino.FractionBits)
 	if !supplied.IsUint64() || supplied.Uint64() >= reserve.DepositLimit {
 		return 0, nil
 	}

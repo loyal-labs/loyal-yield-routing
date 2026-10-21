@@ -59,7 +59,7 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 	if request.TargetID != o.Target.TargetID || o.ObservedSlot <= 0 || o.ObservedSlot < request.RequestedSlot || o.WalletBalanceRaw < 0 {
 		return errors.New("control observation identity, balance or requested slot invalid")
 	}
-	if o.status() == "active" && !sha256HexPattern.MatchString(o.WalletAccountDataSHA256) {
+	if o.status() == "active" && !o.hasCoherentWalletSnapshot() {
 		return errors.New("active control observation lacks decoded wallet account evidence")
 	}
 	return WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -82,9 +82,8 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 		}
 		if o.ObservedSlot >= currentSlot && status != "closed" {
 			status = o.status()
-			// App floor rebasing depends on this projection. A coherent decoded
-			// snapshot may advance it; absent accounts never become zero balances.
-			if sha256HexPattern.MatchString(o.WalletAccountDataSHA256) {
+			// App floor rebasing reads this projection; absent accounts never become zero balances.
+			if o.hasCoherentWalletSnapshot() {
 				var walletSlot, walletAmount int64
 				var walletHash *string
 				var walletCommitment string

@@ -13,13 +13,13 @@ func TestAllowanceReadTreatsZeroExpiryAsOpen(t *testing.T) {
 	controller := &Controller{chain: &scriptedControllerChain{}}
 	period, start := int64(2592000), int64(1784019890)
 	window := func(expiry int64) *TargetExecutionContext {
-		return &TargetExecutionContext{Wallet: "wallet", WalletUsdcAta: "wallet-ata", VaultPubkey: "vault", TokenMint: USDCMint, RecurringDelegation: "delegation",
+		return &TargetExecutionContext{Wallet: "wallet", WalletUsdcAta: "wallet-ata", VaultPubkey: "vault", TokenMint: USDCMint,
 			PeriodLengthSeconds: &period, StartTimestamp: &start, RecurringDelegationNonce: 1784019837377, ExpiryTimestamp: &expiry}
 	}
-	if allowance, err := controller.readRemainingAllowance(t.Context(), window(0)); err != nil || allowance == nil {
+	if allowance, err := controller.readRemainingAllowance(t.Context(), window(0), "delegation"); err != nil || allowance == nil {
 		t.Fatal("expiry 0 deferred", allowance, err)
 	}
-	if _, err := controller.readRemainingAllowance(t.Context(), window(time.Now().Add(-time.Hour).Unix())); !errors.Is(err, ErrAllowanceUnknown) {
+	if _, err := controller.readRemainingAllowance(t.Context(), window(time.Now().Add(-time.Hour).Unix()), "delegation"); !errors.Is(err, ErrAllowanceUnknown) {
 		t.Fatal("expired delegation read", err)
 	}
 }

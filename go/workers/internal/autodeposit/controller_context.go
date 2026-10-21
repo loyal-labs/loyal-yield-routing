@@ -7,35 +7,28 @@ import (
 )
 
 type TargetExecutionContext struct {
-	FreshActionable    bool
-	SetupPolicyAccount string
-	SweepPolicyAccount string
-	TargetID           int64
-	Settings           string
-	VaultIndex         int64
-	Wallet             string
-	WalletUsdcAta      string
-	VaultPubkey        string
-	VaultUsdcAta       string
-	TokenMint          string
-	// RecurringDelegation is the delegated pull authority account. Empty means
-	// the target has no recurring delegation: a pull can never be authorized,
-	// which is a quarantine condition, not a zero allowance.
-	RecurringDelegation      string
+	FreshActionable          bool
+	SetupPolicyAccount       string
+	SweepPolicyAccount       string
+	TargetID                 int64
+	Settings                 string
+	VaultIndex               int64
+	Wallet                   string
+	WalletUsdcAta            string
+	VaultPubkey              string
+	VaultUsdcAta             string
+	TokenMint                string
+	RecurringDelegation      *string
 	RecurringDelegationNonce uint64
 	WalletBalanceFloorRaw    int64
 	MaxAmountPerPeriodRaw    *int64
 	PeriodLengthSeconds      *int64
 	StartTimestamp           *int64
 	ExpiryTimestamp          *int64
-	// RoutePolicy identifies the active same_mint_kamino policy the fresh
-	// loader already demanded. A nil RoutePolicy on a recovery row means the
-	// policy changed under a claim holding custody: recovery still runs, but
-	// the frozen plan, not the live policy, decides the destination.
-	RoutePolicy          *RoutePolicyContext
-	CurrentReserve       *string
-	CurrentMarket        *string
-	CurrentLiquidityMint *string
+	RoutePolicy              *RoutePolicyContext
+	CurrentReserve           *string
+	CurrentMarket            *string
+	CurrentLiquidityMint     *string
 }
 
 type RoutePolicyContext struct {
@@ -61,7 +54,7 @@ SELECT
     target.vault_pubkey,
     target.vault_token_ata,
     target.token_mint,
-    COALESCE(target.recurring_delegation, ''),
+    NULLIF(target.recurring_delegation, ''),
     target.wallet_balance_floor_raw,
     target.max_amount_per_period,
     target.period_length_seconds,
