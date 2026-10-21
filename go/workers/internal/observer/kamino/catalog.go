@@ -174,14 +174,14 @@ var policySupportedMarkets = []supportedMarket{
 }
 
 var policySupportedMints = map[string]string{
-	"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
-	"Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
-	"2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": "PYUSD",
-	"USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA":  "USDS",
-	"2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH": "USDG",
+	fleet.USDCMint:  "USDC",
+	fleet.USDTMint:  "USDT",
+	fleet.PYUSDMint: "PYUSD",
+	fleet.USDSMint:  "USDS",
+	fleet.USDGMint:  "USDG",
 	"DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT": "USDE",
 	"Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN": "SUSDE",
-	"CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH": "CASH",
+	fleet.CashMint: "CASH",
 	"AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj": "SYRUPUSDC",
 	"USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB":  "USD1",
 	"9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u": "FDUSD",

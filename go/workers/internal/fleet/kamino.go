@@ -83,7 +83,7 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 	}
 	depositLimit := reserve.DepositLimit
 	return ReserveState{
-		AvailableLiquidityRaw: availableRaw, DepositLimitRaw: &depositLimit,
+		AvailableLiquidityUSDMicros: availableRaw, DepositLimitRaw: &depositLimit,
 		ReserveIdentity: identity, Slot: slot, LastUpdateSlot: lastUpdateSlot,
 		LastUpdateStale:        reserve.LastUpdateStale,
 		EconomicSlotLag:        lag,

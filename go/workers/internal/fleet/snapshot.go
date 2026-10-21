@@ -351,23 +351,23 @@ type snapshotRecord struct {
 }
 
 type recordedReserve struct {
-	Reserve               string    `json:"reserve"`
-	Market                string    `json:"market"`
-	LiquidityMint         string    `json:"liquidityMint"`
-	Slot                  int64     `json:"slot"`
-	ObservedAt            time.Time `json:"observedAt"`
-	LastUpdateSlot        int64     `json:"lastUpdateSlot"`
-	LastUpdateStale       bool      `json:"lastUpdateStale"`
-	SupplyAPYBPS          int64     `json:"supplyApyBps"`
-	TotalSupplyRaw        int64     `json:"totalSupplyUsdMicros"`
-	AvailableLiquidityRaw *int64    `json:"availableLiquidityRaw"`
-	DepositLimitRaw       *uint64   `json:"depositLimitRaw"`
+	Reserve                     string    `json:"reserve"`
+	Market                      string    `json:"market"`
+	LiquidityMint               string    `json:"liquidityMint"`
+	Slot                        int64     `json:"slot"`
+	ObservedAt                  time.Time `json:"observedAt"`
+	LastUpdateSlot              int64     `json:"lastUpdateSlot"`
+	LastUpdateStale             bool      `json:"lastUpdateStale"`
+	SupplyAPYBPS                int64     `json:"supplyApyBps"`
+	TotalSupplyRaw              int64     `json:"totalSupplyUsdMicros"`
+	AvailableLiquidityUSDMicros *int64    `json:"availableLiquidityRaw"`
+	DepositLimitRaw             *uint64   `json:"depositLimitRaw"`
 }
 
 func recordOf(snapshot Snapshot) (snapshotRecord, error) {
 	reserves := make([]recordedReserve, 0, len(snapshot.Reserves))
 	for _, r := range snapshot.Reserves {
-		reserves = append(reserves, recordedReserve{r.Address, r.Market, r.Mint, r.Slot, r.ObservedAt, r.LastUpdateSlot, r.LastUpdateStale, r.SupplyAPYBPS, r.TotalSupplyRaw, r.AvailableLiquidityRaw, r.DepositLimitRaw})
+		reserves = append(reserves, recordedReserve{r.Address, r.Market, r.Mint, r.Slot, r.ObservedAt, r.LastUpdateSlot, r.LastUpdateStale, r.SupplyAPYBPS, r.TotalSupplyRaw, r.AvailableLiquidityUSDMicros, r.DepositLimitRaw})
 	}
 	sort.Slice(reserves, func(i, j int) bool { return reserves[i].Reserve < reserves[j].Reserve })
 	state, err := json.Marshal(struct {
