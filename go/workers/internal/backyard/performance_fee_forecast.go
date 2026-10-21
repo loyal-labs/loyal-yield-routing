@@ -32,13 +32,6 @@ func selectorFeeReportBound(horizon time.Duration) int64 {
 	return int64((horizon-1)/routineNAVReportInterval+1) + selectorEntryReportBound + initialAndTerminalReportSlots
 }
 
-// selectorFeeReservedGain is a conditional lower estimate under the existing
-// fixed-rate, unchanged-holder/no-external-cashflow route forecast. Candidate
-// fee-positive income is at most the modeled NAV rise to its peak plus unreported
-// current NAV and sub-Q48 book dust. Each crystallization adds <=1 asset raw
-// from fee rounding and <=1 LP valued at maxNAV/current effective supply.
-// Existing/extra treasury LP can grow by at most maxNAV/minNAV. Reserve all
-// that value, then compare to KEEP's upper return; never haircut a nominal edge.
 func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics, idle float64) (float64, bool) {
 	if !finite(e.Gain) || s.TotalVaultNAVRaw <= 0 {
 		return 0, false
@@ -64,23 +57,10 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 	if !finite(maxNAV) || !finite(minNAV) || !finite(income) || maxNAV > 1<<53 || minNAV <= 0 || income > 1<<53 {
 		return 0, false
 	}
-	scale := new(big.Int).Lsh(big.NewInt(1), voltrHighWaterMarkFractionBits)
-	dust := new(big.Int).Lsh(big.NewInt(s.VoltrTotalValueRaw), voltrHighWaterMarkFractionBits)
-	dust.Sub(dust, new(big.Int).Mul(littleInt(s.VoltrHighWaterMarkBits[:]), big.NewInt(s.LPSupplyInclFeesRaw)))
-	dustRaw := new(big.Int)
-	if dust.Sign() > 0 {
-		dustRaw.Add(dust, new(big.Int).Sub(scale, big.NewInt(1))).Quo(dustRaw, scale)
-	}
-	eligible := new(big.Int).Add(big.NewInt(int64(income)), dustRaw)
-	eligible.Add(eligible, big.NewInt(max(s.TotalVaultNAVRaw-s.VoltrTotalValueRaw, 0)))
-	fee := new(big.Rat).SetFrac(new(big.Int).Mul(eligible, big.NewInt(s.ApprovedAdminPerformanceFeeBPS)), big.NewInt(10_000))
-	unit := new(big.Rat).SetFrac(big.NewInt(int64(maxNAV)), big.NewInt(s.LPSupplyInclFeesRaw))
-	dustPerReport := new(big.Rat).SetFrac(
-		new(big.Int).Mul(new(big.Int).Lsh(big.NewInt(s.LPSupplyInclFeesRaw), 1), big.NewInt(int64(maxNAV))),
-		new(big.Int).Mul(big.NewInt(int64(minNAV)), scale))
-	dustPerReport.Mul(dustPerReport, big.NewRat(s.ApprovedAdminPerformanceFeeBPS, 10_000))
-	unit.Add(unit, big.NewRat(1, 1)).Add(unit, dustPerReport).Mul(unit, big.NewRat(selectorFeeReportBound(horizon), 1))
-	fee.Add(fee, unit).Mul(fee, new(big.Rat).SetFrac(big.NewInt(int64(maxNAV)), big.NewInt(int64(minNAV))))
+	fee := new(big.Rat).SetFrac(new(big.Int).Mul(feeEligibleNAVRise(s, int64(income)), big.NewInt(s.ApprovedAdminPerformanceFeeBPS)), big.NewInt(10_000))
+	rounding := crystallizationRoundingPerReport(s, int64(maxNAV), int64(minNAV))
+	rounding.Mul(rounding, big.NewRat(selectorFeeReportBound(horizon), 1))
+	fee.Add(fee, rounding).Mul(fee, treasuryLPGrowthBound(int64(maxNAV), int64(minNAV)))
 	reserve := new(big.Int).Add(fee.Num(), new(big.Int).Sub(fee.Denom(), big.NewInt(1)))
 	reserve.Quo(reserve, fee.Denom())
 	if !reserve.IsInt64() || reserve.Int64() > 1<<53 || !reserveLeavesHoldersHalfMinNAV(reserve, int64(minNAV)) {
@@ -91,4 +71,35 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 
 func reserveLeavesHoldersHalfMinNAV(reserve *big.Int, minNAV int64) bool {
 	return new(big.Int).Lsh(new(big.Int).Set(reserve), 1).Cmp(big.NewInt(minNAV)) < 0
+}
+
+func feeEligibleNAVRise(s Snapshot, modeledIncome int64) *big.Int {
+	eligible := new(big.Int).Add(big.NewInt(modeledIncome), highWaterMarkBookDustRaw(s))
+	return eligible.Add(eligible, big.NewInt(max(s.TotalVaultNAVRaw-s.VoltrTotalValueRaw, 0)))
+}
+
+func highWaterMarkBookDustRaw(s Snapshot) *big.Int {
+	scale := new(big.Int).Lsh(big.NewInt(1), voltrHighWaterMarkFractionBits)
+	dust := new(big.Int).Lsh(big.NewInt(s.VoltrTotalValueRaw), voltrHighWaterMarkFractionBits)
+	dust.Sub(dust, new(big.Int).Mul(littleInt(s.VoltrHighWaterMarkBits[:]), big.NewInt(s.LPSupplyInclFeesRaw)))
+	dustRaw := new(big.Int)
+	if dust.Sign() > 0 {
+		dustRaw.Add(dust, new(big.Int).Sub(scale, big.NewInt(1))).Quo(dustRaw, scale)
+	}
+	return dustRaw
+}
+
+func crystallizationRoundingPerReport(s Snapshot, maxNAV, minNAV int64) *big.Rat {
+	scale := new(big.Int).Lsh(big.NewInt(1), voltrHighWaterMarkFractionBits)
+	oneLP := new(big.Rat).SetFrac(big.NewInt(maxNAV), big.NewInt(s.LPSupplyInclFeesRaw))
+	feeOnBookDust := new(big.Rat).SetFrac(
+		new(big.Int).Mul(new(big.Int).Lsh(big.NewInt(s.LPSupplyInclFeesRaw), 1), big.NewInt(maxNAV)),
+		new(big.Int).Mul(big.NewInt(minNAV), scale))
+	feeOnBookDust.Mul(feeOnBookDust, big.NewRat(s.ApprovedAdminPerformanceFeeBPS, 10_000))
+	oneAssetRaw := big.NewRat(1, 1)
+	return oneLP.Add(oneLP, oneAssetRaw).Add(oneLP, feeOnBookDust)
+}
+
+func treasuryLPGrowthBound(maxNAV, minNAV int64) *big.Rat {
+	return new(big.Rat).SetFrac(big.NewInt(maxNAV), big.NewInt(minNAV))
 }

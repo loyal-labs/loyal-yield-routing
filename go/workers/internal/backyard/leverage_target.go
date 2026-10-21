@@ -121,7 +121,7 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	out.Cost = stepCost
 	years := p.Horizon.Hours() / (365.25 * 24)
 	out.GainRaw = upStepGain(market, upStep{CollateralMicros: float64(s.PositionCollateralValueRaw), DebtMicros: float64(s.PositionDebtValueRaw),
-		LiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepAPR: math.Log1p(market.CurrentBorrowAPY), APR: apr,
+		AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: math.Log1p(market.CurrentBorrowAPY), StepDebtAPR: apr,
 		CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS})
 	if !finite(out.GainRaw) {
 		out = out.held(leverageReasonFeeForecastUnavailable)
@@ -136,21 +136,18 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	return out
 }
 
-// upStep is one candidate up move, every amount in USDC micros: a position
-// of collateral and debt borrowing liability more, proceeds of it converted
-// into collateral, every debt at APR after the step, against KEEP's income
-// with its debt at KeepAPR.
 type upStep struct {
-	CollateralMicros, DebtMicros, LiabilityMicros, ProceedsMicros float64
-	KeepAPR, APR                                                  float64
-	CostMicros, Years                                             float64
-	FeeBPS                                                        int64
+	CollateralMicros, DebtMicros, AddedLiabilityMicros, ProceedsMicros float64
+	KeepDebtAPR, StepDebtAPR                                           float64
+	CostMicros, Years                                                  float64
+	FeeBPS                                                             int64
 }
 
 func upStepGain(m LaneEconomics, u upStep) float64 {
-	keepGross := forecastGain(u.CollateralMicros, u.CollateralMicros, u.DebtMicros, m, u.KeepAPR, u.Years)
+	keepGross := forecastGain(u.CollateralMicros, u.CollateralMicros, u.DebtMicros, m, u.KeepDebtAPR, u.Years)
 	cost := math.Ceil(u.CostMicros)
-	candidate := pilotForecastEconomics(pilotEconomics{Debt: u.DebtMicros + u.LiabilityMicros, Proceeds: u.ProceedsMicros, APR: u.APR}, u.CollateralMicros-cost, m, u.Years, int64(cost))
+	collateralNetOfCost := u.CollateralMicros - cost
+	candidate := pilotForecastEconomics(pilotEconomics{Debt: u.DebtMicros + u.AddedLiabilityMicros, Proceeds: u.ProceedsMicros, APR: u.StepDebtAPR}, collateralNetOfCost, m, u.Years, int64(cost))
 	extra := candidate.Gain + cost - keepGross
 	if extra > 0 {
 		extra *= 1 - float64(u.FeeBPS)/10_000
