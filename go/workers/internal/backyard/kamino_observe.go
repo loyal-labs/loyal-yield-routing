@@ -440,8 +440,8 @@ func validateKaminoRefresh(o decodedKaminoObligation, reserves ...decodedKaminoR
 	// transaction must refresh the account; it does not invalidate a read used
 	// to build that refresh transaction. price_status is likewise not a
 	// universal validity mask (the USDC reserve legitimately reports zero).
-	// This mirrors the existing Rust Multiply observer: for a populated
-	// obligation, both reserve views must be at least as new as the obligation.
+	// For a populated obligation, both reserve views must be at least as new as
+	// the obligation.
 	// Every dispatched Kamino action refreshes and simulates before persistence.
 	if o.hasPosition {
 		if o.refreshedSlot <= 0 {

@@ -14,8 +14,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// Slot is what one account position of a constraint admits: Any account, one
-// of the keys of a Pin, or an account whose data a Match states.
 type Slot struct {
 	kind  slotKind
 	keys  []solana.PublicKey
@@ -95,12 +93,6 @@ func Slots(program solana.PublicKey, slots []AccountSlot[Slot]) []Slot {
 	return out
 }
 
-// Allow is the constraint that admits one instruction: its program, the
-// predicates on its data, in the order the policy states them (the
-// discriminator first, then any bound on its arguments), and what each
-// account slot admits. Program packages call it with their instruction's own
-// account order, so a builder and the constraint that admits it cannot
-// disagree.
 func Allow(program solana.PublicKey, data []DataConstraintView, slots []Slot) InstructionConstraintView {
 	out := InstructionConstraintView{ProgramID: program, DataConstraints: data}
 	for index, slot := range slots {
