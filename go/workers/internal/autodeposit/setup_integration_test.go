@@ -14,8 +14,8 @@ type setupReplayChain struct {
 	broadcasts int
 }
 
-func (s *setupReplayChain) LatestBlockhash(context.Context) (string, int64, error) {
-	return fixedKey("setup-controller-blockhash"), 900, nil
+func (s *setupReplayChain) LatestBlockhash(context.Context) (Blockhash, error) {
+	return Blockhash{Hash: fixedKey("setup-controller-blockhash"), LastValidBlockHeight: 900}, nil
 }
 func (s *setupReplayChain) SignatureState(context.Context, string) (chain.SignatureState, error) {
 	if s.broadcasts >= s.landOn {

@@ -28,17 +28,21 @@ type Chain interface {
 	// distinguishes "cannot read it" from "it is exhausted"; unknown never
 	// becomes a zero cap.
 	RemainingDelegationAllowanceRaw(ctx context.Context, delegation string, identity DelegationIdentity) (int64, error)
-	// LatestBlockhash returns a fresh confirmed blockhash and its validity
-	// window, required before any wire is built.
-	LatestBlockhash(ctx context.Context) (string, int64, error)
+	LatestBlockhash(ctx context.Context) (Blockhash, error)
 	chain.LandChain
 	ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error)
 	SimulateExact(ctx context.Context, attempt DurableAttempt) error
-	// ConfirmedVaultPositionRaw reads the vault's deposited liquidity in the
-	// frozen reserve from confirmed chain state, with the slot it was read at.
-	// It is the post-confirm position amount finalization publishes.
-	// The read is no older than minSlot, the top-up's confirmed slot.
-	ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (int64, int64, error)
+	ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (VaultPosition, error)
+}
+
+type Blockhash struct {
+	Hash                 string
+	LastValidBlockHeight int64
+}
+
+type VaultPosition struct {
+	AmountRaw    int64
+	ObservedSlot int64
 }
 
 var ErrTokenAccountAbsent = errors.New("required autodeposit token account is absent")
@@ -131,12 +135,12 @@ func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegati
 	return allowance, nil
 }
 
-func (c *RPCChain) LatestBlockhash(ctx context.Context) (string, int64, error) {
-	hash, lastValid, _, err := c.Blockhash(ctx, rpc.CommitmentConfirmed, 0)
+func (c *RPCChain) LatestBlockhash(ctx context.Context) (Blockhash, error) {
+	hash, lastValid, _, err := c.Client.Blockhash(ctx, rpc.CommitmentConfirmed, 0)
 	if err != nil {
-		return "", 0, err
+		return Blockhash{}, err
 	}
-	return hash.String(), int64(lastValid), nil
+	return Blockhash{Hash: hash.String(), LastValidBlockHeight: int64(lastValid)}, nil
 }
 
 func (c *RPCChain) MinimumBalanceForRentExemption(ctx context.Context, size int) (uint64, error) {
@@ -204,35 +208,35 @@ func (c *RPCChain) SimulateExact(ctx context.Context, attempt DurableAttempt) er
 	return nil
 }
 
-func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (int64, int64, error) {
+func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (VaultPosition, error) {
 	observedSlot, accounts, err := c.ReadAccounts(ctx, minSlot, []string{route.Obligation, plan.Reserve})
 	if err != nil {
-		return 0, 0, err
+		return VaultPosition{}, err
 	}
 	obligation, err := kamino.DecodeObligation(accounts[0])
 	if err != nil {
-		return 0, 0, fmt.Errorf("obligation %s is not a confirmed KLend obligation", route.Obligation)
+		return VaultPosition{}, fmt.Errorf("obligation %s is not a confirmed KLend obligation", route.Obligation)
 	}
 	reserve, err := kamino.DecodeReserve(accounts[1])
 	if err != nil {
-		return 0, 0, fmt.Errorf("reserve %s is not a confirmed KLend reserve", plan.Reserve)
+		return VaultPosition{}, fmt.Errorf("reserve %s is not a confirmed KLend reserve", plan.Reserve)
 	}
 	collateralRaw := obligation.Collateral(mustKey(plan.Reserve))
 	if collateralRaw > 1<<63-1 {
-		return 0, 0, fmt.Errorf("obligation %s collateral amount exceeds the family's int64 range", route.Obligation)
+		return VaultPosition{}, fmt.Errorf("obligation %s collateral amount exceeds the family's int64 range", route.Obligation)
 	}
 	if collateralRaw == 0 {
-		return 0, 0, fmt.Errorf("obligation %s carries no confirmed deposit in the frozen reserve %s", route.Obligation, plan.Reserve)
+		return VaultPosition{}, fmt.Errorf("obligation %s carries no confirmed deposit in the frozen reserve %s", route.Obligation, plan.Reserve)
 	}
 	if obligation.LendingMarket.String() != plan.Market || obligation.Owner.String() != plan.Target.VaultPubkey {
-		return 0, 0, errors.New("confirmed obligation identity differs from frozen plan")
+		return VaultPosition{}, errors.New("confirmed obligation identity differs from frozen plan")
 	}
 	obligationSlot, reserveSlot := obligation.LastUpdateSlot, reserve.LastUpdateSlot
 	if observedSlot <= 0 || obligationSlot == 0 || reserveSlot < obligationSlot || reserveSlot > uint64(observedSlot) || obligationSlot > uint64(observedSlot) {
-		return 0, 0, errors.New("confirmed collateral conversion snapshot is stale or incoherent")
+		return VaultPosition{}, errors.New("confirmed collateral conversion snapshot is stale or incoherent")
 	}
 	if reserve.LendingMarket.String() != plan.Market || reserve.LiquidityMint.String() != plan.LiquidityMint {
-		return 0, 0, errors.New("Kamino reserve identity drifted")
+		return VaultPosition{}, errors.New("Kamino reserve identity drifted")
 	}
 	// ConfirmedVaultPositionRaw reads the obligation's deposited collateral for
 	// the frozen reserve and converts it to liquidity through the reserve's
@@ -241,12 +245,12 @@ func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPl
 	// final flooring through the shared KLend decoder.
 	liquidity, err := reserve.CollateralToLiquidity(collateralRaw)
 	if err != nil {
-		return 0, 0, err
+		return VaultPosition{}, err
 	}
 	if liquidity > 1<<63-1 {
-		return 0, 0, errors.New("redeemable liquidity exceeds SQL BIGINT")
+		return VaultPosition{}, errors.New("redeemable liquidity exceeds SQL BIGINT")
 	}
-	return int64(liquidity), observedSlot, nil
+	return VaultPosition{AmountRaw: int64(liquidity), ObservedSlot: observedSlot}, nil
 }
 
 func base64StdDecode(encoded string) ([]byte, error) {

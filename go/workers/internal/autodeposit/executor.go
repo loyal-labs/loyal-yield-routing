@@ -1,5 +1,7 @@
 package autodeposit
 
+import "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+
 type ExecutorResult string
 
 const (
@@ -130,12 +132,9 @@ const SurplusLotClassificationDBValue = "unknown"
 
 const ConsumerName = "balance_sweep_autodeposit_trigger"
 
-const USDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+const USDCMint = fleet.USDCMint
 
 const (
 	StaleRequestedSlotSeconds = 15 * 60
 	RequestedSlotTimeoutError = "Autodeposit request timed out before worker selection."
 )
-
-// ConsumerName is the projection-offset consumer this family owns. Legacy claim
-// staleness checks read the same row, so it must not be renamed per process.

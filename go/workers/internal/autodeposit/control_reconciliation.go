@@ -17,6 +17,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
+const vaultSmartAccountIndex = 1
+
 type ControlTarget struct {
 	TargetID, SetupGeneration, PolicySeed, Nonce                 int64
 	Settings, Wallet, WalletTokenATA, Vault, VaultTokenATA, Mint string
@@ -31,6 +33,10 @@ type ControlObservation struct {
 	PolicyValid, AuthorityValid, DelegationValid, TokenDelegateValid bool
 	WalletBalanceRaw                                                 int64
 	WalletAccountDataSHA256                                          string
+}
+
+func (o ControlObservation) hasCoherentWalletSnapshot() bool {
+	return sha256HexPattern.MatchString(o.WalletAccountDataSHA256)
 }
 
 func (o ControlObservation) status() string {
@@ -74,7 +80,6 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		return o, errors.New("control delegation differs from canonical nonce PDA")
 	}
 	settings, _ := solana.PublicKeyFromBase58(target.Settings)
-	const vaultSmartAccountIndex = 1
 	expectedVault, _, err := squads.SmartAccountAddress(settings, vaultSmartAccountIndex)
 	if err != nil || expectedVault.String() != target.Vault {
 		return o, errors.New("control vault differs from canonical settings PDA")
@@ -115,7 +120,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		if err != nil {
 			return o, err
 		}
-		if decoded.Bump != policyBump || decoded.PolicySeed != uint64(target.PolicySeed) || decoded.AccountIndex != 1 || decoded.Settings != target.Settings {
+		if decoded.Bump != policyBump || decoded.PolicySeed != uint64(target.PolicySeed) || decoded.AccountIndex != vaultSmartAccountIndex || decoded.Settings != target.Settings {
 			return o, errors.New("control policy header differs from target")
 		}
 		inner, err := transferRecurring(uint64(*target.MaxAmountPerPeriod), wallet, vault, mint, target.RecurringDelegation, target.WalletTokenATA, target.VaultTokenATA)
@@ -137,14 +142,12 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		if _, err = RemainingDelegationAllowance(accounts[2].Owner.String(), accounts[2].Data, DelegationIdentity{Account: target.RecurringDelegation, Delegator: target.Wallet, Delegatee: target.Vault, Mint: target.Mint, Nonce: uint64(target.Nonce)}); err != nil {
 			return o, err
 		}
-		if binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:]) != uint64(*target.MaxAmountPerPeriod) {
+		delegationBudget := binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:])
+		if delegationBudget != uint64(*target.MaxAmountPerPeriod) {
 			return o, errors.New("control delegation budget differs from target")
 		}
 		o.DelegationValid = true
-		// The envelope match ignores account-data constraints, so the policy's
-		// per-period cap is checked here, chain against chain: a policy that
-		// cannot authorize the delegation's whole budget cannot run its pulls.
-		if o.PolicyExists && (!capped || policyCap < binary.LittleEndian.Uint64(accounts[2].Data[delegationPerPeriodOffset:])) {
+		if o.PolicyExists && !policyCapCoversDelegationBudget(policyCap, capped, delegationBudget) {
 			o.PolicyValid = false
 		}
 	}
@@ -159,6 +162,10 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		o.TokenDelegateValid = held.Delegate != nil && held.Delegate.String() == target.SubscriptionAuthority
 	}
 	return o, nil
+}
+
+func policyCapCoversDelegationBudget(policyCap uint64, capped bool, delegationBudget uint64) bool {
+	return capped && policyCap >= delegationBudget
 }
 
 func policyBudgetCap(constraints []squads.InstructionConstraintView) (uint64, bool) {

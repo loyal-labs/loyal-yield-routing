@@ -444,8 +444,8 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	if e = (&Controller{chain: rpcChain}).verifyTopUpEffects(t.Context(), plan, route, Settlement{Attempt: top}); e != nil {
 		t.Fatalf("actual exact top-up receipt: %v", e)
 	}
-	if position, slot, err := rpcChain.ConfirmedVaultPositionRaw(t.Context(), plan, route, 0); err != nil || position != f.AmountRaw || slot != 1000 {
-		t.Fatalf("actual mock obligation/collateral conversion=%d slot%d err=%v", position, slot, err)
+	if position, err := rpcChain.ConfirmedVaultPositionRaw(t.Context(), plan, route, 0); err != nil || position.AmountRaw != f.AmountRaw || position.ObservedSlot != 1000 {
+		t.Fatalf("actual mock obligation/collateral conversion=%+v err=%v", position, err)
 	}
 	if e = rpcChain.SendWire(t.Context(), svmWire(t, top), true); e != nil {
 		t.Fatal(e)

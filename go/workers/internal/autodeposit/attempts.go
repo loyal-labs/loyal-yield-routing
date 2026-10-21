@@ -80,29 +80,31 @@ const (
 	TopUpEffectAmbiguous    TopUpRecoveryAction = "effect_ambiguous"
 )
 
-// ClassifyDirectTopUpRecovery decides a resumed deposit leg from the vault
-// balance and the persisted attempt, never from a fresh spend decision.
-//
-// existingAttemptState nil means no top-up attempt row exists yet.
-// persistedSourcePreBalanceRaw is the vault balance snapshot that attempt was
-// prepared with; confirmedSiblingDepositsSinceRaw discounts later sibling
-// deposits on the same vault that cannot already be inside that snapshot.
-func ClassifyDirectTopUpRecovery(existingAttemptState *AttemptState, vaultAmountRaw, plannedAmountRaw int64, persistedSourcePreBalanceRaw *int64, confirmedSiblingDepositsSinceRaw int64) TopUpRecoveryAction {
-	if existingAttemptState != nil && AttemptHoldsClaim(*existingAttemptState) {
+type TopUpRecoveryInput struct {
+	ExistingAttemptState             *AttemptState
+	VaultAmountRaw                   int64
+	PlannedAmountRaw                 int64
+	PersistedSourcePreBalanceRaw     *int64
+	ConfirmedSiblingDepositsSinceRaw int64
+}
+
+// ClassifyDirectTopUpRecovery decides a resumed deposit leg from the vault balance and the persisted attempt, never a fresh spend.
+func ClassifyDirectTopUpRecovery(in TopUpRecoveryInput) TopUpRecoveryAction {
+	if in.ExistingAttemptState != nil && AttemptHoldsClaim(*in.ExistingAttemptState) {
 		return TopUpReconcilePersisted
 	}
 	var expectedIfNotLanded *int64
-	if persistedSourcePreBalanceRaw != nil {
-		adjusted, ok := subChecked(*persistedSourcePreBalanceRaw, confirmedSiblingDepositsSinceRaw)
+	if in.PersistedSourcePreBalanceRaw != nil {
+		adjusted, ok := subChecked(*in.PersistedSourcePreBalanceRaw, in.ConfirmedSiblingDepositsSinceRaw)
 		if ok {
 			expectedIfNotLanded = &adjusted
 		}
 	}
-	if vaultAmountRaw < plannedAmountRaw ||
-		(existingAttemptState != nil &&
-			AttemptAllowsSafeRequeue(*existingAttemptState) &&
+	if in.VaultAmountRaw < in.PlannedAmountRaw ||
+		(in.ExistingAttemptState != nil &&
+			AttemptAllowsSafeRequeue(*in.ExistingAttemptState) &&
 			expectedIfNotLanded != nil &&
-			vaultAmountRaw < *expectedIfNotLanded) {
+			in.VaultAmountRaw < *expectedIfNotLanded) {
 		return TopUpEffectAmbiguous
 	}
 	return TopUpPrepareOrRequeue

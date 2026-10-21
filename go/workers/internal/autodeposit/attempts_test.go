@@ -29,7 +29,7 @@ func TestTopUpRecoveryClassification(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			got := ClassifyDirectTopUpRecovery(testCase.state, testCase.vault, testCase.planned, testCase.snapshot, testCase.siblings)
+			got := ClassifyDirectTopUpRecovery(TopUpRecoveryInput{testCase.state, testCase.vault, testCase.planned, testCase.snapshot, testCase.siblings})
 			if got != testCase.want {
 				t.Fatalf("classified %q, want %q", got, testCase.want)
 			}

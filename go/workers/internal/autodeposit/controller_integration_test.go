@@ -403,8 +403,8 @@ func (s *scriptedControllerChain) RemainingDelegationAllowanceRaw(ctx context.Co
 	return 1 << 40, nil
 }
 
-func (s *scriptedControllerChain) LatestBlockhash(ctx context.Context) (string, int64, error) {
-	return "itest-controller-blockhash", 900, nil
+func (s *scriptedControllerChain) LatestBlockhash(ctx context.Context) (Blockhash, error) {
+	return Blockhash{Hash: "itest-controller-blockhash", LastValidBlockHeight: 900}, nil
 }
 
 func (s *scriptedControllerChain) FinalizedBlockHeight(context.Context) (uint64, uint64, error) {
@@ -459,11 +459,11 @@ func (s *scriptedControllerChain) SimulateExact(ctx context.Context, attempt Dur
 	return s.simulateErr
 }
 
-func (s *scriptedControllerChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, _ int64) (int64, int64, error) {
+func (s *scriptedControllerChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, _ int64) (VaultPosition, error) {
 	if position, seen := s.positions[plan.Reserve]; seen {
-		return position[0], position[1], nil
+		return VaultPosition{AmountRaw: position[0], ObservedSlot: position[1]}, nil
 	}
-	return plan.AmountRaw, 870_002, nil
+	return VaultPosition{AmountRaw: plan.AmountRaw, ObservedSlot: 870_002}, nil
 }
 
 type scriptedControllerWires struct {

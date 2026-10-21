@@ -42,8 +42,6 @@ type TopUpWireRequest struct {
 	LastValidBlockHeight int64
 }
 
-// BuiltWire is a signed transaction this family may persist. The digest is the
-// lowercase hex sha256 of the exact wire bytes.
 type BuiltWire struct {
 	Signature               string
 	SignedTransactionBase64 string
@@ -60,8 +58,7 @@ type Controller struct {
 	leaseRenewWindow time.Duration
 }
 
-// DefaultLeaseRenewWindow renews well inside the ten-minute claim lease.
-const DefaultLeaseRenewWindow = 3 * time.Minute
+const DefaultLeaseRenewWindow = ClaimLease * 3 / 10
 
 const FeePayerMinimumLamports = 50_000_000
 
@@ -232,10 +229,11 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	if targetContext == nil {
 		return ResultNotActionable, nil
 	}
-	if targetContext.RecurringDelegation == "" {
+	if targetContext.RecurringDelegation == nil {
 		return ResultNotActionable, fmt.Errorf("autodeposit target %d has no recurring delegation", target.TargetID)
 	}
-	if !targetContext.hasRouteIdentity() {
+	routePolicy := targetContext.RoutePolicy
+	if routePolicy == nil {
 		return ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no active same_mint_kamino policy", target.TargetID)
 	}
 	withdrawn, err := c.store.VaultWithdrawn(ctx, targetContext)
@@ -256,7 +254,7 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	remainingAllowance, err := c.readRemainingAllowance(ctx, targetContext)
+	remainingAllowance, err := c.readRemainingAllowance(ctx, targetContext, *targetContext.RecurringDelegation)
 	if err != nil {
 		if _, deferErr := c.store.DeferScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID, err.Error(), false); deferErr != nil {
 			return ResultDependencyUnavailable, errors.Join(err, deferErr)
@@ -299,7 +297,7 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	if err := c.store.ResolveDepositReserve(scope.ctx, targetContext); err != nil {
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
 	}
-	plan := targetContext.depositPlan(claim.AmountRaw)
+	plan := targetContext.depositPlan(*routePolicy, claim.AmountRaw)
 	frozen, err := c.store.FreezeDepositPlan(scope.ctx, claimToken, scope.leaseToken, plan)
 	if err != nil {
 		return c.release(scope, claimToken, ResultRecoveryPending, err)
@@ -320,29 +318,23 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	if targetContext == nil || !targetContext.FreshActionable || targetContext.RecurringDelegation == "" || targetContext.SweepPolicyAccount != frozen.Target.SweepPolicyAccount || targetContext.Wallet != frozen.Target.Wallet || targetContext.VaultPubkey != frozen.Target.VaultPubkey {
+	if targetContext == nil || !targetContext.FreshActionable || targetContext.RecurringDelegation == nil || targetContext.SweepPolicyAccount != frozen.Target.SweepPolicyAccount || targetContext.Wallet != frozen.Target.Wallet || targetContext.VaultPubkey != frozen.Target.VaultPubkey {
 		return c.release(scope, claimToken, ResultDeferred, nil)
 	}
 	walletBalance, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, frozen.Target.WalletUsdcAta, frozen.Target.Wallet)
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	allowance, err := c.readRemainingAllowance(scope.ctx, targetContext)
+	delegation := *targetContext.RecurringDelegation
+	allowance, err := c.readRemainingAllowance(scope.ctx, targetContext, delegation)
 	if err != nil {
 		return c.release(scope, claimToken, ResultDeferred, err)
 	}
 	if walletBalance < frozen.AmountRaw || targetContext.WalletBalanceFloorRaw < 0 || walletBalance-frozen.AmountRaw < targetContext.WalletBalanceFloorRaw || *allowance < frozen.AmountRaw || (targetContext.MaxAmountPerPeriodRaw != nil && *targetContext.MaxAmountPerPeriodRaw < frozen.AmountRaw) {
 		return c.release(scope, claimToken, ResultDeferred, nil)
 	}
-	// Preflight the destination BEFORE the pull: the top-up must be executable
-	// against the frozen reserve, obligation and custody, or the wallet never
-	// moves. No funds have moved when this fails.
-	route, err := c.wires.ConfirmTopUpRoute(scope.ctx, frozen)
-	if err != nil {
+	if err := c.preflightTopUpRouteBeforePull(scope.ctx, frozen); err != nil {
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
-	}
-	if uint64(frozen.AmountRaw) < route.MinimumDepositRaw {
-		return c.release(scope, claimToken, ResultPreflightBlocked, fmt.Errorf("%w: amount %d is below the reserve's minimum deposit %d", ErrRouteNotExecutable, frozen.AmountRaw, route.MinimumDepositRaw))
 	}
 
 	custodyBefore, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, frozen.Target.VaultUsdcAta, frozen.Target.VaultPubkey)
@@ -356,13 +348,13 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if owned {
 		return c.release(scope, claimToken, ResultDeferred, errors.New(ownedCustodyDeferral))
 	}
-	blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
+	blockhash, err := c.chain.LatestBlockhash(scope.ctx)
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
 	wire, err := c.wires.BuildPull(scope.ctx, PullWireRequest{
-		Plan: frozen, RecurringDelegation: targetContext.RecurringDelegation,
-		RecentBlockhash: blockhash, LastValidBlockHeight: lastValid,
+		Plan: frozen, RecurringDelegation: delegation,
+		RecentBlockhash: blockhash.Hash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
 	})
 	if err != nil {
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
@@ -410,6 +402,17 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	return c.finishTopUpLeg(scope, claimToken, target, frozen, settlement)
 }
 
+func (c *Controller) preflightTopUpRouteBeforePull(ctx context.Context, frozen DepositPlan) error {
+	route, err := c.wires.ConfirmTopUpRoute(ctx, frozen)
+	if err != nil {
+		return err
+	}
+	if uint64(frozen.AmountRaw) < route.MinimumDepositRaw {
+		return fmt.Errorf("%w: amount %d is below the reserve's minimum deposit %d", ErrRouteNotExecutable, frozen.AmountRaw, route.MinimumDepositRaw)
+	}
+	return nil
+}
+
 func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken string, plan DepositPlan) (bool, error) {
 	builder := c.wires
 	for stage := 0; stage < 4; stage++ {
@@ -424,11 +427,11 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 		if err != nil || next == nil {
 			return next == nil && err == nil, err
 		}
-		blockhash, height, err := c.chain.LatestBlockhash(scope.ctx)
+		blockhash, err := c.chain.LatestBlockhash(scope.ctx)
 		if err != nil {
 			return false, err
 		}
-		wire, err := builder.BuildDestinationSetup(scope.ctx, plan, *next, blockhash, height)
+		wire, err := builder.BuildDestinationSetup(scope.ctx, plan, *next, blockhash.Hash, blockhash.LastValidBlockHeight)
 		if err != nil {
 			return false, err
 		}
@@ -493,7 +496,10 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		return ResultDependencyUnavailable, err
 	}
 
-	switch ClassifyDirectTopUpRecovery(existingState, custody, plan.AmountRaw, persistedPreBalance, siblingDeposits) {
+	switch ClassifyDirectTopUpRecovery(TopUpRecoveryInput{
+		ExistingAttemptState: existingState, VaultAmountRaw: custody, PlannedAmountRaw: plan.AmountRaw,
+		PersistedSourcePreBalanceRaw: persistedPreBalance, ConfirmedSiblingDepositsSinceRaw: siblingDeposits,
+	}) {
 	case TopUpEffectAmbiguous:
 		return ResultTransactionEffectAmbig, nil
 	case TopUpReconcilePersisted:
@@ -528,14 +534,12 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 			return ResultKaminoTopUpFailed, err
 		}
 		residue := topUpResidue(held, residueBound, custody-plan.AmountRaw, plan.AmountRaw, route.DepositRoomRaw)
-		blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
+		blockhash, err := c.chain.LatestBlockhash(scope.ctx)
 		if err != nil {
 			return ResultDependencyUnavailable, err
 		}
-		wire, err := c.wires.BuildTopUp(scope.ctx, TopUpWireRequest{Plan: plan, ResidueRaw: residue, RecentBlockhash: blockhash, LastValidBlockHeight: lastValid})
+		wire, err := c.wires.BuildTopUp(scope.ctx, TopUpWireRequest{Plan: plan, ResidueRaw: residue, RecentBlockhash: blockhash.Hash, LastValidBlockHeight: blockhash.LastValidBlockHeight})
 		if err != nil {
-			// The pulled custody stays claimed for recovery; it must never be
-			// released while only the deposit leg failed.
 			return ResultKaminoTopUpFailed, err
 		}
 		prepared, err := c.store.PersistPreparedAttempt(scope.ctx, PreparedAttempt{
@@ -594,7 +598,7 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	if pull.Attempt.ConfirmedSlot != nil {
 		confirmedSlot = *pull.Attempt.ConfirmedSlot
 	}
-	positionAmountRaw, observedSlot, err := c.chain.ConfirmedVaultPositionRaw(scope.ctx, plan, route, confirmedSlot)
+	position, err := c.chain.ConfirmedVaultPositionRaw(scope.ctx, plan, route, confirmedSlot)
 	if errors.Is(err, chain.ErrBehind) {
 		return ResultRecoveryPending, err
 	}
@@ -602,7 +606,7 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		return ResultDependencyUnavailable, err
 	}
 	if _, err := c.store.FinalizeConfirmedAutodeposit(scope.ctx, claimToken, *pull.Attempt.ExecutionID, target.ScheduledSlotID,
-		scope.leaseToken, positionAmountRaw, observedSlot); err != nil {
+		scope.leaseToken, position.AmountRaw, position.ObservedSlot); err != nil {
 		if errors.Is(err, ErrOwnershipLost) {
 			return ResultRecoveryPending, err
 		}
@@ -723,7 +727,7 @@ func validatePullReceipt(plan DepositPlan, attempt DurableAttempt, receipt Recei
 	return nil
 }
 
-func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *TargetExecutionContext) (*int64, error) {
+func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *TargetExecutionContext, delegation string) (*int64, error) {
 	now := time.Now().Unix()
 	if targetContext.PeriodLengthSeconds != nil && *targetContext.PeriodLengthSeconds <= 0 {
 		return nil, ErrAllowanceUnknown
@@ -735,7 +739,7 @@ func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *
 	if targetContext.ExpiryTimestamp != nil && *targetContext.ExpiryTimestamp != 0 && now >= *targetContext.ExpiryTimestamp {
 		return nil, ErrAllowanceUnknown
 	}
-	allowance, err := c.chain.RemainingDelegationAllowanceRaw(ctx, targetContext.RecurringDelegation, DelegationIdentity{
+	allowance, err := c.chain.RemainingDelegationAllowanceRaw(ctx, delegation, DelegationIdentity{
 		Delegator:          targetContext.Wallet,
 		Delegatee:          targetContext.VaultPubkey,
 		Mint:               targetContext.TokenMint,
@@ -792,9 +796,7 @@ func (c *Controller) holdClaimLease(parent context.Context, claimToken string, t
 	return executionScope{leaseToken: leaseToken, ctx: execCtx, release: release}, nil
 }
 
-func (t *TargetExecutionContext) hasRouteIdentity() bool { return t.RoutePolicy != nil }
-
-func (t *TargetExecutionContext) depositPlan(amountRaw int64) DepositPlan {
+func (t *TargetExecutionContext) depositPlan(policy RoutePolicyContext, amountRaw int64) DepositPlan {
 	tokenAta := t.WalletUsdcAta
 	vaultTokenAta := t.VaultUsdcAta
 	plan := DepositPlan{
@@ -805,7 +807,7 @@ func (t *TargetExecutionContext) depositPlan(amountRaw int64) DepositPlan {
 		LiquidityMint: derefString(t.CurrentLiquidityMint),
 		Target: DepositPlanTarget{
 			ID:                   t.TargetID,
-			ManagedVaultID:       t.RoutePolicy.ManagedVaultID,
+			ManagedVaultID:       policy.ManagedVaultID,
 			Settings:             t.Settings,
 			VaultIndex:           int(t.VaultIndex),
 			Wallet:               t.Wallet,
@@ -815,10 +817,10 @@ func (t *TargetExecutionContext) depositPlan(amountRaw int64) DepositPlan {
 			VaultUsdcAta:         vaultTokenAta,
 			VaultTokenAta:        vaultTokenAta,
 			TokenMint:            t.TokenMint,
-			RoutePolicyAccount:   t.RoutePolicy.Account,
+			RoutePolicyAccount:   policy.Account,
 			SweepPolicyAccount:   t.SweepPolicyAccount,
 			SetupPolicyAccount:   t.SetupPolicyAccount,
-			RoutePolicySeed:      t.RoutePolicy.Seed,
+			RoutePolicySeed:      policy.Seed,
 			CurrentReserve:       t.CurrentReserve,
 			CurrentMarket:        t.CurrentMarket,
 			CurrentLiquidityMint: t.CurrentLiquidityMint,

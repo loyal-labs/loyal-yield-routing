@@ -386,9 +386,8 @@ func heldTargetIDs(targets []lockedTarget) []int64 {
 // depleteLotsNewestFirst applies an externally observed outflow to open lots.
 // Lot statuses stay open/depleted here: the money left the wallet without this
 // family moving it, which is evidence about surplus, not a completed sweep.
-// Callers pass only the part of an outflow that is not this family's pull.
-func depleteLotsNewestFirst(ctx context.Context, tx pgx.Tx, target lockedTarget, outflowAmountRaw int64) (int64, error) {
-	if outflowAmountRaw == 0 {
+func depleteLotsNewestFirst(ctx context.Context, tx pgx.Tx, target lockedTarget, externalOutflowRaw int64) (int64, error) {
+	if externalOutflowRaw == 0 {
 		return 0, nil
 	}
 	targetID := target.id
@@ -429,7 +428,7 @@ FOR UPDATE OF lot`, targetID, USDCMint)
 	}
 	rows.Close()
 
-	var remaining int64 = outflowAmountRaw
+	var remaining int64 = externalOutflowRaw
 	var depletedAmount int64
 	for _, lot := range lots {
 		if remaining == 0 {

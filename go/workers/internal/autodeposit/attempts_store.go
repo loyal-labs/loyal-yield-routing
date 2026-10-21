@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -90,8 +91,7 @@ func UnmarshalDepositPlan(raw []byte) (DepositPlan, error) {
 	return plan, nil
 }
 
-// ClaimLeaseSeconds is the executor ownership window on a selected claim.
-const ClaimLeaseSeconds = "10 minutes"
+const ClaimLease = 10 * time.Minute
 
 // AcquireClaimLease takes executor ownership of a selected claim. It succeeds
 // only when no live lease exists, so two executors can never both prepare a
@@ -100,7 +100,7 @@ func (s *Store) AcquireClaimLease(ctx context.Context, claimToken string, target
 	tag, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_lot_claims
 SET autodeposit_executor_lease_token = $3,
-    autodeposit_executor_lease_expires_at = now() + interval '`+ClaimLeaseSeconds+`',
+    autodeposit_executor_lease_expires_at = now() + make_interval(secs => $4),
     updated_at = now()
 WHERE claim_token = $1
   AND target_id = $2
@@ -108,7 +108,7 @@ WHERE claim_token = $1
   AND (
     autodeposit_executor_lease_token IS NULL
     OR autodeposit_executor_lease_expires_at <= now()
-  )`, claimToken, targetID, leaseToken)
+  )`, claimToken, targetID, leaseToken, ClaimLease.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("acquire autodeposit claim lease: %w", err)
 	}
@@ -118,12 +118,12 @@ WHERE claim_token = $1
 func (s *Store) RenewClaimLease(ctx context.Context, claimToken, leaseToken string) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_lot_claims
-SET autodeposit_executor_lease_expires_at = now() + interval '`+ClaimLeaseSeconds+`',
+SET autodeposit_executor_lease_expires_at = now() + make_interval(secs => $3),
     updated_at = now()
 WHERE claim_token = $1
   AND status = 'selected'
   AND autodeposit_executor_lease_token = $2
-  AND autodeposit_executor_lease_expires_at > now()`, claimToken, leaseToken)
+  AND autodeposit_executor_lease_expires_at > now()`, claimToken, leaseToken, ClaimLease.Seconds())
 	if err != nil {
 		return fmt.Errorf("renew autodeposit claim lease: %w", err)
 	}
