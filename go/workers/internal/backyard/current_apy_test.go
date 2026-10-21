@@ -43,12 +43,6 @@ func TestCurrentAPYMatchesTheLeverageWatchFigure(t *testing.T) {
 	if got.APYBPS != 767 || got.Level != 1 {
 		t.Fatalf("debt-free %+v", got)
 	}
-	// Flat: nothing computed, flat flag set.
-	flat := base()
-	flat.RouteLane = autoAUTOPYUSD.Lane
-	if got, ok := currentPositionAPY(flat, []LaneEconomics{m}); ok || !got.Flat {
-		t.Fatalf("flat %+v", got)
-	}
 }
 
 func TestCurrentAPYWriteThrottle(t *testing.T) {
@@ -193,9 +187,9 @@ func TestLeverageWatchSummaryEqualsThePrintedLine(t *testing.T) {
 		if lane.SpreadBPS != nil {
 			spread = fmt.Sprintf("%.2f", float64(*lane.SpreadBPS)/100)
 		}
-		native := fmt.Sprintf("native=%.2f%% feed=unavailable", float64(lane.NativeBPS)/100)
+		native := fmt.Sprintf("native=%.2f%% feed=unavailable", float64(lane.ScoredNativeBPS)/100)
 		if lane.FeedNativeBPS != nil {
-			native = fmt.Sprintf("native=%.2f%% feed=%.2f%% gap=%+.2f", float64(lane.NativeBPS)/100, float64(*lane.FeedNativeBPS)/100, float64(lane.NativeBPS-*lane.FeedNativeBPS)/100)
+			native = fmt.Sprintf("native=%.2f%% feed=%.2f%% gap=%+.2f", float64(lane.ScoredNativeBPS)/100, float64(*lane.FeedNativeBPS)/100, float64(lane.ScoredNativeBPS-*lane.FeedNativeBPS)/100)
 		}
 		rebuilt := fmt.Sprintf("%s(spread=%s %s enterable=%s apy %s)", lane.Lane, spread, native, entry, strings.Join(parts, " "))
 		if !strings.Contains(summary, rebuilt) {

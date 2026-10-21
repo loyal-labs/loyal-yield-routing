@@ -7,78 +7,50 @@ import (
 	"time"
 )
 
+const (
+	leverageReasonSpreadRule             = "spread_rule"
+	leverageReasonCapacityUnknown        = "borrow_capacity_unknown"
+	leverageReasonStepBelowMinimum       = "leverage_step_below_minimum"
+	leverageReasonRateUnavailable        = "leverage_rate_unavailable"
+	leverageReasonFeeTermsUnavailable    = "fee_terms_unavailable"
+	leverageReasonFeeForecastUnavailable = "fee_forecast_unavailable"
+	leverageReasonCostUnavailable        = "leverage_cost_unavailable"
+	leverageReasonNotWorthCost           = "up_move_not_worth_cost"
+	leverageReasonApproved               = "up_move_approved"
+)
+
 type leverageDecision struct {
 	Lane          string
 	Current, Next float64
 	SpreadBPS     int64
 	GainRaw       float64
-	CostRaw       float64
 	Reason        string
 	BorrowRaw     uint64
 	RoomRaw       uint64
-	// Cost is the priced step's expected cost (CostRaw is its total).
-	Cost leverageStepCost
-	// TermDays is the lane's days to its term debt's maturity, when it owes
-	// term debt (decide_term.go).
+	Cost          leverageStepCost
+	// TermDays is the lane's days to its term debt's maturity, when it owes term debt (decide_term.go).
 	TermDays  float64
 	TermKnown bool
 }
 
-// decideLeverageTarget applies the option-1 rule to one funded lane's view,
-// the level setting target() reads (backyard_lane_levels). It runs only on a
-// settled lane: nothing nonterminal, no withdrawal or bridge cash in flight,
-// and the selector itself chose KEEP (a rotation freezes every lane's level
-// until it settles). Custody beside the position is vault cash its next
-// step takes whole; it changes no level. An up move needs the
-// level's spread (leverageLadder) and a positive gain over KEEP
-// after the move's own cost and the performance fee on the extra income. It
-// does not need the selector's MinimumBenefit, which is SWITCH hysteresis
-// against a full unwind, not a cost of borrowing more in place.
-// DOWN/no-change never use this gate.
-//
-// The move is sized at the whole step to the next level (desiredLeverage
-// Borrow), not at the debt reserve's momentary room, so the approval stands
-// while the reserve is full. Its rate is the curve at the step's utilization,
-// capped at the reserve's utilization borrow limit (leverageRateDebtRaw): no
-// executable part of the step borrows above it. The worker borrows each
-// tick's capacity-sized part of it the moment room opens (leverageUpReceive).
-//
-// Borrowing more in place changes the same vault's income by the increment
-// only, so the gain compares like with like: the candidate's and KEEP's
-// gross income over the horizon, the full performance fee on a positive
-// difference (a vault below its high-water mark pays less, never more), then
-// the move's cost. The selector's SWITCH forecast instead reserves fees on
-// the whole position's income against KEEP's fee-favoured upper bound; on a
-// $100k position that asymmetry alone outweighed any in-place borrow the
-// debt reserve could fund (live 2026-10-10: AUTO held 1.01x under a 1.75x
-// target while PYUSD had $3k-$5k of room for five hours).
-//
-// The cost is the step's expected cost (lanePricer.priceStep): the KLend
-// origination fee and the expected conversion loss of the up step the
-// executor would assemble and of the down step that unwinds it, with the two
-// transactions' network fees, all at the batch's central prices. It was 2 x
-// UncertaintyBPS of the borrowed amount: a haircut that bounds execution,
-// not what capital loses, and at AUTO's realized spread (~2.9 pts) it
-// refused every up step whatever the room. Uncertainty stays where it bounds
-// execution: the step's minimum output. The income forecast values the
-// borrow and its proceeds at central prices too.
-// An unpriced step is leverage_cost_unavailable, never free.
+func (d leverageDecision) held(reason string) leverageDecision {
+	d.Next, d.Reason = d.Current, reason
+	return d
+}
+
+func leverageSettled(s Snapshot, selector SelectorResult) bool {
+	return earnActiveLane(s.RouteLane) && s.HasPosition && s.PositionCollateralRaw > 0 &&
+		selector.Action == "KEEP" && s.Nonterminal == "" && withdrawalShortfallRaw(s) == 0 &&
+		s.SquadsIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0
+}
+
+// decideLeverageTarget sets the level target() reads for one settled lane.
+// An up move needs the level's spread (leverageLadder) and a positive gain over KEEP after the move's priced cost; an unpriced step is leverage_cost_unavailable, never free.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	out.TermDays, out.TermKnown = termDays(s)
-	if !earnActiveLane(s.RouteLane) || !s.HasPosition || s.PositionCollateralRaw <= 0 ||
-		selector.Action != "KEEP" || s.Nonterminal != "" || withdrawalShortfallRaw(s) != 0 ||
-		s.SquadsIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
-		return out, false
-	}
-	var market *LaneEconomics
-	for i := range markets {
-		if markets[i].Lane == s.RouteLane {
-			market = &markets[i]
-		}
-	}
-	equity := s.PositionCollateralValueRaw - s.PositionDebtValueRaw
-	if market == nil || equity <= 0 {
+	market := economicsOf(markets, s.RouteLane)
+	if !leverageSettled(s, selector) || market == nil || s.PositionCollateralValueRaw-s.PositionDebtValueRaw <= 0 {
 		return out, false
 	}
 	maxLevel := laneMaxLevel(s.RouteLane)
@@ -99,7 +71,7 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	}
 	out.Next = nextLeverageLevel(out.Current, maxLevel, spreadAt)
 	out.SpreadBPS = int64(currentSpread * 10_000)
-	out.Reason = "spread_rule"
+	out.Reason = leverageReasonSpreadRule
 	if out.Next < out.Current {
 		return out, true
 	}
@@ -112,60 +84,58 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	raw := leverageDesiredRaw(s, level)
 	if raw < leverageMinimumBorrowRaw {
 		if level > 0 && !s.BorrowCapacityKnown {
-			out.Reason = "borrow_capacity_unknown"
+			out.Reason = leverageReasonCapacityUnknown
 		} else if level > 0 {
-			out.Reason = "leverage_step_below_minimum"
+			out.Reason = leverageReasonStepBelowMinimum
 		}
 		return out, true
 	}
+	return out.priceUpStep(s, *market, level, raw, p, price), true
+}
+
+func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level float64, raw uint64, p SelectorPolicy, price leverageStepPricer) leverageDecision {
 	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
 	proceeds, priceErr := capacityBorrowCentralValue(s, raw, false)
 	liability, debtErr := capacityBorrowCentralValue(s, raw+fee, true)
 	rateDebt := float64(leverageRateDebtRaw(s, raw+fee))
-	apr, rateErr := projectedBorrowAPR(*market, rateDebt)
-	spread, allowed := leverageUpAllowed(*market, level, rateDebt)
+	apr, rateErr := projectedBorrowAPR(market, rateDebt)
+	spread, allowed := leverageUpAllowed(market, level, rateDebt)
 	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil {
-		out.Next, out.Reason = out.Current, "leverage_rate_unavailable"
-		return out, true
+		return out.held(leverageReasonRateUnavailable)
 	}
 	if !allowed {
 		out.Next = out.Current
-		return out, true
+		return out
 	}
 	out.SpreadBPS = int64(spread * 10_000)
-	moved := float64(proceeds)
 	if !s.MonitorsArmed || !approvedVoltrFeeTerms(s) {
-		out.Next, out.Reason = out.Current, "fee_terms_unavailable"
-		return out, true
+		return out.held(leverageReasonFeeTermsUnavailable)
 	}
 	if p.validate() != nil || s.PositionDebtValueRaw < 0 || !finite(market.CurrentBorrowAPY) || market.CurrentBorrowAPY < 0 {
-		out.Next, out.Reason = out.Current, "fee_forecast_unavailable"
-		return out, true
+		return out.held(leverageReasonFeeForecastUnavailable)
 	}
 	if price == nil {
-		out.Next, out.Reason = out.Current, "leverage_cost_unavailable"
-		return out, true
+		return out.held(leverageReasonCostUnavailable)
 	}
 	stepCost, costErr := price(raw)
 	if costErr != nil || stepCost.TotalMicros < 0 || stepCost.TotalMicros > 1<<53 {
-		out.Next, out.Reason = out.Current, leverageCostOutageReason(costErr)
-		return out, true
+		return out.held(leverageCostOutageReason(costErr))
 	}
-	out.Cost, out.CostRaw = stepCost, float64(stepCost.TotalMicros)
+	out.Cost = stepCost
 	years := p.Horizon.Hours() / (365.25 * 24)
-	out.GainRaw = upStepGain(*market, float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), float64(liability), moved,
-		math.Log1p(market.CurrentBorrowAPY), apr, out.CostRaw, years, s.ApprovedAdminPerformanceFeeBPS)
+	out.GainRaw = upStepGain(market, float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), float64(liability), float64(proceeds),
+		math.Log1p(market.CurrentBorrowAPY), apr, float64(stepCost.TotalMicros), years, s.ApprovedAdminPerformanceFeeBPS)
 	if !finite(out.GainRaw) {
-		out.Next, out.Reason, out.GainRaw = out.Current, "fee_forecast_unavailable", 0
-		return out, true
+		out = out.held(leverageReasonFeeForecastUnavailable)
+		out.GainRaw = 0
+		return out
 	}
 	if out.GainRaw <= 0 {
-		out.Next, out.Reason = out.Current, "up_move_not_worth_cost"
-	} else {
-		out.Reason = "up_move_approved"
-		out.BorrowRaw = raw
+		return out.held(leverageReasonNotWorthCost)
 	}
-	return out, true
+	out.Reason = leverageReasonApproved
+	out.BorrowRaw = raw
+	return out
 }
 
 // upStepGain is the live rule's gain of one up step over the horizon: a
@@ -192,18 +162,12 @@ func (d leverageDecision) level() laneLevel {
 	return laneLevel{Level: d.Next, UpApproved: d.Next > 1 && d.BorrowRaw >= leverageMinimumBorrowRaw}
 }
 
-// leverageOutageReasons are the decisions that are not decisions: the step
-// could not be evaluated (capacity, rate or cost unknown). They carry the
-// stored level and approval, as the selector carries its persistence
-// windows through outages; only an economic refusal (spread_rule,
-// up_move_not_worth_cost), a level change or a risk or fee-terms change
-// revokes an approval.
 func (d leverageDecision) outage() bool {
 	switch d.Reason {
-	case "borrow_capacity_unknown", "leverage_rate_unavailable", "fee_forecast_unavailable", "leverage_cost_unavailable":
+	case leverageReasonCapacityUnknown, leverageReasonRateUnavailable, leverageReasonFeeForecastUnavailable, leverageReasonCostUnavailable:
 		return true
 	}
-	return strings.HasPrefix(d.Reason, "leverage_cost_unavailable(")
+	return strings.HasPrefix(d.Reason, leverageReasonCostUnavailable+"(")
 }
 
 func (d leverageDecision) storeChanges(s Snapshot) bool {
@@ -227,12 +191,14 @@ func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPol
 		if m.Lane != lane || m.validate(now, p) != nil || m.DebtRawPerUSDCRaw <= 0 {
 			continue
 		}
-		// The step's projected utilization: its whole borrow, in the debt
-		// reserve's raw units (forecast only).
-		_, allowed := leverageUpAllowed(m, maxLevel, float64(e)*(maxLevel-1)*m.DebtRawPerUSDCRaw)
+		_, allowed := leverageUpAllowed(m, maxLevel, wholeStepBorrowDebtRaw(e, maxLevel, m))
 		return lane, laneLevel{Level: maxLevel, UpApproved: allowed}, true
 	}
 	return "", laneLevel{}, false
+}
+
+func wholeStepBorrowDebtRaw(equityRaw int64, maxLevel float64, m LaneEconomics) float64 {
+	return float64(equityRaw) * (maxLevel - 1) * m.DebtRawPerUSDCRaw
 }
 
 func (d leverageDecision) logLine() string {
@@ -241,7 +207,7 @@ func (d leverageDecision) logLine() string {
 		term = fmt.Sprintf("%.2f", d.TermDays)
 	}
 	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f (fee=%d in=%d out=%d network=%d) borrow=%d room=%d term_days=%s reason=%s",
-		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.Cost.BorrowFeeMicros, d.Cost.EntrySwapLossMicros, d.Cost.ExitSwapLossMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, term, d.Reason)
+		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, float64(d.Cost.TotalMicros), d.Cost.BorrowFeeMicros, d.Cost.EntrySwapLossMicros, d.Cost.ExitSwapLossMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, term, d.Reason)
 }
 
 type leverageDecisionLog struct {

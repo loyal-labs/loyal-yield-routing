@@ -10,9 +10,7 @@ type leverageRung struct {
 	level, up, down float64
 }
 
-// leverageLadder is the one list of levels (owner decision 2026-10-14), in
-// APY points (0.01 = 1 pt). A lane climbs no higher than its cap
-// (earnLane.maxLevel).
+// leverageLadder is the one list of levels, in APY points (0.01 = 1 pt).
 var leverageLadder = [...]leverageRung{
 	{level: 1},
 	{level: 1.5, up: 0.01, down: 0},
@@ -21,6 +19,8 @@ var leverageLadder = [...]leverageRung{
 	{level: 2.5, up: 0.025, down: 0.015},
 	{level: 3, up: 0.025, down: 0.015},
 }
+
+var firstLeveredLevel = leverageLadder[1].level
 
 func leverageRungIndex(level float64) (int, bool) {
 	for i, r := range leverageLadder {
@@ -55,7 +55,7 @@ func laneCeilingLTVBPS(lane string) int64 {
 // and nothing sits above the lane's cap.
 func heldLevel(lane string, stored float64) float64 {
 	if stored == 1 {
-		stored = 1.5
+		stored = firstLeveredLevel
 	}
 	return min(stored, laneMaxLevel(lane))
 }
@@ -64,7 +64,7 @@ func currentLeverageBand(s Snapshot) float64 {
 	if s.PositionDebtRaw <= 0 {
 		return 1
 	}
-	best, bestDiff := 1.5, int64(math.MaxInt64)
+	best, bestDiff := firstLeveredLevel, int64(math.MaxInt64)
 	for _, r := range leverageLadder[1:] {
 		diff := s.LTVBPS - leverageLevelLTVBPS(r.level)
 		if diff < 0 {
@@ -113,14 +113,7 @@ func leverageUpAllowed(m LaneEconomics, level, debtRaw float64) (float64, bool) 
 	return spread, ok && spread >= leverageLadder[i].up
 }
 
-// settledLevel is the level a lane at from settles at: the ladder climbed
-// one rung at a time, as the live rule (decideLeverageTarget) climbs it one
-// sample at a time, up to the lane's cap. A rung is taken when its step can
-// be taken today (debtTo: the cumulative rate debt reaching it; false stops
-// the climb), the spread rule holds at that debt (leverageUpAllowed) and the
-// step pays its own cost (pays: the live rule's gain test, upStepGain, on
-// the step's priceStep cost). A nil pays is the spread rule alone: the most
-// the live rule could take the lane to, where no step can be priced.
+// settledLevel is the level a lane at from settles at: rungs climbed while debtTo reaches them, the spread rule holds at that debt and pays accepts the step.
 func settledLevel(m LaneEconomics, from float64, debtTo func(level float64) (float64, bool), pays func(level, debt float64) bool) float64 {
 	level := from
 	for _, r := range leverageLadder[1:] {
@@ -137,7 +130,7 @@ func settledLevel(m LaneEconomics, from float64, debtTo func(level float64) (flo
 		if _, up := leverageUpAllowed(m, r.level, debt); !up {
 			break
 		}
-		if pays != nil && !pays(r.level, debt) {
+		if !pays(r.level, debt) {
 			break
 		}
 		level = r.level
@@ -146,7 +139,19 @@ func settledLevel(m LaneEconomics, from float64, debtTo func(level float64) (flo
 }
 
 func sizeSettledLevel(m LaneEconomics, equityRaw int64) float64 {
-	return settledLevel(m, 1, func(level float64) (float64, bool) { return levelDebtRaw(m, level, equityRaw) }, nil)
+	return settledLevel(m, 1, func(level float64) (float64, bool) { return levelDebtRaw(m, level, equityRaw) }, spreadRuleOnly)
+}
+
+func spreadRuleOnly(float64, float64) bool { return true }
+
+func economicsOf(markets []LaneEconomics, lane string) *LaneEconomics {
+	var out *LaneEconomics
+	for i := range markets {
+		if markets[i].Lane == lane {
+			out = &markets[i]
+		}
+	}
+	return out
 }
 
 func heldRungDebt(s Snapshot, level float64) (float64, bool) {
