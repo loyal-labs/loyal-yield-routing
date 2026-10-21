@@ -12,7 +12,7 @@ import (
 // so the parity test below is what binds the values to the captured graph.
 func TestBasicRuntimeRoutePinnedAddressesDecode(t *testing.T) {
 	t.Parallel()
-	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
+	for _, lane := range []string{PrimeUSDCLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)

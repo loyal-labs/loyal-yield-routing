@@ -127,7 +127,7 @@ func TestTickPersistsWithdrawalPrepareHoldBeforeRecordingOperation(t *testing.T)
 		withdrawalHealth: func(_ context.Context, h WithdrawalHealth) error { stored = h; return nil },
 	}}
 	err := w.Tick(context.Background())
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if !errors.As(err, &hold) || holdCause(hold) != "step_no_withdraw_room" || recorded || stored.Status != "unavailable" {
 		t.Fatalf("pre-operation refusal not projected: err=%v recorded=%v health=%+v", err, recorded, stored)
 	}

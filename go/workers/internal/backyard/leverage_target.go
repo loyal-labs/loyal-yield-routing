@@ -40,7 +40,7 @@ func (d leverageDecision) held(reason string) leverageDecision {
 
 func leverageSettled(s Snapshot, selector SelectorResult) bool {
 	return earnActiveLane(s.RouteLane) && s.HasPosition && s.PositionCollateralRaw > 0 &&
-		selector.Action == "KEEP" && s.Nonterminal == "" && withdrawalShortfallRaw(s) == 0 &&
+		selector.Action == SelectorKeep && s.Nonterminal == "" && withdrawalShortfallRaw(s) == 0 &&
 		s.SquadsIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0
 }
 

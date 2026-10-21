@@ -37,7 +37,7 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 		Lane  string
 		Steps []struct {
 			Leg     string
-			Request KaminoPrimeUSDCRequest
+			Request KaminoLegRequest
 		}
 	}
 	read("plan.json", &plan)
@@ -194,7 +194,7 @@ func TestPhase3KaminoProbeMatchesProduction(t *testing.T) {
 		Lane  string
 		Steps []struct {
 			Leg, WireBase64, WireSHA256 string
-			Request                     KaminoPrimeUSDCRequest
+			Request                     KaminoLegRequest
 		}
 	}
 	if err := json.Unmarshal(data, &plan); err != nil {
@@ -233,7 +233,7 @@ func TestExportPhase3KaminoControlledProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows := []any{}
-	addresses := map[string]bool{budgetClockAddress: true, bridgeSettings: true}
+	addresses := map[string]bool{budgetClockAddress: true, backyardSettings: true}
 	policies := map[string]string{}
 	for _, step := range []struct {
 		name   string

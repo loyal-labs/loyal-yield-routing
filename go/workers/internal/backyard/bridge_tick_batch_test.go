@@ -17,7 +17,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	m := readyWorkerManifest(t)
 	accounts := append(routeNAVFixture(t, 77), exactReportTicketAccount(t, 4))
 	binary.LittleEndian.PutUint64(accountAt(accounts, bridgeStrategyATA).Data[64:72], 0)
-	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{ObservationID: "tick-batch", Slot: 77, RouteKind: RouteKind, RouteLane: PhaseOneLaneID, StrategyKey: PhaseOneLaneID, Fresh: true, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: 0, SquadsIdleRaw: 6, LastReportAgeSeconds: 3600}}
+	o := Observation{ObservedAt: time.Now().UTC(), Snapshot: Snapshot{ObservationID: "tick-batch", Slot: 77, RouteKind: RouteKind, RouteLane: PrimeUSDCLaneID, StrategyKey: PrimeUSDCLaneID, Fresh: true, VoltrIdleRaw: 11, VoltrStrategyIdleRaw: 0, SquadsIdleRaw: 6, LastReportAgeSeconds: 3600}}
 	o.Snapshot = targeted(o.Snapshot)
 	o.routeBatch = &routeObservationBatch{Slot: 77, ObservationID: o.Snapshot.ObservationID, ManifestSHA256: m.SHA256, Accounts: accounts}
 	decision := Decide(o.Snapshot)
@@ -44,7 +44,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 			_ = json.Unmarshal(params[0], &addresses)
 			values := make([]any, len(addresses))
 			for i, address := range addresses {
-				if captured, ok := capturedPolicyAccount(address); ok && (!uninstalled || address == bridgeSettings) {
+				if captured, ok := capturedPolicyAccount(address); ok && (!uninstalled || address == backyardSettings) {
 					values[i] = captured
 				}
 			}

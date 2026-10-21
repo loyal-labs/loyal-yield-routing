@@ -78,7 +78,7 @@ func TestCapitalAndNAVBuildAtomicArmThenVoltrPayload(t *testing.T) {
 				writable bool
 			}{
 				{bridgeStrategy, false, false}, {reportTicketPDA, false, true},
-				{bridgeSettings, false, false}, {bridgeVault, true, false},
+				{backyardSettings, false, false}, {bridgeVault, true, false},
 				{squads.ProgramID.String(), false, false},
 			}
 			if len(arm.accounts) != len(wantArmAccounts) {

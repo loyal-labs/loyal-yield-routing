@@ -166,7 +166,7 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 			return q, "", false, nil
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable from=%s lane=%s size=%d: %v\n", from, market.Lane, size, err)
-		var hold *BudgetHold
+		var hold *PreSendHold
 		if errors.As(err, &hold) && holdCause(hold) == "selector_move_cost_exceeds_equity" {
 			return q, "selector_move_cost_exceeds_equity", true, err
 		}
@@ -285,7 +285,7 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	if quoteErr != nil {
 		enriched, quotes = append([]LaneEconomics(nil), markets...), nil
 		reason := selectorSourceQuoteUnavailable
-		var hold *BudgetHold
+		var hold *PreSendHold
 		if errors.As(quoteErr, &hold) && selectorQuoteCollectionHoldCodes[holdCause(hold)] {
 			reason = holdCause(hold)
 		}

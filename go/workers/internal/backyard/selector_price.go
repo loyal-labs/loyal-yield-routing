@@ -215,7 +215,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 }
 
 func stepStage(quote string, err error) string {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if errors.As(err, &hold) {
 		switch holdCause(hold) {
 		case "step_does_not_compile", "step_over_policy_cap", "step_amounts_invalid", "step_over_key_limit":

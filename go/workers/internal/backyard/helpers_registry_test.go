@@ -71,7 +71,7 @@ func CompileBridgeMessage(request BridgeBuildRequest) ([]byte, error) {
 }
 
 // kaminoPrimeUSDCInstruction is a Kamino leg's instruction on its own lane.
-func kaminoPrimeUSDCInstruction(request KaminoPrimeUSDCRequest) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+func kaminoPrimeUSDCInstruction(request KaminoLegRequest) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
 	return kaminoRouteInstruction(rwa, request, request.RouteLane)
 }
 
@@ -94,7 +94,7 @@ func CompileJupiterMessage(request JupiterSwapRequest) ([]byte, error) {
 	return compileJupiterMessageForDelegate(rwa, request, mustKey(bridgeDelegate))
 }
 
-func CompileKaminoMessage(request KaminoPrimeUSDCRequest) ([]byte, error) {
+func CompileKaminoMessage(request KaminoLegRequest) ([]byte, error) {
 	return compileKaminoMessageForDelegate(rwa, request, mustKey(bridgeDelegate))
 }
 

@@ -31,22 +31,22 @@ func (m RouteManifest) route(lane string) (RuntimeRoute, error) { return m.vault
 
 var errKaminoPacketUnavailable = fmt.Errorf("Kamino packet unavailable")
 
-func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoPrimeUSDCRequest, error) {
+func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoLegRequest, error) {
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
-		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
+		return KaminoLegRequest{}, errKaminoPacketUnavailable
 	}
 	route, err := m.route(lane)
 	if err != nil {
-		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
+		return KaminoLegRequest{}, errKaminoPacketUnavailable
 	}
 	discriminator := kaminoLegDiscriminator(leg)
 	if discriminator == nil {
-		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
+		return KaminoLegRequest{}, errKaminoPacketUnavailable
 	}
 	key, _ := kaminoPolicyLeg(route, leg)
 	policy, err := policies.account(key)
 	if err != nil {
-		return KaminoPrimeUSDCRequest{}, err
+		return KaminoLegRequest{}, err
 	}
 	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	metas := map[kaminoPrimeUSDCLeg][]accountMeta{kaminoLegDeposit: deposit, kaminoLegBorrow: borrow, kaminoLegRepay: repay, kaminoLegWithdraw: withdraw}[leg]
@@ -55,10 +55,10 @@ func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action A
 		accounts[i].Address, accounts[i].Signer, accounts[i].Writable = encodeBase58(item.key[:]), item.signer, item.writable
 	}
 	data := binary.LittleEndian.AppendUint64(append([]byte(nil), discriminator...), amount)
-	request := KaminoPrimeUSDCRequest{Action: action, AmountRaw: amount, Policy: policy, Accounts: accounts, Data: data,
+	request := KaminoLegRequest{Action: action, AmountRaw: amount, Policy: policy, Accounts: accounts, Data: data,
 		RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: lane}
 	if _, observedLeg, err := kaminoRouteInstruction(m.vault, request, lane); err != nil || observedLeg != leg {
-		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable
+		return KaminoLegRequest{}, errKaminoPacketUnavailable
 	}
 	return request, nil
 }

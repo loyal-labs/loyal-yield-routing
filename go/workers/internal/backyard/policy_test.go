@@ -62,7 +62,7 @@ func TestUninstalledLiteralHoldsByName(t *testing.T) {
 		}
 		changed[key] = installedPolicy{matches: matches}
 		_, err = manifest.kaminoPacketForRoute(changed, OpenRouteStep, kaminoLegBorrow, 1, blockhash, route.Lane)
-		if hold, ok := err.(*BudgetHold); !ok || holdCause(hold) != reason {
+		if hold, ok := err.(*PreSendHold); !ok || holdCause(hold) != reason {
 			t.Fatalf("%d installed accounts must hold by name, got %v", matches, err)
 		}
 	}
@@ -162,7 +162,7 @@ func capturedPolicyAccount(address string) (map[string]any, bool) {
 		return map[string]any{"data": []string{base64.StdEncoding.EncodeToString(data), "base64"}, "owner": squads.ProgramID.String(),
 			"lamports": 1, "executable": false, "rentEpoch": 0, "space": len(data)}
 	}
-	if address == bridgeSettings {
+	if address == backyardSettings {
 		data := append([]byte(nil), squads.SettingsDiscriminator[:]...)
 		data = append(data, make([]byte, 16+32)...)
 		data = append(data, 1, 0, 0, 0, 0, 0)
@@ -191,7 +191,7 @@ type testPolicyAccountData struct {
 // one full-permission signer (the executor), threshold 1, no time lock,
 // hooks or expiration.
 func encodeTestPolicy(seed uint64, p squads.Policy) (testPolicyAccountData, error) {
-	settings := solanaKey(bridgeSettings)
+	settings := solanaKey(backyardSettings)
 	address, bump, err := squads.PolicyAddress(settings, seed)
 	if err != nil {
 		return testPolicyAccountData{}, err

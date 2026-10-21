@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func repaymentEffectsFixture(t *testing.T) (KaminoPrimeUSDCRequest, ExpectedEffects, ConfirmedTransactionEvidence) {
+func repaymentEffectsFixture(t *testing.T) (KaminoLegRequest, ExpectedEffects, ConfirmedTransactionEvidence) {
 	t.Helper()
 	route := ethenaUSDePYUSD
 	source, destination := kaminoLegCustodiesForRoute(kaminoLegRepay, route)

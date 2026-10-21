@@ -41,10 +41,10 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 		build func(t *testing.T) []byte
 	}
 	var rows []row
-	for _, lane := range []string{autoAUTOPYUSD.Lane, PhaseOneLaneID, SelectedRouteID, onreONycUSDC, ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, PhaseOneLaneID} {
+	for _, lane := range []string{autoAUTOPYUSD.Lane, PrimeUSDCLaneID, SelectedRouteID, onreONycUSDC, ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, PrimeUSDCLaneID} {
 		for _, leg := range kaminoLegs {
 			open, delever := OpenRouteStep, DeleverRouteStep
-			if lane == PhaseOneLaneID {
+			if lane == PrimeUSDCLaneID {
 				open, delever = OpenRouteStep, DeleverRouteStep
 			}
 			action := open
@@ -64,7 +64,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 			}})
 		}
 	}
-	for _, lane := range []string{autoAUTOPYUSD.Lane, PhaseOneLaneID, SelectedRouteID, onreONycUSDC} {
+	for _, lane := range []string{autoAUTOPYUSD.Lane, PrimeUSDCLaneID, SelectedRouteID, onreONycUSDC} {
 		rows = append(rows, row{"initialize/" + lane, func(t *testing.T) []byte {
 			r, err := manifest.initializationRequest(policies, lane, blockhash, 17_637_760, 5000)
 			if err != nil {
@@ -91,8 +91,8 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 		}})
 	}
 	swaps := map[string][]Action{autoAUTOPYUSD.Lane: {SwapStableToCollateralStep, SwapDebtToCollateralStep, SwapCollateralToStableStep, SwapCollateralToDebtStep, SwapDebtToUSDCStep},
-		PhaseOneLaneID: {SwapStableToCollateralStep, SwapCollateralToStableStep}}
-	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, onreONycUSDC} {
+		PrimeUSDCLaneID: {SwapStableToCollateralStep, SwapCollateralToStableStep}}
+	for _, lane := range []string{PrimeUSDCLaneID, SelectedRouteID, onreONycUSDC} {
 		swaps[lane] = []Action{SwapStableToCollateralStep, SwapCollateralToStableStep}
 	}
 	for _, lane := range []string{ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {

@@ -56,7 +56,7 @@ func buildAndSignJupiterTransactionForDelegate(request JupiterSwapRequest, execu
 	return signMessage(executor, expectedDelegate, message, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
-func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoPrimeUSDCRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
+func buildAndSignKaminoPrimeUSDCTransactionForDelegate(request KaminoLegRequest, executor ed25519.PrivateKey, expectedDelegate publicKey) (SignedTransaction, error) {
 	message, err := compileKaminoMessageForDelegate(rwa, request, expectedDelegate)
 	if err != nil {
 		return SignedTransaction{}, err

@@ -15,7 +15,7 @@ func TestStrategyTwoBridgeLegsRespectPerExecutionCap(t *testing.T) {
 		return BridgeBuildRequest{
 			Action: action, AmountRaw: amountRaw, Policy: testPolicyAccount(policyKey{action: action}),
 			Report:        BridgeReport{Sequence: 100, ObservedSlot: 100, NAVAfterRaw: 1_000_000, SnapshotDigest: hex.EncodeToString(digest)},
-			AdaptorConfig: bridgeStrategy, Settings: bridgeSettings,
+			AdaptorConfig: bridgeStrategy, Settings: backyardSettings,
 			RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 		}
 	}

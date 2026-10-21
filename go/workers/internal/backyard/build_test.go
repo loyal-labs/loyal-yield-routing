@@ -31,7 +31,7 @@ func bridgeTestRequest(action Action, amount uint64) BridgeBuildRequest {
 		Action: action, AmountRaw: amount, Policy: testPolicyAccount(policyKey{action: action}),
 		Report:          BridgeReport{Sequence: 1, ObservedSlot: 1, NAVAfterRaw: 0, SnapshotDigest: hex.EncodeToString(bytes.Repeat([]byte{1}, 32))},
 		AdaptorConfig:   bridgeStrategy,
-		Settings:        bridgeSettings,
+		Settings:        backyardSettings,
 		RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 	}
 }

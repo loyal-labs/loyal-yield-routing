@@ -28,34 +28,34 @@ func kaminoTestMetas(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
 	return map[kaminoPrimeUSDCLeg][]accountMeta{kaminoLegDeposit: deposit, kaminoLegBorrow: borrow, kaminoLegRepay: repay, kaminoLegWithdraw: withdraw}[leg]
 }
 
-func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoPrimeUSDCRequest {
+func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoLegRequest {
 	var discriminator []byte
 	var metas []accountMeta
 	switch leg {
 	case kaminoLegDeposit:
-		discriminator, metas = kamino.DepositV2Discriminator[:], kaminoTestMetas(kaminoLegDeposit, PhaseOneLaneID)
+		discriminator, metas = kamino.DepositV2Discriminator[:], kaminoTestMetas(kaminoLegDeposit, PrimeUSDCLaneID)
 	case kaminoLegBorrow:
-		discriminator, metas = kamino.BorrowV2Discriminator[:], kaminoTestMetas(kaminoLegBorrow, PhaseOneLaneID)
+		discriminator, metas = kamino.BorrowV2Discriminator[:], kaminoTestMetas(kaminoLegBorrow, PrimeUSDCLaneID)
 	case kaminoLegRepay:
-		discriminator, metas = kamino.RepayV2Discriminator[:], kaminoTestMetas(kaminoLegRepay, PhaseOneLaneID)
+		discriminator, metas = kamino.RepayV2Discriminator[:], kaminoTestMetas(kaminoLegRepay, PrimeUSDCLaneID)
 	case kaminoLegWithdraw:
-		discriminator, metas = kamino.WithdrawV2Discriminator[:], kaminoTestMetas(kaminoLegWithdraw, PhaseOneLaneID)
+		discriminator, metas = kamino.WithdrawV2Discriminator[:], kaminoTestMetas(kaminoLegWithdraw, PrimeUSDCLaneID)
 	default:
 		panic("unknown test leg")
 	}
 	data := append([]byte(nil), discriminator...)
 	data = appendU64(data, 1_000_000)
-	return KaminoPrimeUSDCRequest{
+	return KaminoLegRequest{
 		// Synthetic fixture address, frozen literal: independent of the Voltr
 		// bridge policy rollover.
 		Action: action, AmountRaw: 1_000_000, Policy: "8Nd646MD6H6hQrXZuP6utG5QZjRZ44GrRmdZJGShmhnh",
-		Accounts: manifestAccounts(metas), Data: data, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99, RouteLane: PhaseOneLaneID,
+		Accounts: manifestAccounts(metas), Data: data, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99, RouteLane: PrimeUSDCLaneID,
 	}
 }
 
 func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 	t.Parallel()
-	route, err := runtimeRoute(PhaseOneLaneID)
+	route, err := runtimeRoute(PrimeUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestSharedKaminoTokenProgramAndLaneBoundary(t *testing.T) {
 	if borrow[10].key != mustKey(token2022Program) || repay[7].key != mustKey(token2022Program) {
 		t.Fatal("debt transfer used the wrong token program")
 	}
-	installed, err := runtimeRoute(PhaseOneLaneID)
+	installed, err := runtimeRoute(PrimeUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if leg != test.leg || inner.program != publicKey(kamino.ProgramID) || len(inner.accounts) != test.count {
 				t.Fatal("did not build the pinned Kamino PRIME/USDC leg")
 			}
-			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(rwa, PhaseOneLaneID)
+			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(rwa, PrimeUSDCLaneID)
 			if len(refresh) != 3 || !bytes.Equal(refresh[0].data, kamino.RefreshReserveDiscriminator[:]) ||
 				!bytes.Equal(refresh[1].data, kamino.RefreshReserveDiscriminator[:]) || !bytes.Equal(refresh[2].data, kamino.RefreshObligationDiscriminator[:]) {
 				t.Fatal("canonical KLend refresh prefix drifted")
@@ -200,7 +200,7 @@ func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
 func TestKaminoPrimeUSDCBuilderFailsClosedOnEveryAuthorityBoundary(t *testing.T) {
 	t.Parallel()
 	request := kaminoTestRequest(OpenRouteStep, kaminoLegDeposit)
-	request.Accounts[2].Address = bridgeSettings
+	request.Accounts[2].Address = backyardSettings
 	if _, _, err := kaminoPrimeUSDCInstruction(request); err == nil {
 		t.Fatal("wrong lending market accepted")
 	}

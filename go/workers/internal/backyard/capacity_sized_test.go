@@ -49,7 +49,7 @@ func TestCapacitySizedActualCarry(t *testing.T) {
 // capacityBorrowGateFixture is a borrow request whose raw reserves are
 // refreshed at slot 42, the clock's slot, with room, fee receiver and prices
 // that pass the final borrow gate.
-func capacityBorrowGateFixture(t *testing.T, sourceDebt uint64) ([]ConfirmedAccount, RuntimeRoute, KaminoPrimeUSDCRequest, ExpectedEffects) {
+func capacityBorrowGateFixture(t *testing.T, sourceDebt uint64) ([]ConfirmedAccount, RuntimeRoute, KaminoLegRequest, ExpectedEffects) {
 	t.Helper()
 	_, m, _, _, accounts, route := leverage175Fixture(t)
 	putScaledFraction(accountAt(accounts, route.Kamino.Obligation).Data[1296:1312], new(big.Int).Lsh(new(big.Int).SetUint64(sourceDebt), 60))
@@ -74,7 +74,7 @@ func capacityBorrowGateFixture(t *testing.T, sourceDebt uint64) ([]ConfirmedAcco
 	for _, address := range []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve} {
 		binary.LittleEndian.PutUint64(accountAt(accounts, address).Data[kaminoMarketPriceLastUpdatedTSOffset:], 1000)
 	}
-	r, err := m.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, route.Lane)
+	r, err := m.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegBorrow, 10_000_000, LatestBlockhash{Blockhash: backyardSettings, LastValidBlockHeight: 99}, route.Lane)
 	if err != nil {
 		t.Fatal(err)
 	}

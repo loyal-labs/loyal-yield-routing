@@ -21,7 +21,7 @@ func TestTopupDepositWirePassesThePersistedWireGate(t *testing.T) {
 		"top-up deposit (collateral, no debt)": {route.Kamino.CollateralReserve},
 		"redeposit (collateral and debt)":      {route.Kamino.CollateralReserve, route.Kamino.DebtReserve},
 	} {
-		request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 36_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, route.Lane)
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 36_000_000, LatestBlockhash{Blockhash: backyardSettings, LastValidBlockHeight: 99}, route.Lane)
 		if err != nil {
 			t.Fatal(err)
 		}

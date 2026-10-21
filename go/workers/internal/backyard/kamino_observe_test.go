@@ -118,7 +118,7 @@ func TestTargetBorrowRespectsNineDecimalCollateral(t *testing.T) {
 func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	t.Parallel()
 	c := KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Market: primePRIMEUSDC.Kamino.Market, Obligation: bridgeSettings,
+		Program: kamino.ProgramID.String(), Market: primePRIMEUSDC.Kamino.Market, Obligation: backyardSettings,
 		CollateralReserve: primePRIMEUSDC.Kamino.CollateralReserve, DebtReserve: primePRIMEUSDC.Kamino.DebtReserve,
 		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: bridgeUSDC,
 	}
@@ -147,7 +147,7 @@ func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 func TestKaminoObligationAcceptsTheFourLifecycleStates(t *testing.T) {
 	t.Parallel()
 	c := KaminoObservationConfig{
-		Program: kamino.ProgramID.String(), Market: primePRIMEUSDC.Kamino.Market, Obligation: bridgeSettings,
+		Program: kamino.ProgramID.String(), Market: primePRIMEUSDC.Kamino.Market, Obligation: backyardSettings,
 		CollateralReserve: primePRIMEUSDC.Kamino.CollateralReserve, DebtReserve: primePRIMEUSDC.Kamino.DebtReserve,
 		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: bridgeUSDC,
 	}

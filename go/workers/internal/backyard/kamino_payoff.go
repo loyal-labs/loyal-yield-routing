@@ -24,24 +24,21 @@ type KaminoPayoffBound struct {
 	AccountsSHA256     string           `json:"accountsSha256"`
 }
 
-// kaminoPayoffSteps is how many observation windows past its batch a debt's
-// payoff upper bound covers: a down step that repays all of it is sized on
-// that bound, decided, prepared, signed and landed within them.
-const kaminoPayoffSteps = 6
+const kaminoPayoffMaxObservationWindows = 6
 
-func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, steps int64) (KaminoPayoffBound, error) {
+func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, windows int64) (KaminoPayoffBound, error) {
 	var bound KaminoPayoffBound
-	if steps < 1 || steps > kaminoPayoffSteps {
+	if windows < 1 || windows > kaminoPayoffMaxObservationWindows {
 		return bound, budgetHold("invalid_payoff_execution_window")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
-	if slot <= 0 || slot > math.MaxInt64-steps*observationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
+	if slot <= 0 || slot > math.MaxInt64-windows*observationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
 		clock.Executable || len(clock.Data) != 40 {
 		return bound, budgetHold("invalid_payoff_clock")
 	}
 	clockSlot := binary.LittleEndian.Uint64(clock.Data[:8])
 	now := int64(binary.LittleEndian.Uint64(clock.Data[32:40]))
-	if clockSlot < uint64(slot) || clockSlot > uint64(slot)+1 || now <= 0 || now > math.MaxInt64-steps*kaminoPayoffWindowSeconds {
+	if clockSlot < uint64(slot) || clockSlot > uint64(slot)+1 || now <= 0 || now > math.MaxInt64-windows*kaminoPayoffWindowSeconds {
 		return bound, budgetHold("invalid_payoff_clock")
 	}
 	reserveAccount := accountAt(accounts, route.Kamino.DebtReserve)
@@ -67,8 +64,8 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 		return bound, err
 	}
 	updatedUnix := int64(terms.LastUpdateTimestamp)
-	bound = KaminoPayoffBound{ObservedSlot: slot, ChainUnix: now, ThroughSlot: int64(clockSlot) + steps*observationLagSlots(),
-		ThroughUnix: now + steps*kaminoPayoffWindowSeconds, ReserveUpdatedSlot: reserve.refreshedSlot, ReserveUpdatedUnix: updatedUnix,
+	bound = KaminoPayoffBound{ObservedSlot: slot, ChainUnix: now, ThroughSlot: int64(clockSlot) + windows*observationLagSlots(),
+		ThroughUnix: now + windows*kaminoPayoffWindowSeconds, ReserveUpdatedSlot: reserve.refreshedSlot, ReserveUpdatedUnix: updatedUnix,
 		InterestBasis: basis, MaximumRateBPS: maximumRate, ObservedDebtRaw: debt, AccountsSHA256: hashConfirmedAccounts(accounts)}
 	elapsed, unitsPerYear := bound.ThroughSlot-reserve.refreshedSlot, uint64(63_072_000)
 	if basis == kamino.TrueAPRBasis {

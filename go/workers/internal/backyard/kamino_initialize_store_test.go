@@ -96,7 +96,7 @@ func TestInitializationMigrationRetainsEngineAndLaneBoundaries(t *testing.T) {
 		action, engine, lane string
 		valid                bool
 	}{
-		{string(InitializeKaminoObligation), "backyard_rwa_v1", PhaseOneLaneID, true},
+		{string(InitializeKaminoObligation), "backyard_rwa_v1", PrimeUSDCLaneID, true},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", SelectedRouteID, true},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "OnRe/ONyc/USDC", true},
 		{string(OpenRouteStep), "backyard_rwa_v1", "OnRe/ONyc/USDC", true},

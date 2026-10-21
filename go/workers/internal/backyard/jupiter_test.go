@@ -37,7 +37,7 @@ func fixtureHTTP(client *jupiter.Client) *http.Client {
 // jupiterTestInstruction is the PRIME/USDC route's swap of action in the
 // shape the swap API returns (v2TestInstruction).
 func jupiterTestInstruction(action Action, amount, out uint64) JupiterSwapInstruction {
-	return v2TestInstruction(PhaseOneLaneID, action, amount, out, 0)
+	return v2TestInstruction(PrimeUSDCLaneID, action, amount, out, 0)
 }
 
 // v2TestInstruction is lane's shared_accounts_route_v2 of action as the swap
@@ -90,7 +90,7 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 	} {
 		request := JupiterSwapRequest{Action: test.action, AmountRaw: 1_000_000, QuotedOutputRaw: 990_000, MinimumOutputRaw: 985_050,
 			Policy:      test.policy,
-			Instruction: jupiterTestInstruction(test.action, 1_000_000, 990_000), RecentBlockhash: bridgeSettings, LastValidBlockHeight: 2, RouteLane: PhaseOneLaneID}
+			Instruction: jupiterTestInstruction(test.action, 1_000_000, 990_000), RecentBlockhash: backyardSettings, LastValidBlockHeight: 2, RouteLane: PrimeUSDCLaneID}
 		signed, err := buildAndSignJupiterTransactionForDelegate(request, key, delegate)
 		if err != nil {
 			t.Fatal(err)
@@ -115,18 +115,18 @@ func TestJupiterBuilderPinsBothExactEdgesAndPacketBoundary(t *testing.T) {
 func TestJupiterValidatorAcceptsOnlySharedDialectsAndExactCustodies(t *testing.T) {
 	t.Parallel()
 	instruction := jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
-	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err != nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID); err != nil {
 		t.Fatal(err)
 	}
 	instruction.Accounts[2].Pubkey = previousBackyardVault
-	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err == nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID); err == nil {
 		t.Fatal("accepted drifted/prior custody")
 	}
 	instruction = jupiterTestInstruction(SwapStableToCollateralStep, 100, 99)
 	data, _ := base64.StdEncoding.DecodeString(instruction.Data)
 	data[0] ^= 1
 	instruction.Data = base64.StdEncoding.EncodeToString(data)
-	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PhaseOneLaneID); err == nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 99, 98, PrimeUSDCLaneID); err == nil {
 		t.Fatal("accepted arbitrary Jupiter dialect")
 	}
 }
@@ -167,11 +167,11 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PhaseOneLaneID, SwapStableToCollateralStep, 100, 32); err != nil {
+	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PrimeUSDCLaneID, SwapStableToCollateralStep, 100, 32); err != nil {
 		t.Fatal(err)
 	}
 	companion = true
-	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PhaseOneLaneID, SwapStableToCollateralStep, 100, 32); err == nil {
+	if _, _, err := freshSwapForRoute(context.Background(), rwa, client, PrimeUSDCLaneID, SwapStableToCollateralStep, 100, 32); err == nil {
 		t.Fatal("accepted a setup instruction outside the policy contract")
 	}
 }
@@ -182,7 +182,7 @@ func TestJupiterAcceptsCanonicalSystemProgramAccount(t *testing.T) {
 	instruction.Accounts = append(instruction.Accounts, jupiter.AccountMeta{
 		Pubkey: "11111111111111111111111111111111",
 	})
-	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 95, 94, PhaseOneLaneID); err != nil {
+	if _, err := validateJupiterInstructionForRoute(rwa, instruction, SwapStableToCollateralStep, 100, 95, 94, PrimeUSDCLaneID); err != nil {
 		t.Fatal(err)
 	}
 	key, err := decodeKey("11111111111111111111111111111111")

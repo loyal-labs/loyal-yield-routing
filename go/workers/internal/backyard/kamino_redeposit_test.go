@@ -10,12 +10,12 @@ import (
 	"testing"
 )
 
-func redepositProbeRequest(t *testing.T, dir string) (KaminoPrimeUSDCRequest, []byte) {
+func redepositProbeRequest(t *testing.T, dir string) (KaminoLegRequest, []byte) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "plan.json"))
 	var plan struct {
 		LendingPrelude struct {
-			Steps []struct{ Request KaminoPrimeUSDCRequest }
+			Steps []struct{ Request KaminoLegRequest }
 		}
 	}
 	if err != nil || json.Unmarshal(data, &plan) != nil || len(plan.LendingPrelude.Steps) != 4 {

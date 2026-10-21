@@ -362,7 +362,7 @@ func TestOperatorWriterRefusesBesideTheEngineAndFreesTheLockOnClose(t *testing.T
 			return SelectorResult{}, nil
 		},
 	})
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if !errors.As(err, &hold) || holdCause(hold) != "selector_evaluate_writer_lock_unavailable" {
 		t.Fatalf("the selector command beside the engine: %v", err)
 	}

@@ -12,7 +12,7 @@ import (
 
 func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T) {
 	m := readyWorkerManifest(t)
-	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	m.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 	var previous string
 	for _, valid := range []bool{true, false} {
 		observe := productionConfirmedBatchForManifest(t, m, 77, func(accounts []ConfirmedAccount) {
@@ -33,7 +33,7 @@ func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T
 			t.Fatal(err)
 		}
 		s := o.Snapshot
-		if s.RouteLane != PhaseOneLaneID || s.CollateralIdleRaw != 3 || s.StrategyNAVRaw != 40 || s.PositionCollateralRaw != 10 {
+		if s.RouteLane != PrimeUSDCLaneID || s.CollateralIdleRaw != 3 || s.StrategyNAVRaw != 40 || s.PositionCollateralRaw != 10 {
 			t.Fatal("deposit bound changed custody or NAV", s)
 		}
 		if valid && s.MinimumCollateralDepositRaw != 3 || !valid && s.MinimumCollateralDepositRaw != 0 {
@@ -248,7 +248,7 @@ func TestViewHoldsEveryRouteObservationAccount(t *testing.T) {
 // until the queue was claimed.
 func TestCoveredDemandObservationDepositsSwappedCollateral(t *testing.T) {
 	m := primeFixtureManifest(readyWorkerManifest(t))
-	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	m.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 	accounts := productionRouteBatchAccounts(t, 77, func(accounts []ConfirmedAccount) {
 		clear(accountAt(accounts, primePRIMEUSDC.Kamino.Obligation).Data[1208:2208])
 		binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], 77)
@@ -272,7 +272,7 @@ func TestCoveredDemandObservationDepositsSwappedCollateral(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := base()
-	s.RouteLane, s.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
+	s.RouteLane, s.StrategyKey = PrimeUSDCLaneID, PrimeUSDCLaneID
 	s.WithdrawalDemandRaw, s.VoltrIdleRaw = o.Snapshot.WithdrawalDemandRaw, o.Snapshot.VoltrIdleRaw
 	s.CollateralIdleRaw, s.MinimumCollateralDepositRaw = o.Snapshot.CollateralIdleRaw, o.Snapshot.MinimumCollateralDepositRaw
 	if got := Decide(targeted(s)); s.WithdrawalDemandRaw != 5 || s.VoltrIdleRaw < 5 || got.Action != OpenRouteStep || got.AmountRaw != 4_000 {

@@ -116,7 +116,7 @@ func signedTestBuildResult(t *testing.T, key ed25519.PrivateKey, message []byte)
 		SignedWireSHA256:     sha256Bytes(wire),
 		MessageSHA256:        sha256Bytes(message),
 		TransactionSignature: encodeBase58(ed25519.Sign(key, message)),
-		RecentBlockhash:      bridgeSettings,
+		RecentBlockhash:      backyardSettings,
 		LastValidBlockHeight: 99,
 		SimulationSlot:       42,
 	}

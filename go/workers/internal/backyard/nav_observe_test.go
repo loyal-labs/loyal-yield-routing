@@ -227,7 +227,7 @@ func TestComputeRouteNAVValuesConfirmedCustodyAndPositionConservatively(t *testi
 
 func nonUSDCDebtNAVFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount) {
 	t.Helper()
-	route, err := runtimeRoute(PhaseOneLaneID)
+	route, err := runtimeRoute(PrimeUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestComputeRouteNAVAcceptsRefreshMarkerAndRejectsInvalidInputs(t *testing.T
 		}
 	})
 	t.Run("unknown custody", func(t *testing.T) {
-		accounts := append(routeNAVFixture(t, 77), ConfirmedAccount{Address: bridgeSettings, Owner: bridgeTokenProgram, Lamports: 1, Data: make([]byte, 165)})
+		accounts := append(routeNAVFixture(t, 77), ConfirmedAccount{Address: backyardSettings, Owner: bridgeTokenProgram, Lamports: 1, Data: make([]byte, 165)})
 		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "unsupported custody") {
 			t.Fatalf("unknown custody accepted: %v", err)
 		}
@@ -354,7 +354,7 @@ func TestComputeRouteNAVAcceptsRefreshMarkerAndRejectsInvalidInputs(t *testing.T
 	t.Run("unsupported obligation reserve", func(t *testing.T) {
 		accounts := routeNAVFixture(t, 77)
 		obligation := accountAt(accounts, primePRIMEUSDC.Kamino.Obligation)
-		putKey(t, obligation.Data[232:264], bridgeSettings)
+		putKey(t, obligation.Data[232:264], backyardSettings)
 		binary.LittleEndian.PutUint64(obligation.Data[264:272], 1)
 		if _, err := ComputeRouteNAV(77, accounts, manifest, nil); err == nil || !strings.Contains(err.Error(), "unsupported Kamino collateral") {
 			t.Fatalf("unsupported active position accepted: %v", err)

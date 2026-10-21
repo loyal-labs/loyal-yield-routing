@@ -369,7 +369,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 	base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
 	if earnHeldLane(route.Lane) && position.DebtRaw > 0 {
-		bound, err := decodeKaminoPayoffWindow(accounts, route, slot, kaminoPayoffSteps)
+		bound, err := decodeKaminoPayoffWindow(accounts, route, slot, kaminoPayoffMaxObservationWindows)
 		if err != nil {
 			return Observation{}, nil, err
 		}
@@ -727,12 +727,12 @@ func staleHealthRetry(state *vaultState, hold Observation, err error, refreshExh
 }
 
 func refreshSimulationFailed(err error) bool {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	return errors.As(err, &hold) && holdCause(hold) == "price_refresh_simulation_failed"
 }
 
 func transientValuationRefreshFailure(err error) bool {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if errors.As(err, &hold) {
 		if holdCause(hold) == "price_refresh_simulation_unavailable" {
 			return true

@@ -9,7 +9,7 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 	t.Parallel()
 	const slot = int64(77)
 	manifest := readyWorkerManifest(t)
-	route, _ := runtimeRoute(PhaseOneLaneID)
+	route, _ := runtimeRoute(PrimeUSDCLaneID)
 	flat := func() []ConfirmedAccount {
 		accounts := routeNAVFixture(t, slot)
 		clear(accountAt(accounts, route.Kamino.Obligation).Data[96:2208])
@@ -37,7 +37,7 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 				t.Fatalf("cash observation opened entry: %+v %v", p, err)
 			}
 			s := base()
-			s.RouteLane, s.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
+			s.RouteLane, s.StrategyKey = PrimeUSDCLaneID, PrimeUSDCLaneID
 			s.SquadsIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw = int64(nav.Custodies.SquadsUSDCraw), int64(p.EntryCapacityRaw), int64(p.EntryCapacityRaw)
 			s.LiquidationThresholdBPS, s.MaxLTVBPS = p.LiquidationThresholdBPS, p.MaxLTVBPS()
 			s.Obligation = p.Obligation

@@ -85,7 +85,7 @@ func TestUnheldOverflowRefreshRefusalNeverLatches(t *testing.T) {
 				calls++
 				for _, r := range routes {
 					if r.Lane == autoAUTOWYLDSLane {
-						return 0, nil, &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
+						return 0, nil, &PreSendHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
 					}
 				}
 				return valued(ctx, routes, addresses, minSlot)

@@ -16,12 +16,7 @@ type KaminoPrimeUSDCAccounts []struct {
 	Writable bool
 }
 
-// KaminoPrimeUSDCRequest describes one policy-wrapped leg of the fixed route.
-// OPEN is either its PRIME collateral deposit or USDC borrow leg; DELEVER is
-// either its USDC repayment or PRIME collateral withdrawal leg.  A swap is
-// intentionally outside this narrow builder and cannot be smuggled in as an
-// arbitrary program instruction.
-type KaminoPrimeUSDCRequest struct {
+type KaminoLegRequest struct {
 	Action               Action
 	AmountRaw            uint64
 	Policy               string
@@ -74,7 +69,7 @@ const (
 	kaminoLegWithdraw
 )
 
-func compileKaminoMessageForDelegate(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey) ([]byte, error) {
+func compileKaminoMessageForDelegate(v *Vault, request KaminoLegRequest, delegate publicKey) ([]byte, error) {
 	route, err := v.route(request.RouteLane)
 	if err != nil {
 		return nil, err
@@ -82,7 +77,7 @@ func compileKaminoMessageForDelegate(v *Vault, request KaminoPrimeUSDCRequest, d
 	return compileReviewedKaminoMessage(v, request, delegate, route)
 }
 
-func compileReviewedKaminoMessage(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
+func compileReviewedKaminoMessage(v *Vault, request KaminoLegRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
 	if request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Kamino blockhash lifetime")
 	}
@@ -106,7 +101,7 @@ func compileReviewedKaminoMessage(v *Vault, request KaminoPrimeUSDCRequest, dele
 // over request's topology) followed by the leg's Squads execute at its
 // policy constraint. KLend's check_refresh counts back from the top-level
 // execute, so the prefix must sit directly in front of it.
-func kaminoPolicyInstructions(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]compiledInstruction, kaminoPrimeUSDCLeg, error) {
+func kaminoPolicyInstructions(v *Vault, request KaminoLegRequest, delegate publicKey, route RuntimeRoute) ([]compiledInstruction, kaminoPrimeUSDCLeg, error) {
 	inner, leg, err := kaminoResolvedRouteInstruction(request, route)
 	if err != nil {
 		return nil, 0, err
@@ -139,7 +134,7 @@ func bytesEqual(left, right []byte) bool {
 	return true
 }
 
-func kaminoRouteInstruction(v *Vault, request KaminoPrimeUSDCRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+func kaminoRouteInstruction(v *Vault, request KaminoLegRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
 	route, err := v.route(lane)
 	if err != nil {
 		return compiledInstruction{}, 0, err
@@ -147,7 +142,7 @@ func kaminoRouteInstruction(v *Vault, request KaminoPrimeUSDCRequest, lane strin
 	return kaminoResolvedRouteInstruction(request, route)
 }
 
-func kaminoResolvedRouteInstruction(request KaminoPrimeUSDCRequest, route RuntimeRoute) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+func kaminoResolvedRouteInstruction(request KaminoLegRequest, route RuntimeRoute) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
 	lane := request.RouteLane
 	if lane == "" {
 		lane = route.Lane
@@ -210,11 +205,11 @@ func exactKaminoMetas(got, want []accountMeta) bool {
 }
 
 func kaminoPrimeUSDCRefreshInstructionsForRoute(v *Vault, lane string) []compiledInstruction {
-	refresh, _ := kaminoPrimeUSDCRefreshInstructionsForRequest(v, KaminoPrimeUSDCRequest{RouteLane: lane})
+	refresh, _ := kaminoPrimeUSDCRefreshInstructionsForRequest(v, KaminoLegRequest{RouteLane: lane})
 	return refresh
 }
 
-func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, request KaminoPrimeUSDCRequest) ([]compiledInstruction, error) {
+func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, request KaminoLegRequest) ([]compiledInstruction, error) {
 	route, err := v.route(request.RouteLane)
 	if err != nil {
 		return nil, err
@@ -222,7 +217,7 @@ func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, request KaminoPrimeU
 	return kaminoRefreshInstructionsForResolvedRoute(request, route)
 }
 
-func kaminoRefreshInstructionsForResolvedRoute(request KaminoPrimeUSDCRequest, route RuntimeRoute) ([]compiledInstruction, error) {
+func kaminoRefreshInstructionsForResolvedRoute(request KaminoLegRequest, route RuntimeRoute) ([]compiledInstruction, error) {
 	market := kaminoKey(route.Kamino.Market)
 	refreshReserve := func(reserve string) compiledInstruction {
 		return kaminoCompiled(kamino.RefreshReserve(kamino.RefreshReserveAccounts{Reserve: kaminoKey(reserve), LendingMarket: market, Scope: kaminoKey(kaminoScopePrices)}))
@@ -283,7 +278,7 @@ func wrapSquadsKaminoPolicy(v *Vault, policy, executor, expectedDelegate publicK
 }
 
 type KaminoExecutionEvidence struct {
-	Request         KaminoPrimeUSDCRequest
+	Request         KaminoLegRequest
 	ExpectedEffects ExpectedEffects
 }
 

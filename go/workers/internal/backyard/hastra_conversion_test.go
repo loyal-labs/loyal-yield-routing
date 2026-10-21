@@ -43,7 +43,7 @@ func hastraTestView(slot int64, accounts ...ConfirmedAccount) *View {
 func hastraTestChain(t *testing.T) *chain.Client {
 	t.Helper()
 	return newFakeChain(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":{"blockhash":"` + bridgeSettings + `","lastValidBlockHeight":99}}}`), nil
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":{"blockhash":"` + backyardSettings + `","lastValidBlockHeight":99}}}`), nil
 	}))
 }
 
@@ -140,7 +140,7 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 	for _, action := range []Action{SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep} {
 		t.Run(string(action), func(t *testing.T) {
 			leg, _ := hastraConversionLeg(action, autoAUTOWYLDSLane)
-			request := HastraConversionRequest{Action: action, AmountRaw: 1_000_000, Policy: policy, RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99, RouteLane: autoAUTOWYLDSLane}
+			request := HastraConversionRequest{Action: action, AmountRaw: 1_000_000, Policy: policy, RecentBlockhash: backyardSettings, LastValidBlockHeight: 99, RouteLane: autoAUTOWYLDSLane}
 			if leg != lanepolicy.HastraMintDeposit {
 				request.Price, request.PriceScale, request.PriceTimestamp = price.Price.String(), price.Scale, price.Timestamp
 			}
@@ -216,7 +216,7 @@ func TestHastraEffectsQuoteTheProgramRounding(t *testing.T) {
 			t.Fatal(row.action, err)
 		}
 		r, e := evidence.Request, evidence.ExpectedEffects
-		if r.OutputRaw != row.want || r.Policy != policy || r.RecentBlockhash != bridgeSettings || (row.action == SwapUSDCToDebtStep) != (r.Price == "") {
+		if r.OutputRaw != row.want || r.Policy != policy || r.RecentBlockhash != backyardSettings || (row.action == SwapUSDCToDebtStep) != (r.Price == "") {
 			t.Fatalf("%s request %+v, want output %d", row.action, r, row.want)
 		}
 		if _, err := DecodeExpectedEffects(rwa, mustMarshalEffects(t, e)); err != nil {

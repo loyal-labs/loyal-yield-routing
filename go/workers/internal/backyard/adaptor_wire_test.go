@@ -81,7 +81,7 @@ func TestAdaptorWireMatchesRustFixture(t *testing.T) {
 	if err != nil || !bytes.Equal(arm.data, unhex(t, f.ArmReport.Data)) {
 		t.Fatalf("ArmReport data drifted: %x err=%v", arm.data, err)
 	}
-	keys := map[string]string{"config": rwa.Strategy, "ticket": reportTicketPDA, "squads_settings": bridgeSettings, "squads_vault": rwa.squads, "squads_program": squads.ProgramID.String()}
+	keys := map[string]string{"config": rwa.Strategy, "ticket": reportTicketPDA, "squads_settings": backyardSettings, "squads_vault": rwa.squads, "squads_program": squads.ProgramID.String()}
 	if len(arm.accounts) != len(f.ArmReport.Accounts) {
 		t.Fatalf("ArmReport has %d accounts", len(arm.accounts))
 	}

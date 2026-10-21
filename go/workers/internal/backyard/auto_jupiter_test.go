@@ -44,7 +44,7 @@ func autoJupiterTestRequest(t *testing.T, action Action, amount, out uint64, fil
 	return JupiterSwapRequest{Action: action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: out * 9950 / 10000,
 		Policy:          testPolicyAccount(autoSwapKey(t, action)),
 		Instruction:     autoJupiterTestInstruction(t, action, amount, out, filler),
-		RecentBlockhash: bridgeSettings, LastValidBlockHeight: 99, RouteLane: autoAUTOPYUSD.Lane}
+		RecentBlockhash: backyardSettings, LastValidBlockHeight: 99, RouteLane: autoAUTOPYUSD.Lane}
 }
 
 func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
@@ -88,7 +88,7 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 		if body.Method != "getLatestBlockhash" {
 			t.Fatalf("fitting AUTO quote path read %s; no chain lookup read was expected", body.Method)
 		}
-		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":{"blockhash":"` + bridgeSettings + `","lastValidBlockHeight":99}}}`), nil
+		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":{"blockhash":"` + backyardSettings + `","lastValidBlockHeight":99}}}`), nil
 	})
 	decision := Decision{Action: SwapStableToCollateralStep, Reason: "candidate_quote", IdempotencyKey: "candidate-quote", AmountRaw: 1_000_000, StrategyKey: autoAUTOPYUSD.Lane}
 	evidence, err := prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, testPolicies(t), decision, 2_000_000, 0, 42)

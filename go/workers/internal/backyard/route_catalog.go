@@ -224,7 +224,7 @@ var onreONycUSDCRouteTemplate = RuntimeRoute{
 }
 
 var primePRIMEUSDCTemplate = RuntimeRoute{
-	Lane: PhaseOneLaneID, Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "USDC",
+	Lane: PrimeUSDCLaneID, Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
 		Program: kamino.ProgramID.String(),
 		Market:  fleet.KaminoFigureMarket, MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",

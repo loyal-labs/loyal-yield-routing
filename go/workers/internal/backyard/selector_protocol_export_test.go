@@ -52,7 +52,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	addresses := map[string]bool{budgetClockAddress: true, bridgeSettings: true}
+	addresses := map[string]bool{budgetClockAddress: true, backyardSettings: true}
 	policies := map[string]string{}
 	rows := []any{}
 	for _, step := range []struct {
@@ -119,7 +119,7 @@ func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
 		t.Skip("explicit retained protocol evidence required")
 	}
 	type record struct {
-		Request                KaminoPrimeUSDCRequest
+		Request                KaminoLegRequest
 		WireBase64, WireSHA256 string
 	}
 	verify := func(r record) {

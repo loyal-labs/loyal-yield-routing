@@ -92,7 +92,7 @@ func TestWorkerDispatchesAtomicStep(t *testing.T) {
 	if want.Reason != hardLTVDeleverReason {
 		t.Fatal(want)
 	}
-	request := StepRequest{Open: KaminoPrimeUSDCRequest{RouteLane: s.RouteLane}, Close: &KaminoPrimeUSDCRequest{RouteLane: s.RouteLane}}
+	request := StepRequest{Open: KaminoLegRequest{RouteLane: s.RouteLane}, Close: &KaminoLegRequest{RouteLane: s.RouteLane}}
 	var order []string
 	worker := &Worker{routeKey: productionRouteKey, manifest: readyWorkerManifest(t), runtime: tickRuntime{
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },

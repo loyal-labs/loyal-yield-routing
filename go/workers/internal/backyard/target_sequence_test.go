@@ -300,7 +300,7 @@ func TestTargetHardLTVStepsDownOrHoldsNoRoom(t *testing.T) {
 	st.obligation.BorrowFactorAdjustedDebtValueSF[0], st.obligation.BorrowedAssetsMarketValueSF[0] = 79, 79
 	if _, err := st.stepWithdrawReceipts(); err == nil {
 		t.Fatal("a reserve without withdraw room sized a down step")
-	} else if hold, ok := err.(*BudgetHold); !ok || hold.Reason != holdNoRoom {
+	} else if hold, ok := err.(*PreSendHold); !ok || hold.Reason != holdNoRoom {
 		t.Fatalf("no withdraw room is not no_room: %v", err)
 	}
 }
@@ -456,7 +456,7 @@ func TestUpStepOverTheLegCapSizesToTheCap(t *testing.T) {
 func TestStepSimulationRefusalIsChainRefused(t *testing.T) {
 	t.Parallel()
 	refused := simulationRefused(errors.New(`signed transaction simulation failed: slot=1 err={"InstructionError":[3,{"Custom":6098}]}`))
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if !errors.As(refused, &hold) || hold.Reason != holdChainRefused || !strings.Contains(hold.Details["simulation"], "6098") {
 		t.Fatalf("refusal: %v", refused)
 	}

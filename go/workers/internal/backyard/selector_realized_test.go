@@ -191,7 +191,7 @@ func TestRankingFlipsWhenTheFeedOverstatesALane(t *testing.T) {
 	in := selectorFixture()
 	now := in.Now
 	onyc, _ := runtimeRoute(onreONycUSDC)
-	prime, _ := runtimeRoute(PhaseOneLaneID)
+	prime, _ := runtimeRoute(PrimeUSDCLaneID)
 	routes := []RuntimeRoute{onyc, prime}
 	reserves := map[string]reserveEconomics{}
 	for _, r := range routes {
