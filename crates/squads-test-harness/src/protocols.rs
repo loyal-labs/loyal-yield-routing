@@ -178,7 +178,7 @@ pub fn mock_kamino_reserve_transaction(
     let transaction_accounts = if is_deposit {
         vec![
             AccountMeta::new(vault, false),
-            AccountMeta::new(reserve_accounts.reserve, false),
+            AccountMeta::new(reserve_accounts.obligation, false),
             AccountMeta::new_readonly(reserve_accounts.market, false),
             AccountMeta::new_readonly(reserve_accounts.lending_market_authority, false),
             AccountMeta::new(reserve_accounts.reserve, false),
@@ -198,7 +198,7 @@ pub fn mock_kamino_reserve_transaction(
     } else {
         vec![
             AccountMeta::new(vault, false),
-            AccountMeta::new(reserve_accounts.reserve, false),
+            AccountMeta::new(reserve_accounts.obligation, false),
             AccountMeta::new_readonly(reserve_accounts.market, false),
             AccountMeta::new_readonly(reserve_accounts.lending_market_authority, false),
             AccountMeta::new(reserve_accounts.reserve, false),
@@ -276,6 +276,7 @@ pub fn mock_kamino_reserve_route_part(
     let mut lookup_table_requirements = loyal_actions::YieldRouteLookupTableRequirements::default();
     lookup_table_requirements.add_kamino_reserve(reserve_requirements);
     lookup_table_requirements.add_vault_account(vault);
+    lookup_table_requirements.add_obligation(reserve.obligation);
     lookup_table_requirements.add_vault_token_account(reserve.vault_liquidity);
 
     MockKaminoRoutePart {
@@ -724,6 +725,8 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
         reserve_liquidity_supply,
         reserve_collateral_supply,
     );
+    let obligation = loyal_actions::derive_kamino_vanilla_obligation(vault, market);
+    seed_mock_kamino_obligation_with_standing_deposit_if_missing(svm, obligation, market, vault);
     seed_empty_system_account_if_missing(svm, lending_market_authority);
     seed_spl_mint_if_missing(svm, liquidity_mint, None, liquidity_decimals, 0);
     seed_spl_mint(
@@ -751,6 +754,7 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
 
     MockKaminoReserveTokenAccounts {
         reserve,
+        obligation,
         market,
         lending_market_authority,
         liquidity_mint,
@@ -761,6 +765,36 @@ pub fn seed_mock_kamino_reserve_spl_accounts_with_mint(
         reserve_collateral_supply,
         reserve_liquidity_supply,
     }
+}
+
+fn seed_mock_kamino_obligation_with_standing_deposit_if_missing(
+    svm: &mut LiteSVM,
+    obligation: Pubkey,
+    market: Pubkey,
+    owner: Pubkey,
+) {
+    if svm.get_account(&obligation).is_some() {
+        return;
+    }
+
+    let mut data = vec![0; 3344];
+    data[0..8].copy_from_slice(&KAMINO_OBLIGATION_DISCRIMINATOR);
+    data[32..64].copy_from_slice(market.as_ref());
+    data[64..96].copy_from_slice(owner.as_ref());
+    let standing_deposit_reserve =
+        KAMINO_OBLIGATION_FIRST_DEPOSIT_RESERVE_OFFSET + KAMINO_OBLIGATION_DEPOSIT_SLOT_LEN;
+    data[standing_deposit_reserve..standing_deposit_reserve + 32].copy_from_slice(market.as_ref());
+    svm.set_account(
+        obligation,
+        Account {
+            lamports: LAMPORTS_PER_SOL,
+            data,
+            owner: KAMINO_LEND_PROGRAM_ID,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .expect("seed mock Kamino obligation account");
 }
 
 fn seed_mock_kamino_reserve_account(

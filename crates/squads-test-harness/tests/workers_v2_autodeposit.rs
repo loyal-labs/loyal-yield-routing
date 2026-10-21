@@ -220,7 +220,7 @@ fn source_authorizations_export_connected_go_initial_state() {
         "producer":"squads-test-harness/tests/workers_v2_autodeposit.rs source_authorizations_export_connected_go_initial_state",
         "squadsProgramSha256":format!("{:x}",Sha256::digest(std::fs::read(&c.loaded_program_path).unwrap())),
         "subscriptionsProgramSha256":format!("{:x}",Sha256::digest(std::fs::read(subscriptions_path).unwrap())),
-        "mockProgramSha256":format!("{:x}",Sha256::digest(std::fs::read(std::env::var("MOCK_YIELD_PROTOCOLS_PROGRAM_SO").expect("configured fixed-price mock SBF required")).unwrap())),
+        "mockProgramSha256":format!("{:x}",Sha256::digest(std::fs::read(mock_yield_protocols_program_so_path().expect("fixed-price mock SBF built")).unwrap())),
         "initializationRentProfile":"retained low-rent Subscriptions harness; actual wallet SOL topups and default Rent restored before snapshot",
         "scope":"real Squads/Subscriptions/SPL authorization accounts; connected Go builds the financial execution packet; no KLend production claim"
     },"settings":c.pool.settings.to_string(),"wallet":wallet.to_string(),"vault":c.vault.to_string(),

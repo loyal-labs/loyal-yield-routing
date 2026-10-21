@@ -1,0 +1,104 @@
+name: Squads harness tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - package.json
+      - .github/workflows/squads-tests.yml
+
+  # Every PR reports the check; the changes job skips the tests when no
+  # Rust path changed.
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_BUILD_JOBS: "4"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: squads-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      squads: ${{ steps.diff.outputs.squads }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        # Pushes are already filtered by the push paths above.
+        run: |
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(crates/|Cargo\.(toml|lock)$|package\.json$|\.github/workflows/squads-tests\.yml$)'; then
+            echo squads=true >> "$GITHUB_OUTPUT"
+          else
+            echo squads=false >> "$GITHUB_OUTPUT"
+          fi
+
+  test-squads:
+    needs: changes
+    if: needs.changes.outputs.squads == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - name: Restore SBF build tools
+        id: sbf-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/solana-release
+            ~/.cache/solana
+          key: sbf-tools-agave-3.1.12
+      - name: Install pinned SBF build tools
+        if: steps.sbf-tools.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 https://github.com/anza-xyz/agave/releases/download/v3.1.12/solana-release-x86_64-unknown-linux-gnu.tar.bz2 -o "$RUNNER_TEMP/solana-release.tar.bz2"
+          echo "4d45dab6ccfe5321292ad6dc152f7ace71ccbddde5ecda0aaa3f92bbfe8ed803  $RUNNER_TEMP/solana-release.tar.bz2" | sha256sum --check
+          tar -xjf "$RUNNER_TEMP/solana-release.tar.bz2" -C "$HOME"
+          rm "$RUNNER_TEMP/solana-release.tar.bz2"
+      - name: Put the SBF build tools on PATH
+        run: echo "$HOME/solana-release/bin" >> "$GITHUB_PATH"
+      - name: Restore Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: squads-tests-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: squads-tests-cargo-
+      - name: Squads smart-account program fixture is present
+        run: test -s "$SQUADS_SMART_ACCOUNT_PROGRAM_SO"
+      - name: Build the SBF programs and run the harness tests
+        env:
+          RUST_TEST_NOCAPTURE: "1"
+        run: |
+          cargo build-sbf --version
+          set -o pipefail
+          bun run test:squads 2>&1 | tee "$RUNNER_TEMP/test-squads.log"
+      - name: The Squads tests ran and were not skipped
+        run: |
+          ! grep -F 'skipping real Squads' "$RUNNER_TEMP/test-squads.log"
+          grep -E '^test wallet_b_can_only_deposit_and_withdraw_main_market_usdc_reserve \.\.\. ok$' "$RUNNER_TEMP/test-squads.log"
+          grep -E '^test wallet_b_can_deposit_and_withdraw_through_one_combined_kamino_policy \.\.\. ok$' "$RUNNER_TEMP/test-squads.log"
