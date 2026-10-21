@@ -43,6 +43,18 @@ const (
 	Held            OperationStatus = "held"
 )
 
+func (s OperationStatus) unsigned() bool {
+	return s == Decided || s == Built || s == Simulated
+}
+
+func (s OperationStatus) signedUnlanded() bool {
+	return s == Signed || s == BroadcastIntent
+}
+
+func (s OperationStatus) preBroadcast() bool {
+	return s.unsigned() || s == Signed
+}
+
 type Snapshot struct {
 	ValuationSource        string `json:",omitempty"`
 	ValuationSlot          int64  `json:",omitempty"`

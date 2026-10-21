@@ -766,7 +766,7 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 }
 
 func (d *Database) MarkPreBroadcastFailed(ctx context.Context, operationID string, from OperationStatus, reason string) error {
-	if reason == "" || (from != Decided && from != Built && from != Simulated) {
+	if reason == "" || !from.unsigned() {
 		return fmt.Errorf("pre-broadcast failure requires an unsent source and explicit reason")
 	}
 	return d.transition(ctx, operationID, from, Failed, `, recovery_reason = $4`, reason)
@@ -777,7 +777,7 @@ func (d *Database) MarkPreBroadcastFailed(ctx context.Context, operationID strin
 // impossible: the persisted signature is absent and its blockhash is expired.
 // Found, ambiguous, or failed-on-chain signatures must remain recovery stops.
 func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID string, from OperationStatus) error {
-	if from != Signed && from != BroadcastIntent {
+	if !from.signedUnlanded() {
 		return fmt.Errorf("expired-absent failure requires a signed source")
 	}
 	if err := d.transition(ctx, operationID, from, Failed,

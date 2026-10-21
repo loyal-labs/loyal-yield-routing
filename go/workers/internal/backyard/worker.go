@@ -247,7 +247,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		w.holds.note(Snapshot{}, operation.StrategyKey, "", "")
 		w.events.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
-			if operation.BroadcastIntentRecorded || !preBroadcastStatus(operation.Status) {
+			if operation.BroadcastIntentRecorded || !operation.Status.preBroadcast() {
 				return &afterBroadcastError{err}
 			}
 			return err
@@ -401,12 +401,6 @@ type afterBroadcastError struct{ err error }
 
 func (e *afterBroadcastError) Error() string { return e.err.Error() }
 func (e *afterBroadcastError) Unwrap() error { return e.err }
-
-// preBroadcastStatus reports states in which lifecycle recovery can still
-// only refuse or retire the wire: a send first commits broadcast_intent.
-func preBroadcastStatus(status OperationStatus) bool {
-	return status == Decided || status == Built || status == Simulated || status == Signed
-}
 
 func isPreSendHold(err error) bool {
 	var hold *BudgetHold
