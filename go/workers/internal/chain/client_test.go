@@ -63,6 +63,20 @@ func TestRateLimitIsTypedAndKeepsTheKeyOut(t *testing.T) {
 	}
 }
 
+func TestProviderErrorTextKeepsEchoedCredentialsOut(t *testing.T) {
+	for _, code := range []int{-32602, -32603} {
+		body := map[string]any{"jsonrpc": "2.0", "id": 0, "error": map[string]any{"code": code, "message": "upstream https://host/?api-key=SECRET refused"}}
+		client := serve(t, func(request) (int, any) { return http.StatusOK, body })
+		_, err := client.Slot(context.Background(), rpc.CommitmentConfirmed)
+		if err == nil || !strings.Contains(err.Error(), "refused") {
+			t.Fatalf("code %d: want the provider's message, got %v", code, err)
+		}
+		if strings.Contains(err.Error(), "https://host") || strings.Contains(err.Error(), "SECRET") {
+			t.Fatalf("code %d: provider text leaked its URL or key: %v", code, err)
+		}
+	}
+}
+
 func TestTransportFailuresKeepTheKeyOut(t *testing.T) {
 	hang := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-hang }))
