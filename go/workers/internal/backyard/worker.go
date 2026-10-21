@@ -22,12 +22,15 @@ type Worker struct {
 	runtime  tickRuntime
 	events   *events
 	holds    holdLog
+
+	navReportKnown    bool
+	navReportSeededAt time.Time
 }
 
 type tickRuntime struct {
 	withdrawalHealth        func(context.Context, WithdrawalHealth) error
 	observeWithdrawalHealth func(context.Context) (Observation, error)
-	lastReportedNAV         func(context.Context, string) (time.Time, bool, error)
+	persistedNAVReport      func(context.Context, string) (navReport, bool, error)
 	prepareInitialization   func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error)
 	loadNonterminal         func(context.Context, string) (*PersistedOperation, error)
 	advance                 func(context.Context, PersistedOperation) error
@@ -154,8 +157,8 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		identity: newProgramIdentityWatcher(viewProgramIdentity(view)).observe,
 	}
 	return tickRuntime{
-		withdrawalHealth: database.RecordWithdrawalHealth,
-		lastReportedNAV:  database.LastReportedNAV,
+		withdrawalHealth:   database.RecordWithdrawalHealth,
+		persistedNAVReport: database.ObservedNAVReport,
 		observeWithdrawalHealth: func(ctx context.Context) (Observation, error) {
 			o, err := state.batch(ctx)
 			if err == nil {
@@ -222,10 +225,8 @@ func NewWorker(database *Database, rpc *chain.Client, view *View, jupiterClient 
 func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	var healthObservation Observation
 	var healthDecision Decision
-	defer func() {
-		w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr)
-		w.publishNAVReport(ctx)
-	}()
+	defer func() { w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr) }()
+	w.seedNAVReport(ctx)
 	stopped, err := w.stopWhileLatched(ctx)
 	if err != nil {
 		return err
@@ -258,6 +259,10 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	healthObservation = observation
 	w.events.noteSnapshot(observation.Snapshot)
+	if r, ok := observedNAVReport(observation.Snapshot); ok {
+		w.events.navReported(w.routeKey, r)
+		w.navReportKnown = true
+	}
 	w.events.leverageObserved(heldLaneLeverage(observation))
 	if w.runtime.watchRoom != nil {
 		w.runtime.watchRoom(leverageRoomWatches(observation), w.roomObserved)
@@ -325,14 +330,21 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	return w.runtime.advance(ctx, *pending)
 }
 
-func (w *Worker) publishNAVReport(ctx context.Context) {
-	if w.runtime.lastReportedNAV == nil {
+func (w *Worker) seedNAVReport(ctx context.Context) {
+	if w.navReportKnown || w.runtime.persistedNAVReport == nil || time.Since(w.navReportSeededAt) < time.Minute {
 		return
 	}
+	w.navReportSeededAt = time.Now()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if at, ok, err := w.runtime.lastReportedNAV(ctx, w.routeKey); err == nil && ok {
-		w.events.navReportRead(w.routeKey, at)
+	r, ok, err := w.runtime.persistedNAVReport(ctx, w.routeKey)
+	if err != nil {
+		w.events.navReportUnread(err)
+		return
+	}
+	w.navReportKnown = true
+	if ok {
+		w.events.navReported(w.routeKey, r)
 	}
 }
 

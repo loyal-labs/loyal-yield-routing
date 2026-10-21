@@ -86,7 +86,7 @@
       "impact": "The vault's reported NAV is stale, so deposits and withdrawals may be priced from an old value.",
       "recovery": "Verify a new REPORT_NAV reconciled and the exported report time advanced. A vanished series is not proof that reports resumed.",
       "summary": "Earn MAX NAV report is overdue",
-      "trigger": "No reconciled NAV report in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes."
+      "trigger": "A vault that holds value has had no NAV report land in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes."
     }
   },
   {

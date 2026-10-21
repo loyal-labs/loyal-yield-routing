@@ -41,7 +41,7 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 			Name: "loyal_backyard_withdrawal_observed_timestamp_seconds", Help: "Coherent observation time of durable Backyard withdrawal health.",
 		}, []string{"family", "route"}),
 		navReported: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "loyal_backyard_nav_reported_timestamp_seconds", Help: "When the last Backyard REPORT_NAV reconciled, read from the journal; no series before the first.",
+			Name: "loyal_backyard_nav_reported_timestamp_seconds", Help: "On-chain time of the vault strategy receipt's last NAV report; no series while the vault holds nothing.",
 		}, []string{"family", "route"}),
 		landed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_family_landed_total", Help: "Operations that reached their on-chain outcome.",
@@ -171,8 +171,12 @@ func (f *Facts) BackyardWithdrawalHealth(route string, attention bool, observed 
 	f.withdrawalObserved.WithLabelValues(string(FamilyBackyard), route).Set(float64(observed.Unix()))
 }
 
-func (f *Facts) BackyardNAVReported(route string, reconciled time.Time) {
-	f.navReported.WithLabelValues(string(FamilyBackyard), route).Set(float64(reconciled.Unix()))
+func (f *Facts) BackyardNAVReported(route string, reported time.Time) {
+	f.navReported.WithLabelValues(string(FamilyBackyard), route).Set(float64(reported.Unix()))
+}
+
+func (f *Facts) BackyardNAVDrained(route string) {
+	f.navReported.DeleteLabelValues(string(FamilyBackyard), route)
 }
 
 func (f *Facts) Landed(family Family) {

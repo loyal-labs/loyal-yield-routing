@@ -54,11 +54,34 @@ func (e *events) withdrawalHealthStored(h WithdrawalHealth) {
 	e.facts.BackyardWithdrawalHealth(h.RouteKey, h.Status == "operator_attention", h.ObservedAt)
 }
 
-func (e *events) navReportRead(route string, reconciled time.Time) {
+type navReport struct {
+	at         time.Time
+	holdsValue bool
+}
+
+func observedNAVReport(s Snapshot) (navReport, bool) {
+	if !s.Fresh || !s.valued() {
+		return navReport{}, false
+	}
+	return navReport{at: time.Unix(s.PriorReportUpdatedUnix, 0), holdsValue: s.StrategyNAVRaw > 0 || s.PriorReportedNAVRaw > 0 || s.HasPosition}, true
+}
+
+func (e *events) navReported(route string, r navReport) {
 	if e == nil || e.facts == nil {
 		return
 	}
-	e.facts.BackyardNAVReported(route, reconciled)
+	if r.holdsValue {
+		e.facts.BackyardNAVReported(route, r.at)
+	} else {
+		e.facts.BackyardNAVDrained(route)
+	}
+}
+
+func (e *events) navReportUnread(err error) {
+	if e == nil {
+		return
+	}
+	e.log.Warn("backyard_nav_report_unread", "detail", chain.Scrub(err.Error()))
 }
 
 func (e *events) workerStart(owner, manifestSHA256 string) {

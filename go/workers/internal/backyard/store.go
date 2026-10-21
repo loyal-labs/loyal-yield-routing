@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -448,14 +449,20 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 	return required, nil
 }
 
-const LastReportedNAVSQL = `SELECT max(updated_at) FROM loyal_yield.multiply_operations WHERE route_key = $1 AND action = '` + string(ReportNAV) + `' AND status = 'reconciled'`
-
-func (d *Database) LastReportedNAV(ctx context.Context, routeKey string) (time.Time, bool, error) {
-	var reconciled pgtype.Timestamptz
-	if err := d.pool.QueryRow(ctx, LastReportedNAVSQL, routeKey).Scan(&reconciled); err != nil {
-		return time.Time{}, false, fmt.Errorf("read last reconciled NAV report: %w", err)
+func (d *Database) ObservedNAVReport(ctx context.Context, routeKey string) (navReport, bool, error) {
+	var raw []byte
+	err := d.pool.QueryRow(ctx, `SELECT state->'observation' FROM loyal_yield.multiply_route_states WHERE route_key = $1`, routeKey).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && raw == nil {
+		return navReport{}, false, nil
 	}
-	return reconciled.Time, reconciled.Valid, nil
+	if err != nil {
+		return navReport{}, false, fmt.Errorf("read persisted route observation: %w", err)
+	}
+	var projection routeObservationProjection
+	if err := json.Unmarshal(raw, &projection); err != nil {
+		return navReport{}, false, fmt.Errorf("decode persisted route observation: %w", err)
+	}
+	return projection.navReport()
 }
 
 type ReconciledBridgeJournalState struct {
@@ -559,6 +566,16 @@ type routeObservationProjection struct {
 	ReportObservedAt            string `json:"reportObservedAt"`
 	ReportSnapshotDigest        string `json:"reportSnapshotDigest"`
 	NAVFresh                    bool   `json:"navFresh"`
+}
+
+func (p routeObservationProjection) navReport() (navReport, bool, error) {
+	computed, computedErr := strconv.ParseInt(p.ComputedStrategyNAV, 10, 64)
+	reported, reportedErr := strconv.ParseInt(p.ReportedNAVRaw, 10, 64)
+	at, atErr := time.Parse(time.RFC3339, p.ReportObservedAt)
+	if err := errors.Join(computedErr, reportedErr, atErr); err != nil {
+		return navReport{}, false, fmt.Errorf("persisted route observation NAV fields: %w", err)
+	}
+	return navReport{at: at, holdsValue: computed > 0 || reported > 0 || p.RouteStatus == "positioned"}, true, nil
 }
 
 func newRouteObservationProjection(observation Observation) (routeObservationProjection, error) {
