@@ -131,11 +131,11 @@ func TestLiveStateRestartComputesTheCurrentState(t *testing.T) {
 		if s.HeldLanes != autoAUTOPYUSD.Lane+","+autoAUTOWYLDSLane || len(o.lanes) != 2 {
 			t.Fatalf("approved=%v: held %q over %d views", approved, s.HeldLanes, len(o.lanes))
 		}
-		want := LaneTarget{Rule: holdAtTarget, Level: 1.75, UpApproved: approved}
+		want := LaneTarget{Rule: ruleHold, Level: 1.75, UpApproved: approved}
 		if s.Target != want {
 			t.Fatalf("approved=%v: target %+v, want %+v", approved, s.Target, want)
 		}
-		if d := Decide(s); d.Action != Hold || d.Reason != holdAtTarget {
+		if d := Decide(s); d.Action != Hold || d.Reason != string(holdAtTarget) {
 			t.Fatalf("approved=%v: the restart moved: %+v", approved, d)
 		}
 		lanes := make([]targetLane, len(o.lanes))
@@ -248,7 +248,7 @@ func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
 		if s.HeldLanes != base.HeldLanes || len(o.lanes) != 2 || s.Target != base.Target || s.RouteLane != base.RouteLane {
 			t.Fatalf("residue %d moved the target: held %q views %d target %+v", residue, s.HeldLanes, len(o.lanes), s.Target)
 		}
-		if d := Decide(s); d.Action != Hold || d.Reason != holdAtTarget {
+		if d := Decide(s); d.Action != Hold || d.Reason != string(holdAtTarget) {
 			t.Fatalf("residue %d: %+v", residue, d)
 		}
 		// Counted once: every view's NAV grows by the residue's value (PYUSD
@@ -297,7 +297,7 @@ func TestLiveCollateralResidueGoesWhereItsNextLegTakesIt(t *testing.T) {
 		}
 		d := Decide(s)
 		if residue == uint64(partialWithdrawalDustRaw) {
-			if s.Target.Rule != holdAtTarget || d.Action != Hold || d.Reason != holdAtTarget {
+			if s.Target.Rule != ruleHold || d.Action != Hold || d.Reason != string(holdAtTarget) {
 				t.Fatalf("dust moved: %+v %+v", s.Target, d)
 			}
 			continue

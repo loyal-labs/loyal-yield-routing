@@ -52,7 +52,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 		LiquidationThresholdBPS: 8_000, MaxLTVBPS: 8_000}
 
 	decision := Decide(snapshot)
-	if decision.Action != Hold || decision.Reason != holdAtTarget || decision.AmountRaw != 0 {
+	if decision.Action != Hold || decision.Reason != string(holdAtTarget) || decision.AmountRaw != 0 {
 		t.Fatalf("selected-lane terminal withdrawal state is not stable: %+v", decision)
 	}
 }

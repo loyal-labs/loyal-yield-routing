@@ -248,7 +248,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	w.events.inflight(operation != nil)
 	if operation != nil {
 		healthDecision = Decision{Action: RecoverTransaction}
-		w.holds.note(Snapshot{}, operation.StrategyKey, "", "")
+		w.holds.acted(operation.StrategyKey)
 		w.events.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
 			if operation.BroadcastIntentRecorded || !operation.Status.preBroadcast() {
@@ -284,13 +284,13 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	w.events.noteAction(decision.Action)
 	switch decision.Action {
 	case Hold:
-		w.holds.note(observation.Snapshot, decision.StrategyKey, decision.Reason, "")
+		w.holds.note(observation.Snapshot, decision.StrategyKey, HoldReason(decision.Reason), "")
 		return nil
 	case HoldManualRecovery:
 		w.holds.note(observation.Snapshot, decision.StrategyKey, holdStopped, decision.Reason)
 		return w.latchManualRecovery(ctx, observation, decision)
 	}
-	w.holds.note(observation.Snapshot, decision.StrategyKey, "", "")
+	w.holds.acted(decision.StrategyKey)
 	logStage("observe_decide", tickStart)
 	request, effects, prepared, err := w.prepare(ctx, decision, observation)
 	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.valued() {

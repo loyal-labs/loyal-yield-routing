@@ -139,7 +139,7 @@ func TestStepConversionExcessJoinsThePosition(t *testing.T) {
 	}
 	excess := pyusd
 	excess.DebtIdleRaw = 2_500_000
-	if got := Decide(targeted(excess)); got.Action != Hold || got.Reason != holdAtTarget {
+	if got := Decide(targeted(excess)); got.Action != Hold || got.Reason != string(holdAtTarget) {
 		t.Fatalf("PYUSD excess beside its debt started a leg: %+v", got)
 	}
 	excess.DebtIdleRaw, excess.CollateralIdleRaw = 0, 2_400_000
