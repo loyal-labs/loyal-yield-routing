@@ -15,6 +15,13 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
+type SimulatedStep string
+
+const (
+	SimulateUp   SimulatedStep = "up"
+	SimulateDown SimulatedStep = "down"
+)
+
 // RunSimulateStep builds lane's atomic up or down step from the chain as it
 // is now, through the production step assembly (assembleStep), with the
 // delegate as fee payer, and simulates it unsigned (sigVerify off, the
@@ -27,7 +34,7 @@ import (
 // converts the liquidity it redeems at the observed rate and the held
 // collateral into debt, and repays held debt plus the conversion's
 // guaranteed output.
-func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, vault, lane string, up bool, amountRaw uint64) error {
+func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, vault, lane string, direction SimulatedStep, amountRaw uint64) error {
 	v, err := findVault(vault)
 	if err != nil {
 		return err
@@ -69,14 +76,14 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 		return err
 	}
 	convert := amountRaw + st.heldDebt()
-	if !up {
+	if direction == SimulateDown {
 		liquidity, err := st.collateral.redeemLiquidityRaw(amountRaw)
 		if err != nil {
 			return err
 		}
 		convert = liquidity + st.collateralBalance
 	}
-	evidence, guaranteed, err := assembleStep(ctx, cluster, view, client, manifest, policies, st, map[bool]StepKind{true: stepUp, false: stepDown}[up], amountRaw, convert, viewSlot)
+	evidence, guaranteed, err := assembleStep(ctx, cluster, view, client, manifest, policies, st, map[SimulatedStep]StepKind{SimulateUp: stepUp, SimulateDown: stepDown}[direction], amountRaw, convert, viewSlot)
 	if err != nil {
 		return err
 	}
@@ -84,7 +91,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "lane: %s\ndir: %s\nobserved slot: %d\nLTV before: %d bps\n", lane, map[bool]string{true: "up", false: "down"}[up], slot, ltvBefore)
+	fmt.Fprintf(out, "lane: %s\ndir: %s\nobserved slot: %d\nLTV before: %d bps\n", lane, direction, slot, ltvBefore)
 	fmt.Fprintf(out, "open: %d raw\nconvert: %d raw in, %d raw guaranteed out\nclose: %d raw\n", amountRaw, convert, guaranteed, evidence.Request.Close.AmountRaw)
 	fmt.Fprintf(out, "v1: %d of %d bytes, %d of %d keys\n", step.WireBytes, maxTransactionBytes, step.Keys, maxTransactionKeys)
 	// An all-zero signature: with sigVerify off the cluster runs the message

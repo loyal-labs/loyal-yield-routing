@@ -12,12 +12,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// landResendEvery matches the fleet landing cadence; landWindow bounds one
-// dispatch's landing to a blockhash lifetime.
-var (
-	landResendEvery = time.Second
-	landWindow      = 90 * time.Second
-)
+// landWindow bounds one dispatch's landing to a blockhash lifetime.
+var landWindow = 90 * time.Second
 
 type WireBuilder interface {
 	BuildPull(ctx context.Context, request PullWireRequest) (BuiltWire, error)
@@ -142,7 +138,7 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 	out, err := chain.Land(landCtx, c.chain, chain.Attempt{
 		Wire: wire, Signature: attempt.Signature, LastValidBlockHeight: uint64(attempt.LastValidBlockHeight),
 		Required: chain.Confirmed,
-	}, landResendEvery, func(sendCtx context.Context) error {
+	}, chain.LandResendEvery, func(sendCtx context.Context) error {
 		if attempt.BroadcastCount == 0 {
 			if err := c.chain.SimulateExact(sendCtx, attempt); err != nil {
 				return err
@@ -446,7 +442,7 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 		landCtx, cancel := context.WithTimeout(scope.ctx, landWindow)
 		out, err := chain.Land(landCtx, c.chain, chain.Attempt{
 			Wire: bytes, Signature: wire.Signature, LastValidBlockHeight: uint64(wire.LastValidBlockHeight), Required: chain.Confirmed,
-		}, landResendEvery, func(context.Context) error { return c.assertOwnership(scope, claimToken) })
+		}, chain.LandResendEvery, func(context.Context) error { return c.assertOwnership(scope, claimToken) })
 		cancel()
 		if errors.Is(err, context.DeadlineExceeded) && scope.ctx.Err() == nil {
 			return false, nil

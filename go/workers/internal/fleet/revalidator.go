@@ -21,7 +21,7 @@ import (
 
 const (
 	SolanaPacketLimit   = 1232
-	defaultComputeLimit = uint64(1_400_000)
+	DefaultComputeLimit = uint64(1_400_000)
 )
 
 type FleetVault struct {
@@ -691,7 +691,7 @@ type RoutePreparation struct {
 }
 
 func prepareRoute(instructions []RouteInstruction, payer string, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error), kind string) (RoutePreparation, error) {
-	if feeLamports == 0 || computeLimit == 0 || computeLimit > defaultComputeLimit {
+	if feeLamports == 0 || computeLimit == 0 || computeLimit > DefaultComputeLimit {
 		return RoutePreparation{}, errors.New("fee or compute limit is invalid")
 	}
 	tx, missing, err := compileV0Transaction(payer, recentBlockhash, instructions, tables, feeLamports, computeLimit)

@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 func TestMain(m *testing.M) {
-	resendEvery, lookupResendEvery = time.Millisecond, time.Millisecond
+	chain.LandResendEvery = time.Millisecond
 	os.Exit(m.Run())
 }
 

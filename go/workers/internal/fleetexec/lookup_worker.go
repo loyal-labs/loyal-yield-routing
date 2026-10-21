@@ -14,9 +14,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// lookupResendEvery matches the fleet landing cadence.
-var lookupResendEvery = time.Second
-
 type LookupWorkerConfig struct {
 	Cluster, Owner                       string
 	LeaseTTL, TickDeadline, PollInterval time.Duration
@@ -222,7 +219,7 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 	var err error
 	if len(target.Wire) > 0 && !w.config.ReconcileOnly {
 		landCtx, cancel := context.WithTimeout(ctx, w.config.TickDeadline/2)
-		out, err = chain.Land(landCtx, w.chain, target, lookupResendEvery, func(sendCtx context.Context) error {
+		out, err = chain.Land(landCtx, w.chain, target, chain.LandResendEvery, func(sendCtx context.Context) error {
 			return w.store.RecordLookupSend(sendCtx, op, attempt)
 		})
 		cancel()

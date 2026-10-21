@@ -244,7 +244,7 @@ func (r *CrossMintRuntime) attempt(l SubmissionLease) chain.Attempt {
 }
 
 func (r *CrossMintRuntime) land(workCtx, ctx context.Context, l SubmissionLease, first *CrossMintMovement) error {
-	out, err := chain.Land(workCtx, r.chain, r.attempt(l), resendEvery, func(sendCtx context.Context) error {
+	out, err := chain.Land(workCtx, r.chain, r.attempt(l), chain.LandResendEvery, func(sendCtx context.Context) error {
 		if first != nil {
 			m := *first
 			first = nil
