@@ -7,6 +7,8 @@ import (
 	"math"
 
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 )
 
 type Instruction struct {
@@ -88,7 +90,7 @@ func ExecuteTransactionSyncV2(e ExecuteSync) (Instruction, error) {
 		accounts[i].IsSigner = false
 	}
 	data := append([]byte(nil), ExecuteTransactionSyncV2Discriminator[:]...)
-	data = append(data, e.AccountIndex, syncSignerCount, syncPayloadPolicy, policyPayloadProgramInteraction, optionSome)
+	data = append(data, e.AccountIndex, syncSignerCount, syncPayloadPolicy, policyPayloadProgramInteraction, anchor.OptionSomeTag)
 	data = binary.LittleEndian.AppendUint32(data, uint32(len(e.ConstraintIndexes)))
 	data = append(data, e.ConstraintIndexes...)
 	data = append(data, transactionPayloadSyncTransaction, e.AccountIndex)
@@ -104,7 +106,7 @@ func DecodeExecuteTransactionSyncV2(ix Instruction) (ExecuteSync, error) {
 	bad := errors.New("instruction is not a canonical Squads sync policy execution")
 	d := ix.Data
 	if ix.ProgramID != ProgramID || len(ix.Accounts) < 3 || ix.Accounts[1].PublicKey != ProgramID || len(d) < 17 ||
-		!bytes.Equal(d[:8], ExecuteTransactionSyncV2Discriminator[:]) || !bytes.Equal(d[9:13], []byte{syncSignerCount, syncPayloadPolicy, policyPayloadProgramInteraction, optionSome}) {
+		!bytes.Equal(d[:8], ExecuteTransactionSyncV2Discriminator[:]) || !bytes.Equal(d[9:13], []byte{syncSignerCount, syncPayloadPolicy, policyPayloadProgramInteraction, anchor.OptionSomeTag}) {
 		return out, bad
 	}
 	out.Policy, out.Signer, out.AccountIndex = ix.Accounts[0].PublicKey, ix.Accounts[2].PublicKey, d[8]

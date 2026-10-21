@@ -529,8 +529,6 @@ fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo])
     Ok(())
 }
 
-// The Multiply fixture uses the source-pinned Scope address. This local model
-// does not evaluate prices or pretend to model mature Scope/KLend risk logic.
 const VANILLA_OBLIGATION_TAG: u8 = 0;
 const VANILLA_OBLIGATION_ID: u8 = 0;
 const OBLIGATION_SPACE: usize = 3344;
@@ -560,6 +558,8 @@ const MULTIPLY_ROUTE_TAIL: [u8; 3] = [
     JUPITER_FIXTURE_SLIPPAGE_BPS[1],
     JUPITER_FIXTURE_PLATFORM_FEE_BPS,
 ];
+// The Multiply fixture uses the source-pinned Scope address. This local model
+// does not evaluate prices or pretend to model mature Scope/KLend risk logic.
 const MULTIPLY_FIXTURE_SCOPE: Pubkey = pubkey!("3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH");
 fn fixture_scope_refresh_account(account: &AccountInfo, program_id: &Pubkey) -> bool {
     !account.is_writable

@@ -302,6 +302,17 @@ const MARKET_ACCOUNT_INDEX: usize = 2;
 const RESERVE_ACCOUNT_INDEX: usize = 4;
 const LIQUIDITY_MINT_ACCOUNT_INDEX: usize = 5;
 const VAULT_LIQUIDITY_ACCOUNT_INDEX: usize = 9;
+// K-Lend validates the reserve-owned vaults, collateral mint, market authority,
+// optional farm state, sysvar, and Farms program against the pinned reserve and
+// market. Encoding those program-enforced accounts again makes the policy-create
+// transaction exceed Solana's packet limit. These are the user-controlled
+// security edges: vault authority, allowed obligations, markets/reserves,
+// liquidity mint, and vault source/destination. K-Lend binds each obligation
+// and reserve to its market, validates reserve-owned supply accounts, requires
+// the classic collateral-token program, and binds the liquidity-token program
+// to the pinned mint owner. One allowlisted deposit and one allowlisted
+// withdrawal constraint therefore preserve exact pair safety without
+// exceeding the packet limit.
 const PROTECTED_ACCOUNT_INDEXES: [usize; 6] = [
     OWNER_ACCOUNT_INDEX,
     OBLIGATION_ACCOUNT_INDEX,

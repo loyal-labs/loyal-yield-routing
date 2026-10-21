@@ -33,20 +33,8 @@ const (
 
 	UpgradedStrategyReceiptVersion = 2
 
-	optionNone = 0
-	optionSome = 1
-
-	optionSomeHeaderLen = 1 + 4
-	discriminatorLen    = 8
+	discriminatorLen = 8
 )
-
-func OptionSomeHeader(length uint32) []byte {
-	return binary.LittleEndian.AppendUint32([]byte{optionSome}, length)
-}
-
-func OptionSome(value []byte) []byte {
-	return append(OptionSomeHeader(uint32(len(value))), value...)
-}
 
 type Vault struct {
 	AssetMint, IdleATA, LPMint, Manager, Admin                                    solana.PublicKey
@@ -215,10 +203,10 @@ func strategyInstruction(discriminator [8]byte, amount uint64, adaptorInstructio
 	data := binary.LittleEndian.AppendUint64(discriminator[:], amount)
 	for _, option := range [][]byte{adaptorInstruction, adaptorArgs} {
 		if option == nil {
-			data = append(data, optionNone)
+			data = append(data, anchor.OptionNone)
 			continue
 		}
-		data = append(data, OptionSome(option)...)
+		data = append(data, anchor.OptionSome(option)...)
 	}
 	return solana.NewInstruction(ProgramID, accounts, data)
 }
@@ -253,10 +241,10 @@ var (
 // TrustfulEndValueOffset is where a Trustful deposit_strategy or
 // withdraw_strategy carries its end value: after the amount, Some(adaptor
 // discriminator) and the Some(u32 length) of its additional args.
-const TrustfulEndValueOffset = StrategyAdaptorCallOffset + optionSomeHeaderLen + discriminatorLen + optionSomeHeaderLen
+const TrustfulEndValueOffset = StrategyAdaptorCallOffset + anchor.OptionSomeHeaderLen + discriminatorLen + anchor.OptionSomeHeaderLen
 
 func TrustfulCall(discriminator [8]byte) []byte {
-	return append(OptionSome(discriminator[:]), OptionSomeHeader(8)...)
+	return append(anchor.OptionSome(discriminator[:]), anchor.OptionSomeHeader(8)...)
 }
 
 func TrustfulHoldingAuthority(strategyAuth, strategy solana.PublicKey) (solana.PublicKey, error) {

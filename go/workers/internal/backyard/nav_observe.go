@@ -183,6 +183,9 @@ func decodeStrategyReceipt(v *Vault, account ConfirmedAccount) (voltr.StrategyRe
 	if err != nil {
 		return voltr.StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt envelope or layout drifted")
 	}
+	// The custody balance is reported rather than required zero: a nonzero
+	// value must surface as a custody monitor HOLD, not as an undecodable
+	// account.
 	if receipt.Vault != solanaKey(v.VoltrVault) || receipt.Strategy != solanaKey(v.Strategy) ||
 		receipt.AdaptorProgram != solanaKey(v.Adaptor) || receipt.Version != voltr.UpgradedStrategyReceiptVersion {
 		return voltr.StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt binding or reserved bytes drifted")

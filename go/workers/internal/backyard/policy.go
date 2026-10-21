@@ -8,6 +8,7 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -582,7 +583,7 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	nothing := func(offset uint64) []squads.DataConstraintView {
 		return []squads.DataConstraintView{squads.DataU64(offset, squads.OpEquals, 0)}
 	}
-	reportArgs := voltr.OptionSomeHeader(bridgeReportLen)
+	reportArgs := anchor.OptionSomeHeader(bridgeReportLen)
 	reportArgs = append(reportArgs, bridgeReportVersion)
 	arm := func(operation byte, amount func(uint64) []squads.DataConstraintView) squads.InstructionConstraintView {
 		data := append(amount(armAmountOffset),
@@ -592,7 +593,7 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	}
 	move := func(allowed func(voltr.StrategyAllowed, []squads.AccountSlot[squads.Slot], ...squads.DataConstraintView) squads.InstructionConstraintView,
 		adaptorInstruction []byte, amount func(uint64) []squads.DataConstraintView) squads.InstructionConstraintView {
-		call := voltr.OptionSome(adaptorInstruction)
+		call := anchor.OptionSome(adaptorInstruction)
 		reportOffset := uint64(voltr.StrategyAdaptorCallOffset + len(call) + bridgeReportArgsPrefixLen)
 		data := append(amount(voltr.StrategyAmountOffset),
 			squads.DataU64(reportOffset+bridgeReportNAVOffset, squads.OpLessThanOrEqualTo, bridgeMaxNAV),

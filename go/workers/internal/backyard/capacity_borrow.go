@@ -45,6 +45,9 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 		if !kaminoObligationTermOpen(decoded, debt, clockUnixTimestamp(accounts)) {
 			return 0, nil
 		}
+		// Cross-mode (elevation group 0) is the only recipe the pilot
+		// initializes. A different group needs its exact market/paired-collateral
+		// cap model; it must not inherit cross-mode liquidity.
 		if decoded.elevationGroup != 0 || !allZero(obligation.Data[2288:2320]) {
 			return 0, nil
 		}

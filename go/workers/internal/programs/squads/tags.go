@@ -24,8 +24,6 @@ const (
 )
 
 const (
-	optionSome byte = 1
-
 	settingsActionPolicyCreate byte = 7
 	settingsActionPolicyRemove byte = 9
 

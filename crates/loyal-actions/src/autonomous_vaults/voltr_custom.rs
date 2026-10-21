@@ -352,6 +352,8 @@ fn arm_constraint(
     });
     SquadsInstructionConstraint {
         program_id: instruction.program_id,
+        // The adaptor itself rederives and authenticates Settings/vault/program.
+        // The policy only needs to pin the immutable config and its one-use PDA.
         account_constraints: selected_account_constraints(instruction, ARM_BOUND_ACCOUNT_INDEXES),
         data_constraints,
     }

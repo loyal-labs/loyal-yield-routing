@@ -59,7 +59,8 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	}
 	// An unknown basis or an early-repay penalty needs another model
 	// (kamino.Reserve.SupportedInterestTerms); term debt accrues on the same
-	// curve.
+	// curve. The 7.3.9 SDK does NOT decode the basis/timestamp: do not use its
+	// slot-only APR.
 	terms, err := kamino.DecodeReserve(chainAccount(reserveAccount, reserveAccount.Address))
 	if err != nil || terms.SupportedInterestTerms() != nil {
 		return bound, budgetHold("unsupported_payoff_interest_terms")
