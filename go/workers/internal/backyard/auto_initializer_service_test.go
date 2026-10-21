@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 // applyInitializerScopeMigrationFile executes one actual store migration file,
@@ -243,7 +244,7 @@ func openInitializerAutoScopeServiceDatabase(t *testing.T, name string, timeout 
 	// parsed-config serialization does not round-trip the unix-socket DSN.
 	serviceURL := strings.Replace(url, "/phase3_budget_test", "/"+name, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	db, err := OpenDatabase(ctx, serviceURL)
+	db, err := OpenDatabase(ctx, engine.DirectDSN(serviceURL))
 	if err != nil {
 		cancel()
 		t.Fatal(err)

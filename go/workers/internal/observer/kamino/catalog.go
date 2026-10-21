@@ -163,7 +163,7 @@ var policySupportedMarkets = []supportedMarket{
 	{fleet.KaminoFigureMarket, "Figure Market", []string{"safe", "medium", "aggressive"}},
 	{fleet.KaminoMapleMarket, "Maple Market", []string{"safe", "medium", "aggressive"}},
 	{fleet.KaminoOnReMarket, "OnRe Market", []string{"safe", "medium", "aggressive"}},
-	{"BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF", "Ethena Market", []string{"safe", "medium", "aggressive"}},
+	{fleet.KaminoEthenaMarket, "Ethena Market", []string{"safe", "medium", "aggressive"}},
 	{"DxXdAyU3kCjnyggvHmY5nAwg5cRbbmdyX3npfDMjjMek", "JLP Market", []string{"medium", "aggressive"}},
 	{"GMqmFygF5iSm5nkckYU6tieggFcR42SyjkkhK5rswFRs", "Bitcoin Market", []string{"medium", "aggressive"}},
 	{"CF32kn7AY8X1bW7ZkGcHc4X9ZWTxqKGCJk6QwrQkDcdw", "Superstate Opening Bell Market", []string{"medium", "aggressive"}},

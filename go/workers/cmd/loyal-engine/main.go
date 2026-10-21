@@ -40,7 +40,7 @@ func run(ctx context.Context) error {
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
 	if scope == "backyard" {
-		facts.Own(engine.FamilyBackyard)
+		facts.SeedFamilySeriesAtZero(engine.FamilyBackyard)
 	}
 	metrics, err := engine.ListenMetrics(os.Getenv("LOYAL_METRICS_ADDRESS"), registry)
 	if err != nil {

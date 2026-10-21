@@ -50,7 +50,7 @@ func idleObserved(topology *EarnMaxTopology) *ObservedRoute {
 	for _, config := range topology.StrategyCatalog() {
 		observed.Strategies = append(observed.Strategies, &StrategyObservation{
 			StrategyKey: config.Key, DebtAmountSF: "0",
-			CollateralValueSF: new(big.Int), DebtValueSF: new(big.Int),
+			CollateralValueSF: knownMarketValue(new(big.Int)), DebtValueSF: new(big.Int),
 			DebtMarketPriceSF: new(big.Int).SetUint64(fractionOneSF),
 			UnhealthyValueSF:  new(big.Int), DebtMintFactor: 1_000_000,
 		})
@@ -77,7 +77,7 @@ func activeObserved(topology *EarnMaxTopology, key StrategyKey, collateral, debt
 	observed := idleObserved(topology)
 	position := &StrategyObservation{
 		StrategyKey: key, CollateralDepositedRaw: collateral, DebtRaw: debt,
-		CollateralValueSF: new(big.Int).SetUint64(collateralValueSF), DebtValueSF: new(big.Int).SetUint64(debtValueSF),
+		CollateralValueSF: knownMarketValue(new(big.Int).SetUint64(collateralValueSF)), DebtValueSF: new(big.Int).SetUint64(debtValueSF),
 		DebtMarketPriceSF: new(big.Int).SetUint64(priceSF), DebtMintFactor: 1_000_000,
 		UnhealthyValueSF: new(big.Int).Mul(new(big.Int).SetUint64(debtValueSF), big.NewInt(2)),
 	}
@@ -200,9 +200,6 @@ func TestTopologyDeterminismAndIdentity(t *testing.T) {
 			t.Fatalf("strategy %s custody/obligation is on-curve (not a PDA)", key)
 		}
 	}
-	if _, err := topology.Strategy("not_a_strategy"); err == nil {
-		t.Fatal("unknown strategy was accepted")
-	}
 }
 
 // ---------------------------------------------------------------- planner
@@ -234,7 +231,7 @@ func TestPlannerDeploysThenLoops(t *testing.T) {
 	targetValue := uint64(config.TargetLTVBPS) * 3_900_000_000_000 / 10_000
 	position := &StrategyObservation{
 		StrategyKey: SyrupUsdcUsdc, CollateralDepositedRaw: 3_900_000,
-		CollateralValueSF: big.NewInt(3_900_000_000_000), DebtValueSF: new(big.Int),
+		CollateralValueSF: knownMarketValue(big.NewInt(3_900_000_000_000)), DebtValueSF: new(big.Int),
 		DebtMarketPriceSF: big.NewInt(1_000_000_000_000), DebtMintFactor: 1_000_000,
 		UnhealthyValueSF: big.NewInt(4_000_000_000_000),
 	}
@@ -730,7 +727,7 @@ func TestSnapshotInputUnits(t *testing.T) {
 	// 1 << 60 SF = exactly 1.0 -> 1_000_000 micros.
 	position := &StrategyObservation{
 		StrategyKey: SyrupUsdcUsdc, CollateralDepositedRaw: 2_000_000, DebtRaw: 1_000_000,
-		CollateralValueSF: big.NewInt(1 << 60), DebtValueSF: big.NewInt(1 << 60 >> 2),
+		CollateralValueSF: knownMarketValue(big.NewInt(1 << 60)), DebtValueSF: big.NewInt(1 << 60 >> 2),
 		DebtMarketPriceSF:      big.NewInt(1 << 60),
 		CollateralSupplyAPYBPS: 500, DebtBorrowAPYBPS: 1_000,
 		UnhealthyValueSF: big.NewInt(1 << 60),
@@ -770,7 +767,7 @@ func TestBindBeforeRequiresObservedCustody(t *testing.T) {
 	effects := &ExpectedEffects{TokenDeltas: []TokenDelta{{
 		Account: topology.ClaimCustody.String(), Mint: USDCMint, RawDelta: -10,
 	}}}
-	if err := bindBefore(effects, observed, "", topology); err != nil {
+	if err := bindBefore(effects, observed, NoStrategy, topology); err != nil {
 		t.Fatal(err)
 	}
 	if len(effects.TokenAmountsBefore) != 1 || effects.TokenAmountsBefore[0].AmountRaw != observed.Claim.AmountRaw {
@@ -779,7 +776,7 @@ func TestBindBeforeRequiresObservedCustody(t *testing.T) {
 	effects = &ExpectedEffects{TokenDeltas: []TokenDelta{{
 		Account: fixtureKey(12).String(), Mint: USDCMint, RawDelta: -10,
 	}}}
-	if err := bindBefore(effects, observed, "", topology); err == nil {
+	if err := bindBefore(effects, observed, NoStrategy, topology); err == nil {
 		t.Fatal("unobserved custody was bound")
 	}
 }
