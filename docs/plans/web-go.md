@@ -34,8 +34,7 @@ open and test. No DNS flip, no move off Vercel in this phase.
   `go/workers/internal`) serves the embedded build (`internal/webserve`),
   the `/api` routes Go owns (`internal/webapp`, huma on chi), and forwards
   every other `/api/*` to the Next deployment (`LOYAL_WEB_UPSTREAM`, default
-  `https://app.askloyal.com`). `internal/webauth` verifies Privy tokens and
-  the `loyal_email_session` cookie as apps/web does.
+  `https://app.askloyal.com`).
 - `bun run web:build` builds it all into `bin/loyal-web`.
 
 ## Facts the seed established
@@ -61,10 +60,10 @@ open and test. No DNS flip, no move off Vercel in this phase.
 | G4 blog + static | `src/routes/blog/**`, `src/overrides/blog-data.ts`, `scripts/web/static-files.ts` | blog index (with `?page=`) and every slug render from `public/blog/*/post.md` read at build; sitemap.xml, robots.txt, llms.txt, llms-full.txt emitted into dist equal to Vercel's |
 | G5 Go server | `go/workers/cmd/loyal-web/**`, `go/workers/internal/{webapp/{router,proxy,headers}.go,webserve/**}` | proxy contract (method/body/query/cookies through, Host to upstream, Set-Cookie untouched, SSE flushes, same-origin Origin rewritten to upstream's); `/ingest/*` as apps/web next.config rewrites; CSP Report-Only and frame-ancestors equal to next.config.ts:44-72,150-167; cache tiers of wen webserve.go; `go vet`, `go test -race` green |
 | G6 deploy | `deploy/hetzner/systemd/loyal-web.service`, the `web` case in `scripts/deploy-workers.sh`, `deploy/hetzner/caddy/loyal-web.caddy`, README section | `bun run deploy web <sha>` builds linux/amd64, ships, activates under the host lock, checks `/readyz` and the release, restores the previous binary on failure; unit limits (MemoryMax, CPUQuota, Nice); no IPs in the repo |
-| G7 Go API pilot | `go/workers/internal/webapp/api_*.go`, `web/packages/api` generation, `scripts/web/api-diff.ts` | one yield read family on the same path as its Next handler, using `webauth` and `Deps` only, JSON equal to Vercel's for the test account |
+| G7 Go API pilot | `go/workers/internal/webapp/api_*.go`, `web/packages/api` generation, `scripts/web/api-diff.ts` | one yield read family on the same path as its Next handler, JSON equal to Vercel's for the test account |
 
 Shared files (`routes.table.ts`, `__root.tsx`, `main.tsx`, `vite.config.ts`,
-`index.html`, `go.mod`, `internal/webapp/api.go`, `internal/webauth`) belong
+`index.html`, `go.mod`, `internal/webapp/api.go`) belong
 to the foreman: a lane asks, the foreman edits on `web-go/seed`.
 
 ## Later, not in this phase

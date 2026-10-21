@@ -21,14 +21,14 @@ type Config struct {
 	Ready    func() bool
 }
 
-func New(cfg Config, deps Deps) http.Handler {
+func New(cfg Config) http.Handler {
 	r := chi.NewRouter()
 	r.Use(headers(cfg))
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Get("/readyz", ready(cfg.ready()))
 
 	api := humachi.New(r, apiConfig())
-	RegisterAPI(api, deps)
+	RegisterAPI(api)
 	proxied := forward(cfg.Upstream)
 	r.Handle("/api/*", proxied)
 	r.Handle("/ingest/*", proxied)
@@ -94,6 +94,6 @@ func apiConfig() huma.Config {
 
 func OpenAPI() *huma.OpenAPI {
 	api := humachi.New(chi.NewRouter(), apiConfig())
-	RegisterAPI(api, Deps{})
+	RegisterAPI(api)
 	return api.OpenAPI()
 }
