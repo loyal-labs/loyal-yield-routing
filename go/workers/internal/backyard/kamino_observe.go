@@ -477,6 +477,14 @@ func keyString(data []byte) string {
 }
 func uniqueNonzero(values []string) []string {
 	seen := map[string]struct{}{}
+	// Reserves are refreshed independently on mainnet, so their LastUpdate
+	// slots are not expected to match. LastUpdate.stale means the next
+	// transaction must refresh the account; it does not invalidate a read used
+	// to build that refresh transaction. price_status is likewise not a
+	// universal validity mask (the USDC reserve legitimately reports zero).
+	// This mirrors the existing Rust Multiply observer: for a populated
+	// obligation, both reserve views must be at least as new as the obligation.
+	// Every dispatched Kamino action refreshes and simulates before persistence.
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		if value != "" {

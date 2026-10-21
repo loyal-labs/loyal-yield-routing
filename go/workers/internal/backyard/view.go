@@ -128,6 +128,11 @@ func viewAddresses() []string {
 	return uniqueNonzero(addresses)
 }
 
+// viewAddresses is every fixed account a vault's route-catalog lane observes,
+// prices, builds or admits against, for every vault, plus the pinned program
+// identity accounts. The stream bills by the byte, so no oracle or AMM pool
+// is among them.
+
 // seed is the start-up read, before the view is shared. It is not a
 // fallback: planning never reads RPC for these accounts.
 func (v *View) seed(ctx context.Context) error {
