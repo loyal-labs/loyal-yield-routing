@@ -403,6 +403,8 @@ type ObligationBefore struct {
 }
 
 type ExpectedEffects struct {
+	// Rust serializes the empty vec as [] (serde(default) is decode-only), so
+	// this field must never be omitted from the persisted JSONB.
 	TokenAmountsBefore []TokenAmountBefore `json:"tokenAmountsBefore"`
 	TokenDeltas        []TokenDelta        `json:"tokenDeltas"`
 	// Rust writes absent obligation fields as explicit nulls; so must Go.
@@ -422,31 +424,29 @@ func (e ExpectedEffects) MarshalJSON() ([]byte, error) {
 }
 
 type MultiplyOperation struct {
-	OperationID      string          `json:"operationId"`
-	RouteKey         string          `json:"routeKey"`
-	Cycle            uint64          `json:"-"`
-	EngineVersion    string          `json:"engineVersion"`
-	Action           MultiplyAction  `json:"action"`
-	StrategyKey      StrategyKey     `json:"-"`
-	Status           OperationStatus `json:"-"`
-	IDempotencyKey   string          `json:"-"`
-	ExpectedEffects  ExpectedEffects `json:"-"`
-	PolicyAccount    *string         `json:"-"`
-	PolicyDataSHA256 *string         `json:"-"`
-	// Rust serializes the empty vec as [] (serde(default) is decode-only), so
-	// this field must never be omitted from the persisted JSONB.
-	MessageSHA256          *string    `json:"-"`
-	SignedWire             []byte     `json:"-"`
-	SignedWireSHA256       *string    `json:"-"`
-	TransactionSignature   *string    `json:"-"`
-	SourceInstructionIndex *uint16    `json:"-"`
-	RecentBlockhash        *string    `json:"-"`
-	LastValidBlockHeight   *uint64    `json:"-"`
-	BroadcastIntentAt      *time.Time `json:"-"`
-	ConfirmedSlot          *uint64    `json:"-"`
-	ReconciliationSHA256   *string    `json:"-"`
-	CreatedAt              time.Time  `json:"-"`
-	UpdatedAt              time.Time  `json:"-"`
+	OperationID            string          `json:"operationId"`
+	RouteKey               string          `json:"routeKey"`
+	Cycle                  uint64          `json:"-"`
+	EngineVersion          string          `json:"engineVersion"`
+	Action                 MultiplyAction  `json:"action"`
+	StrategyKey            StrategyKey     `json:"-"`
+	Status                 OperationStatus `json:"-"`
+	IDempotencyKey         string          `json:"-"`
+	ExpectedEffects        ExpectedEffects `json:"-"`
+	PolicyAccount          *string         `json:"-"`
+	PolicyDataSHA256       *string         `json:"-"`
+	MessageSHA256          *string         `json:"-"`
+	SignedWire             []byte          `json:"-"`
+	SignedWireSHA256       *string         `json:"-"`
+	TransactionSignature   *string         `json:"-"`
+	SourceInstructionIndex *uint16         `json:"-"`
+	RecentBlockhash        *string         `json:"-"`
+	LastValidBlockHeight   *uint64         `json:"-"`
+	BroadcastIntentAt      *time.Time      `json:"-"`
+	ConfirmedSlot          *uint64         `json:"-"`
+	ReconciliationSHA256   *string         `json:"-"`
+	CreatedAt              time.Time       `json:"-"`
+	UpdatedAt              time.Time       `json:"-"`
 }
 
 func (o *MultiplyOperation) Validate() error {
