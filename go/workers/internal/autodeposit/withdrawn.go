@@ -9,9 +9,6 @@ import (
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// targetRoutedSQL is fresh work's route predicate over a row aliased target:
-// the vault's active managed row points at an active same_mint_kamino policy.
-// Without it automatic work has no destination and is never dispatched.
 const targetRoutedSQL = `EXISTS (
       SELECT 1
       FROM loyal_yield.managed_vaults AS managed
@@ -30,14 +27,8 @@ const targetRoutedSQL = `EXISTS (
         AND managed.vault_pubkey = target.vault_pubkey
   )`
 
-// withdrawnSkipReason is the slot last_error for automatic work skipped
-// because the user took everything out of yield.
 const withdrawnSkipReason = "autodeposit skipped: the user withdrew everything from yield"
 
-// VaultWithdrawn reports whether the user took everything out of yield: the
-// vault holds nothing now but held something before, as a reserve row or a
-// yield position (active or closed). A vault with no history never held
-// anything and takes the default reserve like a first deposit.
 func (s *Store) VaultWithdrawn(ctx context.Context, target *TargetExecutionContext) (bool, error) {
 	var withdrawn bool
 	err := s.pool.QueryRow(ctx, `
@@ -61,15 +52,6 @@ SELECT NOT EXISTS (
 	return withdrawn, nil
 }
 
-// skipAutomaticSlots cancels the listed slots that are still automatic,
-// unclaimed and unsigned work, and suppresses their open lots, as a closed
-// target's work is. A user-requested scheduled slot is an explicit ask to
-// deposit again and is left to run. A failed or released slot is ended too,
-// so it does not linger as an offer to deposit, but only when it holds the
-// unheld evidence schedule repair requires before requeueing one: no claim,
-// no execution and no attempt on the slot, and no live, executed or attempted
-// claim over its lots. Anything else belongs to its recovery. It returns how
-// many slots it canceled.
 func skipAutomaticSlots(ctx context.Context, tx pgx.Tx, slotIDs []int64) (int64, error) {
 	if len(slotIDs) == 0 {
 		return 0, nil
@@ -113,8 +95,6 @@ SELECT count(*) FROM slot`, slotIDs, withdrawnSkipReason).Scan(&skipped)
 	return skipped, nil
 }
 
-// SkipWithdrawnScheduledSlot ends one automatic slot of a user who withdrew
-// everything. It reports whether the slot was skipped.
 func (s *Store) SkipWithdrawnScheduledSlot(ctx context.Context, scheduledSlotID int64) (bool, error) {
 	var skipped int64
 	err := WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (err error) {

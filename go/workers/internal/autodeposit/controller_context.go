@@ -6,10 +6,6 @@ import (
 	"fmt"
 )
 
-// TargetExecutionContext is everything one execution needs about a target:
-// the frozen plan identity, the delegated pull authority and the live policy
-// facts. It is read fresh for every execution; eligibility decisions never
-// ride on a cached row.
 type TargetExecutionContext struct {
 	FreshActionable    bool
 	SetupPolicyAccount string
@@ -36,16 +32,12 @@ type TargetExecutionContext struct {
 	// loader already demanded. A nil RoutePolicy on a recovery row means the
 	// policy changed under a claim holding custody: recovery still runs, but
 	// the frozen plan, not the live policy, decides the destination.
-	RoutePolicy *RoutePolicyContext
-	// CurrentReserve/Market/LiquidityMint are the destination a fresh claim
-	// resolves from the vault's observed holdings (ResolveDepositReserve);
-	// recovery reads the plan it already has.
+	RoutePolicy          *RoutePolicyContext
 	CurrentReserve       *string
 	CurrentMarket        *string
 	CurrentLiquidityMint *string
 }
 
-// RoutePolicyContext is the active route policy side of the execution context.
 type RoutePolicyContext struct {
 	ID             int64
 	Account        string
@@ -54,9 +46,6 @@ type RoutePolicyContext struct {
 	LastSeenSlot   int64
 }
 
-// LoadTargetExecutionContext reads one target's execution context. A missing
-// row is a typed zero result, not an error: the executor reports it as
-// not-actionable instead of inventing identity.
 func (s *Store) LoadTargetExecutionContext(ctx context.Context, targetID int64) (*TargetExecutionContext, error) {
 	if s == nil || s.pool == nil {
 		return nil, errors.New("autodeposit store has no database pool")
@@ -160,8 +149,6 @@ WHERE target.id = $1
 		return nil, fmt.Errorf("autodeposit target %d has no configured wallet balance floor", targetID)
 	}
 	context.WalletBalanceFloorRaw = *floor
-	// A delegation always carries its nonce (balance_sweep_targets CHECK); a
-	// target without one has neither.
 	if nonce != nil {
 		context.RecurringDelegationNonce = uint64(*nonce)
 	}

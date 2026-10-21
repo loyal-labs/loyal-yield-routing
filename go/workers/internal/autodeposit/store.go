@@ -12,16 +12,10 @@ import (
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// Store owns the Autodeposit family's durable state in the existing
-// loyal_yield schema. It talks to the same tables the legacy Rust trigger and
-// TypeScript executor use, so a Go worker and a legacy worker contend on real
-// rows rather than on a Go-private queue.
 type Store struct {
 	pool *pgxpool.Pool
 }
 
-// NewStore wraps an existing pool. The runtime owns pool lifecycle; the store
-// only owns family SQL.
 func NewStore(pool *pgxpool.Pool) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("autodeposit store requires a database pool")
@@ -35,8 +29,6 @@ func (s *Store) Close() {
 	}
 }
 
-// ProjectionOutcome reports one projection pass. The event-id window is the
-// durable progress; the counts are observability only.
 type ProjectionOutcome struct {
 	PreviousEventID      int64
 	LastEventID          int64
@@ -55,18 +47,10 @@ type walletBalanceEventRow struct {
 	TxnSignature          *string
 	TargetActive          bool
 	WalletBalanceFloorRaw *int64
-	// OwnWithdrawal marks an event carried by the vault's own Earn
-	// withdrawal: the user moving yield back to the wallet.
-	OwnWithdrawal bool
-	// OwnPullRaw is the amount of this family's pull whose signature the
-	// event carries; its claim already took that amount from the lots.
-	OwnPullRaw int64
+	OwnWithdrawal         bool
+	OwnPullRaw            int64
 }
 
-// ProjectSurplusLotsOnce advances the surplus-lot projection by one bounded
-// batch, in one transaction. Lots and the projection offset commit together, so
-// a crash cannot acknowledge events whose lots are missing, and a replay of an
-// unacknowledged event is idempotent on its source event.
 func (s *Store) ProjectSurplusLotsOnce(ctx context.Context, batchLimit int64) (ProjectionOutcome, error) {
 	var outcome ProjectionOutcome
 	if s == nil || s.pool == nil {
@@ -115,9 +99,6 @@ func (s *Store) ProjectSurplusLotsOnce(ctx context.Context, batchLimit int64) (P
 				if !ok {
 					return &LotError{Code: LotErrAmountOverflow}
 				}
-				// Our own pull is the claim's outflow, already consumed from
-				// the claimed lots. Depleting it again wrote off twice each
-				// deposit; the TS executor's re-claimed lots had masked that.
 				external := outflow - min64(outflow, event.OwnPullRaw)
 				depleted, err := depleteLotsNewestFirst(ctx, tx, event.TargetID, external)
 				if err != nil {
@@ -148,9 +129,6 @@ func absChecked(value int64) (int64, bool) {
 	return value, true
 }
 
-// lockProjectionOffset takes the consumer's projection row and locks it for the
-// pass. The upsert-then-lock pair is the legacy trigger's row claim; a second
-// worker blocks here instead of double-projecting the same events.
 func lockProjectionOffset(ctx context.Context, tx pgx.Tx) (int64, error) {
 	var inserted int64
 	if err := tx.QueryRow(ctx, `
@@ -245,9 +223,6 @@ LIMIT $3`, lastEventID, USDCMint, limit)
 	return events, rows.Err()
 }
 
-// insertInitialSurplusLot schedules the first observed balance above the floor.
-// A paused target, a missing floor, or a balance at or below the floor creates
-// no lot: desired enablement alone is not observed eligibility.
 func insertInitialSurplusLot(ctx context.Context, tx pgx.Tx, event walletBalanceEventRow) (bool, error) {
 	if !event.TargetActive {
 		return false, nil
@@ -278,9 +253,6 @@ func insertPositiveDeltaLot(ctx context.Context, tx pgx.Tx, event walletBalanceE
 		"wallet balance increase scheduled for autodeposit after one hour")
 }
 
-// insertScheduledLot files a new lot onto the target's one scheduled slot. A slot
-// is touched only for a lot that was actually inserted: a replayed event
-// inserts nothing.
 func insertScheduledLot(ctx context.Context, tx pgx.Tx, event walletBalanceEventRow, amountRaw int64, confidence, reason string) (bool, error) {
 	eligibleAfter := ScheduledEligibleAfter(event.ObservedAt)
 	var lotID int64
@@ -344,8 +316,6 @@ RETURNING id`, targetID, eligibleAfter, USDCMint).Scan(&slotID); err != nil {
 	return slotID, nil
 }
 
-// lockTarget takes the target row, the per-target turn every slot and lot
-// writer takes before touching the target's slots or lots.
 func lockTarget(ctx context.Context, tx pgx.Tx, targetID int64) error {
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE id = $1 FOR UPDATE`, targetID); err != nil {
 		return fmt.Errorf("lock autodeposit target %d: %w", targetID, err)

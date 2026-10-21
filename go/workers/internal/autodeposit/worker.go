@@ -10,31 +10,15 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// TargetExecutor is the consumer-defined execution effect for one dispatchable
-// target. It carries no financial decisions: which claim to take, how much to
-// sweep, and when a wire may be rebroadcast are all owned by this family's
-// typed functions and Store SQL. The implementation owns only the effects this
-// package cannot do — chain reads, wire construction, broadcast — and reports
-// its typed family outcome.
 type TargetExecutor interface {
-	// Execute resolves one executable target: recovering a claim whose pull
-	// already holds custody, or claiming and sweeping a fresh scheduled slot.
-	// An unknown outcome never proves completion; with an error it is failed.
 	Execute(ctx context.Context, target ExecutableTarget) (ExecutorResult, error)
 }
 
-// WorkerDependencies are the worker's explicit dependencies and bounds.
 type WorkerDependencies struct {
-	// Store is the durable family state. Required.
-	Store *Store
-	// Executor performs one target's chain effects. Required.
+	Store    *Store
 	Executor TargetExecutor
-	// Facts receives the family's progress, inflight count and failure codes.
-	// Required.
-	Facts *engine.Facts
-	// FeePayer reads the payer every pass. Required.
+	Facts    *engine.Facts
 	FeePayer FeePayerReader
-	// Notifier tells the app a due sweep could not start. Nil disables it.
 	Notifier *SweepNotifier
 
 	PollInterval          time.Duration
@@ -45,17 +29,12 @@ type WorkerDependencies struct {
 	ReleaseBatchLimit     int64
 }
 
-// Worker is the synchronous Autodeposit runtime: one Tick is one complete
-// reconcile-and-dispatch pass. Run repeats it until the context is cancelled.
 type Worker struct {
-	store    *Store
-	executor TargetExecutor
-	facts    *engine.Facts
-	feePayer FeePayerReader
-	notifier *SweepNotifier
-	// notified holds the slots pushed during the current payer outage. The
-	// app dedupes by slot; this only keeps a long outage from re-posting
-	// every pass. A restart re-sends, which the app absorbs.
+	store           *Store
+	executor        TargetExecutor
+	facts           *engine.Facts
+	feePayer        FeePayerReader
+	notifier        *SweepNotifier
 	notified        map[int64]struct{}
 	executionErrors int
 
@@ -67,8 +46,6 @@ type Worker struct {
 	releaseBatchLimit     int64
 }
 
-// Defaults for unset dependency bounds. The poll interval is the Rust
-// trigger's: the timeout of the one wakeup loop.
 const (
 	DefaultPollInterval         = 10 * time.Second
 	DefaultProjectionBatchLimit = 500
@@ -76,20 +53,16 @@ const (
 	DefaultReleaseBatchLimit    = 100
 )
 
-// FeePayerReader reads the balance of the one account that pays every wire.
 type FeePayerReader interface {
 	FeePayerLamports(ctx context.Context) (payer string, lamports uint64, err error)
 }
 
-// notifyBudget bounds one pass's failed-sweep pushes, so a hung app endpoint
-// cannot eat the pass (each push has its own 5 s timeout).
 const notifyBudget = 15 * time.Second
 
 // WakeupChannel carries {"scheduled_slot_id": N} for each slot that becomes
 // requested (migration 0016's trigger on balance_sweep_scheduled_slots).
 const WakeupChannel = "loyal_yield_autodeposit_wakeup"
 
-// NewWorker validates the dependencies and applies the family defaults.
 func NewWorker(deps WorkerDependencies) (*Worker, error) {
 	if deps.Store == nil {
 		return nil, errors.New("autodeposit worker requires a store")
@@ -138,43 +111,22 @@ func NewWorker(deps WorkerDependencies) (*Worker, error) {
 	return worker, nil
 }
 
-// TickReport is what one pass observed and did. It is evidence for callers,
-// not control state.
 type TickReport struct {
-	Projection ProjectionOutcome
-	Outcome    ExecutorOutcome
-	Dispatched []ExecutableTarget
-	Alerts     []ExecutorFailureAlert
-	// ExecutorErrors includes errors accompanying a nonfatal family outcome.
-	// Such an outcome can retain custody safely without proving runtime health.
-	ExecutorErrors int
-	// FeePayerExhausted means the pass claimed and sent nothing.
+	Projection        ProjectionOutcome
+	Outcome           ExecutorOutcome
+	Dispatched        []ExecutableTarget
+	Alerts            []ExecutorFailureAlert
+	ExecutorErrors    int
 	FeePayerExhausted bool
 }
 
-// settled reports a pass that left nothing undone: every due target landed
-// or had nothing to act on (a capped allowance or a drained vault).
 func (r TickReport) settled() bool {
 	o := r.Outcome
 	return !r.FeePayerExhausted && o.ExecutionsAttempted == o.ExecutionsCompleted+o.ExecutionsNoop+o.ExecutionsNotActionable
 }
 
-// Tick runs one complete pass:
-//
-//  1. advance the surplus-lot projection (schedule/deplete),
-//  2. fail requested slots that were never picked up,
-//  3. release selected claims that provably never pulled,
-//  4. load executable targets — pull recovery first, fresh sweeps after,
-//  5. dispatch each through the executor and record its outcome.
-//
-// A recovery pass runs even while a target's desired_active is false: custody
-// that already left the wallet must be resolved regardless of enablement. The
-// error return covers only this pass's own housekeeping failures; executor
-// outcomes are tallied, never aborted the scan.
 func (w *Worker) Tick(ctx context.Context) (TickReport, error) { return w.tick(ctx, nil) }
 
-// tick dispatches the woken slots first. Each failure is counted under the
-// Rust trigger's OperationalError code for the same stage.
 func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 	var report TickReport
 	if err := ctx.Err(); err != nil {
@@ -205,8 +157,6 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 		w.failed("autodeposit_stale_claim_released", nil)
 	}
 
-	// One payer pays setup, pull and top-up. It is read once per pass, before
-	// any claim: a payer that cannot finish a deposit starts none (04e792e0).
 	payer, lamports, err := w.feePayer.FeePayerLamports(ctx)
 	if err != nil {
 		return report, w.failed("autodeposit_dependency_unavailable", err)
@@ -224,7 +174,6 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 	if report.FeePayerExhausted {
 		slog.Error("autodeposit fee payer is out of SOL; top up the delegated signer", "code", "autodeposit_fee_payer_exhausted",
 			"feePayer", payer, "balanceLamports", lamports, "minimumLamports", FeePayerMinimumLamports, "dueTargets", len(targets))
-		// LoyalFeePayerExhausted on the balance gauge is the one page.
 		w.notifyUnstarted(ctx, targets)
 		return report, nil
 	}
@@ -236,10 +185,6 @@ func (w *Worker) tick(ctx context.Context, hints []int64) (TickReport, error) {
 	return report, nil
 }
 
-// notifyUnstarted pushes each due fresh slot the failed sweep the TS executor
-// reported on fee-payer exhaustion (6557c221), once per slot per outage; a
-// push that did not reach the app is tried again next pass. Claims already
-// holding custody are not a promise this pass breaks.
 func (w *Worker) notifyUnstarted(ctx context.Context, targets []ExecutableTarget) {
 	if w.notifier == nil {
 		return
@@ -259,7 +204,6 @@ func (w *Worker) notifyUnstarted(ctx context.Context, targets []ExecutableTarget
 	}
 }
 
-// failed counts and logs one stable failure code. Shutdown is not a failure.
 func (w *Worker) failed(code string, err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
@@ -273,10 +217,6 @@ func (w *Worker) failed(code string, err error) error {
 	return err
 }
 
-// dispatch runs the executor over the prioritized target list in order. The
-// order is the family's recovery-starvation guarantee: it is preserved here
-// even if the executor is slow, because dispatch is synchronous. Each alert
-// an outcome deserves is counted under its code.
 func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outcome *ExecutorOutcome) []ExecutorFailureAlert {
 	var alerts []ExecutorFailureAlert
 	w.executionErrors = 0
@@ -316,10 +256,6 @@ func (w *Worker) dispatch(ctx context.Context, targets []ExecutableTarget, outco
 	return alerts
 }
 
-// Run repeats the pass until the context is cancelled. There is one wakeup:
-// a requested-slot notification or, failing that, the poll interval. A
-// failing pass is not fatal: the next one re-reads the durable state, which is
-// the family's recovery model.
 func (w *Worker) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	wake := make(chan int64, w.dispatchLimit)
@@ -337,7 +273,6 @@ func (w *Worker) Run(ctx context.Context) error {
 		cycle, cycleCancel := context.WithTimeout(ctx, runtimeCycleTimeout)
 		if report, err := w.tick(cycle, hints); err == nil {
 			if err = w.passFacts(cycle); err == nil && report.settled() {
-				// A landing marks progress itself; so does a pass with nothing undone.
 				w.facts.Progress(engine.FamilyAutodeposit)
 			}
 		}
@@ -353,7 +288,6 @@ func (w *Worker) Run(ctx context.Context) error {
 			timer.Stop()
 			hints = append(hints, slot)
 		}
-		// Wakeups already delivered ride the same pass; nothing waits for more.
 	delivered:
 		for len(hints) > 0 && len(hints) < cap(wake) {
 			select {
@@ -366,15 +300,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// passFacts reads the inflight count and the age of the oldest deposit the
-// family owes, from the rows. The clocks are the Rust overdue check's
-// (OVERDUE_AUTODEPOSIT_WORK_SQL): a selected claim's created_at, and an
-// idle-blocked slot's first-blocked time. Neither moves on retry, unlike
-// eligible_after. Lots that are due but legitimately wait (a capped period
-// allowance, an expired delegation) are not idle-blocked and not counted. An
-// idle-blocked slot counts only while it holds open lots, the wallet is still
-// above its floor and no claim owns the target: lots the wallet no longer
-// backs are owed nothing.
 func (w *Worker) passFacts(ctx context.Context) error {
 	var inflight int
 	var oldest float64
@@ -407,10 +332,6 @@ SELECT
 	return nil
 }
 
-// listen holds one LISTEN session and turns each requested-slot notification
-// into a wakeup. A lost session reconnects after the poll interval, which
-// alone drives the loop meanwhile. A full wakeup buffer drops the hint: the
-// slot is durable and the next poll dispatches it.
 func (w *Worker) listen(ctx context.Context, wake chan<- int64) {
 	for {
 		err := w.listenOnce(ctx, wake)

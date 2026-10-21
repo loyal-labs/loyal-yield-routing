@@ -8,8 +8,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// SignedWire owns exact, previously verified transaction bytes. This container
-// protects byte identity; family receipt/wire validation proves authorization.
 type SignedWire struct {
 	bytes []byte
 	hash  [32]byte

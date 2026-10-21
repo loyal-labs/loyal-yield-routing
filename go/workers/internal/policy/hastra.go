@@ -12,14 +12,10 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// HastraAmounts are a Hastra product's op amounts, raw: USDC into wYLDS
-// (mint deposit), wYLDS into AUTO (stake deposit) and AUTO into wYLDS (stake
-// redeem).
 type HastraAmounts struct {
 	MintDeposit, StakeDeposit, StakeRedeem uint64
 }
 
-// The hastra ops in policy order: a leg's value is its constraint index.
 const (
 	HastraStakeDeposit = iota
 	HastraStakeRedeem
@@ -27,10 +23,6 @@ const (
 	HastraLegs
 )
 
-// HastraConstraints are a vault's Hastra conversions between its own
-// associated token accounts, in policy order: every account pinned (the
-// vault, its three ATAs and every program account), the amount free by the
-// owner's no-limits choice for conversions.
 func HastraConstraints(vault solana.PublicKey) ([HastraLegs]squads.InstructionConstraintView, hastra.StakeAccounts, hastra.MintAccounts, error) {
 	var out [HastraLegs]squads.InstructionConstraintView
 	stake, err := hastra.OwnStake(vault)
@@ -47,11 +39,6 @@ func HastraConstraints(vault solana.PublicKey) ([HastraLegs]squads.InstructionCo
 	return out, stake, mint, nil
 }
 
-// Hastra is the product of one smart-account vault converting through Hastra
-// between its own associated token accounts: wYLDS into AUTO, AUTO into
-// wYLDS, and USDC into wYLDS. payer creates each op's destination account,
-// idempotently, outside the policy. Each op's name says what the stake price
-// quotes for it.
 func Hastra(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, payer solana.PublicKey, amounts HastraAmounts) Build {
 	return func(ctx context.Context, minSlot uint64) (Product, error) {
 		vault, _, err := squads.SmartAccountAddress(settings, vaultIndex)

@@ -16,9 +16,6 @@ import (
 
 var base64Std = base64.StdEncoding
 
-// Chain is the chain-effect capability an execution needs. It is deliberately
-// narrower than an RPC client: no account writes, no policy decisions. The
-// controller owns the durable order; the adapter owns transport.
 type Chain interface {
 	// ConfirmedTokenBalanceRaw reads one token account's current raw balance. A
 	// missing or malformed account is an error; zero requires an observed
@@ -34,14 +31,8 @@ type Chain interface {
 	// LatestBlockhash returns a fresh confirmed blockhash and its validity
 	// window, required before any wire is built.
 	LatestBlockhash(ctx context.Context) (string, int64, error)
-	// LandChain is the shared send path persisted wires land through.
 	chain.LandChain
-	// ConfirmedReceipt reads the immutable transaction receipt for the exact
-	// signature, for integer effect verification.
 	ConfirmedReceipt(ctx context.Context, signature string) (ReceiptEvidence, error)
-	// SimulateExact simulates the persisted wire's exact bytes with signature
-	// verification, before the family records anything as settled. It never
-	// replaces the blockhash.
 	SimulateExact(ctx context.Context, attempt DurableAttempt) error
 	// ConfirmedVaultPositionRaw reads the vault's deposited liquidity in the
 	// frozen reserve from confirmed chain state, with the slot it was read at.
@@ -50,14 +41,10 @@ type Chain interface {
 	ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (int64, int64, error)
 }
 
-// ErrTokenAccountAbsent reports a token account that does not exist (yet).
 var ErrTokenAccountAbsent = errors.New("required autodeposit token account is absent")
 
-// ErrAllowanceUnknown reports that the delegated allowance could not be read.
-// The controller defers instead of treating the unknown as exhaustion.
 var ErrAllowanceUnknown = errors.New("autodeposit recurring delegation allowance is unreadable")
 
-// ReceiptEffect is one token account's movement inside a confirmed transaction.
 type ReceiptEffect struct {
 	TokenAccount string
 	Mint         string
@@ -65,15 +52,12 @@ type ReceiptEffect struct {
 	PostRaw      int64
 }
 
-// ReceiptEvidence is the confirmed receipt of one signature with the token
-// movements this family verifies its effects against.
 type ReceiptEvidence struct {
 	Signature string
 	Slot      int64
 	Effects   []ReceiptEffect
 }
 
-// EffectFor returns the receipt's movement for one token account.
 func (e ReceiptEvidence) EffectFor(tokenAccount string) (ReceiptEffect, bool) {
 	for _, effect := range e.Effects {
 		if effect.TokenAccount == tokenAccount {
@@ -83,16 +67,10 @@ func (e ReceiptEvidence) EffectFor(tokenAccount string) (ReceiptEffect, bool) {
 	return ReceiptEffect{}, false
 }
 
-// RPCChain is the production Chain: the shared chain client plus the
-// family's decoders. It adds no family behavior: reads, broadcast, receipts,
-// simulation.
 type RPCChain struct {
 	*chain.Client
 }
 
-// NewRPCChain builds the production chain adapter over the shared client.
-// The recurring-delegation allowance is decoded with the official
-// loyal-actions byte layout (delegation.go); no decoder is injected.
 func NewRPCChain(client *chain.Client) *RPCChain {
 	return &RPCChain{Client: client}
 }
@@ -113,12 +91,6 @@ func (c *RPCChain) ConfirmedTokenBalanceRaw(ctx context.Context, tokenAccount, a
 	return int64(held.Amount), err
 }
 
-// RemainingDelegationAllowanceRaw reads the delegation account and decodes its
-// unused authorization with the official loyal-actions layout. The account
-// owner is checked before any byte is read, and the embedded delegator,
-// delegatee and mint must equal the frozen identity: an unrelated account can
-// never authorize this family's pull. A mismatching or corrupt account is
-// unknown, never a zero cap.
 func (c *RPCChain) RemainingDelegationAllowanceRaw(ctx context.Context, delegation string, identity DelegationIdentity) (int64, error) {
 	if _, err := solana.PublicKeyFromBase58(delegation); err != nil {
 		return 0, fmt.Errorf("%w: delegation address %q is not a public key", ErrAllowanceUnknown, delegation)
@@ -215,8 +187,6 @@ func (c *RPCChain) ConfirmedLamports(ctx context.Context, address string) (uint6
 	return accounts[0].Lamports, nil
 }
 
-// SimulateExact simulates the persisted wire's exact bytes with signature
-// verification before the family records anything as settled.
 func (c *RPCChain) SimulateExact(ctx context.Context, attempt DurableAttempt) error {
 	if _, err := persistedWireTransaction(attempt); err != nil {
 		return err
@@ -234,11 +204,6 @@ func (c *RPCChain) SimulateExact(ctx context.Context, attempt DurableAttempt) er
 	return nil
 }
 
-// ConfirmedVaultPositionRaw reads the obligation's deposited collateral for
-// the frozen reserve and converts it to liquidity through the reserve's
-// collateral exchange value, at one coherent confirmed slot. Borrowed liquidity
-// and fee liabilities remain in the 60-bit scaled-fraction domain until the
-// final flooring through the shared KLend decoder.
 func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (int64, int64, error) {
 	observedSlot, accounts, err := c.ReadAccounts(ctx, minSlot, []string{route.Obligation, plan.Reserve})
 	if err != nil {
@@ -279,13 +244,10 @@ func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPl
 	return int64(liquidity), observedSlot, nil
 }
 
-// base64StdDecode decodes the persisted wire bytes.
 func base64StdDecode(encoded string) ([]byte, error) {
 	return base64Std.DecodeString(encoded)
 }
 
-// receiptEvidence keeps the token accounts the receipt reports on both sides.
-// An account absent from one side is unknown there; it cannot prove a delta.
 func receiptEvidence(signature string, receipt chain.Receipt) (ReceiptEvidence, error) {
 	evidence := ReceiptEvidence{Signature: signature, Slot: int64(receipt.Slot)}
 	if receipt.Err != nil {

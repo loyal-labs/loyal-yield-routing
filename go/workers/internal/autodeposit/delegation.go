@@ -36,10 +36,6 @@ const (
 	delegationDataLen             = 211
 )
 
-// DelegationIdentity is the on-chain identity a delegation account must prove.
-// The delegator, delegatee and mint are the plan's frozen wallet, vault and
-// token; a delegation whose embedded keys disagree with them authorizes
-// nothing this family may pull.
 type DelegationIdentity struct {
 	Account            string
 	Delegator          string
@@ -49,11 +45,6 @@ type DelegationIdentity struct {
 	WalletTokenAccount string
 }
 
-// RemainingDelegationAllowance decodes one delegation account's unused
-// authorization. The account owner is checked against the Subscriptions
-// program before any byte is read, and the embedded delegator, delegatee and
-// mint must equal the supplied identity, so an unrelated or spoofed account
-// can never fund a sweep decision.
 func RemainingDelegationAllowance(owner string, data []byte, identity DelegationIdentity) (int64, error) {
 	if owner != SubscriptionsProgramID {
 		return 0, fmt.Errorf("delegation account %s is owned by %s, want the Subscriptions program", identity.Account, owner)
@@ -98,8 +89,6 @@ func RemainingDelegationAllowance(owner string, data []byte, identity Delegation
 	}
 	perPeriod := binary.LittleEndian.Uint64(data[delegationPerPeriodOffset : delegationPerPeriodOffset+8])
 	pulled := binary.LittleEndian.Uint64(data[delegationAmountPulledOffset : delegationAmountPulledOffset+8])
-	// A pulled counter above its period budget is a corrupt or hostile account:
-	// unknown is never zero, and a corrupt counter is never a fresh allowance.
 	if pulled > perPeriod {
 		return 0, fmt.Errorf("delegation account %s pulled %d exceeds its %d per-period budget", identity.Account, pulled, perPeriod)
 	}
@@ -117,9 +106,6 @@ func subscriptionAuthorityKey(delegator, mint []byte) ([32]byte, error) {
 	return findProgramAddress([][]byte{[]byte(subscriptionAuthoritySeed), delegator, mint}, SubscriptionsProgramID)
 }
 
-// delegationAccount derives the recurring delegation PDA the plan's identity
-// implies. A store value that disagrees with this derivation is not this
-// target's delegation and must not be read as one.
 func delegationAccountKey(subscriptionAuthority, delegator, delegatee []byte, nonce uint64) ([32]byte, error) {
 	var nonceBytes [8]byte
 	binary.LittleEndian.PutUint64(nonceBytes[:], nonce)
@@ -132,7 +118,4 @@ func subscriptionEventAuthorityKey() ([32]byte, error) {
 	return findProgramAddress([][]byte{[]byte(subscriptionEventSeed)}, SubscriptionsProgramID)
 }
 
-// ErrAllowanceCorrupt reports a delegation account whose bytes exist but do
-// not decode to a usable allowance. It is distinct from a transport failure:
-// the controller defers on either, but an operator alert reads them differently.
 var ErrAllowanceCorrupt = errors.New("autodeposit recurring delegation allowance is unreadable")

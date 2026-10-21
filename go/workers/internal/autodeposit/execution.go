@@ -12,18 +12,6 @@ import (
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// The balance_sweep_executions row is the legacy accounted-recovery contract:
-// one execution per confirmed pull, keyed by the pull signature, carrying the
-// exact wallet/custody balances the pull receipt proved. The Go executor writes
-// the same columns the TypeScript executor writes, so the recovery script and
-// this package agree on every byte of evidence.
-
-// ErrOwnershipLost is declared in claims.go; finalization maps the database's
-// lease error onto it so callers treat it exactly like any other lost lease.
-
-// CreatePullExecution inserts the execution row a confirmed pull owns and
-// leaves the pull's immutable execution_id NULL. A top-up is prepared with
-// this returned id. Replay must match every recorded effect and identity.
 func (s *Store) CreatePullExecution(ctx context.Context, claimToken string, targetID, scheduledSlotID int64, leaseToken string, plan DepositPlan, pull DurableAttempt, walletPreRaw, walletPostRaw, custodyPreRaw, custodyPostRaw int64) (int64, error) {
 	if pull.State != AttemptConfirmed || pull.ConfirmedSlot == nil {
 		return 0, fmt.Errorf("autodeposit pull %s is not confirmed; no execution row may exist", pull.Signature)
@@ -50,7 +38,6 @@ func (s *Store) CreatePullExecution(ctx context.Context, claimToken string, targ
 	dedupeKey := fmt.Sprintf("%d:autodeposit-pull:%s", targetID, pull.Signature)
 	var executionID int64
 	err = WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		// The claim lease is still the fence: a lost claim never mints accounting.
 		var ownedClaim string
 		if err := tx.QueryRow(ctx, `
 SELECT claim_token FROM loyal_yield.balance_sweep_lot_claims
@@ -108,10 +95,6 @@ LIMIT 1`,
 	return executionID, nil
 }
 
-// FinalizeConfirmedAutodeposit publishes the confirmed top-up into yield
-// accounting through the shared atomic function: deposits, holding events,
-// execution completion, lot linkage, claim and slot completion all commit or
-// roll back together. The database's lease error is surfaced as a lost claim.
 func (s *Store) FinalizeConfirmedAutodeposit(ctx context.Context, claimToken string, executionID, scheduledSlotID int64, leaseToken string, postConfirmPositionAmountRaw, postConfirmObservedSlot int64) (string, error) {
 	var status string
 	err := s.pool.QueryRow(ctx, `

@@ -16,9 +16,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// The swap/v1 API bases. Lite is keyless and rate limited (it answered 503 for
-// a few minutes on 2026-10-09). Keyed serves the same API to requests carrying
-// an API key, and also answers keyless requests under a smaller rate limit.
 const (
 	LiteBase  = "https://lite-api.jup.ag/swap/v1"
 	KeyedBase = "https://api.jup.ag/swap/v1"
@@ -26,15 +23,11 @@ const (
 
 const maxResponseBytes = 2 << 20
 
-// Client calls one swap/v1 base. It sends each request once: no retries, no
-// caching and no fallback to another host.
 type Client struct {
 	base, apiKey string
 	http         *http.Client
 }
 
-// NewClient binds an absolute base URL. A non-empty apiKey is sent as
-// x-api-key on every request.
 func NewClient(base, apiKey string, client *http.Client) (*Client, error) {
 	parsed, err := url.Parse(base)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || client == nil {
@@ -43,7 +36,6 @@ func NewClient(base, apiKey string, client *http.Client) (*Client, error) {
 	return &Client{base: strings.TrimRight(base, "/"), apiKey: apiKey, http: client}, nil
 }
 
-// QuoteRequest asks for an ExactIn route.
 type QuoteRequest struct {
 	InputMint, OutputMint string
 	Amount                uint64
@@ -52,12 +44,9 @@ type QuoteRequest struct {
 	// InstructionVersion "V2" asks for the v2 route dialects; empty leaves
 	// Jupiter's default.
 	InstructionVersion string
-	// Dexes restricts the route to these venues; empty allows any.
-	Dexes string
+	Dexes              string
 }
 
-// Quote is the part of a quote the workers read. Raw is the response as
-// received, which SwapInstructions posts back unchanged.
 type Quote struct {
 	Raw                  json.RawMessage   `json:"-"`
 	InputMint            string            `json:"inputMint"`
@@ -72,7 +61,6 @@ type Quote struct {
 	RoutePlan            []json.RawMessage `json:"routePlan"`
 }
 
-// SwapInstructions is the swap-instructions response.
 type SwapInstructions struct {
 	SwapInstruction             Instruction       `json:"swapInstruction"`
 	SetupInstructions           []json.RawMessage `json:"setupInstructions"`
@@ -82,21 +70,18 @@ type SwapInstructions struct {
 	AddressLookupTableAddresses []string          `json:"addressLookupTableAddresses"`
 }
 
-// Instruction is one instruction as the API encodes it.
 type Instruction struct {
 	ProgramID string        `json:"programId"`
 	Accounts  []AccountMeta `json:"accounts"`
-	Data      string        `json:"data"` // base64
+	Data      string        `json:"data"`
 }
 
-// AccountMeta is one instruction account as the API encodes it.
 type AccountMeta struct {
 	Pubkey     string `json:"pubkey"`
 	IsSigner   bool   `json:"isSigner"`
 	IsWritable bool   `json:"isWritable"`
 }
 
-// Decode is the instruction as the chain takes it.
 func (ix Instruction) Decode() (*solana.GenericInstruction, error) {
 	program, err := solana.PublicKeyFromBase58(ix.ProgramID)
 	if err != nil {
@@ -117,19 +102,15 @@ func (ix Instruction) Decode() (*solana.GenericInstruction, error) {
 	return solana.NewInstruction(program, metas, data), nil
 }
 
-// Null reports whether an optional JSON value is absent or null.
 func Null(value json.RawMessage) bool {
 	trimmed := bytes.TrimSpace(value)
 	return len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null"))
 }
 
-// Companions reports whether the response asks for any instruction besides
-// the swap.
 func (s SwapInstructions) Companions() bool {
 	return len(s.SetupInstructions) != 0 || len(s.OtherInstructions) != 0 || !Null(s.CleanupInstruction) || !Null(s.TokenLedgerInstruction)
 }
 
-// Quote fetches an ExactIn quote.
 func (c *Client) Quote(ctx context.Context, request QuoteRequest) (Quote, error) {
 	query := url.Values{
 		"inputMint": {request.InputMint}, "outputMint": {request.OutputMint},
@@ -158,8 +139,9 @@ func (c *Client) Quote(ctx context.Context, request QuoteRequest) (Quote, error)
 	return quote, nil
 }
 
-// SwapInstructions fetches the instructions for quote with user as the
-// swap authority, without SOL wrapping or a dynamic compute unit limit.
+// SwapInstructions returns shared_accounts_route_v2 only when the quote asked
+// for instructionVersion=V2 and useSharedAccounts is true; otherwise it
+// returns the legacy shared_accounts_route.
 func (c *Client) SwapInstructions(ctx context.Context, quote Quote, user solana.PublicKey, useSharedAccounts bool) (SwapInstructions, error) {
 	body, err := json.Marshal(map[string]any{
 		"userPublicKey": user.String(), "quoteResponse": quote.Raw,
@@ -203,8 +185,6 @@ func (c *Client) do(request *http.Request) (json.RawMessage, error) {
 	return data, nil
 }
 
-// StatusError is a Jupiter response that is not a valid 200: Code 429 is
-// the shared key's rate limit.
 type StatusError struct{ Code int }
 
 func (e *StatusError) Error() string {

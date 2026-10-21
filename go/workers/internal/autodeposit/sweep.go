@@ -1,7 +1,5 @@
 package autodeposit
 
-// SweepCaps bounds one sweep decision: how much is schedulable, what the wallet
-// actually holds above its floor, and the per-period limits that may shave it.
 type SweepCaps struct {
 	EligibleLotAmountRaw  int64
 	WalletBalanceRaw      int64
@@ -10,7 +8,6 @@ type SweepCaps struct {
 	RemainingAllowanceRaw *int64
 }
 
-// SweepDecisionKind names why a sweep did or did not happen.
 type SweepDecisionKind string
 
 const (
@@ -20,8 +17,6 @@ const (
 	SweepGo               SweepDecisionKind = "sweep"
 )
 
-// SweepAmountDecision is the sweep outcome for one target at one instant.
-// Amounts are zero unless Kind is SweepGo.
 type SweepAmountDecision struct {
 	Kind                       SweepDecisionKind
 	AmountRaw                  int64
@@ -32,17 +27,11 @@ type SweepAmountDecision struct {
 	CappedByRemainingAllowance bool
 }
 
-// SelectedLot is the per-lot split of a sweep amount.
 type SelectedLot struct {
 	LotID     int64
 	AmountRaw int64
 }
 
-// ComputeSweepAmount resolves the sweep amount from caps without picking lots.
-//
-// Order matters: the per-period cap is applied first, then the wallet floor
-// (never sweep money the user keeps), then the delegated allowance. A zero or
-// negative allowance is a hard stop, not zero-sized sweep.
 func ComputeSweepAmount(caps SweepCaps) SweepAmountDecision {
 	if caps.EligibleLotAmountRaw <= 0 {
 		return SweepAmountDecision{Kind: SweepNoEligibleLots}

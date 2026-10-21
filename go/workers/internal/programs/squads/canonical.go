@@ -98,9 +98,6 @@ func compactPubkeyTableIsTight(payload PolicyPayloadView) bool {
 	return len(referenced) == len(seen)
 }
 
-// ConstraintsEqual compares decoded constraint semantics: program, ordered
-// account clauses (index, owner, pinned keys or data predicates) and data
-// predicates. Compact pubkey-table indexes are already resolved.
 func ConstraintsEqual(left, right []InstructionConstraintView) bool {
 	if len(left) != len(right) {
 		return false
@@ -197,9 +194,9 @@ func dataConstraintsEqual(left, right []DataConstraintView) bool {
 // lock, start or expiration. It is loyal-actions squads.rs
 // serialize_settings_actions for that action.
 func appendLegacyPolicyCreate(out []byte, seed uint64, accountIndex uint8, constraints []InstructionConstraintView, limits []SpendingLimitView, delegate solana.PublicKey) ([]byte, error) {
-	out = append(out, 7)                              // SettingsAction::PolicyCreate
-	out = binary.LittleEndian.AppendUint64(out, seed) // seed
-	out = append(out, 3, accountIndex)                // LegacyProgramInteraction
+	out = append(out, 7) // SettingsAction::PolicyCreate
+	out = binary.LittleEndian.AppendUint64(out, seed)
+	out = append(out, 3, accountIndex) // LegacyProgramInteraction
 	out = binary.LittleEndian.AppendUint32(out, uint32(len(constraints)))
 	for _, constraint := range constraints {
 		out = append(out, constraint.ProgramID[:]...)
@@ -233,9 +230,6 @@ func appendLegacyPolicyCreate(out []byte, seed uint64, accountIndex uint8, const
 	out = append(out, 0, 0) // pre_hook, post_hook
 	out = binary.LittleEndian.AppendUint32(out, uint32(len(limits)))
 	for _, limit := range limits {
-		// A LimitedSpendingLimit states its mint, window and amount per
-		// period; Squads starts it at zero use, with no accumulation, per-use
-		// cap or exact quantity.
 		if limit.Accumulate || limit.MaxPerUse != 0 || limit.ExactQuantity || limit.Period > 4 {
 			return nil, errors.New("a policy's spending limit states only its mint, window and amount per period")
 		}

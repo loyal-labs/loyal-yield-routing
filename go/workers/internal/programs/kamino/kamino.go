@@ -1,7 +1,3 @@
-// Package kamino holds the Kamino Lending (KLend) and Kamino Farms facts the
-// workers use: program IDs, the account layouts they read, the PDAs they
-// derive and the instructions they send. Each fact is defined here once.
-// Layouts follow klend-interface 23b9f2b.
 package kamino
 
 import (
@@ -13,7 +9,6 @@ var (
 	FarmsProgramID = solana.MustPublicKeyFromBase58("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr")
 )
 
-// Account sizes, discriminator included.
 const (
 	ReserveSize       = 8624
 	ObligationSize    = 3344
@@ -39,45 +34,35 @@ var (
 	InitUserMetadataDiscriminator              = [8]byte{117, 169, 176, 69, 197, 23, 15, 162}
 )
 
-// LendingMarketAuthority is the market's PDA ["lma", market].
 func LendingMarketAuthority(market solana.PublicKey) (solana.PublicKey, error) {
 	key, _, err := solana.FindProgramAddress([][]byte{[]byte("lma"), market[:]}, ProgramID)
 	return key, err
 }
 
-// ObligationAddress is the PDA [tag, id, owner, market, seed1, seed2].
 func ObligationAddress(tag, id uint8, owner, market, seed1, seed2 solana.PublicKey) (solana.PublicKey, error) {
 	key, _, err := solana.FindProgramAddress([][]byte{{tag}, {id}, owner[:], market[:], seed1[:], seed2[:]}, ProgramID)
 	return key, err
 }
 
-// VanillaObligation is owner's tag 0, id 0 obligation in market, whose seed
-// accounts are the default (zero) key.
 func VanillaObligation(owner, market solana.PublicKey) (solana.PublicKey, error) {
 	return ObligationAddress(0, 0, owner, market, solana.PublicKey{}, solana.PublicKey{})
 }
 
-// UserMetadataAddress is owner's PDA ["user_meta", owner].
 func UserMetadataAddress(owner solana.PublicKey) (solana.PublicKey, error) {
 	key, _, err := solana.FindProgramAddress([][]byte{[]byte("user_meta"), owner[:]}, ProgramID)
 	return key, err
 }
 
-// ReserveLiquiditySupply is a reserve's liquidity vault, the PDA
-// ["reserve_liq_supply", reserve].
 func ReserveLiquiditySupply(reserve solana.PublicKey) (solana.PublicKey, error) {
 	key, _, err := solana.FindProgramAddress([][]byte{[]byte("reserve_liq_supply"), reserve[:]}, ProgramID)
 	return key, err
 }
 
-// ReserveFeeVault is a reserve's liquidity fee vault, the fee receiver a
-// borrow pays into: the PDA ["fee_receiver", reserve].
 func ReserveFeeVault(reserve solana.PublicKey) (solana.PublicKey, error) {
 	key, _, err := solana.FindProgramAddress([][]byte{[]byte("fee_receiver"), reserve[:]}, ProgramID)
 	return key, err
 }
 
-// ObligationFarmUserState is the Farms PDA ["user", farm, obligation].
 func ObligationFarmUserState(farm, obligation solana.PublicKey) (solana.PublicKey, error) {
 	key, _, err := solana.FindProgramAddress([][]byte{[]byte("user"), farm[:], obligation[:]}, FarmsProgramID)
 	return key, err
