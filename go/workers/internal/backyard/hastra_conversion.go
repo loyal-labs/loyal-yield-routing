@@ -62,12 +62,16 @@ func hastraEdgeForRoute(v *Vault, action Action, lane string) (hastraEdge, error
 	}
 	debt := [2]string{route.DebtCustody, route.Kamino.DebtMint}
 	collateral := [2]string{route.CollateralCustody, route.Kamino.CollateralMint}
-	from, to := [2]string{v.cash, bridgeUSDC}, debt // mint deposit
+	var from, to [2]string
 	switch leg {
 	case policy.HastraStakeDeposit:
 		from, to = debt, collateral
 	case policy.HastraStakeRedeem:
 		from, to = collateral, debt
+	case policy.HastraMintDeposit:
+		from, to = [2]string{v.cash, bridgeUSDC}, debt
+	default:
+		return hastraEdge{}, fmt.Errorf("unknown Hastra leg %d", leg)
 	}
 	return hastraEdge{leg: leg, source: from[0], sourceMint: from[1], destination: to[0], destinationMint: to[1]}, nil
 }

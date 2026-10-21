@@ -19,28 +19,19 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// Adaptor error numbers are copied from
-// crates/loyal-voltr-rwa-nav-adaptor/src/error.rs (AdaptorError); they name
-// the reason a failed rwa bridge wire records.
 const (
-	// ReportSlot: the report's observed slot is older than the adaptor's
-	// maximum report age at landing, so the report was refused unconsumed.
-	adaptorErrorReportSlot uint32 = 9
-	// TicketReplay: this slot's report was already consumed, so the refused
-	// transaction cannot have armed a second report for the same slot.
+	adaptorErrorReportSlot   uint32 = 9
 	adaptorErrorTicketReplay uint32 = 18
 )
 
 const squadsSpendingLimitReason = "squads_spending_limit_exceeded"
 
-// adaptorMaxReportAgeSlots is the deployed adaptor config's max report age.
+const adaptorMaxReportAgeSlots = int64(32)
+
 // unclassifiedTransactionErrReason is the reason of a failed transaction no
 // program error names, and the manual-recovery marker of a failure whose
 // receipt does not prove the rollback.
-const (
-	adaptorMaxReportAgeSlots         = int64(32)
-	unclassifiedTransactionErrReason = "confirmed_transaction_error"
-)
+const unclassifiedTransactionErrReason = "confirmed_transaction_error"
 
 func decodeInstructionErrorCustom(raw json.RawMessage) (uint32, bool) {
 	var frame struct {

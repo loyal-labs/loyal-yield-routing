@@ -15,3 +15,6 @@ no-entrypoint = []
 solana-program.workspace = true
 solana-system-interface.workspace = true
 spl-token = { workspace = true, features = ["no-entrypoint"] }
+
+[dev-dependencies]
+serde_json = "1"

@@ -2960,6 +2960,7 @@ dependencies = [
 name = "loyal-voltr-rwa-nav-adaptor"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "solana-program",
  "solana-system-interface",
  "spl-token",
