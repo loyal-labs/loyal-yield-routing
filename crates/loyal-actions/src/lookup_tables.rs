@@ -6,7 +6,6 @@ use std::{
     fmt,
 };
 
-const VAULT_HASH_DOMAIN: &[u8] = b"loyal-route-alt-vault-v1";
 const ADVANCE_NONCE_PREFIX: [u8; 4] = [4, 0, 0, 0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -28,13 +27,6 @@ impl LookupTableAccountAccess {
             Self::Writable
         } else {
             Self::Readonly
-        }
-    }
-
-    fn hash_tag(self) -> u8 {
-        match self {
-            Self::Readonly => 0,
-            Self::Writable => 1,
         }
     }
 }
@@ -114,19 +106,6 @@ impl VaultRole {
             Self::VaultTokenAccount => "vault_token_account",
             Self::Metadata => "metadata",
             Self::FarmUserState => "farm_user_state",
-        }
-    }
-
-    fn hash_tag(self) -> u8 {
-        match self {
-            Self::Settings => 0,
-            Self::Vault => 1,
-            Self::Obligation => 2,
-            Self::Policy => 3,
-            Self::ActionAccount => 4,
-            Self::VaultTokenAccount => 5,
-            Self::Metadata => 6,
-            Self::FarmUserState => 7,
         }
     }
 }
@@ -559,12 +538,6 @@ impl LookupTableManifest {
         addresses
     }
 
-    pub fn vault_hash_input(&self) -> Vec<u8> {
-        let mut output = hash_input_prefix(VAULT_HASH_DOMAIN);
-        append_vault_requirements(&mut output, &self.vault);
-        output
-    }
-
     pub fn validate_against_instructions(
         &self,
         payer: Pubkey,
@@ -763,28 +736,6 @@ fn validate_access(
     }
 }
 
-fn hash_input_prefix(domain: &[u8]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(domain.len() + 1);
-    output.extend_from_slice(domain);
-    output.push(0);
-    output
-}
-
-fn append_vault_requirements(output: &mut Vec<u8>, requirements: &[Vault]) {
-    append_len(output, requirements.len());
-    for requirement in requirements {
-        output.push(2);
-        output.extend_from_slice(requirement.address.as_ref());
-        output.push(requirement.access.hash_tag());
-        append_len(output, requirement.roles.len());
-        output.extend(requirement.roles.iter().map(|role| role.hash_tag()));
-    }
-}
-
-fn append_len(output: &mut Vec<u8>, len: usize) {
-    output.extend_from_slice(&(len as u64).to_le_bytes());
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LookupTableManifestError {
     ConflictingProvenance {
@@ -953,30 +904,6 @@ mod tests {
             LookupTableManifest::from_instructions(payer, &instructions, &provenance),
             Err(LookupTableManifestError::MissingProvenance { address: vault })
         );
-    }
-
-    #[test]
-    fn manifest_order_and_hash_inputs_are_deterministic() {
-        let (payer, instructions, _, _, shared, vault) = instruction_fixture();
-        let unused = Pubkey::new_unique();
-        let mut first = LookupTableAccountProvenance::default();
-        first.add_vault(vault, VaultRole::VaultTokenAccount);
-        first.add_shared_market(shared, SharedMarketRole::Reserve);
-        first.add_shared_market(shared, SharedMarketRole::LiquiditySupply);
-        first.add_shared_market(unused, SharedMarketRole::Market);
-        let mut second = LookupTableAccountProvenance::default();
-        second.add_shared_market(unused, SharedMarketRole::Market);
-        second.add_shared_market(shared, SharedMarketRole::LiquiditySupply);
-        second.add_shared_market(shared, SharedMarketRole::Reserve);
-        second.add_vault(vault, VaultRole::VaultTokenAccount);
-
-        let first = LookupTableManifest::from_instructions(payer, &instructions, &first)
-            .expect("first provenance order should compile");
-        let second = LookupTableManifest::from_instructions(payer, &instructions, &second)
-            .expect("second provenance order should compile");
-
-        assert_eq!(first, second);
-        assert_eq!(first.vault_hash_input(), second.vault_hash_input());
     }
 
     #[test]

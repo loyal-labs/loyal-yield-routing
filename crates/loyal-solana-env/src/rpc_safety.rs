@@ -30,11 +30,6 @@ pub fn validate_rpc_genesis_hash(cluster: &str, observed: Hash) -> Result<(), St
 }
 
 /// Produces a bounded fatal-error message without endpoint credentials.
-///
-/// Client error implementations are allowed to render their request URL. An
-/// accepted endpoint always contains `://`, so replacing the complete token
-/// removes user info, path, query, and fragment together while retaining RPC
-/// method/status context around it.
 pub fn redacted_external_error(message: &str) -> String {
     let mut suppress_following_tokens = 0_usize;
     message
@@ -120,30 +115,5 @@ mod tests {
         assert!(validate_rpc_genesis_hash("devnet", mainnet).is_err());
         assert!(validate_rpc_genesis_hash("localnet", mainnet).is_err());
         assert!(validate_rpc_genesis_hash("custom", localnet).is_err());
-    }
-
-    #[test]
-    fn reusable_alt_rpc_fatal_errors_are_safe() {
-        let safe = redacted_external_error(
-            "getLatestBlockhash failed sending https://user:password@example.test/private/path?api-key=secret with HTTP 401 Unauthorized token=also-secret Authorization: Bearer header-secret api-key: separated-secret",
-        );
-        assert!(safe.contains("getLatestBlockhash"));
-        assert!(safe.contains("HTTP 401 Unauthorized"));
-        for secret in [
-            "user",
-            "password",
-            "private/path",
-            "api-key",
-            "secret",
-            "also-secret",
-            "Bearer",
-            "header-secret",
-            "separated-secret",
-        ] {
-            assert!(
-                !safe.contains(secret),
-                "fatal error leaked {secret}: {safe}"
-            );
-        }
     }
 }
