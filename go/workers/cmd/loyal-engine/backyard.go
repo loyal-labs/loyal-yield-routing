@@ -48,7 +48,7 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if laserstream.APIKey, err = engine.Credential("BACKYARD_HELIUS_API_KEY"); err != nil {
 		return err
 	}
-	database, err := backyard.OpenDatabase(ctx, cfg.DatabaseURL)
+	database, err := backyard.OpenDatabase(ctx, engine.DirectDSN(cfg.DatabaseURL))
 	if err != nil {
 		return err
 	}

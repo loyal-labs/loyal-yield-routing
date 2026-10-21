@@ -273,7 +273,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
 	for _, family := range families {
-		lost, err := engine.HoldFamily(ctx, cfg.databaseURL, family)
+		lost, err := engine.HoldFamily(ctx, engine.DirectDSN(cfg.databaseURL), family)
 		if err != nil {
 			return retailError("family lock", err)
 		}
@@ -285,7 +285,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 			}
 		}(family)
 	}
-	facts.Own(families...)
+	facts.SeedFamilySeriesAtZero(families...)
 	cluster, err := chain.New(cfg.rpcURL, 15*time.Second)
 	if err != nil {
 		return retailError("chain RPC", err)

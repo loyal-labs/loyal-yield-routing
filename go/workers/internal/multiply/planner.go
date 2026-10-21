@@ -33,7 +33,7 @@ func AmountExact(value uint64) PlannedAmount { return PlannedAmount{Mode: ModeEx
 
 type ActionPlan struct {
 	Action             MultiplyAction
-	StrategyKey        StrategyKey // "" when user-side
+	StrategyKey        StrategyKey
 	Amount             PlannedAmount
 	DestinationAccount string
 }
@@ -79,7 +79,7 @@ func NextAction(route *RouteState, observed *ObservedRoute, topology *EarnMaxTop
 			return PlannerDecision{Kind: DecisionInvalidObservation}
 		}
 	}
-	active := StrategyKey("")
+	active := NoStrategy
 	for _, position := range observed.Strategies {
 		if position == nil {
 			return PlannerDecision{Kind: DecisionInvalidObservation}
@@ -141,7 +141,7 @@ func planUp(observed *ObservedRoute, target StrategyKey, topology *EarnMaxTopolo
 	if !validMarketValues(position) || position.DebtMintFactor == 0 {
 		return PlannerDecision{Kind: DecisionInvalidObservation}
 	}
-	collateralValue := new(big.Int).Set(position.CollateralValueSF)
+	collateralValue := new(big.Int).Set(position.CollateralValueSF.Int())
 	targetDebtValue := saturatingU128(new(big.Int).Mul(collateralValue, new(big.Int).SetUint64(uint64(config.TargetLTVBPS))))
 	targetDebtValue.Div(targetDebtValue, big.NewInt(10_000))
 	tolerance := saturatingU128(new(big.Int).Mul(collateralValue, big.NewInt(targetLTVToleranceBPS)))

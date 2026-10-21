@@ -59,7 +59,7 @@ func TestLatchedRouteStopsProgress(t *testing.T) {
 	t.Parallel()
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
-	facts.Own(engine.FamilyBackyard)
+	facts.SeedFamilySeriesAtZero(engine.FamilyBackyard)
 	progress := func() float64 {
 		families, err := registry.Gather()
 		if err != nil {

@@ -22,13 +22,13 @@ func run(ctx context.Context) error {
 	}
 	registry := prometheus.NewRegistry()
 	facts := engine.NewFacts(registry)
-	facts.Own(engine.FamilyObserver)
+	facts.SeedFamilySeriesAtZero(engine.FamilyObserver)
 	metrics, err := engine.ListenMetrics(os.Getenv("LOYAL_METRICS_ADDRESS"), registry)
 	if err != nil {
 		return err
 	}
 	defer metrics.Close()
-	lost, err := engine.HoldFamily(ctx, cfg.NeonDatabaseURL, engine.FamilyObserver)
+	lost, err := engine.HoldFamily(ctx, engine.DirectDSN(cfg.NeonDatabaseURL), engine.FamilyObserver)
 	if err != nil {
 		return err
 	}

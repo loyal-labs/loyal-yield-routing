@@ -21,12 +21,16 @@ const (
 
 var ErrFamilyHeld = errors.New("family is held by another process")
 
+// DirectDSN is a database URL that reaches the server directly, never through
+// a transaction pooler: a pooler hands the session to strangers, so a session
+// advisory lock held on it is not held by its taker.
+type DirectDSN string
+
 // HoldFamily takes the family's session advisory lock on a dedicated
-// connection and keeps it until ctx ends or the connection drops. The DSN must
-// be direct, not a transaction pooler: a pooler hands the session to strangers.
+// connection and keeps it until ctx ends or the connection drops.
 // done is closed when the hold is lost; the caller must stop writing then.
-func HoldFamily(ctx context.Context, directDSN string, family Family) (done <-chan struct{}, err error) {
-	conn, err := pgx.Connect(ctx, directDSN)
+func HoldFamily(ctx context.Context, dsn DirectDSN, family Family) (done <-chan struct{}, err error) {
+	conn, err := pgx.Connect(ctx, string(dsn))
 	if err != nil {
 		return nil, err
 	}

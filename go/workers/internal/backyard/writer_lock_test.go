@@ -65,7 +65,7 @@ func TestWriterIsOneSession(t *testing.T) {
 	}
 
 	// (1) The writer's session holds the lock.
-	first, err := OpenDatabase(ctx, url)
+	first, err := OpenDatabase(ctx, engine.DirectDSN(url))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestWriterIsOneSession(t *testing.T) {
 	}
 	secondOpened := make(chan opened, 1)
 	go func() {
-		database, err := OpenDatabase(ctx, url)
+		database, err := OpenDatabase(ctx, engine.DirectDSN(url))
 		secondOpened <- opened{database, err}
 	}()
 	for deadline := time.Now().Add(10 * time.Second); len(lockSessions(false)) == 0; {
@@ -234,7 +234,7 @@ func TestWriterSessionSurvivesCallerDeadlines(t *testing.T) {
 	ctx, cancel, admin, url := openManualRecoveryTestDatabase(t, 30*time.Second)
 	defer cancel()
 	defer admin.Close()
-	writer, err := OpenDatabase(ctx, url)
+	writer, err := OpenDatabase(ctx, engine.DirectDSN(url))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestOperatorWriterRefusesBesideTheEngineAndFreesTheLockOnClose(t *testing.T
 
 	// The engine holds the lock: the operator writer refuses and leaves
 	// nothing behind, and the selector command reports the refusal.
-	writer, err := OpenDatabase(ctx, url)
+	writer, err := OpenDatabase(ctx, engine.DirectDSN(url))
 	if err != nil {
 		t.Fatal(err)
 	}

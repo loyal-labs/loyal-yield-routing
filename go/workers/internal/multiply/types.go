@@ -26,27 +26,59 @@ const (
 	tickLeaseExpirySeconds = 30
 )
 
-type StrategyKey string
+type StrategyKey uint8
 
 const (
-	OnycUsdc       StrategyKey = "onyc_usdc"
-	OnycUsds       StrategyKey = "onyc_usds"
-	PrimeUsdc      StrategyKey = "prime_usdc"
-	PrimePyusd     StrategyKey = "prime_pyusd"
-	PrimeUsds      StrategyKey = "prime_usds"
-	SyrupUsdcUsdc  StrategyKey = "syrup_usdc_usdc"
-	SyrupUsdcPyusd StrategyKey = "syrup_usdc_pyusd"
+	NoStrategy StrategyKey = iota
+	OnycUsdc
+	OnycUsds
+	PrimeUsdc
+	PrimePyusd
+	PrimeUsds
+	SyrupUsdcUsdc
+	SyrupUsdcPyusd
 )
+
+var strategyKeyNames = [...]string{
+	NoStrategy:     "",
+	OnycUsdc:       "onyc_usdc",
+	OnycUsds:       "onyc_usds",
+	PrimeUsdc:      "prime_usdc",
+	PrimePyusd:     "prime_pyusd",
+	PrimeUsds:      "prime_usds",
+	SyrupUsdcUsdc:  "syrup_usdc_usdc",
+	SyrupUsdcPyusd: "syrup_usdc_pyusd",
+}
 
 var strategyKeys = []StrategyKey{OnycUsdc, OnycUsds, PrimeUsdc, PrimePyusd, PrimeUsds, SyrupUsdcUsdc, SyrupUsdcPyusd}
 
-func (k StrategyKey) Valid() bool {
-	for _, value := range strategyKeys {
-		if value == k {
-			return true
+func (k StrategyKey) Valid() bool { return k > NoStrategy && int(k) < len(strategyKeyNames) }
+
+func (k StrategyKey) String() string {
+	if int(k) >= len(strategyKeyNames) {
+		return ""
+	}
+	return strategyKeyNames[k]
+}
+
+func ParseStrategyKey(text string) (StrategyKey, bool) {
+	for key, name := range strategyKeyNames {
+		if name == text {
+			return StrategyKey(key), true
 		}
 	}
-	return false
+	return NoStrategy, false
+}
+
+func (k StrategyKey) MarshalText() ([]byte, error) { return []byte(k.String()), nil }
+
+func (k *StrategyKey) UnmarshalText(text []byte) error {
+	key, ok := ParseStrategyKey(string(text))
+	if !ok {
+		return fmt.Errorf("unknown strategy key %q", text)
+	}
+	*k = key
+	return nil
 }
 
 type RouteGoal string
@@ -170,7 +202,7 @@ func NewActivePosition(strategyKey StrategyKey, obligation string, collateral, d
 
 func (p MultiplyPosition) ActiveStrategyKey() StrategyKey {
 	if p.StrategyKey == nil {
-		return ""
+		return NoStrategy
 	}
 	return *p.StrategyKey
 }

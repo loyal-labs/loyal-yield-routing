@@ -878,7 +878,7 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 	if !validMarketValues(active) || active.UnhealthyValueSF == nil || active.UnhealthyValueSF.Sign() < 0 || active.UnhealthyValueSF.BitLen() > 128 {
 		return nil, errors.New("position snapshot valuation is unknown or invalid")
 	}
-	collateralValue := toUSDMicros(active.CollateralValueSF)
+	collateralValue := toUSDMicros(active.CollateralValueSF.Int())
 	debtValue := toUSDMicros(active.DebtValueSF)
 	claimMicros := new(big.Int).SetUint64(observed.Claim.AmountRaw)
 	equity := new(big.Int).Add(claimMicros, collateralValue)
@@ -886,7 +886,7 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 	if equity.Sign() < 0 {
 		equity = big.NewInt(0)
 	}
-	key := string(active.StrategyKey)
+	key := active.StrategyKey.String()
 	input.StrategyKey = &key
 	input.CollateralRaw = formatUint(active.CollateralDepositedRaw)
 	input.DebtRaw = formatUint(active.DebtRaw)

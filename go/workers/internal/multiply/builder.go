@@ -360,7 +360,7 @@ func resolveBorrow(amount PlannedAmount, observed *ObservedRoute, config Strateg
 	if !validMarketValues(position) || position.DebtMintFactor == 0 {
 		return 0, errors.New("position valuation is unknown or invalid")
 	}
-	targetValueSF := saturatingU128(new(big.Int).Mul(position.CollateralValueSF, new(big.Int).SetUint64(uint64(config.TargetLTVBPS))))
+	targetValueSF := saturatingU128(new(big.Int).Mul(position.CollateralValueSF.Int(), new(big.Int).SetUint64(uint64(config.TargetLTVBPS))))
 	targetValueSF.Div(targetValueSF, big.NewInt(10_000))
 	additionalValueSF := new(big.Int).Sub(targetValueSF, position.DebtValueSF)
 	if additionalValueSF.Sign() < 0 {

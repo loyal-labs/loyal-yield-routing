@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"context"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"os"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func TestCountNonterminalAgainstDatabase(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	db, err := OpenDatabase(ctx, url)
+	db, err := OpenDatabase(ctx, engine.DirectDSN(url))
 	if err != nil {
 		t.Fatal(err)
 	}
