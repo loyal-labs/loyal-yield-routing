@@ -32,7 +32,7 @@ func validLevel(level float64) bool {
 func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 	var in targetInputs
 	if err := json.Unmarshal(levels, &in.Levels); err != nil {
-		return in, budgetHold("invalid_lane_levels")
+		return in, staleHold("invalid_lane_levels")
 	}
 	// A row for a lane this binary does not install has no view to target;
 	// it never stops the lanes that are installed (hard LTV included).
@@ -40,11 +40,11 @@ func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 		if !earnHeldLane(lane) {
 			delete(in.Levels, lane)
 		} else if !validLevel(level.Level) {
-			return in, budgetHold("invalid_lane_levels")
+			return in, staleHold("invalid_lane_levels")
 		}
 	}
 	if err := json.Unmarshal(exits, &in.Exits); err != nil {
-		return in, budgetHold("invalid_lane_exits")
+		return in, staleHold("invalid_lane_exits")
 	}
 	for lane := range in.Exits {
 		if !earnHeldLane(lane) {
@@ -54,7 +54,7 @@ func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 	if len(entry) > 0 && string(entry) != "null" {
 		var result SelectorResult
 		if json.Unmarshal(entry, &result) != nil {
-			return in, budgetHold("invalid_selector_result")
+			return in, staleHold("invalid_selector_result")
 		}
 		in.Entry = &result
 	}

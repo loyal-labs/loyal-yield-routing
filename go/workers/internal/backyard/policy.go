@@ -162,9 +162,9 @@ func (p installedPolicies) account(key policyKey) (string, error) {
 	case 1:
 		return p[key].Account.String(), nil
 	case 0:
-		return "", budgetHold(key.String() + " policy not installed")
+		return "", staleHold(key.String() + " policy not installed")
 	default:
-		return "", budgetHold(key.String() + " policy installed twice")
+		return "", staleHold(key.String() + " policy installed twice")
 	}
 }
 

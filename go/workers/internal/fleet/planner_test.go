@@ -12,9 +12,9 @@ import (
 // about something else is not decided by capacity.
 func ampleCapacity(snapshot MarketSnapshot) MarketSnapshot {
 	for address, reserve := range snapshot.Reserves {
-		if reserve.AvailableLiquidityRaw == nil {
+		if reserve.AvailableLiquidityUSDMicros == nil {
 			available := reserve.TotalSupplyRaw
-			reserve.AvailableLiquidityRaw = &available
+			reserve.AvailableLiquidityUSDMicros = &available
 		}
 		if reserve.DepositLimitRaw == nil {
 			limit := uint64(math.MaxUint64)

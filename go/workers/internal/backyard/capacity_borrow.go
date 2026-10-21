@@ -25,7 +25,7 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 	}
 	clock := accountAt(accounts, budgetClockAddress)
 	if clock.Owner != "Sysvar1111111111111111111111111111111111111" || clock.Executable || len(clock.Data) != 40 {
-		return 0, budgetHold("borrow_capacity_clock_invalid")
+		return 0, staleHold("borrow_capacity_clock_invalid")
 	}
 	slot := int64(binary.LittleEndian.Uint64(clock.Data[:8]))
 	if err := validateKaminoReserveHealth(slot, false, decodedKaminoObligation{}, collateral, debt); err != nil {

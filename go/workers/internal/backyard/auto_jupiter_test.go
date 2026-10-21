@@ -124,7 +124,7 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 		}
 	}
 	_, err = prepareJupiterQuoteEvidence(context.Background(), rpc, client, manifest, uninstalled, decision, 2_000_000, 0, 42)
-	assertBudgetHold(t, err, swapKey.String()+" policy not installed")
+	assertPreSendHold(t, err, swapKey.String()+" policy not installed")
 	// A foreign action on this lane is rejected before any quote is requested.
 	foreign := decision
 	foreign.Action = SwapUSDCToDebtStep

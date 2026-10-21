@@ -19,7 +19,7 @@ type KaminoInitializationRequest struct {
 func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
 	v := m.vault
 	if !earnInitializerLane(r.RouteLane) {
-		return nil, budgetHold("initializer_lane_unreviewed")
+		return nil, staleHold("initializer_lane_unreviewed")
 	}
 	if r.LastValidBlockHeight <= 0 || r.RentLamports == 0 || r.MaximumFeeLamports == 0 {
 		return nil, fmt.Errorf("incomplete Multiply initialization admission")
@@ -60,7 +60,7 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 
 func (m RouteManifest) validateInitializedKaminoObligation(r KaminoInitializationRequest, a ConfirmedAccount) error {
 	if !earnInitializerLane(r.RouteLane) {
-		return budgetHold("initializer_lane_unreviewed")
+		return staleHold("initializer_lane_unreviewed")
 	}
 	route, err := m.route(r.RouteLane)
 	if err != nil {

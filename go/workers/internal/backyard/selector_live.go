@@ -30,7 +30,7 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 	seen := map[string]LaneEconomics{}
 	for _, market := range out {
 		if _, dup := seen[market.Lane]; !earnActiveLane(market.Lane) || dup {
-			return nil, nil, budgetHold(invalidSelectorMarketSet)
+			return nil, nil, staleHold(invalidSelectorMarketSet)
 		}
 		seen[market.Lane] = market
 	}
@@ -40,11 +40,11 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 		onlyLane, onlySource = request.Lane, request.SourceLane
 	}
 	if s.TotalVaultNAVRaw <= policy.IdleBufferRaw {
-		return out, nil, budgetHold(selectorLiveSnapshotUnavailable)
+		return out, nil, staleHold(selectorLiveSnapshotUnavailable)
 	}
 	if !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" ||
 		withdrawalShortfallRaw(s) != 0 || s.VoltrStrategyIdleRaw != 0 || s.WithdrawalDemandRaw < 0 || s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 {
-		return out, nil, budgetHold(selectorSourceUnavailable)
+		return out, nil, staleHold(selectorSourceUnavailable)
 	}
 	idle := uint64(s.VoltrIdleRaw-s.WithdrawalDemandRaw) + uint64(s.SquadsIdleRaw)
 	cashBlocked := ""

@@ -10,7 +10,7 @@ func TestCapacityReviewNonParBenchmarkDebtUnits(t *testing.T) {
 	// Debt priced at $0.80 against USDC at $1: 1.25 raw debt units per USDC.
 	m := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .12, BorrowCurve: []BorrowCurvePoint{{0, 0}, {10000, 1000}}, DebtSupplyRaw: 1_000_000_000, DebtBorrowRaw: 100_000_000, DebtRawPerUSDCRaw: 1.25}
 	s := Snapshot{RouteLane: autoAUTOPYUSD.Lane, PositionDebtRaw: 50_000_000}
-	got, ok := leverageSpread(m, 1.5, 100_000_000, true, s)
+	got, ok := leverageSpread(m, 1.5, 100_000_000, &s)
 	apr, err := projectedBorrowAPR(m, 12_500_000)
 	want := m.NativeAPY - math.Expm1(apr)
 	if err != nil || !ok || math.Abs(got-want) > 1e-10 {
@@ -21,11 +21,11 @@ func TestCapacityReviewNonParBenchmarkDebtUnits(t *testing.T) {
 func TestCapacityReviewBenchmarkMissingPriceAndUSDC(t *testing.T) {
 	t.Parallel()
 	m := LaneEconomics{Lane: autoAUTOPYUSD.Lane, NativeAPY: .12, BorrowCurve: []BorrowCurvePoint{{0, 0}, {10000, 1000}}, DebtSupplyRaw: 1_000_000_000, DebtBorrowRaw: 100_000_000}
-	if _, ok := leverageSpread(m, 1.5, 100_000_000, true); ok {
+	if _, ok := leverageSpread(m, 1.5, 100_000_000, nil); ok {
 		t.Fatal("non-par benchmark silently assumed parity")
 	}
 	var watch leverageWatch
-	watch.observe([]LaneEconomics{m}, m.Lane, 100_000_000, true, rwa.AdminPerformanceFeeBPS)
+	watch.observe([]LaneEconomics{m}, m.Lane, 100_000_000, true, rwa.AdminPerformanceFeeBPS, nil)
 	if len(watch.summary) != 1 || watch.summary[0].SpreadBPS != nil {
 		t.Fatal("missing price persisted a numeric hypothetical spread")
 	}
@@ -35,7 +35,7 @@ func TestCapacityReviewBenchmarkMissingPriceAndUSDC(t *testing.T) {
 	if _, present := watch.summary[0].APYBPS["1.00"]; !present {
 		t.Fatal("missing price removed unaffected 1x benchmark")
 	}
-	if _, ok := leverageLevelAPY(m, 1, 100_000_000, false, rwa.AdminPerformanceFeeBPS); !ok {
+	if _, ok := leverageLevelAPY(m, 1, 100_000_000, nil, rwa.AdminPerformanceFeeBPS); !ok {
 		t.Fatal("debt-free benchmark needs no conversion")
 	}
 	s := Snapshot{RouteLane: autoAUTOPYUSD.Lane, HasPosition: true, PositionCollateralValueRaw: 140_000_000, PositionDebtValueRaw: 40_000_000, PositionDebtRaw: 50_000_000}
@@ -45,7 +45,7 @@ func TestCapacityReviewBenchmarkMissingPriceAndUSDC(t *testing.T) {
 	}
 	m.Lane = onreONycUSDC
 	s.RouteLane = m.Lane
-	got, ok := leverageSpread(m, 1.5, 100_000_000, true, s)
+	got, ok := leverageSpread(m, 1.5, 100_000_000, &s)
 	apr, _ := projectedBorrowAPR(m, 0)
 	if !ok || math.Abs(got-(m.NativeAPY-math.Expm1(apr))) > 1e-12 {
 		t.Fatal("USDC benchmark parity changed", got)

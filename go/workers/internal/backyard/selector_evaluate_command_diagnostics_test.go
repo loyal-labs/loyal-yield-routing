@@ -19,11 +19,11 @@ import (
 func TestSelectorEvaluateFailureCodesAllowlisted(t *testing.T) {
 	t.Parallel()
 	for reason := range selectorEvaluateAdmissionHoldCodes {
-		if got := sanitizedSelectorEvaluateFailure(budgetHold(reason)); got != reason {
+		if got := sanitizedSelectorEvaluateFailure(staleHold(reason)); got != reason {
 			t.Fatalf("allowlisted hold %q did not echo itself: %q", reason, got)
 		}
 	}
-	wrapped := fmt.Errorf("locked persistence: %w", budgetHold("selector_evaluation_not_current"))
+	wrapped := fmt.Errorf("locked persistence: %w", staleHold("selector_evaluation_not_current"))
 	if got := sanitizedSelectorEvaluateFailure(wrapped); got != "selector_evaluation_not_current" {
 		t.Fatalf("wrapped hold not visible: %q", got)
 	}
@@ -60,7 +60,7 @@ func TestSelectorEvaluateFailureMasksSecrets(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"unknown_hold", budgetHold("operator note postgresql://backyard:hunter2@10.0.0.7/neon"), "selector_evaluate_unavailable"},
+		{"unknown_hold", staleHold("operator note postgresql://backyard:hunter2@10.0.0.7/neon"), "selector_evaluate_unavailable"},
 		{"generic_dsn", errors.New("pq: failed connect to postgresql://backyard:hunter2@10.0.0.7/neon"), "selector_evaluate_unavailable"},
 		{"unknown_sql_class", &pgconn.PgError{Code: "XX000", Message: "crash", Detail: "host=10.0.0.7 password=hunter2"}, "selector_evaluate_unavailable"},
 		{"wrapped_unknown_sql", fmt.Errorf("record: %w", &pgconn.PgError{Code: "23505", Detail: "dsn postgresql://backyard:hunter2@10.0.0.7/neon"}), "selector_evaluate_unavailable"},
@@ -99,7 +99,7 @@ func TestSelectorEvaluateExecuteEvaluatorFailureDiagnostic(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"stale_quote", budgetHold("selector_evaluation_not_current"), "selector_evaluation_not_current"},
+		{"stale_quote", staleHold("selector_evaluation_not_current"), "selector_evaluation_not_current"},
 		{"secret_sql", fmt.Errorf("scan: duplicate key dsn=postgresql://backyard:hunter2@10.0.0.7/neon"), "selector_evaluate_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -13,11 +13,11 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	defer cancel()
 	var result SelectorResult
 	if !input.Snapshot.MonitorsArmed {
-		return result, budgetHold(selectorFeeEvidenceUnavailable)
+		return result, staleHold(selectorFeeEvidenceUnavailable)
 	}
 	now := time.Now().UTC()
 	if input.Now.After(now) || now.Sub(input.Now) > 5*time.Second || input.Snapshot.Slot <= 0 || confirmedSlot < input.Snapshot.Slot || confirmedSlot-input.Snapshot.Slot > observationLagSlots() {
-		return result, budgetHold(selectorEvaluationNotCurrent)
+		return result, staleHold(selectorEvaluationNotCurrent)
 	}
 	err := d.inTx(ctx, func(tx pgx.Tx) (err error) {
 		var raw []byte
@@ -31,11 +31,11 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 			} `json:"selector"`
 		}
 		if json.Unmarshal(raw, &state) != nil {
-			return budgetHold(invalidSelectorRouteState)
+			return staleHold(invalidSelectorRouteState)
 		}
 		now = time.Now().UTC()
 		if now.Sub(input.Now) > 5*time.Second {
-			return budgetHold(selectorEvaluationNotCurrent)
+			return staleHold(selectorEvaluationNotCurrent)
 		}
 		input.Now = now
 		currentQuotes := make([]MoveQuote, 0, len(input.Quotes))

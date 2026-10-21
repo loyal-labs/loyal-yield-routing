@@ -171,7 +171,7 @@ func TestEntryPricesTheExecutorsLegsWithoutMutatingAccounts(t *testing.T) {
 		t.Fatal("entry borrow", q)
 	}
 	if q.Cost.EntrySwapCostMicros != 0 || q.Cost.ExitSwapCostMicros != 0 || q.Cost.NetworkMicros <= 0 || q.Cost.Step.NetworkMicros <= 0 ||
-		q.CostRaw != q.Cost.NetworkMicros+q.Cost.Step.TotalMicros || q.Cost.TotalMicros != q.CostRaw {
+		q.CostRaw != int64(q.Cost.NetworkMicros+q.Cost.Step.TotalMicros) || int64(q.Cost.TotalMicros) != q.CostRaw {
 		t.Fatalf("entry cost %+v", q.Cost)
 	}
 }
@@ -197,7 +197,7 @@ func TestEntryIntoAnAbsentObligationCarriesItsSetup(t *testing.T) {
 	// The vault pays the obligation's rent and the delegate the farm user
 	// state's, both above any network fee.
 	rent := uint64((128+kamino.ObligationSize)*3480*2 + (128+kamino.FarmUserStateSize)*3480*2)
-	if q.Cost.SetupMicros <= 0 || q.CostRaw != q.Cost.NetworkMicros+q.Cost.SetupMicros+q.Cost.Step.TotalMicros {
+	if q.Cost.SetupMicros <= 0 || q.CostRaw != int64(q.Cost.NetworkMicros+q.Cost.SetupMicros+q.Cost.Step.TotalMicros) {
 		t.Fatalf("entry cost %+v", q.Cost)
 	}
 	if rentOnly, err := testLanePricer(t, rpc, client, m, 42).lamportsMicros(rent); err != nil || q.Cost.SetupMicros <= rentOnly {
@@ -285,11 +285,11 @@ func TestLanePricesRefuseAStalePrice(t *testing.T) {
 func TestStepBuildRefusalsAreNamed(t *testing.T) {
 	t.Parallel()
 	for cause, want := range map[string]string{"step_does_not_compile": "step_build", "step_over_policy_cap": "step_build", "jupiter_auto_wire_floor_zero": "entry_quote"} {
-		if got := stepStage("entry_quote", budgetHold(cause)); got != want {
+		if got := stepStage(stageEntryQuote, staleHold(cause)); string(got) != want {
 			t.Fatalf("%s: %s", cause, got)
 		}
 	}
-	if got := leverageCostOutageReason(costOutage(stepStage("exit_quote", budgetHold("step_over_policy_cap")), budgetHold("step_over_policy_cap"))); got != "leverage_cost_unavailable(step_build)" {
+	if got := leverageCostOutageReason(costOutage(stepStage("exit_quote", staleHold("step_over_policy_cap")), staleHold("step_over_policy_cap"))); got != "leverage_cost_unavailable(step_build)" {
 		t.Fatal(got)
 	}
 }

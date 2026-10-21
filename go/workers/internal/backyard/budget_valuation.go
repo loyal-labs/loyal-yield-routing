@@ -92,11 +92,11 @@ type BudgetPrice struct {
 
 func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (int64, error) {
 	if p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > observationLagCeilingSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
-		return 0, budgetHold("missing_stale_or_mismatched_usdc_valuation")
+		return 0, staleHold("missing_stale_or_mismatched_usdc_valuation")
 	}
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, p.TokenUpperSF, p.USDCLowerSF, true)
 	if err != nil || value > math.MaxInt64 {
-		return 0, budgetHoldFrom(err, "invalid_usdc_valuation")
+		return 0, staleHoldFrom(err, "invalid_usdc_valuation")
 	}
 	return int64(value), nil
 }
@@ -107,13 +107,13 @@ func UpperPriceMargin(price kamino.ScaledFraction, marginBPS uint16) (kamino.Sca
 	var out kamino.ScaledFraction
 	value := littleInt(price[:])
 	if value.Sign() <= 0 {
-		return out, budgetHold("invalid_usdc_valuation")
+		return out, staleHold("invalid_usdc_valuation")
 	}
 	value.Mul(value, new(big.Int).SetUint64(10_000+uint64(marginBPS)))
 	value.Add(value, big.NewInt(9_999))
 	value.Div(value, big.NewInt(10_000))
 	if value.BitLen() > 128 {
-		return out, budgetHold("invalid_usdc_valuation")
+		return out, staleHold("invalid_usdc_valuation")
 	}
 	bytes := value.Bytes()
 	for i := range bytes {
@@ -125,13 +125,13 @@ func UpperPriceMargin(price kamino.ScaledFraction, marginBPS uint16) (kamino.Sca
 func lowerPriceMargin(price kamino.ScaledFraction, marginBPS uint16) (kamino.ScaledFraction, error) {
 	var out kamino.ScaledFraction
 	if marginBPS >= 10_000 {
-		return out, budgetHold("invalid_usdc_valuation")
+		return out, staleHold("invalid_usdc_valuation")
 	}
 	value := littleInt(price[:])
 	value.Mul(value, new(big.Int).SetUint64(10_000-uint64(marginBPS)))
 	value.Div(value, big.NewInt(10_000))
 	if value.Sign() <= 0 {
-		return out, budgetHold("invalid_usdc_valuation")
+		return out, staleHold("invalid_usdc_valuation")
 	}
 	bytes := value.Bytes()
 	for i := range bytes {

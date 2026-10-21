@@ -39,11 +39,11 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 	manifest, state := v.manifest, &vaultState{}
 	rpc, err := chain.New(config.RPCURL, 15*time.Second)
 	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_rpc_unavailable")
+		return staleHoldFrom(err, "selector_evaluate_rpc_unavailable")
 	}
 	view, err := OpenView(ctx, rpc, nil)
 	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_rpc_unavailable")
+		return staleHoldFrom(err, "selector_evaluate_rpc_unavailable")
 	}
 	return runSelectorEvaluate(ctx, out, execute, selectorEvaluateDeps{
 		manifest:    manifest,
@@ -68,7 +68,7 @@ func runSelectorEvaluate(ctx context.Context, out io.Writer, execute bool, deps 
 		return requestErr
 	}
 	if execute && request == nil {
-		return budgetHold("selector_evaluate_requires_canary_request")
+		return staleHold("selector_evaluate_requires_canary_request")
 	}
 	if !execute {
 		return selectorEvaluateDryRun(ctx, out, deps)
@@ -79,7 +79,7 @@ func runSelectorEvaluate(ctx context.Context, out io.Writer, execute bool, deps 
 func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
 	cfg, err := pgxpool.ParseConfig(deps.databaseURL)
 	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_database_configuration_invalid")
+		return staleHoldFrom(err, "selector_evaluate_database_configuration_invalid")
 	}
 	cfg.MaxConns = 2
 	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
@@ -87,17 +87,17 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	database := &Database{pool: pool}
 	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_journal_unavailable")
+		return staleHoldFrom(err, "selector_evaluate_journal_unavailable")
 	}
 	defer database.Close()
 	feed, err := deps.newFeed(ctx, deps.manifest)
 	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_feed_unavailable")
+		return staleHoldFrom(err, "selector_evaluate_feed_unavailable")
 	}
 	feedErr := feed.Refresh(ctx)
 	observation, err := deps.observe(ctx, database, deps.manifest)
 	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_observation_unavailable")
+		return staleHoldFrom(err, "selector_evaluate_observation_unavailable")
 	}
 	markets, _ := feed.Snapshot()
 	selection := SelectOpportunity(SelectorInput{Now: time.Now().UTC(), Snapshot: observation.Snapshot, Lanes: observation.lanes, Markets: markets, Policy: DefaultSelectorPolicy()}, SelectorState{})
@@ -168,15 +168,15 @@ func sanitizedSelectorEvaluateFailure(err error) string {
 func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
 	database, err := openOperatorWriter(ctx, deps.databaseURL)
 	if errors.Is(err, engine.ErrFamilyHeld) {
-		return budgetHoldFrom(err, "selector_evaluate_writer_lock_unavailable")
+		return staleHoldFrom(err, "selector_evaluate_writer_lock_unavailable")
 	}
 	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_database_unavailable")
+		return staleHoldFrom(err, "selector_evaluate_database_unavailable")
 	}
 	defer database.Close()
 	feed, err := deps.newFeed(ctx, deps.manifest)
 	if err != nil {
-		return budgetHoldFrom(err, "selector_evaluate_feed_unavailable")
+		return staleHoldFrom(err, "selector_evaluate_feed_unavailable")
 	}
 	attemptStart := time.Now().UTC()
 	feedErr := feed.Refresh(ctx)
@@ -193,7 +193,7 @@ func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEv
 			FeedFailure      string  `json:"feedFailure,omitempty"`
 			EvaluatorFailure string  `json:"evaluatorFailure"`
 		}{"locked_execute_failure", time.Since(attemptStart).Seconds(), feedFailure, sanitizedSelectorEvaluateFailure(evalErr)})
-		return budgetHold("selector_evaluate_unavailable")
+		return staleHold("selector_evaluate_unavailable")
 	}
 	report := struct {
 		Mode        string         `json:"mode"`

@@ -703,9 +703,9 @@ func rotationForwardAPY(source Snapshot, ms, md LaneEconomics) (float64, bool) {
 	if equity <= 0 {
 		return 0, false
 	}
-	held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, source)
+	held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, &source, 0)
 	size := laneReleaseLimitRaw(source)
-	entered, okD := leverageLevelAPY(md, sizeSettledLevel(md, size), size, false, 0)
+	entered, okD := leverageLevelAPY(md, sizeSettledLevel(md, size), size, nil, 0)
 	return entered, ok && okD && entered > held
 }
 
@@ -730,7 +730,7 @@ func rotationDestination(source Snapshot, markets map[string]LaneEconomics, now 
 const gainBelowMinimumBenefit = "gain_below_minimum_benefit"
 
 func moveGainCeiling(source *Snapshot, ms, md LaneEconomics, size int64, p SelectorPolicy) float64 {
-	apy, ok := leverageLevelAPY(md, sizeSettledLevel(md, size), size, false, 0)
+	apy, ok := leverageLevelAPY(md, sizeSettledLevel(md, size), size, nil, 0)
 	if !ok {
 		return math.Inf(1)
 	}
@@ -739,7 +739,7 @@ func moveGainCeiling(source *Snapshot, ms, md LaneEconomics, size int64, p Selec
 		if equity <= 0 {
 			return math.Inf(1)
 		}
-		held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, true, 0, *source)
+		held, ok := leverageLevelAPY(ms, float64(source.PositionCollateralValueRaw)/float64(equity), equity, source, 0)
 		if !ok {
 			return math.Inf(1)
 		}

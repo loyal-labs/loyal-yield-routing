@@ -212,7 +212,7 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 			read: fixtureBatchRuntime(77, initial),
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
-				return 0, nil, budgetHold(tc.reason)
+				return 0, nil, staleHold(tc.reason)
 			},
 		})
 		if tc.transient {

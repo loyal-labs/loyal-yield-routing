@@ -131,7 +131,7 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Cli
 			}
 			minimum = min(minimum, floor)
 			if minimum == 0 {
-				return budgetHold("jupiter_auto_wire_floor_zero")
+				return staleHold("jupiter_auto_wire_floor_zero")
 			}
 		}
 		return nil

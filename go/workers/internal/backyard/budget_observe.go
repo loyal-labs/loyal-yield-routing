@@ -13,15 +13,15 @@ const valuationMarginBPS uint16 = 100
 
 func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, reference KaminoObservationConfig, reserveAddress, tokenMint, tokenProgram string) (BudgetPrice, error) {
 	if slot > math.MaxInt64-observationLagCeilingSlots {
-		return BudgetPrice{}, budgetHold("invalid_price_observation_slot")
+		return BudgetPrice{}, staleHold("invalid_price_observation_slot")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
 	if clock.Owner != "Sysvar1111111111111111111111111111111111111" || clock.Executable || len(clock.Data) != 40 {
-		return BudgetPrice{}, budgetHold("invalid_valuation_clock")
+		return BudgetPrice{}, staleHold("invalid_valuation_clock")
 	}
 	now := int64(binary.LittleEndian.Uint64(clock.Data[32:40]))
 	if now <= 0 {
-		return BudgetPrice{}, budgetHold("invalid_valuation_clock")
+		return BudgetPrice{}, staleHold("invalid_valuation_clock")
 	}
 	tokenAccount, referenceAccount := accountAt(accounts, reserveAddress), accountAt(accounts, reference.DebtReserve)
 	token, err := decodeKaminoReserve(tokenAccount, tokenMint, config)
@@ -44,7 +44,7 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 		return BudgetPrice{}, err
 	}
 	if validateExecutionMint(usdcMint, classicTokenProgram, 6) != nil || usdc.mintDecimals != 6 {
-		return BudgetPrice{}, budgetHold("usdc_reference_metadata_mismatch")
+		return BudgetPrice{}, staleHold("usdc_reference_metadata_mismatch")
 	}
 	upper, lower := token.terms.MarketPriceSF, usdc.terms.MarketPriceSF
 	if tokenMint != fleet.USDCMint {

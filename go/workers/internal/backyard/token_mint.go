@@ -28,10 +28,10 @@ func validateExecutionMint(account ConfirmedAccount, program string, decimals ui
 	owner, _ := solana.PublicKeyFromBase58(account.Owner)
 	mint, err := spl.DecodeMint(&chain.Account{Owner: owner, Executable: account.Executable, Data: account.Data})
 	if err != nil {
-		return budgetHoldFrom(err, "execution_mint_layout_mismatch")
+		return staleHoldFrom(err, "execution_mint_layout_mismatch")
 	}
 	if account.Owner != program || decimals > 18 || mint.Decimals != decimals {
-		return budgetHold("execution_mint_metadata_mismatch")
+		return staleHold("execution_mint_metadata_mismatch")
 	}
 	for _, extension := range mint.Extensions {
 		kind, value, length := extension.Type, extension.Value, len(extension.Value)
@@ -40,7 +40,7 @@ func validateExecutionMint(account ConfirmedAccount, program string, decimals ui
 		case spl.ExtensionTransferFeeConfig:
 			valid = length == transferFeeConfigLen
 			if valid && (binary.LittleEndian.Uint16(value[olderTransferFeeBPSOffset:]) != 0 || binary.LittleEndian.Uint16(value[newerTransferFeeBPSOffset:]) != 0) {
-				return budgetHold("execution_mint_transfer_fee_enabled")
+				return staleHold("execution_mint_transfer_fee_enabled")
 			}
 		case spl.ExtensionMintCloseAuthority, spl.ExtensionPermanentDelegate:
 			valid = length == authorityExtensionLen
@@ -51,7 +51,7 @@ func validateExecutionMint(account ConfirmedAccount, program string, decimals ui
 			if valid {
 				for _, b := range value[transferHookProgramOffset:] {
 					if b != 0 {
-						return budgetHold("execution_mint_transfer_hook_enabled")
+						return staleHold("execution_mint_transfer_hook_enabled")
 					}
 				}
 			}
@@ -62,10 +62,10 @@ func validateExecutionMint(account ConfirmedAccount, program string, decimals ui
 		case spl.ExtensionTokenMetadata:
 			valid = length >= tokenMetadataMinLen
 		default:
-			return budgetHold("execution_mint_extension_unsupported")
+			return staleHold("execution_mint_extension_unsupported")
 		}
 		if !valid {
-			return budgetHold("execution_mint_extension_malformed")
+			return staleHold("execution_mint_extension_malformed")
 		}
 	}
 	return nil

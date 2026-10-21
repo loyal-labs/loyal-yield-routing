@@ -152,7 +152,7 @@ func buildStepMessage(v *Vault, step StepRequest, delegate publicKey) (stepMessa
 	}
 	keys := distinctKeys(delegate, instructions)
 	if keys > maxTransactionKeys {
-		return stepMessage{Keys: keys}, budgetHold("step_over_key_limit")
+		return stepMessage{Keys: keys}, staleHold("step_over_key_limit")
 	}
 	message, err := compileV1Message(delegate, blockhash, instructions, executionBudget(route.Lane, len(instructions)))
 	if err != nil {

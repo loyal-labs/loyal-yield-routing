@@ -46,7 +46,7 @@ func capacityReport(snapshot MarketSnapshot, vaults []FleetVault, inflight map[s
 		if line == nil {
 			line = &ReserveCapacity{Reserve: p.SourceReserve, Mint: p.Mint, MovableUSDMicros: plan.Movable[p.SourceReserve]}
 			if state, ok := snapshot.Reserves[p.SourceReserve]; ok {
-				line.APYBPS, line.AvailableLiquidityUSDMicros = state.SupplyAPYBPS, state.AvailableLiquidityUSDMicros()
+				line.APYBPS, line.AvailableLiquidityUSDMicros = state.SupplyAPYBPS, state.AvailableLiquidityUSDMicros
 			}
 			lines[p.SourceReserve] = line
 		}

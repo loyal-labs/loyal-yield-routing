@@ -166,7 +166,7 @@ func (c legCap) headroom() legCap {
 func (st stepState) stepWithdrawReceipts() (uint64, error) {
 	ceiling, ok := kaminoBorrowLimitBPS(st.obligation)
 	if !ok || ceiling <= stepWithdrawMarginBPS {
-		return 0, budgetHold("step_withdraw_limit_unavailable")
+		return 0, staleHold("step_withdraw_limit_unavailable")
 	}
 	receipts, _, err := withdrawExcessAtLTV(st.position, uint64(ceiling-stepWithdrawMarginBPS))
 	if err != nil {
@@ -189,13 +189,13 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (downSt
 		receipts = min(receipts, limit)
 		liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
 		if err != nil || liquidity == 0 || s.PositionCollateralValueRaw <= 0 {
-			return downStepPlan{}, budgetHoldFrom(err, "release_leg_unavailable")
+			return downStepPlan{}, staleHoldFrom(err, "release_leg_unavailable")
 		}
 		convert := new(big.Int).Mul(new(big.Int).SetUint64(liquidity), big.NewInt(s.PositionDebtValueRaw))
 		convert.Mul(convert, big.NewInt(10_000+stepSwapLossBPS))
 		convert.Quo(convert, new(big.Int).Mul(big.NewInt(s.PositionCollateralValueRaw), big.NewInt(10_000)))
 		if !convert.IsUint64() || convert.Sign() <= 0 {
-			return downStepPlan{}, budgetHold("release_leg_unavailable")
+			return downStepPlan{}, staleHold("release_leg_unavailable")
 		}
 		return downStepPlan{receipts, min(convert.Uint64(), liquidity+st.collateralBalance)}, nil
 	}
@@ -211,7 +211,7 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (downSt
 	margined := new(big.Int).Mul(new(big.Int).SetUint64(need), big.NewInt(10_000+stepSwapLossBPS))
 	margined.Quo(margined, big.NewInt(10_000))
 	if !margined.IsUint64() {
-		return downStepPlan{}, budgetHold("step_amounts_invalid")
+		return downStepPlan{}, staleHold("step_amounts_invalid")
 	}
 	if need = margined.Uint64(); need > st.collateralBalance {
 		need -= st.collateralBalance
@@ -223,7 +223,7 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (downSt
 	receipts = min(receipts, limit, p.CollateralDepositedRaw-1)
 	liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
 	if err != nil || liquidity == 0 {
-		return downStepPlan{}, budgetHoldFrom(err, "step_no_withdraw_room")
+		return downStepPlan{}, staleHoldFrom(err, "step_no_withdraw_room")
 	}
 	return downStepPlan{receipts, liquidity + st.collateralBalance}, nil
 }
@@ -257,8 +257,9 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	case stepUp:
 		borrow := uint64(decision.AmountRaw)
 		if decision.Reason != termKeepAliveReason {
-			if capped, capErr := capacitySizedBorrow(st.position, accounts, route, leverageUpLevel(s)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
-				err = budgetHoldFrom(capErr, "borrow_capacity_shrank")
+			upLevel, _ := leverageUpLevel(s)
+			if capped, capErr := capacitySizedBorrow(st.position, accounts, route, upLevel); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
+				err = staleHoldFrom(capErr, "borrow_capacity_shrank")
 			}
 		}
 		if err == nil {
@@ -324,7 +325,7 @@ func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupi
 	receipts = stepLegCap(st.route).clamp(receipts)
 	liquidity, err := st.collateral.redeemLiquidityRaw(receipts)
 	if err != nil || receipts == 0 || liquidity == 0 {
-		return StepExecutionEvidence{}, 0, budgetHoldFrom(err, "release_leg_unavailable")
+		return StepExecutionEvidence{}, 0, staleHoldFrom(err, "release_leg_unavailable")
 	}
 	if st.cash, err = vaultCustodyRaw(manifest.vault, accounts, manifest.vault.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {
 		return StepExecutionEvidence{}, 0, err
@@ -355,10 +356,10 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		destinationHeld = st.cash
 	}
 	if stepLegCap(route).exceeded(openRaw) {
-		return StepExecutionEvidence{}, 0, budgetHold("step_over_policy_cap")
+		return StepExecutionEvidence{}, 0, staleHold("step_over_policy_cap")
 	}
 	if openRaw == 0 || convertRaw == 0 || convertRaw > math.MaxInt64 || sourceHeld > math.MaxUint64-openLiquidity || convertRaw > sourceHeld+openLiquidity {
-		return StepExecutionEvidence{}, 0, budgetHold("step_amounts_invalid")
+		return StepExecutionEvidence{}, 0, staleHold("step_amounts_invalid")
 	}
 	placeholder := LatestBlockhash{Blockhash: v.squads, LastValidBlockHeight: 1}
 	open, err := manifest.kaminoPacketForRoute(policies, action, openLeg, openRaw, placeholder, lane)
@@ -402,7 +403,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		return StepExecutionEvidence{}, 0, err
 	}
 	if stepLegCap(route).exceeded(closeRaw) && !exit {
-		return StepExecutionEvidence{}, 0, budgetHold("step_over_policy_cap")
+		return StepExecutionEvidence{}, 0, staleHold("step_over_policy_cap")
 	}
 	hash, height := stepConversionBlockhash(conversionRequest)
 	blockhash := LatestBlockhash{Blockhash: hash, LastValidBlockHeight: height}
@@ -416,7 +417,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		}
 	}
 	if _, err := compileStepMessageForDelegate(v, request, mustKey(backyardDelegate)); err != nil {
-		return StepExecutionEvidence{}, 0, budgetHoldFrom(err, "step_does_not_compile")
+		return StepExecutionEvidence{}, 0, staleHoldFrom(err, "step_does_not_compile")
 	}
 	effect := func(custody, mint, program string, before, after uint64) ExpectedAccountEffect {
 		return ExpectedAccountEffect{Address: custody, Owner: program, Mint: mint, Authority: v.squads, BeforeRaw: before, AfterRaw: after}
@@ -442,7 +443,7 @@ func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
 	borrow = min(borrow, limit)
 	p := st.position
 	if limit <= st.collateralBalance {
-		return 0, budgetHold("step_over_policy_cap")
+		return 0, staleHold("step_over_policy_cap")
 	}
 	collateral, err := valueBetweenTokenRaw(borrow, p.DebtDecimals, p.CollateralDecimals, p.DebtPriceSF, p.CollateralPriceSF, true)
 	if err != nil {
@@ -454,7 +455,7 @@ func stepUpBorrowWithinCap(st stepState, borrow uint64) (uint64, error) {
 		}
 	}
 	if borrow < leverageMinimumBorrowRaw {
-		return 0, budgetHold("step_over_policy_cap")
+		return 0, staleHold("step_over_policy_cap")
 	}
 	return borrow, nil
 }
@@ -484,11 +485,11 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	}
 	deposit := st.collateralBalance + liquidity
 	if stepLegCap(route).exceeded(receipts) || stepLegCap(destination).exceeded(deposit) {
-		return StepExecutionEvidence{}, budgetHold("step_over_policy_cap")
+		return StepExecutionEvidence{}, staleHold("step_over_policy_cap")
 	}
 	account := accountAt(accounts, destination.Kamino.Obligation)
 	if account.Address != destination.Kamino.Obligation || account.Lamports == 0 {
-		return StepExecutionEvidence{}, budgetHold("overflow_obligation_absent")
+		return StepExecutionEvidence{}, staleHold("overflow_obligation_absent")
 	}
 	if _, err := decodeKaminoObligation(account, destination.Kamino); err != nil {
 		return StepExecutionEvidence{}, err
@@ -513,7 +514,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	closing.ObligationReserves = topology
 	request := StepRequest{Open: open, Close: &closing}
 	if _, err := compileStepMessageForDelegate(v, request, mustKey(backyardDelegate)); err != nil {
-		return StepExecutionEvidence{}, budgetHoldFrom(err, "step_does_not_compile")
+		return StepExecutionEvidence{}, staleHoldFrom(err, "step_does_not_compile")
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: moveEffects(route, st.collateralBalance)}, nil
 }

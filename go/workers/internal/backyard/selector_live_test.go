@@ -84,7 +84,7 @@ func TestLiveSelectorRejectsDuplicateMarketFanoutAndStaleSource(t *testing.T) {
 	o.ObservedAt = time.Now().UTC()
 	market := in.Markets[0]
 	_, _, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market, market}, in.Policy, nil)
-	assertBudgetHold(t, err, "invalid_selector_market_set")
+	assertPreSendHold(t, err, "invalid_selector_market_set")
 	// A sample whose observation is past its quoting window reads nothing.
 	o.ObservedAt = o.ObservedAt.Add(-time.Minute)
 	if _, _, err = collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, in.Markets, in.Policy, nil); !errors.Is(err, errConfirmedObservationUnavailable) {
@@ -192,7 +192,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	if len(legs) != 2 || legs[0] != 10_000_000 || legs[1] != 1_000_000 {
 		t.Fatal("ladder legs", legs)
 	}
-	if quotes[0].CostRaw <= 0 || quotes[0].CostRaw != quotes[0].Cost.TotalMicros {
+	if quotes[0].CostRaw <= 0 || quotes[0].CostRaw != int64(quotes[0].Cost.TotalMicros) {
 		t.Fatal("published quote lost its expected cost", quotes[0].Cost)
 	}
 	if benefit, admissible := selectorMoveQuoteBenefit(o, []LaneEconomics{market}, policy, quotes[0]); !admissible || benefit <= 0 {

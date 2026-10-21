@@ -42,7 +42,7 @@ func TestExecutionMintRejectsChangedTransferSemantics(t *testing.T) {
 			} else {
 				changed.Data[tc.offset] = 1
 			}
-			assertBudgetHold(t, validateExecutionMint(changed, token2022Program, 6), tc.reason)
+			assertPreSendHold(t, validateExecutionMint(changed, token2022Program, 6), tc.reason)
 		})
 	}
 	for size := 0; size < len(data); size++ {

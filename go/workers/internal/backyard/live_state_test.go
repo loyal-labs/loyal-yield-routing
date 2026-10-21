@@ -143,9 +143,10 @@ func TestLiveStateRestartComputesTheCurrentState(t *testing.T) {
 			lanes[i] = targetLane{s: view, held: true, level: in.Levels[view.RouteLane]}
 		}
 		for i, view := range o.lanes {
-			t.Logf("approved=%v %s LTV %d bps, up level %v, borrow blocked %v", approved, view.RouteLane, view.LTVBPS, leverageUpLevel(view), view.BorrowUtilizationBlocked)
-			if view.LTVBPS < 4200 || view.LTVBPS > 4300 || leverageUpLevel(view) != 0 {
-				t.Fatalf("%s is not at its 1.75 band: LTV %d up %v", view.RouteLane, view.LTVBPS, leverageUpLevel(view))
+			upLevel, up := leverageUpLevel(view)
+			t.Logf("approved=%v %s LTV %d bps, up level %v, borrow blocked %v", approved, view.RouteLane, view.LTVBPS, upLevel, view.BorrowUtilizationBlocked)
+			if view.LTVBPS < 4200 || view.LTVBPS > 4300 || up {
+				t.Fatalf("%s is not at its 1.75 band: LTV %d up %v", view.RouteLane, view.LTVBPS, upLevel)
 			}
 			// The overflow move needs a source below its stored level: PYUSD
 			// sits on it, so the Oct 11 overflow neither repeats nor extends.

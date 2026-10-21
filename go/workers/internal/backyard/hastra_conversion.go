@@ -200,7 +200,7 @@ func hastraPriceAt(ctx context.Context, view *View, minimumSlot int64) (hastra.S
 	}
 	now := clockUnixTimestamp(accounts[1:])
 	if now <= 0 {
-		return hastra.StakePrice{}, 0, 0, budgetHold("invalid_valuation_clock")
+		return hastra.StakePrice{}, 0, 0, staleHold("invalid_valuation_clock")
 	}
 	return price, now, slot, nil
 }
@@ -271,12 +271,12 @@ func prepareHastraQuoteEvidence(ctx context.Context, v *Vault, rpc *chain.Client
 			return HastraExecutionEvidence{}, confirmedObservationUnavailable(err)
 		}
 		if !landable(price, now) {
-			return HastraExecutionEvidence{}, budgetHold("hastra_price_stale")
+			return HastraExecutionEvidence{}, staleHold("hastra_price_stale")
 		}
 		request.Price, request.PriceScale, request.PriceTimestamp = price.Price.String(), price.Scale, price.Timestamp
 	}
 	if request.OutputRaw, err = hastraOutput(edge.leg, price, amount); err != nil {
-		return HastraExecutionEvidence{}, budgetHoldFrom(err, "hastra_conversion_rounds_to_zero")
+		return HastraExecutionEvidence{}, staleHoldFrom(err, "hastra_conversion_rounds_to_zero")
 	}
 	if destinationRaw > math.MaxUint64-request.OutputRaw {
 		return HastraExecutionEvidence{}, fmt.Errorf("Hastra destination overflows")

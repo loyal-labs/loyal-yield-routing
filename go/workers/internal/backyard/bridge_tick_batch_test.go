@@ -83,7 +83,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	}
 	uninstalled = true
 	_, _, err = prepareBridgeFromTickObservation(context.Background(), client, view, m, decision, o)
-	assertBudgetHold(t, err, "REPORT_NAV policy not installed")
+	assertPreSendHold(t, err, "REPORT_NAV policy not installed")
 }
 
 func TestSelectorWakeWaitsForActiveTickAndCoalesces(t *testing.T) {

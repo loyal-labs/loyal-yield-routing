@@ -159,7 +159,7 @@ func TestUnavailableSpreadNeverFlipsTheStoredTarget(t *testing.T) {
 	good := leverageMarket(s.RouteLane, 0.12, math.Log1p(0.06))
 	full := good
 	full.DebtSupplyRaw, full.DebtBorrowRaw = 1_000_000_000, 900_000_000 // $100 free < $500 borrow
-	if _, ok := leverageSpread(full, 1.5, 1_000_000_000, false); ok {
+	if _, ok := leverageSpread(full, 1.5, 1_000_000_000, nil); ok {
 		t.Fatal("fixture: spread(1.5x) should be unavailable")
 	}
 	if d, _ := decideLeverageTarget(s, keep, []LaneEconomics{full}, p, twentyBPSStepCost); d.Next != s.LeverageTargetLevel || d.BorrowRaw != 0 {
