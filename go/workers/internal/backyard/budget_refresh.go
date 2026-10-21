@@ -103,9 +103,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 	if _, err = checkedUnsignedMessage(message); err != nil {
 		return 0, nil, err
 	}
-	// All-zero placeholder signature; sigVerify is explicitly false. These
-	// bytes cannot be broadcast successfully and are never persisted as signed.
-	wire := signedWire(message, make([]byte, 64))
+	wire := simulationWire(message)
 	keys, err := publicKeys(addresses)
 	if err != nil {
 		return 0, nil, err

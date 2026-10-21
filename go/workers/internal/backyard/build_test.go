@@ -28,10 +28,8 @@ func forwardedAdaptorWire(t *testing.T, outer []byte) []byte {
 
 func bridgeTestRequest(action Action, amount uint64) BridgeBuildRequest {
 	return BridgeBuildRequest{
-		Action: action, AmountRaw: amount, Policy: testPolicyAccount(policyKey{action: action}),
-		Report:          BridgeReport{Sequence: 1, ObservedSlot: 1, NAVAfterRaw: 0, SnapshotDigest: hex.EncodeToString(bytes.Repeat([]byte{1}, 32))},
-		AdaptorConfig:   bridgeStrategy,
-		Settings:        backyardSettings,
+		Action: BridgeAction(action), AmountRaw: amount, Policy: testPolicyAccount(policyKey{action: action}),
+		Report:          BridgeReport{Sequence: 1, ObservedSlot: 1, NAVAfterRaw: 0, SnapshotDigest: navDigest(hex.EncodeToString(bytes.Repeat([]byte{1}, 32)))},
 		RecentBlockhash: bridgeVault, LastValidBlockHeight: 99,
 	}
 }
@@ -198,7 +196,7 @@ func TestBridgeBuilderRejectsCapitalAndReportMutations(t *testing.T) {
 	if _, err := bridgeInstruction(rwa, bad); err != nil {
 		t.Fatal("nonzero digest was rejected")
 	}
-	bad.Report.SnapshotDigest = strings.Repeat("00", 32)
+	bad.Report.SnapshotDigest = navDigest(strings.Repeat("00", 32))
 	if _, err := bridgeInstruction(rwa, bad); err == nil {
 		t.Fatal("zero digest accepted")
 	}

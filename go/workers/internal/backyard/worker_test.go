@@ -68,7 +68,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 			if got != decision {
 				t.Fatalf("prepared wrong decision: %+v", got)
 			}
-			return observation, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: got.Action}}, nil
+			return observation, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: BridgeAction(got.Action)}}, nil
 		},
 		recordDecision: func(_ context.Context, route string, _ Observation, got Decision, _ string) (DecisionRecord, error) {
 			order = append(order, "record")
@@ -79,7 +79,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 		},
 		build: func(_ context.Context, operationID string, request any, _ ExpectedEffects) error {
 			order = append(order, "build")
-			if r, ok := request.(BridgeBuildRequest); operationID != "operation" || !ok || r.Action != VoltrAllocateToSquads {
+			if r, ok := request.(BridgeBuildRequest); operationID != "operation" || !ok || r.Action != bridgeAllocateToSquads {
 				t.Fatalf("bridge dispatch drifted")
 			}
 			return nil
@@ -119,7 +119,7 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },
 		observe:         func(context.Context) (Observation, error) { return observation, nil },
 		prepareBridge: func(_ context.Context, _ RouteManifest, d Decision, _ Observation) (Observation, BridgeExecutionEvidence, error) {
-			return observation, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: d.Action}}, nil
+			return observation, BridgeExecutionEvidence{Request: BridgeBuildRequest{Action: BridgeAction(d.Action)}}, nil
 		},
 		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			return DecisionRecord{OperationID: "operation", Status: Decided}, nil

@@ -108,7 +108,7 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uint64(s.StrategyNAVRaw) != single.StrategyNAVRaw || s.ReportSnapshotDigest != single.SnapshotDigest {
+	if uint64(s.StrategyNAVRaw) != single.StrategyNAVRaw || s.ReportSnapshotDigest != string(single.SnapshotDigest) {
 		t.Fatalf("one held lane changed the report: %d %s vs %d %s", s.StrategyNAVRaw, s.ReportSnapshotDigest, single.StrategyNAVRaw, single.SnapshotDigest)
 	}
 	// The observation identity is the one-lane identity (pinned from the

@@ -72,19 +72,24 @@ func recentSlotMillis(ctx context.Context, c *chain.Client) (float64, error) {
 	return 1000 / slotsPerSecond, nil
 }
 
-// BudgetPrice is an observation, not an assumed stablecoin peg. The producer
-// must bind the mint/program/decimals and reserve/oracle account hashes to its
-// coherent chain read. Upper and lower prices share the oracle quote unit.
+type oracleQuotePair struct {
+	TokenUpperSF kamino.ScaledFraction `json:"tokenUpperSf"`
+	USDCLowerSF  kamino.ScaledFraction `json:"usdcLowerSf"`
+}
+
 type BudgetPrice struct {
-	Source           string                `json:"source"`
-	Mint             string                `json:"mint"`
-	TokenProgram     string                `json:"tokenProgram"`
-	Decimals         uint8                 `json:"decimals"`
-	TokenUpperSF     kamino.ScaledFraction `json:"tokenUpperSf"`
-	USDCLowerSF      kamino.ScaledFraction `json:"usdcLowerSf"`
-	ObservedSlot     int64                 `json:"observedSlot"`
-	ValidThroughSlot int64                 `json:"validThroughSlot"`
-	EvidenceSHA256   string                `json:"evidenceSha256"`
+	Source       string `json:"source"`
+	Mint         string `json:"mint"`
+	TokenProgram string `json:"tokenProgram"`
+	Decimals     uint8  `json:"decimals"`
+	oracleQuotePair
+	ObservedSlot     int64  `json:"observedSlot"`
+	ValidThroughSlot int64  `json:"validThroughSlot"`
+	EvidenceSHA256   string `json:"evidenceSha256"`
+}
+
+func observedBudgetPrice(slot int64, evidence []ConfirmedAccount, mint, program string, decimals uint8, quote oracleQuotePair) BudgetPrice {
+	return BudgetPrice{Source: routeRefreshValuationSource, Mint: mint, TokenProgram: program, Decimals: decimals, oracleQuotePair: quote, ObservedSlot: slot, ValidThroughSlot: slot + observationLagSlots(), EvidenceSHA256: hashConfirmedAccounts(evidence)}
 }
 
 func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (int64, error) {

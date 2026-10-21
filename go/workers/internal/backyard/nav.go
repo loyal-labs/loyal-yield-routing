@@ -48,9 +48,11 @@ type NAVComponent struct {
 	Raw, Slot        int64
 	Known, Liability bool
 }
+type navDigest string
+
 type NAVReportInput struct {
 	Raw            int64
-	SnapshotDigest string
+	SnapshotDigest navDigest
 }
 
 type NAVSnapshotContext struct {
@@ -99,5 +101,5 @@ func ComputeNAV(ctx NAVSnapshotContext, cs []NAVComponent) (NAVReportInput, erro
 	}
 	sort.Strings(canonical)
 	h := sha256.Sum256([]byte(fmt.Sprintf("%d:%s:%s:%v", ctx.Slot, ctx.ReceiptFingerprint, ctx.ManifestSHA256, canonical)))
-	return NAVReportInput{assets - liabilities, hex.EncodeToString(h[:])}, nil
+	return NAVReportInput{assets - liabilities, navDigest(hex.EncodeToString(h[:]))}, nil
 }

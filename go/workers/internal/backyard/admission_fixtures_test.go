@@ -562,7 +562,7 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 		t.Fatalf("restore decision: %+v", d)
 	}
 	r := bridgeTestRequest(d.Action, uint64(d.AmountRaw))
-	r.Report = BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(s.StrategyNAVRaw), SnapshotDigest: s.ReportSnapshotDigest}
+	r.Report = BridgeReport{Sequence: uint64(s.Slot), ObservedSlot: uint64(s.Slot), NAVAfterRaw: uint64(s.StrategyNAVRaw), SnapshotDigest: navDigest(s.ReportSnapshotDigest)}
 	effects, _, _, _, err := bridgeExpectedEffects(rwa, d, uint64(s.VoltrIdleRaw), uint64(s.VoltrStrategyIdleRaw), uint64(s.SquadsIdleRaw))
 	if err != nil {
 		t.Fatal(err)

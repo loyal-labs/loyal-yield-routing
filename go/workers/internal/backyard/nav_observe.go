@@ -88,7 +88,7 @@ type RouteNAVSnapshot struct {
 	Receipt                 voltr.StrategyReceipt
 	Voltr                   VoltrVaultBook
 	LPSupplyRaw             uint64
-	SnapshotDigest          string
+	SnapshotDigest          navDigest
 	Report                  BridgeReport
 	OtherLanes              []heldLaneState
 }

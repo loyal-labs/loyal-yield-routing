@@ -625,7 +625,7 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 		nav.Voltr.TotalValueRaw > math.MaxInt64 || nav.Receipt.CustodyTrackedRaw > math.MaxInt64 ||
 		nav.Voltr.LockedProfitDegradationSeconds > math.MaxInt64 || nav.Voltr.LastUpdatedLockedProfitRaw > math.MaxInt64 ||
 		nav.Voltr.LastLockedProfitReportUnix > math.MaxInt64 ||
-		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(nav.SnapshotDigest) {
+		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(string(nav.SnapshotDigest)) {
 		return fmt.Errorf("route NAV cannot be merged into the confirmed snapshot")
 	}
 	currentUnix := now.Unix()
@@ -639,7 +639,7 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.PriorReportedNAVRaw = int64(nav.PriorReportedNAVRaw)
 	snapshot.PriorReportUpdatedUnix = lastUpdated
 	snapshot.ReportSequence = int64(nav.Report.Sequence)
-	snapshot.ReportSnapshotDigest = nav.Report.SnapshotDigest
+	snapshot.ReportSnapshotDigest = string(nav.Report.SnapshotDigest)
 	snapshot.DebtIdleRaw = int64(nav.Custodies.SquadsDebtRaw)
 	snapshot.CollateralIdleValueRaw = int64(nav.PrimeIdleValueRaw)
 	snapshot.VoltrTotalValueRaw = int64(nav.Voltr.TotalValueRaw)

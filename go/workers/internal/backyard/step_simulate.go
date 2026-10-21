@@ -94,9 +94,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	fmt.Fprintf(out, "lane: %s\ndir: %s\nobserved slot: %d\nLTV before: %d bps\n", lane, direction, slot, ltvBefore)
 	fmt.Fprintf(out, "open: %d raw\nconvert: %d raw in, %d raw guaranteed out\nclose: %d raw\n", amountRaw, convert, guaranteed, evidence.Request.Close.AmountRaw)
 	fmt.Fprintf(out, "v1: %d of %d bytes, %d of %d keys\n", step.WireBytes, maxTransactionBytes, step.Keys, maxTransactionKeys)
-	// An all-zero signature: with sigVerify off the cluster runs the message
-	// as the delegate's without its key, and these bytes can never land.
-	wire := signedWire(step.Message, make([]byte, 64))
+	wire := simulationWire(step.Message)
 	capture := []solana.PublicKey{solanaKey(route.Kamino.Obligation), solanaKey(route.Kamino.CollateralReserve), solanaKey(route.Kamino.DebtReserve)}
 	simulated, err := cluster.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentConfirmed, ReplaceRecentBlockhash: true,
 		Accounts: &rpc.SimulateTransactionAccountsOpts{Encoding: solana.EncodingBase64, Addresses: capture}})

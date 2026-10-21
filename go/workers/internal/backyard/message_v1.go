@@ -139,6 +139,10 @@ func signedWire(message, signature []byte) []byte {
 	return append(append([]byte(nil), message...), signature...)
 }
 
+func simulationWire(message []byte) []byte {
+	return signedWire(message, make([]byte, ed25519.SignatureSize))
+}
+
 func splitSignedWire(wire []byte) ([]byte, []byte, error) {
 	if len(wire) > ed25519.SignatureSize+4 && wire[0] == 0x81 && wire[1] == 1 {
 		split := len(wire) - ed25519.SignatureSize
@@ -152,7 +156,7 @@ func decodeV1Message(message []byte) (solana.Message, error) {
 	if len(message) == 0 || message[0] != 0x81 {
 		return m, fmt.Errorf("not a v1 message")
 	}
-	tx, err := solana.TransactionFromBytes(signedWire(message, make([]byte, ed25519.SignatureSize)))
+	tx, err := solana.TransactionFromBytes(simulationWire(message))
 	if err != nil {
 		return m, err
 	}

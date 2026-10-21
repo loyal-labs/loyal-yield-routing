@@ -61,7 +61,7 @@ func TestBridgeTickBatchSkipsAccountReadsAndRejectsStaleOrTamperedEvidence(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.routeBatch != o.routeBatch || evidence.Request.Action != ReportNAV || len(evidence.ExpectedEffects.Accounts) == 0 || requests["getMultipleAccounts"] != 3 || requests["getLatestBlockhash"] != 1 {
+	if prepared.routeBatch != o.routeBatch || evidence.Request.Action != bridgeReportNAV || len(evidence.ExpectedEffects.Accounts) == 0 || requests["getMultipleAccounts"] != 3 || requests["getLatestBlockhash"] != 1 {
 		t.Fatal("lost shared batch or unexpected preparation reads", requests)
 	}
 	withBatch, _ := json.Marshal(o)
