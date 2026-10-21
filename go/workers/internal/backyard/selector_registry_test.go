@@ -19,7 +19,7 @@ func TestBlockedDebtReserveNeverAccruesLeveragedPersistence(t *testing.T) {
 	state := SelectorState{}
 	for i := 0; i < 3; i++ {
 		result := SelectOpportunity(in, state)
-		if _, ok := result.State.Advantages[lane]; ok {
+		if _, ok := result.State.Advantages[advantageKey{lane: lane}]; ok {
 			t.Fatalf("sample %d: blocked lane accrued persistence: %+v", i, result.State)
 		}
 		state = result.State
@@ -30,10 +30,10 @@ func TestBlockedDebtReserveNeverAccruesLeveragedPersistence(t *testing.T) {
 	q := &unlevered.Quotes[0]
 	q.Unlevered, q.BorrowReceiveRaw, q.BorrowFeeRaw, q.BorrowValueRaw, q.ProceedsValueRaw = true, 0, 0, 0, 0
 	result := SelectOpportunity(unlevered, SelectorState{})
-	if _, ok := result.State.Advantages[lane]; ok {
+	if _, ok := result.State.Advantages[advantageKey{lane: lane}]; ok {
 		t.Fatal("1x quote accrued the leveraged window", result.State)
 	}
-	if _, ok := result.State.Advantages[unleveredAdvantageKey(lane)]; !ok {
+	if _, ok := result.State.Advantages[advantageKey{lane: lane, unlevered: true}]; !ok {
 		t.Fatal("profitable 1x quote did not open its own window", result.State)
 	}
 }
@@ -45,7 +45,7 @@ func primePYUSDQuote(in SelectorInput) MoveQuote {
 		MinimumIdleRaw: uint64(in.Snapshot.TotalVaultNAVRaw), BorrowReceiveRaw: 5_000_000, BorrowFeeRaw: 10_000,
 		SourceLane: in.Snapshot.RouteLane, DestinationLane: primePRIMEPYUSD.Lane, ObservationID: in.Snapshot.ObservationID,
 		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
-		EvidenceID: sha256Bytes([]byte("prime-pyusd-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + budgetMaxObservationLagSlots,
+		EvidenceID: sha256Bytes([]byte("prime-pyusd-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + observationLagFloorSlots,
 	})
 }
 

@@ -143,8 +143,6 @@ func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route Ru
 	return leverageStepWithinRisk(p, accounts, route, min(receive, desired, depositRoom), rate)
 }
 
-const borrowLimitRefreshMarginDivisor = 1000
-
 func debtBorrowFeeRate(accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	debt, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
 	if err != nil {
@@ -163,7 +161,8 @@ func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route
 	}
 	borrowLimitBeforeRedeposit := new(big.Int).Mul(new(big.Int).SetUint64(collateral), big.NewInt(p.MaxLTVBPS))
 	borrowLimitBeforeRedeposit.Quo(borrowLimitBeforeRedeposit, big.NewInt(10_000))
-	borrowLimitBeforeRedeposit.Sub(borrowLimitBeforeRedeposit, new(big.Int).Quo(borrowLimitBeforeRedeposit, big.NewInt(borrowLimitRefreshMarginDivisor)))
+	refreshMargin := new(big.Int).Mul(borrowLimitBeforeRedeposit, big.NewInt(leverageUpRefreshMarginBPS))
+	borrowLimitBeforeRedeposit.Sub(borrowLimitBeforeRedeposit, refreshMargin.Quo(refreshMargin, big.NewInt(10_000)))
 	if !borrowLimitBeforeRedeposit.IsUint64() || borrowLimitBeforeRedeposit.Uint64() <= p.DebtRaw {
 		return 0, nil
 	}

@@ -337,11 +337,8 @@ func (e *events) roomObserved(u roomUpdate) {
 	if e == nil {
 		return
 	}
-	if u.watch.debt && e.facts != nil && !math.IsNaN(u.roomUSD) {
+	if e.facts != nil && !math.IsNaN(u.roomUSD) {
 		e.facts.BackyardLeverageRoom(e.vault, u.watch.lane, u.roomUSD)
-	}
-	if !u.watch.debt {
-		return
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -403,6 +400,10 @@ func (e *events) leverageUpLanded(lane string, borrowedRaw int64, signature stri
 
 func (e *events) hold(lane string, reason HoldReason) {
 	if e == nil || e.facts == nil {
+		return
+	}
+	if reason == holdNone {
+		e.facts.BackyardHoldCleared(e.vault)
 		return
 	}
 	e.facts.BackyardHold(e.vault, lane, string(reason))

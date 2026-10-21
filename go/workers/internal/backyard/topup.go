@@ -7,9 +7,7 @@ const (
 	stepResidueReason     = "step_residue_to_collateral"
 )
 
-// laneSwap reads the edge table the builder signs from, so a step never picks
-// a swap the lane's policy lacks (AUTO and OnRe have no USDC->debt edge).
-func laneSwap(lane string, action Action) bool {
+func laneSupportsSwap(lane string, action Action) bool {
 	if _, hastra := hastraConversionLeg(action, lane); hastra {
 		return true
 	}

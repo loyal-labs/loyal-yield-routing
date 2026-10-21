@@ -112,7 +112,7 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 		Selection           SelectorResult `json:"selection"`
 	}{"no_quote_diagnostic", "ranking diagnostic only: no quotes are collected, nothing is executable, not an executable canary preflight", nil, "", "", Decide(observation.Snapshot), selection}
 	if requestErr != nil {
-		report.CanaryRequestError = "invalid_pilot_canary_request"
+		report.CanaryRequestError = invalidPilotCanaryRequest
 	} else if request != nil {
 		report.CanaryRequest = *request
 	}
@@ -122,18 +122,23 @@ func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEva
 	return json.NewEncoder(out).Encode(report)
 }
 
-// selectorEvaluateAdmissionHoldCodes is the closed set of BudgetHold reasons
-// the locked evaluation (selector_entry.go, pilot_canary_entry.go) can return
-// to this command. Membership is the only thing the failure diagnostic echoes;
-// any other reason collapses to the generic code.
+const (
+	invalidPilotCanaryRequest      = "invalid_pilot_canary_request"
+	invalidSelectorRouteState      = "invalid_selector_route_state"
+	pilotCanaryHistoryFull         = "pilot_canary_history_full"
+	pilotCanaryRequestIDReused     = "pilot_canary_request_id_reused"
+	selectorEvaluationNotCurrent   = "selector_evaluation_not_current"
+	selectorFeeEvidenceUnavailable = "selector_fee_evidence_unavailable"
+)
+
 var selectorEvaluateAdmissionHoldCodes = map[string]bool{
-	"duplicate_move_quote":              true,
-	"invalid_pilot_canary_request":      true,
-	"invalid_selector_route_state":      true,
-	"pilot_canary_history_full":         true,
-	"pilot_canary_request_id_reused":    true,
-	"selector_evaluation_not_current":   true,
-	"selector_fee_evidence_unavailable": true,
+	duplicateMoveQuote:             true,
+	invalidPilotCanaryRequest:      true,
+	invalidSelectorRouteState:      true,
+	pilotCanaryHistoryFull:         true,
+	pilotCanaryRequestIDReused:     true,
+	selectorEvaluationNotCurrent:   true,
+	selectorFeeEvidenceUnavailable: true,
 }
 
 const sqlstateQueryCanceled = "57014"

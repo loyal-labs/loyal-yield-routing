@@ -161,7 +161,7 @@ func TestSelectorForecastCountsMoveCostOnce(t *testing.T) {
 	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
 	invested := float64(amount - q.CostRaw)
 	e, blocked := pilotQuoteEconomics(q, market, invested, years)
-	if blocked != "" {
+	if blocked != nil {
 		t.Fatal(blocked)
 	}
 	if want := float64(amount-expected) + e.Proceeds - e.Debt; e.InitialNAV != want {

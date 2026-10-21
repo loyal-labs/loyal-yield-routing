@@ -29,7 +29,7 @@ func evaluatePricedQuote(t *testing.T, q MoveQuote, m LaneEconomics) pricedRun {
 	}
 	out := pricedRun{invested: float64(q.EquityRaw - q.CostRaw), years: (7 * 24 * time.Hour).Hours() / (365.25 * 24)}
 	e, blocked := pilotQuoteEconomics(q, m, out.invested, out.years)
-	if blocked != "" {
+	if blocked != nil {
 		t.Fatal(blocked)
 	}
 	out.raw, out.debt, out.proceeds = uint64(e.DebtRaw), uint64(e.Debt), uint64(e.Proceeds)
@@ -124,7 +124,7 @@ func TestExitOnlyLaneNeverReachesFeedEconomics(t *testing.T) {
 	}
 	// An active lane with an executable quote keeps sampling its window.
 	usdcSample := SelectOpportunity(selectorFixture(), SelectorState{})
-	if _, sampled := usdcSample.State.Advantages["OnRe/ONyc/USDC"]; !sampled {
+	if _, sampled := usdcSample.State.Advantages[advantageKey{lane: "OnRe/ONyc/USDC"}]; !sampled {
 		t.Fatalf("active lane persistence regressed: %+v", usdcSample.State)
 	}
 }

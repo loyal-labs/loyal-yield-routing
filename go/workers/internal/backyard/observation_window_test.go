@@ -26,7 +26,7 @@ func TestObservationWindowScalesWithSlotTimeAndIsClamped(t *testing.T) {
 	}
 	reset()
 	t.Cleanup(reset)
-	if observationLagSlots() != budgetMaxObservationLagSlots {
+	if observationLagSlots() != observationLagFloorSlots {
 		t.Fatal("unmeasured window is not 32 slots")
 	}
 	client := newFakeChain(t, nil)
@@ -56,7 +56,7 @@ func TestObservationWindowScalesWithSlotTimeAndIsClamped(t *testing.T) {
 	}
 	observationLagChecked, observationLagMeasured = time.Now().Add(-2*time.Minute), time.Now().Add(-11*time.Minute)
 	refreshObservationLagSlots(context.Background(), client)
-	if observationLagSlots() != budgetMaxObservationLagSlots {
+	if observationLagSlots() != observationLagFloorSlots {
 		t.Fatal("a stale measurement did not fall back to 32 slots")
 	}
 }
@@ -77,7 +77,7 @@ func TestWidenedWindowStillBoundsPriceAge(t *testing.T) {
 	}
 	_, err := p.valueUpper(1, "m", "p", 150)
 	assertBudgetHoldReason(err)
-	p.ValidThroughSlot = 100 + budgetMaxObservationLagCeilingSlots + 1
+	p.ValidThroughSlot = 100 + observationLagCeilingSlots + 1
 	_, err = p.valueUpper(1, "m", "p", 101)
 	assertBudgetHoldReason(err)
 }

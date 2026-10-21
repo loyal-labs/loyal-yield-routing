@@ -342,7 +342,7 @@ func unavailableLanes(routes []RuntimeRoute, latest []LaneEconomics, realized ma
 		if priced[route.Lane] {
 			continue
 		}
-		reason := "economic_evidence_unavailable"
+		reason := economicEvidenceUnavailable
 		r := realized[route.Kamino.CollateralReserve]
 		switch {
 		case r.yield.ObservedAt.IsZero() && r.reason != "":

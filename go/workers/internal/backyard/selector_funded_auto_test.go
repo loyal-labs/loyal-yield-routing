@@ -23,7 +23,7 @@ func fundedAutoFixture(t *testing.T) SelectorInput {
 		MinimumIdleRaw: uint64(in.Snapshot.TotalVaultNAVRaw), BorrowReceiveRaw: 5_000_000, BorrowFeeRaw: 10_000,
 		SourceLane: in.Snapshot.RouteLane, DestinationLane: testAutoLane, ObservationID: in.Snapshot.ObservationID,
 		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
-		EvidenceID: sha256Bytes([]byte("auto-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + budgetMaxObservationLagSlots,
+		EvidenceID: sha256Bytes([]byte("auto-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + observationLagFloorSlots,
 	}
 	in.Quotes = []MoveQuote{parBorrow(quote)}
 	return in
@@ -41,7 +41,7 @@ func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
 	if result.Action != "KEEP" || result.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("first profitable sample must hold for persistence", result)
 	}
-	window, ok := result.State.Advantages[testAutoLane]
+	window, ok := result.State.Advantages[advantageKey{lane: testAutoLane}]
 	if !ok || !window.Since.Equal(in.Now) || !window.LastSample.Equal(in.Now) {
 		t.Fatal("priced sample did not open the window", result.State)
 	}
@@ -62,7 +62,7 @@ func TestAutoCandidateOrdinarySelectionAcrossSamples(t *testing.T) {
 	if result.Action != "KEEP" || result.Reason != "advantage_not_yet_persistent" {
 		t.Fatal("stale window survived a MaxSampleGap breach", result)
 	}
-	if window, ok := result.State.Advantages[testAutoLane]; !ok || !window.Since.Equal(in.Now) {
+	if window, ok := result.State.Advantages[advantageKey{lane: testAutoLane}]; !ok || !window.Since.Equal(in.Now) {
 		t.Fatal("restarted window lost its fresh start", result.State)
 	}
 }
@@ -110,7 +110,7 @@ func TestAutoCandidateFullAndUnavailableCapacityHoldWithoutPersistence(t *testin
 	if installedResult.Action != "KEEP" || installedResult.Reason != "advantage_not_yet_persistent" || len(installedResult.State.Advantages) != 1 {
 		t.Fatal("installed binding did not open the candidate persistence window", installedResult)
 	}
-	if window, ok := installedResult.State.Advantages[testAutoLane]; !ok || !window.Since.Equal(in.Now) {
+	if window, ok := installedResult.State.Advantages[advantageKey{lane: testAutoLane}]; !ok || !window.Since.Equal(in.Now) {
 		t.Fatal("installed persistence window drifted", installedResult.State)
 	}
 }

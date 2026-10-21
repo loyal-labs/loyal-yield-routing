@@ -22,6 +22,13 @@ const (
 	// authority changes nothing about the reviewed binary and every external
 	// tool can reproduce the digest with sha256(data[45:]).
 	programDataExecutableOffset = 45
+
+	voltrProgramDataAddress   = "3fiAyUjktZkZf6hcbBPy6U6UdkMdEFoToS4sjtzAd5az"
+	voltrProgramDataSHA256    = "bf1c1831b3d6350f4340badb942bd2e7bfaca4aa89276cb65e8480aa30d44c56"
+	voltrProgramDeploySlot    = int64(445223838)
+	adaptorProgramDataAddress = "DrvzixaVmAuPVVJPtP5wykb9mvgDWqZbvZau9oiCUpHu"
+	adaptorProgramDataSHA256  = "8361a469833fa17df8f62f9c4b8055aa859552fe8db7610b8fcb3af6ac6eb6d5"
+	adaptorProgramDeploySlot  = int64(443528877)
 )
 
 type pinnedProgramIdentity struct {

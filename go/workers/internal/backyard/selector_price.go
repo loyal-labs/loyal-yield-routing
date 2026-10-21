@@ -86,6 +86,7 @@ func (p lanePricer) setupMicros(ctx context.Context, route RuntimeRoute, blockha
 type lanePrices struct {
 	collateral, debt, usdc           [16]byte
 	collateralDecimals, debtDecimals uint8
+	debtBorrowFeeSF                  uint64
 }
 
 func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrices, error) {
@@ -110,16 +111,14 @@ func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrice
 		return lanePrices{}, err
 	}
 	return lanePrices{collateral: collateral.marketPriceSF, debt: debt.marketPriceSF, usdc: usdc.marketPriceSF,
-		collateralDecimals: collateral.mintDecimals, debtDecimals: debt.mintDecimals}, nil
+		collateralDecimals: collateral.mintDecimals, debtDecimals: debt.mintDecimals, debtBorrowFeeSF: debt.terms.BorrowFeeSF}, nil
 }
 
-// collateralValue and debtValue are raw amounts in USDC micros at the batch's
-// central prices: expectations, never bounds.
-func (p lanePrices) collateralValue(raw uint64) (int64, error) {
+func (p lanePrices) collateralMicros(raw uint64) (int64, error) {
 	return centralValue(raw, p.collateralDecimals, p.collateral, p.usdc)
 }
 
-func (p lanePrices) debtValue(raw uint64) (int64, error) {
+func (p lanePrices) debtMicros(raw uint64) (int64, error) {
 	return centralValue(raw, p.debtDecimals, p.debt, p.usdc)
 }
 
@@ -185,11 +184,11 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		value func(uint64) (int64, error)
 		raw   uint64
 	}{
-		{&legs.BorrowFeeMicros, prices.debtValue, fee},
-		{&legs.EntryInMicros, prices.debtValue, borrowRaw},
-		{&legs.EntryOutMicros, prices.collateralValue, bought},
-		{&legs.ExitInMicros, prices.collateralValue, bought},
-		{&legs.ExitOutMicros, prices.debtValue, conversionQuotedOutput(down.Request)},
+		{&legs.BorrowFeeMicros, prices.debtMicros, fee},
+		{&legs.EntryInMicros, prices.debtMicros, borrowRaw},
+		{&legs.EntryOutMicros, prices.collateralMicros, bought},
+		{&legs.ExitInMicros, prices.collateralMicros, bought},
+		{&legs.ExitOutMicros, prices.debtMicros, conversionQuotedOutput(down.Request)},
 	} {
 		if *v.into, err = v.value(v.raw); err != nil {
 			return leverageStepCost{}, costOutage("price", err)
@@ -226,24 +225,14 @@ func stepStage(quote string, err error) string {
 	return quote
 }
 
-// entryCost is what an entry into a lane is expected to cost the vault's
-// capital: the entry conversion's loss, the sale's loss when the collateral
-// returns to USDC, the network fees of the lane's own transactions (entry
-// swap, deposit, exit step), the up steps to the level it settles at, each
-// priced with its unwind (priceStep) and summed in Step (zero at 1x), the
-// creation of an absent obligation (setupMicros) and,
-// on a rotation, its source's release (releaseMicros). The swap losses are
-// signed, against the batch's mark: a collateral bought under its mark gains
-// on entry what it loses on exit. Voltr's allocate, stage and restore move
-// the same cash for every lane and are not lane costs.
 type entryCost struct {
-	EntrySwapLossMicros int64            `json:"entrySwapLossMicros"`
-	ExitSwapLossMicros  int64            `json:"exitSwapLossMicros"`
-	NetworkMicros       int64            `json:"networkMicros"`
-	SetupMicros         int64            `json:"setupMicros,omitempty"`
-	ReleaseMicros       int64            `json:"releaseMicros,omitempty"`
-	Step                leverageStepCost `json:"step"`
-	TotalMicros         int64            `json:"totalMicros"`
+	EntrySwapCostMicros  int64            `json:"entrySwapLossMicros"`
+	ExitSwapCostMicros   int64            `json:"exitSwapLossMicros"`
+	NetworkMicros        int64            `json:"networkMicros"`
+	SetupMicros          int64            `json:"setupMicros,omitempty"`
+	ReleaseNetworkMicros int64            `json:"releaseMicros,omitempty"`
+	Step                 leverageStepCost `json:"step"`
+	TotalMicros          int64            `json:"totalMicros"`
 }
 
 func (p lanePricer) priceEntry(ctx context.Context, o Observation, market LaneEconomics, equity uint64) (MoveQuote, error) {
@@ -286,7 +275,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	if value, err := prices.debtValue(room); err == nil {
+	if value, err := prices.debtMicros(room); err == nil {
 		display := uint64(value)
 		q.DebtRoomUSDCRaw = &display
 	}
@@ -317,12 +306,12 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	depositValue, err := prices.collateralValue(guaranteed)
+	depositValue, err := prices.collateralMicros(guaranteed)
 	if err != nil {
 		return q, err
 	}
 	q.DepositValueRaw = uint64(depositValue)
-	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
+	rate := prices.debtBorrowFeeSF
 	debtLeft, depositLeft := room, depositRoom-min(deposited, depositRoom)
 	collateralValue, debtValue := float64(depositValue), 0.0
 	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
@@ -369,12 +358,12 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 			}
 			return false
 		}
-		proceeds, err := prices.debtValue(borrows[n-1])
+		proceeds, err := prices.debtMicros(borrows[n-1])
 		if err != nil {
 			walkErr = err
 			return false
 		}
-		liability, err := prices.debtValue(borrows[n-1] + borrowFees[n-1])
+		liability, err := prices.debtMicros(borrows[n-1] + borrowFees[n-1])
 		if err != nil {
 			walkErr = err
 			return false
@@ -406,11 +395,11 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 				return q, err
 			}
 		}
-		debt, err := prices.debtValue(borrow + fee)
+		debt, err := prices.debtMicros(borrow + fee)
 		if err != nil {
 			return q, err
 		}
-		proceeds, err := prices.debtValue(borrow)
+		proceeds, err := prices.debtMicros(borrow)
 		if err != nil {
 			return q, err
 		}
@@ -429,12 +418,12 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	boughtValue, err := prices.collateralValue(bought)
+	boughtValue, err := prices.collateralMicros(bought)
 	if err != nil {
 		return q, err
 	}
-	cost.EntrySwapLossMicros = int64(equity) - boughtValue
-	cost.ExitSwapLossMicros = boughtValue - int64(conversionQuotedOutput(exit.Request))
+	cost.EntrySwapCostMicros = int64(equity) - boughtValue
+	cost.ExitSwapCostMicros = boughtValue - int64(conversionQuotedOutput(exit.Request))
 	blockhash := LatestBlockhash{Blockhash: entry.Request.RecentBlockhash, LastValidBlockHeight: entry.Request.LastValidBlockHeight}
 	deposit, err := p.manifest.kaminoPacketForRoute(p.policies, OpenRouteStep, kaminoLegDeposit, guaranteed, blockhash, lane)
 	if err != nil {
@@ -469,15 +458,15 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		}
 	}
 	if source != nil {
-		if cost.ReleaseMicros, err = p.releaseMicros(ctx, o, *source, equity); err != nil {
+		if cost.ReleaseNetworkMicros, err = p.releaseNetworkMicros(ctx, o, *source, equity); err != nil {
 			return q, err
 		}
 	}
-	fees, err := budgetSum(cost.NetworkMicros, cost.SetupMicros, cost.ReleaseMicros, cost.Step.TotalMicros)
+	fees, err := budgetSum(cost.NetworkMicros, cost.SetupMicros, cost.ReleaseNetworkMicros, cost.Step.TotalMicros)
 	if err != nil {
 		return q, err
 	}
-	if cost.TotalMicros = fees + cost.EntrySwapLossMicros + cost.ExitSwapLossMicros; cost.TotalMicros < 0 {
+	if cost.TotalMicros = fees + cost.EntrySwapCostMicros + cost.ExitSwapCostMicros; cost.TotalMicros < 0 {
 		cost.TotalMicros = 0
 	}
 	q.Cost, q.CostRaw = cost, cost.TotalMicros
@@ -585,13 +574,7 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 	return out, nil
 }
 
-// releaseMicros is the network fee of the legs a rotation's release of
-// equity from source sends, built from the tick's batch as the executor
-// builds them (target rule 5r): beside debt the repay of its share, then the
-// withdrawal of its collateral share as USDC. Their swap loss is the
-// source's exit, which staying would pay later: it is not the move's cost.
-// Building them bounds the release at this size.
-func (p lanePricer) releaseMicros(ctx context.Context, o Observation, source Snapshot, equity uint64) (int64, error) {
+func (p lanePricer) releaseNetworkMicros(ctx context.Context, o Observation, source Snapshot, equity uint64) (int64, error) {
 	if o.routeBatch == nil || equity > math.MaxInt64 {
 		return 0, budgetHold("selector_release_unpriced")
 	}

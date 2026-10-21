@@ -142,8 +142,8 @@ func TestPerformanceFeeMoneyBoundCoversPinnedDilutionAndRounding(t *testing.T) {
 func TestPerformanceFeeLegacyHWMBlocksOnlyEconomicSelector(t *testing.T) {
 	t.Parallel()
 	in := coherentFeeSelectorFixture(t, 1_000_000, 1_000_000, new(big.Int).Lsh(big.NewInt(1), 47))
-	previous := SelectorState{Advantages: map[string]AdvantageWindow{
-		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now},
+	previous := SelectorState{Advantages: map[advantageKey]AdvantageWindow{
+		{lane: in.Markets[0].Lane}: {Since: in.Now.Add(-time.Hour), LastSample: in.Now},
 	}}
 	got := SelectOpportunity(in, previous)
 	if got.Action != "KEEP" || got.Reason != "fee_hwm_baseline_unavailable" || len(got.State.Advantages) != 0 || got.SelectedQuote != nil {
@@ -329,8 +329,8 @@ func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 	in.Quotes[0].EquityRaw, in.Quotes[0].BorrowReceiveRaw = 10_000_000, 5_000_000
 	in.Quotes[0] = parBorrow(in.Quotes[0])
 	in.Quotes[0].EvidenceID = sha256Bytes([]byte("unarmed-quoted-projection"))
-	previous := SelectorState{Advantages: map[string]AdvantageWindow{
-		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now.Add(-time.Second)},
+	previous := SelectorState{Advantages: map[advantageKey]AdvantageWindow{
+		{lane: in.Markets[0].Lane}: {Since: in.Now.Add(-time.Hour), LastSample: in.Now.Add(-time.Second)},
 	}}
 	// A diagnostic model can have a persistent, fully formed selected quote.
 	// It still cannot cross the locked authority writer, even as a canary.
