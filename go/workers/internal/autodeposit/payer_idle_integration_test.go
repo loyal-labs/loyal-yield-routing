@@ -118,3 +118,19 @@ func TestUnownedResidueDepositsWithThePull(t *testing.T) {
 		t.Fatalf("top-up deposited %d, want the 5000000 pull plus the 3 residue: %v", deposited, err)
 	}
 }
+
+func TestOpenCrossMintMovementDefersBeforeItsCustodyReachesTheVault(t *testing.T) {
+	window := newFreshScenario(t, "cross-mint-window", 3)
+	if _, err := window.store.pool.Exec(t.Context(), `
+INSERT INTO loyal_yield.rebalance_decisions (vault_id,status,source_reserve,target_reserve,source_liquidity_mint,target_liquidity_mint,amount_raw,
+ source_apy_bps,target_apy_bps,estimated_edge_bps,estimated_cost_lamports,decision_reason,execution_plan,idempotency_key,cross_mint_activation_control_generation)
+SELECT id,'confirming','cross-mint-window-reserve','cross-mint-window-target',$2,'itest-other-mint',5000000,1,2,1,0,'target_supply_apy_exceeds_source','{}'::jsonb,'itest-cross-mint-window',1
+FROM loyal_yield.managed_vaults WHERE vault_pubkey=$1`, "itest-vault-cross-mint-window", USDCMint); err != nil {
+		t.Fatal(err)
+	}
+	worker, _ := window.worker(t, ControllerDependencies{}, nil)
+	report, err := worker.Tick(t.Context())
+	if report.Outcome.ExecutionsDeferred != 1 || report.Outcome.ExecutionsCompleted != 0 || len(window.wires.built) != 0 {
+		t.Fatalf("an open cross-mint movement did not defer the deposit: %+v built %v: %v", report.Outcome, window.wires.built, err)
+	}
+}
