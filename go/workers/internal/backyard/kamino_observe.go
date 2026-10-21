@@ -75,6 +75,8 @@ type KaminoPosition struct {
 	Oracles                  []string
 }
 
+// MaxLTVBPS is the borrow limit; before a deposit KLend gives a cross-mode
+// obligation's first deposit the collateral reserve's LTV.
 func (p KaminoPosition) MaxLTVBPS() int64 {
 	return cmp.Or(p.BorrowLimitBPS, p.CollateralLTVBPS)
 }

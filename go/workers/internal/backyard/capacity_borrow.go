@@ -255,6 +255,7 @@ func leverageBorrowCeiling(s Snapshot, level float64) uint64 {
 	return s.LeverageBorrowRaw[i]
 }
 
+// liability rounds up.
 func capacityBorrowExpectedUSDC(s Snapshot, amount uint64, liability bool) (uint64, error) {
 	if !earnHeldLane(s.RouteLane) {
 		return 0, fmt.Errorf("runtime lane %q is not installed", s.RouteLane)
