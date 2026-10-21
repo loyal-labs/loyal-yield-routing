@@ -76,13 +76,14 @@ var (
 	secretPattern = regexp.MustCompile(`(?i)(password|api[-_]?key|token|secret)=\S+`)
 )
 
-const maxProviderText = 500
+const maxScrubbed = 500
 
-func providerText(message string) string {
+// Scrub masks URLs and credential values in text that may echo an RPC endpoint and bounds it for logs and storage.
+func Scrub(message string) string {
 	message = urlPattern.ReplaceAllString(message, "<url>")
 	message = secretPattern.ReplaceAllString(message, "$1=<redacted>")
-	if len(message) > maxProviderText {
-		message = strings.ToValidUTF8(message[:maxProviderText], "")
+	if len(message) > maxScrubbed {
+		message = strings.ToValidUTF8(message[:maxScrubbed], "")
 	}
 	return message
 }
@@ -98,9 +99,9 @@ func failed(method string, err error) error {
 	case errors.As(err, &rpcErr) && rpcErr.Code == behindCode:
 		return fmt.Errorf("%s: %w", method, ErrBehind)
 	case errors.As(err, &rpcErr) && unavailableCodes[rpcErr.Code]:
-		return fmt.Errorf("%s: %w: rpc error %d: %s", method, ErrUnavailable, rpcErr.Code, providerText(rpcErr.Message))
+		return fmt.Errorf("%s: %w: rpc error %d: %s", method, ErrUnavailable, rpcErr.Code, Scrub(rpcErr.Message))
 	case errors.As(err, &rpcErr):
-		return fmt.Errorf("%s: rpc error %d: %s", method, rpcErr.Code, providerText(rpcErr.Message))
+		return fmt.Errorf("%s: rpc error %d: %s", method, rpcErr.Code, Scrub(rpcErr.Message))
 	case errors.As(err, &httpErr):
 		return fmt.Errorf("%s: %w: rpc status %d", method, ErrUnavailable, httpErr.Code)
 	case errors.As(err, &urlErr):

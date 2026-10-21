@@ -273,7 +273,7 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 	status := chain.SignatureState{Found: true, Slot: out.Slot, Commitment: chain.Finalized, Err: out.Err}
 	recovery, err := recoverLookup(attempt, status, receipt, snapshot)
 	if err != nil {
-		return w.store.markLookupDrift(ctx, op, attempt, err.Error())
+		return w.store.markLookupDrift(ctx, op, attempt, engine.ErrorText(err))
 	}
 	if recovery.proof == nil {
 		return w.store.deferLookupRecovery(ctx, op, recovery.wait, false)
