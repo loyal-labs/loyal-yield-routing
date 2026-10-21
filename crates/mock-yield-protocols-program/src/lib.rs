@@ -189,6 +189,10 @@ fn process_jupiter(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -
     }
 }
 
+// Narrow executable model of the verifier's one-hop RouteV2 envelope. This
+// executes SPL transfers, not the production AlphaQ pricing/CPI implementation.
+// The fixture's pool inventory is owned by Jupiter's event-authority PDA because
+// that PDA is present in the unchanged official RouteV2 account layout.
 fn process_local_alphaq_route(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -407,6 +411,9 @@ fn process_jupiter_stable_exact_in(
 }
 
 fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+    // The local fixed-price model does not accrue interest or consult oracles.
+    // Accept only the official refresh wire shape and validated fixture accounts;
+    // do not blanket-accept unknown public instructions ahead of asset movement.
     if data == [2, 218, 138, 235, 79, 201, 25, 102] {
         if accounts.len() != 6
             || accounts[0].owner != program_id
@@ -522,6 +529,8 @@ fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo])
     Ok(())
 }
 
+// The Multiply fixture uses the source-pinned Scope address. This local model
+// does not evaluate prices or pretend to model mature Scope/KLend risk logic.
 const MULTIPLY_FIXTURE_SCOPE: Pubkey = pubkey!("3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH");
 fn fixture_scope_refresh_account(account: &AccountInfo, program_id: &Pubkey) -> bool {
     !account.is_writable
@@ -541,6 +550,8 @@ fn parse_kamino_instruction(data: &[u8]) -> Result<KaminoInstruction, ProgramErr
     if data[..8] == KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR {
         return Ok(KaminoInstruction::Withdraw { amount });
     }
+    // SHA256 global names and ordered accounts verified against locked
+    // KLend SDK 23b9f2b instructions/{borrow,repay}.rs by the Rust producer.
     if data[..8] == [161, 128, 143, 245, 171, 199, 194, 6] {
         return Ok(KaminoInstruction::Borrow { amount });
     }
@@ -673,6 +684,9 @@ fn process_kamino_withdraw(
     close_emptied_kamino_obligation(kamino.obligation, kamino.owner)
 }
 
+// KLend's withdrawal closes the obligation it leaves with no active deposit
+// and no active borrow and pays its lamports to the owner
+// (handler_withdraw_obligation_collateral_and_redeem_reserve_collateral.rs).
 fn close_emptied_kamino_obligation(obligation: &AccountInfo, owner: &AccountInfo) -> ProgramResult {
     {
         let data = obligation.try_borrow_data()?;
@@ -700,6 +714,9 @@ fn close_emptied_kamino_obligation(obligation: &AccountInfo, owner: &AccountInfo
     Ok(())
 }
 
+// Narrow fixed-price, zero-interest/fee Multiply bank model. It executes SPL
+// movements and checked source-layout liability writes; it does not implement
+// mature KLend pricing, accrual, elevation groups, farms, or liquidation.
 const MULTIPLY_MARKET: Pubkey = pubkey!("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y");
 const MULTIPLY_USDC_RESERVE: Pubkey = pubkey!("Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo");
 const MULTIPLY_SYRUP_MINT: Pubkey = pubkey!("AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj");
@@ -1200,6 +1217,7 @@ fn adjust_kamino_obligation(
             .checked_sub(amount)
             .ok_or(ProgramError::InsufficientFunds)?
     };
+    // KLend's Obligation::withdraw frees the deposit slot on a full withdrawal.
     let slot_reserve = if next_amount == 0 && !deposit {
         Pubkey::default()
     } else {
