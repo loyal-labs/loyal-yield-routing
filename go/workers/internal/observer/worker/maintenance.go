@@ -24,11 +24,8 @@ var mediumMainnetMarkets = []string{
 }
 
 func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, error) {
-	if r != nil && !r.cfg.ReadModelsEnabled {
+	if r.cfg.Cluster != "mainnet-beta" {
 		return nil, nil
-	}
-	if r == nil || r.cfg.Cluster != "mainnet-beta" {
-		return nil, errors.New("fixed product read models require mainnet-beta namespace")
 	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -44,13 +41,6 @@ func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, er
 	return maintenance, err
 }
 
-// validateMaintenanceNamespace checks the actual RPC endpoint before a pass.
-// It deliberately does not classify custody rows: the Apps recorders these
-// passes replace (earn-fleet-allocation, reserve-share-price and forecast
-// crons) select every active vault_index=1 managed vault with no cluster test,
-// so legacy route_policies.cluster='unknown' rows and positions without a
-// managed vault are part of the published product universe, not a reason to
-// stop publishing it.
 func (r *Runtime) validateMaintenanceNamespace(ctx context.Context) error {
 	return validateWatchNamespace(ctx, r.cfg.Cluster, r.rpc)
 }

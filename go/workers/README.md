@@ -93,8 +93,7 @@ Observer retains its reviewed transport configuration in
 `internal/observer/config/config.go` and runs the Earn domain application
 (`internal/observer/earn`) in process: policy projection, the durable Earn
 reconciliation queue and the hourly Earn APY snapshots. Observer watches come
-from the Yield database (`NEON_DATABASE_URL`) alone. Product read models stay with the Apps crons until
-`OBSERVER_READ_MODELS_ENABLED=true` hands them over. The fixed watch catalog
+from the Yield database (`NEON_DATABASE_URL`) alone. The product read models run on mainnet-beta. The fixed watch catalog
 verifies actual mainnet genesis before opening writers and on every watch
 refresh.
 Each family
