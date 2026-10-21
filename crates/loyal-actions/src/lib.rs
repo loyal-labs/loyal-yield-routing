@@ -13,9 +13,10 @@ mod stablecoins;
 pub use actions::*;
 pub use detection::{
     decode_squads_policy_create_actions, detect_jupiter_cross_mint_policy_account,
-    DetectedJupiterCrossMintPolicyAccount, SquadsAccountConstraintKindView,
+    DetectedJupiterCrossMintPolicyAccount, PolicyDetectionError, SquadsAccountConstraintKindView,
     SquadsAccountConstraintView, SquadsDataConstraintView, SquadsDataOperatorView,
-    SquadsDataValueView, SquadsInstructionConstraintView,
+    SquadsDataValueView, SquadsInstructionConstraintView, SquadsLimitedSpendingLimitView,
+    SquadsPeriodV2View, SquadsProgramInteractionPolicyView, SquadsSettingsActionView,
 };
 pub use earn_max::{
     earn_max_policy_constraints, EarnMaxPolicyBoundary, EarnMaxPolicyFamily, EarnMaxPolicyLane,

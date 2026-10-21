@@ -127,33 +127,6 @@ pub struct DetectedJupiterCrossMintPolicyAccount {
     pub dialect_constraint_indexes: BTreeMap<JupiterV2Dialect, u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DetectedJupiterCrossMintPolicySemantics {
-    pub settings: Pubkey,
-    pub vault: Pubkey,
-    pub delegated_signer: Pubkey,
-    pub account_index: u8,
-    pub source_shard: JupiterCrossMintSourceShard,
-    pub max_slippage_bps: u16,
-    pub daily_source_mint_spending_cap: u64,
-    pub dialect_constraint_indexes: BTreeMap<JupiterV2Dialect, u8>,
-}
-
-impl DetectedJupiterCrossMintPolicyAccount {
-    pub fn manifest_semantics(&self) -> DetectedJupiterCrossMintPolicySemantics {
-        DetectedJupiterCrossMintPolicySemantics {
-            settings: self.settings,
-            vault: self.vault,
-            delegated_signer: self.delegated_signer,
-            account_index: self.account_index,
-            source_shard: self.source_shard,
-            max_slippage_bps: self.max_slippage_bps,
-            daily_source_mint_spending_cap: self.daily_source_mint_spending_cap,
-            dialect_constraint_indexes: self.dialect_constraint_indexes.clone(),
-        }
-    }
-}
-
 pub fn detect_jupiter_cross_mint_policy_account(
     account_data: &[u8],
 ) -> Result<Option<DetectedJupiterCrossMintPolicyAccount>, PolicyDetectionError> {
