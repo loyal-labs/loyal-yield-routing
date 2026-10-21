@@ -82,21 +82,25 @@ func publicKeys(addresses []string) ([]solana.PublicKey, error) {
 	return keys, nil
 }
 
+type accountBatch struct {
+	Slot     int64
+	Accounts []ConfirmedAccount
+}
+
 // readAccounts reads one account set at commitment, all at one slot no older
-// than minSlot; that slot is the only one a Snapshot built from it may use.
-// Only an optional address may be absent: it comes back with its address
-// alone.
-func readAccounts(ctx context.Context, c *chain.Client, commitment rpc.CommitmentType, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
+// than minSlot. Only an optional address may be absent: it comes back with
+// its address alone.
+func readAccounts(ctx context.Context, c *chain.Client, commitment rpc.CommitmentType, addresses []string, minSlot int64, optional ...string) (accountBatch, error) {
 	if len(addresses) == 0 {
-		return 0, nil, fmt.Errorf("account addresses are required")
+		return accountBatch{}, fmt.Errorf("account addresses are required")
 	}
 	keys, err := publicKeys(addresses)
 	if err != nil {
-		return 0, nil, err
+		return accountBatch{}, err
 	}
 	slot, read, err := c.Accounts(ctx, keys, commitment, uint64(minSlot))
 	if err != nil {
-		return 0, nil, confirmedObservationUnavailable(err)
+		return accountBatch{}, confirmedObservationUnavailable(err)
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for i, account := range read {
@@ -106,13 +110,13 @@ func readAccounts(ctx context.Context, c *chain.Client, commitment rpc.Commitmen
 		case slices.Contains(optional, addresses[i]):
 			accounts[i] = ConfirmedAccount{Address: addresses[i]}
 		default:
-			return 0, nil, fmt.Errorf("required account %s is absent", addresses[i])
+			return accountBatch{}, fmt.Errorf("required account %s is absent", addresses[i])
 		}
 	}
-	return int64(slot), accounts, nil
+	return accountBatch{Slot: int64(slot), Accounts: accounts}, nil
 }
 
-func finalizedAccounts(ctx context.Context, c *chain.Client, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
+func finalizedAccounts(ctx context.Context, c *chain.Client, addresses []string, minSlot int64, optional ...string) (accountBatch, error) {
 	return readAccounts(ctx, c, rpc.CommitmentFinalized, addresses, minSlot, optional...)
 }
 

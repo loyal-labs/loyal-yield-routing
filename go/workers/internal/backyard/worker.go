@@ -436,15 +436,19 @@ func isPreSendHold(err error) bool {
 	}
 }
 
-// notifySelectorCommit requests another serialized tick; never execute a
-// transaction from the collector. A queued wake survives an active tick.
-func (w *Worker) notifySelectorCommit(action SelectorAction) {
-	if !action.entersOrRotates() {
-		return
-	}
+// requestTick wakes the tick loop; a queued wake survives an active tick.
+func (w *Worker) requestTick() {
 	select {
 	case w.wake <- struct{}{}:
 	default:
+	}
+}
+
+// notifySelectorCommit requests another serialized tick; never execute a
+// transaction from the collector.
+func (w *Worker) notifySelectorCommit(action SelectorAction) {
+	if action.entersOrRotates() {
+		w.requestTick()
 	}
 }
 
@@ -479,16 +483,28 @@ func (w *Worker) Run(ctx context.Context) error {
 	return w.runTicks(ctx, w.Tick)
 }
 
-// vaultState is one vault's in-process state, shared by its worker and its
-// selector samples: its events, and the streaks that retry before a latch.
-// refreshFailures counts consecutive reserve refreshes Kamino rejected;
-// staleSince is the unix nanos of the first kamino_stale health hold since the
-// last passed health check, 0 when none. One-off stale reads latched on 09-26
-// (21:52 AUTO reserve 345 slots old; 23:19 230 slots old) and three reads
-// within 5 s latched the looping vault: stale holds retry until they have
-// lasted kaminoStaleLatchWindow. Paused/emergency reserves still latch at
-// once, and a restart restarts the window.
 type vaultState struct {
-	events                      *events
-	refreshFailures, staleSince atomic.Int64
+	events        *events
+	refreshFailed failureStreak
+	staleHeld     staleStreak
+}
+
+type failureStreak struct{ consecutive atomic.Int64 }
+
+func (s *failureStreak) record() int64 { return s.consecutive.Add(1) }
+
+func (s *failureStreak) clear() { s.consecutive.Store(0) }
+
+type staleStreak struct{ firstUnixNano atomic.Int64 }
+
+func (s *staleStreak) clear() { s.firstUnixNano.Store(0) }
+
+func (s *staleStreak) startedAt(now time.Time) time.Time {
+	first := now.UnixNano()
+	if !s.firstUnixNano.CompareAndSwap(0, first) {
+		if v := s.firstUnixNano.Load(); v != 0 {
+			first = v
+		}
+	}
+	return time.Unix(0, first)
 }

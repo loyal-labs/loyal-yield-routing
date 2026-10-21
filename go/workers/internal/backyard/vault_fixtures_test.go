@@ -42,6 +42,6 @@ func loadEmbeddedRouteManifest() (RouteManifest, error) { return rwa.manifest, n
 // through, and its two streaks by their names.
 var (
 	testVaultState            = &vaultState{}
-	refreshSimulationFailures = &testVaultState.refreshFailures
-	kaminoStaleSince          = &testVaultState.staleSince
+	refreshSimulationFailures = &testVaultState.refreshFailed.consecutive
+	kaminoStaleSince          = &testVaultState.staleHeld.firstUnixNano
 )

@@ -151,7 +151,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			refreshedSlot, refreshedAccounts, refreshErr = runtime.refreshValuation(ctx, routes, captureAddresses, slot)
 		}
 		if refreshErr == nil {
-			runtime.state.refreshFailures.Store(0)
+			runtime.state.refreshFailed.clear()
 			if err := validateRouteValuationCapture(refreshedSlot, refreshedAccounts, captureAddresses, slot); err != nil {
 				return Observation{}, nil, err
 			}
@@ -184,7 +184,7 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			// ticks and selector samples share the count, so it latches sooner,
 			// never later).
 			if refreshSimulationFailed(refreshErr) &&
-				runtime.state.refreshFailures.Add(1) < refreshSimulationLatchAfter {
+				runtime.state.refreshFailed.record() < refreshSimulationLatchAfter {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh rejected, retrying: %w", refreshErr))
 			}
 			refreshExhausted = true
@@ -294,7 +294,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 		hold, err := healthHold(err, route.Lane)
 		return Observation{}, hold, err
 	}
-	runtime.state.staleSince.Store(0)
+	runtime.state.staleHeld.clear()
 	collateralMint, err := decodeBase58PublicKey(route.Kamino.CollateralMint)
 	if err != nil {
 		return Observation{}, nil, err
@@ -720,13 +720,7 @@ func staleHealthRetry(state *vaultState, hold Observation, err error, refreshExh
 	if hold.Snapshot.ManualReason != "kamino_stale" || refreshExhausted {
 		return nil
 	}
-	since := now.UnixNano()
-	if !state.staleSince.CompareAndSwap(0, since) {
-		if v := state.staleSince.Load(); v != 0 {
-			since = v
-		}
-	}
-	if now.Sub(time.Unix(0, since)) >= kaminoStaleLatchWindow {
+	if now.Sub(state.staleHeld.startedAt(now)) >= kaminoStaleLatchWindow {
 		return nil
 	}
 	return confirmedObservationUnavailable(fmt.Errorf("kamino health hold, retrying: %w", err))

@@ -31,7 +31,8 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal("selected route absent")
 	}
-	slot, accounts, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, 0)
+	batch, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}, 0)
+	slot, accounts := batch.Slot, batch.Accounts
 	if err != nil {
 		t.Fatal("reserve capture unavailable")
 	}
