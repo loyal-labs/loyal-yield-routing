@@ -1,3 +1,11 @@
+// Package multiply ports the Earn MAX (Kamino Multiply) route controller from
+// 91694cd9^:crates/loyal-fleet-worker/src/multiply and the durable state contract from
+// 91694cd9^:crates/loyal-yield-store/src/{fleet_orchestration/multiply.rs,multiply_state_store.rs}.
+//
+// The persisted JSON must stay byte-compatible with the Rust writer: the same
+// field names, enum spellings, and tagged position encoding. A Go worker and
+// the retained Rust worker read and write the same rows, so any drift here is
+// a cross-binary correctness bug, not a style issue.
 package multiply
 
 import (
@@ -397,8 +405,9 @@ type ObligationBefore struct {
 type ExpectedEffects struct {
 	TokenAmountsBefore []TokenAmountBefore `json:"tokenAmountsBefore"`
 	TokenDeltas        []TokenDelta        `json:"tokenDeltas"`
-	ObligationBefore   *ObligationBefore   `json:"obligationBefore"`
-	ObligationDelta    *ObligationDelta    `json:"obligationDelta"`
+	// Rust writes absent obligation fields as explicit nulls; so must Go.
+	ObligationBefore *ObligationBefore `json:"obligationBefore"`
+	ObligationDelta  *ObligationDelta  `json:"obligationDelta"`
 }
 
 func (e ExpectedEffects) MarshalJSON() ([]byte, error) {
@@ -413,29 +422,31 @@ func (e ExpectedEffects) MarshalJSON() ([]byte, error) {
 }
 
 type MultiplyOperation struct {
-	OperationID            string          `json:"operationId"`
-	RouteKey               string          `json:"routeKey"`
-	Cycle                  uint64          `json:"-"`
-	EngineVersion          string          `json:"engineVersion"`
-	Action                 MultiplyAction  `json:"action"`
-	StrategyKey            StrategyKey     `json:"-"`
-	Status                 OperationStatus `json:"-"`
-	IDempotencyKey         string          `json:"-"`
-	ExpectedEffects        ExpectedEffects `json:"-"`
-	PolicyAccount          *string         `json:"-"`
-	PolicyDataSHA256       *string         `json:"-"`
-	MessageSHA256          *string         `json:"-"`
-	SignedWire             []byte          `json:"-"`
-	SignedWireSHA256       *string         `json:"-"`
-	TransactionSignature   *string         `json:"-"`
-	SourceInstructionIndex *uint16         `json:"-"`
-	RecentBlockhash        *string         `json:"-"`
-	LastValidBlockHeight   *uint64         `json:"-"`
-	BroadcastIntentAt      *time.Time      `json:"-"`
-	ConfirmedSlot          *uint64         `json:"-"`
-	ReconciliationSHA256   *string         `json:"-"`
-	CreatedAt              time.Time       `json:"-"`
-	UpdatedAt              time.Time       `json:"-"`
+	OperationID      string          `json:"operationId"`
+	RouteKey         string          `json:"routeKey"`
+	Cycle            uint64          `json:"-"`
+	EngineVersion    string          `json:"engineVersion"`
+	Action           MultiplyAction  `json:"action"`
+	StrategyKey      StrategyKey     `json:"-"`
+	Status           OperationStatus `json:"-"`
+	IDempotencyKey   string          `json:"-"`
+	ExpectedEffects  ExpectedEffects `json:"-"`
+	PolicyAccount    *string         `json:"-"`
+	PolicyDataSHA256 *string         `json:"-"`
+	// Rust serializes the empty vec as [] (serde(default) is decode-only), so
+	// this field must never be omitted from the persisted JSONB.
+	MessageSHA256          *string    `json:"-"`
+	SignedWire             []byte     `json:"-"`
+	SignedWireSHA256       *string    `json:"-"`
+	TransactionSignature   *string    `json:"-"`
+	SourceInstructionIndex *uint16    `json:"-"`
+	RecentBlockhash        *string    `json:"-"`
+	LastValidBlockHeight   *uint64    `json:"-"`
+	BroadcastIntentAt      *time.Time `json:"-"`
+	ConfirmedSlot          *uint64    `json:"-"`
+	ReconciliationSHA256   *string    `json:"-"`
+	CreatedAt              time.Time  `json:"-"`
+	UpdatedAt              time.Time  `json:"-"`
 }
 
 func (o *MultiplyOperation) Validate() error {

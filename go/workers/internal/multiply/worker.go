@@ -946,7 +946,7 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 		income := new(big.Int).Mul(collateralValue, big.NewInt(supply))
 		cost := new(big.Int).Mul(debtValue, big.NewInt(borrow))
 		net := new(big.Int).Sub(income, cost)
-		net.Quo(net, equity)
+		net.Quo(net, equity) // signed Rust division truncates toward zero
 		if !net.IsInt64() {
 			return nil, errors.New("snapshot forecast APY exceeds SQL BIGINT")
 		}
