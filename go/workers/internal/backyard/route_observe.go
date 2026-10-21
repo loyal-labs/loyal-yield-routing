@@ -182,6 +182,11 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			if transientValuationRefreshFailure(refreshErr) {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh unavailable: %w", refreshErr))
 			}
+			// Vlad-approved 09-25 after two one-off latches (16:13, 21:26) whose
+			// refresh passed on the next probe: a Kamino-rejected refresh retries
+			// until refreshSimulationLatchAfter refreshes in a row fail (worker
+			// ticks and selector samples share the count, so it latches sooner,
+			// never later).
 			if refreshSimulationFailed(refreshErr) &&
 				runtime.state.refreshFailures.Add(1) < refreshSimulationLatchAfter {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh rejected, retrying: %w", refreshErr))
@@ -218,11 +223,6 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 	working.Snapshot.ObservationID = sha256Bytes([]byte(fmt.Sprintf("%s|target:%+v|inputs:%s", working.Snapshot.ObservationID, laneTarget, working.Snapshot.TargetInputs)))
 	working.routeBatch.ObservationID = working.Snapshot.ObservationID
 	working.lanes = snapshots
-	// Vlad-approved 09-25 after two one-off latches (16:13, 21:26) whose
-	// refresh passed on the next probe: a Kamino-rejected refresh retries
-	// until refreshSimulationLatchAfter refreshes in a row fail (worker
-	// ticks and selector samples share the count, so it latches sooner,
-	// never later).
 	return working, accounts, nil
 }
 
