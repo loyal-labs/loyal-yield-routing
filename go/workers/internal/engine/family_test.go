@@ -10,11 +10,11 @@ import (
 )
 
 func TestHoldFamilyAdmitsOneWriterUntilItsSessionEnds(t *testing.T) {
-	dsn := os.Getenv("FLEET_EXEC_TEST_DATABASE_URL")
+	dsn := DirectDSN(os.Getenv("FLEET_EXEC_TEST_DATABASE_URL"))
 	if dsn == "" {
 		t.Skip("requires a disposable PostgreSQL fixture")
 	}
-	if u, err := url.Parse(dsn); err != nil || u.Hostname() != "127.0.0.1" {
+	if u, err := url.Parse(string(dsn)); err != nil || u.Hostname() != "127.0.0.1" {
 		t.Fatal("refusing a non-loopback database")
 	}
 	first, cancel := context.WithCancel(context.Background())

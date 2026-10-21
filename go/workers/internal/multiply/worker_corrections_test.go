@@ -66,12 +66,12 @@ func TestPlannerAndBorrowKeepFullScaledFractions(t *testing.T) {
 	observed := idleObserved(topology)
 	position := observed.Position(SyrupUsdcUsdc)
 	position.CollateralDepositedRaw = 1_000_000_000
-	position.CollateralValueSF = reviewSF(1_000)
+	position.CollateralValueSF = knownMarketValue(reviewSF(1_000))
 	position.DebtValueSF = reviewSF(100)
 	position.DebtRaw = 100_000_000
 	position.DebtMarketPriceSF = reviewSF(1)
 	position.DebtMintFactor = 1_000_000
-	collateralBefore, debtBefore := position.CollateralValueSF.String(), position.DebtValueSF.String()
+	collateralBefore, debtBefore := position.CollateralValueSF.Int().String(), position.DebtValueSF.String()
 	decision := planUp(observed, SyrupUsdcUsdc, topology)
 	if decision.Kind != "execute" || decision.Plan.Action != ActionBorrowDebt {
 		t.Fatalf("normal position above $16 failed planning: %+v", decision)
@@ -85,7 +85,7 @@ func TestPlannerAndBorrowKeepFullScaledFractions(t *testing.T) {
 	if amount != want {
 		t.Fatalf("borrow amount %d, want %d", amount, want)
 	}
-	if position.CollateralValueSF.String() != collateralBefore || position.DebtValueSF.String() != debtBefore {
+	if position.CollateralValueSF.Int().String() != collateralBefore || position.DebtValueSF.String() != debtBefore {
 		t.Fatal("planner mutated confirmed evidence")
 	}
 	position.DebtValueSF = nil
@@ -150,7 +150,7 @@ func TestPinnedObligationLayoutAndReserveMintIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if position.UnhealthyValueSF.Cmp(reviewSF(400)) != 0 || position.CollateralValueSF.Cmp(reviewSF(500)) != 0 || position.DebtValueSF.Cmp(reviewSF(100)) != 0 {
+	if position.UnhealthyValueSF.Cmp(reviewSF(400)) != 0 || position.CollateralValueSF.Int().Cmp(reviewSF(500)) != 0 || position.DebtValueSF.Cmp(reviewSF(100)) != 0 {
 		t.Fatalf("wrong full-width valuation: %+v", position)
 	}
 	if position.DebtRaw != 100_000_000 {
@@ -176,7 +176,7 @@ func TestPinnedObligationLayoutAndReserveMintIdentity(t *testing.T) {
 func TestValuationUsesUnsignedRawAndWideIntermediates(t *testing.T) {
 	reserve := &decodedReserve{MarketPriceSF: reviewSF(1), TotalLiquiditySF: reviewSF(math.MaxUint64), CollateralMintSupply: math.MaxUint64}
 	value, err := collateralMarketValueSF(reserve, math.MaxUint64)
-	if err != nil || value.Cmp(reviewSF(math.MaxUint64)) != 0 {
+	if err != nil || value.Int().Cmp(reviewSF(math.MaxUint64)) != 0 {
 		t.Fatalf("unsigned raw amount narrowed: %v, %v", value, err)
 	}
 	reserve.MarketPriceSF = new(big.Int).Lsh(big.NewInt(1), 127)
@@ -241,7 +241,7 @@ func TestSnapshotClaimUnitsIdleZerosAndUnknownEvidence(t *testing.T) {
 	}
 	position := observed.Position(SyrupUsdcUsdc)
 	position.CollateralDepositedRaw, position.DebtRaw = 1_000_000_000, 500_000_000
-	position.CollateralValueSF, position.DebtValueSF = reviewSF(1_000), reviewSF(500)
+	position.CollateralValueSF, position.DebtValueSF = knownMarketValue(reviewSF(1_000)), reviewSF(500)
 	position.UnhealthyValueSF = reviewSF(800)
 	active, err := snapshotInput(route, observed)
 	if err != nil || active.EquityUSDMicros != "530000000" {

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -31,7 +32,7 @@ func TestLoopingWithdrawRefusedByVoltrSettlesFailed(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	db, err := OpenDatabase(ctx, url)
+	db, err := OpenDatabase(ctx, engine.DirectDSN(url))
 	if err != nil {
 		t.Fatal(err)
 	}

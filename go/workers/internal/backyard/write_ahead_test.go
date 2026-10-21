@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"io"
 	"net/http"
 	"strings"
@@ -95,7 +96,7 @@ func TestCrashBetweenPersistAndSendLandsThePersistedWire(t *testing.T) {
 	}
 
 	// A new process: its own database handle, the production advance.
-	restarted, err := OpenDatabase(ctx, url)
+	restarted, err := OpenDatabase(ctx, engine.DirectDSN(url))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -216,9 +216,7 @@ func (f *Facts) FeePayerBalance(payer string, lamports uint64) {
 
 func (f *Facts) AutodepositOldestDueAge(seconds float64) { f.oldestDue.Set(seconds) }
 
-// Own creates the series of each family this process writes at zero, so a
-// family that never completes work reads as progress 0, not as absent.
-func (f *Facts) Own(families ...Family) {
+func (f *Facts) SeedFamilySeriesAtZero(families ...Family) {
 	for _, family := range families {
 		f.landed.WithLabelValues(string(family))
 		f.inflight.WithLabelValues(string(family))
