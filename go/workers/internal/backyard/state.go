@@ -110,7 +110,6 @@ type Snapshot struct {
 	LastUpdatedLockedProfitRaw     int64
 	LastLockedProfitReportUnix     int64
 	VoltrHighWaterMarkBits         [16]byte
-	VoltrHighWaterMarkKnown        bool
 	FeeAccumulatorRaw              int64
 	LPSupplyInclFeesRaw            int64
 	ManagerPerformanceFeeBPS       int64
