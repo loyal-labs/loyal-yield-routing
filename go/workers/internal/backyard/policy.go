@@ -168,10 +168,7 @@ func (p installedPolicies) account(key policyKey) (string, error) {
 	}
 }
 
-// kaminoPolicyLeg is the policy a route executes leg through and the leg's
-// constraint there: the AUTO lane's KLend policy, a basic family, or the
-// route's split policy for the leg.
-func kaminoPolicyLeg(route RuntimeRoute, leg kaminoLeg) (policyKey, byte) {
+func kaminoPolicyLeg(route RuntimeRoute, leg kaminoLeg) (key policyKey, constraint byte) {
 	switch {
 	case autoRoute(route.Lane):
 		return policyKey{lane: route.Lane}, map[kaminoLeg]byte{kaminoLegDeposit: policy.LoopDeposit, kaminoLegWithdraw: policy.LoopWithdraw,
@@ -185,7 +182,7 @@ func kaminoPolicyLeg(route RuntimeRoute, leg kaminoLeg) (policyKey, byte) {
 	}
 }
 
-func initializerPolicyLeg(lane string) (policyKey, byte) {
+func initializerPolicyLeg(lane string) (key policyKey, constraint byte) {
 	if autoRoute(lane) {
 		return policyKey{lane: lane}, policy.LoopInitialize
 	}
