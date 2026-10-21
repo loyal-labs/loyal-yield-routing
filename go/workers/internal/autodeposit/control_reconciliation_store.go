@@ -82,6 +82,7 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 		}
 		if o.ObservedSlot >= currentSlot && status != "closed" {
 			status = o.status()
+			// App floor rebasing reads this projection; absent accounts never become zero balances.
 			if o.hasCoherentWalletSnapshot() {
 				var walletSlot, walletAmount int64
 				var walletHash *string

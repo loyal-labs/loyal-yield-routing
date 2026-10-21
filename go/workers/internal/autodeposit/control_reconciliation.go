@@ -147,6 +147,7 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 			return o, errors.New("control delegation budget differs from target")
 		}
 		o.DelegationValid = true
+		// The Squads envelope match ignores account-data constraints, so the per-period cap is checked here.
 		if o.PolicyExists && !policyCapCoversDelegationBudget(policyCap, capped, delegationBudget) {
 			o.PolicyValid = false
 		}

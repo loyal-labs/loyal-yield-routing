@@ -130,6 +130,7 @@ func (o *ExecutorOutcome) RecordExecutorResult(result ExecutorResult) *ExecutorF
 
 const SurplusLotClassificationDBValue = "unknown"
 
+// ConsumerName keys this family's projection_offsets row, which claim staleness checks also read; never rename it per process.
 const ConsumerName = "balance_sweep_autodeposit_trigger"
 
 const USDCMint = fleet.USDCMint

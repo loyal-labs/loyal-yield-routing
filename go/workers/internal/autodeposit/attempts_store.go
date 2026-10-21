@@ -100,7 +100,7 @@ func (s *Store) AcquireClaimLease(ctx context.Context, claimToken string, target
 	tag, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_lot_claims
 SET autodeposit_executor_lease_token = $3,
-    autodeposit_executor_lease_expires_at = now() + make_interval(secs => $4),
+    autodeposit_executor_lease_expires_at = now() + make_interval(secs => $4::double precision),
     updated_at = now()
 WHERE claim_token = $1
   AND target_id = $2
@@ -118,7 +118,7 @@ WHERE claim_token = $1
 func (s *Store) RenewClaimLease(ctx context.Context, claimToken, leaseToken string) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_lot_claims
-SET autodeposit_executor_lease_expires_at = now() + make_interval(secs => $3),
+SET autodeposit_executor_lease_expires_at = now() + make_interval(secs => $3::double precision),
     updated_at = now()
 WHERE claim_token = $1
   AND status = 'selected'
