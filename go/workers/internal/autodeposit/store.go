@@ -64,22 +64,25 @@ func (s *Store) ProjectSurplusLotsOnce(ctx context.Context, batchLimit int64) (P
 		if err != nil {
 			return err
 		}
-		events, err := fetchEventsAfter(ctx, tx, previousEventID, batchLimit)
+		eventIDs, eventTargets, err := pickEventsAfter(ctx, tx, previousEventID, batchLimit)
 		if err != nil {
 			return err
+		}
+		targets, err := lockTargets(ctx, tx, eventTargets)
+		if err != nil {
+			return err
+		}
+		events, err := fetchEvents(ctx, tx, eventIDs)
+		if err != nil {
+			return err
+		}
+		if len(events) != len(eventIDs) {
+			return fmt.Errorf("autodeposit projection picked %d wallet events and read %d", len(eventIDs), len(events))
 		}
 		outcome = ProjectionOutcome{
 			PreviousEventID: previousEventID,
 			LastEventID:     previousEventID,
 			EventsScanned:   len(events),
-		}
-		eventTargets := make([]int64, len(events))
-		for i, event := range events {
-			eventTargets[i] = event.TargetID
-		}
-		targets, err := lockTargets(ctx, tx, eventTargets)
-		if err != nil {
-			return err
 		}
 		for i, event := range events {
 			target := targets[i]
@@ -177,7 +180,35 @@ WHERE consumer_name = $1`, ConsumerName, eventID)
 	return nil
 }
 
-func fetchEventsAfter(ctx context.Context, tx pgx.Tx, lastEventID, limit int64) ([]walletBalanceEventRow, error) {
+func pickEventsAfter(ctx context.Context, tx pgx.Tx, lastEventID, limit int64) ([]int64, []int64, error) {
+	rows, err := tx.Query(ctx, `
+SELECT event.event_id, event.target_id
+FROM loyal_yield.balance_sweep_wallet_balance_events AS event
+JOIN loyal_yield.balance_sweep_targets AS target
+  ON target.id = event.target_id
+WHERE event.event_id > $1
+  AND event.mint = target.token_mint
+  AND target.cluster = 'mainnet-beta'
+  AND target.token_mint = $2
+ORDER BY event.event_id ASC
+LIMIT $3`, lastEventID, USDCMint, limit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("pick autodeposit wallet events: %w", err)
+	}
+	defer rows.Close()
+	var eventIDs, targetIDs []int64
+	for rows.Next() {
+		var eventID, targetID int64
+		if err := rows.Scan(&eventID, &targetID); err != nil {
+			return nil, nil, fmt.Errorf("scan autodeposit wallet event pick: %w", err)
+		}
+		eventIDs = append(eventIDs, eventID)
+		targetIDs = append(targetIDs, targetID)
+	}
+	return eventIDs, targetIDs, rows.Err()
+}
+
+func fetchEvents(ctx context.Context, tx pgx.Tx, eventIDs []int64) ([]walletBalanceEventRow, error) {
 	rows, err := tx.Query(ctx, `
 SELECT
     event.event_id,
@@ -209,12 +240,8 @@ SELECT
 FROM loyal_yield.balance_sweep_wallet_balance_events AS event
 JOIN loyal_yield.balance_sweep_targets AS target
   ON target.id = event.target_id
-WHERE event.event_id > $1
-  AND event.mint = target.token_mint
-  AND target.cluster = 'mainnet-beta'
-  AND target.token_mint = $2
-ORDER BY event.event_id ASC
-LIMIT $3`, lastEventID, USDCMint, limit)
+WHERE event.event_id = ANY($1::bigint[])
+ORDER BY event.event_id ASC`, eventIDs)
 	if err != nil {
 		return nil, fmt.Errorf("fetch autodeposit wallet events: %w", err)
 	}

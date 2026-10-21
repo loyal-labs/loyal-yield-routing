@@ -20,6 +20,14 @@ func scanControlTarget(row pgx.Row) (ControlTarget, error) {
 }
 
 func lockTargetControls(ctx context.Context, tx pgx.Tx, targetID int64) (lockedTarget, ControlTarget, error) {
+	var settings, vaultPubkey string
+	var vaultIndex int16
+	if err := tx.QueryRow(ctx, `SELECT settings,vault_index,vault_pubkey FROM loyal_yield.balance_sweep_targets WHERE id=$1`, targetID).Scan(&settings, &vaultIndex, &vaultPubkey); err != nil {
+		return lockedTarget{}, ControlTarget{}, err
+	}
+	if err := GateVaultTargets(ctx, tx, settings, vaultIndex, vaultPubkey); err != nil {
+		return lockedTarget{}, ControlTarget{}, err
+	}
 	target, err := scanControlTarget(tx.QueryRow(ctx, `SELECT `+controlTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, targetID))
 	if err != nil {
 		return lockedTarget{}, ControlTarget{}, err

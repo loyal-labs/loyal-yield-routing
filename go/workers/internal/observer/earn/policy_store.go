@@ -225,6 +225,9 @@ func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event Balance
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lock); err != nil {
 			return err
 		}
+		if err := autodeposit.GateVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+			return err
+		}
 		var currentID, observation int64
 		var currentPolicy string
 		err := tx.QueryRow(ctx, `
