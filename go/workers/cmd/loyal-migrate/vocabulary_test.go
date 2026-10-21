@@ -222,8 +222,17 @@ func (v vocabulary) applyEnum(def *definition, stmt string) error {
 	name := `(?:\w+\.)?` + regexp.QuoteMeta(v.name)
 	if m := regexp.MustCompile(`(?is)^CREATE\s+TYPE\s+` + name + `\s+AS\s+ENUM\s*\((.*)\)$`).FindStringSubmatch(stmt); m != nil {
 		items, err := parseItems(m[1])
+		if err != nil {
+			return err
+		}
+		if def.present {
+			if !sameSet(def.items, items) {
+				return fmt.Errorf("type already exists with %q, so Postgres keeps it", def.items)
+			}
+			return nil
+		}
 		*def = definition{present: true, items: items}
-		return err
+		return nil
 	}
 	if m := regexp.MustCompile(`(?is)^ALTER\s+TYPE\s+` + name + `\s+ADD\s+VALUE\s+(?:IF\s+NOT\s+EXISTS\s+)?('(?:[^']|'')*')(?:\s+(?:BEFORE|AFTER)\s+'(?:[^']|'')*')?$`).FindStringSubmatch(stmt); m != nil && def.present {
 		items, err := parseItems(m[1])
@@ -342,6 +351,13 @@ func balanced(s string, open, closing byte) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("unbalanced %q", open)
+}
+
+func sameSet(a, b []string) bool {
+	a, b = slices.Clone(a), slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(a, b)
 }
 
 func parseItems(list string) ([]string, error) {
