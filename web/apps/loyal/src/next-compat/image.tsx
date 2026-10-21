@@ -27,10 +27,6 @@ export function fillStyle(style?: CSSProperties): CSSProperties {
   };
 }
 
-// quality/unoptimized/placeholder and the /_next/image optimizer have no
-// equivalent here: src is served as authored, from public/ or the bundle.
-// With fill the width/height attributes stay off, as in Next; the CSS owns
-// the size.
 export default function Image({ src, fill, priority, quality: _quality, unoptimized: _unoptimized, placeholder: _placeholder, width, height, style, ...rest }: ImageProps) {
   const staticImage = typeof src === "string" ? undefined : src;
   return (

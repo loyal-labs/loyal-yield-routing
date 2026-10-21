@@ -1,5 +1,3 @@
-// Opt-in read-only comparison after enabling the Go stats pilot on the test host.
-// bun scripts/web/api-diff.ts https://next.askloyal.com https://app.askloyal.com
 import { isDeepStrictEqual } from "node:util";
 
 const [base, reference] = process.argv.slice(2);
@@ -23,7 +21,6 @@ for (let attempt = 0; attempt < 3; attempt++) {
   if (go.response.headers.get("X-Loyal-API-Source") !== "go") {
     throw new Error("The test host is still proxying stats; install WEB_APP_DATABASE_URL before comparing.");
   }
-  // A snapshot refresh between requests is not a serialization mismatch.
   if (typeof go.body.refreshedAt !== "string" || typeof next.body.refreshedAt !== "string") {
     throw new Error("Stats response is missing refreshedAt");
   }

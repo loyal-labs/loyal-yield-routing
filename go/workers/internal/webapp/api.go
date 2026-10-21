@@ -35,7 +35,6 @@ func RegisterAPI(api huma.API, appDB *pgxpool.Pool) {
 		}, func(ctx context.Context, _ *struct{}) (*earnStatsOutput, error) {
 			stats, err := loadEarnPublicStats(ctx, appDB)
 			if err != nil {
-				// Database errors can contain connection details; keep them out of logs.
 				slog.Warn("earn stats unavailable")
 				unavailable := &earnStatsUnavailable{}
 				unavailable.Detail.Code = "earn_stats_unavailable"

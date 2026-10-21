@@ -28,8 +28,6 @@ function rawPage(value: unknown): string | undefined {
 }
 
 function blogMetadata(pageNumber: number): Metadata {
-  // Each paginated page self-canonicalizes (page 2 -> /blog?page=2), the
-  // SEO-correct pattern for a series, never canonicalized back to /blog.
   const canonical = pageNumber > 1 ? `/blog?page=${pageNumber}` : "/blog";
   const title = pageNumber > 1 ? `Blog – Page ${pageNumber} | Loyal` : PAGE_TITLE;
 
