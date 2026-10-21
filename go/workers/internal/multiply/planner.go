@@ -1,10 +1,5 @@
 package multiply
 
-// The only route planner, ported from
-// 91694cd9^:crates/loyal-fleet-worker/src/multiply/planner.rs. It selects one literal
-// transaction from confirmed custody and obligation state; it never predicts a
-// multi-transaction graph.
-
 import (
 	"math/big"
 )
@@ -14,7 +9,6 @@ const (
 	minJupiterSwapRaw     = uint64(50_000)
 )
 
-// PlannedAmount mirrors planner::PlannedAmount.
 type PlannedAmount struct {
 	Mode    string // "exact" | "all" | "max_safe" | "to_target_ltv"
 	Exactly uint64 // set when Mode == "exact"
@@ -28,7 +22,6 @@ var (
 
 func AmountExact(value uint64) PlannedAmount { return PlannedAmount{Mode: "exact", Exactly: value} }
 
-// ActionPlan is one selected literal action.
 type ActionPlan struct {
 	Action             MultiplyAction
 	StrategyKey        StrategyKey // "" when user-side
@@ -36,12 +29,11 @@ type ActionPlan struct {
 	DestinationAccount string
 }
 
-// PlannerDecision mirrors planner::PlannerDecision.
 type PlannerDecision struct {
 	Kind      string // "execute" | "resume" | "complete"
 	Plan      *ActionPlan
 	ResumeID  string
-	Condition string // deterministic unresolved custody reason
+	Condition string
 }
 
 func ExecuteDecision(plan ActionPlan) PlannerDecision {
@@ -50,7 +42,6 @@ func ExecuteDecision(plan ActionPlan) PlannerDecision {
 
 func CompleteDecision() PlannerDecision { return PlannerDecision{Kind: "complete"} }
 
-// NextAction mirrors next_action.
 func NextAction(route *RouteState, observed *ObservedRoute, topology *EarnMaxTopology) PlannerDecision {
 	if route == nil {
 		return PlannerDecision{Kind: "invalid_observation"}
@@ -61,8 +52,6 @@ func NextAction(route *RouteState, observed *ObservedRoute, topology *EarnMaxTop
 	if observed == nil || topology == nil {
 		return PlannerDecision{Kind: "invalid_observation"}
 	}
-	// Only an explicit absence from a complete bank snapshot is empty.
-	// A partial caller observation must not become completion or permission.
 	if !observed.ActiveStrategyIsCoherent() {
 		return PlannerDecision{Kind: "invalid_observation"}
 	}
@@ -200,10 +189,6 @@ func planDown(observed *ObservedRoute, active StrategyKey) PlannerDecision {
 			})
 		}
 	}
-	// Intentional correction to Rust plan_down: an empty obligation does not
-	// make a previously borrowed non-USDC custody balance disappear. Reuse
-	// the scoped debt-to-collateral recipe, then the existing collateral-to-
-	// claim branch on the next fresh tick. USDC debt aliases claim custody.
 	for _, entry := range observed.DebtCustodies {
 		if entry.Balance.Account == observed.Claim.Account || entry.Balance.AmountRaw == 0 {
 			continue
@@ -213,7 +198,5 @@ func planDown(observed *ObservedRoute, active StrategyKey) PlannerDecision {
 		}
 		return ExecuteDecision(ActionPlan{Action: ActionSwapDebtToCollateral, StrategyKey: entry.StrategyKey, Amount: AmountExact(entry.Balance.AmountRaw)})
 	}
-	// Claim is a root-signed user transaction prepared by the app. The
-	// delegate stops once the requested amount is liquid in claim custody.
 	return CompleteDecision()
 }

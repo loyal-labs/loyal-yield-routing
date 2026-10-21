@@ -8,8 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Family names one swap unit. Exactly one process writes a family at a time;
-// the Rust worker it replaces is stopped before this process starts.
 type Family string
 
 const (
@@ -21,7 +19,6 @@ const (
 	FamilyBackyard    Family = "backyard"
 )
 
-// ErrFamilyHeld means another process already writes this family.
 var ErrFamilyHeld = errors.New("family is held by another process")
 
 // HoldFamily takes the family's session advisory lock on a dedicated
@@ -46,8 +43,6 @@ func HoldFamily(ctx context.Context, directDSN string, family Family) (done <-ch
 	go func() {
 		defer close(lost)
 		defer conn.Close(context.Background())
-		// Closing the session releases the lock; a dropped session means
-		// another process may now hold it.
 		_ = conn.PgConn().WaitForNotification(ctx)
 	}()
 	return lost, nil

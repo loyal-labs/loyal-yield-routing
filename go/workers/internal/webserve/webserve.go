@@ -1,5 +1,3 @@
-// Package webserve serves the built web app (web/apps/loyal/dist), embedded at
-// build time by `bun run web:build`.
 package webserve
 
 import (
@@ -22,9 +20,6 @@ func init() {
 	dist, distErr = fs.Sub(embedded, "dist")
 }
 
-// Cache tiers, ported from wen server/internal/webserve (webserve.go:24-30,
-// 71-80): hashed /assets are immutable for a year, index.html and every SPA
-// fallback are revalidated, other public files cache for a day.
 const (
 	immutableCacheControl  = "public, max-age=31536000, immutable"
 	publicFileCacheControl = "public, max-age=86400, stale-while-revalidate=604800"
@@ -32,8 +27,6 @@ const (
 	noStore                = "no-store"
 )
 
-// Ready reports whether the embedded build contains index.html: a binary
-// built without the web build must not report ready.
 func Ready() bool {
 	if distErr != nil {
 		return false
@@ -42,8 +35,6 @@ func Ready() bool {
 	return err == nil
 }
 
-// Handler serves files from dist; a path with no file and no extension is a
-// client route and gets index.html.
 func Handler() http.Handler {
 	if distErr != nil {
 		panic(distErr)
@@ -54,8 +45,6 @@ func Handler() http.Handler {
 		if name == "" {
 			name = "index.html"
 		}
-		// public/ has folders (agents/, landing/) that share a name with a
-		// client route; a folder is never served, the route is.
 		if info, err := fs.Stat(dist, name); err != nil || info.IsDir() {
 			if path.Ext(name) != "" {
 				w.Header().Set("Cache-Control", noStore)
@@ -80,8 +69,6 @@ func Handler() http.Handler {
 	})
 }
 
-// publicFile matches the file kinds the browser reuses across pages
-// (webserve.go:86-92 of the wen port).
 func publicFile(name string) bool {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico", ".avif", ".woff", ".woff2":

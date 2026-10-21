@@ -1,9 +1,5 @@
 package multiply
 
-// Policy contracts ported from
-// 91694cd9^:crates/loyal-fleet-worker/src/multiply/policy.rs: canonical KLend v2
-// discriminators and per-family constraint indexes.
-
 import (
 	"errors"
 
@@ -11,7 +7,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// PolicyFamily mirrors policy::PolicyFamily.
 type PolicyFamily string
 
 const (
@@ -20,7 +15,6 @@ const (
 	FamilySwap       PolicyFamily = "SwapRoutes"
 )
 
-// FamilyForAction mirrors family_for_action.
 func FamilyForAction(action MultiplyAction) (PolicyFamily, error) {
 	switch action {
 	case ActionDepositCollateral, ActionWithdrawCollateral, ActionWithdrawRemainingCollateral:
@@ -34,9 +28,6 @@ func FamilyForAction(action MultiplyAction) (PolicyFamily, error) {
 	return "", errors.New("action has no strategy policy family")
 }
 
-// ConstraintIndexes mirrors constraint_indexes: the terminal instruction must
-// be the single policy-wrapped instruction, and its single constraint index is
-// derived from the action and route shape.
 func ConstraintIndexes(config StrategyConfig, action MultiplyAction, instructions []Instruction) ([]byte, error) {
 	if len(instructions) != 1 {
 		return nil, errors.New("policy execution must contain exactly one terminal instruction")
@@ -124,14 +115,12 @@ func equalBytes(left, right []byte) bool {
 	return true
 }
 
-// AccountMeta mirrors solana_sdk::Instruction's account entry.
 type AccountMeta struct {
 	PubKey     solana.PublicKey
 	IsSigner   bool
 	IsWritable bool
 }
 
-// Instruction is the multiply package's instruction value.
 type Instruction struct {
 	ProgramID solana.PublicKey
 	Accounts  []AccountMeta

@@ -1,9 +1,5 @@
 package multiply
 
-// Confirmed route observation, ported from
-// 91694cd9^:crates/loyal-fleet-worker/src/multiply/observe.rs with the KLend layouts
-// shared by the reviewed backyard and fleet decoders in this module tree.
-
 import (
 	"context"
 	"errors"
@@ -20,16 +16,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// ObservationReader is the consumer-defined chain read surface; *chain.Client
-// is the production binding and tests bind fixtures. Missing accounts are nil
-// entries in the same order. SlotsPerSecond is the chain's measured slot
-// rate, which Legacy-basis reserve rates need.
 type ObservationReader interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
 	SlotsPerSecond(ctx context.Context) (float64, error)
 }
 
-// StrategyObservation is one decoded obligation/reserve pair.
 type StrategyObservation struct {
 	StrategyKey StrategyKey
 
@@ -50,13 +41,11 @@ type StrategyObservation struct {
 	DebtBorrowAPYBPS                uint64
 }
 
-// CustodyBalance pairs a strategy with its custody balance.
 type CustodyBalance struct {
 	StrategyKey StrategyKey
 	Balance     TokenBalance
 }
 
-// ObservedRoute is the complete confirmed route snapshot.
 type ObservedRoute struct {
 	Slot                uint64
 	Claim               TokenBalance
@@ -96,7 +85,6 @@ func (o *ObservedRoute) CollateralCustody(key StrategyKey) *TokenBalance {
 	return nil
 }
 
-// ActiveStrategyIsCoherent mirrors active_strategy_is_coherent.
 func (o *ObservedRoute) ActiveStrategyIsCoherent() bool {
 	if o == nil {
 		return false
@@ -120,7 +108,6 @@ func (o *ObservedRoute) ActiveStrategyIsCoherent() bool {
 		active.DebtReserveLastUpdateSlot >= active.ObligationLastUpdateSlot
 }
 
-// ObserveConfirmed observes the whole route plus optional external custody.
 func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *EarnMaxTopology, extra []TokenBalance) (*ObservedRoute, error) {
 	if reader == nil || topology == nil {
 		return nil, errors.New("confirmed observation dependencies are absent")
@@ -129,9 +116,6 @@ func ObserveConfirmed(ctx context.Context, reader ObservationReader, topology *E
 	for _, config := range topology.StrategyCatalog() {
 		keys = append(keys, config.CollateralCustody, config.Obligation, config.CollateralReserve, config.DebtCustody, config.DebtReserve)
 	}
-	// Receipt destinations participate in the same bank snapshot as vault
-	// custody and obligations. A second slotless read can combine incompatible
-	// before/after states and cannot support financial reconciliation.
 	for _, custody := range extra {
 		key, err := solana.PublicKeyFromBase58(custody.Account)
 		if err != nil {
@@ -306,8 +290,6 @@ func lessKey(left, right solana.PublicKey) bool {
 	return false
 }
 
-// tokenBalance is the raw amount of a mint's account under tokenProgram, held
-// by owner when owner is set.
 func tokenBalance(account *chain.Account, mint string, tokenProgram solana.PublicKey, owner *solana.PublicKey) (uint64, error) {
 	held, err := spl.DecodeTokenAccount(account)
 	if err != nil {
@@ -353,7 +335,6 @@ func decodeObligation(account *chain.Account, config StrategyConfig, vault solan
 	if deposits > 1 || borrows > 1 {
 		return nil, errors.New("obligation reserve topology drifted")
 	}
-	// ceil(debt_sf / 2^60), bounded to u64 like the Rust checked conversion.
 	debtRaw := uint64(0)
 	if debtSF != nil {
 		ceil := ceilDiv60(debtSF)
@@ -510,8 +491,6 @@ func checkedU128(value *big.Int) (*big.Int, error) {
 	return new(big.Int).Set(value), nil
 }
 
-// saturatingU128 preserves the Rust planner's u128 saturating operations;
-// intermediates remain exact and never alias observed values.
 func saturatingU128(value *big.Int) *big.Int {
 	if value.Sign() < 0 {
 		return new(big.Int)
@@ -567,9 +546,6 @@ func allZero(data []byte) bool {
 	return true
 }
 
-// reserveAPYBPS is the reserve's supply or borrow APY, kamino.Reserve.Rates,
-// in bps. A Legacy-basis reserve needs the measured slot rate; without it the
-// observation is unavailable and the next tick retries.
 func reserveAPYBPS(ctx context.Context, reader ObservationReader, decoded *decodedReserve, supply bool) (uint64, error) {
 	var slotsPerSecond float64
 	var rateErr error
@@ -594,7 +570,6 @@ func reserveAPYBPS(ctx context.Context, reader ObservationReader, decoded *decod
 	return uint64(bps), nil
 }
 
-// CollateralToLiquidityRaw mirrors collateral_to_liquidity_raw.
 func CollateralToLiquidityRaw(position *StrategyObservation, collateralRaw uint64) (uint64, error) {
 	if position == nil {
 		return kamino.CollateralToLiquidity(nil, 0, collateralRaw)
@@ -602,7 +577,6 @@ func CollateralToLiquidityRaw(position *StrategyObservation, collateralRaw uint6
 	return kamino.CollateralToLiquidity(position.CollateralTotalLiquiditySF, position.CollateralTotalSupplyRaw, collateralRaw)
 }
 
-// PositionBalance mirrors position_balance.
 func PositionBalance(observation *ObservedRoute, key StrategyKey, topology *EarnMaxTopology) (MultiplyPosition, error) {
 	config, err := topology.Strategy(key)
 	if err != nil {

@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	// LeaseTTL mirrors MULTIPLY_DEFAULT_LEASE_SECONDS.
 	LeaseTTL = 30 * time.Second
 
 	operationColumns = "operation_id, route_key, cycle, engine_version, action, strategy_key, status, idempotency_key, expected_effects, policy_account, policy_data_sha256, message_sha256, signed_wire, signed_wire_sha256, transaction_signature, source_instruction_index, recent_blockhash, last_valid_block_height, broadcast_intent_at, confirmed_slot, reconciliation_sha256, created_at, updated_at"
@@ -31,12 +30,10 @@ const (
 	routeStateSelect = "SELECT route_key, settings, vault_index, vault, state, state_version, fencing_token FROM loyal_yield.multiply_route_states WHERE route_key=$1"
 )
 
-// Store is the pool-injected durable multiply store.
 type Store struct {
 	pool *pgxpool.Pool
 }
 
-// NewStoreFromPool borrows the engine's pool. The caller owns its lifetime.
 func NewStoreFromPool(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	if ctx == nil || pool == nil {
 		return nil, errors.New("multiply store requires caller context and pool")
@@ -47,10 +44,8 @@ func NewStoreFromPool(ctx context.Context, pool *pgxpool.Pool) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// Pool exposes the injected pool for root composition (metrics, health).
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// Lease is a fencing-token route lease.
 type Lease struct {
 	RouteKey     string
 	Owner        string
@@ -59,7 +54,6 @@ type Lease struct {
 	Version      int64
 }
 
-// StoredRoute pairs the typed route state with its lease columns.
 type StoredRoute struct {
 	RouteKey     string
 	Settings     string
@@ -71,7 +65,6 @@ type StoredRoute struct {
 	Operation    *MultiplyOperation
 }
 
-// ReadyPolicySet mirrors ReadyEarnMaxPolicySet.
 type ReadyPolicySet struct {
 	Settings       string
 	VaultIndex     uint8
@@ -80,14 +73,13 @@ type ReadyPolicySet struct {
 	ObservedSlot   uint64
 }
 
-// PositionSnapshotInput mirrors MultiplyPositionSnapshotInput.
 type PositionSnapshotInput struct {
 	RouteKey            string
 	Generation          uint64
 	ObservedSlot        uint64
 	ObservedAt          time.Time
 	StrategyKey         *string
-	ClaimRaw            string // numeric text
+	ClaimRaw            string
 	CollateralRaw       string
 	DebtRaw             string
 	EquityUSD           string
@@ -105,8 +97,6 @@ type PositionSnapshotInput struct {
 	CoverageStartAt     *time.Time
 }
 
-// RecordPositionSnapshot mirrors record_multiply_position_snapshot; false
-// means the (route_key, observed_slot) row already existed.
 func (s *Store) RecordPositionSnapshot(ctx context.Context, input *PositionSnapshotInput) (bool, error) {
 	if input == nil || strings.TrimSpace(input.RouteKey) == "" || input.Generation == 0 || input.Generation > 1<<63-1 || input.ObservedSlot == 0 || input.ObservedSlot > 1<<63-1 {
 		return false, errors.New("multiply position snapshot identity is invalid")
@@ -148,7 +138,6 @@ func (s *Store) RecordPositionSnapshot(ctx context.Context, input *PositionSnaps
 	return tag.RowsAffected() == 1, nil
 }
 
-// LoadUnbootstrappedPolicySet mirrors load_unbootstrapped_earn_max_policy_set.
 func (s *Store) LoadUnbootstrappedPolicySet(ctx context.Context) (*ReadyPolicySet, error) {
 	row := s.pool.QueryRow(ctx, `
         SELECT policy.settings, policy.vault_index, policy.vault,
@@ -185,7 +174,6 @@ func (s *Store) LoadUnbootstrappedPolicySet(ctx context.Context) (*ReadyPolicySe
 	return &set, nil
 }
 
-// EarnMaxPolicySetReady mirrors earn_max_policy_set_ready.
 func (s *Store) EarnMaxPolicySetReady(ctx context.Context, settings string, vaultIndex uint8, policySeedBase uint64) (bool, error) {
 	var ready bool
 	err := s.pool.QueryRow(ctx, `
@@ -201,7 +189,6 @@ func (s *Store) EarnMaxPolicySetReady(ctx context.Context, settings string, vaul
 	return ready, err
 }
 
-// CreateRouteState mirrors create_multiply_route_state.
 func (s *Store) CreateRouteState(ctx context.Context, state *RouteState) (bool, error) {
 	if err := validateRouteState(state.RouteKey, state); err != nil {
 		return false, err
@@ -222,8 +209,6 @@ func (s *Store) CreateRouteState(ctx context.Context, state *RouteState) (bool, 
 	return tag.RowsAffected() == 1, nil
 }
 
-// LoadRouteState mirrors load_multiply_route_state including the column/state
-// identity checks and the current-operation binding check.
 func (s *Store) LoadRouteState(ctx context.Context, routeKey string) (*StoredRoute, error) {
 	var (
 		key, settings, vault string
@@ -270,7 +255,6 @@ func (s *Store) LoadRouteState(ctx context.Context, routeKey string) (*StoredRou
 	return stored, nil
 }
 
-// LoadRouteStateBySettings mirrors load_multiply_route_state_by_settings.
 func (s *Store) LoadRouteStateBySettings(ctx context.Context, settings string, vaultIndex uint8) (*StoredRoute, error) {
 	if strings.TrimSpace(settings) == "" {
 		return nil, errors.New("settings is empty")
@@ -288,7 +272,6 @@ func (s *Store) LoadRouteStateBySettings(ctx context.Context, settings string, v
 	return s.LoadRouteState(ctx, key)
 }
 
-// LoadOperation mirrors load_multiply_operation.
 func (s *Store) LoadOperation(ctx context.Context, operationID string) (*MultiplyOperation, error) {
 	rows, err := s.pool.Query(ctx,
 		"SELECT "+operationColumns+" FROM loyal_yield.multiply_operations WHERE operation_id=$1", operationID)
@@ -302,7 +285,6 @@ func (s *Store) LoadOperation(ctx context.Context, operationID string) (*Multipl
 	return decodeOperation(rows)
 }
 
-// OperationExistsForSignature mirrors multiply_operation_exists_for_signature.
 func (s *Store) OperationExistsForSignature(ctx context.Context, routeKey, signature string) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
@@ -314,9 +296,6 @@ func (s *Store) OperationExistsForSignature(ctx context.Context, routeKey, signa
 	return exists, err
 }
 
-// LeaseNextRoute shares the Rust lease rows and fencing tokens. Pending
-// operations remain eligible after readiness removal or a new withdrawal
-// debounce; those gates control only fresh admission.
 func (s *Store) LeaseNextRoute(ctx context.Context, owner string, expiresAt time.Time) (*Lease, error) {
 	if err := validateLeaseInput(owner, expiresAt); err != nil {
 		return nil, err
@@ -386,7 +365,6 @@ func (s *Store) LeaseNextRoute(ctx context.Context, owner string, expiresAt time
 		FencingToken: fencing, Version: version}, nil
 }
 
-// LeaseRoute mirrors lease_multiply_route_state.
 func (s *Store) LeaseRoute(ctx context.Context, routeKey, owner string, expiresAt time.Time) (*Lease, error) {
 	if err := validateLeaseInput(owner, expiresAt); err != nil {
 		return nil, err
@@ -408,7 +386,6 @@ func (s *Store) LeaseRoute(ctx context.Context, routeKey, owner string, expiresA
 		FencingToken: fencing, Version: version}, nil
 }
 
-// RenewLease mirrors renew_multiply_route_lease.
 func (s *Store) RenewLease(ctx context.Context, lease *Lease, expiresAt time.Time) (bool, error) {
 	if err := validateLeaseInput(lease.Owner, expiresAt); err != nil {
 		return false, err
@@ -425,7 +402,6 @@ func (s *Store) RenewLease(ctx context.Context, lease *Lease, expiresAt time.Tim
 	return tag.RowsAffected() == 1, nil
 }
 
-// SaveRouteState mirrors save_multiply_route_state.
 func (s *Store) SaveRouteState(ctx context.Context, lease *Lease, state *RouteState) (bool, error) {
 	version, ok, err := s.updateRoute(ctx, lease, state)
 	if err != nil || !ok {
@@ -435,8 +411,6 @@ func (s *Store) SaveRouteState(ctx context.Context, lease *Lease, state *RouteSt
 	return true, nil
 }
 
-// PrepareOperation mirrors prepare_multiply_operation: insert the prepared
-// operation and advance the route in one transaction.
 func (s *Store) PrepareOperation(ctx context.Context, lease *Lease, route *RouteState, operation *MultiplyOperation) (bool, error) {
 	if err := validateNextRoute(lease, route); err != nil {
 		return false, err
@@ -483,9 +457,6 @@ func (s *Store) PrepareOperation(ctx context.Context, lease *Lease, route *Route
 	return true, nil
 }
 
-// PersistSignedOperation mirrors persist_signed_operation: the exact signed
-// wire is accepted only by a lease-guarded update from 'prepared'. The wire
-// cannot be replaced afterwards.
 func (s *Store) PersistSignedOperation(ctx context.Context, lease *Lease, operationID, policyAccount, policyDataSHA256, messageSHA256 string, signed *SignedOperation) (bool, error) {
 	if lease == nil || signed == nil || signed.LastValidBlockHeight <= 0 {
 		return false, errors.New("signed operation or lease is missing")
@@ -518,12 +489,10 @@ func (s *Store) PersistSignedOperation(ctx context.Context, lease *Lease, operat
 	return tag.RowsAffected() == 1, nil
 }
 
-// MarkBroadcastIntent mirrors mark_multiply_broadcast_intent.
 func (s *Store) MarkBroadcastIntent(ctx context.Context, lease *Lease, operationID string, at time.Time) (bool, error) {
 	return s.advanceOperation(ctx, lease, operationID, "signed_persisted", "broadcast_intent", &at, nil)
 }
 
-// MarkConfirmed mirrors mark_multiply_confirmed.
 func (s *Store) MarkConfirmed(ctx context.Context, lease *Lease, operationID string, confirmedSlot uint64) (bool, error) {
 	slot, err := int64FromU64(confirmedSlot, "slot")
 	if err != nil {
@@ -549,7 +518,6 @@ func (s *Store) advanceOperation(ctx context.Context, lease *Lease, operationID,
 	return tag.RowsAffected() == 1, nil
 }
 
-// CancelPreparedOperation mirrors cancel_prepared_multiply_operation.
 func (s *Store) CancelPreparedOperation(ctx context.Context, lease *Lease, operationID string, route *RouteState) (bool, error) {
 	if err := validateNextRoute(lease, route); err != nil {
 		return false, err
@@ -587,8 +555,6 @@ func (s *Store) CancelPreparedOperation(ctx context.Context, lease *Lease, opera
 	return true, nil
 }
 
-// ExpireOperation mirrors expire_multiply_operation: a signature absent once
-// the finalized height passed its blockhash can never land.
 func (s *Store) ExpireOperation(ctx context.Context, lease *Lease, operationID string, route *RouteState) (bool, error) {
 	if err := validateNextRoute(lease, route); err != nil {
 		return false, err
@@ -626,7 +592,6 @@ func (s *Store) ExpireOperation(ctx context.Context, lease *Lease, operationID s
 	return true, nil
 }
 
-// MarkManualRecovery mirrors mark_multiply_manual_recovery.
 func (s *Store) MarkManualRecovery(ctx context.Context, lease *Lease, operationID string, route *RouteState) (bool, error) {
 	if err := validateNextRoute(lease, route); err != nil {
 		return false, err
@@ -664,9 +629,6 @@ func (s *Store) MarkManualRecovery(ctx context.Context, lease *Lease, operationI
 	return true, nil
 }
 
-// ReconcileOperation requires exact transaction evidence before the fenced
-// terminal operation/route publication. The proof is checked, not stored:
-// reconciliation_sha256 is the durable fact, as in Rust.
 func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationID, transactionSignature, reconciliationSHA256 string, confirmedSlot uint64, route *RouteState, proofs ...*ReconciledReceiptProof) (bool, error) {
 	if len(proofs) != 1 || proofs[0] == nil {
 		return false, errors.New("reconciliation requires an exact transaction receipt")
@@ -737,7 +699,6 @@ func (s *Store) ReconcileOperation(ctx context.Context, lease *Lease, operationI
 	return true, nil
 }
 
-// ReleaseLease mirrors release_multiply_route_lease.
 func (s *Store) ReleaseLease(ctx context.Context, lease *Lease) (bool, error) {
 	tag, err := s.pool.Exec(ctx,
 		"UPDATE loyal_yield.multiply_route_states SET lease_owner=NULL, lease_expires_at=NULL WHERE route_key=$1 AND state_version=$2 AND lease_owner=$3 AND fencing_token=$4",
@@ -996,8 +957,6 @@ func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteStat
 			return errors.New("multiply custody is reserved by legacy fleet work")
 		}
 	}
-	// Serialize the observed sweep configuration with the legacy target row.
-	// This does not replace the external disable/drain activation contract.
 	targets, err := tx.Query(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE vault_pubkey=$1 AND vault_index=$2 ORDER BY id FOR UPDATE`, route.Vault, route.VaultIndex)
 	if err != nil {
 		return err
@@ -1014,7 +973,6 @@ func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteStat
 	if err != nil {
 		return err
 	}
-	// Inactive targets may still own previously signed or selected attempts.
 	var sweep bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets target WHERE target.vault_pubkey=$1 AND target.vault_index=$2 AND ((target.desired_active AND target.chain_status='active') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims claim WHERE claim.target_id=target.id AND claim.status='selected') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts attempt WHERE attempt.target_id=target.id AND (attempt.attempt_state IN ('prepared','submitted') OR (attempt.attempt_state='confirmed' AND EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims unresolved WHERE unresolved.claim_token=attempt.claim_token AND unresolved.status<>'executed'))))))`, route.Vault, route.VaultIndex).Scan(&sweep); err != nil {
 		return err

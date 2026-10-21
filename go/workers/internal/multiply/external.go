@@ -9,14 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Externally observed Earn MAX facts, ported from loyal-yield-store
-// (admit_external_multiply_operation, the ready branch of
-// project_earn_max_policy_set) and fleet_orchestration/multiply.rs
-// (roll_terminal_policy_seed_base, upgrade_terminal_three_policy_manifest).
-// The observer writes them; the Earn MAX worker owns everything it signs.
-
-// RollTerminalPolicySeedBase moves a fully claimed, empty route onto a newer
-// policy seed base so a re-created policy set can serve the next deposit.
 func (s *RouteState) RollTerminalPolicySeedBase(policySeedBase, observedSlot uint64, observedAt time.Time) error {
 	if policySeedBase == s.PolicySeedBase {
 		return nil
@@ -29,8 +21,6 @@ func (s *RouteState) RollTerminalPolicySeedBase(policySeedBase, observedSlot uin
 	return s.ValidatePersisted()
 }
 
-// UpgradeTerminalThreePolicyManifest moves a terminal earn_max_v1 (schema 8)
-// route onto the current engine and the observed policy seed base.
 func (s *RouteState) UpgradeTerminalThreePolicyManifest(policySeedBase, observedSlot uint64, observedAt time.Time) error {
 	if s.EngineVersion != "earn_max_v1" || s.SchemaVersion != 8 {
 		return errors.New("route goal change is invalid while another action is active")
@@ -58,9 +48,6 @@ func leasedNow(owner *string, expires *time.Time) bool {
 	return owner != nil && expires != nil && expires.After(time.Now())
 }
 
-// ProjectReadyPolicySetInTx is the ready branch of project_earn_max_policy_set:
-// a terminal route rolls to the newly ready policy seed base in the caller's
-// policy-set transaction.
 func ProjectReadyPolicySetInTx(ctx context.Context, tx pgx.Tx, settings string, vaultIndex uint8, policySeedBase, observedSlot uint64, observedAt time.Time) error {
 	var raw []byte
 	var owner *string
@@ -109,8 +96,6 @@ func ProjectReadyPolicySetInTx(ctx context.Context, tx pgx.Tx, settings string, 
 	return err
 }
 
-// AdmitExternalOperation records one confirmed wallet deposit or root claim
-// as a reconciled operation and advances the route in the same transaction.
 func (s *Store) AdmitExternalOperation(ctx context.Context, lease *Lease, route *RouteState, operation *MultiplyOperation) (bool, error) {
 	if err := validateNextRoute(lease, route); err != nil {
 		return false, err

@@ -13,13 +13,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// A status-cache hit is not a transaction receipt. A missing or pruned receipt
-// and an unavailable endpoint keep the original attempt owned, including after
-// restart.
 var errReceiptUnavailable = errors.New("confirmed transaction receipt unavailable")
 
-// ReconciledReceiptEvidence is the confirmed receipt and the resolved ALT
-// vectors it was proven against, so the store can prove it again.
 type ReconciledReceiptEvidence struct {
 	OperationID            string
 	Signature              string
@@ -31,8 +26,6 @@ type ReconciledReceiptEvidence struct {
 	LookupTables           map[solana.PublicKey]solana.PublicKeySlice
 }
 
-// Its fields are private: only a successfully validated actual receipt creates
-// a proof. The store rechecks identity and effects under the operation row lock.
 type ReconciledReceiptProof struct{ evidence ReconciledReceiptEvidence }
 
 func (e *Executor) readReceipt(ctx context.Context, op *MultiplyOperation, topology *EarnMaxTopology) (*ReconciledReceiptProof, error) {
@@ -43,8 +36,6 @@ func (e *Executor) readReceipt(ctx context.Context, op *MultiplyOperation, topol
 	if err != nil {
 		return nil, err
 	}
-	// Only an absent receipt or an endpoint that cannot answer waits; a receipt
-	// the cluster returned but the client rejects is a verdict.
 	receipt, err := e.Chain.Receipt(ctx, signature, rpc.CommitmentConfirmed)
 	if errors.Is(err, chain.ErrNotFound) || errors.Is(err, chain.ErrUnavailable) {
 		return nil, fmt.Errorf("%w: %w", errReceiptUnavailable, err)
@@ -148,9 +139,6 @@ func validateConfirmedReceipt(op *MultiplyOperation, topology *EarnMaxTopology, 
 			return nil, errors.New("receipt custody has a different token program")
 		}
 	}
-	// RPC transaction metadata supplies token amounts, not KLend obligation
-	// account bytes. Attribute token movement here; verify source obligation
-	// direction against the subsequent coherent account bank separately.
 	effects := op.ExpectedEffects
 	effects.ObligationDelta = nil
 	after := &ObservedRoute{Slot: r.Slot}

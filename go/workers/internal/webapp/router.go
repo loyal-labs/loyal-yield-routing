@@ -1,6 +1,3 @@
-// Package webapp is loyal-web's HTTP surface: the embedded web app, the /api
-// routes Go owns, and a forward of every other /api and /ingest path to the
-// Next deployment that still owns it.
 package webapp
 
 import (
@@ -18,12 +15,10 @@ import (
 
 type Config struct {
 	Addr     string
-	Upstream *url.URL // the Next deployment that answers the /api and /ingest paths Go does not
-	AppHost  string   // requests for this host at / go to /app, as apps/web middleware.ts does
+	Upstream *url.URL
+	AppHost  string // requests for this host at / go to /app, as apps/web middleware.ts does
 	Release  string
-	// Ready reports whether the embedded web build is servable; nil means
-	// webserve.Ready. Tests inject a fake.
-	Ready func() bool
+	Ready    func() bool
 }
 
 func New(cfg Config, deps Deps) http.Handler {
@@ -48,7 +43,6 @@ func (cfg Config) ready() func() bool {
 	return webserve.Ready
 }
 
-// ready answers 200 only when the embedded web build is servable.
 func ready(ok func() bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		if !ok() {
@@ -98,7 +92,6 @@ func apiConfig() huma.Config {
 	return config
 }
 
-// OpenAPI is the spec of every route RegisterAPI declares, for the TS client.
 func OpenAPI() *huma.OpenAPI {
 	api := humachi.New(chi.NewRouter(), apiConfig())
 	RegisterAPI(api, Deps{})

@@ -30,7 +30,6 @@ func run() error {
 	return json.NewEncoder(os.Stdout).Encode(result)
 }
 
-// decide runs one saved decision. It never opens a database, RPC or signer.
 func decide(kind string, input io.Reader) (any, error) {
 	decode := json.NewDecoder(input)
 	decode.DisallowUnknownFields()
