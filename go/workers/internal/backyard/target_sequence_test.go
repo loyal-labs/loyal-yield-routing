@@ -251,7 +251,7 @@ func TestTargetWithdrawalFreesExactlyTheDemand(t *testing.T) {
 		"DELEVER_ROUTE_STEP:"+releaseReason,
 		"SWAP_COLLATERAL_TO_STABLE_STEP:"+outboundCollateralReason,
 		"STAGE_SQUADS_TO_VOLTR:"+outboundStageReason,
-		"HOLD:"+holdAtTarget)
+		"HOLD:"+string(holdAtTarget))
 	l := b.lane(SelectedRouteID)
 	if b.voltr < b.demand || b.voltr > b.demand+b.demand/50 || ltvOf(l) < 3332 || ltvOf(l) > 3334 || l.debt == 0 {
 		t.Fatalf("freed %d for %d, lane LTV %d debt %d", b.voltr, b.demand, ltvOf(l), l.debt)
@@ -262,21 +262,21 @@ func TestTargetLevelOneSevenFiveStepsUpOnceApproved(t *testing.T) {
 	t.Parallel()
 	// Unapproved: the stored level alone moves nothing.
 	b := laneBook(onreONycUSDC, 1.75, false)
-	wantSteps(t, b.walk(t, 5), "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "HOLD:"+string(holdAtTarget))
 	b.in.Levels[onreONycUSDC] = laneLevel{Level: 1.75, UpApproved: true}
-	wantSteps(t, b.walk(t, 5), "OPEN_ROUTE_STEP:"+leverageUpReason, "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "OPEN_ROUTE_STEP:"+leverageUpReason, "HOLD:"+string(holdAtTarget))
 	if l := b.lane(onreONycUSDC); ltvOf(l) < 4280 || ltvOf(l) > 4286 {
 		t.Fatalf("1.75 step left LTV %d", ltvOf(l))
 	}
 	// The stored level falls to 1.5: one partial down step, never debt 0.
 	b.in.Levels[onreONycUSDC] = laneLevel{Level: 1.5}
-	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+leverageDownPartialReason, "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+leverageDownPartialReason, "HOLD:"+string(holdAtTarget))
 	if l := b.lane(onreONycUSDC); l.debt == 0 || ltvOf(l) > 3334 {
 		t.Fatalf("1.5 down step left debt %d LTV %d", l.debt, ltvOf(l))
 	}
 	// Level 1 is economic: it holds at 1.5, not at debt 0.
 	b.in.Levels[onreONycUSDC] = laneLevel{Level: 1}
-	wantSteps(t, b.walk(t, 5), "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "HOLD:"+string(holdAtTarget))
 }
 
 func TestTargetHardLTVStepsDownOrHoldsNoRoom(t *testing.T) {
@@ -284,7 +284,7 @@ func TestTargetHardLTVStepsDownOrHoldsNoRoom(t *testing.T) {
 	b := laneBook(onreONycUSDC, 1.75, true)
 	l := b.lane(onreONycUSDC)
 	l.debt = 107_000_000_000 // LTV 7133 > hard 7000
-	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+hardLTVDeleverReason, "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+hardLTVDeleverReason, "HOLD:"+string(holdAtTarget))
 	if ltvOf(l) >= 7000 || l.debt == 0 {
 		t.Fatalf("hard LTV step left LTV %d debt %d", ltvOf(l), l.debt)
 	}
@@ -318,20 +318,20 @@ func TestTargetTermMaturity(t *testing.T) {
 	// Under a day left and no room for the keep-alive borrow: debt 0 by one
 	// down step.
 	b := wyldsBook(20*3_600, 0)
-	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+debtZeroReason, "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+debtZeroReason, "HOLD:"+string(holdAtTarget))
 	if l := b.lane(autoAUTOWYLDSLane); l.debt != 0 || l.coll <= 0 {
 		t.Fatalf("maturity left debt %d collateral %d", l.debt, l.coll)
 	}
 	// Under three days with room: the minimum up step keeps it alive, and
 	// the restarted term needs nothing more.
 	b = wyldsBook(2*86_400, 1<<40)
-	wantSteps(t, b.walk(t, 5), "OPEN_ROUTE_STEP:"+termKeepAliveReason, "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "OPEN_ROUTE_STEP:"+termKeepAliveReason, "HOLD:"+string(holdAtTarget))
 	if l := b.lane(autoAUTOWYLDSLane); l.termEnd != bookNow+30*86_400 || l.debt != 25_260_000_000+int64(termKeepAliveBorrowRaw) {
 		t.Fatalf("keep-alive left term %d debt %d", l.termEnd, l.debt)
 	}
 	// More than three days left: nothing.
 	b = wyldsBook(4*86_400, 1<<40)
-	wantSteps(t, b.walk(t, 5), "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "HOLD:"+string(holdAtTarget))
 }
 
 func TestTargetOperatorExit(t *testing.T) {
@@ -339,7 +339,7 @@ func TestTargetOperatorExit(t *testing.T) {
 	// Debt 0: one full down step, then the lane holds its equity.
 	b := mapleBook(1.5, false)
 	b.in.Exits = map[string]laneExit{SelectedRouteID: {}}
-	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+debtZeroReason, "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+debtZeroReason, "HOLD:"+string(holdAtTarget))
 	if l := b.lane(SelectedRouteID); l.debt != 0 || l.coll != 100_000_000_000 {
 		t.Fatalf("debt-0 exit left debt %d collateral %d", l.debt, l.coll)
 	}
@@ -352,7 +352,7 @@ func TestTargetOperatorExit(t *testing.T) {
 		"DELEVER_ROUTE_STEP:"+exitWithdrawReason,
 		// Flat, the vault's Squads cash returns to Voltr.
 		"STAGE_SQUADS_TO_VOLTR:"+returnCashReason,
-		"HOLD:"+holdAtTarget)
+		"HOLD:"+string(holdAtTarget))
 	if b.voltr != 100_000_000_000 || b.equity() != 0 {
 		t.Fatalf("equity-0 exit left Voltr %d equity %d", b.voltr, b.equity())
 	}
@@ -362,14 +362,14 @@ func TestTargetOperatorExit(t *testing.T) {
 	b.in.Exits = map[string]laneExit{SelectedRouteID: {EquityZero: true}}
 	l := b.lane(SelectedRouteID)
 	l.coll, l.debt = partialWithdrawalDustRaw, 0
-	wantSteps(t, b.walk(t, 3), "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 3), "HOLD:"+string(holdAtTarget))
 	// A withdrawal from a lane at debt 0 releases straight to USDC: release,
 	// stage.
 	b = mapleBook(1.5, false)
 	b.in.Exits = map[string]laneExit{SelectedRouteID: {}}
 	b.walk(t, 5)
 	b.in.Exits, b.demand = nil, 10_000_000_000
-	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+releaseReason, "STAGE_SQUADS_TO_VOLTR:"+outboundStageReason, "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+releaseReason, "STAGE_SQUADS_TO_VOLTR:"+outboundStageReason, "HOLD:"+string(holdAtTarget))
 	if l := b.lane(SelectedRouteID); b.voltr < b.demand || l.idle != 0 || l.debt != 0 {
 		t.Fatalf("debt-free release left Voltr %d idle %d debt %d", b.voltr, l.idle, l.debt)
 	}
@@ -399,7 +399,7 @@ func TestTargetOverflowReplaysOctoberEleventhInFourTransactions(t *testing.T) {
 		"DELEVER_ROUTE_STEP:"+overflowMoveReason,
 		"OPEN_ROUTE_STEP:"+leverageUpReason,
 		"OPEN_ROUTE_STEP:"+leverageUpReason,
-		"HOLD:"+holdAtTarget)
+		"HOLD:"+string(holdAtTarget))
 	if len(steps)-1 != 4 {
 		t.Fatalf("%d transactions", len(steps)-1)
 	}
@@ -413,7 +413,7 @@ func TestTargetOverflowReplaysOctoberEleventhInFourTransactions(t *testing.T) {
 		t.Fatalf("moved equity %d", e)
 	}
 	// Restarted on that end state the target is the state: no more moves.
-	wantSteps(t, b.walk(t, 3), "HOLD:"+holdAtTarget)
+	wantSteps(t, b.walk(t, 3), "HOLD:"+string(holdAtTarget))
 }
 
 // P1: an up step larger than a split-policy lane's leg cap borrows up to the
@@ -479,7 +479,7 @@ func TestTargetWithdrawalSpansLanes(t *testing.T) {
 	release := "DELEVER_ROUTE_STEP:" + releaseReason
 	swap := "SWAP_COLLATERAL_TO_STABLE_STEP:" + outboundCollateralReason
 	stage := "STAGE_SQUADS_TO_VOLTR:" + outboundStageReason
-	wantSteps(t, steps, release, swap, stage, release, swap, stage, "HOLD:"+holdAtTarget)
+	wantSteps(t, steps, release, swap, stage, release, swap, stage, "HOLD:"+string(holdAtTarget))
 	if b.voltr < b.demand || b.lane(SelectedRouteID).debt == 0 || onre.debt == 0 {
 		t.Fatalf("freed %d of %d; debts %d %d", b.voltr, b.demand, b.lane(SelectedRouteID).debt, onre.debt)
 	}
@@ -567,7 +567,7 @@ func TestTargetDebtCashNoLaneOwesConvertsToUSDC(t *testing.T) {
 	// needs it: then it converts before any lane releases.
 	owed := topup
 	owed.PositionDebtRaw, owed.PositionDebtValueRaw, owed.PayoffDebtRaw, owed.LTVBPS = 300_000_000, 300_000_000, 300_000_000, 3000
-	if d := Decide(targeted(owed)); d.Action != Hold || d.Reason != holdAtTarget {
+	if d := Decide(targeted(owed)); d.Action != Hold || d.Reason != string(holdAtTarget) {
 		t.Fatalf("owed PYUSD moved: %+v", d)
 	}
 	owed.WithdrawalDemandRaw, owed.VoltrIdleRaw = 20_000_000, 0

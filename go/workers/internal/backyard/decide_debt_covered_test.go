@@ -11,7 +11,7 @@ func TestNonUSDCCoveredWithdrawalDoesNotUnwind(t *testing.T) {
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw = true, 560_000_000, 190_000_000
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw, s.PayoffDebtRaw = 571_000_000, 190_000_000, 190_001_000
 	s.LTVBPS, s.WithdrawalDemandRaw, s.VoltrIdleRaw = 3322, 5_000_000, 1_295_000_000
-	if got := Decide(targeted(s)); got.Action != Hold || got.Reason != holdAtTarget {
+	if got := Decide(targeted(s)); got.Action != Hold || got.Reason != string(holdAtTarget) {
 		t.Fatalf("covered demand unwound: %+v", got)
 	}
 	s.LastReportAgeSeconds = 60

@@ -144,7 +144,7 @@ func TestWithdrawalDemandRemainsTruthfulAcrossTypedLanes(t *testing.T) {
 		s = targeted(s)
 		original := s
 		got := Decide(s)
-		if got.Action != Hold || got.Reason != holdAtTarget || s != original {
+		if got.Action != Hold || got.Reason != string(holdAtTarget) || s != original {
 			t.Fatalf("covered %s: %+v", lane, got)
 		}
 		// Squads cash beside a held lane stages before any position moves.

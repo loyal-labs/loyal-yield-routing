@@ -26,6 +26,8 @@ import (
 
 const heartbeatInterval = time.Minute
 
+const causeWindow = 10 * time.Minute
+
 type events struct {
 	log   *slog.Logger
 	facts *engine.Facts
@@ -70,7 +72,7 @@ func (e *events) workerStart(owner, manifestSHA256 string) {
 }
 
 // noteCause remembers the latest underlying failure so the latch it causes
-// can carry it: one slot, last cause wins within ten minutes.
+// can carry it: one slot, last cause wins.
 func (e *events) noteCause(detail string) {
 	if e == nil || detail == "" {
 		return
@@ -86,7 +88,7 @@ func (e *events) latched(reason string) {
 	}
 	e.mu.Lock()
 	cause := ""
-	if e.cause != "" && e.now().Sub(e.causeAt) < 10*time.Minute {
+	if e.cause != "" && e.now().Sub(e.causeAt) < causeWindow {
 		cause = e.cause
 	}
 	e.cause, e.manual, e.latchReason = "", true, reason
@@ -320,7 +322,7 @@ func errorCode(err error) string {
 		if cause := holdCause(hold); hold.Details["cause"] != "" {
 			return cause
 		}
-		return hold.Reason
+		return string(hold.Reason)
 	case errors.Is(err, errConfirmedObservationUnavailable):
 		return "confirmed_observation_unavailable"
 	case errors.Is(err, context.DeadlineExceeded):
@@ -399,12 +401,11 @@ func (e *events) leverageUpLanded(lane string, borrowedRaw int64, signature stri
 	}
 }
 
-// hold sets the hold the tick ended in ("" while it acts).
-func (e *events) hold(lane, reason string) {
+func (e *events) hold(lane string, reason HoldReason) {
 	if e == nil || e.facts == nil {
 		return
 	}
-	e.facts.BackyardHold(e.vault, lane, reason)
+	e.facts.BackyardHold(e.vault, lane, string(reason))
 }
 
 func (e *events) stepNoRoom(lane, rule string) {
