@@ -12,14 +12,11 @@ import (
 const ownedCustodyDeferral = "another family holds open custody on the vault USDC account"
 
 // VaultCustodyHeldElsewhere reports whether funds in the vault USDC account
-// may belong to someone other than this claim. A cross-mint movement owns
-// them from its decision row on, wherever custody_account points: the row
-// names the source reserve until the withdraw leg finalizes, while the funds
-// already sit in the account. An abandoned movement (closed_by_user,
-// manual_intervention) leaves its custody in its credit account for an
-// operator. Another selected Autodeposit claim on the vault owns its pull. A
-// non-zero sinceAttemptID also counts any cross-mint decision created after
-// that attempt, so a movement that started and finished meanwhile is seen.
+// may belong to someone other than this claim: a confirming cross-mint
+// movement (custody_account names the source reserve until the withdraw leg
+// finalizes, while the funds already sit here), an abandoned one whose custody
+// is this account, a cross-mint decision created since sinceAttemptID, or
+// another selected Autodeposit claim on the vault.
 func (s *Store) VaultCustodyHeldElsewhere(ctx context.Context, vaultPubkey, vaultUsdcAta, ownClaimToken string, sinceAttemptID int64) (bool, error) {
 	var held bool
 	err := s.pool.QueryRow(ctx, `
@@ -28,7 +25,7 @@ SELECT EXISTS (
     JOIN loyal_yield.managed_vaults AS vault ON vault.id = decision.vault_id
     WHERE vault.vault_pubkey = $1
       AND decision.movement_route = 'cross_mint_jupiter'
-      AND (decision.terminal_outcome IS NULL
+      AND ((decision.status = 'confirming' AND decision.terminal_outcome IS NULL)
         OR (decision.terminal_outcome IN ('closed_by_user', 'manual_intervention') AND decision.custody_account = $2)
         OR decision.created_at >= (
             SELECT attempt.created_at FROM loyal_yield.balance_sweep_transaction_attempts AS attempt

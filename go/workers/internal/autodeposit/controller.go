@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -613,10 +612,11 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 }
 
 func topUpResidue(held bool, recorded, custodyBeyondPull, pull int64, room uint64) int64 {
-	if held || room <= uint64(pull) {
+	residue := min(recorded, custodyBeyondPull)
+	if held || residue <= 0 || uint64(pull)+uint64(residue) >= room {
 		return 0
 	}
-	return min(recorded, custodyBeyondPull, int64(min(room-uint64(pull), math.MaxInt64)))
+	return residue
 }
 
 func unanswered(result ExecutorResult, err error) (ExecutorResult, error) {

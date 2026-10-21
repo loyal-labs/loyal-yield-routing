@@ -130,7 +130,7 @@ FROM loyal_yield.managed_vaults WHERE vault_pubkey=$1`, "itest-vault-cross-mint-
 	}
 	worker, _ := window.worker(t, ControllerDependencies{}, nil)
 	report, err := worker.Tick(t.Context())
-	if report.Outcome.ExecutionsDeferred != 1 || report.Outcome.ExecutionsCompleted != 0 || len(window.wires.built) != 0 {
+	if err != nil || report.Outcome.ExecutionsDeferred != 1 || report.Outcome.ExecutionsCompleted != 0 || len(window.wires.built) != 0 {
 		t.Fatalf("an open cross-mint movement did not defer the deposit: %+v built %v: %v", report.Outcome, window.wires.built, err)
 	}
 }
