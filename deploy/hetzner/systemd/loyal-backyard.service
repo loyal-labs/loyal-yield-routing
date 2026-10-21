@@ -62,6 +62,8 @@ SystemCallFilter=~@privileged
 SystemCallErrorNumber=EPERM
 UMask=0077
 LimitNOFILE=65536
+CPUWeight=1000
+IOWeight=1000
 
 [Install]
 WantedBy=multi-user.target
