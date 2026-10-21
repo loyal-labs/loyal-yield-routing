@@ -139,17 +139,10 @@ func signedWire(message, signature []byte) []byte {
 	return append(append([]byte(nil), message...), signature...)
 }
 
-// splitSignedWire is a one-signature wire's message and signature: a v1 wire
-// (the message, then its signature), or one an older binary persisted (a
-// signature count of one, the signature, then a legacy or v0 message), so a
-// row in flight across the upgrade still lands and settles.
 func splitSignedWire(wire []byte) ([]byte, []byte, error) {
-	switch {
-	case len(wire) > ed25519.SignatureSize+4 && wire[0] == 0x81 && wire[1] == 1:
+	if len(wire) > ed25519.SignatureSize+4 && wire[0] == 0x81 && wire[1] == 1 {
 		split := len(wire) - ed25519.SignatureSize
 		return wire[:split], wire[split:], nil
-	case len(wire) > 1+ed25519.SignatureSize && wire[0] == 1:
-		return wire[1+ed25519.SignatureSize:], wire[1 : 1+ed25519.SignatureSize], nil
 	}
 	return nil, nil, fmt.Errorf("not a single-signature transaction")
 }

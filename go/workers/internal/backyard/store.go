@@ -26,32 +26,7 @@ import (
 
 const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, strategy_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8, $9)`
 
-const strategyJournalHead = "WITH strategy_journal AS (\n SELECT * FROM loyal_yield.multiply_operations WHERE route_key = $1 AND "
-
-// ActiveStrategyJournalCTE excludes only individually bound, reviewed records
-// from the retired strategy. Unknown/unscoped records remain visible and can
-// still trip accounting monitors. It never scopes by deployment or manifest.
-const ActiveStrategyJournalCTE = strategyJournalHead + retiredStrategyExclusion + "\n) "
-
-// retiredStrategyExclusion is the predicate that hides the reviewed records of
-// the retired strategy.
-const retiredStrategyExclusion = `NOT COALESCE(
-   route_key = 'rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh'
-   AND engine_version = 'backyard_rwa_v1'
-   AND confirmed_slot BETWEEN 1 AND 444157954
-   AND expected_effects->>'journalStrategyConfig' = '9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj'
-   AND expected_effects->'journalAssociation'->>'schema' = 'backyard-strategy-association/v1'
-   AND expected_effects->'journalAssociation'->>'operationId' = operation_id
-   AND expected_effects->'journalAssociation'->>'routeKey' = route_key
-   AND expected_effects->'journalAssociation'->>'confirmedSlot' = confirmed_slot::text
-   AND expected_effects->'journalAssociation'->>'signature' = transaction_signature
-   AND expected_effects->'journalAssociation'->>'action' = action
-   AND expected_effects->'journalAssociation'->>'status' = status
-   AND expected_effects->'journalAssociation'->>'currentStrategyConfig' = 'DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY'
-   AND expected_effects->'journalAssociation'->>'bootstrapSlot' = '446086069'
-   AND expected_effects->'journalAssociation'->>'evidenceSha256' = '3319db2f57baf743be2471d72a1e9d34168a81ebc0378071f7a7f28e1d968a64', false)`
-
-const PostMutationNAVRequiredSQL = ActiveStrategyJournalCTE + `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM strategy_journal WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
+const PostMutationNAVRequiredSQL = `SELECT COALESCE((SELECT action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'reconciled' AND action IN ('SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP','VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','REPORT_NAV') ORDER BY confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id DESC LIMIT 1), false)`
 
 // LatestDecisionEpochSQL advances after a fully reconciled mutation or an
 // explicitly terminal pre-broadcast failure. A confirmed report-only operation
@@ -61,16 +36,7 @@ const PostMutationNAVRequiredSQL = ActiveStrategyJournalCTE + `SELECT COALESCE((
 // without making ambiguous money movement retryable.
 const LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_yield.multiply_operations WHERE route_key = $1 AND (status IN ('reconciled','failed') OR (status = 'manual_recovery' AND action = 'REPORT_NAV')) ORDER BY updated_at DESC, operation_id DESC LIMIT 1), 'genesis')`
 
-const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') AND NOT COALESCE(
- expected_effects->'manualResolution'->>'schema'='backyard-manual-resolution/v1'
- AND expected_effects->'manualResolution'->>'disposition'='superseded_by_strategy_reset'
- AND expected_effects->'manualResolution'->>'operationId'=operation_id
- AND expected_effects->'manualResolution'->>'routeKey'=route_key
- AND expected_effects->'manualResolution'->>'action'=action
- AND expected_effects->'manualResolution'->>'signature'=transaction_signature
- AND expected_effects->'manualResolution'->>'confirmedSlot'=confirmed_slot::text
- AND expected_effects->'manualResolution'->>'evidenceSha256' ~ '^[0-9a-f]{64}$'
- AND length(expected_effects->'manualResolution'->>'evidencePath')>0,false))`
+const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP'))`
 
 const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7,
  simulation_slot = $8, simulation_result = $9::jsonb, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $10::jsonb), updated_at = now() WHERE operation_id = $1 AND status = 'decided'`
@@ -408,7 +374,7 @@ func (d *Database) recordDecisionTx(
 	return DecisionRecord{OperationID: operationID, Cycle: cycle, Status: Decided}, nil
 }
 
-const nonterminalStatusSQL = `'decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling'`
+const nonterminalStatusSQL = `'decided','built','simulated','signed','broadcast_intent','confirmed','reconciling'`
 
 func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, error) {
 	database, err := openOperatorDatabase(ctx, databaseURL)
@@ -505,7 +471,6 @@ const ReconciledBridgeJournalSQL = `WITH latest_per_action AS (
  SELECT DISTINCT ON (action) operation_id FROM loyal_yield.multiply_operations
  WHERE route_key = $1 AND status = 'reconciled'
    AND action IN ('REPORT_NAV','VOLTR_ALLOCATE_TO_SQUADS','VOLTR_RESTORE_IDLE','STAGE_SQUADS_TO_VOLTR')
-   AND ` + retiredStrategyExclusion + `
  ORDER BY action, confirmed_slot DESC NULLS LAST, updated_at DESC, operation_id COLLATE "C" DESC
 ), strategy_journal AS (
  SELECT * FROM loyal_yield.multiply_operations WHERE operation_id IN (SELECT operation_id FROM latest_per_action)
@@ -812,7 +777,7 @@ func (d *Database) MarkPreBroadcastFailed(ctx context.Context, operationID strin
 // impossible: the persisted signature is absent and its blockhash is expired.
 // Found, ambiguous, or failed-on-chain signatures must remain recovery stops.
 func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID string, from OperationStatus) error {
-	if from != Signed && from != BroadcastIntent && from != Submitted {
+	if from != Signed && from != BroadcastIntent {
 		return fmt.Errorf("expired-absent failure requires a signed source")
 	}
 	if err := d.transition(ctx, operationID, from, Failed,
@@ -854,7 +819,7 @@ func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) 
 }
 
 func (d *Database) MarkConfirmed(ctx context.Context, operationID string, from OperationStatus, slot int64) error {
-	if slot <= 0 || (from != BroadcastIntent && from != Submitted) {
+	if slot <= 0 || from != BroadcastIntent {
 		return fmt.Errorf("invalid confirmation")
 	}
 	tag, err := d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status = 'confirmed', confirmed_slot = $2, confirmation_status = 'confirmed', updated_at = now() WHERE operation_id = $1 AND status = $3`, operationID, slot, string(from))

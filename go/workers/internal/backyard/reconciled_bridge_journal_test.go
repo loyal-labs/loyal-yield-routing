@@ -130,7 +130,7 @@ func TestReconciledBridgeJournalAgainstDatabase(t *testing.T) {
 	}
 
 	// An unreconciled row is not evidence at all.
-	insertOperation(t, "-pending", "submitted", "VOLTR_RESTORE_IDLE", 102, `{"decision":{"observationSlot":102}}`, 200)
+	insertOperation(t, "-pending", "broadcast_intent", "VOLTR_RESTORE_IDLE", 102, `{"decision":{"observationSlot":102}}`, 200)
 	if state = journal(t); !state.MutationAfterReport || state.TicketSequenceRaw != 101 {
 		t.Fatalf("an unreconciled row was read as journal evidence: %+v", state)
 	}

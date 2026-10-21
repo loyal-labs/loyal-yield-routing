@@ -12,7 +12,7 @@ func base() Snapshot {
 func TestDecisionPrecedenceAndOneAction(t *testing.T) {
 	t.Parallel()
 	s := base()
-	s.Nonterminal = Submitted
+	s.Nonterminal = BroadcastIntent
 	s.HasAmbiguousSubmission = true
 	if got := Decide(s); got.Action != RecoverTransaction || got.Reason != "recover_ambiguous_submission" {
 		t.Fatal(got)

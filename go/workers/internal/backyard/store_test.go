@@ -283,35 +283,6 @@ func TestActionableIdempotencyUsesDurableTerminalEpoch(t *testing.T) {
 	}
 }
 
-func TestCapitalManualRecoveryBlocksEveryNewExecutableDecision(t *testing.T) {
-	t.Parallel()
-	query := normalizeSQL(UnresolvedCapitalRecoverySQL)
-	for _, required := range []string{
-		"status = 'manual_recovery'",
-		"'VOLTR_ALLOCATE_TO_SQUADS'",
-		"'STAGE_SQUADS_TO_VOLTR'",
-		"'VOLTR_RESTORE_IDLE'",
-		"'SWAP_USDC_TO_PRIME_STEP'",
-		"'SWAP_PRIME_TO_USDC_STEP'",
-		"'OPEN_PRIME_USDC_STEP'",
-		"'DELEVER_PRIME_USDC_STEP'",
-		"'manualResolution'",
-		"'operationId'=operation_id",
-		"'signature'=transaction_signature",
-		"'confirmedSlot'=confirmed_slot::text",
-	} {
-		if !strings.Contains(query, required) {
-			t.Fatalf("manual-recovery fence is missing %q", required)
-		}
-	}
-	if strings.Contains(query, "'REPORT_NAV'") {
-		t.Fatal("report-only manual recovery was made a capital execution blocker")
-	}
-	if strings.Contains(query, "fe45a0369bf950da3ea311a4c493377cf9720a92c359c0bfbe739a3d9f699cbe") {
-		t.Fatal("incident identity belongs in the audited migration, not the live decision guard")
-	}
-}
-
 func normalizeSQL(sql string) string {
 	return strings.Join(strings.Fields(sql), " ")
 }

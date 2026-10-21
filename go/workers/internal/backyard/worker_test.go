@@ -328,7 +328,7 @@ func TestTickAdvancesOnlyItsDurablySignedWireWithoutPollDelay(t *testing.T) {
 					}
 					if op.Status == Signed {
 						advanced++
-						persisted.Status = Submitted
+						persisted.Status = BroadcastIntent
 					}
 					return nil
 				},

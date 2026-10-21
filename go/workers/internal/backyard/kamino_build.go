@@ -78,13 +78,6 @@ func compileKaminoMessageForDelegate(v *Vault, request KaminoPrimeUSDCRequest, d
 	if err != nil {
 		return nil, err
 	}
-	return compileResolvedKaminoMessage(v, request, delegate, route)
-}
-
-// The public compiler and signer resolve installed routes before entering this
-// shared byte builder. Keeping resolution outside permits offline SDK/SBF parity
-// tests without registering candidate routes or changing production authority.
-func compileResolvedKaminoMessage(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
 	return compileReviewedKaminoMessage(v, request, delegate, route)
 }
 

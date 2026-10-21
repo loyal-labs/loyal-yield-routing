@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -116,7 +115,7 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 	return "", errors.New("BACKYARD_RWA_SELECTOR_LIVE must be 0 or 1")
 }
 
-const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear) | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
+const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear)]`
 
 func runBackyardOperator(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 1 && args[0] == "in-flight" {
@@ -150,12 +149,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 	if err != nil {
 		return err
 	}
-	encode := func(value any, err error) error {
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(out).Encode(value)
-	}
 	if len(args) == 0 {
 		return errors.New(backyardUsage)
 	}
@@ -187,17 +180,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		}
 		_, err = fmt.Fprintln(out, result)
 		return err
-	case command == "settle-manual-restore":
-		request, execute, err := parseSettleManualRestoreFlags(rest)
-		if err != nil {
-			return err
-		}
-		result, err := backyard.RunManualRestoreReprocess(ctx, cfg.DatabaseURL, cfg.RPCURL, request, execute)
-		if err != nil {
-			_ = json.NewEncoder(out).Encode(result)
-			return err
-		}
-		return encode(result, nil)
 	}
 	return errors.New(backyardUsage)
 }
@@ -231,34 +213,6 @@ func parseSimulateStepFlags(args []string) (vault, lane string, up bool, amount 
 		return "", "", false, 0, fmt.Errorf("simulate-step: --vault, --lane, --dir up|down and a positive --amount-raw are required\n%s", simulateStepUsage)
 	}
 	return vault, lane, dir == "up", amount, nil
-}
-
-func parseSettleManualRestoreFlags(args []string) (backyard.ManualRestoreReprocessRequest, bool, error) {
-	request, execute := backyard.ManualRestoreReprocessRequest{}, false
-	usage := `usage: loyal-engine backyard settle-manual-restore --operation <operation id> --signature <signature> [--execute]`
-	for index := 0; index < len(args); index++ {
-		var target *string
-		switch args[index] {
-		case "--execute":
-			execute = true
-			continue
-		case "--operation":
-			target = &request.OperationID
-		case "--signature":
-			target = &request.Signature
-		default:
-			return request, execute, fmt.Errorf("settle-manual-restore: unexpected argument %q\n%s", args[index], usage)
-		}
-		if index+1 >= len(args) {
-			return request, execute, fmt.Errorf("settle-manual-restore: %s requires a value\n%s", args[index], usage)
-		}
-		*target = args[index+1]
-		index++
-	}
-	if request.OperationID == "" || request.Signature == "" {
-		return request, execute, fmt.Errorf("settle-manual-restore: --operation and --signature are required\n%s", usage)
-	}
-	return request, execute, nil
 }
 
 const exitLaneUsage = `usage: loyal-engine backyard exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear)`
