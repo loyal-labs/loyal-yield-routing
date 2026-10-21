@@ -8,8 +8,8 @@ import (
 )
 
 // BasicPolicyFamily identifies one of the four shared ProgramInteraction
-// policies installed by the Rust/TypeScript track. The family owns the policy
-// account; each lifecycle leg selects a constraint inside that account.
+// policies. The family owns the policy account; each lifecycle leg selects a
+// constraint inside that account.
 type BasicPolicyFamily string
 
 const (

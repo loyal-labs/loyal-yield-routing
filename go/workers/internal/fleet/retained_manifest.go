@@ -155,6 +155,18 @@ func BuildCrossMintPreflightALTManifest(input KaminoSameMintRouteRequest, settin
 	return buildRouteALTManifest(input, settings, []string{withdrawPolicy, swapPolicy}, payer, instructions, &validatedSwap, true)
 }
 
+func leadingAdvanceNonceAccount(instructions []RouteInstruction) (string, bool) {
+	if len(instructions) == 0 {
+		return "", false
+	}
+	ix := instructions[0]
+	if ix.Program == solana.SystemProgramID.String() && len(ix.Data) >= 4 &&
+		bytes.Equal(ix.Data[:4], []byte{4, 0, 0, 0}) && len(ix.Accounts) > 0 {
+		return ix.Accounts[0].Address, true
+	}
+	return "", false
+}
+
 func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, policies []string, payer string, instructions []RouteInstruction, validatedSwap *RouteInstruction, includeKLend bool) (ALTManifest, error) {
 	type requirement struct {
 		key      [32]byte
@@ -320,16 +332,10 @@ func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, po
 			}
 		}
 	}
-	// Match loyal-actions::lookup_tables::nonce_pubkey: only the first
-	// instruction, the System program, and the four-byte advance prefix count.
-	if len(instructions) > 0 {
-		ix := instructions[0]
-		if ix.Program == solana.SystemProgramID.String() && len(ix.Data) >= 4 &&
-			bytes.Equal(ix.Data[:4], []byte{4, 0, 0, 0}) && len(ix.Accounts) > 0 {
-			nonce := byte(2)
-			if err := touch(ix.Accounts[0].Address, false, &nonce); err != nil {
-				return ALTManifest{}, err
-			}
+	if nonceAccount, ok := leadingAdvanceNonceAccount(instructions); ok {
+		nonce := byte(2)
+		if err := touch(nonceAccount, false, &nonce); err != nil {
+			return ALTManifest{}, err
 		}
 	}
 	groups := [3][]*requirement{}

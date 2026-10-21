@@ -555,9 +555,8 @@ func swapExactIn(quotes QuoteClient, ctx contextT, inputMint, outputMint string,
 	}, nil
 }
 
-// validateEarnMaxJupiterRoute ports the actual bounded Rust validator in
-// loyal-actions/src/earn_max.rs. It binds fixed accounts and privileges, the
-// sole vault authority, exact amounts, slippage and zero platform fee.
+// validateEarnMaxJupiterRoute binds fixed accounts and privileges, the sole
+// vault authority, exact amounts, slippage and zero platform fee.
 func validateEarnMaxJupiterRoute(instruction Instruction, vault, source, destination, inputMint, outputMint solana.PublicKey, inputAmount, quotedOutput, minimumOutput uint64) error {
 	route, err := jupiter.DecodeSharedAccountsRoute(instruction.Data)
 	if instruction.ProgramID != jupiter.ProgramID || err != nil {

@@ -23,10 +23,10 @@
       "scope": "44 locked Rust KLend SDK action cases, including farms and token-program variants."
     },
     {
-      "file": "internal/multiply/testdata/rust-squads-envelope.json",
+      "file": "../../crates/loyal-actions/fixtures/squads-execute-envelope-v1.json",
       "sha256": "057c3d4b3e79f82b25961c47dde0a5227ee655f9dfb91d53904924213d4de44a",
       "classification": "independent_sdk_abi",
-      "scope": "Locked Rust Squads compiler envelope bytes; Go producer never regenerates expected output."
+      "scope": "Locked Squads execute envelope bytes read by the Go and Rust golden tests; neither producer regenerates expected output."
     },
     {
       "file": "internal/multiply/testdata/svm-root-wallet-claim.json",
