@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Intent is one Earn MAX withdraw or cancel memo of a route. The observer
-// records it in earn_max_intents; the worker decides it under the route lease.
 type Intent struct {
 	Signature        string
 	InstructionIndex int32
@@ -25,7 +23,6 @@ type Intent struct {
 	ObservedAt  time.Time
 }
 
-// pendingIntents lists the route's undecided intents in chain order.
 func (s *Store) pendingIntents(ctx context.Context, settings, vault string) ([]Intent, error) {
 	rows, err := s.pool.Query(ctx, `
         SELECT signature, instruction_index, kind, request_id, amount_raw::text, destination, slot, observed_at
@@ -57,9 +54,6 @@ func (s *Store) pendingIntents(ctx context.Context, settings, vault string) ([]I
 	return intents, rows.Err()
 }
 
-// decideIntent moves the route by one intent and returns its operation action
-// and evidence, or the reason the route refuses it. A "max" withdrawal takes
-// the route's equity.
 func (s *RouteState) decideIntent(intent Intent, equityRaw uint64) (MultiplyAction, map[string]any, string) {
 	switch intent.Kind {
 	case "withdraw":
@@ -93,8 +87,6 @@ func (s *RouteState) decideIntent(intent Intent, equityRaw uint64) (MultiplyActi
 	return "", nil, "invalid_state"
 }
 
-// applyIntent commits the route change, its request_withdrawal or
-// cancel_withdrawal operation and the applied decision together.
 func (s *Store) applyIntent(ctx context.Context, lease *Lease, route *RouteState, intent Intent, action MultiplyAction, evidence map[string]any) error {
 	if err := validateNextRoute(lease, route); err != nil {
 		return err
@@ -152,8 +144,6 @@ func (s *Store) applyIntent(ctx context.Context, lease *Lease, route *RouteState
 	return nil
 }
 
-// refuseIntent records that the route cannot take the intent; it is never
-// retried.
 func (s *Store) refuseIntent(ctx context.Context, intent Intent, reason string) error {
 	_, err := s.pool.Exec(ctx, `
         UPDATE loyal_yield.earn_max_intents SET status='refused', refusal_reason=$3, decided_at=now()
@@ -161,9 +151,6 @@ func (s *Store) refuseIntent(ctx context.Context, intent Intent, reason string) 
 	return err
 }
 
-// ApplyPendingIntents decides the route's pending intents oldest first under
-// the worker's lease, before planning. A "max" withdrawal resolves from the
-// equity the worker observed this tick. It reports whether the route moved.
 func (s *Store) ApplyPendingIntents(ctx context.Context, lease *Lease, route *RouteState, equityUSD string) (bool, error) {
 	intents, err := s.pendingIntents(ctx, route.Settings, route.Vault)
 	if err != nil || len(intents) == 0 {

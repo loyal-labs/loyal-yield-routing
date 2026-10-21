@@ -28,7 +28,6 @@ func Open(ctx context.Context, dsn string, maxConnections int32) (*pgxpool.Pool,
 	return pool, nil
 }
 
-// WithTx owns commit/rollback; a canceled begin context does not clean up a pgx tx.
 func WithTx(ctx context.Context, pool *pgxpool.Pool, options pgx.TxOptions, fn func(pgx.Tx) error) (err error) {
 	if pool == nil || fn == nil {
 		return errors.New("missing transaction dependency")

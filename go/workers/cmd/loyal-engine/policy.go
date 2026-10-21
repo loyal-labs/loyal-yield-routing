@@ -40,8 +40,6 @@ const policyUsage = `usage: loyal-engine policy apply|check klend --settings <se
   addresses: print the vault, its ATAs of the mints with balances, and the installed policies.
   All read credential SOLANA_RPC_URL; swap reads JUPITER_API_KEY when it is set.`
 
-// runPolicy is the developer loop for a policy: apply it, check it, remove
-// it, against the real chain, and the addresses it is about.
 func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) < 1 {
 		return errors.New(policyUsage)
@@ -153,8 +151,6 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("--to: %w", err)
 		}
-		// apply installs the policy, which needs no quote; only check asks
-		// Jupiter for the swap instruction.
 		build = func(payer solana.PublicKey) policy.Build {
 			if act == "apply" {
 				return policy.SwapPolicy(c, settings, uint8(*vaultIndex), from, to, *amount)
@@ -199,7 +195,6 @@ func runPolicy(ctx context.Context, args []string, out io.Writer) error {
 	return errors.New(policyUsage)
 }
 
-// publicKeys is a repeatable public key flag.
 type publicKeys []solana.PublicKey
 
 func (p *publicKeys) String() string { return fmt.Sprint(*p) }
@@ -213,7 +208,6 @@ func (p *publicKeys) Set(value string) error {
 	return nil
 }
 
-// publicKeyList parses a comma-separated flag of public keys.
 func publicKeyList(name, value string) ([]solana.PublicKey, error) {
 	var out []solana.PublicKey
 	for _, part := range strings.Split(value, ",") {
@@ -229,7 +223,6 @@ func publicKeyList(name, value string) ([]solana.PublicKey, error) {
 	return out, nil
 }
 
-// credentialKeypair reads a keypair from a systemd credential.
 func credentialKeypair(name string) (solana.PrivateKey, error) {
 	value, err := engine.Credential(name)
 	if err != nil {

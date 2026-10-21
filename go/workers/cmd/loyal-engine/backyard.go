@@ -42,7 +42,6 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	if err != nil {
 		return err
 	}
-	// Backyard plans from a LaserStream view of its own accounts.
 	laserstream := stream.GRPCConnector{Endpoint: strings.TrimSpace(os.Getenv("BACKYARD_LASERSTREAM_ENDPOINT"))}
 	if laserstream.Endpoint == "" {
 		return errors.New("BACKYARD_LASERSTREAM_ENDPOINT is required")
@@ -74,8 +73,6 @@ func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics
 	return engine.Run(ctx, lane, metrics)
 }
 
-// backyardRuntimeConfig reads the Backyard database and RPC credentials shared
-// by the engine and the one-shot operator commands.
 func backyardRuntimeConfig() (backyard.RuntimeConfig, error) {
 	var cfg backyard.RuntimeConfig
 	var err error
@@ -101,8 +98,6 @@ func backyardJupiter(key string) *jupiter.Client {
 	return client
 }
 
-// optionalCredential is for keys whose absence has a defined meaning: without
-// JUPITER_API_KEY Backyard uses the keyless Jupiter endpoint.
 func optionalCredential(name string) string {
 	value, err := engine.Credential(name)
 	if err != nil {
@@ -111,7 +106,6 @@ func optionalCredential(name string) string {
 	return value
 }
 
-// backyardSelectorMode reads BACKYARD_RWA_SELECTOR_LIVE, 0 or 1.
 func backyardSelectorMode() (backyard.SelectorMode, error) {
 	switch os.Getenv("BACKYARD_RWA_SELECTOR_LIVE") {
 	case "", "0":
@@ -124,13 +118,8 @@ func backyardSelectorMode() (backyard.SelectorMode, error) {
 
 const backyardUsage = `usage: loyal-engine backyard [in-flight | simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n> | selector-evaluate --vault <vault> [--execute] | clear-hold --vault <vault> --reason "<text>" | exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear) | settle-manual-restore --operation <operation id> --signature <signature> [--execute]]`
 
-// runBackyardOperator is the one-shot operator surface of the Backyard
-// family. It reads the same BACKYARD_* credentials as the engine.
 func runBackyardOperator(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 1 && args[0] == "in-flight" {
-		// The release gate (deploy/hetzner/activate.sh): prints the
-		// number of operations a restart would resume, over every vault.
-		// Needs only the DB.
 		url, err := engine.Credential("BACKYARD_DATABASE_URL")
 		if err != nil {
 			return err
@@ -147,8 +136,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		return err
 	}
 	if len(args) > 0 && args[0] == "simulate-step" {
-		// Read-only: builds one atomic leverage step from live chain state and
-		// simulates it unsigned. Needs only the RPC (and Jupiter for a swap).
 		vault, lane, up, amount, err := parseSimulateStepFlags(args[1:])
 		if err != nil {
 			return err
@@ -174,11 +161,8 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 	}
 	switch command, rest := args[0], args[1:]; {
 	case command == "selector-evaluate" && len(rest) >= 2 && rest[0] == "--vault" && (len(rest) == 2 || len(rest) == 3 && rest[2] == "--execute"):
-		// --execute performs exactly one locked evaluation under its own
-		// short route lease; the committed entry is durable route state.
 		return backyard.RunSelectorEvaluate(ctx, out, cfg, rest[1], len(rest) == 3)
 	case command == "clear-hold":
-		// The only operator path that lifts a durable manual recovery stop.
 		if len(rest) != 4 || rest[0] != "--vault" || rest[2] != "--reason" || rest[3] == "" {
 			return errors.New(`usage: loyal-engine backyard clear-hold --vault <vault> --reason "<text>"`)
 		}
@@ -193,9 +177,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		_, err = fmt.Fprintln(out, result)
 		return err
 	case command == "exit-lane":
-		// The operator exit row: the lane's target debt is 0 (and with
-		// --equity-zero its equity too). The worker delevers it by atomic
-		// steps on its next ticks; --clear removes the row.
 		request, err := parseExitLaneFlags(rest)
 		if err != nil {
 			return err
@@ -223,8 +204,6 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 
 const simulateStepUsage = `usage: loyal-engine backyard simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n>`
 
-// parseSimulateStepFlags is syntactic only; the vault, lane and amount are
-// checked where the step is built.
 func parseSimulateStepFlags(args []string) (vault, lane string, up bool, amount uint64, err error) {
 	dir := ""
 	for index := 0; index < len(args); index++ {
@@ -254,8 +233,6 @@ func parseSimulateStepFlags(args []string) (vault, lane string, up bool, amount 
 	return vault, lane, dir == "up", amount, nil
 }
 
-// parseSettleManualRestoreFlags is syntactic only; every authority check
-// stays with the settlement package.
 func parseSettleManualRestoreFlags(args []string) (backyard.ManualRestoreReprocessRequest, bool, error) {
 	request, execute := backyard.ManualRestoreReprocessRequest{}, false
 	usage := `usage: loyal-engine backyard settle-manual-restore --operation <operation id> --signature <signature> [--execute]`
@@ -286,8 +263,6 @@ func parseSettleManualRestoreFlags(args []string) (backyard.ManualRestoreReproce
 
 const exitLaneUsage = `usage: loyal-engine backyard exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear)`
 
-// parseExitLaneFlags is syntactic only; the lane is checked where the row is
-// written.
 func parseExitLaneFlags(args []string) (backyard.LaneExitRequest, error) {
 	var request backyard.LaneExitRequest
 	for index := 0; index < len(args); index++ {

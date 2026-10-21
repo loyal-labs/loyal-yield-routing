@@ -245,7 +245,6 @@ func CurrentPolicyMatches(account *chain.Account, policy PolicyConfig, delegate 
 		current.Payload.Policy.Equal(squads.Policy{VaultIndex: expectedVaultIndex, Constraints: expected}), nil
 }
 
-// PolicyDataHash hashes the policy account bytes for the persisted binding.
 func PolicyDataHash(data []byte) string {
 	digest := sha256.Sum256(data)
 	return fmt.Sprintf("%x", digest[:])

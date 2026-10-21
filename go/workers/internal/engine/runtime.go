@@ -7,10 +7,8 @@ import (
 	"sync"
 )
 
-// Lane is a synchronous process-lifetime capability, not a workflow interface.
 type Lane interface{ Run(context.Context) error }
 
-// Run owns lane lifetimes and joins all work before dependencies can be closed.
 func Run(ctx context.Context, lanes ...Lane) error {
 	if ctx == nil || len(lanes) == 0 {
 		return errors.New("missing runtime lanes")

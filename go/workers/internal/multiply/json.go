@@ -1,8 +1,5 @@
 package multiply
 
-// JSON helpers shared by the store and worker: persisted documents decode
-// with unknown fields denied, byte-compatible with the Rust serde contract.
-
 import (
 	"bytes"
 	"encoding/json"
@@ -17,7 +14,6 @@ func jsonMarshal(value any) ([]byte, error) {
 	return encoded, nil
 }
 
-// jsonUnmarshalStrict mirrors serde deny_unknown_fields.
 func jsonUnmarshalStrict(raw []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
