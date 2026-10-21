@@ -438,8 +438,8 @@ func isPreSendHold(err error) bool {
 
 // notifySelectorCommit requests another serialized tick; never execute a
 // transaction from the collector. A queued wake survives an active tick.
-func (w *Worker) notifySelectorCommit(action string) {
-	if !selectorEntersOrRotates(SelectorResult{Action: action}) {
+func (w *Worker) notifySelectorCommit(action SelectorAction) {
+	if !action.entersOrRotates() {
 		return
 	}
 	select {

@@ -101,25 +101,14 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		uint64(observation.Snapshot.SquadsIdleRaw) != custodies.SquadsUSDCraw {
 		return Observation{}, BridgeExecutionEvidence{}, fmt.Errorf("bridge custody changed inside confirmed construction snapshot")
 	}
-	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(v, decision, custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw)
+	effects, idleAfter, strategyAfter, squadsAfter, err := bridgeExpectedEffects(v, decision, custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw)
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
 	postCustodies := custodies
+	postCustodies.VoltrIdleRaw = idleAfter
 	postCustodies.StrategyUSDCraw = strategyAfter
 	postCustodies.SquadsUSDCraw = squadsAfter
-	switch decision.Action {
-	case VoltrAllocateToSquads:
-		postCustodies.VoltrIdleRaw -= uint64(decision.AmountRaw)
-	case VoltrRestoreIdle:
-		postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
-	case StageSquadsToVoltr:
-		if v.trustful() {
-			// Voltr's withdraw_strategy sweeps the holding account into idle
-			// in the same transaction.
-			postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
-		}
-	}
 	valued, err := navLanes(v, accounts, observation.Snapshot.heldLanes())
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
@@ -167,9 +156,9 @@ func expectedAdaptorReturnData(v *Vault, navAfterRaw uint64) *ExpectedReturnData
 	return &ExpectedReturnData{ProgramID: v.Adaptor, DataBase64: base64.StdEncoding.EncodeToString(data)}
 }
 
-func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads uint64) (ExpectedEffects, uint64, uint64, error) {
+func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads uint64) (ExpectedEffects, uint64, uint64, uint64, error) {
 	if decision.AmountRaw < 0 {
-		return ExpectedEffects{}, 0, 0, fmt.Errorf("negative bridge amount")
+		return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("negative bridge amount")
 	}
 	amount := uint64(decision.AmountRaw)
 	idleAfter, strategyAfter, squadsAfter := idle, strategy, squads
@@ -180,32 +169,32 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 		// consumes vault idle and increases Squads while strategy custody returns
 		// to its starting balance.
 		if idle < amount || squads > math.MaxUint64-amount {
-			return ExpectedEffects{}, 0, 0, fmt.Errorf("allocation effects overflow or underflow")
+			return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("allocation effects overflow or underflow")
 		}
 		idleAfter, squadsAfter = idle-amount, squads+amount
 	case StageSquadsToVoltr:
 		if v.trustful() {
 			if squads < amount || idle > math.MaxUint64-amount {
-				return ExpectedEffects{}, 0, 0, fmt.Errorf("withdrawal effects overflow or underflow")
+				return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("withdrawal effects overflow or underflow")
 			}
 			squadsAfter, idleAfter = squads-amount, idle+amount
 			break
 		}
 		if squads < amount || strategy > math.MaxUint64-amount {
-			return ExpectedEffects{}, 0, 0, fmt.Errorf("staging effects overflow or underflow")
+			return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("staging effects overflow or underflow")
 		}
 		squadsAfter, strategyAfter = squads-amount, strategy+amount
 	case VoltrRestoreIdle:
 		if strategy < amount || idle > math.MaxUint64-amount {
-			return ExpectedEffects{}, 0, 0, fmt.Errorf("restore effects overflow or underflow")
+			return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("restore effects overflow or underflow")
 		}
 		strategyAfter, idleAfter = strategy-amount, idle+amount
 	case ReportNAV:
 		if amount != 0 {
-			return ExpectedEffects{}, 0, 0, fmt.Errorf("NAV report cannot move capital")
+			return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("NAV report cannot move capital")
 		}
 	default:
-		return ExpectedEffects{}, 0, 0, fmt.Errorf("unsupported bridge action")
+		return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("unsupported bridge action")
 	}
 	accounts := []ExpectedAccountEffect{
 		{Address: v.strategyATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.strategyAuth, BeforeRaw: strategy, AfterRaw: strategyAfter},
@@ -215,7 +204,7 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 	if invokesAdaptor {
 		accounts = slices.Insert(accounts, 0, ExpectedAccountEffect{Address: v.idleATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.idleAuth, BeforeRaw: idle, AfterRaw: idleAfter})
 	}
-	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, strategyAfter, squadsAfter, nil
+	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, idleAfter, strategyAfter, squadsAfter, nil
 }
 
 func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {

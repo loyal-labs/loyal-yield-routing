@@ -195,7 +195,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 			request := bridgeTestRequest(ReportNAV, 0)
 			request.LastValidBlockHeight = 10
 			request.Report.ObservedSlot, request.Report.Sequence = 42, 42
-			buildEffects, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: ReportNAV}, 0, 0, 0)
+			buildEffects, _, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: ReportNAV}, 0, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

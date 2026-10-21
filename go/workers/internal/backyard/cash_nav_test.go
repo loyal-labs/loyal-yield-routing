@@ -39,7 +39,7 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 			s := base()
 			s.RouteLane, s.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
 			s.SquadsIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw = int64(nav.Custodies.SquadsUSDCraw), int64(p.EntryCapacityRaw), int64(p.EntryCapacityRaw)
-			s.LiquidationThresholdBPS, s.MaxLTVBPS = p.LiquidationThresholdBPS, p.MaxLTVBPS
+			s.LiquidationThresholdBPS, s.MaxLTVBPS = p.LiquidationThresholdBPS, p.MaxLTVBPS()
 			s.Obligation = p.Obligation
 			for _, present := range []bool{true, false} {
 				s.Obligation = observedObligation(present)

@@ -39,7 +39,7 @@ func TestCrashBetweenPersistAndSendLandsThePersistedWire(t *testing.T) {
 		t.Fatalf("fixture is not actionable: %+v", decision)
 	}
 	request := bridgeTestRequest(VoltrAllocateToSquads, uint64(decision.AmountRaw))
-	effects, _, _, err := bridgeExpectedEffects(rwa, decision, 7, 0, 0)
+	effects, _, _, _, err := bridgeExpectedEffects(rwa, decision, 7, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

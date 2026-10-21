@@ -211,7 +211,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 	publishCurrentAPY(ctx, time.Now(), p.apyThrottle, observed, markets, func(ctx context.Context, value CurrentAPY) error {
 		return database.RecordCurrentAPY(ctx, routeKey, value)
 	}, logf)
-	if result.Action == "ENTER" || result.Action == "CANARY_ENTER" || selectorRotates(result) {
+	if result.Action.entersOrRotates() {
 		worker.notifySelectorCommit(result.Action)
 		printf("selector action=%s source=%s destination=%s\n", result.Action, result.SourceLane, result.DestinationLane)
 		p.lastSampleKey = ""

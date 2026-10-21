@@ -358,7 +358,7 @@ func overflowMove(lanes []targetLane, i int, in targetInputs) (lane string, move
 
 func entryLane(lanes []targetLane, in targetInputs) (int, int64) {
 	r := in.Entry
-	if r == nil || (r.Action != "ENTER" && r.Action != "CANARY_ENTER" && !selectorRotates(*r)) || r.SelectedQuote == nil || !earnActiveLane(r.DestinationLane) {
+	if r == nil || !r.Action.entersOrRotates() || r.SelectedQuote == nil || !earnActiveLane(r.DestinationLane) {
 		return -1, 0
 	}
 	for i, l := range lanes {
@@ -367,7 +367,7 @@ func entryLane(lanes []targetLane, in targetInputs) (int, int64) {
 		}
 		s, q := l.s, r.SelectedQuote
 		raw := int64(0)
-		if !selectorRotates(*r) && q.DestinationLane == s.RouteLane && q.currentAtSlot(s.Slot) && q.EquityRaw > 0 && q.CostRaw >= 0 && q.CostRaw < q.EquityRaw && q.validBorrow() &&
+		if !r.Action.rotates() && q.DestinationLane == s.RouteLane && q.currentAtSlot(s.Slot) && q.EquityRaw > 0 && q.CostRaw >= 0 && q.CostRaw < q.EquityRaw && q.validBorrow() &&
 			q.EquityRaw <= s.VoltrIdleRaw-s.WithdrawalDemandRaw {
 			raw = q.EquityRaw
 		}
@@ -426,7 +426,7 @@ func rotationReleaseStep(r *SelectorResult, s Snapshot) (repay, withdraw int64) 
 }
 
 func rotationCurrent(r *SelectorResult, s Snapshot) bool {
-	if r == nil || !selectorRotates(*r) || r.SelectedQuote == nil || r.SourceRelease == nil || r.SampledAt.IsZero() || s.ChainUnix <= 0 {
+	if r == nil || !r.Action.rotates() || r.SelectedQuote == nil || r.SourceRelease == nil || r.SampledAt.IsZero() || s.ChainUnix <= 0 {
 		return false
 	}
 	gap := DefaultSelectorPolicy().MaxSampleGap

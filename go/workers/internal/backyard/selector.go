@@ -273,8 +273,24 @@ type CandidateForecast struct {
 	NativeAPY       float64  `json:"nativeApy,omitempty"`
 	FeedNativeAPY   *float64 `json:"feedNativeApy,omitempty"`
 }
+type SelectorAction string
+
+const (
+	SelectorKeep         SelectorAction = "KEEP"
+	SelectorEnter        SelectorAction = "ENTER"
+	SelectorRotate       SelectorAction = "ROTATE"
+	SelectorCanaryEnter  SelectorAction = "CANARY_ENTER"
+	SelectorCanaryRotate SelectorAction = "CANARY_ROTATE"
+)
+
+func (a SelectorAction) enters() bool { return a == SelectorEnter || a == SelectorCanaryEnter }
+
+func (a SelectorAction) rotates() bool { return a == SelectorRotate || a == SelectorCanaryRotate }
+
+func (a SelectorAction) entersOrRotates() bool { return a.enters() || a.rotates() }
+
 type SelectorResult struct {
-	Action          string              `json:"action"`
+	Action          SelectorAction      `json:"action"`
 	Reason          string              `json:"reason"`
 	SourceLane      string              `json:"sourceLane,omitempty"`
 	DestinationLane string              `json:"destinationLane,omitempty"`
@@ -321,7 +337,7 @@ func pilotQuoteEconomics(quote MoveQuote, m LaneEconomics, investedNetOfExpense,
 
 func selectorSampleLine(result SelectorResult) (key, line string) {
 	usd := func(raw float64) string { return fmt.Sprintf("$%.2f", raw/1e6) }
-	keys := []string{result.Action, result.Reason, result.SourceLane}
+	keys := []string{string(result.Action), result.Reason, result.SourceLane}
 	parts := make([]string, 0, len(result.Candidates))
 	for _, c := range result.Candidates {
 		lev, net, borrow, room, benefit, reason := "-", "-", "-", "-", "-", c.BlockedReason
@@ -389,7 +405,7 @@ const completeEntryQuoteUnavailable = "complete_entry_quote_unavailable"
 
 func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult {
 	s, p := in.Snapshot, in.Policy
-	out := SelectorResult{Action: "KEEP", Reason: "no_worthwhile_move", SourceLane: s.RouteLane, SampledAt: in.Now}
+	out := SelectorResult{Action: SelectorKeep, Reason: "no_worthwhile_move", SourceLane: s.RouteLane, SampledAt: in.Now}
 	hold := func(reason string) SelectorResult { out.Reason = reason; out.State = SelectorState{}; return out }
 	if err := p.validate(); err != nil || in.Now.IsZero() {
 		return hold("invalid_selector_policy")
@@ -615,7 +631,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		if persistent(best, advantageKey{lane: chosen.Lane}) {
 			quote := quotes[best]
 			out.SelectedQuote = &quote
-			out.Action = "ENTER"
+			out.Action = SelectorEnter
 			out.Reason = "persistent_net_benefit"
 			return out
 		}
@@ -624,7 +640,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		chosen := out.Candidates[bestRotation]
 		if persistent(bestRotation, advantageKey{source: chosen.SourceLane, lane: chosen.Lane}) {
 			quote, source := quotes[bestRotation], sources[bestRotation]
-			out.Action, out.Reason = "ROTATE", "persistent_net_benefit"
+			out.Action, out.Reason = SelectorRotate, "persistent_net_benefit"
 			out.SourceLane, out.DestinationLane, out.EquityRaw = source.RouteLane, chosen.Lane, quote.EquityRaw
 			out.SourceRelease, out.SelectedQuote = newSourceRelease(source, quote.EquityRaw), &quote
 		}
@@ -747,10 +763,6 @@ func heldTrancheGain(source Snapshot, m LaneEconomics, keep *heldSettlement, equ
 	debt := float64(settled.DebtValueRaw) * share
 	e := pilotForecastEconomics(pilotEconomics{Debt: debt, Proceeds: float64(settled.CollateralValueRaw)*share - float64(equity), APR: apr}, float64(equity), m, years, int64(math.Ceil(float64(settled.CostRaw)*share)))
 	return e.Gain, finite(e.Gain)
-}
-
-func selectorRotates(r SelectorResult) bool {
-	return r.Action == "ROTATE" || r.Action == "CANARY_ROTATE"
 }
 
 const (

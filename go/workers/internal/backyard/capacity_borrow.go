@@ -156,10 +156,10 @@ func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route
 	if err != nil {
 		return 0, err
 	}
-	if p.MaxLTVBPS <= 0 {
+	if p.MaxLTVBPS() <= 0 {
 		return 0, nil
 	}
-	borrowLimitBeforeRedeposit := new(big.Int).Mul(new(big.Int).SetUint64(collateral), big.NewInt(p.MaxLTVBPS))
+	borrowLimitBeforeRedeposit := new(big.Int).Mul(new(big.Int).SetUint64(collateral), big.NewInt(p.MaxLTVBPS()))
 	borrowLimitBeforeRedeposit.Quo(borrowLimitBeforeRedeposit, big.NewInt(10_000))
 	refreshMargin := new(big.Int).Mul(borrowLimitBeforeRedeposit, big.NewInt(leverageUpRefreshMarginBPS))
 	borrowLimitBeforeRedeposit.Sub(borrowLimitBeforeRedeposit, refreshMargin.Quo(refreshMargin, big.NewInt(10_000)))

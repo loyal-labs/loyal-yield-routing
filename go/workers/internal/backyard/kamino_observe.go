@@ -2,6 +2,7 @@ package backyard
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -56,25 +57,26 @@ type KaminoObservationConfig struct {
 }
 
 type KaminoPosition struct {
-	Slot, RefreshedSlot     int64
-	HasPosition             bool
-	Obligation              obligationPresence
-	CollateralDepositedRaw  uint64
-	DebtRaw                 uint64
-	RedeemablePrimeRaw      uint64
-	CollateralPriceSF       [16]byte
-	DebtPriceSF             [16]byte
-	CollateralDecimals      uint8
-	DebtDecimals            uint8
-	LiquidationThresholdBPS int64
-	// MaxLTVBPS is the obligation's borrow limit (kaminoBorrowLimitBPS):
-	// the most KLend lets it borrow, as an LTV. Before a deposit it is the
-	// collateral reserve's LTV, the limit a cross-mode obligation's first
-	// deposit gets.
-	MaxLTVBPS                int64
+	Slot, RefreshedSlot      int64
+	HasPosition              bool
+	Obligation               obligationPresence
+	CollateralDepositedRaw   uint64
+	DebtRaw                  uint64
+	RedeemablePrimeRaw       uint64
+	CollateralPriceSF        kamino.ScaledFraction
+	DebtPriceSF              kamino.ScaledFraction
+	CollateralDecimals       uint8
+	DebtDecimals             uint8
+	LiquidationThresholdBPS  int64
+	BorrowLimitBPS           int64
+	CollateralLTVBPS         int64
 	EntryCapacityRaw         uint64
 	BorrowUtilizationBlocked bool
 	Oracles                  []string
+}
+
+func (p KaminoPosition) MaxLTVBPS() int64 {
+	return cmp.Or(p.BorrowLimitBPS, p.CollateralLTVBPS)
 }
 
 func (p KaminoPosition) priced() bool {
@@ -86,7 +88,7 @@ type decodedKaminoObligation struct {
 	hasPosition            bool
 	collateralDepositedRaw uint64
 	debtRaw                uint64
-	debtAmountSF           [16]byte
+	debtAmountSF           kamino.ScaledFraction
 	cumulativeBorrowRate   [32]byte
 	debtBorrow             kamino.ObligationLiquidity
 	// borrowLimitBPS is kaminoBorrowLimitBPS; zero before a deposit.
@@ -98,7 +100,7 @@ type decodedKaminoReserve struct {
 	status                   byte
 	emergencyMode            bool
 	marketPriceLastUpdatedTS int64
-	marketPriceSF            [16]byte
+	marketPriceSF            kamino.ScaledFraction
 	mintDecimals             uint8
 	oracles                  []string
 	totalLiquiditySF         *big.Int
@@ -127,7 +129,7 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 	}
 	deposits, borrows := 0, 0
 	var collateralRaw, debtRaw uint64
-	var debtAmountSF [16]byte
+	var debtAmountSF kamino.ScaledFraction
 	var cumulativeBorrowRate [32]byte
 	var debtBorrow kamino.ObligationLiquidity
 	for _, deposit := range obligation.Deposits {

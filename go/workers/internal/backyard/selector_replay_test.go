@@ -237,7 +237,7 @@ type entryReplay struct {
 	unlevered bool
 	cost      int64
 	benefit   float64
-	action    string
+	action    SelectorAction
 	entered   int64
 }
 
