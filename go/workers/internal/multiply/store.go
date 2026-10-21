@@ -933,7 +933,7 @@ func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteStat
 			}
 		}
 	}
-	if err := autodeposit.LockVaultTargets(ctx, tx, route.Settings, int16(route.VaultIndex), route.Vault); err != nil {
+	if _, err := autodeposit.LockVaultTargets(ctx, tx, route.Settings, int16(route.VaultIndex), route.Vault); err != nil {
 		return err
 	}
 	rows, err := tx.Query(ctx, `SELECT vault.id,vault.active,policy.active,policy.policy_account`+managedVaultsSQL+` FOR UPDATE OF vault,policy`, route.Vault, route.VaultIndex)

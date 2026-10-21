@@ -168,7 +168,7 @@ func upsertVaultWithSetup(ctx context.Context, tx pgx.Tx, routePolicyID, setupPo
 
 func (s *Store) RecordPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+		if _, err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
 			return err
 		}
 		id, err := upsertPolicy(ctx, tx, event)
@@ -182,7 +182,7 @@ func (s *Store) RecordPolicyMatch(ctx context.Context, event PolicyMatchInput) e
 
 func (s *Store) RecordSetupPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+		if _, err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
 			return err
 		}
 		id, err := upsertPolicy(ctx, tx, event)
@@ -578,8 +578,9 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		var targets autodeposit.VaultTargets
 		if routeVaultIndex != nil && routeVaultPubkey != nil {
-			if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, *routeVaultIndex, *routeVaultPubkey); err != nil {
+			if targets, err = autodeposit.LockVaultTargets(ctx, tx, event.Settings, *routeVaultIndex, *routeVaultPubkey); err != nil {
 				return err
 			}
 		}
@@ -614,7 +615,7 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
 				return err
 			}
 			if routeVaultIndex != nil && routeVaultPubkey != nil {
-				if _, err := autodeposit.SkipUnroutedVaultSlots(ctx, tx, event.Settings, *routeVaultIndex, *routeVaultPubkey); err != nil {
+				if _, err := autodeposit.SkipUnroutedVaultSlots(ctx, tx, targets); err != nil {
 					return err
 				}
 			}
