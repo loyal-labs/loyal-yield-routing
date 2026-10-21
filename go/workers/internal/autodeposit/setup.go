@@ -259,8 +259,6 @@ func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a *chain
 	}
 	switch setup.Stage {
 	case SetupATA:
-		// Identity only: custody residue is the controller's idle-tolerance
-		// decision before the pull, as in the TS executor.
 		if _, err := usdcTokenAccount(a, plan.Target.VaultPubkey); err != nil {
 			return err
 		}

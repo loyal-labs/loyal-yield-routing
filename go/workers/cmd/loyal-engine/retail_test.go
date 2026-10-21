@@ -136,29 +136,24 @@ func TestRetailConfigurationIsScopedBoundedAndSecretSafe(t *testing.T) {
 	}
 }
 
-// The TS executor's defaults hold when the host sets nothing: $25 of idle
-// tolerance and no failed-sweep push. The push needs both credentials.
+// The TS executor's defaults hold when the host sets nothing: no failed-sweep
+// push. The push needs both credentials.
 func TestRetailAutodepositSettingsDefaultToProduction(t *testing.T) {
 	configureRetailForTest(t)
 	cfg, err := loadRetailConfig()
-	if err != nil || cfg.idleToleranceRaw != 25_000_000 || cfg.sweepNotifier != nil {
-		t.Fatalf("defaults drifted: tolerance=%d notifier=%v err=%v", cfg.idleToleranceRaw, cfg.sweepNotifier, err)
+	if err != nil || cfg.sweepNotifier != nil {
+		t.Fatalf("defaults drifted: notifier=%v err=%v", cfg.sweepNotifier, err)
 	}
-	t.Setenv("AUTODEPOSIT_IDLE_TOLERANCE_RAW", "1000000")
 	setCredential(t, "RETAIL_SWEEP_NOTIFY_ENDPOINT", "https://app.invalid/api/solana-week/sweep-notify")
 	setCredential(t, "RETAIL_SWEEP_NOTIFY_SECRET", "test-secret")
-	if cfg, err = loadRetailConfig(); err != nil || cfg.idleToleranceRaw != 1_000_000 || cfg.sweepNotifier == nil {
-		t.Fatalf("settings ignored: tolerance=%d notifier=%v err=%v", cfg.idleToleranceRaw, cfg.sweepNotifier, err)
+	if cfg, err = loadRetailConfig(); err != nil || cfg.sweepNotifier == nil {
+		t.Fatalf("settings ignored: notifier=%v err=%v", cfg.sweepNotifier, err)
 	}
-	for _, tc := range []struct{ name, value string }{{"AUTODEPOSIT_IDLE_TOLERANCE_RAW", "-1"}, {"RETAIL_SWEEP_NOTIFY_ENDPOINT", "http://app.invalid/test-secret"}, {"RETAIL_SWEEP_NOTIFY_SECRET", ""}} {
+	for _, tc := range []struct{ name, value string }{{"RETAIL_SWEEP_NOTIFY_ENDPOINT", "http://app.invalid/test-secret"}, {"RETAIL_SWEEP_NOTIFY_SECRET", ""}} {
 		t.Run(tc.name, func(t *testing.T) {
 			setCredential(t, "RETAIL_SWEEP_NOTIFY_ENDPOINT", "https://app.invalid/api/solana-week/sweep-notify")
 			setCredential(t, "RETAIL_SWEEP_NOTIFY_SECRET", "test-secret")
-			if strings.HasPrefix(tc.name, "RETAIL_") {
-				setCredential(t, tc.name, tc.value)
-			} else {
-				t.Setenv(tc.name, tc.value)
-			}
+			setCredential(t, tc.name, tc.value)
 			if _, err := loadRetailConfig(); err == nil || strings.Contains(err.Error(), "test-secret") {
 				t.Fatalf("invalid autodeposit setting accepted or leaked: %v", err)
 			}

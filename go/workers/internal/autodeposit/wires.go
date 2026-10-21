@@ -86,13 +86,13 @@ func NewSweepWireBuilder(executor ed25519.PrivateKey, read AccountReader) (*Swee
 
 func (b *SweepWireBuilder) FeePayer() string { return b.delegate.String() }
 
-// wireAmount renders the frozen plan amount as the wire's u64 field.
-func wireAmount(plan DepositPlan) (uint64, error) {
-	if plan.AmountRaw <= 0 {
+// wireAmount renders a raw amount as the wire's u64 field.
+func wireAmount(amountRaw int64) (uint64, error) {
+	if amountRaw <= 0 {
 		return 0, errors.New("autodeposit wire amount must be positive")
 	}
-	amount := uint64(plan.AmountRaw)
-	if int64(amount) != plan.AmountRaw {
+	amount := uint64(amountRaw)
+	if int64(amount) != amountRaw {
 		return 0, errors.New("autodeposit wire amount is outside the u64 range")
 	}
 	return amount, nil
@@ -115,7 +115,7 @@ func (b *SweepWireBuilder) BuildPull(ctx context.Context, request PullWireReques
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	amount, err := wireAmount(request.Plan)
+	amount, err := wireAmount(request.Plan.AmountRaw)
 	if err != nil {
 		return BuiltWire{}, err
 	}
@@ -140,16 +140,16 @@ func (b *SweepWireBuilder) BuildTopUp(ctx context.Context, request TopUpWireRequ
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	return b.buildTopUpWithRoute(ctx, request.Plan, route, request.RecentBlockhash, request.LastValidBlockHeight)
+	return b.buildTopUpWithRoute(ctx, request.Plan, request.Plan.AmountRaw+request.ResidueRaw, route, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
 // buildTopUpWithRoute signs the top-up against an already-confirmed route.
-func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan DepositPlan, route TopUpRoute, blockhashValue string, lastValidBlockHeight int64) (BuiltWire, error) {
+func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan DepositPlan, amountRaw int64, route TopUpRoute, blockhashValue string, lastValidBlockHeight int64) (BuiltWire, error) {
 	blockhash, err := solana.HashFromBase58(blockhashValue)
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	instructions, err := b.topUpInstructions(ctx, plan, route)
+	instructions, err := b.topUpInstructions(ctx, plan, amountRaw, route)
 	if err != nil {
 		return BuiltWire{}, err
 	}
@@ -158,8 +158,8 @@ func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan Deposit
 
 // topUpInstructions validates the official builder output and actual policy
 // permissions without signing. The pre-pull check and top-up use this same path.
-func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPlan, route TopUpRoute) ([]fleet.RouteInstruction, error) {
-	amount, err := wireAmount(plan)
+func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPlan, amountRaw int64, route TopUpRoute) ([]fleet.RouteInstruction, error) {
+	amount, err := wireAmount(amountRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +258,7 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if _, err := usdcTokenAccount(custody, plan.Target.VaultPubkey); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: %v", ErrRouteNotExecutable, err)
 	}
-	instructions, err := b.topUpInstructions(ctx, plan, route)
+	instructions, err := b.topUpInstructions(ctx, plan, plan.AmountRaw, route)
 	if err != nil {
 		return TopUpRoute{}, err
 	}
@@ -411,8 +411,8 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 		return fmt.Errorf("persisted top-up wrapped instruction is not the KLend deposit v2")
 	}
 	amount := binary.LittleEndian.Uint64(inner.data[8:16])
-	if int64(amount) != plan.AmountRaw || amount > 1<<63-1 {
-		return fmt.Errorf("persisted top-up wire deposits %d, want exactly the frozen %d", amount, plan.AmountRaw)
+	if int64(amount) != attempt.AmountRaw || amount > 1<<63-1 || attempt.AmountRaw < plan.AmountRaw {
+		return fmt.Errorf("persisted top-up wire deposits %d, want exactly the persisted %d and at least the frozen %d", amount, attempt.AmountRaw, plan.AmountRaw)
 	}
 	if len(inner.accounts) != depositInstructionAccountSize {
 		return fmt.Errorf("persisted top-up deposit has %d accounts, want %d", len(inner.accounts), depositInstructionAccountSize)

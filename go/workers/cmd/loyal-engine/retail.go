@@ -37,7 +37,6 @@ type retailConfig struct {
 	crossMintMaxSlippageBPS, crossMintMaxValueLossBPS  uint16
 	jupiterBuildURL, jupiterAPIKey                     string
 	lookup                                             retailLookupConfig
-	idleToleranceRaw                                   int64
 	sweepNotifier                                      *autodeposit.SweepNotifier
 }
 
@@ -138,15 +137,6 @@ func loadRetailConfig() (retailConfig, error) {
 	}
 	if err := cfg.fleetConfig().Validate(); err != nil {
 		return cfg, retailError("fleet configuration", err)
-	}
-	// The TS executor's name and default ($25): idle vault residue a direct
-	// deposit leaves beside it. Deleted once fleet deposits what it redeems
-	// and the existing residue is drained.
-	cfg.idleToleranceRaw = 25_000_000
-	if value := strings.TrimSpace(os.Getenv("AUTODEPOSIT_IDLE_TOLERANCE_RAW")); value != "" {
-		if cfg.idleToleranceRaw, err = strconv.ParseInt(value, 10, 64); err != nil || cfg.idleToleranceRaw < 0 {
-			return cfg, errors.New("AUTODEPOSIT_IDLE_TOLERANCE_RAW must be a non-negative raw USDC amount")
-		}
 	}
 	// The app's failed-sweep push. Both credentials, or neither (disabled).
 	endpoint, secret := optionalCredential("RETAIL_SWEEP_NOTIFY_ENDPOINT"), optionalCredential("RETAIL_SWEEP_NOTIFY_SECRET")
@@ -354,7 +344,7 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("Autodeposit wires", err)
 	}
-	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: deposits, Wires: wires, Facts: facts, IdleToleranceRaw: cfg.idleToleranceRaw})
+	controller, err := autodeposit.NewController(autodeposit.ControllerDependencies{Store: aStore, Chain: deposits, Wires: wires, Facts: facts})
 	if err != nil {
 		return retailError("Autodeposit controller", err)
 	}

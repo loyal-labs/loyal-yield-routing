@@ -36,8 +36,6 @@ Environment=RETAIL_TIMESCALE_SCHEMA=kamino
 # credential drop-in (Rust's format); only keys enabled in
 # route_fee_payer_shards are used, else the delegate pays. Active lookup mode also
 # needs LoadCredentialEncrypted=RETAIL_LOOKUP_MANAGER_KEYPAIR in a drop-in.
-# AUTODEPOSIT_IDLE_TOLERANCE_RAW (raw USDC, default 25000000) is the vault
-# idle residue a direct autodeposit leaves beside it, as in the TS executor.
 # The app's failed-sweep push (Rust/TS SOLANA_WEEK_NOTIFY_*) is optional; with
 # autodeposit in RETAIL_FAMILIES add both in
 # /etc/systemd/system/loyal-retail.service.d/sweep-notify.conf:

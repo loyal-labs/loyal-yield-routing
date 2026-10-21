@@ -9,14 +9,34 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// idleDeferralPrefix starts the slot's last_error when idle vault custody
-// blocks a pull.
-const idleDeferralPrefix = "existing idle vault balance must drain before direct autodeposit: "
+const ownedCustodyDeferral = "another family holds open custody on the vault USDC account"
+
+func (s *Store) VaultCustodyHeldElsewhere(ctx context.Context, vaultPubkey, vaultUsdcAta, ownClaimToken string) (bool, error) {
+	var held bool
+	err := s.pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM loyal_yield.rebalance_decisions AS decision
+    JOIN loyal_yield.managed_vaults AS vault ON vault.id = decision.vault_id
+    WHERE vault.vault_pubkey = $1
+      AND decision.movement_route = 'cross_mint_jupiter'
+      AND decision.terminal_outcome IS NULL
+      AND decision.custody_account = $2)
+OR EXISTS (
+    SELECT 1 FROM loyal_yield.balance_sweep_lot_claims AS claim
+    JOIN loyal_yield.balance_sweep_targets AS target ON target.id = claim.target_id
+    WHERE target.vault_pubkey = $1
+      AND claim.status = 'selected'
+      AND claim.claim_token <> $3)`, vaultPubkey, vaultUsdcAta, ownClaimToken).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("load vault custody owners: %w", err)
+	}
+	return held, nil
+}
 
 // DeferScheduledSlot is the TS executor's deferIdleVaultScheduledSlot for any
-// pre-claim block that does not clear within one poll (idle custody, an
-// unreadable allowance): the slot stays scheduled or requested and waits
-// PreSendRetryDelay. An idle block also records when it first blocked the
+// pre-claim block that does not clear within one poll (custody another family
+// holds, an unreadable allowance): the slot stays scheduled or requested and
+// waits PreSendRetryDelay. A custody block also records when it first blocked the
 // slot; a claim selecting the slot clears it. Only unclaimed, unsigned, due
 // work may move; anything else keeps its owner. It reports whether the slot
 // was deferred.
