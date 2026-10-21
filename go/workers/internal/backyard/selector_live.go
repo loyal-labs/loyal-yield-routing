@@ -168,7 +168,7 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 		}
 		var status *jupiter.StatusError
 		var outage *leverageCostOutage
-		sized := errors.As(err, &outage) && (outage.stage == "entry_quote" || outage.stage == "exit_quote") &&
+		sized := errors.As(err, &outage) && (outage.stage == stageEntryQuote || outage.stage == stageExitQuote) &&
 			!(errors.As(err, &status) && status.Code == http.StatusTooManyRequests)
 		return q, completeEntryQuoteUnavailable, sized, err
 	}

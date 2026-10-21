@@ -187,10 +187,10 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		raw   uint64
 	}{
 		{&legs.BorrowFeeMicros, prices.debtMicros, fee},
-		{&legs.EntryInMicros, prices.debtMicros, borrowRaw},
-		{&legs.EntryOutMicros, prices.collateralMicros, bought},
-		{&legs.ExitInMicros, prices.collateralMicros, bought},
-		{&legs.ExitOutMicros, prices.debtMicros, conversionQuotedOutput(down.Request)},
+		{&legs.EntryDebtMicros, prices.debtMicros, borrowRaw},
+		{&legs.EntryCollateralMicros, prices.collateralMicros, bought},
+		{&legs.ExitCollateralMicros, prices.collateralMicros, bought},
+		{&legs.ExitDebtMicros, prices.debtMicros, conversionQuotedOutput(down.Request)},
 	} {
 		if *v.into, err = v.value(v.raw); err != nil {
 			return leverageStepCost{}, costOutage(stagePrice, err)

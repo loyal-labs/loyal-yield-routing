@@ -146,7 +146,7 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 			priced := false
 			d, ok := decideLeverageTarget(lane, result, markets, p, func(uint64) (leverageStepCost, error) {
 				priced = true
-				return leverageStepCost{}, costOutage("inputs", staleHold("replay"))
+				return leverageStepCost{}, costOutage(stageInputs, staleHold("replay"))
 			})
 			got := laneDecision{next: d.Next, reason: d.Reason, borrowRaw: d.BorrowRaw, level: d.level()}
 			t.Logf("approved=%v %s: %.2fx->%.2fx spread=%d bps reason=%s store=%v", approved, lane.RouteLane, d.Current, d.Next, d.SpreadBPS, d.Reason, d.storeChanges(lane))
@@ -167,7 +167,7 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 var (
 	// AUTO/AUTO/PYUSD, 10,000 PYUSD up step on the live batch, every
 	// conversion quoted 5 bps under the batch's prices.
-	replayOldLiveStep     = leverageStepCost{EntrySwapCostMicros: 4_999_356, ExitSwapCostMicros: 4_996_856, NetworkMicros: 4_596, TotalMicros: 10_000_808}
+	replayOldLiveStep     = leverageStepCost{EntrySwapCostMicros: 4_999_356, UnwindSwapCostMicros: 4_996_856, NetworkMicros: 4_596, TotalMicros: 10_000_808}
 	replayOldLiveStepGain = 7_531_267.0
 )
 
@@ -195,7 +195,7 @@ func TestSelectorReplayLiveStepCost(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := replayOldLiveStep
-	if got.BorrowFeeMicros != old.BorrowFeeMicros || got.EntrySwapCostMicros != old.EntrySwapCostMicros || got.ExitSwapCostMicros != old.ExitSwapCostMicros {
+	if got.BorrowFeeMicros != old.BorrowFeeMicros || got.EntrySwapCostMicros != old.EntrySwapCostMicros || got.UnwindSwapCostMicros != old.UnwindSwapCostMicros {
 		t.Fatalf("conversion losses moved: %+v, old %+v", got, old)
 	}
 	if got.NetworkMicros*3 != old.NetworkMicros || got.TotalMicros != old.TotalMicros-old.NetworkMicros+got.NetworkMicros {
