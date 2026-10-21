@@ -536,7 +536,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		return d(DeleverRouteStep, hardLTVDeleverReason, stepDownMarker)
 	}
 	if termDebtUnknown(s) {
-		return d(Hold, holdStale, 0)
+		return d(Hold, string(holdStale), 0)
 	}
 	// A journal-explained stage finishes before anything reads Voltr idle.
 	// (A Trustful withdrawal is one transaction: it stages nothing.)
@@ -597,7 +597,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decision) (Decision, bool) {
 	if s.CollateralIdleRaw > partialWithdrawalDustRaw {
 		if !laneSwap(s.RouteLane, SwapCollateralToStableStep) {
-			return d(Hold, holdNoRoom, 0), true
+			return d(Hold, string(holdNoRoom), 0), true
 		}
 		return d(SwapCollateralToStableStep, outboundCollateralReason, s.CollateralIdleRaw), true
 	}
@@ -618,7 +618,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 	if t.ReleaseRaw > 0 {
 		equity := laneEquityRaw(s)
 		if equity <= 0 || t.ReleaseRaw*10_000 >= equity*partialWithdrawalFullExitBPS || partialWithdrawalReleaseReceipts(s, t.ReleaseRaw) <= 0 {
-			return d(Hold, holdNoRoom, 0), true
+			return d(Hold, string(holdNoRoom), 0), true
 		}
 		return d(DeleverRouteStep, releaseReason, t.ReleaseRaw), true
 	}
@@ -626,7 +626,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		if s.StrategyNAVRaw == 0 {
 			return d(HoldManualRecovery, "withdrawal_conservation_shortfall", shortfall), true
 		}
-		return d(Hold, holdNoRoom, 0), true
+		return d(Hold, string(holdNoRoom), 0), true
 	}
 	return Decision{}, false
 }
@@ -637,7 +637,7 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 			return d(StageSquadsToVoltr, returnCashReason, s.SquadsIdleRaw)
 		}
 		if t.Rule != ruleEntry {
-			return d(Hold, holdStale, 0)
+			return d(Hold, string(holdStale), 0)
 		}
 	}
 	if hard <= laneCeilingLTVBPS(s.RouteLane) && (s.HasPosition || s.CollateralIdleRaw > 0 || s.SquadsIdleRaw > 0) {
@@ -654,7 +654,7 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	}
 	if laneInFlight(s) {
 		if s.MinimumCollateralDepositRaw <= 0 {
-			return d(Hold, holdStale, 0)
+			return d(Hold, string(holdStale), 0)
 		}
 		if s.HasPosition {
 			return d(OpenRouteStep, topupDepositReason, s.CollateralIdleRaw)
@@ -669,24 +669,24 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	}
 	if t.Rule == ruleEntry && s.SquadsIdleRaw == 0 && !laneInFlight(s) {
 		if t.EntryRaw <= 0 {
-			return d(Hold, holdStale, 0)
+			return d(Hold, string(holdStale), 0)
 		}
 		room, reason := min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw), entryAllocationReason
 		if s.HasPosition {
 			room, reason = s.TopupDepositRoomRaw, topupAllocationReason
 		}
 		if room <= 0 || t.EntryRaw > min(s.VoltrIdleRaw, room) {
-			return d(Hold, holdNoRoom, 0)
+			return d(Hold, string(holdNoRoom), 0)
 		}
 		return d(VoltrAllocateToSquads, reason, t.EntryRaw)
 	}
 	if t.Rule == ruleHold && s.HasPosition && s.SquadsIdleRaw > 0 {
-		return d(Hold, holdStale, 0)
+		return d(Hold, string(holdStale), 0)
 	}
 	if t.UpApproved && leverageUpLevel(withLevel(s, t.Level)) > 0 {
-		return d(Hold, holdNoRoom, 0)
+		return d(Hold, string(holdNoRoom), 0)
 	}
-	return d(Hold, holdAtTarget, 0)
+	return d(Hold, string(holdAtTarget), 0)
 }
 
 func withLevel(s Snapshot, level float64) Snapshot {
@@ -721,7 +721,7 @@ func obligationPrerequisiteHold(s Snapshot, initializationReady func(Snapshot) b
 		return Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: s.RouteLane,
 			IdempotencyKey: fmt.Sprintf("%s:initialize:%s", s.ObservationID, s.RouteLane)}, true
 	}
-	return Decision{Action: Hold, Reason: holdStale, StrategyKey: s.RouteLane,
+	return Decision{Action: Hold, Reason: string(holdStale), StrategyKey: s.RouteLane,
 		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, obligationAbsentHoldReason, 0)}, true
 }
 

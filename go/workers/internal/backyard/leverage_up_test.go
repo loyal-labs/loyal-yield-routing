@@ -33,10 +33,10 @@ func TestLeverageUpDecisionsAtEachLevel(t *testing.T) {
 		}{
 			{1, 1.5, OpenRouteStep, leverageUpReason, 500_000_000},
 			{1, 1.75, OpenRouteStep, leverageUpReason, 500_000_000}, // one level per move
-			{1, 1, Hold, holdAtTarget, 0},
+			{1, 1, Hold, string(holdAtTarget), 0},
 			{1.5, 1.75, OpenRouteStep, leverageUpReason, 250_000_000},
-			{1.5, 1.5, Hold, holdAtTarget, 0},
-			{1.75, 1.75, Hold, holdAtTarget, 0},
+			{1.5, 1.5, Hold, string(holdAtTarget), 0},
+			{1.75, 1.75, Hold, string(holdAtTarget), 0},
 		} {
 			s := at(tc.level, tc.target)
 			got := Decide(targeted(s))

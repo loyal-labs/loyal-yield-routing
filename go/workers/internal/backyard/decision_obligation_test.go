@@ -60,7 +60,7 @@ func TestAbsentObligationHoldsEntryBeforeAnyConstruction(t *testing.T) {
 				}
 				return
 			}
-			if hold.Action != Hold || hold.Reason != holdStale || hold.AmountRaw != 0 || hold.IdempotencyKey == baseline.IdempotencyKey {
+			if hold.Action != Hold || hold.Reason != string(holdStale) || hold.AmountRaw != 0 || hold.IdempotencyKey == baseline.IdempotencyKey {
 				t.Fatalf("absent obligation produced %+v", hold)
 			}
 			if hold.StrategyKey != state.lane || hold.Validate() != nil {

@@ -8,30 +8,24 @@ import (
 	"sort"
 )
 
-// The holds a tick ends in, the closed set loyal_backyard_hold carries:
-//
-//	at_target       the vault is where target() puts it
-//	no_room         the target wants a move the chain has no room for
-//	stale           an input is not current or could not be read; the next
-//	                tick observes again
-//	chain_refused   the signed simulation of the decided transaction failed
-//	stopped         the operator's manual recovery latch
-//
 // Why, in detail, goes in the hold's Details ("cause", "simulation") and the
 // log line, never in the reason.
+type HoldReason string
+
 const (
-	holdAtTarget     = "at_target"
-	holdNoRoom       = "no_room"
-	holdStale        = "stale"
-	holdChainRefused = "chain_refused"
-	holdStopped      = "stopped"
+	holdNone         HoldReason = ""
+	holdAtTarget     HoldReason = "at_target"
+	holdNoRoom       HoldReason = "no_room"
+	holdStale        HoldReason = "stale"
+	holdChainRefused HoldReason = "chain_refused"
+	holdStopped      HoldReason = "stopped"
 )
 
 // BudgetHold is a pre-send refusal, never an authorization to sign or retry
-// an unchanged intent. Its Reason is one of the hold enum; a producer that
-// names only its check (budgetHold) holds stale with that check as its cause.
+// an unchanged intent. A producer that names only its check (budgetHold)
+// holds stale with that check as its cause.
 type BudgetHold struct {
-	Reason  string            `json:"reason"`
+	Reason  HoldReason        `json:"reason"`
 	Details map[string]string `json:"details,omitempty"`
 	cause   error
 }
@@ -40,14 +34,14 @@ func (h *BudgetHold) Unwrap() error { return h.cause }
 
 func (h *BudgetHold) Error() string {
 	if len(h.Details) == 0 {
-		return "HOLD: " + h.Reason
+		return "HOLD: " + string(h.Reason)
 	}
 	keys := make([]string, 0, len(h.Details))
 	for k := range h.Details {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	text := "HOLD: " + h.Reason
+	text := "HOLD: " + string(h.Reason)
 	for _, k := range keys {
 		text += " " + k + "=" + h.Details[k]
 	}
@@ -60,7 +54,7 @@ func budgetHoldFrom(err error, cause string) error { return holdOf(holdStale, ca
 
 func roomHold(cause string, err error) error { return holdOf(holdNoRoom, cause, err) }
 
-func holdOf(reason, cause string, err error) error {
+func holdOf(reason HoldReason, cause string, err error) error {
 	return &BudgetHold{Reason: reason, Details: map[string]string{"cause": cause}, cause: err}
 }
 
@@ -84,7 +78,7 @@ func budgetSum(values ...int64) (int64, error) {
 }
 
 func (d *Database) RecordBudgetHold(ctx context.Context, operationID string, hold *BudgetHold) error {
-	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == "" {
+	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == holdNone {
 		return fmt.Errorf("invalid budget hold journal input")
 	}
 	var status OperationStatus
@@ -100,5 +94,5 @@ func (d *Database) RecordBudgetHold(ctx context.Context, operationID string, hol
 	}
 	return d.transition(ctx, operationID, status, Failed,
 		`, recovery_reason = $4, expected_effects = jsonb_set(expected_effects, '{budgetHold}', $5::jsonb)`,
-		"hold:"+hold.Reason, string(encoded))
+		"hold:"+string(hold.Reason), string(encoded))
 }

@@ -127,9 +127,9 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	check(OpenRouteStep, entryDepositReason)
 	s.CollateralIdleRaw = 0
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.StrategyNAVRaw = true, 1_670_000_000, 1_670_000_000, 1_670_000_000
-	check(Hold, holdAtTarget)
+	check(Hold, string(holdAtTarget))
 	s.LeverageTargetLevel = 1
-	check(Hold, holdAtTarget)
+	check(Hold, string(holdAtTarget))
 	// Pool reopens with an approved 1.5x level: B2 levers through leverage_up.
 	s.BorrowUtilizationBlocked, s.LeverageTargetLevel = false, 1.5
 	armLeverageCapacityFixture(&s)

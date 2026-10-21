@@ -31,11 +31,11 @@ func TestDepositRemainderDoesNotRestartEntryLoop(t *testing.T) {
 	}
 	// Exit-only Ethena never levers: the residue beside its position holds.
 	s.PostMutationNAVRequired = false
-	if got := Decide(targeted(s)); got.Reason != holdAtTarget {
+	if got := Decide(targeted(s)); got.Reason != string(holdAtTarget) {
 		t.Fatal("rounding residue restarted the loop", got)
 	}
 	s.PositionDebtRaw, s.PositionDebtValueRaw, s.DebtIdleRaw = 1004, 2008, 1000
-	if got := Decide(targeted(s)); got.Reason != holdAtTarget {
+	if got := Decide(targeted(s)); got.Reason != string(holdAtTarget) {
 		t.Fatal("debt residue at dust converted outside a step", got)
 	}
 	exit := targetInputs{Exits: map[string]laneExit{ethenaUSDePYUSD.Lane: {EquityZero: true}}}
@@ -58,7 +58,7 @@ func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 				t.Fatal("remainder bypassed required NAV", got)
 			}
 			s.PostMutationNAVRequired = false
-			if got := Decide(targeted(s)); got.Action != Hold || got.Reason != holdAtTarget {
+			if got := Decide(targeted(s)); got.Action != Hold || got.Reason != string(holdAtTarget) {
 				t.Fatal("B2: a debt-free position without a level borrowed", got)
 			}
 			if earnActiveLane(lane) {

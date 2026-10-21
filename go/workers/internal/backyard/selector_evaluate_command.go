@@ -136,6 +136,8 @@ var selectorEvaluateAdmissionHoldCodes = map[string]bool{
 	"selector_fee_evidence_unavailable": true,
 }
 
+const sqlstateQueryCanceled = "57014"
+
 func sanitizedSelectorEvaluateFailure(err error) string {
 	var hold *BudgetHold
 	if errors.As(err, &hold) {
@@ -150,7 +152,7 @@ func sanitizedSelectorEvaluateFailure(err error) string {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
-		case "57014": // query_canceled
+		case sqlstateQueryCanceled:
 			return "selector_evaluate_query_cancelled"
 		}
 		return "selector_evaluate_unavailable"

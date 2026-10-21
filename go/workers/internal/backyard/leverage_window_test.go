@@ -121,11 +121,11 @@ func TestLeverageUpApprovesTheStepAndBorrowsTheRoom(t *testing.T) {
 		t.Fatalf("a full reserve withdrew the approval: %+v", again)
 	}
 	full.LeverageUpApproved = true
-	if d := Decide(targeted(full)); d.Action != Hold || d.Reason != holdNoRoom {
+	if d := Decide(targeted(full)); d.Action != Hold || d.Reason != string(holdNoRoom) {
 		t.Fatalf("a full reserve under a live approval: %+v", d)
 	}
 	full.LeverageUpApproved = false
-	if d := Decide(targeted(full)); d.Action != Hold || d.Reason != holdAtTarget {
+	if d := Decide(targeted(full)); d.Action != Hold || d.Reason != string(holdAtTarget) {
 		t.Fatalf("no approval: %+v", d)
 	}
 }

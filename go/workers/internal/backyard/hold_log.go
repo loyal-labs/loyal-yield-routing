@@ -6,20 +6,19 @@ import (
 	"os"
 )
 
-// holdLog reports why a tick did not move the vault. A hold is not a journal
-// row: only transactions are. It is the loyal_backyard_hold{lane,reason}
-// gauge, one log line when it changes, and, for no_room, the
-// loyal_backyard_step_no_room_total counter the safety alert pages on.
 type holdLog struct {
-	out          io.Writer
-	events       *events
-	lane, reason string
+	out    io.Writer
+	events *events
+	lane   string
+	reason HoldReason
 }
 
-// note takes one tick's outcome: a hold reason (the enum, hold.go), or ""
-// when the tick acts. detail is why: a manual stop's own reason, a hold's
-// cause or simulation error.
-func (l *holdLog) note(s Snapshot, lane, reason, detail string) {
+func (l *holdLog) acted(lane string) {
+	l.events.hold(lane, holdNone)
+	l.lane, l.reason = lane, holdNone
+}
+
+func (l *holdLog) note(s Snapshot, lane string, reason HoldReason, detail string) {
 	if reason == holdNoRoom {
 		l.events.stepNoRoom(lane, string(s.Target.Rule))
 	}
@@ -28,9 +27,6 @@ func (l *holdLog) note(s Snapshot, lane, reason, detail string) {
 		return
 	}
 	l.lane, l.reason = lane, reason
-	if reason == "" {
-		return
-	}
 	out := l.out
 	if out == nil {
 		out = os.Stderr
