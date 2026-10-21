@@ -2,7 +2,6 @@ package backyard
 
 import (
 	"context"
-	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -113,7 +112,10 @@ func TestOneHeldLaneNAVIsTheOneLaneNAV(t *testing.T) {
 	}
 	// The observation identity is the one-lane identity (pinned from the
 	// one-lane observer on the same fixture) bound to the tick's target.
-	identity := sha256Bytes([]byte(fmt.Sprintf("%s|target:%+v|inputs:%s", oneLaneAUTOObservationID, s.Target, s.TargetInputs)))
+	identity, err := targetObservationID(oneLaneAUTOObservationID, s.Target, s.TargetInputs)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if s.ObservationID != identity || s.ReportSnapshotDigest != oneLaneAUTOReportDigest {
 		t.Fatalf("one-lane observation identity or report digest changed: %s %s", s.ObservationID, s.ReportSnapshotDigest)
 	}
