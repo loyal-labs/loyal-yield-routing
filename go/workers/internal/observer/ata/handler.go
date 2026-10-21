@@ -220,8 +220,8 @@ func (h *Handler) persist(ctx context.Context, observed observation) (Outcome, e
 }
 
 // lockCaptureStream makes capture the stream's single writer until commit, so
-// event IDs commit in allocation order. Autodeposit consumes the projected
-// events with a scalar event_id cursor, which skips an ID that commits late.
+// event IDs commit in allocation order. The projector's cursor (event_id > $1
+// ORDER BY event_id) would skip a late lower ID forever, and autodeposit does too.
 func lockCaptureStream(ctx context.Context, tx pgx.Tx, schema string) error {
 	_, err := tx.Exec(ctx, fmt.Sprintf("LOCK TABLE %s.balance_sweep_wallet_ata_observation_dedupe, %s.balance_sweep_wallet_ata_observations IN SHARE ROW EXCLUSIVE MODE", schema, schema))
 	return err
