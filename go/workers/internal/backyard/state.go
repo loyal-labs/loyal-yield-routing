@@ -153,6 +153,10 @@ type Snapshot struct {
 	TargetInputs                     string     `json:",omitempty"`
 }
 
+func (s Snapshot) valued() bool {
+	return s.ManualReason == "" && !s.StrategyReceiptIntegrityFault
+}
+
 func (s Snapshot) heldLanes() []string {
 	if s.HeldLanes == "" {
 		return nil

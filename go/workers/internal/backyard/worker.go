@@ -66,9 +66,7 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	if err := p.enrich(ctx, &observation); err != nil {
 		return Observation{}, err
 	}
-	// Integrity or health failures carry no decodable valuation. Preserve the
-	// last good position projection; the hold decision is the durable record.
-	if observation.Snapshot.StrategyReceiptIntegrityFault || observation.Snapshot.ManualReason != "" {
+	if !observation.Snapshot.valued() {
 		return observation, nil
 	}
 	if err := p.journal.RecordPositionSnapshot(ctx, p.routeKey, observation); err != nil {
@@ -291,7 +289,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	w.holds.note(observation.Snapshot, decision.StrategyKey, "", "")
 	logStage("observe_decide", tickStart)
 	request, effects, prepared, err := w.prepare(ctx, decision, observation)
-	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.ManualReason == "" && !prepared.Snapshot.StrategyReceiptIntegrityFault {
+	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.valued() {
 		healthObservation = prepared
 	}
 	logStage("prepare", tickStart)
@@ -316,8 +314,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
 		return w.journalTickError(ctx, record.OperationID, err)
 	}
-	// The signed wire is persisted: send it now through the same path a
-	// restart takes. A newly signed report has only 32 slots to land.
 	pending, err := w.runtime.loadNonterminal(ctx, w.routeKey)
 	if err != nil || pending == nil {
 		return err

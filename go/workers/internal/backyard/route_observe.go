@@ -18,25 +18,18 @@ import (
 )
 
 // ObserveConfirmedRouteSnapshot extends the bridge snapshot with the route's
-// position and custody, read from the view. It reads no policy: a build reads
-// the policies it executes through, and Squads checks them on chain. Only a
-// stale reserve's valuation refresh simulates through RPC, at the view slot.
-//
-// minSlot is the highest slot the route's own operations landed at: nothing
-// plans from a view that has not seen its own transactions.
-func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, minSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
+// position and custody, read from the view.
+func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil || view == nil {
 		return Observation{}, nil, fmt.Errorf("RPC client and account view are required")
 	}
 	v := manifest.vault
 	return observeConfirmedRouteSnapshotWithAccounts(ctx, manifest, routeObservationRuntime{
-		minSlot: minSlot,
+		minSlot: ownWriteSlot,
 		inputs:  inputs,
 		state:   state,
 		read: func(ctx context.Context, addresses []string, minSlot int64) (int64, []ConfirmedAccount, []programAccount, error) {
-			// A null strategy receipt must reach the integrity classifier
-			// instead of failing the batch as a required absent account.
-			return view.readWithReceipts(ctx, v, addresses, minSlot, append(optionalLifecycleObligations(v, addresses), v.strategyReceipt)...)
+			return view.readWithReceipts(ctx, v, addresses, minSlot, optionalReadAddresses(v, addresses)...)
 		},
 		refreshValuation: func(ctx context.Context, routes []RuntimeRoute, addresses []string, minSlot int64) (int64, []ConfirmedAccount, error) {
 			return simulateRouteValuationRefresh(ctx, v, rpc, routes, addresses, minSlot)
@@ -52,6 +45,10 @@ func applyProgramIdentityObservation(observation *Observation, identity programI
 	observation.Snapshot.ProgramIdentityKnown = identity.Verified
 	observation.Snapshot.VoltrProgramDeploySlot = identity.VoltrProgramDeploySlot
 	observation.Snapshot.AdaptorProgramDeploySlot = identity.AdaptorProgramDeploySlot
+}
+
+func optionalReadAddresses(v *Vault, addresses []string) []string {
+	return append(optionalLifecycleObligations(v, addresses), v.strategyReceipt)
 }
 
 // A full K-Lend withdrawal closes its obligation account, so the obligation is
@@ -398,17 +395,11 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	// B2 1x entry: while the lane's debt reserve blocks borrowing, an
-	// A B2 lane entry is a debt-free deposit, bounded by collateral
-	// deposit room instead of the (zero) leveraged pair capacity. Never on
-	// the cash-only fallback, which has no reserve prices (entry closed).
 	// The observation ID keeps the pair capacity, so price-driven room
 	// changes do not churn it.
 	pairEntryUSDC := entryUSDC
-	if entryUSDC == 0 && earnActiveLane(route.Lane) && position.BorrowUtilizationBlocked && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
-		entryUSDC = room
-	}
-	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
+	pricedEntry := earnActiveLane(route.Lane) && position.priced()
+	if pricedEntry {
 		entryUSDC = room
 		applyBorrowCapacity(&base.Snapshot, position, accounts, route)
 	}
@@ -419,7 +410,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.CapacityRaw = int64(entryUSDC)
 	base.Snapshot.MaxTargetLTVEntryRaw = int64(entryUSDC)
 	base.Snapshot.BorrowUtilizationBlocked = position.BorrowUtilizationBlocked
-	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 && littleInt(position.CollateralPriceSF[:]).Sign() > 0 {
+	if pricedEntry {
 		if err := applyOverflowRoom(v, &base.Snapshot, accounts, route); err != nil {
 			fmt.Fprintf(os.Stderr, "backyard-rwa-worker: overflow room unknown lane=%s: %v\n", route.Lane, err)
 		}
@@ -592,9 +583,8 @@ func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount
 	return valueBetweenTokenRaw(position.EntryCapacityRaw, position.DebtDecimals, 6, position.DebtPriceSF, usdc.marketPriceSF, false)
 }
 
-// topupDepositRoomUSDC values the collateral reserve's remaining deposit limit
-// in bridge USDC from the same confirmed batch, floored and less a 1% price
-// margin, so a plan B3 top-up never sizes a deposit the reserve refuses.
+const topupPriceMarginPercent = 1
+
 func topupDepositRoomUSDC(accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil || collateral.totalLiquiditySF == nil || collateral.depositLimitRaw == 0 {
@@ -617,7 +607,7 @@ func topupDepositRoomUSDC(accounts []ConfirmedAccount, route RuntimeRoute) (uint
 	if err != nil {
 		return 0, err
 	}
-	return min(room/100*99, math.MaxInt64), nil
+	return min(room/100*(100-topupPriceMarginPercent), math.MaxInt64), nil
 }
 
 // routeEconomicObservationID deliberately excludes Slot, the stateless adaptor
