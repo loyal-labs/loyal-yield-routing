@@ -45,7 +45,7 @@ func termKeepAliveRoom(s Snapshot) bool {
 	if err != nil {
 		return false
 	}
-	added, err := capacityBorrowValue(s, termKeepAliveBorrowRaw+fee, true)
+	added, err := capacityBorrowBoundUSDC(s, termKeepAliveBorrowRaw+fee, true)
 	if err != nil {
 		return false
 	}

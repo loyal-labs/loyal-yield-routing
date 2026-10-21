@@ -567,7 +567,7 @@ func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount
 	}
 	if route.Kamino.DebtMint == bridgeUSDC {
 		if basicLane(route.Lane) {
-			return kaminoPairEntryCapacity(position, accounts, route)
+			return kaminoPairEntryCapacityDebtRaw(position, accounts, route)
 		}
 		return position.EntryCapacityRaw, nil
 	}

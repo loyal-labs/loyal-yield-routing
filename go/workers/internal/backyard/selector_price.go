@@ -527,8 +527,8 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 		if err != nil {
 			return false
 		}
-		proceeds, errProceeds := capacityBorrowCentralValue(s, raw, false)
-		liability, errDebt := capacityBorrowCentralValue(s, raw+fee, true)
+		proceeds, errProceeds := capacityBorrowExpectedUSDC(s, raw, false)
+		liability, errDebt := capacityBorrowExpectedUSDC(s, raw+fee, true)
 		keepAPR, errKeep := math.Log1p(m.CurrentBorrowAPY), error(nil)
 		if taken > 0 {
 			keepAPR, errKeep = projectedBorrowAPR(m, rateDebt)

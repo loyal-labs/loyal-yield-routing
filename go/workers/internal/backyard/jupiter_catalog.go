@@ -2,12 +2,9 @@ package backyard
 
 import "fmt"
 
-// catalogEdge is the catalog swap policy a catalog lane swaps action through:
-// its conversions, in constraint order, and the leg of the one that converts
-// the action's from asset into its to asset.
-func catalogEdge(action Action, lane string) ([]conversion, byte, error) {
+func catalogEdge(action Action, lane string) (catalogEdgePolicy, error) {
 	if !catalogJupiterRoute(lane) {
-		return nil, 0, fmt.Errorf("unregistered Jupiter catalog lane")
+		return catalogEdgePolicy{}, fmt.Errorf("unregistered Jupiter catalog lane")
 	}
 	l, _ := findEarnLane(lane)
 	route := l.route
@@ -28,13 +25,13 @@ func catalogEdge(action Action, lane string) ([]conversion, byte, error) {
 	}
 	swap, ok := swaps[action]
 	if !ok {
-		return nil, 0, fmt.Errorf("action %s is no catalog conversion on %s", action, lane)
+		return catalogEdgePolicy{}, fmt.Errorf("action %s is no catalog conversion on %s", action, lane)
 	}
 	return catalogSwap(swap.from, swap.to)
 }
 
 func catalogConversion(v *Vault, action Action, lane string) (swapEdge, error) {
-	conversions, leg, err := catalogEdge(action, lane)
+	edge, err := catalogEdge(action, lane)
 	if err != nil {
 		return swapEdge{}, err
 	}
@@ -42,6 +39,6 @@ func catalogConversion(v *Vault, action Action, lane string) (swapEdge, error) {
 	if err != nil {
 		return swapEdge{}, err
 	}
-	c := conversions[leg]
+	c := edge.conversion()
 	return swapEdge{assets[c.from], assets[c.to]}, nil
 }

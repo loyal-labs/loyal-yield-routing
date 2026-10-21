@@ -195,8 +195,8 @@ func initializerPolicyLeg(lane string) (policyKey, byte) {
 func jupiterPolicyLeg(v *Vault, lane string, action Action) (policyKey, byte, error) {
 	switch {
 	case catalogJupiterRoute(lane):
-		conversions, leg, err := catalogEdge(action, lane)
-		return policyKey{swaps: swapsName(conversions)}, leg, err
+		edge, err := catalogEdge(action, lane)
+		return policyKey{swaps: swapsName(edge.swaps)}, edge.leg, err
 	case basicLane(lane):
 		_, _, source, _, err := jupiterEdgeForRoute(v, action, lane)
 		if err != nil {
@@ -340,15 +340,22 @@ func catalogSwapEdges(v *Vault) ([][]swapEdge, error) {
 	return out, nil
 }
 
-func catalogSwap(from, to string) ([]conversion, byte, error) {
+type catalogEdgePolicy struct {
+	swaps []conversion
+	leg   byte
+}
+
+func (p catalogEdgePolicy) conversion() conversion { return p.swaps[p.leg] }
+
+func catalogSwap(from, to string) (catalogEdgePolicy, error) {
 	for _, policy := range catalogSwaps {
 		for index, c := range policy {
 			if c == (conversion{from, to}) {
-				return policy, byte(index), nil
+				return catalogEdgePolicy{swaps: policy, leg: byte(index)}, nil
 			}
 		}
 	}
-	return nil, 0, fmt.Errorf("no catalog swap policy swaps %s into %s", from, to)
+	return catalogEdgePolicy{}, fmt.Errorf("no catalog swap policy swaps %s into %s", from, to)
 }
 
 func swapsName(conversions []conversion) string {

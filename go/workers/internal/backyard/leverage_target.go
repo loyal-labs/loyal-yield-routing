@@ -95,8 +95,8 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 
 func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level float64, raw uint64, p SelectorPolicy, price leverageStepPricer) leverageDecision {
 	fee, err := kaminoBorrowFeeAtRate(s.BorrowFeeRate, raw)
-	proceeds, priceErr := capacityBorrowCentralValue(s, raw, false)
-	liability, debtErr := capacityBorrowCentralValue(s, raw+fee, true)
+	proceeds, priceErr := capacityBorrowExpectedUSDC(s, raw, false)
+	liability, debtErr := capacityBorrowExpectedUSDC(s, raw+fee, true)
 	rateDebt := float64(leverageRateDebtRaw(s, raw+fee))
 	apr, rateErr := projectedBorrowAPR(market, rateDebt)
 	spread, allowed := leverageUpAllowed(market, level, rateDebt)

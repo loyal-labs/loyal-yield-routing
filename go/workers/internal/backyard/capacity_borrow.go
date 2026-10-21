@@ -255,20 +255,17 @@ func leverageBorrowCeiling(s Snapshot, level float64) uint64 {
 	return s.LeverageBorrowRaw[i]
 }
 
-// capacityBorrowCentralValue values debt raw in USDC at the snapshot's central
-// reserve prices, without capacityBorrowValue's margins: an expectation for
-// the income forecast, never a bound. liability rounds up.
-func capacityBorrowCentralValue(s Snapshot, amount uint64, liability bool) (uint64, error) {
+func capacityBorrowExpectedUSDC(s Snapshot, amount uint64, liability bool) (uint64, error) {
 	if !earnHeldLane(s.RouteLane) {
 		return 0, fmt.Errorf("runtime lane %q is not installed", s.RouteLane)
 	}
 	return valueBetweenTokenRaw(amount, s.BorrowDebtDecimals, 6, s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, liability)
 }
 
-// capacityBorrowValue bounds a borrow's USDC value: bridge USDC is par;
+// capacityBorrowBoundUSDC bounds a borrow's USDC value: bridge USDC is par;
 // non-USDC debt and reference prices use the budgetPriceMarginBPS interval
 // on each side. This is valuation evidence, not a transaction expense.
-func capacityBorrowValue(s Snapshot, amount uint64, liability bool) (uint64, error) {
+func capacityBorrowBoundUSDC(s Snapshot, amount uint64, liability bool) (uint64, error) {
 	l, ok := findEarnLane(s.RouteLane)
 	if !ok {
 		return 0, fmt.Errorf("runtime lane %q is not installed", s.RouteLane)

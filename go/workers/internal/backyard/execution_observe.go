@@ -174,6 +174,8 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 		idleAfter, squadsAfter = idle-amount, squads+amount
 	case StageSquadsToVoltr:
 		if v.trustful() {
+			// Voltr's withdraw_strategy sweeps the holding account into idle
+			// in the same transaction.
 			if squads < amount || idle > math.MaxUint64-amount {
 				return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("withdrawal effects overflow or underflow")
 			}
