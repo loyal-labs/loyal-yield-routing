@@ -33,10 +33,10 @@ function source(row: RouteRow): string {
     `import { createFileRoute${row.kind === "layout" ? ", Outlet" : ""} } from "@tanstack/react-router";`,
     "",
     hasMetadata ? `import Source, * as source from "${module}";` : `import Source from "${module}";`,
-    ...(hasMetadata ? ["", `import { headFromMetadata } from "${compat}";`] : []),
+    ...(hasMetadata ? ["", `import { pageHead } from "${compat}";`] : []),
   ];
   const component = row.kind === "layout" ? "component: () => (\n    <Source>\n      <Outlet />\n    </Source>\n  )," : "component: Source,";
-  const head = hasMetadata ? "\n  head: () => headFromMetadata(source.metadata)," : "";
+  const head = hasMetadata ? "\n  head: () => pageHead(source.metadata)," : "";
   return `${imports.join("\n")}\n\nexport const Route = createFileRoute("${routeId(row)}")({\n  ${component}${head}\n});\n`;
 }
 
