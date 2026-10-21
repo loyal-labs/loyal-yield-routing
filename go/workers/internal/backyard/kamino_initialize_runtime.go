@@ -9,24 +9,24 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// initializationSnapshotReady reports a flat lane whose obligation is known
-// absent and is created through an installed initializer policy, while the
-// target enters it: the Voltr idle a current selector quote allocates and the
-// vault's Squads cash (a rotation's release), all of which the lane takes. A
-// lane whose obligation pre-exists has no initializer: its absence holds.
 func initializationSnapshotReady(s Snapshot) bool {
 	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}
-	if !earnInitializerLane(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
+	if !earnInitializerLane(s.RouteLane) || s.Obligation != obligationAbsent {
 		return false
 	}
-	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {
+	if !s.flatLane() || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || withdrawalShortfallRaw(s) != 0 {
 		return false
 	}
-	if s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" || withdrawalShortfallRaw(s) != 0 {
-		return false
-	}
+	return s.targetFundsEntry()
+}
+
+func (s Snapshot) flatLane() bool {
+	return !s.HasPosition && s.PositionCollateralValueRaw == 0 && s.PositionDebtValueRaw == 0 && s.CollateralIdleValueRaw == 0 && s.PositionCollateralRaw == 0 && s.PositionDebtRaw == 0 && s.CollateralIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0
+}
+
+func (s Snapshot) targetFundsEntry() bool {
 	t := s.Target
 	funding := t.EntryRaw + s.SquadsIdleRaw
 	return t.Rule == ruleEntry && t.EntryRaw >= 0 && funding > 0 && t.EntryRaw <= s.VoltrIdleRaw && funding <= min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) > laneCeilingLTVBPS(s.RouteLane)

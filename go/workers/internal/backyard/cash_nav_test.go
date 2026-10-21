@@ -40,9 +40,9 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 			s.RouteLane, s.StrategyKey = PhaseOneLaneID, PhaseOneLaneID
 			s.SquadsIdleRaw, s.CapacityRaw, s.MaxTargetLTVEntryRaw = int64(nav.Custodies.SquadsUSDCraw), int64(p.EntryCapacityRaw), int64(p.EntryCapacityRaw)
 			s.LiquidationThresholdBPS, s.MaxLTVBPS = p.LiquidationThresholdBPS, p.MaxLTVBPS
-			s.ObligationPresenceKnown, s.ObligationPresent = true, p.ObligationPresent
+			s.Obligation = p.Obligation
 			for _, present := range []bool{true, false} {
-				s.ObligationPresent = present
+				s.Obligation = observedObligation(present)
 				if d := Decide(s); d.Action != StageSquadsToVoltr || d.AmountRaw != s.SquadsIdleRaw {
 					t.Fatalf("unavailable entry market trapped cash: %+v", d)
 				}

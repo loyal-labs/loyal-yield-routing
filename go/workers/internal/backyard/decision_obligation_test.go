@@ -45,12 +45,12 @@ func TestAbsentObligationHoldsEntryBeforeAnyConstruction(t *testing.T) {
 	for _, state := range obligationEntryStates() {
 		t.Run(state.name, func(t *testing.T) {
 			s := state.seed(base())
-			s.ObligationPresenceKnown, s.ObligationPresent = true, true
+			s.Obligation = obligationPresent
 			baseline := Decide(entryTargeted(t, s, state.lane))
 			if baseline.Action != state.expected {
 				t.Fatalf("entry fixture resolved %+v instead of %v", baseline, state.expected)
 			}
-			s.ObligationPresent = false
+			s.Obligation = obligationAbsent
 			hold := Decide(entryTargeted(t, s, state.lane))
 			if initializationSnapshotReady(entryTargeted(t, s, state.lane)) {
 				// A quoted selector entry creates the obligation: the one
@@ -80,7 +80,7 @@ func TestAbsentObligationKeepsAccountingLegsLive(t *testing.T) {
 	if baseline.Action != ReportNAV {
 		t.Fatalf("accounting fixture resolved %+v", baseline)
 	}
-	s.ObligationPresenceKnown, s.ObligationPresent = true, false
+	s.Obligation = obligationAbsent
 	if got := Decide(targeted(s)); got.Action != ReportNAV || got.Reason != baseline.Reason || got.AmountRaw != baseline.AmountRaw {
 		t.Fatalf("absent obligation blocked accounting: %+v vs %+v", got, baseline)
 	}
@@ -119,11 +119,11 @@ func TestObligationPresenceIsObservedNotAssumed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !nav.ObligationPresent || nav.PositionCollateralValue != 30 || nav.PositionDebtValue != 7 {
+	if nav.Obligation != obligationPresent || nav.PositionCollateralValue != 30 || nav.PositionDebtValue != 7 {
 		t.Fatalf("present obligation NAV: %+v", nav)
 	}
 	position := observe(append(batch, clockFixture()))
-	if !position.ObligationPresent || !position.HasPosition || position.CollateralDepositedRaw != 10 {
+	if position.Obligation != obligationPresent || !position.HasPosition || position.CollateralDepositedRaw != 10 {
 		t.Fatalf("present obligation position: %+v", position)
 	}
 
@@ -132,14 +132,14 @@ func TestObligationPresenceIsObservedNotAssumed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if absentNAV.ObligationPresent || absentNAV.PositionCollateralValue != 0 || absentNAV.PositionDebtValue != 0 {
+	if absentNAV.Obligation == obligationPresent || absentNAV.PositionCollateralValue != 0 || absentNAV.PositionDebtValue != 0 {
 		t.Fatalf("absent obligation NAV: %+v", absentNAV)
 	}
 	if absentNAV.StrategyNAVRaw != nav.StrategyNAVRaw-nav.PositionCollateralValue+nav.PositionDebtValue {
 		t.Fatalf("absent obligation NAV kept position value: %+v", absentNAV)
 	}
 	absentPosition := observe(append(absentBatch, clockFixture()))
-	if absentPosition.ObligationPresent || absentPosition.HasPosition || absentPosition.CollateralDepositedRaw != 0 || absentPosition.DebtRaw != 0 {
+	if absentPosition.Obligation == obligationPresent || absentPosition.HasPosition || absentPosition.CollateralDepositedRaw != 0 || absentPosition.DebtRaw != 0 {
 		t.Fatalf("absent obligation decoded into a flat position: %+v", absentPosition)
 	}
 }

@@ -99,7 +99,7 @@ func coherentFeeSelectorFixture(t *testing.T, wealth, supply uint64, hwm *big.In
 		}
 		s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 		s.VoltrIdleRaw, s.StrategyNAVRaw, s.JournalArmedNAVRaw = int64(wealth), 0, 0
-		s.SquadsIdleRaw, s.PrimeIdleRaw, s.CollateralIdleRaw = 0, 0, 0
+		s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 0
 		s.LastReportAgeSeconds = 0
 	})
 	in.Quotes[0].ObservationID = in.Snapshot.ObservationID
@@ -193,14 +193,6 @@ func TestPerformanceFeeQ48FloorKnownAndUnknownBaseline(t *testing.T) {
 	if got := SelectOpportunity(in, SelectorState{}); got.Reason == "fee_hwm_baseline_unavailable" {
 		t.Fatal("ordinary unreported NAV starved the baseline", got)
 	}
-	previous := SelectorState{Advantages: map[string]AdvantageWindow{
-		in.Markets[0].Lane: {Since: in.Now.Add(-time.Hour), LastSample: in.Now},
-	}}
-	in.Snapshot.VoltrHighWaterMarkKnown = false
-	got := SelectOpportunity(in, previous)
-	if got.Action != "KEEP" || got.Reason != "fee_hwm_baseline_unavailable" || len(got.State.Advantages) != 0 {
-		t.Fatalf("unknown armed HWM could persist/spend: %+v", got)
-	}
 	// Fixed-array HWM must not break Snapshot's existing immutable comparison.
 	before := in.Snapshot
 	_ = Decide(in.Snapshot)
@@ -250,15 +242,12 @@ func TestPerformanceFeeLeverageUPNeedsNoHWMBaseline(t *testing.T) {
 	if !ok || got.Next != 1.5 || got.Reason != "up_move_approved" || got.BorrowRaw == 0 || got.GainRaw <= 0 {
 		t.Fatalf("an unknown HWM baseline blocked an in-place UP: %+v ok=%t", got, ok)
 	}
-	for _, unknown := range []bool{false, true} {
-		s.LeverageTargetLevel = 1.5
-		s.PositionCollateralValueRaw, s.PositionCollateralRaw, s.PositionDebtValueRaw = 1_500_000_000, 1_500_000_000, 500_000_000
-		s.VoltrHighWaterMarkKnown = !unknown
-		market.NativeAPY = .01
-		got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, DefaultSelectorPolicy(), twentyBPSStepCost)
-		if !ok || got.Next != 1 {
-			t.Fatalf("bad/unknown HWM blocked DOWN: %+v ok=%t", got, ok)
-		}
+	s.LeverageTargetLevel = 1.5
+	s.PositionCollateralValueRaw, s.PositionCollateralRaw, s.PositionDebtValueRaw = 1_500_000_000, 1_500_000_000, 500_000_000
+	market.NativeAPY = .01
+	got, ok = decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{market}, DefaultSelectorPolicy(), twentyBPSStepCost)
+	if !ok || got.Next != 1 {
+		t.Fatalf("bad HWM blocked DOWN: %+v ok=%t", got, ok)
 	}
 }
 
@@ -364,7 +353,7 @@ func TestPerformanceFeeUnarmedCannotProduceEconomicUP(t *testing.T) {
 	// Even copied HWM terms do not make an unarmed snapshot a coherent book.
 	in := coherentFeeSelectorFixture(t, 1_000_000_000, 1_000_000_000, new(big.Int).Lsh(big.NewInt(1), 48))
 	s.VoltrTotalValueRaw, s.TotalVaultNAVRaw, s.LPSupplyInclFeesRaw = 1_000_000_000, 1_000_000_000, 1_000_000_000
-	s.VoltrHighWaterMarkBits, s.VoltrHighWaterMarkKnown = in.Snapshot.VoltrHighWaterMarkBits, true
+	s.VoltrHighWaterMarkBits = in.Snapshot.VoltrHighWaterMarkBits
 	s.AdminPerformanceFeeBPS = rwa.AdminPerformanceFeeBPS
 	m := leverageMarket(s.RouteLane, .60, math.Log1p(.06))
 	m.CurrentBorrowAPY = .06
@@ -383,7 +372,7 @@ func TestPerformanceFeeProductionObserverArmsCoherentHWM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !o.Snapshot.MonitorsArmed || !o.Snapshot.VoltrHighWaterMarkKnown ||
+	if !o.Snapshot.MonitorsArmed ||
 		littleInt(o.Snapshot.VoltrHighWaterMarkBits[:]).Cmp(want) != 0 || !selectorFeeBaselineKnown(o.Snapshot) || o.routeBatch == nil {
 		t.Fatalf("production coherent book lost fee evidence: %+v", o.Snapshot)
 	}
@@ -398,7 +387,7 @@ func armFeeAuthorityFixture(t *testing.T, s *Snapshot) {
 	const supply = 100_000_000_000_000
 	floor := new(big.Int).Quo(new(big.Int).Lsh(big.NewInt(book), 48), big.NewInt(supply))
 	decoded := coherentFeeSelectorFixture(t, uint64(book), supply, floor).Snapshot
-	s.MonitorsArmed, s.VoltrHighWaterMarkKnown = true, decoded.VoltrHighWaterMarkKnown
+	s.MonitorsArmed = true
 	s.VoltrHighWaterMarkBits = decoded.VoltrHighWaterMarkBits
 	s.VoltrTotalValueRaw, s.LPSupplyInclFeesRaw = decoded.VoltrTotalValueRaw, decoded.LPSupplyInclFeesRaw
 	s.FeeAccumulatorRaw, s.AdminPerformanceFeeBPS = 0, decoded.AdminPerformanceFeeBPS

@@ -17,7 +17,7 @@ func oct10WindowSnapshot(t *testing.T, roomRaw uint64) (Snapshot, LaneEconomics)
 	t.Helper()
 	s := base()
 	s.RouteLane, s.StrategyKey = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane
-	s.HasPosition, s.ObligationPresent, s.ObligationPresenceKnown = true, true, true
+	s.HasPosition, s.Obligation = true, obligationPresent
 	s.PositionCollateralValueRaw, s.PositionCollateralRaw = 102_080_000_000, 102_080_000_000
 	s.PositionDebtValueRaw, s.PositionDebtRaw = 908_000_000, 908_000_000
 	s.LTVBPS = 89

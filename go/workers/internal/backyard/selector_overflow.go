@@ -45,14 +45,14 @@ func overflowSourceBorrowClosed(s Snapshot) bool {
 }
 
 func overflowEquityRaw(s Snapshot, level float64) int64 {
-	if _, ok := overflowLaneOf(s.RouteLane); !ok || !s.OverflowRoomKnown || s.OverflowRoomValueRaw <= 0 {
+	if _, ok := overflowLaneOf(s.RouteLane); !ok || s.OverflowRoom == nil || s.OverflowRoom.FlooredUSDCValue <= 0 {
 		return 0
 	}
 	levered := level - 1
 	if levered <= 0 {
 		return 0
 	}
-	byRoom := int64(math.Floor(float64(s.OverflowRoomValueRaw) / levered))
+	byRoom := int64(math.Floor(float64(s.OverflowRoom.FlooredUSDCValue) / levered))
 	e := min(overflowReleaseValueRaw(s), byRoom, int64(strategyTwoBridgeLegCapRaw))
 	if e < int64(math.Ceil(float64(leverageMinimumBorrowRaw)/levered)) {
 		return 0
@@ -76,7 +76,7 @@ func overflowReleaseReceipts(s Snapshot, free int64) int64 {
 }
 
 func applyOverflowRoom(v *Vault, s *Snapshot, accounts []ConfirmedAccount, route RuntimeRoute) error {
-	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown, s.OverflowObligationPresent = 0, 0, false, false
+	s.OverflowRoom = nil
 	lane, ok := overflowLaneOf(route.Lane)
 	if !ok || !s.HasPosition || !overflowSourceBorrowClosed(*s) {
 		return nil
@@ -89,8 +89,7 @@ func applyOverflowRoom(v *Vault, s *Snapshot, accounts []ConfirmedAccount, route
 	if err != nil {
 		return err
 	}
-	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown = receive, value, true
-	s.OverflowObligationPresent = accountAt(accounts, overflow.Kamino.Obligation).Lamports != 0
+	s.OverflowRoom = &overflowBorrowRoom{DebtRaw: receive, FlooredUSDCValue: value, Obligation: observedObligation(accountAt(accounts, overflow.Kamino.Obligation).Lamports != 0)}
 	return nil
 }
 

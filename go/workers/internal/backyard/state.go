@@ -43,6 +43,18 @@ const (
 	Held            OperationStatus = "held"
 )
 
+func (s OperationStatus) unsigned() bool {
+	return s == Decided || s == Built || s == Simulated
+}
+
+func (s OperationStatus) signedUnlanded() bool {
+	return s == Signed || s == BroadcastIntent
+}
+
+func (s OperationStatus) preBroadcast() bool {
+	return s.unsigned() || s == Signed
+}
+
 type Snapshot struct {
 	ValuationSource        string `json:",omitempty"`
 	ValuationSlot          int64  `json:",omitempty"`
@@ -54,10 +66,8 @@ type Snapshot struct {
 	HasAmbiguousSubmission bool
 	WithdrawalDemandRaw    int64
 	SquadsIdleRaw          int64
-	PrimeIdleRaw           int64
 	// CollateralIdleRaw is the vault's custody of the lane's collateral mint,
 	// the whole account (lanes that share it see the same balance).
-	// PrimeIdleRaw is retained for historical snapshot compatibility.
 	CollateralIdleRaw           int64
 	CollateralIdleValueRaw      int64
 	MinimumCollateralDepositRaw int64
@@ -71,29 +81,16 @@ type Snapshot struct {
 	// HeldLanes is every lane holding exposure in this batch, in registry
 	// order and comma separated ("" when none). RouteLane is the working
 	// lane: the one lane this per-lane view describes.
-	HeldLanes string `json:",omitempty"`
-	// OverflowRoom* is, on a lane that has an overflow lane, that lane's
-	// debt reserve borrow room this batch (raw debt units, and its bridge
-	// USDC value, floored); unknown unless Known.
-	OverflowRoomRaw           uint64 `json:",omitempty"`
-	OverflowRoomValueRaw      int64  `json:",omitempty"`
-	OverflowRoomKnown         bool   `json:",omitempty"`
-	OverflowObligationPresent bool   `json:",omitempty"`
+	HeldLanes    string              `json:",omitempty"`
+	OverflowRoom *overflowBorrowRoom `json:",omitempty"`
 	// DebtTermEndUnix is KLend's term-debt maturity: the last borrow plus the
 	// reserve's debt term, or the market-wide maturity when earlier.
-	DebtTermEndUnix      int64 `json:",omitempty"`
-	ChainUnix            int64 `json:",omitempty"`
-	VoltrStrategyIdleRaw int64
-	VoltrIdleRaw         int64
-	HasPosition          bool
-	// ObligationPresent is the observed existence of the lane's Kamino
-	// obligation account, and ObligationPresenceKnown is set only by the
-	// production observe path, so hand-built unit snapshots keep their existing
-	// decisions. A missing obligation cannot receive a deposit: entry planning
-	// holds on it instead of allocating or swapping collateral into a deposit
-	// Kamino would refuse.
-	ObligationPresent              bool
-	ObligationPresenceKnown        bool
+	DebtTermEndUnix                int64 `json:",omitempty"`
+	ChainUnix                      int64 `json:",omitempty"`
+	VoltrStrategyIdleRaw           int64
+	VoltrIdleRaw                   int64
+	HasPosition                    bool
+	Obligation                     obligationPresence
 	PositionCollateralRaw          int64
 	PositionDebtRaw                int64
 	PositionCollateralValueRaw     int64
@@ -110,7 +107,6 @@ type Snapshot struct {
 	LastUpdatedLockedProfitRaw     int64
 	LastLockedProfitReportUnix     int64
 	VoltrHighWaterMarkBits         [16]byte
-	VoltrHighWaterMarkKnown        bool
 	FeeAccumulatorRaw              int64
 	LPSupplyInclFeesRaw            int64
 	ManagerPerformanceFeeBPS       int64
@@ -169,11 +165,36 @@ type Snapshot struct {
 	TargetInputs                     string     `json:",omitempty"`
 }
 
+func (s Snapshot) valued() bool {
+	return s.ManualReason == "" && !s.StrategyReceiptIntegrityFault
+}
+
 func (s Snapshot) heldLanes() []string {
 	if s.HeldLanes == "" {
 		return nil
 	}
 	return strings.Split(s.HeldLanes, ",")
+}
+
+type obligationPresence uint8
+
+const (
+	obligationUnobserved obligationPresence = iota
+	obligationAbsent
+	obligationPresent
+)
+
+func observedObligation(present bool) obligationPresence {
+	if present {
+		return obligationPresent
+	}
+	return obligationAbsent
+}
+
+type overflowBorrowRoom struct {
+	DebtRaw          uint64
+	FlooredUSDCValue int64
+	Obligation       obligationPresence
 }
 
 type Decision struct {

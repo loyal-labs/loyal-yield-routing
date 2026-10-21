@@ -56,12 +56,9 @@ type KaminoObservationConfig struct {
 }
 
 type KaminoPosition struct {
-	Slot, RefreshedSlot int64
-	HasPosition         bool
-	// ObligationPresent is false only when the observer saw the lane's
-	// obligation account absent from its confirmed batch. A flat decode of a
-	// missing account must never be mistaken for an observed flat position.
-	ObligationPresent       bool
+	Slot, RefreshedSlot     int64
+	HasPosition             bool
+	Obligation              obligationPresence
 	CollateralDepositedRaw  uint64
 	DebtRaw                 uint64
 	RedeemablePrimeRaw      uint64
@@ -78,6 +75,10 @@ type KaminoPosition struct {
 	EntryCapacityRaw         uint64
 	BorrowUtilizationBlocked bool
 	Oracles                  []string
+}
+
+func (p KaminoPosition) priced() bool {
+	return p.LiquidationThresholdBPS > 0 && littleInt(p.CollateralPriceSF[:]).Sign() > 0
 }
 
 type decodedKaminoObligation struct {
@@ -256,6 +257,8 @@ func (o decodedKaminoObligation) debtAtReserveRate(r decodedKaminoReserve) (uint
 	return ceilScaledBigFraction(accrued)
 }
 
+const entryLoopLTVPercent = 50
+
 func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error) {
 	if collateral.totalLiquiditySF == nil || collateral.depositLimitRaw == 0 || debt.borrowLimitRaw == 0 {
 		return 0, nil
@@ -272,10 +275,8 @@ func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error)
 	if err != nil {
 		return 0, err
 	}
-	// One 50%-LTV borrow and one redeposit consume 1.5x the initial
-	// collateral value. Floor this bound and the debt headroom bound.
-	byCollateral := new(big.Int).Mul(new(big.Int).SetUint64(remainingCollateralValue), big.NewInt(2))
-	byCollateral.Quo(byCollateral, big.NewInt(3))
+	byCollateral := new(big.Int).Mul(new(big.Int).SetUint64(remainingCollateralValue), big.NewInt(100))
+	byCollateral.Quo(byCollateral, big.NewInt(100+entryLoopLTVPercent))
 	remainingDebt := debt.borrowLimitRaw - debt.borrowedRaw
 	utilizationHeadroom, err := utilizationBorrowHeadroomRaw(debt)
 	if err != nil {
@@ -284,7 +285,8 @@ func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error)
 	if remainingDebt > utilizationHeadroom {
 		remainingDebt = utilizationHeadroom
 	}
-	byDebt := new(big.Int).Mul(new(big.Int).SetUint64(remainingDebt), big.NewInt(2))
+	byDebt := new(big.Int).Mul(new(big.Int).SetUint64(remainingDebt), big.NewInt(100))
+	byDebt.Quo(byDebt, big.NewInt(entryLoopLTVPercent))
 	if byCollateral.Cmp(byDebt) > 0 {
 		byCollateral.Set(byDebt)
 	}

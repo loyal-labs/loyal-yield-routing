@@ -79,7 +79,7 @@ func (b *book) views() []Snapshot {
 			PositionDebtRaw: l.debt, PositionDebtValueRaw: l.debt, PayoffDebtRaw: l.debt,
 			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr,
 			ChainUnix: b.now, BorrowCapacityKnown: true, BorrowUtilizationBlocked: l.blocked, AdditionalDebtRoomRaw: uint64(l.room),
-			ObligationPresenceKnown: true, ObligationPresent: !l.uninitialized}
+			Obligation: observedObligation(!l.uninitialized)}
 		copy(s.BorrowDebtPriceSF[:], leverageTestPriceBytes())
 		s.BorrowUSDCPriceSF, s.BorrowDebtDecimals = s.BorrowDebtPriceSF, 6
 		if l.coll > 0 {
@@ -98,7 +98,7 @@ func (b *book) views() []Snapshot {
 		}
 		if overflow, ok := overflowLaneOf(id); ok && s.HasPosition && overflowSourceBorrowClosed(s) {
 			o := b.lane(overflow)
-			s.OverflowRoomKnown, s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowObligationPresent = true, uint64(o.room), o.room, o.obligationPresent
+			s.OverflowRoom = &overflowBorrowRoom{DebtRaw: uint64(o.room), FlooredUSDCValue: o.room, Obligation: observedObligation(o.obligationPresent)}
 		}
 		level := b.in.Levels[id]
 		s.LeverageTargetLevel, s.LeverageUpApproved = level.Level, level.UpApproved && level.Level > 1

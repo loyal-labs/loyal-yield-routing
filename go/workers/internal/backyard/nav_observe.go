@@ -17,11 +17,9 @@ import (
 const voltrLPMintLength = 82
 
 // VoltrVaultBook is the vault book decoded independently of the adaptor and of
-// this worker's own arithmetic. It is the only admissible comparison input for
-// the M1 identity `totalValue == idle + custody + receipt.positionValue`.
+// this worker's own arithmetic.
 type VoltrVaultBook struct {
 	voltr.Vault
-	HighWaterMarkKnown bool // the same-batch high-water mark was decoded
 }
 
 // LPTotalsRaw includes all unharvested fee LP and dead weight in the supply
@@ -59,7 +57,7 @@ func decodeVoltrVaultBook(v *Vault, account ConfirmedAccount) (VoltrVaultBook, e
 		vault.Manager != solanaKey(v.squads) || vault.Admin != solanaKey(bridgeSettingsSigner) {
 		return VoltrVaultBook{}, fmt.Errorf("Voltr vault asset, LP, manager, or admin identity drifted")
 	}
-	return VoltrVaultBook{Vault: vault, HighWaterMarkKnown: true}, nil
+	return VoltrVaultBook{Vault: vault}, nil
 }
 
 func decodeVoltrLPSupply(v *Vault, account ConfirmedAccount) (uint64, error) {
@@ -87,7 +85,7 @@ type RouteNAVSnapshot struct {
 	DebtIdleValueRaw        uint64
 	PositionCollateralValue uint64
 	PositionDebtValue       uint64
-	ObligationPresent       bool
+	Obligation              obligationPresence
 	Receipt                 voltr.StrategyReceipt
 	Voltr                   VoltrVaultBook
 	LPSupplyRaw             uint64
@@ -506,9 +504,9 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		TotalVaultNAVRaw: custodies.VoltrIdleRaw + uint64(nav.Raw), PriorReportedNAVRaw: receipt.PositionValueRaw,
 		PriorReportUpdatedTS: receipt.LastUpdatedTS,
 		PrimeIdleValueRaw:    primeIdleValue, PositionCollateralValue: collateralValue, PositionDebtValue: debtValue,
-		DebtIdleValueRaw:  debtIdleValue,
-		ObligationPresent: obligationAccount.Lamports != 0,
-		Receipt:           receipt, Voltr: vault, LPSupplyRaw: lpSupply,
+		DebtIdleValueRaw: debtIdleValue,
+		Obligation:       observedObligation(obligationAccount.Lamports != 0),
+		Receipt:          receipt, Voltr: vault, LPSupplyRaw: lpSupply,
 		SnapshotDigest:  nav.SnapshotDigest,
 		Report:          BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
 		OtherLanesState: strings.Join(otherState, "|"),

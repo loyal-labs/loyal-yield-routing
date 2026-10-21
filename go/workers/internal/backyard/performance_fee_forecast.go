@@ -9,7 +9,7 @@ import (
 const selectorLiveSampleInterval = 15 * time.Second
 
 func selectorFeeBaselineKnown(s Snapshot) bool {
-	if !s.VoltrHighWaterMarkKnown || !approvedVoltrFeeTerms(s) || s.VoltrTotalValueRaw < 0 ||
+	if !approvedVoltrFeeTerms(s) || s.VoltrTotalValueRaw < 0 ||
 		s.LPSupplyInclFeesRaw <= 0 || s.FeeAccumulatorRaw < 0 || s.FeeAccumulatorRaw > s.LPSupplyInclFeesRaw {
 		return false
 	}

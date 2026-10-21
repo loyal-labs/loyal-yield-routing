@@ -44,9 +44,13 @@ type tickRuntime struct {
 	watchRoom               func([]roomWatch, func(roomUpdate))
 }
 
-type productionJournal interface {
+type journalReader interface {
 	PostMutationNAVRequired(ctx context.Context, routeKey string) (bool, error)
 	ReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error)
+}
+
+type productionJournal interface {
+	journalReader
 	RecordPositionSnapshot(ctx context.Context, routeKey string, observation Observation) error
 }
 
@@ -63,12 +67,10 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	if err != nil {
 		return Observation{}, err
 	}
-	if err := p.enrich(ctx, &observation); err != nil {
+	if err := enrichObservation(ctx, p.journal, p.routeKey, p.identity, &observation); err != nil {
 		return Observation{}, err
 	}
-	// Integrity or health failures carry no decodable valuation. Preserve the
-	// last good position projection; the hold decision is the durable record.
-	if observation.Snapshot.StrategyReceiptIntegrityFault || observation.Snapshot.ManualReason != "" {
+	if !observation.Snapshot.valued() {
 		return observation, nil
 	}
 	if err := p.journal.RecordPositionSnapshot(ctx, p.routeKey, observation); err != nil {
@@ -77,16 +79,16 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	return observation, nil
 }
 
-func (p productionObserveState) enrich(ctx context.Context, observation *Observation) error {
+func enrichObservation(ctx context.Context, journal journalReader, routeKey string, identity func(context.Context) (programIdentityObservation, error), observation *Observation) error {
 	if observation != nil && observation.Snapshot.Trustful {
 		return nil
 	}
 	var journalErr, identityErr error
-	var identity programIdentityObservation
+	var observed programIdentityObservation
 	var reads sync.WaitGroup
 	reads.Add(2)
-	go func() { defer reads.Done(); journalErr = p.mergeJournal(ctx, observation) }()
-	go func() { defer reads.Done(); identity, identityErr = p.identity(ctx) }()
+	go func() { defer reads.Done(); journalErr = mergeJournal(ctx, journal, routeKey, observation) }()
+	go func() { defer reads.Done(); observed, identityErr = identity(ctx) }()
 	reads.Wait()
 	if journalErr != nil {
 		return journalErr
@@ -94,7 +96,7 @@ func (p productionObserveState) enrich(ctx context.Context, observation *Observa
 	if identityErr != nil {
 		return identityErr
 	}
-	applyProgramIdentityObservation(observation, identity)
+	applyProgramIdentityObservation(observation, observed)
 	return nil
 }
 
@@ -102,17 +104,17 @@ func (p productionObserveState) enrich(ctx context.Context, observation *Observa
 // construction refresh. It is shared with the outer observation so a refresh
 // cannot accidentally decide from a raw NAV snapshot with default journal
 // state.
-func (p productionObserveState) mergeJournal(ctx context.Context, observation *Observation) error {
+func mergeJournal(ctx context.Context, journal journalReader, routeKey string, observation *Observation) error {
 	if observation == nil {
 		return fmt.Errorf("production observation is nil")
 	}
 	var required bool
-	var journal ReconciledBridgeJournalState
+	var state ReconciledBridgeJournalState
 	var requiredErr, journalErr error
 	var reads sync.WaitGroup
 	reads.Add(2)
-	go func() { defer reads.Done(); required, requiredErr = p.journal.PostMutationNAVRequired(ctx, p.routeKey) }()
-	go func() { defer reads.Done(); journal, journalErr = p.journal.ReconciledBridgeJournal(ctx, p.routeKey) }()
+	go func() { defer reads.Done(); required, requiredErr = journal.PostMutationNAVRequired(ctx, routeKey) }()
+	go func() { defer reads.Done(); state, journalErr = journal.ReconciledBridgeJournal(ctx, routeKey) }()
 	reads.Wait()
 	if requiredErr != nil {
 		return requiredErr
@@ -121,16 +123,16 @@ func (p productionObserveState) mergeJournal(ctx context.Context, observation *O
 		return journalErr
 	}
 	observation.Snapshot.PostMutationNAVRequired = required
-	observation.Snapshot.JournalSequenceKnown = journal.TicketSequenceKnown
-	observation.Snapshot.JournalReconciledSequenceRaw = journal.TicketSequenceRaw
-	observation.Snapshot.JournalArmedNAVKnown = journal.ArmedNAVKnown
-	observation.Snapshot.JournalArmedNAVRaw = journal.ArmedNAVRaw
-	observation.Snapshot.JournalArmedNAVReturnDataMissing = journal.ArmedNAVReturnDataMissing
-	observation.Snapshot.JournalArmedNAVMalformed = journal.ArmedNAVMalformed
-	observation.Snapshot.StagedAmountRaw = journal.StagedAmountRaw
-	observation.Snapshot.StagedAmountKnown = journal.StagedAmountKnown
-	observation.Snapshot.StageTransient = journal.StageAfterTicket
-	observation.Snapshot.CapitalMutated = journal.MutationAfterReport
+	observation.Snapshot.JournalSequenceKnown = state.TicketSequenceKnown
+	observation.Snapshot.JournalReconciledSequenceRaw = state.TicketSequenceRaw
+	observation.Snapshot.JournalArmedNAVKnown = state.ArmedNAVKnown
+	observation.Snapshot.JournalArmedNAVRaw = state.ArmedNAVRaw
+	observation.Snapshot.JournalArmedNAVReturnDataMissing = state.ArmedNAVReturnDataMissing
+	observation.Snapshot.JournalArmedNAVMalformed = state.ArmedNAVMalformed
+	observation.Snapshot.StagedAmountRaw = state.StagedAmountRaw
+	observation.Snapshot.StagedAmountKnown = state.StagedAmountKnown
+	observation.Snapshot.StageTransient = state.StageAfterTicket
+	observation.Snapshot.CapitalMutated = state.MutationAfterReport
 	return nil
 }
 
@@ -159,7 +161,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		observeWithdrawalHealth: func(ctx context.Context) (Observation, error) {
 			o, err := state.batch(ctx)
 			if err == nil {
-				err = state.enrich(ctx, &o)
+				err = enrichObservation(ctx, state.journal, state.routeKey, state.identity, &o)
 			}
 			return o, err
 		},
@@ -249,7 +251,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		w.holds.note(Snapshot{}, operation.StrategyKey, "", "")
 		w.events.noteAction(operation.Decision.Action)
 		if err := w.runtime.advance(ctx, *operation); err != nil {
-			if operation.BroadcastIntentRecorded || !preBroadcastStatus(operation.Status) {
+			if operation.BroadcastIntentRecorded || !operation.Status.preBroadcast() {
 				return &afterBroadcastError{err}
 			}
 			return err
@@ -291,7 +293,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	w.holds.note(observation.Snapshot, decision.StrategyKey, "", "")
 	logStage("observe_decide", tickStart)
 	request, effects, prepared, err := w.prepare(ctx, decision, observation)
-	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.ManualReason == "" && !prepared.Snapshot.StrategyReceiptIntegrityFault {
+	if prepared.Validate() == nil && prepared.Snapshot.Fresh && prepared.Snapshot.valued() {
 		healthObservation = prepared
 	}
 	logStage("prepare", tickStart)
@@ -316,8 +318,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		w.noteHold(observation.Snapshot, decision.StrategyKey, err)
 		return w.journalTickError(ctx, record.OperationID, err)
 	}
-	// The signed wire is persisted: send it now through the same path a
-	// restart takes. A newly signed report has only 32 slots to land.
 	pending, err := w.runtime.loadNonterminal(ctx, w.routeKey)
 	if err != nil || pending == nil {
 		return err
@@ -405,12 +405,6 @@ type afterBroadcastError struct{ err error }
 
 func (e *afterBroadcastError) Error() string { return e.err.Error() }
 func (e *afterBroadcastError) Unwrap() error { return e.err }
-
-// preBroadcastStatus reports states in which lifecycle recovery can still
-// only refuse or retire the wire: a send first commits broadcast_intent.
-func preBroadcastStatus(status OperationStatus) bool {
-	return status == Decided || status == Built || status == Simulated || status == Signed
-}
 
 func isPreSendHold(err error) bool {
 	var hold *BudgetHold

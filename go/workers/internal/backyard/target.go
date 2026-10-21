@@ -332,7 +332,7 @@ func overflowMove(lanes []targetLane, i int, in targetInputs) (string, int64) {
 			return "", 0
 		}
 	}
-	if leverageUpLevel(withLevel(s, l.level.Level)) == 0 || !overflowSourceBorrowClosed(s) || !s.OverflowRoomKnown || s.OverflowRoomRaw < leverageMinimumBorrowRaw ||
+	if leverageUpLevel(withLevel(s, l.level.Level)) == 0 || !overflowSourceBorrowClosed(s) || s.OverflowRoom == nil || s.OverflowRoom.DebtRaw < leverageMinimumBorrowRaw ||
 		dest.Level < 1.5 || !dest.UpApproved {
 		return "", 0
 	}
@@ -568,7 +568,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 		return d(DeleverRouteStep, leverageDownPartialReason, stepDownMarker)
 	}
 	if t.MoveRaw > 0 {
-		if !s.OverflowObligationPresent {
+		if s.OverflowRoom == nil || s.OverflowRoom.Obligation != obligationPresent {
 			return Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: t.MoveTo,
 				IdempotencyKey: fmt.Sprintf("%s:initialize:%s", s.ObservationID, t.MoveTo)}
 		}
@@ -701,7 +701,7 @@ func custodyDiscipline(s Snapshot) (Decision, bool) {
 const obligationAbsentHoldReason = "obligation_absent"
 
 func obligationPrerequisiteHold(s Snapshot, initializationReady func(Snapshot) bool) (Decision, bool) {
-	if !s.ObligationPresenceKnown || s.ObligationPresent || (s.Target.Rule != ruleEntry && s.Target.Rule != ruleCustody && !laneInFlight(s)) {
+	if s.Obligation != obligationAbsent || (s.Target.Rule != ruleEntry && s.Target.Rule != ruleCustody && !laneInFlight(s)) {
 		return Decision{}, false
 	}
 	if initializationReady(s) {

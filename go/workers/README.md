@@ -21,6 +21,7 @@ planner with no database, signing or RPC.
 It also supports single `fleet` and `backyard` decisions. This is a modeled
 decision, not a realized return. Fixture provenance and proof limits are listed
 in `testdata/manifest.json`.
+`-kind backyard` replays snapshots saved at or after #443, so re-capture older files.
 
 Secrets are read only from systemd credential files
 (`$CREDENTIALS_DIRECTORY/<NAME>`, see `deploy/hetzner/`); everything else is
