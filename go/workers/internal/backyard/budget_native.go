@@ -16,7 +16,7 @@ var budgetWrappedSOLMint = solana.WrappedSol.String()
 
 func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *View, minimumSlot int64) (BudgetPrice, error) {
 	if rpc == nil || minimumSlot <= 0 {
-		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
+		return BudgetPrice{}, staleHold("invalid_price_observation_request")
 	}
 	reference := usdcReference
 	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: fleet.KaminoMainMarket}
@@ -54,7 +54,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 		return BudgetPrice{}, err
 	}
 	if price.Decimals != 9 {
-		return BudgetPrice{}, budgetHold("native_sol_decimal_mismatch")
+		return BudgetPrice{}, staleHold("native_sol_decimal_mismatch")
 	}
 	price.Mint = nativeSOLBudgetAsset
 	price.TokenProgram = "11111111111111111111111111111111"

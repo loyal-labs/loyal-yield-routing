@@ -175,7 +175,7 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		return
 	}
 	p.lastEvaluateFailure = ""
-	for _, line := range p.levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(p.levWatchSummary) >= time.Hour, worker.manifest.vault.AdminPerformanceFeeBPS, observed.Snapshot) {
+	for _, line := range p.levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(p.levWatchSummary) >= time.Hour, worker.manifest.vault.AdminPerformanceFeeBPS, &observed.Snapshot) {
 		_, _ = fmt.Fprintln(e.out, line)
 	}
 	if time.Since(p.levWatchSummary) >= time.Hour {

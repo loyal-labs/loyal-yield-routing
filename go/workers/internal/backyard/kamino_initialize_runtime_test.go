@@ -140,11 +140,11 @@ func TestWorkerDispatchesInitializationAfterTheRecord(t *testing.T) {
 		t.Fatal(order)
 	}
 	w.runtime.build = func(context.Context, string, any, ExpectedEffects) error {
-		return budgetHold("initializer_build_refused")
+		return staleHold("initializer_build_refused")
 	}
 	journaled := false
-	w.runtime.recordBudgetHold = func(context.Context, string, *PreSendHold) error { journaled = true; return nil }
-	assertBudgetHold(t, w.Tick(context.Background()), "initializer_build_refused")
+	w.runtime.recordPreSendHold = func(context.Context, string, *PreSendHold) error { journaled = true; return nil }
+	assertPreSendHold(t, w.Tick(context.Background()), "initializer_build_refused")
 	if !journaled {
 		t.Fatal("build hold not recorded")
 	}

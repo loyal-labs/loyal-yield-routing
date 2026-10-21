@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// assertBudgetHold wants a hold whose reason (one of the enum) or cause is
+// assertPreSendHold wants a hold whose reason (one of the enum) or cause is
 // reason.
-func assertBudgetHold(t *testing.T, err error, reason string) {
+func assertPreSendHold(t *testing.T, err error, reason string) {
 	t.Helper()
 	var hold *PreSendHold
 	if !errors.As(err, &hold) || string(hold.Reason) != reason && holdCause(hold) != reason {

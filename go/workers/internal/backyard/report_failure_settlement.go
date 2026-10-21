@@ -83,7 +83,7 @@ type finalizedFailureSettlement struct {
 }
 
 func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byte, signature, wireHash, messageHash string, expectedDelegate publicKey) error {
-	fail := func() error { return budgetHold("unproven_finalized_failure_receipt") }
+	fail := func() error { return staleHold("unproven_finalized_failure_receipt") }
 	if receipt.Slot <= 0 || receipt.Meta == nil || receipt.Meta.Fee == nil || *receipt.Meta.Fee == 0 ||
 		len(receipt.Meta.Err) == 0 || string(receipt.Meta.Err) == "null" ||
 		len(receipt.Transaction) != 2 || receipt.Transaction[1] != "base64" || sha256Bytes(wire) != wireHash {
@@ -144,7 +144,7 @@ func (d *Database) settleFinalizedFailure(ctx context.Context, operation Persist
 		return false, err
 	}
 	if status != string(operation.Status) || signature != operation.TransactionSignature {
-		return false, budgetHold("failed_settlement_journal_changed")
+		return false, staleHold("failed_settlement_journal_changed")
 	}
 	if validateFinalizedFailureReceipt(receipt, wire, signature, wireHash, messageHash, delegate) != nil {
 		return false, nil

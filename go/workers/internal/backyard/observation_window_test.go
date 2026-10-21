@@ -73,7 +73,7 @@ func TestWidenedWindowStillBoundsPriceAge(t *testing.T) {
 	}
 	assertBudgetHoldReason := func(err error) {
 		t.Helper()
-		assertBudgetHold(t, err, "missing_stale_or_mismatched_usdc_valuation")
+		assertPreSendHold(t, err, "missing_stale_or_mismatched_usdc_valuation")
 	}
 	_, err := p.valueUpper(1, "m", "p", 150)
 	assertBudgetHoldReason(err)

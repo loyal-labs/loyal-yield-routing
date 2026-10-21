@@ -20,7 +20,7 @@ func TestPerformanceFeeAPYUsesNetProfit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := LaneEconomics{NativeAPY: tc.native, BorrowCurve: []BorrowCurvePoint{{0, 0}, {10000, 0}}, DebtSupplyRaw: 1e12}
-			got, ok := leverageLevelAPY(m, 1, 1_000_000, false, rwa.AdminPerformanceFeeBPS)
+			got, ok := leverageLevelAPY(m, 1, 1_000_000, nil, rwa.AdminPerformanceFeeBPS)
 			if !ok || math.Abs(got-tc.want) > 1e-12 {
 				t.Fatalf("fee-paying APY=%v ok=%t, want %v", got, ok, tc.want)
 			}
@@ -343,7 +343,7 @@ func TestPerformanceFeeUnarmedCannotWriteSelectorAuthority(t *testing.T) {
 			in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("unarmed-canary")), Lane: in.Markets[0].Lane, EquityRaw: 10_000_000, ExpiresAt: in.Now.Add(time.Minute)}
 		}
 		_, err := (&Database{}).RecordSelectorEvaluation(context.Background(), productionRouteKey, in, in.Snapshot.Slot)
-		assertBudgetHold(t, err, "selector_fee_evidence_unavailable")
+		assertPreSendHold(t, err, "selector_fee_evidence_unavailable")
 	}
 }
 

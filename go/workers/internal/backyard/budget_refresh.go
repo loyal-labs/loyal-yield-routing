@@ -23,7 +23,7 @@ func budgetReserveRefreshInstructions(v *Vault, lane string) ([]compiledInstruct
 	for _, id := range []string{lane, PrimeUSDCLaneID} {
 		prefix := kaminoPrimeUSDCRefreshInstructionsForRoute(v, id)
 		if len(prefix) != 3 {
-			return nil, budgetHold("price_refresh_binding_unavailable")
+			return nil, staleHold("price_refresh_binding_unavailable")
 		}
 		for _, instruction := range prefix[:2] {
 			reserve := instruction.accounts[0].key
@@ -74,7 +74,7 @@ func simulateBudgetRefreshInstructions(ctx context.Context, c *chain.Client, ins
 func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain.Client, instructions []compiledInstruction, addresses []string, optional map[string]struct{}, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	for _, instruction := range instructions {
 		if instruction.program != publicKey(kamino.ProgramID) || !bytesEqual(instruction.data, kamino.RefreshReserveDiscriminator[:]) || len(instruction.accounts) != 6 {
-			return 0, nil, budgetHold("invalid_price_refresh_instruction")
+			return 0, nil, staleHold("invalid_price_refresh_instruction")
 		}
 	}
 	// The simulating node replaces the zero blockhash with its own recent one,
@@ -120,7 +120,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 		return 0, nil, &PreSendHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": string(transactionError)}}
 	}
 	if err != nil {
-		return 0, nil, budgetHoldFrom(err, "price_refresh_simulation_unavailable")
+		return 0, nil, staleHoldFrom(err, "price_refresh_simulation_unavailable")
 	}
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for i, a := range simulated.Accounts {
@@ -129,7 +129,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 				accounts[i] = ConfirmedAccount{Address: addresses[i]}
 				continue
 			}
-			return 0, nil, budgetHold("price_refresh_capture_incomplete")
+			return 0, nil, staleHold("price_refresh_capture_incomplete")
 		}
 		accounts[i] = confirmedAccount(addresses[i], a)
 	}

@@ -77,15 +77,15 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	}
 	candidateSnapshot := s
 	candidateSnapshot.LeverageTargetLevel = out.Next
-	level := leverageUpLevel(candidateSnapshot)
-	if level > 0 && level < out.Next {
+	level, up := leverageUpLevel(candidateSnapshot)
+	if up && level < out.Next {
 		out.Next = max(level, out.Current)
 	}
 	raw := leverageDesiredRaw(s, level)
 	if raw < leverageMinimumBorrowRaw {
-		if level > 0 && !s.BorrowCapacityKnown {
+		if up && !s.BorrowCapacityKnown {
 			out.Reason = leverageReasonCapacityUnknown
-		} else if level > 0 {
+		} else if up {
 			out.Reason = leverageReasonStepBelowMinimum
 		}
 		return out, true
@@ -123,8 +123,9 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	}
 	out.Cost = stepCost
 	years := p.Horizon.Hours() / (365.25 * 24)
-	out.GainRaw = upStepGain(market, float64(s.PositionCollateralValueRaw), float64(s.PositionDebtValueRaw), float64(liability), float64(proceeds),
-		math.Log1p(market.CurrentBorrowAPY), apr, float64(stepCost.TotalMicros), years, s.ApprovedAdminPerformanceFeeBPS)
+	out.GainRaw = upStepGain(market, upStep{CollateralMicros: float64(s.PositionCollateralValueRaw), DebtMicros: float64(s.PositionDebtValueRaw),
+		LiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepAPR: math.Log1p(market.CurrentBorrowAPY), APR: apr,
+		CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS})
 	if !finite(out.GainRaw) {
 		out = out.held(leverageReasonFeeForecastUnavailable)
 		out.GainRaw = 0
@@ -138,22 +139,31 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	return out
 }
 
-// upStepGain is the live rule's gain of one up step over the horizon: a
-// position of collateral and debt (USDC) borrowing liability more, proceeds
-// of it converted into collateral, every debt at apr after the step, against
-// KEEP's gross income with its debt at keepAPR; the performance fee is taken
-// on a positive difference (a vault below its high-water mark pays less,
-// never more), then the step's cost. The step pays when it is positive.
-func upStepGain(m LaneEconomics, collateral, debt, liability, proceeds, keepAPR, apr, cost, years float64, feeBPS int64) float64 {
-	keepGross := forecastGain(collateral, collateral, debt, m, keepAPR, years)
+// upStep is one candidate up move, every amount in USDC micros: a position
+// of collateral and debt borrowing liability more, proceeds of it converted
+// into collateral, every debt at APR after the step, against KEEP's income
+// with its debt at KeepAPR.
+type upStep struct {
+	CollateralMicros, DebtMicros, LiabilityMicros, ProceedsMicros float64
+	KeepAPR, APR                                                  float64
+	CostMicros, Years                                             float64
+	FeeBPS                                                        int64
+}
+
+// upStepGain is the live rule's gain of one up step over the horizon; the
+// performance fee is taken on a positive difference (a vault below its
+// high-water mark pays less, never more), then the step's cost. The step pays
+// when it is positive.
+func upStepGain(m LaneEconomics, u upStep) float64 {
+	keepGross := forecastGain(u.CollateralMicros, u.CollateralMicros, u.DebtMicros, m, u.KeepAPR, u.Years)
 	// The held collateral is not reduced by the move; its cost is. Pass the
 	// collateral the move leaves earning, net of that cost; the candidate's
 	// income is its gain before the cost is charged.
-	cost = math.Ceil(cost)
-	candidate := pilotForecastEconomics(pilotEconomics{Debt: debt + liability, Proceeds: proceeds, APR: apr}, collateral-cost, m, years, int64(cost))
+	cost := math.Ceil(u.CostMicros)
+	candidate := pilotForecastEconomics(pilotEconomics{Debt: u.DebtMicros + u.LiabilityMicros, Proceeds: u.ProceedsMicros, APR: u.APR}, u.CollateralMicros-cost, m, u.Years, int64(cost))
 	extra := candidate.Gain + cost - keepGross
 	if extra > 0 {
-		extra *= 1 - float64(feeBPS)/10_000
+		extra *= 1 - float64(u.FeeBPS)/10_000
 	}
 	return extra - cost
 }

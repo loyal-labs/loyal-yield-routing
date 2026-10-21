@@ -29,17 +29,17 @@ const kaminoPayoffMaxObservationWindows = 6
 func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, slot, windows int64) (KaminoPayoffBound, error) {
 	var bound KaminoPayoffBound
 	if windows < 1 || windows > kaminoPayoffMaxObservationWindows {
-		return bound, budgetHold("invalid_payoff_execution_window")
+		return bound, staleHold("invalid_payoff_execution_window")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
 	if slot <= 0 || slot > math.MaxInt64-windows*observationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
 		clock.Executable || len(clock.Data) != 40 {
-		return bound, budgetHold("invalid_payoff_clock")
+		return bound, staleHold("invalid_payoff_clock")
 	}
 	clockSlot := binary.LittleEndian.Uint64(clock.Data[:8])
 	now := int64(binary.LittleEndian.Uint64(clock.Data[32:40]))
 	if clockSlot < uint64(slot) || clockSlot > uint64(slot)+1 || now <= 0 || now > math.MaxInt64-windows*kaminoPayoffWindowSeconds {
-		return bound, budgetHold("invalid_payoff_clock")
+		return bound, staleHold("invalid_payoff_clock")
 	}
 	reserveAccount := accountAt(accounts, route.Kamino.DebtReserve)
 	reserve, err := decodeKaminoReserve(reserveAccount, route.Kamino.DebtMint, route.Kamino)
@@ -52,11 +52,11 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	}
 	debt, err := obligation.debtAtReserveRate(reserve)
 	if err != nil || debt == 0 || reserve.refreshedSlot <= 0 || reserve.refreshedSlot > int64(clockSlot) {
-		return bound, budgetHoldFrom(err, "payoff_debt_state_unavailable")
+		return bound, staleHoldFrom(err, "payoff_debt_state_unavailable")
 	}
 	terms, err := kamino.DecodeReserve(chainAccount(reserveAccount, reserveAccount.Address))
 	if err != nil || terms.SupportedInterestTerms() != nil {
-		return bound, budgetHold("unsupported_payoff_interest_terms")
+		return bound, staleHold("unsupported_payoff_interest_terms")
 	}
 	basis := terms.InterestRateBasis
 	maximumRate, err := kaminoMaximumBorrowRate(terms)
@@ -70,7 +70,7 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	elapsed, unitsPerYear := bound.ThroughSlot-reserve.refreshedSlot, uint64(63_072_000)
 	if basis == kamino.TrueAPRBasis {
 		if updatedUnix <= 0 || updatedUnix > now {
-			return bound, budgetHold("invalid_payoff_refresh_timestamp")
+			return bound, staleHold("invalid_payoff_refresh_timestamp")
 		}
 		elapsed, unitsPerYear = bound.ThroughUnix-updatedUnix, 31_536_000
 	}
@@ -88,7 +88,7 @@ func kaminoMaximumBorrowRate(reserve kamino.Reserve) (uint64, error) {
 		util, rate := point.UtilizationRateBPS, point.BorrowRateBPS
 		if (i == 0 && util != 0) || (i == 10 && util != 10_000) || util > 10_000 ||
 			(i > 0 && ((previousUtil < 10_000 && util <= previousUtil) || util < previousUtil || rate < previousRate)) {
-			return 0, budgetHold("invalid_payoff_borrow_curve")
+			return 0, staleHold("invalid_payoff_borrow_curve")
 		}
 		maximumRate = max(maximumRate, uint64(rate))
 		previousUtil, previousRate = util, rate
@@ -102,7 +102,7 @@ func kaminoMaximumBorrowRate(reserve kamino.Reserve) (uint64, error) {
 // handled by reobservation, not an assumption that the current curve is permanent.
 func upperKaminoCompoundedDebtSF(debtSF *big.Int, annualBPS, elapsed, unitsPerYear uint64) (uint64, error) {
 	if debtSF == nil || debtSF.Sign() <= 0 || debtSF.BitLen() > 128 || unitsPerYear == 0 {
-		return 0, budgetHold("invalid_payoff_interest_input")
+		return 0, staleHold("invalid_payoff_interest_input")
 	}
 	one := new(big.Int).Lsh(big.NewInt(1), kamino.FractionBits)
 	ceilDivide := func(n, d *big.Int) *big.Int {
@@ -114,19 +114,19 @@ func upperKaminoCompoundedDebtSF(debtSF *big.Int, annualBPS, elapsed, unitsPerYe
 		if n&1 != 0 {
 			factor = ceilDivide(new(big.Int).Mul(factor, base), one)
 			if factor.BitLen() > 128 {
-				return 0, budgetHold("payoff_interest_overflow")
+				return 0, staleHold("payoff_interest_overflow")
 			}
 		}
 		if n > 1 {
 			base = ceilDivide(new(big.Int).Mul(base, base), one)
 			if base.BitLen() > 128 {
-				return 0, budgetHold("payoff_interest_overflow")
+				return 0, staleHold("payoff_interest_overflow")
 			}
 		}
 	}
 	upper := ceilDivide(new(big.Int).Mul(debtSF, factor), new(big.Int).Mul(one, one))
 	if !upper.IsUint64() || upper.Uint64() > math.MaxInt64 {
-		return 0, budgetHold("payoff_interest_overflow")
+		return 0, staleHold("payoff_interest_overflow")
 	}
 	return upper.Uint64(), nil
 }

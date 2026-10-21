@@ -39,14 +39,14 @@ func kaminoBorrowEffects(accounts []ConfirmedAccount, route RuntimeRoute, receiv
 		return effects, err
 	}
 	if effects.Accounts[0].AfterRaw < fee {
-		return effects, budgetHold("borrow_supply_cannot_cover_fee")
+		return effects, staleHold("borrow_supply_cannot_cover_fee")
 	}
 	a := accountAt(accounts, route.DebtFeeReceiver)
 	mint, _ := decodeBase58PublicKey(route.Kamino.DebtMint)
 	authority, _ := decodeBase58PublicKey(route.Kamino.MarketAuthority)
 	custody, err := DecodeTokenCustody(a.Owner, a.Data, mint, authority)
 	if err != nil || a.Owner != route.DebtTokenProgram || a.Lamports == 0 || a.Executable || custody.Raw > math.MaxUint64-fee {
-		return effects, budgetHoldFrom(err, "invalid_borrow_fee_custody")
+		return effects, staleHoldFrom(err, "invalid_borrow_fee_custody")
 	}
 	effects.Kind = "kamino-borrow"
 	effects.Accounts[0].AfterRaw -= fee

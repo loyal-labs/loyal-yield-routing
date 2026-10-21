@@ -83,7 +83,7 @@ func TestLeverageWatchPricesSpreadForNonSourcePYUSDLane(t *testing.T) {
 	auto.DebtRawPerUSDCRaw = 1.0001
 	source := leverageSnapshot(1.5) // the vault holds AUTO
 	var w leverageWatch
-	w.observe([]LaneEconomics{auto, prime}, autoAUTOPYUSD.Lane, 1_000_000_000, true, rwa.AdminPerformanceFeeBPS, source)
+	w.observe([]LaneEconomics{auto, prime}, autoAUTOPYUSD.Lane, 1_000_000_000, true, rwa.AdminPerformanceFeeBPS, &source)
 	spreads := map[string]*int64{}
 	for _, lane := range w.summary {
 		spreads[lane.Lane] = lane.SpreadBPS
@@ -99,7 +99,7 @@ func TestLeverageWatchPricesSpreadForNonSourcePYUSDLane(t *testing.T) {
 	}
 	// A non-USDC lane with no verified price has no levered column.
 	prime.DebtRawPerUSDCRaw = 0
-	if _, ok := leverageSpread(prime, 1.5, 1_000_000_000, false); ok {
+	if _, ok := leverageSpread(prime, 1.5, 1_000_000_000, nil); ok {
 		t.Fatal("unpriced non-USDC spread reported")
 	}
 }

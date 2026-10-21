@@ -38,11 +38,11 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifes
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	if rpc == nil || decision.Action != InitializeKaminoObligation || decision.Validate() != nil {
-		return o, KaminoInitializationRequest{}, budgetHold("invalid_initializer_preparation")
+		return o, KaminoInitializationRequest{}, staleHold("invalid_initializer_preparation")
 	}
 	rent, err := rpc.RentExempt(ctx, kamino.ObligationSize)
 	if err != nil {
-		return o, KaminoInitializationRequest{}, budgetHoldFrom(err, "initializer_rent_unavailable")
+		return o, KaminoInitializationRequest{}, staleHoldFrom(err, "initializer_rent_unavailable")
 	}
 	blockhash, err := latestBlockhash(ctx, rpc)
 	if err != nil {
@@ -61,7 +61,7 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifes
 	}
 	r.MaximumFeeLamports, err = chain.MessageFee(message)
 	if err != nil {
-		return o, r, budgetHoldFrom(err, "message_fee_unpriced")
+		return o, r, staleHoldFrom(err, "message_fee_unpriced")
 	}
 	return o, r, nil
 }
