@@ -112,16 +112,7 @@ func heldLaneLeverage(o Observation) []laneLeverage {
 func (w *Worker) roomObserved(u roomUpdate) {
 	w.events.roomObserved(u)
 	if u.opened {
-		w.notifyRoomOpened()
-	}
-}
-
-// notifyRoomOpened wakes the tick loop like a selector commit does: a queued
-// wake survives an active tick.
-func (w *Worker) notifyRoomOpened() {
-	select {
-	case w.wake <- struct{}{}:
-	default:
+		w.requestTick()
 	}
 }
 
