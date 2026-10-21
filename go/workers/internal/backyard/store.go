@@ -63,10 +63,9 @@ const writerLockKey = `hashtextextended('loyal-family:'||$1, 0)`
 // Every read and write of the engine goes through that session. The pool
 // never opens a second one: once the session ends, every later call fails with
 // errWriterSessionLost, the engine exits, and its supervisor restarts it into
-// a fresh wait. databaseURL must be the direct (non-pooler) DSN: a pooler
-// hands the session to strangers.
-func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
-	return openWriter(ctx, databaseURL, true)
+// a fresh wait.
+func OpenDatabase(ctx context.Context, databaseURL engine.DirectDSN) (*Database, error) {
+	return openWriter(ctx, string(databaseURL), true)
 }
 
 func openOperatorWriter(ctx context.Context, databaseURL string) (*Database, error) {

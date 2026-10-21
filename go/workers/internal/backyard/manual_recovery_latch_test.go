@@ -3,6 +3,7 @@ package backyard
 import (
 	"context"
 	"errors"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"os"
 	"strings"
 	"testing"
@@ -122,7 +123,7 @@ func TestManualRecoveryLatchLifecycleAgainstDatabase(t *testing.T) {
 
 	// (d) Restart simulation: a new worker state object over the same database
 	// still sees the stop.
-	reopened, err := OpenDatabase(ctx, url)
+	reopened, err := OpenDatabase(ctx, engine.DirectDSN(url))
 	if err != nil {
 		t.Fatal(err)
 	}

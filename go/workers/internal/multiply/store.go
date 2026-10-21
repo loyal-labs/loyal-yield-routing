@@ -799,7 +799,7 @@ func strategyKeyText(key StrategyKey) *string {
 	if !key.Valid() {
 		return nil
 	}
-	value := string(key)
+	value := key.String()
 	return &value
 }
 
@@ -834,15 +834,16 @@ func decodeOperation(rows interface{ Scan(...any) error }) (*MultiplyOperation, 
 	}
 	operation := &MultiplyOperation{
 		OperationID: operationID, RouteKey: routeKey, Cycle: uint64(cycle),
-		EngineVersion: engineVersion, Action: MultiplyAction(action), StrategyKey: StrategyKey(""),
+		EngineVersion: engineVersion, Action: MultiplyAction(action), StrategyKey: NoStrategy,
 		Status:    OperationStatus(status),
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}
 	if strategyKey != nil {
-		operation.StrategyKey = StrategyKey(*strategyKey)
-		if !operation.StrategyKey.Valid() {
+		key, ok := ParseStrategyKey(*strategyKey)
+		if !ok || !key.Valid() {
 			return nil, errors.New("operation strategy key is invalid")
 		}
+		operation.StrategyKey = key
 	}
 	if err := jsonUnmarshalStrict(rawEffects, &operation.ExpectedEffects); err != nil {
 		return nil, fmt.Errorf("operation expected effects: %w", err)
