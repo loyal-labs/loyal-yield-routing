@@ -121,6 +121,24 @@ func TestIdleResidueRidesBesideThePull(t *testing.T) {
 	}
 }
 
+func TestUnownedResidueDepositsWithThePull(t *testing.T) {
+	residue := newFreshScenario(t, "unowned-residue", 3)
+	topup := "itest-controller-topup-sig-unowned-residue"
+	residue.chain.receipts[topup] = ReceiptEvidence{Signature: topup, Slot: 870_002, Effects: []ReceiptEffect{
+		{TokenAccount: "itest-vault-usdc-unowned-residue", Mint: USDCMint, PreRaw: 5_000_003, PostRaw: 0},
+		{TokenAccount: "itest-liquidity-supply", Mint: USDCMint, PreRaw: 10, PostRaw: 5_000_013},
+	}}
+	worker, _ := residue.worker(t, ControllerDependencies{}, nil)
+	report, err := worker.Tick(t.Context())
+	if err != nil || report.Outcome.ExecutionsCompleted != 1 {
+		t.Fatalf("unowned residue blocked the deposit: %+v %v", report.Outcome, err)
+	}
+	var deposited int64
+	if err := residue.store.pool.QueryRow(t.Context(), `SELECT amount_raw FROM loyal_yield.balance_sweep_transaction_attempts WHERE target_id=$1 AND operation_kind='top_up' AND attempt_state='confirmed'`, residue.target.TargetID).Scan(&deposited); err != nil || deposited != 5_000_003 {
+		t.Fatalf("top-up deposited %d, want the 5000000 pull plus the 3 residue: %v", deposited, err)
+	}
+}
+
 // The Go port claimed, then released idle-blocked slots: the slot went failed
 // with generic text and schedule repair cleared last_error, so the overdue
 // check could never see a stuck deposit after a fallback. The deferral now
