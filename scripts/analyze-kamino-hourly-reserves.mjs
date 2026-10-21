@@ -290,7 +290,6 @@ async function fetchJupiterCost(from, to) {
         samples.push(Math.max(0, 1 - (outUi * toPrice) / (inUi * fromPrice)));
       }
     } catch {
-      // Missing routes and public API throttles are treated as unavailable.
     }
     await sleep(250);
   }

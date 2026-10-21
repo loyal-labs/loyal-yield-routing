@@ -1,12 +1,3 @@
-// The post archive half of overrides/blog-data.ts. It lives in its own module
-// so the markdown stays out of the entry chunk: blog-data.ts reaches this file
-// only through a dynamic import inside its async functions, so Vite keeps the
-// ~145 KB of post bodies in one lazy chunk that /blog and its slugs pull and
-// the other pages never download.
-//
-// The glob pattern walks from src/overrides/ to apps/web's public/blog, whose
-// contents Vite also copies into dist verbatim (publicDir), so every post body
-// parsed here and every image it references ships in the build.
 import yaml from "js-yaml";
 import { z } from "zod";
 
@@ -68,7 +59,6 @@ function resolveMedia(slug: string, ref: string): string {
   return `/blog/${slug}/${ref.replace(/^\.\//, "")}`;
 }
 
-/** Parses one post.md keyed by its glob path; returns null if the key is off. */
 function loadPost(file: string, raw: string): BlogPostFull | null {
   const slug = /\/blog\/([^/]+)\/post\.md$/.exec(file)?.[1];
   if (!slug) {
@@ -104,9 +94,6 @@ function loadPost(file: string, raw: string): BlogPostFull | null {
   };
 }
 
-// Newest first. Parsed and sorted once at this module's init, which the
-// dynamic import runs at most once: the posts are frozen into the bundle,
-// there is nothing to cache lazily.
 export const allPosts: BlogPostFull[] = Object.entries(rawPosts)
   .map(([file, raw]) => loadPost(file, raw))
   .filter((post): post is BlogPostFull => post !== null)

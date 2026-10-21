@@ -1,9 +1,3 @@
-/**
- * One exact nonzero Phase-2 market deposit proof per invocation.  The same
- * worker is used for the five required market representatives; each bundle
- * contains only prerequisite PolicyCreates, one constrained USDC->collateral
- * swap, permissionless K-Lend refreshes, and one constrained deposit.
- */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

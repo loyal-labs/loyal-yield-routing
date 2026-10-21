@@ -15,7 +15,6 @@ recorded=${2:-}
 dir=${3:-}
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
 case $recorded in none) ;; *[!0-9a-f]* | '') recorded=bad ;; esac
-# finish removes dir: exactly one mktemp dir.
 case $dir in /tmp/loyal-monitoring.*/*) dir=bad ;; /tmp/loyal-monitoring.*) ;; *) dir=bad ;; esac
 if [ ${#sha} -ne 40 ] || [ "$recorded" = bad ] || [ "$dir" = bad ]; then
 	echo "usage: install-rules.sh <40-hex commit sha> <40-hex recorded sha|none> /tmp/loyal-monitoring.*" >&2
@@ -54,9 +53,6 @@ record() {
 	mv -f "$rules.sha.tmp" "$rules.sha"
 }
 
-# rules_loaded <since> <count> waits up to 30 s for a successful Prometheus
-# config reload at or after since, then prints the number of rules it serves
-# from $rules and fails unless that is count.
 rules_loaded() {
 	python3 - "$1" "$2" "$rules" <<'EOF'
 import json, sys, time, urllib.request

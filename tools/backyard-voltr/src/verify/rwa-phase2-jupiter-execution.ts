@@ -1,11 +1,3 @@
-/**
- * Exact, fail-closed construction of a Jupiter v0 Squads policy execution.
- *
- * This is deliberately not a Jupiter route builder.  It consumes the frozen
- * Phase-2 compiler row and the matching resolved-header row, proves that they
- * describe the same constrained instruction, then wraps that exact inner
- * instruction in Squads `executePolicyPayloadSync`.
- */
 import { createHash } from "node:crypto";
 
 import { executePolicyPayloadSync } from "@loyal-labs/loyal-smart-accounts-core/internal";
@@ -294,11 +286,6 @@ function compileInner(instruction: TransactionInstruction) {
   } as const;
 }
 
-/**
- * Build the exact Squads wrapper and resolve every declared ALT.  The caller
- * owns signing and simulation so it can place this transaction in a sequential
- * signed-unsent Helius bundle with its prerequisite PolicyCreate transaction.
- */
 export async function buildExactJupiterSquadsExecution(input: Readonly<{
   connection: Connection;
   compiledPolicy: unknown;
@@ -372,7 +359,6 @@ export async function buildExactJupiterSquadsExecution(input: Readonly<{
   };
 }
 
-/** Sign the constructed v0 execution and enforce that its declared ALTs are used. */
 export function signExactJupiterSquadsExecution(input: Readonly<{
   execution: ExactJupiterSquadsExecution;
   payer: Keypair;

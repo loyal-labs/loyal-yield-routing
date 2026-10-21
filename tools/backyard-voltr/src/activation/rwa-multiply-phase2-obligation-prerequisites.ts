@@ -1,9 +1,3 @@
-/**
- * Creates only absent exact Phase-2 K-Lend obligation PDAs through the current
- * Squads Settings authority.  Every write is independently signed, simulated,
- * persisted before send, confirmed, and decoded back.  It never installs or
- * changes a policy.
- */
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

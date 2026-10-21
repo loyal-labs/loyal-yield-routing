@@ -16,8 +16,6 @@ export type ImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, "src" | "widt
   style?: CSSProperties;
 };
 
-// Next's fill layout: the image is taken out of flow and stretched over its
-// (positioned) parent, keeping an object-fit the caller may set in style.
 export function fillStyle(style?: CSSProperties): CSSProperties {
   return {
     ...style,

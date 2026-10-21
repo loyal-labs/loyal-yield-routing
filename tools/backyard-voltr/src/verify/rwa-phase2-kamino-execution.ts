@@ -1,4 +1,3 @@
-/** Exact fail-closed Squads wrapper for one compiled Phase-2 K-Lend operation. */
 import { createHash } from "node:crypto";
 
 import { executePolicyPayloadSync } from "@loyal-labs/loyal-smart-accounts-core/internal";

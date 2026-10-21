@@ -19,7 +19,6 @@ for rule, case in zip(rules, cases):
     assert case["labels"]["alertname"] == rule["alert"]
     assert required <= rule["annotations"].keys()
     assert all(rule["annotations"][key].strip() for key in required)
-# Exercise every rendered failure-code contract from promtool fixtures too.
 for group in yaml.safe_load((root / "loyal.rules.test.yml").read_text())["tests"]:
     for test in group.get("alert_rule_test", []):
         if test["alertname"] == "LoyalFamilyFailing":
@@ -53,7 +52,6 @@ hostile["labels"]["code"] = '<unsafe attr="x">&'
 hostile["labels"]["arbitrary"] = "DO_NOT_RENDER_LABEL"
 hostile["annotations"]["summary"] = '<unsafe attr="x">&'
 alerts.append(hostile)
-# Unknown future rules get explicit uncertainty, not a false recovery claim.
 alerts.append({"status": "firing", "labels": {"alertname": "FutureRule", "family": "backyard", "severity": "page"}, "annotations": {"summary": "Future condition"}})
 with tempfile.TemporaryDirectory(prefix="loyal-alert-render-") as work:
     work = Path(work)

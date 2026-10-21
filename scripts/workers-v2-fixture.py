@@ -50,8 +50,6 @@ class Script:
     def __init__(self):
         self.lines = []
     def file(self, path, sql=None):
-        # A file runs as one transaction (psql --single-transaction) unless
-        # it uses CONCURRENTLY; sql replaces the file's text when given.
         transactional = not re.search(r"\bCONCURRENTLY\b", path.read_text() if sql is None else sql)
         if transactional:
             self.lines.append("BEGIN;")
@@ -109,12 +107,9 @@ def yield_schema():
             if "Backyard Phase 1 canonical route cardinality drifted" not in activation:
                 raise SystemExit("Production-bound activation fixture contract drifted")
             script.file(migration, ddl)
-            # Do not mark the production data activation as applied.
             continue
         else:
             script.file(migration)
-        # Retained runtime compatibility tools check this ledger at startup.
-        # Record only completed fixture migrations with the runner's checksum.
         name, checksum = ledger[version]
         if not re.fullmatch(r"[a-z0-9_]+", name):
             raise SystemExit("Unsafe migration ledger name")
@@ -125,7 +120,6 @@ def yield_schema():
 def db_url(source, name):
     return urlunparse(source._replace(path="/" + name))
 
-# Every Yield database is a copy of this one migrated template.
 template = "workers_v2_template"
 execute(base, 'CREATE DATABASE "' + template + '"')
 yield_schema().run(db_url(parsed, template))
@@ -156,7 +150,6 @@ if timescale:
         script.file(file)
     script.run(timescale_url)
     if "ata_projector" in urls:
-        # The ATA capture database holds only the split-stream migration.
         execute(timescale, 'CREATE DATABASE workers_v2_ata_capture')
         ata_capture_url = db_url(timescale_parsed, "workers_v2_ata_capture")
         stream_migration = repo / "migrations/timescale/0004_split_balance_sweep_ata_streams.sql"
@@ -166,13 +159,9 @@ if timescale:
         script.file(stream_migration)
         script.run(ata_capture_url)
     print(json.dumps({"gate": "timescale_fixture", "verdict": "PASS", "schema_files": len(files)}))
-# Observer discovery reads the Yield database alone, as the Rust monitor did
-# in production; its watch fixture holds only the registered Yield schema.
 watch_url = None
 if "observer" in urls:
     watch_url = create_yield_database("workers_v2_observer_watch")
-# The C capacity handoff has its own registered database; connected SVM
-# terminal-evidence databases are not reused or reset by these SQL tests.
 if "fleet" in urls and "fleet_cross_mint_capture" not in urls:
     urls["fleet_cross_mint_capture"] = create_yield_database("fleet_cross_mint_capture")
 print(json.dumps({"gate": "fixture", "verdict": "PASS", "registry": str(registry.relative_to(repo)),

@@ -52,11 +52,6 @@ if [[ $family == web && ( $migrations_applied == yes || $mode == stopped ) ]]; t
   exit 2
 fi
 
-# build_web_release <goarch> — build the web release for linux from the
-# worktree of $sha at $build/src into $build/loyal-web. Sets binary. The
-# bundle inlines NEXT_PUBLIC_* from this environment, as Next does; the
-# required ones were checked before the build, and their values are never
-# echoed. The linker stamp is what puts the sha in /readyz's release header.
 build_web_release() {
   GOOS=linux GOARCH=$1 CGO_ENABLED=0 GOFLAGS=-ldflags=-X=main.stamp=$sha \
     sh "$build/src/scripts/web/build.sh" "$build/loyal-web" >/dev/null
@@ -76,17 +71,13 @@ sha=$(git rev-parse --verify --quiet "${target}^{commit}") || {
   exit 1
 }
 if [[ $family == web && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
-  : # dry run: the checked-out sha need not be merged yet
+  :
 elif ! git merge-base --is-ancestor "$sha" origin/main; then
   echo "$sha is not on origin/main; deploy only merged commits" >&2
   exit 1
 fi
 
 if [[ $family == web ]]; then
-  # The bundle inlines NEXT_PUBLIC_* from the environment, as Next does: the
-  # operator runs the deploy under `op run --env-file=.env.1password --`.
-  # Without the Privy app id nothing signs in; fail before building, naming
-  # where it lives; never echo values.
   if [[ -z ${NEXT_PUBLIC_PRIVY_APP_ID:-} ]]; then
     echo "the web bundle inlines NEXT_PUBLIC_* from this environment; missing: NEXT_PUBLIC_PRIVY_APP_ID" >&2
     echo "it lives in the 1Password Environment loyal-noncritical-env (mounted at .env.1password);" >&2
@@ -97,8 +88,6 @@ if [[ $family == web ]]; then
 fi
 
 if [[ $family == web && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
-  # Dry run (web only): everything up to and including the linux build, then
-  # stop before any ssh. The host arch needs ssh, so this builds amd64.
   mkdir -p "$HOME/.loyal"
   build=$(mktemp -d "$HOME/.loyal/deploy-build.XXXXXX")
   trap 'git worktree remove --force "$build/src" >/dev/null 2>&1 || true; rm -rf "$build"' EXIT
@@ -117,8 +106,6 @@ if [[ $family == web && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   exit 0
 fi
 
-# One ssh round trip for the host facts: root, arch, the commit the
-# installed rules came from, running release.
 facts=$(ssh "$host" "id -u; uname -m; echo rules \$(cat $rules_record 2>/dev/null); cat $dropin")
 {
   read -r uid
@@ -140,12 +127,10 @@ if [[ ${#running} -ne 40 ]]; then
 fi
 echo "host $host runs $running; deploying $sha"
 
-# Rules never move backwards: install only over rules from an ancestor of
-# sha (or the same commit), or when no record exists.
 rules_sha=$(sed -n 's/^rules \([0-9a-f]\{40\}\)$/\1/p' <<<"$facts")
 install_rules=yes
 if [[ $family == web ]]; then
-  install_rules=no # web deploys install no Prometheus rules
+  install_rules=no
 elif [[ -n $rules_sha ]] && ! git merge-base --is-ancestor "$rules_sha" "$sha" 2>/dev/null; then
   install_rules=no
   echo "host rules come from $rules_sha, which is not an ancestor of $sha; leaving them"
@@ -181,14 +166,9 @@ elif [[ $family != web ]]; then
   fi
 fi
 
-# A fresh build dir per run, filled from the commit alone: no uncommitted
-# file reaches a release, and two deploys on one machine never share one.
 mkdir -p "$HOME/.loyal"
 build=$(mktemp -d "$HOME/.loyal/deploy-build.XXXXXX")
 if [[ $family == web ]]; then
-  # web builds from a throwaway worktree of the commit alone: the Vite build
-  # needs the whole checkout (and a fresh bun install), not a two-dir
-  # archive. The worktree leaves the git metadata before the dir goes.
   trap 'git worktree remove --force "$build/src" >/dev/null 2>&1 || true; rm -rf "$build"' EXIT
   git worktree add --detach --quiet "$build/src" "$sha"
   (cd "$build/src/web" && bun install --frozen-lockfile >/dev/null)
@@ -231,8 +211,6 @@ if [[ $running != "$sha" || $mode == stopped ]]; then
     mv -f $dir/$binary_name.tmp $dir/$binary_name &&
     mv -f $dir/activate.sh.tmp $dir/activate.sh"
 
-  # A transient unit, so the swap finishes even if this ssh session drops; its
-  # log is also at /var/log/loyal-deploy/<family>-<sha>.log on the host.
   set +e
   ssh "$host" "systemd-run --unit=loyal-deploy-$family-${sha:0:12} --quiet --wait --pipe --collect \
     /bin/sh $dir/activate.sh $family $sha $sum $mode"
@@ -247,8 +225,6 @@ fi
 if [[ $install_rules != yes ]]; then
   exit 0
 fi
-# The commit's monitoring files and install-rules.sh go to a fresh host temp
-# dir, which install-rules.sh checks, installs from and removes.
 upload=$(ssh "$host" "mktemp -d /tmp/loyal-monitoring.XXXXXX")
 scp -q -r "$tree/deploy/hetzner/monitoring" "$tree/deploy/hetzner/install-rules.sh" "$host:$upload/"
 set +e

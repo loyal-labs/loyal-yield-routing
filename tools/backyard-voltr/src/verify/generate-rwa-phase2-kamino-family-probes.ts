@@ -43,10 +43,6 @@ invariant(typeof contextSlot === "number" && Number.isSafeInteger(contextSlot) &
 const lanes = resolutionLanes(resolution);
 invariant(lanes.length === 11 && lanes.every((lane) => lane.exact),
   "resolution artifact does not contain eleven exact lanes");
-// Build all 44 operation layouts before selecting representative current-state
-// probes.  This is intentionally not a direct Kamino transaction: the vault
-// PDA signer exists only when Squads invokes it, so a direct signed wire would
-// be a false proof rather than useful policy evidence.
 const allLaneOperations = lanes.map((lane) => ({
   lane: lane.key,
   operations: buildPhaseTwoKaminoLaneOperations(lane),

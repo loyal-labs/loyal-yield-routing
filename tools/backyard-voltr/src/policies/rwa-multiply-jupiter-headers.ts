@@ -73,12 +73,6 @@ function retryAfterMs(value: string | null): number | null {
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
 }
 
-/**
- * Measures the exact Jupiter instruction inside a transaction that has an
- * actual signature, without needing the Squads PDA's private key. The second
- * required signature slot is deliberately left for the PDA, so the result is
- * a transport-size measurement, never a broadcastable transaction.
- */
 export function measureSignedJupiterPacket(edgeKey: string, instruction: TransactionInstruction) {
   const payer = Keypair.fromSeed(createHash("sha256").update(`backyard-rwa-jupiter-measure:${edgeKey}`).digest());
   const transaction = new Transaction({
@@ -171,8 +165,6 @@ function sanitizeInstructionShape(value: unknown, label: string): SanitizedInstr
   return {
     programId: instruction.programId.toBase58(),
     discriminatorHex: Buffer.from(instruction.data.subarray(0, 8)).toString("hex"),
-    // Instruction data and account metas are public transaction payload, but
-    // deliberately omit Jupiter's free-form quote/response fields.
     dataBase64: Buffer.from(instruction.data).toString("base64"),
     dataSha256: sha256(instruction.data),
     dataBytes: instruction.data.length,
@@ -215,8 +207,6 @@ function validateAuxiliaryInstructionBoundary(body: Record<string, unknown>, edg
   const setupInstructionCount = array(body.setupInstructions ?? [], `${edge.key}.setupInstructions`).length;
   const otherInstructionCount = array(body.otherInstructions ?? [], `${edge.key}.otherInstructions`).length;
   const cleanupInstructionPresent = body.cleanupInstruction !== null && body.cleanupInstruction !== undefined;
-  // There is intentionally no allowlist yet. Adding one must be an explicit
-  // policy-family change, not an accidental acceptance of a Jupiter response.
   invariant(setupInstructionCount === 0 && otherInstructionCount === 0 && !cleanupInstructionPresent,
     `${edge.key} has unapproved auxiliary instructions: setup=${setupInstructionCount}, other=${otherInstructionCount}, cleanup=${cleanupInstructionPresent}`);
   return { setupInstructionCount, otherInstructionCount, cleanupInstructionPresent, explicitlyConstrained: false } as const;
@@ -437,8 +427,6 @@ async function resolveOne(connection: Connection, edge: ReturnType<typeof catalo
     if (!(edge.source.tokenProgram !== edge.destination.tokenProgram
       && error instanceof Error
       && error.message === "legacy SharedAccountsRoute cannot prove two distinct token-program boundaries")) {
-      // Preserve HTTP and auxiliary-instruction errors so the outer bounded
-      // scheduler can stop globally on a 429 or semantic boundary failure.
       throw error;
     }
     family = await instructionFamily(false);
@@ -464,11 +452,6 @@ async function resolveOne(connection: Connection, edge: ReturnType<typeof catalo
   } as const;
 }
 
-/**
- * One-shot, read-only discovery for a previously rejected edge. It captures
- * only the public instruction shapes needed to decide whether a narrower,
- * exact policy family can be defined; it never signs, sends, or accepts one.
- */
 export async function diagnoseRejectedJupiterEdge(connection: Connection, edgeKey: string) {
   invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
   const edge = catalogSwapEdges().find(({ key }) => key === edgeKey);
@@ -498,9 +481,6 @@ export async function diagnoseRejectedJupiterEdge(connection: Connection, edgeKe
     && BigInt(string(quote.outAmount, `${edge.key}.diagnostic.outAmount`)) > 0n
     && array(quote.routePlan, `${edge.key}.diagnostic.routePlan`).length > 0,
   `${edge.key} diagnostic quote identity/economics drifted`);
-  // One quote, then one request for each explicit Jupiter account dialect.
-  // This is discovery only: it does not turn either layout into an accepted
-  // policy family. Keeping the quote shared makes the comparison meaningful.
   const layouts = [];
   for (const useSharedAccounts of [true, false]) {
     const response = await fetch(`${apiBase}/swap-instructions`, {
@@ -523,8 +503,6 @@ export async function diagnoseRejectedJupiterEdge(connection: Connection, edgeKe
     edge: edge.key,
     broadcast: false,
     commitment: "confirmed",
-    // Quote amounts are needed to reproduce exact instruction-tail validation;
-    // the full Jupiter quote body is intentionally not persisted.
     quote: { inAmountRaw: string(quote.inAmount, `${edge.key}.diagnostic.inAmount`),
       outAmountRaw: string(quote.outAmount, `${edge.key}.diagnostic.outAmount`),
       routePlanLength: array(quote.routePlan, `${edge.key}.diagnostic.routePlan`).length },
@@ -545,13 +523,9 @@ async function boundedMap<T, R>(values: readonly T[], concurrency: number, task:
 }
 
 export type JupiterHeaderResolveOptions = Readonly<{
-  /** A prior artifact may supply only structurally revalidated PASS rows. */
   cachedEvidence?: unknown;
-  /** Bounds fresh Jupiter edge retrieval on each resume run. */
   maxNetworkEdges?: number;
-  /** Serializes both quote and swap-instructions calls. */
   minRequestIntervalMs?: number;
-  /** Revalidate exactly these failed edges while preserving every other prior row. */
   targetEdgeKeys?: readonly string[];
 }>;
 
@@ -741,11 +715,6 @@ export async function resolveRepresentativeJupiterFamilies(connection: Connectio
   } as const;
 }
 
-/**
- * Resolve one fresh current instruction for a bounded signed-unsent execution.
- * The caller must still bind it to the compiler's exact policy constraint;
- * this helper intentionally bypasses the cached 52-edge ledger.
- */
 export async function resolveFreshJupiterEdge(connection: Connection, edgeKey: string, maxAccounts = "64", dexes?: string) {
   invariant(await connection.getGenesisHash() === RWA_MULTIPLY_ROUTE.genesisHash, "RPC is not mainnet-beta");
   const edge = catalogSwapEdges().find((candidate) => candidate.key === edgeKey);

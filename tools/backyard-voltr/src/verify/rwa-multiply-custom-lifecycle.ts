@@ -264,8 +264,6 @@ COMMIT;
 `;
   const result = spawnSync("psql", ["-X", "-A", "-t", "-v", "ON_ERROR_STOP=1"], {
     cwd: REPOSITORY_ROOT,
-    // Keep credentials out of argv and verifier output. libpq reads them only
-    // from this child environment.
     env: databaseEnvironment,
     input: query,
     encoding: "utf8",
@@ -2125,8 +2123,6 @@ function renderDeploymentRead(expectedImage: string): JsonRecord {
     ? image.ref
     : typeof service.imagePath === "string" ? service.imagePath : null;
   const imageDigest = typeof image?.sha === "string" ? image.sha : null;
-  // Start at deploy creation, before the process startup identity line. Using
-  // finishedAt can exclude the very runtime proof this read is looking for.
   const deployedAt = typeof liveDeploy.createdAt === "string"
     ? liveDeploy.createdAt
     : typeof liveDeploy.finishedAt === "string" ? liveDeploy.finishedAt : null;
@@ -2798,9 +2794,6 @@ async function main() {
     : fail("C04_C05_handoff_and_standing_regression", "The deployed action contract, partner handoff, and standing repository regression slice agree.", { documentationChecks, handoffPath, closeoutTest }, "Repair the first documentation or standing-test mismatch without changing live behavior.");
   checks.push(c04c05);
 
-  // Phase 1 is deliberately narrower than the future catalog expansion: it
-  // is the authenticated bridge/NAV path, one deployed serialized Go writer,
-  // and one complete reconciled PRIME/USDC lifecycle.
   const phaseOneChecks = [v01, v02, phase2Catalog, v04, v05, c04c05];
   const firstFailure = phaseOneChecks.find((check) => check.verdict === "FAIL") ?? null;
   const blocker = firstFailure === null

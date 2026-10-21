@@ -119,10 +119,6 @@ export const RWA_MULTIPLY_ROUTE = {
       withdraw: 65n,
     },
   },
-  // Voltr's deployed generic bridge. The strategy PDA is derived from the
-  // fixed seed under this adaptor; deposits land directly in the Squads USDC
-  // ATA and withdrawals are sourced from the adaptor's deterministic holding
-  // ATA after Squads stages liquidity there.
   trustfulBridge: {
     adaptorProgram: address("3pnpK9nrs1R65eMV1wqCXkDkhSgN18xb1G5pgYPwoZjJ"),
     strategySeed: "loyal-rwa-multiply-squads-v1",
@@ -132,8 +128,6 @@ export const RWA_MULTIPLY_ROUTE = {
     // The vault cap is 1,000,000 USDC. The NAV ceiling leaves room for yield
     // while bounding the manager-supplied Trustful accounting field.
     maxReportedNavRaw: 2_000_000_000_000n,
-    // All Kamino valuation accounts must share one refresh slot no more than
-    // this many slots behind the finalized snapshot used for the attestation.
     maxSnapshotAgeSlots: 32n,
   },
   customAdaptor: {
@@ -145,8 +139,6 @@ export const RWA_MULTIPLY_ROUTE = {
     maxReportedNavRaw: 2_000_000_000_000n,
     maxReportAgeSlots: 32n,
   },
-  // This is Ranger's independent Voltr protocol-administration authority. It is
-  // deliberately separate from the Loyal Squads Smart Account above.
   voltrAdmission: {
     protocolAdmin: address("G2FCNGgQQ7MYyJvkXw1du86YGR6vXXejuQG9LsjX1kEs"),
     squadsV4Program: address("SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"),

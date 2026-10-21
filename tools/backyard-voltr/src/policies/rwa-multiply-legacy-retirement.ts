@@ -46,7 +46,6 @@ function invariant(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
 
-/** One Settings instruction removes only the four superseded bridge policies. */
 export function buildLegacyCustomPolicyRetirementInstruction(): Instruction {
   const route = RWA_MULTIPLY_ROUTE;
   const policies = LEGACY_CUSTOM_POLICY_ADDRESSES.map((value) => new PublicKey(value));

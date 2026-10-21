@@ -1,8 +1,3 @@
-/**
- * Seed-139 Maple exit activation.  The default path only creates signed,
- * unsent wires and a Helius simulateBundle request.  --execute is an
- * explicitly gated, one-send reconciliation path.
- */
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -53,7 +48,6 @@ function policyAddress(seed: bigint): string {
   return PublicKey.findProgramAddressSync([Buffer.from("smart_account"), Buffer.from("policy"), new PublicKey(RWA_MULTIPLY_ROUTE.squads.settings).toBuffer(), bytes], new PublicKey(RWA_MULTIPLY_ROUTE.squads.program))[0].toBase58();
 }
 
-/** Fail-closed proof of the Go-compatible legacy 37-byte SharedAccountsRoute. */
 export function validateFreshMapleExitHeader(row: any) {
   const ix = row?.instruction;
   const data = Buffer.from(String(ix?.dataBase64 ?? ""), "base64");

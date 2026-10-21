@@ -32,8 +32,6 @@ export function usePathname(): string {
 export function useSearchParams(): URLSearchParams {
   const location = useLocation();
   activeRouter = useTanstackRouter();
-  // Rebuilt from the location on every navigation; treat it as read-only, as
-  // Next's ReadonlyURLSearchParams does.
   return new URLSearchParams(location.searchStr);
 }
 
