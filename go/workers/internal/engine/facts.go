@@ -11,6 +11,7 @@ import (
 type Facts struct {
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec
+	navReported         *prometheus.GaugeVec
 	landed              *prometheus.CounterVec
 	failed              *prometheus.CounterVec
 	inflight            *prometheus.GaugeVec
@@ -38,6 +39,9 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 		}, []string{"family", "route"}),
 		withdrawalObserved: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "loyal_backyard_withdrawal_observed_timestamp_seconds", Help: "Coherent observation time of durable Backyard withdrawal health.",
+		}, []string{"family", "route"}),
+		navReported: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "loyal_backyard_nav_reported_timestamp_seconds", Help: "When the last Backyard REPORT_NAV reconciled, read from the journal; no series before the first.",
 		}, []string{"family", "route"}),
 		landed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "loyal_family_landed_total", Help: "Operations that reached their on-chain outcome.",
@@ -95,7 +99,7 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 			Name: "loyal_backyard_hold", Help: "Why the last Backyard tick did not move the vault: 1 for its lane and hold reason (at_target, no_room, stale, chain_refused, stopped); no series while it acts.",
 		}, []string{"vault", "lane", "reason"}),
 	}
-	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
+	registerer.MustRegister(f.withdrawalAttention, f.withdrawalObserved, f.navReported, f.landed, f.failed, f.inflight, f.progress, f.lane, f.payer, f.oldestDue, f.fleetReplans, f.fleetSimulations, f.fleetMovable,
 		f.leverageRoom, f.leverageGap, f.leverageLanded, f.leverageReaction, f.leverageOutages, f.termDebtDays, f.stepNoRoom, f.hold)
 	return f
 }
@@ -165,6 +169,10 @@ func (f *Facts) BackyardWithdrawalHealth(route string, attention bool, observed 
 	}
 	f.withdrawalAttention.WithLabelValues(string(FamilyBackyard), route).Set(value)
 	f.withdrawalObserved.WithLabelValues(string(FamilyBackyard), route).Set(float64(observed.Unix()))
+}
+
+func (f *Facts) BackyardNAVReported(route string, reconciled time.Time) {
+	f.navReported.WithLabelValues(string(FamilyBackyard), route).Set(float64(reconciled.Unix()))
 }
 
 func (f *Facts) Landed(family Family) {

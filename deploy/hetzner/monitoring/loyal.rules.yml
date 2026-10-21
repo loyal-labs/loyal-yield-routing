@@ -81,6 +81,26 @@ groups:
           trigger: "Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute."
           recovery: "Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment."
 
+      # The NAV report is the vault's only price update; Backyard sends one at
+      # least hourly. The gauge is read from the journal, so a restart neither
+      # resets nor fakes it. A route with no reconciled report has no series;
+      # absent() covers a fresh start and prolonged total metric loss.
+      - alert: LoyalBackyardNAVReportStale
+        expr: |
+          time() - max by (family, route) (loyal_backyard_nav_reported_timestamp_seconds{family="backyard"}) > 3 * 3600
+          or (
+            absent(loyal_backyard_nav_reported_timestamp_seconds{family="backyard"})
+            unless on (family) max by (family) (last_over_time(loyal_backyard_nav_reported_timestamp_seconds{family="backyard"}[24h]))
+          )
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Earn MAX NAV report is overdue"
+          trigger: "No reconciled NAV report in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes."
+          impact: "The vault's reported NAV is stale, so deposits and withdrawals may be priced from an old value."
+          action: "Read the route's latest REPORT_NAV operation and any manual-recovery latch or held decision that stops reports. Check RPC and database health, then verify the next report reconciles on chain; do not clear a latch or force a report just to silence the alert."
+          recovery: "Verify a new REPORT_NAV reconciled and the exported report time advanced. A vanished series is not proof that reports resumed."
+
       # Repeated failed attempts per stable code, including selector evaluations;
       # these samples are not a count of distinct transactions.
       - alert: LoyalFamilyFailing
