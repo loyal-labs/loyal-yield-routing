@@ -144,13 +144,13 @@ func planUp(observed *ObservedRoute, target StrategyKey, topology *EarnMaxTopolo
 	targetDebtValue.Div(targetDebtValue, big.NewInt(10_000))
 	tolerance := saturatingU128(new(big.Int).Mul(collateralValue, big.NewInt(targetLTVToleranceBPS)))
 	tolerance.Div(tolerance, big.NewInt(10_000))
-	missingDebtValue := saturatingU128(new(big.Int).Sub(targetDebtValue, position.DebtValueSF))
+	missingDebtValue := saturatingU128(new(big.Int).Sub(targetDebtValue, position.DebtValueSF.Int()))
 	missingDebtRaw := saturatingU128(new(big.Int).Lsh(big.NewInt(1), 128))
-	if position.DebtMarketPriceSF.Sign() != 0 {
+	if position.DebtMarketPriceSF.Int().Sign() != 0 {
 		missingDebtRaw = saturatingU128(new(big.Int).Mul(missingDebtValue, new(big.Int).SetUint64(position.DebtMintFactor)))
-		missingDebtRaw.Div(missingDebtRaw, position.DebtMarketPriceSF)
+		missingDebtRaw.Div(missingDebtRaw, position.DebtMarketPriceSF.Int())
 	}
-	debtValuePlusTolerance := saturatingU128(new(big.Int).Add(position.DebtValueSF, tolerance))
+	debtValuePlusTolerance := saturatingU128(new(big.Int).Add(position.DebtValueSF.Int(), tolerance))
 	if debtValuePlusTolerance.Cmp(targetDebtValue) < 0 &&
 		missingDebtRaw.Cmp(new(big.Int).SetUint64(minJupiterSwapRaw)) > 0 {
 		return ExecuteDecision(ActionPlan{

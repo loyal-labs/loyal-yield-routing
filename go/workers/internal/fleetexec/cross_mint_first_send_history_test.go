@@ -13,7 +13,7 @@ import (
 func TestCrossMintFirstSendRequiresActualCustodyAnchorWithoutInventingDestinationHistory(t *testing.T) {
 	owner := sdk.MustPublicKeyFromBase58(mustSignedFixture(t).FeePayer)
 	reader := fixtureAccounts{slot: 1005, accounts: map[string]chain.Account{}}
-	makeToken := func(mint string, amount uint64) *fleet.CrossMintTokenAmount {
+	makeToken := func(mint string, amount uint64) *fleet.CrossMintTokenBalance {
 		address, err := associatedCustodyAccount(owner.String(), mint, sdk.TokenProgramID.String())
 		if err != nil {
 			t.Fatal(err)
@@ -25,7 +25,7 @@ func TestCrossMintFirstSendRequiresActualCustodyAnchorWithoutInventingDestinatio
 		binary.LittleEndian.PutUint64(data[64:72], amount)
 		data[108] = 1
 		reader.accounts[address] = fixtureAccount(address, sdk.TokenProgramID.String(), 1, data)
-		return &fleet.CrossMintTokenAmount{Mint: mint, TokenAccount: address, AmountRaw: int64(amount)}
+		return &fleet.CrossMintTokenBalance{Mint: mint, TokenAccount: address, AmountRaw: int64(amount)}
 	}
 	pre := fleet.CrossMintAnchors{Debit: makeToken(fleet.USDCMint, 1000), Credit: makeToken(fleet.USDTMint, 0)}
 	movement := CrossMintMovement{VaultPubkey: owner.String(), Phase: CrossMintSourceIdle, CustodyAccount: pre.Debit.TokenAccount, CustodyMint: pre.Debit.Mint, CustodyReconciledSlot: crossRuntimeInt(1000)}

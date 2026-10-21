@@ -590,7 +590,7 @@ func equalCrossMintInt(a, b *int64) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 func sameCrossMintAnchorAmounts(a, b fleet.CrossMintAnchors) bool {
-	for _, pair := range [][2]*fleet.CrossMintTokenAmount{{a.Debit, b.Debit}, {a.Credit, b.Credit}} {
+	for _, pair := range [][2]*fleet.CrossMintTokenBalance{{a.Debit, b.Debit}, {a.Credit, b.Credit}} {
 		if (pair[0] == nil) != (pair[1] == nil) {
 			return false
 		}
@@ -631,7 +631,7 @@ func observeCrossMintFirstSendBank(ctx context.Context, reader fleet.AccountRead
 		return observeCrossMintBank(ctx, reader, history, m, expected, floor, historyAnchor, recognized, anchorNoHistory)
 	}
 	bound := false
-	for _, anchor := range []*fleet.CrossMintTokenAmount{expected.Debit, expected.Credit} {
+	for _, anchor := range []*fleet.CrossMintTokenBalance{expected.Debit, expected.Credit} {
 		if anchor != nil && anchor.TokenAccount == m.CustodyAccount && anchor.Mint == m.CustodyMint {
 			bound = true
 		}
@@ -648,7 +648,7 @@ func observeCrossMintBank(ctx context.Context, reader fleet.AccountReader, histo
 		return out, 0, errors.New("cross-mint bank needs finalized proof dependencies and positive floor")
 	}
 	keys := []string{}
-	for _, a := range []*fleet.CrossMintTokenAmount{expected.Debit, expected.Credit} {
+	for _, a := range []*fleet.CrossMintTokenBalance{expected.Debit, expected.Credit} {
 		if a != nil {
 			keys = append(keys, a.TokenAccount)
 		}
@@ -673,7 +673,7 @@ func observeCrossMintBank(ctx context.Context, reader fleet.AccountReader, histo
 		}
 		byKey[keys[i]] = a
 	}
-	for i, a := range []*fleet.CrossMintTokenAmount{expected.Debit, expected.Credit} {
+	for i, a := range []*fleet.CrossMintTokenBalance{expected.Debit, expected.Credit} {
 		if a == nil {
 			continue
 		}
@@ -689,7 +689,7 @@ func observeCrossMintBank(ctx context.Context, reader fleet.AccountReader, histo
 		if e != nil || canonical != a.TokenAccount {
 			return out, 0, errors.New("signed token anchor is not canonical vault ATA")
 		}
-		anchor := &fleet.CrossMintTokenAmount{Mint: a.Mint, TokenAccount: a.TokenAccount, AmountRaw: amount}
+		anchor := &fleet.CrossMintTokenBalance{Mint: a.Mint, TokenAccount: a.TokenAccount, AmountRaw: amount}
 		if i == 0 {
 			out.Debit = anchor
 		} else {
@@ -744,7 +744,7 @@ func crossRuntimeInt(v int64) *int64 { return &v }
 func crossMintReceiptEffects(receipt chain.Receipt, m CrossMintMovement, pre fleet.CrossMintAnchors) (CrossMintEffect, fleet.CrossMintAnchors, error) {
 	var effect CrossMintEffect
 	var post fleet.CrossMintAnchors
-	for i, anchor := range []*fleet.CrossMintTokenAmount{pre.Debit, pre.Credit} {
+	for i, anchor := range []*fleet.CrossMintTokenBalance{pre.Debit, pre.Credit} {
 		if anchor == nil {
 			continue
 		}
@@ -763,8 +763,8 @@ func crossMintReceiptEffects(receipt chain.Receipt, m CrossMintMovement, pre fle
 		if amount <= 0 {
 			return effect, post, errors.New("receipt did not perform positive signed directional effect")
 		}
-		delta := &fleet.CrossMintTokenAmount{Mint: anchor.Mint, TokenAccount: anchor.TokenAccount, AmountRaw: amount}
-		balance := &fleet.CrossMintTokenAmount{Mint: anchor.Mint, TokenAccount: anchor.TokenAccount, AmountRaw: after}
+		delta := &fleet.CrossMintTokenDelta{Mint: anchor.Mint, TokenAccount: anchor.TokenAccount, AmountRaw: amount}
+		balance := &fleet.CrossMintTokenBalance{Mint: anchor.Mint, TokenAccount: anchor.TokenAccount, AmountRaw: after}
 		if i == 0 {
 			effect.Debit, post.Debit = delta, balance
 		} else {

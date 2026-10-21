@@ -363,15 +363,15 @@ func resolveBorrow(amount PlannedAmount, observed *ObservedRoute, config Strateg
 	}
 	targetValueSF := saturatingU128(new(big.Int).Mul(position.CollateralValueSF.Int(), new(big.Int).SetUint64(uint64(config.TargetLTVBPS))))
 	targetValueSF.Div(targetValueSF, big.NewInt(10_000))
-	additionalValueSF := new(big.Int).Sub(targetValueSF, position.DebtValueSF)
+	additionalValueSF := new(big.Int).Sub(targetValueSF, position.DebtValueSF.Int())
 	if additionalValueSF.Sign() < 0 {
 		additionalValueSF = big.NewInt(0)
 	}
-	if position.DebtMarketPriceSF.Sign() == 0 {
+	if position.DebtMarketPriceSF.Int().Sign() == 0 {
 		return 0, errors.New("debt reserve price is zero")
 	}
 	raw := saturatingU128(new(big.Int).Mul(additionalValueSF, new(big.Int).SetUint64(position.DebtMintFactor)))
-	raw.Div(raw, position.DebtMarketPriceSF)
+	raw.Div(raw, position.DebtMarketPriceSF.Int())
 	if !raw.IsInt64() {
 		return 0, errors.New("borrow amount exceeds signed expected-effect range")
 	}

@@ -132,7 +132,7 @@ AND confirmation_lease_expires_at>clock_timestamp() FOR UPDATE`
 	})
 	return result, err
 }
-func crossMintDeltaSQL(d *fleet.CrossMintTokenAmount) (any, any, any) {
+func crossMintDeltaSQL(d *fleet.CrossMintTokenDelta) (any, any, any) {
 	if d == nil {
 		return nil, nil, nil
 	}

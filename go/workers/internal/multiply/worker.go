@@ -872,11 +872,11 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 		input.DebtValueUSDMicros = "0"
 		return input, nil
 	}
-	if !validMarketValues(active) || active.UnhealthyValueSF == nil || active.UnhealthyValueSF.Sign() < 0 || active.UnhealthyValueSF.BitLen() > 128 {
+	if !validHealthValues(active) {
 		return nil, errors.New("position snapshot valuation is unknown or invalid")
 	}
 	collateralValue := toUSDMicros(active.CollateralValueSF.Int())
-	debtValue := toUSDMicros(active.DebtValueSF)
+	debtValue := toUSDMicros(active.DebtValueSF.Int())
 	claimMicros := new(big.Int).SetUint64(observed.Claim.AmountRaw)
 	equity := new(big.Int).Add(claimMicros, collateralValue)
 	equity.Sub(equity, debtValue)
@@ -907,10 +907,10 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 		value := ltv.Int64()
 		input.LTVBPS = &value
 	}
-	if active.DebtValueSF.Sign() > 0 {
+	if active.DebtValueSF.Int().Sign() > 0 {
 		health := new(big.Int).Div(
-			new(big.Int).Mul(active.UnhealthyValueSF, big.NewInt(1_000_000)),
-			active.DebtValueSF)
+			new(big.Int).Mul(active.UnhealthyValueSF.Int(), big.NewInt(1_000_000)),
+			active.DebtValueSF.Int())
 		if !health.IsInt64() {
 			return nil, errors.New("snapshot health exceeds SQL BIGINT")
 		}
