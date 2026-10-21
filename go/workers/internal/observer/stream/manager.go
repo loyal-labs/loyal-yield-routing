@@ -151,7 +151,6 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 		m.retire(candidate)
 		return err
 	}
-	m.retire(old)
 	return nil
 }
 
@@ -180,7 +179,11 @@ func (m *Manager) replayBehindFrozen(ctx context.Context, old, candidate *sessio
 		return fmt.Errorf("handoff candidate stopped at promotion frontier %d: %w", target, err)
 	default:
 	}
-	return m.promoteCandidate(old, candidate, replacement)
+	if err := m.promoteCandidate(old, candidate, replacement); err != nil {
+		return err
+	}
+	m.retire(old)
+	return nil
 }
 
 func (m *Manager) ActiveFrontier() uint64 {
