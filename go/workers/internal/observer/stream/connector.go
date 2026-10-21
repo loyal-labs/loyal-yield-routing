@@ -15,6 +15,10 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// LaserStream replays about 216,000 slots; an older from_slot fails every
+// subscribe attempt with OutOfRange.
+const ProviderReplaySlots uint64 = 200_000
+
 const (
 	defaultMaxReceiveMessageSize = 1_000_000_000
 	defaultMaxSendMessageSize    = 32_000_000

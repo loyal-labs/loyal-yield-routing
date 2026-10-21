@@ -3,6 +3,7 @@ package autodeposit
 import (
 	"context"
 	"errors"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"testing"
 	"time"
 )
@@ -500,7 +501,7 @@ func TestControllerSkipsWithdrawnUsersAndDefaultsEmptyVaults(t *testing.T) {
 			if err := store.pool.QueryRow(ctx, `SELECT autodeposit_deposit_plan->>'reserve', autodeposit_deposit_plan->>'market' FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1`, seeded.TargetID).Scan(&planReserve, &planMarket); err != nil {
 				t.Fatal(err)
 			}
-			if planReserve != defaultEarnReserve || planMarket != defaultEarnMarket {
+			if planReserve != defaultEarnReserve || planMarket != fleet.KaminoMainMarket {
 				t.Fatalf("deposit planned into %q/%q, want the default reserve", planReserve, planMarket)
 			}
 		})

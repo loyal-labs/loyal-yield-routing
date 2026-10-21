@@ -20,6 +20,7 @@ on:
       - crates/loyal-actions/**
       - crates/loyal-solana-env/**
       - crates/loyal-hub-abi/**
+      - crates/loyal-voltr-rwa-nav-adaptor/**
 
   # Every PR reports the required checks; the changes job skips them when
   # no workers path changed.
@@ -54,7 +55,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         # Pushes are already filtered by the push paths above.
         run: |
-          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi)/)'; then
+          if test "$GITHUB_EVENT_NAME" = push || git diff --name-only "$BASE" HEAD | grep -qE '^(go/workers/|migrations/|scripts/(verify-workers-v2\.sh|workers-v2-fixture\.py|build-svm-fixtures\.sh)$|\.github/workflows/workers-v2-verify\.yml$|Cargo\.(toml|lock)$|rust-toolchain\.toml$|crates/(squads-test-harness|mock-yield-protocols-program|loyal-actions|loyal-solana-env|loyal-hub-abi|loyal-voltr-rwa-nav-adaptor)/)'; then
             echo workers=true >> "$GITHUB_OUTPUT"
           else
             echo workers=false >> "$GITHUB_OUTPUT"
@@ -131,6 +132,8 @@ jobs:
       - name: Build local connected execution fixtures
         if: steps.fixtures.outputs.cache-hit != 'true'
         run: bash scripts/build-svm-fixtures.sh
+      - name: Replay the golden fixtures through the Rust crates
+        run: cargo test --locked -p loyal-actions -p loyal-voltr-rwa-nav-adaptor golden_
       - name: Apply actual schema to isolated family databases
         env:
           WORKERS_V2_DISPOSABLE: '1'

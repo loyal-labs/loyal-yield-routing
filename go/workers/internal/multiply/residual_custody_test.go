@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -61,7 +62,7 @@ func TestWithdrawalResidualDebtCleanupPreservesAliasedClaimAndExactAmount(t *tes
 		t.Fatal(err)
 	}
 	config := topology.Strategies[SyrupUsdcPyusd]
-	if quotes.request.InputMint != PYUSDMint || quotes.request.Amount != 250_001 || built.ExpectedEffects.TokenDeltas[0].Account != config.DebtCustody.String() || built.ExpectedEffects.TokenDeltas[0].RawDelta != -250_001 {
+	if quotes.request.InputMint != fleet.PYUSDMint || quotes.request.Amount != 250_001 || built.ExpectedEffects.TokenDeltas[0].Account != config.DebtCustody.String() || built.ExpectedEffects.TokenDeltas[0].RawDelta != -250_001 {
 		t.Fatal("residual quote changed borrowed mint, custody or exact input")
 	}
 	observed.DebtCustody(SyrupUsdcPyusd).AmountRaw = 0

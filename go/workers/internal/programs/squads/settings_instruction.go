@@ -7,13 +7,8 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Squads settings-instruction decoding, ported from loyal-actions
-// detection.rs (decode_squads_policy_create_actions_from_parts,
-// detect_squads_policy_removals, detect_squads_policy_update_identity and the
-// strict settings envelope) and squads.rs (compact PolicyUpdate encoding).
-
-// SettingsAction mirrors SquadsSettingsActionView: one PolicyCreate (seeded)
-// or PolicyUpdate (policy_seed 0) carrying a ProgramInteraction payload.
+// SettingsAction is one PolicyCreate (seeded) or PolicyUpdate (policy_seed 0)
+// carrying a ProgramInteraction payload.
 type SettingsAction struct {
 	Settings, Authority solana.PublicKey
 	PolicySeed          uint64
@@ -23,7 +18,6 @@ type SettingsAction struct {
 	Payload             PolicyPayloadView
 }
 
-// PolicyIdentity mirrors DetectedPolicyRemoval.
 type PolicyIdentity struct {
 	Settings, Authority, PolicyAccount solana.PublicKey
 }

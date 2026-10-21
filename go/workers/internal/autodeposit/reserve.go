@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 const (
-	defaultEarnMarket  = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 	defaultEarnReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
 )
 
@@ -48,7 +48,7 @@ func resolveDepositReserve(tokenMint string, positions []LiveVaultPosition) (*Li
 	case tokenMint != USDCMint:
 		return refuse("default_reserve_mint_mismatch")
 	}
-	return &LiveVaultPosition{Reserve: defaultEarnReserve, Market: defaultEarnMarket, LiquidityMint: USDCMint}, nil
+	return &LiveVaultPosition{Reserve: defaultEarnReserve, Market: fleet.KaminoMainMarket, LiquidityMint: USDCMint}, nil
 }
 
 func (s *Store) ResolveDepositReserve(ctx context.Context, target *TargetExecutionContext) error {

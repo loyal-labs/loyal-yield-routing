@@ -30,10 +30,10 @@ func ratesFixture() Reserve {
 func TestReserveRatesScaleLegacyAccrualWithTheMeasuredSlotRate(t *testing.T) {
 	reserve := ratesFixture()
 	for _, tc := range []struct {
-		basis          uint8
+		basis          RateBasis
 		slotsPerSecond float64
 		accrual        float64
-	}{{trueAPRBasis, 0, 1}, {trueAPRBasis, 4.6, 1}, {0, 2.5, 1.25}, {0, 4.6, 2.3}} {
+	}{{TrueAPRBasis, 0, 1}, {TrueAPRBasis, 4.6, 1}, {0, 2.5, 1.25}, {0, 4.6, 2.3}} {
 		reserve.InterestRateBasis = tc.basis
 		rates, err := reserve.Rates(tc.slotsPerSecond)
 		if err != nil {

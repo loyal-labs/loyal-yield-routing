@@ -2,6 +2,7 @@ package observer
 
 import (
 	"encoding/json"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"math"
 	"strings"
 	"testing"
@@ -9,7 +10,7 @@ import (
 )
 
 func testPosition(raw, liquidity string) FleetPosition {
-	return FleetPosition{Reserve: benchmarkReserve, Market: benchmarkMarket, Mint: USDCMint, AmountRaw: raw, Metadata: json.RawMessage(`{"amountSemantics":"kamino_obligation_collateral_deposited_amount","redeemable_liquidity_amount_raw":"` + liquidity + `"}`)}
+	return FleetPosition{Reserve: benchmarkReserve, Market: fleet.KaminoMainMarket, Mint: USDCMint, AmountRaw: raw, Metadata: json.RawMessage(`{"amountSemantics":"kamino_obligation_collateral_deposited_amount","redeemable_liquidity_amount_raw":"` + liquidity + `"}`)}
 }
 func testVault(id int64, at time.Time, p FleetPosition) FleetVault {
 	zero := "0"
@@ -200,7 +201,7 @@ func TestPublicForecastPublishedSeriesContract(t *testing.T) {
 	if err = json.Unmarshal(series, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed) != 2 || parsed[0].Key != "loyal" || parsed[0].Label != "Loyal Earn" || parsed[1].Key != "mainUsdcReserve" || parsed[1].Label != "Kamino Main USDC" || parsed[1].Metadata["reserve"] != benchmarkReserve || parsed[1].Metadata["market"] != benchmarkMarket || parsed[1].Metadata["liquidityMint"] != USDCMint || parsed[1].Metadata["metric"] != "cumulative_annualized_apy_bps" || parsed[0].Metadata["metric"] != "cumulative_annualized_apy_bps" || parsed[1].Samples[0].APYBPS != 900 {
+	if len(parsed) != 2 || parsed[0].Key != "loyal" || parsed[0].Label != "Loyal Earn" || parsed[1].Key != "mainUsdcReserve" || parsed[1].Label != "Kamino Main USDC" || parsed[1].Metadata["reserve"] != benchmarkReserve || parsed[1].Metadata["market"] != fleet.KaminoMainMarket || parsed[1].Metadata["liquidityMint"] != USDCMint || parsed[1].Metadata["metric"] != "cumulative_annualized_apy_bps" || parsed[0].Metadata["metric"] != "cumulative_annualized_apy_bps" || parsed[1].Samples[0].APYBPS != 900 {
 		t.Fatalf("Apps series compatibility lost: %s", series)
 	}
 }

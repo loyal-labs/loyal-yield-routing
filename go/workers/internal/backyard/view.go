@@ -37,14 +37,10 @@ type View struct {
 	manager    *stream.Manager
 	subscribed time.Time
 
-	mu       sync.Mutex
-	accounts map[string]viewAccount
-	queued   []viewAccount
-	// receipts maps every known withdrawal receipt to its discovery slot
-	// until it is in the by-address filter, then to zero; pending counts the
-	// nonzero ones.
+	mu                 sync.Mutex
+	accounts           map[string]viewAccount
+	queued             []viewAccount
 	receipts           map[string]uint64
-	pending            int
 	seedLow, seedHigh  uint64
 	confirmed, through uint64
 	advanced           chan struct{}
@@ -60,8 +56,13 @@ type View struct {
 type viewAccount struct {
 	ConfirmedAccount
 	slot, writeVersion uint64
-	session            int // 0: the start-up read, the end of its slot
+	session            int
 }
+
+const (
+	viewSeedSession = 0
+	receiptFiltered = 0
+)
 
 // supersedes reports whether w replaces held. write_version is node-local,
 // so it orders writes of one slot only within one session; across sessions
@@ -70,7 +71,7 @@ func (w viewAccount) supersedes(held viewAccount) bool {
 	switch {
 	case w.slot != held.slot:
 		return w.slot > held.slot
-	case held.session == 0:
+	case held.session == viewSeedSession:
 		return false
 	case held.session == w.session:
 		return w.writeVersion > held.writeVersion
@@ -88,8 +89,7 @@ const (
 	viewMaxClockAge          = 10 * time.Second
 	viewStall                = 30 * time.Second
 	viewReplaySlots          = 32
-	// The provider replays 200,000 slots (observer runtime.go).
-	viewReplayWindow = 200_000 * 400 * time.Millisecond
+	viewReplayWindow         = time.Duration(stream.ProviderReplaySlots) * 400 * time.Millisecond
 )
 
 // OpenView reads the view's accounts once and, given a connector, streams
@@ -146,7 +146,7 @@ type viewSeed struct {
 func readViewSeed(ctx context.Context, client *chain.Client, fixed []string) (viewSeed, error) {
 	seed := viewSeed{accounts: map[string]viewAccount{}, receipts: map[string]uint64{}, low: math.MaxUint64}
 	held := func(account ConfirmedAccount, slot uint64) {
-		seed.accounts[account.Address] = viewAccount{ConfirmedAccount: account, slot: slot}
+		seed.accounts[account.Address] = viewAccount{ConfirmedAccount: account, slot: slot, session: viewSeedSession}
 		seed.low, seed.high = min(seed.low, slot), max(seed.high, slot)
 	}
 	// ProgramData images are read alone: the Voltr image is over a megabyte
@@ -177,7 +177,7 @@ func readViewSeed(ctx context.Context, client *chain.Client, fixed []string) (vi
 		}
 		for _, account := range read {
 			held(confirmedAccount(account.Key.String(), &account), slot)
-			seed.receipts[account.Key.String()] = 0
+			seed.receipts[account.Key.String()] = receiptFiltered
 		}
 	}
 	return seed, nil
@@ -260,7 +260,7 @@ func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
 		account = ConfirmedAccount{Address: address, Owner: solana.PublicKeyFromBytes(info.Owner).String(), Lamports: info.Lamports, Data: info.Data, Executable: info.Executable}
 	}
 	if _, known := v.receipts[address]; !known && slices.ContainsFunc(update.Filters, func(f string) bool { return strings.HasPrefix(f, viewReceiptsFilterPrefix) }) {
-		v.receipts[address], v.pending = write.Slot, v.pending+1
+		v.receipts[address] = write.Slot
 	}
 	held := viewAccount{account, write.Slot, info.WriteVersion, v.session}
 	if held.slot > v.through {
@@ -279,10 +279,20 @@ func (v *View) apply(write viewAccount) {
 		v.accounts[write.Address] = write
 		for _, set := range v.rooms {
 			if ws := set.watches[write.Address]; len(ws) > 0 {
-				v.observeRoom(set, ws, write, true)
+				v.deliverRoomLocked(set, ws, write, true)
 			}
 		}
 	}
+}
+
+func (v *View) pendingReceiptsLocked() (addresses []string, discovered uint64) {
+	discovered = math.MaxUint64
+	for address, slot := range v.receipts {
+		if slot != receiptFiltered {
+			addresses, discovered = append(addresses, address), min(discovered, slot)
+		}
+	}
+	return addresses, discovered
 }
 
 func (v *View) sync(ctx context.Context) {
@@ -300,13 +310,7 @@ func (v *View) sync(ctx context.Context) {
 	}
 	v.mu.Lock()
 	last, from := v.slotAt, max(v.through-min(v.through, viewReplaySlots), v.seedLow+1)
-	var pending []string
-	discovered := uint64(math.MaxUint64)
-	for address, slot := range v.receipts {
-		if slot > 0 {
-			pending, discovered = append(pending, address), min(discovered, slot)
-		}
-	}
+	pending, discovered := v.pendingReceiptsLocked()
 	v.mu.Unlock()
 	var err error
 	switch {
@@ -321,7 +325,7 @@ func (v *View) sync(ctx context.Context) {
 	if err == nil {
 		v.mu.Lock()
 		for _, address := range pending {
-			v.receipts[address], v.pending = 0, v.pending-1
+			v.receipts[address] = receiptFiltered
 		}
 		v.mu.Unlock()
 	}
@@ -370,6 +374,7 @@ func (v *View) readAt(ctx context.Context, receiptsOf *Vault, addresses []string
 		}
 	}
 	if v.connector != nil {
+		unfiltered, _ := v.pendingReceiptsLocked()
 		clockAge := v.now().Sub(time.Unix(clockUnixTimestamp([]ConfirmedAccount{v.accounts[budgetClockAddress].ConfirmedAccount}), 0))
 		switch {
 		case !v.slotAt.IsZero() && time.Since(v.slotAt) > viewReplayWindow:
@@ -378,7 +383,7 @@ func (v *View) readAt(ctx context.Context, receiptsOf *Vault, addresses []string
 			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view is replaying"))
 		case clockAge > viewMaxClockAge:
 			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view chain time at slot %d is %s old", v.through, clockAge))
-		case withReceipts && v.pending > 0:
+		case withReceipts && len(unfiltered) > 0:
 			return 0, nil, nil, confirmedObservationUnavailable(fmt.Errorf("account view has a receipt filter change pending"))
 		}
 	}

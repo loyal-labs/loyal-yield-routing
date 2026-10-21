@@ -382,25 +382,6 @@ export function partnerStrategyIdentity(
   return strategy;
 }
 
-/**
- * Adapter for the pinned Voltr SDK, whose builder accepts one strategy graph at
- * a time. Authorization always binds fourMarketRouteSpecSha256(); this
- * strategy-specific view is never treated as the product route manifest.
- */
-export function partnerBuilderRoute(
-  strategyId: PartnerStrategyId,
-): PartnerRouteSpec {
-  const strategy = partnerStrategyIdentity(strategyId);
-  return {
-    ...PARTNER_ROUTE,
-    strategy: {
-      reserve: strategy.reserve,
-      lendingMarket: strategy.graph.lendingMarket,
-      collateralFarm: strategy.graph.reserveFarmState,
-    },
-  };
-}
-
 export function partnerStrategyGraphSha256(
   strategyId: PartnerStrategyId,
 ): string {

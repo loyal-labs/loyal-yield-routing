@@ -32,8 +32,7 @@ func sdkInstruction(ix fleet.RouteInstruction) (solana.Instruction, error) {
 }
 
 // transferRecurring is the Subscriptions pull of amount from the wallet's
-// token account to the vault's: tag, u64 amount, delegator, mint
-// (crates/loyal-actions/src/protocols.rs).
+// token account to the vault's.
 func transferRecurring(amount uint64, wallet, vault, mint solana.PublicKey, delegation, walletATA, vaultATA string) (fleet.RouteInstruction, error) {
 	authority, err := subscriptionAuthorityKey(wallet[:], mint[:])
 	if err != nil {

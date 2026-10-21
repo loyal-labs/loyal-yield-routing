@@ -12,8 +12,6 @@ import (
 	klend "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-const fractionBits = 60
-
 type Target struct {
 	Reserve           string   `json:"reserve"`
 	Market            *string  `json:"market"`
@@ -100,12 +98,12 @@ func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Acc
 		return Snapshot{}, fmt.Errorf("reserve %s mint %s does not match target %s", target.Reserve, mint, *target.LiquidityMint)
 	}
 	available := float64(reserve.AvailableAmount)
-	borrowedInt := klend.U128(reserve.BorrowedAmountSF)
+	borrowedInt := reserve.BorrowedAmountSF.Int()
 	borrowed := scaledFraction(borrowedInt)
-	price := scaledFraction(klend.U128(reserve.MarketPriceSF))
-	protocolFees := scaledFraction(klend.U128(reserve.AccumulatedProtocolFeesSF))
-	referrerFees := scaledFraction(klend.U128(reserve.AccumulatedReferrerFeesSF))
-	pendingFees := scaledFraction(klend.U128(reserve.PendingReferrerFeesSF))
+	price := scaledFraction(reserve.MarketPriceSF.Int())
+	protocolFees := scaledFraction(reserve.AccumulatedProtocolFeesSF.Int())
+	referrerFees := scaledFraction(reserve.AccumulatedReferrerFeesSF.Int())
+	pendingFees := scaledFraction(reserve.PendingReferrerFeesSF.Int())
 	totalSupply := math.Max(0, available+borrowed-protocolFees-referrerFees-pendingFees)
 	rates, err := reserve.Rates(slotsPerSecond)
 	if err != nil {
@@ -162,7 +160,7 @@ func Compare(previous, current Snapshot) Diff {
 }
 
 func scaledFraction(value *big.Int) float64 {
-	result, _ := new(big.Rat).SetFrac(value, new(big.Int).Lsh(big.NewInt(1), fractionBits)).Float64()
+	result, _ := new(big.Rat).SetFrac(value, new(big.Int).Lsh(big.NewInt(1), klend.FractionBits)).Float64()
 	return result
 }
 func mintSymbol(mint string) string {

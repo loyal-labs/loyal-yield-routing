@@ -85,11 +85,10 @@ func validateInitializedObligationOnRoute(route RuntimeRoute, r KaminoInitializa
 }
 
 // obligationFarm is one farm the lane's obligation registers with: its
-// reserve's farm in mode 0 (collateral) or 1 (debt), and the obligation's
-// user state in it.
+// reserve's farm in mode, and the obligation's user state in it.
 type obligationFarm struct {
 	accounts kamino.ObligationFarmsInitAccounts
-	mode     uint8
+	mode     kamino.FarmMode
 }
 
 // obligationFarms are the farms of route's reserves, collateral first. The
@@ -100,8 +99,8 @@ func obligationFarms(route RuntimeRoute) []obligationFarm {
 	var out []obligationFarm
 	for _, f := range []struct {
 		reserve, farm, user string
-		mode                uint8
-	}{{k.CollateralReserve, route.CollateralFarm, route.ObligationCollateralFarm, 0}, {k.DebtReserve, route.DebtFarm, route.ObligationDebtFarm, 1}} {
+		mode                kamino.FarmMode
+	}{{k.CollateralReserve, route.CollateralFarm, route.ObligationCollateralFarm, kamino.FarmCollateral}, {k.DebtReserve, route.DebtFarm, route.ObligationDebtFarm, kamino.FarmDebt}} {
 		if f.farm == "" {
 			continue
 		}
@@ -120,5 +119,5 @@ func kaminoRouteInitializer(route RuntimeRoute) (compiledInstruction, error) {
 		return compiledInstruction{}, err
 	}
 	return kaminoCompiled(kamino.InitObligation(kamino.ObligationInitAccounts{Owner: owner, FeePayer: owner, Obligation: obligation,
-		LendingMarket: market, Seed1: collateral, Seed2: debt, OwnerUserMetadata: metadata}, 1, 0)), nil
+		LendingMarket: market, Seed1: collateral, Seed2: debt, OwnerUserMetadata: metadata}, kamino.MultiplyObligationTag, kamino.DefaultObligationID)), nil
 }

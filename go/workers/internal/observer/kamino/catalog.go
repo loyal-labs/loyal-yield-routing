@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/mr-tron/base58"
+	"github.com/solana-foundation/solana-go/v2"
 )
 
 type CatalogClient struct {
@@ -157,10 +159,10 @@ type supportedMarket struct {
 
 // Mirrors loyal-kamino-data targets.rs policy_supported_markets and policy_supported_mints.
 var policySupportedMarkets = []supportedMarket{
-	{"7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF", "Main Market", []string{"safe", "medium", "aggressive"}},
-	{"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", "Figure Market", []string{"safe", "medium", "aggressive"}},
-	{"6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y", "Maple Market", []string{"safe", "medium", "aggressive"}},
-	{"47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8", "OnRe Market", []string{"safe", "medium", "aggressive"}},
+	{fleet.KaminoMainMarket, "Main Market", []string{"safe", "medium", "aggressive"}},
+	{fleet.KaminoFigureMarket, "Figure Market", []string{"safe", "medium", "aggressive"}},
+	{fleet.KaminoMapleMarket, "Maple Market", []string{"safe", "medium", "aggressive"}},
+	{fleet.KaminoOnReMarket, "OnRe Market", []string{"safe", "medium", "aggressive"}},
 	{"BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF", "Ethena Market", []string{"safe", "medium", "aggressive"}},
 	{"DxXdAyU3kCjnyggvHmY5nAwg5cRbbmdyX3npfDMjjMek", "JLP Market", []string{"medium", "aggressive"}},
 	{"GMqmFygF5iSm5nkckYU6tieggFcR42SyjkkhK5rswFRs", "Bitcoin Market", []string{"medium", "aggressive"}},
@@ -196,6 +198,23 @@ func PolicyMarkets(riskBasket string) []string {
 		}
 	}
 	return markets
+}
+
+func PolicyMarketKeys(riskBasket string) []solana.PublicKey {
+	var keys []solana.PublicKey
+	for _, market := range PolicyMarkets(riskBasket) {
+		keys = append(keys, solana.MustPublicKeyFromBase58(market))
+	}
+	return keys
+}
+
+func PolicyMints() []string {
+	mints := make([]string, 0, len(policySupportedMints))
+	for mint := range policySupportedMints {
+		mints = append(mints, mint)
+	}
+	sort.Strings(mints)
+	return mints
 }
 
 func (c *CatalogClient) SupportedReserves(ctx context.Context) ([]SupportedReserveRecord, error) {

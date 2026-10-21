@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -153,7 +154,7 @@ func autoPayoffRPC(t *testing.T, slot int64, batch []ConfirmedAccount) *chain.Cl
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
 	usdc := reserveFixture(t, config.DebtReserve, bridgeUSDC, 42, one, 1, 1)
 	sol := reserveFixture(t, budgetSOLReserve, budgetWrappedSOLMint, 42, new(big.Int).Mul(one, big.NewInt(100)), 1, 1)
-	putKey(t, sol.Data[32:64], budgetSOLMarket)
+	putKey(t, sol.Data[32:64], fleet.KaminoMainMarket)
 	binary.LittleEndian.PutUint64(sol.Data[272:280], 9)
 	batch = append(append([]ConfirmedAccount(nil), batch...), usdc, sol)
 	rpc := budgetBuildRPCWithAccounts(t, 5000, slot, batch)

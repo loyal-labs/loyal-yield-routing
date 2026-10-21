@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -84,7 +85,7 @@ func liveReplayStack(t *testing.T, o Observation, lossBPS int64) (*chain.Client,
 	accounts = append(accounts, mints...)
 	unix := clockUnixTimestamp(accounts)
 	sol := reserveFixture(t, budgetSOLReserve, budgetWrappedSOLMint, o.Snapshot.Slot, new(big.Int).Mul(new(big.Int).Lsh(big.NewInt(1), 60), big.NewInt(150)), 1, 1)
-	putKey(t, sol.Data[32:64], budgetSOLMarket)
+	putKey(t, sol.Data[32:64], fleet.KaminoMainMarket)
 	binary.LittleEndian.PutUint64(sol.Data[272:280], 9)
 	binary.LittleEndian.PutUint64(sol.Data[264:272], uint64(unix))
 	// Hastra's stake price at about the mainnet price, verified at the batch's

@@ -9,7 +9,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// PolicyAccountView mirrors SquadsProgramInteractionPolicyAccountView.
 type PolicyAccountView struct {
 	Settings        solana.PublicKey
 	PolicySeed      uint64
@@ -19,10 +18,8 @@ type PolicyAccountView struct {
 	Payload         PolicyPayloadView
 }
 
-// DecodeCanonicalPolicy is the Go port of loyal-actions detection.rs
-// decode_program_interaction_policy_account: nil means "not a canonical
-// ProgramInteraction policy", which callers treat as a mismatch, never as
-// authority to proceed. Canonical is one full-permission signer, threshold 1,
+// DecodeCanonicalPolicy returns nil for "not a canonical ProgramInteraction
+// policy", which callers treat as a mismatch, never as authority to proceed. Canonical is one full-permission signer, threshold 1,
 // no time lock, hooks or expiration, and the policy's own bump. What the
 // policy authorizes, spending limits included, is Payload.Policy, which a
 // caller compares to the policy it executes through (Policy.Equal,
@@ -188,11 +185,6 @@ func dataConstraintsEqual(left, right []DataConstraintView) bool {
 	return true
 }
 
-// appendLegacyPolicyCreate writes one PolicyCreate settings action carrying
-// the deployed LegacyProgramInteraction payload (enum index 3): hookless, no
-// spending limits, one full-permission delegated signer, threshold 1, no time
-// lock, start or expiration. It is loyal-actions squads.rs
-// serialize_settings_actions for that action.
 func appendLegacyPolicyCreate(out []byte, seed uint64, accountIndex uint8, constraints []InstructionConstraintView, limits []SpendingLimitView, delegate solana.PublicKey) ([]byte, error) {
 	out = append(out, settingsActionPolicyCreate)
 	out = binary.LittleEndian.AppendUint64(out, seed)

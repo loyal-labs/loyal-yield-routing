@@ -8,12 +8,10 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Official Subscriptions-program layout, imported byte-for-byte from
-// crates/loyal-actions/src/ids.rs. The recurring-delegation account is a
-// zero-copy Anchor account: a u8 discriminator at offset 0, then four pubkeys
-// and two u64 counters. A decoder that guessed these offsets could authorize a
-// pull against a fabricated allowance, so every constant below is the
-// loyal-actions constant of the same name.
+// Subscriptions-program layout, owned by the program. The recurring-delegation
+// account is a zero-copy Anchor account: a u8 discriminator at offset 0, then
+// four pubkeys and two u64 counters. A decoder that guessed these offsets could
+// authorize a pull against a fabricated allowance.
 const (
 	SubscriptionsProgramID = "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
 
@@ -99,9 +97,6 @@ func RemainingDelegationAllowance(owner string, data []byte, identity Delegation
 	return int64(remaining), nil
 }
 
-// subscriptionAuthority derives the delegation's subscription authority PDA:
-// seeds ["SubscriptionAuthority", delegator, mint] over the Subscriptions
-// program, exactly as derive_subscription_authority does in loyal-actions.
 func subscriptionAuthorityKey(delegator, mint []byte) ([32]byte, error) {
 	return findProgramAddress([][]byte{[]byte(subscriptionAuthoritySeed), delegator, mint}, SubscriptionsProgramID)
 }

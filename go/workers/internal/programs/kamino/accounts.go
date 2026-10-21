@@ -25,8 +25,17 @@ const reserveVersion = 1
 
 const FractionBits = 60
 
-// Scaled fractions (U68F60 "_sf" values) are kept as their raw little-endian
-// on-chain bytes; BigFractionBytes values are their four u64 limbs.
+// ScaledFraction is a U68F60 on-chain value, kept as its raw little-endian
+// bytes.
+type ScaledFraction [16]byte
+
+// BigScaledFraction is a cumulative borrow rate: four little-endian u64 limbs.
+type BigScaledFraction [32]byte
+
+func (f ScaledFraction) Int() *big.Int {
+	high := new(big.Int).SetUint64(binary.LittleEndian.Uint64(f[8:]))
+	return high.Lsh(high, 64).Or(high, new(big.Int).SetUint64(binary.LittleEndian.Uint64(f[:8])))
+}
 
 type CurvePoint struct {
 	UtilizationRateBPS, BorrowRateBPS uint32
@@ -49,10 +58,10 @@ type Reserve struct {
 	LiquidityMint, LiquiditySupply, LiquidityTokenProgram   solana.PublicKey
 	FeeReceiver                                             solana.PublicKey
 	AvailableAmount, MarketPriceLastUpdatedTS, MintDecimals uint64
-	BorrowedAmountSF, MarketPriceSF                         [16]byte
-	AccumulatedProtocolFeesSF, AccumulatedReferrerFeesSF    [16]byte
-	PendingReferrerFeesSF                                   [16]byte
-	CumulativeBorrowRateBSF                                 [32]byte
+	BorrowedAmountSF, MarketPriceSF                         ScaledFraction
+	AccumulatedProtocolFeesSF, AccumulatedReferrerFeesSF    ScaledFraction
+	PendingReferrerFeesSF                                   ScaledFraction
+	CumulativeBorrowRateBSF                                 BigScaledFraction
 	BorrowedAmountOutsideElevationGroup                     uint64
 	QueuedCollateral                                        uint64
 
@@ -62,7 +71,7 @@ type Reserve struct {
 	Status, ProtocolTakeRatePct, LoanToValuePct, LiquidationThresholdPct uint8
 	UtilizationLimitBlockBorrowingAbovePct                               uint8
 	HostFixedInterestRateBPS                                             uint16
-	InterestRateBasis                                                    uint8 // 0 Legacy (per slot), 1 TrueApr (per second)
+	InterestRateBasis                                                    RateBasis
 	EarlyRepayRemainingInterestPct                                       uint8
 	// Term debt: a borrow must be repaid (or rolled over) within
 	// DebtTermSeconds of its slot's last borrow, and every borrow by
@@ -99,14 +108,14 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 		LendingMarket: key(d, 32), FarmCollateral: key(d, 64), FarmDebt: key(d, 96),
 
 		LiquidityMint: key(l, 0), LiquiditySupply: key(l, 32), FeeReceiver: key(l, 64),
-		AvailableAmount: u64(l, 96), BorrowedAmountSF: [16]byte(l[104:120]), MarketPriceSF: [16]byte(l[120:136]),
-		MarketPriceLastUpdatedTS: u64(l, 136), MintDecimals: u64(l, 144), CumulativeBorrowRateBSF: [32]byte(l[168:200]),
-		AccumulatedProtocolFeesSF: [16]byte(l[216:232]), AccumulatedReferrerFeesSF: [16]byte(l[232:248]),
-		PendingReferrerFeesSF: [16]byte(l[248:264]), LiquidityTokenProgram: key(l, 280),
+		AvailableAmount: u64(l, 96), BorrowedAmountSF: ScaledFraction(l[104:120]), MarketPriceSF: ScaledFraction(l[120:136]),
+		MarketPriceLastUpdatedTS: u64(l, 136), MintDecimals: u64(l, 144), CumulativeBorrowRateBSF: BigScaledFraction(l[168:200]),
+		AccumulatedProtocolFeesSF: ScaledFraction(l[216:232]), AccumulatedReferrerFeesSF: ScaledFraction(l[232:248]),
+		PendingReferrerFeesSF: ScaledFraction(l[248:264]), LiquidityTokenProgram: key(l, 280),
 
 		CollateralMint: key(c, 0), CollateralMintTotalSupply: u64(c, 32), CollateralSupply: key(c, 40),
 
-		Status: k[0], HostFixedInterestRateBPS: binary.LittleEndian.Uint16(k[2:4]), EmergencyMode: k[8] != 0, InterestRateBasis: k[9],
+		Status: k[0], HostFixedInterestRateBPS: binary.LittleEndian.Uint16(k[2:4]), EmergencyMode: k[8] != 0, InterestRateBasis: RateBasis(k[9]),
 		EarlyRepayRemainingInterestPct: k[7], DebtMaturityTimestamp: u64(k, 920), DebtTermSeconds: u64(k, 928),
 		ProtocolTakeRatePct: k[14], LoanToValuePct: k[16], LiquidationThresholdPct: k[17],
 		BorrowFeeSF: u64(k, 40), FlashLoanFeeSF: u64(k, 48), BorrowFactorPct: u64(k, 152),
@@ -126,9 +135,9 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 
 func (r Reserve) TotalLiquiditySF() (*big.Int, error) {
 	total := new(big.Int).Lsh(new(big.Int).SetUint64(r.AvailableAmount), FractionBits)
-	total.Add(total, U128(r.BorrowedAmountSF))
-	for _, fee := range [][16]byte{r.AccumulatedProtocolFeesSF, r.AccumulatedReferrerFeesSF, r.PendingReferrerFeesSF} {
-		value := U128(fee)
+	total.Add(total, r.BorrowedAmountSF.Int())
+	for _, fee := range []ScaledFraction{r.AccumulatedProtocolFeesSF, r.AccumulatedReferrerFeesSF, r.PendingReferrerFeesSF} {
+		value := fee.Int()
 		if total.Cmp(value) < 0 {
 			return nil, errors.New("Kamino reserve total liquidity underflowed fees")
 		}
@@ -163,10 +172,10 @@ func CollateralToLiquidity(totalLiquiditySF *big.Int, collateralSupply, collater
 	return liquidity.Uint64(), nil
 }
 
-// LiquidityToCollateral floors liquidity over the exchange value: the
-// collateral a deposit of liquidity mints at the reserve's current rate. The
-// rate only grows, so against a later read it never exceeds what was minted.
-func (r Reserve) LiquidityToCollateral(liquidity uint64) (uint64, error) {
+// FloorCollateralMinted is the collateral a deposit of liquidity mints at the
+// reserve's current rate, floored. The rate only grows, so against a later
+// read it never exceeds what was minted.
+func (r Reserve) FloorCollateralMinted(liquidity uint64) (uint64, error) {
 	if liquidity == 0 {
 		return 0, nil
 	}
@@ -214,9 +223,9 @@ type ObligationCollateral struct {
 // the debt KLend captured once the term ended, zero before.
 type ObligationLiquidity struct {
 	Reserve                    solana.PublicKey
-	CumulativeBorrowRateBSF    [32]byte
+	CumulativeBorrowRateBSF    BigScaledFraction
 	LastBorrowedAtTimestamp    uint64
-	BorrowedAmountSF           [16]byte
+	BorrowedAmountSF           ScaledFraction
 	BorrowedAmountAtExpiration uint64
 }
 
@@ -232,11 +241,11 @@ type Obligation struct {
 	LendingMarket, Owner   solana.PublicKey
 	Deposits               [8]ObligationCollateral
 	Borrows                [5]ObligationLiquidity
-	UnhealthyBorrowValueSF [16]byte
+	UnhealthyBorrowValueSF ScaledFraction
 	// The values of its last refresh: its deposits, its debt adjusted by the
 	// borrow factors and not, and what it may borrow against its deposits
 	// (each deposit's LTV, or its elevation group's).
-	DepositedValueSF, BorrowFactorAdjustedDebtValueSF, BorrowedAssetsMarketValueSF, AllowedBorrowValueSF [16]byte
+	DepositedValueSF, BorrowFactorAdjustedDebtValueSF, BorrowedAssetsMarketValueSF, AllowedBorrowValueSF ScaledFraction
 	ElevationGroup                                                                                       uint8
 }
 
@@ -249,8 +258,8 @@ func DecodeObligation(a *chain.Account) (Obligation, error) {
 	d := a.Data
 	o := Obligation{
 		LastUpdateSlot: u64(d, 16), LendingMarket: key(d, 32), Owner: key(d, obligationOwnerOffset),
-		UnhealthyBorrowValueSF: [16]byte(d[2256:2272]), ElevationGroup: d[2285], DepositedValueSF: [16]byte(d[1192:1208]),
-		BorrowFactorAdjustedDebtValueSF: [16]byte(d[2208:2224]), BorrowedAssetsMarketValueSF: [16]byte(d[2224:2240]), AllowedBorrowValueSF: [16]byte(d[2240:2256]),
+		UnhealthyBorrowValueSF: ScaledFraction(d[2256:2272]), ElevationGroup: d[2285], DepositedValueSF: ScaledFraction(d[1192:1208]),
+		BorrowFactorAdjustedDebtValueSF: ScaledFraction(d[2208:2224]), BorrowedAssetsMarketValueSF: ScaledFraction(d[2224:2240]), AllowedBorrowValueSF: ScaledFraction(d[2240:2256]),
 	}
 	for i := range o.Deposits {
 		offset := 96 + i*136
@@ -258,8 +267,8 @@ func DecodeObligation(a *chain.Account) (Obligation, error) {
 	}
 	for i := range o.Borrows {
 		offset := 1208 + i*200
-		o.Borrows[i] = ObligationLiquidity{Reserve: key(d, offset), CumulativeBorrowRateBSF: [32]byte(d[offset+32 : offset+64]),
-			LastBorrowedAtTimestamp: u64(d, offset+80), BorrowedAmountSF: [16]byte(d[offset+88 : offset+104]),
+		o.Borrows[i] = ObligationLiquidity{Reserve: key(d, offset), CumulativeBorrowRateBSF: BigScaledFraction(d[offset+32 : offset+64]),
+			LastBorrowedAtTimestamp: u64(d, offset+80), BorrowedAmountSF: ScaledFraction(d[offset+88 : offset+104]),
 			BorrowedAmountAtExpiration: u64(d, offset+160)}
 	}
 	return o, nil
@@ -338,10 +347,7 @@ func DecodeFarmState(a *chain.Account) (FarmState, error) {
 	return FarmState{DelegateAuthority: key(d, 7328), IsFarmFrozen: d[7361] != 0, IsFarmDelegated: d[7362] == 1}, nil
 }
 
-func U128(value [16]byte) *big.Int {
-	high := new(big.Int).SetUint64(binary.LittleEndian.Uint64(value[8:]))
-	return high.Lsh(high, 64).Or(high, new(big.Int).SetUint64(binary.LittleEndian.Uint64(value[:8])))
-}
+func U128(value [16]byte) *big.Int { return ScaledFraction(value).Int() }
 
 func envelope(a *chain.Account, owner solana.PublicKey, size int, discriminator [8]byte, name string) error {
 	if a == nil {

@@ -1,18 +1,5 @@
 package multiply
 
-// Faithful port of the Squads ProgramInteraction policy account decoder and
-// the canonical Earn MAX constraint builder:
-//   crates/loyal-actions/src/detection.rs
-//     decode_program_interaction_policy_account and its readers,
-//   crates/loyal-actions/src/earn_max.rs
-//     earn_max_policy_constraints,
-//   crates/loyal-actions/src/squads.rs
-//     semantic_program_interaction_constraints,
-//   91694cd9^:crates/loyal-fleet-worker/src/multiply/policy.rs
-//     current_policy_matches.
-// The comparison is structural over the decoded payload view, exactly like
-// canonical_policy_payload_matches in the Rust worker.
-
 import (
 	"crypto/sha256"
 	"encoding/binary"
@@ -27,20 +14,14 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// CanonicalConstraints is the Go port of earn_max_policy_constraints over the
+// CanonicalConstraints is the canonical Earn MAX constraint set over the
 // semantic contract: literal KLend lane pinning for collateral/debt families
 // and Jupiter SharedAccountsRoute lane pinning for swaps. Constraint indexes
 // line up with ConstraintIndexes in policy.go.
 func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (constraints []squads.InstructionConstraintView, err error) {
-	// Official semantic_program_interaction_constraints sorts each instruction's
-	// account clauses before serialization; compare that actual account view.
 	defer func() {
 		if err == nil {
-			for i := range constraints {
-				sort.Slice(constraints[i].AccountConstraints, func(a, b int) bool {
-					return constraints[i].AccountConstraints[a].AccountIndex < constraints[i].AccountConstraints[b].AccountIndex
-				})
-			}
+			sortAccountConstraintsAsSquadsStores(constraints)
 		}
 	}()
 	strategies := topology.StrategyCatalog()
@@ -226,10 +207,10 @@ func uniqueKeys(keys []solana.PublicKey) []solana.PublicKey {
 	return unique
 }
 
-// CurrentPolicyMatches is the Go port of current_policy_matches: the on-chain
-// policy account must be a canonical hookless ProgramInteraction policy under
-// the expected PDA, delegating to exactly this signer with threshold 1, and
-// its payload must equal the canonical constraint set.
+// CurrentPolicyMatches reports whether the on-chain policy account is a
+// canonical hookless ProgramInteraction policy under the expected PDA,
+// delegating to exactly this signer with threshold 1, with a payload equal to
+// the canonical constraint set.
 func CurrentPolicyMatches(account *chain.Account, policy PolicyConfig, delegate solana.PublicKey, expected []squads.InstructionConstraintView, expectedVaultIndex uint8) (bool, error) {
 	current, err := squads.DecodeCanonicalPolicy(account)
 	if err != nil {
@@ -243,6 +224,14 @@ func CurrentPolicyMatches(account *chain.Account, policy PolicyConfig, delegate 
 		current.DelegatedSigner == delegate &&
 		current.Threshold == 1 &&
 		current.Payload.Policy.Equal(squads.Policy{VaultIndex: expectedVaultIndex, Constraints: expected}), nil
+}
+
+func sortAccountConstraintsAsSquadsStores(constraints []squads.InstructionConstraintView) {
+	for i := range constraints {
+		sort.Slice(constraints[i].AccountConstraints, func(a, b int) bool {
+			return constraints[i].AccountConstraints[a].AccountIndex < constraints[i].AccountConstraints[b].AccountIndex
+		})
+	}
 }
 
 func PolicyDataHash(data []byte) string {
