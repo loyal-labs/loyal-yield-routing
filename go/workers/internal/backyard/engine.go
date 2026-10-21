@@ -114,10 +114,7 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 	lastUnavailable := ""
 	samplers := make([]*selectorSampler, len(e.workers))
 	for i, worker := range e.workers {
-		// Each vault samples concurrently, so each watches the program
-		// identity itself.
-		samplers[i] = &selectorSampler{engine: e, worker: worker, state: e.states[i], identity: newProgramIdentityWatcher(viewProgramIdentity(e.view)).observe,
-			levWatch: &leverageWatch{}, levDecisionLog: &leverageDecisionLog{}, apyThrottle: &currentAPYThrottle{}}
+		samplers[i] = newSelectorSampler(e, worker, e.states[i])
 	}
 	go func() {
 		defer close(feedDone)
@@ -152,6 +149,11 @@ type selectorSampler struct {
 	levWatch                           *leverageWatch
 	levDecisionLog                     *leverageDecisionLog
 	apyThrottle                        *currentAPYThrottle
+}
+
+func newSelectorSampler(e *Engine, worker *Worker, state *vaultState) *selectorSampler {
+	return &selectorSampler{engine: e, worker: worker, state: state, identity: newProgramIdentityWatcher(viewProgramIdentity(e.view)).observe,
+		levWatch: &leverageWatch{}, levDecisionLog: &leverageDecisionLog{}, apyThrottle: &currentAPYThrottle{}}
 }
 
 func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEconomics) {
