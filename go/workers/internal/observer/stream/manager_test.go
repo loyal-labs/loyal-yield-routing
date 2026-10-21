@@ -271,3 +271,36 @@ func TestPromotedHandoffCancelsAndJoinsOldReceiveWorker(t *testing.T) {
 		t.Fatal("promoted handoff left the old receive worker's transport open")
 	}
 }
+
+func TestOldSessionCannotDeliverAfterPromotion(t *testing.T) {
+	updates := make(chan *pb.SubscribeUpdate, 1)
+	handled := make(chan *pb.SubscribeUpdate, 1)
+	manager := NewManager(&updatingFirstConnector{updates: updates}, HandlerFunc(func(_ context.Context, update *pb.SubscribeUpdate) error {
+		handled <- update
+		return nil
+	}), Config{HandoffTimeout: 5 * time.Second})
+	defer manager.Close()
+	if err := manager.Start(context.Background(), &pb.SubscribeRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	old := manager.active
+	defer manager.retire(old)
+	replacement := &pb.SubscribeRequest{}
+	candidate, err := manager.openSessionBounded(manager.ctx, context.Background(), replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.replayBehindFrozen(context.Background(), old, candidate, replacement); err != nil {
+		t.Fatalf("promote candidate: %v", err)
+	}
+	if manager.active != candidate {
+		t.Fatal("candidate was not promoted")
+	}
+
+	updates <- &pb.SubscribeUpdate{UpdateOneof: &pb.SubscribeUpdate_Slot{Slot: &pb.SubscribeUpdateSlot{Slot: 77}}}
+	select {
+	case update := <-handled:
+		t.Fatalf("old session delivered slot %d after the candidate was promoted", update.GetSlot().GetSlot())
+	case <-old.Done():
+	}
+}
