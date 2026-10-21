@@ -21,6 +21,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    env:
+      NEXT_PUBLIC_GIT_COMMIT_HASH: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
