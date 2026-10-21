@@ -272,10 +272,6 @@ func insertInitialSurplusLot(ctx context.Context, tx pgx.Tx, target lockedTarget
 		"initial wallet ATA balance above the configured floor scheduled for autodeposit after one hour")
 }
 
-// insertPositiveDeltaLot schedules an inflow. The user's own Earn withdrawal
-// landing in the wallet is no inflow: depositing it again would undo the
-// withdrawal. Earn retracts the lot instead when it records the withdrawal
-// after this projection ran (SuppressWithdrawalLots).
 func insertPositiveDeltaLot(ctx context.Context, tx pgx.Tx, target lockedTarget, event walletBalanceEventRow, deltaAmountRaw int64) (bool, error) {
 	if !event.TargetActive || event.OwnWithdrawal {
 		return false, nil
@@ -324,12 +320,6 @@ func openSlotFor(ctx context.Context, tx pgx.Tx, targetID int64, eligibleAfter t
 	return openScheduledSlot(ctx, tx, target, eligibleAfter)
 }
 
-// openScheduledSlot returns the target's one scheduled slot (a unique index
-// allows no second), its due date pushed to at least eligibleAfter, or creates
-// it. A requested slot is one being executed now, not a place for new lots: it
-// is never chosen here and its due date never moves. A scheduled slot whose
-// lots all drained is canceled first rather than reused: drained work's idle
-// block and deferral never carry over to new lots.
 func openScheduledSlot(ctx context.Context, tx pgx.Tx, target lockedTarget, eligibleAfter time.Time) (int64, error) {
 	targetID := target.id
 	if _, err := tx.Exec(ctx, `
@@ -383,9 +373,6 @@ func heldTargetIDs(targets []lockedTarget) []int64 {
 	return ids
 }
 
-// depleteLotsNewestFirst applies an externally observed outflow to open lots.
-// Lot statuses stay open/depleted here: the money left the wallet without this
-// family moving it, which is evidence about surplus, not a completed sweep.
 func depleteLotsNewestFirst(ctx context.Context, tx pgx.Tx, target lockedTarget, externalOutflowRaw int64) (int64, error) {
 	if externalOutflowRaw == 0 {
 		return 0, nil

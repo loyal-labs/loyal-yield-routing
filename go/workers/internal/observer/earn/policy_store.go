@@ -14,12 +14,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Policy projection writers, ported from loyal-yield-store store.rs
-// (record_policy_match, record_setup_policy_match,
-// record_balance_sweep_policy_match, record_cross_mint_swap_policy_manifest,
-// record_policy_removal, record_autodeposit_recurring_delegation). The SQL is
-// unchanged so the stopped Rust writer can resume on the same rows.
-
 func strings0(values []string) []string {
 	if values == nil {
 		return []string{}

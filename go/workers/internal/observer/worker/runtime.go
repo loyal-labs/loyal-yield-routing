@@ -228,9 +228,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 					return anchorErr
 				}
 				if bindingStart != nil {
-					// New bindings were just read from confirmed state above, so
-					// an anchor older than the provider window needs no replay;
-					// requesting it would fail every handoff with OutOfRange.
 					current, slotErr := r.rpc.Slot(passCtx, rpc.CommitmentConfirmed)
 					if slotErr != nil {
 						r.facts.Failed(engine.FamilyObserver, "filter_handoff")

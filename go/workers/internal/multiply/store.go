@@ -891,9 +891,6 @@ func decodeOperation(rows interface{ Scan(...any) error }) (*MultiplyOperation, 
 	return operation, nil
 }
 
-// checkFreshCustodyOwnership uses the exact vault identity and the vault's idle
-// handoff lock. Active foreign configuration itself blocks admission: the
-// configuration owner must disable/drain the old family before activation.
 func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteState) error {
 	settings, err := solana.PublicKeyFromBase58(route.Settings)
 	if err != nil {

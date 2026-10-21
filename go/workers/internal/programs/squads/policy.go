@@ -60,7 +60,7 @@ type SpendingLimitView struct {
 	Period        uint8
 	CustomPeriod  int64
 	MaxPerPeriod  uint64
-	Accumulate    bool   // an unspent allowance carries into the next period
+	Accumulate    bool
 	MaxPerUse     uint64 // 0 when one use may spend the whole allowance
 	ExactQuantity bool   // a use spends exactly MaxPerUse
 }
@@ -75,8 +75,6 @@ func (p Policy) Equal(q Policy) bool {
 	return p.VaultIndex == q.VaultIndex && ConstraintsEqual(p.Constraints, q.Constraints) && SpendingLimitsEqual(p.SpendingLimits, q.SpendingLimits)
 }
 
-// PolicyPayloadView is the policy and, in the compact layout, the pubkey table
-// its keys index.
 type PolicyPayloadView struct {
 	Policy
 	PubkeyTable []solana.PublicKey

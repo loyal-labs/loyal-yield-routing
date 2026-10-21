@@ -194,8 +194,6 @@ const (
 	FarmDebt
 )
 
-// InitObligationFarmsForReserve creates the obligation's farm user state for
-// the reserve farm of mode.
 func InitObligationFarmsForReserve(a ObligationFarmsInitAccounts, mode FarmMode) *solana.GenericInstruction {
 	return instruction(InitObligationFarmsForReserveDiscriminator, []byte{byte(mode)}, metas([]squads.AccountSlot[solana.PublicKey]{
 		squads.SigningWritable(a.Payer), squads.ReadOnly(a.Owner), squads.Writable(a.Obligation), squads.ReadOnly(a.LendingMarketAuthority),

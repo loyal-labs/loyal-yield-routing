@@ -207,10 +207,6 @@ func uniqueKeys(keys []solana.PublicKey) []solana.PublicKey {
 	return unique
 }
 
-// CurrentPolicyMatches reports whether the on-chain policy account is a
-// canonical hookless ProgramInteraction policy under the expected PDA,
-// delegating to exactly this signer with threshold 1, with a payload equal to
-// the canonical constraint set.
 func CurrentPolicyMatches(account *chain.Account, policy PolicyConfig, delegate solana.PublicKey, expected []squads.InstructionConstraintView, expectedVaultIndex uint8) (bool, error) {
 	current, err := squads.DecodeCanonicalPolicy(account)
 	if err != nil {
