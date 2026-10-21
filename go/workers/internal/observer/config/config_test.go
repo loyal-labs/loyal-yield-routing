@@ -110,3 +110,11 @@ func TestFromEnvRejectsUnrepresentableBounds(t *testing.T) {
 		})
 	}
 }
+
+func TestFromEnvRejectsCatalogRefreshAboveTheBound(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECONDS", "181")
+	if _, err := FromEnv(); err == nil || !strings.Contains(err.Error(), "between 1 and 180") {
+		t.Fatalf("catalog refresh of 181 s error = %v", err)
+	}
+}
