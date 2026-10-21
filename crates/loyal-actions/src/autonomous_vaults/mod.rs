@@ -1,9 +1,3 @@
-//! Autonomous treasury-vault policy plans.
-//!
-//! This module is the review surface for the first Loyal autonomous vault. It
-//! keeps protocol-specific constraints separate while sharing the repository's
-//! deployed Squads v5 `ProgramInteraction` policy encoder.
-
 mod kamino;
 mod meteora;
 mod returns;

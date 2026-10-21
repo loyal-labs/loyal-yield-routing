@@ -1,5 +1,3 @@
-//! Privacy-safe metrics derived from SQLx's existing tracing events.
-
 use std::time::Duration;
 
 use opentelemetry::{
@@ -20,10 +18,6 @@ const DATABASE_OPERATION_NAME: &str = "OTHER";
 const DATABASE_DURATION_BOUNDARIES_SECONDS: [f64; 9] =
     [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0];
 
-/// Database queries that may be exported as bounded metric attributes.
-///
-/// Adding a variant is an explicit privacy and cardinality review point. Runtime
-/// SQL, parameters, and caller-provided names cannot enter the metric API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub enum DatabaseQuery {
@@ -50,7 +44,6 @@ impl DatabaseQuery {
     }
 }
 
-/// A bounded phase of a named database query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub enum DatabaseQueryPhase {
@@ -78,7 +71,6 @@ impl DatabaseQueryPhase {
     }
 }
 
-/// Records a phase of a known database query without accepting dynamic labels.
 pub fn record_database_query_phase_duration(
     query: DatabaseQuery,
     phase: DatabaseQueryPhase,

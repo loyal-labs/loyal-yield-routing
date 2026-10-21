@@ -1,9 +1,3 @@
-//! Generated Loyal Hub ABI constants and byte layouts.
-//!
-//! Edit `schema/loyal_hub_abi.schema` when the wire format changes. The
-//! generated module computes offsets and lengths from the schema so program,
-//! SDK, Squads policy, and verification code do not hand-maintain byte layout.
-
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 #[cfg(test)]

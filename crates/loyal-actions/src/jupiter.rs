@@ -1,10 +1,3 @@
-//! Strict Jupiter Swap V2 `/build` validation for Loyal cross-mint routes.
-//!
-//! This module deliberately supports one narrow production contract: a one- or
-//! two-hop AlphaQ ExactIn swap between canonical Earn stablecoins held by one
-//! vault. It validates both classic SPL Token and Token-2022 account state,
-//! while finalized credited deltas remain the economic source of truth.
-
 use crate::stablecoins::EARN_STABLECOINS;
 use crate::{
     derive_associated_token_account, earn_stablecoin, ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -116,12 +109,6 @@ impl JupiterV2Dialect {
     }
 }
 
-/// Source side of one durable cross-mint policy.
-///
-/// The two shards are disjoint so a source mint has exactly one Squads
-/// spending-limit state even though both Jupiter instruction dialects are
-/// authorized. This keeps the configured daily cap aggregate across every
-/// destination and dialect instead of accidentally duplicating it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum JupiterCrossMintSourceShard {
     Classic,
@@ -214,9 +201,6 @@ pub struct JupiterExactInBuildExpectation {
     pub output_mint: JupiterMintSnapshot,
     pub input_token_account: JupiterTokenAccountSnapshot,
     pub output_token_account: JupiterTokenAccountSnapshot,
-    /// Existing canonical vault ATAs that Jupiter may redundantly create for
-    /// intermediate route mints. The worker omits setup only after these
-    /// finalized snapshots prove the accounts already exist.
     pub additional_token_accounts: Vec<JupiterTokenAccountSnapshot>,
     pub input_amount: u64,
     pub minimum_output_amount: u64,

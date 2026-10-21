@@ -555,8 +555,6 @@ fn validate_report_fields(
     report: ReportV1,
     current_slot: u64,
 ) -> AdaptorResult<()> {
-    // The report sequence is not caller-arbitrary: it must be the same nonzero
-    // confirmed observation slot that the Squads-signed ArmReport authorizes.
     if report.sequence == 0 || report.sequence != report.observed_slot {
         return Err(AdaptorError::ReportSequence);
     }

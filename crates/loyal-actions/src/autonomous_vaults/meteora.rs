@@ -21,8 +21,7 @@ pub const METEORA_REMOVE_LIQUIDITY_BY_RANGE2_DISCRIMINATOR: [u8; 8] =
     [204, 2, 195, 145, 53, 145, 145, 205];
 pub const METEORA_CLAIM_FEE2_DISCRIMINATOR: [u8; 8] = [112, 191, 101, 171, 28, 144, 127, 187];
 
-/// Canonical empty `RemainingAccountsInfo` emitted by the official Rust SDK for
-/// this classic-token pair. The two approved BinArray metas follow these bytes.
+/// Meteora DLMM's empty `RemainingAccountsInfo` argument (a borsh empty vec).
 pub const METEORA_CLASSIC_TOKEN_REMAINING_ACCOUNTS_INFO: [u8; 4] = [0; 4];
 
 /// Current Meteora's on-chain enum tag for the reviewed two-sided SpotBalanced
@@ -124,9 +123,6 @@ pub fn create_meteora_policies(
 
     let vault_loyal = derive_vault_token_account(vault, METEORA_LOYAL_MINT);
     let vault_usdc = derive_vault_token_account(vault, USDC_MINT);
-    // The approved base PositionV2 can use either of two adjacent BinArray
-    // windows. Squads pins each suffix slot to its candidate set; DLMM then
-    // enforces that the selected lower/upper pair matches the dynamic range.
     Ok(AutonomousMeteoraPolicies {
         add_liquidity: policy_plan(
             settings,

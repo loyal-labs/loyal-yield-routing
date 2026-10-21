@@ -6,11 +6,6 @@ const MAINNET_BETA_GENESIS_HASH: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147d
 const DEVNET_GENESIS_HASH: &str = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const TESTNET_GENESIS_HASH: &str = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY";
 
-/// Verifies that an RPC endpoint belongs to the explicitly configured cluster.
-///
-/// Canonical clusters have fixed genesis hashes. `localnet` accepts only a
-/// non-canonical genesis, which prevents a localnet-labelled mutation command
-/// from accidentally targeting mainnet, devnet, or testnet.
 pub fn validate_rpc_genesis_hash(cluster: &str, observed: Hash) -> Result<(), String> {
     let mainnet = parse_genesis_hash(MAINNET_BETA_GENESIS_HASH);
     let devnet = parse_genesis_hash(DEVNET_GENESIS_HASH);
@@ -109,7 +104,6 @@ pub fn redacted_external_error(message: &str) -> String {
                 "bearer" | "basic"
             );
             if authorization_header {
-                // Redact both the auth scheme and the credential value.
                 suppress_following_tokens = 2;
                 "[redacted-external-endpoint]"
             } else if separated_secret || authorization_scheme {

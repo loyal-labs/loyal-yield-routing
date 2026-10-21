@@ -1,9 +1,3 @@
-//! Compile the resolved 14-policy Backyard RWA catalog into exact Squads
-//! PolicyCreate and PolicyUpdate instructions. Discovery stays outside this
-//! binary: it accepts only a resolver artifact whose lane graph and Jupiter
-//! headers are explicitly marked resolved, and fails closed on any incomplete
-//! or reordered policy family.
-
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use loyal_actions::{
     create_deployed_semantic_program_interaction_policy_instruction, derive_action_account,
@@ -88,18 +82,10 @@ struct Input {
     delegated_signer: String,
     account_index: u8,
     policy_seed_before: String,
-    /// Confirmed slot and bytes hash from the Settings read that supplied
-    /// `policy_seed_before`.  The compiler does not perform RPC itself, so a
-    /// Phase-2 caller must carry that observation explicitly rather than rely
-    /// on a historical seed baked into this binary.
     #[serde(default)]
     settings_context_slot: Option<u64>,
     #[serde(default)]
     settings_data_sha256: Option<String>,
-    /// A deliberately old confirmed blockhash is used to produce authentic,
-    /// non-broadcastable packet measurements.  It must predate the Settings
-    /// observation by enough slots that it cannot execute if an evidence file
-    /// escapes its intended review path.
     #[serde(default)]
     measurement_blockhash: Option<String>,
     #[serde(default)]
@@ -127,10 +113,6 @@ struct PolicyInput {
     swap_edges: Vec<SwapEdgeInput>,
 }
 
-/// One concrete directed edge carried by a resolved Jupiter constraint.  The
-/// compiler verifies that every address is actually contained by the exact
-/// constraint at the supplied account indexes; this keeps edge coverage from
-/// degrading into an untrusted `semanticEdgeCount` label.
 #[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SwapEdgeInput {
@@ -226,9 +208,6 @@ struct Output {
 struct PackingOutput {
     selected_rung: String,
     attempted_rungs: Vec<PackingAttempt>,
-    /// The first contiguous seeds are intentionally dependency-ordered so a
-    /// capped sequential simulator can create and exercise representatives
-    /// without first installing the entire catalog.
     activation_prefix: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     comparative_candidates: Vec<PackingCandidate>,
@@ -246,9 +225,6 @@ struct PackingCandidate {
     selected: bool,
 }
 
-/// Compact evidence for the exhaustive exact-edge arity boundary.  The raw
-/// signed packets are intentionally not persisted 23,426 times; their packet
-/// hashes are folded into the digest after each signature is verified.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExactSwapPackingProof {
@@ -437,8 +413,6 @@ fn wire(instruction: &Instruction) -> WireInstruction {
     }
 }
 
-/// Full wire size with the message's actual number of 64-byte signature slots.
-/// Signature contents cannot affect packet size, so this needs no private key.
 fn packet_bytes(instruction: &Instruction, fee_payer: Pubkey) -> Result<usize, String> {
     let message = Message::new(std::slice::from_ref(instruction), Some(&fee_payer));
     let signatures = vec![Signature::default(); message.header.num_required_signatures as usize];
@@ -600,11 +574,6 @@ fn take_activation_policy(
     Ok(remaining.remove(index))
 }
 
-/// A ten-policy prefix for the provider's 20-transaction sequential cap.
-/// Swaps are deliberately created before the collateral deposits they fund;
-/// the two remaining swap families are then available as independently
-/// testable representatives.  All omitted policies retain their deterministic
-/// compiler order immediately after this prefix.
 fn activation_prefix_order(
     selected: Vec<PhysicalPolicy>,
 ) -> Result<(Vec<PhysicalPolicy>, Vec<String>), String> {
@@ -705,12 +674,6 @@ fn phase_two_lane_logical_policies(input: &[PolicyInput]) -> Result<Vec<Physical
         .collect()
 }
 
-/// Every contiguous operation partition for a four-operation Kamino lane.
-///
-/// The ABI can combine *complete* instruction constraints in one policy, but has no
-/// shared outer account/data allowlist.  These partitions therefore retain every
-/// operation as an independent exact alternative; they never turn e.g. a deposit
-/// account list and a borrow account list into a cross-product.
 fn kamino_partitions(policy: &PhysicalPolicy) -> Vec<(String, Vec<PhysicalPolicy>)> {
     debug_assert_eq!(policy.constraints.len(), 4);
     (0_u8..8)
@@ -742,8 +705,6 @@ fn kamino_partitions(policy: &PhysicalPolicy) -> Vec<(String, Vec<PhysicalPolicy
 }
 
 fn phase_two_rungs(logical: &[PhysicalPolicy]) -> Vec<(String, Vec<PhysicalPolicy>)> {
-    // Keep every coarse partition in the evidence: a rejected 1+3 partition is
-    // materially different from a rejected 2+2 partition when packet layout moves.
     let labels = [
         "4", "1+3", "2+2", "1+1+2", "3+1", "1+2+1", "2+1+1", "1+1+1+1",
     ];

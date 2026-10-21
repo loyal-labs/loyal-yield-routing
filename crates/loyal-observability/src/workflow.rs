@@ -1,5 +1,3 @@
-//! Privacy-safe workflow metrics and traces.
-
 use std::time::Duration;
 
 use opentelemetry::{
@@ -14,14 +12,10 @@ use crate::ObservabilityWalletAddress;
 
 pub(crate) const WORKFLOW_TRACE_TARGET: &str = "loyal.observability.workflow";
 
-/// A bounded workflow result suitable for trace and metric attributes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkflowOutcome {
-    /// The operation completed successfully.
     Succeeded,
-    /// The operation failed.
     Failed,
-    /// The operation was intentionally skipped because no work was required.
     Skipped,
 }
 
@@ -35,11 +29,6 @@ impl WorkflowOutcome {
     }
 }
 
-/// Low-cardinality workflow metrics exported through the OTLP metrics pipeline.
-///
-/// Wallet addresses are intentionally excluded from metrics because they would
-/// create a high-cardinality dimension. Use logs and traces for wallet-level
-/// correlation.
 #[derive(Clone, Default)]
 pub struct WorkflowMetrics {
     executions: Option<Counter<u64>>,
@@ -66,9 +55,6 @@ impl WorkflowMetrics {
         }
     }
 
-    /// Records one completed workflow operation and its duration.
-    ///
-    /// `workflow` and `operation` must be stable names rather than runtime IDs.
     pub fn record_execution(
         &self,
         workflow: &'static str,
@@ -91,21 +77,12 @@ impl WorkflowMetrics {
     }
 }
 
-/// A privacy-safe span for one operation in a longer workflow.
-///
-/// Create child spans while the parent span is entered or use
-/// `tracing::Instrument` with [`Self::span`] to propagate the parent through an
-/// async future.
 #[derive(Clone, Debug)]
 pub struct WorkflowSpan {
     span: Span,
 }
 
 impl WorkflowSpan {
-    /// Creates a span with stable workflow and operation attributes.
-    ///
-    /// The exported OpenTelemetry span name is `operation`. Use names such as
-    /// `autodeposit.run` or `reconcile.compare_balances`.
     pub fn new(workflow: &'static str, operation: &'static str) -> Self {
         Self {
             span: tracing::info_span!(
@@ -122,50 +99,40 @@ impl WorkflowSpan {
         }
     }
 
-    /// Attaches the raw wallet address to this span.
     pub fn wallet_address(self, wallet_address: &ObservabilityWalletAddress) -> Self {
         self.span
             .record("loyal.wallet.address", wallet_address.as_str());
         self
     }
 
-    /// Returns the underlying `tracing` span for sync or async instrumentation.
     pub fn span(&self) -> &Span {
         &self.span
     }
 
-    /// Enters this span for a synchronous scope.
     pub fn enter(&self) -> Entered<'_> {
         self.span.enter()
     }
 
-    /// Returns the underlying span by value for `tracing::Instrument`.
     pub fn into_span(self) -> Span {
         self.span
     }
 
-    /// Marks the span as successfully completed.
     pub fn succeeded(&self) {
         self.record_outcome(WorkflowOutcome::Succeeded);
         self.span.set_status(Status::Ok);
     }
 
-    /// Marks the span as intentionally skipped because no work was required.
     pub fn skipped(&self) {
         self.record_outcome(WorkflowOutcome::Skipped);
         self.span.set_status(Status::Ok);
     }
 
-    /// Marks the span as failed using a stable, non-user-specific error code.
     pub fn failed(&self, error_code: &'static str) {
         self.record_outcome(WorkflowOutcome::Failed);
         self.span.record("error.type", error_code);
         self.span.set_status(Status::error(error_code));
     }
 
-    /// Marks the span from a result without recording or formatting its error.
-    ///
-    /// The stable `error_code` is used only when `result` is `Err`.
     pub fn finish_from_result<T, E>(
         &self,
         result: &Result<T, E>,

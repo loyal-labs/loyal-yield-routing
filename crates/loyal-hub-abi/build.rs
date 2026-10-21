@@ -46,7 +46,6 @@ struct Schema {
     instruction_records: OrderedMap<String, String>,
 }
 
-/// Preserves order and rejects duplicate keys
 struct OrderedMap<K, V> {
     entries: Vec<(K, V)>,
 }
