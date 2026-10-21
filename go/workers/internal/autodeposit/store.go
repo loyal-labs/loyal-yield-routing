@@ -73,10 +73,19 @@ func (s *Store) ProjectSurplusLotsOnce(ctx context.Context, batchLimit int64) (P
 			LastEventID:     previousEventID,
 			EventsScanned:   len(events),
 		}
-		for _, event := range events {
+		eventTargets := make([]int64, len(events))
+		for i, event := range events {
+			eventTargets[i] = event.TargetID
+		}
+		targets, err := lockTargets(ctx, tx, eventTargets)
+		if err != nil {
+			return err
+		}
+		for i, event := range events {
+			target := targets[i]
 			outcome.LastEventID = event.EventID
 			if event.DeltaAmountRaw == nil {
-				created, err := insertInitialSurplusLot(ctx, tx, event)
+				created, err := insertInitialSurplusLot(ctx, tx, target, event)
 				if err != nil {
 					return err
 				}
@@ -87,7 +96,7 @@ func (s *Store) ProjectSurplusLotsOnce(ctx context.Context, batchLimit int64) (P
 			}
 			switch delta := *event.DeltaAmountRaw; {
 			case delta > 0:
-				created, err := insertPositiveDeltaLot(ctx, tx, event, delta)
+				created, err := insertPositiveDeltaLot(ctx, tx, target, event, delta)
 				if err != nil {
 					return err
 				}
@@ -100,7 +109,7 @@ func (s *Store) ProjectSurplusLotsOnce(ctx context.Context, batchLimit int64) (P
 					return &LotError{Code: LotErrAmountOverflow}
 				}
 				external := outflow - min64(outflow, event.OwnPullRaw)
-				depleted, err := depleteLotsNewestFirst(ctx, tx, event.TargetID, external)
+				depleted, err := depleteLotsNewestFirst(ctx, tx, target, external)
 				if err != nil {
 					return err
 				}
@@ -223,7 +232,7 @@ LIMIT $3`, lastEventID, USDCMint, limit)
 	return events, rows.Err()
 }
 
-func insertInitialSurplusLot(ctx context.Context, tx pgx.Tx, event walletBalanceEventRow) (bool, error) {
+func insertInitialSurplusLot(ctx context.Context, tx pgx.Tx, target lockedTarget, event walletBalanceEventRow) (bool, error) {
 	if !event.TargetActive {
 		return false, nil
 	}
@@ -231,7 +240,7 @@ func insertInitialSurplusLot(ctx context.Context, tx pgx.Tx, event walletBalance
 	if !ok {
 		return false, nil
 	}
-	return insertScheduledLot(ctx, tx, event, amountRaw,
+	return insertScheduledLot(ctx, tx, target, event, amountRaw,
 		"derived",
 		"initial wallet ATA balance above the configured floor scheduled for autodeposit after one hour")
 }
@@ -240,7 +249,7 @@ func insertInitialSurplusLot(ctx context.Context, tx pgx.Tx, event walletBalance
 // landing in the wallet is no inflow: depositing it again would undo the
 // withdrawal. Earn retracts the lot instead when it records the withdrawal
 // after this projection ran (SuppressWithdrawalLots).
-func insertPositiveDeltaLot(ctx context.Context, tx pgx.Tx, event walletBalanceEventRow, deltaAmountRaw int64) (bool, error) {
+func insertPositiveDeltaLot(ctx context.Context, tx pgx.Tx, target lockedTarget, event walletBalanceEventRow, deltaAmountRaw int64) (bool, error) {
 	if !event.TargetActive || event.OwnWithdrawal {
 		return false, nil
 	}
@@ -248,12 +257,12 @@ func insertPositiveDeltaLot(ctx context.Context, tx pgx.Tx, event walletBalanceE
 	if !ok {
 		return false, nil
 	}
-	return insertScheduledLot(ctx, tx, event, amountRaw,
+	return insertScheduledLot(ctx, tx, target, event, amountRaw,
 		"derived",
 		"wallet balance increase scheduled for autodeposit after one hour")
 }
 
-func insertScheduledLot(ctx context.Context, tx pgx.Tx, event walletBalanceEventRow, amountRaw int64, confidence, reason string) (bool, error) {
+func insertScheduledLot(ctx context.Context, tx pgx.Tx, target lockedTarget, event walletBalanceEventRow, amountRaw int64, confidence, reason string) (bool, error) {
 	eligibleAfter := ScheduledEligibleAfter(event.ObservedAt)
 	var lotID int64
 	err := tx.QueryRow(ctx, `
@@ -262,7 +271,7 @@ INSERT INTO loyal_yield.balance_sweep_surplus_lots
      remaining_amount_raw, classification, eligible_after, status, confidence, reason)
 VALUES ($1, $2, $3, $4, $4, $5::loyal_yield.balance_sweep_surplus_classification, $6, 'open', $7, $8)
 ON CONFLICT (source_event_id) DO NOTHING
-RETURNING id`, event.TargetID, event.EventID, event.TxnSignature, amountRaw,
+RETURNING id`, target.id, event.EventID, event.TxnSignature, amountRaw,
 		SurplusLotClassificationDBValue, eligibleAfter, confidence, reason).Scan(&lotID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -270,7 +279,7 @@ RETURNING id`, event.TargetID, event.EventID, event.TxnSignature, amountRaw,
 	if err != nil {
 		return false, fmt.Errorf("insert autodeposit surplus lot for event %d: %w", event.EventID, err)
 	}
-	slotID, err := openSlotFor(ctx, tx, event.TargetID, eligibleAfter)
+	slotID, err := openScheduledSlot(ctx, tx, target, eligibleAfter)
 	if err != nil {
 		return false, err
 	}
@@ -280,20 +289,22 @@ RETURNING id`, event.TargetID, event.EventID, event.TxnSignature, amountRaw,
 	return true, nil
 }
 
-// openSlotFor returns the target's one scheduled slot (a unique index allows
-// no second), its due date pushed to at least eligibleAfter, or creates it.
-// A requested slot is one being executed now, not a place for new lots: it is
-// never chosen here and its due date never moves. A scheduled slot whose lots
-// all drained is canceled first rather than reused: drained work's idle block
-// and deferral never carry over to new lots.
-//
-// Every writer that makes a slot scheduled (this, a claim's residual move, a
-// release) locks the target row first, so they take turns per target; the
-// insert itself is the conflict-safe write on the partial index.
 func openSlotFor(ctx context.Context, tx pgx.Tx, targetID int64, eligibleAfter time.Time) (int64, error) {
-	if err := lockTarget(ctx, tx, targetID); err != nil {
+	target, err := lockTarget(ctx, tx, targetID)
+	if err != nil {
 		return 0, err
 	}
+	return openScheduledSlot(ctx, tx, target, eligibleAfter)
+}
+
+// openScheduledSlot returns the target's one scheduled slot (a unique index
+// allows no second), its due date pushed to at least eligibleAfter, or creates
+// it. A requested slot is one being executed now, not a place for new lots: it
+// is never chosen here and its due date never moves. A scheduled slot whose
+// lots all drained is canceled first rather than reused: drained work's idle
+// block and deferral never carry over to new lots.
+func openScheduledSlot(ctx context.Context, tx pgx.Tx, target lockedTarget, eligibleAfter time.Time) (int64, error) {
+	targetID := target.id
 	if _, err := tx.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
 SET status = 'canceled', last_error = 'its lots drained before new lots arrived', updated_at = now()
@@ -316,24 +327,44 @@ RETURNING id`, targetID, eligibleAfter, USDCMint).Scan(&slotID); err != nil {
 	return slotID, nil
 }
 
-func lockTarget(ctx context.Context, tx pgx.Tx, targetID int64) error {
+// lockedTarget is a balance_sweep_targets row this transaction holds FOR UPDATE; only the lock helpers make one.
+type lockedTarget struct{ id int64 }
+
+func lockTarget(ctx context.Context, tx pgx.Tx, targetID int64) (lockedTarget, error) {
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE id = $1 FOR UPDATE`, targetID); err != nil {
-		return fmt.Errorf("lock autodeposit target %d: %w", targetID, err)
+		return lockedTarget{}, fmt.Errorf("lock autodeposit target %d: %w", targetID, err)
 	}
-	return nil
+	return lockedTarget{id: targetID}, nil
+}
+
+func lockTargets(ctx context.Context, tx pgx.Tx, targetIDs []int64) ([]lockedTarget, error) {
+	if _, err := tx.Exec(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE`, targetIDs); err != nil {
+		return nil, fmt.Errorf("lock autodeposit targets: %w", err)
+	}
+	targets := make([]lockedTarget, len(targetIDs))
+	for i, id := range targetIDs {
+		targets[i] = lockedTarget{id: id}
+	}
+	return targets, nil
+}
+
+func heldTargetIDs(targets []lockedTarget) []int64 {
+	ids := make([]int64, len(targets))
+	for i, target := range targets {
+		ids[i] = target.id
+	}
+	return ids
 }
 
 // depleteLotsNewestFirst applies an externally observed outflow to open lots.
 // Lot statuses stay open/depleted here: the money left the wallet without this
 // family moving it, which is evidence about surplus, not a completed sweep.
 // Callers pass only the part of an outflow that is not this family's pull.
-func depleteLotsNewestFirst(ctx context.Context, tx pgx.Tx, targetID, outflowAmountRaw int64) (int64, error) {
+func depleteLotsNewestFirst(ctx context.Context, tx pgx.Tx, target lockedTarget, outflowAmountRaw int64) (int64, error) {
 	if outflowAmountRaw == 0 {
 		return 0, nil
 	}
-	if err := lockTarget(ctx, tx, targetID); err != nil {
-		return 0, err
-	}
+	targetID := target.id
 	rows, err := tx.Query(ctx, `
 SELECT lot.id, lot.remaining_amount_raw
 FROM loyal_yield.balance_sweep_surplus_lots AS lot
