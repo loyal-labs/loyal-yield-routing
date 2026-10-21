@@ -196,12 +196,16 @@ fn validate_templates(
             &template.deposit_instruction,
             KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR,
             &[
-                (0, vault, "owner"),
-                (1, obligation, "obligation"),
-                (2, template.market, "market"),
-                (4, template.reserve, "reserve"),
-                (5, USDC_MINT, "liquidity mint"),
-                (9, template.vault_usdc, "vault USDC"),
+                (OWNER_ACCOUNT_INDEX, vault, "owner"),
+                (OBLIGATION_ACCOUNT_INDEX, obligation, "obligation"),
+                (MARKET_ACCOUNT_INDEX, template.market, "market"),
+                (RESERVE_ACCOUNT_INDEX, template.reserve, "reserve"),
+                (LIQUIDITY_MINT_ACCOUNT_INDEX, USDC_MINT, "liquidity mint"),
+                (
+                    VAULT_LIQUIDITY_ACCOUNT_INDEX,
+                    template.vault_usdc,
+                    "vault USDC",
+                ),
                 (11, spl_token::id(), "token program"),
                 (12, spl_token::id(), "liquidity token program"),
             ],
@@ -211,12 +215,16 @@ fn validate_templates(
             &template.withdraw_instruction,
             KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR,
             &[
-                (0, vault, "owner"),
-                (1, obligation, "obligation"),
-                (2, template.market, "market"),
-                (4, template.reserve, "reserve"),
-                (5, USDC_MINT, "liquidity mint"),
-                (9, template.vault_usdc, "vault USDC"),
+                (OWNER_ACCOUNT_INDEX, vault, "owner"),
+                (OBLIGATION_ACCOUNT_INDEX, obligation, "obligation"),
+                (MARKET_ACCOUNT_INDEX, template.market, "market"),
+                (RESERVE_ACCOUNT_INDEX, template.reserve, "reserve"),
+                (LIQUIDITY_MINT_ACCOUNT_INDEX, USDC_MINT, "liquidity mint"),
+                (
+                    VAULT_LIQUIDITY_ACCOUNT_INDEX,
+                    template.vault_usdc,
+                    "vault USDC",
+                ),
                 (11, spl_token::id(), "token program"),
                 (12, spl_token::id(), "liquidity token program"),
             ],
@@ -288,22 +296,36 @@ fn invalid(operation: &'static str, field: &'static str) -> AutonomousVaultError
     AutonomousVaultError::InvalidKaminoInstruction { operation, field }
 }
 
+const OWNER_ACCOUNT_INDEX: usize = 0;
+const OBLIGATION_ACCOUNT_INDEX: usize = 1;
+const MARKET_ACCOUNT_INDEX: usize = 2;
+const RESERVE_ACCOUNT_INDEX: usize = 4;
+const LIQUIDITY_MINT_ACCOUNT_INDEX: usize = 5;
+const VAULT_LIQUIDITY_ACCOUNT_INDEX: usize = 9;
+// K-Lend validates the reserve-owned vaults, collateral mint, market authority,
+// optional farm state, sysvar, and Farms program against the pinned reserve and
+// market. Encoding those program-enforced accounts again makes the policy-create
+// transaction exceed Solana's packet limit. These are the user-controlled
+// security edges: vault authority, allowed obligations, markets/reserves,
+// liquidity mint, and vault source/destination. K-Lend binds each obligation
+// and reserve to its market, validates reserve-owned supply accounts, requires
+// the classic collateral-token program, and binds the liquidity-token program
+// to the pinned mint owner. One allowlisted deposit and one allowlisted
+// withdrawal constraint therefore preserve exact pair safety without
+// exceeding the packet limit.
+const PROTECTED_ACCOUNT_INDEXES: [usize; 6] = [
+    OWNER_ACCOUNT_INDEX,
+    OBLIGATION_ACCOUNT_INDEX,
+    MARKET_ACCOUNT_INDEX,
+    RESERVE_ACCOUNT_INDEX,
+    LIQUIDITY_MINT_ACCOUNT_INDEX,
+    VAULT_LIQUIDITY_ACCOUNT_INDEX,
+];
+
 fn protected_instruction_constraint(
     templates: &[KaminoReservePolicyTemplate],
     withdraw: bool,
 ) -> SquadsInstructionConstraint {
-    // K-Lend validates the reserve-owned vaults, collateral mint, market authority,
-    // optional farm state, sysvar, and Farms program against the pinned reserve and
-    // market. Encoding those program-enforced accounts again makes the policy-create
-    // transaction exceed Solana's packet limit. These are the user-controlled
-    // security edges: vault authority, allowed obligations, markets/reserves,
-    // liquidity mint, and vault source/destination. K-Lend binds each obligation
-    // and reserve to its market, validates reserve-owned supply accounts, requires
-    // the classic collateral-token program, and binds the liquidity-token program
-    // to the pinned mint owner. One allowlisted deposit and one allowlisted
-    // withdrawal constraint therefore preserve exact pair safety without
-    // exceeding the packet limit.
-    const PROTECTED_ACCOUNT_INDEXES: [usize; 6] = [0, 1, 2, 4, 5, 9];
     let instructions = templates
         .iter()
         .map(|template| {

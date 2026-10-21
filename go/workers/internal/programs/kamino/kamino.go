@@ -6,6 +6,8 @@ package kamino
 
 import (
 	"github.com/solana-foundation/solana-go/v2"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 )
 
 var (
@@ -19,23 +21,25 @@ const (
 	LendingMarketSize = 4664
 	UserMetadataSize  = 1032
 	FarmUserStateSize = 920
+	FarmStateSize     = 8336
 )
 
-// Anchor instruction discriminators: sha256("global:<name>")[:8].
+const (
+	VanillaObligationTag  uint8 = 0
+	MultiplyObligationTag uint8 = 1
+	DefaultObligationID   uint8 = 0
+)
+
 var (
-	RefreshReserveDiscriminator    = [8]byte{2, 218, 138, 235, 79, 201, 25, 102}
-	RefreshObligationDiscriminator = [8]byte{33, 132, 147, 228, 151, 192, 72, 89}
-	// deposit_reserve_liquidity_and_obligation_collateral_v2
-	DepositV2Discriminator = [8]byte{216, 224, 191, 27, 204, 151, 102, 175}
-	// withdraw_obligation_collateral_and_redeem_reserve_collateral_v2
-	WithdrawV2Discriminator = [8]byte{235, 52, 119, 152, 149, 197, 20, 7}
-	// borrow_obligation_liquidity_v2
-	BorrowV2Discriminator = [8]byte{161, 128, 143, 245, 171, 199, 194, 6}
-	// repay_obligation_liquidity_v2
-	RepayV2Discriminator                       = [8]byte{116, 174, 213, 76, 180, 53, 210, 144}
-	InitObligationDiscriminator                = [8]byte{251, 10, 231, 76, 27, 11, 159, 96}
-	InitObligationFarmsForReserveDiscriminator = [8]byte{136, 63, 15, 186, 211, 152, 168, 164}
-	InitUserMetadataDiscriminator              = [8]byte{117, 169, 176, 69, 197, 23, 15, 162}
+	RefreshReserveDiscriminator                = anchor.Instruction("refresh_reserve")
+	RefreshObligationDiscriminator             = anchor.Instruction("refresh_obligation")
+	DepositV2Discriminator                     = anchor.Instruction("deposit_reserve_liquidity_and_obligation_collateral_v2")
+	WithdrawV2Discriminator                    = anchor.Instruction("withdraw_obligation_collateral_and_redeem_reserve_collateral_v2")
+	BorrowV2Discriminator                      = anchor.Instruction("borrow_obligation_liquidity_v2")
+	RepayV2Discriminator                       = anchor.Instruction("repay_obligation_liquidity_v2")
+	InitObligationDiscriminator                = anchor.Instruction("init_obligation")
+	InitObligationFarmsForReserveDiscriminator = anchor.Instruction("init_obligation_farms_for_reserve")
+	InitUserMetadataDiscriminator              = anchor.Instruction("init_user_metadata")
 )
 
 func LendingMarketAuthority(market solana.PublicKey) (solana.PublicKey, error) {
@@ -49,7 +53,7 @@ func ObligationAddress(tag, id uint8, owner, market, seed1, seed2 solana.PublicK
 }
 
 func VanillaObligation(owner, market solana.PublicKey) (solana.PublicKey, error) {
-	return ObligationAddress(0, 0, owner, market, solana.PublicKey{}, solana.PublicKey{})
+	return ObligationAddress(VanillaObligationTag, DefaultObligationID, owner, market, solana.PublicKey{}, solana.PublicKey{})
 }
 
 func UserMetadataAddress(owner solana.PublicKey) (solana.PublicKey, error) {

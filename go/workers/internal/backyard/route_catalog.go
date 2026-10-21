@@ -94,13 +94,13 @@ func findEarnLane(lane string) (earnLane, bool) {
 
 // routeFor is the lane's chain facts with the accounts owner, a Squads
 // vault, holds on it: its custody of each mint (an associated token account)
-// and its one Multiply obligation (tag 1, id 0, seeded by the two mints) with
+// and its one Multiply obligation (seeded by the two mints) with
 // that obligation's farm states.
 func (l earnLane) routeFor(owner solana.PublicKey) RuntimeRoute {
 	r := l.route
 	k := &r.Kamino
 	k.Vault = owner.String()
-	k.Obligation = mustDerive(kamino.ObligationAddress(1, 0, owner, kaminoKey(k.Market), kaminoKey(k.CollateralMint), kaminoKey(k.DebtMint)))
+	k.Obligation = mustDerive(kamino.ObligationAddress(kamino.MultiplyObligationTag, kamino.DefaultObligationID, owner, kaminoKey(k.Market), kaminoKey(k.CollateralMint), kaminoKey(k.DebtMint)))
 	r.CollateralCustody = mustDerive(spl.AssociatedTokenAddress(owner, kaminoKey(k.CollateralMint), kaminoKey(r.CollateralTokenProgram)))
 	r.DebtCustody = mustDerive(spl.AssociatedTokenAddress(owner, kaminoKey(k.DebtMint), kaminoKey(r.DebtTokenProgram)))
 	if r.CollateralFarm != "" {

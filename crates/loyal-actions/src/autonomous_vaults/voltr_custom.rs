@@ -13,6 +13,7 @@ pub const CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR: [u8; 8] = [242, 35, 198, 137, 82
 pub const CUSTOM_ADAPTOR_WITHDRAW_DISCRIMINATOR: [u8; 8] = [183, 18, 70, 156, 148, 109, 161, 34];
 pub const CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR: [u8; 8] = [164, 175, 246, 41, 178, 140, 35, 3];
 const SPL_TRANSFER_CHECKED: u8 = 12;
+const ARM_BOUND_ACCOUNT_INDEXES: &[usize] = &[0, 1];
 const DEPOSIT_BOUND_ACCOUNT_INDEXES: &[usize] = &[0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17];
 const WITHDRAW_BOUND_ACCOUNT_INDEXES: &[usize] = &[0, 2, 5, 6, 9, 12, 13, 14, 15, 16, 17];
 
@@ -353,7 +354,7 @@ fn arm_constraint(
         program_id: instruction.program_id,
         // The adaptor itself rederives and authenticates Settings/vault/program.
         // The policy only needs to pin the immutable config and its one-use PDA.
-        account_constraints: selected_account_constraints(instruction, &[0, 1]),
+        account_constraints: selected_account_constraints(instruction, ARM_BOUND_ACCOUNT_INDEXES),
         data_constraints,
     }
 }

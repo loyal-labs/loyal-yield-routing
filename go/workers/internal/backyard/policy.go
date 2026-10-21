@@ -2,13 +2,13 @@ package backyard
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -532,7 +532,7 @@ func bridgePolicyKey(v *Vault, action Action) policyKey {
 func trustfulBridgePolicies(v *Vault) map[Action]squads.Policy {
 	pin, free := squads.Pin, squads.Any
 	vault, usdc, custody := solanaKey(v.squads), solanaKey(bridgeUSDC), solanaKey(v.cash)
-	limits := []squads.SpendingLimitView{{Mint: usdc, Period: 1 /* daily */, MaxPerPeriod: 200_000_000_000 /* 200k USDC */}}
+	limits := []squads.SpendingLimitView{{Mint: usdc, Period: squads.PeriodDaily, MaxPerPeriod: 200_000_000_000 /* 200k USDC */}}
 	policy := func(legs ...squads.InstructionConstraintView) squads.Policy {
 		out := vaultPolicy(v, legs...)
 		out.SpendingLimits = limits
@@ -570,7 +570,7 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	pin, free := squads.Pin, squads.Any
 	vault, settings, strategy, ticket := solanaKey(v.squads), solanaKey(bridgeSettings), solanaKey(v.Strategy), solanaKey(reportTicketPDA)
 	usdc, custody, strategyATA := solanaKey(bridgeUSDC), solanaKey(v.cash), solanaKey(v.strategyATA)
-	limits := []squads.SpendingLimitView{{Mint: usdc, Period: 1 /* daily */, MaxPerPeriod: 200_000_000_000 /* 200k USDC */, Accumulate: false, MaxPerUse: 0, ExactQuantity: false}}
+	limits := []squads.SpendingLimitView{{Mint: usdc, Period: squads.PeriodDaily, MaxPerPeriod: 200_000_000_000 /* 200k USDC */, Accumulate: false, MaxPerUse: 0, ExactQuantity: false}}
 	policy := func(legs ...squads.InstructionConstraintView) squads.Policy {
 		out := vaultPolicy(v, legs...)
 		out.SpendingLimits = limits
@@ -583,7 +583,7 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	nothing := func(offset uint64) []squads.DataConstraintView {
 		return []squads.DataConstraintView{squads.DataU64(offset, squads.OpEquals, 0)}
 	}
-	reportArgs := binary.LittleEndian.AppendUint32([]byte{1}, bridgeReportLen) // Some(ReportV1)
+	reportArgs := anchor.OptionSomeHeader(bridgeReportLen)
 	reportArgs = append(reportArgs, bridgeReportVersion)
 	arm := func(operation byte, amount func(uint64) []squads.DataConstraintView) squads.InstructionConstraintView {
 		data := append(amount(armAmountOffset),
@@ -593,7 +593,7 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	}
 	move := func(allowed func(voltr.StrategyAllowed, []squads.AccountSlot[squads.Slot], ...squads.DataConstraintView) squads.InstructionConstraintView,
 		adaptorInstruction []byte, amount func(uint64) []squads.DataConstraintView) squads.InstructionConstraintView {
-		call := append(binary.LittleEndian.AppendUint32([]byte{1}, uint32(len(adaptorInstruction))), adaptorInstruction...) // Some(adaptor instruction)
+		call := anchor.OptionSome(adaptorInstruction)
 		reportOffset := uint64(voltr.StrategyAdaptorCallOffset + len(call) + bridgeReportArgsPrefixLen)
 		data := append(amount(voltr.StrategyAmountOffset),
 			squads.DataU64(reportOffset+bridgeReportNAVOffset, squads.OpLessThanOrEqualTo, bridgeMaxNAV),

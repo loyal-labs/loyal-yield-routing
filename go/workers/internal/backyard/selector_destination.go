@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"math"
@@ -11,8 +10,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// UserState/FarmState fields match farms-sdk 3.2.14 Borsh layouts, including
-// discriminators. A token-loop quote cannot silently assume manual farm setup.
+// A token-loop quote cannot silently assume manual farm setup.
 // An absent obligation has no registration yet: the lane's initializer
 // creates the obligation and registers it with these farms in one
 // transaction (compileKaminoInitializationMessage).
@@ -27,8 +25,7 @@ func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAcc
 			return budgetHoldFrom(err, "selector_farm_binding_invalid")
 		}
 		farm, user := accountAt(accounts, pair[0]), accountAt(accounts, pair[1])
-		if farm.Owner != kamino.FarmsProgramID.String() || farm.Executable || farm.Lamports == 0 || len(farm.Data) != 8336 || !bytes.Equal(farm.Data[:8], []byte{198, 102, 216, 74, 63, 66, 163, 190}) ||
-			!sameKey(farm.Data[7328:7360], route.Kamino.MarketAuthority) || farm.Data[7361] != 0 || farm.Data[7362] != 1 {
+		if state, err := kamino.DecodeFarmState(chainAccount(farm, farm.Address)); err != nil || !sameKey(state.DelegateAuthority[:], route.Kamino.MarketAuthority) || state.IsFarmFrozen || !state.IsFarmDelegated {
 			return budgetHold("selector_farm_unavailable")
 		}
 		if !obligationPresent {
@@ -175,7 +172,7 @@ func payoffReceiptsForLiquidity(totalLiquiditySF *big.Int, mintSupply, liquidity
 	if liquidity == 0 || totalLiquiditySF == nil || totalLiquiditySF.Sign() <= 0 || mintSupply == 0 {
 		return 0, budgetHold("selector_destination_receipt_bound_unavailable")
 	}
-	numerator := new(big.Int).Mul(new(big.Int).SetUint64(liquidity), new(big.Int).Lsh(new(big.Int).SetUint64(mintSupply), 60))
+	numerator := new(big.Int).Mul(new(big.Int).SetUint64(liquidity), new(big.Int).Lsh(new(big.Int).SetUint64(mintSupply), kamino.FractionBits))
 	receipts := new(big.Int).Add(numerator, totalLiquiditySF)
 	receipts.Sub(receipts, big.NewInt(1))
 	receipts.Quo(receipts, totalLiquiditySF)

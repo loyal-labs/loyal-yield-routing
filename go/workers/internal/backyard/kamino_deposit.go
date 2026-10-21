@@ -27,17 +27,16 @@ func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot 
 	if clockSlot < uint64(slot) || clockSlot > uint64(slot)+1 || now <= 0 || now > math.MaxInt64-kaminoPayoffWindowSeconds || r.refreshedSlot <= 0 || r.refreshedSlot > int64(clockSlot) {
 		return 0, budgetHold("invalid_deposit_clock")
 	}
-	config := a.Data[kaminoReserveConfigOffset:]
 	if r.terms.SupportedInterestTerms() != nil {
 		return 0, budgetHold("unsupported_deposit_interest_terms")
 	}
-	rate, err := kaminoMaximumBorrowRate(config)
+	rate, err := kaminoMaximumBorrowRate(r.terms)
 	if err != nil {
 		return 0, err
 	}
 	elapsed, units := int64(clockSlot)+observationLagSlots()-r.refreshedSlot, uint64(63_072_000)
-	if config[9] == 1 {
-		updated := int64(binary.LittleEndian.Uint32(a.Data[28:32]))
+	if r.terms.InterestRateBasis == 1 {
+		updated := int64(r.terms.LastUpdateTimestamp)
 		if updated <= 0 || updated > now {
 			return 0, budgetHold("invalid_deposit_refresh_timestamp")
 		}

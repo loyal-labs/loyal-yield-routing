@@ -10,25 +10,30 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
 var ProgramID = solana.MustPublicKeyFromBase58("vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8")
 
-// Anchor discriminators: sha256("account:<Name>")[:8] and
-// sha256("global:<instruction>")[:8].
 var (
-	VaultDiscriminator             = [8]byte{211, 8, 232, 43, 2, 152, 117, 119}
-	StrategyReceiptDiscriminator   = [8]byte{51, 8, 192, 253, 115, 78, 112, 214}
-	WithdrawalReceiptDiscriminator = [8]byte{203, 81, 223, 141, 175, 108, 101, 114}
-	DepositStrategyDiscriminator   = [8]byte{246, 82, 57, 226, 131, 222, 253, 249}
-	WithdrawStrategyDiscriminator  = [8]byte{31, 45, 162, 5, 193, 217, 134, 188}
+	VaultDiscriminator             = anchor.Account("Vault")
+	StrategyReceiptDiscriminator   = anchor.Account("StrategyInitReceipt")
+	WithdrawalReceiptDiscriminator = anchor.Account("RequestWithdrawVaultReceipt")
+	DepositStrategyDiscriminator   = anchor.Instruction("deposit_strategy")
+	WithdrawStrategyDiscriminator  = anchor.Instruction("withdraw_strategy")
 )
 
 const (
 	VaultSize             = 928
 	StrategyReceiptSize   = 192
 	WithdrawalReceiptSize = 112
+
+	WithdrawalReceiptVaultOffset = 8
+
+	UpgradedStrategyReceiptVersion = 2
+
+	discriminatorLen = 8
 )
 
 type Vault struct {
@@ -109,7 +114,7 @@ func DecodeWithdrawalReceipt(account *chain.Account) (WithdrawalReceipt, error) 
 		little[i] = d[95-i]
 	}
 	r := WithdrawalReceipt{
-		Vault: key(d, 8), User: key(d, 40), LPEscrowedRaw: binary.LittleEndian.Uint64(d[72:]),
+		Vault: key(d, WithdrawalReceiptVaultOffset), User: key(d, 40), LPEscrowedRaw: binary.LittleEndian.Uint64(d[72:]),
 		AssetToWithdrawBits: new(big.Int).SetBytes(little), WithdrawableFromTS: binary.LittleEndian.Uint64(d[96:]), Bump: d[104], Version: d[105],
 	}
 	if r.LPEscrowedRaw == 0 || r.AssetToWithdrawBits.Sign() == 0 || r.WithdrawableFromTS == 0 || r.Version != 0 {
@@ -131,7 +136,7 @@ func WithdrawalReceiptAddress(vault, user solana.PublicKey) (solana.PublicKey, u
 func WithdrawalReceiptFilters(vault solana.PublicKey) []rpc.RPCFilter {
 	return []rpc.RPCFilter{
 		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: WithdrawalReceiptDiscriminator[:]}},
-		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 8, Bytes: vault[:]}},
+		{Memcmp: &rpc.RPCFilterMemcmp{Offset: WithdrawalReceiptVaultOffset, Bytes: vault[:]}},
 	}
 }
 
@@ -198,10 +203,10 @@ func strategyInstruction(discriminator [8]byte, amount uint64, adaptorInstructio
 	data := binary.LittleEndian.AppendUint64(discriminator[:], amount)
 	for _, option := range [][]byte{adaptorInstruction, adaptorArgs} {
 		if option == nil {
-			data = append(data, 0)
+			data = append(data, anchor.OptionNone)
 			continue
 		}
-		data = append(binary.LittleEndian.AppendUint32(append(data, 1), uint32(len(option))), option...)
+		data = append(data, anchor.OptionSome(option)...)
 	}
 	return solana.NewInstruction(ProgramID, accounts, data)
 }
@@ -229,18 +234,17 @@ func zero(data []byte) bool {
 var TrustfulProgramID = solana.MustPublicKeyFromBase58("3pnpK9nrs1R65eMV1wqCXkDkhSgN18xb1G5pgYPwoZjJ")
 
 var (
-	TrustfulDepositDiscriminator  = [8]byte{117, 73, 131, 148, 12, 99, 191, 180}
-	TrustfulWithdrawDiscriminator = [8]byte{35, 58, 217, 109, 98, 184, 147, 14}
+	TrustfulDepositDiscriminator  = anchor.Instruction("deposit_arbitrary")
+	TrustfulWithdrawDiscriminator = anchor.Instruction("withdraw_arbitrary")
 )
 
 // TrustfulEndValueOffset is where a Trustful deposit_strategy or
 // withdraw_strategy carries its end value: after the amount, Some(adaptor
 // discriminator) and the Some(u32 length) of its additional args.
-const TrustfulEndValueOffset = StrategyAdaptorCallOffset + 1 + 4 + 8 + 1 + 4
+const TrustfulEndValueOffset = StrategyAdaptorCallOffset + anchor.OptionSomeHeaderLen + discriminatorLen + anchor.OptionSomeHeaderLen
 
 func TrustfulCall(discriminator [8]byte) []byte {
-	call := append(binary.LittleEndian.AppendUint32([]byte{1}, 8), discriminator[:]...)
-	return binary.LittleEndian.AppendUint32(append(call, 1), 8)
+	return append(anchor.OptionSome(discriminator[:]), anchor.OptionSomeHeader(8)...)
 }
 
 func TrustfulHoldingAuthority(strategyAuth, strategy solana.PublicKey) (solana.PublicKey, error) {

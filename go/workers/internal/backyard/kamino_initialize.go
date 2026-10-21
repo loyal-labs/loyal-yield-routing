@@ -78,7 +78,7 @@ func validateInitializedObligationOnRoute(route RuntimeRoute, r KaminoInitializa
 	}
 	if a.Lamports != r.RentLamports || binary.LittleEndian.Uint64(a.Data[8:16]) != 1 || o.hasPosition ||
 		!allZero(a.Data[96:1184]) || !allZero(a.Data[1208:2208]) ||
-		a.Data[kaminoObligationElevationGroupOffset] != 0 || !allZero(a.Data[2288:2320]) {
+		o.elevationGroup != 0 || !allZero(a.Data[2288:2320]) {
 		return fmt.Errorf("initialized obligation state differs from admitted empty Multiply account")
 	}
 	return nil

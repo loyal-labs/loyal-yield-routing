@@ -56,10 +56,10 @@ func DecodeSettings(account *chain.Account) (Settings, error) {
 	if s.StaleTransactionIndex, err = c.u64(); err != nil {
 		return fail(err)
 	}
-	if err = c.skipOption(32); err != nil { // archival_authority
+	if err = c.skipOption(archivalAuthorityLen); err != nil {
 		return fail(err)
 	}
-	if err = c.skip(8); err != nil { // archivable_after
+	if err = c.skip(archivableAfterLen); err != nil {
 		return fail(err)
 	}
 	if s.Bump, err = c.u8(); err != nil {
@@ -82,7 +82,7 @@ func DecodeSettings(account *chain.Account) (Settings, error) {
 		}
 		s.Signers = append(s.Signers, signer)
 	}
-	if err = c.skip(1); err != nil { // account_utilization
+	if err = c.skip(accountUtilizationLen); err != nil {
 		return fail(err)
 	}
 	if _, err = c.option(func() error {

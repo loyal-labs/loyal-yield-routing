@@ -177,10 +177,9 @@ func decodeReserveEconomics(account ConfirmedAccount, measured func() float64) (
 	return r, nil
 }
 
-// scaledFloat is a KLend scaled fraction (60 fractional bits) as a float.
 func scaledFloat(value *big.Int) float64 {
 	f, _ := new(big.Float).SetInt(value).Float64()
-	return math.Ldexp(f, -60)
+	return math.Ldexp(f, -kamino.FractionBits)
 }
 
 func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomics, yields map[string]nativeYield, feed map[string]float64, now time.Time, p SelectorPolicy) []LaneEconomics {

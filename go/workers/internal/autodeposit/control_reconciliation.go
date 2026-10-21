@@ -74,8 +74,8 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		return o, errors.New("control delegation differs from canonical nonce PDA")
 	}
 	settings, _ := solana.PublicKeyFromBase58(target.Settings)
-	// Loyal smart-accounts core spec/pda-registry.ts, smartAccount index 1.
-	expectedVault, _, err := squads.SmartAccountAddress(settings, 1)
+	const vaultSmartAccountIndex = 1
+	expectedVault, _, err := squads.SmartAccountAddress(settings, vaultSmartAccountIndex)
 	if err != nil || expectedVault.String() != target.Vault {
 		return o, errors.New("control vault differs from canonical settings PDA")
 	}

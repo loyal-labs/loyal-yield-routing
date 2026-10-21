@@ -917,7 +917,7 @@ func EncodeCompactPolicyUpdate(policy, delegate solana.PublicKey, accountIndex u
 			return nil, err
 		}
 	}
-	body = append(body, 0, 0, 0) // pre_hook, post_hook, spending_limits
+	body = append(body, noPreHook, noPostHook, noSpendingLimits)
 	out := append([]byte(nil), ExecuteSettingsTransactionSyncDiscriminator[:]...)
 	out = append(out, syncSignerCount)
 	out = binary.LittleEndian.AppendUint32(out, 1)
@@ -932,7 +932,7 @@ func EncodeCompactPolicyUpdate(policy, delegate solana.PublicKey, accountIndex u
 		out = append(out, key[:]...)
 	}
 	out = append(out, body...)
-	out = append(out, 0) // expiration_args
+	out = append(out, noExpirationArgs)
 	return append(out, 0), nil
 }
 

@@ -472,7 +472,7 @@ fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
     }
 }
 
-// init_obligation (tag 0, id 0) in the official account order: the vanilla
+// init_obligation in the official account order: the vanilla
 // obligation PDA is created through the System program, rent paid by the
 // signing fee payer, and stamped with its market and owner. User metadata and
 // referrer state are not modeled.
@@ -482,8 +482,8 @@ fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo])
         return Err(ProgramError::NotEnoughAccountKeys);
     };
     let seeds: [&[u8]; 6] = [
-        &[0],
-        &[0],
+        &[VANILLA_OBLIGATION_TAG],
+        &[VANILLA_OBLIGATION_ID],
         owner.key.as_ref(),
         market.key.as_ref(),
         seed1.key.as_ref(),
@@ -501,7 +501,7 @@ fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo])
     {
         return Err(ProgramError::InvalidAccountData);
     }
-    let space = 3344;
+    let space = OBLIGATION_SPACE;
     let rent = solana_program::rent::Rent::get()?.minimum_balance(space);
     invoke_signed(
         &solana_program::system_instruction::create_account(
@@ -513,8 +513,8 @@ fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo])
         ),
         &[fee_payer.clone(), obligation.clone(), system.clone()],
         &[&[
-            &[0],
-            &[0],
+            &[VANILLA_OBLIGATION_TAG],
+            &[VANILLA_OBLIGATION_ID],
             owner.key.as_ref(),
             market.key.as_ref(),
             seed1.key.as_ref(),
@@ -529,6 +529,35 @@ fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo])
     Ok(())
 }
 
+const VANILLA_OBLIGATION_TAG: u8 = 0;
+const VANILLA_OBLIGATION_ID: u8 = 0;
+const OBLIGATION_SPACE: usize = 3344;
+const RESERVE_LIQUIDATION_THRESHOLD_OFFSET: usize = 4873;
+const FIXTURE_LIQUIDATION_THRESHOLD_PCT: u8 = 80;
+const JUPITER_ROUTE_ID: u8 = 0;
+const JUPITER_ROUTE_PLAN_STEP_COUNT: [u8; 4] = 1u32.to_le_bytes();
+const JUPITER_TOKEN_SWAP: u8 = 3;
+const JUPITER_ROUTE_PERCENT: u8 = 100;
+const JUPITER_ROUTE_INPUT_INDEX: u8 = 0;
+const JUPITER_ROUTE_OUTPUT_INDEX: u8 = 1;
+const JUPITER_FIXTURE_SLIPPAGE_BPS: [u8; 2] = 50u16.to_le_bytes();
+const JUPITER_FIXTURE_PLATFORM_FEE_BPS: u8 = 0;
+const MULTIPLY_ROUTE_PLAN: [u8; 9] = [
+    JUPITER_ROUTE_ID,
+    JUPITER_ROUTE_PLAN_STEP_COUNT[0],
+    JUPITER_ROUTE_PLAN_STEP_COUNT[1],
+    JUPITER_ROUTE_PLAN_STEP_COUNT[2],
+    JUPITER_ROUTE_PLAN_STEP_COUNT[3],
+    JUPITER_TOKEN_SWAP,
+    JUPITER_ROUTE_PERCENT,
+    JUPITER_ROUTE_INPUT_INDEX,
+    JUPITER_ROUTE_OUTPUT_INDEX,
+];
+const MULTIPLY_ROUTE_TAIL: [u8; 3] = [
+    JUPITER_FIXTURE_SLIPPAGE_BPS[0],
+    JUPITER_FIXTURE_SLIPPAGE_BPS[1],
+    JUPITER_FIXTURE_PLATFORM_FEE_BPS,
+];
 // The Multiply fixture uses the source-pinned Scope address. This local model
 // does not evaluate prices or pretend to model mature Scope/KLend risk logic.
 const MULTIPLY_FIXTURE_SCOPE: Pubkey = pubkey!("3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH");
@@ -901,19 +930,20 @@ fn multiply_fixture_withdraw_amount(
         return Ok(requested);
     }
     let data = obligation.try_borrow_data()?;
-    if data.len() != 3344 || data[32..64] != MULTIPLY_MARKET.to_bytes() {
+    if data.len() != OBLIGATION_SPACE || data[32..64] != MULTIPLY_MARKET.to_bytes() {
         return Err(ProgramError::InvalidAccountData);
     }
     let collateral = read_u64(&data[128..136])?;
     drop(data);
     let debt = multiply_debt_raw(obligation)?;
     let reserve_data = reserve.try_borrow_data()?;
-    // Source ReserveConfig liquidation threshold offset (locked SDK 23b9f2b),
-    // explicitly initialized to80 by the public fixed-price fixture.
-    if reserve_data.len() < 4874 || reserve_data[4873] != 80 {
+    if reserve_data.len() <= RESERVE_LIQUIDATION_THRESHOLD_OFFSET
+        || reserve_data[RESERVE_LIQUIDATION_THRESHOLD_OFFSET] != FIXTURE_LIQUIDATION_THRESHOLD_PCT
+    {
         return Err(ProgramError::InvalidAccountData);
     }
-    let locked = (debt as u128 * 100 + 79) / 80;
+    let threshold = FIXTURE_LIQUIDATION_THRESHOLD_PCT as u128;
+    let locked = (debt as u128 * 100 + threshold - 1) / threshold;
     let amount = (collateral as u128)
         .checked_sub(locked)
         .ok_or(ProgramError::InsufficientFunds)?;
@@ -925,13 +955,11 @@ fn process_multiply_shared_route(
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
-    // Official Jupiter CPI IDL: id:u8, Vec<RoutePlanStep>; TokenSwap(enum3),
-    // percent100,input0,output1; followed by amounts/u16 slippage/u8 fee.
     // Fixed-price model only: no real DEX/Jupiter routing or price claim.
     if accounts.len() != 13
         || data.len() != 36
-        || data[8..17] != [0, 1, 0, 0, 0, 3, 100, 0, 1]
-        || data[33..36] != [50, 0, 0]
+        || data[8..17] != MULTIPLY_ROUTE_PLAN
+        || data[33..36] != MULTIPLY_ROUTE_TAIL
     {
         return Err(ProgramError::InvalidInstructionData);
     }

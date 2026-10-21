@@ -24,7 +24,7 @@ const (
 
 // DataValueView mirrors SquadsDataValueView.
 type DataValueView struct {
-	Kind  uint8 // 0 u8, 1 u16le, 2 u32le, 3 u64le, 4 u128le, 5 bytes
+	Kind  uint8
 	U8    uint8
 	U16   uint16
 	U32   uint32
@@ -63,7 +63,7 @@ type SpendingLimitView struct {
 	Mint          solana.PublicKey
 	Start         int64
 	Expiration    *int64
-	Period        uint8 // 0 one-time, 1 daily, 2 weekly, 3 monthly, 4 custom
+	Period        uint8
 	CustomPeriod  int64
 	MaxPerPeriod  uint64
 	Accumulate    bool   // an unspent allowance carries into the next period
@@ -308,7 +308,7 @@ func decodeHeader(data []byte) (header, int, error) {
 		return header{}, 0, err
 	}
 	// Non-ProgramInteraction kinds have no ProgramInteraction vault-index byte.
-	if kind != 3 {
+	if kind != policyKindProgramInteraction {
 		return header{Settings: settings, PolicySeed: policySeed, Bump: policyBump, TransactionIndex: transactionIndex, StaleTransactionIndex: staleTransactionIndex, Signers: signers, Permissions: permissions, Threshold: threshold, TimeLock: timeLock, Kind: kind}, cursor.offset, nil
 	}
 	accountIndex, err := cursor.u8()
@@ -342,7 +342,7 @@ func DecodeProgramInteractionPolicy(account *chain.Account) (DecodedPolicy, erro
 	if err != nil {
 		return DecodedPolicy{}, err
 	}
-	if h.Kind != 3 {
+	if h.Kind != policyKindProgramInteraction {
 		return DecodedPolicy{}, errors.New("policy is not ProgramInteraction")
 	}
 	p := DecodedPolicy{Settings: h.Settings, Seed: h.PolicySeed, Bump: h.Bump, TransactionIndex: h.TransactionIndex, StaleTransactionIndex: h.StaleTransactionIndex, Signers: h.Signers, Permissions: h.Permissions, Threshold: h.Threshold, TimeLock: h.TimeLock, VaultIndex: h.VaultIndex}
@@ -751,7 +751,7 @@ func readLegacySpendingLimit(cursor *borshCursor) (SpendingLimitView, error) {
 	if limit.ExactQuantity, err = cursor.bool(); err != nil {
 		return SpendingLimitView{}, err
 	}
-	if _, err = cursor.take(8 + 8); err != nil { // remaining_in_period, last_reset
+	if _, err = cursor.take(remainingInPeriodLen + lastResetLen); err != nil {
 		return SpendingLimitView{}, err
 	}
 	return limit, nil
@@ -801,11 +801,11 @@ func readPeriodV2(cursor *borshCursor) (uint8, int64, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	if period > 4 {
+	if period > PeriodCustom {
 		return 0, 0, errors.New("unknown period v2")
 	}
 	var custom int64
-	if period == 4 {
+	if period == PeriodCustom {
 		if custom, err = cursor.i64(); err != nil {
 			return 0, 0, err
 		}

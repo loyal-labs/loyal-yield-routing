@@ -57,22 +57,20 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	if err != nil || debt == 0 || reserve.refreshedSlot <= 0 || reserve.refreshedSlot > int64(clockSlot) {
 		return bound, budgetHoldFrom(err, "payoff_debt_state_unavailable")
 	}
-	config := reserveAccount.Data[kaminoReserveConfigOffset:]
-	// Official current KLend layout: LastUpdate timestamp at account+28, curve
-	// at config+64. An unknown basis or an early-repay penalty needs another
-	// model (kamino.Reserve.SupportedInterestTerms); term debt accrues on the
-	// same curve. The 7.3.9 SDK
-	// does NOT decode the basis/timestamp: do not use its slot-only APR.
+	// An unknown basis or an early-repay penalty needs another model
+	// (kamino.Reserve.SupportedInterestTerms); term debt accrues on the same
+	// curve. The 7.3.9 SDK does NOT decode the basis/timestamp: do not use its
+	// slot-only APR.
 	terms, err := kamino.DecodeReserve(chainAccount(reserveAccount, reserveAccount.Address))
 	if err != nil || terms.SupportedInterestTerms() != nil {
 		return bound, budgetHold("unsupported_payoff_interest_terms")
 	}
 	basis := terms.InterestRateBasis
-	maximumRate, err := kaminoMaximumBorrowRate(config)
+	maximumRate, err := kaminoMaximumBorrowRate(terms)
 	if err != nil {
 		return bound, err
 	}
-	updatedUnix := int64(binary.LittleEndian.Uint32(reserveAccount.Data[28:32]))
+	updatedUnix := int64(terms.LastUpdateTimestamp)
 	bound = KaminoPayoffBound{ObservedSlot: slot, ChainUnix: now, ThroughSlot: int64(clockSlot) + steps*observationLagSlots(),
 		ThroughUnix: now + steps*kaminoPayoffWindowSeconds, ReserveUpdatedSlot: reserve.refreshedSlot, ReserveUpdatedUnix: updatedUnix,
 		InterestBasis: basis, MaximumRateBPS: maximumRate, ObservedDebtRaw: debt, AccountsSHA256: hashConfirmedAccounts(accounts)}
@@ -92,14 +90,10 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	return bound, err
 }
 
-func kaminoMaximumBorrowRate(config []byte) (uint64, error) {
-	if len(config) < 152 {
-		return 0, budgetHold("invalid_payoff_borrow_curve")
-	}
+func kaminoMaximumBorrowRate(reserve kamino.Reserve) (uint64, error) {
 	maximumRate, previousUtil, previousRate := uint64(0), uint32(0), uint32(0)
-	for i := 0; i < 11; i++ {
-		offset := 64 + i*8
-		util, rate := binary.LittleEndian.Uint32(config[offset:]), binary.LittleEndian.Uint32(config[offset+4:])
+	for i, point := range reserve.BorrowRateCurve {
+		util, rate := point.UtilizationRateBPS, point.BorrowRateBPS
 		if (i == 0 && util != 0) || (i == 10 && util != 10_000) || util > 10_000 ||
 			(i > 0 && ((previousUtil < 10_000 && util <= previousUtil) || util < previousUtil || rate < previousRate)) {
 			return 0, budgetHold("invalid_payoff_borrow_curve")
@@ -107,7 +101,7 @@ func kaminoMaximumBorrowRate(config []byte) (uint64, error) {
 		maximumRate = max(maximumRate, uint64(rate))
 		previousUtil, previousRate = util, rate
 	}
-	return maximumRate + uint64(binary.LittleEndian.Uint16(config[2:4])), nil
+	return maximumRate + uint64(reserve.HostFixedInterestRateBPS), nil
 }
 
 // KLend's nonnegative truncated binomial accrual is <= (1+rate/year)^elapsed,
@@ -118,7 +112,7 @@ func upperKaminoCompoundedDebtSF(debtSF *big.Int, annualBPS, elapsed, unitsPerYe
 	if debtSF == nil || debtSF.Sign() <= 0 || debtSF.BitLen() > 128 || unitsPerYear == 0 {
 		return 0, budgetHold("invalid_payoff_interest_input")
 	}
-	one := new(big.Int).Lsh(big.NewInt(1), 60)
+	one := new(big.Int).Lsh(big.NewInt(1), kamino.FractionBits)
 	ceilDivide := func(n, d *big.Int) *big.Int {
 		return new(big.Int).Quo(new(big.Int).Add(n, new(big.Int).Sub(d, big.NewInt(1))), d)
 	}

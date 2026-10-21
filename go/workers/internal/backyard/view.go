@@ -389,9 +389,7 @@ func (v *View) readAt(ctx context.Context, receiptsOf *Vault, addresses []string
 	}
 	var receipts []programAccount
 	for address := range v.receipts {
-		// A receipt names its Voltr vault at offset 8
-		// (voltr.WithdrawalReceiptFilters).
-		if held := v.accounts[address]; withReceipts && held.Lamports > 0 && len(held.Data) >= 40 && sameKey(held.Data[8:40], receiptsOf.VoltrVault) {
+		if held := v.accounts[address]; withReceipts && held.Lamports > 0 && len(held.Data) >= voltr.WithdrawalReceiptVaultOffset+32 && sameKey(held.Data[voltr.WithdrawalReceiptVaultOffset:voltr.WithdrawalReceiptVaultOffset+32], receiptsOf.VoltrVault) {
 			receipts = append(receipts, programAccount{Address: address, Account: held.ConfirmedAccount})
 		}
 	}

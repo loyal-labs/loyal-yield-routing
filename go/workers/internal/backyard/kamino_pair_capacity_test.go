@@ -5,6 +5,21 @@ import (
 	"math"
 	"math/big"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
+)
+
+const (
+	kaminoObligationElevationGroupOffset = 2285
+	kaminoReserveStatusOffset            = kaminoReserveConfigOffset
+	kaminoReserveEmergencyModeOffset     = kaminoReserveConfigOffset + 8
+	kaminoOutsideBorrowCounterOffset     = 6704
+	kaminoOutsideBorrowLimitOffset       = 5504
+	kaminoDisableCrossCollateralOffset   = 5500
+	kaminoDebtWithdrawalCapOffset        = 5448
+	kaminoBorrowFactorOffset             = 5008
+	kaminoLoanToValueOffset              = 4872
+	kaminoQueuedCollateralOffset         = 6968
 )
 
 func pairCapacityFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount, KaminoPosition) {
@@ -83,11 +98,8 @@ func TestNetBorrowHeadroom(t *testing.T) {
 		{"negative_cap", -1, 40, 10, 100, 100, 0, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			data := make([]byte, 32)
-			for i, n := range []uint64{uint64(row.capacity), uint64(row.current), row.start, row.interval} {
-				binary.LittleEndian.PutUint64(data[i*8:], n)
-			}
-			got, err := kaminoNetBorrowHeadroom(data, row.now)
+			withdrawalCap := kamino.WithdrawalCap{ConfigCapacity: row.capacity, CurrentTotal: row.current, LastIntervalStartTimestamp: row.start, IntervalLengthSeconds: row.interval}
+			got, err := kaminoNetBorrowHeadroom(withdrawalCap, row.now)
 			if got != row.want || (err != nil) != row.fail {
 				t.Fatalf("headroom=%d want=%d err=%v", got, row.want, err)
 			}

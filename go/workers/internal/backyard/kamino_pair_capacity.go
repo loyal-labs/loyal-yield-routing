@@ -1,25 +1,11 @@
 package backyard
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
 	"math/big"
-)
 
-// These offsets were obtained from the installed KLend SDK's Borsh layouts,
-// including the 8-byte account discriminator. Cross-mode (elevation group 0)
-// is the only recipe the pilot initializes. A different group needs its exact
-// market/paired-collateral cap model; it must not inherit cross-mode liquidity.
-const (
-	kaminoObligationElevationGroupOffset = 2285
-	kaminoOutsideBorrowCounterOffset     = 6704
-	kaminoOutsideBorrowLimitOffset       = 5504
-	kaminoDisableCrossCollateralOffset   = 5500
-	kaminoDebtWithdrawalCapOffset        = 5448
-	kaminoBorrowFactorOffset             = 5008
-	kaminoLoanToValueOffset              = 4872
-	kaminoQueuedCollateralOffset         = 6968
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // kaminoPairEntryCapacity is an active registry lane's entry equity ceiling:
@@ -40,12 +26,12 @@ func kaminoPairEntryCapacity(position KaminoPosition, accounts []ConfirmedAccoun
 	return unleveredEntryCapacityDebtRaw(position, accounts, route)
 }
 
-func kaminoNetBorrowHeadroom(data []byte, now int64) (uint64, error) {
-	if len(data) != 32 || now <= 0 {
+func kaminoNetBorrowHeadroom(withdrawalCap kamino.WithdrawalCap, now int64) (uint64, error) {
+	if now <= 0 {
 		return 0, fmt.Errorf("pair_capacity_clock_or_cap_invalid")
 	}
-	capacity, current := int64(binary.LittleEndian.Uint64(data[:8])), int64(binary.LittleEndian.Uint64(data[8:16]))
-	start, interval := binary.LittleEndian.Uint64(data[16:24]), binary.LittleEndian.Uint64(data[24:32])
+	capacity, current := withdrawalCap.ConfigCapacity, withdrawalCap.CurrentTotal
+	start, interval := withdrawalCap.LastIntervalStartTimestamp, withdrawalCap.IntervalLengthSeconds
 	if interval == 0 {
 		return math.MaxUint64, nil
 	}
