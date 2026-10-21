@@ -260,10 +260,10 @@ func (f *EconomicFeed) Refresh(ctx context.Context) error {
 	f.refreshRealized(ctx, now)
 	reserves, err := readReserveEconomics(ctx, f.view, f.routes, f.view.rpc.SlotsPerSecond)
 	feed, _ := fetchFeedYields(ctx, f.client, kaminoStatsEndpoint, f.routes, now, p.NativeMaxAge)
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	if err != nil {
+		f.mu.Lock()
 		f.failure = err.Error()
+		f.mu.Unlock()
 		return err
 	}
 	f.publish(reserves, feed, now, p)
@@ -271,9 +271,10 @@ func (f *EconomicFeed) Refresh(ctx context.Context) error {
 }
 
 // publish prices every lane from this refresh's reserves, the realized
-// yields held per collateral reserve and the feed's display APY. The caller
-// holds the write lock.
+// yields held per collateral reserve and the feed's display APY.
 func (f *EconomicFeed) publish(reserves map[string]reserveEconomics, feed map[string]float64, now time.Time, p SelectorPolicy) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	yields := map[string]nativeYield{}
 	for _, route := range f.routes {
 		if r := f.realized[route.Kamino.CollateralReserve]; !r.yield.ObservedAt.IsZero() {
@@ -284,7 +285,7 @@ func (f *EconomicFeed) publish(reserves map[string]reserveEconomics, feed map[st
 	f.failure, f.unavailable = "", ""
 	if len(f.latest) != len(f.routes) {
 		f.failure = "economic_evidence_incomplete"
-		f.unavailable = f.unavailableLanes(now, p)
+		f.unavailable = unavailableLanes(f.routes, f.latest, f.realized, now, p)
 	}
 }
 
@@ -331,18 +332,18 @@ func (f *EconomicFeed) refreshRealized(ctx context.Context, now time.Time) {
 	}
 }
 
-func (f *EconomicFeed) unavailableLanes(now time.Time, p SelectorPolicy) string {
+func unavailableLanes(routes []RuntimeRoute, latest []LaneEconomics, realized map[string]realizedReserve, now time.Time, p SelectorPolicy) string {
 	priced := map[string]bool{}
-	for _, e := range f.latest {
+	for _, e := range latest {
 		priced[e.Lane] = true
 	}
 	var out []string
-	for _, route := range f.routes {
+	for _, route := range routes {
 		if priced[route.Lane] {
 			continue
 		}
 		reason := "economic_evidence_unavailable"
-		r := f.realized[route.Kamino.CollateralReserve]
+		r := realized[route.Kamino.CollateralReserve]
 		switch {
 		case r.yield.ObservedAt.IsZero() && r.reason != "":
 			reason = r.reason

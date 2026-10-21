@@ -54,6 +54,7 @@ type Manager struct {
 	active  *session
 	request *pb.SubscribeRequest
 	closed  bool
+	ended   map[*session]error
 
 	handoffGate chan struct{}
 	fatal       chan error
@@ -69,6 +70,7 @@ func NewManager(connector Connector, handler Handler, config Config) *Manager {
 		config:      config.withDefaults(),
 		ctx:         ctx,
 		cancel:      cancel,
+		ended:       map[*session]error{},
 		fatal:       make(chan error, 1),
 		handoffGate: gate,
 	}
@@ -145,33 +147,20 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 	if err != nil {
 		return fmt.Errorf("open handoff candidate: %w", err)
 	}
-	promoted := false
-	defer func() {
-		if !promoted {
-			candidate.stopAndWait()
-		}
-	}()
-	// A promoted handoff owns the old session's shutdown: cancel AND join its
-	// receive worker before returning, so no old delivery can outlive the
-	// ownership swap. Registered before the delivery gate is taken so the gate
-	// unlocks before the join waits on the frozen receive worker.
-	oldJoined := false
-	defer func() {
-		if oldJoined {
-			old.stopAndWait()
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-old.deliveryGate:
+	if err := m.replayBehindFrozen(ctx, old, candidate, replacement); err != nil {
+		m.retire(candidate)
+		return err
 	}
-	defer func() { old.deliveryGate <- struct{}{} }()
+	m.retire(old)
+	return nil
+}
+
+func (m *Manager) replayBehindFrozen(ctx context.Context, old, candidate *session, replacement *pb.SubscribeRequest) error {
+	if err := old.acquireDelivery(ctx); err != nil {
+		return err
+	}
+	defer old.releaseDelivery()
 	target := old.Frontier()
-	// Start durable candidate delivery only after old delivery is frozen. The
-	// two network subscriptions overlap, but domain handlers never receive old
-	// and replayed state concurrently or race their in-memory projections.
 	candidate.Start()
 
 	for candidate.Frontier() < target {
@@ -191,14 +180,7 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 		return fmt.Errorf("handoff candidate stopped at promotion frontier %d: %w", target, err)
 	default:
 	}
-
-	if err := m.promoteCandidate(old, candidate, replacement); err != nil {
-		return err
-	}
-
-	promoted = true
-	oldJoined = true
-	return nil
+	return m.promoteCandidate(old, candidate, replacement)
 }
 
 func (m *Manager) ActiveFrontier() uint64 {
@@ -224,7 +206,7 @@ func (m *Manager) Close() {
 	m.cancel()
 	m.mu.Unlock()
 	if active != nil {
-		active.stopAndWait()
+		m.retire(active)
 	}
 }
 
@@ -273,8 +255,7 @@ func (m *Manager) promoteCandidate(old, candidate *session, replacement *pb.Subs
 	if m.closed || m.active != old {
 		return errors.New("active subscription changed during handoff")
 	}
-	if candidate.terminal {
-		err := candidate.terminalErr
+	if err, ended := m.ended[candidate]; ended {
 		if err == nil {
 			err = errors.New("candidate stopped without an error")
 		}
@@ -287,15 +268,21 @@ func (m *Manager) promoteCandidate(old, candidate *session, replacement *pb.Subs
 
 func (m *Manager) sessionFinished(s *session, err error) {
 	m.mu.Lock()
-	s.terminal = true
-	s.terminalErr = err
-	isActive := !m.closed && m.active == s
-	if isActive && err != nil && !errors.Is(err, context.Canceled) {
+	defer m.mu.Unlock()
+	m.ended[s] = err
+	if !m.closed && m.active == s && err != nil && !errors.Is(err, context.Canceled) {
 		select {
 		case m.fatal <- err:
 		default:
 		}
 	}
+}
+
+func (m *Manager) retire(s *session) {
+	s.Stop()
+	<-s.done
+	m.mu.Lock()
+	delete(m.ended, s)
 	m.mu.Unlock()
 }
 
@@ -312,28 +299,19 @@ type session struct {
 	start        chan struct{}
 	startOnce    sync.Once
 	stopOnce     sync.Once
-
-	// terminal and terminalErr are guarded by the owning Manager's mu so
-	// completion state and active-session promotion form one critical section.
-	terminal    bool
-	terminalErr error
 }
 
-func (s *session) run(onDone func(error)) {
+func (s *session) run(publishTerminal func(error)) {
 	select {
 	case <-s.start:
+		s.finish(s.receive(), publishTerminal)
 	case <-s.ctx.Done():
-		onDone(context.Canceled)
-		_ = s.stream.Close()
-		s.done <- context.Canceled
-		close(s.done)
-		return
+		s.finish(context.Canceled, publishTerminal)
 	}
-	err := s.receive()
-	// Publish terminal state before connection cleanup or waking Done readers.
-	// This closes the promotion race between a non-blocking Done check and the
-	// active session swap, even if transport cleanup is slow.
-	onDone(err)
+}
+
+func (s *session) finish(err error, publishTerminal func(error)) {
+	publishTerminal(err)
 	_ = s.stream.Close()
 	s.done <- err
 	close(s.done)
@@ -361,24 +339,39 @@ func (s *session) receive() error {
 			continue
 		}
 
-		select {
-		case <-s.ctx.Done():
-			return context.Canceled
-		case <-s.deliveryGate:
-		}
-		if s.ctx.Err() != nil {
-			s.deliveryGate <- struct{}{}
+		if s.acquireDelivery(s.ctx) != nil {
 			return context.Canceled
 		}
-		if err := s.handler.Handle(s.ctx, update); err != nil {
-			s.deliveryGate <- struct{}{}
-			return fmt.Errorf("durably process LaserStream update: %w", err)
+		err = s.deliver(update)
+		s.releaseDelivery()
+		if err != nil {
+			return err
 		}
-		if slot, ok := updateSlot(update); ok {
-			s.advance(slot)
-		}
-		s.deliveryGate <- struct{}{}
 	}
+}
+
+func (s *session) acquireDelivery(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.deliveryGate:
+		return nil
+	}
+}
+
+func (s *session) releaseDelivery() { s.deliveryGate <- struct{}{} }
+
+func (s *session) deliver(update *pb.SubscribeUpdate) error {
+	if s.ctx.Err() != nil {
+		return context.Canceled
+	}
+	if err := s.handler.Handle(s.ctx, update); err != nil {
+		return fmt.Errorf("durably process LaserStream update: %w", err)
+	}
+	if slot, ok := updateSlot(update); ok {
+		s.advance(slot)
+	}
+	return nil
 }
 
 func (s *session) advance(slot uint64) {
@@ -400,15 +393,9 @@ func (s *session) Done() <-chan error        { return s.done }
 func (s *session) Start()                    { s.startOnce.Do(func() { close(s.start) }) }
 func (s *session) Stop()                     { s.stopOnce.Do(s.cancel) }
 
-func (s *session) stopAndWait() {
-	s.Stop()
-	<-s.done
-}
 func handoffReplayStart(frontier, overlap uint64, requested *uint64) uint64 {
-	// A zero frontier means the active stream has not established a durable
-	// boundary yet. Preserve the replacement's validated cursor rather than
-	// turning an immediate handoff into a genesis replay.
-	if frontier == 0 && requested != nil {
+	activeHasNoDurableBoundary := frontier == 0
+	if activeHasNoDurableBoundary && requested != nil {
 		return *requested
 	}
 	overlapStart := frontier - min(frontier, overlap)

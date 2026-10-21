@@ -98,16 +98,19 @@ const (
 // treat any slot an account carries above the label as the future, and each
 // read is the finalized state of its own slot, all within a second.
 func OpenView(ctx context.Context, client *chain.Client, connector stream.Connector) (*View, error) {
-	v := &View{rpc: client, connector: connector, fixed: viewAddresses(), ctx: ctx, now: time.Now,
-		accounts: map[string]viewAccount{}, receipts: map[string]uint64{}, advanced: make(chan struct{}), seedLow: math.MaxUint64}
-	if err := v.seed(ctx); err != nil {
+	fixed := viewAddresses()
+	seed, err := readViewSeed(ctx, client, fixed)
+	if err != nil {
 		return nil, err
 	}
+	v := &View{rpc: client, connector: connector, fixed: fixed, ctx: ctx, now: time.Now,
+		accounts: seed.accounts, receipts: seed.receipts, advanced: make(chan struct{}), seedLow: seed.low, seedHigh: seed.high}
 	if connector == nil {
 		v.through = v.seedHigh
 		return v, nil
 	}
-	return v, v.subscribe(v.seedLow + 1)
+	v.manager, v.subscribed, err = v.subscribe(v.seedLow + 1)
+	return v, err
 }
 
 // viewAddresses is every fixed account a vault's route-catalog lane observes,
@@ -132,25 +135,32 @@ func viewAddresses() []string {
 	return uniqueNonzero(addresses)
 }
 
-// seed is the start-up read, before the view is shared. It is not a
-// fallback: planning never reads RPC for these accounts.
-func (v *View) seed(ctx context.Context) error {
+type viewSeed struct {
+	accounts  map[string]viewAccount
+	receipts  map[string]uint64
+	low, high uint64
+}
+
+// readViewSeed is the start-up read. It is not a fallback: planning never
+// reads RPC for these accounts.
+func readViewSeed(ctx context.Context, client *chain.Client, fixed []string) (viewSeed, error) {
+	seed := viewSeed{accounts: map[string]viewAccount{}, receipts: map[string]uint64{}, low: math.MaxUint64}
 	held := func(account ConfirmedAccount, slot uint64) {
-		v.accounts[account.Address] = viewAccount{ConfirmedAccount: account, slot: slot}
-		v.seedLow, v.seedHigh = min(v.seedLow, slot), max(v.seedHigh, slot)
+		seed.accounts[account.Address] = viewAccount{ConfirmedAccount: account, slot: slot}
+		seed.low, seed.high = min(seed.low, slot), max(seed.high, slot)
 	}
 	// ProgramData images are read alone: the Voltr image is over a megabyte
 	// and batch responses are size-capped.
 	programData := []string{voltrProgramDataAddress, adaptorProgramDataAddress}
-	rest := slices.DeleteFunc(slices.Clone(v.fixed), func(address string) bool { return slices.Contains(programData, address) })
+	rest := slices.DeleteFunc(slices.Clone(fixed), func(address string) bool { return slices.Contains(programData, address) })
 	for _, batch := range [][]string{rest, programData[:1], programData[1:]} {
 		keys, err := publicKeys(batch)
 		if err != nil {
-			return err
+			return viewSeed{}, err
 		}
-		slot, read, err := v.rpc.Accounts(ctx, keys, rpc.CommitmentFinalized, 0)
+		slot, read, err := client.Accounts(ctx, keys, rpc.CommitmentFinalized, 0)
 		if err != nil {
-			return unavailable(err)
+			return viewSeed{}, unavailable(err)
 		}
 		for i, account := range read {
 			if account == nil {
@@ -161,16 +171,16 @@ func (v *View) seed(ctx context.Context) error {
 		}
 	}
 	for _, vault := range vaults {
-		slot, read, err := v.rpc.ProgramAccounts(ctx, voltr.ProgramID, voltr.WithdrawalReceiptFilters(solanaKey(vault.VoltrVault)), rpc.CommitmentFinalized, 0)
+		slot, read, err := client.ProgramAccounts(ctx, voltr.ProgramID, voltr.WithdrawalReceiptFilters(solanaKey(vault.VoltrVault)), rpc.CommitmentFinalized, 0)
 		if err != nil {
-			return unavailable(err)
+			return viewSeed{}, unavailable(err)
 		}
 		for _, account := range read {
 			held(confirmedAccount(account.Key.String(), &account), slot)
-			v.receipts[account.Key.String()] = 0
+			seed.receipts[account.Key.String()] = 0
 		}
 	}
-	return nil
+	return seed, nil
 }
 
 func viewReceiptsFilter(vault *Vault) string { return viewReceiptsFilterPrefix + vault.Name }
@@ -204,15 +214,12 @@ func (v *View) request(from uint64) *pb.SubscribeRequest {
 	}
 }
 
-// subscribe runs under control or before the view is shared.
-func (v *View) subscribe(from uint64) error {
-	manager := stream.NewManager(v.connector, v, stream.Config{ReplayOverlapSlots: viewReplaySlots})
-	v.subscribed = time.Now()
+func (v *View) subscribe(from uint64) (*stream.Manager, time.Time, error) {
+	manager, at := stream.NewManager(v.connector, v, stream.Config{ReplayOverlapSlots: viewReplaySlots}), time.Now()
 	if err := manager.Start(v.ctx, v.request(from)); err != nil {
-		return err
+		return nil, at, err
 	}
-	v.manager = manager
-	return nil
+	return manager, at, nil
 }
 
 func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
@@ -306,9 +313,8 @@ func (v *View) sync(ctx context.Context) {
 	case failed || time.Since(last) > viewStall && time.Since(v.subscribed) > viewStall:
 		if v.manager != nil {
 			v.manager.Close()
-			v.manager = nil
 		}
-		err = v.subscribe(min(from, discovered))
+		v.manager, v.subscribed, err = v.subscribe(min(from, discovered))
 	case len(pending) > 0:
 		err = v.manager.Handoff(ctx, v.request(discovered))
 	}
