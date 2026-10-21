@@ -51,8 +51,6 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	for _, f := range obligationFarms(route) {
 		instructions = append(instructions, kaminoCompiled(kamino.InitObligationFarmsForReserve(f.accounts, f.mode)))
 	}
-	// The eight-constraint installed policy needs the reviewed 64 KiB heap frame
-	// during execute as well as during create (executionBudget).
 	message, err := compileV1Message(mustKey(bridgeDelegate), blockhash, instructions, executionBudget(r.RouteLane, len(instructions)))
 	if err != nil {
 		return nil, err
@@ -78,10 +76,16 @@ func validateInitializedObligationOnRoute(route RuntimeRoute, r KaminoInitializa
 	}
 	if a.Lamports != r.RentLamports || binary.LittleEndian.Uint64(a.Data[8:16]) != 1 || o.hasPosition ||
 		!allZero(a.Data[96:1184]) || !allZero(a.Data[1208:2208]) ||
-		o.elevationGroup != 0 || !allZero(a.Data[2288:2320]) {
+		!plainCrossModeObligation(o, a) {
 		return fmt.Errorf("initialized obligation state differs from admitted empty Multiply account")
 	}
 	return nil
+}
+
+const kaminoObligationReferrerOffset = 2288
+
+func plainCrossModeObligation(o decodedKaminoObligation, a ConfirmedAccount) bool {
+	return o.elevationGroup == 0 && allZero(a.Data[kaminoObligationReferrerOffset:kaminoObligationReferrerOffset+32])
 }
 
 // obligationFarm is one farm the lane's obligation registers with: its
