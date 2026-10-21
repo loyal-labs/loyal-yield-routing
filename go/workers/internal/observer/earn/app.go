@@ -165,16 +165,15 @@ type jobOutcome struct {
 	err                                   error
 }
 
+func isPolicyIdentityOnlyUpdate(update NormalizedUpdate, vault watch.Vault) bool {
+	return update.EventKind != "refund_cleanup_repair" && touchesPolicyIdentity(update, vault) && !isPolicyDeletion(update, vault)
+}
+
 func (a *Application) decideMutation(ctx context.Context, update NormalizedUpdate, vault watch.Vault) (EarnMutation, error) {
 	if vault.EarnMax {
 		return EarnMutation{}, a.projectEarnMaxAccountUpdate(ctx, update, vault)
 	}
-	// The stream's transaction filter projects every Squads and Subscriptions
-	// instruction, so a policy identity's own update moves no position: cash
-	// flow changes a watched token account or obligation in the same
-	// transaction. A legacy policy deletion still needs the zero-balance and
-	// closed-policy proof.
-	if update.EventKind != "refund_cleanup_repair" && touchesPolicyIdentity(update, vault) && !isPolicyDeletion(update, vault) {
+	if isPolicyIdentityOnlyUpdate(update, vault) {
 		return EarnMutation{}, nil
 	}
 	context, err := a.store.LoadContext(ctx, vault.Settings, vault.VaultIndex, vault.Vault)
