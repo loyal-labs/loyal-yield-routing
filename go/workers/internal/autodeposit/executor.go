@@ -128,6 +128,8 @@ func (o *ExecutorOutcome) RecordExecutorResult(result ExecutorResult) *ExecutorF
 
 const SurplusLotClassificationDBValue = "unknown"
 
+// ConsumerName is the projection-offset consumer this family owns. Legacy claim
+// staleness checks read the same row, so it must not be renamed per process.
 const ConsumerName = "balance_sweep_autodeposit_trigger"
 
 const USDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -141,6 +143,3 @@ const (
 	StaleRequestedSlotSeconds = 15 * 60
 	RequestedSlotTimeoutError = "Autodeposit request timed out before worker selection."
 )
-
-// ConsumerName is the projection-offset consumer this family owns. Legacy claim
-// staleness checks read the same row, so it must not be renamed per process.

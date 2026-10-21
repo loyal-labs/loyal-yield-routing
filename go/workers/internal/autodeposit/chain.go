@@ -204,6 +204,11 @@ func (c *RPCChain) SimulateExact(ctx context.Context, attempt DurableAttempt) er
 	return nil
 }
 
+// ConfirmedVaultPositionRaw reads the obligation's deposited collateral for
+// the frozen reserve and converts it to liquidity through the reserve's
+// collateral exchange value, at one coherent confirmed slot. Borrowed liquidity
+// and fee liabilities remain in the 60-bit scaled-fraction domain until the
+// final flooring through the shared KLend decoder.
 func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPlan, route TopUpRoute, minSlot int64) (int64, int64, error) {
 	observedSlot, accounts, err := c.ReadAccounts(ctx, minSlot, []string{route.Obligation, plan.Reserve})
 	if err != nil {
@@ -234,11 +239,6 @@ func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPl
 	if reserve.LendingMarket.String() != plan.Market || reserve.LiquidityMint.String() != plan.LiquidityMint {
 		return 0, 0, errors.New("Kamino reserve identity drifted")
 	}
-	// ConfirmedVaultPositionRaw reads the obligation's deposited collateral for
-	// the frozen reserve and converts it to liquidity through the reserve's
-	// collateral exchange value, at one coherent confirmed slot. Borrowed liquidity
-	// and fee liabilities remain in the 60-bit scaled-fraction domain until the
-	// final flooring through the shared KLend decoder.
 	liquidity, err := reserve.CollateralToLiquidity(collateralRaw)
 	if err != nil {
 		return 0, 0, err
