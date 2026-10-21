@@ -375,7 +375,6 @@ LIMIT 1`,
 	return stored, nil
 }
 
-// LockIdleVaultHandoff holds the vault's idle custody handoff for mint until the transaction ends.
 func LockIdleVaultHandoff(ctx context.Context, tx pgx.Tx, vaultID int64, mint string) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('idle-vault-handoff:%s:%s', $1::bigint, $2::text), 0::bigint))`, vaultID, mint); err != nil {
 		return fmt.Errorf("lock idle handoff of vault %d mint %s: %w", vaultID, mint, err)

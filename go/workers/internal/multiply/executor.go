@@ -372,7 +372,6 @@ func (e *Executor) Simulate(ctx context.Context, signed *SignedOperation, minCon
 	return e.Chain.Simulate(ctx, signed.Wire, opts)
 }
 
-// VerifyExpectedEffects checks confirmed balances against the persisted pre-transaction anchors.
 func VerifyExpectedEffects(effects *ExpectedEffects, action MultiplyAction, after *ObservedRoute, topology *EarnMaxTopology) error {
 	if effects == nil || after == nil || topology == nil {
 		return errors.New("effect evidence is missing")
