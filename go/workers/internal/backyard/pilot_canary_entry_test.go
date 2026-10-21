@@ -163,7 +163,7 @@ func pilotCanaryRetainedHistory(t *testing.T, n int, in SelectorInput) map[strin
 
 func canaryHoldReason(t *testing.T, err error) string {
 	t.Helper()
-	hold, ok := err.(*BudgetHold)
+	hold, ok := err.(*PreSendHold)
 	if !ok {
 		t.Fatalf("expected a budget hold, got %v", err)
 	}

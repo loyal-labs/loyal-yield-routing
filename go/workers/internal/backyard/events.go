@@ -295,7 +295,7 @@ func (d *Database) eventReconciled(ctx context.Context, operationID string) {
 }
 
 func holdTransactionError(err error) string {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if !errors.As(err, &hold) || hold.Details["transactionError"] == "" {
 		return ""
 	}
@@ -303,7 +303,7 @@ func holdTransactionError(err error) string {
 }
 
 func holdDetail(err error) string {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if !errors.As(err, &hold) {
 		return ""
 	}
@@ -315,7 +315,7 @@ func holdDetail(err error) string {
 
 // errorCode maps a tick error to a closed, stable snake_case code.
 func errorCode(err error) string {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.As(err, &hold):

@@ -209,10 +209,10 @@ func TestSharedCustodyBalanceAttribution(t *testing.T) {
 	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+primePRIMEPYUSD.Lane {
 		t.Fatalf("PRIME balance beside one positioned Prime lane: %v %v", held, err)
 	}
-	route, _ := runtimeRoute(PhaseOneLaneID)
+	route, _ := runtimeRoute(PrimeUSDCLaneID)
 	upsertConfirmedAccount(&accounts, kaminoObligationImage(t, route, 77, 1_000_000, 0))
 	held, err = observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), autoAUTOPYUSD.Lane)
-	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+PhaseOneLaneID+","+primePRIMEPYUSD.Lane {
+	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane+","+PrimeUSDCLaneID+","+primePRIMEPYUSD.Lane {
 		t.Fatalf("PRIME balance beside two positioned Prime lanes: %v %v", held, err)
 	}
 }

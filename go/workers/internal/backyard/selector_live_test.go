@@ -174,7 +174,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	// equity: the pricer refuses exactly that economic outcome for the first
 	// ladder size.
 	_, err := testLanePricer(t, rpc, client, m, o.Snapshot.Slot).priceEntry(context.Background(), o, leveredTestMarket(SelectedRouteID), 10_000_000)
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if !errors.As(err, &hold) || holdCause(hold) != "selector_move_cost_exceeds_equity" {
 		t.Fatal("largest refusal is not the economic cost outcome", err)
 	}

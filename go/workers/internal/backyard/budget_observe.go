@@ -7,7 +7,7 @@ import (
 )
 
 const budgetClockAddress = "SysvarC1ock11111111111111111111111111111111"
-const budgetPriceMarginBPS uint16 = 100
+const valuationMarginBPS uint16 = 100
 
 func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, reference KaminoObservationConfig, reserveAddress, tokenMint, tokenProgram string) (BudgetPrice, error) {
 	if slot > math.MaxInt64-observationLagCeilingSlots {
@@ -33,7 +33,7 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 	for _, account := range []ConfirmedAccount{tokenAccount, referenceAccount} {
 		updated := int64(binary.LittleEndian.Uint64(account.Data[264:272]))
 		if updated <= 0 || updated > now || now-updated > kaminoOracleMaxAgeSecs {
-			return BudgetPrice{}, &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "reserve_price", "reserve": account.Address, "chainUnix": strconv.FormatInt(now, 10), "priceUpdatedUnix": strconv.FormatInt(updated, 10)}}
+			return BudgetPrice{}, &PreSendHold{Reason: holdStale, Details: map[string]string{"cause": "reserve_price", "reserve": account.Address, "chainUnix": strconv.FormatInt(now, 10), "priceUpdatedUnix": strconv.FormatInt(updated, 10)}}
 		}
 	}
 	mint := accountAt(accounts, tokenMint)
@@ -46,11 +46,11 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 	}
 	upper, lower := token.marketPriceSF, usdc.marketPriceSF
 	if tokenMint != bridgeUSDC {
-		upper, err = UpperPriceMargin(upper, budgetPriceMarginBPS)
+		upper, err = UpperPriceMargin(upper, valuationMarginBPS)
 		if err != nil {
 			return BudgetPrice{}, err
 		}
-		lower, err = lowerPriceMargin(lower, budgetPriceMarginBPS)
+		lower, err = lowerPriceMargin(lower, valuationMarginBPS)
 		if err != nil {
 			return BudgetPrice{}, err
 		}

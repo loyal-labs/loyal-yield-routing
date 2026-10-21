@@ -102,7 +102,7 @@ func fixtureBatchRuntime(slot int64, accounts []ConfirmedAccount) func(context.C
 // custody), so the observer selects that lane when the manifest names Maple.
 func primeFixtureManifest(manifest RouteManifest) RouteManifest {
 	if manifest.RuntimeActivation.SelectedLane == SelectedRouteID {
-		manifest.RuntimeActivation.SelectedLane = PhaseOneLaneID
+		manifest.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 	}
 	return manifest
 }
@@ -282,7 +282,7 @@ func TestProductionStrategyReceiptIntegrityHoldsDurably(t *testing.T) {
 // holds, and the same healthy batch without the move does not.
 func TestProductionUnexplainedDriftHoldsThroughObserve(t *testing.T) {
 	manifest := readyWorkerManifest(t)
-	manifest.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	manifest.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 	nonCutover := func(accounts []ConfirmedAccount) {
 		config, err := pinnedKaminoObservationConfig()
 		if err != nil {

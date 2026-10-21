@@ -94,7 +94,7 @@ func TestReportSlotSimulationRefusalIsChainRefusedAndReportWindowStaysAtAdaptorL
 		return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":450928730},"value":{"err":{"InstructionError":[0,{"Custom":9}]},"logs":["Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG invoke [1]","Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW invoke [2]","Program FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW failed: custom program error: 0x9","Program SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG failed: custom program error: 0x9"],"unitsConsumed":1}}}`), nil
 	})
 	_, err := simulateSigned(context.Background(), client, []byte{1, 2})
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if refused := simulationRefused(err); !errors.As(refused, &hold) || hold.Reason != holdChainRefused || !strings.Contains(hold.Details["simulation"], "Custom") {
 		t.Fatalf("adaptor ReportSlot refusal is not chain_refused: %v", refused)
 	}

@@ -156,7 +156,7 @@ func TestEconomicFeedInventoryIsTheActiveRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PhaseOneLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, autoAUTOWYLDSLane}
+	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PrimeUSDCLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, autoAUTOWYLDSLane}
 	if len(feed.routes) != len(want) {
 		t.Fatalf("feed inventory size %d, want %d", len(feed.routes), len(want))
 	}

@@ -7,10 +7,10 @@ import (
 )
 
 type StepRequest struct {
-	Open   KaminoPrimeUSDCRequest
+	Open   KaminoLegRequest
 	Swap   *JupiterSwapRequest      `json:",omitempty"`
 	Hastra *HastraConversionRequest `json:",omitempty"`
-	Close  *KaminoPrimeUSDCRequest  `json:",omitempty"`
+	Close  *KaminoLegRequest        `json:",omitempty"`
 }
 
 type StepExecutionEvidence struct {
@@ -76,7 +76,7 @@ type stepMessage struct {
 	WireBytes, Keys int
 }
 
-func opensWithBorrow(open KaminoPrimeUSDCRequest, route RuntimeRoute) (bool, error) {
+func opensWithBorrow(open KaminoLegRequest, route RuntimeRoute) (bool, error) {
 	_, leg, err := kaminoResolvedRouteInstruction(open, route)
 	if err != nil {
 		return false, err
@@ -100,7 +100,7 @@ func buildStepMessage(v *Vault, step StepRequest, delegate publicKey) (stepMessa
 		return stepMessage{}, err
 	}
 	conversion, closeLeg := SwapCollateralToDebtStep, kaminoLegRepay
-	var closeRequest KaminoPrimeUSDCRequest
+	var closeRequest KaminoLegRequest
 	closeRoute := route
 	switch kind {
 	case stepExit:

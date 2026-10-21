@@ -263,9 +263,6 @@ func capacityBorrowExpectedUSDC(s Snapshot, amount uint64, liability bool) (uint
 	return valueBetweenTokenRaw(amount, s.BorrowDebtDecimals, 6, s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, liability)
 }
 
-// capacityBorrowBoundUSDC bounds a borrow's USDC value: bridge USDC is par;
-// non-USDC debt and reference prices use the budgetPriceMarginBPS interval
-// on each side. This is valuation evidence, not a transaction expense.
 func capacityBorrowBoundUSDC(s Snapshot, amount uint64, liability bool) (uint64, error) {
 	l, ok := findEarnLane(s.RouteLane)
 	if !ok {
@@ -275,17 +272,17 @@ func capacityBorrowBoundUSDC(s Snapshot, amount uint64, liability bool) (uint64,
 	var err error
 	if l.route.Kamino.DebtMint != bridgeUSDC {
 		if liability {
-			token, err = UpperPriceMargin(token, budgetPriceMarginBPS)
+			token, err = UpperPriceMargin(token, valuationMarginBPS)
 			if err != nil {
 				return 0, err
 			}
-			usdc, err = lowerPriceMargin(usdc, budgetPriceMarginBPS)
+			usdc, err = lowerPriceMargin(usdc, valuationMarginBPS)
 		} else {
-			token, err = lowerPriceMargin(token, budgetPriceMarginBPS)
+			token, err = lowerPriceMargin(token, valuationMarginBPS)
 			if err != nil {
 				return 0, err
 			}
-			usdc, err = UpperPriceMargin(usdc, budgetPriceMarginBPS)
+			usdc, err = UpperPriceMargin(usdc, valuationMarginBPS)
 		}
 		if err != nil {
 			return 0, err

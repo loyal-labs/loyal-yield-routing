@@ -22,7 +22,7 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 	}
 	var plan struct {
 		LendingPrelude struct {
-			Steps []struct{ Request KaminoPrimeUSDCRequest }
+			Steps []struct{ Request KaminoLegRequest }
 		}
 	}
 	planData, err := os.ReadFile(filepath.Join(dir, "plan.json"))

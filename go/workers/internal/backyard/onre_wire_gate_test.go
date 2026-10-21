@@ -36,7 +36,7 @@ func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
 		{"withdraw with debt (repayment release)", DeleverRouteStep, kaminoLegWithdraw, []string{collateral, debt}},
 		{"withdraw debt-free", DeleverRouteStep, kaminoLegWithdraw, []string{collateral}},
 	} {
-		request, err := manifest.kaminoPacketForRoute(testPolicies(t), c.action, c.leg, 1_000_000, LatestBlockhash{Blockhash: bridgeSettings, LastValidBlockHeight: 99}, onreLane)
+		request, err := manifest.kaminoPacketForRoute(testPolicies(t), c.action, c.leg, 1_000_000, LatestBlockhash{Blockhash: backyardSettings, LastValidBlockHeight: 99}, onreLane)
 		if err != nil {
 			t.Fatalf("%s: packet: %v", c.name, err)
 		}

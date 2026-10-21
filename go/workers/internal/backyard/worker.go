@@ -40,7 +40,7 @@ type tickRuntime struct {
 	prepareStep             func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
 	recordDecision          func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
 	build                   func(context.Context, string, any, ExpectedEffects) error
-	recordBudgetHold        func(context.Context, string, *BudgetHold) error
+	recordBudgetHold        func(context.Context, string, *PreSendHold) error
 	watchRoom               func([]roomWatch, func(roomUpdate))
 }
 
@@ -376,14 +376,14 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 }
 
 func (w *Worker) noteHold(s Snapshot, lane string, err error) {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if errors.As(err, &hold) {
 		w.holds.note(s, lane, hold.Reason, holdCause(hold))
 	}
 }
 
 func (w *Worker) journalTickError(ctx context.Context, operationID string, err error) error {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if !errors.As(err, &hold) || w.runtime.recordBudgetHold == nil {
 		return err
 	}
@@ -414,13 +414,13 @@ func (e *afterBroadcastError) Error() string { return e.err.Error() }
 func (e *afterBroadcastError) Unwrap() error { return e.err }
 
 func isPreSendHold(err error) bool {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	var sent *afterBroadcastError
 	if !errors.As(err, &hold) || errors.As(err, &sent) {
 		return false
 	}
 	switch unwrappable := err.(type) {
-	case *BudgetHold:
+	case *PreSendHold:
 		return true
 	case interface{ Unwrap() []error }:
 		for _, member := range unwrappable.Unwrap() {

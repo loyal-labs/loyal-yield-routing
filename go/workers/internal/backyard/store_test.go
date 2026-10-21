@@ -13,11 +13,11 @@ import (
 func TestRestorePersistedDecisionIncludesImmutableAmountAndReason(t *testing.T) {
 	t.Parallel()
 	expected := []byte(`{"decision":{"amountRaw":896575,"reason":"withdrawal_repay_debt","strategyKey":"Prime/PRIME/USDC"}}`)
-	decision, err := restorePersistedDecision(expected, DeleverRouteStep, "durable-key", PhaseOneLaneID)
+	decision, err := restorePersistedDecision(expected, DeleverRouteStep, "durable-key", PrimeUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.AmountRaw != 896575 || decision.Reason != "withdrawal_repay_debt" || decision.StrategyKey != PhaseOneLaneID {
+	if decision.AmountRaw != 896575 || decision.Reason != "withdrawal_repay_debt" || decision.StrategyKey != PrimeUSDCLaneID {
 		t.Fatalf("persisted decision was not restored exactly: %+v", decision)
 	}
 	if _, err := restorePersistedDecision(expected, DeleverRouteStep, "durable-key", SelectedRouteID); err == nil {

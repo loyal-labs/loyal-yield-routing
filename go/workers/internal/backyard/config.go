@@ -11,7 +11,7 @@ import (
 const (
 	RouteKind = "backyard_rwa_v1"
 	// The Prime/PRIME/USDC and Maple lanes' names (route_catalog.go).
-	PhaseOneLaneID                = "Prime/PRIME/USDC"
+	PrimeUSDCLaneID               = "Prime/PRIME/USDC"
 	SelectedRouteID               = "Maple/syrupUSDC/USDC"
 	Phase2TransactionCapRaw int64 = 1_000_000
 	OneNonterminalInvariant       = "one_nonterminal_operation_per_route"

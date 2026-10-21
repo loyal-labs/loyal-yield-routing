@@ -10,7 +10,7 @@ func compileRequest(m RouteManifest, request any) (message []byte, blockhash str
 	case BridgeBuildRequest:
 		message, err = compileBridgeMessageForDelegate(v, r, delegate)
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
-	case KaminoPrimeUSDCRequest:
+	case KaminoLegRequest:
 		message, err = compileKaminoMessageForDelegate(v, r, delegate)
 		blockhash, height = r.RecentBlockhash, r.LastValidBlockHeight
 	case KaminoInitializationRequest:

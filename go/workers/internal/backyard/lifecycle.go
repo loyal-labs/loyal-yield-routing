@@ -45,7 +45,7 @@ func simulationRefused(err error) error {
 	if errors.Is(err, errConfirmedObservationUnavailable) {
 		return err
 	}
-	return &BudgetHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
+	return &PreSendHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
 }
 
 func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *chain.Client, operation PersistedOperation) error {

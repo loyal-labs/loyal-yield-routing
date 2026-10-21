@@ -85,7 +85,7 @@ func signMessage(executor ed25519.PrivateKey, expectedDelegate publicKey, messag
 // policy is delegated to, and USDC, the asset of every vault. A vault's own
 // accounts are derived from its data (vault.go).
 const (
-	bridgeSettings       = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+	backyardSettings     = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
 	bridgeSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
 	bridgeDelegate       = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
 	bridgeUSDC           = fleet.USDCMint
@@ -104,7 +104,7 @@ const (
 )
 
 func compileBridgeMessageForDelegate(v *Vault, request BridgeBuildRequest, delegate publicKey) ([]byte, error) {
-	if request.LastValidBlockHeight <= 0 || request.AdaptorConfig != v.Strategy || request.Settings != bridgeSettings || request.Report.Sequence != request.Report.ObservedSlot {
+	if request.LastValidBlockHeight <= 0 || request.AdaptorConfig != v.Strategy || request.Settings != backyardSettings || request.Report.Sequence != request.Report.ObservedSlot {
 		return nil, fmt.Errorf("bridge config or report is not bound to confirmed state")
 	}
 	blockhash, err := decodeKey(request.RecentBlockhash)
@@ -167,7 +167,7 @@ func voltrStrategyInstruction(v *Vault, build func(voltr.StrategyAccounts, uint6
 	if err != nil {
 		return compiledInstruction{}, err
 	}
-	remaining := bridgeRemainingSlots(bridgeRemaining[solana.PublicKey]{Settings: solanaKey(bridgeSettings), Vault: solanaKey(v.squads),
+	remaining := bridgeRemainingSlots(bridgeRemaining[solana.PublicKey]{Settings: solanaKey(backyardSettings), Vault: solanaKey(v.squads),
 		Custody: solanaKey(v.cash), Ticket: solanaKey(reportTicketPDA)})
 	accounts := v.strategyAccounts()
 	return sdkInstruction(build(accounts, amount, adaptorDiscriminator, encodedReport, remaining...)), nil

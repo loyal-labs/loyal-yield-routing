@@ -93,10 +93,10 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	}
 	// A typed build refusal stays a journaled stop, never generic restart
 	// recovery or a successful build.
-	rejected := &BudgetHold{Reason: holdChainRefused}
+	rejected := &PreSendHold{Reason: holdChainRefused}
 	worker.runtime.build = func(context.Context, string, any, ExpectedEffects) error { return rejected }
 	journaled := false
-	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *BudgetHold) error {
+	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *PreSendHold) error {
 		if id != "operation" || hold != rejected {
 			t.Fatal("budget HOLD lost its operation or type")
 		}
@@ -130,7 +130,7 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 			}
 			return nil
 		},
-		recordBudgetHold: func(context.Context, string, *BudgetHold) error { journaled = true; return nil },
+		recordBudgetHold: func(context.Context, string, *PreSendHold) error { journaled = true; return nil },
 	}}
 	if err := worker.Tick(context.Background()); !errors.Is(err, errConfirmedObservationUnavailable) || journaled {
 		t.Fatalf("unavailable RPC failed the decided operation: journaled=%v %v", journaled, err)
@@ -193,7 +193,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 			if decision.Action != OpenRouteStep || decision.Reason != entryDepositReason {
 				t.Fatalf("wrong Kamino action: %s", decision.Action)
 			}
-			return openObservation, KaminoExecutionEvidence{Request: KaminoPrimeUSDCRequest{Action: decision.Action}}, nil
+			return openObservation, KaminoExecutionEvidence{Request: KaminoLegRequest{Action: decision.Action}}, nil
 		},
 		recordDecision: func(context.Context, string, Observation, Decision, string) (DecisionRecord, error) {
 			order = append(order, "record")
@@ -201,7 +201,7 @@ func TestTickDispatchesKaminoAndReobservesAfterReconciliation(t *testing.T) {
 		},
 		build: func(_ context.Context, id string, request any, _ ExpectedEffects) error {
 			order = append(order, "build-kamino")
-			if r, ok := request.(KaminoPrimeUSDCRequest); id != "kamino" || !ok || r.Action != OpenRouteStep {
+			if r, ok := request.(KaminoLegRequest); id != "kamino" || !ok || r.Action != OpenRouteStep {
 				t.Fatal("wrong Kamino evidence dispatch")
 			}
 			return nil

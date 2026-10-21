@@ -114,7 +114,7 @@ func TestSelectorEvaluateExecuteEvaluatorFailureDiagnostic(t *testing.T) {
 				},
 			}
 			err := runSelectorEvaluate(ctx, &out, true, deps)
-			var hold *BudgetHold
+			var hold *PreSendHold
 			if !errors.As(err, &hold) || holdCause(hold) != "selector_evaluate_unavailable" {
 				t.Fatalf("evaluator failure did not return the unchanged generic hold: %v", err)
 			}

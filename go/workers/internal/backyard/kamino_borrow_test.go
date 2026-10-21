@@ -22,7 +22,7 @@ func TestPhase3BorrowFeesMatchProduction(t *testing.T) {
 	var plan struct {
 		LendingPrelude struct {
 			Steps []struct {
-				Request    KaminoPrimeUSDCRequest
+				Request    KaminoLegRequest
 				WireSHA256 string
 			}
 		}

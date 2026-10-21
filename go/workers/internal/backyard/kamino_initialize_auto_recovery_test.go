@@ -111,7 +111,7 @@ func TestAutoInitializerReconcilesFinalizedReceiptThroughManifest(t *testing.T) 
 		}},
 		{"installed_lane", func(f *autoInitializerRecoveryFixture) {
 			request := *f.effects.Initialization
-			request.RouteLane = PhaseOneLaneID
+			request.RouteLane = PrimeUSDCLaneID
 			f.effects.Initialization = &request
 		}},
 		{"foreign_lane", func(f *autoInitializerRecoveryFixture) {
@@ -170,7 +170,7 @@ func TestAutoInitializerDecisionValidatesThroughTheRegistry(t *testing.T) {
 		"reason":        func(d *Decision) { d.Reason = "other" },
 		"amount":        func(d *Decision) { d.AmountRaw = 1 },
 		"idempotency":   func(d *Decision) { d.IdempotencyKey = "" },
-		"lane_mismatch": func(d *Decision) { d.StrategyKey = PhaseOneLaneID },
+		"lane_mismatch": func(d *Decision) { d.StrategyKey = PrimeUSDCLaneID },
 		"action":        func(d *Decision) { d.Action = ReportNAV },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -183,11 +183,11 @@ func TestAutoInitializerDecisionValidatesThroughTheRegistry(t *testing.T) {
 	}
 	// Installed selector decisions keep validating in both forms.
 	installed := decision
-	installed.StrategyKey = PhaseOneLaneID
+	installed.StrategyKey = PrimeUSDCLaneID
 	if err := installed.Validate(); err != nil || manifest.validateInitializerDecision(installed, func() KaminoInitializationRequest {
 		req := r
-		req.RouteLane = PhaseOneLaneID
-		req.Policy = testPolicyAccount(policyKey{lane: PhaseOneLaneID, action: InitializeKaminoObligation})
+		req.RouteLane = PrimeUSDCLaneID
+		req.Policy = testPolicyAccount(policyKey{lane: PrimeUSDCLaneID, action: InitializeKaminoObligation})
 		return req
 	}()) != nil {
 		t.Fatalf("installed selector decision drifted: %v", err)

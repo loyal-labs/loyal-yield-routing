@@ -144,7 +144,7 @@ var selectorEvaluateAdmissionHoldCodes = map[string]bool{
 const sqlstateQueryCanceled = "57014"
 
 func sanitizedSelectorEvaluateFailure(err error) string {
-	var hold *BudgetHold
+	var hold *PreSendHold
 	if errors.As(err, &hold) {
 		if selectorEvaluateAdmissionHoldCodes[holdCause(hold)] {
 			return holdCause(hold)

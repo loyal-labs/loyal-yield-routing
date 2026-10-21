@@ -21,18 +21,15 @@ const (
 	holdStopped      HoldReason = "stopped"
 )
 
-// BudgetHold is a pre-send refusal, never an authorization to sign or retry
-// an unchanged intent. A producer that names only its check (budgetHold)
-// holds stale with that check as its cause.
-type BudgetHold struct {
+type PreSendHold struct {
 	Reason  HoldReason        `json:"reason"`
 	Details map[string]string `json:"details,omitempty"`
 	cause   error
 }
 
-func (h *BudgetHold) Unwrap() error { return h.cause }
+func (h *PreSendHold) Unwrap() error { return h.cause }
 
-func (h *BudgetHold) Error() string {
+func (h *PreSendHold) Error() string {
 	if len(h.Details) == 0 {
 		return "HOLD: " + string(h.Reason)
 	}
@@ -55,10 +52,10 @@ func budgetHoldFrom(err error, cause string) error { return holdOf(holdStale, ca
 func roomHold(cause string, err error) error { return holdOf(holdNoRoom, cause, err) }
 
 func holdOf(reason HoldReason, cause string, err error) error {
-	return &BudgetHold{Reason: reason, Details: map[string]string{"cause": cause}, cause: err}
+	return &PreSendHold{Reason: reason, Details: map[string]string{"cause": cause}, cause: err}
 }
 
-func holdCause(h *BudgetHold) string {
+func holdCause(h *PreSendHold) string {
 	if c := h.Details["cause"]; c != "" {
 		return c
 	}
@@ -77,7 +74,7 @@ func budgetSum(values ...int64) (int64, error) {
 	return total, nil
 }
 
-func (d *Database) RecordBudgetHold(ctx context.Context, operationID string, hold *BudgetHold) error {
+func (d *Database) RecordBudgetHold(ctx context.Context, operationID string, hold *PreSendHold) error {
 	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == holdNone {
 		return fmt.Errorf("invalid budget hold journal input")
 	}

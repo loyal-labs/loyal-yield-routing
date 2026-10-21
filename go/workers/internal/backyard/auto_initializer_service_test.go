@@ -132,8 +132,7 @@ func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) 
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "OnRe/ONyc/USDC", true},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", autoAUTOPYUSD.Lane, true},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "Ethena/USDe/PYUSD", false},
-		// PhaseOneLaneID is Prime/PRIME/USDC: already inside the 0079 scope.
-		{string(InitializeKaminoObligation), "backyard_rwa_v1", PhaseOneLaneID, true},
+		{string(InitializeKaminoObligation), "backyard_rwa_v1", PrimeUSDCLaneID, true},
 		{string(InitializeKaminoObligation), "earn_max_v2", autoAUTOPYUSD.Lane, false},
 		{string(OpenRouteStep), "backyard_rwa_v1", "unregistered", false},
 		// 0102 admits AUTO's overflow lane to both lane scopes, and nothing

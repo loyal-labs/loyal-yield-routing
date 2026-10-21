@@ -153,8 +153,8 @@ func TestAutoInitializationEffectsValidateThroughTheManifest(t *testing.T) {
 		t.Fatalf("bound AUTO effect refused by the manifest validator: %v", err)
 	}
 	installed := r
-	installed.RouteLane = PhaseOneLaneID
-	installed.Policy = testPolicyAccount(policyKey{lane: PhaseOneLaneID, action: InitializeKaminoObligation})
+	installed.RouteLane = PrimeUSDCLaneID
+	installed.Policy = testPolicyAccount(policyKey{lane: PrimeUSDCLaneID, action: InitializeKaminoObligation})
 	if err := manifest.validateInitializationEffects(ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "kamino-initialize", Conserved: true, Initialization: &installed}); err != nil {
 		t.Fatalf("installed selector effect refused after the shared-shape refactor: %v", err)
 	}

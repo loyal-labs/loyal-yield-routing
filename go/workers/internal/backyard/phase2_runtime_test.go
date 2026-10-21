@@ -60,7 +60,7 @@ func TestPhase2WithdrawalDemandKeepsTerminalIdleCovered(t *testing.T) {
 func TestPhase2PinnedRuntimeAddressesAreCanonicalBase58(t *testing.T) {
 	t.Parallel()
 	addresses := routeFixedAddresses(rwa)
-	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID} {
+	for _, lane := range []string{PrimeUSDCLaneID, SelectedRouteID} {
 		route, err := runtimeRoute(lane)
 		if err != nil {
 			t.Fatal(err)
@@ -167,7 +167,7 @@ func TestPhase2MapleSignedKaminoWirePassesPersistenceValidation(t *testing.T) {
 func TestPhase2BasicFamilyBindingsCoverAllRuntimeLanes(t *testing.T) {
 	t.Parallel()
 	manifest := embeddedTestManifest(t)
-	for _, lane := range []string{PhaseOneLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
+	for _, lane := range []string{PrimeUSDCLaneID, SelectedRouteID, "OnRe/ONyc/USDC"} {
 		route, err := runtimeRoute(lane)
 		if err != nil || !basicLane(route.Lane) {
 			t.Fatalf("%s is not a basic runtime route: %+v, %v", lane, route, err)

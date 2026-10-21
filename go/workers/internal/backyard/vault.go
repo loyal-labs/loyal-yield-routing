@@ -65,7 +65,7 @@ func newVault(v Vault) *Vault {
 	usdcATA := func(owner string) string {
 		return must(spl.AssociatedTokenAddress(key(owner), key(bridgeUSDC), solana.TokenProgramID))
 	}
-	squadsVault, _, err := squads.SmartAccountAddress(key(bridgeSettings), v.SquadsIndex)
+	squadsVault, _, err := squads.SmartAccountAddress(key(backyardSettings), v.SquadsIndex)
 	v.squads = must(squadsVault, err)
 	v.cash = usdcATA(v.squads)
 	vault, strategy := key(v.VoltrVault), key(v.Strategy)

@@ -87,7 +87,7 @@ func armReportInstruction(v *Vault, action Action, voltrData []byte) (compiledIn
 	data = append(data, tail...)
 	adaptor := solanaKey(v.Adaptor)
 	accounts := squads.Metas(adaptor, armReportSlots(armReport[solana.PublicKey]{Strategy: solanaKey(v.Strategy), Ticket: solanaKey(reportTicketPDA),
-		Settings: solanaKey(bridgeSettings), Vault: solanaKey(v.squads)}, squads.ProgramID))
+		Settings: solanaKey(backyardSettings), Vault: solanaKey(v.squads)}, squads.ProgramID))
 	return sdkInstruction(solana.NewInstruction(adaptor, accounts, data)), nil
 }
 

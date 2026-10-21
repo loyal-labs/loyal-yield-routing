@@ -15,7 +15,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 		// Pin staleness older than the latch window.
 		kaminoStaleSince.Store(1)
 		m := readyWorkerManifest(t)
-		m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+		m.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 		initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
 			binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
 			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
@@ -69,7 +69,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 		if o.ValuationSource != routeRefreshValuationSource || o.ValuationSlot != 78 || o.Snapshot.Slot != 78 || o.Snapshot.SquadsIdleRaw != 21 || o.Snapshot.CollateralIdleRaw != 3 || o.Snapshot.PositionCollateralRaw != 10 {
 			t.Fatal("mixed bank or lost provenance", o)
 		}
-		route, _ := runtimeRoute(PhaseOneLaneID)
+		route, _ := runtimeRoute(PrimeUSDCLaneID)
 		navAccounts, err := selectRouteNAVAccountsForRoute(accounts, route)
 		if err != nil {
 			t.Fatal(err)
@@ -202,7 +202,7 @@ func TestRouteRefreshTransientFailureRetriesInsteadOfLatching(t *testing.T) {
 		transient bool
 	}{{"price_refresh_simulation_unavailable", true}, {"price_refresh_simulation_failed", false}} {
 		m := readyWorkerManifest(t)
-		m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+		m.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 		initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
 			binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
 			binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
@@ -236,7 +236,7 @@ func TestRouteRefreshAgedCaptureRetriesWithoutManualStop(t *testing.T) {
 		kaminoStaleSince.Store(0)
 	})
 	m := readyWorkerManifest(t)
-	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	m.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 	initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
 		binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
 		binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
@@ -285,7 +285,7 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 	refreshSimulationFailures.Store(0)
 	t.Cleanup(func() { refreshSimulationFailures.Store(0) })
 	m := readyWorkerManifest(t)
-	m.RuntimeActivation.SelectedLane = PhaseOneLaneID
+	m.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 	initial := productionRouteBatchAccounts(t, 77, func(a []ConfirmedAccount) {
 		binary.LittleEndian.PutUint64(accountAt(a, budgetClockAddress).Data[:8], 77)
 		binary.LittleEndian.PutUint64(accountAt(a, primePRIMEUSDC.Kamino.CollateralReserve).Data[16:24], 1)
@@ -298,7 +298,7 @@ func TestRejectedRefreshRetriesUntilThirdFailureInARow(t *testing.T) {
 			now:  func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 			refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 				if rejected {
-					return 0, nil, &BudgetHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
+					return 0, nil, &PreSendHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
 				}
 				return 0, nil, context.DeadlineExceeded // transient: neither counts nor latches
 			},

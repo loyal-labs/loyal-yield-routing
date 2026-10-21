@@ -48,7 +48,7 @@ func TestVoltrApprovedFeeTupleAndEveryTermDrift(t *testing.T) {
 	}{{512, 1}, {514, 0}, {514, 1999}, {514, 2001}, {516, 1}, {518, 1}, {520, 1}, {522, 1}, {524, 1}, {526, 1}} {
 		t.Run(strconv.Itoa(tc.offset)+"/"+strconv.Itoa(int(tc.bps)), func(t *testing.T) {
 			s := feePolicySnapshot(t, tc.offset, tc.bps)
-			for _, lane := range []string{PhaseOneLaneID, primePRIMEPYUSD.Lane} {
+			for _, lane := range []string{PrimeUSDCLaneID, primePRIMEPYUSD.Lane} {
 				s.RouteLane = lane
 				for _, decide := range []func(Snapshot) Decision{Decide} {
 					if got := decide(s); got.Action != HoldManualRecovery || got.Reason != "voltr_fee_terms_unapproved" {
@@ -58,7 +58,7 @@ func TestVoltrApprovedFeeTupleAndEveryTermDrift(t *testing.T) {
 			}
 			// The normal worker dispatch must use its durable stop recorder,
 			// never preparation, for a decoded fee-policy fault.
-			s.RouteLane = PhaseOneLaneID
+			s.RouteLane = PrimeUSDCLaneID
 			recorded := false
 			w := &Worker{routeKey: productionRouteKey, manifest: manifest, runtime: tickRuntime{
 				loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil },

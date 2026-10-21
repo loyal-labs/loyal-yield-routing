@@ -185,7 +185,7 @@ func TestSharedCustodyIsTheEntryLanes(t *testing.T) {
 	// The observer's preferred lane for the batch.
 	preferred := flatViewLane(manifest.RuntimeActivation.SelectedLane, in)
 	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), preferred)
-	if err != nil || !slices.Contains(held, route.Lane) || slices.Contains(held, PhaseOneLaneID) {
+	if err != nil || !slices.Contains(held, route.Lane) || slices.Contains(held, PrimeUSDCLaneID) {
 		t.Fatalf("shared PRIME custody held by %v (%v)", held, err)
 	}
 }

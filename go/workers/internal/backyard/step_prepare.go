@@ -366,7 +366,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 	}
 	open.ObligationReserves = st.topology
 	request := StepRequest{Open: open}
-	var closing KaminoPrimeUSDCRequest
+	var closing KaminoLegRequest
 	if !exit {
 		if closing, err = manifest.kaminoPacketForRoute(policies, action, closeLeg, 1, placeholder, lane); err != nil {
 			return StepExecutionEvidence{}, 0, err

@@ -20,7 +20,7 @@ func TestPhase3LinkedLendingMessagesMatchGo(t *testing.T) {
 			Broadcast, SignatureProof bool
 			Steps                     []struct {
 				Leg, WireBase64, WireSHA256 string
-				Request                     KaminoPrimeUSDCRequest
+				Request                     KaminoLegRequest
 			}
 		}
 	}

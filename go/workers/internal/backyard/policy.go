@@ -137,7 +137,7 @@ type installedPolicy struct {
 }
 
 func observeInstalledPolicies(ctx context.Context, rpc *chain.Client, v *Vault, minSlot int64) (installedPolicies, error) {
-	installed, err := squads.Policies(ctx, rpc, solanaKey(bridgeSettings), uint64(max(minSlot, 0)))
+	installed, err := squads.Policies(ctx, rpc, solanaKey(backyardSettings), uint64(max(minSlot, 0)))
 	if err != nil {
 		return nil, unavailable(err)
 	}
@@ -151,7 +151,7 @@ func findInstalledPolicies(v *Vault, installed []squads.Installed) (installedPol
 	}
 	out := installedPolicies{}
 	for key, literal := range literals {
-		found, matches := squads.FindPolicy(installed, solanaKey(bridgeSettings), solanaKey(bridgeDelegate), literal)
+		found, matches := squads.FindPolicy(installed, solanaKey(backyardSettings), solanaKey(bridgeDelegate), literal)
 		out[key] = installedPolicy{found, matches}
 	}
 	return out, nil
@@ -242,7 +242,7 @@ const (
 
 func basicPolicy(v *Vault, family BasicPolicyFamily) (squads.Policy, error) {
 	route := func(lane string) RuntimeRoute { r, _ := v.route(lane); return r }
-	onre, prime, maple := route(onreONycUSDC), route(PhaseOneLaneID), route(SelectedRouteID)
+	onre, prime, maple := route(onreONycUSDC), route(PrimeUSDCLaneID), route(SelectedRouteID)
 	basicLanes := []RuntimeRoute{onre, prime, maple}
 	pinnedLanes := func(field func(RuntimeRoute) string) squads.Slot {
 		addresses := make([]string, len(basicLanes))
@@ -548,7 +548,7 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 		return trustfulBridgePolicies(v)
 	}
 	pin, free := squads.Pin, squads.Any
-	vault, settings, strategy, ticket := solanaKey(v.squads), solanaKey(bridgeSettings), solanaKey(v.Strategy), solanaKey(reportTicketPDA)
+	vault, settings, strategy, ticket := solanaKey(v.squads), solanaKey(backyardSettings), solanaKey(v.Strategy), solanaKey(reportTicketPDA)
 	usdc, custody, strategyATA := solanaKey(bridgeUSDC), solanaKey(v.cash), solanaKey(v.strategyATA)
 
 	capital := func(offset uint64) []squads.DataConstraintView {

@@ -143,7 +143,7 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 							account := &mutant.Accounts[index]
 							switch field {
 							case "address":
-								account.Address = bridgeSettings
+								account.Address = backyardSettings
 							case "signer":
 								account.Signer = !account.Signer
 							case "writable":
@@ -154,10 +154,10 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 							}
 						}
 					}
-					for _, mutation := range []func(*KaminoPrimeUSDCRequest){
-						func(r *KaminoPrimeUSDCRequest) { r.RouteLane = SelectedRouteID },
-						func(r *KaminoPrimeUSDCRequest) { r.RouteLane = "unknown/asset/debt" },
-						func(r *KaminoPrimeUSDCRequest) { r.AmountRaw++ },
+					for _, mutation := range []func(*KaminoLegRequest){
+						func(r *KaminoLegRequest) { r.RouteLane = SelectedRouteID },
+						func(r *KaminoLegRequest) { r.RouteLane = "unknown/asset/debt" },
+						func(r *KaminoLegRequest) { r.AmountRaw++ },
 					} {
 						mutant := request
 						mutation(&mutant)
