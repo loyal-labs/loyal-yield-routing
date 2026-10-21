@@ -39,6 +39,11 @@ type nativeYield struct {
 	EvidenceID string    `json:"evidenceId"`
 }
 
+// parseFeedYields reads Kamino's yield feed (batch stats underlyingApy) per
+// lane: display and comparison only. The feed is not what holding the token
+// earns (AUTO 10.84% against 8.85% realized over 30 days on 2026-10-11; USDe
+// 4.75% while its price does not grow), so no decision reads it. The official
+// API returns a dictionary keyed by reserve and string decimals.
 func parseFeedYields(body []byte, routes []RuntimeRoute, now time.Time, maxAge time.Duration) (map[string]float64, error) {
 	var stats map[string]struct {
 		Token      string `json:"token"`
@@ -47,11 +52,6 @@ func parseFeedYields(body []byte, routes []RuntimeRoute, now time.Time, maxAge t
 			SourceType string       `json:"sourceType"`
 			SourceMint string       `json:"sourceMint"`
 			ObservedAt time.Time    `json:"observedAt"`
-			// parseFeedYields reads Kamino's yield feed (batch stats underlyingApy) per
-			// lane: display and comparison only. The feed is not what holding the token
-			// earns (AUTO 10.84% against 8.85% realized over 30 days on 2026-10-11; USDe
-			// 4.75% while its price does not grow), so no decision reads it. The official
-			// API returns a dictionary keyed by reserve and string decimals.
 		} `json:"underlyingApy"`
 	}
 	if err := json.Unmarshal(body, &stats); err != nil || stats == nil {

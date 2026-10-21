@@ -110,6 +110,10 @@ func OpenView(ctx context.Context, client *chain.Client, connector stream.Connec
 	return v, v.subscribe(v.seedLow + 1)
 }
 
+// viewAddresses is every fixed account a vault's route-catalog lane observes,
+// prices, builds or admits against, for every vault, plus the pinned program
+// identity accounts. The stream bills by the byte, so no oracle or AMM pool
+// is among them.
 func viewAddresses() []string {
 	addresses := []string{reportTicketPDA, budgetClockAddress, voltr.ProgramID.String(), fsj27Program, voltrProgramDataAddress, adaptorProgramDataAddress,
 		bridgeDelegate, solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(), bridgeUSDC, budgetSOLReserve, budgetWrappedSOLMint}
@@ -127,11 +131,6 @@ func viewAddresses() []string {
 	}
 	return uniqueNonzero(addresses)
 }
-
-// viewAddresses is every fixed account a vault's route-catalog lane observes,
-// prices, builds or admits against, for every vault, plus the pinned program
-// identity accounts. The stream bills by the byte, so no oracle or AMM pool
-// is among them.
 
 // seed is the start-up read, before the view is shared. It is not a
 // fallback: planning never reads RPC for these accounts.
