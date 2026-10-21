@@ -208,13 +208,7 @@ func (h *Handler) persist(ctx context.Context, observed observation) (Outcome, e
 	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	err = workersdb.WithTx(writeCtx, h.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		// Sequence allocation alone does not order commits. Take both stream
-		// writer locks before nextval and retain them through publication so a
-		// later committed ID cannot pass an earlier uncommitted v2 observation.
-		// This also waits for retained inserts; historical retained-only gaps
-		// require catch-up before transferring ownership of the scalar cursor.
-		lock := fmt.Sprintf("LOCK TABLE %s.balance_sweep_wallet_ata_observation_dedupe, %s.balance_sweep_wallet_ata_observations IN SHARE ROW EXCLUSIVE MODE", h.schema, h.schema)
-		if _, err := tx.Exec(writeCtx, lock); err != nil {
+		if err := lockCaptureStream(writeCtx, tx, h.schema); err != nil {
 			return err
 		}
 		return tx.QueryRow(writeCtx, query, dedupe, commitment, observed.pubkey, int64(observed.slot), hash, observed.target.Cluster, observed.target.ID, observed.target.Wallet, observed.target.Vault, observed.target.VaultATA, int64(observed.amount), observed.owner, observed.mint, observed.received, observed.source, observed.signature, rawBase64, evidence).Scan(&outcome.EventID, &outcome.Inserted)
@@ -223,6 +217,14 @@ func (h *Handler) persist(ctx context.Context, observed observation) (Outcome, e
 		return Outcome{}, fmt.Errorf("persist ATA observation: %w", err)
 	}
 	return outcome, nil
+}
+
+// lockCaptureStream makes capture the stream's single writer until commit, so
+// event IDs commit in allocation order. Autodeposit consumes the projected
+// events with a scalar event_id cursor, which skips an ID that commits late.
+func lockCaptureStream(ctx context.Context, tx pgx.Tx, schema string) error {
+	_, err := tx.Exec(ctx, fmt.Sprintf("LOCK TABLE %s.balance_sweep_wallet_ata_observation_dedupe, %s.balance_sweep_wallet_ata_observations IN SHARE ROW EXCLUSIVE MODE", schema, schema))
+	return err
 }
 
 func (h *Handler) target(pubkey string) (watch.ATATarget, bool) {

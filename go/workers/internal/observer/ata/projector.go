@@ -25,9 +25,8 @@ type ProjectorConfig struct {
 }
 
 // Projector borrows both pools. It never owns signing or RPC capabilities.
-// Capture must publish event IDs in commit order. Sequence gaps are legitimate;
-// a retained producer cutover requires draining in-flight capture writes before
-// accepting the scalar cursor as a complete frontier.
+// Capture publishes event IDs in commit order (lockCaptureStream), so the
+// scalar cursor is a complete frontier. Sequence gaps are legitimate.
 type Projector struct {
 	capture      *pgxpool.Pool
 	yield        *pgxpool.Pool
