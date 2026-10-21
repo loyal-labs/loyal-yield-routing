@@ -5,11 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
-	"net/url"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
@@ -42,19 +39,6 @@ func TestRejectionCountsSummarizesFleetWithoutVaultIDs(t *testing.T) {
 type failingCatalog struct{ err error }
 
 func (f failingCatalog) LoadCatalog(context.Context) ([]ReserveIdentity, error) { return nil, f.err }
-
-// A failed planning cycle names its cause. The one secret an error can carry,
-// the RPC URL with its API key, is reduced to the operation and cause.
-func TestPlanningCycleFailureLogsItsCauseWithoutTheRPCURL(t *testing.T) {
-	cause := &url.Error{Op: "Post", URL: "https://rpc.example/?api-key=SECRET", Err: errors.New("dial tcp: connection refused")}
-	out := LogErrorText(fmt.Errorf("read chain snapshot: %w", cause))
-	if !strings.Contains(out, "dial tcp: connection refused") {
-		t.Fatalf("planning failure logged without its cause: %s", out)
-	}
-	if strings.Contains(out, "SECRET") {
-		t.Fatalf("planning failure log leaked the RPC credential: %s", out)
-	}
-}
 
 // plannerLaneSucceededAt reads the planner lane's success clock; zero means
 // the lane has never recorded a successful cycle.

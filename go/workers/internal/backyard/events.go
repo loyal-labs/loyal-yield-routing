@@ -7,11 +7,11 @@ import (
 	"errors"
 	"log/slog"
 	"math"
-	"regexp"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
@@ -76,7 +76,7 @@ func (e *events) noteCause(detail string) {
 		return
 	}
 	e.mu.Lock()
-	e.cause, e.causeAt = sanitizedDetail(detail), e.now()
+	e.cause, e.causeAt = chain.Scrub(detail), e.now()
 	e.mu.Unlock()
 }
 
@@ -188,10 +188,10 @@ func (e *events) tickResult(err error, fatal bool) {
 	}
 	code := errorCode(err)
 	if !fatal {
-		e.log.Warn("backyard_tick_deferred", "code", code, "action", string(action), "detail", sanitizedDetail(err.Error()))
+		e.log.Warn("backyard_tick_deferred", "code", code, "action", string(action), "detail", chain.Scrub(err.Error()))
 		return
 	}
-	e.log.Error("backyard_worker_exit", "code", code, "action", string(action), "hold", holdDetail(err), "detail", sanitizedDetail(err.Error()))
+	e.log.Error("backyard_worker_exit", "code", code, "action", string(action), "hold", holdDetail(err), "detail", chain.Scrub(err.Error()))
 	if e.facts != nil {
 		e.facts.Failed(engine.FamilyBackyard, code)
 	}
@@ -292,26 +292,12 @@ func (d *Database) eventReconciled(ctx context.Context, operationID string) {
 	e.operationReconciled(action, amountRaw, signature, nav, navKnown)
 }
 
-var (
-	detailURLPattern    = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://\S+`)
-	detailSecretPattern = regexp.MustCompile(`(?i)(password|api[-_]?key|token|secret)=\S+`)
-)
-
-func sanitizedDetail(text string) string {
-	text = detailURLPattern.ReplaceAllString(text, "<url>")
-	text = detailSecretPattern.ReplaceAllString(text, "$1=<redacted>")
-	if len(text) > 300 {
-		text = text[:300]
-	}
-	return text
-}
-
 func holdTransactionError(err error) string {
 	var hold *BudgetHold
 	if !errors.As(err, &hold) || hold.Details["transactionError"] == "" {
 		return ""
 	}
-	return sanitizedDetail(hold.Details["transactionError"])
+	return chain.Scrub(hold.Details["transactionError"])
 }
 
 func holdDetail(err error) string {
@@ -320,9 +306,9 @@ func holdDetail(err error) string {
 		return ""
 	}
 	if te := holdTransactionError(err); te != "" {
-		return sanitizedDetail(holdCause(hold) + " transactionError=" + te)
+		return chain.Scrub(holdCause(hold) + " transactionError=" + te)
 	}
-	return sanitizedDetail(holdCause(hold))
+	return chain.Scrub(holdCause(hold))
 }
 
 // errorCode maps a tick error to a closed, stable snake_case code.

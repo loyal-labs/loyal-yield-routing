@@ -256,9 +256,14 @@ func (s *Store) releaseNotYet(ctx context.Context, lease SubmissionLease, delay 
 	return err
 }
 
+const maxErrorDetail = 512
+
 func (s *Store) DeferSubmission(ctx context.Context, lease SubmissionLease, delay time.Duration, detail string) error {
-	if delay < 0 || strings.TrimSpace(detail) == "" || len(detail) > 512 {
-		return errors.New("submission deferral requires a nonnegative delay and bounded error")
+	if delay < 0 || strings.TrimSpace(detail) == "" {
+		return errors.New("submission deferral requires a nonnegative delay and an error")
+	}
+	if len(detail) > maxErrorDetail {
+		detail = strings.ToValidUTF8(detail[:maxErrorDetail], "")
 	}
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions
 SET confirmation_available_at=clock_timestamp()+$4::interval,

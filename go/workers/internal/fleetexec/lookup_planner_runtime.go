@@ -150,7 +150,7 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		if r != nil {
 			_, e = p.store.planLookupVaultRequest(ctx, *r, family.policy, proof)
 			if e != nil {
-				if deferErr := p.store.deferLookupPlanningRequest(ctx, *r, e.Error()); deferErr != nil {
+				if deferErr := p.store.deferLookupPlanningRequest(ctx, *r, engine.ErrorText(e)); deferErr != nil {
 					return worked, errors.Join(e, deferErr)
 				}
 				return worked, e

@@ -13,7 +13,9 @@ import (
 	"math/bits"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,9 +64,28 @@ func New(endpoint string, timeout time.Duration) (*Client, error) {
 	if endpoint == "" || timeout <= 0 {
 		return nil, errors.New("chain client requires an endpoint and a timeout")
 	}
-	// The URL can carry a provider key; never forward it to a redirect target.
-	httpClient := &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &Client{rpc: rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: httpClient}))}, nil
+	return &Client{rpc: rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: keyedURLClient(timeout)}))}, nil
+}
+
+func keyedURLClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+var (
+	urlPattern    = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://\S+`)
+	secretPattern = regexp.MustCompile(`(?i)(password|api[-_]?key|token|secret)=\S+`)
+)
+
+const maxScrubbed = 500
+
+// Scrub masks URLs and credential values in text that may echo an RPC endpoint and bounds it for logs and storage.
+func Scrub(message string) string {
+	message = urlPattern.ReplaceAllString(message, "<url>")
+	message = secretPattern.ReplaceAllString(message, "$1=<redacted>")
+	if len(message) > maxScrubbed {
+		message = strings.ToValidUTF8(message[:maxScrubbed], "")
+	}
+	return message
 }
 
 func failed(method string, err error) error {
@@ -78,9 +99,9 @@ func failed(method string, err error) error {
 	case errors.As(err, &rpcErr) && rpcErr.Code == behindCode:
 		return fmt.Errorf("%s: %w", method, ErrBehind)
 	case errors.As(err, &rpcErr) && unavailableCodes[rpcErr.Code]:
-		return fmt.Errorf("%s: %w: rpc error %d: %s", method, ErrUnavailable, rpcErr.Code, rpcErr.Message)
+		return fmt.Errorf("%s: %w: rpc error %d: %s", method, ErrUnavailable, rpcErr.Code, Scrub(rpcErr.Message))
 	case errors.As(err, &rpcErr):
-		return fmt.Errorf("%s: rpc error %d: %s", method, rpcErr.Code, rpcErr.Message)
+		return fmt.Errorf("%s: rpc error %d: %s", method, rpcErr.Code, Scrub(rpcErr.Message))
 	case errors.As(err, &httpErr):
 		return fmt.Errorf("%s: %w: rpc status %d", method, ErrUnavailable, httpErr.Code)
 	case errors.As(err, &urlErr):

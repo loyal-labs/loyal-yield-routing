@@ -80,7 +80,7 @@ func main() {
 		os.Exit(2)
 	}
 	if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Error("engine failed", "error", err)
+		slog.Error("engine failed", "error", engine.ErrorText(err))
 		os.Exit(1)
 	}
 }

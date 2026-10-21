@@ -155,7 +155,7 @@ func ReadSnapshot(ctx context.Context, reader AccountReader, request SnapshotReq
 		}
 		state, err := DecodeKaminoReserve(account, identity, out.Slot, request.SlotsPerSecond)
 		if err != nil {
-			out.Unroutable[identity.Address] = LogErrorText(err)
+			out.Unroutable[identity.Address] = err.Error()
 			continue
 		}
 		state.ObservedAt = out.ObservedAt
@@ -222,7 +222,7 @@ func ReadSnapshot(ctx context.Context, reader AccountReader, request SnapshotReq
 		facts := VaultFacts{}
 		if plan[i].policy >= 0 {
 			if policy, err := DecodeSquadsPolicy(values[plan[i].policy]); err != nil {
-				facts.PolicyErr = LogErrorText(err)
+				facts.PolicyErr = err.Error()
 			} else {
 				facts.Policy = &policy
 			}
