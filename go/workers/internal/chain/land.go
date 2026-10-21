@@ -43,6 +43,8 @@ const (
 	Expired
 )
 
+var LandResendEvery = time.Second
+
 type Outcome struct {
 	Kind        OutcomeKind
 	Slot        uint64

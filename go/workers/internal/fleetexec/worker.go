@@ -15,9 +15,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-// resendEvery matches the Rust confirmer's one-second durable poll.
-var resendEvery = time.Second
-
 type Config struct {
 	Cluster      string
 	Owner        string
@@ -184,7 +181,7 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) erro
 	out, err := chain.Land(leaseCtx, w.chain, chain.Attempt{
 		Wire: record.SignedTransaction, Signature: record.Signature,
 		LastValidBlockHeight: uint64(record.LastValidBlockHeight), Required: chain.Confirmed,
-	}, resendEvery, func(sendCtx context.Context) error {
+	}, chain.LandResendEvery, func(sendCtx context.Context) error {
 		if err := w.store.RecordBroadcastIntent(sendCtx, lease); err != nil {
 			return err
 		}

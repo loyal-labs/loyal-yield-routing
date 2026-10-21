@@ -12,9 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// landResendEvery matches the fleet landing cadence.
-var landResendEvery = time.Second
-
 func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Client, manifest RouteManifest, operationID string, request any, effects ExpectedEffects, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("build runtime dependencies are required")
@@ -84,7 +81,7 @@ func (d *Database) land(ctx context.Context, rpc *chain.Client, operation Persis
 	out, err := chain.Land(ctx, rpc, chain.Attempt{
 		Wire: wire.Bytes(), Signature: encodeBase58(signature),
 		LastValidBlockHeight: uint64(operation.LastValidBlockHeight), Required: chain.Confirmed,
-	}, landResendEvery, func(ctx context.Context) error {
+	}, chain.LandResendEvery, func(ctx context.Context) error {
 		if operation.Status != Signed {
 			return nil
 		}

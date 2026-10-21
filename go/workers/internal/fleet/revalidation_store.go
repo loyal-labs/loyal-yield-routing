@@ -411,7 +411,7 @@ FROM loyal_yield.rebalance_opportunities o WHERE o.id=$1 FOR UPDATE`, lease.Oppo
 		if len(input.MissingAddresses) != 0 {
 			return errors.New("only waiting_alt may persist missing ALT addresses")
 		}
-		if len(prep.Transaction.Message) == 0 || len(prep.Transaction.UnsignedWire) == 0 || prep.Transaction.PacketBytes > SolanaPacketLimit || prep.Transaction.FeeLamports > uint64(lease.FeeCapLamports) || prep.Transaction.ComputeLimit == 0 || prep.Transaction.ComputeLimit > defaultComputeLimit || !prep.Simulation.Succeeded || prep.Simulation.WireSHA256 != prep.Transaction.WireSHA256 {
+		if len(prep.Transaction.Message) == 0 || len(prep.Transaction.UnsignedWire) == 0 || prep.Transaction.PacketBytes > SolanaPacketLimit || prep.Transaction.FeeLamports > uint64(lease.FeeCapLamports) || prep.Transaction.ComputeLimit == 0 || prep.Transaction.ComputeLimit > DefaultComputeLimit || !prep.Simulation.Succeeded || prep.Simulation.WireSHA256 != prep.Transaction.WireSHA256 {
 			return errors.New("executable route bytes or simulation evidence is incomplete")
 		}
 	}

@@ -15,9 +15,6 @@ import (
 
 const SolanaPacketLimit = fleet.SolanaPacketLimit
 
-// defaultComputeLimit mirrors the fleet planner's own compile bound.
-const defaultComputeLimit = uint64(1_400_000)
-
 type WireIdentity struct {
 	SignedTransaction     []byte
 	SignedTransactionHash string
@@ -117,7 +114,7 @@ func (s DelegateSigner) SignPreparedRoute(tx fleet.PreparedTransaction, lastVali
 	if err != nil {
 		return WireIdentity{}, err
 	}
-	if tx.FeeLamports == 0 || tx.ComputeLimit == 0 || tx.ComputeLimit > defaultComputeLimit {
+	if tx.FeeLamports == 0 || tx.ComputeLimit == 0 || tx.ComputeLimit > fleet.DefaultComputeLimit {
 		return WireIdentity{}, errors.New("prepared fee or compute limit is invalid")
 	}
 	if len(tx.WritableAccounts) == 0 {

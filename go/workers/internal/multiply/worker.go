@@ -17,9 +17,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// landResendEvery matches the fleet landing cadence.
-var landResendEvery = time.Second
-
 const tickInterval = 750 * time.Millisecond
 
 type Worker struct {
@@ -431,7 +428,7 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 	out, err := chain.Land(ctx, w.chain, chain.Attempt{
 		Wire: operation.SignedWire, Signature: *operation.TransactionSignature,
 		LastValidBlockHeight: *operation.LastValidBlockHeight, Required: chain.Confirmed,
-	}, landResendEvery, func(sendCtx context.Context) error {
+	}, chain.LandResendEvery, func(sendCtx context.Context) error {
 		if unsent {
 			return intent(sendCtx)
 		}

@@ -70,9 +70,9 @@ func newRevalidator(store revalidationStore, client *chain.Client, config Revali
 		return nil, fmt.Errorf("delegated signer: %w", err)
 	}
 	if config.ComputeLimit == 0 {
-		config.ComputeLimit = defaultComputeLimit
+		config.ComputeLimit = DefaultComputeLimit
 	}
-	if config.ComputeLimit > defaultComputeLimit {
+	if config.ComputeLimit > DefaultComputeLimit {
 		return nil, errors.New("compute limit exceeds Solana maximum")
 	}
 	var jupiter *JupiterBuildClient
@@ -372,8 +372,8 @@ func paddedComputeUnits(measured uint64) uint64 {
 	if padded < 100_000 {
 		return 100_000
 	}
-	if padded > defaultComputeLimit {
-		return defaultComputeLimit
+	if padded > DefaultComputeLimit {
+		return DefaultComputeLimit
 	}
 	return padded
 }
