@@ -17,9 +17,6 @@ const (
 	minimumPublicationLifetime = 70 * time.Second
 )
 
-// DecodeKaminoReserve reads a reserve returned at contextSlot; its slot is the
-// later of contextSlot and its own last update. slotsPerSecond is the chain's
-// measured slot rate (chain.Client.SlotsPerSecond).
 func DecodeKaminoReserve(account *chain.Account, identity ReserveIdentity, contextSlot int64, slotsPerSecond float64) (ReserveState, error) {
 	return decodeKaminoReserve(account, identity, contextSlot, slotsPerSecond)
 }
@@ -46,9 +43,6 @@ func decodeKaminoReserve(account *chain.Account, identity ReserveIdentity, conte
 		return ReserveState{}, fmt.Errorf("reserve %s has no bounded last update", identity.Address)
 	}
 	lastUpdateSlot := int64(reserve.LastUpdateSlot)
-	// getMultipleAccounts returns one bank's state, so the bytes are valid chain
-	// state. contextSlot is a floor (chain.Client.Accounts reports its first
-	// call's slot); a reserve refreshed later was read at or after that refresh.
 	slot := max(contextSlot, lastUpdateSlot)
 	lag := slot - lastUpdateSlot
 	remainingSlots := maximumEconomicSlotLag - lag

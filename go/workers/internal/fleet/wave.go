@@ -5,9 +5,6 @@ import (
 	"math/bits"
 )
 
-// WaveLimits match the retained Rust planner's scheduling limits. They bound
-// admission, not durable execution concurrency; retained ownership still fences
-// every published opportunity independently.
 type WaveLimits struct {
 	MaxOpportunities          int
 	MaxNotionalUSDMicros      int64
@@ -20,8 +17,6 @@ func DefaultWaveLimits() WaveLimits {
 }
 
 type waveCandidate struct {
-	// The input frontier is immutable for this synchronous planning call.
-	// Keep one source view instead of copying its position for every edge.
 	vault     *FleetVault
 	target    string
 	d         Decision
@@ -30,9 +25,6 @@ type waveCandidate struct {
 
 type waveCandidates []waveCandidate
 
-// Less packs room by net gain per dollar moved first: when a reserve's room
-// binds, the holdings that earn most per dollar of it go in. Rust's durable
-// economic priority and its tie-breaks order equal ratios.
 func (h waveCandidates) Less(i, j int) bool {
 	a, b := h[i], h[j]
 	if c := compareGainPerDollar(a.d, b.d); c != 0 {
@@ -55,7 +47,6 @@ func (h waveCandidates) Less(i, j int) bool {
 	if a.vault.Position.ObservedSlot != b.vault.Position.ObservedSlot {
 		return a.vault.Position.ObservedSlot > b.vault.Position.ObservedSlot
 	}
-	// Rust assigns candidate IDs after sorting its normalized source frontier.
 	if a.d.VaultID != b.d.VaultID {
 		return a.d.VaultID < b.d.VaultID
 	}
@@ -68,9 +59,6 @@ func (h waveCandidates) Less(i, j int) bool {
 	return a.target < b.target
 }
 
-// compareGainPerDollar orders a.net/a.principal against b.net/b.principal
-// exactly, by cross-multiplying in 128 bits: 1 when a earns more per dollar.
-// Only eligible decisions are ranked, and theirs are both positive.
 func compareGainPerDollar(a, b Decision) int {
 	if a.ExpectedNetGainUSDMicros <= 0 || a.PrincipalUSDMicros <= 0 || b.ExpectedNetGainUSDMicros <= 0 || b.PrincipalUSDMicros <= 0 {
 		return 0
@@ -92,7 +80,6 @@ func compareGainPerDollar(a, b Decision) int {
 	return 0
 }
 
-// Keep wave conflict admission and the durable execution manifest identical.
 func opportunityConflictKeys(position VaultPosition, decision Decision) []string {
 	keys := []string{"vault:" + position.VaultPubkey, "policy:" + fmt.Sprint(position.PolicyID), "source-reserve:" + decision.SourceReserve, "target-reserve:" + decision.TargetReserve}
 	if bindings := decision.PolicyBindings; decision.RouteKind == "cross_mint_jupiter" && bindings != nil {

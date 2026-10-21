@@ -33,9 +33,6 @@ type lookupPlanningFamily struct {
 	policy                 LookupPackingPolicy
 }
 
-// PlanLookupVaultRequest seals the complete cohort and reserves source capacity
-// atomically under the existing request lease and per-vault advisory lock. The
-// caller obtained bounded PDA absence/SlotHashes evidence before taking a lease.
 func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanningRequest, policy LookupPackingPolicy, bank lookupPlanningBank) (LookupVaultPlan, error) {
 	var result LookupVaultPlan
 	if bank.slot <= 0 || len(bank.reservations) > 16 {
@@ -102,8 +99,6 @@ func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanni
 		if errors.Is(err, pgx.ErrNoRows) {
 			currentID, currentTable, currentReserve = 0, 0, 0
 		}
-		// A terminal attribution is retained for operator repair, never silently
-		// replaced with another packet or another reservation.
 		if currentID != 0 && currentManifest == manifest.ID && currentRevision == revision {
 			var failed bool
 			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations o WHERE binding_id=$1 AND manifest_id=$2 AND operation_state='permanent_failure' AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_terminal_repair_operations WHERE operation_id=o.id))`, currentID, manifest.ID).Scan(&failed); err != nil {

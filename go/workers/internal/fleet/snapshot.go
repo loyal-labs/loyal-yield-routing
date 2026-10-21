@@ -20,18 +20,10 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// opportunityLifetime is how long a published move stays claimable. The
-// planner replans every tick, so a move nobody claimed in this time is
-// replaced by the next tick's plan.
 const opportunityLifetime = 2 * time.Minute
 
-// snapshotReadConcurrency bounds the getMultipleAccounts calls one snapshot
-// has in flight.
 const snapshotReadConcurrency = 8
 
-// CatalogStore reads the routable reserves: Kamino's safe listing, which the
-// observer keeps in Timescale. The listing is the one input that is not a
-// chain fact; only reserve identities are read from it.
 type CatalogStore struct {
 	pool         *pgxpool.Pool
 	schema       string
@@ -57,8 +49,6 @@ func validSQLIdentifier(value string) bool {
 	return true
 }
 
-// LoadCatalog returns each active safe reserve of an enabled mint once, by
-// address. A reserve listed under two identities is not routable.
 func (s *CatalogStore) LoadCatalog(ctx context.Context) ([]ReserveIdentity, error) {
 	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
 SELECT reserve, market, liquidity_mint FROM %s.supported_reserves
@@ -93,59 +83,41 @@ ORDER BY reserve, market, liquidity_mint`, s.schema), s.enabledMints)
 	return routable, nil
 }
 
-// SnapshotVault names the accounts one vault's holdings are read from: its
-// route policy, when named, and its vanilla obligation in each of Markets.
 type SnapshotVault struct {
 	Pubkey        string
 	PolicyAccount string
 	Markets       []string
 }
 
-// Holding is one deposit of a vault's obligation in a catalog reserve:
-// its collateral and the liquidity that collateral redeems at the snapshot.
 type Holding struct {
 	Reserve, Market, Mint       string
 	CollateralRaw, LiquidityRaw uint64
 }
 
-// VaultFacts is what the chain holds for one vault at the snapshot.
 type VaultFacts struct {
-	// Policy is the decoded route policy; PolicyErr says why it is absent.
 	Policy    *DecodedSquadsPolicy
 	PolicyErr string
 	Holdings  []Holding
-	// Idle is the vault's balance in each Earn mint's canonical token
-	// account, read only when the snapshot asked for it.
-	Idle map[string]uint64
+	Idle      map[string]uint64
 }
 
-// Snapshot is one read of every chain fact a planning tick uses: the catalog
-// reserves, then each vault's policy and obligations, every call served at or
-// after the reserves' slot.
 type Snapshot struct {
 	Slot       int64
 	ObservedAt time.Time
-	// Reserves holds the catalog reserves KLend lets a move use now;
-	// Unroutable says why each other catalog reserve is absent.
 	Reserves   map[string]ReserveState
 	Unroutable map[string]string
 	Vaults     map[string]VaultFacts
 }
 
-// SnapshotRequest names what one snapshot reads.
 type SnapshotRequest struct {
 	Catalog []ReserveIdentity
 	Vaults  []SnapshotVault
 	// SlotsPerSecond is the measured slot rate reserve APYs are priced with;
 	// zero reads holdings only and leaves Reserves empty.
 	SlotsPerSecond float64
-	// Idle also reads each vault's Earn token accounts.
-	Idle bool
+	Idle           bool
 }
 
-// ReadSnapshot reads the catalog reserves and then the vaults' accounts over
-// RPC at confirmed commitment, every vault call served at or after the
-// reserves' slot.
 func ReadSnapshot(ctx context.Context, reader AccountReader, request SnapshotRequest) (Snapshot, error) {
 	catalog, vaults, idle := request.Catalog, request.Vaults, request.Idle
 	out := Snapshot{Reserves: map[string]ReserveState{}, Unroutable: map[string]string{}, Vaults: map[string]VaultFacts{}}
@@ -278,8 +250,6 @@ func ReadSnapshot(ctx context.Context, reader AccountReader, request SnapshotReq
 	return out, nil
 }
 
-// obligationHoldings lists the obligation's deposits in catalog reserves. An
-// absent obligation holds nothing.
 func obligationHoldings(account *chain.Account, owner string, reserves map[string]kamino.Reserve) ([]Holding, error) {
 	if account == nil {
 		return nil, nil
@@ -309,8 +279,6 @@ func obligationHoldings(account *chain.Account, owner string, reserves map[strin
 	return out, nil
 }
 
-// idleAmount reads a vault token account: absent is zero, present must be
-// the vault's account of mint.
 func idleAmount(account *chain.Account, mint, owner string) (uint64, error) {
 	if account == nil {
 		return 0, nil
@@ -325,7 +293,6 @@ func idleAmount(account *chain.Account, mint, owner string) (uint64, error) {
 	return held.Amount, nil
 }
 
-// earnTokenProgram is the token program an Earn mint's custody lives under.
 func earnTokenProgram(mint string) solana.PublicKey {
 	switch mint {
 	case CashMint, USDGMint, PYUSDMint:
@@ -334,8 +301,6 @@ func earnTokenProgram(mint string) solana.PublicKey {
 	return solana.TokenProgramID
 }
 
-// readAccountsAt reads keys in calls of 100, several at once, each served at
-// or after minSlot.
 func readAccountsAt(ctx context.Context, reader AccountReader, keys []solana.PublicKey, minSlot uint64) ([]*chain.Account, error) {
 	out := make([]*chain.Account, len(keys))
 	const batch = 100
@@ -379,8 +344,6 @@ func readAccountsAt(ctx context.Context, reader AccountReader, keys []solana.Pub
 	return out, nil
 }
 
-// snapshotRecord is the tick's market evidence as history: the reserves the
-// tick planned from, stored once per tick in optimizer_epochs.
 type snapshotRecord struct {
 	Key                   string
 	Slot                  int64
@@ -420,17 +383,14 @@ func recordOf(snapshot Snapshot) (snapshotRecord, error) {
 	return snapshotRecord{Key: hex.EncodeToString(sum[:]), Slot: snapshot.Slot, ObservedAt: snapshot.ObservedAt, ExpiresAt: snapshot.ObservedAt.Add(opportunityLifetime), State: state}, nil
 }
 
-// Market is the reserves part of a snapshot, as Plan reads it.
 func (s Snapshot) Market(hash string) MarketSnapshot {
 	return MarketSnapshot{Slot: s.Slot, ObservedAt: s.ObservedAt, Hash: hash, Reserves: s.Reserves}
 }
 
-// ReserveSource reads the routable reserves as the chain holds them now.
 type ReserveSource interface {
 	ReadReserves(context.Context) (MarketSnapshot, error)
 }
 
-// ChainReserves reads the catalog's reserves over RPC.
 type ChainReserves struct {
 	Catalog ReserveCatalog
 	RPC     *chain.Client

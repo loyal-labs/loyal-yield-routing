@@ -19,12 +19,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// PolicyMonitor projects confirmed Squads settings instructions, ported from
-// loyal-squads-policy-monitor PolicyMonitor::process_policy_instructions with
-// PostgresPolicyMatchSink and Earn MAX projection. Only the stream calls it.
-// A replay can stop before it reaches later transactions, so every write is
-// slot-ordered or derived: a replayed setup match takes its vault's active
-// flag from the route policy, which an older event cannot reactivate.
 type PolicyMonitor struct {
 	store    *Store
 	rpc      *chain.Client
@@ -32,8 +26,6 @@ type PolicyMonitor struct {
 	delegate solana.PublicKey
 }
 
-// NewPolicyMonitor binds the confirmed-commitment projection to one cluster
-// spelling ("mainnet-beta" or "devnet") and the Earn MAX delegate.
 func NewPolicyMonitor(store *Store, rpc *chain.Client, cluster string, delegate solana.PublicKey) (*PolicyMonitor, error) {
 	switch cluster {
 	case "mainnet", "mainnet-beta":
@@ -50,7 +42,6 @@ func NewPolicyMonitor(store *Store, rpc *chain.Client, cluster string, delegate 
 
 const confirmedCommitment = "confirmed"
 
-// ProcessPolicyInstructions returns the number of projected events.
 func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature string, slot uint64, instructions []squads.Instruction) (int, error) {
 	emitted := 0
 	earnMax := map[solana.PublicKey]uint64{}
@@ -83,7 +74,6 @@ func (m *PolicyMonitor) ProcessPolicyInstructions(ctx context.Context, signature
 	return emitted, nil
 }
 
-// policyEvent is one PolicyMonitorEvent: exactly one input is set.
 type policyEvent struct {
 	route, setup *PolicyMatchInput
 	sweep        *BalanceSweepPolicyMatchInput
@@ -91,9 +81,6 @@ type policyEvent struct {
 	removal      *PolicyRemovalInput
 }
 
-// events classifies one instruction exactly as the Rust monitor emits:
-// a generalized cross-mint policy, else removals, else recognized creates,
-// else an incompatible update invalidating the policy.
 func (m *PolicyMonitor) events(signature string, slot uint64, instruction squads.Instruction) []policyEvent {
 	if event, ok := detectCrossMintPolicy(instruction); ok {
 		event.Signature, event.Slot, event.Cluster, event.SourceCommitment = signature, slot, m.cluster, confirmedCommitment
@@ -215,8 +202,6 @@ func (m *PolicyMonitor) affectedEarnMaxSettings(ctx context.Context, instruction
 	return out, nil
 }
 
-// earnMaxSeedBase is earn_max_policy_seed_base: a canonical create or update
-// payload of one family at its seed base offset.
 func (m *PolicyMonitor) earnMaxSeedBase(action squads.SettingsAction) (uint64, bool, error) {
 	if action.Threshold != 1 || len(action.DelegatedSigners) != 1 || action.DelegatedSigners[0] != m.delegate {
 		return 0, false, nil
@@ -279,8 +264,6 @@ func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings sol
 		families = append(families, expected{family, policy, constraints, hex.EncodeToString(digest[:])})
 		addresses = append(addresses, policy.Account)
 	}
-	// The transaction names the policies, not their current state; the node
-	// must have reached its slot, and the chain client waits for one that has.
 	_, read, err := m.rpc.Accounts(ctx, addresses, confirmedCommitment, slot)
 	if err != nil {
 		return err
@@ -330,7 +313,6 @@ func (m *PolicyMonitor) projectEarnMaxManifest(ctx context.Context, settings sol
 	})
 }
 
-// EarnMaxPolicySeedBase is load_earn_max_policy_seed_base.
 func (s *Store) EarnMaxPolicySeedBase(ctx context.Context, settings string, vaultIndex uint8) (uint64, bool, error) {
 	var value int64
 	err := s.pool.QueryRow(ctx, `
@@ -362,9 +344,6 @@ func isLowerHex64(value string) bool {
 	return true
 }
 
-// ProjectEarnMaxPolicySet is project_earn_max_policy_set: the slot-ordered
-// manifest row, the terminal route roll on ready, and the projection offset
-// commit in one transaction.
 func (s *Store) ProjectEarnMaxPolicySet(ctx context.Context, consumer string, input EarnMaxPolicySetProjectionInput) error {
 	if input.Settings == "" || input.Vault == "" || input.ManifestVersion == "" || input.ObservedSignature == "" || input.PolicySeedBase == 0 ||
 		(input.Status != "incomplete" && input.Status != "ready" && input.Status != "removed") || !isLowerHex64(input.ManifestSHA256) ||

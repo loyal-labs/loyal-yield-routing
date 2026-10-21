@@ -10,8 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// LeaseLookupOperation preserves the existing source owner and economic order.
-// Recovery and read-only verification remain claimable while creation is paused.
 func (s *Store) LeaseLookupOperation(ctx context.Context, cluster, owner string, ttl time.Duration, recoverOnly bool) (*LookupOperation, error) {
 	if cluster == "" || owner == "" || ttl < 10*time.Second || ttl > 5*time.Minute || ttl%time.Second != 0 {
 		return nil, errors.New("lookup operation lease configuration invalid")
@@ -94,7 +92,6 @@ func loadLeasedLookup(ctx context.Context, tx pgx.Tx, id int64) (LookupOperation
 	return op, nil
 }
 
-// Unsigned deferral never clears retained source signatures or owned packets.
 func (s *Store) deferLookupUnsigned(ctx context.Context, op LookupOperation, reason string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state='retry_wait',next_attempt_at=clock_timestamp()+interval '5 seconds',lease_owner=NULL,lease_expires_at=NULL,error_detail=$4,updated_at=clock_timestamp()
  WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp() AND transaction_signature IS NULL AND message_hash IS NULL AND recent_blockhash IS NULL AND last_valid_block_height IS NULL`, op.Intent.OperationID, op.Lease.Owner, op.Lease.FencingToken, reason)

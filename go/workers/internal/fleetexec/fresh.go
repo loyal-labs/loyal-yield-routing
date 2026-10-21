@@ -21,9 +21,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// ExecuteFresh signs and persists the route this process just admitted. The
-// publication transaction rechecks every custody fence the database holds
-// before the signed wire becomes recoverable. Nothing is broadcast here.
 func (w *Worker) ExecuteFresh(ctx context.Context, admission fleet.ExecutionAdmission) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -43,8 +40,6 @@ func (w *Worker) ExecuteFresh(ctx context.Context, admission fleet.ExecutionAdmi
 	}
 	var balance *FeePayerBalance
 	if admission.FeePayer != base58.Encode(w.signer.FeePayer[32:]) {
-		// Rust admits a shard's spend against a balance read within two
-		// seconds of the admission, so it is read here, last.
 		if w.balances == nil {
 			return 0, errors.New("fee-only payer balance reader is not configured")
 		}
@@ -57,20 +52,13 @@ func (w *Worker) ExecuteFresh(ctx context.Context, admission fleet.ExecutionAdmi
 	return w.store.PersistFreshAdmission(ctx, admission, wire, balance)
 }
 
-// FeePayerBalance is one confirmed balance read of a fee-only shard.
 type FeePayerBalance struct {
 	Lamports, Slot int64
 	At             time.Time
 }
 
-// errFeePayerReselection is Rust's fee_payer_reselection_required: the shard
-// cannot fund this route now; the next preparation ranks shards again.
 var errFeePayerReselection = errors.New("fee_payer_reselection_required")
 
-// admitFeeOnlySpend is Rust's reserve_fee_only_route_payer_spend under the
-// shard row lock: the balance read is current, the fee fits the per-
-// transaction and rolling-window budgets, and the balance stays within the
-// floor and ceiling after every fee it cannot yet reflect.
 func admitFeeOnlySpend(ctx context.Context, tx pgx.Tx, cluster, payer, semantic string, opportunityID, submissionID, fee int64, b FeePayerBalance) error {
 	var minimum, maximum, windowMax, txMax int64
 	var window int32
@@ -133,8 +121,6 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
 		return 0, err
 	}
 	payer := decoded.Message.AccountKeys[0].String()
-	// One signature: the delegate pays. Two: the vault's fee-only payer pays,
-	// with the Rust spend reservation 0025 requires for that payer kind.
 	payerKind := "policy"
 	if len(decoded.Signatures) == 2 {
 		payerKind = "fee_only_shard"

@@ -16,10 +16,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Earn MAX claim-custody cash flow, ported from earn_reconciliation.rs
-// project_earn_max_account_update, read_confirmed_earn_max_account_transfer
-// and project_earn_max_confirmed_cash_flow.
-
 type custodyTransfer struct {
 	wire                            []byte
 	lookupTables                    map[solana.PublicKey]solana.PublicKeySlice
@@ -31,7 +27,6 @@ type custodyTransfer struct {
 	destinationPre, destinationPost uint64
 }
 
-// tokenAmount is token_amount_optional: nil when the account has no USDC row.
 func tokenAmount(balances map[solana.PublicKey]chain.TokenBalance, account solana.PublicKey) *uint64 {
 	row, ok := balances[account]
 	if !ok || row.Mint != usdcMint {
@@ -47,7 +42,6 @@ func orZero(value *uint64) uint64 {
 	return *value
 }
 
-// readCustodyTransfer is read_confirmed_earn_max_account_transfer.
 func readCustodyTransfer(ctx context.Context, rpc *chain.Client, signature string, expectedSlot uint64, custody solana.PublicKey) (*custodyTransfer, error) {
 	read, err := readExecution(ctx, rpc, signature)
 	if err != nil {
@@ -144,8 +138,6 @@ func readCustodyTransfer(ctx context.Context, rpc *chain.Client, signature strin
 		transfer.destinationPre, transfer.destinationPost = claimPre, claimPost
 		return transfer, nil
 	}
-	// A root claim moves only between existing token accounts: missing rows
-	// are unknown, not zero, so a create or close cannot hide behind it.
 	for _, key := range []solana.PublicKey{custody, counterparty.key} {
 		if tokenAmount(read.Pre, key) == nil || tokenAmount(read.Post, key) == nil {
 			return nil, errors.New("Earn MAX root claim receipt omitted an actual account balance")
@@ -242,8 +234,6 @@ func (a *Application) projectEarnMaxAccountUpdate(ctx context.Context, update No
 	return err
 }
 
-// routeEngineIsCurrent skips a route not on the current engine, as the Rust
-// projection did after its version check.
 func (a *Application) routeEngineIsCurrent(ctx context.Context, routeKey string) (bool, error) {
 	var engine *string
 	err := a.multiply.Pool().QueryRow(ctx, `SELECT state->>'engineVersion' FROM loyal_yield.multiply_route_states WHERE route_key=$1`, routeKey).Scan(&engine)
@@ -253,9 +243,6 @@ func (a *Application) routeEngineIsCurrent(ctx context.Context, routeKey string)
 	return engine != nil && *engine == multiply.EngineVersion, nil
 }
 
-// validateRootClaim is the single Earn MAX payout validation call site: the
-// claim must be the exact root-wallet transfer of the saved request. Its
-// semantics are owned by multiply.ValidateWalletClaimReceipt.
 func validateRootClaim(route *multiply.RouteState, requestID string, transfer *custodyTransfer) error {
 	topology, err := multiply.TopologyForRoute(route)
 	if err != nil {
@@ -269,8 +256,6 @@ func validateRootClaim(route *multiply.RouteState, requestID string, transfer *c
 	})
 }
 
-// projectCashFlow is project_earn_max_confirmed_cash_flow; requestID is
-// empty for a deposit and the claimable request for a claim.
 func (a *Application) projectCashFlow(ctx context.Context, settings solana.PublicKey, requestID string, transfer *custodyTransfer) (bool, error) {
 	routeKey := fmt.Sprintf("earn-max:%s:0", settings)
 	if exists, err := a.multiply.OperationExistsForSignature(ctx, routeKey, transfer.signature); err != nil || exists {

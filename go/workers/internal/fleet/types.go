@@ -60,9 +60,6 @@ func (r ReserveState) DepositRoomRaw() (room int64, known bool) {
 	return int64(limit - supply), true
 }
 
-// TargetEligible reports whether a move may deposit into r now: refreshed
-// economics with the publication lifetime left, the planner's minimum supply
-// and an APY in bounds.
 func (r ReserveState) TargetEligible() bool {
 	return !r.LastUpdateStale && r.EconomicLifetimeMillis >= minimumPublicationLifetime.Milliseconds() &&
 		r.TotalSupplyUSDMicros >= minimumSupplyUSDMicros && r.SupplyAPYBPS >= 0 && r.SupplyAPYBPS < 5_000

@@ -13,10 +13,8 @@ import (
 
 // sameMintRecovery reconciles a landed same-mint route against finalized
 // account state. A full withdrawal makes KLend close the obligation, so an
-// absent obligation proves zero collateral (Rust parity:
-// decode_kamino_obligation_summary(None) is exists=false, amount 0).
+// absent obligation proves zero collateral.
 type sameMintRecovery struct {
-	// slotRate reads the chain's measured slot rate (chain.Client.SlotsPerSecond).
 	slotRate func(context.Context) (float64, error)
 	store    *Store
 	accounts fleet.AccountReader

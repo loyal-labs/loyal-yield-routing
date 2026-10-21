@@ -26,11 +26,6 @@ import (
 
 const benchmarkReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
 
-// Maintenance owns projections only. Pools are supplied/closed by the runtime;
-// no keypair, signing, broadcast or application repair capability is accepted.
-// The fixed stablecoin/benchmark catalog is mainnet-only. Configuration must
-// positively bind its Yield/Timescale product namespace and RPC to mainnet-beta;
-// the unscoped legacy source tables do not prove that binding themselves.
 type Maintenance struct {
 	yield, timescale   *pgxpool.Pool
 	cluster            string
@@ -55,9 +50,8 @@ type MaintenanceConfig struct {
 	PriceRPC                        ReservePriceRPC
 	RecoveryPoll, HealthObservation time.Duration
 	Logger                          *slog.Logger
-	// OnError is called for every failed pass; it must return promptly.
-	OnError       func()
-	RetryInterval time.Duration
+	OnError                         func()
+	RetryInterval                   time.Duration
 	// ValidateNamespace rechecks the custody namespace before any unscoped
 	// product projection. The runtime supplies it because policy membership can
 	// change after startup; a foreign or unknown scope must not publish.
@@ -122,8 +116,6 @@ type MaintenanceReport struct {
 	AllocationComplete bool
 }
 
-// Run joins all work by construction: each maintenance pass is synchronous and
-// timeout bounded. Tick errors return to the runtime; no missing data is hidden.
 func (m *Maintenance) Run(ctx context.Context) error {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
@@ -219,14 +211,10 @@ func (m *Maintenance) Tick(ctx context.Context, now time.Time) (MaintenanceRepor
 			m.pricesHour = hour
 		}
 	}
-	// The public model is one snapshot per UTC day (the Apps cron ran it daily
-	// at 08:17), so it is due once per snapshot_date, not every hour.
 	if err = m.yield.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM loyal_yield.earn_forecast_snapshots WHERE strategy='medium_fee_aware_1bps' AND risk_profile='medium' AND fee_bps=1 AND snapshot_date=$1::date)`, now.UTC().Format("2006-01-02")).Scan(&due); err != nil {
 		return r, err
 	}
 	if due {
-		// The 30-day evidence read takes tens of seconds; it gets its own
-		// budget instead of the remainder of the 5 s health tick's.
 		if err = m.RecordPublicModel(parent, now); err != nil {
 			return r, err
 		}
@@ -235,9 +223,6 @@ func (m *Maintenance) Tick(ctx context.Context, now time.Time) (MaintenanceRepor
 	return r, nil
 }
 
-// loadVaults reads every active Earn vault's holdings from the chain in one
-// snapshot: its vanilla obligation in each catalog market and its Earn token
-// accounts. A vault whose address is not a public key has no snapshot.
 func (m *Maintenance) loadVaults(ctx context.Context, now time.Time) ([]FleetVault, error) {
 	rows, err := m.yield.Query(ctx, `SELECT id, vault_pubkey FROM loyal_yield.managed_vaults WHERE vault_index=1 AND active=true AND first_seen_at <= $1 ORDER BY id LIMIT $2`, now, m.maxVaults+1)
 	if err != nil {
@@ -350,12 +335,6 @@ WHERE excluded.observed_at >= loyal_yield.earn_fleet_allocations_hourly.observed
 	return sample, prices, err
 }
 
-// loadModelRows reads the model evidence as the latest update per reserve per
-// hour (buckets anchored at start) plus each reserve's last update before
-// start. Every raw update in 30 days is ~1.7M rows on mainnet, far past the
-// evidence bound; this is the binning the Apps earnings path adopted for the
-// same reason (ASK-2209). The latest row of each hour is kept whether stale
-// or not, so a stale reserve is still evicted at that hour.
 func (m *Maintenance) loadModelRows(ctx context.Context, start, end time.Time) ([]ModelReserve, error) {
 	rows, err := m.timescale.Query(ctx, `
 WITH supported AS(SELECT DISTINCT reserve,liquidity_mint FROM kamino.supported_reserves WHERE active=true AND market=ANY($3::text[]) AND liquidity_mint=ANY($4::text[])),
@@ -384,8 +363,6 @@ SELECT * FROM (SELECT * FROM seed UNION ALL SELECT * FROM recent) AS samples ORD
 	return result, nil
 }
 
-// publicModelTimeout bounds the daily public model: the hourly-binned 30-day
-// evidence read is one index probe per reserve-hour (~17k on mainnet, ~25 s).
 const publicModelTimeout = 3 * time.Minute
 
 func (m *Maintenance) RecordPublicModel(ctx context.Context, now time.Time) error {
@@ -399,7 +376,6 @@ func (m *Maintenance) RecordPublicModel(ctx context.Context, now time.Time) erro
 	if err != nil {
 		return err
 	}
-	// Benchmark points are actual hourly observations, not an invented series.
 	benchmark, err := m.timescale.Query(ctx, `WITH previous_sample AS(SELECT observed_at,slot,supply_apy FROM kamino.reserve_updates WHERE reserve=$1 AND observed_at<$2 AND reserve_last_update_stale=false AND supply_apy>=0 AND supply_apy<0.5 ORDER BY observed_at DESC,slot DESC LIMIT 1), latest_sample AS(SELECT observed_at,slot,supply_apy FROM kamino.reserve_updates WHERE reserve=$1 AND observed_at<=$3 AND reserve_last_update_stale=false AND supply_apy>=0 AND supply_apy<0.5 ORDER BY observed_at DESC,slot DESC LIMIT 1), range_candidates AS(SELECT date_bin(interval '1 hour',observed_at,$2::timestamptz) AS sample_bucket,observed_at,slot,supply_apy FROM kamino.reserve_updates WHERE reserve=$1 AND observed_at >=$2 AND observed_at<=$3 AND reserve_last_update_stale=false AND supply_apy>=0 AND supply_apy<0.5), range_samples AS(SELECT DISTINCT ON(sample_bucket) observed_at,slot,supply_apy FROM range_candidates ORDER BY sample_bucket,observed_at DESC,slot DESC) SELECT * FROM(SELECT * FROM previous_sample UNION SELECT * FROM range_samples UNION SELECT * FROM latest_sample) AS samples ORDER BY observed_at,slot LIMIT 723`, benchmarkReserve, model.WindowStartedAt, now)
 	if err != nil {
 		return err
@@ -429,9 +405,6 @@ func (m *Maintenance) RecordPublicModel(ctx context.Context, now time.Time) erro
 	return persistPublicModel(ctx, m.yield, model)
 }
 
-// RefreshHealth uses the same transaction lock, source view and physical-key
-// classification as Rust fleet-health-projector, so overlapping legacy/Go
-// observers cannot publish interleaved snapshots or advance the fence twice.
 func (m *Maintenance) RefreshHealth(ctx context.Context, minimum time.Duration) (bool, int64, error) {
 	if minimum <= 0 || minimum > 300*time.Second {
 		return false, 0, errors.New("health refresh interval outside source contract")
@@ -490,7 +463,6 @@ ON CONFLICT(cluster) DO UPDATE SET payload=excluded.payload,source_watermark=exc
 
 const benchmarkMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 
-// ReservePriceRPC is the observer's read-only capability, not a sender.
 type ReservePriceRPC interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
 	BlockTime(ctx context.Context, slot uint64) (time.Time, error)
@@ -522,8 +494,6 @@ func reservePrice(reserve string, account *chain.Account, contextSlot uint64) (S
 	return SharePrice{Reserve: reserve, Market: market, Mint: mint, Slot: int64(update), Price: price}, nil
 }
 
-// ProbeSharePrices batches at the source's 100-account bound and caches actual
-// block times. Missing/stale/unknown reserves are reported, never timestamped now.
 func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []string, now time.Time) ([]SharePrice, []string, error) {
 	if source == nil || now.IsZero() || len(reserves) > 10_000 {
 		return nil, nil, errors.New("price probe capability/clock/bound invalid")
@@ -543,8 +513,6 @@ func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []st
 	prices := []SharePrice{}
 	missing := []string{}
 	clocks := map[uint64]time.Time{}
-	// Each batch of 100 is its own read, so every reserve is judged against
-	// the slot it was read at.
 	for start := 0; start < len(keys); start += 100 {
 		chunk := keys[start:min(start+100, len(keys))]
 		addresses := make([]solana.PublicKey, len(chunk))
@@ -623,8 +591,6 @@ func (m *Maintenance) RecordSharePrices(ctx context.Context, now time.Time) (int
 	if err != nil {
 		return 0, nil, err
 	}
-	// A candidate catalog outage is not silently treated as an empty universe.
-	// Returning it leaves legacy cron ownership and the pass retryable.
 	candidates, err := m.timescale.Query(ctx, `SELECT DISTINCT reserve FROM kamino.supported_reserves WHERE active=true AND market=ANY($1::text[]) AND liquidity_mint=ANY($2::text[]) ORDER BY reserve LIMIT 10001`, m.markets, stableMints)
 	if err != nil {
 		return 0, nil, err

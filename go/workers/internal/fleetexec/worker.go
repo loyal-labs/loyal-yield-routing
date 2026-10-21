@@ -18,19 +18,14 @@ import (
 // resendEvery matches the Rust confirmer's one-second durable poll.
 var resendEvery = time.Second
 
-// Config is the explicit runtime configuration for one fleet executor.
 type Config struct {
-	Cluster  string
-	Owner    string
-	LeaseTTL time.Duration
-	// BatchSize bounds submissions claimed per tick.
-	BatchSize int
-	// TickInterval spaces recovery sweeps.
+	Cluster      string
+	Owner        string
+	LeaseTTL     time.Duration
+	BatchSize    int
 	TickInterval time.Duration
 	Facts        *engine.Facts
-	// OnHealth receives every executor tick's result and must not block; nil
-	// is a tick that completed. Unset, failed ticks are only logged.
-	OnHealth func(error)
+	OnHealth     func(error)
 }
 
 func (c Config) validate() error {
@@ -40,9 +35,6 @@ func (c Config) validate() error {
 	return nil
 }
 
-// Worker lands and reconciles durable signed route submissions. It holds the
-// delegated signing key only for fresh wire; landing never re-signs or
-// rebuilds bytes.
 type Worker struct {
 	config   Config
 	store    *Store
@@ -50,16 +42,12 @@ type Worker struct {
 	receipts receiptReader
 	signer   DelegateSigner
 	recovery *sameMintRecovery
-	// balances reads a fee-only shard's balance right before admission.
 	balances fleet.AccountReader
 	fresh    *fleet.Revalidator
-	// landing counts claimed rows still being landed or reconciled; at most
-	// BatchSize run at once. Run joins them before returning.
-	landing atomic.Int64
-	wg      sync.WaitGroup
+	landing  atomic.Int64
+	wg       sync.WaitGroup
 }
 
-// NewWorker composes the executor from its concrete dependencies.
 func NewWorker(config Config, store *Store, land chain.LandChain, receipts receiptReader, signer DelegateSigner) (*Worker, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
@@ -75,8 +63,6 @@ func NewWorker(config Config, store *Store, land chain.LandChain, receipts recei
 	return worker, nil
 }
 
-// SetFreshRevalidator wires the concrete read-only preparation controller.
-// Configure it before Run; callers retain the database and RPC lifecycles.
 func (w *Worker) SetFreshRevalidator(r *fleet.Revalidator) error {
 	if r == nil || len(w.signer.FeePayer) != ed25519.PrivateKeySize {
 		return errors.New("fresh execution requires revalidator and delegated key")
@@ -85,8 +71,6 @@ func (w *Worker) SetFreshRevalidator(r *fleet.Revalidator) error {
 	return nil
 }
 
-// Run ticks until the context is canceled and joins every landing before
-// returning.
 func (w *Worker) Run(ctx context.Context) error {
 	defer w.wg.Wait()
 	ticker := time.NewTicker(w.config.TickInterval)
@@ -112,12 +96,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// Tick claims rows up to the free landing capacity and lands or reconciles
-// each in its own goroutine, then publishes one fresh signed route. The next
-// tick's claim lands that route. A fresh route never waits behind a landing.
-// Inflight counts every fleet leg, cross-mint included. One submission's or
-// one opportunity's outcome is recorded on its own row and never fails the
-// tick; a tick that completed is fleet progress.
 func (w *Worker) Tick(ctx context.Context) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -171,8 +149,6 @@ func (w *Worker) Tick(ctx context.Context) (err error) {
 }
 
 func (w *Worker) handleLease(ctx context.Context, lease SubmissionLease) error {
-	// Use the deadline returned by the database rather than granting a new
-	// TTL after network delay.
 	deadline, err := w.store.RenewClaimLease(ctx, lease, w.config.LeaseTTL)
 	if err != nil {
 		return err
@@ -204,9 +180,6 @@ func (w *Worker) handleLease(ctx context.Context, lease SubmissionLease) error {
 	return fmt.Errorf("%w: %s", ErrNotClaimable, lease.Submission.State)
 }
 
-// land resends the row's exact bytes until they land or expire. When the
-// lease window ends first, the row stays signed or submitted and the next
-// tick's claim lands it again: that is the same path a restart takes.
 func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) error {
 	record := lease.Submission
 	if err := verifyDurableWire(record); err != nil {
@@ -228,7 +201,6 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) erro
 		}
 		return err
 	}
-	// Facts count an outcome only once its row is written.
 	switch out.Kind {
 	case chain.Landed:
 		if err = w.store.ConfirmSameMint(leaseCtx, lease, int64(out.Slot)); err == nil {
@@ -251,9 +223,6 @@ func (w *Worker) land(leaseCtx, ctx context.Context, lease SubmissionLease) erro
 	return err
 }
 
-// reconcileFinalized verifies the exact finalized receipt identity and its
-// anchored collateral/liquidity effects before declaring the movement
-// reconciled. Capacity stays reserved until this proof and newer telemetry.
 func (w *Worker) reconcileFinalized(ctx context.Context, lease SubmissionLease) error {
 	record := lease.Submission
 	if record.ConfirmedSlot == nil {
@@ -261,7 +230,7 @@ func (w *Worker) reconcileFinalized(ctx context.Context, lease SubmissionLease) 
 	}
 	receipt, err := finalizedReceipt(ctx, w.receipts, record.Signature)
 	if errors.Is(err, chain.ErrNotFound) {
-		return nil // Finality not reached; the durable backoff continues.
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("finalized transaction: %w", err)
@@ -275,9 +244,6 @@ func (w *Worker) reconcileFinalized(ctx context.Context, lease SubmissionLease) 
 	return w.recovery.reconcile(ctx, lease, receipt)
 }
 
-// Rust's reconciliation schedule (fleet_orchestration/reconciliation.rs):
-// twelve attempts at one second, then doubling to a one-minute cap. Attempt
-// sixty is about ten minutes of failure at the cap.
 const (
 	reconciliationFastRetryAttempts = 12
 	reconciliationMinRetry          = time.Second
@@ -285,9 +251,6 @@ const (
 	reconciliationStallAttempts     = 60
 )
 
-// reconciliationRetryDelay is reconciliation_retry_delay_seconds. A confirmed
-// money movement is never abandoned, so the schedule, not a cap, keeps a
-// permanently failing reconciliation from polling chain state every second.
 func reconciliationRetryDelay(attempts int) time.Duration {
 	over := attempts - reconciliationFastRetryAttempts
 	if over <= 0 {
@@ -296,9 +259,6 @@ func reconciliationRetryDelay(attempts int) time.Duration {
 	return min(reconciliationMinRetry<<min(over, 16), reconciliationMaxRetry)
 }
 
-// deferReconciliation is Rust's deferred_reconciliation_poll_at: the failed
-// attempt is durably rescheduled, and a submission whose durable attempt count
-// reaches reconciliationStallAttempts is reported, once.
 func (w *Worker) deferReconciliation(ctx context.Context, lease SubmissionLease, cause error) error {
 	attempts := lease.Submission.AttemptCount
 	detail := fleet.LogErrorText(cause)
@@ -315,7 +275,6 @@ func (w *Worker) deferReconciliation(ctx context.Context, lease SubmissionLease,
 func int64Ptr(v int64) *int64 { return &v }
 func errPtr(v string) *string { return &v }
 
-// Leave a bounded cancellation margin before the actual database lease ends.
 func leaseWorkDeadline(expires time.Time, ttl time.Duration) time.Time {
 	margin := ttl / 10
 	if margin > 5*time.Second {

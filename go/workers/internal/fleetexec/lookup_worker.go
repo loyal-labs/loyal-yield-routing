@@ -17,16 +17,13 @@ import (
 // lookupResendEvery matches the fleet landing cadence.
 var lookupResendEvery = time.Second
 
-// LookupWorkerConfig bounds one leased operation; planner/catalog polling is a
-// separate responsibility and never receives ManagerKey.
 type LookupWorkerConfig struct {
 	Cluster, Owner                       string
 	LeaseTTL, TickDeadline, PollInterval time.Duration
 	Budget                               LookupBudget
 	ReconcileOnly                        bool
 	Facts                                *engine.Facts
-	// OnHealth must not block; nil means a successful tick with actual RPC evidence.
-	OnHealth func(error)
+	OnHealth                             func(error)
 }
 
 type LookupWorker struct {
@@ -69,8 +66,6 @@ func (w *LookupWorker) Run(ctx context.Context) error {
 	}
 }
 
-// Tick performs at most one source operation and one broadcast. There is no
-// goroutine or automatic retry around Send, and the lease outlives its deadline.
 func (w *LookupWorker) Tick(parent context.Context) (worked bool, resultErr error) {
 	ctx, cancel := context.WithTimeout(parent, w.config.TickDeadline)
 	defer cancel()
@@ -97,7 +92,6 @@ func (w *LookupWorker) tick(ctx context.Context) (worked bool, err error) {
 		return false, err
 	}
 	if op == nil {
-		// An idle source queue is not proof that its RPC dependency works.
 		_, _, _, err = lookupBlockhash(ctx, w.chain)
 		return false, err
 	}
@@ -204,8 +198,6 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 	if !approved {
 		return w.store.deferLookupUnsigned(ctx, op, "source rolling SOL budget exhausted")
 	}
-	// The callback is first invoked only after simulation, custody fences and
-	// the exact durable reservation. It receives no mutable recipe to sign.
 	key, err := w.managerKey(ctx, op.Intent.Payer)
 	if err != nil {
 		return err
@@ -221,10 +213,6 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 	return w.land(ctx, op, prepared)
 }
 
-// land resends the operation's signed bytes until they finalize or expire,
-// then applies the finalized effect. A packet without bytes (signed by the
-// Rust provisioner) and reconcile-only mode resolve by signature status alone,
-// with the same height-first classifier.
 func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt LookupAttempt) error {
 	target := chain.Attempt{
 		Wire: attempt.Wire.SignedTransaction, Signature: attempt.Wire.TransactionSignature,
@@ -233,7 +221,6 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 	var out chain.Outcome
 	var err error
 	if len(target.Wire) > 0 && !w.config.ReconcileOnly {
-		// Leave the tick time to record the outcome inside its own deadline.
 		landCtx, cancel := context.WithTimeout(ctx, w.config.TickDeadline/2)
 		out, err = chain.Land(landCtx, w.chain, target, lookupResendEvery, func(sendCtx context.Context) error {
 			return w.store.RecordLookupSend(sendCtx, op, attempt)
@@ -255,8 +242,6 @@ func (w *LookupWorker) land(ctx context.Context, op LookupOperation, attempt Loo
 	case 0:
 		return w.store.deferLookupRecovery(ctx, op, "signature not finalized", false)
 	case chain.Expired:
-		// Rust re-signs only when the mutation is also absent on chain; a
-		// landed packet the history has not indexed yet must not be archived.
 		snapshot, err := lookupSnapshot(ctx, w.chain, attempt.Intent.TableAddress, int64(out.ContextSlot))
 		if err != nil {
 			return err

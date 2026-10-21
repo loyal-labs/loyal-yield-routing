@@ -36,7 +36,6 @@ func (s *Store) lookupCatalogTables(ctx context.Context, c lookupCatalog, genera
 	return tables, nil
 }
 
-// One coherent finalized bundle read proves every shard from the same bank.
 func (p *LookupPlanner) observeLookupCatalog(ctx context.Context, c lookupCatalog, generation int32, minSlot int64, reportDrift bool) (bool, uint64, error) {
 	tables, err := p.store.lookupCatalogTables(ctx, c, generation)
 	if err != nil {
@@ -130,8 +129,6 @@ func (p *LookupPlanner) reconcileLookupCatalog(ctx context.Context, minSlot int6
 		if err != nil || c == nil {
 			return worked, bank, err
 		}
-		// Planning changes the source head state; activation rechecks its exact
-		// immutable revision and every source physical projection under locks.
 	}
 	if c.target != nil && c.state != "failed" {
 		changed, observed, e := p.observeLookupCatalog(ctx, *c, *c.target, int64(bank), false)

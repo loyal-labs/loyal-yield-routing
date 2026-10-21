@@ -19,9 +19,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// CrossMintFirstSendRequest carries the immutable journal wire, not a new route
-// proposal. The journal owner checks the durable identities again after this
-// read-only chain proof and before recording first broadcast intent.
 type CrossMintFirstSendRequest struct {
 	Movement                                  CrossMintPreparationMovement
 	Leg, Purpose, PolicyAccount               string
@@ -34,9 +31,6 @@ type CrossMintFirstSendRequest struct {
 	ExternalALTs                              []CrossMintExternalALT
 }
 
-// ValidateCrossMintFirstSend verifies the old, unchanged signed message against
-// current finalized protocol state. It never fetches a replacement quote, signs,
-// acquires movement authority or broadcasts.
 func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input CrossMintFirstSendRequest) error {
 	if r == nil || r.rpc == nil || r.signer == "" || input.MinimumSlot <= 0 {
 		return errors.New("cross-mint first send requires concrete chain reader and exact journal evidence")
@@ -120,8 +114,6 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 	if err != nil {
 		return err
 	}
-	// Provider snapshots remain committed even if compilation chose a managed
-	// table instead. Verify every full vector against actual finalized accounts.
 	var providerTables []LookupTable
 	for _, external := range input.ExternalALTs {
 		providerTables = append(providerTables, LookupTable{Address: external.Address, Addresses: external.Addresses, Active: true})
@@ -188,8 +180,6 @@ func (r *Revalidator) ValidateCrossMintFirstSend(ctx context.Context, input Cros
 			return errors.New("first-send bound Kamino policy identity changed")
 		}
 	}
-	// A pure compilation with the OLD blockhash proves instruction order, exact
-	// data, static account flags and lookup indexes. No RPC or signer is involved.
 	canonical, _, err := compileV0Transaction(r.signer, input.RecentBlockhash, append(append([]RouteInstruction{}, actual[:2]...), expected...), tables, 1, compute)
 	if err != nil || !bytes.Equal(canonical.Message, message) {
 		return errors.New("first-send signed message differs from current canonical protected leg")
@@ -335,8 +325,6 @@ func decodeCrossMintFirstSendWire(input CrossMintFirstSendRequest, signer string
 	return tx, message, instructions, tables, nil
 }
 
-// This parses only the small retained Squads compact instruction envelope;
-// Solana transaction/message decoding and ALT resolution above are SDK-owned.
 func decodeCrossMintSignedSwap(outer RouteInstruction, b CrossMintPolicyBindings, signer string) (RouteInstruction, uint8, error) {
 	var inner RouteInstruction
 	fail := func() (RouteInstruction, uint8, error) {

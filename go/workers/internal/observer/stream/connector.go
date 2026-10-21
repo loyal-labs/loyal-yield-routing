@@ -20,22 +20,17 @@ const (
 	defaultMaxSendMessageSize    = 32_000_000
 )
 
-// ClientStream is the bidirectional portion of a Yellowstone subscription used
-// by Manager. The narrow interface also lets the handoff contract be tested
-// against an in-process gRPC server.
 type ClientStream interface {
 	Recv() (*pb.SubscribeUpdate, error)
 	Send(*pb.SubscribeRequest) error
 	CloseSend() error
 }
 
-// OpenStream owns both the stream and its underlying connection.
 type OpenStream interface {
 	ClientStream
 	Close() error
 }
 
-// Connector opens one physical LaserStream subscription.
 type Connector interface {
 	Open(context.Context, *pb.SubscribeRequest) (OpenStream, error)
 }

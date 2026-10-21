@@ -18,8 +18,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// These values originate in the linked opportunity/decision, rather than a
-// signer-supplied balance assertion. They are rechecked under the final fence.
 type sameMintPostContract struct {
 	vaultID, policyID                     int64
 	vault, source, target, mint, settings string
@@ -35,8 +33,6 @@ type observedPosition struct {
 	exists                                            bool
 }
 
-// Unexported: only finalized observation plus exact receipt creates a publishable
-// proof. Current collateral is preserved, including a residual source deposit.
 type sameMintPostProof struct {
 	contract              sameMintPostContract
 	slot                  int64
@@ -189,8 +185,6 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 	if err != nil {
 		return nil, err
 	}
-	// Rust parity (decode_spl_token_account_amount(None)): a null liquidity ATA
-	// is a zero balance. A present account must still be the vault's exact ATA.
 	idleAccount := accounts[len(accounts)-1]
 	idleExists := idleAccount != nil
 	idle := int64(0)
@@ -216,8 +210,6 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 		}
 		p.supplyAPY = state.SupplyAPYBPS
 		obligationAccount := accounts[len(reserves)+i]
-		// Missing accounts are zero only when the finalized RPC returned a null
-		// account. A malformed funded envelope is never interpreted as absent.
 		p.exists = obligationAccount != nil
 		if p.exists {
 			p.amount, e = obligationCollateral(obligationAccount, p.market, c.vault, p.reserve)
@@ -236,8 +228,6 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 	return &sameMintPostProof{contract: c, slot: slot, positions: positions, idleAmount: idle, idleATA: ata, idleATAExists: idleExists, tokenProgram: program, observedAt: time.Now().UTC(), receipt: receipt}, nil
 }
 
-// redeemableCollateral is the liquidity collateral redeems from reserve, in
-// the BIGINT range the position tables store.
 func redeemableCollateral(reserve *chain.Account, collateral int64) (int64, error) {
 	decoded, err := kamino.DecodeReserve(reserve)
 	if err != nil || collateral < 0 {

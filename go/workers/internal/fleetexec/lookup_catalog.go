@@ -104,9 +104,6 @@ func lookupCatalogCompatible(tables []lookupCatalogPhysical, total int, shards [
 	}
 	seen := map[int32]bool{}
 	for _, t := range tables {
-		// A cancelled unsigned create leaves a reserved PDA with no observed
-		// physical incarnation. Treat it as an obsolete partial generation;
-		// selecting Extend solely because its source row exists is invalid.
 		if len(t.confirmed) == 0 && t.nonterminal == 0 && t.lastExtended == nil {
 			return false
 		}
@@ -123,8 +120,6 @@ func lookupCatalogCompatible(tables []lookupCatalogPhysical, total int, shards [
 	return true
 }
 
-// The authoritative sealed head supplies demand. Route requests cannot change
-// the shared catalog or cause a different shard order to be published.
 func (s *Store) planLookupCatalog(ctx context.Context, c lookupCatalog, bank lookupPlanningBank) (int32, bool, error) {
 	var target int32
 	changed := false

@@ -103,11 +103,6 @@ func (s *Set) Fingerprint() string {
 	return string(encoded)
 }
 
-// Loader builds the watch set from the Yield database alone, as Rust's
-// load_earn_subscription_targets (loyal-yield-store store.rs) did in
-// production. That function also consulted app_users/app_user_smart_accounts
-// when they existed in the same database; production keeps Apps identities in
-// a separate database, so that branch never ran and is not carried over.
 type Loader struct {
 	pool    *pgxpool.Pool
 	cluster string
@@ -229,9 +224,6 @@ func (s *Set) NewEarnBindingStart(previous *Set) (*uint64, error) {
 	return result, nil
 }
 
-// RetainPreviousEarnBindings keeps Earn routing monotonic for this process.
-// An update for a just-removed account may still be in flight on the old
-// subscription during handoff. A restart rebuilds the compact current set.
 func (s *Set) RetainPreviousEarnBindings(previous *Set) error {
 	if previous == nil {
 		return nil

@@ -10,9 +10,6 @@ import (
 
 var mainnetGenesis = solanago.MustHashFromBase58("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")
 
-// The watched mint/market identities and Apps legacy namespace exception are
-// mainnet-specific. Check the actual endpoint before opening writers and on
-// each watch refresh; a configured cluster label alone is insufficient.
 func validateWatchNamespace(ctx context.Context, cluster string, rpc *chain.Client) error {
 	if cluster != "mainnet-beta" || rpc == nil {
 		return errors.New("observer fixed watch catalog requires mainnet-beta namespace")

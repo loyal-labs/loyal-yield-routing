@@ -14,8 +14,6 @@ import (
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
-// lookupProof can only be produced by verifying the actual packet, receipt and
-// coherent account effects. The store never accepts a caller's terminal flag.
 type lookupProof struct {
 	state                       LookupAttemptState
 	readbackSlot, finalizedSlot int64

@@ -16,9 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CrossMintActivationPreparation describes the atomic verifier and a separate
-// independently simulated first withdrawal. No signed wire or ready decision
-// is produced here. The custody owner locks capacity and the source lease.
 type CrossMintActivationPreparation struct {
 	Lease                           RevalidationLease
 	Capacity                        CrossMintActivationCapacity
@@ -35,8 +32,6 @@ type CrossMintActivationPreparation struct {
 	SharedAddresses, VaultAddresses []ALTManifestAddress
 }
 
-// CrossMintActivationCapacity is the target reserve as this preparation's
-// finalized bank observed it; activation checks the in-flight moves against it.
 type CrossMintActivationCapacity struct {
 	Cluster, TargetReserve, LiquidityMint string
 	ObservedSupplyUSDMicros, ObservedSlot int64
@@ -57,10 +52,6 @@ type crossMintActivationSourceStore interface {
 	QueueCrossMintActivationALT(context.Context, CrossMintActivationPreparation) error
 }
 
-// PrepareNextCrossMintActivation first prepares exact source fingerprints under
-// a revalidation lease, then freshly certifies under a separate execute lease.
-// Both phases share the same actual preflight calculation. It never claims a
-// same-mint row, changes the fused configuration, signs or creates a decision.
 func (r *Revalidator) PrepareNextCrossMintActivation(ctx context.Context, cluster string) (*CrossMintActivationPreparation, bool, error) {
 	if r == nil || !r.crossMintEnabled || r.jupiter == nil || cluster == "" {
 		return nil, false, errors.New("cross-mint source preparation is unavailable")
@@ -202,9 +193,6 @@ func checkCrossMintSourceLease(ctx context.Context, query crossMintActivationQue
 	return generation, nil
 }
 
-// QueueCrossMintActivationALT publishes only typed, unsigned preparation demand.
-// It holds the source execute fence and the retained control advisory lock while
-// the shared provisioning implementation seals the full address manifest.
 func (s *Store) QueueCrossMintActivationALT(ctx context.Context, p CrossMintActivationPreparation) error {
 	return s.queueCrossMintSourceALT(ctx, p, "execute")
 }

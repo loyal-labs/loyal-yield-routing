@@ -7,20 +7,16 @@ import (
 	"sort"
 )
 
-// maxFeePayerCandidates is Rust's MAX_FEE_PAYER_SHARD_CANDIDATES.
 const maxFeePayerCandidates = 16
 
-// FeePayerShard is one enabled, authority-separated fee-only payer from the
-// Rust registry view route_fee_payer_shard_status, with its budget.
 type FeePayerShard struct {
 	Payer                                                      string
 	MinBalance, MaxBalance, MaxWindowSpend, MaxTxFee, Reserved int64
 }
 
-// RankFeePayers orders a vault's candidate payers by the Rust worker's
-// fee_payer_rendezvous_score, best first, bounded as Rust bounds them. Every
-// route write-locks its fee payer, so one shared payer serializes the whole
-// fleet within a block; ranking per vault spreads vaults over the registry.
+// RankFeePayers orders a vault's candidate payers best first. Every route
+// write-locks its fee payer, so one shared payer serializes the whole fleet
+// within a block; ranking per vault spreads vaults over the registry.
 func RankFeePayers(cluster, vault string, payers []string) []string {
 	score := func(payer string) []byte {
 		key, err := decodePublicKey(payer)
@@ -53,16 +49,11 @@ func RankFeePayers(cluster, vault string, payers []string) []string {
 	return ranked
 }
 
-// healthy is Rust's selection check: the fee cap fits the shard's
-// per-transaction and rolling-window budgets and the balance stays within
-// its floor and ceiling after paying it.
 func (s FeePayerShard) healthy(balance, fee int64) bool {
 	return fee <= s.MaxTxFee && s.Reserved+fee <= s.MaxWindowSpend &&
 		balance >= s.MinBalance && balance-fee >= s.MinBalance && balance <= s.MaxBalance
 }
 
-// EligibleFeePayerShards reads the enabled, authority-separated registry
-// shards whose keys this process holds. The policy signer is never one.
 func (s *Store) EligibleFeePayerShards(ctx context.Context, cluster, policySigner string, mounted []string) ([]FeePayerShard, error) {
 	rows, err := s.pool.Query(ctx, `SELECT fee_payer,minimum_balance_lamports,maximum_balance_lamports,maximum_window_spend_lamports,maximum_transaction_fee_lamports,current_window_reserved_lamports
 FROM loyal_yield.route_fee_payer_shard_status

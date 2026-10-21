@@ -61,9 +61,6 @@ func (s *Store) queueLookupCleanup(ctx context.Context, c lookupCleanupCandidate
 			return 0, errors.New("lookup close deactivation receipt identity changed")
 		}
 		if lookupProducedSlot(snapshot.SlotHashes, snapshot.DeactivationSlot) {
-			// Preserve the actual observed bank while cooldown holds. The
-			// selector orders by verification time so another eligible table
-			// can progress without inventing skipped SlotHashes entries.
 			_, err := s.pool.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables t SET last_verified_slot=$4,last_verified_at=clock_timestamp() WHERE id=$1 AND table_address=$2 AND mutation_epoch=$3 AND desired_state='deactivated' AND deactivated_slot=$5 AND address_hash=$6 AND (last_verified_slot IS NULL OR last_verified_slot<=$4)`, i.TableID, i.TableAddress, i.MutationEpoch, snapshot.Slot, c.deactivation, lookupOrderedAddressHash(i.Prefix))
 			if err != nil {
 				return 0, err
