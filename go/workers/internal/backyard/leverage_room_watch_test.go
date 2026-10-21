@@ -42,7 +42,7 @@ func TestReserveUpdateThatOpensRoomWakesATickThatBorrowsIt(t *testing.T) {
 	view.accounts[route.Kamino.DebtReserve] = viewAccount{ConfirmedAccount: debtReserveWithRoom(t, route, 0), slot: 100}
 	worker := &Worker{wake: make(chan struct{}, 1)}
 	var reports []roomUpdate
-	watch := roomWatch{lane: route.Lane, route: route, debt: true, leverage: true}
+	watch := roomWatch{lane: route.Lane, route: route, leverage: true}
 	view.WatchRoom(rwa, []roomWatch{watch}, func(u roomUpdate) { reports = append(reports, u); worker.roomObserved(u) })
 	woke := func() bool {
 		select {
@@ -125,7 +125,7 @@ func TestLeverageRoomWatchesFollowTheLevels(t *testing.T) {
 		t.Fatalf("held lane leverage: %+v", gaps)
 	}
 	watches := leverageRoomWatches(o)
-	if len(watches) != 2 || !watches[0].leverage || !watches[0].debt || watches[1].leverage || watches[1].lane != onreONycUSDC {
+	if len(watches) != 2 || !watches[0].leverage || watches[1].leverage || watches[1].lane != onreONycUSDC {
 		t.Fatalf("watches: %+v", watches)
 	}
 	// A level below the position wakes nothing; one above it does.
@@ -150,7 +150,7 @@ func TestLeverageReactionIsMeasuredFromTheRoomOpening(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	watch := roomWatch{lane: route.Lane, route: route, debt: true, leverage: true}
+	watch := roomWatch{lane: route.Lane, route: route, leverage: true}
 	e.leverageObserved([]laneLeverage{{lane: route.Lane, targeted: true, target: 1.75, current: 1.01, gap: 0.74}})
 	e.roomObserved(roomUpdate{watch: watch, roomRaw: 0, roomUSD: 0, at: now.Add(-time.Minute)})
 	e.roomObserved(roomUpdate{watch: watch, roomRaw: 3_300_000_000, roomUSD: 3300, open: true, opened: true, at: now.Add(-7 * time.Second)})

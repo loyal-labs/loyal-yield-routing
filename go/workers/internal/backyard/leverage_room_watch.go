@@ -9,14 +9,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// roomWatch is one reserve the worker waits on. Debt watches borrow room on
-// a held lane's debt reserve; collateral watches deposit room on a
-// collateral reserve. leverage marks a lane below its target, the only
-// watches the leverage reaction time is measured on.
+// leverage marks a lane below its target, the only watches the leverage
+// reaction time is measured on.
 type roomWatch struct {
 	lane     string
 	route    RuntimeRoute
-	debt     bool
 	leverage bool
 }
 
@@ -25,10 +22,7 @@ type roomKey struct{ lane, reserve string }
 func (w roomWatch) key() roomKey { return roomKey{w.lane, w.reserve()} }
 
 func (w roomWatch) reserve() string {
-	if w.debt {
-		return w.route.Kamino.DebtReserve
-	}
-	return w.route.Kamino.CollateralReserve
+	return w.route.Kamino.DebtReserve
 }
 
 type roomUpdate struct {
@@ -44,30 +38,15 @@ type roomUpdate struct {
 }
 
 func roomOf(w roomWatch, account ConfirmedAccount, now int64) (room uint64, usd float64, open bool, ok bool) {
-	if w.debt {
-		debt, err := decodeKaminoReserve(account, w.route.Kamino.DebtMint, w.route.Kamino)
-		if err != nil {
-			return 0, 0, false, false
-		}
-		room, err = kaminoDebtReserveRoom(debt, now)
-		if err != nil {
-			return 0, 0, false, false
-		}
-		return room, reserveUSD(room, debt), kaminoReceiveWithinRoom(room, debt.terms.BorrowFeeSF) >= leverageMinimumBorrowRaw, true
-	}
-	collateral, err := decodeKaminoReserve(account, w.route.Kamino.CollateralMint, w.route.Kamino)
-	if err != nil || collateral.totalLiquiditySF == nil {
-		return 0, 0, false, false
-	}
-	deposited, err := ceilScaledBigFraction(collateral.totalLiquiditySF)
+	debt, err := decodeKaminoReserve(account, w.route.Kamino.DebtMint, w.route.Kamino)
 	if err != nil {
 		return 0, 0, false, false
 	}
-	if collateral.depositLimitRaw > deposited {
-		room = collateral.depositLimitRaw - deposited
+	room, err = kaminoDebtReserveRoom(debt, now)
+	if err != nil {
+		return 0, 0, false, false
 	}
-	usd = reserveUSD(room, collateral)
-	return room, usd, usd >= float64(leverageMinimumBorrowRaw)/1e6, true
+	return room, reserveUSD(room, debt), kaminoReceiveWithinRoom(room, debt.terms.BorrowFeeSF) >= leverageMinimumBorrowRaw, true
 }
 
 func reserveUSD(raw uint64, r decodedKaminoReserve) float64 {
@@ -82,12 +61,12 @@ func reserveUSD(raw uint64, r decodedKaminoReserve) float64 {
 func leverageRoomWatches(o Observation) []roomWatch {
 	var out []roomWatch
 	index := map[roomKey]int{}
-	add := func(lane string, debt, leverage bool) {
+	add := func(lane string, leverage bool) {
 		l, ok := findEarnLane(lane)
 		if !ok || l.exitOnly {
 			return
 		}
-		w := roomWatch{lane: lane, route: l.route, debt: debt, leverage: leverage}
+		w := roomWatch{lane: lane, route: l.route, leverage: leverage}
 		if i, seen := index[w.key()]; seen {
 			out[i].leverage = out[i].leverage || leverage
 			return
@@ -97,7 +76,7 @@ func leverageRoomWatches(o Observation) []roomWatch {
 	}
 	for _, lane := range heldLaneLeverage(o) {
 		below := lane.targeted && lane.gap > 0
-		add(lane.lane, true, below)
+		add(lane.lane, below)
 	}
 	return out
 }

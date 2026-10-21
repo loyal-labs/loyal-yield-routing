@@ -337,11 +337,8 @@ func (e *events) roomObserved(u roomUpdate) {
 	if e == nil {
 		return
 	}
-	if u.watch.debt && e.facts != nil && !math.IsNaN(u.roomUSD) {
+	if e.facts != nil && !math.IsNaN(u.roomUSD) {
 		e.facts.BackyardLeverageRoom(e.vault, u.watch.lane, u.roomUSD)
-	}
-	if !u.watch.debt {
-		return
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

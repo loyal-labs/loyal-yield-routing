@@ -1,7 +1,6 @@
 package backyard
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
 	"math/big"
@@ -104,10 +103,7 @@ func overflowRoom(accounts []ConfirmedAccount, overflow RuntimeRoute) (uint64, i
 	if err != nil {
 		return 0, 0, err
 	}
-	if len(debtAccount.Data) < kaminoReserveConfigOffset+48 {
-		return 0, 0, fmt.Errorf("overflow debt reserve config is truncated")
-	}
-	receive := kaminoReceiveWithinRoom(room, binary.LittleEndian.Uint64(debtAccount.Data[kaminoReserveConfigOffset+40:]))
+	receive := kaminoReceiveWithinRoom(room, debt.terms.BorrowFeeSF)
 	end, err := observedDebtTermEnd(accounts, overflow)
 	if err != nil {
 		return 0, 0, err

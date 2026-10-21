@@ -86,6 +86,7 @@ func (p lanePricer) setupMicros(ctx context.Context, route RuntimeRoute, blockha
 type lanePrices struct {
 	collateral, debt, usdc           [16]byte
 	collateralDecimals, debtDecimals uint8
+	debtBorrowFeeSF                  uint64
 }
 
 func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrices, error) {
@@ -110,7 +111,7 @@ func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrice
 		return lanePrices{}, err
 	}
 	return lanePrices{collateral: collateral.marketPriceSF, debt: debt.marketPriceSF, usdc: usdc.marketPriceSF,
-		collateralDecimals: collateral.mintDecimals, debtDecimals: debt.mintDecimals}, nil
+		collateralDecimals: collateral.mintDecimals, debtDecimals: debt.mintDecimals, debtBorrowFeeSF: debt.terms.BorrowFeeSF}, nil
 }
 
 func (p lanePrices) collateralMicros(raw uint64) (int64, error) {
@@ -310,7 +311,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		return q, err
 	}
 	q.DepositValueRaw = uint64(depositValue)
-	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
+	rate := prices.debtBorrowFeeSF
 	debtLeft, depositLeft := room, depositRoom-min(deposited, depositRoom)
 	collateralValue, debtValue := float64(depositValue), 0.0
 	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)

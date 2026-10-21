@@ -88,36 +88,12 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	if _, accepted := history[request.ID]; s.SquadsIdleRaw > 0 && !accepted {
 		return result, nil, nil
 	}
-	if s.SquadsIdleRaw == 0 && (s.PostMutationNAVRequired || s.CapitalMutated || s.LastReportAgeSeconds >= 60 || s.VoltrIdleRaw < request.EquityRaw || Decide(s).Action == ReportNAV) {
+	if s.SquadsIdleRaw == 0 && (s.PostMutationNAVRequired || s.CapitalMutated || s.LastReportAgeSeconds >= capitalMutationReportAgeSeconds || s.VoltrIdleRaw < request.EquityRaw || Decide(s).Action == ReportNAV) {
 		return result, nil, nil
 	}
-	// Candidate validity includes current market data, capacity, bounded full
-	// move costs and borrow terms. Only economic benefit/persistence is bypassed,
-	// explicitly and exclusively for this one operator-funded acceptance attempt.
-	valid := false
-	for _, candidate := range result.Candidates {
-		if candidate.SourceLane == "" && candidate.Lane == request.Lane && candidate.CostsKnown && candidate.BlockedReason == "" {
-			valid = true
-		}
-	}
-	if !valid {
-		return result, nil, nil
-	}
-	var chosen *MoveQuote
-	for i := range input.Quotes {
-		q := input.Quotes[i]
-		if q.DestinationLane == request.Lane && q.SourceLane == s.RouteLane && q.RotateFrom == "" && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
-			if chosen != nil {
-				return result, nil, budgetHold(duplicateMoveQuote)
-			}
-			chosen = &q
-		}
-	}
-	if chosen == nil {
-		return result, nil, nil
-	}
-	if chosen.CostRaw < 0 || chosen.CostRaw >= chosen.EquityRaw || chosen.MinimumIdleRaw < uint64(chosen.EquityRaw) || !chosen.validBorrow() || !chosen.storedWindowValid() || !sha256Pattern.MatchString(chosen.EvidenceID) {
-		return result, nil, fmt.Errorf("invalid_selector_entry")
+	chosen, err := pilotCanaryQuote(input, result, func(q MoveQuote) bool { return q.SourceLane == s.RouteLane })
+	if err != nil || chosen == nil {
+		return result, nil, err
 	}
 	result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ENTER", "operator_acceptance_not_economic_recommendation", request.Lane, request.EquityRaw, chosen
 	return result, &pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, QuoteEvidenceID: chosen.EvidenceID}, nil
@@ -129,36 +105,18 @@ func selectPilotCanaryRotation(input SelectorInput, result SelectorResult, histo
 	if !containsLane(held, request.SourceLane) || containsLane(held, request.Lane) || Decide(s).Action == ReportNAV {
 		return result, nil, nil
 	}
-	valid := false
-	for _, candidate := range result.Candidates {
-		if candidate.SourceLane == request.SourceLane && candidate.Lane == request.Lane && candidate.CostsKnown && candidate.BlockedReason == "" {
-			valid = true
-		}
-	}
 	var source *Snapshot
 	for i := range input.Lanes {
 		if input.Lanes[i].RouteLane == request.SourceLane {
 			source = &input.Lanes[i]
 		}
 	}
-	if !valid || source == nil {
+	if source == nil {
 		return result, nil, nil
 	}
-	var chosen *MoveQuote
-	for i := range input.Quotes {
-		q := input.Quotes[i]
-		if q.RotateFrom == request.SourceLane && q.DestinationLane == request.Lane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
-			if chosen != nil {
-				return result, nil, budgetHold(duplicateMoveQuote)
-			}
-			chosen = &q
-		}
-	}
-	if chosen == nil {
-		return result, nil, nil
-	}
-	if chosen.CostRaw < 0 || chosen.CostRaw >= chosen.EquityRaw || chosen.MinimumIdleRaw < uint64(chosen.EquityRaw) || !chosen.validBorrow() || !chosen.storedWindowValid() || !sha256Pattern.MatchString(chosen.EvidenceID) {
-		return result, nil, fmt.Errorf("invalid_selector_entry")
+	chosen, err := pilotCanaryQuote(input, result, func(MoveQuote) bool { return true })
+	if err != nil || chosen == nil {
+		return result, nil, err
 	}
 	receipt := pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, SourceRelease: newSourceRelease(*source, request.EquityRaw)}
 	if prior, accepted := history[request.ID]; accepted {
@@ -168,4 +126,34 @@ func selectPilotCanaryRotation(input SelectorInput, result SelectorResult, histo
 	result.Action, result.Reason, result.SourceLane, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ROTATE", "operator_acceptance_not_economic_recommendation", request.SourceLane, request.Lane, request.EquityRaw, chosen
 	result.SourceRelease = receipt.SourceRelease
 	return result, &receipt, nil
+}
+
+func pilotCanaryQuote(input SelectorInput, result SelectorResult, fromSource func(MoveQuote) bool) (*MoveQuote, error) {
+	request, s := input.canaryRequest, input.Snapshot
+	valid := false
+	for _, candidate := range result.Candidates {
+		if candidate.SourceLane == request.SourceLane && candidate.Lane == request.Lane && candidate.CostsKnown && candidate.BlockedReason == "" {
+			valid = true
+		}
+	}
+	if !valid {
+		return nil, nil
+	}
+	var chosen *MoveQuote
+	for i := range input.Quotes {
+		q := input.Quotes[i]
+		if q.RotateFrom == request.SourceLane && fromSource(q) && q.DestinationLane == request.Lane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
+			if chosen != nil {
+				return nil, budgetHold(duplicateMoveQuote)
+			}
+			chosen = &q
+		}
+	}
+	if chosen == nil {
+		return nil, nil
+	}
+	if chosen.CostRaw < 0 || chosen.CostRaw >= chosen.EquityRaw || chosen.MinimumIdleRaw < uint64(chosen.EquityRaw) || !chosen.validBorrow() || !chosen.storedWindowValid() || !sha256Pattern.MatchString(chosen.EvidenceID) {
+		return nil, fmt.Errorf("invalid_selector_entry")
+	}
+	return chosen, nil
 }
