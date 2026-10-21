@@ -1,3 +1,12 @@
+// The post archive half of overrides/blog-data.ts. It lives in its own module
+// so the markdown stays out of the entry chunk: blog-data.ts reaches this file
+// only through a dynamic import inside its async functions, so Vite keeps the
+// ~145 KB of post bodies in one lazy chunk that /blog and its slugs pull and
+// the other pages never download.
+//
+// The glob pattern walks from src/overrides/ to apps/web's public/blog, whose
+// contents Vite also copies into dist verbatim (publicDir), so every post body
+// parsed here and every image it references ships in the build.
 import yaml from "js-yaml";
 import { z } from "zod";
 
