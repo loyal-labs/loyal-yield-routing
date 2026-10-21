@@ -1,8 +1,3 @@
-/**
- * One meaningful pre-install Jupiter proof: create the packed prefix policy,
- * then execute its exact USDC->PRIME v0+ALT Squads payload in Helius's
- * stateful signed-unsent simulator.  This never sends a transaction.
- */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

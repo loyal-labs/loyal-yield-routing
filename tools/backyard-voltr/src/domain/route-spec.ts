@@ -38,12 +38,6 @@ export type PartnerStrategyGraphIdentity = Readonly<{
   }>;
 }>;
 
-/**
- * The product-level four-reserve allowlist. Market, farm, Scope, vault and
- * obligation identities are deliberately not copied here: Chunk 0 resolves
- * them from confirmed KLend account bytes and freezes them only after the live
- * compatibility verifier passes.
- */
 export const PARTNER_STRATEGY_CANDIDATES = [
   {
     id: "main",
@@ -63,7 +57,6 @@ export const PARTNER_STRATEGY_CANDIDATES = [
   },
 ] as const satisfies readonly PartnerStrategyCandidate[];
 
-/** Discovery-time identities frozen after the first confirmed four-market probe. */
 export const PARTNER_SCOPE_PROGRAM = address(
   "HFn8GnPADiny6XqUoWE8uRPPxb29ikn4yTuPa9MF2fWJ",
 );
@@ -80,11 +73,6 @@ export const PARTNER_LOOKUP_TABLE_COMPATIBILITY_IDENTITY = {
     "901173cf1cc0bafa9152c66425eb5a4c05819cbdfa742bc9c489d4fa167157c5",
 } as const;
 
-/**
- * Immutable graph identities discovered once and frozen before any four-market
- * policy generation. Mutable reserve economics (rates, balances, refresh slots,
- * oracle values, and account-data hashes) deliberately do not belong here.
- */
 export const PARTNER_FOUR_MARKET_STRATEGIES = [
   {
     id: "main",

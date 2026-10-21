@@ -5,9 +5,6 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
-// This app renders apps/web's components unchanged; apps/web stays the Next
-// app Vercel serves. Everything Next-specific those components import is
-// answered here: next/* by src/next-compat, Node-only modules by src/overrides.
 const here = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 const nextApp = here("../web/");
 
@@ -22,8 +19,6 @@ const compat = {
   "server-only": here("src/next-compat/server-only.ts"),
 };
 
-// apps/web modules that read the filesystem at request time, keyed by their
-// absolute path, replaced by a build-time equivalent.
 const overrides: Record<string, string> = {
   [`${nextApp}src/features/blog/data.ts`]: here("src/overrides/blog-data.ts"),
 };
@@ -40,7 +35,6 @@ function overridesPlugin(): Plugin {
   };
 }
 
-// Next inlines NEXT_PUBLIC_* into client code and nothing else.
 const publicEnv = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => key.startsWith("NEXT_PUBLIC_")),
 );

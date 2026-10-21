@@ -29,7 +29,6 @@ import type {
 import type { ReserveGraph } from "./voltr.js";
 
 const MAINNET_GENESIS_HASH = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
-/** One prepared wire is submitted exactly once; recovery is read-only by its expected signature. */
 export const MAX_IDENTICAL_SUBMISSION_ATTEMPTS = 1;
 const IDENTICAL_SUBMISSION_STATUS_POLLS = 4;
 const IDENTICAL_SUBMISSION_STATUS_POLL_MS = 250;
@@ -154,10 +153,6 @@ function snapshot(
   };
 }
 
-/**
- * The only conversion boundary between kit-native domain/builders and legacy
- * web3.js transaction/RPC APIs required by the pinned external SDK stack.
- */
 export function toWeb3Instruction(instruction: Instruction): TransactionInstruction {
   return new TransactionInstruction({
     programId: new PublicKey(instruction.programAddress),
@@ -287,11 +282,6 @@ function decodeReserveGraphObservation(input: Readonly<{
   };
 }
 
-/**
- * Read all candidate reserves from one bank context. Row-level failures are
- * retained so a compatibility matrix reports the first real incompatibility
- * instead of aborting before the remaining exact reserves are inspected.
- */
 export async function loadReserveGraphs(
   rpcUrl: string,
   route: PartnerRouteSpec,
@@ -458,7 +448,6 @@ export async function confirmedSnapshots(
   return snapshotsAtCommitment(rpcUrl, addresses, "confirmed", minimumContextSlot);
 }
 
-/** Read a confirmed bank timestamp for an already observed slot. */
 export async function confirmedBlockTime(
   rpcUrl: string,
   slot: number,
@@ -471,7 +460,6 @@ export async function confirmedBlockTime(
   return value;
 }
 
-/** Read the finalized bank timestamp for an already observed slot. */
 export async function finalizedBlockTime(
   rpcUrl: string,
   slot: number,
@@ -484,7 +472,6 @@ export async function finalizedBlockTime(
   return value;
 }
 
-/** Return the cluster's current rent-exempt balance for an account layout. */
 export async function rentExemptionLamports(
   rpcUrl: string,
   dataLength: number,
@@ -495,7 +482,6 @@ export async function rentExemptionLamports(
   return new Connection(rpcUrl, "finalized").getMinimumBalanceForRentExemption(dataLength);
 }
 
-/** Load a previously finalized, successful transaction without reducing it to logs. */
 export async function finalizedTransaction(
   rpcUrl: string,
   signature: string,
@@ -512,7 +498,6 @@ export async function finalizedTransaction(
   return transaction;
 }
 
-/** Load a confirmed, successful transaction without reducing it to logs. */
 export async function confirmedTransaction(
   rpcUrl: string,
   signature: string,
@@ -534,7 +519,6 @@ export async function confirmedTransaction(
   return transaction;
 }
 
-/** Load the finalized logs for a previously finalized runtime transaction. */
 export async function finalizedTransactionLogs(
   rpcUrl: string,
   signature: string,
@@ -603,7 +587,6 @@ export async function prepareSignedV0Transaction(input: Readonly<{
   additionalSigners?: readonly SigningMaterial[];
   instructions: readonly Instruction[];
   lookupTableAddresses?: readonly string[];
-  /** Full protected prestate set; simulation post-account return is capped at 31. */
   prestateAddresses?: readonly string[];
   inspectedAddresses: readonly string[];
   minimumContextSlot?: number;
@@ -756,9 +739,7 @@ type SettledPreparedTransaction = Readonly<{
   err: unknown;
   feeLamports: number | null;
   logs: readonly string[];
-  /** Token deltas resolved against this transaction's static keys and ALT addresses. */
   tokenDeltas: readonly Readonly<{ address: string; mint: string; deltaRaw: string }>[];
-  /** Lamport deltas resolved against this transaction's complete account-key list. */
   lamportDeltas: readonly Readonly<{ address: string; deltaRaw: string }>[];
 }>;
 
@@ -813,8 +794,6 @@ async function sendPreparedAtCommitment(
       let returnedSignature: string | null = null;
       let submissionError: string | null = null;
       try {
-        // Every call submits the same immutable signed bytes. RPC-level retries
-        // remain disabled; this loop is the bounded provider recovery fence.
         returnedSignature = await connection.sendRawTransaction(prepared.serializedTransaction, {
           skipPreflight: false,
           preflightCommitment: commitment,

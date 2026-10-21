@@ -99,8 +99,6 @@ if [ "$family" = backyard ]; then
 	[ -n "$dbcred" ] || fail "no BACKYARD_DATABASE_URL in $unit's LoadCredentialEncrypted"
 fi
 if [ "$family" = web ]; then
-	# The up check talks to the unit itself; its address comes from the unit's
-	# own lines, as the Backyard credential above.
 	webaddr=$(systemctl cat "$unit" |
 		sed -n 's/^Environment=LOYAL_WEB_ADDRESS=\([^ ]*\)$/\1/p' | tail -n 1)
 	[ -n "$webaddr" ] || fail "no LOYAL_WEB_ADDRESS in $unit; cannot check /readyz"
@@ -145,9 +143,6 @@ fi
 
 backup=/root/$unit-40-verified-release.conf.$prev.bak
 rollback() {
-	# The previous Backyard release must not inherit a row the new one
-	# signed: it may not know how to send it, and it decides nothing while
-	# the row stands.
 	systemctl stop "$unit" || true
 	count=$(in_flight || echo error)
 	if [ "$count" != 0 ]; then
@@ -171,10 +166,6 @@ fi
 say "starting $unit ($sha)"
 systemctl start "$unit" || true
 
-# Backyard is up when this start logged its worker start under the new
-# release and has not restarted (an explicit start resets NRestarts).
-# Retail and the observer are up when they are still active with no restart
-# 20 s after the start.
 started=no
 if [ "$family" = backyard ]; then
 	deadline=$(($(date +%s) + 60))
@@ -203,8 +194,6 @@ else
 	up="stay active without restarting for 20 s"
 fi
 
-# web answers for itself: the binary must serve /readyz with its own release,
-# not just stay up (an old release that never restarts stays up too).
 if [ "$family" = web ] && [ "$started" = yes ]; then
 	say "waiting for http://$webaddr/readyz to name $sha (up to 30 s)"
 	deadline=$(($(date +%s) + 30))

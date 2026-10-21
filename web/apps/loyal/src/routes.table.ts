@@ -1,13 +1,8 @@
-// Every page and layout of apps/web src/app, and the route that renders it
-// here. The root layout is src/routes/__root.tsx. scripts/web/gen-routes.ts
-// scaffolds a missing route file from a row and, with --check, fails when a
-// row has no route file or a Next page has no row.
-
 export type Owner = "G2" | "G3" | "G4";
 
 export type RouteRow = {
-  next: string; // under apps/web/src/app
-  path: string; // TanStack path
+  next: string;
+  path: string;
   kind: "page" | "layout";
   host: "app" | "site";
   owner: Owner;

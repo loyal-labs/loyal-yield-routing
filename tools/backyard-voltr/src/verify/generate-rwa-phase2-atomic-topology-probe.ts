@@ -1,12 +1,3 @@
-/**
- * Measures the smallest honest pre-install Phase-2 topology:
- *
- *   signed PolicyCreate + signed executePolicyPayloadSync
- *
- * It is deliberately a probe, not Phase-2 simulation evidence. A packet that
- * cannot fit is recorded as an infeasible topology and the command stops
- * before simulation or mutation generation. Nothing in this file broadcasts.
- */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

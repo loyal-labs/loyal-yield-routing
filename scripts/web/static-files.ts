@@ -39,7 +39,6 @@ Bun.plugin({
 
 process.chdir(webApp);
 
-// One MetadataRoute.Sitemap entry, as apps/web's sitemap.ts returns it.
 type SitemapEntry = {
   url: string;
   lastModified?: string | Date;

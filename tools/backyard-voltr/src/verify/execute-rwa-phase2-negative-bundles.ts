@@ -1,10 +1,3 @@
-/**
- * Signed-but-unsent Phase-2 negative policy probes.
- *
- * This command only calls Helius `simulateBundle`; it contains no send or
- * broadcast path.  Each bundle first creates the exact artifact prefix in the
- * simulation bank, then sends one deliberately-invalid Squads execution.
- */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -297,9 +290,6 @@ function extraInstructionOuter(
   delegated: PublicKey,
 ): TransactionInstruction {
   const compiled = compileInner(canonical);
-  // The encoded inner vector declares two instructions while the policy has
-  // one constraint index. The synthetic second record uses the existing
-  // K-Lend program and no accounts, so Squads rejects on count before CPI.
   const twoInstructions = Buffer.concat([
     Buffer.from([2]),
     compiled.bytes.subarray(1),

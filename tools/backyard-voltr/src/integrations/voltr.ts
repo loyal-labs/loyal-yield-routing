@@ -237,7 +237,6 @@ const INSTANT_WITHDRAW_LABELS = [
   "systemProgram",
 ] as const;
 
-/** The live Kamino account graph needed by the Voltr adaptor. */
 export type ReserveGraph = Readonly<{
   reserve: Address;
   lendingMarket: Address;
@@ -487,10 +486,6 @@ export type VoltrRouteBuilder = Readonly<{
   }>;
 }>;
 
-/**
- * Builds every supported Voltr instruction from one route graph. No RPC,
- * web3.js, signer secret, or transaction compilation is performed here.
- */
 export async function createVoltrRouteBuilder(
   route: PartnerRouteSpec,
   graph: ReserveGraph,
@@ -561,8 +556,6 @@ export async function createVoltrRouteBuilder(
           lockedProfitDegradationDuration: route.vaultConfiguration.lockedProfitDegradationDurationSeconds,
           redemptionFee: route.vaultConfiguration.redemptionFeeBps,
           issuanceFee: route.vaultConfiguration.issuanceFeeBps,
-          // This is intentionally sourced from RouteSpec, never from an SDK
-          // default or a caller-provided CLI value.
           withdrawalWaitingPeriod: route.vaultConfiguration.withdrawalWaitingPeriodSeconds,
           name: route.vaultConfiguration.name,
           description: route.vaultConfiguration.description,

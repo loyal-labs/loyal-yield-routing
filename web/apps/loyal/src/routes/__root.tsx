@@ -12,11 +12,6 @@ import { createPublicEnv } from "@/lib/core/config/public";
 
 import { headFromMetadata } from "../next-compat/metadata";
 
-// apps/web src/app/layout.tsx, minus <html>/<body> (index.html) and the
-// server-side env read: process.env here is the NEXT_PUBLIC_* set Vite inlines.
-// Captcha is the one field layout.tsx derives from a server secret (CAP_SECRET);
-// the server that verifies it is the forwarded /api upstream, so a deployed
-// build always shows the widget.
 const resolvedEnv = createPublicEnv(process.env);
 const publicEnv =
   resolvedEnv.captcha.mode === "misconfigured"

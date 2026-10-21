@@ -1,11 +1,3 @@
-/**
- * Phase 2 is deliberately verified independently from the Phase 1 lifecycle.
- *
- * This file does not compile policies, resolve accounts, sign packets, simulate,
- * or install anything.  It is the fail-closed consumer of those producers.  A
- * future producer may change implementation, but it must emit the evidence
- * shapes below before Phase 2 can be called ready.
- */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -199,7 +191,6 @@ function negativeSimulationMutation(row: Json, name: (typeof NEGATIVE_MUTATIONS)
     && bundles.every((bundle) => signedUnsentNegativeBundle(bundle, compiledSha));
 }
 
-/** Returns a JSON-safe PASS/FAIL document. Missing evidence is FAIL, never BLOCKED. */
 export function verifyPhaseTwoAuthority(): RecordJson {
   const failures: Failure[] = [];
   const catalog = readJson(CATALOG, failures);

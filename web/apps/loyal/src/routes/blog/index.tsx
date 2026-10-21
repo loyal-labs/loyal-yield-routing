@@ -13,7 +13,6 @@ const PAGE_DESCRIPTION =
   "Notes from the Loyal team on Smart Accounts, stablecoin yield, and self-custody on Solana.";
 const OG_IMAGE = "/og-image.png";
 
-/** Parse the raw `?page=` value into a positive integer, defaulting to 1. */
 function parsePage(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
@@ -28,11 +27,9 @@ function rawPage(value: unknown): string | undefined {
     : undefined;
 }
 
-// apps/web src/app/blog/page.tsx generateMetadata, on loader data instead of a
-// resolved searchParams promise.
 function blogMetadata(pageNumber: number): Metadata {
-  // Each paginated page self-canonicalizes (page 2 -> /blog?page=2), which is
-  // the SEO-correct pattern for a series rather than canonicalizing back to /blog.
+  // Each paginated page self-canonicalizes (page 2 -> /blog?page=2), the
+  // SEO-correct pattern for a series, never canonicalized back to /blog.
   const canonical = pageNumber > 1 ? `/blog?page=${pageNumber}` : "/blog";
   const title = pageNumber > 1 ? `Blog – Page ${pageNumber} | Loyal` : PAGE_TITLE;
 
@@ -78,12 +75,9 @@ const breadcrumbJsonLd = {
   ],
 };
 
-// apps/web src/app/blog/page.tsx: the async page becomes a loader here and the
-// component renders its body on the loaded page of posts.
 function BlogIndexRoute() {
   const { posts, page: currentPage, totalPages } = Route.useLoaderData();
 
-  // Blog collection schema so AI engines can enumerate the posts on this page.
   const blogJsonLd = {
     "@context": "https://schema.org",
     "@type": "Blog",
@@ -106,7 +100,6 @@ function BlogIndexRoute() {
 
   return (
     <main className="min-h-screen overflow-x-clip bg-white text-black">
-      {/* JSON-LD as script children (XSS-safe; React escapes <>&) — schema has no such chars */}
       <script type="application/ld+json">
         {JSON.stringify(breadcrumbJsonLd)}
       </script>

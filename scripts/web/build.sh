@@ -10,7 +10,6 @@ root=$(git rev-parse --show-toplevel)
 out=${1:-$root/bin/loyal-web}
 
 (cd "$root/web/apps/loyal" && bun install --frozen-lockfile >/dev/null && bun run build)
-# sitemap.xml, llms.txt, llms-full.txt: Next route handlers, written as files.
 (cd "$root/web/apps/loyal" && bun "$root/scripts/web/static-files.ts" "$root/web/apps/loyal/dist")
 rsync -a --delete --exclude .keep "$root/web/apps/loyal/dist/" "$root/go/workers/internal/webserve/dist/"
 (cd "$root/go/workers" && GOTOOLCHAIN=local go build -o "$out" ./cmd/loyal-web)

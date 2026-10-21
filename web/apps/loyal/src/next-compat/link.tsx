@@ -11,11 +11,6 @@ export type LinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & 
 
 export type HrefKind = "internal" | "external";
 
-/**
- * Next Link's routing decision: mailto/tel/other schemes, other origins,
- * `#hash`-only and empty hrefs are plain anchors; relative paths and
- * same-origin URLs navigate client-side. `origin` is injectable for tests.
- */
 export function classifyHref(href: LinkProps["href"], origin: string): { kind: HrefKind; url: string } {
   const url = typeof href === "string" ? href : stringifyHrefObject(href);
   if (url === "" || url.startsWith("#")) return { kind: "external", url };
@@ -30,18 +25,12 @@ export function classifyHref(href: LinkProps["href"], origin: string): { kind: H
 
 function stringifyHrefObject(href: Exclude<LinkProps["href"], string>): string {
   const query = href.query ? `?${new URLSearchParams(href.query)}` : "";
-  // Next's UrlObject hash carries its '#'; tolerate the bare word too.
   const hash = href.hash ? (href.hash.startsWith("#") ? href.hash : `#${href.hash}`) : "";
   return `${href.pathname ?? ""}${query}${hash}`;
 }
 
 const MODIFIER_KEYS = ["metaKey", "ctrlKey", "shiftKey", "altKey"] as const;
 
-// In-app hrefs go through TanStack Router (no page reload); everything the
-// browser should own — other origins, `#hash`-only, mailto:, tel:,
-// target="_blank", download, modifier-clicks — stays a plain anchor. All
-// anchor props pass through; the user's onClick runs before navigation so
-// preventDefault still wins.
 export default function Link({ href, replace, scroll, prefetch, onClick, onMouseEnter, onFocus, ...rest }: LinkProps) {
   const router = useTanstackRouter();
   const { kind, url } = classifyHref(href, window.location.origin);
@@ -61,7 +50,6 @@ export default function Link({ href, replace, scroll, prefetch, onClick, onMouse
 
   if (!navigates) return <a href={url} onClick={onClick} onMouseEnter={onMouseEnter} onFocus={onFocus} {...rest} />;
 
-  // Next preloads on intent unless prefetch is explicitly false.
   const preload = () => {
     if (prefetch === false) return;
     router.preloadRoute<string, string>({ href: url }).catch(() => {});
