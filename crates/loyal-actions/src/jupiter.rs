@@ -142,12 +142,22 @@ impl JupiterCrossMintSourceShard {
     }
 }
 
+const _: () = {
+    let mut index = 0;
+    while index < EARN_STABLECOINS.len() {
+        assert!(
+            EARN_STABLECOINS[index].decimals == 6,
+            "the cross-mint cap is one base-unit figure for every source mint"
+        );
+        index += 1;
+    }
+};
+
 /// Durable cross-mint authority for one disjoint source-mint shard.
 ///
 /// Every policy contains both supported Jupiter V2 ExactIn dialects and all
-/// six canonical Earn destination ATAs. All V1 stablecoins have six decimals,
-/// so one user-selected base-unit cap can be applied independently to each
-/// source mint without a value-conversion oracle in the policy.
+/// six canonical Earn destination ATAs. The cap is in base units and applies
+/// independently to each source mint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JupiterCrossMintPolicySpec {
     pub source_shard: JupiterCrossMintSourceShard,

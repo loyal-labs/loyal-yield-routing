@@ -12,8 +12,6 @@ use solana_sdk::{
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const SOLANA_PACKET_BYTES: usize = 1232;
-/// Five market policies, one six-constraint swap policy, and two bridge policies.
-pub const BEST_CASE_PHYSICAL_POLICY_COUNT: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CatalogAccount<T> {
@@ -757,20 +755,16 @@ mod tests {
             create_market_policies(key(11), key(12), key(13), 1, 0, &graph(14, 40)).unwrap();
         let second =
             create_market_policies(key(11), key(12), key(13), 1, 0, &graph(16, 60)).unwrap();
+        let markets = [
+            Market::Onre,
+            Market::Prime,
+            Market::Maple,
+            Market::Auto,
+            Market::Ethena,
+        ];
+        assert_eq!(first.len(), markets.len());
         assert_eq!(
-            first.len() + 1 + 2,
-            BEST_CASE_PHYSICAL_POLICY_COUNT,
-            "five market policies plus swap and two bridges is the best-case eight-policy layout"
-        );
-        assert_eq!(
-            [
-                Market::Onre,
-                Market::Prime,
-                Market::Maple,
-                Market::Auto,
-                Market::Ethena
-            ]
-            .map(|market| lanes()
+            markets.map(|market| lanes()
                 .into_iter()
                 .filter(|lane| lane.market == market)
                 .count()

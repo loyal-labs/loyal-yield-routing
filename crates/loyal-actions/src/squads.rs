@@ -762,9 +762,7 @@ fn exact_program_interaction_constraints(
         .collect()
 }
 
-/// Atomically installs a full-permission Settings signer before removing the
-/// current signer. The add-first order prevents a threshold-1 Settings account
-/// from passing through an empty signer set.
+/// Atomically replaces the current Settings signer with a full-permission one.
 pub fn handoff_settings_signer_instruction(
     settings: Pubkey,
     current_signer: Pubkey,
@@ -777,19 +775,7 @@ pub fn handoff_settings_signer_instruction(
     {
         return Err(LoyalActionError::InvalidSettingsHandoff);
     }
-    let actions = vec![
-        SquadsSettingsAction::AddSigner {
-            new_signer: SquadsSmartAccountSigner {
-                key: new_signer,
-                permissions: SquadsPermissions {
-                    mask: SQUADS_FULL_PERMISSIONS_MASK,
-                },
-            },
-        },
-        SquadsSettingsAction::RemoveSigner {
-            old_signer: current_signer,
-        },
-    ];
+    let actions = add_new_signer_then_remove_current(new_signer, current_signer);
 
     Ok(Instruction {
         program_id: SQUADS_SMART_ACCOUNT_PROGRAM_ID,
@@ -802,6 +788,25 @@ pub fn handoff_settings_signer_instruction(
         ],
         data: serialize_settings_actions(actions),
     })
+}
+
+fn add_new_signer_then_remove_current(
+    new_signer: Pubkey,
+    current_signer: Pubkey,
+) -> Vec<SquadsSettingsAction> {
+    vec![
+        SquadsSettingsAction::AddSigner {
+            new_signer: SquadsSmartAccountSigner {
+                key: new_signer,
+                permissions: SquadsPermissions {
+                    mask: SQUADS_FULL_PERMISSIONS_MASK,
+                },
+            },
+        },
+        SquadsSettingsAction::RemoveSigner {
+            old_signer: current_signer,
+        },
+    ]
 }
 
 pub fn decode_settings_signer_handoff_instruction(
