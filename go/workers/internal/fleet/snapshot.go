@@ -109,12 +109,22 @@ type Snapshot struct {
 	Vaults     map[string]VaultFacts
 }
 
+type SlotRate struct {
+	perSecond float64
+	measured  bool
+}
+
+var HoldingsOnly = SlotRate{}
+
+func MeasuredSlotRate(perSecond float64) SlotRate {
+	return SlotRate{perSecond: perSecond, measured: true}
+}
+
 type SnapshotRequest struct {
-	Catalog []ReserveIdentity
-	Vaults  []SnapshotVault
-	// SlotsPerSecond is the measured slot rate; nil reads holdings only.
-	SlotsPerSecond *float64
-	Idle           bool
+	Catalog  []ReserveIdentity
+	Vaults   []SnapshotVault
+	SlotRate SlotRate
+	Idle     bool
 }
 
 func ReadSnapshot(ctx context.Context, reader AccountReader, request SnapshotRequest) (Snapshot, error) {
@@ -149,10 +159,10 @@ func ReadSnapshot(ctx context.Context, reader AccountReader, request SnapshotReq
 			continue
 		}
 		decoded[identity.Address] = reserve
-		if request.SlotsPerSecond == nil {
+		if !request.SlotRate.measured {
 			continue
 		}
-		state, err := DecodeKaminoReserve(account, identity, out.Slot, *request.SlotsPerSecond)
+		state, err := DecodeKaminoReserve(account, identity, out.Slot, request.SlotRate.perSecond)
 		if err != nil {
 			out.Unroutable[identity.Address] = err.Error()
 			continue
@@ -407,7 +417,7 @@ func (c ChainReserves) ReadReserves(ctx context.Context) (MarketSnapshot, error)
 	if err != nil {
 		return MarketSnapshot{}, fmt.Errorf("measured slot rate: %w", err)
 	}
-	snapshot, err := ReadSnapshot(ctx, c.RPC, SnapshotRequest{Catalog: catalog, SlotsPerSecond: &slotsPerSecond})
+	snapshot, err := ReadSnapshot(ctx, c.RPC, SnapshotRequest{Catalog: catalog, SlotRate: MeasuredSlotRate(slotsPerSecond)})
 	if err != nil {
 		return MarketSnapshot{}, err
 	}

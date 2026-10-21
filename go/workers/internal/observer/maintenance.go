@@ -254,7 +254,7 @@ func (m *Maintenance) loadVaults(ctx context.Context, now time.Time) ([]FleetVau
 	for _, identity := range catalog {
 		markets = append(markets, identity.Market)
 	}
-	request := fleet.SnapshotRequest{Catalog: catalog, Idle: true}
+	request := fleet.SnapshotRequest{Catalog: catalog, SlotRate: fleet.HoldingsOnly, Idle: true}
 	for _, e := range entries {
 		if _, err := solana.PublicKeyFromBase58(e.pubkey); err == nil {
 			request.Vaults = append(request.Vaults, fleet.SnapshotVault{Pubkey: e.pubkey, Markets: markets})

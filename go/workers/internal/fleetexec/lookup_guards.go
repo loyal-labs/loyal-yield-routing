@@ -28,7 +28,6 @@ func (i LookupIntent) writerPlan(owner string) fleet.LookupLockPlan {
 	return plan
 }
 
-// Recovery takes no desired-state gate: changing controls cannot revoke a packet.
 func lookupControlState(ctx context.Context, tx pgx.Tx, i LookupIntent) (bool, error) {
 	var paused bool
 	if err := tx.QueryRow(ctx, `SELECT paused FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster=$1`, i.Cluster).Scan(&paused); err != nil {
