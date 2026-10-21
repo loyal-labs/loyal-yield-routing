@@ -345,7 +345,7 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 		prepared, e, err := w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
 		return e.Request, e.ExpectedEffects, prepared, err
 	case OpenRouteStep, DeleverRouteStep:
-		if _, atomic := stepDecision(observation.Snapshot, wireDecision); atomic {
+		if stepKind(wireDecision) != notStep {
 			if w.runtime.prepareStep == nil {
 				return nil, ExpectedEffects{}, observation, budgetHold("step_preparation_unavailable")
 			}

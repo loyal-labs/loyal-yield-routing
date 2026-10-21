@@ -45,7 +45,7 @@ func TestLeverageMovesDecideAtomicSteps(t *testing.T) {
 			if got.Action != DeleverRouteStep || got.Reason != c.reason || got.StrategyKey != lane {
 				t.Fatalf("%s %s: decided %+v (target %+v)", lane, c.reason, got, c.s.Target)
 			}
-			if up, ok := stepDecision(c.s, got); !ok || up {
+			if kind := stepKind(got); kind == notStep || kind == stepUp {
 				t.Fatalf("%s %s: not a down step", lane, c.reason)
 			}
 			if c.reason == releaseReason {

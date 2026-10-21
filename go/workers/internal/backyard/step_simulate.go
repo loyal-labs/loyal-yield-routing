@@ -76,7 +76,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 		}
 		convert = liquidity + st.collateralBalance
 	}
-	evidence, guaranteed, err := assembleStep(ctx, cluster, view, client, manifest, policies, st, map[bool]Action{true: SwapDebtToCollateralStep, false: SwapCollateralToDebtStep}[up], amountRaw, convert, viewSlot)
+	evidence, guaranteed, err := assembleStep(ctx, cluster, view, client, manifest, policies, st, map[bool]StepKind{true: stepUp, false: stepDown}[up], amountRaw, convert, viewSlot)
 	if err != nil {
 		return err
 	}

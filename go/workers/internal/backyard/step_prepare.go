@@ -12,10 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// The hard-LTV down step's reason. A leverage_up or term_keepalive borrow is
-// an up step; debt_zero, leverage_down_partial and (beside debt)
-// withdrawal_release are down steps; overflow_move is a move;
-// exit_withdraw_collateral and a release beside no debt are exits.
 const hardLTVDeleverReason = "hard_ltv_delever"
 
 const (
@@ -30,23 +26,38 @@ const (
 	stepWithdrawMarginBPS = 300
 )
 
-// stepDecision reports whether d is an atomic step of s's lane, and whether
-// it is an up step. An overflow move and an exit are steps that are not up;
-// every DeleverRouteStep is a step.
-func stepDecision(s Snapshot, d Decision) (up bool, ok bool) {
+type StepKind uint8
+
+const (
+	notStep StepKind = iota
+	stepUp
+	stepDown
+	stepMove
+	stepRelease
+	stepExit
+)
+
+func stepKind(d Decision) StepKind {
 	if !earnHeldLane(d.StrategyKey) {
-		return false, false
+		return notStep
 	}
 	switch d.Action {
 	case OpenRouteStep:
-		return true, d.Reason == leverageUpReason || d.Reason == termKeepAliveReason
+		switch d.Reason {
+		case leverageUpReason, termKeepAliveReason:
+			return stepUp
+		}
 	case DeleverRouteStep:
 		switch d.Reason {
-		case hardLTVDeleverReason, debtZeroReason, leverageDownPartialReason, overflowMoveReason, exitWithdrawReason, releaseReason, rotateRepayReason, rotateWithdrawReason:
-			return false, true
+		case hardLTVDeleverReason, debtZeroReason, leverageDownPartialReason, rotateRepayReason:
+			return stepDown
+		case overflowMoveReason:
+			return stepMove
+		case exitWithdrawReason, releaseReason, rotateWithdrawReason:
+			return stepRelease
 		}
 	}
-	return false, false
+	return notStep
 }
 
 func stepDebtToLTVRaw(s Snapshot, ltvBPS int64) int64 {
@@ -217,8 +228,8 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (downSt
 }
 
 func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, client *jupiter.Client, decision Decision, observation Observation) (Observation, StepExecutionEvidence, error) {
-	up, ok := stepDecision(observation.Snapshot, decision)
-	if !ok || rpc == nil || view == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
+	kind := stepKind(decision)
+	if kind == notStep || rpc == nil || view == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, StepExecutionEvidence{}, fmt.Errorf("invalid step evidence request")
 	}
 	prepareStart, s, accounts, v := time.Now(), observation.Snapshot, observation.routeBatch.Accounts, manifest.vault
@@ -233,17 +244,16 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 	if err != nil {
 		return Observation{}, StepExecutionEvidence{}, err
 	}
-	if decision.Reason == overflowMoveReason {
+	switch kind {
+	case stepMove:
 		evidence, err := assembleMove(ctx, rpc, manifest, observation.policies, accounts, st, s, decision)
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
-	}
-	if decision.Reason == exitWithdrawReason || decision.Reason == releaseReason || decision.Reason == rotateWithdrawReason {
+	case stepRelease:
 		evidence, _, err := releaseLeg(ctx, rpc, view, client, manifest, observation.policies, accounts, st, s, decision)
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
-	}
-	if up {
+	case stepUp:
 		borrow := uint64(decision.AmountRaw)
 		if decision.Reason != termKeepAliveReason {
 			if capped, capErr := capacitySizedBorrow(st.position, accounts, route, leverageUpLevel(s)); capErr != nil || borrow > capped || borrow < leverageMinimumBorrowRaw {
@@ -256,7 +266,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		if err != nil {
 			return Observation{}, StepExecutionEvidence{}, err
 		}
-		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapDebtToCollateralStep, borrow, borrow+st.heldDebt(), s.Slot)
+		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, stepUp, borrow, borrow+st.heldDebt(), s.Slot)
 		logStage("prepare_step", prepareStart)
 		return observation, evidence, err
 	}
@@ -269,7 +279,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		return Observation{}, StepExecutionEvidence{}, err
 	}
 	receipts, convert := plan.withdrawReceiptsRaw, plan.convertCollateralRaw
-	evidence, guaranteed, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapCollateralToDebtStep, receipts, convert, s.Slot)
+	evidence, guaranteed, err := assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, stepDown, receipts, convert, s.Slot)
 	if err == nil && full && st.heldDebt()+guaranteed < repay {
 		scaled := new(big.Int).Mul(new(big.Int).SetUint64(convert), new(big.Int).SetUint64(repay-st.heldDebt()))
 		scaled.Mul(scaled, big.NewInt(10_001)).Quo(scaled, new(big.Int).Mul(new(big.Int).SetUint64(guaranteed), big.NewInt(10_000)))
@@ -280,7 +290,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 				if more = min(more, limit, st.position.CollateralDepositedRaw-1); more > receipts {
 					liquidity, redeemErr := st.collateral.redeemLiquidityRaw(more)
 					if redeemErr == nil && liquidity > 0 {
-						evidence, _, err = assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, SwapCollateralToDebtStep, more, liquidity+st.collateralBalance, s.Slot)
+						evidence, _, err = assembleStep(ctx, rpc, view, client, manifest, observation.policies, st, stepDown, more, liquidity+st.collateralBalance, s.Slot)
 					}
 				}
 			}
@@ -300,7 +310,7 @@ func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupi
 		if err != nil {
 			return StepExecutionEvidence{}, 0, err
 		}
-		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, SwapCollateralToDebtStep, plan.withdrawReceiptsRaw, plan.convertCollateralRaw, s.Slot)
+		evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, stepDown, plan.withdrawReceiptsRaw, plan.convertCollateralRaw, s.Slot)
 		return evidence, liquidity + st.collateralBalance - plan.convertCollateralRaw, err
 	}
 	receipts := st.position.CollateralDepositedRaw
@@ -318,22 +328,16 @@ func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupi
 	if st.cash, err = vaultCustodyRaw(manifest.vault, accounts, manifest.vault.cash, bridgeUSDC, bridgeTokenProgram); err != nil {
 		return StepExecutionEvidence{}, 0, err
 	}
-	evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, SwapCollateralToStableStep, receipts, liquidity+st.collateralBalance, s.Slot)
+	evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, stepExit, receipts, liquidity+st.collateralBalance, s.Slot)
 	return evidence, 0, err
 }
 
-// assembleStep is one step of st's lane converting by conversion: Open
-// borrows (up) or withdraws openRaw, the conversion converts convertRaw at
-// the route size the step's other accounts leave, and Close deposits (up) or
-// repays (down) the held destination custody plus the conversion's
-// guaranteed output, which it returns. An exit (collateral to USDC) closes
-// nothing: the output stays in the Squads bridge account. Every leg carries
-// the conversion's blockhash.
-func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, st stepState, conversion Action, openRaw, convertRaw uint64, slot int64) (StepExecutionEvidence, uint64, error) {
+func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, st stepState, kind StepKind, openRaw, convertRaw uint64, slot int64) (StepExecutionEvidence, uint64, error) {
 	v := manifest.vault
 	route := st.route
 	lane := route.Lane
-	up, exit := conversion == SwapDebtToCollateralStep, conversion == SwapCollateralToStableStep
+	up, exit := kind == stepUp, kind == stepExit
+	conversion := map[StepKind]Action{stepUp: SwapDebtToCollateralStep, stepDown: SwapCollateralToDebtStep, stepExit: SwapCollateralToStableStep}[kind]
 	action, openLeg, closeLeg := DeleverRouteStep, kaminoLegWithdraw, kaminoLegRepay
 	sourceHeld, destinationHeld, openLiquidity := st.collateralBalance, st.heldDebt(), uint64(0)
 	if up {

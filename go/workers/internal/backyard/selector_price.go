@@ -165,7 +165,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		return leverageStepCost{}, costOutage("price", err)
 	}
 	st := stepState{route: route, collateral: collateral, slot: uint64(slot), topology: topology}
-	up, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, SwapDebtToCollateralStep, borrowRaw, borrowRaw, slot)
+	up, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, stepUp, borrowRaw, borrowRaw, slot)
 	if err != nil {
 		return leverageStepCost{}, costOutage(stepStage("entry_quote", err), err)
 	}
@@ -175,7 +175,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		return leverageStepCost{}, costOutage("exit_quote", err)
 	}
 	st.topology = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	down, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, SwapCollateralToDebtStep, receipts, bought, slot)
+	down, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, stepDown, receipts, bought, slot)
 	if err != nil {
 		return leverageStepCost{}, costOutage(stepStage("exit_quote", err), err)
 	}
@@ -425,7 +425,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		return q, err
 	}
 	exit, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, stepState{route: route, collateral: reserve, slot: uint64(slot), topology: []string{route.Kamino.CollateralReserve}},
-		SwapCollateralToStableStep, receipts, bought, slot)
+		stepExit, receipts, bought, slot)
 	if err != nil {
 		return q, err
 	}
@@ -618,7 +618,7 @@ func (p lanePricer) releaseMicros(ctx context.Context, o Observation, source Sna
 		if err != nil {
 			return 0, err
 		}
-		step, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, SwapCollateralToDebtStep, plan.withdrawReceiptsRaw, plan.convertCollateralRaw, source.Slot)
+		step, _, err := assembleStep(ctx, p.rpc, p.view, p.client, p.manifest, p.policies, st, stepDown, plan.withdrawReceiptsRaw, plan.convertCollateralRaw, source.Slot)
 		if err != nil {
 			return 0, err
 		}
