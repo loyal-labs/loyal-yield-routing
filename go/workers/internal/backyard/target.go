@@ -8,59 +8,27 @@ import (
 	"time"
 )
 
-// Backyard has one target and one step.
-//
-// target(chain, rates, inputs) is a pure function computed every tick and
-// never stored. Its inputs besides the chain are the lane levels and the
-// operator exits (target_inputs.go) and the selector's latest result (the
-// rates' choice of a lane for the vault's cash, or of a held lane's tranche
-// to rotate into another). For every candidate lane it
-// says where that lane should be, and it names the one lane the next step
-// moves. Its rules, in priority order:
-//
-//  1. hard LTV: a lane at or past the lower of its liquidation threshold -
-//     10 points and its max LTV - 3 points goes back to its level's LTV
-//     (under the brake, when the brake fell to the level);
-//  2. term maturity: term debt under a day from maturity without room for the
-//     keep-alive borrow (or past it) goes to debt 0; under three days with
-//     room, the keep-alive borrow (the minimum up step) restarts the term;
-//  3. the operator exit row: debt 0, and with equity_zero the collateral
-//     leaves as USDC (one exit step: withdraw and swap);
-//  4. custody in flight: collateral waiting for a held lane's next leg goes
-//     first, and debt-mint cash no held lane owes converts toward Voltr;
-//     withdrawal demand: Voltr idle must cover the queue, and the largest
-//     lane frees the rest at its level;
-//  5. the selector's allocation: an overflow lane takes the collateral its
-//     source cannot lever (one atomic move); the vault's cash enters the
-//     selector's current destination, a held lane included; a rotation
-//     releases its tranche from the source as Squads cash, which that rule
-//     then enters (the selector records no new result until it has); with
-//     no destination named, a USDC-debt home lane's step excess joins its
-//     position;
-//  6. the level setting: each lane steps toward its stored level.
-//
-// An ordinary economic target never goes to debt 0: a stored level of 1 is
-// held at 1.5, because borrowing room may not come back. Debt 0 comes only
-// from hard LTV's emergency, term maturity, or the operator exit row.
-//
-// step (Decide) returns the next atomic transaction toward the working lane's
-// target, or a hold whose reason is one of a small set: at_target, no_room,
-// stale. A manual recovery hold stops the route.
+type targetRule string
 
-// Target rules.
 const (
-	ruleHardLTV       = "hard_ltv"
-	ruleTermUnknown   = "term_unknown"
-	ruleTermMaturity  = "term_maturity"
-	ruleTermKeepAlive = "term_keepalive"
-	ruleOperatorExit  = "operator_exit"
-	ruleCustody       = "custody"
-	ruleWithdrawal    = "withdrawal"
-	ruleOverflow      = "overflow"
-	ruleLevel         = "level"
-	ruleRotate        = "rotate"
-	ruleEntry         = "entry"
-	ruleHold          = "at_target"
+	ruleHardLTV       targetRule = "hard_ltv"
+	ruleTermUnknown   targetRule = "term_unknown"
+	ruleTermMaturity  targetRule = "term_maturity"
+	ruleTermKeepAlive targetRule = "term_keepalive"
+	ruleOperatorExit  targetRule = "operator_exit"
+	ruleCustody       targetRule = "custody"
+	ruleWithdrawal    targetRule = "withdrawal"
+	ruleOverflow      targetRule = "overflow"
+	ruleLevel         targetRule = "level"
+	ruleRotate        targetRule = "rotate"
+	ruleEntry         targetRule = "entry"
+	ruleHold          targetRule = "at_target"
+)
+
+const (
+	levelUnchanged float64 = 0
+	levelDebtZero  float64 = 1
+	levelFloor     float64 = 1.5
 )
 
 const (
@@ -82,14 +50,12 @@ const (
 // LaneTarget is where target() puts the working lane this tick, and the rule
 // that put it there.
 type LaneTarget struct {
-	Rule string `json:"rule"`
-	// Level is the leverage the lane sits at: 0 leaves the position as it is,
-	// 1 repays all debt, a level above it is that level's LTV band.
-	Level      float64 `json:"level,omitempty"`
-	UpApproved bool    `json:"upApproved,omitempty"`
-	KeepAlive  bool    `json:"keepAlive,omitempty"`
-	EquityZero bool    `json:"equityZero,omitempty"`
-	Outbound   bool    `json:"outbound,omitempty"`
+	Rule       targetRule `json:"rule"`
+	Level      float64    `json:"level,omitempty"`
+	UpApproved bool       `json:"upApproved,omitempty"`
+	KeepAlive  bool       `json:"keepAlive,omitempty"`
+	EquityZero bool       `json:"equityZero,omitempty"`
+	Outbound   bool       `json:"outbound,omitempty"`
 	// ReleaseRaw is the equity (bridge USDC value) the lane frees at its own
 	// level toward Voltr.
 	ReleaseRaw int64 `json:"releaseRaw,omitempty"`
@@ -140,131 +106,189 @@ func withdrawalShortfallRaw(s Snapshot) int64 {
 	return max(s.WithdrawalDemandRaw-s.VoltrIdleRaw, 0)
 }
 
-// target computes the vault's target over the tick's per-lane views (one per
-// held lane, plus the candidates an overflow or entry may move into, in
-// registry order) and returns the index of the working lane and its target.
+type targetTick struct {
+	lanes     []targetLane
+	in        targetInputs
+	vault     Snapshot
+	shortfall int64
+}
+
+func (k targetTick) outbound() bool { return k.shortfall > 0 }
+
+func storedTarget(l targetLane) LaneTarget {
+	return LaneTarget{Rule: ruleHold, Level: heldLevel(l.s.RouteLane, l.level.Level), UpApproved: l.level.UpApproved && l.level.Level > 1}
+}
+
+var targetRules = [...]func(targetTick) (int, LaneTarget, bool){
+	hardLTVTarget, termTarget, operatorExitTarget, custodyTarget, withdrawalTarget,
+	rotateTarget, overflowTarget, entryTarget, homeEntryTarget, levelTarget, homeHoldTarget,
+}
+
 func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 	if len(views) == 0 {
 		return -1, LaneTarget{}
 	}
-	lanes := make([]targetLane, len(views))
+	tick := targetTick{lanes: make([]targetLane, len(views)), in: in, vault: views[0], shortfall: withdrawalShortfallRaw(views[0])}
 	held := views[0].heldLanes()
 	for i, s := range views {
-		lanes[i] = targetLane{s: s, held: containsLane(held, s.RouteLane), level: in.Levels[s.RouteLane]}
+		tick.lanes[i] = targetLane{s: s, held: containsLane(held, s.RouteLane), level: in.Levels[s.RouteLane]}
 		if exit, ok := in.Exits[s.RouteLane]; ok {
-			lanes[i].exit = &exit
+			tick.lanes[i].exit = &exit
 		}
 	}
-	vault := views[0]
-	stored := func(l targetLane) LaneTarget {
-		return LaneTarget{Rule: ruleHold, Level: heldLevel(l.s.RouteLane, l.level.Level), UpApproved: l.level.UpApproved && l.level.Level > 1}
+	for _, rule := range targetRules {
+		if i, t, ok := rule(tick); ok {
+			return i, t
+		}
 	}
+	return 0, LaneTarget{Rule: ruleHold}
+}
+
+func hardLTVTarget(k targetTick) (int, LaneTarget, bool) {
 	worst, excess := -1, int64(-1)
-	for i, l := range lanes {
+	for i, l := range k.lanes {
 		s := l.s
 		if hard := hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS); l.held && s.HasPosition && s.PositionDebtRaw > 0 && s.LTVBPS >= hard && s.LTVBPS-hard > excess {
 			worst, excess = i, s.LTVBPS-hard
 		}
 	}
-	if worst >= 0 {
-		t := stored(lanes[worst])
-		t.Rule, t.Level = ruleHardLTV, heldLevel(lanes[worst].s.RouteLane, max(lanes[worst].level.Level, 1.5))
-		return worst, t
+	if worst < 0 {
+		return 0, LaneTarget{}, false
 	}
-	shortfall := withdrawalShortfallRaw(vault)
-	outbound := shortfall > 0
-	for i, l := range lanes {
+	t := storedTarget(k.lanes[worst])
+	t.Rule, t.Level = ruleHardLTV, heldLevel(k.lanes[worst].s.RouteLane, max(k.lanes[worst].level.Level, levelFloor))
+	return worst, t, true
+}
+
+func termTarget(k targetTick) (int, LaneTarget, bool) {
+	for i, l := range k.lanes {
 		s := l.s
 		if !l.held || s.PositionDebtRaw <= 0 {
 			continue
 		}
 		if termDebtUnknown(s) {
-			return i, LaneTarget{Rule: ruleTermUnknown}
+			return i, LaneTarget{Rule: ruleTermUnknown}, true
 		}
 		if termDeleverDue(s) {
-			return i, LaneTarget{Rule: ruleTermMaturity, Level: 1}
+			return i, LaneTarget{Rule: ruleTermMaturity, Level: levelDebtZero}, true
 		}
-		if left, ok := termSecondsLeft(s); ok && left < termKeepAliveSeconds && termKeepAliveRoom(s) && (!outbound || left < termDeleverSeconds) {
-			t := stored(l)
+		if left, ok := termSecondsLeft(s); ok && left < termKeepAliveSeconds && termKeepAliveRoom(s) && (!k.outbound() || left < termDeleverSeconds) {
+			t := storedTarget(l)
 			t.Rule, t.KeepAlive = ruleTermKeepAlive, true
-			return i, t
+			return i, t, true
 		}
 	}
-	for i, l := range lanes {
+	return 0, LaneTarget{}, false
+}
+
+func operatorExitTarget(k targetTick) (int, LaneTarget, bool) {
+	for i, l := range k.lanes {
 		s := l.s
 		if l.exit == nil || !l.held {
 			continue
 		}
 		if s.PositionDebtRaw > 0 || (l.exit.EquityZero && s.PositionCollateralRaw > partialWithdrawalDustRaw) {
-			return i, LaneTarget{Rule: ruleOperatorExit, Level: 1, EquityZero: l.exit.EquityZero, Outbound: l.exit.EquityZero}
+			return i, LaneTarget{Rule: ruleOperatorExit, Level: levelDebtZero, EquityZero: l.exit.EquityZero, Outbound: l.exit.EquityZero}, true
 		}
 	}
-	for i, l := range lanes {
+	return 0, LaneTarget{}, false
+}
+
+func custodyTarget(k targetTick) (int, LaneTarget, bool) {
+	for i, l := range k.lanes {
 		inFlight := l.held && laneInFlight(l.s)
-		loose := !inFlight && l.s.DebtIdleRaw > partialWithdrawalDustRaw && (outbound || !debtCashOwed(lanes, l.s))
+		loose := !inFlight && l.s.DebtIdleRaw > partialWithdrawalDustRaw && (k.outbound() || !debtCashOwed(k.lanes, l.s))
 		if !inFlight && !loose {
 			continue
 		}
-		t := stored(l)
-		t.Rule, t.Outbound = ruleCustody, outbound || loose || (l.exit != nil && l.exit.EquityZero)
-		return i, t
+		t := storedTarget(l)
+		t.Rule, t.Outbound = ruleCustody, k.outbound() || loose || (l.exit != nil && l.exit.EquityZero)
+		return i, t, true
 	}
-	if outbound {
-		if gap := shortfall - vault.SquadsIdleRaw; gap > 0 {
-			if i := releaseLane(lanes); i >= 0 {
-				free := gap + max(gap*partialWithdrawalBufferBPS/10_000, partialWithdrawalMinimumBufferRaw)
-				t := stored(lanes[i])
-				t.Rule, t.Outbound, t.ReleaseRaw = ruleWithdrawal, true, min(free, laneReleaseLimitRaw(lanes[i].s))
-				return i, t
-			}
+	return 0, LaneTarget{}, false
+}
+
+func withdrawalTarget(k targetTick) (int, LaneTarget, bool) {
+	if !k.outbound() {
+		return 0, LaneTarget{}, false
+	}
+	if gap := k.shortfall - k.vault.SquadsIdleRaw; gap > 0 {
+		if i := releaseLane(k.lanes); i >= 0 {
+			free := gap + max(gap*partialWithdrawalBufferBPS/10_000, partialWithdrawalMinimumBufferRaw)
+			t := storedTarget(k.lanes[i])
+			t.Rule, t.Outbound, t.ReleaseRaw = ruleWithdrawal, true, min(free, laneReleaseLimitRaw(k.lanes[i].s))
+			return i, t, true
 		}
-		i := max(homeLane(lanes), 0)
-		return i, LaneTarget{Rule: ruleWithdrawal, Outbound: true}
 	}
-	for i, l := range lanes {
-		if repay, withdraw := rotationReleaseStep(in.Entry, l.s); l.held && l.exit == nil && (repay > 0 || withdraw > 0) {
-			if j, _ := entryLane(lanes, in); j < 0 {
-				break
+	return max(homeLane(k.lanes), 0), LaneTarget{Rule: ruleWithdrawal, Outbound: true}, true
+}
+
+func rotateTarget(k targetTick) (int, LaneTarget, bool) {
+	for i, l := range k.lanes {
+		if repay, withdraw := rotationReleaseStep(k.in.Entry, l.s); l.held && l.exit == nil && (repay > 0 || withdraw > 0) {
+			if j, _ := entryLane(k.lanes, k.in); j < 0 {
+				return 0, LaneTarget{}, false
 			}
-			t := stored(l)
+			t := storedTarget(l)
 			t.Rule, t.RepayRaw, t.WithdrawRaw = ruleRotate, repay, withdraw
-			return i, t
+			return i, t, true
 		}
 	}
-	for i, l := range lanes {
-		if lane, e := overflowMove(lanes, i, in); e > 0 {
-			t := stored(l)
+	return 0, LaneTarget{}, false
+}
+
+func overflowTarget(k targetTick) (int, LaneTarget, bool) {
+	for i, l := range k.lanes {
+		if lane, e := overflowMove(k.lanes, i, k.in); e > 0 {
+			t := storedTarget(l)
 			t.Rule, t.MoveRaw, t.MoveTo = ruleOverflow, e, lane
-			return i, t
+			return i, t, true
 		}
 	}
-	if i, raw := entryLane(lanes, in); i >= 0 && (vault.SquadsIdleRaw > 0 || raw > 0 || !anyHeld(lanes)) {
-		t := stored(lanes[i])
+	return 0, LaneTarget{}, false
+}
+
+func entryTarget(k targetTick) (int, LaneTarget, bool) {
+	if i, raw := entryLane(k.lanes, k.in); i >= 0 && (k.vault.SquadsIdleRaw > 0 || raw > 0 || !anyHeld(k.lanes)) {
+		t := storedTarget(k.lanes[i])
 		t.Rule, t.EntryRaw = ruleEntry, raw
-		return i, t
+		return i, t, true
 	}
-	if home := homeLane(lanes); home >= 0 && vault.SquadsIdleRaw > 0 && selectorDestination(in) == "" &&
-		sharedUSDCDebt(lanes[home].s.RouteLane) && lanes[home].s.PositionDebtRaw > 0 {
-		t := stored(lanes[home])
+	return 0, LaneTarget{}, false
+}
+
+func homeEntryTarget(k targetTick) (int, LaneTarget, bool) {
+	if home := homeLane(k.lanes); home >= 0 && k.vault.SquadsIdleRaw > 0 && selectorDestination(k.in) == "" &&
+		sharedUSDCDebt(k.lanes[home].s.RouteLane) && k.lanes[home].s.PositionDebtRaw > 0 {
+		t := storedTarget(k.lanes[home])
 		t.Rule = ruleEntry
-		return home, t
+		return home, t, true
 	}
-	for i, l := range lanes {
-		if !l.held || l.exit != nil || l.level.Level == 0 {
+	return 0, LaneTarget{}, false
+}
+
+func levelTarget(k targetTick) (int, LaneTarget, bool) {
+	for i, l := range k.lanes {
+		if !l.held || l.exit != nil || l.level.Level == levelUnchanged {
 			continue
 		}
-		t := stored(l)
+		t := storedTarget(l)
 		t.Rule = ruleLevel
 		if levelDownDue(l.s, t) || (t.UpApproved && !l.s.BorrowUtilizationBlocked && leverageUpReceive(l.s, t) >= leverageMinimumBorrowRaw) {
-			return i, t
+			return i, t, true
 		}
 	}
-	if home := homeLane(lanes); home >= 0 {
-		t := stored(lanes[home])
-		t.Rule = ruleHold
-		return home, t
+	return 0, LaneTarget{}, false
+}
+
+func homeHoldTarget(k targetTick) (int, LaneTarget, bool) {
+	home := homeLane(k.lanes)
+	if home < 0 {
+		return 0, LaneTarget{}, false
 	}
-	return 0, LaneTarget{Rule: ruleHold}
+	t := storedTarget(k.lanes[home])
+	t.Rule = ruleHold
+	return home, t, true
 }
 
 func homeLane(lanes []targetLane) int {
@@ -322,7 +346,7 @@ func overflowMove(lanes []targetLane, i int, in targetInputs) (lane string, move
 		}
 	}
 	if leverageUpLevel(withLevel(s, l.level.Level)) == 0 || !overflowSourceBorrowClosed(s) || s.OverflowRoom == nil || s.OverflowRoom.DebtRaw < leverageMinimumBorrowRaw ||
-		dest.Level < 1.5 || !dest.UpApproved {
+		dest.Level < levelFloor || !dest.UpApproved {
 		return "", 0
 	}
 	e := overflowEquityRaw(s, dest.Level)
@@ -421,7 +445,7 @@ func rotationLeft(r *SelectorResult, vault Snapshot, lanes []Snapshot) bool {
 
 func levelDownDue(s Snapshot, t LaneTarget) bool {
 	band := leverageLevelLTVBPS(t.Level)
-	return t.Level >= 1.5 && s.HasPosition && s.PositionDebtRaw > 0 && s.LTVBPS > band+leverageUpNearBPS && stepDebtToLTVRaw(s, band) > 0
+	return t.Level >= levelFloor && s.HasPosition && s.PositionDebtRaw > 0 && s.LTVBPS > band+leverageUpNearBPS && stepDebtToLTVRaw(s, band) > 0
 }
 
 func leverageUpReceive(s Snapshot, t LaneTarget) uint64 {
@@ -523,7 +547,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if !s.Trustful && s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
 		return report("post_mutation_nav_due")
 	}
-	if t.Level == 1 && s.PositionDebtRaw > 0 {
+	if t.Level == levelDebtZero && s.PositionDebtRaw > 0 {
 		return d(DeleverRouteStep, debtZeroReason, stepDownMarker)
 	}
 	// Voltr idle already pays the queue: keep the report current for claims.
@@ -591,10 +615,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		return d(DeleverRouteStep, exitWithdrawReason, stepDownMarker), true
 	}
 	if t.ReleaseRaw > 0 {
-		// A release never empties a lane: 90% of its equity or more is the
-		// operator's exit.
-		equity := laneEquityRaw(s)
-		if equity <= 0 || t.ReleaseRaw*10_000 >= equity*partialWithdrawalFullExitBPS || partialWithdrawalReleaseReceipts(s, t.ReleaseRaw) <= 0 {
+		if partialWithdrawalReleaseReceipts(s, t.ReleaseRaw) <= 0 {
 			return d(Hold, holdNoRoom, 0), true
 		}
 		return d(DeleverRouteStep, releaseReason, t.ReleaseRaw), true

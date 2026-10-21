@@ -21,7 +21,7 @@ type holdLog struct {
 // cause or simulation error.
 func (l *holdLog) note(s Snapshot, lane, reason, detail string) {
 	if reason == holdNoRoom {
-		l.events.stepNoRoom(lane, s.Target.Rule)
+		l.events.stepNoRoom(lane, string(s.Target.Rule))
 	}
 	l.events.hold(lane, reason)
 	if lane == l.lane && reason == l.reason {
