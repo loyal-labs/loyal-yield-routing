@@ -14,10 +14,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// CanonicalConstraints is the canonical Earn MAX constraint set over the
-// semantic contract: literal KLend lane pinning for collateral/debt families
-// and Jupiter SharedAccountsRoute lane pinning for swaps. Constraint indexes
-// line up with ConstraintIndexes in policy.go.
 func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (constraints []squads.InstructionConstraintView, err error) {
 	defer func() {
 		if err == nil {
@@ -70,12 +66,12 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 	switch family {
 	case FamilyCollateral:
 		return []squads.InstructionConstraintView{
-			collateralConstraint(boundary, kamino.DepositV2Discriminator),
-			collateralConstraint(boundary, kamino.WithdrawV2Discriminator),
+			collateralDepositIndex:  collateralConstraint(boundary, kamino.DepositV2Discriminator),
+			collateralWithdrawIndex: collateralConstraint(boundary, kamino.WithdrawV2Discriminator),
 		}, nil
 	case FamilyDebt:
 		return []squads.InstructionConstraintView{
-			{
+			debtBorrowIndex: {
 				ProgramID: boundary.klendProgram,
 				AccountConstraints: []squads.AccountConstraintView{
 					pinned(0, boundary.vault),
@@ -85,7 +81,7 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 				},
 				DataConstraints: []squads.DataConstraintView{sliceEquals(kamino.BorrowV2Discriminator)},
 			},
-			{
+			debtRepayIndex: {
 				ProgramID: boundary.klendProgram,
 				AccountConstraints: []squads.AccountConstraintView{
 					pinned(0, boundary.vault),
@@ -98,16 +94,16 @@ func CanonicalConstraints(topology *EarnMaxTopology, family PolicyFamily) (const
 		}, nil
 	case FamilySwap:
 		return []squads.InstructionConstraintView{
-			swapConstraint(boundary,
+			swapUsdToOnycPrimeIndex: swapConstraint(boundary,
 				[]solana.PublicKey{boundary.usdcCustody, boundary.usdsCustody},
 				[]solana.PublicKey{boundary.onycCustody, boundary.primeCustody}),
-			swapConstraint(boundary,
+			swapUsdToPrimeSyrupIndex: swapConstraint(boundary,
 				[]solana.PublicKey{boundary.usdcCustody, boundary.pyusdCustody},
 				[]solana.PublicKey{boundary.primeCustody, boundary.syrupUsdcCustody}),
-			swapConstraint(boundary,
+			swapOnycPrimeToUsdIndex: swapConstraint(boundary,
 				[]solana.PublicKey{boundary.onycCustody, boundary.primeCustody},
 				[]solana.PublicKey{boundary.usdcCustody, boundary.usdsCustody}),
-			swapConstraint(boundary,
+			swapPrimeSyrupToUsdIndex: swapConstraint(boundary,
 				[]solana.PublicKey{boundary.primeCustody, boundary.syrupUsdcCustody},
 				[]solana.PublicKey{boundary.usdcCustody, boundary.pyusdCustody}),
 		}, nil
