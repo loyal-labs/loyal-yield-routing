@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -37,7 +36,7 @@ func NewWorker(config Config, store *Store, client *chain.Client, catalog Reserv
 
 func (w *Worker) runtimeCycle(ctx context.Context) {
 	if err := w.planningCycle(ctx); err != nil {
-		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "errorCategory": "cycle", "error": LogErrorText(err)})
+		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "errorCategory": "cycle", "error": engine.ErrorText(err)})
 		return
 	}
 	w.facts.Progress(engine.FamilyFleet)
@@ -122,27 +121,6 @@ func rejectionCounts(rejections map[int64]string) map[string]int {
 		counts[reason]++
 	}
 	return counts
-}
-
-var (
-	logURLPattern    = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://\S+`)
-	logSecretPattern = regexp.MustCompile(`(?i)(password|api[-_]?key|token|secret)=\S+`)
-)
-
-// LogErrorText is an error's cause for the fleet family's logs: engine
-// ErrorText reduces a *url.Error to its operation and cause, and any other
-// URL- or credential-shaped text an error carries is replaced, because RPC
-// URLs carry their API key. The text is bounded.
-func LogErrorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	text := logURLPattern.ReplaceAllString(engine.ErrorText(err), "<url>")
-	text = logSecretPattern.ReplaceAllString(text, "$1=<redacted>")
-	if len(text) > 500 {
-		text = text[:500]
-	}
-	return text
 }
 
 func logEvent(event map[string]any) {

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
 type ExecutionAdmission struct {
@@ -95,7 +96,7 @@ func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*Ex
 	if errors.Is(err, chain.ErrBehind) {
 		return nil, true, store.ReleaseRevalidationNotYet(ctx, *lease)
 	}
-	reason := LogErrorText(err)
+	reason := engine.ErrorText(err)
 	var replan *CapacityReplan
 	if errors.As(err, &replan) {
 		replanned, replanErr := store.ReplanRevalidation(ctx, *lease)

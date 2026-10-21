@@ -82,11 +82,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		case w.config.OnHealth != nil && err == nil:
 			w.config.OnHealth(nil)
 		case w.config.OnHealth != nil:
-			// Only redacted text leaves the executor: RPC errors can carry
-			// the credential-bearing URL.
-			w.config.OnHealth(fmt.Errorf("fleetexec tick: %s", fleet.LogErrorText(err)))
+			w.config.OnHealth(fmt.Errorf("fleetexec tick: %s", engine.ErrorText(err)))
 		case err != nil:
-			slog.Error("fleetexec tick failed", "error", fleet.LogErrorText(err))
+			slog.Error("fleetexec tick failed", "error", engine.ErrorText(err))
 		}
 		select {
 		case <-ctx.Done():
@@ -117,9 +115,7 @@ func (w *Worker) Tick(ctx context.Context) (err error) {
 				defer w.wg.Done()
 				defer w.landing.Add(-1)
 				if err := w.handleLease(ctx, lease); err != nil && !errors.Is(err, ErrStaleOwner) && !errors.Is(err, context.Canceled) {
-					// ErrorText strips the credential-bearing RPC URL; the row
-					// itself holds the state.
-					slog.Error("fleetexec submission handling failed", "submissionId", lease.Submission.ID, "error", fleet.LogErrorText(err))
+					slog.Error("fleetexec submission handling failed", "submissionId", lease.Submission.ID, "error", engine.ErrorText(err))
 				}
 			}(lease)
 		}
@@ -261,7 +257,7 @@ func reconciliationRetryDelay(attempts int) time.Duration {
 
 func (w *Worker) deferReconciliation(ctx context.Context, lease SubmissionLease, cause error) error {
 	attempts := lease.Submission.AttemptCount
-	detail := fleet.LogErrorText(cause)
+	detail := engine.ErrorText(cause)
 	if err := w.store.DeferSubmission(ctx, lease, reconciliationRetryDelay(attempts), detail); err != nil {
 		return fmt.Errorf("reconciliation defer failed after %s: %w", detail, err)
 	}
