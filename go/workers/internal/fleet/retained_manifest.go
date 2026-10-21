@@ -15,8 +15,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// ALTManifestAddress is the retained durable provisioning row. Its ordinal
-// follows base58 address order, separately from the v1 raw-pubkey hash order.
+// ALTManifestAddress is the retained durable provisioning row.
 type ALTManifestAddress struct {
 	Address, SemanticClass, AccountRole string
 	Ordinal                             int32
@@ -388,10 +387,7 @@ func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, po
 			}
 			records = append(records, ALTManifestAddress{Address: encodeBase58(r.key[:]), SemanticClass: semanticClass, AccountRole: strings.Join(tags, ","), Writable: r.writable})
 		}
-		sort.Slice(records, func(i, j int) bool { return records[i].Address < records[j].Address })
-		for i := range records {
-			records[i].Ordinal = int32(i)
-		}
+		numberInBase58Order(records)
 		if class == 1 {
 			manifest.SharedAddresses = records
 		} else {
@@ -404,4 +400,11 @@ func buildRouteALTManifest(input KaminoSameMintRouteRequest, settings string, po
 	manifest.sourceShared = append([]ALTManifestAddress{}, manifest.SharedAddresses...)
 	manifest.sourceVault = append([]ALTManifestAddress{}, manifest.VaultAddresses...)
 	return manifest, nil
+}
+
+func numberInBase58Order(records []ALTManifestAddress) {
+	sort.Slice(records, func(i, j int) bool { return records[i].Address < records[j].Address })
+	for i := range records {
+		records[i].Ordinal = int32(i)
+	}
 }
