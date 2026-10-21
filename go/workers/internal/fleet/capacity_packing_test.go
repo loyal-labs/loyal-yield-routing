@@ -16,7 +16,7 @@ import (
 func packingReserve(address string, apy, supply, available int64, depositLimit uint64) ReserveState {
 	return ReserveState{ReserveIdentity: ReserveIdentity{Address: address, Market: "market", Mint: USDCMint}, Slot: 500, LastUpdateSlot: 500,
 		SupplyAPYBPS: apy, TotalSupplyRaw: supply, EconomicLifetimeMillis: 600_000, DataHash: "hash:" + address,
-		AvailableLiquidityRaw: &available, DepositLimitRaw: &depositLimit}
+		AvailableLiquidityUSDMicros: &available, DepositLimitRaw: &depositLimit}
 }
 
 func packingSnapshot(reserves ...ReserveState) MarketSnapshot {
@@ -161,7 +161,7 @@ func TestSourceLiquidityBindsWithdrawals(t *testing.T) {
 	}
 	source := snapshot.Reserves["source"]
 	available := int64(5_000_000_000)
-	source.AvailableLiquidityRaw = &available
+	source.AvailableLiquidityUSDMicros = &available
 	snapshot.Reserves["source"] = source
 	plan, err = PlanFleet(snapshot, vaults)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestUnknownCapacityEvidenceIsNotPlannable(t *testing.T) {
 		packingReserve("target", 900, 10_000_000_000_000, 10_000_000_000_000, unlimited))
 	position := packingHolding(snapshot, 1, "source", 4_000_000_000, "target").Position
 	source, target := snapshot.Reserves["source"], snapshot.Reserves["target"]
-	source.AvailableLiquidityRaw = nil
+	source.AvailableLiquidityUSDMicros = nil
 	snapshot.Reserves["source"] = source
 	if d := Plan(snapshot, position, "source", "target"); d.Reason != "source_liquidity_unknown" {
 		t.Fatalf("unknown source liquidity planned as %s", d.Reason)

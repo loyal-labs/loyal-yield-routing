@@ -168,7 +168,7 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 }
 
 func moveFitsReserves(source, target ReserveState, position VaultPosition) string {
-	available := source.AvailableLiquidityUSDMicros()
+	available := source.AvailableLiquidityUSDMicros
 	if available == nil {
 		return "source_liquidity_unknown"
 	}

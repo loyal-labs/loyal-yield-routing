@@ -538,7 +538,7 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	// now, before anything is built or simulated: KLend pays withdrawals only
 	// from available liquidity and refuses deposits past the deposit limit.
 	targetRoom, roomKnown := targetEconomics.DepositRoomRaw()
-	sourceAvailable := sourceEconomics.AvailableLiquidityUSDMicros()
+	sourceAvailable := sourceEconomics.AvailableLiquidityUSDMicros
 	if sourceAvailable == nil || !roomKnown || redeemable > math.MaxInt64 {
 		return f, errors.New("fresh reserve capacity is unreadable")
 	}
