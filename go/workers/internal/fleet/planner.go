@@ -270,6 +270,8 @@ func sumWideInt64(values []int64) (int64, bool) {
 	return value.Int64(), true
 }
 
+// Match Rust's conservative proportional quote while leaving one collateral
+// unit in the source obligation so recovery can reuse the existing obligation.
 func crossMintRecoveryAnchoredPosition(position VaultPosition) (VaultPosition, bool) {
 	if position.SourceCollateralAmountRaw <= 1 || position.AmountRaw <= 0 || position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited {
 		return position, false
@@ -285,8 +287,6 @@ func crossMintRecoveryAnchoredPosition(position VaultPosition) (VaultPosition, b
 
 func mulDivInt64(left, right, divisor int64) (int64, bool) {
 	if divisor == 0 {
-		// Match Rust's conservative proportional quote while leaving one collateral
-		// unit in the source obligation so recovery can reuse the existing obligation.
 		return 0, false
 	}
 	product := left * right
