@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	kaminocatalog "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -30,29 +32,17 @@ const (
 	EarnWallets                 = "earn_wallets"
 )
 
-var (
-	tokenProgram     = solana.TokenProgramID
-	token2022Program = solana.Token2022ProgramID
-)
-
 type Stablecoin struct{ Mint, TokenProgram solana.PublicKey }
 
-var stablecoins = []Stablecoin{
-	{solana.MustPublicKeyFromBase58("CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"), token2022Program},
-	{solana.MustPublicKeyFromBase58("2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"), token2022Program},
-	{solana.MustPublicKeyFromBase58("2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"), token2022Program},
-	{solana.MustPublicKeyFromBase58("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), tokenProgram},
-	{solana.MustPublicKeyFromBase58("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"), tokenProgram},
-	{solana.MustPublicKeyFromBase58("USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"), tokenProgram},
-}
+var stablecoins = func() []Stablecoin {
+	var coins []Stablecoin
+	for _, stable := range fleet.EarnStablecoins() {
+		coins = append(coins, Stablecoin{solana.MustPublicKeyFromBase58(stable.Mint), solana.MustPublicKeyFromBase58(stable.TokenProgram)})
+	}
+	return coins
+}()
 
-var safeMarkets = []solana.PublicKey{
-	solana.MustPublicKeyFromBase58("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"),
-	solana.MustPublicKeyFromBase58("CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"),
-	solana.MustPublicKeyFromBase58("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"),
-	solana.MustPublicKeyFromBase58("47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"),
-	solana.MustPublicKeyFromBase58("BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF"),
-}
+var safeMarkets = kaminocatalog.PolicyMarketKeys("safe")
 
 type ATATarget struct {
 	ID                                                int64

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"io"
 	"log/slog"
 	"strings"
@@ -33,7 +34,7 @@ func offlineClosedPool(t *testing.T) *pgxpool.Pool {
 func TestMaintenanceOutageRetriesReportsEachFailureAndCancellationJoins(t *testing.T) {
 	pool := offlineClosedPool(t)
 	failures := make(chan struct{}, 16)
-	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, HealthObservation: time.Millisecond, RetryInterval: 2 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), OnError: func() { failures <- struct{}{} }})
+	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{fleet.KaminoMainMarket}, PriceRPC: &priceFixtureRPC{}, HealthObservation: time.Millisecond, RetryInterval: 2 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), OnError: func() { failures <- struct{}{} }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +62,7 @@ func TestMaintenanceOutageRetriesReportsEachFailureAndCancellationJoins(t *testi
 }
 func TestFixedMainnetCatalogCannotBeLabelledDevnet(t *testing.T) {
 	pool := offlineClosedPool(t)
-	_, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "devnet", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, OnError: func() {}})
+	_, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "devnet", MediumMarkets: []string{fleet.KaminoMainMarket}, PriceRPC: &priceFixtureRPC{}, OnError: func() {}})
 	if err == nil {
 		t.Fatal("mainnet product universe accepted a devnet namespace")
 	}
@@ -70,7 +71,7 @@ func TestFixedMainnetCatalogCannotBeLabelledDevnet(t *testing.T) {
 func TestChangedCustodyNamespaceBlocksAllProductWrites(t *testing.T) {
 	pool := offlineClosedPool(t)
 	foreign := errors.New("foreign active custody")
-	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, OnError: func() {}, ValidateNamespace: func(context.Context) error { return foreign }})
+	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{fleet.KaminoMainMarket}, PriceRPC: &priceFixtureRPC{}, OnError: func() {}, ValidateNamespace: func(context.Context) error { return foreign }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +101,7 @@ func TestMaintenanceFailureLogsItsCause(t *testing.T) {
 	var output syncBuffer
 	failed := make(chan struct{}, 16)
 	cause := errors.New("legacy custody namespace rejected")
-	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{benchmarkMarket}, PriceRPC: &priceFixtureRPC{}, HealthObservation: time.Millisecond, RetryInterval: time.Minute, Logger: slog.New(slog.NewJSONHandler(&output, nil)), OnError: func() { failed <- struct{}{} }, ValidateNamespace: func(context.Context) error { return cause }})
+	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{fleet.KaminoMainMarket}, PriceRPC: &priceFixtureRPC{}, HealthObservation: time.Millisecond, RetryInterval: time.Minute, Logger: slog.New(slog.NewJSONHandler(&output, nil)), OnError: func() { failed <- struct{}{} }, ValidateNamespace: func(context.Context) error { return cause }})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	kaminocatalog "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 )
 
 const mainUSDCReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
@@ -21,23 +22,10 @@ type APYStrategy struct {
 	FeeBPS            int16
 }
 
-var apyStableMints = []string{
-	"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-	"2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
-	"2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "DEkqHyPN7GMRJ5cArtQFAWefqbZb33Hyf6s5iCwjEonT",
-	"Eh6XEPhSwoLv5wFApukmnaVSHQ6sAnoD9BmgmwQoN2sN", "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
-	"AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj", "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
-	"9zNQRsGLjNKwCUU5Gq5LR8beUCPzQMVMqKAi3SSZh54u", "AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9",
-	"3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC", "BTRR3sj1Bn2ZjuemgbeQ6SCtf84iXS81CS7UDTSxUCaK",
-}
-
 func APYStrategyForRiskProfile(value string) (APYStrategy, bool) {
-	markets := keyStrings(safeMarkets)
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "safe":
-		return APYStrategy{Name: "safe_fee_aware_1bps", RiskProfile: "safe", markets: markets, FeeBPS: 1}, true
-	case "medium":
-		return APYStrategy{Name: "medium_fee_aware_1bps", RiskProfile: "medium", markets: append(markets, keyStrings(mediumMarkets)...), FeeBPS: 1}, true
+	switch risk := strings.ToLower(strings.TrimSpace(value)); risk {
+	case "safe", "medium":
+		return APYStrategy{Name: risk + "_fee_aware_1bps", RiskProfile: risk, markets: kaminocatalog.PolicyMarkets(risk), FeeBPS: 1}, true
 	}
 	return APYStrategy{}, false
 }
@@ -117,7 +105,7 @@ func (r *APYRefresher) supportedReserves(ctx context.Context, strategy APYStrate
             WHERE active = true
               AND market = ANY($1)
               AND liquidity_mint = ANY($2)
-            ORDER BY market, liquidity_mint, reserve`, strategy.markets, apyStableMints)
+            ORDER BY market, liquidity_mint, reserve`, strategy.markets, kaminocatalog.PolicyMints())
 	if err != nil {
 		return nil, fmt.Errorf("fetch supported Kamino stable reserves: %w", err)
 	}

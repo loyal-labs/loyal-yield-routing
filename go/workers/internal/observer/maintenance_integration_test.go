@@ -121,7 +121,7 @@ func TestSharePriceOlderOverlappingObserverCannotOverwriteState(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM loyal_yield.earn_reserve_share_prices WHERE cluster=$1`, cluster)
 	})
 	at := time.Now().UTC().Truncate(time.Second)
-	p := SharePrice{Reserve: benchmarkReserve, Market: benchmarkMarket, Mint: USDCMint, ObservedAt: at, ObservedHour: at.Truncate(time.Hour), Slot: 100, Price: 1.1}
+	p := SharePrice{Reserve: benchmarkReserve, Market: fleet.KaminoMainMarket, Mint: USDCMint, ObservedAt: at, ObservedHour: at.Truncate(time.Hour), Slot: 100, Price: 1.1}
 	write := func(p SharePrice) {
 		t.Helper()
 		tx, err := pool.Begin(ctx)
@@ -198,7 +198,7 @@ func TestTelemetryReadsHoldingsFromTheChainAndForwardAllocationClock(t *testing.
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
 	cluster := "readmodel-allocation-" + suffix
 	now := time.Now().UTC().Truncate(time.Second)
-	vaultKey, reserveKey, market := telemetryKey("vault"+suffix), telemetryKey("reserve"+suffix), solana.MustPublicKeyFromBase58(benchmarkMarket)
+	vaultKey, reserveKey, market := telemetryKey("vault"+suffix), telemetryKey("reserve"+suffix), solana.MustPublicKeyFromBase58(fleet.KaminoMainMarket)
 	reserve := reserveKey.String()
 	usdc := solana.MustPublicKeyFromBase58(USDCMint)
 	// 1,000 collateral over 1,200 liquidity: one unit redeems 1.2.
@@ -233,7 +233,7 @@ func TestTelemetryReadsHoldingsFromTheChainAndForwardAllocationClock(t *testing.
 		obligation.String(): {Key: obligation, Owner: kamino.ProgramID, Lamports: 1, Data: obligationData},
 		idle.String():       {Key: idle, Owner: solana.TokenProgramID, Lamports: 1, Data: idleData},
 	}}
-	m := &Maintenance{yield: pool, cluster: cluster, timeout: 10 * time.Second, maxVaults: 10000, rpc: node, catalog: telemetryCatalog{{Address: reserve, Market: benchmarkMarket, Mint: USDCMint}}}
+	m := &Maintenance{yield: pool, cluster: cluster, timeout: 10 * time.Second, maxVaults: 10000, rpc: node, catalog: telemetryCatalog{{Address: reserve, Market: fleet.KaminoMainMarket, Mint: USDCMint}}}
 	var policy int64
 	var vaults []int64
 	t.Cleanup(func() {

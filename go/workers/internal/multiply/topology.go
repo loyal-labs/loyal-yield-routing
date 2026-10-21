@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -22,17 +23,11 @@ const (
 
 	MainnetGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
 
-	USDCMint  = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-	USDSMint  = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
-	PYUSDMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
+	USDCMint = fleet.USDCMint
 
 	onycMint  = "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5"
 	primeMint = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
 	syrupMint = "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj"
-
-	onreMarket   = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"
-	figureMarket = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
-	mapleMarket  = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
 
 	commonOracle = "3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH"
 
@@ -213,7 +208,7 @@ type strategyTemplate struct {
 
 var strategyTemplates = []strategyTemplate{
 	{
-		key: OnycUsdc, market: onreMarket, marketAuthority: onycMarketAuthority, oracle: commonOracle,
+		key: OnycUsdc, market: fleet.KaminoOnReMarket, marketAuthority: onycMarketAuthority, oracle: commonOracle,
 		collateralReserve: onycCollateralReserve, collateralMint: onycMint,
 		collateralLiquiditySupply: onycCollateralLiquiditySupply, collateralReceiptMint: onycCollateralReceiptMint,
 		collateralMintSupply: onycCollateralReceiptSupply,
@@ -224,18 +219,18 @@ var strategyTemplates = []strategyTemplate{
 		staticCollateralSeed: 32,
 	},
 	{
-		key: OnycUsds, market: onreMarket, marketAuthority: onycMarketAuthority, oracle: commonOracle,
+		key: OnycUsds, market: fleet.KaminoOnReMarket, marketAuthority: onycMarketAuthority, oracle: commonOracle,
 		collateralReserve: onycCollateralReserve, collateralMint: onycMint,
 		collateralLiquiditySupply: onycCollateralLiquiditySupply, collateralReceiptMint: onycCollateralReceiptMint,
 		collateralMintSupply: onycCollateralReceiptSupply,
-		debtReserve:          "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC", debtMint: USDSMint,
+		debtReserve:          "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC", debtMint: fleet.USDSMint,
 		debtTokenProgram: TokenProgram, debtLiquiditySupply: "21Skwocv5cJoftyejSTtXVaHJWTg88xcWGQtnRvUyKLx",
 		debtFeeVault:  "CmMAn2UtLWHsQhwv31Trz4BZwVravs2jgxZYK2daTHaK",
 		debtFarmState: "5piFMvvPonJM8zJbCGoPD2jZt59hNURDLDTpXQzgbydc", targetLTVBPS: 5000,
 		staticCollateralSeed: 32,
 	},
 	{
-		key: PrimeUsdc, market: figureMarket, marketAuthority: primeMarketAuthority, oracle: commonOracle,
+		key: PrimeUsdc, market: fleet.KaminoFigureMarket, marketAuthority: primeMarketAuthority, oracle: commonOracle,
 		collateralReserve: primeCollateralReserve, collateralMint: primeMint,
 		collateralLiquiditySupply: primeCollateralLiquiditySupply, collateralReceiptMint: primeCollateralReceiptMint,
 		collateralMintSupply: primeCollateralReceiptSupply,
@@ -245,27 +240,27 @@ var strategyTemplates = []strategyTemplate{
 		staticCollateralSeed: 32,
 	},
 	{
-		key: PrimePyusd, market: figureMarket, marketAuthority: primeMarketAuthority, oracle: commonOracle,
+		key: PrimePyusd, market: fleet.KaminoFigureMarket, marketAuthority: primeMarketAuthority, oracle: commonOracle,
 		collateralReserve: primeCollateralReserve, collateralMint: primeMint,
 		collateralLiquiditySupply: primeCollateralLiquiditySupply, collateralReceiptMint: primeCollateralReceiptMint,
 		collateralMintSupply: primeCollateralReceiptSupply,
-		debtReserve:          "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5", debtMint: PYUSDMint,
+		debtReserve:          "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5", debtMint: fleet.PYUSDMint,
 		debtTokenProgram: Token2022Program, debtLiquiditySupply: "4LF3i8grZPRbk8d6gXvzRux4rYjGd5AmqrpLLYFpPKKt",
 		debtFeeVault: "4b9U55muKtwx9RimJSuztvyZaKWkmaoferVexgvxrYJr", targetLTVBPS: 6500,
 		staticCollateralSeed: 32,
 	},
 	{
-		key: PrimeUsds, market: figureMarket, marketAuthority: primeMarketAuthority, oracle: commonOracle,
+		key: PrimeUsds, market: fleet.KaminoFigureMarket, marketAuthority: primeMarketAuthority, oracle: commonOracle,
 		collateralReserve: primeCollateralReserve, collateralMint: primeMint,
 		collateralLiquiditySupply: primeCollateralLiquiditySupply, collateralReceiptMint: primeCollateralReceiptMint,
 		collateralMintSupply: primeCollateralReceiptSupply,
-		debtReserve:          "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", debtMint: USDSMint,
+		debtReserve:          "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", debtMint: fleet.USDSMint,
 		debtTokenProgram: TokenProgram, debtLiquiditySupply: "5tP1kDJBYnjtrpUaRQhsrU1Y28ahiJVjz8p9mbqJFpz5",
 		debtFeeVault: "DjmdtvsvctUXCZ32y6UGdCEvXPTds6Ci7LFnVhw5HaQY", targetLTVBPS: 6500,
 		staticCollateralSeed: 32,
 	},
 	{
-		key: SyrupUsdcUsdc, market: mapleMarket, marketAuthority: syrupMarketAuthority, oracle: commonOracle,
+		key: SyrupUsdcUsdc, market: fleet.KaminoMapleMarket, marketAuthority: syrupMarketAuthority, oracle: commonOracle,
 		collateralReserve: syrupCollateralReserve, collateralMint: syrupMint,
 		collateralLiquiditySupply: syrupCollateralLiquiditySupply, collateralReceiptMint: syrupCollateralReceiptMint,
 		collateralMintSupply: syrupCollateralMintSupply,
@@ -276,11 +271,11 @@ var strategyTemplates = []strategyTemplate{
 		staticCollateralSeed: 32,
 	},
 	{
-		key: SyrupUsdcPyusd, market: mapleMarket, marketAuthority: syrupMarketAuthority, oracle: commonOracle,
+		key: SyrupUsdcPyusd, market: fleet.KaminoMapleMarket, marketAuthority: syrupMarketAuthority, oracle: commonOracle,
 		collateralReserve: syrupCollateralReserve, collateralMint: syrupMint,
 		collateralLiquiditySupply: syrupCollateralLiquiditySupply, collateralReceiptMint: syrupCollateralReceiptMint,
 		collateralMintSupply: syrupCollateralMintSupply,
-		debtReserve:          "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS", debtMint: PYUSDMint,
+		debtReserve:          "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS", debtMint: fleet.PYUSDMint,
 		debtTokenProgram: Token2022Program, debtLiquiditySupply: "GUENeLN1ufX4K5622DbyYoQFhaWxMKoCFycvLSEYsykN",
 		debtFeeVault:  "AwnzukUiajn7b3T9hXcwy19RLPZcHmLANUeqZnzXT6dU",
 		debtFarmState: "9AUA7XZ1rynUsZcmVCgj8UFdQuDozFSMpaNGBZAtiPWj", targetLTVBPS: 6500,

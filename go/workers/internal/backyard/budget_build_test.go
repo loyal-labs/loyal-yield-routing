@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // Exercise the actual RPC decoder, production compiler and valuation path.
@@ -31,7 +32,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 	sf := new(big.Int).Lsh(big.NewInt(1), 60)
 	usdc := reserveFixture(t, config.DebtReserve, bridgeUSDC, 42, sf, 1, 1)
 	sol := reserveFixture(t, budgetSOLReserve, budgetWrappedSOLMint, 42, new(big.Int).Mul(sf, big.NewInt(100)), 1, 1)
-	putKey(t, sol.Data[32:64], budgetSOLMarket)
+	putKey(t, sol.Data[32:64], fleet.KaminoMainMarket)
 	binary.LittleEndian.PutUint64(sol.Data[272:280], 9)
 	for _, account := range []ConfirmedAccount{usdc, sol} {
 		binary.LittleEndian.PutUint64(account.Data[264:272], 1000)

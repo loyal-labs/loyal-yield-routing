@@ -6,11 +6,11 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const budgetSOLReserve = "d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q"
-const budgetSOLMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 
 var budgetWrappedSOLMint = solana.WrappedSol.String()
 
@@ -19,7 +19,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 		return BudgetPrice{}, budgetHold("invalid_price_observation_request")
 	}
 	reference := usdcReference
-	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: budgetSOLMarket}
+	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: fleet.KaminoMainMarket}
 	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}
 	_, accounts, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {

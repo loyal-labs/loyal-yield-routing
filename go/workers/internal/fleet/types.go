@@ -12,6 +12,10 @@ const (
 	PYUSDMint                                = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 	USDTMint                                 = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 	USDSMint                                 = "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"
+	KaminoMainMarket                         = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
+	KaminoFigureMarket                       = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
+	KaminoMapleMarket                        = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
+	KaminoOnReMarket                         = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"
 	amountSemanticsKaminoCollateralDeposited = "kamino_obligation_collateral_deposited_amount"
 	amountSemanticsRedeemableLiquidity       = "redeemable_liquidity_amount"
 )

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -50,7 +51,7 @@ func reserveFixture() *chain.Account {
 	data := make([]byte, kamino.ReserveSize)
 	copy(data, kamino.ReserveDiscriminator[:])
 	binary.LittleEndian.PutUint64(data[8:16], 1)
-	copy(data[32:64], solana.MustPublicKeyFromBase58(benchmarkMarket).Bytes())
+	copy(data[32:64], solana.MustPublicKeyFromBase58(fleet.KaminoMainMarket).Bytes())
 	copy(data[128:160], solana.MustPublicKeyFromBase58(USDCMint).Bytes())
 	binary.LittleEndian.PutUint64(data[16:24], 900)
 	binary.LittleEndian.PutUint64(data[224:232], 100_000_000)
