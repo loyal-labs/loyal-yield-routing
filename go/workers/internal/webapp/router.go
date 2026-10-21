@@ -4,7 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
+	"regexp"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -62,17 +62,23 @@ func site(cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cfg.AppHost != "" && requestHost(r) == cfg.AppHost {
 			if r.URL.Path == "/" {
-				http.Redirect(w, r, "/app", http.StatusFound)
+				http.Redirect(w, r, (&url.URL{Path: "/app", RawQuery: r.URL.RawQuery}).String(), http.StatusFound)
 				return
 			}
 			app.ServeHTTP(w, r)
 			return
 		}
-		if !strings.Contains(r.URL.Path, ".") && localeRedirect(w, r) {
+		if !skippedByNextMatcher(r.URL.Path) && localeRedirect(w, r) {
 			return
 		}
 		app.ServeHTTP(w, r)
 	})
+}
+
+var nextMatcherSkips = regexp.MustCompile(`^/(?:_next|api|favicon.ico|.*\..*)`)
+
+func skippedByNextMatcher(path string) bool {
+	return nextMatcherSkips.MatchString(path)
 }
 
 func requestHost(r *http.Request) string {

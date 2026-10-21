@@ -38,9 +38,7 @@ func localeRedirect(w http.ResponseWriter, r *http.Request) bool {
 	requested := r.URL.Query().Get(localeParam)
 	if locales[requested] {
 		target := *r.URL
-		query := target.Query()
-		query.Del(localeParam)
-		target.RawQuery = query.Encode()
+		target.RawQuery = withoutParam(target.RawQuery, localeParam)
 		http.SetCookie(w, &http.Cookie{
 			Name:     localeCookie,
 			Value:    requested,
@@ -71,6 +69,31 @@ func localeRedirect(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Vary", "Accept-Language, Cookie")
 	http.Redirect(w, r, localizedPath(preferred, r.URL), http.StatusTemporaryRedirect)
 	return true
+}
+
+func withoutParam(rawQuery, name string) string {
+	var kept []string
+	for _, pair := range strings.Split(rawQuery, "&") {
+		if pair == "" {
+			continue
+		}
+		rawKey, rawValue, _ := strings.Cut(pair, "=")
+		key, keyErr := url.QueryUnescape(rawKey)
+		if keyErr != nil {
+			kept = append(kept, pair)
+			continue
+		}
+		if key == name {
+			continue
+		}
+		value, valueErr := url.QueryUnescape(rawValue)
+		if valueErr != nil {
+			kept = append(kept, pair)
+			continue
+		}
+		kept = append(kept, url.QueryEscape(key)+"="+url.QueryEscape(value))
+	}
+	return strings.Join(kept, "&")
 }
 
 func localizedPath(locale string, u *url.URL) string {
