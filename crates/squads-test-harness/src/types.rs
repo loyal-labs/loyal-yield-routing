@@ -485,7 +485,7 @@ mod tests {
         .unwrap();
 
         let mut expected = vec![
-            0, // SquadsPolicyCreationPayload::InternalFundTransfer
+            0,
             2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0,
         ];
         expected.extend_from_slice(&[7; 32]);

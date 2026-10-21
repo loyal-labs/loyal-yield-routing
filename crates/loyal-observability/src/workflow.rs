@@ -55,9 +55,6 @@ impl WorkflowMetrics {
         }
     }
 
-    /// Records one completed workflow operation and its duration.
-    ///
-    /// `workflow` and `operation` must be stable names rather than runtime IDs.
     pub fn record_execution(
         &self,
         workflow: &'static str,

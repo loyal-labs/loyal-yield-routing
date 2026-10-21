@@ -29,7 +29,6 @@ pub fn validate_rpc_genesis_hash(cluster: &str, observed: Hash) -> Result<(), St
     Ok(())
 }
 
-/// Produces a bounded fatal-error message without endpoint credentials.
 pub fn redacted_external_error(message: &str) -> String {
     let mut suppress_following_tokens = 0_usize;
     message

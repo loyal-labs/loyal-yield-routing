@@ -828,7 +828,7 @@ mod tests {
         vec![
             test_account(true, true),   // Voltr strategy authority
             test_account(false, false), // adaptor config
-            test_account(false, true),  // Voltr requires vault asset mint writable
+            test_account(false, true),
             test_account(false, true),  // strategy asset ATA
             test_account(false, false), // asset token program
             test_account(false, false), // Squads Settings

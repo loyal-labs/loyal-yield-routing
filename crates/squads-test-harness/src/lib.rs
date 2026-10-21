@@ -1,23 +1,5 @@
 #![allow(clippy::too_many_arguments)]
 
-//! Vertical-slice helpers for Squads and Loyal Actions tests.
-//!
-//! The crate keeps the public API grouped by the concepts a test author is
-//! likely to look for:
-//!
-//! - [`squads`] owns Squads PDA derivation, smart-account setup, and sync
-//!   transaction payload helpers.
-//! - [`actions`] adapts test contexts and mock protocol accounts into
-//!   `loyal-actions` SDK inputs.
-//! - [`policies`] owns raw Squads policy instruction builders for focused
-//!   Squads tests.
-//! - [`protocols`] owns test protocol fixtures, SPL account seeding, and mock
-//!   Jupiter/Kamino/Loyal Hub instruction data.
-//! - [`runtime`] owns LiteSVM setup and transaction submission helpers.
-//!
-//! New scenario tests can import from [`prelude`] when they need the common
-//! harness surface.
-
 pub mod actions;
 pub mod constants;
 pub mod execution;

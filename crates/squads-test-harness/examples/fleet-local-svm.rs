@@ -90,9 +90,6 @@ impl LocalChain {
             "getGenesisHash" => Ok(json!(
                 solana_sdk::hash::Hash::new_from_array([42; 32]).to_string()
             )),
-            // Explicit fixture-only bank operation. Unlike warp_to_slot,
-            // LiteSVM's own method advances its real recent-blockhash sysvar.
-            // It does not synthesize a signature, transaction or receipt.
             "expireBlockhash" => {
                 let svm = self.svm.as_mut().unwrap();
                 svm.expire_blockhash();

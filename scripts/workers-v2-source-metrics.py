@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Count physical non-test Go source; report only, never a correctness gate."""
 import json
 from collections import defaultdict
 from pathlib import Path

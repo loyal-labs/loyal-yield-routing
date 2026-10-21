@@ -1,24 +1,4 @@
 #!/bin/sh
-# activate.sh <family> <sha> <sha256> [stopped] — switch loyal-<family>
-# (backyard, retail, observer or web) to an uploaded release. Runs on the host as
-# root, started by scripts/deploy-workers.sh as a transient unit
-# (systemd-run --wait --pipe), so a dropped ssh session cannot cut it off
-# mid-swap. One deploy at a time, any family: it holds the host's deploy lock.
-#
-# Backyard stops only when no operation is in flight. Retail and the observer
-# have no such gate: a stop leaves retail's signed rows on their operation
-# rows and the next start lands them. Either way the new release starts from
-# the verified-release drop-in, and the previous drop-in comes back if the new
-# release does not come up.
-#
-# A running unit is the normal case. "stopped" says the operator stopped the
-# unit on purpose (to apply migrations): it must be inactive, the deploy
-# starts it on the new release, and a rollback leaves it stopped on the
-# previous drop-in.
-#
-# web (loyal-web) is up when it has stayed active without restarting for 20 s
-# and then /readyz on the unit's LOYAL_WEB_ADDRESS returns 200 naming
-# X-Loyal-Release: <sha>.
 set -eu
 
 family=${1:-}

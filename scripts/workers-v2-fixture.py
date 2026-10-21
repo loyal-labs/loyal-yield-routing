@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""Apply the repository Yield and Timescale migrations only to allowlisted test databases.
-
-The Yield schema is migrated once, into a template database, by one psql
-session; every family database is then a copy of that template. Each file
-keeps its own transaction (psql --single-transaction semantics) unless it
-uses CONCURRENTLY, exactly as the per-file runs did.
-"""
 import hashlib
 import json
 import os
@@ -46,7 +39,6 @@ def psql_quote(path):
     return "'" + str(path).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 class Script:
-    """One psql session's input, run in order."""
     def __init__(self):
         self.lines = []
     def file(self, path, sql=None):

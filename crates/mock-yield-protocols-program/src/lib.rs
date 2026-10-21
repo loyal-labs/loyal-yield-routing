@@ -472,10 +472,6 @@ fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
     }
 }
 
-// init_obligation in the official account order: the vanilla
-// obligation PDA is created through the System program, rent paid by the
-// signing fee payer, and stamped with its market and owner. User metadata and
-// referrer state are not modeled.
 fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let [owner, fee_payer, obligation, market, seed1, seed2, _metadata, _rent, system] = accounts
     else {
@@ -558,8 +554,6 @@ const MULTIPLY_ROUTE_TAIL: [u8; 3] = [
     JUPITER_FIXTURE_SLIPPAGE_BPS[1],
     JUPITER_FIXTURE_PLATFORM_FEE_BPS,
 ];
-// The Multiply fixture uses the source-pinned Scope address. This local model
-// does not evaluate prices or pretend to model mature Scope/KLend risk logic.
 const MULTIPLY_FIXTURE_SCOPE: Pubkey = pubkey!("3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH");
 fn fixture_scope_refresh_account(account: &AccountInfo, program_id: &Pubkey) -> bool {
     !account.is_writable
@@ -743,9 +737,6 @@ fn close_emptied_kamino_obligation(obligation: &AccountInfo, owner: &AccountInfo
     Ok(())
 }
 
-// Narrow fixed-price, zero-interest/fee Multiply bank model. It executes SPL
-// movements and checked source-layout liability writes; it does not implement
-// mature KLend pricing, accrual, elevation groups, farms, or liquidation.
 const MULTIPLY_MARKET: Pubkey = pubkey!("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y");
 const MULTIPLY_USDC_RESERVE: Pubkey = pubkey!("Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo");
 const MULTIPLY_SYRUP_MINT: Pubkey = pubkey!("AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj");
@@ -955,7 +946,6 @@ fn process_multiply_shared_route(
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
-    // Fixed-price model only: no real DEX/Jupiter routing or price claim.
     if accounts.len() != 13
         || data.len() != 36
         || data[8..17] != MULTIPLY_ROUTE_PLAN
