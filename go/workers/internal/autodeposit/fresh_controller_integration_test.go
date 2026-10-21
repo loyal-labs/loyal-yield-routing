@@ -177,8 +177,8 @@ type refusingSetupWires struct {
 	refusal error
 }
 
-func (w refusingSetupWires) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
-	return w.scriptedControllerWires.ProveTopUpWire(ctx, plan, attempt, route)
+func (w refusingSetupWires) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute, residueBoundRaw int64) error {
+	return w.scriptedControllerWires.ProveTopUpWire(ctx, plan, attempt, route, residueBoundRaw)
 }
 
 func (w refusingSetupWires) InspectDestinationSetup(context.Context, DepositPlan) (*DestinationSetupPlan, error) {

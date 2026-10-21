@@ -23,7 +23,7 @@ type WireBuilder interface {
 	BuildPull(ctx context.Context, request PullWireRequest) (BuiltWire, error)
 	ConfirmTopUpRoute(ctx context.Context, plan DepositPlan) (TopUpRoute, error)
 	BuildTopUp(ctx context.Context, request TopUpWireRequest) (BuiltWire, error)
-	ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error
+	ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute, residueBoundRaw int64) error
 	FeePayer() string
 	DestinationSetupBuilder
 }
@@ -37,6 +37,7 @@ type PullWireRequest struct {
 
 type TopUpWireRequest struct {
 	Plan                 DepositPlan
+	ResidueRaw           int64
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 }
@@ -57,7 +58,6 @@ type Controller struct {
 	wires            WireBuilder
 	facts            *engine.Facts
 	leaseRenewWindow time.Duration
-	idleToleranceRaw int64
 }
 
 // DefaultLeaseRenewWindow renews well inside the ten-minute claim lease.
@@ -71,7 +71,6 @@ type ControllerDependencies struct {
 	Wires            WireBuilder
 	Facts            *engine.Facts
 	LeaseRenewWindow time.Duration
-	IdleToleranceRaw int64
 }
 
 func NewController(deps ControllerDependencies) (*Controller, error) {
@@ -94,11 +93,8 @@ func NewController(deps ControllerDependencies) (*Controller, error) {
 	if window < 0 || window > DefaultLeaseRenewWindow {
 		return nil, errors.New("claim renewal window must be positive and at most three minutes")
 	}
-	if deps.IdleToleranceRaw < 0 {
-		return nil, errors.New("autodeposit idle tolerance must not be negative")
-	}
 
-	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, facts: deps.Facts, leaseRenewWindow: window, idleToleranceRaw: deps.IdleToleranceRaw}, nil
+	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, facts: deps.Facts, leaseRenewWindow: window}, nil
 }
 
 func (c *Controller) FeePayerLamports(ctx context.Context) (string, uint64, error) {
@@ -267,28 +263,17 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 		}
 		return ResultDeferred, err
 	}
-	// Rust fleet same-mint routes withdraw all source collateral but deposit
-	// the planned liquidity, so interest accrued since planning stays in the
-	// vault ATA, and nothing drains idle custody. Residue up to the tolerance
-	// rides beside the pull (the top-up deposits the pulled amount; every check
-	// is on deltas). Idle above it may be custody another family owns: the TS
-	// executor defers the slot before claiming, and so does this.
-	// The tolerance is deleted once fleet deposits what it redeems and the
-	// existing residue is drained.
-	custody, err := c.chain.ConfirmedTokenBalanceRaw(ctx, targetContext.VaultUsdcAta, targetContext.VaultPubkey)
-	if errors.Is(err, ErrTokenAccountAbsent) {
-		custody, err = 0, nil
-	}
+	owned, err := c.store.VaultCustodyHeldElsewhere(ctx, targetContext.VaultPubkey, targetContext.VaultUsdcAta, "", 0)
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	if custody > c.idleToleranceRaw && walletBalance > targetContext.WalletBalanceFloorRaw && *remainingAllowance > 0 {
-		deferred, err := c.store.DeferScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID, fmt.Sprintf("%s%d", idleDeferralPrefix, custody), true)
+	if owned && walletBalance > targetContext.WalletBalanceFloorRaw && *remainingAllowance > 0 {
+		deferred, err := c.store.DeferScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID, ownedCustodyDeferral, true)
 		if err != nil {
 			return ResultDependencyUnavailable, err
 		}
 		if deferred {
-			return ResultDeferred, fmt.Errorf("%s%d", idleDeferralPrefix, custody)
+			return ResultDeferred, errors.New(ownedCustodyDeferral)
 		}
 	}
 
@@ -364,8 +349,12 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	if custodyBefore > c.idleToleranceRaw {
-		return c.release(scope, claimToken, ResultDeferred, fmt.Errorf("%s%d", idleDeferralPrefix, custodyBefore))
+	owned, err := c.store.VaultCustodyHeldElsewhere(scope.ctx, frozen.Target.VaultPubkey, frozen.Target.VaultUsdcAta, claimToken, 0)
+	if err != nil {
+		return ResultDependencyUnavailable, err
+	}
+	if owned {
+		return c.release(scope, claimToken, ResultDeferred, errors.New(ownedCustodyDeferral))
 	}
 	blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
 	if err != nil {
@@ -475,9 +464,15 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 
 func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, target ExecutableTarget, plan DepositPlan, pull Settlement) (ExecutorResult, error) {
 	confirmedPull := pull.Attempt
-	if err := c.verifyPullEffects(scope.ctx, plan, confirmedPull); err != nil {
+	pullReceipt, err := c.chain.ConfirmedReceipt(scope.ctx, confirmedPull.Signature)
+	if err != nil {
 		return ResultTransactionEffectAmbig, err
 	}
+	if err := validatePullReceipt(plan, confirmedPull, pullReceipt); err != nil {
+		return ResultTransactionEffectAmbig, err
+	}
+	pulledInto, _ := pullReceipt.EffectFor(plan.Target.VaultUsdcAta)
+	residueBound := pulledInto.PreRaw
 	custody, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, plan.Target.VaultUsdcAta, plan.Target.VaultPubkey)
 	if err != nil {
 		return ResultDependencyUnavailable, err
@@ -524,11 +519,20 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 			}
 			return unanswered(ResultYieldPersistenceFailed, err)
 		}
+		held, err := c.store.VaultCustodyHeldElsewhere(scope.ctx, plan.Target.VaultPubkey, plan.Target.VaultUsdcAta, claimToken, confirmedPull.ID)
+		if err != nil {
+			return ResultDependencyUnavailable, err
+		}
+		route, err := c.wires.ConfirmTopUpRoute(scope.ctx, plan)
+		if err != nil {
+			return ResultKaminoTopUpFailed, err
+		}
+		residue := topUpResidue(held, residueBound, custody-plan.AmountRaw, plan.AmountRaw, route.DepositRoomRaw)
 		blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
 		if err != nil {
 			return ResultDependencyUnavailable, err
 		}
-		wire, err := c.wires.BuildTopUp(scope.ctx, TopUpWireRequest{Plan: plan, RecentBlockhash: blockhash, LastValidBlockHeight: lastValid})
+		wire, err := c.wires.BuildTopUp(scope.ctx, TopUpWireRequest{Plan: plan, ResidueRaw: residue, RecentBlockhash: blockhash, LastValidBlockHeight: lastValid})
 		if err != nil {
 			// The pulled custody stays claimed for recovery; it must never be
 			// released while only the deposit leg failed.
@@ -540,7 +544,7 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 			ScheduledSlotID:          target.ScheduledSlotID,
 			OperationKind:            OperationTopUp,
 			ExecutionID:              &executionID,
-			AmountRaw:                plan.AmountRaw,
+			AmountRaw:                plan.AmountRaw + residue,
 			SourcePreBalanceRaw:      custody,
 			DestinationPreBalanceRaw: 0,
 			Signature:                wire.Signature,
@@ -576,7 +580,7 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	if err != nil {
 		return ResultKaminoTopUpFailed, err
 	}
-	if err := c.wires.ProveTopUpWire(scope.ctx, plan, pull.Attempt, route); err != nil {
+	if err := c.wires.ProveTopUpWire(scope.ctx, plan, pull.Attempt, route, residueBound); err != nil {
 		return unanswered(ResultTransactionEffectAmbig, err)
 	}
 	if err := c.verifyTopUpEffects(scope.ctx, plan, route, pull); err != nil {
@@ -605,6 +609,14 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		return ResultYieldPersistenceFailed, err
 	}
 	return ResultCompleted, nil
+}
+
+func topUpResidue(held bool, recorded, custodyBeyondPull, pull int64, room uint64) int64 {
+	residue := min(recorded, custodyBeyondPull)
+	if held || residue <= 0 || uint64(pull)+uint64(residue) >= room {
+		return 0
+	}
+	return residue
 }
 
 func unanswered(result ExecutorResult, err error) (ExecutorResult, error) {
@@ -654,15 +666,15 @@ func (c *Controller) verifyTopUpEffects(ctx context.Context, plan DepositPlan, r
 		return fmt.Errorf("liquidity supply movement mint is %s, want the frozen %s", supply.Mint, plan.LiquidityMint)
 	}
 	// KLend mints floor(amount × rate) collateral and takes only the liquidity
-	// that collateral is worth, so it may take less than the frozen amount by
+	// that collateral is worth, so it may take less than the persisted amount by
 	// under one collateral unit's value; the rest stays in custody. The rate
 	// only rises, so the confirmed route's minimum deposit bounds that unit.
 	taken := supply.PostRaw - supply.PreRaw
 	if delta := custody.PostRaw - custody.PreRaw; delta != -taken {
 		return fmt.Errorf("top-up custody moved %d, want minus the %d the reserve received", delta, taken)
 	}
-	if taken <= 0 || taken > plan.AmountRaw || uint64(plan.AmountRaw-taken) >= route.MinimumDepositRaw {
-		return fmt.Errorf("reserve liquidity moved %d, want the frozen %d less under one collateral unit (%d)", taken, plan.AmountRaw, route.MinimumDepositRaw)
+	if deposited := settlement.Attempt.AmountRaw; taken <= 0 || taken > deposited || uint64(deposited-taken) >= route.MinimumDepositRaw {
+		return fmt.Errorf("reserve liquidity moved %d, want the persisted %d less under one collateral unit (%d)", taken, deposited, route.MinimumDepositRaw)
 	}
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -39,6 +40,7 @@ type TopUpRoute struct {
 	Position          fleet.KaminoPositionAccounts `json:"position"`
 	Obligation        string                       `json:"obligation"`
 	MinimumDepositRaw uint64                       `json:"-"`
+	DepositRoomRaw    uint64                       `json:"-"`
 }
 
 type SweepWireBuilder struct {
@@ -67,12 +69,12 @@ func NewSweepWireBuilder(executor ed25519.PrivateKey, read AccountReader) (*Swee
 
 func (b *SweepWireBuilder) FeePayer() string { return b.delegate.String() }
 
-func wireAmount(plan DepositPlan) (uint64, error) {
-	if plan.AmountRaw <= 0 {
+func wireAmount(amountRaw int64) (uint64, error) {
+	if amountRaw <= 0 {
 		return 0, errors.New("autodeposit wire amount must be positive")
 	}
-	amount := uint64(plan.AmountRaw)
-	if int64(amount) != plan.AmountRaw {
+	amount := uint64(amountRaw)
+	if int64(amount) != amountRaw {
 		return 0, errors.New("autodeposit wire amount is outside the u64 range")
 	}
 	return amount, nil
@@ -92,7 +94,7 @@ func (b *SweepWireBuilder) BuildPull(ctx context.Context, request PullWireReques
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	amount, err := wireAmount(request.Plan)
+	amount, err := wireAmount(request.Plan.AmountRaw)
 	if err != nil {
 		return BuiltWire{}, err
 	}
@@ -113,23 +115,23 @@ func (b *SweepWireBuilder) BuildTopUp(ctx context.Context, request TopUpWireRequ
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	return b.buildTopUpWithRoute(ctx, request.Plan, route, request.RecentBlockhash, request.LastValidBlockHeight)
+	return b.buildTopUpWithRoute(ctx, request.Plan, request.Plan.AmountRaw+request.ResidueRaw, route, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
-func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan DepositPlan, route TopUpRoute, blockhashValue string, lastValidBlockHeight int64) (BuiltWire, error) {
+func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan DepositPlan, amountRaw int64, route TopUpRoute, blockhashValue string, lastValidBlockHeight int64) (BuiltWire, error) {
 	blockhash, err := solana.HashFromBase58(blockhashValue)
 	if err != nil {
 		return BuiltWire{}, err
 	}
-	instructions, err := b.topUpInstructions(ctx, plan, route)
+	instructions, err := b.topUpInstructions(ctx, plan, amountRaw, route)
 	if err != nil {
 		return BuiltWire{}, err
 	}
 	return b.sign(plan, blockhash, lastValidBlockHeight, instructions)
 }
 
-func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPlan, route TopUpRoute) ([]fleet.RouteInstruction, error) {
-	amount, err := wireAmount(plan)
+func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPlan, amountRaw int64, route TopUpRoute) ([]fleet.RouteInstruction, error) {
+	amount, err := wireAmount(amountRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -199,6 +201,9 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if route.MinimumDepositRaw, err = reserve.MinimumDeposit(); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s exchange value: %v", ErrRouteNotExecutable, plan.Reserve, err)
 	}
+	if route.DepositRoomRaw, err = depositRoom(reserve); err != nil {
+		return TopUpRoute{}, fmt.Errorf("%w: reserve %s total supply: %v", ErrRouteNotExecutable, plan.Reserve, err)
+	}
 	obligation, err := kamino.DecodeObligation(obligationAccount)
 	if err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: obligation %s does not exist; run the missing-obligation setup before a pull", ErrRouteNotExecutable, obligationKey)
@@ -222,7 +227,7 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if _, err := usdcTokenAccount(custody, plan.Target.VaultPubkey); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: %v", ErrRouteNotExecutable, err)
 	}
-	instructions, err := b.topUpInstructions(ctx, plan, route)
+	instructions, err := b.topUpInstructions(ctx, plan, plan.AmountRaw, route)
 	if err != nil {
 		return TopUpRoute{}, err
 	}
@@ -230,6 +235,19 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 		return TopUpRoute{}, err
 	}
 	return route, nil
+}
+
+func depositRoom(reserve kamino.Reserve) (uint64, error) {
+	total, err := reserve.TotalLiquiditySF()
+	if err != nil {
+		return 0, err
+	}
+	supplied := new(big.Int).Add(total, big.NewInt(1<<60-1))
+	supplied.Rsh(supplied, 60)
+	if !supplied.IsUint64() || supplied.Uint64() >= reserve.DepositLimit {
+		return 0, nil
+	}
+	return reserve.DepositLimit - supplied.Uint64(), nil
 }
 
 func reserveRoute(reserve *chain.Account, vault string) (TopUpRoute, error) {
@@ -270,7 +288,7 @@ func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan,
 	return fleet.BuildPolicyEnvelope(policyAccount, plan.Target.Settings, b.delegate.String(), accounts[0], []fleet.RouteInstruction{inner})
 }
 
-func (b *SweepWireBuilder) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
+func (b *SweepWireBuilder) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute, residueBoundRaw int64) error {
 	tx, err := persistedWireTransaction(attempt)
 	if err != nil {
 		return err
@@ -282,10 +300,10 @@ func (b *SweepWireBuilder) ProveTopUpWire(ctx context.Context, plan DepositPlan,
 	if err != nil {
 		return err
 	}
-	return b.proveTopUpDecoded(plan, attempt, route, message, tx.Message.Signers())
+	return b.proveTopUpDecoded(plan, attempt, route, residueBoundRaw, message, tx.Message.Signers())
 }
 
-func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAttempt, route TopUpRoute, message decodedMessage, signers solana.PublicKeySlice) error {
+func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAttempt, route TopUpRoute, residueBoundRaw int64, message decodedMessage, signers solana.PublicKeySlice) error {
 	if err := validatePlanPublicKeys(plan); err != nil {
 		return err
 	}
@@ -355,8 +373,8 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 		return fmt.Errorf("persisted top-up wrapped instruction is not the KLend deposit v2")
 	}
 	amount := binary.LittleEndian.Uint64(inner.data[8:16])
-	if int64(amount) != plan.AmountRaw || amount > 1<<63-1 {
-		return fmt.Errorf("persisted top-up wire deposits %d, want exactly the frozen %d", amount, plan.AmountRaw)
+	if amount > 1<<63-1 || int64(amount) != attempt.AmountRaw || int64(amount) < plan.AmountRaw || residueBoundRaw < 0 || int64(amount)-plan.AmountRaw > residueBoundRaw {
+		return fmt.Errorf("persisted top-up wire deposits %d, want exactly the persisted %d, between the frozen %d and %d more", amount, attempt.AmountRaw, plan.AmountRaw, residueBoundRaw)
 	}
 	if len(inner.accounts) != depositInstructionAccountSize {
 		return fmt.Errorf("persisted top-up deposit has %d accounts, want %d", len(inner.accounts), depositInstructionAccountSize)

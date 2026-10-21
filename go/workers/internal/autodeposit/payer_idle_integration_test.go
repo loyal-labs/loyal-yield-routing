@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-	"time"
 )
 
 // Root cause (04e792e0, 6557c221): on 2026-08-07 the shared signer fell to
@@ -102,73 +101,36 @@ func TestFeePayerExhaustionClaimsNothingAndPushesEachDueSlot(t *testing.T) {
 	}
 }
 
-// Root cause (9467ebf5, 2089d5fa, ASK-2164): Rust fleet same-mint routes
-// withdraw all source collateral but deposit the planned liquidity, so the
-// interest accrued since planning stays in the vault ATA, and nothing drains
-// idle custody. The Go port refused any idle above zero, so a vault holding
-// 3 raw units could never autodeposit again. Residue up to the $25 tolerance
-// rides beside the pull.
-func TestIdleResidueRidesBesideThePull(t *testing.T) {
-	residue := newFreshScenario(t, "residue", 3)
-	worker, _ := residue.worker(t, ControllerDependencies{IdleToleranceRaw: 25_000_000}, nil)
+func TestUnownedResidueDepositsWithThePull(t *testing.T) {
+	residue := newFreshScenario(t, "unowned-residue", 3)
+	topup := "itest-controller-topup-sig-unowned-residue"
+	residue.chain.receipts[topup] = ReceiptEvidence{Signature: topup, Slot: 870_002, Effects: []ReceiptEffect{
+		{TokenAccount: "itest-vault-usdc-unowned-residue", Mint: USDCMint, PreRaw: 5_000_003, PostRaw: 0},
+		{TokenAccount: "itest-liquidity-supply", Mint: USDCMint, PreRaw: 10, PostRaw: 5_000_013},
+	}}
+	worker, _ := residue.worker(t, ControllerDependencies{}, nil)
 	report, err := worker.Tick(t.Context())
 	if err != nil || report.Outcome.ExecutionsCompleted != 1 {
-		t.Fatalf("idle residue blocked the deposit: %+v %v", report.Outcome, err)
+		t.Fatalf("unowned residue blocked the deposit: %+v %v", report.Outcome, err)
 	}
-	var destinationPre int64
-	if err := residue.store.pool.QueryRow(t.Context(), `SELECT destination_pre_balance_raw FROM loyal_yield.balance_sweep_transaction_attempts WHERE target_id=$1 AND operation_kind='pull'`, residue.target.TargetID).Scan(&destinationPre); err != nil || destinationPre != 3 {
-		t.Fatalf("pull recorded custody pre-balance %d, want the observed 3: %v", destinationPre, err)
+	var deposited int64
+	if err := residue.store.pool.QueryRow(t.Context(), `SELECT amount_raw FROM loyal_yield.balance_sweep_transaction_attempts WHERE target_id=$1 AND operation_kind='top_up' AND attempt_state='confirmed'`, residue.target.TargetID).Scan(&deposited); err != nil || deposited != 5_000_003 {
+		t.Fatalf("top-up deposited %d, want the 5000000 pull plus the 3 residue: %v", deposited, err)
 	}
 }
 
-// The Go port claimed, then released idle-blocked slots: the slot went failed
-// with generic text and schedule repair cleared last_error, so the overdue
-// check could never see a stuck deposit after a fallback. The deferral now
-// happens before any claim, as the TS executor's deferIdleVaultScheduledSlot
-// does; the gauge reads the slot's first-blocked time.
-func TestIdleAboveToleranceDefersBeforeClaimingWithADurableBlock(t *testing.T) {
-	owned := newFreshScenario(t, "owned-idle", 25_000_001)
-	ctx := t.Context()
-	worker, registry := owned.worker(t, ControllerDependencies{IdleToleranceRaw: 25_000_000}, nil)
-	block := func() (status, lastError string, waits bool, since time.Time) {
-		t.Helper()
-		if err := owned.store.pool.QueryRow(ctx, `SELECT status::text, last_error, eligible_after > now() + interval '4 minutes', idle_blocked_since FROM loyal_yield.balance_sweep_scheduled_slots WHERE id=$1`, owned.slot).Scan(&status, &lastError, &waits, &since); err != nil {
-			t.Fatal(err)
-		}
-		return status, lastError, waits, since
-	}
-	var first time.Time
-	for deferral := 1; deferral <= 3; deferral++ {
-		report, err := worker.Tick(ctx)
-		if err != nil || report.Outcome.ExecutionsDeferred != 1 || len(report.Alerts) != 0 || len(owned.wires.built) != 0 || report.settled() {
-			t.Fatalf("deferral %d: outcome %+v alerts %v built %v: %v", deferral, report.Outcome, report.Alerts, owned.wires.built, err)
-		}
-		status, lastError, waits, since := block()
-		if status != "scheduled" || !waits || lastError != idleDeferralPrefix+"25000001" {
-			t.Fatalf("deferral %d left slot %s %q (waits %v)", deferral, status, lastError, waits)
-		}
-		if !first.IsZero() && !since.Equal(first) {
-			t.Fatalf("first-blocked time moved from %s to %s", first, since)
-		}
-		first = since
-		elapseReleaseDelay(t, owned.store, owned.target.TargetID)
-	}
-	var claims int
-	if err := owned.store.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.balance_sweep_lot_claims WHERE target_id=$1`, owned.target.TargetID).Scan(&claims); err != nil || claims != 0 {
-		t.Fatalf("idle-blocked target was claimed %d times: %v", claims, err)
-	}
-	if failedCount(t, registry, "autodeposit_idle_blocked") != 0 {
-		t.Fatal("a deferral was counted as a failure")
-	}
-
-	// Blocked for two hours: the gauge reads the first-blocked time.
-	if _, err := owned.store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots SET idle_blocked_since = now() - interval '2 hours' WHERE id=$1`, owned.slot); err != nil {
+func TestOpenCrossMintMovementDefersBeforeItsCustodyReachesTheVault(t *testing.T) {
+	window := newFreshScenario(t, "cross-mint-window", 3)
+	if _, err := window.store.pool.Exec(t.Context(), `
+INSERT INTO loyal_yield.rebalance_decisions (vault_id,status,source_reserve,target_reserve,source_liquidity_mint,target_liquidity_mint,amount_raw,
+ source_apy_bps,target_apy_bps,estimated_edge_bps,estimated_cost_lamports,decision_reason,execution_plan,idempotency_key,cross_mint_activation_control_generation)
+SELECT id,'confirming','cross-mint-window-reserve','cross-mint-window-target',$2,'itest-other-mint',5000000,1,2,1,0,'target_supply_apy_exceeds_source','{}'::jsonb,'itest-cross-mint-window',1
+FROM loyal_yield.managed_vaults WHERE vault_pubkey=$1`, "itest-vault-cross-mint-window", USDCMint); err != nil {
 		t.Fatal(err)
 	}
-	if err := worker.passFacts(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if age := metricValue(t, registry, "loyal_autodeposit_oldest_due_lot_age_seconds", nil); age < 7190 || age > 7300 {
-		t.Fatalf("oldest due age %v, want the two hours since first blocked", age)
+	worker, _ := window.worker(t, ControllerDependencies{}, nil)
+	report, err := worker.Tick(t.Context())
+	if err != nil || report.Outcome.ExecutionsDeferred != 1 || report.Outcome.ExecutionsCompleted != 0 || len(window.wires.built) != 0 {
+		t.Fatalf("an open cross-mint movement did not defer the deposit: %+v built %v: %v", report.Outcome, window.wires.built, err)
 	}
 }
