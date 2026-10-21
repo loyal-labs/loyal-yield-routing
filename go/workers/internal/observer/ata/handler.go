@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	workersdb "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/mr-tron/base58"
@@ -27,7 +28,7 @@ const (
 	laserStreamSource = "laserstream_grpc"
 	rpcSeedSource     = "rpc_seed"
 	commitment        = "confirmed"
-	usdcMint          = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+	usdcMint          = fleet.USDCMint
 )
 
 type Handler struct {

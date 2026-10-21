@@ -157,20 +157,31 @@ type supportedMarket struct {
 	riskBaskets  []string
 }
 
+const (
+	kaminoEthenaMarket     = "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF"
+	kaminoJLPMarket        = "DxXdAyU3kCjnyggvHmY5nAwg5cRbbmdyX3npfDMjjMek"
+	kaminoBitcoinMarket    = "GMqmFygF5iSm5nkckYU6tieggFcR42SyjkkhK5rswFRs"
+	kaminoSuperstateMarket = "CF32kn7AY8X1bW7ZkGcHc4X9ZWTxqKGCJk6QwrQkDcdw"
+	kaminoHumaMarket       = "52FSGeeokLpgvgAMdqxyt5Hoc2TbUYj5b8yxrEdZ37Vf"
+	kaminoSolsticeMarket   = "9Y7uwXgQ68mGqRtZfuFaP4hc4fxeJ7cE9zTtqTxVhfGU"
+	kaminoXStocksMarket    = "5wJeMrUYECGq41fxRESKALVcHnNX26TAWy4W98yULsua"
+	kaminoAltcoinsMarket   = "ByYiZxp8QrdN9qbdtaAiePN8AAr3qvTPppNJDpf5DVJ5"
+)
+
 // Mirrors loyal-kamino-data targets.rs policy_supported_markets and policy_supported_mints.
 var policySupportedMarkets = []supportedMarket{
 	{fleet.KaminoMainMarket, "Main Market", []string{"safe", "medium", "aggressive"}},
 	{fleet.KaminoFigureMarket, "Figure Market", []string{"safe", "medium", "aggressive"}},
 	{fleet.KaminoMapleMarket, "Maple Market", []string{"safe", "medium", "aggressive"}},
 	{fleet.KaminoOnReMarket, "OnRe Market", []string{"safe", "medium", "aggressive"}},
-	{"BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF", "Ethena Market", []string{"safe", "medium", "aggressive"}},
-	{"DxXdAyU3kCjnyggvHmY5nAwg5cRbbmdyX3npfDMjjMek", "JLP Market", []string{"medium", "aggressive"}},
-	{"GMqmFygF5iSm5nkckYU6tieggFcR42SyjkkhK5rswFRs", "Bitcoin Market", []string{"medium", "aggressive"}},
-	{"CF32kn7AY8X1bW7ZkGcHc4X9ZWTxqKGCJk6QwrQkDcdw", "Superstate Opening Bell Market", []string{"medium", "aggressive"}},
-	{"52FSGeeokLpgvgAMdqxyt5Hoc2TbUYj5b8yxrEdZ37Vf", "Huma Market", []string{"aggressive"}},
-	{"9Y7uwXgQ68mGqRtZfuFaP4hc4fxeJ7cE9zTtqTxVhfGU", "Solstice Market", []string{"aggressive"}},
-	{"5wJeMrUYECGq41fxRESKALVcHnNX26TAWy4W98yULsua", "xStocks Market", []string{"aggressive"}},
-	{"ByYiZxp8QrdN9qbdtaAiePN8AAr3qvTPppNJDpf5DVJ5", "Altcoins Market", []string{"aggressive"}},
+	{kaminoEthenaMarket, "Ethena Market", []string{"safe", "medium", "aggressive"}},
+	{kaminoJLPMarket, "JLP Market", []string{"medium", "aggressive"}},
+	{kaminoBitcoinMarket, "Bitcoin Market", []string{"medium", "aggressive"}},
+	{kaminoSuperstateMarket, "Superstate Opening Bell Market", []string{"medium", "aggressive"}},
+	{kaminoHumaMarket, "Huma Market", []string{"aggressive"}},
+	{kaminoSolsticeMarket, "Solstice Market", []string{"aggressive"}},
+	{kaminoXStocksMarket, "xStocks Market", []string{"aggressive"}},
+	{kaminoAltcoinsMarket, "Altcoins Market", []string{"aggressive"}},
 }
 
 var policySupportedMints = map[string]string{

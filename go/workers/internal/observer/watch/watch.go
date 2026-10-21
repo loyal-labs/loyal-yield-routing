@@ -34,7 +34,7 @@ const (
 
 type Stablecoin struct{ Mint, TokenProgram solana.PublicKey }
 
-var stablecoins = func() []Stablecoin {
+var Stablecoins = func() []Stablecoin {
 	var coins []Stablecoin
 	for _, stable := range fleet.EarnStablecoins() {
 		coins = append(coins, Stablecoin{solana.MustPublicKeyFromBase58(stable.Mint), solana.MustPublicKeyFromBase58(stable.TokenProgram)})
@@ -318,7 +318,7 @@ func (l *Loader) loadATATargets(ctx context.Context) (map[string]ATATarget, erro
 		  AND target.desired_active
 		  AND target.chain_status = 'active'
 		  AND target.token_mint = $2
-		ORDER BY target.id`, l.cluster, stablecoins[3].Mint.String())
+		ORDER BY target.id`, l.cluster, Stablecoins[3].Mint.String())
 	if err != nil {
 		return nil, fmt.Errorf("load active ATA targets: %w", err)
 	}
@@ -602,12 +602,12 @@ func buildVault(target earnTarget) (Vault, error) {
 		if err != nil {
 			return Vault{}, err
 		}
-		result.Accounts = append(result.Accounts, Account{target.Wallet, "wallet"}, Account{associatedToken(wallet, stablecoins[3]), "autodeposit_wallet_ata"})
-		for _, coin := range stablecoins {
+		result.Accounts = append(result.Accounts, Account{target.Wallet, "wallet"}, Account{associatedToken(wallet, Stablecoins[3]), "autodeposit_wallet_ata"})
+		for _, coin := range Stablecoins {
 			result.Accounts = append(result.Accounts, Account{associatedToken(wallet, coin), "wallet_token"})
 		}
 	}
-	for _, coin := range stablecoins {
+	for _, coin := range Stablecoins {
 		result.Accounts = append(result.Accounts, Account{associatedToken(vaultKey, coin), "idle_token"})
 	}
 	markets := append([]string(nil), target.Markets...)
@@ -648,7 +648,7 @@ func USDCATA(owner string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return associatedToken(pubkey, stablecoins[3]), nil
+	return associatedToken(pubkey, Stablecoins[3]), nil
 }
 
 func associatedToken(owner solana.PublicKey, coin Stablecoin) string {

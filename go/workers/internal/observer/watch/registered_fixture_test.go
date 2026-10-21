@@ -130,12 +130,12 @@ func (f *registeredFixture) managed(i watchIdentity, index uint8, active bool, c
 }
 func (f *registeredFixture) onboarding(i watchIdentity) {
 	p := f.policy(i, 1, true, "mainnet-beta", 120)
-	if _, err := f.yield.Exec(f.ctx, `INSERT INTO loyal_yield.earn_deposit_onboarding_attempts(wallet_address,delegated_signer,settings,vault_index,vault_pubkey,policy_id,policy_account,policy_seed,target_reserve,market,liquidity_mint,status,first_seen_at,updated_at) VALUES($1,$1,$2,1,$3,$4,$5,$6,$7,$8,$9,'policy_pending',now(),now())`, i.wallet, i.settings, f.vault(i, 1), p.id, p.account, p.seed, f.key("reserve"), safeMarkets[0].String(), stablecoins[3].Mint.String()); err != nil {
+	if _, err := f.yield.Exec(f.ctx, `INSERT INTO loyal_yield.earn_deposit_onboarding_attempts(wallet_address,delegated_signer,settings,vault_index,vault_pubkey,policy_id,policy_account,policy_seed,target_reserve,market,liquidity_mint,status,first_seen_at,updated_at) VALUES($1,$1,$2,1,$3,$4,$5,$6,$7,$8,$9,'policy_pending',now(),now())`, i.wallet, i.settings, f.vault(i, 1), p.id, p.account, p.seed, f.key("reserve"), safeMarkets[0].String(), Stablecoins[3].Mint.String()); err != nil {
 		f.t.Fatal(err)
 	}
 }
 func (f *registeredFixture) position(i watchIdentity, p watchPolicy, vault string) {
-	if _, err := f.yield.Exec(f.ctx, `INSERT INTO loyal_yield.user_yield_positions(wallet_address,smart_account_address,settings,vault_index,vault_pubkey,policy_id,policy_account,policy_seed,initial_reserve,initial_market,initial_liquidity_mint,deposit_mint,principal_amount_raw,first_deposit_signature,last_deposit_signature,last_confirmed_slot,status,created_at,updated_at,current_reserve,current_market,current_liquidity_mint,current_amount_raw,current_observed_slot,current_observed_at) VALUES($1,$3,$2,1,$3,$4,$5,$6,$7,$8,$9,$9,1000000,'watch-deposit','watch-deposit',200,'active',now(),now(),$7,$8,$9,1000000,200,now())`, i.wallet, i.settings, vault, p.id, p.account, p.seed, f.key("reserve"), safeMarkets[0].String(), stablecoins[3].Mint.String()); err != nil {
+	if _, err := f.yield.Exec(f.ctx, `INSERT INTO loyal_yield.user_yield_positions(wallet_address,smart_account_address,settings,vault_index,vault_pubkey,policy_id,policy_account,policy_seed,initial_reserve,initial_market,initial_liquidity_mint,deposit_mint,principal_amount_raw,first_deposit_signature,last_deposit_signature,last_confirmed_slot,status,created_at,updated_at,current_reserve,current_market,current_liquidity_mint,current_amount_raw,current_observed_slot,current_observed_at) VALUES($1,$3,$2,1,$3,$4,$5,$6,$7,$8,$9,$9,1000000,'watch-deposit','watch-deposit',200,'active',now(),now(),$7,$8,$9,1000000,200,now())`, i.wallet, i.settings, vault, p.id, p.account, p.seed, f.key("reserve"), safeMarkets[0].String(), Stablecoins[3].Mint.String()); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -158,7 +158,7 @@ func (f *registeredFixture) autodeposit(i watchIdentity, desired bool, status, c
 		f.t.Fatal(err)
 	}
 	a := watchATA{walletATA: walletATA, vault: vault}
-	if err := f.yield.QueryRow(f.ctx, `INSERT INTO loyal_yield.balance_sweep_targets(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,wallet,wallet_usdc_ata,vault_usdc_ata,wallet_token_ata,vault_token_ata,token_mint,threshold,max_amount_per_period,desired_active,chain_status,last_seen_slot,last_seen_signature,cluster,subscription_authority,recurring_delegation,recurring_delegation_nonce) VALUES($1,$2,$3,$4,1,$5,$2,$6,$7,$6,$7,$8,1,1000000,$9,$10,200,'watch-fixture',$11,$12,$13::text,CASE WHEN $13::text IS NULL THEN NULL ELSE 1 END) RETURNING id`, i.settings, i.wallet, p.seed, p.account, vault, walletATA, vaultATA, stablecoins[3].Mint.String(), desired, status, cluster, authority, delegation).Scan(&a.id); err != nil {
+	if err := f.yield.QueryRow(f.ctx, `INSERT INTO loyal_yield.balance_sweep_targets(settings,authority,policy_seed,policy_account,vault_index,vault_pubkey,wallet,wallet_usdc_ata,vault_usdc_ata,wallet_token_ata,vault_token_ata,token_mint,threshold,max_amount_per_period,desired_active,chain_status,last_seen_slot,last_seen_signature,cluster,subscription_authority,recurring_delegation,recurring_delegation_nonce) VALUES($1,$2,$3,$4,1,$5,$2,$6,$7,$6,$7,$8,1,1000000,$9,$10,200,'watch-fixture',$11,$12,$13::text,CASE WHEN $13::text IS NULL THEN NULL ELSE 1 END) RETURNING id`, i.settings, i.wallet, p.seed, p.account, vault, walletATA, vaultATA, Stablecoins[3].Mint.String(), desired, status, cluster, authority, delegation).Scan(&a.id); err != nil {
 		f.t.Fatal(err)
 	}
 	return a

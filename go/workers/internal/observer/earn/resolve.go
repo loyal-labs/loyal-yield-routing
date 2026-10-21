@@ -215,8 +215,8 @@ func classifyCashFlow(t earnTransaction, update NormalizedUpdate, vault watch.Va
 		return nil, nil
 	}
 	var result *cashFlow
-	for _, stable := range earnStables {
-		delta := t.ownerTokenDelta(stable.mint, vault.Wallet)
+	for _, stable := range watch.Stablecoins {
+		delta := t.ownerTokenDelta(stable.Mint, vault.Wallet)
 		if delta.Sign() == 0 {
 			continue
 		}
@@ -231,7 +231,7 @@ func classifyCashFlow(t earnTransaction, update NormalizedUpdate, vault watch.Va
 		if !delta.IsUint64() {
 			return nil, errors.New("wallet token delta overflow")
 		}
-		result = &cashFlow{kind: kind, mint: stable.mint.String(), amount: delta.Uint64()}
+		result = &cashFlow{kind: kind, mint: stable.Mint.String(), amount: delta.Uint64()}
 	}
 	return result, nil
 }
@@ -254,8 +254,8 @@ func bindingKeys(vault watch.Vault, role string) ([]solana.PublicKey, error) {
 type cleanupProof struct{ balancesZero, policiesClosed bool }
 
 func knownStable(mint solana.PublicKey) bool {
-	for _, stable := range earnStables {
-		if stable.mint == mint {
+	for _, stable := range watch.Stablecoins {
+		if stable.Mint == mint {
 			return true
 		}
 	}
@@ -358,8 +358,8 @@ func blockingTokenInventory(ctx context.Context, rpc *chain.Client, vault solana
 				continue
 			}
 			productIdle := false
-			for _, stable := range earnStables {
-				if stable.program == program && stable.mint == held.Mint && associatedToken(vault, stable.mint, stable.program) == address {
+			for _, stable := range watch.Stablecoins {
+				if stable.TokenProgram == program && stable.Mint == held.Mint && associatedToken(vault, stable.Mint, stable.TokenProgram) == address {
 					productIdle = true
 				}
 			}
