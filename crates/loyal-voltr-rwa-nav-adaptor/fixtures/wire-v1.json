@@ -20,6 +20,66 @@
       { "name": "squads_program", "signer": false, "writable": false }
     ]
   },
+  "bridge_builders": {
+    "VoltrRestoreIdle": {
+      "program": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "data": "1f2da205c1d986bc40420f00000000000108000000b712469c946da122013900000001c8ed991a00000000c8ed991a0000000015cd5b07000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "accounts": [
+        { "key": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", "signer": true, "writable": false },
+        { "key": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y", "signer": false, "writable": false },
+        { "key": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA", "signer": false, "writable": true },
+        { "key": "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u", "signer": false, "writable": false },
+        { "key": "5bw4VYzpZXsk9SUNyWwJkb4fEx1DS8eNMFB6Qb4MUfhE", "signer": false, "writable": true },
+        { "key": "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", "signer": false, "writable": false },
+        { "key": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW", "signer": false, "writable": false },
+        { "key": "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb", "signer": false, "writable": true },
+        { "key": "5r74AE7yewacfRzoGAjXx5X3gM9LUoLU29eHzdjiLrJo", "signer": false, "writable": true },
+        { "key": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "signer": false, "writable": true },
+        { "key": "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb", "signer": false, "writable": false },
+        { "key": "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh", "signer": false, "writable": true },
+        { "key": "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC", "signer": false, "writable": true },
+        { "key": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "signer": false, "writable": false },
+        { "key": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6", "signer": false, "writable": false },
+        { "key": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", "signer": true, "writable": false },
+        { "key": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe", "signer": false, "writable": true },
+        { "key": "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq", "signer": false, "writable": true }
+      ]
+    },
+    "ReportNAV": {
+      "program": "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
+      "data": "f65239e283defdf900000000000000000108000000f223c68952e1f2b6013900000001c8ed991a00000000c8ed991a0000000015cd5b07000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "accounts": [
+        { "key": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", "signer": true, "writable": false },
+        { "key": "4sycXz9Xwevedo6eiXR8QEhY8yrQrkNS4G1deY9tAD2Y", "signer": false, "writable": false },
+        { "key": "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA", "signer": false, "writable": true },
+        { "key": "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", "signer": false, "writable": false },
+        { "key": "AsfkxMdVYjMnr2fdTBMUXhq81hgi2hbENXCy9WhUQF7u", "signer": false, "writable": false },
+        { "key": "5bw4VYzpZXsk9SUNyWwJkb4fEx1DS8eNMFB6Qb4MUfhE", "signer": false, "writable": true },
+        { "key": "EoHz6FHTL34F6HjuJmb5EceaRqxRG1RMYwYWKtWkGBFb", "signer": false, "writable": true },
+        { "key": "5r74AE7yewacfRzoGAjXx5X3gM9LUoLU29eHzdjiLrJo", "signer": false, "writable": true },
+        { "key": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "signer": false, "writable": true },
+        { "key": "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb", "signer": false, "writable": false },
+        { "key": "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh", "signer": false, "writable": true },
+        { "key": "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC", "signer": false, "writable": true },
+        { "key": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "signer": false, "writable": false },
+        { "key": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW", "signer": false, "writable": false },
+        { "key": "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6", "signer": false, "writable": false },
+        { "key": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", "signer": true, "writable": false },
+        { "key": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe", "signer": false, "writable": true },
+        { "key": "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq", "signer": false, "writable": true }
+      ]
+    },
+    "StageSquadsToVoltr": {
+      "program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "data": "0c40420f000000000006",
+      "accounts": [
+        { "key": "EBG2iYrcXttDy9FpWDeNVL8uaCLRCkevrpRyrAhvVYKe", "signer": false, "writable": true },
+        { "key": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "signer": false, "writable": false },
+        { "key": "EPCVCLY5wfumf6yPvqu7zuEB4WnnXbnPsy7JrKoAWcqC", "signer": false, "writable": true },
+        { "key": "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", "signer": true, "writable": false }
+      ]
+    }
+  },
   "discriminators": {
     "adaptor_deposit": "f223c68952e1f2b6",
     "adaptor_withdraw": "b712469c946da122",
