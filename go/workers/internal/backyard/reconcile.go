@@ -14,8 +14,7 @@ import (
 var (
 	classicTokenProgram = solana.TokenProgramID.String()
 	token2022Program    = solana.Token2022ProgramID.String()
-	// bridgeTokenProgram is the token program of the bridge and Kamino legs.
-	bridgeTokenProgram = classicTokenProgram
+	bridgeTokenProgram  = classicTokenProgram
 )
 
 type ExpectedAccountEffect struct {
@@ -183,10 +182,6 @@ func validateRepaymentEffects(expected ExpectedEffects) error {
 	return nil
 }
 
-// ReconcileConfirmedTransaction verifies effects against the immutable receipt
-// for the exact persisted signature. A later account read is intentionally not
-// accepted: unrelated deposits and claims can mutate the same custodies after
-// this transaction confirms.
 func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
 	if expected.Kind == "kamino-initialize" || expected.Initialization != nil {
 		return v.manifest.reconcileKaminoInitialization(expected, receipt)
@@ -208,8 +203,6 @@ func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt C
 	canonical := make([]string, 0, len(expected.Accounts))
 	bounds := expected.Repayment
 	if expected.Deposit != nil {
-		// KLend debits at most the signed amount; whatever it leaves stays in
-		// our custody, and the receipt says what moved.
 		bounds = &ExpectedRepayment{1, expected.Deposit.MaximumDebitRaw}
 	}
 	beforeByMint := make(map[string]uint64, len(expected.Accounts))
@@ -222,10 +215,6 @@ func ReconcileConfirmedTransaction(v *Vault, expected ExpectedEffects, receipt C
 			pre.Authority != effect.Authority || post.Authority != effect.Authority {
 			return Reconciliation{}, nil, fmt.Errorf("transaction-scoped custody identity or precondition mismatch: %s", effect.Address)
 		}
-		// The receipt's pre and post bracket this transaction only, so its
-		// delta is what this transaction moved. Any account (Voltr idle, the
-		// Kamino reserves, even our own custody) may have been written between
-		// our observation and this transaction; that is no mismatch.
 		moved, planned := int64(post.Raw)-int64(pre.Raw), int64(effect.AfterRaw)-int64(effect.BeforeRaw)
 		if bounds != nil {
 			if i == 0 {

@@ -19,8 +19,6 @@ type KaminoInitializationReceipt struct {
 	Obligation       ConfirmedAccount `json:"obligation"`
 }
 
-// validateInitializationEffectsShape is the structural check: only a conserved native kamino-initialize effect with no
-// side accounts, deposits, repayments or return data is admissible.
 func validateInitializationEffectsShape(e ExpectedEffects) error {
 	if e.Schema != "loyal-backyard-rwa-expected-effects/v1" || e.Kind != "kamino-initialize" ||
 		!e.Conserved || len(e.Accounts) != 0 || e.Initialization == nil || e.Deposit != nil || e.Repayment != nil || e.ReturnData != nil {
@@ -29,8 +27,6 @@ func validateInitializationEffectsShape(e ExpectedEffects) error {
 	return nil
 }
 
-// validateInitializationEffects checks the shape and recompiles the
-// embedded admission request.
 func (m RouteManifest) validateInitializationEffects(e ExpectedEffects) error {
 	if err := validateInitializationEffectsShape(e); err != nil {
 		return err
@@ -39,9 +35,6 @@ func (m RouteManifest) validateInitializationEffects(e ExpectedEffects) error {
 	return err
 }
 
-// reconcileKaminoInitialization reconciles a native initializer through the
-// manifest that compiled it: the effect revalidated, the message recompiled
-// and the created obligation checked empty.
 func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt ConfirmedTransactionEvidence) (Reconciliation, []byte, error) {
 	if err := m.validateInitializationEffects(e); err != nil {
 		return Reconciliation{}, nil, err
@@ -62,8 +55,6 @@ func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt 
 		return Reconciliation{}, nil, fmt.Errorf("native initialization balances are incomplete")
 	}
 	route, _ := m.route(r.RouteLane)
-	// The delegate pays the fee and the rent of each farm user state the
-	// obligation registers.
 	farms := map[string]bool{}
 	for _, f := range obligationFarms(route) {
 		farms[f.accounts.ObligationFarmUserState.String()] = true
@@ -119,10 +110,6 @@ func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt 
 	return Reconciliation{ConfirmedSlot: receipt.Slot, EffectsSHA256: sha256Bytes(evidence), Conserved: true}, evidence, nil
 }
 
-// observeFinalizedKaminoInitialization reads the immutable receipt for the
-// persisted wire, recompiled and its journal decision validated through the
-// explicit reviewed manifest. Account presence alone never establishes which
-// submission created it or authorizes a retry.
 func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context, rpc *chain.Client, r KaminoInitializationRequest, op PersistedOperation) (ConfirmedTransactionEvidence, error) {
 	var out ConfirmedTransactionEvidence
 	if rpc == nil {

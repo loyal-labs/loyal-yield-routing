@@ -23,12 +23,7 @@ import (
 // top-level instruction, so each KLend execute carries its own refresh prefix
 // directly in front of it. All three legs carry the step's one blockhash.
 type StepRequest struct {
-	// Open is the KLend borrow (up) or withdraw (down) leg; its
-	// ObligationReserves is the obligation's topology before the step.
-	Open KaminoPrimeUSDCRequest
-	// The conversion of what Open released, exactly one of the two: debt
-	// into collateral (up), collateral into debt (down) or USDC (exit);
-	// neither on a move.
+	Open   KaminoPrimeUSDCRequest
 	Swap   *JupiterSwapRequest      `json:",omitempty"`
 	Hastra *HastraConversionRequest `json:",omitempty"`
 	// Close is the KLend deposit (up, move) or repay (down) leg of held
@@ -44,14 +39,10 @@ type StepExecutionEvidence struct {
 	ExpectedEffects ExpectedEffects
 }
 
-// move reports a step that converts nothing: an overflow move.
 func (r StepRequest) move() bool { return r.Swap == nil && r.Hastra == nil }
 
-// exit reports a step that closes nothing: a withdrawal beside no debt (an
-// equity-zero exit's last step, a debt-free release).
 func (r StepRequest) exit() bool { return r.Close == nil }
 
-// conversion is the step's conversion request, whichever venue converts it.
 func (r StepRequest) conversion() (any, error) {
 	switch {
 	case r.Swap != nil && r.Hastra == nil:
@@ -62,15 +53,11 @@ func (r StepRequest) conversion() (any, error) {
 	return nil, fmt.Errorf("a step converts through exactly one venue")
 }
 
-// stepMessage is a compiled step and what it costs: the signed
-// transaction's bytes (message and one signature) and its keys, against
-// maxTransactionBytes and maxTransactionKeys.
 type stepMessage struct {
 	Message         []byte
 	WireBytes, Keys int
 }
 
-// stepUp reports the step's direction from its Open leg.
 func stepUp(open KaminoPrimeUSDCRequest, route RuntimeRoute) (bool, error) {
 	_, leg, err := kaminoResolvedRouteInstruction(open, route)
 	if err != nil {
@@ -85,9 +72,6 @@ func stepUp(open KaminoPrimeUSDCRequest, route RuntimeRoute) (bool, error) {
 	return false, fmt.Errorf("a step opens with a borrow or a withdrawal, not a %s", leg)
 }
 
-// buildStepMessage compiles step into one v1 message paid by delegate. It
-// refuses more than maxTransactionKeys keys (step_over_key_limit); WireBytes
-// is the signed size, which checkedUnsignedMessage bounds.
 func buildStepMessage(v *Vault, step StepRequest, delegate publicKey) (stepMessage, error) {
 	route, err := v.route(step.Open.RouteLane)
 	if err != nil {
@@ -126,8 +110,6 @@ func buildStepMessage(v *Vault, step StepRequest, delegate publicKey) (stepMessa
 		if closeRequest.RouteLane != route.Lane {
 			return stepMessage{}, fmt.Errorf("step legs name different lanes")
 		}
-		// After a borrow or a partial withdrawal the obligation holds both the
-		// collateral deposit and the debt.
 		closeRequest.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
 	}
 	blockhash, err := decodeKey(step.Open.RecentBlockhash)
@@ -167,9 +149,6 @@ func buildStepMessage(v *Vault, step StepRequest, delegate publicKey) (stepMessa
 	return stepMessage{Message: message, WireBytes: len(message) + ed25519.SignatureSize, Keys: keys}, nil
 }
 
-// stepSwapMaxAccounts is the route size a step's swap is quoted at: the key
-// budget the step's legs leave (jupiterMaxAccounts), with the swap counted
-// by its fixed accounts.
 func stepSwapMaxAccounts(v *Vault, step StepRequest, action Action) (int, error) {
 	route, err := v.route(step.Open.RouteLane)
 	if err != nil {
@@ -197,8 +176,6 @@ func stepSwapMaxAccounts(v *Vault, step StepRequest, action Action) (int, error)
 	return jupiterMaxAccounts(instructions), nil
 }
 
-// compileStepMessageForDelegate is the step's signed message: every leg on
-// the step's one blockhash, within the packet.
 func compileStepMessageForDelegate(v *Vault, r StepRequest, delegate publicKey) ([]byte, error) {
 	blockhash, height := r.Open.RecentBlockhash, r.Open.LastValidBlockHeight
 	cb, ch := blockhash, height
@@ -229,8 +206,6 @@ func stepConversionBlockhash(conversion any) (string, int64) {
 	return "", 0
 }
 
-// stepConversionExecute is the conversion's Squads execute, through its own
-// venue's producer, on lane in the step's direction.
 func stepConversionExecute(v *Vault, step StepRequest, lane string, action Action, delegate publicKey) (compiledInstruction, error) {
 	conversion, err := step.conversion()
 	if err != nil {
@@ -267,9 +242,6 @@ func stepConversionOutput(conversion any) (uint64, error) {
 	return 0, fmt.Errorf("step conversion %T is neither a Jupiter swap nor a Hastra conversion", conversion)
 }
 
-// stepCloseAmount is the Close leg's exact amount: the custody held before
-// the step plus the conversion's guaranteed output. KLend deposits and repays
-// at most that, so the residue is at most the conversion's slippage slack.
 func stepCloseAmount(heldRaw uint64, conversion any) (uint64, error) {
 	out, err := stepConversionOutput(conversion)
 	if err != nil {
@@ -281,13 +253,6 @@ func stepCloseAmount(heldRaw uint64, conversion any) (uint64, error) {
 	return heldRaw + out, nil
 }
 
-// stepEffects bounds what the step does to the vault's two custodies of the
-// lane, collateral then debt: each account's AfterRaw (and MinimumAfterRaw)
-// is the least it can hold if the step lands. Up: the debt custody is
-// untouched (the borrow is exactly what the conversion spends) and the
-// collateral custody keeps at least held + guaranteed out - deposit, zero.
-// Down: the collateral custody keeps at least held + withdrawn - converted,
-// and the debt custody at least held + guaranteed out - repay, zero.
 func stepEffects(up bool, collateral, debt ExpectedAccountEffect) ExpectedEffects {
 	minimum := func(effect ExpectedAccountEffect) ExpectedAccountEffect {
 		after := effect.AfterRaw

@@ -24,8 +24,6 @@ func (r shadowJournal) RecordPositionSnapshot(context.Context, string, Observati
 	return fmt.Errorf("shadow_projection_writes_disabled")
 }
 
-// This observer enriches a separate snapshot without projecting NAV or taking
-// an execution lease. Broader ownership failures stay confined to shadow output.
 func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.Client, view *View, manifest RouteManifest, vault *vaultState, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
 	v := manifest.vault
 	planning, err := database.readRoutePlanningState(ctx, v.RouteKey)

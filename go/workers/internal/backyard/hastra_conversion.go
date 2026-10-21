@@ -20,8 +20,6 @@ import (
 // Inside this window the conversion holds until Hastra's next price push.
 const hastraPriceLandingSeconds = 120
 
-// hastraLane reports a lane whose debt converts through Hastra: AUTO
-// collateral with wYLDS debt. Keyed on the route's mints, not its name.
 func hastraLane(route RuntimeRoute) bool {
 	return route.Kamino.CollateralMint == hastra.AUTOMint.String() && route.Kamino.DebtMint == hastra.WYLDSMint.String()
 }
@@ -48,8 +46,6 @@ func hastraConversionLeg(action Action, lane string) (byte, bool) {
 	return 0, false
 }
 
-// hastraEdge is one Hastra conversion's two vault custodies and mints; every
-// Hastra account is a classic SPL Token account.
 type hastraEdge struct {
 	leg                                              byte
 	source, sourceMint, destination, destinationMint string
@@ -76,25 +72,15 @@ func hastraEdgeForRoute(v *Vault, action Action, lane string) (hastraEdge, error
 	return hastraEdge{leg: leg, source: from[0], sourceMint: from[1], destination: to[0], destinationMint: to[1]}, nil
 }
 
-// HastraConversionRequest is one Hastra conversion of the vault's own
-// custody, executed through the Hastra policy. A stake conversion's output is
-// the program's formula at the stake price it reads when it executes; the
-// request carries the price it was quoted at, and is signed only while that
-// price is still the program's and lands before going stale
-// (validateHastraPrice).
 type HastraConversionRequest struct {
 	Action    Action
 	AmountRaw uint64
-	// OutputRaw is what the conversion pays at the quoted price, with the
-	// program's rounding: StakePrice.AUTOForWYLDS for a stake deposit,
-	// WYLDSForAUTO for a redeem, the amount itself for a 1:1 mint deposit.
 	OutputRaw uint64
 	// The stake price quoted (stake conversions only): Price wYLDS per AUTO
 	// times PriceScale, verified for PriceTimestamp.
-	Price          string `json:",omitempty"`
-	PriceScale     uint64 `json:",omitempty"`
-	PriceTimestamp int64  `json:",omitempty"`
-	// Policy is the installed account of the Hastra policy.
+	Price                string `json:",omitempty"`
+	PriceScale           uint64 `json:",omitempty"`
+	PriceTimestamp       int64  `json:",omitempty"`
 	Policy               string
 	RecentBlockhash      string
 	LastValidBlockHeight int64
@@ -106,7 +92,6 @@ type HastraExecutionEvidence struct {
 	ExpectedEffects ExpectedEffects
 }
 
-// stakePrice is the request's quoted price.
 func (r HastraConversionRequest) stakePrice() (hastra.StakePrice, error) {
 	price, ok := new(big.Int).SetString(r.Price, 10)
 	if !ok {
@@ -115,8 +100,6 @@ func (r HastraConversionRequest) stakePrice() (hastra.StakePrice, error) {
 	return hastra.StakePrice{Price: price, Scale: r.PriceScale, Timestamp: r.PriceTimestamp}, nil
 }
 
-// hastraOutput is what leg pays for amount at price, by the program's
-// rounding.
 func hastraOutput(leg byte, price hastra.StakePrice, amount uint64) (uint64, error) {
 	switch leg {
 	case policy.HastraStakeDeposit:
@@ -129,8 +112,6 @@ func hastraOutput(leg byte, price hastra.StakePrice, amount uint64) (uint64, err
 	return 0, fmt.Errorf("unknown Hastra leg %d", leg)
 }
 
-// hastraInstruction is the request's Hastra instruction and its policy leg.
-// The quote must be the program's own output at the carried price.
 func hastraInstruction(v *Vault, r HastraConversionRequest) (compiledInstruction, byte, error) {
 	edge, err := hastraEdgeForRoute(v, r.Action, r.RouteLane)
 	if err != nil {
@@ -171,10 +152,6 @@ func hastraInstruction(v *Vault, r HastraConversionRequest) (compiledInstruction
 	return kaminoCompiled(ix), edge.leg, nil
 }
 
-// compileHastraMessageForDelegate is the conversion's message: the
-// canonical heap frame (the Hastra policy is as large as AUTO's KLend policy,
-// which the deployed Squads ELF parses only under the 64 KiB heap) and the
-// Squads execute of the one Hastra instruction at its policy leg.
 func compileHastraMessageForDelegate(v *Vault, request HastraConversionRequest, delegate publicKey) ([]byte, error) {
 	if request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Hastra request")
@@ -194,8 +171,6 @@ func compileHastraMessageForDelegate(v *Vault, request HastraConversionRequest, 
 	return checkedUnsignedMessage(message)
 }
 
-// hastraPolicyExecute is the request's conversion as the Squads execute of
-// its Hastra instruction at the Hastra policy's leg.
 func hastraPolicyExecute(v *Vault, request HastraConversionRequest, delegate publicKey) (compiledInstruction, error) {
 	inner, leg, err := hastraInstruction(v, request)
 	if err != nil {
@@ -208,8 +183,6 @@ func hastraPolicyExecute(v *Vault, request HastraConversionRequest, delegate pub
 	return wrapSquadsPolicy(v, policy, delegate, []byte{leg}, inner)
 }
 
-// hastraPriceAt reads the stake price and the chain clock at a view slot no
-// older than minimumSlot.
 func hastraPriceAt(ctx context.Context, view *View, minimumSlot int64) (hastra.StakePrice, int64, int64, error) {
 	slot, accounts, err := view.read(ctx, []string{hastra.StakePriceConfig.String(), budgetClockAddress}, minimumSlot)
 	if err != nil {
@@ -231,15 +204,10 @@ func hastraPriceAt(ctx context.Context, view *View, minimumSlot int64) (hastra.S
 	return price, now, slot, nil
 }
 
-// landable reports whether a conversion built at chain time now still lands
-// on price: price stays inside its staleness limit for the wire's lifetime.
 func landable(price hastra.StakePrice, now int64) bool {
 	return now <= math.MaxInt64-hastraPriceLandingSeconds && price.Fresh(now+hastraPriceLandingSeconds)
 }
 
-// prepareHastraFromTickObservation builds a Hastra conversion from the tick's
-// own view batch, as the Jupiter path does: the vault's two custodies of the
-// edge, the installed Hastra policy, the stake price and a blockhash.
 func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, HastraExecutionEvidence, error) {
 	if rpc == nil || view == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, HastraExecutionEvidence{}, fmt.Errorf("invalid Hastra evidence request")
@@ -285,11 +253,6 @@ func prepareHastraFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	return observation, evidence, nil
 }
 
-// prepareHastraQuoteEvidence quotes decision's conversion of the source
-// custody's sourceRaw at the stake price at slot, and its effects: the source
-// debited exactly the amount and the destination credited at least the
-// program's output at that price. A stake price that would go stale before
-// the wire lands holds.
 func prepareHastraQuoteEvidence(ctx context.Context, v *Vault, rpc *chain.Client, view *View, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (HastraExecutionEvidence, error) {
 	edge, err := hastraEdgeForRoute(v, decision.Action, decision.StrategyKey)
 	if err != nil {
@@ -335,8 +298,6 @@ func prepareHastraQuoteEvidence(ctx context.Context, v *Vault, rpc *chain.Client
 	}, nil
 }
 
-// conversionVenueHastra reports a decided conversion that executes through
-// Hastra rather than Jupiter.
 func conversionVenueHastra(decision Decision) bool {
 	_, ok := hastraConversionLeg(decision.Action, decision.StrategyKey)
 	return ok

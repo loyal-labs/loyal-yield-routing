@@ -1,9 +1,5 @@
 package backyard
 
-// Journaled reasons of an entry beside a funded position. A step's close
-// moves its conversion's minimum output; the excess the conversion delivers
-// stays beside the position: borrowed-token excess converts to collateral,
-// which the top-up deposit then joins.
 const (
 	topupSwapReason       = "topup_usdc_requires_collateral"
 	topupAllocationReason = "topup_voltr_idle"

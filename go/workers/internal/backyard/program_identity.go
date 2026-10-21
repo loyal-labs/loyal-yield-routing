@@ -10,10 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
-// The upgradeable-loader identity this worker accepts. Any other owner, a
-// different account discriminant, a moved deploy slot, or a ProgramData image
-// that no longer hashes to its pin leaves the program identity unverified and
-// stops the route for manual recovery.
 const (
 	bpfLoaderProgramOwner      = "BPFLoaderUpgradeab1e11111111111111111111111"
 	programAccountDiscriminant = uint32(2)
@@ -28,9 +24,6 @@ const (
 	programDataExecutableOffset = 45
 )
 
-// pinnedProgramIdentity is the reviewed binary of one upgradeable program: the
-// ProgramData address it must point at, the slot that data deployed at, and the
-// sha256 of the executable bytes ProgramData.data[45:].
 type pinnedProgramIdentity struct {
 	program, programData, dataSHA256 string
 	deploySlot                       int64
@@ -47,7 +40,6 @@ var pinnedProgramIdentities = []pinnedProgramIdentity{
 // an absent one carries its address alone.
 type programIdentityReader func(ctx context.Context) ([]ConfirmedAccount, error)
 
-// viewProgramIdentity reads the pinned identity accounts from the view.
 func viewProgramIdentity(view *View) programIdentityReader {
 	return func(ctx context.Context) ([]ConfirmedAccount, error) {
 		addresses := []string{voltr.ProgramID.String(), fsj27Program, voltrProgramDataAddress, adaptorProgramDataAddress}
@@ -56,16 +48,12 @@ func viewProgramIdentity(view *View) programIdentityReader {
 	}
 }
 
-// programIdentityObservation is what the monitors arm M6 from.
 type programIdentityObservation struct {
 	Verified                 bool
 	VoltrProgramDeploySlot   int64
 	AdaptorProgramDeploySlot int64
 }
 
-// programIdentityWatcher remembers which deploy slots were already verified
-// against the ProgramData hash, so a tick hashes only at worker start and
-// after an observed slot move.
 type programIdentityWatcher struct {
 	reader       programIdentityReader
 	lastVerified map[string]int64
@@ -130,8 +118,6 @@ func identityImage(images []ConfirmedAccount, address string) (ConfirmedAccount,
 	return ConfirmedAccount{}, fmt.Errorf("program identity account %s is absent", address)
 }
 
-// decodeProgramIdentityHeader validates a 36-byte upgradeable program account:
-// a u32 variant of 2 followed by the 32-byte ProgramData address.
 func decodeProgramIdentityHeader(image ConfirmedAccount) (string, error) {
 	if image.Owner != bpfLoaderProgramOwner || !image.Executable || image.Lamports == 0 ||
 		len(image.Data) != programHeaderLength {
@@ -143,8 +129,6 @@ func decodeProgramIdentityHeader(image ConfirmedAccount) (string, error) {
 	return encodeBase58(image.Data[4:36]), nil
 }
 
-// decodeProgramDataSlot validates a 12-byte ProgramData header: a u32 variant
-// of 3 followed by the u64 last-deploy slot.
 func decodeProgramDataSlot(image ConfirmedAccount) (int64, error) {
 	if err := validateProgramDataAccount(image, programDataHeaderLength); err != nil {
 		return 0, err
@@ -156,9 +140,6 @@ func decodeProgramDataSlot(image ConfirmedAccount) (int64, error) {
 	return slot, nil
 }
 
-// verifyProgramDataImage hashes the executable ProgramData bytes (data[45:])
-// against its pin. The 45-byte loader header is excluded: it carries the
-// upgrade authority, which can rotate without the binary changing.
 func verifyProgramDataImage(image ConfirmedAccount, pin pinnedProgramIdentity) (int64, error) {
 	if err := validateProgramDataAccount(image, programDataExecutableOffset); err != nil {
 		return 0, err

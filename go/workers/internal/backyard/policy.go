@@ -17,8 +17,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// vaultPolicy is v's Squads vault's policy of constraints, in leg order,
-// with no spending limits.
 func vaultPolicy(v *Vault, constraints ...squads.InstructionConstraintView) squads.Policy {
 	return squads.Policy{VaultIndex: v.SquadsIndex, Constraints: constraints}
 }
@@ -34,18 +32,13 @@ type policyKey struct {
 	leg    kaminoPrimeUSDCLeg
 	family BasicPolicyFamily
 	swaps  string
-	// hastra names the Hastra conversion policy by its conversions in
-	// constraint order (hastraName).
 	hastra string
 }
 
-// conversion is one swap a policy admits: the from symbol into the to symbol.
 type conversion struct{ from, to string }
 
 var kaminoLegs = []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegWithdraw, kaminoLegBorrow, kaminoLegRepay}
 
-// backyardPolicies is every policy v executes through, by what the runtime
-// looks it up by.
 func backyardPolicies(v *Vault) (map[policyKey]squads.Policy, error) {
 	out := map[policyKey]squads.Policy{}
 	var first error
@@ -135,10 +128,6 @@ func (k policyKey) String() string {
 	}
 }
 
-// installedPolicies is, for each of a vault's literals, how many accounts on
-// Backyard's Settings, delegated to its executor, decode to it, and that
-// account when exactly one does. A build reads it once, at its slot, and
-// executes every instruction it composes through it.
 type installedPolicies map[policyKey]installedPolicy
 
 type installedPolicy struct {
@@ -146,8 +135,6 @@ type installedPolicy struct {
 	matches int
 }
 
-// observeInstalledPolicies reads every policy on Backyard's Settings at a
-// slot no older than minSlot and finds each of v's literals among them.
 func observeInstalledPolicies(ctx context.Context, rpc *chain.Client, v *Vault, minSlot int64) (installedPolicies, error) {
 	installed, err := squads.Policies(ctx, rpc, solanaKey(bridgeSettings), uint64(max(minSlot, 0)))
 	if err != nil {
@@ -169,8 +156,6 @@ func findInstalledPolicies(v *Vault, installed []squads.Installed) (installedPol
 	return out, nil
 }
 
-// account is the installed account of key's literal; a literal installed
-// on no account, or on more than one, holds.
 func (p installedPolicies) account(key policyKey) (string, error) {
 	switch p[key].matches {
 	case 1:
@@ -199,8 +184,6 @@ func kaminoPolicyLeg(route RuntimeRoute, leg kaminoPrimeUSDCLeg) (policyKey, byt
 	}
 }
 
-// initializerPolicyLeg is the policy that creates lane's obligation and its
-// constraint there.
 func initializerPolicyLeg(lane string) (policyKey, byte) {
 	if autoRoute(lane) {
 		return policyKey{lane: lane}, policy.LoopInitialize
@@ -208,8 +191,6 @@ func initializerPolicyLeg(lane string) (policyKey, byte) {
 	return policyKey{lane: lane, action: InitializeKaminoObligation}, splitLeg
 }
 
-// jupiterPolicyLeg is the policy lane swaps action through and the edge's
-// constraint there.
 func jupiterPolicyLeg(v *Vault, lane string, action Action) (policyKey, byte, error) {
 	switch {
 	case catalogJupiterRoute(lane):
@@ -243,24 +224,21 @@ func autoPolicy(v *Vault, route RuntimeRoute) (squads.Policy, error) {
 	return vaultPolicy(v, out[:]...), err
 }
 
-// The basic families' legs, in the order of each family's policy. The swap
-// families pair the same two edges: SwapRoutesA swaps out of USDC (or another
-// stable) and SwapRoutesB back into it.
 const (
-	basicDeposit = iota // CollateralLifecycle
+	basicDeposit = iota
 	basicWithdraw
 	basicCollateralLegs
 )
 
 const (
-	basicBorrow = iota // DebtLifecycle
+	basicBorrow = iota
 	basicRepay
 	basicDebtLegs
 )
 
 const (
-	basicSwapONycPrime = iota // USDC with ONyc or PRIME
-	basicSwapSyrup            // USDC with syrupUSDC
+	basicSwapONycPrime = iota
+	basicSwapSyrup
 	basicSwapLegs
 )
 
@@ -304,12 +282,8 @@ func basicPolicy(v *Vault, family BasicPolicyFamily) (squads.Policy, error) {
 	}
 }
 
-// A split policy authorizes one leg of one lane as its one constraint.
 const splitLeg = 0
 
-// kaminoLegPolicy is a lane's split KLend policy for leg: every account the
-// leg sends pinned, KLend's own slots too (squads.Pinned), and the amount at
-// most the vault cap.
 func kaminoLegPolicy(v *Vault, route RuntimeRoute, leg kaminoPrimeUSDCLeg) (squads.Policy, error) {
 	collateral, debt := kaminoRouteAccounts(route, func(address string) squads.Slot { return squads.Pin(kaminoKey(address)) })
 	amount := squads.DataU64(kamino.AmountOffset, squads.OpLessThanOrEqualTo, bridgeCapRaw)
@@ -327,8 +301,6 @@ func kaminoLegPolicy(v *Vault, route RuntimeRoute, leg kaminoPrimeUSDCLeg) (squa
 	}
 }
 
-// initializerPolicy is a Multiply lane's split policy that creates its one
-// obligation.
 func initializerPolicy(v *Vault, route RuntimeRoute) (squads.Policy, error) {
 	constraint, err := obligationInitAllowed(route)
 	return vaultPolicy(v, constraint), err
@@ -354,7 +326,6 @@ var catalogSwaps = [][]conversion{
 	{{"USDC", "AUTO"}, {"AUTO", "USDC"}, {"AUTO", "PYUSD"}},
 }
 
-// catalogSwapEdges are the catalog policies over v's custodies.
 func catalogSwapEdges(v *Vault) ([][]swapEdge, error) {
 	assets, err := routeSwapAssets(v)
 	if err != nil {
@@ -369,8 +340,6 @@ func catalogSwapEdges(v *Vault) ([][]swapEdge, error) {
 	return out, nil
 }
 
-// catalogSwap is the catalog policy with the conversion of the from symbol
-// into the to symbol, and that conversion's constraint index.
 func catalogSwap(from, to string) ([]conversion, byte, error) {
 	for _, policy := range catalogSwaps {
 		for index, c := range policy {
@@ -382,8 +351,6 @@ func catalogSwap(from, to string) ([]conversion, byte, error) {
 	return nil, 0, fmt.Errorf("no catalog swap policy swaps %s into %s", from, to)
 }
 
-// swapsName names a catalog swap policy by its conversions in constraint
-// order, as "USDC->ONyc/USDC->PRIME".
 func swapsName(conversions []conversion) string {
 	names := make([]string, len(conversions))
 	for i, c := range conversions {
@@ -392,8 +359,6 @@ func swapsName(conversions []conversion) string {
 	return strings.Join(names, "/")
 }
 
-// swapAsset is one token a swap policy moves: the vault's custody of it, its
-// mint and its token program.
 type swapAsset struct {
 	symbol                 string
 	custody, mint, program solana.PublicKey
@@ -414,7 +379,6 @@ func (a swapAsset) programAccounts() []solana.PublicKey {
 	return jupiter.AuthorityTokenAccounts(jupiter.APIAuthorities, a.mint, a.program)
 }
 
-// usdgMint is Global Dollar, which only the catalog swap policies name.
 const usdgMint = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
 
 func asset(symbol, custody, mint, program string) swapAsset {
@@ -431,8 +395,6 @@ func debtAsset(r RuntimeRoute) swapAsset {
 	return asset(r.DebtSymbol, r.DebtCustody, r.Kamino.DebtMint, r.DebtTokenProgram)
 }
 
-// routeSwapAssets are v's swap assets by symbol: USDC, every lane's
-// collateral and debt, and USDG, which only the catalog policies name.
 func routeSwapAssets(v *Vault) (map[string]swapAsset, error) {
 	usdg, err := spl.AssociatedTokenAddress(kaminoKey(v.squads), kaminoKey(usdgMint), solana.Token2022ProgramID)
 	if err != nil {
@@ -445,8 +407,6 @@ func routeSwapAssets(v *Vault) (map[string]swapAsset, error) {
 	return out, nil
 }
 
-// swapEdge is one conversion a swap policy admits: the vault's custody of from
-// into its custody of to.
 type swapEdge struct{ from, to swapAsset }
 
 func (e swapEdge) conversion() conversion { return conversion{e.from.symbol, e.to.symbol} }
@@ -455,7 +415,6 @@ func (e swapEdge) allowed(v *Vault, data ...squads.DataConstraintView) squads.In
 	return vaultSwap(v, []swapAsset{e.from}, []swapAsset{e.to}, data...)
 }
 
-// swapPolicy is v's policy of swap edges, in constraint order.
 func swapPolicy(v *Vault, edges ...swapEdge) squads.Policy {
 	constraints := make([]squads.InstructionConstraintView, len(edges))
 	for i, edge := range edges {
@@ -464,7 +423,6 @@ func swapPolicy(v *Vault, edges ...swapEdge) squads.Policy {
 	return vaultPolicy(v, constraints...)
 }
 
-// pinned is the slot that admits only the route addresses given.
 func pinned(addresses ...string) squads.Slot {
 	keys := make([]solana.PublicKey, len(addresses))
 	for i, address := range addresses {
@@ -485,7 +443,6 @@ func vaultDebt(v *Vault, market, custody squads.Slot) kamino.LiquidityAllowed {
 	return kamino.OwnDebtAllowed(kaminoKey(v.squads), market, custody)
 }
 
-// hastraConversions are the conversions of the Hastra policy, by leg.
 var hastraConversions = [policy.HastraLegs]conversion{policy.HastraStakeDeposit: {"wYLDS", "AUTO"}, policy.HastraStakeRedeem: {"AUTO", "wYLDS"},
 	policy.HastraMintDeposit: {"USDC", "wYLDS"}}
 
@@ -533,8 +490,6 @@ func vaultSwap(v *Vault, from, to []swapAsset, data ...squads.DataConstraintView
 		DestinationTokenProgram: destinationProgram}, data...)
 }
 
-// obligationInitAllowed creates the route's one Multiply obligation: every
-// account pinned, the vault paying.
 func obligationInitAllowed(route RuntimeRoute) (squads.InstructionConstraintView, error) {
 	vault := kaminoKey(route.Kamino.Vault)
 	metadata, err := kamino.UserMetadataAddress(vault)
@@ -546,16 +501,12 @@ func obligationInitAllowed(route RuntimeRoute) (squads.InstructionConstraintView
 		Seed2: pinned(route.Kamino.DebtMint), OwnerUserMetadata: squads.Pin(metadata)}, 1, 0), nil
 }
 
-// The capital and NAV bridge policies run two legs in one Squads payload:
-// ArmReport arms the report ticket, then the Voltr leg consumes it. A leg's
-// value is the constraint index it executes under.
 const (
 	bridgeArmLeg = iota
 	bridgeCapitalLeg
 	bridgeCapitalLegs
 )
 
-// The staging policy runs one leg: the vault's USDC custody to the strategy.
 const (
 	bridgeStageLeg = iota
 	bridgeStageLegs
@@ -612,12 +563,6 @@ func trustfulBridgePolicies(v *Vault) map[Action]squads.Policy {
 	return map[Action]squads.Policy{VoltrAllocateToSquads: policy(deposit[:]...), StageSquadsToVoltr: policy(withdraw[:]...)}
 }
 
-// bridgePolicies are the Voltr bridge's four policies, by the action each
-// authorizes. Every leg pins the vault, the strategy-two config and the
-// report ticket it touches, bounds its amount by the per-leg cap (exactly
-// zero for a NAV report) and its reported NAV by the vault's max; Voltr and
-// the adaptor check the rest. Each policy also spends at most the daily USDC
-// cap, a plain limit: no accumulation, per-use cap or exact quantity.
 func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	if v.trustful() {
 		return trustfulBridgePolicies(v)

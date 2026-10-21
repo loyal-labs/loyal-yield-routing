@@ -18,14 +18,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// Backyard reads, simulates and sends through the shared chain client, which
-// never retries. These functions turn what the cluster says into the family's
-// evidence types. An endpoint that could not answer (chain.ErrUnavailable: a
-// transport failure, a rate limit, a node behind the asked slot) ends the tick
-// as an unavailable observation, and the next tick reads again.
-
-// unavailable marks an endpoint that could not answer as an unavailable
-// observation; every other error passes through unchanged.
 func unavailable(err error) error {
 	if errors.Is(err, chain.ErrUnavailable) {
 		return confirmedObservationUnavailable(err)
@@ -46,8 +38,6 @@ type ConfirmedAccount struct {
 	Executable      bool
 }
 
-// chainAccount is the confirmed account at address for the shared program
-// decoders; any other account is absent.
 func chainAccount(a ConfirmedAccount, address string) *chain.Account {
 	key, keyErr := solana.PublicKeyFromBase58(a.Address)
 	owner, ownerErr := solana.PublicKeyFromBase58(a.Owner)
@@ -122,7 +112,6 @@ func readAccounts(ctx context.Context, c *chain.Client, commitment rpc.Commitmen
 	return int64(slot), accounts, nil
 }
 
-// finalizedAccounts is readAccounts at finalized.
 func finalizedAccounts(ctx context.Context, c *chain.Client, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
 	return readAccounts(ctx, c, rpc.CommitmentFinalized, addresses, minSlot, optional...)
 }
@@ -140,8 +129,6 @@ func latestBlockhash(ctx context.Context, c *chain.Client) (LatestBlockhash, err
 	return LatestBlockhash{Blockhash: hash.String(), LastValidBlockHeight: int64(lastValid)}, nil
 }
 
-// simulateSigned verifies the exact signed bytes that would later be
-// persisted, with signature checks and the wire's own blockhash.
 func simulateSigned(ctx context.Context, c *chain.Client, signedWire []byte) (SimulationResult, error) {
 	if len(signedWire) == 0 {
 		return SimulationResult{}, fmt.Errorf("signed transaction wire is required")
@@ -189,9 +176,6 @@ func signatureStatus(ctx context.Context, c *chain.Client, signature string) (Si
 	}, nil
 }
 
-// finalizedReceipt reads the exact signature's transaction at commitment. A
-// receipt the cluster does not have yet, or an endpoint that could not answer,
-// is an unavailable observation: the next tick reads again.
 func finalizedReceipt(ctx context.Context, c *chain.Client, signature string) (chain.Receipt, error) {
 	sig, err := solana.SignatureFromBase58(signature)
 	if err != nil {
@@ -228,10 +212,6 @@ type ConfirmedTransactionEvidence struct {
 	Initialization    *KaminoInitializationReceipt
 }
 
-// finalizedTransaction reads the immutable finalized receipt for the exact
-// persisted signature. Reconciliation must use these transaction-scoped
-// pre/post token balances rather than a later account read that can include
-// unrelated user deposits or claims.
 func finalizedTransaction(ctx context.Context, c *chain.Client, signature string) (ConfirmedTransactionEvidence, error) {
 	receipt, err := finalizedReceipt(ctx, c, signature)
 	if err != nil {

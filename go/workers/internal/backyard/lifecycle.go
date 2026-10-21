@@ -15,12 +15,6 @@ import (
 // landResendEvery matches the fleet landing cadence.
 var landResendEvery = time.Second
 
-// The one transaction path of a tick, after Decide chose an action and
-// prepare built its request: sign the request's message, simulate that exact
-// signed wire, and persist it (write-ahead) before anything sends it. The
-// simulation, the Squads policy, KLend and the request's own minimum output
-// refuse a wrong transaction; nothing here re-reads the chain or re-checks
-// the bytes it just encoded.
 func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Client, manifest RouteManifest, operationID string, request any, effects ExpectedEffects, credentials Credentials) error {
 	if database == nil || rpc == nil || operationID == "" {
 		return fmt.Errorf("build runtime dependencies are required")
@@ -50,12 +44,6 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 	return database.PersistSigned(ctx, operationID, signed, simulation, encoded)
 }
 
-// simulationRefused is a wire the chain refused in simulation (a policy, a
-// spending limit, KLend, the adaptor's report age, a minimum output): it was
-// never sent, it is the chain_refused hold, which the tick journals with the
-// simulation error, and the next tick decides again. An endpoint that could
-// not answer leaves the row decided; the next tick fails it and decides
-// again.
 func simulationRefused(err error) error {
 	if errors.Is(err, errConfirmedObservationUnavailable) {
 		return err
@@ -63,9 +51,6 @@ func simulationRefused(err error) error {
 	return &BudgetHold{Reason: holdChainRefused, Details: map[string]string{"simulation": err.Error()}, cause: err}
 }
 
-// advanceNonterminalWithManifest moves the one durable operation on:
-// a row never signed fails (the next tick decides again), a signed row lands
-// its exact persisted wire, and a landed row reconciles once it is final.
 func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest, database *Database, rpc *chain.Client, operation PersistedOperation) error {
 	if database == nil || rpc == nil || !IsNonterminal(operation.Status) {
 		return fmt.Errorf("invalid nonterminal recovery input")
@@ -90,7 +75,6 @@ func advanceNonterminalWithManifest(ctx context.Context, manifest RouteManifest,
 // row that already recorded it resends the same bytes, which cannot spend
 // twice.
 func (d *Database) land(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
-	// The signature landing polls is the wire's own, never a second column.
 	wire, err := chain.OwnSignedWire(operation.SignedWire, operation.SignedWireSHA256)
 	var signature []byte
 	if err == nil {
@@ -119,19 +103,13 @@ func (d *Database) land(ctx context.Context, rpc *chain.Client, operation Persis
 	case out.Kind == chain.Expired:
 		return d.MarkExpiredAbsentFailed(ctx, operation.ID, operation.Status)
 	case operation.Status == Signed:
-		// On chain although this worker never recorded a send of it.
 		return d.MarkManualRecovery(ctx, operation.ID, Signed, "signed_signature_found_before_broadcast_intent")
 	case out.Kind == chain.Failed:
-		// A failed Solana transaction moves no funds. Decode the failure
-		// before stopping capital: an adaptor report refusal is a liveness
-		// termination, everything else stays a capital stop.
 		return d.recoverConfirmedFailure(ctx, rpc, operation)
 	}
 	return d.MarkConfirmed(ctx, operation.ID, operation.Status, int64(out.Slot))
 }
 
-// reconcile checks a landed operation's finalized receipt against the
-// effects persisted with its wire, once.
 func (d *Database) reconcile(ctx context.Context, manifest RouteManifest, rpc *chain.Client, operation PersistedOperation) error {
 	status, err := signatureStatus(ctx, rpc, operation.TransactionSignature)
 	if err != nil {
@@ -171,7 +149,6 @@ func sha256Bytes(data []byte) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// simulationJSON is the persisted form of a simulation result.
 func simulationJSON(simulation SimulationResult) (string, error) {
 	encoded, err := json.Marshal(simulation)
 	return string(encoded), err

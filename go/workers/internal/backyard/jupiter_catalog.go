@@ -16,13 +16,9 @@ func catalogEdge(action Action, lane string) ([]conversion, byte, error) {
 		SwapDebtToCollateralStep: {debt, collateral}, SwapCollateralToDebtStep: {collateral, debt}, SwapUSDCToDebtStep: {usdc, debt},
 		SwapDebtToUSDCStep: {debt, usdc}}
 	if route.Lane == autoAUTOPYUSDTemplate.Lane {
-		// AUTO's recipe has no USDC into its debt: it repays from collateral.
 		delete(swaps, SwapUSDCToDebtStep)
 	}
 	if hastraLane(route) {
-		// A Hastra lane's debt converts only through Hastra
-		// (hastraConversionLeg), and never into USDC; its collateral and USDC
-		// stay on these edges.
 		for action := range swaps {
 			if _, hastra := hastraConversionLeg(action, lane); hastra {
 				delete(swaps, action)
@@ -37,8 +33,6 @@ func catalogEdge(action Action, lane string) ([]conversion, byte, error) {
 	return catalogSwap(swap.from, swap.to)
 }
 
-// catalogConversion is the edge of v's custodies a catalog lane swaps action
-// along.
 func catalogConversion(v *Vault, action Action, lane string) (swapEdge, error) {
 	conversions, leg, err := catalogEdge(action, lane)
 	if err != nil {

@@ -28,13 +28,8 @@ type leverageStepCost struct {
 	TotalMicros         int64 `json:"totalMicros"`
 }
 
-// leverageStepPricer prices the step that borrows borrowRaw more debt. An
-// error is an unknown cost, never zero.
 type leverageStepPricer func(borrowRaw uint64) (leverageStepCost, error)
 
-// leverageStepLegs is one step's priced evidence: the conversion quotes of
-// the up step and of the down step that unwinds it, at central values, and
-// the two transactions' network fees.
 type leverageStepLegs struct {
 	BorrowFeeMicros int64
 	// Entry: BorrowRaw debt in, its quoted collateral out.
@@ -62,7 +57,6 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	return out, nil
 }
 
-// plus is two steps' costs together: the cost of taking both.
 func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 	var out leverageStepCost
 	for _, v := range []struct {
@@ -88,7 +82,6 @@ func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 // HTTP or URL text.
 var leverageCostStages = map[string]bool{"inputs": true, "policies": true, "entry_quote": true, "exit_quote": true, "step_build": true, "price": true, "network_fee": true, "deadline": true}
 
-// leverageCostOutage is a step that could not be priced, at one stage.
 type leverageCostOutage struct {
 	stage string
 	err   error
@@ -104,9 +97,6 @@ func costOutage(stage string, err error) error {
 	return &leverageCostOutage{stage: stage, err: err}
 }
 
-// leverageCostOutageReason is the sanitized reason of a pricing failure:
-// leverage_cost_unavailable(<stage>) for a known stage, the bare reason
-// otherwise.
 func leverageCostOutageReason(err error) string {
 	var outage *leverageCostOutage
 	if errors.As(err, &outage) && leverageCostStages[outage.stage] {
@@ -122,8 +112,6 @@ func leverageCostOutageReason(err error) string {
 // approval revoked as leverage_cost_unavailable).
 const leverageStepPriceTimeout = 15 * time.Second
 
-// productionLeverageStepPricer prices a held lane's step from o's batch:
-// the up and down steps the executor would assemble for it (priceStep).
 func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, m RouteManifest, o Observation, s Snapshot) leverageStepPricer {
 	return func(borrowRaw uint64) (leverageStepCost, error) {
 		ctx, cancel := context.WithTimeout(ctx, leverageStepPriceTimeout)

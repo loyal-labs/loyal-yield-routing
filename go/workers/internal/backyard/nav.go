@@ -19,10 +19,6 @@ type DecodedTokenCustody struct {
 	TokenProgram string
 }
 
-// DecodeTokenCustody decodes a plain, unfrozen custody account of either
-// token program: no delegate, close authority or wrapped SOL, and only
-// Token-2022 extensions that cannot change its spendability or accounting.
-// The exact mint and custody authority are caller-pinned bytes.
 func DecodeTokenCustody(programOwner string, data []byte, expectedMint, expectedAuthority [32]byte) (DecodedTokenCustody, error) {
 	if bytes.Equal(expectedMint[:], make([]byte, 32)) || bytes.Equal(expectedAuthority[:], make([]byte, 32)) {
 		return DecodedTokenCustody{}, fmt.Errorf("zero token identity")
@@ -35,13 +31,9 @@ func DecodeTokenCustody(programOwner string, data []byte, expectedMint, expected
 	if held.Mint != expectedMint || held.Owner != expectedAuthority {
 		return DecodedTokenCustody{}, fmt.Errorf("token custody mint or authority mismatch")
 	}
-	// Frozen accounts are readable but cannot safely participate in a
-	// money-moving lifecycle.
 	if held.Frozen {
 		return DecodedTokenCustody{}, fmt.Errorf("token custody is not initialized")
 	}
-	// The MVP pins plain custody accounts. Extra authority state is not present
-	// in the manifest and therefore fails closed.
 	if held.Delegate != nil || held.IsNative || held.HasCloseAuthority {
 		return DecodedTokenCustody{}, fmt.Errorf("token custody has unsupported authority state")
 	}

@@ -10,8 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-// prepareJupiterFromTickObservation builds from the tick's own view batch, as
-// the bridge does; it reads only the policies it executes through, at its slot.
 func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, client *jupiter.Client, observation Observation) (Observation, JupiterExecutionEvidence, error) {
 	if rpc == nil || client == nil || observation.routeBatch == nil || decision.AmountRaw <= 0 {
 		return Observation{}, JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter evidence request")
@@ -66,9 +64,6 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 	return observation, evidence, err
 }
 
-// jupiterTokenPrograms is the token program of the swap's source and
-// destination custody: a catalog edge's assets, and the classic program for
-// every USDC-only lane.
 func jupiterTokenPrograms(v *Vault, action Action, lane string) (string, string, error) {
 	switch {
 	case catalogJupiterRoute(lane):
@@ -91,8 +86,6 @@ func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client 
 	return prepareJupiterQuoteEvidenceAt(ctx, v, rpc, client, policies, decision, sourceRaw, destinationRaw, slot, maxAccounts)
 }
 
-// prepareJupiterQuoteEvidenceAt quotes decision's swap at a route size of at
-// most maxAccounts venue accounts.
 func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Client, client *jupiter.Client, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64, maxAccounts int) (JupiterExecutionEvidence, error) {
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(v, decision.Action, decision.StrategyKey)
 	if err != nil {
@@ -139,13 +132,6 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Cli
 		return JupiterExecutionEvidence{}, fmt.Errorf("Jupiter destination threshold overflows")
 	}
 	if autoCollateralLane(decision.StrategyKey) {
-		// Retention keeps min(JSON threshold, enforceable wire floor): the
-		// legacy AUTO wire cannot guarantee more than its quoted output scaled
-		// by its own slippage, so funding is never sized off an advisory
-		// threshold the program would not enforce. A normalized floor of zero
-		// means the quote carries no enforceable output guarantee at all —
-		// fail closed with a typed hold the caller can propagate, never a
-		// retained zero minimum.
 		floor, floorErr := jupiterInstructionWireFloor(instruction)
 		if floorErr != nil {
 			return JupiterExecutionEvidence{}, confirmedObservationUnavailable(floorErr)

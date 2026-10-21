@@ -9,19 +9,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ManualRecoveryLatch is the operator's stop: one row in
-// loyal_yield.backyard_manual_recovery_latches. A HOLD_MANUAL_RECOVERY
-// decision writes it; every tick reads it before anything else and does
-// nothing while it is set; only `loyal-engine backyard clear-hold` lifts it.
-// Nothing about the stop is written to the operation journal.
 type ManualRecoveryLatch struct {
 	Reason          string
 	ObservationID   string
 	ObservationSlot int64
 }
 
-// The insert keeps the first active latch: an already-latched route preserves
-// its original reason, and only a cleared latch may be armed again.
 const latchManualRecoverySQL = `INSERT INTO loyal_yield.backyard_manual_recovery_latches
  (route_key, reason, observation_id, observation_slot) VALUES ($1, $2, $3, $4)
  ON CONFLICT (route_key) DO UPDATE SET
@@ -40,7 +33,6 @@ func validateManualRecoveryLatch(latch ManualRecoveryLatch) error {
 	return nil
 }
 
-// LatchManualRecovery persists the stop for the route.
 func (d *Database) LatchManualRecovery(ctx context.Context, routeKey string, latch ManualRecoveryLatch) error {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return fmt.Errorf("database is not configured")
@@ -54,7 +46,6 @@ func (d *Database) LatchManualRecovery(ctx context.Context, routeKey string, lat
 	return nil
 }
 
-// ManualRecoveryLatch reports the route's active stop.
 func (d *Database) ManualRecoveryLatch(ctx context.Context, routeKey string) (ManualRecoveryLatch, bool, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return ManualRecoveryLatch{}, false, fmt.Errorf("database is not configured")
@@ -72,9 +63,6 @@ func (d *Database) ManualRecoveryLatch(ctx context.Context, routeKey string) (Ma
 	return latch, true, nil
 }
 
-// ClearManualRecoveryHold is the operator command that lifts the stop. It
-// refuses an empty reason and records the reason and the clearing time on
-// the latch row. It is never called by the worker loop.
 func ClearManualRecoveryHold(ctx context.Context, databaseURL, routeKey, reason string) (string, error) {
 	if routeKey == "" {
 		return "", fmt.Errorf("a route key is required to clear a manual recovery hold")

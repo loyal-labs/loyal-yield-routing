@@ -15,10 +15,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// This is a finalized, exact-wire failed transaction receipt, not an estimate
-// of effects from logs. Failed execution rolls back atomically; additionally
-// verify the complete native/token balance vector, including the fee payer's
-// sole permitted debit.
 type finalizedFailureReceipt struct {
 	Slot        int64                 `json:"slot"`
 	Transaction []string              `json:"transaction"`
@@ -35,10 +31,6 @@ type finalizedFailureMeta struct {
 	LogMessages       []string          `json:"logMessages"`
 }
 
-// readFailureReceipt reads a failed signature's finalized receipt in
-// getTransaction's own shape, the form the settlement proof validates and
-// persists. A receipt the cluster does not have yet, or one without an error,
-// is an unavailable observation: the next tick lands the wire again.
 func readFailureReceipt(ctx context.Context, rpc *chain.Client, signature string) (finalizedFailureReceipt, error) {
 	r, err := finalizedReceipt(ctx, rpc, signature)
 	if err != nil {
@@ -90,13 +82,6 @@ type finalizedFailureSettlement struct {
 	Receipt                 finalizedFailureReceipt `json:"receipt"`
 }
 
-// validateFinalizedFailureReceipt proves a finalized failed receipt moved
-// nothing but the fee: it is the exact persisted wire, signed by the delegate
-// at key 0 under the persisted hashes; it carries an error; the fee payer was
-// debited exactly the fee; every other account's lamports are unchanged; and
-// the complete token balance rows after equal those before. It holds for any
-// action and any error: a landed failure rolls back every instruction effect,
-// and the balances are the evidence.
 func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byte, signature, wireHash, messageHash string, expectedDelegate publicKey) error {
 	fail := func() error { return budgetHold("unproven_finalized_failure_receipt") }
 	if receipt.Slot <= 0 || receipt.Meta == nil || receipt.Meta.Fee == nil || *receipt.Meta.Fee == 0 ||
@@ -120,8 +105,6 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 	if signer != expectedDelegate || !ed25519.Verify(signer[:], message, sig) || encodeBase58(sig) != signature || sha256Bytes(message) != messageHash {
 		return fail()
 	}
-	// Every account key of the exact wire (a v1 message loads no others) has
-	// balance metadata.
 	count := len(m.AccountKeys)
 	if len(receipt.Meta.PreBalances) != count || len(receipt.Meta.PostBalances) != count {
 		return fail()
@@ -136,8 +119,6 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 			return fail()
 		}
 	}
-	// Compare parsed complete rows, so ordering of JSON object keys is harmless,
-	// while owner, mint, account index, token amount and decimals all stay bound.
 	var pre, post any
 	a, _ := json.Marshal(receipt.Meta.PreTokenBalances)
 	b, _ := json.Marshal(receipt.Meta.PostTokenBalances)
@@ -168,9 +149,6 @@ func (d *Database) settleFinalizedFailure(ctx context.Context, operation Persist
 	if status != string(operation.Status) || signature != operation.TransactionSignature {
 		return false, budgetHold("failed_settlement_journal_changed")
 	}
-	// A manual row leaves through this settlement only when this package
-	// latched it for a landed failure; any other recovery reason is a
-	// different incident and stays manual.
 	if status == string(ManualRecovery) && recoveryReason != unclassifiedTransactionErrReason {
 		return false, budgetHold("failed_settlement_requires_landed_failure")
 	}

@@ -9,56 +9,34 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Vault is one Voltr vault Backyard manages: data, nothing else. Its book is
-// its own Squads vault (Settings' SquadsIndex), so two vaults' NAVs never
-// overlap; every other address is derived from these fields (newVault).
 type Vault struct {
-	Name string
-	// VoltrVault is the Voltr vault, Strategy its one strategy and Adaptor
-	// the program Voltr calls for it.
+	Name                          string
 	VoltrVault, Strategy, Adaptor string
 	SquadsIndex                   uint8
-	// RouteKey names the vault's route row; rwa keeps its original key.
-	RouteKey string
-	// AdminPerformanceFeeBPS is the vault's approved Voltr admin performance
-	// fee. M7 holds unless the chain's term is exactly this; every other
-	// Voltr fee term is zero.
-	AdminPerformanceFeeBPS int64
+	RouteKey                      string
+	AdminPerformanceFeeBPS        int64
 
-	// Derived: the Squads vault that manages it and its USDC account (the
-	// vault's cash), and Voltr's accounts of the vault and its strategy.
 	squads, cash                               string
 	protocol, idleAuth, idleATA, lpMint        string
 	strategyAuth, strategyATA, strategyReceipt string
 	adaptorReceipt                             string
-	// A Trustful vault's withdrawal is paid from its holding authority's
-	// USDC account.
-	holdingAuth, holding string
-	routes               []RuntimeRoute
-	manifest             RouteManifest
+	holdingAuth, holding                       string
+	routes                                     []RuntimeRoute
+	manifest                                   RouteManifest
 }
 
-// The rwa vault: Backyard's first vault, on its own FSj27 report adaptor.
 var rwa = newVault(Vault{Name: "rwa", VoltrVault: "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
 	Strategy: "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY", Adaptor: fsj27Program, SquadsIndex: 0,
 	RouteKey: "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh", AdminPerformanceFeeBPS: 0})
 
-// The looping vault, on Voltr's Trustful adaptor: Squads vault index 2 is
-// its book.
 var looping = newVault(Vault{Name: "looping", VoltrVault: "GrHZD15bMiUwrVPsmBwz8GRoQeDZN6wNEQVdW8k8SxV1",
 	Strategy: "GUCvzfn1hqThWp5uQNF7CqoxC1XckCPTjsRGKVXHPxu1", Adaptor: voltr.TrustfulProgramID.String(), SquadsIndex: 2,
 	RouteKey: "backyard:6HTfVjwk5FfW4GH67hmEen7VHeURdB5EJj6E429qTrUY", AdminPerformanceFeeBPS: 0})
 
-// vaults are the vaults the engine runs, a Worker each.
 var vaults = []*Vault{rwa, looping}
 
-// fsj27Program is the rwa vault's report adaptor. Its strategy-two config's
-// key is the Voltr strategy key, derived offline from the setup admin over
-// domain loyal-rwa-multiply-mainnet-v3; it replaces the retired v2 config
-// 9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj.
 const fsj27Program = "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"
 
-// findVault is the vault named name.
 func findVault(name string) (*Vault, error) {
 	for _, v := range vaults {
 		if v.Name == name {
@@ -72,9 +50,6 @@ func findVault(name string) (*Vault, error) {
 	return nil, fmt.Errorf("no Backyard vault %q; there are %q", name, names)
 }
 
-// newVault derives v's addresses: the Squads vault PDA and its USDC ATA,
-// Voltr's PDAs of the vault and strategy and their USDC ATAs, and every lane's
-// accounts owned by the Squads vault (earnLane.routeFor).
 func newVault(v Vault) *Vault {
 	key := func(value string) solana.PublicKey { return solana.PublicKey(mustKey(value)) }
 	must := func(address solana.PublicKey, err error) string {
@@ -117,14 +92,8 @@ func newVault(v Vault) *Vault {
 	return &v
 }
 
-// trustful reports a vault on Voltr's Trustful adaptor: its NAV is the
-// strategy receipt, reported by deposit_strategy's end value, and a
-// withdrawal is one transaction through the holding account. Every other
-// vault is on the FSj27 report adaptor (report_ticket.go).
 func (v *Vault) trustful() bool { return v.Adaptor == voltr.TrustfulProgramID.String() }
 
-// route is lane's chain facts in v: the lane's template with the accounts v's
-// Squads vault owns.
 func (v *Vault) route(lane string) (RuntimeRoute, error) {
 	for _, route := range v.routes {
 		if route.Lane == lane {
@@ -134,8 +103,6 @@ func (v *Vault) route(lane string) (RuntimeRoute, error) {
 	return RuntimeRoute{}, fmt.Errorf("runtime lane %q is not installed", lane)
 }
 
-// strategyAccounts are Voltr's deposit_strategy and withdraw_strategy
-// accounts of v's strategy, managed by v's Squads vault.
 func (v *Vault) strategyAccounts() voltr.StrategyAccounts {
 	return voltr.StrategyAccounts{Manager: solanaKey(v.squads), Protocol: solanaKey(v.protocol), Vault: solanaKey(v.VoltrVault),
 		Strategy: solanaKey(v.Strategy), AdaptorAddReceipt: solanaKey(v.adaptorReceipt), StrategyInitReceipt: solanaKey(v.strategyReceipt),
@@ -144,7 +111,6 @@ func (v *Vault) strategyAccounts() voltr.StrategyAccounts {
 		AssetTokenProgram: solanaKey(bridgeTokenProgram), AdaptorProgram: solanaKey(v.Adaptor)}
 }
 
-// vaultOfRoute is the vault whose route row is routeKey.
 func vaultOfRoute(routeKey string) (*Vault, error) {
 	for _, v := range vaults {
 		if v.RouteKey == routeKey {
@@ -154,8 +120,6 @@ func vaultOfRoute(routeKey string) (*Vault, error) {
 	return nil, fmt.Errorf("route %q is no Backyard vault's", routeKey)
 }
 
-// RouteKey is the route row of the vault named vault, for the operator
-// commands.
 func RouteKey(vault string) (string, error) {
 	v, err := findVault(vault)
 	if err != nil {
@@ -164,7 +128,6 @@ func RouteKey(vault string) (string, error) {
 	return v.RouteKey, nil
 }
 
-// RouteKeys are every vault's route rows.
 func RouteKeys() []string {
 	out := make([]string, len(vaults))
 	for i, v := range vaults {

@@ -10,10 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CurrentAPY is the vault position's fee-paying APY estimate, published for the
-// web app in multiply_route_states.state.currentApy. It includes the approved
-// performance fee on profitable carry, not exact realized HWM fees. Display only:
-// no money path, admission or selector decision reads it.
+// CurrentAPY is an estimate after the approved performance fee, not realized
+// HWM fees. Display only: no money path reads it.
 type CurrentAPY struct {
 	Lane       string    `json:"lane"`
 	APYBPS     int64     `json:"apyBps"`
@@ -58,8 +56,6 @@ func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) 
 	return out, true
 }
 
-// currentAPYThrottle limits writes: an APY change of >= 5 bps, a flat
-// change, or 10 minutes since the last write.
 type currentAPYThrottle struct {
 	last    CurrentAPY
 	written time.Time
@@ -85,8 +81,6 @@ func (t *currentAPYThrottle) wrote(now time.Time, value CurrentAPY) {
 	t.last, t.written = value, now
 }
 
-// RecordCurrentAPY stores the published APY. It changes no money. A flat
-// position only sets flat=true and keeps the last APY.
 func (d *Database) RecordCurrentAPY(ctx context.Context, routeKey string, value CurrentAPY) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -94,15 +88,12 @@ func (d *Database) RecordCurrentAPY(ctx context.Context, routeKey string, value 
 	}
 	update := `jsonb_set(state,'{currentApy}',$2::jsonb,true)`
 	if value.Flat {
-		// Keep the last APY; mark it flat.
 		update = `jsonb_set(state,'{currentApy}',COALESCE(state->'currentApy','{}'::jsonb) || jsonb_build_object('flat',true,'observedAt',$2::jsonb->'observedAt'),true)`
 	}
 	_, err = d.pool.Exec(ctx, `UPDATE loyal_yield.multiply_route_states SET state=`+update+`,updated_at=clock_timestamp() WHERE route_key=$1`, routeKey, string(raw))
 	return err
 }
 
-// publishCurrentAPY is the selector-loop hook: compute, throttle, write.
-// Every failure only logs; it never reaches a tick or a money path.
 func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYThrottle, observed Observation, markets []LaneEconomics, write func(context.Context, CurrentAPY) error, logf func(string, ...any)) {
 	if observed.planning == nil || !earnHeldLane(observed.Snapshot.RouteLane) {
 		return
@@ -122,15 +113,11 @@ func publishCurrentAPY(ctx context.Context, now time.Time, throttle *currentAPYT
 	throttle.wrote(now, value)
 }
 
-// LeverageWatchSummary is the stored copy of the hourly leverage-watch
-// summary line (display data for the admin app).
 type LeverageWatchSummary struct {
 	ObservedAt time.Time           `json:"observedAt"`
 	Lanes      []leverageWatchLane `json:"lanes"`
 }
 
-// mergeLeverageWatch keeps every previous lane the new summary does not
-// carry (with its older observedAt) and replaces the ones it does.
 func mergeLeverageWatch(previous *LeverageWatchSummary, next LeverageWatchSummary) LeverageWatchSummary {
 	out := LeverageWatchSummary{ObservedAt: next.ObservedAt}
 	seen := map[string]bool{}
@@ -149,9 +136,6 @@ func mergeLeverageWatch(previous *LeverageWatchSummary, next LeverageWatchSummar
 	return out
 }
 
-// RecordLeverageWatch merges and stores the summary under
-// state.leverageWatch. The per-lane merge reads the stored value under the
-// statement's row lock.
 func (d *Database) RecordLeverageWatch(ctx context.Context, routeKey string, summary LeverageWatchSummary) error {
 	return d.inTx(ctx, func(tx pgx.Tx) error {
 		var raw []byte
@@ -174,8 +158,6 @@ func (d *Database) RecordLeverageWatch(ctx context.Context, routeKey string, sum
 	})
 }
 
-// publishLeverageWatch stores the summary the watch just printed. Every
-// failure only logs.
 func publishLeverageWatch(ctx context.Context, now time.Time, watch *leverageWatch, observed Observation, write func(context.Context, LeverageWatchSummary) error, logf func(string, ...any)) {
 	if watch == nil || len(watch.summary) == 0 || observed.planning == nil {
 		return

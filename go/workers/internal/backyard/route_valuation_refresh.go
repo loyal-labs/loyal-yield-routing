@@ -9,10 +9,6 @@ import (
 
 const routeRefreshValuationSource = "unsigned-reserve-refresh-simulation"
 
-// simulateRouteValuationRefresh captures one bank after a closed set of
-// permissionless reserve refreshes. Custody, obligation, receipt and policy
-// accounts are read-only to these instructions. The simulation fee payer is
-// excluded: its virtual fee must never become observed operational spending.
 func simulateRouteValuationRefresh(ctx context.Context, v *Vault, c *chain.Client, routes []RuntimeRoute, addresses []string, minimumSlot int64) (int64, []ConfirmedAccount, error) {
 	lanes := make([]string, 0, len(routes))
 	for _, route := range routes {
@@ -60,17 +56,12 @@ func validateRouteValuationCapture(slot int64, accounts []ConfirmedAccount, addr
 		}
 		seen[account.Address] = true
 	}
-	// Check integrity before allowing a retry; late evidence stays rejected.
 	if slot-minimumSlot > observationLagSlots() {
 		return confirmedObservationUnavailable(fmt.Errorf("valuation capture is outside freshness window"))
 	}
 	return nil
 }
 
-// selectorValuationAddresses retains the valued lanes' (working plus held)
-// valuation/execution inputs and every lane's ownership accounts. Unowned
-// lanes' exclusive economic caches cannot affect this NAV and need not
-// consume simulation packet space.
 func selectorValuationAddresses(v *Vault, routes []RuntimeRoute, addresses []string) []string {
 	protected := map[string]bool{}
 	for _, address := range pinnedRouteNAVAddressesForRoutes(v, routes) {

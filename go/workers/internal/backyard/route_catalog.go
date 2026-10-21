@@ -9,45 +9,22 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// lanePolicy is how a lane's KLend legs are authorized on chain.
 type lanePolicy byte
 
 const (
-	// policyBasic: the four shared basic families (USDC debt from Squads cash,
-	// one constraint per lane in every family; policy.go basicPolicy).
 	policyBasic lanePolicy = iota + 1
-	// policyAuto: one autoPolicy literal of the lane's own carries every leg.
 	policyAuto
-	// policySplit: one split KLend policy per leg, capped at the vault cap.
 	policySplit
 )
 
-// earnLane is one Earn Max loop Backyard holds installed on-chain policies
-// for: its chain facts (route) and how it may be used. The route is a
-// template: market, reserves, mints and programs, with no account of a vault;
-// routeFor fills in the accounts one Squads vault owns.
 type earnLane struct {
-	route  RuntimeRoute
-	policy lanePolicy
-	// basicSwapLeg is a basic lane's constraint in the basic swap families.
+	route        RuntimeRoute
+	policy       lanePolicy
 	basicSwapLeg byte
-	// jupiterDexes keeps the lane's Jupiter quotes inside the venues it was
-	// reviewed against; empty quotes every venue.
 	jupiterDexes string
-	// exitOnly: a held position on the lane is still observed, valued and
-	// exited (withdrawals, unwinds, payoff), but the lane is never scored,
-	// entered, funded anew or levered.
-	exitOnly bool
-	// initializer: the lane's obligation is created through an installed
-	// initializer policy. Otherwise the obligation already exists on chain
-	// (owner KLend, verified 2026-10-10) and no initializer policy is
-	// installed: a missing obligation holds.
-	initializer bool
-	// overflowOf names the lane this one is the overflow of: it shares that
-	// lane's collateral reserve and custody, is never a selector or tranche
-	// destination, and is entered only by an overflow move from it when that
-	// lane's next leverage step finds no borrow room (selector_overflow.go).
-	overflowOf string
+	exitOnly     bool
+	initializer  bool
+	overflowOf   string
 	// maxLevel is the lane's cap: the highest leverage level it may hold
 	// (leverage_level.go), set per lane from its lender limits and its
 	// borrow pool (owner decision 2026-10-14); a level of the ladder above 1,
@@ -68,34 +45,13 @@ type earnLane struct {
 // economics decide, not a hand list (owner decision 2026-10-10: every
 // policy-covered loop is checked).
 var earnLanes = laneCapsOnLadder([]earnLane{
-	// Each cap is the highest level whose LTV sits under the lane's hard LTV
-	// (owner decision 2026-10-15: every lane to its most reasonable point);
-	// lender limits read from the reserves on 2026-10-15. The spread rule, not
-	// the cap, keeps a thin or negative-spread lane low.
-	// Maple: 88% max LTV, 90% liquidation (hard LTV 80%); 3x = 66.7%. Its
-	// USDC borrow pool is thin and its spread often under 2.5 pts, so the
-	// rule rarely takes it past 1.75x.
 	{route: mapleSyrupUSDCUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapSyrup, jupiterDexes: "Manifest", initializer: true, maxLevel: 3},
-	// OnRe: 66% max LTV, 75% liquidation (hard LTV 63%, where a down step
-	// still has withdraw room); 2.5x = 60%. 3x (66.7%) sits over the hard
-	// LTV, so 2.5x is its ceiling.
 	{route: onreONycUSDCRouteTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true, maxLevel: 2.5},
-	// AUTO: 78% max LTV, 80% liquidation (hard LTV 70%); 3x = 66.7%.
 	{route: autoAUTOPYUSDTemplate, policy: policyAuto, initializer: true, maxLevel: 3},
-	// Prime: 88% max LTV, 91% liquidation (hard LTV 81%); 3x = 66.7%. Its
-	// spreads sit near or under zero, so the rule holds it at 1x.
 	{route: primePRIMEUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true, maxLevel: 3},
 	{route: primePRIMEPYUSDTemplate, policy: policySplit, maxLevel: 3},
 	{route: primePRIMEUSDSTemplate, policy: policySplit, maxLevel: 3},
-	// Ethena is exit-only. Kamino's yield feed reports ~4.75% underlyingApy for
-	// USDe, but USDe's price does not grow, so a holder never earns it; and
-	// both its debt reserves sit at borrowLimit 0. Its installed policies stay
-	// installed so a held position stays observable and exitable.
 	{route: ethenaUSDePYUSDTemplate, policy: policySplit, exitOnly: true, maxLevel: 1.75},
-	// AUTO's overflow lane (owner decision 2026-10-11): when AUTO/AUTO/PYUSD
-	// has no PYUSD borrow room, AUTO moves into this second obligation and
-	// levers with wYLDS, converted through Hastra. Same collateral reserve
-	// and hard LTV as AUTO/AUTO/PYUSD, so the same 3x.
 	{route: autoAUTOWYLDSTemplate, policy: policyAuto, initializer: true, overflowOf: autoAUTOPYUSDTemplate.Lane, maxLevel: 3},
 })
 
@@ -112,12 +68,30 @@ func laneCapsOnLadder(lanes []earnLane) []earnLane {
 
 func findEarnLane(lane string) (earnLane, bool) {
 	for _, l := range earnLanes {
+		// Each cap is the highest level whose LTV sits under the lane's hard LTV
+		// (owner decision 2026-10-15: every lane to its most reasonable point);
+		// lender limits read from the reserves on 2026-10-15. The spread rule, not
+		// the cap, keeps a thin or negative-spread lane low.
+		// Maple: 88% max LTV, 90% liquidation (hard LTV 80%); 3x = 66.7%. Its
+		// USDC borrow pool is thin and its spread often under 2.5 pts, so the
+		// rule rarely takes it past 1.75x.
 		if l.route.Lane == lane {
+			// OnRe: 66% max LTV, 75% liquidation (hard LTV 63%, where a down step
+			// still has withdraw room); 2.5x = 60%. 3x (66.7%) sits over the hard
+			// LTV, so 2.5x is its ceiling.
 			return l, true
+			// AUTO: 78% max LTV, 80% liquidation (hard LTV 70%); 3x = 66.7%.
 		}
+		// Prime: 88% max LTV, 91% liquidation (hard LTV 81%); 3x = 66.7%. Its
+		// spreads sit near or under zero, so the rule holds it at 1x.
 	}
 	return earnLane{}, false
 }
+
+// Ethena is exit-only. Kamino's yield feed reports ~4.75% underlyingApy for
+// USDe, but USDe's price does not grow, so a holder never earns it; and
+// both its debt reserves sit at borrowLimit 0. Its installed policies stay
+// installed so a held position stays observable and exitable.
 
 // routeFor is the lane's chain facts with the accounts owner, a Squads
 // vault, holds on it: its custody of each mint (an associated token account)
@@ -139,7 +113,6 @@ func (l earnLane) routeFor(owner solana.PublicKey) RuntimeRoute {
 	return r
 }
 
-// mustDerive is a derived address of a checked-in identity.
 func mustDerive(key solana.PublicKey, err error) string {
 	if err != nil {
 		panic("derive Backyard address: " + err.Error())
@@ -147,29 +120,21 @@ func mustDerive(key solana.PublicKey, err error) string {
 	return key.String()
 }
 
-// earnActiveLane reports a lane the selector scores and may enter, fund and
-// lever.
 func earnActiveLane(lane string) bool {
 	l, ok := findEarnLane(lane)
 	return ok && !l.exitOnly
 }
 
-// earnHeldLane reports a lane whose position is observed, valued and exited:
-// every registry lane, exit-only ones included.
 func earnHeldLane(lane string) bool {
 	_, ok := findEarnLane(lane)
 	return ok
 }
 
-// earnInitializerLane reports a registry lane whose obligation is created
-// through an installed initializer policy.
 func earnInitializerLane(lane string) bool {
 	l, ok := findEarnLane(lane)
 	return ok && l.initializer
 }
 
-// earnLaneIDs lists the registry lanes in registry order; exit-only lanes
-// only when held is set.
 func earnLaneIDs(held bool) []string {
 	out := make([]string, 0, len(earnLanes))
 	for _, l := range earnLanes {
@@ -180,7 +145,6 @@ func earnLaneIDs(held bool) []string {
 	return out
 }
 
-// lanesWithPolicy are v's routes authorized by policy, in registry order.
 func lanesWithPolicy(v *Vault, policy lanePolicy) []RuntimeRoute {
 	var out []RuntimeRoute
 	for i, l := range earnLanes {
@@ -191,36 +155,24 @@ func lanesWithPolicy(v *Vault, policy lanePolicy) []RuntimeRoute {
 	return out
 }
 
-// basicLane reports a registry lane served by the shared basic policy
-// families (USDC debt, Squads USDC custody); every other registry lane swaps
-// through the catalog edges.
 func basicLane(lane string) bool {
 	l, ok := findEarnLane(lane)
 	return ok && l.policy == policyBasic
 }
 
-// autoRoute reports a lane that runs every KLend leg through one autoPolicy
-// literal of its own.
 func autoRoute(lane string) bool {
 	l, ok := findEarnLane(lane)
 	return ok && l.policy == policyAuto
 }
 
-// catalogJupiterRoute reports a registry lane that swaps through the catalog
-// Jupiter policies: every registry lane outside the basic families.
 func catalogJupiterRoute(lane string) bool {
 	return earnHeldLane(lane) && !basicLane(lane)
 }
 
-// ObservationReserve is one Kamino reserve a registry lane borrows from or
-// deposits into.
 type ObservationReserve struct {
 	Market, MarketName, Reserve, LiquidityMint string
 }
 
-// ObservationReserves are the registry lanes' collateral and debt reserves,
-// each once, in registry order: what the Kamino reserve observer pins for
-// Backyard. A market is named by its lanes' protocol.
 func ObservationReserves() []ObservationReserve {
 	var out []ObservationReserve
 	seen := map[string]bool{}
@@ -236,8 +188,6 @@ func ObservationReserves() []ObservationReserve {
 	return out
 }
 
-// usdcReference is the KLend USDC reserve Backyard prices USDC by: the
-// Prime/PRIME/USDC lane's debt reserve.
 var usdcReference = primePRIMEUSDCTemplate.Kamino
 
 var mapleSyrupUSDCUSDCTemplate = RuntimeRoute{
@@ -280,8 +230,6 @@ var onreONycUSDCRouteTemplate = RuntimeRoute{
 	DebtFarm: "7vNfe1qX8iDxP5p3A4fosrjLqdn1YjmmGcZZkG2b4APF",
 }
 
-// The Prime market's PRIME collateral reserve and custody are shared by its
-// three debt lanes.
 var primePRIMEUSDCTemplate = RuntimeRoute{
 	Lane: PhaseOneLaneID, Protocol: "Prime", CollateralSymbol: "PRIME", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
@@ -295,8 +243,6 @@ var primePRIMEUSDCTemplate = RuntimeRoute{
 	DebtFeeReceiver: "BzSw9sWTxUumr2wHhDiezkaLy3QZQS1KT4a9Fz8GvAQ6", CollateralTokenProgram: classicTokenProgram, DebtTokenProgram: classicTokenProgram,
 }
 
-// Finalized account review at slot 444525169 matches all four installed
-// policy vectors for each Prime sibling, with no farm substitution.
 var primePRIMEPYUSDTemplate = func() RuntimeRoute {
 	r := primePRIMEUSDCTemplate
 	r.Lane, r.DebtSymbol = "Prime/PRIME/PYUSD", "PYUSD"
@@ -314,8 +260,6 @@ var primePRIMEUSDSTemplate = func() RuntimeRoute {
 	return r
 }()
 
-// pyusdMint is PYUSD, which every PYUSD-debt lane borrows into the vault's
-// one PYUSD account.
 const pyusdMint = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"
 
 var autoAUTOPYUSDTemplate = RuntimeRoute{
@@ -337,12 +281,6 @@ var autoAUTOPYUSDTemplate = RuntimeRoute{
 	CollateralTokenProgram:    classicTokenProgram, DebtTokenProgram: token2022Program,
 }
 
-// autoAUTOWYLDSTemplate shares AUTO/AUTO/PYUSD's market, collateral reserve and
-// collateral custody (the vault holds one AUTO account for both lanes) and
-// borrows wYLDS from reserve 34GJ…, a classic SPL Token mint with no farms.
-// Its obligation (tag 1, seeds AUTO and wYLDS), its debt custody (the vault's
-// wYLDS associated token account) and the reserve's liquidity supply and fee
-// vault are PDAs, derived here rather than written down.
 var autoAUTOWYLDSTemplate = func() RuntimeRoute {
 	r := autoAUTOPYUSDTemplate
 	r.Lane, r.DebtSymbol = autoAUTOWYLDSLane, "wYLDS"
@@ -354,11 +292,8 @@ var autoAUTOWYLDSTemplate = func() RuntimeRoute {
 	return r
 }()
 
-// onreONycUSDC is the OnRe lane.
 const onreONycUSDC = "OnRe/ONyc/USDC"
 
-// autoAUTOWYLDSLane is AUTO's overflow lane: AUTO collateral levered with
-// wYLDS term debt in AUTO's market, through its own obligation.
 const autoAUTOWYLDSLane = "AUTO/AUTO/wYLDS"
 
 var ethenaUSDePYUSDTemplate = RuntimeRoute{

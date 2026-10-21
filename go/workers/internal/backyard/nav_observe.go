@@ -62,8 +62,6 @@ func decodeVoltrVaultBook(v *Vault, account ConfirmedAccount) (VoltrVaultBook, e
 	return VoltrVaultBook{Vault: vault, HighWaterMarkKnown: true}, nil
 }
 
-// decodeVoltrLPSupply reads only the mint supply of the vault LP asset. Fee
-// LP that Voltr has accrued but not yet minted is added by VoltrVaultBook.
 func decodeVoltrLPSupply(v *Vault, account ConfirmedAccount) (uint64, error) {
 	if account.Address != v.lpMint || account.Owner != bridgeTokenProgram || account.Executable ||
 		account.Lamports == 0 || len(account.Data) < voltrLPMintLength {
@@ -74,16 +72,11 @@ func decodeVoltrLPSupply(v *Vault, account ConfirmedAccount) (uint64, error) {
 
 type RouteNAVCustodies struct {
 	VoltrIdleRaw, StrategyUSDCraw, SquadsUSDCraw, SquadsPRIMEraw uint64
-	// Separate from USDC; zero on USDC-debt lanes to avoid double counting.
-	SquadsDebtRaw uint64
+	SquadsDebtRaw                                                uint64
 }
 
 type RouteNAVSnapshot struct {
-	Slot int64
-	// Custodies reports every observed custody balance, including the strategy
-	// custody ATA. StrategyCustody is deliberately not a NAV component: Voltr
-	// books the strategy custody balance itself, so adding it here would count
-	// it twice (the Sep 4 incident reported exactly that double count).
+	Slot                    int64
 	Custodies               RouteNAVCustodies
 	VaultIdleRaw            uint64
 	StrategyNAVRaw          uint64
@@ -94,22 +87,18 @@ type RouteNAVSnapshot struct {
 	DebtIdleValueRaw        uint64
 	PositionCollateralValue uint64
 	PositionDebtValue       uint64
-	// ObligationPresent reports whether the obligation account existed in this
-	// confirmed batch. Zero position values from a missing account are an
-	// observed absence, never a silently decoded flat position.
-	ObligationPresent bool
-	Receipt           voltr.StrategyReceipt
-	Voltr             VoltrVaultBook
-	LPSupplyRaw       uint64
-	SnapshotDigest    string
-	Report            BridgeReport
+	ObligationPresent       bool
+	Receipt                 voltr.StrategyReceipt
+	Voltr                   VoltrVaultBook
+	LPSupplyRaw             uint64
+	SnapshotDigest          string
+	Report                  BridgeReport
 	// OtherLanesState is the other valued lanes' economic state (lane,
 	// collateral, debt and counted custody raws), "" when one lane is valued.
 	OtherLanesState string
 }
 
 func pinnedRouteNAVAddressesForRoute(v *Vault, route RuntimeRoute) []string {
-	// FSj27's strategy key is its config account; Trustful's is no account.
 	var config []string
 	if !v.trustful() {
 		config = []string{v.Strategy}
@@ -123,12 +112,7 @@ func pinnedRouteNAVAddressesForRoute(v *Vault, route RuntimeRoute) []string {
 		route.Kamino.Obligation,
 		route.Kamino.CollateralReserve,
 		route.Kamino.DebtReserve,
-		// The lending market is part of the valuation input: its emergency
-		// mode pauses the whole position, so it is pinned, hashed into the
-		// NAV fingerprint, and required in every batch.
 		route.Kamino.Market,
-		// The Voltr book and the LP mint are read in the same coherent batch so
-		// the fail-closed monitors never compare values from different slots.
 		v.VoltrVault,
 		v.lpMint,
 	)
@@ -138,8 +122,6 @@ func pinnedRouteNAVAddressesForRoute(v *Vault, route RuntimeRoute) []string {
 	return addresses
 }
 
-// heldLaneNAVAddresses are the accounts that value one non-working held
-// lane: its obligation, reserves, market and custodies.
 func heldLaneNAVAddresses(route RuntimeRoute) []string {
 	addresses := []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve, route.Kamino.Market, route.CollateralCustody}
 	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
@@ -148,9 +130,6 @@ func heldLaneNAVAddresses(route RuntimeRoute) []string {
 	return addresses
 }
 
-// pinnedRouteNAVAddressesForRoutes is the union NAV namespace: the working
-// lane's pinned accounts, then each other held lane's accounts not already
-// present. One route gives exactly pinnedRouteNAVAddressesForRoute.
 func pinnedRouteNAVAddressesForRoutes(v *Vault, routes []RuntimeRoute) []string {
 	if len(routes) == 0 {
 		return nil
@@ -171,8 +150,6 @@ func pinnedRouteNAVAddressesForRoutes(v *Vault, routes []RuntimeRoute) []string 
 	return addresses
 }
 
-// navRoutes is the lane set one NAV values: the working lane first, then
-// every other held lane in registry order.
 func navRoutes(v *Vault, working RuntimeRoute, held []string) ([]RuntimeRoute, error) {
 	routes := []RuntimeRoute{working}
 	for _, lane := range held {
@@ -217,12 +194,6 @@ func decodeStrategyReceipt(v *Vault, account ConfirmedAccount) (voltr.StrategyRe
 	return receipt, nil
 }
 
-// strategyReceiptIntegrityFault classifies a confirmed strategy receipt that
-// cannot be the reviewed Voltr account at all: it is absent from the batch,
-// owned by another program, or the wrong length. Those are observed integrity
-// failures and become the durable strategy_receipt_integrity hold; malformed
-// fields inside a correctly enveloped receipt stay decode errors, and
-// transport failures never reach this classifier.
 func strategyReceiptIntegrityFault(account ConfirmedAccount) bool {
 	return account.Address == "" || account.Owner != voltr.ProgramID.String() || len(account.Data) != voltr.StrategyReceiptSize
 }
@@ -343,8 +314,6 @@ func navInputFingerprintForRoutes(v *Vault, slot int64, accounts []ConfirmedAcco
 		hash := sha256.Sum256(account.Data)
 		parts = append(parts, fmt.Sprintf("%s:%s:%d:%t:%x", address, account.Owner, account.Lamports, account.Executable, hash[:]))
 	}
-	// For bridge construction, custody overrides describe the exact expected
-	// poststate while reserve/obligation/config bytes remain the confirmed input.
 	parts = append(parts, fmt.Sprintf("post:%d:%d:%d:%d", custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, custodies.SquadsPRIMEraw))
 	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
 		parts = append(parts, fmt.Sprintf("post-debt:%d", custodies.SquadsDebtRaw))
@@ -354,11 +323,6 @@ func navInputFingerprintForRoutes(v *Vault, slot int64, accounts []ConfirmedAcco
 	return hex.EncodeToString(hash[:]), nil
 }
 
-// ComputeRouteNAVForRoutes values the whole vault book over one coherent
-// batch: the working lane (routes[0], whose custodies the override may
-// replace) plus every other valued lane. Custody is the vault's: each
-// account is counted once, whichever lanes name it; the Squads USDC ATA is
-// always the bridge cash.
 func ComputeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest RouteManifest, override *RouteNAVCustodies, routes []RuntimeRoute) (RouteNAVSnapshot, error) {
 	return computeRouteNAVForRoutes(slot, accounts, manifest, override, routes)
 }
@@ -433,9 +397,6 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	// Empty positions and empty non-USDC custodies need no market valuation.
-	// Both the observed and hypothetical poststate must be cash-only; an
-	// override cannot hide exposure to evade the reserve health gate.
 	cashOnly := observedCashOnly && !obligation.hasPosition && custodies.SquadsPRIMEraw == 0 && custodies.SquadsDebtRaw == 0
 	marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, kaminoConfig.Market), kaminoConfig)
 	if err != nil {
@@ -447,9 +408,6 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if collateralReserve.refreshedSlot > slot || debtReserve.refreshedSlot > slot || obligation.refreshedSlot > slot {
 		return RouteNAVSnapshot{}, fmt.Errorf("Kamino valuation claims a future refresh slot")
 	}
-	// Voltr reports USDC raw units, never raw units of the selected debt
-	// asset. A separate USDC reference from the same batch is required for
-	// non-USDC lanes; neither a ticker nor equal decimals establishes a peg.
 	usdcReserve := debtReserve
 	if kaminoConfig.DebtMint != bridgeUSDC {
 		reference := usdcReference
@@ -558,7 +516,6 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	}, nil
 }
 
-// heldLaneValue is one non-working valued lane's NAV components.
 type heldLaneValue struct {
 	components []NAVComponent
 	state      string

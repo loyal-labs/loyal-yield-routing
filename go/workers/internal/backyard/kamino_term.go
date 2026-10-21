@@ -7,10 +7,6 @@ package backyard
 // obligation's term again. Past its end a borrow can borrow no more
 // (DebtReachedReserveDebtTerm) and becomes liquidatable.
 
-// kaminoReserveTermOpen reports whether reserve admits borrowing at chain
-// time now, reserve-wide: interest terms the workers price
-// (SupportedInterestTerms: no early-repay interest) and no market-wide
-// maturity, or one still ahead.
 func kaminoReserveTermOpen(reserve decodedKaminoReserve, now int64) bool {
 	t := reserve.terms
 	return t.SupportedInterestTerms() == nil && (t.DebtMaturityTimestamp == 0 || now >= 0 && uint64(now) < t.DebtMaturityTimestamp)
@@ -36,16 +32,11 @@ func debtTermEnd(obligation decodedKaminoObligation, reserve decodedKaminoReserv
 	return int64(end)
 }
 
-// kaminoObligationTermOpen reports whether obligation may still borrow from
-// reserve at chain time now: the reserve admits it and the obligation's term,
-// when it has one, is known and still ahead.
 func kaminoObligationTermOpen(obligation decodedKaminoObligation, reserve decodedKaminoReserve, now int64) bool {
 	end := debtTermEnd(obligation, reserve)
 	return kaminoReserveTermOpen(reserve, now) && end != termMaturityUnknown && (end == 0 || now < end)
 }
 
-// observedDebtTermEnd is debtTermEnd of route's obligation from one batch:
-// zero when the obligation is absent.
 func observedDebtTermEnd(accounts []ConfirmedAccount, route RuntimeRoute) (int64, error) {
 	account := accountAt(accounts, route.Kamino.Obligation)
 	if account.Address != route.Kamino.Obligation || account.Lamports == 0 {
