@@ -6,19 +6,14 @@ import (
 )
 
 const (
-	leverageUpReason  = "leverage_up"
-	leverageUpNearBPS = 200
-	// Smallest leverage_up borrow in debt raw units (six-decimal stables).
+	leverageUpReason           = "leverage_up"
+	leverageUpNearBPS          = 200
 	leverageMinimumBorrowRaw   = 10_000_000
 	leverageSwapLossBPS        = 100
 	leverageUpRefreshMarginBPS = 10
 	leverageUpKeepScale        = 100_000_000
 )
 
-// leverageUpLevel is the next level above the position (at most one step),
-// when the stored level and the lane's cap allow it. An up step sizes from the
-// same batch (LeverageBorrowRaw) once the selector's economics approve it
-// (target.go).
 func leverageUpLevel(s Snapshot) (float64, bool) {
 	if !earnActiveLane(s.RouteLane) || s.LeverageTargetLevel <= 1 {
 		return 0, false
@@ -64,7 +59,6 @@ func (p KaminoPosition) leverageUpBorrowRaw(level float64) (uint64, error) {
 	return b.Uint64(), nil
 }
 
-// leverageUpCapFee caps receive so the step lands within ceilingBPS after the swap loss; below the minimum borrow it refuses.
 func leverageUpCapFee(p KaminoPosition, ceilingBPS int64, receive uint64, fee func(uint64) (uint64, error)) (uint64, error) {
 	collateral, err := p.collateralValueDebtRaw()
 	if err != nil {

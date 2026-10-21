@@ -28,9 +28,8 @@ type leverageDecision struct {
 	BorrowRaw     uint64
 	RoomRaw       uint64
 	Cost          leverageStepCost
-	// TermDays is the lane's days to its term debt's maturity, when it owes term debt (decide_term.go).
-	TermDays  float64
-	TermKnown bool
+	TermDays      float64
+	TermKnown     bool
 }
 
 func (d leverageDecision) held(reason string) leverageDecision {
@@ -44,8 +43,6 @@ func leverageSettled(s Snapshot, selector SelectorResult) bool {
 		s.SquadsIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0
 }
 
-// decideLeverageTarget sets the level target() reads for one settled lane.
-// An up move needs the level's spread (leverageLadder) and a positive gain over KEEP after the move's priced cost; an unpriced step is leverage_cost_unavailable, never free.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	out.TermDays, out.TermKnown = termDays(s)
@@ -150,15 +147,8 @@ type upStep struct {
 	FeeBPS                                                        int64
 }
 
-// upStepGain is the live rule's gain of one up step over the horizon; the
-// performance fee is taken on a positive difference (a vault below its
-// high-water mark pays less, never more), then the step's cost. The step pays
-// when it is positive.
 func upStepGain(m LaneEconomics, u upStep) float64 {
 	keepGross := forecastGain(u.CollateralMicros, u.CollateralMicros, u.DebtMicros, m, u.KeepAPR, u.Years)
-	// The held collateral is not reduced by the move; its cost is. Pass the
-	// collateral the move leaves earning, net of that cost; the candidate's
-	// income is its gain before the cost is charged.
 	cost := math.Ceil(u.CostMicros)
 	candidate := pilotForecastEconomics(pilotEconomics{Debt: u.DebtMicros + u.LiabilityMicros, Proceeds: u.ProceedsMicros, APR: u.APR}, u.CollateralMicros-cost, m, u.Years, int64(cost))
 	extra := candidate.Gain + cost - keepGross

@@ -113,7 +113,6 @@ func leverageUpAllowed(m LaneEconomics, level, debtRaw float64) (float64, bool) 
 	return spread, ok && spread >= leverageLadder[i].up
 }
 
-// settledLevel is the level a lane at from settles at: rungs climbed while debtTo reaches them, the spread rule holds at that debt and pays accepts the step.
 func settledLevel(m LaneEconomics, from float64, debtTo func(level float64) (float64, bool), pays func(level, debt float64) bool) float64 {
 	level := from
 	for _, r := range leverageLadder[1:] {

@@ -10,10 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// A token-loop quote cannot silently assume manual farm setup.
-// An absent obligation has no registration yet: the lane's initializer
-// creates the obligation and registers it with these farms in one
-// transaction (compileKaminoInitializationMessage).
 func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAccount) error {
 	obligationPresent := accountAt(accounts, route.Kamino.Obligation).Lamports != 0
 	for _, pair := range [][2]string{{route.CollateralFarm, route.ObligationCollateralFarm}, {route.DebtFarm, route.ObligationDebtFarm}} {

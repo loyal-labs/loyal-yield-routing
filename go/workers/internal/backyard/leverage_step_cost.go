@@ -52,10 +52,6 @@ type leverageStepLegs struct {
 	NetworkMicros               usdMicros
 }
 
-// cost is the step's expected cost. Each swap's loss is signed, against
-// the batch's central price: a collateral the up step buys under its mark
-// gains there what the down step's sale loses. The round trip never costs
-// less than zero.
 func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	out := leverageStepCost{BorrowFeeMicros: l.BorrowFeeMicros, NetworkMicros: l.NetworkMicros,
 		EntrySwapCostMicros: l.EntryInMicros - l.EntryOutMicros, ExitSwapCostMicros: l.ExitInMicros - l.ExitOutMicros}

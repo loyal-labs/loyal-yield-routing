@@ -25,7 +25,7 @@ type reserveEconomics struct {
 	Slot                        int64
 	ObservedAt                  time.Time
 	SupplyAPY                   float64
-	SupplyRaw, BorrowRaw        float64 // raw liquidity units of the reserve's mint
+	SupplyRaw, BorrowRaw        float64
 	Curve                       []BorrowCurvePoint
 	HostBPS                     float64
 	Status                      uint8
@@ -40,11 +40,7 @@ type nativeYield struct {
 	EvidenceID string    `json:"evidenceId"`
 }
 
-// parseFeedYields reads Kamino's yield feed (batch stats underlyingApy) per
-// lane: display and comparison only. The feed is not what holding the token
-// earns (AUTO 10.84% against 8.85% realized over 30 days on 2026-10-11; USDe
-// 4.75% while its price does not grow), so no decision reads it. The official
-// API returns a dictionary keyed by reserve and string decimals.
+// The official API returns a dictionary keyed by reserve and string decimals.
 func parseFeedYields(body []byte, routes []RuntimeRoute, now time.Time, maxAge time.Duration) (map[string]float64, error) {
 	var stats map[string]struct {
 		Token      string `json:"token"`
@@ -271,8 +267,6 @@ func (f *EconomicFeed) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// publish prices every lane from this refresh's reserves, the realized
-// yields held per collateral reserve and the feed's display APY.
 func (f *EconomicFeed) publish(reserves map[string]reserveEconomics, feed map[string]float64, now time.Time, p SelectorPolicy) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

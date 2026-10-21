@@ -47,8 +47,6 @@ const (
 	returnCashReason         = "entry_capacity_changed_return_cash"
 )
 
-// LaneTarget is where target() puts the working lane this tick, and the rule
-// that put it there.
 type LaneTarget struct {
 	Rule       targetRule `json:"rule"`
 	Level      float64    `json:"level,omitempty"`
@@ -56,9 +54,7 @@ type LaneTarget struct {
 	KeepAlive  bool       `json:"keepAlive,omitempty"`
 	EquityZero bool       `json:"equityZero,omitempty"`
 	Outbound   bool       `json:"outbound,omitempty"`
-	// ReleaseRaw is the equity (bridge USDC value) the lane frees at its own
-	// level toward Voltr.
-	ReleaseRaw int64 `json:"releaseRaw,omitempty"`
+	ReleaseRaw int64      `json:"releaseRaw,omitempty"`
 	// RepayRaw (debt) then WithdrawRaw (collateral receipts) are a
 	// rotation's release from the lane: the USDC stays in the Squads account
 	// for the cash rule to enter.
@@ -538,8 +534,6 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if termDebtUnknown(s) {
 		return d(Hold, string(holdStale), 0)
 	}
-	// A journal-explained stage finishes before anything reads Voltr idle.
-	// (A Trustful withdrawal is one transaction: it stages nothing.)
 	if !s.Trustful && s.VoltrStrategyIdleRaw > 0 {
 		return d(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
 	}
@@ -550,7 +544,6 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if t.Level == levelDebtZero && s.PositionDebtRaw > 0 {
 		return d(DeleverRouteStep, debtZeroReason, stepDownMarker)
 	}
-	// Voltr idle already pays the queue: keep the report current for claims.
 	if s.WithdrawalDemandRaw > 0 && withdrawalShortfallRaw(s) == 0 &&
 		(s.Trustful && trustfulReportDue(s) || !s.Trustful && (s.CapitalMutated || s.LastReportAgeSeconds >= capitalMutationReportAgeSeconds)) {
 		return report("withdrawal_covered_nav_due")
@@ -605,7 +598,6 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		if debtToUSDCConvertible(s.RouteLane) {
 			return d(SwapDebtToUSDCStep, outboundDebtReason, s.DebtIdleRaw), true
 		}
-		// Hastra debt never redeems to USDC: it stakes to collateral first.
 		return d(SwapDebtToCollateralStep, outboundDebtReason, s.DebtIdleRaw), true
 	}
 	if s.SquadsIdleRaw > 0 {
@@ -614,7 +606,6 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 	if t.EquityZero && s.PositionDebtRaw == 0 && s.PositionCollateralRaw > partialWithdrawalDustRaw {
 		return d(DeleverRouteStep, exitWithdrawReason, stepDownMarker), true
 	}
-	// A release never empties a lane: 90% of its equity or more is the operator's exit.
 	if t.ReleaseRaw > 0 {
 		equity := laneEquityRaw(s)
 		if equity <= 0 || t.ReleaseRaw*10_000 >= equity*partialWithdrawalFullExitBPS || partialWithdrawalReleaseReceipts(s, t.ReleaseRaw) <= 0 {

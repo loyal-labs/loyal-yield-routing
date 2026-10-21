@@ -16,10 +16,6 @@ import (
 
 const selectorLadderBudget = 3 * time.Second
 
-// collectSelectorQuotes prices, at most selectorLadderRungs exact sizes per
-// move, every move SelectOpportunity scores: cash's entry into each candidate
-// lane, a held lane included (priceEntry), and each held lane's rotation of a
-// tranche into another lane whose forward APY beats it (priceMove).
 func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, o Observation, markets []LaneEconomics, policy SelectorPolicy, request *pilotCanaryEntryRequest) ([]LaneEconomics, []MoveQuote, error) {
 	ctx, cancel := context.WithDeadline(ctx, o.ObservedAt.Add(8*time.Second))
 	defer cancel()

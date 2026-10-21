@@ -11,12 +11,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-// Capital amounts are raw USDC (six decimals). Forecasts are estimates only;
-// transaction amounts, reservations and reconciliation keep integer arithmetic.
-// An entry deposits equity, then its first up step levers it to the ladder's
-// first level (1.5x); later levels are later decisions, and a destination is
-// priced at the level they settle it at (settledLevel).
-
 // Capacity distinguishes unknown, a closed entry, and an explicitly unlimited
 // limit. It is equity capacity for the exact pair and execution recipe, not a
 // reserve's aggregate available liquidity or the collateral's borrow limit.
@@ -140,13 +134,6 @@ type SelectorPolicy struct {
 const selectorHorizon = 30 * 24 * time.Hour
 
 func DefaultSelectorPolicy() SelectorPolicy {
-	// Shadow starting values; activation must review observed churn and costs.
-	// 30-day horizon (Vlad OK 09-26): over 7 days a move had to repay its
-	// cost plus the margin within one week (~5%/yr APY edge), so even a
-	// clearly better lane (AUTO 9.2% vs Maple 3.7%) never passed.
-	// MaxSampleGap 10 min (Vlad OK 09-26): samples skip while a NAV report or
-	// a failed quote runs, so live gaps reached ~6 min and a 2-min gap reset
-	// the 30-min window every few minutes; every sample taken must still lead.
 	return SelectorPolicy{Horizon: selectorHorizon, Persistence: 30 * time.Minute, MaxSampleGap: 10 * time.Minute, MarketMaxAge: 90 * time.Second, NativeMaxAge: 2 * time.Hour, QuoteMaxAge: 30 * time.Second, MinimumBenefitRaw: 250_000, UncertaintyBPS: 10, IdleBufferRaw: 0}
 }
 func (p SelectorPolicy) validate() error {
@@ -187,12 +174,6 @@ type MoveQuote struct {
 	ValidThroughSlot int64     `json:"validThroughSlot"`
 }
 
-// storedWindowValid checks a PERSISTED quote's own slot window against the
-// fixed ceiling, not the runtime-measured observation lag: the lag is
-// re-measured (48/49 slots) and a quote stored under 49 must stay a valid
-// record when it later reads 48 (live 2026-09-29: the worker exited on
-// invalid_selector_entry). Freshness for new spending is still
-// currentAtSlot at the current slot, in target() and the canary.
 func (q MoveQuote) storedWindowValid() bool {
 	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot && q.ValidThroughSlot-q.SampleSlot <= observationLagCeilingSlots
 }
@@ -317,10 +298,6 @@ type pilotEconomics struct {
 	PositiveIncome, InitialNAV, EndingNAV float64
 }
 
-// pilotQuoteEconomics projects a candidate from its quote: the liability the
-// up step owes (receive plus fee) and the principal it converts into
-// collateral, at the quote's central values. Its cost is charged once, in
-// Gain.
 func pilotQuoteEconomics(quote MoveQuote, m LaneEconomics, investedNetOfExpense, years float64) (pilotEconomics, error) {
 	if !quote.validBorrow() {
 		return pilotEconomics{}, errors.New("bounded_borrow_unavailable")
