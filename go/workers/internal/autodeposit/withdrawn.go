@@ -2,6 +2,7 @@ package autodeposit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -97,7 +98,18 @@ SELECT count(*) FROM slot`, slotIDs, withdrawnSkipReason).Scan(&skipped)
 
 func (s *Store) SkipWithdrawnScheduledSlot(ctx context.Context, scheduledSlotID int64) (bool, error) {
 	var skipped int64
-	err := WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (err error) {
+	err := WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		var targetID int64
+		err := tx.QueryRow(ctx, `SELECT target_id FROM loyal_yield.balance_sweep_scheduled_slots WHERE id = $1`, scheduledSlotID).Scan(&targetID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("load target of autodeposit slot %d: %w", scheduledSlotID, err)
+		}
+		if err := lockTarget(ctx, tx, targetID); err != nil {
+			return err
+		}
 		skipped, err = skipAutomaticSlots(ctx, tx, []int64{scheduledSlotID})
 		return err
 	})
@@ -143,6 +155,23 @@ WHERE target.id = lot.target_id
   AND lot.source_signature = $1
   AND lot.status = 'open'`, signature, settings, vaultIndex, vaultPubkey); err != nil {
 		return fmt.Errorf("suppress autodeposit lots of Earn withdrawal %s: %w", signature, err)
+	}
+	return nil
+}
+
+// LockVaultTargets takes the vault's targets in id order; every writer of the vault's managed_vaults or route_policies rows calls it first.
+func LockVaultTargets(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) error {
+	var targetIDs []int64
+	if err := tx.QueryRow(ctx, `
+SELECT COALESCE(array_agg(id ORDER BY id), '{}')
+FROM loyal_yield.balance_sweep_targets
+WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3`, settings, vaultIndex, vaultPubkey).Scan(&targetIDs); err != nil {
+		return fmt.Errorf("load autodeposit targets of vault %s: %w", vaultPubkey, err)
+	}
+	for _, targetID := range targetIDs {
+		if err := lockTarget(ctx, tx, targetID); err != nil {
+			return err
+		}
 	}
 	return nil
 }

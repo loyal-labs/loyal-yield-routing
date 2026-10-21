@@ -168,6 +168,9 @@ func upsertVaultWithSetup(ctx context.Context, tx pgx.Tx, routePolicyID, setupPo
 
 func (s *Store) RecordPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+			return err
+		}
 		id, err := upsertPolicy(ctx, tx, event)
 		if err != nil {
 			return err
@@ -179,6 +182,9 @@ func (s *Store) RecordPolicyMatch(ctx context.Context, event PolicyMatchInput) e
 
 func (s *Store) RecordSetupPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+			return err
+		}
 		id, err := upsertPolicy(ctx, tx, event)
 		if err != nil {
 			return err
@@ -565,7 +571,19 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
 		var routePolicyID int64
 		var routeVaultIndex *int16
 		var routeVaultPubkey *string
+		var sameVault bool
 		err := tx.QueryRow(ctx, `
+            SELECT vault_index, vault_pubkey FROM loyal_yield.route_policies
+            WHERE policy_account = $1 AND settings = $2 AND authority = $3`, event.PolicyAccount, event.Settings, event.Authority).Scan(&routeVaultIndex, &routeVaultPubkey)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if routeVaultIndex != nil && routeVaultPubkey != nil {
+			if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, *routeVaultIndex, *routeVaultPubkey); err != nil {
+				return err
+			}
+		}
+		err = tx.QueryRow(ctx, `
             UPDATE loyal_yield.route_policies
             SET active = FALSE,
                 finalized_eligible = FALSE,
@@ -578,9 +596,15 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
               AND settings = $6
               AND authority = $7
               AND $3 >= last_seen_slot
-            RETURNING id, vault_index, vault_pubkey`, event.Cluster, event.SourceCommitment, slot, event.Signature, event.PolicyAccount, event.Settings, event.Authority).Scan(&routePolicyID, &routeVaultIndex, &routeVaultPubkey)
+            RETURNING id, vault_index, vault_pubkey,
+                vault_index IS NOT DISTINCT FROM $8 AND vault_pubkey IS NOT DISTINCT FROM $9`,
+			event.Cluster, event.SourceCommitment, slot, event.Signature, event.PolicyAccount, event.Settings, event.Authority,
+			routeVaultIndex, routeVaultPubkey).Scan(&routePolicyID, &routeVaultIndex, &routeVaultPubkey, &sameVault)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		if err == nil && !sameVault {
+			return fmt.Errorf("route policy %s changed vault after its removal locked the vault's Autodeposit targets", event.PolicyAccount)
 		}
 		if err == nil {
 			if _, err := tx.Exec(ctx, `

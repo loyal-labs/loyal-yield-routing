@@ -305,6 +305,9 @@ func observedOrNow(value *time.Time) time.Time {
 }
 
 func applyPolicyOnly(ctx context.Context, tx pgx.Tx, m EarnPolicyOnlyMutation) error {
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
+		return err
+	}
 	route, err := upsertPolicy(ctx, tx, m.RoutePolicy)
 	if err != nil {
 		return err
@@ -351,6 +354,9 @@ func applyPolicyOnly(ctx context.Context, tx pgx.Tx, m EarnPolicyOnlyMutation) e
 type managedVault struct{ id, activePolicyID int64 }
 
 func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
+		return err
+	}
 	route, err := upsertPolicy(ctx, tx, m.RoutePolicy)
 	if err != nil {
 		return err
@@ -716,6 +722,9 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 		return err
 	}
 	observedAt := observedOrNow(m.ObservedAt)
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.VaultPubkey); err != nil {
+		return err
+	}
 	var position struct {
 		id, principal, amount, observedSlot, policyID, policySeed int64
 		status, policyAccount                                     string
@@ -892,6 +901,9 @@ func applyCleanup(ctx context.Context, tx pgx.Tx, m EarnCleanupMutation) error {
 		return err
 	}
 	observedAt := observedOrNow(m.ObservedAt)
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.Settings, int16(m.VaultIndex), m.VaultPubkey); err != nil {
+		return err
+	}
 	var vaultID, activePolicyID int64
 	var setupPolicyID *int64
 	err = tx.QueryRow(ctx, `

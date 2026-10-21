@@ -2,7 +2,11 @@ package earn
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/url"
 	"os"
@@ -12,7 +16,9 @@ import (
 
 	pb "github.com/helius-labs/laserstream-sdk/go/proto"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -229,6 +235,101 @@ func TestRoutePolicyRemovalEndsVaultAutodepositWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertVaultWork(t, pool, f, work)
+}
+
+func waitBlockedBy(t *testing.T, pool *pgxpool.Pool, holder int32) int32 {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for {
+		var pid int32
+		err := pool.QueryRow(ctx, `SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) LIMIT 1`, holder).Scan(&pid)
+		if err == nil {
+			return pid
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("wait for a backend blocked by %d: %v", holder, err)
+		}
+	}
+}
+
+func TestRoutePolicyRemovalAndAutodepositAttemptTakeTurns(t *testing.T) {
+	pool := observerPool(t)
+	ctx := context.Background()
+	f := seedRoutedAutodeposit(t, pool)
+	slot, _ := seedSlotWithLot(t, pool, f.targetID, "requested", nil)
+	claim := solana.NewWallet().PublicKey().String()
+	if _, err := pool.Exec(ctx, `INSERT INTO loyal_yield.balance_sweep_lot_claims
+        (claim_token, target_id, amount_raw, status, autodeposit_executor_lease_token, autodeposit_executor_lease_expires_at)
+        VALUES ($1, $2, 5000000, 'selected', 'lease-race', now() + interval '1 hour')`, claim, f.targetID); err != nil {
+		t.Fatal(err)
+	}
+	store, err := autodeposit.NewStore(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = gate.Rollback(ctx) }()
+	var gatePID int32
+	if err := gate.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&gatePID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gate.Exec(ctx, `SELECT 1 FROM loyal_yield.managed_vaults WHERE settings = $1 FOR SHARE`, f.settings); err != nil {
+		t.Fatal(err)
+	}
+
+	removal := make(chan error, 1)
+	go func() {
+		removal <- NewStore(pool).RecordPolicyRemoval(ctx, PolicyRemovalInput{
+			Signature: solana.NewWallet().PublicKey().String(), Slot: 200, Cluster: "mainnet-beta", SourceCommitment: "confirmed",
+			Settings: f.settings, Authority: f.authority, PolicyAccount: f.routePolicy,
+		})
+	}()
+	removalPID := waitBlockedBy(t, pool, gatePID)
+
+	wire := []byte("route-removal-race-wire")
+	hash := sha256.Sum256(wire)
+	floor := int64(100_000)
+	attempt := make(chan error, 1)
+	go func() {
+		_, err := store.PersistPreparedAttempt(ctx, autodeposit.PreparedAttempt{
+			ClaimToken: claim, TargetID: f.targetID, ScheduledSlotID: slot,
+			OperationKind: autodeposit.OperationPull, AmountRaw: 5_000_000, SourcePreBalanceRaw: 9_000_000,
+			ProtectionFloorRaw: &floor,
+			Signature:          claim + "-signature", SignedTransactionBase64: base64.StdEncoding.EncodeToString(wire),
+			SignedTransactionSHA256: hex.EncodeToString(hash[:]), RecentBlockhash: "route-removal-race", LastValidBlockHeight: 500,
+		}, "lease-race")
+		attempt <- err
+	}()
+	waitBlockedBy(t, pool, removalPID)
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	removalErr, attemptErr := <-removal, <-attempt
+	for _, err := range []error{removalErr, attemptErr} {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "40P01" {
+			t.Fatalf("removal=%v attempt=%v: policy removal and the attempt deadlocked", removalErr, attemptErr)
+		}
+	}
+	if removalErr != nil || !errors.Is(attemptErr, autodeposit.ErrRoutePolicyMissing) {
+		t.Fatalf("removal=%v attempt=%v, want the removal to land and the attempt to find no route", removalErr, attemptErr)
+	}
+	var attempts int
+	var routeActive bool
+	if err := pool.QueryRow(ctx, `SELECT
+        (SELECT count(*) FROM loyal_yield.balance_sweep_transaction_attempts WHERE claim_token = $1),
+        (SELECT active FROM loyal_yield.route_policies WHERE policy_account = $2)`, claim, f.routePolicy).Scan(&attempts, &routeActive); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 || routeActive {
+		t.Fatalf("attempts=%d route active=%v, want no attempt on a removed route", attempts, routeActive)
+	}
 }
 
 // Earn cleanup (the user's final exit) retires both policies and the vault
