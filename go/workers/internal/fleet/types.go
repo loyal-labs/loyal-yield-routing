@@ -74,11 +74,37 @@ type MarketSnapshot struct {
 
 var SubmissionTerminalStates = []string{"reconciled", "expired", "failed"}
 
-var earnStableMints = []string{CashMint, USDGMint, PYUSDMint, USDCMint, USDTMint, USDSMint}
+type EarnStablecoin struct{ Mint, TokenProgram string }
 
-// EarnStableMints is the canonical Earn registry in Rust EarnUniverse order
-// (CASH, USDG, PYUSD, USDC, USDT, USDS).
+var earnStablecoins = []EarnStablecoin{
+	{CashMint, token2022Program},
+	{USDGMint, token2022Program},
+	{PYUSDMint, token2022Program},
+	{USDCMint, tokenProgram},
+	{USDTMint, tokenProgram},
+	{USDSMint, tokenProgram},
+}
+
+var earnStableMints = func() []string {
+	mints := make([]string, len(earnStablecoins))
+	for i, stable := range earnStablecoins {
+		mints[i] = stable.Mint
+	}
+	return mints
+}()
+
+func EarnStablecoins() []EarnStablecoin { return append([]EarnStablecoin(nil), earnStablecoins...) }
+
 func EarnStableMints() []string { return append([]string(nil), earnStableMints...) }
+
+func EarnStableTokenProgram(mint string) (string, bool) {
+	for _, stable := range earnStablecoins {
+		if stable.Mint == mint {
+			return stable.TokenProgram, true
+		}
+	}
+	return "", false
+}
 
 type CrossMintEarnPolicyBinding struct {
 	PolicyAccount     string `json:"policy_account"`

@@ -12,6 +12,8 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
+type earnStable struct{ mint, program solana.PublicKey }
+
 var (
 	loyalHubProgram      = solana.MustPublicKeyFromBase58("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH")
 	subscriptionsProgram = solana.MustPublicKeyFromBase58("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44")
@@ -38,16 +40,13 @@ var (
 		solana.MustPublicKeyFromBase58("5wJeMrUYECGq41fxRESKALVcHnNX26TAWy4W98yULsua"),
 		solana.MustPublicKeyFromBase58("ByYiZxp8QrdN9qbdtaAiePN8AAr3qvTPppNJDpf5DVJ5"),
 	}
-
-	// EARN_STABLECOINS order: CASH, USDG, PYUSD (Token-2022), USDC, USDT, USDS.
-	earnStables = []struct{ mint, program solana.PublicKey }{
-		{solana.MustPublicKeyFromBase58(fleet.CashMint), token2022Program},
-		{solana.MustPublicKeyFromBase58(fleet.USDGMint), token2022Program},
-		{solana.MustPublicKeyFromBase58(fleet.PYUSDMint), token2022Program},
-		{usdcMint, tokenProgram},
-		{solana.MustPublicKeyFromBase58(fleet.USDTMint), tokenProgram},
-		{solana.MustPublicKeyFromBase58(fleet.USDSMint), tokenProgram},
-	}
+	earnStables = func() []earnStable {
+		var stables []earnStable
+		for _, stable := range fleet.EarnStablecoins() {
+			stables = append(stables, earnStable{solana.MustPublicKeyFromBase58(stable.Mint), solana.MustPublicKeyFromBase58(stable.TokenProgram)})
+		}
+		return stables
+	}()
 )
 
 const (

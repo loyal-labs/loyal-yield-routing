@@ -20,7 +20,7 @@ import (
 func TestFreshVaultTokenCustodyChecksProgramAndState(t *testing.T) {
 	owner := testIdentity(60)
 	for _, mint := range []string{USDCMint, PYUSDMint} {
-		program, ok := stableTokenProgram(mint)
+		program, ok := EarnStableTokenProgram(mint)
 		if !ok {
 			t.Fatal("fixture mint unsupported")
 		}

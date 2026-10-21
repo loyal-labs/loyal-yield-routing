@@ -100,17 +100,12 @@ func parseCrossMintAnchors(raw []byte) (crossMintAnchors, error) {
 	return a, nil
 }
 
-// Registry parity with loyal-actions stablecoins.rs, rather than trusting a
-// signer-supplied program ID for a mint's token-account envelope.
 func canonicalCustodyTokenProgram(mint string) (string, error) {
-	switch mint {
-	case fleet.USDCMint, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA":
-		return sdk.TokenProgramID.String(), nil
-	case "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo":
-		return sdk.Token2022ProgramID.String(), nil
-	default:
+	program, ok := fleet.EarnStableTokenProgram(mint)
+	if !ok {
 		return "", errors.New("custody mint is outside canonical Earn registry")
 	}
+	return program, nil
 }
 func custodyTokenAmount(a *chain.Account, mint, owner string) (int64, error) {
 	program, err := canonicalCustodyTokenProgram(mint)

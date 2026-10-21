@@ -7,21 +7,8 @@ import (
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 )
-
-// These eight market identities are the retained loyal-actions Medium preset:
-// actions.rs:680-715 and ids.rs:81-89. The runtime owns/joins the maintenance
-// lane and supplies its existing pools; no extra database pool or signer exists.
-var mediumMainnetMarkets = []string{
-	"7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
-	"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
-	"6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
-	"47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8",
-	"BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF",
-	"DxXdAyU3kCjnyggvHmY5nAwg5cRbbmdyX3npfDMjjMek",
-	"GMqmFygF5iSm5nkckYU6tieggFcR42SyjkkhK5rswFRs",
-	"CF32kn7AY8X1bW7ZkGcHc4X9ZWTxqKGCJk6QwrQkDcdw",
-}
 
 func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, error) {
 	if r.cfg.Cluster != "mainnet-beta" {
@@ -37,7 +24,7 @@ func (r *Runtime) NewMaintenance(ctx context.Context) (*observer.Maintenance, er
 		return nil, errors.New("product read model RPC is not Solana mainnet")
 	}
 	onError := func() { r.facts.Failed(engine.FamilyObserver, "read_models") }
-	maintenance, err := observer.NewMaintenance(r.neon, r.timescale, observer.MaintenanceConfig{Cluster: r.cfg.Cluster, MediumMarkets: mediumMainnetMarkets, PriceRPC: r.rpc, Logger: r.logger, ValidateNamespace: r.validateMaintenanceNamespace, OnError: onError})
+	maintenance, err := observer.NewMaintenance(r.neon, r.timescale, observer.MaintenanceConfig{Cluster: r.cfg.Cluster, MediumMarkets: kamino.PolicyMarkets("medium"), PriceRPC: r.rpc, Logger: r.logger, ValidateNamespace: r.validateMaintenanceNamespace, OnError: onError})
 	return maintenance, err
 }
 
