@@ -142,7 +142,7 @@ func TestStepConversionExcessJoinsThePosition(t *testing.T) {
 	if got := Decide(targeted(excess)); got.Action != Hold || got.Reason != holdAtTarget {
 		t.Fatalf("PYUSD excess beside its debt started a leg: %+v", got)
 	}
-	excess.DebtIdleRaw, excess.CollateralIdleRaw, excess.PrimeIdleRaw = 0, 2_400_000, 2_400_000
+	excess.DebtIdleRaw, excess.CollateralIdleRaw = 0, 2_400_000
 	if got := Decide(targeted(excess)); got.Action != OpenRouteStep || got.Reason != topupDepositReason || got.AmountRaw != 2_400_000 {
 		t.Fatalf("AUTO excess: %+v", got)
 	}
@@ -153,7 +153,7 @@ func TestStepConversionExcessJoinsThePosition(t *testing.T) {
 	if got := Decide(targeted(maple)); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 || got.Validate() != nil {
 		t.Fatalf("Squads cash beside USDC debt: %+v", got)
 	}
-	maple.SquadsIdleRaw, maple.CollateralIdleRaw, maple.PrimeIdleRaw = 0, 2_400_000, 2_400_000
+	maple.SquadsIdleRaw, maple.CollateralIdleRaw = 0, 2_400_000
 	got := Decide(targeted(maple))
 	if got.Action != OpenRouteStep || got.Reason != topupDepositReason {
 		t.Fatalf("syrupUSDC excess: %+v", got)

@@ -54,10 +54,8 @@ type Snapshot struct {
 	HasAmbiguousSubmission bool
 	WithdrawalDemandRaw    int64
 	SquadsIdleRaw          int64
-	PrimeIdleRaw           int64
 	// CollateralIdleRaw is the vault's custody of the lane's collateral mint,
 	// the whole account (lanes that share it see the same balance).
-	// PrimeIdleRaw is retained for historical snapshot compatibility.
 	CollateralIdleRaw           int64
 	CollateralIdleValueRaw      int64
 	MinimumCollateralDepositRaw int64

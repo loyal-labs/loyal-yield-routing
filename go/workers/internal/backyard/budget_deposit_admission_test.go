@@ -27,7 +27,7 @@ func depositAdmissionFixtureForPosition(t *testing.T, variant string, redeposit 
 	route := ethenaUSDePYUSD
 	obligation := accountAt(accounts, route.Kamino.Obligation)
 	if redeposit {
-		o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw = 1_000_000, 1_000_000
+		o.Snapshot.CollateralIdleRaw = 1_000_000
 		binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 1_000_000)
 	} else {
 		o.Snapshot.HasPosition = false

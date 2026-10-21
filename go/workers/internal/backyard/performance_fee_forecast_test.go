@@ -99,7 +99,7 @@ func coherentFeeSelectorFixture(t *testing.T, wealth, supply uint64, hwm *big.In
 		}
 		s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
 		s.VoltrIdleRaw, s.StrategyNAVRaw, s.JournalArmedNAVRaw = int64(wealth), 0, 0
-		s.SquadsIdleRaw, s.PrimeIdleRaw, s.CollateralIdleRaw = 0, 0, 0
+		s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 0
 		s.LastReportAgeSeconds = 0
 	})
 	in.Quotes[0].ObservationID = in.Snapshot.ObservationID

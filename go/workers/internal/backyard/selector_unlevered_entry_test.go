@@ -123,9 +123,9 @@ func TestUnleveredEntryLifecycleAndNoLoop(t *testing.T) {
 	check(VoltrAllocateToSquads, entryAllocationReason)
 	s.VoltrIdleRaw, s.SquadsIdleRaw = 0, 1_677_000_000
 	check(SwapStableToCollateralStep, entrySwapReason)
-	s.SquadsIdleRaw, s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 1_670_000_000, 1_670_000_000
+	s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 1_670_000_000
 	check(OpenRouteStep, entryDepositReason)
-	s.CollateralIdleRaw, s.PrimeIdleRaw = 0, 0
+	s.CollateralIdleRaw = 0
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw, s.StrategyNAVRaw = true, 1_670_000_000, 1_670_000_000, 1_670_000_000
 	check(Hold, holdAtTarget)
 	s.LeverageTargetLevel = 1

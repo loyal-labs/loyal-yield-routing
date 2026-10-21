@@ -236,7 +236,7 @@ func TestAutoCandidateObservationReportsOwnedPYUSDPosition(t *testing.T) {
 	if observation.Snapshot.PositionCollateralRaw != int64(autoFixtureDepositReceiptRaw) || observation.Snapshot.PositionDebtRaw != int64(autoFixtureDebtRaw) {
 		t.Fatalf("position raws lost their token scales: %+v", observation.Snapshot)
 	}
-	if observation.Snapshot.PrimeIdleRaw != int64(autoFixtureCollateralIdleRaw) || observation.Snapshot.DebtIdleRaw != int64(autoFixtureDebtIdleRaw) {
+	if observation.Snapshot.CollateralIdleRaw != int64(autoFixtureCollateralIdleRaw) || observation.Snapshot.DebtIdleRaw != int64(autoFixtureDebtIdleRaw) {
 		t.Fatalf("idle custody raws lost their token scales: %+v", observation.Snapshot)
 	}
 	// NAV view: 3_000 nine-decimal tokens at 1.5 floor to 4 micro-USDC of idle

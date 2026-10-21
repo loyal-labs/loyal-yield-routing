@@ -82,7 +82,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	if request.SourceLane != "" {
 		return selectPilotCanaryRotation(input, result, history)
 	}
-	if s.HasPosition || s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0 || s.CollateralIdleRaw > 0 || s.PrimeIdleRaw > 0 || s.HeldLanes != "" {
+	if s.HasPosition || s.PositionCollateralRaw > 0 || s.PositionDebtRaw > 0 || s.CollateralIdleRaw > 0 || s.HeldLanes != "" {
 		return result, nil, nil
 	}
 	if _, accepted := history[request.ID]; s.SquadsIdleRaw > 0 && !accepted {

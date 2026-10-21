@@ -256,12 +256,12 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 	}
 	o, _, _, m, rpc, _, accounts := payoffAdmissionFixture(t, 20_000, extra...)
 	route := ethenaUSDePYUSD
-	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.DebtIdleRaw = 20_000_000, 20_000_000, 1_000
+	o.Snapshot.CollateralIdleRaw, o.Snapshot.DebtIdleRaw = 20_000_000, 1_000
 	o.Snapshot.CollateralIdleValueRaw = 20_000
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 20_000_000)
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 1_000)
 	if fundingAction == SwapUSDCToDebtStep {
-		o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw, o.Snapshot.SquadsIdleRaw = 0, 0, 20_000
+		o.Snapshot.CollateralIdleRaw, o.Snapshot.SquadsIdleRaw = 0, 20_000
 		o.Snapshot.CollateralIdleValueRaw = 0
 		binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 0)
 	}
@@ -395,7 +395,7 @@ func borrowAdmissionFixture(t *testing.T, output uint64, variant string) (Observ
 	o, _, _, m, _, client, accounts := fundingAdmissionFixture(t, output)
 	route := ethenaUSDePYUSD
 	o.Snapshot.PositionDebtRaw, o.Snapshot.PositionDebtValueRaw, o.Snapshot.DebtIdleRaw = 0, 0, 0
-	o.Snapshot.CollateralIdleRaw, o.Snapshot.PrimeIdleRaw = 1, 1
+	o.Snapshot.CollateralIdleRaw = 1
 	clear(accountAt(accounts, route.Kamino.Obligation).Data[1208:1408])
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.DebtCustody).Data[64:72], 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, route.CollateralCustody).Data[64:72], 1)
@@ -554,7 +554,7 @@ func partialWithdrawalRestoreFixture(t *testing.T, lane string, debt int64) (Obs
 	s.LTVBPS, s.LeverageTargetLevel = debt*10_000/s.PositionCollateralValueRaw, 1.5
 	s.WithdrawalDemandRaw, s.VoltrIdleRaw = 10_000_000, 0
 	s.VoltrStrategyIdleRaw, s.StagedAmountRaw, s.StagedAmountKnown, s.StageTransient = 11_000_000, 11_000_000, true, true
-	s.CollateralIdleRaw, s.PrimeIdleRaw, s.DebtIdleRaw, s.SquadsIdleRaw = 0, 0, 0, 0
+	s.CollateralIdleRaw, s.DebtIdleRaw, s.SquadsIdleRaw = 0, 0, 0
 	s.StrategyNAVRaw, s.TotalVaultNAVRaw = s.PositionCollateralValueRaw-debt, s.PositionCollateralValueRaw-debt
 	d := Decide(*s)
 	if d.Action != VoltrRestoreIdle || d.Reason != "withdrawal_staged" {

@@ -25,7 +25,7 @@ func monitorSnapshot(t *testing.T, mutate func(accounts []ConfirmedAccount, s *S
 	s := Snapshot{ObservationID: "monitor", Slot: 77, RouteKind: RouteKind, Fresh: true,
 		RouteLane: PhaseOneLaneID, StrategyKey: PhaseOneLaneID,
 		VoltrIdleRaw: int64(nav.Custodies.VoltrIdleRaw), VoltrStrategyIdleRaw: int64(nav.Custodies.StrategyUSDCraw),
-		SquadsIdleRaw: int64(nav.Custodies.SquadsUSDCraw), PrimeIdleRaw: int64(nav.Custodies.SquadsPRIMEraw),
+		SquadsIdleRaw:     int64(nav.Custodies.SquadsUSDCraw),
 		CollateralIdleRaw: int64(nav.Custodies.SquadsPRIMEraw), StrategyNAVRaw: int64(nav.StrategyNAVRaw),
 		ApprovedAdminPerformanceFeeBPS: rwa.AdminPerformanceFeeBPS}
 	if err := applyRouteNAVSnapshot(&s, nav, time.Now()); err != nil {

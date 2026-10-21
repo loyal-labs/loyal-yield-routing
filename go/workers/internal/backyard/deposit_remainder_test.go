@@ -25,7 +25,7 @@ func TestDepositRemainderDoesNotRestartEntryLoop(t *testing.T) {
 	}
 	s.RouteLane, s.StrategyKey = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
 	s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 100_000_000, 110_000
-	s.CollateralIdleRaw, s.PrimeIdleRaw, s.PostMutationNAVRequired = 1, 1, true
+	s.CollateralIdleRaw, s.PostMutationNAVRequired = 1, true
 	if got := Decide(s); got.Action != ReportNAV {
 		t.Fatal("deposit bypassed NAV", got)
 	}
@@ -52,7 +52,7 @@ func TestPilotUSDCRoundingRemainderDoesNotRestartEntry(t *testing.T) {
 			s.RouteLane, s.StrategyKey = lane, lane
 			s.MinimumCollateralDepositRaw = 3
 			s.HasPosition, s.PositionCollateralRaw, s.PositionCollateralValueRaw = true, 100_000_000, 100_000_000
-			s.CollateralIdleRaw, s.PrimeIdleRaw = 1, 1
+			s.CollateralIdleRaw = 1
 			s.PostMutationNAVRequired = true
 			if got := Decide(s); got.Action != ReportNAV {
 				t.Fatal("remainder bypassed required NAV", got)
