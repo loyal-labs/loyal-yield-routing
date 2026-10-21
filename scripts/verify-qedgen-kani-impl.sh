@@ -177,8 +177,7 @@ fi
 
 kani_extra_args=()
 if [[ -n "$KANI_EXTRA_ARGS" ]]; then
-  # shellcheck disable=SC2206
-  kani_extra_args=($KANI_EXTRA_ARGS)
+  read -r -a kani_extra_args <<< "$KANI_EXTRA_ARGS"
 fi
 if [[ -n "$KANI_HARNESS_TIMEOUT" ]]; then
   kani_extra_args+=(-Z unstable-options)

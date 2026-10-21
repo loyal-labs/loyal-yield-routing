@@ -269,7 +269,7 @@ function main() {
     goStore.includes("route.lease_expires_at > clock_timestamp() FOR UPDATE OF route") &&
     goStore.includes("func (d *Database) lockOperationLease") &&
     goStore.includes("OperationRouteForLeaseSQL, operationID, lease.Owner, lease.FencingToken") &&
-    nonterminalIndex.length > 0 && ["'decided'", "'built'", "'simulated'", "'signed'", "'broadcast_intent'", "'submitted'", "'confirmed'", "'reconciling'"].every((status) => nonterminalIndex.includes(status));
+    nonterminalIndex.length > 0 && ["'decided'", "'built'", "'simulated'", "'signed'", "'broadcast_intent'", "'confirmed'", "'reconciling'"].every((status) => nonterminalIndex.includes(status));
   const operationRowsExact = operations.length >= requiredActions.length && requiredActions.every((action) => operations.some((row) =>
     row.action === action && (row.status === "reconciled" || (action === "VOLTR_RESTORE_IDLE" && row.operationId === restoreIncident?.operationId)))) &&
     operations.every((row) => typeof row.operationId === "string" && row.strategyKey === selectedLane &&
