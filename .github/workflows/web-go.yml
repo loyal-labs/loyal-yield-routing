@@ -7,7 +7,6 @@ on:
       - web/**
       - go/workers/cmd/loyal-web/**
       - go/workers/internal/webapp/**
-      - go/workers/internal/webauth/**
       - go/workers/internal/webserve/**
       - scripts/web/**
       - .github/workflows/web-go.yml
@@ -45,5 +44,5 @@ jobs:
       - name: go
         working-directory: go/workers
         run: |
-          go vet ./cmd/loyal-web ./internal/webapp ./internal/webauth ./internal/webserve
-          go test -race ./cmd/loyal-web ./internal/webapp ./internal/webauth ./internal/webserve
+          go vet ./cmd/loyal-web ./internal/webapp ./internal/webserve
+          go test -race ./cmd/loyal-web ./internal/webapp ./internal/webserve

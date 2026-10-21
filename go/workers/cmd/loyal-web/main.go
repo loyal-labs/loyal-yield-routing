@@ -77,7 +77,7 @@ func run(ctx context.Context) error {
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           webapp.New(cfg, webapp.Deps{}),
+		Handler:           webapp.New(cfg),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
