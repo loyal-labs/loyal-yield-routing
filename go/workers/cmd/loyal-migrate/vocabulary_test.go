@@ -16,9 +16,10 @@ import (
 	"testing"
 )
 
-const internalDir = "../../internal"
-
-var yieldMigrations = "../../../../migrations/yield"
+const (
+	yieldMigrations = "../../../../migrations/yield"
+	internalDir     = "../../internal"
+)
 
 func TestGoVocabulariesMatchLatestMigrations(t *testing.T) {
 	cases := []struct {
@@ -29,23 +30,23 @@ func TestGoVocabulariesMatchLatestMigrations(t *testing.T) {
 		vocab  vocabulary
 	}{
 		{"AttemptState", "autodeposit", typedConsts, "AttemptState",
-			vocabulary{checkConstraint, "balance_sweep_transaction_attempts_state_check", "attempt_state"}},
+			vocabulary{checkConstraint, "balance_sweep_transaction_attempts_state_check", "balance_sweep_transaction_attempts", "attempt_state"}},
 		{"ClaimStatus", "autodeposit", typedConsts, "ClaimStatus",
-			vocabulary{enumType, "balance_sweep_lot_claim_status", ""}},
+			vocabulary{enumType, "balance_sweep_lot_claim_status", "", ""}},
 		{"LotStatus", "autodeposit", typedConsts, "LotStatus",
-			vocabulary{enumType, "balance_sweep_surplus_lot_status", ""}},
+			vocabulary{enumType, "balance_sweep_surplus_lot_status", "", ""}},
 		{"SubmissionState", "fleetexec", typedConsts, "SubmissionState",
-			vocabulary{checkConstraint, "signed_route_submissions_state_check", "submission_state"}},
+			vocabulary{checkConstraint, "signed_route_submissions_state_check", "signed_route_submissions", "submission_state"}},
 		{"SubmissionTerminalStates", "fleet", stringSliceVar, "SubmissionTerminalStates",
-			vocabulary{partialIndex, "signed_route_submissions_one_nonterminal_opportunity_idx", "submission_state"}},
+			vocabulary{partialIndex, "signed_route_submissions_one_nonterminal_opportunity_idx", "signed_route_submissions", "submission_state"}},
 		{"MovementLeg", "fleetexec", typedConsts, "MovementLeg",
-			vocabulary{checkConstraint, "signed_route_submissions_movement_leg_check", "movement_leg"}},
+			vocabulary{checkConstraint, "signed_route_submissions_movement_leg_check", "signed_route_submissions", "movement_leg"}},
 		{"LegPurpose", "fleetexec", typedConsts, "LegPurpose",
-			vocabulary{checkConstraint, "signed_route_submissions_movement_leg_check", "leg_purpose"}},
+			vocabulary{checkConstraint, "signed_route_submissions_movement_leg_check", "signed_route_submissions", "leg_purpose"}},
 		{"LookupKind", "fleetexec", typedConsts, "LookupKind",
-			vocabulary{checkConstraint, "lookup_table_operations_kind_check", "operation_kind"}},
+			vocabulary{checkConstraint, "lookup_table_operations_kind_check", "lookup_table_operations", "operation_kind"}},
 		{"WakeupChannel", "autodeposit", stringConst, "WakeupChannel",
-			vocabulary{notifyFunction, "notify_autodeposit_requested_slot", ""}},
+			vocabulary{notifyFunction, "notify_autodeposit_requested_slot", "", ""}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -67,7 +68,7 @@ func TestLeverageLadderMatchesMigrationAndKeepsItsGap(t *testing.T) {
 		levels = append(levels, r.level)
 	}
 	var want []float64
-	wantItems, source := migrationVocabulary(t, vocabulary{checkConstraint, "backyard_lane_levels_level_check", "level"})
+	wantItems, source := migrationVocabulary(t, vocabulary{checkConstraint, "backyard_lane_levels_level_check", "backyard_lane_levels", "level"})
 	for _, item := range wantItems {
 		v, err := strconv.ParseFloat(item, 64)
 		if err != nil {
@@ -101,6 +102,7 @@ const (
 type vocabulary struct {
 	kind   vocabularyKind
 	name   string
+	table  string
 	column string
 }
 
@@ -117,6 +119,7 @@ var (
 	enumStatementRE   = regexp.MustCompile(`(?i)\b(?:CREATE|ALTER|DROP)\s+TYPE\b|\bADD\s+VALUE\b|\bRENAME\s+VALUE\b|\bpg_enum\b`)
 	dropConstraintRE  = regexp.MustCompile(`(?i)\bDROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?$`)
 	constraintRE      = regexp.MustCompile(`(?i)\bCONSTRAINT\s+$`)
+	validateRE        = regexp.MustCompile(`(?i)\bVALIDATE\s+CONSTRAINT\s+$`)
 	checkOpenRE       = regexp.MustCompile(`(?i)^\s*CHECK\s*\(`)
 	dropIndexRE       = regexp.MustCompile(`(?i)\bDROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?(?:\w+\.)?$`)
 	createIndexRE     = regexp.MustCompile(`(?i)\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?:\w+\.)?$`)
@@ -159,6 +162,9 @@ func readVocabulary(dir string, v vocabulary) ([]string, string, error) {
 			return nil, "", fmt.Errorf("%s: %w", base, err)
 		}
 		for _, s := range stmts {
+			if v.removesBacking(s) {
+				return nil, "", fmt.Errorf("%s: statement removes the table or column behind %s: %.200s", base, v.name, s)
+			}
 			locs := mention.FindAllStringIndex(s, -1)
 			if len(locs) == 0 {
 				continue
@@ -176,6 +182,15 @@ func readVocabulary(dir string, v vocabulary) ([]string, string, error) {
 		return nil, "", fmt.Errorf("no migration leaves %s defined", v.name)
 	}
 	return def.items, def.source, nil
+}
+
+func (v vocabulary) removesBacking(stmt string) bool {
+	if v.table == "" {
+		return false
+	}
+	table, column := regexp.QuoteMeta(v.table), regexp.QuoteMeta(v.column)
+	return regexp.MustCompile(`(?i)^DROP\s+TABLE\b.*\b`+table+`\b`).MatchString(stmt) ||
+		regexp.MustCompile(`(?i)^ALTER\s+TABLE\s+(?:ONLY\s+)?(?:IF\s+EXISTS\s+)?(?:\w+\.)?`+table+`\b.*\bDROP\s+(?:COLUMN\s+)?(?:IF\s+EXISTS\s+)?`+column+`\b`).MatchString(stmt)
 }
 
 func (v vocabulary) apply(def *definition, stmt string, locs [][]int) error {
@@ -225,6 +240,8 @@ func (v vocabulary) applyCheck(def *definition, before, after string) error {
 	case dropConstraintRE.MatchString(before):
 		*def = definition{}
 		return nil
+	case validateRE.MatchString(before):
+		return nil
 	case constraintRE.MatchString(before) && checkOpenRE.MatchString(after):
 		body, err := balanced(after[strings.Index(after, "("):], '(', ')')
 		if err != nil {
@@ -272,8 +289,17 @@ func (v vocabulary) applyIndex(def *definition, before, after string) error {
 			return err
 		}
 		items, err := parseItems(list)
+		if err != nil {
+			return err
+		}
+		if def.present {
+			if !slices.Equal(def.items, items) {
+				return fmt.Errorf("index already exists with %q, so Postgres keeps it", def.items)
+			}
+			return nil
+		}
 		*def = definition{present: true, items: items}
-		return err
+		return nil
 	}
 	return errors.New("neither DROP INDEX nor CREATE INDEX")
 }
