@@ -153,16 +153,11 @@ const _: () = {
     }
 };
 
-/// Durable cross-mint authority for one disjoint source-mint shard.
-///
-/// Every policy contains both supported Jupiter V2 ExactIn dialects and all
-/// six canonical Earn destination ATAs. The cap is in base units and applies
-/// independently to each source mint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JupiterCrossMintPolicySpec {
     pub source_shard: JupiterCrossMintSourceShard,
     pub max_slippage_bps: u16,
-    pub daily_source_mint_spending_cap: u64,
+    pub daily_source_mint_spending_cap_base_units: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

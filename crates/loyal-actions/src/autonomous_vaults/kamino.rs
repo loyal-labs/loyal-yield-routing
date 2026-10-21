@@ -106,8 +106,8 @@ pub fn create_kamino_policies(
     }
 
     let operation_constraints = vec![
-        protected_instruction_constraint(&templates, false),
-        protected_instruction_constraint(&templates, true),
+        user_controlled_instruction_constraint(&templates, false),
+        user_controlled_instruction_constraint(&templates, true),
     ];
     let init_constraints = vec![init_obligation_constraint(
         vault,
@@ -302,18 +302,7 @@ const MARKET_ACCOUNT_INDEX: usize = 2;
 const RESERVE_ACCOUNT_INDEX: usize = 4;
 const LIQUIDITY_MINT_ACCOUNT_INDEX: usize = 5;
 const VAULT_LIQUIDITY_ACCOUNT_INDEX: usize = 9;
-// K-Lend validates the reserve-owned vaults, collateral mint, market authority,
-// optional farm state, sysvar, and Farms program against the pinned reserve and
-// market. Encoding those program-enforced accounts again makes the policy-create
-// transaction exceed Solana's packet limit. These are the user-controlled
-// security edges: vault authority, allowed obligations, markets/reserves,
-// liquidity mint, and vault source/destination. K-Lend binds each obligation
-// and reserve to its market, validates reserve-owned supply accounts, requires
-// the classic collateral-token program, and binds the liquidity-token program
-// to the pinned mint owner. One allowlisted deposit and one allowlisted
-// withdrawal constraint therefore preserve exact pair safety without
-// exceeding the packet limit.
-const PROTECTED_ACCOUNT_INDEXES: [usize; 6] = [
+const USER_CONTROLLED_ACCOUNT_INDEXES: [usize; 6] = [
     OWNER_ACCOUNT_INDEX,
     OBLIGATION_ACCOUNT_INDEX,
     MARKET_ACCOUNT_INDEX,
@@ -322,7 +311,7 @@ const PROTECTED_ACCOUNT_INDEXES: [usize; 6] = [
     VAULT_LIQUIDITY_ACCOUNT_INDEX,
 ];
 
-fn protected_instruction_constraint(
+fn user_controlled_instruction_constraint(
     templates: &[KaminoReservePolicyTemplate],
     withdraw: bool,
 ) -> SquadsInstructionConstraint {
@@ -339,7 +328,7 @@ fn protected_instruction_constraint(
     let instruction = instructions[0];
     SquadsInstructionConstraint {
         program_id: instruction.program_id,
-        account_constraints: PROTECTED_ACCOUNT_INDEXES
+        account_constraints: USER_CONTROLLED_ACCOUNT_INDEXES
             .iter()
             .map(|index| {
                 pubkey_allowlist_constraint(
@@ -590,7 +579,7 @@ mod tests {
     fn allowlists_only_the_two_approved_markets_reserves_and_obligations() {
         let vault = Pubkey::new_unique();
         let templates = templates(vault);
-        let deposit = protected_instruction_constraint(&templates, false);
+        let deposit = user_controlled_instruction_constraint(&templates, false);
 
         assert_pubkey_allowlist(
             account_constraint(&deposit, 1),

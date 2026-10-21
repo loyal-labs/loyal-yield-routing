@@ -218,14 +218,13 @@ fn validate_key(
     Ok(())
 }
 
-fn validate_envelope(
+fn validate_report_v1_envelope(
     operation: &'static str,
     instruction: &Instruction,
     outer: [u8; 8],
     inner: [u8; 8],
 ) -> Result<(), VoltrCustomPolicyError> {
     let data = &instruction.data;
-    // Only the report version is pinned; sequence, slot, NAV and digest are left for the adaptor to authenticate and order.
     if data.len() != ENVELOPE_LEN
         || data[..8] != outer
         || data[ADAPTOR_CALL_OFFSET] != 1
@@ -437,7 +436,7 @@ pub fn create_voltr_custom_policies(
     if allocation.program_id != identity.voltr_program || allocation.accounts.len() != 18 {
         return Err(invalid("allocation", "program or account count"));
     }
-    validate_envelope(
+    validate_report_v1_envelope(
         "allocation",
         allocation,
         VOLTR_DEPOSIT,
@@ -510,7 +509,7 @@ pub fn create_voltr_custom_policies(
     if refresh.program_id != identity.voltr_program || refresh.accounts.len() != 18 {
         return Err(invalid("NAV refresh", "program or account count"));
     }
-    validate_envelope(
+    validate_report_v1_envelope(
         "NAV refresh",
         refresh,
         VOLTR_DEPOSIT,
@@ -602,7 +601,7 @@ pub fn create_voltr_custom_policies(
     if withdraw.program_id != identity.voltr_program || withdraw.accounts.len() != 18 {
         return Err(invalid("withdraw", "program or account count"));
     }
-    validate_envelope(
+    validate_report_v1_envelope(
         "withdraw",
         withdraw,
         VOLTR_WITHDRAW,
@@ -1095,7 +1094,7 @@ mod tests {
             CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR.to_vec(),
             golden_hex(&f["discriminators"]["arm_report"])
         );
-        assert!(validate_envelope(
+        assert!(validate_report_v1_envelope(
             "allocation",
             &instruction(envelope.clone(), 0),
             VOLTR_DEPOSIT,

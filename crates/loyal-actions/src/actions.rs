@@ -790,7 +790,7 @@ pub fn create_jupiter_cross_mint_policy_action(
         .source_shard
         .source_mints()
         .into_iter()
-        .map(|mint| (mint, spec.daily_source_mint_spending_cap))
+        .map(|mint| (mint, spec.daily_source_mint_spending_cap_base_units))
         .collect::<Vec<_>>();
     let instruction = create_program_interaction_action_instruction_with_daily_spending_limits(
         context.settings,
@@ -830,7 +830,7 @@ pub fn create_jupiter_cross_mint_policy_set(
             JupiterCrossMintPolicySpec {
                 source_shard,
                 max_slippage_bps,
-                daily_source_mint_spending_cap,
+                daily_source_mint_spending_cap_base_units: daily_source_mint_spending_cap,
             },
             action_seed,
         )
@@ -846,7 +846,7 @@ fn validate_jupiter_cross_mint_policy_spec(spec: JupiterCrossMintPolicySpec) -> 
     if spec.max_slippage_bps == 0 || spec.max_slippage_bps > 10_000 {
         return Err(LoyalActionError::InvalidSlippageBps);
     }
-    if spec.daily_source_mint_spending_cap == 0 {
+    if spec.daily_source_mint_spending_cap_base_units == 0 {
         return Err(LoyalActionError::InvalidDailySpendingCap);
     }
     Ok(())
@@ -1424,7 +1424,7 @@ mod tests {
             JupiterCrossMintPolicySpec {
                 source_shard: JupiterCrossMintSourceShard::Classic,
                 max_slippage_bps: JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
-                daily_source_mint_spending_cap: 1_000_000_000,
+                daily_source_mint_spending_cap_base_units: 1_000_000_000,
             },
             43,
         )
@@ -1556,7 +1556,7 @@ mod tests {
         let spec = JupiterCrossMintPolicySpec {
             source_shard: JupiterCrossMintSourceShard::Classic,
             max_slippage_bps: JUPITER_DEFAULT_MAX_SLIPPAGE_BPS,
-            daily_source_mint_spending_cap: 1,
+            daily_source_mint_spending_cap_base_units: 1,
         };
         assert_eq!(
             create_jupiter_cross_mint_policy_action(
@@ -1586,7 +1586,7 @@ mod tests {
             create_jupiter_cross_mint_policy_action(
                 context,
                 JupiterCrossMintPolicySpec {
-                    daily_source_mint_spending_cap: 0,
+                    daily_source_mint_spending_cap_base_units: 0,
                     ..spec
                 },
                 41,

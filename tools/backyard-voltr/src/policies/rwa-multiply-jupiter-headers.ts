@@ -109,13 +109,16 @@ export function measureSignedJupiterPacket(edgeKey: string, instruction: Transac
   };
 }
 
+const ORDINARY_ROUTE_EDGE_KEYS: ReadonlySet<string> = new Set(["USDC->USDG"]);
+
 export function catalogSwapEdges() {
   const assets = new Map(catalogCustodies().map((value) => [value.symbol, value]));
   const edges = readRwaMultiplyCatalog().swapEdges.map(({ from, to }) => {
     const source = assets.get(from);
     const destination = assets.get(to);
     invariant(source && destination, `swap edge ${from}->${to} references an unknown asset`);
-    return { key: `${from}->${to}`, from, to, source, destination };
+    const key = `${from}->${to}`;
+    return { key, from, to, source, destination, useSharedAccounts: !ORDINARY_ROUTE_EDGE_KEYS.has(key) };
   });
   invariant(edges.length === 52 && new Set(edges.map(({ key }) => key)).size === 52,
     "swap catalog is not exactly 52 unique directed edges");
@@ -417,12 +420,7 @@ async function resolveOne(connection: Connection, edge: ReturnType<typeof catalo
   };
   let family: Awaited<ReturnType<typeof instructionFamily>>;
   try {
-    // USDG is Token-2022 and Jupiter's shared-account cross-program shape has
-    // repeatedly failed before CPI on the exact signed Squads wrapper.  Use
-    // Jupiter's ordinary Route family for this edge so every token account is
-    // explicit and the policy can constrain the same source/destination
-    // boundary without adding permissions.
-    family = await instructionFamily(edge.key !== "USDC->USDG");
+    family = await instructionFamily(edge.useSharedAccounts);
   } catch (error) {
     if (!(edge.source.tokenProgram !== edge.destination.tokenProgram
       && error instanceof Error
