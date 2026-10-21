@@ -38,8 +38,20 @@ const HEADER_CONTROL_PATHS = [
 
 const STATIC_SERVER_HEADERS = new Set(["content-type", "cache-control"]);
 
+const GO_ONLY_HEADERS: Record<string, string> = {
+  "x-loyal-release": "the build stamp loyal-web adds to every response",
+  date: "set by net/http",
+  "content-length": "set by net/http",
+  "content-type": "the static server infers it from the file",
+  "cache-control": "the static server sets per-file caching",
+  "last-modified": "http.FileServer",
+  etag: "http.FileServer",
+  "accept-ranges": "http.FileServer",
+};
+
 type Outcome =
-  | { kind: "continue" }
+  | { kind: "continue"; cookies: string[] }
+  | { kind: "error"; status: number }
   | { kind: "rewrite"; to: string }
   | { kind: "redirect"; status: number; location: string; cookies: string[]; cacheControl: string | null; vary: string | null };
 
@@ -51,10 +63,12 @@ type KnownDifference = {
   go: (expected: Outcome, c: LocaleCase) => Outcome | null;
 };
 
-function withSearch(location: string, change: (params: URLSearchParams) => void): string {
+function sortedByKey(location: string): string {
   const url = new URL(location, "http://localhost");
-  change(url.searchParams);
-  return `${url.pathname}${url.searchParams.size ? `?${url.searchParams}` : ""}`;
+  if (!url.search) return location;
+  const key = (pair: string) => decodeURIComponent((pair.split("=")[0] ?? "").replaceAll("+", " "));
+  const pairs = url.search.slice(1).split("&").sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+  return `${url.pathname}?${pairs.join("&")}`;
 }
 
 const KNOWN_DIFFERENCES: KnownDifference[] = [
@@ -88,7 +102,7 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
     reason: "localeRedirect re-encodes the query with url.Values.Encode, which sorts keys; Next keeps the request's order",
     go: (expected) =>
       expected.kind === "redirect" && expected.cookies.length > 0
-        ? { ...expected, location: withSearch(expected.location, (params) => params.sort()) }
+        ? { ...expected, location: sortedByKey(expected.location) }
         : null,
   },
 ];
@@ -211,7 +225,7 @@ const middlewareMatches = (pathname: string) => matchesMiddleware(pathname, { he
 function nextOutcome(c: LocaleCase, ignoreMatcher = false): Outcome {
   const base = new URL(`http://${c.host}`);
   const url = new URL(c.target, base);
-  if (!ignoreMatcher && !middlewareMatches(url.pathname)) return { kind: "continue" };
+  if (!ignoreMatcher && !middlewareMatches(url.pathname)) return { kind: "continue", cookies: [] };
   const headers = new Headers({ host: c.host, "user-agent": c.userAgent });
   if (c.acceptLanguage) headers.set("accept-language", c.acceptLanguage);
   if (c.cookie) headers.set("cookie", c.cookie);
@@ -225,7 +239,7 @@ function describe(response: Response, base: URL): Outcome {
     const to = new URL(rewrite);
     return { kind: "rewrite", to: `${to.pathname}${to.search}` };
   }
-  if (response.headers.get("x-middleware-next")) return { kind: "continue" };
+  if (response.headers.get("x-middleware-next")) return { kind: "continue", cookies: normalizedCookies(response) };
   return redirectOutcome(response, base);
 }
 
@@ -235,10 +249,14 @@ function redirectOutcome(response: Response, base: URL): Outcome {
     kind: "redirect",
     status: response.status,
     location: location.origin === base.origin ? `${location.pathname}${location.search}` : location.href,
-    cookies: response.headers.getSetCookie().map(normalizeCookie).sort(),
+    cookies: normalizedCookies(response),
     cacheControl: response.headers.get("cache-control"),
     vary: response.headers.get("vary"),
   };
+}
+
+function normalizedCookies(response: Response): string[] {
+  return response.headers.getSetCookie().map(normalizeCookie).sort();
 }
 
 function normalizeCookie(cookie: string): string {
@@ -248,7 +266,8 @@ function normalizeCookie(cookie: string): string {
 }
 
 function goOutcome(response: Response, host: string): Outcome {
-  if (response.status < 300 || response.status >= 400) return { kind: "continue" };
+  if (response.status >= 500) return { kind: "error", status: response.status };
+  if (response.status < 300 || response.status >= 400) return { kind: "continue", cookies: normalizedCookies(response) };
   return redirectOutcome(response, new URL(`http://${host}`));
 }
 
@@ -311,27 +330,31 @@ function headerUrls(routes: HeaderRoute[]): string[] {
   return [...urls];
 }
 
-function expectedHeaders(routes: HeaderRoute[], target: string): Map<string, string> {
+function matchingRoutes(routes: HeaderRoute[], target: string): HeaderRoute[] {
   const url = new URL(target, "http://localhost");
   const query = Object.fromEntries(url.searchParams);
-  const expected = new Map<string, string>();
-  for (const route of routes) {
-    if (!route.match(url.pathname)) continue;
-    if (!matchHas({ headers: {} } as never, query, route.has as never, undefined as never)) continue;
-    for (const { key, value } of route.headers) expected.set(key.toLowerCase(), value);
-  }
-  return expected;
+  return routes.filter(
+    (route) => route.match(url.pathname) && matchHas({ headers: {} } as never, query, route.has as never, undefined as never),
+  );
 }
 
 async function compareHeaders(origin: string): Promise<Failure[]> {
   const items = (await nextConfig.headers?.()) ?? [];
   const routes = items.map((item) => buildCustomRoute("header", item as never, "", false)) as unknown as HeaderRoute[];
-  const known = new Set(routes.flatMap((route) => route.headers.map(({ key }) => key.toLowerCase())));
   const failures: Failure[] = [];
+  for (const source of Object.keys(HEADER_SOURCE_PATHS)) {
+    if (!routes.some((route) => route.source === source)) {
+      failures.push({ what: `HEADER_SOURCE_PATHS lists ${source} but next.config.ts headers() no longer has it`, expected: source, actual: null });
+    }
+  }
+  const known = new Set(routes.flatMap((route) => route.headers.map(({ key }) => key.toLowerCase())));
+  const checked = new Map<string, number>();
   for (const target of headerUrls(routes)) {
-    const expected = expectedHeaders(routes, target);
+    const matching = matchingRoutes(routes, target);
+    const expected = new Map(matching.flatMap((route) => route.headers.map(({ key, value }): [string, string] => [key.toLowerCase(), value])));
     const response = await fetch(`${origin}${target}`, { redirect: "manual" });
     await response.arrayBuffer();
+    for (const route of matching) checked.set(route.source, (checked.get(route.source) ?? 0) + route.headers.length);
     for (const key of known) {
       const want = expected.get(key) ?? null;
       const got = response.headers.get(key);
@@ -339,6 +362,14 @@ async function compareHeaders(origin: string): Promise<Failure[]> {
       if (want === null && STATIC_SERVER_HEADERS.has(key)) continue;
       if (want !== got) failures.push({ what: `GET ${target} header ${key}`, expected: want, actual: got });
     }
+    for (const key of response.headers.keys()) {
+      if (!known.has(key) && !(key in GO_ONLY_HEADERS)) {
+        failures.push({ what: `GET ${target} header ${key} is not sent by next.config.ts`, expected: null, actual: response.headers.get(key) });
+      }
+    }
+  }
+  for (const source of Object.keys(HEADER_SOURCE_PATHS)) {
+    if (!checked.get(source)) failures.push({ what: `no header was checked for ${source}`, expected: ">0 checks", actual: 0 });
   }
   return failures;
 }
@@ -370,14 +401,14 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-async function start(bin: string): Promise<{ origin: string; server: Subprocess }> {
+async function start(bin: string, upstream: string): Promise<{ origin: string; server: Subprocess }> {
   const port = await freePort();
   const server = Bun.spawn([bin], {
     env: {
       ...process.env,
       LOYAL_WEB_ADDRESS: `127.0.0.1:${port}`,
       LOYAL_WEB_APP_HOST: APP_HOST,
-      LOYAL_WEB_UPSTREAM: "http://127.0.0.1:1",
+      LOYAL_WEB_UPSTREAM: upstream,
     },
     stdout: "ignore",
     stderr: "ignore",
@@ -398,13 +429,18 @@ async function start(bin: string): Promise<{ origin: string; server: Subprocess 
 
 async function main(): Promise<number> {
   const bin = argValue("--bin") ?? new URL("../../bin/loyal-web", import.meta.url).pathname;
-  const { origin, server } = await start(bin);
+  const upstream = Bun.serve({ port: 0, fetch: () => new Response("upstream") });
+  const { origin, server } = await start(bin, `http://127.0.0.1:${upstream.port}`);
   try {
     const cases = localeCases();
     const failures = [
       ...(await compareHeaders(origin)),
       ...(await pool(cases, 32, (c) => compareLocale(origin, c))),
     ];
+    const floor = LOCALES.length * TRANSLATED_PATHS.length;
+    if (cases.length < floor) failures.push({ what: "too few locale cases ran", expected: `>= ${floor}`, actual: cases.length });
+    if (redirects < floor) failures.push({ what: "too few locale redirects expected by Next", expected: `>= ${floor}`, actual: redirects });
+    if (headerChecks === 0) failures.push({ what: "no header was checked", expected: ">0", actual: 0 });
     for (const difference of KNOWN_DIFFERENCES) {
       if (!fired.has(difference.name)) {
         failures.push({ what: `known difference "${difference.name}" no longer occurs: delete it from KNOWN_DIFFERENCES`, expected: null, actual: null });
@@ -419,6 +455,7 @@ async function main(): Promise<number> {
     return failures.length === 0 ? 0 : 1;
   } finally {
     server.kill();
+    await upstream.stop(true);
   }
 }
 
