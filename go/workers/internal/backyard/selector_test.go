@@ -74,7 +74,7 @@ func TestSelectorPersistenceRestartsAfterCapacityClosureAndSurvivesJSONRestart(t
 	if closed.Action != "KEEP" || closed.Candidates[0].BlockedReason != "entry_closed" {
 		t.Fatal(closed)
 	}
-	if _, kept := closed.State.Advantages["OnRe/ONyc/USDC"]; kept {
+	if _, kept := closed.State.Advantages[advantageKey{lane: "OnRe/ONyc/USDC"}]; kept {
 		t.Fatal("a closed lane kept its persistence window", closed.State)
 	}
 	in.Markets[0].EntryCapacity = Capacity{Known: true, Unlimited: true}
@@ -211,7 +211,7 @@ func TestSelectorNAVDoesNotEraseFreshAdvantage(t *testing.T) {
 	in.Snapshot.LastReportAgeSeconds = 3600
 	advanceSelectorFixture(&in, 30*time.Second)
 	accounting := SelectOpportunity(in, first.State)
-	if accounting.Action != "KEEP" || accounting.Reason != "accounting_first" || !accounting.State.Advantages[in.Markets[0].Lane].Since.Equal(in.Now.Add(-30*time.Second)) {
+	if accounting.Action != "KEEP" || accounting.Reason != "accounting_first" || !accounting.State.Advantages[advantageKey{lane: in.Markets[0].Lane}].Since.Equal(in.Now.Add(-30*time.Second)) {
 		t.Fatal(accounting)
 	}
 	advanceSelectorFixture(&in, 31*time.Second)

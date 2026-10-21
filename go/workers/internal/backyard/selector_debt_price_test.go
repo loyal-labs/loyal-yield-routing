@@ -124,7 +124,7 @@ func TestExitOnlyLaneNeverReachesFeedEconomics(t *testing.T) {
 	}
 	// An active lane with an executable quote keeps sampling its window.
 	usdcSample := SelectOpportunity(selectorFixture(), SelectorState{})
-	if _, sampled := usdcSample.State.Advantages["OnRe/ONyc/USDC"]; !sampled {
+	if _, sampled := usdcSample.State.Advantages[advantageKey{lane: "OnRe/ONyc/USDC"}]; !sampled {
 		t.Fatalf("active lane persistence regressed: %+v", usdcSample.State)
 	}
 }

@@ -596,7 +596,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 
 func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decision) (Decision, bool) {
 	if s.CollateralIdleRaw > partialWithdrawalDustRaw {
-		if !laneSwap(s.RouteLane, SwapCollateralToStableStep) {
+		if !laneSupportsSwap(s.RouteLane, SwapCollateralToStableStep) {
 			return d(Hold, string(holdNoRoom), 0), true
 		}
 		return d(SwapCollateralToStableStep, outboundCollateralReason, s.CollateralIdleRaw), true

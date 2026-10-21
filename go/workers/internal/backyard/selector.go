@@ -216,10 +216,41 @@ type AdvantageWindow struct {
 	LastSample time.Time `json:"lastSample"`
 }
 
-// Advantages are keyed by the move: a cash entry by its lane, a rotation by
-// source->destination (rotationAdvantageKey), a 1x quote with "|1x".
 type SelectorState struct {
-	Advantages map[string]AdvantageWindow `json:"advantages,omitempty"`
+	Advantages map[advantageKey]AdvantageWindow `json:"advantages,omitempty"`
+}
+
+type advantageKey struct {
+	source, lane string
+	unlevered    bool
+}
+
+func (k advantageKey) unleveredKey() advantageKey {
+	k.unlevered = true
+	return k
+}
+
+func (k advantageKey) String() string {
+	text := k.lane
+	if k.source != "" {
+		text = k.source + "->" + k.lane
+	}
+	if k.unlevered {
+		text += "|1x"
+	}
+	return text
+}
+
+func (k advantageKey) MarshalText() ([]byte, error) { return []byte(k.String()), nil }
+
+func (k *advantageKey) UnmarshalText(text []byte) error {
+	rest, unlevered := strings.CutSuffix(string(text), "|1x")
+	source, lane, rotation := strings.Cut(rest, "->")
+	if !rotation {
+		source, lane = "", rest
+	}
+	*k = advantageKey{source: source, lane: lane, unlevered: unlevered}
+	return nil
 }
 
 type CandidateForecast struct {
@@ -309,10 +340,7 @@ func selectorSampleLine(result SelectorResult) (key, line string) {
 			reason = "-"
 		}
 		roomOpen := c.DebtRoomUSDCRaw != nil && *c.DebtRoomUSDCRaw > 0
-		name := c.Lane
-		if c.SourceLane != "" {
-			name = rotationAdvantageKey(c.SourceLane, c.Lane)
-		}
+		name := advantageKey{source: c.SourceLane, lane: c.Lane}.String()
 		keys = append(keys, fmt.Sprintf("%s:%s:%s:%s:%t", name, reason, borrow, lev, roomOpen))
 		parts = append(parts, fmt.Sprintf("%s(lev=%s net=%s %s borrow=%s room=%s benefit=%s reason=%s)", name, lev, net, nativeFeedText(c.NativeAPY, c.FeedNativeAPY), borrow, room, benefit, reason))
 	}
@@ -401,16 +429,16 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		lanes = append(lanes, lane)
 	}
 	sort.Strings(lanes)
-	out.State.Advantages = map[string]AdvantageWindow{}
-	sample := func(c CandidateForecast, move string, q MoveQuote) {
+	out.State.Advantages = map[advantageKey]AdvantageWindow{}
+	sample := func(c CandidateForecast, move advantageKey, q MoveQuote) {
 		if c.BlockedReason == "fee_forecast_unavailable" {
 			delete(out.State.Advantages, move)
-			delete(out.State.Advantages, unleveredAdvantageKey(move))
+			delete(out.State.Advantages, move.unleveredKey())
 		}
 		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) {
 			key := move
 			if q.Unlevered {
-				key = unleveredAdvantageKey(move)
+				key = move.unleveredKey()
 			}
 			sampleAdvantageWindow(&out, previous, key, in.Now, p)
 		}
@@ -422,7 +450,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		c := CandidateForecast{Lane: lane, NativeAPY: m.NativeAPY, FeedNativeAPY: m.FeedNativeAPY}
 		if err := m.validate(in.Now, p); err != nil {
 			c.BlockedReason = err.Error()
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
+			carryAdvantageWindows(&out, previous, advantageKey{lane: lane}, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -456,7 +484,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			if m.EntryBlockedReason != "" {
 				c.BlockedReason = m.EntryBlockedReason
 			}
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
+			carryAdvantageWindows(&out, previous, advantageKey{lane: lane}, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -465,7 +493,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 			if c.BlockedReason == "" {
 				c.BlockedReason = "entry_closed"
 			}
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
+			carryAdvantageWindows(&out, previous, advantageKey{lane: lane}, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
@@ -485,12 +513,12 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 		if quote == nil {
 			c.BlockedReason = boundedMoveCostUnavailable
-			carryAdvantageWindows(&out, previous, lane, c.BlockedReason)
+			carryAdvantageWindows(&out, previous, advantageKey{lane: lane}, c.BlockedReason)
 			out.Candidates = append(out.Candidates, c)
 			continue
 		}
 		scoreMove(&c, s, p, m, *quote, equity, out.KeepGainRaw, years)
-		sample(c, lane, *quote)
+		sample(c, advantageKey{lane: lane}, *quote)
 		out.Candidates = append(out.Candidates, c)
 		quotes[len(out.Candidates)-1] = *quote
 		if c.BlockedReason == "" && c.BenefitRaw > float64(p.MinimumBenefitRaw) && (best < 0 || c.BenefitRaw > out.Candidates[best].BenefitRaw) {
@@ -510,7 +538,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 				continue
 			}
 			m := markets[lane]
-			key := rotationAdvantageKey(source.RouteLane, lane)
+			key := advantageKey{source: source.RouteLane, lane: lane}
 			c := CandidateForecast{SourceLane: source.RouteLane, Lane: lane, NativeAPY: m.NativeAPY, FeedNativeAPY: m.FeedNativeAPY}
 			if !sourceKnown || ms.validate(in.Now, p) != nil || m.validate(in.Now, p) != nil {
 				c.BlockedReason = economicEvidenceUnavailable
@@ -558,7 +586,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 	}
 	for key, window := range previous.Advantages {
-		if _, present := markets[advantageKeyLane(key)]; !present {
+		if _, present := markets[key.lane]; !present {
 			if _, sampled := out.State.Advantages[key]; !sampled {
 				out.State.Advantages[key] = window
 			}
@@ -572,9 +600,9 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		out.Reason = "no_worthwhile_executable_move"
 		return out
 	}
-	persistent := func(i int, key string) bool {
+	persistent := func(i int, key advantageKey) bool {
 		if quotes[i].Unlevered {
-			key = unleveredAdvantageKey(key)
+			key = key.unleveredKey()
 		}
 		window, stable := out.State.Advantages[key]
 		return stable && in.Now.Sub(window.Since) >= p.Persistence
@@ -584,7 +612,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		chosen := out.Candidates[best]
 		out.DestinationLane = chosen.Lane
 		out.EquityRaw = chosen.InvestedRaw
-		if persistent(best, chosen.Lane) {
+		if persistent(best, advantageKey{lane: chosen.Lane}) {
 			quote := quotes[best]
 			out.SelectedQuote = &quote
 			out.Action = "ENTER"
@@ -594,7 +622,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 	}
 	if bestRotation >= 0 {
 		chosen := out.Candidates[bestRotation]
-		if persistent(bestRotation, rotationAdvantageKey(chosen.SourceLane, chosen.Lane)) {
+		if persistent(bestRotation, advantageKey{source: chosen.SourceLane, lane: chosen.Lane}) {
 			quote, source := quotes[bestRotation], sources[bestRotation]
 			out.Action, out.Reason = "ROTATE", "persistent_net_benefit"
 			out.SourceLane, out.DestinationLane, out.EquityRaw = source.RouteLane, chosen.Lane, quote.EquityRaw
@@ -636,7 +664,7 @@ func scoreMove(c *CandidateForecast, s Snapshot, p SelectorPolicy, m LaneEconomi
 }
 
 func rotationSource(held []string, s Snapshot) bool {
-	return containsLane(held, s.RouteLane) && s.HasPosition && earnHeldLane(s.RouteLane) && laneSwap(s.RouteLane, SwapCollateralToStableStep) && laneReleaseLimitRaw(s) > 0
+	return containsLane(held, s.RouteLane) && s.HasPosition && earnHeldLane(s.RouteLane) && laneSupportsSwap(s.RouteLane, SwapCollateralToStableStep) && laneReleaseLimitRaw(s) > 0
 }
 
 func rotationPair(source, destination string) bool {
@@ -725,16 +753,6 @@ func selectorRotates(r SelectorResult) bool {
 	return r.Action == "ROTATE" || r.Action == "CANARY_ROTATE"
 }
 
-func rotationAdvantageKey(source, destination string) string { return source + "->" + destination }
-
-func advantageKeyLane(key string) string {
-	key = strings.TrimSuffix(key, "|1x")
-	if i := strings.Index(key, "->"); i >= 0 {
-		return key[i+2:]
-	}
-	return key
-}
-
 const (
 	economicEvidenceUnavailable = "economic_evidence_unavailable"
 	boundedMoveCostUnavailable  = "bounded_move_cost_unavailable"
@@ -752,11 +770,11 @@ var selectorAvailabilityReasons = map[string]bool{
 	selectorLiveSnapshotUnavailable: true,
 }
 
-func carryAdvantageWindows(out *SelectorResult, previous SelectorState, move, reason string) {
+func carryAdvantageWindows(out *SelectorResult, previous SelectorState, move advantageKey, reason string) {
 	if !selectorAvailabilityReasons[reason] {
 		return
 	}
-	for _, key := range []string{move, unleveredAdvantageKey(move)} {
+	for _, key := range []advantageKey{move, move.unleveredKey()} {
 		if _, sampled := out.State.Advantages[key]; sampled {
 			continue
 		}
@@ -766,15 +784,13 @@ func carryAdvantageWindows(out *SelectorResult, previous SelectorState, move, re
 	}
 }
 
-func unleveredAdvantageKey(move string) string { return move + "|1x" }
-
-func sampleAdvantageWindow(out *SelectorResult, previous SelectorState, lane string, now time.Time, p SelectorPolicy) {
+func sampleAdvantageWindow(out *SelectorResult, previous SelectorState, key advantageKey, now time.Time, p SelectorPolicy) {
 	window := AdvantageWindow{Since: now, LastSample: now}
-	old, ok := previous.Advantages[lane]
+	old, ok := previous.Advantages[key]
 	if ok && !old.Since.IsZero() && !old.Since.After(old.LastSample) && !old.LastSample.After(now) && now.Sub(old.LastSample) <= p.MaxSampleGap {
 		window.Since = old.Since
 	}
-	out.State.Advantages[lane] = window
+	out.State.Advantages[key] = window
 }
 
 func (q MoveQuote) validBorrow() bool {
