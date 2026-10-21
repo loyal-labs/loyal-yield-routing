@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
@@ -75,11 +76,16 @@ func (s *Store) refreshLookupReservation(ctx context.Context, op LookupOperation
 		return result, false, errors.New("lookup proposed PDA lacks actual absent recent bank evidence")
 	}
 	err = db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		paused, err := lookupControlLock(ctx, tx, op.Intent, op.Lease.Owner)
+		plan := op.Intent.writerPlan(op.Lease.Owner)
+		plan.Authority = op.Intent.Authority
+		if err := fleet.LockLookupRows(ctx, tx, plan); err != nil {
+			return err
+		}
+		paused, err := lookupControlState(ctx, tx, op.Intent)
 		if err != nil {
 			return err
 		}
-		source, err := lookupLockSource(ctx, tx, op.Intent, op.Lease)
+		source, err := lookupSourceState(ctx, tx, op.Intent, op.Lease)
 		if err != nil {
 			return err
 		}
@@ -101,9 +107,6 @@ func (s *Store) refreshLookupReservation(ctx context.Context, op LookupOperation
 		}
 		if !rekeyable {
 			return errors.New("lookup owned packet prevents reservation refresh")
-		}
-		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, op.Intent.Authority); err != nil {
-			return err
 		}
 		var occupied bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.route_lookup_tables WHERE table_address=$1)`, address).Scan(&occupied); err != nil {

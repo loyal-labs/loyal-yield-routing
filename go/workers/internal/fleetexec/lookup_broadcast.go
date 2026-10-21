@@ -6,17 +6,21 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 var ErrLookupPaused = errors.New("lookup source provisioning is paused")
 
 func (s *Store) RecordLookupSend(ctx context.Context, operation LookupOperation, attempt LookupAttempt) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		paused, err := lookupControlLock(ctx, tx, attempt.Intent, operation.Lease.Owner)
+		if err := fleet.LockLookupRows(ctx, tx, attempt.Intent.writerPlan(operation.Lease.Owner)); err != nil {
+			return err
+		}
+		paused, err := lookupControlState(ctx, tx, attempt.Intent)
 		if err != nil {
 			return err
 		}
-		source, err := lookupLockSource(ctx, tx, attempt.Intent, operation.Lease)
+		source, err := lookupSourceState(ctx, tx, attempt.Intent, operation.Lease)
 		if err != nil {
 			return err
 		}

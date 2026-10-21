@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func (s *Store) lookupCatalogTables(ctx context.Context, c lookupCatalog, generation int32) ([]lookupCatalogPhysical, error) {
@@ -183,16 +184,22 @@ func (s *Store) reportLookupCatalogDrift(ctx context.Context, c lookupCatalog, t
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('shared-alt-drift:'||$1,0))`, c.cluster); err != nil {
 			return err
 		}
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Heads: fleet.LookupRows{IDs: []int64{c.familyID}}, Families: fleet.LookupRows{IDs: []int64{c.familyID}}}); err != nil {
+			return err
+		}
 		var exact bool
-		err := tx.QueryRow(ctx, `SELECT h.catalog_revision_id=$2 AND h.readiness_state='active' AND f.active_generation IS NOT NULL AND f.active_generation=h.target_generation FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_families f ON f.id=h.family_id WHERE h.family_id=$1 FOR UPDATE OF h,f`, c.familyID, c.revisionID).Scan(&exact)
+		err := tx.QueryRow(ctx, `SELECT h.catalog_revision_id=$2 AND h.readiness_state='active' AND f.active_generation IS NOT NULL AND f.active_generation=h.target_generation FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_families f ON f.id=h.family_id WHERE h.family_id=$1`, c.familyID, c.revisionID).Scan(&exact)
 		if err != nil {
 			return err
 		}
 		if !exact {
 			return errors.New("lookup drift lost active catalog fence")
 		}
+		if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Tables: fleet.LookupRows{IDs: []int64{t.id}}}); err != nil {
+			return err
+		}
 		var membership []string
-		err = tx.QueryRow(ctx, `SELECT cluster=$2 AND family_id=$3 AND table_address=$4 AND authority=$5 AND mutation_epoch=$6 AND generation=$7 AND last_verified_slot<=$8 AND last_extended_slot IS NOT DISTINCT FROM $9::bigint,COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id=t.id),'{}'::text[]) FROM loyal_yield.route_lookup_tables t WHERE id=$1 AND allocation_kind='shared_market' FOR UPDATE`, t.id, c.cluster, c.familyID, t.address, c.authority, t.epoch, c.active, snapshot.Slot, t.lastExtended).Scan(&exact, &membership)
+		err = tx.QueryRow(ctx, `SELECT cluster=$2 AND family_id=$3 AND table_address=$4 AND authority=$5 AND mutation_epoch=$6 AND generation=$7 AND last_verified_slot<=$8 AND last_extended_slot IS NOT DISTINCT FROM $9::bigint,COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id=t.id),'{}'::text[]) FROM loyal_yield.route_lookup_tables t WHERE id=$1 AND allocation_kind='shared_market'`, t.id, c.cluster, c.familyID, t.address, c.authority, t.epoch, c.active, snapshot.Slot, t.lastExtended).Scan(&exact, &membership)
 		if err != nil {
 			return err
 		}

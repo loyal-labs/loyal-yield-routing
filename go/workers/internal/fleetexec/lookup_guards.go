@@ -14,14 +14,24 @@ func lookupFamilyAllows(state string, kind LookupKind) bool {
 	return state == "active" || (state == "retiring" && (kind == LookupDeactivate || kind == LookupClose))
 }
 
-// Control, shared head, family, table, operation is the writer lock order.
+func (i LookupIntent) controlPlan(owner string) fleet.LookupLockPlan {
+	return fleet.LookupLockPlan{ControlCluster: i.Cluster, ControlOwner: owner, Heads: fleet.LookupRows{IDs: []int64{i.FamilyID}}}
+}
+
+func (i LookupIntent) sourcePlan() fleet.LookupLockPlan {
+	return fleet.LookupLockPlan{Families: fleet.LookupRows{IDs: []int64{i.FamilyID}}, Tables: fleet.LookupRows{IDs: []int64{i.TableID}}, Operations: fleet.LookupRows{IDs: []int64{i.OperationID}}}
+}
+
+func (i LookupIntent) writerPlan(owner string) fleet.LookupLockPlan {
+	plan := i.sourcePlan()
+	plan.ControlCluster, plan.ControlOwner, plan.Heads = i.Cluster, owner, fleet.LookupRows{IDs: []int64{i.FamilyID}}
+	return plan
+}
+
 // Recovery takes no desired-state gate: changing controls cannot revoke a packet.
-func lookupControlLock(ctx context.Context, tx pgx.Tx, i LookupIntent, owner string) (bool, error) {
-	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_provisioner_controls(cluster,paused,reason,updated_by,control_epoch) VALUES($1,false,'implicit unpaused provisioner control',$2,0) ON CONFLICT(cluster) DO NOTHING`, i.Cluster, owner); err != nil {
-		return false, err
-	}
+func lookupControlState(ctx context.Context, tx pgx.Tx, i LookupIntent) (bool, error) {
 	var paused bool
-	if err := tx.QueryRow(ctx, `SELECT paused FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster=$1 FOR UPDATE`, i.Cluster).Scan(&paused); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT paused FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster=$1`, i.Cluster).Scan(&paused); err != nil {
 		return false, err
 	}
 	var kind string
@@ -30,7 +40,7 @@ func lookupControlLock(ctx context.Context, tx pgx.Tx, i LookupIntent, owner str
 	}
 	if kind == "shared_market" {
 		var revision int64
-		if err := tx.QueryRow(ctx, `SELECT catalog_revision_id FROM loyal_yield.lookup_table_shared_market_catalog_heads WHERE family_id=$1 FOR UPDATE`, i.FamilyID).Scan(&revision); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT catalog_revision_id FROM loyal_yield.lookup_table_shared_market_catalog_heads WHERE family_id=$1`, i.FamilyID).Scan(&revision); err != nil {
 			return false, errors.New("lookup shared catalog head is unavailable")
 		}
 	}

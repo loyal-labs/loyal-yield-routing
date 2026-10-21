@@ -23,27 +23,32 @@ func (s *Store) ActivateLookupCatalog(ctx context.Context, cluster string, famil
 		byAddress[snapshot.Address] = snapshot
 	}
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		paused, err := lookupControlLock(ctx, tx, LookupIntent{Cluster: cluster, FamilyID: familyID}, "lookup-catalog")
+		i := LookupIntent{Cluster: cluster, FamilyID: familyID}
+		if err := fleet.LockLookupRows(ctx, tx, i.controlPlan("lookup-catalog")); err != nil {
+			return err
+		}
+		paused, err := lookupControlState(ctx, tx, i)
 		if err != nil {
 			return err
 		}
 		if paused {
 			return ErrLookupPaused
 		}
-		// The head is the catalog ownership fence. Planning and signing use this
-		// same head-before-family lock order; no separate Go planning owner exists.
 		var currentRevision, manifest int64
 		var target *int32
-		if err := tx.QueryRow(ctx, `SELECT h.catalog_revision_id,h.target_generation,r.manifest_id FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_shared_market_catalog_revisions r ON r.id=h.catalog_revision_id WHERE h.family_id=$1 FOR UPDATE OF h`, familyID).Scan(&currentRevision, &target, &manifest); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT h.catalog_revision_id,h.target_generation,r.manifest_id FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_shared_market_catalog_revisions r ON r.id=h.catalog_revision_id WHERE h.family_id=$1`, familyID).Scan(&currentRevision, &target, &manifest); err != nil {
 			return err
 		}
 		if currentRevision != revisionID || target == nil || *target != generation {
 			return errors.New("lookup catalog head changed before activation")
 		}
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Families: fleet.LookupRows{IDs: []int64{familyID}}}); err != nil {
+			return err
+		}
 		var authority, state, kind string
 		var active *int32
 		var highwater int
-		if err := tx.QueryRow(ctx, `SELECT provisioning_authority,desired_state,kind,active_generation,allocation_high_water FROM loyal_yield.lookup_table_families WHERE id=$1 AND cluster=$2 FOR UPDATE`, familyID, cluster).Scan(&authority, &state, &kind, &active, &highwater); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT provisioning_authority,desired_state,kind,active_generation,allocation_high_water FROM loyal_yield.lookup_table_families WHERE id=$1 AND cluster=$2`, familyID, cluster).Scan(&authority, &state, &kind, &active, &highwater); err != nil {
 			return err
 		}
 		if state != "active" || kind != "shared_market" {
@@ -69,7 +74,14 @@ func (s *Store) ActivateLookupCatalog(ctx context.Context, cluster string, famil
 		if active != nil && *active != generation {
 			generations = append(generations, *active)
 		}
-		rows, err := tx.Query(ctx, `SELECT id,table_address,authority,generation,shard_ordinal,desired_state,address_count,usable_address_count,address_hash,addresses,last_verified_slot FROM loyal_yield.route_lookup_tables WHERE family_id=$1 AND generation=ANY($2) AND allocation_kind='shared_market' ORDER BY id FOR UPDATE`, familyID, generations)
+		tableIDs, err := fleet.QueryLookupIDs(ctx, tx, `SELECT id FROM loyal_yield.route_lookup_tables WHERE family_id=$1 AND generation=ANY($2) AND allocation_kind='shared_market' ORDER BY id`, familyID, generations)
+		if err != nil {
+			return err
+		}
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Tables: fleet.LookupRows{IDs: tableIDs}}); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT id,table_address,authority,generation,shard_ordinal,desired_state,address_count,usable_address_count,address_hash,addresses,last_verified_slot FROM loyal_yield.route_lookup_tables WHERE family_id=$1 AND generation=ANY($2) AND allocation_kind='shared_market' ORDER BY id`, familyID, generations)
 		if err != nil {
 			return err
 		}

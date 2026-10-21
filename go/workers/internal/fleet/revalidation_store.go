@@ -301,26 +301,11 @@ ORDER BY route_table.table_address`, cluster, vaultID, minimumSlot, requiredAddr
 	return result, nil
 }
 
-// LockReserves serializes admissions through the reserves of a move: every
-// writer that admits a move takes these locks in reserve order first.
-func LockReserves(ctx context.Context, tx pgx.Tx, cluster string, reserves ...string) error {
-	reserves = canonicalStrings(reserves)
-	for _, reserve := range reserves {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "loyal-yield-fleet-reserve:"+cluster+":"+reserve); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func admissionCapacity(ctx context.Context, tx pgx.Tx, lease RevalidationLease, input RevalidationCommit) (int64, error) {
 	if input.SourceAvailableLiquidityRaw == nil || input.TargetDepositRoomRaw == nil || input.TargetObservedSlot <= 0 || input.TargetObservedSupplyUSDMicros < 0 {
 		return 0, errors.New("fresh reserve capacity evidence is missing")
 	}
-	if err := LockReserves(ctx, tx, lease.Cluster, lease.SourceReserve, lease.TargetReserve); err != nil {
-		return 0, err
-	}
-	inflow, outflow, err := InflightFlows(ctx, tx, lease.Cluster, input.TargetObservedSlot, lease.OpportunityID)
+	inflow, outflow, err := LockedInflightFlows(ctx, tx, lease.Cluster, input.TargetObservedSlot, lease.OpportunityID, lease.SourceReserve, lease.TargetReserve)
 	if err != nil {
 		return 0, err
 	}
@@ -773,14 +758,18 @@ func lockWaitingALTSharedCatalog(ctx context.Context, tx pgx.Tx, cluster string,
 			return errors.New("shared ALT demand is not normalized typed vector")
 		}
 	}
-	if _, err := tx.Exec(ctx, `SELECT h.family_id FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_families f ON f.id=h.family_id WHERE f.cluster=$1 AND f.kind='shared_market' AND f.desired_state='active' FOR SHARE OF h`, cluster); err != nil {
+	catalogFamilies, err := QueryLookupIDs(ctx, tx, `SELECT id FROM loyal_yield.lookup_table_families WHERE cluster=$1 AND kind='shared_market' AND desired_state='active' ORDER BY id`, cluster)
+	if err != nil {
+		return err
+	}
+	if err := LockLookupRows(ctx, tx, LookupLockPlan{Heads: LookupRows{IDs: catalogFamilies, Share: true}, Families: LookupRows{IDs: catalogFamilies, Share: true}}); err != nil {
 		return err
 	}
 	var familyID int64
 	var generation *int32
 	var highWater int32
 	var version string
-	if err := tx.QueryRow(ctx, `SELECT id,active_generation,allocation_high_water,catalog_version FROM loyal_yield.lookup_table_families WHERE cluster=$1 AND kind='shared_market' AND desired_state='active' FOR SHARE`, cluster).Scan(&familyID, &generation, &highWater, &version); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT id,active_generation,allocation_high_water,catalog_version FROM loyal_yield.lookup_table_families WHERE cluster=$1 AND kind='shared_market' AND desired_state='active'`, cluster).Scan(&familyID, &generation, &highWater, &version); err != nil {
 		return fmt.Errorf("shared ALT catalog family missing: %w", err)
 	}
 	if generation == nil || highWater <= 0 || highWater > 256 {
@@ -850,9 +839,17 @@ func lockWaitingALTSharedCatalog(ctx context.Context, tx pgx.Tx, cluster string,
 		durable                          bool
 		deactivated                      *int64
 	}
+	shardIDs, err := QueryLookupIDs(ctx, tx, `SELECT id FROM loyal_yield.route_lookup_tables WHERE family_id=$1 AND generation=$2 AND allocation_kind='shared_market'
+ AND desired_state NOT IN('deactivated','closed','failed') ORDER BY id`, familyID, *generation)
+	if err != nil {
+		return err
+	}
+	if err = LockLookupRows(ctx, tx, LookupLockPlan{Tables: LookupRows{IDs: shardIDs, Share: true}}); err != nil {
+		return err
+	}
 	rows, err = tx.Query(ctx, `SELECT id,shard_ordinal,address_count,COALESCE(usable_address_count,-1),COALESCE(allocation_high_water,-1),last_verified_slot,desired_state,status,durable,deactivated_slot
  FROM loyal_yield.route_lookup_tables WHERE family_id=$1 AND generation=$2 AND allocation_kind='shared_market'
- AND desired_state NOT IN('deactivated','closed','failed') ORDER BY shard_ordinal,id FOR SHARE`, familyID, *generation)
+ AND desired_state NOT IN('deactivated','closed','failed') ORDER BY shard_ordinal,id`, familyID, *generation)
 	if err != nil {
 		return err
 	}
@@ -911,7 +908,15 @@ func lockWaitingALTSharedCatalog(ctx context.Context, tx pgx.Tx, cluster string,
 	for i, s := range shards {
 		tableIDs[i] = s.id
 	}
-	rows, err = tx.Query(ctx, `SELECT id FROM loyal_yield.lookup_table_operations WHERE family_id=$1 AND (target_generation=$2 OR route_lookup_table_id=ANY($3::bigint[])) AND operation_state NOT IN('complete','permanent_failure','cancelled') FOR SHARE`, familyID, *generation, tableIDs)
+	const pendingOperations = `SELECT id FROM loyal_yield.lookup_table_operations WHERE family_id=$1 AND (target_generation=$2 OR route_lookup_table_id=ANY($3::bigint[])) AND operation_state NOT IN('complete','permanent_failure','cancelled') ORDER BY id`
+	operationIDs, err := QueryLookupIDs(ctx, tx, pendingOperations, familyID, *generation, tableIDs)
+	if err != nil {
+		return err
+	}
+	if err = LockLookupRows(ctx, tx, LookupLockPlan{Operations: LookupRows{IDs: operationIDs, Share: true}}); err != nil {
+		return err
+	}
+	rows, err = tx.Query(ctx, pendingOperations, familyID, *generation, tableIDs)
 	if err != nil {
 		return err
 	}

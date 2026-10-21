@@ -144,10 +144,7 @@ type CrossMintCapacityProjection struct {
 }
 
 func crossMintTargetFits(ctx context.Context, tx pgx.Tx, p CrossMintCapacityProjection, opportunity, principal int64) (int64, error) {
-	if err := fleet.LockReserves(ctx, tx, p.Cluster, p.TargetReserve); err != nil {
-		return 0, err
-	}
-	inflow, _, err := fleet.InflightFlows(ctx, tx, p.Cluster, p.ObservedSlot, opportunity)
+	inflow, _, err := fleet.LockedInflightFlows(ctx, tx, p.Cluster, p.ObservedSlot, opportunity, p.TargetReserve)
 	if err != nil {
 		return 0, err
 	}
@@ -264,6 +261,13 @@ func (s *Store) ActivateCrossMintMovement(ctx context.Context, l fleet.Revalidat
 		}
 		if !g.StartNewMovements || input.SourceControlGeneration != g.Generation {
 			return errors.New("starting cross-mint movements is disabled")
+		}
+		vaultActive, err := fleet.LockVaultForDecision(ctx, tx, l.VaultID)
+		if err != nil {
+			return err
+		}
+		if !vaultActive {
+			return ErrStaleOwner
 		}
 		var opportunity int64
 		err = tx.QueryRow(ctx, crossMintActivationPolicySQL, l.OpportunityID, l.Owner, l.FencingToken, b.Settings, int16(b.VaultIndex), b.VaultPubkey, b.DelegatedSigner, b.Withdraw.PolicyAccount, int64(b.Withdraw.ObservedSlot), b.Deposit.PolicyAccount, int64(b.Deposit.ObservedSlot), b.Swap.PolicyAccount, int64(b.Swap.ObservedSlot), b.Swap.SourceShard, int32(b.Swap.MaxSlippageBPS), int64(b.Swap.DailySourceMintSpendingCap), b.Swap.ManifestFingerprint, b.Swap.EnrollmentGeneration).Scan(&opportunity)
@@ -1228,7 +1232,7 @@ WHERE opportunity.id = $1
   AND opportunity.source_liquidity_mint
         <> opportunity.target_liquidity_mint
   AND opportunity.execution_plan ->> 'kind' = 'cross_mint_jupiter'
-FOR UPDATE OF opportunity, vault, withdraw_policy, deposit_policy,
+FOR UPDATE OF opportunity, withdraw_policy, deposit_policy,
     swap_policy, sibling_policy, opt_in`
 
 const crossMintActivateDecisionSQL = `INSERT INTO loyal_yield.rebalance_decisions

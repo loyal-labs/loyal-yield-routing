@@ -206,8 +206,8 @@ func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, 
 		}
 		seen[expected.TableID] = true
 	}
-	tables, err := LockExecutionALTParents(ctx, tx, admission.SelectedALTs)
-	if err != nil {
+	plan, tables := ExecutionALTLockPlan(admission.SelectedALTs)
+	if err := LockLookupRows(ctx, tx, plan); err != nil {
 		return err
 	}
 	for _, expected := range tables {
@@ -222,7 +222,7 @@ func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, 
  AND (mutation.operation_state IN ('signed','submitted','confirmed','finalized','reconciled','needs_reconcile')
  OR (mutation.operation_state IN ('leased','retry_wait') AND mutation.transaction_signature IS NOT NULL)))
  FROM loyal_yield.route_lookup_tables t JOIN loyal_yield.lookup_table_families f ON f.id=t.family_id
- WHERE t.id=$1 FOR SHARE OF t`, expected.TableID, lease.Cluster).Scan(&address, &familyID, &generation, &epoch, &kind, &active)
+ WHERE t.id=$1`, expected.TableID, lease.Cluster).Scan(&address, &familyID, &generation, &epoch, &kind, &active)
 		if err != nil {
 			return fmt.Errorf("lock selected ALT: %w", err)
 		}
@@ -263,27 +263,16 @@ func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, 
 	return nil
 }
 
-// LockExecutionALTParents share-locks the selected tables' families, then
-// their vault bindings, each in id order, and returns the tables in id order
-// for the caller to lock next. Lookup writers lock family, binding, then table
-// (lookupLockSource, ActivateLookupCatalog, ActivateLookupBinding); taking a
-// table before its family let a catalog writer holding the family FOR UPDATE
-// deadlock against admission ("lock selected ALT: deadlock detected").
-func LockExecutionALTParents(ctx context.Context, tx pgx.Tx, selected []ExecutionALT) ([]ExecutionALT, error) {
+func ExecutionALTLockPlan(selected []ExecutionALT) (LookupLockPlan, []ExecutionALT) {
 	tables := append([]ExecutionALT(nil), selected...)
 	sort.Slice(tables, func(i, j int) bool { return tables[i].TableID < tables[j].TableID })
-	families, bindings := []int64{}, []int64{}
+	plan := LookupLockPlan{Families: LookupRows{Share: true}, Bindings: LookupRows{Share: true}, Tables: LookupRows{Share: true}}
 	for _, table := range tables {
-		families = append(families, table.FamilyID)
+		plan.Families.IDs = append(plan.Families.IDs, table.FamilyID)
 		if table.BindingID != nil {
-			bindings = append(bindings, *table.BindingID)
+			plan.Bindings.IDs = append(plan.Bindings.IDs, *table.BindingID)
 		}
+		plan.Tables.IDs = append(plan.Tables.IDs, table.TableID)
 	}
-	if _, err := tx.Exec(ctx, `SELECT id FROM loyal_yield.lookup_table_families WHERE id=ANY($1::bigint[]) ORDER BY id FOR SHARE`, families); err != nil {
-		return nil, fmt.Errorf("lock selected ALT families: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `SELECT id FROM loyal_yield.lookup_table_vault_bindings WHERE id=ANY($1::bigint[]) ORDER BY id FOR SHARE`, bindings); err != nil {
-		return nil, fmt.Errorf("lock selected ALT bindings: %w", err)
-	}
-	return tables, nil
+	return plan, tables
 }

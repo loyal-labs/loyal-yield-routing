@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func (s *Store) finishLookupVerification(ctx context.Context, op LookupOperation, snapshot LookupSnapshot) error {
@@ -15,7 +16,10 @@ func (s *Store) finishLookupVerification(ctx context.Context, op LookupOperation
 		return s.deferLookupUnsigned(ctx, op, "read-only verification lacks exact mature active table")
 	}
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if _, err := lookupLockSource(ctx, tx, i, op.Lease); err != nil {
+		if err := fleet.LockLookupRows(ctx, tx, i.sourcePlan()); err != nil {
+			return err
+		}
+		if _, err := lookupSourceState(ctx, tx, i, op.Lease); err != nil {
 			return err
 		}
 		if err := lookupSourceMembership(ctx, tx, i); err != nil {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type lookupCleanupCandidate struct {
@@ -73,25 +74,34 @@ func (s *Store) queueLookupCleanup(ctx context.Context, c lookupCleanupCandidate
 	}
 	var id int64
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		paused, err := lookupControlLock(ctx, tx, i, "go-lookup-cleanup")
+		if err := fleet.LockLookupRows(ctx, tx, i.controlPlan("go-lookup-cleanup")); err != nil {
+			return err
+		}
+		paused, err := lookupControlState(ctx, tx, i)
 		if err != nil {
 			return err
 		}
 		if paused {
 			return ErrLookupPaused
 		}
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Families: fleet.LookupRows{IDs: []int64{i.FamilyID}, Share: true}}); err != nil {
+			return err
+		}
 		var state, kind string
 		var cluster, authority, payer string
-		err = tx.QueryRow(ctx, `SELECT desired_state,kind,cluster,provisioning_authority,payer FROM loyal_yield.lookup_table_families WHERE id=$1 FOR SHARE`, i.FamilyID).Scan(&state, &kind, &cluster, &authority, &payer)
+		err = tx.QueryRow(ctx, `SELECT desired_state,kind,cluster,provisioning_authority,payer FROM loyal_yield.lookup_table_families WHERE id=$1`, i.FamilyID).Scan(&state, &kind, &cluster, &authority, &payer)
 		if err != nil {
 			return err
 		}
 		if !lookupFamilyAllows(state, i.Kind) || cluster != i.Cluster || authority != i.Authority || payer != i.Payer || authority != payer {
 			return errors.New("lookup cleanup family no longer eligible")
 		}
+		if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Tables: fleet.LookupRows{IDs: []int64{i.TableID}}}); err != nil {
+			return err
+		}
 		var tableState string
 		var exact bool
-		err = tx.QueryRow(ctx, `SELECT desired_state,cluster=$2 AND family_id=$3 AND table_address=$4 AND authority=$5 AND payer=$5 AND generation=$6 AND mutation_epoch=$7 AND address_count=$8 AND address_hash=$9 AND last_verified_slot<=$10 AND (deactivated_slot IS NOT DISTINCT FROM $11::bigint) FROM loyal_yield.route_lookup_tables WHERE id=$1 FOR UPDATE`, i.TableID, i.Cluster, i.FamilyID, i.TableAddress, i.Authority, i.Generation, i.MutationEpoch, len(i.Prefix), lookupOrderedAddressHash(i.Prefix), snapshot.Slot, c.deactivation).Scan(&tableState, &exact)
+		err = tx.QueryRow(ctx, `SELECT desired_state,cluster=$2 AND family_id=$3 AND table_address=$4 AND authority=$5 AND payer=$5 AND generation=$6 AND mutation_epoch=$7 AND address_count=$8 AND address_hash=$9 AND last_verified_slot<=$10 AND (deactivated_slot IS NOT DISTINCT FROM $11::bigint) FROM loyal_yield.route_lookup_tables WHERE id=$1`, i.TableID, i.Cluster, i.FamilyID, i.TableAddress, i.Authority, i.Generation, i.MutationEpoch, len(i.Prefix), lookupOrderedAddressHash(i.Prefix), snapshot.Slot, c.deactivation).Scan(&tableState, &exact)
 		if err != nil {
 			return err
 		}

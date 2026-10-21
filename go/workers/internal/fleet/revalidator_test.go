@@ -404,7 +404,7 @@ func TestRevalidationStoreIntegrationFusedExecuteIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rival.Rollback(ctx)
-	if err = LockReserves(ctx, rival, cluster, target.Address); err != nil {
+	if _, _, err = LockedInflightFlows(ctx, rival, cluster, 0, 0, target.Address); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = rival.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='leased',lease_kind='execute',lease_owner='other-executor',lease_expires_at=clock_timestamp()+interval '1 minute',route_fingerprint='route',requirements_fingerprint='requirements' WHERE id=$1`, otherID); err != nil {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type lookupCatalog struct {
@@ -74,7 +75,14 @@ func lookupCatalogGenerationTx(ctx context.Context, tx pgx.Tx, familyID int64, g
 	if err := tx.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.route_lookup_tables WHERE family_id=$1 AND generation=$2 AND allocation_kind='shared_market'`, familyID, generation).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := tx.Query(ctx, `SELECT t.id,t.mutation_epoch,t.table_address,t.desired_state,t.shard_ordinal,COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id=t.id),'{}'::text[]),COALESCE((SELECT array_agg(a.address ORDER BY o.created_at,o.id,a.ordinal) FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_operation_addresses a ON a.operation_id=o.id WHERE o.route_lookup_table_id=t.id AND o.operation_state NOT IN ('complete','permanent_failure','cancelled')),'{}'::text[]),(SELECT count(*) FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=t.id AND operation_state NOT IN ('complete','permanent_failure','cancelled')),t.last_verified_slot,t.last_extended_slot FROM loyal_yield.route_lookup_tables t WHERE t.family_id=$1 AND t.generation=$2 AND allocation_kind='shared_market' AND desired_state NOT IN ('deactivated','closed','failed') ORDER BY t.id FOR UPDATE LIMIT 17`, familyID, generation)
+	generationIDs, err := fleet.QueryLookupIDs(ctx, tx, `SELECT t.id FROM loyal_yield.route_lookup_tables t WHERE t.family_id=$1 AND t.generation=$2 AND allocation_kind='shared_market' AND desired_state NOT IN ('deactivated','closed','failed') ORDER BY t.id LIMIT 17`, familyID, generation)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Tables: fleet.LookupRows{IDs: generationIDs}}); err != nil {
+		return nil, 0, err
+	}
+	rows, err := tx.Query(ctx, `SELECT t.id,t.mutation_epoch,t.table_address,t.desired_state,t.shard_ordinal,COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id=t.id),'{}'::text[]),COALESCE((SELECT array_agg(a.address ORDER BY o.created_at,o.id,a.ordinal) FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_operation_addresses a ON a.operation_id=o.id WHERE o.route_lookup_table_id=t.id AND o.operation_state NOT IN ('complete','permanent_failure','cancelled')),'{}'::text[]),(SELECT count(*) FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=t.id AND operation_state NOT IN ('complete','permanent_failure','cancelled')),t.last_verified_slot,t.last_extended_slot FROM loyal_yield.route_lookup_tables t WHERE t.family_id=$1 AND t.generation=$2 AND allocation_kind='shared_market' AND desired_state NOT IN ('deactivated','closed','failed') ORDER BY t.id LIMIT 17`, familyID, generation)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -132,7 +140,10 @@ func (s *Store) planLookupCatalog(ctx context.Context, c lookupCatalog, bank loo
 	}
 	err = db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		i := LookupIntent{Cluster: c.cluster, FamilyID: c.familyID, Authority: c.authority, Payer: c.payer}
-		paused, err := lookupControlLock(ctx, tx, i, "go-lookup-catalog")
+		if err := fleet.LockLookupRows(ctx, tx, i.controlPlan("go-lookup-catalog")); err != nil {
+			return err
+		}
+		paused, err := lookupControlState(ctx, tx, i)
 		if err != nil {
 			return err
 		}
@@ -140,14 +151,17 @@ func (s *Store) planLookupCatalog(ctx context.Context, c lookupCatalog, bank loo
 			return ErrLookupPaused
 		}
 		var exact bool
-		if err = tx.QueryRow(ctx, `SELECT catalog_revision_id=$2 FROM loyal_yield.lookup_table_shared_market_catalog_heads WHERE family_id=$1 FOR UPDATE`, c.familyID, c.revisionID).Scan(&exact); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT catalog_revision_id=$2 FROM loyal_yield.lookup_table_shared_market_catalog_heads WHERE family_id=$1`, c.familyID, c.revisionID).Scan(&exact); err != nil {
 			return err
 		}
 		if !exact {
 			return errors.New("lookup catalog changed before planning")
 		}
+		if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Families: fleet.LookupRows{IDs: []int64{c.familyID}}}); err != nil {
+			return err
+		}
 		var active *int32
-		if err = tx.QueryRow(ctx, `SELECT active_generation,kind='shared_market' AND desired_state='active' AND cluster=$2 AND provisioning_authority=$3 AND payer=$3 AND catalog_version=$4 AND allocation_high_water=$5 FROM loyal_yield.lookup_table_families WHERE id=$1 FOR UPDATE`, c.familyID, c.cluster, c.authority, c.version, c.capacity).Scan(&active, &exact); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT active_generation,kind='shared_market' AND desired_state='active' AND cluster=$2 AND provisioning_authority=$3 AND payer=$3 AND catalog_version=$4 AND allocation_high_water=$5 FROM loyal_yield.lookup_table_families WHERE id=$1`, c.familyID, c.cluster, c.authority, c.version, c.capacity).Scan(&active, &exact); err != nil {
 			return err
 		}
 		if !exact || bank.authority != c.authority || bank.slot <= 0 {
@@ -218,7 +232,7 @@ func (s *Store) planLookupCatalog(ctx context.Context, c lookupCatalog, bank loo
 			}
 			contextValue := map[string]any{"catalog_revision_id": c.revisionID}
 			if table == nil {
-				if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, c.authority); err != nil {
+				if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Authority: c.authority}); err != nil {
 					return err
 				}
 				var chosen *lookupReservation
