@@ -230,8 +230,12 @@ func flatViewLane(preferred string, in targetInputs) string {
 	return preferred
 }
 
+func selectorEntersOrRotates(r SelectorResult) bool {
+	return r.Action == "ENTER" || r.Action == "CANARY_ENTER" || selectorRotates(r)
+}
+
 func selectorDestination(in targetInputs) string {
-	if r := in.Entry; r != nil && (r.Action == "ENTER" || r.Action == "CANARY_ENTER" || selectorRotates(*r)) && earnActiveLane(r.DestinationLane) {
+	if r := in.Entry; r != nil && selectorEntersOrRotates(*r) && earnActiveLane(r.DestinationLane) {
 		if _, exiting := in.Exits[r.DestinationLane]; !exiting {
 			return r.DestinationLane
 		}
@@ -420,17 +424,17 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if err := applyRouteNAVSnapshot(&base.Snapshot, nav, observedAt); err != nil {
 		return Observation{}, nil, err
 	}
-	base.Snapshot.ObservationID = routeEconomicObservationID(
-		base.Snapshot.ObservationID, prime.Raw, position.CollateralDepositedRaw, position.DebtRaw,
-		position.BorrowUtilizationBlocked,
-		nav.StrategyNAVRaw, nav.PriorReportedNAVRaw, pairEntryUSDC,
-	)
+	base.Snapshot.ObservationID = routeEconomicState{
+		primeRaw: prime.Raw, collateralRaw: position.CollateralDepositedRaw, debtRaw: position.DebtRaw,
+		borrowUtilizationBlocked: position.BorrowUtilizationBlocked,
+		strategyNAVRaw:           nav.StrategyNAVRaw, priorReportedNAVRaw: nav.PriorReportedNAVRaw, pairCapacityRaw: pairEntryUSDC,
+	}.observationID(base.Snapshot.ObservationID)
 	if route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane) {
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))
 		base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 	}
-	if nav.OtherLanesState != "" {
-		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|held:%s|other-lanes:%s", base.Snapshot.ObservationID, base.Snapshot.HeldLanes, nav.OtherLanesState)))
+	if len(nav.OtherLanes) > 0 {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|held:%s|other-lanes:%s", base.Snapshot.ObservationID, base.Snapshot.HeldLanes, nav.otherLanesState())))
 		base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 	}
 	base.ObservedAt = observedAt
@@ -610,21 +614,17 @@ func topupDepositRoomUSDC(accounts []ConfirmedAccount, route RuntimeRoute) (uint
 	return min(room/100*(100-topupPriceMarginPercent), math.MaxInt64), nil
 }
 
-// routeEconomicObservationID deliberately excludes Slot, the stateless adaptor
-// report sequence (which equals Slot), and the slot-bearing NAV digest. A later
-// confirmed read of unchanged money state must remain the same decision input;
-// the durable operation journal supplies the lifecycle epoch for actionable
-// idempotency.
-func routeEconomicObservationID(
-	bridgeObservationID string,
-	primeRaw, collateralRaw, debtRaw uint64,
-	borrowUtilizationBlocked bool,
-	strategyNAVRaw, priorReportedNAVRaw, capacityRaw uint64,
-) string {
+type routeEconomicState struct {
+	primeRaw, collateralRaw, debtRaw                     uint64
+	borrowUtilizationBlocked                             bool
+	strategyNAVRaw, priorReportedNAVRaw, pairCapacityRaw uint64
+}
+
+func (e routeEconomicState) observationID(bridgeObservationID string) string {
 	stateHash := sha256.Sum256([]byte(fmt.Sprintf(
 		"%s|prime:%d|collateral:%d|debt:%d|borrow-utilization-blocked:%t|strategy-nav:%d|reported-nav:%d|capacity:%d",
-		bridgeObservationID, primeRaw, collateralRaw, debtRaw,
-		borrowUtilizationBlocked, strategyNAVRaw, priorReportedNAVRaw, capacityRaw,
+		bridgeObservationID, e.primeRaw, e.collateralRaw, e.debtRaw,
+		e.borrowUtilizationBlocked, e.strategyNAVRaw, e.priorReportedNAVRaw, e.pairCapacityRaw,
 	)))
 	return fmt.Sprintf("%x", stateHash[:])
 }
@@ -689,12 +689,14 @@ func observedLTVBPS(position KaminoPosition) (int64, error) {
 	if position.RedeemablePrimeRaw == 0 {
 		return 0, fmt.Errorf("Kamino debt has no redeemable collateral")
 	}
-	collateral := new(big.Int).Mul(new(big.Int).SetUint64(position.RedeemablePrimeRaw), littleInt(position.CollateralPriceSF[:]))
-	debt := new(big.Int).Mul(new(big.Int).SetUint64(position.DebtRaw), littleInt(position.DebtPriceSF[:]))
-	// Prices are per token, not per raw unit. Cross-multiply the decimal
-	// scales before division; otherwise a 9/6 lane understates LTV 1,000x.
-	debt.Mul(debt, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(position.CollateralDecimals)), nil))
-	collateral.Mul(collateral, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(position.DebtDecimals)), nil))
+	return ltvBPSFromTokenPrices(position.RedeemablePrimeRaw, position.CollateralPriceSF, position.CollateralDecimals, position.DebtRaw, position.DebtPriceSF, position.DebtDecimals)
+}
+
+func ltvBPSFromTokenPrices(collateralRaw uint64, collateralPriceSF [16]byte, collateralDecimals uint8, debtRaw uint64, debtPriceSF [16]byte, debtDecimals uint8) (int64, error) {
+	collateral := new(big.Int).Mul(new(big.Int).SetUint64(collateralRaw), littleInt(collateralPriceSF[:]))
+	debt := new(big.Int).Mul(new(big.Int).SetUint64(debtRaw), littleInt(debtPriceSF[:]))
+	debt.Mul(debt, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(collateralDecimals)), nil))
+	collateral.Mul(collateral, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(debtDecimals)), nil))
 	if collateral.Sign() <= 0 || debt.Sign() <= 0 {
 		return 0, fmt.Errorf("Kamino LTV price is zero")
 	}

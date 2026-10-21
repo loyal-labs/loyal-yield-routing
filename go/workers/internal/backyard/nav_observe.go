@@ -91,9 +91,15 @@ type RouteNAVSnapshot struct {
 	LPSupplyRaw             uint64
 	SnapshotDigest          string
 	Report                  BridgeReport
-	// OtherLanesState is the other valued lanes' economic state (lane,
-	// collateral, debt and counted custody raws), "" when one lane is valued.
-	OtherLanesState string
+	OtherLanes              []heldLaneState
+}
+
+func (n RouteNAVSnapshot) otherLanesState() string {
+	states := make([]string, len(n.OtherLanes))
+	for i, lane := range n.OtherLanes {
+		states[i] = lane.String()
+	}
+	return strings.Join(states, "|")
 }
 
 func pinnedRouteNAVAddressesForRoute(v *Vault, route RuntimeRoute) []string {
@@ -386,69 +392,18 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 			return RouteNAVSnapshot{}, err
 		}
 	}
-	collateralReserve, err := decodeKaminoReserve(accountAt(accounts, kaminoConfig.CollateralReserve), kaminoConfig.CollateralMint, kaminoConfig)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
-	debtReserve, err := decodeKaminoReserve(accountAt(accounts, kaminoConfig.DebtReserve), kaminoConfig.DebtMint, kaminoConfig)
-	if err != nil {
-		return RouteNAVSnapshot{}, err
-	}
 	cashOnly := observedCashOnly && !obligation.hasPosition && custodies.SquadsPRIMEraw == 0 && custodies.SquadsDebtRaw == 0
-	marketEmergency, err := decodeKaminoMarketEmergency(accountAt(accounts, kaminoConfig.Market), kaminoConfig)
+	reserves, err := decodeLaneReserves(accounts, kaminoConfig, slot, obligation, cashOnly)
 	if err != nil {
 		return RouteNAVSnapshot{}, err
 	}
-	if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, collateralReserve, debtReserve); err != nil && !cashOnly {
-		return RouteNAVSnapshot{}, err
-	}
-	if collateralReserve.refreshedSlot > slot || debtReserve.refreshedSlot > slot || obligation.refreshedSlot > slot {
-		return RouteNAVSnapshot{}, fmt.Errorf("Kamino valuation claims a future refresh slot")
-	}
-	usdcReserve := debtReserve
-	if kaminoConfig.DebtMint != bridgeUSDC {
-		reference := usdcReference
-		usdcReserve, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
-		if err != nil {
-			return RouteNAVSnapshot{}, fmt.Errorf("decode NAV USDC reference: %w", err)
-		}
-		if err := validateKaminoReserveHealth(slot, marketEmergency, obligation, usdcReserve); err != nil && !cashOnly {
-			return RouteNAVSnapshot{}, err
-		}
-		if usdcReserve.refreshedSlot > slot {
-			return RouteNAVSnapshot{}, fmt.Errorf("NAV USDC reference claims a future slot")
-		}
-	}
-	if usdcReserve.mintDecimals != 6 {
-		return RouteNAVSnapshot{}, fmt.Errorf("NAV USDC reference decimals drifted")
-	}
-	var primeIdleValue, collateralValue, debtValue, debtIdleValue uint64
+	var held laneValues
 	if !cashOnly {
-		redeemablePRIME, err := collateralReserve.redeemLiquidityRaw(obligation.collateralDepositedRaw)
-		if err != nil {
-			return RouteNAVSnapshot{}, err
-		}
-		primeIdleValue, err = valueBetweenTokenRaw(custodies.SquadsPRIMEraw, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-		if err != nil {
-			return RouteNAVSnapshot{}, err
-		}
-		collateralValue, err = valueBetweenTokenRaw(redeemablePRIME, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-		if err != nil {
-			return RouteNAVSnapshot{}, err
-		}
-		debtRaw, err := obligation.debtAtReserveRate(debtReserve)
-		if err != nil {
-			return RouteNAVSnapshot{}, err
-		}
-		debtValue, err = valueBetweenTokenRaw(debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
-		if err != nil {
-			return RouteNAVSnapshot{}, err
-		}
-		debtIdleValue, err = valueBetweenTokenRaw(custodies.SquadsDebtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-		if err != nil {
+		if held, err = reserves.value(obligation, custodies.SquadsPRIMEraw, custodies.SquadsDebtRaw); err != nil {
 			return RouteNAVSnapshot{}, err
 		}
 	}
+	primeIdleValue, collateralValue, debtValue, debtIdleValue := held.collateralIdle, held.collateral, held.debt, held.debtIdle
 	values := []uint64{custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, primeIdleValue, collateralValue, debtValue, debtIdleValue}
 	for _, value := range values {
 		if value > math.MaxInt64 {
@@ -477,14 +432,14 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if kaminoConfig.DebtMint != bridgeUSDC {
 		counted[route.DebtCustody] = true
 	}
-	otherState := make([]string, 0, len(routes)-1)
+	otherLanes := make([]heldLaneState, 0, len(routes)-1)
 	for _, other := range routes[1:] {
 		value, err := valueHeldLane(v, slot, accounts, other, counted)
 		if err != nil {
 			return RouteNAVSnapshot{}, fmt.Errorf("value held lane %s: %w", other.Lane, err)
 		}
 		components = append(components, value.components...)
-		otherState = append(otherState, value.state)
+		otherLanes = append(otherLanes, value.state)
 	}
 	nav, err := ComputeNAV(NAVSnapshotContext{
 		Slot: slot, ReceiptFingerprint: fingerprint,
@@ -507,15 +462,98 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		DebtIdleValueRaw: debtIdleValue,
 		Obligation:       observedObligation(obligationAccount.Lamports != 0),
 		Receipt:          receipt, Voltr: vault, LPSupplyRaw: lpSupply,
-		SnapshotDigest:  nav.SnapshotDigest,
-		Report:          BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
-		OtherLanesState: strings.Join(otherState, "|"),
+		SnapshotDigest: nav.SnapshotDigest,
+		Report:         BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
+		OtherLanes:     otherLanes,
 	}, nil
+}
+
+type heldLaneState struct {
+	lane                                                   string
+	collateralRaw, debtRaw, collateralIdleRaw, debtIdleRaw uint64
+}
+
+func (h heldLaneState) String() string {
+	return fmt.Sprintf("%s:%d:%d:%d:%d", h.lane, h.collateralRaw, h.debtRaw, h.collateralIdleRaw, h.debtIdleRaw)
 }
 
 type heldLaneValue struct {
 	components []NAVComponent
-	state      string
+	state      heldLaneState
+}
+
+type laneReserves struct {
+	collateral, debt, usdc decodedKaminoReserve
+}
+
+type laneValues struct {
+	collateralIdle, collateral, debt, debtIdle uint64
+}
+
+func decodeLaneReserves(accounts []ConfirmedAccount, config KaminoObservationConfig, slot int64, obligation decodedKaminoObligation, unhealthyAllowed bool) (laneReserves, error) {
+	collateral, err := decodeKaminoReserve(accountAt(accounts, config.CollateralReserve), config.CollateralMint, config)
+	if err != nil {
+		return laneReserves{}, err
+	}
+	debt, err := decodeKaminoReserve(accountAt(accounts, config.DebtReserve), config.DebtMint, config)
+	if err != nil {
+		return laneReserves{}, err
+	}
+	emergency, err := decodeKaminoMarketEmergency(accountAt(accounts, config.Market), config)
+	if err != nil {
+		return laneReserves{}, err
+	}
+	if err := validateKaminoReserveHealth(slot, emergency, obligation, collateral, debt); err != nil && !unhealthyAllowed {
+		return laneReserves{}, err
+	}
+	if collateral.refreshedSlot > slot || debt.refreshedSlot > slot || obligation.refreshedSlot > slot {
+		return laneReserves{}, fmt.Errorf("Kamino valuation claims a future refresh slot")
+	}
+	usdc := debt
+	if config.DebtMint != bridgeUSDC {
+		reference := usdcReference
+		if usdc, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference); err != nil {
+			return laneReserves{}, fmt.Errorf("decode NAV USDC reference: %w", err)
+		}
+		if err := validateKaminoReserveHealth(slot, emergency, obligation, usdc); err != nil && !unhealthyAllowed {
+			return laneReserves{}, err
+		}
+		if usdc.refreshedSlot > slot {
+			return laneReserves{}, fmt.Errorf("NAV USDC reference claims a future slot")
+		}
+	}
+	if usdc.mintDecimals != 6 {
+		return laneReserves{}, fmt.Errorf("NAV USDC reference decimals drifted")
+	}
+	return laneReserves{collateral: collateral, debt: debt, usdc: usdc}, nil
+}
+
+func (r laneReserves) value(o decodedKaminoObligation, collateralIdleRaw, debtIdleRaw uint64) (laneValues, error) {
+	redeemable, err := r.collateral.redeemLiquidityRaw(o.collateralDepositedRaw)
+	if err != nil {
+		return laneValues{}, err
+	}
+	toUSDC := func(raw uint64, reserve decodedKaminoReserve, liability bool) (uint64, error) {
+		return valueBetweenTokenRaw(raw, reserve.mintDecimals, 6, reserve.marketPriceSF, r.usdc.marketPriceSF, liability)
+	}
+	var v laneValues
+	if v.collateralIdle, err = toUSDC(collateralIdleRaw, r.collateral, false); err != nil {
+		return laneValues{}, err
+	}
+	if v.collateral, err = toUSDC(redeemable, r.collateral, false); err != nil {
+		return laneValues{}, err
+	}
+	debtRaw, err := o.debtAtReserveRate(r.debt)
+	if err != nil {
+		return laneValues{}, err
+	}
+	if v.debt, err = toUSDC(debtRaw, r.debt, true); err != nil {
+		return laneValues{}, err
+	}
+	if v.debtIdle, err = toUSDC(debtIdleRaw, r.debt, false); err != nil {
+		return laneValues{}, err
+	}
+	return v, nil
 }
 
 // valueHeldLane values one non-working valued lane from the same batch: its
@@ -554,82 +592,32 @@ func valueHeldLane(v *Vault, slot int64, accounts []ConfirmedAccount, route Runt
 			return heldLaneValue{}, err
 		}
 	}
-	state := fmt.Sprintf("%s:%d:%d:%d:%d", route.Lane, obligation.collateralDepositedRaw, obligation.debtRaw, collateralIdle, debtIdle)
+	state := heldLaneState{lane: route.Lane, collateralRaw: obligation.collateralDepositedRaw, debtRaw: obligation.debtRaw, collateralIdleRaw: collateralIdle, debtIdleRaw: debtIdle}
 	if !obligation.hasPosition && collateralIdle == 0 && debtIdle == 0 {
 		return heldLaneValue{state: state}, nil
 	}
-	collateralReserve, err := decodeKaminoReserve(accountAt(accounts, config.CollateralReserve), config.CollateralMint, config)
+	reserves, err := decodeLaneReserves(accounts, config, slot, obligation, false)
 	if err != nil {
 		return heldLaneValue{}, err
 	}
-	debtReserve, err := decodeKaminoReserve(accountAt(accounts, config.DebtReserve), config.DebtMint, config)
+	values, err := reserves.value(obligation, collateralIdle, debtIdle)
 	if err != nil {
 		return heldLaneValue{}, err
 	}
-	emergency, err := decodeKaminoMarketEmergency(accountAt(accounts, config.Market), config)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
-	if err := validateKaminoReserveHealth(slot, emergency, obligation, collateralReserve, debtReserve); err != nil {
-		return heldLaneValue{}, err
-	}
-	if collateralReserve.refreshedSlot > slot || debtReserve.refreshedSlot > slot || obligation.refreshedSlot > slot {
-		return heldLaneValue{}, fmt.Errorf("Kamino valuation claims a future refresh slot")
-	}
-	usdcReserve := debtReserve
-	if nonUSDC {
-		reference := usdcReference
-		if usdcReserve, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference); err != nil {
-			return heldLaneValue{}, fmt.Errorf("decode NAV USDC reference: %w", err)
-		}
-		if err := validateKaminoReserveHealth(slot, emergency, obligation, usdcReserve); err != nil {
-			return heldLaneValue{}, err
-		}
-		if usdcReserve.refreshedSlot > slot {
-			return heldLaneValue{}, fmt.Errorf("NAV USDC reference claims a future slot")
-		}
-	}
-	if usdcReserve.mintDecimals != 6 {
-		return heldLaneValue{}, fmt.Errorf("NAV USDC reference decimals drifted")
-	}
-	redeemable, err := collateralReserve.redeemLiquidityRaw(obligation.collateralDepositedRaw)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
-	collateralValue, err := valueBetweenTokenRaw(redeemable, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
-	debtRaw, err := obligation.debtAtReserveRate(debtReserve)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
-	debtValue, err := valueBetweenTokenRaw(debtRaw, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, true)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
-	collateralIdleValue, err := valueBetweenTokenRaw(collateralIdle, collateralReserve.mintDecimals, 6, collateralReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
-	debtIdleValue, err := valueBetweenTokenRaw(debtIdle, debtReserve.mintDecimals, 6, debtReserve.marketPriceSF, usdcReserve.marketPriceSF, false)
-	if err != nil {
-		return heldLaneValue{}, err
-	}
-	for _, value := range []uint64{collateralValue, debtValue, collateralIdleValue, debtIdleValue} {
+	for _, value := range []uint64{values.collateral, values.debt, values.collateralIdle, values.debtIdle} {
 		if value > math.MaxInt64/4 {
 			return heldLaneValue{}, fmt.Errorf("NAV component exceeds signed range")
 		}
 	}
 	out := heldLaneValue{state: state}
 	out.components = append(out.components,
-		NAVComponent{Account: config.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(collateralValue), Slot: slot, Known: true},
-		NAVComponent{Account: config.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(debtValue), Slot: slot, Known: true, Liability: true})
+		NAVComponent{Account: config.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(values.collateral), Slot: slot, Known: true},
+		NAVComponent{Account: config.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(values.debt), Slot: slot, Known: true, Liability: true})
 	if countCollateral {
-		out.components = append(out.components, NAVComponent{Account: route.CollateralCustody, Owner: v.squads, Raw: int64(collateralIdleValue), Slot: slot, Known: true})
+		out.components = append(out.components, NAVComponent{Account: route.CollateralCustody, Owner: v.squads, Raw: int64(values.collateralIdle), Slot: slot, Known: true})
 	}
 	if countDebt {
-		out.components = append(out.components, NAVComponent{Account: route.DebtCustody, Owner: v.squads, Raw: int64(debtIdleValue), Slot: slot, Known: true})
+		out.components = append(out.components, NAVComponent{Account: route.DebtCustody, Owner: v.squads, Raw: int64(values.debtIdle), Slot: slot, Known: true})
 	}
 	return out, nil
 }

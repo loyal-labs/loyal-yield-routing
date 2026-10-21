@@ -222,11 +222,38 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 		depositLimitRaw:         reserve.DepositLimit,
 		borrowLimitRaw:          reserve.BorrowLimit,
 		borrowedRaw:             borrowedRaw,
-		borrowedLiquiditySF:     kamino.U128(reserve.BorrowedAmountSF),
+		borrowedLiquiditySF:     reserve.BorrowedAmountSF.Int(),
 		utilizationLimitPct:     reserve.UtilizationLimitBlockBorrowingAbovePct,
 		cumulativeBorrowRate:    reserve.CumulativeBorrowRateBSF,
 		terms:                   reserve,
 	}, nil
+}
+
+// debtSFAtReserveRate is debtAtReserveRate's scaled-fraction step; roundUp
+// ceils where KLend floors, for the payoff upper bound.
+func (o decodedKaminoObligation) debtSFAtReserveRate(r decodedKaminoReserve, roundUp bool) (*big.Int, error) {
+	amount := littleInt(o.debtAmountSF[:])
+	if amount.Sign() == 0 {
+		if o.debtRaw != 0 {
+			return nil, fmt.Errorf("Kamino stored debt fraction is missing")
+		}
+		return amount, nil
+	}
+	former, current := littleInt(o.cumulativeBorrowRate[:]), littleInt(r.cumulativeBorrowRate[:])
+	if former.Sign() <= 0 || current.Cmp(former) < 0 {
+		return nil, fmt.Errorf("Kamino cumulative borrow rate is zero or regressed")
+	}
+	if current.Cmp(former) == 0 {
+		return amount, nil
+	}
+	product := new(big.Int).Mul(amount, current)
+	if product.BitLen() > 256 {
+		return nil, fmt.Errorf("Kamino interest multiplication exceeds u256")
+	}
+	if roundUp {
+		product.Add(product, new(big.Int).Sub(former, big.NewInt(1)))
+	}
+	return product.Quo(product, former), nil
 }
 
 // Match KLend ObligationLiquidity::accrue_interest: multiply the unrounded
@@ -235,26 +262,11 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 // This is debt at the captured reserve refresh, NOT a future interest bound.
 // Admission must separately reserve interest through its execution horizon.
 func (o decodedKaminoObligation) debtAtReserveRate(r decodedKaminoReserve) (uint64, error) {
-	amount := littleInt(o.debtAmountSF[:])
-	if amount.Sign() == 0 {
-		if o.debtRaw != 0 {
-			return 0, fmt.Errorf("Kamino stored debt fraction is missing")
-		}
-		return 0, nil
+	debtSF, err := o.debtSFAtReserveRate(r, false)
+	if err != nil {
+		return 0, err
 	}
-	former, current := littleInt(o.cumulativeBorrowRate[:]), littleInt(r.cumulativeBorrowRate[:])
-	if former.Sign() <= 0 || current.Cmp(former) < 0 {
-		return 0, fmt.Errorf("Kamino cumulative borrow rate is zero or regressed")
-	}
-	if current.Cmp(former) == 0 {
-		return ceilScaledBigFraction(amount)
-	}
-	product := new(big.Int).Mul(amount, current)
-	if product.BitLen() > 256 {
-		return 0, fmt.Errorf("Kamino interest multiplication exceeds u256")
-	}
-	accrued := product.Quo(product, former)
-	return ceilScaledBigFraction(accrued)
+	return ceilScaledBigFraction(debtSF)
 }
 
 const entryLoopLTVPercent = 50
@@ -327,7 +339,7 @@ func utilizationBorrowHeadroomRaw(debt decodedKaminoReserve) (uint64, error) {
 	if headroomSF.Sign() <= 0 {
 		return 0, nil
 	}
-	headroomRaw := headroomSF.Rsh(headroomSF, 60)
+	headroomRaw := headroomSF.Rsh(headroomSF, kamino.FractionBits)
 	if !headroomRaw.IsUint64() {
 		return 0, fmt.Errorf("Kamino utilization headroom exceeds u64")
 	}

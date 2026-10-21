@@ -347,8 +347,6 @@ func DecodeFarmState(a *chain.Account) (FarmState, error) {
 	return FarmState{DelegateAuthority: key(d, 7328), IsFarmFrozen: d[7361] != 0, IsFarmDelegated: d[7362] == 1}, nil
 }
 
-func U128(value [16]byte) *big.Int { return ScaledFraction(value).Int() }
-
 func envelope(a *chain.Account, owner solana.PublicKey, size int, discriminator [8]byte, name string) error {
 	if a == nil {
 		return fmt.Errorf("Kamino %s is absent", name)

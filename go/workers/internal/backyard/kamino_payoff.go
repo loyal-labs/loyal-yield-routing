@@ -77,11 +77,10 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 		}
 		elapsed, unitsPerYear = bound.ThroughUnix-updatedUnix, 31_536_000
 	}
-	// Keep sub-token debt precision. Starting from ceil(raw debt) on every
-	// revalidation would add a whole unit of artificial interest at each refresh.
-	former := littleInt(obligation.cumulativeBorrowRate[:])
-	debtSF := new(big.Int).Mul(littleInt(obligation.debtAmountSF[:]), littleInt(reserve.cumulativeBorrowRate[:]))
-	debtSF.Add(debtSF, new(big.Int).Sub(former, big.NewInt(1))).Quo(debtSF, former)
+	debtSF, err := obligation.debtSFAtReserveRate(reserve, true)
+	if err != nil {
+		return bound, err
+	}
 	bound.UpperDebtRaw, err = upperKaminoCompoundedDebtSF(debtSF, maximumRate, uint64(elapsed), unitsPerYear)
 	return bound, err
 }

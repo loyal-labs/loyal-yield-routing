@@ -66,35 +66,34 @@ func TestTerminalFailedRowNeverBlocksCapitalAndAdvancesTheEpoch(t *testing.T) {
 func TestSignatureStatusFailureRequiresSettlement(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name                          string
-		value                         string
-		found, settled, processedOnly bool
-		confirmed, finalized, failed  bool
+		name  string
+		value string
+		want  signatureCommitment
 	}{
 		{
 			name:  "a processed-only failure is not a failure",
 			value: `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"processed"}`,
-			found: true, processedOnly: true,
+			want:  signatureProcessed,
 		},
 		{
 			name:  "a finalized failure is a failure",
 			value: `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"finalized"}`,
-			found: true, settled: true, finalized: true, failed: true,
+			want:  signatureFailed,
 		},
 		{
 			name:  "a confirmed failure is a failure",
 			value: `{"slot":45,"err":{"InstructionError":[0,{"Custom":9}]},"confirmationStatus":"confirmed"}`,
-			found: true, settled: true, failed: true,
+			want:  signatureFailed,
 		},
 		{
 			name:  "a confirmed success is confirmed",
 			value: `{"slot":45,"err":null,"confirmationStatus":"confirmed"}`,
-			found: true, settled: true, confirmed: true,
+			want:  signatureConfirmed,
 		},
 		{
 			name:  "a processed success is only an observation",
 			value: `{"slot":45,"err":null,"confirmationStatus":"processed"}`,
-			found: true, processedOnly: true,
+			want:  signatureProcessed,
 		},
 	}
 	for _, testCase := range cases {
@@ -106,8 +105,7 @@ func TestSignatureStatusFailureRequiresSettlement(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if status.Found != testCase.found || status.Settled != testCase.settled || status.ProcessedOnly != testCase.processedOnly ||
-			status.Confirmed != testCase.confirmed || status.Finalized != testCase.finalized || status.Failed != testCase.failed {
+		if status != testCase.want {
 			t.Fatalf("%s: observation = %+v", testCase.name, status)
 		}
 	}

@@ -281,16 +281,3 @@ type SimulationResult struct {
 	UnitsConsumed uint64
 	Logs          []string
 }
-
-type SignatureObservation struct {
-	Found            bool
-	Confirmed        bool
-	Finalized        bool
-	Settled          bool
-	ProcessedOnly    bool
-	ConfirmationSlot int64
-	// Failed is true only for a settled (confirmed/finalized) on-chain error.
-	// A processed-only failure is never reported here: it can still be forked
-	// away, so it stays an observation, not a transition.
-	Failed bool
-}

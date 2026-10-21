@@ -150,30 +150,35 @@ func simulateSigned(ctx context.Context, c *chain.Client, signedWire []byte) (Si
 	return SimulationResult{Slot: int64(simulated.Slot), UnitsConsumed: simulated.Units, Logs: simulated.Logs}, nil
 }
 
-// signatureStatus reads one signature with full history. A processed-only
-// result can still be forked away, so it proves nothing about failure or
-// success and may never drive a terminal transition. Only a settled
-// observation reports Failed; Confirmed additionally excludes a settled
-// on-chain error.
-func signatureStatus(ctx context.Context, c *chain.Client, signature string) (SignatureObservation, error) {
+type signatureCommitment uint8
+
+const (
+	signatureAbsent signatureCommitment = iota
+	signatureProcessed
+	signatureConfirmed
+	signatureFinalized
+	signatureFailed
+)
+
+func signatureStatus(ctx context.Context, c *chain.Client, signature string) (signatureCommitment, error) {
 	if signature == "" {
-		return SignatureObservation{}, fmt.Errorf("transaction signature is required")
+		return signatureAbsent, fmt.Errorf("transaction signature is required")
 	}
 	state, err := c.SignatureState(ctx, signature)
 	if err != nil {
-		return SignatureObservation{}, unavailable(err)
+		return signatureAbsent, unavailable(err)
 	}
-	if !state.Found {
-		return SignatureObservation{}, nil
+	switch {
+	case !state.Found:
+		return signatureAbsent, nil
+	case state.Slot <= 0 || state.Commitment < chain.Confirmed:
+		return signatureProcessed, nil
+	case state.Err != "":
+		return signatureFailed, nil
+	case state.Commitment == chain.Finalized:
+		return signatureFinalized, nil
 	}
-	settled := state.Slot > 0 && state.Commitment >= chain.Confirmed
-	failed := settled && state.Err != ""
-	return SignatureObservation{
-		Found: true, Confirmed: settled && !failed,
-		Finalized: settled && state.Commitment == chain.Finalized,
-		Settled:   settled, ProcessedOnly: !settled,
-		ConfirmationSlot: int64(state.Slot), Failed: failed,
-	}, nil
+	return signatureConfirmed, nil
 }
 
 func finalizedReceipt(ctx context.Context, c *chain.Client, signature string) (chain.Receipt, error) {
