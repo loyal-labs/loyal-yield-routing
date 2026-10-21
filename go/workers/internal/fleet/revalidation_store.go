@@ -102,7 +102,7 @@ WITH candidate AS (
    -- Rust's opportunity lease, for every route kind: a submission that is not
    -- terminal still owns the opportunity.
    AND NOT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions holding
-     WHERE holding.opportunity_id=o.id AND holding.submission_state NOT IN `+submissionTerminalStates+`)
+     WHERE holding.opportunity_id=o.id AND holding.submission_state<>ALL($9))
    -- Rust's per-vault gate (lease_rebalance_opportunity_batch): a vault whose
    -- decision is still moving money is not prepared again until it settles.
    AND NOT EXISTS(SELECT 1 FROM loyal_yield.rebalance_decisions active_decision
@@ -163,7 +163,7 @@ LEFT JOIN loyal_yield.route_policies withdraw_policy
  AND withdraw_policy.settings=vault.settings AND withdraw_policy.vault_index=vault.vault_index
  AND withdraw_policy.vault_pubkey=vault.vault_pubkey
  AND 'same_mint_kamino'=ANY(withdraw_policy.route_modes)
- AND ($5='' OR $5=ANY(withdraw_policy.delegated_signers))`, cluster, owner, ttl.String(), includeReady, signer, crossMintEnabled, routeKind, leaseKind).Scan(
+ AND ($5='' OR $5=ANY(withdraw_policy.delegated_signers))`, cluster, owner, ttl.String(), includeReady, signer, crossMintEnabled, routeKind, leaseKind, SubmissionTerminalStates).Scan(
 		&l.OpportunityID, &l.OptimizerEpochID, &l.IdempotencyKey, &l.FencingToken,
 		&l.ExpiresAt, &l.VaultID, &l.VaultPubkey, &l.VaultIndex, &l.PolicyAccount,
 		&l.DelegatedSigners, &l.SetupPolicyAccount, &l.SourceReserve, &l.TargetReserve, &l.LiquidityMint,

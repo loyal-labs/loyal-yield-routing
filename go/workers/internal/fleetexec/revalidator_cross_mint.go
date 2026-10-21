@@ -36,7 +36,7 @@ func (a *RevalidatorCrossMint) PrepareCrossMintLeg(ctx context.Context, q CrossM
 	return revalidatorCrossMintPreparedLeg(prepared)
 }
 
-func revalidatorCrossMintLegError(ctx context.Context, leg string, err error) error {
+func revalidatorCrossMintLegError(ctx context.Context, leg MovementLeg, err error) error {
 	if leg == LegSwap && errors.Is(err, fleet.ErrCrossMintQuoteUnavailable) && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("source swap economics: %w", ErrCrossMintSwapUnavailable)
 	}
@@ -74,7 +74,7 @@ func revalidatorCrossMintMovement(m CrossMintMovement) fleet.CrossMintPreparatio
 
 func revalidatorCrossMintLegRequest(q CrossMintLegRequest) fleet.CrossMintPreparationRequest {
 	return fleet.CrossMintPreparationRequest{
-		Movement: revalidatorCrossMintMovement(q.Movement), Leg: q.Leg, Purpose: q.Purpose,
+		Movement: revalidatorCrossMintMovement(q.Movement), Leg: string(q.Leg), Purpose: string(q.Purpose),
 		Generation: q.Generation, RemainingFeeLamports: q.RemainingFeeLamports,
 		ContinuationOwner: q.ContinuationOwner, ContinuationFencingToken: q.ContinuationFencingToken,
 		ControlGeneration: q.ControlGeneration, ExpiresAt: q.ExpiresAt,
@@ -185,7 +185,7 @@ func revalidatorCrossMintFirstSendRequest(q CrossMintFirstSendRequest) (fleet.Cr
 		return fleet.CrossMintFirstSendRequest{}, errors.New("first-send journal identity differs from movement")
 	}
 	return fleet.CrossMintFirstSendRequest{
-		Movement: revalidatorCrossMintMovement(q.Movement), Leg: s.MovementLeg, Purpose: s.LegPurpose,
+		Movement: revalidatorCrossMintMovement(q.Movement), Leg: string(s.MovementLeg), Purpose: string(s.LegPurpose),
 		PolicyAccount: q.PolicyAccount, MinimumSlot: q.MinimumSlot,
 		SignedWire: bytes.Clone(s.SignedTransaction), ExpectedWireSHA256: q.ExpectedWireSHA256, ExpectedMessageSHA256: s.MessageHash,
 		Signature: s.Signature, RecentBlockhash: s.RecentBlockhash, LastValidBlockHeight: s.LastValidBlockHeight,

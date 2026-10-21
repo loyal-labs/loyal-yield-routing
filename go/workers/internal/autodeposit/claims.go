@@ -11,7 +11,6 @@ import (
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// ClaimStatus mirrors loyal_yield.balance_sweep_lot_claim_status.
 type ClaimStatus string
 
 const (

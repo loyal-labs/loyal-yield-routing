@@ -21,7 +21,7 @@ func TestRevalidatorCrossMintRequestPreservesAuthorityAndCustody(t *testing.T) {
 	m := CrossMintMovement{DecisionID: 1, OpportunityID: 2, OptimizerEpochID: 3, VaultID: 4, Cluster: "localnet", VaultPubkey: "vault", SourceSnapshotID: &snapshot, SourceReserve: "source", IntendedTargetReserve: "intended", ActiveTargetReserve: "fallback", SourceMint: "mint-a", TargetMint: "mint-b", PlannedAmountRaw: 990, ExecutionPlan: json.RawMessage(`{"plan":1}`), PreflightCertification: json.RawMessage(`{"cert":2}`), CustodyMint: "mint-b", CustodyAccount: "aggregate", CustodyAmountRaw: 990, CustodyObservedBalanceRaw: &amount, CustodyReconciledSlot: &slot, CustodyVersion: 7, Phase: CrossMintTargetIdle, TerminalOutcome: &terminal}
 	q := CrossMintLegRequest{Movement: m, Leg: LegDeposit, Purpose: PurposeFallbackTarget, Generation: 9, RemainingFeeLamports: 10000, ContinuationOwner: "actual-d-owner", ContinuationFencingToken: 10, ControlGeneration: 0, ExpiresAt: time.Now().Add(time.Minute)}
 	got := revalidatorCrossMintLegRequest(q)
-	if got.ContinuationOwner != q.ContinuationOwner || got.ContinuationFencingToken != q.ContinuationFencingToken || got.ControlGeneration != 0 || !got.ExpiresAt.Equal(q.ExpiresAt) || got.Generation != q.Generation || got.RemainingFeeLamports != q.RemainingFeeLamports || got.Leg != q.Leg || got.Purpose != q.Purpose {
+	if got.ContinuationOwner != q.ContinuationOwner || got.ContinuationFencingToken != q.ContinuationFencingToken || got.ControlGeneration != 0 || !got.ExpiresAt.Equal(q.ExpiresAt) || got.Generation != q.Generation || got.RemainingFeeLamports != q.RemainingFeeLamports || got.Leg != string(q.Leg) || got.Purpose != string(q.Purpose) {
 		t.Fatalf("changed actual lease authority: %+v", got)
 	}
 	encodedD, _ := json.Marshal(m)
@@ -172,7 +172,7 @@ func TestRevalidatorCrossMintFirstSendPreservesExactPersistedWireAndLookupOrder(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got.SignedWire, q.Submission.SignedTransaction) || got.ExpectedWireSHA256 != q.ExpectedWireSHA256 || got.ExpectedMessageSHA256 != q.Submission.MessageHash || got.Signature != q.Submission.Signature || got.RecentBlockhash != q.Submission.RecentBlockhash || got.LastValidBlockHeight != q.Submission.LastValidBlockHeight || got.Leg != q.Submission.MovementLeg || got.Purpose != q.Submission.LegPurpose || got.MinimumSlot != q.MinimumSlot || !reflect.DeepEqual(got.SelectedALTs, q.SelectedALTs) {
+	if !bytes.Equal(got.SignedWire, q.Submission.SignedTransaction) || got.ExpectedWireSHA256 != q.ExpectedWireSHA256 || got.ExpectedMessageSHA256 != q.Submission.MessageHash || got.Signature != q.Submission.Signature || got.RecentBlockhash != q.Submission.RecentBlockhash || got.LastValidBlockHeight != q.Submission.LastValidBlockHeight || got.Leg != string(q.Submission.MovementLeg) || got.Purpose != string(q.Submission.LegPurpose) || got.MinimumSlot != q.MinimumSlot || !reflect.DeepEqual(got.SelectedALTs, q.SelectedALTs) {
 		t.Fatal("first-send reconstructed or changed durable evidence")
 	}
 	q.Submission.SignedTransaction[0] = 99

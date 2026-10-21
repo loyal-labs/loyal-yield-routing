@@ -2,6 +2,7 @@ package autodeposit
 
 import (
 	"errors"
+	"slices"
 )
 
 type OperationKind string
@@ -11,7 +12,6 @@ const (
 	OperationTopUp OperationKind = "top_up"
 )
 
-// AttemptState mirrors loyal_yield.balance_sweep_transaction_attempts.attempt_state.
 type AttemptState string
 
 const (
@@ -55,13 +55,13 @@ func (e *EffectAmbiguousError) Error() string {
 	return "autodeposit transaction effect is ambiguous: " + e.Detail
 }
 
+// ClaimHoldingPullAttemptStates are the attempt states in which funds may
+// already have moved out of the wallet, so the claim stays owned and a
+// restarted worker resumes it.
+var ClaimHoldingPullAttemptStates = []string{string(AttemptPrepared), string(AttemptSubmitted), string(AttemptConfirmed)}
+
 func AttemptHoldsClaim(state AttemptState) bool {
-	switch state {
-	case AttemptPrepared, AttemptSubmitted, AttemptConfirmed:
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(ClaimHoldingPullAttemptStates, string(state))
 }
 
 func AttemptAllowsSafeRequeue(state AttemptState) bool {

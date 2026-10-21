@@ -179,7 +179,8 @@ func TestCrossMintActivationAndSignedPublicationRetainExistingFences(t *testing.
 		t.Fatal(err)
 	}
 	var saved []byte
-	var leg, required string
+	var leg MovementLeg
+	var required string
 	var owner *string
 	if err = pool.QueryRow(ctx, `SELECT s.signed_transaction,s.movement_leg,s.required_commitment,d.continuation_lease_owner FROM loyal_yield.signed_route_submissions s JOIN loyal_yield.rebalance_decisions d ON d.id=s.decision_id WHERE s.id=$1`, id).Scan(&saved, &leg, &required, &owner); err != nil {
 		t.Fatal(err)
@@ -251,7 +252,7 @@ func TestCrossMintSignedAppendRejectsChangedAdmissionWithoutPartialPublication(t
 	}
 }
 
-func seedCrossMintReceiptAttempt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, b seededBaseline, leg, purpose string, e CrossMintExpectedEffect, pre CrossMintBalanceAnchors, slot int64) SubmissionLease {
+func seedCrossMintReceiptAttempt(t *testing.T, ctx context.Context, pool *pgxpool.Pool, b seededBaseline, leg MovementLeg, purpose LegPurpose, e CrossMintExpectedEffect, pre CrossMintBalanceAnchors, slot int64) SubmissionLease {
 	t.Helper()
 	wire, _ := integrationWire(t, 123)
 	var bound PersistRouteInput

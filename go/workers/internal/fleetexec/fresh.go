@@ -79,7 +79,7 @@ func admitFeeOnlySpend(ctx context.Context, tx pgx.Tx, cluster, payer, semantic 
 	}
 	var unreflected, spent int64
 	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(r.compiled_fee_lamports),0)::BIGINT FROM loyal_yield.route_fee_payer_spend_reservations r JOIN loyal_yield.signed_route_submissions s ON s.id=r.signed_submission_id
-  WHERE r.cluster=$1 AND r.fee_payer=$2 AND ((s.confirmed_slot IS NULL AND s.submission_state NOT IN ('reconciled','expired','failed')) OR s.confirmed_slot>$3)`, cluster, payer, b.Slot).Scan(&unreflected); err != nil {
+  WHERE r.cluster=$1 AND r.fee_payer=$2 AND ((s.confirmed_slot IS NULL AND s.submission_state<>ALL($4)) OR s.confirmed_slot>$3)`, cluster, payer, b.Slot, fleet.SubmissionTerminalStates).Scan(&unreflected); err != nil {
 		return err
 	}
 	if b.Lamports < minimum || b.Lamports > maximum || b.Lamports-unreflected-fee < minimum {

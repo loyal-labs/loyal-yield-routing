@@ -72,10 +72,7 @@ type MarketSnapshot struct {
 	Reserves   map[string]ReserveState `json:"reserves"`
 }
 
-// submissionTerminalStates are the signed_route_submissions states that no
-// longer own their opportunity: the schema's one-open-submission index and
-// every Rust holding guard exclude exactly these. Any other state is in flight.
-const submissionTerminalStates = `('reconciled','expired','failed')`
+var SubmissionTerminalStates = []string{"reconciled", "expired", "failed"}
 
 var earnStableMints = []string{CashMint, USDGMint, PYUSDMint, USDCMint, USDTMint, USDSMint}
 

@@ -6,7 +6,6 @@ import (
 
 const ScheduleDelay = time.Hour
 
-// LotStatus mirrors loyal_yield.balance_sweep_surplus_lot_status.
 type LotStatus string
 
 const (

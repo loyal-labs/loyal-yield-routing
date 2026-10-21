@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// LookupKind is the existing 0017 operation vocabulary. Verify has no signer
-// or transaction; rollover is a new physical table in a later generation.
+// Verify has no signer or transaction; rollover is a new physical table in a
+// later generation.
 type LookupKind string
 
 const (

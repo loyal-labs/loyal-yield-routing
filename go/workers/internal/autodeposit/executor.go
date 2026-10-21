@@ -132,11 +132,6 @@ const ConsumerName = "balance_sweep_autodeposit_trigger"
 
 const USDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
-// Claim-holding pull attempt states: an attempt in one of these states means
-// funds may already have moved out of the wallet, so the claim stays owned and
-// a restarted worker resumes it.
-var ClaimHoldingPullAttemptStates = []string{"prepared", "submitted", "confirmed"}
-
 const (
 	StaleRequestedSlotSeconds = 15 * 60
 	RequestedSlotTimeoutError = "Autodeposit request timed out before worker selection."

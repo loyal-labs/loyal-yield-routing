@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func (s *Store) ActivateLookupCatalog(ctx context.Context, cluster string, familyID, revisionID int64, generation int32, snapshots []LookupSnapshot) error {
@@ -130,7 +131,7 @@ func (s *Store) ActivateLookupCatalog(ctx context.Context, cluster string, famil
 			err = tx.QueryRow(ctx, `SELECT
  EXISTS(SELECT 1 FROM loyal_yield.lookup_table_usage_leases WHERE route_lookup_table_id=ANY($1) AND released_at IS NULL AND expires_at>clock_timestamp()) OR
  EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=ANY($1) AND operation_state NOT IN ('complete','permanent_failure','cancelled')) OR
- EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s WHERE s.cluster=$2 AND s.submission_state NOT IN ('reconciled','failed','expired') AND (jsonb_typeof(s.alt_mutation_epochs->'tables') IS DISTINCT FROM 'array' OR EXISTS(SELECT 1 FROM unnest($1::bigint[]) id WHERE s.alt_mutation_epochs @> jsonb_build_object('tables',jsonb_build_array(jsonb_build_object('tableId',id))))))`, ids, cluster).Scan(&protected)
+ EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions s WHERE s.cluster=$2 AND s.submission_state<>ALL($3) AND (jsonb_typeof(s.alt_mutation_epochs->'tables') IS DISTINCT FROM 'array' OR EXISTS(SELECT 1 FROM unnest($1::bigint[]) id WHERE s.alt_mutation_epochs @> jsonb_build_object('tables',jsonb_build_array(jsonb_build_object('tableId',id))))))`, ids, cluster, fleet.SubmissionTerminalStates).Scan(&protected)
 			if err != nil {
 				return err
 			}
