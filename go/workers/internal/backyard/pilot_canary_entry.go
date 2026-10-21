@@ -9,11 +9,6 @@ import (
 	"time"
 )
 
-// An explicit, expiring acceptance request uses the real selector quote and
-// ordinary execution admission. It is not an economic recommendation. The
-// immutable request ID is consumed under the route lock before any allocation;
-// restarting the same deployment never authorizes another attempt. With a
-// sourceLane it rotates equityRaw of that held lane into lane.
 type pilotCanaryEntryRequest struct {
 	ID         string    `json:"id"`
 	Lane       string    `json:"lane"`
@@ -54,10 +49,6 @@ func (r pilotCanaryEntryRequest) validate(now time.Time) error {
 	return nil
 }
 
-// pilotCanaryReceiptCapacity bounds the number of retained canary receipts.
-// Retained IDs are never pruned or reset, and consumed-ID checks stay before
-// this capacity gate.
-// Raised 16 -> 32 on 2026-09-25 after the Maple/AUTO rotation used all 16.
 const pilotCanaryReceiptCapacity = 32
 
 func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, error) {

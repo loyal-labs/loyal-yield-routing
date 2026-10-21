@@ -56,18 +56,16 @@ func (s OperationStatus) preBroadcast() bool {
 }
 
 type Snapshot struct {
-	ValuationSource        string `json:",omitempty"`
-	ValuationSlot          int64  `json:",omitempty"`
-	ObservationID          string
-	Slot                   int64
-	RouteKind              string
-	ManualReason           string
-	Nonterminal            OperationStatus
-	HasAmbiguousSubmission bool
-	WithdrawalDemandRaw    int64
-	SquadsIdleRaw          int64
-	// CollateralIdleRaw is the vault's custody of the lane's collateral mint,
-	// the whole account (lanes that share it see the same balance).
+	ValuationSource             string `json:",omitempty"`
+	ValuationSlot               int64  `json:",omitempty"`
+	ObservationID               string
+	Slot                        int64
+	RouteKind                   string
+	ManualReason                string
+	Nonterminal                 OperationStatus
+	HasAmbiguousSubmission      bool
+	WithdrawalDemandRaw         int64
+	SquadsIdleRaw               int64
 	CollateralIdleRaw           int64
 	CollateralIdleValueRaw      int64
 	MinimumCollateralDepositRaw int64

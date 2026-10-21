@@ -12,8 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// budgetReserveRefreshInstructions pins the closed instruction set: the lane's
-// two refreshes plus the USDC reference reserve's, deduplicated.
 func budgetReserveRefreshInstructions(v *Vault, lane string) ([]compiledInstruction, error) {
 	if _, err := v.route(lane); err != nil {
 		return nil, err

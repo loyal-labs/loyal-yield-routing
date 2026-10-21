@@ -63,7 +63,7 @@ func hastraEdgeForRoute(v *Vault, action Action, lane string) (hastraEdge, error
 	}
 	debt := [2]string{route.DebtCustody, route.Kamino.DebtMint}
 	collateral := [2]string{route.CollateralCustody, route.Kamino.CollateralMint}
-	from, to := [2]string{v.cash, fleet.USDCMint}, debt // mint deposit
+	from, to := [2]string{v.cash, fleet.USDCMint}, debt
 	switch leg {
 	case policy.HastraStakeDeposit:
 		from, to = debt, collateral

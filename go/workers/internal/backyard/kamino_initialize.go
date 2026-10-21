@@ -88,8 +88,6 @@ func plainCrossModeObligation(o decodedKaminoObligation, a ConfirmedAccount) boo
 	return o.elevationGroup == 0 && allZero(a.Data[kaminoObligationReferrerOffset:kaminoObligationReferrerOffset+32])
 }
 
-// obligationFarm is one farm the lane's obligation registers with: its
-// reserve's farm in mode, and the obligation's user state in it.
 type obligationFarm struct {
 	accounts kamino.ObligationFarmsInitAccounts
 	mode     kamino.FarmMode

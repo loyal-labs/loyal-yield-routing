@@ -81,9 +81,6 @@ func signMessage(executor ed25519.PrivateKey, expectedDelegate publicKey, messag
 		transactionSignature: encodeBase58(signature), recentBlockhash: blockhash, lastValidBlockHeight: height}, nil
 }
 
-// Backyard's Squads Settings, its one signer, the delegate every Backyard
-// policy is delegated to. A vault's own
-// accounts are derived from its data (vault.go).
 const (
 	backyardSettings       = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
 	backyardSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"

@@ -17,8 +17,6 @@ import (
 
 const voltrLPMintLength = 82
 
-// VoltrVaultBook is the vault book decoded independently of the adaptor and of
-// this worker's own arithmetic.
 type VoltrVaultBook struct {
 	voltr.Vault
 }
@@ -188,9 +186,6 @@ func decodeStrategyReceipt(v *Vault, account ConfirmedAccount) (voltr.StrategyRe
 	if err != nil {
 		return voltr.StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt envelope or layout drifted")
 	}
-	// The custody balance is reported rather than required zero: a nonzero
-	// value must surface as a custody monitor HOLD, not as an undecodable
-	// account.
 	if receipt.Vault != solanaKey(v.VoltrVault) || receipt.Strategy != solanaKey(v.Strategy) ||
 		receipt.AdaptorProgram != solanaKey(v.Adaptor) || receipt.Version != voltr.UpgradedStrategyReceiptVersion {
 		return voltr.StrategyReceipt{}, fmt.Errorf("Voltr strategy receipt binding or reserved bytes drifted")
@@ -252,9 +247,6 @@ func decodeRouteNAVCustodiesForRoute(v *Vault, accounts []ConfirmedAccount, rout
 	return result, nil
 }
 
-// valueBetweenTokenRaw converts raw units between assets without assuming
-// matching decimals or a stablecoin peg. The two reserve prices use the same
-// scaled-fraction quote denomination, which cancels exactly in their ratio.
 func valueBetweenTokenRaw(raw uint64, tokenDecimals, debtDecimals uint8, tokenPriceSF, debtPriceSF [16]byte, liability bool) (uint64, error) {
 	return valueBetweenPrices(raw, tokenDecimals, debtDecimals, littleInt(tokenPriceSF[:]), littleInt(debtPriceSF[:]), liability)
 }
@@ -557,11 +549,6 @@ func (r laneReserves) value(o decodedKaminoObligation, collateralIdleRaw, debtId
 	return v, nil
 }
 
-// valueHeldLane values one non-working valued lane from the same batch: its
-// obligation, and each custody account it names that no earlier lane has
-// counted (the vault's custody is counted once, never per lane). A lane with
-// no position and no counted custody balance contributes nothing and needs no
-// market valuation; any exposure keeps the reserve health gate.
 func valueHeldLane(v *Vault, slot int64, accounts []ConfirmedAccount, route RuntimeRoute, counted map[string]bool) (heldLaneValue, error) {
 	config := route.Kamino
 	var collateralIdle, debtIdle uint64

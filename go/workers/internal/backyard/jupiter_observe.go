@@ -107,10 +107,6 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Cli
 		var quote jupiter.Quote
 		var err error
 		if quote, instruction, err = freshSwapForRoute(ctx, v, client, decision.StrategyKey, decision.Action, amount, maxAccounts); err != nil {
-			// Jupiter may temporarily return a different route dialect or account
-			// shape as liquidity changes. That is a fail-closed observation miss,
-			// not a fatal worker invariant: do not journal or sign it, and let the
-			// serialized loop request a fresh quote on its next bounded tick.
 			return confirmedObservationUnavailable(err)
 		}
 		key, _, err := jupiterPolicyLeg(v, decision.StrategyKey, decision.Action)

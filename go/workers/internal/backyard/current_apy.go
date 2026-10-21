@@ -10,8 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CurrentAPY is an estimate after the approved performance fee, not realized
-// HWM fees. Display only: no money path reads it.
 type CurrentAPY struct {
 	Lane       string    `json:"lane"`
 	APYBPS     int64     `json:"apyBps"`
@@ -20,7 +18,6 @@ type CurrentAPY struct {
 	Flat       bool      `json:"flat"`
 }
 
-// currentPositionAPY is the route lane's APY at its actual collateral/equity ratio and current debt cost; a flat position comes back Flat.
 func currentPositionAPY(s Snapshot, markets []LaneEconomics) (CurrentAPY, bool) {
 	out := CurrentAPY{Lane: s.RouteLane}
 	collateral := float64(s.PositionCollateralValueRaw) + float64(max(s.CollateralIdleValueRaw, 0))

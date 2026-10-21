@@ -7,12 +7,6 @@ import (
 
 const maxConcurrentReads = 4
 
-// concurrentReads runs independent read-only steps at once, at most
-// maxConcurrentReads in flight, and returns the first error in step order: the
-// error the serial sequence would have stopped on. A failure cancels only the
-// steps after it, which the serial sequence would never have reached; the
-// steps before it finish, so the reported error is never a cancellation it
-// caused. Each step writes only its own results.
 func concurrentReads(ctx context.Context, steps ...func(context.Context) error) error {
 	errs := make([]error, len(steps))
 	contexts := make([]context.Context, len(steps))

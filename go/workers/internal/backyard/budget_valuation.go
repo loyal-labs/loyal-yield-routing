@@ -41,9 +41,6 @@ func observationLagForSlotMillis(ms float64) int64 {
 	return min(max(int64(math.Ceil(observationWindowMillis/ms)), observationLagFloorSlots), observationLagCeilingSlots)
 }
 
-// refreshObservationLagSlots re-measures the slot time at most once a minute,
-// at the start of a tick so one tick sees one window. A failed read keeps the
-// last value for 10 minutes, then falls back to 32 slots.
 func refreshObservationLagSlots(ctx context.Context, c *chain.Client) {
 	observationLagMu.Lock()
 	defer observationLagMu.Unlock()

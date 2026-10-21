@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	RouteKind = "backyard_rwa_v1"
-	// The Prime/PRIME/USDC and Maple lanes' names (route_catalog.go).
+	RouteKind                     = "backyard_rwa_v1"
 	PrimeUSDCLaneID               = "Prime/PRIME/USDC"
 	MapleSyrupUSDCLaneID          = "Maple/syrupUSDC/USDC"
 	Phase2TransactionCapRaw int64 = 1_000_000
