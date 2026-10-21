@@ -11,7 +11,7 @@ import (
 
 func TestStageExpectedEffectsMatchDirectTransferReceipt(t *testing.T) {
 	t.Parallel()
-	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(rwa,
+	effects, _, strategyAfter, squadsAfter, err := bridgeExpectedEffects(rwa,
 		Decision{Action: StageSquadsToVoltr, AmountRaw: 119}, 0, 0, 1_792_877,
 	)
 	if err != nil {
@@ -66,7 +66,7 @@ func TestExecutionObserverDecodesOnlyExactAdaptorV2Bindings(t *testing.T) {
 
 func TestBridgeExpectedEffectsAreExactAndConserved(t *testing.T) {
 	t.Parallel()
-	effects, strategyAfter, squadsAfter, err := bridgeExpectedEffects(rwa,
+	effects, _, strategyAfter, squadsAfter, err := bridgeExpectedEffects(rwa,
 		Decision{Action: VoltrAllocateToSquads, AmountRaw: 4}, 10, 7, 3,
 	)
 	if err != nil || strategyAfter != 7 || squadsAfter != 7 || len(effects.Accounts) != 3 {
@@ -75,7 +75,7 @@ func TestBridgeExpectedEffectsAreExactAndConserved(t *testing.T) {
 	if effects.Accounts[0].AfterRaw != 6 || effects.Accounts[1].AfterRaw != 7 || effects.Accounts[2].AfterRaw != 7 {
 		t.Fatal("allocation effect graph drifted")
 	}
-	if _, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: VoltrRestoreIdle, AmountRaw: 8}, 10, 7, 3); err == nil {
+	if _, _, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: VoltrRestoreIdle, AmountRaw: 8}, 10, 7, 3); err == nil {
 		t.Fatal("bridge observer accepted an underfunded restore")
 	}
 }

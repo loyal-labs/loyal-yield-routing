@@ -84,7 +84,7 @@ func (p lanePricer) setupMicros(ctx context.Context, route RuntimeRoute, blockha
 }
 
 type lanePrices struct {
-	collateral, debt, usdc           [16]byte
+	collateral, debt, usdc           kamino.ScaledFraction
 	collateralDecimals, debtDecimals uint8
 	debtBorrowFeeSF                  uint64
 }
@@ -122,7 +122,7 @@ func (p lanePrices) debtMicros(raw uint64) (int64, error) {
 	return centralValue(raw, p.debtDecimals, p.debt, p.usdc)
 }
 
-func centralValue(raw uint64, decimals uint8, price, usdc [16]byte) (int64, error) {
+func centralValue(raw uint64, decimals uint8, price, usdc kamino.ScaledFraction) (int64, error) {
 	if raw == 0 {
 		return 0, nil
 	}
@@ -284,7 +284,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		return q, err
 	}
 	equity = min(equity, capacity)
-	if equity == 0 || hardLTVBPS(position.LiquidationThresholdBPS, position.MaxLTVBPS) <= laneCeilingLTVBPS(route.Lane) {
+	if equity == 0 || hardLTVBPS(position.LiquidationThresholdBPS, position.MaxLTVBPS()) <= laneCeilingLTVBPS(route.Lane) {
 		return q, budgetHold("selector_destination_capacity_unavailable")
 	}
 	q.EquityRaw = int64(equity)
@@ -527,8 +527,8 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 		if err != nil {
 			return false
 		}
-		proceeds, errProceeds := capacityBorrowCentralValue(s, raw, false)
-		liability, errDebt := capacityBorrowCentralValue(s, raw+fee, true)
+		proceeds, errProceeds := capacityBorrowExpectedUSDC(s, raw, false)
+		liability, errDebt := capacityBorrowExpectedUSDC(s, raw+fee, true)
 		keepAPR, errKeep := math.Log1p(m.CurrentBorrowAPY), error(nil)
 		if taken > 0 {
 			keepAPR, errKeep = projectedBorrowAPR(m, rateDebt)

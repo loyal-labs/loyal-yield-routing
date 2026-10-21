@@ -15,7 +15,7 @@ func laneSupportsSwap(lane string, action Action) bool {
 		return false
 	}
 	if catalogJupiterRoute(lane) {
-		_, _, err := catalogEdge(action, lane)
+		_, err := catalogEdge(action, lane)
 		return err == nil
 	}
 	return basicLane(lane) && basicSwapAction(action)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 const (
@@ -78,15 +79,15 @@ func recentSlotMillis(ctx context.Context, c *chain.Client) (float64, error) {
 // must bind the mint/program/decimals and reserve/oracle account hashes to its
 // coherent chain read. Upper and lower prices share the oracle quote unit.
 type BudgetPrice struct {
-	Source           string   `json:"source"`
-	Mint             string   `json:"mint"`
-	TokenProgram     string   `json:"tokenProgram"`
-	Decimals         uint8    `json:"decimals"`
-	TokenUpperSF     [16]byte `json:"tokenUpperSf"`
-	USDCLowerSF      [16]byte `json:"usdcLowerSf"`
-	ObservedSlot     int64    `json:"observedSlot"`
-	ValidThroughSlot int64    `json:"validThroughSlot"`
-	EvidenceSHA256   string   `json:"evidenceSha256"`
+	Source           string                `json:"source"`
+	Mint             string                `json:"mint"`
+	TokenProgram     string                `json:"tokenProgram"`
+	Decimals         uint8                 `json:"decimals"`
+	TokenUpperSF     kamino.ScaledFraction `json:"tokenUpperSf"`
+	USDCLowerSF      kamino.ScaledFraction `json:"usdcLowerSf"`
+	ObservedSlot     int64                 `json:"observedSlot"`
+	ValidThroughSlot int64                 `json:"validThroughSlot"`
+	EvidenceSHA256   string                `json:"evidenceSha256"`
 }
 
 func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (int64, error) {
@@ -102,8 +103,8 @@ func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (i
 
 const nativeSOLBudgetAsset = "native:SOL"
 
-func UpperPriceMargin(price [16]byte, marginBPS uint16) ([16]byte, error) {
-	var out [16]byte
+func UpperPriceMargin(price kamino.ScaledFraction, marginBPS uint16) (kamino.ScaledFraction, error) {
+	var out kamino.ScaledFraction
 	value := littleInt(price[:])
 	if value.Sign() <= 0 {
 		return out, budgetHold("invalid_usdc_valuation")
@@ -121,8 +122,8 @@ func UpperPriceMargin(price [16]byte, marginBPS uint16) ([16]byte, error) {
 	return out, nil
 }
 
-func lowerPriceMargin(price [16]byte, marginBPS uint16) ([16]byte, error) {
-	var out [16]byte
+func lowerPriceMargin(price kamino.ScaledFraction, marginBPS uint16) (kamino.ScaledFraction, error) {
+	var out kamino.ScaledFraction
 	if marginBPS >= 10_000 {
 		return out, budgetHold("invalid_usdc_valuation")
 	}

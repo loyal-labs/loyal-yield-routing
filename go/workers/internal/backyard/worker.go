@@ -446,8 +446,8 @@ func (w *Worker) requestTick() {
 
 // notifySelectorCommit requests another serialized tick; never execute a
 // transaction from the collector.
-func (w *Worker) notifySelectorCommit(action string) {
-	if selectorEntersOrRotates(SelectorResult{Action: action}) {
+func (w *Worker) notifySelectorCommit(action SelectorAction) {
+	if action.entersOrRotates() {
 		w.requestTick()
 	}
 }

@@ -51,7 +51,7 @@ func TestPairCapacityIsDepositRoomAndFailsClosedOnUnknownEvidence(t *testing.T) 
 	route, accounts, _ := pairCapacityFixture(t)
 	position := leverageTestPosition(0, 0)
 	binary.LittleEndian.PutUint64(accountAt(accounts, budgetClockAddress).Data[:8], 77)
-	if got, err := kaminoPairEntryCapacity(position, nil, route); err == nil || got != 0 {
+	if got, err := kaminoPairEntryCapacityDebtRaw(position, nil, route); err == nil || got != 0 {
 		t.Fatal("unknown borrowing evidence became capacity", got, err)
 	}
 	collateral, err := decodeKaminoReserve(accounts[0], route.Kamino.CollateralMint, route.Kamino)
@@ -63,16 +63,16 @@ func TestPairCapacityIsDepositRoomAndFailsClosedOnUnknownEvidence(t *testing.T) 
 		t.Fatal(err)
 	}
 	binary.LittleEndian.PutUint64(accounts[0].Data[kaminoReserveConfigOffset+160:], deposited+10_000)
-	got, err := kaminoPairEntryCapacity(position, accounts, route)
+	got, err := kaminoPairEntryCapacityDebtRaw(position, accounts, route)
 	if err != nil || got != 9_900 {
 		t.Fatal("deposit room is not the entry ceiling", got, err)
 	}
 	binary.LittleEndian.PutUint64(accounts[1].Data[kaminoOutsideBorrowLimitOffset:], 0)
-	if closedDebt, err := kaminoPairEntryCapacity(position, accounts, route); err != nil || closedDebt != got {
+	if closedDebt, err := kaminoPairEntryCapacityDebtRaw(position, accounts, route); err != nil || closedDebt != got {
 		t.Fatal("closed debt room changed entry equity", closedDebt, err)
 	}
 	binary.LittleEndian.PutUint64(accounts[0].Data[kaminoReserveConfigOffset+160:], deposited)
-	if full, err := kaminoPairEntryCapacity(position, accounts, route); err != nil || full != 0 {
+	if full, err := kaminoPairEntryCapacityDebtRaw(position, accounts, route); err != nil || full != 0 {
 		t.Fatal("full deposit limit still advertised capacity", full, err)
 	}
 }

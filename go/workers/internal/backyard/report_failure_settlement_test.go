@@ -17,7 +17,7 @@ func failureSettlementFixture(t *testing.T) (finalizedFailureReceipt, []byte, pu
 	if err != nil {
 		t.Fatal(err)
 	}
-	effects, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: ReportNAV}, 1214944, 0, 0)
+	effects, _, _, _, err := bridgeExpectedEffects(rwa, Decision{Action: ReportNAV}, 1214944, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

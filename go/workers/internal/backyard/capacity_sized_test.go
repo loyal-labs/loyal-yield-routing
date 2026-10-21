@@ -21,12 +21,12 @@ func TestCapacitySizedEntryRetainsCollateralRoom(t *testing.T) {
 		binary.LittleEndian.PutUint64(a.Data[kaminoOutsideBorrowLimitOffset:], 200_000_000_000)
 	}
 	binary.LittleEndian.PutUint64(accounts[1].Data[224:], 10_000_000_000)
-	got, err := kaminoPairEntryCapacity(position, accounts, route)
+	got, err := kaminoPairEntryCapacityDebtRaw(position, accounts, route)
 	if err != nil || got < 100_000_000_000 {
 		t.Fatalf("equity clipped by borrowing: %d %v", got, err)
 	}
 	binary.LittleEndian.PutUint64(accounts[1].Data[224:], 0)
-	zero, err := kaminoPairEntryCapacity(position, accounts, route)
+	zero, err := kaminoPairEntryCapacityDebtRaw(position, accounts, route)
 	if err != nil || zero != got {
 		t.Fatalf("zero debt room changed equity: %d %v", zero, err)
 	}

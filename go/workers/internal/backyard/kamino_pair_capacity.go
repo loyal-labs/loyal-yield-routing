@@ -8,15 +8,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// kaminoPairEntryCapacity is an active registry lane's entry equity ceiling:
-// the collateral reserve's deposit room (B2: collateral equity is retained
-// independently of debt room, which bounds only the borrow), after the
-// borrowing evidence itself validates — unknown is not a zero loan.
-//
-// The returned equity is DEBT-denominated raw units. That equals USDC equity
-// only when the debt mint is bridgeUSDC — same decimals never imply price
-// parity.
-func kaminoPairEntryCapacity(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
+func kaminoPairEntryCapacityDebtRaw(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	if !earnActiveLane(route.Lane) {
 		return 0, fmt.Errorf("pair_capacity_lane_unreviewed")
 	}

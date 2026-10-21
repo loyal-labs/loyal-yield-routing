@@ -21,15 +21,15 @@ func TestCatalogJupiterInstructionsBuildThroughInstalledEdges(t *testing.T) {
 	seen := map[string]bool{}
 	for _, lane := range []string{ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {
 		for _, action := range []Action{SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep} {
-			conversions, leg, err := catalogEdge(action, lane)
+			edge, err := catalogEdge(action, lane)
 			if err != nil {
 				t.Fatal(err)
 			}
-			key := conversions[leg].from + "->" + conversions[leg].to
+			key := edge.conversion().from + "->" + edge.conversion().to
 			seen[key] = true
 			t.Run(lane+"/"+key, func(t *testing.T) {
 				request := fixtureSwapRequest(t, lane, action)
-				if _, index, err := jupiterPolicyLeg(rwa, lane, action); err != nil || index != leg {
+				if _, index, err := jupiterPolicyLeg(rwa, lane, action); err != nil || index != edge.leg {
 					t.Fatal("policy selector drift", err)
 				}
 				message := compileTestSwap(t, request)

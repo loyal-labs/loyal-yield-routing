@@ -115,7 +115,7 @@ func TestSelectorWakeWaitsForActiveTickAndCoalesces(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first tick absent")
 	}
-	for _, action := range []string{"ENTER", "CANARY_ENTER", "SWITCH"} {
+	for _, action := range []SelectorAction{"ENTER", "CANARY_ENTER", "SWITCH"} {
 		w.notifySelectorCommit(action)
 	}
 	if calls.Load() != 1 || len(w.wake) != 1 {

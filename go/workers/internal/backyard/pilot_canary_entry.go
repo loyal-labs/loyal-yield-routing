@@ -68,7 +68,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	if err := request.validate(input.Now); err != nil {
 		return result, nil, err
 	}
-	result.Action, result.Reason, result.DestinationLane, result.SelectedQuote = "KEEP", "operator_canary_waiting", "", nil
+	result.Action, result.Reason, result.DestinationLane, result.SelectedQuote = SelectorKeep, "operator_canary_waiting", "", nil
 	result.SourceLane, result.SourceRelease = input.Snapshot.RouteLane, nil
 	if prior, exists := history[request.ID]; exists && prior.Request != *request {
 		return result, nil, budgetHold(pilotCanaryRequestIDReused)
@@ -95,7 +95,7 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	if err != nil || chosen == nil {
 		return result, nil, err
 	}
-	result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ENTER", "operator_acceptance_not_economic_recommendation", request.Lane, request.EquityRaw, chosen
+	result.Action, result.Reason, result.DestinationLane, result.EquityRaw, result.SelectedQuote = SelectorCanaryEnter, "operator_acceptance_not_economic_recommendation", request.Lane, request.EquityRaw, chosen
 	return result, &pilotCanaryEntryReceipt{Request: *request, AcceptedAt: input.Now, QuoteEvidenceID: chosen.EvidenceID}, nil
 }
 
@@ -123,7 +123,7 @@ func selectPilotCanaryRotation(input SelectorInput, result SelectorResult, histo
 		receipt = prior
 	}
 	receipt.QuoteEvidenceID = chosen.EvidenceID
-	result.Action, result.Reason, result.SourceLane, result.DestinationLane, result.EquityRaw, result.SelectedQuote = "CANARY_ROTATE", "operator_acceptance_not_economic_recommendation", request.SourceLane, request.Lane, request.EquityRaw, chosen
+	result.Action, result.Reason, result.SourceLane, result.DestinationLane, result.EquityRaw, result.SelectedQuote = SelectorCanaryRotate, "operator_acceptance_not_economic_recommendation", request.SourceLane, request.Lane, request.EquityRaw, chosen
 	result.SourceRelease = receipt.SourceRelease
 	return result, &receipt, nil
 }
