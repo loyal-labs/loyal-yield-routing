@@ -15,11 +15,9 @@ func TestCapturePublicationLockOrdersSequenceBeforeCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(context.Background())
-	// Hold exactly the production transaction's two publication locks, before
-	// allocating a sequence ID. This first transaction models a writer paused
-	// immediately before commit; the second is the actual Handler.persist path.
-	if _, err := tx.Exec(ctx, `LOCK TABLE loyal_prod.balance_sweep_wallet_ata_observation_dedupe,
-loyal_prod.balance_sweep_wallet_ata_observations IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+	// This first transaction models a writer paused immediately before commit;
+	// the second is the actual Handler.persist path.
+	if err := lockCaptureStream(ctx, tx, "loyal_prod"); err != nil {
 		t.Fatal(err)
 	}
 	var firstID int64
