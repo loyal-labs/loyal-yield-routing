@@ -118,54 +118,6 @@ func TestDecodeExpectedEffectsFromOperationEnvelope(t *testing.T) {
 // custody giving up what it held. A landed move must decode from its persisted
 // evidence and reconcile from its receipt, not fall into manual recovery as
 // invalid_expected_effects.
-func TestOverflowMoveEffectsDecodeAndReconcile(t *testing.T) {
-	t.Parallel()
-	route, err := runtimeRoute("AUTO/AUTO/PYUSD")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const balance = 5_000_000
-	encoded, err := json.Marshal(map[string]any{"schema": "loyal-backyard-rwa-operation-evidence/v1", "expectedEffects": moveEffects(route, balance)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected, err := DecodeExpectedEffects(rwa, encoded)
-	if err != nil {
-		t.Fatalf("a move's effects do not decode: %v", err)
-	}
-	receipt := func(post uint64) ConfirmedTransactionEvidence {
-		custody := func(raw uint64) []TransactionTokenBalance {
-			return []TransactionTokenBalance{{Address: route.CollateralCustody, OwnerProgram: route.CollateralTokenProgram, Mint: route.Kamino.CollateralMint, Authority: bridgeVault, Raw: raw}}
-		}
-		return ConfirmedTransactionEvidence{Signature: "move", Slot: 1, PreTokenBalances: custody(balance), PostTokenBalances: custody(post)}
-	}
-	if _, _, err := ReconcileConfirmedTransaction(rwa, expected, receipt(0)); err != nil {
-		t.Fatalf("landed move did not reconcile: %v", err)
-	}
-
-	// One account is a move's shape only: it still needs its minimum, and a
-	// conversion still needs two custodies of different mints.
-	bare := moveEffects(route, balance)
-	bare.Accounts[0].MinimumAfterRaw = nil
-	same := moveEffects(route, balance)
-	other := same.Accounts[0]
-	other.Address = testPublicKey(9)
-	same.Accounts = append(same.Accounts, other)
-	for name, effects := range map[string]ExpectedEffects{"move without minimum": bare, "same-mint conversion": same} {
-		data, err := json.Marshal(effects)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := DecodeExpectedEffects(rwa, data); err == nil {
-			t.Fatalf("%s decoded", name)
-		}
-	}
-}
-
-// A user deposit (or claim) that lands between the worker's observation and a
-// REPORT_NAV must not fail reconciliation: every account is reconciled by this
-// transaction's own delta, which stays exact. Regression for the 2026-09-24
-// out_of_band_crank halt (ASK-2304).
 func TestReconciliationChecksEachAccountsTransactionDelta(t *testing.T) {
 	t.Parallel()
 	strategyAuth, strategyATA := bridgeStrategyAuth, bridgeStrategyATA

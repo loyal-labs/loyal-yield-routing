@@ -615,7 +615,8 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		return d(DeleverRouteStep, exitWithdrawReason, stepDownMarker), true
 	}
 	if t.ReleaseRaw > 0 {
-		if partialWithdrawalReleaseReceipts(s, t.ReleaseRaw) <= 0 {
+		equity := laneEquityRaw(s)
+		if equity <= 0 || t.ReleaseRaw*10_000 >= equity*partialWithdrawalFullExitBPS || partialWithdrawalReleaseReceipts(s, t.ReleaseRaw) <= 0 {
 			return d(Hold, holdNoRoom, 0), true
 		}
 		return d(DeleverRouteStep, releaseReason, t.ReleaseRaw), true
