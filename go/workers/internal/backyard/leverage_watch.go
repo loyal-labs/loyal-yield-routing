@@ -10,11 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-// leverageSpread is token yield minus the borrow APY at the utilization the
-// lane's hypothetical debt would reach at that level. Current raw source debt
-// is already included in observed utilization. The hypothetical debt begins as
-// USDC value and becomes raw debt units at the lane's own verified reserve
-// prices (DebtRawPerUSDCRaw); a lane without that price omits the column.
 func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source *Snapshot) (float64, bool) {
 	debt, ok := levelDebtRaw(m, level, equityRaw)
 	if !ok {

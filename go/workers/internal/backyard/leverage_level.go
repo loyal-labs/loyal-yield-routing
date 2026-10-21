@@ -2,22 +2,20 @@ package backyard
 
 import "math"
 
-// leverageRung is one level of the ladder and the spread rule at it: an up
-// move to level needs the spread at the step's own borrow (token yield minus
-// the borrow APY once the step is borrowed) at or above up; a lane at level
-// steps down one level when its current spread falls under down.
+type apyFraction float64
+
 type leverageRung struct {
-	level, up, down float64
+	level               float64
+	enterAt, leaveBelow apyFraction
 }
 
-// leverageLadder is the one list of levels, in APY points (0.01 = 1 pt).
 var leverageLadder = [...]leverageRung{
 	{level: 1},
-	{level: 1.5, up: 0.01, down: 0},
-	{level: 1.75, up: 0.02, down: 0.01},
-	{level: 2, up: 0.025, down: 0.015},
-	{level: 2.5, up: 0.025, down: 0.015},
-	{level: 3, up: 0.025, down: 0.015},
+	{level: 1.5, enterAt: 0.01, leaveBelow: 0},
+	{level: 1.75, enterAt: 0.02, leaveBelow: 0.01},
+	{level: 2, enterAt: 0.025, leaveBelow: 0.015},
+	{level: 2.5, enterAt: 0.025, leaveBelow: 0.015},
+	{level: 3, enterAt: 0.025, leaveBelow: 0.015},
 }
 
 var firstLeveredLevel = leverageLadder[1].level
@@ -83,12 +81,12 @@ func nextLeverageLevel(current, maxLevel float64, spreadAt func(float64) (float6
 		return current
 	}
 	if i+1 < len(leverageLadder) && leverageLadder[i+1].level <= maxLevel {
-		if spread, known := spreadAt(leverageLadder[i+1].level); known && spread >= leverageLadder[i+1].up {
+		if spread, known := spreadAt(leverageLadder[i+1].level); known && apyFraction(spread) >= leverageLadder[i+1].enterAt {
 			return leverageLadder[i+1].level
 		}
 	}
 	if i > 0 {
-		if spread, known := spreadAt(current); known && spread < leverageLadder[i].down {
+		if spread, known := spreadAt(current); known && apyFraction(spread) < leverageLadder[i].leaveBelow {
 			return leverageLadder[i-1].level
 		}
 	}
@@ -96,7 +94,7 @@ func nextLeverageLevel(current, maxLevel float64, spreadAt func(float64) (float6
 }
 
 func leverageBorrowSpread(m LaneEconomics, debtRaw float64) (float64, bool) {
-	apr, err := projectedBorrowAPR(m, debtRaw)
+	apr, err := projectedBorrowAPR(m, debtMintRaw(debtRaw))
 	if err != nil || !finite(apr) {
 		return 0, false
 	}
@@ -110,10 +108,9 @@ func leverageUpAllowed(m LaneEconomics, level, debtRaw float64) (float64, bool) 
 		return 0, false
 	}
 	spread, ok := leverageBorrowSpread(m, debtRaw)
-	return spread, ok && spread >= leverageLadder[i].up
+	return spread, ok && apyFraction(spread) >= leverageLadder[i].enterAt
 }
 
-// settledLevel is the level a lane at from settles at: rungs climbed while debtTo reaches them, the spread rule holds at that debt and pays accepts the step.
 func settledLevel(m LaneEconomics, from float64, debtTo func(level float64) (float64, bool), pays func(level, debt float64) bool) float64 {
 	level := from
 	for _, r := range leverageLadder[1:] {

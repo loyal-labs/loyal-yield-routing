@@ -9,12 +9,10 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// leverage marks a lane below its target, the only watches the leverage
-// reaction time is measured on.
 type roomWatch struct {
-	lane     string
-	route    RuntimeRoute
-	leverage bool
+	lane        string
+	route       RuntimeRoute
+	belowTarget bool
 }
 
 type roomKey struct{ lane, reserve string }
@@ -26,49 +24,49 @@ func (w roomWatch) reserve() string {
 }
 
 type roomUpdate struct {
-	watch   roomWatch
-	roomRaw uint64
-	// roomUSD is the room at the reserve's own oracle price; NaN when the
-	// price is not decodable (unknown is not zero).
-	roomUSD float64
-	open    bool
-	opened  bool
-	slot    uint64
-	at      time.Time
+	watch      roomWatch
+	roomRaw    uint64
+	roomUSD    float64
+	roomPriced bool
+	open       bool
+	opened     bool
+	slot       uint64
+	at         time.Time
 }
 
-func roomOf(w roomWatch, account ConfirmedAccount, now int64) (room uint64, usd float64, open bool, ok bool) {
+func roomOf(w roomWatch, account ConfirmedAccount, now int64) (roomUpdate, bool) {
 	debt, err := decodeKaminoReserve(account, w.route.Kamino.DebtMint, w.route.Kamino)
 	if err != nil {
-		return 0, 0, false, false
+		return roomUpdate{}, false
 	}
-	room, err = kaminoDebtReserveRoom(debt, now)
+	room, err := kaminoDebtReserveRoom(debt, now)
 	if err != nil {
-		return 0, 0, false, false
+		return roomUpdate{}, false
 	}
-	return room, reserveUSD(room, debt), kaminoReceiveWithinRoom(room, debt.terms.BorrowFeeSF) >= leverageMinimumBorrowRaw, true
+	usd, priced := reserveUSD(room, debt)
+	return roomUpdate{watch: w, roomRaw: room, roomUSD: usd, roomPriced: priced, open: kaminoReceiveWithinRoom(room, debt.terms.BorrowFeeSF) >= leverageMinimumBorrowRaw}, true
 }
 
-func reserveUSD(raw uint64, r decodedKaminoReserve) float64 {
+func reserveUSD(raw uint64, r decodedKaminoReserve) (float64, bool) {
 	price := littleInt(r.terms.MarketPriceSF[:])
 	if price.Sign() <= 0 {
-		return math.NaN()
+		return 0, false
 	}
 	v, _ := new(big.Rat).SetFrac(new(big.Int).Mul(new(big.Int).SetUint64(raw), price), new(big.Int).Lsh(big.NewInt(1), kamino.FractionBits)).Float64()
-	return v / math.Pow10(int(r.mintDecimals))
+	return v / math.Pow10(int(r.mintDecimals)), true
 }
 
 func leverageRoomWatches(o Observation) []roomWatch {
 	var out []roomWatch
 	index := map[roomKey]int{}
-	add := func(lane string, leverage bool) {
+	add := func(lane string, belowTarget bool) {
 		l, ok := findEarnLane(lane)
 		if !ok || l.exitOnly {
 			return
 		}
-		w := roomWatch{lane: lane, route: l.route, leverage: leverage}
+		w := roomWatch{lane: lane, route: l.route, belowTarget: belowTarget}
 		if i, seen := index[w.key()]; seen {
-			out[i].leverage = out[i].leverage || leverage
+			out[i].belowTarget = out[i].belowTarget || belowTarget
 			return
 		}
 		index[w.key()] = len(out)
@@ -122,13 +120,11 @@ type roomSet struct {
 	on      func(roomUpdate)
 }
 
-// WatchRoom replaces vault's room watches. on runs under the view lock so
-// registrations land in order with stream writes: it must not block or read
-// the view.
 func (v *View) WatchRoom(vault *Vault, watches []roomWatch, on func(roomUpdate)) {
 	if v == nil {
 		return
 	}
+	defer v.flushRooms()
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	set := &roomSet{watches: map[string][]roomWatch{}, open: map[roomKey]bool{}, on: on}
@@ -141,7 +137,7 @@ func (v *View) WatchRoom(vault *Vault, watches []roomWatch, on func(roomUpdate))
 	}
 	for reserve, ws := range set.watches {
 		if held, ok := v.accounts[reserve]; ok {
-			v.deliverRoomLocked(set, ws, held, false)
+			v.queueRoomLocked(set, ws, held, false)
 		}
 	}
 }
@@ -150,17 +146,35 @@ func (v *View) clockUnix() int64 {
 	return clockUnixTimestamp([]ConfirmedAccount{v.accounts[budgetClockAddress].ConfirmedAccount})
 }
 
-func (v *View) deliverRoomLocked(set *roomSet, ws []roomWatch, write viewAccount, edges bool) {
+type roomDelivery struct {
+	on     func(roomUpdate)
+	update roomUpdate
+}
+
+func (v *View) queueRoomLocked(set *roomSet, ws []roomWatch, write viewAccount, edges bool) {
 	now := v.clockUnix()
 	for _, w := range ws {
-		room, usd, open, ok := roomOf(w, write.ConfirmedAccount, now)
+		u, ok := roomOf(w, write.ConfirmedAccount, now)
 		if !ok {
 			continue
 		}
-		opened := edges && w.leverage && open && !set.open[w.key()]
-		set.open[w.key()] = open
+		u.opened = edges && w.belowTarget && u.open && !set.open[w.key()]
+		set.open[w.key()] = u.open
 		if set.on != nil {
-			set.on(roomUpdate{watch: w, roomRaw: room, roomUSD: usd, open: open, opened: opened, slot: write.slot, at: v.now()})
+			u.slot, u.at = write.slot, v.now()
+			v.roomOut = append(v.roomOut, roomDelivery{set.on, u})
 		}
+	}
+}
+
+func (v *View) flushRooms() {
+	v.delivering.Lock()
+	defer v.delivering.Unlock()
+	v.mu.Lock()
+	out := v.roomOut
+	v.roomOut = nil
+	v.mu.Unlock()
+	for _, d := range out {
+		d.on(d.update)
 	}
 }

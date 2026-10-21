@@ -7,8 +7,6 @@ import (
 	"sort"
 )
 
-// Why, in detail, goes in the hold's Details ("cause", "simulation") and the
-// log line, never in the reason.
 type HoldReason string
 
 const (

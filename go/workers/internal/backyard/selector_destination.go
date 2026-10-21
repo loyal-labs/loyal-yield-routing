@@ -10,10 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// A token-loop quote cannot silently assume manual farm setup.
-// An absent obligation has no registration yet: the lane's initializer
-// creates the obligation and registers it with these farms in one
-// transaction (compileKaminoInitializationMessage).
 func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAccount) error {
 	obligationPresent := accountAt(accounts, route.Kamino.Obligation).Lamports != 0
 	for _, pair := range [][2]string{{route.CollateralFarm, route.ObligationCollateralFarm}, {route.DebtFarm, route.ObligationDebtFarm}} {
@@ -145,10 +141,8 @@ func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64,
 	return collateralCustody, nil
 }
 
-// unleveredEntryCapacityDebtRaw bounds a B2 1x destination entry by the
-// collateral reserve's remaining deposit limit, valued in debt-mint units
-// (floored, less 1%) so the caller's existing debt-price conversion applies
-// unchanged. No borrow capacity is involved.
+const unleveredDepositHaircutPercent = 1
+
 func unleveredEntryCapacityDebtRaw(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
 	if err != nil || collateral.totalLiquiditySF == nil || collateral.terms.DepositLimit == 0 {
@@ -162,7 +156,7 @@ func unleveredEntryCapacityDebtRaw(position KaminoPosition, accounts []Confirmed
 	if err != nil {
 		return 0, err
 	}
-	return min(room/100*99, math.MaxInt64), nil
+	return min(room/100*(100-unleveredDepositHaircutPercent), math.MaxInt64), nil
 }
 
 // payoffReceiptsForLiquidity ceils the receipt count whose redemption at ANY

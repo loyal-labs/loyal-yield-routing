@@ -55,7 +55,7 @@ func (s OperationStatus) preBroadcast() bool {
 	return s.unsigned() || s == Signed
 }
 
-type debtMintRaw int64
+type debtCustodyRaw int64
 
 type Snapshot struct {
 	ValuationSource             string `json:",omitempty"`
@@ -71,7 +71,7 @@ type Snapshot struct {
 	CollateralIdleRaw           int64
 	CollateralIdleValueRaw      int64
 	MinimumCollateralDepositRaw int64
-	DebtIdleRaw                 debtMintRaw
+	DebtIdleRaw                 debtCustodyRaw
 	PayoffDebtRaw               int64
 	RouteLane                   string
 	StrategyKey                 string

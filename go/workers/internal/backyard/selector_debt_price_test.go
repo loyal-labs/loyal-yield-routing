@@ -32,7 +32,7 @@ func evaluatePricedQuote(t *testing.T, q MoveQuote, m LaneEconomics) pricedRun {
 	if blocked != nil {
 		t.Fatal(blocked)
 	}
-	out.raw, out.debt, out.proceeds = uint64(e.DebtRaw), uint64(e.Debt), uint64(e.Proceeds)
+	out.raw, out.debt, out.proceeds = uint64(e.DebtRaw), uint64(e.DebtUSDC), uint64(e.Proceeds)
 	out.apr, out.gain = e.APR, e.Gain
 	return out
 }
@@ -49,12 +49,12 @@ func TestOffPegDebtKeepsReserveAPRAndMovesUSDCEconomics(t *testing.T) {
 	}
 	// Interpolated by hand: 2,500 bps utilization between the 2,000 and 4,000
 	// points.
-	u := float64(base.raw) / m.DebtSupplyRaw * 10_000
+	u := float64(base.raw) / float64(m.DebtSupplyRaw) * 10_000
 	wantAPR := (800 + (3000-800)*(u-2000)/(4000-2000)) / 10_000.0
 	if base.apr != wantAPR || repriced.apr != wantAPR {
 		t.Fatalf("APR=%v/%v want raw-unit %v", base.apr, repriced.apr, wantAPR)
 	}
-	if buggy, err := projectedBorrowAPR(m, float64(repriced.debt)); err != nil || buggy == wantAPR {
+	if buggy, err := projectedBorrowAPR(m, debtMintRaw(repriced.debt)); err != nil || buggy == wantAPR {
 		t.Fatalf("fixture insensitive to a USDC-valued APR: buggy=%v err=%v", buggy, err)
 	}
 	if repriced.debt <= base.debt || repriced.proceeds <= base.proceeds || base.debt != 500_000_000 || base.proceeds != 499_000_000 {

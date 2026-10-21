@@ -150,7 +150,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		op := broadcastOperation(id, routeKey)
 		status, reason, _, err := advance(t, ctx, op, finalizedFailure,
 			transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 9}}}, "logMessages": []string{}}))
-		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason || err != nil {
+		if status != "manual_recovery" || reason != unprovenRollbackRecoveryReason || err != nil {
 			t.Fatalf("truncated failure logs lost the capital stop: %s %q %v", status, reason, err)
 		}
 		otherRoute, otherID := newBroadcastOperation(t, "voltr")
@@ -158,7 +158,7 @@ func TestReportFailureLifecycleAgainstDatabase(t *testing.T) {
 		otherReceipt := transactionResult(t, 500, nil, map[string]any{"err": map[string]any{"InstructionError": []any{0, map[string]any{"Custom": 6004}}},
 			"logMessages": adaptorFailureLogs(voltr.ProgramID.String(), 6004)})
 		status, reason, _, err = advance(t, ctx, other, finalizedFailure, otherReceipt)
-		if status != "manual_recovery" || reason != unclassifiedTransactionErrReason || err != nil {
+		if status != "manual_recovery" || reason != unprovenRollbackRecoveryReason || err != nil {
 			t.Fatalf("a non-adaptor error lost the capital stop: %s %q %v", status, reason, err)
 		}
 	})

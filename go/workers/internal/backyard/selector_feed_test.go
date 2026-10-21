@@ -98,7 +98,7 @@ func TestReserveFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	}
 	rows := map[string]reserveEconomics{c.Reserve: c, d.Reserve: d}
 	got := combineEconomics([]RuntimeRoute{r}, rows, native, nil, now, DefaultSelectorPolicy())
-	if len(got) != 1 || got[0].EntryCapacity.Known || got[0].DebtSupplyRaw != supply || got[0].DebtBorrowRaw != borrow {
+	if len(got) != 1 || got[0].EntryCapacity.Known || float64(got[0].DebtSupplyRaw) != supply || float64(got[0].DebtBorrowRaw) != borrow {
 		t.Fatalf("feed: %+v", got)
 	}
 	curveAPR := (364.0*5000/9000 + f.HostBorrowBPS) / 10_000 // 50% utilization
@@ -204,7 +204,7 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	rows[collateral.Reserve] = collateral
 	rows[debt.Reserve] = debt
 	got := combineEconomics([]RuntimeRoute{auto}, rows, native, nil, now, DefaultSelectorPolicy())
-	if len(got) != 1 || got[0].Lane != autoAUTOPYUSD.Lane || got[0].DebtBorrowRaw != borrow || got[0].DebtSupplyRaw != supply || got[0].HostBorrowBPS != host {
+	if len(got) != 1 || got[0].Lane != autoAUTOPYUSD.Lane || float64(got[0].DebtBorrowRaw) != borrow || float64(got[0].DebtSupplyRaw) != supply || got[0].HostBorrowBPS != host {
 		t.Fatalf("candidate route economics not produced from complete evidence: %+v", got)
 	}
 	// The exit-only Ethena lane is never scored, even from complete evidence.

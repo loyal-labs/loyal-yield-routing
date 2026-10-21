@@ -51,8 +51,6 @@ func decodeObservedReportTicket(v *Vault, account ConfirmedAccount) (observedRep
 	return observedReportTicket{LastConsumedSequence: lastConsumed, Armed: armed}, nil
 }
 
-// ticketedBridgeInstructions is the bridge action's inner instructions and
-// the leg each executes under.
 func ticketedBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compiledInstruction, []byte, error) {
 	capital, err := bridgeInstruction(v, request)
 	if err != nil {

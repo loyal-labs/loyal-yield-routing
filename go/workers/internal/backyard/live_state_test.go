@@ -259,7 +259,7 @@ func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
 			if view.StrategyNAVRaw != s.StrategyNAVRaw || grew > residue+slack || grew+slack < residue {
 				t.Fatalf("residue %d: %s NAV grew %d", residue, view.RouteLane, grew)
 			}
-			if want := map[bool]debtMintRaw{true: debtMintRaw(residue), false: 0}[view.RouteLane == autoAUTOPYUSD.Lane]; view.DebtIdleRaw != want {
+			if want := map[bool]debtCustodyRaw{true: debtCustodyRaw(residue), false: 0}[view.RouteLane == autoAUTOPYUSD.Lane]; view.DebtIdleRaw != want {
 				t.Fatalf("%s reads PYUSD custody %d", view.RouteLane, view.DebtIdleRaw)
 			}
 		}

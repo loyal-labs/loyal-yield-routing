@@ -110,7 +110,6 @@ func (w *Worker) publishWithdrawalHealth(ctx context.Context, o Observation, dec
 	defer cancel()
 	if o.Validate() != nil {
 		manualStopHasNoLiveWorkToDelay := decision.Action == HoldManualRecovery
-		// Never add network observation to signed-wire polling or failed execution reads.
 		if !manualStopHasNoLiveWorkToDelay || w.runtime.observeWithdrawalHealth == nil {
 			return
 		}

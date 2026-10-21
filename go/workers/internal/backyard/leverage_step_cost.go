@@ -10,22 +10,12 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-// leverageStepCost is the expected cost of one leverage up step at the
-// batch's central prices: what the vault's capital loses by
-// taking the step (lanePricer.priceStep). Execution bounds (the conversion's
-// minimum output) stay on the step itself; none of them is a cost.
-//
-// The step is eventually repaid, so its unwind is charged at entry: release
-// the increment's collateral, sell it back to debt, repay. An up step that
-// only pays for its way in would look profitable while the level it buys is
-// never left for free, and the spread rule's down moves sell exactly this
-// increment.
 type leverageStepCost struct {
-	BorrowFeeMicros     usdMicros `json:"borrowFeeMicros"`
-	EntrySwapCostMicros usdMicros `json:"entrySwapLossMicros"`
-	ExitSwapCostMicros  usdMicros `json:"exitSwapLossMicros"`
-	NetworkMicros       usdMicros `json:"networkMicros"`
-	TotalMicros         usdMicros `json:"totalMicros"`
+	BorrowFeeMicros      usdMicros `json:"borrowFeeMicros"`
+	EntrySwapCostMicros  usdMicros `json:"entrySwapLossMicros"`
+	UnwindSwapCostMicros usdMicros `json:"exitSwapLossMicros"`
+	NetworkMicros        usdMicros `json:"networkMicros"`
+	TotalMicros          usdMicros `json:"totalMicros"`
 }
 
 type usdMicros int64
@@ -44,29 +34,23 @@ func sumMicros(values ...usdMicros) (usdMicros, error) {
 type leverageStepPricer func(borrowRaw uint64) (leverageStepCost, error)
 
 type leverageStepLegs struct {
-	BorrowFeeMicros usdMicros
-	// Entry: BorrowRaw debt in, its quoted collateral out.
-	EntryInMicros, EntryOutMicros usdMicros
-	// Exit: the entry's quoted collateral in, its quoted debt out.
-	ExitInMicros, ExitOutMicros usdMicros
-	NetworkMicros               usdMicros
+	BorrowFeeMicros                        usdMicros
+	EntryDebtMicros, EntryCollateralMicros usdMicros
+	ExitCollateralMicros, ExitDebtMicros   usdMicros
+	NetworkMicros                          usdMicros
 }
 
-// cost is the step's expected cost. Each swap's loss is signed, against
-// the batch's central price: a collateral the up step buys under its mark
-// gains there what the down step's sale loses. The round trip never costs
-// less than zero.
 func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	out := leverageStepCost{BorrowFeeMicros: l.BorrowFeeMicros, NetworkMicros: l.NetworkMicros,
-		EntrySwapCostMicros: l.EntryInMicros - l.EntryOutMicros, ExitSwapCostMicros: l.ExitInMicros - l.ExitOutMicros}
-	if l.BorrowFeeMicros < 0 || l.NetworkMicros <= 0 || l.EntryInMicros <= 0 || l.EntryOutMicros <= 0 || l.ExitInMicros <= 0 || l.ExitOutMicros <= 0 {
+		EntrySwapCostMicros: l.EntryDebtMicros - l.EntryCollateralMicros, UnwindSwapCostMicros: l.ExitCollateralMicros - l.ExitDebtMicros}
+	if l.BorrowFeeMicros < 0 || l.NetworkMicros <= 0 || l.EntryDebtMicros <= 0 || l.EntryCollateralMicros <= 0 || l.ExitCollateralMicros <= 0 || l.ExitDebtMicros <= 0 {
 		return out, staleHold(leverageReasonCostUnavailable)
 	}
 	fees, err := sumMicros(out.BorrowFeeMicros, out.NetworkMicros)
 	if err != nil {
 		return out, staleHoldFrom(err, leverageReasonCostUnavailable)
 	}
-	out.TotalMicros = max(fees+out.EntrySwapCostMicros+out.ExitSwapCostMicros, 0)
+	out.TotalMicros = max(fees+out.EntrySwapCostMicros+out.UnwindSwapCostMicros, 0)
 	return out, nil
 }
 
@@ -78,7 +62,7 @@ func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 	}{
 		{&out.BorrowFeeMicros, c.BorrowFeeMicros, d.BorrowFeeMicros},
 		{&out.EntrySwapCostMicros, c.EntrySwapCostMicros, d.EntrySwapCostMicros},
-		{&out.ExitSwapCostMicros, c.ExitSwapCostMicros, d.ExitSwapCostMicros},
+		{&out.UnwindSwapCostMicros, c.UnwindSwapCostMicros, d.UnwindSwapCostMicros},
 		{&out.NetworkMicros, c.NetworkMicros, d.NetworkMicros},
 		{&out.TotalMicros, c.TotalMicros, d.TotalMicros},
 	} {
@@ -90,17 +74,17 @@ func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 	return out, nil
 }
 
-type costStage string
+type costStage struct{ name string }
 
-const (
-	stageInputs     costStage = "inputs"
-	stagePolicies   costStage = "policies"
-	stageEntryQuote costStage = "entry_quote"
-	stageExitQuote  costStage = "exit_quote"
-	stageStepBuild  costStage = "step_build"
-	stagePrice      costStage = "price"
-	stageNetworkFee costStage = "network_fee"
-	stageDeadline   costStage = "deadline"
+var (
+	stageInputs     = costStage{"inputs"}
+	stagePolicies   = costStage{"policies"}
+	stageEntryQuote = costStage{"entry_quote"}
+	stageExitQuote  = costStage{"exit_quote"}
+	stageStepBuild  = costStage{"step_build"}
+	stagePrice      = costStage{"price"}
+	stageNetworkFee = costStage{"network_fee"}
+	stageDeadline   = costStage{"deadline"}
 )
 
 type leverageCostOutage struct {
@@ -109,7 +93,7 @@ type leverageCostOutage struct {
 }
 
 func (e *leverageCostOutage) Error() string {
-	return leverageReasonCostUnavailable + "(" + string(e.stage) + ")"
+	return leverageReasonCostUnavailable + "(" + e.stage.name + ")"
 }
 func (e *leverageCostOutage) Unwrap() error { return e.err }
 

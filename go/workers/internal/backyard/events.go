@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
-	"math"
 	"sync"
 	"time"
 
@@ -320,7 +319,7 @@ func (e *events) roomObserved(u roomUpdate) {
 	if e == nil {
 		return
 	}
-	if e.facts != nil && !math.IsNaN(u.roomUSD) {
+	if e.facts != nil && u.roomPriced {
 		e.facts.BackyardLeverageRoom(e.vault, u.watch.lane, u.roomUSD)
 	}
 	e.mu.Lock()
@@ -330,7 +329,7 @@ func (e *events) roomObserved(u roomUpdate) {
 	}
 	lane := u.watch.lane
 	e.roomRaw[lane] = u.roomRaw
-	if !u.watch.leverage || !u.open {
+	if !u.watch.belowTarget || !u.open {
 		delete(e.roomOpenedAt, lane)
 		return
 	}

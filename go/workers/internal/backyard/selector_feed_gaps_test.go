@@ -166,7 +166,7 @@ func TestSelectorForecastCountsMoveCostOnce(t *testing.T) {
 	if blocked != nil {
 		t.Fatal(blocked)
 	}
-	if want := float64(amount-expected) + e.Proceeds - e.Debt; e.InitialNAV != want {
+	if want := float64(amount-expected) + e.Proceeds - e.DebtUSDC; e.InitialNAV != want {
 		t.Fatalf("InitialNAV %.0f, want post-move NAV %.0f", e.InitialNAV, want)
 	}
 	income := e.Gain + float64(expected)

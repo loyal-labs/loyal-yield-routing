@@ -640,7 +640,7 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.PriorReportUpdatedUnix = lastUpdated
 	snapshot.ReportSequence = int64(nav.Report.Sequence)
 	snapshot.ReportSnapshotDigest = string(nav.Report.SnapshotDigest)
-	snapshot.DebtIdleRaw = debtMintRaw(nav.Custodies.SquadsDebtRaw)
+	snapshot.DebtIdleRaw = debtCustodyRaw(nav.Custodies.SquadsDebtRaw)
 	snapshot.CollateralIdleValueRaw = int64(nav.PrimeIdleValueRaw)
 	snapshot.VoltrTotalValueRaw = int64(nav.Voltr.TotalValueRaw)
 	snapshot.VoltrReceiptCustodyTrackedRaw = int64(nav.Receipt.CustodyTrackedRaw)

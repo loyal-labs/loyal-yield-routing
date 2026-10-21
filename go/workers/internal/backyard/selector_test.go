@@ -322,7 +322,7 @@ func TestPilotSelectorForecastUsesQuotedBorrowInsteadOfLeverageAssumption(t *tes
 	// collateral (the fee is charged in the cost).
 	debt := float64(3_000_100)
 	collateral := float64(10_000_000-in.Quotes[0].CostRaw) + 3_000_000
-	apr, err := projectedBorrowAPR(in.Markets[0], debt)
+	apr, err := projectedBorrowAPR(in.Markets[0], debtMintRaw(debt))
 	if err != nil {
 		t.Fatal(err)
 	}
