@@ -42,7 +42,7 @@ func TestLoopingWithdrawRefusedByVoltrSettlesFailed(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{41}, ed25519.SeedSize))
 	delegate := publicKeyFromBytes(key.Public().(ed25519.PublicKey))
 	request := bridgeTestRequest(StageSquadsToVoltr, 25_000_000)
-	request.Report.NAVAfterRaw = 75_000_000
+	request.AdaptorConfig, request.Report.NAVAfterRaw = looping.Strategy, 75_000_000
 	message, err := compileBridgeMessageForDelegate(looping, request, delegate)
 	if err != nil {
 		t.Fatal(err)

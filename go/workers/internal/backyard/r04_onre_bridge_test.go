@@ -108,7 +108,7 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 				t.Fatal("unsupported bridge action")
 			}
 		}
-		request := BridgeBuildRequest{Action: BridgeAction(action), AmountRaw: amountRaw, Policy: testPolicyAccount(policyKey{action: action}), Report: BridgeReport{Sequence: uint64(in.Slot), ObservedSlot: uint64(in.Slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest}, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
+		request := BridgeBuildRequest{Action: BridgeAction(action), AmountRaw: amountRaw, Policy: testPolicyAccount(policyKey{action: action}), Report: BridgeReport{Sequence: uint64(in.Slot), ObservedSlot: uint64(in.Slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest}, AdaptorConfig: bridgeStrategy, Settings: backyardSettings, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99}
 		message, e := CompileBridgeMessage(request)
 		if e != nil {
 			t.Fatal(e)

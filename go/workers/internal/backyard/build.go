@@ -52,6 +52,8 @@ type BridgeBuildRequest struct {
 	AmountRaw            uint64
 	Report               BridgeReport
 	Policy               string
+	AdaptorConfig        string
+	Settings             string
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 }
@@ -101,7 +103,7 @@ const (
 )
 
 func compileBridgeMessageForDelegate(v *Vault, request BridgeBuildRequest, delegate publicKey) ([]byte, error) {
-	if request.LastValidBlockHeight <= 0 || request.Report.Sequence != request.Report.ObservedSlot {
+	if request.LastValidBlockHeight <= 0 || request.AdaptorConfig != v.Strategy || request.Settings != backyardSettings || request.Report.Sequence != request.Report.ObservedSlot {
 		return nil, fmt.Errorf("bridge config or report is not bound to confirmed state")
 	}
 	blockhash, err := decodeKey(request.RecentBlockhash)

@@ -144,6 +144,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 		Request: BridgeBuildRequest{
 			Action: BridgeAction(decision.Action), AmountRaw: uint64(decision.AmountRaw),
 			Report: nav.Report, Policy: policy,
+			AdaptorConfig: v.Strategy, Settings: backyardSettings,
 			RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,
 		},
 		ExpectedEffects: effects,
