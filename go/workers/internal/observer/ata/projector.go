@@ -12,10 +12,7 @@ import (
 )
 
 // ProjectorConfig bounds the single-threaded capture-to-Yield projection loop.
-// Stream must be production, the only capture stream (Timescale 0009 dropped
-// staging); it names the projector's Yield event namespace.
 type ProjectorConfig struct {
-	Stream       string
 	Cluster      string
 	BatchLimit   int
 	PollInterval time.Duration
@@ -44,10 +41,6 @@ func NewProjector(capture, yield *pgxpool.Pool, config ProjectorConfig) (*Projec
 	if capture == nil || yield == nil {
 		return nil, errors.New("ATA projector requires capture and Yield pools")
 	}
-	if config.Stream != "production" {
-		return nil, fmt.Errorf("unsupported ATA capture stream %q", config.Stream)
-	}
-	schema := "loyal_prod"
 	if config.Cluster != "mainnet-beta" && config.Cluster != "devnet" {
 		return nil, fmt.Errorf("unsupported ATA projection cluster %q", config.Cluster)
 	}
@@ -57,8 +50,8 @@ func NewProjector(capture, yield *pgxpool.Pool, config ProjectorConfig) (*Projec
 	if config.PollInterval <= 0 || config.PollInterval > time.Minute || config.IOTimeout <= 0 || config.IOTimeout > time.Minute {
 		return nil, errors.New("ATA projection poll interval and IO timeout must be positive and at most one minute")
 	}
-	return &Projector{capture: capture, yield: yield, schema: schema, cluster: config.Cluster,
-		consumer:   "balance_sweep_ata_projector:" + config.Stream,
+	return &Projector{capture: capture, yield: yield, schema: "loyal_prod", cluster: config.Cluster,
+		consumer:   "balance_sweep_ata_projector:production",
 		batchLimit: config.BatchLimit, pollInterval: config.PollInterval, ioTimeout: config.IOTimeout,
 		onHealth: config.OnHealth, onError: config.OnError}, nil
 }

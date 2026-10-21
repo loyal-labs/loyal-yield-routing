@@ -723,6 +723,13 @@ func drainedObligationTarget(ctx context.Context, rpc *chain.Client, update Norm
 		PlanningMetadata: metadata("earn_laserstream_drained_obligation_withdrawal", slot)}, nil
 }
 
+func ignoreUntargetedCashFlow(flow cashFlow, transaction earnTransaction, signature string) (EarnMutation, error) {
+	if flow.kind == cashWithdrawal && len(transaction.kaminoWithdrawAccounts()) > 0 {
+		return EarnMutation{}, fmt.Errorf("withdrawal cash flow %s has no provable Kamino target", signature)
+	}
+	return EarnMutation{}, nil
+}
+
 func readCashFlowProof(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, route PolicyMatchInput, setup *PolicyMatchInput, transaction earnTransaction, flow cashFlow) (EarnMutation, error) {
 	signature := *update.Signature
 	snapshot, err := readVaultSnapshot(ctx, rpc, vault, route, update.Slot)
@@ -744,13 +751,7 @@ func readCashFlowProof(ctx context.Context, rpc *chain.Client, update Normalized
 		}
 	}
 	if target == nil {
-		if flow.kind == cashWithdrawal && len(transaction.kaminoWithdrawAccounts()) > 0 {
-			return EarnMutation{}, fmt.Errorf("withdrawal cash flow %s has no provable Kamino target", signature)
-		}
-		// A wallet credit without a Kamino withdraw is an idle-vault sweep
-		// (full-exit dust return), not a reserve withdrawal: retrying can never
-		// prove a target and would block the vault's later jobs.
-		return EarnMutation{}, nil
+		return ignoreUntargetedCashFlow(flow, transaction, signature)
 	}
 	var remaining uint64
 	for _, reserve := range snapshot.reserves {

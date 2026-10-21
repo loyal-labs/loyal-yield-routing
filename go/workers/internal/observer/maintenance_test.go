@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
-	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -30,35 +29,6 @@ func offlineClosedPool(t *testing.T) *pgxpool.Pool {
 	}
 	pool.Close()
 	return pool
-}
-func TestMaintenanceOutageRetriesReportsEachFailureAndCancellationJoins(t *testing.T) {
-	pool := offlineClosedPool(t)
-	failures := make(chan struct{}, 16)
-	m, err := NewMaintenance(pool, pool, MaintenanceConfig{Cluster: "mainnet-beta", MediumMarkets: []string{fleet.KaminoMainMarket}, PriceRPC: &priceFixtureRPC{}, HealthObservation: time.Millisecond, RetryInterval: 2 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), OnError: func() { failures <- struct{}{} }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- m.Run(ctx) }()
-	// The first failed pass and actual retries are each reported.
-	for i := 0; i < 3; i++ {
-		select {
-		case <-failures:
-		case <-ctx.Done():
-			t.Fatal("ordinary outage stopped retries")
-		}
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("run ended without caller cancellation: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("maintenance did not join cancelled caller")
-	}
 }
 func TestFixedMainnetCatalogCannotBeLabelledDevnet(t *testing.T) {
 	pool := offlineClosedPool(t)

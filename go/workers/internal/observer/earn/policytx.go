@@ -16,10 +16,25 @@ import (
 
 var memoProgram = solana.MustPublicKeyFromBase58("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 
-// Memo is one Earn MAX memo instruction with its chain location
-// (outer index * 256, or group index * 256 + inner index + 1).
+type ChainLocation uint16
+
+func OuterLocation(outer int) (ChainLocation, error) {
+	if outer > 0xff {
+		return 0, errors.New("Earn MAX outer memo instruction index overflow")
+	}
+	return ChainLocation(outer * 256), nil
+}
+
+func InnerLocation(group uint32, inner int) (ChainLocation, error) {
+	value := uint64(group)*256 + uint64(inner) + 1
+	if group > 0xffff || value > 0xffff {
+		return 0, errors.New("Earn MAX memo instruction index overflow")
+	}
+	return ChainLocation(value), nil
+}
+
 type Memo struct {
-	SourceIndex uint16
+	SourceIndex ChainLocation
 	Accounts    []solana.PublicKey
 	Data        []byte
 }
@@ -74,14 +89,6 @@ func isPolicyProgram(program solana.PublicKey) bool {
 	return program == squads.ProgramID || program == subscriptionsProgram
 }
 
-func innerMemoIndex(group uint32, inner int) (uint16, error) {
-	value := uint64(group)*256 + uint64(inner) + 1
-	if group > 0xffff || value > 0xffff {
-		return 0, errors.New("Earn MAX memo instruction index overflow")
-	}
-	return uint16(value), nil
-}
-
 func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot uint64) (*PolicyTransaction, error) {
 	if len(info.GetSignature()) != 64 {
 		return nil, errors.New("LaserStream policy transaction signature")
@@ -121,8 +128,9 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 		}
 		program := table.keys[index]
 		if program == memoProgram {
-			if outer > 0xff {
-				return nil, errors.New("Earn MAX outer memo instruction index overflow")
+			location, err := OuterLocation(outer)
+			if err != nil {
+				return nil, err
 			}
 			var accounts []solana.PublicKey
 			for _, account := range compiled.GetAccounts() {
@@ -130,7 +138,7 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 					accounts = append(accounts, table.keys[account])
 				}
 			}
-			out.Memos = append(out.Memos, Memo{SourceIndex: uint16(outer) * 256, Accounts: accounts, Data: compiled.GetData()})
+			out.Memos = append(out.Memos, Memo{SourceIndex: location, Accounts: accounts, Data: compiled.GetData()})
 			continue
 		}
 		if isPolicyProgram(program) {
@@ -151,7 +159,7 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 			if program != memoProgram {
 				continue
 			}
-			source, err := innerMemoIndex(group.GetIndex(), inner)
+			source, err := InnerLocation(group.GetIndex(), inner)
 			if err != nil {
 				return nil, err
 			}
@@ -161,7 +169,7 @@ func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot
 	return out, nil
 }
 
-func memoFrom(source uint16, accounts []solana.AccountMeta, data []byte) Memo {
+func memoFrom(source ChainLocation, accounts []solana.AccountMeta, data []byte) Memo {
 	keys := make([]solana.PublicKey, 0, len(accounts))
 	for _, account := range accounts {
 		keys = append(keys, account.PublicKey)
@@ -255,7 +263,7 @@ func projectEarnMaxMemos(ctx context.Context, store *Store, logger *slog.Logger,
 	return nil
 }
 
-func (s *Store) RecordEarnMaxIntent(ctx context.Context, settings, vault string, transaction *PolicyTransaction, index uint16, intent *EarnMaxIntent) (bool, error) {
+func (s *Store) RecordEarnMaxIntent(ctx context.Context, settings, vault string, transaction *PolicyTransaction, index ChainLocation, intent *EarnMaxIntent) (bool, error) {
 	var ours bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_route_states WHERE settings = $1 AND vault = $2)`, settings, vault).Scan(&ours); err != nil || !ours {
 		return false, err
