@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"sort"
 )
 
@@ -45,9 +44,9 @@ func (h *PreSendHold) Error() string {
 	return text
 }
 
-func budgetHold(cause string) error { return holdOf(holdStale, cause, nil) }
+func staleHold(cause string) error { return holdOf(holdStale, cause, nil) }
 
-func budgetHoldFrom(err error, cause string) error { return holdOf(holdStale, cause, err) }
+func staleHoldFrom(err error, cause string) error { return holdOf(holdStale, cause, err) }
 
 func roomHold(cause string, err error) error { return holdOf(holdNoRoom, cause, err) }
 
@@ -62,19 +61,7 @@ func holdCause(h *PreSendHold) string {
 	return h.Details["simulation"]
 }
 
-// budgetSum adds non-negative micros, refusing overflow.
-func budgetSum(values ...int64) (int64, error) {
-	var total int64
-	for _, value := range values {
-		if value < 0 || total > math.MaxInt64-value {
-			return 0, budgetHold("invalid_budget_accounting")
-		}
-		total += value
-	}
-	return total, nil
-}
-
-func (d *Database) RecordBudgetHold(ctx context.Context, operationID string, hold *PreSendHold) error {
+func (d *Database) RecordPreSendHold(ctx context.Context, operationID string, hold *PreSendHold) error {
 	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == holdNone {
 		return fmt.Errorf("invalid budget hold journal input")
 	}

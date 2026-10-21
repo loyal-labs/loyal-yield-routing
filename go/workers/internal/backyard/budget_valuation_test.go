@@ -22,11 +22,11 @@ func TestBudgetPriceRejectsStaleMismatchedAndOverflowInputs(t *testing.T) {
 		slot          int64
 	}{{"other", classicTokenProgram, 42}, {"asset", token2022Program, 42}, {"asset", classicTokenProgram, 75}, {"asset", classicTokenProgram, 41}} {
 		_, err := p.valueUpper(1, tc.mint, tc.program, tc.slot)
-		assertBudgetHold(t, err, "missing_stale_or_mismatched_usdc_valuation")
+		assertPreSendHold(t, err, "missing_stale_or_mismatched_usdc_valuation")
 	}
 	p.Decimals = 0
 	_, err := p.valueUpper(math.MaxUint64, "asset", classicTokenProgram, 42)
-	assertBudgetHold(t, err, "invalid_usdc_valuation")
+	assertPreSendHold(t, err, "invalid_usdc_valuation")
 }
 
 func TestPriceMarginCeilsAndRejectsU128Overflow(t *testing.T) {
@@ -41,5 +41,5 @@ func TestPriceMarginCeilsAndRejectsU128Overflow(t *testing.T) {
 		price[i] = 255
 	}
 	_, err = UpperPriceMargin(price, 1)
-	assertBudgetHold(t, err, "invalid_usdc_valuation")
+	assertPreSendHold(t, err, "invalid_usdc_valuation")
 }

@@ -480,7 +480,7 @@ func TestRefreshBlockhashNotFoundIsTransient(t *testing.T) {
 	t.Parallel()
 	notFound := &PreSendHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `"BlockhashNotFound"`}}
 	rejected := &PreSendHold{Reason: holdStale, Details: map[string]string{"cause": "price_refresh_simulation_failed", "transactionError": `{"InstructionError":[0,{"Custom":6009}]}`}}
-	if !transientValuationRefreshFailure(notFound) || transientValuationRefreshFailure(rejected) || transientValuationRefreshFailure(budgetHold("price_refresh_simulation_failed")) {
+	if !transientValuationRefreshFailure(notFound) || transientValuationRefreshFailure(rejected) || transientValuationRefreshFailure(staleHold("price_refresh_simulation_failed")) {
 		t.Fatal("BlockhashNotFound classification is wrong")
 	}
 }
@@ -501,7 +501,7 @@ func TestStaleUSDCReferenceTriesRefreshBeforeHealthHold(t *testing.T) {
 		now:  func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 		refreshValuation: func(context.Context, []RuntimeRoute, []string, int64) (int64, []ConfirmedAccount, error) {
 			refreshCalls++
-			return 0, nil, budgetHold("price_refresh_simulation_unavailable")
+			return 0, nil, staleHold("price_refresh_simulation_unavailable")
 		},
 	})
 	if refreshCalls != 1 || !errors.Is(err, errConfirmedObservationUnavailable) {

@@ -22,18 +22,18 @@ func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAcc
 		}
 		derived, err := deriveKaminoObligationFarmUserState(pair[0], route.Kamino.Obligation)
 		if err != nil || derived != pair[1] {
-			return budgetHoldFrom(err, "selector_farm_binding_invalid")
+			return staleHoldFrom(err, "selector_farm_binding_invalid")
 		}
 		farm, user := accountAt(accounts, pair[0]), accountAt(accounts, pair[1])
 		if state, err := kamino.DecodeFarmState(chainAccount(farm, farm.Address)); err != nil || !sameKey(state.DelegateAuthority[:], route.Kamino.MarketAuthority) || state.IsFarmFrozen || !state.IsFarmDelegated {
-			return budgetHold("selector_farm_unavailable")
+			return staleHold("selector_farm_unavailable")
 		}
 		if !obligationPresent {
 			continue
 		}
 		if state, err := kamino.DecodeFarmUserState(chainAccount(user, user.Address)); err != nil || !sameKey(state.FarmState[:], pair[0]) ||
 			!sameKey(state.Owner[:], v.squads) || !state.IsFarmDelegated || !sameKey(state.Delegatee[:], route.Kamino.Obligation) {
-			return budgetHold("selector_farm_registration_unavailable")
+			return staleHold("selector_farm_registration_unavailable")
 		}
 	}
 	return nil
@@ -50,7 +50,7 @@ func selectorDestinationAccounts(ctx context.Context, v *Vault, rpc *chain.Clien
 		return 0, nil, empty, err
 	}
 	if custody != 0 {
-		return 0, nil, empty, budgetHold("selector_destination_custody_in_flight")
+		return 0, nil, empty, staleHold("selector_destination_custody_in_flight")
 	}
 	return slot, accounts, position, nil
 }
@@ -85,7 +85,7 @@ func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64,
 		}
 		ticket, err := decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
 		if err != nil || ticket.Armed || ticket.LastConsumedSequence >= uint64(slot) {
-			return 0, budgetHoldFrom(err, "selector_destination_ticket_unavailable")
+			return 0, staleHoldFrom(err, "selector_destination_ticket_unavailable")
 		}
 	}
 	var err error
@@ -109,7 +109,7 @@ func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64,
 			farmKey = "11111111111111111111111111111111"
 		}
 		if !sameKey(a.Data[160:192], side.supply) || !sameKey(a.Data[408:440], side.program) || !sameKey(a.Data[farmOffset:farmOffset+32], farmKey) {
-			return 0, budgetHold("selector_destination_reserve_binding_changed")
+			return 0, staleHold("selector_destination_reserve_binding_changed")
 		}
 		if err = validateExecutionMint(accountAt(accounts, side.mint), side.program, side.decimals); err != nil {
 			return 0, err
@@ -118,11 +118,11 @@ func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64,
 	c := accountAt(accounts, route.Kamino.CollateralReserve)
 	d := accountAt(accounts, route.Kamino.DebtReserve)
 	if !sameKey(c.Data[2560:2592], route.CollateralReceiptMint) || !sameKey(c.Data[2600:2632], route.CollateralReceiptSupply) || !sameKey(d.Data[192:224], route.DebtFeeReceiver) {
-		return 0, budgetHold("selector_destination_reserve_binding_changed")
+		return 0, staleHold("selector_destination_reserve_binding_changed")
 	}
 	receipt := accountAt(accounts, route.CollateralReceiptMint)
 	if receipt.Owner != classicTokenProgram || receipt.Executable || receipt.Lamports == 0 || len(receipt.Data) != 82 || receipt.Data[45] != 1 || binary.LittleEndian.Uint32(receipt.Data[:4]) != 1 || !sameKey(receipt.Data[4:36], route.Kamino.MarketAuthority) {
-		return 0, budgetHold("selector_destination_receipt_mint_unavailable")
+		return 0, staleHold("selector_destination_receipt_mint_unavailable")
 	}
 	collateralCustody := uint64(0)
 	for _, b := range []struct{ address, mint, authority, program string }{
@@ -136,7 +136,7 @@ func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64,
 		a := accountAt(accounts, b.address)
 		custody, err := DecodeTokenCustody(a.Owner, a.Data, mustKey(b.mint), mustKey(b.authority))
 		if err != nil || a.Owner != b.program || a.Executable || a.Lamports == 0 {
-			return 0, budgetHoldFrom(err, "selector_destination_custody_unavailable")
+			return 0, staleHoldFrom(err, "selector_destination_custody_unavailable")
 		}
 		if b.address == route.CollateralCustody {
 			collateralCustody = custody.Raw
@@ -170,14 +170,14 @@ func unleveredEntryCapacityDebtRaw(position KaminoPosition, accounts []Confirmed
 // so floor(wire * rateFuture) >= floor(wire * rateNow) >= the target.
 func payoffReceiptsForLiquidity(totalLiquiditySF *big.Int, mintSupply, liquidity uint64) (uint64, error) {
 	if liquidity == 0 || totalLiquiditySF == nil || totalLiquiditySF.Sign() <= 0 || mintSupply == 0 {
-		return 0, budgetHold("selector_destination_receipt_bound_unavailable")
+		return 0, staleHold("selector_destination_receipt_bound_unavailable")
 	}
 	numerator := new(big.Int).Mul(new(big.Int).SetUint64(liquidity), new(big.Int).Lsh(new(big.Int).SetUint64(mintSupply), kamino.FractionBits))
 	receipts := new(big.Int).Add(numerator, totalLiquiditySF)
 	receipts.Sub(receipts, big.NewInt(1))
 	receipts.Quo(receipts, totalLiquiditySF)
 	if !receipts.IsUint64() {
-		return 0, budgetHold("selector_destination_receipt_bound_unavailable")
+		return 0, staleHold("selector_destination_receipt_bound_unavailable")
 	}
 	return receipts.Uint64(), nil
 }

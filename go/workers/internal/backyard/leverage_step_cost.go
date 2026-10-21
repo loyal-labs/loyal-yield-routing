@@ -21,22 +21,35 @@ import (
 // never left for free, and the spread rule's down moves sell exactly this
 // increment.
 type leverageStepCost struct {
-	BorrowFeeMicros     int64 `json:"borrowFeeMicros"`
-	EntrySwapCostMicros int64 `json:"entrySwapLossMicros"`
-	ExitSwapCostMicros  int64 `json:"exitSwapLossMicros"`
-	NetworkMicros       int64 `json:"networkMicros"`
-	TotalMicros         int64 `json:"totalMicros"`
+	BorrowFeeMicros     usdMicros `json:"borrowFeeMicros"`
+	EntrySwapCostMicros usdMicros `json:"entrySwapLossMicros"`
+	ExitSwapCostMicros  usdMicros `json:"exitSwapLossMicros"`
+	NetworkMicros       usdMicros `json:"networkMicros"`
+	TotalMicros         usdMicros `json:"totalMicros"`
+}
+
+type usdMicros int64
+
+func sumMicros(values ...usdMicros) (usdMicros, error) {
+	var total usdMicros
+	for _, value := range values {
+		if value < 0 || total > math.MaxInt64-value {
+			return 0, staleHold("invalid_budget_accounting")
+		}
+		total += value
+	}
+	return total, nil
 }
 
 type leverageStepPricer func(borrowRaw uint64) (leverageStepCost, error)
 
 type leverageStepLegs struct {
-	BorrowFeeMicros int64
+	BorrowFeeMicros usdMicros
 	// Entry: BorrowRaw debt in, its quoted collateral out.
-	EntryInMicros, EntryOutMicros int64
+	EntryInMicros, EntryOutMicros usdMicros
 	// Exit: the entry's quoted collateral in, its quoted debt out.
-	ExitInMicros, ExitOutMicros int64
-	NetworkMicros               int64
+	ExitInMicros, ExitOutMicros usdMicros
+	NetworkMicros               usdMicros
 }
 
 // cost is the step's expected cost. Each swap's loss is signed, against
@@ -47,11 +60,11 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	out := leverageStepCost{BorrowFeeMicros: l.BorrowFeeMicros, NetworkMicros: l.NetworkMicros,
 		EntrySwapCostMicros: l.EntryInMicros - l.EntryOutMicros, ExitSwapCostMicros: l.ExitInMicros - l.ExitOutMicros}
 	if l.BorrowFeeMicros < 0 || l.NetworkMicros <= 0 || l.EntryInMicros <= 0 || l.EntryOutMicros <= 0 || l.ExitInMicros <= 0 || l.ExitOutMicros <= 0 {
-		return out, budgetHold(leverageReasonCostUnavailable)
+		return out, staleHold(leverageReasonCostUnavailable)
 	}
-	fees, err := budgetSum(out.BorrowFeeMicros, out.NetworkMicros)
+	fees, err := sumMicros(out.BorrowFeeMicros, out.NetworkMicros)
 	if err != nil {
-		return out, budgetHoldFrom(err, leverageReasonCostUnavailable)
+		return out, staleHoldFrom(err, leverageReasonCostUnavailable)
 	}
 	out.TotalMicros = max(fees+out.EntrySwapCostMicros+out.ExitSwapCostMicros, 0)
 	return out, nil
@@ -60,8 +73,8 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 	var out leverageStepCost
 	for _, v := range []struct {
-		into *int64
-		a, b int64
+		into *usdMicros
+		a, b usdMicros
 	}{
 		{&out.BorrowFeeMicros, c.BorrowFeeMicros, d.BorrowFeeMicros},
 		{&out.EntrySwapCostMicros, c.EntrySwapCostMicros, d.EntrySwapCostMicros},
@@ -70,39 +83,47 @@ func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 		{&out.TotalMicros, c.TotalMicros, d.TotalMicros},
 	} {
 		if v.a > 0 && v.b > math.MaxInt64-v.a || v.a < 0 && v.b < math.MinInt64-v.a {
-			return out, budgetHold(leverageReasonCostUnavailable)
+			return out, staleHold(leverageReasonCostUnavailable)
 		}
 		*v.into = v.a + v.b
 	}
 	return out, nil
 }
 
-// leverageCostStages is the closed set of pricing stages an outage names.
-// The cause in a log line or metric label is one of these, never raw RPC,
-// HTTP or URL text.
-var leverageCostStages = map[string]bool{"inputs": true, "policies": true, "entry_quote": true, "exit_quote": true, "step_build": true, "price": true, "network_fee": true, "deadline": true}
+type costStage string
+
+const (
+	stageInputs     costStage = "inputs"
+	stagePolicies   costStage = "policies"
+	stageEntryQuote costStage = "entry_quote"
+	stageExitQuote  costStage = "exit_quote"
+	stageStepBuild  costStage = "step_build"
+	stagePrice      costStage = "price"
+	stageNetworkFee costStage = "network_fee"
+	stageDeadline   costStage = "deadline"
+)
 
 type leverageCostOutage struct {
-	stage string
+	stage costStage
 	err   error
 }
 
 func (e *leverageCostOutage) Error() string {
-	return leverageReasonCostUnavailable + "(" + e.stage + ")"
+	return leverageReasonCostUnavailable + "(" + string(e.stage) + ")"
 }
 func (e *leverageCostOutage) Unwrap() error { return e.err }
 
-func costOutage(stage string, err error) error {
+func costOutage(stage costStage, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		stage = "deadline"
+		stage = stageDeadline
 	}
 	return &leverageCostOutage{stage: stage, err: err}
 }
 
 func leverageCostOutageReason(err error) string {
 	var outage *leverageCostOutage
-	if errors.As(err, &outage) && leverageCostStages[outage.stage] {
-		return leverageReasonCostUnavailable + "(" + outage.stage + ")"
+	if errors.As(err, &outage) {
+		return outage.Error()
 	}
 	return leverageReasonCostUnavailable
 }
@@ -115,7 +136,7 @@ func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *
 		defer cancel()
 		route, err := m.route(s.RouteLane)
 		if err != nil || o.routeBatch == nil {
-			return leverageStepCost{}, costOutage("inputs", budgetHold(leverageReasonCostUnavailable))
+			return leverageStepCost{}, costOutage(stageInputs, staleHold(leverageReasonCostUnavailable))
 		}
 		pricer, err := newLanePricer(ctx, rpc, view, client, m, s.Slot)
 		if err != nil {
@@ -123,7 +144,7 @@ func productionLeverageStepPricer(ctx context.Context, rpc *chain.Client, view *
 		}
 		topology, err := observedObligationTopology(o.routeBatch.Accounts, route)
 		if err != nil {
-			return leverageStepCost{}, costOutage("inputs", err)
+			return leverageStepCost{}, costOutage(stageInputs, err)
 		}
 		return pricer.priceStep(ctx, o.routeBatch.Accounts, route, topology, s.Slot, borrowRaw)
 	}

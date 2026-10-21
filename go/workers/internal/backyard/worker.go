@@ -40,7 +40,7 @@ type tickRuntime struct {
 	prepareStep             func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
 	recordDecision          func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
 	build                   func(context.Context, string, any, ExpectedEffects) error
-	recordBudgetHold        func(context.Context, string, *PreSendHold) error
+	recordPreSendHold       func(context.Context, string, *PreSendHold) error
 	watchRoom               func([]roomWatch, func(roomUpdate))
 }
 
@@ -196,7 +196,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 		recordDecision: func(ctx context.Context, routeKey string, observation Observation, decision Decision, manifestSHA256 string) (DecisionRecord, error) {
 			return database.RecordDecisionOnManifest(ctx, manifest, routeKey, observation, decision, manifestSHA256)
 		},
-		recordBudgetHold: database.RecordBudgetHold,
+		recordPreSendHold: database.RecordPreSendHold,
 		build: func(ctx context.Context, operationID string, request any, effects ExpectedEffects) error {
 			return buildSimulatePersist(ctx, database, rpc, manifest, operationID, request, effects, credentials)
 		},
@@ -301,7 +301,7 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 		return fmt.Errorf("actionable decision was not durably recorded as decided")
 	}
 	if w.runtime.build == nil {
-		err = budgetHold("build_unavailable")
+		err = staleHold("build_unavailable")
 	} else {
 		err = w.runtime.build(ctx, record.OperationID, request, effects)
 	}
@@ -344,7 +344,7 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 	switch decision.Action {
 	case InitializeKaminoObligation:
 		if w.runtime.prepareInitialization == nil {
-			return nil, ExpectedEffects{}, observation, budgetHold("initializer_preparation_unavailable")
+			return nil, ExpectedEffects{}, observation, staleHold("initializer_preparation_unavailable")
 		}
 		prepared, r, err := w.runtime.prepareInitialization(ctx, w.manifest, wireDecision, observation)
 		return r, kaminoInitializationEffects(r), prepared, err
@@ -354,7 +354,7 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 	case OpenRouteStep, DeleverRouteStep:
 		if stepKind(wireDecision) != notStep {
 			if w.runtime.prepareStep == nil {
-				return nil, ExpectedEffects{}, observation, budgetHold("step_preparation_unavailable")
+				return nil, ExpectedEffects{}, observation, staleHold("step_preparation_unavailable")
 			}
 			prepared, e, err := w.runtime.prepareStep(ctx, w.manifest, wireDecision, observation)
 			return e.Request, e.ExpectedEffects, prepared, err
@@ -364,7 +364,7 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 	case SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
 		if conversionVenueHastra(wireDecision) {
 			if w.runtime.prepareHastra == nil {
-				return nil, ExpectedEffects{}, observation, budgetHold("hastra_preparation_unavailable")
+				return nil, ExpectedEffects{}, observation, staleHold("hastra_preparation_unavailable")
 			}
 			prepared, e, err := w.runtime.prepareHastra(ctx, w.manifest, wireDecision, observation)
 			return e.Request, e.ExpectedEffects, prepared, err
@@ -384,13 +384,13 @@ func (w *Worker) noteHold(s Snapshot, lane string, err error) {
 
 func (w *Worker) journalTickError(ctx context.Context, operationID string, err error) error {
 	var hold *PreSendHold
-	if !errors.As(err, &hold) || w.runtime.recordBudgetHold == nil {
+	if !errors.As(err, &hold) || w.runtime.recordPreSendHold == nil {
 		return err
 	}
 	if errors.Is(hold, chain.ErrUnavailable) {
 		return confirmedObservationUnavailable(err)
 	}
-	if journalErr := w.runtime.recordBudgetHold(ctx, operationID, hold); journalErr != nil {
+	if journalErr := w.runtime.recordPreSendHold(ctx, operationID, hold); journalErr != nil {
 		return errors.Join(err, journalErr)
 	}
 	return err

@@ -146,7 +146,7 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 			priced := false
 			d, ok := decideLeverageTarget(lane, result, markets, p, func(uint64) (leverageStepCost, error) {
 				priced = true
-				return leverageStepCost{}, costOutage("inputs", budgetHold("replay"))
+				return leverageStepCost{}, costOutage("inputs", staleHold("replay"))
 			})
 			got := laneDecision{next: d.Next, reason: d.Reason, borrowRaw: d.BorrowRaw, level: d.level()}
 			t.Logf("approved=%v %s: %.2fx->%.2fx spread=%d bps reason=%s store=%v", approved, lane.RouteLane, d.Current, d.Next, d.SpreadBPS, d.Reason, d.storeChanges(lane))

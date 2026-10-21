@@ -18,19 +18,19 @@ func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot 
 	a := accountAt(accounts, route.Kamino.CollateralReserve)
 	r, err := decodeKaminoReserve(a, route.Kamino.CollateralMint, route.Kamino)
 	if err != nil || r.collateralMintSupply == 0 || maximum == 0 || maximum > math.MaxInt64 {
-		return 0, budgetHoldFrom(err, "deposit_rounding_reserve_unavailable")
+		return 0, staleHoldFrom(err, "deposit_rounding_reserve_unavailable")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
 	if slot <= 0 || slot > math.MaxInt64-observationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" || clock.Executable || len(clock.Data) != 40 {
-		return 0, budgetHold("invalid_deposit_clock")
+		return 0, staleHold("invalid_deposit_clock")
 	}
 	clockSlot := binary.LittleEndian.Uint64(clock.Data[:8])
 	now := int64(binary.LittleEndian.Uint64(clock.Data[32:40]))
 	if clockSlot < uint64(slot) || clockSlot > uint64(slot)+1 || now <= 0 || now > math.MaxInt64-kaminoPayoffWindowSeconds || r.refreshedSlot <= 0 || r.refreshedSlot > int64(clockSlot) {
-		return 0, budgetHold("invalid_deposit_clock")
+		return 0, staleHold("invalid_deposit_clock")
 	}
 	if r.terms.SupportedInterestTerms() != nil {
-		return 0, budgetHold("unsupported_deposit_interest_terms")
+		return 0, staleHold("unsupported_deposit_interest_terms")
 	}
 	rate, err := kaminoMaximumBorrowRate(r.terms)
 	if err != nil {
@@ -40,7 +40,7 @@ func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot 
 	if r.terms.InterestRateBasis == kamino.TrueAPRBasis {
 		updated := int64(r.terms.LastUpdateTimestamp)
 		if updated <= 0 || updated > now {
-			return 0, budgetHold("invalid_deposit_refresh_timestamp")
+			return 0, staleHold("invalid_deposit_refresh_timestamp")
 		}
 		elapsed, units = now+kaminoPayoffWindowSeconds-updated, 31_536_000
 	}
@@ -53,7 +53,7 @@ func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot 
 		loss++
 	}
 	if loss == 0 || loss >= maximum {
-		return 0, budgetHold("deposit_below_rounding_window")
+		return 0, staleHold("deposit_below_rounding_window")
 	}
 	return maximum - loss, nil
 }

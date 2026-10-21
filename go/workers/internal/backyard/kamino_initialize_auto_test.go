@@ -132,7 +132,7 @@ func TestAutoInitializerCompilesAtItsLeg(t *testing.T) {
 	foreign := r
 	foreign.RouteLane = "Ethena/USDe/PYUSD"
 	_, err = manifest.compileKaminoInitializationMessage(foreign)
-	assertBudgetHold(t, err, "initializer_lane_unreviewed")
+	assertPreSendHold(t, err, "initializer_lane_unreviewed")
 	// The request builder resolves the installed AUTO policy's account.
 	resolved, err := manifest.initializationRequest(testPolicies(t), autoAUTOPYUSD.Lane, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 100}, r.RentLamports, r.MaximumFeeLamports)
 	if err != nil || resolved.Policy != installedAutoPolicyKey() || manifest.validateInitializationRequest(resolved) != nil {

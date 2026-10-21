@@ -341,11 +341,11 @@ func overflowMove(lanes []targetLane, i int, in targetInputs) (lane string, move
 	}
 	dest := in.Levels[lane]
 	for _, other := range lanes {
-		if t := other.s; other.held && t.RouteLane == lane && (termDebtUnknown(t) || termDeleverDue(t) || leverageUpLevel(withLevel(t, dest.Level)) > 0) {
+		if t := other.s; other.held && t.RouteLane == lane && (termDebtUnknown(t) || termDeleverDue(t) || hasUpMove(withLevel(t, dest.Level))) {
 			return "", 0
 		}
 	}
-	if leverageUpLevel(withLevel(s, l.level.Level)) == 0 || !overflowSourceBorrowClosed(s) || s.OverflowRoom == nil || s.OverflowRoom.DebtRaw < leverageMinimumBorrowRaw ||
+	if !hasUpMove(withLevel(s, l.level.Level)) || !overflowSourceBorrowClosed(s) || s.OverflowRoom == nil || s.OverflowRoom.DebtRaw < leverageMinimumBorrowRaw ||
 		dest.Level < levelFloor || !dest.UpApproved {
 		return "", 0
 	}
@@ -454,8 +454,8 @@ func leverageUpReceive(s Snapshot, t LaneTarget) uint64 {
 	}
 	probe := s
 	probe.LeverageTargetLevel = t.Level
-	level := leverageUpLevel(probe)
-	if level == 0 {
+	level, ok := leverageUpLevel(probe)
+	if !ok {
 		return 0
 	}
 	receive := leverageBorrowCeiling(s, level)
@@ -683,7 +683,7 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	if t.Rule == ruleHold && s.HasPosition && s.SquadsIdleRaw > 0 {
 		return d(Hold, string(holdStale), 0)
 	}
-	if t.UpApproved && leverageUpLevel(withLevel(s, t.Level)) > 0 {
+	if t.UpApproved && hasUpMove(withLevel(s, t.Level)) {
 		return d(Hold, string(holdNoRoom), 0)
 	}
 	return d(Hold, string(holdAtTarget), 0)

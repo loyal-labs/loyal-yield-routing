@@ -96,7 +96,7 @@ func TestTickRecordsBeforeBridgeBuildAndDispatchesExactAction(t *testing.T) {
 	rejected := &PreSendHold{Reason: holdChainRefused}
 	worker.runtime.build = func(context.Context, string, any, ExpectedEffects) error { return rejected }
 	journaled := false
-	worker.runtime.recordBudgetHold = func(_ context.Context, id string, hold *PreSendHold) error {
+	worker.runtime.recordPreSendHold = func(_ context.Context, id string, hold *PreSendHold) error {
 		if id != "operation" || hold != rejected {
 			t.Fatal("budget HOLD lost its operation or type")
 		}
@@ -126,11 +126,11 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 		},
 		build: func(context.Context, string, any, ExpectedEffects) error {
 			if builds++; builds == 1 {
-				return budgetHoldFrom(fmt.Errorf("simulateTransaction: %w", chain.ErrBehind), "deposit_projection_unavailable")
+				return staleHoldFrom(fmt.Errorf("simulateTransaction: %w", chain.ErrBehind), "deposit_projection_unavailable")
 			}
 			return nil
 		},
-		recordBudgetHold: func(context.Context, string, *PreSendHold) error { journaled = true; return nil },
+		recordPreSendHold: func(context.Context, string, *PreSendHold) error { journaled = true; return nil },
 	}}
 	if err := worker.Tick(context.Background()); !errors.Is(err, errConfirmedObservationUnavailable) || journaled {
 		t.Fatalf("unavailable RPC failed the decided operation: journaled=%v %v", journaled, err)
@@ -141,7 +141,7 @@ func TestTickBuildOnUnavailableRPCLeavesTheOperationDecided(t *testing.T) {
 	// A hold on anything else is still journaled.
 	builds = 0
 	worker.runtime.build = func(context.Context, string, any, ExpectedEffects) error {
-		return budgetHoldFrom(errors.New("bad layout"), "execution_mint_layout_mismatch")
+		return staleHoldFrom(errors.New("bad layout"), "execution_mint_layout_mismatch")
 	}
 	if err := worker.Tick(context.Background()); err == nil || !journaled {
 		t.Fatalf("a real hold was not journaled: %v", err)

@@ -37,11 +37,11 @@ func readPilotCanaryEntryRequest(now time.Time) (*pilotCanaryEntryRequest, error
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&request) != nil {
-		return nil, budgetHold(invalidPilotCanaryRequest)
+		return nil, staleHold(invalidPilotCanaryRequest)
 	}
 	var trailing any
 	if len(raw) > 512 || decoder.Decode(&trailing) != io.EOF || request.validate(now) != nil {
-		return nil, budgetHold(invalidPilotCanaryRequest)
+		return nil, staleHold(invalidPilotCanaryRequest)
 	}
 	return &request, nil
 }
@@ -49,7 +49,7 @@ func readPilotCanaryEntryRequest(now time.Time) (*pilotCanaryEntryRequest, error
 func (r pilotCanaryEntryRequest) validate(now time.Time) error {
 	if len(r.ID) != 64 || !sha256Pattern.MatchString(r.ID) || !earnActiveLane(r.Lane) || r.EquityRaw <= 0 || uint64(r.EquityRaw) > strategyTwoBridgeLegCapRaw || !r.ExpiresAt.After(now) || r.ExpiresAt.After(now.Add(15*time.Minute)) ||
 		r.SourceLane != "" && (!earnHeldLane(r.SourceLane) || !rotationPair(r.SourceLane, r.Lane)) {
-		return budgetHold(invalidPilotCanaryRequest)
+		return staleHold(invalidPilotCanaryRequest)
 	}
 	return nil
 }
@@ -71,9 +71,9 @@ func selectPilotCanaryEntry(input SelectorInput, result SelectorResult, history 
 	result.Action, result.Reason, result.DestinationLane, result.SelectedQuote = SelectorKeep, "operator_canary_waiting", "", nil
 	result.SourceLane, result.SourceRelease = input.Snapshot.RouteLane, nil
 	if prior, exists := history[request.ID]; exists && prior.Request != *request {
-		return result, nil, budgetHold(pilotCanaryRequestIDReused)
+		return result, nil, staleHold(pilotCanaryRequestIDReused)
 	} else if !exists && len(history) >= pilotCanaryReceiptCapacity {
-		return result, nil, budgetHold(pilotCanaryHistoryFull)
+		return result, nil, staleHold(pilotCanaryHistoryFull)
 	}
 	s := input.Snapshot
 	if !s.Fresh || s.WithdrawalDemandRaw != 0 || s.ManualReason != "" || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.VoltrStrategyIdleRaw != 0 {
@@ -144,7 +144,7 @@ func pilotCanaryQuote(input SelectorInput, result SelectorResult, fromSource fun
 		q := input.Quotes[i]
 		if q.RotateFrom == request.SourceLane && fromSource(q) && q.DestinationLane == request.Lane && q.EquityRaw == request.EquityRaw && q.ObservationID == s.ObservationID && q.currentAtSlot(s.Slot) && freshAt(input.Now, q.ObservedAt, input.Policy.QuoteMaxAge) {
 			if chosen != nil {
-				return nil, budgetHold(duplicateMoveQuote)
+				return nil, staleHold(duplicateMoveQuote)
 			}
 			chosen = &q
 		}

@@ -17,7 +17,7 @@ import (
 // (raw ~ USDC micros in these fixtures) plus three $0.01 transactions: the
 // economics the leverage fixtures were written against.
 func twentyBPSStepCost(raw uint64) (leverageStepCost, error) {
-	return leverageStepLegs{EntryInMicros: int64(raw), EntryOutMicros: int64(raw) - int64(raw/500), ExitInMicros: 1, ExitOutMicros: 1, NetworkMicros: 30_000}.cost()
+	return leverageStepLegs{EntryInMicros: usdMicros(raw), EntryOutMicros: usdMicros(raw) - usdMicros(raw/500), ExitInMicros: 1, ExitOutMicros: 1, NetworkMicros: 30_000}.cost()
 }
 
 // measuredStepCost prices a step at measured AUTO quotes (2026-10-11, $100k):
@@ -25,8 +25,8 @@ func twentyBPSStepCost(raw uint64) (leverageStepCost, error) {
 // a zero origination fee, and six transactions at about $0.002 each.
 func measuredStepCost(feeBPS int64) leverageStepPricer {
 	return func(raw uint64) (leverageStepCost, error) {
-		in := int64(raw)
-		return leverageStepLegs{BorrowFeeMicros: in * feeBPS / 10_000, EntryInMicros: in, EntryOutMicros: in + in*3/100_000,
+		in := usdMicros(raw)
+		return leverageStepLegs{BorrowFeeMicros: in * usdMicros(feeBPS) / 10_000, EntryInMicros: in, EntryOutMicros: in + in*3/100_000,
 			ExitInMicros: in + in*3/100_000, ExitOutMicros: in + in*3/100_000 - in*64/100_000, NetworkMicros: 12_000}.cost()
 	}
 }

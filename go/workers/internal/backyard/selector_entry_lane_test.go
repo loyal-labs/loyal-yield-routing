@@ -14,7 +14,7 @@ func TestCanaryRequestCannotTargetDeferredLane(t *testing.T) {
 	// The exit-only Ethena lane is never a canary destination.
 	t.Setenv("BACKYARD_RWA_PILOT_CANARY_ENTRY", request(ethenaUSDePYUSD.Lane))
 	_, err := readPilotCanaryEntryRequest(time.Now().UTC())
-	assertBudgetHold(t, err, "invalid_pilot_canary_request")
+	assertPreSendHold(t, err, "invalid_pilot_canary_request")
 	// Every active registry lane is an entry lane (Prime/PRIME/USDC again
 	// since 2026-10-10).
 	for _, lane := range earnLaneIDs(false) {
@@ -31,7 +31,7 @@ func TestCanaryRequestCannotTargetDeferredLane(t *testing.T) {
 	in.Markets[0].Lane, in.Quotes[0].DestinationLane = ethenaUSDePYUSD.Lane, ethenaUSDePYUSD.Lane
 	in.canaryRequest = &pilotCanaryEntryRequest{ID: sha256Bytes([]byte("deferred-acceptance")), Lane: in.Markets[0].Lane, EquityRaw: int64(in.Snapshot.TotalVaultNAVRaw), ExpiresAt: in.Now.Add(10 * time.Minute)}
 	result, receipt, err := selectPilotCanaryEntry(in, SelectOpportunity(in, SelectorState{}), nil)
-	assertBudgetHold(t, err, "invalid_pilot_canary_request")
+	assertPreSendHold(t, err, "invalid_pilot_canary_request")
 	if receipt != nil || result.Action == "CANARY_ENTER" {
 		t.Fatal("deferred canary accepted", result, receipt)
 	}
