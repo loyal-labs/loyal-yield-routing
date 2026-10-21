@@ -15,7 +15,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// ALTManifestAddress is the retained durable provisioning row.
 type ALTManifestAddress struct {
 	Address, SemanticClass, AccountRole string
 	Ordinal                             int32

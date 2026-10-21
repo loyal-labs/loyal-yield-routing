@@ -36,7 +36,6 @@ func (a DownWithdraw) simulated() (SimulatedStep, StepKind, uint64) {
 	return SimulateDown, stepDown, a.CollateralReceiptRaw
 }
 
-// RunSimulateStep is read-only: it never signs or sends.
 func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, vault, lane string, amount StepAmount) error {
 	direction, kind, amountRaw := amount.simulated()
 	v, err := findVault(vault)
