@@ -6,6 +6,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func lookupFamilyAllows(state string, kind LookupKind) bool {
@@ -38,8 +40,8 @@ func lookupUnsignedGuards(ctx context.Context, tx pgx.Tx, i LookupIntent, source
 	var protected bool
 	err := tx.QueryRow(ctx, `SELECT
  EXISTS(SELECT 1 FROM loyal_yield.lookup_table_usage_leases WHERE route_lookup_table_id=$1 AND released_at IS NULL AND expires_at>clock_timestamp()) OR
- EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions WHERE cluster=$2 AND submission_state NOT IN ('reconciled','failed','expired') AND (alt_mutation_epochs @> jsonb_build_object('tables',jsonb_build_array(jsonb_build_object('tableId',$1::bigint))) OR jsonb_typeof(alt_mutation_epochs->'tables') IS DISTINCT FROM 'array')) OR
- EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations predecessor JOIN loyal_yield.lookup_table_operations current ON current.id=$3 WHERE predecessor.route_lookup_table_id=$1 AND predecessor.id<>$3 AND predecessor.operation_state NOT IN ('complete','permanent_failure','cancelled') AND (predecessor.created_at,predecessor.id)<(current.created_at,current.id))`, i.TableID, i.Cluster, i.OperationID).Scan(&protected)
+ EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions WHERE cluster=$2 AND submission_state<>ALL($4) AND (alt_mutation_epochs @> jsonb_build_object('tables',jsonb_build_array(jsonb_build_object('tableId',$1::bigint))) OR jsonb_typeof(alt_mutation_epochs->'tables') IS DISTINCT FROM 'array')) OR
+ EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations predecessor JOIN loyal_yield.lookup_table_operations current ON current.id=$3 WHERE predecessor.route_lookup_table_id=$1 AND predecessor.id<>$3 AND predecessor.operation_state NOT IN ('complete','permanent_failure','cancelled') AND (predecessor.created_at,predecessor.id)<(current.created_at,current.id))`, i.TableID, i.Cluster, i.OperationID, fleet.SubmissionTerminalStates).Scan(&protected)
 	if err != nil {
 		return err
 	}

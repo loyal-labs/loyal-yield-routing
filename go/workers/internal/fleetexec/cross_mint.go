@@ -70,7 +70,8 @@ type CrossMintGates struct {
 
 type CrossMintLegRequest struct {
 	Movement                                    CrossMintMovement
-	Leg, Purpose                                string
+	Leg                                         MovementLeg
+	Purpose                                     LegPurpose
 	Generation, RemainingFeeLamports            int64
 	ContinuationOwner                           string
 	ContinuationFencingToken, ControlGeneration int64
@@ -358,7 +359,7 @@ type crossMintNextCustody struct {
 	terminalSlot    *int64
 }
 
-func crossMintReceiptTransition(m CrossMintMovement, leg, purpose string, expected CrossMintExpectedEffect, pre CrossMintBalanceAnchors, actual CrossMintEffect, post CrossMintBalanceAnchors, slot int64) (crossMintNextCustody, error) {
+func crossMintReceiptTransition(m CrossMintMovement, leg MovementLeg, purpose LegPurpose, expected CrossMintExpectedEffect, pre CrossMintBalanceAnchors, actual CrossMintEffect, post CrossMintBalanceAnchors, slot int64) (crossMintNextCustody, error) {
 	var next crossMintNextCustody
 	if slot <= 0 || m.CustodyReconciledSlot != nil && slot < *m.CustodyReconciledSlot {
 		return next, errors.New("receipt precedes custody or lacks finalized slot")
@@ -420,6 +421,6 @@ func crossMintReceiptTransition(m CrossMintMovement, leg, purpose string, expect
 	return next, nil
 }
 
-func crossMintSemantic(decision int64, leg string, generation int64) string {
+func crossMintSemantic(decision int64, leg MovementLeg, generation int64) string {
 	return fmt.Sprintf("cross-mint:%d:%s:%d", decision, leg, generation)
 }

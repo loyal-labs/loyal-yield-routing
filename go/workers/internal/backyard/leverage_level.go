@@ -11,10 +11,8 @@ type leverageRung struct {
 }
 
 // leverageLadder is the one list of levels (owner decision 2026-10-14), in
-// APY points (0.01 = 1 pt). Each down sits at least 1 point under its up, so
-// a lane never flip-flops. A lane climbs no higher than its cap
-// (earnLane.maxLevel). The migration's CHECK on backyard_lane_levels lists
-// the same levels.
+// APY points (0.01 = 1 pt). A lane climbs no higher than its cap
+// (earnLane.maxLevel).
 var leverageLadder = [...]leverageRung{
 	{level: 1},
 	{level: 1.5, up: 0.01, down: 0},

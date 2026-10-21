@@ -59,8 +59,6 @@ type FeePayerReader interface {
 
 const notifyBudget = 15 * time.Second
 
-// WakeupChannel carries {"scheduled_slot_id": N} for each slot that becomes
-// requested (migration 0016's trigger on balance_sweep_scheduled_slots).
 const WakeupChannel = "loyal_yield_autodeposit_wakeup"
 
 func NewWorker(deps WorkerDependencies) (*Worker, error) {

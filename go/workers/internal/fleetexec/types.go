@@ -1,9 +1,12 @@
 package fleetexec
 
-import "errors"
+import (
+	"errors"
+	"slices"
 
-// SubmissionState mirrors loyal_yield.signed_route_submissions.submission_state.
-// The legacy Rust confirmer and the schema CHECK own this vocabulary.
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+)
+
 type SubmissionState string
 
 const (
@@ -19,25 +22,24 @@ const (
 )
 
 func (s SubmissionState) Terminal() bool {
-	return s == StateReconciled || s == StateExpired || s == StateFailed
+	return slices.Contains(fleet.SubmissionTerminalStates, string(s))
 }
 
-// Movement legs reuse the exact vocabulary the schema CHECK owns
-// (signed_route_submissions_movement_leg_check): a same-mint route is a
-// single "route" leg; a cross-mint movement carries withdraw/swap/deposit
-// legs. Any other value is rejected by the database, never remapped here.
+type MovementLeg string
+
 const (
-	LegRoute    = "route"
-	LegWithdraw = "withdraw"
-	LegSwap     = "swap"
-	LegDeposit  = "deposit"
+	LegRoute    MovementLeg = "route"
+	LegWithdraw MovementLeg = "withdraw"
+	LegSwap     MovementLeg = "swap"
+	LegDeposit  MovementLeg = "deposit"
 )
 
-// Leg purposes are likewise schema-owned.
+type LegPurpose string
+
 const (
-	PurposeOptimizeYield  = "optimize_yield"
-	PurposeRecoverSource  = "recover_source"
-	PurposeFallbackTarget = "fallback_target"
+	PurposeOptimizeYield  LegPurpose = "optimize_yield"
+	PurposeRecoverSource  LegPurpose = "recover_source"
+	PurposeFallbackTarget LegPurpose = "fallback_target"
 )
 
 var (

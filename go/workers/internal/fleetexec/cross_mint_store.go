@@ -73,7 +73,9 @@ func (s *Store) ReconcileCrossMintLeg(ctx context.Context, l SubmissionLease, in
 	}
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var decision, confirmed int64
-		var leg, purpose, signature string
+		var leg MovementLeg
+		var purpose LegPurpose
+		var signature string
 		var expectedJSON, anchorsJSON json.RawMessage
 		query := `SELECT decision_id,confirmed_slot,movement_leg,leg_purpose,transaction_signature,expected_effect,expected_balance_anchors
 FROM loyal_yield.signed_route_submissions WHERE id=$1 AND decision_id IS NOT NULL AND movement_leg<>'route'
@@ -518,7 +520,7 @@ func (s *Store) QueueCrossMintALT(ctx context.Context, l CrossMintContinuationLe
 			return err
 		}
 		var holding bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions WHERE decision_id=$1 AND submission_state NOT IN ('reconciled','expired','failed'))`, m.DecisionID).Scan(&holding); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions WHERE decision_id=$1 AND submission_state<>ALL($2))`, m.DecisionID, fleet.SubmissionTerminalStates).Scan(&holding); err != nil {
 			return err
 		}
 		if holding {
@@ -641,7 +643,7 @@ func (s *Store) ClaimCrossMintContinuation(ctx context.Context, cluster, owner s
 		}
 		l := CrossMintContinuationLease{Owner: owner, ControlGeneration: g.Generation}
 		var id int64
-		err = tx.QueryRow(ctx, crossMintClaimSQL, cluster, owner, int32(ttl/time.Second), g.Generation).Scan(&id, &l.FencingToken, &l.ExpiresAt)
+		err = tx.QueryRow(ctx, crossMintClaimSQL, cluster, owner, int32(ttl/time.Second), g.Generation, fleet.SubmissionTerminalStates).Scan(&id, &l.FencingToken, &l.ExpiresAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -682,7 +684,7 @@ AND continuation_lease_expires_at>clock_timestamp() FOR UPDATE`, l.Movement.Deci
 	return m, err
 }
 
-func (s *Store) CrossMintLegBudget(ctx context.Context, l CrossMintContinuationLease, leg string) (int64, int64, error) {
+func (s *Store) CrossMintLegBudget(ctx context.Context, l CrossMintContinuationLease, leg MovementLeg) (int64, int64, error) {
 	if leg != LegWithdraw && leg != LegSwap && leg != LegDeposit {
 		return 0, 0, ErrNotClaimable
 	}
@@ -767,7 +769,7 @@ func (s *Store) AppendCrossMintLeg(ctx context.Context, l CrossMintContinuationL
 			}
 		}
 		var live bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions WHERE decision_id=$1 AND submission_state NOT IN ('reconciled','expired','failed'))`, m.DecisionID).Scan(&live); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.signed_route_submissions WHERE decision_id=$1 AND submission_state<>ALL($2))`, m.DecisionID, fleet.SubmissionTerminalStates).Scan(&live); err != nil {
 			return err
 		}
 		if live {
@@ -897,9 +899,7 @@ const crossMintClaimSQL = `WITH candidate AS (
           SELECT 1
           FROM loyal_yield.signed_route_submissions submission
           WHERE submission.decision_id = decision.id
-            AND submission.submission_state NOT IN (
-                'reconciled', 'expired', 'failed'
-            )
+            AND submission.submission_state <> ALL($5)
       )
     ORDER BY decision.continuation_available_at,
              decision.created_at, decision.id

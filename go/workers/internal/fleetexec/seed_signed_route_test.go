@@ -27,8 +27,8 @@ type PersistRouteInput struct {
 	ConflictAccountKeys  []string
 	ExecutorOwner        string
 	ExecutorFencingToken int64
-	MovementLeg          string
-	LegPurpose           string
+	MovementLeg          MovementLeg
+	LegPurpose           LegPurpose
 	LegGeneration        int64
 	OptimizerEpochID     int64
 	// AltRequirementsFingerprint and AltSelectionFingerprint are the exact
@@ -225,7 +225,7 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.SQLState() == "23505"
 }
 
-func legalLegPurpose(purpose string) bool {
+func legalLegPurpose(purpose LegPurpose) bool {
 	switch purpose {
 	case PurposeOptimizeYield, PurposeRecoverSource, PurposeFallbackTarget:
 		return true

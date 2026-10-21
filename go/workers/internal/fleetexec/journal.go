@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type Store struct{ pool *pgxpool.Pool }
@@ -58,7 +59,7 @@ func (s *Store) RecordBroadcastIntent(ctx context.Context, lease SubmissionLease
 
 func (s *Store) InflightCount(ctx context.Context, cluster string) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE cluster=$1 AND submission_state NOT IN ('reconciled','expired','failed')`, cluster).Scan(&n)
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE cluster=$1 AND submission_state<>ALL($2)`, cluster, fleet.SubmissionTerminalStates).Scan(&n)
 	return n, err
 }
 
@@ -101,8 +102,8 @@ type SubmissionRecord struct {
 	RecentBlockhash           string
 	LastValidBlockHeight      int64
 	FeePayer                  string
-	MovementLeg               string
-	LegPurpose                string
+	MovementLeg               MovementLeg
+	LegPurpose                LegPurpose
 	LegGeneration             int64
 	SignedTransaction         []byte
 	State                     SubmissionState
