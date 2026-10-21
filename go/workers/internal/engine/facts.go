@@ -147,10 +147,12 @@ func (f *Facts) BackyardStepNoRoom(vault, lane, rule string) {
 }
 
 func (f *Facts) BackyardHold(vault, lane, reason string) {
+	f.BackyardHoldCleared(vault)
+	f.hold.WithLabelValues(vault, lane, reason).Set(1)
+}
+
+func (f *Facts) BackyardHoldCleared(vault string) {
 	f.hold.DeletePartialMatch(prometheus.Labels{"vault": vault})
-	if reason != "" {
-		f.hold.WithLabelValues(vault, lane, reason).Set(1)
-	}
 }
 
 func (f *Facts) BackyardTermDebtDays(vault, lane string, days float64, owed bool) {

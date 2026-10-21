@@ -405,6 +405,10 @@ func (e *events) hold(lane string, reason HoldReason) {
 	if e == nil || e.facts == nil {
 		return
 	}
+	if reason == holdNone {
+		e.facts.BackyardHoldCleared(e.vault)
+		return
+	}
 	e.facts.BackyardHold(e.vault, lane, string(reason))
 }
 
