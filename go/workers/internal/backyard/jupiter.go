@@ -74,11 +74,6 @@ type JupiterSwapRequest struct {
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 	RouteLane            string
-	EntryReturnReserved  bool `json:"entryReturnReserved,omitempty"`
-	// TopupReturnReserved marks an entry swap beside a funded debt-free
-	// position (plan B3). It is set only for the journaled top-up reason and
-	// always together with EntryReturnReserved.
-	TopupReturnReserved bool `json:"topupReturnReserved,omitempty"`
 }
 
 type JupiterExecutionEvidence struct {

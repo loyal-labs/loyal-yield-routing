@@ -237,7 +237,7 @@ func TestAutoCandidateObservationReportsOwnedPYUSDPosition(t *testing.T) {
 	if observation.Snapshot.PositionCollateralRaw != int64(autoFixtureDepositReceiptRaw) || observation.Snapshot.PositionDebtRaw != int64(autoFixtureDebtRaw) {
 		t.Fatalf("position raws lost their token scales: %+v", observation.Snapshot)
 	}
-	if observation.Snapshot.CollateralIdleRaw != int64(autoFixtureCollateralIdleRaw) || observation.Snapshot.DebtIdleRaw != int64(autoFixtureDebtIdleRaw) {
+	if observation.Snapshot.CollateralIdleRaw != int64(autoFixtureCollateralIdleRaw) || observation.Snapshot.DebtIdleRaw != debtMintRaw(autoFixtureDebtIdleRaw) {
 		t.Fatalf("idle custody raws lost their token scales: %+v", observation.Snapshot)
 	}
 	// NAV view: 3_000 nine-decimal tokens at 1.5 floor to 4 micro-USDC of idle
@@ -321,7 +321,7 @@ func TestAutoCandidateObservationPricesAbovePegDebtThroughReservePrice(t *testin
 	if snapshot.PositionDebtValueRaw != 7_140_000 || snapshot.StrategyNAVRaw != 32_040_009 || snapshot.TotalVaultNAVRaw != 32_040_020 {
 		t.Fatalf("above-peg debt was not repriced through the reserve price: %+v", snapshot)
 	}
-	if snapshot.DebtIdleRaw != int64(autoFixtureDebtIdleRaw) {
+	if snapshot.DebtIdleRaw != debtMintRaw(autoFixtureDebtIdleRaw) {
 		t.Fatalf("idle debt raw units were disturbed: %+v", snapshot)
 	}
 	if snapshot.LTVBPS != 2_380 || snapshot.PayoffDebtRaw < int64(autoFixtureDebtRaw)+1 {

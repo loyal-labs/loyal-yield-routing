@@ -22,19 +22,23 @@ const (
 	SimulateDown SimulatedStep = "down"
 )
 
-// RunSimulateStep builds lane's atomic up or down step from the chain as it
-// is now, through the production step assembly (assembleStep), with the
-// delegate as fee payer, and simulates it unsigned (sigVerify off, the
-// cluster's blockhash): the read-only proof that one transaction carries the
-// whole step through the installed policies. It never signs or sends.
-//
-// up borrows amountRaw of debt, converts exactly that into collateral and
-// deposits held collateral plus the conversion's guaranteed output. down
-// withdraws amountRaw of collateral receipt (KLend's withdraw amount),
-// converts the liquidity it redeems at the observed rate and the held
-// collateral into debt, and repays held debt plus the conversion's
-// guaranteed output.
-func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, vault, lane string, direction SimulatedStep, amountRaw uint64) error {
+type StepAmount interface {
+	simulated() (SimulatedStep, StepKind, uint64)
+}
+
+type UpBorrow struct{ DebtRaw uint64 }
+
+type DownWithdraw struct{ CollateralReceiptRaw uint64 }
+
+func (a UpBorrow) simulated() (SimulatedStep, StepKind, uint64) { return SimulateUp, stepUp, a.DebtRaw }
+
+func (a DownWithdraw) simulated() (SimulatedStep, StepKind, uint64) {
+	return SimulateDown, stepDown, a.CollateralReceiptRaw
+}
+
+// RunSimulateStep is read-only: it never signs or sends.
+func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *jupiter.Client, vault, lane string, amount StepAmount) error {
+	direction, kind, amountRaw := amount.simulated()
 	v, err := findVault(vault)
 	if err != nil {
 		return err
@@ -76,14 +80,14 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 		return err
 	}
 	convert := amountRaw + st.heldDebt()
-	if direction == SimulateDown {
+	if kind == stepDown {
 		liquidity, err := st.collateral.redeemLiquidityRaw(amountRaw)
 		if err != nil {
 			return err
 		}
 		convert = liquidity + st.collateralBalance
 	}
-	evidence, guaranteed, err := assembleStep(ctx, cluster, view, client, manifest, policies, st, map[SimulatedStep]StepKind{SimulateUp: stepUp, SimulateDown: stepDown}[direction], amountRaw, convert, viewSlot)
+	evidence, guaranteed, err := assembleStep(ctx, cluster, view, client, manifest, policies, st, kind, amountRaw, convert, viewSlot)
 	if err != nil {
 		return err
 	}

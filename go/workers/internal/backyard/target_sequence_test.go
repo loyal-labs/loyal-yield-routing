@@ -535,7 +535,7 @@ func TestTargetDebtCashNoLaneOwesConvertsToUSDC(t *testing.T) {
 	pyusd := flat
 	pyusd.RouteLane, pyusd.StrategyKey = autoAUTOPYUSD.Lane, autoAUTOPYUSD.Lane
 	for _, residue := range []int64{25_000_000, partialWithdrawalDustRaw} {
-		pyusd.DebtIdleRaw = residue
+		pyusd.DebtIdleRaw = debtMintRaw(residue)
 		views := []Snapshot{flat, pyusd}
 		i, tgt := target(views, b.in)
 		s := views[i]

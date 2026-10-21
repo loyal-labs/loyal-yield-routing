@@ -145,7 +145,7 @@ func TestTwoHeldLanesNAVCountsEverySharedCustodyOnce(t *testing.T) {
 		t.Fatalf("two-lane NAV: strategy %d total %d", s.StrategyNAVRaw, s.TotalVaultNAVRaw)
 	}
 	// The working lane's per-lane view is unchanged by the other lane.
-	if s.PositionCollateralValueRaw != 30_000_000 || s.PositionDebtValueRaw != 7_000_000 || s.SquadsIdleRaw != 6 || s.DebtIdleRaw != int64(autoFixtureDebtIdleRaw) {
+	if s.PositionCollateralValueRaw != 30_000_000 || s.PositionDebtValueRaw != 7_000_000 || s.SquadsIdleRaw != 6 || s.DebtIdleRaw != debtMintRaw(autoFixtureDebtIdleRaw) {
 		t.Fatalf("working-lane view absorbed another lane: %+v", s)
 	}
 	if s.ObservationID == oneLaneAUTOObservationID {
@@ -244,7 +244,7 @@ func TestPYUSDNoLaneOwesIsCountedOnceAndConverts(t *testing.T) {
 	} {
 		manifest, accounts := multiLaneFixture(t, c.mutate)
 		s := observeMultiLane(t, manifest, accounts).Snapshot
-		if s.HeldLanes != c.held || s.StrategyNAVRaw != c.strategy || s.DebtIdleRaw != int64(autoFixtureDebtIdleRaw) {
+		if s.HeldLanes != c.held || s.StrategyNAVRaw != c.strategy || s.DebtIdleRaw != debtMintRaw(autoFixtureDebtIdleRaw) {
 			t.Fatalf("%s: held %q NAV %d PYUSD %d", name, s.HeldLanes, s.StrategyNAVRaw, s.DebtIdleRaw)
 		}
 		// The bridge monitors read journal facts this batch-only fixture

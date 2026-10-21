@@ -247,11 +247,11 @@ func decodeRouteNAVCustodiesForRoute(v *Vault, accounts []ConfirmedAccount, rout
 	return result, nil
 }
 
-func valueBetweenTokenRaw(raw uint64, tokenDecimals, debtDecimals uint8, tokenPriceSF, debtPriceSF [16]byte, liability bool) (uint64, error) {
-	return valueBetweenPrices(raw, tokenDecimals, debtDecimals, littleInt(tokenPriceSF[:]), littleInt(debtPriceSF[:]), liability)
+func valueBetweenTokenRaw(raw uint64, tokenDecimals, debtDecimals uint8, tokenPriceSF, debtPriceSF [16]byte, roundUp bool) (uint64, error) {
+	return valueBetweenPrices(raw, tokenDecimals, debtDecimals, littleInt(tokenPriceSF[:]), littleInt(debtPriceSF[:]), roundUp)
 }
 
-func valueBetweenPrices(raw uint64, tokenDecimals, debtDecimals uint8, tokenPrice, debtPrice *big.Int, liability bool) (uint64, error) {
+func valueBetweenPrices(raw uint64, tokenDecimals, debtDecimals uint8, tokenPrice, debtPrice *big.Int, roundUp bool) (uint64, error) {
 	if tokenDecimals > 18 || debtDecimals > 18 {
 		return 0, fmt.Errorf("unsupported token decimal scale")
 	}
@@ -263,7 +263,7 @@ func valueBetweenPrices(raw uint64, tokenDecimals, debtDecimals uint8, tokenPric
 	denominator := new(big.Int).Mul(debtPrice, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(tokenDecimals)), nil))
 	quotient, remainder := new(big.Int), new(big.Int)
 	quotient.QuoRem(numerator, denominator, remainder)
-	if liability && remainder.Sign() != 0 {
+	if roundUp && remainder.Sign() != 0 {
 		quotient.Add(quotient, big.NewInt(1))
 	}
 	if !quotient.IsUint64() {

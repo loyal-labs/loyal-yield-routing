@@ -143,7 +143,7 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 			leg, _ := hastraConversionLeg(action, autoAUTOWYLDSLane)
 			request := HastraConversionRequest{Action: action, AmountRaw: 1_000_000, Policy: policy, RecentBlockhash: backyardSettings, LastValidBlockHeight: 99, RouteLane: autoAUTOWYLDSLane}
 			if leg != lanepolicy.HastraMintDeposit {
-				request.Price, request.PriceScale, request.PriceTimestamp = price.Price.String(), price.Scale, price.Timestamp
+				request.StakeQuote = quoteStakePrice(price)
 			}
 			if request.OutputRaw, err = hastraOutput(leg, price, request.AmountRaw); err != nil {
 				t.Fatal(err)
@@ -217,7 +217,7 @@ func TestHastraEffectsQuoteTheProgramRounding(t *testing.T) {
 			t.Fatal(row.action, err)
 		}
 		r, e := evidence.Request, evidence.ExpectedEffects
-		if r.OutputRaw != row.want || r.Policy != policy || r.RecentBlockhash != backyardSettings || (row.action == SwapUSDCToDebtStep) != (r.Price == "") {
+		if r.OutputRaw != row.want || r.Policy != policy || r.RecentBlockhash != backyardSettings || (row.action == SwapUSDCToDebtStep) != (r.StakeQuote == nil) {
 			t.Fatalf("%s request %+v, want output %d", row.action, r, row.want)
 		}
 		if _, err := DecodeExpectedEffects(rwa, mustMarshalEffects(t, e)); err != nil {

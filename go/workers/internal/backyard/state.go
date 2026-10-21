@@ -55,6 +55,8 @@ func (s OperationStatus) preBroadcast() bool {
 	return s.unsigned() || s == Signed
 }
 
+type debtMintRaw int64
+
 type Snapshot struct {
 	ValuationSource             string `json:",omitempty"`
 	ValuationSlot               int64  `json:",omitempty"`
@@ -69,13 +71,10 @@ type Snapshot struct {
 	CollateralIdleRaw           int64
 	CollateralIdleValueRaw      int64
 	MinimumCollateralDepositRaw int64
-	// DebtIdleRaw is the vault's custody of the lane's debt mint, the whole
-	// account, in that mint's raw units. SquadsIdleRaw remains bridge USDC,
-	// even when the lane borrows PYUSD/USDG/USDS.
-	DebtIdleRaw   int64
-	PayoffDebtRaw int64
-	RouteLane     string
-	StrategyKey   string
+	DebtIdleRaw                 debtMintRaw
+	PayoffDebtRaw               int64
+	RouteLane                   string
+	StrategyKey                 string
 	// HeldLanes is every lane holding exposure in this batch, in registry
 	// order and comma separated ("" when none). RouteLane is the working
 	// lane: the one lane this per-lane view describes.

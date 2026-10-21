@@ -24,6 +24,5 @@ func entrySwapAdmissionFixture(t *testing.T) (Observation, Decision, JupiterExec
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.Request.EntryReturnReserved = true
 	return o, d, e, manifest, rpc, client, accounts
 }

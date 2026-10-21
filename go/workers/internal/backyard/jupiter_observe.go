@@ -57,10 +57,6 @@ func prepareJupiterFromTickObservation(ctx context.Context, rpc *chain.Client, m
 	}
 	evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, observation.policies, decision, sourceRaw, destinationRaw, observation.Snapshot.Slot)
 	logStage("prepare_jupiter_quote", prepareStart)
-	if err == nil && decision.Action == SwapStableToCollateralStep && earnHeldLane(decision.StrategyKey) {
-		evidence.Request.EntryReturnReserved = true
-		evidence.Request.TopupReturnReserved = decision.Reason == topupSwapReason
-	}
 	return observation, evidence, err
 }
 
@@ -74,9 +70,15 @@ func jupiterTokenPrograms(v *Vault, action Action, lane string) (string, string,
 	}
 }
 
-// Current execution calls this after checking actual custody/policy accounts.
-// Exit costing may also quote prospective balances, but must never treat that
-// estimate as current-state simulation or promote its wire to execution.
+type prospectiveJupiterQuote struct {
+	Request JupiterSwapRequest
+}
+
+func quoteProspectiveJupiter(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (prospectiveJupiterQuote, error) {
+	evidence, err := prepareJupiterQuoteEvidence(ctx, rpc, client, manifest, policies, decision, sourceRaw, destinationRaw, slot)
+	return prospectiveJupiterQuote{Request: evidence.Request}, err
+}
+
 func prepareJupiterQuoteEvidence(ctx context.Context, rpc *chain.Client, client *jupiter.Client, manifest RouteManifest, policies installedPolicies, decision Decision, sourceRaw, destinationRaw uint64, slot int64) (JupiterExecutionEvidence, error) {
 	v := manifest.vault
 	maxAccounts, err := jupiterSwapMaxAccounts(v, decision.StrategyKey, decision.Action)

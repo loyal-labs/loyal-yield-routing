@@ -197,7 +197,7 @@ func operatorExitTarget(k targetTick) (int, LaneTarget, bool) {
 func custodyTarget(k targetTick) (int, LaneTarget, bool) {
 	for i, l := range k.lanes {
 		inFlight := l.held && laneInFlight(l.s)
-		loose := !inFlight && l.s.DebtIdleRaw > partialWithdrawalDustRaw && (k.outbound() || !debtCashOwed(k.lanes, l.s))
+		loose := !inFlight && int64(l.s.DebtIdleRaw) > partialWithdrawalDustRaw && (k.outbound() || !debtCashOwed(k.lanes, l.s))
 		if !inFlight && !loose {
 			continue
 		}
@@ -520,7 +520,7 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if s.ManualReason != "" || s.RouteKind != RouteKind || !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.LiquidationThresholdBPS > 10_000 || s.MaxLTVBPS > 10_000 {
 		return d(HoldManualRecovery, "invalid_or_incoherent_snapshot", 0)
 	}
-	for _, value := range []int64{s.WithdrawalDemandRaw, s.SquadsIdleRaw, s.CollateralIdleRaw, s.CollateralIdleValueRaw, s.MinimumCollateralDepositRaw, s.DebtIdleRaw, s.PayoffDebtRaw,
+	for _, value := range []int64{s.WithdrawalDemandRaw, s.SquadsIdleRaw, s.CollateralIdleRaw, s.CollateralIdleValueRaw, s.MinimumCollateralDepositRaw, int64(s.DebtIdleRaw), s.PayoffDebtRaw,
 		s.VoltrStrategyIdleRaw, s.VoltrIdleRaw, s.PositionCollateralRaw, s.PositionDebtRaw, s.PositionCollateralValueRaw, s.PositionDebtValueRaw,
 		s.StrategyNAVRaw, s.PriorReportedNAVRaw, s.LTVBPS, s.LiquidationThresholdBPS, s.MaxLTVBPS, s.LastReportAgeSeconds, s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw} {
 		if value < 0 {
@@ -601,12 +601,12 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		}
 		return d(SwapCollateralToStableStep, outboundCollateralReason, s.CollateralIdleRaw), true
 	}
-	if s.DebtIdleRaw > partialWithdrawalDustRaw {
+	if int64(s.DebtIdleRaw) > partialWithdrawalDustRaw {
 		if debtToUSDCConvertible(s.RouteLane) {
-			return d(SwapDebtToUSDCStep, outboundDebtReason, s.DebtIdleRaw), true
+			return d(SwapDebtToUSDCStep, outboundDebtReason, int64(s.DebtIdleRaw)), true
 		}
 		// Hastra debt never redeems to USDC: it stakes to collateral first.
-		return d(SwapDebtToCollateralStep, outboundDebtReason, s.DebtIdleRaw), true
+		return d(SwapDebtToCollateralStep, outboundDebtReason, int64(s.DebtIdleRaw)), true
 	}
 	if s.SquadsIdleRaw > 0 {
 		return d(StageSquadsToVoltr, outboundStageReason, s.SquadsIdleRaw), true
