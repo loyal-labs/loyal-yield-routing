@@ -225,6 +225,7 @@ fn validate_envelope(
     inner: [u8; 8],
 ) -> Result<(), VoltrCustomPolicyError> {
     let data = &instruction.data;
+    // Only the report version is pinned; sequence, slot, NAV and digest are left for the adaptor to authenticate and order.
     if data.len() != ENVELOPE_LEN
         || data[..8] != outer
         || data[ADAPTOR_CALL_OFFSET] != 1
