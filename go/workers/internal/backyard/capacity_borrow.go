@@ -45,10 +45,7 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 		if !kaminoObligationTermOpen(decoded, debt, clockUnixTimestamp(accounts)) {
 			return 0, nil
 		}
-		// Cross-mode (elevation group 0) is the only recipe the pilot
-		// initializes. A different group needs its exact market/paired-collateral
-		// cap model; it must not inherit cross-mode liquidity.
-		if decoded.elevationGroup != 0 || !allZero(obligation.Data[2288:2320]) {
+		if !plainCrossModeObligation(decoded, obligation) {
 			return 0, nil
 		}
 	}
@@ -57,6 +54,8 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 	}
 	return kaminoDebtReserveRoom(debt, clockUnixTimestamp(accounts))
 }
+
+const parBorrowFactorPct = 100
 
 func kaminoDebtReserveRoom(debt decodedKaminoReserve, now int64) (uint64, error) {
 	if !kaminoReserveTermOpen(debt, now) {
@@ -68,13 +67,10 @@ func kaminoDebtReserveRoom(debt decodedKaminoReserve, now int64) (uint64, error)
 	if debt.terms.QueuedCollateral != 0 {
 		return 0, nil
 	}
-	factor := debt.terms.BorrowFactorPct
 	// KLend clamps the effective factor to at least 100%, including old
 	// configurations whose serialized value is zero.
-	factor = max(factor, 100)
-	if factor != 100 {
-		// Pilot risk observation uses unweighted LTV. A weighted debt lane needs
-		// consistent risk/unwind admission before accepting new capital.
+	unweightedDebtOnly := max(debt.terms.BorrowFactorPct, parBorrowFactorPct) == parBorrowFactorPct
+	if !unweightedDebtOnly {
 		return 0, nil
 	}
 	feeRate := debt.terms.BorrowFeeSF
@@ -126,7 +122,10 @@ func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route Ru
 	if err != nil {
 		return 0, err
 	}
-	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
+	rate, err := debtBorrowFeeRate(accounts, route)
+	if err != nil {
+		return 0, err
+	}
 	receive := kaminoReceiveWithinRoom(room, rate)
 	if receive < leverageMinimumBorrowRaw {
 		return 0, nil
@@ -142,11 +141,16 @@ func capacitySizedBorrow(p KaminoPosition, accounts []ConfirmedAccount, route Ru
 	return leverageStepWithinRisk(p, accounts, route, min(receive, desired, depositRoom), rate)
 }
 
-// leverageStepWithinRisk caps a receive at the obligation's borrow limit
-// before the redeposit (KLend checks the borrow on its own; a 0.1%
-// price-refresh margin) and at the lane's ceiling after it
-// (leverageUpCapFee), the borrow fee included; zero below the minimum
-// borrow.
+const borrowLimitRefreshMarginDivisor = 1000
+
+func debtBorrowFeeRate(accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
+	debt, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
+	if err != nil {
+		return 0, err
+	}
+	return debt.terms.BorrowFeeSF, nil
+}
+
 func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, receive, rate uint64) (uint64, error) {
 	collateral, err := p.collateralValueDebtRaw()
 	if err != nil {
@@ -155,13 +159,13 @@ func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route
 	if p.MaxLTVBPS <= 0 {
 		return 0, nil
 	}
-	protocol := new(big.Int).Mul(new(big.Int).SetUint64(collateral), big.NewInt(p.MaxLTVBPS))
-	protocol.Quo(protocol, big.NewInt(10_000))
-	protocol.Sub(protocol, new(big.Int).Quo(protocol, big.NewInt(1000)))
-	if !protocol.IsUint64() || protocol.Uint64() <= p.DebtRaw {
+	borrowLimitBeforeRedeposit := new(big.Int).Mul(new(big.Int).SetUint64(collateral), big.NewInt(p.MaxLTVBPS))
+	borrowLimitBeforeRedeposit.Quo(borrowLimitBeforeRedeposit, big.NewInt(10_000))
+	borrowLimitBeforeRedeposit.Sub(borrowLimitBeforeRedeposit, new(big.Int).Quo(borrowLimitBeforeRedeposit, big.NewInt(borrowLimitRefreshMarginDivisor)))
+	if !borrowLimitBeforeRedeposit.IsUint64() || borrowLimitBeforeRedeposit.Uint64() <= p.DebtRaw {
 		return 0, nil
 	}
-	receive = min(receive, kaminoReceiveWithinRoom(protocol.Uint64()-p.DebtRaw, rate))
+	receive = min(receive, kaminoReceiveWithinRoom(borrowLimitBeforeRedeposit.Uint64()-p.DebtRaw, rate))
 	receive, err = leverageUpCapFee(p, laneCeilingLTVBPS(route.Lane), receive, func(n uint64) (uint64, error) { return kaminoBorrowFeeAtRate(rate, n) })
 	if err != nil {
 		return 0, nil
@@ -169,8 +173,7 @@ func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route
 	return receive, nil
 }
 
-func desiredLeverageBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level float64) (uint64, error) {
-	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
+func desiredLeverageBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level float64, rate uint64) (uint64, error) {
 	if rate >= uint64(1)<<kamino.FractionBits {
 		return 0, nil
 	}
@@ -189,6 +192,10 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 	if err != nil {
 		return
 	} // new borrowing holds; urgent exits remain live
+	debtReserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
+	if err != nil {
+		return
+	}
 	var borrow, desired [len(leverageLadder)]uint64
 	for i, r := range leverageLadder[1:] {
 		if r.level > laneMaxLevel(route.Lane) {
@@ -197,13 +204,9 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 		if borrow[i+1], err = capacitySizedBorrow(p, accounts, route, r.level); err != nil {
 			return
 		}
-		if desired[i+1], err = desiredLeverageBorrow(p, accounts, route, r.level); err != nil {
+		if desired[i+1], err = desiredLeverageBorrow(p, accounts, route, r.level, debtReserve.terms.BorrowFeeSF); err != nil {
 			return
 		}
-	}
-	debtReserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
-	if err != nil {
-		return
 	}
 	utilizationHeadroom, err := utilizationBorrowHeadroomRaw(debtReserve)
 	if err != nil {
@@ -219,7 +222,7 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 		return
 	}
 	s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, s.BorrowDebtDecimals = p.DebtPriceSF, usdc.marketPriceSF, p.DebtDecimals
-	s.BorrowFeeRate = binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
+	s.BorrowFeeRate = debtReserve.terms.BorrowFeeSF
 	s.BorrowCapacityKnown, s.AdditionalDebtRoomRaw = true, room
 	s.LeverageBorrowRaw, s.LeverageDesiredRaw = borrow, desired
 	s.BorrowUtilizationHeadroomRaw = utilizationHeadroom

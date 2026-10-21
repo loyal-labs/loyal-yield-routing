@@ -5,12 +5,10 @@ import (
 	"sync"
 )
 
-// phase3ReadFanout bounds the independent reads one pricer runs at once; each
-// cost read already fans out to its fee and price reads.
-const phase3ReadFanout = 4
+const maxConcurrentReads = 4
 
 // concurrentReads runs independent read-only steps at once, at most
-// phase3ReadFanout in flight, and returns the first error in step order: the
+// maxConcurrentReads in flight, and returns the first error in step order: the
 // error the serial sequence would have stopped on. A failure cancels only the
 // steps after it, which the serial sequence would never have reached; the
 // steps before it finish, so the reported error is never a cancellation it
@@ -23,7 +21,7 @@ func concurrentReads(ctx context.Context, steps ...func(context.Context) error) 
 		contexts[i], cancels[i] = context.WithCancel(ctx)
 		defer cancels[i]()
 	}
-	slots := make(chan struct{}, phase3ReadFanout)
+	slots := make(chan struct{}, maxConcurrentReads)
 	var reads sync.WaitGroup
 	for i, step := range steps {
 		reads.Add(1)
