@@ -614,6 +614,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 	if t.EquityZero && s.PositionDebtRaw == 0 && s.PositionCollateralRaw > partialWithdrawalDustRaw {
 		return d(DeleverRouteStep, exitWithdrawReason, stepDownMarker), true
 	}
+	// A release never empties a lane: 90% of its equity or more is the operator's exit.
 	if t.ReleaseRaw > 0 {
 		equity := laneEquityRaw(s)
 		if equity <= 0 || t.ReleaseRaw*10_000 >= equity*partialWithdrawalFullExitBPS || partialWithdrawalReleaseReceipts(s, t.ReleaseRaw) <= 0 {
