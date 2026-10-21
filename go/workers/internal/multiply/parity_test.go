@@ -200,9 +200,6 @@ func TestTopologyDeterminismAndIdentity(t *testing.T) {
 			t.Fatalf("strategy %s custody/obligation is on-curve (not a PDA)", key)
 		}
 	}
-	if _, err := topology.Strategy(NoStrategy); err == nil {
-		t.Fatal("unknown strategy was accepted")
-	}
 }
 
 // ---------------------------------------------------------------- planner

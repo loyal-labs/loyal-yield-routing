@@ -20,8 +20,7 @@ import (
 )
 
 // runBackyard is LOYAL_WORKER_SCOPE=backyard: the separately credentialed
-// Backyard family. BACKYARD_DATABASE_URL must be the direct (non-pooler) DSN:
-// the engine's one database session holds the family lock, Backyard's
+// Backyard family. The engine's one database session holds the family lock, Backyard's
 // one-writer lock (backyard.OpenDatabase). A second process waits for it
 // before it reads or writes anything; nothing below re-checks it.
 func runBackyard(ctx context.Context, owner string, facts *engine.Facts, metrics engine.Lane) error {
