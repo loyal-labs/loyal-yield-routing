@@ -16,8 +16,6 @@ import (
 const lookupProgram = "AddressLookupTab1e1111111111111111111111111"
 const lookupMaximumChunk = 20
 
-// Official ABI reference: locked solana-address-lookup-table-interface 2.2.2,
-// instruction.rs ProgramInstruction bincode enum and its four public builders.
 func lookupInstructions(intent LookupIntent) ([]sdk.Instruction, error) {
 	if intent.Cluster == "" || intent.OperationID <= 0 || intent.FamilyID <= 0 || intent.TableID <= 0 || intent.Generation < 0 || intent.MutationEpoch < 0 || intent.Payer != intent.Authority || intent.TableAddress == intent.Authority {
 		return nil, errors.New("lookup-table immutable ownership is incomplete")

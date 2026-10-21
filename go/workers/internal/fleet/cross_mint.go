@@ -690,23 +690,20 @@ func (r *Revalidator) loadFinalizedJupiterTables(ctx context.Context, listed map
 	return tables, nil
 }
 
-// validateStableMintExtensions admits only mint extensions that cannot
-// change raw transfer accounting: no fee, hook or non-initialized default
-// account state.
 func validateStableMintExtensions(extensions []spl.Extension) error {
 	for _, extension := range extensions {
 		value := extension.Value
 		switch extension.Type {
-		case 3, 4, 12, 16, 18, 19:
-		case 6:
+		case spl.ExtensionMintCloseAuthority, spl.ExtensionConfidentialTransferMint, spl.ExtensionPermanentDelegate, spl.ExtensionConfidentialTransferFeeConfig, spl.ExtensionMetadataPointer, spl.ExtensionTokenMetadata:
+		case spl.ExtensionDefaultAccountState:
 			if len(value) != 1 || value[0] != 1 {
 				return errors.New("Token-2022 default account state is not initialized")
 			}
-		case 1:
+		case spl.ExtensionTransferFeeConfig:
 			if len(value) != 108 || binary.LittleEndian.Uint64(value[80:88]) != 0 || binary.LittleEndian.Uint16(value[88:90]) != 0 || binary.LittleEndian.Uint64(value[98:106]) != 0 || binary.LittleEndian.Uint16(value[106:108]) != 0 {
 				return errors.New("Token-2022 mint has a nonzero transfer fee")
 			}
-		case 14:
+		case spl.ExtensionTransferHook:
 			if len(value) != 64 || !bytes.Equal(value[32:], make([]byte, 32)) {
 				return errors.New("Token-2022 mint has an active transfer hook")
 			}
@@ -717,12 +714,10 @@ func validateStableMintExtensions(extensions []spl.Extension) error {
 	return nil
 }
 
-// validateStableAccount admits mint's canonical-program account held by
-// owner; a Token-2022 one must carry the extended layout.
 func validateStableAccount(account *chain.Account, mint, owner string) (spl.TokenAccount, error) {
 	program, ok := EarnStableTokenProgram(mint)
 	held, err := spl.DecodeTokenAccount(account)
-	if !ok || err != nil || held.Program.String() != program || held.Mint.String() != mint || held.Owner.String() != owner || held.Frozen || program == token2022Program && len(account.Data) <= 165 {
+	if !ok || err != nil || held.Program.String() != program || held.Mint.String() != mint || held.Owner.String() != owner || held.Frozen || program == token2022Program && !spl.HasExtensionLayout(account) {
 		return spl.TokenAccount{}, errors.New("stable token account program, binding or state is invalid")
 	}
 	if err := held.UnrestrictedBalance(); err != nil {
@@ -733,7 +728,7 @@ func validateStableAccount(account *chain.Account, mint, owner string) (spl.Toke
 func validateStableMint(account *chain.Account, mint string) error {
 	program, ok := EarnStableTokenProgram(mint)
 	decoded, err := spl.DecodeMint(account)
-	if !ok || err != nil || account.Key.String() != mint || decoded.Program.String() != program || decoded.Decimals != 6 || program == token2022Program && len(account.Data) <= 165 {
+	if !ok || err != nil || account.Key.String() != mint || decoded.Program.String() != program || decoded.Decimals != 6 || program == token2022Program && !spl.HasExtensionLayout(account) {
 		return errors.New("stable mint binding, decimals, or state is invalid")
 	}
 	return validateStableMintExtensions(decoded.Extensions)

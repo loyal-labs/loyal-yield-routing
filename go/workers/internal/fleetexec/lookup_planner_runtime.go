@@ -70,7 +70,6 @@ func (p *LookupPlanner) Run(ctx context.Context) error {
 	}
 }
 
-// A permanently malformed planning request must not strand rent forever.
 func (p *LookupPlanner) retireIndependentlyOfPlanning(ctx context.Context, bank int64) (bool, error) {
 	if p.config.ReconcileOnly {
 		return false, nil

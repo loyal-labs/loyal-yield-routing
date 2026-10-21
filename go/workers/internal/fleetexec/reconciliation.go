@@ -174,18 +174,11 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 	if c.sourceKind == "idle_vault_usdc" && ata != c.idleATA {
 		return nil, errors.New("idle custody ATA differs from signed plan")
 	}
-	// The second batch includes reserves again: obligation collateral and the
-	// conversion fraction share one finalized bank observation. An earlier reserve
-	// quote cannot be promoted to the later obligation slot. A full source exit
-	// closes the source obligation inside the route (KLend withdraw), so null
-	// accounts are returned rather than rejected; reserves stay required by
-	// reservePostIdentity and the target must still hold funded collateral.
-	keys := append(append(append([]string{}, reserves...), obligations...), ata)
-	slot, accounts, err := fleet.ReadAccounts(ctx, reader, keys, rpc.CommitmentFinalized, discoverySlot)
+	slot, batch, err := readPostAtOneFinalizedSlot(ctx, reader, reserves, obligations, ata, discoverySlot)
 	if err != nil {
 		return nil, err
 	}
-	idleAccount := accounts[len(accounts)-1]
+	idleAccount := batch.ata
 	idleExists := idleAccount != nil
 	idle := int64(0)
 	if idleExists {
@@ -196,7 +189,7 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 	}
 	for i := range positions {
 		p := &positions[i]
-		a := accounts[i]
+		a := batch.reserves[i]
 		market, obligation, collateral, token, e := reservePostIdentity(a, c.mint, c.vault)
 		if e != nil {
 			return nil, e
@@ -209,7 +202,7 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 			return nil, e
 		}
 		p.supplyAPY = state.SupplyAPYBPS
-		obligationAccount := accounts[len(reserves)+i]
+		obligationAccount := batch.obligations[i]
 		p.exists = obligationAccount != nil
 		if p.exists {
 			p.amount, e = obligationCollateral(obligationAccount, p.market, c.vault, p.reserve)
@@ -226,6 +219,20 @@ func observeSameMintPost(ctx context.Context, reader fleet.AccountReader, c same
 		return nil, errors.New("post-state target collateral is not funded")
 	}
 	return &sameMintPostProof{contract: c, slot: slot, positions: positions, idleAmount: idle, idleATA: ata, idleATAExists: idleExists, tokenProgram: program, observedAt: time.Now().UTC(), receipt: receipt}, nil
+}
+
+type postBatch struct {
+	reserves, obligations []*chain.Account
+	ata                   *chain.Account
+}
+
+func readPostAtOneFinalizedSlot(ctx context.Context, reader fleet.AccountReader, reserves, obligations []string, ata string, minimumSlot int64) (int64, postBatch, error) {
+	keys := append(append(append([]string{}, reserves...), obligations...), ata)
+	slot, accounts, err := fleet.ReadAccounts(ctx, reader, keys, rpc.CommitmentFinalized, minimumSlot)
+	if err != nil {
+		return 0, postBatch{}, err
+	}
+	return slot, postBatch{reserves: accounts[:len(reserves)], obligations: accounts[len(reserves) : len(reserves)+len(obligations)], ata: accounts[len(accounts)-1]}, nil
 }
 
 func redeemableCollateral(reserve *chain.Account, collateral int64) (int64, error) {
