@@ -28,7 +28,6 @@ type LookupLockPlan struct {
 	Operations                   LookupRows
 }
 
-// LockLookupRows locks control, shared-market heads, families, desired heads, bindings, tables, the authority advisory, then operations, each class in id order.
 func LockLookupRows(ctx context.Context, tx pgx.Tx, p LookupLockPlan) error {
 	if p.ControlCluster != "" {
 		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_provisioner_controls(cluster,paused,reason,updated_by,control_epoch) VALUES($1,false,'implicit unpaused provisioner control',$2,0) ON CONFLICT(cluster) DO NOTHING`, p.ControlCluster, p.ControlOwner); err != nil {

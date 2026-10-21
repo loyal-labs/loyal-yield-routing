@@ -1,13 +1,3 @@
-// Command loyal-migrate applies the repository's SQL migrations to the Yield
-// (Neon) and Timescale databases. It keeps the ledger the retired Rust runners
-// wrote: version, name and the lowercase hex SHA-256 of the file bytes, in
-// loyal_yield.schema_migrations and loyal.timescale_schema_migrations.
-//
-//	loyal-migrate -db yield status          # read-only: applied, pending, checksum drift
-//	loyal-migrate -db yield up              # apply pending migrations in version order
-//	loyal-migrate -db yield -to 104 up      # apply pending migrations up to version 104
-//
-// The URL comes from NEON_DATABASE_URL (yield) or TIMESCALEDB_URL (timescale).
 package main
 
 import (
@@ -203,9 +193,6 @@ func apply(ctx context.Context, conn *pgx.Conn, db database, m migration) error 
 	})
 }
 
-// up applies the pending migrations in version order, those at or below
-// through: a release applies its pre-deploy migrations first and the ones
-// that need the new binary live after it.
 func up(ctx context.Context, conn *pgx.Conn, db database, files []migration, through int64, out io.Writer) error {
 	schema, _, _ := strings.Cut(db.ledger, ".")
 	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+schema+"; CREATE TABLE IF NOT EXISTS "+db.ledger+
