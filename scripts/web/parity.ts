@@ -63,14 +63,6 @@ type KnownDifference = {
   go: (expected: Outcome, c: LocaleCase) => Outcome | null;
 };
 
-function sortedByKey(location: string): string {
-  const url = new URL(location, "http://localhost");
-  if (!url.search) return location;
-  const key = (pair: string) => decodeURIComponent((pair.split("=")[0] ?? "").replaceAll("+", " "));
-  const pairs = url.search.slice(1).split("&").sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
-  return `${url.pathname}?${pairs.join("&")}`;
-}
-
 const KNOWN_DIFFERENCES: KnownDifference[] = [
   {
     name: "app host root",
@@ -78,31 +70,6 @@ const KNOWN_DIFFERENCES: KnownDifference[] = [
     go: (expected, c) =>
       expected.kind === "rewrite" && c.host.startsWith(APP_HOST)
         ? { kind: "redirect", status: 302, location: expected.to, cookies: [], cacheControl: null, vary: null }
-        : null,
-  },
-  {
-    name: "app host root drops the query",
-    reason: "router.go redirects to the constant /app, so ?ref=x on the app host root is lost; the rewrite keeps it",
-    go: (expected) =>
-      expected.kind === "redirect" && expected.status === 302 && expected.location.startsWith("/app?")
-        ? { ...expected, location: "/app" }
-        : null,
-  },
-  {
-    name: "matcher exclusions",
-    reason: "middleware.ts skips /_next* and /api* prefixes; webapp skips only paths with a dot and /api/*, so ?lang= still redirects on /_next*, /apiary",
-    go: (_, c) => {
-      const pathname = new URL(c.target, "http://localhost").pathname;
-      const skippedByNextOnly = !middlewareMatches(pathname) && !pathname.includes(".") && !pathname.startsWith("/api/");
-      return skippedByNextOnly ? nextOutcome(c, true) : null;
-    },
-  },
-  {
-    name: "query order",
-    reason: "localeRedirect re-encodes the query with url.Values.Encode, which sorts keys; Next keeps the request's order",
-    go: (expected) =>
-      expected.kind === "redirect" && expected.cookies.length > 0
-        ? { ...expected, location: sortedByKey(expected.location) }
         : null,
   },
 ];
