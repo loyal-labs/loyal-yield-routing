@@ -356,6 +356,7 @@ fn arm_constraint(
     });
     SquadsInstructionConstraint {
         program_id: instruction.program_id,
+        // The adaptor rederives and authenticates Settings/vault/program.
         account_constraints: selected_account_constraints(
             instruction,
             ARM_CONFIG_TICKET_ACCOUNT_INDEXES,
@@ -653,6 +654,7 @@ pub fn create_voltr_custom_policies(
     }
     validate_arm("withdraw", &templates.withdraw_arm, withdraw, identity, 1)?;
 
+    // Voltr validates the receipt/authority PDAs; the adaptor validates the rest.
     let allocation_constraint = voltr_constraint(
         allocation,
         VOLTR_DEPOSIT,
@@ -1126,6 +1128,6 @@ mod tests {
         else {
             panic!("arm constraint is not a byte slice");
         };
-        assert_eq!(pinned, arm[17..17 + pinned.len()]);
+        assert_eq!(pinned, arm[17..23]);
     }
 }

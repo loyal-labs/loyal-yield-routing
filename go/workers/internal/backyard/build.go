@@ -97,9 +97,9 @@ var (
 
 const (
 	bridgeCapRaw               uint64 = 1_000_000_000_000
-	bridgeMaxNAV                      = bridgeCapRaw
+	bridgeMaxNAV               uint64 = 1_000_000_000_000
 	bridgeDailyCapRaw          uint64 = 200_000_000_000
-	strategyTwoBridgeLegCapRaw        = bridgeDailyCapRaw
+	strategyTwoBridgeLegCapRaw uint64 = 200_000_000_000
 )
 
 func compileBridgeMessageForDelegate(v *Vault, request BridgeBuildRequest, delegate publicKey) ([]byte, error) {

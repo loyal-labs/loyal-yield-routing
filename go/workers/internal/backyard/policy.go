@@ -307,8 +307,6 @@ func initializerPolicy(v *Vault, route RuntimeRoute) (squads.Policy, error) {
 	return vaultPolicy(v, constraint), err
 }
 
-const maxCatalogSwapConversions = 3
-
 // catalogSwaps are the Jupiter policies the catalog lanes, AUTO among them,
 // swap through, each its conversions in constraint order.
 var catalogSwaps = [][]conversion{
@@ -335,9 +333,6 @@ func catalogSwapEdges(v *Vault) ([][]swapEdge, error) {
 	}
 	out := make([][]swapEdge, len(catalogSwaps))
 	for i, policy := range catalogSwaps {
-		if len(policy) > maxCatalogSwapConversions {
-			return nil, fmt.Errorf("catalog swap policy %d has %d conversions", i, len(policy))
-		}
 		for _, c := range policy {
 			out[i] = append(out[i], swapEdge{assets[c.from], assets[c.to]})
 		}
