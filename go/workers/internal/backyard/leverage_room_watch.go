@@ -1,11 +1,12 @@
 package backyard
 
 import (
-	"encoding/binary"
 	"math"
 	"math/big"
 	"sort"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // roomWatch is one reserve the worker waits on. Debt watches borrow room on
@@ -47,12 +48,11 @@ func roomOf(w roomWatch, account ConfirmedAccount, now int64) (room uint64, usd 
 		if err != nil {
 			return 0, 0, false, false
 		}
-		room, err = kaminoDebtReserveRoom(account, debt, now)
+		room, err = kaminoDebtReserveRoom(debt, now)
 		if err != nil {
 			return 0, 0, false, false
 		}
-		rate := binary.LittleEndian.Uint64(account.Data[kaminoReserveConfigOffset+40:])
-		return room, reserveUSD(room, debt), kaminoReceiveWithinRoom(room, rate) >= leverageMinimumBorrowRaw, true
+		return room, reserveUSD(room, debt), kaminoReceiveWithinRoom(room, debt.terms.BorrowFeeSF) >= leverageMinimumBorrowRaw, true
 	}
 	collateral, err := decodeKaminoReserve(account, w.route.Kamino.CollateralMint, w.route.Kamino)
 	if err != nil || collateral.totalLiquiditySF == nil {
@@ -69,13 +69,12 @@ func roomOf(w roomWatch, account ConfirmedAccount, now int64) (room uint64, usd 
 	return room, usd, usd >= float64(leverageMinimumBorrowRaw)/1e6, true
 }
 
-// reserveUSD values raw liquidity at the reserve's own Q60 market price.
 func reserveUSD(raw uint64, r decodedKaminoReserve) float64 {
 	price := littleInt(r.marketPriceSF[:])
 	if price.Sign() <= 0 {
 		return math.NaN()
 	}
-	v, _ := new(big.Rat).SetFrac(new(big.Int).Mul(new(big.Int).SetUint64(raw), price), new(big.Int).Lsh(big.NewInt(1), 60)).Float64()
+	v, _ := new(big.Rat).SetFrac(new(big.Int).Mul(new(big.Int).SetUint64(raw), price), new(big.Int).Lsh(big.NewInt(1), kamino.FractionBits)).Float64()
 	return v / math.Pow10(int(r.mintDecimals))
 }
 

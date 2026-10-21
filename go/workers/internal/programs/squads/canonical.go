@@ -39,7 +39,7 @@ func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
 	if err != nil {
 		return nil, err
 	}
-	if h.Kind != 3 {
+	if h.Kind != policyKindProgramInteraction {
 		return nil, nil
 	}
 	var candidates []FullPayload
@@ -157,27 +157,27 @@ func dataConstraintsEqual(left, right []DataConstraintView) bool {
 			return false
 		}
 		switch l.Kind {
-		case 0:
+		case ValueU8:
 			if l.U8 != r.U8 {
 				return false
 			}
-		case 1:
+		case ValueU16:
 			if l.U16 != r.U16 {
 				return false
 			}
-		case 2:
+		case ValueU32:
 			if l.U32 != r.U32 {
 				return false
 			}
-		case 3:
+		case ValueU64:
 			if l.U64 != r.U64 {
 				return false
 			}
-		case 4:
+		case ValueU128:
 			if l.U128 != r.U128 {
 				return false
 			}
-		case 5:
+		case ValueBytes:
 			if !bytes.Equal(l.Bytes, r.Bytes) {
 				return false
 			}
@@ -194,9 +194,9 @@ func dataConstraintsEqual(left, right []DataConstraintView) bool {
 // lock, start or expiration. It is loyal-actions squads.rs
 // serialize_settings_actions for that action.
 func appendLegacyPolicyCreate(out []byte, seed uint64, accountIndex uint8, constraints []InstructionConstraintView, limits []SpendingLimitView, delegate solana.PublicKey) ([]byte, error) {
-	out = append(out, 7) // SettingsAction::PolicyCreate
+	out = append(out, settingsActionPolicyCreate)
 	out = binary.LittleEndian.AppendUint64(out, seed)
-	out = append(out, 3, accountIndex) // LegacyProgramInteraction
+	out = append(out, policyCreationLegacyProgramInteraction, accountIndex)
 	out = binary.LittleEndian.AppendUint32(out, uint32(len(constraints)))
 	for _, constraint := range constraints {
 		out = append(out, constraint.ProgramID[:]...)
@@ -227,10 +227,10 @@ func appendLegacyPolicyCreate(out []byte, seed uint64, accountIndex uint8, const
 			return nil, err
 		}
 	}
-	out = append(out, 0, 0) // pre_hook, post_hook
+	out = append(out, noPreHook, noPostHook)
 	out = binary.LittleEndian.AppendUint32(out, uint32(len(limits)))
 	for _, limit := range limits {
-		if limit.Accumulate || limit.MaxPerUse != 0 || limit.ExactQuantity || limit.Period > 4 {
+		if limit.Accumulate || limit.MaxPerUse != 0 || limit.ExactQuantity || limit.Period > PeriodCustom {
 			return nil, errors.New("a policy's spending limit states only its mint, window and amount per period")
 		}
 		out = append(out, limit.Mint[:]...)
@@ -241,16 +241,16 @@ func appendLegacyPolicyCreate(out []byte, seed uint64, accountIndex uint8, const
 			out = binary.LittleEndian.AppendUint64(append(out, 1), uint64(*limit.Expiration))
 		}
 		out = append(out, limit.Period)
-		if limit.Period == 4 {
+		if limit.Period == PeriodCustom {
 			out = binary.LittleEndian.AppendUint64(out, uint64(limit.CustomPeriod))
 		}
 		out = binary.LittleEndian.AppendUint64(out, limit.MaxPerPeriod)
 	}
-	out = binary.LittleEndian.AppendUint32(out, 1) // signers
+	out = binary.LittleEndian.AppendUint32(out, legacyPolicySignerCount)
 	out = append(append(out, delegate[:]...), FullPermissions)
-	out = binary.LittleEndian.AppendUint16(out, 1) // threshold
-	out = binary.LittleEndian.AppendUint32(out, 0) // time_lock
-	return append(out, 0, 0), nil                  // start_timestamp, expiration_args
+	out = binary.LittleEndian.AppendUint16(out, legacyPolicyThreshold)
+	out = binary.LittleEndian.AppendUint32(out, legacyPolicyTimeLock)
+	return append(out, noStartTimestamp, noExpirationArgs), nil
 }
 
 func appendDataConstraints(out []byte, constraints []DataConstraintView) ([]byte, error) {
@@ -260,17 +260,17 @@ func appendDataConstraints(out []byte, constraints []DataConstraintView) ([]byte
 		value := constraint.DataValue
 		out = append(out, value.Kind)
 		switch value.Kind {
-		case 0:
+		case ValueU8:
 			out = append(out, value.U8)
-		case 1:
+		case ValueU16:
 			out = binary.LittleEndian.AppendUint16(out, value.U16)
-		case 2:
+		case ValueU32:
 			out = binary.LittleEndian.AppendUint32(out, value.U32)
-		case 3:
+		case ValueU64:
 			out = binary.LittleEndian.AppendUint64(out, value.U64)
-		case 4:
+		case ValueU128:
 			out = append(out, value.U128[:]...)
-		case 5:
+		case ValueBytes:
 			out = binary.LittleEndian.AppendUint32(out, uint32(len(value.Bytes)))
 			out = append(out, value.Bytes...)
 		default:

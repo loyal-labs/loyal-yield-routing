@@ -9,18 +9,21 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 )
 
-// Anchor account discriminators: sha256("account:<name>")[:8].
 var (
-	ReserveDiscriminator       = [8]byte{43, 242, 204, 202, 26, 247, 59, 127}
-	ObligationDiscriminator    = [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
-	LendingMarketDiscriminator = [8]byte{246, 114, 50, 98, 72, 157, 28, 120}
-	UserMetadataDiscriminator  = [8]byte{157, 214, 220, 235, 98, 135, 171, 28}
-	FarmUserStateDiscriminator = [8]byte{72, 177, 85, 249, 76, 167, 186, 126}
+	ReserveDiscriminator       = anchor.Account("Reserve")
+	ObligationDiscriminator    = anchor.Account("Obligation")
+	LendingMarketDiscriminator = anchor.Account("LendingMarket")
+	UserMetadataDiscriminator  = anchor.Account("UserMetadata")
+	FarmUserStateDiscriminator = anchor.Account("UserState")
+	FarmStateDiscriminator     = anchor.Account("FarmState")
 )
 
 const reserveVersion = 1
+
+const FractionBits = 60
 
 // Scaled fractions (U68F60 "_sf" values) are kept as their raw little-endian
 // on-chain bytes; BigFractionBytes values are their four u64 limbs.
@@ -35,12 +38,13 @@ type WithdrawalCap struct {
 }
 
 type Reserve struct {
-	LastUpdateSlot  uint64
-	LastUpdateStale bool
-	PriceStatus     uint8
-	LendingMarket   solana.PublicKey
-	FarmCollateral  solana.PublicKey
-	FarmDebt        solana.PublicKey
+	LastUpdateSlot      uint64
+	LastUpdateStale     bool
+	PriceStatus         uint8
+	LastUpdateTimestamp uint32
+	LendingMarket       solana.PublicKey
+	FarmCollateral      solana.PublicKey
+	FarmDebt            solana.PublicKey
 
 	LiquidityMint, LiquiditySupply, LiquidityTokenProgram   solana.PublicKey
 	FeeReceiver                                             solana.PublicKey
@@ -50,6 +54,7 @@ type Reserve struct {
 	PendingReferrerFeesSF                                   [16]byte
 	CumulativeBorrowRateBSF                                 [32]byte
 	BorrowedAmountOutsideElevationGroup                     uint64
+	QueuedCollateral                                        uint64
 
 	CollateralMint, CollateralSupply solana.PublicKey
 	CollateralMintTotalSupply        uint64
@@ -90,7 +95,7 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 	}
 	l, c, k := d[reserveLiquidity:], d[reserveCollateral:], d[reserveConfig:]
 	r := Reserve{
-		LastUpdateSlot: u64(d, 16), LastUpdateStale: d[24] != 0, PriceStatus: d[25],
+		LastUpdateSlot: u64(d, 16), LastUpdateStale: d[24] != 0, PriceStatus: d[25], LastUpdateTimestamp: binary.LittleEndian.Uint32(d[28:32]),
 		LendingMarket: key(d, 32), FarmCollateral: key(d, 64), FarmDebt: key(d, 96),
 
 		LiquidityMint: key(l, 0), LiquiditySupply: key(l, 32), FeeReceiver: key(l, 64),
@@ -111,7 +116,7 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 		DisableUsageAsCollOutsideEmode: k[644] != 0, UtilizationLimitBlockBorrowingAbovePct: k[645],
 		BorrowLimitOutsideElevationGroup: u64(k, 648),
 
-		BorrowedAmountOutsideElevationGroup: u64(d, 6704),
+		BorrowedAmountOutsideElevationGroup: u64(d, 6704), QueuedCollateral: u64(d, 6968),
 	}
 	for i := range r.BorrowRateCurve {
 		r.BorrowRateCurve[i] = CurvePoint{binary.LittleEndian.Uint32(k[64+i*8:]), binary.LittleEndian.Uint32(k[68+i*8:])}
@@ -120,7 +125,7 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 }
 
 func (r Reserve) TotalLiquiditySF() (*big.Int, error) {
-	total := new(big.Int).Lsh(new(big.Int).SetUint64(r.AvailableAmount), 60)
+	total := new(big.Int).Lsh(new(big.Int).SetUint64(r.AvailableAmount), FractionBits)
 	total.Add(total, U128(r.BorrowedAmountSF))
 	for _, fee := range [][16]byte{r.AccumulatedProtocolFeesSF, r.AccumulatedReferrerFeesSF, r.PendingReferrerFeesSF} {
 		value := U128(fee)
@@ -151,7 +156,7 @@ func CollateralToLiquidity(totalLiquiditySF *big.Int, collateralSupply, collater
 		return 0, errors.New("Kamino collateral exchange rate is unavailable")
 	}
 	liquidity := new(big.Int).Mul(new(big.Int).SetUint64(collateral), totalLiquiditySF)
-	liquidity.Quo(liquidity, new(big.Int).Lsh(new(big.Int).SetUint64(collateralSupply), 60))
+	liquidity.Quo(liquidity, new(big.Int).Lsh(new(big.Int).SetUint64(collateralSupply), FractionBits))
 	if !liquidity.IsUint64() {
 		return 0, errors.New("Kamino redeemable collateral exceeds u64")
 	}
@@ -172,7 +177,7 @@ func (r Reserve) LiquidityToCollateral(liquidity uint64) (uint64, error) {
 	if total.Sign() <= 0 || r.CollateralMintTotalSupply == 0 {
 		return 0, errors.New("Kamino collateral exchange rate is unavailable")
 	}
-	collateral := new(big.Int).Mul(new(big.Int).SetUint64(liquidity), new(big.Int).Lsh(new(big.Int).SetUint64(r.CollateralMintTotalSupply), 60))
+	collateral := new(big.Int).Mul(new(big.Int).SetUint64(liquidity), new(big.Int).Lsh(new(big.Int).SetUint64(r.CollateralMintTotalSupply), FractionBits))
 	collateral.Quo(collateral, total)
 	if !collateral.IsUint64() {
 		return 0, errors.New("Kamino minted collateral exceeds u64")
@@ -188,7 +193,7 @@ func (r Reserve) MinimumDeposit() (uint64, error) {
 	if total.Sign() == 0 || r.CollateralMintTotalSupply == 0 {
 		return 1, nil
 	}
-	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(r.CollateralMintTotalSupply), 60)
+	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(r.CollateralMintTotalSupply), FractionBits)
 	amount := new(big.Int).Add(total, denominator)
 	amount.Sub(amount, big.NewInt(1)).Quo(amount, denominator)
 	if !amount.IsUint64() || amount.Sign() <= 0 {
@@ -318,6 +323,19 @@ func DecodeFarmUserState(a *chain.Account) (FarmUserState, error) {
 	}
 	d := a.Data
 	return FarmUserState{FarmState: key(d, 16), Owner: key(d, 48), IsFarmDelegated: d[80] == 1, Delegatee: key(d, 480)}, nil
+}
+
+type FarmState struct {
+	DelegateAuthority             solana.PublicKey
+	IsFarmFrozen, IsFarmDelegated bool
+}
+
+func DecodeFarmState(a *chain.Account) (FarmState, error) {
+	if err := envelope(a, FarmsProgramID, FarmStateSize, FarmStateDiscriminator, "farm state"); err != nil {
+		return FarmState{}, err
+	}
+	d := a.Data
+	return FarmState{DelegateAuthority: key(d, 7328), IsFarmFrozen: d[7361] != 0, IsFarmDelegated: d[7362] == 1}, nil
 }
 
 func U128(value [16]byte) *big.Int {

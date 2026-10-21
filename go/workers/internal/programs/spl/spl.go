@@ -14,6 +14,30 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
+const (
+	ExtensionTransferFeeConfig             uint16 = 1
+	ExtensionTransferFeeAmount             uint16 = 2
+	ExtensionMintCloseAuthority            uint16 = 3
+	ExtensionConfidentialTransferMint      uint16 = 4
+	ExtensionImmutableOwner                uint16 = 7
+	ExtensionPermanentDelegate             uint16 = 12
+	ExtensionTransferHook                  uint16 = 14
+	ExtensionTransferHookAccount           uint16 = 15
+	ExtensionConfidentialTransferFeeConfig uint16 = 16
+	ExtensionMetadataPointer               uint16 = 18
+	ExtensionTokenMetadata                 uint16 = 19
+)
+
+const (
+	legacyMintLen      = 82
+	legacyAccountLen   = 165
+	multisigLen        = 355
+	accountTypeOffset  = legacyAccountLen
+	accountTypeMint    = 1
+	accountTypeAccount = 2
+	tlvHeaderLen       = 4
+)
+
 type TokenAccount struct {
 	Program           solana.PublicKey
 	Mint              solana.PublicKey
@@ -39,7 +63,7 @@ type Extension struct {
 }
 
 func DecodeTokenAccount(account *chain.Account) (TokenAccount, error) {
-	extensions, err := decodeExtensions(account, 165, 2)
+	extensions, err := decodeExtensions(account, legacyAccountLen, accountTypeAccount)
 	if err != nil {
 		return TokenAccount{}, err
 	}
@@ -63,9 +87,9 @@ func (a TokenAccount) UnrestrictedBalance() error {
 	for _, extension := range a.Extensions {
 		value := extension.Value
 		switch {
-		case extension.Type == 7 && len(value) == 0:
-		case extension.Type == 2 && len(value) == 8 && binary.LittleEndian.Uint64(value) == 0:
-		case extension.Type == 15 && len(value) == 1 && value[0] == 0:
+		case extension.Type == ExtensionImmutableOwner && len(value) == 0:
+		case extension.Type == ExtensionTransferFeeAmount && len(value) == 8 && binary.LittleEndian.Uint64(value) == 0:
+		case extension.Type == ExtensionTransferHookAccount && len(value) == 1 && value[0] == 0:
 		default:
 			return fmt.Errorf("token account extension %d restricts its balance", extension.Type)
 		}
@@ -74,7 +98,7 @@ func (a TokenAccount) UnrestrictedBalance() error {
 }
 
 func DecodeMint(account *chain.Account) (Mint, error) {
-	extensions, err := decodeExtensions(account, 82, 1)
+	extensions, err := decodeExtensions(account, legacyMintLen, accountTypeMint)
 	if err != nil {
 		return Mint{}, err
 	}
@@ -86,9 +110,7 @@ func DecodeMint(account *chain.Account) (Mint, error) {
 }
 
 // decodeExtensions checks the owner and layout of a token program account
-// whose base is baseLength bytes and returns its Token-2022 extensions. An
-// extended account carries accountType at byte 165, is not the multisig
-// length, and holds at least one four-byte TLV header.
+// whose base is baseLength bytes and returns its Token-2022 extensions.
 func decodeExtensions(account *chain.Account, baseLength int, accountType byte) ([]Extension, error) {
 	if account == nil {
 		return nil, errors.New("token program account is absent")
@@ -100,12 +122,12 @@ func decodeExtensions(account *chain.Account, baseLength int, accountType byte) 
 	if len(data) == baseLength {
 		return nil, nil
 	}
-	if account.Owner == solana.TokenProgramID || len(data) < 170 || len(data) == 355 || data[165] != accountType || !allZero(data[baseLength:165]) {
+	if account.Owner == solana.TokenProgramID || len(data) < accountTypeOffset+1+tlvHeaderLen || len(data) == multisigLen || data[accountTypeOffset] != accountType || !allZero(data[baseLength:accountTypeOffset]) {
 		return nil, fmt.Errorf("token program account %s has an invalid %d-byte layout", account.Key, len(data))
 	}
 	var extensions []Extension
 	seen := map[uint16]bool{}
-	for tail := data[166:]; len(tail) > 0; {
+	for tail := data[accountTypeOffset+1:]; len(tail) > 0; {
 		if len(tail) < 4 {
 			return nil, fmt.Errorf("token program account %s has a truncated extension header", account.Key)
 		}

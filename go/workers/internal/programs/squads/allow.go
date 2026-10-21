@@ -108,19 +108,19 @@ func Allow(program solana.PublicKey, data []DataConstraintView, slots []Slot) In
 }
 
 func DataBytes(offset uint64, value []byte) DataConstraintView {
-	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 5, Bytes: append([]byte(nil), value...)}, Operator: OpEquals}
+	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: ValueBytes, Bytes: append([]byte(nil), value...)}, Operator: OpEquals}
 }
 
 func DataU8(offset uint64, op DataOperatorView, value uint8) DataConstraintView {
-	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 0, U8: value}, Operator: op}
+	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: ValueU8, U8: value}, Operator: op}
 }
 
 func DataU16(offset uint64, op DataOperatorView, value uint16) DataConstraintView {
-	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 1, U16: value}, Operator: op}
+	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: ValueU16, U16: value}, Operator: op}
 }
 
 func DataU64(offset uint64, op DataOperatorView, value uint64) DataConstraintView {
-	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 3, U64: value}, Operator: op}
+	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: ValueU64, U64: value}, Operator: op}
 }
 
 type PolicyApply struct {
@@ -166,10 +166,10 @@ func (p PolicyApply) Instruction() (Instruction, error) {
 		accounts = append(accounts, solana.AccountMeta{PublicKey: policy, IsWritable: true})
 	}
 	for _, old := range p.Replace {
-		data = append(append(data, 9), old[:]...) // SettingsAction::PolicyRemove
+		data = append(append(data, settingsActionPolicyRemove), old[:]...)
 		accounts = append(accounts, solana.AccountMeta{PublicKey: old, IsWritable: true})
 	}
-	data = append(data, 0) // memo
+	data = append(data, noMemo)
 	return Instruction{ProgramID: ProgramID, Accounts: accounts, Data: data}, nil
 }
 
@@ -273,24 +273,24 @@ func Admits(constraint InstructionConstraintView, ix Instruction, account func(s
 func predicatesHold(predicates []DataConstraintView, data []byte) bool {
 	for _, d := range predicates {
 		v := d.DataValue
-		size := map[uint8]int{0: 1, 1: 2, 2: 4, 3: 8, 4: 16, 5: len(v.Bytes)}[v.Kind]
-		if v.Kind > 5 || d.DataOffset > uint64(len(data)) || uint64(size) > uint64(len(data))-d.DataOffset {
+		size := map[uint8]int{ValueU8: 1, ValueU16: 2, ValueU32: 4, ValueU64: 8, ValueU128: 16, ValueBytes: len(v.Bytes)}[v.Kind]
+		if v.Kind > ValueBytes || d.DataOffset > uint64(len(data)) || uint64(size) > uint64(len(data))-d.DataOffset {
 			return false
 		}
 		at := data[d.DataOffset : d.DataOffset+uint64(size)]
 		var order int
 		switch v.Kind {
-		case 0:
+		case ValueU8:
 			order = cmp.Compare(at[0], v.U8)
-		case 1:
+		case ValueU16:
 			order = cmp.Compare(binary.LittleEndian.Uint16(at), v.U16)
-		case 2:
+		case ValueU32:
 			order = cmp.Compare(binary.LittleEndian.Uint32(at), v.U32)
-		case 3:
+		case ValueU64:
 			order = cmp.Compare(binary.LittleEndian.Uint64(at), v.U64)
-		case 4:
+		case ValueU128:
 			order = bytes.Compare(reversed(at), reversed(v.U128[:]))
-		case 5:
+		case ValueBytes:
 			if d.Operator != OpEquals && d.Operator != OpNotEquals {
 				return false
 			}

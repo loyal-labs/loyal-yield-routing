@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -11,18 +12,21 @@ import (
 
 var ProgramID = solana.MustPublicKeyFromBase58("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")
 
-// Anchor discriminators, sha256("global:<instruction>")[:8], of the route
-// instructions we sign or authorize.
 var (
-	SharedAccountsRouteDiscriminator   = [8]byte{193, 32, 155, 51, 65, 214, 156, 129}
-	RouteV2Discriminator               = [8]byte{187, 100, 250, 204, 49, 196, 175, 20}
-	SharedAccountsRouteV2Discriminator = [8]byte{209, 152, 83, 147, 124, 254, 216, 233}
+	SharedAccountsRouteDiscriminator   = anchor.Instruction("shared_accounts_route")
+	RouteV2Discriminator               = anchor.Instruction("route_v2")
+	SharedAccountsRouteV2Discriminator = anchor.Instruction("shared_accounts_route_v2")
 )
 
-// The legacy route tail, after the route plan, which ends the legacy
-// shared_accounts_route data: in_amount u64, quoted_out_amount u64,
-// slippage_bps u16 and platform_fee_bps u8.
-const routeTailLen = 19
+// The legacy route tail follows the route plan and ends the
+// shared_accounts_route data.
+const (
+	inAmountLen        = 8
+	quotedOutAmountLen = 8
+	slippageBPSLen     = 2
+	platformFeeBPSLen  = 1
+	routeTailLen       = inAmountLen + quotedOutAmountLen + slippageBPSLen + platformFeeBPSLen
+)
 
 type SharedAccountsRoute struct {
 	Steps           uint32
@@ -40,26 +44,24 @@ func DecodeSharedAccountsRoute(data []byte) (SharedAccountsRoute, error) {
 	return SharedAccountsRoute{
 		Steps:           binary.LittleEndian.Uint32(data[9:13]),
 		InAmount:        binary.LittleEndian.Uint64(tail),
-		QuotedOutAmount: binary.LittleEndian.Uint64(tail[8:]),
-		SlippageBPS:     binary.LittleEndian.Uint16(tail[16:]),
-		PlatformFeeBPS:  tail[18],
+		QuotedOutAmount: binary.LittleEndian.Uint64(tail[inAmountLen:]),
+		SlippageBPS:     binary.LittleEndian.Uint16(tail[inAmountLen+quotedOutAmountLen:]),
+		PlatformFeeBPS:  tail[routeTailLen-platformFeeBPSLen],
 	}, nil
 }
 
-// shared_accounts_route_v2's arguments, each at a fixed offset ahead of its
-// variable-length route plan: id u8 @8, in_amount u64 @9, quoted_out_amount
-// u64 @17, slippage_bps u16 @25, platform_fee_bps u16 @27,
-// positive_slippage_bps u16 @29, then route_plan Vec<RoutePlanStepV2> @31.
-// The platform fee and the positive-slippage fee are the 4 bytes at
+// The platform fee and the positive-slippage fee are the V2FeesLen bytes at
 // V2FeesOffset; while both are zero the route takes no fee account.
 const (
-	V2IDOffset        = 8
-	V2InAmountOffset  = 9
-	V2QuotedOutOffset = 17
-	V2SlippageOffset  = 25
-	V2FeesOffset      = 27
-	V2FeesLen         = 4
-	V2RoutePlanOffset = 31
+	V2IDOffset             = 8
+	V2InAmountOffset       = V2IDOffset + 1
+	V2QuotedOutOffset      = V2InAmountOffset + inAmountLen
+	V2SlippageOffset       = V2QuotedOutOffset + quotedOutAmountLen
+	V2FeesOffset           = V2SlippageOffset + slippageBPSLen
+	V2FeesLen              = platformFeeBPSV2Len + positiveSlippageBPSLen
+	V2RoutePlanOffset      = V2FeesOffset + V2FeesLen
+	platformFeeBPSV2Len    = 2
+	positiveSlippageBPSLen = 2
 )
 
 type SharedRouteV2Args struct {

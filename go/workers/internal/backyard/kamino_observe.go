@@ -19,14 +19,6 @@ const (
 	kaminoRequiredPriceStatus = 0x3f
 	kaminoReserveConfigOffset = 4856
 
-	// ReserveConfig.status (0 = Active) sits at the config base, and its
-	// emergency_mode follows status, asset_tier padding, host_fixed_interest_
-	// rate_bps, min_deleveraging_bonus_bps, block_ctoken_usage, and early_
-	// repay_remaining_interest_pct. liquidation_threshold_pct at +17 is the
-	// already-decoded cross-check for this base.
-	kaminoReserveStatusOffset        = kaminoReserveConfigOffset
-	kaminoReserveEmergencyModeOffset = kaminoReserveConfigOffset + 8
-
 	kaminoOracleMaxAgeSecs = int64(300)
 )
 
@@ -98,6 +90,7 @@ type decodedKaminoObligation struct {
 	debtBorrow             kamino.ObligationLiquidity
 	// borrowLimitBPS is kaminoBorrowLimitBPS; zero before a deposit.
 	borrowLimitBPS int64
+	elevationGroup uint8
 }
 type decodedKaminoReserve struct {
 	refreshedSlot            int64
@@ -165,7 +158,7 @@ func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig)
 		refreshedSlot: int64(obligation.LastUpdateSlot), hasPosition: deposits > 0 || borrows > 0,
 		collateralDepositedRaw: collateralRaw, debtRaw: debtRaw,
 		debtAmountSF: debtAmountSF, cumulativeBorrowRate: cumulativeBorrowRate, debtBorrow: debtBorrow,
-		borrowLimitBPS: limit,
+		borrowLimitBPS: limit, elevationGroup: obligation.ElevationGroup,
 	}, nil
 }
 
@@ -343,8 +336,8 @@ func ceilScaledBigFraction(value *big.Int) (uint64, error) {
 	if value == nil || value.Sign() < 0 || value.BitLen() > 128 {
 		return 0, fmt.Errorf("Kamino scaled fraction exceeds u128")
 	}
-	integer := new(big.Int).Rsh(new(big.Int).Set(value), 60)
-	if new(big.Int).And(new(big.Int).Set(value), new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 60), big.NewInt(1))).Sign() > 0 {
+	integer := new(big.Int).Rsh(new(big.Int).Set(value), kamino.FractionBits)
+	if new(big.Int).And(new(big.Int).Set(value), new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), kamino.FractionBits), big.NewInt(1))).Sign() > 0 {
 		integer.Add(integer, big.NewInt(1))
 	}
 	if !integer.IsUint64() {
@@ -361,8 +354,8 @@ func ceilScaledFraction(value []byte) (uint64, error) {
 	if high > math.MaxUint64>>4 {
 		return 0, fmt.Errorf("Kamino debt exceeds u64")
 	}
-	result := high<<4 | low>>60
-	if low&((uint64(1)<<60)-1) != 0 {
+	result := high<<4 | low>>kamino.FractionBits
+	if low&((uint64(1)<<kamino.FractionBits)-1) != 0 {
 		if result == math.MaxUint64 {
 			return 0, fmt.Errorf("Kamino debt exceeds u64")
 		}

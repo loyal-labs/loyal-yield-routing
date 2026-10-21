@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // kaminoAdditionalDebtRoom is a fee-inclusive ADDITIONAL liability limit.
@@ -43,28 +45,27 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 		if !kaminoObligationTermOpen(decoded, debt, clockUnixTimestamp(accounts)) {
 			return 0, nil
 		}
-		if obligation.Data[kaminoObligationElevationGroupOffset] != 0 || !allZero(obligation.Data[2288:2320]) {
+		if decoded.elevationGroup != 0 || !allZero(obligation.Data[2288:2320]) {
 			return 0, nil
 		}
 	}
-	if collateralAccount.Data[kaminoDisableCrossCollateralOffset] != 0 ||
-		collateralAccount.Data[kaminoReserveStatusOffset] != 0 || collateralAccount.Data[kaminoReserveEmergencyModeOffset] != 0 {
+	if collateral.terms.DisableUsageAsCollOutsideEmode || collateral.status != 0 || collateral.emergencyMode {
 		return 0, nil
 	}
-	return kaminoDebtReserveRoom(debtAccount, debt, clockUnixTimestamp(accounts))
+	return kaminoDebtReserveRoom(debt, clockUnixTimestamp(accounts))
 }
 
-func kaminoDebtReserveRoom(debtAccount ConfirmedAccount, debt decodedKaminoReserve, now int64) (uint64, error) {
+func kaminoDebtReserveRoom(debt decodedKaminoReserve, now int64) (uint64, error) {
 	if !kaminoReserveTermOpen(debt, now) {
 		return 0, nil
 	}
 	// Newer KLend consumes the first trailing padding u64 for queued collateral.
 	// Until the pinned decoder models freely available liquidity, decline new
 	// borrowing when any liquidity is queued. Old zero-filled padding is safe.
-	if binary.LittleEndian.Uint64(debtAccount.Data[kaminoQueuedCollateralOffset:]) != 0 {
+	if debt.terms.QueuedCollateral != 0 {
 		return 0, nil
 	}
-	factor := binary.LittleEndian.Uint64(debtAccount.Data[kaminoBorrowFactorOffset:])
+	factor := debt.terms.BorrowFactorPct
 	// KLend clamps the effective factor to at least 100%, including old
 	// configurations whose serialized value is zero.
 	factor = max(factor, 100)
@@ -73,12 +74,12 @@ func kaminoDebtReserveRoom(debtAccount ConfirmedAccount, debt decodedKaminoReser
 		// consistent risk/unwind admission before accepting new capital.
 		return 0, nil
 	}
-	feeRate := binary.LittleEndian.Uint64(debtAccount.Data[kaminoReserveConfigOffset+40:])
-	if feeRate >= uint64(1)<<60 {
+	feeRate := debt.terms.BorrowFeeSF
+	if feeRate >= uint64(1)<<kamino.FractionBits {
 		return 0, nil
 	}
-	outsideLimit := binary.LittleEndian.Uint64(debtAccount.Data[kaminoOutsideBorrowLimitOffset:])
-	outsideUsed := binary.LittleEndian.Uint64(debtAccount.Data[kaminoOutsideBorrowCounterOffset:])
+	outsideLimit := debt.terms.BorrowLimitOutsideElevationGroup
+	outsideUsed := debt.terms.BorrowedAmountOutsideElevationGroup
 	if outsideUsed >= outsideLimit || debt.borrowedRaw >= debt.borrowLimitRaw {
 		return 0, nil
 	}
@@ -86,13 +87,13 @@ func kaminoDebtReserveRoom(debtAccount ConfirmedAccount, debt decodedKaminoReser
 	if err != nil {
 		return 0, err
 	}
-	daily, err := kaminoNetBorrowHeadroom(debtAccount.Data[kaminoDebtWithdrawalCapOffset:kaminoDebtWithdrawalCapOffset+32], now)
+	daily, err := kaminoNetBorrowHeadroom(debt.terms.DebtWithdrawalCap, now)
 	if err != nil {
 		return 0, err
 	}
-	available := binary.LittleEndian.Uint64(debtAccount.Data[224:232])
+	available := debt.terms.AvailableAmount
 	debtRoom := min(available, outsideLimit-outsideUsed, debt.borrowLimitRaw-debt.borrowedRaw, utilization, daily)
-	if debtAccount.Data[kaminoReserveStatusOffset] != 0 || debtAccount.Data[kaminoReserveEmergencyModeOffset] != 0 {
+	if debt.status != 0 || debt.emergencyMode {
 		return 0, nil
 	}
 	return min(debtRoom, math.MaxInt64), nil
@@ -101,14 +102,14 @@ func kaminoDebtReserveRoom(debtAccount ConfirmedAccount, debt decodedKaminoReser
 // Fee-safe floor, including KLend's minimum-one rounding. Never overflows and
 // never rounds up into the room. Exact fees are rechecked for the fixed wire.
 func kaminoReceiveWithinRoom(room, rate uint64) uint64 {
-	if room == 0 || rate >= uint64(1)<<60 {
+	if room == 0 || rate >= uint64(1)<<kamino.FractionBits {
 		return 0
 	}
 	room = min(room, math.MaxInt64)
 	if rate == 0 {
 		return room
 	}
-	one := new(big.Int).Lsh(big.NewInt(1), 60)
+	one := new(big.Int).Lsh(big.NewInt(1), kamino.FractionBits)
 	n := new(big.Int).Mul(new(big.Int).SetUint64(room-1), one)
 	n.Quo(n, new(big.Int).Add(one, new(big.Int).SetUint64(rate)))
 	if n.Uint64() < 2 {
@@ -167,7 +168,7 @@ func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route
 
 func desiredLeverageBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level float64) (uint64, error) {
 	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
-	if rate >= uint64(1)<<60 {
+	if rate >= uint64(1)<<kamino.FractionBits {
 		return 0, nil
 	}
 	desired, err := p.leverageUpBorrowRaw(level)

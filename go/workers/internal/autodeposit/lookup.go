@@ -32,17 +32,16 @@ func (b *SweepWireBuilder) resolvePersistedLookups(ctx context.Context, tx *sola
 	}
 	tables := map[solana.PublicKey]solana.PublicKeySlice{}
 	for _, a := range accounts {
-		// Solana AddressLookupTable bincode metadata occupies 56 bytes. Table
-		// entries are append-only; deactivated/just-extended tables fail closed.
-		if a.Owner != solana.AddressLookupTableProgramID || a.Executable || len(a.Data) < 56 || (len(a.Data)-56)%32 != 0 || binary.LittleEndian.Uint32(a.Data[:4]) != 1 || binary.LittleEndian.Uint64(a.Data[4:12]) != ^uint64(0) || binary.LittleEndian.Uint64(a.Data[12:20]) >= uint64(slot) {
+		// Table entries are append-only; deactivated/just-extended tables fail closed.
+		if a.Owner != solana.AddressLookupTableProgramID || a.Executable || len(a.Data) < lookupTableMetaSize || (len(a.Data)-lookupTableMetaSize)%addressSize != 0 || binary.LittleEndian.Uint32(a.Data[:4]) != 1 || binary.LittleEndian.Uint64(a.Data[4:12]) != ^uint64(0) || binary.LittleEndian.Uint64(a.Data[12:20]) >= uint64(slot) {
 			return errors.New("persisted lookup table is unavailable, deactivated or not yet usable")
 		}
-		keys := make(solana.PublicKeySlice, 0, (len(a.Data)-56)/32)
+		keys := make(solana.PublicKeySlice, 0, (len(a.Data)-lookupTableMetaSize)/addressSize)
 		if cap(keys) > 256 {
 			return errors.New("lookup table exceeds address bound")
 		}
-		for offset := 56; offset < len(a.Data); offset += 32 {
-			keys = append(keys, solana.PublicKeyFromBytes(a.Data[offset:offset+32]))
+		for offset := lookupTableMetaSize; offset < len(a.Data); offset += addressSize {
+			keys = append(keys, solana.PublicKeyFromBytes(a.Data[offset:offset+addressSize]))
 		}
 		tables[a.Key] = keys
 	}
@@ -51,3 +50,8 @@ func (b *SweepWireBuilder) resolvePersistedLookups(ctx context.Context, tx *sola
 	}
 	return tx.Message.ResolveLookups()
 }
+
+const (
+	lookupTableMetaSize = 56
+	addressSize         = 32
+)

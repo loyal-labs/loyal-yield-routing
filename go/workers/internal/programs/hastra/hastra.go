@@ -7,6 +7,7 @@ import (
 	"math/big"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -37,11 +38,10 @@ var (
 	MintPool               = solana.MustPublicKeyFromBase58("CVJvFmYcpqq3u7i5cqDK6dqDkTx14Lg8NwUgsLBswcLu")
 )
 
-// Anchor instruction discriminators, sha256("global:<name>")[:8]. Both
-// programs name their deposit "deposit".
+// Both programs name their deposit "deposit".
 var (
-	DepositDiscriminator = [8]byte{242, 35, 198, 137, 82, 225, 242, 182}
-	RedeemDiscriminator  = [8]byte{184, 12, 86, 149, 70, 196, 97, 225}
+	DepositDiscriminator = anchor.Instruction("deposit")
+	RedeemDiscriminator  = anchor.Instruction("redeem")
 )
 
 const AmountOffset = 8
@@ -165,10 +165,15 @@ func pda(program solana.PublicKey, seeds ...[]byte) solana.PublicKey {
 	return key
 }
 
-// StakePriceConfigDiscriminator is sha256("account:StakePriceConfig")[:8].
-var StakePriceConfigDiscriminator = [8]byte{15, 224, 172, 217, 179, 246, 85, 16}
+var StakePriceConfigDiscriminator = anchor.Account("StakePriceConfig")
 
-const stakePriceConfigSize = 177
+const (
+	stakePriceConfigSize    = 177
+	stakePriceOffset        = 136
+	stakeScaleOffset        = 152
+	stakeTimestampOffset    = 160
+	stakeMaxStalenessOffset = 168
+)
 
 type StakePrice struct {
 	Price                   *big.Int
@@ -176,8 +181,7 @@ type StakePrice struct {
 	Timestamp, MaxStaleness int64
 }
 
-// DecodeStakePrice decodes the stake program's StakePriceConfig: price i128
-// at 136, scale u64 at 152, timestamp i64 at 160, max staleness i64 at 168.
+// DecodeStakePrice decodes the stake program's StakePriceConfig.
 func DecodeStakePrice(a *chain.Account) (StakePrice, error) {
 	if a == nil {
 		return StakePrice{}, errors.New("Hastra stake price config is absent")
@@ -187,11 +191,11 @@ func DecodeStakePrice(a *chain.Account) (StakePrice, error) {
 		return StakePrice{}, fmt.Errorf("Hastra stake price config %s envelope or layout drifted", a.Key)
 	}
 	d := a.Data
-	low, high := binary.LittleEndian.Uint64(d[136:]), int64(binary.LittleEndian.Uint64(d[144:]))
+	low, high := binary.LittleEndian.Uint64(d[stakePriceOffset:]), int64(binary.LittleEndian.Uint64(d[stakePriceOffset+8:]))
 	price := new(big.Int).Lsh(big.NewInt(high), 64)
 	price.Add(price, new(big.Int).SetUint64(low))
-	return StakePrice{Price: price, Scale: binary.LittleEndian.Uint64(d[152:]),
-		Timestamp: int64(binary.LittleEndian.Uint64(d[160:])), MaxStaleness: int64(binary.LittleEndian.Uint64(d[168:]))}, nil
+	return StakePrice{Price: price, Scale: binary.LittleEndian.Uint64(d[stakeScaleOffset:]),
+		Timestamp: int64(binary.LittleEndian.Uint64(d[stakeTimestampOffset:])), MaxStaleness: int64(binary.LittleEndian.Uint64(d[stakeMaxStalenessOffset:]))}, nil
 }
 
 func (p StakePrice) Fresh(now int64) bool {

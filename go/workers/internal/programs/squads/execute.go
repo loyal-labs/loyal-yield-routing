@@ -88,12 +88,10 @@ func ExecuteTransactionSyncV2(e ExecuteSync) (Instruction, error) {
 		accounts[i].IsSigner = false
 	}
 	data := append([]byte(nil), ExecuteTransactionSyncV2Discriminator[:]...)
-	// account_index, num_signers 1, SyncPayload::Policy, PolicyPayload::
-	// ProgramInteraction, Some(instruction_constraint_indices).
-	data = append(data, e.AccountIndex, 1, 1, 1, 1)
+	data = append(data, e.AccountIndex, syncSignerCount, syncPayloadPolicy, policyPayloadProgramInteraction, optionSome)
 	data = binary.LittleEndian.AppendUint32(data, uint32(len(e.ConstraintIndexes)))
 	data = append(data, e.ConstraintIndexes...)
-	data = append(data, 1, e.AccountIndex) // TransactionPayload::SyncTransaction { account_index }
+	data = append(data, transactionPayloadSyncTransaction, e.AccountIndex)
 	data = binary.LittleEndian.AppendUint32(data, uint32(len(compiled)))
 	data = append(data, compiled...)
 	metas := make([]solana.AccountMeta, 0, 3+len(accounts))
@@ -106,7 +104,7 @@ func DecodeExecuteTransactionSyncV2(ix Instruction) (ExecuteSync, error) {
 	bad := errors.New("instruction is not a canonical Squads sync policy execution")
 	d := ix.Data
 	if ix.ProgramID != ProgramID || len(ix.Accounts) < 3 || ix.Accounts[1].PublicKey != ProgramID || len(d) < 17 ||
-		!bytes.Equal(d[:8], ExecuteTransactionSyncV2Discriminator[:]) || !bytes.Equal(d[9:13], []byte{1, 1, 1, 1}) {
+		!bytes.Equal(d[:8], ExecuteTransactionSyncV2Discriminator[:]) || !bytes.Equal(d[9:13], []byte{syncSignerCount, syncPayloadPolicy, policyPayloadProgramInteraction, optionSome}) {
 		return out, bad
 	}
 	out.Policy, out.Signer, out.AccountIndex = ix.Accounts[0].PublicKey, ix.Accounts[2].PublicKey, d[8]
