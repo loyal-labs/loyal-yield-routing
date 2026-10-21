@@ -41,6 +41,7 @@ const EXPECTED_UPGRADE_AUTHORITY: &str = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9
 const PACKET_SAFETY_MARGIN: usize = 32;
 const DEFAULT_LOADER_WRITE_WINDOW: usize = 8;
 const MAX_LOADER_WRITE_WINDOW: usize = 16;
+const TX_FEE_RESERVE_LAMPORTS: u64 = 10_000;
 
 #[derive(Clone, Copy, Debug)]
 struct ProgramSpec {
@@ -246,7 +247,8 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
     let programdata_rent = rpc
         .get_minimum_balance_for_rent_exemption(programdata_len)
         .context("read ProgramData rent")?;
-    let full_deployment_fee_reserve = (total_write_transactions as u64 + 2).saturating_mul(10_000);
+    let full_deployment_fee_reserve =
+        (total_write_transactions as u64 + 2).saturating_mul(TX_FEE_RESERVE_LAMPORTS);
     let full_deployment_minimum = program_rent
         .saturating_add(programdata_rent)
         .saturating_add(full_deployment_fee_reserve);
@@ -300,7 +302,8 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
     let is_upgrade = deployed.is_some();
 
     if !args.execute {
-        let remaining_fee_reserve = (total_write_transactions as u64 + 2).saturating_mul(10_000);
+        let remaining_fee_reserve =
+            (total_write_transactions as u64 + 2).saturating_mul(TX_FEE_RESERVE_LAMPORTS);
         let minimum_starting_balance = if is_upgrade {
             buffer_rent.saturating_add(remaining_fee_reserve)
         } else {
@@ -389,10 +392,11 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
         .as_ref()
         .map(|account| account.lamports)
         .unwrap_or(0);
-    let remaining_transaction_count = pending_before as u64
-        + 1 // DeployWithMaxDataLen or Upgrade.
-        + u64::from(initial_buffer.is_none()); // Create + initialize buffer.
-    let remaining_fee_reserve = remaining_transaction_count.saturating_mul(10_000);
+    let final_loader_tx_count = 1u64;
+    let buffer_setup_tx_count = u64::from(initial_buffer.is_none());
+    let remaining_transaction_count =
+        pending_before as u64 + final_loader_tx_count + buffer_setup_tx_count;
+    let remaining_fee_reserve = remaining_transaction_count.saturating_mul(TX_FEE_RESERVE_LAMPORTS);
     let minimum_starting_balance = if is_upgrade {
         buffer_rent
             .saturating_sub(buffer_lamport_credit)
@@ -1443,58 +1447,19 @@ fn execute_loader_write_batches(
     }
     let mut receipts = Vec::with_capacity(pending.len());
     for (batch_index, batch) in pending.chunks(write_window).enumerate() {
-        // Persist and simulate every signed wire before broadcasting any wire in this batch.
-        // Existing barriers are reconciled, or exact signed wires are re-simulated and
-        // idempotently re-sent only while their persisted blockhash remains valid.
-        let mut reconciled = Vec::new();
-        let mut ready = Vec::new();
-        let mut errors = Vec::new();
-        for pending_write in batch {
-            let stage = format!(
-                "write_{:06}_{}",
-                pending_write.offset,
-                pending_write.bytes.len()
-            );
-            match prepare_exact_stage(
-                rpc,
-                barrier_dir,
-                spec,
-                &stage,
-                std::slice::from_ref(&pending_write.instruction),
-                &payer.pubkey(),
-                &[payer],
-                minimum_context_slot,
-                CommitmentConfig::confirmed(),
-            ) {
-                Err(error) => errors.push(format!("{stage} prepare: {error:#}")),
-                Ok(PreparedExactStage::Reconciled(receipt)) => {
-                    // A mixed resume must prove the old signed write reached both a confirmed
-                    // receipt and the exact loader bytes before any fresh write is broadcast.
-                    match wait_for_confirmed_buffer_chunk(
-                        rpc,
-                        buffer,
-                        &payer.pubkey(),
-                        pending_write.offset,
-                        &pending_write.bytes,
-                        Duration::from_secs(60),
-                    ) {
-                        Ok(Some(_)) => {
-                            minimum_context_slot = minimum_context_slot.max(receipt.receipt_slot);
-                            reconciled.push((pending_write, receipt));
-                        }
-                        Ok(None) => errors.push(format!(
-                            "{} confirmed buffer CAS failed while reconciling existing barrier",
-                            receipt.stage
-                        )),
-                        Err(error) => errors.push(format!(
-                            "{} existing barrier CAS read: {error:#}",
-                            receipt.stage
-                        )),
-                    }
-                }
-                Ok(prepared) => ready.push((stage, pending_write, prepared)),
-            }
-        }
+        let PreparedBatch {
+            reconciled,
+            ready,
+            mut errors,
+        } = prepare_batch(
+            rpc,
+            barrier_dir,
+            spec,
+            payer,
+            buffer,
+            batch,
+            &mut minimum_context_slot,
+        );
         if !errors.is_empty() {
             bail!(
                 "loader write batch {} preparation had {} error(s): {}",
@@ -1504,48 +1469,16 @@ fn execute_loader_write_batches(
             );
         }
 
-        // Send the bounded window first; confirmation happens only after no more than the
-        // configured number of unique, barrier-backed signatures are in flight.
-        let mut submitted = Vec::with_capacity(ready.len());
-        for (stage, pending_write, prepared) in ready {
-            match broadcast_prepared_exact_stage(rpc, &stage, prepared) {
-                Ok(sent) => submitted.push((stage, pending_write, sent)),
-                Err(error) => errors.push(format!("{stage} broadcast: {error:#}")),
-            }
-        }
-        for (stage, pending_write, sent) in submitted {
-            match reconcile_submitted_exact_stage(rpc, &stage, sent, CommitmentConfig::confirmed())
-            {
-                Ok(receipt) => reconciled.push((pending_write, receipt)),
-                Err(error) => errors.push(format!("{stage} confirmed receipt: {error:#}")),
-            }
-        }
-
-        // Do not advance to another batch (or ultimately Upgrade) until every signature and
-        // every exact chunk in the just-reconciled batch is visible at confirmed commitment.
-        for (pending_write, receipt) in reconciled {
-            match wait_for_confirmed_buffer_chunk(
-                rpc,
-                buffer,
-                &payer.pubkey(),
-                pending_write.offset,
-                &pending_write.bytes,
-                Duration::from_secs(60),
-            ) {
-                Ok(Some(_)) => {
-                    minimum_context_slot = minimum_context_slot.max(receipt.receipt_slot);
-                    receipts.push(receipt);
-                }
-                Ok(None) => errors.push(format!(
-                    "confirmed buffer CAS failed after {}",
-                    receipt.stage
-                )),
-                Err(error) => errors.push(format!(
-                    "{} confirmed buffer CAS read: {error:#}",
-                    receipt.stage
-                )),
-            }
-        }
+        let submitted = broadcast_window(rpc, ready, &mut errors);
+        receipts.extend(confirm_batch(
+            rpc,
+            payer,
+            buffer,
+            submitted,
+            reconciled,
+            &mut errors,
+            &mut minimum_context_slot,
+        ));
         if !errors.is_empty() {
             bail!(
                 "loader write batch {} had {} error(s): {}",
@@ -1562,6 +1495,154 @@ fn execute_loader_write_batches(
         );
     }
     Ok((receipts, minimum_context_slot))
+}
+
+struct PreparedBatch<'a> {
+    reconciled: Vec<(&'a PendingWrite, StageReceiptReport)>,
+    ready: Vec<(String, &'a PendingWrite, PreparedExactStage)>,
+    errors: Vec<String>,
+}
+
+fn prepare_batch<'a>(
+    rpc: &RpcClient,
+    barrier_dir: &Path,
+    spec: &ProgramSpec,
+    payer: &Keypair,
+    buffer: &Pubkey,
+    batch: &'a [PendingWrite],
+    minimum_context_slot: &mut u64,
+) -> PreparedBatch<'a> {
+    let mut prepared_batch = PreparedBatch {
+        reconciled: Vec::new(),
+        ready: Vec::new(),
+        errors: Vec::new(),
+    };
+    for pending_write in batch {
+        let stage = format!(
+            "write_{:06}_{}",
+            pending_write.offset,
+            pending_write.bytes.len()
+        );
+        match prepare_exact_stage(
+            rpc,
+            barrier_dir,
+            spec,
+            &stage,
+            std::slice::from_ref(&pending_write.instruction),
+            &payer.pubkey(),
+            &[payer],
+            *minimum_context_slot,
+            CommitmentConfig::confirmed(),
+        ) {
+            Err(error) => prepared_batch
+                .errors
+                .push(format!("{stage} prepare: {error:#}")),
+            Ok(PreparedExactStage::Reconciled(receipt)) => {
+                match reconcile_resumed_write(
+                    rpc,
+                    buffer,
+                    &payer.pubkey(),
+                    pending_write,
+                    receipt,
+                    minimum_context_slot,
+                ) {
+                    Ok(receipt) => prepared_batch.reconciled.push((pending_write, receipt)),
+                    Err(error) => prepared_batch.errors.push(error),
+                }
+            }
+            Ok(prepared) => prepared_batch.ready.push((stage, pending_write, prepared)),
+        }
+    }
+    prepared_batch
+}
+
+fn reconcile_resumed_write(
+    rpc: &RpcClient,
+    buffer: &Pubkey,
+    authority: &Pubkey,
+    pending_write: &PendingWrite,
+    receipt: StageReceiptReport,
+    minimum_context_slot: &mut u64,
+) -> std::result::Result<StageReceiptReport, String> {
+    match wait_for_confirmed_buffer_chunk(
+        rpc,
+        buffer,
+        authority,
+        pending_write.offset,
+        &pending_write.bytes,
+        Duration::from_secs(60),
+    ) {
+        Ok(Some(_)) => {
+            *minimum_context_slot = (*minimum_context_slot).max(receipt.receipt_slot);
+            Ok(receipt)
+        }
+        Ok(None) => Err(format!(
+            "{} confirmed buffer CAS failed while reconciling existing barrier",
+            receipt.stage
+        )),
+        Err(error) => Err(format!(
+            "{} existing barrier CAS read: {error:#}",
+            receipt.stage
+        )),
+    }
+}
+
+fn broadcast_window<'a>(
+    rpc: &RpcClient,
+    ready: Vec<(String, &'a PendingWrite, PreparedExactStage)>,
+    errors: &mut Vec<String>,
+) -> Vec<(String, &'a PendingWrite, SubmittedExactStage)> {
+    let mut submitted = Vec::with_capacity(ready.len());
+    for (stage, pending_write, prepared) in ready {
+        match broadcast_prepared_exact_stage(rpc, &stage, prepared) {
+            Ok(sent) => submitted.push((stage, pending_write, sent)),
+            Err(error) => errors.push(format!("{stage} broadcast: {error:#}")),
+        }
+    }
+    submitted
+}
+
+fn confirm_batch<'a>(
+    rpc: &RpcClient,
+    payer: &Keypair,
+    buffer: &Pubkey,
+    submitted: Vec<(String, &'a PendingWrite, SubmittedExactStage)>,
+    mut reconciled: Vec<(&'a PendingWrite, StageReceiptReport)>,
+    errors: &mut Vec<String>,
+    minimum_context_slot: &mut u64,
+) -> Vec<StageReceiptReport> {
+    for (stage, pending_write, sent) in submitted {
+        match reconcile_submitted_exact_stage(rpc, &stage, sent, CommitmentConfig::confirmed()) {
+            Ok(receipt) => reconciled.push((pending_write, receipt)),
+            Err(error) => errors.push(format!("{stage} confirmed receipt: {error:#}")),
+        }
+    }
+
+    let mut receipts = Vec::with_capacity(reconciled.len());
+    for (pending_write, receipt) in reconciled {
+        match wait_for_confirmed_buffer_chunk(
+            rpc,
+            buffer,
+            &payer.pubkey(),
+            pending_write.offset,
+            &pending_write.bytes,
+            Duration::from_secs(60),
+        ) {
+            Ok(Some(_)) => {
+                *minimum_context_slot = (*minimum_context_slot).max(receipt.receipt_slot);
+                receipts.push(receipt);
+            }
+            Ok(None) => errors.push(format!(
+                "confirmed buffer CAS failed after {}",
+                receipt.stage
+            )),
+            Err(error) => errors.push(format!(
+                "{} confirmed buffer CAS read: {error:#}",
+                receipt.stage
+            )),
+        }
+    }
+    receipts
 }
 
 fn inspect_deployed_program(

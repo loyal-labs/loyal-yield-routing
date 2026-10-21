@@ -55,7 +55,21 @@ pub const OTLP_ENDPOINT_ENV: &str = "OBSERVABILITY_OTLP_ENDPOINT";
 
 pub const INGESTION_API_KEY_ENV: &str = "OBSERVABILITY_INGESTION_API_KEY";
 
-/// Non-secret configuration for the observability subscriber.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IngestionApiKey(String);
+
+impl IngestionApiKey {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for IngestionApiKey {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("IngestionApiKey(<redacted>)")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservabilityConfig {
     pub enabled: bool,
@@ -65,6 +79,7 @@ pub struct ObservabilityConfig {
     pub service_instance_id: Option<String>,
     pub render_service_id: Option<String>,
     pub stdout_filter: String,
+    pub ingestion_api_key: Option<IngestionApiKey>,
 }
 
 impl ObservabilityConfig {
@@ -90,6 +105,7 @@ impl ObservabilityConfig {
             service_instance_id: non_empty_env("RENDER_INSTANCE_ID"),
             render_service_id: non_empty_env("RENDER_SERVICE_ID"),
             stdout_filter: non_empty_env("RUST_LOG").unwrap_or_else(|| "warn".to_owned()),
+            ingestion_api_key: non_empty_env(INGESTION_API_KEY_ENV).map(IngestionApiKey),
         };
 
         validate_config(&config)?;
@@ -299,7 +315,7 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
     let logs_endpoint = signal_endpoint(&base_endpoint, "/v1/logs")?;
     let metrics_endpoint = signal_endpoint(&base_endpoint, "/v1/metrics")?;
     let traces_endpoint = signal_endpoint(&base_endpoint, "/v1/traces")?;
-    let headers = ingestion_headers()?;
+    let headers = ingestion_headers(&config)?;
     let log_exporter = LogExporter::builder()
         .with_http()
         .with_endpoint(logs_endpoint)
@@ -346,9 +362,7 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
         tracer: Some(tracer_provider),
     };
 
-    // WARN-level operational errors are exported too: they must stay visible for
-    // dashboards and repeat-count alerts, they just must not page as errors.
-    let operational_errors_only = filter::filter_fn(|metadata| {
+    let operational_warn_and_above = filter::filter_fn(|metadata| {
         metadata.target() == OPERATIONAL_ERROR_TARGET && *metadata.level() <= Level::WARN
     });
     let log_layer = OpenTelemetryTracingBridge::new(
@@ -357,7 +371,7 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
             .as_ref()
             .expect("logger provider is installed when observability is enabled"),
     )
-    .with_filter(operational_errors_only);
+    .with_filter(operational_warn_and_above);
     let trace_layer = providers.tracer.as_ref().map(|provider| {
         let workflow_traces_only =
             filter::filter_fn(|metadata| metadata.target() == WORKFLOW_TRACE_TARGET);
@@ -442,20 +456,29 @@ fn validate_export_config(config: &ObservabilityConfig) -> Result<(), InitError>
 
     let endpoint = required_env(OTLP_ENDPOINT_ENV)?;
     signal_endpoint(&endpoint, "/v1/logs")?;
-    required_env(INGESTION_API_KEY_ENV)?;
+    ingestion_api_key(config)?;
     Ok(())
 }
 
 fn required_env(name: &str) -> Result<String, InitError> {
-    non_empty_env(name).ok_or_else(|| {
-        InitError::InvalidConfig(format!("{name} must be set when {ENABLED_ENV}=true"))
-    })
+    non_empty_env(name).ok_or_else(|| missing_when_enabled(name))
 }
 
-fn ingestion_headers() -> Result<HashMap<String, String>, InitError> {
+fn missing_when_enabled(name: &str) -> InitError {
+    InitError::InvalidConfig(format!("{name} must be set when {ENABLED_ENV}=true"))
+}
+
+fn ingestion_api_key(config: &ObservabilityConfig) -> Result<&IngestionApiKey, InitError> {
+    config
+        .ingestion_api_key
+        .as_ref()
+        .ok_or_else(|| missing_when_enabled(INGESTION_API_KEY_ENV))
+}
+
+fn ingestion_headers(config: &ObservabilityConfig) -> Result<HashMap<String, String>, InitError> {
     Ok(HashMap::from([(
         "authorization".to_owned(),
-        required_env(INGESTION_API_KEY_ENV)?,
+        ingestion_api_key(config)?.as_str().to_owned(),
     )]))
 }
 
