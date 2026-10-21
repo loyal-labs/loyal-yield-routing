@@ -54,6 +54,13 @@ func (e *events) withdrawalHealthStored(h WithdrawalHealth) {
 	e.facts.BackyardWithdrawalHealth(h.RouteKey, h.Status == "operator_attention", h.ObservedAt)
 }
 
+func (e *events) navReportRead(route string, reconciled time.Time) {
+	if e == nil || e.facts == nil {
+		return
+	}
+	e.facts.BackyardNAVReported(route, reconciled)
+}
+
 func (e *events) workerStart(owner, manifestSHA256 string) {
 	if e == nil {
 		return

@@ -730,6 +730,47 @@ tests:
         recovery: Verify both health metrics exist and the observation advances from fresh confirmed evidence. A resolved freshness alert does not establish claimability or payment.
         summary: Earn MAX withdrawal health is unavailable
         trigger: Required withdrawal-health metrics are missing or the observation is over 5 minutes old; condition persisted for 1 minute.
+- name: a NAV report older than 3 hours pages while a fresh one does not
+  interval: 1m
+  input_series:
+  - series: loyal_backyard_nav_reported_timestamp_seconds{family="backyard",route="pooled-usdc"}
+    values: '0x240'
+  - series: loyal_backyard_nav_reported_timestamp_seconds{family="backyard",route="fresh"}
+    values: 0+60x240
+  alert_rule_test:
+  - eval_time: 185m
+    alertname: LoyalBackyardNAVReportStale
+  - eval_time: 187m
+    alertname: LoyalBackyardNAVReportStale
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+        route: pooled-usdc
+      exp_annotations:
+        action: Read the route's latest REPORT_NAV operation and any manual-recovery latch or held decision that stops reports. Check RPC and database health, then verify the next report reconciles on chain; do not clear a latch or force a report just to silence the alert.
+        impact: The vault's reported NAV is stale, so deposits and withdrawals may be priced from an old value.
+        recovery: Verify a new REPORT_NAV reconciled and the exported report time advanced. A vanished series is not proof that reports resumed.
+        summary: Earn MAX NAV report is overdue
+        trigger: No reconciled NAV report in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes.
+- name: no NAV report time is unknown, then pages
+  interval: 1m
+  input_series: []
+  alert_rule_test:
+  - eval_time: 4m
+    alertname: LoyalBackyardNAVReportStale
+  - eval_time: 6m
+    alertname: LoyalBackyardNAVReportStale
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        family: backyard
+      exp_annotations:
+        action: Read the route's latest REPORT_NAV operation and any manual-recovery latch or held decision that stops reports. Check RPC and database health, then verify the next report reconciles on chain; do not clear a latch or force a report just to silence the alert.
+        impact: The vault's reported NAV is stale, so deposits and withdrawals may be priced from an old value.
+        recovery: Verify a new REPORT_NAV reconciled and the exported report time advanced. A vanished series is not proof that reports resumed.
+        summary: Earn MAX NAV report is overdue
+        trigger: No reconciled NAV report in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes.
 - interval: 1m
   input_series:
   - series: loyal_family_failed_total{family="backyard",code="build_token_valuation_unavailable"}

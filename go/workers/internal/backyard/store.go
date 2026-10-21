@@ -448,6 +448,16 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 	return required, nil
 }
 
+const LastReportedNAVSQL = `SELECT max(updated_at) FROM loyal_yield.multiply_operations WHERE route_key = $1 AND action = '` + string(ReportNAV) + `' AND status = 'reconciled'`
+
+func (d *Database) LastReportedNAV(ctx context.Context, routeKey string) (time.Time, bool, error) {
+	var reconciled pgtype.Timestamptz
+	if err := d.pool.QueryRow(ctx, LastReportedNAVSQL, routeKey).Scan(&reconciled); err != nil {
+		return time.Time{}, false, fmt.Errorf("read last reconciled NAV report: %w", err)
+	}
+	return reconciled.Time, reconciled.Valid, nil
+}
+
 type ReconciledBridgeJournalState struct {
 	TicketSequenceKnown       bool
 	TicketSequenceRaw         int64

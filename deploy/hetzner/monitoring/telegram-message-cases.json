@@ -76,6 +76,21 @@
   },
   {
     "labels": {
+      "alertname": "LoyalBackyardNAVReportStale",
+      "family": "backyard",
+      "route": "test-route",
+      "severity": "page"
+    },
+    "annotations": {
+      "action": "Read the route's latest REPORT_NAV operation and any manual-recovery latch or held decision that stops reports. Check RPC and database health, then verify the next report reconciles on chain; do not clear a latch or force a report just to silence the alert.",
+      "impact": "The vault's reported NAV is stale, so deposits and withdrawals may be priced from an old value.",
+      "recovery": "Verify a new REPORT_NAV reconciled and the exported report time advanced. A vanished series is not proof that reports resumed.",
+      "summary": "Earn MAX NAV report is overdue",
+      "trigger": "No reconciled NAV report in over 3 hours (routine cadence is hourly), or no report time is exported at all; condition persisted for 5 minutes."
+    }
+  },
+  {
+    "labels": {
       "alertname": "LoyalFamilyFailing",
       "code": "selector_evaluate_unavailable",
       "family": "backyard",

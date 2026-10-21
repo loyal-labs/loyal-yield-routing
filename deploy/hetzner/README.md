@@ -506,6 +506,7 @@ The alerts are:
 | LoyalFamilyFailing | At least 3 failed-attempt samples with one code in 15m, sustained for 5m; then held until the condition stays clear for 30m. Selector evaluations are not distinct transactions |
 | LoyalBackyardWithdrawalAttention | Persisted withdrawal attention for a stable family/route, sustained for 1m |
 | LoyalBackyardWithdrawalHealthUnavailable | Observation older than 5m or missing health metrics, sustained for 1m |
+| LoyalBackyardNAVReportStale | No reconciled REPORT_NAV for 3h on a route, or no report time exported at all, sustained for 5m |
 | LoyalAutodepositOverdue | A selected Autodeposit claim, or a slot blocked by custody another family holds open on the vault USDC account, is over 1h old |
 | LoyalFeePayerLow | A fee payer has been below 0.55 SOL for 5m (warning) |
 | LoyalFeePayerExhausted | A fee payer is below 0.05 SOL: Autodeposit starts nothing. Alertmanager inhibits Autodeposit's LoyalFamilyProgressStale on the same unit while it fires, so the one cause pages once |
@@ -620,6 +621,7 @@ use this additional delay.
 | `LoyalLaneStalled` | Named lane's oldest work and dependency errors | That lane completes work, not a healthy sibling |
 | `LoyalBackyardWithdrawalAttention` | Scoped health, cash/demand, active operation and guard | Blocker removed or funding progresses; payment checked separately |
 | `LoyalBackyardWithdrawalHealthUnavailable` | Metric pair, observation age, DB reads/writes | Fresh durable assessment from coherent chain evidence |
+| `LoyalBackyardNAVReportStale` | Latest REPORT_NAV operation, recovery latch, held decision | A new REPORT_NAV reconciled and the report time advanced |
 | `LoyalWorkerDown` | Process, local metrics listener and first runtime error | Expected release, live metrics and work progress |
 | `LoyalUnitDown` | Intended state and startup error; never revive retired units | Intended active service and dependent progress |
 | `LoyalUnitRestartLoop` | First exit/OOM/configuration/dependency failure | Restarts stop and useful work resumes |

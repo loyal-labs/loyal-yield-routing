@@ -27,6 +27,7 @@ type Worker struct {
 type tickRuntime struct {
 	withdrawalHealth        func(context.Context, WithdrawalHealth) error
 	observeWithdrawalHealth func(context.Context) (Observation, error)
+	lastReportedNAV         func(context.Context, string) (time.Time, bool, error)
 	prepareInitialization   func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error)
 	loadNonterminal         func(context.Context, string) (*PersistedOperation, error)
 	advance                 func(context.Context, PersistedOperation) error
@@ -154,6 +155,7 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 	}
 	return tickRuntime{
 		withdrawalHealth: database.RecordWithdrawalHealth,
+		lastReportedNAV:  database.LastReportedNAV,
 		observeWithdrawalHealth: func(ctx context.Context) (Observation, error) {
 			o, err := state.batch(ctx)
 			if err == nil {
@@ -220,7 +222,10 @@ func NewWorker(database *Database, rpc *chain.Client, view *View, jupiterClient 
 func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	var healthObservation Observation
 	var healthDecision Decision
-	defer func() { w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr) }()
+	defer func() {
+		w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr)
+		w.publishNAVReport(ctx)
+	}()
 	stopped, err := w.stopWhileLatched(ctx)
 	if err != nil {
 		return err
@@ -318,6 +323,17 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	defer logStage("send", tickStart)
 	return w.runtime.advance(ctx, *pending)
+}
+
+func (w *Worker) publishNAVReport(ctx context.Context) {
+	if w.runtime.lastReportedNAV == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if at, ok, err := w.runtime.lastReportedNAV(ctx, w.routeKey); err == nil && ok {
+		w.events.navReportRead(w.routeKey, at)
+	}
 }
 
 func (w *Worker) stopWhileLatched(ctx context.Context) (bool, error) {
