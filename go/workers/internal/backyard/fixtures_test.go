@@ -13,7 +13,8 @@ import (
 
 // confirmedAccounts is readAccounts at confirmed.
 func confirmedAccounts(ctx context.Context, c *chain.Client, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
-	return readAccounts(ctx, c, rpc.CommitmentConfirmed, addresses, minSlot, optional...)
+	batch, err := readAccounts(ctx, c, rpc.CommitmentConfirmed, addresses, minSlot, optional...)
+	return batch.Slot, batch.Accounts, err
 }
 
 // depositProjectionAddresses is a lane's entry-projection capture set.

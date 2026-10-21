@@ -142,15 +142,15 @@ func (m RouteManifest) observeFinalizedKaminoInitialization(ctx context.Context,
 		return out, fmt.Errorf("initializer finalized wire differs")
 	}
 	route, _ := m.route(r.RouteLane)
-	slot, accounts, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.Obligation}, int64(receipt.Slot))
+	batch, err := finalizedAccounts(ctx, rpc, []string{route.Kamino.Obligation}, int64(receipt.Slot))
 	if err != nil {
 		return out, err
 	}
-	if len(accounts) != 1 {
+	if len(batch.Accounts) != 1 {
 		return out, fmt.Errorf("initializer finalized account unavailable")
 	}
 	out = ConfirmedTransactionEvidence{Finalized: true, Signature: op.TransactionSignature, Slot: int64(receipt.Slot),
 		Initialization: &KaminoInitializationReceipt{MessageSHA256: sha256Bytes(message), SignedWireSHA256: op.SignedWireSHA256,
-			FeeLamports: receipt.Fee, PreBalances: receipt.PreLamports, PostBalances: receipt.PostLamports, AccountReadSlot: slot, Obligation: accounts[0]}}
+			FeeLamports: receipt.Fee, PreBalances: receipt.PreLamports, PostBalances: receipt.PostLamports, AccountReadSlot: batch.Slot, Obligation: batch.Accounts[0]}}
 	return out, nil
 }
