@@ -929,6 +929,9 @@ func applyCleanup(ctx context.Context, tx pgx.Tx, m EarnCleanupMutation) error {
 		return err
 	}
 	observedAt := observedOrNow(m.ObservedAt)
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.Settings, int16(m.VaultIndex), m.VaultPubkey); err != nil {
+		return err
+	}
 	var vaultID, activePolicyID int64
 	var setupPolicyID *int64
 	err = tx.QueryRow(ctx, `

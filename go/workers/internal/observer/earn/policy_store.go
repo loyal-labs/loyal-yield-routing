@@ -578,6 +578,17 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
 		var routeVaultIndex *int16
 		var routeVaultPubkey *string
 		err := tx.QueryRow(ctx, `
+            SELECT vault_index, vault_pubkey FROM loyal_yield.route_policies
+            WHERE policy_account = $1 AND settings = $2 AND authority = $3`, event.PolicyAccount, event.Settings, event.Authority).Scan(&routeVaultIndex, &routeVaultPubkey)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if routeVaultIndex != nil && routeVaultPubkey != nil {
+			if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, *routeVaultIndex, *routeVaultPubkey); err != nil {
+				return err
+			}
+		}
+		err = tx.QueryRow(ctx, `
             UPDATE loyal_yield.route_policies
             SET active = FALSE,
                 finalized_eligible = FALSE,
