@@ -3,9 +3,6 @@ use crate::{
 };
 use solana_sdk::pubkey::Pubkey;
 
-/// Stablecoin metadata shared by Earn policy construction and route execution.
-///
-/// The ordered pair generator below is the only V1 cross-mint pair registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EarnStablecoin {
     pub symbol: &'static str,

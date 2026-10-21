@@ -43,6 +43,12 @@ pub const KAMINO_RESERVE_LIQUIDITY_AUTHORITY_SEED: &[u8] = b"kamino-reserve-liq-
 pub const KAMINO_COLLATERAL_MINT_AUTHORITY_SEED: &[u8] = b"kamino-collateral-mint-authority";
 pub const KAMINO_LENDING_MARKET_AUTHORITY_SEED: &[u8] = b"lma";
 pub const KAMINO_RESERVE_STATE_LEN: usize = 160;
+const KAMINO_REFRESH_RESERVE_DISCRIMINATOR: [u8; 8] = [2, 218, 138, 235, 79, 201, 25, 102];
+const KAMINO_REFRESH_OBLIGATION_DISCRIMINATOR: [u8; 8] = [33, 132, 147, 228, 151, 192, 72, 89];
+const KAMINO_BORROW_OBLIGATION_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
+    [161, 128, 143, 245, 171, 199, 194, 6];
+const KAMINO_REPAY_OBLIGATION_LIQUIDITY_DISCRIMINATOR: [u8; 8] =
+    [116, 174, 213, 76, 180, 53, 210, 144];
 const KAMINO_RESERVE_DISCRIMINATOR: [u8; 8] = [43, 242, 204, 202, 26, 247, 59, 127];
 const KAMINO_OBLIGATION_DISCRIMINATOR: [u8; 8] = [168, 206, 141, 106, 88, 76, 172, 167];
 const KAMINO_RESERVE_LENDING_MARKET_OFFSET: usize = 32;
@@ -411,10 +417,7 @@ fn process_jupiter_stable_exact_in(
 }
 
 fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
-    // The local fixed-price model does not accrue interest or consult oracles.
-    // Accept only the official refresh wire shape and validated fixture accounts;
-    // do not blanket-accept unknown public instructions ahead of asset movement.
-    if data == [2, 218, 138, 235, 79, 201, 25, 102] {
+    if data == KAMINO_REFRESH_RESERVE_DISCRIMINATOR {
         if accounts.len() != 6
             || accounts[0].owner != program_id
             || !accounts[0].is_writable
@@ -429,7 +432,7 @@ fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
         let reserve = read_kamino_reserve_state(&accounts[0])?;
         return require_key(&accounts[1], &reserve.lending_market);
     }
-    if data == [33, 132, 147, 228, 151, 192, 72, 89] {
+    if data == KAMINO_REFRESH_OBLIGATION_DISCRIMINATOR {
         if accounts.len() < 2
             || accounts[0].owner != program_id
             || accounts[1].owner != program_id
@@ -472,10 +475,6 @@ fn process_kamino(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) ->
     }
 }
 
-// init_obligation in the official account order: the vanilla
-// obligation PDA is created through the System program, rent paid by the
-// signing fee payer, and stamped with its market and owner. User metadata and
-// referrer state are not modeled.
 fn process_kamino_init_obligation(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let [owner, fee_payer, obligation, market, seed1, seed2, _metadata, _rent, system] = accounts
     else {
@@ -558,8 +557,6 @@ const MULTIPLY_ROUTE_TAIL: [u8; 3] = [
     JUPITER_FIXTURE_SLIPPAGE_BPS[1],
     JUPITER_FIXTURE_PLATFORM_FEE_BPS,
 ];
-// The Multiply fixture uses the source-pinned Scope address. This local model
-// does not evaluate prices or pretend to model mature Scope/KLend risk logic.
 const MULTIPLY_FIXTURE_SCOPE: Pubkey = pubkey!("3t4JZcueEzTbVP6kLxXrL3VpWx45jDer4eqysweBchNH");
 fn fixture_scope_refresh_account(account: &AccountInfo, program_id: &Pubkey) -> bool {
     !account.is_writable
@@ -579,12 +576,10 @@ fn parse_kamino_instruction(data: &[u8]) -> Result<KaminoInstruction, ProgramErr
     if data[..8] == KAMINO_WITHDRAW_RESERVE_LIQUIDITY_DISCRIMINATOR {
         return Ok(KaminoInstruction::Withdraw { amount });
     }
-    // SHA256 global names and ordered accounts verified against locked
-    // KLend SDK 23b9f2b instructions/{borrow,repay}.rs by the Rust producer.
-    if data[..8] == [161, 128, 143, 245, 171, 199, 194, 6] {
+    if data[..8] == KAMINO_BORROW_OBLIGATION_LIQUIDITY_DISCRIMINATOR {
         return Ok(KaminoInstruction::Borrow { amount });
     }
-    if data[..8] == [116, 174, 213, 76, 180, 53, 210, 144] {
+    if data[..8] == KAMINO_REPAY_OBLIGATION_LIQUIDITY_DISCRIMINATOR {
         return Ok(KaminoInstruction::Repay { amount });
     }
 
@@ -743,9 +738,6 @@ fn close_emptied_kamino_obligation(obligation: &AccountInfo, owner: &AccountInfo
     Ok(())
 }
 
-// Narrow fixed-price, zero-interest/fee Multiply bank model. It executes SPL
-// movements and checked source-layout liability writes; it does not implement
-// mature KLend pricing, accrual, elevation groups, farms, or liquidation.
 const MULTIPLY_MARKET: Pubkey = pubkey!("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y");
 const MULTIPLY_USDC_RESERVE: Pubkey = pubkey!("Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo");
 const MULTIPLY_SYRUP_MINT: Pubkey = pubkey!("AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj");
@@ -955,7 +947,6 @@ fn process_multiply_shared_route(
     accounts: &[AccountInfo],
     data: &[u8],
 ) -> ProgramResult {
-    // Fixed-price model only: no real DEX/Jupiter routing or price claim.
     if accounts.len() != 13
         || data.len() != 36
         || data[8..17] != MULTIPLY_ROUTE_PLAN

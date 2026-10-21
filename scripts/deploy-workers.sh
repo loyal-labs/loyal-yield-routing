@@ -1,28 +1,4 @@
 #!/usr/bin/env bash
-# bun run deploy backyard|retail|observer|web [sha] [--migrations-applied] [--stopped]
-#
-# Builds the engine from a clean snapshot of an origin/main commit, uploads
-# it to the workers host as /opt/loyal/releases/<family>/<sha>/ and switches
-# loyal-<family> to it with deploy/hetzner/activate.sh, which holds the
-# host's deploy lock, waits for no in-flight Backyard operation and rolls
-# back if the new release does not come up. Then
-# deploy/hetzner/install-rules.sh installs the commit's Prometheus rules,
-# unless the host's come from a commit that is not its ancestor. A sha that
-# already runs only gets the rules step. --stopped deploys to a unit the
-# operator stopped on purpose (to apply migrations) and starts it on the new
-# release. Production: owner's go-ahead.
-#
-# web deploys loyal-web the same way, minus the migrations check and the
-# rules step: it builds the Vite app and the Go server from a throwaway git
-# worktree (the Vite build needs the whole checkout, not a two-dir archive)
-# with the NEXT_PUBLIC_* set Vercel production inlines, from the environment
-# (run it under `op run --env-file=.env.1password --`; values are never
-# echoed). NEXT_PUBLIC_APP_ENVIRONMENT is unset on Vercel production, which
-# apps/web reads as "prod". LOYAL_DEPLOY_DRY_RUN=1 builds the linux binary and stops
-# before any ssh.
-#
-# The host is the ssh alias in LOYAL_WORKERS_SSH (default loyal-workers); it
-# must log in as root.
 # shellcheck disable=SC2029 # the remote commands are built here on purpose
 set -euo pipefail
 

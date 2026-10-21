@@ -1,13 +1,4 @@
 #!/bin/sh
-# install-rules.sh <sha> <recorded sha|none> <dir> — install the Prometheus
-# rules of commit sha, uploaded to dir/monitoring, as
-# /etc/prometheus/loyal.rules.yml, and record sha beside it in
-# loyal.rules.yml.sha. Runs on the host as root, started by
-# scripts/deploy-workers.sh as a transient unit after the engine step. The
-# driver installs only over rules from an ancestor of sha (or none) and
-# passes the sha it read; under the host's deploy lock the record must still
-# say that. The upload is checked first, the file replaced atomically and
-# Prometheus must report it loaded; otherwise the previous file comes back.
 set -eu
 
 sha=${1:-}

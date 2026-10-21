@@ -29,6 +29,8 @@ struct LocalChain {
     slot: u64,
 }
 
+const FIXTURE_START_SLOT: u64 = 1000;
+
 impl LocalChain {
     fn new() -> Result<Self> {
         let mut svm = LiteSVM::new();
@@ -38,7 +40,7 @@ impl LocalChain {
             .ok_or("required Subscriptions SBF missing")?;
         add_mock_kamino_lend_program(&mut svm)?;
         add_mock_jupiter_program(&mut svm)?;
-        svm.warp_to_slot(1000);
+        svm.warp_to_slot(FIXTURE_START_SLOT);
         Ok(Self {
             svm: Some(svm),
             initialized: false,
@@ -46,7 +48,7 @@ impl LocalChain {
             submissions: 0,
             transactions: BTreeMap::new(),
             history: Vec::new(),
-            slot: 1000,
+            slot: FIXTURE_START_SLOT,
         })
     }
 
@@ -81,7 +83,7 @@ impl LocalChain {
                 )?;
             }
             self.initialized = true;
-            return Ok(json!({"slot":1000,"blockhash":svm.latest_blockhash().to_string()}));
+            return Ok(json!({"slot":FIXTURE_START_SLOT,"blockhash":svm.latest_blockhash().to_string()}));
         }
         if !self.initialized {
             return Err("initialize chain before RPC".into());
@@ -90,9 +92,6 @@ impl LocalChain {
             "getGenesisHash" => Ok(json!(
                 solana_sdk::hash::Hash::new_from_array([42; 32]).to_string()
             )),
-            // Explicit fixture-only bank operation. Unlike warp_to_slot,
-            // LiteSVM's own method advances its real recent-blockhash sysvar.
-            // It does not synthesize a signature, transaction or receipt.
             "expireBlockhash" => {
                 let svm = self.svm.as_mut().unwrap();
                 svm.expire_blockhash();
@@ -113,12 +112,9 @@ impl LocalChain {
             }
             "getSlot" | "getBlockHeight" => Ok(json!(self.slot)),
             "getEpochInfo" => Ok(json!({"absoluteSlot":self.slot,"blockHeight":self.slot})),
-            "getRecentPrioritizationFees" => Ok(json!([{"slot":1000,"prioritizationFee":0}])),
+            "getRecentPrioritizationFees" => Ok(json!([{"slot":FIXTURE_START_SLOT,"prioritizationFee":0}])),
             "getRecentPerformanceSamples" => Ok(json!([{"slot":self.slot,"numSlots":150,"numTransactions":0,"numNonVoteTransactions":0,"samplePeriodSecs":60}])),
-            // This controlled bank starts at slot 1000 and retains every
-            // transaction submitted through this process. It does not import
-            // historical ledger blocks or model mainnet pruning/consensus.
-            "getFirstAvailableBlock" => Ok(json!(1000u64)),
+            "getFirstAvailableBlock" => Ok(json!(FIXTURE_START_SLOT)),
             "getLatestBlockhash" => Ok(json!({"context":{"slot":self.slot},"value":{
                 "blockhash":self.svm.as_ref().unwrap().latest_blockhash().to_string(),"lastValidBlockHeight":self.slot.checked_add(150).ok_or("fixture height overflow")?
             }})),

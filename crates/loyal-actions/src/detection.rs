@@ -1400,7 +1400,7 @@ mod tests {
         JupiterCrossMintPolicySpec {
             source_shard,
             max_slippage_bps: 75,
-            daily_source_mint_spending_cap: 1_000_000_000,
+            daily_source_mint_spending_cap_base_units: 1_000_000_000,
         }
     }
 

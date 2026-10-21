@@ -487,8 +487,6 @@ pub fn create_deployed_semantic_program_interaction_policy_instruction(
     })
 }
 
-/// Canonical deployed Autodeposit policy. Its mutable wallet floor is
-/// deliberately absent.
 #[allow(clippy::too_many_arguments)]
 pub fn build_canonical_subscription_sweep_policy_create(
     settings: Pubkey,
@@ -762,7 +760,6 @@ fn exact_program_interaction_constraints(
         .collect()
 }
 
-/// Atomically replaces the current Settings signer with a full-permission one.
 pub fn handoff_settings_signer_instruction(
     settings: Pubkey,
     current_signer: Pubkey,

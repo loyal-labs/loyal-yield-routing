@@ -1135,8 +1135,6 @@ fn parse_retention_cleanup_enabled(value: Result<String, env::VarError>) -> Resu
     }
 }
 
-// Unset binds every interface (the container image relies on it). An invalid
-// value is an error, never a silent fallback to 0.0.0.0.
 fn parse_bind_address(value: Result<String, env::VarError>) -> Result<IpAddr, BoxError> {
     match value {
         Err(env::VarError::NotPresent) => Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
