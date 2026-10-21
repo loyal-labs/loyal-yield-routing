@@ -185,6 +185,7 @@ WHERE target.id = lot.target_id
 	return nil
 }
 
+// LockVaultTargets takes the vault's targets in id order; every writer of the vault's managed_vaults or route_policies rows calls it first.
 func LockVaultTargets(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) error {
 	var targetIDs []int64
 	if err := tx.QueryRow(ctx, `
