@@ -229,9 +229,8 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 	}, nil
 }
 
-// debtSFAtReserveRate matches KLend ObligationLiquidity::accrue_interest:
-// the unrounded stored Fraction times the reserve/obligation cumulative-rate
-// ratio, as of the reserve's refresh.
+// debtSFAtReserveRate is debtAtReserveRate's scaled-fraction step; roundUp
+// ceils where KLend floors, for the payoff upper bound.
 func (o decodedKaminoObligation) debtSFAtReserveRate(r decodedKaminoReserve, roundUp bool) (*big.Int, error) {
 	amount := littleInt(o.debtAmountSF[:])
 	if amount.Sign() == 0 {
@@ -257,6 +256,11 @@ func (o decodedKaminoObligation) debtSFAtReserveRate(r decodedKaminoReserve, rou
 	return product.Quo(product, former), nil
 }
 
+// Match KLend ObligationLiquidity::accrue_interest: multiply the unrounded
+// stored Fraction by the reserve/obligation U256 cumulative-rate ratio, floor
+// at the scaled-fraction boundary, then ceil once into executable raw debt.
+// This is debt at the captured reserve refresh, NOT a future interest bound.
+// Admission must separately reserve interest through its execution horizon.
 func (o decodedKaminoObligation) debtAtReserveRate(r decodedKaminoReserve) (uint64, error) {
 	debtSF, err := o.debtSFAtReserveRate(r, false)
 	if err != nil {

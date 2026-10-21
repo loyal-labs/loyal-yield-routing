@@ -399,6 +399,8 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if err != nil {
 		return Observation{}, nil, err
 	}
+	// The observation ID keeps the pair capacity, so price-driven room
+	// changes do not churn it.
 	pairEntryUSDC := entryUSDC
 	pricedEntry := earnActiveLane(route.Lane) && position.priced()
 	if pricedEntry {

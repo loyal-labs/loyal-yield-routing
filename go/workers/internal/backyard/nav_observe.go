@@ -482,9 +482,6 @@ type heldLaneValue struct {
 	state      heldLaneState
 }
 
-// laneReserves is one lane's three priced reserves: its collateral, its debt,
-// and the USDC reserve every valuation is quoted in (the debt reserve itself
-// for a USDC-debt lane).
 type laneReserves struct {
 	collateral, debt, usdc decodedKaminoReserve
 }
