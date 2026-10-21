@@ -366,6 +366,7 @@ pub struct MockJupiterTokenAccounts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MockKaminoReserveTokenAccounts {
     pub reserve: Pubkey,
+    pub obligation: Pubkey,
     pub market: Pubkey,
     pub lending_market_authority: Pubkey,
     pub liquidity_mint: Pubkey,
@@ -484,10 +485,7 @@ mod tests {
         .serialize(&mut actual)
         .unwrap();
 
-        let mut expected = vec![
-            0,
-            2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0,
-        ];
+        let mut expected = vec![0, 2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0];
         expected.extend_from_slice(&[7; 32]);
         assert_eq!(actual, expected);
     }

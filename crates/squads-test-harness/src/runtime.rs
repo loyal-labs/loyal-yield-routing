@@ -269,9 +269,12 @@ pub fn try_send_instructions_with_heap_frame(
     payer: &Keypair,
     additional_signers: &[&Keypair],
 ) -> Result<(), String> {
-    let mut instructions_with_heap_frame = Vec::with_capacity(instructions.len() + 1);
+    let mut instructions_with_heap_frame = Vec::with_capacity(instructions.len() + 2);
     instructions_with_heap_frame.push(ComputeBudgetInstruction::request_heap_frame(
         SQUADS_EXTENDED_HEAP_FRAME_BYTES,
+    ));
+    instructions_with_heap_frame.push(ComputeBudgetInstruction::set_compute_unit_limit(
+        loyal_actions::jupiter::SOLANA_MAX_COMPUTE_UNITS,
     ));
     instructions_with_heap_frame.extend_from_slice(instructions);
 
