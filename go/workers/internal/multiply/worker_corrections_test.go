@@ -67,11 +67,11 @@ func TestPlannerAndBorrowKeepFullScaledFractions(t *testing.T) {
 	position := observed.Position(SyrupUsdcUsdc)
 	position.CollateralDepositedRaw = 1_000_000_000
 	position.CollateralValueSF = knownMarketValue(reviewSF(1_000))
-	position.DebtValueSF = reviewSF(100)
+	position.DebtValueSF = knownMarketValue(reviewSF(100))
 	position.DebtRaw = 100_000_000
-	position.DebtMarketPriceSF = reviewSF(1)
+	position.DebtMarketPriceSF = knownMarketValue(reviewSF(1))
 	position.DebtMintFactor = 1_000_000
-	collateralBefore, debtBefore := position.CollateralValueSF.Int().String(), position.DebtValueSF.String()
+	collateralBefore, debtBefore := position.CollateralValueSF.Int().String(), position.DebtValueSF.Int().String()
 	decision := planUp(observed, SyrupUsdcUsdc, topology)
 	if decision.Kind != "execute" || decision.Plan.Action != ActionBorrowDebt {
 		t.Fatalf("normal position above $16 failed planning: %+v", decision)
@@ -85,10 +85,10 @@ func TestPlannerAndBorrowKeepFullScaledFractions(t *testing.T) {
 	if amount != want {
 		t.Fatalf("borrow amount %d, want %d", amount, want)
 	}
-	if position.CollateralValueSF.Int().String() != collateralBefore || position.DebtValueSF.String() != debtBefore {
+	if position.CollateralValueSF.Int().String() != collateralBefore || position.DebtValueSF.Int().String() != debtBefore {
 		t.Fatal("planner mutated confirmed evidence")
 	}
-	position.DebtValueSF = nil
+	position.DebtValueSF = MarketValueSF{}
 	if decision := planUp(observed, SyrupUsdcUsdc, topology); decision.Kind != "invalid_observation" {
 		t.Fatal("missing valuation became a complete or executable decision")
 	}
@@ -150,7 +150,7 @@ func TestPinnedObligationLayoutAndReserveMintIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if position.UnhealthyValueSF.Cmp(reviewSF(400)) != 0 || position.CollateralValueSF.Int().Cmp(reviewSF(500)) != 0 || position.DebtValueSF.Cmp(reviewSF(100)) != 0 {
+	if position.UnhealthyValueSF.Int().Cmp(reviewSF(400)) != 0 || position.CollateralValueSF.Int().Cmp(reviewSF(500)) != 0 || position.DebtValueSF.Int().Cmp(reviewSF(100)) != 0 {
 		t.Fatalf("wrong full-width valuation: %+v", position)
 	}
 	if position.DebtRaw != 100_000_000 {
@@ -241,8 +241,8 @@ func TestSnapshotClaimUnitsIdleZerosAndUnknownEvidence(t *testing.T) {
 	}
 	position := observed.Position(SyrupUsdcUsdc)
 	position.CollateralDepositedRaw, position.DebtRaw = 1_000_000_000, 500_000_000
-	position.CollateralValueSF, position.DebtValueSF = knownMarketValue(reviewSF(1_000)), reviewSF(500)
-	position.UnhealthyValueSF = reviewSF(800)
+	position.CollateralValueSF, position.DebtValueSF = knownMarketValue(reviewSF(1_000)), knownMarketValue(reviewSF(500))
+	position.UnhealthyValueSF = knownMarketValue(reviewSF(800))
 	active, err := snapshotInput(route, observed)
 	if err != nil || active.EquityUSDMicros != "530000000" {
 		t.Fatalf("claim raw units double-scaled: %+v %v", active, err)
@@ -252,7 +252,7 @@ func TestSnapshotClaimUnitsIdleZerosAndUnknownEvidence(t *testing.T) {
 	if err != nil || active.ForecastAPYBPS == nil || *active.ForecastAPYBPS != "0" {
 		t.Fatalf("signed forecast division did not truncate toward zero: %+v %v", active, err)
 	}
-	position.DebtValueSF = nil
+	position.DebtValueSF = MarketValueSF{}
 	if _, err := snapshotInput(route, observed); err == nil {
 		t.Fatal("missing valuation became a zero-valued snapshot")
 	}

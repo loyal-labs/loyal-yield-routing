@@ -278,7 +278,7 @@ func (r *Revalidator) finishCrossMintInitialWithdrawal(ctx context.Context, l Re
 	out.ConflictKeys = canonicalStrings([]string{"vault-write:" + l.VaultPubkey, fmt.Sprintf("fleet-shared-write-lane:%02d", l.VaultID%64)})
 	mint, ata, minimum := l.SourceLiquidityMint, bank.source.Position.VaultLiquidityATA, int64(1)
 	out.ExpectedEffect, _ = json.Marshal(crossMintPreparationEffect{CreditMint: &mint, CreditAccount: &ata, MinimumCredit: &minimum})
-	out.BalanceAnchors, _ = json.Marshal(CrossMintAnchors{Credit: &CrossMintTokenAmount{mint, ata, int64(binary.LittleEndian.Uint64(bank.accounts[ata].Data[64:72]))}, Position: &CrossMintPositionAnchor{Reserve: l.SourceReserve, Market: bank.source.Position.Market, Obligation: bank.source.Obligation, ObligationExists: true, CollateralRaw: int64(bank.sourceCollateral)}})
+	out.BalanceAnchors, _ = json.Marshal(CrossMintAnchors{Credit: &CrossMintTokenBalance{mint, ata, int64(binary.LittleEndian.Uint64(bank.accounts[ata].Data[64:72]))}, Position: &CrossMintPositionAnchor{Reserve: l.SourceReserve, Market: bank.source.Position.Market, Obligation: bank.source.Obligation, ObligationExists: true, CollateralRaw: int64(bank.sourceCollateral)}})
 	out.ObservedAt, out.ObservedSlot = bank.observedAt, bank.slot
 	return out, nil
 }

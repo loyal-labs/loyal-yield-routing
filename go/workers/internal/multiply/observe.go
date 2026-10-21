@@ -21,12 +21,16 @@ type ObservationReader interface {
 	SlotsPerSecond(ctx context.Context) (float64, error)
 }
 
-// MarketValueSF is a market value as a checked u128 scaled fraction; the zero value is unknown.
+// MarketValueSF is a market value as a checked u128 scaled fraction; MarketValueSF{} is unknown, a known 0 is a value.
 type MarketValueSF struct{ value *big.Int }
 
 func knownMarketValue(value *big.Int) MarketValueSF { return MarketValueSF{value} }
 
 func (v MarketValueSF) Int() *big.Int { return v.value }
+
+func (v MarketValueSF) valid() bool {
+	return v.value != nil && v.value.Sign() >= 0 && v.value.BitLen() <= 128
+}
 
 type StrategyObservation struct {
 	StrategyKey StrategyKey
@@ -38,9 +42,9 @@ type StrategyObservation struct {
 	DebtRaw                         uint64
 	DebtAmountSF                    string
 	CollateralValueSF               MarketValueSF
-	DebtValueSF                     *big.Int
-	UnhealthyValueSF                *big.Int
-	DebtMarketPriceSF               *big.Int
+	DebtValueSF                     MarketValueSF
+	UnhealthyValueSF                MarketValueSF
+	DebtMarketPriceSF               MarketValueSF
 	DebtMintFactor                  uint64
 	CollateralTotalSupplyRaw        uint64
 	CollateralTotalLiquiditySF      *big.Int
@@ -367,7 +371,7 @@ func decodeObligation(account *chain.Account, config StrategyConfig, vault solan
 	if obligation.ElevationGroup != 0 {
 		return nil, errors.New("obligation identity drifted")
 	}
-	unhealthy := obligation.UnhealthyBorrowValueSF.Int()
+	unhealthy := knownMarketValue(obligation.UnhealthyBorrowValueSF.Int())
 	collateralValue, err := collateralMarketValueSF(collateralReserve, collateralDepositedRaw)
 	if err != nil {
 		return nil, err
@@ -395,7 +399,7 @@ func decodeObligation(account *chain.Account, config StrategyConfig, vault solan
 		CollateralValueSF:               collateralValue,
 		DebtValueSF:                     debtValue,
 		UnhealthyValueSF:                unhealthy,
-		DebtMarketPriceSF:               new(big.Int).Set(debtReserve.MarketPriceSF),
+		DebtMarketPriceSF:               knownMarketValue(new(big.Int).Set(debtReserve.MarketPriceSF)),
 		DebtMintFactor:                  debtMintFactor,
 		CollateralTotalSupplyRaw:        collateralReserve.CollateralMintSupply,
 		CollateralTotalLiquiditySF:      collateralReserve.TotalLiquiditySF,
@@ -414,16 +418,16 @@ func emptyObligation(config StrategyConfig, collateralReserve, debtReserve *deco
 		ObligationLastUpdateSlot:        0,
 		DebtAmountSF:                    "0",
 		CollateralValueSF:               knownMarketValue(new(big.Int)),
-		DebtValueSF:                     new(big.Int),
+		DebtValueSF:                     knownMarketValue(new(big.Int)),
 		CollateralReserveLastUpdateSlot: collateralReserve.LastUpdateSlot,
 		DebtReserveLastUpdateSlot:       debtReserve.LastUpdateSlot,
 		DebtMintFactor:                  debtMintFactor,
-		UnhealthyValueSF:                new(big.Int),
+		UnhealthyValueSF:                knownMarketValue(new(big.Int)),
 		CollateralTotalSupplyRaw:        collateralReserve.CollateralMintSupply,
 		CollateralTotalLiquiditySF:      collateralReserve.TotalLiquiditySF,
 		CollateralSupplyAPYBPS:          collateralAPY,
 		DebtBorrowAPYBPS:                debtAPY,
-		DebtMarketPriceSF:               new(big.Int).Set(debtReserve.MarketPriceSF),
+		DebtMarketPriceSF:               knownMarketValue(new(big.Int).Set(debtReserve.MarketPriceSF)),
 	}, nil
 }
 
@@ -495,18 +499,22 @@ func collateralMarketValueSF(reserve *decodedReserve, collateralRaw uint64) (Mar
 	return knownMarketValue(checked), nil
 }
 
-func debtMarketValueSF(reserve *decodedReserve, debtSF *big.Int) (*big.Int, error) {
+func debtMarketValueSF(reserve *decodedReserve, debtSF *big.Int) (MarketValueSF, error) {
 	if debtSF == nil || debtSF.Sign() == 0 {
-		return new(big.Int), nil
+		return knownMarketValue(new(big.Int)), nil
 	}
 	mintFactor, err := mintFactor(reserve.Decimals)
 	if err != nil {
-		return nil, err
+		return MarketValueSF{}, err
 	}
 	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(mintFactor), kamino.FractionBits)
 	value := new(big.Int).Mul(debtSF, reserve.MarketPriceSF)
 	value.Div(value, denominator)
-	return checkedU128(value)
+	checked, err := checkedU128(value)
+	if err != nil {
+		return MarketValueSF{}, err
+	}
+	return knownMarketValue(checked), nil
 }
 
 func checkedU128(value *big.Int) (*big.Int, error) {
@@ -530,12 +538,11 @@ func validMarketValues(position *StrategyObservation) bool {
 	if position == nil {
 		return false
 	}
-	for _, value := range []*big.Int{position.CollateralValueSF.Int(), position.DebtValueSF, position.DebtMarketPriceSF} {
-		if value == nil || value.Sign() < 0 || value.BitLen() > 128 {
-			return false
-		}
-	}
-	return true
+	return position.CollateralValueSF.valid() && position.DebtValueSF.valid() && position.DebtMarketPriceSF.valid()
+}
+
+func validHealthValues(position *StrategyObservation) bool {
+	return validMarketValues(position) && position.UnhealthyValueSF.valid()
 }
 
 func mintFactor(decimals uint64) (uint64, error) {
@@ -608,13 +615,13 @@ func PositionBalance(observation *ObservedRoute, key StrategyKey, topology *Earn
 		return MultiplyPosition{}, err
 	}
 	position := observation.Position(key)
-	if !validMarketValues(position) || position.UnhealthyValueSF == nil || position.UnhealthyValueSF.Sign() < 0 || position.UnhealthyValueSF.BitLen() > 128 {
+	if !validHealthValues(position) {
 		return MultiplyPosition{}, errors.New("position valuation is unknown or invalid")
 	}
 	health := uint64(math.MaxUint64)
-	if position.DebtValueSF.Sign() != 0 {
-		healthValue := saturatingU128(new(big.Int).Mul(position.UnhealthyValueSF, big.NewInt(1_000_000)))
-		healthValue.Div(healthValue, position.DebtValueSF)
+	if position.DebtValueSF.Int().Sign() != 0 {
+		healthValue := saturatingU128(new(big.Int).Mul(position.UnhealthyValueSF.Int(), big.NewInt(1_000_000)))
+		healthValue.Div(healthValue, position.DebtValueSF.Int())
 		if healthValue.IsUint64() {
 			health = healthValue.Uint64()
 		}

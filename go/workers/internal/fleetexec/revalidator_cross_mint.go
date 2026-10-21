@@ -138,7 +138,7 @@ func revalidatorCrossMintContracts(e CrossMintExpectedEffect, a fleet.CrossMintA
 	if (e.Debit == nil) != (a.Debit == nil) || (e.CreditMint == nil) != (e.CreditTokenAccount == nil) || (e.CreditMint == nil) != (e.MinimumCreditAmountRaw == nil) || (e.CreditMint == nil) != (a.Credit == nil) || e.Debit == nil && e.CreditMint == nil {
 		return errors.New("source effect and balance accounts are incomplete")
 	}
-	for _, anchor := range []*fleet.CrossMintTokenAmount{a.Debit, a.Credit} {
+	for _, anchor := range []*fleet.CrossMintTokenBalance{a.Debit, a.Credit} {
 		if anchor != nil && (anchor.Mint == "" || anchor.TokenAccount == "" || anchor.AmountRaw < 0) {
 			return errors.New("source token anchor is invalid")
 		}

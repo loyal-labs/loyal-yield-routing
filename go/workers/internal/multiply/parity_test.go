@@ -50,9 +50,9 @@ func idleObserved(topology *EarnMaxTopology) *ObservedRoute {
 	for _, config := range topology.StrategyCatalog() {
 		observed.Strategies = append(observed.Strategies, &StrategyObservation{
 			StrategyKey: config.Key, DebtAmountSF: "0",
-			CollateralValueSF: knownMarketValue(new(big.Int)), DebtValueSF: new(big.Int),
-			DebtMarketPriceSF: new(big.Int).SetUint64(fractionOneSF),
-			UnhealthyValueSF:  new(big.Int), DebtMintFactor: 1_000_000,
+			CollateralValueSF: knownMarketValue(new(big.Int)), DebtValueSF: knownMarketValue(new(big.Int)),
+			DebtMarketPriceSF: knownMarketValue(new(big.Int).SetUint64(fractionOneSF)),
+			UnhealthyValueSF:  knownMarketValue(new(big.Int)), DebtMintFactor: 1_000_000,
 		})
 		observed.CollateralCustodies = append(observed.CollateralCustodies, CustodyBalance{
 			StrategyKey: config.Key,
@@ -77,9 +77,9 @@ func activeObserved(topology *EarnMaxTopology, key StrategyKey, collateral, debt
 	observed := idleObserved(topology)
 	position := &StrategyObservation{
 		StrategyKey: key, CollateralDepositedRaw: collateral, DebtRaw: debt,
-		CollateralValueSF: knownMarketValue(new(big.Int).SetUint64(collateralValueSF)), DebtValueSF: new(big.Int).SetUint64(debtValueSF),
-		DebtMarketPriceSF: new(big.Int).SetUint64(priceSF), DebtMintFactor: 1_000_000,
-		UnhealthyValueSF: new(big.Int).Mul(new(big.Int).SetUint64(debtValueSF), big.NewInt(2)),
+		CollateralValueSF: knownMarketValue(new(big.Int).SetUint64(collateralValueSF)), DebtValueSF: knownMarketValue(new(big.Int).SetUint64(debtValueSF)),
+		DebtMarketPriceSF: knownMarketValue(new(big.Int).SetUint64(priceSF)), DebtMintFactor: 1_000_000,
+		UnhealthyValueSF: knownMarketValue(new(big.Int).Mul(new(big.Int).SetUint64(debtValueSF), big.NewInt(2))),
 	}
 	setObservedPosition(observed, position)
 	observed.CollateralCustodies[0].Balance.AmountRaw = 0
@@ -231,9 +231,9 @@ func TestPlannerDeploysThenLoops(t *testing.T) {
 	targetValue := uint64(config.TargetLTVBPS) * 3_900_000_000_000 / 10_000
 	position := &StrategyObservation{
 		StrategyKey: SyrupUsdcUsdc, CollateralDepositedRaw: 3_900_000,
-		CollateralValueSF: knownMarketValue(big.NewInt(3_900_000_000_000)), DebtValueSF: new(big.Int),
-		DebtMarketPriceSF: big.NewInt(1_000_000_000_000), DebtMintFactor: 1_000_000,
-		UnhealthyValueSF: big.NewInt(4_000_000_000_000),
+		CollateralValueSF: knownMarketValue(big.NewInt(3_900_000_000_000)), DebtValueSF: knownMarketValue(new(big.Int)),
+		DebtMarketPriceSF: knownMarketValue(big.NewInt(1_000_000_000_000)), DebtMintFactor: 1_000_000,
+		UnhealthyValueSF: knownMarketValue(big.NewInt(4_000_000_000_000)),
 	}
 	setObservedPosition(observed, position)
 	decision = NextAction(state, observed, topology)
@@ -250,7 +250,7 @@ func TestPlannerDeploysThenLoops(t *testing.T) {
 		t.Fatalf("borrow amount %d, want %d (targetLTV %d bps)", amount, want, config.TargetLTVBPS)
 	}
 	// Within tolerance of target LTV -> complete.
-	position.DebtValueSF = new(big.Int).SetUint64(targetValue)
+	position.DebtValueSF = knownMarketValue(new(big.Int).SetUint64(targetValue))
 	position.DebtRaw = targetValue / 1_000_000
 	decision = NextAction(state, observed, topology)
 	if decision.Kind != "complete" {
@@ -727,10 +727,10 @@ func TestSnapshotInputUnits(t *testing.T) {
 	// 1 << 60 SF = exactly 1.0 -> 1_000_000 micros.
 	position := &StrategyObservation{
 		StrategyKey: SyrupUsdcUsdc, CollateralDepositedRaw: 2_000_000, DebtRaw: 1_000_000,
-		CollateralValueSF: knownMarketValue(big.NewInt(1 << 60)), DebtValueSF: big.NewInt(1 << 60 >> 2),
-		DebtMarketPriceSF:      big.NewInt(1 << 60),
+		CollateralValueSF: knownMarketValue(big.NewInt(1 << 60)), DebtValueSF: knownMarketValue(big.NewInt(1 << 60 >> 2)),
+		DebtMarketPriceSF:      knownMarketValue(big.NewInt(1 << 60)),
 		CollateralSupplyAPYBPS: 500, DebtBorrowAPYBPS: 1_000,
-		UnhealthyValueSF: big.NewInt(1 << 60),
+		UnhealthyValueSF: knownMarketValue(big.NewInt(1 << 60)),
 	}
 	setObservedPosition(observed, position)
 	input, err := snapshotInput(route, observed)

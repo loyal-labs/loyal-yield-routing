@@ -26,14 +26,14 @@ const (
 )
 
 type CrossMintExpectedEffect struct {
-	Debit                  *fleet.CrossMintTokenAmount `json:"debit"`
-	CreditMint             *string                     `json:"creditMint"`
-	CreditTokenAccount     *string                     `json:"creditTokenAccount"`
-	MinimumCreditAmountRaw *int64                      `json:"minimumCreditAmountRaw"`
+	Debit                  *fleet.CrossMintTokenDelta `json:"debit"`
+	CreditMint             *string                    `json:"creditMint"`
+	CreditTokenAccount     *string                    `json:"creditTokenAccount"`
+	MinimumCreditAmountRaw *int64                     `json:"minimumCreditAmountRaw"`
 }
 type CrossMintEffect struct {
-	Debit  *fleet.CrossMintTokenAmount `json:"debit"`
-	Credit *fleet.CrossMintTokenAmount `json:"credit"`
+	Debit  *fleet.CrossMintTokenDelta `json:"debit"`
+	Credit *fleet.CrossMintTokenDelta `json:"credit"`
 }
 
 type CrossMintMovement struct {
@@ -324,11 +324,11 @@ func validateCrossMintLeg(r CrossMintLegRequest, e CrossMintExpectedEffect, a fl
 	}
 	return nil
 }
-func validCrossMintDelta(a *fleet.CrossMintTokenAmount) bool {
+func validCrossMintDelta(a *fleet.CrossMintTokenDelta) bool {
 	return a != nil && a.Mint != "" && a.TokenAccount != "" && a.AmountRaw > 0
 }
 func validateCrossMintAnchors(a fleet.CrossMintAnchors) error {
-	for _, t := range []*fleet.CrossMintTokenAmount{a.Debit, a.Credit} {
+	for _, t := range []*fleet.CrossMintTokenBalance{a.Debit, a.Credit} {
 		if t != nil && (t.Mint == "" || t.TokenAccount == "" || t.AmountRaw < 0) {
 			return errors.New("invalid token balance anchor")
 		}
