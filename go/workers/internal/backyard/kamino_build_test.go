@@ -144,8 +144,8 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 		t.Fatal(err)
 	}
 	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	refresh := kaminoPrimeUSDCRefreshInstructionsForRequest(rwa, request)
-	if len(refresh) != 3 || len(refresh[2].accounts) != 4 ||
+	refresh, err := kaminoPrimeUSDCRefreshInstructionsForRequest(rwa, request)
+	if err != nil || len(refresh) != 3 || len(refresh[2].accounts) != 4 ||
 		encodeBase58(refresh[2].accounts[2].key[:]) != route.Kamino.CollateralReserve ||
 		encodeBase58(refresh[2].accounts[3].key[:]) != route.Kamino.DebtReserve {
 		t.Fatal("re-deposit refresh did not carry the confirmed collateral/debt reserve topology")
@@ -164,7 +164,7 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 		t.Fatalf("confirmed-topology re-deposit wire was rejected: %v", err)
 	}
 	request.ObligationReserves = []string{route.Kamino.DebtReserve}
-	if got := kaminoPrimeUSDCRefreshInstructionsForRequest(rwa, request); got != nil {
+	if _, err := kaminoPrimeUSDCRefreshInstructionsForRequest(rwa, request); err == nil {
 		t.Fatal("non-canonical obligation reserve order was accepted")
 	}
 }

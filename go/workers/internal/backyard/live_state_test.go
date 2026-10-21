@@ -263,8 +263,8 @@ func TestLivePYUSDResidueIsVaultCash(t *testing.T) {
 			}
 		}
 		st, err := readStepState(rwa, o.routeBatch.Accounts, autoAUTOPYUSD, s.Slot)
-		if err != nil || st.heldDebt != residue || st.debtBalance != residue {
-			t.Fatalf("AUTO/AUTO/PYUSD's step does not take the whole account: held %d (%v)", st.heldDebt, err)
+		if err != nil || st.heldDebt() != residue || st.debtBalance != residue {
+			t.Fatalf("AUTO/AUTO/PYUSD's step does not take the whole account: held %d (%v)", st.heldDebt(), err)
 		}
 	}
 }
@@ -342,7 +342,7 @@ func TestLiveEquityZeroExitLeavesNoCollateralForTheSharingLane(t *testing.T) {
 	if s.RouteLane != autoAUTOWYLDSLane || s.Target.Rule != ruleOperatorExit || !s.Target.EquityZero || s.PositionDebtRaw != 0 || s.PositionCollateralRaw == 0 {
 		t.Fatalf("exit target %s %+v", s.RouteLane, s.Target)
 	}
-	if up, atomic := stepDecision(s, d); d.Action != DeleverRouteStep || d.Reason != exitWithdrawReason || d.StrategyKey != autoAUTOWYLDSLane || up || !atomic {
+	if kind := stepKind(d); d.Action != DeleverRouteStep || d.Reason != exitWithdrawReason || d.StrategyKey != autoAUTOWYLDSLane || kind == notStep || kind == stepUp {
 		t.Fatalf("exit step %+v", d)
 	}
 	// The step landed: the wYLDS obligation is empty, the AUTO custody as it

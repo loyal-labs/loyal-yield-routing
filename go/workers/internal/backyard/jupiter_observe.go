@@ -99,58 +99,54 @@ func prepareJupiterQuoteEvidenceAt(ctx context.Context, v *Vault, rpc *chain.Cli
 		return JupiterExecutionEvidence{}, fmt.Errorf("invalid Jupiter quote construction inputs")
 	}
 	amount := uint64(decision.AmountRaw)
-	// The blockhash does not depend on the quote: read both at once, and keep
-	// the serial error order (the quote's checks first).
-	var quote jupiter.Quote
 	var instruction JupiterSwapInstruction
+	var policy string
+	var out, minimum uint64
 	var blockhash LatestBlockhash
-	var blockhashErr error
-	err = concurrentReads(ctx, func(ctx context.Context) (err error) {
-		quote, instruction, err = freshSwapForRoute(ctx, v, client, decision.StrategyKey, decision.Action, amount, maxAccounts)
-		return err
-	}, func(ctx context.Context) error {
-		blockhash, blockhashErr = latestBlockhash(ctx, rpc)
+	err = concurrentReads(ctx, func(ctx context.Context) error {
+		var quote jupiter.Quote
+		var err error
+		if quote, instruction, err = freshSwapForRoute(ctx, v, client, decision.StrategyKey, decision.Action, amount, maxAccounts); err != nil {
+			// Jupiter may temporarily return a different route dialect or account
+			// shape as liquidity changes. That is a fail-closed observation miss,
+			// not a fatal worker invariant: do not journal or sign it, and let the
+			// serialized loop request a fresh quote on its next bounded tick.
+			return confirmedObservationUnavailable(err)
+		}
+		key, _, err := jupiterPolicyLeg(v, decision.StrategyKey, decision.Action)
+		if err != nil {
+			return confirmedObservationUnavailable(err)
+		}
+		if policy, err = policies.account(key); err != nil {
+			return err
+		}
+		out, minimum, err = validateJupiterQuoteForRoute(v, quote, decision.Action, amount, decision.StrategyKey)
+		if err != nil || destinationRaw > math.MaxUint64-minimum {
+			return fmt.Errorf("Jupiter destination threshold overflows")
+		}
+		if autoCollateralLane(decision.StrategyKey) {
+			floor, err := jupiterInstructionWireFloor(instruction)
+			if err != nil {
+				return confirmedObservationUnavailable(err)
+			}
+			minimum = min(minimum, floor)
+			if minimum == 0 {
+				return budgetHold("jupiter_auto_wire_floor_zero")
+			}
+		}
 		return nil
+	}, func(ctx context.Context) (err error) {
+		blockhash, err = latestBlockhash(ctx, rpc)
+		return err
 	})
-	if err != nil {
-		// Jupiter may temporarily return a different route dialect or account
-		// shape as liquidity changes. That is a fail-closed observation miss,
-		// not a fatal worker invariant: do not journal or sign it, and let the
-		// serialized loop request a fresh quote on its next bounded tick.
-		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
-	}
-	key, _, err := jupiterPolicyLeg(v, decision.StrategyKey, decision.Action)
-	if err != nil {
-		return JupiterExecutionEvidence{}, confirmedObservationUnavailable(err)
-	}
-	policy, err := policies.account(key)
 	if err != nil {
 		return JupiterExecutionEvidence{}, err
 	}
-	out, minimum, err := validateJupiterQuoteForRoute(v, quote, decision.Action, amount, decision.StrategyKey)
-	if err != nil || destinationRaw > math.MaxUint64-minimum {
-		return JupiterExecutionEvidence{}, fmt.Errorf("Jupiter destination threshold overflows")
-	}
-	if autoCollateralLane(decision.StrategyKey) {
-		floor, floorErr := jupiterInstructionWireFloor(instruction)
-		if floorErr != nil {
-			return JupiterExecutionEvidence{}, confirmedObservationUnavailable(floorErr)
-		}
-		if floor < minimum {
-			minimum = floor
-		}
-		if minimum == 0 {
-			return JupiterExecutionEvidence{}, budgetHold("jupiter_auto_wire_floor_zero")
-		}
-	}
 	minimumAfter := destinationRaw + minimum
-	if blockhashErr != nil {
-		return JupiterExecutionEvidence{}, blockhashErr
-	}
 	request := JupiterSwapRequest{Action: decision.Action, AmountRaw: amount, QuotedOutputRaw: out, MinimumOutputRaw: minimum, Policy: policy, Instruction: instruction, RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight, RouteLane: decision.StrategyKey}
 	return JupiterExecutionEvidence{
 		Request: request,
-		ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "cross-mint-swap", Conserved: false, Accounts: []ExpectedAccountEffect{
+		ExpectedEffects: ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: effectsCrossMintSwap, Conserved: false, Accounts: []ExpectedAccountEffect{
 			{Address: sourceATA, Owner: sourceProgram, Mint: sourceMint, Authority: v.squads, BeforeRaw: sourceRaw, AfterRaw: sourceRaw - amount},
 			{Address: destinationATA, Owner: destinationProgram, Mint: destinationMint, Authority: v.squads, BeforeRaw: destinationRaw, AfterRaw: minimumAfter, MinimumAfterRaw: &minimumAfter},
 		}},

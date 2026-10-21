@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/anchor"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
@@ -379,8 +380,6 @@ func (a swapAsset) programAccounts() []solana.PublicKey {
 	return jupiter.AuthorityTokenAccounts(jupiter.APIAuthorities, a.mint, a.program)
 }
 
-const usdgMint = "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH"
-
 func asset(symbol, custody, mint, program string) swapAsset {
 	return swapAsset{symbol: symbol, custody: kaminoKey(custody), mint: kaminoKey(mint), program: kaminoKey(program)}
 }
@@ -396,11 +395,11 @@ func debtAsset(r RuntimeRoute) swapAsset {
 }
 
 func routeSwapAssets(v *Vault) (map[string]swapAsset, error) {
-	usdg, err := spl.AssociatedTokenAddress(kaminoKey(v.squads), kaminoKey(usdgMint), solana.Token2022ProgramID)
+	usdg, err := spl.AssociatedTokenAddress(kaminoKey(v.squads), kaminoKey(fleet.USDGMint), solana.Token2022ProgramID)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]swapAsset{"USDC": usdcAsset(v), "USDG": asset("USDG", usdg.String(), usdgMint, token2022Program)}
+	out := map[string]swapAsset{"USDC": usdcAsset(v), "USDG": asset("USDG", usdg.String(), fleet.USDGMint, token2022Program)}
 	for _, r := range v.routes {
 		out[r.CollateralSymbol], out[r.DebtSymbol] = collateralAsset(r), debtAsset(r)
 	}

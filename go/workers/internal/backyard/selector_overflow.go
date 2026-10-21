@@ -60,10 +60,8 @@ func overflowEquityRaw(s Snapshot, level float64) int64 {
 	return e
 }
 
-// overflowReleaseReceipts converts the overflow source's E (bridge USDC
-// value) into collateral receipts, capped at the overflow release limit.
-func overflowReleaseReceipts(s Snapshot, free int64) int64 {
-	value := min(free, overflowReleaseValueRaw(s))
+func overflowReleaseReceipts(s Snapshot, releaseValueRaw int64) (collateralReceiptsRaw int64) {
+	value := min(releaseValueRaw, overflowReleaseValueRaw(s))
 	if value <= 0 || s.PositionCollateralRaw <= 0 || s.PositionCollateralValueRaw <= 0 {
 		return 0
 	}
