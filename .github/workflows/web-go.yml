@@ -41,6 +41,8 @@ jobs:
         run: bun scripts/web/gen-routes.ts --check
       - name: build
         run: sh scripts/web/build.sh
+      - name: Go headers and locale redirects match loyal-app
+        run: bun scripts/web/parity.ts
       - name: go
         working-directory: go/workers
         run: |
