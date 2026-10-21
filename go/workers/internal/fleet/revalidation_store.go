@@ -604,9 +604,6 @@ FOR UPDATE`, lease.Cluster, lease.VaultID, prep.RequirementsFingerprint).Scan(&r
 	return requestID, nil
 }
 
-// Fingerprints hash raw pubkey ordering including static accounts, while these
-// persisted vectors use base58 lexical ordering and restart ordinals per class.
-// They are different source contracts; never sort one to impersonate the other.
 func waitingALTManifestAddresses(prep RoutePreparation, missing []string) ([]provisioningAddress, []provisioningAddress, error) {
 	m := prep.Manifest
 	requirements, err := ALTManifestRequirementsFingerprint(m)

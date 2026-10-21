@@ -11,7 +11,6 @@ import (
 //go:embed all:dist
 var embedded embed.FS
 
-// appEnvironment is set from the frontend build environment by build.sh.
 var appEnvironment = "prod"
 
 var (

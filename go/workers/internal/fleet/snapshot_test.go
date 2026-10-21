@@ -79,7 +79,7 @@ func TestReadSnapshotReadsEveryVaultFactAtTheReservesSlot(t *testing.T) {
 	put(fixtureAccount(idle.String(), solana.TokenProgramID.String(), 1, idleData))
 
 	slotRate := 2.5
-	request := SnapshotRequest{Catalog: []ReserveIdentity{routable, absent, drifted}, SlotsPerSecond: &slotRate, Idle: true,
+	request := SnapshotRequest{Catalog: []ReserveIdentity{routable, absent, drifted}, SlotRate: MeasuredSlotRate(slotRate), Idle: true,
 		Vaults: []SnapshotVault{{Pubkey: held, PolicyAccount: policyAccount, Markets: []string{market, otherMarket}}, {Pubkey: bare, PolicyAccount: unreadable, Markets: []string{market}}}}
 	snapshot, err := ReadSnapshot(context.Background(), node, request)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestReadSnapshotReadsEveryVaultFactAtTheReservesSlot(t *testing.T) {
 	}
 
 	// Holdings only: no reserve is priced, holdings still convert.
-	request.SlotsPerSecond = nil
+	request.SlotRate = HoldingsOnly
 	if snapshot, err = ReadSnapshot(context.Background(), node, request); err != nil || len(snapshot.Reserves) != 0 || snapshot.Vaults[held].Holdings[0].LiquidityRaw != 2_000 {
 		t.Fatalf("holdings-only snapshot %+v %v", snapshot, err)
 	}

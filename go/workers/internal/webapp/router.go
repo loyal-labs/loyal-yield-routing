@@ -86,7 +86,6 @@ func apiConfig() huma.Config {
 	config := huma.DefaultConfig("Loyal API", "1.0.0")
 	config.DocsPath = ""
 	config.OpenAPIPath = "/api/openapi"
-	// Next's JSON contract has no Huma $schema field.
 	config.CreateHooks = nil
 	return config
 }

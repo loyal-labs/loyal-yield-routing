@@ -8,24 +8,6 @@ import (
 
 // Facts are the only health signal a family emits. Alerting rules live in
 // Alertmanager; nothing in-process interprets them.
-//
-//	loyal_family_landed_total{family}                    operations that reached their on-chain outcome
-//	loyal_family_failed_total{family,code}               operations that ended without it, by stable code
-//	loyal_family_inflight{family}                        operations signed or sent and not yet terminal
-//	loyal_family_last_progress_timestamp_seconds{family} last time the family completed a unit of work
-//	loyal_lane_last_success_timestamp_seconds{family,lane} last tick a lane finished without error
-//	loyal_fee_payer_balance_lamports{payer}              lamports of a payer, read every pass
-//	loyal_autodeposit_oldest_due_lot_age_seconds         age of the oldest owned or blocked deposit
-//	loyal_fleet_capacity_replans_total{reason}           moves dropped at execution because they no longer fit
-//	loyal_fleet_simulation_failures_total{stage}         execution simulations that failed; the move retries
-//	loyal_fleet_movable_capital_usd{reserve}             capital in a reserve with an eligible move this cycle
-//	loyal_backyard_leverage_borrow_room_usd{vault,lane}  a held lane's debt reserve borrow room, at its oracle price
-//	loyal_backyard_leverage_gap{vault,lane}              a held lane's stored leverage target minus its leverage
-//	loyal_backyard_leverage_up_landed_total{vault,lane}  leverage_up borrows that landed
-//	loyal_backyard_leverage_reaction_seconds{vault}      first observed room to the leverage_up borrow landing
-//	loyal_backyard_leverage_decision_outages_total{vault,reason} leverage samples that could not be decided, by sanitized cause
-//	loyal_backyard_term_debt_days_to_maturity{vault,lane} a held lane's days to its term debt's maturity
-//	loyal_backyard_hold{vault,lane,reason}               1 for the hold the last tick ended in; no series while it acts
 type Facts struct {
 	withdrawalAttention *prometheus.GaugeVec
 	withdrawalObserved  *prometheus.GaugeVec

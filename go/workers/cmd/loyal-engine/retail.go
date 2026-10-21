@@ -341,7 +341,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("lookup writer", err)
 	}
-	// This lane receives no manager key or broadcast capability.
 	lookupPlanner, err := fleetexec.NewLookupPlanner(dStore, cluster, fleetexec.LookupPlannerConfig{
 		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
 		TickDeadline: 20 * time.Second, PollInterval: time.Second,

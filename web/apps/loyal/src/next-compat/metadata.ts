@@ -1,31 +1,12 @@
 import type { Metadata } from "next";
 
+import { metadata as layoutMetadata } from "@/app/layout";
 import { SITE_URL } from "@/lib/seo/site";
 
 export type Head = {
   meta: Array<Record<string, string>>;
   links: Array<Record<string, string>>;
 };
-
-// The exact head Next 15 renders for a Metadata, observed against production
-// (askloyal.com), which head-diff.ts re-checks:
-//   <title> | meta description | meta robots | link canonical | link
-//   alternate (hreflang) | og:title og:description og:url og:site_name
-//   og:locale og:image og:image:width og:image:height og:image:alt og:type |
-//   twitter:card twitter:title twitter:description twitter:image
-//   twitter:image:alt | link shortcut icon, link icon, link apple-touch-icon
-// Two Next behaviours the shape depends on:
-//  - Metadata merges shallowly per top-level key down the segment chain, so a
-//    page's openGraph replaces the root's whole (og:site_name does not leak
-//    onto pages that set their own openGraph).
-//  - TanStack's HeadContent dedupes meta by name/property (deepest route
-//    wins) but links only by exact equality. Root tags therefore cannot carry
-//    contested keys: a root canonical would double every page's canonical.
-// So the root layout's metadata (marked by metadataBase, which only it sets)
-// is remembered and its call emits only the shell tags — title, description,
-// icons. Every page's call merges its metadata over the root's and emits the
-// full merged set; pages without metadata (Next: inherit everything) emit the
-// root's set. Existing callers keep calling headFromMetadata(metadata).
 
 type TitleDescriptor = { absolute?: string; default?: string; template?: string };
 
@@ -69,17 +50,16 @@ type MetadataView = {
 
 type MergedMetadata = MetadataView & { metadataBase: URL };
 
-let rootMetadata: MetadataView | undefined;
+const rootMetadata = layoutMetadata as MetadataView;
 
-export function headFromMetadata(metadata: Metadata | undefined): Head {
+export function rootHead(): Head {
+  return shellHead({ ...rootMetadata, metadataBase: rootMetadata.metadataBase ?? new URL(SITE_URL) });
+}
+
+export function pageHead(metadata: Metadata | undefined): Head {
   const view = metadata as MetadataView | undefined;
-  if (view?.metadataBase) rootMetadata = view;
-
-  const root = rootMetadata ?? view;
-  const base = view?.metadataBase ?? root?.metadataBase ?? new URL(SITE_URL);
-  if (view?.metadataBase) return shellHead({ ...view, metadataBase: base });
-  const merged: MergedMetadata = { ...root, ...view, metadataBase: base };
-  return fullHead(merged);
+  const base = rootMetadata.metadataBase ?? new URL(SITE_URL);
+  return fullHead({ ...rootMetadata, ...view, metadataBase: base });
 }
 
 function shellHead(root: MergedMetadata): Head {

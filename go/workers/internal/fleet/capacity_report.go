@@ -13,11 +13,6 @@ const (
 	apyBucketBPS         = 50
 )
 
-// ReserveCapacity is one reserve's line in kamino_fleet_capacity: the capital
-// the planned holdings keep in it, what it pays, and the best same-mint
-// destination with the room that destination has left this cycle. Vaults
-// with an open opportunity or decision are not planned, so their capital is
-// not in Held.
 type ReserveCapacity struct {
 	Reserve                     string `json:"reserve"`
 	Mint                        string `json:"mint"`

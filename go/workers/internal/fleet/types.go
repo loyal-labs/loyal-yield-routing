@@ -44,7 +44,6 @@ type ReserveState struct {
 	DepositLimitRaw             *uint64 `json:"depositLimitRaw"`
 }
 
-// DepositRoomRaw is the supply the deposit limit still admits; known is false when the limit was not observed.
 func (r ReserveState) DepositRoomRaw() (room int64, known bool) {
 	if r.DepositLimitRaw == nil || r.TotalSupplyRaw < 0 {
 		return 0, false

@@ -33,8 +33,6 @@ func crossMintALTPartsHash(parts []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// CrossMintExternalAddressHash ports Rust's ordered_lookup_table_address_hash.
-// Repeated members retain their original indexes; they must not be deduplicated.
 func CrossMintExternalAddressHash(addresses []string) (string, error) {
 	if len(addresses) == 0 || len(addresses) > 256 {
 		return "", errors.New("external ALT requires bounded complete member vector")

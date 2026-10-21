@@ -286,8 +286,6 @@ func crossMintRecoveryAnchoredPosition(position VaultPosition) (VaultPosition, b
 
 func mulDivInt64(left, right, divisor int64) (int64, bool) {
 	if divisor == 0 {
-		// Match Rust's conservative proportional quote while leaving one collateral
-		// unit in the source obligation so recovery can reuse the existing obligation.
 		return 0, false
 	}
 	product := left * right
