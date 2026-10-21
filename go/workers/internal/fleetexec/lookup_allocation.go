@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type lookupReservation struct {
@@ -39,11 +40,11 @@ func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanni
 		return result, errors.New("lookup planning bank invalid")
 	}
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.lookup_table_provisioner_controls(cluster,paused,reason,updated_by,control_epoch) VALUES($1,false,'implicit unpaused provisioner control',$2,0) ON CONFLICT(cluster) DO NOTHING`, request.Cluster, request.Lease.Owner); err != nil {
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{ControlCluster: request.Cluster, ControlOwner: request.Lease.Owner}); err != nil {
 			return err
 		}
 		var paused bool
-		if err := tx.QueryRow(ctx, `SELECT paused FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster=$1 FOR UPDATE`, request.Cluster).Scan(&paused); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT paused FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster=$1`, request.Cluster).Scan(&paused); err != nil {
 			return err
 		}
 		if paused {
@@ -61,9 +62,12 @@ func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanni
 		if err = lookupRequestCatalogGuard(ctx, tx, request); err != nil {
 			return err
 		}
+		if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Families: fleet.LookupRows{IDs: []int64{manifest.FamilyID}, Share: true}}); err != nil {
+			return err
+		}
 		var f lookupPlanningFamily
 		var water int
-		err = tx.QueryRow(ctx, `SELECT id,logical_name,provisioning_authority,payer,COALESCE(active_generation,0),hard_capacity,largest_atomic_expansion,safety_margin,allocation_high_water FROM loyal_yield.lookup_table_families WHERE id=$1 AND kind='vault_shards' AND desired_state='active' FOR SHARE`, manifest.FamilyID).Scan(&f.id, &f.name, &f.authority, &f.payer, &f.activeGeneration, &f.policy.HardCapacity, &f.policy.LargestAtomicExpansion, &f.policy.SafetyMargin, &water)
+		err = tx.QueryRow(ctx, `SELECT id,logical_name,provisioning_authority,payer,COALESCE(active_generation,0),hard_capacity,largest_atomic_expansion,safety_margin,allocation_high_water FROM loyal_yield.lookup_table_families WHERE id=$1 AND kind='vault_shards' AND desired_state='active'`, manifest.FamilyID).Scan(&f.id, &f.name, &f.authority, &f.payer, &f.activeGeneration, &f.policy.HardCapacity, &f.policy.LargestAtomicExpansion, &f.policy.SafetyMargin, &water)
 		if err != nil {
 			return err
 		}
@@ -75,11 +79,11 @@ func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanni
 		if err != nil {
 			return err
 		}
-		// Writers lock bindings before tables. The binding update below fires a
-		// trigger that updates its table rows, so every binding this transaction
-		// touches is locked first, in id order; fresh admission holds the active
-		// binding before it locks the table.
-		if _, err = tx.Exec(ctx, `SELECT id FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=0 AND lifecycle_state IN ('active','preparing','warming') ORDER BY id FOR UPDATE`, f.id, request.VaultID); err != nil {
+		bindingIDs, err := fleet.QueryLookupIDs(ctx, tx, `SELECT id FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=0 AND lifecycle_state IN ('active','preparing','warming') ORDER BY id`, f.id, request.VaultID)
+		if err != nil {
+			return err
+		}
+		if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Bindings: fleet.LookupRows{IDs: bindingIDs}}); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(ctx, `UPDATE loyal_yield.lookup_table_vault_bindings SET lifecycle_state='failed',deactivated_at=COALESCE(deactivated_at,clock_timestamp()),updated_at=clock_timestamp() WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=0 AND lifecycle_state IN ('preparing','warming') AND (manifest_id<>$3 OR desired_head_revision<>$4)`, f.id, request.VaultID, manifest.ID, revision); err != nil {
@@ -92,7 +96,7 @@ func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanni
 		var currentID, currentTable, currentManifest, currentRevision int64
 		var currentReserve int
 		var currentState string
-		err = tx.QueryRow(ctx, `SELECT id,route_lookup_table_id,manifest_id,desired_head_revision,reserved_capacity,lifecycle_state FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=0 AND lifecycle_state IN ('active','preparing','warming') ORDER BY CASE WHEN lifecycle_state='active' THEN 1 ELSE 0 END,id DESC LIMIT 1 FOR UPDATE`, f.id, request.VaultID).Scan(&currentID, &currentTable, &currentManifest, &currentRevision, &currentReserve, &currentState)
+		err = tx.QueryRow(ctx, `SELECT id,route_lookup_table_id,manifest_id,desired_head_revision,reserved_capacity,lifecycle_state FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=0 AND lifecycle_state IN ('active','preparing','warming') ORDER BY CASE WHEN lifecycle_state='active' THEN 1 ELSE 0 END,id DESC LIMIT 1`, f.id, request.VaultID).Scan(&currentID, &currentTable, &currentManifest, &currentRevision, &currentReserve, &currentState)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -108,7 +112,15 @@ func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanni
 				return errors.New("lookup binding has terminal operation requiring source repair")
 			}
 		}
-		rows, err := tx.Query(ctx, `SELECT t.id,t.family_id,t.generation,t.shard_ordinal,t.reserved_address_count,t.allocation_high_water,(SELECT count(DISTINCT vault_id) FROM loyal_yield.lookup_table_vault_bindings WHERE route_lookup_table_id=t.id AND lifecycle_state IN ('preparing','warming','active','standby','retiring')),t.accepting_allocations AND (t.allocation_kind='vault_shard' OR t.id=$2),t.desired_state,COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id=t.id),'{}'::text[]),COALESCE((SELECT array_agg(DISTINCT a.address ORDER BY a.address) FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_operation_addresses a ON a.operation_id=o.id WHERE o.route_lookup_table_id=t.id AND o.operation_state NOT IN ('complete','permanent_failure','cancelled')),'{}'::text[]) FROM loyal_yield.route_lookup_tables t WHERE family_id=$1 AND allocation_kind IN ('vault_shard','dedicated_vault') AND desired_state IN ('preparing','warming','active','standby') AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations o WHERE o.route_lookup_table_id=t.id AND o.operation_kind IN ('create','rollover') AND o.operation_state='permanent_failure' AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_terminal_repair_operations WHERE operation_id=o.id)) ORDER BY t.id FOR UPDATE LIMIT 257`, f.id, currentTable)
+		const planningTables = `FROM loyal_yield.route_lookup_tables t WHERE family_id=$1 AND allocation_kind IN ('vault_shard','dedicated_vault') AND desired_state IN ('preparing','warming','active','standby') AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations o WHERE o.route_lookup_table_id=t.id AND o.operation_kind IN ('create','rollover') AND o.operation_state='permanent_failure' AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_terminal_repair_operations WHERE operation_id=o.id)) ORDER BY t.id LIMIT 257`
+		tableIDs, err := fleet.QueryLookupIDs(ctx, tx, `SELECT t.id `+planningTables, f.id)
+		if err != nil {
+			return err
+		}
+		if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Tables: fleet.LookupRows{IDs: tableIDs}}); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT t.id,t.family_id,t.generation,t.shard_ordinal,t.reserved_address_count,t.allocation_high_water,(SELECT count(DISTINCT vault_id) FROM loyal_yield.lookup_table_vault_bindings WHERE route_lookup_table_id=t.id AND lifecycle_state IN ('preparing','warming','active','standby','retiring')),t.accepting_allocations AND (t.allocation_kind='vault_shard' OR t.id=$2),t.desired_state,COALESCE((SELECT array_agg(address ORDER BY ordinal) FROM loyal_yield.lookup_table_addresses WHERE route_lookup_table_id=t.id),'{}'::text[]),COALESCE((SELECT array_agg(DISTINCT a.address ORDER BY a.address) FROM loyal_yield.lookup_table_operations o JOIN loyal_yield.lookup_table_operation_addresses a ON a.operation_id=o.id WHERE o.route_lookup_table_id=t.id AND o.operation_state NOT IN ('complete','permanent_failure','cancelled')),'{}'::text[]) `+planningTables, f.id, currentTable)
 		if err != nil {
 			return err
 		}
@@ -151,7 +163,7 @@ func (s *Store) planLookupVaultRequest(ctx context.Context, request LookupPlanni
 		kind := LookupExtend
 		contextValue := map[string]any{"request_id": request.ID, "requirementsFingerprint": request.Fingerprint}
 		if allocation.TableID == 0 {
-			if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, f.authority); err != nil {
+			if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Authority: f.authority}); err != nil {
 				return err
 			}
 			var chosen *lookupReservation

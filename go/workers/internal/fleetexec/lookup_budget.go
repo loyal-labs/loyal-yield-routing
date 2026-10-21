@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type LookupBudget struct {
@@ -25,11 +26,14 @@ func (s *Store) ReserveLookupBudget(ctx context.Context, operation LookupOperati
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('reusable-alt-budget:'||$1,0))`, operation.Intent.Cluster); err != nil {
 			return err
 		}
-		paused, err := lookupControlLock(ctx, tx, operation.Intent, operation.Lease.Owner)
+		if err := fleet.LockLookupRows(ctx, tx, operation.Intent.writerPlan(operation.Lease.Owner)); err != nil {
+			return err
+		}
+		paused, err := lookupControlState(ctx, tx, operation.Intent)
 		if err != nil {
 			return err
 		}
-		source, err := lookupLockSource(ctx, tx, operation.Intent, operation.Lease)
+		source, err := lookupSourceState(ctx, tx, operation.Intent, operation.Lease)
 		if err != nil {
 			return err
 		}

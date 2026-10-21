@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func (s *Store) nextLookupPlanningVault(ctx context.Context, cluster string) (int64, error) {
@@ -59,15 +60,25 @@ func lookupPlanningSatisfiedTx(ctx context.Context, tx pgx.Tx, r LookupPlanningR
 	var family, manifest int64
 	var generation *int32
 	var state string
-	// Lock the authoritative head before its family, as catalog publication does.
-	if err := tx.QueryRow(ctx, `SELECT h.family_id,rev.manifest_id,h.target_generation,h.readiness_state FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_families f ON f.id=h.family_id JOIN loyal_yield.lookup_table_shared_market_catalog_revisions rev ON rev.id=h.catalog_revision_id WHERE f.cluster=$1 AND f.kind='shared_market' AND f.desired_state='active' AND h.catalog_revision_id=$2 FOR SHARE OF h`, r.Cluster, p.CatalogRevisionID).Scan(&family, &manifest, &generation, &state); err != nil {
+	headWhere := `FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_families f ON f.id=h.family_id JOIN loyal_yield.lookup_table_shared_market_catalog_revisions rev ON rev.id=h.catalog_revision_id WHERE f.cluster=$1 AND f.kind='shared_market' AND f.desired_state='active' AND h.catalog_revision_id=$2`
+	headIDs, err := fleet.QueryLookupIDs(ctx, tx, `SELECT h.family_id `+headWhere, r.Cluster, p.CatalogRevisionID)
+	if err != nil {
+		return false, err
+	}
+	if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Heads: fleet.LookupRows{IDs: headIDs, Share: true}}); err != nil {
+		return false, err
+	}
+	if err := tx.QueryRow(ctx, `SELECT h.family_id,rev.manifest_id,h.target_generation,h.readiness_state `+headWhere, r.Cluster, p.CatalogRevisionID).Scan(&family, &manifest, &generation, &state); err != nil {
 		return false, err
 	}
 	if generation == nil || state != "active" {
 		return false, nil
 	}
+	if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Families: fleet.LookupRows{IDs: []int64{family}, Share: true}}); err != nil {
+		return false, err
+	}
 	var active *int32
-	if err := tx.QueryRow(ctx, `SELECT active_generation FROM loyal_yield.lookup_table_families WHERE id=$1 AND desired_state='active' FOR SHARE`, family).Scan(&active); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT active_generation FROM loyal_yield.lookup_table_families WHERE id=$1 AND desired_state='active'`, family).Scan(&active); err != nil {
 		return false, err
 	}
 	if active == nil || *active != *generation {
@@ -103,7 +114,10 @@ func lookupPlanningSatisfiedTx(ctx context.Context, tx pgx.Tx, r LookupPlanningR
 		}
 		tableIDs = append(tableIDs, p.TableID)
 	}
-	rows, err = tx.Query(ctx, `SELECT t.id,t.table_address,t.authority,t.address_count,t.usable_address_count,t.address_hash,t.addresses,t.last_verified_slot,t.status,t.desired_state,t.durable FROM loyal_yield.route_lookup_tables t WHERE id=ANY($1) ORDER BY id FOR SHARE`, tableIDs)
+	if err = fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Tables: fleet.LookupRows{IDs: tableIDs, Share: true}}); err != nil {
+		return false, err
+	}
+	rows, err = tx.Query(ctx, `SELECT t.id,t.table_address,t.authority,t.address_count,t.usable_address_count,t.address_hash,t.addresses,t.last_verified_slot,t.status,t.desired_state,t.durable FROM loyal_yield.route_lookup_tables t WHERE id=ANY($1) ORDER BY id`, tableIDs)
 	if err != nil {
 		return false, err
 	}

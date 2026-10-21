@@ -332,6 +332,15 @@ WHERE o.cluster=$1 AND o.id<>$3
           WHERE s.decision_id=d.id AND s.movement_leg IN ('route','deposit')
             AND s.confirmed_slot IS NOT NULL AND s.confirmed_slot<=$2)))`
 
+func LockedInflightFlows(ctx context.Context, tx pgx.Tx, cluster string, slot, exclude int64, reserves ...string) (inflow, outflow map[string]int64, err error) {
+	for _, reserve := range canonicalStrings(reserves) {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "loyal-yield-fleet-reserve:"+cluster+":"+reserve); err != nil {
+			return nil, nil, err
+		}
+	}
+	return InflightFlows(ctx, tx, cluster, slot, exclude)
+}
+
 func InflightFlows(ctx context.Context, q Querier, cluster string, slot, exclude int64) (inflow, outflow map[string]int64, err error) {
 	rows, err := q.Query(ctx, inflightFlowsSQL, cluster, slot, exclude)
 	if err != nil {
@@ -432,8 +441,17 @@ VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,epoch_key) DO NOTHING RETURNING id
 	return id, err
 }
 
-// publishOne keeps, readmits or replaces one vault's move under the vault's
-// row lock, the same lock the claim's decision handoff serializes on.
+// LockVaultForDecision takes the vault row's exclusive lock that serializes a
+// vault's decision handoff against its opportunity publication, and reports
+// whether the vault is active; an unknown vault is inactive.
+func LockVaultForDecision(ctx context.Context, tx pgx.Tx, vaultID int64) (active bool, err error) {
+	err = tx.QueryRow(ctx, `SELECT active FROM loyal_yield.managed_vaults WHERE id=$1 FOR UPDATE`, vaultID).Scan(&active)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return active, err
+}
+
 func (s *Store) publishOne(ctx context.Context, cluster string, epochID int64, record snapshotRecord, planned PlannedOpportunity) (int64, string, error) {
 	d := planned.Decision
 	if err := d.Validate(); err != nil {
@@ -444,13 +462,12 @@ func (s *Store) publishOne(ctx context.Context, cluster string, epochID int64, r
 		return 0, "", err
 	}
 	defer tx.Rollback(ctx)
-	var vaultActive bool
-	err = tx.QueryRow(ctx, `SELECT active FROM loyal_yield.managed_vaults WHERE id=$1 FOR UPDATE`, d.VaultID).Scan(&vaultActive)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && !vaultActive {
-		return 0, "inactive_vault", tx.Commit(ctx)
-	}
+	vaultActive, err := LockVaultForDecision(ctx, tx, d.VaultID)
 	if err != nil {
 		return 0, "", err
+	}
+	if !vaultActive {
+		return 0, "inactive_vault", tx.Commit(ctx)
 	}
 	type row struct {
 		id                    int64

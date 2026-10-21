@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 type lookupEffectReadback struct {
@@ -42,7 +43,10 @@ func (s *Store) commitLookupProof(ctx context.Context, operation LookupOperation
 		return errors.New("lookup actual SOL accounting exceeds durable range")
 	}
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if _, err := lookupLockSource(ctx, tx, attempt.Intent, operation.Lease); err != nil {
+		if err := fleet.LockLookupRows(ctx, tx, attempt.Intent.sourcePlan()); err != nil {
+			return err
+		}
+		if _, err := lookupSourceState(ctx, tx, attempt.Intent, operation.Lease); err != nil {
 			return err
 		}
 		finalized := proof.finalizedSlot

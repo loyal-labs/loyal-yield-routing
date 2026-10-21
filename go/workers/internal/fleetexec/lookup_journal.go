@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/mr-tron/base58"
 )
 
@@ -51,13 +52,10 @@ type lookupLockedSource struct {
 	context                                    json.RawMessage
 }
 
-// Every transition locks the source family, physical table and source operation
-// in that order, then rechecks the live owner and fencing token. No RPC occurs
-// in this transaction. Packet ownership outlives control changes and leases.
-func lookupLockSource(ctx context.Context, tx pgx.Tx, i LookupIntent, lease LookupLease) (lookupLockedSource, error) {
+func lookupSourceState(ctx context.Context, tx pgx.Tx, i LookupIntent, lease LookupLease) (lookupLockedSource, error) {
 	var out lookupLockedSource
 	var cluster, authority, payer string
-	err := tx.QueryRow(ctx, `SELECT cluster,provisioning_authority,payer,desired_state,kind FROM loyal_yield.lookup_table_families WHERE id=$1 FOR UPDATE`, i.FamilyID).Scan(&cluster, &authority, &payer, &out.familyState, &out.familyKind)
+	err := tx.QueryRow(ctx, `SELECT cluster,provisioning_authority,payer,desired_state,kind FROM loyal_yield.lookup_table_families WHERE id=$1`, i.FamilyID).Scan(&cluster, &authority, &payer, &out.familyState, &out.familyKind)
 	if err != nil {
 		return out, err
 	}
@@ -67,7 +65,7 @@ func lookupLockSource(ctx context.Context, tx pgx.Tx, i LookupIntent, lease Look
 	var family, epoch int64
 	var address, tableAuthority, tablePayer, tableCluster string
 	var generation int32
-	err = tx.QueryRow(ctx, `SELECT family_id,cluster,table_address,authority,payer,generation,mutation_epoch,desired_state FROM loyal_yield.route_lookup_tables WHERE id=$1 FOR UPDATE`, i.TableID).Scan(&family, &tableCluster, &address, &tableAuthority, &tablePayer, &generation, &epoch, &out.tableState)
+	err = tx.QueryRow(ctx, `SELECT family_id,cluster,table_address,authority,payer,generation,mutation_epoch,desired_state FROM loyal_yield.route_lookup_tables WHERE id=$1`, i.TableID).Scan(&family, &tableCluster, &address, &tableAuthority, &tablePayer, &generation, &epoch, &out.tableState)
 	if err != nil {
 		return out, err
 	}
@@ -76,7 +74,7 @@ func lookupLockSource(ctx context.Context, tx pgx.Tx, i LookupIntent, lease Look
 	}
 	var sourceKind string
 	var sourceTable, sourceFamily, sourceEpoch int64
-	err = tx.QueryRow(ctx, `SELECT family_id,route_lookup_table_id,operation_kind,mutation_epoch,operation_state,operation_context FROM loyal_yield.lookup_table_operations WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp() FOR UPDATE`, i.OperationID, lease.Owner, lease.FencingToken).Scan(&sourceFamily, &sourceTable, &sourceKind, &sourceEpoch, &out.state, &out.context)
+	err = tx.QueryRow(ctx, `SELECT family_id,route_lookup_table_id,operation_kind,mutation_epoch,operation_state,operation_context FROM loyal_yield.lookup_table_operations WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, i.OperationID, lease.Owner, lease.FencingToken).Scan(&sourceFamily, &sourceTable, &sourceKind, &sourceEpoch, &out.state, &out.context)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, ErrStaleOwner
 	}
@@ -132,11 +130,14 @@ func (s *Store) PersistLookupPrepared(ctx context.Context, operation LookupOpera
 		return prepared, err
 	}
 	err = db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		paused, err := lookupControlLock(ctx, tx, i, operation.Lease.Owner)
+		if err := fleet.LockLookupRows(ctx, tx, i.writerPlan(operation.Lease.Owner)); err != nil {
+			return err
+		}
+		paused, err := lookupControlState(ctx, tx, i)
 		if err != nil {
 			return err
 		}
-		locked, err := lookupLockSource(ctx, tx, i, operation.Lease)
+		locked, err := lookupSourceState(ctx, tx, i, operation.Lease)
 		if err != nil {
 			return err
 		}

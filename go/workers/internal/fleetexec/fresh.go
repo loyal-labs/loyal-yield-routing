@@ -241,13 +241,9 @@ func (s *Store) PersistFreshAdmission(ctx context.Context, a fleet.ExecutionAdmi
 	return submissionID, err
 }
 
-// Lock the same parent identities as fresh admission, in the lookup writers'
-// family, binding, table order, then compare the exact normalized member
-// vector used by compilation. Mutators serialize on these rows; a binding
-// identity cannot be adopted from an unlocked EXISTS result.
 func lockAdmissionALTs(ctx context.Context, tx pgx.Tx, a fleet.ExecutionAdmission) error {
-	tables, err := fleet.LockExecutionALTParents(ctx, tx, a.SelectedALTs)
-	if err != nil {
+	plan, tables := fleet.ExecutionALTLockPlan(a.SelectedALTs)
+	if err := fleet.LockLookupRows(ctx, tx, plan); err != nil {
 		return err
 	}
 	for _, table := range tables {
@@ -257,8 +253,7 @@ func lockAdmissionALTs(ctx context.Context, tx pgx.Tx, a fleet.ExecutionAdmissio
     AND t.durable AND t.desired_state='active' AND t.status IN ('active','usable') AND t.deactivated_slot IS NULL
     AND f.cluster=t.cluster AND f.desired_state='active' AND f.active_generation=t.generation
     AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations op WHERE op.route_lookup_table_id=t.id AND op.operation_kind IN ('create','extend','rollover','deactivate','close')
-     AND (op.operation_state IN ('signed','submitted','confirmed','finalized','reconciled','needs_reconcile') OR op.operation_state IN ('leased','retry_wait') AND op.transaction_signature IS NOT NULL))
-   FOR SHARE OF t`, table.TableID, table.Address, a.Lease.Cluster, table.MutationEpoch, table.FamilyID, table.Generation).Scan(&kind)
+     AND (op.operation_state IN ('signed','submitted','confirmed','finalized','reconciled','needs_reconcile') OR op.operation_state IN ('leased','retry_wait') AND op.transaction_signature IS NOT NULL))`, table.TableID, table.Address, a.Lease.Cluster, table.MutationEpoch, table.FamilyID, table.Generation).Scan(&kind)
 		if err != nil {
 			return fmt.Errorf("selected ALT changed before signed publication: %w", err)
 		}

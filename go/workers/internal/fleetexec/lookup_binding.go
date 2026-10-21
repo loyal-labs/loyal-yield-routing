@@ -27,29 +27,46 @@ func (s *Store) ActivateLookupBinding(ctx context.Context, bindingID int64, snap
 		if err := tx.QueryRow(ctx, `SELECT cluster FROM loyal_yield.lookup_table_families WHERE id=$1`, familyID).Scan(&cluster); err != nil {
 			return err
 		}
-		paused, err := lookupControlLock(ctx, tx, LookupIntent{Cluster: cluster, FamilyID: familyID}, "go-lookup-binding")
+		intent := LookupIntent{Cluster: cluster, FamilyID: familyID}
+		if err := fleet.LockLookupRows(ctx, tx, intent.controlPlan("go-lookup-binding")); err != nil {
+			return err
+		}
+		paused, err := lookupControlState(ctx, tx, intent)
 		if err != nil {
 			return err
 		}
 		if paused {
 			return ErrLookupPaused
 		}
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Families: fleet.LookupRows{IDs: []int64{familyID}, Share: true}}); err != nil {
+			return err
+		}
 		var activeGeneration *int32
-		if err := tx.QueryRow(ctx, `SELECT cluster,provisioning_authority,payer,active_generation FROM loyal_yield.lookup_table_families WHERE id=$1 AND kind='vault_shards' AND desired_state='active' FOR SHARE`, familyID).Scan(&cluster, &authority, &payer, &activeGeneration); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT cluster,provisioning_authority,payer,active_generation FROM loyal_yield.lookup_table_families WHERE id=$1 AND kind='vault_shards' AND desired_state='active'`, familyID).Scan(&cluster, &authority, &payer, &activeGeneration); err != nil {
 			return err
 		}
 		if authority != snapshot.Authority || payer != authority {
 			return errors.New("lookup binding authority changed")
 		}
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{DesiredHeads: []fleet.LookupDesiredHeadKey{{FamilyID: familyID, VaultID: vaultID, BindingOrdinal: ordinal}}}); err != nil {
+			return err
+		}
 		var revision int64
 		var desiredManifest int64
-		if err := tx.QueryRow(ctx, `SELECT manifest_id,desired_revision FROM loyal_yield.lookup_table_vault_desired_heads WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=$3 FOR UPDATE`, familyID, vaultID, ordinal).Scan(&desiredManifest, &revision); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT manifest_id,desired_revision FROM loyal_yield.lookup_table_vault_desired_heads WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=$3`, familyID, vaultID, ordinal).Scan(&desiredManifest, &revision); err != nil {
 			return err
 		}
 		if desiredManifest != manifestID {
 			return errors.New("lookup binding desired manifest superseded")
 		}
-		rows, err := tx.Query(ctx, `SELECT id,route_lookup_table_id,lifecycle_state,manifest_id,desired_head_revision FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=$3 AND lifecycle_state IN ('preparing','warming','active') ORDER BY id FOR UPDATE`, familyID, vaultID, ordinal)
+		candidateIDs, err := fleet.QueryLookupIDs(ctx, tx, `SELECT id FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=$3 AND lifecycle_state IN ('preparing','warming','active') ORDER BY id`, familyID, vaultID, ordinal)
+		if err != nil {
+			return err
+		}
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Bindings: fleet.LookupRows{IDs: candidateIDs}}); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `SELECT id,route_lookup_table_id,lifecycle_state,manifest_id,desired_head_revision FROM loyal_yield.lookup_table_vault_bindings WHERE family_id=$1 AND vault_id=$2 AND binding_ordinal=$3 AND lifecycle_state IN ('preparing','warming','active') ORDER BY id`, familyID, vaultID, ordinal)
 		if err != nil {
 			return err
 		}
@@ -94,7 +111,10 @@ func (s *Store) ActivateLookupBinding(ctx context.Context, bindingID int64, snap
 		if !candidate || newest != bindingID {
 			return errors.New("lookup binding is not newest desired candidate")
 		}
-		rows, err = tx.Query(ctx, `SELECT id FROM loyal_yield.route_lookup_tables WHERE id=ANY($1) AND family_id=$2 ORDER BY id FOR UPDATE`, affected, familyID)
+		if err := fleet.LockLookupRows(ctx, tx, fleet.LookupLockPlan{Tables: fleet.LookupRows{IDs: affected}}); err != nil {
+			return err
+		}
+		rows, err = tx.Query(ctx, `SELECT id FROM loyal_yield.route_lookup_tables WHERE id=ANY($1) AND family_id=$2 ORDER BY id`, affected, familyID)
 		if err != nil {
 			return err
 		}
