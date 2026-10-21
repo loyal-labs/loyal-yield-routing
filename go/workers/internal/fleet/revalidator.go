@@ -49,12 +49,6 @@ type FleetPlan struct {
 // forward the selected inflow/outflow. No reserve can exceed its 2% frontier,
 // its deposit limit or its available liquidity, and a vault moves at most
 // one holding per wave.
-//
-// A vault's secondary holdings may only consolidate into its primary
-// (largest) reserve. The user's position records one current reserve, which a
-// rebalance never rewrites, and Autodeposit refuses a vault whose recorded
-// reserve is drained while two others hold its mint; consolidation only ever
-// removes a live reserve.
 func PlanFleet(snapshot MarketSnapshot, vaults []FleetVault) (FleetPlan, error) {
 	return PlanFleetWithLimits(snapshot, vaults, DefaultWaveLimits())
 }
@@ -86,16 +80,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		reserve string
 	}
 	seen := map[holding]bool{}
-	// A vault's primary holding is its largest, ties to the lower reserve
-	// address: the order LoadMigratedFleet reads holdings in.
-	primary := map[int64]*FleetVault{}
-	for i := range vaults {
-		p := vaults[i].Position
-		if current, ok := primary[p.VaultID]; !ok || p.AmountRaw > current.Position.AmountRaw ||
-			p.AmountRaw == current.Position.AmountRaw && p.SourceReserve < current.Position.SourceReserve {
-			primary[p.VaultID] = &vaults[i]
-		}
-	}
 	eligibleVaults := map[int64]bool{}
 	baseInflow, baseOutflow := map[string]int64{}, map[string]int64{}
 	for _, vault := range vaults {
@@ -142,15 +126,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		}
 		for target := range vault.CrossMintTargets {
 			allowed[target] = true
-		}
-		if main := primary[vault.Position.VaultID]; main != vault {
-			consolidation := allowed[main.Position.SourceReserve]
-			allowed = map[string]bool{}
-			if !consolidation {
-				out.Rejections[vault.Position.VaultID] = "secondary_holding_cannot_consolidate"
-				continue
-			}
-			allowed[main.Position.SourceReserve] = true
 		}
 		eligible := false
 		allowedTargets := make([]string, 0, len(allowed))
