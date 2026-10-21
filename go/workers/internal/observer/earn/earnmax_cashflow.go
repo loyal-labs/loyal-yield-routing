@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"time"
 
@@ -153,16 +154,26 @@ func usdcBalance(account solana.PublicKey, amount uint64) multiply.TokenBalance 
 	return multiply.TokenBalance{Account: account.String(), Mint: multiply.USDCMint, TokenProgram: multiply.TokenProgram, AmountRaw: amount}
 }
 
-// projectEarnMaxAccountUpdate is project_earn_max_account_update.
-// SnapshotApplicable reports whether a confirmed-state read of address,
-// recovered without the transaction that changed it, can be applied to vault.
-// Rust never enqueued such a job: every Rust Earn job carried its signature.
-// Two facts are proven only by their transaction, so an unsigned job for them
-// fails until it is dead-lettered. An Earn MAX claim-custody change needs its
-// exact transfer; its custody history is recovered by signature instead
-// (recoverEarnMaxGaps, Rust's enqueue_earn_max_rpc_gap_updates). A closed
-// classic policy needs its closing transaction for the refund or cleanup.
-func SnapshotApplicable(vault watch.Vault, address string, deleted bool) bool {
+// SnapshotRecoveryEvent builds the unsigned confirmed-state read for address,
+// recovered without the transaction that changed it. It reports false when no
+// affected vault can complete such a job.
+func SnapshotRecoveryEvent(address string, filters []string, kind, eventKey string, slot uint64, affected []watch.Vault, logger *slog.Logger) (QueuedEvent, bool) {
+	vaults := make([]watch.Vault, 0, len(affected))
+	for _, vault := range affected {
+		if snapshotApplicable(vault, address, kind == "account_deleted") {
+			vaults = append(vaults, vault)
+		} else if !vault.EarnMax {
+			logger.Warn("Earn policy closed outside the replayable range; its closing transaction is not recoverable from account state", "event", "earn_policy_closed_unreplayed", "policy", address, "vault", vault.Vault)
+		}
+	}
+	if len(vaults) == 0 {
+		return QueuedEvent{}, false
+	}
+	update := NormalizedUpdate{EventKey: &eventKey, Filters: filters, EventKind: kind, AccountPubkey: &address, Slot: slot}
+	return QueuedEvent{EventKey: eventKey, Slot: slot, Event: update, Vaults: vaults, Account: address}, true
+}
+
+func snapshotApplicable(vault watch.Vault, address string, deleted bool) bool {
 	if vault.EarnMax {
 		vaultKey, err := solana.PublicKeyFromBase58(vault.Vault)
 		return err == nil && address != associatedToken(vaultKey, usdcMint, tokenProgram).String()
@@ -170,6 +181,7 @@ func SnapshotApplicable(vault watch.Vault, address string, deleted bool) bool {
 	return !deleted || !isPolicyDeletion(NormalizedUpdate{EventKind: "account_deleted", AccountPubkey: &address}, vault)
 }
 
+// projectEarnMaxAccountUpdate is project_earn_max_account_update.
 func (a *Application) projectEarnMaxAccountUpdate(ctx context.Context, update NormalizedUpdate, vault watch.Vault) error {
 	idle := false
 	for _, filter := range update.Filters {

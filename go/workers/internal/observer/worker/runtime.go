@@ -689,20 +689,9 @@ func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, 
 			return 0, fmt.Errorf("earn binding %s has no affected vault", binding.address)
 		}
 		eventKey, kind := bindingRecoveryEvent(binding.address, accounts[index])
-		vaults := make([]watch.Vault, 0, len(affected))
-		for _, vault := range affected {
-			if earn.SnapshotApplicable(vault, binding.address, kind == "account_deleted") {
-				vaults = append(vaults, vault)
-			} else if !vault.EarnMax {
-				r.logger.Warn("Earn policy closed outside the replayable range; its closing transaction is not recoverable from account state", "event", "earn_policy_closed_unreplayed", "policy", binding.address, "vault", vault.Vault)
-			}
+		if event, ok := earn.SnapshotRecoveryEvent(binding.address, binding.filters, kind, eventKey, slot, affected, r.logger); ok {
+			events = append(events, event)
 		}
-		if len(vaults) == 0 {
-			continue
-		}
-		address := binding.address
-		update := earn.NormalizedUpdate{EventKey: &eventKey, Filters: binding.filters, EventKind: kind, AccountPubkey: &address, Slot: slot}
-		events = append(events, earn.QueuedEvent{EventKey: eventKey, Slot: slot, Event: update, Vaults: vaults, Account: binding.address})
 	}
 	if len(events) == 0 {
 		return 0, nil

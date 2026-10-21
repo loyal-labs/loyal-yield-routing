@@ -12,7 +12,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Binding recovery enqueues unsigned state reads. SnapshotApplicable must name
+// Binding recovery enqueues unsigned state reads. snapshotApplicable must name
 // exactly the shapes the durable consumer can complete: every shape it
 // admits completes on the first attempt, and every shape it rejects is one
 // the consumer can only fail until the dead-letter ceiling.
@@ -76,8 +76,8 @@ func TestSnapshotApplicableMatchesUnsignedJobOutcome(t *testing.T) {
 			}
 			completed := !outcome.deferred && !outcome.deadLettered
 			failing := outcome.deferred && outcome.kind == deferFailure
-			if applicable := SnapshotApplicable(shape.vault, shape.address, shape.deleted); applicable != completed || (!applicable && !failing) {
-				t.Fatalf("SnapshotApplicable=%v but unsigned job outcome %+v", applicable, outcome)
+			if applicable := snapshotApplicable(shape.vault, shape.address, shape.deleted); applicable != completed || (!applicable && !failing) {
+				t.Fatalf("snapshotApplicable=%v but unsigned job outcome %+v", applicable, outcome)
 			}
 		})
 	}
