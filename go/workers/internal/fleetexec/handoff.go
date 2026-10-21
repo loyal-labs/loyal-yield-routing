@@ -13,8 +13,6 @@ import (
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
-// Recovery validates the immutable signed bytes again before the first send;
-// none of the DTO metadata alone grants a signing or broadcasting capability.
 func verifyDurableWire(r SubmissionRecord) error {
 	tx, err := sdk.TransactionFromBytes(r.SignedTransaction)
 	if err != nil {
@@ -122,9 +120,6 @@ func checkPreparedALTUsage(ctx context.Context, tx pgx.Tx, raw []byte, semantic,
 	return nil
 }
 
-// ConfirmSameMint binds the exact signature and slot to its decision and hands
-// off reconciliation atomically. Cross-mint needs per-leg finalized custody and
-// cannot use this method, even if its signature happens to be confirmed.
 func (s *Store) ConfirmSameMint(ctx context.Context, lease SubmissionLease, slot int64) error {
 	if slot <= 0 || lease.Submission.MovementLeg != LegRoute {
 		return errors.New("same-mint confirmation requires positive slot and route leg")

@@ -54,8 +54,6 @@ const localeCookieMaxAge = 60 * 60 * 24 * 365
 // botUserAgent is BOT_USER_AGENT_RE of locale-redirect.ts:13-14.
 var botUserAgent = regexp.MustCompile(`(?i)bot|crawl|spider|slurp|preview|facebookexternalhit|embedly|whatsapp|telegram`)
 
-// localeRedirect writes Next's locale redirect and reports whether it did;
-// false means the request continues unchanged.
 func localeRedirect(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
@@ -133,7 +131,7 @@ func preferredLocale(acceptLanguage string) string {
 				if parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil {
 					quality = parsed
 				} else {
-					quality = 0 // Number("abc") is NaN, filtered out
+					quality = 0
 				}
 				break
 			}

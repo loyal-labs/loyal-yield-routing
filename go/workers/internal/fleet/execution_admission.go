@@ -18,10 +18,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// ExecutionAdmission is the result of fresh read-only preparation followed by
-// locked capacity/conflict admission. It contains no signing capability. The
-// executor must recheck these identities while publishing its immutable wire;
-// receiving this value alone is never permission to broadcast.
 type ExecutionAdmission struct {
 	Lease                   RevalidationLease
 	Preparation             RoutePreparation
@@ -31,8 +27,7 @@ type ExecutionAdmission struct {
 	ConflictKeys            []string
 	Evidence                FreshRouteEvidence
 	Anchors                 ExecutionBalanceAnchors
-	// FeePayer is the policy signer or the vault's fee-only shard.
-	FeePayer string
+	FeePayer                string
 }
 
 type ExecutionALT struct {
@@ -60,28 +55,18 @@ type executionAdmissionStore interface {
 	ReplanRevalidation(context.Context, RevalidationLease) (bool, error)
 }
 
-// ExecutionMetrics counts the execution outcomes that are not failures of an
-// operation: a move re-planned because it no longer fits, and a simulation
-// that failed before admission (the opportunity retries).
 type ExecutionMetrics interface {
 	FleetCapacityReplan(reason string)
 	FleetSimulationFailed(stage string)
 }
 
-// CapacityReplan is a fresh, deterministic answer that the whole holding no
-// longer fits: the source cannot pay it, the target's deposit limit or 2%
-// frontier cannot take it, or its dilution-priced gain no longer clears the
-// threshold. Retrying the same move cannot change that answer, so the
-// opportunity ends and the planner sizes the vault again next cycle.
 type CapacityReplan struct {
-	Reason string // stable code, the metric label
+	Reason string
 	Detail string
 }
 
 func (e *CapacityReplan) Error() string { return e.Detail }
 
-// reserveCapacityShortfall is nil when amount fits both fresh reserves after
-// the other admitted, not yet landed moves through them.
 func reserveCapacityShortfall(amount, sourceAvailable, sourceInflight, targetRoom, targetInflight int64) error {
 	if withdrawable, ok := sumInt64(sourceAvailable, -sourceInflight); !ok || withdrawable < amount {
 		return &CapacityReplan{Reason: "source_liquidity_exhausted", Detail: fmt.Sprintf("source pays %d after %d in flight; move needs %d", sourceAvailable, sourceInflight, amount)}
@@ -92,16 +77,8 @@ func reserveCapacityShortfall(amount, sourceAvailable, sourceInflight, targetRoo
 	return nil
 }
 
-// simulationStages are the prepareSameMint stages that simulate the route.
 var simulationStages = map[string]bool{"baseline_simulation": true, "prepare_route": true}
 
-// PrepareExecution shares the actual policy, official builder, fee, simulation
-// and ALT preparation with revalidation. A waiting ALT request is durable work,
-// but yields no signable admission. Cross-mint legs use their separate custody
-// protocol and cannot be passed through this same-mint API. A claimed
-// opportunity that no longer fits ends as capacity_replan and frees its vault
-// for the next planning cycle; any other failure is recorded on its own row,
-// as Rust's revalidate-lane Retry. Neither is an error of the caller's tick.
 func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*ExecutionAdmission, bool, error) {
 	store, ok := r.store.(executionAdmissionStore)
 	if !ok {
@@ -142,7 +119,6 @@ func (r *Revalidator) PrepareExecution(ctx context.Context, cluster string) (*Ex
 	return nil, true, nil
 }
 
-// prepareExecution returns the failing prepareSameMint stage with its error.
 func (r *Revalidator) prepareExecution(ctx context.Context, store executionAdmissionStore, cluster string, lease RevalidationLease) (*ExecutionAdmission, string, error) {
 	ctx, cancel := context.WithDeadline(ctx, lease.ExpiresAt.Add(-5*time.Second))
 	defer cancel()
@@ -165,8 +141,6 @@ func (r *Revalidator) prepareExecution(ctx context.Context, store executionAdmis
 		commit.Disposition, commit.MissingAddresses = "waiting_alt", prepared.Missing
 		return nil, "", r.store.CommitRevalidation(ctx, lease, commit)
 	}
-	// These are the retained Rust semantic lanes, distinct from the physical
-	// writable vector (which includes the shared fee payer and reserve accounts).
 	commit.ConflictKeys = canonicalStrings([]string{"vault-write:" + lease.VaultPubkey, fmt.Sprintf("fleet-shared-write-lane:%02d", lease.VaultID%64)})
 	admission := &ExecutionAdmission{Lease: lease, Preparation: prepared.Preparation,
 		LastValidBlockHeight: prepared.LastValidBlockHeight, ConflictKeys: append([]string(nil), commit.ConflictKeys...),
@@ -223,9 +197,6 @@ func (s *Store) CommitExecutionAdmission(ctx context.Context, lease Revalidation
 	return s.commitRevalidation(ctx, lease, commit, admission)
 }
 
-// lockExecutionALTs checks the same normalized membership and mutation epochs
-// used by compilation, under the actual legacy parent-row locks. The executor
-// later adopts prepared_transaction usage leases in its signed publication.
 func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, admission *ExecutionAdmission) error {
 	seen := map[int64]bool{}
 	for i, expected := range admission.SelectedALTs {
@@ -282,8 +253,6 @@ func lockExecutionALTs(ctx context.Context, tx pgx.Tx, lease RevalidationLease, 
 			return errors.New("selected ALT usable member vector changed")
 		}
 	}
-	// This fingerprint is deterministic Go selection evidence. Legacy adoption
-	// preserves stored Rust fingerprints rather than recomputing this value.
 	raw, err := json.Marshal(admission.SelectedALTs)
 	if err != nil {
 		return err

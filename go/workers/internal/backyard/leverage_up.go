@@ -14,8 +14,7 @@ import (
 // cap's LTV, and KLend's own loan-to-value bounds the borrow before the
 // redeposit.
 const (
-	leverageUpReason = "leverage_up"
-	// A position within 2 LTV points of a level counts as at that level.
+	leverageUpReason  = "leverage_up"
 	leverageUpNearBPS = 200
 	// Smallest leverage_up borrow in debt raw units (six-decimal stables).
 	leverageMinimumBorrowRaw = 10_000_000
@@ -33,7 +32,7 @@ func leverageUpLevel(s Snapshot) float64 {
 	ltv := int64(0)
 	if s.PositionDebtRaw > 0 {
 		if s.LTVBPS <= 0 {
-			return 0 // debt without an observed LTV: never lever up
+			return 0
 		}
 		ltv = s.LTVBPS
 	}
@@ -48,8 +47,6 @@ func leverageUpLevel(s Snapshot) float64 {
 	return 0
 }
 
-// leverageUpBorrowRaw sizes the borrow toward level, any level above 1 on
-// the ladder, before the fee and the lane's ceiling; see leverageUpCapFee.
 func (p KaminoPosition) leverageUpBorrowRaw(level float64) (uint64, error) {
 	if i, ok := leverageRungIndex(level); !ok || i == 0 {
 		return 0, budgetHold("invalid_leverage_up_level")
@@ -119,15 +116,10 @@ func leverageUpCapFee(p KaminoPosition, ceilingBPS int64, receive uint64, fee fu
 	return receive, nil
 }
 
-// heldLevelLTVBPS is the LTV a down step (hard LTV, or a stored level below
-// the position) brings the lane to: its held level's, at least 1.5x.
 func heldLevelLTVBPS(s Snapshot) int64 {
 	return leverageLevelLTVBPS(heldLevel(s.RouteLane, max(s.LeverageTargetLevel, 1.5)))
 }
 
-// hardLTVStepLTVBPS is the LTV a hard-LTV step brings the lane to: its held
-// level's, or, when the brake has fallen to or under that, the highest
-// level's under the brake (debt 0 under 1.5x's).
 func hardLTVStepLTVBPS(s Snapshot) int64 {
 	hard, ltv := hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS), int64(0)
 	for _, r := range leverageLadder {
@@ -138,7 +130,4 @@ func hardLTVStepLTVBPS(s Snapshot) int64 {
 	return min(heldLevelLTVBPS(s), ltv)
 }
 
-// leverageDownPartialReason is the down step to the held level's LTV (a
-// stored level, or the lane's cap, below a position above that level's
-// band).
 const leverageDownPartialReason = "leverage_down_partial"

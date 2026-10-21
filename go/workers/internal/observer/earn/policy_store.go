@@ -34,7 +34,6 @@ func policySeedBigint(seed uint64) (int64, error) {
 	return int64(seed), nil
 }
 
-// upsertPolicy returns the route_policies id.
 func upsertPolicy(ctx context.Context, tx pgx.Tx, event PolicyMatchInput) (int64, error) {
 	if _, err := commitmentRank(event.SourceCommitment); err != nil {
 		return 0, err
@@ -129,7 +128,6 @@ const managedVaultReplace = `
                     WHERE id = loyal_yield.managed_vaults.active_policy_id
                 )`
 
-// upsertVault returns the managed_vaults id.
 func upsertVault(ctx context.Context, tx pgx.Tx, policyID int64, event PolicyMatchInput) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `
@@ -168,9 +166,11 @@ func upsertVaultWithSetup(ctx context.Context, tx pgx.Tx, routePolicyID, setupPo
 	return id, err
 }
 
-// RecordPolicyMatch projects one detected yield route policy.
 func (s *Store) RecordPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+			return err
+		}
 		id, err := upsertPolicy(ctx, tx, event)
 		if err != nil {
 			return err
@@ -180,9 +180,11 @@ func (s *Store) RecordPolicyMatch(ctx context.Context, event PolicyMatchInput) e
 	})
 }
 
-// RecordSetupPolicyMatch attaches a setup policy to its existing vault.
 func (s *Store) RecordSetupPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+			return err
+		}
 		id, err := upsertPolicy(ctx, tx, event)
 		if err != nil {
 			return err
@@ -205,8 +207,6 @@ func (s *Store) RecordSetupPolicyMatch(ctx context.Context, event PolicyMatchInp
 	})
 }
 
-// RecordBalanceSweepPolicyMatch projects one Autodeposit policy, rolling a
-// target whose policy account changed.
 func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event BalanceSweepPolicyMatchInput) error {
 	seed, err := policySeedBigint(event.PolicySeed)
 	if err != nil {
@@ -242,8 +242,6 @@ func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event Balance
 		}
 		if err == nil && currentPolicy != event.PolicyAccount {
 			if slot <= observation {
-				// The newer target already owns this wallet; the older policy is
-				// history.
 				return nil
 			}
 			if _, err := tx.Exec(ctx, `
@@ -322,8 +320,6 @@ func (s *Store) RecordBalanceSweepPolicyMatch(ctx context.Context, event Balance
 		if err != nil {
 			return err
 		}
-		// Every policy observation attaches the latest delegation the stream
-		// recorded, including one that landed before the policy or its vault.
 		authority, err := subscriptionAuthority(event.Wallet, event.TokenMint)
 		if err != nil {
 			return err
@@ -401,7 +397,6 @@ func markCrossMintPolicyAmbiguous(ctx context.Context, tx pgx.Tx, cluster, polic
 	return startEligible, err
 }
 
-// RecordCrossMintSwapPolicyManifest projects one generalized Jupiter policy.
 func (s *Store) RecordCrossMintSwapPolicyManifest(ctx context.Context, event CrossMintSwapPolicyManifestInput) error {
 	if err := validateCrossMintManifest(event); err != nil {
 		return err
@@ -530,7 +525,6 @@ func eqInt64(current, value *int64) bool {
 	return (current == nil) == (value == nil) && (current == nil || *current == *value)
 }
 
-// RecordPolicyRemoval closes a policy account of any family.
 func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInput) error {
 	eventRank, err := commitmentRank(event.SourceCommitment)
 	if err != nil {
@@ -577,7 +571,19 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
 		var routePolicyID int64
 		var routeVaultIndex *int16
 		var routeVaultPubkey *string
+		var sameVault bool
 		err := tx.QueryRow(ctx, `
+            SELECT vault_index, vault_pubkey FROM loyal_yield.route_policies
+            WHERE policy_account = $1 AND settings = $2 AND authority = $3`, event.PolicyAccount, event.Settings, event.Authority).Scan(&routeVaultIndex, &routeVaultPubkey)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if routeVaultIndex != nil && routeVaultPubkey != nil {
+			if err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, *routeVaultIndex, *routeVaultPubkey); err != nil {
+				return err
+			}
+		}
+		err = tx.QueryRow(ctx, `
             UPDATE loyal_yield.route_policies
             SET active = FALSE,
                 finalized_eligible = FALSE,
@@ -590,9 +596,15 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
               AND settings = $6
               AND authority = $7
               AND $3 >= last_seen_slot
-            RETURNING id, vault_index, vault_pubkey`, event.Cluster, event.SourceCommitment, slot, event.Signature, event.PolicyAccount, event.Settings, event.Authority).Scan(&routePolicyID, &routeVaultIndex, &routeVaultPubkey)
+            RETURNING id, vault_index, vault_pubkey,
+                vault_index IS NOT DISTINCT FROM $8 AND vault_pubkey IS NOT DISTINCT FROM $9`,
+			event.Cluster, event.SourceCommitment, slot, event.Signature, event.PolicyAccount, event.Settings, event.Authority,
+			routeVaultIndex, routeVaultPubkey).Scan(&routePolicyID, &routeVaultIndex, &routeVaultPubkey, &sameVault)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
+		}
+		if err == nil && !sameVault {
+			return fmt.Errorf("route policy %s changed vault after its removal locked the vault's Autodeposit targets", event.PolicyAccount)
 		}
 		if err == nil {
 			if _, err := tx.Exec(ctx, `
@@ -601,9 +613,6 @@ func (s *Store) RecordPolicyRemoval(ctx context.Context, event PolicyRemovalInpu
                 WHERE active_policy_id = $1 AND active`, routePolicyID); err != nil {
 				return err
 			}
-			// A removed route policy leaves no Autodeposit target with a
-			// sweep policy to close, so its vault's work ends here. The
-			// targets stay active: the sweep policy itself was not removed.
 			if routeVaultIndex != nil && routeVaultPubkey != nil {
 				if _, err := autodeposit.SkipUnroutedVaultSlots(ctx, tx, event.Settings, *routeVaultIndex, *routeVaultPubkey); err != nil {
 					return err
@@ -692,10 +701,6 @@ func deactivateCrossMintSwapPolicy(ctx context.Context, tx pgx.Tx, event PolicyR
 	return err
 }
 
-// upsertAutodepositReconciliationRequest asks for one more control
-// observation after an attach. The target's control identity changed, so the
-// ask stands even when the delegation's slot precedes an observation already
-// processed: the reconciler skipped that one, the target had no delegation.
 func upsertAutodepositReconciliationRequest(ctx context.Context, tx pgx.Tx, targetID, requestedSlot int64) error {
 	_, err := tx.Exec(ctx, `
         INSERT INTO loyal_yield.autodeposit_reconciliation_requests AS request
@@ -708,7 +713,6 @@ func upsertAutodepositReconciliationRequest(ctx context.Context, tx pgx.Tx, targ
 	return err
 }
 
-// subscriptionAuthority is the Subscriptions authority PDA of wallet and mint.
 func subscriptionAuthority(wallet, mint string) (string, error) {
 	walletKey, err := solana.PublicKeyFromBase58(wallet)
 	if err != nil {
@@ -721,13 +725,6 @@ func subscriptionAuthority(wallet, mint string) (string, error) {
 	return pda(subscriptionsProgram, []byte("SubscriptionAuthority"), walletKey[:], mintKey[:]).String(), nil
 }
 
-// RecordRecurringDelegation records one confirmed Subscriptions recurring
-// delegation, whether or not its vault or Autodeposit target exists yet, and
-// attaches it to the wallet's targets on that vault whose mint the
-// subscription authority is for. A delegation that lands before its vault is
-// projected stays recorded until a policy observation attaches it. It returns
-// why bytes that cannot be stored were skipped; an error is only ever a
-// storage failure.
 func (s *Store) RecordRecurringDelegation(ctx context.Context, input RecurringDelegationObserved) (string, error) {
 	skipped := ""
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -793,9 +790,6 @@ func (s *Store) RecordRecurringDelegation(ctx context.Context, input RecurringDe
 	return skipped, err
 }
 
-// RecordDelegationRevoked marks a recorded delegation closed at slot, so no
-// target attaches it again and a replayed create cannot revive it. A target
-// that already holds it keeps it, as before: Autodeposit reads the chain.
 func (s *Store) RecordDelegationRevoked(ctx context.Context, delegation string, slot uint64) error {
 	_, err := s.pool.Exec(ctx, `
         UPDATE loyal_yield.recurring_delegation_observations
@@ -804,9 +798,6 @@ func (s *Store) RecordDelegationRevoked(ctx context.Context, delegation string, 
 	return err
 }
 
-// attachRecurringDelegation sets an open target's delegation to the latest
-// live recorded one of its wallet, vault and subscription authority, unless
-// the target already holds it or a later one, and requests reconciliation.
 func attachRecurringDelegation(ctx context.Context, tx pgx.Tx, targetID int64, wallet, vault, authority string) error {
 	var status string
 	var slot int64

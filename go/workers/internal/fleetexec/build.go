@@ -13,15 +13,11 @@ import (
 	solanasdk "github.com/solana-foundation/solana-go/v2"
 )
 
-// SolanaPacketLimit is the network MTU for a versioned transaction.
 const SolanaPacketLimit = fleet.SolanaPacketLimit
 
 // defaultComputeLimit mirrors the fleet planner's own compile bound.
 const defaultComputeLimit = uint64(1_400_000)
 
-// WireIdentity is the exact signed transaction evidence durably persisted
-// before any broadcast. The bytes are immutable once written; recovery can
-// only reuse them for their protocol-specific proof, never rebuild them.
 type WireIdentity struct {
 	SignedTransaction     []byte
 	SignedTransactionHash string
@@ -31,17 +27,11 @@ type WireIdentity struct {
 	LastValidBlockHeight  int64
 }
 
-// DelegateSigner holds the delegated policy signer, which also pays a route's
-// fee unless the vault ranks a healthy fee-only registry shard first.
-// FeeOnly holds the mounted fee-only shard keys; a fee-only payer signs only for
-// the fee and holds no vault, policy or ALT authority.
 type DelegateSigner struct {
 	FeePayer ed25519.PrivateKey
 	FeeOnly  []ed25519.PrivateKey
 }
 
-// signers returns the keys for a message's required signers, in order: the
-// delegate alone, or a fee-only payer followed by the delegate.
 func (s DelegateSigner) signers(keys []solanasdk.PublicKey, required, readonlySigned int) ([]ed25519.PrivateKey, error) {
 	delegate := base58.Encode(s.FeePayer[32:])
 	switch {
@@ -57,11 +47,6 @@ func (s DelegateSigner) signers(keys []solanasdk.PublicKey, required, readonlySi
 	return nil, fmt.Errorf("prepared route fee payer %s is not the delegated signer or a configured fee-only payer", keys[0])
 }
 
-// SignPreparedRoute turns a fleet-compiled unsigned v0 wire into exact signed
-// bytes without altering the message. It re-proves message identity, packet
-// bounds, required-signer authority and the recent blockhash against the
-// preparation before signing, so the persisted wire is exactly what the
-// planner simulated.
 func (s DelegateSigner) SignPreparedRoute(tx fleet.PreparedTransaction, lastValidBlockHeight int64) (WireIdentity, error) {
 	if len(s.FeePayer) != ed25519.PrivateKeySize {
 		return WireIdentity{}, errors.New("missing delegated fee-payer signing key")
@@ -141,9 +126,6 @@ func (s DelegateSigner) SignPreparedRoute(tx fleet.PreparedTransaction, lastVali
 	signed := []byte{byte(len(keys))}
 	var first []byte
 	for _, key := range keys {
-		// The stored public half must be the public half of the stored seed; a
-		// key assembled from divergent halves would sign as an unexpected
-		// authority even though its own public half is what gets compared.
 		if !bytes.Equal(ed25519.NewKeyFromSeed(key.Seed())[32:], key[32:]) {
 			return WireIdentity{}, errors.New("signing key's public half does not match its seed")
 		}

@@ -1,9 +1,5 @@
 package multiply
 
-// Worker lifecycle ported from 91694cd9^:crates/loyal-fleet-worker/src/multiply/mod.rs:
-// synchronous Run(ctx) with cancel-and-join, one fenced lease per tick, and
-// recovery branches that own every ambiguous state. No goroutine per route.
-
 import (
 	"context"
 	"crypto/ed25519"
@@ -26,23 +22,18 @@ var landResendEvery = time.Second
 
 const tickInterval = 750 * time.Millisecond
 
-// Worker is the multiply route worker. The executor (and only the executor)
-// holds the signer; the worker never sees key material.
 type Worker struct {
-	store    *Store
-	observer ObservationReader
-	executor *Executor
-	quotes   QuoteClient
-	workerID string
-	// routeKey pins one route when the root composes a single-route worker.
+	store        *Store
+	observer     ObservationReader
+	executor     *Executor
+	quotes       QuoteClient
+	workerID     string
 	routeKey     *string
 	recoveryOnly bool
 	chain        chain.LandChain
 	facts        *engine.Facts
 }
 
-// WorkerDeps carries the pool-injected store, the observation reader, the
-// executor, and the identity for leases.
 type WorkerDeps struct {
 	Store    *Store
 	Observer ObservationReader
@@ -50,18 +41,12 @@ type WorkerDeps struct {
 	Quotes   QuoteClient
 	WorkerID string
 	RouteKey *string
-	// Chain lands persisted wires; Facts receives the family outcomes.
-	Chain chain.LandChain
-	Facts *engine.Facts
+	Chain    chain.LandChain
+	Facts    *engine.Facts
 }
 
-// NewWorker validates the dependency set. The signer capability is checked to
-// live inside the executor only.
 func NewWorker(deps WorkerDeps) (*Worker, error) { return newWorker(deps, false) }
 
-// NewRecoveryWorker has no signing capability. It can adopt landed exact wires,
-// reconcile, prove expiry and send an already signed durable attempt. It cannot
-// create, replace or sign a transaction.
 func NewRecoveryWorker(deps WorkerDeps) (*Worker, error) { return newWorker(deps, true) }
 
 func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
@@ -101,9 +86,6 @@ func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
 	}, nil
 }
 
-// Run mirrors run(): bootstrap unpinned routes, tick, sleep, drain on
-// cancellation. A route IO failure leaves its durable attempt for recovery
-// and does not terminate every route sharing this worker.
 func (w *Worker) Run(ctx context.Context) error {
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
@@ -111,9 +93,6 @@ func (w *Worker) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		// Bootstrap, lease acquisition and the recovery census share the same
-		// bounded cycle as route IO. A busy or locked database must not leave
-		// those unleased stages waiting on the process context indefinitely.
 		cycle, cancelCycle := context.WithTimeout(ctx, LeaseTTL)
 		bootstrapFailed := false
 		if w.routeKey == nil && !w.recoveryOnly {
@@ -138,7 +117,6 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 		if err == nil && !bootstrapFailed {
 			var inflight int
-			// The landing may have used the whole cycle; the count is its own read.
 			if err = w.store.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.multiply_operations WHERE status IN ('signed_persisted','broadcast_intent','confirmed','reconciliation_pending')`).Scan(&inflight); err == nil {
 				w.facts.Inflight(engine.FamilyMultiply, inflight)
 				w.facts.Progress(engine.FamilyMultiply)
@@ -154,8 +132,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// BootstrapReadyRoute mirrors bootstrap_ready_route: create the deterministic
-// schema-9 route for the first ready earn-max-v2 policy projection.
 func (w *Worker) BootstrapReadyRoute(ctx context.Context) (string, error) {
 	policy, err := w.store.LoadUnbootstrappedPolicySet(ctx)
 	if err != nil {
@@ -195,8 +171,6 @@ func (w *Worker) BootstrapReadyRoute(ctx context.Context) (string, error) {
 	return "", nil
 }
 
-// Tick mirrors tick(): acquire a lease, run the leased body, release the
-// lease, and refuse to report success if the lease was lost before release.
 func (w *Worker) Tick(ctx context.Context) (TickResult, error) {
 	expiresAt := time.Now().UTC().Add(LeaseTTL)
 	var (
@@ -219,9 +193,6 @@ func (w *Worker) Tick(ctx context.Context) (TickResult, error) {
 		}
 		return TickResult{RouteKey: key, Condition: "no_route_available"}, nil
 	}
-	// The persisted fence cannot revoke a signed chain transaction. Stop all
-	// route IO at this lease's deadline, retaining any durable attempt if an
-	// acknowledgement is lost; a subsequent lease must recover it first.
 	workCtx, cancelWork := context.WithDeadline(ctx, lease.ExpiresAt)
 	result, tickErr := w.tickLeased(workCtx, lease)
 	cancelWork()
@@ -275,8 +246,6 @@ func (w *Worker) tickLeased(ctx context.Context, lease *Lease) (TickResult, erro
 		if destErr != nil {
 			return TickResult{}, errors.New("withdrawal destination identity is invalid")
 		}
-		// The persisted request binds a token account, not a wallet. Rust's
-		// transfer_checked and the user-signed Claim use this exact address.
 		extra = append(extra, TokenBalance{
 			Account: destination.String(), Mint: USDCMint, TokenProgram: TokenProgram,
 		})
@@ -295,7 +264,6 @@ func (w *Worker) tickLeased(ctx context.Context, lease *Lease) (TickResult, erro
 	if _, err := w.store.RecordPositionSnapshot(ctx, snapshot); err != nil {
 		return TickResult{}, err
 	}
-	// The next tick plans the moved route and observes its new destination.
 	if moved, err := w.store.ApplyPendingIntents(ctx, lease, stored.State, snapshot.EquityUSD); err != nil || moved {
 		return TickResult{RouteKey: &stored.RouteKey, Condition: "earn_max_intents_applied"}, err
 	}
@@ -365,8 +333,6 @@ func (w *Worker) executePlan(ctx context.Context, lease *Lease, stored *StoredRo
 		return TickResult{}, err
 	}
 	if residualCleanup {
-		// Do not publish even an unsigned operation for cleanup which lacks
-		// its existing literal policy. Admission never creates new authority.
 		if _, err := w.executor.EnsureExactPolicy(ctx, topology, plan, built); err != nil {
 			if ctx.Err() != nil {
 				return TickResult{}, ctx.Err()
@@ -407,8 +373,6 @@ func (w *Worker) executePlan(ctx context.Context, lease *Lease, stored *StoredRo
 	return w.land(ctx, lease, &route, signed, topology)
 }
 
-// signAndPersist mirrors execute_operation up to its durable boundary: sign,
-// simulate and persist the exact wire before anything is sent.
 func (w *Worker) signAndPersist(ctx context.Context, lease *Lease, operation *MultiplyOperation, plan *ActionPlan, built *BuiltOperation,
 	before *ObservedRoute, topology *EarnMaxTopology) (*MultiplyOperation, error) {
 	policy, err := w.executor.EnsureExactPolicy(ctx, topology, plan, built)
@@ -446,11 +410,6 @@ func (w *Worker) signAndPersist(ctx context.Context, lease *Lease, operation *Mu
 	return stored, nil
 }
 
-// land resends the operation's persisted wire until it confirms, fails on
-// chain or its blockhash expires. The first send moves signed_persisted to
-// broadcast_intent exactly as mark_multiply_broadcast_intent; a resend only
-// proves this worker still holds the route lease. Expiry is Rust's
-// expire_multiply_operation: the route clears and the planner replans.
 func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, operation *MultiplyOperation, topology *EarnMaxTopology) (TickResult, error) {
 	if _, err := PersistedTransaction(operation); err != nil {
 		return TickResult{}, err
@@ -483,17 +442,14 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 		return err
 	})
 	if errors.Is(err, context.DeadlineExceeded) {
-		// The lease window ended first; the next lease lands the same wire.
 		return tickResult(route, operation, "awaiting_stored_signature"), nil
 	}
 	if err != nil {
 		return TickResult{}, err
 	}
-	// Facts count an outcome only once its row is written.
 	switch out.Kind {
 	case chain.Landed:
 		if unsent {
-			// Landed without a send of ours: a lost acknowledgement.
 			if err := intent(ctx); err != nil {
 				return TickResult{}, err
 			}
@@ -525,8 +481,6 @@ func (w *Worker) land(ctx context.Context, lease *Lease, route *RouteState, oper
 	return tickResult(&next, operation, "operation_expired_without_effect"), nil
 }
 
-// recover mirrors recover(): every non-terminal status has exactly one owned
-// resolution; nothing is ever replaced behind an ambiguous send.
 func (w *Worker) recover(ctx context.Context, lease *Lease, stored *StoredRoute,
 	topology *EarnMaxTopology) (TickResult, error) {
 	operation := stored.Operation
@@ -576,8 +530,6 @@ func operationExternalCustodies(operation *MultiplyOperation, topology *EarnMaxT
 		if _, err := solana.PublicKeyFromBase58(delta.Account); err != nil {
 			return nil, err
 		}
-		// The only external transfer supported by this family's current
-		// request contract is a classic USDC user claim.
 		if delta.Mint != USDCMint {
 			return nil, errors.New("external effect token program is not established by the family contract")
 		}
@@ -628,10 +580,6 @@ func (w *Worker) receiptRecoveryFailure(ctx context.Context, lease *Lease, route
 
 var errReconciliationBankUnavailable = errors.New("confirmed reconciliation bank is stale or incoherent")
 
-// Reject a stale provider frontier before decoding financial account state.
-// The confirmed receipt is the minimum bank context, not a before-balance: the
-// read asks for a node at or past it, and a lagging node (chain.ErrBehind) or
-// an endpoint that cannot answer is not a verdict on the bank.
 type reconciliationReader struct {
 	ObservationReader
 	minimumSlot uint64
@@ -666,11 +614,6 @@ func (w *Worker) enterManualRecovery(ctx context.Context, lease *Lease, route *R
 	return tickResult(route, operation, "manual_recovery_required"), nil
 }
 
-// reconcileOperation mirrors reconcile_operation: re-observe confirmed state
-// (with the operation's unknown destination custodies as extra reads), pin
-// the read to the confirmed slot, re-hash the policy account against the
-// persisted binding, verify the persisted expected effects, and advance the
-// route position once.
 func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *RouteState,
 	operation *MultiplyOperation, confirmedSlot uint64, topology *EarnMaxTopology) (*RouteState, error) {
 	proof, err := w.executor.readReceipt(ctx, operation, topology)
@@ -801,10 +744,6 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 	return &next, nil
 }
 
-// The bridge (balance-sweep-ata-monitor validate_earn_max_claim) accepts only
-// the saved exact payout, so custody below it is a shortfall here. Once the
-// Claim is built and accepted with earn.ClaimPayout, a "max" withdrawal stops
-// being gated by its pre-unwind estimate.
 func withdrawalClaimCondition(route *RouteState, observed *ObservedRoute, topology *EarnMaxTopology) (string, error) {
 	if route == nil || route.Withdrawal == nil || observed == nil || topology == nil || observed.Slot == 0 || !observed.ActiveStrategyIsCoherent() {
 		return "", errors.New("withdrawal claim evidence is absent or incoherent")
@@ -844,8 +783,6 @@ func withdrawalClaimCondition(route *RouteState, observed *ObservedRoute, topolo
 	return "withdrawal_claimable", nil
 }
 
-// OperationID mirrors operation_id: "mul-" plus the first 32 hex chars of
-// sha256(engine_version || route_key || cycle_le || generation_le || action).
 func OperationID(routeKey string, cycle, generation uint64, action string) string {
 	hash := sha256.New()
 	hash.Write([]byte(EngineVersion))
@@ -859,8 +796,6 @@ func OperationID(routeKey string, cycle, generation uint64, action string) strin
 	return "mul-" + fmt.Sprintf("%x", hash.Sum(nil))[:32]
 }
 
-// bindBefore mirrors bind_before: every expected token delta is bound to the
-// confirmed before-balance, and the obligation state is recorded.
 func bindBefore(effects *ExpectedEffects, observed *ObservedRoute,
 	strategyKey StrategyKey, topology *EarnMaxTopology) error {
 	if effects == nil || observed == nil || observed.Slot == 0 || topology == nil {

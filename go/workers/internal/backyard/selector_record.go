@@ -8,23 +8,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RecordSelectorEvaluation consumes a complete economic quote, never a shadow
-// ranking, and stores the result: the rates' choice target() reads (a flat
-// vault enters the lane of its latest ENTER). Nothing here writes a
-// transaction or any spending authority, so an operation in flight or a
-// manual stop does not refuse it: the tick reads the choice as an input.
-// Two samples record nothing and leave the previous result and its windows:
-// one that holds for recovery or safety (it observed nothing to decide on),
-// and any sample while the previous rotation is left: its release on its
-// source, or its released cash in Squads (target rules 5r and 5 finish it
-// from the result that started it).
 func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string, input SelectorInput, confirmedSlot int64) (SelectorResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	var result SelectorResult
-	// The pure selector also serves diagnostic model snapshots. Only a
-	// coherent, monitors-armed book may write the entry choice here,
-	// including operator canaries.
 	if !input.Snapshot.MonitorsArmed {
 		return result, budgetHold("selector_fee_evidence_unavailable")
 	}
@@ -51,9 +38,6 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 			return budgetHold("selector_evaluation_not_current")
 		}
 		input.Now = now
-		// The sample's observation may precede the final quote collection. Use
-		// the caller's latest confirmed slot as well as the sample's slot; a
-		// fresh timestamp alone cannot extend a quote's window.
 		currentQuotes := make([]MoveQuote, 0, len(input.Quotes))
 		for _, q := range input.Quotes {
 			if q.currentAtSlot(confirmedSlot) {
@@ -98,9 +82,6 @@ func (d *Database) RecordSelectorEvaluation(ctx context.Context, routeKey string
 	return result, err
 }
 
-// selectorSample is one sample's result over the previous one and whether it
-// is recorded: a rotation left on the vault, or a sample that holds for
-// recovery or safety, keeps the previous result unrecorded.
 func selectorSample(input SelectorInput, previous SelectorResult, history map[string]pilotCanaryEntryReceipt) (SelectorResult, *pilotCanaryEntryReceipt, bool, error) {
 	if rotationLeft(&previous, input.Snapshot, input.Lanes) {
 		return previous, nil, false, nil

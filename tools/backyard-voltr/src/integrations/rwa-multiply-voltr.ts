@@ -433,12 +433,6 @@ export async function buildRwaMultiplyManagerInstructions(
   } as const;
 }
 
-/**
- * One-time Squads policy payload. Squads makes its vault PDA the signer and
- * grants only the immutable Voltr strategy PDA permission to pull USDC back
- * during adaptor withdraw. This instruction does not install or execute a
- * policy by itself.
- */
 export async function buildRwaMultiplyBridgeApprovalInstruction(
   route: RwaMultiplyRouteSpec = RWA_MULTIPLY_ROUTE,
 ): Promise<Instruction> {

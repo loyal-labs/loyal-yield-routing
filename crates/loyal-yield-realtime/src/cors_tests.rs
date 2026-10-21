@@ -2,7 +2,6 @@ use super::*;
 use axum::{body::Body, http::Request};
 use tower::ServiceExt;
 
-// Exercise the real CORS layer with browser preflights, not just its matcher.
 #[tokio::test]
 async fn preview_preflights_reflect_only_allowed_origins() {
     let rules = [
@@ -91,7 +90,6 @@ async fn preview_preflights_reflect_only_allowed_origins() {
         }
     }
 
-    // CORS admission does not turn an auth failure into a successful response.
     let response = app
         .oneshot(
             Request::builder()

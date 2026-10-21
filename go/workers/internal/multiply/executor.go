@@ -31,8 +31,6 @@ const (
 	solanaPacketBytes  = 1232
 )
 
-// ExecutorChain is the cluster surface the executor reads, simulates and
-// proves receipts through; *chain.Client is the production binding.
 type ExecutorChain interface {
 	GenesisHash(context.Context) (solana.Hash, error)
 	Blockhash(context.Context, rpc.CommitmentType, uint64) (hash solana.Hash, lastValid, slot uint64, err error)
@@ -41,21 +39,16 @@ type ExecutorChain interface {
 	Receipt(context.Context, solana.Signature, rpc.CommitmentType) (chain.Receipt, error)
 }
 
-// Executor owns the delegate signing capability and the durable send path.
 type Executor struct {
 	Chain    ExecutorChain
-	Signer   ed25519.PrivateKey // held here and nowhere else
+	Signer   ed25519.PrivateKey
 	feePayer ed25519.PrivateKey
 }
 
-// NewExecutor validates the signer capability and pins mainnet before any
-// other use, like Executor::new.
 func NewExecutor(c ExecutorChain, signer ed25519.PrivateKey) (*Executor, error) {
 	return NewExecutorWithFeePayer(c, signer, signer)
 }
 
-// NewRecoveryExecutorContext pins the same chain identity without acquiring
-// private keys. Durable signed bytes are the only submission capability.
 func NewRecoveryExecutorContext(ctx context.Context, c ExecutorChain) (*Executor, error) {
 	if ctx == nil || c == nil {
 		return nil, errors.New("recovery executor requires context and RPC")
@@ -82,8 +75,6 @@ func NewExecutorWithFeePayer(c ExecutorChain, feePayer, signer ed25519.PrivateKe
 	return NewExecutorWithFeePayerContext(context.Background(), c, feePayer, signer)
 }
 
-// NewExecutorWithFeePayerContext pins mainnet under the engine startup context.
-// The local timeout bounds preflight without discarding caller cancellation.
 func NewExecutorWithFeePayerContext(ctx context.Context, c ExecutorChain, feePayer, signer ed25519.PrivateKey) (*Executor, error) {
 	if ctx == nil {
 		return nil, errors.New("multiply executor requires caller context")
@@ -112,15 +103,10 @@ func NewExecutorWithFeePayerContext(ctx context.Context, c ExecutorChain, feePay
 	return &Executor{Chain: c, Signer: append(ed25519.PrivateKey(nil), signer...), feePayer: append(ed25519.PrivateKey(nil), feePayer...)}, nil
 }
 
-// Delegate returns the policy signer public key, which may differ from the fee payer.
 func (e *Executor) Delegate() solana.PublicKey {
 	return solana.PublicKey(e.Signer[32:])
 }
 
-// PrepareAndSign mirrors the executor's prepare+sign stage: fetch the
-// blockhash, assemble the compute-budget preamble, the KLend refresh chain,
-// and the single Squads policy terminal, compile and sign the legacy wire,
-// and return the immutable SignedOperation. Nothing is sent here.
 func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, policy solana.PublicKey, accountIndex uint8, constraintIndexes []byte, minContextSlot uint64) (*SignedOperation, uint64, error) {
 	if built != nil && len(built.PolicyInstructions) == 1 && built.PolicyInstructions[0].ProgramID == solana.TokenProgramID {
 		return nil, 0, errors.New("delegate cannot sign wallet-owned token claims")
@@ -256,17 +242,12 @@ func computeBudgetPreamble() []Instruction {
 	return []Instruction{{ProgramID: ix.ProgID, Data: ix.DataBytes}}
 }
 
-// PolicyEvidence mirrors executor::PolicyEvidence.
 type PolicyEvidence struct {
 	Account           solana.PublicKey
 	DataSHA256        string
 	ConstraintIndexes []byte
 }
 
-// EnsureExactPolicy is the Go port of ensure_exact_policy: the delegate may
-// only fire a terminal instruction through an installed canonical policy
-// whose payload still equals the Earn MAX contract and that delegates to
-// exactly this signer.
 func (e *Executor) EnsureExactPolicy(ctx context.Context, topology *EarnMaxTopology, plan *ActionPlan, built *BuiltOperation) (*PolicyEvidence, error) {
 	if plan == nil || plan.Action == ActionClaim {
 		return nil, errors.New("claim belongs to the app root-wallet owner; delegate execution is forbidden")
@@ -315,10 +296,6 @@ func (e *Executor) EnsureExactPolicy(ctx context.Context, topology *EarnMaxTopol
 	}, nil
 }
 
-// PersistedTransaction re-verifies the stored wire before any recovery send:
-// the SHA-256 must match the persisted column, the first signature must equal
-// the persisted transaction signature, and the message blockhash must equal
-// the persisted recent blockhash. Any drift refuses the send.
 func decodeVerifiedTransaction(wire []byte) (*solana.Transaction, error) {
 	if len(wire) == 0 || len(wire) > solanaPacketBytes {
 		return nil, errors.New("signed wire size is invalid")
@@ -385,10 +362,6 @@ func MessageSHA256(wire []byte) (string, error) {
 	return hexEncode(digest[:]), nil
 }
 
-// Simulate runs the signed wire at confirmed with sigVerify and its own
-// blockhash, exactly as the Rust executor simulates. A failed transaction is
-// a *chain.SimulationError; failure before broadcast keeps the operation in
-// prepared.
 func (e *Executor) Simulate(ctx context.Context, signed *SignedOperation, minContextSlot uint64) (chain.Simulated, error) {
 	opts := rpc.SimulateTransactionOpts{SigVerify: true, Commitment: rpc.CommitmentConfirmed}
 	if minContextSlot > 0 {
@@ -532,7 +505,6 @@ func hexEncode(value []byte) string {
 	return string(out)
 }
 
-// lookupTables reads the active address lookup tables at confirmed.
 func (e *Executor) lookupTables(ctx context.Context, keys []solana.PublicKey) (map[solana.PublicKey]solana.PublicKeySlice, error) {
 	if len(keys) == 0 || len(keys) > 4 {
 		return nil, errors.New("lookup table count is invalid")
@@ -571,8 +543,6 @@ func (e *Executor) lookupTables(ctx context.Context, keys []solana.PublicKey) (m
 	return tables, nil
 }
 
-// policyAccount reads one Squads policy account at confirmed, from a node at
-// or past minContextSlot: nil when absent, with the slot it answered at.
 func (e *Executor) policyAccount(ctx context.Context, key solana.PublicKey, minContextSlot uint64) (*chain.Account, uint64, error) {
 	slot, accounts, err := e.Chain.Accounts(ctx, []solana.PublicKey{key}, rpc.CommitmentConfirmed, minContextSlot)
 	if err != nil {

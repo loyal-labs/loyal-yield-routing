@@ -1,10 +1,5 @@
 package fleet
 
-// This file owns the part of the Kamino route which used to be reconstructed
-// by the Rust fleet worker: whole-fleet wave selection, fresh evidence fences,
-// Squads policy decoding/wrapping, reusable ALT selection, and exact v0 bytes.
-// It intentionally contains no signer or broadcast API.
-
 import (
 	"bytes"
 	"crypto/sha256"
@@ -29,9 +24,6 @@ const (
 	defaultComputeLimit = uint64(1_400_000)
 )
 
-// FleetVault is one held reserve of a migrated and currently unblocked
-// policy/vault: a vault holding several reserves appears once per reserve.
-// Callers must load this complete set in one repeatable-read snapshot.
 type FleetVault struct {
 	Position                 VaultPosition
 	AllowedTargets           []string
@@ -49,11 +41,7 @@ type PlannedOpportunity struct {
 type FleetPlan struct {
 	Opportunities []PlannedOpportunity `json:"opportunities"`
 	Rejections    map[int64]string     `json:"rejections"`
-	// Movable is, per source reserve, the capital in holdings that had an
-	// eligible move against the committed frontier at the start of the wave:
-	// worth moving and fitting both reserves, whether or not this wave
-	// admitted it. Capital that stays movable is capital not moving.
-	Movable map[string]int64 `json:"movable"`
+	Movable       map[string]int64     `json:"movable"`
 }
 
 // PlanFleet evaluates all holding/target pairs, packs whole holdings into
@@ -80,8 +68,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		if vault.Position.BlockedReason != "" {
 			continue
 		}
-		// Targets absent from the snapshot cannot enter the frontier. This
-		// upper bound also accounts for overlaps and duplicate permissions.
 		edges := min(len(vault.AllowedTargets), len(snapshot.Reserves))
 		edges += min(len(vault.CrossMintTargets), len(snapshot.Reserves)-edges)
 		if edges > int(^uint(0)>>1)-capacity {
@@ -128,8 +114,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 	}
 	candidates := make(waveCandidates, 0, capacity)
 	out := FleetPlan{Rejections: map[int64]string{}, Movable: map[string]int64{}}
-	// Visit holdings in their normalized identity so a vault's rejection
-	// reason, like the wave itself, never depends on loader order.
 	order := make([]int, len(vaults))
 	for i := range order {
 		order[i] = i
@@ -185,8 +169,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 			position.SourceCommittedInflowUSDMicros, position.SourceCommittedOutflowUSDMicros = baseInflow[position.SourceReserve], baseOutflow[position.SourceReserve]
 			d := Plan(snapshot, position, position.SourceReserve, target)
 			if _, cross := vault.CrossMintTargets[target]; cross {
-				// Declare the escaping copy only for an actual cross-mint
-				// edge; a failed map lookup must not allocate a zero binding.
 				binding := vault.CrossMintTargets[target]
 				d.RouteKind = "cross_mint_jupiter"
 				d.SourceMint = position.Mint
@@ -199,7 +181,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 				eligible = true
 				eligibleVaults[position.VaultID] = true
 			}
-			// An initially uneconomic target may improve after another selected flow.
 			candidates = append(candidates, waveCandidate{vault: vault, target: target, d: d, conflicts: opportunityConflictKeys(position, d)})
 		}
 		if !eligible {
@@ -219,8 +200,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 	tenantCounts, conflictCounts := map[string]int{}, map[string]int{}
 	selectedCount, selectedNotional := 0, int64(0)
 	for selectedCount < limits.MaxOpportunities {
-		// Full rescore is O(wave limit * permitted candidates). Rejected
-		// candidates do not cause another scan; only a selected flow does.
 		best := -1
 		for i, c := range candidates {
 			position := c.vault.Position
@@ -287,9 +266,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		if !ok {
 			return FleetPlan{}, errors.New("wave outflow overflow")
 		}
-		// Match Rust's publication admission after wave selection: an unfunded
-		// three-leg route is not published, but must not free in-wave capacity
-		// or let a different candidate bypass the selected vault/limits.
 		if d.RouteKind == "cross_mint_jupiter" && d.EstimatedCostLamports < 15_000 {
 			out.Rejections[position.VaultID] = "cross_mint_fee_envelope_not_covered"
 			continue
@@ -301,8 +277,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 		}
 		out.Opportunities = append(out.Opportunities, PlannedOpportunity{d, plan})
 	}
-	// Preserve visibility of unvisited candidates when the wave count fills;
-	// selected vaults (including fee-fenced publications) keep their outcome.
 	for _, candidate := range candidates {
 		if selectedCount == limits.MaxOpportunities && !selectedVaults[candidate.vault.Position.VaultID] && candidate.d.Eligible {
 			out.Rejections[candidate.d.VaultID] = "wave_opportunity_limit"
@@ -311,9 +285,6 @@ func PlanFleetWithLimits(snapshot MarketSnapshot, vaults []FleetVault, limits Wa
 	return out, nil
 }
 
-// rescoreCandidate re-derives one candidate's decision against the current
-// wave frontier, preserving its exact source position, allowed targets and
-// cross-mint bindings. ok is false on committed-frontier arithmetic overflow.
 func rescoreCandidate(snapshot MarketSnapshot, c waveCandidate, baseInflow, baseOutflow, inflow, outflow map[string]int64) (waveCandidate, bool) {
 	position := c.vault.Position
 	var ok bool
@@ -335,8 +306,6 @@ func rescoreCandidate(snapshot MarketSnapshot, c waveCandidate, baseInflow, base
 		d.SourceMint = position.Mint
 		d.TargetMint = snapshot.Reserves[c.target].Mint
 		d.Mint = d.TargetMint
-		// Policy identity is frozen per permitted edge, independent of the
-		// changing reserve frontier. Reuse its one owned copy on rescoring.
 		d.PolicyBindings = c.d.PolicyBindings
 		d.CrossMintMaxValueLossBPS = c.vault.CrossMintMaxValueLossBPS
 	}
@@ -357,8 +326,6 @@ func canonicalExecutionPlan(snapshot MarketSnapshot, v FleetVault, d Decision) (
 	return canonicalSameMintExecutionPlan(v.Position, d, source.SupplyAPYBPS, target.SupplyAPYBPS, target.Slot, targetObservedAt)
 }
 
-// canonicalSameMintExecutionPlan is shared by whole-fleet planning and durable
-// publication so rediscovery hashes the exact same Rust-compatible JSON.
 func canonicalSameMintExecutionPlan(position VaultPosition, decision Decision, observedSourceAPY, observedTargetAPY, targetSlot int64, targetObservedAt time.Time) (json.RawMessage, error) {
 	feeTier := "base"
 	if decision.EstimatedCostLamports >= 50_000 {
@@ -486,7 +453,6 @@ func canonicalStrings(values []string) []string {
 	return out
 }
 
-// FreshRouteEvidence is what one same-mint preparation observed.
 type FreshRouteEvidence struct {
 	Anchors                       ExecutionBalanceAnchors
 	ObservedAt                    time.Time
@@ -494,14 +460,12 @@ type FreshRouteEvidence struct {
 	ObservedSourceAPYBPS          int64
 	ObservedTargetAPYBPS          int64
 	TargetObservedSupplyUSDMicros int64
-	// Fresh capacity: what the source pays out now and the target's room
-	// below its deposit limit, raw units.
-	SourceAvailableLiquidityRaw int64
-	TargetDepositRoomRaw        int64
-	OpportunityID               int64
-	OpportunityKey              string
-	EpochID                     int64
-	EpochFingerprint            string
+	SourceAvailableLiquidityRaw   int64
+	TargetDepositRoomRaw          int64
+	OpportunityID                 int64
+	OpportunityKey                string
+	EpochID                       int64
+	EpochFingerprint              string
 }
 type DecodedSquadsPolicy struct {
 	Settings              string
@@ -542,17 +506,11 @@ func validateDelegatedInstructions(p DecodedSquadsPolicy, delegatedSigner string
 	return p, nil
 }
 
-// Authorizes reports whether the deployed policy lets delegatedSigner run
-// exactly the protected instructions: the matcher BuildPolicyEnvelope uses,
-// without wrapping. A non-nil error is a fact about the policy's contents.
 func (p DecodedSquadsPolicy) Authorizes(delegatedSigner string, protected []RouteInstruction) error {
 	_, err := validateDelegatedInstructions(p, delegatedSigner, protected)
 	return err
 }
 
-// BuildPolicyEnvelope validates the actual deployed policy before wrapping its
-// exact protected instructions. Autodeposit and fleet share this ABI and the
-// constraint matcher; their journals and recovery protocols remain separate.
 func BuildPolicyEnvelope(policyAccount, settings, delegate string, account *chain.Account, protected []RouteInstruction) (RouteInstruction, error) {
 	p, err := DecodeSquadsPolicy(account)
 	if err != nil {
@@ -577,9 +535,6 @@ func contains(v []string, s string) bool {
 	return false
 }
 
-// DecodeSquadsPolicy reads a threshold-one ProgramInteraction policy,
-// retaining every account and data constraint for exact instruction-index
-// validation.
 func DecodeSquadsPolicy(account *chain.Account) (DecodedSquadsPolicy, error) {
 	decoded, err := squads.DecodeProgramInteractionPolicy(account)
 	if err != nil {
@@ -665,8 +620,6 @@ func policyContainsKey(keys []solana.PublicKey, address string) bool {
 	return false
 }
 
-// Numeric variants retain their wire width and little-endian ordering. The
-// variant tag is checked before selecting its union field.
 func policyValueBytes(value squads.DataValueView) []byte {
 	switch value.Kind {
 	case 0:
@@ -762,8 +715,6 @@ type RoutePreparation struct {
 	ExecutionPlan                             json.RawMessage
 }
 
-// prepareRoute compiles the final instructions for payer and simulates the
-// exact unsigned wire. Callers set the route and requirements fingerprints.
 func prepareRoute(instructions []RouteInstruction, payer string, tables []LookupTable, recentBlockhash string, feeLamports, computeLimit uint64, simulate func([]byte) (SimulationEvidence, error), kind string) (RoutePreparation, error) {
 	if feeLamports == 0 || computeLimit == 0 || computeLimit > defaultComputeLimit {
 		return RoutePreparation{}, errors.New("fee or compute limit is invalid")

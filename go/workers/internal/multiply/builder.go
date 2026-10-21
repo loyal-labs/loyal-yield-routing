@@ -1,11 +1,5 @@
 package multiply
 
-// Operation builder ported from
-// 91694cd9^:crates/loyal-fleet-worker/src/multiply/builder.rs. KLend account vectors
-// follow the reviewed in-repo KLend v2 templates (internal/fleet and
-// internal/backyard): optional farm/referrer/placeholder slots carry the KLend
-// program id, and the trailing reserve farm slot carries the Farms program id.
-
 import (
 	"bytes"
 	"context"
@@ -25,7 +19,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// BuiltOperation mirrors builder::BuiltOperation.
 type BuiltOperation struct {
 	PreInstructions    []Instruction
 	PolicyInstructions []Instruction
@@ -34,9 +27,6 @@ type BuiltOperation struct {
 	QuoteContextSlot   *uint64
 }
 
-// QuoteClient is the consumer-defined Jupiter quote surface. The production
-// client is *jupiter.Client; tests bind fixtures. Live network access stays
-// outside the offline decision path.
 type QuoteClient interface {
 	Quote(ctx contextT, request jupiter.QuoteRequest) (jupiter.Quote, error)
 	SwapInstructions(ctx contextT, quote jupiter.Quote, user solana.PublicKey, useSharedAccounts bool) (jupiter.SwapInstructions, error)
@@ -49,9 +39,6 @@ const (
 	jupiterMaximumRouteLegs = 4
 )
 
-// BuildOperation mirrors build_operation for every plan the planner emits.
-// The user-side actions stay rejected: they are admitted from confirmed
-// wallet transactions, never built by the delegate.
 func BuildOperation(plan *ActionPlan, observed *ObservedRoute, topology *EarnMaxTopology, quotes QuoteClient, ctx contextT) (*BuiltOperation, error) {
 	if plan == nil || observed == nil || topology == nil {
 		return nil, errors.New("multiply operation requires a plan, observations and topology")
@@ -171,8 +158,6 @@ func BuildOperation(plan *ActionPlan, observed *ObservedRoute, topology *EarnMax
 	return nil, fmt.Errorf("unknown multiply action %q", plan.Action)
 }
 
-// WalletClaimReceipt contains confirmed transaction metadata, not later balance
-// snapshots. LookupTables resolve a v0 message's loaded accounts.
 type WalletClaimReceipt struct {
 	Signature                                                      string
 	ConfirmationState                                              string
@@ -183,13 +168,6 @@ type WalletClaimReceipt struct {
 	SourceBefore, SourceAfter, DestinationBefore, DestinationAfter TokenBalance
 }
 
-// ValidateWalletClaimReceipt is the Rust bridge's acceptance of a root-wallet
-// Claim (balance-sweep-ata-monitor validate_earn_max_root_claim and
-// validate_earn_max_claim), check for check: the one non-compute-budget
-// instruction is the exact Squads root Transaction payload, for vault 0, of
-// the saved amount from the claim custody to the saved destination, with an
-// account table of exactly those five custody keys. Any number of signers;
-// the Squads program enforces the authority's permission on chain.
 func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, requestID string, receipt *WalletClaimReceipt) error {
 	if route == nil || topology == nil || receipt == nil || route.Withdrawal == nil {
 		return errors.New("claim has no route, topology or receipt")
@@ -287,8 +265,6 @@ func ValidateWalletClaimReceipt(route *RouteState, topology *EarnMaxTopology, re
 		if len(accounts) < 3 || !accounts[2].IsSigner {
 			return errors.New("claim authority did not sign the transaction")
 		}
-		// SDK compilers may order the five inner accounts differently: keep the
-		// proven order but require exactly the custody key set.
 		table := make([]solana.AccountMeta, 0, len(accounts)-3)
 		for _, a := range accounts[3:] {
 			table = append(table, *a)
@@ -404,8 +380,6 @@ func resolveBorrow(amount PlannedAmount, observed *ObservedRoute, config Strateg
 	return raw.Uint64(), nil
 }
 
-// Instruction graph construction through the shared KLend builders.
-
 func keyMeta(key solana.PublicKey, signer, writable bool) AccountMeta {
 	return AccountMeta{PubKey: key, IsSigner: signer, IsWritable: writable}
 }
@@ -425,7 +399,6 @@ func klend(ix *solana.GenericInstruction) Instruction {
 	return out
 }
 
-// optionalFarmKey is an absent farm account's zero key.
 func optionalFarmKey(key *solana.PublicKey) solana.PublicKey {
 	if key == nil {
 		return solana.PublicKey{}
@@ -433,8 +406,6 @@ func optionalFarmKey(key *solana.PublicKey) solana.PublicKey {
 	return *key
 }
 
-// refreshes are the collateral and debt reserve refreshes and the
-// obligation refresh over the included reserves.
 func refreshes(config StrategyConfig, debtReserve, includeCollateral, includeDebt bool) []Instruction {
 	reserve := func(key solana.PublicKey) Instruction {
 		return klend(kamino.RefreshReserve(kamino.RefreshReserveAccounts{Reserve: key, LendingMarket: config.Market, Scope: config.Oracle}))
@@ -487,8 +458,6 @@ func repayInstructions(config StrategyConfig, vault solana.PublicKey, amount uin
 	return append(refreshes(config, true, true, true), klend(kamino.RepayV2(debtAccounts(config, vault), amount))), nil
 }
 
-// swapExactIn ports the Jupiter swap arm: quote, validate, and bind the
-// vault custody before any effect estimate exists.
 func swapExactIn(quotes QuoteClient, ctx contextT, inputMint, outputMint string, plan *ActionPlan, source, destination, vault solana.PublicKey) (*BuiltOperation, error) {
 	if quotes == nil {
 		return nil, errors.New("Jupiter quotes are required for swap actions")
@@ -623,9 +592,6 @@ func validateEarnMaxJupiterRoute(instruction Instruction, vault, source, destina
 	if route.InAmount != inputAmount || route.QuotedOutAmount != quotedOutput || route.SlippageBPS != jupiterSlippageBPS || route.PlatformFeeBPS != 0 {
 		return errors.New("Jupiter exact amount, slippage or fee drifted")
 	}
-	// Keep multiplication wide rather than saturate the u64 product. All
-	// inputs fit SQL BIGINT but the intermediate need not; flooring a capped
-	// product would fabricate a much smaller output threshold.
 	minimum := new(big.Int).Mul(new(big.Int).SetUint64(quotedOutput), big.NewInt(10_000-jupiterSlippageBPS))
 	minimum.Add(minimum, big.NewInt(9_999)).Quo(minimum, big.NewInt(10_000))
 	if !minimum.IsUint64() || minimum.Uint64() != minimumOutput || inputAmount == 0 || minimumOutput == 0 {

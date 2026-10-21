@@ -288,7 +288,6 @@ async fn run() -> Result<(), BoxError> {
         result = &mut server => result?,
         _ = shutdown_signal() => {
             shutdown_sender.send_replace(true);
-            // Close streams immediately; bound draining even for a stalled peer.
             timeout(Duration::from_secs(45), &mut server)
                 .await
                 .map_err(|_| "realtime shutdown exceeded 45 seconds")??;
@@ -675,9 +674,6 @@ async fn events(
         .into_response()
 }
 
-// Covers pool acquisition and all pre-stream replay work, including stalled DB
-// requests. Dropping the future cancels admission; statement_timeout also bounds
-// server-side queries on every pooled connection.
 async fn admission_work<T>(
     state: &AppState,
     work: impl std::future::Future<Output = Result<T, BoxError>>,
@@ -1130,7 +1126,6 @@ fn parse_env_u16(name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
-// Unset keeps cleanup on; only the exact strings "true" and "false" are accepted.
 fn parse_retention_cleanup_enabled(value: Result<String, env::VarError>) -> Result<bool, BoxError> {
     match value {
         Err(env::VarError::NotPresent) => Ok(true),

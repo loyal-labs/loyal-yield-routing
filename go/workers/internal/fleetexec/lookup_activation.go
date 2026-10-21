@@ -10,9 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// ActivateLookupCatalog publishes only the same immutable head/generation which
-// the caller read on chain. No transaction status or lifecycle flag substitutes
-// for every full ordered shard's actual mature finalized account.
 func (s *Store) ActivateLookupCatalog(ctx context.Context, cluster string, familyID, revisionID int64, generation int32, snapshots []LookupSnapshot) error {
 	if cluster == "" || familyID <= 0 || revisionID <= 0 || generation < 0 {
 		return errors.New("lookup catalog activation identity invalid")
@@ -128,10 +125,6 @@ func (s *Store) ActivateLookupCatalog(ctx context.Context, cluster string, famil
 				return errors.New("lookup catalog source membership differs from exact verified table")
 			}
 		}
-		// Live usage fences only a generation switch. Re-verifying the generation
-		// already active changes nothing that a route in flight relies on; holding
-		// it would fail every planner tick while the fleet routes through the
-		// catalog.
 		var protected bool
 		if switching := active == nil || *active != generation; switching {
 			err = tx.QueryRow(ctx, `SELECT

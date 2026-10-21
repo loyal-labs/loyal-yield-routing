@@ -9,22 +9,16 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// Execution is a landed transaction with the instructions it ran. It is the
-// one getTransaction decoder; Receipt is the same read without them.
 type Execution struct {
 	Receipt
 	Transaction *solana.Transaction
-	// Inner lists the instructions each top-level instruction invoked,
-	// compiled against Keys.
-	Inner []rpc.InnerInstruction
+	Inner       []rpc.InnerInstruction
 }
 
 // anyVersion accepts every transaction version the node serves: a reader
 // pinned to an older version fails forever on a newer transaction.
 const anyVersion = 255
 
-// Execution reads signature's transaction at commitment (confirmed or
-// finalized). ErrNotFound means the cluster has no record of it there.
 func (c *Client) Execution(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) (Execution, error) {
 	version := uint64(anyVersion)
 	out, err := c.rpc.GetTransaction(ctx, signature, &rpc.GetTransactionOpts{Encoding: solana.EncodingBase64, Commitment: commitment, MaxSupportedTransactionVersion: &version})

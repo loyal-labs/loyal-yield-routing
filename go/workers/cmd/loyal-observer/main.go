@@ -51,8 +51,6 @@ func run(ctx context.Context) error {
 		return err
 	}
 	lanes := []engine.Lane{runtime, projector, metrics}
-	// Read models stay with the Apps hourly crons until the Phase 2 handover
-	// sets OBSERVER_READ_MODELS_ENABLED=true; disabled, there is no lane.
 	maintenance, err := runtime.NewMaintenance(ctx)
 	if err != nil {
 		return err
@@ -61,14 +59,12 @@ func run(ctx context.Context) error {
 		lanes = append(lanes, maintenance)
 	}
 	err = engine.Run(ctx, lanes...)
-	// A lost lock cancels ctx; report it as a failure, not a clean stop.
 	if cause := context.Cause(ctx); errors.Is(cause, errLockLost) {
 		return cause
 	}
 	return err
 }
 
-// errLockLost means another process may now write the observer family.
 var errLockLost = errors.New("observer family lock lost")
 
 func main() {
@@ -83,8 +79,6 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	// The release the linker stamped (make release); deploys verify the build
-	// by it, as for loyal-engine.
 	slog.Info("observer_start", "release", engine.Release)
 	if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("observer failed", "error", err)

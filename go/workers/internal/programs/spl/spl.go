@@ -1,10 +1,3 @@
-// Package spl holds the SPL Token, Token-2022, Associated Token, System and
-// Compute Budget facts the workers use: token account and mint decoding,
-// associated token addresses and the instructions we emit. Program IDs are
-// solana-go's (solana.TokenProgramID, solana.Token2022ProgramID,
-// solana.SPLAssociatedTokenAccountProgramID, solana.SystemProgramID,
-// solana.ComputeBudget), and so are the builders, flattened to plain
-// instructions.
 package spl
 
 import (
@@ -21,38 +14,30 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// TokenAccount is an initialized or frozen SPL Token or Token-2022 account.
 type TokenAccount struct {
-	Program  solana.PublicKey // the owning token program
-	Mint     solana.PublicKey
-	Owner    solana.PublicKey // the token authority
-	Amount   uint64           // raw base units of Mint
-	Delegate *solana.PublicKey
-	// DelegatedAmount is what Delegate may still move, in raw units.
+	Program           solana.PublicKey
+	Mint              solana.PublicKey
+	Owner             solana.PublicKey
+	Amount            uint64
+	Delegate          *solana.PublicKey
 	DelegatedAmount   uint64
 	Frozen            bool
-	IsNative          bool // a wrapped SOL account
+	IsNative          bool
 	HasCloseAuthority bool
-	Extensions        []Extension // Token-2022 only, in account order
+	Extensions        []Extension
 }
 
-// Mint is an initialized SPL Token or Token-2022 mint.
 type Mint struct {
 	Program    solana.PublicKey
 	Decimals   uint8
 	Extensions []Extension
 }
 
-// Extension is one Token-2022 TLV entry.
 type Extension struct {
 	Type  uint16
 	Value []byte
 }
 
-// DecodeTokenAccount decodes a token account the way the token program
-// unpacks it: a token program owner, the exact classic length, valid option
-// tags and state, and for Token-2022 the account type and a well-formed TLV
-// area without duplicate entries.
 func DecodeTokenAccount(account *chain.Account) (TokenAccount, error) {
 	extensions, err := decodeExtensions(account, 165, 2)
 	if err != nil {
@@ -74,9 +59,6 @@ func DecodeTokenAccount(account *chain.Account) (TokenAccount, error) {
 	return out, nil
 }
 
-// UnrestrictedBalance reports whether the account's extensions leave all of
-// its balance transferable: only ImmutableOwner, a TransferFeeAmount with
-// nothing withheld and a TransferHookAccount outside a transfer.
 func (a TokenAccount) UnrestrictedBalance() error {
 	for _, extension := range a.Extensions {
 		value := extension.Value
@@ -91,8 +73,6 @@ func (a TokenAccount) UnrestrictedBalance() error {
 	return nil
 }
 
-// DecodeMint decodes an initialized mint with valid authority option tags;
-// an extended Token-2022 mint pads its base to 165 bytes with zeros.
 func DecodeMint(account *chain.Account) (Mint, error) {
 	extensions, err := decodeExtensions(account, 82, 1)
 	if err != nil {
@@ -155,8 +135,6 @@ func allZero(data []byte) bool {
 	return true
 }
 
-// AssociatedTokenAddress is owner's associated token account for mint under
-// tokenProgram, which must be SPL Token or Token-2022.
 func AssociatedTokenAddress(owner, mint, tokenProgram solana.PublicKey) (solana.PublicKey, error) {
 	if tokenProgram != solana.TokenProgramID && tokenProgram != solana.Token2022ProgramID {
 		return solana.PublicKey{}, fmt.Errorf("%s is not a token program", tokenProgram)
@@ -165,23 +143,17 @@ func AssociatedTokenAddress(owner, mint, tokenProgram solana.PublicKey) (solana.
 	return address, err
 }
 
-// CreateIdempotentATA creates owner's associated token account for mint,
-// paid by payer, unless it exists.
 func CreateIdempotentATA(payer, owner, mint, tokenProgram solana.PublicKey) *solana.GenericInstruction {
 	return flatten(associatedtokenaccount.NewCreateIdempotentInstructionBuilder().
 		SetPayer(payer).SetWallet(owner).SetMint(mint).SetTokenProgram(tokenProgram).Build())
 }
 
-// Transfer is TransferChecked's account set with a single authority, in its
-// order. The builder and TransferCheckedAllowed read the same slot list.
 type Transfer[T any] struct {
 	Source, Mint, Destination, Authority T
 }
 
 type TransferAllowed = Transfer[squads.Slot]
 
-// Offsets in TransferChecked data: the instruction tag, the amount and the
-// mint's decimals.
 const (
 	transferCheckedTag           = 12
 	TransferCheckedAmountOffset  = 1
@@ -192,45 +164,34 @@ func transferCheckedSlots[T any](a Transfer[T]) []squads.AccountSlot[T] {
 	return []squads.AccountSlot[T]{squads.Writable(a.Source), squads.ReadOnly(a.Mint), squads.Writable(a.Destination), squads.Signing(a.Authority)}
 }
 
-// TransferChecked moves amount raw units of mint from source to destination
-// under authority.
 func TransferChecked(tokenProgram, source, mint, destination, authority solana.PublicKey, amount uint64, decimals uint8) *solana.GenericInstruction {
 	accounts := squads.Metas(tokenProgram, transferCheckedSlots(Transfer[solana.PublicKey]{Source: source, Mint: mint, Destination: destination, Authority: authority}))
 	data := append(binary.LittleEndian.AppendUint64([]byte{transferCheckedTag}, amount), decimals)
 	return solana.NewInstruction(tokenProgram, accounts, data)
 }
 
-// TransferCheckedAllowed admits TransferChecked under tokenProgram over the
-// allowed accounts, of a mint with decimals, its amount bounded by the
-// amount predicates (at TransferCheckedAmountOffset).
 func TransferCheckedAllowed(tokenProgram solana.PublicKey, a TransferAllowed, decimals uint8, amount ...squads.DataConstraintView) squads.InstructionConstraintView {
 	data := append([]squads.DataConstraintView{squads.DataU8(0, squads.OpEquals, transferCheckedTag)}, amount...)
 	data = append(data, squads.DataU8(transferCheckedDecimalOffset, squads.OpEquals, decimals))
 	return squads.Allow(tokenProgram, data, squads.Slots(tokenProgram, transferCheckedSlots(a)))
 }
 
-// SystemTransfer moves lamports out of a signing account.
 func SystemTransfer(from, to solana.PublicKey, lamports uint64) *solana.GenericInstruction {
 	return flatten(system.NewTransferInstruction(lamports, from, to).Build())
 }
 
-// SetComputeUnitLimit caps the transaction's compute units.
 func SetComputeUnitLimit(units uint32) *solana.GenericInstruction {
 	return flatten(computebudget.NewSetComputeUnitLimitInstruction(units).Build())
 }
 
-// SetComputeUnitPrice sets the priority fee in micro-lamports per unit.
 func SetComputeUnitPrice(microLamports uint64) *solana.GenericInstruction {
 	return flatten(computebudget.NewSetComputeUnitPriceInstruction(microLamports).Build())
 }
 
-// RequestHeapFrame requests a transaction heap of bytes.
 func RequestHeapFrame(bytes uint32) *solana.GenericInstruction {
 	return flatten(computebudget.NewRequestHeapFrameInstruction(bytes).Build())
 }
 
-// flatten encodes a fixed-layout solana-go instruction, whose in-memory
-// encoder cannot fail.
 func flatten(ix solana.Instruction) *solana.GenericInstruction {
 	data, err := ix.Data()
 	if err != nil {

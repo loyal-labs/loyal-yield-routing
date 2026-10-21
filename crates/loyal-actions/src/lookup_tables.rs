@@ -241,9 +241,6 @@ impl LookupTableAccountProvenance {
     }
 }
 
-/// Semantic Kamino accounts owned by a route phase. Callers provide accounts;
-/// this type, rather than the runtime or test fixture, owns their ALT class and
-/// role mapping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KaminoReserveLookupTableAccounts {
     pub market: Pubkey,
@@ -279,9 +276,6 @@ impl KaminoReserveLookupTableAccounts {
     }
 }
 
-/// Builder-owned semantic requirements for a yield-route transaction or
-/// phase. The raw provenance maps stay encapsulated so consumers cannot drift
-/// into duplicating the shared-market versus vault role policy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct YieldRouteLookupTableRequirements {
     provenance: LookupTableAccountProvenance,
@@ -427,9 +421,6 @@ impl YieldRouteLookupTableRequirements {
     }
 }
 
-/// An instruction paired with the semantic ALT requirements emitted by the
-/// builder that produced it. Wrapping or compiling the instruction may change
-/// its outer shape, but must carry these requirements forward.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct YieldRouteInstruction {
     instruction: Instruction,
@@ -460,8 +451,6 @@ impl YieldRouteInstruction {
     }
 }
 
-/// Ordered transaction instructions with requirements composed before the
-/// instruction vector is flattened for v0 compilation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct YieldRouteInstructionPlan {
     instructions: Vec<Instruction>,
@@ -488,8 +477,6 @@ impl YieldRouteInstructionPlan {
         Ok(())
     }
 
-    /// Adds an instruction whose only non-static accounts are already present
-    /// in the explicit outer context (for example, a payer-to-vault transfer).
     pub fn push_outer_instruction(&mut self, instruction: Instruction) {
         self.instructions.push(instruction);
     }

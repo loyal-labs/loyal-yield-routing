@@ -2,11 +2,6 @@ package backyard
 
 import "math"
 
-// B2 option 1 (docs/plans/b2-variable-leverage-design.md): the leverage
-// levels a lane may hold and the one-step spread rule that moves it between
-// them. This file holds the pure level logic; the durable target and the
-// moves are built on it.
-
 // leverageRung is one level of the ladder and the spread rule at it: an up
 // move to level needs the spread at the step's own borrow (token yield minus
 // the borrow APY once the step is borrowed) at or above up; a lane at level
@@ -29,7 +24,6 @@ var leverageLadder = [...]leverageRung{
 	{level: 3, up: 0.025, down: 0.015},
 }
 
-// leverageRungIndex is level's place on the ladder; false off it.
 func leverageRungIndex(level float64) (int, bool) {
 	for i, r := range leverageLadder {
 		if r.level == level {
@@ -39,9 +33,6 @@ func leverageRungIndex(level float64) (int, bool) {
 	return 0, false
 }
 
-// leverageLevelLTVBPS is the LTV a level sits at after its last redeposit:
-// 1 - 1/level (1.5x = 33.33%, 1.75x = 42.86%, 2x = 50%, 2.5x = 60%,
-// 3x = 66.67%).
 func leverageLevelLTVBPS(level float64) int64 {
 	if level <= 1 {
 		return 0
@@ -49,8 +40,6 @@ func leverageLevelLTVBPS(level float64) int64 {
 	return int64(math.Floor((1 - 1/level) * 10_000))
 }
 
-// laneMaxLevel is the lane's cap: the highest level it may hold
-// (route_catalog.go); 1 for a lane outside the registry.
 func laneMaxLevel(lane string) float64 {
 	l, ok := findEarnLane(lane)
 	if !ok {
@@ -59,8 +48,6 @@ func laneMaxLevel(lane string) float64 {
 	return l.maxLevel
 }
 
-// laneCeilingLTVBPS is the most a lane borrows: its cap's LTV. Every up step
-// lands within it, and the lane's hard LTV must sit above it.
 func laneCeilingLTVBPS(lane string) int64 {
 	return leverageLevelLTVBPS(laneMaxLevel(lane))
 }
@@ -92,10 +79,6 @@ func currentLeverageBand(s Snapshot) float64 {
 	return best
 }
 
-// nextLeverageLevel applies the spread rule from current, at most one level
-// per decision and never above maxLevel: up when the spread at the next
-// level reaches its up threshold, else down when the spread at current falls
-// under its down threshold.
 func nextLeverageLevel(current, maxLevel float64, spreadAt func(float64) (float64, bool)) float64 {
 	i, ok := leverageRungIndex(current)
 	if !ok {
@@ -114,8 +97,6 @@ func nextLeverageLevel(current, maxLevel float64, spreadAt func(float64) (float6
 	return current
 }
 
-// leverageBorrowSpread is the lane's token yield minus the borrow APY once
-// debtRaw more raw debt units are borrowed from its debt reserve.
 func leverageBorrowSpread(m LaneEconomics, debtRaw float64) (float64, bool) {
 	apr, err := projectedBorrowAPR(m, debtRaw)
 	if err != nil || !finite(apr) {
@@ -125,9 +106,6 @@ func leverageBorrowSpread(m LaneEconomics, debtRaw float64) (float64, bool) {
 	return spread, finite(spread)
 }
 
-// leverageUpAllowed applies the spread rule to borrowing debtRaw more raw
-// debt units to reach level: the same test the leverage decision and the
-// selector's entry quote apply.
 func leverageUpAllowed(m LaneEconomics, level, debtRaw float64) (float64, bool) {
 	i, ok := leverageRungIndex(level)
 	if !ok || i == 0 {
@@ -169,17 +147,10 @@ func settledLevel(m LaneEconomics, from float64, debtTo func(level float64) (flo
 	return level
 }
 
-// sizeSettledLevel is the most equityRaw entering a lane at 1x could settle
-// at in today's market, each rung's debt its share of the equity
-// (levelDebtRaw): the spread rule alone, since a market forecast prices no
-// step. Its APY is a ceiling the priced quote's walk never exceeds.
 func sizeSettledLevel(m LaneEconomics, equityRaw int64) float64 {
 	return settledLevel(m, 1, func(level float64) (float64, bool) { return levelDebtRaw(m, level, equityRaw) }, nil)
 }
 
-// heldRungDebt is the live rule's rate debt for the whole step from s's
-// position to level: its desired borrow and Kamino fee, capped at the debt
-// reserve's utilization limit (leverageRateDebtRaw).
 func heldRungDebt(s Snapshot, level float64) (float64, bool) {
 	raw := leverageDesiredRaw(s, level)
 	if raw < leverageMinimumBorrowRaw {
@@ -192,8 +163,6 @@ func heldRungDebt(s Snapshot, level float64) (float64, bool) {
 	return float64(leverageRateDebtRaw(s, raw+fee)), true
 }
 
-// heldFromLevel is the rung a held position's walk starts from: its band,
-// never above the lane's cap.
 func heldFromLevel(s Snapshot) float64 {
 	return min(currentLeverageBand(s), laneMaxLevel(s.RouteLane))
 }

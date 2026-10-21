@@ -41,51 +41,33 @@ pub use wallet::ObservabilityWalletAddress;
 use workflow::WORKFLOW_TRACE_TARGET;
 pub use workflow::{WorkflowMetrics, WorkflowOutcome, WorkflowSpan};
 
-/// The only `tracing` target exported by this crate's OTLP layer.
 const OPERATIONAL_ERROR_TARGET: &str = "loyal.observability.operational_error";
 
-/// Enables the remote OTLP exporter when set to a truthy value.
 pub const ENABLED_ENV: &str = "OBSERVABILITY_ENABLED";
 
-/// Sets `deployment.environment.name` on exported records.
 pub const ENVIRONMENT_ENV: &str = "OBSERVABILITY_ENVIRONMENT";
 
-/// Overrides the service version embedded in the image or discovered from Render.
 pub const SERVICE_VERSION_ENV: &str = "OBSERVABILITY_SERVICE_VERSION";
 
-/// Immutable version embedded by the worker image build.
 pub const IMAGE_VERSION_ENV: &str = "LOYAL_IMAGE_VERSION";
 
-/// Sets the shared base OTLP endpoint for logs, metrics, and traces.
 pub const OTLP_ENDPOINT_ENV: &str = "OBSERVABILITY_OTLP_ENDPOINT";
 
-/// Sets the server-only ClickStack ingestion key.
 pub const INGESTION_API_KEY_ENV: &str = "OBSERVABILITY_INGESTION_API_KEY";
 
 /// Non-secret configuration for the observability subscriber.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservabilityConfig {
-    /// Whether OTLP logs, metrics, and traces should be exported.
     pub enabled: bool,
-    /// Logical service name used by ClickStack and other OTLP backends.
     pub service_name: String,
-    /// Deployment environment, for example `production` or `staging`.
     pub deployment_environment: String,
-    /// Immutable deployed version, normally the image or Git SHA.
     pub service_version: Option<String>,
-    /// Runtime instance identifier.
     pub service_instance_id: Option<String>,
-    /// Render service identifier, recorded as `render.service.id`.
     pub render_service_id: Option<String>,
-    /// Filter for the local formatting layer. Defaults to `RUST_LOG` or `warn`.
     pub stdout_filter: String,
 }
 
 impl ObservabilityConfig {
-    /// Reads non-secret service metadata from the process environment.
-    ///
-    /// The endpoint and ingestion key remain outside this config so secrets
-    /// cannot be exposed through its `Debug` implementation.
     pub fn from_env(default_service_name: impl Into<String>) -> Result<Self, InitError> {
         let default_service_name = default_service_name.into();
         let enabled = parse_enabled(ENABLED_ENV, env::var(ENABLED_ENV).ok().as_deref())?;
@@ -116,13 +98,6 @@ impl ObservabilityConfig {
     }
 }
 
-/// A deliberately small, privacy-safe error record.
-///
-/// Text fields require static strings so runtime errors, request bodies,
-/// transaction payloads, and other user data cannot be passed accidentally.
-/// Add only stable classifications and operator-facing summaries. The wallet
-/// address is the one deliberate runtime-valued exception, carried by its own
-/// typed field rather than a free-form string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationalError {
     code: &'static str,
@@ -135,7 +110,6 @@ pub struct OperationalError {
 }
 
 impl OperationalError {
-    /// Creates an operational error with stable, non-user-specific fields.
     pub const fn new(code: &'static str, operation: &'static str, summary: &'static str) -> Self {
         Self {
             code,
@@ -148,35 +122,26 @@ impl OperationalError {
         }
     }
 
-    /// Records the error at WARN instead of ERROR.
-    ///
-    /// For conditions the process already recovers from on its own (a transient
-    /// dependency failure that is retried, a supervisor restart). The record is still
-    /// exported and searchable; it just does not page as if an operator were needed.
     pub const fn warning(mut self) -> Self {
         self.level = Level::WARN;
         self
     }
 
-    /// Marks whether retrying the failed operation is expected to be safe.
     pub const fn retryable(mut self, retryable: bool) -> Self {
         self.retryable = retryable;
         self
     }
 
-    /// Marks whether an operator or a repair flow must take action.
     pub const fn recovery_required(mut self, recovery_required: bool) -> Self {
         self.recovery_required = recovery_required;
         self
     }
 
-    /// Attaches the raw wallet address to this record.
     pub fn wallet_address(mut self, wallet_address: ObservabilityWalletAddress) -> Self {
         self.wallet_address = Some(wallet_address);
         self
     }
 
-    /// Emits this record to local logs and, when enabled, the filtered OTLP layer.
     pub fn emit(self) {
         // `tracing::event!` needs a const level alongside `name:`/`target:`, so the
         // field list is written once and the level chosen by branch.
@@ -222,49 +187,34 @@ impl OperationalError {
     }
 }
 
-/// Owns the OTLP providers and flushes them when dropped.
-///
-/// Keep this value alive until the service has finished shutting down.
 pub struct ObservabilityGuard {
     providers: Providers,
     workflow_metrics: WorkflowMetrics,
 }
 
 impl ObservabilityGuard {
-    /// Returns whether remote observability export is enabled.
     pub fn is_enabled(&self) -> bool {
         self.providers.logger.is_some()
     }
 
-    /// Returns whether the metrics exporter is enabled.
     pub fn metrics_enabled(&self) -> bool {
         self.providers.meter.is_some()
     }
 
-    /// Returns whether the trace exporter is enabled.
     pub fn traces_enabled(&self) -> bool {
         self.providers.tracer.is_some()
     }
 
-    /// Returns the low-cardinality workflow metric instruments.
-    ///
-    /// The returned handle is a no-op when [`ENABLED_ENV`] is false.
     pub fn workflow_metrics(&self) -> WorkflowMetrics {
         self.workflow_metrics.clone()
     }
 
-    /// Returns the typed success metrics for durable Earn rebalance stages.
     pub fn earn_rebalance_metrics(&self) -> EarnRebalanceMetrics {
         EarnRebalanceMetrics {
             workflow: self.workflow_metrics.clone(),
         }
     }
 
-    /// Returns a service-owned meter backed by the configured OTLP provider.
-    ///
-    /// Metric names and dimensions stay in the service that owns their domain
-    /// meaning. When observability is disabled this is the process-global no-op
-    /// meter, so callers do not need a second instrumentation path.
     pub fn meter(&self, instrumentation_scope: &'static str) -> Meter {
         self.providers
             .meter
@@ -273,12 +223,10 @@ impl ObservabilityGuard {
             .unwrap_or_else(|| opentelemetry::global::meter(instrumentation_scope))
     }
 
-    /// Flushes queued records without shutting the provider down.
     pub fn force_flush(&self) -> Result<(), LifecycleError> {
         force_flush_providers(&self.providers)
     }
 
-    /// Flushes queued records and shuts the provider down immediately.
     pub fn shutdown(mut self) -> Result<(), LifecycleError> {
         shutdown_providers(&mut self.providers)
     }
@@ -297,7 +245,6 @@ struct Providers {
     tracer: Option<SdkTracerProvider>,
 }
 
-/// Initializes local structured logging and the optional OTLP exporter.
 pub fn init_from_env(
     default_service_name: impl Into<String>,
 ) -> Result<ObservabilityGuard, InitError> {
@@ -436,16 +383,11 @@ pub fn init(config: ObservabilityConfig) -> Result<ObservabilityGuard, InitError
     })
 }
 
-/// Failure while configuring or installing the subscriber.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InitError {
-    /// A configuration value is missing or invalid.
     InvalidConfig(String),
-    /// `RUST_LOG` or the explicit stdout filter is invalid.
     InvalidFilter(String),
-    /// The OTLP exporter could not be built.
     Exporter(String),
-    /// Another global subscriber is already installed or installation failed.
     Subscriber(String),
 }
 
@@ -468,7 +410,6 @@ impl Display for InitError {
 
 impl Error for InitError {}
 
-/// Failure while flushing or shutting down the OTLP provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleError(String);
 

@@ -20,7 +20,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// Official program constants for the two family wires.
 const (
 	splTokenID     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 	instructionsID = "Sysvar1nstructions1111111111111111111111111"
@@ -33,34 +32,17 @@ const (
 	systemProgramZero = "11111111111111111111111111111111"
 )
 
-// AccountReader reads one coherent confirmed account set in address order, at
-// a slot no older than minSlot (0 for any): the required addresses must all
-// exist, an optional one is nil when absent. The production adapter binds it
-// to the chain client; tests bind it to fixtures.
 type AccountReader func(ctx context.Context, minSlot int64, addresses []string, optional ...string) (int64, []*chain.Account, error)
 
-// ErrRouteNotExecutable reports a destination that cannot take the deposit
-// today. No funds have moved when it is returned, and the controller refuses
-// the pull instead of preparing custody it could not deposit.
 var ErrRouteNotExecutable = errors.New("autodeposit destination is not executable")
 
-// TopUpRoute is the confirmed destination identity one top-up wire is bound
-// to. It is read fresh before the pull and again before the top-up wire is
-// built, so a signed wire only ever targets the accounts the frozen plan named.
 type TopUpRoute struct {
-	Position   fleet.KaminoPositionAccounts `json:"position"`
-	Obligation string                       `json:"obligation"`
-	// MinimumDepositRaw is the smallest liquidity amount that mints one
-	// collateral unit at the confirmed reserve's exchange value.
-	MinimumDepositRaw uint64 `json:"-"`
-	DepositRoomRaw    uint64 `json:"-"`
+	Position          fleet.KaminoPositionAccounts `json:"position"`
+	Obligation        string                       `json:"obligation"`
+	MinimumDepositRaw uint64                       `json:"-"`
+	DepositRoomRaw    uint64                       `json:"-"`
 }
 
-// SweepWireBuilder is the production WireBuilder: it compiles and signs the
-// family's two exact wires — the delegated Subscriptions pull and the
-// policy-wrapped KLend top-up — and never produces any other transaction.
-// The executor key is injected explicitly; it must be the pinned delegate the
-// balance-sweep policy authorizes, and it pays its own fees.
 type SweepWireBuilder struct {
 	read     AccountReader
 	executor ed25519.PrivateKey
@@ -68,7 +50,6 @@ type SweepWireBuilder struct {
 	rent     SetupRentReader
 }
 
-// NewSweepWireBuilder validates the signing material and the account reader.
 func NewSweepWireBuilder(executor ed25519.PrivateKey, read AccountReader) (*SweepWireBuilder, error) {
 	if len(executor) != ed25519.PrivateKeySize {
 		return nil, errors.New("autodeposit wire builder requires an ed25519 delegated signer key")
@@ -88,7 +69,6 @@ func NewSweepWireBuilder(executor ed25519.PrivateKey, read AccountReader) (*Swee
 
 func (b *SweepWireBuilder) FeePayer() string { return b.delegate.String() }
 
-// wireAmount renders a raw amount as the wire's u64 field.
 func wireAmount(amountRaw int64) (uint64, error) {
 	if amountRaw <= 0 {
 		return 0, errors.New("autodeposit wire amount must be positive")
@@ -100,9 +80,6 @@ func wireAmount(amountRaw int64) (uint64, error) {
 	return amount, nil
 }
 
-// BuildPull compiles and signs the delegated Subscriptions transfer_recurring
-// pull under the target's balance-sweep policy: the recurring delegation moves
-// the frozen amount from the wallet USDC ATA into the frozen vault custody ATA.
 func (b *SweepWireBuilder) BuildPull(ctx context.Context, request PullWireRequest) (BuiltWire, error) {
 	if err := validatePlanPublicKeys(request.Plan, request.RecurringDelegation, request.Plan.Target.SweepPolicyAccount); err != nil {
 		return BuiltWire{}, err
@@ -133,10 +110,6 @@ func (b *SweepWireBuilder) BuildPull(ctx context.Context, request PullWireReques
 	return b.sign(request.Plan, blockhash, request.LastValidBlockHeight, []fleet.RouteInstruction{wrapped})
 }
 
-// BuildTopUp compiles and signs the frozen Kamino deposit of the pulled
-// custody: the confirmed reserve route is proved against the frozen plan, the
-// official KLend proxy builds the refresh-plus-deposit instructions, and the
-// deposit instruction is wrapped under the target's policy.
 func (b *SweepWireBuilder) BuildTopUp(ctx context.Context, request TopUpWireRequest) (BuiltWire, error) {
 	route, err := b.ConfirmTopUpRoute(ctx, request.Plan)
 	if err != nil {
@@ -145,7 +118,6 @@ func (b *SweepWireBuilder) BuildTopUp(ctx context.Context, request TopUpWireRequ
 	return b.buildTopUpWithRoute(ctx, request.Plan, request.Plan.AmountRaw+request.ResidueRaw, route, request.RecentBlockhash, request.LastValidBlockHeight)
 }
 
-// buildTopUpWithRoute signs the top-up against an already-confirmed route.
 func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan DepositPlan, amountRaw int64, route TopUpRoute, blockhashValue string, lastValidBlockHeight int64) (BuiltWire, error) {
 	blockhash, err := solana.HashFromBase58(blockhashValue)
 	if err != nil {
@@ -158,8 +130,6 @@ func (b *SweepWireBuilder) buildTopUpWithRoute(ctx context.Context, plan Deposit
 	return b.sign(plan, blockhash, lastValidBlockHeight, instructions)
 }
 
-// topUpInstructions validates the official builder output and actual policy
-// permissions without signing. The pre-pull check and top-up use this same path.
 func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPlan, amountRaw int64, route TopUpRoute) ([]fleet.RouteInstruction, error) {
 	amount, err := wireAmount(amountRaw)
 	if err != nil {
@@ -180,12 +150,6 @@ func (b *SweepWireBuilder) topUpInstructions(ctx context.Context, plan DepositPl
 	return instructions, nil
 }
 
-// ConfirmTopUpRoute reads and proves the frozen destination against confirmed
-// chain state: the reserve must still be the frozen reserve in the frozen
-// market with the frozen liquidity mint, the custody must still be the vault's
-// USDC ATA, and the obligation must exist, belong to the vault and market, and
-// carry no borrows or foreign deposits. The controller calls this BEFORE the
-// pull so an unexecutable destination is refused before any wallet funds move.
 func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPlan) (TopUpRoute, error) {
 	if err := validatePlanPublicKeys(plan); err != nil {
 		return TopUpRoute{}, err
@@ -286,9 +250,6 @@ func depositRoom(reserve kamino.Reserve) (uint64, error) {
 	return reserve.DepositLimit - supplied.Uint64(), nil
 }
 
-// reserveRoute is a confirmed reserve's identity with the vault's KLend
-// accounts in its market: market authority, vanilla obligation, the vault's
-// liquidity ATA and the obligation's collateral farm user.
 func reserveRoute(reserve *chain.Account, vault string) (TopUpRoute, error) {
 	position, err := fleet.DecodeReserveIdentity(reserve)
 	if err == nil {
@@ -297,8 +258,6 @@ func reserveRoute(reserve *chain.Account, vault string) (TopUpRoute, error) {
 	return TopUpRoute{Position: position, Obligation: position.Obligation}, err
 }
 
-// usdcTokenAccount is owner's unfrozen SPL Token USDC account, whose balance
-// fits the family's int64 range.
 func usdcTokenAccount(account *chain.Account, owner string) (spl.TokenAccount, error) {
 	held, err := spl.DecodeTokenAccount(account)
 	if err != nil {
@@ -310,10 +269,6 @@ func usdcTokenAccount(account *chain.Account, owner string) (spl.TokenAccount, e
 	return held, nil
 }
 
-// wrapWithPolicy wraps one inner instruction in the Squads
-// execute_transaction_sync_v2 envelope the balance-sweep policy authorizes:
-// [policy(w), squadsProgram, executor(signer), inner accounts...], with the
-// inner signer flags cleared because the executor is the only signer.
 func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan, policyAccount string, inner fleet.RouteInstruction) (fleet.RouteInstruction, error) {
 	if policyAccount == "" {
 		return fleet.RouteInstruction{}, errors.New("autodeposit wire has no frozen policy account")
@@ -333,21 +288,11 @@ func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan,
 	return fleet.BuildPolicyEnvelope(policyAccount, plan.Target.Settings, b.delegate.String(), accounts[0], []fleet.RouteInstruction{inner})
 }
 
-// ProveTopUpWire verifies the persisted immutable top-up wire byte-for-byte:
-// exactly three instructions — two public KLend refreshes and one
-// policy-wrapped deposit — the deposit's exact discriminator, account vector,
-// frozen reserve/obligation/custody identity and amount, and the executor as
-// the wrapped transaction's only signer. Token balances are never treated as
-// Kamino proof; the wire itself is the proof, and the receipt is checked
-// against it separately.
 func (b *SweepWireBuilder) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute, residueBoundRaw int64) error {
 	tx, err := persistedWireTransaction(attempt)
 	if err != nil {
 		return err
 	}
-	// Historical TypeScript attempts can be v0 packets with an independent fee
-	// payer. Adoption resolves only their pinned lookups and verifies every
-	// signature; it never rebuilds or resigns the recorded message.
 	if err = b.resolvePersistedLookups(ctx, tx); err != nil {
 		return err
 	}
@@ -400,7 +345,6 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	if !keyEqual(message.instructions[1].accounts[0], plan.Market) || (len(message.instructions[1].accounts) == 3 && !keyEqual(message.instructions[1].accounts[2], plan.Reserve)) {
 		return errors.New("persisted obligation refresh includes a foreign market or deposit")
 	}
-	// Refresh the reserve first, then the obligation, in frozen identity order.
 	if key := message.instructions[0].accounts[0]; !keyEqual(key, plan.Reserve) {
 		return fmt.Errorf("persisted top-up wire refreshes reserve %s, want the frozen %s", key, plan.Reserve)
 	}
@@ -471,9 +415,6 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 	return nil
 }
 
-// sign compiles, signs and size-bounds one family wire. The digest is the
-// sha256 of the exact wire bytes, validated through the shared OwnSignedWire
-// contract before anything is persisted.
 func (b *SweepWireBuilder) sign(plan DepositPlan, blockhash solana.Hash, lastValidBlockHeight int64, instructions []fleet.RouteInstruction) (BuiltWire, error) {
 	if lastValidBlockHeight <= 0 {
 		return BuiltWire{}, errors.New("autodeposit wire needs a positive validity window")
@@ -511,8 +452,6 @@ func (b *SweepWireBuilder) sign(plan DepositPlan, blockhash solana.Hash, lastVal
 	}, nil
 }
 
-// transaction checks packet size and signer ownership before any pull can be
-// authorized, as well as when the top-up is eventually signed.
 func (b *SweepWireBuilder) transaction(blockhash solana.Hash, instructions []fleet.RouteInstruction) (*solana.Transaction, error) {
 	sdkInstructions := make([]solana.Instruction, len(instructions))
 	for i, ix := range instructions {

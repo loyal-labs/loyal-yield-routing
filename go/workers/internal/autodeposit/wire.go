@@ -15,8 +15,6 @@ import (
 
 const solanaPacketBytes = 1232
 
-// sdkInstruction is the one conversion from a route instruction to the
-// solana-go instruction the transaction compiles.
 func sdkInstruction(ix fleet.RouteInstruction) (solana.Instruction, error) {
 	program, err := solana.PublicKeyFromBase58(ix.Program)
 	if err != nil {
@@ -58,7 +56,6 @@ func transferRecurring(amount uint64, wallet, vault, mint solana.PublicKey, dele
 	}}, nil
 }
 
-// mustKey is reserved for pinned constants or caller-validated keys.
 func mustKey(value string) solana.PublicKey {
 	key, err := solana.PublicKeyFromBase58(value)
 	if err != nil {

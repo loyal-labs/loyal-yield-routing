@@ -135,8 +135,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Only initialization belongs to this deadline. The stream and the
-	// binding recovery it may need are owned by the process context.
 	cancelStartup()
 	appDone.Add(2)
 	go func() { defer appDone.Done(); r.refreshSupportedReserveCatalog(appCtx) }()
@@ -242,7 +240,6 @@ func (r *Runtime) Run(ctx context.Context) error {
 					start := clampToReplayWindow(*bindingStart, current)
 					bindingStart = &start
 				}
-				// A reserve new to the stream starts from its current chain state.
 				if added := addedTargets(targets, nextTargets); len(added) > 0 {
 					if _, seedErr := r.kamino.Seed(passCtx, added); seedErr != nil {
 						r.facts.Failed(engine.FamilyObserver, "kamino_seed")
@@ -318,10 +315,6 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	// Rust never starts from an arbitrarily old catalog: a complete API
-	// catalog is committed before the monitor seeds, and any failure aborts
-	// startup. load validated the cluster namespace first; an exact refresh
-	// cannot change the identities it selected, only renew fetched_at.
 	if _, err := r.publishSupportedReserves(ctx); err != nil {
 		return nil, nil, 0, fmt.Errorf("publish supported Kamino reserves before observer startup: %w", err)
 	}
@@ -350,9 +343,6 @@ func (r *Runtime) loadAndSeed(ctx context.Context) (*watch.Set, []kamino.Target,
 	return set, targets, kaminoSlot, nil
 }
 
-// A whole pass gets one budget, including its SQL and every RPC batch. Leave
-// at least half the progress window for control/error processing between passes.
-// refreshEarnAPY writes hourly Earn APY snapshots until ctx ends.
 func (r *Runtime) refreshEarnAPY(ctx context.Context) {
 	for {
 		written, err := r.apy.Refresh(ctx, time.Now())
@@ -370,9 +360,6 @@ func (r *Runtime) refreshEarnAPY(ctx context.Context) {
 	}
 }
 
-// readSlotRate gives the Kamino handler the chain's measured slot rate. A
-// failed read keeps the last measured rate; until one succeeds, Legacy-basis
-// reserve rows are skipped, never retried on the shared stream.
 func (r *Runtime) readSlotRate(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, r.passTimeout())
 	defer cancel()
@@ -385,7 +372,6 @@ func (r *Runtime) readSlotRate(ctx context.Context) {
 	r.kamino.SetSlotRate(slotsPerSecond)
 }
 
-// refreshSlotRate reads the slot rate once a sample period until ctx ends.
 func (r *Runtime) refreshSlotRate(ctx context.Context) {
 	for {
 		select {
@@ -440,14 +426,10 @@ func (r *Runtime) publishSupportedReserves(ctx context.Context) (int, error) {
 	return len(records), nil
 }
 
-// laserStreamReplaySlots is LASERSTREAM_MAX_REPLAY_SLOTS in the Rust monitor
-// (balance-sweep-ata-monitor main.rs). LaserStream replays about 216,000
-// slots; an older from_slot fails every subscribe attempt with OutOfRange.
+// LaserStream replays about 216,000 slots; an older from_slot fails every
+// subscribe attempt with OutOfRange.
 const laserStreamReplaySlots uint64 = 200_000
 
-// clampToReplayWindow is Rust's clamp_laserstream_replay_start: a start older
-// than the provider window begins at the window edge, and the caller recovers
-// the skipped range from confirmed account state instead of replay.
 func clampToReplayWindow(start, current uint64) uint64 {
 	if current > laserStreamReplaySlots && start < current-laserStreamReplaySlots {
 		return current - laserStreamReplaySlots
@@ -455,25 +437,13 @@ func clampToReplayWindow(start, current uint64) uint64 {
 	return start
 }
 
-// streamPlan is where one LaserStream session starts: requested is the
-// continuity point, from is requested clamped into the provider window. watch
-// is the watch-observation continuity the plan used; fresh means no durable
-// Earn continuity exists at all (neither this observer's watch observation
-// nor an Earn cursor).
 type streamPlan struct {
 	requested, from, watch uint64
 	fresh                  bool
 }
 
-// gap reports a continuity point the provider can no longer replay.
 func (p streamPlan) gap() bool { return p.from > p.requested }
 
-// planSession chooses the from_slot of every LaserStream session, the first
-// one and each reconnect, so their replay rules cannot diverge. A session that
-// delivered slots is continued from its durable frontier; otherwise (process
-// start, or a session that failed before its first slot) from the durable
-// cursors, as Rust's resume_from_durable_cursor does. seed is the Kamino/ATA
-// seed slot and is zero after process start.
 func (r *Runtime) planSession(ctx context.Context, seed, frontier, watchCursor uint64) (streamPlan, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.passTimeout())
 	defer cancel()
@@ -494,9 +464,6 @@ func (r *Runtime) planSession(ctx context.Context, seed, frontier, watchCursor u
 		if err != nil {
 			return streamPlan{}, err
 		}
-		// Rust never wrote a watch observation; it continued from its Earn
-		// cursor alone. Without this observer's own observation, that cursor
-		// is the continuity, so continuing Rust is not a first observation.
 		if continuity == 0 {
 			continuity = earnCursor
 		}
@@ -507,13 +474,6 @@ func (r *Runtime) planSession(ctx context.Context, seed, frontier, watchCursor u
 	return streamPlan{requested: requested, from: clampToReplayWindow(requested, current), watch: continuity, fresh: continuity == 0}, nil
 }
 
-// startSession opens one LaserStream session through planSession. Bindings
-// are read from confirmed state (recoverWatchState) only for a real gap: a
-// start clamped into the provider window, or no durable Earn continuity at
-// all. Continuing durable cursors (Rust's included) is covered by replay, as
-// it was for Rust, and that continuity becomes the recorded watch
-// observation. It returns the started manager, the plan and the watch
-// observation cursor.
 func (r *Runtime) startSession(ctx context.Context, set *watch.Set, targets []kamino.Target, seed, frontier uint64, watchConsumer string, watchCursor uint64) (*stream.Manager, streamPlan, uint64, error) {
 	plan, err := r.planSession(ctx, seed, frontier, watchCursor)
 	if err != nil {
@@ -551,13 +511,6 @@ func (r *Runtime) startSession(ctx context.Context, set *watch.Set, targets []ka
 	return manager, plan, watchCursor, nil
 }
 
-// reconnectBackoff paces every LaserStream reconnect with the Rust ATA/Earn
-// monitor policy (balance-sweep-ata-monitor lib.rs reconnect_backoff and
-// run_laserstream_loop): 500 ms doubling per reconnect up to 30 s, counted
-// whether the failed session had started or not. Rust restarted the count
-// only by rebuilding the session; here it restarts once a session moved the
-// durable frontier past the previous failure, so a session that starts and
-// dies on the same update keeps backing off instead of hammering LaserStream.
 type reconnectBackoff struct {
 	delay    time.Duration
 	failedAt uint64
@@ -568,8 +521,6 @@ const (
 	reconnectMaxDelay  = 30 * time.Second
 )
 
-// next returns the wait before reconnecting after a session that reached
-// frontier (zero when it delivered no slot).
 func (b *reconnectBackoff) next(frontier uint64) time.Duration {
 	if b.delay == 0 || frontier > b.failedAt {
 		b.delay = reconnectBaseDelay
@@ -580,10 +531,6 @@ func (b *reconnectBackoff) next(frontier uint64) time.Duration {
 	return b.delay
 }
 
-// resumeSession replaces a failed session. Every attempt waits its backoff
-// first and plans afresh, so an outage longer than the provider window cannot
-// keep requesting a slot that has left it, and a clamped plan recovers
-// bindings before the stream resumes.
 func (r *Runtime) resumeSession(ctx context.Context, set *watch.Set, targets []kamino.Target, frontier uint64, backoff *reconnectBackoff, watchConsumer string, watchCursor uint64) (*stream.Manager, uint64, error) {
 	for attempt := 1; ; attempt++ {
 		delay := backoff.next(frontier)
@@ -604,11 +551,6 @@ func (r *Runtime) resumeSession(ctx context.Context, set *watch.Set, targets []k
 	}
 }
 
-// selectReplayStart takes the oldest durable cursor, as Rust's
-// laserstream_replay_start_slot does per stream. Earn observation anchors
-// (route_policies.last_seen_slot) are not continuity cursors: most predate the
-// provider window, and the bindings they anchor are recovered from confirmed
-// state when no cursor covers them. A zero seed or cursor is absent.
 func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, overlap uint64) (uint64, error) {
 	var starts []uint64
 	if seed > 0 {
@@ -623,8 +565,6 @@ func selectReplayStart(current, seed, earnCursor, policyCursor, watchCursor, ove
 	if watchCursor > 0 {
 		starts = append(starts, subtract(watchCursor, overlap))
 	} else {
-		// First deployment has no durable watch scan yet. Bound discovery gaps
-		// independently of ahead Earn/projection cursors.
 		starts = append(starts, subtract(current, max(overlap, 10_000)))
 	}
 	requested := current
@@ -698,15 +638,8 @@ func newEarnBindingRecoveries(previous, next *watch.Set) []earnBindingRecovery {
 	return result
 }
 
-// earnBindingRecoveryBatch is the getMultipleAccounts limit; each batch is one
-// RPC read and one capture transaction under its own deadline.
 const earnBindingRecoveryBatch = 100
 
-// recoverWatchState reads every binding of set from confirmed state, then
-// records the watch observation at fromSlot. Its cost grows with the watch
-// set, so each batch carries a pass deadline and the whole read carries none.
-// The cursor moves only after every batch is durable; a restart before then
-// repeats the read under the same event keys and inserts no duplicate jobs.
 func (r *Runtime) recoverWatchState(ctx context.Context, set *watch.Set, watchConsumer string, fromSlot uint64) (int64, error) {
 	recovered, err := r.recoverNewEarnBindings(ctx, nil, set)
 	if err != nil {
@@ -756,8 +689,6 @@ func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, 
 			return 0, fmt.Errorf("earn binding %s has no affected vault", binding.address)
 		}
 		eventKey, kind := bindingRecoveryEvent(binding.address, accounts[index])
-		// Only vaults that can apply an unsigned state read receive one; the
-		// rest would fail until dead-lettered (earn.SnapshotApplicable).
 		vaults := make([]watch.Vault, 0, len(affected))
 		for _, vault := range affected {
 			if earn.SnapshotApplicable(vault, binding.address, kind == "account_deleted") {
@@ -783,9 +714,6 @@ func (r *Runtime) recoverEarnBindingBatch(ctx context.Context, next *watch.Set, 
 	return outcome.InsertedJobs, nil
 }
 
-// bindingRecoveryEvent keys a recovered binding by its address and the
-// confirmed state read, never by the read slot: reading the same state again
-// after a restart names the same job, which the job key then deduplicates.
 func bindingRecoveryEvent(address string, account *chain.Account) (string, string) {
 	if account == nil || account.Lamports == 0 {
 		return "watch-discovery:" + address + ":deleted", "account_deleted"
@@ -872,7 +800,6 @@ func (r *Runtime) recoverEarnMaxGaps(ctx context.Context, set *watch.Set) (int64
 	return inserted, nil
 }
 
-// addedTargets are the reserves next watches and previous does not.
 func addedTargets(previous, next []kamino.Target) []kamino.Target {
 	watched := make(map[string]bool, len(previous))
 	for _, target := range previous {

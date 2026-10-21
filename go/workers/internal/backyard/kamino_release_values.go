@@ -1,8 +1,5 @@
 package backyard
 
-// A position's release room: how much collateral it may withdraw before its
-// debt is repaid, inside the market's risk limits.
-
 // These values contain no receipt count or account image. Callers supply a
 // conservative underlying collateral amount and a finite-window debt bound.
 type kaminoReleaseValues struct {

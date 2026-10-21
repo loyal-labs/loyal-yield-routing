@@ -8,12 +8,6 @@ import (
 	"time"
 )
 
-// B2 leverage watch (docs/plans/b2-variable-leverage-design.md). Scores each
-// lane at each ladder level from the same selector feed. It never feeds a
-// decision and sends nothing: its only outputs are the hourly summary line
-// and its stored copy. The spread rule it once simulated runs live
-// (leverage_level.go, leverage_target.go).
-
 // leverageSpread is token yield minus the borrow APY at the utilization the
 // lane's hypothetical debt would reach at that level. Current raw source debt
 // is already included in observed utilization. The hypothetical debt begins as
@@ -33,8 +27,6 @@ func leverageSpread(m LaneEconomics, level float64, equityRaw int64, source bool
 	return leverageBorrowSpread(m, max(debt, 0))
 }
 
-// levelDebtRaw is the debt equityRaw holds at level, (level-1) x equity, in
-// the lane's raw debt units.
 func levelDebtRaw(m LaneEconomics, level float64, equityRaw int64) (float64, bool) {
 	debt := (level - 1) * float64(equityRaw)
 	if !finite(debt) || debt < 0 || debt > 1<<53 {
@@ -55,10 +47,6 @@ func levelDebtRaw(m LaneEconomics, level float64, equityRaw int64) (float64, boo
 	return debt, true
 }
 
-// leverageLevelAPY is the lane's APY at a leverage level: token yield plus
-// (level-1) x the spread at that level. The single source for the leverage
-// watch summary ('apy 1.75x=') and the published currentApy, so the
-// dashboard and the app never disagree.
 func leverageLevelAPY(m LaneEconomics, level float64, equityRaw int64, source bool, feeBPS int64, observed ...Snapshot) (float64, bool) {
 	spread, ok := leverageSpread(m, level, equityRaw, source, observed...)
 	if !ok {
@@ -67,10 +55,6 @@ func leverageLevelAPY(m LaneEconomics, level float64, equityRaw int64, source bo
 	return performanceFeeForecast(m.NativeAPY+m.SupplyAPY+(level-1)*spread, feeBPS), true
 }
 
-// performanceFeeForecast estimates continuous fee-paying annual growth at
-// the vault's admin performance fee, not realized fees or a universal HWM
-// bound. Losses never receive a fee rebate, and no fee leaves the APY as it
-// is. Money selection uses a separate asset/fee-LP rounding reserve.
 func performanceFeeForecast(apy float64, feeBPS int64) float64 {
 	if apy <= 0 || feeBPS == 0 {
 		return apy
@@ -84,7 +68,6 @@ type leverageWatch struct {
 	summary []leverageWatchLane
 }
 
-// leverageWatchLane is one lane of the summary line, as printed.
 type leverageWatchLane struct {
 	Lane       string           `json:"lane"`
 	ObservedAt time.Time        `json:"observedAt"`
@@ -97,8 +80,6 @@ type leverageWatchLane struct {
 	FeedNativeBPS *int64 `json:"feedNativeBps,omitempty"`
 }
 
-// observe returns, when summary is set, one line with each lane's spread and
-// APY by level.
 func (w *leverageWatch) observe(markets []LaneEconomics, sourceLane string, equityRaw int64, summary bool, feeBPS int64, observed ...Snapshot) []string {
 	w.summary = nil
 	if !summary {

@@ -11,13 +11,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// A destination is a lane an entry or a rotation's tranche would go to, held
-// or not: an entry beside a position is a top-up (docs/backyard-target.md
-// rule 5). Its batch is one refreshed capture of its reserves
-// (observeSelectorDestinationBatch),
-// the same kind of capture the tick values from, and these checks are the
-// chain facts its legs' builders take as given.
-
 // UserState/FarmState fields match farms-sdk 3.2.14 Borsh layouts, including
 // discriminators. A token-loop quote cannot silently assume manual farm setup.
 // An absent obligation has no registration yet: the lane's initializer
@@ -49,9 +42,6 @@ func validateSelectorFarms(v *Vault, route RuntimeRoute, accounts []ConfirmedAcc
 	return nil
 }
 
-// selectorDestinationAccounts is a destination's refreshed batch, its
-// position, and every check its entry's legs depend on. Collateral waiting in
-// its custody is a leg in flight (target rule 4), not a destination.
 func selectorDestinationAccounts(ctx context.Context, v *Vault, rpc *chain.Client, view *View, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
 	slot, accounts, position, err := observeSelectorDestinationBatch(ctx, v, rpc, route, minimumSlot)
@@ -68,12 +58,6 @@ func selectorDestinationAccounts(ctx context.Context, v *Vault, rpc *chain.Clien
 	return slot, accounts, position, nil
 }
 
-// observeSelectorDestinationBatch is the destination lane's batch and
-// position, valued like the tick's: one bank captured after the lane's
-// reserve refreshes (an unsigned simulation, never a broadcast), tolerating
-// an absent optional obligation or farm. bridgeDelegate's captured lamports
-// differ by the simulated fee; every freshness, ownership, capacity and
-// funding check still runs fail-closed on it.
 func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.Client, route RuntimeRoute, minimumSlot int64) (int64, []ConfirmedAccount, KaminoPosition, error) {
 	var empty KaminoPosition
 	addresses := []string{route.Kamino.Market, route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve,
@@ -82,8 +66,6 @@ func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.C
 		route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm,
 		budgetClockAddress, v.squads, bridgeDelegate}
 	if !v.trustful() {
-		// The FSj27 config and report ticket the destination checks
-		// (validateSelectorDestinationCommon).
 		addresses = append(addresses, v.Strategy, reportTicketPDA)
 	}
 	addresses = append(addresses, usdcReference.DebtReserve)
@@ -99,8 +81,6 @@ func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.C
 	return slot, accounts, position, nil
 }
 
-// validateSelectorDestinationCommon runs every destination check and returns
-// the observed collateral custody balance.
 func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64, accounts []ConfirmedAccount, position KaminoPosition) (uint64, error) {
 	if !v.trustful() {
 		if _, err := decodeObservedAdaptorConfig(v, accountAt(accounts, v.Strategy)); err != nil {

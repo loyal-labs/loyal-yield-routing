@@ -40,8 +40,6 @@ type retailConfig struct {
 	sweepNotifier                                      *autodeposit.SweepNotifier
 }
 
-// Configuration is scoped to this capability. Legacy/background writer flags
-// are not authority to start a new retail engine; active is an explicit opt-in.
 func loadRetailConfig() (retailConfig, error) {
 	var cfg retailConfig
 	if os.Getenv("RETAIL_MODE") != "active" {
@@ -138,7 +136,6 @@ func loadRetailConfig() (retailConfig, error) {
 	if err := cfg.fleetConfig().Validate(); err != nil {
 		return cfg, retailError("fleet configuration", err)
 	}
-	// The app's failed-sweep push. Both credentials, or neither (disabled).
 	endpoint, secret := optionalCredential("RETAIL_SWEEP_NOTIFY_ENDPOINT"), optionalCredential("RETAIL_SWEEP_NOTIFY_SECRET")
 	if (endpoint == "") != (secret == "") {
 		return cfg, errors.New("RETAIL_SWEEP_NOTIFY_ENDPOINT and RETAIL_SWEEP_NOTIFY_SECRET must both be set or both be absent")
@@ -151,9 +148,6 @@ func loadRetailConfig() (retailConfig, error) {
 	return cfg, nil
 }
 
-// loadFeeOnlyPayers reads the optional fee-only route payers, in Rust's
-// YIELD_ROUTE_FEE_PAYER_KEYPAIRS format: a JSON array of encoded keypairs.
-// Absent means the delegate pays every route, as in Rust.
 func loadFeeOnlyPayers(delegate ed25519.PrivateKey) ([]ed25519.PrivateKey, error) {
 	const name = "YIELD_ROUTE_FEE_PAYER_KEYPAIRS"
 	raw, err := os.ReadFile(filepath.Join(os.Getenv("CREDENTIALS_DIRECTORY"), name))
@@ -223,13 +217,9 @@ func parseRetailKey(material string) (ed25519.PrivateKey, error) {
 }
 
 func (c retailConfig) fleetConfig() fleet.Config {
-	// A tick reads every planned vault's obligations and policy over RPC
-	// (about a hundred getMultipleAccounts calls for the 2026-10 fleet).
 	return fleet.Config{DatabaseURL: c.databaseURL, TimescaleURL: c.timescaleURL, TimescaleSchema: c.timescaleSchema, RPCURL: c.rpcURL, Cluster: "mainnet-beta", PollInterval: 15 * time.Second, DelegatedSigner: base58.Encode(c.delegate[32:]), RevalidationOwner: "retail", RevalidationLeaseTTL: 30 * time.Second, RevalidationComputeLimit: 1_400_000, CrossMintEnabled: c.crossMintEnabled, CrossMintMaxValueLossBPS: c.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: c.crossMintMaxSlippageBPS, JupiterBuildURL: c.jupiterBuildURL, JupiterAPIKey: c.jupiterAPIKey}
 }
 
-// The outer diagnostic retains error identity for cancellation and inspection
-// without rendering DSNs, provider URLs, signing material or returned payloads.
 type retailStageFailure struct {
 	stage string
 	cause error
@@ -246,8 +236,6 @@ func retailError(stage string, cause error) error {
 
 var errFamilyLockLost = errors.New("family lock lost")
 
-// retailFamilies parses RETAIL_FAMILIES: the families this process writes.
-// Each cutover moves one family from its stopped Rust worker to Go.
 func retailFamilies(value string) ([]engine.Family, error) {
 	var families []engine.Family
 	seen := map[engine.Family]bool{}
@@ -267,7 +255,6 @@ func retailFamilies(value string) ([]engine.Family, error) {
 	return families, nil
 }
 
-// facts is the family health surface; metrics is the joined /metrics lane.
 func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics engine.Lane) error {
 	if ctx == nil {
 		return errors.New("retail requires caller context")
@@ -283,8 +270,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return err
 	}
-	// One writer per family: hold each family's session lock on the direct
-	// database before any lane starts, and stop every lane if one is lost.
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
 	for _, family := range families {
@@ -301,7 +286,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 		}(family)
 	}
 	facts.Own(families...)
-	// Every family lands its signed rows through the same send path.
 	cluster, err := chain.New(cfg.rpcURL, 15*time.Second)
 	if err != nil {
 		return retailError("chain RPC", err)
@@ -382,13 +366,10 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("fleet planner", err)
 	}
-	// Compilation/verification remains available for recovery with rollout off.
-	// Only the planner and D controller receive fresh cross-mint enablement.
 	revalidator, err := fleet.NewRevalidator(cStore, cluster, fleet.RevalidatorConfig{Owner: owner, DelegatedSigner: cConfig.DelegatedSigner, LeaseTTL: cConfig.RevalidationLeaseTTL, ComputeLimit: cConfig.RevalidationComputeLimit, CrossMintEnabled: true, CrossMintMaxValueLossBPS: cfg.crossMintMaxValueLossBPS, CrossMintMaxSlippageBPS: cfg.crossMintMaxSlippageBPS, JupiterBuildURL: cfg.jupiterBuildURL, JupiterAPIKey: cfg.jupiterAPIKey, FeeOnlyPayers: cfg.feeOnlyPublicKeys(), Metrics: facts})
 	if err != nil {
 		return retailError("fused fleet preparation", err)
 	}
-	// Preparation belongs to the executor.
 	executor, err := fleetexec.NewWorker(fleetexec.Config{Cluster: cConfig.Cluster, Owner: owner, LeaseTTL: 30 * time.Second, BatchSize: 20, TickInterval: 750 * time.Millisecond, Facts: facts, OnHealth: laneHealth(facts, engine.FamilyFleet, "executor")}, dStore, cluster, cluster, fleetexec.DelegateSigner{FeePayer: cfg.delegate, FeeOnly: cfg.feeOnly})
 	if err != nil {
 		return retailError("fleet executor", err)
@@ -400,7 +381,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("cross-mint runtime", err)
 	}
-	// Multiply quotes through the keyless lite API.
 	multiplyQuotes, _ := jupiter.NewClient(jupiter.LiteBase, "", &http.Client{Timeout: 15 * time.Second})
 	multiplyWorker, err := multiply.NewWorker(multiply.WorkerDeps{Store: gStore, Observer: cluster, Executor: gExecutor, Quotes: multiplyQuotes, WorkerID: owner, Chain: cluster, Facts: facts})
 	if err != nil {
@@ -419,7 +399,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 			facts.LaneSucceeded(family, "executor")
 			lanes = append(lanes, planner, executor, crossMint)
 		case engine.FamilyLookup:
-			// Each lane's success clock starts when it starts.
 			facts.LaneSucceeded(family, "lookup_planner")
 			facts.LaneSucceeded(family, "lookup_writer")
 			lanes = append(lanes, lookupPlanner, lookupWorker)
@@ -434,11 +413,6 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	return retailError("lanes", err)
 }
 
-// laneHealth logs a lane's failed tick with its cause and records each tick
-// that finished without error. A failed tick is not a failed operation: a
-// transient RPC error or a held catalog activation clears on a later tick, so
-// only a lane with no success for a while is a fact worth paging on. The
-// durable lookup pause is an operator state, not a failure.
 func laneHealth(facts *engine.Facts, family engine.Family, lane string) func(error) {
 	return func(err error) {
 		switch {

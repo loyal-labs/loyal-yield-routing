@@ -15,7 +15,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// AccountReader is the account read retail decisions are made from.
 type AccountReader interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
 }
@@ -56,8 +55,6 @@ func SimulateExact(ctx context.Context, c *chain.Client, wire []byte, commitment
 	return evidence, nil
 }
 
-// recentPriorityFee is the 75th percentile of the prices recent transactions
-// writing the first 128 of writable paid, zero when none did.
 func recentPriorityFee(ctx context.Context, c *chain.Client, writable []string) (uint64, error) {
 	keys := make([]solana.PublicKey, 0, min(len(writable), 128))
 	for _, address := range writable[:min(len(writable), 128)] {

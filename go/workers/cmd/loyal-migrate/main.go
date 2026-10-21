@@ -229,8 +229,6 @@ func up(ctx context.Context, conn *pgx.Conn, db database, files []migration, thr
 	return nil
 }
 
-// defaultDir finds migrations/<db> in the working directory or an ancestor,
-// so the command runs from the repository root or from go/workers.
 func defaultDir(name string) string {
 	dir, err := os.Getwd()
 	if err != nil {

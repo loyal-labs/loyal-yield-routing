@@ -31,9 +31,6 @@ const (
 	adaptorErrorTicketReplay uint32 = 18
 )
 
-// squadsSpendingLimitReason marks a Squads spending-limit refusal: a
-// specific HOLD reason in simulation, and the recorded reason of a landed
-// refusal.
 const squadsSpendingLimitReason = "squads_spending_limit_exceeded"
 
 // adaptorMaxReportAgeSlots is the deployed adaptor config's max report age.
@@ -45,9 +42,6 @@ const (
 	unclassifiedTransactionErrReason = "confirmed_transaction_error"
 )
 
-// decodeInstructionErrorCustom returns the innermost InstructionError custom
-// code. CPI failures nest as another InstructionError frame inside the error
-// position, so the walk recurses until a {"Custom": code} leaf or exhaustion.
 func decodeInstructionErrorCustom(raw json.RawMessage) (uint32, bool) {
 	var frame struct {
 		InstructionError *json.RawMessage `json:"InstructionError"`
@@ -77,7 +71,6 @@ func programIDFromFailedLogLine(line string) (string, bool) {
 	return id, found && strings.Contains(rest, "failed")
 }
 
-// programInvokeDepth parses "Program <id> invoke [depth]".
 func programInvokeDepth(line string) (string, int, bool) {
 	prefix, ok := strings.CutPrefix(line, "Program ")
 	if !ok {
@@ -102,7 +95,6 @@ func programInvokeDepth(line string) (string, int, bool) {
 	return id, depth, true
 }
 
-// programSuccessLogLine parses "Program <id> success".
 func programSuccessLogLine(line string) (string, bool) {
 	prefix, ok := strings.CutPrefix(line, "Program ")
 	if !ok {
@@ -112,16 +104,6 @@ func programSuccessLogLine(line string) (string, bool) {
 	return id, found && strings.HasPrefix(rest, "success")
 }
 
-// failingProgramFromLogs attributes a custom instruction error to the program
-// that produced it by rebuilding the CPI call stack from the log lines: every
-// "Program <id> invoke [depth]" pushes a frame, "success" pops its frame, and
-// an explicit "Program <id> failed:" line names the frame that failed.
-//
-// An AnchorError without such a line is attributed only when it appears inside
-// the innermost frame that is still open at that point. Open frames alone
-// prove nothing: logs that end without any error line - truncated, missing, or
-// simply exhausted - return the empty result, an unattributed failure, never a
-// guess about whichever frame happened to remain open.
 func failingProgramFromLogs(logs []string) string {
 	var stack []string
 	anchorProgram := ""
@@ -159,12 +141,6 @@ func failingProgramFromLogs(logs []string) string {
 	return anchorProgram
 }
 
-// confirmedFailureReason is the reason a failed transaction's row records,
-// from its RPC error and logs: the rwa adaptor's report refusals and the
-// Squads spending limit by name, any other custom error attributed to its
-// program as program_error:<program>:<code>, and confirmed_transaction_error
-// when no program error is attributable. It labels the failure; whether the
-// row settles is the receipt proof's alone.
 func confirmedFailureReason(rawErr json.RawMessage, logs []string) string {
 	code, ok := decodeInstructionErrorCustom(rawErr)
 	program := failingProgramFromLogs(logs)
@@ -181,12 +157,6 @@ func confirmedFailureReason(rawErr json.RawMessage, logs []string) string {
 	return "program_error:" + program + ":" + strconv.FormatUint(uint64(code), 10)
 }
 
-// recoverConfirmedFailure settles one failed broadcast from its finalized
-// receipt, read once. A receipt that proves the exact persisted wire rolled
-// back terminates the row in `failed`, so the next tick plans again from
-// fresh state and UnresolvedCapitalRecoverySQL never sees it; a receipt that
-// does not latches manual recovery. A receipt that is not finalized yet
-// leaves the row in its submission state, and the next tick lands it again.
 func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *chain.Client, operation PersistedOperation) error {
 	receipt, err := readFailureReceipt(ctx, rpc, operation.TransactionSignature)
 	if err != nil {

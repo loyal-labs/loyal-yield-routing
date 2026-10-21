@@ -19,15 +19,12 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// The token programs as the TokenBalance strings carry them.
 var (
 	TokenProgram     = solana.TokenProgramID.String()
 	Token2022Program = solana.Token2022ProgramID.String()
 )
 
 const (
-	// EarnMaxVaultIndex is the retail vault index 0 (legacy agent vault index
-	// stays distinct per the worker contract).
 	EarnMaxVaultIndex uint8 = 0
 
 	MainnetGenesisHash = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
@@ -40,7 +37,7 @@ const (
 	primeMint = "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"
 	syrupMint = "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj"
 
-	onreMarket   = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8" // PRIME_MARKET alias in Rust is Figure; ONYC market is OnRe
+	onreMarket   = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"
 	figureMarket = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"
 	mapleMarket  = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"
 
@@ -65,13 +62,11 @@ const (
 	syrupCollateralMintSupply      = "21GK6yHS3MKhTnF5pN5FuSmnpLiyPXTDrpxxbqMEoX58"
 )
 
-// PolicyConfig is one Squads smart-account policy PDA for a strategy family.
 type PolicyConfig struct {
 	Seed    uint64
 	Account solana.PublicKey
 }
 
-// StrategyConfig is one fixed collateral/debt lane.
 type StrategyConfig struct {
 	Key             StrategyKey
 	Market          solana.PublicKey
@@ -104,7 +99,6 @@ type StrategyConfig struct {
 	SwapPolicy       PolicyConfig
 }
 
-// PolicyForAction mirrors StrategyConfig::policy: None for user-side actions.
 func (s StrategyConfig) PolicyForAction(action MultiplyAction) (PolicyConfig, bool) {
 	switch action {
 	case ActionDepositCollateral, ActionWithdrawCollateral, ActionWithdrawRemainingCollateral:
@@ -118,7 +112,6 @@ func (s StrategyConfig) PolicyForAction(action MultiplyAction) (PolicyConfig, bo
 	return PolicyConfig{}, false
 }
 
-// EarnMaxTopology is the deterministic deployment for one settings account.
 type EarnMaxTopology struct {
 	ManifestVersion   string
 	Settings          solana.PublicKey
@@ -142,9 +135,6 @@ func optionalFarm(value string) *solana.PublicKey {
 	return &key
 }
 
-// DeriveEarnMaxTopology mirrors derive_earn_max_topology_with_policy_seed_base.
-// seedBase > 0 selects the dynamic policy seeds base, base+1 for debt and
-// base+2 for swap; zero selects the reviewed static seeds 32/33/34.
 func DeriveEarnMaxTopology(settings solana.PublicKey, policySeedBase uint64) (*EarnMaxTopology, error) {
 	vault, _, err := squads.SmartAccountAddress(settings, EarnMaxVaultIndex)
 	if err != nil {
@@ -177,8 +167,6 @@ func DeriveEarnMaxTopology(settings solana.PublicKey, policySeedBase uint64) (*E
 	}, nil
 }
 
-// TopologyForRoute mirrors topology_for_route, including the route identity
-// check against the deterministic topology.
 func TopologyForRoute(state *RouteState) (*EarnMaxTopology, error) {
 	settings, err := solana.PublicKeyFromBase58(state.Settings)
 	if err != nil {
@@ -225,7 +213,7 @@ type strategyTemplate struct {
 	debtTokenProgram          string
 	debtLiquiditySupply       string
 	debtFeeVault              string
-	debtFarmState             string // empty when none
+	debtFarmState             string
 	targetLTVBPS              uint16
 	staticCollateralSeed      uint64
 }
@@ -312,7 +300,6 @@ func deriveStrategy(settings, vault solana.PublicKey, template strategyTemplate,
 	collateralMint := mustKey(template.collateralMint)
 	debtMint := mustKey(template.debtMint)
 	debtTokenProgram := mustKey(template.debtTokenProgram)
-	// The Multiply obligation is tag 1, id 0 over the collateral and debt mints.
 	obligation, err := kamino.ObligationAddress(1, 0, vault, market, collateralMint, debtMint)
 	if err != nil {
 		return StrategyConfig{}, err
@@ -382,7 +369,6 @@ func policyConfig(settings solana.PublicKey, seed uint64) (PolicyConfig, error) 
 	return PolicyConfig{Seed: seed, Account: account}, nil
 }
 
-// routeKeyFor mirrors format!("earn-max:{settings}:{vault_index}").
 func routeKeyFor(settings solana.PublicKey, vaultIndex uint8) string {
 	return "earn-max:" + settings.String() + ":" + strconv.Itoa(int(vaultIndex))
 }

@@ -24,9 +24,7 @@ type Config struct {
 	KaminoAPIBase        string
 	Cluster              string
 	ATAStream            string
-	// APYRiskProfiles are the published Earn APY strategies; empty when the
-	// shared snapshot table is written by another environment.
-	APYRiskProfiles []string
+	APYRiskProfiles      []string
 	// ReadModelsEnabled runs the product read-model passes, which write
 	// earn_fleet_allocations_hourly, earn_reserve_share_prices and
 	// earn_forecast_snapshots. The Apps hourly crons (earn-reserve-share-prices

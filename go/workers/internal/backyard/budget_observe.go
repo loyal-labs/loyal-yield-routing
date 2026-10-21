@@ -9,9 +9,6 @@ import (
 const budgetClockAddress = "SysvarC1ock11111111111111111111111111111111"
 const budgetPriceMarginBPS uint16 = 100
 
-// decodeBudgetTokenPrice is tokenMint's price in USDC from one refreshed
-// capture of its reserve and the pinned USDC reference reserve, with
-// budgetPriceMarginBPS on each side.
 func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, reference KaminoObservationConfig, reserveAddress, tokenMint, tokenProgram string) (BudgetPrice, error) {
 	if slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_slot")

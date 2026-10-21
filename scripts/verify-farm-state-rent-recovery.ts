@@ -1,21 +1,4 @@
 #!/usr/bin/env bun
-/**
- * Verifies whether the SOL locked in Kamino obligation farm `UserState` accounts can be
- * recovered by us.
- *
- * Every Kamino route the fleet opens creates one `UserState` per (reserve farm, obligation)
- * and pays its rent from the shared policy signer. That rent is never returned, and by
- * 2026-08-07 it accounted for the largest recurring outflow from the signer that ran the
- * fleet dry.
- *
- * A recovery would need one of three things to be true: an instruction that closes the
- * account, an owner willing to move its lamports, or an account we own outright. This
- * script tests all three against mainnet and reports which, if any, hold.
- *
- * Strictly read-only: it derives, reads, and simulates. It never signs, never sends, and
- * never needs a keypair. `simulateTransaction` is executed against a throwaway blockhash
- * with `sigVerify: false`, so the transaction it builds cannot land even by accident.
- */
 import {
   AddressLookupTableProgram,
   Connection,
@@ -29,17 +12,14 @@ import { inflateSync } from "node:zlib";
 const KLEND_PROGRAM_ID = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
 const FARMS_PROGRAM_ID = "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr";
 const LOOKUP_TABLE_PROGRAM_ID = "AddressLookupTab1e1111111111111111111111111";
-/** Farm user states created by the production policy signer, from the 60-day census. */
 const SAMPLE_FARM_USER_STATES = [
   "6cF9Ar2j6qww9ejNz981q5D12nGd2SXcju9t5vvFayEU",
   "77n16Ycq3QfYfFx11jAPYGSHhutKimLJ7U96Vz23fbHE",
   "8KSs9mMWe1X7SmyVdnsPBHiaUP2KSWFHcF3X7d8ndAd4",
 ];
-/** Any funded account works; this one pays the fleet's transactions today. */
 const FUNDED_FEE_PAYER = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5";
 const OBSERVED_ACCOUNT_COUNT = 962;
 const OBSERVED_RENT_LAMPORTS_EACH = 7_294_080;
-/** Any instruction that could plausibly return rent would be named like one of these. */
 const RECOVERY_NAME_PATTERN =
   /close|delete|destroy|reclaim|refund|terminate|deinit|dealloc|remove|burn/i;
 
@@ -62,8 +42,6 @@ type Idl = {
   accounts?: { name: string }[];
 };
 
-/** Reads a program's Anchor IDL from the chain, so the answer comes from the deployed
- *  program rather than from a checked-in copy that could have drifted. */
 async function loadIdl(connection: Connection, programId: string): Promise<Idl> {
   const program = new PublicKey(programId);
   const [base] = PublicKey.findProgramAddressSync([], program);
@@ -100,8 +78,6 @@ async function main(): Promise<void> {
   const farmsRecovery = farms.instructions
     .filter((ix) => RECOVERY_NAME_PATTERN.test(ix.name))
     .map((ix) => ix.name);
-  // deleteReferrerStateAndShortUrl closes a referrer account, not a farm user state, so
-  // it is named explicitly rather than allowed to satisfy the search by accident.
   const klendFarmRecovery = klendRecovery.filter((name) => /farm|user/i.test(name));
   const farmsFarmRecovery = farmsRecovery.filter((name) => /farm|user/i.test(name));
 
@@ -142,14 +118,6 @@ async function main(): Promise<void> {
   );
 
   console.log("\n3. can the rent be moved without the owning program's help?");
-  // Only the owning program may debit an account it owns. Simulating the transfer turns
-  // that rule from an assertion in a comment into an observed refusal from the runtime.
-  //
-  // The fee payer is a funded account rather than the farm state itself, so the
-  // simulation reaches execution instead of stopping at an unfundable payer, and
-  // signature verification is disabled so the run is not short-circuited by the missing
-  // PDA signature before the ownership rule is ever consulted. Nothing is signed and the
-  // blockhash is replaced by the simulator, so this cannot land.
   const { blockhash } = await connection.getLatestBlockhash("finalized");
   const message = new TransactionMessage({
     instructions: [
@@ -172,9 +140,6 @@ async function main(): Promise<void> {
     simulation.value.err
   );
   const logs = (simulation.value.logs ?? []).join("\n");
-  // The exact refusal matters. "must not carry data" is the runtime saying the account
-  // belongs to a program, which is a different and far more permanent obstacle than a
-  // missing signature or an empty balance would have been.
   check(
     "the refusal is the ownership rule, not a signature or funding problem",
     /must not carry data/i.test(logs),
@@ -187,10 +152,6 @@ async function main(): Promise<void> {
   );
 
   console.log("\n4. what IS recoverable? (lookup tables, for contrast)");
-  // The farm states are not the whole story. The same signer also funds lookup tables,
-  // and those carry the close path the farm states lack. Proving the recoverable case
-  // here keeps the negative result above honest: the obstacle is Kamino's account model,
-  // not something inherent to rent.
   const lookupTables = await connection.getProgramAccounts(
     new PublicKey(LOOKUP_TABLE_PROGRAM_ID),
     {
@@ -247,9 +208,6 @@ async function main(): Promise<void> {
     ),
     { commitment: "finalized", replaceRecentBlockhash: true, sigVerify: false }
   );
-  // Closing before the deactivation cooldown must fail, and fail for that reason. A
-  // close that succeeded here would mean the sampled table was already deactivated,
-  // which would make the recovery estimate wrong rather than merely unproven.
   check(
     "closing is refused only until the deactivation cooldown elapses",
     /not deactivated/i.test((close.value.logs ?? []).join("\n")),

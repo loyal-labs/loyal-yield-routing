@@ -108,9 +108,6 @@ func (m *Manager) Start(ctx context.Context, request *pb.SubscribeRequest) error
 	return nil
 }
 
-// Handoff replaces the complete filter set without creating an observation
-// gap. The candidate starts from the smaller of its requested FromSlot and the
-// active durable frontier minus the configured overlap.
 func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest) error {
 	if replacement == nil {
 		return errors.New("replacement subscription request is required")
@@ -165,10 +162,6 @@ func (m *Manager) Handoff(ctx context.Context, replacement *pb.SubscribeRequest)
 		}
 	}()
 
-	// Freeze the old stream at an application-durable boundary before candidate
-	// replay reaches domain handlers. Its receive goroutine may have one frame
-	// waiting behind this gate, while HTTP/2 flow control safely backpressures
-	// subsequent frames.
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -230,8 +223,6 @@ func (m *Manager) Close() {
 	m.active = nil
 	m.cancel()
 	m.mu.Unlock()
-	// Close owns the active receive worker's exit: cancel AND join so callers
-	// never observe handled work after Close returns.
 	if active != nil {
 		active.stopAndWait()
 	}
@@ -243,9 +234,6 @@ func (m *Manager) openSession(ctx context.Context, request *pb.SubscribeRequest)
 	return m.openSessionBounded(ctx, opening, request)
 }
 
-// Opening a replacement is bounded by its control pass, but the resulting
-// subscription belongs to the long-lived manager. Detach the temporary cancel
-// hook before publishing it so a successful pass's deadline cannot stop it.
 func (m *Manager) openSessionBounded(parent, opening context.Context, request *pb.SubscribeRequest) (*session, error) {
 	sessionCtx, cancel := context.WithCancel(parent)
 	stopOpening := context.AfterFunc(opening, cancel)
@@ -279,10 +267,6 @@ func (m *Manager) openSessionBounded(parent, opening context.Context, request *p
 	return s, nil
 }
 
-// promoteCandidate serializes the active-session swap with sessionFinished.
-// If completion wins the lock, a terminal candidate cannot be promoted. If
-// promotion wins, completion observes the candidate as active and reports its
-// error through the fatal channel.
 func (m *Manager) promoteCandidate(old, candidate *session, replacement *pb.SubscribeRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -321,7 +305,6 @@ type session struct {
 	stream  OpenStream
 	handler Handler
 
-	// deliveryGate freezes a durable frontier without blocking cancellation.
 	deliveryGate chan struct{}
 	frontier     atomic.Uint64
 	progress     chan struct{}
@@ -417,8 +400,6 @@ func (s *session) Done() <-chan error        { return s.done }
 func (s *session) Start()                    { s.startOnce.Do(func() { close(s.start) }) }
 func (s *session) Stop()                     { s.stopOnce.Do(s.cancel) }
 
-// stopAndWait cancels the session and blocks until its receive worker has
-// fully exited, including transport cleanup and the final done publication.
 func (s *session) stopAndWait() {
 	s.Stop()
 	<-s.done

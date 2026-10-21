@@ -11,10 +11,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// The lookup family reads finalized state only. A table and the SlotHashes
-// sysvar come from one call, so the cooldown proof and the table it gates
-// describe the same bank.
-
 func lookupSnapshot(ctx context.Context, c *chain.Client, address string, minSlot int64) (LookupSnapshot, error) {
 	key, err := sdk.PublicKeyFromBase58(address)
 	if err != nil || minSlot < 0 {
@@ -79,8 +75,6 @@ func decodeLookupSnapshot(address string, slot int64, a, hashes *chain.Account) 
 	return out, nil
 }
 
-// Catalog drift may observe an absent or differently owned account. Financial
-// recovery still uses lookupSnapshot's strict program-owner decoder.
 type lookupCatalogObservation struct {
 	snapshot LookupSnapshot
 	reason   string
@@ -132,7 +126,6 @@ func lookupCatalogObservations(ctx context.Context, c *chain.Client, addresses [
 	return observations, nil
 }
 
-// lookupFinalizedReceipt is nil while finalized history has no record of sig.
 func lookupFinalizedReceipt(ctx context.Context, c *chain.Client, sig string) (*LookupReceipt, error) {
 	signature, err := sdk.SignatureFromBase58(sig)
 	if err != nil {
@@ -166,15 +159,11 @@ func lookupFinalizedReceipt(ctx context.Context, c *chain.Client, sig string) (*
 	return out, nil
 }
 
-// lookupBlockhash is a finalized blockhash, its expiry height and the bank
-// slot it was read at.
 func lookupBlockhash(ctx context.Context, c *chain.Client) (string, int64, int64, error) {
 	hash, height, slot, err := c.Blockhash(ctx, rpc.CommitmentFinalized, 0)
 	return hash.String(), int64(height), int64(slot), err
 }
 
-// lookupBalance is key's finalized lamports at or after minSlot; an absent
-// account holds none.
 func lookupBalance(ctx context.Context, c *chain.Client, key string, minSlot int64) (uint64, error) {
 	pub, err := sdk.PublicKeyFromBase58(key)
 	if err != nil || minSlot < 0 {

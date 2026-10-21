@@ -16,9 +16,6 @@ type programAccount struct {
 	Account ConfirmedAccount
 }
 
-// DecodeVoltrWithdrawalReceipt admits a deployed withdrawal receipt of vault
-// at address only when it is the canonical vault/user PDA with its bump and
-// owes no more than vaultCapRaw.
 func DecodeVoltrWithdrawalReceipt(account ConfirmedAccount, address, vault string, vaultCapRaw uint64) (VoltrWithdrawalReceipt, error) {
 	if account.Address != "" && account.Address != address {
 		return VoltrWithdrawalReceipt{}, fmt.Errorf("receipt address envelope mismatch")

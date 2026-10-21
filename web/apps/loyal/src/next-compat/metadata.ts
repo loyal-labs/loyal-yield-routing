@@ -73,23 +73,15 @@ let rootMetadata: MetadataView | undefined;
 
 export function headFromMetadata(metadata: Metadata | undefined): Head {
   const view = metadata as MetadataView | undefined;
-  // Only the root layout's metadata carries metadataBase in apps/web.
   if (view?.metadataBase) rootMetadata = view;
 
   const root = rootMetadata ?? view;
   const base = view?.metadataBase ?? root?.metadataBase ?? new URL(SITE_URL);
   if (view?.metadataBase) return shellHead({ ...view, metadataBase: base });
-  // Shallow per-top-level-key merge, the page over the layout: a page's
-  // openGraph replaces the root's whole, keys the page omits fall back to the
-  // root's (home has no openGraph of its own and inherits the root's).
   const merged: MergedMetadata = { ...root, ...view, metadataBase: base };
   return fullHead(merged);
 }
 
-// Root call: only what no page overrides by route-level tags — title and
-// description survive HeadContent's meta dedupe until a page's own win, icons
-// are inherited by every page. openGraph, twitter and alternates are
-// intentionally absent: each page emits them from its merged metadata.
 function shellHead(root: MergedMetadata): Head {
   const meta: Head["meta"] = [];
   const links: Head["links"] = [];
@@ -125,7 +117,6 @@ function fullHead(merged: MergedMetadata): Head {
       if (image.alt) meta.push({ property: "og:image:alt", content: image.alt });
     }
     if (og.type) meta.push({ property: "og:type", content: og.type });
-    // Next renders an article's times after og:type.
     if (og.publishedTime) meta.push({ property: "article:published_time", content: isoTime(og.publishedTime) });
     if (og.modifiedTime) meta.push({ property: "article:modified_time", content: isoTime(og.modifiedTime) });
   }
@@ -151,8 +142,6 @@ function fullHead(merged: MergedMetadata): Head {
   return { meta, links };
 }
 
-// Next's title resolution: `absolute` wins outright; a plain string on a page
-// runs through the parent layout's `template`; otherwise `default`.
 function renderTitle(metadata: MetadataView, parent: MetadataView | undefined): string | undefined {
   const title = metadata.title as string | TitleDescriptor | null | undefined;
   if (typeof title === "string") {
@@ -213,13 +202,11 @@ function pushIcons(links: Head["links"], icons: IconsView | undefined | null): v
   }
 }
 
-// Next absolutizes metadata URLs against metadataBase and trims an
-// origin-only result to the bare origin: canonical "/" and og:url
-// "https://askloyal.com/" both render as "https://askloyal.com".
 function isoTime(value: string | Date): string {
   return typeof value === "string" ? value : value.toISOString();
 }
 
+// Next trims an origin-only absolute URL to the bare origin.
 function resolveUrl(value: string | URL | null | undefined, base: URL): string | undefined {
   if (value === null || value === undefined || value === "") return undefined;
   const resolved = new URL(value instanceof URL ? value.toString() : value, base);

@@ -7,9 +7,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// All identities are fixed by the lane and the account its initializer
-// policy literal is installed on (Policy). Rent and network fees are native SOL
-// flows, separate from user USDC principal.
 type KaminoInitializationRequest struct {
 	RouteLane            string `json:"routeLane"`
 	Policy               string `json:"policy"`
@@ -19,10 +16,6 @@ type KaminoInitializationRequest struct {
 	MaximumFeeLamports   uint64 `json:"maximumFeeLamports"`
 }
 
-// compileKaminoInitializationMessage is the initializer of a lane whose
-// obligation Backyard creates (earnInitializerLane): the basic lanes'
-// split initializer policies and the AUTO lanes' KLend policy initializer
-// leg, then the obligation's farm registrations. Any other lane holds.
 func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitializationRequest) ([]byte, error) {
 	v := m.vault
 	if !earnInitializerLane(r.RouteLane) {
@@ -67,8 +60,6 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	return checkedUnsignedMessage(message)
 }
 
-// validateInitializedKaminoObligation checks a created obligation is the
-// admitted empty Multiply account.
 func (m RouteManifest) validateInitializedKaminoObligation(r KaminoInitializationRequest, a ConfirmedAccount) error {
 	if !earnInitializerLane(r.RouteLane) {
 		return budgetHold("initializer_lane_unreviewed")
@@ -121,9 +112,6 @@ func obligationFarms(route RuntimeRoute) []obligationFarm {
 	return out
 }
 
-// kaminoRouteInitializer is the lane-independent core: the identical
-// nine-account topology with the route's own debt mint and its obligation, a
-// PDA of the vault and the route identities (earnLane.routeFor).
 func kaminoRouteInitializer(route RuntimeRoute) (compiledInstruction, error) {
 	owner, market, obligation := kaminoKey(route.Kamino.Vault), kaminoKey(route.Kamino.Market), kaminoKey(route.Kamino.Obligation)
 	collateral, debt := kaminoKey(route.Kamino.CollateralMint), kaminoKey(route.Kamino.DebtMint)

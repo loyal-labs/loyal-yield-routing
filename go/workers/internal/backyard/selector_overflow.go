@@ -7,30 +7,11 @@ import (
 	"math/big"
 )
 
-// Overflow (owner decision 2026-10-11). AUTO/AUTO/PYUSD is Earn Max's AUTO
-// lane; AUTO/AUTO/wYLDS is its overflow lane, a second obligation on the same
-// collateral reserve and custody that borrows wYLDS. When the source lane is
-// below its level and its own debt reserve has no room for the minimum
-// borrow, while the overflow lane's reserve has room and its stored level
-// approves levering there, target() moves collateral worth E from the source
-// obligation into the overflow obligation in one transaction (withdraw,
-// deposit; nothing waits in the shared custody), and the overflow lane then
-// levers toward its own level by ordinary up steps.
-//
-// E is sized so the vault's whole level heads to its levels: the source lands
-// at most at its cap's LTV, and E is at most what the overflow reserve's
-// room levers to the overflow lane's stored level, the level its up steps
-// take the move to. While the source has room its own up step wins and
-// nothing moves; the overflow lane is never a selector destination of its
-// own.
-
-// overflowSourceOf is the lane an overflow lane overflows.
 func overflowSourceOf(lane string) (string, bool) {
 	l, ok := findEarnLane(lane)
 	return l.overflowOf, ok && l.overflowOf != ""
 }
 
-// overflowLaneOf is a source lane's overflow lane.
 func overflowLaneOf(source string) (string, bool) {
 	if source == "" {
 		return "", false
@@ -43,16 +24,11 @@ func overflowLaneOf(source string) (string, bool) {
 	return "", false
 }
 
-// selectorDestinationLane reports a lane the selector may enter, switch to
-// or move a tranche into on its own economics: every active lane except an
-// overflow lane, which only an overflow tranche enters.
 func selectorDestinationLane(lane string) bool {
 	_, overflow := overflowSourceOf(lane)
 	return earnActiveLane(lane) && !overflow
 }
 
-// overflowLaneBlockedReason marks an overflow lane in the selector's market
-// set: it is entered only by an overflow tranche from its source.
 const overflowLaneBlockedReason = "overflow_lane_entered_by_overflow_only"
 
 // debtToUSDCConvertible reports a lane whose debt leftovers may convert to
@@ -64,19 +40,10 @@ func debtToUSDCConvertible(lane string) bool {
 	return !ok || !hastraLane(l.route)
 }
 
-// overflowSourceBorrowClosed is the source lane's own borrow room known and
-// under the minimum borrow: the only state in which the overflow room is
-// read, so the only one in which observation captures it.
 func overflowSourceBorrowClosed(s Snapshot) bool {
 	return s.BorrowCapacityKnown && (s.BorrowUtilizationBlocked || kaminoReceiveWithinRoom(s.AdditionalDebtRoomRaw, s.BorrowFeeRate) < leverageMinimumBorrowRaw)
 }
 
-// overflowEquityRaw sizes E: the source's release limit, what the overflow
-// reserve's room levers to the overflow lane's stored level L (room =
-// (L-1) E; its cap would undersize the move whenever the level sits under
-// it, and the walk would move the remainder round after round), and the
-// tranche cap. Zero below the smallest E that levers with at least the
-// minimum borrow.
 func overflowEquityRaw(s Snapshot, level float64) int64 {
 	if _, ok := overflowLaneOf(s.RouteLane); !ok || !s.OverflowRoomKnown || s.OverflowRoomValueRaw <= 0 {
 		return 0
@@ -108,12 +75,6 @@ func overflowReleaseReceipts(s Snapshot, free int64) int64 {
 	return receipts.Int64()
 }
 
-// applyOverflowRoom stamps, on a lane with an overflow lane, that lane's
-// fee-inclusive receive room and its bridge USDC value, judged on the tick's
-// refreshed batch, which refreshes the overflow lane's reserves with the
-// valued lanes' (nobody but us borrows from the wYLDS reserve, so its raw
-// state is far past the health age). Only a source holding a position that
-// cannot borrow reads it.
 func applyOverflowRoom(v *Vault, s *Snapshot, accounts []ConfirmedAccount, route RuntimeRoute) error {
 	s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowRoomKnown, s.OverflowObligationPresent = 0, 0, false, false
 	lane, ok := overflowLaneOf(route.Lane)

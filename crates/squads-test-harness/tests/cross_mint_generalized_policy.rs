@@ -33,8 +33,8 @@ use solana_sdk::{
 use squads_test_harness::{
     create_funded_squads_test_context_with_mock_programs,
     execute_squads_program_interaction_instruction, get_spl_token_amount, loyal_action_context,
-    seed_mock_jupiter_spl_accounts, seed_spl_mint_if_missing, seed_spl_token_account,
-    try_send_instructions, MockProgram, SquadsCompiledInstruction,
+    seed_mock_jupiter_spl_accounts, seed_spl_token_account, try_send_instructions, MockProgram,
+    SquadsCompiledInstruction,
 };
 
 const CLASSIC_POLICY_SEED: u64 = 1;
@@ -205,59 +205,6 @@ fn generalized_cross_mint_policy_set_creates_reads_executes_and_rejects_mutation
         "local Jupiter fixture must reject its unsupported reverse direction"
     );
 
-    // Wrong source shard: the classic policy has no PYUSD spending limit.
-    let wrong_source = fixture_accounts(&fixture, context.vault, vault_pyusd, vault_usdc);
-    let wrong_source_swap = fixture_swap(
-        &fixture,
-        classic_route_v2,
-        &delegated_signer,
-        wrong_source,
-        decode_jupiter_swap_data(&fixture),
-    );
-    assert!(
-        try_send_instructions(
-            &mut context.svm,
-            &[wrong_source_swap],
-            &delegated_signer,
-            &[]
-        )
-        .is_err(),
-        "wrong source shard must not authorize a PYUSD decrease"
-    );
-
-    // Unsupported source mint: no spending-limit entry means a vault-token
-    // decrease cannot pass the Squads policy envelope.
-    let unsupported_mint = Pubkey::new_unique();
-    let unsupported_source =
-        derive_associated_token_account(context.vault, unsupported_mint, spl_token::ID);
-    seed_spl_mint_if_missing(&mut context.svm, unsupported_mint, None, 6, 0);
-    seed_spl_token_account(
-        &mut context.svm,
-        unsupported_source,
-        unsupported_mint,
-        context.vault,
-        in_amount,
-    );
-    let unsupported_accounts =
-        fixture_accounts(&fixture, context.vault, unsupported_source, vault_usdc);
-    let unsupported_swap = fixture_swap(
-        &fixture,
-        classic_route_v2,
-        &delegated_signer,
-        unsupported_accounts,
-        decode_jupiter_swap_data(&fixture),
-    );
-    assert!(
-        try_send_instructions(
-            &mut context.svm,
-            &[unsupported_swap],
-            &delegated_signer,
-            &[]
-        )
-        .is_err(),
-        "unsupported source mint must not be spendable without a limit"
-    );
-
     // The destination must be one of the canonical vault ATAs.
     let noncanonical_destination = Keypair::new().pubkey();
     seed_spl_token_account(
@@ -326,6 +273,80 @@ fn generalized_cross_mint_policy_set_creates_reads_executes_and_rejects_mutation
         wrong_dialect,
         "SharedAccountsRouteV2 data under RouteV2 index 0",
     );
+}
+
+#[test]
+fn token_2022_shard_refuses_usdc_source_on_supported_route() {
+    let mut context = create_funded_squads_test_context_with_mock_programs(&[MockProgram::Jupiter])
+        .expect("create funded Squads test context");
+    let context = context
+        .as_mut()
+        .expect("generalized cross-mint policy test requires the Squads SBF fixture");
+
+    let delegated_signer = Keypair::new();
+    context
+        .svm
+        .airdrop(&delegated_signer.pubkey(), 100_000_000)
+        .expect("airdrop delegated signer");
+    let action_context = loyal_action_context(context, delegated_signer.pubkey());
+    let policy_set = create_jupiter_cross_mint_policy_set(
+        action_context,
+        MAX_SLIPPAGE_BPS,
+        DAILY_SOURCE_CAP,
+        JupiterCrossMintPolicySeeds {
+            classic: CLASSIC_POLICY_SEED,
+            token_2022: TOKEN_2022_POLICY_SEED,
+        },
+    )
+    .expect("build generalized cross-mint policy set");
+    assert_create_fits_and_executes(context, &policy_set.classic.instruction, "classic shard");
+    assert_create_fits_and_executes(
+        context,
+        &policy_set.token_2022.instruction,
+        "Token-2022 shard",
+    );
+
+    let fixture = load_jupiter_usdc_pyusd_fixture();
+    let in_amount = parse_fixture_amount(&fixture.in_amount);
+    let out_amount = parse_fixture_amount(&fixture.out_amount);
+    let vault_usdc = canonical_ata(context.vault, USDC_MINT);
+    let vault_pyusd = canonical_ata(context.vault, PYUSD_MINT);
+    seed_mock_jupiter_spl_accounts(&mut context.svm, in_amount * 2, out_amount * 3);
+    seed_spl_token_account(
+        &mut context.svm,
+        vault_usdc,
+        USDC_MINT,
+        context.vault,
+        in_amount * 2,
+    );
+    seed_spl_token_account(&mut context.svm, vault_pyusd, PYUSD_MINT, context.vault, 0);
+
+    let usdc_to_pyusd = EarnStablecoinPair::new(USDC_MINT, PYUSD_MINT).unwrap();
+    assert!(policy_set
+        .token_2022
+        .step_for_pair(usdc_to_pyusd, JupiterV2Dialect::RouteV2)
+        .is_err());
+    let token_2022_route_v2 = LoyalActionStep::new(policy_set.token_2022.account, 0);
+    let accounts = fixture_accounts(&fixture, context.vault, vault_usdc, vault_pyusd);
+    seed_jupiter_fixture_accounts(&mut context.svm, &fixture, &accounts.0);
+    let swap = fixture_swap(
+        &fixture,
+        token_2022_route_v2,
+        &delegated_signer,
+        accounts,
+        decode_jupiter_swap_data(&fixture),
+    );
+    let error =
+        try_send_instructions(&mut context.svm, &[swap], &delegated_signer, &[]).unwrap_err();
+    assert!(
+        error.contains("ProgramInteractionModifiedIllegalBalance"),
+        "{error}"
+    );
+    assert_eq!(
+        get_spl_token_amount(&context.svm, vault_usdc),
+        in_amount * 2
+    );
+    assert_eq!(get_spl_token_amount(&context.svm, vault_pyusd), 0);
 }
 
 fn assert_create_fits_and_executes(

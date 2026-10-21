@@ -21,9 +21,6 @@ import { notFound } from "../../../next-compat/navigation";
 
 const SITE_ORIGIN = "https://askloyal.com";
 
-// apps/web src/app/blog/[slug]/page.tsx generateMetadata, on the loaded post
-// instead of a resolved params promise. The empty fallback covers the not-found
-// render, where the loader never resolved.
 function postMetadata(post: BlogPostFull | undefined): Metadata {
   if (!post) {
     return { title: "Blog | Loyal" };
@@ -53,8 +50,6 @@ function postMetadata(post: BlogPostFull | undefined): Metadata {
   };
 }
 
-// apps/web src/app/blog/[slug]/page.tsx: the async page becomes a loader here
-// and the component renders its body on the loaded post.
 function BlogPostRoute() {
   const { post, morePosts } = Route.useLoaderData();
 
@@ -103,7 +98,6 @@ function BlogPostRoute() {
 
   return (
     <main className="min-h-screen overflow-x-clip bg-white text-black">
-      {/* JSON-LD as script children (XSS-safe; React escapes <>&) */}
       <script type="application/ld+json">{JSON.stringify(articleJsonLd)}</script>
       <script type="application/ld+json">
         {JSON.stringify(breadcrumbJsonLd)}
@@ -125,8 +119,6 @@ function BlogPostRoute() {
                 {post.description}
               </p>
             ) : null}
-            {/* Meta: desktop is one row (author · reading · date); mobile
-                stacks to reading·date (16px) above the author (20px). */}
             <div className="flex flex-col gap-4 text-[20px] tracking-[-0.4px] sm:flex-row sm:flex-wrap sm:items-center">
               {post.author ? (
                 <span className="order-2 flex items-center gap-3 sm:order-1 sm:gap-4">

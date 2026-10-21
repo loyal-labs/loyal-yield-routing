@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// capacityHeartbeat is how often the capacity line is logged when nothing in
-// it changed.
 const capacityHeartbeat = time.Hour
 
 // ReserveCapacity is one reserve's line in kamino_fleet_capacity: the capital
@@ -17,24 +15,18 @@ const capacityHeartbeat = time.Hour
 // with an open opportunity or decision are not planned, so their capital is
 // not in Held. Amounts are USD micros (raw units of a six-decimal stable).
 type ReserveCapacity struct {
-	Reserve  string `json:"reserve"`
-	Mint     string `json:"mint"`
-	Holdings int    `json:"holdings"`
-	Held     int64  `json:"heldUsdMicros"`
-	// Movable is the held capital whose move cleared every planner check.
-	Movable   int64  `json:"movableUsdMicros"`
-	APYBPS    int64  `json:"apyBps"`
-	Available *int64 `json:"availableLiquidityUsdMicros"`
-	// Best is empty when no eligible same-mint destination pays more.
+	Reserve    string `json:"reserve"`
+	Mint       string `json:"mint"`
+	Holdings   int    `json:"holdings"`
+	Held       int64  `json:"heldUsdMicros"`
+	Movable    int64  `json:"movableUsdMicros"`
+	APYBPS     int64  `json:"apyBps"`
+	Available  *int64 `json:"availableLiquidityUsdMicros"`
 	Best       string `json:"bestDestination,omitempty"`
 	BestAPYBPS int64  `json:"bestDestinationApyBps,omitempty"`
-	// BestRoom is the smallest of the destination's 2% frontier and deposit
-	// room, less the committed and this wave's inflows; nil when its deposit
-	// limit is unknown.
-	BestRoom *int64 `json:"bestDestinationRoomUsdMicros"`
+	BestRoom   *int64 `json:"bestDestinationRoomUsdMicros"`
 }
 
-// capacityReport builds the per-reserve capacity lines, ordered by reserve.
 func capacityReport(snapshot MarketSnapshot, vaults []FleetVault, inflight map[string]int64, plan FleetPlan) []ReserveCapacity {
 	committed := map[string]int64{}
 	for reserve, value := range inflight {
@@ -76,8 +68,6 @@ func capacityReport(snapshot MarketSnapshot, vaults []FleetVault, inflight map[s
 	return report
 }
 
-// destinationRoom is the planner's room for one target: the smaller of its
-// 2% frontier and its deposit room, less committed inflows, at least 0.
 func destinationRoom(target ReserveState, committedInflow int64) *int64 {
 	deposit, known := target.DepositRoomRaw()
 	if !known {
@@ -104,8 +94,6 @@ func capacityChangeKey(report []ReserveCapacity) string {
 	return key.String()
 }
 
-// capacityLog emits kamino_fleet_capacity when the coarse report changes and
-// at least once per heartbeat.
 type capacityLog struct {
 	key  string
 	last time.Time

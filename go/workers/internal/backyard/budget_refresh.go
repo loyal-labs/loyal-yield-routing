@@ -36,9 +36,6 @@ func budgetReserveRefreshInstructions(v *Vault, lane string) ([]compiledInstruct
 	return instructions, nil
 }
 
-// budgetReserveRefreshInstructionsForLanes is the same closed set over
-// several lanes, each reserve refreshed once: a multi-lane NAV values every
-// held lane from one refreshed bank.
 func budgetReserveRefreshInstructionsForLanes(v *Vault, lanes []string) ([]compiledInstruction, error) {
 	seen := map[publicKey]bool{}
 	var instructions []compiledInstruction
@@ -128,7 +125,6 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 	accounts := make([]ConfirmedAccount, len(addresses))
 	for i, a := range simulated.Accounts {
 		if a == nil {
-			// Only an explicitly optional pinned address may stay absent.
 			if _, permitted := optional[addresses[i]]; permitted {
 				accounts[i] = ConfirmedAccount{Address: addresses[i]}
 				continue

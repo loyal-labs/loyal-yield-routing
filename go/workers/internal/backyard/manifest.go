@@ -8,11 +8,6 @@ import (
 	"fmt"
 )
 
-// RouteManifest is the fact set a decision is taken on: one vault's routes,
-// identified by SHA256 (the hash of every lane's chain facts, which binds
-// decision evidence and NAV report digests to it), and the lane a flat
-// vault's view describes before any selector entry orients it (the
-// registry's first lane).
 type RouteManifest struct {
 	RuntimeActivation RuntimeActivation
 	SHA256            string
@@ -32,13 +27,10 @@ func manifestOf(v *Vault) (RouteManifest, error) {
 	return RouteManifest{RuntimeActivation: RuntimeActivation{SelectedLane: v.routes[0].Lane}, SHA256: hex.EncodeToString(hash[:]), vault: v}, nil
 }
 
-// route is lane's chain facts in the manifest's vault.
 func (m RouteManifest) route(lane string) (RuntimeRoute, error) { return m.vault.route(lane) }
 
 var errKaminoPacketUnavailable = fmt.Errorf("Kamino packet unavailable")
 
-// kaminoPacketForRoute is lane's packet for leg, for amount, executed through
-// the leg's installed policy.
 func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoPrimeUSDCRequest, error) {
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
 		return KaminoPrimeUSDCRequest{}, errKaminoPacketUnavailable

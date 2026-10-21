@@ -24,11 +24,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// OperationInsert is the only execution journal shape. The SQL uses the existing
-// multiply_operations table; callers must insert it before any transaction work.
 const OperationInsert = `INSERT INTO loyal_yield.multiply_operations (operation_id, route_key, cycle, engine_version, action, status, idempotency_key, strategy_key, expected_effects, recovery_reason) VALUES ($1, $2, $3, 'backyard_rwa_v1', $4, $5, $6, $7, $8, $9)`
 
-// strategyJournalHead opens the journal CTE over one route's operations.
 const strategyJournalHead = "WITH strategy_journal AS (\n SELECT * FROM loyal_yield.multiply_operations WHERE route_key = $1 AND "
 
 // ActiveStrategyJournalCTE excludes only individually bound, reviewed records
@@ -64,9 +61,6 @@ const PostMutationNAVRequiredSQL = ActiveStrategyJournalCTE + `SELECT COALESCE((
 // without making ambiguous money movement retryable.
 const LatestDecisionEpochSQL = `SELECT COALESCE((SELECT operation_id FROM loyal_yield.multiply_operations WHERE route_key = $1 AND (status IN ('reconciled','failed') OR (status = 'manual_recovery' AND action = 'REPORT_NAV')) ORDER BY updated_at DESC, operation_id DESC LIMIT 1), 'genesis')`
 
-// A reviewed migration may attach an evidence-backed disposition to an old
-// failed reconciliation. The original failure and wire remain intact. Bind the
-// disposition to its own row, so copying metadata cannot clear another incident.
 const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status = 'manual_recovery' AND action IN ('VOLTR_ALLOCATE_TO_SQUADS','STAGE_SQUADS_TO_VOLTR','VOLTR_RESTORE_IDLE','SWAP_USDC_TO_PRIME_STEP','SWAP_PRIME_TO_USDC_STEP','OPEN_PRIME_USDC_STEP','DELEVER_PRIME_USDC_STEP','SWAP_STABLE_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_STABLE_STEP','SWAP_DEBT_TO_COLLATERAL_STEP','SWAP_COLLATERAL_TO_DEBT_STEP','SWAP_USDC_TO_DEBT_STEP','SWAP_DEBT_TO_USDC_STEP','OPEN_ROUTE_STEP','DELEVER_ROUTE_STEP') AND NOT COALESCE(
  expected_effects->'manualResolution'->>'schema'='backyard-manual-resolution/v1'
  AND expected_effects->'manualResolution'->>'disposition'='superseded_by_strategy_reset'
@@ -78,9 +72,6 @@ const UnresolvedCapitalRecoverySQL = `SELECT EXISTS (SELECT 1 FROM loyal_yield.m
  AND expected_effects->'manualResolution'->>'evidenceSha256' ~ '^[0-9a-f]{64}$'
  AND length(expected_effects->'manualResolution'->>'evidencePath')>0,false))`
 
-// PersistSignedUpdate is the write-ahead record of a tick's transaction: the
-// exact signed wire, its simulation and the effects reconcile checks, in one
-// statement, before anything sends it.
 const PersistSignedUpdate = `UPDATE loyal_yield.multiply_operations SET status = 'signed', message_sha256 = $2, signed_wire = $3, signed_wire_sha256 = $4, transaction_signature = $5, recent_blockhash = $6, last_valid_block_height = $7,
  simulation_slot = $8, simulation_result = $9::jsonb, expected_effects = jsonb_set(expected_effects, '{expectedEffects}', $10::jsonb), updated_at = now() WHERE operation_id = $1 AND status = 'decided'`
 
@@ -90,23 +81,14 @@ const RouteProjectionUpdate = `UPDATE loyal_yield.multiply_route_states SET stat
 
 const PositionSnapshotInsert = `INSERT INTO loyal_yield.multiply_position_snapshots (route_key, generation, observed_slot, observed_at, strategy_key, claim_raw, collateral_raw, debt_raw, equity_usd_micros, collateral_value_usd_micros, debt_value_usd_micros, ltv_bps, forecast_apy_bps, valuation_source, valuation_slot, valuation_observed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $4) ON CONFLICT (route_key, observed_slot) DO NOTHING`
 
-// Database is Backyard's store. The engine's Database is the writer
-// (OpenDatabase): one session that holds the family advisory lock, so no
-// write here re-checks who the writer is.
 type Database struct {
-	pool *pgxpool.Pool
-	// writer: the pool's one session holds the lock, and Close releases it.
+	pool   *pgxpool.Pool
 	writer bool
-	// events are each route's events, by route key, set by the engine
-	// before its workers start.
 	events map[string]*events
 }
 
-// errWriterSessionLost: the writer's one session ended, and the lock with it.
 var errWriterSessionLost = errors.New("writer session lost")
 
-// writerLockKey is Backyard's one-writer lock, the family advisory lock; $1 is
-// the family.
 const writerLockKey = `hashtextextended('loyal-family:'||$1, 0)`
 
 // OpenDatabase opens the Backyard writer: one database session that takes
@@ -121,15 +103,10 @@ func OpenDatabase(ctx context.Context, databaseURL string) (*Database, error) {
 	return openWriter(ctx, databaseURL, true)
 }
 
-// openOperatorWriter is the writer of a one-shot operator write: the same one
-// session, but it refuses with engine.ErrFamilyHeld instead of waiting while
-// another process holds the lock, so it refuses while the engine runs.
 func openOperatorWriter(ctx context.Context, databaseURL string) (*Database, error) {
 	return openWriter(ctx, databaseURL, false)
 }
 
-// openWriter opens the one-session writer; wait chooses waiting for the lock
-// over refusing it.
 func openWriter(ctx context.Context, databaseURL string, wait bool) (*Database, error) {
 	if databaseURL == "" {
 		return nil, fmt.Errorf("database URL is required")
@@ -138,8 +115,6 @@ func openWriter(ctx context.Context, databaseURL string, wait bool) (*Database, 
 	if err != nil {
 		return nil, errors.New("invalid Backyard database configuration")
 	}
-	// The tick loop and the selector collector take turns on the one
-	// session; the pool never retires it on its own.
 	config.MaxConns, config.MinConns, config.MinIdleConns = 1, 0, 0
 	config.MaxConnLifetime, config.MaxConnIdleTime = math.MaxInt64, math.MaxInt64
 	// A caller's deadline cancels its statement on the server and keeps the
@@ -222,10 +197,6 @@ func (d *Database) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return tx.Commit(end)
 }
 
-// openOperatorDatabase is a plain pool that takes no lock, for the one-shot
-// operator commands that run beside the engine: the reads (in-flight) and the
-// operator inputs the engine reads on its next tick (exit-lane, clear-hold).
-// A command that writes the engine's own rows opens openOperatorWriter.
 func openOperatorDatabase(ctx context.Context, databaseURL string) (*Database, error) {
 	if databaseURL == "" {
 		return nil, fmt.Errorf("database URL is required")
@@ -249,8 +220,6 @@ func (d *Database) Close() {
 		return
 	}
 	if d.writer {
-		// Acquire waits for a caller still on the session, as pool.Close
-		// would; a lost session fails it at once (the pool dials no other).
 		if conn, err := d.pool.Acquire(context.Background()); err == nil {
 			session := conn.Hijack()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -320,10 +289,6 @@ func newDecisionEvidence(observation Observation, decision Decision, manifestSHA
 	}
 }
 
-// RecordDecisionOnManifest journals the tick's transaction as a decided operation. Only
-// transactions get rows: a hold is a gauge (holdLog) and a manual stop is the
-// latch row. The one-nonterminal partial unique index keeps one operation in
-// flight.
 func (d *Database) RecordDecisionOnManifest(
 	ctx context.Context,
 	manifest RouteManifest,
@@ -349,8 +314,6 @@ func (d *Database) RecordDecisionOnManifest(
 	return record, nil
 }
 
-// Provenance is optional for historical confirmed evidence. Empty and explicit
-// confirmed sources serialize identically; projected valuations remain explicit.
 func persistedValuationMetadata(o Observation) (string, int64, error) {
 	source, slot := o.Snapshot.ValuationSource, o.Snapshot.ValuationSlot
 	if source == "" && slot == 0 {
@@ -416,9 +379,6 @@ func (d *Database) recordDecisionTx(
 	if unresolvedCapitalRecovery {
 		return DecisionRecord{}, fmt.Errorf("unresolved capital-moving manual recovery blocks execution")
 	}
-	// Economic observations intentionally exclude slot. Namespace the
-	// operation by the last completed lifecycle mutation, so a later cycle
-	// can execute the same economic decision again.
 	var operationEpoch string
 	if err := tx.QueryRow(ctx, LatestDecisionEpochSQL, routeKey).Scan(&operationEpoch); err != nil {
 		return DecisionRecord{}, fmt.Errorf("read durable operation epoch: %w", err)
@@ -450,9 +410,6 @@ func (d *Database) recordDecisionTx(
 
 const nonterminalStatusSQL = `'decided','built','simulated','signed','broadcast_intent','submitted','confirmed','reconciling'`
 
-// CountNonterminal counts the route's operations a restart would resume. It
-// is the release gate's read: it takes no writer lock, so it runs beside the
-// live worker.
 func CountNonterminal(ctx context.Context, databaseURL, routeKey string) (int, error) {
 	database, err := openOperatorDatabase(ctx, databaseURL)
 	if err != nil {
@@ -503,9 +460,6 @@ func (d *Database) LoadNonterminal(ctx context.Context, routeKey string) (*Persi
 	return &operation, nil
 }
 
-// PostMutationNAVRequired is restart-safe accounting cadence. A reconciled
-// Jupiter/Kamino action remains dirty until a later reconciled bridge action
-// (all fixed bridge paths carry ReportV1) becomes the latest money mutation.
 func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string) (bool, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return false, fmt.Errorf("database is not configured")
@@ -517,10 +471,6 @@ func (d *Database) PostMutationNAVRequired(ctx context.Context, routeKey string)
 	return required, nil
 }
 
-// ReconciledBridgeJournalState is the journal evidence the production observe
-// path merges into a snapshot. Every fact is read from reconciled rows only, so
-// an on-chain state is explained by what this worker actually reconciled and
-// never by comparing two valuations with each other.
 type ReconciledBridgeJournalState struct {
 	// Ticket-consuming evidence. Only VOLTR_ALLOCATE_TO_SQUADS,
 	// VOLTR_RESTORE_IDLE, and REPORT_NAV consume the report ticket, and each of
@@ -534,16 +484,10 @@ type ReconciledBridgeJournalState struct {
 	ArmedNAVRaw               int64
 	ArmedNAVReturnDataMissing bool
 	ArmedNAVMalformed         bool
-	// Stage-transient evidence: a reconciled stage newer than the last ticket
-	// consumption means the route sits between its stage and restore legs, so
-	// nonzero strategy custody is expected while Voltr still books zero.
-	StagedAmountKnown bool
-	StagedAmountRaw   int64
-	StageAfterTicket  bool
-	// MutationAfterReport is a reconciled bridge mutation newer than the last
-	// reconciled report. Read straight from the journal, it is the only
-	// accepted explanation for a NAV move (S1/S2).
-	MutationAfterReport bool
+	StagedAmountKnown         bool
+	StagedAmountRaw           int64
+	StageAfterTicket          bool
+	MutationAfterReport       bool
 }
 
 // ReconciledBridgeJournalSQL reads every journal fact the fail-closed monitors
@@ -646,10 +590,6 @@ func journalOrderAfter(a, b journalOrderKey) bool {
 	return a.operationID > b.operationID
 }
 
-// ReconciledBridgeJournal returns the journal facts the monitors arm from.
-// A reconciled ticket-consuming operation without usable adaptor return data is
-// reported as missing or malformed instead of known=false, so the receipt
-// monitor holds durably rather than silently disarming.
 func (d *Database) ReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return ReconciledBridgeJournalState{}, fmt.Errorf("database is not configured")
@@ -794,11 +734,6 @@ func newRouteObservationProjection(observation Observation) (routeObservationPro
 	}, nil
 }
 
-// RecordPositionSnapshot atomically persists the confirmed route projection and
-// its current position shape. Flat
-// and collateral-only rows are retained so the admin view cannot fall back to a
-// stale leveraged snapshot. APY remains unknown for positions; confirmed idle
-// capital has an exact zero forecast rather than an invented protocol yield.
 func (d *Database) RecordPositionSnapshot(ctx context.Context, routeKey string, observation Observation) error {
 	if d == nil || d.pool == nil || routeKey == "" || observation.Validate() != nil {
 		return fmt.Errorf("position snapshot database or observation is invalid")
@@ -865,9 +800,6 @@ func (d *Database) transition(ctx context.Context, operationID string, from, to 
 	return nil
 }
 
-// MarkPreBroadcastFailed releases the one-nonterminal invariant only for
-// states that prove no send was possible. Recovery never rebuilds, re-signs,
-// or submits the abandoned operation.
 func (d *Database) MarkPreBroadcastFailed(ctx context.Context, operationID string, from OperationStatus, reason string) error {
 	if reason == "" || (from != Decided && from != Built && from != Simulated) {
 		return fmt.Errorf("pre-broadcast failure requires an unsent source and explicit reason")
@@ -891,8 +823,6 @@ func (d *Database) MarkExpiredAbsentFailed(ctx context.Context, operationID stri
 	return nil
 }
 
-// PersistSigned records the tick's exact signed wire with its simulation and
-// expected effects. Nothing is sent before it commits.
 func (d *Database) PersistSigned(ctx context.Context, operationID string, signed SignedTransaction, simulation SimulationResult, effects []byte) error {
 	if simulation.Slot <= 0 || !json.Valid(effects) {
 		return fmt.Errorf("invalid signed transaction evidence")
@@ -912,7 +842,6 @@ func (d *Database) PersistSigned(ctx context.Context, operationID string, signed
 	return nil
 }
 
-// MarkBroadcastIntent records that the signed wire may now be sent.
 func (d *Database) MarkBroadcastIntent(ctx context.Context, operationID string) error {
 	tag, err := d.pool.Exec(ctx, PersistBroadcastIntentUpdate, operationID)
 	if err != nil {
@@ -938,8 +867,6 @@ func (d *Database) MarkConfirmed(ctx context.Context, operationID string, from O
 	return nil
 }
 
-// MarkReconciled settles a landed operation whose finalized receipt matched
-// its persisted effects.
 func (d *Database) MarkReconciled(ctx context.Context, operationID string, reconciliation Reconciliation, effects []byte) error {
 	if err := reconciliation.Validate(); err != nil || !json.Valid(effects) {
 		return fmt.Errorf("invalid reconciliation evidence")

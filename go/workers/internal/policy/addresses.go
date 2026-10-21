@@ -12,11 +12,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// Addresses prints what a lane needs to know about a smart account before it
-// writes a policy for it: the vault at vaultIndex, the vault's associated
-// token account of each mint with its balance (absent when it does not
-// exist), and every policy installed on settings with its delegate and the
-// programs its constraints call.
 func Addresses(ctx context.Context, c *chain.Client, out io.Writer, settings solana.PublicKey, vaultIndex uint8, mints []solana.PublicKey) error {
 	vault, _, err := squads.SmartAccountAddress(settings, vaultIndex)
 	if err != nil {

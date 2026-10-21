@@ -16,27 +16,21 @@ import (
 )
 
 type DurableHandler struct {
-	Kamino *kamino.Handler
-	ATA    *ata.Handler
-	Earn   *earn.Handler
-	// EarnApp projects confirmed policy transactions and reports observer
-	// progress once the Earn application has caught up.
-	EarnApp *earn.Application
-	Facts   *engine.Facts
-	// lastSlotAt is when the stream last delivered a durable slot; zero after
-	// a reconnect. The runtime restarts a session that stops delivering.
+	Kamino     *kamino.Handler
+	ATA        *ata.Handler
+	Earn       *earn.Handler
+	EarnApp    *earn.Application
+	Facts      *engine.Facts
 	lastSlotAt atomic.Int64
 }
 
 func (h *DurableHandler) failed(code string) { h.Facts.Failed(engine.FamilyObserver, code) }
 
-// stalled reports whether a session that has delivered slots stopped for longer than timeout.
 func (h *DurableHandler) stalled(timeout time.Duration) bool {
 	last := h.lastSlotAt.Load()
 	return last > 0 && time.Since(time.Unix(0, last)) > timeout
 }
 
-// streamAlive reports whether the session delivered a slot recently.
 func (h *DurableHandler) streamAlive() bool {
 	last := h.lastSlotAt.Load()
 	return last > 0 && time.Since(time.Unix(0, last)) < streamLiveness

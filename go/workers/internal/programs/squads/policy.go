@@ -43,11 +43,9 @@ type DataConstraintView struct {
 // AccountConstraintView mirrors SquadsAccountConstraintView.
 type AccountConstraintView struct {
 	AccountIndex uint8
-	// Pubkeys is set when the constraint pins literal accounts; AccountData
-	// is set when it constrains an account's own data.
-	Pubkeys     []solana.PublicKey
-	AccountData []DataConstraintView
-	Owner       *solana.PublicKey
+	Pubkeys      []solana.PublicKey
+	AccountData  []DataConstraintView
+	Owner        *solana.PublicKey
 }
 
 // InstructionConstraintView mirrors SquadsInstructionConstraintView.
@@ -73,18 +71,12 @@ type SpendingLimitView struct {
 	ExactQuantity bool   // a use spends exactly MaxPerUse
 }
 
-// Policy is what a ProgramInteraction policy authorizes: the smart account
-// (vault index) it executes as, its constraints in index order, and its
-// spending limits. A worker writes the policy it executes through as one, and
-// finds the installed account by Equal (FindPolicy).
 type Policy struct {
 	VaultIndex     uint8
 	Constraints    []InstructionConstraintView
 	SpendingLimits []SpendingLimitView
 }
 
-// Equal reports whether p and q authorize the same: vault index, constraints
-// and spending limits.
 func (p Policy) Equal(q Policy) bool {
 	return p.VaultIndex == q.VaultIndex && ConstraintsEqual(p.Constraints, q.Constraints) && SpendingLimitsEqual(p.SpendingLimits, q.SpendingLimits)
 }
@@ -96,7 +88,6 @@ type PolicyPayloadView struct {
 	PubkeyTable []solana.PublicKey
 }
 
-// FullPayload is a ProgramInteraction payload decoded through its tail.
 type FullPayload struct {
 	Payload           PolicyPayloadView
 	PreHook, PostHook bool
@@ -327,10 +318,6 @@ func decodeHeader(data []byte) (header, int, error) {
 	return header{settings, policySeed, policyBump, transactionIndex, staleTransactionIndex, signers, permissions, threshold, timeLock, kind, accountIndex}, cursor.offset, nil
 }
 
-// DecodedPolicy is a ProgramInteraction Policy account: its header and
-// instruction constraints. Full is the payload decoded through hooks, spending
-// limits and the account tail in the same layout; nil when that tail does not
-// decode.
 type DecodedPolicy struct {
 	Settings                                solana.PublicKey
 	Seed                                    uint64
@@ -346,9 +333,6 @@ type DecodedPolicy struct {
 	Full                                    *FullPayload
 }
 
-// DecodeProgramInteractionPolicy decodes the constraint prefix in the legacy
-// Borsh layout, or in the compact pubkey-table layout when the legacy read
-// fails or is empty; it never grants authority on its own.
 func DecodeProgramInteractionPolicy(account *chain.Account) (DecodedPolicy, error) {
 	if account == nil || account.Owner != ProgramID || account.Executable {
 		return DecodedPolicy{}, errors.New("policy account is absent or not owned by Squads")
@@ -392,9 +376,6 @@ func decodePayload(data []byte, offset int, vaultIndex uint8, compact bool) (Ful
 	return readLegacyPayload(cursor, vaultIndex)
 }
 
-// readConstraints decodes only the constraint prefix. Fleet intentionally accepts
-// a prefix without hooks, spending limits or account tail; Multiply requires the
-// complete payload. Neither decoding mode grants execution authority.
 func readConstraints(cursor *borshCursor, accountIndex uint8, compact bool) (PolicyPayloadView, error) {
 	if !compact {
 		constraintCount, err := cursor.u32Len()
@@ -619,7 +600,6 @@ func readCompactAccountConstraint(cursor *borshCursor, table []solana.PublicKey)
 		if err != nil {
 			return AccountConstraintView{}, err
 		}
-		// A pinned-key constraint stays a pinned-key constraint when empty.
 		view.Pubkeys = make([]solana.PublicKey, 0, count)
 		for i := 0; i < count; i++ {
 			index, err := cursor.u8()
@@ -740,8 +720,6 @@ func readDataConstraint(cursor *borshCursor) (DataConstraintView, error) {
 	return view, nil
 }
 
-// readLegacySpendingLimit reads one legacy account spending limit; its usage
-// counters (remaining in period, last reset) are skipped.
 func readLegacySpendingLimit(cursor *borshCursor) (SpendingLimitView, error) {
 	var limit SpendingLimitView
 	var err error

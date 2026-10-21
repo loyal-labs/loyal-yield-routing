@@ -195,16 +195,6 @@ pub(crate) fn jupiter_constraint(
     }
 }
 
-/// One durable Jupiter capability over the canonical Earn stablecoin universe.
-///
-/// The policy binds the destination to one of the six canonical vault ATAs.
-/// The source mint allowlist is the policy's three spending limits: Squads
-/// tracks every writable token account owned by the vault and rejects any
-/// decrease whose mint has no active limit. The source token account itself is
-/// therefore intentionally not duplicated here. Jupiter remains responsible
-/// for validating its mint, token-program, event-authority, and internal
-/// program-account relationships, just as Kamino owns its protocol-internal
-/// reserve relationships.
 pub(crate) fn jupiter_cross_mint_constraint(
     vault: Pubkey,
     dialect: JupiterV2Dialect,

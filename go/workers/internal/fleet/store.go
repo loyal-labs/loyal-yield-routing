@@ -35,7 +35,6 @@ func (s *Store) Close() {
 	}
 }
 
-// NewStoreFromPool borrows the runtime's scoped Yield pool.
 func NewStoreFromPool(pool *pgxpool.Pool) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("fleet requires a caller-owned pool")
@@ -43,10 +42,6 @@ func NewStoreFromPool(pool *pgxpool.Pool) (*Store, error) {
 	return &Store{pool: pool}, nil
 }
 
-// RegisterFleetPlanningCluster ensures source-projection fan-out knows this
-// cluster without refreshing planner health. A new registration receives the
-// schema's normal startup grace period; only a complete planning pass advances
-// last_seen_at after that.
 func (s *Store) RegisterFleetPlanningCluster(ctx context.Context, cluster string) error {
 	if s == nil || s.pool == nil || cluster == "" || cluster != strings.TrimSpace(cluster) {
 		return errors.New("fleet planning cluster requires a canonical cluster")
@@ -60,9 +55,6 @@ ON CONFLICT(cluster) DO NOTHING`, cluster); err != nil {
 	return nil
 }
 
-// HeartbeatFleetPlanningCluster records successful-cycle health. It never
-// creates a registration so a caller cannot accidentally hide a startup or
-// registration failure behind a fresh liveness timestamp.
 func (s *Store) HeartbeatFleetPlanningCluster(ctx context.Context, cluster string) error {
 	if s == nil || s.pool == nil || cluster == "" || cluster != strings.TrimSpace(cluster) {
 		return errors.New("fleet planning heartbeat requires a canonical cluster")
@@ -86,9 +78,6 @@ type FleetLoadOptions struct {
 	CrossMintMaxValueLossBPS uint16
 }
 
-// RegisteredVault is one vault enrolled for same-mint routing: our record of
-// it and of its active route policy, which names the markets and mints it may
-// hold. Its holdings are read from the chain each tick.
 type RegisteredVault struct {
 	VaultID                        int64
 	Settings                       string
@@ -98,14 +87,9 @@ type RegisteredVault struct {
 	PolicyAccount, PolicyAuthority string
 	Markets, StableMints           []string
 	KaminoMints, DelegatedSigners  []string
-	// The finalized Earn and swap policies a cross-mint move would bind.
-	EarnPolicies, SwapPolicies json.RawMessage
+	EarnPolicies, SwapPolicies     json.RawMessage
 }
 
-// LoadRegistry reads the active vaults the planner may move: enrolled for
-// same-mint routing under a finalized policy that delegates to the signer,
-// with no claimed opportunity and no decision still moving money. A vault
-// whose last move is unclaimed is planned again; the plan replaces it.
 func (s *Store) LoadRegistry(ctx context.Context, cluster string, options FleetLoadOptions) ([]RegisteredVault, error) {
 	if cluster == "" {
 		return nil, errors.New("cluster is required")
@@ -175,7 +159,6 @@ ORDER BY vault.id`, cluster, options.DelegatedSigner, options.EnableCrossMint)
 	return registry, rows.Err()
 }
 
-// SnapshotVaults are the accounts the registry's holdings are read from.
 func SnapshotVaults(registry []RegisteredVault) []SnapshotVault {
 	out := make([]SnapshotVault, len(registry))
 	for i, v := range registry {
@@ -207,10 +190,6 @@ type observedSwapPolicy struct {
 	ManifestFingerprint        string `json:"manifest_fingerprint"`
 }
 
-// PlanningVaults is the fleet Plan reads: one FleetVault per catalog holding
-// a vault's live policy permits, largest first. A vault whose route policy
-// on chain does not delegate exclusively to the signer plans nothing; its
-// holdings carry the reason. inflow and outflow are the moves in flight.
 func PlanningVaults(snapshot Snapshot, catalog []ReserveIdentity, registry []RegisteredVault, inflow, outflow map[string]int64, options FleetLoadOptions) ([]FleetVault, error) {
 	var fleet []FleetVault
 	for _, v := range registry {
@@ -274,8 +253,6 @@ func sortHoldings(holdings []Holding) {
 	})
 }
 
-// crossMintTargets binds each target-eligible reserve of another Earn mint
-// to the vault's exact finalized Earn and swap policies.
 func crossMintTargets(snapshot Snapshot, catalog []ReserveIdentity, position VaultPosition, v RegisteredVault, options FleetLoadOptions) (map[string]CrossMintPolicyBindings, error) {
 	result := map[string]CrossMintPolicyBindings{}
 	if !options.EnableCrossMint || options.DelegatedSigner == "" || !contains(v.DelegatedSigners, options.DelegatedSigner) {
@@ -350,16 +327,10 @@ func crossMintTargets(snapshot Snapshot, catalog []ReserveIdentity, position Vau
 	return result, nil
 }
 
-// Querier is a pool or a transaction.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// inflightFlowsSQL lists the moves the chain does not show yet at slot $2:
-// claimed for execution; decided with no route or deposit leg confirmed at
-// or before that slot; or confirmed by a leg that landed after it. A leg
-// confirmed by the slot is in the snapshot; a failed one ended its decision.
-// $3 names an opportunity left out.
 const inflightFlowsSQL = `
 SELECT o.source_reserve, COALESCE(d.active_target_reserve, o.target_reserve), o.principal_usd_micros
 FROM loyal_yield.rebalance_opportunities o
@@ -374,8 +345,6 @@ WHERE o.cluster=$1 AND o.id<>$3
           WHERE s.decision_id=d.id AND s.movement_leg IN ('route','deposit')
             AND s.confirmed_slot IS NOT NULL AND s.confirmed_slot<=$2)))`
 
-// InflightFlows sums the principal in flight into and out of each reserve,
-// as the chain at slot does not show it yet.
 func InflightFlows(ctx context.Context, q Querier, cluster string, slot, exclude int64) (inflow, outflow map[string]int64, err error) {
 	rows, err := q.Query(ctx, inflightFlowsSQL, cluster, slot, exclude)
 	if err != nil {
@@ -403,27 +372,17 @@ func InflightFlows(ctx context.Context, q Querier, cluster string, slot, exclude
 	return inflow, outflow, rows.Err()
 }
 
-// PublishSummary counts what one tick did to the queue.
 type PublishSummary struct {
 	EpochID                                 int64
 	Published, Kept, Readmitted, Superseded int64
 	ActiveWork                              int64
 }
 
-// unclaimedSQL is an opportunity no executor holds: never claimed, done
-// preparing, or claimed under a lease that ended without a decision.
 const unclaimedSQL = `o.decision_id IS NULL AND (o.opportunity_state IN ('revalidate','waiting_alt','ready')
   OR (o.opportunity_state='leased' AND o.lease_expires_at<=clock_timestamp()))`
 
-// keepMargin is the life an unclaimed move must have left for the next tick
-// to keep it rather than replace it.
 const keepMargin = "75 seconds"
 
-// PublishPlan records the tick's snapshot and makes the queue the plan. A
-// planned move an unclaimed row of its vault already holds keeps that row;
-// any other planned move replaces its vault's unclaimed rows; every
-// unclaimed row the plan does not hold is superseded. Claimed work is never
-// touched.
 func (s *Store) PublishPlan(ctx context.Context, cluster string, snapshot Snapshot, plan FleetPlan) (PublishSummary, error) {
 	var summary PublishSummary
 	record, err := recordOf(snapshot)

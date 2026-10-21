@@ -9,10 +9,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// validateExecutionMint checks current transfer semantics, not a stablecoin
-// symbol or historical mint snapshot. Authority identities still belong to the
-// lane's pinned evidence. Confidential account operations are not supported by
-// DecodeTokenCustody even when the mint permits creating such accounts.
 func validateExecutionMint(account ConfirmedAccount, program string, decimals uint8) error {
 	owner, _ := solana.PublicKeyFromBase58(account.Owner)
 	mint, err := spl.DecodeMint(&chain.Account{Owner: owner, Executable: account.Executable, Data: account.Data})

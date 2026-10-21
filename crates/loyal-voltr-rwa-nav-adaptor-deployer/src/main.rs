@@ -231,8 +231,6 @@ fn run(rpc_url: &str) -> Result<DeploymentReport> {
         .context("read finalized payer balance")?
         .value;
     let programdata_address = get_program_data_address(&program_id);
-    // Transaction size is independent of the concrete 32-byte buffer address.
-    // Dry-run deliberately does not load signer material merely to derive that address.
     let write_chunk_bytes = calculate_write_chunk_size(&expected_authority, &programdata_address)?;
     let total_write_transactions = artifact.len().div_ceil(write_chunk_bytes);
 
@@ -1240,8 +1238,6 @@ fn prepare_exact_stage(
             });
         }
 
-        // The signature is absent from history and its blockhash has expired. Keep this
-        // immutable barrier for audit/recovery, then create a distinct signed attempt below.
         barrier_path = next_attempt_barrier_path(barrier_dir, stage)?;
     }
 

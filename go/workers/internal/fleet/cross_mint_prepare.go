@@ -24,9 +24,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// These preparation DTOs have no signer or submission capability. The command
-// adapter converts them into the executor's custody protocol; fleet never
-// imports the signing consumer. Every field is checked against durable state.
 type CrossMintPreparationMovement struct {
 	DecisionID, OpportunityID, OptimizerEpochID, VaultID      int64
 	Cluster, VaultPubkey                                      string
@@ -69,13 +66,8 @@ type CrossMintLegPreparation struct {
 	SharedAddresses, VaultAddresses []ALTManifestAddress
 }
 
-// Only a fully validated quote below the economic floor permits the caller to
-// prepare source recovery. Provider, custody, policy and decoding errors hold.
 var ErrCrossMintQuoteUnavailable = errors.New("validated cross-mint quote is below the required economic output")
 
-// CrossMintPreflightCertificate is the retained source certificate emitted by
-// certify_cross_mint_before_withdraw (fleet-worker/cross_mint.rs). It describes
-// a verifier transaction, never an executable withdrawal-plus-swap route.
 type CrossMintPreflightCertificate struct {
 	Kind                         string                       `json:"kind"`
 	CertifiedAt                  time.Time                    `json:"certifiedAt"`
@@ -149,10 +141,6 @@ func crossMintCertificateAmount(value string) (uint64, error) {
 	return amount, nil
 }
 
-// ValidateCrossMintPreflightCertificate rejects a nonempty generic object and
-// the older Go evidence shape. Those shapes cannot prove the source's complete
-// target-policy and verifier topology gates. The caller must bind this exact
-// typed certificate to an authoritative, write-once movement admission.
 func ValidateCrossMintPreflightCertificate(m CrossMintPreparationMovement, now time.Time) (CrossMintPreflightCertificate, error) {
 	var c CrossMintPreflightCertificate
 	var plan crossMintPlan
@@ -298,8 +286,6 @@ func validateCrossMintPreparationRequest(q CrossMintPreparationRequest, signer, 
 	return plan, nil
 }
 
-// PrepareCrossMintLeg builds one independent leg, using the KLend builders or
-// the strict Jupiter validator. It neither advances custody nor signs.
 func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPreparationRequest) (CrossMintLegPreparation, error) {
 	var out CrossMintLegPreparation
 	if r == nil || r.rpc == nil || !r.crossMintEnabled || r.computeLimit == 0 {
@@ -446,9 +432,6 @@ func (r *Revalidator) PrepareCrossMintLeg(ctx context.Context, q CrossMintPrepar
 	if err != nil {
 		return CrossMintLegPreparation{}, err
 	}
-	// Resolution, fee queries and simulation may take time. Re-observe the full
-	// same-bank envelope and history before releasing signable bytes, just as
-	// the source runtime does after its resolver finishes.
 	finalBank, err := r.loadCrossMintPreparationBank(ctx, q, plan, bank.additionalMints)
 	if err != nil {
 		return CrossMintLegPreparation{}, err
@@ -484,8 +467,6 @@ type crossMintPreparationBank struct {
 	externalTables                                       []LookupTable
 }
 
-// at is name's account in the bank. A name the bank does not hold is the zero
-// account, which every decoder rejects.
 func (b crossMintPreparationBank) at(name string) *chain.Account {
 	a := b.accounts[name]
 	return &a
@@ -518,8 +499,6 @@ func (r *Revalidator) loadCrossMintPreparationBank(ctx context.Context, q CrossM
 	return r.loadCrossMintRouteBank(ctx, q, plan, additionalMints, floor)
 }
 
-// Discovery and repeat batch share one finalized bank for every route leg and
-// the initial verifier; certificate/lease admission remains their caller's job.
 func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPreparationRequest, plan crossMintPlan, additionalMints []string, floor int64) (crossMintPreparationBank, error) {
 	var bank crossMintPreparationBank
 	m, b := q.Movement, plan.Bindings
@@ -660,7 +639,7 @@ func (r *Revalidator) prepareCrossMintKaminoInstructions(ctx context.Context, q 
 		position, collateral, binding = bank.source, bank.sourceCollateral, b.Withdraw
 		index = binding.ConstraintIndex
 		if q.Purpose == "recover_source" {
-			index = 1 // immutable source recovery policy arm in the retained Rust protocol
+			index = 1
 		}
 	}
 	var route KaminoSameMintRoute
@@ -750,7 +729,7 @@ func (r *Revalidator) prepareCrossMintSwapInstructions(ctx context.Context, q Cr
 		return nil, effect, anchors, err
 	}
 	minimum = max(minimum, profitable)
-	plan.Amount = amount // post-withdraw attribution, never the stale planned estimate
+	plan.Amount = amount
 	slippage := min(b.Swap.MaxSlippageBPS, r.crossMintMaxSlippageBPS)
 	var validated validatedJupiterBuild
 	var externalTables []LookupTable
@@ -960,9 +939,6 @@ func (s *Store) CheckCrossMintPreparation(ctx context.Context, q CrossMintPrepar
 	return nil
 }
 
-// The signing consumer must prove recognized finalized custody history before
-// and after this preparation. This readback independently binds its exact
-// aggregate to a coherent bank; equality alone is never attribution proof.
 func (r *Revalidator) checkCrossMintCustody(q CrossMintPreparationRequest, bank crossMintPreparationBank) error {
 	m := q.Movement
 	program, _ := stableTokenProgram(m.CustodyMint)
@@ -982,8 +958,6 @@ func (r *Revalidator) checkCrossMintCustody(q CrossMintPreparationRequest, bank 
 	return nil
 }
 
-// Waiting metadata is not signable and is stable across retries of this exact
-// movement leg and generation. The consumer owns fenced durable provisioning.
 func crossMintMissingALTPreparation(q CrossMintPreparationRequest, instructions []RouteInstruction, missing []string) RoutePreparation {
 	route, _ := json.Marshal(struct {
 		DecisionID   int64

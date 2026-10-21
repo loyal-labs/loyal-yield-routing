@@ -30,10 +30,6 @@ func (s *Store) LoadControlTarget(ctx context.Context, targetID int64) (*Control
 	return &t, nil
 }
 
-// ApplyControlObservation ports the current Yield store's generation bootstrap
-// (store.rs2136..2320), not the pre-0059 App's -targetID bootstrap. It fences
-// both the outbox lease and the exact target generation/identity in one SQL
-// transaction. The existing target trigger emits the configuration outbox.
 func (s *Store) ApplyControlObservation(ctx context.Context, request ReconciliationRequest, owner string, o ControlObservation) error {
 	if request.TargetID != o.Target.TargetID || o.ObservedSlot <= 0 || o.ObservedSlot < request.RequestedSlot || o.WalletBalanceRaw < 0 {
 		return errors.New("control observation identity, balance or requested slot invalid")
@@ -86,12 +82,6 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 			if _, err = tx.Exec(ctx, `UPDATE loyal_yield.balance_sweep_targets SET chain_status=$2,chain_observation_slot=$3,last_seen_at=now(),last_seen_slot=GREATEST(last_seen_slot,$3) WHERE id=$1`, request.TargetID, status, o.ObservedSlot); err != nil {
 				return err
 			}
-			// The initial surplus is automatic work and needs the Earn route as
-			// its destination, as every projected lot does: a lot scheduled on an
-			// unrouted vault is never dispatched, skipped or closed. Bootstrap
-			// waits for the route; the wallet change of the first Earn deposit
-			// raises the next control observation. (Intentional correction of the
-			// Yield store's bootstrap, which wrote lots on unrouted vaults.)
 			var routed bool
 			if err = tx.QueryRow(ctx, `SELECT `+targetRoutedSQL+` FROM loyal_yield.balance_sweep_targets AS target WHERE target.id=$1`, request.TargetID).Scan(&routed); err != nil {
 				return err
@@ -144,7 +134,6 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 				}
 			}
 		}
-		// A concurrently raised request survives through the high-water mark.
 		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.autodeposit_reconciliation_requests SET processed_slot=GREATEST(processed_slot,$3),requested_slot=GREATEST(requested_slot,$3),attempt_count=0,claim_owner=NULL,claim_expires_at=NULL,last_error=NULL,updated_at=now()WHERE target_id=$1 AND claim_owner=$2 AND claim_expires_at>now()`, request.TargetID, owner, o.ObservedSlot)
 		if err != nil {
 			return err

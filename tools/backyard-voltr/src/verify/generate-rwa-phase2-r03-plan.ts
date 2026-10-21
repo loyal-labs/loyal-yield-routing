@@ -1,11 +1,3 @@
-/**
- * Build the current Maple R03 signed-unsent handoff.
- *
- * This is verification tooling only.  It uses the official Kamino SDK for an
- * absent-obligation setup prelude and the reviewed Phase-2 wrappers for the
- * route legs, then hands exact wires to the Go simulate-only command.  There
- * is deliberately no sendTransaction/sendRawTransaction or --execute path.
- */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

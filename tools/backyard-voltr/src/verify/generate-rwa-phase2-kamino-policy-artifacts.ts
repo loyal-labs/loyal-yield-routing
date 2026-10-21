@@ -1,12 +1,3 @@
-/**
- * Compile only the resolved K-Lend half of Phase 2.
- *
- * Jupiter remains intentionally absent until all 52 exact current headers are
- * available.  The compiler signs every attempted PolicyCreate rung with the
- * approved Settings authority, but against a confirmed blockhash at least 512
- * slots old.  The resulting wire proves real signing and packet size while
- * being expired before it is persisted; this command never sends a packet.
- */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";

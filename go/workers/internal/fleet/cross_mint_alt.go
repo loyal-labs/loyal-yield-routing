@@ -86,9 +86,6 @@ func crossMintExternalRequirementsFingerprint(v1 string, external []CrossMintExt
 	return crossMintALTPartsHash(parts), nil
 }
 
-// CrossMintALTSelectionFingerprint preserves the existing managed-only JSON
-// hash byte for byte. External routes bind all provider snapshots and actual
-// contributing wire order in a versioned envelope; no managed IDs are invented.
 func CrossMintALTSelectionFingerprint(managed []ExecutionALT, external []CrossMintExternalALT, lookupOrder []string) (string, error) {
 	if len(external) == 0 {
 		encoded, err := json.Marshal(managed)
@@ -159,8 +156,6 @@ func cloneCrossMintExternalALTs(tables []CrossMintExternalALT) []CrossMintExtern
 	return out
 }
 
-// The retained resolver compiles managed tables first, then provider inputs
-// not already present. The compiler prunes unused tables from actual wireorder.
 func combineCrossMintLookupTables(managed, external []LookupTable) ([]LookupTable, error) {
 	out := append([]LookupTable{}, managed...)
 	seen := map[string][]string{}

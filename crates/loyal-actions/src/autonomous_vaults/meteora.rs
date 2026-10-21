@@ -21,8 +21,7 @@ pub const METEORA_REMOVE_LIQUIDITY_BY_RANGE2_DISCRIMINATOR: [u8; 8] =
     [204, 2, 195, 145, 53, 145, 145, 205];
 pub const METEORA_CLAIM_FEE2_DISCRIMINATOR: [u8; 8] = [112, 191, 101, 171, 28, 144, 127, 187];
 
-/// Canonical empty `RemainingAccountsInfo` emitted by the official Rust SDK for
-/// this classic-token pair. The two approved BinArray metas follow these bytes.
+/// Meteora DLMM's empty `RemainingAccountsInfo` argument (a borsh empty vec).
 pub const METEORA_CLASSIC_TOKEN_REMAINING_ACCOUNTS_INFO: [u8; 4] = [0; 4];
 
 /// Current Meteora's on-chain enum tag for the reviewed two-sided SpotBalanced

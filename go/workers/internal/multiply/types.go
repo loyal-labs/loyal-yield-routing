@@ -17,7 +17,6 @@ import (
 	"time"
 )
 
-// Versions and lease bounds mirror the Rust constants exactly.
 const (
 	StateSchemaVersion     = 9
 	EngineVersion          = "earn_max_v2"
@@ -27,8 +26,6 @@ const (
 	tickLeaseExpirySeconds = 30
 )
 
-// StrategyKey is one fixed collateral/debt lane. Spelling matches the Rust
-// serde snake_case encoding stored in multiply_operations.strategy_key.
 type StrategyKey string
 
 const (
@@ -52,7 +49,6 @@ func (k StrategyKey) Valid() bool {
 	return false
 }
 
-// RouteGoal is the persisted product intent. Never rewritten by observation.
 type RouteGoal string
 
 const (
@@ -63,7 +59,6 @@ const (
 	GoalManualRecovery RouteGoal = "manual_recovery"
 )
 
-// MultiplyAction spellings match multiply_operations.action.
 type MultiplyAction string
 
 const (
@@ -102,7 +97,6 @@ func (a MultiplyAction) IsStrategyAction() bool {
 	return a.Valid()
 }
 
-// OperationStatus is the immutable attempt lifecycle spelled as SQL values.
 type OperationStatus string
 
 const (
@@ -120,7 +114,6 @@ func (s OperationStatus) IsTerminal() bool {
 	return s == StatusReconciled || s == StatusExpired || s == StatusManualRecovery
 }
 
-// WithdrawalStatus spellings match the Rust serde encoding.
 type WithdrawalStatus string
 
 const (
@@ -130,7 +123,6 @@ const (
 	WithdrawalClaimed   WithdrawalStatus = "claimed"
 )
 
-// TokenBalance is a raw integer custody balance tagged with mint and program.
 type TokenBalance struct {
 	Account      string `json:"account"`
 	Mint         string `json:"mint"`
@@ -145,9 +137,6 @@ func (b TokenBalance) Validate() error {
 	return nil
 }
 
-// MultiplyPosition is the tagged enum persisted in route state JSON, exactly
-// as Rust serde writes it: {"kind":"idle","claim":...} or
-// {"kind":"active","strategyKey":...,...} with the arm fields at top level.
 type MultiplyPosition struct {
 	Kind            string        `json:"kind"`
 	Claim           *TokenBalance `json:"claim,omitempty"`
@@ -159,12 +148,10 @@ type MultiplyPosition struct {
 	HealthFactorPPM *uint64       `json:"healthFactorPpm,omitempty"`
 }
 
-// NewIdlePosition builds the idle arm.
 func NewIdlePosition(claim TokenBalance) MultiplyPosition {
 	return MultiplyPosition{Kind: "idle", Claim: &claim}
 }
 
-// NewActivePosition builds the active arm.
 func NewActivePosition(strategyKey StrategyKey, obligation string, collateral, debt TokenBalance, debtAmountSF string, healthFactorPPM uint64) MultiplyPosition {
 	key := strategyKey
 	obligationCopy := obligation
@@ -224,7 +211,6 @@ func (p MultiplyPosition) Validate() error {
 	return nil
 }
 
-// DepositEvidence proves one confirmed wallet deposit.
 type DepositEvidence struct {
 	RequestID            string    `json:"requestId"`
 	TransactionSignature string    `json:"transactionSignature"`
@@ -238,7 +224,6 @@ type DepositEvidence struct {
 	ObservedAt           time.Time `json:"observedAt"`
 }
 
-// Withdrawal is the product SLA record for one user withdrawal request.
 type Withdrawal struct {
 	RequestID          string           `json:"requestId"`
 	DestinationAccount string           `json:"destinationAccount"`
@@ -261,8 +246,6 @@ func (w Withdrawal) validate(now time.Time) error {
 	return nil
 }
 
-// RouteState is the schema-9 route document, byte-compatible with the Rust
-// MultiplyRouteState serde encoding (camelCase, deny unknown fields).
 type RouteState struct {
 	SchemaVersion        int              `json:"schemaVersion"`
 	EngineVersion        string           `json:"engineVersion"`
@@ -283,7 +266,6 @@ type RouteState struct {
 	ObservedAt           time.Time        `json:"observedAt"`
 }
 
-// NewRouteState mirrors MultiplyRouteState::new including its validation.
 func NewRouteState(routeKey, settings string, vaultIndex uint8, vault string, policySeedBase uint64, claim TokenBalance, observedSlot uint64, observedAt time.Time) (*RouteState, error) {
 	state := &RouteState{
 		SchemaVersion:  StateSchemaVersion,
@@ -313,7 +295,6 @@ func (s *RouteState) WithdrawalMatches(requestID, destinationAccount string, amo
 		s.Withdrawal.AmountRaw == amountRaw
 }
 
-// ValidatePersisted mirrors Rust validate_persisted exactly.
 func (s *RouteState) ValidatePersisted() error {
 	if s.SchemaVersion != StateSchemaVersion || s.EngineVersion != EngineVersion ||
 		strings.TrimSpace(s.RouteKey) == "" || strings.TrimSpace(s.Settings) == "" ||
@@ -341,7 +322,6 @@ func (s *RouteState) ValidatePersisted() error {
 	return nil
 }
 
-// AdmitDeposit mirrors Rust admit_deposit: one confirmed deposit starts Deploy.
 func (s *RouteState) AdmitDeposit(evidence DepositEvidence) error {
 	if strings.TrimSpace(evidence.RequestID) == "" || strings.TrimSpace(evidence.TransactionSignature) == "" ||
 		strings.TrimSpace(evidence.WalletAccount) == "" || evidence.AmountRaw == 0 ||
@@ -360,8 +340,6 @@ func (s *RouteState) AdmitDeposit(evidence DepositEvidence) error {
 	return nil
 }
 
-// RequestWithdrawal mirrors Rust request_withdrawal including idempotent
-// same-request replay.
 func (s *RouteState) RequestWithdrawal(requestID, destinationAccount string, amountRaw uint64, requestedAt time.Time) (bool, error) {
 	if s.WithdrawalMatches(requestID, destinationAccount, amountRaw) {
 		return false, nil
@@ -386,8 +364,6 @@ func (s *RouteState) RequestWithdrawal(requestID, destinationAccount string, amo
 	return true, nil
 }
 
-// CancelWithdrawal mirrors Rust cancel_withdrawal: re-enter Deploy with the
-// planner converging without an extra mutation when unwind never started.
 func (s *RouteState) CancelWithdrawal(requestID string) error {
 	canCancel := s.CurrentOperationID == nil && s.Withdrawal != nil &&
 		s.Withdrawal.RequestID == requestID &&
@@ -401,28 +377,24 @@ func (s *RouteState) CancelWithdrawal(requestID string) error {
 	return nil
 }
 
-// TokenDelta is one expected custody movement.
 type TokenDelta struct {
 	Account  string `json:"account"`
 	Mint     string `json:"mint"`
 	RawDelta int64  `json:"rawDelta"`
 }
 
-// ObligationDelta is one expected KLend obligation movement.
 type ObligationDelta struct {
 	Obligation         string `json:"obligation"`
 	CollateralRawDelta int64  `json:"collateralRawDelta"`
 	DebtRawDelta       int64  `json:"debtRawDelta"`
 }
 
-// TokenAmountBefore is the exact pre-transaction custody amount.
 type TokenAmountBefore struct {
 	Account   string `json:"account"`
 	Mint      string `json:"mint"`
 	AmountRaw uint64 `json:"amountRaw"`
 }
 
-// ObligationBefore is the exact pre-transaction obligation state.
 type ObligationBefore struct {
 	Obligation    string `json:"obligation"`
 	CollateralRaw uint64 `json:"collateralRaw"`
@@ -430,10 +402,7 @@ type ObligationBefore struct {
 	DebtAmountSF  string `json:"debtAmountSf"`
 }
 
-// ExpectedEffects is the reconciliation contract persisted with the operation.
 type ExpectedEffects struct {
-	// Rust serializes the empty vec as [] (serde(default) is decode-only), so
-	// this field must never be omitted from the persisted JSONB.
 	TokenAmountsBefore []TokenAmountBefore `json:"tokenAmountsBefore"`
 	TokenDeltas        []TokenDelta        `json:"tokenDeltas"`
 	// Rust writes absent obligation fields as explicit nulls; so must Go.
@@ -441,8 +410,6 @@ type ExpectedEffects struct {
 	ObligationDelta  *ObligationDelta  `json:"obligationDelta"`
 }
 
-// MarshalJSON keeps the Rust serde contract: tokenAmountsBefore is always a
-// JSON array ([] when empty), never null.
 func (e ExpectedEffects) MarshalJSON() ([]byte, error) {
 	type expectedEffectsAlias ExpectedEffects
 	if e.TokenAmountsBefore == nil {
@@ -454,34 +421,34 @@ func (e ExpectedEffects) MarshalJSON() ([]byte, error) {
 	return jsonMarshal(expectedEffectsAlias(e))
 }
 
-// MultiplyOperation is one durable transaction attempt.
 type MultiplyOperation struct {
-	OperationID            string          `json:"operationId"`
-	RouteKey               string          `json:"routeKey"`
-	Cycle                  uint64          `json:"-"`
-	EngineVersion          string          `json:"engineVersion"`
-	Action                 MultiplyAction  `json:"action"`
-	StrategyKey            StrategyKey     `json:"-"`
-	Status                 OperationStatus `json:"-"`
-	IDempotencyKey         string          `json:"-"`
-	ExpectedEffects        ExpectedEffects `json:"-"`
-	PolicyAccount          *string         `json:"-"`
-	PolicyDataSHA256       *string         `json:"-"`
-	MessageSHA256          *string         `json:"-"`
-	SignedWire             []byte          `json:"-"`
-	SignedWireSHA256       *string         `json:"-"`
-	TransactionSignature   *string         `json:"-"`
-	SourceInstructionIndex *uint16         `json:"-"`
-	RecentBlockhash        *string         `json:"-"`
-	LastValidBlockHeight   *uint64         `json:"-"`
-	BroadcastIntentAt      *time.Time      `json:"-"`
-	ConfirmedSlot          *uint64         `json:"-"`
-	ReconciliationSHA256   *string         `json:"-"`
-	CreatedAt              time.Time       `json:"-"`
-	UpdatedAt              time.Time       `json:"-"`
+	OperationID      string          `json:"operationId"`
+	RouteKey         string          `json:"routeKey"`
+	Cycle            uint64          `json:"-"`
+	EngineVersion    string          `json:"engineVersion"`
+	Action           MultiplyAction  `json:"action"`
+	StrategyKey      StrategyKey     `json:"-"`
+	Status           OperationStatus `json:"-"`
+	IDempotencyKey   string          `json:"-"`
+	ExpectedEffects  ExpectedEffects `json:"-"`
+	PolicyAccount    *string         `json:"-"`
+	PolicyDataSHA256 *string         `json:"-"`
+	// Rust serializes the empty vec as [] (serde(default) is decode-only), so
+	// this field must never be omitted from the persisted JSONB.
+	MessageSHA256          *string    `json:"-"`
+	SignedWire             []byte     `json:"-"`
+	SignedWireSHA256       *string    `json:"-"`
+	TransactionSignature   *string    `json:"-"`
+	SourceInstructionIndex *uint16    `json:"-"`
+	RecentBlockhash        *string    `json:"-"`
+	LastValidBlockHeight   *uint64    `json:"-"`
+	BroadcastIntentAt      *time.Time `json:"-"`
+	ConfirmedSlot          *uint64    `json:"-"`
+	ReconciliationSHA256   *string    `json:"-"`
+	CreatedAt              time.Time  `json:"-"`
+	UpdatedAt              time.Time  `json:"-"`
 }
 
-// Validate mirrors MultiplyOperation::validate.
 func (o *MultiplyOperation) Validate() error {
 	if strings.TrimSpace(o.OperationID) == "" || strings.TrimSpace(o.RouteKey) == "" ||
 		o.Cycle == 0 || o.EngineVersion != EngineVersion ||
@@ -496,8 +463,6 @@ func (o *MultiplyOperation) Validate() error {
 	return nil
 }
 
-// SignedOperation is the exact signed wire and its identity, persisted before
-// any broadcast intent. The wire itself is immutable once accepted.
 type SignedOperation struct {
 	Wire                 []byte
 	WireSHA256           string
@@ -506,7 +471,6 @@ type SignedOperation struct {
 	LastValidBlockHeight int64
 }
 
-// NewSignedOperation mirrors SignedOperation::new including BIGINT checks.
 func NewSignedOperation(wire []byte, transactionSignature, recentBlockhash string, lastValidBlockHeight uint64) (*SignedOperation, error) {
 	if len(wire) == 0 || strings.TrimSpace(transactionSignature) == "" ||
 		strings.TrimSpace(recentBlockhash) == "" || lastValidBlockHeight == 0 || lastValidBlockHeight > (1<<63-1) {
@@ -522,7 +486,6 @@ func NewSignedOperation(wire []byte, transactionSignature, recentBlockhash strin
 	}, nil
 }
 
-// TickResult is the per-tick JSON evidence the Rust worker printed.
 type TickResult struct {
 	RouteKey    *string `json:"routeKey"`
 	Condition   string  `json:"condition"`

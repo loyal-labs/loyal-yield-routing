@@ -263,9 +263,6 @@ function main() {
     return historical !== undefined && row.deployId === historical.deployId && row.sourceCommit === historical.sourceCommit &&
       row.imageDigest === historical.imageDigest && row.leaseOwner === `render:srv-dabkt0ojo6nc7381o9fg:sha-${historical.sourceCommit}`;
   };
-  // Historical fencing tokens are intentionally not reconstructed: the operation
-  // ledger does not retain them. Instead, prove each row's exact immutable deploy
-  // interval and verify that every operation mutation is fenced in its DB transaction.
   const nonterminalIndex = workerMigration.slice(workerMigration.indexOf("CREATE UNIQUE INDEX multiply_operations_one_nonterminal_per_route"));
   const leaseFenceInvariant = goStore.includes("const OperationRouteForLeaseSQL") &&
     goStore.includes("route.lease_owner = $2 AND route.fencing_token = $3") &&

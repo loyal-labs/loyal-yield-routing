@@ -13,9 +13,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-// The root must configure this revalidator with the exact continuation owner
-// used by the D controller/runtime. Request ownership is passed unchanged;
-// C verifies it against its configured owner and the actual durable lease.
 type RevalidatorCrossMint struct{ revalidator *fleet.Revalidator }
 
 var (
@@ -24,7 +21,6 @@ var (
 	_ CrossMintFirstSendVerifier = (*RevalidatorCrossMint)(nil)
 )
 
-// NewRevalidatorCrossMint binds the cross-mint runtime to Go route preparation.
 func NewRevalidatorCrossMint(revalidator *fleet.Revalidator) (*RevalidatorCrossMint, error) {
 	if revalidator == nil {
 		return nil, errors.New("cross-mint adapters require concrete source revalidator")
@@ -41,8 +37,6 @@ func (a *RevalidatorCrossMint) PrepareCrossMintLeg(ctx context.Context, q CrossM
 }
 
 func revalidatorCrossMintLegError(ctx context.Context, leg string, err error) error {
-	// Only the source's validated economic shortfall permits recovery.
-	// Timeouts, cancellation, policy and account failures retain custody.
 	if leg == LegSwap && errors.Is(err, fleet.ErrCrossMintQuoteUnavailable) && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("source swap economics: %w", ErrCrossMintSwapUnavailable)
 	}
@@ -107,7 +101,6 @@ func revalidatorCrossMintPreparedLeg(p fleet.CrossMintLegPreparation) (CrossMint
 		SharedAddresses: revalidatorCrossMintALTAddresses(p.SharedAddresses), VaultAddresses: revalidatorCrossMintALTAddresses(p.VaultAddresses),
 	}
 	if p.WaitingALT {
-		// Waiting demand has no simulated executable effect or custody proof.
 		return out, nil
 	}
 	if p.Preparation.Transaction.FeeLamports == 0 || p.Preparation.Transaction.FeeLamports > math.MaxInt64 || p.LastValidBlockHeight <= 0 {
@@ -141,8 +134,6 @@ func revalidatorCrossMintDecode(raw []byte, target any) error {
 	return nil
 }
 
-// Decode the receipt contract without synthesizing absent accounts or amounts.
-// D separately checks leg-specific meaning against its locked movement.
 func revalidatorCrossMintContracts(e CrossMintExpectedEffect, a CrossMintBalanceAnchors) error {
 	if (e.Debit == nil) != (a.Debit == nil) || (e.CreditMint == nil) != (e.CreditTokenAccount == nil) || (e.CreditMint == nil) != (e.MinimumCreditAmountRaw == nil) || (e.CreditMint == nil) != (a.Credit == nil) || e.Debit == nil && e.CreditMint == nil {
 		return errors.New("source effect and balance accounts are incomplete")

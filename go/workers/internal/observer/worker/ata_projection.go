@@ -9,9 +9,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/ata"
 )
 
-// NewATAProjector borrows the capture and Yield pools already owned by the
-// observer. Progress uses the retained stream consumer and its atomic cursor;
-// the observer owns and joins this lane alongside capture and read models.
 func (r *Runtime) NewATAProjector(ctx context.Context) (*ata.Projector, error) {
 	if r == nil || r.neon == nil || r.timescale == nil || r.facts == nil {
 		return nil, errors.New("ATA projection requires initialized observer pools and facts")

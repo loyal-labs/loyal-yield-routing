@@ -12,11 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// Earn reconciliation job queue and mutation application, ported from
-// loyal-yield-store store.rs (claim/retry/dead_letter/complete
-// earn_reconciliation_job and apply_earn_*). Row states are unchanged.
-
-// Job is one claimed earn_reconciliation_jobs row.
 type Job struct {
 	ID           int64
 	Consumer     string
@@ -27,10 +22,6 @@ type Job struct {
 	AttemptCount int32
 }
 
-// claimableJob is the readiness predicate over loyal_yield.earn_reconciliation_jobs
-// for consumer $1: due, unleased, and not behind an earlier pending job of the
-// same vault. ClaimJob and the observer's backlog check share it, so a vault
-// blocked behind a failing head job is backlog for neither.
 const claimableJob = `
 consumer_name = $1
                   AND completed_at IS NULL
@@ -56,7 +47,6 @@ consumer_name = $1
                         )
                   )`
 
-// ClaimJob leases the oldest ready job whose vault has no earlier pending job.
 func (s *Store) ClaimJob(ctx context.Context, consumer, owner string, leaseSeconds int64) (*Job, error) {
 	var job Job
 	var slot int64
@@ -110,8 +100,6 @@ func (s *Store) RetryJob(ctx context.Context, jobID int64, owner, message string
 	return nil
 }
 
-// DeadLetterJob parks a terminally failing job so the vault queue advances;
-// clearing completed_at requeues it.
 func (s *Store) DeadLetterJob(ctx context.Context, jobID int64, owner, message string) error {
 	tag, err := s.pool.Exec(ctx, `
             UPDATE loyal_yield.earn_reconciliation_jobs
@@ -127,12 +115,9 @@ func (s *Store) DeadLetterJob(ctx context.Context, jobID int64, owner, message s
 	return nil
 }
 
-// ReconciliationContext is the vault's projected route and setup policy.
 type ReconciliationContext struct {
 	RoutePolicy, SetupPolicy *PolicyMatchInput
-	// ObservedSlot is the slot of the vault's current balances, zero when
-	// none were observed.
-	ObservedSlot uint64
+	ObservedSlot             uint64
 }
 
 func (s *Store) LoadContext(ctx context.Context, settings string, vaultIndex uint8, vaultPubkey string) (ReconciliationContext, error) {
@@ -205,9 +190,6 @@ func (s *Store) LoadContext(ctx context.Context, settings string, vaultIndex uin
 	return out, rows.Err()
 }
 
-// CompleteJob applies one mutation and completes its job atomically. The
-// chain mutation identity makes replays a no-op; refund rent accounting and
-// position cleanup have independent identities.
 func (s *Store) CompleteJob(ctx context.Context, jobID int64, owner string, mutation EarnMutation) (int, error) {
 	applied := 0
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -323,6 +305,9 @@ func observedOrNow(value *time.Time) time.Time {
 }
 
 func applyPolicyOnly(ctx context.Context, tx pgx.Tx, m EarnPolicyOnlyMutation) error {
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
+		return err
+	}
 	route, err := upsertPolicy(ctx, tx, m.RoutePolicy)
 	if err != nil {
 		return err
@@ -369,6 +354,9 @@ func applyPolicyOnly(ctx context.Context, tx pgx.Tx, m EarnPolicyOnlyMutation) e
 type managedVault struct{ id, activePolicyID int64 }
 
 func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
+		return err
+	}
 	route, err := upsertPolicy(ctx, tx, m.RoutePolicy)
 	if err != nil {
 		return err
@@ -445,15 +433,11 @@ func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
 		int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey, route, m.RoutePolicy.PolicyAccount, seed, m.TargetReserve, m.Market,
 		m.LiquidityMint, m.TargetSupplyAPYBPS, m.DepositMint, amount, observedAt).Scan(&depositID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// This exact deposit was already committed: do not republish its old
-		// account snapshot and risk replacing newer vault state.
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	// The position identity is unique across repeated Earn lifecycles; a
-	// closed row is reactivated rather than colliding with the initial index.
 	var existing struct {
 		id                   int64
 		reserve, mint        string
@@ -551,7 +535,6 @@ func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
 	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, m.VaultEmpty, observedSlot, observedAt)
 }
 
-// applyBalances publishes a managed vault's observed holdings.
 func applyBalances(ctx context.Context, tx pgx.Tx, m EarnBalancesMutation) error {
 	var vault managedVault
 	err := tx.QueryRow(ctx, `SELECT id, active_policy_id FROM loyal_yield.managed_vaults WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3 AND active`, m.Settings, int16(m.VaultIndex), m.VaultPubkey).Scan(&vault.id, &vault.activePolicyID)
@@ -568,11 +551,6 @@ func applyBalances(ctx context.Context, tx pgx.Tx, m EarnBalancesMutation) error
 	return applyObservedBalances(ctx, tx, vault, m.ReserveState, m.IdleState, m.VaultEmpty, slot, observedOrNow(m.ObservedAt))
 }
 
-// applyObservedBalances makes the vault's current positions and idle balances
-// the observation's, unless a newer observation is already current. A vault
-// whose observation holds nothing closes its users' active positions; so does
-// an older observation applied after a newer one that found the vault empty,
-// since a position it touched was opened or changed before the funds left.
 func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, reserves []EarnReserveMutation, idles []EarnIdleTokenMutation, empty bool, observedSlot int64, observedAt time.Time) error {
 	var current, currentID int64
 	var currentEmpty bool
@@ -628,7 +606,6 @@ func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, r
 		if len(metadata) == 0 {
 			metadata = []byte("null")
 		}
-		// Zero rows stay out of history; see reconcile_vault_transaction_guarded.
 		if amount > 0 {
 			if _, err := tx.Exec(ctx, `
                 INSERT INTO loyal_yield.vault_position_snapshot_positions
@@ -693,9 +670,6 @@ func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, r
 	return nil
 }
 
-// closeEmptyVaultPositions closes the vault's active app positions observed
-// at or before the snapshot, which found no deposit and no idle cash: the
-// funds left the vault.
 func closeEmptyVaultPositions(ctx context.Context, tx pgx.Tx, vaultID, snapshotID int64) error {
 	var ready bool
 	if err := tx.QueryRow(ctx, `SELECT to_regclass('loyal_yield.user_yield_positions') IS NOT NULL AND to_regclass('loyal_yield.user_yield_position_holding_events') IS NOT NULL`).Scan(&ready); err != nil || !ready {
@@ -731,7 +705,6 @@ WHERE p.id = inserted_events.position_id`, vaultID, snapshotID)
 }
 
 func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) error {
-	// Withdrawals must not reactivate a retired policy during historical replay.
 	confirmedSlot, err := slotBigint(m.ConfirmedSlot)
 	if err != nil {
 		return err
@@ -749,6 +722,9 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 		return err
 	}
 	observedAt := observedOrNow(m.ObservedAt)
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.VaultPubkey); err != nil {
+		return err
+	}
 	var position struct {
 		id, principal, amount, observedSlot, policyID, policySeed int64
 		status, policyAccount                                     string
@@ -841,12 +817,9 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 	if err != nil {
 		return err
 	}
-	// The withdrawal landing in the wallet is no Autodeposit inflow.
 	if err := autodeposit.SuppressWithdrawalLots(ctx, tx, m.WithdrawalSignature, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.VaultPubkey); err != nil {
 		return err
 	}
-	// A reused position row whose later zero-balance boundary already settled
-	// the old principal gets history only.
 	if historyOnly {
 		return nil
 	}
@@ -855,7 +828,6 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 		return err
 	}
 	principalDelta := -min(position.principal, withdrawn)
-	// Yield withdrawn beyond principal must not reduce later deposits.
 	nextPrincipal := position.principal + principalDelta
 	current := observedSlot >= position.observedSlot
 	resulting, eventSlot := position.amount, position.observedSlot
@@ -929,6 +901,9 @@ func applyCleanup(ctx context.Context, tx pgx.Tx, m EarnCleanupMutation) error {
 		return err
 	}
 	observedAt := observedOrNow(m.ObservedAt)
+	if err := autodeposit.LockVaultTargets(ctx, tx, m.Settings, int16(m.VaultIndex), m.VaultPubkey); err != nil {
+		return err
+	}
 	var vaultID, activePolicyID int64
 	var setupPolicyID *int64
 	err = tx.QueryRow(ctx, `
@@ -942,7 +917,6 @@ func applyCleanup(ctx context.Context, tx pgx.Tx, m EarnCleanupMutation) error {
 	if err != nil {
 		return err
 	}
-	// A historical close never closes a replacement policy or later deposit.
 	var superseded bool
 	if err := tx.QueryRow(ctx, `
         SELECT EXISTS (
@@ -1039,7 +1013,6 @@ func applyCleanup(ctx context.Context, tx pgx.Tx, m EarnCleanupMutation) error {
 	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.managed_vaults SET active = FALSE, last_seen_at = now() WHERE id = $1`, vaultID); err != nil {
 		return err
 	}
-	// The vault's Autodeposit work had only this route as its destination.
 	_, err = autodeposit.SkipUnroutedVaultSlots(ctx, tx, m.Settings, int16(m.VaultIndex), m.VaultPubkey)
 	return err
 }

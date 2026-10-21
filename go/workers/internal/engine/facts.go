@@ -118,26 +118,18 @@ func NewFacts(registerer prometheus.Registerer) *Facts {
 	return f
 }
 
-// FleetCapacityReplan counts a move the execution dropped because it no
-// longer fits; it is not a failed operation, so it is not in failed_total.
 func (f *Facts) FleetCapacityReplan(reason string) { f.fleetReplans.WithLabelValues(reason).Inc() }
 
-// FleetSimulationFailed counts an execution simulation that failed.
 func (f *Facts) FleetSimulationFailed(stage string) { f.fleetSimulations.WithLabelValues(stage).Inc() }
 
-// FleetMovableCapital sets every planned reserve's movable capital each
-// cycle, zero included, so a reserve that stops being movable reads 0.
 func (f *Facts) FleetMovableCapital(reserve string, usd float64) {
 	f.fleetMovable.WithLabelValues(reserve).Set(usd)
 }
 
-// BackyardLeverageRoom sets a vault's held lane's borrow room in USD.
 func (f *Facts) BackyardLeverageRoom(vault, lane string, usd float64) {
 	f.leverageRoom.WithLabelValues(vault, lane).Set(usd)
 }
 
-// BackyardLeverageGap sets a vault's held lane's leverage gap; a lane
-// without a stored target has no gap series (not 0).
 func (f *Facts) BackyardLeverageGap(vault, lane string, gap float64, targeted bool) {
 	if !targeted {
 		f.leverageGap.DeleteLabelValues(vault, lane)
@@ -146,18 +138,14 @@ func (f *Facts) BackyardLeverageGap(vault, lane string, gap float64, targeted bo
 	f.leverageGap.WithLabelValues(vault, lane).Set(gap)
 }
 
-// BackyardLeverageOutage counts a leverage sample that could not be decided.
 func (f *Facts) BackyardLeverageOutage(vault, reason string) {
 	f.leverageOutages.WithLabelValues(vault, reason).Inc()
 }
 
-// BackyardStepNoRoom counts a step held for lack of chain room.
 func (f *Facts) BackyardStepNoRoom(vault, lane, rule string) {
 	f.stepNoRoom.WithLabelValues(vault, lane, rule).Inc()
 }
 
-// BackyardHold sets the hold a vault's last tick ended in, or clears it
-// (reason "") while the tick acts.
 func (f *Facts) BackyardHold(vault, lane, reason string) {
 	f.hold.DeletePartialMatch(prometheus.Labels{"vault": vault})
 	if reason != "" {
@@ -165,8 +153,6 @@ func (f *Facts) BackyardHold(vault, lane, reason string) {
 	}
 }
 
-// BackyardTermDebtDays sets a held lane's days to its term debt's maturity;
-// a lane without term debt has no series.
 func (f *Facts) BackyardTermDebtDays(vault, lane string, days float64, owed bool) {
 	if !owed {
 		f.termDebtDays.DeleteLabelValues(vault, lane)
@@ -175,15 +161,12 @@ func (f *Facts) BackyardTermDebtDays(vault, lane string, days float64, owed bool
 	f.termDebtDays.WithLabelValues(vault, lane).Set(days)
 }
 
-// BackyardLeverageLaneGone removes a vault's lane that is no longer held.
 func (f *Facts) BackyardLeverageLaneGone(vault, lane string) {
 	f.leverageGap.DeleteLabelValues(vault, lane)
 	f.leverageRoom.DeleteLabelValues(vault, lane)
 	f.termDebtDays.DeleteLabelValues(vault, lane)
 }
 
-// BackyardLeverageUpLanded counts a landed leverage_up borrow and, when the
-// room it used was observed opening, its reaction time.
 func (f *Facts) BackyardLeverageUpLanded(vault, lane string, reaction time.Duration, known bool) {
 	f.leverageLanded.WithLabelValues(vault, lane).Inc()
 	if known {
@@ -191,7 +174,6 @@ func (f *Facts) BackyardLeverageUpLanded(vault, lane string, reaction time.Durat
 	}
 }
 
-// BackyardWithdrawalHealth is called only after the display state commits.
 func (f *Facts) BackyardWithdrawalHealth(route string, attention bool, observed time.Time) {
 	value := float64(0)
 	if attention {
@@ -214,8 +196,6 @@ func (f *Facts) Inflight(family Family, n int) {
 	f.inflight.WithLabelValues(string(family)).Set(float64(n))
 }
 
-// InflightAdd moves a family's in-flight count by delta, for a family whose
-// lanes each report their own operations (Backyard's vaults).
 func (f *Facts) InflightAdd(family Family, delta int) {
 	f.inflight.WithLabelValues(string(family)).Add(float64(delta))
 }
@@ -224,9 +204,6 @@ func (f *Facts) Progress(family Family) {
 	f.progress.WithLabelValues(string(family)).Set(float64(time.Now().Unix()))
 }
 
-// LaneSucceeded records a lane tick that finished without error. A lane
-// shares its family's progress with the family's other lanes, so this is the
-// one fact that shows a single lane failing every tick.
 func (f *Facts) LaneSucceeded(family Family, lane string) {
 	f.lane.WithLabelValues(string(family), lane).Set(float64(time.Now().Unix()))
 }

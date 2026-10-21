@@ -63,29 +63,20 @@ const (
 	ruleHold          = "at_target"
 )
 
-// Decision reasons of the target's moves.
 const (
-	// A lane's debt goes to 0 (term maturity, operator exit), by down steps.
-	debtZeroReason = "debt_zero"
-	// A lane frees equity toward Voltr at its own level (withdrawal).
-	releaseReason = "withdrawal_release"
-	// A lane's collateral moves to its overflow lane in one transaction.
-	overflowMoveReason = "overflow_move"
-	// A rotation's source frees its tranche at its own level as Squads
-	// cash: it repays the debt share, then withdraws the collateral share
-	// as USDC.
-	rotateRepayReason    = "rotate_repay"
-	rotateWithdrawReason = "rotate_withdraw"
-	// Lane custody and Squads cash leave toward Voltr.
+	debtZeroReason           = "debt_zero"
+	releaseReason            = "withdrawal_release"
+	overflowMoveReason       = "overflow_move"
+	rotateRepayReason        = "rotate_repay"
+	rotateWithdrawReason     = "rotate_withdraw"
 	outboundCollateralReason = "outbound_collateral_to_usdc"
 	outboundDebtReason       = "outbound_debt_residue"
 	outboundStageReason      = "outbound_stage"
 	exitWithdrawReason       = "exit_withdraw_collateral"
-	// An entry or top-up's cash.
-	entryAllocationReason = "eligible_voltr_idle"
-	entrySwapReason       = "usdc_requires_collateral"
-	entryDepositReason    = "collateral_ready"
-	returnCashReason      = "entry_capacity_changed_return_cash"
+	entryAllocationReason    = "eligible_voltr_idle"
+	entrySwapReason          = "usdc_requires_collateral"
+	entryDepositReason       = "collateral_ready"
+	returnCashReason         = "entry_capacity_changed_return_cash"
 )
 
 // LaneTarget is where target() puts the working lane this tick, and the rule
@@ -97,25 +88,19 @@ type LaneTarget struct {
 	Level      float64 `json:"level,omitempty"`
 	UpApproved bool    `json:"upApproved,omitempty"`
 	KeepAlive  bool    `json:"keepAlive,omitempty"`
-	// EquityZero withdraws the lane's collateral as USDC after its debt.
-	EquityZero bool `json:"equityZero,omitempty"`
-	// Outbound sends the lane's idle custody and Squads cash toward Voltr.
-	Outbound bool `json:"outbound,omitempty"`
+	EquityZero bool    `json:"equityZero,omitempty"`
+	Outbound   bool    `json:"outbound,omitempty"`
 	// ReleaseRaw is the equity (bridge USDC value) the lane frees at its own
 	// level toward Voltr.
 	ReleaseRaw int64 `json:"releaseRaw,omitempty"`
 	// RepayRaw (debt) then WithdrawRaw (collateral receipts) are a
 	// rotation's release from the lane: the USDC stays in the Squads account
 	// for the cash rule to enter.
-	RepayRaw    int64 `json:"repayRaw,omitempty"`
-	WithdrawRaw int64 `json:"withdrawRaw,omitempty"`
-	// MoveRaw is the collateral value the lane moves to MoveTo, its overflow
-	// lane, in one transaction.
-	MoveRaw int64  `json:"moveRaw,omitempty"`
-	MoveTo  string `json:"moveTo,omitempty"`
-	// EntryRaw is Voltr idle allocated to the lane: an entry, beside its
-	// position or not.
-	EntryRaw int64 `json:"entryRaw,omitempty"`
+	RepayRaw    int64  `json:"repayRaw,omitempty"`
+	WithdrawRaw int64  `json:"withdrawRaw,omitempty"`
+	MoveRaw     int64  `json:"moveRaw,omitempty"`
+	MoveTo      string `json:"moveTo,omitempty"`
+	EntryRaw    int64  `json:"entryRaw,omitempty"`
 }
 
 // hardLTVBPS is a lane's hard LTV, the brake (owner decisions 2026-10-14):
@@ -128,22 +113,14 @@ func hardLTVBPS(liquidationThresholdBPS, maxLTVBPS int64) int64 {
 	return min(liquidationThresholdBPS-1000, maxLTVBPS-stepWithdrawMarginBPS)
 }
 
-// laneEquityRaw is the lane position's own equity in bridge USDC.
 func laneEquityRaw(s Snapshot) int64 {
 	return s.PositionCollateralValueRaw - s.PositionDebtValueRaw
 }
 
-// laneInFlight reports collateral custody the lane's next leg takes: above
-// dust, and at least the deposit KLend accepts (one collateral receipt) when
-// that leg is a deposit. Less is vault cash, counted in NAV, that the lane's
-// next step takes whole.
 func laneInFlight(s Snapshot) bool {
 	return s.CollateralIdleRaw > partialWithdrawalDustRaw && s.CollateralIdleRaw >= s.MinimumCollateralDepositRaw
 }
 
-// debtCashOwed reports a held lane that steps and owes the mint of s's debt
-// custody (the vault's one account of that mint): its next step takes that
-// cash whole.
 func debtCashOwed(lanes []targetLane, s Snapshot) bool {
 	lane, ok := findEarnLane(s.RouteLane)
 	for _, l := range lanes {
@@ -156,7 +133,6 @@ func debtCashOwed(lanes []targetLane, s Snapshot) bool {
 	return false
 }
 
-// targetLane is one candidate lane's view and its stored inputs.
 type targetLane struct {
 	s     Snapshot
 	held  bool
@@ -164,8 +140,6 @@ type targetLane struct {
 	exit  *laneExit
 }
 
-// withdrawalShortfallRaw is the part of the withdrawal queue Voltr idle does
-// not cover. Covered demand stays reserved in Voltr idle and freezes nothing.
 func withdrawalShortfallRaw(s Snapshot) int64 {
 	return max(s.WithdrawalDemandRaw-s.VoltrIdleRaw, 0)
 }
@@ -189,7 +163,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 	stored := func(l targetLane) LaneTarget {
 		return LaneTarget{Rule: ruleHold, Level: heldLevel(l.s.RouteLane, l.level.Level), UpApproved: l.level.UpApproved && l.level.Level > 1}
 	}
-	// 1. Hard LTV: the lane furthest past it.
 	worst, excess := -1, int64(-1)
 	for i, l := range lanes {
 		s := l.s
@@ -204,8 +177,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 	}
 	shortfall := withdrawalShortfallRaw(vault)
 	outbound := shortfall > 0
-	// 2. Term maturity. The keep-alive waits for an unfunded withdrawal until
-	// the term's last day.
 	for i, l := range lanes {
 		s := l.s
 		if !l.held || s.PositionDebtRaw <= 0 {
@@ -223,7 +194,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 			return i, t
 		}
 	}
-	// 3. Operator exits.
 	for i, l := range lanes {
 		s := l.s
 		if l.exit == nil || !l.held {
@@ -233,10 +203,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 			return i, LaneTarget{Rule: ruleOperatorExit, Level: 1, EquityZero: l.exit.EquityZero, Outbound: l.exit.EquityZero}
 		}
 	}
-	// 4a. Custody in flight finishes first, in its direction: collateral a
-	// held lane's next leg takes, and debt-mint cash above dust that a
-	// withdrawal needs or no held lane owes, which leaves toward Voltr (cash
-	// a held lane owes otherwise waits for its next step).
 	for i, l := range lanes {
 		inFlight := l.held && laneInFlight(l.s)
 		loose := !inFlight && l.s.DebtIdleRaw > partialWithdrawalDustRaw && (outbound || !debtCashOwed(lanes, l.s))
@@ -247,9 +213,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		t.Rule, t.Outbound = ruleCustody, outbound || loose || (l.exit != nil && l.exit.EquityZero)
 		return i, t
 	}
-	// 4b. Withdrawal: Squads cash stages; the lane with the most equity frees
-	// the rest, up to under 90% of its own equity (more is an exit), and the
-	// next lane frees what is still missing on a later tick.
 	if outbound {
 		if gap := shortfall - vault.SquadsIdleRaw; gap > 0 {
 			if i := releaseLane(lanes); i >= 0 {
@@ -262,15 +225,9 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		i := max(homeLane(lanes), 0)
 		return i, LaneTarget{Rule: ruleWithdrawal, Outbound: true}
 	}
-	// 5r. Rotation: the selector's current rotation releases its tranche
-	// from the source as Squads cash, from the position it priced to the
-	// position it leaves, while its destination is viewed and not exiting;
-	// rule 5 then enters that cash. It
-	// finishes before an overflow move reads the source's level mid-release.
 	for i, l := range lanes {
 		if repay, withdraw := rotationReleaseStep(in.Entry, l.s); l.held && l.exit == nil && (repay > 0 || withdraw > 0) {
 			if j, _ := entryLane(lanes, in); j < 0 {
-				// The destination is unviewed or exiting: the source keeps it.
 				break
 			}
 			t := stored(l)
@@ -278,8 +235,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 			return i, t
 		}
 	}
-	// 5a. Overflow: a source whose own reserve cannot lever its equity moves
-	// collateral to its overflow lane, which levers it there.
 	for i, l := range lanes {
 		if lane, e := overflowMove(lanes, i, in); e > 0 {
 			t := stored(l)
@@ -287,12 +242,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 			return i, t
 		}
 	}
-	// 5. Cash: the vault's Squads cash, and the Voltr idle a current entry
-	// quote allocates, enter the selector's current destination, a held lane
-	// included. A flat vault's view is that lane's. The Squads cash is the
-	// destination's while the selector names one, viewed or not; with none,
-	// a USDC-debt home lane's step excess joins its position, and any other
-	// cash waits for the selector.
 	if i, raw := entryLane(lanes, in); i >= 0 && (vault.SquadsIdleRaw > 0 || raw > 0 || !anyHeld(lanes)) {
 		t := stored(lanes[i])
 		t.Rule, t.EntryRaw = ruleEntry, raw
@@ -304,8 +253,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 		t.Rule = ruleEntry
 		return home, t
 	}
-	// 6. Levels: down to the stored level, or up toward it with approval and
-	// room.
 	for i, l := range lanes {
 		if !l.held || l.exit != nil || l.level.Level == 0 {
 			continue
@@ -316,8 +263,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 			return i, t
 		}
 	}
-	// Otherwise the vault holds, described by its home lane at its stored
-	// level.
 	if home := homeLane(lanes); home >= 0 {
 		t := stored(lanes[home])
 		t.Rule = ruleHold
@@ -326,9 +271,6 @@ func target(views []Snapshot, in targetInputs) (int, LaneTarget) {
 	return 0, LaneTarget{Rule: ruleHold}
 }
 
-// homeLane is the lane a held vault's hold describes: the held active lane
-// with the most equity that is no overflow lane and is not exiting; -1
-// without one.
 func homeLane(lanes []targetLane) int {
 	best, equity := -1, int64(-1)
 	for i, l := range lanes {
@@ -351,8 +293,6 @@ func anyHeld(lanes []targetLane) bool {
 	return false
 }
 
-// releaseLane is the lane a withdrawal frees from: the held lane with the
-// most equity, an overflow lane included.
 func releaseLane(lanes []targetLane) int {
 	best, equity := -1, int64(0)
 	for i, l := range lanes {
@@ -365,8 +305,6 @@ func releaseLane(lanes []targetLane) int {
 	return best
 }
 
-// laneReleaseLimitRaw is the most equity a release frees from s: under 90%
-// of its equity (90% or more is the operator's exit).
 func laneReleaseLimitRaw(s Snapshot) int64 {
 	return max((laneEquityRaw(s)*partialWithdrawalFullExitBPS-1)/10_000, 0)
 }
@@ -405,11 +343,6 @@ func overflowMove(lanes []targetLane, i int, in targetInputs) (string, int64) {
 	return lane, e
 }
 
-// entryLane is where the vault's cash enters: the selector's latest
-// destination among the candidates (an entry's, or a rotation's), and the
-// Voltr idle an entry quote allocates while it is current at this batch and
-// the idle beyond the queue covers it (0 otherwise; Squads cash already
-// allocated or released still goes to that lane).
 func entryLane(lanes []targetLane, in targetInputs) (int, int64) {
 	r := in.Entry
 	if r == nil || (r.Action != "ENTER" && r.Action != "CANARY_ENTER" && !selectorRotates(*r)) || r.SelectedQuote == nil || !earnActiveLane(r.DestinationLane) {
@@ -430,9 +363,6 @@ func entryLane(lanes []targetLane, in targetInputs) (int, int64) {
 	return -1, 0
 }
 
-// SourceRelease is a rotation's release from its source, sized when the
-// selector decided it: the position it priced (receipts and debt raw) and the
-// position it leaves, at the position's own level.
 type SourceRelease struct {
 	CollateralRaw       int64 `json:"collateralRaw"`
 	DebtRaw             int64 `json:"debtRaw"`
@@ -440,9 +370,6 @@ type SourceRelease struct {
 	DebtTargetRaw       int64 `json:"debtTargetRaw"`
 }
 
-// newSourceRelease sizes the release of equity e (bridge USDC value) from
-// s: its share e/Eq of the collateral and of the debt, below the 90% of its
-// equity that keeps it a lane. Nil when s cannot release it.
 func newSourceRelease(s Snapshot, e int64) *SourceRelease {
 	e = min(e, laneReleaseLimitRaw(s))
 	receipts := partialWithdrawalReleaseReceipts(s, e)
@@ -484,8 +411,6 @@ func rotationReleaseStep(r *SelectorResult, s Snapshot) (repay, withdraw int64) 
 	return 0, 0
 }
 
-// rotationCurrent reports a rotation r sampled within MaxSampleGap of s's
-// chain time.
 func rotationCurrent(r *SelectorResult, s Snapshot) bool {
 	if r == nil || !selectorRotates(*r) || r.SelectedQuote == nil || r.SourceRelease == nil || r.SampledAt.IsZero() || s.ChainUnix <= 0 {
 		return false
@@ -495,12 +420,6 @@ func rotationCurrent(r *SelectorResult, s Snapshot) bool {
 	return age >= -gap && age <= gap
 }
 
-// rotationLeft reports a current rotation r that has not finished on the
-// vault: its release is left on its source, or Squads cash (the release's
-// USDC) waits for the cash rule to enter it in r's destination. The selector
-// records no new result while one is left (RecordSelectorEvaluation), so the
-// cash enters the destination the release was for, and no next tranche is
-// released while this one's cash is idle.
 func rotationLeft(r *SelectorResult, vault Snapshot, lanes []Snapshot) bool {
 	for _, l := range lanes {
 		if repay, withdraw := rotationReleaseStep(r, l); repay > 0 || withdraw > 0 {
@@ -510,14 +429,11 @@ func rotationLeft(r *SelectorResult, vault Snapshot, lanes []Snapshot) bool {
 	return rotationCurrent(r, vault) && vault.SquadsIdleRaw > 0
 }
 
-// levelDownDue: a held level below the position's band, with debt.
 func levelDownDue(s Snapshot, t LaneTarget) bool {
 	band := leverageLevelLTVBPS(t.Level)
 	return t.Level >= 1.5 && s.HasPosition && s.PositionDebtRaw > 0 && s.LTVBPS > band+leverageUpNearBPS && stepDebtToLTVRaw(s, band) > 0
 }
 
-// leverageUpReceive is the same-batch capacity-sized borrow toward the
-// target's level, 0 without an approval.
 func leverageUpReceive(s Snapshot, t LaneTarget) uint64 {
 	if !t.UpApproved {
 		return 0
@@ -535,8 +451,6 @@ func leverageUpReceive(s Snapshot, t LaneTarget) uint64 {
 	return receive
 }
 
-// targetSummary names every candidate lane's stored inputs for the decision
-// evidence: lane=level[+up][!exit].
 func targetSummary(views []Snapshot, in targetInputs) string {
 	parts := make([]string, 0, len(views))
 	for _, s := range views {
@@ -557,15 +471,12 @@ func targetSummary(views []Snapshot, in targetInputs) string {
 	return strings.Join(parts, ",")
 }
 
-// Decide is step(chain, target): the next atomic transaction toward the
-// working lane's target (s.Target), or a hold.
 func Decide(s Snapshot) Decision {
 	return decideSnapshot(s, initializationSnapshotReady)
 }
 
 func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if s.Trustful {
-		// The receipt is the fact: it must be the strategy's.
 		if s.MonitorsArmed && s.Nonterminal == "" && s.StrategyReceiptIntegrityFault {
 			return monitorHold(s, "strategy_receipt_integrity")
 		}
@@ -607,8 +518,6 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	}
 	hard := hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS)
 	t := s.Target
-	// Risk first: one down step back to the level's LTV.
-	// (LTV is 0 without debt.)
 	if s.HasPosition && s.LTVBPS >= hard {
 		return d(DeleverRouteStep, hardLTVDeleverReason, stepDownMarker)
 	}
@@ -620,13 +529,10 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	if !s.Trustful && s.VoltrStrategyIdleRaw > 0 {
 		return d(VoltrRestoreIdle, "withdrawal_staged", s.VoltrStrategyIdleRaw)
 	}
-	// Strategy custody is empty here (restored above), so a report observes
-	// it empty.
 	report := func(reason string) Decision { return d(ReportNAV, reason, 0) }
 	if !s.Trustful && s.PostMutationNAVRequired && !withdrawalIdleUnderfunded(s) {
 		return report("post_mutation_nav_due")
 	}
-	// Debt 0: term maturity or the operator exit.
 	if t.Level == 1 && s.PositionDebtRaw > 0 {
 		return d(DeleverRouteStep, debtZeroReason, stepDownMarker)
 	}
@@ -640,7 +546,6 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 			return next
 		}
 	}
-	// A rotation's release, at the source's own level.
 	if t.RepayRaw > 0 {
 		return d(DeleverRouteStep, rotateRepayReason, t.RepayRaw)
 	}
@@ -664,7 +569,6 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	}
 	if t.MoveRaw > 0 {
 		if !s.OverflowObligationPresent {
-			// The overflow lane's obligation comes first; it moves no money.
 			return Decision{Action: InitializeKaminoObligation, Reason: "multiply_obligation_missing", StrategyKey: t.MoveTo,
 				IdempotencyKey: fmt.Sprintf("%s:initialize:%s", s.ObservationID, t.MoveTo)}
 		}
@@ -676,9 +580,6 @@ func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decisio
 	return inboundStep(s, t, hard, d)
 }
 
-// outboundStep moves the working lane's custody and the vault's Squads cash
-// toward Voltr, then frees what the target releases; false when nothing is
-// left to move.
 func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decision) (Decision, bool) {
 	if s.CollateralIdleRaw > partialWithdrawalDustRaw {
 		if !laneSwap(s.RouteLane, SwapCollateralToStableStep) {
@@ -697,8 +598,6 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		return d(StageSquadsToVoltr, outboundStageReason, s.SquadsIdleRaw), true
 	}
 	if t.EquityZero && s.PositionDebtRaw == 0 && s.PositionCollateralRaw > partialWithdrawalDustRaw {
-		// One step withdraws and converts it to USDC: none of it waits in a
-		// custody other lanes share.
 		return d(DeleverRouteStep, exitWithdrawReason, stepDownMarker), true
 	}
 	if t.ReleaseRaw > 0 {
@@ -711,7 +610,6 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 		return d(DeleverRouteStep, releaseReason, t.ReleaseRaw), true
 	}
 	if shortfall := withdrawalShortfallRaw(s); t.Rule == ruleWithdrawal && shortfall > 0 {
-		// Nothing the target may touch is left to free.
 		if s.StrategyNAVRaw == 0 {
 			return d(HoldManualRecovery, "withdrawal_conservation_shortfall", shortfall), true
 		}
@@ -720,12 +618,7 @@ func outboundStep(s Snapshot, t LaneTarget, d func(Action, string, int64) Decisi
 	return Decision{}, false
 }
 
-// inboundStep moves cash and custody into the working lane, then levers it
-// toward its level.
 func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, int64) Decision) Decision {
-	// A flat lane's Squads cash is an entry's allocation. It returns to
-	// Voltr when the lane cannot take all of it; without a current entry it
-	// waits for the selector (a withdrawal stages it).
 	if !s.HasPosition && !laneInFlight(s) && s.SquadsIdleRaw > 0 {
 		if min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) < s.SquadsIdleRaw || s.LiquidationThresholdBPS <= 0 || hard <= laneCeilingLTVBPS(s.RouteLane) {
 			return d(StageSquadsToVoltr, returnCashReason, s.SquadsIdleRaw)
@@ -737,8 +630,6 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 	if hard <= laneCeilingLTVBPS(s.RouteLane) && (s.HasPosition || s.CollateralIdleRaw > 0 || s.SquadsIdleRaw > 0) {
 		return d(HoldManualRecovery, "invalid_entry_ltv", 0)
 	}
-	// Squads cash the target gives this lane (rule 5) converts to its
-	// collateral; beside a USDC debt, through the debt-to-collateral leg.
 	if s.SquadsIdleRaw > 0 && (t.Rule == ruleEntry || t.Rule == ruleCustody) {
 		if sharedUSDCDebt(s.RouteLane) && s.PositionDebtRaw > 0 {
 			return d(SwapDebtToCollateralStep, stepResidueReason, s.SquadsIdleRaw)
@@ -748,7 +639,6 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 		}
 		return d(SwapStableToCollateralStep, topupSwapReason, s.SquadsIdleRaw)
 	}
-	// Collateral a deposit takes deposits beside the position.
 	if laneInFlight(s) {
 		if s.MinimumCollateralDepositRaw <= 0 {
 			return d(Hold, holdStale, 0)
@@ -768,7 +658,6 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 		if t.EntryRaw <= 0 {
 			return d(Hold, holdStale, 0)
 		}
-		// Beside a position the deposit's room is the reserve's.
 		room, reason := min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw), entryAllocationReason
 		if s.HasPosition {
 			room, reason = s.TopupDepositRoomRaw, topupAllocationReason
@@ -778,11 +667,9 @@ func inboundStep(s Snapshot, t LaneTarget, hard int64, d func(Action, string, in
 		}
 		return d(VoltrAllocateToSquads, reason, t.EntryRaw)
 	}
-	// Squads cash no current selector destination takes waits for one.
 	if t.Rule == ruleHold && s.HasPosition && s.SquadsIdleRaw > 0 {
 		return d(Hold, holdStale, 0)
 	}
-	// The target wants a move the chain has no room for.
 	if t.UpApproved && leverageUpLevel(withLevel(s, t.Level)) > 0 {
 		return d(Hold, holdNoRoom, 0)
 	}
@@ -794,11 +681,8 @@ func withLevel(s Snapshot, level float64) Snapshot {
 	return s
 }
 
-// custodyDiscipline fails closed when the strategy custody balance is not
-// exactly the amount this worker last staged into Voltr for the route. Voltr
-// sweeps the entire custody on restore and books that balance into its own
-// total value, so an unexplained balance is manual recovery and never an
-// amount the planner may infer from a custody read.
+// custodyDiscipline: Voltr's restore sweeps the entire strategy custody and
+// books it into its own total value, so custody must equal the staged amount.
 func custodyDiscipline(s Snapshot) (Decision, bool) {
 	if s.Nonterminal != "" || s.VoltrStrategyIdleRaw <= 0 {
 		return Decision{}, false
@@ -816,9 +700,6 @@ func custodyDiscipline(s Snapshot) (Decision, bool) {
 // the next leg would fund. It clears by itself once the account exists.
 const obligationAbsentHoldReason = "obligation_absent"
 
-// obligationPrerequisiteHold initializes a lane's absent obligation before a
-// flat vault's entry deposits into it; any other deposit into an absent
-// obligation holds (Kamino would refuse it).
 func obligationPrerequisiteHold(s Snapshot, initializationReady func(Snapshot) bool) (Decision, bool) {
 	if !s.ObligationPresenceKnown || s.ObligationPresent || (s.Target.Rule != ruleEntry && s.Target.Rule != ruleCustody && !laneInFlight(s)) {
 		return Decision{}, false
@@ -831,9 +712,6 @@ func obligationPrerequisiteHold(s Snapshot, initializationReady func(Snapshot) b
 		IdempotencyKey: fmt.Sprintf("%s:%s:%d", s.ObservationID, obligationAbsentHoldReason, 0)}, true
 }
 
-// overflowReleaseValueRaw is the most collateral value an overflow source
-// moves without repaying: down to its cap's LTV (debt / (collateral - R)),
-// and below the 90% of its equity that keeps it a lane.
 func overflowReleaseValueRaw(s Snapshot) int64 {
 	if s.PositionCollateralValueRaw <= 0 || s.PositionDebtValueRaw < 0 {
 		return 0

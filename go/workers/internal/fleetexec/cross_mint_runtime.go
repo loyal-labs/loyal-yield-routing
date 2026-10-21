@@ -21,8 +21,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// The root adapts C's concrete finalized policy verifier. This capability has
-// no signer, send method or authority to alter the persisted transaction.
 type CrossMintFirstSendVerifier interface {
 	VerifyCrossMintFirstSend(context.Context, CrossMintFirstSendRequest) error
 }
@@ -47,9 +45,6 @@ type CrossMintActivationSource interface {
 	PrepareCrossMintActivation(context.Context, string) (*CrossMintActivationAdmission, error)
 }
 
-// CrossMintRuntime owns only the retained cross-mint family. Same-mint claims
-// keep their existing owner; fresh activation comes last, after recovery and
-// continuation, and still passes the atomic source-owned store admission.
 type CrossMintRuntime struct {
 	config     Config
 	store      *Store
@@ -75,8 +70,6 @@ func NewCrossMintRuntime(ctx context.Context, config Config, store *Store, contr
 	return runtime, nil
 }
 
-// NewCrossMintRecoveryRuntime owns existing signed packets without a signing
-// key. It cannot create a continuation or activation, even if a source is set.
 func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Store, client *chain.Client, verifier CrossMintFirstSendVerifier) (*CrossMintRuntime, error) {
 	if err := config.validate(); err != nil {
 		return nil, err
@@ -87,7 +80,6 @@ func NewCrossMintRecoveryRuntime(ctx context.Context, config Config, store *Stor
 	return &CrossMintRuntime{config: config, store: store, accounts: client, history: client, status: client, receipts: client, chain: client, verifier: verifier}, nil
 }
 
-// Configure before Run. The root retains dependency and pool lifecycles.
 func (r *CrossMintRuntime) SetActivationSource(source CrossMintActivationSource) {
 	r.admission = source
 }
@@ -122,7 +114,7 @@ func (r *CrossMintRuntime) Tick(ctx context.Context) (advanced int, err error) {
 	}
 	for _, l := range leases {
 		e = r.handle(ctx, l)
-		if errors.Is(e, chain.ErrBehind) { // Not yet: hand this leg back, go on to the others.
+		if errors.Is(e, chain.ErrBehind) {
 			if e = r.store.releaseNotYet(ctx, l, 5*time.Second); e == nil {
 				continue
 			}
@@ -167,9 +159,6 @@ func (r *CrossMintRuntime) Tick(ctx context.Context) (advanced int, err error) {
 	return advanced + 1, nil
 }
 
-// Health describes this configured owner, not just a successful SQL poll.
-// Manual uncertainty, unsupported payers and foreign/expired ownership remain
-// closed. RPC frontiers must cover every durable finalized custody anchor.
 func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error {
 	deadline, err := r.store.RenewClaimLease(ctx, l, r.config.LeaseTTL)
 	if err != nil {
@@ -183,8 +172,6 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 	if l.Submission.State == StateReconciliationPending {
 		return r.reconcile(workCtx, l)
 	}
-	// One height-first classification, shared with land(); expiry still
-	// needs the custody proof before the leg may go terminal.
 	out, err := chain.Observe(workCtx, r.chain, r.attempt(l))
 	if err != nil {
 		return err
@@ -256,9 +243,6 @@ func (r *CrossMintRuntime) attempt(l SubmissionLease) chain.Attempt {
 		LastValidBlockHeight: uint64(l.Submission.LastValidBlockHeight), Required: chain.Finalized}
 }
 
-// land resends the leg's exact bytes until they finalize or expire. The first
-// send of an unsent leg is recorded with its full custody recheck; later sends
-// only count. If the lease window ends first, the next claim lands again.
 func (r *CrossMintRuntime) land(workCtx, ctx context.Context, l SubmissionLease, first *CrossMintMovement) error {
 	out, err := chain.Land(workCtx, r.chain, r.attempt(l), resendEvery, func(sendCtx context.Context) error {
 		if first != nil {
@@ -292,13 +276,11 @@ func (r *CrossMintRuntime) land(workCtx, ctx context.Context, l SubmissionLease,
 		r.config.Facts.Failed(engine.FamilyFleet, "transaction_failed")
 		return fmt.Errorf("%s; custody and capacity retained: %s", reason, out.Err)
 	default:
-		// Not terminal: the custody proof decides; its row is counted there.
 		height, slot := int64(out.BlockHeight), int64(out.ContextSlot)
 		return r.store.deferCrossMintStatus(workCtx, l, &slot, &height, "expiry_requires_finalized_custody_and_history", true)
 	}
 }
 
-// recordCrossMintResend counts one more send of an already-sent leg.
 func (s *Store) recordCrossMintResend(ctx context.Context, l SubmissionLease) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET submission_state='submitted',submitted_at=COALESCE(submitted_at,clock_timestamp()),broadcast_count=broadcast_count+1,last_broadcast_at=clock_timestamp(),last_status_checked_at=clock_timestamp(),error_detail='broadcast_intent_persisted',updated_at=clock_timestamp() WHERE id=$1 AND confirmation_lease_owner=$2 AND confirmation_fencing_token=$3 AND confirmation_lease_expires_at>clock_timestamp() AND broadcast_count>0 AND submission_state IN ('signed','submitted') AND movement_leg IN ('withdraw','swap','deposit')`, l.Submission.ID, l.Owner, l.FencingToken)
 	if err != nil {
@@ -311,8 +293,6 @@ func (s *Store) recordCrossMintResend(ctx context.Context, l SubmissionLease) er
 }
 
 func (r *CrossMintRuntime) hold(ctx context.Context, l SubmissionLease, reason string, cause error) error {
-	// A node that cannot answer says nothing about custody: Tick hands the
-	// claim back and a later tick asks again.
 	if errors.Is(cause, chain.ErrUnavailable) {
 		return cause
 	}
@@ -357,8 +337,6 @@ func (s *Store) ClaimCrossMintRecoveryWork(ctx context.Context, cluster, owner s
 	return leases, err
 }
 
-// Nonterminal observations cannot release movement capacity or synthesize a
-// receipt. The explicit backoff also prevents ambiguous work spinning forever.
 func (s *Store) deferCrossMintStatus(ctx context.Context, l SubmissionLease, floor, height *int64, reason string, ambiguous bool) error {
 	if floor != nil && *floor <= 0 || height != nil && *height <= l.Submission.LastValidBlockHeight {
 		return errors.New("expiry observation lacks positive slot or expired height")
@@ -626,9 +604,6 @@ func sameCrossMintAnchorAmounts(a, b CrossMintBalanceAnchors) bool {
 	return true
 }
 
-// Observe every token anchor and the reserve/obligation pair in ONE finalized
-// bank. History follows the balance observation, so restoration cannot hide
-// an external debit. The source-backed decoder owns exchange-rate rounding.
 func observeCrossMintBank(ctx context.Context, reader fleet.AccountReader, history historyReader, m CrossMintMovement, expected CrossMintBalanceAnchors, floor, historyAnchor int64, recognized map[string]bool, requireTokenAnchor bool) (CrossMintBalanceAnchors, int64, error) {
 	return observeCrossMintBankWithAnchorPolicy(ctx, reader, history, m, expected, floor, historyAnchor, recognized, requireTokenAnchor, "")
 }
@@ -759,7 +734,6 @@ func crossMintReceiptEffects(receipt chain.Receipt, m CrossMintMovement, pre Cro
 		if anchor == nil {
 			continue
 		}
-		// A balance absent from either side is unknown, never zero.
 		account, keyErr := sdk.PublicKeyFromBase58(anchor.TokenAccount)
 		was, preKnown := receipt.Pre[account]
 		is, postKnown := receipt.Post[account]
@@ -820,7 +794,7 @@ func (r *CrossMintRuntime) reconcile(ctx context.Context, l SubmissionLease) err
 	if err != nil {
 		return err
 	}
-	known[l.Submission.Signature] = true // Exact finalized wire just verified above.
+	known[l.Submission.Signature] = true
 	bank, _, err := observeCrossMintBank(ctx, r.accounts, r.history, m, pre, slot, slot, known, true)
 	if err != nil {
 		return r.hold(ctx, l, "finalized_custody_history_unproven", err)
@@ -893,8 +867,6 @@ func (s *Store) verifyCrossMintReceiptLoadedAccounts(ctx context.Context, record
 			}
 		}
 	}
-	// The receipt's balance indices resolve only through this durable
-	// index->address evidence.
 	if len(receipt.Keys) != len(keys) {
 		return errors.New("receipt account list differs from durable account index evidence")
 	}

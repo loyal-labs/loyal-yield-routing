@@ -1,7 +1,3 @@
-// Package webauth answers "who is calling" for loyal-web's /api routes, the
-// same two ways apps/web does: a Privy access token, or the wallet session
-// cookie apps/web issues (features/identity/server/session-cookie.ts,
-// session-token.ts).
 package webauth
 
 import (
@@ -43,9 +39,6 @@ type Session struct {
 	SettingsPDA         string `json:"settingsPda,omitempty"`
 }
 
-// Principal is a wallet session with a provisioned smart account: what
-// apps/web's resolveAuthenticatedPrincipalFromRequest returns
-// (features/identity/server/auth-session.ts).
 type Principal struct {
 	WalletAddress       string
 	SmartAccountAddress string
@@ -87,9 +80,7 @@ func New(cfg Config) (*Verifier, error) {
 }
 
 var (
-	ErrUnauthenticated = errors.New("unauthenticated")
-	// ErrNotWalletPrincipal is a valid session that is not a provisioned
-	// Solana wallet (apps/web's AuthGatewayError, status 403).
+	ErrUnauthenticated    = errors.New("unauthenticated")
 	ErrNotWalletPrincipal = errors.New("not a wallet principal")
 )
 
@@ -100,7 +91,6 @@ func sessionCookieName(r *http.Request) string {
 	return WalletSessionCookie
 }
 
-// Session verifies the session cookie and returns its claims.
 func (v *Verifier) Session(r *http.Request) (Session, error) {
 	cookie, err := r.Cookie(sessionCookieName(r))
 	if err != nil || len(v.session) == 0 {
@@ -153,8 +143,6 @@ func (v *Verifier) Principal(r *http.Request) (Principal, error) {
 	return Principal{WalletAddress: s.WalletAddress, SmartAccountAddress: s.SmartAccountAddress, SettingsPDA: s.SettingsPDA}, nil
 }
 
-// PrivyUser verifies a Privy access token (Authorization bearer or the
-// privy-token cookie) and returns the Privy user id.
 func (v *Verifier) PrivyUser(r *http.Request) (string, error) {
 	if v.privy == nil {
 		return "", ErrUnauthenticated
@@ -193,8 +181,6 @@ func str(claims map[string]any, key string) string {
 	return s
 }
 
-// privyKeys caches Privy's JWKS for 15 minutes and keeps the last good set
-// when a refresh fails (wen server/internal/auth/auth.go).
 type privyKeys struct {
 	url     string
 	mu      sync.Mutex

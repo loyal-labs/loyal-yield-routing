@@ -5,8 +5,6 @@ import (
 	"slices"
 )
 
-// These planner values mirror the source packed allocator. They contain only
-// catalog/membership/capacity, with no RPC send or signing capability.
 type LookupPackingPolicy struct {
 	HardCapacity, LargestAtomicExpansion, SafetyMargin int
 	GrowthReservation, MaximumVaultCohort              int
@@ -133,8 +131,6 @@ func allocateLookupVault(demand LookupVaultDemand, candidates []LookupShardCandi
 	return LookupAllocation{Generation: demand.NextGeneration, ShardOrdinal: demand.NextShardOrdinal, Missing: lookupSortedSet(desired), ReservedCapacity: reserved, ProjectedOccupied: len(desired), ProjectedCommitment: reserved, HighWater: highWater, Dedicated: dedicated}, nil
 }
 
-// Catalog publication is append-packed in persisted ordinal order. Reordering
-// its confirmed prefix requires a later generation, never an in-place extension.
 func lookupCatalogShards(ordered []string, capacity int) ([][]string, error) {
 	if capacity <= 0 || capacity > 256 || len(lookupAddressSet(ordered)) != len(ordered) {
 		return nil, errors.New("lookup catalog capacity or ordered uniqueness invalid")

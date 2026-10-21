@@ -10,10 +10,6 @@ import (
 
 var ErrLookupPaused = errors.New("lookup source provisioning is paused")
 
-// RecordLookupSend counts one send of the operation's signed packet before
-// the bytes leave. The first send also takes the Rust 0021 exact-signature
-// permit and rechecks the source controls; resends of the same bytes only
-// count, because the permit already covers that signature.
 func (s *Store) RecordLookupSend(ctx context.Context, operation LookupOperation, attempt LookupAttempt) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		paused, err := lookupControlLock(ctx, tx, attempt.Intent, operation.Lease.Owner)
@@ -60,9 +56,6 @@ func (s *Store) RecordLookupSend(ctx context.Context, operation LookupOperation,
 	})
 }
 
-// deferLookupRecovery changes only scheduling and retains the signed packet,
-// as Rust's poll deferral does. A pause also moves a never-sent packet to
-// needs_reconcile.
 func (s *Store) deferLookupRecovery(ctx context.Context, operation LookupOperation, reason string, paused bool) error {
 	if len(reason) > 500 {
 		reason = reason[:500]
@@ -77,7 +70,6 @@ func (s *Store) deferLookupRecovery(ctx context.Context, operation LookupOperati
 	return nil
 }
 
-// releaseLookupNotYet hands a lease back for a later tick, uncounted and with no error.
 func (s *Store) releaseLookupNotYet(ctx context.Context, operation LookupOperation) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.lookup_table_operations SET operation_state=CASE WHEN operation_state='leased' THEN 'retry_wait' ELSE operation_state END,next_attempt_at=clock_timestamp()+interval '5 seconds',attempt_count=attempt_count-1,lease_owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, operation.Intent.OperationID, operation.Lease.Owner, operation.Lease.FencingToken)
 	if err == nil && tag.RowsAffected() != 1 {
@@ -86,8 +78,6 @@ func (s *Store) releaseLookupNotYet(ctx context.Context, operation LookupOperati
 	return err
 }
 
-// markLookupDrift is Rust's NeedsManualReconcile: the packet's chain effect
-// does not match its intent, so it is neither retried nor applied.
 func (s *Store) markLookupDrift(ctx context.Context, operation LookupOperation, attempt LookupAttempt, reason string) error {
 	if len(reason) > 500 {
 		reason = reason[:500]

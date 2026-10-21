@@ -142,9 +142,6 @@ func snapshotIdle(v FleetVault) (*big.Int, bool) {
 }
 func numeric39(n *big.Int) bool { return n.Sign() >= 0 && len(n.String()) <= 39 }
 
-// AggregateAllocation is a forward observation, never a historical backfill.
-// Missing, invalid and stale vaults remain explicit coverage categories. An
-// unknown unit never enters reserve or idle totals as zero-valued permission.
 func AggregateAllocation(vaults []FleetVault, now time.Time) (AllocationSample, error) {
 	if now.IsZero() {
 		return AllocationSample{}, errors.New("allocation requires observation time")
@@ -273,8 +270,6 @@ func SnapshotSharePrices(vaults []FleetVault, now time.Time) []SharePrice {
 	return result
 }
 
-// ModelReserve and ModelPoint belong to the public unit-notional simulation.
-// They are never raw money, spend decisions, realized returns or custody proof.
 type ModelReserve struct {
 	Reserve, Mint       string
 	ObservedAt          time.Time
@@ -506,9 +501,6 @@ type StageHealthReport struct {
 	StuckStages              []StageDetection `json:"stuckStages"`
 }
 
-// StageHealth is the Rust health.rs feedback detector over the first cluster
-// aggregate row. Missing state-entry evidence with positive backlog is an
-// immediate invariant violation; absent timestamps never become epoch zero.
 func StageHealth(payload []byte, poll, observation time.Duration, now time.Time) (StageHealthReport, error) {
 	var report StageHealthReport
 	if poll < time.Millisecond || observation < time.Millisecond || poll > time.Duration(math.MaxInt64/2) || now.IsZero() {
@@ -648,8 +640,6 @@ func StageHealth(payload []byte, poll, observation time.Duration, now time.Time)
 	return report, nil
 }
 
-// FleetOrchestrationStatus JSON contract (Yield 0093 dropped the retired Rust
-// planner's sweep columns); SQL view additions are not implicitly published.
 const healthPayloadFields = "cluster opportunity_state opportunity_count principal_usd_micros annual_yield_gain_usd_micros yield_gain_usd_micros_per_hour oldest_created_at oldest_state_entered_at oldest_age_seconds oldest_state_age_seconds expired_lease_count pending_outbox_count pending_submission_count pending_compiled_fee_lamports expiry_check_pending_count effect_ambiguous_count oldest_pending_submission_at oldest_pending_submission_age_seconds sender_submission_count oldest_sender_state_entered_at oldest_sender_state_age_seconds confirmer_submission_count oldest_confirmer_state_entered_at oldest_confirmer_state_age_seconds reconciler_submission_count oldest_reconciler_state_entered_at oldest_reconciler_state_age_seconds planner_registered_at planner_last_seen_at planner_last_seen_age_seconds latest_market_epoch_id latest_market_epoch_key latest_market_slot latest_market_observed_at latest_market_expires_at latest_market_epoch_age_seconds latest_market_epoch_expires_in_seconds latest_market_epoch_expired waiting_alt_opportunity_count waiting_alt_principal_usd_micros waiting_alt_yield_gain_usd_micros_per_hour oldest_waiting_alt_state_entered_at oldest_waiting_alt_state_age_seconds ready_opportunity_count ready_principal_usd_micros ready_yield_gain_usd_micros_per_hour oldest_ready_state_entered_at oldest_ready_state_age_seconds current_epoch_opportunity_count current_epoch_principal_usd_micros current_epoch_recoverable_yield_usd_micros_per_hour current_epoch_submitted_within_10s_yield_ppm current_epoch_submitted_within_2m_yield_ppm current_epoch_submitted_within_10m_yield_ppm current_epoch_confirmed_within_30s_yield_ppm current_epoch_submission_p95_milliseconds current_epoch_confirmation_p95_milliseconds current_epoch_compiled_fee_lamports active_physical_writable_key_count top_physical_writable_key_congestion"
 
 const healthOptionalFields = " opportunity_state oldest_created_at oldest_state_entered_at oldest_age_seconds oldest_state_age_seconds oldest_pending_submission_at oldest_pending_submission_age_seconds oldest_sender_state_entered_at oldest_sender_state_age_seconds oldest_confirmer_state_entered_at oldest_confirmer_state_age_seconds oldest_reconciler_state_entered_at oldest_reconciler_state_age_seconds planner_registered_at planner_last_seen_at planner_last_seen_age_seconds latest_market_epoch_id latest_market_epoch_key latest_market_slot latest_market_observed_at latest_market_expires_at latest_market_epoch_age_seconds latest_market_epoch_expires_in_seconds latest_market_epoch_expired oldest_waiting_alt_state_entered_at oldest_waiting_alt_state_age_seconds oldest_ready_state_entered_at oldest_ready_state_age_seconds current_epoch_submission_p95_milliseconds current_epoch_confirmation_p95_milliseconds "
@@ -685,7 +675,7 @@ func normalizeHealthPayload(payload []byte) ([]byte, error) {
 				if err := json.Unmarshal(value, &v); err != nil {
 					return nil, err
 				}
-			case "top_physical_writable_key_congestion": // Validated below.
+			case "top_physical_writable_key_congestion":
 			default:
 				if !strings.HasSuffix(key, "_at") {
 					var v int64

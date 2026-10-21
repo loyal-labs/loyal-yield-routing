@@ -25,7 +25,7 @@ type RevalidationLease struct {
 	VaultPubkey                     string
 	VaultIndex                      uint8
 	PolicyAccount                   string
-	SetupPolicyAccount              string // active setup policy: init_obligation authority
+	SetupPolicyAccount              string
 	DelegatedSigners                []string
 	SourceReserve                   string
 	TargetReserve                   string
@@ -43,8 +43,6 @@ type RevalidationLease struct {
 	ExecutionPlan                   json.RawMessage
 }
 
-// ClaimRevalidation leases one runnable/recoverable row with SKIP LOCKED. A
-// crashed lease is only reclaimed in the same revalidation lane.
 func (s *Store) ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, delegatedSigner ...string) (*RevalidationLease, error) {
 	signer := ""
 	if len(delegatedSigner) > 0 {
@@ -53,9 +51,6 @@ func (s *Store) ClaimRevalidation(ctx context.Context, cluster, owner string, tt
 	return s.claimRoutePreparation(ctx, cluster, owner, ttl, includeReady, crossMintEnabled, signer, "", "revalidate")
 }
 
-// ClaimCrossMintActivation only takes untouched cross-mint reserve candidates.
-// Same-mint fused admission and already signed movement custody remain owned by
-// their existing claims. Expired execute leases are recoverable only pre-decision.
 func (s *Store) ClaimCrossMintActivation(ctx context.Context, cluster, owner string, ttl time.Duration, signer string) (*RevalidationLease, error) {
 	if signer == "" {
 		return nil, errors.New("cross-mint activation requires delegated signer")
@@ -63,8 +58,6 @@ func (s *Store) ClaimCrossMintActivation(ctx context.Context, cluster, owner str
 	return s.claimRoutePreparation(ctx, cluster, owner, ttl, true, true, signer, "cross_mint_jupiter", "execute")
 }
 
-// ClaimCrossMintPreflight leaves every other family with its current owner.
-// Its revalidation lease cannot authorize a signed movement admission.
 func (s *Store) ClaimCrossMintPreflight(ctx context.Context, cluster, owner string, ttl time.Duration, signer string) (*RevalidationLease, error) {
 	if signer == "" {
 		return nil, errors.New("cross-mint preflight requires delegated signer")
@@ -209,12 +202,6 @@ WHERE opportunity.id=$1 AND opportunity.idempotency_key=$2 AND opportunity.optim
 	return nil
 }
 
-// DeferRevalidation is the revalidate lane's Retry outcome in Rust's
-// finish_fleet_worker_task: the claimed opportunity returns to revalidate two
-// seconds later with its reason and without a lease. It is false, and the row
-// keeps its lease until expiry, when the lease is no longer this one or the
-// opportunity lacks the publication lifetime the deferred commit trigger
-// requires (Rust's Expired outcome; the epoch sweeper retires it).
 func (s *Store) DeferRevalidation(ctx context.Context, lease RevalidationLease, reason string) (bool, error) {
 	if s == nil || s.pool == nil || lease.OpportunityID <= 0 || strings.TrimSpace(reason) == "" {
 		return false, errors.New("invalid revalidation deferral")
@@ -237,7 +224,6 @@ WHERE o.id=$1 AND o.opportunity_state='leased' AND o.lease_kind='revalidate'
 	return tag.RowsAffected() == 1, nil
 }
 
-// ReleaseRevalidationNotYet hands a claim back for a later tick, uncounted and with no reason.
 func (s *Store) ReleaseRevalidationNotYet(ctx context.Context, lease RevalidationLease) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.rebalance_opportunities SET opportunity_state='revalidate',available_at=clock_timestamp()+interval '2 seconds',lease_kind=NULL,lease_owner=NULL,lease_expires_at=NULL,attempt_count=attempt_count-1,updated_at=clock_timestamp()
 WHERE id=$1 AND opportunity_state='leased' AND lease_kind='revalidate' AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>clock_timestamp()`, lease.OpportunityID, lease.Owner, lease.FencingToken)
@@ -247,12 +233,6 @@ WHERE id=$1 AND opportunity_state='leased' AND lease_kind='revalidate' AND lease
 	return err
 }
 
-// ReplanRevalidation ends a claimed opportunity that no longer fits as stale
-// with terminal reason capacity_replan. It leaves the active states, so the
-// planner's committed frontier stops counting its principal and its vault is
-// planned again next cycle; a revalidate lease holds no capacity reservation
-// or conflict lease yet, since only a committed admission takes them. It is
-// false when the lease is no longer this one.
 func (s *Store) ReplanRevalidation(ctx context.Context, lease RevalidationLease) (bool, error) {
 	if s == nil || s.pool == nil || lease.OpportunityID <= 0 {
 		return false, errors.New("invalid capacity re-plan")
@@ -273,9 +253,6 @@ func (s *Store) LoadReusableLookupTables(ctx context.Context, cluster string, va
 	if s == nil || s.pool == nil || cluster == "" || vaultID <= 0 || minimumSlot <= 0 || len(requiredAddresses) == 0 {
 		return nil, errors.New("invalid reusable ALT query")
 	}
-	// Persisted verification establishes the normalized membership baseline; it
-	// need not be from the current evidence slot because the caller reloads and
-	// verifies every scoped candidate from confirmed RPC immediately afterward.
 	rows, err := s.pool.Query(ctx, `
 SELECT route_table.id,route_table.mutation_epoch,route_table.family_id,route_table.generation,
        CASE WHEN family.kind='vault_shards' THEN binding.id ELSE NULL END,route_table.table_address,
@@ -336,11 +313,6 @@ func LockReserves(ctx context.Context, tx pgx.Tx, cluster string, reserves ...st
 	return nil
 }
 
-// admissionCapacity checks, under the reserve locks, that the move fits the
-// reserves the route was built from after every other move in flight through
-// them: the source pays it, the target's deposit limit takes it, and the
-// target's in-flight inflow stays within its 2% frontier. It returns the
-// target inflow already in flight.
 func admissionCapacity(ctx context.Context, tx pgx.Tx, lease RevalidationLease, input RevalidationCommit) (int64, error) {
 	if input.SourceAvailableLiquidityRaw == nil || input.TargetDepositRoomRaw == nil || input.TargetObservedSlot <= 0 || input.TargetObservedSupplyUSDMicros < 0 {
 		return 0, errors.New("fresh reserve capacity evidence is missing")
@@ -372,15 +344,10 @@ type RevalidationCommit struct {
 	ObservedTargetAPYBPS          int64
 	TargetObservedSupplyUSDMicros int64
 	TargetObservedSlot            int64
-	// Fresh chain capacity of the route's reserves (FreshRouteEvidence).
-	SourceAvailableLiquidityRaw *int64
-	TargetDepositRoomRaw        *int64
+	SourceAvailableLiquidityRaw   *int64
+	TargetDepositRoomRaw          *int64
 }
 
-// CommitRevalidation performs every mutable fence and the queue transition in
-// one transaction. Exact message/wire/simulation evidence is inserted before
-// ready/execute becomes visible. A zero-row or changed identity is a fence,
-// never a retry with stale bytes.
 func (s *Store) CommitRevalidation(ctx context.Context, lease RevalidationLease, input RevalidationCommit) error {
 	if input.Disposition == "fused_execute" {
 		return errors.New("fused admission requires fresh typed execution evidence")
@@ -556,17 +523,11 @@ type provisioningAddress struct {
 	Writable      bool
 }
 
-// upsertWaitingALTRequest mirrors the retained Rust handoff: the immutable
-// address demand is inserted, sealed, and linked to its opportunity in the
-// same transaction that makes waiting_alt visible.
 func upsertWaitingALTRequest(ctx context.Context, tx pgx.Tx, lease RevalidationLease, prep RoutePreparation, missing []string) (int64, error) {
 	shared, vault, err := waitingALTManifestAddresses(prep, missing)
 	if err != nil {
 		return 0, err
 	}
-	// Finalized external tables can cover an identity account and remove it
-	// from durable demand. Bind the source lease to the builder's original
-	// full typed accounts; persist and catalog-check only the durable vectors.
 	sourceShared, sourceVault, err := ALTManifestSourceAddresses(prep.Manifest)
 	if err != nil {
 		return 0, err
@@ -615,8 +576,6 @@ WHERE cluster=$1 AND vault_id=$2 AND requirements_fingerprint=$3
 FOR UPDATE`, lease.Cluster, lease.VaultID, prep.RequirementsFingerprint).Scan(&requestID, &existingSharedHash, &existingVaultHash, &sharedCount, &vaultCount, &sealed, &status, &errorCode); err != nil {
 		return 0, fmt.Errorf("load existing ALT provisioning request: %w", err)
 	}
-	// Source lookup_tables.rs13217: identical requirements may serve different
-	// route shapes. Preserve the first route fingerprint as immutable audit data.
 	if !sealed || existingSharedHash != sharedHash || existingVaultHash != vaultHash || sharedCount != len(shared) || vaultCount != len(vault) {
 		return 0, errors.New("sealed ALT provisioning request idempotency collision")
 	}
@@ -753,12 +712,6 @@ func lockWaitingALTIdentity(ctx context.Context, tx pgx.Tx, lease RevalidationLe
 	if pubkey != lease.VaultPubkey || index != int16(lease.VaultIndex) {
 		return errors.New("ALT manifest vault identity changed")
 	}
-	// The vault's setup policy is bound to the vault exactly like its route
-	// policy: a route that opens a target obligation runs init under it, and
-	// Rust names it in every route manifest (fleet-worker lib.rs
-	// same_mint_outer_lookup_table_requirements and
-	// policy_lookup_table_manifest). The route_policies row check below still
-	// proves each named policy belongs to this vault.
 	policies := map[string]bool{lease.PolicyAccount: true}
 	if lease.SetupPolicyAccount != "" {
 		policies[lease.SetupPolicyAccount] = true
@@ -803,10 +756,6 @@ func lockWaitingALTIdentity(ctx context.Context, tx pgx.Tx, lease RevalidationLe
 	return nil
 }
 
-// LockSharedALTManifestCoverage ports lookup_tables.rs4051/10785/11111. The
-// caller owns its source fence and transaction. Arbitrary table membership is
-// insufficient: typed route requirements must fit the current catalog and its
-// exact active physical generation, with no append remnants or pending mutation.
 func LockSharedALTManifestCoverage(ctx context.Context, tx pgx.Tx, cluster string, addresses []ALTManifestAddress) error {
 	rows := make([]provisioningAddress, len(addresses))
 	for i, a := range addresses {
@@ -824,7 +773,9 @@ func lockWaitingALTSharedCatalog(ctx context.Context, tx pgx.Tx, cluster string,
 			return errors.New("shared ALT demand is not normalized typed vector")
 		}
 	}
-	// Lock source hierarchy one level at a time: family -> head -> physical.
+	if _, err := tx.Exec(ctx, `SELECT h.family_id FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_families f ON f.id=h.family_id WHERE f.cluster=$1 AND f.kind='shared_market' AND f.desired_state='active' FOR SHARE OF h`, cluster); err != nil {
+		return err
+	}
 	var familyID int64
 	var generation *int32
 	var highWater int32
@@ -997,8 +948,6 @@ func provisioningAddressesHash(addresses []provisioningAddress) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-// AdmissionEconomics is a move's economics at admission: its target APY
-// diluted by the inflow already in flight into the fresh target supply.
 type AdmissionEconomics struct {
 	ObservedTargetAPYBPS  int64
 	ProjectedTargetAPYBPS int64
@@ -1008,9 +957,6 @@ type AdmissionEconomics struct {
 	FeeCapLamports        int64
 }
 
-// ComputeAdmissionEconomics prices the move with the plan's fresh APYs over
-// the fresh target supply plus committed in-flight inflow and this move. A
-// move no longer worth making is a CapacityReplan.
 func ComputeAdmissionEconomics(lease RevalidationLease, executionPlan json.RawMessage, observedSupply, committed int64) (AdmissionEconomics, error) {
 	var plan struct {
 		ObservedTargetAPYBPS            int64 `json:"observed_target_apy_bps"`

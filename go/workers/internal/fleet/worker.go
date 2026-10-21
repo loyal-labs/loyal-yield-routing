@@ -12,7 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// ReserveCatalog lists the routable reserves.
 type ReserveCatalog interface {
 	LoadCatalog(context.Context) ([]ReserveIdentity, error)
 }
@@ -36,9 +35,6 @@ func NewWorker(config Config, store *Store, client *chain.Client, catalog Reserv
 	return &Worker{config: config, store: store, rpc: client, catalog: catalog, facts: facts}, nil
 }
 
-// runtimeCycle plans once; a completed cycle is fleet progress and the
-// planner lane's success. The executor also marks fleet progress every tick,
-// so only the lane fact shows a planner failing every cycle.
 func (w *Worker) runtimeCycle(ctx context.Context) {
 	if err := w.planningCycle(ctx); err != nil {
 		logEvent(map[string]any{"event": "kamino_fleet_planner_cycle_failed", "errorCategory": "cycle", "error": LogErrorText(err)})
@@ -62,8 +58,6 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-// planningCycle is one tick: read the registry, read the chain once, plan,
-// and make the queue the plan.
 func (w *Worker) planningCycle(ctx context.Context) error {
 	if err := w.store.RegisterFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
 		return err
@@ -112,8 +106,6 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	if err := w.store.HeartbeatFleetPlanningCluster(ctx, w.config.Cluster); err != nil {
 		return err
 	}
-	// Every routable reserve is set each cycle, zero included, so capital
-	// that stops being movable reads 0 rather than its last value.
 	for address := range snapshot.Reserves {
 		w.facts.FleetMovableCapital(address, float64(fleetPlan.Movable[address])/1e6)
 	}
@@ -124,8 +116,6 @@ func (w *Worker) planningCycle(ctx context.Context) error {
 	return nil
 }
 
-// Log one count per reason, not a fleet-sized map of vault IDs every cycle.
-// Keep the detailed per-vault results in FleetPlan for callers that need them.
 func rejectionCounts(rejections map[int64]string) map[string]int {
 	counts := make(map[string]int)
 	for _, reason := range rejections {

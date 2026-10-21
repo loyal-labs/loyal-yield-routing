@@ -8,8 +8,6 @@ import (
 
 const selectorLiveSampleInterval = 15 * time.Second
 
-// This is a selector-only gate, never M7 or a manual-recovery latch. Compare
-// the HWM to the coherent BOOK, not independently accruing current NAV.
 func selectorFeeBaselineKnown(s Snapshot) bool {
 	if !s.VoltrHighWaterMarkKnown || !approvedVoltrFeeTerms(s) || s.VoltrTotalValueRaw < 0 ||
 		s.LPSupplyInclFeesRaw <= 0 || s.FeeAccumulatorRaw < 0 || s.FeeAccumulatorRaw > s.LPSupplyInclFeesRaw {
@@ -51,14 +49,12 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 			return e.Gain, true
 		}
 		wealth := float64(s.TotalVaultNAVRaw)
-		return wealth * performanceFeeForecast(e.Gain/wealth, s.ApprovedAdminPerformanceFeeBPS), true // projection only
+		return wealth * performanceFeeForecast(e.Gain/wealth, s.ApprovedAdminPerformanceFeeBPS), true
 	}
 	if horizon <= 0 || !selectorFeeBaselineKnown(s) || !finite(idle) || idle < 0 ||
 		!finite(e.PositiveIncome) || e.PositiveIncome < 0 || e.InitialNAV <= 0 {
 		return 0, false
 	}
-	// A vault approved at no fee crystallizes nothing: no fee, no rounding,
-	// no fee LP, so nothing is reserved.
 	if s.ApprovedAdminPerformanceFeeBPS == 0 {
 		return e.Gain, true
 	}
@@ -69,8 +65,6 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 	if !finite(maxNAV) || !finite(minNAV) || !finite(income) || maxNAV > 1<<53 || minNAV <= 0 || income > 1<<53 {
 		return 0, false
 	}
-	// Ceil the book wealth above HWM exactly. Equality to the rounded Q48
-	// baseline may leave <one Q48 unit per LP; it is not a zero-fee premise.
 	scale := new(big.Int).Lsh(big.NewInt(1), 48)
 	dust := new(big.Int).Lsh(big.NewInt(s.VoltrTotalValueRaw), 48)
 	dust.Sub(dust, new(big.Int).Mul(littleInt(s.VoltrHighWaterMarkBits[:]), big.NewInt(s.LPSupplyInclFeesRaw)))

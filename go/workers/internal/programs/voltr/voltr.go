@@ -1,8 +1,3 @@
-// Package voltr holds the Voltr vault program facts the workers use, each
-// defined once: the program ID, the account layouts we read (Vault,
-// StrategyInitReceipt and RequestWithdrawVaultReceipt), the withdrawal
-// receipt PDA and the deposit_strategy and withdraw_strategy instructions we
-// send.
 package voltr
 
 import (
@@ -18,7 +13,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
-// ProgramID is the Voltr vault program.
 var ProgramID = solana.MustPublicKeyFromBase58("vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8")
 
 // Anchor discriminators: sha256("account:<Name>")[:8] and
@@ -31,14 +25,12 @@ var (
 	WithdrawStrategyDiscriminator  = [8]byte{31, 45, 162, 5, 193, 217, 134, 188}
 )
 
-// Deployed account sizes.
 const (
 	VaultSize             = 928
 	StrategyReceiptSize   = 192
 	WithdrawalReceiptSize = 112
 )
 
-// Vault is the part of a Vault account the workers read.
 type Vault struct {
 	AssetMint, IdleATA, LPMint, Manager, Admin                                    solana.PublicKey
 	TotalValueRaw, LockedProfitDegradationSeconds, WithdrawalWaitingPeriodSeconds uint64
@@ -51,8 +43,6 @@ type Vault struct {
 	LastUpdatedLockedProfitRaw, LastLockedProfitReportUnix                        uint64
 }
 
-// DecodeVault decodes a Vault of at least the deployed size; bytes an
-// upgrade appends are not read.
 func DecodeVault(account *chain.Account) (Vault, error) {
 	if !funded(account, VaultDiscriminator) || len(account.Data) < VaultSize {
 		return Vault{}, errors.New("account is not a funded Voltr Vault of the deployed layout")
@@ -70,8 +60,6 @@ func DecodeVault(account *chain.Account) (Vault, error) {
 	}, nil
 }
 
-// StrategyReceipt is a StrategyInitReceipt: one strategy's position in a
-// vault.
 type StrategyReceipt struct {
 	Vault, Strategy, AdaptorProgram solana.PublicKey
 	PositionValueRaw, LastUpdatedTS uint64
@@ -82,8 +70,6 @@ type StrategyReceipt struct {
 	CustodyTrackedRaw uint64
 }
 
-// DecodeStrategyReceipt decodes a StrategyInitReceipt of the deployed size
-// whose reserved bytes, other than the custody balance, are zero.
 func DecodeStrategyReceipt(account *chain.Account) (StrategyReceipt, error) {
 	if !funded(account, StrategyReceiptDiscriminator) || len(account.Data) != StrategyReceiptSize {
 		return StrategyReceipt{}, errors.New("account is not a funded Voltr StrategyInitReceipt of the deployed size")
@@ -99,8 +85,6 @@ func DecodeStrategyReceipt(account *chain.Account) (StrategyReceipt, error) {
 	}, nil
 }
 
-// WithdrawalReceipt is a RequestWithdrawVaultReceipt: one user's pending
-// withdrawal.
 type WithdrawalReceipt struct {
 	Vault, User   solana.PublicKey
 	LPEscrowedRaw uint64
@@ -140,14 +124,10 @@ func DecodeWithdrawalReceipt(account *chain.Account) (WithdrawalReceipt, error) 
 	return r, nil
 }
 
-// WithdrawalReceiptAddress derives ["request_withdraw_vault_receipt", vault,
-// user].
 func WithdrawalReceiptAddress(vault, user solana.PublicKey) (solana.PublicKey, uint8, error) {
 	return solana.FindProgramAddress([][]byte{[]byte("request_withdraw_vault_receipt"), vault[:], user[:]}, ProgramID)
 }
 
-// WithdrawalReceiptFilters select every withdrawal receipt of vault in a
-// getProgramAccounts scan of ProgramID.
 func WithdrawalReceiptFilters(vault solana.PublicKey) []rpc.RPCFilter {
 	return []rpc.RPCFilter{
 		{Memcmp: &rpc.RPCFilterMemcmp{Offset: 0, Bytes: WithdrawalReceiptDiscriminator[:]}},
@@ -155,12 +135,6 @@ func WithdrawalReceiptFilters(vault solana.PublicKey) []rpc.RPCFilter {
 	}
 }
 
-// Strategy is the fixed account set of deposit_strategy and
-// withdraw_strategy; the adaptor's own accounts follow it as remaining
-// accounts. Each instruction's account order is written once, as a
-// squads.AccountSlot list over the key type: the builder reads keys from it,
-// *Allowed reads the squads.Slot each position admits. The adaptor's
-// remaining accounts are the caller's slot list, read the same way.
 type Strategy[T any] struct {
 	Manager, Protocol, Vault, Strategy, AdaptorAddReceipt, StrategyInitReceipt  T
 	VaultAssetIdleAuth, VaultStrategyAuth, AssetMint, LPMint                    T
@@ -172,9 +146,6 @@ type (
 	StrategyAllowed  = Strategy[squads.Slot]
 )
 
-// Offsets in deposit_strategy and withdraw_strategy data: the amount, then
-// the adaptor call, Some(adaptor instruction) and Some(adaptor args), which
-// Voltr forwards to the adaptor.
 const (
 	StrategyAmountOffset      = 8
 	StrategyAdaptorCallOffset = 16
@@ -198,28 +169,18 @@ func withdrawStrategySlots[T any](a Strategy[T]) []squads.AccountSlot[T] {
 	}
 }
 
-// DepositStrategy moves amount of the vault's idle asset into a strategy
-// through its adaptor. adaptorInstruction is the adaptor discriminator Voltr
-// calls; adaptorArgs, when not nil, are the bytes it forwards to it.
 func DepositStrategy(a StrategyAccounts, amount uint64, adaptorInstruction, adaptorArgs []byte, remaining ...squads.AccountSlot[solana.PublicKey]) *solana.GenericInstruction {
 	return strategyInstruction(DepositStrategyDiscriminator, amount, adaptorInstruction, adaptorArgs, metas(append(depositStrategySlots(a), remaining...)))
 }
 
-// DepositStrategyAllowed admits DepositStrategy over the allowed accounts,
-// then the adaptor's remaining accounts, with data predicates after its
-// discriminator.
 func DepositStrategyAllowed(a StrategyAllowed, remaining []squads.AccountSlot[squads.Slot], data ...squads.DataConstraintView) squads.InstructionConstraintView {
 	return allow(DepositStrategyDiscriminator, depositStrategySlots(a), remaining, data)
 }
 
-// WithdrawStrategy moves amount of the vault's asset out of a strategy back
-// to idle through its adaptor, with DepositStrategy's arguments.
 func WithdrawStrategy(a StrategyAccounts, amount uint64, adaptorInstruction, adaptorArgs []byte, remaining ...squads.AccountSlot[solana.PublicKey]) *solana.GenericInstruction {
 	return strategyInstruction(WithdrawStrategyDiscriminator, amount, adaptorInstruction, adaptorArgs, metas(append(withdrawStrategySlots(a), remaining...)))
 }
 
-// WithdrawStrategyAllowed admits WithdrawStrategy as DepositStrategyAllowed
-// admits DepositStrategy.
 func WithdrawStrategyAllowed(a StrategyAllowed, remaining []squads.AccountSlot[squads.Slot], data ...squads.DataConstraintView) squads.InstructionConstraintView {
 	return allow(WithdrawStrategyDiscriminator, withdrawStrategySlots(a), remaining, data)
 }
@@ -233,8 +194,6 @@ func allow(discriminator [8]byte, slots, remaining []squads.AccountSlot[squads.S
 	return squads.Allow(ProgramID, predicates, squads.Slots(ProgramID, append(slots, remaining...)))
 }
 
-// strategyInstruction encodes (amount: u64, instruction_discriminator:
-// Option<Vec<u8>>, additional_args: Option<Vec<u8>>).
 func strategyInstruction(discriminator [8]byte, amount uint64, adaptorInstruction, adaptorArgs []byte, accounts []*solana.AccountMeta) *solana.GenericInstruction {
 	data := binary.LittleEndian.AppendUint64(discriminator[:], amount)
 	for _, option := range [][]byte{adaptorInstruction, adaptorArgs} {
@@ -247,8 +206,6 @@ func strategyInstruction(discriminator [8]byte, amount uint64, adaptorInstructio
 	return solana.NewInstruction(ProgramID, accounts, data)
 }
 
-// funded reports whether account is a live, funded Voltr account of the
-// discriminated type.
 func funded(account *chain.Account, discriminator [8]byte) bool {
 	return account != nil && account.Owner == ProgramID && !account.Executable && account.Lamports > 0 && bytes.HasPrefix(account.Data, discriminator[:])
 }
@@ -271,7 +228,6 @@ func zero(data []byte) bool {
 // strategy's position.
 var TrustfulProgramID = solana.MustPublicKeyFromBase58("3pnpK9nrs1R65eMV1wqCXkDkhSgN18xb1G5pgYPwoZjJ")
 
-// Trustful instruction discriminators (voltrxyz/trustful-scripts IDL).
 var (
 	TrustfulDepositDiscriminator  = [8]byte{117, 73, 131, 148, 12, 99, 191, 180}
 	TrustfulWithdrawDiscriminator = [8]byte{35, 58, 217, 109, 98, 184, 147, 14}
@@ -282,31 +238,20 @@ var (
 // discriminator) and the Some(u32 length) of its additional args.
 const TrustfulEndValueOffset = StrategyAdaptorCallOffset + 1 + 4 + 8 + 1 + 4
 
-// TrustfulCall is the adaptor call and args a Trustful deposit_strategy or
-// withdraw_strategy carries from StrategyAdaptorCallOffset up to its end
-// value: Some(discriminator) then the Some(Vec) length of its 8-byte args.
 func TrustfulCall(discriminator [8]byte) []byte {
 	call := append(binary.LittleEndian.AppendUint32([]byte{1}, 8), discriminator[:]...)
 	return binary.LittleEndian.AppendUint32(append(call, 1), 8)
 }
 
-// TrustfulHoldingAuthority is the Trustful PDA [strategyAuth, strategy] whose
-// token account a withdrawal is paid from.
 func TrustfulHoldingAuthority(strategyAuth, strategy solana.PublicKey) (solana.PublicKey, error) {
 	key, _, err := solana.FindProgramAddress([][]byte{strategyAuth[:], strategy[:]}, TrustfulProgramID)
 	return key, err
 }
 
-// TrustfulDeposit is deposit_strategy through Trustful: amount of the vault's
-// idle asset goes to destination, and endValue is the strategy's position
-// after it.
 func TrustfulDeposit(a StrategyAccounts, amount, endValue uint64, destination solana.PublicKey) *solana.GenericInstruction {
 	return DepositStrategy(a, amount, TrustfulDepositDiscriminator[:], binary.LittleEndian.AppendUint64(nil, endValue), squads.Writable(destination))
 }
 
-// TrustfulWithdraw is withdraw_strategy through Trustful: amount comes back
-// to idle from the holding account of holdingAuthority, and endValue is the
-// strategy's position after it.
 func TrustfulWithdraw(a StrategyAccounts, amount, endValue uint64, holdingAuthority, holding solana.PublicKey) *solana.GenericInstruction {
 	return WithdrawStrategy(a, amount, TrustfulWithdrawDiscriminator[:], binary.LittleEndian.AppendUint64(nil, endValue), squads.ReadOnly(holdingAuthority), squads.Writable(holding))
 }

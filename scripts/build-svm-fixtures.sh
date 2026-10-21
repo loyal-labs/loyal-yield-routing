@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Build the connected SVM fixtures the Workers v2 Go tests execute against:
-# the mock yield protocols program, the fleet LiteSVM harness, the multiply
-# fixture binary and the autodeposit fixture. Needs cargo-build-sbf on PATH.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo build-sbf --tools-version v1.52 --manifest-path crates/mock-yield-protocols-program/Cargo.toml -- --locked

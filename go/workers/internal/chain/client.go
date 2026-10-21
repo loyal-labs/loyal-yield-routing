@@ -27,12 +27,8 @@ import (
 // timeout, 5xx, rate limit or a lagging node. It says nothing about the chain.
 var ErrUnavailable = errors.New("rpc unavailable")
 
-// ErrRateLimited is the endpoint refusing for rate: HTTP 429 with a plain
-// body, or the JSON-RPC error providers send with it.
 var ErrRateLimited = fmt.Errorf("%w: rate limited", ErrUnavailable)
 
-// ErrBehind is a node that has not reached the requested minContextSlot yet:
-// not yet, so the caller's next tick asks again.
 var ErrBehind = fmt.Errorf("%w: node behind the requested slot", ErrUnavailable)
 
 const (
@@ -52,17 +48,14 @@ type Client struct {
 	slotRate slotRate
 }
 
-// slotRate is the last slot-rate read, when it completed, and the read in
-// flight, if any.
 type slotRate struct {
 	mu        sync.Mutex
 	perSecond float64
 	err       error
 	at        time.Time
-	reading   chan struct{} // closed when the read in flight completes
+	reading   chan struct{}
 }
 
-// SlotSamplePeriod is how often the cluster takes a performance sample.
 const SlotSamplePeriod = 60 * time.Second
 
 func New(endpoint string, timeout time.Duration) (*Client, error) {
@@ -74,9 +67,6 @@ func New(endpoint string, timeout time.Duration) (*Client, error) {
 	return &Client{rpc: rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: httpClient}))}, nil
 }
 
-// failed names the method and keeps only what the endpoint said: the JSON-RPC
-// code and message, the HTTP status or the transport cause. solana-go's own
-// messages for the last two carry the request URL, which can hold a key.
 func failed(method string, err error) error {
 	var rpcErr *jsonrpc.RPCError
 	var httpErr *jsonrpc.HTTPError
@@ -103,7 +93,6 @@ func failed(method string, err error) error {
 	return fmt.Errorf("%s: invalid rpc response", method)
 }
 
-// Account is one account as the cluster holds it.
 type Account struct {
 	Key        solana.PublicKey
 	Owner      solana.PublicKey
@@ -154,9 +143,6 @@ func (c *Client) Slot(ctx context.Context, commitment rpc.CommitmentType) (uint6
 	return slot, nil
 }
 
-// Blockhash is a blockhash at commitment from a node at or past
-// minContextSlot, the last block height it is valid at and the slot it was
-// read at.
 func (c *Client) Blockhash(ctx context.Context, commitment rpc.CommitmentType, minContextSlot uint64) (hash solana.Hash, lastValid, slot uint64, err error) {
 	out, err := c.rpc.GetLatestBlockhashWithOpts(ctx, &rpc.GetLatestBlockhashOpts{Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
 	if err != nil {
@@ -214,7 +200,6 @@ func MessageFee(message []byte) (uint64, error) {
 
 var ed25519Program, secp256r1Program = solana.MustPublicKeyFromBase58("Ed25519SigVerify111111111111111111111111111"), solana.MustPublicKeyFromBase58("Secp256r1SigVerify1111111111111111111111111")
 
-// GenesisHash identifies the cluster.
 func (c *Client) GenesisHash(ctx context.Context) (solana.Hash, error) {
 	hash, err := c.rpc.GetGenesisHash(ctx)
 	if err != nil {
@@ -226,7 +211,6 @@ func (c *Client) GenesisHash(ctx context.Context) (solana.Hash, error) {
 	return hash, nil
 }
 
-// RentExempt is the minimum balance an account of size bytes needs.
 func (c *Client) RentExempt(ctx context.Context, size uint64) (uint64, error) {
 	lamports, err := c.rpc.GetMinimumBalanceForRentExemption(ctx, size, rpc.CommitmentConfirmed)
 	if err != nil {
@@ -238,7 +222,6 @@ func (c *Client) RentExempt(ctx context.Context, size uint64) (uint64, error) {
 	return lamports, nil
 }
 
-// SimulationError is a simulation the cluster ran and the transaction failed.
 type SimulationError struct {
 	Slot uint64
 	Err  any
@@ -253,13 +236,10 @@ func (e *SimulationError) Error() string {
 	return fmt.Sprintf("simulation failed at slot %d: %v %q", e.Slot, e.Err, tail)
 }
 
-// Simulated is a simulation the cluster ran and the transaction succeeded.
 type Simulated struct {
-	Slot  uint64
-	Units uint64
-	Logs  []string
-	// Accounts are opts.Accounts' addresses as the simulation left them, in
-	// order; an absent account is nil.
+	Slot     uint64
+	Units    uint64
+	Logs     []string
 	Accounts []*Account
 }
 
@@ -296,7 +276,6 @@ func (c *Client) Simulate(ctx context.Context, wire []byte, opts rpc.SimulateTra
 	return simulated, nil
 }
 
-// TokenBalance is one token account's balance before or after a transaction.
 type TokenBalance struct {
 	Mint     solana.PublicKey
 	Owner    solana.PublicKey
@@ -313,7 +292,6 @@ type Receipt struct {
 	Slot uint64
 	Err  any
 	Fee  uint64
-	// Wire is the transaction exactly as the cluster stored it.
 	Wire []byte
 	// Keys are the static keys, then the loaded writable, then the loaded
 	// readonly addresses; the lamport vectors follow the same order.
@@ -323,20 +301,15 @@ type Receipt struct {
 	Pre                            map[solana.PublicKey]TokenBalance
 	Post                           map[solana.PublicKey]TokenBalance
 	Logs                           []string
-	// ReturnProgram set ReturnData last; zero when nothing returned data.
-	ReturnProgram solana.PublicKey
-	ReturnData    []byte
+	ReturnProgram                  solana.PublicKey
+	ReturnData                     []byte
 }
 
-// Receipt reads signature's transaction at commitment (confirmed or
-// finalized), of any version. ErrNotFound means the cluster has no record of
-// it there.
 func (c *Client) Receipt(ctx context.Context, signature solana.Signature, commitment rpc.CommitmentType) (Receipt, error) {
 	read, err := c.Execution(ctx, signature, commitment)
 	return read.Receipt, err
 }
 
-// Signed is one transaction in an address's confirmed history.
 type Signed struct {
 	Signature solana.Signature
 	Slot      uint64
@@ -364,7 +337,6 @@ func (c *Client) History(ctx context.Context, address solana.PublicKey, limit in
 	return history, nil
 }
 
-// ErrNotFound is a signature or account the cluster has no record of.
 var ErrNotFound = errors.New("not found")
 
 // SendWire submits the exact bytes once; maxRetries 0 keeps the node from
@@ -377,8 +349,6 @@ func (c *Client) SendWire(ctx context.Context, wire []byte, skipPreflight bool) 
 	return nil
 }
 
-// FinalizedBlockHeight is the finalized block height and its slot, read
-// together from one node.
 func (c *Client) FinalizedBlockHeight(ctx context.Context) (height, slot uint64, err error) {
 	out, err := c.rpc.GetEpochInfo(ctx, rpc.CommitmentFinalized)
 	if err != nil {
@@ -390,7 +360,6 @@ func (c *Client) FinalizedBlockHeight(ctx context.Context) (height, slot uint64,
 	return out.BlockHeight, out.AbsoluteSlot, nil
 }
 
-// SignatureState reads one signature's status with full history.
 func (c *Client) SignatureState(ctx context.Context, signature string) (SignatureState, error) {
 	sig, err := solana.SignatureFromBase58(signature)
 	if err != nil {
@@ -448,8 +417,6 @@ func tokenBalances(keys []solana.PublicKey, rows []rpc.TokenBalance) (map[solana
 	return balances, nil
 }
 
-// ProgramAccounts lists program's accounts that match every filter at
-// commitment, read from a node at or past minContextSlot.
 func (c *Client) ProgramAccounts(ctx context.Context, program solana.PublicKey, filters []rpc.RPCFilter, commitment rpc.CommitmentType, minContextSlot uint64) (slot uint64, accounts []Account, err error) {
 	out, err := c.rpc.GetProgramAccountsWithContext(ctx, program, &rpc.GetProgramAccountsOpts{Encoding: solana.EncodingBase64, Commitment: commitment, Filters: filters, MinContextSlot: atLeast(minContextSlot)})
 	if err != nil {
@@ -482,7 +449,6 @@ func (c *Client) PriorityFees(ctx context.Context, writable []solana.PublicKey) 
 	return fees, nil
 }
 
-// atLeast is the minContextSlot option: none for zero.
 func atLeast(slot uint64) *uint64 {
 	if slot == 0 {
 		return nil
@@ -490,8 +456,6 @@ func atLeast(slot uint64) *uint64 {
 	return &slot
 }
 
-// FinalizedBlockHeightAt is the block height of the finalized block at slot.
-// ErrNotFound means the cluster has no finalized block there.
 func (c *Client) FinalizedBlockHeightAt(ctx context.Context, slot uint64) (uint64, error) {
 	rewards, version := false, uint64(anyVersion)
 	out, err := c.rpc.GetBlockWithOpts(ctx, slot, &rpc.GetBlockOpts{TransactionDetails: rpc.TransactionDetailsNone, Rewards: &rewards, Commitment: rpc.CommitmentFinalized, MaxSupportedTransactionVersion: &version})
@@ -507,10 +471,6 @@ func (c *Client) FinalizedBlockHeightAt(ctx context.Context, slot uint64) (uint6
 	return *out.BlockHeight, nil
 }
 
-// SlotsPerSecond is the cluster's measured slot rate: the slots over the
-// seconds of its last five performance samples. A new sample lands once a
-// period, so a completed read, failed or not, answers until one has passed.
-// One read is in flight at a time; other callers wait for it or their ctx.
 func (c *Client) SlotsPerSecond(ctx context.Context) (float64, error) {
 	r := &c.slotRate
 	for {
@@ -533,7 +493,6 @@ func (c *Client) SlotsPerSecond(ctx context.Context) (float64, error) {
 		r.mu.Unlock()
 		perSecond, err := c.measureSlotRate(ctx)
 		r.mu.Lock()
-		// A caller's own cancellation is not the cluster's answer.
 		if ctx.Err() == nil {
 			r.perSecond, r.err, r.at = perSecond, err, time.Now()
 		}
@@ -555,8 +514,6 @@ func (c *Client) measureSlotRate(ctx context.Context) (float64, error) {
 	return float64(slots) / float64(seconds), nil
 }
 
-// SlotSamples sums the cluster's last n performance samples (one a minute)
-// that report both slots and seconds.
 func (c *Client) SlotSamples(ctx context.Context, n uint) (slots, seconds uint64, err error) {
 	out, err := c.rpc.GetRecentPerformanceSamples(ctx, &n)
 	if err != nil {

@@ -15,18 +15,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// selectorEvaluateFeed is the feed surface the command needs. The production
-// EconomicFeed satisfies it unchanged; tests substitute a stub.
 type selectorEvaluateFeed interface {
 	Refresh(context.Context) error
 	Snapshot() ([]LaneEconomics, string)
 }
 
-// selectorEvaluateDeps carries the command's only injection points. Production
-// wires the real constructors over the embedded manifest; tests wire the same
-// reviewed-manifest fixtures and the real locked persistence. There is no
-// second command mode behind these seams — both dry-run and execute use the
-// SAME manifest inventory, lane predicates and evaluation.
 type selectorEvaluateDeps struct {
 	manifest    RouteManifest
 	databaseURL string
@@ -35,23 +28,6 @@ type selectorEvaluateDeps struct {
 	evaluate    func(context.Context, *Database, []LaneEconomics) (SelectorResult, error)
 }
 
-// RunSelectorEvaluate is the one-shot entry seam. The production selector
-// evaluation (evaluateSelector) has exactly one caller in Run — the continuous
-// live sample loop, which refreshes the economic feed from Backyard's account
-// view. This command performs the SAME evaluation once:
-//
-//   - default (dry-run): the read-only shadow path — production readers, no
-//     lease, no database writes (the SQL connection itself rejects writes) —
-//     over the SAME manifest inventory and lane predicates as execute, plus an
-//     explicit canary-request report. It never consumes the request, collects
-//     no quotes, and is a ranking diagnostic only, never an executable canary
-//     preflight.
-//   - --execute: feed refresh, one snapshot, one evaluateSelector call under
-//     Backyard's writer lock, which it refuses while the worker runs.
-//
-// The canary request stays the operator authorization either way: expiring,
-// single-use, bounded, and validated through the same manifest both here and
-// inside the evaluation.
 func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfig, vault string, execute bool) error {
 	if config.RPCURL == "" || config.DatabaseURL == "" {
 		return fmt.Errorf("BACKYARD_SOLANA_RPC_URL and BACKYARD_DATABASE_URL are required for selector evaluation")
@@ -65,7 +41,6 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_rpc_unavailable")
 	}
-	// A one-shot command plans from the view's start-up read alone.
 	view, err := OpenView(ctx, rpc, nil)
 	if err != nil {
 		return budgetHoldFrom(err, "selector_evaluate_rpc_unavailable")
@@ -85,11 +60,6 @@ func RunSelectorEvaluate(ctx context.Context, out io.Writer, config RuntimeConfi
 	})
 }
 
-// runSelectorEvaluate is bounded end to end (a stalled feed cannot hold the
-// writer lock or hang the command), refuses an execute run
-// without a present valid canary request before anything connects, and maps
-// every stage failure to a fixed sanitized error: raw feed, RPC, SQL and
-// configuration errors can carry credential paths or DSNs.
 func runSelectorEvaluate(ctx context.Context, out io.Writer, execute bool, deps selectorEvaluateDeps) error {
 	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
@@ -106,11 +76,6 @@ func runSelectorEvaluate(ctx context.Context, out io.Writer, execute bool, deps 
 	return selectorEvaluateExecute(ctx, out, deps)
 }
 
-// selectorEvaluateDryRun mirrors the read-only shadow path with the SAME
-// manifest inventory and lane predicates as the locked execute path, so a
-// reviewed candidate appears in diagnostics instead of being silently dropped
-// by installed-only closures. No quotes are collected and nothing is
-// executable: this is a diagnostic, never an executable canary preflight.
 func selectorEvaluateDryRun(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
 	cfg, err := pgxpool.ParseConfig(deps.databaseURL)
 	if err != nil {
@@ -171,10 +136,6 @@ var selectorEvaluateAdmissionHoldCodes = map[string]bool{
 	"selector_fee_evidence_unavailable": true,
 }
 
-// sanitizedSelectorEvaluateFailure maps one evaluator error to a single fixed
-// diagnostic code. Raw SQL, network and configuration errors can carry DSNs or
-// server messages, and a hold reason is echoed only when it is one of the
-// locked evaluation's own codes — nothing arbitrary ever reaches the output.
 func sanitizedSelectorEvaluateFailure(err error) string {
 	var hold *BudgetHold
 	if errors.As(err, &hold) {
@@ -197,14 +158,6 @@ func sanitizedSelectorEvaluateFailure(err error) string {
 	return "selector_evaluate_unavailable"
 }
 
-// selectorEvaluateExecute is exactly one iteration of Run's live sample body
-// (worker.go live-mode branch): feed refresh, one snapshot, one locked
-// evaluation — through the writer the worker process holds in the
-// continuous form: one session that holds the writer lock, which this command
-// opens without waiting, so it refuses while the worker runs. The live loop's
-// notifySelectorCommit only queues a wake on its own worker's tick channel;
-// there is no tick loop here, and the committed entry is durable route state
-// that the next worker start reads from the journal.
 func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEvaluateDeps) error {
 	database, err := openOperatorWriter(ctx, deps.databaseURL)
 	if errors.Is(err, engine.ErrFamilyHeld) {
@@ -223,10 +176,6 @@ func selectorEvaluateExecute(ctx context.Context, out io.Writer, deps selectorEv
 	markets, _ := feed.Snapshot()
 	result, evalErr := deps.evaluate(ctx, database, markets)
 	if evalErr != nil {
-		// One sanitized fixed-code line before the unchanged generic hold:
-		// enough to name the failing admission guard or database class
-		// without ever echoing the underlying error text. A report encode
-		// failure must not alter the returned error.
 		feedFailure := ""
 		if feedErr != nil {
 			feedFailure = "selector_economic_feed_refresh_unavailable"

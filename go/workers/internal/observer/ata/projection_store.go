@@ -20,7 +20,6 @@ func (p *Projector) applyBatch(ctx context.Context, fetchedAfter int64, events [
 		_ = tx.Rollback(cleanup)
 	}()
 	var cursor int64
-	// This exact retained consumer row is also the old/new mutual exclusion fence.
 	if err := tx.QueryRow(ctx, `INSERT INTO loyal_yield.projection_offsets(consumer_name,last_event_id)
 VALUES($1,0) ON CONFLICT(consumer_name) DO UPDATE SET consumer_name=EXCLUDED.consumer_name
 RETURNING last_event_id`, p.consumer).Scan(&cursor); err != nil {
@@ -59,8 +58,6 @@ RETURNING last_event_id`, p.consumer).Scan(&cursor); err != nil {
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		// Do not report progress on an ambiguous response. Next Tick reads the
-		// durable offset and reuses the capture IDs, never synthesizes new IDs.
 		return ProjectionOutcome{}, fmt.Errorf("commit ATA projection: %w", err)
 	}
 	return outcome, nil
@@ -73,8 +70,6 @@ func lockProjectionTarget(ctx context.Context, tx pgx.Tx, event projectionEvent)
 FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, event.targetID).Scan(&cluster, &wallet, &walletATA, &vault, &vaultATA, &mint); err != nil {
 		return err
 	}
-	// Capture has no setup generation. Bind only the actual custody identities,
-	// never fabricate a generation or reinterpret closed/paused desired state.
 	if cluster == nil || *cluster != event.cluster || wallet != event.wallet || walletATA != event.walletATA ||
 		vault != event.vault || vaultATA != event.vaultATA || mint != event.mint {
 		return errors.New("captured custody identity differs from locked target")
@@ -94,7 +89,7 @@ WHERE target_id=$1 AND mint=$2 FOR UPDATE`, event.targetID, event.mint).Scan(&pr
 		if *previous < 0 {
 			return false, errors.New("negative current ATA balance")
 		}
-		value := event.amountRaw - *previous // Both nonnegative BIGINT amounts; subtraction cannot overflow.
+		value := event.amountRaw - *previous
 		delta = &value
 	}
 	result, err := tx.Exec(ctx, `INSERT INTO loyal_yield.balance_sweep_wallet_balance_events
@@ -106,9 +101,6 @@ ON CONFLICT(event_id) DO NOTHING`, projectionEventArgs(event, previous, delta)..
 		return false, err
 	}
 	if result.RowsAffected() == 0 {
-		// Intentional correction to the retained implementation: a conflicting
-		// stable ID cannot silently overwrite current state, and an exact retry
-		// must preserve the already committed previous balance and financial delta.
 		var matches bool
 		err := tx.QueryRow(ctx, `SELECT ROW(target_id,wallet,wallet_usdc_ata,wallet_token_ata,mint,amount_raw,
 observed_slot,observed_at,source,source_commitment,txn_signature,account_data_hash,raw_evidence)

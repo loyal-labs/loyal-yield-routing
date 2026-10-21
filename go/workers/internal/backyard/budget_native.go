@@ -9,8 +9,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// Read-only price reference discovered at confirmed slot 444381476 by exact
-// program, market and mint filters. This is NOT an executable runtime lane.
 const budgetSOLReserve = "d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q"
 const budgetSOLMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 
@@ -23,8 +21,6 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 	reference := usdcReference
 	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: budgetSOLMarket}
 	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}
-	// The reserves' oracles come from the view; the price is the refreshed
-	// simulation's, like every value.
 	_, accounts, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
@@ -60,8 +56,6 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 	if price.Decimals != 9 {
 		return BudgetPrice{}, budgetHold("native_sol_decimal_mismatch")
 	}
-	// Wrapped SOL uses lamport-denominated units. This relabeling values the
-	// native fee debit; no wrapping, swap, custody creation or transfer occurs.
 	price.Mint = nativeSOLBudgetAsset
 	price.TokenProgram = "11111111111111111111111111111111"
 	return price, nil

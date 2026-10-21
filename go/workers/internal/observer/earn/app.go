@@ -20,20 +20,14 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Application is the Go Earn domain application that replaced the Rust
-// earn-domain-bridge child: policy transaction projection on the stream path
-// and the durable Earn reconciliation job consumers.
 type Application struct {
-	store    *Store
-	multiply *multiply.Store
-	rpc      *chain.Client
-	monitor  *PolicyMonitor
-	consumer string
-	facts    *engine.Facts
-	logger   *slog.Logger
-	// streamAlive reports whether the LaserStream session delivered a slot
-	// recently; observer progress requires both a live stream and a caught-up
-	// Earn application.
+	store       *Store
+	multiply    *multiply.Store
+	rpc         *chain.Client
+	monitor     *PolicyMonitor
+	consumer    string
+	facts       *engine.Facts
+	logger      *slog.Logger
 	streamAlive func() bool
 }
 
@@ -46,7 +40,6 @@ const (
 	consumerIdleInterval = time.Second
 )
 
-// NewApplication binds the Earn application to the observer's Neon pool.
 func NewApplication(ctx context.Context, pool *pgxpool.Pool, rpc *chain.Client, cluster string, delegate solana.PublicKey, facts *engine.Facts, logger *slog.Logger, streamAlive func() bool) (*Application, error) {
 	store := NewStore(pool)
 	multiplyStore, err := multiply.NewStoreFromPool(ctx, pool)
@@ -61,8 +54,6 @@ func NewApplication(ctx context.Context, pool *pgxpool.Pool, rpc *chain.Client, 
 		facts: facts, logger: logger, streamAlive: streamAlive}, nil
 }
 
-// HandlePolicyTransaction projects one confirmed policy transaction from the
-// stream and advances the policy projection cursor past its slot.
 func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.SubscribeUpdate) error {
 	transaction := update.GetTransaction()
 	if transaction == nil {
@@ -92,9 +83,6 @@ func (a *Application) HandlePolicyTransaction(ctx context.Context, update *pb.Su
 	return a.store.AdvanceProjectionCursor(ctx, PolicyProjectionConsumer, slot)
 }
 
-// recordRecurringDelegations records each Subscriptions create_recurring and
-// revoke_delegation. The program is public: bytes that are not ours are
-// logged and skipped.
 func (a *Application) recordRecurringDelegations(ctx context.Context, transaction *PolicyTransaction) error {
 	for _, instruction := range transaction.Instructions {
 		accounts, data := instruction.Accounts, instruction.Data
@@ -169,7 +157,6 @@ func deferralKind(err error) deferral {
 	return deferFailure
 }
 
-// jobOutcome is EarnReconciliationProcessOutcome.
 type jobOutcome struct {
 	idle, applied, deferred, deadLettered bool
 	jobID                                 int64
@@ -197,7 +184,6 @@ func (a *Application) decideMutation(ctx context.Context, update NormalizedUpdat
 	return resolveMutation(ctx, a.rpc, update, vault, context)
 }
 
-// processNextJob is process_next_earn_reconciliation_job_with_policy_monitor.
 func (a *Application) processNextJob(ctx context.Context, owner string) (jobOutcome, error) {
 	job, err := a.store.ClaimJob(ctx, a.consumer, owner, jobLeaseSeconds)
 	if err != nil {
@@ -235,11 +221,6 @@ func (a *Application) processNextJob(ctx context.Context, owner string) (jobOutc
 	return jobOutcome{deferred: true, jobID: job.ID, attempt: job.AttemptCount, kind: kind, err: errors.New(message)}, nil
 }
 
-// caughtUp reports whether no claimable Earn job has waited longer than the
-// backlog horizon. A job deferred to a later attempt, or queued behind an
-// earlier pending job of its vault, is not claimable: the head's failure is
-// reported through Failed at the alert thresholds, while consumers that fall
-// behind the claimable queue stop observer progress.
 func (a *Application) caughtUp(ctx context.Context) (bool, error) {
 	var oldest *time.Time
 	if err := a.store.pool.QueryRow(ctx, `
@@ -262,7 +243,6 @@ func (a *Application) reportCycle(ctx context.Context) {
 	}
 }
 
-// RunConsumers runs the durable Earn reconciliation consumers until ctx ends.
 func (a *Application) RunConsumers(ctx context.Context, workers int) {
 	var wait sync.WaitGroup
 	for worker := range workers {
@@ -290,7 +270,6 @@ func (a *Application) runConsumer(ctx context.Context, owner string, reports boo
 			reason := map[deferral]string{deferProofPending: "proof_pending", deferRPCBehind: "rpc_behind", deferFailure: "failure"}[outcome.kind]
 			level := slog.LevelWarn
 			if alert {
-				// Rust alerted on a first failure and on a proof stale at attempt 6.
 				a.facts.Failed(engine.FamilyObserver, "earn_job_"+reason)
 				level = slog.LevelError
 			}

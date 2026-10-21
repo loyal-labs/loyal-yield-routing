@@ -31,8 +31,6 @@ func lookupDerivedAddress(authority string, slot uint64) (string, error) {
 	return address.String(), err
 }
 
-// Refresh uses only actual produced bank entries, not fabricated numeric slots.
-// The proposed account is explicitly absent at/after this bank before any lock.
 func (w *LookupWorker) refreshCreate(ctx context.Context, op LookupOperation, old LookupSnapshot) (LookupOperation, error) {
 	if op.Intent.RecentSlot == nil || !old.Absent || len(op.Intent.Prefix) != 0 || (op.Intent.Kind != LookupCreate && op.Intent.Kind != LookupRollover) {
 		return op, errors.New("lookup create refresh lacks empty unsigned reservation")

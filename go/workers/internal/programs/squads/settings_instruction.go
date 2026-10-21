@@ -28,7 +28,6 @@ type PolicyIdentity struct {
 	Settings, Authority, PolicyAccount solana.PublicKey
 }
 
-// ErrUnsupportedSettingsInstruction is PolicyDetectionError::UnsupportedSettingsInstruction.
 var ErrUnsupportedSettingsInstruction = errors.New("instruction is not a supported Squads settings instruction")
 
 const syncSignerCount = 1
@@ -50,7 +49,6 @@ func (c *borshCursor) requireSettingsDiscriminator() error {
 
 func (c *borshCursor) remaining() int { return len(c.data) - c.offset }
 
-// DecodeSettingsActions is decode_squads_policy_create_actions.
 func DecodeSettingsActions(instruction Instruction) ([]SettingsAction, error) {
 	if instruction.ProgramID != ProgramID {
 		return nil, nil
@@ -164,8 +162,6 @@ func decodeSettingsActions(settings, authority solana.PublicKey, hint *solana.Pu
 	return actions, nil
 }
 
-// creationPayload is read_policy_payload: tags 3 (legacy) and 4 (compact)
-// decode a ProgramInteraction view; any other payload is skipped as nil.
 func (c *borshCursor) creationPayload() (*PolicyPayloadView, error) {
 	tag, err := c.u8()
 	if err != nil {
@@ -229,7 +225,6 @@ func (c *borshCursor) creationPayload() (*PolicyPayloadView, error) {
 	}
 }
 
-// creationSpendingLimit reads a LimitedSpendingLimit (raw when table is nil).
 func (c *borshCursor) creationSpendingLimit(table []solana.PublicKey) (SpendingLimitView, error) {
 	var limit SpendingLimitView
 	var err error
@@ -280,7 +275,6 @@ func (c *borshCursor) signers() ([]solana.PublicKey, error) {
 	return signers, nil
 }
 
-// delegatedSigner is read_delegated_signer: exactly one full-permission signer.
 func (c *borshCursor) delegatedSigner() (*solana.PublicKey, error) {
 	count, err := c.u32()
 	if err != nil {
@@ -326,7 +320,6 @@ func (c *borshCursor) skipOptionString() error {
 	return err
 }
 
-// expiration reads Option<PolicyExpirationArgs>; true when present.
 func (c *borshCursor) expiration() (bool, error) {
 	return c.option(func() error {
 		kind, err := c.u8()
@@ -523,8 +516,6 @@ func (c *borshCursor) skipRawHook() error {
 	return err
 }
 
-// skipCompiledHook mirrors detection.rs exactly, including its empty pubkey
-// table and u8-prefixed instruction data.
 func (c *borshCursor) skipCompiledHook() error {
 	_, err := c.option(func() error {
 		if _, err := c.u8(); err != nil {
@@ -548,8 +539,6 @@ func (c *borshCursor) skipCompiledHook() error {
 	return err
 }
 
-// StrictEnvelope is strict_settings_envelope: the six-account canonical
-// settings instruction with a writable policy account.
 func StrictEnvelope(instruction Instruction) (PolicyIdentity, bool) {
 	a := instruction.Accounts
 	if instruction.ProgramID != ProgramID || len(a) != 6 || a[2].PublicKey != solana.SystemProgramID || a[3].PublicKey != ProgramID ||
@@ -559,7 +548,6 @@ func StrictEnvelope(instruction Instruction) (PolicyIdentity, bool) {
 	return PolicyIdentity{Settings: a[0].PublicKey, Authority: a[1].PublicKey, PolicyAccount: a[5].PublicKey}, true
 }
 
-// DetectPolicyRemovals is detect_squads_policy_removals.
 func DetectPolicyRemovals(instruction Instruction) ([]PolicyIdentity, error) {
 	a := instruction.Accounts
 	if instruction.ProgramID != ProgramID || len(a) < 6 || a[2].PublicKey != solana.SystemProgramID || a[3].PublicKey != ProgramID ||
@@ -612,7 +600,6 @@ func DetectPolicyRemovals(instruction Instruction) ([]PolicyIdentity, error) {
 	return removals, nil
 }
 
-// DetectPolicyUpdateIdentity is detect_squads_policy_update_identity.
 func DetectPolicyUpdateIdentity(instruction Instruction) (*PolicyIdentity, error) {
 	envelope, ok := StrictEnvelope(instruction)
 	if !ok {
@@ -653,8 +640,6 @@ func DetectPolicyUpdateIdentity(instruction Instruction) (*PolicyIdentity, error
 	return &envelope, nil
 }
 
-// StrictPolicyAction is the one-action strict create/update decoded by
-// detect_jupiter_cross_mint_policy_action before classification.
 type StrictPolicyAction struct {
 	Envelope        PolicyIdentity
 	Create          bool
@@ -664,8 +649,6 @@ type StrictPolicyAction struct {
 	Payload         PolicyPayloadView
 }
 
-// DecodeStrictPolicyAction returns nil unless the instruction is exactly one
-// legacy-payload PolicyCreate/PolicyUpdate with canonical metadata.
 func DecodeStrictPolicyAction(instruction Instruction) (*StrictPolicyAction, error) {
 	envelope, ok := StrictEnvelope(instruction)
 	if !ok {
@@ -769,8 +752,6 @@ func DecodeStrictPolicyAction(instruction Instruction) (*StrictPolicyAction, err
 	return &out, nil
 }
 
-// legacyInteractionPayload is read_program_interaction_payload: only the
-// hookless legacy tag 3 is classified.
 func (c *borshCursor) legacyInteractionPayload() (*PolicyPayloadView, error) {
 	tag, err := c.u8()
 	if err != nil {
@@ -833,8 +814,6 @@ func (c *borshCursor) legacyInteractionPayload() (*PolicyPayloadView, error) {
 	return &payload, nil
 }
 
-// CreationTableIsTight is compact_pubkey_table_is_tight for instruction
-// payloads, which also reference spending-limit mints.
 func CreationTableIsTight(payload PolicyPayloadView) bool {
 	if len(payload.PubkeyTable) == 0 {
 		return true
@@ -872,10 +851,6 @@ func CreationTableIsTight(payload PolicyPayloadView) bool {
 	return true
 }
 
-// EncodeCompactPolicyUpdate is the instruction data of
-// update_semantic_program_interaction_policy_instruction: one PolicyUpdate
-// with the compact ProgramInteraction payload (enum index 4), no hooks or
-// spending limits, one full-permission delegate, threshold 1.
 func EncodeCompactPolicyUpdate(policy, delegate solana.PublicKey, accountIndex uint8, constraints []InstructionConstraintView) ([]byte, error) {
 	if len(constraints) > 20 {
 		return nil, errors.New("compact policy payload overflow")
@@ -961,7 +936,6 @@ func EncodeCompactPolicyUpdate(policy, delegate solana.PublicKey, accountIndex u
 	return append(out, 0), nil
 }
 
-// appendDataConstraintValues writes data constraints without a length prefix.
 func appendDataConstraintValues(out []byte, constraints []DataConstraintView) ([]byte, error) {
 	encoded, err := appendDataConstraints(nil, constraints)
 	if err != nil {

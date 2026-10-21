@@ -14,13 +14,10 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// receiptReader reads a landed transaction's receipt.
 type receiptReader interface {
 	Receipt(ctx context.Context, signature sdk.Signature, commitment rpc.CommitmentType) (chain.Receipt, error)
 }
 
-// finalizedReceipt is signature's finalized receipt. chain.ErrNotFound means
-// finality has not reached it yet.
 func finalizedReceipt(ctx context.Context, receipts receiptReader, signature string) (chain.Receipt, error) {
 	sig, err := sdk.SignatureFromBase58(signature)
 	if err != nil {
@@ -29,10 +26,6 @@ func finalizedReceipt(ctx context.Context, receipts receiptReader, signature str
 	return receipts.Receipt(ctx, sig, rpc.CommitmentFinalized)
 }
 
-// VerifyReceiptIdentity proves the chain receipt is exactly the durably
-// persisted attempt: same signed bytes, leading signature and message, same
-// slot, and a successful on-chain result. Anything else cannot confirm the
-// route.
 func VerifyReceiptIdentity(receipt chain.Receipt, record SubmissionRecord, confirmedSlot int64) error {
 	if int64(receipt.Slot) != confirmedSlot {
 		return fmt.Errorf("receipt slot %d differs from confirmed slot %d", receipt.Slot, confirmedSlot)

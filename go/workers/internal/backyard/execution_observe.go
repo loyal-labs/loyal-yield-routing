@@ -52,10 +52,6 @@ func decodeObservedAdaptorConfig(v *Vault, account ConfirmedAccount) (observedAd
 	return observedAdaptorConfig{}, nil
 }
 
-// Reuse the enriched, receipt-fenced bank owned by this Tick. The current slot
-// is the view's; only the blockhash needs a new RPC read. Admission, signing
-// simulation, durable authority binding and final send revalidation still run
-// unchanged.
 func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, BridgeExecutionEvidence, error) {
 	batch := observation.routeBatch
 	if rpc == nil || batch == nil || batch.Slot != observation.Snapshot.Slot || batch.ObservationID != observation.Snapshot.ObservationID || batch.ManifestSHA256 != manifest.SHA256 || observation.Validate() != nil {
@@ -68,7 +64,6 @@ func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	if slot-batch.Slot > min(observationLagSlots(), adaptorMaxReportAgeSlots) {
 		return Observation{}, BridgeExecutionEvidence{}, confirmedObservationUnavailable(fmt.Errorf("tick-local bridge observation exceeded slot freshness"))
 	}
-	// The policies this build executes through: one read, at its slot.
 	if observation.policies, err = observeInstalledPolicies(ctx, rpc, manifest.vault, batch.Slot); err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
@@ -130,8 +125,6 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 			postCustodies.VoltrIdleRaw += uint64(decision.AmountRaw)
 		}
 	}
-	// The report values the whole book: every other lane the observation
-	// valued beside the working lane's poststate.
 	valued, err := navLanes(v, accounts, observation.Snapshot.heldLanes())
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
@@ -197,8 +190,6 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 		idleAfter, squadsAfter = idle-amount, squads+amount
 	case StageSquadsToVoltr:
 		if v.trustful() {
-			// Squads cash reaches idle through the holding account in one
-			// transaction; the strategy custody is untouched.
 			if squads < amount || idle > math.MaxUint64-amount {
 				return ExpectedEffects{}, 0, 0, fmt.Errorf("withdrawal effects overflow or underflow")
 			}
@@ -235,8 +226,6 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, strategyAfter, squadsAfter, nil
 }
 
-// prepareKaminoFromTickObservation builds from the tick's own view batch, as
-// the bridge does; it reads only the policies it executes through, at its slot.
 func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, decision Decision, observation Observation) (Observation, KaminoExecutionEvidence, error) {
 	if rpc == nil || observation.routeBatch == nil || decision.Action != OpenRouteStep {
 		return Observation{}, KaminoExecutionEvidence{}, fmt.Errorf("invalid Kamino evidence request")
@@ -321,8 +310,6 @@ func withdrawExcessAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, uint64
 	return receipt.Uint64(), prime.Uint64(), nil
 }
 
-// Work in underlying token units before any receipt conversion. A forecast
-// can use bounded scalar holdings without inventing an obligation or receipts.
 func withdrawableUnderlyingAtLTV(values kaminoReleaseValues, ltvBPS uint64) (uint64, error) {
 	if ltvBPS == 0 || ltvBPS >= 10_000 {
 		return 0, fmt.Errorf("invalid repayment release LTV")

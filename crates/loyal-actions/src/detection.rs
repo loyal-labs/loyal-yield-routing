@@ -190,7 +190,6 @@ pub enum DetectedSwapLane {
     },
 }
 
-/// Identity carried by a strict Jupiter policy settings action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectedJupiterPolicyIdentity {
     Create {
@@ -218,12 +217,6 @@ impl DetectedJupiterPolicyIdentity {
     }
 }
 
-/// The strict, durable generalized Jupiter authority emitted by the cross-mint
-/// policy builder.
-///
-/// The policy deliberately describes a stablecoin universe and source-mint
-/// spending envelope rather than individual pairs. The actual pair and
-/// dialect are still selected from this manifest when a route is built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedJupiterCrossMintPolicy {
     pub settings: Pubkey,
@@ -238,8 +231,6 @@ pub struct DetectedJupiterCrossMintPolicy {
     pub dialect_constraint_indexes: BTreeMap<JupiterV2Dialect, u8>,
 }
 
-/// Durable identity and capability decoded from an on-chain generalized
-/// Jupiter policy account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedJupiterCrossMintPolicyAccount {
     pub settings: Pubkey,
@@ -255,9 +246,6 @@ pub struct DetectedJupiterCrossMintPolicyAccount {
     pub dialect_constraint_indexes: BTreeMap<JupiterV2Dialect, u8>,
 }
 
-/// Manifest-relevant semantics decoded from a generalized policy.
-///
-/// Database projection fields are intentionally not part of this value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectedJupiterCrossMintPolicySemantics {
     pub settings: Pubkey,
@@ -361,9 +349,6 @@ pub struct DetectedPolicyRemoval {
     pub policy_account: Pubkey,
 }
 
-/// Detect the strict generalized cross-mint Jupiter policy create/update
-/// shape. This intentionally does not accept one-dialect policies or policies
-/// with a broader account/mint envelope.
 pub fn detect_jupiter_cross_mint_policy_action(
     instruction: &Instruction,
 ) -> Result<Option<DetectedJupiterCrossMintPolicy>, PolicyDetectionError> {
@@ -456,9 +441,6 @@ pub fn detect_jupiter_cross_mint_policy_action(
     }))
 }
 
-/// Decode and strictly classify an on-chain generalized cross-mint Jupiter
-/// policy account. Both the legacy and compact ProgramInteraction account
-/// encodings are accepted; their semantic policy must be identical.
 pub fn detect_jupiter_cross_mint_policy_account(
     account_data: &[u8],
 ) -> Result<Option<DetectedJupiterCrossMintPolicyAccount>, PolicyDetectionError> {
@@ -561,10 +543,6 @@ pub fn detect_jupiter_cross_mint_policy_account(
     Ok(Some(first))
 }
 
-/// Decode the complete security-relevant contract of a hookless, unlimited,
-/// one-signer ProgramInteraction policy account. Legacy and compact account
-/// encodings are accepted, but hooks, spending limits, expiration, malformed
-/// signer metadata, and non-canonical policy identity are rejected.
 pub fn decode_program_interaction_policy_account(
     account_data: &[u8],
 ) -> Result<Option<SquadsProgramInteractionPolicyAccountView>, PolicyDetectionError> {
@@ -641,10 +619,6 @@ pub fn decode_program_interaction_policy_account(
     }))
 }
 
-/// Detect canonical one- or multi-action Squads policy removals.
-///
-/// The instruction does not include removed policy payloads, so these results
-/// deliberately makes no claim about whether the account was a Jupiter policy.
 pub fn detect_squads_policy_removals(
     instruction: &Instruction,
 ) -> Result<Vec<DetectedPolicyRemoval>, PolicyDetectionError> {
@@ -699,7 +673,6 @@ pub fn detect_squads_policy_removals(
     Ok(removals)
 }
 
-/// Compatibility helper for callers that require exactly one removal.
 pub fn detect_squads_policy_remove(
     instruction: &Instruction,
 ) -> Result<Option<DetectedPolicyRemoval>, PolicyDetectionError> {
@@ -707,12 +680,6 @@ pub fn detect_squads_policy_remove(
     Ok((removals.len() == 1).then(|| removals[0]))
 }
 
-/// Detect the identity of any canonical one-action Squads policy update.
-///
-/// This intentionally does not classify the new payload. Monitors use it only
-/// after every recognized policy-family detector declined the instruction, so
-/// a previously known capability is invalidated instead of remaining active
-/// after an incompatible update.
 pub fn detect_squads_policy_update_identity(
     instruction: &Instruction,
 ) -> Result<Option<DetectedPolicyRemoval>, PolicyDetectionError> {
@@ -1249,8 +1216,6 @@ fn source_shard_for_mints(mints: &BTreeSet<Pubkey>) -> Option<JupiterCrossMintSo
     .find(|shard| shard.source_mints().into_iter().collect::<BTreeSet<_>>() == *mints)
 }
 
-/// Compact policy accounts use a shared pubkey table. A strict detector must
-/// not silently accept unused or duplicate table entries as policy metadata.
 fn compact_pubkey_table_is_tight(payload: &SquadsProgramInteractionPolicyView) -> bool {
     if payload.pubkey_table.is_empty() {
         return true;

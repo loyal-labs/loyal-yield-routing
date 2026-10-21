@@ -1,8 +1,3 @@
-/**
- * Helius signed-unsent proof for the four installed Phase 1 bridge policies.
- * Two exact existing-policy prelude payloads stage and restore one raw USDC in
- * the ephemeral confirmed bank; no admin funding or broadcast occurs.
- */
 import { createHash } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";

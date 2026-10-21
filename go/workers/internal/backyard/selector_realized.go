@@ -13,11 +13,6 @@ import (
 	"time"
 )
 
-// kaminoReserveHistoryEndpoint is Kamino's hourly reserve metrics history
-// (market, then reserve). Our own projection, kamino.reserve_updates, holds
-// the same market price but covers AUTO only since 2026-09-20 (22 days on
-// 2026-10-11), short of the window; and the selector reads current reserve
-// state from Backyard's account view, not Timescale.
 const kaminoReserveHistoryEndpoint = "https://api.kamino.finance/kamino-market/%s/reserves/%s/metrics/history"
 
 // realizedYieldWindow is the trailing window a collateral's native yield is
@@ -35,23 +30,12 @@ const kaminoReserveHistoryEndpoint = "https://api.kamino.finance/kamino-market/%
 // loses value still lowers the 30-day figure in proportion.
 const realizedYieldWindow = 30 * 24 * time.Hour
 
-// realizedYieldMaxSpan bounds how far before the window start the oldest
-// price may sit (a hole in the history): the span annualizes exactly, but a
-// longer one is no longer the 30-day record.
 const realizedYieldMaxSpan = realizedYieldWindow + 48*time.Hour
 
-// realizedYieldRetry spaces history reads: the history advances hourly, so a
-// reserve is read again once its newest point is an hour old, at most this
-// often.
 const realizedYieldRetry = 5 * time.Minute
 
-// realizedYieldHistoryMaxBody bounds one reserve's history response (~1 MB
-// for 32 hourly days).
 const realizedYieldHistoryMaxBody = 8 << 20
 
-// realizedYieldUnavailable labels a lane whose realized native yield cannot
-// be measured; the lane has no economics. The feed's own yield is never
-// substituted.
 func realizedYieldUnavailable(detail string) error {
 	return fmt.Errorf("realized_yield_unavailable(%s)", detail)
 }
@@ -61,15 +45,6 @@ type reserveHistoryPoint struct {
 	Price float64
 }
 
-// parseRealizedYield is the collateral's realized native yield: its reserve
-// market price growth over the trailing window, annualized,
-// (P_now/P_then)^(365 days/span) - 1.
-//
-// The price is metrics.assetPriceUSD, the reserve's stored market price: the
-// price KLend values the collateral at for LTV (equal to the on-chain
-// market_price_sf observations, e.g. AUTO 1.0237302007 at 2026-10-10 12:00).
-// For syrupUSDC, ONyc, PRIME and AUTO it is the token's exchange rate in USD;
-// for USDe its USD oracle. Nothing divides a peg out.
 func parseRealizedYield(body []byte, reserve, mint string, now time.Time) (nativeYield, error) {
 	var history struct {
 		Reserve string `json:"reserve"`
@@ -120,8 +95,6 @@ func parseRealizedYield(body []byte, reserve, mint string, now time.Time) (nativ
 	return nativeYield{APY: apy, ObservedAt: latest.At, EvidenceID: sha256Bytes(body)}, nil
 }
 
-// fetchRealizedYield reads one collateral reserve's hourly history covering
-// the window and its slack.
 func fetchRealizedYield(ctx context.Context, client *http.Client, endpoint string, route RuntimeRoute, now time.Time) (nativeYield, error) {
 	if client == nil {
 		return nativeYield{}, realizedYieldUnavailable("history_client_unavailable")
@@ -155,17 +128,12 @@ func fetchRealizedYield(ctx context.Context, client *http.Client, endpoint strin
 	return parseRealizedYield(body, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, now)
 }
 
-// realizedReserve is the feed's last read of one collateral reserve's
-// history: the yield it measured (zero ObservedAt when none), the reason the
-// last read failed, and when it was attempted.
 type realizedReserve struct {
 	yield     nativeYield
 	reason    string
 	attempted time.Time
 }
 
-// due reports a reserve whose history should be read again: never read, or
-// its newest point an hour old (or none), at most every realizedYieldRetry.
 func (r realizedReserve) due(now time.Time) bool {
 	if r.attempted.IsZero() {
 		return true

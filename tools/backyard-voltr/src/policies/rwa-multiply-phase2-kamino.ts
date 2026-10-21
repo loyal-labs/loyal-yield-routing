@@ -154,12 +154,6 @@ function assertInstruction(
   } as const;
 }
 
-/**
- * Build the exact four K-Lend V2 operation shapes for a fully decoded lane.
- * This is policy compilation input only: it signs nothing and has no RPC or
- * submission path.  Farms are explicitly absent (K-Lend program placeholders)
- * just as in the live Phase-1 policy builder.
- */
 export function buildPhaseTwoKaminoLaneOperations(lane: ResolvedLane, amountRaw: bigint = PROBE_AMOUNT_RAW) {
   assertLane(lane);
   const graph = lane.resolved;

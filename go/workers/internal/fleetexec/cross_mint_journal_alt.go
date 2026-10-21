@@ -8,9 +8,6 @@ import (
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
-// Journal decoding binds immutable provider inputs and authentic managed
-// membership to the original SDK wire order. It never fetches replacement
-// vectors or grants a managed ID to an external table.
 func crossMintJournalALTProof(raw []byte, managed []fleet.ExecutionALT, wire []byte, fingerprint string) ([]CrossMintExternalALT, []string, map[string][]string, error) {
 	external, savedOrder, err := parseCrossMintExternalALTEvidence(raw)
 	if err != nil {

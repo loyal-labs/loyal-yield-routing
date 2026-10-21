@@ -33,9 +33,6 @@ type ALTManifest struct {
 	boundRequirementsFingerprint    string
 }
 
-// ValidateALTManifestIntegrity accepts only the unchanged output of the typed
-// source builder, including the static account hash material omitted from the
-// durable provisioning rows. It does not certify RPC freshness or chain state.
 func ValidateALTManifestIntegrity(manifest *ALTManifest) error {
 	if manifest == nil || len(manifest.fingerprintMaterial) == 0 {
 		return fmt.Errorf("ALT manifest lacks typed source builder provenance")
@@ -53,8 +50,6 @@ func ValidateALTManifestIntegrity(manifest *ALTManifest) error {
 	return nil
 }
 
-// ALTManifestRequirementsFingerprint exposes only builder-bound requirements.
-// A caller-computed composite hash cannot create finalized external provenance.
 func ALTManifestRequirementsFingerprint(manifest *ALTManifest) (string, error) {
 	if err := ValidateALTManifestIntegrity(manifest); err != nil {
 		return "", err
@@ -75,10 +70,6 @@ func ALTManifestExternalSnapshots(manifest *ALTManifest) ([]CrossMintExternalALT
 	return cloneCrossMintExternalALTs(manifest.externalSnapshots), nil
 }
 
-// ALTManifestSourceAddresses returns the original full source identities for
-// store binding checks. Durable demand may exclude keys proven covered by an
-// actual finalized external table; the original v1 fingerprint still binds all
-// typed source accounts. Returned slices cannot mutate that private provenance.
 func ALTManifestSourceAddresses(manifest *ALTManifest) (shared, vault []ALTManifestAddress, err error) {
 	if err := ValidateALTManifestIntegrity(manifest); err != nil {
 		return nil, nil, err
@@ -86,10 +77,6 @@ func ALTManifestSourceAddresses(manifest *ALTManifest) (shared, vault []ALTManif
 	return append([]ALTManifestAddress{}, manifest.sourceShared...), append([]ALTManifestAddress{}, manifest.sourceVault...), nil
 }
 
-// filterFinalizedExternalALTManifest ports the retained verifier's durable
-// manifest projection. Coverage is accepted only after the concrete shared
-// reader proves the exact table vectors, active chain state and warm slot.
-// This projection does not register tables or grant execution usage leases.
 func (r *Revalidator) filterFinalizedExternalALTManifest(ctx context.Context, manifest ALTManifest, tables []LookupTable, minimumSlot int64) (ALTManifest, error) {
 	if err := ValidateALTManifestIntegrity(&manifest); err != nil {
 		return ALTManifest{}, err
@@ -160,18 +147,10 @@ func (r *Revalidator) bindFinalizedCrossMintALTManifest(ctx context.Context, man
 	return manifest, nil
 }
 
-// BuildRouteALTManifest derives typed provenance from decoded KLend positions
-// and exact builder instructions. For a strictly validated direct Jupiter
-// instruction it ports fleet-worker's jupiter_swap_lookup_table_requirements:
-// route mints are liquidity_mint; canonical vault ATAs are vault_token_account;
-// remaining validated swap accounts are infrastructure. Unknown outer accounts
-// still fail. No table membership or user-supplied role can invent provenance.
 func BuildRouteALTManifest(input KaminoSameMintRouteRequest, settings, policy, payer string, instructions []RouteInstruction, validatedSwap *RouteInstruction) (ALTManifest, error) {
 	return buildRouteALTManifest(input, settings, []string{policy}, payer, instructions, validatedSwap, validatedSwap == nil)
 }
 
-// BuildCrossMintPreflightALTManifest merges both actual builder provenance
-// sets for the atomic verifier. It never describes an executable movement leg.
 func BuildCrossMintPreflightALTManifest(input KaminoSameMintRouteRequest, settings, withdrawPolicy, swapPolicy, payer string, instructions []RouteInstruction, validatedSwap RouteInstruction) (ALTManifest, error) {
 	return buildRouteALTManifest(input, settings, []string{withdrawPolicy, swapPolicy}, payer, instructions, &validatedSwap, true)
 }

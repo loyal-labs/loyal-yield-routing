@@ -9,8 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// A read-only census avoids acquiring or incrementing source leases while idle.
-// The later lease query remains authoritative if priority or ownership changes.
 func (s *Store) nextLookupPlanningVault(ctx context.Context, cluster string) (int64, error) {
 	var vault int64
 	err := s.pool.QueryRow(ctx, `SELECT r.vault_id `+lookupPlanningCandidates+` LIMIT 1`, cluster).Scan(&vault)
@@ -20,9 +18,6 @@ func (s *Store) nextLookupPlanningVault(ctx context.Context, cluster string) (in
 	return vault, err
 }
 
-// Read published source references before taking a request lease. A different
-// request may win the later economic-priority lease; unmatched evidence simply
-// leaves that request queued. No source status substitutes for these accounts.
 func (p *LookupPlanner) readPlanningReadiness(ctx context.Context, vault int64, bank *lookupPlanningBank) error {
 	rows, err := p.store.pool.Query(ctx, `SELECT DISTINCT t.table_address FROM loyal_yield.route_lookup_tables t JOIN loyal_yield.lookup_table_families f ON f.id=t.family_id WHERE f.cluster=$1 AND f.desired_state='active' AND t.desired_state='active' AND t.generation=f.active_generation AND ((f.kind='shared_market' AND EXISTS(SELECT 1 FROM loyal_yield.lookup_table_shared_market_catalog_heads h WHERE h.family_id=f.id AND h.readiness_state='active' AND h.target_generation=f.active_generation)) OR (f.kind='vault_shards' AND EXISTS(SELECT 1 FROM loyal_yield.lookup_table_vault_bindings b JOIN loyal_yield.lookup_table_vault_desired_heads h ON h.family_id=b.family_id AND h.vault_id=b.vault_id AND h.binding_ordinal=b.binding_ordinal AND h.manifest_id=b.manifest_id AND h.desired_revision=b.desired_head_revision WHERE b.route_lookup_table_id=t.id AND b.vault_id=$2 AND b.binding_ordinal=0 AND b.lifecycle_state='active'))) ORDER BY t.table_address LIMIT 18`, p.config.Cluster, vault)
 	if err != nil {

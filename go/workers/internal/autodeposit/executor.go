@@ -1,6 +1,5 @@
 package autodeposit
 
-// ExecutorResult is the family's durable execution outcome, independent of process status.
 type ExecutorResult string
 
 const (
@@ -17,27 +16,17 @@ const (
 	ResultTransactionEffectAmbig ExecutorResult = "transaction_effect_ambiguous"
 	ResultIdleHandoffFailed      ExecutorResult = "idle_handoff_failed"
 	ResultDependencyUnavailable  ExecutorResult = "dependency_unavailable"
-	// ResultClaimTransitionFailed is a claim that could not be released; no
-	// funds moved and no yield was involved.
-	ResultClaimTransitionFailed ExecutorResult = "claim_transition_failed"
+	ResultClaimTransitionFailed  ExecutorResult = "claim_transition_failed"
 )
 
-// ExecutorFailureAlert is the operator-facing meaning of an execution outcome.
 type ExecutorFailureAlert struct {
-	Code      string
-	Operation string
-	Summary   string
-	Retryable bool
-	// SelfRecovering marks an outcome whose executor already scheduled its own
-	// retry: visible at WARN, never paging.
+	Code           string
+	Operation      string
+	Summary        string
+	Retryable      bool
 	SelfRecovering bool
 }
 
-// ExecutorFailureAlertFor returns the alert an outcome deserves, or nil when the
-// outcome reports a correct decision rather than a fault. A target whose vault is
-// confirmed empty, or whose missing token delegate was safely quarantined, has
-// nothing the executor can act on; paging on it trains real failures to be
-// ignored.
 func ExecutorFailureAlertFor(result ExecutorResult) *ExecutorFailureAlert {
 	switch result {
 	case ResultKaminoTopUpFailed:
@@ -52,8 +41,6 @@ func ExecutorFailureAlertFor(result ExecutorResult) *ExecutorFailureAlert {
 			Operation: "persist_autodeposit_yield_position",
 			Summary:   "autodeposit top-up succeeded but yield persistence failed",
 		}
-	// The route itself is unexecutable and no funds moved. Waiting cannot clear
-	// it, so it must not page as a lookup-table or top-up fault.
 	case ResultPreflightBlocked:
 		return &ExecutorFailureAlert{
 			Code:      "autodeposit_preflight_blocked",
@@ -82,7 +69,6 @@ func ExecutorFailureAlertFor(result ExecutorResult) *ExecutorFailureAlert {
 			Retryable:      true,
 			SelfRecovering: true,
 		}
-	// The Rust trigger's code for a failed claim/release transition.
 	case ResultClaimTransitionFailed:
 		return &ExecutorFailureAlert{
 			Code:      "autodeposit_claim_transition_failed",
@@ -106,7 +92,6 @@ func genericExecutorAlert() *ExecutorFailureAlert {
 	}
 }
 
-// ExecutorOutcome is one scan's executor tallies.
 type ExecutorOutcome struct {
 	TargetsScanned            int
 	ExecutionsAttempted       int
@@ -121,7 +106,6 @@ type ExecutorOutcome struct {
 	StaleClaimsReleased       int64
 }
 
-// RecordExecutorResult tallies a family outcome and returns its operator alert.
 func (o *ExecutorOutcome) RecordExecutorResult(result ExecutorResult) *ExecutorFailureAlert {
 	switch result {
 	case ResultCompleted:
@@ -142,15 +126,10 @@ func (o *ExecutorOutcome) RecordExecutorResult(result ExecutorResult) *ExecutorF
 	return ExecutorFailureAlertFor(result)
 }
 
-// ResidualOpenLotReason is the legacy classification value written for lots the
-// trigger derives. It is a storage vocabulary, not scheduler behavior.
 const SurplusLotClassificationDBValue = "unknown"
 
-// ConsumerName is the projection-offset consumer this family owns. Legacy claim
-// staleness checks read the same row, so it must not be renamed per process.
 const ConsumerName = "balance_sweep_autodeposit_trigger"
 
-// USDCMint is the only mint the Autodeposit family schedules today.
 const USDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 // Claim-holding pull attempt states: an attempt in one of these states means
@@ -158,9 +137,10 @@ const USDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 // a restarted worker resumes it.
 var ClaimHoldingPullAttemptStates = []string{"prepared", "submitted", "confirmed"}
 
-// RequestedSlotTimeoutReason is written to a slot whose request was never
-// picked up before the legacy 15-minute selection deadline.
 const (
 	StaleRequestedSlotSeconds = 15 * 60
 	RequestedSlotTimeoutError = "Autodeposit request timed out before worker selection."
 )
+
+// ConsumerName is the projection-offset consumer this family owns. Legacy claim
+// staleness checks read the same row, so it must not be renamed per process.

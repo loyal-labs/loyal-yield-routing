@@ -14,8 +14,6 @@ import (
 	"github.com/mr-tron/base58"
 )
 
-// This is crates/loyal-solana-env/src/signer.rs's production ALT authority.
-// Neither the route delegate nor another environment key grants ALT authority.
 const retailLookupAuthority = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
 
 type retailLookupConfig struct {
@@ -62,8 +60,6 @@ func loadRetailLookupConfig() (retailLookupConfig, error) {
 	return cfg, nil
 }
 
-// The callback accepts only the immutable operation's authority/payer. It is
-// invoked by the worker after simulation and durable budget admission.
 func (c retailLookupConfig) managerKey() func(context.Context, string) (ed25519.PrivateKey, error) {
 	if !c.active {
 		return nil

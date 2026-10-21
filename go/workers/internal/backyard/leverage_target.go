@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// leverageDecision is one B2 option-1 level decision for the funded lane.
 type leverageDecision struct {
 	Lane          string
 	Current, Next float64
@@ -16,8 +15,7 @@ type leverageDecision struct {
 	CostRaw       float64
 	Reason        string
 	BorrowRaw     uint64
-	// RoomRaw is the debt reserve's additional debt room this sample.
-	RoomRaw uint64
+	RoomRaw       uint64
 	// Cost is the priced step's expected cost (CostRaw is its total).
 	Cost leverageStepCost
 	// TermDays is the lane's days to its term debt's maturity, when it owes
@@ -83,17 +81,11 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	if market == nil || equity <= 0 {
 		return out, false
 	}
-	// The rule steps from the STORED target, not the position: a target the
-	// position has not reached yet (borrowing blocked) is still the decided
-	// level, so re-deciding from the position flipped it (live 2026-09-28:
-	// 1.5x <-> 1x writes, each bumping the generation). Without a stored
-	// target the position level is the base. Levels stop at the lane's cap.
 	maxLevel := laneMaxLevel(s.RouteLane)
 	out.Current = min(currentLeverageBand(s), maxLevel)
 	if s.LeverageTargetLevel > 0 {
 		out.Current = min(s.LeverageTargetLevel, maxLevel)
 	}
-	// Down rules use current borrowing cost even when new capacity is unknown.
 	currentSpread := market.NativeAPY + market.SupplyAPY - market.CurrentBorrowAPY
 	spreadAt := func(level float64) (float64, bool) {
 		if level <= out.Current {
@@ -111,15 +103,9 @@ func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEco
 	if out.Next < out.Current {
 		return out, true
 	}
-	// A stored desired ceiling may be above the actual position. Price the
-	// whole remaining step, including its entire fee/cost.
 	candidateSnapshot := s
 	candidateSnapshot.LeverageTargetLevel = out.Next
 	level := leverageUpLevel(candidateSnapshot)
-	// The stored level advances no further than the step priced here, one
-	// level above the position: an approval pays for that step alone, and
-	// the next is priced when it is the next. It never falls back to the
-	// position (see above).
 	if level > 0 && level < out.Next {
 		out.Next = max(level, out.Current)
 	}
@@ -202,8 +188,6 @@ func upStepGain(m LaneEconomics, collateral, debt, liability, proceeds, keepAPR,
 	return extra - cost
 }
 
-// level is the decision as the lane's stored level: the level, and whether
-// the up step toward it is approved.
 func (d leverageDecision) level() laneLevel {
 	return laneLevel{Level: d.Next, UpApproved: d.Next > 1 && d.BorrowRaw >= leverageMinimumBorrowRaw}
 }
@@ -222,8 +206,6 @@ func (d leverageDecision) outage() bool {
 	return strings.HasPrefix(d.Reason, "leverage_cost_unavailable(")
 }
 
-// storeChanges reports whether d changes the lane's stored level or its
-// approval; an outage changes neither.
 func (d leverageDecision) storeChanges(s Snapshot) bool {
 	if d.outage() {
 		return false
@@ -231,10 +213,6 @@ func (d leverageDecision) storeChanges(s Snapshot) bool {
 	return d.level() != laneLevel{Level: s.LeverageTargetLevel, UpApproved: s.LeverageUpApproved}
 }
 
-// decideOverflowLevel is the level an overflow lane its source cannot lever
-// into takes before it holds anything: its cap, approved while the
-// overflow lane's spread at the borrow its room would make clears the
-// level's rule. Once the overflow lane holds a position its own view decides.
 func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPolicy, now time.Time) (string, laneLevel, bool) {
 	lane, ok := overflowLaneOf(source.RouteLane)
 	if !ok || !source.HasPosition || !overflowSourceBorrowClosed(source) || !source.OverflowRoomKnown || containsLane(source.heldLanes(), lane) {
@@ -266,20 +244,11 @@ func (d leverageDecision) logLine() string {
 		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, d.CostRaw, d.Cost.BorrowFeeMicros, d.Cost.EntrySwapLossMicros, d.Cost.ExitSwapLossMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, term, d.Reason)
 }
 
-// leverageDecisionLog rate-limits the 'leverage decision' line: it prints
-// when the outcome (level, reason, approved borrow) changes, otherwise at
-// most once an hour (live 2026-09-28: a 1x->1.5x decision held by blocked
-// borrowing printed on every 15 s selector sample). Holds print too: the
-// stored target is the cap, so an approved or refused up move keeps
-// Next == Current, and keying on the level alone hid every one of them
-// (live 2026-10-10). Each lane keeps its own line.
 type leverageDecisionLog struct {
 	printed map[string]time.Time
 	last    map[string]leverageDecisionKey
 }
 
-// The key leaves out the drifting numbers (approved size, room); whether an
-// approval and room exist are in it.
 type leverageDecisionKey struct {
 	next     float64
 	reason   string

@@ -28,8 +28,6 @@ type Spec struct {
 	Accounts map[string]AccountFilter
 }
 
-// Build creates the single combined request used by the Go worker. Earn's role
-// labels are supplied in Accounts alongside the two required core labels.
 func Build(spec Spec) (*pb.SubscribeRequest, error) {
 	if spec.FromSlot == 0 {
 		return nil, errors.New("combined LaserStream from_slot must be non-zero")
@@ -45,10 +43,8 @@ func Build(spec Spec) (*pb.SubscribeRequest, error) {
 		if len(addresses) == 0 {
 			return nil, fmt.Errorf("account filter %q is empty and would subscribe to all accounts", label)
 		}
-		// Rust sends nonempty_txn_signature=Some(true) for the ATA/Earn channels
-		// and None for Kamino reserves (kamino-reserve-monitor source.rs).
-		// Some(false) is not "unset": it drops every transaction-driven update,
-		// which is how a reserve account changes.
+		// A false nonempty_txn_signature is not unset: it drops every
+		// transaction-driven update, which is how a reserve account changes.
 		var requireSignature *bool
 		if filter.RequireTxnSignature {
 			required := true
@@ -70,8 +66,6 @@ func Build(spec Spec) (*pb.SubscribeRequest, error) {
 	return &pb.SubscribeRequest{
 		Accounts: accounts,
 		Transactions: map[string]*pb.SubscribeRequestFilterTransactions{
-			// Subscriptions carries the Autodeposit recurring delegations a
-			// wallet creates outside Squads.
 			EarnMaxPolicyTransactions: {
 				Vote:           &vote,
 				Failed:         &failed,

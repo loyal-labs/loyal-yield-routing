@@ -1,6 +1,3 @@
-// Command loyal-web serves the Loyal web app (web/apps/loyal, embedded) and
-// its /api: routes moved to Go are answered here, every other /api path is
-// forwarded to the Next deployment that still owns it.
 package main
 
 import (
@@ -48,12 +45,8 @@ func parseOrigin(name, fallback string) (*url.URL, error) {
 	return origin, nil
 }
 
-// stamp is the commit set at link time for builds without VCS info, by
-// -ldflags=-X=main.stamp=<sha>. release prefers it over the build info.
 var stamp string
 
-// release is the commit the binary was built from; a build from a dirty tree
-// names no commit.
 func release() string {
 	if stamp != "" {
 		return stamp

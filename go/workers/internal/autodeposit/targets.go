@@ -1,14 +1,10 @@
 package autodeposit
 
-// ExecutableTarget is one unit of dispatch for a scan: either a fresh
-// scheduled slot or an existing claim whose pull already has a durable attempt.
 type ExecutableTarget struct {
 	TargetID        int64
 	ScheduledSlotID int64
-	// ClaimToken is non-empty for a recovery row: an existing claim to resume.
-	ClaimToken string
-	// Wallet is a fresh slot's owner, the address its failed-sweep push names.
-	Wallet string
+	ClaimToken      string
+	Wallet          string
 }
 
 func (t ExecutableTarget) isRecovery() bool { return t.ClaimToken != "" }
@@ -74,8 +70,6 @@ func stableSortStable[T any](items []T, less func(a, b T) bool) {
 	}
 }
 
-// hintPosition ranks a hinted slot by its arrival position and puts every
-// unhinted slot behind all hinted ones instead of in front of them.
 func hintPosition(hintRank map[int64]int, scheduledSlotID int64) int {
 	if position, hinted := hintRank[scheduledSlotID]; hinted {
 		return position

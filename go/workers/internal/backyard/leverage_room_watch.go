@@ -8,14 +8,6 @@ import (
 	"time"
 )
 
-// Leverage reacts to reserve room the moment it opens. The account view
-// already streams every lane's reserves over LaserStream; the worker tells it
-// which reserves it is waiting on (roomWatch), and the view recomputes their
-// room from each update it applies. When a watched reserve's room crosses
-// from below to at or above the minimum, the view wakes the worker's tick
-// loop: no polling, no second loop, and the tick that wakes plans from its
-// own observation as always.
-
 // roomWatch is one reserve the worker waits on. Debt watches borrow room on
 // a held lane's debt reserve; collateral watches deposit room on a
 // collateral reserve. leverage marks a lane below its target, the only
@@ -37,7 +29,6 @@ func (w roomWatch) reserve() string {
 	return w.route.Kamino.CollateralReserve
 }
 
-// roomUpdate is one watched reserve's room as the view applied it.
 type roomUpdate struct {
 	watch   roomWatch
 	roomRaw uint64
@@ -45,16 +36,11 @@ type roomUpdate struct {
 	// price is not decodable (unknown is not zero).
 	roomUSD float64
 	open    bool
-	// opened: the room crossed from below the minimum to at or above it.
-	opened bool
-	slot   uint64
-	at     time.Time
+	opened  bool
+	slot    uint64
+	at      time.Time
 }
 
-// roomOf recomputes a watched reserve's room from its account alone, at
-// chain time now. Debt room is kaminoDebtReserveRoom, open when the
-// fee-inclusive receive it allows reaches the minimum borrow. Deposit room is
-// the collateral reserve's remaining deposit limit, open at $10 of it.
 func roomOf(w roomWatch, account ConfirmedAccount, now int64) (room uint64, usd float64, open bool, ok bool) {
 	if w.debt {
 		debt, err := decodeKaminoReserve(account, w.route.Kamino.DebtMint, w.route.Kamino)
@@ -93,9 +79,6 @@ func reserveUSD(raw uint64, r decodedKaminoReserve) float64 {
 	return v / math.Pow10(int(r.mintDecimals))
 }
 
-// leverageRoomWatches is what a tick watches: the debt reserve of every held
-// lane (for the room gauge), waking on the ones below their stored leverage
-// target.
 func leverageRoomWatches(o Observation) []roomWatch {
 	var out []roomWatch
 	index := map[string]int{}
@@ -120,8 +103,6 @@ func leverageRoomWatches(o Observation) []roomWatch {
 	return out
 }
 
-// laneLeverage is one held lane's actual leverage (collateral over equity)
-// and, when it has a stored target, the target minus it.
 type laneLeverage struct {
 	lane            string
 	targeted        bool
@@ -133,8 +114,6 @@ type laneLeverage struct {
 	termOwed bool
 }
 
-// heldLaneLeverage is every held lane with positive equity in one
-// observation, from its own view.
 func heldLaneLeverage(o Observation) []laneLeverage {
 	var out []laneLeverage
 	for _, s := range o.lanes {
@@ -156,8 +135,6 @@ func heldLaneLeverage(o Observation) []laneLeverage {
 	return out
 }
 
-// roomObserved is the view's room callback: the gauges and reaction clock,
-// and a wake when a watched reserve's room opens.
 func (w *Worker) roomObserved(u roomUpdate) {
 	w.events.roomObserved(u)
 	if u.opened {
@@ -213,8 +190,6 @@ func (v *View) clockUnix() int64 {
 	return clockUnixTimestamp([]ConfirmedAccount{v.accounts[budgetClockAddress].ConfirmedAccount})
 }
 
-// observeRoom recomputes a watched reserve's room from an applied write and
-// reports it; edges wake only when edges is set (a stream write).
 func (v *View) observeRoom(set *roomSet, ws []roomWatch, write viewAccount, edges bool) {
 	now := v.clockUnix()
 	for _, w := range ws {

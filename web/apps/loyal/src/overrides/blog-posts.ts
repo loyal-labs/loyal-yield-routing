@@ -68,7 +68,6 @@ function resolveMedia(slug: string, ref: string): string {
   return `/blog/${slug}/${ref.replace(/^\.\//, "")}`;
 }
 
-/** Parses one post.md keyed by its glob path; returns null if the key is off. */
 function loadPost(file: string, raw: string): BlogPostFull | null {
   const slug = /\/blog\/([^/]+)\/post\.md$/.exec(file)?.[1];
   if (!slug) {
@@ -104,9 +103,6 @@ function loadPost(file: string, raw: string): BlogPostFull | null {
   };
 }
 
-// Newest first. Parsed and sorted once at this module's init, which the
-// dynamic import runs at most once: the posts are frozen into the bundle,
-// there is nothing to cache lazily.
 export const allPosts: BlogPostFull[] = Object.entries(rawPosts)
   .map(([file, raw]) => loadPost(file, raw))
   .filter((post): post is BlogPostFull => post !== null)

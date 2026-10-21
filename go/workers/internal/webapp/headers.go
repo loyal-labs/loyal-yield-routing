@@ -54,9 +54,6 @@ func headers(cfg Config) func(http.Handler) http.Handler {
 	}
 }
 
-// securityResponse applies the security headers just before the response
-// goes out, over whatever the handler (or the proxied upstream) put in the
-// header map.
 type securityResponse struct {
 	http.ResponseWriter
 	release   string
@@ -80,8 +77,6 @@ func (s *securityResponse) Write(body []byte) (int, error) {
 	return s.ResponseWriter.Write(body)
 }
 
-// finish covers a handler that returned without writing anything; Set is
-// idempotent, so double application is harmless.
 func (s *securityResponse) finish() { s.apply() }
 
 func (s *securityResponse) apply() {
@@ -112,15 +107,12 @@ func (s *securityResponse) apply() {
 	}
 }
 
-// Flush passes streaming writes through so an SSE response reaches the
-// client as the upstream produces it.
 func (s *securityResponse) Flush() {
 	if flusher, ok := s.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
 }
 
-// Hijack lets upgraded connections (websockets) through untouched.
 func (s *securityResponse) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hijacker, ok := s.ResponseWriter.(http.Hijacker)
 	if !ok {

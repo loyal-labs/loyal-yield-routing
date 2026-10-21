@@ -16,12 +16,10 @@ export const BLOG_POSTS_PER_PAGE = 9;
 
 let allPostsPromise: Promise<BlogPostFull[]> | undefined;
 
-/** Loads the parsed archive; the first call's promise is every later call's. */
 function loadAllPosts(): Promise<BlogPostFull[]> {
   return (allPostsPromise ??= import("./blog-posts").then((m) => m.allPosts));
 }
 
-/** Strips the markdown body, leaving listing-friendly post metadata. */
 function toMeta(post: BlogPostFull): BlogPost {
   return {
     slug: post.slug,

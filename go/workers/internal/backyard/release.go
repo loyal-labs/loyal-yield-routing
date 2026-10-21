@@ -10,13 +10,10 @@ import "math/big"
 // withdrawal is stored: each tick's target recomputes the shortfall, and a
 // release larger than one step's withdraw room repeats.
 const (
-	partialWithdrawalBufferBPS     int64 = 100       // 1% of S ...
+	partialWithdrawalBufferBPS     int64 = 100
 	partialWithdrawalMinimumBuffer int64 = 1_000_000 // ... at least $1
-	// A release of 90% of a lane's equity or more is the operator's exit,
-	// not a withdrawal's.
-	partialWithdrawalFullExitBPS int64 = 9_000
-	// Collateral or cash below this is rounding residue, not a leg.
-	partialWithdrawalDustRaw int64 = 1_000
+	partialWithdrawalFullExitBPS   int64 = 9_000
+	partialWithdrawalDustRaw       int64 = 1_000
 )
 
 // partialWithdrawalReleaseReceipts converts the USDC target E into the

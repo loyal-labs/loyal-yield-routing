@@ -39,8 +39,6 @@ func forward(upstream *url.URL) http.Handler {
 	return proxy
 }
 
-// presentOrigin rewrites a same-host Origin to the upstream origin and leaves
-// a foreign one alone.
 func presentOrigin(r *httputil.ProxyRequest, upstream *url.URL) {
 	origin := r.Out.Header.Get("Origin")
 	if origin == "" {

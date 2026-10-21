@@ -8,18 +8,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ReconciliationRequest is one claimed high-water reconciliation ask for an
-// Autodeposit target. AttemptCount is the claim's retry epoch: the consumer
-// widens its backoff from it.
 type ReconciliationRequest struct {
 	TargetID      int64
 	RequestedSlot int64
 	AttemptCount  int
 }
 
-// ClaimAutodepositReconciliationRequest takes exclusive, lease-bounded ownership
-// of the oldest ready request, bumping its attempt count. SKIP LOCKED keeps
-// concurrent consumers on different rows instead of deadlocking.
 func (s *Store) ClaimAutodepositReconciliationRequest(ctx context.Context, claimOwner string, leaseSeconds int64) (*ReconciliationRequest, error) {
 	if leaseSeconds <= 0 {
 		return nil, errors.New("autodeposit reconciliation lease requires a positive duration")
@@ -60,10 +54,6 @@ RETURNING request.target_id, request.requested_slot, request.attempt_count`, cla
 	return &request, rows.Err()
 }
 
-// CompleteAutodepositReconciliationRequest advances the processed high-water
-// mark through the observed slot. Both marks move by GREATEST so a request that
-// was re-raised while this claim ran keeps its newer ask. It reports whether
-// more remains pending beyond what was just processed.
 func (s *Store) CompleteAutodepositReconciliationRequest(ctx context.Context, targetID int64, claimOwner string, processedSlot int64) (bool, error) {
 	if processedSlot < 0 {
 		return false, fmt.Errorf("autodeposit reconciliation processed slot %d is negative", processedSlot)
@@ -91,8 +81,6 @@ RETURNING processed_slot < requested_slot`, targetID, claimOwner, processedSlot)
 	return stillPending, nil
 }
 
-// RetryAutodepositReconciliationRequest releases a failed claim and schedules
-// the next attempt after its backoff, keeping the error as durable evidence.
 func (s *Store) RetryAutodepositReconciliationRequest(ctx context.Context, targetID int64, claimOwner, lastError string, retryAfterSeconds int64) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.autodeposit_reconciliation_requests
@@ -113,8 +101,6 @@ WHERE target_id = $1
 	return nil
 }
 
-// RescheduleAutodepositReconciliationRequest hands the claim back for a later
-// pass without counting the attempt or recording an error.
 func (s *Store) RescheduleAutodepositReconciliationRequest(ctx context.Context, targetID int64, claimOwner string, retryAfterSeconds int64) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.autodeposit_reconciliation_requests SET claim_owner=NULL,claim_expires_at=NULL,attempt_count=attempt_count-1,next_attempt_at=NOW()+make_interval(secs=>$3::double precision),updated_at=NOW() WHERE target_id=$1 AND claim_owner=$2 AND claim_expires_at>NOW()`, targetID, claimOwner, retryAfterSeconds)
 	if err == nil && tag.RowsAffected() != 1 {
@@ -123,9 +109,6 @@ func (s *Store) RescheduleAutodepositReconciliationRequest(ctx context.Context, 
 	return err
 }
 
-// ReconciliationRetryBackoffSeconds widens the consumer's base retry delay
-// exponentially with the claimed attempt count, capped at five doublings and
-// saturated instead of overflowing like the legacy shifting arithmetic.
 func ReconciliationRetryBackoffSeconds(baseRetryAfterSeconds int64, attemptCount int) int64 {
 	if baseRetryAfterSeconds <= 0 || attemptCount <= 1 {
 		return baseRetryAfterSeconds

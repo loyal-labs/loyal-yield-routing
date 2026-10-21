@@ -11,11 +11,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
-// WithdrawalHealth is display-only. No decision, admission or signer reads it.
-// Its clock is the coherent observation clock, never the assessment/write time.
 type WithdrawalHealth struct {
-	// Assessment-only metadata, never serialized: routine NAV/recovery work
-	// can wait normally but is not proof a prior intervention was resolved.
 	preserveAttention bool
 	Version           int        `json:"version"`
 	Cluster           string     `json:"cluster"`
@@ -58,8 +54,6 @@ func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr 
 	return h, true
 }
 
-// mergeWithdrawalHealth never reports recovery from an unavailable assessment.
-// Keeping the old observation clock also keeps the freshness alert honest.
 func mergeWithdrawalHealth(previous *WithdrawalHealth, next WithdrawalHealth) WithdrawalHealth {
 	if previous != nil && previous.Version == next.Version && previous.Cluster == next.Cluster &&
 		previous.Vault == next.Vault && previous.Program == next.Program && previous.RouteKey == next.RouteKey {
@@ -78,8 +72,6 @@ func mergeWithdrawalHealth(previous *WithdrawalHealth, next WithdrawalHealth) Wi
 	return next
 }
 
-// RecordWithdrawalHealth stores this display projection under the route row
-// lock. It changes no money.
 func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHealth) error {
 	v, err := vaultOfRoute(next.RouteKey)
 	if err != nil || next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != v.VoltrVault || next.Program != voltr.ProgramID.String() {
@@ -110,7 +102,6 @@ func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHe
 	return nil
 }
 
-// Display failures never change execution or overwrite the last durable health.
 func (w *Worker) publishWithdrawalHealth(ctx context.Context, o Observation, decision Decision, tickErr error) {
 	if w.runtime.withdrawalHealth == nil {
 		return

@@ -59,19 +59,13 @@ type Snapshot struct {
 	// CollateralIdleRaw is the vault's custody of the lane's collateral mint,
 	// the whole account (lanes that share it see the same balance).
 	// PrimeIdleRaw is retained for historical snapshot compatibility.
-	CollateralIdleRaw int64
-	// Same-batch, rounded-down bridge-USDC NAV value, used only to select a
-	// plausible funding source. The executable quote minimum remains the gate.
-	CollateralIdleValueRaw int64
-	// Smallest input admitted by the current reserve-derived rounding bound.
-	// Remainders below this stay in custody for exit, not repeated deposits.
+	CollateralIdleRaw           int64
+	CollateralIdleValueRaw      int64
 	MinimumCollateralDepositRaw int64
 	// DebtIdleRaw is the vault's custody of the lane's debt mint, the whole
 	// account, in that mint's raw units. SquadsIdleRaw remains bridge USDC,
 	// even when the lane borrows PYUSD/USDG/USDS.
-	DebtIdleRaw int64
-	// PayoffDebtRaw includes the current finite interest window for typed
-	// debt lanes, including shared USDC. Observation and final-send validation independently recompute it.
+	DebtIdleRaw   int64
 	PayoffDebtRaw int64
 	RouteLane     string
 	StrategyKey   string
@@ -82,16 +76,12 @@ type Snapshot struct {
 	// OverflowRoom* is, on a lane that has an overflow lane, that lane's
 	// debt reserve borrow room this batch (raw debt units, and its bridge
 	// USDC value, floored); unknown unless Known.
-	OverflowRoomRaw      uint64 `json:",omitempty"`
-	OverflowRoomValueRaw int64  `json:",omitempty"`
-	OverflowRoomKnown    bool   `json:",omitempty"`
-	// OverflowObligationPresent: the overflow lane's obligation exists, from
-	// the same capture as its room.
-	OverflowObligationPresent bool `json:",omitempty"`
-	// DebtTermEndUnix is the working lane's borrow maturity on a term debt
-	// reserve (KLend's last borrow plus the reserve's debt term, or the
-	// market-wide maturity when earlier); zero without term debt.
-	// ChainUnix is the batch's Clock time.
+	OverflowRoomRaw           uint64 `json:",omitempty"`
+	OverflowRoomValueRaw      int64  `json:",omitempty"`
+	OverflowRoomKnown         bool   `json:",omitempty"`
+	OverflowObligationPresent bool   `json:",omitempty"`
+	// DebtTermEndUnix is KLend's term-debt maturity: the last borrow plus the
+	// reserve's debt term, or the market-wide maturity when earlier.
 	DebtTermEndUnix      int64 `json:",omitempty"`
 	ChainUnix            int64 `json:",omitempty"`
 	VoltrStrategyIdleRaw int64
@@ -103,133 +93,83 @@ type Snapshot struct {
 	// decisions. A missing obligation cannot receive a deposit: entry planning
 	// holds on it instead of allocating or swapping collateral into a deposit
 	// Kamino would refuse.
-	ObligationPresent          bool
-	ObligationPresenceKnown    bool
-	PositionCollateralRaw      int64
-	PositionDebtRaw            int64
-	PositionCollateralValueRaw int64
-	PositionDebtValueRaw       int64
-	StrategyNAVRaw             int64
-	TotalVaultNAVRaw           int64
-	PriorReportedNAVRaw        int64
-	PriorReportUpdatedUnix     int64
-	ReportSequence             int64
-	ReportSnapshotDigest       string
-	// Voltr book reads from the same confirmed batch. VoltrTotalValueRaw closes
-	// the M1 identity together with the custody Voltr books itself
-	// (VoltrReceiptCustodyTrackedRaw, receipt offset 128); the observed strategy
-	// custody ATA balance (VoltrStrategyIdleRaw) is deliberately absent from
-	// that identity because a stage in flight moves Squads cash into the ATA
-	// without invoking Voltr.
+	ObligationPresent              bool
+	ObligationPresenceKnown        bool
+	PositionCollateralRaw          int64
+	PositionDebtRaw                int64
+	PositionCollateralValueRaw     int64
+	PositionDebtValueRaw           int64
+	StrategyNAVRaw                 int64
+	TotalVaultNAVRaw               int64
+	PriorReportedNAVRaw            int64
+	PriorReportUpdatedUnix         int64
+	ReportSequence                 int64
+	ReportSnapshotDigest           string
 	VoltrTotalValueRaw             int64
 	VoltrReceiptCustodyTrackedRaw  int64
 	LockedProfitDegradationSeconds int64
 	LastUpdatedLockedProfitRaw     int64
 	LastLockedProfitReportUnix     int64
-	// FeeAccumulatorRaw is unharvested fee LP; LPSupplyInclFeesRaw includes it
-	// and dead weight. Their ratio is warning-only. All eight same-batch fee
-	// terms must match the exact approved tuple before new decisions.
-	// Economic selection alone requires the coherent BOOK HWM baseline.
-	// Fixed-size bytes preserve Snapshot comparability; NAV/withdrawals ignore it.
-	VoltrHighWaterMarkBits    [16]byte
-	VoltrHighWaterMarkKnown   bool
-	FeeAccumulatorRaw         int64
-	LPSupplyInclFeesRaw       int64
-	ManagerPerformanceFeeBPS  int64
-	AdminPerformanceFeeBPS    int64
-	ManagerManagementFeeBPS   int64
-	AdminManagementFeeBPS     int64
-	RedemptionFeeBPS          int64
-	IssuanceFeeBPS            int64
-	ProtocolPerformanceFeeBPS int64
-	ProtocolManagementFeeBPS  int64
-	// StagedAmountRaw is the amount of the most recent reconciled
-	// STAGE_SQUADS_TO_VOLTR operation for this route, with StagedAmountKnown
-	// false when the journal has no such operation. A restore must debit
-	// exactly this amount out of custody; anything else is a custody mismatch.
-	StagedAmountRaw   int64
-	StagedAmountKnown bool
-	// Trustful is a vault on Voltr's Trustful adaptor (Vault.trustful): its
-	// strategy receipt is its report, so none of the FSj27 monitors, journal
-	// or ticket fields below arm its decisions.
-	Trustful bool `json:",omitempty"`
-	// ApprovedAdminPerformanceFeeBPS is the vault's approved admin performance
-	// fee (Vault.AdminPerformanceFeeBPS): M7 pins AdminPerformanceFeeBPS to it,
-	// and every fee forecast charges it.
+	VoltrHighWaterMarkBits         [16]byte
+	VoltrHighWaterMarkKnown        bool
+	FeeAccumulatorRaw              int64
+	LPSupplyInclFeesRaw            int64
+	ManagerPerformanceFeeBPS       int64
+	AdminPerformanceFeeBPS         int64
+	ManagerManagementFeeBPS        int64
+	AdminManagementFeeBPS          int64
+	RedemptionFeeBPS               int64
+	IssuanceFeeBPS                 int64
+	ProtocolPerformanceFeeBPS      int64
+	ProtocolManagementFeeBPS       int64
+	StagedAmountRaw                int64
+	StagedAmountKnown              bool
+	Trustful                       bool  `json:",omitempty"`
 	ApprovedAdminPerformanceFeeBPS int64 `json:",omitempty"`
 	// Phase 2 monitor inputs. MonitorsArmed is set only when the serialized
 	// worker merged a coherent confirmed route NAV batch, so hand-built unit
 	// snapshots keep their existing decisions. The journal, ticket, and
 	// program-identity fields are filled by the production observe path.
-	MonitorsArmed                 bool
-	TicketLastConsumedSequenceRaw int64
-	JournalSequenceKnown          bool
-	JournalReconciledSequenceRaw  int64
-	JournalArmedNAVKnown          bool
-	JournalArmedNAVRaw            int64
-	// JournalArmedNAVReturnDataMissing and JournalArmedNAVMalformed record a
-	// reconciled ticket-consuming operation that carries no usable adaptor
-	// return data: both are durable holds, never a silent disarm.
+	MonitorsArmed                    bool
+	TicketLastConsumedSequenceRaw    int64
+	JournalSequenceKnown             bool
+	JournalReconciledSequenceRaw     int64
+	JournalArmedNAVKnown             bool
+	JournalArmedNAVRaw               int64
 	JournalArmedNAVReturnDataMissing bool
 	JournalArmedNAVMalformed         bool
-	// StageTransient is true when a reconciled stage is newer than the last
-	// ticket-consuming operation, so nonzero custody is the expected stage leg.
-	StageTransient bool
-	// StrategyReceiptIntegrityFault records a confirmed batch whose strategy
-	// receipt is absent, foreign-owned, or the wrong length: an observed
-	// integrity failure that holds durably instead of failing the tick before
-	// any decision exists.
-	StrategyReceiptIntegrityFault bool
-	ProgramIdentityKnown          bool
-	VoltrProgramDeploySlot        int64
-	AdaptorProgramDeploySlot      int64
-	LTVBPS                        int64
-	LiquidationThresholdBPS       int64
-	// MaxLTVBPS is the collateral reserve's loan-to-value (KLend's borrow
-	// limit); with the liquidation threshold it sets the hard LTV.
-	MaxLTVBPS                int64
-	Fresh                    bool
-	CapacityRaw              int64
-	PolicyLimitRaw           int64
-	MaxTargetLTVEntryRaw     int64
-	BorrowUtilizationBlocked bool
-	// LeverageTargetLevel is the lane's stored level (a level on the ladder,
-	// leverage_level.go; 0 when none is stored) and LeverageUpApproved
-	// whether the selector's economics approve the up step toward it:
-	// target()'s level inputs.
-	LeverageTargetLevel float64
-	LeverageUpApproved  bool
-	// Same-batch exact receive ceilings for the step to each ladder level
-	// up to the lane's cap, by ladder index (0 above the cap).
-	// Zero known room holds borrowing, never targets repayment of existing debt.
-	BorrowCapacityKnown   bool
-	AdditionalDebtRoomRaw uint64
-	LeverageBorrowRaw     [len(leverageLadder)]uint64
-	BorrowDebtPriceSF     [16]byte
-	BorrowUSDCPriceSF     [16]byte
-	BorrowDebtDecimals    uint8
-	BorrowFeeRate         uint64
-	// LeverageDesiredRaw is the whole step to each level inside the
-	// position's risk limits, not bounded by reserve room: the size an up
-	// move is priced and approved at.
-	LeverageDesiredRaw [len(leverageLadder)]uint64
-	// BorrowUtilizationHeadroomRaw is the debt reserve's room to its
-	// utilization borrow limit (MaxUint64 without a limit).
-	BorrowUtilizationHeadroomRaw uint64
-	// TopupDepositRoomRaw is the collateral reserve's remaining deposit limit,
-	// valued in bridge USDC (floored, less a 1% price margin). It sizes a
-	// plan B3 top-up; zero or unknown allocates nothing.
-	TopupDepositRoomRaw     int64
-	CapitalMutated          bool
-	PostMutationNAVRequired bool
-	LastReportAgeSeconds    int64
-	// Target is where target() puts this lane this tick (target.go), and
-	// TargetInputs every candidate lane's stored inputs it read.
-	Target       LaneTarget `json:",omitempty"`
-	TargetInputs string     `json:",omitempty"`
+	StageTransient                   bool
+	StrategyReceiptIntegrityFault    bool
+	ProgramIdentityKnown             bool
+	VoltrProgramDeploySlot           int64
+	AdaptorProgramDeploySlot         int64
+	LTVBPS                           int64
+	LiquidationThresholdBPS          int64
+	MaxLTVBPS                        int64
+	Fresh                            bool
+	CapacityRaw                      int64
+	PolicyLimitRaw                   int64
+	MaxTargetLTVEntryRaw             int64
+	BorrowUtilizationBlocked         bool
+	LeverageTargetLevel              float64
+	LeverageUpApproved               bool
+	BorrowCapacityKnown              bool
+	AdditionalDebtRoomRaw            uint64
+	LeverageBorrowRaw                [len(leverageLadder)]uint64
+	BorrowDebtPriceSF                [16]byte
+	BorrowUSDCPriceSF                [16]byte
+	BorrowDebtDecimals               uint8
+	BorrowFeeRate                    uint64
+	LeverageDesiredRaw               [len(leverageLadder)]uint64
+	BorrowUtilizationHeadroomRaw     uint64
+	TopupDepositRoomRaw              int64
+	CapitalMutated                   bool
+	PostMutationNAVRequired          bool
+	LastReportAgeSeconds             int64
+	Target                           LaneTarget `json:",omitempty"`
+	TargetInputs                     string     `json:",omitempty"`
 }
 
-// heldLanes is HeldLanes as a list.
 func (s Snapshot) heldLanes() []string {
 	if s.HeldLanes == "" {
 		return nil
@@ -245,9 +185,6 @@ type Decision struct {
 	StrategyKey    string
 }
 
-// validateSelectorInitializerDecision is the initializer decision shape: a
-// registry lane with an installed initializer policy, zero amount, exact
-// reason, nonempty idempotency key.
 func validateSelectorInitializerDecision(d Decision) error {
 	if !earnInitializerLane(d.StrategyKey) || d.AmountRaw != 0 || d.Reason != "multiply_obligation_missing" || d.IdempotencyKey == "" {
 		return fmt.Errorf("invalid Multiply initialization decision")
@@ -281,20 +218,10 @@ func (d Decision) Validate() error {
 	return fmt.Errorf("unknown decision action")
 }
 
-// Observation is one coherent bank read. Principal is chain state; reserve
-// valuations may use the explicitly identified unsigned refresh source.
 type Observation struct {
-	planning *routePlanningState
-	// Tick-local account evidence, intentionally excluded from persisted JSON.
-	// It is produced only by the coherent route observer and never cached by Worker.
-	routeBatch *routeObservationBatch
-	// policies is where each Backyard literal is installed, read once by the
-	// build this observation was prepared for (prepare*, a selector sample):
-	// never by the tick's observation, never persisted or cached.
-	policies installedPolicies
-	// lanes are every candidate lane's view of this batch, in registry
-	// order, with their stored levels: target()'s input. Snapshot is the
-	// working lane's.
+	planning        *routePlanningState
+	routeBatch      *routeObservationBatch
+	policies        installedPolicies
 	lanes           []Snapshot
 	ValuationSource string `json:",omitempty"`
 	ValuationSlot   int64  `json:",omitempty"`
@@ -302,7 +229,6 @@ type Observation struct {
 	ObservedAt      time.Time
 }
 
-// Operation is the durable journal identity created before transaction work.
 type Operation struct {
 	ID          string
 	RouteKey    string
@@ -311,9 +237,6 @@ type Operation struct {
 	Decision    Decision
 }
 
-// PersistedOperation is the durable execution state loaded before any new
-// observation is allowed. SignedWire is the only wire recovery may inspect;
-// recovery must never rebuild or re-sign it.
 type PersistedOperation struct {
 	Operation
 	Status                  OperationStatus
@@ -327,8 +250,6 @@ type PersistedOperation struct {
 	ConfirmedSlot           int64
 }
 
-// Reconciliation is independently observed after confirmation. EffectsSHA256
-// identifies canonical observed balance deltas, not the RPC send response.
 type Reconciliation struct {
 	ConfirmedSlot int64
 	EffectsSHA256 string

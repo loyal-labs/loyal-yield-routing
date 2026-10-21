@@ -8,10 +8,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// FinalizeLookupRollback ports the explicit source rollback-finalization
-// transition. It releases expired standby reservations, then makes their
-// physical tables eligible for separately proved deactivation/close packets.
-// Current shared heads are never retired by an inferred age or empty queue.
 func (s *Store) FinalizeLookupRollback(ctx context.Context, cluster string, familyID int64) (bool, error) {
 	changed := false
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
@@ -110,8 +106,6 @@ func (s *Store) FinalizeLookupRollback(ctx context.Context, cluster string, fami
 		if protected {
 			return nil
 		}
-		// A predecessor generation cannot be finalized while any live binding
-		// other than the explicitly expired standby set still references it.
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_vault_bindings WHERE route_lookup_table_id=ANY($1) AND lifecycle_state IN ('preparing','warming','active','standby','retiring') AND NOT id=ANY($2))`, previousTables, bindings).Scan(&protected); err != nil {
 			return err
 		}

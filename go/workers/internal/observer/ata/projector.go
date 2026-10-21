@@ -71,10 +71,6 @@ type ProjectionOutcome struct {
 	FetchedEvents   int
 }
 
-// Tick reads capture before opening the destination transaction. A competing
-// retained/Go projector may advance the shared offset meanwhile; only events
-// beyond the locked destination offset are then applied. Events, current
-// balances and offset commit together. A lost commit response is retried by ID.
 func (p *Projector) Tick(ctx context.Context) (ProjectionOutcome, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.ioTimeout)
 	defer cancel()
@@ -92,11 +88,6 @@ func (p *Projector) Tick(ctx context.Context) (ProjectionOutcome, error) {
 	return p.applyBatch(ctx, after, events)
 }
 
-// Run reports ordinary failures without canceling the independently committing
-// capture lane. Failed batches retain their checkpoint and retry with bounded
-// backoff; persistent evidence conflicts remain unhealthy and are never skipped.
-// Callbacks run synchronously outside transactions and must return promptly.
-// Constructor errors remain runtime startup failures.
 func (p *Projector) Run(ctx context.Context) error {
 	backoff := 250 * time.Millisecond
 	for {
@@ -206,9 +197,6 @@ func (event projectionEvent) validate(previous int64) error {
 	return nil
 }
 
-// Match the retained mapper exactly without decoding JSON numbers as float64.
-// Only explicitly captured observations are patches; omitted accounts are never
-// inferred to have zero balance or removed from the destination projection.
 func projectionEvidence(raw json.RawMessage, accountData string) (json.RawMessage, error) {
 	if !json.Valid(raw) {
 		return nil, errors.New("invalid JSON evidence")
