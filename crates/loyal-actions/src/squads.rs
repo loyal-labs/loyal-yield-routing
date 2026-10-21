@@ -487,10 +487,8 @@ pub fn create_deployed_semantic_program_interaction_policy_instruction(
     })
 }
 
-/// Canonical deployed Autodeposit policy from Loyal Apps
-/// 45de590: smart-account-vaults/client.ts1894..2004. Its mutable wallet floor
-/// is deliberately absent. Preserve every owner/data restriction here, in the
-/// source action SDK, rather than re-encoding this security contract in a worker.
+/// Canonical deployed Autodeposit policy. Its mutable wallet floor is
+/// deliberately absent.
 #[allow(clippy::too_many_arguments)]
 pub fn build_canonical_subscription_sweep_policy_create(
     settings: Pubkey,

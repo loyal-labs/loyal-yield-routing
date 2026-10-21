@@ -43,8 +43,8 @@ func (g goldenInstruction) instruction(t *testing.T) Instruction {
 	return out
 }
 
-func TestSquadsEnvelopeMatchesIndependentRustGolden(t *testing.T) {
-	raw, err := os.ReadFile("testdata/rust-squads-envelope.json")
+func TestSquadsExecuteEnvelopeGolden(t *testing.T) {
+	raw, err := os.ReadFile("../../../../../crates/loyal-actions/fixtures/squads-execute-envelope-v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestSquadsEnvelopeMatchesIndependentRustGolden(t *testing.T) {
 	}
 	digest := sha256.Sum256([]byte(fixture.RequestJSON))
 	if hex.EncodeToString(digest[:]) != fixture.Provenance.InputSHA256 || fixture.Expected.SourceSHA256 != fixture.Provenance.InputSHA256 {
-		t.Fatal("Rust golden producer input hash drifted")
+		t.Fatal("golden input hash drifted")
 	}
 	var request struct {
 		Policy      string              `json:"policy"`
@@ -108,7 +108,7 @@ func TestSquadsEnvelopeMatchesIndependentRustGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(actualJSON) != string(expectedJSON) {
-		t.Fatalf("Squads envelope differs from Rust golden:\nactual %s\nRust %s", actualJSON, expectedJSON)
+		t.Fatalf("Squads envelope differs from golden:\nactual %s\ngolden %s", actualJSON, expectedJSON)
 	}
 	decoded, err := DecodeExecuteTransactionSyncV2(actual)
 	if err != nil || decoded.Policy != policy || decoded.Signer != delegate || decoded.AccountIndex != request.Index || !bytes.Equal(decoded.ConstraintIndexes, constraints) || len(decoded.Inner) != len(inner) {

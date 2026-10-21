@@ -10,7 +10,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// DataOperatorView mirrors SquadsDataOperatorView.
 type DataOperatorView uint8
 
 const (
@@ -22,7 +21,6 @@ const (
 	OpLessThanOrEqualTo
 )
 
-// DataValueView mirrors SquadsDataValueView.
 type DataValueView struct {
 	Kind  uint8
 	U8    uint8
@@ -33,14 +31,12 @@ type DataValueView struct {
 	Bytes []byte
 }
 
-// DataConstraintView mirrors SquadsDataConstraintView.
 type DataConstraintView struct {
 	DataOffset uint64
 	DataValue  DataValueView
 	Operator   DataOperatorView
 }
 
-// AccountConstraintView mirrors SquadsAccountConstraintView.
 type AccountConstraintView struct {
 	AccountIndex uint8
 	Pubkeys      []solana.PublicKey
@@ -48,16 +44,14 @@ type AccountConstraintView struct {
 	Owner        *solana.PublicKey
 }
 
-// InstructionConstraintView mirrors SquadsInstructionConstraintView.
 type InstructionConstraintView struct {
 	ProgramID          solana.PublicKey
 	AccountConstraints []AccountConstraintView
 	DataConstraints    []DataConstraintView
 }
 
-// SpendingLimitView mirrors SquadsLimitedSpendingLimitView, with the
-// allowance rules of the legacy account layout (the compact layout has none:
-// they read zero there). Its usage counters are Squads' running state, not
+// SpendingLimitView carries the allowance rules of the legacy account layout
+// (the compact layout has none: they read zero there). Its usage counters are Squads' running state, not
 // what the policy allows, so it does not carry them.
 type SpendingLimitView struct {
 	Mint          solana.PublicKey
@@ -81,8 +75,8 @@ func (p Policy) Equal(q Policy) bool {
 	return p.VaultIndex == q.VaultIndex && ConstraintsEqual(p.Constraints, q.Constraints) && SpendingLimitsEqual(p.SpendingLimits, q.SpendingLimits)
 }
 
-// PolicyPayloadView mirrors SquadsProgramInteractionPolicyView: the policy and,
-// in the compact layout, the pubkey table its keys index.
+// PolicyPayloadView is the policy and, in the compact layout, the pubkey table
+// its keys index.
 type PolicyPayloadView struct {
 	Policy
 	PubkeyTable []solana.PublicKey
