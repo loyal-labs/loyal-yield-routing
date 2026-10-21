@@ -85,6 +85,20 @@ func (o *ObservedRoute) CollateralCustody(key StrategyKey) *TokenBalance {
 	return nil
 }
 
+func (o *ObservedRoute) balances() []*TokenBalance {
+	all := []*TokenBalance{&o.Claim}
+	for index := range o.CollateralCustodies {
+		all = append(all, &o.CollateralCustodies[index].Balance)
+	}
+	for index := range o.DebtCustodies {
+		all = append(all, &o.DebtCustodies[index].Balance)
+	}
+	for index := range o.ExternalCustody {
+		all = append(all, &o.ExternalCustody[index])
+	}
+	return all
+}
+
 func (o *ObservedRoute) ActiveStrategyIsCoherent() bool {
 	if o == nil {
 		return false
@@ -330,7 +344,7 @@ func decodeObligation(account *chain.Account, config StrategyConfig, vault solan
 			return nil, errors.New("obligation reserve topology drifted")
 		}
 		borrows++
-		debtSF = kamino.U128(borrow.BorrowedAmountSF)
+		debtSF = borrow.BorrowedAmountSF.Int()
 	}
 	if deposits > 1 || borrows > 1 {
 		return nil, errors.New("obligation reserve topology drifted")
@@ -346,7 +360,7 @@ func decodeObligation(account *chain.Account, config StrategyConfig, vault solan
 	if obligation.ElevationGroup != 0 {
 		return nil, errors.New("obligation identity drifted")
 	}
-	unhealthy := kamino.U128(obligation.UnhealthyBorrowValueSF)
+	unhealthy := obligation.UnhealthyBorrowValueSF.Int()
 	collateralValue, err := collateralMarketValueSF(collateralReserve, collateralDepositedRaw)
 	if err != nil {
 		return nil, err
@@ -427,7 +441,7 @@ func decodeReserve(account *chain.Account, config StrategyConfig) (*decodedReser
 	if err != nil || account.Key != address {
 		return nil, errors.New("KLend account envelope or layout drifted")
 	}
-	price := kamino.U128(reserve.MarketPriceSF)
+	price := reserve.MarketPriceSF.Int()
 	if reserve.LendingMarket != config.Market || reserve.LiquidityMint != mustKey(mint) || reserve.Status != 0 || price.Sign() == 0 {
 		return nil, errors.New("reserve identity, status, or price drifted")
 	}
@@ -449,13 +463,13 @@ func decodeReserve(account *chain.Account, config StrategyConfig) (*decodedReser
 	}, nil
 }
 
-const fractionOneSF = uint64(1) << 60
+const fractionOneSF = uint64(1) << kamino.FractionBits
 
 func collateralMarketValueSF(reserve *decodedReserve, collateralRaw uint64) (*big.Int, error) {
 	if collateralRaw == 0 {
 		return new(big.Int), nil
 	}
-	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(reserve.CollateralMintSupply), 60)
+	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(reserve.CollateralMintSupply), kamino.FractionBits)
 	if denominator.Sign() == 0 {
 		return nil, errors.New("collateral reserve supply is zero")
 	}
@@ -478,7 +492,7 @@ func debtMarketValueSF(reserve *decodedReserve, debtSF *big.Int) (*big.Int, erro
 	if err != nil {
 		return nil, err
 	}
-	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(mintFactor), 60)
+	denominator := new(big.Int).Lsh(new(big.Int).SetUint64(mintFactor), kamino.FractionBits)
 	value := new(big.Int).Mul(debtSF, reserve.MarketPriceSF)
 	value.Div(value, denominator)
 	return checkedU128(value)
@@ -529,7 +543,7 @@ func mintFactor(decimals uint64) (uint64, error) {
 }
 
 func ceilDiv60(value *big.Int) *big.Int {
-	result := new(big.Int).Rsh(value, 60)
+	result := new(big.Int).Rsh(value, kamino.FractionBits)
 	remainder := new(big.Int).And(value, new(big.Int).SetUint64(fractionOneSF-1))
 	if remainder.Sign() > 0 {
 		result.Add(result, big.NewInt(1))

@@ -652,7 +652,7 @@ func TestVerifyExpectedEffectsRules(t *testing.T) {
 	// Undershoot below the persisted spend must fail.
 	setCollateralAmount(before, 5_000)
 	setCollateralAmount(after, 4_900)
-	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, before, after, topology); err == nil {
+	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, after, topology); err == nil {
 		t.Fatal("undershoot was accepted")
 	}
 	// Faithful deposit: custody lost exactly the spend and the obligation
@@ -662,11 +662,11 @@ func TestVerifyExpectedEffectsRules(t *testing.T) {
 		Obligation: config.Obligation.String(), CollateralRawDelta: 500,
 	}
 	effects.ObligationBefore = &ObligationBefore{Obligation: config.Obligation.String(), DebtAmountSF: "0"}
-	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, before, after, topology); err == nil {
+	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, after, topology); err == nil {
 		t.Fatal("positive obligation delta without position collateral must fail")
 	}
 	afterPosition.CollateralDepositedRaw = 500
-	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, before, after, topology); err != nil {
+	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, after, topology); err != nil {
 		t.Fatalf("faithful deposit rejected: %v", err)
 	}
 	// Repay-all must clear obligation debt; unspent custody residue is valid.
@@ -697,11 +697,11 @@ func TestVerifyExpectedEffectsRules(t *testing.T) {
 	setObservedRaw(before, debtConfig.DebtCustody.String(), 1_000)
 	setObservedRaw(after, debtConfig.DebtCustody.String(), 100)
 	after.Position(debtKey).DebtRaw = 1
-	if err := VerifyExpectedEffects(effects, ActionRepayDebt, before, after, topology); err == nil {
+	if err := VerifyExpectedEffects(effects, ActionRepayDebt, after, topology); err == nil {
 		t.Fatal("repay-all retained obligation debt")
 	}
 	after.Position(debtKey).DebtRaw = 0
-	if err := VerifyExpectedEffects(effects, ActionRepayDebt, before, after, topology); err != nil {
+	if err := VerifyExpectedEffects(effects, ActionRepayDebt, after, topology); err != nil {
 		t.Fatalf("repay-all with unspent custody residue rejected: %v", err)
 	}
 }
@@ -743,14 +743,14 @@ func TestSnapshotInputUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if input.CollateralValueUSD != "1000000" {
-		t.Fatalf("collateral value %s micros, want 1000000", input.CollateralValueUSD)
+	if input.CollateralValueUSDMicros != "1000000" {
+		t.Fatalf("collateral value %s micros, want 1000000", input.CollateralValueUSDMicros)
 	}
-	if input.DebtValueUSD != "250000" {
-		t.Fatalf("debt value %s micros, want 250000", input.DebtValueUSD)
+	if input.DebtValueUSDMicros != "250000" {
+		t.Fatalf("debt value %s micros, want 250000", input.DebtValueUSDMicros)
 	}
-	if input.EquityUSD != "750000" { // 1_000_000 - 250_000
-		t.Fatalf("equity %s micros", input.EquityUSD)
+	if input.EquityUSDMicros != "750000" { // 1_000_000 - 250_000
+		t.Fatalf("equity %s micros", input.EquityUSDMicros)
 	}
 	if input.LeverageBPS == nil || *input.LeverageBPS != 13333 { // 1_000_000*10000/750_000
 		t.Fatalf("leverage bps %v", input.LeverageBPS)

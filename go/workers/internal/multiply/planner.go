@@ -9,18 +9,27 @@ const (
 	minJupiterSwapRaw     = uint64(50_000)
 )
 
+type AmountMode string
+
+const (
+	ModeExact       AmountMode = "exact"
+	ModeAll         AmountMode = "all"
+	ModeMaxSafe     AmountMode = "max_safe"
+	ModeToTargetLTV AmountMode = "to_target_ltv"
+)
+
 type PlannedAmount struct {
-	Mode    string // "exact" | "all" | "max_safe" | "to_target_ltv"
+	Mode    AmountMode
 	Exactly uint64 // set when Mode == "exact"
 }
 
 var (
-	AmountAll         = PlannedAmount{Mode: "all"}
-	AmountMaxSafe     = PlannedAmount{Mode: "max_safe"}
-	AmountToTargetLTV = PlannedAmount{Mode: "to_target_ltv"}
+	AmountAll         = PlannedAmount{Mode: ModeAll}
+	AmountMaxSafe     = PlannedAmount{Mode: ModeMaxSafe}
+	AmountToTargetLTV = PlannedAmount{Mode: ModeToTargetLTV}
 )
 
-func AmountExact(value uint64) PlannedAmount { return PlannedAmount{Mode: "exact", Exactly: value} }
+func AmountExact(value uint64) PlannedAmount { return PlannedAmount{Mode: ModeExact, Exactly: value} }
 
 type ActionPlan struct {
 	Action             MultiplyAction
@@ -29,41 +38,51 @@ type ActionPlan struct {
 	DestinationAccount string
 }
 
+type DecisionKind string
+
+const (
+	DecisionExecute            DecisionKind = "execute"
+	DecisionResume             DecisionKind = "resume"
+	DecisionComplete           DecisionKind = "complete"
+	DecisionInvalidObservation DecisionKind = "invalid_observation"
+	DecisionUnresolvedCustody  DecisionKind = "unresolved_custody"
+)
+
 type PlannerDecision struct {
-	Kind      string // "execute" | "resume" | "complete"
+	Kind      DecisionKind
 	Plan      *ActionPlan
 	ResumeID  string
 	Condition string
 }
 
 func ExecuteDecision(plan ActionPlan) PlannerDecision {
-	return PlannerDecision{Kind: "execute", Plan: &plan}
+	return PlannerDecision{Kind: DecisionExecute, Plan: &plan}
 }
 
-func CompleteDecision() PlannerDecision { return PlannerDecision{Kind: "complete"} }
+func CompleteDecision() PlannerDecision { return PlannerDecision{Kind: DecisionComplete} }
 
 func NextAction(route *RouteState, observed *ObservedRoute, topology *EarnMaxTopology) PlannerDecision {
 	if route == nil {
-		return PlannerDecision{Kind: "invalid_observation"}
+		return PlannerDecision{Kind: DecisionInvalidObservation}
 	}
 	if route.CurrentOperationID != nil {
-		return PlannerDecision{Kind: "resume", ResumeID: *route.CurrentOperationID}
+		return PlannerDecision{Kind: DecisionResume, ResumeID: *route.CurrentOperationID}
 	}
 	if observed == nil || topology == nil {
-		return PlannerDecision{Kind: "invalid_observation"}
+		return PlannerDecision{Kind: DecisionInvalidObservation}
 	}
 	if !observed.ActiveStrategyIsCoherent() {
-		return PlannerDecision{Kind: "invalid_observation"}
+		return PlannerDecision{Kind: DecisionInvalidObservation}
 	}
 	for _, config := range topology.StrategyCatalog() {
 		if observed.Position(config.Key) == nil || observed.CollateralCustody(config.Key) == nil || observed.DebtCustody(config.Key) == nil {
-			return PlannerDecision{Kind: "invalid_observation"}
+			return PlannerDecision{Kind: DecisionInvalidObservation}
 		}
 	}
 	active := StrategyKey("")
 	for _, position := range observed.Strategies {
 		if position == nil {
-			return PlannerDecision{Kind: "invalid_observation"}
+			return PlannerDecision{Kind: DecisionInvalidObservation}
 		}
 		if position.CollateralDepositedRaw > 0 || position.DebtRaw > 0 {
 			active = position.StrategyKey
@@ -85,11 +104,11 @@ func planUp(observed *ObservedRoute, target StrategyKey, topology *EarnMaxTopolo
 	config := topology.Strategies[target]
 	position := observed.Position(target)
 	if position == nil {
-		return PlannerDecision{Kind: "invalid_observation"}
+		return PlannerDecision{Kind: DecisionInvalidObservation}
 	}
 	collateralCustody := observed.CollateralCustody(target)
 	if collateralCustody == nil || observed.DebtCustody(target) == nil {
-		return PlannerDecision{Kind: "invalid_observation"}
+		return PlannerDecision{Kind: DecisionInvalidObservation}
 	}
 	if collateralCustody != nil && collateralCustody.AmountRaw > 0 {
 		return ExecuteDecision(ActionPlan{
@@ -120,7 +139,7 @@ func planUp(observed *ObservedRoute, target StrategyKey, topology *EarnMaxTopolo
 		return ExecuteDecision(ActionPlan{Action: ActionRepayDebt, StrategyKey: target, Amount: amount})
 	}
 	if !validMarketValues(position) || position.DebtMintFactor == 0 {
-		return PlannerDecision{Kind: "invalid_observation"}
+		return PlannerDecision{Kind: DecisionInvalidObservation}
 	}
 	collateralValue := new(big.Int).Set(position.CollateralValueSF)
 	targetDebtValue := saturatingU128(new(big.Int).Mul(collateralValue, new(big.Int).SetUint64(uint64(config.TargetLTVBPS))))
@@ -147,11 +166,11 @@ func planDown(observed *ObservedRoute, active StrategyKey) PlannerDecision {
 	if active.Valid() {
 		position := observed.Position(active)
 		if position == nil {
-			return PlannerDecision{Kind: "invalid_observation"}
+			return PlannerDecision{Kind: DecisionInvalidObservation}
 		}
 		debtCustody := observed.DebtCustody(active)
 		if debtCustody == nil || observed.CollateralCustody(active) == nil {
-			return PlannerDecision{Kind: "invalid_observation"}
+			return PlannerDecision{Kind: DecisionInvalidObservation}
 		}
 		debtCustodyRaw := uint64(0)
 		if debtCustody != nil {
@@ -194,7 +213,7 @@ func planDown(observed *ObservedRoute, active StrategyKey) PlannerDecision {
 			continue
 		}
 		if entry.Balance.AmountRaw <= minJupiterSwapRaw {
-			return PlannerDecision{Kind: "unresolved_custody", Condition: "withdrawal_residual_debt_dust"}
+			return PlannerDecision{Kind: DecisionUnresolvedCustody, Condition: "withdrawal_residual_debt_dust"}
 		}
 		return ExecuteDecision(ActionPlan{Action: ActionSwapDebtToCollateral, StrategyKey: entry.StrategyKey, Amount: AmountExact(entry.Balance.AmountRaw)})
 	}
