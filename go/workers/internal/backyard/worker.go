@@ -214,32 +214,24 @@ func NewWorker(database *Database, rpc *chain.Client, view *View, jupiterClient 
 	if database == nil || database.pool == nil || rpc == nil || view == nil || v == nil || state == nil || config.PollInterval <= 0 {
 		return nil, fmt.Errorf("invalid concrete worker configuration")
 	}
-	key, err := credentials.signer()
-	if err != nil {
+	if _, err := credentials.signer(); err != nil {
 		return nil, err
 	}
 	return &Worker{wake: make(chan struct{}, 1), routeKey: v.RouteKey, interval: config.PollInterval, manifest: v.manifest, events: state.events, holds: holdLog{events: state.events},
-		runtime: productionTickRuntime(database, rpc, view, jupiterClient, state, v.manifest, Credentials{PolicyKey: key})}, nil
+		runtime: productionTickRuntime(database, rpc, view, jupiterClient, state, v.manifest, credentials)}, nil
 }
 
 func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	var healthObservation Observation
 	var healthDecision Decision
 	defer func() { w.publishWithdrawalHealth(ctx, healthObservation, healthDecision, tickErr) }()
-	// The manual recovery latch is read before anything else in the tick, so
-	// a healthy batch or a restart can never resume execution behind the
-	// operator's stop. A latched tick writes nothing.
-	if w.runtime.loadLatch != nil {
-		latch, latched, err := w.runtime.loadLatch(ctx, w.routeKey)
-		if err != nil {
-			return err
-		}
-		w.events.noteLatch(latched, latch.Reason)
-		if latched {
-			healthDecision = Decision{Action: HoldManualRecovery}
-			w.holds.note(Snapshot{}, "", holdStopped, latch.Reason)
-			return nil
-		}
+	stopped, err := w.stopWhileLatched(ctx)
+	if err != nil {
+		return err
+	}
+	if stopped {
+		healthDecision = Decision{Action: HoldManualRecovery}
+		return nil
 	}
 	operation, err := w.runtime.loadNonterminal(ctx, w.routeKey)
 	if err != nil {
@@ -330,6 +322,21 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	}
 	defer logStage("send", tickStart)
 	return w.runtime.advance(ctx, *pending)
+}
+
+func (w *Worker) stopWhileLatched(ctx context.Context) (bool, error) {
+	if w.runtime.loadLatch == nil {
+		return false, nil
+	}
+	latch, latched, err := w.runtime.loadLatch(ctx, w.routeKey)
+	if err != nil {
+		return false, err
+	}
+	w.events.noteLatch(latched, latch.Reason)
+	if latched {
+		w.holds.note(Snapshot{}, "", holdStopped, latch.Reason)
+	}
+	return latched, nil
 }
 
 func (w *Worker) prepare(ctx context.Context, decision Decision, observation Observation) (any, ExpectedEffects, Observation, error) {
@@ -432,7 +439,7 @@ func isPreSendHold(err error) bool {
 // notifySelectorCommit requests another serialized tick; never execute a
 // transaction from the collector. A queued wake survives an active tick.
 func (w *Worker) notifySelectorCommit(action string) {
-	if action != "ENTER" && action != "CANARY_ENTER" && !selectorRotates(SelectorResult{Action: action}) {
+	if !selectorEntersOrRotates(SelectorResult{Action: action}) {
 		return
 	}
 	select {

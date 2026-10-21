@@ -32,6 +32,8 @@ func (s Snapshot) targetFundsEntry() bool {
 	return t.Rule == ruleEntry && t.EntryRaw >= 0 && funding > 0 && t.EntryRaw <= s.VoltrIdleRaw && funding <= min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) > laneCeilingLTVBPS(s.RouteLane)
 }
 
+const compileOnlyMaximumFeeLamports = 1
+
 func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, o Observation) (Observation, KaminoInitializationRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -46,12 +48,10 @@ func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifes
 	if err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
-	// MaximumFeeLamports is not part of the wire; one is a compile-only
-	// placeholder, replaced by the RPC fee for these exact message bytes.
 	if o.policies, err = observeInstalledPolicies(ctx, rpc, manifest.vault, o.Snapshot.Slot); err != nil {
 		return o, KaminoInitializationRequest{}, err
 	}
-	r, err := manifest.initializationRequest(o.policies, decision.StrategyKey, blockhash, rent, 1)
+	r, err := manifest.initializationRequest(o.policies, decision.StrategyKey, blockhash, rent, compileOnlyMaximumFeeLamports)
 	if err != nil {
 		return o, r, err
 	}

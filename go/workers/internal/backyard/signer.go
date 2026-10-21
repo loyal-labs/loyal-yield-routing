@@ -9,15 +9,15 @@ import (
 )
 
 type Credentials struct {
-	PolicyKey ed25519.PrivateKey
+	key ed25519.PrivateKey
 }
 
 func (c Credentials) signer() (ed25519.PrivateKey, error) {
-	if len(c.PolicyKey) != ed25519.PrivateKeySize {
+	if len(c.key) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("Backyard signing capability is not configured")
 	}
-	key := ed25519.NewKeyFromSeed(c.PolicyKey.Seed())
-	if !key.Public().(ed25519.PublicKey).Equal(c.PolicyKey.Public()) {
+	key := ed25519.NewKeyFromSeed(c.key.Seed())
+	if !key.Public().(ed25519.PublicKey).Equal(c.key.Public()) {
 		return nil, fmt.Errorf("Backyard signing capability public half does not match seed")
 	}
 	if publicKeyFromBytes(key.Public().(ed25519.PublicKey)) != mustKey(bridgeDelegate) {
@@ -34,11 +34,11 @@ func ParseCredentials(material string) (Credentials, error) {
 	if err != nil {
 		return Credentials{}, fmt.Errorf("invalid Backyard signing configuration")
 	}
-	key, err = (Credentials{PolicyKey: key}).signer()
+	key, err = (Credentials{key: key}).signer()
 	if err != nil {
 		return Credentials{}, err
 	}
-	return Credentials{PolicyKey: key}, nil
+	return Credentials{key: key}, nil
 }
 
 func decodeSolanaKeypairMaterial(value string) (ed25519.PrivateKey, error) {
