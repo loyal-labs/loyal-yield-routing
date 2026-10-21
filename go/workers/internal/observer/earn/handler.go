@@ -97,30 +97,21 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	return h.store.Enqueue(ctx, h.consumer, eventKey, normalized.Slot, normalized, affected, account)
 }
 
+func policyDiscoveryEventKey(update NormalizedUpdate, vaults []watch.Vault) (string, bool) {
+	if update.EventKind == "account_deleted" || update.Signature == nil {
+		return "", false
+	}
+	for _, vault := range vaults {
+		if touchesPolicyIdentity(update, vault) {
+			return fmt.Sprintf("policy-discovery:%d:%s", update.Slot, *update.Signature), true
+		}
+	}
+	return "", false
+}
+
 func durableEventKey(update NormalizedUpdate, vaults []watch.Vault) string {
-	policyFilter := false
-	for _, filter := range update.Filters {
-		if filter == watch.EarnSmartAccounts || filter == watch.EarnPolicyAccounts || filter == watch.EarnWallets {
-			policyFilter = true
-		}
-	}
-	policyAccount := false
-	if update.AccountPubkey != nil {
-		for _, vault := range vaults {
-			if *update.AccountPubkey == vault.Settings || *update.AccountPubkey == vault.Wallet {
-				policyAccount = true
-			}
-			for _, account := range vault.Accounts {
-				if account.Pubkey == *update.AccountPubkey && (account.Role == "smart_account" || account.Role == "policy") {
-					policyAccount = true
-				}
-			}
-		}
-	}
-	// A wallet or settings update can arrive first in a close transaction;
-	// deletions keep their own key so discovery cannot consume the cleanup.
-	if policyFilter && policyAccount && update.EventKind != "account_deleted" && update.Signature != nil {
-		return fmt.Sprintf("policy-discovery:%d:%s", update.Slot, *update.Signature)
+	if key, ok := policyDiscoveryEventKey(update, vaults); ok {
+		return key
 	}
 	if update.EventKey != nil {
 		return *update.EventKey

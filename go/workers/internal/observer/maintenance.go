@@ -52,10 +52,7 @@ type MaintenanceConfig struct {
 	Logger                          *slog.Logger
 	OnError                         func()
 	RetryInterval                   time.Duration
-	// ValidateNamespace rechecks the custody namespace before any unscoped
-	// product projection. The runtime supplies it because policy membership can
-	// change after startup; a foreign or unknown scope must not publish.
-	ValidateNamespace func(context.Context) error
+	ValidateNamespace               func(context.Context) error
 }
 
 func NewMaintenance(yield, timescale *pgxpool.Pool, c MaintenanceConfig) (*Maintenance, error) {
@@ -67,6 +64,9 @@ func NewMaintenance(yield, timescale *pgxpool.Pool, c MaintenanceConfig) (*Maint
 	}
 	if c.OnError == nil {
 		return nil, errors.New("maintenance requires a failure consumer")
+	}
+	if c.ValidateNamespace == nil {
+		return nil, errors.New("maintenance requires a namespace validator")
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -165,10 +165,8 @@ func (m *Maintenance) Tick(ctx context.Context, now time.Time) (MaintenanceRepor
 	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
-	if m.validateNamespace != nil {
-		if err := m.validateNamespace(ctx); err != nil {
-			return r, err
-		}
+	if err := m.validateNamespace(ctx); err != nil {
+		return r, err
 	}
 	published, fence, err := m.RefreshHealth(ctx, m.observation)
 	r.HealthPublished, r.HealthFence = published, fence
@@ -494,6 +492,11 @@ func reservePrice(reserve string, account *chain.Account, contextSlot uint64) (S
 	return SharePrice{Reserve: reserve, Market: market, Mint: mint, Slot: int64(update), Price: price}, nil
 }
 
+type blockClock struct {
+	at    time.Time
+	known bool
+}
+
 func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []string, now time.Time) ([]SharePrice, []string, error) {
 	if source == nil || now.IsZero() || len(reserves) > 10_000 {
 		return nil, nil, errors.New("price probe capability/clock/bound invalid")
@@ -512,7 +515,7 @@ func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []st
 	sort.Strings(keys)
 	prices := []SharePrice{}
 	missing := []string{}
-	clocks := map[uint64]time.Time{}
+	clocks := map[uint64]blockClock{}
 	for start := 0; start < len(keys); start += 100 {
 		chunk := keys[start:min(start+100, len(keys))]
 		addresses := make([]solana.PublicKey, len(chunk))
@@ -532,18 +535,18 @@ func ProbeSharePrices(ctx context.Context, source ReservePriceRPC, reserves []st
 				missing = append(missing, key)
 				continue
 			}
-			at, known := clocks[uint64(price.Slot)]
-			if !known {
-				// An unknown block time leaves the reserve missing, never timestamped now.
-				at, _ = source.BlockTime(ctx, uint64(price.Slot))
-				clocks[uint64(price.Slot)] = at
+			clock, cached := clocks[uint64(price.Slot)]
+			if !cached {
+				at, err := source.BlockTime(ctx, uint64(price.Slot))
+				clock = blockClock{at: at, known: err == nil && at.Unix() > 0}
+				clocks[uint64(price.Slot)] = clock
 			}
-			if at.Unix() <= 0 || at.After(now) {
+			if !clock.known || clock.at.After(now) {
 				missing = append(missing, key)
 				continue
 			}
-			price.ObservedAt = at
-			price.ObservedHour = at.Truncate(time.Hour)
+			price.ObservedAt = clock.at
+			price.ObservedHour = clock.at.Truncate(time.Hour)
 			prices = append(prices, price)
 		}
 	}
@@ -553,8 +556,6 @@ func (m *Maintenance) RecordSharePrices(ctx context.Context, now time.Time) (int
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
 	reserves := map[string]bool{benchmarkReserve: true}
-	// The App cron also widens probes with its just-recorded allocation, covering
-	// positions whose App projection/candidate catalog has not caught up yet.
 	var allocation []byte
 	err := m.yield.QueryRow(ctx, `SELECT reserve_amounts FROM loyal_yield.earn_fleet_allocations_hourly WHERE cluster=$1 AND observed_at<=$2 ORDER BY observed_at DESC LIMIT 1`, m.cluster, now).Scan(&allocation)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -572,8 +573,6 @@ func (m *Maintenance) RecordSharePrices(ctx context.Context, now time.Time) (int
 			reserves[key] = true
 		}
 	}
-	// Compatibility with current App AUM candidate widening; no float weights are
-	// needed merely to identify reserves with positive raw principal.
 	held, err := m.yield.Query(ctx, `SELECT DISTINCT current_reserve FROM loyal_yield.user_yield_positions WHERE status='active' AND vault_index=1 AND current_amount_raw>0 ORDER BY current_reserve LIMIT 10001`)
 	if err != nil {
 		return 0, nil, err

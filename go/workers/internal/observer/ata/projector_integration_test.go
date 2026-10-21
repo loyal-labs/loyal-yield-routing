@@ -71,7 +71,7 @@ func projectorFixture(t *testing.T) (*Projector, context.Context) {
 	t.Helper()
 	capture, ctx := projectorFixturePool(t, "ATA_CAPTURE_TEST_DATABASE_URL", "workers_v2_ata_capture")
 	yield, _ := projectorFixturePool(t, "ATA_PROJECTOR_TEST_DATABASE_URL", "workers_v2_ata_projector")
-	p, err := NewProjector(capture, yield, ProjectorConfig{Stream: "production", Cluster: "mainnet-beta", BatchLimit: 100, PollInterval: time.Millisecond, IOTimeout: 5 * time.Second})
+	p, err := NewProjector(capture, yield, ProjectorConfig{Cluster: "mainnet-beta", BatchLimit: 100, PollInterval: time.Millisecond, IOTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

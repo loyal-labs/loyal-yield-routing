@@ -14,7 +14,7 @@ func (r *Runtime) NewATAProjector(ctx context.Context) (*ata.Projector, error) {
 		return nil, errors.New("ATA projection requires initialized observer pools and facts")
 	}
 	projector, err := ata.NewProjector(r.timescale, r.neon, ata.ProjectorConfig{
-		Stream: r.cfg.ATAStream, Cluster: r.cfg.Cluster, BatchLimit: 500, PollInterval: 250 * time.Millisecond,
+		Cluster: r.cfg.Cluster, BatchLimit: 500, PollInterval: 250 * time.Millisecond,
 		IOTimeout: 10 * time.Second,
 		OnError:   func(err error) { r.ataProjectionFailed(ctx, err) },
 	})
