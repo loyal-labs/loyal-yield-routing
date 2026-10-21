@@ -10,8 +10,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-// leverageStepCost is the expected cost of one leverage up step, in USDC
-// micros at the batch's central prices: what the vault's capital loses by
+// leverageStepCost is the expected cost of one leverage up step at the
+// batch's central prices: what the vault's capital loses by
 // taking the step (lanePricer.priceStep). Execution bounds (the conversion's
 // minimum output) stay on the step itself; none of them is a cost.
 //
