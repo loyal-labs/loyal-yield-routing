@@ -20,6 +20,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/autodeposit"
 )
 
 const (
@@ -884,10 +886,9 @@ func decodeOperation(rows interface{ Scan(...any) error }) (*MultiplyOperation, 
 	return operation, nil
 }
 
-// checkFreshCustodyOwnership uses the exact vault identity and the legacy
-// idle-vault-handoff lock. Active foreign configuration itself blocks admission:
-// the configuration owner must disable/drain the old family before activation.
-// A Go-only mutex could not stop an unchanged Rust writer from starting later.
+// checkFreshCustodyOwnership uses the exact vault identity and the vault's idle
+// handoff lock. Active foreign configuration itself blocks admission: the
+// configuration owner must disable/drain the old family before activation.
 func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteState) error {
 	settings, err := solana.PublicKeyFromBase58(route.Settings)
 	if err != nil {
@@ -906,7 +907,36 @@ func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteStat
 			own[policy.Account.String()] = true
 		}
 	}
-	rows, err := tx.Query(ctx, `SELECT vault.id,vault.active,policy.active,policy.policy_account FROM loyal_yield.managed_vaults vault JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id WHERE vault.vault_pubkey=$1 AND vault.vault_index=$2 FOR UPDATE OF vault,policy`, route.Vault, route.VaultIndex)
+	const managedVaultsSQL = ` FROM loyal_yield.managed_vaults vault JOIN loyal_yield.route_policies policy ON policy.id=vault.active_policy_id WHERE vault.vault_pubkey=$1 AND vault.vault_index=$2 ORDER BY vault.id`
+	idRows, err := tx.Query(ctx, `SELECT vault.id`+managedVaultsSQL, route.Vault, route.VaultIndex)
+	if err != nil {
+		return err
+	}
+	handoffVaults, err := pgx.CollectRows(idRows, pgx.RowTo[int64])
+	if err != nil {
+		return err
+	}
+	mints := map[string]bool{USDCMint: true}
+	for _, config := range topology.StrategyCatalog() {
+		mints[config.CollateralMint] = true
+		mints[config.DebtMint] = true
+	}
+	ordered := make([]string, 0, len(mints))
+	for mint := range mints {
+		ordered = append(ordered, mint)
+	}
+	sort.Strings(ordered)
+	for _, vaultID := range handoffVaults {
+		for _, mint := range ordered {
+			if err := autodeposit.LockIdleVaultHandoff(ctx, tx, vaultID, mint); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := autodeposit.LockVaultTargets(ctx, tx, route.Settings, int16(route.VaultIndex), route.Vault); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT vault.id,vault.active,policy.active,policy.policy_account`+managedVaultsSQL+` FOR UPDATE OF vault,policy`, route.Vault, route.VaultIndex)
 	if err != nil {
 		return err
 	}
@@ -929,22 +959,12 @@ func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteStat
 	if err != nil {
 		return err
 	}
-	// Claim every mint's existing advisory namespace in deterministic order.
-	mints := map[string]bool{USDCMint: true}
-	for _, config := range topology.StrategyCatalog() {
-		mints[config.CollateralMint] = true
-		mints[config.DebtMint] = true
+	if len(managedRows) != len(handoffVaults) {
+		return errors.New("multiply custody vaults changed while taking their idle handoff locks")
 	}
-	ordered := make([]string, 0, len(mints))
-	for mint := range mints {
-		ordered = append(ordered, mint)
-	}
-	sort.Strings(ordered)
-	for _, v := range managedRows {
-		for _, mint := range ordered {
-			if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended(format('idle-vault-handoff:%s:%s',$1::bigint,$2::text),0::bigint))", v.id, mint); err != nil {
-				return err
-			}
+	for i, v := range managedRows {
+		if v.id != handoffVaults[i] {
+			return errors.New("multiply custody vaults changed while taking their idle handoff locks")
 		}
 		if v.active && v.policyActive && !own[v.policy] {
 			return errors.New("multiply custody has active foreign routing configuration")
@@ -956,22 +976,6 @@ func checkFreshCustodyOwnership(ctx context.Context, tx pgx.Tx, route *RouteStat
 		if queued {
 			return errors.New("multiply custody is reserved by legacy fleet work")
 		}
-	}
-	targets, err := tx.Query(ctx, `SELECT id FROM loyal_yield.balance_sweep_targets WHERE vault_pubkey=$1 AND vault_index=$2 ORDER BY id FOR UPDATE`, route.Vault, route.VaultIndex)
-	if err != nil {
-		return err
-	}
-	for targets.Next() {
-		var id int64
-		if err := targets.Scan(&id); err != nil {
-			targets.Close()
-			return err
-		}
-	}
-	err = targets.Err()
-	targets.Close()
-	if err != nil {
-		return err
 	}
 	var sweep bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_targets target WHERE target.vault_pubkey=$1 AND target.vault_index=$2 AND ((target.desired_active AND target.chain_status='active') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims claim WHERE claim.target_id=target.id AND claim.status='selected') OR EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_transaction_attempts attempt WHERE attempt.target_id=target.id AND (attempt.attempt_state IN ('prepared','submitted') OR (attempt.attempt_state='confirmed' AND EXISTS(SELECT 1 FROM loyal_yield.balance_sweep_lot_claims unresolved WHERE unresolved.claim_token=attempt.claim_token AND unresolved.status<>'executed'))))))`, route.Vault, route.VaultIndex).Scan(&sweep); err != nil {

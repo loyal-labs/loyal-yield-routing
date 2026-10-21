@@ -61,7 +61,7 @@ func (s *Store) ClaimEligibleLotsOnce(ctx context.Context, targetID int64, claim
 			return nil
 		}
 
-		targetActive, err := lockActiveTarget(ctx, tx, targetID)
+		target, targetActive, err := lockActiveTarget(ctx, tx, targetID)
 		if err != nil {
 			return err
 		}
@@ -81,20 +81,6 @@ FROM loyal_yield.balance_sweep_targets WHERE id = $1`, targetID).Scan(&currentFl
 		}
 		if currentMax != nil && (maxAmountPerPeriodRaw == nil || *currentMax < *maxAmountPerPeriodRaw) {
 			maxAmountPerPeriodRaw = currentMax
-		}
-		// The target row serializes independent claim tokens. A loader's
-		// earlier check is insufficient when two executors share a vault.
-		var selectedClaimExists bool
-		if err := tx.QueryRow(ctx, `
-SELECT EXISTS (
-  SELECT 1 FROM loyal_yield.balance_sweep_lot_claims
-  WHERE target_id = $1 AND status = 'selected'
-)`, targetID).Scan(&selectedClaimExists); err != nil {
-			return fmt.Errorf("check selected autodeposit claim: %w", err)
-		}
-		if selectedClaimExists {
-			outcome = noopClaim(targetID, "target_has_selected_claim")
-			return nil
 		}
 
 		staleCheckEventID, err := currentTargetEventID(ctx, tx, targetID)
@@ -168,12 +154,18 @@ SELECT EXISTS (
 			return nil
 		}
 
-		if _, err := tx.Exec(ctx, `
+		inserted, err := tx.Exec(ctx, `
 INSERT INTO loyal_yield.balance_sweep_lot_claims
     (claim_token, target_id, amount_raw, status, stale_check_event_id)
-VALUES ($1, $2, $3, 'selected', $4)`,
-			claimToken, targetID, decision.AmountRaw, staleCheckEventID); err != nil {
+VALUES ($1, $2, $3, 'selected', $4)
+ON CONFLICT (target_id) WHERE status = 'selected' DO NOTHING`,
+			claimToken, targetID, decision.AmountRaw, staleCheckEventID)
+		if err != nil {
 			return fmt.Errorf("insert autodeposit lot claim: %w", err)
+		}
+		if inserted.RowsAffected() == 0 {
+			outcome = noopClaim(targetID, "target_has_selected_claim")
+			return nil
 		}
 		for _, item := range claimed {
 			if _, err := tx.Exec(ctx, `
@@ -206,7 +198,7 @@ SET status = 'selected', claim_token = $2, last_error = NULL, idle_blocked_since
 WHERE id = $1`, scheduledSlotID, claimToken); err != nil {
 			return fmt.Errorf("mark autodeposit slot selected: %w", err)
 		}
-		if err := moveResidualOpenLots(ctx, tx, targetID, scheduledSlotID); err != nil {
+		if err := moveResidualOpenLots(ctx, tx, target, scheduledSlotID); err != nil {
 			return err
 		}
 
@@ -232,7 +224,7 @@ func noopClaim(targetID int64, reason string) ClaimOutcome {
 	return ClaimOutcome{Status: ClaimNoopStatus(), Reason: reason, TargetID: targetID}
 }
 
-func lockActiveTarget(ctx context.Context, tx pgx.Tx, targetID int64) (bool, error) {
+func lockActiveTarget(ctx context.Context, tx pgx.Tx, targetID int64) (lockedTarget, bool, error) {
 	var active bool
 	err := tx.QueryRow(ctx, `
 SELECT COALESCE(desired_active AND chain_status = 'active' AND cluster='mainnet-beta'
@@ -242,12 +234,12 @@ WHERE id = $1
   AND token_mint = $2
 FOR UPDATE`, targetID, USDCMint).Scan(&active)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return lockedTarget{}, false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("lock autodeposit target %d: %w", targetID, err)
+		return lockedTarget{}, false, fmt.Errorf("lock autodeposit target %d: %w", targetID, err)
 	}
-	return active, nil
+	return lockedTarget{id: targetID}, active, nil
 }
 
 func currentTargetEventID(ctx context.Context, tx pgx.Tx, targetID int64) (int64, error) {
@@ -337,7 +329,7 @@ FOR UPDATE SKIP LOCKED`, targetID, USDCMint, scheduledSlotID)
 	return lots, rows.Err()
 }
 
-func moveResidualOpenLots(ctx context.Context, tx pgx.Tx, targetID, selectedSlotID int64) error {
+func moveResidualOpenLots(ctx context.Context, tx pgx.Tx, target lockedTarget, selectedSlotID int64) error {
 	var due *time.Time
 	if err := tx.QueryRow(ctx, `
 SELECT MAX(eligible_after) FROM loyal_yield.balance_sweep_surplus_lots
@@ -347,7 +339,7 @@ WHERE scheduled_slot_id = $1 AND status = 'open' AND remaining_amount_raw > 0`, 
 	if due == nil {
 		return nil
 	}
-	slotID, err := openSlotFor(ctx, tx, targetID, *due)
+	slotID, err := openScheduledSlot(ctx, tx, target, *due)
 	if err != nil {
 		return err
 	}
@@ -605,14 +597,8 @@ WHERE claim.claim_token = $1`, claimToken, leaseToken, ClaimHoldingPullAttemptSt
 
 func releaseClaimCustody(ctx context.Context, tx pgx.Tx, claimToken string, delay time.Duration) (bool, error) {
 	seconds := int64(delay / time.Second)
-	// The released slot becomes the target's scheduled slot: take the target's
-	// turn before any lot or slot, as every writer of a scheduled slot does
-	// (openSlotFor).
-	var targetID int64
-	if err := tx.QueryRow(ctx, `SELECT target_id FROM loyal_yield.balance_sweep_lot_claims WHERE claim_token = $1`, claimToken).Scan(&targetID); err != nil {
-		return false, fmt.Errorf("read released autodeposit claim: %w", err)
-	}
-	if err := lockTarget(ctx, tx, targetID); err != nil {
+	target, err := lockClaimTarget(ctx, tx, claimToken)
+	if err != nil {
 		return false, err
 	}
 	tag, err := tx.Exec(ctx, `
@@ -665,7 +651,7 @@ WITH other AS (
     SET scheduled_slot_id = $1, updated_at = now()
     WHERE scheduled_slot_id IN (SELECT id FROM other) AND status = 'open'
 )
-SELECT max(eligible_after) FROM other`, slotID, targetID).Scan(&mergedDue); err != nil {
+SELECT max(eligible_after) FROM other`, slotID, target.id).Scan(&mergedDue); err != nil {
 		return false, fmt.Errorf("merge scheduled autodeposit slot after release: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -683,6 +669,14 @@ WHERE id = $1`, slotID, seconds, mergedDue); err != nil {
 		return false, fmt.Errorf("reschedule autodeposit slot after release: %w", err)
 	}
 	return true, nil
+}
+
+func lockClaimTarget(ctx context.Context, tx pgx.Tx, claimToken string) (lockedTarget, error) {
+	var targetID int64
+	if err := tx.QueryRow(ctx, `SELECT target_id FROM loyal_yield.balance_sweep_lot_claims WHERE claim_token = $1`, claimToken).Scan(&targetID); err != nil {
+		return lockedTarget{}, fmt.Errorf("read autodeposit claim target: %w", err)
+	}
+	return lockTarget(ctx, tx, targetID)
 }
 
 var ErrClaimCustodyHeld = errors.New("autodeposit claim holds custody")

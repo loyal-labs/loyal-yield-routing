@@ -53,7 +53,7 @@ SELECT NOT EXISTS (
 	return withdrawn, nil
 }
 
-func skipAutomaticSlots(ctx context.Context, tx pgx.Tx, slotIDs []int64) (int64, error) {
+func skipAutomaticSlots(ctx context.Context, tx pgx.Tx, targets []lockedTarget, slotIDs []int64) (int64, error) {
 	if len(slotIDs) == 0 {
 		return 0, nil
 	}
@@ -63,6 +63,7 @@ WITH slot AS (
     UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
     SET status = 'canceled', last_error = $2, updated_at = now()
     WHERE slot.id = ANY($1::bigint[])
+      AND slot.target_id = ANY($3::bigint[])
       AND slot.claim_token IS NULL
       AND slot.execution_id IS NULL
       AND NOT EXISTS (
@@ -89,7 +90,7 @@ WITH slot AS (
       AND lot.remaining_amount_raw > 0
     RETURNING lot.id
 )
-SELECT count(*) FROM slot`, slotIDs, withdrawnSkipReason).Scan(&skipped)
+SELECT count(*) FROM slot`, slotIDs, withdrawnSkipReason, heldTargetIDs(targets)).Scan(&skipped)
 	if err != nil {
 		return 0, fmt.Errorf("skip automatic autodeposit slots %v: %w", slotIDs, err)
 	}
@@ -107,35 +108,34 @@ func (s *Store) SkipWithdrawnScheduledSlot(ctx context.Context, scheduledSlotID 
 		if err != nil {
 			return fmt.Errorf("load target of autodeposit slot %d: %w", scheduledSlotID, err)
 		}
-		if err := lockTarget(ctx, tx, targetID); err != nil {
+		target, err := lockTarget(ctx, tx, targetID)
+		if err != nil {
 			return err
 		}
-		skipped, err = skipAutomaticSlots(ctx, tx, []int64{scheduledSlotID})
+		skipped, err = skipAutomaticSlots(ctx, tx, []lockedTarget{target}, []int64{scheduledSlotID})
 		return err
 	})
 	return skipped == 1, err
 }
 
-// SkipUnroutedVaultSlots ends the automatic work of every target on a vault
-// whose Earn route is gone. Earn calls it inside the transaction that retires
+// SkipUnroutedVaultSlots ends the automatic work of the held targets of a
+// vault whose Earn route is gone. Earn calls it inside the transaction that retires
 // the route, so no slot outlives its destination: dispatch requires the route
 // and would otherwise never select, skip or close the slot. The targets stay
 // active; a later inflow schedules new work and is decided again.
-func SkipUnroutedVaultSlots(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) (int64, error) {
+func SkipUnroutedVaultSlots(ctx context.Context, tx pgx.Tx, targets VaultTargets) (int64, error) {
 	var slotIDs []int64
 	if err := tx.QueryRow(ctx, `
 SELECT COALESCE(array_agg(slot.id ORDER BY slot.id), '{}')
 FROM loyal_yield.balance_sweep_targets AS target
 JOIN loyal_yield.balance_sweep_scheduled_slots AS slot
   ON slot.target_id = target.id
-WHERE target.settings = $1
-  AND target.vault_index = $2
-  AND target.vault_pubkey = $3
+WHERE target.id = ANY($1::bigint[])
   AND slot.status IN ('scheduled', 'failed', 'released')
-  AND NOT `+targetRoutedSQL, settings, vaultIndex, vaultPubkey).Scan(&slotIDs); err != nil {
+  AND NOT `+targetRoutedSQL, heldTargetIDs(targets.held)).Scan(&slotIDs); err != nil {
 		return 0, fmt.Errorf("load unrouted autodeposit slots: %w", err)
 	}
-	return skipAutomaticSlots(ctx, tx, slotIDs)
+	return skipAutomaticSlots(ctx, tx, targets.held, slotIDs)
 }
 
 // SuppressWithdrawalLots retracts surplus scheduled from the vault's own Earn
@@ -143,35 +143,47 @@ WHERE target.settings = $1
 // withdrawal; once the withdrawal is known the projection refuses that inflow
 // itself. A slot left without lots is reused by the next inflow, as any
 // scheduled slot is.
-func SuppressWithdrawalLots(ctx context.Context, tx pgx.Tx, signature, settings string, vaultIndex int16, vaultPubkey string) error {
+func SuppressWithdrawalLots(ctx context.Context, tx pgx.Tx, signature string, targets VaultTargets) error {
 	if _, err := tx.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_surplus_lots AS lot
 SET status = 'suppressed', updated_at = now()
-FROM loyal_yield.balance_sweep_targets AS target
-WHERE target.id = lot.target_id
-  AND target.settings = $2
-  AND target.vault_index = $3
-  AND target.vault_pubkey = $4
+WHERE lot.target_id = ANY($2::bigint[])
   AND lot.source_signature = $1
-  AND lot.status = 'open'`, signature, settings, vaultIndex, vaultPubkey); err != nil {
+  AND lot.status = 'open'`, signature, heldTargetIDs(targets.held)); err != nil {
 		return fmt.Errorf("suppress autodeposit lots of Earn withdrawal %s: %w", signature, err)
 	}
 	return nil
 }
 
-// LockVaultTargets takes the vault's targets in id order; every writer of the vault's managed_vaults or route_policies rows calls it first.
-func LockVaultTargets(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) error {
-	var targetIDs []int64
-	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(array_agg(id ORDER BY id), '{}')
-FROM loyal_yield.balance_sweep_targets
-WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3`, settings, vaultIndex, vaultPubkey).Scan(&targetIDs); err != nil {
-		return fmt.Errorf("load autodeposit targets of vault %s: %w", vaultPubkey, err)
-	}
-	for _, targetID := range targetIDs {
-		if err := lockTarget(ctx, tx, targetID); err != nil {
-			return err
-		}
+// VaultTargets is the set of a vault's targets this transaction holds FOR UPDATE; only LockVaultTargets makes one.
+type VaultTargets struct{ held []lockedTarget }
+
+func GateVaultTargets(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('autodeposit-vault-targets:%s:%s:%s', $1::text, $2::smallint, $3::text), 0::bigint))`, settings, vaultIndex, vaultPubkey); err != nil {
+		return fmt.Errorf("gate autodeposit targets of vault %s: %w", vaultPubkey, err)
 	}
 	return nil
+}
+
+// LockVaultTargets takes GateVaultTargets, which every adder or activator of a vault's target also takes first, then the vault's targets in id order, and returns the held set; every writer of the vault's managed_vaults or route_policies rows calls it first.
+func LockVaultTargets(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) (VaultTargets, error) {
+	if err := GateVaultTargets(ctx, tx, settings, vaultIndex, vaultPubkey); err != nil {
+		return VaultTargets{}, err
+	}
+	rows, err := tx.Query(ctx, `
+SELECT id FROM loyal_yield.balance_sweep_targets
+WHERE settings = $1 AND vault_index = $2 AND vault_pubkey = $3
+ORDER BY id FOR UPDATE`, settings, vaultIndex, vaultPubkey)
+	if err != nil {
+		return VaultTargets{}, fmt.Errorf("lock autodeposit targets of vault %s: %w", vaultPubkey, err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return VaultTargets{}, fmt.Errorf("lock autodeposit targets of vault %s: %w", vaultPubkey, err)
+	}
+	held := make([]lockedTarget, len(ids))
+	for i, id := range ids {
+		held[i] = lockedTarget{id: id}
+	}
+	return VaultTargets{held: held}, nil
 }

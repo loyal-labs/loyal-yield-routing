@@ -19,6 +19,31 @@ func scanControlTarget(row pgx.Row) (ControlTarget, error) {
 	return t, err
 }
 
+func lockTargetControls(ctx context.Context, tx pgx.Tx, targetID int64) (lockedTarget, ControlTarget, error) {
+	var settings, vaultPubkey string
+	var vaultIndex int16
+	if err := tx.QueryRow(ctx, `SELECT settings,vault_index,vault_pubkey FROM loyal_yield.balance_sweep_targets WHERE id=$1`, targetID).Scan(&settings, &vaultIndex, &vaultPubkey); err != nil {
+		return lockedTarget{}, ControlTarget{}, err
+	}
+	if err := GateVaultTargets(ctx, tx, settings, vaultIndex, vaultPubkey); err != nil {
+		return lockedTarget{}, ControlTarget{}, err
+	}
+	target, err := scanControlTarget(tx.QueryRow(ctx, `SELECT `+controlTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, targetID))
+	if err != nil {
+		return lockedTarget{}, ControlTarget{}, err
+	}
+	return lockedTarget{id: targetID}, target, nil
+}
+
+func lockReconciliationRequest(ctx context.Context, tx pgx.Tx, target lockedTarget, owner string) error {
+	var requestID int64
+	err := tx.QueryRow(ctx, `SELECT target_id FROM loyal_yield.autodeposit_reconciliation_requests WHERE target_id=$1 AND claim_owner=$2 AND claim_expires_at>now() FOR UPDATE`, target.id, owner).Scan(&requestID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrOwnershipLost
+	}
+	return err
+}
+
 func (s *Store) LoadControlTarget(ctx context.Context, targetID int64) (*ControlTarget, error) {
 	t, err := scanControlTarget(s.pool.QueryRow(ctx, `SELECT `+controlTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 AND subscription_authority IS NOT NULL AND recurring_delegation IS NOT NULL AND max_amount_per_period>0`, targetID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -38,16 +63,11 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 		return errors.New("active control observation lacks decoded wallet account evidence")
 	}
 	return WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		// Policy discovery already locks target before raising its request.
-		// Keep that ordering so application cannot deadlock with discovery.
-		target, err := scanControlTarget(tx.QueryRow(ctx, `SELECT `+controlTargetColumns+` FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, request.TargetID))
+		locked, target, err := lockTargetControls(ctx, tx, request.TargetID)
 		if err != nil {
 			return err
 		}
-		var requestID int64
-		if err := tx.QueryRow(ctx, `SELECT target_id FROM loyal_yield.autodeposit_reconciliation_requests WHERE target_id=$1 AND claim_owner=$2 AND claim_expires_at>now() FOR UPDATE`, request.TargetID, owner).Scan(&requestID); errors.Is(err, pgx.ErrNoRows) {
-			return ErrOwnershipLost
-		} else if err != nil {
+		if err := lockReconciliationRequest(ctx, tx, locked, owner); err != nil {
 			return err
 		}
 		if !reflect.DeepEqual(target, o.Target) {
@@ -113,7 +133,7 @@ func (s *Store) ApplyControlObservation(ctx context.Context, request Reconciliat
 							eligible = start
 						}
 					}
-					slotID, err := openSlotFor(ctx, tx, target.TargetID, eligible)
+					slotID, err := openScheduledSlot(ctx, tx, locked, eligible)
 					if err != nil {
 						return err
 					}

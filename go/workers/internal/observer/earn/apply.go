@@ -305,7 +305,7 @@ func observedOrNow(value *time.Time) time.Time {
 }
 
 func applyPolicyOnly(ctx context.Context, tx pgx.Tx, m EarnPolicyOnlyMutation) error {
-	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
+	if _, err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
 		return err
 	}
 	route, err := upsertPolicy(ctx, tx, m.RoutePolicy)
@@ -354,7 +354,7 @@ func applyPolicyOnly(ctx context.Context, tx pgx.Tx, m EarnPolicyOnlyMutation) e
 type managedVault struct{ id, activePolicyID int64 }
 
 func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
-	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
+	if _, err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
 		return err
 	}
 	route, err := upsertPolicy(ctx, tx, m.RoutePolicy)
@@ -722,7 +722,8 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 		return err
 	}
 	observedAt := observedOrNow(m.ObservedAt)
-	if err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.VaultPubkey); err != nil {
+	targets, err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.VaultPubkey)
+	if err != nil {
 		return err
 	}
 	var position struct {
@@ -817,7 +818,7 @@ func applyWithdrawal(ctx context.Context, tx pgx.Tx, m EarnWithdrawalMutation) e
 	if err != nil {
 		return err
 	}
-	if err := autodeposit.SuppressWithdrawalLots(ctx, tx, m.WithdrawalSignature, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.VaultPubkey); err != nil {
+	if err := autodeposit.SuppressWithdrawalLots(ctx, tx, m.WithdrawalSignature, targets); err != nil {
 		return err
 	}
 	if historyOnly {
@@ -901,7 +902,8 @@ func applyCleanup(ctx context.Context, tx pgx.Tx, m EarnCleanupMutation) error {
 		return err
 	}
 	observedAt := observedOrNow(m.ObservedAt)
-	if err := autodeposit.LockVaultTargets(ctx, tx, m.Settings, int16(m.VaultIndex), m.VaultPubkey); err != nil {
+	targets, err := autodeposit.LockVaultTargets(ctx, tx, m.Settings, int16(m.VaultIndex), m.VaultPubkey)
+	if err != nil {
 		return err
 	}
 	var vaultID, activePolicyID int64
@@ -1013,6 +1015,6 @@ func applyCleanup(ctx context.Context, tx pgx.Tx, m EarnCleanupMutation) error {
 	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.managed_vaults SET active = FALSE, last_seen_at = now() WHERE id = $1`, vaultID); err != nil {
 		return err
 	}
-	_, err = autodeposit.SkipUnroutedVaultSlots(ctx, tx, m.Settings, int16(m.VaultIndex), m.VaultPubkey)
+	_, err = autodeposit.SkipUnroutedVaultSlots(ctx, tx, targets)
 	return err
 }

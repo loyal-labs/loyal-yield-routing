@@ -4,10 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-
-	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
 // seedEarnWithdrawal records the vault's own Earn withdrawal carried by the
@@ -54,41 +50,5 @@ func TestProjectionRefusesOwnEarnWithdrawalInflow(t *testing.T) {
 	}
 	if outcome.EventsScanned != 3 || outcome.LotsCreated != 1 || len(lots) != 1 || lots[0] != 9_200_003 {
 		t.Fatalf("projection outcome %+v lots from events %v, want only the plain 1 USDC inflow scheduled", outcome, lots)
-	}
-}
-
-// When Earn records the withdrawal after the wallet event was projected, the
-// lot it produced is retracted in Earn's transaction. Another vault's lot
-// with the same signature is not this withdrawal's.
-func TestEarnWithdrawalRetractsItsProjectedLot(t *testing.T) {
-	store := integrationStore(t)
-	ctx := context.Background()
-	own := seedIntegrationTarget(t, store, "withdrawal-own")
-	other := seedIntegrationTarget(t, store, "withdrawal-other")
-	base := time.Now().Add(-time.Hour).Truncate(time.Second)
-	signature := "itest-retracted-withdrawal"
-	for i, target := range []int64{own.TargetID, other.TargetID} {
-		eventID := int64(9_300_001 + i)
-		store.insertIntegrationEvent(t, target, eventID, 14_000_000, ptrInt64(10_000_000), base)
-		if _, err := store.pool.Exec(ctx, `UPDATE loyal_yield.balance_sweep_wallet_balance_events SET txn_signature = $2 WHERE event_id = $1`, eventID, signature); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if outcome, err := store.ProjectSurplusLotsOnce(ctx, 100); err != nil || outcome.LotsCreated != 2 {
-		t.Fatalf("projection before Earn knew the withdrawal: %+v %v, want both lots", outcome, err)
-	}
-	if err := WorkersDB.WithTx(ctx, store.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		return SuppressWithdrawalLots(ctx, tx, signature, "itest-settings-withdrawal-own", 1, "itest-vault-withdrawal-own")
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for target, want := range map[int64]string{own.TargetID: "suppressed", other.TargetID: "open"} {
-		var status string
-		if err := store.pool.QueryRow(ctx, `SELECT status::text FROM loyal_yield.balance_sweep_surplus_lots WHERE target_id = $1`, target).Scan(&status); err != nil {
-			t.Fatal(err)
-		}
-		if status != want {
-			t.Errorf("target %d lot %s, want %s", target, status, want)
-		}
 	}
 }

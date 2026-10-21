@@ -241,7 +241,7 @@ type PreparedAttempt struct {
 // PersistPreparedAttempt stores one signed transaction before its first
 // broadcast and returns the durable attempt that now owns the operation.
 //
-// The idle-vault-handoff advisory lock and the guarded insert run in one
+// The vault's idle handoff lock and the guarded insert run in one
 // transaction. An existing active attempt always wins: it may already be in
 // flight, and a second wire for the same operation would create two competing
 // spends. A new row is inserted only while this executor still owns the claim
@@ -265,41 +265,34 @@ func (s *Store) PersistPreparedAttempt(ctx context.Context, prepared PreparedAtt
 	}
 	var stored DurableAttempt
 	err = WorkersDB.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		lock, err := tx.Exec(ctx, `
-SELECT pg_advisory_xact_lock(
-    hashtextextended(
-      format('idle-vault-handoff:%s:%s', vault.id, target.token_mint),
-      0::bigint
-    )
-)
+		var vaultID int64
+		var mint string
+		err := tx.QueryRow(ctx, `
+SELECT vault.id, target.token_mint
 FROM loyal_yield.balance_sweep_targets AS target
 JOIN loyal_yield.managed_vaults AS vault
   ON vault.settings = target.settings
  AND vault.vault_index = target.vault_index
  AND vault.vault_pubkey = target.vault_pubkey
-WHERE target.id = $1`, prepared.TargetID)
-		if err != nil {
-			return fmt.Errorf("lock autodeposit idle vault handoff: %w", err)
-		}
-		if lock.RowsAffected() != 1 {
+WHERE target.id = $1`, prepared.TargetID).Scan(&vaultID, &mint)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("%w: autodeposit target %d has no managed vault for its idle handoff", ErrOwnershipLost, prepared.TargetID)
 		}
-		// Serialize user control changes with new signed pull publication. The
-		// fresh checks apply only to inserted wire, never adoption/recovery.
-		var admissionActive bool
-		var floor, maximum *int64
-		if err := tx.QueryRow(ctx, `SELECT desired_active AND chain_status='active',wallet_balance_floor_raw,max_amount_per_period
- FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, prepared.TargetID).Scan(&admissionActive, &floor, &maximum); err != nil {
-			return fmt.Errorf("lock autodeposit pull controls: %w", err)
+		if err != nil {
+			return fmt.Errorf("load autodeposit idle vault handoff: %w", err)
 		}
-		pullAllowed := prepared.OperationKind != OperationPull || (admissionActive && floor != nil && prepared.ProtectionFloorRaw != nil &&
-			*floor == *prepared.ProtectionFloorRaw && prepared.SourcePreBalanceRaw-prepared.AmountRaw >= *floor &&
-			(maximum == nil || prepared.AmountRaw <= *maximum))
-		policyScoped, err := lockRoutePolicy(ctx, tx, prepared.TargetID)
+		if err := LockIdleVaultHandoff(ctx, tx, vaultID, mint); err != nil {
+			return err
+		}
+		target, insertAdmitted, err := lockPullAdmission(ctx, tx, prepared)
 		if err != nil {
 			return err
 		}
-		pullAllowed = pullAllowed && policyScoped
+		policyScoped, err := lockRoutePolicy(ctx, tx, target)
+		if err != nil {
+			return err
+		}
+		insertAdmitted = insertAdmitted && policyScoped
 		rows, err := tx.Query(ctx, `
 WITH guarded_claim AS (
   UPDATE loyal_yield.balance_sweep_lot_claims
@@ -358,7 +351,7 @@ LIMIT 1`,
 			prepared.ScheduledSlotID, prepared.ExecutionID, prepared.AmountRaw,
 			prepared.SourcePreBalanceRaw, prepared.DestinationPreBalanceRaw,
 			prepared.Signature, prepared.SignedTransactionBase64, prepared.SignedTransactionSHA256,
-			prepared.RecentBlockhash, prepared.LastValidBlockHeight, pullAllowed)
+			prepared.RecentBlockhash, prepared.LastValidBlockHeight, insertAdmitted)
 		if err != nil {
 			return fmt.Errorf("persist prepared autodeposit %s attempt: %w", prepared.OperationKind, err)
 		}
@@ -380,6 +373,27 @@ LIMIT 1`,
 		return DurableAttempt{}, err
 	}
 	return stored, nil
+}
+
+// LockIdleVaultHandoff holds the vault's idle custody handoff for mint until the transaction ends.
+func LockIdleVaultHandoff(ctx context.Context, tx pgx.Tx, vaultID int64, mint string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('idle-vault-handoff:%s:%s', $1::bigint, $2::text), 0::bigint))`, vaultID, mint); err != nil {
+		return fmt.Errorf("lock idle handoff of vault %d mint %s: %w", vaultID, mint, err)
+	}
+	return nil
+}
+
+func lockPullAdmission(ctx context.Context, tx pgx.Tx, prepared PreparedAttempt) (lockedTarget, bool, error) {
+	var active bool
+	var floor, maximum *int64
+	if err := tx.QueryRow(ctx, `SELECT desired_active AND chain_status='active',wallet_balance_floor_raw,max_amount_per_period
+ FROM loyal_yield.balance_sweep_targets WHERE id=$1 FOR UPDATE`, prepared.TargetID).Scan(&active, &floor, &maximum); err != nil {
+		return lockedTarget{}, false, fmt.Errorf("lock autodeposit pull controls: %w", err)
+	}
+	admitted := prepared.OperationKind != OperationPull || (active && floor != nil && prepared.ProtectionFloorRaw != nil &&
+		*floor == *prepared.ProtectionFloorRaw && prepared.SourcePreBalanceRaw-prepared.AmountRaw >= *floor &&
+		(maximum == nil || prepared.AmountRaw <= *maximum))
+	return lockedTarget{id: prepared.TargetID}, admitted, nil
 }
 
 func (s *Store) RecordAttemptBroadcast(ctx context.Context, attempt DurableAttempt, leaseToken string) (DurableAttempt, error) {
@@ -567,16 +581,14 @@ WHERE target_id = $1
 
 var ErrRoutePolicyMissing = errors.New("autodeposit target has no active same_mint_kamino route policy")
 
-// lockRoutePolicy locks the target's active route policy, called after the
-// target lock and before inserting a new packet.
-func lockRoutePolicy(ctx context.Context, tx pgx.Tx, id int64) (bool, error) {
+func lockRoutePolicy(ctx context.Context, tx pgx.Tx, target lockedTarget) (bool, error) {
 	var policy int64
 	err := tx.QueryRow(ctx, `SELECT rp.id FROM loyal_yield.balance_sweep_targets target
 JOIN loyal_yield.managed_vaults mv ON mv.settings=target.settings AND mv.vault_index=target.vault_index AND mv.vault_pubkey=target.vault_pubkey AND mv.active
 JOIN loyal_yield.route_policies rp ON rp.id=mv.active_policy_id AND rp.active AND rp.cluster='mainnet-beta'
 AND rp.authority=target.authority AND rp.settings=target.settings AND rp.vault_index=target.vault_index AND rp.vault_pubkey=target.vault_pubkey
 WHERE target.id=$1 AND 'same_mint_kamino'=ANY(rp.route_modes)
-FOR SHARE OF mv,rp`, id).Scan(&policy)
+FOR SHARE OF mv,rp`, target.id).Scan(&policy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
