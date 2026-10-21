@@ -42,7 +42,7 @@ func connectedPolicyHeader(t *testing.T, settings, signer string, seed uint64) (
 
 func connectedPolicyHeaderForIndex(t *testing.T, settings, signer string, seed uint64, vaultIndex uint8) ([]byte, string) {
 	t.Helper()
-	data, err := BuildExactPolicyFixture(settings, signer, vaultIndex, nil)
+	data, err := buildExactPolicyFixture(settings, signer, vaultIndex, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func connectedEarnPolicyData(settings, signer string, instructions []RouteInstru
 }
 
 func connectedEarnPolicyDataForIndex(settings, signer string, vaultIndex uint8, instructions []RouteInstruction, positions []KaminoPositionAccounts) ([]byte, error) {
-	b, err := BuildExactPolicyFixture(settings, signer, vaultIndex, nil)
+	b, err := buildExactPolicyFixture(settings, signer, vaultIndex, nil)
 	if err != nil {
 		return nil, err
 	}

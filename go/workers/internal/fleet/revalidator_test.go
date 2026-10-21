@@ -88,7 +88,7 @@ func testRoute() []RouteInstruction {
 
 func TestFreshPolicyWrapALTAndExactV0(t *testing.T) {
 	route := testRoute()
-	policyBytes, err := BuildExactPolicyFixture(testMarket, testVault, 0, []RouteInstruction{route[1], route[3]})
+	policyBytes, err := buildExactPolicyFixture(testMarket, testVault, 0, []RouteInstruction{route[1], route[3]})
 	if err != nil {
 		t.Fatal(err)
 	}

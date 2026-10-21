@@ -162,7 +162,7 @@ func TestPlannerTickPlansFromOneChainSnapshot(t *testing.T) {
 		binary.LittleEndian.PutUint64(account.Data[2592:2600], 2_000_000_000_000_000)
 		return account
 	}
-	policyData, err := BuildExactPolicyFixture(settings, signer, 0, []RouteInstruction{{Program: kamino.ProgramID.String(), Data: []byte{1}}})
+	policyData, err := buildExactPolicyFixture(settings, signer, 0, []RouteInstruction{{Program: kamino.ProgramID.String(), Data: []byte{1}}})
 	if err != nil {
 		t.Fatal(err)
 	}

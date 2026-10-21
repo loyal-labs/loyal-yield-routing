@@ -18,7 +18,7 @@ func TestPolicyPrefixRetainsByteLimitAndTailIndependence(t *testing.T) {
 	// Fleet's retained prefix ABI has no hooks, limits or account tail.
 	for _, size := range []int{128, 256, 257} {
 		instruction := RouteInstruction{Program: kamino.ProgramID.String(), Data: bytes.Repeat([]byte{7}, size)}
-		data, err := BuildExactPolicyFixture(testMarket, testVault, 1, []RouteInstruction{instruction})
+		data, err := buildExactPolicyFixture(testMarket, testVault, 1, []RouteInstruction{instruction})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func TestPolicyTypedValuesPreserveNumericWidthAndByteOperators(t *testing.T) {
 }
 func TestPolicyPrefixRejectsMalformedVectorsAndAuthority(t *testing.T) {
 	ix := RouteInstruction{Program: kamino.ProgramID.String(), Data: []byte{7}}
-	data, err := BuildExactPolicyFixture(testMarket, testVault, 1, []RouteInstruction{ix})
+	data, err := buildExactPolicyFixture(testMarket, testVault, 1, []RouteInstruction{ix})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestPolicyPrefixRejectsMalformedVectorsAndAuthority(t *testing.T) {
 }
 
 func TestPolicyCompactPrefixBoundaries(t *testing.T) {
-	legacy, err := BuildExactPolicyFixture(testMarket, testVault, 1, nil)
+	legacy, err := buildExactPolicyFixture(testMarket, testVault, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
