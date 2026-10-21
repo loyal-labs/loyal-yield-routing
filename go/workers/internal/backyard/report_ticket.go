@@ -56,10 +56,10 @@ func ticketedBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compile
 	if err != nil {
 		return nil, nil, err
 	}
-	if request.Action == StageSquadsToVoltr {
+	if request.Action == bridgeStageSquadsToVoltr {
 		return []compiledInstruction{capital}, []byte{bridgeStageLeg}, nil
 	}
-	arm, err := armReportInstruction(v, request.Action, capital.data)
+	arm, err := armReportInstruction(v, Action(request.Action), capital.data)
 	if err != nil {
 		return nil, nil, err
 	}

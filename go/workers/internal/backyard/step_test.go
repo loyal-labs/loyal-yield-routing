@@ -64,7 +64,7 @@ func stepTestBuild(t *testing.T, lane string, up bool, venue int) (StepRequest, 
 			t.Fatal(err)
 		}
 		price := hastra.StakePrice{Price: hastraTestPrice, Scale: 1_000_000_000_000_000_000, Timestamp: kaminoFixtureUnix}
-		r := HastraConversionRequest{Action: conversion, AmountRaw: 1_000_000, Price: price.Price.String(), PriceScale: price.Scale, PriceTimestamp: price.Timestamp,
+		r := HastraConversionRequest{Action: conversion, AmountRaw: 1_000_000, StakeQuote: quoteStakePrice(price),
 			Policy: account, RecentBlockhash: bridgeVault, LastValidBlockHeight: 99, RouteLane: lane}
 		if r.OutputRaw, err = hastraOutput(leg, price, r.AmountRaw); err != nil {
 			t.Fatal(err)

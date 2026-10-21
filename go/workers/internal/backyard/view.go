@@ -144,8 +144,6 @@ type viewSeed struct {
 	low, high uint64
 }
 
-// readViewSeed is the start-up read. It is not a fallback: planning never
-// reads RPC for these accounts.
 func readViewSeed(ctx context.Context, client *chain.Client, fixed []string) (viewSeed, error) {
 	seed := viewSeed{accounts: map[string]viewAccount{}, receipts: map[string]uint64{}, low: math.MaxUint64}
 	held := func(account ConfirmedAccount, slot uint64) {

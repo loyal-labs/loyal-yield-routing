@@ -55,7 +55,6 @@ func jupiterSkeletonExecute(v *Vault, lane string, action Action) (compiledInstr
 		{key: publicKey(jupiter.ProgramAuthority(0))}, {key: mustKey(v.squads), signer: true}, {key: mustKey(sourceATA), writable: true},
 		program(sourceMint, sourceProgram, sourceATA), program(destinationMint, destinationProgram, destinationATA), {key: mustKey(destinationATA), writable: true},
 		ro(sourceMint), ro(destinationMint), ro(sourceProgram), ro(destinationProgram), {key: publicKey(jupiter.EventAuthority)}, {key: publicKey(jupiter.ProgramID)}}}
-	// The swap's policy is an account of its own, named by no other leg.
 	return wrapSquadsPolicy(v, publicKey(sha256.Sum256([]byte("jupiter swap policy stand-in"))), mustKey(backyardDelegate), []byte{0}, inner)
 }
 
@@ -75,11 +74,6 @@ type JupiterSwapRequest struct {
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 	RouteLane            string
-	EntryReturnReserved  bool `json:"entryReturnReserved,omitempty"`
-	// TopupReturnReserved marks an entry swap beside a funded debt-free
-	// position (plan B3). It is set only for the journaled top-up reason and
-	// always together with EntryReturnReserved.
-	TopupReturnReserved bool `json:"topupReturnReserved,omitempty"`
 }
 
 type JupiterExecutionEvidence struct {

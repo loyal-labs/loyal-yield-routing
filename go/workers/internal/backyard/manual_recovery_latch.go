@@ -83,7 +83,6 @@ func ClearManualRecoveryHold(ctx context.Context, databaseURL, routeKey, reason 
 		latched, routeKey, clearedAt.UTC().Format(time.RFC3339)), nil
 }
 
-// clearManualRecoveryLatch clears the active latch.
 func (d *Database) clearManualRecoveryLatch(ctx context.Context, routeKey, reason string) (time.Time, string, error) {
 	var clearedAt time.Time
 	var latched string

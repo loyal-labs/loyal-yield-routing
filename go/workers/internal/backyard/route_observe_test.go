@@ -47,7 +47,7 @@ func TestPilotUSDCObservationBoundsDepositRemainderWithoutLosingNAV(t *testing.T
 }
 
 func cadenceNAV(slot, current, reported uint64, lastUpdated time.Time) RouteNAVSnapshot {
-	digest := strings.Repeat("a", 64)
+	digest := navDigest(strings.Repeat("a", 64))
 	return RouteNAVSnapshot{
 		Slot: int64(slot), StrategyNAVRaw: current, TotalVaultNAVRaw: current, PriorReportedNAVRaw: reported,
 		PriorReportUpdatedTS: uint64(lastUpdated.Unix()), SnapshotDigest: digest,

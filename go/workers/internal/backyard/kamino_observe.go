@@ -93,9 +93,8 @@ type decodedKaminoObligation struct {
 	debtAmountSF           kamino.ScaledFraction
 	cumulativeBorrowRate   [32]byte
 	debtBorrow             kamino.ObligationLiquidity
-	// borrowLimitBPS is kaminoBorrowLimitBPS; zero before a deposit.
-	borrowLimitBPS int64
-	elevationGroup uint8
+	borrowLimitBPS         int64
+	elevationGroup         uint8
 }
 type decodedKaminoReserve struct {
 	refreshedSlot            int64

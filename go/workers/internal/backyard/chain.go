@@ -87,9 +87,6 @@ type accountBatch struct {
 	Accounts []ConfirmedAccount
 }
 
-// readAccounts reads one account set at commitment, all at one slot no older
-// than minSlot. Only an optional address may be absent: it comes back with
-// its address alone.
 func readAccounts(ctx context.Context, c *chain.Client, commitment rpc.CommitmentType, addresses []string, minSlot int64, optional ...string) (accountBatch, error) {
 	if len(addresses) == 0 {
 		return accountBatch{}, fmt.Errorf("account addresses are required")

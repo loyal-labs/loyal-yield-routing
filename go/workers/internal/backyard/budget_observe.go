@@ -57,5 +57,5 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 			return BudgetPrice{}, err
 		}
 	}
-	return BudgetPrice{Source: routeRefreshValuationSource, Mint: tokenMint, TokenProgram: mint.Owner, Decimals: token.mintDecimals, TokenUpperSF: upper, USDCLowerSF: lower, ObservedSlot: slot, ValidThroughSlot: slot + observationLagSlots(), EvidenceSHA256: hashConfirmedAccounts(accounts)}, nil
+	return observedBudgetPrice(slot, accounts, tokenMint, mint.Owner, token.mintDecimals, oracleQuotePair{TokenUpperSF: upper, USDCLowerSF: lower}), nil
 }

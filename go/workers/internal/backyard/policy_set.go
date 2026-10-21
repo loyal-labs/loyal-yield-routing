@@ -7,9 +7,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// BasicPolicyFamily identifies one of the four shared ProgramInteraction
-// policies. The family owns the policy account; each lifecycle leg selects a
-// constraint inside that account.
 type BasicPolicyFamily string
 
 const (

@@ -78,7 +78,7 @@ func TestRouteRefreshValuesNoncashFromOneBankAndRejectsStaleOracle(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if int64(nav.StrategyNAVRaw) != o.Snapshot.StrategyNAVRaw || nav.SnapshotDigest != o.Snapshot.ReportSnapshotDigest {
+		if int64(nav.StrategyNAVRaw) != o.Snapshot.StrategyNAVRaw || string(nav.SnapshotDigest) != o.Snapshot.ReportSnapshotDigest {
 			t.Fatal("construction recomputation lost valuation provenance")
 		}
 		originalDigest := nav.SnapshotDigest

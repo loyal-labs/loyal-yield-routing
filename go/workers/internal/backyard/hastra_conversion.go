@@ -63,7 +63,7 @@ func hastraEdgeForRoute(v *Vault, action Action, lane string) (hastraEdge, error
 	}
 	debt := [2]string{route.DebtCustody, route.Kamino.DebtMint}
 	collateral := [2]string{route.CollateralCustody, route.Kamino.CollateralMint}
-	from, to := [2]string{v.cash, fleet.USDCMint}, debt // mint deposit
+	from, to := [2]string{v.cash, fleet.USDCMint}, debt
 	switch leg {
 	case policy.HastraStakeDeposit:
 		from, to = debt, collateral
@@ -74,14 +74,10 @@ func hastraEdgeForRoute(v *Vault, action Action, lane string) (hastraEdge, error
 }
 
 type HastraConversionRequest struct {
-	Action    Action
-	AmountRaw uint64
-	OutputRaw uint64
-	// The stake price quoted (stake conversions only): Price wYLDS per AUTO
-	// times PriceScale, verified for PriceTimestamp.
-	Price                string `json:",omitempty"`
-	PriceScale           uint64 `json:",omitempty"`
-	PriceTimestamp       int64  `json:",omitempty"`
+	Action               Action
+	AmountRaw            uint64
+	OutputRaw            uint64
+	StakeQuote           *StakeQuote
 	Policy               string
 	RecentBlockhash      string
 	LastValidBlockHeight int64
@@ -93,12 +89,22 @@ type HastraExecutionEvidence struct {
 	ExpectedEffects ExpectedEffects
 }
 
+type StakeQuote struct {
+	WYLDSPerAUTOScaled *big.Int
+	Scale              uint64
+	VerifiedAt         int64
+}
+
+func quoteStakePrice(price hastra.StakePrice) *StakeQuote {
+	return &StakeQuote{WYLDSPerAUTOScaled: new(big.Int).Set(price.Price), Scale: price.Scale, VerifiedAt: price.Timestamp}
+}
+
 func (r HastraConversionRequest) stakePrice() (hastra.StakePrice, error) {
-	price, ok := new(big.Int).SetString(r.Price, 10)
-	if !ok {
+	if r.StakeQuote == nil {
 		return hastra.StakePrice{}, fmt.Errorf("Hastra request carries no stake price")
 	}
-	return hastra.StakePrice{Price: price, Scale: r.PriceScale, Timestamp: r.PriceTimestamp}, nil
+	q := r.StakeQuote
+	return hastra.StakePrice{Price: new(big.Int).Set(q.WYLDSPerAUTOScaled), Scale: q.Scale, Timestamp: q.VerifiedAt}, nil
 }
 
 func hastraOutput(leg byte, price hastra.StakePrice, amount uint64) (uint64, error) {
@@ -126,7 +132,7 @@ func hastraInstruction(v *Vault, r HastraConversionRequest) (compiledInstruction
 		if price, err = r.stakePrice(); err != nil {
 			return compiledInstruction{}, 0, err
 		}
-	} else if r.Price != "" || r.PriceScale != 0 || r.PriceTimestamp != 0 {
+	} else if r.StakeQuote != nil {
 		return compiledInstruction{}, 0, fmt.Errorf("Hastra mint deposit carries a stake price")
 	}
 	if out, err := hastraOutput(edge.leg, price, r.AmountRaw); err != nil || out != r.OutputRaw {
@@ -273,7 +279,7 @@ func prepareHastraQuoteEvidence(ctx context.Context, v *Vault, rpc *chain.Client
 		if !landable(price, now) {
 			return HastraExecutionEvidence{}, staleHold("hastra_price_stale")
 		}
-		request.Price, request.PriceScale, request.PriceTimestamp = price.Price.String(), price.Scale, price.Timestamp
+		request.StakeQuote = quoteStakePrice(price)
 	}
 	if request.OutputRaw, err = hastraOutput(edge.leg, price, amount); err != nil {
 		return HastraExecutionEvidence{}, staleHoldFrom(err, "hastra_conversion_rounds_to_zero")

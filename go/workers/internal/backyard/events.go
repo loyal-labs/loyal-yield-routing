@@ -14,15 +14,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// Backyard writes its operational events as structured slog JSON on stdout,
-// which journald ships to ClickStack, and its health as engine facts on
-// /metrics, each labelled with its vault. Alert thresholds (LTV, waiting
-// withdrawals, repeated failures) are rules over these fields in
-// Alertmanager/ClickStack, not decisions here.
-//
-// A vault's events are its worker's (vaultState); every method is nil-safe,
-// so tests and one-shot commands emit nothing.
-
 const heartbeatInterval = time.Minute
 
 const causeWindow = 10 * time.Minute
@@ -70,8 +61,6 @@ func (e *events) workerStart(owner, manifestSHA256 string) {
 	e.log.Info("backyard_worker_start", "owner", owner, "manifest_sha256", manifestSHA256)
 }
 
-// noteCause remembers the latest underlying failure so the latch it causes
-// can carry it: one slot, last cause wins.
 func (e *events) noteCause(detail string) {
 	if e == nil || detail == "" {
 		return
@@ -171,8 +160,6 @@ func (e *events) tickResult(err error, fatal bool) {
 	}
 	e.action = ""
 	e.mu.Unlock()
-	// A latched route keeps ticking without error; it is stopped, not
-	// progressing, so the stale-progress alert pages until clear-hold.
 	if err == nil && !manual && e.facts != nil {
 		e.facts.Progress(engine.FamilyBackyard)
 		e.facts.LaneSucceeded(engine.FamilyBackyard, e.vault)
@@ -220,9 +207,6 @@ func (e *events) operationFailedAfterSend(action Action, reason, signature strin
 	if e == nil {
 		return
 	}
-	// A failed REPORT_NAV is retried by the next tick (mostly blockhash
-	// expiry); the nav_reported absence pages if retries stop working, so only
-	// fund-moving steps page here.
 	if action == ReportNAV {
 		e.log.Info("backyard_operation_failed_after_send", "code", reason, "action", string(action), "signature", signature)
 		return
@@ -312,7 +296,6 @@ func holdDetail(err error) string {
 	return chain.Scrub(holdCause(hold))
 }
 
-// errorCode maps a tick error to a closed, stable snake_case code.
 func errorCode(err error) string {
 	var hold *PreSendHold
 	var pgErr *pgconn.PgError

@@ -12,8 +12,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// budgetReserveRefreshInstructions pins the closed instruction set: the lane's
-// two refreshes plus the USDC reference reserve's, deduplicated.
 func budgetReserveRefreshInstructions(v *Vault, lane string) ([]compiledInstruction, error) {
 	if _, err := v.route(lane); err != nil {
 		return nil, err
@@ -105,9 +103,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 	if _, err = checkedUnsignedMessage(message); err != nil {
 		return 0, nil, err
 	}
-	// All-zero placeholder signature; sigVerify is explicitly false. These
-	// bytes cannot be broadcast successfully and are never persisted as signed.
-	wire := signedWire(message, make([]byte, 64))
+	wire := simulationWire(message)
 	keys, err := publicKeys(addresses)
 	if err != nil {
 		return 0, nil, err

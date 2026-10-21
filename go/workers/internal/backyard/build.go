@@ -31,24 +31,27 @@ type compiledInstruction struct {
 }
 
 // BridgeReport is the fixed payload accepted by the immutable adaptor v2.
-// SnapshotDigest must be ComputeNAV's lower-case hex digest.
 type BridgeReport struct {
 	Sequence       uint64
 	ObservedSlot   uint64
 	NAVAfterRaw    uint64
-	SnapshotDigest string
+	SnapshotDigest navDigest
 }
 
-// BridgeBuildRequest is intentionally closed over the four bridge operations
-// which can run before the Kamino open packet is ready.
+type BridgeAction Action
+
+const (
+	bridgeAllocateToSquads   = BridgeAction(VoltrAllocateToSquads)
+	bridgeStageSquadsToVoltr = BridgeAction(StageSquadsToVoltr)
+	bridgeRestoreIdle        = BridgeAction(VoltrRestoreIdle)
+	bridgeReportNAV          = BridgeAction(ReportNAV)
+)
+
 type BridgeBuildRequest struct {
-	Action    Action
-	AmountRaw uint64
-	Report    BridgeReport
-	Policy    string
-	// These bindings are read from the confirmed immutable adaptor config and
-	// Squads Settings before a transaction is built. They are repeated here so
-	// a stale observation cannot be silently paired with the hard-coded wire.
+	Action               BridgeAction
+	AmountRaw            uint64
+	Report               BridgeReport
+	Policy               string
 	AdaptorConfig        string
 	Settings             string
 	RecentBlockhash      string
@@ -81,9 +84,6 @@ func signMessage(executor ed25519.PrivateKey, expectedDelegate publicKey, messag
 		transactionSignature: encodeBase58(signature), recentBlockhash: blockhash, lastValidBlockHeight: height}, nil
 }
 
-// Backyard's Squads Settings, its one signer, the delegate every Backyard
-// policy is delegated to. A vault's own
-// accounts are derived from its data (vault.go).
 const (
 	backyardSettings       = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
 	backyardSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
@@ -135,22 +135,22 @@ func compileBridgeMessageForDelegate(v *Vault, request BridgeBuildRequest, deleg
 
 func bridgeInstruction(v *Vault, request BridgeBuildRequest) (compiledInstruction, error) {
 	switch request.Action {
-	case VoltrAllocateToSquads:
+	case bridgeAllocateToSquads:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, fmt.Errorf("invalid allocation amount")
 		}
 		return voltrStrategyInstruction(v, voltr.DepositStrategy, adaptorDepositDiscriminator, request.AmountRaw, request.Report)
-	case ReportNAV:
+	case bridgeReportNAV:
 		if request.AmountRaw != 0 {
 			return compiledInstruction{}, fmt.Errorf("NAV refresh cannot move capital")
 		}
 		return voltrStrategyInstruction(v, voltr.DepositStrategy, adaptorDepositDiscriminator, 0, request.Report)
-	case VoltrRestoreIdle:
+	case bridgeRestoreIdle:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, fmt.Errorf("invalid Voltr restore amount")
 		}
 		return voltrStrategyInstruction(v, voltr.WithdrawStrategy, adaptorWithdrawDiscriminator, request.AmountRaw, request.Report)
-	case StageSquadsToVoltr:
+	case bridgeStageSquadsToVoltr:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return compiledInstruction{}, fmt.Errorf("invalid staging amount")
 		}
@@ -191,7 +191,7 @@ func encodeBridgeReport(report BridgeReport) ([]byte, error) {
 	if report.Sequence == 0 || report.Sequence != report.ObservedSlot || report.NAVAfterRaw > bridgeMaxNAV {
 		return nil, fmt.Errorf("invalid adaptor report fields")
 	}
-	digest, err := hex.DecodeString(report.SnapshotDigest)
+	digest, err := hex.DecodeString(string(report.SnapshotDigest))
 	if err != nil || len(digest) != 32 || allZero(digest) {
 		return nil, fmt.Errorf("invalid adaptor snapshot digest")
 	}
@@ -220,13 +220,13 @@ func trustfulBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compile
 	}
 	accounts := v.strategyAccounts()
 	switch request.Action {
-	case VoltrAllocateToSquads, ReportNAV:
-		if (request.Action == ReportNAV) != (request.AmountRaw == 0) || request.AmountRaw > strategyTwoBridgeLegCapRaw {
+	case bridgeAllocateToSquads, bridgeReportNAV:
+		if (request.Action == bridgeReportNAV) != (request.AmountRaw == 0) || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return nil, nil, fmt.Errorf("invalid Trustful deposit amount")
 		}
 		deposit := voltr.TrustfulDeposit(accounts, request.AmountRaw, book, solanaKey(v.cash))
 		return []compiledInstruction{sdkInstruction(deposit)}, []byte{trustfulDepositLeg}, nil
-	case StageSquadsToVoltr:
+	case bridgeStageSquadsToVoltr:
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return nil, nil, fmt.Errorf("invalid Trustful withdrawal amount")
 		}

@@ -64,7 +64,7 @@ func TestAdaptorWireMatchesRustFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	report := BridgeReport{Sequence: f.ReportV1.Sequence, ObservedSlot: f.ReportV1.ObservedSlot, NAVAfterRaw: f.ReportV1.NAVAfterRaw, SnapshotDigest: f.ReportV1.SnapshotDigest}
+	report := BridgeReport{Sequence: f.ReportV1.Sequence, ObservedSlot: f.ReportV1.ObservedSlot, NAVAfterRaw: f.ReportV1.NAVAfterRaw, SnapshotDigest: navDigest(f.ReportV1.SnapshotDigest)}
 	wire, err := encodeBridgeReport(report)
 	if err != nil || !bytes.Equal(wire, unhex(t, f.ReportV1.Wire)) {
 		t.Fatalf("report wire drifted: %x err=%v", wire, err)

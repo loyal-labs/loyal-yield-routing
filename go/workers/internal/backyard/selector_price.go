@@ -290,7 +290,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 		return q, staleHold("selector_destination_capacity_unavailable")
 	}
 	q.EquityRaw = int64(equity)
-	entry, err := prepareJupiterQuoteEvidence(ctx, p.rpc, p.client, p.manifest, p.policies, Decision{Action: SwapStableToCollateralStep, AmountRaw: int64(equity), StrategyKey: lane}, equity, 0, slot)
+	entry, err := quoteProspectiveJupiter(ctx, p.rpc, p.client, p.manifest, p.policies, Decision{Action: SwapStableToCollateralStep, AmountRaw: int64(equity), StrategyKey: lane}, equity, 0, slot)
 	if err != nil {
 		return q, err
 	}

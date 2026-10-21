@@ -21,11 +21,9 @@ const (
 )
 
 type EngineConfig struct {
-	Database *Database
-	RPC      *chain.Client
-	View     *View
-	// Credentials is the Backyard delegated executor capability. It stays
-	// inside the engine instance; observers and planners never receive it.
+	Database    *Database
+	RPC         *chain.Client
+	View        *View
 	Credentials Credentials
 	Config      Config
 	Owner       string
@@ -78,9 +76,6 @@ func NewEngine(config EngineConfig) (*Engine, error) {
 	return e, nil
 }
 
-// Run starts the selector collector and serializes lifecycle ticks. Its
-// Database is the writer session that holds Backyard's one-writer lock. Cancellation surfaces as context.Canceled so the owning process runtime can
-// join the lane without recording a failure.
 func (e *Engine) Run(ctx context.Context) error {
 	if e == nil || len(e.workers) == 0 {
 		return fmt.Errorf("Backyard engine is not constructed")

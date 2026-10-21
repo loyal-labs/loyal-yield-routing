@@ -213,7 +213,7 @@ func TestComputeRouteNAVValuesConfirmedCustodyAndPositionConservatively(t *testi
 		t.Fatalf("unexpected route NAV: %+v", got)
 	}
 	if got.Report.Sequence != 77 || got.Report.ObservedSlot != 77 || got.Report.NAVAfterRaw != 33 ||
-		!sha256Pattern.MatchString(got.Report.SnapshotDigest) || got.Report.SnapshotDigest != got.SnapshotDigest {
+		!sha256Pattern.MatchString(string(got.Report.SnapshotDigest)) || got.Report.SnapshotDigest != got.SnapshotDigest {
 		t.Fatalf("invalid ReportV1 inputs: %+v", got.Report)
 	}
 	reversed := append([]ConfirmedAccount(nil), accounts...)

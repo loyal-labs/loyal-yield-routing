@@ -43,8 +43,6 @@ var pinnedProgramIdentities = []pinnedProgramIdentity{
 		deploySlot: adaptorProgramDeploySlot, dataSHA256: adaptorProgramDataSHA256},
 }
 
-// programIdentityReader returns the pinned program and ProgramData accounts;
-// an absent one carries its address alone.
 type programIdentityReader func(ctx context.Context) ([]ConfirmedAccount, error)
 
 func viewProgramIdentity(view *View) programIdentityReader {
@@ -70,12 +68,6 @@ func newProgramIdentityWatcher(reader programIdentityReader) *programIdentityWat
 	return &programIdentityWatcher{reader: reader, lastVerified: map[string]int64{}}
 }
 
-// observe verifies the pinned program identity. A ProgramData image is hashed
-// whenever its deploy slot was not already verified. Absence, a wrong owner,
-// a wrong discriminant, a moved slot, or a hash mismatch returns
-// Verified=false and no error, so the caller records a durable
-// program_identity_unverified hold instead of failing the tick; only an
-// unavailable view is an error.
 func (w *programIdentityWatcher) observe(ctx context.Context) (programIdentityObservation, error) {
 	observation := programIdentityObservation{}
 	images, err := w.reader(ctx)

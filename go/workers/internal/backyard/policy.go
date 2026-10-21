@@ -22,11 +22,6 @@ func vaultPolicy(v *Vault, constraints ...squads.InstructionConstraintView) squa
 	return squads.Policy{VaultIndex: v.SquadsIndex, Constraints: constraints}
 }
 
-// policyKey is what the runtime looks a Backyard policy up by: the route lane
-// it serves (empty when lanes share it) and, within that, the action it
-// executes, the leg of a split KLend policy, or the basic family. A catalog
-// swap policy serves the conversions of its edges, named in constraint order
-// (swapsName), whatever lane asks for them.
 type policyKey struct {
 	lane   string
 	action Action
@@ -82,10 +77,6 @@ func backyardPolicies(v *Vault) (map[policyKey]squads.Policy, error) {
 	return out, first
 }
 
-// PolicyLiteral is the policy the runtime of the vault named vault holds
-// under name, the name a hold gives it (policyKey's String), so `loyal-engine
-// policy apply backyard --vault <vault>` installs exactly the literal the
-// runtime looks for.
 func PolicyLiteral(vault, name string) (squads.Policy, error) {
 	v, err := findVault(vault)
 	if err != nil {
@@ -210,8 +201,6 @@ func jupiterPolicyLeg(v *Vault, lane string, action Action) (policyKey, byte, er
 	}
 }
 
-// autoPolicy is an AUTO lane's KLend policy: the klend-loop policy
-// (policy.LoopConstraints) on its collateral and debt reserves.
 func autoPolicy(v *Vault, route RuntimeRoute) (squads.Policy, error) {
 	k := route.Kamino
 	out, err := policy.LoopConstraints(kaminoKey(k.Vault), kaminoKey(k.Market), kaminoKey(k.CollateralReserve), kaminoKey(k.CollateralMint),
@@ -304,8 +293,6 @@ func initializerPolicy(v *Vault, route RuntimeRoute) (squads.Policy, error) {
 	return vaultPolicy(v, constraint), err
 }
 
-// catalogSwaps are the Jupiter policies the catalog lanes, AUTO among them,
-// swap through, each its conversions in constraint order.
 var catalogSwaps = [][]conversion{
 	{{"USDC", "ONyc"}, {"USDC", "PRIME"}},
 	{{"USDC", "USDe"}, {"USDS", "ONyc"}},
@@ -446,15 +433,11 @@ var hastraConversions = [policy.HastraLegs]conversion{policy.HastraStakeDeposit:
 
 func hastraName() string { return swapsName(hastraConversions[:]) }
 
-// hastraPolicy is the vault's Hastra conversions between its own associated
-// token accounts.
 func hastraPolicy(v *Vault) (squads.Policy, error) {
 	out, _, _, err := policy.HastraConstraints(kaminoKey(v.squads))
 	return vaultPolicy(v, out[:]...), err
 }
 
-// vaultSwap is a shared_accounts_route_v2 by the vault from its custody of
-// any from asset into its custody of any to asset.
 func vaultSwap(v *Vault, from, to []swapAsset, data ...squads.DataConstraintView) squads.InstructionConstraintView {
 	side := func(assets []swapAsset) (custody, programAccount, mint, program squads.Slot) {
 		var custodies, programAccounts, mints, programs []solana.PublicKey

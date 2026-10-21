@@ -17,8 +17,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-// ObserveConfirmedRouteSnapshot extends the bridge snapshot with the route's
-// position and custody, read from the view.
 func ObserveConfirmedRouteSnapshot(ctx context.Context, rpc *chain.Client, view *View, manifest RouteManifest, state *vaultState, ownWriteSlot int64, inputs targetInputs) (Observation, []ConfirmedAccount, error) {
 	if rpc == nil || view == nil {
 		return Observation{}, nil, fmt.Errorf("RPC client and account view are required")
@@ -179,11 +177,6 @@ func observeConfirmedRouteSnapshotWithAccounts(ctx context.Context, manifest Rou
 			if transientValuationRefreshFailure(refreshErr) {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh unavailable: %w", refreshErr))
 			}
-			// Vlad-approved 09-25 after two one-off latches (16:13, 21:26) whose
-			// refresh passed on the next probe: a Kamino-rejected refresh retries
-			// until refreshSimulationLatchAfter refreshes in a row fail (worker
-			// ticks and selector samples share the count, so it latches sooner,
-			// never later).
 			if refreshSimulationFailed(refreshErr) &&
 				runtime.state.refreshFailed.record() < refreshSimulationLatchAfter {
 				return Observation{}, nil, confirmedObservationUnavailable(fmt.Errorf("reserve valuation refresh rejected, retrying: %w", refreshErr))
@@ -359,10 +352,6 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	base.Snapshot.HeldLanes = strings.Join(held, ",")
 	base.Snapshot.TicketLastConsumedSequenceRaw = int64(ticket.LastConsumedSequence)
 	base.Snapshot.HasPosition = position.HasPosition
-	// The position view and the NAV view decode the obligation independently
-	// out of the same confirmed batch; they must agree on whether the account
-	// even exists. An absent obligation is carried forward explicitly instead
-	// of being silently folded into a flat position.
 	if position.Obligation != nav.Obligation {
 		return Observation{}, nil, fmt.Errorf("route NAV and position disagree on the obligation account")
 	}
@@ -395,8 +384,6 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	if err != nil {
 		return Observation{}, nil, err
 	}
-	// The observation ID keeps the pair capacity, so price-driven room
-	// changes do not churn it.
 	pairEntryUSDC := entryUSDC
 	pricedEntry := earnActiveLane(route.Lane) && position.priced()
 	if pricedEntry {
@@ -638,7 +625,7 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 		nav.Voltr.TotalValueRaw > math.MaxInt64 || nav.Receipt.CustodyTrackedRaw > math.MaxInt64 ||
 		nav.Voltr.LockedProfitDegradationSeconds > math.MaxInt64 || nav.Voltr.LastUpdatedLockedProfitRaw > math.MaxInt64 ||
 		nav.Voltr.LastLockedProfitReportUnix > math.MaxInt64 ||
-		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(nav.SnapshotDigest) {
+		nav.Report.SnapshotDigest != nav.SnapshotDigest || !sha256Pattern.MatchString(string(nav.SnapshotDigest)) {
 		return fmt.Errorf("route NAV cannot be merged into the confirmed snapshot")
 	}
 	currentUnix := now.Unix()
@@ -652,8 +639,8 @@ func applyRouteNAVSnapshot(snapshot *Snapshot, nav RouteNAVSnapshot, now time.Ti
 	snapshot.PriorReportedNAVRaw = int64(nav.PriorReportedNAVRaw)
 	snapshot.PriorReportUpdatedUnix = lastUpdated
 	snapshot.ReportSequence = int64(nav.Report.Sequence)
-	snapshot.ReportSnapshotDigest = nav.Report.SnapshotDigest
-	snapshot.DebtIdleRaw = int64(nav.Custodies.SquadsDebtRaw)
+	snapshot.ReportSnapshotDigest = string(nav.Report.SnapshotDigest)
+	snapshot.DebtIdleRaw = debtCustodyRaw(nav.Custodies.SquadsDebtRaw)
 	snapshot.CollateralIdleValueRaw = int64(nav.PrimeIdleValueRaw)
 	snapshot.VoltrTotalValueRaw = int64(nav.Voltr.TotalValueRaw)
 	snapshot.VoltrReceiptCustodyTrackedRaw = int64(nav.Receipt.CustodyTrackedRaw)

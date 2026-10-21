@@ -10,9 +10,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// kaminoAdditionalDebtRoom is a fee-inclusive ADDITIONAL liability limit.
-// Existing obligation debt is never subtracted from this room or treated as a
-// target. All reserve limits and the chain clock must come from one batch.
 func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	collateralAccount, debtAccount := accountAt(accounts, route.Kamino.CollateralReserve), accountAt(accounts, route.Kamino.DebtReserve)
 	collateral, err := decodeKaminoReserve(collateralAccount, route.Kamino.CollateralMint, route.Kamino)
@@ -46,7 +43,6 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 		if !kaminoObligationTermOpen(decoded, debt, clockUnixTimestamp(accounts)) {
 			return 0, nil
 		}
-		// A different elevation group must not inherit cross-mode liquidity.
 		if !plainCrossModeObligation(decoded, obligation) {
 			return 0, nil
 		}
@@ -193,7 +189,7 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 	room, err := kaminoAdditionalDebtRoom(accounts, route)
 	if err != nil {
 		return
-	} // new borrowing holds; urgent exits remain live
+	}
 	debtReserve, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.DebtReserve), route.Kamino.DebtMint, route.Kamino)
 	if err != nil {
 		return
@@ -238,8 +234,6 @@ func leverageRateDebtRaw(s Snapshot, debtRaw uint64) uint64 {
 	return min(debtRaw, s.BorrowUtilizationHeadroomRaw)
 }
 
-// leverageDesiredRaw is the whole step to level (see desiredLeverageBorrow);
-// zero when capacity is unknown or level is off the ladder.
 func leverageDesiredRaw(s Snapshot, level float64) uint64 {
 	i, ok := leverageRungIndex(level)
 	if !s.BorrowCapacityKnown || !ok {
@@ -256,12 +250,11 @@ func leverageBorrowCeiling(s Snapshot, level float64) uint64 {
 	return s.LeverageBorrowRaw[i]
 }
 
-// liability rounds up.
-func capacityBorrowExpectedUSDC(s Snapshot, amount uint64, liability bool) (uint64, error) {
+func capacityBorrowExpectedUSDC(s Snapshot, amount uint64, roundUp bool) (uint64, error) {
 	if !earnHeldLane(s.RouteLane) {
 		return 0, fmt.Errorf("runtime lane %q is not installed", s.RouteLane)
 	}
-	return valueBetweenTokenRaw(amount, s.BorrowDebtDecimals, 6, s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, liability)
+	return valueBetweenTokenRaw(amount, s.BorrowDebtDecimals, 6, s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, roundUp)
 }
 
 func capacityBorrowBoundUSDC(s Snapshot, amount uint64, liability bool) (uint64, error) {
