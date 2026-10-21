@@ -2,9 +2,11 @@ import "./fonts.css";
 
 export type NextFont = { className: string; variable: string; style: { fontFamily: string } };
 
+type PlexFace = "normal" | "italic";
+
 type GoogleFontOptions = {
-  weight?: string | string[];
-  style?: string | string[];
+  weight?: "400" | ["400"];
+  style?: PlexFace | PlexFace[];
   subsets?: string[];
   variable?: string;
   display?: string;
@@ -15,6 +17,6 @@ export function IBM_Plex_Sans(options: GoogleFontOptions = {}): NextFont {
   return {
     className: "",
     variable,
-    style: { fontFamily: `var(--${variable}), sans-serif` },
+    style: { fontFamily: "'IBM Plex Sans', sans-serif" },
   };
 }

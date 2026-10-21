@@ -2199,7 +2199,7 @@ SELECT json_build_object(
   'nonterminalCount', (SELECT count(*) FROM loyal_yield.multiply_operations
     WHERE route_key = 'rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh'
       AND status IN ('prepared','signed_persisted','broadcast_intent','confirmed',
-        'reconciliation_pending','decided','built','simulated','signed','submitted','reconciling')),
+        'reconciliation_pending','decided','built','simulated','signed','reconciling')),
   'recentBackyardWrites', (SELECT count(*) FROM loyal_yield.multiply_operations
     WHERE route_key = 'rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh'
       AND engine_version = 'backyard_rwa_v1' AND updated_at >= now() - interval '30 minutes'),
