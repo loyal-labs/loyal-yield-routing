@@ -31,6 +31,15 @@ type adaptorWireFixture struct {
 			Writable bool   `json:"writable"`
 		} `json:"accounts"`
 	} `json:"arm_report"`
+	BridgeBuilders map[string]struct {
+		Program  string `json:"program"`
+		Data     string `json:"data"`
+		Accounts []struct {
+			Key      string `json:"key"`
+			Signer   bool   `json:"signer"`
+			Writable bool   `json:"writable"`
+		} `json:"accounts"`
+	} `json:"bridge_builders"`
 	Discriminators map[string]string `json:"discriminators"`
 	Errors         map[string]uint32 `json:"errors"`
 	ReportTicket   struct {
@@ -89,6 +98,24 @@ func TestAdaptorWireMatchesRustFixture(t *testing.T) {
 		got := arm.accounts[i]
 		if solana.PublicKey(got.key).String() != keys[want.Name] || got.signer != want.Signer || got.writable != want.Writable {
 			t.Fatalf("ArmReport account %d is not %s", i, want.Name)
+		}
+	}
+
+	for name, c := range map[string]struct {
+		action Action
+		amount uint64
+	}{"VoltrRestoreIdle": {VoltrRestoreIdle, f.VoltrDeposit.Amount}, "ReportNAV": {ReportNAV, 0}, "StageSquadsToVoltr": {StageSquadsToVoltr, f.VoltrDeposit.Amount}} {
+		want := f.BridgeBuilders[name]
+		request := bridgeTestRequest(c.action, c.amount)
+		request.Report = report
+		got, err := bridgeInstruction(rwa, request)
+		if err != nil || solana.PublicKey(got.program).String() != want.Program || !bytes.Equal(got.data, unhex(t, want.Data)) || len(got.accounts) != len(want.Accounts) {
+			t.Fatalf("%s instruction drifted: program %s data %x err=%v", name, solana.PublicKey(got.program), got.data, err)
+		}
+		for i, account := range want.Accounts {
+			if solana.PublicKey(got.accounts[i].key).String() != account.Key || got.accounts[i].signer != account.Signer || got.accounts[i].writable != account.Writable {
+				t.Fatalf("%s account %d drifted", name, i)
+			}
 		}
 	}
 

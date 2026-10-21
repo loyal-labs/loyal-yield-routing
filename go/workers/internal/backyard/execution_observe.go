@@ -73,6 +73,10 @@ func prepareBridgeFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 }
 
 func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, observation Observation, accounts []ConfirmedAccount) (Observation, BridgeExecutionEvidence, error) {
+	action, err := bridgeActionOf(decision.Action)
+	if err != nil {
+		return Observation{}, BridgeExecutionEvidence{}, err
+	}
 	policy, err := observation.policies.account(bridgePolicyKey(manifest.vault, decision.Action))
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
@@ -142,7 +146,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	}
 	return observation, BridgeExecutionEvidence{
 		Request: BridgeBuildRequest{
-			Action: BridgeAction(decision.Action), AmountRaw: uint64(decision.AmountRaw),
+			Action: action, AmountRaw: uint64(decision.AmountRaw),
 			Report: nav.Report, Policy: policy,
 			AdaptorConfig: v.Strategy, Settings: backyardSettings,
 			RecentBlockhash: blockhash.Blockhash, LastValidBlockHeight: blockhash.LastValidBlockHeight,

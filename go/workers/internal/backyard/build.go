@@ -47,6 +47,14 @@ const (
 	bridgeReportNAV          = BridgeAction(ReportNAV)
 )
 
+func bridgeActionOf(action Action) (BridgeAction, error) {
+	switch action {
+	case VoltrAllocateToSquads, StageSquadsToVoltr, VoltrRestoreIdle, ReportNAV:
+		return BridgeAction(action), nil
+	}
+	return "", fmt.Errorf("action %s is not a bridge action", action)
+}
+
 type BridgeBuildRequest struct {
 	Action               BridgeAction
 	AmountRaw            uint64
