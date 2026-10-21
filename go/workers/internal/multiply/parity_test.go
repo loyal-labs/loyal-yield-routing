@@ -216,7 +216,7 @@ func TestPlannerDeploysThenLoops(t *testing.T) {
 	decision := NextAction(state, observed, topology)
 	if decision.Kind != "execute" || decision.Plan == nil ||
 		decision.Plan.Action != ActionSwapClaimToCollateral ||
-		decision.Plan.Amount.Exactly != 4_000_000 {
+		decision.Plan.Amount != AmountExact(4_000_000) {
 		t.Fatalf("expected claim swap, got %+v", decision)
 	}
 	// After the swap, the collateral custody holds funds -> deposit.
@@ -241,7 +241,7 @@ func TestPlannerDeploysThenLoops(t *testing.T) {
 	setObservedPosition(observed, position)
 	decision = NextAction(state, observed, topology)
 	if decision.Kind != "execute" || decision.Plan.Action != ActionBorrowDebt ||
-		decision.Plan.Amount.Mode != "to_target_ltv" {
+		decision.Plan.Amount != AmountToTargetLTV {
 		t.Fatalf("expected borrow to target LTV, got %+v", decision)
 	}
 	amount, err := resolveBorrow(decision.Plan.Amount, observed, config)
@@ -289,7 +289,7 @@ func TestPlannerWithdrawsThenClaims(t *testing.T) {
 	if decision.Kind != "execute" || decision.Plan.Action != ActionRepayDebt {
 		t.Fatalf("expected repay first, got %+v", decision)
 	}
-	if decision.Plan.Amount.Mode != "all" {
+	if decision.Plan.Amount != AmountAll {
 		t.Fatalf("repay of full custody must be repay-all, got %+v", decision.Plan.Amount)
 	}
 	observed, _ = activeObserved(topology, SyrupUsdcUsdc, 3_000_000, 1_000_000,
@@ -298,7 +298,7 @@ func TestPlannerWithdrawsThenClaims(t *testing.T) {
 	syrupCustody(observed, SyrupUsdcUsdc).Balance.AmountRaw = 0
 	decision = NextAction(state, observed, topology)
 	if decision.Kind != "execute" || decision.Plan.Action != ActionWithdrawCollateral ||
-		decision.Plan.Amount.Mode != "max_safe" {
+		decision.Plan.Amount != AmountMaxSafe {
 		t.Fatalf("expected max-safe withdraw, got %+v", decision)
 	}
 	// No active position but collateral custody holds residue -> swap to claim.

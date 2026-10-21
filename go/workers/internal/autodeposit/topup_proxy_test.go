@@ -40,7 +40,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := fleet.BuildExactPolicyFixture(plan.Target.Settings, solana.PrivateKey(key).PublicKey().String(), 1, official.Protected)
+	policy, err := exactPolicyFixture(plan.Target.Settings, solana.PrivateKey(key).PublicKey().String(), 1, official.Protected)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 	foreign := official.Protected[0]
 	foreign.Data = append([]byte(nil), foreign.Data...)
 	binary.LittleEndian.PutUint64(foreign.Data[8:], uint64(plan.AmountRaw+1))
-	badPolicy, err := fleet.BuildExactPolicyFixture(plan.Target.Settings, solana.PrivateKey(key).PublicKey().String(), 1, []fleet.RouteInstruction{foreign})
+	badPolicy, err := exactPolicyFixture(plan.Target.Settings, solana.PrivateKey(key).PublicKey().String(), 1, []fleet.RouteInstruction{foreign})
 	if err != nil {
 		t.Fatal(err)
 	}

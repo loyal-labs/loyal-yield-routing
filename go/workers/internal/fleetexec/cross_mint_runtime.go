@@ -221,7 +221,7 @@ func (r *CrossMintRuntime) handle(ctx context.Context, l SubmissionLease) error 
 	if m.CustodyReconciledSlot != nil {
 		historyAnchor = *m.CustodyReconciledSlot
 	}
-	known := journalSignatures{}
+	known := newJournalSignatures(nil)
 	if m.CustodyReconciledSlot != nil {
 		known, err = r.store.crossMintRecognizedSignatures(workCtx, m.DecisionID, historyAnchor)
 		if err != nil {
@@ -808,7 +808,7 @@ func (r *CrossMintRuntime) reconcile(ctx context.Context, l SubmissionLease) err
 	if err != nil {
 		return err
 	}
-	known.set[l.Submission.Signature] = true
+	known = known.with(l.Submission.Signature)
 	bank, _, err := observeCrossMintBank(ctx, r.accounts, r.history, m, pre, slot, slot, known, anchorEveryToken)
 	if err != nil {
 		return r.hold(ctx, l, "finalized_custody_history_unproven", err)
@@ -868,7 +868,7 @@ func (s *Store) verifyCrossMintReceiptLoadedAccounts(ctx context.Context, record
 			return errors.New("receipt lookup has no persisted registered identity")
 		}
 	}
-	for _, slot := range fleet.LoadedLookupSlots(tx.Message.AddressTableLookups) {
+	for _, slot := range chain.LoadedLookupSlots(tx.Message.AddressTableLookups) {
 		members := byAddress[slot.Table.String()]
 		if int(slot.Index) >= len(members) {
 			return errors.New("receipt lookup index exceeds original members")

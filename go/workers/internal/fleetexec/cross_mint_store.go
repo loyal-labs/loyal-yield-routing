@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"sort"
 	"time"
@@ -413,24 +414,41 @@ func (s *Store) CrossMintMovement(ctx context.Context, id int64) (CrossMintMovem
 	return readCrossMintMovement(ctx, s.pool, id)
 }
 
+type journalSignatures struct{ set map[string]bool }
+
+func newJournalSignatures(known map[string]bool, extra ...string) journalSignatures {
+	set := make(map[string]bool, len(known)+len(extra))
+	maps.Copy(set, known)
+	for _, signature := range extra {
+		set[signature] = true
+	}
+	return journalSignatures{set}
+}
+
+func (j journalSignatures) has(signature string) bool { return j.set[signature] }
+
+func (j journalSignatures) with(signature string) journalSignatures {
+	return newJournalSignatures(j.set, signature)
+}
+
 func (s *Store) crossMintRecognizedSignatures(ctx context.Context, decision, anchor int64) (journalSignatures, error) {
 	rows, err := s.pool.Query(ctx, `SELECT transaction_signature FROM loyal_yield.signed_route_submissions WHERE decision_id=$1 AND submission_state='reconciled' AND finalized_slot>=$2 ORDER BY finalized_slot,id LIMIT 10001`, decision, anchor)
 	if err != nil {
-		return journalSignatures{}, err
+		return newJournalSignatures(nil), err
 	}
 	defer rows.Close()
 	known := map[string]bool{}
 	for rows.Next() {
 		var signature string
 		if err = rows.Scan(&signature); err != nil {
-			return journalSignatures{}, err
+			return newJournalSignatures(nil), err
 		}
 		known[signature] = true
 		if len(known) > 10000 {
-			return journalSignatures{}, errors.New("recognized movement history exceeds bounded proof window")
+			return newJournalSignatures(nil), errors.New("recognized movement history exceeds bounded proof window")
 		}
 	}
-	return journalSignatures{known}, rows.Err()
+	return newJournalSignatures(known), rows.Err()
 }
 
 func nonemptyCrossMintObject(raw []byte) bool {

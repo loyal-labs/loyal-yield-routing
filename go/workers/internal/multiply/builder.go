@@ -86,18 +86,18 @@ func BuildOperation(plan *ActionPlan, observed *ObservedRoute, topology *EarnMax
 	case ActionWithdrawCollateral, ActionWithdrawRemainingCollateral:
 		position := observed.Position(config.Key)
 		var wireCollateralAmount, expectedCollateralAmount uint64
-		switch plan.Amount.Mode {
-		case ModeExact:
-			wireCollateralAmount, expectedCollateralAmount = plan.Amount.Exactly, plan.Amount.Exactly
-		case ModeAll:
+		switch amount := plan.Amount.(type) {
+		case ExactAmount:
+			wireCollateralAmount, expectedCollateralAmount = uint64(amount), uint64(amount)
+		case allAmount:
 			wireCollateralAmount, expectedCollateralAmount = position.CollateralDepositedRaw, position.CollateralDepositedRaw
-		case ModeMaxSafe:
+		case maxSafeAmount:
 			wireCollateralAmount, expectedCollateralAmount = ^uint64(0), 1
 		default:
 			return nil, errors.New("invalid withdraw amount mode")
 		}
 		var liquidityAmount uint64
-		if plan.Amount.Mode == ModeMaxSafe {
+		if plan.Amount == AmountMaxSafe {
 			liquidityAmount = 1
 		} else {
 			var err error
@@ -122,11 +122,12 @@ func BuildOperation(plan *ActionPlan, observed *ObservedRoute, topology *EarnMax
 	case ActionRepayDebt:
 		debt := observed.Position(config.Key).DebtRaw
 		var wireAmount, expectedAmount uint64
+		exact, isExact := plan.Amount.(ExactAmount)
 		switch {
-		case plan.Amount.Mode == ModeAll:
+		case plan.Amount == AmountAll:
 			wireAmount, expectedAmount = ^uint64(0), debt
-		case plan.Amount.Mode == ModeExact && plan.Amount.Exactly > 0 && plan.Amount.Exactly < debt:
-			wireAmount, expectedAmount = plan.Amount.Exactly, plan.Amount.Exactly
+		case isExact && exact > 0 && uint64(exact) < debt:
+			wireAmount, expectedAmount = uint64(exact), uint64(exact)
 		default:
 			return nil, errors.New("repay requires an exact partial amount or repay-all")
 		}
@@ -343,17 +344,17 @@ func obligationEffect(config StrategyConfig, collateralRawDelta, debtRawDelta in
 }
 
 func exactAmount(amount PlannedAmount) (uint64, error) {
-	if amount.Mode == ModeExact && amount.Exactly > 0 && amount.Exactly <= math.MaxInt64 {
-		return amount.Exactly, nil
+	if exact, ok := amount.(ExactAmount); ok && exact > 0 && exact <= math.MaxInt64 {
+		return uint64(exact), nil
 	}
 	return 0, errors.New("operation requires a positive exact amount")
 }
 
 func resolveBorrow(amount PlannedAmount, observed *ObservedRoute, config StrategyConfig) (uint64, error) {
-	if amount.Mode == ModeExact {
+	if _, ok := amount.(ExactAmount); ok {
 		return exactAmount(amount)
 	}
-	if amount.Mode != ModeToTargetLTV {
+	if amount != AmountToTargetLTV {
 		return 0, errors.New("invalid borrow amount mode")
 	}
 	position := observed.Position(config.Key)

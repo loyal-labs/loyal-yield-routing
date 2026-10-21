@@ -9,27 +9,25 @@ const (
 	minJupiterSwapRaw     = uint64(50_000)
 )
 
-type AmountMode string
+type PlannedAmount interface{ plannedAmount() }
 
-const (
-	ModeExact       AmountMode = "exact"
-	ModeAll         AmountMode = "all"
-	ModeMaxSafe     AmountMode = "max_safe"
-	ModeToTargetLTV AmountMode = "to_target_ltv"
-)
+type ExactAmount uint64
+type allAmount struct{}
+type maxSafeAmount struct{}
+type toTargetLTVAmount struct{}
 
-type PlannedAmount struct {
-	Mode    AmountMode
-	Exactly uint64 // set when Mode == "exact"
-}
+func (ExactAmount) plannedAmount()       {}
+func (allAmount) plannedAmount()         {}
+func (maxSafeAmount) plannedAmount()     {}
+func (toTargetLTVAmount) plannedAmount() {}
 
 var (
-	AmountAll         = PlannedAmount{Mode: ModeAll}
-	AmountMaxSafe     = PlannedAmount{Mode: ModeMaxSafe}
-	AmountToTargetLTV = PlannedAmount{Mode: ModeToTargetLTV}
+	AmountAll         PlannedAmount = allAmount{}
+	AmountMaxSafe     PlannedAmount = maxSafeAmount{}
+	AmountToTargetLTV PlannedAmount = toTargetLTVAmount{}
 )
 
-func AmountExact(value uint64) PlannedAmount { return PlannedAmount{Mode: ModeExact, Exactly: value} }
+func AmountExact(value uint64) PlannedAmount { return ExactAmount(value) }
 
 type ActionPlan struct {
 	Action             MultiplyAction

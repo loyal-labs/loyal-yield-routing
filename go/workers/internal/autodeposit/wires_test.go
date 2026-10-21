@@ -191,7 +191,7 @@ func testWireBuilder(t *testing.T) *SweepWireBuilder {
 		inner := fleet.RouteInstruction{Program: SubscriptionsProgramID, Data: data, Accounts: []fleet.InstructionAccount{
 			{Address: delegation, Writable: true}, {Address: base58Key(authority[:])}, {Address: plan.Target.WalletUsdcAta, Writable: true}, {Address: plan.Target.VaultUsdcAta, Writable: true}, {Address: USDCMint}, {Address: splTokenID}, {Address: plan.Target.VaultPubkey, Signer: true}, {Address: base58Key(event[:])}, {Address: SubscriptionsProgramID},
 		}}
-		policy, err := fleet.BuildExactPolicyFixture(plan.Target.Settings, solana.PrivateKey(private).PublicKey().String(), 1, []fleet.RouteInstruction{inner})
+		policy, err := exactPolicyFixture(plan.Target.Settings, solana.PrivateKey(private).PublicKey().String(), 1, []fleet.RouteInstruction{inner})
 		if err != nil {
 			return 0, nil, err
 		}

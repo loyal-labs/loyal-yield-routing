@@ -59,7 +59,7 @@ func TestReadSnapshotReadsEveryVaultFactAtTheReservesSlot(t *testing.T) {
 	settings, signer := testIdentity(60), testIdentity(61)
 	held, bare, foreign := testIdentity(70), testIdentity(71), testIdentity(72)
 	policyAccount, unreadable := testIdentity(80), testIdentity(81)
-	policyData, err := BuildExactPolicyFixture(settings, signer, 0, []RouteInstruction{{Program: kamino.ProgramID.String(), Data: []byte{1}}})
+	policyData, err := buildExactPolicyFixture(settings, signer, 0, []RouteInstruction{{Program: kamino.ProgramID.String(), Data: []byte{1}}})
 	if err != nil {
 		t.Fatal(err)
 	}
