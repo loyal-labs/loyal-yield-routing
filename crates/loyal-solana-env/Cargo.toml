@@ -6,7 +6,6 @@ description = "Credential-safe Solana signer and RPC environment helpers for Loy
 
 [dependencies]
 bs58 = "0.5"
-reqwest = { workspace = true, default-features = false }
 serde_json = "1"
 solana-sdk.workspace = true
 thiserror.workspace = true

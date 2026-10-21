@@ -1,20 +1,13 @@
 use crate::{
-    jupiter::JupiterBuildError, LoyalActionError, Result,
+    LoyalActionError, Result,
     SemanticProgramInteractionAccountDataConstraint as AccountDataConstraint,
     SemanticProgramInteractionConstraint as Constraint,
     SemanticProgramInteractionDataConstraint as DataConstraint,
 };
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use solana_sdk::pubkey::Pubkey;
 
 pub const EARN_MAX_SHARED_ACCOUNTS_ROUTE: [u8; 8] =
     [0xc1, 0x20, 0x9b, 0x33, 0x41, 0xd6, 0x9c, 0x81];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EarnMaxObservationReserve {
-    pub market: &'static str,
-    pub reserve: &'static str,
-    pub liquidity_mint: &'static str,
-}
 
 pub const EARN_MAX_ONRE_MARKET: &str = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8";
 pub const EARN_MAX_FIGURE_MARKET: &str = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA";
@@ -35,62 +28,6 @@ pub const EARN_MAX_PRIME_USDS_DEBT_RESERVE: &str = "7SzMWArC8WAenndXFmRyfvcvrNPo
 pub const EARN_MAX_SYRUP_COLLATERAL_RESERVE: &str = "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY";
 pub const EARN_MAX_SYRUP_USDC_DEBT_RESERVE: &str = "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo";
 pub const EARN_MAX_SYRUP_PYUSD_DEBT_RESERVE: &str = "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS";
-
-/// The ten exact Kamino reserves referenced by the seven approved Earn Max
-/// strategies. This is shared by policy construction and observation so a
-/// market with multiple same-mint reserves cannot select the wrong account.
-pub const EARN_MAX_OBSERVATION_RESERVES: [EarnMaxObservationReserve; 10] = [
-    EarnMaxObservationReserve {
-        market: EARN_MAX_ONRE_MARKET,
-        reserve: EARN_MAX_ONYC_COLLATERAL_RESERVE,
-        liquidity_mint: EARN_MAX_ONYC_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_ONRE_MARKET,
-        reserve: EARN_MAX_ONYC_USDC_DEBT_RESERVE,
-        liquidity_mint: EARN_MAX_USDC_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_ONRE_MARKET,
-        reserve: EARN_MAX_ONYC_USDS_DEBT_RESERVE,
-        liquidity_mint: EARN_MAX_USDS_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_FIGURE_MARKET,
-        reserve: EARN_MAX_PRIME_COLLATERAL_RESERVE,
-        liquidity_mint: EARN_MAX_PRIME_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_FIGURE_MARKET,
-        reserve: EARN_MAX_PRIME_USDC_DEBT_RESERVE,
-        liquidity_mint: EARN_MAX_USDC_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_FIGURE_MARKET,
-        reserve: EARN_MAX_PRIME_PYUSD_DEBT_RESERVE,
-        liquidity_mint: EARN_MAX_PYUSD_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_FIGURE_MARKET,
-        reserve: EARN_MAX_PRIME_USDS_DEBT_RESERVE,
-        liquidity_mint: EARN_MAX_USDS_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_MAPLE_MARKET,
-        reserve: EARN_MAX_SYRUP_COLLATERAL_RESERVE,
-        liquidity_mint: EARN_MAX_SYRUP_USDC_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_MAPLE_MARKET,
-        reserve: EARN_MAX_SYRUP_USDC_DEBT_RESERVE,
-        liquidity_mint: EARN_MAX_USDC_MINT,
-    },
-    EarnMaxObservationReserve {
-        market: EARN_MAX_MAPLE_MARKET,
-        reserve: EARN_MAX_SYRUP_PYUSD_DEBT_RESERVE,
-        liquidity_mint: EARN_MAX_PYUSD_MINT,
-    },
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EarnMaxPolicyFamily {
@@ -126,88 +63,6 @@ pub struct EarnMaxPolicyBoundary {
     pub borrow_discriminator: [u8; 8],
     pub repay_discriminator: [u8; 8],
     pub lanes: Vec<EarnMaxPolicyLane>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct EarnMaxJupiterRouteExpectation {
-    pub jupiter_program: Pubkey,
-    pub vault: Pubkey,
-    pub source: Pubkey,
-    pub destination: Pubkey,
-    pub input_mint: Pubkey,
-    pub output_mint: Pubkey,
-    pub input_amount: u64,
-    pub quoted_output_amount: u64,
-    pub minimum_output_amount: u64,
-    pub slippage_bps: u16,
-}
-
-pub fn validate_earn_max_jupiter_route(
-    instruction: &Instruction,
-    expected: EarnMaxJupiterRouteExpectation,
-) -> std::result::Result<(), JupiterBuildError> {
-    if instruction.program_id != expected.jupiter_program {
-        return Err(JupiterBuildError::UnexpectedProgram("swapInstruction"));
-    }
-    let expected_accounts = [
-        (2, expected.vault, true, false),
-        (3, expected.source, false, true),
-        (6, expected.destination, false, true),
-        (7, expected.input_mint, false, false),
-        (8, expected.output_mint, false, false),
-    ];
-    for (index, pubkey, signer, writable) in expected_accounts {
-        let account = instruction
-            .accounts
-            .get(index)
-            .ok_or(JupiterBuildError::InvalidSwapAccounts)?;
-        if account.pubkey != pubkey
-            || account.is_signer != signer
-            || account.is_writable != writable
-        {
-            return Err(JupiterBuildError::InvalidSwapAccounts);
-        }
-    }
-    if instruction
-        .accounts
-        .iter()
-        .filter(|account| account.is_signer)
-        .count()
-        != 1
-    {
-        return Err(JupiterBuildError::InvalidAuthority("swapInstruction"));
-    }
-    let data = instruction.data.as_slice();
-    if data.get(..8) != Some(EARN_MAX_SHARED_ACCOUNTS_ROUTE.as_slice()) || data.len() < 32 {
-        return Err(JupiterBuildError::UnsupportedJupiterDialect);
-    }
-    let route_count = read_u32(data, 9).ok_or(JupiterBuildError::InvalidRoutePlan)?;
-    if !(1..=4).contains(&route_count) {
-        return Err(JupiterBuildError::InvalidRoutePlan);
-    }
-    let tail = data.len() - 19;
-    let input = read_u64(data, tail).ok_or(JupiterBuildError::InvalidSwapInstructionData)?;
-    let output = read_u64(data, tail + 8).ok_or(JupiterBuildError::InvalidSwapInstructionData)?;
-    let slippage =
-        read_u16(data, tail + 16).ok_or(JupiterBuildError::InvalidSwapInstructionData)?;
-    if input != expected.input_amount
-        || output != expected.quoted_output_amount
-        || slippage != expected.slippage_bps
-    {
-        return Err(JupiterBuildError::InvalidSwapInstructionData);
-    }
-    if data.last() != Some(&0) {
-        return Err(JupiterBuildError::PlatformFeeNotZero);
-    }
-    let minimum = expected
-        .quoted_output_amount
-        .saturating_mul(u64::from(10_000 - expected.slippage_bps))
-        .saturating_add(9_999)
-        / 10_000;
-    if expected.minimum_output_amount != minimum {
-        return Err(JupiterBuildError::InvalidMinimumOutput);
-    }
-    Ok(())
 }
 
 pub fn earn_max_policy_constraints(
@@ -341,24 +196,6 @@ fn unique(values: impl IntoIterator<Item = Pubkey>) -> Vec<Pubkey> {
     unique
 }
 
-fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
-    data.get(offset..offset + 2)
-        .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
-        .map(u16::from_le_bytes)
-}
-
-fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
-    data.get(offset..offset + 4)
-        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-        .map(u32::from_le_bytes)
-}
-
-fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
-    data.get(offset..offset + 8)
-        .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-        .map(u64::from_le_bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,7 +204,7 @@ mod tests {
         derive_associated_token_account, derive_kamino_obligation, derive_squads_vault,
     };
     use sha2::{Digest, Sha256};
-    use solana_sdk::instruction::{AccountMeta, Instruction};
+    use solana_sdk::instruction::Instruction;
     use std::str::FromStr;
 
     fn key(value: &str) -> Pubkey {
@@ -553,68 +390,5 @@ mod tests {
                 .len()),
             [2, 2, 4]
         );
-    }
-
-    #[test]
-    fn jupiter_mutation_boundary_rejects_value_redirection_and_quote_drift() {
-        let jupiter = key("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
-        let vault = Pubkey::new_unique();
-        let source = Pubkey::new_unique();
-        let destination = Pubkey::new_unique();
-        let input_mint = Pubkey::new_unique();
-        let output_mint = Pubkey::new_unique();
-        let expected = EarnMaxJupiterRouteExpectation {
-            jupiter_program: jupiter,
-            vault,
-            source,
-            destination,
-            input_mint,
-            output_mint,
-            input_amount: 1_000,
-            quoted_output_amount: 2_001,
-            minimum_output_amount: 1_991,
-            slippage_bps: 50,
-        };
-        let mut accounts = (0..9)
-            .map(|_| AccountMeta::new_readonly(Pubkey::new_unique(), false))
-            .collect::<Vec<_>>();
-        accounts[2] = AccountMeta::new_readonly(vault, true);
-        accounts[3] = AccountMeta::new(source, false);
-        accounts[6] = AccountMeta::new(destination, false);
-        accounts[7] = AccountMeta::new_readonly(input_mint, false);
-        accounts[8] = AccountMeta::new_readonly(output_mint, false);
-        let mut data = Vec::from(EARN_MAX_SHARED_ACCOUNTS_ROUTE);
-        data.push(0);
-        data.extend(1_u32.to_le_bytes());
-        data.extend(expected.input_amount.to_le_bytes());
-        data.extend(expected.quoted_output_amount.to_le_bytes());
-        data.extend(expected.slippage_bps.to_le_bytes());
-        data.push(0);
-        let instruction = Instruction {
-            program_id: jupiter,
-            accounts,
-            data,
-        };
-        validate_earn_max_jupiter_route(&instruction, expected).unwrap();
-
-        for index in [2, 3, 6, 7, 8] {
-            let mut mutation = instruction.clone();
-            mutation.accounts[index].pubkey = Pubkey::new_unique();
-            assert!(validate_earn_max_jupiter_route(&mutation, expected).is_err());
-        }
-        let mut extra_signer = instruction.clone();
-        extra_signer.accounts[0].is_signer = true;
-        assert!(validate_earn_max_jupiter_route(&extra_signer, expected).is_err());
-
-        for offset in [0, 9, 13, 21, 29, 31] {
-            let mut mutation = instruction.clone();
-            mutation.data[offset] ^= 1;
-            assert!(validate_earn_max_jupiter_route(&mutation, expected).is_err());
-        }
-        let wrong_threshold = EarnMaxJupiterRouteExpectation {
-            minimum_output_amount: 1_990,
-            ..expected
-        };
-        assert!(validate_earn_max_jupiter_route(&instruction, wrong_threshold).is_err());
     }
 }
