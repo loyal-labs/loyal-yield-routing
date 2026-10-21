@@ -98,7 +98,7 @@ func (b *book) views() []Snapshot {
 		}
 		if overflow, ok := overflowLaneOf(id); ok && s.HasPosition && overflowSourceBorrowClosed(s) {
 			o := b.lane(overflow)
-			s.OverflowRoomKnown, s.OverflowRoomRaw, s.OverflowRoomValueRaw, s.OverflowObligationPresent = true, uint64(o.room), o.room, o.obligationPresent
+			s.OverflowRoom = &overflowBorrowRoom{DebtRaw: uint64(o.room), FlooredUSDCValue: o.room, Obligation: observedObligation(o.obligationPresent)}
 		}
 		level := b.in.Levels[id]
 		s.LeverageTargetLevel, s.LeverageUpApproved = level.Level, level.UpApproved && level.Level > 1

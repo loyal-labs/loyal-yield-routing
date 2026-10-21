@@ -71,14 +71,8 @@ type Snapshot struct {
 	// HeldLanes is every lane holding exposure in this batch, in registry
 	// order and comma separated ("" when none). RouteLane is the working
 	// lane: the one lane this per-lane view describes.
-	HeldLanes string `json:",omitempty"`
-	// OverflowRoom* is, on a lane that has an overflow lane, that lane's
-	// debt reserve borrow room this batch (raw debt units, and its bridge
-	// USDC value, floored); unknown unless Known.
-	OverflowRoomRaw           uint64 `json:",omitempty"`
-	OverflowRoomValueRaw      int64  `json:",omitempty"`
-	OverflowRoomKnown         bool   `json:",omitempty"`
-	OverflowObligationPresent bool   `json:",omitempty"`
+	HeldLanes    string              `json:",omitempty"`
+	OverflowRoom *overflowBorrowRoom `json:",omitempty"`
 	// DebtTermEndUnix is KLend's term-debt maturity: the last borrow plus the
 	// reserve's debt term, or the market-wide maturity when earlier.
 	DebtTermEndUnix                int64 `json:",omitempty"`
@@ -181,6 +175,12 @@ func observedObligation(present bool) obligationPresence {
 		return obligationPresent
 	}
 	return obligationAbsent
+}
+
+type overflowBorrowRoom struct {
+	DebtRaw          uint64
+	FlooredUSDCValue int64
+	Obligation       obligationPresence
 }
 
 type Decision struct {

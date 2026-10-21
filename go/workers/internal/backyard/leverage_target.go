@@ -215,7 +215,7 @@ func (d leverageDecision) storeChanges(s Snapshot) bool {
 
 func decideOverflowLevel(source Snapshot, markets []LaneEconomics, p SelectorPolicy, now time.Time) (string, laneLevel, bool) {
 	lane, ok := overflowLaneOf(source.RouteLane)
-	if !ok || !source.HasPosition || !overflowSourceBorrowClosed(source) || !source.OverflowRoomKnown || containsLane(source.heldLanes(), lane) {
+	if !ok || !source.HasPosition || !overflowSourceBorrowClosed(source) || source.OverflowRoom == nil || containsLane(source.heldLanes(), lane) {
 		return "", laneLevel{}, false
 	}
 	maxLevel := laneMaxLevel(lane)

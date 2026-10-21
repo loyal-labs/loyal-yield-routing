@@ -42,21 +42,21 @@ func TestOverflowRoomIsJudgedOnTheRefreshedBatch(t *testing.T) {
 	// the overflow room is read.
 	closed := Snapshot{HasPosition: true, BorrowCapacityKnown: true, BorrowUtilizationBlocked: true}
 
-	s := Snapshot{BorrowCapacityKnown: true, AdditionalDebtRoomRaw: 1_000_000_000_000, OverflowRoomKnown: true}
-	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOPYUSD); err != nil || s.OverflowRoomKnown {
+	s := Snapshot{BorrowCapacityKnown: true, AdditionalDebtRoomRaw: 1_000_000_000_000, OverflowRoom: &overflowBorrowRoom{}}
+	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOPYUSD); err != nil || s.OverflowRoom != nil {
 		t.Fatalf("source with room: %+v %v", s, err)
 	}
 	s = closed
-	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOPYUSD); err != nil || !s.OverflowRoomKnown || s.OverflowRoomRaw != wantRaw || s.OverflowRoomValueRaw != wantValue {
+	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOPYUSD); err != nil || s.OverflowRoom == nil || s.OverflowRoom.DebtRaw != wantRaw || s.OverflowRoom.FlooredUSDCValue != wantValue {
 		t.Fatalf("room was not judged on the batch: %+v %v", s, err)
 	}
 	s = closed
-	s.OverflowRoomKnown, s.OverflowRoomRaw = true, 1
-	if err := applyOverflowRoom(rwa, &s, stale, autoAUTOPYUSD); !errors.Is(err, errKaminoReserveStale) || s.OverflowRoomKnown || s.OverflowRoomRaw != 0 {
+	s.OverflowRoom = &overflowBorrowRoom{DebtRaw: 1}
+	if err := applyOverflowRoom(rwa, &s, stale, autoAUTOPYUSD); !errors.Is(err, errKaminoReserveStale) || s.OverflowRoom != nil {
 		t.Fatalf("stale batch: %+v %v", s, err)
 	}
-	s = Snapshot{OverflowRoomKnown: true}
-	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOWYLDS); err != nil || s.OverflowRoomKnown {
+	s = Snapshot{OverflowRoom: &overflowBorrowRoom{}}
+	if err := applyOverflowRoom(rwa, &s, fresh, autoAUTOWYLDS); err != nil || s.OverflowRoom != nil {
 		t.Fatalf("non-source lane: %+v %v", s, err)
 	}
 	// The batch refreshes the overflow lane with its source even while the
@@ -92,7 +92,7 @@ func TestUnheldOverflowRefreshRefusalNeverLatches(t *testing.T) {
 			},
 			now: func() time.Time { return time.Unix(kaminoFixtureUnix, 0).UTC() },
 		})
-		if err != nil || o.Snapshot.ManualReason != "" || o.Snapshot.HeldLanes != autoAUTOPYUSD.Lane || o.Snapshot.OverflowRoomKnown {
+		if err != nil || o.Snapshot.ManualReason != "" || o.Snapshot.HeldLanes != autoAUTOPYUSD.Lane || o.Snapshot.OverflowRoom != nil {
 			t.Fatalf("tick %d: %v %q %+v", i, err, o.Snapshot.ManualReason, o.Snapshot)
 		}
 	}
