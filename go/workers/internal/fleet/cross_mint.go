@@ -296,7 +296,7 @@ func validateJupiterEnvelope(body []byte, expected crossMintPlan, vault string, 
 	if len(raw.BlockhashWithMetadata.Blockhash) != 32 || raw.BlockhashWithMetadata.LastValidBlockHeight == 0 || !validJupiterFetchedAt(raw.BlockhashWithMetadata.FetchedAt) || bytes.Equal(raw.BlockhashWithMetadata.Blockhash, make([]byte, 32)) {
 		return validatedJupiterBuild{}, errors.New("invalid Jupiter blockhash metadata")
 	}
-	all := append(computeBudgetInstructions(uint32(defaultComputeLimit), unitPrice), setups...)
+	all := append(computeBudgetInstructions(uint32(DefaultComputeLimit), unitPrice), setups...)
 	all = append(all, swap)
 	unique := map[string]bool{vault: true}
 	dataBytes := 0
@@ -310,7 +310,7 @@ func validateJupiterEnvelope(body []byte, expected crossMintPlan, vault string, 
 	if len(all) > 8 || len(unique) > 64 || dataBytes > 1024 {
 		return validatedJupiterBuild{}, errors.New("Jupiter build exceeds instruction, account, or data limits")
 	}
-	structure, _, e := compileV0Transaction(vault, encodeBase58(raw.BlockhashWithMetadata.Blockhash), all, tables, 1, defaultComputeLimit)
+	structure, _, e := compileV0Transaction(vault, encodeBase58(raw.BlockhashWithMetadata.Blockhash), all, tables, 1, DefaultComputeLimit)
 	if e != nil || structure.PacketBytes > SolanaPacketLimit {
 		return validatedJupiterBuild{}, errors.New("Jupiter build exceeds packet limit")
 	}

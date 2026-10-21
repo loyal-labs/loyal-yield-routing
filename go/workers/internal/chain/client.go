@@ -36,14 +36,16 @@ var ErrBehind = fmt.Errorf("%w: node behind the requested slot", ErrUnavailable)
 const (
 	rateLimitedCode = -32429
 	behindCode      = -32016
+
+	internalErrorCode           = -32603
+	blockNotAvailableCode       = -32004
+	nodeUnhealthyCode           = -32005
+	blockStatusNotAvailableCode = -32014
 )
 
-// unavailableCodes are JSON-RPC errors about the node, not the chain: internal
-// error, block or status not available yet, node unhealthy.
-var unavailableCodes = map[int]bool{-32603: true, -32004: true, -32005: true, -32014: true}
+var unavailableCodes = map[int]bool{internalErrorCode: true, blockNotAvailableCode: true, nodeUnhealthyCode: true, blockStatusNotAvailableCode: true}
 
-// maxAccountsPerCall is getMultipleAccounts' limit.
-const maxAccountsPerCall = 100
+const getMultipleAccountsLimit = 100
 
 type Client struct {
 	rpc      *rpc.Client
@@ -130,8 +132,8 @@ func (c *Client) Accounts(ctx context.Context, keys []solana.PublicKey, commitme
 		return 0, nil, errors.New("getMultipleAccounts: no keys")
 	}
 	accounts = make([]*Account, 0, len(keys))
-	for start := 0; start < len(keys); start += maxAccountsPerCall {
-		batch := keys[start:min(start+maxAccountsPerCall, len(keys))]
+	for start := 0; start < len(keys); start += getMultipleAccountsLimit {
+		batch := keys[start:min(start+getMultipleAccountsLimit, len(keys))]
 		out, err := c.rpc.GetMultipleAccountsWithOpts(ctx, batch, &rpc.GetMultipleAccountsOpts{Encoding: solana.EncodingBase64, Commitment: commitment, MinContextSlot: atLeast(minContextSlot)})
 		if err != nil {
 			return 0, nil, failed("getMultipleAccounts", err)

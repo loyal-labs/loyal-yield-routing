@@ -341,12 +341,11 @@ func runRetail(ctx context.Context, owner string, facts *engine.Facts, metrics e
 	if err != nil {
 		return retailError("lookup writer", err)
 	}
-	// Retain the source provisioner's growth reservation (8) and vault cohort
-	// limit (16). This lane receives no manager key or broadcast capability.
+	// This lane receives no manager key or broadcast capability.
 	lookupPlanner, err := fleetexec.NewLookupPlanner(dStore, cluster, fleetexec.LookupPlannerConfig{
 		Cluster: "mainnet-beta", Owner: owner, LeaseTTL: 30 * time.Second,
 		TickDeadline: 20 * time.Second, PollInterval: time.Second,
-		CatalogInterval: time.Minute, GrowthReservation: 8, MaximumVaultCohort: 16,
+		CatalogInterval: time.Minute, GrowthReservation: fleetexec.SourceGrowthReservation, MaximumVaultCohort: fleetexec.SourceMaximumVaultCohort,
 		ReconcileOnly: !cfg.lookup.active, Facts: facts,
 		OnHealth: laneHealth(facts, engine.FamilyLookup, "lookup_planner"),
 	})

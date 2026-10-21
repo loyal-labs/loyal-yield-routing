@@ -135,7 +135,7 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		return err
 	}
 	if len(args) > 0 && args[0] == "simulate-step" {
-		vault, lane, up, amount, err := parseSimulateStepFlags(args[1:])
+		vault, lane, direction, amount, err := parseSimulateStepFlags(args[1:])
 		if err != nil {
 			return err
 		}
@@ -143,7 +143,7 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 		if err != nil {
 			return err
 		}
-		return backyard.RunSimulateStep(ctx, out, url, backyardJupiter(optionalCredential("JUPITER_API_KEY")), vault, lane, up, amount)
+		return backyard.RunSimulateStep(ctx, out, url, backyardJupiter(optionalCredential("JUPITER_API_KEY")), vault, lane, direction, amount)
 	}
 	cfg, err := backyardRuntimeConfig()
 	if err != nil {
@@ -186,11 +186,11 @@ func runBackyardOperator(ctx context.Context, args []string, out io.Writer) erro
 
 const simulateStepUsage = `usage: loyal-engine backyard simulate-step --vault <vault> --lane <lane> --dir up|down --amount-raw <n>`
 
-func parseSimulateStepFlags(args []string) (vault, lane string, up bool, amount uint64, err error) {
-	dir := ""
+func parseSimulateStepFlags(args []string) (vault, lane string, direction backyard.SimulatedStep, amount uint64, err error) {
+	var dir backyard.SimulatedStep
 	for index := 0; index < len(args); index++ {
 		if index+1 >= len(args) {
-			return "", "", false, 0, fmt.Errorf("simulate-step: %s requires a value\n%s", args[index], simulateStepUsage)
+			return "", "", "", 0, fmt.Errorf("simulate-step: %s requires a value\n%s", args[index], simulateStepUsage)
 		}
 		value := args[index+1]
 		switch args[index] {
@@ -199,20 +199,20 @@ func parseSimulateStepFlags(args []string) (vault, lane string, up bool, amount 
 		case "--lane":
 			lane = value
 		case "--dir":
-			dir = value
+			dir = backyard.SimulatedStep(value)
 		case "--amount-raw":
 			if amount, err = strconv.ParseUint(value, 10, 64); err != nil {
-				return "", "", false, 0, fmt.Errorf("simulate-step: --amount-raw requires an integer\n%s", simulateStepUsage)
+				return "", "", "", 0, fmt.Errorf("simulate-step: --amount-raw requires an integer\n%s", simulateStepUsage)
 			}
 		default:
-			return "", "", false, 0, fmt.Errorf("simulate-step: unexpected argument %q\n%s", args[index], simulateStepUsage)
+			return "", "", "", 0, fmt.Errorf("simulate-step: unexpected argument %q\n%s", args[index], simulateStepUsage)
 		}
 		index++
 	}
-	if vault == "" || lane == "" || (dir != "up" && dir != "down") || amount == 0 {
-		return "", "", false, 0, fmt.Errorf("simulate-step: --vault, --lane, --dir up|down and a positive --amount-raw are required\n%s", simulateStepUsage)
+	if vault == "" || lane == "" || (dir != backyard.SimulateUp && dir != backyard.SimulateDown) || amount == 0 {
+		return "", "", "", 0, fmt.Errorf("simulate-step: --vault, --lane, --dir up|down and a positive --amount-raw are required\n%s", simulateStepUsage)
 	}
-	return vault, lane, dir == "up", amount, nil
+	return vault, lane, dir, amount, nil
 }
 
 const exitLaneUsage = `usage: loyal-engine backyard exit-lane --vault <vault> --lane <lane> (--by <operator> [--equity-zero] | --clear)`

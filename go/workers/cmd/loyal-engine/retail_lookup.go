@@ -16,6 +16,8 @@ import (
 
 const retailLookupAuthority = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
 
+var inertReconcileOnlyBudget = fleetexec.LookupBudget{MaximumLamports: 1, RollingWindow: 24 * time.Hour}
+
 type retailLookupConfig struct {
 	active  bool
 	manager ed25519.PrivateKey
@@ -23,9 +25,7 @@ type retailLookupConfig struct {
 }
 
 func loadRetailLookupConfig() (retailLookupConfig, error) {
-	// Recovery never invokes the budget or key capability. A positive inert
-	// value satisfies the shared constructor without granting a spend budget.
-	cfg := retailLookupConfig{budget: fleetexec.LookupBudget{MaximumLamports: 1, RollingWindow: 24 * time.Hour}}
+	cfg := retailLookupConfig{budget: inertReconcileOnlyBudget}
 	switch strings.TrimSpace(os.Getenv("RETAIL_LOOKUP_MODE")) {
 	case "", "reconcile-only":
 		return cfg, nil

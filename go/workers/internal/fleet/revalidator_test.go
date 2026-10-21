@@ -236,7 +236,7 @@ func TestLoadReusableLookupTablesScopesStaleCandidatesBeforeRPC(t *testing.T) {
 }
 
 func TestComputePadding(t *testing.T) {
-	cases := map[uint64]uint64{0: 100_000, 1: 100_000, 200_000: 240_000, ^uint64(0): defaultComputeLimit}
+	cases := map[uint64]uint64{0: 100_000, 1: 100_000, 200_000: 240_000, ^uint64(0): DefaultComputeLimit}
 	for measured, want := range cases {
 		if got := paddedComputeUnits(measured); got != want {
 			t.Fatalf("paddedComputeUnits(%d)=%d want %d", measured, got, want)

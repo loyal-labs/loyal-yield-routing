@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -203,8 +204,8 @@ func apply(ctx context.Context, conn *pgx.Conn, db database, m migration) error 
 }
 
 // up applies the pending migrations in version order, those at or below
-// through when it is positive: a release applies its pre-deploy migrations
-// first and the ones that need the new binary live after it.
+// through: a release applies its pre-deploy migrations first and the ones
+// that need the new binary live after it.
 func up(ctx context.Context, conn *pgx.Conn, db database, files []migration, through int64, out io.Writer) error {
 	schema, _, _ := strings.Cut(db.ledger, ".")
 	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+schema+"; CREATE TABLE IF NOT EXISTS "+db.ledger+
@@ -216,7 +217,7 @@ func up(ctx context.Context, conn *pgx.Conn, db database, files []migration, thr
 		return err
 	}
 	for _, m := range p.Pending {
-		if through > 0 && m.Version > through {
+		if m.Version > through {
 			fmt.Fprintf(out, "left pending %04d_%s (above -to %d)\n", m.Version, m.Name, through)
 			continue
 		}
@@ -251,9 +252,12 @@ func run(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("loyal-migrate", flag.ContinueOnError)
 	name := flags.String("db", "yield", "yield or timescale")
 	dir := flags.String("dir", "", "migration directory (default: nearest migrations/<db>)")
-	through := flags.Int64("to", 0, "up applies pending migrations only up to this version (default: all)")
+	through := flags.Int64("to", math.MaxInt64, "up applies pending migrations only up to this version (default: all)")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *through < 1 {
+		return errors.New("-to must be a migration version >= 1; omit it to apply all")
 	}
 	db, ok := databases[*name]
 	if !ok || flags.NArg() != 1 || (flags.Arg(0) != "status" && flags.Arg(0) != "up") {

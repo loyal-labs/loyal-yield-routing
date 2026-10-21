@@ -212,7 +212,7 @@ func TestCrossMintPreparationAggregateIncludesUnattributedSurplus(t *testing.T) 
 func TestCrossMintMissingALTResultCannotBeSigned(t *testing.T) {
 	q, _, _ := crossMintPreparationFixture(t)
 	calls := 0
-	r := &Revalidator{signer: testPubkey(93), computeLimit: defaultComputeLimit, rpc: crossMintPrepareRPC(t, func(method string, _ []json.RawMessage) any {
+	r := &Revalidator{signer: testPubkey(93), computeLimit: DefaultComputeLimit, rpc: crossMintPrepareRPC(t, func(method string, _ []json.RawMessage) any {
 		calls++
 		if method != "getLatestBlockhash" {
 			t.Fatalf("waiting leg called %s", method)
