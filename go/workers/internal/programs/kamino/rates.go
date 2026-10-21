@@ -6,12 +6,8 @@ import (
 	"math/big"
 )
 
-// ErrSlotRateUnavailable: a Legacy-basis reserve's rates need the chain's
-// measured slot rate, and none was read.
 var ErrSlotRateUnavailable = errors.New("Kamino Legacy-basis rates need the measured slot rate")
 
-// ErrUnsupportedInterestTerms: the reserve's interest needs a model the
-// workers do not have.
 var ErrUnsupportedInterestTerms = errors.New("Kamino reserve interest terms are unsupported")
 
 const (
@@ -35,8 +31,6 @@ func (r Reserve) SupportedInterestTerms() error {
 	return nil
 }
 
-// NeedsSlotRate reports a Legacy-basis reserve: only its rates read the
-// measured slot rate.
 func (r Reserve) NeedsSlotRate() bool { return r.InterestRateBasis == legacyBasis }
 
 // AccrualPerCurve is the annual rate a reserve accrues per unit of its
@@ -58,10 +52,6 @@ func (r Reserve) AccrualPerCurve(slotsPerSecond float64) (float64, error) {
 	return slotsPerSecond / klendSlotsPerSecond, nil
 }
 
-// Rates are a reserve's annual rates at its stored utilization as KLend
-// accrues them, the one reserve-rate definition the workers use. Suppliers
-// earn borrow interest net of the protocol take; the host fixed rate is
-// borrower-only. APY compounds continuously.
 type Rates struct {
 	Utilization                                float64
 	BorrowAPR, SupplyAPR, BorrowAPY, SupplyAPY float64
@@ -87,8 +77,6 @@ func (r Reserve) Rates(slotsPerSecond float64) (Rates, error) {
 	return out, nil
 }
 
-// CurveRate is a curve's annual rate at utilization: linear between its
-// points, the terminal point at or above full utilization.
 func CurveRate(curve [11]CurvePoint, utilization float64) float64 {
 	u := min(max(utilization, 0), 1) * 10_000
 	for i := 1; i < len(curve); i++ {

@@ -11,10 +11,6 @@ import (
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// FailStaleRequestedSlots closes requested slots that no worker picked up within
-// the legacy selection window. A request that silently stays requested forever
-// hides a dead consumer behind an apparently pending ask. The request fails;
-// its lots stay owed and move to the target's one open slot.
 func (s *Store) FailStaleRequestedSlots(ctx context.Context, limit int64) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("autodeposit store has no database pool")
@@ -76,7 +72,6 @@ RETURNING slot.id, slot.target_id, slot.eligible_after`, int64(StaleRequestedSlo
 	return failed, err
 }
 
-// moveOpenLots files a closed slot's open lots onto the target's one open slot.
 func moveOpenLots(ctx context.Context, tx pgx.Tx, targetID, fromSlotID int64, due time.Time) error {
 	var open bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots WHERE scheduled_slot_id = $1 AND status = 'open' AND remaining_amount_raw > 0)`, fromSlotID).Scan(&open); err != nil || !open {
@@ -93,12 +88,6 @@ WHERE scheduled_slot_id = $1 AND status = 'open' AND remaining_amount_raw > 0`, 
 	return err
 }
 
-// ReleaseStaleSelectedClaims restores lots from selected claims that never
-// reached a pull. Restoration is deliberately conservative: a claim is stale
-// only when its lot value is still in the wallet, the projection has caught up
-// with the wallet's event history, and no pull attempt exists that could have
-// moved the funds. Anything else is recovery work, not reclaimable stock. The
-// released claim's slot is scheduled again, as an executor's release does.
 func (s *Store) ReleaseStaleSelectedClaims(ctx context.Context, staleSelectedClaimSeconds, limit int64) (int64, error) {
 	if s == nil || s.pool == nil {
 		return 0, errors.New("autodeposit store has no database pool")

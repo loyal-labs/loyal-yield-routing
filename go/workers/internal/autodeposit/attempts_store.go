@@ -14,11 +14,6 @@ import (
 	WorkersDB "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// DepositPlanTarget is the frozen destination identity of an autodeposit top-up.
-// It is persisted before the pull is broadcast so recovery knows exactly where
-// the pulled amount must land, even if the fleet later changes the vault's
-// current reserve. The JSON shape is the legacy executor's: raw custody values
-// and long ids travel as strings so no JSON number can lose precision.
 type DepositPlanTarget struct {
 	ID                   int64   `json:"id,string"`
 	ManagedVaultID       int64   `json:"managedVaultId,string"`
@@ -40,9 +35,6 @@ type DepositPlanTarget struct {
 	CurrentLiquidityMint *string `json:"currentLiquidityMint"`
 }
 
-// DepositPlan is the immutable intent stored on a selected claim: the exact
-// pull amount plus the frozen destination. The database trigger keeps the
-// column immutable once written; the first plan wins.
 type DepositPlan struct {
 	Version       int               `json:"version"`
 	AmountRaw     int64             `json:"amountRaw,string"`
@@ -52,14 +44,10 @@ type DepositPlan struct {
 	Target        DepositPlanTarget `json:"target"`
 }
 
-// DepositPlanVersion is the only plan shape this family reads.
 const DepositPlanVersion = 1
 
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// MarshalDepositPlan renders the plan exactly as the legacy executor serialized
-// it, so a plan frozen by a Go worker parses in the TypeScript recovery path
-// and vice versa.
 func MarshalDepositPlan(plan DepositPlan) ([]byte, error) {
 	if plan.AmountRaw <= 0 {
 		return nil, errors.New("autodeposit deposit plan amount must be positive")
@@ -70,8 +58,6 @@ func MarshalDepositPlan(plan DepositPlan) ([]byte, error) {
 	return json.Marshal(plan)
 }
 
-// UnmarshalDepositPlan parses a stored plan and rejects anything this family
-// cannot execute exactly: the same fields the legacy parser requires.
 func UnmarshalDepositPlan(raw []byte) (DepositPlan, error) {
 	var plan DepositPlan
 	if len(raw) == 0 {
@@ -129,8 +115,6 @@ WHERE claim_token = $1
 	return tag.RowsAffected() == 1, nil
 }
 
-// RenewClaimLease extends an owned lease or reports lost ownership: a lease
-// that another executor took means this execution must stop touching the claim.
 func (s *Store) RenewClaimLease(ctx context.Context, claimToken, leaseToken string) error {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_lot_claims
@@ -149,8 +133,6 @@ WHERE claim_token = $1
 	return nil
 }
 
-// ReleaseClaimLease drops executor ownership when the execution defers without
-// finishing. Only the token that owns the lease can clear it.
 func (s *Store) ReleaseClaimLease(ctx context.Context, claimToken, leaseToken string) error {
 	_, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_lot_claims
@@ -201,7 +183,6 @@ RETURNING autodeposit_deposit_plan`, claimToken, leaseToken, frozen).Scan(&store
 	return UnmarshalDepositPlan(stored)
 }
 
-// LoadLatestAttempt reads the newest attempt of one operation for a claim.
 func (s *Store) LoadLatestAttempt(ctx context.Context, claimToken string, operationKind OperationKind) (*DurableAttempt, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT id, claim_token, operation_kind, attempt_number, execution_id, amount_raw,
@@ -240,7 +221,6 @@ func scanAttempt(rows pgx.Rows) (*DurableAttempt, error) {
 	return &attempt, rows.Err()
 }
 
-// PreparedAttempt is the exact signed wire to persist before any broadcast.
 type PreparedAttempt struct {
 	ClaimToken               string
 	TargetID                 int64
@@ -255,9 +235,7 @@ type PreparedAttempt struct {
 	SignedTransactionSHA256  string
 	RecentBlockhash          string
 	LastValidBlockHeight     int64
-	// Only fresh pull admission uses this protection revision. Existing signed
-	// attempts remain recoverable when controls change.
-	ProtectionFloorRaw *int64
+	ProtectionFloorRaw       *int64
 }
 
 // PersistPreparedAttempt stores one signed transaction before its first
@@ -404,9 +382,6 @@ LIMIT 1`,
 	return stored, nil
 }
 
-// RecordAttemptBroadcast marks the persisted wire as submitted. The immutable
-// identity columns must still match what was persisted, or ownership of the
-// operation has changed hands.
 func (s *Store) RecordAttemptBroadcast(ctx context.Context, attempt DurableAttempt, leaseToken string) (DurableAttempt, error) {
 	rows, err := s.pool.Query(ctx, `
 UPDATE loyal_yield.balance_sweep_transaction_attempts
@@ -447,9 +422,6 @@ RETURNING id, claim_token, operation_kind, attempt_number, execution_id, amount_
 	return *recorded, nil
 }
 
-// RecordAttemptObservation stores one chain reading of the persisted signature.
-// When the update finds nothing to change, the attempt is re-read: another
-// executor may have recorded the same signature first, which is the same truth.
 func (s *Store) RecordAttemptObservation(ctx context.Context, attempt DurableAttempt, observation AttemptObservation, leaseToken string) (DurableAttempt, error) {
 	if observation.State == AttemptPrepared || observation.State == AttemptSubmitted {
 		return DurableAttempt{}, fmt.Errorf("attempt observation must be a chain outcome, not %s", observation.State)
@@ -508,17 +480,11 @@ RETURNING id, claim_token, operation_kind, attempt_number, execution_id, amount_
 	return DurableAttempt{}, fmt.Errorf("durable attempt %d could not record signature observation", attempt.ID)
 }
 
-// PullRecoveryContext is a claim whose pull already holds custody: the durable
-// attempt plus the frozen plan that says where the funds must land.
 type PullRecoveryContext struct {
 	Attempt DurableAttempt
 	Plan    DepositPlan
 }
 
-// LoadPullRecoveryContext resolves an existing claim's confirmed-or-pending
-// pull and its immutable deposit plan. It refuses half-identified recovery: a
-// confirmed pull without a slot, or a plan that disagrees with the attempt
-// amount, is an integrity fault an operator must look at, not a retry.
 func (s *Store) LoadPullRecoveryContext(ctx context.Context, claimToken string, targetID, scheduledSlotID int64) (*PullRecoveryContext, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT attempt.id, attempt.claim_token, attempt.operation_kind, attempt.attempt_number,
@@ -583,9 +549,6 @@ LIMIT 1`, claimToken, targetID, scheduledSlotID)
 	return &PullRecoveryContext{Attempt: attempt, Plan: plan}, nil
 }
 
-// LoadConfirmedSiblingTopUpsSince sums confirmed top-ups on the same target that
-// were recorded after the given attempt row, so a persisted vault snapshot can
-// be discounted instead of misread as a lost deposit.
 func (s *Store) LoadConfirmedSiblingTopUpsSince(ctx context.Context, targetID int64, claimToken string, afterAttemptID int64) (int64, error) {
 	var total int64
 	err := s.pool.QueryRow(ctx, `
@@ -602,8 +565,6 @@ WHERE target_id = $1
 	return total, nil
 }
 
-// ErrRoutePolicyMissing refuses a new wire for a target whose vault has no
-// active mainnet same_mint_kamino route policy. Signed wires stay recoverable.
 var ErrRoutePolicyMissing = errors.New("autodeposit target has no active same_mint_kamino route policy")
 
 // lockRoutePolicy locks the target's active route policy, called after the

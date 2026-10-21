@@ -22,9 +22,6 @@ type LoopAmounts struct {
 	Deposit, Withdraw, Borrow, Repay uint64
 }
 
-// The klend-loop ops in policy order, which is also the order of Backyard's
-// AUTO lane policies (built here, LoopConstraints): a leg's value is its
-// constraint index.
 const (
 	LoopDeposit = iota
 	LoopWithdraw
@@ -34,9 +31,6 @@ const (
 	LoopLegs
 )
 
-// loopLane is what a loop's policy pins: the vault, its lane obligation in
-// market over the two mints, the collateral reserve and the vault's two
-// custodies (its associated token accounts of the mints).
 type loopLane struct {
 	vault, market, collateralReserve, collateralMint, debtMint solana.PublicKey
 	collateralCustody, debtCustody, obligation, metadata       solana.PublicKey
@@ -58,12 +52,6 @@ func newLoopLane(vault, market, collateralReserve, collateralMint, collateralPro
 	return l, err
 }
 
-// constraints are the loop's constraints in policy order: deposit and
-// withdrawal by the vault on any obligation it owns, at the collateral
-// reserve and its collateral custody; borrow and repayment on any obligation
-// it owns, in the market and its debt custody; and the creation of its one
-// lane obligation, every account pinned, the vault paying. KLend checks the
-// rest. Backyard's AUTO lanes run through exactly these (LoopConstraints).
 func (l loopLane) constraints() [LoopLegs]squads.InstructionConstraintView {
 	var out [LoopLegs]squads.InstructionConstraintView
 	collateral := kamino.OwnCollateralAllowed(l.vault, squads.Pin(l.collateralReserve), squads.Pin(l.collateralCustody))
@@ -78,9 +66,6 @@ func (l loopLane) constraints() [LoopLegs]squads.InstructionConstraintView {
 	return out
 }
 
-// LoopConstraints are the klend-loop policy's constraints for vault's lane
-// obligation (tag 1, id 0, seeds the two mints) in market: the one builder
-// of the policy both this product and Backyard's AUTO lanes execute through.
 func LoopConstraints(vault, market, collateralReserve, collateralMint, collateralProgram, debtMint, debtProgram solana.PublicKey) ([LoopLegs]squads.InstructionConstraintView, error) {
 	lane, err := newLoopLane(vault, market, collateralReserve, collateralMint, collateralProgram, debtMint, debtProgram)
 	if err != nil {
@@ -89,14 +74,6 @@ func LoopConstraints(vault, market, collateralReserve, collateralMint, collatera
 	return lane.constraints(), nil
 }
 
-// KLendLoop is the product of one smart-account vault running a leveraged
-// loop on a (collateral reserve, debt reserve) pair of one market through its
-// lane obligation (tag 1, id 0, seeds the collateral and debt mints), as a
-// Backyard lane does: deposit, withdraw, borrow, repay, and create the
-// obligation, in that policy order. The vault's user metadata must exist (the
-// klend product creates it). payer funds, outside the policy, the vault's
-// associated token accounts, any obligation farm, and what the vault lacks
-// of the obligation's rent.
 func KLendLoop(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, collateralReserve, debtReserve, payer solana.PublicKey, amounts LoopAmounts) Build {
 	return func(ctx context.Context, minSlot uint64) (Product, error) {
 		vault, _, err := squads.SmartAccountAddress(settings, vaultIndex)
@@ -153,9 +130,6 @@ func KLendLoop(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, col
 		for i, key := range keys[3:] {
 			farmExists[key] = state[3+i] != nil
 		}
-		// The vault pays the obligation's rent, as Backyard's vault does;
-		// payer tops it up outside the policy to the rent plus a rent-exempt
-		// balance of its own, which the vault keeps.
 		var topUp []solana.Instruction
 		if state[1] == nil {
 			rent, err := c.RentExempt(ctx, kamino.ObligationSize)
@@ -250,7 +224,6 @@ func KLendLoop(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, col
 	}
 }
 
-// ceilSF is a scaled fraction rounded up to whole units.
 func ceilSF(sf [16]byte) uint64 {
 	value := kamino.U128(sf)
 	value.Add(value, new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 60), big.NewInt(1)))

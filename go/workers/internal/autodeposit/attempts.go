@@ -4,8 +4,6 @@ import (
 	"errors"
 )
 
-// OperationKind is one leg of an autodeposit: the wallet pull, then the Kamino
-// top-up. They are separate chain transactions by contract.
 type OperationKind string
 
 const (
@@ -24,9 +22,6 @@ const (
 	AttemptExpired   AttemptState = "expired"
 )
 
-// DurableAttempt is one persisted signed transaction. Its wire identity —
-// signature, exact bytes, hash, blockhash and validity window — is immutable
-// once stored; only state, broadcast count and observation fields advance.
 type DurableAttempt struct {
 	ID                       int64
 	ClaimToken               string
@@ -46,26 +41,20 @@ type DurableAttempt struct {
 	ConfirmedSlot            *int64
 }
 
-// AttemptObservation is one chain reading of a persisted signature.
 type AttemptObservation struct {
 	State         AttemptState
 	ConfirmedSlot *int64
 	Err           error
 }
 
-// ErrOwnershipLost reports that another executor owns the claim now.
 var ErrOwnershipLost = errors.New("autodeposit claim ownership lost")
 
-// ErrEffectAmbiguous reports that a deposit's chain effect cannot be proven
-// either way; submitting another deposit would risk double spending.
 type EffectAmbiguousError struct{ Detail string }
 
 func (e *EffectAmbiguousError) Error() string {
 	return "autodeposit transaction effect is ambiguous: " + e.Detail
 }
 
-// AttemptHoldsClaim reports whether the attempt state still owns the claim's
-// funds: the wire may already have landed, so the custody cannot be re-claimed.
 func AttemptHoldsClaim(state AttemptState) bool {
 	switch state {
 	case AttemptPrepared, AttemptSubmitted, AttemptConfirmed:
@@ -75,31 +64,20 @@ func AttemptHoldsClaim(state AttemptState) bool {
 	}
 }
 
-// AttemptAllowsSafeRequeue reports whether a conclusive failure leaves the
-// claim's funds provably unmoved, so a fresh attempt with a new signature may be
-// prepared.
 func AttemptAllowsSafeRequeue(state AttemptState) bool {
 	return state == AttemptFailed || state == AttemptExpired
 }
 
-// Settlement is the outcome of landing one persisted attempt.
 type Settlement struct {
 	Attempt DurableAttempt
 }
 
-// TopUpRecoveryAction classifies what a resumed claim does about its deposit leg.
 type TopUpRecoveryAction string
 
 const (
-	// TopUpReconcilePersisted: the persisted top-up still holds the claim, so
-	// reconcile its signature instead of preparing another deposit.
 	TopUpReconcilePersisted TopUpRecoveryAction = "reconcile_persisted"
-	// TopUpPrepareOrRequeue: no live attempt holds the claim and the vault balance
-	// is consistent with the deposit not having landed; prepare or requeue.
-	TopUpPrepareOrRequeue TopUpRecoveryAction = "prepare_or_requeue"
-	// TopUpEffectAmbiguous: the vault balance is lower than the plan can explain,
-	// so the deposit may have landed in a way nothing recorded. Refuse.
-	TopUpEffectAmbiguous TopUpRecoveryAction = "effect_ambiguous"
+	TopUpPrepareOrRequeue   TopUpRecoveryAction = "prepare_or_requeue"
+	TopUpEffectAmbiguous    TopUpRecoveryAction = "effect_ambiguous"
 )
 
 // ClassifyDirectTopUpRecovery decides a resumed deposit leg from the vault

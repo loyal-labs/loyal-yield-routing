@@ -7,19 +7,13 @@ import (
 	"fmt"
 )
 
-// The TS executor's defaultEarnTarget (loyal-actions
-// getKaminoUsdcEarnTargetForCluster, mainnet): Kamino's main-market USDC reserve.
 const (
 	defaultEarnMarket  = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 	defaultEarnReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
 )
 
-// ErrUnresolvedCurrentReserve is the TS executor's
-// UNRESOLVED_CURRENT_RESERVE_MARKER: no destination may be guessed.
 var ErrUnresolvedCurrentReserve = errors.New("Autodeposit target reserve could not be resolved against chain truth")
 
-// LiveVaultPosition is one vault_reserve_positions_current row: the vault's
-// observed holding in one reserve, zero rows included.
 type LiveVaultPosition struct {
 	Reserve       string
 	Market        string
@@ -27,17 +21,6 @@ type LiveVaultPosition struct {
 	AmountRaw     int64
 }
 
-// resolveDepositReserve picks a fresh claim's destination from the vault's
-// observed holdings, the observer's one projection of them, with no stored
-// pointer: of the reserves in the deposit's mint that hold a position, the
-// largest, ties broken by reserve address. A fleet rebalance moves the
-// holding, so the deposit follows it and never recreates a position the fleet
-// drains again (ASK-2051); a vault split across reserves (85 production
-// vaults) deposits where most of it already is. A vault that holds nothing at
-// all takes the default reserve, which exists for USDC only; one that holds
-// only other mints refuses, as the TS executor did. A
-// user who withdrew everything never reaches this on automatic work (see
-// VaultWithdrawn); only their explicit request deposits again.
 func resolveDepositReserve(tokenMint string, positions []LiveVaultPosition) (*LiveVaultPosition, error) {
 	var best *LiveVaultPosition
 	live := false
@@ -57,13 +40,10 @@ func resolveDepositReserve(tokenMint string, positions []LiveVaultPosition) (*Li
 	}
 	switch {
 	case best != nil && best.Market == "":
-		// The TS loader threw on a row without its market.
 		return refuse("missing_market")
 	case best != nil:
 		return best, nil
 	case live:
-		// The vault holds other mints only: the default reserve would be a
-		// second position its obligation may refuse (wires.go), so no guess.
 		return refuse("liquidity_mint_mismatch")
 	case tokenMint != USDCMint:
 		return refuse("default_reserve_mint_mismatch")
@@ -71,8 +51,6 @@ func resolveDepositReserve(tokenMint string, positions []LiveVaultPosition) (*Li
 	return &LiveVaultPosition{Reserve: defaultEarnReserve, Market: defaultEarnMarket, LiquidityMint: USDCMint}, nil
 }
 
-// ResolveDepositReserve points a fresh claim's destination at the vault's
-// observed holding before any funds move.
 func (s *Store) ResolveDepositReserve(ctx context.Context, target *TargetExecutionContext) error {
 	positions, err := s.loadLiveVaultPositions(ctx, target)
 	if err != nil {
@@ -86,9 +64,6 @@ func (s *Store) ResolveDepositReserve(ctx context.Context, target *TargetExecuti
 	return nil
 }
 
-// loadLiveVaultPositions scopes on the vault's full identity: a replaced or
-// deactivated vault keeps its rows and must neither redirect nor fake
-// ambiguity.
 func (s *Store) loadLiveVaultPositions(ctx context.Context, target *TargetExecutionContext) ([]LiveVaultPosition, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT position.reserve, COALESCE(position.market, ''), position.liquidity_mint, position.amount_raw

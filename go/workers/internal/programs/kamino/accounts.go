@@ -17,22 +17,18 @@ var (
 	ObligationDiscriminator    = [8]byte{168, 206, 141, 106, 88, 76, 172, 167}
 	LendingMarketDiscriminator = [8]byte{246, 114, 50, 98, 72, 157, 28, 120}
 	UserMetadataDiscriminator  = [8]byte{157, 214, 220, 235, 98, 135, 171, 28}
-	// Farms UserState.
 	FarmUserStateDiscriminator = [8]byte{72, 177, 85, 249, 76, 167, 186, 126}
 )
 
-// The reserve version every decoded reserve must carry.
 const reserveVersion = 1
 
 // Scaled fractions (U68F60 "_sf" values) are kept as their raw little-endian
 // on-chain bytes; BigFractionBytes values are their four u64 limbs.
 
-// CurvePoint is one point of a reserve's borrow rate curve.
 type CurvePoint struct {
 	UtilizationRateBPS, BorrowRateBPS uint32
 }
 
-// WithdrawalCap is a reserve's deposit or debt withdrawal cap.
 type WithdrawalCap struct {
 	ConfigCapacity, CurrentTotal                      int64
 	LastIntervalStartTimestamp, IntervalLengthSeconds uint64
@@ -43,11 +39,11 @@ type Reserve struct {
 	LastUpdateStale bool
 	PriceStatus     uint8
 	LendingMarket   solana.PublicKey
-	FarmCollateral  solana.PublicKey // zero when absent
-	FarmDebt        solana.PublicKey // zero when absent
+	FarmCollateral  solana.PublicKey
+	FarmDebt        solana.PublicKey
 
 	LiquidityMint, LiquiditySupply, LiquidityTokenProgram   solana.PublicKey
-	FeeReceiver                                             solana.PublicKey // the liquidity fee vault a borrow pays its fee into
+	FeeReceiver                                             solana.PublicKey
 	AvailableAmount, MarketPriceLastUpdatedTS, MintDecimals uint64
 	BorrowedAmountSF, MarketPriceSF                         [16]byte
 	AccumulatedProtocolFeesSF, AccumulatedReferrerFeesSF    [16]byte
@@ -58,7 +54,6 @@ type Reserve struct {
 	CollateralMint, CollateralSupply solana.PublicKey
 	CollateralMintTotalSupply        uint64
 
-	// ReserveConfig.
 	Status, ProtocolTakeRatePct, LoanToValuePct, LiquidationThresholdPct uint8
 	UtilizationLimitBlockBorrowingAbovePct                               uint8
 	HostFixedInterestRateBPS                                             uint16
@@ -79,17 +74,12 @@ type Reserve struct {
 	DepositWithdrawalCap, DebtWithdrawalCap                     WithdrawalCap
 }
 
-// Reserve is the subset of a KLend Reserve the workers read.
-
-// Reserve byte offsets, discriminator included.
 const (
 	reserveLiquidity  = 128
 	reserveCollateral = 2560
 	reserveConfig     = 4856
 )
 
-// DecodeReserve decodes a funded, non-executable KLend reserve of the current
-// version.
 func DecodeReserve(a *chain.Account) (Reserve, error) {
 	if err := envelope(a, ProgramID, ReserveSize, ReserveDiscriminator, "reserve"); err != nil {
 		return Reserve{}, err
@@ -129,8 +119,6 @@ func DecodeReserve(a *chain.Account) (Reserve, error) {
 	return r, nil
 }
 
-// TotalLiquiditySF is ReserveLiquidity::total_supply as a scaled fraction:
-// available plus borrowed liquidity minus all three fee pools.
 func (r Reserve) TotalLiquiditySF() (*big.Int, error) {
 	total := new(big.Int).Lsh(new(big.Int).SetUint64(r.AvailableAmount), 60)
 	total.Add(total, U128(r.BorrowedAmountSF))
@@ -144,7 +132,6 @@ func (r Reserve) TotalLiquiditySF() (*big.Int, error) {
 	return total, nil
 }
 
-// CollateralToLiquidity is what collateral redeems from the reserve.
 func (r Reserve) CollateralToLiquidity(collateral uint64) (uint64, error) {
 	if collateral == 0 {
 		return 0, nil
@@ -156,9 +143,6 @@ func (r Reserve) CollateralToLiquidity(collateral uint64) (uint64, error) {
 	return CollateralToLiquidity(total, r.CollateralMintTotalSupply, collateral)
 }
 
-// CollateralToLiquidity floors collateral times the exchange value: total
-// liquidity (a scaled fraction) per collateral mint unit. A positive amount
-// needs a positive total liquidity and collateral supply.
 func CollateralToLiquidity(totalLiquiditySF *big.Int, collateralSupply, collateral uint64) (uint64, error) {
 	if collateral == 0 {
 		return 0, nil
@@ -196,8 +180,6 @@ func (r Reserve) LiquidityToCollateral(liquidity uint64) (uint64, error) {
 	return collateral.Uint64(), nil
 }
 
-// MinimumDeposit is the smallest liquidity amount that mints one collateral
-// unit: the ceiling of one unit's exchange value, or 1 at the initial rate.
 func (r Reserve) MinimumDeposit() (uint64, error) {
 	total, err := r.TotalLiquiditySF()
 	if err != nil {
@@ -215,7 +197,6 @@ func (r Reserve) MinimumDeposit() (uint64, error) {
 	return amount.Uint64(), nil
 }
 
-// ObligationCollateral is one deposit slot; an empty slot has a zero reserve.
 type ObligationCollateral struct {
 	Reserve         solana.PublicKey
 	DepositedAmount uint64
@@ -234,10 +215,6 @@ type ObligationLiquidity struct {
 	BorrowedAmountAtExpiration uint64
 }
 
-// DebtTermEnd is the unix time the borrow's debt term in reserve ends, as
-// KLend's get_debt_term_end_timestamp: its last borrow plus the reserve's
-// debt term. It is absent when the reserve has no term or the slot no
-// borrow time. A borrow at or after it is refused (DebtReachedReserveDebtTerm).
 func (b ObligationLiquidity) DebtTermEnd(reserve Reserve) (uint64, bool) {
 	if reserve.DebtTermSeconds == 0 || b.LastBorrowedAtTimestamp == 0 {
 		return 0, false
@@ -245,7 +222,6 @@ func (b ObligationLiquidity) DebtTermEnd(reserve Reserve) (uint64, bool) {
 	return b.LastBorrowedAtTimestamp + reserve.DebtTermSeconds, true
 }
 
-// Obligation is the subset of a KLend Obligation the workers read.
 type Obligation struct {
 	LastUpdateSlot         uint64
 	LendingMarket, Owner   solana.PublicKey
@@ -259,10 +235,8 @@ type Obligation struct {
 	ElevationGroup                                                                                       uint8
 }
 
-// obligationOwnerOffset is where an obligation account holds its owner.
 const obligationOwnerOffset = 64
 
-// DecodeObligation decodes a funded, non-executable KLend obligation.
 func DecodeObligation(a *chain.Account) (Obligation, error) {
 	if err := envelope(a, ProgramID, ObligationSize, ObligationDiscriminator, "obligation"); err != nil {
 		return Obligation{}, err
@@ -286,7 +260,6 @@ func DecodeObligation(a *chain.Account) (Obligation, error) {
 	return o, nil
 }
 
-// Collateral is the amount deposited from reserve; zero when it is absent.
 func (o Obligation) Collateral(reserve solana.PublicKey) uint64 {
 	for _, deposit := range o.Deposits {
 		if deposit.Reserve == reserve {
@@ -296,7 +269,6 @@ func (o Obligation) Collateral(reserve solana.PublicKey) uint64 {
 	return 0
 }
 
-// DepositReserves and BorrowReserves list the occupied slots in slot order.
 func (o Obligation) DepositReserves() []solana.PublicKey {
 	var out []solana.PublicKey
 	for _, deposit := range o.Deposits {
@@ -317,8 +289,6 @@ func (o Obligation) BorrowReserves() []solana.PublicKey {
 	return out
 }
 
-// DecodeLendingMarketEmergencyMode reads a funded, non-executable lending
-// market's global emergency_mode flag.
 func DecodeLendingMarketEmergencyMode(a *chain.Account) (bool, error) {
 	if err := envelope(a, ProgramID, LendingMarketSize, LendingMarketDiscriminator, "lending market"); err != nil {
 		return false, err
@@ -326,12 +296,10 @@ func DecodeLendingMarketEmergencyMode(a *chain.Account) (bool, error) {
 	return a.Data[122] != 0, nil
 }
 
-// UserMetadata is the subset of a KLend UserMetadata the workers read.
 type UserMetadata struct {
 	Referrer, Owner solana.PublicKey
 }
 
-// DecodeUserMetadata decodes a funded, non-executable KLend UserMetadata.
 func DecodeUserMetadata(a *chain.Account) (UserMetadata, error) {
 	if err := envelope(a, ProgramID, UserMetadataSize, UserMetadataDiscriminator, "user metadata"); err != nil {
 		return UserMetadata{}, err
@@ -339,13 +307,11 @@ func DecodeUserMetadata(a *chain.Account) (UserMetadata, error) {
 	return UserMetadata{Referrer: key(a.Data, 8), Owner: key(a.Data, 80)}, nil
 }
 
-// FarmUserState is the subset of a Farms UserState the workers read.
 type FarmUserState struct {
 	FarmState, Owner, Delegatee solana.PublicKey
 	IsFarmDelegated             bool
 }
 
-// DecodeFarmUserState decodes a funded, non-executable Farms UserState.
 func DecodeFarmUserState(a *chain.Account) (FarmUserState, error) {
 	if err := envelope(a, FarmsProgramID, FarmUserStateSize, FarmUserStateDiscriminator, "farm user state"); err != nil {
 		return FarmUserState{}, err
@@ -354,7 +320,6 @@ func DecodeFarmUserState(a *chain.Account) (FarmUserState, error) {
 	return FarmUserState{FarmState: key(d, 16), Owner: key(d, 48), IsFarmDelegated: d[80] == 1, Delegatee: key(d, 480)}, nil
 }
 
-// U128 reads a little-endian scaled fraction.
 func U128(value [16]byte) *big.Int {
 	high := new(big.Int).SetUint64(binary.LittleEndian.Uint64(value[8:]))
 	return high.Lsh(high, 64).Or(high, new(big.Int).SetUint64(binary.LittleEndian.Uint64(value[:8])))

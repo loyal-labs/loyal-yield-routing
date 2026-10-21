@@ -16,16 +16,11 @@ import (
 
 const sweepNotifyTimeout = 5 * time.Second
 
-// SweepNotifier tells the app that a scheduled sweep did not land, so the app
-// can push the wallet's devices (ASK-2091). The app's sent-log keeps one push
-// per dedupeKey, which is what keeps every retry of one stuck slot down to a
-// single push. A nil notifier is the disabled one.
 type SweepNotifier struct {
 	endpoint, secret string
 	client           *http.Client
 }
 
-// NewSweepNotifier binds the app endpoint and its bearer secret.
 func NewSweepNotifier(endpoint, secret string) (*SweepNotifier, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {

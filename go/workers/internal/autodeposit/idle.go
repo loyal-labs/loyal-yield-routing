@@ -9,17 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// idleDeferralPrefix starts the slot's last_error when idle vault custody
-// blocks a pull.
 const idleDeferralPrefix = "existing idle vault balance must drain before direct autodeposit: "
 
-// DeferScheduledSlot is the TS executor's deferIdleVaultScheduledSlot for any
-// pre-claim block that does not clear within one poll (idle custody, an
-// unreadable allowance): the slot stays scheduled or requested and waits
-// PreSendRetryDelay. An idle block also records when it first blocked the
-// slot; a claim selecting the slot clears it. Only unclaimed, unsigned, due
-// work may move; anything else keeps its owner. It reports whether the slot
-// was deferred.
 func (s *Store) DeferScheduledSlot(ctx context.Context, targetID, scheduledSlotID int64, reason string, idle bool) (bool, error) {
 	if s == nil || s.pool == nil {
 		return false, errors.New("autodeposit store has no database pool")

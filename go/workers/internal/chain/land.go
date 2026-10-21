@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// Commitment is the cluster's confirmation level for one signature.
 type Commitment int
 
 const (
@@ -15,64 +14,43 @@ const (
 	Finalized
 )
 
-// SignatureState is one exact signature's status, read with full history.
-// Found is false when the cluster has no record of the signature.
 type SignatureState struct {
-	Found      bool
-	Slot       uint64
-	Commitment Commitment
-	// Err is the transaction's chain error, empty when it succeeded.
-	Err string
-	// ContextSlot is the slot the status answer was read at.
+	Found       bool
+	Slot        uint64
+	Commitment  Commitment
+	Err         string
 	ContextSlot uint64
 }
 
-// LandChain is the RPC surface land needs. SendWire submits the exact bytes
-// once with maxRetries 0; it never retries on its own.
 type LandChain interface {
 	SendWire(ctx context.Context, wire []byte, skipPreflight bool) error
-	// FinalizedBlockHeight returns the finalized block height and the slot
-	// it belongs to, read together from one node.
 	FinalizedBlockHeight(ctx context.Context) (height, slot uint64, err error)
 	SignatureState(ctx context.Context, signature string) (SignatureState, error)
 }
 
-// Attempt is a signed transaction already written to its operation row with
-// its blockhash expiry.
 type Attempt struct {
 	Wire                 []byte
 	Signature            string
 	LastValidBlockHeight uint64
-	// Required is the commitment the family treats as landed.
-	Required Commitment
+	Required             Commitment
 }
 
 type OutcomeKind int
 
 const (
-	// Landed: the signature reached the required commitment without error.
 	Landed OutcomeKind = iota + 1
-	// Failed: the signature is confirmed with a chain error.
 	Failed
-	// Expired: the finalized block height passed the blockhash's last valid
-	// height and the cluster has no record of the signature, so these bytes
-	// can never land.
 	Expired
 )
 
 type Outcome struct {
-	// Kind is zero while the signature is still undecided.
-	Kind OutcomeKind
-	// Slot is the landed or failed slot, Commitment the level it was read at.
-	Slot       uint64
-	Commitment Commitment
-	Err        string
-	// BlockHeight is the finalized height that proved expiry.
+	Kind        OutcomeKind
+	Slot        uint64
+	Commitment  Commitment
+	Err         string
 	BlockHeight uint64
-	// ContextSlot is the slot at which the absent status was read.
 	ContextSlot uint64
-	// SendErr is the last send transport error, kept for the log only.
-	SendErr error
+	SendErr     error
 }
 
 // Observe classifies the signature once, without sending. Height is read
@@ -85,7 +63,6 @@ func Observe(ctx context.Context, chain LandChain, attempt Attempt) (Outcome, er
 	return out, err
 }
 
-// observe also reports whether resending the bytes can still help.
 func observe(ctx context.Context, chain LandChain, attempt Attempt) (Outcome, bool, error) {
 	height, finalizedSlot, err := chain.FinalizedBlockHeight(ctx)
 	if err != nil {
@@ -103,11 +80,8 @@ func observe(ctx context.Context, chain LandChain, attempt Attempt) (Outcome, bo
 	case !status.Found && height > attempt.LastValidBlockHeight && status.ContextSlot >= finalizedSlot:
 		return Outcome{Kind: Expired, BlockHeight: height, ContextSlot: status.ContextSlot}, false, nil
 	case !status.Found && height > attempt.LastValidBlockHeight:
-		// Expired bytes are not sent again; wait for a node that is caught up.
 		return Outcome{}, false, nil
 	}
-	// Not seen yet, or seen only on a fork that may be dropped. A processed
-	// error or a confirmed success awaiting finalization waits without sending.
 	return Outcome{}, !status.Found || status.Commitment == Processed && status.Err == "", nil
 }
 

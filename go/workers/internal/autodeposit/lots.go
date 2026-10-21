@@ -1,16 +1,9 @@
-// Package autodeposit implements the Autodeposit family: surplus-lot
-// projection, sweep decisions, durable claim custody, signed two-leg
-// (pull/top-up) execution and recovery. The typed rules here are the Go port of
-// 91694cd9^:crates/balance-sweep-autodeposit-trigger/src/lib.rs and the durable
-// confirmation protocol in scripts/durable-autodeposit-confirmation.ts.
 package autodeposit
 
 import (
 	"time"
 )
 
-// ScheduleDelay is the fixed one-hour wait between observing wallet surplus and
-// becoming eligible to sweep it. It is not configurable per target.
 const ScheduleDelay = time.Hour
 
 // LotStatus mirrors loyal_yield.balance_sweep_surplus_lot_status.
@@ -24,8 +17,6 @@ const (
 	LotSuppressed LotStatus = "suppressed"
 )
 
-// SurplusLot is one schedulable tranche of wallet surplus. RemainingAmountRaw is
-// the only authoritative balance; OriginalAmountRaw bounds later restoration.
 type SurplusLot struct {
 	ID                 int64
 	SourceEventID      int64
@@ -39,14 +30,12 @@ type SurplusLot struct {
 	CreatedAt          time.Time
 }
 
-// LotErrorCode distinguishes rejected financial input from other failures.
 type LotErrorCode string
 
 const (
 	LotErrAmountOverflow LotErrorCode = "amount_overflow"
 )
 
-// LotError rejects an amount transition that would corrupt custody accounting.
 type LotError struct {
 	Code LotErrorCode
 }
@@ -60,14 +49,10 @@ func (e *LotError) Error() string {
 	}
 }
 
-// ScheduledEligibleAfter applies the fixed one-hour delay to an observation.
 func ScheduledEligibleAfter(observedAt time.Time) time.Time {
 	return observedAt.Add(ScheduleDelay)
 }
 
-// InitialSurplusAmount schedules the first observation of a wallet: the balance
-// above a configured floor. A target without a floor never schedules, and a
-// balance at or below the floor schedules nothing.
 func InitialSurplusAmount(amountRaw int64, walletBalanceFloorRaw *int64) (int64, bool) {
 	if walletBalanceFloorRaw == nil {
 		return 0, false
@@ -79,9 +64,6 @@ func InitialSurplusAmount(amountRaw int64, walletBalanceFloorRaw *int64) (int64,
 	return surplus, true
 }
 
-// PositiveDeltaSurplusAmount schedules only the newly created surplus: the
-// increase above the floor, not the whole deposit. A deposit entirely below the
-// floor, or one that only refills a drawdown, schedules nothing.
 func PositiveDeltaSurplusAmount(amountAfterRaw, deltaAmountRaw int64, walletBalanceFloorRaw *int64) (int64, bool) {
 	if deltaAmountRaw <= 0 || walletBalanceFloorRaw == nil {
 		return 0, false

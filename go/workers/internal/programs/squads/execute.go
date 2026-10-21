@@ -9,14 +9,12 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Instruction is one instruction with resolved accounts.
 type Instruction struct {
 	ProgramID solana.PublicKey
 	Accounts  []solana.AccountMeta
 	Data      []byte
 }
 
-// InstructionOf is ix with its accounts resolved.
 func InstructionOf(ix solana.Instruction) (Instruction, error) {
 	data, err := ix.Data()
 	if err != nil {
@@ -32,8 +30,6 @@ func InstructionOf(ix solana.Instruction) (Instruction, error) {
 	return out, nil
 }
 
-// ExecuteSync is an execute_transaction_sync_v2 that runs inner instructions
-// as the smart account through a ProgramInteraction policy.
 type ExecuteSync struct {
 	Policy, Signer    solana.PublicKey
 	AccountIndex      uint8
@@ -105,9 +101,6 @@ func ExecuteTransactionSyncV2(e ExecuteSync) (Instruction, error) {
 	return Instruction{ProgramID: ProgramID, Accounts: append(metas, accounts...), Data: data}, nil
 }
 
-// DecodeExecuteTransactionSyncV2 is the inverse of ExecuteTransactionSyncV2:
-// it accepts exactly that envelope and resolves each inner instruction's
-// program and accounts against the transaction accounts.
 func DecodeExecuteTransactionSyncV2(ix Instruction) (ExecuteSync, error) {
 	var out ExecuteSync
 	bad := errors.New("instruction is not a canonical Squads sync policy execution")

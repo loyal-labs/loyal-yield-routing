@@ -12,16 +12,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// KLend is the product of one smart-account vault lending in one KLend
-// reserve through its vanilla obligation: create the user metadata and the
-// obligation, deposit amount of liquidity, withdraw the collateral that
-// deposit minted. The vault signs and pays rent for what it owns; payer funds
-// the vault's ATA and the obligation farm outside the policy, as the Earn
-// route does.
-//
-// Its deposit and withdrawal are constrained as Backyard's are: the vault, an
-// obligation it owns, the reserve and the vault's ATA are pinned, and KLend
-// checks the rest itself.
 func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve, payer solana.PublicKey, amount uint64) Build {
 	return func(ctx context.Context, minSlot uint64) (Product, error) {
 		vault, _, err := squads.SmartAccountAddress(settings, vaultIndex)
@@ -74,8 +64,6 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 			deposited = o.DepositReserves()
 		}
 
-		// The withdrawal takes back only what the deposit minted, never the
-		// vault's other collateral in the reserve.
 		minted, err := r.LiquidityToCollateral(amount)
 		if err != nil {
 			return Product{}, err

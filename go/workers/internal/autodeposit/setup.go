@@ -32,7 +32,6 @@ type DestinationSetupPlan struct {
 	ObservedSlot      int64      `json:"observedSlot"`
 }
 
-// SetupAttempt is one signed destination setup stage, landed in-process.
 type SetupAttempt struct {
 	ClaimToken string
 	Plan       DestinationSetupPlan
@@ -118,8 +117,6 @@ func validateDestinationSetupPlan(plan DepositPlan, setup DestinationSetupPlan) 
 	return nil
 }
 
-// InspectDestinationSetup never treats a malformed/foreign existing account
-// as missing. It plans one dependency-ordered stage against a coherent read.
 func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan DepositPlan) (*DestinationSetupPlan, error) {
 	if err := validatePlanPublicKeys(plan); err != nil {
 		return nil, err
@@ -166,7 +163,6 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 	} else if err := validateSetupAccount(plan, DestinationSetupPlan{Stage: SetupATA, Account: ata, Route: route}, by[ata]); err != nil {
 		return nil, err
 	}
-	// Check existing dependencies even when an earlier dependency is missing.
 	if by[metadata] == nil {
 		if stage == "" {
 			stage = SetupMetadata
@@ -226,8 +222,6 @@ func (b *SweepWireBuilder) InspectDestinationSetup(ctx context.Context, plan Dep
 		if vaultLamports < rent {
 			setup.RentTopUpLamports = rent - vaultLamports
 		}
-		// The exact constraint matcher chooses the route policy when it already
-		// authorizes init, otherwise the explicitly linked setup policy.
 		for _, policy := range []string{plan.Target.RoutePolicyAccount, plan.Target.SetupPolicyAccount} {
 			if policy == "" {
 				continue
@@ -259,8 +253,6 @@ func validateSetupAccount(plan DepositPlan, setup DestinationSetupPlan, a *chain
 	}
 	switch setup.Stage {
 	case SetupATA:
-		// Identity only: custody residue is the controller's idle-tolerance
-		// decision before the pull, as in the TS executor.
 		if _, err := usdcTokenAccount(a, plan.Target.VaultPubkey); err != nil {
 			return err
 		}

@@ -21,8 +21,6 @@ const (
 	ClaimFailed   ClaimStatus = "failed"
 )
 
-// ClaimOutcome is the result of one claim attempt for a target. A noop carries
-// the reason the wallet keeps its money this round.
 type ClaimOutcome struct {
 	Status            ClaimStatus
 	Reason            string
@@ -33,8 +31,6 @@ type ClaimOutcome struct {
 	Lots              []SelectedLot
 }
 
-// SweepDecisionReason maps a typed sweep decision onto the claim vocabulary the
-// legacy executor already reports.
 func SweepDecisionReason(decision SweepAmountDecision) string {
 	switch decision.Kind {
 	case SweepNoEligibleLots:
@@ -48,14 +44,6 @@ func SweepDecisionReason(decision SweepAmountDecision) string {
 	}
 }
 
-// ClaimEligibleLotsOnce takes exclusive custody of one target's schedulable
-// surplus for a pull, inside one transaction.
-//
-// The sweep amount comes from the same typed decision function the replay
-// verifier uses, but it is computed over lots locked by this transaction, so a
-// concurrent claim on another worker sees them gone. The claim row, its lot
-// items, the decremented lots, the residual slot and the selected slot commit
-// atomically: custody is never half-taken.
 func (s *Store) ClaimEligibleLotsOnce(ctx context.Context, targetID int64, claimToken string, scheduledSlotID int64, walletBalanceRaw, walletBalanceFloorRaw int64, maxAmountPerPeriodRaw, remainingAllowanceRaw *int64) (ClaimOutcome, error) {
 	var outcome ClaimOutcome
 	if s == nil || s.pool == nil {
@@ -82,8 +70,6 @@ func (s *Store) ClaimEligibleLotsOnce(ctx context.Context, targetID int64, claim
 			outcome = noopClaim(targetID, "target_not_active")
 			return nil
 		}
-		// The user can change protection settings after the RPC/context read.
-		// Read the authoritative settings while the target row stays locked.
 		var currentFloor, currentMax *int64
 		if err := tx.QueryRow(ctx, `
 SELECT wallet_balance_floor_raw, max_amount_per_period
@@ -241,17 +227,12 @@ WHERE id = $1`, scheduledSlotID, claimToken); err != nil {
 	return outcome, nil
 }
 
-// ClaimNoopStatus is the not-actionable claim status.
 func ClaimNoopStatus() ClaimStatus { return "noop" }
 
 func noopClaim(targetID int64, reason string) ClaimOutcome {
 	return ClaimOutcome{Status: ClaimNoopStatus(), Reason: reason, TargetID: targetID}
 }
 
-// lockActiveTarget locks the target row and reports observed-and-desired
-// eligibility. A paused desired state or a non-active chain status both refuse:
-// the pause path must also keep recovery available, which loadAutodepositPull
-// recovery rows do not consult here.
 func lockActiveTarget(ctx context.Context, tx pgx.Tx, targetID int64) (bool, error) {
 	var active bool
 	err := tx.QueryRow(ctx, `
@@ -357,9 +338,6 @@ FOR UPDATE SKIP LOCKED`, targetID, USDCMint, scheduledSlotID)
 	return lots, rows.Err()
 }
 
-// moveResidualOpenLots keeps unswept open lots schedulable on the target's
-// one scheduled slot once their slot is taken by a claim, so a partial sweep never
-// strands the remainder behind a selected slot.
 func moveResidualOpenLots(ctx context.Context, tx pgx.Tx, targetID, selectedSlotID int64) error {
 	var due *time.Time
 	if err := tx.QueryRow(ctx, `
@@ -483,9 +461,6 @@ ORDER BY item.lot_id ASC`, claimToken, USDCMint)
 	}, nil
 }
 
-// CompleteClaimOnce links a finished claim to its execution and closes the slot
-// in one transaction. A claim that is no longer selected reports noop with a
-// reason instead of rewriting someone else's custody.
 func (s *Store) CompleteClaimOnce(ctx context.Context, claimToken string, executionID int64) (ClaimOutcome, error) {
 	var outcome ClaimOutcome
 	if s == nil || s.pool == nil {
@@ -567,17 +542,8 @@ WHERE claim_token = $1`, claimToken, executionID); err != nil {
 	return outcome, nil
 }
 
-// PreSendRetryDelay is the TS executor's pre-send failure cadence
-// (PRE_SEND_FAILURE_RETRY_DELAY_SECONDS, ad456191): how long a slot waits
-// after a failure that moved no funds. A blocked route or drifted wallet or
-// allowance does not clear within one poll; retrying every poll only claims,
-// releases and pages again.
 const PreSendRetryDelay = 5 * time.Minute
 
-// ReleaseClaimOnce returns an unspent claim's lots to the open pool and the
-// claimed slot to the schedule, neither eligible before PreSendRetryDelay.
-// The locked claim must still belong to
-// this live executor lease, and no pull attempt or execution may hold custody.
 func (s *Store) ReleaseClaimOnce(ctx context.Context, claimToken, leaseToken string) (ClaimOutcome, error) {
 	var outcome ClaimOutcome
 	if s == nil || s.pool == nil {
@@ -638,13 +604,6 @@ WHERE claim.claim_token = $1`, claimToken, leaseToken, ClaimHoldingPullAttemptSt
 	return outcome, nil
 }
 
-// releaseClaimCustody returns an unspent claim's lots to the open pool, ends
-// the claim and schedules its slot again, neither eligible before delay. The
-// target's scheduled slot, which took inflows and the claim's residual lots
-// while the claim held its slot, merges back into it, so the target keeps one
-// scheduled slot. A requested slot is left alone. Failing the slot instead left
-// one dead slot per attempt and stranded its lots, so a target blocked at
-// preflight grew ~540 slots a day (target 7940, Oct 2026).
 func releaseClaimCustody(ctx context.Context, tx pgx.Tx, claimToken string, delay time.Duration) (bool, error) {
 	seconds := int64(delay / time.Second)
 	// The released slot becomes the target's scheduled slot: take the target's
@@ -695,9 +654,6 @@ WHERE claim_token = $1`, claimToken).Scan(&slotID)
 	if err != nil {
 		return false, fmt.Errorf("find released autodeposit slot: %w", err)
 	}
-	// While the claim held its slot, inflows and its residual lots went to the
-	// target's scheduled slot; it merges back here, first, so the released
-	// slot is never a second scheduled one.
 	var mergedDue *time.Time
 	if err := tx.QueryRow(ctx, `
 WITH other AS (
@@ -730,11 +686,8 @@ WHERE id = $1`, slotID, seconds, mergedDue); err != nil {
 	return true, nil
 }
 
-// ErrClaimCustodyHeld distinguishes a financial hold from executor ownership.
 var ErrClaimCustodyHeld = errors.New("autodeposit claim holds custody")
 
-// LoadFrozenDepositPlan reads the claim's immutable deposit plan under the
-// executor's live claim lease.
 func (s *Store) LoadFrozenDepositPlan(ctx context.Context, claimToken string, targetID int64, leaseToken string) (DepositPlan, error) {
 	var raw []byte
 	err := s.pool.QueryRow(ctx, `SELECT autodeposit_deposit_plan FROM loyal_yield.balance_sweep_lot_claims WHERE claim_token=$1 AND target_id=$2 AND status='selected' AND autodeposit_executor_lease_token=$3 AND autodeposit_executor_lease_expires_at>now()`, claimToken, targetID, leaseToken).Scan(&raw)

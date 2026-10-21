@@ -8,13 +8,11 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Signer is one smart-account signer and its permission mask.
 type Signer struct {
 	Key         solana.PublicKey
 	Permissions uint8
 }
 
-// Settings is a smart account's Settings account.
 type Settings struct {
 	Seed                                    [16]byte
 	SettingsAuthority                       solana.PublicKey
@@ -27,10 +25,6 @@ type Settings struct {
 	Reserved                                uint8
 }
 
-// DecodeSettings decodes the Settings layout of the deployed program: seed,
-// settings authority, threshold, time lock, transaction indexes, archival
-// authority and time, bump, signers, account utilization, the next policy
-// seed and a reserved byte. Any byte after the reserved byte must be zero.
 func DecodeSettings(account *chain.Account) (Settings, error) {
 	var s Settings
 	if account == nil || account.Owner != ProgramID || account.Executable {

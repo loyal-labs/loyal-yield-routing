@@ -8,8 +8,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// TokenAccounts lists owner's accounts of one token program at commitment,
-// read no older than minContextSlot.
 func (c *Client) TokenAccounts(ctx context.Context, owner, program solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (slot uint64, accounts []Account, err error) {
 	opts := &rpc.GetTokenAccountsOpts{Commitment: commitment, Encoding: solana.EncodingBase64}
 	if minContextSlot > 0 {

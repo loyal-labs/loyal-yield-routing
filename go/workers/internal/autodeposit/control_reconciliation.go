@@ -17,9 +17,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// ControlTarget follows the single-target projection introduced by migration
-// 0059. Missing wallet-authorized artifacts remain pending; this reconciler
-// never creates a delegation or changes the user's desired enablement/floor.
 type ControlTarget struct {
 	TargetID, SetupGeneration, PolicySeed, Nonce                 int64
 	Settings, Wallet, WalletTokenATA, Vault, VaultTokenATA, Mint string
@@ -46,10 +43,6 @@ func (o ControlObservation) status() string {
 	return "inconsistent"
 }
 
-// ObserveControl uses the same full policy constraint matcher as a real pull,
-// plus the official delegation identity/PDA and SPL token-delegate layouts.
-// Unlike the original owner-only monitor, malformed artifacts cannot activate
-// a target. All four accounts come from one confirmed RPC context.
 func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTarget, minimumSlot int64) (ControlObservation, error) {
 	o := ControlObservation{Target: target}
 	if target.MaxAmountPerPeriod == nil || *target.MaxAmountPerPeriod <= 0 {
@@ -129,8 +122,6 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 		if err != nil {
 			return o, err
 		}
-		// A policy that does not allow this pull is an observed fact, like the
-		// cap check below: the target is inconsistent, not unprovable.
 		if decoded.Authorizes(b.delegate.String(), []fleet.RouteInstruction{inner}) == nil {
 			policyCap, capped = policyBudgetCap(decoded.Constraints)
 			o.PolicyValid = true
@@ -170,9 +161,6 @@ func (b *SweepWireBuilder) ObserveControl(ctx context.Context, target ControlTar
 	return o, nil
 }
 
-// policyBudgetCap is the per-period amount the Autodeposit policy lets a
-// transfer_recurring draw: its "at most" constraint on the delegation
-// account's per-period field.
 func policyBudgetCap(constraints []squads.InstructionConstraintView) (uint64, bool) {
 	for _, instruction := range constraints {
 		if instruction.ProgramID.String() != SubscriptionsProgramID {
@@ -193,9 +181,6 @@ type ControlReader interface {
 	ObserveControl(context.Context, ControlTarget, int64) (ControlObservation, error)
 }
 
-// ControlReconciler consumes the existing coalesced high-water outbox. One
-// bounded Tick owns one existing lease; cancellation never invents a retry
-// transaction. Run is composed by the root runtime alongside the same family.
 type ControlReconciler struct {
 	Store                       *Store
 	Reader                      ControlReader
@@ -229,8 +214,6 @@ func (r *ControlReconciler) Tick(ctx context.Context) (bool, error) {
 	defer cancel()
 	target, err := r.Store.LoadControlTarget(work, request.TargetID)
 	if err == nil && target == nil {
-		// No delegation yet: there is no control to observe. Attaching one
-		// raises the next ask (observer attachRecurringDelegation).
 		_, err = r.Store.CompleteAutodepositReconciliationRequest(work, request.TargetID, owner, request.RequestedSlot)
 		return true, err
 	}
@@ -245,12 +228,9 @@ func (r *ControlReconciler) Tick(ctx context.Context) (bool, error) {
 		if ctx.Err() != nil {
 			return true, ctx.Err()
 		}
-		// The proof deadline may have expired. Cleanup uses the still-live caller
-		// context and its own short bound; an expired lease remains recoverable.
 		retryCtx, retryCancel := context.WithTimeout(ctx, runtimeHealthTimeout)
 		defer retryCancel()
 		if errors.Is(err, chain.ErrBehind) {
-			// Not yet: the node has not reached the requested slot.
 			return true, r.Store.RescheduleAutodepositReconciliationRequest(retryCtx, request.TargetID, owner, 15)
 		}
 		retryErr := r.Store.RetryAutodepositReconciliationRequest(retryCtx, request.TargetID, owner, "control reconciliation proof unavailable", ReconciliationRetryBackoffSeconds(15, request.AttemptCount))

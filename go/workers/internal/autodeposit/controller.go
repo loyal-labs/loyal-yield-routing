@@ -19,33 +19,15 @@ var (
 	landWindow      = 90 * time.Second
 )
 
-// WireBuilder is the wire-construction capability the runtime must supply: the
-// exact Loyal subscriptions pull and Kamino reserve top-up instruction
-// builders, the route preflight a pull must pass before any funds move, and
-// the persisted-wire proof a top-up receipt is verified against. It is
-// deliberately a consumer-owned interface — this package owns WHEN a wire may
-// exist, the builder owns its bytes, and no other wire is ever accepted.
 type WireBuilder interface {
-	// BuildPull builds and signs the delegated wallet pull for the frozen plan.
 	BuildPull(ctx context.Context, request PullWireRequest) (BuiltWire, error)
-	// ConfirmTopUpRoute proves the frozen destination against confirmed chain
-	// state. The controller runs it BEFORE the pull: an unexecutable
-	// destination never justifies moving wallet funds.
 	ConfirmTopUpRoute(ctx context.Context, plan DepositPlan) (TopUpRoute, error)
-	// BuildTopUp builds and signs the Kamino top-up of the pulled custody into
-	// the frozen destination reserve.
 	BuildTopUp(ctx context.Context, request TopUpWireRequest) (BuiltWire, error)
-	// ProveTopUpWire verifies a persisted top-up attempt's immutable wire
-	// byte-for-byte against the frozen plan and confirmed route.
 	ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error
-	// FeePayer is the account that pays for every wire this builder signs.
 	FeePayer() string
-	// The destination's account setup, inspected, built and read back before
-	// any pull: a stage the chain already holds returns no plan.
 	DestinationSetupBuilder
 }
 
-// PullWireRequest freezes every input of one pull wire.
 type PullWireRequest struct {
 	Plan                 DepositPlan
 	RecurringDelegation  string
@@ -53,7 +35,6 @@ type PullWireRequest struct {
 	LastValidBlockHeight int64
 }
 
-// TopUpWireRequest freezes every input of one top-up wire.
 type TopUpWireRequest struct {
 	Plan                 DepositPlan
 	RecentBlockhash      string
@@ -70,19 +51,11 @@ type BuiltWire struct {
 	LastValidBlockHeight    int64
 }
 
-// Controller is the production Autodeposit executor: a real implementation of
-// TargetExecutor over the family's durable SQL journal and live chain reads.
-// It owns the durable order — claim, lease, freeze, preflight, persist exact
-// wire, simulate the exact bytes, durable broadcast intent, send, observe,
-// verify the exact receipt — and never constructs a replacement for a
-// persisted wire.
 type Controller struct {
-	store *Store
-	chain Chain
-	wires WireBuilder
-	facts *engine.Facts
-	// leaseRenewWindow is how often an in-flight execution renews its claim
-	// lease. Zero selects the default.
+	store            *Store
+	chain            Chain
+	wires            WireBuilder
+	facts            *engine.Facts
 	leaseRenewWindow time.Duration
 	idleToleranceRaw int64
 }
@@ -90,26 +63,17 @@ type Controller struct {
 // DefaultLeaseRenewWindow renews well inside the ten-minute claim lease.
 const DefaultLeaseRenewWindow = 3 * time.Minute
 
-// FeePayerMinimumLamports is the TS executor's fee-payer floor (04e792e0):
-// below it the payer cannot be trusted to land setup, pull and top-up, so no
-// claim starts. The 0.55 SOL warning is an alert rule on the balance gauge.
 const FeePayerMinimumLamports = 50_000_000
 
-// ControllerDependencies are the controller's explicit dependencies.
 type ControllerDependencies struct {
-	Store *Store
-	Chain Chain
-	Wires WireBuilder
-	Facts *engine.Facts
-	// LeaseRenewWindow is optional.
+	Store            *Store
+	Chain            Chain
+	Wires            WireBuilder
+	Facts            *engine.Facts
 	LeaseRenewWindow time.Duration
-	// IdleToleranceRaw is the vault idle balance a direct deposit may leave
-	// beside it. Zero tolerates none.
 	IdleToleranceRaw int64
 }
 
-// NewController validates the dependencies. A controller without all three
-// capabilities is not constructed: there is no partially real execution mode.
 func NewController(deps ControllerDependencies) (*Controller, error) {
 	if deps.Store == nil || deps.Store.pool == nil {
 		return nil, errors.New("autodeposit controller requires a store")
@@ -137,15 +101,12 @@ func NewController(deps ControllerDependencies) (*Controller, error) {
 	return &Controller{store: deps.Store, chain: deps.Chain, wires: deps.Wires, facts: deps.Facts, leaseRenewWindow: window, idleToleranceRaw: deps.IdleToleranceRaw}, nil
 }
 
-// FeePayerLamports reads the balance of the one account that pays every wire.
 func (c *Controller) FeePayerLamports(ctx context.Context) (string, uint64, error) {
 	payer := c.wires.FeePayer()
 	lamports, err := c.chain.ConfirmedLamports(ctx, payer)
 	return payer, lamports, err
 }
 
-// release returns an unspent claim's lots; a release that fails is a claim
-// transition failure, never a yield-persistence one.
 func (c *Controller) release(scope executionScope, claimToken string, result ExecutorResult, cause error) (ExecutorResult, error) {
 	if _, err := c.store.ReleaseClaimOnce(scope.ctx, claimToken, scope.leaseToken); err != nil {
 		return ResultClaimTransitionFailed, err
@@ -153,8 +114,6 @@ func (c *Controller) release(scope executionScope, claimToken string, result Exe
 	return result, cause
 }
 
-// Execute resolves one dispatchable target and reports its end state through
-// a typed family outcome. Errors retain the outcome reached before the failure.
 func (c *Controller) Execute(ctx context.Context, target ExecutableTarget) (ExecutorResult, error) {
 	if target.isRecovery() {
 		return c.executeRecovery(ctx, target)
@@ -162,18 +121,12 @@ func (c *Controller) Execute(ctx context.Context, target ExecutableTarget) (Exec
 	return c.executeFresh(ctx, target)
 }
 
-// executionScope is one execution's owned resources: the lease token, the
-// cancellable context every chain call runs under, and the release that joins
-// the lease keeper before returning.
 type executionScope struct {
 	leaseToken string
 	ctx        context.Context
 	release    func()
 }
 
-// assertOwnership renews the claim lease, failing when another executor took
-// it. It is called before every custody mutation so a lost fence can never
-// write state the executor no longer owns.
 func (c *Controller) assertOwnership(scope executionScope, claimToken string) error {
 	if err := c.store.RenewClaimLease(scope.ctx, claimToken, scope.leaseToken); err != nil {
 		return err
@@ -181,12 +134,6 @@ func (c *Controller) assertOwnership(scope executionScope, claimToken string) er
 	return nil
 }
 
-// settle lands one persisted pull or top-up through the shared send path.
-// Every send is counted first, as the TS executor's
-// recordAutodepositAttemptBroadcast does, and the first send simulates the
-// exact bytes. The outcome is recorded as the TS observation state: confirmed,
-// failed or expired. When the landing window closes first, the attempt stays
-// submitted and the next dispatch lands it again.
 func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settlement, error) {
 	if attempt.Signature == "" || attempt.SignedTransactionBase64 == "" {
 		return Settlement{}, errors.New("durable attempt has no persisted wire identity")
@@ -204,7 +151,6 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 		Required: chain.Confirmed,
 	}, landResendEvery, func(sendCtx context.Context) error {
 		if attempt.BroadcastCount == 0 {
-			// A simulation error leaves the wire prepared, unsent and claimed.
 			if err := c.chain.SimulateExact(sendCtx, attempt); err != nil {
 				return err
 			}
@@ -242,9 +188,6 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 	return Settlement{Attempt: recorded}, nil
 }
 
-// executeRecovery resumes a claim whose pull already holds custody. It runs
-// even when the target's desired enablement is off: the funds are already out
-// of the wallet.
 func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarget) (ExecutorResult, error) {
 	scope, err := c.holdClaimLease(ctx, target.ClaimToken, target.TargetID)
 	if err != nil {
@@ -264,8 +207,6 @@ func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarge
 		return c.executeFrozenClaim(scope, target.ClaimToken, target, plan)
 	}
 	if recovery.Attempt.State == AttemptConfirmed {
-		// Verify the persisted pull's exact effects before treating custody as
-		// owned: the wallet debited and the frozen custody credited.
 		if err := c.verifyPullEffects(scope.ctx, recovery.Plan, recovery.Attempt); err != nil {
 			return ResultTransactionEffectAmbig, err
 		}
@@ -279,19 +220,14 @@ func (c *Controller) executeRecovery(ctx context.Context, target ExecutableTarge
 		return ResultDependencyUnavailable, err
 	}
 	if settlement.Attempt.State == AttemptSubmitted || settlement.Attempt.State == AttemptPrepared {
-		// A wire that may still land is never released and never retried
-		// generically: only the settlement protocol may resolve it.
 		return ResultRecoveryPending, nil
 	}
 	if !AttemptAllowsSafeRequeue(settlement.Attempt.State) {
-		// Confirmed: the pull landed. The top-up leg decides the rest.
 		return c.finishTopUpLeg(scope, target.ClaimToken, target, recovery.Plan, settlement)
 	}
-	// Conclusive pull failure or expiry: the funds provably never left.
 	return c.release(scope, target.ClaimToken, ResultDeferred, nil)
 }
 
-// executeFresh claims and sweeps one scheduled slot.
 func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) (ExecutorResult, error) {
 	targetContext, err := c.store.LoadTargetExecutionContext(ctx, target.TargetID)
 	if err != nil {
@@ -300,20 +236,12 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	if targetContext == nil {
 		return ResultNotActionable, nil
 	}
-	// The delegated authority is validated separately from its allowance: a
-	// target without a delegation can never be pulled, but that is a
-	// configuration fault, not an exhausted allowance.
 	if targetContext.RecurringDelegation == "" {
 		return ResultNotActionable, fmt.Errorf("autodeposit target %d has no recurring delegation", target.TargetID)
 	}
 	if !targetContext.hasRouteIdentity() {
-		// The route is unexecutable and no funds moved; waiting for the
-		// observer may clear it.
 		return ResultPreflightBlocked, fmt.Errorf("autodeposit target %d has no active same_mint_kamino policy", target.TargetID)
 	}
-	// A user who took everything out of yield gets no automatic deposits.
-	// Their automatic slot ends here, before any claim or chain read; a new
-	// inflow schedules new work and is decided again.
 	withdrawn, err := c.store.VaultWithdrawn(ctx, targetContext)
 	if err != nil {
 		return ResultDependencyUnavailable, err
@@ -334,8 +262,6 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	}
 	remainingAllowance, err := c.readRemainingAllowance(ctx, targetContext)
 	if err != nil {
-		// An unreadable allowance does not clear within one poll; the slot
-		// waits like an idle-blocked one instead of being due every pass.
 		if _, deferErr := c.store.DeferScheduledSlot(ctx, target.TargetID, target.ScheduledSlotID, err.Error(), false); deferErr != nil {
 			return ResultDependencyUnavailable, errors.Join(err, deferErr)
 		}
@@ -385,9 +311,6 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	}
 	defer scope.release()
 
-	// Freeze amount and destination before any pull wire exists. No fleet move
-	// updates the position pointer; the vault's observed holding is the
-	// destination. Only a fresh claim may redirect: a frozen plan is immutable.
 	if err := c.store.ResolveDepositReserve(scope.ctx, targetContext); err != nil {
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
 	}
@@ -400,16 +323,9 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 	return c.executeFrozenClaim(scope, claimToken, target, frozen)
 }
 
-// An unsigned claim may need account setup before its pull. Like the TS
-// executor's ensure-before-pull path the chain account is the fact: each stage
-// is inspected, built, landed and read back here. A stage creates its account
-// and pays its own rent shortfall in one atomic transaction, so a stage
-// repeated after a crash fails on the existing account and costs only a fee.
 func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string, target ExecutableTarget, frozen DepositPlan) (ExecutorResult, error) {
 	ready, err := c.ensureDestinationSetup(scope, claimToken, frozen)
 	if err != nil {
-		// No pull wire exists yet, so the wallet never moved: release like
-		// every other pre-pull refusal, as the TS executor did.
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
 	}
 	if !ready {
@@ -428,7 +344,6 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	}
 	allowance, err := c.readRemainingAllowance(scope.ctx, targetContext)
 	if err != nil {
-		// Nothing moved: release, so the slot waits PreSendRetryDelay.
 		return c.release(scope, claimToken, ResultDeferred, err)
 	}
 	if walletBalance < frozen.AmountRaw || targetContext.WalletBalanceFloorRaw < 0 || walletBalance-frozen.AmountRaw < targetContext.WalletBalanceFloorRaw || *allowance < frozen.AmountRaw || (targetContext.MaxAmountPerPeriodRaw != nil && *targetContext.MaxAmountPerPeriodRaw < frozen.AmountRaw) {
@@ -441,9 +356,6 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
 	}
-	// KLend refuses a deposit that mints no collateral, and a pulled amount it
-	// refuses can never leave custody. The TS executor's pre-pull dry run
-	// refused it here.
 	if uint64(frozen.AmountRaw) < route.MinimumDepositRaw {
 		return c.release(scope, claimToken, ResultPreflightBlocked, fmt.Errorf("%w: amount %d is below the reserve's minimum deposit %d", ErrRouteNotExecutable, frozen.AmountRaw, route.MinimumDepositRaw))
 	}
@@ -452,8 +364,6 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	// Idle above the tolerance arrived after the pre-claim check, or this is a
-	// frozen claim resumed after a crash: the pull still waits for it.
 	if custodyBefore > c.idleToleranceRaw {
 		return c.release(scope, claimToken, ResultDeferred, fmt.Errorf("%s%d", idleDeferralPrefix, custodyBefore))
 	}
@@ -466,7 +376,6 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 		RecentBlockhash: blockhash, LastValidBlockHeight: lastValid,
 	})
 	if err != nil {
-		// A wire that was never signed never moved funds: release the claim.
 		return c.release(scope, claimToken, ResultPreflightBlocked, err)
 	}
 	prepared, err := c.store.PersistPreparedAttempt(scope.ctx, PreparedAttempt{
@@ -506,8 +415,6 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	case settlement.Attempt.State != AttemptConfirmed:
 		return ResultRecoveryPending, nil
 	}
-	// The pull receipt must prove the exact integer movement before custody is
-	// treated as owned.
 	if err := c.verifyPullEffects(scope.ctx, frozen, settlement.Attempt); err != nil {
 		return ResultTransactionEffectAmbig, err
 	}
@@ -556,31 +463,21 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 			return false, err
 		}
 		if out.Kind != chain.Landed {
-			// Not landed: the next dispatch inspects the chain again.
 			return false, nil
 		}
 		if err = builder.ReadbackDestinationSetup(scope.ctx, plan, *next, int64(out.Slot)); err != nil {
 			return false, err
 		}
 	}
-	// Four dependency stages were created; route inspection runs once more.
 	next, err := builder.InspectDestinationSetup(scope.ctx, plan)
 	return next == nil, err
 }
 
-// finishTopUpLeg resolves the deposit side of a confirmed pull: record the
-// execution the pull owns, reconcile the persisted top-up when one holds the
-// claim, verify the persisted wire and its exact receipt, and finalize the
-// claim atomically through the shared accounting function.
 func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, target ExecutableTarget, plan DepositPlan, pull Settlement) (ExecutorResult, error) {
-	// The confirmed pull owns the execution row: it is keyed to the pull's
-	// signature, slot and amount, exactly the legacy accounted-recovery key.
 	confirmedPull := pull.Attempt
 	if err := c.verifyPullEffects(scope.ctx, plan, confirmedPull); err != nil {
 		return ResultTransactionEffectAmbig, err
 	}
-	// The custody that the pull funded is the vault's USDC ATA, never the
-	// wallet ATA: every top-up read below is against the pulled account.
 	custody, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, plan.Target.VaultUsdcAta, plan.Target.VaultPubkey)
 	if err != nil {
 		return ResultDependencyUnavailable, err
@@ -666,20 +563,15 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 			return ResultDependencyUnavailable, err
 		}
 		if settlement.Attempt.State != AttemptConfirmed {
-			// Prepared or submitted custody stays claimed; it is never released.
 			return ResultRecoveryPending, nil
 		}
 		pull = settlement
 	}
 
-	// The execution id belongs to the immutable prepared top-up. A missing id
-	// cannot be repaired by mutating signed custody evidence after confirmation.
 	if pull.Attempt.ExecutionID == nil {
 		return ResultTransactionEffectAmbig, &EffectAmbiguousError{Detail: "persisted top-up has no immutable execution identity"}
 	}
 
-	// The persisted wire is the deposit's proof; the receipt is checked
-	// against it. Both must agree on the frozen identity and exact amount.
 	route, err := c.wires.ConfirmTopUpRoute(scope.ctx, plan)
 	if err != nil {
 		return ResultKaminoTopUpFailed, err
@@ -691,9 +583,6 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		return unanswered(ResultTransactionEffectAmbig, err)
 	}
 
-	// Finalization re-proves ownership and completes claim, slot, execution
-	// and yield accounting in one atomic database call. There is no permanent
-	// pending here: the execution row already exists.
 	if err := c.assertOwnership(scope, claimToken); err != nil {
 		return ResultRecoveryPending, err
 	}
@@ -703,7 +592,7 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	}
 	positionAmountRaw, observedSlot, err := c.chain.ConfirmedVaultPositionRaw(scope.ctx, plan, route, confirmedSlot)
 	if errors.Is(err, chain.ErrBehind) {
-		return ResultRecoveryPending, err // Not yet: the next pass finalizes from a node at the confirmed slot.
+		return ResultRecoveryPending, err
 	}
 	if err != nil {
 		return ResultDependencyUnavailable, err
@@ -718,8 +607,6 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	return ResultCompleted, nil
 }
 
-// unanswered keeps an RPC endpoint that could not answer from reading as a
-// verdict about the transaction; the next pass reads again.
 func unanswered(result ExecutorResult, err error) (ExecutorResult, error) {
 	if errors.Is(err, chain.ErrUnavailable) {
 		return ResultDependencyUnavailable, err
@@ -727,12 +614,7 @@ func unanswered(result ExecutorResult, err error) (ExecutorResult, error) {
 	return result, err
 }
 
-// ensurePullExecution creates the execution row a confirmed pull owns, from
-// the pull attempt's recorded evidence, and links the claim's confirmed
-// attempts to it. Idempotent on the pull signature's dedupe key.
 func (c *Controller) ensurePullExecution(scope executionScope, claimToken string, target ExecutableTarget, plan DepositPlan, confirmedPull DurableAttempt) (int64, error) {
-	// Current custody can include sibling movements. Accounting uses only the
-	// immutable receipt of this exact pull, including its actual pre-balances.
 	receipt, err := c.chain.ConfirmedReceipt(scope.ctx, confirmedPull.Signature)
 	if err != nil {
 		return 0, err
@@ -746,9 +628,6 @@ func (c *Controller) ensurePullExecution(scope executionScope, claimToken string
 		confirmedPull, wallet.PreRaw, wallet.PostRaw, custody.PreRaw, custody.PostRaw)
 }
 
-// verifyTopUpEffects proves the confirmed receipt against the proved wire: the
-// custody lost and the reserve's liquidity supply gained exactly the frozen
-// amount, in USDC, at a slot that does not precede the recorded confirmation.
 func (c *Controller) verifyTopUpEffects(ctx context.Context, plan DepositPlan, route TopUpRoute, settlement Settlement) error {
 	receipt, err := c.chain.ConfirmedReceipt(ctx, settlement.Attempt.Signature)
 	if err != nil {
@@ -788,9 +667,6 @@ func (c *Controller) verifyTopUpEffects(ctx context.Context, plan DepositPlan, r
 	return nil
 }
 
-// verifyPullEffects proves the pull receipt: the wallet debited and the frozen
-// custody credited exactly the planned amount, in the frozen mint, at a slot
-// that does not precede the recorded confirmation.
 func (c *Controller) verifyPullEffects(ctx context.Context, plan DepositPlan, attempt DurableAttempt) error {
 	if attempt.State != AttemptConfirmed {
 		return fmt.Errorf("pull %s is %s, not confirmed; its effects cannot be verified", attempt.Signature, attempt.State)
@@ -835,9 +711,6 @@ func validatePullReceipt(plan DepositPlan, attempt DurableAttempt, receipt Recei
 	return nil
 }
 
-// readRemainingAllowance reads the live delegated allowance against the
-// frozen identity. Unknown is deferred, never a zero cap; a conclusive zero is
-// a hard stop.
 func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *TargetExecutionContext) (*int64, error) {
 	now := time.Now().Unix()
 	if targetContext.PeriodLengthSeconds != nil && *targetContext.PeriodLengthSeconds <= 0 {
@@ -846,8 +719,7 @@ func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *
 	if targetContext.StartTimestamp != nil && now < *targetContext.StartTimestamp {
 		return nil, ErrAllowanceUnknown
 	}
-	// The Subscriptions program reads expiry 0 as a delegation that never
-	// expires; nearly every production delegation is created that way.
+	// The Subscriptions program reads expiry 0 as never expires.
 	if targetContext.ExpiryTimestamp != nil && *targetContext.ExpiryTimestamp != 0 && now >= *targetContext.ExpiryTimestamp {
 		return nil, ErrAllowanceUnknown
 	}
@@ -864,10 +736,6 @@ func (c *Controller) readRemainingAllowance(ctx context.Context, targetContext *
 	return &allowance, nil
 }
 
-// holdClaimLease takes the claim lease and keeps renewing it while the
-// execution runs. The returned context is owned by this execution: losing the
-// lease cancels it, so every in-flight chain call is abandoned with the fence.
-// The keeper goroutine joins before release returns.
 func (c *Controller) holdClaimLease(parent context.Context, claimToken string, targetID int64) (executionScope, error) {
 	leaseToken, err := newLeaseToken()
 	if err != nil {
@@ -895,8 +763,6 @@ func (c *Controller) holdClaimLease(parent context.Context, claimToken string, t
 				renewErr := c.store.RenewClaimLease(renewCtx, claimToken, leaseToken)
 				renewCancel()
 				if renewErr != nil {
-					// Losing the fence stops the execution that no longer owns
-					// the claim; its in-flight chain call is abandoned with it.
 					cancel()
 					return
 				}
@@ -916,9 +782,6 @@ func (c *Controller) holdClaimLease(parent context.Context, claimToken string, t
 
 func (t *TargetExecutionContext) hasRouteIdentity() bool { return t.RoutePolicy != nil }
 
-// depositPlan freezes the sweep into the immutable plan shape. The frozen
-// identity comes from the observed context at freeze time; recovery never
-// re-derives it.
 func (t *TargetExecutionContext) depositPlan(amountRaw int64) DepositPlan {
 	tokenAta := t.WalletUsdcAta
 	vaultTokenAta := t.VaultUsdcAta

@@ -25,17 +25,12 @@ type Slot struct {
 	Owner *solana.PublicKey
 }
 
-// Any is the slot that admits any account.
 var Any = Slot{Any: true}
 
-// Pin is the slot that admits only keys.
 func Pin(keys ...solana.PublicKey) Slot { return Slot{Keys: keys} }
 
-// Unpinned is Any for every key: a fixed slot the policy leaves to the
-// instruction's own program.
 func Unpinned(solana.PublicKey) Slot { return Any }
 
-// Pinned is Pin of the one key: a fixed slot the policy pins.
 func Pinned(key solana.PublicKey) Slot { return Pin(key) }
 
 // AccountSlot is one account position of an instruction: its key (a
@@ -60,7 +55,6 @@ func Optional[T any](key T, writable bool) AccountSlot[T] {
 	return AccountSlot[T]{Key: key, Writable: writable, Optional: true}
 }
 
-// Metas are program's instruction accounts for slots.
 func Metas(program solana.PublicKey, slots []AccountSlot[solana.PublicKey]) []*solana.AccountMeta {
 	out := make([]*solana.AccountMeta, len(slots))
 	for i, s := range slots {
@@ -73,9 +67,6 @@ func Metas(program solana.PublicKey, slots []AccountSlot[solana.PublicKey]) []*s
 	return out
 }
 
-// Slots are what program's constraint admits at each of slots. An optional
-// slot that pins the zero key (an absent account) admits the program id the
-// builder sends for it.
 func Slots(program solana.PublicKey, slots []AccountSlot[Slot]) []Slot {
 	out := make([]Slot, len(slots))
 	for i, s := range slots {
@@ -116,32 +107,22 @@ func Allow(program solana.PublicKey, data []DataConstraintView, slots []Slot) In
 	return out
 }
 
-// DataBytes is the predicate that instruction data at offset equals value.
 func DataBytes(offset uint64, value []byte) DataConstraintView {
 	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 5, Bytes: append([]byte(nil), value...)}, Operator: OpEquals}
 }
 
-// DataU8 is the predicate that the byte at offset compares to value by op.
 func DataU8(offset uint64, op DataOperatorView, value uint8) DataConstraintView {
 	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 0, U8: value}, Operator: op}
 }
 
-// DataU16 is the predicate that the little-endian u16 at offset compares to
-// value by op.
 func DataU16(offset uint64, op DataOperatorView, value uint16) DataConstraintView {
 	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 1, U16: value}, Operator: op}
 }
 
-// DataU64 is the predicate that the little-endian u64 at offset compares to
-// value by op.
 func DataU64(offset uint64, op DataOperatorView, value uint64) DataConstraintView {
 	return DataConstraintView{DataOffset: offset, DataValue: DataValueView{Kind: 3, U64: value}, Operator: op}
 }
 
-// PolicyApply installs one policy and removes the policies it replaces in a
-// single execute_settings_transaction_sync: PolicyCreate at Seed (none when
-// Constraints is empty), then one PolicyRemove per replaced policy. Signer is
-// the smart account's one signer; RentPayer funds the new policy.
 type PolicyApply struct {
 	Settings, RentPayer, Signer, Delegate solana.PublicKey
 	Seed                                  uint64
@@ -151,15 +132,11 @@ type PolicyApply struct {
 	Replace                               []solana.PublicKey
 }
 
-// Policy is the address the applied policy will have.
 func (p PolicyApply) Policy() (solana.PublicKey, error) {
 	policy, _, err := PolicyAddress(p.Settings, p.Seed)
 	return policy, err
 }
 
-// Instruction is the settings instruction: accounts are settings (w), rent
-// payer (w, s), system program, the Squads program, the signer (s), then the
-// new and replaced policies (w).
 func (p PolicyApply) Instruction() (Instruction, error) {
 	creates := 0
 	if len(p.Constraints) > 0 {
@@ -196,7 +173,6 @@ func (p PolicyApply) Instruction() (Instruction, error) {
 	return Instruction{ProgramID: ProgramID, Accounts: accounts, Data: data}, nil
 }
 
-// NextPolicySeed is the seed the next PolicyCreate on settings must use.
 func NextPolicySeed(s Settings) uint64 {
 	if s.PolicySeed == nil {
 		return 1
@@ -204,18 +180,11 @@ func NextPolicySeed(s Settings) uint64 {
 	return *s.PolicySeed + 1
 }
 
-// Installed is one ProgramInteraction policy installed on a Settings.
 type Installed struct {
 	Account solana.PublicKey
-	View    *PolicyAccountView // nil when the policy is not a canonical one (DecodeCanonicalPolicy)
+	View    *PolicyAccountView
 }
 
-// Policies lists every policy account installed on settings, read at a slot
-// no older than minSlot (none when zero). It reads the Settings account, then
-// the policy at each seed up to its PolicySeed by derived address, pinned to
-// the Settings read's slot. A seed whose account is gone, or holds anything
-// but a Squads policy of settings, is skipped; a policy at a seed above
-// PolicySeed is not seen.
 func Policies(ctx context.Context, c *chain.Client, settings solana.PublicKey, minSlot uint64) ([]Installed, error) {
 	slot, read, err := c.Accounts(ctx, []solana.PublicKey{settings}, rpc.CommitmentConfirmed, minSlot)
 	if err != nil {
@@ -276,12 +245,6 @@ func FindPolicy(installed []Installed, settings, delegate solana.PublicKey, want
 	return found, matches
 }
 
-// Admits reports whether constraint admits ix as Squads checks one
-// ProgramInteraction constraint: ix calls its program, the account at each
-// constrained index is one of its keys or holds data its predicates admit
-// (and has its owner, when one is set), and ix's data satisfies every data
-// predicate. account is the state of an account a data or owner predicate
-// reads; nil, or a nil result, admits nothing there.
 func Admits(constraint InstructionConstraintView, ix Instruction, account func(solana.PublicKey) *chain.Account) bool {
 	if constraint.ProgramID != ix.ProgramID {
 		return false
@@ -307,10 +270,6 @@ func Admits(constraint InstructionConstraintView, ix Instruction, account func(s
 	return predicatesHold(constraint.DataConstraints, ix.Data)
 }
 
-// predicatesHold reports whether data satisfies every predicate: the
-// little-endian integer at its offset compares to its value by its operator,
-// or the bytes there equal (or, by OpNotEquals, differ from) its bytes. Data
-// too short for a predicate fails it.
 func predicatesHold(predicates []DataConstraintView, data []byte) bool {
 	for _, d := range predicates {
 		v := d.DataValue
@@ -345,8 +304,6 @@ func predicatesHold(predicates []DataConstraintView, data []byte) bool {
 	return true
 }
 
-// reversed is a little-endian integer's bytes in big-endian order, which
-// compare as the integers do.
 func reversed(le []byte) []byte {
 	out := slices.Clone(le)
 	slices.Reverse(out)
