@@ -28,7 +28,7 @@ func policySeedBigint(seed uint64) (int64, error) {
 	return int64(seed), nil
 }
 
-func upsertPolicy(ctx context.Context, tx pgx.Tx, event PolicyMatchInput) (int64, error) {
+func upsertPolicy(ctx context.Context, tx pgx.Tx, _ autodeposit.VaultTargets, event PolicyMatchInput) (int64, error) {
 	if _, err := commitmentRank(event.SourceCommitment); err != nil {
 		return 0, err
 	}
@@ -122,7 +122,7 @@ const managedVaultReplace = `
                     WHERE id = loyal_yield.managed_vaults.active_policy_id
                 )`
 
-func upsertVault(ctx context.Context, tx pgx.Tx, policyID int64, event PolicyMatchInput) (int64, error) {
+func upsertVault(ctx context.Context, tx pgx.Tx, _ autodeposit.VaultTargets, policyID int64, event PolicyMatchInput) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `
         INSERT INTO loyal_yield.managed_vaults
@@ -145,7 +145,7 @@ func upsertVault(ctx context.Context, tx pgx.Tx, policyID int64, event PolicyMat
 	return id, err
 }
 
-func upsertVaultWithSetup(ctx context.Context, tx pgx.Tx, routePolicyID, setupPolicyID int64, event PolicyMatchInput) (int64, error) {
+func upsertVaultWithSetup(ctx context.Context, tx pgx.Tx, _ autodeposit.VaultTargets, routePolicyID, setupPolicyID int64, event PolicyMatchInput) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `
         INSERT INTO loyal_yield.managed_vaults
@@ -162,24 +162,26 @@ func upsertVaultWithSetup(ctx context.Context, tx pgx.Tx, routePolicyID, setupPo
 
 func (s *Store) RecordPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if _, err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
-			return err
-		}
-		id, err := upsertPolicy(ctx, tx, event)
+		targets, err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey)
 		if err != nil {
 			return err
 		}
-		_, err = upsertVault(ctx, tx, id, event)
+		id, err := upsertPolicy(ctx, tx, targets, event)
+		if err != nil {
+			return err
+		}
+		_, err = upsertVault(ctx, tx, targets, id, event)
 		return err
 	})
 }
 
 func (s *Store) RecordSetupPolicyMatch(ctx context.Context, event PolicyMatchInput) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-		if _, err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey); err != nil {
+		targets, err := autodeposit.LockVaultTargets(ctx, tx, event.Settings, int16(event.VaultIndex), event.VaultPubkey)
+		if err != nil {
 			return err
 		}
-		id, err := upsertPolicy(ctx, tx, event)
+		id, err := upsertPolicy(ctx, tx, targets, event)
 		if err != nil {
 			return err
 		}
