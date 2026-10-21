@@ -36,16 +36,6 @@ export type RwaMultiplyRouteSpec = Readonly<{
       withdraw: 65n;
     }>;
   }>;
-  /** Inactive fallback retained for forensic comparison only. */
-  trustfulBridge: Readonly<{
-    adaptorProgram: Address;
-    strategySeed: "loyal-rwa-multiply-squads-v1";
-    strategy: Address;
-    withdrawalHoldingAuth: Address;
-    withdrawalHoldingAta: Address;
-    maxReportedNavRaw: 2_000_000_000_000n;
-    maxSnapshotAgeSlots: 32n;
-  }>;
   customAdaptor: Readonly<{
     program: Address;
     strategyConfig: Address;
@@ -119,17 +109,6 @@ export const RWA_MULTIPLY_ROUTE = {
       withdraw: 65n,
     },
   },
-  trustfulBridge: {
-    adaptorProgram: address("3pnpK9nrs1R65eMV1wqCXkDkhSgN18xb1G5pgYPwoZjJ"),
-    strategySeed: "loyal-rwa-multiply-squads-v1",
-    strategy: address("4MetvifzuZShQ5zUhff4mVvwpu3kfKcqYfuY8pW7Zy9B"),
-    withdrawalHoldingAuth: address("915qDo3X21eUc6RyX3Qx7KPW8qHJhUuJBSD9YNaVQwwa"),
-    withdrawalHoldingAta: address("BsyRSvD5vfrE9VKhaZqvBt5nHAbPA4omAv3eePNXbQyN"),
-    // The vault cap is 1,000,000 USDC. The NAV ceiling leaves room for yield
-    // while bounding the manager-supplied Trustful accounting field.
-    maxReportedNavRaw: 2_000_000_000_000n,
-    maxSnapshotAgeSlots: 32n,
-  },
   customAdaptor: {
     program: address("FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW"),
     strategyConfig: address("9hDH4acTDrSjg9d5n8c1g53jMTonaDAUesp1diCWuuhj"),
@@ -185,8 +164,5 @@ function canonicalJson(value: unknown): string {
 export function rwaMultiplyRouteSpecSha256(
   route: RwaMultiplyRouteSpec = RWA_MULTIPLY_ROUTE,
 ): string {
-  // Trustful is retained only as an inactive fallback. It cannot influence the
-  // identity hash of the active custom-adaptor route.
-  const { trustfulBridge: _trustfulBridge, ...activeRoute } = route;
-  return createHash("sha256").update(canonicalJson(activeRoute)).digest("hex");
+  return createHash("sha256").update(canonicalJson(route)).digest("hex");
 }

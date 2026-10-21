@@ -22,6 +22,7 @@ const COMPILED_PATH = resolve(ROOT, "docs/evidence/backyard-rwa-go/policy-compil
 const RESOLUTION_PATH = resolve(ROOT, "docs/evidence/backyard-rwa-go/policy-resolution-v1.json");
 const JUPITER_HEADERS_PATH = resolve(ROOT, "docs/evidence/backyard-rwa-go/policy-jupiter-headers-v1.json");
 const PACKET_LIMIT = 1_232;
+const FROZEN_DEPOSIT_PERCENT_OF_MINIMUM = 90n;
 const ALLOWED = new Set(["OnRe/ONyc/USDC", "Prime/PRIME/USDC", "Maple/syrupUSDC/USDC", "AUTO/AUTO/PYUSD", "Ethena/USDe/PYUSD"]);
 function invariant(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 function object(value: unknown, label: string): Json { invariant(value !== null && typeof value === "object" && !Array.isArray(value), `${label} is not an object`); return value as Json; }
@@ -136,11 +137,8 @@ async function main() {
   const quote = object(freshHeader.quote, `${edgeKey} Jupiter quote`);
   const freshInstruction = object(freshHeader.instruction, `${edgeKey} Jupiter instruction`);
   const frozenMetadata = frozenTemplate ? object(object(freshHeader, `${edgeKey} frozen header`).frozenTemplate, `${edgeKey} frozen template metadata`) : null;
-  // Frozen route templates prove policy capability, not quote exactness. Keep
-  // a 10% buffer under the captured minimum so harmless AMM drift cannot
-  // starve the deposit while still clearing Kamino's non-dust minimums.
   const depositAmountRaw = frozenTemplate
-    ? (BigInt(String(frozenMetadata!.originalMinimumOutputRaw)) * 9n) / 10n
+    ? (BigInt(String(frozenMetadata!.originalMinimumOutputRaw)) * FROZEN_DEPOSIT_PERCENT_OF_MINIMUM) / 100n
     : BigInt(String(quote.otherAmountThresholdRaw ?? ""));
   invariant(depositAmountRaw > 0n, `${edgeKey} Jupiter output threshold is absent`);
   const source = object(freshHeader.source, `${edgeKey} source`); const sourceBalance = BigInt((await connection.getTokenAccountBalance(new PublicKey(String(source.ata)), "confirmed")).value.amount);

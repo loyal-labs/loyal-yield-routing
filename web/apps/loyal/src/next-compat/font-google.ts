@@ -10,14 +10,11 @@ type GoogleFontOptions = {
   display?: string;
 };
 
-// IBM Plex Sans is self-hosted in ./fonts (400 normal + italic, OFL), declared
-// in fonts.css. Only the blog requests it, with weight 400 and both styles —
-// exactly what fonts.css declares; other option values would need more faces
-// and are not modelled.
 export function IBM_Plex_Sans(options: GoogleFontOptions = {}): NextFont {
+  const variable = (options.variable ?? "--font-ibm-plex-sans").replace(/^--/, "");
   return {
     className: "",
-    variable: (options.variable ?? "--font-ibm-plex-sans").replace(/^--/, ""),
-    style: { fontFamily: "'IBM Plex Sans', sans-serif" },
+    variable,
+    style: { fontFamily: `var(--${variable}), sans-serif` },
   };
 }
