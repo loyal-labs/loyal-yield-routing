@@ -22,27 +22,17 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
-// View is Backyard's LaserStream view of its own accounts; planning reads it
-// instead of polling pooled RPC. A start-up read takes every account at
-// finalized, each keeping its own slot, and the stream replays from the
-// oldest of those slots at confirmed.
-//
-// The view is exactly the chain at S, the slot it is complete through: the
-// previous confirmed slot status. The observer's frontier (the highest slot of
-// any handled update) is a replay cursor, not a completeness claim, and
-// neither it nor Yellowstone orders a slot's account updates before that
-// slot's confirmed status. So S lags one confirmed slot, assuming every
-// account update of a slot arrives before the next confirmed slot's status.
-// Writes above S wait in arrival order until S reaches their slot; a write at
-// or below S that arrives late is applied and counted in a warning.
+// View is Backyard's LaserStream view of its own accounts. Yellowstone does not
+// order a slot's account updates before that slot's confirmed status, so the
+// view is complete only through S, the previous confirmed slot, and writes
+// above S wait until S reaches their slot.
 type View struct {
 	rpc       *chain.Client
 	connector stream.Connector
 	fixed     []string
-	ctx       context.Context // owns the stream
+	ctx       context.Context
 	now       func() time.Time
 
-	// control serializes reconnects and handoffs; it guards manager and subscribed.
 	control    sync.Mutex
 	manager    *stream.Manager
 	subscribed time.Time
@@ -57,17 +47,13 @@ type View struct {
 	pending            int
 	seedLow, seedHigh  uint64
 	confirmed, through uint64
-	advanced           chan struct{} // closed and replaced whenever S moves
-	slotAt             time.Time     // arrival of the last slot status: stall detection only
-	// session counts delivering stream sessions; the Manager hands each its
-	// own context. A new session replays already applied slots, so the view
-	// is not read until that session confirms a new slot.
-	session    int
-	sessionCtx context.Context
-	replaying  bool
-	late       int
+	advanced           chan struct{}
+	slotAt             time.Time
+	session            int
+	sessionCtx         context.Context
+	replaying          bool
+	late               int
 
-	// Each worker's room watches (leverage_room_watch.go), by its vault.
 	rooms map[*Vault]*roomSet
 }
 
@@ -99,12 +85,9 @@ const (
 	viewAccountsFilter       = "backyard_accounts"
 	viewReceiptsFilterPrefix = "backyard_voltr_receipts:"
 	viewSlotsFilter          = "backyard_slots"
-	// Chain time at S trails the wall clock by confirmation, the one-slot lag
-	// and the stream: a few seconds. 10s leaves room for Clock drift while a
-	// view tens of slots behind stops planning.
-	viewMaxClockAge = 10 * time.Second
-	viewStall       = 30 * time.Second
-	viewReplaySlots = 32
+	viewMaxClockAge          = 10 * time.Second
+	viewStall                = 30 * time.Second
+	viewReplaySlots          = 32
 	// The provider replays 200,000 slots (observer runtime.go).
 	viewReplayWindow = 200_000 * 400 * time.Millisecond
 )
@@ -127,10 +110,6 @@ func OpenView(ctx context.Context, client *chain.Client, connector stream.Connec
 	return v, v.subscribe(v.seedLow + 1)
 }
 
-// viewAddresses is every fixed account a vault's route-catalog lane observes,
-// prices, builds or admits against, for every vault, plus the pinned program
-// identity accounts. The stream bills by the byte, so no oracle or AMM pool
-// is among them.
 func viewAddresses() []string {
 	addresses := []string{reportTicketPDA, budgetClockAddress, voltr.ProgramID.String(), fsj27Program, voltrProgramDataAddress, adaptorProgramDataAddress,
 		bridgeDelegate, solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(), bridgeUSDC, budgetSOLReserve, budgetWrappedSOLMint}
@@ -142,8 +121,6 @@ func viewAddresses() []string {
 				route.Kamino.Market, route.Kamino.Obligation, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply, route.DebtLiquiditySupply, route.DebtFeeReceiver, route.Kamino.CollateralMint, route.Kamino.DebtMint,
 				route.CollateralReceiptMint, route.CollateralReceiptSupply, route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm)
 			if hastraLane(route) {
-				// A Hastra conversion is quoted at, and revalidated against, the
-				// stake price (validateHastraPrice).
 				addresses = append(addresses, hastra.StakePriceConfig.String())
 			}
 		}
@@ -192,11 +169,8 @@ func (v *View) seed(ctx context.Context) error {
 	return nil
 }
 
-// viewReceiptsFilter names the stream filter of vault's withdrawal receipts.
 func viewReceiptsFilter(vault *Vault) string { return viewReceiptsFilterPrefix + vault.Name }
 
-// request subscribes the fixed accounts and known receipts by address, new
-// receipts by owner and memcmp, and confirmed slots.
 func (v *View) request(from uint64) *pb.SubscribeRequest {
 	v.mu.Lock()
 	addresses := slices.Clone(v.fixed)
@@ -237,7 +211,6 @@ func (v *View) subscribe(from uint64) error {
 	return nil
 }
 
-// Handle takes one stream update. It never blocks on IO.
 func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -271,12 +244,10 @@ func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
 	}
 	info := write.Account
 	address := solana.PublicKeyFromBytes(info.Pubkey).String()
-	// A closed account reads like an absent RPC account: its address alone.
 	account := ConfirmedAccount{Address: address}
 	if info.Lamports > 0 {
 		account = ConfirmedAccount{Address: address, Owner: solana.PublicKeyFromBytes(info.Owner).String(), Lamports: info.Lamports, Data: info.Data, Executable: info.Executable}
 	}
-	// Discovery is recorded on arrival so the handoff starts at once.
 	if _, known := v.receipts[address]; !known && slices.ContainsFunc(update.Filters, func(f string) bool { return strings.HasPrefix(f, viewReceiptsFilterPrefix) }) {
 		v.receipts[address], v.pending = write.Slot, v.pending+1
 	}
@@ -303,10 +274,6 @@ func (v *View) apply(write viewAccount) {
 	}
 }
 
-// sync is the stream upkeep each read does first, never more than once at a
-// time. A failed or stalled stream reconnects once from S−32; the next read
-// makes the next attempt. Discovered receipts are handed off into the
-// by-address filter from their discovery slot, so a close is not missed.
 func (v *View) sync(ctx context.Context) {
 	if v.connector == nil || !v.control.TryLock() {
 		return
@@ -359,26 +326,17 @@ func (v *View) slot(ctx context.Context) (int64, error) {
 	return slot, err
 }
 
-// errViewReplayGap stops the worker: a stream silent for longer than the
-// provider replays cannot resume, and a restart takes a new start-up read.
 var errViewReplayGap = errors.New("account view stream gap exceeds the provider replay window")
 
-// read returns addresses at S >= minSlot, waiting for S to get there no
-// longer than a live view's chain time may trail. Only an optional address
-// may be absent; an address outside the view is an error, never an absence.
 func (v *View) read(ctx context.Context, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, error) {
 	slot, accounts, _, err := v.readAt(ctx, nil, addresses, minSlot, optional...)
 	return slot, accounts, err
 }
 
-// readWithReceipts is read plus vault's open withdrawal receipts. Only it
-// waits out a receipt handoff: until a discovered receipt is in the
-// by-address filter, its close could be missed.
 func (v *View) readWithReceipts(ctx context.Context, vault *Vault, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
 	return v.readAt(ctx, vault, addresses, minSlot, optional...)
 }
 
-// readAt reads addresses and, with receiptsOf, that vault's receipts.
 func (v *View) readAt(ctx context.Context, receiptsOf *Vault, addresses []string, minSlot int64, optional ...string) (int64, []ConfirmedAccount, []programAccount, error) {
 	withReceipts := receiptsOf != nil
 	if v == nil {

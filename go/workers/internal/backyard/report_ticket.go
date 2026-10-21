@@ -118,9 +118,6 @@ const (
 	reportTicketArmWireLen = armReportArgsOffset + bridgeReportArgsPrefixLen + bridgeReportLen
 )
 
-// armReportAllowed admits ArmReport of operation over the allowed accounts,
-// with data predicates after its discriminator and operation. The Squads
-// program slot is free: the adaptor checks it.
 func armReportAllowed(v *Vault, a armReport[squads.Slot], operation byte, data ...squads.DataConstraintView) squads.InstructionConstraintView {
 	adaptor := solanaKey(v.Adaptor)
 	leading := append(append([]byte(nil), armReportDiscriminator...), operation)

@@ -36,7 +36,6 @@ type BudgetHold struct {
 	cause   error
 }
 
-// Unwrap is the error the hold was taken on, if any.
 func (h *BudgetHold) Unwrap() error { return h.cause }
 
 func (h *BudgetHold) Error() string {
@@ -55,20 +54,16 @@ func (h *BudgetHold) Error() string {
 	return text
 }
 
-// budgetHold is the stale hold of a check named cause.
 func budgetHold(cause string) error { return holdOf(holdStale, cause, nil) }
 
-// budgetHoldFrom is budgetHold taken on err.
 func budgetHoldFrom(err error, cause string) error { return holdOf(holdStale, cause, err) }
 
-// roomHold is the no_room hold of a check named cause, taken on err.
 func roomHold(cause string, err error) error { return holdOf(holdNoRoom, cause, err) }
 
 func holdOf(reason, cause string, err error) error {
 	return &BudgetHold{Reason: reason, Details: map[string]string{"cause": cause}, cause: err}
 }
 
-// holdCause is a hold's detail: the check it names, or its simulation error.
 func holdCause(h *BudgetHold) string {
 	if c := h.Details["cause"]; c != "" {
 		return c
@@ -88,9 +83,6 @@ func budgetSum(values ...int64) (int64, error) {
 	return total, nil
 }
 
-// RecordBudgetHold fails the tick's never-submitted operation with its hold:
-// recovery_reason hold:<reason>, the hold in its expected effects. Only
-// never-submitted states may fail.
 func (d *Database) RecordBudgetHold(ctx context.Context, operationID string, hold *BudgetHold) error {
 	if d == nil || d.pool == nil || operationID == "" || hold == nil || hold.Reason == "" {
 		return fmt.Errorf("invalid budget hold journal input")

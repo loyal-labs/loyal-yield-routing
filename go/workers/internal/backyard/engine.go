@@ -13,8 +13,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
-// SelectorMode chooses the economic selector collector beside the serialized
-// transaction loop: off or live selector authority.
 type SelectorMode string
 
 const (
@@ -22,35 +20,22 @@ const (
 	SelectorLive SelectorMode = "live"
 )
 
-// EngineConfig is the explicit injected runtime for one separately credentialed
-// Backyard engine instance. The loyal-engine command constructs it; Database,
-// RPC, and signing credentials are all Backyard-scoped.
 type EngineConfig struct {
 	Database *Database
 	RPC      *chain.Client
-	// View is the LaserStream view of Backyard's accounts planning reads.
-	View *View
+	View     *View
 	// Credentials is the Backyard delegated executor capability. It stays
 	// inside the engine instance; observers and planners never receive it.
 	Credentials Credentials
 	Config      Config
-	// Owner is the platform-neutral scope+instance+release identity, for logs.
-	Owner string
-	// Out receives the human-readable lifecycle lines; Logger the structured
-	// events; Facts the family health facts. Logger and Facts may be nil.
-	Out    io.Writer
-	Logger *slog.Logger
-	Facts  *engine.Facts
-	// Selector and its economic feed run beside, never inside, the
-	// transaction loop. Neither collector sends transactions.
-	Selector SelectorMode
-	// Jupiter is the swap/v1 client every quote goes through.
-	Jupiter *jupiter.Client
+	Owner       string
+	Out         io.Writer
+	Logger      *slog.Logger
+	Facts       *engine.Facts
+	Selector    SelectorMode
+	Jupiter     *jupiter.Client
 }
 
-// Engine is the concrete runtime adapter for process composition: one Worker
-// per vault, each with its vault's in-process state, behind the family's one
-// writer lock.
 type Engine struct {
 	workers  []*Worker
 	states   []*vaultState
@@ -63,9 +48,6 @@ type Engine struct {
 	runtime  EngineConfig
 }
 
-// NewEngine validates the complete injected runtime or fails closed. A missing
-// dependency or a capability that does not match the pinned delegated
-// executor is a startup failure, not a degraded mode.
 func NewEngine(config EngineConfig) (*Engine, error) {
 	if config.Owner == "" {
 		return nil, fmt.Errorf("Backyard engine requires an instance identity")
@@ -104,7 +86,6 @@ func (e *Engine) Run(ctx context.Context) error {
 		return fmt.Errorf("Backyard engine is not constructed")
 	}
 	if e.runtime.Selector != SelectorOff {
-		// The feed observes every active registry lane.
 		feed, err := NewEconomicFeed(e.view)
 		if err != nil {
 			return err
@@ -126,10 +107,6 @@ func (e *Engine) Run(ctx context.Context) error {
 	return engine.Run(ctx, lanes...)
 }
 
-// runSelector collects economics off the transaction loop: one feed refresh
-// per sample, then each vault's evaluation from it. Live acceptance is
-// fenced against its pre-observation version and existing pilot. The
-// returned stop joins the collector.
 func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 	out := e.out
 	feedCtx, cancelFeed := context.WithCancel(ctx)
@@ -142,16 +119,11 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 		samplers[i] = &selectorSampler{engine: e, worker: worker, state: e.states[i], identity: newProgramIdentityWatcher(viewProgramIdentity(e.view)).observe,
 			levWatch: &leverageWatch{}, levDecisionLog: &leverageDecisionLog{}, apyThrottle: &currentAPYThrottle{}}
 	}
-	// Economic collection stays off the transaction loop. Live acceptance
-	// is fenced against its pre-observation version and existing pilot; the
-	// collector sends no transactions.
 	go func() {
 		defer close(feedDone)
 		runSelectorSamples(feedCtx, selectorLiveSampleInterval, func(ctx context.Context) {
 			_ = feed.Refresh(ctx)
 			markets, _ := feed.Snapshot()
-			// A lane without economics (its realized yield unmeasurable) is
-			// not scored; say which and why, once per change.
 			if unavailable := feed.UnavailableLanes(); unavailable != lastUnavailable {
 				lastUnavailable = unavailable
 				if unavailable != "" {
@@ -169,11 +141,6 @@ func (e *Engine) runSelector(ctx context.Context, feed *EconomicFeed) func() {
 	return func() { cancelFeed(); <-feedDone }
 }
 
-// selectorSampler is one vault's selector sample: its evaluation from the
-// sample's markets and what it prints, stores and wakes. Sample diagnostics
-// print when their sanitized shape changes (the held sample also hourly), so
-// neither a persistent outage nor a stable hold floods the log on the sample
-// cadence.
 type selectorSampler struct {
 	engine   *Engine
 	worker   *Worker
@@ -196,8 +163,6 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 	logf := func(format string, args ...any) { _, _ = fmt.Fprintf(e.out, format, args...) }
 	result, observed, err := database.evaluateSelectorObserved(ctx, rpc, view, e.runtime.Jupiter, worker.manifest, p.state, markets, p.identity, DefaultSelectorPolicy())
 	if err != nil {
-		// Closed-set sanitized code only: raw RPC/DB errors may carry
-		// service URLs. Change-only keeps a persistent outage at one line.
 		code := sanitizedSelectorEvaluateFailure(err)
 		events.selectorSampleError(err)
 		if code != p.lastEvaluateFailure {
@@ -208,19 +173,15 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		return
 	}
 	p.lastEvaluateFailure = ""
-	// B2 watch-only: log lines, never a decision input.
 	for _, line := range p.levWatch.observe(markets, result.SourceLane, result.EquityRaw, time.Since(p.levWatchSummary) >= time.Hour, worker.manifest.vault.AdminPerformanceFeeBPS, observed.Snapshot) {
 		_, _ = fmt.Fprintln(e.out, line)
 	}
 	if time.Since(p.levWatchSummary) >= time.Hour {
 		p.levWatchSummary = time.Now()
-		// Display only: the same summary numbers, for the admin app.
 		publishLeverageWatch(ctx, time.Now(), p.levWatch, observed, func(ctx context.Context, summary LeverageWatchSummary) error {
 			return database.RecordLeverageWatch(ctx, routeKey, summary)
 		}, logf)
 	}
-	// B2 option 1: each held lane's level, target()'s level input. It
-	// changes no money by itself.
 	for _, lane := range observed.lanes {
 		decision, ok := decideLeverageTarget(lane, result, markets, DefaultSelectorPolicy(), productionLeverageStepPricer(feedCtx, rpc, view, e.runtime.Jupiter, worker.manifest, observed, lane))
 		if !ok {
@@ -238,8 +199,6 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 			}
 		}
 	}
-	// An overflow lane its source cannot lever into takes its cap
-	// before it holds anything.
 	for _, source := range observed.lanes {
 		if lane, level, ok := decideOverflowLevel(source, markets, DefaultSelectorPolicy(), time.Now().UTC()); ok && observed.planning != nil && observed.planning.inputs.Levels[lane] != level {
 			if err := database.RecordLaneLevel(ctx, routeKey, lane, level); err != nil {
@@ -247,7 +206,6 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 			}
 		}
 	}
-	// Display only: the position's current net APY for the web app.
 	publishCurrentAPY(ctx, time.Now(), p.apyThrottle, observed, markets, func(ctx context.Context, value CurrentAPY) error {
 		return database.RecordCurrentAPY(ctx, routeKey, value)
 	}, logf)
@@ -257,10 +215,6 @@ func (p *selectorSampler) sample(ctx, feedCtx context.Context, markets []LaneEco
 		p.lastSampleKey = ""
 		return
 	}
-	// Held-sample diagnostics list every candidate with its numbers; they
-	// print when the sample's shape changes (action, reason, and each
-	// candidate's reason, borrow state and leverage) and hourly, so a
-	// reserve that opens shows the same tick.
 	key, line := selectorSampleLine(result)
 	if key != p.lastSampleKey || time.Since(p.lastSamplePrint) >= time.Hour {
 		p.lastSampleKey, p.lastSamplePrint = key, time.Now()

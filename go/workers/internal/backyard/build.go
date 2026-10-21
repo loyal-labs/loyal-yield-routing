@@ -14,11 +14,6 @@ import (
 
 var ErrTransactionConstructionUnavailable = fmt.Errorf("transaction construction blocked: deployed adaptor v2 and complete policy catalog are required")
 
-// This file deliberately implements only the legacy Solana message encoding
-// needed by the Backyard worker.  It is not a general Solana SDK.  Keeping the
-// codec here makes the exact bytes that are simulated, persisted, and later
-// recovered independently reviewable, without a Rust or TypeScript runtime.
-
 type publicKey [32]byte
 
 type accountMeta struct {
@@ -50,8 +45,7 @@ type BridgeBuildRequest struct {
 	Action    Action
 	AmountRaw uint64
 	Report    BridgeReport
-	// Policy is the installed account of the action's bridge policy.
-	Policy string
+	Policy    string
 	// These bindings are read from the confirmed immutable adaptor config and
 	// Squads Settings before a transaction is built. They are repeated here so
 	// a stale observation cannot be silently paired with the hard-coded wire.
@@ -61,8 +55,6 @@ type BridgeBuildRequest struct {
 	LastValidBlockHeight int64
 }
 
-// SignedTransaction is one exact signed wire (message, then signature): what
-// the build simulates and persists before any send.
 type SignedTransaction struct {
 	message              []byte
 	signedWire           []byte
@@ -73,8 +65,6 @@ type SignedTransaction struct {
 	lastValidBlockHeight int64
 }
 
-// signMessage signs message as executor, which must be expectedDelegate:
-// the one wire every Backyard build persists.
 func signMessage(executor ed25519.PrivateKey, expectedDelegate publicKey, message []byte, blockhash string, height int64) (SignedTransaction, error) {
 	if len(executor) != ed25519.PrivateKeySize || height <= 0 {
 		return SignedTransaction{}, fmt.Errorf("invalid signing material")
@@ -179,9 +169,6 @@ func bridgeInstruction(v *Vault, request BridgeBuildRequest) (compiledInstructio
 	}
 }
 
-// voltrStrategyInstruction is a bridge Voltr deposit_strategy or
-// withdraw_strategy: Voltr calls the pinned adaptor instruction with the
-// encoded report, over the bridge's remaining accounts.
 func voltrStrategyInstruction(v *Vault, build func(voltr.StrategyAccounts, uint64, []byte, []byte, ...squads.AccountSlot[solana.PublicKey]) *solana.GenericInstruction,
 	adaptorDiscriminator []byte, amount uint64, report BridgeReport) (compiledInstruction, error) {
 	encodedReport, err := encodeBridgeReport(report)
@@ -194,10 +181,6 @@ func voltrStrategyInstruction(v *Vault, build func(voltr.StrategyAccounts, uint6
 	return sdkInstruction(build(accounts, amount, adaptorDiscriminator, encodedReport, remaining...)), nil
 }
 
-// bridgeRemaining is the adaptor's remaining accounts after Voltr's own, as
-// both the bridge's Voltr legs and their policy constraints read them
-// (bridgeRemainingSlots): the Squads settings, the vault that signs, its USDC
-// custody, then the report ticket the adaptor consumes.
 type bridgeRemaining[T any] struct {
 	Settings, Vault, Custody, Ticket T
 }
@@ -231,10 +214,6 @@ func encodeBridgeReport(report BridgeReport) ([]byte, error) {
 	return append(data, digest...), nil
 }
 
-// The Trustful bridge's legs: deposit_strategy is its Deposit policy's one
-// leg (an allocation, or a NAV report of nothing); a withdrawal is its
-// Withdraw policy's two, the Squads cash into the holding account, then
-// withdraw_strategy.
 const (
 	trustfulDepositLeg = iota
 	trustfulDepositLegs
@@ -246,9 +225,6 @@ const (
 	trustfulWithdrawLegs
 )
 
-// trustfulBridgeInstructions is a Trustful vault's bridge action and the
-// leg each instruction executes under. Every one reports the book after it
-// (the request's NAV) as the strategy's end value.
 func trustfulBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compiledInstruction, []byte, error) {
 	book := request.Report.NAVAfterRaw
 	if book > bridgeMaxNAV {
@@ -279,7 +255,6 @@ func stageInstruction(v *Vault, amount uint64) compiledInstruction {
 
 func solanaKey(value string) solana.PublicKey { return solana.PublicKey(mustKey(value)) }
 
-// squads is ix as Squads reads an inner instruction.
 func (ix compiledInstruction) squads() squads.Instruction {
 	out := squads.Instruction{ProgramID: solana.PublicKey(ix.program), Data: ix.data}
 	for _, account := range ix.accounts {
@@ -288,7 +263,6 @@ func (ix compiledInstruction) squads() squads.Instruction {
 	return out
 }
 
-// sdkInstruction is an instruction solana-go built.
 func sdkInstruction(ix *solana.GenericInstruction) compiledInstruction {
 	out := compiledInstruction{program: publicKey(ix.ProgID), data: ix.DataBytes}
 	for _, account := range ix.AccountValues {
@@ -304,8 +278,6 @@ func wrapSquadsPolicyForDelegate(v *Vault, policy, executor, expectedDelegate pu
 	return wrapSquadsPolicy(v, policy, executor, constraintIndexes, inner...)
 }
 
-// wrapSquadsPolicy runs inner as v's Squads vault through policy, signed by
-// executor.
 func wrapSquadsPolicy(v *Vault, policy, executor publicKey, constraintIndexes []byte, inner ...compiledInstruction) (compiledInstruction, error) {
 	execute := squads.ExecuteSync{Policy: solana.PublicKey(policy), Signer: solana.PublicKey(executor), AccountIndex: v.SquadsIndex,
 		ConstraintIndexes: constraintIndexes}

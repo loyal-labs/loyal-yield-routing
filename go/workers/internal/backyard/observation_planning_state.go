@@ -5,17 +5,12 @@ import (
 	"fmt"
 )
 
-// One database snapshot supplies target()'s stored inputs for one
-// observation. It is never serialized or retained across observations.
 type routePlanningState struct {
-	routeKey string
-	inputs   targetInputs
-	// landedSlot is the highest slot any of the route's operations landed at.
+	routeKey   string
+	inputs     targetInputs
 	landedSlot int64
 }
 
-// readRoutePlanningState reads target()'s stored inputs and the selector's
-// latest result in one statement.
 func (d *Database) readRoutePlanningState(ctx context.Context, routeKey string) (*routePlanningState, error) {
 	if d == nil || d.pool == nil || routeKey == "" {
 		return nil, fmt.Errorf("planning state database is not configured")

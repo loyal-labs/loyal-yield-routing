@@ -77,7 +77,6 @@ func refreshObservationLagSlots(ctx context.Context, c *chain.Client) {
 	}
 }
 
-// recentSlotMillis is the chain's measured slot time.
 func recentSlotMillis(ctx context.Context, c *chain.Client) (float64, error) {
 	slotsPerSecond, err := c.SlotsPerSecond(ctx)
 	if err != nil {
@@ -114,8 +113,6 @@ func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (i
 
 const nativeSOLBudgetAsset = "native:SOL"
 
-// UpperPriceMargin applies a caller-reviewed conservative basis-point margin
-// to a positive observed price without float precision loss or u128 wrapping.
 func UpperPriceMargin(price [16]byte, marginBPS uint16) ([16]byte, error) {
 	var out [16]byte
 	value := littleInt(price[:])

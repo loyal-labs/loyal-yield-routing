@@ -48,8 +48,6 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	// The view is its one start-up read, at viewSlot: later reads are floored
-	// there, not at the refreshed batch's simulation slot past it.
 	viewSlot, err := view.slot(ctx)
 	if err != nil {
 		return err

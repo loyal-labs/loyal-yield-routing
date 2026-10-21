@@ -9,33 +9,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The stored inputs of target(), and nothing else. The withdrawal queue is
-// Voltr's own receipts, read with the chain. The two rows here are:
-//
-//   - a lane's level (loyal_yield.backyard_lane_levels): the leverage the
-//     selector's economics chose for it, and whether the up step toward it is
-//     worth its cost at the last sample;
-//   - an operator exit (loyal_yield.backyard_lane_exits): "lane X target debt
-//     0", optionally with its collateral returned to Voltr too.
-
-// laneLevel is one lane's stored level.
 type laneLevel struct {
 	Level      float64 `json:"level"`
 	UpApproved bool    `json:"upApproved,omitempty"`
 }
 
-// laneExit is one lane's operator exit.
 type laneExit struct {
 	EquityZero bool `json:"equityZero,omitempty"`
 }
 
-// targetInputs is everything target() reads besides the chain.
 type targetInputs struct {
 	Levels map[string]laneLevel
 	Exits  map[string]laneExit
-	// Entry is the selector's latest result, the rates' choice of a lane for a
-	// flat vault's cash; nil when the selector has not written one.
-	Entry *SelectorResult
+	Entry  *SelectorResult
 }
 
 func validLevel(level float64) bool {
@@ -43,7 +29,6 @@ func validLevel(level float64) bool {
 	return ok
 }
 
-// decodeTargetInputs decodes the planning read's level and exit aggregates.
 func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 	var in targetInputs
 	if err := json.Unmarshal(levels, &in.Levels); err != nil {
@@ -76,13 +61,9 @@ func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 	return in, nil
 }
 
-// targetInputsSQL reads the levels and exits of route $1 as two JSON objects
-// keyed by lane.
 const targetInputsSQL = `COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('level', level, 'upApproved', up_approved)) FROM loyal_yield.backyard_lane_levels WHERE route_key = $1), '{}'::jsonb),
 	COALESCE((SELECT jsonb_object_agg(lane, jsonb_build_object('equityZero', equity_zero)) FROM loyal_yield.backyard_lane_exits WHERE route_key = $1), '{}'::jsonb)`
 
-// RecordLaneLevel stores one lane's level. The selector sample loop is its
-// only writer; it changes no money by itself.
 func (d *Database) RecordLaneLevel(ctx context.Context, routeKey, lane string, level laneLevel) error {
 	if !earnActiveLane(lane) || !validLevel(level.Level) || (level.UpApproved && level.Level <= 1) {
 		return fmt.Errorf("invalid_lane_level")
@@ -94,7 +75,6 @@ func (d *Database) RecordLaneLevel(ctx context.Context, routeKey, lane string, l
 	return err
 }
 
-// LaneExitRequest is one `loyal-engine backyard exit-lane` call.
 type LaneExitRequest struct {
 	Vault       string
 	Lane        string
@@ -103,9 +83,6 @@ type LaneExitRequest struct {
 	RequestedBy string
 }
 
-// RunLaneExit writes or clears one lane's operator exit row. Writing it sets
-// the lane's target debt to 0 (and, with EquityZero, its equity too): the
-// worker delevers it by atomic down steps on its next ticks.
 func RunLaneExit(ctx context.Context, databaseURL string, request LaneExitRequest) (string, error) {
 	if !earnHeldLane(request.Lane) || (!request.Clear && (request.RequestedBy == "" || len(request.RequestedBy) > 256)) {
 		return "", fmt.Errorf("exit-lane: a registry lane and --by <operator> (at most 256 characters) are required")

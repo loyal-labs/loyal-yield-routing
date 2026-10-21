@@ -9,10 +9,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// KaminoPrimeUSDCAccounts is the exact account list produced by the checked
-// Kamino SDK for one leg.  Reserve-owned token accounts are deliberately read
-// from the confirmed reserve graph; they are not guessed or derived here.
-// The builder accepts no route, mint, or program override.
 type KaminoPrimeUSDCAccounts []struct {
 	Address  string
 	Signer   bool
@@ -25,21 +21,15 @@ type KaminoPrimeUSDCAccounts []struct {
 // intentionally outside this narrow builder and cannot be smuggled in as an
 // arbitrary program instruction.
 type KaminoPrimeUSDCRequest struct {
-	Action    Action
-	AmountRaw uint64
-	// Policy is the installed account of the leg's policy (kaminoPolicyLeg).
+	Action               Action
+	AmountRaw            uint64
 	Policy               string
 	Accounts             KaminoPrimeUSDCAccounts
 	Data                 []byte
 	RecentBlockhash      string
 	LastValidBlockHeight int64
 	RouteLane            string
-	// ObligationReserves is the exact confirmed deposit-then-borrow reserve
-	// sequence currently present in the obligation (obligationTopology); an
-	// empty obligation has none. RefreshObligation takes exactly these as its
-	// remaining accounts; deriving them from the mutation leg breaks
-	// re-deposits and a fresh obligation's first deposit.
-	ObligationReserves []string
+	ObligationReserves   []string
 }
 
 // obligationTopology is what RefreshObligation names after the obligation:
@@ -54,8 +44,6 @@ func obligationTopology(o kamino.Obligation) []string {
 	return topology
 }
 
-// observedObligationTopology is the topology of route's obligation in
-// accounts: none while the account does not exist yet.
 func observedObligationTopology(accounts []ConfirmedAccount, route RuntimeRoute) ([]string, error) {
 	account := accountAt(accounts, route.Kamino.Obligation)
 	if account.Address != route.Kamino.Obligation {
@@ -100,7 +88,6 @@ func compileResolvedKaminoMessage(v *Vault, request KaminoPrimeUSDCRequest, dele
 	return compileReviewedKaminoMessage(v, request, delegate, route)
 }
 
-// compileReviewedKaminoMessage is the checked byte builder.
 func compileReviewedKaminoMessage(v *Vault, request KaminoPrimeUSDCRequest, delegate publicKey, route RuntimeRoute) ([]byte, error) {
 	if request.LastValidBlockHeight <= 0 {
 		return nil, fmt.Errorf("invalid Kamino blockhash lifetime")
@@ -228,8 +215,6 @@ func exactKaminoMetas(got, want []accountMeta) bool {
 	return true
 }
 
-// kaminoPrimeUSDCRefreshInstructionsForRoute is lane's refresh prefix over
-// an empty obligation.
 func kaminoPrimeUSDCRefreshInstructionsForRoute(v *Vault, lane string) []compiledInstruction {
 	return kaminoPrimeUSDCRefreshInstructionsForRequest(v, KaminoPrimeUSDCRequest{RouteLane: lane})
 }
@@ -281,18 +266,12 @@ func kaminoRefreshInstructionsForResolvedRoute(request KaminoPrimeUSDCRequest, r
 	}
 }
 
-// kaminoMetasForRoute is the SDK v2 account layout of a route's four legs;
-// only the bound market/custody/token/farm identities vary. An empty farm is
-// absent.
 func kaminoMetasForRoute(r RuntimeRoute) (deposit, borrow, repay, withdraw []accountMeta) {
 	collateral, debt := kaminoRouteAccounts(r, kaminoKey)
 	return kaminoCompiled(kamino.DepositV2(collateral, 0)).accounts, kaminoCompiled(kamino.BorrowV2(debt, 0)).accounts,
 		kaminoCompiled(kamino.RepayV2(debt, 0)).accounts, kaminoCompiled(kamino.WithdrawV2(collateral, 0)).accounts
 }
 
-// kaminoRouteAccounts is the route's collateral and debt account sets, each
-// address as key gives it: the keys the route's legs send, or the slots its
-// split policies pin. An absent (empty) address is the zero key either way.
 func kaminoRouteAccounts[T any](r RuntimeRoute, key func(string) T) (kamino.Collateral[T], kamino.Liquidity[T]) {
 	vault, obligation, market, authority := key(r.Kamino.Vault), key(r.Kamino.Obligation), key(r.Kamino.Market), key(r.Kamino.MarketAuthority)
 	return kamino.Collateral[T]{Owner: vault, Obligation: obligation, LendingMarket: market, LendingMarketAuthority: authority,
@@ -305,7 +284,6 @@ func kaminoRouteAccounts[T any](r RuntimeRoute, key func(string) T) (kamino.Coll
 			ObligationFarmUserState: key(r.ObligationDebtFarm), ReserveFarmState: key(r.DebtFarm)}
 }
 
-// kaminoKey is a route address; an empty one is the absent (zero) key.
 func kaminoKey(address string) solana.PublicKey {
 	if address == "" {
 		return solana.PublicKey{}
@@ -328,9 +306,6 @@ func wrapSquadsKaminoPolicy(v *Vault, policy, executor, expectedDelegate publicK
 	return wrapSquadsPolicy(v, policy, executor, []byte{constraintIndex}, inner)
 }
 
-// KaminoExecutionEvidence is intentionally explicit. The observer supplies a
-// coherent confirmed account graph and the already-validated expected effects;
-// this package only constructs the exact, policy-wrapped, signed wire.
 type KaminoExecutionEvidence struct {
 	Request         KaminoPrimeUSDCRequest
 	ExpectedEffects ExpectedEffects

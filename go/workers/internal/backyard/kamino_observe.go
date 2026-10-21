@@ -1,9 +1,5 @@
 package backyard
 
-// This file decodes only the registry lanes' Kamino graphs. It is not a
-// general KLend decoder: an unfamiliar account layout or topology is an
-// observation failure, not an opportunity to guess.
-
 import (
 	"bytes"
 	"encoding/binary"
@@ -31,17 +27,9 @@ const (
 	kaminoReserveStatusOffset        = kaminoReserveConfigOffset
 	kaminoReserveEmergencyModeOffset = kaminoReserveConfigOffset + 8
 
-	// Audit U5 / monitor M5: a reserve that has not refreshed within the
-	// adaptor's report window (adaptorMaxReportAgeSlots), a paused reserve,
-	// or a stale oracle price keeps reporting the last valuation. Every
-	// report-bearing action fails closed. kaminoOracleMaxAgeSecs is the one
-	// price age every valuation is held to.
 	kaminoOracleMaxAgeSecs = int64(300)
 )
 
-// Fail-closed reserve health violations are sentinel errors so the observers
-// can turn them into HOLD_MANUAL_RECOVERY decisions with the contract's
-// reasons instead of a failed observation tick.
 var (
 	errKaminoReserveStale    = errors.New("kamino_stale")
 	errKaminoReservePaused   = errors.New("reserve_paused")
@@ -49,7 +37,6 @@ var (
 	errKaminoMarketEmergency = errors.New("kamino_market_emergency")
 )
 
-// kaminoHealthReason maps a reserve-health sentinel to its HOLD reason.
 func kaminoHealthReason(err error) (string, bool) {
 	switch {
 	case errors.Is(err, errKaminoReserveStale), errors.Is(err, errKaminoOracleStale):
@@ -60,9 +47,6 @@ func kaminoHealthReason(err error) (string, bool) {
 	return "", false
 }
 
-// KaminoHealthHoldObservation converts one fail-closed reserve-health
-// violation into a HOLD_MANUAL_RECOVERY observation. Any other error is not a
-// reserve-health verdict and is returned unchanged.
 func KaminoHealthHoldObservation(err error, slot int64, now time.Time) (Observation, bool) {
 	reason, known := kaminoHealthReason(err)
 	if !known {
@@ -111,9 +95,7 @@ type decodedKaminoObligation struct {
 	debtRaw                uint64
 	debtAmountSF           [16]byte
 	cumulativeBorrowRate   [32]byte
-	// debtBorrow is the debt reserve's borrow slot, whose last borrow time
-	// starts its debt term (debtTermEnd); zero without debt.
-	debtBorrow kamino.ObligationLiquidity
+	debtBorrow             kamino.ObligationLiquidity
 	// borrowLimitBPS is kaminoBorrowLimitBPS; zero before a deposit.
 	borrowLimitBPS int64
 }
@@ -401,9 +383,6 @@ func (r decodedKaminoReserve) redeemLiquidityRaw(collateralRaw uint64) (uint64, 
 	return kamino.CollateralToLiquidity(r.totalLiquiditySF, r.collateralMintSupply, collateralRaw)
 }
 
-// collateralValueDebtRaw is the position's collateral valued in raw debt
-// units at the batch's reserve prices: the C every leverage size is a share
-// of.
 func (p KaminoPosition) collateralValueDebtRaw() (uint64, error) {
 	if p.CollateralDepositedRaw == 0 || p.RedeemablePrimeRaw == 0 {
 		return 0, fmt.Errorf("Kamino collateral value is unavailable")
@@ -416,7 +395,6 @@ func (p KaminoPosition) collateralValueDebtRaw() (uint64, error) {
 	if p.CollateralDecimals > 18 || p.DebtDecimals > 18 {
 		return 0, fmt.Errorf("Kamino mint decimals exceed supported scale")
 	}
-	// KLend's conservative scaled-fraction rounding at each step.
 	valueSF := new(big.Int).Mul(new(big.Int).SetUint64(p.RedeemablePrimeRaw), collateralPrice)
 	valueSF.Div(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(p.CollateralDecimals)), nil))
 	valueSF.Mul(valueSF, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(p.DebtDecimals)), nil))
@@ -427,17 +405,10 @@ func (p KaminoPosition) collateralValueDebtRaw() (uint64, error) {
 	return raw.Uint64(), nil
 }
 
-// decodeKaminoMarketEmergency reads the market's global emergency-mode flag.
-// An unexpected length, owner, or discriminator is an observation failure,
-// never an assumed healthy market.
 func decodeKaminoMarketEmergency(account ConfirmedAccount, c KaminoObservationConfig) (bool, error) {
 	return kamino.DecodeLendingMarketEmergencyMode(chainAccount(account, c.Market))
 }
 
-// validateKaminoReserveHealth is the fail-closed gate behind monitor M5. On
-// top of validateKaminoRefresh's relative freshness it requires, at the
-// observation slot: every reserve refreshed within adaptorMaxReportAgeSlots,
-// ReserveConfig.status 0, and no reserve- or market-level emergency mode.
 func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, obligation decodedKaminoObligation, reserves ...decodedKaminoReserve) error {
 	if marketEmergencyMode {
 		return fmt.Errorf("Kamino market is in emergency mode: %w", errKaminoMarketEmergency)
@@ -452,14 +423,9 @@ func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, o
 				reserve.refreshedSlot, observedSlot, errKaminoReserveStale)
 		}
 	}
-	// The pre-existing relative coherency check stays subordinate: an
-	// absolutely stale reserve is reported as kamino_stale even when it is also
-	// older than its obligation.
 	return validateKaminoRefresh(obligation, reserves...)
 }
 
-// validateKaminoOracleAge requires every reserve's market price to have been
-// published within kaminoOracleMaxAgeSecs of the observed block time.
 func validateKaminoOracleAge(observedUnix int64, reserves ...decodedKaminoReserve) error {
 	for _, reserve := range reserves {
 		updated := reserve.marketPriceLastUpdatedTS
@@ -477,14 +443,6 @@ func validateKaminoRefresh(o decodedKaminoObligation, reserves ...decodedKaminoR
 			return fmt.Errorf("Kamino reserve valuation is stale, invalid, or incoherent")
 		}
 	}
-	// Reserves are refreshed independently on mainnet, so their LastUpdate
-	// slots are not expected to match. LastUpdate.stale means the next
-	// transaction must refresh the account; it does not invalidate a read used
-	// to build that refresh transaction. price_status is likewise not a
-	// universal validity mask (the USDC reserve legitimately reports zero).
-	// This mirrors the existing Rust Multiply observer: for a populated
-	// obligation, both reserve views must be at least as new as the obligation.
-	// Every dispatched Kamino action refreshes and simulates before persistence.
 	if o.hasPosition {
 		if o.refreshedSlot <= 0 {
 			return fmt.Errorf("Kamino obligation valuation is stale, invalid, or incoherent")
@@ -498,9 +456,6 @@ func validateKaminoRefresh(o decodedKaminoObligation, reserves ...decodedKaminoR
 	return nil
 }
 
-// clockUnixTimestamp reads the Clock sysvar carried in the same confirmed
-// batch as the reserves, so oracle freshness is judged on chain time from the
-// observed context rather than the worker's wall clock.
 func clockUnixTimestamp(accounts []ConfirmedAccount) int64 {
 	clock := accountAt(accounts, budgetClockAddress)
 	if len(clock.Data) < 40 {

@@ -8,16 +8,10 @@ import (
 	"strings"
 )
 
-// Credentials is the explicit Backyard signing capability: the delegated
-// executor keypair for the fixed manifest lane. A loyal-engine instance owns
-// one Credentials value; observers, planners, and callers of decision or
-// recovery paths never receive one.
 type Credentials struct {
 	PolicyKey ed25519.PrivateKey
 }
 
-// signer validates the capability against the pinned delegated executor, so a
-// mismatched key fails at startup instead of at first build.
 func (c Credentials) signer() (ed25519.PrivateKey, error) {
 	if len(c.PolicyKey) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("Backyard signing capability is not configured")
@@ -32,9 +26,9 @@ func (c Credentials) signer() (ed25519.PrivateKey, error) {
 	return key, nil
 }
 
-// ParseCredentials follows loyal-solana-env's established input contract: a
-// JSON byte array, hexadecimal bytes, or base58 bytes representing a 32-byte
-// seed or 64-byte Solana secret key. Errors deliberately omit all secret data.
+// ParseCredentials accepts a JSON byte array, hexadecimal bytes, or base58
+// bytes representing a 32-byte seed or 64-byte Solana secret key. Errors omit
+// all secret data.
 func ParseCredentials(material string) (Credentials, error) {
 	key, err := decodeSolanaKeypairMaterial(material)
 	if err != nil {

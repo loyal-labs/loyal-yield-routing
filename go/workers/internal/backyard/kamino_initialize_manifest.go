@@ -2,8 +2,6 @@ package backyard
 
 import "fmt"
 
-// initializationRequest is lane's initializer request through its installed
-// initializer policy.
 func (m RouteManifest) initializationRequest(policies installedPolicies, lane string, blockhash LatestBlockhash, rent, maximumFee uint64) (KaminoInitializationRequest, error) {
 	key, _ := initializerPolicyLeg(lane)
 	policy, err := policies.account(key)
@@ -23,14 +21,6 @@ func (m RouteManifest) validateInitializationRequest(r KaminoInitializationReque
 	return err
 }
 
-// validateInitializerDecision is the narrow manifest-aware initializer
-// decision validator for the recovery observer. It keeps the exact installed
-// shape requirements — InitializeKaminoObligation, multiply_obligation_missing,
-// zero amount, nonempty idempotency key, and the journal lane matching the
-// request lane — with selector lanes still resolved by
-// validateSelectorInitializerDecision. The AUTO lane is admitted only when
-// the request itself compiles through validateInitializationRequest; no other
-// decision validation is relaxed.
 func (m RouteManifest) validateInitializerDecision(d Decision, r KaminoInitializationRequest) error {
 	if d.Action != InitializeKaminoObligation || d.StrategyKey != r.RouteLane {
 		return fmt.Errorf("initializer journal decision differs")

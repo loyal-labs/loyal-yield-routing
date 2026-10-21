@@ -43,9 +43,6 @@ type events struct {
 	withdrawSince time.Time
 	heartbeatAt   time.Time
 
-	// Leverage watch: per lane below its target, when its borrow room was
-	// first seen at or above the minimum and the last room seen; the lanes
-	// the last tick reported as held.
 	roomOpenedAt map[string]time.Time
 	roomRaw      map[string]uint64
 	heldLanes    map[string]bool
@@ -59,8 +56,6 @@ func newEvents(log *slog.Logger, facts *engine.Facts, vault string) *events {
 }
 
 func (e *events) withdrawalHealthStored(h WithdrawalHealth) {
-	// Unavailable assessments must not refresh a healthy gauge on repeated
-	// errors; the last series stays in place and freshness ages out.
 	if e == nil || e.facts == nil || h.Status == "unavailable" {
 		return
 	}
@@ -85,7 +80,6 @@ func (e *events) noteCause(detail string) {
 	e.mu.Unlock()
 }
 
-// latched reports a newly recorded manual recovery stop.
 func (e *events) latched(reason string) {
 	if e == nil {
 		return
@@ -103,8 +97,6 @@ func (e *events) latched(reason string) {
 	}
 }
 
-// noteLatch is the tick's latch read. Only the operator clear-hold command
-// lifts a latch, so a latched -> clear edge is reported here.
 func (e *events) noteLatch(latched bool, reason string) {
 	if e == nil {
 		return
@@ -121,8 +113,6 @@ func (e *events) noteLatch(latched bool, reason string) {
 	}
 }
 
-// inflight reports the route's one nonterminal operation, if any: the
-// family's gauge is the sum over its vaults.
 func (e *events) inflight(open bool) {
 	if e == nil || e.facts == nil {
 		return
@@ -148,8 +138,6 @@ func (e *events) noteAction(action Action) {
 	e.mu.Unlock()
 }
 
-// noteSnapshot keeps the latest full confirmed valuation for the heartbeat.
-// Health-hold snapshots carry no valuation and are skipped.
 func (e *events) noteSnapshot(s Snapshot) {
 	if e == nil || !s.Fresh || s.ManualReason != "" {
 		return
@@ -166,8 +154,6 @@ func (e *events) noteSnapshot(s Snapshot) {
 	e.mu.Unlock()
 }
 
-// tickResult runs after every tick: progress, the once-a-minute heartbeat with
-// the position's valuation fields, and the fatal exit record.
 func (e *events) tickResult(err error, fatal bool) {
 	if e == nil {
 		return
@@ -211,8 +197,6 @@ func (e *events) tickResult(err error, fatal bool) {
 	}
 }
 
-// selectorUnavailable reports a live selector sample that could not be
-// evaluated (change-only); the route keeps its current authority.
 func (e *events) selectorUnavailable(code string) {
 	if e == nil {
 		return
@@ -220,14 +204,10 @@ func (e *events) selectorUnavailable(code string) {
 	e.log.Warn("backyard_selector_unavailable", "code", code)
 }
 
-// selectorSampleError counts a failed live sample by its sanitized code.
 func (e *events) selectorSampleError(err error) {
 	e.selectorSampleFailed(sanitizedSelectorEvaluateFailure(err))
 }
 
-// selectorSampleFailed counts every failed live sample. The log line above is
-// change-only to keep volume down; the counter is not, so a persistent outage
-// keeps failing and pages.
 func (e *events) selectorSampleFailed(code string) {
 	if e == nil || e.facts == nil {
 		return
@@ -235,8 +215,6 @@ func (e *events) selectorSampleFailed(code string) {
 	e.facts.Failed(engine.FamilyBackyard, code)
 }
 
-// operationFailedAfterSend reports a broadcast money operation that ended
-// failed or in manual recovery.
 func (e *events) operationFailedAfterSend(action Action, reason, signature string) {
 	if e == nil {
 		return
@@ -254,8 +232,6 @@ func (e *events) operationFailedAfterSend(action Action, reason, signature strin
 	}
 }
 
-// operationReconciled reports one finalized, reconciled money step; a
-// reconciled REPORT_NAV additionally reports the NAV it armed.
 func (e *events) operationReconciled(action Action, amountRaw int64, signature string, navRaw int64, navKnown bool) {
 	if e == nil {
 		return
@@ -269,8 +245,6 @@ func (e *events) operationReconciled(action Action, amountRaw int64, signature s
 	}
 }
 
-// eventOperation reads the facts an operation record carries. Read-only, it
-// runs after the state change committed.
 type eventOperationFacts struct {
 	action               Action
 	amountRaw            int64
@@ -294,17 +268,12 @@ func (d *Database) eventOperation(ctx context.Context, operationID string) (even
 	return f, d.events[routeKey], err == nil
 }
 
-// eventFailedAfterSend reports an operation that ended failed or in manual
-// recovery, only if it was broadcast; pre-send refusals are not reported.
 func (d *Database) eventFailedAfterSend(ctx context.Context, operationID, reason string) {
 	if f, e, ok := d.eventOperation(ctx, operationID); ok && f.broadcast {
 		e.operationFailedAfterSend(f.action, reason, f.signature)
 	}
 }
 
-// eventReconciled reports a reconciled money step and, for REPORT_NAV, the NAV
-// its adaptor return data armed; a landed leverage_up borrow also reports
-// its lane, size and reaction time.
 func (d *Database) eventReconciled(ctx context.Context, operationID string) {
 	f, e, ok := d.eventOperation(ctx, operationID)
 	if !ok {
@@ -328,8 +297,6 @@ var (
 	detailSecretPattern = regexp.MustCompile(`(?i)(password|api[-_]?key|token|secret)=\S+`)
 )
 
-// sanitizedDetail removes anything URL- or credential-shaped (RPC/DB URLs can
-// carry credentials) and bounds the text.
 func sanitizedDetail(text string) string {
 	text = detailURLPattern.ReplaceAllString(text, "<url>")
 	text = detailSecretPattern.ReplaceAllString(text, "$1=<redacted>")
@@ -339,7 +306,6 @@ func sanitizedDetail(text string) string {
 	return text
 }
 
-// holdTransactionError is a hold's bounded simulation error, if any.
 func holdTransactionError(err error) string {
 	var hold *BudgetHold
 	if !errors.As(err, &hold) || hold.Details["transactionError"] == "" {
@@ -348,7 +314,6 @@ func holdTransactionError(err error) string {
 	return sanitizedDetail(hold.Details["transactionError"])
 }
 
-// holdDetail is a BudgetHold's cause plus its transaction error, if any.
 func holdDetail(err error) string {
 	var hold *BudgetHold
 	if !errors.As(err, &hold) {
@@ -366,8 +331,6 @@ func errorCode(err error) string {
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.As(err, &hold):
-		// The check that held names the failure; its reason (stale,
-		// no_room, chain_refused) alone would not.
 		if cause := holdCause(hold); hold.Details["cause"] != "" {
 			return cause
 		}
@@ -382,9 +345,6 @@ func errorCode(err error) string {
 	return "worker_fault"
 }
 
-// roomObserved takes one watched reserve's recomputed room from the account
-// view: the room gauge, and the first time a lane below its leverage target
-// had room for the minimum borrow (the reaction clock's start).
 func (e *events) roomObserved(u roomUpdate) {
 	if e == nil {
 		return
@@ -411,8 +371,6 @@ func (e *events) roomObserved(u roomUpdate) {
 	}
 }
 
-// leverageObserved sets every held lane's leverage gap from one tick's
-// observation and drops lanes no longer held.
 func (e *events) leverageObserved(lanes []laneLeverage) {
 	if e == nil || e.facts == nil {
 		return
@@ -434,8 +392,6 @@ func (e *events) leverageObserved(lanes []laneLeverage) {
 	}
 }
 
-// leverageUpLanded reports a landed leverage_up borrow: the counter, the
-// reaction time from the room it used first being seen, and one log line.
 func (e *events) leverageUpLanded(lane string, borrowedRaw int64, signature string) {
 	if e == nil {
 		return
@@ -465,8 +421,6 @@ func (e *events) hold(lane, reason string) {
 	e.facts.BackyardHold(e.vault, lane, reason)
 }
 
-// stepNoRoom counts a step that holds for lack of chain room, by lane and
-// target rule.
 func (e *events) stepNoRoom(lane, rule string) {
 	if e == nil || e.facts == nil {
 		return
@@ -474,8 +428,6 @@ func (e *events) stepNoRoom(lane, rule string) {
 	e.facts.BackyardStepNoRoom(e.vault, lane, rule)
 }
 
-// leverageDecisionOutage counts a leverage sample that could not be decided,
-// by its sanitized cause (leverage_target.go outage()).
 func (e *events) leverageDecisionOutage(reason string) {
 	if e == nil || e.facts == nil {
 		return

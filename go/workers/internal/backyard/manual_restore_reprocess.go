@@ -27,8 +27,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// ManualRestoreReprocessRequest pins the exact row: both fields are required
-// and both must match the stored journal identity before anything is written.
 type ManualRestoreReprocessRequest struct {
 	OperationID string
 	Signature   string
@@ -53,18 +51,9 @@ type ManualRestoreFailureResult struct {
 	TerminalStatus string `json:"terminalStatus,omitempty"`
 }
 
-// manualRestoreNoNonterminalSQL is the only route-activity gate for this
-// settlement command: under the writer lock the route has no nonterminal
-// operation. Historical manual rows — including previously resolved strategy
-// resets — are deliberately not consulted here; they stay untouched, and the
-// worker's own UnresolvedCapitalRecoverySQL keeps blocking them for new
-// capital decisions.
 const manualRestoreNoNonterminalSQL = `SELECT EXISTS (
  SELECT 1 FROM loyal_yield.multiply_operations WHERE route_key = $1 AND status IN (` + nonterminalStatusSQL + `))`
 
-// sanitizedStage returns the fixed error an operator sees for a failed stage.
-// Underlying database, RPC, and provider errors are intentionally discarded:
-// their text can carry credentials or provider response bodies.
 func sanitizedStage(stage string) error {
 	return errors.New("settle-manual-restore blocked at stage " + stage)
 }
@@ -104,13 +93,6 @@ func (d *Database) loadManualRestoreOperation(ctx context.Context, operationID s
 	return operation, recoveryReason, messageHash, nil
 }
 
-// RunManualRestoreReprocess validates, and with execute writes, the exact
-// already-manual landed failure. Validation is total before the write: the
-// row identity, the stored unclassified marker and the finalized receipt's
-// rollback proof gate the dry-run; the execute path runs on Backyard's writer
-// (one session that holds the writer lock, refused while the worker runs),
-// re-checks route activity on it, and runs the same settlement the automatic
-// walk uses.
 func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, request ManualRestoreReprocessRequest, execute bool) (ManualRestoreFailureResult, error) {
 	result := ManualRestoreFailureResult{Schema: "backyard-manual-restore-reprocess/v1"}
 	if databaseURL == "" || rpcURL == "" {
@@ -119,7 +101,6 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 	if request.OperationID == "" || request.Signature == "" {
 		return result, errors.New("settle-manual-restore: --operation and --signature are required")
 	}
-	// The execute path writes: it runs on the writer, opened before it reads.
 	open := openOperatorDatabase
 	if execute {
 		open = openOperatorWriter
@@ -153,8 +134,6 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		result.Stage = "row_shape"
 		return result, errors.New("settle-manual-restore: operation does not match the reprocessable landed failure shape")
 	}
-	// The one finalized receipt the settlement below proves, and the reason
-	// the automatic walk records from it.
 	receipt, err := readFailureReceipt(ctx, rpc, operation.TransactionSignature)
 	if err != nil {
 		result.Stage = "read_receipt"
@@ -191,10 +170,6 @@ func RunManualRestoreReprocess(ctx context.Context, databaseURL, rpcURL string, 
 		if errors.As(settleErr, &pgErr) {
 			result.Stage = "settlement_sql_" + pgErr.Code + "_" + pgErr.ConstraintName
 		}
-		// A BudgetHold's cause names the exact safety guard that refused
-		// settlement; surfacing it alone keeps operator output fixed while
-		// still identifying the guard. The row is unchanged; the
-		// sanitized stage code is all the operator output carries.
 		var hold *BudgetHold
 		if errors.As(settleErr, &hold) {
 			result.Stage = holdCause(hold)

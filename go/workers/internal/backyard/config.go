@@ -11,17 +11,12 @@ import (
 const (
 	RouteKind = "backyard_rwa_v1"
 	// The Prime/PRIME/USDC and Maple lanes' names (route_catalog.go).
-	PhaseOneLaneID  = "Prime/PRIME/USDC"
-	SelectedRouteID = "Maple/syrupUSDC/USDC"
-	// The Phase 2 authorization envelope permits at most 1 USDC-equivalent per
-	// money-moving transaction. Selected-lane decisions are clamped before they
-	// are journaled, quoted, signed, or broadcast.
+	PhaseOneLaneID                = "Prime/PRIME/USDC"
+	SelectedRouteID               = "Maple/syrupUSDC/USDC"
 	Phase2TransactionCapRaw int64 = 1_000_000
 	OneNonterminalInvariant       = "one_nonterminal_operation_per_route"
 )
 
-// Phase 2 monitor knobs. They are code constants on purpose: loosening a
-// fail-closed bound must be a reviewed change, not environment configuration.
 const (
 	// Program-identity pins (M6): for each pinned program the ProgramData
 	// address, the last-deploy slot recorded in that account, and the sha256 of
@@ -40,20 +35,12 @@ const (
 	adaptorProgramDataSHA256  = "8361a469833fa17df8f62f9c4b8055aa859552fe8db7610b8fcb3af6ac6eb6d5"
 	voltrProgramDeploySlot    = int64(445223838)
 	adaptorProgramDeploySlot  = int64(443528877)
-	// S1/S2: the observed NAV may drift from the last reported NAV by this
-	// bounded relative tolerance; beyond it the book is unexplained and the
-	// route stops instead of reporting.
-	navDriftToleranceBPS = int64(50)
-	navDriftFloorRaw     = int64(1_000)
-	// Batch routine fee-bearing reports to avoid whole-LP rounding consuming
-	// small pilot gains. Withdrawal and post-mutation reporting keep priority.
-	routineNAVReportInterval = time.Hour
-	// Unharvested fee LP above this share of effective supply warns only. It
-	// is not a fee-rate limit, harvest trigger or permission to stop withdrawals.
-	feeAccumulatorWarningBPS = int64(100)
+	navDriftToleranceBPS      = int64(50)
+	navDriftFloorRaw          = int64(1_000)
+	routineNAVReportInterval  = time.Hour
+	feeAccumulatorWarningBPS  = int64(100)
 )
 
-// Config is deliberately fixed for the MVP; route selection is not configurable.
 type Config struct {
 	PollInterval time.Duration
 }
@@ -62,14 +49,9 @@ func DefaultConfig() Config {
 	return Config{PollInterval: 5 * time.Second}
 }
 
-// RuntimeConfig is the Backyard-only process configuration the one-shot
-// operator commands read. Separately deployed engine instances have
-// independent credentials; neither reads the other's URLs or keys.
 type RuntimeConfig struct {
 	DatabaseURL, RPCURL string
-	// Jupiter is the swap/v1 client the selector evaluate command quotes
-	// through.
-	Jupiter *jupiter.Client
+	Jupiter             *jupiter.Client
 }
 
 func (c RuntimeConfig) Validate() error {

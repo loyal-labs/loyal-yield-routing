@@ -14,8 +14,6 @@ import (
 
 var errConfirmedObservationUnavailable = errors.New("confirmed route observation is temporarily unavailable")
 
-// Worker runs one vault's ticks: its route row, its manifest (the vault's
-// routes) and its events.
 type Worker struct {
 	wake     chan struct{}
 	routeKey string
@@ -23,9 +21,7 @@ type Worker struct {
 	manifest RouteManifest
 	runtime  tickRuntime
 	events   *events
-	// holds reports why a tick did not move the vault: a gauge on /metrics
-	// and a log line when it changes; a hold is never a journal row.
-	holds holdLog
+	holds    holdLog
 }
 
 type tickRuntime struct {
@@ -36,36 +32,24 @@ type tickRuntime struct {
 	advance                 func(context.Context, PersistedOperation) error
 	observe                 func(context.Context) (Observation, error)
 	loadLatch               func(context.Context, string) (ManualRecoveryLatch, bool, error)
-	// latch writes the operator's stop for a HOLD_MANUAL_RECOVERY decision.
-	latch          func(context.Context, string, ManualRecoveryLatch) error
-	prepareBridge  func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
-	prepareKamino  func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
-	prepareJupiter func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
-	prepareHastra  func(context.Context, RouteManifest, Decision, Observation) (Observation, HastraExecutionEvidence, error)
-	// prepareStep builds an atomic step (stepDecision) from the tick's batch.
-	prepareStep    func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
-	recordDecision func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
-	// build signs the decided operation's request, simulates that exact wire
-	// and persists it with its expected effects before anything sends it.
-	build            func(context.Context, string, any, ExpectedEffects) error
-	recordBudgetHold func(context.Context, string, *BudgetHold) error
-	// watchRoom hands the account view the reserves this tick waits on
-	// (leverage_room_watch.go); nil without a streaming view.
-	watchRoom func([]roomWatch, func(roomUpdate))
+	latch                   func(context.Context, string, ManualRecoveryLatch) error
+	prepareBridge           func(context.Context, RouteManifest, Decision, Observation) (Observation, BridgeExecutionEvidence, error)
+	prepareKamino           func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoExecutionEvidence, error)
+	prepareJupiter          func(context.Context, RouteManifest, Decision, Observation) (Observation, JupiterExecutionEvidence, error)
+	prepareHastra           func(context.Context, RouteManifest, Decision, Observation) (Observation, HastraExecutionEvidence, error)
+	prepareStep             func(context.Context, RouteManifest, Decision, Observation) (Observation, StepExecutionEvidence, error)
+	recordDecision          func(context.Context, string, Observation, Decision, string) (DecisionRecord, error)
+	build                   func(context.Context, string, any, ExpectedEffects) error
+	recordBudgetHold        func(context.Context, string, *BudgetHold) error
+	watchRoom               func([]roomWatch, func(roomUpdate))
 }
 
-// productionJournal is the journal evidence the production observe path merges
-// into a snapshot. *Database implements it.
 type productionJournal interface {
 	PostMutationNAVRequired(ctx context.Context, routeKey string) (bool, error)
 	ReconciledBridgeJournal(ctx context.Context, routeKey string) (ReconciledBridgeJournalState, error)
 	RecordPositionSnapshot(ctx context.Context, routeKey string, observation Observation) error
 }
 
-// productionObserveState is the production observe path with its three readers
-// injectable: the confirmed account batch, the reconciled journal, and the
-// pinned program identity. productionTickRuntime wires all three to the real
-// database, RPC client, and chain; tests stub them to drive the same merge.
 type productionObserveState struct {
 	manifest RouteManifest
 	routeKey string
@@ -74,9 +58,6 @@ type productionObserveState struct {
 	identity func(context.Context) (programIdentityObservation, error)
 }
 
-// observe merges one confirmed batch with the journal and the pinned program
-// identity, so every monitor input the decision engine reads comes from the
-// same tick and none of it is inferred from a valuation.
 func (p productionObserveState) observe(ctx context.Context) (Observation, error) {
 	observation, err := p.batch(ctx)
 	if err != nil {
@@ -96,13 +77,7 @@ func (p productionObserveState) observe(ctx context.Context) (Observation, error
 	return observation, nil
 }
 
-// enrich is the one production snapshot merge used by both the outer
-// observation and construction refreshes. Keeping the identity watcher in
-// this callback prevents a refresh from receiving a raw NAV snapshot while
-// the outer tick sees a verified program image.
 func (p productionObserveState) enrich(ctx context.Context, observation *Observation) error {
-	// A Trustful vault's receipt is its report: no journal or program
-	// identity arms its decisions.
 	if observation != nil && observation.Snapshot.Trustful {
 		return nil
 	}
@@ -182,8 +157,6 @@ func productionTickRuntime(database *Database, rpc *chain.Client, view *View, ju
 	return tickRuntime{
 		withdrawalHealth: database.RecordWithdrawalHealth,
 		observeWithdrawalHealth: func(ctx context.Context) (Observation, error) {
-			// Latches and recovery skip normal observation. Read for display only;
-			// do not write position state or feed this back into execution.
 			o, err := state.batch(ctx)
 			if err == nil {
 				err = state.enrich(ctx, &o)
@@ -235,9 +208,6 @@ func confirmedObservationUnavailable(err error) error {
 	return fmt.Errorf("%w: %w", errConfirmedObservationUnavailable, err)
 }
 
-// NewWorker constructs vault's serialized lifecycle worker. The signing
-// capability is injected, validated here, and never derivable from a
-// decision, observation, or recovery input.
 func NewWorker(database *Database, rpc *chain.Client, view *View, jupiterClient *jupiter.Client, config Config, credentials Credentials, v *Vault, state *vaultState) (*Worker, error) {
 	if database == nil || database.pool == nil || rpc == nil || view == nil || v == nil || state == nil || config.PollInterval <= 0 {
 		return nil, fmt.Errorf("invalid concrete worker configuration")
@@ -362,8 +332,6 @@ func (w *Worker) Tick(ctx context.Context) (tickErr error) {
 	return w.runtime.advance(ctx, *pending)
 }
 
-// prepare builds the decided action's request from the tick's batch: the one
-// transaction this tick will sign. It never decides again.
 func (w *Worker) prepare(ctx context.Context, decision Decision, observation Observation) (any, ExpectedEffects, Observation, error) {
 	wireDecision := decision
 	switch decision.Action {
@@ -377,7 +345,6 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 		prepared, e, err := w.runtime.prepareBridge(ctx, w.manifest, wireDecision, observation)
 		return e.Request, e.ExpectedEffects, prepared, err
 	case OpenRouteStep, DeleverRouteStep:
-		// A leverage move executes as one atomic step (step.go).
 		if _, atomic := stepDecision(observation.Snapshot, wireDecision); atomic {
 			if w.runtime.prepareStep == nil {
 				return nil, ExpectedEffects{}, observation, budgetHold("step_preparation_unavailable")
@@ -388,8 +355,6 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 		prepared, e, err := w.runtime.prepareKamino(ctx, w.manifest, wireDecision, observation)
 		return e.Request, e.ExpectedEffects, prepared, err
 	case SwapStableToCollateralStep, SwapCollateralToStableStep, SwapDebtToCollateralStep, SwapCollateralToDebtStep, SwapUSDCToDebtStep, SwapDebtToUSDCStep:
-		// A conversion executes through Hastra or Jupiter by its lane and
-		// action (hastraConversionLeg).
 		if conversionVenueHastra(wireDecision) {
 			if w.runtime.prepareHastra == nil {
 				return nil, ExpectedEffects{}, observation, budgetHold("hastra_preparation_unavailable")
@@ -403,8 +368,6 @@ func (w *Worker) prepare(ctx context.Context, decision Decision, observation Obs
 	return nil, ExpectedEffects{}, observation, fmt.Errorf("action %s is not dispatchable", decision.Action)
 }
 
-// noteHold reports a hold the tick's prepare or build ended in: its reason on
-// the gauge (no_room counted too), its cause on the log line.
 func (w *Worker) noteHold(s Snapshot, lane string, err error) {
 	var hold *BudgetHold
 	if errors.As(err, &hold) {
@@ -412,14 +375,11 @@ func (w *Worker) noteHold(s Snapshot, lane string, err error) {
 	}
 }
 
-// journalTickError fails the tick's operation with its pre-send hold.
 func (w *Worker) journalTickError(ctx context.Context, operationID string, err error) error {
 	var hold *BudgetHold
 	if !errors.As(err, &hold) || w.runtime.recordBudgetHold == nil {
 		return err
 	}
-	// An endpoint that could not answer says nothing about the operation: it
-	// stays decided; the next tick fails it and decides again.
 	if errors.Is(hold, chain.ErrUnavailable) {
 		return confirmedObservationUnavailable(err)
 	}
@@ -429,8 +389,6 @@ func (w *Worker) journalTickError(ctx context.Context, operationID string, err e
 	return err
 }
 
-// latchManualRecovery writes the operator's stop for a manual recovery
-// decision; the next tick reads it and does nothing until clear-hold.
 func (w *Worker) latchManualRecovery(ctx context.Context, observation Observation, decision Decision) error {
 	if w.runtime.latch == nil {
 		return fmt.Errorf("manual recovery latch runtime is unavailable")
@@ -443,8 +401,6 @@ func (w *Worker) latchManualRecovery(ctx context.Context, observation Observatio
 	return nil
 }
 
-// afterBroadcastError marks a tick error from advancing an operation whose
-// broadcast intent is already durable. Its holds are never pre-send retries.
 type afterBroadcastError struct{ err error }
 
 func (e *afterBroadcastError) Error() string { return e.err.Error() }
@@ -456,13 +412,6 @@ func preBroadcastStatus(status OperationStatus) bool {
 	return status == Decided || status == Built || status == Simulated || status == Signed
 }
 
-// isPreSendHold reports a tick error made only of holds raised
-// before anything was broadcast. The next tick re-observes the chain and
-// re-derives the whole leg, exactly what a process restart would do, without
-// the Render restart (13 tries, 10 restarts in the 09-26 AUTO entry; the
-// per-reason list it replaces grew with every move). A hold joined with any
-// other fault (a store or wire error) still stops the worker,
-// and so does any hold from an operation whose broadcast intent is recorded.
 func isPreSendHold(err error) bool {
 	var hold *BudgetHold
 	var sent *afterBroadcastError
@@ -502,12 +451,7 @@ func (w *Worker) runTicks(ctx context.Context, tick func(context.Context) error)
 	for {
 		err := tick(ctx)
 		if err != nil {
-			// Confirmed-observation gaps and pre-send holds (the journaled
-			// spending-limit refusal among them) skip this tick's leg and retry
-			// on the next interval; anything else - including a hold joined
-			// with a store error - is a process fault and stops the worker.
 			if !errors.Is(err, errConfirmedObservationUnavailable) && !isPreSendHold(err) {
-				// A SIGTERM cancellation is a normal stop, not an alert.
 				if ctx.Err() == nil {
 					w.events.tickResult(err, true)
 				}
@@ -527,10 +471,6 @@ func (w *Worker) runTicks(ctx context.Context, tick func(context.Context) error)
 	}
 }
 
-// Run serializes lifecycle ticks until ctx ends. Every read and write goes
-// through the writer session that holds Backyard's one-writer lock (the
-// family advisory lock); once that session is lost they fail, and the
-// tick's store error stops the worker.
 func (w *Worker) Run(ctx context.Context) error {
 	if w == nil {
 		return fmt.Errorf("invalid worker runtime")

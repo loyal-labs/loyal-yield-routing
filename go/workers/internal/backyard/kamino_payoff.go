@@ -8,9 +8,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-// This is an exit-cost estimate over a finite execution window, not a change
-// to the caps or a guarantee after an arbitrary chain/price/configuration change.
-// Recompute from chain Clock at final send; a now-insufficient wire remains HOLD.
 const kaminoPayoffWindowSeconds int64 = 60
 
 type KaminoPayoffBound struct {

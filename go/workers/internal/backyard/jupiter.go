@@ -26,7 +26,6 @@ func jupiterMaxAccounts(other []compiledInstruction) int {
 	return max(maxTransactionKeys-distinctKeys(mustKey(bridgeDelegate), other), 0)
 }
 
-// jupiterSwapMaxAccounts is a standalone swap's: its one Squads execute.
 func jupiterSwapMaxAccounts(v *Vault, lane string, action Action) (int, error) {
 	skeleton, err := jupiterSkeletonExecute(v, lane, action)
 	if err != nil {
@@ -35,9 +34,6 @@ func jupiterSwapMaxAccounts(v *Vault, lane string, action Action) (int, error) {
 	return jupiterMaxAccounts([]compiledInstruction{skeleton}), nil
 }
 
-// jupiterSkeletonExecute is the Squads execute of action's swap on lane with
-// only its twelve fixed accounts, through program authority 0, at a stand-in
-// policy: what a swap names before its venue accounts.
 func jupiterSkeletonExecute(v *Vault, lane string, action Action) (compiledInstruction, error) {
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(v, action, lane)
 	if err != nil {
@@ -62,7 +58,6 @@ func jupiterSkeletonExecute(v *Vault, lane string, action Action) (compiledInstr
 	return wrapSquadsPolicy(v, publicKey(sha256.Sum256([]byte("jupiter swap policy stand-in"))), mustKey(bridgeDelegate), []byte{0}, inner)
 }
 
-// JupiterSwapInstruction is the swap instruction as journaled in the request.
 type JupiterSwapInstruction struct {
 	ProgramID string                `json:"programId"`
 	Accounts  []jupiter.AccountMeta `json:"accounts"`
@@ -70,11 +65,10 @@ type JupiterSwapInstruction struct {
 }
 
 type JupiterSwapRequest struct {
-	Action           Action
-	AmountRaw        uint64
-	QuotedOutputRaw  uint64
-	MinimumOutputRaw uint64
-	// Policy is the installed account of the swap's policy (jupiterPolicyLeg).
+	Action               Action
+	AmountRaw            uint64
+	QuotedOutputRaw      uint64
+	MinimumOutputRaw     uint64
 	Policy               string
 	Instruction          JupiterSwapInstruction
 	RecentBlockhash      string
@@ -94,8 +88,6 @@ type JupiterExecutionEvidence struct {
 
 func jupiterEdgeForRoute(v *Vault, action Action, lane string) (sourceMint, destinationMint, sourceATA, destinationATA string, err error) {
 	if catalogJupiterRoute(lane) {
-		// A catalog lane, AUTO among them, swaps along its catalog edge, the
-		// one its policy admits.
 		edge, err := catalogConversion(v, action, lane)
 		return edge.from.mint.String(), edge.to.mint.String(), edge.from.custody.String(), edge.to.custody.String(), err
 	}
@@ -113,8 +105,6 @@ func jupiterEdgeForRoute(v *Vault, action Action, lane string) (sourceMint, dest
 	}
 }
 
-// basicSwapAction reports an action a basic lane swaps through its families:
-// USDC (its debt) into collateral and back.
 func basicSwapAction(action Action) bool {
 	switch action {
 	case SwapStableToCollateralStep, SwapDebtToCollateralStep, SwapCollateralToStableStep, SwapCollateralToDebtStep:
@@ -183,11 +173,6 @@ func validateJupiterQuoteForRoute(v *Vault, quote jupiter.Quote, action Action, 
 	return out, minimum, nil
 }
 
-// validateJupiterInstructionForRoute checks the swap API's instruction against
-// the request: a shared_accounts_route_v2 by the vault alone, from the edge's
-// source custody and mint into its destination custody and mint, of exactly
-// amount at the quoted out with at most the worker's slippage. Its policy
-// pins the rest on chain.
 func validateJupiterInstructionForRoute(v *Vault, value JupiterSwapInstruction, action Action, amount, out, minimum uint64, lane string) (compiledInstruction, error) {
 	sourceMint, destinationMint, sourceATA, destinationATA, err := jupiterEdgeForRoute(v, action, lane)
 	if err != nil {
@@ -252,17 +237,11 @@ func jupiterInstructionWireFloor(instruction JupiterSwapInstruction) (uint64, er
 	return floor.Div(floor, big.NewInt(10_000)).Uint64(), nil
 }
 
-// autoCollateralLane is the key of every AUTO special case: a lane whose
-// collateral is AUTO (AUTO/PYUSD and its wYLDS overflow lane), by its mint.
 func autoCollateralLane(lane string) bool {
 	l, ok := findEarnLane(lane)
 	return ok && l.route.Kamino.CollateralMint == autoAUTOPYUSDTemplate.Kamino.CollateralMint
 }
 
-// jupiterValidateAutoRetainedMinimum rejects a retained AUTO request whose
-// minimum output exceeds what its own wire can enforce, so caller-forged
-// evidence quoting an advisory JSON threshold cannot bypass the producer's
-// conservative retention. Other lanes keep their established semantics.
 func jupiterValidateAutoRetainedMinimum(request JupiterSwapRequest) error {
 	if !autoCollateralLane(request.RouteLane) {
 		return nil
@@ -293,8 +272,6 @@ func compileJupiterMessageForDelegate(v *Vault, request JupiterSwapRequest, dele
 	return checkedUnsignedMessage(message)
 }
 
-// jupiterPolicyExecute is the request's swap as the Squads execute of its
-// validated instruction at its policy's edge constraint.
 func jupiterPolicyExecute(v *Vault, request JupiterSwapRequest, delegate publicKey) (compiledInstruction, error) {
 	inner, err := validateJupiterInstructionForRoute(v, request.Instruction, request.Action, request.AmountRaw, request.QuotedOutputRaw, request.MinimumOutputRaw, request.RouteLane)
 	if err != nil {

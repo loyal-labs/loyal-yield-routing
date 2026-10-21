@@ -37,8 +37,6 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 		return nil, nil, err
 	}
 	out := append([]LaneEconomics(nil), markets...)
-	// Markets are the active registry lanes; any other market fails closed
-	// with the set error of an unknown lane.
 	seen := map[string]LaneEconomics{}
 	for _, market := range out {
 		if _, dup := seen[market.Lane]; !earnActiveLane(market.Lane) || dup {
@@ -50,23 +48,17 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 	if s.TotalVaultNAVRaw <= policy.IdleBufferRaw {
 		return out, nil, budgetHold("selector_live_snapshot_unavailable")
 	}
-	// Moves are priced on a settled book: Voltr idle beyond the withdrawal
-	// queue and the Squads cash an entry already allocated, no shortfall.
 	if !s.Fresh || s.ObservationID == "" || s.Slot <= 0 || s.Nonterminal != "" || s.HasAmbiguousSubmission || s.ManualReason != "" ||
 		withdrawalShortfallRaw(s) != 0 || s.VoltrStrategyIdleRaw != 0 || s.WithdrawalDemandRaw < 0 || s.VoltrIdleRaw < 0 || s.SquadsIdleRaw < 0 {
 		return out, nil, budgetHold("selector_source_unavailable")
 	}
 	idle := uint64(s.VoltrIdleRaw-s.WithdrawalDemandRaw) + uint64(s.SquadsIdleRaw)
-	// Without cash beyond the buffer no lane is entered with cash; a
-	// rotation canary prices its own pair only.
 	cashBlocked := ""
 	if idle <= uint64(policy.IdleBufferRaw) {
 		cashBlocked = "selector_move_has_no_entry_cash"
 	} else if onlySource != "" {
 		cashBlocked = "operator_canary_rotation_only"
 	}
-	// The policies and the SOL price every quote of this sample is priced
-	// through: one read each, at the sample's slot.
 	pricer, err := newLanePricer(ctx, rpc, view, client, manifest, s.Slot)
 	if err != nil {
 		return out, nil, err
@@ -106,9 +98,6 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 		} else {
 			jobs = append(jobs, job{i: i, maximum: canary(min(strategyTwoBridgeLegCapRaw, uint64(s.TotalVaultNAVRaw-policy.IdleBufferRaw), idle-uint64(policy.IdleBufferRaw)))})
 		}
-		// Each held lane's tranche, released, enters this lane when it is
-		// the source's best destination by forward APY (a canary prices
-		// its pair anyway).
 		held := s.heldLanes()
 		for k := range o.lanes {
 			source := o.lanes[k]
@@ -130,10 +119,6 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 		}(j)
 	}
 	wg.Wait()
-	// Keep the best quote per move; the pure selector owns cross-move
-	// competition and persistence. Without any profitable size, the best
-	// valid quote stays published for evidence: SelectOpportunity then
-	// decides KEEP from its own math.
 	result := make([]MoveQuote, 0, len(jobs))
 	for j, job := range jobs {
 		if len(laddered[j]) == 0 {
@@ -160,11 +145,6 @@ func collectSelectorQuotes(ctx context.Context, rpc *chain.Client, view *View, c
 	return out, result, nil
 }
 
-// ladder prices one move into market's lane, of cash or of source's
-// tranche, at up to selectorLadderRungs exact sizes from maximum down, and
-// returns the collected quotes, or the refusal that labels the move when
-// none collects. An operator canary skips the benefit check, so its sizes
-// are quoted whatever their gain ceiling.
 func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEconomics, policy SelectorPolicy, market LaneEconomics, source *Snapshot, maximum uint64, canary bool) ([]MoveQuote, string) {
 	from := "cash"
 	if source != nil {
@@ -176,8 +156,6 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 			ms = m
 		}
 	}
-	// A rotation's source is settled once, on the first size priced: what
-	// staying earns does not depend on the tranche.
 	var keep *heldSettlement
 	price := func(size uint64) (MoveQuote, string, bool, error) {
 		var err error
@@ -194,10 +172,6 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 			return q, "", false, nil
 		}
 		_, _ = fmt.Fprintf(os.Stderr, "backyard-rwa-worker: selector entry quote unavailable from=%s lane=%s size=%d: %v\n", from, market.Lane, size, err)
-		// A smaller size may repair a cost beyond equity or a step quote
-		// the leveraged route cannot fill at this size (exit_quote at the
-		// 90% tranche, Oct 14); Jupiter's rate limit and every other
-		// refusal stop the move.
 		var hold *BudgetHold
 		if errors.As(err, &hold) && holdCause(hold) == "selector_move_cost_exceeds_equity" {
 			return q, "selector_move_cost_exceeds_equity", true, err
@@ -208,13 +182,7 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 			!(errors.As(err, &status) && status.Code == http.StatusTooManyRequests)
 		return q, "complete_entry_quote_unavailable", sized, err
 	}
-	// Biggest-first sizing ladder: when the largest size cannot clear the
-	// selector benefit under its expected cost, price at most two smaller
-	// exact sizes, inside the collection deadline.
 	var collected []MoveQuote
-	// The largest size's refusal labels the move when nothing collects:
-	// economic failures keep probing smaller sizes, while network,
-	// staleness and validation refusals stop the ladder immediately.
 	refusal := ""
 	sufficient, smallerUnavailable := false, false
 	size := maximum
@@ -222,8 +190,6 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 		if size == 0 || (j > 0 && (ctx.Err() != nil || time.Since(o.ObservedAt) > selectorLadderBudget)) {
 			break
 		}
-		// A size whose gain ceiling cannot clear MinimumBenefit is not
-		// quoted, nor is any smaller one.
 		if !canary && moveGainCeiling(source, ms, market, int64(min(size, math.MaxInt64)), policy) <= float64(policy.MinimumBenefitRaw) {
 			if j == 0 {
 				refusal = gainBelowMinimumBenefit
@@ -247,22 +213,13 @@ func (p lanePricer) ladder(ctx context.Context, o Observation, markets []LaneEco
 			sufficient = true
 			break
 		}
-		// The quote may be clamped below size (deposit room): the next
-		// rung steps down from what was actually priced.
 		size = selectorNextLadderSize(min(size, uint64(q.EquityRaw)), uint64(max(q.Cost.EntrySwapLossMicros, 0)))
 	}
 	return selectorLadderOutcome(collected, sufficient, smallerUnavailable, refusal)
 }
 
-// selectorLadderRungs is how many exact sizes one lane's ladder prices.
 const selectorLadderRungs = 3
 
-// selectorNextLadderSize is the next, smaller ladder size: a tenth of the
-// last one, unless the last rung's entry swap lost over a tenth of its size
-// to the venue's depth. Then the next rung is 90% of the value the venue
-// actually filled. Maple's reviewed venue (Manifest) fills about 33.6k
-// syrupUSDC (~$40k): a $100k rung pays ~$61k of swap loss there, and a
-// $10k rung would leave most of the fillable size unpriced.
 func selectorNextLadderSize(size, entrySwapLoss uint64) uint64 {
 	next := size / 10
 	if entrySwapLoss <= size/10 || entrySwapLoss >= size {
@@ -286,17 +243,11 @@ func selectorLadderOutcome(collected []MoveQuote, sufficient, smallerUnavailable
 	return collected, refusal
 }
 
-// selectorQuoteSizeSufficient reports whether an already-collected quote
-// clears the existing selector benefit under its expected expense, so no
-// smaller ladder size is priced.
 func selectorQuoteSizeSufficient(o Observation, markets []LaneEconomics, policy SelectorPolicy, q MoveQuote) bool {
 	benefit, admissible := selectorMoveQuoteBenefit(o, markets, policy, q)
 	return admissible && benefit > float64(policy.MinimumBenefitRaw)
 }
 
-// selectorMoveQuoteBenefit reuses the pure SelectOpportunity evaluator on one
-// exact quote rather than duplicating any financial formula. It reports the
-// candidate's BenefitRaw and whether the quote is admissible at all.
 func selectorMoveQuoteBenefit(o Observation, markets []LaneEconomics, policy SelectorPolicy, q MoveQuote) (float64, bool) {
 	eval := append([]LaneEconomics(nil), markets...)
 	for i := range eval {
@@ -331,9 +282,6 @@ func (d *Database) evaluateSelector(ctx context.Context, rpc *chain.Client, view
 	return result, err
 }
 
-// evaluateSelectorObserved also returns the observation the result was
-// decided from, so the B2 leverage decision uses the same snapshot and
-// planning inputs.
 func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Client, view *View, client *jupiter.Client, manifest RouteManifest, vault *vaultState, markets []LaneEconomics, identity func(context.Context) (programIdentityObservation, error), policy SelectorPolicy) (SelectorResult, Observation, error) {
 	o, err := observeSelectorShadow(ctx, d, rpc, view, manifest, vault, identity)
 	if err != nil {
@@ -351,12 +299,6 @@ func (d *Database) evaluateSelectorObserved(ctx context.Context, rpc *chain.Clie
 	}
 	enriched, quotes, quoteErr := collectSelectorQuotes(ctx, rpc, view, client, manifest, o, markets, policy, onlyLane, onlySource, maximum...)
 	if quoteErr != nil {
-		// No fabricated executable capacity on an outage. Current economic evidence
-		// can still maintain persistence, while pure selection cannot enter.
-		// Each lane keeps one sanitized refusal code: the collector's own closed
-		// gate codes echo, and every deeper producer, transport or database
-		// failure collapses to the generic source-quote code — never the raw
-		// error text.
 		enriched, quotes = append([]LaneEconomics(nil), markets...), nil
 		reason := "selector_source_quote_unavailable"
 		var hold *BudgetHold

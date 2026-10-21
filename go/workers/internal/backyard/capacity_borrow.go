@@ -41,7 +41,6 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 			return 0, err
 		}
 		if !kaminoObligationTermOpen(decoded, debt, clockUnixTimestamp(accounts)) {
-			// Past its debt term the obligation can borrow no more.
 			return 0, nil
 		}
 		if obligation.Data[kaminoObligationElevationGroupOffset] != 0 || !allZero(obligation.Data[2288:2320]) {
@@ -55,12 +54,6 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 	return kaminoDebtReserveRoom(debtAccount, debt, clockUnixTimestamp(accounts))
 }
 
-// kaminoDebtReserveRoom is the debt reserve's own share of the additional
-// debt room: what any obligation could still borrow from it at chain time
-// now (borrowing disabled or unmodelled, queued liquidity, weighted debt,
-// the outside-elevation-group and borrow limits, the utilization limit, the
-// daily net-borrow cap, available liquidity, status). It reads one account,
-// so the account view can recompute it on every update of the reserve.
 func kaminoDebtReserveRoom(debtAccount ConfirmedAccount, debt decodedKaminoReserve, now int64) (uint64, error) {
 	if !kaminoReserveTermOpen(debt, now) {
 		return 0, nil
@@ -172,11 +165,6 @@ func leverageStepWithinRisk(p KaminoPosition, accounts []ConfirmedAccount, route
 	return receive, nil
 }
 
-// desiredLeverageBorrow is the whole step to level the position wants, inside
-// its own risk limits but not bounded by the debt reserve's room or the
-// collateral reserve's deposit room. It is what an up move is priced at: no
-// executable borrow is larger, so none pays a higher rate. The worker borrows
-// this tick's capacity-sized part of it.
 func desiredLeverageBorrow(p KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute, level float64) (uint64, error) {
 	rate := binary.LittleEndian.Uint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoReserveConfigOffset+40:])
 	if rate >= uint64(1)<<60 {
@@ -197,8 +185,6 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 	if err != nil {
 		return
 	} // new borrowing holds; urgent exits remain live
-	// Every level above 1 up to the lane's cap: the stored level a decision
-	// steps to may be past the position's next one.
 	var borrow, desired [len(leverageLadder)]uint64
 	for i, r := range leverageLadder[1:] {
 		if r.level > laneMaxLevel(route.Lane) {
@@ -253,7 +239,6 @@ func leverageDesiredRaw(s Snapshot, level float64) uint64 {
 	return s.LeverageDesiredRaw[i]
 }
 
-// leverageBorrowCeiling is this batch's capacity-sized borrow toward level.
 func leverageBorrowCeiling(s Snapshot, level float64) uint64 {
 	i, ok := leverageRungIndex(level)
 	if !s.BorrowCapacityKnown || !ok {

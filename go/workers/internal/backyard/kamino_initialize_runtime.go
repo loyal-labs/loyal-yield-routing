@@ -32,8 +32,6 @@ func initializationSnapshotReady(s Snapshot) bool {
 	return t.Rule == ruleEntry && t.EntryRaw >= 0 && funding > 0 && t.EntryRaw <= s.VoltrIdleRaw && funding <= min(s.CapacityRaw, s.PolicyLimitRaw, s.MaxTargetLTVEntryRaw) && s.CapacityRaw > 0 && s.PolicyLimitRaw > 0 && s.MaxTargetLTVEntryRaw > 0 && hardLTVBPS(s.LiquidationThresholdBPS, s.MaxLTVBPS) > laneCeilingLTVBPS(s.RouteLane)
 }
 
-// This prepares only an empty account before allocating user principal: the
-// initializer the tick decided, from the tick's own observation.
 func prepareKaminoInitialization(ctx context.Context, rpc *chain.Client, manifest RouteManifest, decision Decision, o Observation) (Observation, KaminoInitializationRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
