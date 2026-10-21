@@ -130,7 +130,7 @@ func RepayV2Allowed(a LiquidityAllowed, fixed func(solana.PublicKey) squads.Slot
 func OwnedObligation(owner solana.PublicKey) squads.Slot {
 	program := ProgramID
 	return squads.Slot{Owner: &program, Data: []squads.DataConstraintView{{
-		DataOffset: obligationOwnerOffset, DataValue: squads.DataValueView{Kind: 5, Bytes: owner.Bytes()}, Operator: squads.OpEquals,
+		DataOffset: obligationOwnerOffset, DataValue: squads.DataValueView{Kind: squads.ValueBytes, Bytes: owner.Bytes()}, Operator: squads.OpEquals,
 	}}}
 }
 
@@ -187,10 +187,17 @@ type ObligationFarmsInitAccounts struct {
 	ReserveFarmState, ObligationFarmUserState, LendingMarket  solana.PublicKey
 }
 
+type FarmMode uint8
+
+const (
+	FarmCollateral FarmMode = iota
+	FarmDebt
+)
+
 // InitObligationFarmsForReserve creates the obligation's farm user state for
-// the reserve farm of mode (0 collateral, 1 debt).
-func InitObligationFarmsForReserve(a ObligationFarmsInitAccounts, mode uint8) *solana.GenericInstruction {
-	return instruction(InitObligationFarmsForReserveDiscriminator, []byte{mode}, metas([]squads.AccountSlot[solana.PublicKey]{
+// the reserve farm of mode.
+func InitObligationFarmsForReserve(a ObligationFarmsInitAccounts, mode FarmMode) *solana.GenericInstruction {
+	return instruction(InitObligationFarmsForReserveDiscriminator, []byte{byte(mode)}, metas([]squads.AccountSlot[solana.PublicKey]{
 		squads.SigningWritable(a.Payer), squads.ReadOnly(a.Owner), squads.Writable(a.Obligation), squads.ReadOnly(a.LendingMarketAuthority),
 		squads.Writable(a.Reserve), squads.Writable(a.ReserveFarmState), squads.Writable(a.ObligationFarmUserState), squads.ReadOnly(a.LendingMarket),
 		squads.ReadOnly(FarmsProgramID), squads.ReadOnly(solana.SysVarRentPubkey), squads.ReadOnly(solana.SystemProgramID)})...)

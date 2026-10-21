@@ -11,17 +11,17 @@ import (
 const kaminoPayoffWindowSeconds int64 = 60
 
 type KaminoPayoffBound struct {
-	ObservedSlot       int64  `json:"observedSlot"`
-	ChainUnix          int64  `json:"chainUnix"`
-	ThroughSlot        int64  `json:"throughSlot"`
-	ThroughUnix        int64  `json:"throughUnix"`
-	ReserveUpdatedSlot int64  `json:"reserveUpdatedSlot"`
-	ReserveUpdatedUnix int64  `json:"reserveUpdatedUnix"`
-	InterestBasis      byte   `json:"interestBasis"`
-	MaximumRateBPS     uint64 `json:"maximumRateBps"`
-	ObservedDebtRaw    uint64 `json:"observedDebtRaw"`
-	UpperDebtRaw       uint64 `json:"upperDebtRaw"`
-	AccountsSHA256     string `json:"accountsSha256"`
+	ObservedSlot       int64            `json:"observedSlot"`
+	ChainUnix          int64            `json:"chainUnix"`
+	ThroughSlot        int64            `json:"throughSlot"`
+	ThroughUnix        int64            `json:"throughUnix"`
+	ReserveUpdatedSlot int64            `json:"reserveUpdatedSlot"`
+	ReserveUpdatedUnix int64            `json:"reserveUpdatedUnix"`
+	InterestBasis      kamino.RateBasis `json:"interestBasis"`
+	MaximumRateBPS     uint64           `json:"maximumRateBps"`
+	ObservedDebtRaw    uint64           `json:"observedDebtRaw"`
+	UpperDebtRaw       uint64           `json:"upperDebtRaw"`
+	AccountsSHA256     string           `json:"accountsSha256"`
 }
 
 // kaminoPayoffSteps is how many observation windows past its batch a debt's
@@ -57,10 +57,6 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 	if err != nil || debt == 0 || reserve.refreshedSlot <= 0 || reserve.refreshedSlot > int64(clockSlot) {
 		return bound, budgetHoldFrom(err, "payoff_debt_state_unavailable")
 	}
-	// An unknown basis or an early-repay penalty needs another model
-	// (kamino.Reserve.SupportedInterestTerms); term debt accrues on the same
-	// curve. The 7.3.9 SDK does NOT decode the basis/timestamp: do not use its
-	// slot-only APR.
 	terms, err := kamino.DecodeReserve(chainAccount(reserveAccount, reserveAccount.Address))
 	if err != nil || terms.SupportedInterestTerms() != nil {
 		return bound, budgetHold("unsupported_payoff_interest_terms")
@@ -75,7 +71,7 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 		ThroughUnix: now + steps*kaminoPayoffWindowSeconds, ReserveUpdatedSlot: reserve.refreshedSlot, ReserveUpdatedUnix: updatedUnix,
 		InterestBasis: basis, MaximumRateBPS: maximumRate, ObservedDebtRaw: debt, AccountsSHA256: hashConfirmedAccounts(accounts)}
 	elapsed, unitsPerYear := bound.ThroughSlot-reserve.refreshedSlot, uint64(63_072_000)
-	if basis == 1 {
+	if basis == kamino.TrueAPRBasis {
 		if updatedUnix <= 0 || updatedUnix > now {
 			return bound, budgetHold("invalid_payoff_refresh_timestamp")
 		}

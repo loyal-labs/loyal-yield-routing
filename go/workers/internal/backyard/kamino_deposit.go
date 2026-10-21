@@ -3,6 +3,8 @@ package backyard
 import (
 	"encoding/binary"
 	"math"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
 // KLend mints floor(request / receipt exchange rate), then transfers the ceil
@@ -35,7 +37,7 @@ func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot 
 		return 0, err
 	}
 	elapsed, units := int64(clockSlot)+observationLagSlots()-r.refreshedSlot, uint64(63_072_000)
-	if r.terms.InterestRateBasis == 1 {
+	if r.terms.InterestRateBasis == kamino.TrueAPRBasis {
 		updated := int64(r.terms.LastUpdateTimestamp)
 		if updated <= 0 || updated > now {
 			return 0, budgetHold("invalid_deposit_refresh_timestamp")

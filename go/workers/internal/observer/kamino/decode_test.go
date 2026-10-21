@@ -86,7 +86,7 @@ func TestDecodeReserveMatchesKlendLayout(t *testing.T) {
 }
 
 func putFraction(destination []byte, integer int64) {
-	value := new(big.Int).Lsh(big.NewInt(integer), fractionBits)
+	value := new(big.Int).Lsh(big.NewInt(integer), klend.FractionBits)
 	bytes := value.Bytes()
 	for index := range bytes {
 		destination[index] = bytes[len(bytes)-1-index]

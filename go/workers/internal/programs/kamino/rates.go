@@ -10,9 +10,14 @@ var ErrSlotRateUnavailable = errors.New("Kamino Legacy-basis rates need the meas
 
 var ErrUnsupportedInterestTerms = errors.New("Kamino reserve interest terms are unsupported")
 
+type RateBasis uint8
+
 const (
-	legacyBasis  = 0
-	trueAPRBasis = 1
+	LegacyBasis RateBasis = iota
+	TrueAPRBasis
+)
+
+const (
 	// klendSlotsPerSecond is KLend's SLOTS_PER_SECOND, the slot count its
 	// SLOTS_PER_YEAR divides a Legacy-basis annual rate by.
 	klendSlotsPerSecond = 2
@@ -25,13 +30,13 @@ const (
 // decides only when an obligation may borrow and when its debt becomes
 // liquidatable (ObligationLiquidity.DebtTermEnd), not what it accrues.
 func (r Reserve) SupportedInterestTerms() error {
-	if r.InterestRateBasis > trueAPRBasis || r.EarlyRepayRemainingInterestPct != 0 || r.ProtocolTakeRatePct > 100 {
+	if r.InterestRateBasis > TrueAPRBasis || r.EarlyRepayRemainingInterestPct != 0 || r.ProtocolTakeRatePct > 100 {
 		return ErrUnsupportedInterestTerms
 	}
 	return nil
 }
 
-func (r Reserve) NeedsSlotRate() bool { return r.InterestRateBasis == legacyBasis }
+func (r Reserve) NeedsSlotRate() bool { return r.InterestRateBasis == LegacyBasis }
 
 // AccrualPerCurve is the annual rate a reserve accrues per unit of its
 // configured curve rate. A TrueApr-basis reserve accrues the curve per second
@@ -43,7 +48,7 @@ func (r Reserve) AccrualPerCurve(slotsPerSecond float64) (float64, error) {
 	if err := r.SupportedInterestTerms(); err != nil {
 		return 0, err
 	}
-	if r.InterestRateBasis == trueAPRBasis {
+	if r.InterestRateBasis == TrueAPRBasis {
 		return 1, nil
 	}
 	if !(slotsPerSecond > 0) || math.IsInf(slotsPerSecond, 0) {
@@ -68,7 +73,7 @@ func (r Reserve) Rates(slotsPerSecond float64) (Rates, error) {
 	}
 	var out Rates
 	if total.Sign() > 0 {
-		out.Utilization, _ = new(big.Rat).SetFrac(U128(r.BorrowedAmountSF), total).Float64()
+		out.Utilization, _ = new(big.Rat).SetFrac(r.BorrowedAmountSF.Int(), total).Float64()
 	}
 	curve := CurveRate(r.BorrowRateCurve, out.Utilization) * accrual
 	out.BorrowAPR = curve + float64(r.HostFixedInterestRateBPS)/10_000*accrual

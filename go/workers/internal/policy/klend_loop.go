@@ -62,7 +62,7 @@ func (l loopLane) constraints() [LoopLegs]squads.InstructionConstraintView {
 	out[LoopRepay] = kamino.RepayV2Allowed(debt, squads.Unpinned)
 	out[LoopInitialize] = kamino.InitObligationAllowed(kamino.ObligationInitAllowed{Owner: squads.Pin(l.vault), FeePayer: squads.Pin(l.vault),
 		Obligation: squads.Pin(l.obligation), LendingMarket: squads.Pin(l.market), Seed1: squads.Pin(l.collateralMint),
-		Seed2: squads.Pin(l.debtMint), OwnerUserMetadata: squads.Pin(l.metadata)}, 1, 0)
+		Seed2: squads.Pin(l.debtMint), OwnerUserMetadata: squads.Pin(l.metadata)}, kamino.MultiplyObligationTag, kamino.DefaultObligationID)
 	return out
 }
 
@@ -162,7 +162,7 @@ func KLendLoop(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, col
 		}
 		withdraw := amounts.Withdraw
 		if withdraw != math.MaxUint64 {
-			if withdraw, err = collateral.LiquidityToCollateral(withdraw); err != nil {
+			if withdraw, err = collateral.FloorCollateralMinted(withdraw); err != nil {
 				return Product{}, err
 			}
 		}
@@ -178,7 +178,7 @@ func KLendLoop(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, col
 		}
 		refresh = append(refresh, kamino.RefreshObligation(market, lane.obligation,
 			append(obligation.DepositReserves(), obligation.BorrowReserves()...)...))
-		farmInit := func(farm, reserveFarm, reserve solana.PublicKey, mode uint8) []solana.Instruction {
+		farmInit := func(farm, reserveFarm, reserve solana.PublicKey, mode kamino.FarmMode) []solana.Instruction {
 			if farm.IsZero() || farmExists[farm] {
 				return nil
 			}
@@ -205,17 +205,17 @@ func KLendLoop(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, col
 		ops := make([]Op, LoopLegs)
 		ops[LoopDeposit] = Op{Name: fmt.Sprintf("deposit %d (deposited collateral %d)", amounts.Deposit, obligation.Collateral(collateralReserve)),
 			Inner:  kamino.DepositV2(collateralAccounts, amounts.Deposit),
-			Before: before(append([]solana.Instruction{createCollateral}, farmInit(collateralFarm, collateral.FarmCollateral, collateralReserve, 0)...)...)}
+			Before: before(append([]solana.Instruction{createCollateral}, farmInit(collateralFarm, collateral.FarmCollateral, collateralReserve, kamino.FarmCollateral)...)...)}
 		ops[LoopWithdraw] = Op{Name: fmt.Sprintf("withdraw %d collateral (deposited %d)", withdraw, obligation.Collateral(collateralReserve)),
 			Inner: kamino.WithdrawV2(collateralAccounts, withdraw), Before: before(createCollateral)}
 		ops[LoopBorrow] = Op{Name: fmt.Sprintf("borrow %d (debt now %d)", amounts.Borrow, debtNow),
 			Inner:  kamino.BorrowV2(debtAccounts, amounts.Borrow),
-			Before: before(append([]solana.Instruction{createDebt}, farmInit(debtFarm, debt.FarmDebt, debtReserve, 1)...)...)}
+			Before: before(append([]solana.Instruction{createDebt}, farmInit(debtFarm, debt.FarmDebt, debtReserve, kamino.FarmDebt)...)...)}
 		ops[LoopRepay] = Op{Name: fmt.Sprintf("repay %d (debt now %d, before interest since the last refresh)", amounts.Repay, debtNow),
 			Inner: kamino.RepayV2(debtAccounts, amounts.Repay), Before: before()}
 		ops[LoopInitialize] = Op{Name: "init lane obligation " + lane.obligation.String(),
 			Inner: kamino.InitObligation(kamino.ObligationInitAccounts{Owner: vault, FeePayer: vault, Obligation: lane.obligation,
-				LendingMarket: market, Seed1: lane.collateralMint, Seed2: lane.debtMint, OwnerUserMetadata: lane.metadata}, 1, 0),
+				LendingMarket: market, Seed1: lane.collateralMint, Seed2: lane.debtMint, OwnerUserMetadata: lane.metadata}, kamino.MultiplyObligationTag, kamino.DefaultObligationID),
 			Before: topUp, Done: state[1] != nil}
 		for i := range ops {
 			ops[i].Allowed = constraints[i]
@@ -224,10 +224,10 @@ func KLendLoop(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, col
 	}
 }
 
-func ceilSF(sf [16]byte) uint64 {
-	value := kamino.U128(sf)
-	value.Add(value, new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 60), big.NewInt(1)))
-	value.Rsh(value, 60)
+func ceilSF(sf kamino.ScaledFraction) uint64 {
+	value := sf.Int()
+	value.Add(value, new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), kamino.FractionBits), big.NewInt(1)))
+	value.Rsh(value, kamino.FractionBits)
 	if !value.IsUint64() {
 		return math.MaxUint64
 	}

@@ -64,7 +64,7 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 			deposited = o.DepositReserves()
 		}
 
-		minted, err := r.LiquidityToCollateral(amount)
+		minted, err := r.FloorCollateralMinted(amount)
 		if err != nil {
 			return Product{}, err
 		}
@@ -85,7 +85,7 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 		if !farmUser.IsZero() && state[2] == nil {
 			depositBefore = append(depositBefore, kamino.InitObligationFarmsForReserve(kamino.ObligationFarmsInitAccounts{
 				Payer: payer, Owner: vault, Obligation: obligation, LendingMarketAuthority: authority, Reserve: reserve,
-				ReserveFarmState: r.FarmCollateral, ObligationFarmUserState: farmUser, LendingMarket: market}, 0))
+				ReserveFarmState: r.FarmCollateral, ObligationFarmUserState: farmUser, LendingMarket: market}, kamino.FarmCollateral))
 		}
 		metadataInit := kamino.UserMetadataInitAccounts{Owner: vault, FeePayer: vault, UserMetadata: metadata}
 		obligationInit := kamino.ObligationInitAccounts{Owner: vault, FeePayer: vault, Obligation: obligation, LendingMarket: market,
@@ -103,8 +103,8 @@ func KLend(c *chain.Client, settings solana.PublicKey, vaultIndex uint8, reserve
 				Name: "init obligation",
 				Allowed: kamino.InitObligationAllowed(kamino.ObligationInitAllowed{Owner: squads.Pin(vault), FeePayer: squads.Pin(vault),
 					Obligation: squads.Pin(obligation), LendingMarket: squads.Pin(market), Seed1: squads.Pin(solana.PublicKey{}),
-					Seed2: squads.Pin(solana.PublicKey{}), OwnerUserMetadata: squads.Pin(metadata)}, 0, 0),
-				Inner: kamino.InitObligation(obligationInit, 0, 0),
+					Seed2: squads.Pin(solana.PublicKey{}), OwnerUserMetadata: squads.Pin(metadata)}, kamino.VanillaObligationTag, kamino.DefaultObligationID),
+				Inner: kamino.InitObligation(obligationInit, kamino.VanillaObligationTag, kamino.DefaultObligationID),
 				Done:  state[1] != nil,
 			},
 			{
