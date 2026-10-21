@@ -6,7 +6,7 @@
 # NEXT_PUBLIC_* in the environment are inlined into the app, as Next does.
 set -eu
 
-root=$(git rev-parse --show-toplevel)
+root=$(cd "$(dirname "$0")/../.." && pwd)
 out=${1:-$root/bin/loyal-web}
 
 (cd "$root/web/apps/loyal" && bun install --frozen-lockfile >/dev/null && bun run build)
