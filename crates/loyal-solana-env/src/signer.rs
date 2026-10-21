@@ -1,12 +1,8 @@
-use solana_sdk::{signature::Keypair, signer::Signer};
+use solana_sdk::signature::Keypair;
 use std::env;
 use thiserror::Error;
 
 pub const SOLANA_TESTING_PK_ENV: &str = "SOLANA_TESTING_PK";
-pub const POLICY_KEYPAIR_ENV: &str = "POLICY_KEYPAIR";
-pub const YIELD_ROUTER_KEYPAIR_ENV: &str = "YIELD_ROUTER_KEYPAIR";
-pub const YIELD_ROUTE_FEE_PAYER_KEYPAIRS_ENV: &str = "YIELD_ROUTE_FEE_PAYER_KEYPAIRS";
-pub const STANDARD_POLICY_AUTHORITY: &str = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5";
 const SOLANA_SECRET_KEY_LENGTH: usize = 32;
 const SOLANA_KEYPAIR_LENGTH: usize = 64;
 
@@ -24,54 +20,10 @@ pub enum PolicySignerError {
     InvalidLength { length: usize },
     #[error("Solana keypair bytes do not describe a valid Solana keypair")]
     InvalidKeypair,
-    #[error("YIELD_ROUTE_FEE_PAYER_KEYPAIRS must be a JSON array of encoded keypair strings")]
-    InvalidKeypairSet,
-    #[error("YIELD_ROUTE_FEE_PAYER_KEYPAIRS contains a duplicate public key")]
-    DuplicateKeypair,
-    #[error("POLICY_KEYPAIR does not match the standard policy authority")]
-    UnexpectedPolicyAuthority,
 }
 
 pub fn solana_testing_keypair_from_env() -> Result<Keypair, PolicySignerError> {
     keypair_from_env(SOLANA_TESTING_PK_ENV)
-}
-
-pub fn policy_keypair_from_env() -> Result<Keypair, PolicySignerError> {
-    keypair_from_env(POLICY_KEYPAIR_ENV)
-}
-
-pub fn standard_policy_keypair_from_env() -> Result<Keypair, PolicySignerError> {
-    let keypair = policy_keypair_from_env()?;
-    if keypair.pubkey().to_string() != STANDARD_POLICY_AUTHORITY {
-        return Err(PolicySignerError::UnexpectedPolicyAuthority);
-    }
-    Ok(keypair)
-}
-
-pub fn yield_router_keypair_from_env() -> Result<Keypair, PolicySignerError> {
-    keypair_from_env(YIELD_ROUTER_KEYPAIR_ENV)
-}
-
-pub fn route_fee_payer_keypairs_from_env() -> Result<Vec<Keypair>, PolicySignerError> {
-    let value = match env::var(YIELD_ROUTE_FEE_PAYER_KEYPAIRS_ENV) {
-        Ok(value) if !value.trim().is_empty() => value,
-        Ok(_) | Err(env::VarError::NotPresent) => return Ok(Vec::new()),
-        Err(env::VarError::NotUnicode(_)) => return Err(PolicySignerError::InvalidKeypairSet),
-    };
-    let encoded: Vec<String> =
-        serde_json::from_str(&value).map_err(|_| PolicySignerError::InvalidKeypairSet)?;
-    let mut keypairs = encoded
-        .iter()
-        .map(|value| keypair_from_string(value))
-        .collect::<Result<Vec<_>, _>>()?;
-    keypairs.sort_by_key(|keypair| keypair.pubkey().to_string());
-    if keypairs
-        .windows(2)
-        .any(|window| window[0].pubkey() == window[1].pubkey())
-    {
-        return Err(PolicySignerError::DuplicateKeypair);
-    }
-    Ok(keypairs)
 }
 
 pub fn keypair_from_env(name: &'static str) -> Result<Keypair, PolicySignerError> {

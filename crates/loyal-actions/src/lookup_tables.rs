@@ -6,8 +6,6 @@ use std::{
     fmt,
 };
 
-const MANIFEST_HASH_DOMAIN: &[u8] = b"loyal-route-alt-manifest-v1";
-const SHARED_MARKET_HASH_DOMAIN: &[u8] = b"loyal-route-alt-shared-market-v1";
 const VAULT_HASH_DOMAIN: &[u8] = b"loyal-route-alt-vault-v1";
 const ADVANCE_NONCE_PREFIX: [u8; 4] = [4, 0, 0, 0];
 
@@ -58,15 +56,6 @@ impl MustRemainStaticReason {
             Self::InvokedProgram => "invoked_program",
         }
     }
-
-    fn hash_tag(self) -> u8 {
-        match self {
-            Self::FeePayer => 0,
-            Self::Signer => 1,
-            Self::Nonce => 2,
-            Self::InvokedProgram => 3,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -98,22 +87,6 @@ impl SharedMarketRole {
             Self::ScopePrices => "scope_prices",
             Self::ReserveFarmState => "reserve_farm_state",
             Self::Infrastructure => "infrastructure",
-        }
-    }
-
-    fn hash_tag(self) -> u8 {
-        match self {
-            Self::Market => 0,
-            Self::MarketAuthority => 1,
-            Self::Reserve => 2,
-            Self::LiquidityMint => 3,
-            Self::LiquiditySupply => 4,
-            Self::CollateralMint => 5,
-            Self::CollateralSupply => 6,
-            Self::Oracle => 7,
-            Self::ScopePrices => 8,
-            Self::ReserveFarmState => 9,
-            Self::Infrastructure => 10,
         }
     }
 }
@@ -586,20 +559,6 @@ impl LookupTableManifest {
         addresses
     }
 
-    pub fn canonical_hash_input(&self) -> Vec<u8> {
-        let mut output = hash_input_prefix(MANIFEST_HASH_DOMAIN);
-        append_static_requirements(&mut output, &self.must_remain_static);
-        append_shared_market_requirements(&mut output, &self.shared_market);
-        append_vault_requirements(&mut output, &self.vault);
-        output
-    }
-
-    pub fn shared_market_hash_input(&self) -> Vec<u8> {
-        let mut output = hash_input_prefix(SHARED_MARKET_HASH_DOMAIN);
-        append_shared_market_requirements(&mut output, &self.shared_market);
-        output
-    }
-
     pub fn vault_hash_input(&self) -> Vec<u8> {
         let mut output = hash_input_prefix(VAULT_HASH_DOMAIN);
         append_vault_requirements(&mut output, &self.vault);
@@ -811,28 +770,6 @@ fn hash_input_prefix(domain: &[u8]) -> Vec<u8> {
     output
 }
 
-fn append_static_requirements(output: &mut Vec<u8>, requirements: &[MustRemainStatic]) {
-    append_len(output, requirements.len());
-    for requirement in requirements {
-        output.push(0);
-        output.extend_from_slice(requirement.address.as_ref());
-        output.push(requirement.access.hash_tag());
-        append_len(output, requirement.reasons.len());
-        output.extend(requirement.reasons.iter().map(|reason| reason.hash_tag()));
-    }
-}
-
-fn append_shared_market_requirements(output: &mut Vec<u8>, requirements: &[SharedMarket]) {
-    append_len(output, requirements.len());
-    for requirement in requirements {
-        output.push(1);
-        output.extend_from_slice(requirement.address.as_ref());
-        output.push(requirement.access.hash_tag());
-        append_len(output, requirement.roles.len());
-        output.extend(requirement.roles.iter().map(|role| role.hash_tag()));
-    }
-}
-
 fn append_vault_requirements(output: &mut Vec<u8>, requirements: &[Vault]) {
     append_len(output, requirements.len());
     for requirement in requirements {
@@ -1039,11 +976,6 @@ mod tests {
             .expect("second provenance order should compile");
 
         assert_eq!(first, second);
-        assert_eq!(first.canonical_hash_input(), second.canonical_hash_input());
-        assert_eq!(
-            first.shared_market_hash_input(),
-            second.shared_market_hash_input()
-        );
         assert_eq!(first.vault_hash_input(), second.vault_hash_input());
     }
 

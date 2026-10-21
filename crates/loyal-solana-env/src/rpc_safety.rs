@@ -29,31 +29,6 @@ pub fn validate_rpc_genesis_hash(cluster: &str, observed: Hash) -> Result<(), St
     Ok(())
 }
 
-/// Returns only the endpoint origin. User info, path, query, and fragment are
-/// deliberately omitted because managed RPC credentials may live in any of
-/// those URL components.
-pub fn redacted_rpc_endpoint(rpc_url: &str) -> String {
-    let Ok(url) = reqwest::Url::parse(rpc_url) else {
-        return "<configured>".to_owned();
-    };
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return "<configured>".to_owned();
-    }
-    url.origin().ascii_serialization()
-}
-
-/// Rejects malformed or non-HTTP endpoints without echoing the supplied value.
-/// This also ensures fatal-error redaction can recognize every accepted RPC URL
-/// by its scheme even when a client library includes it in an error chain.
-pub fn validate_rpc_endpoint(rpc_url: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(rpc_url)
-        .map_err(|_| "configured RPC endpoint must be an absolute HTTP(S) URL".to_owned())?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err("configured RPC endpoint must be an absolute HTTP(S) URL".to_owned());
-    }
-    Ok(())
-}
-
 /// Produces a bounded fatal-error message without endpoint credentials.
 ///
 /// Client error implementations are allowed to render their request URL. An
@@ -148,29 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn reusable_alt_rpc_endpoint_redaction_never_exposes_credentials() {
-        assert_eq!(
-            redacted_rpc_endpoint("https://user:password@example.test/secret/path?api-key=secret"),
-            "https://example.test"
-        );
-        assert_eq!(
-            redacted_rpc_endpoint("https://example.quiknode.pro/path-token/"),
-            "https://example.quiknode.pro"
-        );
-        assert_eq!(
-            redacted_rpc_endpoint("http://localhost:8899/private?token=secret"),
-            "http://localhost:8899"
-        );
-        assert_eq!(redacted_rpc_endpoint("not a URL"), "<configured>");
-    }
-
-    #[test]
-    fn reusable_alt_rpc_endpoint_validation_and_fatal_errors_are_safe() {
-        validate_rpc_endpoint("https://user:password@example.test/private?token=secret").unwrap();
-        validate_rpc_endpoint("http://localhost:8899").unwrap();
-        assert!(validate_rpc_endpoint("example.test/private-token").is_err());
-        assert!(validate_rpc_endpoint("file:///tmp/rpc").is_err());
-
+    fn reusable_alt_rpc_fatal_errors_are_safe() {
         let safe = redacted_external_error(
             "getLatestBlockhash failed sending https://user:password@example.test/private/path?api-key=secret with HTTP 401 Unauthorized token=also-secret Authorization: Bearer header-secret api-key: separated-secret",
         );

@@ -11,8 +11,22 @@ mod squads;
 mod stablecoins;
 
 pub use actions::*;
-pub use detection::*;
-pub use earn_max::*;
+pub use detection::{
+    decode_squads_policy_create_actions, detect_jupiter_cross_mint_policy_account,
+    DetectedJupiterCrossMintPolicyAccount, SquadsAccountConstraintKindView,
+    SquadsAccountConstraintView, SquadsDataConstraintView, SquadsDataOperatorView,
+    SquadsDataValueView, SquadsInstructionConstraintView,
+};
+pub use earn_max::{
+    earn_max_policy_constraints, EarnMaxPolicyBoundary, EarnMaxPolicyFamily, EarnMaxPolicyLane,
+    EARN_MAX_FIGURE_MARKET, EARN_MAX_MAPLE_MARKET, EARN_MAX_ONRE_MARKET,
+    EARN_MAX_ONYC_COLLATERAL_RESERVE, EARN_MAX_ONYC_MINT, EARN_MAX_ONYC_USDC_DEBT_RESERVE,
+    EARN_MAX_ONYC_USDS_DEBT_RESERVE, EARN_MAX_PRIME_COLLATERAL_RESERVE, EARN_MAX_PRIME_MINT,
+    EARN_MAX_PRIME_PYUSD_DEBT_RESERVE, EARN_MAX_PRIME_USDC_DEBT_RESERVE,
+    EARN_MAX_PRIME_USDS_DEBT_RESERVE, EARN_MAX_PYUSD_MINT, EARN_MAX_SYRUP_COLLATERAL_RESERVE,
+    EARN_MAX_SYRUP_PYUSD_DEBT_RESERVE, EARN_MAX_SYRUP_USDC_DEBT_RESERVE, EARN_MAX_SYRUP_USDC_MINT,
+    EARN_MAX_USDC_MINT, EARN_MAX_USDS_MINT,
+};
 pub use ids::*;
 pub use lookup_tables::*;
 pub use loyal_hub_abi as hub_abi;
