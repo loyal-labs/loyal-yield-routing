@@ -182,22 +182,22 @@ func TestEffectsRejectOverspendMissingAnchorsAndAcceptBoundedSwap(t *testing.T) 
 		}
 	}
 	setRaw(400)
-	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, nil, after, topology); err == nil {
+	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, after, topology); err == nil {
 		t.Fatal("missing persisted balance accepted")
 	}
 	effects.TokenAmountsBefore = []TokenAmountBefore{{Account: custody.Account, Mint: custody.Mint, AmountRaw: 1000}}
-	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, nil, after, topology); err == nil {
+	if err := VerifyExpectedEffects(effects, ActionDepositCollateral, after, topology); err == nil {
 		t.Fatal("overspend accepted")
 	}
-	if err := VerifyExpectedEffects(effects, ActionSwapCollateralToDebt, nil, after, topology); err == nil {
+	if err := VerifyExpectedEffects(effects, ActionSwapCollateralToDebt, after, topology); err == nil {
 		t.Fatal("swap exceeded maximum")
 	}
 	setRaw(600)
-	if err := VerifyExpectedEffects(effects, ActionSwapCollateralToDebt, nil, after, topology); err != nil {
+	if err := VerifyExpectedEffects(effects, ActionSwapCollateralToDebt, after, topology); err != nil {
 		t.Fatalf("bounded swap: %v", err)
 	}
 	effects.TokenAmountsBefore[0].Mint = USDCMint
-	if err := VerifyExpectedEffects(effects, ActionSwapCollateralToDebt, nil, after, topology); err == nil {
+	if err := VerifyExpectedEffects(effects, ActionSwapCollateralToDebt, after, topology); err == nil {
 		t.Fatal("wrong mint anchor accepted")
 	}
 }

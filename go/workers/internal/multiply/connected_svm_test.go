@@ -194,7 +194,7 @@ func newMultiplySVMFixtureWithInitialAccounts(t *testing.T, initialize func(*Ear
 	if _, err := NewExecutorWithFeePayerContext(ctx, f.cluster, testDelegateSeed(), testDelegateSeed()); err == nil {
 		t.Fatal("local SVM pretended to be mainnet")
 	}
-	f.executor = &Executor{Chain: f.cluster, Signer: testDelegateSeed(), feePayer: testDelegateSeed()}
+	f.executor = &Executor{Chain: f.cluster, signer: testDelegateSeed(), feePayer: testDelegateSeed()}
 	for _, item := range []struct {
 		family PolicyFamily
 		policy PolicyConfig

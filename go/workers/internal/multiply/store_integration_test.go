@@ -243,7 +243,7 @@ func TestStoreLifecycleCannotReconcileWithoutActualReceipt(t *testing.T) {
 		RouteKey: routeKey, Generation: next.Generation, ObservedSlot: 331_895_500,
 		ObservedAt: time.Now().UTC(), ClaimRaw: "1000000",
 		CollateralRaw: "0", DebtRaw: "0",
-		EquityUSD: "1000000", CollateralValueUSD: "0", DebtValueUSD: "0",
+		EquityUSDMicros: "1000000", CollateralValueUSDMicros: "0", DebtValueUSDMicros: "0",
 		ValuationSource: "confirmed_kamino_reserve_curve_500ms",
 	})
 	if err != nil || !recorded {
@@ -252,8 +252,8 @@ func TestStoreLifecycleCannotReconcileWithoutActualReceipt(t *testing.T) {
 	if replayed, _ := store.RecordPositionSnapshot(ctx, &PositionSnapshotInput{
 		RouteKey: routeKey, Generation: next.Generation, ObservedSlot: 331_895_500,
 		ObservedAt: time.Now().UTC(), ClaimRaw: "1000000", CollateralRaw: "0",
-		DebtRaw: "0", EquityUSD: "1000000", CollateralValueUSD: "0",
-		DebtValueUSD: "0", ValuationSource: "confirmed_kamino_reserve_curve_500ms",
+		DebtRaw: "0", EquityUSDMicros: "1000000", CollateralValueUSDMicros: "0",
+		DebtValueUSDMicros: "0", ValuationSource: "confirmed_kamino_reserve_curve_500ms",
 	}); replayed {
 		t.Fatal("duplicate snapshot slot was recorded")
 	}

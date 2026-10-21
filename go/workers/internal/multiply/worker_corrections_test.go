@@ -40,7 +40,7 @@ func TestPlannerDebtCustodyThreshold(t *testing.T) {
 		amount uint64
 		debt   uint64
 		action MultiplyAction
-		mode   string
+		mode   AmountMode
 	}{
 		{"dust_partial", 1, 100_000, ActionRepayDebt, "exact"},
 		{"boundary_partial", 50_000, 100_000, ActionRepayDebt, "exact"},
@@ -239,7 +239,7 @@ func TestSnapshotClaimUnitsIdleZerosAndUnknownEvidence(t *testing.T) {
 	observed.Claim.AmountRaw = 30_000_000
 	route := testRouteState(t, topology)
 	idle, err := snapshotInput(route, observed)
-	if err != nil || idle.CollateralRaw != "0" || idle.DebtRaw != "0" || idle.EquityUSD != "30000000" {
+	if err != nil || idle.CollateralRaw != "0" || idle.DebtRaw != "0" || idle.EquityUSDMicros != "30000000" {
 		t.Fatalf("idle snapshot cannot be stored consistently: %+v %v", idle, err)
 	}
 	position := observed.Position(SyrupUsdcUsdc)
@@ -247,7 +247,7 @@ func TestSnapshotClaimUnitsIdleZerosAndUnknownEvidence(t *testing.T) {
 	position.CollateralValueSF, position.DebtValueSF = reviewSF(1_000), reviewSF(500)
 	position.UnhealthyValueSF = reviewSF(800)
 	active, err := snapshotInput(route, observed)
-	if err != nil || active.EquityUSD != "530000000" {
+	if err != nil || active.EquityUSDMicros != "530000000" {
 		t.Fatalf("claim raw units double-scaled: %+v %v", active, err)
 	}
 	position.CollateralSupplyAPYBPS, position.DebtBorrowAPYBPS = 1, 3
@@ -264,12 +264,12 @@ func TestSnapshotClaimUnitsIdleZerosAndUnknownEvidence(t *testing.T) {
 func TestWorkerAcceptsExecutorPrivateKeyAndDepositRejectsWrap(t *testing.T) {
 	topology := testTopology(t)
 	dependencies := WorkerDeps{Store: &Store{pool: &pgxpool.Pool{}}, Observer: shortReviewReader{},
-		Executor: &Executor{Chain: &fakeChain{}, Signer: testDelegateSeed()}, Quotes: fakeQuoteClient{topology}, WorkerID: "review",
+		Executor: &Executor{Chain: &fakeChain{}, signer: testDelegateSeed()}, Quotes: fakeQuoteClient{topology}, WorkerID: "review",
 		Chain: &fakeChain{}, Facts: testFacts()}
 	if _, err := NewWorker(dependencies); err != nil {
 		t.Fatal(err)
 	}
-	dependencies.Executor = &Executor{Signer: make([]byte, ed25519.SeedSize)}
+	dependencies.Executor = &Executor{signer: make([]byte, ed25519.SeedSize)}
 	if _, err := NewWorker(dependencies); err == nil {
 		t.Fatal("seed-sized buffer accepted as an executor private key")
 	}

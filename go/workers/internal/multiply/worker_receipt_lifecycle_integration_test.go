@@ -193,7 +193,7 @@ func TestCurrentGoMultiplyActualReceiptTerminalRollsBackOnStaleFence(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := VerifyExpectedEffects(&op.ExpectedEffects, op.Action, nil, after, f.topology); err != nil {
+	if err := VerifyExpectedEffects(&op.ExpectedEffects, op.Action, after, f.topology); err != nil {
 		t.Fatal(err)
 	}
 	proof.evidence.ObservationSlot = after.Slot
@@ -234,7 +234,7 @@ func TestCurrentGoMultiplyMockRejectsInvalidScopeRefresh(t *testing.T) {
 		{"different-oracle", func(ix *Instruction) { ix.Accounts[5].PubKey = config.MarketAuthority }},
 		{"writable-oracle", func(ix *Instruction) { ix.Accounts[5].IsWritable = true }},
 		{"signer-oracle", func(ix *Instruction) {
-			ix.Accounts[5].PubKey = solana.PublicKey(f.executor.Signer[32:])
+			ix.Accounts[5].PubKey = solana.PublicKey(f.executor.signer[32:])
 			ix.Accounts[5].IsSigner = true
 		}},
 	} {

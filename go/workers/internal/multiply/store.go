@@ -1,11 +1,5 @@
 package multiply
 
-// Durable store ported statement-for-statement from
-// 91694cd9^:crates/loyal-yield-store/src/multiply_state_store.rs. Every UPDATE is
-// fenced by state_version + lease_owner + fencing_token + lease expiry; the
-// signed wire is immutable once persisted (only expiry/manual recovery
-// null it, never a replacement).
-
 import (
 	"context"
 	"crypto/sha256"
@@ -76,27 +70,27 @@ type ReadyPolicySet struct {
 }
 
 type PositionSnapshotInput struct {
-	RouteKey            string
-	Generation          uint64
-	ObservedSlot        uint64
-	ObservedAt          time.Time
-	StrategyKey         *string
-	ClaimRaw            string
-	CollateralRaw       string
-	DebtRaw             string
-	EquityUSD           string
-	CollateralValueUSD  string
-	DebtValueUSD        string
-	LeverageBPS         *int64
-	LTVBPS              *int64
-	HealthFactorPPM     *int64
-	SupplyAPYBPS        *int64
-	BorrowAPYBPS        *int64
-	ForecastAPYBPS      *string
-	ValuationSource     string
-	ValuationSlot       *uint64
-	ValuationObservedAt *time.Time
-	CoverageStartAt     *time.Time
+	RouteKey                 string
+	Generation               uint64
+	ObservedSlot             uint64
+	ObservedAt               time.Time
+	StrategyKey              *string
+	ClaimRaw                 string
+	CollateralRaw            string
+	DebtRaw                  string
+	EquityUSDMicros          string
+	CollateralValueUSDMicros string
+	DebtValueUSDMicros       string
+	LeverageBPS              *int64
+	LTVBPS                   *int64
+	HealthFactorPPM          *int64
+	SupplyAPYBPS             *int64
+	BorrowAPYBPS             *int64
+	ForecastAPYBPS           *string
+	ValuationSource          string
+	ValuationSlot            *uint64
+	ValuationObservedAt      *time.Time
+	CoverageStartAt          *time.Time
 }
 
 func (s *Store) RecordPositionSnapshot(ctx context.Context, input *PositionSnapshotInput) (bool, error) {
@@ -129,8 +123,8 @@ func (s *Store) RecordPositionSnapshot(ctx context.Context, input *PositionSnaps
         )
         ON CONFLICT (route_key, observed_slot) DO NOTHING`,
 		input.RouteKey, int64(input.Generation), int64(input.ObservedSlot), input.ObservedAt, input.StrategyKey,
-		input.ClaimRaw, input.CollateralRaw, input.DebtRaw, input.EquityUSD,
-		input.CollateralValueUSD, input.DebtValueUSD,
+		input.ClaimRaw, input.CollateralRaw, input.DebtRaw, input.EquityUSDMicros,
+		input.CollateralValueUSDMicros, input.DebtValueUSDMicros,
 		input.LeverageBPS, input.LTVBPS, input.HealthFactorPPM, input.SupplyAPYBPS,
 		input.BorrowAPYBPS, input.ForecastAPYBPS, input.ValuationSource,
 		valuationSlot, input.ValuationObservedAt, input.CoverageStartAt)
@@ -393,7 +387,7 @@ func (s *Store) RenewLease(ctx context.Context, lease *Lease, expiresAt time.Tim
 		return false, err
 	}
 	tag, err := s.pool.Exec(ctx,
-		"UPDATE loyal_yield.multiply_route_states SET lease_expires_at=$5 WHERE route_key=$1 AND state_version=$2 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>now()",
+		"UPDATE loyal_yield.multiply_route_states SET lease_expires_at=$5 WHERE route_key=$1 AND "+leaseFence("", 2),
 		lease.RouteKey, lease.Version, lease.Owner, lease.FencingToken, expiresAt)
 	if err != nil {
 		return false, err
@@ -479,8 +473,7 @@ func (s *Store) PersistSignedOperation(ctx context.Context, lease *Lease, operat
             recent_blockhash=$12, last_valid_block_height=$13, updated_at=now()
         FROM loyal_yield.multiply_route_states route
         WHERE operation.operation_id=$1 AND operation.route_key=$2 AND operation.status='prepared'
-          AND route.route_key=operation.route_key AND route.state_version=$3
-          AND route.lease_owner=$4 AND route.fencing_token=$5 AND route.lease_expires_at>now()`,
+          AND route.route_key=operation.route_key AND `+leaseFence("route", 3),
 		operationID, lease.RouteKey, lease.Version, lease.Owner, lease.FencingToken,
 		policyAccount, policyDataSHA256, messageSHA256,
 		signed.Wire, signed.WireSHA256, signed.TransactionSignature,
@@ -510,8 +503,7 @@ func (s *Store) advanceOperation(ctx context.Context, lease *Lease, operationID,
             confirmed_slot=COALESCE($9, operation.confirmed_slot), updated_at=now()
         FROM loyal_yield.multiply_route_states route
         WHERE operation.operation_id=$1 AND operation.route_key=$2 AND operation.status=$6
-          AND route.route_key=operation.route_key AND route.state_version=$3
-          AND route.lease_owner=$4 AND route.fencing_token=$5 AND route.lease_expires_at>now()`,
+          AND route.route_key=operation.route_key AND `+leaseFence("route", 3),
 		operationID, lease.RouteKey, lease.Version, lease.Owner, lease.FencingToken,
 		from, to, broadcastAt, confirmedSlot)
 	if err != nil {
@@ -734,7 +726,7 @@ func (s *Store) updateRoute(ctx context.Context, lease *Lease, state *RouteState
 func updateRouteInTx(ctx context.Context, tx pgx.Tx, lease *Lease, encoded []byte) (int64, bool, error) {
 	var version int64
 	err := tx.QueryRow(ctx,
-		"UPDATE loyal_yield.multiply_route_states SET state=$5, state_version=state_version+1, updated_at=now() WHERE route_key=$1 AND state_version=$2 AND lease_owner=$3 AND fencing_token=$4 AND lease_expires_at>now() RETURNING state_version",
+		"UPDATE loyal_yield.multiply_route_states SET state=$5, state_version=state_version+1, updated_at=now() WHERE route_key=$1 AND "+leaseFence("", 2)+" RETURNING state_version",
 		lease.RouteKey, lease.Version, lease.Owner, lease.FencingToken, encoded).Scan(&version)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
@@ -743,6 +735,18 @@ func updateRouteInTx(ctx context.Context, tx pgx.Tx, lease *Lease, encoded []byt
 		return 0, false, err
 	}
 	return version, true, nil
+}
+
+func leaseFence(alias string, firstArg int) string {
+	column := func(name string) string {
+		if alias == "" {
+			return name
+		}
+		return alias + "." + name
+	}
+	return fmt.Sprintf("%s=$%d AND %s=$%d AND %s=$%d AND %s>now()",
+		column("state_version"), firstArg, column("lease_owner"), firstArg+1,
+		column("fencing_token"), firstArg+2, column("lease_expires_at"))
 }
 
 func validateRouteState(routeKey string, state *RouteState) error {

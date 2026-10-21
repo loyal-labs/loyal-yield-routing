@@ -1,10 +1,5 @@
 package multiply
 
-// Durable execution ported from
-// 91694cd9^:crates/loyal-fleet-worker/src/multiply/executor.rs. The ed25519 delegate
-// key material lives only inside Executor; every other component plans,
-// builds, or observes but can never sign.
-
 import (
 	"bytes"
 	"context"
@@ -29,6 +24,13 @@ const (
 	computeUnitLimit   = uint32(400_000)
 	maxTransactionFee  = uint64(20_000)
 	solanaPacketBytes  = 1232
+
+	altMetaBytes                    = 56
+	altTypeOffset                   = 0
+	altTypeLookupTable              = 1
+	altDeactivationSlotOffset       = 4
+	altLastExtendedStartIndexOffset = 20
+	altAuthorityTagOffset           = 21
 )
 
 type ExecutorChain interface {
@@ -41,7 +43,7 @@ type ExecutorChain interface {
 
 type Executor struct {
 	Chain    ExecutorChain
-	Signer   ed25519.PrivateKey
+	signer   ed25519.PrivateKey
 	feePayer ed25519.PrivateKey
 }
 
@@ -100,11 +102,11 @@ func NewExecutorWithFeePayerContext(ctx context.Context, c ExecutorChain, feePay
 	if genesis.String() != mainnetGenesisHash {
 		return nil, fmt.Errorf("rpc is not mainnet-beta (genesis %s)", genesis)
 	}
-	return &Executor{Chain: c, Signer: append(ed25519.PrivateKey(nil), signer...), feePayer: append(ed25519.PrivateKey(nil), feePayer...)}, nil
+	return &Executor{Chain: c, signer: append(ed25519.PrivateKey(nil), signer...), feePayer: append(ed25519.PrivateKey(nil), feePayer...)}, nil
 }
 
 func (e *Executor) Delegate() solana.PublicKey {
-	return solana.PublicKey(e.Signer[32:])
+	return solana.PublicKey(e.signer[32:])
 }
 
 func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, policy solana.PublicKey, accountIndex uint8, constraintIndexes []byte, minContextSlot uint64) (*SignedOperation, uint64, error) {
@@ -127,7 +129,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 		}
 		seenTables[key] = true
 	}
-	if !validPrivateKey(e.Signer) || !validPrivateKey(e.feePayer) {
+	if !validPrivateKey(e.signer) || !validPrivateKey(e.feePayer) {
 		return nil, 0, errors.New("executor lost its signing capability")
 	}
 	blockhash, lastValid, slot, err := e.Chain.Blockhash(ctx, rpc.CommitmentConfirmed, 0)
@@ -204,7 +206,7 @@ func (e *Executor) PrepareAndSign(ctx context.Context, built *BuiltOperation, po
 		case feePayer:
 			private = e.feePayer
 		case e.Delegate():
-			private = e.Signer
+			private = e.signer
 		default:
 			return nil
 		}
@@ -370,11 +372,8 @@ func (e *Executor) Simulate(ctx context.Context, signed *SignedOperation, minCon
 	return e.Chain.Simulate(ctx, signed.Wire, opts)
 }
 
-// VerifyExpectedEffects compares confirmed balances against immutable persisted
-// anchors, following Rust's exact-input, bounded-swap and repay-all rules.
-// The historical before parameter is ignored; a fresh read cannot establish
-// what the account held before an already broadcast operation.
-func VerifyExpectedEffects(effects *ExpectedEffects, action MultiplyAction, _, after *ObservedRoute, topology *EarnMaxTopology) error {
+// VerifyExpectedEffects checks confirmed balances against the persisted pre-transaction anchors.
+func VerifyExpectedEffects(effects *ExpectedEffects, action MultiplyAction, after *ObservedRoute, topology *EarnMaxTopology) error {
 	if effects == nil || after == nil || topology == nil {
 		return errors.New("effect evidence is missing")
 	}
@@ -461,17 +460,9 @@ func observedTokenAmount(observed *ObservedRoute, account, mint string) (uint64,
 	if observed == nil {
 		return 0, false
 	}
-	balances := []TokenBalance{observed.Claim}
-	for _, v := range observed.CollateralCustodies {
-		balances = append(balances, v.Balance)
-	}
-	for _, v := range observed.DebtCustodies {
-		balances = append(balances, v.Balance)
-	}
-	balances = append(balances, observed.ExternalCustody...)
 	var amount uint64
 	found := false
-	for _, v := range balances {
+	for _, v := range observed.balances() {
 		if v.Account == account && v.Mint == mint {
 			if found && amount != v.AmountRaw {
 				return 0, false
@@ -526,17 +517,20 @@ func (e *Executor) lookupTables(ctx context.Context, keys []solana.PublicKey) (m
 			return nil, errors.New("lookup table is absent or invalid")
 		}
 		data := account.Data
-		// Solana lookup-table state has 56 bytes of metadata, then public keys.
-		if len(data) < 56 || (len(data)-56)%32 != 0 || binary.LittleEndian.Uint32(data[:4]) != 1 || binary.LittleEndian.Uint64(data[4:12]) != math.MaxUint64 || data[21] > 1 {
+		if len(data) < altMetaBytes || (len(data)-altMetaBytes)%solana.PublicKeyLength != 0 ||
+			binary.LittleEndian.Uint32(data[altTypeOffset:]) != altTypeLookupTable ||
+			binary.LittleEndian.Uint64(data[altDeactivationSlotOffset:]) != math.MaxUint64 ||
+			data[altAuthorityTagOffset] > 1 {
 			return nil, errors.New("lookup table state is inactive or malformed")
 		}
-		count := (len(data) - 56) / 32
-		if count == 0 || count > 256 || int(data[20]) > count {
+		count := (len(data) - altMetaBytes) / solana.PublicKeyLength
+		if count == 0 || count > 256 || int(data[altLastExtendedStartIndexOffset]) > count {
 			return nil, errors.New("lookup table address count is invalid")
 		}
 		addresses := make(solana.PublicKeySlice, count)
 		for j := range addresses {
-			copy(addresses[j][:], data[56+j*32:56+(j+1)*32])
+			start := altMetaBytes + j*solana.PublicKeyLength
+			copy(addresses[j][:], data[start:start+solana.PublicKeyLength])
 		}
 		tables[keys[i]] = addresses
 	}

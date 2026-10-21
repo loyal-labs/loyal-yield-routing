@@ -16,11 +16,24 @@ type Intent struct {
 	InstructionIndex int32
 	Kind             string
 	RequestID        string
-	// AmountRaw nil is a "max" withdrawal.
-	AmountRaw   *uint64
-	Destination *string
-	Slot        uint64
-	ObservedAt  time.Time
+	Amount           WithdrawAmount
+	Destination      *string
+	Slot             uint64
+	ObservedAt       time.Time
+}
+
+type WithdrawAmount struct {
+	exact bool
+	raw   uint64
+}
+
+func exactWithdrawal(raw uint64) WithdrawAmount { return WithdrawAmount{exact: true, raw: raw} }
+
+func (a WithdrawAmount) resolve(equityUSDCRaw uint64) uint64 {
+	if a.exact {
+		return a.raw
+	}
+	return equityUSDCRaw
 }
 
 func (s *Store) pendingIntents(ctx context.Context, settings, vault string) ([]Intent, error) {
@@ -46,7 +59,7 @@ func (s *Store) pendingIntents(ctx context.Context, settings, vault string) ([]I
 			if err != nil {
 				return nil, err
 			}
-			intent.AmountRaw = &value
+			intent.Amount = exactWithdrawal(value)
 		}
 		intent.Slot = uint64(slot)
 		intents = append(intents, intent)
@@ -54,13 +67,10 @@ func (s *Store) pendingIntents(ctx context.Context, settings, vault string) ([]I
 	return intents, rows.Err()
 }
 
-func (s *RouteState) decideIntent(intent Intent, equityRaw uint64) (MultiplyAction, map[string]any, string) {
+func (s *RouteState) decideIntent(intent Intent, equityUSDCRaw uint64) (MultiplyAction, map[string]any, string) {
 	switch intent.Kind {
 	case "withdraw":
-		amount := equityRaw
-		if intent.AmountRaw != nil {
-			amount = *intent.AmountRaw
-		}
+		amount := intent.Amount.resolve(equityUSDCRaw)
 		switch {
 		case s.WithdrawalMatches(intent.RequestID, *intent.Destination, amount):
 			return "", nil, "no_action"
@@ -151,20 +161,19 @@ func (s *Store) refuseIntent(ctx context.Context, intent Intent, reason string) 
 	return err
 }
 
-func (s *Store) ApplyPendingIntents(ctx context.Context, lease *Lease, route *RouteState, equityUSD string) (bool, error) {
+func (s *Store) ApplyPendingIntents(ctx context.Context, lease *Lease, route *RouteState, equityUSDMicros string) (bool, error) {
 	intents, err := s.pendingIntents(ctx, route.Settings, route.Vault)
 	if err != nil || len(intents) == 0 {
 		return false, err
 	}
-	// USDC raw units are USD micros.
-	equity, err := strconv.ParseUint(equityUSD, 10, 64)
+	equityUSDCRaw, err := strconv.ParseUint(equityUSDMicros, 10, 64)
 	if err != nil {
 		return false, fmt.Errorf("route equity does not fit u64: %w", err)
 	}
 	next, moved := *route, false
 	for _, intent := range intents {
 		candidate := next
-		action, evidence, reason := candidate.decideIntent(intent, equity)
+		action, evidence, reason := candidate.decideIntent(intent, equityUSDCRaw)
 		if reason != "" {
 			if err := s.refuseIntent(ctx, intent, reason); err != nil {
 				return moved, err

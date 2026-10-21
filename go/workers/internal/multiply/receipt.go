@@ -145,7 +145,7 @@ func validateConfirmedReceipt(op *MultiplyOperation, topology *EarnMaxTopology, 
 	for account, balance := range r.Post {
 		after.ExternalCustody = append(after.ExternalCustody, TokenBalance{Account: account.String(), Mint: balance.Mint.String(), TokenProgram: balance.Program.String(), AmountRaw: balance.Amount})
 	}
-	if err := VerifyExpectedEffects(&effects, op.Action, nil, after, topology); err != nil {
+	if err := VerifyExpectedEffects(&effects, op.Action, after, topology); err != nil {
 		return nil, fmt.Errorf("transaction token receipt: %w", err)
 	}
 	hash, err := financialAnchorsHash(op.ExpectedEffects)

@@ -50,7 +50,7 @@ func NewWorker(deps WorkerDeps) (*Worker, error) { return newWorker(deps, false)
 func NewRecoveryWorker(deps WorkerDeps) (*Worker, error) { return newWorker(deps, true) }
 
 func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
-	if recoveryOnly && deps.Executor != nil && (len(deps.Executor.Signer) != 0 || len(deps.Executor.feePayer) != 0) {
+	if recoveryOnly && deps.Executor != nil && (len(deps.Executor.signer) != 0 || len(deps.Executor.feePayer) != 0) {
 		return nil, errors.New("recovery worker must not hold private keys")
 	}
 	if deps.Store == nil || deps.Store.pool == nil {
@@ -59,7 +59,7 @@ func newWorker(deps WorkerDeps, recoveryOnly bool) (*Worker, error) {
 	if deps.Observer == nil {
 		return nil, errors.New("multiply worker requires an observation reader")
 	}
-	if deps.Executor == nil || deps.Executor.Chain == nil || (!recoveryOnly && len(deps.Executor.Signer) != ed25519.PrivateKeySize) {
+	if deps.Executor == nil || deps.Executor.Chain == nil || (!recoveryOnly && len(deps.Executor.signer) != ed25519.PrivateKeySize) {
 		return nil, errors.New("multiply worker requires an executor holding the delegate capability")
 	}
 	if deps.Quotes == nil && !recoveryOnly {
@@ -264,7 +264,7 @@ func (w *Worker) tickLeased(ctx context.Context, lease *Lease) (TickResult, erro
 	if _, err := w.store.RecordPositionSnapshot(ctx, snapshot); err != nil {
 		return TickResult{}, err
 	}
-	if moved, err := w.store.ApplyPendingIntents(ctx, lease, stored.State, snapshot.EquityUSD); err != nil || moved {
+	if moved, err := w.store.ApplyPendingIntents(ctx, lease, stored.State, snapshot.EquityUSDMicros); err != nil || moved {
 		return TickResult{RouteKey: &stored.RouteKey, Condition: "earn_max_intents_applied"}, err
 	}
 	if stored.State.Goal == GoalDeploy {
@@ -276,7 +276,7 @@ func (w *Worker) tickLeased(ctx context.Context, lease *Lease) (TickResult, erro
 	}
 	decision := NextAction(stored.State, observed, topology)
 	switch decision.Kind {
-	case "complete":
+	case DecisionComplete:
 		next := *stored.State
 		if next.Goal == GoalWithdraw && next.Withdrawal != nil &&
 			next.Withdrawal.Status != WithdrawalClaimable {
@@ -308,11 +308,11 @@ func (w *Worker) tickLeased(ctx context.Context, lease *Lease) (TickResult, erro
 			}
 		}
 		return TickResult{RouteKey: &stored.RouteKey, Condition: "route_complete"}, nil
-	case "resume":
+	case DecisionResume:
 		return TickResult{}, errors.New("current operation was handled above")
-	case "unresolved_custody":
+	case DecisionUnresolvedCustody:
 		return TickResult{RouteKey: &stored.RouteKey, Condition: decision.Condition}, nil
-	case "execute":
+	case DecisionExecute:
 		return w.executePlan(ctx, lease, stored, topology, observed, decision.Plan)
 	}
 	return TickResult{}, fmt.Errorf("unknown planner decision %q", decision.Kind)
@@ -656,9 +656,7 @@ func (w *Worker) reconcileOperation(ctx context.Context, lease *Lease, route *Ro
 		PolicyDataHash(policyData.Data) != *operation.PolicyDataSHA256 {
 		return nil, errors.New("confirmed policy account drifted from the persisted binding")
 	}
-	// The verifier owns the persisted pre-effect anchors. A fresh chain read
-	// here is already after execution and cannot establish a before-balance.
-	if err := VerifyExpectedEffects(&operation.ExpectedEffects, operation.Action, nil, after, topology); err != nil {
+	if err := VerifyExpectedEffects(&operation.ExpectedEffects, operation.Action, after, topology); err != nil {
 		return nil, err
 	}
 	var active StrategyKey
@@ -804,17 +802,7 @@ func bindBefore(effects *ExpectedEffects, observed *ObservedRoute,
 	effects.TokenAmountsBefore = make([]TokenAmountBefore, 0, len(effects.TokenDeltas))
 	for _, delta := range effects.TokenDeltas {
 		var match *TokenBalance
-		candidates := []*TokenBalance{&observed.Claim}
-		for index := range observed.CollateralCustodies {
-			candidates = append(candidates, &observed.CollateralCustodies[index].Balance)
-		}
-		for index := range observed.DebtCustodies {
-			candidates = append(candidates, &observed.DebtCustodies[index].Balance)
-		}
-		for index := range observed.ExternalCustody {
-			candidates = append(candidates, &observed.ExternalCustody[index])
-		}
-		for _, balance := range candidates {
+		for _, balance := range observed.balances() {
 			if balance.Account == delta.Account && balance.Mint == delta.Mint {
 				match = balance
 				break
@@ -846,12 +834,10 @@ func bindBefore(effects *ExpectedEffects, observed *ObservedRoute,
 	return nil
 }
 
-// snapshotInput mirrors snapshot_input with exact u128->USD-micros math.
 func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapshotInput, error) {
 	if route == nil || observed == nil {
 		return nil, errors.New("position snapshot observation is absent")
 	}
-	const fractionOneSF = uint64(1) << 60
 	var active *StrategyObservation
 	for _, position := range observed.Strategies {
 		if position == nil {
@@ -884,9 +870,9 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 	}
 	input.CoverageStartAt = &coverageStart
 	if active == nil {
-		input.EquityUSD = formatUint(observed.Claim.AmountRaw)
-		input.CollateralValueUSD = "0"
-		input.DebtValueUSD = "0"
+		input.EquityUSDMicros = formatUint(observed.Claim.AmountRaw)
+		input.CollateralValueUSDMicros = "0"
+		input.DebtValueUSDMicros = "0"
 		return input, nil
 	}
 	if !validMarketValues(active) || active.UnhealthyValueSF == nil || active.UnhealthyValueSF.Sign() < 0 || active.UnhealthyValueSF.BitLen() > 128 {
@@ -894,7 +880,6 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 	}
 	collateralValue := toUSDMicros(active.CollateralValueSF)
 	debtValue := toUSDMicros(active.DebtValueSF)
-	// USDC raw units already are USD micros (six mint decimals).
 	claimMicros := new(big.Int).SetUint64(observed.Claim.AmountRaw)
 	equity := new(big.Int).Add(claimMicros, collateralValue)
 	equity.Sub(equity, debtValue)
@@ -905,9 +890,9 @@ func snapshotInput(route *RouteState, observed *ObservedRoute) (*PositionSnapsho
 	input.StrategyKey = &key
 	input.CollateralRaw = formatUint(active.CollateralDepositedRaw)
 	input.DebtRaw = formatUint(active.DebtRaw)
-	input.CollateralValueUSD = collateralValue.String()
-	input.DebtValueUSD = debtValue.String()
-	input.EquityUSD = equity.String()
+	input.CollateralValueUSDMicros = collateralValue.String()
+	input.DebtValueUSDMicros = debtValue.String()
+	input.EquityUSDMicros = equity.String()
 	tenThousand := big.NewInt(10_000)
 	if equity.Sign() > 0 {
 		leverage := new(big.Int).Div(new(big.Int).Mul(collateralValue, tenThousand), equity)
