@@ -62,6 +62,8 @@ func (r ReserveState) DepositRoomRaw() (room int64, known bool) {
 // SupplyUSDMicros holds because Earn reserves are six-decimal stablecoins valued at a code-owned $1.
 func (r ReserveState) SupplyUSDMicros() int64 { return r.TotalSupplyRaw }
 
+func (r ReserveState) AvailableLiquidityUSDMicros() *int64 { return r.AvailableLiquidityRaw }
+
 func (r ReserveState) TargetEligible() bool {
 	return !r.LastUpdateStale && r.EconomicLifetimeMillis >= minimumPublicationLifetime.Milliseconds() &&
 		r.SupplyUSDMicros() >= minimumSupplyUSDMicros && r.SupplyAPYBPS >= 0 && r.SupplyAPYBPS < 5_000

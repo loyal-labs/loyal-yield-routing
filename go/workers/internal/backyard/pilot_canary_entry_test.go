@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"testing"
 	"time"
 )
@@ -108,7 +109,7 @@ func TestPilotCanaryReceiptAndEntryCommitOnceAcrossRestart(t *testing.T) {
 	if err != nil || result.Action != "CANARY_ENTER" {
 		t.Fatal(result, err)
 	}
-	restarted, err := OpenDatabase(ctx, url)
+	restarted, err := OpenDatabase(ctx, engine.DirectDSN(url))
 	if err != nil {
 		t.Fatal(err)
 	}
