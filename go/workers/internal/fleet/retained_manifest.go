@@ -15,6 +15,8 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
+// ALTManifestAddress is the retained durable provisioning row. Its ordinal
+// follows base58 address order, separately from the v1 raw-pubkey hash order.
 type ALTManifestAddress struct {
 	Address, SemanticClass, AccountRole string
 	Ordinal                             int32

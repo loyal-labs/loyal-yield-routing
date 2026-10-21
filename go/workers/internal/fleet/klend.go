@@ -9,6 +9,11 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
+// KLend routes. This is the Go port of the official klend-interface builders
+// (Kamino-Finance/klend 23b9f2b, libs/klend-interface) that the retired
+// loyal-klend-proxy child invoked. Byte parity with that Rust proxy is pinned
+// by testdata/klend/golden.json.
+
 type InstructionAccount struct {
 	Address  string `json:"address"`
 	Signer   bool   `json:"signer"`

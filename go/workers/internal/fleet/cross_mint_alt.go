@@ -11,6 +11,9 @@ import (
 	"sort"
 )
 
+// External snapshots are finalized provider inputs, including tables which do
+// not contribute to the compiled message. They never carry managed identities
+// or acquire managed usage leases. Member order is the Solana index contract.
 type CrossMintExternalALT struct {
 	Address            string   `json:"tableAddress"`
 	Addresses          []string `json:"addresses"`
@@ -30,6 +33,8 @@ func crossMintALTPartsHash(parts []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// CrossMintExternalAddressHash ports Rust's ordered_lookup_table_address_hash.
+// Repeated members retain their original indexes; they must not be deduplicated.
 func CrossMintExternalAddressHash(addresses []string) (string, error) {
 	if len(addresses) == 0 || len(addresses) > 256 {
 		return "", errors.New("external ALT requires bounded complete member vector")
