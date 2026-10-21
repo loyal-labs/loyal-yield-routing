@@ -45,6 +45,7 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 		if !kaminoObligationTermOpen(decoded, debt, clockUnixTimestamp(accounts)) {
 			return 0, nil
 		}
+		// A different elevation group must not inherit cross-mode liquidity.
 		if !plainCrossModeObligation(decoded, obligation) {
 			return 0, nil
 		}
@@ -70,6 +71,7 @@ func kaminoDebtReserveRoom(debt decodedKaminoReserve, now int64) (uint64, error)
 	// KLend clamps the effective factor to at least 100%, including old
 	// configurations whose serialized value is zero.
 	unweightedDebtOnly := max(debt.terms.BorrowFactorPct, parBorrowFactorPct) == parBorrowFactorPct
+	// Risk observation uses unweighted LTV, so a weighted debt lane needs its own risk and unwind admission.
 	if !unweightedDebtOnly {
 		return 0, nil
 	}
