@@ -1,6 +1,8 @@
 import { useRouter as useTanstackRouter } from "@tanstack/react-router";
 import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
 
+import { navigate } from "./navigation";
+
 export type LinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & {
   href: string | { pathname?: string; query?: Record<string, string>; hash?: string };
   replace?: boolean;
@@ -41,11 +43,7 @@ export default function Link({ href, replace, scroll, prefetch, onClick, onMouse
     if (!navigates || event.defaultPrevented) return;
     if (event.button !== 0 || MODIFIER_KEYS.some((key) => event[key])) return;
     event.preventDefault();
-    // TTo pinned to string: href carries the fully built path, `to` stays
-    // unset as the types then allow.
-    router
-      .navigate<typeof router, string>({ href: url, replace, resetScroll: scroll === false ? false : undefined })
-      .catch(() => {});
+    navigate(router, url, replace ?? false, scroll);
   };
 
   if (!navigates) return <a href={url} onClick={onClick} onMouseEnter={onMouseEnter} onFocus={onFocus} {...rest} />;

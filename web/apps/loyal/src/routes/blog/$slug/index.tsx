@@ -16,7 +16,7 @@ import {
 import type { BlogPostFull } from "@/features/blog/types";
 import { cn } from "@/lib/utils";
 
-import { headFromMetadata } from "../../../next-compat/metadata";
+import { pageHead } from "../../../next-compat/metadata";
 import { notFound } from "../../../next-compat/navigation";
 
 const SITE_ORIGIN = "https://askloyal.com";
@@ -189,6 +189,6 @@ export const Route = createFileRoute("/blog/$slug/")({
     }
     return { post, morePosts: await getMoreArticles(post.slug, 3) };
   },
-  head: ({ loaderData }) => headFromMetadata(postMetadata(loaderData?.post)),
+  head: ({ loaderData }) => pageHead(postMetadata(loaderData?.post)),
   component: BlogPostRoute,
 });
