@@ -199,7 +199,7 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomic
 		// only ever meet other raw amounts of the same reserve (utilization)
 		// or the priced quote's raw debt, never USDC. Both reserves are the
 		// view at one slot, so the lane is observed at their chain time.
-		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: d.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: c.SupplyAPY, BorrowCurve: d.Curve, HostBorrowBPS: d.HostBPS, DebtSupplyRaw: d.SupplyRaw, DebtBorrowRaw: d.BorrowRaw}
+		e := LaneEconomics{Lane: route.Lane, EvidenceID: c.Hash + ":" + d.Hash + ":" + y.EvidenceID, ObservedAt: d.ObservedAt, NativeObservedAt: y.ObservedAt, NativeAPY: y.APY, SupplyAPY: c.SupplyAPY, BorrowCurve: d.Curve, HostBorrowBPS: d.HostBPS, DebtSupplyRaw: debtMintRaw(d.SupplyRaw), DebtBorrowRaw: debtMintRaw(d.BorrowRaw)}
 		if rate, ok := feed[route.Lane]; ok {
 			e.FeedNativeAPY = &rate
 		}

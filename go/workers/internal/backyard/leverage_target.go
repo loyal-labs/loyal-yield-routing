@@ -95,7 +95,7 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	proceeds, priceErr := capacityBorrowExpectedUSDC(s, raw, false)
 	liability, debtErr := capacityBorrowExpectedUSDC(s, raw+fee, true)
 	rateDebt := float64(leverageRateDebtRaw(s, raw+fee))
-	apr, rateErr := projectedBorrowAPR(market, rateDebt)
+	apr, rateErr := projectedBorrowAPR(market, debtMintRaw(rateDebt))
 	spread, allowed := leverageUpAllowed(market, level, rateDebt)
 	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil {
 		return out.held(leverageReasonRateUnavailable)
@@ -147,7 +147,7 @@ func upStepGain(m LaneEconomics, u upStep) float64 {
 	keepGross := forecastGain(u.CollateralMicros, u.CollateralMicros, u.DebtMicros, m, u.KeepDebtAPR, u.Years)
 	cost := math.Ceil(u.CostMicros)
 	collateralNetOfCost := u.CollateralMicros - cost
-	candidate := pilotForecastEconomics(pilotEconomics{Debt: u.DebtMicros + u.AddedLiabilityMicros, Proceeds: u.ProceedsMicros, APR: u.StepDebtAPR}, collateralNetOfCost, m, u.Years, int64(cost))
+	candidate := pilotForecastEconomics(pilotEconomics{DebtUSDC: u.DebtMicros + u.AddedLiabilityMicros, Proceeds: u.ProceedsMicros, APR: u.StepDebtAPR}, collateralNetOfCost, m, u.Years, int64(cost))
 	extra := candidate.Gain + cost - keepGross
 	if extra > 0 {
 		extra *= 1 - float64(u.FeeBPS)/10_000

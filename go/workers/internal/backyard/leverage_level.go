@@ -94,7 +94,7 @@ func nextLeverageLevel(current, maxLevel float64, spreadAt func(float64) (float6
 }
 
 func leverageBorrowSpread(m LaneEconomics, debtRaw float64) (float64, bool) {
-	apr, err := projectedBorrowAPR(m, debtRaw)
+	apr, err := projectedBorrowAPR(m, debtMintRaw(debtRaw))
 	if err != nil || !finite(apr) {
 		return 0, false
 	}
