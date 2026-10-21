@@ -17,7 +17,7 @@ import (
 // (raw ~ USDC micros in these fixtures) plus three $0.01 transactions: the
 // economics the leverage fixtures were written against.
 func twentyBPSStepCost(raw uint64) (leverageStepCost, error) {
-	return leverageStepLegs{EntryInMicros: usdMicros(raw), EntryOutMicros: usdMicros(raw) - usdMicros(raw/500), ExitInMicros: 1, ExitOutMicros: 1, NetworkMicros: 30_000}.cost()
+	return leverageStepLegs{EntryDebtMicros: usdMicros(raw), EntryCollateralMicros: usdMicros(raw) - usdMicros(raw/500), ExitCollateralMicros: 1, ExitDebtMicros: 1, NetworkMicros: 30_000}.cost()
 }
 
 // measuredStepCost prices a step at measured AUTO quotes (2026-10-11, $100k):
@@ -26,8 +26,8 @@ func twentyBPSStepCost(raw uint64) (leverageStepCost, error) {
 func measuredStepCost(feeBPS int64) leverageStepPricer {
 	return func(raw uint64) (leverageStepCost, error) {
 		in := usdMicros(raw)
-		return leverageStepLegs{BorrowFeeMicros: in * usdMicros(feeBPS) / 10_000, EntryInMicros: in, EntryOutMicros: in + in*3/100_000,
-			ExitInMicros: in + in*3/100_000, ExitOutMicros: in + in*3/100_000 - in*64/100_000, NetworkMicros: 12_000}.cost()
+		return leverageStepLegs{BorrowFeeMicros: in * usdMicros(feeBPS) / 10_000, EntryDebtMicros: in, EntryCollateralMicros: in + in*3/100_000,
+			ExitCollateralMicros: in + in*3/100_000, ExitDebtMicros: in + in*3/100_000 - in*64/100_000, NetworkMicros: 12_000}.cost()
 	}
 }
 
@@ -39,10 +39,10 @@ func quoteOutage(uint64) (leverageStepCost, error) {
 func TestLeverageStepCostIsWhatCapitalLoses(t *testing.T) {
 	t.Parallel()
 	for name, legs := range map[string]leverageStepLegs{
-		"no exit quote":   {EntryInMicros: 1, EntryOutMicros: 1, ExitInMicros: 1, NetworkMicros: 1},
-		"no network fee":  {EntryInMicros: 1, EntryOutMicros: 1, ExitInMicros: 1, ExitOutMicros: 1},
-		"no entry quote":  {ExitInMicros: 1, ExitOutMicros: 1, NetworkMicros: 1},
-		"negative borrow": {BorrowFeeMicros: -1, EntryInMicros: 1, EntryOutMicros: 1, ExitInMicros: 1, ExitOutMicros: 1, NetworkMicros: 1},
+		"no exit quote":   {EntryDebtMicros: 1, EntryCollateralMicros: 1, ExitCollateralMicros: 1, NetworkMicros: 1},
+		"no network fee":  {EntryDebtMicros: 1, EntryCollateralMicros: 1, ExitCollateralMicros: 1, ExitDebtMicros: 1},
+		"no entry quote":  {ExitCollateralMicros: 1, ExitDebtMicros: 1, NetworkMicros: 1},
+		"negative borrow": {BorrowFeeMicros: -1, EntryDebtMicros: 1, EntryCollateralMicros: 1, ExitCollateralMicros: 1, ExitDebtMicros: 1, NetworkMicros: 1},
 	} {
 		if _, err := legs.cost(); err == nil {
 			t.Fatalf("%s priced", name)
@@ -64,7 +64,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 	}
 	s.LeverageTargetLevel, s.LeverageUpApproved = approved.level().Level, approved.level().UpApproved
 	outage := func(uint64) (leverageStepCost, error) {
-		return leverageStepCost{}, costOutage("exit_quote", fmt.Errorf("Jupiter https://api.example/?api-key=secret: %w", context.DeadlineExceeded))
+		return leverageStepCost{}, costOutage(stageExitQuote, fmt.Errorf("Jupiter https://api.example/?api-key=secret: %w", context.DeadlineExceeded))
 	}
 	got, ok := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), outage)
 	if !ok || got.Reason != "leverage_cost_unavailable(deadline)" || !got.outage() || got.storeChanges(s) {
@@ -74,7 +74,7 @@ func TestLeverageCostOutageCarriesTheApproval(t *testing.T) {
 		t.Fatalf("log line: %s", line)
 	}
 	quoteFailed := func(uint64) (leverageStepCost, error) {
-		return leverageStepCost{}, costOutage("entry_quote", errors.New("route dialect changed"))
+		return leverageStepCost{}, costOutage(stageEntryQuote, errors.New("route dialect changed"))
 	}
 	if got, _ := decideLeverageTarget(s, SelectorResult{Action: "KEEP"}, []LaneEconomics{m}, DefaultSelectorPolicy(), quoteFailed); got.Reason != "leverage_cost_unavailable(entry_quote)" || got.storeChanges(s) {
 		t.Fatalf("entry quote outage: %+v", got)

@@ -28,10 +28,10 @@ const squadsSpendingLimitReason = "squads_spending_limit_exceeded"
 
 const adaptorMaxReportAgeSlots = int64(32)
 
-// unclassifiedTransactionErrReason is the reason of a failed transaction no
-// program error names, and the manual-recovery marker of a failure whose
-// receipt does not prove the rollback.
-const unclassifiedTransactionErrReason = "confirmed_transaction_error"
+const (
+	unclassifiedTransactionErrReason = "confirmed_transaction_error"
+	unprovenRollbackRecoveryReason   = "confirmed_transaction_error"
+)
 
 func decodeInstructionErrorCustom(raw json.RawMessage) (uint32, bool) {
 	var frame struct {
@@ -157,5 +157,5 @@ func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *chain.Clien
 	if err != nil || settled {
 		return err
 	}
-	return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unclassifiedTransactionErrReason)
+	return d.MarkManualRecovery(ctx, operation.ID, operation.Status, unprovenRollbackRecoveryReason)
 }

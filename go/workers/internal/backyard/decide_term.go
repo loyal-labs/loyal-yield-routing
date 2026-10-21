@@ -9,9 +9,7 @@ const (
 	termDeleverSeconds     int64 = 24 * 3600
 	termKeepAliveReason          = "term_keepalive"
 	termKeepAliveBorrowRaw       = leverageMinimumBorrowRaw
-	// termMaturityUnknown marks term debt whose borrow slot carries no borrow
-	// time: its maturity cannot be known, so nothing borrows or plans on it.
-	termMaturityUnknown int64 = -1
+	termMaturityUnknown    int64 = -1
 )
 
 func applyDebtTerm(s *Snapshot, accounts []ConfirmedAccount, route RuntimeRoute) error {

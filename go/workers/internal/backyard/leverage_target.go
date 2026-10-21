@@ -28,9 +28,8 @@ type leverageDecision struct {
 	BorrowRaw     uint64
 	RoomRaw       uint64
 	Cost          leverageStepCost
-	// TermDays is the lane's days to its term debt's maturity, when it owes term debt (decide_term.go).
-	TermDays  float64
-	TermKnown bool
+	TermDays      float64
+	TermKnown     bool
 }
 
 func (d leverageDecision) held(reason string) leverageDecision {
@@ -44,8 +43,6 @@ func leverageSettled(s Snapshot, selector SelectorResult) bool {
 		s.SquadsIdleRaw == 0 && s.VoltrStrategyIdleRaw == 0
 }
 
-// decideLeverageTarget sets the level target() reads for one settled lane.
-// An up move needs the level's spread (leverageLadder) and a positive gain over KEEP after the move's priced cost; an unpriced step is leverage_cost_unavailable, never free.
 func decideLeverageTarget(s Snapshot, selector SelectorResult, markets []LaneEconomics, p SelectorPolicy, price leverageStepPricer) (leverageDecision, bool) {
 	out := leverageDecision{Lane: s.RouteLane, RoomRaw: s.AdditionalDebtRoomRaw}
 	out.TermDays, out.TermKnown = termDays(s)
@@ -98,7 +95,7 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	proceeds, priceErr := capacityBorrowExpectedUSDC(s, raw, false)
 	liability, debtErr := capacityBorrowExpectedUSDC(s, raw+fee, true)
 	rateDebt := float64(leverageRateDebtRaw(s, raw+fee))
-	apr, rateErr := projectedBorrowAPR(market, rateDebt)
+	apr, rateErr := projectedBorrowAPR(market, debtMintRaw(rateDebt))
 	spread, allowed := leverageUpAllowed(market, level, rateDebt)
 	if err != nil || priceErr != nil || debtErr != nil || rateErr != nil {
 		return out.held(leverageReasonRateUnavailable)
@@ -124,7 +121,7 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	out.Cost = stepCost
 	years := p.Horizon.Hours() / (365.25 * 24)
 	out.GainRaw = upStepGain(market, upStep{CollateralMicros: float64(s.PositionCollateralValueRaw), DebtMicros: float64(s.PositionDebtValueRaw),
-		LiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepAPR: math.Log1p(market.CurrentBorrowAPY), APR: apr,
+		AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: math.Log1p(market.CurrentBorrowAPY), StepDebtAPR: apr,
 		CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS})
 	if !finite(out.GainRaw) {
 		out = out.held(leverageReasonFeeForecastUnavailable)
@@ -139,28 +136,18 @@ func (out leverageDecision) priceUpStep(s Snapshot, market LaneEconomics, level 
 	return out
 }
 
-// upStep is one candidate up move, every amount in USDC micros: a position
-// of collateral and debt borrowing liability more, proceeds of it converted
-// into collateral, every debt at APR after the step, against KEEP's income
-// with its debt at KeepAPR.
 type upStep struct {
-	CollateralMicros, DebtMicros, LiabilityMicros, ProceedsMicros float64
-	KeepAPR, APR                                                  float64
-	CostMicros, Years                                             float64
-	FeeBPS                                                        int64
+	CollateralMicros, DebtMicros, AddedLiabilityMicros, ProceedsMicros float64
+	KeepDebtAPR, StepDebtAPR                                           float64
+	CostMicros, Years                                                  float64
+	FeeBPS                                                             int64
 }
 
-// upStepGain is the live rule's gain of one up step over the horizon; the
-// performance fee is taken on a positive difference (a vault below its
-// high-water mark pays less, never more), then the step's cost. The step pays
-// when it is positive.
 func upStepGain(m LaneEconomics, u upStep) float64 {
-	keepGross := forecastGain(u.CollateralMicros, u.CollateralMicros, u.DebtMicros, m, u.KeepAPR, u.Years)
-	// The held collateral is not reduced by the move; its cost is. Pass the
-	// collateral the move leaves earning, net of that cost; the candidate's
-	// income is its gain before the cost is charged.
+	keepGross := forecastGain(u.CollateralMicros, u.CollateralMicros, u.DebtMicros, m, u.KeepDebtAPR, u.Years)
 	cost := math.Ceil(u.CostMicros)
-	candidate := pilotForecastEconomics(pilotEconomics{Debt: u.DebtMicros + u.LiabilityMicros, Proceeds: u.ProceedsMicros, APR: u.APR}, u.CollateralMicros-cost, m, u.Years, int64(cost))
+	collateralNetOfCost := u.CollateralMicros - cost
+	candidate := pilotForecastEconomics(pilotEconomics{DebtUSDC: u.DebtMicros + u.AddedLiabilityMicros, Proceeds: u.ProceedsMicros, APR: u.StepDebtAPR}, collateralNetOfCost, m, u.Years, int64(cost))
 	extra := candidate.Gain + cost - keepGross
 	if extra > 0 {
 		extra *= 1 - float64(u.FeeBPS)/10_000
@@ -217,7 +204,7 @@ func (d leverageDecision) logLine() string {
 		term = fmt.Sprintf("%.2f", d.TermDays)
 	}
 	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f (fee=%d in=%d out=%d network=%d) borrow=%d room=%d term_days=%s reason=%s",
-		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, float64(d.Cost.TotalMicros), d.Cost.BorrowFeeMicros, d.Cost.EntrySwapCostMicros, d.Cost.ExitSwapCostMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, term, d.Reason)
+		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, float64(d.Cost.TotalMicros), d.Cost.BorrowFeeMicros, d.Cost.EntrySwapCostMicros, d.Cost.UnwindSwapCostMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, term, d.Reason)
 }
 
 type leverageDecisionLog struct {

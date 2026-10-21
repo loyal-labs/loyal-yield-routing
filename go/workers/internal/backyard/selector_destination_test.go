@@ -285,11 +285,11 @@ func TestLanePricesRefuseAStalePrice(t *testing.T) {
 func TestStepBuildRefusalsAreNamed(t *testing.T) {
 	t.Parallel()
 	for cause, want := range map[string]string{"step_does_not_compile": "step_build", "step_over_policy_cap": "step_build", "jupiter_auto_wire_floor_zero": "entry_quote"} {
-		if got := stepStage(stageEntryQuote, staleHold(cause)); string(got) != want {
+		if got := stepStage(stageEntryQuote, staleHold(cause)); got.name != want {
 			t.Fatalf("%s: %s", cause, got)
 		}
 	}
-	if got := leverageCostOutageReason(costOutage(stepStage("exit_quote", staleHold("step_over_policy_cap")), staleHold("step_over_policy_cap"))); got != "leverage_cost_unavailable(step_build)" {
+	if got := leverageCostOutageReason(costOutage(stepStage(stageExitQuote, staleHold("step_over_policy_cap")), staleHold("step_over_policy_cap"))); got != "leverage_cost_unavailable(step_build)" {
 		t.Fatal(got)
 	}
 }

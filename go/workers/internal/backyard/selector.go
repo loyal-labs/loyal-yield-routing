@@ -11,12 +11,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-// Capital amounts are raw USDC (six decimals). Forecasts are estimates only;
-// transaction amounts, reservations and reconciliation keep integer arithmetic.
-// An entry deposits equity, then its first up step levers it to the ladder's
-// first level (1.5x); later levels are later decisions, and a destination is
-// priced at the level they settle it at (settledLevel).
-
 // Capacity distinguishes unknown, a closed entry, and an explicitly unlimited
 // limit. It is equity capacity for the exact pair and execution recipe, not a
 // reserve's aggregate available liquidity or the collateral's borrow limit.
@@ -59,8 +53,8 @@ type LaneEconomics struct {
 	CurrentBorrowAPY float64            `json:"currentBorrowApy"`
 	BorrowCurve      []BorrowCurvePoint `json:"borrowCurve"`
 	HostBorrowBPS    float64            `json:"hostBorrowBps"`
-	DebtSupplyRaw    float64            `json:"debtSupplyUsdcRaw"`
-	DebtBorrowRaw    float64            `json:"debtBorrowUsdcRaw"`
+	DebtSupplyRaw    debtMintRaw        `json:"debtSupplyUsdcRaw"`
+	DebtBorrowRaw    debtMintRaw        `json:"debtBorrowUsdcRaw"`
 	// DebtRawPerUSDCRaw converts a USDC value into a non-USDC debt lane's raw
 	// debt units at the verified debt and USDC reserve prices of the same feed
 	// read; 0 when unknown and on USDC debt, whose raw units are USDC. Forecast
@@ -86,7 +80,7 @@ func (e LaneEconomics) validate(now time.Time, p SelectorPolicy) error {
 	}
 	// Borrowed may exceed total supply: KLend's total supply nets protocol and
 	// referrer fees out of available liquidity, so utilization can exceed 100%.
-	if e.SupplyAPY < 0 || e.CurrentBorrowAPY < 0 || !finite(e.HostBorrowBPS) || e.HostBorrowBPS < 0 || e.HostBorrowBPS > 100_000 || !finite(e.DebtSupplyRaw) || !finite(e.DebtBorrowRaw) || e.DebtSupplyRaw <= 0 || e.DebtBorrowRaw < 0 ||
+	if e.SupplyAPY < 0 || e.CurrentBorrowAPY < 0 || !finite(e.HostBorrowBPS) || e.HostBorrowBPS < 0 || e.HostBorrowBPS > 100_000 || !finite(float64(e.DebtSupplyRaw)) || !finite(float64(e.DebtBorrowRaw)) || e.DebtSupplyRaw <= 0 || e.DebtBorrowRaw < 0 ||
 		!finite(e.DebtRawPerUSDCRaw) || e.DebtRawPerUSDCRaw < 0 {
 		return fmt.Errorf("invalid_debt_market")
 	}
@@ -98,8 +92,8 @@ func (e LaneEconomics) validate(now time.Time, p SelectorPolicy) error {
 // utilization after additionalDebt raw debt units. Like KLend's
 // get_borrow_rate, utilization above 100% prices at the terminal point; this
 // prices the rate only, never whether the borrow can be funded.
-func projectedBorrowAPR(e LaneEconomics, additionalDebt float64) (float64, error) {
-	if !finite(additionalDebt) || additionalDebt < 0 || e.DebtSupplyRaw <= 0 {
+func projectedBorrowAPR(e LaneEconomics, additionalDebt debtMintRaw) (float64, error) {
+	if !finite(float64(additionalDebt)) || additionalDebt < 0 || e.DebtSupplyRaw <= 0 {
 		return 0, fmt.Errorf("projected_debt_unavailable")
 	}
 	points := e.BorrowCurve
@@ -115,7 +109,7 @@ func projectedBorrowAPR(e LaneEconomics, additionalDebt float64) (float64, error
 			return 0, fmt.Errorf("invalid_borrow_curve")
 		}
 	}
-	u := min((e.DebtBorrowRaw+additionalDebt)/e.DebtSupplyRaw*10_000, 10_000)
+	u := min(float64((e.DebtBorrowRaw+additionalDebt)/e.DebtSupplyRaw)*10_000, 10_000)
 	for i := 1; i < len(points); i++ {
 		if u <= points[i].UtilizationBPS {
 			a, b := points[i-1], points[i]
@@ -140,13 +134,6 @@ type SelectorPolicy struct {
 const selectorHorizon = 30 * 24 * time.Hour
 
 func DefaultSelectorPolicy() SelectorPolicy {
-	// Shadow starting values; activation must review observed churn and costs.
-	// 30-day horizon (Vlad OK 09-26): over 7 days a move had to repay its
-	// cost plus the margin within one week (~5%/yr APY edge), so even a
-	// clearly better lane (AUTO 9.2% vs Maple 3.7%) never passed.
-	// MaxSampleGap 10 min (Vlad OK 09-26): samples skip while a NAV report or
-	// a failed quote runs, so live gaps reached ~6 min and a 2-min gap reset
-	// the 30-min window every few minutes; every sample taken must still lead.
 	return SelectorPolicy{Horizon: selectorHorizon, Persistence: 30 * time.Minute, MaxSampleGap: 10 * time.Minute, MarketMaxAge: 90 * time.Second, NativeMaxAge: 2 * time.Hour, QuoteMaxAge: 30 * time.Second, MinimumBenefitRaw: 250_000, UncertaintyBPS: 10, IdleBufferRaw: 0}
 }
 func (p SelectorPolicy) validate() error {
@@ -187,12 +174,6 @@ type MoveQuote struct {
 	ValidThroughSlot int64     `json:"validThroughSlot"`
 }
 
-// storedWindowValid checks a PERSISTED quote's own slot window against the
-// fixed ceiling, not the runtime-measured observation lag: the lag is
-// re-measured (48/49 slots) and a quote stored under 49 must stay a valid
-// record when it later reads 48 (live 2026-09-29: the worker exited on
-// invalid_selector_entry). Freshness for new spending is still
-// currentAtSlot at the current slot, in target() and the canary.
 func (q MoveQuote) storedWindowValid() bool {
 	return q.SampleSlot > 0 && q.ValidThroughSlot >= q.SampleSlot && q.ValidThroughSlot-q.SampleSlot <= observationLagCeilingSlots
 }
@@ -309,18 +290,14 @@ func forecastGain(collateral, supplied, debt float64, e LaneEconomics, borrowAPR
 	return (collateral-supplied)*math.Expm1(math.Log1p(e.NativeAPY)*years) + supplied*math.Expm1((math.Log1p(e.NativeAPY)+math.Log1p(e.SupplyAPY))*years) - debt*math.Expm1(borrowAPR*years)
 }
 
-// pilotEconomics is one entry's projected economics. DebtRaw stays in raw
-// debt-mint units (the reserve's projected utilization); Debt and Proceeds
-// are the same borrow valued in USDC at the lane batch's prices.
+type debtMintRaw float64
+
 type pilotEconomics struct {
-	DebtRaw, Debt, Proceeds, APR, Gain    float64
+	DebtRaw                               debtMintRaw
+	DebtUSDC, Proceeds, APR, Gain         float64
 	PositiveIncome, InitialNAV, EndingNAV float64
 }
 
-// pilotQuoteEconomics projects a candidate from its quote: the liability the
-// up step owes (receive plus fee) and the principal it converts into
-// collateral, at the quote's central values. Its cost is charged once, in
-// Gain.
 func pilotQuoteEconomics(quote MoveQuote, m LaneEconomics, investedNetOfExpense, years float64) (pilotEconomics, error) {
 	if !quote.validBorrow() {
 		return pilotEconomics{}, errors.New("bounded_borrow_unavailable")
@@ -328,7 +305,7 @@ func pilotQuoteEconomics(quote MoveQuote, m LaneEconomics, investedNetOfExpense,
 	if quote.Unlevered {
 		return pilotForecastEconomics(pilotEconomics{}, investedNetOfExpense, m, years, quote.CostRaw), nil
 	}
-	e := pilotEconomics{DebtRaw: float64(quote.BorrowReceiveRaw) + float64(quote.BorrowFeeRaw), Debt: float64(quote.BorrowValueRaw), Proceeds: float64(quote.ProceedsValueRaw)}
+	e := pilotEconomics{DebtRaw: debtMintRaw(float64(quote.BorrowReceiveRaw) + float64(quote.BorrowFeeRaw)), DebtUSDC: float64(quote.BorrowValueRaw), Proceeds: float64(quote.ProceedsValueRaw)}
 	apr, err := projectedBorrowAPR(m, e.DebtRaw)
 	if err != nil {
 		return pilotEconomics{}, err
@@ -373,34 +350,34 @@ func nativeFeedText(native float64, feed *float64) string {
 }
 
 func quoteLeverageAndNetAPY(e pilotEconomics, invested float64, m LaneEconomics, feeBPS int64) (float64, float64) {
-	equity := invested + e.Proceeds - e.Debt
+	equity := invested + e.Proceeds - e.DebtUSDC
 	if invested <= 0 || equity <= 0 {
 		return 0, 0
 	}
 	collateral := invested + e.Proceeds
-	gross := (collateral*math.Expm1(math.Log1p(m.NativeAPY)+math.Log1p(m.SupplyAPY)) - e.Debt*math.Expm1(e.APR)) / equity
+	gross := (collateral*math.Expm1(math.Log1p(m.NativeAPY)+math.Log1p(m.SupplyAPY)) - e.DebtUSDC*math.Expm1(e.APR)) / equity
 	return collateral / equity, performanceFeeForecast(gross, feeBPS)
 }
 
-// All candidate collateral is supplied. A nonnegative asset exponential minus
-// a nonnegative borrow exponential has its minimum at an endpoint when the
-// initial collateral equity is positive. Reject the other case economically.
 func pilotForecastEconomics(e pilotEconomics, investedNetOfExpense float64, m LaneEconomics, years float64, expense int64) pilotEconomics {
 	collateral := investedNetOfExpense + e.Proceeds
 	assetRate := math.Log1p(m.NativeAPY) + math.Log1p(m.SupplyAPY)
 	incomeAt := func(t float64) float64 {
-		return collateral*math.Expm1(assetRate*t) - e.Debt*math.Expm1(e.APR*t)
+		return collateral*math.Expm1(assetRate*t) - e.DebtUSDC*math.Expm1(e.APR*t)
 	}
-	peak := years
-	if assetRate > 0 && e.APR > assetRate && e.Debt > 0 {
-		peak = max(0, min(years, math.Log(assetRate*collateral/(e.APR*e.Debt))/(e.APR-assetRate)))
-	}
-	e.PositiveIncome = max(incomeAt(peak), 0)
+	e.PositiveIncome = max(incomeAt(peakIncomeYears(collateral, e.DebtUSDC, assetRate, e.APR, years)), 0)
 	income := incomeAt(years)
 	e.Gain = income - float64(expense)
-	e.InitialNAV = collateral - e.Debt
+	e.InitialNAV = collateral - e.DebtUSDC
 	e.EndingNAV = e.InitialNAV + income
 	return e
+}
+
+func peakIncomeYears(collateral, debt, assetRate, debtAPR, years float64) float64 {
+	if assetRate > 0 && debtAPR > assetRate && debt > 0 {
+		return max(0, min(years, math.Log(assetRate*collateral/(debtAPR*debt))/(debtAPR-assetRate)))
+	}
+	return years
 }
 
 const completeEntryQuoteUnavailable = "complete_entry_quote_unavailable"
@@ -491,7 +468,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		}
 		if displayAmount > 0 && !unpricedDebt {
 			level := sizeSettledLevel(m, displayAmount)
-			apr, err := projectedBorrowAPR(m, float64(displayAmount)*(level-1))
+			apr, err := projectedBorrowAPR(m, debtMintRaw(float64(displayAmount)*(level-1)))
 			if err == nil {
 				c.BorrowAPR = apr
 				c.GrossGainRaw = forecastGain(float64(displayAmount)*level, float64(displayAmount)*level, float64(displayAmount)*(level-1), m, apr, years)
@@ -758,12 +735,12 @@ func heldTrancheGain(source Snapshot, m LaneEconomics, keep *heldSettlement, equ
 		settled = *keep
 	}
 	share := float64(equity) / float64(total)
-	apr, err := projectedBorrowAPR(m, settled.RateDebtRaw)
+	apr, err := projectedBorrowAPR(m, debtMintRaw(settled.RateDebtRaw))
 	if err != nil || settled.DebtValueRaw < 0 || settled.CollateralValueRaw < settled.DebtValueRaw || settled.CostRaw < 0 {
 		return 0, false
 	}
 	debt := float64(settled.DebtValueRaw) * share
-	e := pilotForecastEconomics(pilotEconomics{Debt: debt, Proceeds: float64(settled.CollateralValueRaw)*share - float64(equity), APR: apr}, float64(equity), m, years, int64(math.Ceil(float64(settled.CostRaw)*share)))
+	e := pilotForecastEconomics(pilotEconomics{DebtUSDC: debt, Proceeds: float64(settled.CollateralValueRaw)*share - float64(equity), APR: apr}, float64(equity), m, years, int64(math.Ceil(float64(settled.CostRaw)*share)))
 	return e.Gain, finite(e.Gain)
 }
 

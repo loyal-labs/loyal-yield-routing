@@ -187,10 +187,10 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		raw   uint64
 	}{
 		{&legs.BorrowFeeMicros, prices.debtMicros, fee},
-		{&legs.EntryInMicros, prices.debtMicros, borrowRaw},
-		{&legs.EntryOutMicros, prices.collateralMicros, bought},
-		{&legs.ExitInMicros, prices.collateralMicros, bought},
-		{&legs.ExitOutMicros, prices.debtMicros, conversionQuotedOutput(down.Request)},
+		{&legs.EntryDebtMicros, prices.debtMicros, borrowRaw},
+		{&legs.EntryCollateralMicros, prices.collateralMicros, bought},
+		{&legs.ExitCollateralMicros, prices.collateralMicros, bought},
+		{&legs.ExitDebtMicros, prices.debtMicros, conversionQuotedOutput(down.Request)},
 	} {
 		if *v.into, err = v.value(v.raw); err != nil {
 			return leverageStepCost{}, costOutage(stagePrice, err)
@@ -371,10 +371,10 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 			return false
 		}
 		if n > 1 {
-			keepAPR, errKeep := projectedBorrowAPR(market, float64(funded.DebtRaw))
-			apr, errStep := projectedBorrowAPR(market, debt)
+			keepAPR, errKeep := projectedBorrowAPR(market, debtMintRaw(funded.DebtRaw))
+			apr, errStep := projectedBorrowAPR(market, debtMintRaw(debt))
 			if !feeTerms || errKeep != nil || errStep != nil ||
-				!(upStepGain(market, upStep{CollateralMicros: collateralValue, DebtMicros: debtValue, LiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepAPR: keepAPR, APR: apr, CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS}) > 0) {
+				!(upStepGain(market, upStep{CollateralMicros: collateralValue, DebtMicros: debtValue, AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: keepAPR, StepDebtAPR: apr, CostMicros: float64(stepCost.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS}) > 0) {
 				return false
 			}
 		}
@@ -533,9 +533,9 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 		liability, errDebt := capacityBorrowExpectedUSDC(s, raw+fee, true)
 		keepAPR, errKeep := math.Log1p(m.CurrentBorrowAPY), error(nil)
 		if taken > 0 {
-			keepAPR, errKeep = projectedBorrowAPR(m, rateDebt)
+			keepAPR, errKeep = projectedBorrowAPR(m, debtMintRaw(rateDebt))
 		}
-		apr, errRate := projectedBorrowAPR(m, rung)
+		apr, errRate := projectedBorrowAPR(m, debtMintRaw(rung))
 		if walkErr = errors.Join(errProceeds, errDebt, errKeep, errRate); walkErr != nil {
 			return false
 		}
@@ -556,7 +556,7 @@ func (p lanePricer) settleHeld(ctx context.Context, o Observation, s Snapshot, m
 			walkErr = err
 			return false
 		}
-		if !(upStepGain(m, upStep{CollateralMicros: collateral, DebtMicros: debt, LiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepAPR: keepAPR, APR: apr, CostMicros: float64(step.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS}) > 0) {
+		if !(upStepGain(m, upStep{CollateralMicros: collateral, DebtMicros: debt, AddedLiabilityMicros: float64(liability), ProceedsMicros: float64(proceeds), KeepDebtAPR: keepAPR, StepDebtAPR: apr, CostMicros: float64(step.TotalMicros), Years: years, FeeBPS: s.ApprovedAdminPerformanceFeeBPS}) > 0) {
 			return false
 		}
 		if cost, err = cost.plus(step); err != nil {

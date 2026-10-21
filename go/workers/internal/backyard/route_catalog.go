@@ -62,16 +62,10 @@ var earnLanes = laneCapsOnLadder([]earnLane{
 	{route: primePRIMEUSDCTemplate, policy: policyBasic, basicSwapLeg: basicSwapONycPrime, initializer: true, maxLevel: 3},
 	{route: primePRIMEPYUSDTemplate, policy: policySplit, maxLevel: 3},
 	{route: primePRIMEUSDSTemplate, policy: policySplit, maxLevel: 3},
-	// Ethena is exit-only. Kamino's yield feed reports ~4.75% underlyingApy for
-	// USDe, but USDe's price does not grow, so a holder never earns it; and
-	// both its debt reserves sit at borrowLimit 0. Its installed policies stay
-	// installed so a held position stays observable and exitable.
 	{route: ethenaUSDePYUSDTemplate, policy: policySplit, exitOnly: true, maxLevel: 1.75},
 	{route: autoAUTOWYLDSTemplate, policy: policyAuto, initializer: true, overflowOf: autoAUTOPYUSDTemplate.Lane, maxLevel: 3},
 })
 
-// laneCapsOnLadder is lanes, each cap a level of the ladder above 1; any
-// other cap is a programming error and stops the binary at start.
 func laneCapsOnLadder(lanes []earnLane) []earnLane {
 	for _, l := range lanes {
 		if i, ok := leverageRungIndex(l.maxLevel); !ok || i == 0 {

@@ -88,7 +88,7 @@ func TestHourlyFeeBudgetUsesPilotShareGranularity(t *testing.T) {
 func TestHourlyFeeIncomeIncludesPeakBeforeEndingLoss(t *testing.T) {
 	t.Parallel()
 	m := LaneEconomics{NativeAPY: math.Expm1(.10)}
-	e := pilotForecastEconomics(pilotEconomics{Debt: 1_000_000_000, Proceeds: 1_000_000_000, APR: .19}, 1_000_000_000, m, 3, 0)
+	e := pilotForecastEconomics(pilotEconomics{DebtUSDC: 1_000_000_000, Proceeds: 1_000_000_000, APR: .19}, 1_000_000_000, m, 3, 0)
 	if e.Gain >= 0 || e.PositiveIncome < 2_000_000 || e.PositiveIncome > 4_000_000 {
 		t.Fatalf("ending loss hid an earlier fee-paying peak: %+v", e)
 	}

@@ -34,8 +34,6 @@ func decodeTargetInputs(levels, exits, entry []byte) (targetInputs, error) {
 	if err := json.Unmarshal(levels, &in.Levels); err != nil {
 		return in, staleHold("invalid_lane_levels")
 	}
-	// A row for a lane this binary does not install has no view to target;
-	// it never stops the lanes that are installed (hard LTV included).
 	for lane, level := range in.Levels {
 		if !earnHeldLane(lane) {
 			delete(in.Levels, lane)

@@ -34,7 +34,7 @@ func oct10WindowSnapshot(t *testing.T, roomRaw uint64) (Snapshot, LaneEconomics)
 	}
 	m := LaneEconomics{Lane: s.RouteLane, NativeAPY: 0.0947,
 		BorrowCurve:   []BorrowCurvePoint{{0, 458}, {8000, 580}, {9000, 580}, {9500, 662}, {10_000, 905}},
-		DebtSupplyRaw: 4_866_000e6, DebtBorrowRaw: 4_866_000e6*0.9 - float64(roomRaw)}
+		DebtSupplyRaw: 4_866_000e6, DebtBorrowRaw: debtMintRaw(4_866_000e6*0.9 - float64(roomRaw))}
 	apr, err := projectedBorrowAPR(m, 0)
 	if err != nil {
 		t.Fatal(err)

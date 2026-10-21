@@ -100,10 +100,6 @@ func enrichObservation(ctx context.Context, journal journalReader, routeKey stri
 	return nil
 }
 
-// mergeJournal copies the durable facts that arm the monitors into a
-// construction refresh. It is shared with the outer observation so a refresh
-// cannot accidentally decide from a raw NAV snapshot with default journal
-// state.
 func mergeJournal(ctx context.Context, journal journalReader, routeKey string, observation *Observation) error {
 	if observation == nil {
 		return fmt.Errorf("production observation is nil")
@@ -436,7 +432,6 @@ func isPreSendHold(err error) bool {
 	}
 }
 
-// requestTick wakes the tick loop; a queued wake survives an active tick.
 func (w *Worker) requestTick() {
 	select {
 	case w.wake <- struct{}{}:
@@ -444,8 +439,6 @@ func (w *Worker) requestTick() {
 	}
 }
 
-// notifySelectorCommit requests another serialized tick; never execute a
-// transaction from the collector.
 func (w *Worker) notifySelectorCommit(action SelectorAction) {
 	if action.entersOrRotates() {
 		w.requestTick()
