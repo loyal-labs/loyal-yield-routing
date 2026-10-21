@@ -824,7 +824,9 @@ func lockWaitingALTSharedCatalog(ctx context.Context, tx pgx.Tx, cluster string,
 			return errors.New("shared ALT demand is not normalized typed vector")
 		}
 	}
-	// Lock source hierarchy one level at a time: family -> head -> physical.
+	if _, err := tx.Exec(ctx, `SELECT h.family_id FROM loyal_yield.lookup_table_shared_market_catalog_heads h JOIN loyal_yield.lookup_table_families f ON f.id=h.family_id WHERE f.cluster=$1 AND f.kind='shared_market' AND f.desired_state='active' FOR SHARE OF h`, cluster); err != nil {
+		return err
+	}
 	var familyID int64
 	var generation *int32
 	var highWater int32
