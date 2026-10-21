@@ -19,6 +19,7 @@ const (
 	ExtensionTransferFeeAmount             uint16 = 2
 	ExtensionMintCloseAuthority            uint16 = 3
 	ExtensionConfidentialTransferMint      uint16 = 4
+	ExtensionDefaultAccountState           uint16 = 6
 	ExtensionImmutableOwner                uint16 = 7
 	ExtensionPermanentDelegate             uint16 = 12
 	ExtensionTransferHook                  uint16 = 14
@@ -37,6 +38,10 @@ const (
 	accountTypeAccount = 2
 	tlvHeaderLen       = 4
 )
+
+func HasExtensionLayout(account *chain.Account) bool {
+	return len(account.Data) > legacyAccountLen
+}
 
 type TokenAccount struct {
 	Program           solana.PublicKey

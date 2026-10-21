@@ -157,7 +157,6 @@ func (w *LookupWorker) prepare(ctx context.Context, op LookupOperation) error {
 	if err != nil {
 		return err
 	}
-	// Unsigned: the bank checks the program effects, not the signature.
 	if _, err = w.chain.Simulate(ctx, wire, rpc.SimulateTransactionOpts{Commitment: rpc.CommitmentFinalized, ReplaceRecentBlockhash: true}); err != nil {
 		return err
 	}
