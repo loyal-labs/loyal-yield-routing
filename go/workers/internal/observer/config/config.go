@@ -25,15 +25,8 @@ type Config struct {
 	Cluster              string
 	ATAStream            string
 	APYRiskProfiles      []string
-	// ReadModelsEnabled runs the product read-model passes, which write
-	// earn_fleet_allocations_hourly, earn_reserve_share_prices and
-	// earn_forecast_snapshots. The Apps hourly crons (earn-reserve-share-prices
-	// and earn-forecast-snapshot) own those tables until the Phase 2 handover
-	// retires them and flips this on; Rust never wrote them. One fact has one
-	// writer, so the default is off (OBSERVER_READ_MODELS_ENABLED=true|false).
-	ReadModelsEnabled  bool
-	ReplayOverlapSlots uint64
-	WatchRefresh       time.Duration
+	ReplayOverlapSlots   uint64
+	WatchRefresh         time.Duration
 	// CatalogRefresh renews the supported reserve catalog the planners read
 	// (Rust KAMINO_SUPPORTED_RESERVE_REFRESH_INTERVAL_SECS, default 120, at
 	// most 180 so a fetched_at stays inside the planners' 300 s age bound).
@@ -116,13 +109,6 @@ func FromEnv() (Config, error) {
 	case "true":
 	default:
 		return Config{}, errors.New("DISABLE_EARN_APY_REFRESH must be true or false")
-	}
-	switch strings.TrimSpace(os.Getenv("OBSERVER_READ_MODELS_ENABLED")) {
-	case "", "false":
-	case "true":
-		cfg.ReadModelsEnabled = true
-	default:
-		return Config{}, errors.New("OBSERVER_READ_MODELS_ENABLED must be true or false")
 	}
 	if cfg.ReconciliationWorkers < 1 {
 		return Config{}, errors.New("reconciliation worker counts must be positive")
