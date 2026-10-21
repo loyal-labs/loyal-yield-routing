@@ -1,5 +1,3 @@
-//! Test-harness adapters for the `loyal-actions` SDK.
-
 use loyal_actions::{
     CrossMintRoute, JupiterSwapContract, LookupTableManifestError, LoyalActionContext,
     LoyalActionError, LoyalActionStep, Result, SameMintRoute, SwapLane,

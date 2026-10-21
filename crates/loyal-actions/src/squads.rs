@@ -304,10 +304,6 @@ pub fn remove_policies_instruction(
     }
 }
 
-/// Updates one existing hookless ProgramInteraction policy to exact current
-/// instruction bytes and an explicit subset of account pubkeys. This is the
-/// narrow production operation used when a literal protocol primitive changes
-/// direction; it never adds hooks or spending limits.
 pub fn create_exact_program_interaction_policy_instruction(
     settings: Pubkey,
     authority: Pubkey,
@@ -392,10 +388,6 @@ pub enum SemanticProgramInteractionDataConstraint {
     U64LessThanOrEqual { offset: u64, value: u64 },
 }
 
-/// Update a long-lived hookless policy from a small semantic contract. This is
-/// intentionally the only generic surface: callers name protocol programs,
-/// fixed custody accounts, and bounded wire fields; hooks, account-data
-/// predicates, spending limits, and expirations cannot be expressed here.
 pub fn update_semantic_program_interaction_policy_instruction(
     settings: Pubkey,
     authority: Pubkey,
@@ -455,9 +447,6 @@ pub fn create_semantic_program_interaction_policy_instruction(
     })
 }
 
-/// Create a hookless semantic ProgramInteraction policy through the deployed
-/// SettingsAction ABI (LegacyProgramInteraction, enum index 3). The compact
-/// variant above is retained only for structural packing experiments.
 pub fn create_deployed_semantic_program_interaction_policy_instruction(
     settings: Pubkey,
     authority: Pubkey,
@@ -817,9 +806,6 @@ pub fn handoff_settings_signer_instruction(
     })
 }
 
-/// Independently decodes the narrow handoff wire shape emitted above. This is
-/// intentionally not a general Settings-action decoder: any extra action,
-/// reordered action, memo, account, or trailing byte is rejected.
 pub fn decode_settings_signer_handoff_instruction(
     instruction: &Instruction,
 ) -> Result<SquadsSettingsSignerHandoff> {
@@ -879,8 +865,6 @@ pub fn decode_settings_signer_handoff_instruction(
     })
 }
 
-/// Creates the exact effectively-unlimited SPL SpendingLimit used by an
-/// autonomous vault to return one mint to one treasury owner.
 #[allow(clippy::too_many_arguments)]
 pub fn create_unlimited_spl_spending_limit_policy_instruction(
     settings: Pubkey,
@@ -939,9 +923,6 @@ pub fn create_unlimited_spl_spending_limit_policy_instruction(
     }
 }
 
-/// Executes an SPL SpendingLimit through canonical classic-token ATAs. The
-/// on-chain policy ultimately authorizes the destination owner and mint; using
-/// canonical ATAs here removes client-side destination ambiguity.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_spl_spending_limit_policy_instruction(
     policy: Pubkey,
@@ -1466,10 +1447,7 @@ enum SquadsPolicyCreationPayload {
     InternalFundTransfer(Vec<u8>),
     SpendingLimit(SquadsSpendingLimitPolicyCreationPayload),
     SettingsChange(Vec<u8>),
-    /// Deployed ProgramInteraction payload selected only by explicitly named
-    /// deployed-ABI helpers.
     LegacyProgramInteraction(SquadsProgramInteractionPolicyCreationPayload),
-    /// Compact compatibility payload retained for existing consumer callers.
     ProgramInteraction(SquadsCompactProgramInteractionPolicyCreationPayload),
 }
 

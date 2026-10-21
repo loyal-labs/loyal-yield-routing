@@ -1,10 +1,3 @@
-//! Compile the forward-only Maple syrupUSDC -> USDC Jupiter exit policy.
-//!
-//! This is an activation artifact, not an activation side effect. It requires
-//! the finalized Settings seed boundary, emits a fresh seed-139 PolicyCreate,
-//! and never talks to RPC or broadcasts. The Go runtime must not switch to the
-//! replacement until its account bytes have been finalized and read back.
-
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use loyal_actions::{
     create_deployed_semantic_program_interaction_policy_instruction, derive_action_account,

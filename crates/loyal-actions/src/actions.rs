@@ -273,7 +273,6 @@ pub struct YieldRouteActionInstruction {
     lookup_table_requirements: YieldRouteLookupTableRequirements,
 }
 
-/// One of the two durable cross-mint policy shards.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JupiterCrossMintPolicyAction {
     pub account: Pubkey,
@@ -283,10 +282,6 @@ pub struct JupiterCrossMintPolicyAction {
 }
 
 impl JupiterCrossMintPolicyAction {
-    /// Select the immutable constraint index for a fresh Jupiter build.
-    ///
-    /// Pair choice is deliberately dynamic, but its source must belong to this
-    /// shard and its target must be a different canonical Earn stablecoin.
     pub fn step_for_pair(
         &self,
         pair: EarnStablecoinPair,
@@ -700,9 +695,6 @@ fn kamino_stable_markets_for_profile(profile: KaminoStableRiskProfile) -> Vec<Pu
     unique_pubkeys(markets)
 }
 
-// Production Kamino Stable preset allowlists are sourced from the local Kamino
-// cache/report; USCC was additionally verified against Multiliquid's Solana
-// deployment docs.
 fn safe_kamino_markets() -> Vec<Pubkey> {
     vec![
         KAMINO_MAIN_MARKET,
@@ -775,7 +767,6 @@ pub fn create_swap_yield_route_action(
     })
 }
 
-/// Create one durable source-mint shard with both supported Jupiter dialects.
 pub fn create_jupiter_cross_mint_policy_action(
     context: LoyalActionContext,
     spec: JupiterCrossMintPolicySpec,
@@ -824,10 +815,6 @@ pub fn create_jupiter_cross_mint_policy_action(
     })
 }
 
-/// Build the complete V1 cross-mint authority set.
-///
-/// The two policies have disjoint source mints and both contain both Jupiter
-/// dialects, so each source-mint cap exists exactly once.
 pub fn create_jupiter_cross_mint_policy_set(
     context: LoyalActionContext,
     max_slippage_bps: u16,

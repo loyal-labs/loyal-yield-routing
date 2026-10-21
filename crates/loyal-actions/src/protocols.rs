@@ -195,9 +195,6 @@ pub(crate) fn jupiter_constraint(
     }
 }
 
-/// One durable Jupiter capability over the canonical Earn stablecoin universe.
-///
-/// The policy binds the destination to one of the six canonical vault ATAs.
 pub(crate) fn jupiter_cross_mint_constraint(
     vault: Pubkey,
     dialect: JupiterV2Dialect,

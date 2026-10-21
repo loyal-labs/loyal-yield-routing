@@ -1,7 +1,3 @@
-//! Local-only execution transport for the connected fleet verifier.
-//! JSON lines on stdin/stdout; no network listener and no production credentials.
-//! Unknown operations fail closed. Account injection is permitted exactly once,
-//! before any simulation or submission. Transaction effects come from LiteSVM.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use litesvm::LiteSVM;
 use serde_json::{json, Value};
@@ -109,8 +105,6 @@ impl LocalChain {
                 }
                 let svm = self.svm.as_mut().unwrap();
                 svm.warp_to_slot(slot);
-                // One actual fixture bank advancement contributes one entry.
-                // Numeric gaps do not fabricate produced blocks or cooldown.
                 let mut slot_hashes: SlotHashes = svm.get_sysvar();
                 slot_hashes.add(slot, svm.latest_blockhash());
                 svm.set_sysvar(&slot_hashes);
@@ -118,18 +112,13 @@ impl LocalChain {
                 Ok(json!(slot))
             }
             "getSlot" | "getBlockHeight" => Ok(json!(self.slot)),
-            // Height and its slot from one answer, as Go's landing reads them.
             "getEpochInfo" => Ok(json!({"absoluteSlot":self.slot,"blockHeight":self.slot})),
-            // No contention in the deterministic local chain.
             "getRecentPrioritizationFees" => Ok(json!([{"slot":1000,"prioritizationFee":0}])),
-            // One 60 s sample at Solana's 400 ms target: the measured slot rate
-            // the Go workers price Legacy-basis Kamino reserves with.
             "getRecentPerformanceSamples" => Ok(json!([{"slot":self.slot,"numSlots":150,"numTransactions":0,"numNonVoteTransactions":0,"samplePeriodSecs":60}])),
             // This controlled bank starts at slot 1000 and retains every
             // transaction submitted through this process. It does not import
             // historical ledger blocks or model mainnet pruning/consensus.
             "getFirstAvailableBlock" => Ok(json!(1000u64)),
-            // Existing local slot-as-blockheight approximation; no PoH model.
             "getLatestBlockhash" => Ok(json!({"context":{"slot":self.slot},"value":{
                 "blockhash":self.svm.as_ref().unwrap().latest_blockhash().to_string(),"lastValidBlockHeight":self.slot.checked_add(150).ok_or("fixture height overflow")?
             }})),
@@ -198,7 +187,7 @@ impl LocalChain {
                     .to_string();
                 self.submissions += 1;
                 if self.receipts.contains_key(&signature) {
-                    return Ok(json!(signature)); // Solana's already-processed retry: no execution.
+                    return Ok(json!(signature));
                 }
                 let svm = self.svm.as_mut().unwrap();
                 let (keys, loaded) = transaction_keys(svm, &tx)?;
@@ -209,7 +198,6 @@ impl LocalChain {
                 let pre_tokens = token_balances(svm, &keys)?;
                 let tx_signature = tx.signatures[0];
                 let result = svm.send_transaction(tx);
-                // Rejected packets are not fabricated into finalized receipts.
                 if svm.get_transaction(&tx_signature).is_none() {
                     return Err(format!("transaction rejected before recording: {result:?}").into());
                 }
@@ -223,11 +211,8 @@ impl LocalChain {
                 };
                 let post_balances = lamport_balances(svm, &keys);
                 let post_tokens = token_balances(svm, &keys)?;
-                // Controlled fixture bank conservation isolates the actual charged
-                // fee from rent transfers and close refunds. All message keys
-                // are complete and distinct, including created/closed accounts.
-                // Locked LiteSVM 0.7.1 lib.rs:834 passes priority fee 0 to
-                // calculate_fee; this is not mainnet priority-fee correctness.
+                // litesvm 0.7.1 passes priority fee 0 to calculate_fee, so fee
+                // math here is not mainnet.
                 if pre_balances.len() != keys.len() || post_balances.len() != keys.len() {
                     return Err("incomplete fixture SOL balances".into());
                 }

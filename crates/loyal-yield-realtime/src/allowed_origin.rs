@@ -11,7 +11,6 @@ pub(crate) enum AllowedOrigin {
 impl AllowedOrigin {
     pub(crate) fn parse(origin: &str, is_render: bool) -> Result<Self, BoxError> {
         if origin.contains('*') {
-            // Wildcards are DNS suffix rules, not arbitrary glob expressions.
             let suffix = origin
                 .strip_prefix("https://*.")
                 .ok_or("wildcard origins must use https://*.domain")?;
@@ -50,8 +49,6 @@ impl AllowedOrigin {
                 let Ok(origin) = origin.to_str() else {
                     return false;
                 };
-                // Browser origins contain no credentials, path or port here.
-                // Parsing URL-like input would normalize away some of these.
                 let Some(host) = origin.strip_prefix("https://") else {
                     return false;
                 };

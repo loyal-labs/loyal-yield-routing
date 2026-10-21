@@ -1,5 +1,3 @@
-//! Low-cardinality success metrics for the durable Earn rebalance pipeline.
-
 use std::time::Duration;
 
 #[cfg(test)]
@@ -7,10 +5,8 @@ use opentelemetry::metrics::Meter;
 
 use crate::{WorkflowMetrics, WorkflowOutcome};
 
-/// Stable workflow name shared by every Earn rebalance worker.
 pub const EARN_REBALANCE_WORKFLOW: &str = "earn.rebalance";
 
-/// A durable forward transition in the Earn rebalance pipeline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EarnRebalanceStage {
     AtaObservationPersisted,
@@ -43,7 +39,6 @@ impl EarnRebalanceStage {
     }
 }
 
-/// Typed facade which can only emit successful durable Earn transitions.
 #[derive(Clone, Default)]
 pub struct EarnRebalanceMetrics {
     pub(crate) workflow: WorkflowMetrics,
@@ -57,7 +52,6 @@ impl EarnRebalanceMetrics {
         }
     }
 
-    /// Records exactly one durable stage success.
     pub fn record_success(&self, stage: EarnRebalanceStage, duration: Duration) {
         self.workflow.record_execution(
             EARN_REBALANCE_WORKFLOW,
@@ -67,7 +61,6 @@ impl EarnRebalanceMetrics {
         );
     }
 
-    /// Records a known number of independently persisted successes.
     pub fn record_successes(&self, stage: EarnRebalanceStage, count: usize, duration: Duration) {
         for _ in 0..count {
             self.record_success(stage, duration);

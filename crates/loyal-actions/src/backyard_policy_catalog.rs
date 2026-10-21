@@ -1,9 +1,3 @@
-//! Exact, offline semantic contract for the Backyard RWA Squads policy catalog.
-//!
-//! This deliberately contains no discovery addresses.  A compiler must replace every
-//! [`CatalogAccount::Unresolved`] value from a confirmed mainnet graph before it can
-//! emit a policy instruction.  In particular, Maple/USDG must never be guessed.
-
 use crate::squads::{
     create_semantic_program_interaction_policy_instruction, LoyalActionError,
     SemanticProgramInteractionConstraint, SemanticProgramInteractionDataConstraint,
@@ -85,7 +79,6 @@ pub struct Lane {
 pub struct KaminoPermission {
     pub lane: Lane,
     pub operation: KaminoOperation,
-    /// The policy compiler binds this to the lane's own reserve graph, never a mint-only lookup.
     pub debt_reserve: CatalogAccount<String>,
     pub collateral_reserve: CatalogAccount<String>,
     pub obligation: CatalogAccount<String>,
@@ -103,7 +96,6 @@ pub enum Asset {
     Rwa(RwaCollateral),
 }
 
-/// The immutable semantic expansion required by verifier V03.
 pub fn lanes() -> Vec<Lane> {
     vec![
         Lane {
@@ -204,8 +196,6 @@ pub fn swap_edges() -> BTreeSet<SwapEdge> {
     out
 }
 
-/// Expand only with a lane-keyed graph.  The map key makes a cartesian market/custody
-/// authorization impossible to express in this compiler boundary.
 pub fn expand_permissions(
     graph: &BTreeMap<
         Lane,
@@ -259,9 +249,6 @@ impl From<LoyalActionError> for CatalogError {
     }
 }
 
-/// Confirmed, position-specific accounts for one K-Lend lane.  The graph is keyed
-/// by [`Lane`], so a debt reserve or obligation cannot be reused by a different
-/// same-mint lane unless the caller explicitly makes that (reviewable) binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedLaneAccounts {
     pub klend_program: Pubkey,
@@ -279,9 +266,6 @@ pub struct ResolvedLaneAccounts {
     pub debt_token_program: Pubkey,
 }
 
-/// Instruction offsets are manifest-owned rather than inferred from an asset
-/// symbol.  The compiler records them in its canonical output alongside the
-/// resolved graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KaminoInstructionLayout {
     pub tag: u8,
@@ -360,9 +344,6 @@ fn lane_constraints(
         .collect()
 }
 
-/// Build exactly one physical policy per market. Each lane contributes four
-/// operation-specific constraints, preserving its own indexed pins. The five
-/// canonical markets therefore have 12/12/12/4/4 constraints respectively.
 pub fn create_market_policies(
     settings: Pubkey,
     authority: Pubkey,
@@ -408,9 +389,6 @@ pub fn create_market_policies(
     Ok(out)
 }
 
-/// Compile one complete market direction/lifecycle slice.  The caller must use
-/// this only as one member of a packing layout that covers every operation for
-/// the market; the returned instruction carries no wildcard account pins.
 pub fn create_market_policy(
     settings: Pubkey,
     authority: Pubkey,
@@ -484,10 +462,6 @@ pub struct ResolvedSwapBiclique {
     pub tag: u8,
 }
 
-/// Build one physical swap policy with exactly six biclique constraints:
-/// stable->RWA, RWA->stable, plus one source-specific stable->stable constraint
-/// per stable. Squads pins custody addresses, while the external token-account
-/// mint validator remains the owner of custody/mint correlation.
 pub fn create_swap_policy(
     settings: Pubkey,
     authority: Pubkey,
@@ -515,9 +489,6 @@ pub fn create_swap_policy(
     )
 }
 
-/// Compile one non-empty directed swap slice.  Callers that split the 52-edge
-/// graph must prove their slices are disjoint and complete against
-/// [`swap_edges`] before using this instruction for an installed policy.
 pub fn create_swap_policy_slice(
     settings: Pubkey,
     authority: Pubkey,
@@ -561,7 +532,6 @@ pub fn create_swap_policy_slice(
     )?)
 }
 
-/// Reject unresolved values before policy bytes are constructed.
 pub fn require_resolved(permissions: &[KaminoPermission]) -> Result<(), CatalogError> {
     for permission in permissions {
         for account in [
@@ -603,13 +573,6 @@ pub struct PackingSelection {
     pub packets: Vec<SignedPacket>,
 }
 
-/// Measures the actual legacy wire that would carry one policy-create instruction.
-///
-/// This is deliberately a packet measurement primitive, not a policy installer:
-/// callers choose an ephemeral authority and recent blockhash, and no RPC call is
-/// made.  Packet length is invariant under the key/signature values themselves;
-/// callers must still use a current resolved account graph before treating an
-/// artifact as installable.
 pub fn signed_policy_create_packet_bytes(
     instruction: &Instruction,
     authority: &Keypair,
@@ -626,8 +589,6 @@ pub fn signed_policy_create_packet_bytes(
         .len()
 }
 
-/// Select the first supplied complete layout whose *signed* create/update packets fit.
-/// Callers must provide every policy in every rung; this API cannot silently drop a pin.
 pub fn select_first_fitting_layout(
     layouts: &[(PackingRung, Vec<SignedPacket>)],
 ) -> Result<PackingSelection, CatalogError> {

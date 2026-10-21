@@ -40,9 +40,6 @@ pub fn policy_keypair_from_env() -> Result<Keypair, PolicySignerError> {
     keypair_from_env(POLICY_KEYPAIR_ENV)
 }
 
-/// Loads the production policy signer and rejects a silently mis-mounted key.
-/// The error deliberately omits both the observed public key and all key
-/// material so startup/status logs cannot turn signer validation into a leak.
 pub fn standard_policy_keypair_from_env() -> Result<Keypair, PolicySignerError> {
     let keypair = policy_keypair_from_env()?;
     if keypair.pubkey().to_string() != STANDARD_POLICY_AUTHORITY {
@@ -55,11 +52,6 @@ pub fn yield_router_keypair_from_env() -> Result<Keypair, PolicySignerError> {
     keypair_from_env(YIELD_ROUTER_KEYPAIR_ENV)
 }
 
-/// Loads the optional fee-only route payer pool without ever echoing its
-/// encoded key material. The outer value is a JSON array of strings so an
-/// individual keypair may keep using any format accepted by
-/// [`keypair_from_string`]. Missing or blank configuration intentionally means
-/// "use POLICY_KEYPAIR only".
 pub fn route_fee_payer_keypairs_from_env() -> Result<Vec<Keypair>, PolicySignerError> {
     let value = match env::var(YIELD_ROUTE_FEE_PAYER_KEYPAIRS_ENV) {
         Ok(value) if !value.trim().is_empty() => value,
