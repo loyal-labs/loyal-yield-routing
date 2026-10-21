@@ -240,7 +240,6 @@ const (
 	basicSwapLegs
 )
 
-// basicPolicy is one basic family's policy, shared by the three runtime lanes.
 func basicPolicy(v *Vault, family BasicPolicyFamily) (squads.Policy, error) {
 	route := func(lane string) RuntimeRoute { r, _ := v.route(lane); return r }
 	onre, prime, maple := route(onreONycUSDC), route(PhaseOneLaneID), route(SelectedRouteID)

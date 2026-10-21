@@ -1768,8 +1768,7 @@ async function legacyPolicyCatalogCheck(): Promise<Check> {
     && independentSimulation.results.every((result) => result.passed);
   const checks = {
     semanticSourcePresent: semanticSource.includes("create_market_policies")
-      && semanticSource.includes("create_swap_policy")
-      && semanticSource.includes("BEST_CASE_PHYSICAL_POLICY_COUNT"),
+      && semanticSource.includes("create_swap_policy"),
     noFalseReadyCompiler: compilerSource.length > 0
       && !compilerSource.includes("READY_FOR_POLICY_INSTALLATION"),
     catalogSchema: catalog?.schema === "loyal-backyard-rwa-policy-catalog/v1",

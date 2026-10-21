@@ -90,7 +90,6 @@ func findEarnLane(lane string) (earnLane, bool) {
 	return earnLane{}, false
 }
 
-// routeFor is the lane's chain facts with the accounts owner holds on it.
 func (l earnLane) routeFor(owner solana.PublicKey) RuntimeRoute {
 	r := l.route
 	k := &r.Kamino
