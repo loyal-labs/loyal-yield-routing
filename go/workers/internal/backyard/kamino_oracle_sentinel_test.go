@@ -45,7 +45,7 @@ func TestKaminoOracleSentinelIsNeverAConfiguredOracle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sentinel oracle config broke the real observation: %v", err)
 	}
-	if len(position.Oracles) != 1 || position.Oracles[0] != kaminoScopePrices || !position.ObligationPresent {
+	if len(position.Oracles) != 1 || position.Oracles[0] != kaminoScopePrices || position.Obligation != obligationPresent {
 		t.Fatalf("configured oracles %v, want only the real scope oracle", position.Oracles)
 	}
 }

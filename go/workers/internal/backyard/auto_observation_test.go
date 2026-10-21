@@ -230,7 +230,7 @@ func TestAutoCandidateObservationReportsOwnedPYUSDPosition(t *testing.T) {
 		t.Fatalf("observation lost the candidate lane identity: %+v", observation.Snapshot)
 	}
 	// Position view: exact raw amounts in their own token scales.
-	if !observation.Snapshot.HasPosition || !observation.Snapshot.ObligationPresent || !observation.Snapshot.ObligationPresenceKnown {
+	if !observation.Snapshot.HasPosition || observation.Snapshot.Obligation != obligationPresent {
 		t.Fatalf("owned position was not reported as a present position: %+v", observation.Snapshot)
 	}
 	if observation.Snapshot.PositionCollateralRaw != int64(autoFixtureDepositReceiptRaw) || observation.Snapshot.PositionDebtRaw != int64(autoFixtureDebtRaw) {
@@ -284,7 +284,7 @@ func TestAutoCandidateObservationValuesFlatPositionWithoutLiability(t *testing.T
 	if snapshot.HasPosition || snapshot.PositionDebtRaw != 0 || snapshot.PositionCollateralRaw != 0 || snapshot.PayoffDebtRaw != 0 {
 		t.Fatalf("flat batch reported a liability: %+v", snapshot)
 	}
-	if !snapshot.ObligationPresent || !snapshot.ObligationPresenceKnown {
+	if snapshot.Obligation != obligationPresent {
 		t.Fatalf("flat batch did not carry explicit obligation presence: %+v", snapshot)
 	}
 	if snapshot.PositionDebtValueRaw != 0 || snapshot.PositionCollateralValueRaw != 0 || snapshot.LTVBPS != 0 || snapshot.DebtIdleRaw != 0 {
@@ -373,7 +373,7 @@ func TestAutoCandidateStaleValuationHoldsAndNeverDropsToCash(t *testing.T) {
 	if !errors.Is(fallbackErr, errKaminoReserveStale) {
 		t.Fatalf("the AUTO cash fallback accepted a stale reserve: %+v, %v", position, fallbackErr)
 	}
-	if position.HasPosition || position.DebtRaw != 0 || position.ObligationPresent {
+	if position.HasPosition || position.DebtRaw != 0 || position.Obligation == obligationPresent {
 		t.Fatalf("the AUTO cash fallback manufactured a flat position: %+v", position)
 	}
 }
@@ -398,7 +398,7 @@ func TestAutoCandidateDebtWithoutCollateralIsNeverFlat(t *testing.T) {
 // TestAutoCandidateAbsentObligationStaysExplicit proves the explicit-absence
 // contract: with the AUTO obligation account null in the batch (the production
 // wire form of an absent optional account is an address-only image), the
-// snapshot reports ObligationPresent=false and zero position instead of
+// snapshot reports an absent obligation and zero position instead of
 // silently decoding a flat position from a missing account.
 func TestAutoCandidateAbsentObligationStaysExplicit(t *testing.T) {
 	manifest, _, accounts := autoObservationBatch(t, 77, nil)
@@ -408,10 +408,10 @@ func TestAutoCandidateAbsentObligationStaysExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := observation.Snapshot
-	if snapshot.ObligationPresent || snapshot.HasPosition || snapshot.PositionDebtRaw != 0 || snapshot.PositionCollateralRaw != 0 {
+	if snapshot.Obligation == obligationPresent || snapshot.HasPosition || snapshot.PositionDebtRaw != 0 || snapshot.PositionCollateralRaw != 0 {
 		t.Fatalf("an absent obligation was folded into a decoded position: %+v", snapshot)
 	}
-	if !snapshot.ObligationPresenceKnown || !snapshot.MonitorsArmed {
+	if snapshot.Obligation != obligationAbsent || !snapshot.MonitorsArmed {
 		t.Fatalf("absence was not carried as an explicit observation fact: %+v", snapshot)
 	}
 }

@@ -18,7 +18,7 @@ func initializationSnapshotReady(s Snapshot) bool {
 	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}
-	if !earnInitializerLane(s.RouteLane) || !s.ObligationPresenceKnown || s.ObligationPresent {
+	if !earnInitializerLane(s.RouteLane) || s.Obligation != obligationAbsent {
 		return false
 	}
 	if s.HasPosition || s.PositionCollateralValueRaw != 0 || s.PositionDebtValueRaw != 0 || s.CollateralIdleValueRaw != 0 || s.PositionCollateralRaw != 0 || s.PositionDebtRaw != 0 || s.CollateralIdleRaw != 0 || s.VoltrStrategyIdleRaw != 0 {

@@ -367,11 +367,10 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	// out of the same confirmed batch; they must agree on whether the account
 	// even exists. An absent obligation is carried forward explicitly instead
 	// of being silently folded into a flat position.
-	if position.ObligationPresent != nav.ObligationPresent {
+	if position.Obligation != nav.Obligation {
 		return Observation{}, nil, fmt.Errorf("route NAV and position disagree on the obligation account")
 	}
-	base.Snapshot.ObligationPresent = position.ObligationPresent
-	base.Snapshot.ObligationPresenceKnown = true
+	base.Snapshot.Obligation = position.Obligation
 	base.Snapshot.PositionCollateralRaw = int64(position.CollateralDepositedRaw)
 	base.Snapshot.PositionDebtRaw = int64(position.DebtRaw)
 	if earnHeldLane(route.Lane) && position.DebtRaw > 0 {
@@ -515,7 +514,7 @@ func observeKaminoWithCashFallback(v *Vault, slot int64, accounts []ConfirmedAcc
 			return KaminoPosition{}, originalErr
 		}
 	}
-	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, ObligationPresent: account.Lamports != 0, BorrowUtilizationBlocked: true}, nil
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, Obligation: observedObligation(account.Lamports != 0), BorrowUtilizationBlocked: true}, nil
 }
 
 func observeKaminoFromFixedAccounts(slot int64, accounts []ConfirmedAccount, config KaminoObservationConfig) (KaminoPosition, error) {
@@ -570,7 +569,7 @@ func observeKaminoFromFixedAccounts(slot int64, accounts []ConfirmedAccount, con
 	if err != nil {
 		return KaminoPosition{}, err
 	}
-	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, ObligationPresent: obligationAccount.Lamports != 0, CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, MaxLTVBPS: cmp.Or(obligation.borrowLimitBPS, int64(collateral.loanToValuePct)*100), EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
+	return KaminoPosition{Slot: slot, RefreshedSlot: obligation.refreshedSlot, HasPosition: obligation.hasPosition, Obligation: observedObligation(obligationAccount.Lamports != 0), CollateralDepositedRaw: obligation.collateralDepositedRaw, DebtRaw: debtRaw, RedeemablePrimeRaw: redeemable, CollateralPriceSF: collateral.marketPriceSF, DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals, Oracles: oracles, LiquidationThresholdBPS: int64(collateral.liquidationThresholdPct) * 100, MaxLTVBPS: cmp.Or(obligation.borrowLimitBPS, int64(collateral.loanToValuePct)*100), EntryCapacityRaw: capacity, BorrowUtilizationBlocked: borrowUtilizationBlocked}, nil
 }
 
 func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {

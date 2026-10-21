@@ -272,7 +272,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	if !position.ObligationPresent && !earnInitializerLane(lane) {
+	if position.Obligation != obligationPresent && !earnInitializerLane(lane) {
 		return q, budgetHold("selector_destination_obligation_absent")
 	}
 	if slot > q.ValidThroughSlot {
@@ -463,7 +463,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 			return q, err
 		}
 	}
-	if !position.ObligationPresent {
+	if position.Obligation != obligationPresent {
 		if cost.SetupMicros, err = p.setupMicros(ctx, route, blockhash); err != nil {
 			return q, err
 		}

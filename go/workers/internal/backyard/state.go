@@ -81,19 +81,12 @@ type Snapshot struct {
 	OverflowObligationPresent bool   `json:",omitempty"`
 	// DebtTermEndUnix is KLend's term-debt maturity: the last borrow plus the
 	// reserve's debt term, or the market-wide maturity when earlier.
-	DebtTermEndUnix      int64 `json:",omitempty"`
-	ChainUnix            int64 `json:",omitempty"`
-	VoltrStrategyIdleRaw int64
-	VoltrIdleRaw         int64
-	HasPosition          bool
-	// ObligationPresent is the observed existence of the lane's Kamino
-	// obligation account, and ObligationPresenceKnown is set only by the
-	// production observe path, so hand-built unit snapshots keep their existing
-	// decisions. A missing obligation cannot receive a deposit: entry planning
-	// holds on it instead of allocating or swapping collateral into a deposit
-	// Kamino would refuse.
-	ObligationPresent              bool
-	ObligationPresenceKnown        bool
+	DebtTermEndUnix                int64 `json:",omitempty"`
+	ChainUnix                      int64 `json:",omitempty"`
+	VoltrStrategyIdleRaw           int64
+	VoltrIdleRaw                   int64
+	HasPosition                    bool
+	Obligation                     obligationPresence
 	PositionCollateralRaw          int64
 	PositionDebtRaw                int64
 	PositionCollateralValueRaw     int64
@@ -173,6 +166,21 @@ func (s Snapshot) heldLanes() []string {
 		return nil
 	}
 	return strings.Split(s.HeldLanes, ",")
+}
+
+type obligationPresence uint8
+
+const (
+	obligationUnobserved obligationPresence = iota
+	obligationAbsent
+	obligationPresent
+)
+
+func observedObligation(present bool) obligationPresence {
+	if present {
+		return obligationPresent
+	}
+	return obligationAbsent
 }
 
 type Decision struct {

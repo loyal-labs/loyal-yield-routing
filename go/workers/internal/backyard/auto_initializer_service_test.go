@@ -628,7 +628,7 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		t.Fatal("candidate observation through the production merge", err)
 	}
 	if !o.Snapshot.Fresh || o.Snapshot.RouteLane != autoAUTOPYUSD.Lane ||
-		!o.Snapshot.ObligationPresenceKnown || o.Snapshot.ObligationPresent || o.Snapshot.HasPosition ||
+		o.Snapshot.Obligation != obligationAbsent || o.Snapshot.HasPosition ||
 		o.Snapshot.Target.EntryRaw != candidateEquity || o.Snapshot.StrategyNAVRaw != 0 ||
 		o.Snapshot.CapacityRaw <= 0 || o.Snapshot.Nonterminal != "" {
 		t.Fatalf("real candidate observation did not reach initializer readiness: %+v", o.Snapshot)
@@ -712,8 +712,8 @@ func TestAutoInitializerServicePathThroughRealInitializerScopeMigration(t *testi
 		name string
 		mut  func(*Snapshot)
 	}{
-		{"unknown-obligation", func(s *Snapshot) { s.ObligationPresenceKnown = false }},
-		{"present-obligation", func(s *Snapshot) { s.ObligationPresent = true }},
+		{"unknown-obligation", func(s *Snapshot) { s.Obligation = obligationUnobserved }},
+		{"present-obligation", func(s *Snapshot) { s.Obligation = obligationPresent }},
 		{"withdrawal-shortfall", func(s *Snapshot) { s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1 }},
 		{"non-flat-state", func(s *Snapshot) { s.PositionDebtRaw = 1 }},
 		{"pending-operation", func(s *Snapshot) { s.Nonterminal = Signed }},

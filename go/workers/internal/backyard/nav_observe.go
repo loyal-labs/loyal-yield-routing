@@ -85,7 +85,7 @@ type RouteNAVSnapshot struct {
 	DebtIdleValueRaw        uint64
 	PositionCollateralValue uint64
 	PositionDebtValue       uint64
-	ObligationPresent       bool
+	Obligation              obligationPresence
 	Receipt                 voltr.StrategyReceipt
 	Voltr                   VoltrVaultBook
 	LPSupplyRaw             uint64
@@ -504,9 +504,9 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		TotalVaultNAVRaw: custodies.VoltrIdleRaw + uint64(nav.Raw), PriorReportedNAVRaw: receipt.PositionValueRaw,
 		PriorReportUpdatedTS: receipt.LastUpdatedTS,
 		PrimeIdleValueRaw:    primeIdleValue, PositionCollateralValue: collateralValue, PositionDebtValue: debtValue,
-		DebtIdleValueRaw:  debtIdleValue,
-		ObligationPresent: obligationAccount.Lamports != 0,
-		Receipt:           receipt, Voltr: vault, LPSupplyRaw: lpSupply,
+		DebtIdleValueRaw: debtIdleValue,
+		Obligation:       observedObligation(obligationAccount.Lamports != 0),
+		Receipt:          receipt, Voltr: vault, LPSupplyRaw: lpSupply,
 		SnapshotDigest:  nav.SnapshotDigest,
 		Report:          BridgeReport{Sequence: uint64(slot), ObservedSlot: uint64(slot), NAVAfterRaw: uint64(nav.Raw), SnapshotDigest: nav.SnapshotDigest},
 		OtherLanesState: strings.Join(otherState, "|"),

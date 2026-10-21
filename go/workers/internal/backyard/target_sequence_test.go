@@ -79,7 +79,7 @@ func (b *book) views() []Snapshot {
 			PositionDebtRaw: l.debt, PositionDebtValueRaw: l.debt, PayoffDebtRaw: l.debt,
 			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr,
 			ChainUnix: b.now, BorrowCapacityKnown: true, BorrowUtilizationBlocked: l.blocked, AdditionalDebtRoomRaw: uint64(l.room),
-			ObligationPresenceKnown: true, ObligationPresent: !l.uninitialized}
+			Obligation: observedObligation(!l.uninitialized)}
 		copy(s.BorrowDebtPriceSF[:], leverageTestPriceBytes())
 		s.BorrowUSDCPriceSF, s.BorrowDebtDecimals = s.BorrowDebtPriceSF, 6
 		if l.coll > 0 {

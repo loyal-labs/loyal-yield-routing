@@ -23,7 +23,7 @@ func initializationPlanningFixture(lane string) Observation {
 	s.Slot = 42
 	s.RouteLane = lane
 	s.StrategyKey = lane
-	s.ObligationPresenceKnown = true
+	s.Obligation = obligationAbsent
 	s.VoltrIdleRaw = 1_000_000
 	s.Target = LaneTarget{Rule: ruleEntry, EntryRaw: 1_000_000}
 	s.CapacityRaw = 1_000_000
@@ -40,7 +40,7 @@ func TestInitializationDecisionPreservesRecoveryWithdrawalAndEntryGuards(t *test
 			t.Fatalf("initializer not selected for %s: %+v", lane, d)
 		}
 		for _, mutate := range []func(*Snapshot){
-			func(s *Snapshot) { s.ObligationPresenceKnown = false }, func(s *Snapshot) { s.ObligationPresent = true },
+			func(s *Snapshot) { s.Obligation = obligationUnobserved }, func(s *Snapshot) { s.Obligation = obligationPresent },
 			func(s *Snapshot) { s.Nonterminal = Signed }, func(s *Snapshot) { s.WithdrawalDemandRaw = s.VoltrIdleRaw + 1 }, func(s *Snapshot) { s.Target = LaneTarget{Rule: ruleHold} }, func(s *Snapshot) { s.Target.EntryRaw = 0 },
 			func(s *Snapshot) { s.SquadsIdleRaw = 1 }, func(s *Snapshot) { s.CollateralIdleRaw = 1 }, func(s *Snapshot) { s.PositionDebtRaw = 1 }, func(s *Snapshot) { s.CapacityRaw = 0 }, func(s *Snapshot) { s.LiquidationThresholdBPS = laneCeilingLTVBPS(s.RouteLane) + 1000 },
 		} {

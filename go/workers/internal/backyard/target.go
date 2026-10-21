@@ -701,7 +701,7 @@ func custodyDiscipline(s Snapshot) (Decision, bool) {
 const obligationAbsentHoldReason = "obligation_absent"
 
 func obligationPrerequisiteHold(s Snapshot, initializationReady func(Snapshot) bool) (Decision, bool) {
-	if !s.ObligationPresenceKnown || s.ObligationPresent || (s.Target.Rule != ruleEntry && s.Target.Rule != ruleCustody && !laneInFlight(s)) {
+	if s.Obligation != obligationAbsent || (s.Target.Rule != ruleEntry && s.Target.Rule != ruleCustody && !laneInFlight(s)) {
 		return Decision{}, false
 	}
 	if initializationReady(s) {

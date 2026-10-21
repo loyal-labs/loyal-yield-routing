@@ -56,12 +56,9 @@ type KaminoObservationConfig struct {
 }
 
 type KaminoPosition struct {
-	Slot, RefreshedSlot int64
-	HasPosition         bool
-	// ObligationPresent is false only when the observer saw the lane's
-	// obligation account absent from its confirmed batch. A flat decode of a
-	// missing account must never be mistaken for an observed flat position.
-	ObligationPresent       bool
+	Slot, RefreshedSlot     int64
+	HasPosition             bool
+	Obligation              obligationPresence
 	CollateralDepositedRaw  uint64
 	DebtRaw                 uint64
 	RedeemablePrimeRaw      uint64
