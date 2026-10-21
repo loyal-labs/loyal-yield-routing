@@ -46,10 +46,7 @@ type preparedALTEpoch struct {
 
 func parsePreparedALTEpochs(raw []byte) ([]preparedALTEpoch, error) {
 	var body struct {
-		Tables []struct {
-			TableID       int64  `json:"tableId"`
-			MutationEpoch *int64 `json:"mutationEpoch"`
-		} `json:"tables"`
+		Tables []preparedALTEpoch `json:"tables"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err
@@ -59,19 +56,23 @@ func parsePreparedALTEpochs(raw []byte) ([]preparedALTEpoch, error) {
 	}
 	seen := map[int64]bool{}
 	for _, t := range body.Tables {
-		if t.TableID <= 0 || t.MutationEpoch != nil && *t.MutationEpoch < 0 || seen[t.TableID] {
+		if t.TableID <= 0 || t.MutationEpoch < 0 || seen[t.TableID] {
 			return nil, errors.New("signed route has invalid ALT proof")
 		}
 		seen[t.TableID] = true
 	}
-	epochs := make([]preparedALTEpoch, len(body.Tables))
-	for i, t := range body.Tables {
-		if t.MutationEpoch == nil {
+	// A missing mutationEpoch would decode to zero. Check presence separately;
+	// zero itself is a valid epoch in the legacy schema.
+	var generic struct {
+		Tables []map[string]json.RawMessage `json:"tables"`
+	}
+	_ = json.Unmarshal(raw, &generic)
+	for _, t := range generic.Tables {
+		if len(t["mutationEpoch"]) == 0 || bytes.Equal(t["mutationEpoch"], []byte("null")) {
 			return nil, errors.New("ALT proof lacks mutation epoch")
 		}
-		epochs[i] = preparedALTEpoch{TableID: t.TableID, MutationEpoch: *t.MutationEpoch}
 	}
-	return epochs, nil
+	return body.Tables, nil
 }
 func checkPreparedALTUsage(ctx context.Context, tx pgx.Tx, raw []byte, semantic, cluster, requirements string) error {
 	expected, err := parsePreparedALTEpochs(raw)
