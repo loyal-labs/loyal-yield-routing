@@ -64,7 +64,7 @@ func TestTopUpPreflightUsesOfficialBuilderAndActualPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempt := DurableAttempt{AmountRaw: plan.AmountRaw, Signature: built.Signature, SignedTransactionBase64: built.SignedTransactionBase64, SignedTransactionSHA256: built.SignedTransactionSHA256, RecentBlockhash: built.RecentBlockhash, LastValidBlockHeight: built.LastValidBlockHeight}
-	if err := builder.ProveTopUpWire(t.Context(), plan, attempt, confirmed); err != nil {
+	if err := builder.ProveTopUpWire(t.Context(), plan, attempt, confirmed, 0); err != nil {
 		t.Fatal(err)
 	}
 	// An actual policy that permits another amount is not executable even when

@@ -427,7 +427,7 @@ func TestSVMActualGoPullExecutesRealProgramsAndExactReceipt(t *testing.T) {
 	}
 	top := svmDurablePull(topWire, f.AmountRaw)
 	top.OperationKind = OperationTopUp
-	if e = builder.ProveTopUpWire(t.Context(), plan, top, route); e != nil {
+	if e = builder.ProveTopUpWire(t.Context(), plan, top, route, 0); e != nil {
 		t.Fatalf("immutable official top-up wire: %v", e)
 	}
 	if e = rpcChain.SimulateExact(t.Context(), top); e != nil {

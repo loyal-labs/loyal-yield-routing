@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -485,7 +486,7 @@ func (s *scriptedControllerWires) ConfirmTopUpRoute(ctx context.Context, plan De
 		return TopUpRoute{}, s.routeErr
 	}
 	return TopUpRoute{Position: fleet.KaminoPositionAccounts{LiquiditySupply: "itest-liquidity-supply"},
-		Obligation: "itest-obligation", MinimumDepositRaw: max(s.minimumDeposit, 1)}, nil
+		Obligation: "itest-obligation", MinimumDepositRaw: max(s.minimumDeposit, 1), DepositRoomRaw: math.MaxInt64}, nil
 }
 
 func (s *scriptedControllerWires) BuildTopUp(ctx context.Context, request TopUpWireRequest) (BuiltWire, error) {
@@ -497,7 +498,7 @@ func (s *scriptedControllerWires) BuildTopUp(ctx context.Context, request TopUpW
 
 func (s *scriptedControllerWires) FeePayer() string { return "itest-fee-payer" }
 
-func (s *scriptedControllerWires) ProveTopUpWire(_ context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
+func (s *scriptedControllerWires) ProveTopUpWire(_ context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute, _ int64) error {
 	return s.proofError
 }
 

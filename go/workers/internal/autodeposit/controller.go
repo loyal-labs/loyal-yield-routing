@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -37,7 +38,7 @@ type WireBuilder interface {
 	BuildTopUp(ctx context.Context, request TopUpWireRequest) (BuiltWire, error)
 	// ProveTopUpWire verifies a persisted top-up attempt's immutable wire
 	// byte-for-byte against the frozen plan and confirmed route.
-	ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error
+	ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute, residueBoundRaw int64) error
 	// FeePayer is the account that pays for every wire this builder signs.
 	FeePayer() string
 	// The destination's account setup, inspected, built and read back before
@@ -335,7 +336,7 @@ func (c *Controller) executeFresh(ctx context.Context, target ExecutableTarget) 
 		}
 		return ResultDeferred, err
 	}
-	owned, err := c.store.VaultCustodyHeldElsewhere(ctx, targetContext.VaultPubkey, targetContext.VaultUsdcAta, "")
+	owned, err := c.store.VaultCustodyHeldElsewhere(ctx, targetContext.VaultPubkey, targetContext.VaultUsdcAta, "", 0)
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
@@ -435,7 +436,7 @@ func (c *Controller) executeFrozenClaim(scope executionScope, claimToken string,
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	owned, err := c.store.VaultCustodyHeldElsewhere(scope.ctx, frozen.Target.VaultPubkey, frozen.Target.VaultUsdcAta, claimToken)
+	owned, err := c.store.VaultCustodyHeldElsewhere(scope.ctx, frozen.Target.VaultPubkey, frozen.Target.VaultUsdcAta, claimToken, 0)
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
@@ -561,9 +562,15 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	// The confirmed pull owns the execution row: it is keyed to the pull's
 	// signature, slot and amount, exactly the legacy accounted-recovery key.
 	confirmedPull := pull.Attempt
-	if err := c.verifyPullEffects(scope.ctx, plan, confirmedPull); err != nil {
+	pullReceipt, err := c.chain.ConfirmedReceipt(scope.ctx, confirmedPull.Signature)
+	if err != nil {
 		return ResultTransactionEffectAmbig, err
 	}
+	if err := validatePullReceipt(plan, confirmedPull, pullReceipt); err != nil {
+		return ResultTransactionEffectAmbig, err
+	}
+	pulledInto, _ := pullReceipt.EffectFor(plan.Target.VaultUsdcAta)
+	residueBound := pulledInto.PreRaw
 	// The custody that the pull funded is the vault's USDC ATA, never the
 	// wallet ATA: every top-up read below is against the pulled account.
 	custody, err := c.chain.ConfirmedTokenBalanceRaw(scope.ctx, plan.Target.VaultUsdcAta, plan.Target.VaultPubkey)
@@ -585,9 +592,8 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	if err != nil {
 		return ResultDependencyUnavailable, err
 	}
-	residue := confirmedPull.DestinationPreBalanceRaw
 
-	switch ClassifyDirectTopUpRecovery(existingState, custody, plan.AmountRaw+residue, persistedPreBalance, siblingDeposits) {
+	switch ClassifyDirectTopUpRecovery(existingState, custody, plan.AmountRaw, persistedPreBalance, siblingDeposits) {
 	case TopUpEffectAmbiguous:
 		return ResultTransactionEffectAmbig, nil
 	case TopUpReconcilePersisted:
@@ -613,6 +619,15 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 			}
 			return unanswered(ResultYieldPersistenceFailed, err)
 		}
+		held, err := c.store.VaultCustodyHeldElsewhere(scope.ctx, plan.Target.VaultPubkey, plan.Target.VaultUsdcAta, claimToken, confirmedPull.ID)
+		if err != nil {
+			return ResultDependencyUnavailable, err
+		}
+		route, err := c.wires.ConfirmTopUpRoute(scope.ctx, plan)
+		if err != nil {
+			return ResultKaminoTopUpFailed, err
+		}
+		residue := topUpResidue(held, residueBound, custody-plan.AmountRaw, plan.AmountRaw, route.DepositRoomRaw)
 		blockhash, lastValid, err := c.chain.LatestBlockhash(scope.ctx)
 		if err != nil {
 			return ResultDependencyUnavailable, err
@@ -670,7 +685,7 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 	if err != nil {
 		return ResultKaminoTopUpFailed, err
 	}
-	if err := c.wires.ProveTopUpWire(scope.ctx, plan, pull.Attempt, route); err != nil {
+	if err := c.wires.ProveTopUpWire(scope.ctx, plan, pull.Attempt, route, residueBound); err != nil {
 		return unanswered(ResultTransactionEffectAmbig, err)
 	}
 	if err := c.verifyTopUpEffects(scope.ctx, plan, route, pull); err != nil {
@@ -702,6 +717,13 @@ func (c *Controller) finishTopUpLeg(scope executionScope, claimToken string, tar
 		return ResultYieldPersistenceFailed, err
 	}
 	return ResultCompleted, nil
+}
+
+func topUpResidue(held bool, recorded, custodyBeyondPull, pull int64, room uint64) int64 {
+	if held || room <= uint64(pull) {
+		return 0
+	}
+	return min(recorded, custodyBeyondPull, int64(min(room-uint64(pull), math.MaxInt64)))
 }
 
 // unanswered keeps an RPC endpoint that could not answer from reading as a

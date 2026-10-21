@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/solana-foundation/solana-go/v2"
@@ -52,6 +53,7 @@ type TopUpRoute struct {
 	// MinimumDepositRaw is the smallest liquidity amount that mints one
 	// collateral unit at the confirmed reserve's exchange value.
 	MinimumDepositRaw uint64 `json:"-"`
+	DepositRoomRaw    uint64 `json:"-"`
 }
 
 // SweepWireBuilder is the production WireBuilder: it compiles and signs the
@@ -235,6 +237,9 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 	if route.MinimumDepositRaw, err = reserve.MinimumDeposit(); err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: reserve %s exchange value: %v", ErrRouteNotExecutable, plan.Reserve, err)
 	}
+	if route.DepositRoomRaw, err = depositRoom(reserve); err != nil {
+		return TopUpRoute{}, fmt.Errorf("%w: reserve %s total supply: %v", ErrRouteNotExecutable, plan.Reserve, err)
+	}
 	obligation, err := kamino.DecodeObligation(obligationAccount)
 	if err != nil {
 		return TopUpRoute{}, fmt.Errorf("%w: obligation %s does not exist; run the missing-obligation setup before a pull", ErrRouteNotExecutable, obligationKey)
@@ -266,6 +271,19 @@ func (b *SweepWireBuilder) ConfirmTopUpRoute(ctx context.Context, plan DepositPl
 		return TopUpRoute{}, err
 	}
 	return route, nil
+}
+
+func depositRoom(reserve kamino.Reserve) (uint64, error) {
+	total, err := reserve.TotalLiquiditySF()
+	if err != nil {
+		return 0, err
+	}
+	supplied := new(big.Int).Add(total, big.NewInt(1<<60-1))
+	supplied.Rsh(supplied, 60)
+	if !supplied.IsUint64() || supplied.Uint64() >= reserve.DepositLimit {
+		return 0, nil
+	}
+	return reserve.DepositLimit - supplied.Uint64(), nil
 }
 
 // reserveRoute is a confirmed reserve's identity with the vault's KLend
@@ -322,7 +340,7 @@ func (b *SweepWireBuilder) wrapWithPolicy(ctx context.Context, plan DepositPlan,
 // the wrapped transaction's only signer. Token balances are never treated as
 // Kamino proof; the wire itself is the proof, and the receipt is checked
 // against it separately.
-func (b *SweepWireBuilder) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute) error {
+func (b *SweepWireBuilder) ProveTopUpWire(ctx context.Context, plan DepositPlan, attempt DurableAttempt, route TopUpRoute, residueBoundRaw int64) error {
 	tx, err := persistedWireTransaction(attempt)
 	if err != nil {
 		return err
@@ -337,10 +355,10 @@ func (b *SweepWireBuilder) ProveTopUpWire(ctx context.Context, plan DepositPlan,
 	if err != nil {
 		return err
 	}
-	return b.proveTopUpDecoded(plan, attempt, route, message, tx.Message.Signers())
+	return b.proveTopUpDecoded(plan, attempt, route, residueBoundRaw, message, tx.Message.Signers())
 }
 
-func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAttempt, route TopUpRoute, message decodedMessage, signers solana.PublicKeySlice) error {
+func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAttempt, route TopUpRoute, residueBoundRaw int64, message decodedMessage, signers solana.PublicKeySlice) error {
 	if err := validatePlanPublicKeys(plan); err != nil {
 		return err
 	}
@@ -411,8 +429,8 @@ func (b *SweepWireBuilder) proveTopUpDecoded(plan DepositPlan, attempt DurableAt
 		return fmt.Errorf("persisted top-up wrapped instruction is not the KLend deposit v2")
 	}
 	amount := binary.LittleEndian.Uint64(inner.data[8:16])
-	if int64(amount) != attempt.AmountRaw || amount > 1<<63-1 || attempt.AmountRaw < plan.AmountRaw {
-		return fmt.Errorf("persisted top-up wire deposits %d, want exactly the persisted %d and at least the frozen %d", amount, attempt.AmountRaw, plan.AmountRaw)
+	if amount > 1<<63-1 || int64(amount) != attempt.AmountRaw || int64(amount) < plan.AmountRaw || residueBoundRaw < 0 || int64(amount)-plan.AmountRaw > residueBoundRaw {
+		return fmt.Errorf("persisted top-up wire deposits %d, want exactly the persisted %d, between the frozen %d and %d more", amount, attempt.AmountRaw, plan.AmountRaw, residueBoundRaw)
 	}
 	if len(inner.accounts) != depositInstructionAccountSize {
 		return fmt.Errorf("persisted top-up deposit has %d accounts, want %d", len(inner.accounts), depositInstructionAccountSize)
