@@ -66,9 +66,9 @@ type SpendingLimitView struct {
 	Period        uint8 // 0 one-time, 1 daily, 2 weekly, 3 monthly, 4 custom
 	CustomPeriod  int64
 	MaxPerPeriod  uint64
-	Accumulate    bool
-	MaxPerUse     uint64
-	ExactQuantity bool
+	Accumulate    bool   // an unspent allowance carries into the next period
+	MaxPerUse     uint64 // 0 when one use may spend the whole allowance
+	ExactQuantity bool   // a use spends exactly MaxPerUse
 }
 
 type Policy struct {

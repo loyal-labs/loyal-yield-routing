@@ -141,3 +141,6 @@ const (
 	StaleRequestedSlotSeconds = 15 * 60
 	RequestedSlotTimeoutError = "Autodeposit request timed out before worker selection."
 )
+
+// ConsumerName is the projection-offset consumer this family owns. Legacy claim
+// staleness checks read the same row, so it must not be renamed per process.
