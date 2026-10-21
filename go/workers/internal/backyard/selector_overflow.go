@@ -121,7 +121,7 @@ func overflowRoom(accounts []ConfirmedAccount, overflow RuntimeRoute) (uint64, i
 	if usdc.mintDecimals != 6 {
 		return 0, 0, fmt.Errorf("USDC reference reserve decimals drifted")
 	}
-	value, err := valueBetweenTokenRaw(receive, debt.mintDecimals, 6, debt.marketPriceSF, usdc.marketPriceSF, false)
+	value, err := valueBetweenTokenRaw(receive, debt.mintDecimals, 6, debt.terms.MarketPriceSF, usdc.terms.MarketPriceSF, false)
 	if err != nil {
 		return 0, 0, err
 	}

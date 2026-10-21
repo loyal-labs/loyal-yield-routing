@@ -216,7 +216,7 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (downSt
 	if need = margined.Uint64(); need > st.collateralBalance {
 		need -= st.collateralBalance
 	}
-	receipts, err := payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.collateralMintSupply, need)
+	receipts, err := payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.terms.CollateralMintTotalSupply, need)
 	if err != nil {
 		return downStepPlan{}, err
 	}
@@ -286,7 +286,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		scaled.Mul(scaled, big.NewInt(10_001)).Quo(scaled, new(big.Int).Mul(new(big.Int).SetUint64(guaranteed), big.NewInt(10_000)))
 		if scaled.IsUint64() && scaled.Uint64() > st.collateralBalance {
 			var more uint64
-			if more, err = payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.collateralMintSupply, scaled.Uint64()-st.collateralBalance); err == nil {
+			if more, err = payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.terms.CollateralMintTotalSupply, scaled.Uint64()-st.collateralBalance); err == nil {
 				limit, _ := st.stepWithdrawReceipts()
 				if more = min(more, limit, st.position.CollateralDepositedRaw-1); more > receipts {
 					liquidity, redeemErr := st.collateral.redeemLiquidityRaw(more)

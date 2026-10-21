@@ -99,26 +99,14 @@ type decodedKaminoObligation struct {
 }
 type decodedKaminoReserve struct {
 	refreshedSlot            int64
-	status                   byte
-	emergencyMode            bool
 	marketPriceLastUpdatedTS int64
-	marketPriceSF            kamino.ScaledFraction
 	mintDecimals             uint8
 	oracles                  []string
 	totalLiquiditySF         *big.Int
-	collateralMintSupply     uint64
-	liquidationThresholdPct  byte
-	loanToValuePct           byte
-	depositLimitRaw          uint64
-	borrowLimitRaw           uint64
 	borrowedRaw              uint64
 	borrowedLiquiditySF      *big.Int
-	utilizationLimitPct      byte
 	cumulativeBorrowRate     [32]byte
-	// terms is the decoded reserve, whose interest terms
-	// (SupportedInterestTerms) and debt term (DebtMaturityTimestamp,
-	// DebtTermSeconds) kamino_term.go reads.
-	terms kamino.Reserve
+	terms                    kamino.Reserve
 }
 
 func decodeKaminoObligation(account ConfirmedAccount, c KaminoObservationConfig) (decodedKaminoObligation, error) {
@@ -216,20 +204,14 @@ func decodeKaminoReserve(account ConfirmedAccount, mint string, c KaminoObservat
 		return decodedKaminoReserve{}, err
 	}
 	return decodedKaminoReserve{
-		refreshedSlot: int64(reserve.LastUpdateSlot), marketPriceSF: reserve.MarketPriceSF, oracles: oracles,
-		status: reserve.Status, emergencyMode: reserve.EmergencyMode,
+		refreshedSlot: int64(reserve.LastUpdateSlot), oracles: oracles,
 		marketPriceLastUpdatedTS: int64(reserve.MarketPriceLastUpdatedTS),
 		mintDecimals:             uint8(reserve.MintDecimals),
-		totalLiquiditySF:         totalLiquidity, collateralMintSupply: reserve.CollateralMintTotalSupply,
-		liquidationThresholdPct: reserve.LiquidationThresholdPct,
-		loanToValuePct:          reserve.LoanToValuePct,
-		depositLimitRaw:         reserve.DepositLimit,
-		borrowLimitRaw:          reserve.BorrowLimit,
-		borrowedRaw:             borrowedRaw,
-		borrowedLiquiditySF:     reserve.BorrowedAmountSF.Int(),
-		utilizationLimitPct:     reserve.UtilizationLimitBlockBorrowingAbovePct,
-		cumulativeBorrowRate:    reserve.CumulativeBorrowRateBSF,
-		terms:                   reserve,
+		totalLiquiditySF:         totalLiquidity,
+		borrowedRaw:              borrowedRaw,
+		borrowedLiquiditySF:      reserve.BorrowedAmountSF.Int(),
+		cumulativeBorrowRate:     reserve.CumulativeBorrowRateBSF,
+		terms:                    reserve,
 	}, nil
 }
 
@@ -276,24 +258,24 @@ func (o decodedKaminoObligation) debtAtReserveRate(r decodedKaminoReserve) (uint
 const entryLoopLTVPercent = 50
 
 func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error) {
-	if collateral.totalLiquiditySF == nil || collateral.depositLimitRaw == 0 || debt.borrowLimitRaw == 0 {
+	if collateral.totalLiquiditySF == nil || collateral.terms.DepositLimit == 0 || debt.terms.BorrowLimit == 0 {
 		return 0, nil
 	}
 	depositedRaw, err := ceilScaledBigFraction(collateral.totalLiquiditySF)
 	if err != nil {
 		return 0, err
 	}
-	if depositedRaw >= collateral.depositLimitRaw || debt.borrowedRaw >= debt.borrowLimitRaw {
+	if depositedRaw >= collateral.terms.DepositLimit || debt.borrowedRaw >= debt.terms.BorrowLimit {
 		return 0, nil
 	}
-	remainingCollateral := collateral.depositLimitRaw - depositedRaw
-	remainingCollateralValue, err := valueBetweenTokenRaw(remainingCollateral, collateral.mintDecimals, debt.mintDecimals, collateral.marketPriceSF, debt.marketPriceSF, false)
+	remainingCollateral := collateral.terms.DepositLimit - depositedRaw
+	remainingCollateralValue, err := valueBetweenTokenRaw(remainingCollateral, collateral.mintDecimals, debt.mintDecimals, collateral.terms.MarketPriceSF, debt.terms.MarketPriceSF, false)
 	if err != nil {
 		return 0, err
 	}
 	byCollateral := new(big.Int).Mul(new(big.Int).SetUint64(remainingCollateralValue), big.NewInt(100))
 	byCollateral.Quo(byCollateral, big.NewInt(100+entryLoopLTVPercent))
-	remainingDebt := debt.borrowLimitRaw - debt.borrowedRaw
+	remainingDebt := debt.terms.BorrowLimit - debt.borrowedRaw
 	utilizationHeadroom, err := utilizationBorrowHeadroomRaw(debt)
 	if err != nil {
 		return 0, err
@@ -313,7 +295,7 @@ func entryCapacityDebtRaw(collateral, debt decodedKaminoReserve) (uint64, error)
 }
 
 func borrowingBlockedByUtilization(debt decodedKaminoReserve) (bool, error) {
-	if debt.utilizationLimitPct == 0 {
+	if debt.terms.UtilizationLimitBlockBorrowingAbovePct == 0 {
 		return false, nil
 	}
 	headroom, err := utilizationBorrowHeadroomRaw(debt)
@@ -325,15 +307,15 @@ func borrowingBlockedByUtilization(debt decodedKaminoReserve) (bool, error) {
 // A zero pct disables this gate. Returning zero deliberately defers every new
 // positive borrow at or beyond the boundary while leaving repayments intact.
 func utilizationBorrowHeadroomRaw(debt decodedKaminoReserve) (uint64, error) {
-	if debt.utilizationLimitPct == 0 {
+	if debt.terms.UtilizationLimitBlockBorrowingAbovePct == 0 {
 		return math.MaxUint64, nil
 	}
-	if debt.utilizationLimitPct > 100 || debt.totalLiquiditySF == nil || debt.borrowedLiquiditySF == nil ||
+	if debt.terms.UtilizationLimitBlockBorrowingAbovePct > 100 || debt.totalLiquiditySF == nil || debt.borrowedLiquiditySF == nil ||
 		debt.totalLiquiditySF.Sign() < 0 || debt.borrowedLiquiditySF.Sign() < 0 {
 		return 0, fmt.Errorf("invalid Kamino utilization boundary")
 	}
 	limitSF := new(big.Int).Mul(new(big.Int).Set(debt.totalLiquiditySF),
-		new(big.Int).SetUint64(uint64(debt.utilizationLimitPct)))
+		new(big.Int).SetUint64(uint64(debt.terms.UtilizationLimitBlockBorrowingAbovePct)))
 	limitSF.Quo(limitSF, big.NewInt(100))
 	if debt.borrowedLiquiditySF.Cmp(limitSF) >= 0 {
 		return 0, nil
@@ -391,7 +373,7 @@ func littleInt(value []byte) *big.Int {
 }
 
 func (r decodedKaminoReserve) redeemLiquidityRaw(collateralRaw uint64) (uint64, error) {
-	return kamino.CollateralToLiquidity(r.totalLiquiditySF, r.collateralMintSupply, collateralRaw)
+	return kamino.CollateralToLiquidity(r.totalLiquiditySF, r.terms.CollateralMintTotalSupply, collateralRaw)
 }
 
 func (p KaminoPosition) collateralValueDebtRaw() (uint64, error) {
@@ -425,9 +407,9 @@ func validateKaminoReserveHealth(observedSlot int64, marketEmergencyMode bool, o
 		return fmt.Errorf("Kamino market is in emergency mode: %w", errKaminoMarketEmergency)
 	}
 	for _, reserve := range reserves {
-		if reserve.status != 0 || reserve.emergencyMode {
+		if reserve.terms.Status != 0 || reserve.terms.EmergencyMode {
 			return fmt.Errorf("Kamino reserve %d/%t is not active: %w",
-				reserve.status, reserve.emergencyMode, errKaminoReservePaused)
+				reserve.terms.Status, reserve.terms.EmergencyMode, errKaminoReservePaused)
 		}
 		if reserve.refreshedSlot > observedSlot || observedSlot-reserve.refreshedSlot > adaptorMaxReportAgeSlots {
 			return fmt.Errorf("Kamino reserve last refreshed at %d, observation slot %d: %w",

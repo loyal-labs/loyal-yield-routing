@@ -46,7 +46,7 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 	if validateExecutionMint(usdcMint, classicTokenProgram, 6) != nil || usdc.mintDecimals != 6 {
 		return BudgetPrice{}, budgetHold("usdc_reference_metadata_mismatch")
 	}
-	upper, lower := token.marketPriceSF, usdc.marketPriceSF
+	upper, lower := token.terms.MarketPriceSF, usdc.terms.MarketPriceSF
 	if tokenMint != fleet.USDCMint {
 		upper, err = UpperPriceMargin(upper, valuationMarginBPS)
 		if err != nil {

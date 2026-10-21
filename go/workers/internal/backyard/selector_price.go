@@ -111,7 +111,7 @@ func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrice
 	if err := validateKaminoOracleAge(clockUnixTimestamp(accounts), collateral, debt, usdc); err != nil {
 		return lanePrices{}, err
 	}
-	return lanePrices{collateral: collateral.marketPriceSF, debt: debt.marketPriceSF, usdc: usdc.marketPriceSF,
+	return lanePrices{collateral: collateral.terms.MarketPriceSF, debt: debt.terms.MarketPriceSF, usdc: usdc.terms.MarketPriceSF,
 		collateralDecimals: collateral.mintDecimals, debtDecimals: debt.mintDecimals, debtBorrowFeeSF: debt.terms.BorrowFeeSF}, nil
 }
 
@@ -170,7 +170,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		return leverageStepCost{}, costOutage(stepStage("entry_quote", err), err)
 	}
 	bought := conversionQuotedOutput(up.Request)
-	receipts, err := payoffReceiptsForLiquidity(collateral.totalLiquiditySF, collateral.collateralMintSupply, bought)
+	receipts, err := payoffReceiptsForLiquidity(collateral.totalLiquiditySF, collateral.terms.CollateralMintTotalSupply, bought)
 	if err != nil {
 		return leverageStepCost{}, costOutage("exit_quote", err)
 	}
@@ -410,7 +410,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	receipts, err := payoffReceiptsForLiquidity(reserve.totalLiquiditySF, reserve.collateralMintSupply, bought)
+	receipts, err := payoffReceiptsForLiquidity(reserve.totalLiquiditySF, reserve.terms.CollateralMintTotalSupply, bought)
 	if err != nil {
 		return q, err
 	}

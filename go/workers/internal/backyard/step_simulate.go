@@ -156,6 +156,6 @@ func stepLTVBPS(accounts stepLTVAccounts, route RuntimeRoute) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return observedLTVBPS(KaminoPosition{RedeemablePrimeRaw: redeemable, DebtRaw: debtRaw, CollateralPriceSF: collateral.marketPriceSF,
-		DebtPriceSF: debt.marketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals})
+	return observedLTVBPS(KaminoPosition{RedeemablePrimeRaw: redeemable, DebtRaw: debtRaw, CollateralPriceSF: collateral.terms.MarketPriceSF,
+		DebtPriceSF: debt.terms.MarketPriceSF, CollateralDecimals: collateral.mintDecimals, DebtDecimals: debt.mintDecimals})
 }

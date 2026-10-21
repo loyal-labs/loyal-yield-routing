@@ -44,7 +44,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	amount, err := valueBetweenTokenRaw(15_000_000, debt.mintDecimals, collateral.mintDecimals, debt.marketPriceSF, collateral.marketPriceSF, false)
+	amount, err := valueBetweenTokenRaw(15_000_000, debt.mintDecimals, collateral.mintDecimals, debt.terms.MarketPriceSF, collateral.terms.MarketPriceSF, false)
 	if err != nil || amount == 0 {
 		t.Fatal("collateral sizing unavailable", err)
 	}

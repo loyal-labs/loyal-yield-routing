@@ -535,7 +535,7 @@ func (r laneReserves) value(o decodedKaminoObligation, collateralIdleRaw, debtId
 		return laneValues{}, err
 	}
 	toUSDC := func(raw uint64, reserve decodedKaminoReserve, liability bool) (uint64, error) {
-		return valueBetweenTokenRaw(raw, reserve.mintDecimals, 6, reserve.marketPriceSF, r.usdc.marketPriceSF, liability)
+		return valueBetweenTokenRaw(raw, reserve.mintDecimals, 6, reserve.terms.MarketPriceSF, r.usdc.terms.MarketPriceSF, liability)
 	}
 	var v laneValues
 	if v.collateralIdle, err = toUSDC(collateralIdleRaw, r.collateral, false); err != nil {
