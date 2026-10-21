@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -214,11 +215,11 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 		return
 	}
 	reference, config := route.Kamino.DebtReserve, route.Kamino
-	if route.Kamino.DebtMint != bridgeUSDC {
+	if route.Kamino.DebtMint != fleet.USDCMint {
 		config = usdcReference
 		reference = config.DebtReserve
 	}
-	usdc, err := decodeKaminoReserve(accountAt(accounts, reference), bridgeUSDC, config)
+	usdc, err := decodeKaminoReserve(accountAt(accounts, reference), fleet.USDCMint, config)
 	if err != nil || usdc.mintDecimals != 6 || littleInt(usdc.marketPriceSF[:]).Sign() <= 0 {
 		return
 	}
@@ -270,7 +271,7 @@ func capacityBorrowBoundUSDC(s Snapshot, amount uint64, liability bool) (uint64,
 	}
 	token, usdc := s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF
 	var err error
-	if l.route.Kamino.DebtMint != bridgeUSDC {
+	if l.route.Kamino.DebtMint != fleet.USDCMint {
 		if liability {
 			token, err = UpperPriceMargin(token, valuationMarginBPS)
 			if err != nil {

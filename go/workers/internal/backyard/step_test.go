@@ -83,7 +83,7 @@ func stepTestBuild(t *testing.T, lane string, up bool, venue int) (StepRequest, 
 		t.Fatal(err)
 	}
 	step.Close = &closing
-	message, err := buildStepMessage(rwa, step, mustKey(bridgeDelegate))
+	message, err := buildStepMessage(rwa, step, mustKey(backyardDelegate))
 	return step, message, err
 }
 
@@ -119,7 +119,7 @@ func stepTestExit(t *testing.T, lane string, venue int) (StepRequest, stepMessag
 	open.ObligationReserves = []string{route.Kamino.CollateralReserve}
 	swap := stepTestSwap(t, lane, SwapCollateralToStableStep, venue)
 	step := StepRequest{Open: open, Swap: &swap}
-	message, err := buildStepMessage(rwa, step, mustKey(bridgeDelegate))
+	message, err := buildStepMessage(rwa, step, mustKey(backyardDelegate))
 	return step, message, err
 }
 
@@ -165,7 +165,7 @@ func TestExitStepWithdrawsAndSwapsToUSDCInOneMessage(t *testing.T) {
 		}
 		closing := step.Open
 		step.Close = &closing
-		if _, err := buildStepMessage(rwa, step, mustKey(bridgeDelegate)); err == nil {
+		if _, err := buildStepMessage(rwa, step, mustKey(backyardDelegate)); err == nil {
 			t.Fatalf("%s: a closing withdrawal compiled into an exit", lane)
 		}
 	}

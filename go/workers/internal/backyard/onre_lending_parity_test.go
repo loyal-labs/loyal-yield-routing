@@ -1,6 +1,7 @@
 package backyard
 
 import (
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -16,7 +17,7 @@ func onreLendingParityRoute() RuntimeRoute {
 			Obligation:        "4LnCFir7Qc99GhjGHLcwtkfweyAMu37u5QE1zTupKsei",
 			CollateralReserve: "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
 			DebtReserve:       "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
-			CollateralMint:    "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5", DebtMint: bridgeUSDC,
+			CollateralMint:    "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5", DebtMint: fleet.USDCMint,
 		},
 		CollateralCustody: "AVX9wxDTk639eZ4KaiMA7LrLhXe7Lg6DaDDVRa1Q7Ji3", DebtCustody: bridgeSquadsATA,
 		CollateralLiquiditySupply: "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG",

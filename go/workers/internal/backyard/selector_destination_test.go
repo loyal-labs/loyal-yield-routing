@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -21,7 +22,7 @@ import (
 // Neither fixture transport supports simulation/signing/submission.
 func selectorDestinationFixture(t *testing.T) (RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
-	return selectorDestinationFixtureForLane(t, SelectedRouteID, nil)
+	return selectorDestinationFixtureForLane(t, MapleSyrupUSDCLaneID, nil)
 }
 
 // selectorDestinationFixtureForLane builds the same controlled destination
@@ -36,7 +37,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
 	for _, side := range []struct{ reserve, mint, supply, farm string }{
 		{route.Kamino.CollateralReserve, route.Kamino.CollateralMint, route.CollateralLiquiditySupply, ""},
-		{route.Kamino.DebtReserve, bridgeUSDC, route.DebtLiquiditySupply, route.DebtFarm},
+		{route.Kamino.DebtReserve, fleet.USDCMint, route.DebtLiquiditySupply, route.DebtFarm},
 	} {
 		a := reserveFixture(t, side.reserve, side.mint, 42, one, 1_000_000_000, 1_000_000_000)
 		putKey(t, a.Data[32:64], route.Kamino.Market)
@@ -55,7 +56,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		if side.farm != "" {
 			putKey(t, a.Data[96:128], side.farm)
 		}
-		if side.mint == bridgeUSDC {
+		if side.mint == fleet.USDCMint {
 			putKey(t, a.Data[192:224], route.DebtFeeReceiver)
 		} else {
 			putKey(t, a.Data[2560:2592], route.CollateralReceiptMint)
@@ -82,9 +83,9 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 		}
 		add(a)
 	}
-	for _, b := range []kaminoCustodyBoundary{{route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault}, {bridgeSquadsATA, bridgeUSDC, bridgeVault},
-		{route.CollateralLiquiditySupply, route.Kamino.CollateralMint, route.Kamino.MarketAuthority}, {route.DebtLiquiditySupply, bridgeUSDC, route.Kamino.MarketAuthority},
-		{route.DebtFeeReceiver, bridgeUSDC, route.Kamino.MarketAuthority}, {route.CollateralReceiptSupply, route.CollateralReceiptMint, route.Kamino.MarketAuthority}} {
+	for _, b := range []kaminoCustodyBoundary{{route.CollateralCustody, route.Kamino.CollateralMint, bridgeVault}, {bridgeSquadsATA, fleet.USDCMint, bridgeVault},
+		{route.CollateralLiquiditySupply, route.Kamino.CollateralMint, route.Kamino.MarketAuthority}, {route.DebtLiquiditySupply, fleet.USDCMint, route.Kamino.MarketAuthority},
+		{route.DebtFeeReceiver, fleet.USDCMint, route.Kamino.MarketAuthority}, {route.CollateralReceiptSupply, route.CollateralReceiptMint, route.Kamino.MarketAuthority}} {
 		amount := uint64(0)
 		if b.Authority != bridgeVault {
 			amount = 1_000_000_000
@@ -93,7 +94,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 	}
 	add(exactAdaptorConfigAccount(t))
 	add(exactReportTicketAccount(t, 1))
-	for _, a := range []string{bridgeVault, bridgeDelegate} {
+	for _, a := range []string{bridgeVault, backyardDelegate} {
 		add(ConfirmedAccount{Address: a, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000})
 	}
 	farm := ConfirmedAccount{Address: route.DebtFarm, Owner: kamino.FarmsProgramID.String(), Lamports: 1, Data: make([]byte, 8336)}
@@ -127,7 +128,7 @@ func selectorDestinationFixtureForLane(t *testing.T, lane string, tweak func([]C
 			}
 			amount, _ := strconv.ParseUint(body.QuoteResponse.InAmount, 10, 64)
 			instruction := captured.Instruction
-			if body.QuoteResponse.InputMint != bridgeUSDC {
+			if body.QuoteResponse.InputMint != fleet.USDCMint {
 				instruction = reverse.Instruction
 			}
 			data, _ := base64.StdEncoding.DecodeString(instruction.Data)
@@ -156,7 +157,7 @@ func TestEntryPricesTheExecutorsLegsWithoutMutatingAccounts(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
 	before := hashConfirmedAccounts(accounts)
-	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(SelectedRouteID), 100_000_000)
+	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(MapleSyrupUSDCLaneID), 100_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,15 +182,15 @@ func TestEntryPricesTheExecutorsLegsWithoutMutatingAccounts(t *testing.T) {
 // every lane refused, so it never entered).
 func TestEntryIntoAnAbsentObligationCarriesItsSetup(t *testing.T) {
 	t.Parallel()
-	route, _ := runtimeRoute(SelectedRouteID)
-	m, rpc, client, _ := selectorDestinationFixtureForLane(t, SelectedRouteID, func(accounts []ConfirmedAccount) {
+	route, _ := runtimeRoute(MapleSyrupUSDCLaneID)
+	m, rpc, client, _ := selectorDestinationFixtureForLane(t, MapleSyrupUSDCLaneID, func(accounts []ConfirmedAccount) {
 		for i := range accounts {
 			if a := &accounts[i]; a.Address == route.Kamino.Obligation || a.Address == route.ObligationDebtFarm {
 				a.Lamports, a.Data = 0, nil
 			}
 		}
 	})
-	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(SelectedRouteID), 100_000_000)
+	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(MapleSyrupUSDCLaneID), 100_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,8 +210,8 @@ func TestEntryIntoAnAbsentObligationCarriesItsSetup(t *testing.T) {
 // every lane worth entering was held, so Prime's tranche never priced.
 func TestEntryBesideAHeldPositionPrices(t *testing.T) {
 	t.Parallel()
-	route, _ := runtimeRoute(SelectedRouteID)
-	m, rpc, client, _ := selectorDestinationFixtureForLane(t, SelectedRouteID, func(accounts []ConfirmedAccount) {
+	route, _ := runtimeRoute(MapleSyrupUSDCLaneID)
+	m, rpc, client, _ := selectorDestinationFixtureForLane(t, MapleSyrupUSDCLaneID, func(accounts []ConfirmedAccount) {
 		o := accountAt(accounts, route.Kamino.Obligation)
 		putKey(t, o.Data[96:128], route.Kamino.CollateralReserve)
 		binary.LittleEndian.PutUint64(o.Data[128:136], 100_000_000)
@@ -218,7 +219,7 @@ func TestEntryBesideAHeldPositionPrices(t *testing.T) {
 		putScaledFraction(o.Data[1240:1272], new(big.Int).Lsh(big.NewInt(1), 60))
 		putScaledFraction(o.Data[1296:1312], new(big.Int).Lsh(big.NewInt(40_000_000), 60))
 	})
-	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(SelectedRouteID), 100_000_000)
+	q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(MapleSyrupUSDCLaneID), 100_000_000)
 	if err != nil || q.EquityRaw != 100_000_000 {
 		t.Fatalf("held destination did not price: %+v %v", q, err)
 	}
@@ -229,14 +230,14 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 	for _, kind := range []string{"farm_missing", "farm_frozen", "foreign_user", "foreign_delegate", "reserve_farm", "receipt_authority", "nonflat", "capacity"} {
 		t.Run(kind, func(t *testing.T) {
 			m, rpc, client, accounts := selectorDestinationFixture(t)
-			route, _ := runtimeRoute(SelectedRouteID)
+			route, _ := runtimeRoute(MapleSyrupUSDCLaneID)
 			switch kind {
 			case "farm_missing":
 				clear(accountAt(accounts, route.ObligationDebtFarm).Data[:8])
 			case "farm_frozen":
 				accountAt(accounts, route.DebtFarm).Data[7361] = 1
 			case "foreign_user":
-				putKey(t, accountAt(accounts, route.ObligationDebtFarm).Data[48:80], bridgeDelegate)
+				putKey(t, accountAt(accounts, route.ObligationDebtFarm).Data[48:80], backyardDelegate)
 			case "foreign_delegate":
 				putKey(t, accountAt(accounts, route.ObligationDebtFarm).Data[480:512], bridgeVault)
 			case "reserve_farm":
@@ -248,7 +249,7 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 			case "capacity":
 				binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.DebtReserve).Data[kaminoOutsideBorrowLimitOffset:], 0)
 			}
-			q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(SelectedRouteID), 100_000_000)
+			q, err := testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 100_000_000), leveredTestMarket(MapleSyrupUSDCLaneID), 100_000_000)
 			if kind == "capacity" {
 				// Maple is a B2 lane (registry): a closed borrow limit prices
 				// the debt-free 1x entry instead of refusing the lane.
@@ -269,7 +270,7 @@ func TestSelectorDestinationDeclinesMissingFarmAndCustodyDrift(t *testing.T) {
 func TestLanePricesRefuseAStalePrice(t *testing.T) {
 	t.Parallel()
 	_, _, _, accounts := selectorDestinationFixture(t)
-	route, _ := runtimeRoute(SelectedRouteID)
+	route, _ := runtimeRoute(MapleSyrupUSDCLaneID)
 	if _, err := batchLanePrices(accounts, route); err != nil {
 		t.Fatal(err)
 	}

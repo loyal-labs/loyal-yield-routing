@@ -41,7 +41,7 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 		return nil, err
 	}
 	_, index := initializerPolicyLeg(r.RouteLane)
-	outer, err := wrapSquadsKaminoPolicy(v, policy, mustKey(bridgeDelegate), mustKey(bridgeDelegate), index, inner)
+	outer, err := wrapSquadsKaminoPolicy(v, policy, mustKey(backyardDelegate), mustKey(backyardDelegate), index, inner)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (m RouteManifest) compileKaminoInitializationMessage(r KaminoInitialization
 	for _, f := range obligationFarms(route) {
 		instructions = append(instructions, kaminoCompiled(kamino.InitObligationFarmsForReserve(f.accounts, f.mode)))
 	}
-	message, err := compileV1Message(mustKey(bridgeDelegate), blockhash, instructions, executionBudget(r.RouteLane, len(instructions)))
+	message, err := compileV1Message(mustKey(backyardDelegate), blockhash, instructions, executionBudget(r.RouteLane, len(instructions)))
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +108,7 @@ func obligationFarms(route RuntimeRoute) []obligationFarm {
 		if f.farm == "" {
 			continue
 		}
-		out = append(out, obligationFarm{mode: f.mode, accounts: kamino.ObligationFarmsInitAccounts{Payer: kaminoKey(bridgeDelegate), Owner: kaminoKey(k.Vault),
+		out = append(out, obligationFarm{mode: f.mode, accounts: kamino.ObligationFarmsInitAccounts{Payer: kaminoKey(backyardDelegate), Owner: kaminoKey(k.Vault),
 			Obligation: kaminoKey(k.Obligation), LendingMarketAuthority: kaminoKey(k.MarketAuthority), Reserve: kaminoKey(f.reserve),
 			ReserveFarmState: kaminoKey(f.farm), ObligationFarmUserState: kaminoKey(f.user), LendingMarket: kaminoKey(k.Market)}})
 	}

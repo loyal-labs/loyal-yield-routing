@@ -68,7 +68,7 @@ func TestCashNAVDoesNotDependOnEntryMarket(t *testing.T) {
 			case "future_slot":
 				binary.LittleEndian.PutUint64(accountAt(accounts, route.Kamino.CollateralReserve).Data[16:24], uint64(slot+1))
 			case "foreign_custody":
-				putKey(t, accountAt(accounts, route.CollateralCustody).Data[32:64], bridgeDelegate)
+				putKey(t, accountAt(accounts, route.CollateralCustody).Data[32:64], backyardDelegate)
 			case "override_adds_exposure":
 				override = &RouteNAVCustodies{SquadsUSDCraw: 6, SquadsPRIMEraw: 1}
 			}

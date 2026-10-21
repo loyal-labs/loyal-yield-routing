@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -32,8 +33,8 @@ func exactAdaptorConfigAccount(t *testing.T) ConfirmedAccount {
 	data[8] = 2
 	bindings := []string{
 		voltr.ProgramID.String(), bridgeVoltrVault, bridgeStrategy, bridgeStrategyAuth,
-		squads.ProgramID.String(), backyardSettings, bridgeSettingsSigner, bridgeVault,
-		bridgeUSDC, bridgeTokenProgram, bridgeSquadsATA,
+		squads.ProgramID.String(), backyardSettings, backyardSettingsSigner, bridgeVault,
+		fleet.USDCMint, bridgeTokenProgram, bridgeSquadsATA,
 	}
 	for index, binding := range bindings {
 		key, err := decodeBase58PublicKey(binding)
@@ -91,7 +92,7 @@ func TestExpectedAdaptorReturnDataIsExactNAVLittleEndian(t *testing.T) {
 	effects := ExpectedEffects{
 		Schema: "loyal-backyard-rwa-expected-effects/v1", Kind: "bridge", Conserved: true,
 		Accounts: []ExpectedAccountEffect{{
-			Address: bridgeIdleATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC,
+			Address: bridgeIdleATA, Owner: bridgeTokenProgram, Mint: fleet.USDCMint,
 			Authority: bridgeIdleAuthority,
 		}},
 		ReturnData: expected,
@@ -114,7 +115,7 @@ func TestKaminoLegSelectionAdvancesOneReviewedStateTransition(t *testing.T) {
 		name         string
 		decision     Decision
 		position     KaminoPosition
-		leg          kaminoPrimeUSDCLeg
+		leg          kaminoLeg
 		wire, effect uint64
 	}{
 		{"deposit", Decision{Action: OpenRouteStep, AmountRaw: 10}, KaminoPosition{}, kaminoLegDeposit, 10, 10},

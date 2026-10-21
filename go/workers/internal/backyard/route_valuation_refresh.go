@@ -15,7 +15,7 @@ func simulateRouteValuationRefresh(ctx context.Context, v *Vault, c *chain.Clien
 		lanes = append(lanes, route.Lane)
 	}
 	for _, address := range addresses {
-		if address == bridgeDelegate {
+		if address == backyardDelegate {
 			return 0, nil, fmt.Errorf("valuation capture includes simulated fee payer")
 		}
 	}
@@ -51,7 +51,7 @@ func validateRouteValuationCapture(slot int64, accounts []ConfirmedAccount, addr
 	}
 	seen := make(map[string]bool, len(addresses))
 	for i, account := range accounts {
-		if account.Address != addresses[i] || account.Address == bridgeDelegate || seen[account.Address] || account.ValuationSource != routeRefreshValuationSource || account.ValuationSlot != slot {
+		if account.Address != addresses[i] || account.Address == backyardDelegate || seen[account.Address] || account.ValuationSource != routeRefreshValuationSource || account.ValuationSlot != slot {
 			return fmt.Errorf("valuation capture namespace or provenance drifted")
 		}
 		seen[account.Address] = true

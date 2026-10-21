@@ -7,6 +7,8 @@ import (
 	"os"
 	"sort"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // Test-only, zero-signature bridge compiler used by the connected deployed-SBF
@@ -65,7 +67,7 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 					if e != nil || !a.Present {
 						t.Fatal("missing local custody")
 					}
-					custody, e := DecodeTokenCustody(a.Owner, data, mustKey(bridgeUSDC), mustKey(authority))
+					custody, e := DecodeTokenCustody(a.Owner, data, mustKey(fleet.USDCMint), mustKey(authority))
 					if e != nil || custody.Raw > bridgeMaxNAV {
 						t.Fatal("invalid local custody")
 					}
@@ -116,7 +118,7 @@ func TestExportOnReBridgeProbe(t *testing.T) {
 			t.Fatal(e)
 		}
 		addresses[request.Policy] = true
-		addresses[bridgeDelegate] = true
+		addresses[backyardDelegate] = true
 		for _, ix := range inner {
 			addresses[encodeBase58(ix.program[:])] = true
 			for _, a := range ix.accounts {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -120,7 +121,7 @@ func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	c := KaminoObservationConfig{
 		Program: kamino.ProgramID.String(), Market: primePRIMEUSDC.Kamino.Market, Obligation: backyardSettings,
 		CollateralReserve: primePRIMEUSDC.Kamino.CollateralReserve, DebtReserve: primePRIMEUSDC.Kamino.DebtReserve,
-		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: bridgeUSDC,
+		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: fleet.USDCMint,
 	}
 	reserve := make([]byte, kamino.ReserveSize)
 	copy(reserve[:8], kamino.ReserveDiscriminator[:])
@@ -149,7 +150,7 @@ func TestKaminoObligationAcceptsTheFourLifecycleStates(t *testing.T) {
 	c := KaminoObservationConfig{
 		Program: kamino.ProgramID.String(), Market: primePRIMEUSDC.Kamino.Market, Obligation: backyardSettings,
 		CollateralReserve: primePRIMEUSDC.Kamino.CollateralReserve, DebtReserve: primePRIMEUSDC.Kamino.DebtReserve,
-		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: bridgeUSDC,
+		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: fleet.USDCMint,
 	}
 	data := make([]byte, kamino.ObligationSize)
 	copy(data[:8], kamino.ObligationDiscriminator[:])

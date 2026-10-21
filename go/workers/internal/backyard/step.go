@@ -166,7 +166,7 @@ func stepSwapMaxAccounts(v *Vault, step StepRequest, action Action) (int, error)
 	if err != nil {
 		return 0, err
 	}
-	delegate := mustKey(bridgeDelegate)
+	delegate := mustKey(backyardDelegate)
 	open, _, err := kaminoPolicyInstructions(v, step.Open, delegate, route)
 	if err != nil {
 		return 0, err

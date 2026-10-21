@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -108,7 +109,7 @@ func TestInitializerPreparationMeasuresNativeFunding(t *testing.T) {
 }
 
 func TestWorkerDispatchesInitializationAfterTheRecord(t *testing.T) {
-	o := initializationPlanningFixture(SelectedRouteID)
+	o := initializationPlanningFixture(MapleSyrupUSDCLaneID)
 	d := Decide(o.Snapshot)
 	m := readyWorkerManifest(t)
 	var order []string
@@ -116,7 +117,7 @@ func TestWorkerDispatchesInitializationAfterTheRecord(t *testing.T) {
 		loadNonterminal: func(context.Context, string) (*PersistedOperation, error) { return nil, nil }, observe: func(context.Context) (Observation, error) { return o, nil },
 		prepareInitialization: func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error) {
 			order = append(order, "prepare")
-			return o, KaminoInitializationRequest{RouteLane: SelectedRouteID}, nil
+			return o, KaminoInitializationRequest{RouteLane: MapleSyrupUSDCLaneID}, nil
 		},
 		recordDecision: func(_ context.Context, _ string, _ Observation, got Decision, _ string) (DecisionRecord, error) {
 			if got != d {
@@ -187,13 +188,13 @@ func initializationPrestateFixture(t *testing.T) (KaminoInitializationRequest, m
 	}
 	delete(accounts, route.Kamino.Obligation)
 	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
-	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
+	accounts[backyardDelegate] = ConfirmedAccount{Address: backyardDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
 	m := ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
 	copy(m.Data, kamino.UserMetadataDiscriminator[:])
 	putKey(t, m.Data[80:112], bridgeVault)
 	accounts[metadataAddress] = m
 	accounts[route.Kamino.Market] = marketFixture(t, route.Kamino.Market)
-	for _, mint := range []string{route.Kamino.CollateralMint, bridgeUSDC} {
+	for _, mint := range []string{route.Kamino.CollateralMint, fleet.USDCMint} {
 		a := ConfirmedAccount{Address: mint, Owner: classicTokenProgram, Lamports: 1, Data: make([]byte, 82)}
 		a.Data[44], a.Data[45] = 6, 1
 		accounts[mint] = a

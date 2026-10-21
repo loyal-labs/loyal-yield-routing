@@ -131,7 +131,7 @@ func TestSelectorEntryFundingLaneAuthority(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := earnActiveLane(SelectedRouteID); got != tc.maple {
+			if got := earnActiveLane(MapleSyrupUSDCLaneID); got != tc.maple {
 				t.Fatal("installed lane funding changed", got)
 			}
 			if got := earnActiveLane(testAutoLane); got != tc.autoFund {

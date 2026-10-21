@@ -46,7 +46,7 @@ func autoInitializerPrestateAccounts(t *testing.T, r KaminoInitializationRequest
 	}
 	delete(accounts, route.Kamino.Obligation)
 	accounts[bridgeVault] = ConfirmedAccount{Address: bridgeVault, Owner: system, Lamports: r.RentLamports}
-	accounts[bridgeDelegate] = ConfirmedAccount{Address: bridgeDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
+	accounts[backyardDelegate] = ConfirmedAccount{Address: backyardDelegate, Owner: system, Lamports: r.MaximumFeeLamports}
 	m := ConfirmedAccount{Address: metadataAddress, Owner: kamino.ProgramID.String(), Lamports: 1, Data: make([]byte, 1032)}
 	copy(m.Data, kamino.UserMetadataDiscriminator[:])
 	putKey(t, m.Data[80:112], bridgeVault)

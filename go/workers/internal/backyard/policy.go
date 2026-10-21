@@ -30,7 +30,7 @@ func vaultPolicy(v *Vault, constraints ...squads.InstructionConstraintView) squa
 type policyKey struct {
 	lane   string
 	action Action
-	leg    kaminoPrimeUSDCLeg
+	leg    kaminoLeg
 	family BasicPolicyFamily
 	swaps  string
 	hastra string
@@ -38,7 +38,7 @@ type policyKey struct {
 
 type conversion struct{ from, to string }
 
-var kaminoLegs = []kaminoPrimeUSDCLeg{kaminoLegDeposit, kaminoLegWithdraw, kaminoLegBorrow, kaminoLegRepay}
+var kaminoLegs = []kaminoLeg{kaminoLegDeposit, kaminoLegWithdraw, kaminoLegBorrow, kaminoLegRepay}
 
 func backyardPolicies(v *Vault) (map[policyKey]squads.Policy, error) {
 	out := map[policyKey]squads.Policy{}
@@ -106,8 +106,8 @@ func PolicyLiteral(vault, name string) (squads.Policy, error) {
 	return squads.Policy{}, fmt.Errorf("no Backyard policy %q; there are %q", name, names)
 }
 
-func (l kaminoPrimeUSDCLeg) String() string {
-	return map[kaminoPrimeUSDCLeg]string{kaminoLegDeposit: "deposit", kaminoLegWithdraw: "withdraw", kaminoLegBorrow: "borrow", kaminoLegRepay: "repay"}[l]
+func (l kaminoLeg) String() string {
+	return map[kaminoLeg]string{kaminoLegDeposit: "deposit", kaminoLegWithdraw: "withdraw", kaminoLegBorrow: "borrow", kaminoLegRepay: "repay"}[l]
 }
 
 func (k policyKey) String() string {
@@ -151,7 +151,7 @@ func findInstalledPolicies(v *Vault, installed []squads.Installed) (installedPol
 	}
 	out := installedPolicies{}
 	for key, literal := range literals {
-		found, matches := squads.FindPolicy(installed, solanaKey(backyardSettings), solanaKey(bridgeDelegate), literal)
+		found, matches := squads.FindPolicy(installed, solanaKey(backyardSettings), solanaKey(backyardDelegate), literal)
 		out[key] = installedPolicy{found, matches}
 	}
 	return out, nil
@@ -171,15 +171,15 @@ func (p installedPolicies) account(key policyKey) (string, error) {
 // kaminoPolicyLeg is the policy a route executes leg through and the leg's
 // constraint there: the AUTO lane's KLend policy, a basic family, or the
 // route's split policy for the leg.
-func kaminoPolicyLeg(route RuntimeRoute, leg kaminoPrimeUSDCLeg) (policyKey, byte) {
+func kaminoPolicyLeg(route RuntimeRoute, leg kaminoLeg) (policyKey, byte) {
 	switch {
 	case autoRoute(route.Lane):
-		return policyKey{lane: route.Lane}, map[kaminoPrimeUSDCLeg]byte{kaminoLegDeposit: policy.LoopDeposit, kaminoLegWithdraw: policy.LoopWithdraw,
+		return policyKey{lane: route.Lane}, map[kaminoLeg]byte{kaminoLegDeposit: policy.LoopDeposit, kaminoLegWithdraw: policy.LoopWithdraw,
 			kaminoLegBorrow: policy.LoopBorrow, kaminoLegRepay: policy.LoopRepay}[leg]
 	case basicLane(route.Lane) && (leg == kaminoLegDeposit || leg == kaminoLegWithdraw):
-		return policyKey{family: BasicCollateralLifecycle}, map[kaminoPrimeUSDCLeg]byte{kaminoLegDeposit: basicDeposit, kaminoLegWithdraw: basicWithdraw}[leg]
+		return policyKey{family: BasicCollateralLifecycle}, map[kaminoLeg]byte{kaminoLegDeposit: basicDeposit, kaminoLegWithdraw: basicWithdraw}[leg]
 	case basicLane(route.Lane):
-		return policyKey{family: BasicDebtLifecycle}, map[kaminoPrimeUSDCLeg]byte{kaminoLegBorrow: basicBorrow, kaminoLegRepay: basicRepay}[leg]
+		return policyKey{family: BasicDebtLifecycle}, map[kaminoLeg]byte{kaminoLegBorrow: basicBorrow, kaminoLegRepay: basicRepay}[leg]
 	default:
 		return policyKey{lane: route.Lane, leg: leg}, splitLeg
 	}
@@ -242,7 +242,7 @@ const (
 
 func basicPolicy(v *Vault, family BasicPolicyFamily) (squads.Policy, error) {
 	route := func(lane string) RuntimeRoute { r, _ := v.route(lane); return r }
-	onre, prime, maple := route(onreONycUSDC), route(PrimeUSDCLaneID), route(SelectedRouteID)
+	onre, prime, maple := route(onreONycUSDC), route(PrimeUSDCLaneID), route(MapleSyrupUSDCLaneID)
 	basicLanes := []RuntimeRoute{onre, prime, maple}
 	pinnedLanes := func(field func(RuntimeRoute) string) squads.Slot {
 		addresses := make([]string, len(basicLanes))
@@ -285,7 +285,7 @@ func basicPolicy(v *Vault, family BasicPolicyFamily) (squads.Policy, error) {
 
 const splitLeg = 0
 
-func kaminoLegPolicy(v *Vault, route RuntimeRoute, leg kaminoPrimeUSDCLeg) (squads.Policy, error) {
+func kaminoLegPolicy(v *Vault, route RuntimeRoute, leg kaminoLeg) (squads.Policy, error) {
 	collateral, debt := kaminoRouteAccounts(route, func(address string) squads.Slot { return squads.Pin(kaminoKey(address)) })
 	amount := squads.DataU64(kamino.AmountOffset, squads.OpLessThanOrEqualTo, bridgeCapRaw)
 	switch leg {
@@ -390,7 +390,7 @@ func asset(symbol, custody, mint, program string) swapAsset {
 	return swapAsset{symbol: symbol, custody: kaminoKey(custody), mint: kaminoKey(mint), program: kaminoKey(program)}
 }
 
-func usdcAsset(v *Vault) swapAsset { return asset("USDC", v.cash, bridgeUSDC, classicTokenProgram) }
+func usdcAsset(v *Vault) swapAsset { return asset("USDC", v.cash, fleet.USDCMint, classicTokenProgram) }
 
 func collateralAsset(r RuntimeRoute) swapAsset {
 	return asset(r.CollateralSymbol, r.CollateralCustody, r.Kamino.CollateralMint, r.CollateralTokenProgram)
@@ -511,7 +511,7 @@ func bridgePolicyKey(v *Vault, action Action) policyKey {
 
 func trustfulBridgePolicies(v *Vault) map[Action]squads.Policy {
 	pin, free := squads.Pin, squads.Any
-	vault, usdc, custody := solanaKey(v.squads), solanaKey(bridgeUSDC), solanaKey(v.cash)
+	vault, usdc, custody := solanaKey(v.squads), solanaKey(fleet.USDCMint), solanaKey(v.cash)
 	accounts := voltr.StrategyAllowed{Manager: pin(vault), Protocol: free, Vault: pin(solanaKey(v.VoltrVault)), Strategy: pin(solanaKey(v.Strategy)),
 		AdaptorAddReceipt: free, StrategyInitReceipt: free, VaultAssetIdleAuth: free, VaultStrategyAuth: free, AssetMint: pin(usdc),
 		LPMint: free, VaultAssetIdleATA: free, VaultStrategyAssetATA: pin(solanaKey(v.strategyATA)), AssetTokenProgram: pin(solana.TokenProgramID),
@@ -539,7 +539,7 @@ func trustfulBridgePolicies(v *Vault) map[Action]squads.Policy {
 
 func bridgePolicy(v *Vault, legs ...squads.InstructionConstraintView) squads.Policy {
 	out := vaultPolicy(v, legs...)
-	out.SpendingLimits = []squads.SpendingLimitView{{Mint: solanaKey(bridgeUSDC), Period: squads.PeriodDaily, MaxPerPeriod: bridgeDailyCapRaw}}
+	out.SpendingLimits = []squads.SpendingLimitView{{Mint: solanaKey(fleet.USDCMint), Period: squads.PeriodDaily, MaxPerPeriod: bridgeDailyCapRaw}}
 	return out
 }
 
@@ -549,7 +549,7 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	}
 	pin, free := squads.Pin, squads.Any
 	vault, settings, strategy, ticket := solanaKey(v.squads), solanaKey(backyardSettings), solanaKey(v.Strategy), solanaKey(reportTicketPDA)
-	usdc, custody, strategyATA := solanaKey(bridgeUSDC), solanaKey(v.cash), solanaKey(v.strategyATA)
+	usdc, custody, strategyATA := solanaKey(fleet.USDCMint), solanaKey(v.cash), solanaKey(v.strategyATA)
 
 	capital := func(offset uint64) []squads.DataConstraintView {
 		return []squads.DataConstraintView{squads.DataU64(offset, squads.OpGreaterThan, 0), squads.DataU64(offset, squads.OpLessThanOrEqualTo, strategyTwoBridgeLegCapRaw)}

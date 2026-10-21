@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -31,8 +32,8 @@ func decodeObservedAdaptorConfig(v *Vault, account ConfirmedAccount) (observedAd
 	}
 	bindings := []string{
 		voltr.ProgramID.String(), v.VoltrVault, v.Strategy, v.strategyAuth,
-		squads.ProgramID.String(), backyardSettings, bridgeSettingsSigner, v.squads,
-		bridgeUSDC, bridgeTokenProgram, v.cash, "",
+		squads.ProgramID.String(), backyardSettings, backyardSettingsSigner, v.squads,
+		fleet.USDCMint, bridgeTokenProgram, v.cash, "",
 	}
 	for index, binding := range bindings {
 		field := account.Data[16+index*32 : 48+index*32]
@@ -199,12 +200,12 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 		return ExpectedEffects{}, 0, 0, 0, fmt.Errorf("unsupported bridge action")
 	}
 	accounts := []ExpectedAccountEffect{
-		{Address: v.strategyATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.strategyAuth, BeforeRaw: strategy, AfterRaw: strategyAfter},
-		{Address: v.cash, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.squads, BeforeRaw: squads, AfterRaw: squadsAfter},
+		{Address: v.strategyATA, Owner: bridgeTokenProgram, Mint: fleet.USDCMint, Authority: v.strategyAuth, BeforeRaw: strategy, AfterRaw: strategyAfter},
+		{Address: v.cash, Owner: bridgeTokenProgram, Mint: fleet.USDCMint, Authority: v.squads, BeforeRaw: squads, AfterRaw: squadsAfter},
 	}
 	invokesAdaptor := decision.Action != StageSquadsToVoltr || v.trustful()
 	if invokesAdaptor {
-		accounts = slices.Insert(accounts, 0, ExpectedAccountEffect{Address: v.idleATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.idleAuth, BeforeRaw: idle, AfterRaw: idleAfter})
+		accounts = slices.Insert(accounts, 0, ExpectedAccountEffect{Address: v.idleATA, Owner: bridgeTokenProgram, Mint: fleet.USDCMint, Authority: v.idleAuth, BeforeRaw: idle, AfterRaw: idleAfter})
 	}
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, idleAfter, strategyAfter, squadsAfter, nil
 }
@@ -250,7 +251,7 @@ func prepareKaminoFromTickObservation(ctx context.Context, rpc *chain.Client, vi
 	return observation, KaminoExecutionEvidence{Request: request, ExpectedEffects: effects}, nil
 }
 
-func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoPrimeUSDCLeg, uint64, uint64, error) {
+func selectKaminoLeg(decision Decision, position KaminoPosition) (kaminoLeg, uint64, uint64, error) {
 	switch decision.Action {
 	case OpenRouteStep:
 		if decision.AmountRaw <= 0 {
@@ -324,7 +325,7 @@ type kaminoCustodyBoundary struct {
 	Address, Mint, Authority string
 }
 
-func kaminoLegCustodiesForRoute(leg kaminoPrimeUSDCLeg, route RuntimeRoute) (kaminoCustodyBoundary, kaminoCustodyBoundary) {
+func kaminoLegCustodiesForRoute(leg kaminoLeg, route RuntimeRoute) (kaminoCustodyBoundary, kaminoCustodyBoundary) {
 	collateralVault := kaminoCustodyBoundary{route.CollateralCustody, route.Kamino.CollateralMint, route.Kamino.Vault}
 	collateralReserve := kaminoCustodyBoundary{route.CollateralLiquiditySupply, route.Kamino.CollateralMint, route.Kamino.MarketAuthority}
 	stableVault := kaminoCustodyBoundary{route.DebtCustody, route.Kamino.DebtMint, route.Kamino.Vault}

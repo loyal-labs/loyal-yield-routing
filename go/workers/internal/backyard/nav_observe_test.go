@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -95,11 +96,11 @@ func voltrVaultFixture(t *testing.T, totalValueRaw uint64) ConfirmedAccount {
 	t.Helper()
 	data := make([]byte, 928)
 	copy(data[:8], voltr.VaultDiscriminator[:])
-	putKey(t, data[104:136], bridgeUSDC)
+	putKey(t, data[104:136], fleet.USDCMint)
 	putKey(t, data[136:168], bridgeIdleATA)
 	putKey(t, data[272:304], bridgeLPMint)
 	putKey(t, data[368:400], bridgeVault)
-	putKey(t, data[400:432], bridgeSettingsSigner)
+	putKey(t, data[400:432], backyardSettingsSigner)
 	binary.LittleEndian.PutUint64(data[168:176], totalValueRaw)
 	binary.LittleEndian.PutUint64(data[448:456], 0)
 	binary.LittleEndian.PutUint64(data[456:464], 600)
@@ -110,7 +111,7 @@ func voltrVaultFixture(t *testing.T, totalValueRaw uint64) ConfirmedAccount {
 func voltrLPMintFixture(t *testing.T, supplyRaw uint64) ConfirmedAccount {
 	t.Helper()
 	data := make([]byte, voltrLPMintLength)
-	putKey(t, data[4:36], bridgeSettingsSigner)
+	putKey(t, data[4:36], backyardSettingsSigner)
 	binary.LittleEndian.PutUint64(data[36:44], supplyRaw)
 	data[44] = 9
 	return ConfirmedAccount{Address: bridgeLPMint, Owner: bridgeTokenProgram, Lamports: 1, Data: data}
@@ -180,13 +181,13 @@ func routeNAVFixture(t *testing.T, slot int64) []ConfirmedAccount {
 	return []ConfirmedAccount{
 		adaptor,
 		strategyReceiptFixture(t, 42),
-		tokenAccountFixture(t, bridgeIdleATA, bridgeUSDC, bridgeIdleAuthority, 11),
-		tokenAccountFixture(t, bridgeStrategyATA, bridgeUSDC, bridgeStrategyAuth, 5),
-		tokenAccountFixture(t, bridgeSquadsATA, bridgeUSDC, bridgeVault, 6),
+		tokenAccountFixture(t, bridgeIdleATA, fleet.USDCMint, bridgeIdleAuthority, 11),
+		tokenAccountFixture(t, bridgeStrategyATA, fleet.USDCMint, bridgeStrategyAuth, 5),
+		tokenAccountFixture(t, bridgeSquadsATA, fleet.USDCMint, bridgeVault, 6),
 		tokenAccountFixture(t, primePRIMEUSDC.CollateralCustody, primePRIMEUSDC.Kamino.CollateralMint, bridgeVault, 3),
 		obligationFixture(t, slot, 10, 7),
 		reserveFixture(t, primePRIMEUSDC.Kamino.CollateralReserve, primePRIMEUSDC.Kamino.CollateralMint, slot, oneAndHalf, 200, 100),
-		reserveFixture(t, primePRIMEUSDC.Kamino.DebtReserve, bridgeUSDC, slot, one, 100, 100),
+		reserveFixture(t, primePRIMEUSDC.Kamino.DebtReserve, fleet.USDCMint, slot, one, 100, 100),
 		marketFixture(t, primePRIMEUSDC.Kamino.Market),
 		voltrVaultFixture(t, 49),
 		voltrLPMintFixture(t, 1_000),

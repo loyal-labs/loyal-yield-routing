@@ -57,7 +57,7 @@ func autoPayoffMints(t *testing.T, route RuntimeRoute) []ConfirmedAccount {
 	return []ConfirmedAccount{
 		{Address: route.Kamino.CollateralMint, Owner: classicTokenProgram, Lamports: 1, Data: mint(9)},
 		{Address: route.Kamino.DebtMint, Owner: token2022Program, Lamports: 1, Data: mint(6)},
-		{Address: bridgeUSDC, Owner: classicTokenProgram, Lamports: 1, Data: mint(6)},
+		{Address: fleet.USDCMint, Owner: classicTokenProgram, Lamports: 1, Data: mint(6)},
 	}
 }
 
@@ -93,7 +93,7 @@ func autoJupiterTransport(t *testing.T, route RuntimeRoute, quote func(in, desti
 			quoted, _ := strconv.ParseUint(body.QuoteResponse.OutAmount, 10, 64)
 			var action Action
 			switch {
-			case body.QuoteResponse.OutputMint == route.Kamino.CollateralMint && body.QuoteResponse.InputMint == bridgeUSDC:
+			case body.QuoteResponse.OutputMint == route.Kamino.CollateralMint && body.QuoteResponse.InputMint == fleet.USDCMint:
 				action = SwapStableToCollateralStep
 			case body.QuoteResponse.OutputMint == route.Kamino.CollateralMint && body.QuoteResponse.InputMint == route.Kamino.DebtMint:
 				action = SwapDebtToCollateralStep
@@ -152,7 +152,7 @@ func autoPayoffRPC(t *testing.T, slot int64, batch []ConfirmedAccount) *chain.Cl
 		t.Fatal(err)
 	}
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
-	usdc := reserveFixture(t, config.DebtReserve, bridgeUSDC, 42, one, 1, 1)
+	usdc := reserveFixture(t, config.DebtReserve, fleet.USDCMint, 42, one, 1, 1)
 	sol := reserveFixture(t, budgetSOLReserve, budgetWrappedSOLMint, 42, new(big.Int).Mul(one, big.NewInt(100)), 1, 1)
 	putKey(t, sol.Data[32:64], fleet.KaminoMainMarket)
 	binary.LittleEndian.PutUint64(sol.Data[272:280], 9)
@@ -287,7 +287,7 @@ func autoCandidateStack(t *testing.T, slot int64, extra func([]ConfirmedAccount)
 		batch = append(batch, a)
 	}
 	ensure(ConfirmedAccount{Address: bridgeVault, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000})
-	ensure(ConfirmedAccount{Address: bridgeDelegate, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000})
+	ensure(ConfirmedAccount{Address: backyardDelegate, Owner: "11111111111111111111111111111111", Lamports: 1_000_000_000})
 	// The full position observation fetches each reserve's configured oracle
 	// accounts. Serve exact dummies for precisely the keys the reserves name,
 	// derived through the production decoder.

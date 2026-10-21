@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // ObserveConfirmedRouteSnapshot extends the bridge snapshot with the route's
@@ -342,7 +343,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 	stateHash := sha256.Sum256([]byte(fmt.Sprintf("%s|voltr-idle:%d|strategy-idle:%d|squads-idle:%d", fingerprint, idle.Raw, strategy.Raw, squads.Raw)))
 	base := Observation{ObservedAt: runtime.now(), Snapshot: Snapshot{ObservationID: fmt.Sprintf("%x", stateHash[:]), Slot: slot, RouteKind: RouteKind, Fresh: true, WithdrawalDemandRaw: demand, VoltrIdleRaw: int64(idle.Raw), VoltrStrategyIdleRaw: int64(strategy.Raw), SquadsIdleRaw: int64(squads.Raw), Trustful: v.trustful(), ApprovedAdminPerformanceFeeBPS: v.AdminPerformanceFeeBPS}}
 	base.Snapshot.CollateralIdleRaw = int64(prime.Raw)
-	if (route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane)) && prime.Raw > 0 && withdrawalShortfallRaw(base.Snapshot) == 0 {
+	if (route.Kamino.DebtMint != fleet.USDCMint || basicLane(route.Lane)) && prime.Raw > 0 && withdrawalShortfallRaw(base.Snapshot) == 0 {
 		minimum, err := kaminoDepositMinimum(accounts, route, slot, math.MaxInt64)
 		if err != nil && !basicLane(route.Lane) {
 			return Observation{}, nil, err
@@ -424,7 +425,7 @@ func observeLaneView(ctx context.Context, manifest RouteManifest, runtime routeO
 		borrowUtilizationBlocked: position.BorrowUtilizationBlocked,
 		strategyNAVRaw:           nav.StrategyNAVRaw, priorReportedNAVRaw: nav.PriorReportedNAVRaw, pairCapacityRaw: pairEntryUSDC,
 	}.observationID(base.Snapshot.ObservationID)
-	if route.Kamino.DebtMint != bridgeUSDC || basicLane(route.Lane) {
+	if route.Kamino.DebtMint != fleet.USDCMint || basicLane(route.Lane) {
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s|lane:%s|idle-debt:%d|payoff-debt:%d|idle-collateral-value:%d|position-debt-value:%d|minimum-deposit:%d", base.Snapshot.ObservationID, route.Lane, nav.Custodies.SquadsDebtRaw, base.Snapshot.PayoffDebtRaw, base.Snapshot.CollateralIdleValueRaw, base.Snapshot.PositionDebtValueRaw, base.Snapshot.MinimumCollateralDepositRaw)))
 		base.Snapshot.ObservationID = fmt.Sprintf("%x", digest[:])
 	}
@@ -565,14 +566,14 @@ func routeEntryCapacityUSDC(position KaminoPosition, accounts []ConfirmedAccount
 	if earnActiveLane(route.Lane) && position.LiquidationThresholdBPS > 0 {
 		return topupDepositRoomUSDC(accounts, route)
 	}
-	if route.Kamino.DebtMint == bridgeUSDC {
+	if route.Kamino.DebtMint == fleet.USDCMint {
 		if basicLane(route.Lane) {
 			return kaminoPairEntryCapacityDebtRaw(position, accounts, route)
 		}
 		return position.EntryCapacityRaw, nil
 	}
 	reference := usdcReference
-	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
+	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), fleet.USDCMint, reference)
 	if err != nil {
 		return 0, err
 	}
@@ -594,11 +595,11 @@ func topupDepositRoomUSDC(accounts []ConfirmedAccount, route RuntimeRoute) (uint
 		return 0, err
 	}
 	usdcReserve, usdcConfig := route.Kamino.DebtReserve, route.Kamino
-	if route.Kamino.DebtMint != bridgeUSDC {
+	if route.Kamino.DebtMint != fleet.USDCMint {
 		usdcConfig = usdcReference
 		usdcReserve = usdcConfig.DebtReserve
 	}
-	usdc, err := decodeKaminoReserve(accountAt(accounts, usdcReserve), bridgeUSDC, usdcConfig)
+	usdc, err := decodeKaminoReserve(accountAt(accounts, usdcReserve), fleet.USDCMint, usdcConfig)
 	if err != nil || usdc.mintDecimals != 6 {
 		return 0, fmt.Errorf("top-up USDC reference unavailable")
 	}

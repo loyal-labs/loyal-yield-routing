@@ -52,7 +52,7 @@ func newAutoInitializerRecoveryFixture(t *testing.T) autoInitializerRecoveryFixt
 	for i := 0; i < count; i++ {
 		pre[i], post[i] = 1, 1
 		switch encodeBase58(keys[i][:]) {
-		case bridgeDelegate:
+		case backyardDelegate:
 			pre[i], post[i] = 1_000_000, 995_000
 		case bridgeVault:
 			pre[i], post[i] = 100_000_000, 100_000_000-r.RentLamports

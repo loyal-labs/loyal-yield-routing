@@ -156,7 +156,7 @@ func TestBridgeTransactionSignsExactWireAndPersistsOnlyAfterSimulation(t *testin
 	if err := result.validateForDelegate(delegate); err != nil {
 		t.Fatalf("exact delegated signer was rejected: %v", err)
 	}
-	if err := result.validateForDelegate(mustKey(bridgeDelegate)); err == nil {
+	if err := result.validateForDelegate(mustKey(backyardDelegate)); err == nil {
 		t.Fatal("wrong delegated signer was accepted")
 	}
 	tampered := result
@@ -172,7 +172,7 @@ func TestBridgeTransactionSignsExactWireAndPersistsOnlyAfterSimulation(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := signMessage(key, mustKey(bridgeDelegate), message, bridgeVault, 99); err == nil {
+	if _, err := signMessage(key, mustKey(backyardDelegate), message, bridgeVault, 99); err == nil {
 		t.Fatal("unpinned executor key was accepted")
 	}
 }

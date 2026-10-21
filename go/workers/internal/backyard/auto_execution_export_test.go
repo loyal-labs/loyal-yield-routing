@@ -32,7 +32,7 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 	}
 	manifest := embeddedTestManifest(t)
 	policy := testPolicies(t)[policyKey{lane: autoAUTOPYUSD.Lane}]
-	delegate := mustKey(bridgeDelegate)
+	delegate := mustKey(backyardDelegate)
 	messages := make([]map[string]any, 0, 10)
 
 	addMessage := func(kind, leg string, constraintIndex byte, amountRaw any, request any, message []byte) {
@@ -67,7 +67,7 @@ func TestExportAutoExecutionMessages(t *testing.T) {
 	// indexes. Deposit/borrow are open-side legs; repay/withdraw are
 	// delever-side legs — the exact action each packet must carry.
 	lifecycle := []struct {
-		leg      kaminoPrimeUSDCLeg
+		leg      kaminoLeg
 		action   Action
 		kind     string
 		legName  string

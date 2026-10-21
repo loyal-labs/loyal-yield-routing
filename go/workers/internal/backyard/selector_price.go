@@ -8,6 +8,7 @@ import (
 	"math"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -99,8 +100,8 @@ func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrice
 		return lanePrices{}, err
 	}
 	usdc := debt
-	if route.Kamino.DebtMint != bridgeUSDC {
-		if usdc, err = decodeKaminoReserve(accountAt(accounts, usdcReference.DebtReserve), bridgeUSDC, usdcReference); err != nil {
+	if route.Kamino.DebtMint != fleet.USDCMint {
+		if usdc, err = decodeKaminoReserve(accountAt(accounts, usdcReference.DebtReserve), fleet.USDCMint, usdcReference); err != nil {
 			return lanePrices{}, err
 		}
 	}
@@ -195,7 +196,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		}
 	}
 	for _, step := range []StepRequest{up.Request, down.Request} {
-		message, err := compileStepMessageForDelegate(p.manifest.vault, step, mustKey(bridgeDelegate))
+		message, err := compileStepMessageForDelegate(p.manifest.vault, step, mustKey(backyardDelegate))
 		if err != nil {
 			return leverageStepCost{}, costOutage("network_fee", err)
 		}
@@ -431,13 +432,13 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	}
 	for _, compile := range []func() ([]byte, error){
 		func() ([]byte, error) {
-			return compileJupiterMessageForDelegate(p.manifest.vault, entry.Request, mustKey(bridgeDelegate))
+			return compileJupiterMessageForDelegate(p.manifest.vault, entry.Request, mustKey(backyardDelegate))
 		},
 		func() ([]byte, error) {
-			return compileKaminoMessageForDelegate(p.manifest.vault, deposit, mustKey(bridgeDelegate))
+			return compileKaminoMessageForDelegate(p.manifest.vault, deposit, mustKey(backyardDelegate))
 		},
 		func() ([]byte, error) {
-			return compileStepMessageForDelegate(p.manifest.vault, exit.Request, mustKey(bridgeDelegate))
+			return compileStepMessageForDelegate(p.manifest.vault, exit.Request, mustKey(backyardDelegate))
 		},
 	} {
 		message, err := compile()
@@ -615,7 +616,7 @@ func (p lanePricer) releaseNetworkMicros(ctx context.Context, o Observation, sou
 	steps = append(steps, step.Request)
 	total := int64(0)
 	for _, request := range steps {
-		message, err := compileStepMessageForDelegate(p.manifest.vault, request, mustKey(bridgeDelegate))
+		message, err := compileStepMessageForDelegate(p.manifest.vault, request, mustKey(backyardDelegate))
 		if err != nil {
 			return 0, err
 		}

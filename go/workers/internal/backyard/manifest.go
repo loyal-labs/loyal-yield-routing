@@ -31,7 +31,7 @@ func (m RouteManifest) route(lane string) (RuntimeRoute, error) { return m.vault
 
 var errKaminoPacketUnavailable = fmt.Errorf("Kamino packet unavailable")
 
-func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action Action, leg kaminoPrimeUSDCLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoLegRequest, error) {
+func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action Action, leg kaminoLeg, amount uint64, blockhash LatestBlockhash, lane string) (KaminoLegRequest, error) {
 	if amount == 0 || blockhash.Blockhash == "" || blockhash.LastValidBlockHeight <= 0 {
 		return KaminoLegRequest{}, errKaminoPacketUnavailable
 	}
@@ -49,8 +49,8 @@ func (m RouteManifest) kaminoPacketForRoute(policies installedPolicies, action A
 		return KaminoLegRequest{}, err
 	}
 	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
-	metas := map[kaminoPrimeUSDCLeg][]accountMeta{kaminoLegDeposit: deposit, kaminoLegBorrow: borrow, kaminoLegRepay: repay, kaminoLegWithdraw: withdraw}[leg]
-	accounts := make(KaminoPrimeUSDCAccounts, len(metas))
+	metas := map[kaminoLeg][]accountMeta{kaminoLegDeposit: deposit, kaminoLegBorrow: borrow, kaminoLegRepay: repay, kaminoLegWithdraw: withdraw}[leg]
+	accounts := make(KaminoLegAccounts, len(metas))
 	for i, item := range metas {
 		accounts[i].Address, accounts[i].Signer, accounts[i].Writable = encodeBase58(item.key[:]), item.signer, item.writable
 	}

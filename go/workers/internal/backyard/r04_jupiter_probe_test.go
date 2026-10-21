@@ -139,7 +139,7 @@ func TestExportPhase3JupiterControlledProbe(t *testing.T) {
 		t.Fatal("probe exceeds one coherent account batch")
 	}
 	plan := map[string]any{"schema": "phase3-jupiter-controlled-probe/v1", "broadcast": false, "lane": ethenaUSDePYUSD.Lane, "quoteObservationSlot": slot,
-		"delegate": bridgeDelegate, "inputCustody": bridgeSquadsATA, "collateralCustody": ethenaUSDePYUSD.CollateralCustody, "debtCustody": ethenaUSDePYUSD.DebtCustody,
+		"delegate": backyardDelegate, "inputCustody": bridgeSquadsATA, "collateralCustody": ethenaUSDePYUSD.CollateralCustody, "debtCustody": ethenaUSDePYUSD.DebtCustody,
 		"steps": rows, "addresses": keys, "policies": policies}
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {

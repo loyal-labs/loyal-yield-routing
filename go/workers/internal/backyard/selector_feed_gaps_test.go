@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // leveredTestMarket is lane economics whose spread clears every live leverage
@@ -30,7 +32,7 @@ func TestFeedScoresLaneWhoseDebtReserveBorrowedExceedsSupply(t *testing.T) {
 	now := time.Now().UTC()
 	usds, pyusd := primePRIMEUSDS, primePRIMEPYUSD
 	reserves := map[string]reserveEconomics{
-		primePRIMEUSDC.Kamino.DebtReserve: feedReserveFixture(primePRIMEUSDC.Kamino.DebtReserve, bridgeUSDC, primePRIMEUSDC.Kamino.Market, now, 0.9999),
+		primePRIMEUSDC.Kamino.DebtReserve: feedReserveFixture(primePRIMEUSDC.Kamino.DebtReserve, fleet.USDCMint, primePRIMEUSDC.Kamino.Market, now, 0.9999),
 		usds.Kamino.CollateralReserve:     feedReserveFixture(usds.Kamino.CollateralReserve, usds.Kamino.CollateralMint, usds.Kamino.Market, now, 1.05),
 		usds.Kamino.DebtReserve:           feedReserveFixture(usds.Kamino.DebtReserve, usds.Kamino.DebtMint, usds.Kamino.Market, now, 1),
 		pyusd.Kamino.DebtReserve:          feedReserveFixture(pyusd.Kamino.DebtReserve, pyusd.Kamino.DebtMint, pyusd.Kamino.Market, now, 0.9998),
@@ -130,7 +132,7 @@ func TestSelectorDestinationLeversOnlyAtTheLiveSpreadMinimum(t *testing.T) {
 		{"below 1 pt", 0.10, math.Log1p(0.095), false},
 		{"just above 1 pt", 0.10, math.Log1p(0.0899), true},
 	} {
-		q := quote(leverageMarket(SelectedRouteID, tc.yield, tc.apr), false)
+		q := quote(leverageMarket(MapleSyrupUSDCLaneID, tc.yield, tc.apr), false)
 		if tc.levered {
 			if q.Unlevered || q.SpreadUnlevered || q.BorrowReceiveRaw == 0 {
 				t.Fatalf("%s: not levered: %+v", tc.name, q)
@@ -143,7 +145,7 @@ func TestSelectorDestinationLeversOnlyAtTheLiveSpreadMinimum(t *testing.T) {
 	}
 	// A closed debt reserve is still 1x because borrowing is blocked, not by
 	// the spread rule: the sample line keeps saying borrow=blocked.
-	if q := quote(leveredTestMarket(SelectedRouteID), true); !q.Unlevered || q.SpreadUnlevered {
+	if q := quote(leveredTestMarket(MapleSyrupUSDCLaneID), true); !q.Unlevered || q.SpreadUnlevered {
 		t.Fatalf("blocked borrowing labelled as a spread choice: %+v", q)
 	}
 }
@@ -156,8 +158,8 @@ func TestSelectorDestinationLeversOnlyAtTheLiveSpreadMinimum(t *testing.T) {
 func TestSelectorForecastCountsMoveCostOnce(t *testing.T) {
 	t.Parallel()
 	const amount, expected = int64(100_000_000), int64(60_000_000)
-	q := parBorrow(MoveQuote{DestinationLane: SelectedRouteID, EquityRaw: amount, CostRaw: expected, BorrowReceiveRaw: 20_000_000, BorrowFeeRaw: 20_000})
-	market := leverageMarket(SelectedRouteID, 0.12, math.Log1p(0.06))
+	q := parBorrow(MoveQuote{DestinationLane: MapleSyrupUSDCLaneID, EquityRaw: amount, CostRaw: expected, BorrowReceiveRaw: 20_000_000, BorrowFeeRaw: 20_000})
+	market := leverageMarket(MapleSyrupUSDCLaneID, 0.12, math.Log1p(0.06))
 	years := DefaultSelectorPolicy().Horizon.Hours() / (365.25 * 24)
 	invested := float64(amount - q.CostRaw)
 	e, blocked := pilotQuoteEconomics(q, market, invested, years)

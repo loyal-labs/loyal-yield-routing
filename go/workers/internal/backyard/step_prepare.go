@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -325,7 +326,7 @@ func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupi
 	if err != nil || receipts == 0 || liquidity == 0 {
 		return StepExecutionEvidence{}, 0, budgetHoldFrom(err, "release_leg_unavailable")
 	}
-	if st.cash, err = vaultCustodyRaw(manifest.vault, accounts, manifest.vault.cash, bridgeUSDC, bridgeTokenProgram); err != nil {
+	if st.cash, err = vaultCustodyRaw(manifest.vault, accounts, manifest.vault.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {
 		return StepExecutionEvidence{}, 0, err
 	}
 	evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, stepExit, receipts, liquidity+st.collateralBalance, s.Slot)
@@ -414,7 +415,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 			return StepExecutionEvidence{}, 0, err
 		}
 	}
-	if _, err := compileStepMessageForDelegate(v, request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileStepMessageForDelegate(v, request, mustKey(backyardDelegate)); err != nil {
 		return StepExecutionEvidence{}, 0, budgetHoldFrom(err, "step_does_not_compile")
 	}
 	effect := func(custody, mint, program string, before, after uint64) ExpectedAccountEffect {
@@ -427,7 +428,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		debt.AfterRaw = st.debtBalance - st.heldDebt()
 	}
 	if exit {
-		debt = effect(v.cash, bridgeUSDC, bridgeTokenProgram, st.cash, closeRaw)
+		debt = effect(v.cash, fleet.USDCMint, bridgeTokenProgram, st.cash, closeRaw)
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: stepEffects(up, collateral, debt)}, guaranteed, nil
 }
@@ -511,7 +512,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	}
 	closing.ObligationReserves = topology
 	request := StepRequest{Open: open, Close: &closing}
-	if _, err := compileStepMessageForDelegate(v, request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileStepMessageForDelegate(v, request, mustKey(backyardDelegate)); err != nil {
 		return StepExecutionEvidence{}, budgetHoldFrom(err, "step_does_not_compile")
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: moveEffects(route, st.collateralBalance)}, nil

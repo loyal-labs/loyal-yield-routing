@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -142,7 +143,7 @@ func TestJupiterFreshSwapIsBoundedAndRejectsCompanionInstructions(t *testing.T) 
 			if r.URL.Query().Get("maxAccounts") != "32" || r.URL.Query().Get("slippageBps") != "50" || r.URL.Query().Get("instructionVersion") != "V2" {
 				t.Error("quote bounds drifted")
 			}
-			response = `{"inputMint":"` + bridgeUSDC + `","outputMint":"` + primePRIMEUSDC.Kamino.CollateralMint + `","inAmount":"100","outAmount":"99","otherAmountThreshold":"98","swapMode":"ExactIn","slippageBps":50,"platformFee":null,"routePlan":[{}]}`
+			response = `{"inputMint":"` + fleet.USDCMint + `","outputMint":"` + primePRIMEUSDC.Kamino.CollateralMint + `","inAmount":"100","outAmount":"99","otherAmountThreshold":"98","swapMode":"ExactIn","slippageBps":50,"platformFee":null,"routePlan":[{}]}`
 		case "/swap-instructions":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {

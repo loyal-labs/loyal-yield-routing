@@ -66,7 +66,7 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 						Operations   []struct {
 							Operation, Policy                                              string
 							ProgramMatches, RetainedPolicyBytesMatch, AccountVectorMatches bool
-							Accounts                                                       KaminoPrimeUSDCAccounts
+							Accounts                                                       KaminoLegAccounts
 						}
 					}
 				}
@@ -139,7 +139,7 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 					for index := range request.Accounts {
 						for _, field := range []string{"address", "signer", "writable"} {
 							mutant := request
-							mutant.Accounts = append(KaminoPrimeUSDCAccounts(nil), request.Accounts...)
+							mutant.Accounts = append(KaminoLegAccounts(nil), request.Accounts...)
 							account := &mutant.Accounts[index]
 							switch field {
 							case "address":
@@ -155,7 +155,7 @@ func testCatalogKaminoConstruction(t *testing.T, lanes []string) {
 						}
 					}
 					for _, mutation := range []func(*KaminoLegRequest){
-						func(r *KaminoLegRequest) { r.RouteLane = SelectedRouteID },
+						func(r *KaminoLegRequest) { r.RouteLane = MapleSyrupUSDCLaneID },
 						func(r *KaminoLegRequest) { r.RouteLane = "unknown/asset/debt" },
 						func(r *KaminoLegRequest) { r.AmountRaw++ },
 					} {

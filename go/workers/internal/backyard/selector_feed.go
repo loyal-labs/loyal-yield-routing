@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -191,7 +192,7 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomic
 		return finite(r.PriceUSD) && r.PriceUSD > 0 && r.Decimals <= 18
 	}
 	usdc := reserves[usdcReference.DebtReserve]
-	usdcPriced := valid(usdc, usdcReference.DebtReserve, bridgeUSDC, usdcReference.Market) && priced(usdc) && usdc.Decimals == 6
+	usdcPriced := valid(usdc, usdcReference.DebtReserve, fleet.USDCMint, usdcReference.Market) && priced(usdc) && usdc.Decimals == 6
 	for _, route := range routes {
 		c, d := reserves[route.Kamino.CollateralReserve], reserves[route.Kamino.DebtReserve]
 		y, ok := yields[route.Lane]
@@ -206,7 +207,7 @@ func combineEconomics(routes []RuntimeRoute, reserves map[string]reserveEconomic
 		if rate, ok := feed[route.Lane]; ok {
 			e.FeedNativeAPY = &rate
 		}
-		if route.Kamino.DebtMint != bridgeUSDC && usdcPriced && priced(d) {
+		if route.Kamino.DebtMint != fleet.USDCMint && usdcPriced && priced(d) {
 			e.DebtRawPerUSDCRaw = usdc.PriceUSD / d.PriceUSD * math.Pow10(d.Decimals-6)
 		}
 		if c.Status != 0 || d.Status != 0 || c.Emergency || d.Emergency {

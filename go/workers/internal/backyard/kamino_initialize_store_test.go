@@ -37,7 +37,7 @@ func TestInitializationDatabaseSettlement(t *testing.T) {
 	receipt.Signature = encodeBase58(wireSig(wire))
 	raw, _ := json.Marshal(expected)
 	if _, err := db.pool.Exec(ctx, `INSERT INTO loyal_yield.multiply_operations(operation_id,route_key,status,action,strategy_key,expected_effects)
- VALUES($1,$2,'decided',$3,$4,$5::jsonb)`, id, key, string(InitializeKaminoObligation), SelectedRouteID, string(raw)); err != nil {
+ VALUES($1,$2,'decided',$3,$4,$5::jsonb)`, id, key, string(InitializeKaminoObligation), MapleSyrupUSDCLaneID, string(raw)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.pool.Exec(ctx, `UPDATE loyal_yield.multiply_operations SET status='reconciling',signed_wire_sha256=$2,transaction_signature=$3,confirmed_slot=$4,signed_wire=$5 WHERE operation_id=$1`, id, receipt.Initialization.SignedWireSHA256, receipt.Signature, receipt.Slot, wire); err != nil {
@@ -97,16 +97,16 @@ func TestInitializationMigrationRetainsEngineAndLaneBoundaries(t *testing.T) {
 		valid                bool
 	}{
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", PrimeUSDCLaneID, true},
-		{string(InitializeKaminoObligation), "backyard_rwa_v1", SelectedRouteID, true},
+		{string(InitializeKaminoObligation), "backyard_rwa_v1", MapleSyrupUSDCLaneID, true},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "OnRe/ONyc/USDC", true},
 		{string(OpenRouteStep), "backyard_rwa_v1", "OnRe/ONyc/USDC", true},
 		{string(SwapDebtToCollateralStep), "backyard_rwa_v1", "OnRe/ONyc/USDC", true},
-		{string(InitializeKaminoObligation), "earn_max_v2", SelectedRouteID, false},
+		{string(InitializeKaminoObligation), "earn_max_v2", MapleSyrupUSDCLaneID, false},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "OnRe/ONyc/USDS", false},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "", false},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "AUTO/AUTO/PYUSD", false},
 		{string(OpenRouteStep), "backyard_rwa_v1", "unregistered", false},
-		{string(ReportNAV), "backyard_rwa_v1", SelectedRouteID, true},
+		{string(ReportNAV), "backyard_rwa_v1", MapleSyrupUSDCLaneID, true},
 		{"borrow_debt", "earn_max_v2", "legacy", true},
 		{"borrow_debt", "backyard_rwa_v1", "legacy", false},
 	} {

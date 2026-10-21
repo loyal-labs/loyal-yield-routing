@@ -90,7 +90,7 @@ func TestFinalizedReportFailureRequiresCompleteExactRollbackReceipt(t *testing.T
 			}
 		})
 	}
-	if err := validateFinalizedFailureReceipt(base, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), mustKey(bridgeDelegate)); err == nil {
+	if err := validateFinalizedFailureReceipt(base, wire, encodeBase58(wireSig(wire)), sha256Bytes(wire), sha256Bytes(wireMsg(wire)), mustKey(backyardDelegate)); err == nil {
 		t.Fatal("wrong signer admitted")
 	}
 }

@@ -33,7 +33,7 @@ func debtReserveWithRoom(t *testing.T, route RuntimeRoute, availableRaw uint64) 
 // room under the standing approval.
 func TestReserveUpdateThatOpensRoomWakesATickThatBorrowsIt(t *testing.T) {
 	t.Parallel()
-	route, err := runtimeRoute(SelectedRouteID)
+	route, err := runtimeRoute(MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -53,8 +54,8 @@ func decodeVoltrVaultBook(v *Vault, account ConfirmedAccount) (VoltrVaultBook, e
 	if err != nil {
 		return VoltrVaultBook{}, fmt.Errorf("Voltr vault account envelope or layout drifted")
 	}
-	if vault.AssetMint != solanaKey(bridgeUSDC) || vault.IdleATA != solanaKey(v.idleATA) || vault.LPMint != solanaKey(v.lpMint) ||
-		vault.Manager != solanaKey(v.squads) || vault.Admin != solanaKey(bridgeSettingsSigner) {
+	if vault.AssetMint != solanaKey(fleet.USDCMint) || vault.IdleATA != solanaKey(v.idleATA) || vault.LPMint != solanaKey(v.lpMint) ||
+		vault.Manager != solanaKey(v.squads) || vault.Admin != solanaKey(backyardSettingsSigner) {
 		return VoltrVaultBook{}, fmt.Errorf("Voltr vault asset, LP, manager, or admin identity drifted")
 	}
 	return VoltrVaultBook{Vault: vault}, nil
@@ -120,7 +121,7 @@ func pinnedRouteNAVAddressesForRoute(v *Vault, route RuntimeRoute) []string {
 		v.VoltrVault,
 		v.lpMint,
 	)
-	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
+	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != fleet.USDCMint {
 		addresses = append(addresses, route.DebtCustody, usdcReference.DebtReserve)
 	}
 	return addresses
@@ -128,7 +129,7 @@ func pinnedRouteNAVAddressesForRoute(v *Vault, route RuntimeRoute) []string {
 
 func heldLaneNAVAddresses(route RuntimeRoute) []string {
 	addresses := []string{route.Kamino.Obligation, route.Kamino.CollateralReserve, route.Kamino.DebtReserve, route.Kamino.Market, route.CollateralCustody}
-	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
+	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != fleet.USDCMint {
 		addresses = append(addresses, route.DebtCustody, usdcReference.DebtReserve)
 	}
 	return addresses
@@ -230,7 +231,7 @@ func decodeRouteNAVCustodiesForRoute(v *Vault, accounts []ConfirmedAccount, rout
 		VoltrIdleRaw: idle.Raw, StrategyUSDCraw: strategy.Raw,
 		SquadsUSDCraw: squadsUSDC.Raw, SquadsPRIMEraw: squadsPRIME.Raw,
 	}
-	if route.Kamino.DebtMint != bridgeUSDC {
+	if route.Kamino.DebtMint != fleet.USDCMint {
 		if route.DebtCustody == "" || route.DebtCustody == v.cash || route.DebtCustody == route.CollateralCustody {
 			return RouteNAVCustodies{}, fmt.Errorf("non-USDC debt custody is missing or aliased")
 		}
@@ -318,7 +319,7 @@ func navInputFingerprintForRoutes(v *Vault, slot int64, accounts []ConfirmedAcco
 		parts = append(parts, fmt.Sprintf("%s:%s:%d:%t:%x", address, account.Owner, account.Lamports, account.Executable, hash[:]))
 	}
 	parts = append(parts, fmt.Sprintf("post:%d:%d:%d:%d", custodies.VoltrIdleRaw, custodies.StrategyUSDCraw, custodies.SquadsUSDCraw, custodies.SquadsPRIMEraw))
-	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != bridgeUSDC {
+	if route.Kamino.DebtMint != "" && route.Kamino.DebtMint != fleet.USDCMint {
 		parts = append(parts, fmt.Sprintf("post-debt:%d", custodies.SquadsDebtRaw))
 	}
 	sort.Strings(parts)
@@ -379,7 +380,7 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 	if override != nil {
 		custodies = *override
 	}
-	if route.Kamino.DebtMint == bridgeUSDC && custodies.SquadsDebtRaw != 0 {
+	if route.Kamino.DebtMint == fleet.USDCMint && custodies.SquadsDebtRaw != 0 {
 		return RouteNAVSnapshot{}, fmt.Errorf("USDC debt custody would be counted twice")
 	}
 
@@ -425,11 +426,11 @@ func computeRouteNAVForRoutes(slot int64, accounts []ConfirmedAccount, manifest 
 		{Account: kaminoConfig.Obligation + ":collateral", Owner: kamino.ProgramID.String(), Raw: int64(collateralValue), Slot: slot, Known: true},
 		{Account: kaminoConfig.Obligation + ":debt", Owner: kamino.ProgramID.String(), Raw: int64(debtValue), Slot: slot, Known: true, Liability: true},
 	}
-	if kaminoConfig.DebtMint != bridgeUSDC {
+	if kaminoConfig.DebtMint != fleet.USDCMint {
 		components = append(components, NAVComponent{Account: route.DebtCustody, Owner: v.squads, Raw: int64(debtIdleValue), Slot: slot, Known: true})
 	}
 	counted := map[string]bool{v.cash: true, route.CollateralCustody: true}
-	if kaminoConfig.DebtMint != bridgeUSDC {
+	if kaminoConfig.DebtMint != fleet.USDCMint {
 		counted[route.DebtCustody] = true
 	}
 	otherLanes := make([]heldLaneState, 0, len(routes)-1)
@@ -510,9 +511,9 @@ func decodeLaneReserves(accounts []ConfirmedAccount, config KaminoObservationCon
 		return laneReserves{}, fmt.Errorf("Kamino valuation claims a future refresh slot")
 	}
 	usdc := debt
-	if config.DebtMint != bridgeUSDC {
+	if config.DebtMint != fleet.USDCMint {
 		reference := usdcReference
-		if usdc, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference); err != nil {
+		if usdc, err = decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), fleet.USDCMint, reference); err != nil {
 			return laneReserves{}, fmt.Errorf("decode NAV USDC reference: %w", err)
 		}
 		if err := validateKaminoReserveHealth(slot, emergency, obligation, usdc); err != nil && !unhealthyAllowed {
@@ -571,7 +572,7 @@ func valueHeldLane(v *Vault, slot int64, accounts []ConfirmedAccount, route Runt
 			return heldLaneValue{}, err
 		}
 	}
-	nonUSDC := config.DebtMint != bridgeUSDC
+	nonUSDC := config.DebtMint != fleet.USDCMint
 	countDebt := nonUSDC && route.DebtCustody != "" && route.DebtCustody != v.cash && !counted[route.DebtCustody]
 	if countDebt {
 		if debtIdle, err = vaultCustodyRaw(v, accounts, route.DebtCustody, config.DebtMint, route.DebtTokenProgram); err != nil {

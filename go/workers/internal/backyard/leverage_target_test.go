@@ -95,7 +95,7 @@ func TestLeverageDecisionRunsOnlyOnASettledLane(t *testing.T) {
 		"nonterminal":      {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.Nonterminal = Signed }},
 		"withdrawal":       {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.WithdrawalDemandRaw = 1 }},
 		"idle squads cash": {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.SquadsIdleRaw = 1 }},
-		"maple":            {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID }},
+		"maple":            {SelectorResult{Action: "KEEP"}, func(s *Snapshot) { s.RouteLane, s.StrategyKey = MapleSyrupUSDCLaneID, MapleSyrupUSDCLaneID }},
 	} {
 		c2 := s
 		c.mutate(&c2)

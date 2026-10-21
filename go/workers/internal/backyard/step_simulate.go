@@ -87,7 +87,7 @@ func RunSimulateStep(ctx context.Context, out io.Writer, rpcURL string, client *
 	if err != nil {
 		return err
 	}
-	step, err := buildStepMessage(v, evidence.Request, mustKey(bridgeDelegate))
+	step, err := buildStepMessage(v, evidence.Request, mustKey(backyardDelegate))
 	if err != nil {
 		return err
 	}

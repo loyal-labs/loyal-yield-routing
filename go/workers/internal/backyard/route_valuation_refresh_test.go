@@ -127,7 +127,7 @@ func TestRouteValuationCaptureFreshnessRequiresIntegrity(t *testing.T) {
 			case "namespace":
 				copyAccounts[0].Address = primePRIMEUSDC.Kamino.DebtReserve
 			case "fee_payer":
-				copyAccounts[0].Address, copyAddresses[0] = bridgeDelegate, bridgeDelegate
+				copyAccounts[0].Address, copyAddresses[0] = backyardDelegate, backyardDelegate
 			case "duplicate":
 				copyAccounts = append(copyAccounts, accounts[0])
 				copyAddresses = append(copyAddresses, addresses[0])

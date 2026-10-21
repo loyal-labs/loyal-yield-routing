@@ -25,7 +25,7 @@ func TestOnReKaminoWiresPassThePersistedWireGate(t *testing.T) {
 	for _, c := range []struct {
 		name     string
 		action   Action
-		leg      kaminoPrimeUSDCLeg
+		leg      kaminoLeg
 		reserves []string
 	}{
 		{"initial deposit (flat obligation)", OpenRouteStep, kaminoLegDeposit, []string{}},

@@ -293,7 +293,7 @@ func TestSelectorReplayFlatEntry(t *testing.T) {
 		"auto-lossy/unlevered": {unlevered: true, cost: 1_201_345, benefit: 47_429.22, action: "ENTER", entered: 200_000_000},
 	}
 	for _, c := range []stack{
-		{"maple", SelectedRouteID, 42, 100_000_000, func(t *testing.T) (RouteManifest, *chain.Client, *jupiter.Client) {
+		{"maple", MapleSyrupUSDCLaneID, 42, 100_000_000, func(t *testing.T) (RouteManifest, *chain.Client, *jupiter.Client) {
 			m, rpc, client, _ := selectorDestinationFixture(t)
 			return m, rpc, client
 		}},

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func overflowSourceOf(lane string) (string, bool) {
@@ -112,7 +114,7 @@ func overflowRoom(accounts []ConfirmedAccount, overflow RuntimeRoute) (uint64, i
 		receive = 0
 	}
 	reference := usdcReference
-	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), bridgeUSDC, reference)
+	usdc, err := decodeKaminoReserve(accountAt(accounts, reference.DebtReserve), fleet.USDCMint, reference)
 	if err != nil {
 		return 0, 0, err
 	}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func (o Observation) Validate() error {
@@ -30,7 +32,7 @@ func decodePinnedUSDC(account ConfirmedAccount, authority string) (DecodedTokenC
 	if account.Address == "" || account.Executable || account.Lamports == 0 {
 		return DecodedTokenCustody{}, fmt.Errorf("missing or invalid custody envelope")
 	}
-	mint, err := decodeBase58PublicKey(bridgeUSDC)
+	mint, err := decodeBase58PublicKey(fleet.USDCMint)
 	if err != nil {
 		return DecodedTokenCustody{}, err
 	}

@@ -7,7 +7,7 @@ import "testing"
 func TestManifestIdentityIsTheRegistrysFacts(t *testing.T) {
 	t.Parallel()
 	manifest, err := loadEmbeddedRouteManifest()
-	if err != nil || !sha256Pattern.MatchString(manifest.SHA256) || manifest.RuntimeActivation.SelectedLane != SelectedRouteID {
+	if err != nil || !sha256Pattern.MatchString(manifest.SHA256) || manifest.RuntimeActivation.SelectedLane != MapleSyrupUSDCLaneID {
 		t.Fatalf("%+v %v", manifest, err)
 	}
 	changed := *rwa

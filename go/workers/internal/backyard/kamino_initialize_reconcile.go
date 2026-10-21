@@ -72,7 +72,7 @@ func (m RouteManifest) reconcileKaminoInitialization(e ExpectedEffects, receipt 
 			continue
 		}
 		switch address {
-		case bridgeDelegate:
+		case backyardDelegate:
 			if i != 0 || before < after {
 				return Reconciliation{}, nil, fmt.Errorf("initializer network fee differs")
 			}

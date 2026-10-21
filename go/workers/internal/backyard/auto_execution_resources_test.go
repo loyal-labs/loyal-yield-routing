@@ -45,12 +45,12 @@ func assertBudget(t *testing.T, name string, config solana.TransactionConfig, un
 // slots (an extra one is InvalidAccountInput, 6006).
 func TestFreshObligationEntryCompilesAsTheChainRunsIt(t *testing.T) {
 	t.Parallel()
-	delegate := mustKey(bridgeDelegate)
-	route, err := runtimeRoute(SelectedRouteID)
+	delegate := mustKey(backyardDelegate)
+	route, err := runtimeRoute(MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	swap, err := compileJupiterMessageForDelegate(rwa, fixtureSwapRequest(t, SelectedRouteID, SwapStableToCollateralStep), delegate)
+	swap, err := compileJupiterMessageForDelegate(rwa, fixtureSwapRequest(t, MapleSyrupUSDCLaneID, SwapStableToCollateralStep), delegate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestFreshObligationEntryCompilesAsTheChainRunsIt(t *testing.T) {
 	copy(data, kamino.ObligationDiscriminator[:])
 	empty := ConfirmedAccount{Address: route.Kamino.Obligation, Owner: kamino.ProgramID.String(), Lamports: 1, Data: data}
 	policies, _, _ := stepTestPolicies(t)
-	deposit, err := embeddedTestManifest(t).kaminoPacketForRoute(policies, OpenRouteStep, kaminoLegDeposit, 33_507_178, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, SelectedRouteID)
+	deposit, err := embeddedTestManifest(t).kaminoPacketForRoute(policies, OpenRouteStep, kaminoLegDeposit, 33_507_178, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 99}, MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}

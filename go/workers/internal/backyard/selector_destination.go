@@ -61,7 +61,7 @@ func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.C
 		route.Kamino.CollateralMint, route.Kamino.DebtMint, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply,
 		route.DebtLiquiditySupply, route.DebtFeeReceiver, route.CollateralReceiptMint, route.CollateralReceiptSupply,
 		route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm,
-		budgetClockAddress, v.squads, bridgeDelegate}
+		budgetClockAddress, v.squads, backyardDelegate}
 	if !v.trustful() {
 		addresses = append(addresses, v.Strategy, reportTicketPDA)
 	}
