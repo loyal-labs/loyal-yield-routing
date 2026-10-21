@@ -441,9 +441,7 @@ VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(cluster,epoch_key) DO NOTHING RETURNING id
 	return id, err
 }
 
-// LockVaultForDecision takes the vault row's exclusive lock that serializes a
-// vault's decision handoff against its opportunity publication, and reports
-// whether the vault is active; an unknown vault is inactive.
+// LockVaultForDecision locks the vault row against opportunity publication and reports whether it is active (unknown is inactive).
 func LockVaultForDecision(ctx context.Context, tx pgx.Tx, vaultID int64) (active bool, err error) {
 	err = tx.QueryRow(ctx, `SELECT active FROM loyal_yield.managed_vaults WHERE id=$1 FOR UPDATE`, vaultID).Scan(&active)
 	if errors.Is(err, pgx.ErrNoRows) {
