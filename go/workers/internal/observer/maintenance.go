@@ -461,8 +461,6 @@ ON CONFLICT(cluster) DO UPDATE SET payload=excluded.payload,source_watermark=exc
 	return published, fence, err
 }
 
-const benchmarkMarket = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
-
 type ReservePriceRPC interface {
 	Accounts(ctx context.Context, keys []solana.PublicKey, commitment rpc.CommitmentType, minContextSlot uint64) (uint64, []*chain.Account, error)
 	BlockTime(ctx context.Context, slot uint64) (time.Time, error)
@@ -639,7 +637,7 @@ func marshalPublicModel(model PublicModel) ([]byte, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	series, err := json.Marshal([]map[string]any{{"key": "loyal", "label": "Loyal Earn", "metadata": map[string]string{"metric": "cumulative_annualized_apy_bps"}, "samples": model.Samples}, {"key": "mainUsdcReserve", "label": "Kamino Main USDC", "metadata": map[string]string{"metric": "cumulative_annualized_apy_bps", "market": benchmarkMarket, "reserve": benchmarkReserve, "liquidityMint": USDCMint}, "samples": model.Benchmark}})
+	series, err := json.Marshal([]map[string]any{{"key": "loyal", "label": "Loyal Earn", "metadata": map[string]string{"metric": "cumulative_annualized_apy_bps"}, "samples": model.Samples}, {"key": "mainUsdcReserve", "label": "Kamino Main USDC", "metadata": map[string]string{"metric": "cumulative_annualized_apy_bps", "market": fleet.KaminoMainMarket, "reserve": benchmarkReserve, "liquidityMint": USDCMint}, "samples": model.Benchmark}})
 	if err != nil {
 		return nil, nil, err
 	}

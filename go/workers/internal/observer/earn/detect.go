@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+	kaminocatalog "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
@@ -22,24 +23,7 @@ var (
 	usdcMint             = solana.MustPublicKeyFromBase58(fleet.USDCMint)
 	rentSysvar           = solana.SysVarRentPubkey
 
-	safeMarkets = []solana.PublicKey{
-		solana.MustPublicKeyFromBase58("7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"),
-		solana.MustPublicKeyFromBase58("CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA"),
-		solana.MustPublicKeyFromBase58("6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y"),
-		solana.MustPublicKeyFromBase58("47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8"),
-		solana.MustPublicKeyFromBase58("BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF"),
-	}
-	mediumMarkets = []solana.PublicKey{
-		solana.MustPublicKeyFromBase58("DxXdAyU3kCjnyggvHmY5nAwg5cRbbmdyX3npfDMjjMek"),
-		solana.MustPublicKeyFromBase58("GMqmFygF5iSm5nkckYU6tieggFcR42SyjkkhK5rswFRs"),
-		solana.MustPublicKeyFromBase58("CF32kn7AY8X1bW7ZkGcHc4X9ZWTxqKGCJk6QwrQkDcdw"),
-	}
-	aggressiveMarkets = []solana.PublicKey{
-		solana.MustPublicKeyFromBase58("52FSGeeokLpgvgAMdqxyt5Hoc2TbUYj5b8yxrEdZ37Vf"),
-		solana.MustPublicKeyFromBase58("9Y7uwXgQ68mGqRtZfuFaP4hc4fxeJ7cE9zTtqTxVhfGU"),
-		solana.MustPublicKeyFromBase58("5wJeMrUYECGq41fxRESKALVcHnNX26TAWy4W98yULsua"),
-		solana.MustPublicKeyFromBase58("ByYiZxp8QrdN9qbdtaAiePN8AAr3qvTPppNJDpf5DVJ5"),
-	}
+	safeMarkets = kaminocatalog.PolicyMarketKeys("safe")
 	earnStables = func() []earnStable {
 		var stables []earnStable
 		for _, stable := range fleet.EarnStablecoins() {
@@ -144,14 +128,9 @@ func keyStrings(keys []solana.PublicKey) []string {
 
 func presetFor(markets []solana.PublicKey) (preset, profile *string) {
 	unique := uniqueKeys(markets)
-	candidate := append([]solana.PublicKey(nil), safeMarkets...)
-	for _, step := range []struct {
-		name  string
-		extra []solana.PublicKey
-	}{{"safe", nil}, {"medium", mediumMarkets}, {"aggressive", aggressiveMarkets}} {
-		candidate = uniqueKeys(append(candidate, step.extra...))
-		if equalKeys(unique, candidate) {
-			name, risk := "kamino_stable", step.name
+	for _, risk := range []string{"safe", "medium", "aggressive"} {
+		if equalKeys(unique, kaminocatalog.PolicyMarketKeys(risk)) {
+			name := "kamino_stable"
 			return &name, &risk
 		}
 	}
