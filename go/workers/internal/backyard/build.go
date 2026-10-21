@@ -82,13 +82,12 @@ func signMessage(executor ed25519.PrivateKey, expectedDelegate publicKey, messag
 }
 
 // Backyard's Squads Settings, its one signer, the delegate every Backyard
-// policy is delegated to, and USDC, the asset of every vault. A vault's own
+// policy is delegated to. A vault's own
 // accounts are derived from its data (vault.go).
 const (
-	backyardSettings     = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
-	bridgeSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
-	bridgeDelegate       = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
-	bridgeUSDC           = fleet.USDCMint
+	backyardSettings       = "5YQ78RwqukvCcykpmjmgRFmbEUeAgLpuVDxx1xNZnHD6"
+	backyardSettingsSigner = "BAqgbERmvUViqDSx961xpRBHGt68SpACiWL4t9696qZZ"
+	backyardDelegate       = "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5"
 )
 
 var (
@@ -231,7 +230,7 @@ func trustfulBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compile
 		if request.AmountRaw == 0 || request.AmountRaw > strategyTwoBridgeLegCapRaw {
 			return nil, nil, fmt.Errorf("invalid Trustful withdrawal amount")
 		}
-		hold := spl.TransferChecked(solana.TokenProgramID, solanaKey(v.cash), solanaKey(bridgeUSDC), solanaKey(v.holding), solanaKey(v.squads), request.AmountRaw, 6)
+		hold := spl.TransferChecked(solana.TokenProgramID, solanaKey(v.cash), solanaKey(fleet.USDCMint), solanaKey(v.holding), solanaKey(v.squads), request.AmountRaw, 6)
 		withdraw := voltr.TrustfulWithdraw(accounts, request.AmountRaw, book, solanaKey(v.holdingAuth), solanaKey(v.holding))
 		return []compiledInstruction{sdkInstruction(hold), sdkInstruction(withdraw)}, []byte{trustfulHoldLeg, trustfulWithdrawLeg}, nil
 	}
@@ -239,7 +238,7 @@ func trustfulBridgeInstructions(v *Vault, request BridgeBuildRequest) ([]compile
 }
 
 func stageInstruction(v *Vault, amount uint64) compiledInstruction {
-	return sdkInstruction(spl.TransferChecked(solana.TokenProgramID, solanaKey(v.cash), solanaKey(bridgeUSDC), solanaKey(v.strategyATA), solanaKey(v.squads), amount, 6))
+	return sdkInstruction(spl.TransferChecked(solana.TokenProgramID, solanaKey(v.cash), solanaKey(fleet.USDCMint), solanaKey(v.strategyATA), solanaKey(v.squads), amount, 6))
 }
 
 func solanaKey(value string) solana.PublicKey { return solana.PublicKey(mustKey(value)) }
@@ -346,7 +345,7 @@ var (
 	encodeBase58 = base58.Encode
 )
 
-func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
+func kaminoLegDiscriminator(leg kaminoLeg) []byte {
 	switch leg {
 	case kaminoLegDeposit:
 		return kamino.DepositV2Discriminator[:]

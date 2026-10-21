@@ -10,13 +10,13 @@ import (
 
 func adaptorFailureLogs(program string, code int) []string {
 	return []string{
-		"Program " + bridgeDelegate + " invoke [1]",
+		"Program " + backyardDelegate + " invoke [1]",
 		"Program log: Instruction: StageSquadsToVoltr",
 		"Program " + program + " invoke [2]",
 		"Program log: AnchorError occurred. Error Code: ReportSlot. Error Number: 0x" +
 			strings.ToUpper(strings.TrimPrefix(jsonNumberHex(code), "0x")),
 		"Program " + program + " failed: custom program error: 0x" + jsonNumberHex(code),
-		"Program " + bridgeDelegate + " failed: custom program error: 0x" + jsonNumberHex(code),
+		"Program " + backyardDelegate + " failed: custom program error: 0x" + jsonNumberHex(code),
 	}
 }
 

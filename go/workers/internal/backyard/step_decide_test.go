@@ -147,7 +147,7 @@ func TestStepConversionExcessJoinsThePosition(t *testing.T) {
 		t.Fatalf("AUTO excess: %+v", got)
 	}
 	maple := leverageSnapshot(1.5)
-	maple.RouteLane, maple.StrategyKey, maple.LeverageTargetLevel = SelectedRouteID, SelectedRouteID, 1.5
+	maple.RouteLane, maple.StrategyKey, maple.LeverageTargetLevel = MapleSyrupUSDCLaneID, MapleSyrupUSDCLaneID, 1.5
 	maple.MinimumCollateralDepositRaw = 1
 	maple.SquadsIdleRaw = 2_500_000
 	if got := Decide(targeted(maple)); got.Action != SwapDebtToCollateralStep || got.Reason != stepResidueReason || got.AmountRaw != 2_500_000 || got.Validate() != nil {

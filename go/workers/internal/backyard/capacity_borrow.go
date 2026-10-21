@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/big"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -50,7 +51,7 @@ func kaminoAdditionalDebtRoom(accounts []ConfirmedAccount, route RuntimeRoute) (
 			return 0, nil
 		}
 	}
-	if collateral.terms.DisableUsageAsCollOutsideEmode || collateral.status != 0 || collateral.emergencyMode {
+	if collateral.terms.DisableUsageAsCollOutsideEmode || collateral.terms.Status != 0 || collateral.terms.EmergencyMode {
 		return 0, nil
 	}
 	return kaminoDebtReserveRoom(debt, clockUnixTimestamp(accounts))
@@ -81,7 +82,7 @@ func kaminoDebtReserveRoom(debt decodedKaminoReserve, now int64) (uint64, error)
 	}
 	outsideLimit := debt.terms.BorrowLimitOutsideElevationGroup
 	outsideUsed := debt.terms.BorrowedAmountOutsideElevationGroup
-	if outsideUsed >= outsideLimit || debt.borrowedRaw >= debt.borrowLimitRaw {
+	if outsideUsed >= outsideLimit || debt.borrowedRaw >= debt.terms.BorrowLimit {
 		return 0, nil
 	}
 	utilization, err := utilizationBorrowHeadroomRaw(debt)
@@ -93,8 +94,8 @@ func kaminoDebtReserveRoom(debt decodedKaminoReserve, now int64) (uint64, error)
 		return 0, err
 	}
 	available := debt.terms.AvailableAmount
-	debtRoom := min(available, outsideLimit-outsideUsed, debt.borrowLimitRaw-debt.borrowedRaw, utilization, daily)
-	if debt.status != 0 || debt.emergencyMode {
+	debtRoom := min(available, outsideLimit-outsideUsed, debt.terms.BorrowLimit-debt.borrowedRaw, utilization, daily)
+	if debt.terms.Status != 0 || debt.terms.EmergencyMode {
 		return 0, nil
 	}
 	return min(debtRoom, math.MaxInt64), nil
@@ -214,15 +215,15 @@ func applyBorrowCapacity(s *Snapshot, p KaminoPosition, accounts []ConfirmedAcco
 		return
 	}
 	reference, config := route.Kamino.DebtReserve, route.Kamino
-	if route.Kamino.DebtMint != bridgeUSDC {
+	if route.Kamino.DebtMint != fleet.USDCMint {
 		config = usdcReference
 		reference = config.DebtReserve
 	}
-	usdc, err := decodeKaminoReserve(accountAt(accounts, reference), bridgeUSDC, config)
-	if err != nil || usdc.mintDecimals != 6 || littleInt(usdc.marketPriceSF[:]).Sign() <= 0 {
+	usdc, err := decodeKaminoReserve(accountAt(accounts, reference), fleet.USDCMint, config)
+	if err != nil || usdc.mintDecimals != 6 || littleInt(usdc.terms.MarketPriceSF[:]).Sign() <= 0 {
 		return
 	}
-	s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, s.BorrowDebtDecimals = p.DebtPriceSF, usdc.marketPriceSF, p.DebtDecimals
+	s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF, s.BorrowDebtDecimals = p.DebtPriceSF, usdc.terms.MarketPriceSF, p.DebtDecimals
 	s.BorrowFeeRate = debtReserve.terms.BorrowFeeSF
 	s.BorrowCapacityKnown, s.AdditionalDebtRoomRaw = true, room
 	s.LeverageBorrowRaw, s.LeverageDesiredRaw = borrow, desired
@@ -270,7 +271,7 @@ func capacityBorrowBoundUSDC(s Snapshot, amount uint64, liability bool) (uint64,
 	}
 	token, usdc := s.BorrowDebtPriceSF, s.BorrowUSDCPriceSF
 	var err error
-	if l.route.Kamino.DebtMint != bridgeUSDC {
+	if l.route.Kamino.DebtMint != fleet.USDCMint {
 		if liability {
 			token, err = UpperPriceMargin(token, valuationMarginBPS)
 			if err != nil {

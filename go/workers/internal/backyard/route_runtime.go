@@ -1,5 +1,7 @@
 package backyard
 
+import "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
+
 type RuntimeRoute struct {
 	Lane                      string
 	Protocol                  string
@@ -23,5 +25,5 @@ type RuntimeRoute struct {
 
 func sharedUSDCDebt(lane string) bool {
 	l, ok := findEarnLane(lane)
-	return ok && l.route.Kamino.DebtMint == bridgeUSDC && l.route.DebtTokenProgram == classicTokenProgram
+	return ok && l.route.Kamino.DebtMint == fleet.USDCMint && l.route.DebtTokenProgram == classicTokenProgram
 }

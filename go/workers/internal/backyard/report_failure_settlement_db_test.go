@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
@@ -64,7 +65,7 @@ func TestLoopingWithdrawRefusedByVoltrSettlesFailed(t *testing.T) {
 	var tokens []json.RawMessage
 	for i, k := range keys {
 		if owner := owners[encodeBase58(k[:])]; owner != "" {
-			row, _ := json.Marshal(map[string]any{"accountIndex": i, "mint": bridgeUSDC, "owner": owner, "programId": bridgeTokenProgram,
+			row, _ := json.Marshal(map[string]any{"accountIndex": i, "mint": fleet.USDCMint, "owner": owner, "programId": bridgeTokenProgram,
 				"uiTokenAmount": map[string]any{"amount": "25000000", "decimals": 6}})
 			tokens = append(tokens, row)
 		}

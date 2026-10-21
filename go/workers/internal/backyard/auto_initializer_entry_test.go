@@ -10,7 +10,7 @@ import (
 // entryQuoteFixture is a selector ENTER quote into lane: the shape target()
 // reads from the selector's latest result.
 func entryQuoteFixture(now time.Time, lane string, amount int64) MoveQuote {
-	return parBorrow(MoveQuote{MinimumIdleRaw: uint64(amount), BorrowReceiveRaw: uint64(amount / 2), SourceLane: SelectedRouteID, DestinationLane: lane, ObservationID: "quoted-source", EquityRaw: amount, CostRaw: 1, ObservedAt: now.Add(-time.Second), EvidenceID: sha256Bytes([]byte("complete-recipe")), SampleSlot: 42, ValidThroughSlot: 74})
+	return parBorrow(MoveQuote{MinimumIdleRaw: uint64(amount), BorrowReceiveRaw: uint64(amount / 2), SourceLane: MapleSyrupUSDCLaneID, DestinationLane: lane, ObservationID: "quoted-source", EquityRaw: amount, CostRaw: 1, ObservedAt: now.Add(-time.Second), EvidenceID: sha256Bytes([]byte("complete-recipe")), SampleSlot: 42, ValidThroughSlot: 74})
 }
 
 // parBorrow values q's up step at par: its liability is receive plus fee and

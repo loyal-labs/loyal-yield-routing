@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // leverageSpread is token yield minus the borrow APY at the utilization the
@@ -37,7 +39,7 @@ func levelDebtRaw(m LaneEconomics, level float64, equityRaw int64) (float64, boo
 		if !ok {
 			return 0, false
 		}
-		if l.route.Kamino.DebtMint != bridgeUSDC {
+		if l.route.Kamino.DebtMint != fleet.USDCMint {
 			if !finite(m.DebtRawPerUSDCRaw) || m.DebtRawPerUSDCRaw <= 0 {
 				return 0, false
 			}

@@ -132,7 +132,7 @@ func validateFinalizedFailureReceipt(receipt finalizedFailureReceipt, wire []byt
 // finalized receipt: when the receipt proves the persisted wire moved nothing
 // but its fee, the row ends `failed` with that proof and the next tick
 // re-observes. It reports false, changing nothing, when the receipt does not
-// prove it. delegate is the wire's signer: the pinned bridgeDelegate in
+// prove it. delegate is the wire's signer: the pinned backyardDelegate in
 // production.
 func (d *Database) settleFinalizedFailure(ctx context.Context, operation PersistedOperation, receipt finalizedFailureReceipt, reason string, delegate publicKey) (bool, error) {
 	if d == nil || d.pool == nil || operation.ID == "" || reason == "" || operation.Status != BroadcastIntent {

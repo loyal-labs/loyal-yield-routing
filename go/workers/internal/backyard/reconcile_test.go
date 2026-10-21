@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func TestConfirmedTransactionReconciliationUsesReceiptDeltasAndAdaptorReturn(t *testing.T) {
@@ -123,19 +125,19 @@ func TestReconciliationChecksEachAccountsTransactionDelta(t *testing.T) {
 	strategyAuth, strategyATA := bridgeStrategyAuth, bridgeStrategyATA
 	effects := func(idleBefore, idleAfter uint64) ExpectedEffects {
 		return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: []ExpectedAccountEffect{
-			{Address: bridgeIdleATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeIdleAuthority, BeforeRaw: idleBefore, AfterRaw: idleAfter},
-			{Address: strategyATA, Owner: classicTokenProgram, Mint: bridgeUSDC, Authority: strategyAuth, BeforeRaw: 0, AfterRaw: 0},
+			{Address: bridgeIdleATA, Owner: classicTokenProgram, Mint: fleet.USDCMint, Authority: bridgeIdleAuthority, BeforeRaw: idleBefore, AfterRaw: idleAfter},
+			{Address: strategyATA, Owner: classicTokenProgram, Mint: fleet.USDCMint, Authority: strategyAuth, BeforeRaw: 0, AfterRaw: 0},
 		}}
 	}
 	receipt := func(idlePre, idlePost, strategyPre, strategyPost uint64) ConfirmedTransactionEvidence {
 		return ConfirmedTransactionEvidence{Signature: "report", Slot: 450085751,
 			PreTokenBalances: []TransactionTokenBalance{
-				{Address: bridgeIdleATA, OwnerProgram: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeIdleAuthority, Raw: idlePre},
-				{Address: strategyATA, OwnerProgram: classicTokenProgram, Mint: bridgeUSDC, Authority: strategyAuth, Raw: strategyPre},
+				{Address: bridgeIdleATA, OwnerProgram: classicTokenProgram, Mint: fleet.USDCMint, Authority: bridgeIdleAuthority, Raw: idlePre},
+				{Address: strategyATA, OwnerProgram: classicTokenProgram, Mint: fleet.USDCMint, Authority: strategyAuth, Raw: strategyPre},
 			},
 			PostTokenBalances: []TransactionTokenBalance{
-				{Address: bridgeIdleATA, OwnerProgram: classicTokenProgram, Mint: bridgeUSDC, Authority: bridgeIdleAuthority, Raw: idlePost},
-				{Address: strategyATA, OwnerProgram: classicTokenProgram, Mint: bridgeUSDC, Authority: strategyAuth, Raw: strategyPost},
+				{Address: bridgeIdleATA, OwnerProgram: classicTokenProgram, Mint: fleet.USDCMint, Authority: bridgeIdleAuthority, Raw: idlePost},
+				{Address: strategyATA, OwnerProgram: classicTokenProgram, Mint: fleet.USDCMint, Authority: strategyAuth, Raw: strategyPost},
 			}}
 	}
 	// The incident: observed 95,387,976; a 5 USDC deposit landed first.

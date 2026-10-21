@@ -20,7 +20,7 @@ func TestRestorePersistedDecisionIncludesImmutableAmountAndReason(t *testing.T) 
 	if decision.AmountRaw != 896575 || decision.Reason != "withdrawal_repay_debt" || decision.StrategyKey != PrimeUSDCLaneID {
 		t.Fatalf("persisted decision was not restored exactly: %+v", decision)
 	}
-	if _, err := restorePersistedDecision(expected, DeleverRouteStep, "durable-key", SelectedRouteID); err == nil {
+	if _, err := restorePersistedDecision(expected, DeleverRouteStep, "durable-key", MapleSyrupUSDCLaneID); err == nil {
 		t.Fatal("strategy drift between the envelope and operation row was accepted")
 	}
 }

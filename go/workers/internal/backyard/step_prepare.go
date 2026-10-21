@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -215,7 +216,7 @@ func planDownStep(s Snapshot, d Decision, st stepState, repayRaw uint64) (downSt
 	if need = margined.Uint64(); need > st.collateralBalance {
 		need -= st.collateralBalance
 	}
-	receipts, err := payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.collateralMintSupply, need)
+	receipts, err := payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.terms.CollateralMintTotalSupply, need)
 	if err != nil {
 		return downStepPlan{}, err
 	}
@@ -286,7 +287,7 @@ func prepareStepFromTickObservation(ctx context.Context, rpc *chain.Client, view
 		scaled.Mul(scaled, big.NewInt(10_001)).Quo(scaled, new(big.Int).Mul(new(big.Int).SetUint64(guaranteed), big.NewInt(10_000)))
 		if scaled.IsUint64() && scaled.Uint64() > st.collateralBalance {
 			var more uint64
-			if more, err = payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.collateralMintSupply, scaled.Uint64()-st.collateralBalance); err == nil {
+			if more, err = payoffReceiptsForLiquidity(st.collateral.totalLiquiditySF, st.collateral.terms.CollateralMintTotalSupply, scaled.Uint64()-st.collateralBalance); err == nil {
 				limit, _ := st.stepWithdrawReceipts()
 				if more = min(more, limit, st.position.CollateralDepositedRaw-1); more > receipts {
 					liquidity, redeemErr := st.collateral.redeemLiquidityRaw(more)
@@ -326,7 +327,7 @@ func releaseLeg(ctx context.Context, rpc *chain.Client, view *View, client *jupi
 	if err != nil || receipts == 0 || liquidity == 0 {
 		return StepExecutionEvidence{}, 0, staleHoldFrom(err, "release_leg_unavailable")
 	}
-	if st.cash, err = vaultCustodyRaw(manifest.vault, accounts, manifest.vault.cash, bridgeUSDC, bridgeTokenProgram); err != nil {
+	if st.cash, err = vaultCustodyRaw(manifest.vault, accounts, manifest.vault.cash, fleet.USDCMint, bridgeTokenProgram); err != nil {
 		return StepExecutionEvidence{}, 0, err
 	}
 	evidence, _, err := assembleStep(ctx, rpc, view, client, manifest, policies, st, stepExit, receipts, liquidity+st.collateralBalance, s.Slot)
@@ -415,7 +416,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 			return StepExecutionEvidence{}, 0, err
 		}
 	}
-	if _, err := compileStepMessageForDelegate(v, request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileStepMessageForDelegate(v, request, mustKey(backyardDelegate)); err != nil {
 		return StepExecutionEvidence{}, 0, staleHoldFrom(err, "step_does_not_compile")
 	}
 	effect := func(custody, mint, program string, before, after uint64) ExpectedAccountEffect {
@@ -428,7 +429,7 @@ func assembleStep(ctx context.Context, rpc *chain.Client, view *View, client *ju
 		debt.AfterRaw = st.debtBalance - st.heldDebt()
 	}
 	if exit {
-		debt = effect(v.cash, bridgeUSDC, bridgeTokenProgram, st.cash, closeRaw)
+		debt = effect(v.cash, fleet.USDCMint, bridgeTokenProgram, st.cash, closeRaw)
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: stepEffects(up, collateral, debt)}, guaranteed, nil
 }
@@ -512,7 +513,7 @@ func assembleMove(ctx context.Context, rpc *chain.Client, manifest RouteManifest
 	}
 	closing.ObligationReserves = topology
 	request := StepRequest{Open: open, Close: &closing}
-	if _, err := compileStepMessageForDelegate(v, request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileStepMessageForDelegate(v, request, mustKey(backyardDelegate)); err != nil {
 		return StepExecutionEvidence{}, staleHoldFrom(err, "step_does_not_compile")
 	}
 	return StepExecutionEvidence{Request: request, ExpectedEffects: moveEffects(route, st.collateralBalance)}, nil

@@ -10,7 +10,7 @@ import (
 func selectorFixture() SelectorInput {
 	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
 	s := base()
-	s.RouteLane = SelectedRouteID
+	s.RouteLane = MapleSyrupUSDCLaneID
 	s.StrategyKey = s.RouteLane
 	s.VoltrIdleRaw = 1_000_000_000
 	s.TotalVaultNAVRaw = s.VoltrIdleRaw
@@ -247,7 +247,7 @@ func TestStagedRestoreFinishesAfterWithdrawalDemandChanges(t *testing.T) {
 	t.Parallel()
 	for _, demand := range []int64{0, 3} {
 		s := base()
-		s.RouteLane = SelectedRouteID
+		s.RouteLane = MapleSyrupUSDCLaneID
 		s.WithdrawalDemandRaw, s.VoltrIdleRaw = demand, 10
 		s.VoltrStrategyIdleRaw, s.StagedAmountRaw, s.StagedAmountKnown = 5, 5, true
 		s.PostMutationNAVRequired = true

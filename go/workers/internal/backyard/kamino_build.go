@@ -10,7 +10,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-type KaminoPrimeUSDCAccounts []struct {
+type KaminoLegAccounts []struct {
 	Address  string
 	Signer   bool
 	Writable bool
@@ -20,7 +20,7 @@ type KaminoLegRequest struct {
 	Action               Action
 	AmountRaw            uint64
 	Policy               string
-	Accounts             KaminoPrimeUSDCAccounts
+	Accounts             KaminoLegAccounts
 	Data                 []byte
 	RecentBlockhash      string
 	LastValidBlockHeight int64
@@ -60,10 +60,10 @@ const (
 	kaminoInstructions = "Sysvar1nstructions1111111111111111111111111"
 )
 
-type kaminoPrimeUSDCLeg byte
+type kaminoLeg byte
 
 const (
-	kaminoLegDeposit kaminoPrimeUSDCLeg = iota + 1
+	kaminoLegDeposit kaminoLeg = iota + 1
 	kaminoLegBorrow
 	kaminoLegRepay
 	kaminoLegWithdraw
@@ -101,7 +101,7 @@ func compileReviewedKaminoMessage(v *Vault, request KaminoLegRequest, delegate p
 // over request's topology) followed by the leg's Squads execute at its
 // policy constraint. KLend's check_refresh counts back from the top-level
 // execute, so the prefix must sit directly in front of it.
-func kaminoPolicyInstructions(v *Vault, request KaminoLegRequest, delegate publicKey, route RuntimeRoute) ([]compiledInstruction, kaminoPrimeUSDCLeg, error) {
+func kaminoPolicyInstructions(v *Vault, request KaminoLegRequest, delegate publicKey, route RuntimeRoute) ([]compiledInstruction, kaminoLeg, error) {
 	inner, leg, err := kaminoResolvedRouteInstruction(request, route)
 	if err != nil {
 		return nil, 0, err
@@ -134,7 +134,7 @@ func bytesEqual(left, right []byte) bool {
 	return true
 }
 
-func kaminoRouteInstruction(v *Vault, request KaminoLegRequest, lane string) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+func kaminoRouteInstruction(v *Vault, request KaminoLegRequest, lane string) (compiledInstruction, kaminoLeg, error) {
 	route, err := v.route(lane)
 	if err != nil {
 		return compiledInstruction{}, 0, err
@@ -142,7 +142,7 @@ func kaminoRouteInstruction(v *Vault, request KaminoLegRequest, lane string) (co
 	return kaminoResolvedRouteInstruction(request, route)
 }
 
-func kaminoResolvedRouteInstruction(request KaminoLegRequest, route RuntimeRoute) (compiledInstruction, kaminoPrimeUSDCLeg, error) {
+func kaminoResolvedRouteInstruction(request KaminoLegRequest, route RuntimeRoute) (compiledInstruction, kaminoLeg, error) {
 	lane := request.RouteLane
 	if lane == "" {
 		lane = route.Lane
@@ -171,7 +171,7 @@ func kaminoResolvedRouteInstruction(request KaminoLegRequest, route RuntimeRoute
 	return compiledInstruction{program: publicKey(kamino.ProgramID), accounts: accounts, data: append([]byte(nil), request.Data...)}, leg, nil
 }
 
-func matchesKaminoStepForResolvedRoute(action Action, discriminator []byte, accounts []accountMeta, route RuntimeRoute) (kaminoPrimeUSDCLeg, bool) {
+func matchesKaminoStepForResolvedRoute(action Action, discriminator []byte, accounts []accountMeta, route RuntimeRoute) (kaminoLeg, bool) {
 	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
 	switch action {
 	case OpenRouteStep:
@@ -204,12 +204,12 @@ func exactKaminoMetas(got, want []accountMeta) bool {
 	return true
 }
 
-func kaminoPrimeUSDCRefreshInstructionsForRoute(v *Vault, lane string) []compiledInstruction {
-	refresh, _ := kaminoPrimeUSDCRefreshInstructionsForRequest(v, KaminoLegRequest{RouteLane: lane})
+func kaminoRefreshInstructionsForRoute(v *Vault, lane string) []compiledInstruction {
+	refresh, _ := kaminoRefreshInstructionsForRequest(v, KaminoLegRequest{RouteLane: lane})
 	return refresh
 }
 
-func kaminoPrimeUSDCRefreshInstructionsForRequest(v *Vault, request KaminoLegRequest) ([]compiledInstruction, error) {
+func kaminoRefreshInstructionsForRequest(v *Vault, request KaminoLegRequest) ([]compiledInstruction, error) {
 	route, err := v.route(request.RouteLane)
 	if err != nil {
 		return nil, err

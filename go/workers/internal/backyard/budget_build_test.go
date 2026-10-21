@@ -30,7 +30,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 		t.Fatal(err)
 	}
 	sf := new(big.Int).Lsh(big.NewInt(1), 60)
-	usdc := reserveFixture(t, config.DebtReserve, bridgeUSDC, 42, sf, 1, 1)
+	usdc := reserveFixture(t, config.DebtReserve, fleet.USDCMint, 42, sf, 1, 1)
 	sol := reserveFixture(t, budgetSOLReserve, budgetWrappedSOLMint, 42, new(big.Int).Mul(sf, big.NewInt(100)), 1, 1)
 	putKey(t, sol.Data[32:64], fleet.KaminoMainMarket)
 	binary.LittleEndian.PutUint64(sol.Data[272:280], 9)
@@ -45,7 +45,7 @@ func budgetBuildRPCWithAccounts(t *testing.T, fee uint64, finalSlot int64, extra
 	clock := ConfirmedAccount{Address: budgetClockAddress, Owner: "Sysvar1111111111111111111111111111111111111", Lamports: 1, Data: make([]byte, 40)}
 	binary.LittleEndian.PutUint64(clock.Data[32:40], 1000)
 	accounts := map[string]ConfirmedAccount{}
-	for _, a := range []ConfirmedAccount{usdc, sol, mint(bridgeUSDC, 6), mint(budgetWrappedSOLMint, 9), clock} {
+	for _, a := range []ConfirmedAccount{usdc, sol, mint(fleet.USDCMint, 6), mint(budgetWrappedSOLMint, 9), clock} {
 		accounts[a.Address] = a
 	}
 	for _, a := range extra {

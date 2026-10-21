@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -120,7 +121,7 @@ func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	c := KaminoObservationConfig{
 		Program: kamino.ProgramID.String(), Market: primePRIMEUSDC.Kamino.Market, Obligation: backyardSettings,
 		CollateralReserve: primePRIMEUSDC.Kamino.CollateralReserve, DebtReserve: primePRIMEUSDC.Kamino.DebtReserve,
-		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: bridgeUSDC,
+		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: fleet.USDCMint,
 	}
 	reserve := make([]byte, kamino.ReserveSize)
 	copy(reserve[:8], kamino.ReserveDiscriminator[:])
@@ -135,7 +136,7 @@ func TestDecodeKaminoPrimeUSDCRejectsTopologyAndDecodesOracles(t *testing.T) {
 	oracle := bridgeVault
 	putKey(t, reserve[5224:5256], oracle)
 	decoded, err := decodeKaminoReserve(ConfirmedAccount{Address: c.CollateralReserve, Owner: c.Program, Lamports: 1, Data: reserve}, c.CollateralMint, c)
-	if err != nil || decoded.mintDecimals != 9 || decoded.utilizationLimitPct != 90 || len(uniqueNonzero(decoded.oracles)) != 1 || uniqueNonzero(decoded.oracles)[0] != oracle {
+	if err != nil || decoded.mintDecimals != 9 || decoded.terms.UtilizationLimitBlockBorrowingAbovePct != 90 || len(uniqueNonzero(decoded.oracles)) != 1 || uniqueNonzero(decoded.oracles)[0] != oracle {
 		t.Fatalf("decoded=%+v err=%v", decoded, err)
 	}
 	reserve[128] ^= 1
@@ -149,7 +150,7 @@ func TestKaminoObligationAcceptsTheFourLifecycleStates(t *testing.T) {
 	c := KaminoObservationConfig{
 		Program: kamino.ProgramID.String(), Market: primePRIMEUSDC.Kamino.Market, Obligation: backyardSettings,
 		CollateralReserve: primePRIMEUSDC.Kamino.CollateralReserve, DebtReserve: primePRIMEUSDC.Kamino.DebtReserve,
-		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: bridgeUSDC,
+		Vault: bridgeVault, CollateralMint: primePRIMEUSDC.Kamino.CollateralMint, DebtMint: fleet.USDCMint,
 	}
 	data := make([]byte, kamino.ObligationSize)
 	copy(data[:8], kamino.ObligationDiscriminator[:])
@@ -176,7 +177,7 @@ func TestKaminoObligationAcceptsTheFourLifecycleStates(t *testing.T) {
 
 func TestKaminoCollateralExchangeRateUsesExactScaledFractionFloor(t *testing.T) {
 	t.Parallel()
-	reserve := decodedKaminoReserve{totalLiquiditySF: new(big.Int).Lsh(big.NewInt(120), 60), collateralMintSupply: 100}
+	reserve := decodedKaminoReserve{totalLiquiditySF: new(big.Int).Lsh(big.NewInt(120), 60), terms: kamino.Reserve{CollateralMintTotalSupply: 100}}
 	got, err := reserve.redeemLiquidityRaw(25)
 	if err != nil || got != 30 {
 		t.Fatalf("redeemable=%d err=%v", got, err)
@@ -190,20 +191,18 @@ func TestKaminoEntryCapacityBoundsOneRedepositAndBorrowHeadroom(t *testing.T) {
 	putScaledFraction(price[:], one)
 	collateral := decodedKaminoReserve{
 		totalLiquiditySF: new(big.Int).Lsh(big.NewInt(100), 60),
-		depositLimitRaw:  250,
-		marketPriceSF:    price,
+		terms:            kamino.Reserve{DepositLimit: 250, MarketPriceSF: price},
 	}
 	debt := decodedKaminoReserve{
-		borrowedRaw:    20,
-		borrowLimitRaw: 70,
-		marketPriceSF:  price,
+		borrowedRaw: 20,
+		terms:       kamino.Reserve{BorrowLimit: 70, MarketPriceSF: price},
 	}
 	// Collateral permits an initial 100 (150 * 2/3); debt permits 100
 	// (50 * 2), so the reviewed exact bound is 100.
 	if got, err := entryCapacityDebtRaw(collateral, debt); err != nil || got != 100 {
 		t.Fatalf("capacity=%d err=%v", got, err)
 	}
-	debt.borrowLimitRaw = 60
+	debt.terms.BorrowLimit = 60
 	if got, err := entryCapacityDebtRaw(collateral, debt); err != nil || got != 80 {
 		t.Fatalf("debt-limited capacity=%d err=%v", got, err)
 	}
@@ -217,7 +216,7 @@ func TestKaminoUtilizationGateCapsEntryAndBlocksBorrowAtBoundary(t *testing.T) {
 	borrowed.Quo(borrowed, big.NewInt(100))
 	debt := decodedKaminoReserve{
 		totalLiquiditySF: total, borrowedLiquiditySF: borrowed,
-		borrowedRaw: 94, borrowLimitRaw: 1_000, utilizationLimitPct: 90,
+		borrowedRaw: 94, terms: kamino.Reserve{BorrowLimit: 1_000, UtilizationLimitBlockBorrowingAbovePct: 90},
 	}
 	if blocked, err := borrowingBlockedByUtilization(debt); err != nil || !blocked {
 		t.Fatalf("93.68%% utilization was not blocked by the 90%% gate: blocked=%t err=%v", blocked, err)
@@ -232,9 +231,9 @@ func TestKaminoUtilizationGateCapsEntryAndBlocksBorrowAtBoundary(t *testing.T) {
 	putScaledFraction(price[:], one)
 	collateral := decodedKaminoReserve{
 		totalLiquiditySF: new(big.Int).Mul(new(big.Int).Set(one), big.NewInt(100)),
-		depositLimitRaw:  250, marketPriceSF: price,
+		terms:            kamino.Reserve{DepositLimit: 250, MarketPriceSF: price},
 	}
-	debt.marketPriceSF = price
+	debt.terms.MarketPriceSF = price
 	if capacity, err := entryCapacityDebtRaw(collateral, debt); err != nil || capacity != 18 {
 		t.Fatalf("entry capacity did not include utilization headroom: capacity=%d err=%v", capacity, err)
 	}

@@ -3,6 +3,8 @@ package backyard
 import (
 	"fmt"
 	"slices"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func containsLane(lanes []string, lane string) bool {
@@ -75,7 +77,7 @@ func navLanes(v *Vault, accounts []ConfirmedAccount, held []string) ([]string, e
 	}
 	lanes := append([]string(nil), held...)
 	for _, r := range v.routes {
-		if r.Kamino.DebtMint == bridgeUSDC || named[r.DebtCustody] || accountAt(accounts, r.DebtCustody).Address != r.DebtCustody {
+		if r.Kamino.DebtMint == fleet.USDCMint || named[r.DebtCustody] || accountAt(accounts, r.DebtCustody).Address != r.DebtCustody {
 			continue
 		}
 		named[r.DebtCustody] = true

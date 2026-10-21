@@ -132,11 +132,11 @@ func TestPhase3DepositRoundingMatchesProduction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if post.collateralMintSupply-pre.collateralMintSupply != probe.ReceiptRaw {
+		if post.terms.CollateralMintTotalSupply-pre.terms.CollateralMintTotalSupply != probe.ReceiptRaw {
 			t.Fatal("minted receipt mismatch")
 		}
 		refreshed := new(big.Int).Sub(post.totalLiquiditySF, new(big.Int).Lsh(new(big.Int).SetUint64(probe.ActualDebitRaw), 60))
-		n := new(big.Int).Lsh(new(big.Int).Mul(new(big.Int).SetUint64(r.AmountRaw), new(big.Int).SetUint64(pre.collateralMintSupply)), 60)
+		n := new(big.Int).Lsh(new(big.Int).Mul(new(big.Int).SetUint64(r.AmountRaw), new(big.Int).SetUint64(pre.terms.CollateralMintTotalSupply)), 60)
 		if n.Quo(n, refreshed).Uint64() != probe.ReceiptRaw {
 			t.Fatal("deployed receipt rounding differs from refreshed-rate equation")
 		}

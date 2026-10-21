@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -147,9 +148,9 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 	accounts := []ConfirmedAccount{
 		exactAdaptorConfigAccount(t),
 		strategyReceiptFixture(t, 42),
-		tokenAccountFixture(t, bridgeIdleATA, bridgeUSDC, bridgeIdleAuthority, 11),
-		tokenAccountFixture(t, bridgeStrategyATA, bridgeUSDC, bridgeStrategyAuth, 0),
-		tokenAccountFixture(t, bridgeSquadsATA, bridgeUSDC, bridgeVault, 6),
+		tokenAccountFixture(t, bridgeIdleATA, fleet.USDCMint, bridgeIdleAuthority, 11),
+		tokenAccountFixture(t, bridgeStrategyATA, fleet.USDCMint, bridgeStrategyAuth, 0),
+		tokenAccountFixture(t, bridgeSquadsATA, fleet.USDCMint, bridgeVault, 6),
 		voltrVaultFixture(t, 53),
 		voltrLPMintFixture(t, 1_000),
 		exactReportTicketAccount(t, 4),
@@ -158,12 +159,12 @@ func autoObservationBatch(t *testing.T, slot int64, mutate func([]ConfirmedAccou
 		{Address: primePRIMEUSDC.Kamino.CollateralMint, Owner: kamino.ProgramID.String(), Lamports: 1, Data: []byte{1}},
 		// Legacy PRIME/USDC identities the candidate batch still requests.
 		kaminoReserveImage(t, primePRIMEUSDC.Kamino.Market, primePRIMEUSDC.Kamino.CollateralReserve, primePRIMEUSDC.Kamino.CollateralMint, slot, oneAndHalf, 200, 0, 100, 6),
-		kaminoReserveImage(t, primePRIMEUSDC.Kamino.Market, primePRIMEUSDC.Kamino.DebtReserve, bridgeUSDC, slot, peg, 100, 0, 100, 6),
+		kaminoReserveImage(t, primePRIMEUSDC.Kamino.Market, primePRIMEUSDC.Kamino.DebtReserve, fleet.USDCMint, slot, peg, 100, 0, 100, 6),
 		marketFixture(t, primePRIMEUSDC.Kamino.Market),
 		tokenAccountFixture(t, primePRIMEUSDC.CollateralCustody, primePRIMEUSDC.Kamino.CollateralMint, bridgeVault, 0),
 		obligationFixture(t, slot, 0, 0),
 		tokenAccountFixture(t, primePRIMEUSDC.CollateralLiquiditySupply, primePRIMEUSDC.Kamino.CollateralMint, primePRIMEUSDC.Kamino.MarketAuthority, 200),
-		tokenAccountFixture(t, primePRIMEUSDC.DebtLiquiditySupply, bridgeUSDC, primePRIMEUSDC.Kamino.MarketAuthority, 100),
+		tokenAccountFixture(t, primePRIMEUSDC.DebtLiquiditySupply, fleet.USDCMint, primePRIMEUSDC.Kamino.MarketAuthority, 100),
 		// The candidate AUTO protocol identities themselves.
 		kaminoReserveImage(t, route.Kamino.Market, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, slot, oneAndHalf,
 			autoFixturePoolLiquidity, 0, autoFixturePoolReceiptSupply, 9),

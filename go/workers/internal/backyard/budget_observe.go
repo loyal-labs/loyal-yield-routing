@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"math"
 	"strconv"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 const budgetClockAddress = "SysvarC1ock11111111111111111111111111111111"
@@ -26,7 +28,7 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 	if err != nil {
 		return BudgetPrice{}, err
 	}
-	usdc, err := decodeKaminoReserve(referenceAccount, bridgeUSDC, reference)
+	usdc, err := decodeKaminoReserve(referenceAccount, fleet.USDCMint, reference)
 	if err != nil {
 		return BudgetPrice{}, err
 	}
@@ -37,15 +39,15 @@ func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, ref
 		}
 	}
 	mint := accountAt(accounts, tokenMint)
-	usdcMint := accountAt(accounts, bridgeUSDC)
+	usdcMint := accountAt(accounts, fleet.USDCMint)
 	if err := validateExecutionMint(mint, tokenProgram, token.mintDecimals); err != nil {
 		return BudgetPrice{}, err
 	}
 	if validateExecutionMint(usdcMint, classicTokenProgram, 6) != nil || usdc.mintDecimals != 6 {
 		return BudgetPrice{}, staleHold("usdc_reference_metadata_mismatch")
 	}
-	upper, lower := token.marketPriceSF, usdc.marketPriceSF
-	if tokenMint != bridgeUSDC {
+	upper, lower := token.terms.MarketPriceSF, usdc.terms.MarketPriceSF
+	if tokenMint != fleet.USDCMint {
 		upper, err = UpperPriceMargin(upper, valuationMarginBPS)
 		if err != nil {
 			return BudgetPrice{}, err

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // multiLaneFixture is the coherent AUTO candidate batch: every other registry lane joins with an absent obligation and empty
@@ -40,7 +42,7 @@ func withFlatLanes(t *testing.T, accounts *[]ConfirmedAccount) {
 			custody.Owner = route.CollateralTokenProgram
 			upsertConfirmedAccount(accounts, custody)
 		}
-		if route.Kamino.DebtMint != bridgeUSDC && accountAt(*accounts, route.DebtCustody).Address == "" {
+		if route.Kamino.DebtMint != fleet.USDCMint && accountAt(*accounts, route.DebtCustody).Address == "" {
 			custody := tokenAccountFixture(t, route.DebtCustody, route.Kamino.DebtMint, bridgeVault, 0)
 			custody.Owner = route.DebtTokenProgram
 			upsertConfirmedAccount(accounts, custody)

@@ -97,7 +97,7 @@ func coherentFeeSelectorFixture(t *testing.T, wealth, supply uint64, hwm *big.In
 		if err := applyRouteNAVSnapshot(s, nav, in.Now); err != nil {
 			t.Fatal(err)
 		}
-		s.RouteLane, s.StrategyKey = SelectedRouteID, SelectedRouteID
+		s.RouteLane, s.StrategyKey = MapleSyrupUSDCLaneID, MapleSyrupUSDCLaneID
 		s.VoltrIdleRaw, s.StrategyNAVRaw, s.JournalArmedNAVRaw = int64(wealth), 0, 0
 		s.SquadsIdleRaw, s.CollateralIdleRaw = 0, 0
 		s.LastReportAgeSeconds = 0

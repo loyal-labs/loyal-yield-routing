@@ -20,9 +20,9 @@ func obligationEntryStates() []struct {
 		seed     func(Snapshot) Snapshot
 		expected Action
 	}{
-		{"selected allocates voltr idle", SelectedRouteID, func(s Snapshot) Snapshot { s.VoltrIdleRaw = 4; return s }, VoltrAllocateToSquads},
-		{"selected swaps usdc for collateral", SelectedRouteID, func(s Snapshot) Snapshot { s.SquadsIdleRaw = 4; return s }, SwapStableToCollateralStep},
-		{"selected deposits collateral", SelectedRouteID, func(s Snapshot) Snapshot { s.CollateralIdleRaw = 4_000; return s }, OpenRouteStep},
+		{"selected allocates voltr idle", MapleSyrupUSDCLaneID, func(s Snapshot) Snapshot { s.VoltrIdleRaw = 4; return s }, VoltrAllocateToSquads},
+		{"selected swaps usdc for collateral", MapleSyrupUSDCLaneID, func(s Snapshot) Snapshot { s.SquadsIdleRaw = 4; return s }, SwapStableToCollateralStep},
+		{"selected deposits collateral", MapleSyrupUSDCLaneID, func(s Snapshot) Snapshot { s.CollateralIdleRaw = 4_000; return s }, OpenRouteStep},
 		{"non usdc swaps usdc for collateral", autoAUTOPYUSD.Lane, func(s Snapshot) Snapshot { s.SquadsIdleRaw = 4; return s }, SwapStableToCollateralStep},
 		{"non usdc allocates voltr idle", autoAUTOPYUSD.Lane, func(s Snapshot) Snapshot { s.VoltrIdleRaw = 4; return s }, VoltrAllocateToSquads},
 	}

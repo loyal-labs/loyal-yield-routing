@@ -50,7 +50,7 @@ func roomOf(w roomWatch, account ConfirmedAccount, now int64) (room uint64, usd 
 }
 
 func reserveUSD(raw uint64, r decodedKaminoReserve) float64 {
-	price := littleInt(r.marketPriceSF[:])
+	price := littleInt(r.terms.MarketPriceSF[:])
 	if price.Sign() <= 0 {
 		return math.NaN()
 	}

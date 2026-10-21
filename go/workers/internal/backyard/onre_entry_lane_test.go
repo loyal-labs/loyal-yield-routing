@@ -10,7 +10,7 @@ import (
 // without a manifest gate); the exit-only Ethena lane is not.
 func TestEveryActiveRegistryLaneEntersUnderTheUnchangedSelectorRule(t *testing.T) {
 	t.Parallel()
-	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PrimeUSDCLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, autoAUTOWYLDSLane}
+	want := []string{MapleSyrupUSDCLaneID, onreONycUSDC, autoAUTOPYUSD.Lane, PrimeUSDCLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, autoAUTOWYLDSLane}
 	got := earnLaneIDs(false)
 	if len(got) != len(want) {
 		t.Fatalf("active registry %v, want %v", got, want)

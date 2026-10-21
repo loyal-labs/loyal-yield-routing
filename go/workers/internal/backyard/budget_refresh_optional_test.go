@@ -28,7 +28,7 @@ func TestSimulatedReserveRefreshOptionalCapturePreservesPinnedAbsence(t *testing
 		}
 		switch payload.Method {
 		case "getLatestBlockhash":
-			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":41},"value":{"blockhash":"` + bridgeDelegate + `","lastValidBlockHeight":100}}}`), nil
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":41},"value":{"blockhash":"` + backyardDelegate + `","lastValidBlockHeight":100}}}`), nil
 		case "simulateTransaction":
 			populated := `{"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","lamports":9,"data":["AQ==","base64"],"executable":false}`
 			body := `{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":43},"value":{"err":null,"accounts":[null,` + populated + `,null]}}}`
@@ -78,7 +78,7 @@ func TestSimulatedReserveRefreshCaptureStaysFailClosed(t *testing.T) {
 				}
 				switch payload.Method {
 				case "getLatestBlockhash":
-					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":41},"value":{"blockhash":"` + bridgeDelegate + `","lastValidBlockHeight":100}}}`), nil
+					return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":41},"value":{"blockhash":"` + backyardDelegate + `","lastValidBlockHeight":100}}}`), nil
 				case "simulateTransaction":
 					populated := `{"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","lamports":9,"data":["AQ==","base64"],"executable":false}`
 					values := []string{populated, populated}
@@ -120,7 +120,7 @@ func TestSimulatedReserveRefreshMessageCarriesCaptureAccounts(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		if payload.Method == "getLatestBlockhash" {
-			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":41},"value":{"blockhash":"` + bridgeDelegate + `","lastValidBlockHeight":100}}}`), nil
+			return response(`{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":41},"value":{"blockhash":"` + backyardDelegate + `","lastValidBlockHeight":100}}}`), nil
 		}
 		if payload.Method != "simulateTransaction" {
 			t.Fatalf("unexpected RPC method %q", payload.Method)

@@ -27,7 +27,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	route, err := runtimeRoute(SelectedRouteID)
+	route, err := runtimeRoute(MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal("selected route absent")
 	}
@@ -44,7 +44,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	amount, err := valueBetweenTokenRaw(15_000_000, debt.mintDecimals, collateral.mintDecimals, debt.marketPriceSF, collateral.marketPriceSF, false)
+	amount, err := valueBetweenTokenRaw(15_000_000, debt.mintDecimals, collateral.mintDecimals, debt.terms.MarketPriceSF, collateral.terms.MarketPriceSF, false)
 	if err != nil || amount == 0 {
 		t.Fatal("collateral sizing unavailable", err)
 	}
@@ -57,7 +57,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	rows := []any{}
 	for _, step := range []struct {
 		name   string
-		leg    kaminoPrimeUSDCLeg
+		leg    kaminoLeg
 		action Action
 		amount uint64
 	}{
@@ -92,7 +92,7 @@ func TestExportSelectorProtocolPosition(t *testing.T) {
 	sort.Strings(keys)
 	output, err := json.MarshalIndent(map[string]any{"schema": "selector-kamino-position-probe/v1", "broadcast": false, "signatureProof": false,
 		"lane": route.Lane, "sizingSlot": slot, "sizingAccountsSHA256": hashConfirmedAccounts(accounts), "collateralSeedRaw": amount,
-		"debtSeedRaw": 100_000, "vault": bridgeVault, "delegate": bridgeDelegate, "obligation": route.Kamino.Obligation,
+		"debtSeedRaw": 100_000, "vault": bridgeVault, "delegate": backyardDelegate, "obligation": route.Kamino.Obligation,
 		"collateralCustody": route.CollateralCustody, "debtCustody": route.DebtCustody, "addresses": keys, "policies": policies, "steps": rows}, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -138,18 +138,18 @@ func TestSelectorProtocolMessagesMatchCurrentCompiler(t *testing.T) {
 		Steps []record
 	}
 	data, err := os.ReadFile(dir + "/plan.json")
-	if err != nil || json.Unmarshal(data, &plan) != nil || plan.Lane != SelectedRouteID || len(plan.Steps) != 4 {
+	if err != nil || json.Unmarshal(data, &plan) != nil || plan.Lane != MapleSyrupUSDCLaneID || len(plan.Steps) != 4 {
 		t.Fatal("invalid retained position plan", err)
 	}
 	for _, r := range plan.Steps {
-		if r.Request.RouteLane != SelectedRouteID {
+		if r.Request.RouteLane != MapleSyrupUSDCLaneID {
 			t.Fatal("unexpected lane")
 		}
 		verify(r)
 	}
 	if data, err = os.ReadFile(dir + "/partial-plan.json"); err == nil {
 		var partial record
-		if json.Unmarshal(data, &partial) != nil || partial.Request.RouteLane != SelectedRouteID || partial.Request.Action != DeleverRouteStep || partial.Request.AmountRaw != 1_000_000 {
+		if json.Unmarshal(data, &partial) != nil || partial.Request.RouteLane != MapleSyrupUSDCLaneID || partial.Request.Action != DeleverRouteStep || partial.Request.AmountRaw != 1_000_000 {
 			t.Fatal("partial repayment mode drift")
 		}
 		_, leg, err := kaminoPrimeUSDCInstruction(partial.Request)

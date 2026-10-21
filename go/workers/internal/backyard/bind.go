@@ -5,7 +5,7 @@ import (
 )
 
 func compileRequest(m RouteManifest, request any) (message []byte, blockhash string, height int64, err error) {
-	delegate, v := mustKey(bridgeDelegate), m.vault
+	delegate, v := mustKey(backyardDelegate), m.vault
 	switch r := request.(type) {
 	case BridgeBuildRequest:
 		message, err = compileBridgeMessageForDelegate(v, r, delegate)

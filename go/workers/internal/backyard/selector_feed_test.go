@@ -9,11 +9,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func nativeFixture(t *testing.T) (RuntimeRoute, time.Time, string) {
 	t.Helper()
-	r, _ := runtimeRoute(SelectedRouteID)
+	r, _ := runtimeRoute(MapleSyrupUSDCLaneID)
 	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
 	return r, now, `{"` + r.Kamino.CollateralReserve + `":{"token":"` + r.Kamino.CollateralMint + `","underlyingApy":{"current":"0.04965083163","sourceType":"yield-feed","sourceMint":"` + r.Kamino.CollateralMint + `","observedAt":"2026-09-15T23:00:13.804Z"},"borrowCaps":{"globalDebt":{"capacity":"0"}},"actualAvailableLiquidityUsd":"0"}}`
 }
@@ -86,7 +88,7 @@ func TestReserveFeedKeepsIdentityAndDoesNotInventPairCapacity(t *testing.T) {
 	c := reserveEconomics{Reserve: r.Kamino.CollateralReserve, Market: r.Kamino.Market, Mint: r.Kamino.CollateralMint, ObservedAt: now, Slot: 42, Hash: strings.Repeat("a", 64), SupplyAPY: f.SupplyAPY}
 	d := c
 	d.Reserve = r.Kamino.DebtReserve
-	d.Mint = bridgeUSDC
+	d.Mint = fleet.USDCMint
 	d.SupplyRaw = supply
 	d.BorrowRaw = borrow
 	d.HostBPS = f.HostBorrowBPS
@@ -129,19 +131,19 @@ func TestSelectorObservesPriorCustodyAndHoldsEveryExposedLane(t *testing.T) {
 			accounts[i] = tokenAccountFixture(t, source.CollateralCustody, source.Kamino.CollateralMint, bridgeVault, 1)
 		}
 	}
-	got, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), SelectedRouteID)
+	got, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), MapleSyrupUSDCLaneID)
 	if err != nil || strings.Join(got, ",") != source.Lane {
 		t.Fatalf("old custody hidden: %v %v", got, err)
 	}
-	other, _ := runtimeRoute(SelectedRouteID)
+	other, _ := runtimeRoute(MapleSyrupUSDCLaneID)
 	for i := range accounts {
 		if accounts[i].Address == other.CollateralCustody {
 			accounts[i] = tokenAccountFixture(t, other.CollateralCustody, other.Kamino.CollateralMint, bridgeVault, 1)
 		}
 	}
 	// Two exposed lanes are one held set, never silently reduced to one.
-	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), SelectedRouteID)
-	if err != nil || strings.Join(held, ",") != SelectedRouteID+","+source.Lane {
+	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), MapleSyrupUSDCLaneID)
+	if err != nil || strings.Join(held, ",") != MapleSyrupUSDCLaneID+","+source.Lane {
 		t.Fatalf("two exposed lanes: held %v err %v", held, err)
 	}
 }
@@ -156,7 +158,7 @@ func TestEconomicFeedInventoryIsTheActiveRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane, PrimeUSDCLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, autoAUTOWYLDSLane}
+	want := []string{MapleSyrupUSDCLaneID, onreONycUSDC, autoAUTOPYUSD.Lane, PrimeUSDCLaneID, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, autoAUTOWYLDSLane}
 	if len(feed.routes) != len(want) {
 		t.Fatalf("feed inventory size %d, want %d", len(feed.routes), len(want))
 	}
@@ -214,7 +216,7 @@ func TestCombineEconomicsProducesCandidateRouteEconomics(t *testing.T) {
 	// The debt identity is the route's OWN debt mint: a USDC-minted debt row
 	// for the AUTO debt reserve is an identity mismatch and is refused.
 	wrong := debt
-	wrong.Mint = bridgeUSDC
+	wrong.Mint = fleet.USDCMint
 	rows[debt.Reserve] = wrong
 	if len(combineEconomics([]RuntimeRoute{auto}, rows, native, nil, now, DefaultSelectorPolicy())) != 0 {
 		t.Fatal("candidate debt identity mismatch accepted")

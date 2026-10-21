@@ -8,6 +8,7 @@ import (
 	"math"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
@@ -100,8 +101,8 @@ func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrice
 		return lanePrices{}, err
 	}
 	usdc := debt
-	if route.Kamino.DebtMint != bridgeUSDC {
-		if usdc, err = decodeKaminoReserve(accountAt(accounts, usdcReference.DebtReserve), bridgeUSDC, usdcReference); err != nil {
+	if route.Kamino.DebtMint != fleet.USDCMint {
+		if usdc, err = decodeKaminoReserve(accountAt(accounts, usdcReference.DebtReserve), fleet.USDCMint, usdcReference); err != nil {
 			return lanePrices{}, err
 		}
 	}
@@ -111,7 +112,7 @@ func batchLanePrices(accounts []ConfirmedAccount, route RuntimeRoute) (lanePrice
 	if err := validateKaminoOracleAge(clockUnixTimestamp(accounts), collateral, debt, usdc); err != nil {
 		return lanePrices{}, err
 	}
-	return lanePrices{collateral: collateral.marketPriceSF, debt: debt.marketPriceSF, usdc: usdc.marketPriceSF,
+	return lanePrices{collateral: collateral.terms.MarketPriceSF, debt: debt.terms.MarketPriceSF, usdc: usdc.terms.MarketPriceSF,
 		collateralDecimals: collateral.mintDecimals, debtDecimals: debt.mintDecimals, debtBorrowFeeSF: debt.terms.BorrowFeeSF}, nil
 }
 
@@ -170,7 +171,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		return leverageStepCost{}, costOutage(stepStage(stageEntryQuote, err), err)
 	}
 	bought := conversionQuotedOutput(up.Request)
-	receipts, err := payoffReceiptsForLiquidity(collateral.totalLiquiditySF, collateral.collateralMintSupply, bought)
+	receipts, err := payoffReceiptsForLiquidity(collateral.totalLiquiditySF, collateral.terms.CollateralMintTotalSupply, bought)
 	if err != nil {
 		return leverageStepCost{}, costOutage(stageExitQuote, err)
 	}
@@ -196,7 +197,7 @@ func (p lanePricer) priceStep(ctx context.Context, accounts []ConfirmedAccount, 
 		}
 	}
 	for _, step := range []StepRequest{up.Request, down.Request} {
-		message, err := compileStepMessageForDelegate(p.manifest.vault, step, mustKey(bridgeDelegate))
+		message, err := compileStepMessageForDelegate(p.manifest.vault, step, mustKey(backyardDelegate))
 		if err != nil {
 			return leverageStepCost{}, costOutage(stageNetworkFee, err)
 		}
@@ -410,7 +411,7 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	if err != nil {
 		return q, err
 	}
-	receipts, err := payoffReceiptsForLiquidity(reserve.totalLiquiditySF, reserve.collateralMintSupply, bought)
+	receipts, err := payoffReceiptsForLiquidity(reserve.totalLiquiditySF, reserve.terms.CollateralMintTotalSupply, bought)
 	if err != nil {
 		return q, err
 	}
@@ -432,13 +433,13 @@ func (p lanePricer) priceMove(ctx context.Context, o Observation, source *Snapsh
 	}
 	for _, compile := range []func() ([]byte, error){
 		func() ([]byte, error) {
-			return compileJupiterMessageForDelegate(p.manifest.vault, entry.Request, mustKey(bridgeDelegate))
+			return compileJupiterMessageForDelegate(p.manifest.vault, entry.Request, mustKey(backyardDelegate))
 		},
 		func() ([]byte, error) {
-			return compileKaminoMessageForDelegate(p.manifest.vault, deposit, mustKey(bridgeDelegate))
+			return compileKaminoMessageForDelegate(p.manifest.vault, deposit, mustKey(backyardDelegate))
 		},
 		func() ([]byte, error) {
-			return compileStepMessageForDelegate(p.manifest.vault, exit.Request, mustKey(bridgeDelegate))
+			return compileStepMessageForDelegate(p.manifest.vault, exit.Request, mustKey(backyardDelegate))
 		},
 	} {
 		message, err := compile()
@@ -616,7 +617,7 @@ func (p lanePricer) releaseNetworkMicros(ctx context.Context, o Observation, sou
 	steps = append(steps, step.Request)
 	var total usdMicros
 	for _, request := range steps {
-		message, err := compileStepMessageForDelegate(p.manifest.vault, request, mustKey(bridgeDelegate))
+		message, err := compileStepMessageForDelegate(p.manifest.vault, request, mustKey(backyardDelegate))
 		if err != nil {
 			return 0, err
 		}

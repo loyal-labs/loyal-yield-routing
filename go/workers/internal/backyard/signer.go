@@ -20,7 +20,7 @@ func (c Credentials) signer() (ed25519.PrivateKey, error) {
 	if !key.Public().(ed25519.PublicKey).Equal(c.key.Public()) {
 		return nil, fmt.Errorf("Backyard signing capability public half does not match seed")
 	}
-	if publicKeyFromBytes(key.Public().(ed25519.PublicKey)) != mustKey(bridgeDelegate) {
+	if publicKeyFromBytes(key.Public().(ed25519.PublicKey)) != mustKey(backyardDelegate) {
 		return nil, fmt.Errorf("Backyard signing capability does not match the pinned delegated executor")
 	}
 	return key, nil

@@ -30,7 +30,7 @@ func readyWorkerManifest(t *testing.T) RouteManifest {
 // that lane under the selector's current quote.
 func tickObservation(snapshot Snapshot) Observation {
 	if snapshot.RouteLane == "" {
-		snapshot.RouteLane, snapshot.StrategyKey = SelectedRouteID, SelectedRouteID
+		snapshot.RouteLane, snapshot.StrategyKey = MapleSyrupUSDCLaneID, MapleSyrupUSDCLaneID
 	}
 	if snapshot.Target.Rule == "" {
 		var in targetInputs

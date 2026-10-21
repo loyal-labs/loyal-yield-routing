@@ -8,8 +8,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
-func manifestAccounts(metas []accountMeta) KaminoPrimeUSDCAccounts {
-	accounts := make(KaminoPrimeUSDCAccounts, len(metas))
+func manifestAccounts(metas []accountMeta) KaminoLegAccounts {
+	accounts := make(KaminoLegAccounts, len(metas))
 	for index, value := range metas {
 		accounts[index].Address = encodeBase58(value.key[:])
 		accounts[index].Signer = value.signer
@@ -19,16 +19,16 @@ func manifestAccounts(metas []accountMeta) KaminoPrimeUSDCAccounts {
 }
 
 // kaminoTestMetas is lane's SDK v2 account layout for leg.
-func kaminoTestMetas(leg kaminoPrimeUSDCLeg, lane string) []accountMeta {
+func kaminoTestMetas(leg kaminoLeg, lane string) []accountMeta {
 	route, err := runtimeRoute(lane)
 	if err != nil {
 		panic(err)
 	}
 	deposit, borrow, repay, withdraw := kaminoMetasForRoute(route)
-	return map[kaminoPrimeUSDCLeg][]accountMeta{kaminoLegDeposit: deposit, kaminoLegBorrow: borrow, kaminoLegRepay: repay, kaminoLegWithdraw: withdraw}[leg]
+	return map[kaminoLeg][]accountMeta{kaminoLegDeposit: deposit, kaminoLegBorrow: borrow, kaminoLegRepay: repay, kaminoLegWithdraw: withdraw}[leg]
 }
 
-func kaminoTestRequest(action Action, leg kaminoPrimeUSDCLeg) KaminoLegRequest {
+func kaminoTestRequest(action Action, leg kaminoLeg) KaminoLegRequest {
 	var discriminator []byte
 	var metas []accountMeta
 	switch leg {
@@ -84,7 +84,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 	tests := []struct {
 		name   string
 		action Action
-		leg    kaminoPrimeUSDCLeg
+		leg    kaminoLeg
 		count  int
 	}{
 		{"deposit", OpenRouteStep, kaminoLegDeposit, 17},
@@ -104,7 +104,7 @@ func TestKaminoPrimeUSDCBuilderPinsAllFourV2SDKLegsAndRefreshes(t *testing.T) {
 			if leg != test.leg || inner.program != publicKey(kamino.ProgramID) || len(inner.accounts) != test.count {
 				t.Fatal("did not build the pinned Kamino PRIME/USDC leg")
 			}
-			refresh := kaminoPrimeUSDCRefreshInstructionsForRoute(rwa, PrimeUSDCLaneID)
+			refresh := kaminoRefreshInstructionsForRoute(rwa, PrimeUSDCLaneID)
 			if len(refresh) != 3 || !bytes.Equal(refresh[0].data, kamino.RefreshReserveDiscriminator[:]) ||
 				!bytes.Equal(refresh[1].data, kamino.RefreshReserveDiscriminator[:]) || !bytes.Equal(refresh[2].data, kamino.RefreshObligationDiscriminator[:]) {
 				t.Fatal("canonical KLend refresh prefix drifted")
@@ -135,16 +135,16 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	var err error
-	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), OpenRouteStep, kaminoLegDeposit, 77, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	route, err := runtimeRoute(SelectedRouteID)
+	route, err := runtimeRoute(MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.ObligationReserves = []string{route.Kamino.CollateralReserve, route.Kamino.DebtReserve}
-	refresh, err := kaminoPrimeUSDCRefreshInstructionsForRequest(rwa, request)
+	refresh, err := kaminoRefreshInstructionsForRequest(rwa, request)
 	if err != nil || len(refresh) != 3 || len(refresh[2].accounts) != 4 ||
 		encodeBase58(refresh[2].accounts[2].key[:]) != route.Kamino.CollateralReserve ||
 		encodeBase58(refresh[2].accounts[3].key[:]) != route.Kamino.DebtReserve {
@@ -164,7 +164,7 @@ func TestKaminoRefreshUsesConfirmedObligationTopologyForRedeposit(t *testing.T) 
 		t.Fatalf("confirmed-topology re-deposit wire was rejected: %v", err)
 	}
 	request.ObligationReserves = []string{route.Kamino.DebtReserve}
-	if _, err := kaminoPrimeUSDCRefreshInstructionsForRequest(rwa, request); err == nil {
+	if _, err := kaminoRefreshInstructionsForRequest(rwa, request); err == nil {
 		t.Fatal("non-canonical obligation reserve order was accepted")
 	}
 }
@@ -173,11 +173,11 @@ func TestKaminoWithdrawWireAcceptsDebtBearingObligationTopology(t *testing.T) {
 	t.Parallel()
 	manifest := embeddedTestManifest(t)
 	var err error
-	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, SelectedRouteID)
+	request, err := manifest.kaminoPacketForRoute(testPolicies(t), DeleverRouteStep, kaminoLegWithdraw, 1_000_000, LatestBlockhash{Blockhash: bridgeVault, LastValidBlockHeight: 9}, MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	route, err := runtimeRoute(SelectedRouteID)
+	route, err := runtimeRoute(MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}

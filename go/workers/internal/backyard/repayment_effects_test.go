@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func repaymentEffectsFixture(t *testing.T) (KaminoLegRequest, ExpectedEffects, ConfirmedTransactionEvidence) {
@@ -64,8 +66,8 @@ func TestBoundedKaminoRepaymentReconcilesActualDebitWithoutClaimingPayoff(t *tes
 	}
 	receipt.PostTokenBalances[1].Raw = 8_000
 	for _, mutate := range []func(*ConfirmedTransactionEvidence){
-		func(r *ConfirmedTransactionEvidence) { r.PostTokenBalances[1].Mint = bridgeUSDC },
-		func(r *ConfirmedTransactionEvidence) { r.PostTokenBalances[0].Authority = bridgeDelegate },
+		func(r *ConfirmedTransactionEvidence) { r.PostTokenBalances[1].Mint = fleet.USDCMint },
+		func(r *ConfirmedTransactionEvidence) { r.PostTokenBalances[0].Authority = backyardDelegate },
 		func(r *ConfirmedTransactionEvidence) { r.PreTokenBalances[0].Raw++ },
 		func(r *ConfirmedTransactionEvidence) { r.PostTokenBalances[0].OwnerProgram = classicTokenProgram },
 		func(r *ConfirmedTransactionEvidence) {

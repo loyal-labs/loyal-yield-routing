@@ -3,6 +3,7 @@ package backyard
 import (
 	"fmt"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
@@ -63,7 +64,7 @@ func newVault(v Vault) *Vault {
 		return must(address, err)
 	}
 	usdcATA := func(owner string) string {
-		return must(spl.AssociatedTokenAddress(key(owner), key(bridgeUSDC), solana.TokenProgramID))
+		return must(spl.AssociatedTokenAddress(key(owner), key(fleet.USDCMint), solana.TokenProgramID))
 	}
 	squadsVault, _, err := squads.SmartAccountAddress(key(backyardSettings), v.SquadsIndex)
 	v.squads = must(squadsVault, err)
@@ -106,7 +107,7 @@ func (v *Vault) route(lane string) (RuntimeRoute, error) {
 func (v *Vault) strategyAccounts() voltr.StrategyAccounts {
 	return voltr.StrategyAccounts{Manager: solanaKey(v.squads), Protocol: solanaKey(v.protocol), Vault: solanaKey(v.VoltrVault),
 		Strategy: solanaKey(v.Strategy), AdaptorAddReceipt: solanaKey(v.adaptorReceipt), StrategyInitReceipt: solanaKey(v.strategyReceipt),
-		VaultAssetIdleAuth: solanaKey(v.idleAuth), VaultStrategyAuth: solanaKey(v.strategyAuth), AssetMint: solanaKey(bridgeUSDC),
+		VaultAssetIdleAuth: solanaKey(v.idleAuth), VaultStrategyAuth: solanaKey(v.strategyAuth), AssetMint: solanaKey(fleet.USDCMint),
 		LPMint: solanaKey(v.lpMint), VaultAssetIdleATA: solanaKey(v.idleATA), VaultStrategyAssetATA: solanaKey(v.strategyATA),
 		AssetTokenProgram: solanaKey(bridgeTokenProgram), AdaptorProgram: solanaKey(v.Adaptor)}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/stream"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
@@ -119,7 +120,7 @@ func OpenView(ctx context.Context, client *chain.Client, connector stream.Connec
 // is among them.
 func viewAddresses() []string {
 	addresses := []string{reportTicketPDA, budgetClockAddress, voltr.ProgramID.String(), fsj27Program, voltrProgramDataAddress, adaptorProgramDataAddress,
-		bridgeDelegate, solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(), bridgeUSDC, budgetSOLReserve, budgetWrappedSOLMint}
+		backyardDelegate, solana.SysVarRentPubkey.String(), solana.SystemProgramID.String(), fleet.USDCMint, budgetSOLReserve, budgetWrappedSOLMint}
 	for _, v := range vaults {
 		metadata, _ := kamino.UserMetadataAddress(kaminoKey(v.squads))
 		addresses = append(addresses, v.Adaptor, v.squads, metadata.String())

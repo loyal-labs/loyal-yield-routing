@@ -101,7 +101,7 @@ func fixtureBatchRuntime(slot int64, accounts []ConfirmedAccount) func(context.C
 // accounts are the Prime/PRIME/USDC lane's (market, obligation, reserves and
 // custody), so the observer selects that lane when the manifest names Maple.
 func primeFixtureManifest(manifest RouteManifest) RouteManifest {
-	if manifest.RuntimeActivation.SelectedLane == SelectedRouteID {
+	if manifest.RuntimeActivation.SelectedLane == MapleSyrupUSDCLaneID {
 		manifest.RuntimeActivation.SelectedLane = PrimeUSDCLaneID
 	}
 	return manifest

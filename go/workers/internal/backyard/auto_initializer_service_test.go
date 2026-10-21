@@ -61,7 +61,7 @@ func assertInitializerAutoScopeMigrationContract(t *testing.T, ctx context.Conte
 		valid        bool
 	}{
 		{"backyard_rwa_v1", "Prime/PRIME/USDC", true},
-		{"backyard_rwa_v1", SelectedRouteID, true},
+		{"backyard_rwa_v1", MapleSyrupUSDCLaneID, true},
 		{"backyard_rwa_v1", "OnRe/ONyc/USDC", true},
 		{"backyard_rwa_v1", autoAUTOPYUSD.Lane, true},
 		{"backyard_rwa_v1", "Ethena/USDe/PYUSD", false},
@@ -128,7 +128,7 @@ func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) 
 		valid                bool
 	}{
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "Prime/PRIME/USDC", true},
-		{string(InitializeKaminoObligation), "backyard_rwa_v1", SelectedRouteID, true},
+		{string(InitializeKaminoObligation), "backyard_rwa_v1", MapleSyrupUSDCLaneID, true},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "OnRe/ONyc/USDC", true},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", autoAUTOPYUSD.Lane, true},
 		{string(InitializeKaminoObligation), "backyard_rwa_v1", "Ethena/USDe/PYUSD", false},
@@ -143,7 +143,7 @@ func TestInitializerAutoScopeMigrationExpandsOnlyInitializerScope(t *testing.T) 
 		{string(SwapCollateralToDebtStep), "backyard_rwa_v1", autoAUTOWYLDSLane, true},
 		{string(SwapDebtToCollateralStep), "backyard_rwa_v1", "AUTO/AUTO/USDG", false},
 		{string(InitializeKaminoObligation), "earn_max_v2", autoAUTOWYLDSLane, false},
-		{string(ReportNAV), "backyard_rwa_v1", SelectedRouteID, true},
+		{string(ReportNAV), "backyard_rwa_v1", MapleSyrupUSDCLaneID, true},
 		{"borrow_debt", "earn_max_v2", "legacy", true},
 	} {
 		nested, err := tx.Begin(ctx)
@@ -457,18 +457,18 @@ func TestCandidateObservationInventoryCoversTheCandidateLane(t *testing.T) {
 	}
 	// Candidate-only ownership holds the candidate lane even with a Maple
 	// preference.
-	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), SelectedRouteID)
+	held, err := observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), MapleSyrupUSDCLaneID)
 	if err != nil || strings.Join(held, ",") != autoAUTOPYUSD.Lane {
 		t.Fatalf("candidate ownership was not held: %v %v", held, err)
 	}
 	// Combined candidate and Maple exposure is one held set.
-	mapleRoute, err := runtimeRoute(SelectedRouteID)
+	mapleRoute, err := runtimeRoute(MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	upsertConfirmedAccount(&accounts, kaminoObligationImage(t, mapleRoute, 77, autoFixtureDepositReceiptRaw, autoFixtureDebtRaw))
-	held, err = observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), SelectedRouteID)
-	if err != nil || strings.Join(held, ",") != SelectedRouteID+","+autoAUTOPYUSD.Lane {
+	held, err = observedSelectorHeldLanes(rwa, accounts, earnLaneIDs(true), MapleSyrupUSDCLaneID)
+	if err != nil || strings.Join(held, ",") != MapleSyrupUSDCLaneID+","+autoAUTOPYUSD.Lane {
 		t.Fatalf("combined candidate and Maple exposure: held %v err %v", held, err)
 	}
 }

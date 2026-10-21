@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
@@ -143,10 +144,10 @@ func debtResidueAdmissionFixture(t *testing.T, debtOutput uint64, extraAccounts 
 		}
 		var payload any
 		if req.Method == "GET" {
-			if req.URL.Query().Get("amount") != "10000" || req.URL.Query().Get("outputMint") != bridgeUSDC {
+			if req.URL.Query().Get("amount") != "10000" || req.URL.Query().Get("outputMint") != fleet.USDCMint {
 				t.Fatal("debt residue quote changed amount or destination")
 			}
-			payload = jupiter.Quote{InputMint: route.Kamino.DebtMint, OutputMint: bridgeUSDC, InAmount: "10000", OutAmount: fmt.Sprint(debtOutput), OtherAmountThreshold: fmt.Sprint(debtOutput), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload = jupiter.Quote{InputMint: route.Kamino.DebtMint, OutputMint: fleet.USDCMint, InAmount: "10000", OutAmount: fmt.Sprint(debtOutput), OtherAmountThreshold: fmt.Sprint(debtOutput), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else {
 			payload = map[string]any{"swapInstruction": instruction}
 		}
@@ -218,10 +219,10 @@ func withdrawalAdmissionFixture(t *testing.T, quoted uint64, extraAccounts ...Co
 	client, err := fixtureJupiter(roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var payload any
 		if req.Method == "GET" && req.URL.Path == "/quote" {
-			if req.URL.Query().Get("amount") != "100000000" || req.URL.Query().Get("inputMint") != route.Kamino.CollateralMint || req.URL.Query().Get("outputMint") != bridgeUSDC {
+			if req.URL.Query().Get("amount") != "100000000" || req.URL.Query().Get("inputMint") != route.Kamino.CollateralMint || req.URL.Query().Get("outputMint") != fleet.USDCMint {
 				t.Fatal("exit quote changed custody or amount")
 			}
-			payload = jupiter.Quote{InputMint: route.Kamino.CollateralMint, OutputMint: bridgeUSDC, InAmount: "100000000", OutAmount: fmt.Sprint(quoted), OtherAmountThreshold: fmt.Sprint(quoted), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
+			payload = jupiter.Quote{InputMint: route.Kamino.CollateralMint, OutputMint: fleet.USDCMint, InAmount: "100000000", OutAmount: fmt.Sprint(quoted), OtherAmountThreshold: fmt.Sprint(quoted), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}}
 		} else if req.Method == "POST" && req.URL.Path == "/swap-instructions" {
 			payload = map[string]any{"swapInstruction": instruction}
 		} else {
@@ -248,7 +249,7 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 	var extra []ConfirmedAccount
 	if fundingAction == SwapUSDCToDebtStep {
 		data := make([]byte, 165)
-		putKey(t, data[:32], bridgeUSDC)
+		putKey(t, data[:32], fleet.USDCMint)
 		putKey(t, data[32:64], bridgeVault)
 		binary.LittleEndian.PutUint64(data[64:72], 20_000)
 		data[108] = 1
@@ -296,12 +297,12 @@ func fundingAdmissionFixtureForSource(t *testing.T, output uint64, fundingAction
 				t.Fatal(err)
 			}
 			action, out := SwapCollateralToStableStep, amount/1000
-			if q.Get("inputMint") == bridgeUSDC && q.Get("outputMint") == route.Kamino.CollateralMint {
+			if q.Get("inputMint") == fleet.USDCMint && q.Get("outputMint") == route.Kamino.CollateralMint {
 				action, out = SwapStableToCollateralStep, amount*1000
 			}
 			if q.Get("outputMint") == route.Kamino.DebtMint {
 				action, out = SwapCollateralToDebtStep, output
-				if q.Get("inputMint") == bridgeUSDC {
+				if q.Get("inputMint") == fleet.USDCMint {
 					action = SwapUSDCToDebtStep
 				}
 			}

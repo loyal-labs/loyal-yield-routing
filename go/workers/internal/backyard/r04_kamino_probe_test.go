@@ -237,7 +237,7 @@ func TestExportPhase3KaminoControlledProbe(t *testing.T) {
 	policies := map[string]string{}
 	for _, step := range []struct {
 		name   string
-		leg    kaminoPrimeUSDCLeg
+		leg    kaminoLeg
 		action Action
 		amount uint64
 	}{
@@ -275,7 +275,7 @@ func TestExportPhase3KaminoControlledProbe(t *testing.T) {
 	}
 	sort.Strings(keys)
 	encoded, err := json.MarshalIndent(map[string]any{"schema": "phase3-kamino-controlled-probe/v1", "broadcast": false, "signatureProof": false, "lane": route.Lane,
-		"vault": bridgeVault, "delegate": bridgeDelegate, "obligation": route.Kamino.Obligation, "collateralCustody": route.CollateralCustody, "debtCustody": route.DebtCustody,
+		"vault": bridgeVault, "delegate": backyardDelegate, "obligation": route.Kamino.Obligation, "collateralCustody": route.CollateralCustody, "debtCustody": route.DebtCustody,
 		"addresses": keys, "policies": policies, "steps": rows}, "", "  ")
 	if err != nil {
 		t.Fatal(err)

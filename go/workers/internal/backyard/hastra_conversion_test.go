@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	lanepolicy "github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
@@ -171,7 +172,7 @@ func TestEveryHastraLegExecutesAtItsOwnConstraint(t *testing.T) {
 			}
 			destination := map[byte]int{lanepolicy.HastraStakeDeposit: 9, lanepolicy.HastraStakeRedeem: 6, lanepolicy.HastraMintDeposit: 7}[leg]
 			changed := squads.Instruction{ProgramID: ix.ProgramID, Accounts: slices.Clone(ix.Accounts), Data: ix.Data}
-			changed.Accounts[destination].PublicKey = solanaKey(bridgeDelegate)
+			changed.Accounts[destination].PublicKey = solanaKey(backyardDelegate)
 			for index, constraint := range literal.Constraints {
 				if squads.Admits(constraint, changed, vaultObligation) {
 					t.Errorf("constraint %d admits a foreign destination", index)
@@ -208,7 +209,7 @@ func TestHastraEffectsQuoteTheProgramRounding(t *testing.T) {
 	}{
 		{SwapDebtToCollateralStep, autoAUTOWYLDS.DebtCustody, autoAUTOWYLDS.CollateralCustody, hastra.WYLDSMint.String(), hastra.AUTOMint.String(), floor(1_000_003, scale, hastraTestPrice)},
 		{SwapCollateralToDebtStep, autoAUTOWYLDS.CollateralCustody, autoAUTOWYLDS.DebtCustody, hastra.AUTOMint.String(), hastra.WYLDSMint.String(), floor(1_000_003, hastraTestPrice, scale)},
-		{SwapUSDCToDebtStep, bridgeSquadsATA, autoAUTOWYLDS.DebtCustody, bridgeUSDC, hastra.WYLDSMint.String(), 1_000_003},
+		{SwapUSDCToDebtStep, bridgeSquadsATA, autoAUTOWYLDS.DebtCustody, fleet.USDCMint, hastra.WYLDSMint.String(), 1_000_003},
 	} {
 		decision := Decision{Action: row.action, AmountRaw: 1_000_003, StrategyKey: autoAUTOWYLDSLane}
 		evidence, err := prepareHastraQuoteEvidence(context.Background(), rwa, rpc, view, policies, decision, 5_000_000, 7, 42)

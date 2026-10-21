@@ -153,7 +153,7 @@ func (d *Database) recoverConfirmedFailure(ctx context.Context, rpc *chain.Clien
 	if err != nil {
 		return err
 	}
-	settled, err := d.settleFinalizedFailure(ctx, operation, receipt, confirmedFailureReason(receipt.Meta.Err, receipt.Meta.LogMessages), mustKey(bridgeDelegate))
+	settled, err := d.settleFinalizedFailure(ctx, operation, receipt, confirmedFailureReason(receipt.Meta.Err, receipt.Meta.LogMessages), mustKey(backyardDelegate))
 	if err != nil || settled {
 		return err
 	}

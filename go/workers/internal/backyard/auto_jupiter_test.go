@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // autoVenueKey deterministically derives a non-authority venue account for
@@ -59,7 +61,7 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 		var response string
 		switch r.URL.Path {
 		case "/quote":
-			response = `{"inputMint":"` + bridgeUSDC + `","outputMint":"` + route.Kamino.CollateralMint +
+			response = `{"inputMint":"` + fleet.USDCMint + `","outputMint":"` + route.Kamino.CollateralMint +
 				`","inAmount":"1000000","outAmount":"990000","otherAmountThreshold":"985050",` +
 				`"swapMode":"ExactIn","slippageBps":50,"platformFee":null,"routePlan":[{}]}`
 		case "/swap-instructions":
@@ -110,7 +112,7 @@ func TestAutoQuoteEvidenceThroughInstalledPolicy(t *testing.T) {
 	if destination.Address != route.CollateralCustody || destination.AfterRaw != 985_050 {
 		t.Fatalf("destination effect drifted: %+v", destination)
 	}
-	if _, err := compileJupiterMessageForDelegate(rwa, request, mustKey(bridgeDelegate)); err != nil {
+	if _, err := compileJupiterMessageForDelegate(rwa, request, mustKey(backyardDelegate)); err != nil {
 		t.Fatalf("quote-path request did not compile through the installed policy: %v", err)
 	}
 	// The same decision without its swap policy installed holds by name.

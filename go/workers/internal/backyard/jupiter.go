@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"strconv"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 	"github.com/solana-foundation/solana-go/v2"
 )
@@ -23,7 +24,7 @@ const (
 // (other, which names the swap's twelve fixed accounts) is counted. Jupiter
 // treats maxAccounts as a hint; a route over the budget fails to compile.
 func jupiterMaxAccounts(other []compiledInstruction) int {
-	return max(maxTransactionKeys-distinctKeys(mustKey(bridgeDelegate), other), 0)
+	return max(maxTransactionKeys-distinctKeys(mustKey(backyardDelegate), other), 0)
 }
 
 func jupiterSwapMaxAccounts(v *Vault, lane string, action Action) (int, error) {
@@ -55,7 +56,7 @@ func jupiterSkeletonExecute(v *Vault, lane string, action Action) (compiledInstr
 		program(sourceMint, sourceProgram, sourceATA), program(destinationMint, destinationProgram, destinationATA), {key: mustKey(destinationATA), writable: true},
 		ro(sourceMint), ro(destinationMint), ro(sourceProgram), ro(destinationProgram), {key: publicKey(jupiter.EventAuthority)}, {key: publicKey(jupiter.ProgramID)}}}
 	// The swap's policy is an account of its own, named by no other leg.
-	return wrapSquadsPolicy(v, publicKey(sha256.Sum256([]byte("jupiter swap policy stand-in"))), mustKey(bridgeDelegate), []byte{0}, inner)
+	return wrapSquadsPolicy(v, publicKey(sha256.Sum256([]byte("jupiter swap policy stand-in"))), mustKey(backyardDelegate), []byte{0}, inner)
 }
 
 type JupiterSwapInstruction struct {
@@ -99,9 +100,9 @@ func jupiterEdgeForRoute(v *Vault, action Action, lane string) (sourceMint, dest
 	case !basicSwapAction(action):
 		return "", "", "", "", fmt.Errorf("action %s is not an approved basic Jupiter edge", action)
 	case action == SwapStableToCollateralStep || action == SwapDebtToCollateralStep:
-		return bridgeUSDC, route.Kamino.CollateralMint, v.cash, route.CollateralCustody, nil
+		return fleet.USDCMint, route.Kamino.CollateralMint, v.cash, route.CollateralCustody, nil
 	default:
-		return route.Kamino.CollateralMint, bridgeUSDC, route.CollateralCustody, v.cash, nil
+		return route.Kamino.CollateralMint, fleet.USDCMint, route.CollateralCustody, v.cash, nil
 	}
 }
 

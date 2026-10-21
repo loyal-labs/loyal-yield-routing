@@ -42,7 +42,7 @@ func TestLiteralsAreDistinctAndNAVMovesNoCapital(t *testing.T) {
 func TestUninstalledLiteralHoldsByName(t *testing.T) {
 	t.Parallel()
 	policies := testPolicies(t)
-	route, err := runtimeRoute(SelectedRouteID)
+	route, err := runtimeRoute(MapleSyrupUSDCLaneID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func encodeTestPolicy(seed uint64, p squads.Policy) (testPolicyAccountData, erro
 	le(uint64(0))
 	le(uint64(0))
 	le(uint32(1))
-	key(solanaKey(bridgeDelegate))
+	key(solanaKey(backyardDelegate))
 	b.WriteByte(squads.FullPermissions)
 	le(uint16(1))
 	le(uint32(0))
@@ -288,6 +288,6 @@ func encodeTestPolicy(seed uint64, p squads.Policy) (testPolicyAccountData, erro
 	}
 	le(int64(0))
 	option(false)
-	key(solanaKey(bridgeDelegate))
+	key(solanaKey(backyardDelegate))
 	return testPolicyAccountData{address: address, data: b.Bytes()}, nil
 }

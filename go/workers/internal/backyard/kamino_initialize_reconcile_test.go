@@ -131,7 +131,7 @@ func initializationReconcileFixture(t *testing.T) (ExpectedEffects, ConfirmedTra
 		switch address := encodeBase58(keys[i][:]); address {
 		case route.ObligationDebtFarm:
 			pre[i], post[i] = 0, farmRent
-		case bridgeDelegate:
+		case backyardDelegate:
 			pre[i], post[i] = 10_000_000, 10_000_000-5000-uint64(len(farms))*farmRent
 		case bridgeVault:
 			pre[i], post[i] = 100_000_000, 100_000_000-r.RentLamports

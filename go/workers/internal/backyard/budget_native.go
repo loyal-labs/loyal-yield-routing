@@ -20,7 +20,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 	}
 	reference := usdcReference
 	config := KaminoObservationConfig{Program: kamino.ProgramID.String(), Market: fleet.KaminoMainMarket}
-	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, bridgeUSDC, budgetClockAddress}
+	addresses := []string{budgetSOLReserve, reference.DebtReserve, budgetWrappedSOLMint, fleet.USDCMint, budgetClockAddress}
 	_, accounts, err := view.read(ctx, addresses, minimumSlot)
 	if err != nil {
 		return BudgetPrice{}, err
@@ -30,7 +30,7 @@ func ObserveNativeSOLBudgetPrice(ctx context.Context, rpc *chain.Client, view *V
 		for _, row := range []struct {
 			address, mint string
 			config        KaminoObservationConfig
-		}{{budgetSOLReserve, budgetWrappedSOLMint, config}, {reference.DebtReserve, bridgeUSDC, reference}} {
+		}{{budgetSOLReserve, budgetWrappedSOLMint, config}, {reference.DebtReserve, fleet.USDCMint, reference}} {
 			account := accountAt(accounts, row.address)
 			if _, err = decodeKaminoReserve(account, row.mint, row.config); err != nil {
 				return BudgetPrice{}, err

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/policy"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/hastra"
 	"github.com/solana-foundation/solana-go/v2"
@@ -62,7 +63,7 @@ func hastraEdgeForRoute(v *Vault, action Action, lane string) (hastraEdge, error
 	}
 	debt := [2]string{route.DebtCustody, route.Kamino.DebtMint}
 	collateral := [2]string{route.CollateralCustody, route.Kamino.CollateralMint}
-	from, to := [2]string{v.cash, bridgeUSDC}, debt // mint deposit
+	from, to := [2]string{v.cash, fleet.USDCMint}, debt // mint deposit
 	switch leg {
 	case policy.HastraStakeDeposit:
 		from, to = debt, collateral

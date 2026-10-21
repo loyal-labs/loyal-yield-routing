@@ -105,7 +105,7 @@ func (b *book) views() []Snapshot {
 		views = append(views, s)
 	}
 	if len(views) == 0 {
-		views = append(views, Snapshot{ObservationID: "book", Slot: 100, RouteKind: RouteKind, Fresh: true, RouteLane: SelectedRouteID, StrategyKey: SelectedRouteID,
+		views = append(views, Snapshot{ObservationID: "book", Slot: 100, RouteKind: RouteKind, Fresh: true, RouteLane: MapleSyrupUSDCLaneID, StrategyKey: MapleSyrupUSDCLaneID,
 			LiquidationThresholdBPS: 8000, MaxLTVBPS: 8000, VoltrIdleRaw: b.voltr, SquadsIdleRaw: b.squads, WithdrawalDemandRaw: b.demand, ChainUnix: b.now,
 			StrategyNAVRaw: nav, PriorReportedNAVRaw: nav, TotalVaultNAVRaw: nav + b.voltr})
 	}
@@ -231,7 +231,7 @@ func ltvOf(l *bookLane) int64 { return l.debt * 10_000 / l.coll }
 
 // mapleBook is one Maple lane with $100k equity at its stored level.
 func mapleBook(level float64, approved bool) *book {
-	return laneBook(SelectedRouteID, level, approved)
+	return laneBook(MapleSyrupUSDCLaneID, level, approved)
 }
 
 func laneBook(lane string, level float64, approved bool) *book {
@@ -252,7 +252,7 @@ func TestTargetWithdrawalFreesExactlyTheDemand(t *testing.T) {
 		"SWAP_COLLATERAL_TO_STABLE_STEP:"+outboundCollateralReason,
 		"STAGE_SQUADS_TO_VOLTR:"+outboundStageReason,
 		"HOLD:"+string(holdAtTarget))
-	l := b.lane(SelectedRouteID)
+	l := b.lane(MapleSyrupUSDCLaneID)
 	if b.voltr < b.demand || b.voltr > b.demand+b.demand/50 || ltvOf(l) < 3332 || ltvOf(l) > 3334 || l.debt == 0 {
 		t.Fatalf("freed %d for %d, lane LTV %d debt %d", b.voltr, b.demand, ltvOf(l), l.debt)
 	}
@@ -338,15 +338,15 @@ func TestTargetOperatorExit(t *testing.T) {
 	t.Parallel()
 	// Debt 0: one full down step, then the lane holds its equity.
 	b := mapleBook(1.5, false)
-	b.in.Exits = map[string]laneExit{SelectedRouteID: {}}
+	b.in.Exits = map[string]laneExit{MapleSyrupUSDCLaneID: {}}
 	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+debtZeroReason, "HOLD:"+string(holdAtTarget))
-	if l := b.lane(SelectedRouteID); l.debt != 0 || l.coll != 100_000_000_000 {
+	if l := b.lane(MapleSyrupUSDCLaneID); l.debt != 0 || l.coll != 100_000_000_000 {
 		t.Fatalf("debt-0 exit left debt %d collateral %d", l.debt, l.coll)
 	}
 	// Equity 0 as well: withdraw and convert in one step, stage; the cash
 	// ends in Voltr.
 	b = mapleBook(1.5, false)
-	b.in.Exits = map[string]laneExit{SelectedRouteID: {EquityZero: true}}
+	b.in.Exits = map[string]laneExit{MapleSyrupUSDCLaneID: {EquityZero: true}}
 	wantSteps(t, b.walk(t, 8),
 		"DELEVER_ROUTE_STEP:"+debtZeroReason,
 		"DELEVER_ROUTE_STEP:"+exitWithdrawReason,
@@ -359,18 +359,18 @@ func TestTargetOperatorExit(t *testing.T) {
 	// A deposit a capped exit step left at dust is residue, not a leg: the
 	// exit is done.
 	b = mapleBook(1.5, false)
-	b.in.Exits = map[string]laneExit{SelectedRouteID: {EquityZero: true}}
-	l := b.lane(SelectedRouteID)
+	b.in.Exits = map[string]laneExit{MapleSyrupUSDCLaneID: {EquityZero: true}}
+	l := b.lane(MapleSyrupUSDCLaneID)
 	l.coll, l.debt = partialWithdrawalDustRaw, 0
 	wantSteps(t, b.walk(t, 3), "HOLD:"+string(holdAtTarget))
 	// A withdrawal from a lane at debt 0 releases straight to USDC: release,
 	// stage.
 	b = mapleBook(1.5, false)
-	b.in.Exits = map[string]laneExit{SelectedRouteID: {}}
+	b.in.Exits = map[string]laneExit{MapleSyrupUSDCLaneID: {}}
 	b.walk(t, 5)
 	b.in.Exits, b.demand = nil, 10_000_000_000
 	wantSteps(t, b.walk(t, 5), "DELEVER_ROUTE_STEP:"+releaseReason, "STAGE_SQUADS_TO_VOLTR:"+outboundStageReason, "HOLD:"+string(holdAtTarget))
-	if l := b.lane(SelectedRouteID); b.voltr < b.demand || l.idle != 0 || l.debt != 0 {
+	if l := b.lane(MapleSyrupUSDCLaneID); b.voltr < b.demand || l.idle != 0 || l.debt != 0 {
 		t.Fatalf("debt-free release left Voltr %d idle %d debt %d", b.voltr, l.idle, l.debt)
 	}
 }
@@ -480,8 +480,8 @@ func TestTargetWithdrawalSpansLanes(t *testing.T) {
 	swap := "SWAP_COLLATERAL_TO_STABLE_STEP:" + outboundCollateralReason
 	stage := "STAGE_SQUADS_TO_VOLTR:" + outboundStageReason
 	wantSteps(t, steps, release, swap, stage, release, swap, stage, "HOLD:"+string(holdAtTarget))
-	if b.voltr < b.demand || b.lane(SelectedRouteID).debt == 0 || onre.debt == 0 {
-		t.Fatalf("freed %d of %d; debts %d %d", b.voltr, b.demand, b.lane(SelectedRouteID).debt, onre.debt)
+	if b.voltr < b.demand || b.lane(MapleSyrupUSDCLaneID).debt == 0 || onre.debt == 0 {
+		t.Fatalf("freed %d of %d; debts %d %d", b.voltr, b.demand, b.lane(MapleSyrupUSDCLaneID).debt, onre.debt)
 	}
 }
 
@@ -609,12 +609,12 @@ func TestTargetRotationReleaseLeavesUSDCInSquads(t *testing.T) {
 // nothing, and the cash enters the destination (its obligation first), never
 // the source.
 func TestRotationCashFromUSDCDebtSourceEntersTheDestination(t *testing.T) {
-	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{SelectedRouteID: {Level: 1.5}}}}
-	l := b.lane(SelectedRouteID)
+	b := &book{now: bookNow, in: targetInputs{Levels: map[string]laneLevel{MapleSyrupUSDCLaneID: {Level: 1.5}}}}
+	l := b.lane(MapleSyrupUSDCLaneID)
 	l.coll, l.debt, l.obligationPresent = 28_420_000, 9_420_000, true
 	b.lane(onreONycUSDC).uninitialized = true
-	rotate := SelectorResult{Action: "CANARY_ROTATE", SourceLane: SelectedRouteID, DestinationLane: onreONycUSDC, EquityRaw: 15_000_000,
-		SelectedQuote: &MoveQuote{RotateFrom: SelectedRouteID, DestinationLane: onreONycUSDC, EquityRaw: 15_000_000},
+	rotate := SelectorResult{Action: "CANARY_ROTATE", SourceLane: MapleSyrupUSDCLaneID, DestinationLane: onreONycUSDC, EquityRaw: 15_000_000,
+		SelectedQuote: &MoveQuote{RotateFrom: MapleSyrupUSDCLaneID, DestinationLane: onreONycUSDC, EquityRaw: 15_000_000},
 		SampledAt:     time.Unix(bookNow, 0), SourceRelease: newSourceRelease(b.views()[0], 15_000_000)}
 	b.in.Entry = &rotate
 	for _, want := range []string{rotateRepayReason, rotateWithdrawReason} {

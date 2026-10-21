@@ -61,7 +61,7 @@ func observeSelectorDestinationBatch(ctx context.Context, v *Vault, rpc *chain.C
 		route.Kamino.CollateralMint, route.Kamino.DebtMint, route.CollateralCustody, route.DebtCustody, route.CollateralLiquiditySupply,
 		route.DebtLiquiditySupply, route.DebtFeeReceiver, route.CollateralReceiptMint, route.CollateralReceiptSupply,
 		route.CollateralFarm, route.ObligationCollateralFarm, route.DebtFarm, route.ObligationDebtFarm,
-		budgetClockAddress, v.squads, bridgeDelegate}
+		budgetClockAddress, v.squads, backyardDelegate}
 	if !v.trustful() {
 		addresses = append(addresses, v.Strategy, reportTicketPDA)
 	}
@@ -151,14 +151,14 @@ func validateSelectorDestinationCommon(v *Vault, route RuntimeRoute, slot int64,
 // unchanged. No borrow capacity is involved.
 func unleveredEntryCapacityDebtRaw(position KaminoPosition, accounts []ConfirmedAccount, route RuntimeRoute) (uint64, error) {
 	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
-	if err != nil || collateral.totalLiquiditySF == nil || collateral.depositLimitRaw == 0 {
+	if err != nil || collateral.totalLiquiditySF == nil || collateral.terms.DepositLimit == 0 {
 		return 0, err
 	}
 	deposited, err := ceilScaledBigFraction(collateral.totalLiquiditySF)
-	if err != nil || deposited >= collateral.depositLimitRaw {
+	if err != nil || deposited >= collateral.terms.DepositLimit {
 		return 0, err
 	}
-	room, err := valueBetweenTokenRaw(collateral.depositLimitRaw-deposited, position.CollateralDecimals, position.DebtDecimals, position.CollateralPriceSF, position.DebtPriceSF, false)
+	room, err := valueBetweenTokenRaw(collateral.terms.DepositLimit-deposited, position.CollateralDecimals, position.DebtDecimals, position.CollateralPriceSF, position.DebtPriceSF, false)
 	if err != nil {
 		return 0, err
 	}

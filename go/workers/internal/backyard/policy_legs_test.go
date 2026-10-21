@@ -41,7 +41,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 		build func(t *testing.T) []byte
 	}
 	var rows []row
-	for _, lane := range []string{autoAUTOPYUSD.Lane, PrimeUSDCLaneID, SelectedRouteID, onreONycUSDC, ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, PrimeUSDCLaneID} {
+	for _, lane := range []string{autoAUTOPYUSD.Lane, PrimeUSDCLaneID, MapleSyrupUSDCLaneID, onreONycUSDC, ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane, PrimeUSDCLaneID} {
 		for _, leg := range kaminoLegs {
 			open, delever := OpenRouteStep, DeleverRouteStep
 			if lane == PrimeUSDCLaneID {
@@ -64,7 +64,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 			}})
 		}
 	}
-	for _, lane := range []string{autoAUTOPYUSD.Lane, PrimeUSDCLaneID, SelectedRouteID, onreONycUSDC} {
+	for _, lane := range []string{autoAUTOPYUSD.Lane, PrimeUSDCLaneID, MapleSyrupUSDCLaneID, onreONycUSDC} {
 		rows = append(rows, row{"initialize/" + lane, func(t *testing.T) []byte {
 			r, err := manifest.initializationRequest(policies, lane, blockhash, 17_637_760, 5000)
 			if err != nil {
@@ -92,7 +92,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 	}
 	swaps := map[string][]Action{autoAUTOPYUSD.Lane: {SwapStableToCollateralStep, SwapDebtToCollateralStep, SwapCollateralToStableStep, SwapCollateralToDebtStep, SwapDebtToUSDCStep},
 		PrimeUSDCLaneID: {SwapStableToCollateralStep, SwapCollateralToStableStep}}
-	for _, lane := range []string{PrimeUSDCLaneID, SelectedRouteID, onreONycUSDC} {
+	for _, lane := range []string{PrimeUSDCLaneID, MapleSyrupUSDCLaneID, onreONycUSDC} {
 		swaps[lane] = []Action{SwapStableToCollateralStep, SwapCollateralToStableStep}
 	}
 	for _, lane := range []string{ethenaUSDePYUSD.Lane, primePRIMEPYUSD.Lane, primePRIMEUSDS.Lane} {
@@ -127,7 +127,7 @@ func TestEveryRuntimeLegExecutesAtItsOwnConstraint(t *testing.T) {
 					continue
 				}
 				// A swap's output stays in the vault and pays no fee.
-				foreign := solanaKey(bridgeDelegate) // not a vault custody
+				foreign := solanaKey(backyardDelegate) // not a vault custody
 				for name, mutate := range map[string]func(*squads.Instruction){
 					"foreign destination": func(ix *squads.Instruction) { ix.Accounts[5].PublicKey = foreign },
 					"platform fee":        func(ix *squads.Instruction) { ix.Data[jupiter.V2FeesOffset] = 1 },

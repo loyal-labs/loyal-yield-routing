@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/kamino"
 )
 
@@ -24,10 +25,10 @@ const (
 
 func pairCapacityFixture(t *testing.T) (RuntimeRoute, []ConfirmedAccount, KaminoPosition) {
 	t.Helper()
-	route, _ := runtimeRoute(SelectedRouteID)
+	route, _ := runtimeRoute(MapleSyrupUSDCLaneID)
 	one := new(big.Int).Lsh(big.NewInt(1), 60)
 	c := reserveFixture(t, route.Kamino.CollateralReserve, route.Kamino.CollateralMint, 77, one, 100, 100)
-	d := reserveFixture(t, route.Kamino.DebtReserve, bridgeUSDC, 77, one, 1000, 1000)
+	d := reserveFixture(t, route.Kamino.DebtReserve, fleet.USDCMint, 77, one, 1000, 1000)
 	for _, a := range []*ConfirmedAccount{&c, &d} {
 		putKey(t, a.Data[32:64], route.Kamino.Market)
 		binary.LittleEndian.PutUint64(a.Data[kaminoReserveConfigOffset+160:], 10_000)

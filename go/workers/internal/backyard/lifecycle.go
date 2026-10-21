@@ -28,7 +28,7 @@ func buildSimulatePersist(ctx context.Context, database *Database, rpc *chain.Cl
 	if err != nil {
 		return err
 	}
-	signed, err := signMessage(signer, mustKey(bridgeDelegate), message, blockhash, height)
+	signed, err := signMessage(signer, mustKey(backyardDelegate), message, blockhash, height)
 	if err != nil {
 		return err
 	}

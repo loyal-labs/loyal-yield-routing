@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
 func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, accounts := selectorDestinationFixture(t)
-	route, _ := runtimeRoute(SelectedRouteID)
+	route, _ := runtimeRoute(MapleSyrupUSDCLaneID)
 	// Maple is a B2 lane (registry): its entry equity is bounded by the
 	// collateral reserve's deposit room, independent of debt room.
 	collateral, err := decodeKaminoReserve(accountAt(accounts, route.Kamino.CollateralReserve), route.Kamino.CollateralMint, route.Kamino)
@@ -37,7 +38,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	o := tickObservation(in.Snapshot)
 	o.ObservedAt = time.Now().UTC()
 	market := in.Markets[0]
-	market.Lane = SelectedRouteID
+	market.Lane = MapleSyrupUSDCLaneID
 	market.EntryCapacity = Capacity{}
 	unavailable := market
 	unavailable.Lane = "OnRe/ONyc/USDC"
@@ -48,7 +49,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 		t.Fatal(err, quotes, observed)
 	}
 	q := quotes[0]
-	if q.DestinationLane != SelectedRouteID || q.EquityRaw <= 0 || q.EquityRaw >= 10_000_000 || observed[0].EntryCapacity.Raw != q.EquityRaw || !observed[0].EntryCapacity.Known || markets[0].EntryCapacity.Known {
+	if q.DestinationLane != MapleSyrupUSDCLaneID || q.EquityRaw <= 0 || q.EquityRaw >= 10_000_000 || observed[0].EntryCapacity.Raw != q.EquityRaw || !observed[0].EntryCapacity.Known || markets[0].EntryCapacity.Known {
 		t.Fatal("partial capacity or immutable feed lost", q, observed)
 	}
 	if observed[1].EntryBlockedReason == "" || observed[1].EntryCapacity.Raw != 0 {
@@ -59,7 +60,7 @@ func TestLiveSelectorCollectsExecutablePartialCapacityAndKeepsFeedImmutable(t *t
 	result := SelectOpportunity(in, SelectorState{})
 	found := false
 	for _, candidate := range result.Candidates {
-		if candidate.Lane == SelectedRouteID {
+		if candidate.Lane == MapleSyrupUSDCLaneID {
 			found = candidate.CostsKnown
 		}
 	}
@@ -101,7 +102,7 @@ func TestCanaryQuoteCollectionSkipsOtherLanes(t *testing.T) {
 	o := tickObservation(in.Snapshot)
 	o.ObservedAt = time.Now().UTC()
 	market := in.Markets[0]
-	market.Lane = SelectedRouteID
+	market.Lane = MapleSyrupUSDCLaneID
 	// Control: without a canary lane the fundable lane is priced.
 	if _, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, in.Policy, nil); err != nil || len(quotes) != 1 {
 		t.Fatal("control quote missing", err, quotes)
@@ -119,7 +120,7 @@ func quoteLegsTransport(t *testing.T, base http.RoundTripper, legs *[]uint64, im
 	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Path == "/quote" {
 			amount, _ := strconv.ParseUint(req.URL.Query().Get("amount"), 10, 64)
-			if req.URL.Query().Get("inputMint") == bridgeUSDC {
+			if req.URL.Query().Get("inputMint") == fleet.USDCMint {
 				for _, size := range []uint64{10_000_000, 1_000_000, 100_000} {
 					if amount == size {
 						*legs = append(*legs, amount)
@@ -127,9 +128,9 @@ func quoteLegsTransport(t *testing.T, base http.RoundTripper, legs *[]uint64, im
 					}
 				}
 			}
-			if req.URL.Query().Get("inputMint") == bridgeUSDC && amount >= impactThreshold {
+			if req.URL.Query().Get("inputMint") == fleet.USDCMint && amount >= impactThreshold {
 				out := amount / divisor
-				raw, err := json.Marshal(jupiter.Quote{InputMint: bridgeUSDC, OutputMint: req.URL.Query().Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}})
+				raw, err := json.Marshal(jupiter.Quote{InputMint: fleet.USDCMint, OutputMint: req.URL.Query().Get("outputMint"), InAmount: fmt.Sprint(amount), OutAmount: fmt.Sprint(out), OtherAmountThreshold: fmt.Sprint(out * 995 / 1000), SwapMode: "ExactIn", SlippageBPS: 50, RoutePlan: []json.RawMessage{json.RawMessage(`{}`)}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -150,7 +151,7 @@ func ladderLiveObservation(t *testing.T, nativeAPY float64) (RouteManifest, *cha
 	o := tickObservation(in.Snapshot)
 	o.ObservedAt = time.Now().UTC()
 	market := in.Markets[0]
-	market.Lane = SelectedRouteID
+	market.Lane = MapleSyrupUSDCLaneID
 	market.NativeAPY = nativeAPY
 	market.EntryCapacity = Capacity{Known: true, Unlimited: true}
 	policy := DefaultSelectorPolicy()
@@ -173,7 +174,7 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 	// (out=in/100000 on the equity leg), so its expected cost reaches its own
 	// equity: the pricer refuses exactly that economic outcome for the first
 	// ladder size.
-	_, err := testLanePricer(t, rpc, client, m, o.Snapshot.Slot).priceEntry(context.Background(), o, leveredTestMarket(SelectedRouteID), 10_000_000)
+	_, err := testLanePricer(t, rpc, client, m, o.Snapshot.Slot).priceEntry(context.Background(), o, leveredTestMarket(MapleSyrupUSDCLaneID), 10_000_000)
 	var hold *PreSendHold
 	if !errors.As(err, &hold) || holdCause(hold) != "selector_move_cost_exceeds_equity" {
 		t.Fatal("largest refusal is not the economic cost outcome", err)
@@ -202,9 +203,9 @@ func TestLiveSelectorLadderProbesSmallerAfterLargestCostExceedsEquity(t *testing
 func TestLiveSelectorLadderFallsThroughRefusedStepQuote(t *testing.T) {
 	t.Parallel()
 	m, rpc, client, o, market, policy := ladderLiveObservation(t, .5)
-	lever := leveredTestMarket(SelectedRouteID)
+	lever := leveredTestMarket(MapleSyrupUSDCLaneID)
 	market.CurrentBorrowAPY, market.BorrowCurve, market.DebtSupplyRaw, market.DebtBorrowRaw = lever.CurrentBorrowAPY, lever.BorrowCurve, lever.DebtSupplyRaw, lever.DebtBorrowRaw
-	route, _ := runtimeRoute(SelectedRouteID)
+	route, _ := runtimeRoute(MapleSyrupUSDCLaneID)
 	base := fixtureHTTP(client).Transport
 	// Jupiter has no route for the largest rung's 1.5x down step (exit_quote,
 	// a plain 400); the 10 USDC rung borrows below the minimum and needs none.
@@ -242,7 +243,7 @@ func TestCanaryQuotedBelowGainCeiling(t *testing.T) {
 	// No size's gain ceiling clears this minimum, yet an operator canary skips
 	// the benefit check, so its size is still quoted.
 	policy.MinimumBenefitRaw = 1_000_000_000
-	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, &pilotCanaryEntryRequest{Lane: SelectedRouteID, EquityRaw: 10_000_000})
+	_, quotes, err := collectSelectorQuotes(context.Background(), rpc, fixtureView(t, rpc), client, m, o, []LaneEconomics{market}, policy, &pilotCanaryEntryRequest{Lane: MapleSyrupUSDCLaneID, EquityRaw: 10_000_000})
 	if err != nil || len(quotes) != 1 || quotes[0].EquityRaw != 10_000_000 {
 		t.Fatal("canary size not quoted below the gain ceiling", err, quotes)
 	}

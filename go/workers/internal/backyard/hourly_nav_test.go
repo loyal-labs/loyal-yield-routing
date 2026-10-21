@@ -9,7 +9,7 @@ import (
 
 func TestHourlyRoutineNAVKeepsUrgentReportsAndSafety(t *testing.T) {
 	t.Parallel()
-	for _, lane := range []string{SelectedRouteID, onreONycUSDC, autoAUTOPYUSD.Lane} {
+	for _, lane := range []string{MapleSyrupUSDCLaneID, onreONycUSDC, autoAUTOPYUSD.Lane} {
 		t.Run(lane, func(t *testing.T) {
 			s := base()
 			s.RouteLane, s.StrategyKey = lane, lane

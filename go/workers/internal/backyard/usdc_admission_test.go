@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/jupiter"
 )
 
@@ -21,7 +22,7 @@ import (
 // transport; no simulation, signer or live-program success is claimed here.
 func usdcReturnFixture(t *testing.T) (Observation, RouteManifest, *chain.Client, *jupiter.Client, []ConfirmedAccount) {
 	t.Helper()
-	return usdcReturnFixtureForLane(t, SelectedRouteID)
+	return usdcReturnFixtureForLane(t, MapleSyrupUSDCLaneID)
 }
 
 // usdcReturnFixtureForLane maps the controlled Ethena fixture onto one basic
@@ -61,7 +62,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 				a.Data = bytes.ReplaceAll(a.Data, from[:], to[:])
 			}
 		}
-		if a.Address == route.DebtCustody || a.Address == route.DebtLiquiditySupply || a.Address == bridgeUSDC {
+		if a.Address == route.DebtCustody || a.Address == route.DebtLiquiditySupply || a.Address == fleet.USDCMint {
 			a.Owner = classicTokenProgram
 		}
 		accounts = append(accounts, a)
@@ -94,7 +95,7 @@ func usdcReturnFixtureForLane(t *testing.T, lane string) (Observation, RouteMani
 				t.Fatal(err)
 			}
 			key, out := symbol+"->USDC", amount/1000
-			if q.Get("inputMint") == bridgeUSDC {
+			if q.Get("inputMint") == fleet.USDCMint {
 				key, out = "USDC->"+symbol, amount*1000
 			}
 			for _, row := range headers.Rows {
@@ -128,7 +129,7 @@ func TestUSDCHardLTVIsOneDownStep(t *testing.T) {
 	s := base()
 	s.HasPosition, s.PositionCollateralRaw, s.PositionDebtRaw, s.PayoffDebtRaw, s.LTVBPS = true, 200, 100, 101, 7000
 	s.PositionCollateralValueRaw, s.PositionDebtValueRaw = 200, 100
-	for _, lane := range append(basicLaneIDs(), SelectedRouteID) {
+	for _, lane := range append(basicLaneIDs(), MapleSyrupUSDCLaneID) {
 		s.RouteLane, s.StrategyKey = lane, lane
 		// Whatever cash or collateral sits idle, the step funds its own repay.
 		for _, cash := range []int64{0, 99, 101} {

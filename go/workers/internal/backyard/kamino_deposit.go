@@ -17,7 +17,7 @@ import (
 func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot int64, maximum uint64) (uint64, error) {
 	a := accountAt(accounts, route.Kamino.CollateralReserve)
 	r, err := decodeKaminoReserve(a, route.Kamino.CollateralMint, route.Kamino)
-	if err != nil || r.collateralMintSupply == 0 || maximum == 0 || maximum > math.MaxInt64 {
+	if err != nil || r.terms.CollateralMintTotalSupply == 0 || maximum == 0 || maximum > math.MaxInt64 {
 		return 0, staleHoldFrom(err, "deposit_rounding_reserve_unavailable")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
@@ -48,8 +48,8 @@ func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot 
 	if err != nil {
 		return 0, err
 	}
-	loss := upper / r.collateralMintSupply
-	if upper%r.collateralMintSupply != 0 {
+	loss := upper / r.terms.CollateralMintTotalSupply
+	if upper%r.terms.CollateralMintTotalSupply != 0 {
 		loss++
 	}
 	if loss == 0 || loss >= maximum {

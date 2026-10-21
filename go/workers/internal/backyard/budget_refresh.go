@@ -21,7 +21,7 @@ func budgetReserveRefreshInstructions(v *Vault, lane string) ([]compiledInstruct
 	seen := map[publicKey]bool{}
 	var instructions []compiledInstruction
 	for _, id := range []string{lane, PrimeUSDCLaneID} {
-		prefix := kaminoPrimeUSDCRefreshInstructionsForRoute(v, id)
+		prefix := kaminoRefreshInstructionsForRoute(v, id)
 		if len(prefix) != 3 {
 			return nil, staleHold("price_refresh_binding_unavailable")
 		}
@@ -84,7 +84,7 @@ func simulateBudgetRefreshInstructionsWithOptional(ctx context.Context, c *chain
 	// capture address rides along as a read-only static key. The fee payer is
 	// already a message key; capture adds no signer, no write permission, and
 	// no new instruction.
-	feePayer := mustKey(bridgeDelegate)
+	feePayer := mustKey(backyardDelegate)
 	capture := make([]publicKey, 0, len(addresses))
 	seenCapture := map[publicKey]bool{}
 	for _, address := range addresses {

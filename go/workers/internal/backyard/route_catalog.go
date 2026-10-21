@@ -184,7 +184,7 @@ func ObservationReserves() []ObservationReserve {
 var usdcReference = primePRIMEUSDCTemplate.Kamino
 
 var mapleSyrupUSDCUSDCTemplate = RuntimeRoute{
-	Lane: SelectedRouteID, Protocol: "Maple", CollateralSymbol: "syrupUSDC", DebtSymbol: "USDC",
+	Lane: MapleSyrupUSDCLaneID, Protocol: "Maple", CollateralSymbol: "syrupUSDC", DebtSymbol: "USDC",
 	Kamino: KaminoObservationConfig{
 		Program:           kamino.ProgramID.String(),
 		Market:            fleet.KaminoMapleMarket,
@@ -192,7 +192,7 @@ var mapleSyrupUSDCUSDCTemplate = RuntimeRoute{
 		CollateralReserve: "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY",
 		CollateralMint:    "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj",
 		DebtReserve:       "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo",
-		DebtMint:          bridgeUSDC,
+		DebtMint:          fleet.USDCMint,
 	},
 	CollateralLiquiditySupply: "8Se5SK1Tty2bH4EQVrKW8hwr9Lc9E2cEbkaN59DpcB6i",
 	CollateralReceiptMint:     "9gQ8M4WiFepY9skYntJZ5N3joa3RByiPqao61gMfmGMu",
@@ -212,7 +212,7 @@ var onreONycUSDCRouteTemplate = RuntimeRoute{
 		CollateralReserve: "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ",
 		CollateralMint:    "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
 		DebtReserve:       "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z",
-		DebtMint:          bridgeUSDC,
+		DebtMint:          fleet.USDCMint,
 	},
 	CollateralLiquiditySupply: "9YuHgsPVGgWrkpsaRZmeZCV2uXweMEn6TEAcusQKRjgG",
 	CollateralReceiptMint:     "CtzvqjvpxJDXyraDjP2QrEr8b1xvGvxADRV7w29qrmxd",
@@ -229,7 +229,7 @@ var primePRIMEUSDCTemplate = RuntimeRoute{
 		Program: kamino.ProgramID.String(),
 		Market:  fleet.KaminoFigureMarket, MarketAuthority: "9SLBVnPz8dRGvafST6zNBZYSSt3HtdU68XQLGR13t3uM",
 		CollateralReserve: "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", CollateralMint: "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7",
-		DebtReserve: "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu", DebtMint: bridgeUSDC,
+		DebtReserve: "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu", DebtMint: fleet.USDCMint,
 	},
 	CollateralLiquiditySupply: "FkSkbRU5A6JXRXo5uaFwCS7jQ6jHYa1DxFtfpXfTz352", CollateralReceiptMint: "FMKBCGqipyj5dm9C58Rb9ZWYeneDzrxd3YaL6amgZ8gW",
 	CollateralReceiptSupply: "Eg4wKFWc8aGfAqrcmYu3paz2afY5VqJMo17K95Y4VqFN", DebtLiquiditySupply: "H6JUwz8c61eQnYUx8avGXydKztKPyGvgWAUjmZUPS3BC",

@@ -18,11 +18,11 @@ func TestMultiplyInitializerPinnedTopology(t *testing.T) {
 			ix.accounts[6].key != mustKey("78e2ZY7pcpQjhimGg9DUn8cipXaFPdpHEkd2YkMDNEr1") {
 			t.Fatal("PDA differs from captured initializer", lane)
 		}
-		outer, err := wrapSquadsKaminoPolicy(rwa, mustKey(backyardSettings), mustKey(bridgeDelegate), mustKey(bridgeDelegate), 0, ix)
+		outer, err := wrapSquadsKaminoPolicy(rwa, mustKey(backyardSettings), mustKey(backyardDelegate), mustKey(backyardDelegate), 0, ix)
 		if err != nil {
 			t.Fatal(err)
 		}
-		message, err := compileV1Message(mustKey(bridgeDelegate), mustKey(bridgeVault), []compiledInstruction{outer}, executionBudget(lane, 1))
+		message, err := compileV1Message(mustKey(backyardDelegate), mustKey(bridgeVault), []compiledInstruction{outer}, executionBudget(lane, 1))
 		if err != nil {
 			t.Fatal(err)
 		}

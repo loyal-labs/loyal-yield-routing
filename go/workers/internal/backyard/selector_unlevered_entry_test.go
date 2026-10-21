@@ -48,8 +48,8 @@ func TestUnblockedLaneKeepsTheLeveragedEntryAndBlockedMapleTakes1x(t *testing.T)
 	if q.Unlevered || q.BorrowReceiveRaw == 0 || q.Cost.Step.TotalMicros <= 0 {
 		t.Fatalf("unblocked OnRe lost its leveraged entry: %+v", q)
 	}
-	m, rpc, client, _ = selectorDestinationFixtureForLane(t, SelectedRouteID, blockDebtUtilization(t, SelectedRouteID))
-	q, err = testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 1_000_000), leveredTestMarket(SelectedRouteID), 1_000_000)
+	m, rpc, client, _ = selectorDestinationFixtureForLane(t, MapleSyrupUSDCLaneID, blockDebtUtilization(t, MapleSyrupUSDCLaneID))
+	q, err = testLanePricer(t, rpc, client, m, 42).priceEntry(context.Background(), flatEntryObservation(42, 1_000_000), leveredTestMarket(MapleSyrupUSDCLaneID), 1_000_000)
 	if err != nil || !q.Unlevered || q.BorrowReceiveRaw != 0 {
 		t.Fatalf("blocked Maple did not price the 1x entry: %+v %v", q, err)
 	}

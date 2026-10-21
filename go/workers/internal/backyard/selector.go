@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // Capital amounts are raw USDC (six decimals). Forecasts are estimates only;
@@ -481,7 +483,7 @@ func SelectOpportunity(in SelectorInput, previous SelectorState) SelectorResult 
 		// The gross display forecast compares RAW debt units with a USDC
 		// allocation — exact only for USDC-debt lanes, so it stays USDC-only.
 		l, known := findEarnLane(lane)
-		unpricedDebt := !known || l.route.Kamino.DebtMint != bridgeUSDC
+		unpricedDebt := !known || l.route.Kamino.DebtMint != fleet.USDCMint
 		amount, known := m.EntryCapacity.amount(allocation)
 		displayAmount := amount
 		if !known {
