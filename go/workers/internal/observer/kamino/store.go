@@ -11,20 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/backyard"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 func earnMaxObservationTargets() []Target {
 	rows := [][3]string{
-		{"47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8", "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ", "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5"},
-		{"47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8", "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},
-		{"47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8", "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"},
-		{"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"},
-		{"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},
-		{"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"},
-		{"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"},
-		{"6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y", "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY", "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj"},
-		{"6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y", "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"},
-		{"6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y", "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo"},
+		{fleet.KaminoOnReMarket, "6ZxkBSJEqsXA3Kdm2PDAzHLUdPTPUK93Lf4bAezec1UQ", "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5"},
+		{fleet.KaminoOnReMarket, "AYL4LMc4ZCVyq3Z7XPJGWDM4H9PiWjqXAAuuHBEGVR2Z", fleet.USDCMint},
+		{fleet.KaminoOnReMarket, "3yDc9ARvtPLhYxZLgucZGuBtZ9bHshBvXTwHxGe3nhmC", fleet.USDSMint},
+		{fleet.KaminoFigureMarket, "BUTND9T7Ux4KR8RAEgd4WoZwnP7xA279oA1y3iPVcvSh", "3b8X44fLF9ooXaUm3hhSgjpmVs6rZZ3pPoGnGahc3Uu7"},
+		{fleet.KaminoFigureMarket, "9GJ9GBRwCp4pHmWrQ43L5xpc9Vykg7jnfwcFGN8FoHYu", fleet.USDCMint},
+		{fleet.KaminoFigureMarket, "3ZUAwhEtK8XWfK4fy98z4yoptm4GeyeAu21L11HPXaZ5", fleet.PYUSDMint},
+		{fleet.KaminoFigureMarket, "7SzMWArC8WAenndXFmRyfvcvrNPodqUFkmPrmmoRZvn4", fleet.USDSMint},
+		{fleet.KaminoMapleMarket, "AwCyCPZYJSZ93xcVKNK7jR8e1BHzJXq1D4bReNuh9woY", "AvZZF1YaZDziPY2RCK4oJrRVrbN3mTD9NL24hPeaZeUj"},
+		{fleet.KaminoMapleMarket, "Atj6UREVWa7WxbF2EMKNyfmYUY1U1txughe2gjhcPDCo", fleet.USDCMint},
+		{fleet.KaminoMapleMarket, "92qeAka3ZzCGPfJriDXrE7tiNqfATVCAM6ZjjctR3TrS", fleet.PYUSDMint},
 	}
 	targets := make([]Target, 0, len(rows))
 	for _, row := range rows {

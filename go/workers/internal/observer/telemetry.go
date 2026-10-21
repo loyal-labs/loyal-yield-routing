@@ -9,13 +9,15 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
 // These four Loyal product mints have six decimal liquidity units. Financial
 // amounts remain integers; float64 is used only for the published price ratio.
-const USDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+const USDCMint = fleet.USDCMint
 
-var stableMints = []string{USDCMint, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA"}
+var stableMints = []string{USDCMint, fleet.USDTMint, fleet.PYUSDMint, fleet.USDSMint}
 
 func supportedMint(mint string) bool {
 	for _, known := range stableMints {

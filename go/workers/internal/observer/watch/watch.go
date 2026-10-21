@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -41,6 +42,8 @@ var stablecoins = func() []Stablecoin {
 	}
 	return coins
 }()
+
+func Stablecoins() []Stablecoin { return slices.Clone(stablecoins) }
 
 var safeMarkets = kaminocatalog.PolicyMarketKeys("safe")
 
