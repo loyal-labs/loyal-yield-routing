@@ -53,7 +53,7 @@ func TestWithdrawalResidualDebtCleanupPreservesAliasedClaimAndExactAmount(t *tes
 	}
 	observed.DebtCustody(SyrupUsdcPyusd).AmountRaw = 250_001
 	decision := NextAction(route, observed, topology)
-	if decision.Kind != "execute" || decision.Plan.Action != ActionSwapDebtToCollateral || decision.Plan.StrategyKey != SyrupUsdcPyusd || decision.Plan.Amount.Exactly != 250_001 {
+	if decision.Kind != "execute" || decision.Plan.Action != ActionSwapDebtToCollateral || decision.Plan.StrategyKey != SyrupUsdcPyusd || decision.Plan.Amount != AmountExact(250_001) {
 		t.Fatalf("orphan borrowed custody disappeared: %+v", decision)
 	}
 	quotes := &residualQuoteFixture{topology: topology}
@@ -68,7 +68,7 @@ func TestWithdrawalResidualDebtCleanupPreservesAliasedClaimAndExactAmount(t *tes
 	observed.DebtCustody(SyrupUsdcPyusd).AmountRaw = 0
 	observed.CollateralCustody(SyrupUsdcPyusd).AmountRaw = 246_263
 	decision = NextAction(route, observed, topology)
-	if decision.Kind != "execute" || decision.Plan.Action != ActionSwapCollateralToClaim || decision.Plan.Amount.Exactly != 246_263 {
+	if decision.Kind != "execute" || decision.Plan.Action != ActionSwapCollateralToClaim || decision.Plan.Amount != AmountExact(246_263) {
 		t.Fatalf("residual collateral never returned to claim custody: %+v", decision)
 	}
 }

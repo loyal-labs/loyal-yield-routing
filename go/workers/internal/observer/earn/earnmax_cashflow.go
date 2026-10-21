@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
-	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/multiply"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/observer/watch"
 	"github.com/solana-foundation/solana-go/v2"
@@ -58,7 +57,7 @@ func readCustodyTransfer(ctx context.Context, rpc *chain.Client, signature strin
 	transaction, keys := read.Transaction, read.Keys
 	loaded := keys[len(transaction.Message.AccountKeys):]
 	tables := map[solana.PublicKey]solana.PublicKeySlice{}
-	slots := fleet.LoadedLookupSlots(transaction.Message.AddressTableLookups)
+	slots := chain.LoadedLookupSlots(transaction.Message.AddressTableLookups)
 	if len(slots) > len(loaded) {
 		return nil, errors.New("Earn MAX cash-flow loaded addresses do not cover the lookups")
 	}

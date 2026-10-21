@@ -70,7 +70,7 @@ func setupFixture(t *testing.T, stage SetupStage) (*SweepWireBuilder, DepositPla
 	}
 	setup := DestinationSetupPlan{Stage: stage, Account: address, Route: route, ObservedSlot: 500}
 	if len(built.Protected) > 0 {
-		policy, err := fleet.BuildExactPolicyFixture(plan.Target.Settings, delegate, 1, built.Protected)
+		policy, err := exactPolicyFixture(plan.Target.Settings, delegate, 1, built.Protected)
 		if err != nil {
 			t.Fatal(err)
 		}

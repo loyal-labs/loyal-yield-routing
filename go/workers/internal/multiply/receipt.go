@@ -83,22 +83,22 @@ func validateConfirmedReceipt(op *MultiplyOperation, topology *EarnMaxTopology, 
 		return nil, err
 	}
 	static := append(solana.PublicKeySlice(nil), tx.Message.AccountKeys...)
-	var writable, readonly solana.PublicKeySlice
-	for _, lookup := range tx.Message.GetAddressTableLookups() {
-		addresses, ok := tables[lookup.AccountKey]
-		if !ok {
+	lookups := tx.Message.GetAddressTableLookups()
+	for _, lookup := range lookups {
+		if _, ok := tables[lookup.AccountKey]; !ok {
 			return nil, errors.New("receipt omitted exact ALT vector")
 		}
-		for _, pair := range []struct {
-			indexes []uint8
-			out     *solana.PublicKeySlice
-		}{{lookup.WritableIndexes, &writable}, {lookup.ReadonlyIndexes, &readonly}} {
-			for _, index := range pair.indexes {
-				if int(index) >= len(addresses) {
-					return nil, errors.New("receipt ALT index is outside exact vector")
-				}
-				*pair.out = append(*pair.out, addresses[index])
-			}
+	}
+	var writable, readonly solana.PublicKeySlice
+	for _, slot := range chain.LoadedLookupSlots(lookups) {
+		addresses := tables[slot.Table]
+		if int(slot.Index) >= len(addresses) {
+			return nil, errors.New("receipt ALT index is outside exact vector")
+		}
+		if slot.Readonly {
+			readonly = append(readonly, addresses[slot.Index])
+		} else {
+			writable = append(writable, addresses[slot.Index])
 		}
 	}
 	keys := append(append(static, writable...), readonly...)
