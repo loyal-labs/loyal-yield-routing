@@ -168,10 +168,11 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 }
 
 func moveFitsReserves(source, target ReserveState, position VaultPosition) string {
-	if source.AvailableLiquidityRaw == nil {
+	available := source.AvailableLiquidityUSDMicros()
+	if available == nil {
 		return "source_liquidity_unknown"
 	}
-	withdrawable, ok := sumInt64(*source.AvailableLiquidityRaw, -position.SourceCommittedOutflowUSDMicros)
+	withdrawable, ok := sumInt64(*available, -position.SourceCommittedOutflowUSDMicros)
 	if !ok || withdrawable < position.AmountRaw {
 		return "source_liquidity_exhausted"
 	}

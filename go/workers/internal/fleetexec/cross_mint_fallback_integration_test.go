@@ -46,10 +46,10 @@ func crossMintFallbackFixture(t *testing.T, primaryEligible bool) (*CrossMintCon
 	}
 	b := seededBaseline{Cluster: m.Cluster, DecisionID: m.DecisionID, OpportunityID: m.OpportunityID, EpochID: m.OptimizerEpochID}
 	credit := int64(999000000)
-	e := CrossMintExpectedEffect{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: m.CustodyAmountRaw}, CreditMint: crossString(m.TargetMint), CreditTokenAccount: crossString(ata), MinimumCreditAmountRaw: &credit}
-	pre := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: *m.CustodyObservedBalanceRaw}, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: 7}}
-	effect := CrossMintEffect{Debit: e.Debit, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: credit}}
-	post := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenAmount{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: 50}, Credit: &fleet.CrossMintTokenAmount{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: credit + 7}}
+	e := CrossMintExpectedEffect{Debit: &fleet.CrossMintTokenDelta{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: m.CustodyAmountRaw}, CreditMint: crossString(m.TargetMint), CreditTokenAccount: crossString(ata), MinimumCreditAmountRaw: &credit}
+	pre := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenBalance{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: *m.CustodyObservedBalanceRaw}, Credit: &fleet.CrossMintTokenBalance{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: 7}}
+	effect := CrossMintEffect{Debit: e.Debit, Credit: &fleet.CrossMintTokenDelta{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: credit}}
+	post := fleet.CrossMintAnchors{Debit: &fleet.CrossMintTokenBalance{Mint: m.SourceMint, TokenAccount: m.CustodyAccount, AmountRaw: 50}, Credit: &fleet.CrossMintTokenBalance{Mint: m.TargetMint, TokenAccount: ata, AmountRaw: credit + 7}}
 	l := seedCrossMintReceiptAttempt(t, ctx, pool, b, LegSwap, PurposeOptimizeYield, e, pre, 1015)
 	m, err = r.store.ReconcileCrossMintLeg(ctx, l, CrossMintReconciliation{FinalizedSlot: 1015, Effect: effect, BalanceAnchors: post})
 	if err != nil {

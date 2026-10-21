@@ -53,7 +53,7 @@ func parseCrossMintAnchors(raw []byte) (fleet.CrossMintAnchors, error) {
 		return a, errors.New("cross-mint no-effect proof has no token custody anchors")
 	}
 	seen := map[string]bool{}
-	for _, anchor := range []*fleet.CrossMintTokenAmount{a.Debit, a.Credit} {
+	for _, anchor := range []*fleet.CrossMintTokenBalance{a.Debit, a.Credit} {
 		if anchor == nil {
 			continue
 		}
@@ -183,9 +183,9 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 		return nil, err
 	}
 	recognized := newJournalSignatures(known)
-	tokenAnchors := []*fleet.CrossMintTokenAmount{}
+	tokenAnchors := []*fleet.CrossMintTokenBalance{}
 	addresses := []string{}
-	for _, a := range []*fleet.CrossMintTokenAmount{anchors.Debit, anchors.Credit} {
+	for _, a := range []*fleet.CrossMintTokenBalance{anchors.Debit, anchors.Credit} {
 		if a != nil {
 			tokenAnchors = append(tokenAnchors, a)
 			addresses = append(addresses, a.TokenAccount)
