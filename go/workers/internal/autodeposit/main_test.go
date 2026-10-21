@@ -14,7 +14,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	chain.LandResendEvery, landWindow = time.Millisecond, 200*time.Millisecond
+	chain.LandResendEvery, blockhashLandWindow = time.Millisecond, 200*time.Millisecond
 	os.Exit(m.Run())
 }
 

@@ -168,8 +168,6 @@ func coalesce(first, second *string) *string {
 	return second
 }
 
-// supportedReserveCatalogLockKey is loyal-kamino-data timescale.rs
-// SUPPORTED_RESERVE_CATALOG_LOCK_KEY, shared with the Rust explicit sync.
 const supportedReserveCatalogLockKey int64 = 5_499_540_200_513_620
 
 func (s *Store) RefreshSupportedReserves(ctx context.Context, records []SupportedReserveRecord) error {

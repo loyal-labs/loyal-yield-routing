@@ -1,5 +1,3 @@
-// Package anchor derives Anchor's 8-byte account and instruction
-// discriminators from their names and frames Borsh Options.
 package anchor
 
 import (

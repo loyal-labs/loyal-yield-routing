@@ -18,12 +18,8 @@ type PolicyAccountView struct {
 	Payload         PolicyPayloadView
 }
 
-// DecodeCanonicalPolicy returns nil for "not a canonical ProgramInteraction
-// policy", which callers treat as a mismatch, never as authority to proceed. Canonical is one full-permission signer, threshold 1,
-// no time lock, hooks or expiration, and the policy's own bump. What the
-// policy authorizes, spending limits included, is Payload.Policy, which a
-// caller compares to the policy it executes through (Policy.Equal,
-// FindPolicy).
+var ErrNotCanonical = errors.New("policy account is not a canonical ProgramInteraction policy")
+
 func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
 	if account == nil || account.Owner != ProgramID || account.Executable {
 		return nil, errors.New("policy account is absent or not owned by Squads")
@@ -37,7 +33,7 @@ func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
 		return nil, err
 	}
 	if h.Kind != policyKindProgramInteraction {
-		return nil, nil
+		return nil, ErrNotCanonical
 	}
 	var candidates []FullPayload
 	for _, compact := range []bool{false, true} {
@@ -50,7 +46,7 @@ func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
 		return nil, err
 	}
 	if len(h.Signers) != 1 || h.Permissions[0] != FullPermissions || h.Threshold != 1 || h.TimeLock != 0 || h.StaleTransactionIndex > h.TransactionIndex || h.Bump != expectedBump {
-		return nil, nil
+		return nil, ErrNotCanonical
 	}
 	var valid []PolicyPayloadView
 	for _, candidate := range candidates {
@@ -59,7 +55,7 @@ func DecodeCanonicalPolicy(account *chain.Account) (*PolicyAccountView, error) {
 		}
 	}
 	if len(valid) == 0 {
-		return nil, nil
+		return nil, ErrNotCanonical
 	}
 	for _, candidate := range valid[1:] {
 		if !candidate.Policy.Equal(valid[0].Policy) {

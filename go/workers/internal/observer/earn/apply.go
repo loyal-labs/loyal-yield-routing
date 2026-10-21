@@ -305,18 +305,19 @@ func observedOrNow(value *time.Time) time.Time {
 }
 
 func applyPolicyOnly(ctx context.Context, tx pgx.Tx, m EarnPolicyOnlyMutation) error {
-	if _, err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
-		return err
-	}
-	route, err := upsertPolicy(ctx, tx, m.RoutePolicy)
+	targets, err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey)
 	if err != nil {
 		return err
 	}
-	setup, err := upsertPolicy(ctx, tx, m.SetupPolicy)
+	route, err := upsertPolicy(ctx, tx, targets, m.RoutePolicy)
 	if err != nil {
 		return err
 	}
-	if _, err = upsertVaultWithSetup(ctx, tx, route, setup, m.RoutePolicy); err != nil {
+	setup, err := upsertPolicy(ctx, tx, targets, m.SetupPolicy)
+	if err != nil {
+		return err
+	}
+	if _, err = upsertVaultWithSetup(ctx, tx, targets, route, setup, m.RoutePolicy); err != nil {
 		return err
 	}
 	routeSlot, err := slotBigint(m.RoutePolicy.Slot)
@@ -354,24 +355,25 @@ func applyPolicyOnly(ctx context.Context, tx pgx.Tx, m EarnPolicyOnlyMutation) e
 type managedVault struct{ id, activePolicyID int64 }
 
 func applyDeposit(ctx context.Context, tx pgx.Tx, m EarnDepositMutation) error {
-	if _, err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey); err != nil {
+	targets, err := autodeposit.LockVaultTargets(ctx, tx, m.RoutePolicy.Settings, int16(m.RoutePolicy.VaultIndex), m.RoutePolicy.VaultPubkey)
+	if err != nil {
 		return err
 	}
-	route, err := upsertPolicy(ctx, tx, m.RoutePolicy)
+	route, err := upsertPolicy(ctx, tx, targets, m.RoutePolicy)
 	if err != nil {
 		return err
 	}
 	var vaultID int64
 	if m.SetupPolicy != nil {
-		setup, err := upsertPolicy(ctx, tx, *m.SetupPolicy)
+		setup, err := upsertPolicy(ctx, tx, targets, *m.SetupPolicy)
 		if err != nil {
 			return err
 		}
-		vaultID, err = upsertVaultWithSetup(ctx, tx, route, setup, m.RoutePolicy)
+		vaultID, err = upsertVaultWithSetup(ctx, tx, targets, route, setup, m.RoutePolicy)
 		if err != nil {
 			return err
 		}
-	} else if vaultID, err = upsertVault(ctx, tx, route, m.RoutePolicy); err != nil {
+	} else if vaultID, err = upsertVault(ctx, tx, targets, route, m.RoutePolicy); err != nil {
 		return err
 	}
 	var vault managedVault

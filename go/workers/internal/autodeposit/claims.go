@@ -352,9 +352,6 @@ WHERE scheduled_slot_id = $1 AND status = 'open' AND remaining_amount_raw > 0`, 
 	return nil
 }
 
-// LoadExistingClaim returns the durable state of a claim token, or nil when the
-// token is unknown. Recovery paths call this before doing anything else so a
-// retried execution resumes its own claim instead of taking a new one.
 func (s *Store) LoadExistingClaim(ctx context.Context, claimToken string, targetID int64) (*ClaimOutcome, error) {
 	if s == nil || s.pool == nil {
 		return nil, errors.New("autodeposit store has no database pool")

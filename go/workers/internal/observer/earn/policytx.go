@@ -215,7 +215,6 @@ func parseEarnMaxIntent(data []byte) (*EarnMaxIntent, error) {
 		}
 		return &EarnMaxIntent{Withdraw: &EarnMaxWithdrawIntent{RequestID: fields[4], DestinationAccount: fields[6], AmountRaw: amount}}, nil
 	case len(fields) == 5 && fields[3] == "cancel" && validRequestID(fields[4]):
-		// Rust u64::from_str accepts one leading '+'.
 		return &EarnMaxIntent{Cancel: &EarnMaxCancelIntent{RequestID: fields[4]}}, nil
 	case len(fields) >= 4 && (fields[3] == "deposit" || fields[3] == "claim"):
 		return nil, nil

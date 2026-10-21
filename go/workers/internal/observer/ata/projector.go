@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// ProjectorConfig bounds the single-threaded capture-to-Yield projection loop.
 type ProjectorConfig struct {
 	Cluster      string
 	BatchLimit   int
@@ -21,9 +20,6 @@ type ProjectorConfig struct {
 	OnError      func(error)
 }
 
-// Projector borrows both pools. It never owns signing or RPC capabilities.
-// Capture publishes event IDs in commit order (lockCaptureStream), so the
-// scalar cursor is a complete frontier. Sequence gaps are legitimate.
 type Projector struct {
 	capture      *pgxpool.Pool
 	yield        *pgxpool.Pool

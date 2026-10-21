@@ -33,9 +33,6 @@ RETURNING last_event_id`, p.consumer).Scan(&cursor); err != nil {
 		if event.id <= cursor {
 			continue
 		}
-		// Source IDs are global to the stream, not scoped to a chain. Consume
-		// known foreign namespaces without projecting them into unscoped Yield
-		// financial tables. Unknown namespaces are rejected by readCapture.
 		if event.cluster != p.cluster {
 			outcome.LastEventID = event.id
 			continue

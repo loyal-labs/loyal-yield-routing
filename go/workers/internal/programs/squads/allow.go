@@ -14,20 +14,31 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// Slot is what one account position of a constraint admits: any account, one
-// of Keys, or an account whose data matches Data. Owner, when set, also pins
-// the account's owner program. The zero Slot admits nothing a policy can say,
-// so Allow refuses it: a slot is free only when the literal says Any.
+// Slot is what one account position of a constraint admits: Any account, one
+// of the keys of a Pin, or an account whose data a Match states.
 type Slot struct {
-	Any   bool
-	Keys  []solana.PublicKey
-	Data  []DataConstraintView
-	Owner *solana.PublicKey
+	kind  slotKind
+	keys  []solana.PublicKey
+	data  []DataConstraintView
+	owner *solana.PublicKey
 }
 
-var Any = Slot{Any: true}
+type slotKind uint8
 
-func Pin(keys ...solana.PublicKey) Slot { return Slot{Keys: keys} }
+const (
+	slotUnset slotKind = iota
+	slotAny
+	slotPinned
+	slotMatched
+)
+
+var Any = Slot{kind: slotAny}
+
+func Pin(keys ...solana.PublicKey) Slot { return Slot{kind: slotPinned, keys: keys} }
+
+func Match(owner solana.PublicKey, data ...DataConstraintView) Slot {
+	return Slot{kind: slotMatched, data: data, owner: &owner}
+}
 
 func Unpinned(solana.PublicKey) Slot { return Any }
 
@@ -71,13 +82,13 @@ func Slots(program solana.PublicKey, slots []AccountSlot[Slot]) []Slot {
 	out := make([]Slot, len(slots))
 	for i, s := range slots {
 		out[i] = s.Key
-		if s.Optional && len(s.Key.Keys) > 0 {
-			out[i].Keys = make([]solana.PublicKey, len(s.Key.Keys))
-			for j, key := range s.Key.Keys {
+		if s.Optional && len(s.Key.keys) > 0 {
+			out[i].keys = make([]solana.PublicKey, len(s.Key.keys))
+			for j, key := range s.Key.keys {
 				if key.IsZero() {
 					key = program
 				}
-				out[i].Keys[j] = key
+				out[i].keys[j] = key
 			}
 		}
 	}
@@ -89,17 +100,16 @@ func Slots(program solana.PublicKey, slots []AccountSlot[Slot]) []Slot {
 // discriminator first, then any bound on its arguments), and what each
 // account slot admits. Program packages call it with their instruction's own
 // account order, so a builder and the constraint that admits it cannot
-// disagree. A slot that is neither Any nor constrained is a literal that
-// forgot a field, and Allow panics on it.
+// disagree.
 func Allow(program solana.PublicKey, data []DataConstraintView, slots []Slot) InstructionConstraintView {
 	out := InstructionConstraintView{ProgramID: program, DataConstraints: data}
 	for index, slot := range slots {
 		switch {
-		case slot.Any:
-		case len(slot.Keys) > 0 && len(slot.Data) == 0:
-			out.AccountConstraints = append(out.AccountConstraints, AccountConstraintView{AccountIndex: uint8(index), Pubkeys: slot.Keys, Owner: slot.Owner})
-		case len(slot.Keys) == 0 && len(slot.Data) > 0:
-			out.AccountConstraints = append(out.AccountConstraints, AccountConstraintView{AccountIndex: uint8(index), AccountData: slot.Data, Owner: slot.Owner})
+		case slot.kind == slotAny:
+		case slot.kind == slotPinned && len(slot.keys) > 0:
+			out.AccountConstraints = append(out.AccountConstraints, AccountConstraintView{AccountIndex: uint8(index), Pubkeys: slot.keys, Owner: slot.owner})
+		case slot.kind == slotMatched && len(slot.data) > 0:
+			out.AccountConstraints = append(out.AccountConstraints, AccountConstraintView{AccountIndex: uint8(index), AccountData: slot.data, Owner: slot.owner})
 		default:
 			panic(fmt.Sprintf("constraint for %s leaves account %d unset", program, index))
 		}

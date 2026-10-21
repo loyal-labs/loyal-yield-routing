@@ -41,7 +41,7 @@ func TestDecodeVoltrWithdrawalReceiptRequiresExactDeployedLayoutAndPDA(t *testin
 	vault, user := testPublicKey(11), testPublicKey(44)
 	address, data := receiptFixture(t, vault, user, 7, 3<<48)
 	decoded, err := DecodeVoltrWithdrawalReceipt(ConfirmedAccount{Address: address, Owner: program, Lamports: 1, Data: data}, address, vault, 10)
-	if err != nil || decoded.User.String() != user || decoded.LPEscrowedRaw != 7 || decoded.UpperBoundAssetRaw != 3 || decoded.Version != 0 {
+	if err != nil || decoded.User.String() != user || decoded.LPEscrowedRaw != 7 || decoded.UpperBoundAssetRaw() != 3 || decoded.Version != 0 {
 		t.Fatalf("decoded=%+v err=%v", decoded, err)
 	}
 	badPadding := append([]byte(nil), data...)

@@ -93,9 +93,6 @@ func UnmarshalDepositPlan(raw []byte) (DepositPlan, error) {
 
 const ClaimLease = 10 * time.Minute
 
-// AcquireClaimLease takes executor ownership of a selected claim. It succeeds
-// only when no live lease exists, so two executors can never both prepare a
-// pull for one claim.
 func (s *Store) AcquireClaimLease(ctx context.Context, claimToken string, targetID int64, leaseToken string) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 UPDATE loyal_yield.balance_sweep_lot_claims
@@ -148,10 +145,6 @@ WHERE claim_token = $1
 	return nil
 }
 
-// FreezeDepositPlan stores the immutable destination/amount intent on the claim
-// and returns the plan that is actually frozen. The COALESCE means an existing
-// plan wins: a retry can never repoint pulled funds at a different reserve, and
-// the database trigger rejects any attempted rewrite.
 func (s *Store) FreezeDepositPlan(ctx context.Context, claimToken, leaseToken string, plan DepositPlan) (DepositPlan, error) {
 	frozen, err := MarshalDepositPlan(plan)
 	if err != nil {

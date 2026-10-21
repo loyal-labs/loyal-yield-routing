@@ -13,8 +13,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/fleet"
 )
 
-// These four Loyal product mints have six decimal liquidity units. Financial
-// amounts remain integers; float64 is used only for the published price ratio.
 const USDCMint = fleet.USDCMint
 
 var stableMints = []string{USDCMint, fleet.USDTMint, fleet.PYUSDMint, fleet.USDSMint}
@@ -235,9 +233,6 @@ func AggregateAllocation(vaults []FleetVault, now time.Time) (AllocationSample, 
 	return sample, nil
 }
 
-// SnapshotSharePrices preserves the real snapshot's slot/hour. It chooses the
-// largest recent collateral position to limit integer-rounding noise, exactly
-// as earn-fleet-allocation.shared.ts; it never prices unknown conversion units.
 func SnapshotSharePrices(vaults []FleetVault, now time.Time) []SharePrice {
 	largest := map[string]*big.Int{}
 	prices := map[string]SharePrice{}
@@ -415,9 +410,6 @@ func SimulatePublicModel(rows []ModelReserve, start, end time.Time) (PublicModel
 	return result, nil
 }
 
-// BenchmarkModel follows timescaleReserveApySamplesToEarnHistorySamples: accrue
-// the last actual rate over each interval, then annualize the cumulative return.
-// Before the first supplied rate this public model holds cash (zero return).
 func BenchmarkModel(rows []ModelReserve, start, end time.Time) ([]ModelPoint, error) {
 	if !end.After(start) || len(rows) == 0 || len(rows) > 100_000 {
 		return nil, errors.New("benchmark evidence/window missing")

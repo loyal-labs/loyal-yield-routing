@@ -158,6 +158,7 @@ WHERE lot.target_id = ANY($2::bigint[])
 // VaultTargets is the set of a vault's targets this transaction holds FOR UPDATE; only LockVaultTargets makes one.
 type VaultTargets struct{ held []lockedTarget }
 
+// GateVaultTargets is taken first by LockVaultTargets and by every adder or activator of a vault's target.
 func GateVaultTargets(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('autodeposit-vault-targets:%s:%s:%s', $1::text, $2::smallint, $3::text), 0::bigint))`, settings, vaultIndex, vaultPubkey); err != nil {
 		return fmt.Errorf("gate autodeposit targets of vault %s: %w", vaultPubkey, err)
@@ -165,7 +166,6 @@ func GateVaultTargets(ctx context.Context, tx pgx.Tx, settings string, vaultInde
 	return nil
 }
 
-// LockVaultTargets takes GateVaultTargets, which every adder or activator of a vault's target also takes first, then the vault's targets in id order, and returns the held set; every writer of the vault's managed_vaults or route_policies rows calls it first.
 func LockVaultTargets(ctx context.Context, tx pgx.Tx, settings string, vaultIndex int16, vaultPubkey string) (VaultTargets, error) {
 	if err := GateVaultTargets(ctx, tx, settings, vaultIndex, vaultPubkey); err != nil {
 		return VaultTargets{}, err

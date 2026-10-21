@@ -28,7 +28,7 @@ func DecodeVoltrWithdrawalReceipt(account ConfirmedAccount, address, vault strin
 	if receipt.Vault.String() != vault {
 		return VoltrWithdrawalReceipt{}, fmt.Errorf("receipt vault mismatch")
 	}
-	if receipt.UpperBoundAssetRaw > vaultCapRaw {
+	if receipt.UpperBoundAssetRaw() > vaultCapRaw {
 		return VoltrWithdrawalReceipt{}, fmt.Errorf("receipt amount exceeds approved cap")
 	}
 	expected, bump, err := voltr.WithdrawalReceiptAddress(receipt.Vault, receipt.User)

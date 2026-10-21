@@ -181,7 +181,6 @@ type StakePrice struct {
 	Timestamp, MaxStaleness int64
 }
 
-// DecodeStakePrice decodes the stake program's StakePriceConfig.
 func DecodeStakePrice(a *chain.Account) (StakePrice, error) {
 	if a == nil {
 		return StakePrice{}, errors.New("Hastra stake price config is absent")
