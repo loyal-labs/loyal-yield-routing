@@ -148,8 +148,6 @@ func (h *Handler) Seed(ctx context.Context) (uint64, error) {
 	return minimum, nil
 }
 
-// decodeObservation settles a closed account, or one that is not a USDC token
-// account, to zero on its own bytes: no routeable USDC is at that address.
 func decodeObservation(target watch.ATATarget, pubkey string, lamports uint64, ownerBytes, data []byte, slot uint64, source string, signature *string, received time.Time) (observation, error) {
 	if slot == 0 || slot > math.MaxInt64 {
 		return observation{}, fmt.Errorf("ATA slot is invalid")

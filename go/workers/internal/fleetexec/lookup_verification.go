@@ -9,8 +9,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// Verification is read-only on chain, including while family controls pause
-// mutations. It cannot adopt a signature or infer absent account success.
 func (s *Store) finishLookupVerification(ctx context.Context, op LookupOperation, snapshot LookupSnapshot) error {
 	i := op.Intent
 	if i.Kind != LookupVerify || snapshot.Address != i.TableAddress || snapshot.Slot <= 0 || snapshot.Absent || snapshot.Owner != lookupProgram || snapshot.Authority != i.Authority || !lookupSameAddresses(snapshot.Addresses, i.Prefix) || len(i.Extension) != 0 || snapshot.DeactivationSlot != math.MaxUint64 || snapshot.Slot <= int64(snapshot.LastExtendedSlot) {
@@ -30,8 +28,6 @@ func (s *Store) finishLookupVerification(ctx context.Context, op LookupOperation
 		if !unsigned {
 			return errors.New("lookup verification cannot replace owned signed mutation")
 		}
-		// Source Verify publishes a new confirmed-membership projection version;
-		// it is atomic with completion here, so a restart cannot advance it twice.
 		tag, err := tx.Exec(ctx, `UPDATE loyal_yield.route_lookup_tables SET desired_state=CASE WHEN desired_state IN ('preparing','warming') THEN 'active' ELSE desired_state END,status='usable',usable_address_count=address_count,mutation_epoch=mutation_epoch+1,last_extended_slot=$4,last_extended_start_index=$5,last_verified_slot=$3,last_verified_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 AND mutation_epoch=$2 AND mutation_epoch<9223372036854775807 AND desired_state IN ('preparing','warming','active','standby','retiring') AND (last_verified_slot IS NULL OR last_verified_slot<=$3)`, i.TableID, i.MutationEpoch, snapshot.Slot, int64(snapshot.LastExtendedSlot), int(snapshot.LastExtendedStartIndex))
 		if err != nil {
 			return err

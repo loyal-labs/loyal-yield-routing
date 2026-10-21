@@ -13,16 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Hourly Earn APY snapshots, ported from balance-sweep-ata-monitor
-// earn_apy.rs: a time-weighted 30-day trailing APY of the best eligible
-// Kamino stable reserve per sample hour, Timescale reserve updates in, one
-// loyal_yield.earn_apy_hourly_snapshots row per strategy and hour out. The
-// table is owned by the existing production schema; the Go refresher never
-// creates it.
-
 const mainUSDCReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
 
-// APYStrategy is one published fee-aware strategy.
 type APYStrategy struct {
 	Name, RiskProfile string
 	markets           []string
@@ -39,7 +31,6 @@ var apyStableMints = []string{
 	"3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC", "BTRR3sj1Bn2ZjuemgbeQ6SCtf84iXS81CS7UDTSxUCaK",
 }
 
-// APYStrategyForRiskProfile is earn_apy_strategy_for_risk_profile.
 func APYStrategyForRiskProfile(value string) (APYStrategy, bool) {
 	markets := keyStrings(safeMarkets)
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -61,7 +52,6 @@ const (
 	APYRefreshInterval = time.Hour
 )
 
-// APYRefresher writes hourly Earn APY snapshots.
 type APYRefresher struct {
 	timescale, neon *pgxpool.Pool
 	strategies      []APYStrategy
@@ -83,7 +73,6 @@ type apySnapshot struct {
 	loyalBPS, mainBPS       int32
 }
 
-// Refresh rebuilds each strategy's unsettled tail and returns rows written.
 func (r *APYRefresher) Refresh(ctx context.Context, now time.Time) (int, error) {
 	end := now.UTC().Truncate(time.Hour)
 	retention := end.Add(-apyOutputSpan)
@@ -234,7 +223,6 @@ type apySegment struct {
 	loyal, mainUSDC float64
 }
 
-// computeSnapshots is compute_hourly_snapshots.
 func computeSnapshots(end time.Time, feeBPS int16, outputStart, queryStart time.Time, rows []reserveUpdate, supported map[string]string) []apySnapshot {
 	if !end.After(outputStart) {
 		return nil

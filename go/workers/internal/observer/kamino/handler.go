@@ -24,17 +24,15 @@ type snapshotRank struct {
 	snapshot           Snapshot
 }
 type Handler struct {
-	store     *Store
-	rpc       *chain.Client
-	logger    *slog.Logger
-	storeRaw  bool
-	mu        sync.RWMutex
-	targets   map[string]Target
-	snapshots map[string]snapshotRank
-	// slotsPerSecond is the chain's last measured slot rate, set by the
-	// runtime once a sample period; zero until one is read.
+	store          *Store
+	rpc            *chain.Client
+	logger         *slog.Logger
+	storeRaw       bool
+	mu             sync.RWMutex
+	targets        map[string]Target
+	snapshots      map[string]snapshotRank
 	slotsPerSecond float64
-	skipped        map[string]bool // reserve and reason already logged
+	skipped        map[string]bool
 }
 
 type HandleOutcome struct {
@@ -97,10 +95,6 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	return HandleOutcome{Slot: accountUpdate.GetSlot(), Inserted: outcome.Inserted}, nil
 }
 
-// Seed reads targets once at confirmed commitment and inserts each as an
-// http_snapshot row, the state the stream continues from: every target at
-// start-up, each added one when the watched set changes. It returns the
-// lowest slot read.
 func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
 	if len(targets) == 0 {
 		return 0, fmt.Errorf("kamino target catalog is empty")
@@ -141,14 +135,12 @@ func (h *Handler) Seed(ctx context.Context, targets []Target) (uint64, error) {
 	return minimum, nil
 }
 
-// SetSlotRate gives the handler the chain's measured slot rate.
 func (h *Handler) SetSlotRate(slotsPerSecond float64) {
 	h.mu.Lock()
 	h.slotsPerSecond = slotsPerSecond
 	h.mu.Unlock()
 }
 
-// decode is Decode at the last measured slot rate.
 func (h *Handler) decode(target Target, slot uint64, observedAt time.Time, account *chain.Account) (Snapshot, error) {
 	h.mu.RLock()
 	slotsPerSecond := h.slotsPerSecond
@@ -156,10 +148,6 @@ func (h *Handler) decode(target Target, slot uint64, observedAt time.Time, accou
 	return Decode(target, slot, observedAt, account, slotsPerSecond)
 }
 
-// skip drops a reserve row the observer cannot store and reports whether its
-// data was malformed. A row it cannot price yet (a Legacy-basis reserve before
-// any slot rate is measured) or at all (interest terms with no model) is
-// logged once per reserve and reason; malformed data, every time.
 func (h *Handler) skip(reserve string, slot uint64, err error) bool {
 	reason := "unsupported_interest_terms"
 	switch {
@@ -179,8 +167,6 @@ func (h *Handler) skip(reserve string, slot uint64, err error) bool {
 	return false
 }
 
-// record inserts one confirmed reserve state with its diff against the newest
-// state this handler holds, then holds it when it is newer.
 func (h *Handler) record(ctx context.Context, target Target, snapshot Snapshot, source string, data []byte, slot, writeVersion uint64, receivedAt time.Time) (InsertOutcome, error) {
 	decodedAt := time.Now().UTC()
 	h.mu.RLock()

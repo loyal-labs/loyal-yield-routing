@@ -7,12 +7,6 @@ import (
 	"time"
 )
 
-// The projection inputs below mirror loyal-yield-store's serde types field for
-// field (snake_case JSON). The Go Earn application writes the same rows as the
-// stopped Rust earn-domain-bridge; the parity test feeds one JSON
-// script to both implementations.
-
-// PolicyMatchInput is one detected route or setup policy (route_policies row).
 type PolicyMatchInput struct {
 	Signature            string          `json:"signature"`
 	Slot                 uint64          `json:"slot"`
@@ -35,7 +29,6 @@ type PolicyMatchInput struct {
 	SwapLanes            json.RawMessage `json:"swap_lanes"`
 }
 
-// CrossMintSwapPolicyManifestInput is one strict generalized Jupiter policy.
 type CrossMintSwapPolicyManifestInput struct {
 	Signature                  string  `json:"signature"`
 	Slot                       uint64  `json:"slot"`
@@ -55,7 +48,6 @@ type CrossMintSwapPolicyManifestInput struct {
 	ManifestFingerprint        string  `json:"manifest_fingerprint"`
 }
 
-// PolicyRemovalInput closes one policy account of any family.
 type PolicyRemovalInput struct {
 	Signature        string `json:"signature"`
 	Slot             uint64 `json:"slot"`
@@ -66,7 +58,6 @@ type PolicyRemovalInput struct {
 	PolicyAccount    string `json:"policy_account"`
 }
 
-// BalanceSweepPolicyMatchInput is one detected Autodeposit policy.
 type BalanceSweepPolicyMatchInput struct {
 	Signature          string   `json:"signature"`
 	Slot               uint64   `json:"slot"`
@@ -88,7 +79,6 @@ type BalanceSweepPolicyMatchInput struct {
 	MaxAmountPerPeriod uint64   `json:"max_amount_per_period"`
 }
 
-// RecurringDelegationObserved is one confirmed Subscriptions create.
 type RecurringDelegationObserved struct {
 	Wallet                string `json:"wallet"`
 	VaultPubkey           string `json:"vault_pubkey"`
@@ -103,7 +93,6 @@ type RecurringDelegationObserved struct {
 	Slot                  uint64 `json:"slot"`
 }
 
-// EarnMaxPolicySetProjectionInput is one Earn MAX three-policy manifest.
 type EarnMaxPolicySetProjectionInput struct {
 	Settings          string          `json:"settings"`
 	VaultIndex        uint8           `json:"vault_index"`
@@ -118,7 +107,6 @@ type EarnMaxPolicySetProjectionInput struct {
 	ObservedAt        time.Time       `json:"observed_at"`
 }
 
-// EarnMaxIntent is the serde enum {"withdraw":{...}} | {"cancel":{...}}.
 type EarnMaxIntent struct {
 	Withdraw *EarnMaxWithdrawIntent `json:"withdraw,omitempty"`
 	Cancel   *EarnMaxCancelIntent   `json:"cancel,omitempty"`
@@ -134,7 +122,6 @@ type EarnMaxCancelIntent struct {
 	RequestID string `json:"request_id"`
 }
 
-// EarnReserveMutation is one confirmed reserve position.
 type EarnReserveMutation struct {
 	Reserve          string          `json:"reserve"`
 	Market           *string         `json:"market"`
@@ -146,7 +133,6 @@ type EarnReserveMutation struct {
 	PlanningMetadata json.RawMessage `json:"planning_metadata"`
 }
 
-// EarnIdleTokenMutation is one confirmed idle vault token account.
 type EarnIdleTokenMutation struct {
 	Mint             string     `json:"mint"`
 	AmountRaw        uint64     `json:"amount_raw"`
@@ -179,8 +165,7 @@ type EarnDepositMutation struct {
 	ReserveState        []EarnReserveMutation   `json:"reserve_state"`
 	IdleState           []EarnIdleTokenMutation `json:"idle_state"`
 	ObservedAt          *time.Time              `json:"observed_at"`
-	// VaultEmpty is the read's finding that the vault holds nothing.
-	VaultEmpty bool `json:"vault_empty,omitempty"`
+	VaultEmpty          bool                    `json:"vault_empty,omitempty"`
 }
 
 type EarnWithdrawalMutation struct {
@@ -201,9 +186,6 @@ type EarnWithdrawalMutation struct {
 	VaultEmpty          bool                    `json:"vault_empty,omitempty"`
 }
 
-// EarnBalancesMutation is a vault's complete holdings after a transaction
-// that moved no wallet cash: a fleet move between reserves or a Kamino
-// deposit of idle cash.
 type EarnBalancesMutation struct {
 	Settings     string                  `json:"settings"`
 	VaultIndex   uint8                   `json:"vault_index"`
@@ -237,8 +219,6 @@ type EarnRefundMutation struct {
 	ObservedAt      *time.Time `json:"observed_at"`
 }
 
-// EarnMutation is the serde enum EarnDirectMutation: exactly one variant, or
-// none for Noop ("Noop" as a bare JSON string).
 type EarnMutation struct {
 	PolicyOnly *EarnPolicyOnlyMutation `json:"PolicyOnly,omitempty"`
 	Deposit    *EarnDepositMutation    `json:"Deposit,omitempty"`
@@ -282,8 +262,6 @@ func amountBigint(amount uint64) (int64, error) {
 func commitmentRank(commitment string) (int, error) {
 	switch commitment {
 	case "unknown":
-		// Migration 36 rows predate commitment tracking; the weakest rank lets a
-		// later finalized observation repair them.
 		return 0, nil
 	case "processed":
 		return 1, nil

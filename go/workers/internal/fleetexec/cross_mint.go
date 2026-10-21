@@ -97,8 +97,6 @@ type CrossMintALTAddress struct {
 	Writable                            bool
 }
 
-// The composition root adapts the concrete signer-free fleet factory here;
-// fleet does not import its signing consumer. Errors never authorize a send.
 type CrossMintLegFactory interface {
 	PrepareCrossMintLeg(context.Context, CrossMintLegRequest) (CrossMintPreparedLeg, error)
 }
@@ -118,8 +116,6 @@ type CrossMintController struct {
 	reserves       fleet.ReserveSource
 }
 
-// The controller only signs and journals. Broadcast, finalized receipt proof,
-// and ambiguity recovery remain the existing executor's responsibility.
 func NewCrossMintController(store *Store, factory CrossMintLegFactory, signer DelegateSigner, client *chain.Client, cluster, owner string, ttl time.Duration, swapEnabled bool) (*CrossMintController, error) {
 	if store == nil || store.pool == nil || factory == nil || client == nil || len(signer.FeePayer) != ed25519.PrivateKeySize || cluster == "" || owner == "" || ttl < 10*time.Second || ttl > 300*time.Second || ttl%time.Second != 0 {
 		return nil, errors.New("cross-mint controller requires store, factory, identities and 10-300 second lease")
@@ -127,8 +123,6 @@ func NewCrossMintController(store *Store, factory CrossMintLegFactory, signer De
 	return &CrossMintController{store: store, factory: factory, signer: signer, cluster: cluster, owner: owner, ttl: ttl, swapEnabled: swapEnabled, accounts: client, history: client, chain: client}, nil
 }
 
-// ContinueOne is deliberately separate from Worker.Tick until the composed
-// receipt/history owner proves all phases. No new opportunity is admitted here.
 func (c *CrossMintController) ContinueOne(ctx context.Context) (int64, bool, error) {
 	lease, err := c.store.ClaimCrossMintContinuation(ctx, c.cluster, c.owner, c.ttl)
 	if err != nil || lease == nil {
@@ -219,9 +213,6 @@ func (c *CrossMintController) ContinueOne(ctx context.Context) (int64, bool, err
 	return id, true, err
 }
 
-// A coherent amount is necessary but insufficient: external spending followed
-// by replenishment can restore the balance. Retain D's finalized address
-// history protocol and require a recognized signature at the custody anchor.
 func (c *CrossMintController) verifyIdleCustody(ctx context.Context, m CrossMintMovement) error {
 	if m.Phase == CrossMintSourceReserve {
 		return nil
@@ -367,8 +358,6 @@ type crossMintNextCustody struct {
 	terminalSlot    *int64
 }
 
-// crossMintReceiptTransition is source parity with movement.rs. It receives
-// exact finalized transaction deltas AND finalized position/account readbacks.
 func crossMintReceiptTransition(m CrossMintMovement, leg, purpose string, expected CrossMintExpectedEffect, pre CrossMintBalanceAnchors, actual CrossMintEffect, post CrossMintBalanceAnchors, slot int64) (crossMintNextCustody, error) {
 	var next crossMintNextCustody
 	if slot <= 0 || m.CustodyReconciledSlot != nil && slot < *m.CustodyReconciledSlot {

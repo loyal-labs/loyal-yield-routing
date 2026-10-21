@@ -10,14 +10,8 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// errLookupBindingDeferred is the source LogicalHeadUsageLease deferral: the
-// binding is otherwise publishable, but this vault's head is still in use. It
-// is a not-ready outcome for one vault, never a planner failure.
 var errLookupBindingDeferred = errors.New("lookup binding has logical usage or unresolved packet custody")
 
-// ActivateLookupBinding publishes only the newest desired revision, after an
-// actual mature account read. Other vaults using an unchanged packed physical
-// table do not conflict with this logical-head publication.
 func (s *Store) ActivateLookupBinding(ctx context.Context, bindingID int64, snapshot LookupSnapshot) error {
 	if bindingID <= 0 || snapshot.Slot <= 0 || snapshot.Absent || snapshot.Owner != lookupProgram || snapshot.DeactivationSlot != math.MaxUint64 || snapshot.LastExtendedSlot >= uint64(snapshot.Slot) {
 		return errors.New("lookup binding has no actual mature ALT proof")
@@ -99,7 +93,6 @@ func (s *Store) ActivateLookupBinding(ctx context.Context, bindingID int64, snap
 		if !candidate || newest != bindingID {
 			return errors.New("lookup binding is not newest desired candidate")
 		}
-		// Lock the predecessor/candidate physical rows in stable order.
 		rows, err = tx.Query(ctx, `SELECT id FROM loyal_yield.route_lookup_tables WHERE id=ANY($1) AND family_id=$2 ORDER BY id FOR UPDATE`, affected, familyID)
 		if err != nil {
 			return err

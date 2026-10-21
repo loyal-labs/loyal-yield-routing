@@ -156,9 +156,6 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	if priority < 1 {
 		priority = 1
 	}
-	// The whole holding must fit both reserves this cycle. These checks come
-	// after the economics so a capacity reason always names a move worth
-	// making; the vault is planned again next cycle.
 	if reason := moveFitsReserves(source, target, position); reason != "" {
 		return ineligible(reason)
 	}
@@ -170,13 +167,6 @@ func Plan(snapshot MarketSnapshot, position VaultPosition, sourceAddress, target
 	return decision
 }
 
-// moveFitsReserves checks a whole holding against what the two reserves can
-// take now: the source must pay it out of available liquidity left after the
-// committed outflows (DB in-flight plus this wave), and the target's deposit
-// limit must have room for it after the committed inflows. Unknown evidence
-// is its own reason, never zero or unlimited. The execution re-reads both
-// reserves from the chain, so a stale fit ends as a re-plan, not a failed
-// transaction.
 func moveFitsReserves(source, target ReserveState, position VaultPosition) string {
 	if source.AvailableLiquidityRaw == nil {
 		return "source_liquidity_unknown"
@@ -196,9 +186,6 @@ func moveFitsReserves(source, target ReserveState, position VaultPosition) strin
 	return ""
 }
 
-// capacityAdjustedTargetAPY mirrors the Rust planner's four conservative
-// capacity bands. The selected band's ceiling, rather than the candidate's
-// exact amount, prices the marginal target APY for the whole planning wave.
 func capacityAdjustedTargetAPY(target ReserveState, committedInflow, committedOutflow, candidate int64) (int64, bool, bool) {
 	cumulativeInflow, ok := sumInt64(committedInflow, candidate)
 	if !ok {
@@ -262,8 +249,6 @@ func minInt64(left, right int64) int64 {
 }
 
 func sumInt64(values ...int64) (int64, bool) {
-	// Most custody/frontier sums fit at every step. Keep that path allocation
-	// free, but preserve cancellation across an overflowing intermediate sum.
 	var total int64
 	for _, part := range values {
 		if part > 0 && total > math.MaxInt64-part || part < 0 && total < math.MinInt64-part {
@@ -285,8 +270,6 @@ func sumWideInt64(values []int64) (int64, bool) {
 	return value.Int64(), true
 }
 
-// Match Rust's conservative proportional quote while leaving one collateral
-// unit in the source obligation so recovery can reuse the existing obligation.
 func crossMintRecoveryAnchoredPosition(position VaultPosition) (VaultPosition, bool) {
 	if position.SourceCollateralAmountRaw <= 1 || position.AmountRaw <= 0 || position.SourceAmountSemantics != amountSemanticsKaminoCollateralDeposited {
 		return position, false
@@ -312,8 +295,6 @@ func mulDivInt64(left, right, divisor int64) (int64, bool) {
 		}
 		return product / divisor, true
 	}
-	// An overflowing numerator can still yield a valid quotient. Keep exact
-	// wide arithmetic for it rather than rejecting or rounding the spend.
 	value := new(big.Int).Mul(big.NewInt(left), big.NewInt(right))
 	value.Quo(value, big.NewInt(divisor))
 	if !value.IsInt64() {

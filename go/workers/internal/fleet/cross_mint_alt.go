@@ -11,9 +11,6 @@ import (
 	"sort"
 )
 
-// External snapshots are finalized provider inputs, including tables which do
-// not contribute to the compiled message. They never carry managed identities
-// or acquire managed usage leases. Member order is the Solana index contract.
 type CrossMintExternalALT struct {
 	Address            string   `json:"tableAddress"`
 	Addresses          []string `json:"addresses"`
@@ -33,8 +30,6 @@ func crossMintALTPartsHash(parts []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// CrossMintExternalAddressHash ports Rust's ordered_lookup_table_address_hash.
-// Repeated members retain their original indexes; they must not be deduplicated.
 func CrossMintExternalAddressHash(addresses []string) (string, error) {
 	if len(addresses) == 0 || len(addresses) > 256 {
 		return "", errors.New("external ALT requires bounded complete member vector")
@@ -86,9 +81,6 @@ func crossMintExternalRequirementsFingerprint(v1 string, external []CrossMintExt
 	return crossMintALTPartsHash(parts), nil
 }
 
-// CrossMintALTSelectionFingerprint preserves the existing managed-only JSON
-// hash byte for byte. External routes bind all provider snapshots and actual
-// contributing wire order in a versioned envelope; no managed IDs are invented.
 func CrossMintALTSelectionFingerprint(managed []ExecutionALT, external []CrossMintExternalALT, lookupOrder []string) (string, error) {
 	if len(external) == 0 {
 		encoded, err := json.Marshal(managed)
@@ -159,8 +151,6 @@ func cloneCrossMintExternalALTs(tables []CrossMintExternalALT) []CrossMintExtern
 	return out
 }
 
-// The retained resolver compiles managed tables first, then provider inputs
-// not already present. The compiler prunes unused tables from actual wireorder.
 func combineCrossMintLookupTables(managed, external []LookupTable) ([]LookupTable, error) {
 	out := append([]LookupTable{}, managed...)
 	seen := map[string][]string{}

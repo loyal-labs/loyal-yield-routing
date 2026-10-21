@@ -66,9 +66,6 @@ type CrossMintReconciliation struct {
 	BalanceAnchors CrossMintBalanceAnchors
 }
 
-// ReconcileCrossMintLeg accepts the exact receipt and finalized readbacks from
-// the family proof owner. It cannot turn a confirmation or balance guess into
-// custody: the durable attempt must already carry the same finalized slot.
 func (s *Store) ReconcileCrossMintLeg(ctx context.Context, l SubmissionLease, input CrossMintReconciliation) (CrossMintMovement, error) {
 	var result CrossMintMovement
 	if input.FinalizedSlot <= 0 || l.Submission.DecisionID == nil || l.Submission.MovementLeg == LegRoute {
@@ -139,16 +136,11 @@ func crossMintDeltaSQL(d *CrossMintTokenAmount) (any, any, any) {
 	return d.Mint, d.TokenAccount, d.AmountRaw
 }
 
-// CrossMintCapacityProjection is a target reserve as a fresh read observed
-// it: the supply its 2% frontier and the move's dilution are priced on.
 type CrossMintCapacityProjection struct {
 	Cluster, TargetReserve, LiquidityMint string
 	ObservedSupplyUSDMicros, ObservedSlot int64
 }
 
-// crossMintTargetFits checks, under the target's reserve lock, that principal
-// fits its 2% frontier after every other move in flight into it, and returns
-// the inflow those moves commit.
 func crossMintTargetFits(ctx context.Context, tx pgx.Tx, p CrossMintCapacityProjection, opportunity, principal int64) (int64, error) {
 	if err := fleet.LockReserves(ctx, tx, p.Cluster, p.TargetReserve); err != nil {
 		return 0, err
@@ -171,9 +163,6 @@ type CrossMintActivation struct {
 	SourceControlGeneration            int64
 }
 
-// A continuation can be reclaimed under a newer control generation without
-// granting the old activation permission to start withdrawing. Cancellation
-// rechecks this fact while holding both the control and movement locks.
 func (s *Store) crossMintInitialAuthority(ctx context.Context, l CrossMintContinuationLease) (bool, error) {
 	var allowed bool
 	err := s.pool.QueryRow(ctx, `SELECT cross_mint_activation_control_generation=$4 FROM loyal_yield.rebalance_decisions WHERE id=$1 AND continuation_lease_owner=$2 AND continuation_fencing_token=$3 AND continuation_control_generation=$4 AND continuation_lease_expires_at>clock_timestamp()`, l.Movement.DecisionID, l.Owner, l.FencingToken, l.ControlGeneration).Scan(&allowed)
@@ -183,9 +172,6 @@ func (s *Store) crossMintInitialAuthority(ctx context.Context, l CrossMintContin
 	return allowed, err
 }
 
-// CancelUntouchedCrossMint releases only source-reserve custody with no
-// signed attempt, under live revoked start authority. Signed bytes cannot be
-// revoked by this database flag, even if they have not yet been broadcast.
 func (s *Store) CancelUntouchedCrossMint(ctx context.Context, l CrossMintContinuationLease, observedSlot int64) error {
 	return s.cancelUntouchedCrossMint(ctx, l, observedSlot, crossMintControlRevoked)
 }
@@ -197,8 +183,6 @@ const (
 	crossMintRolloutDisabled
 )
 
-// Only the controller's immutable disabled rollout selects the second basis.
-// Both bases require untouched custody, zero signed attempts and live fences.
 func (s *Store) cancelUntouchedCrossMint(ctx context.Context, l CrossMintContinuationLease, observedSlot int64, authority crossMintCancellationAuthority) error {
 	if observedSlot <= 0 {
 		return errors.New("untouched cancellation lacks finalized observation slot")
@@ -249,9 +233,6 @@ func (s *Store) cancelUntouchedCrossMint(ctx context.Context, l CrossMintContinu
 	})
 }
 
-// ActivateCrossMintMovement freezes certified intent once the target has
-// room for it, before custody can leave the reserve. A crash before signed publication is
-// recovered by the existing continuation claim rather than a new opportunity.
 func (s *Store) ActivateCrossMintMovement(ctx context.Context, l fleet.RevalidationLease, input CrossMintActivation) (CrossMintMovement, error) {
 	var result CrossMintMovement
 	p := input.Capacity
@@ -342,9 +323,6 @@ func (s *Store) ActivateCrossMintMovement(ctx context.Context, l fleet.Revalidat
 	return result, err
 }
 
-// RebindCrossMintFallbackCapacity binds the movement to the fallback target
-// once that reserve has room for it, and invalidates the old continuation
-// lease. The caller must reclaim and prepare against the new binding.
 func (s *Store) RebindCrossMintFallbackCapacity(ctx context.Context, l CrossMintContinuationLease, p CrossMintCapacityProjection) error {
 	if p.Cluster != l.Movement.Cluster || p.LiquidityMint != l.Movement.TargetMint || p.TargetReserve == "" || p.ObservedSupplyUSDMicros < 0 || p.ObservedSlot <= 0 {
 		return errors.New("fallback projection is not current target-mint capacity")
@@ -515,9 +493,6 @@ func validateCrossMintALTManifest(p CrossMintPreparedLeg) error {
 	return nil
 }
 
-// QueueCrossMintALT ports the retained full-manifest request/seal protocol.
-// It keeps decision_created intent immutable and schedules another fenced
-// continuation; it never treats a provider lookup address as a registered ID.
 func (s *Store) QueueCrossMintALT(ctx context.Context, l CrossMintContinuationLease, r CrossMintLegRequest, p CrossMintPreparedLeg) (int64, error) {
 	if err := validateCrossMintALTManifest(p); err != nil {
 		return 0, err
@@ -826,8 +801,6 @@ func (s *Store) AppendCrossMintLeg(ctx context.Context, l CrossMintContinuationL
 		if err = lockAdmissionALTs(ctx, tx, admission); err != nil {
 			return err
 		}
-		// Signing consumer owns prepared usage. The C factory is read-only and
-		// cannot acquire leases; exact registered members are locked above.
 		for _, table := range p.SelectedALTs {
 			var leaseID int64
 			err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.lookup_table_usage_leases(cluster,lease_kind,reference_key,route_lookup_table_id,vault_id,binding_id,route_fingerprint,requirements_fingerprint,expires_at) VALUES($1,'prepared_transaction',$2,$3,$4,$5,$6,$7,clock_timestamp()+interval '5 minutes') ON CONFLICT(lease_kind,reference_key,route_lookup_table_id) DO UPDATE SET expires_at=GREATEST(loyal_yield.lookup_table_usage_leases.expires_at,EXCLUDED.expires_at),updated_at=clock_timestamp() WHERE loyal_yield.lookup_table_usage_leases.cluster=EXCLUDED.cluster AND loyal_yield.lookup_table_usage_leases.vault_id=EXCLUDED.vault_id AND loyal_yield.lookup_table_usage_leases.binding_id IS NOT DISTINCT FROM EXCLUDED.binding_id AND loyal_yield.lookup_table_usage_leases.requirements_fingerprint=EXCLUDED.requirements_fingerprint AND loyal_yield.lookup_table_usage_leases.released_at IS NULL RETURNING id`, m.Cluster, semantic, table.TableID, m.VaultID, table.BindingID, p.Preparation.RouteFingerprint, p.Preparation.RequirementsFingerprint).Scan(&leaseID)
@@ -851,8 +824,6 @@ func (s *Store) AppendCrossMintLeg(ctx context.Context, l CrossMintContinuationL
 				return fmt.Errorf("%w: %v", ErrConflictLeaseHeld, err)
 			}
 		}
-		// Only the retained policy payer is supported by this consumer. A future
-		// fee-only shard needs its existing durable spend-reservation protocol.
 		if payer != bindings.DelegatedSigner {
 			return errors.New("cross-mint fee-only payer reservation is not configured")
 		}
@@ -906,7 +877,7 @@ func checkCrossMintInitialPolicies(ctx context.Context, tx pgx.Tx, m CrossMintMo
 	return err
 }
 
-// Retained movement.rs SQL predicates; clock_timestamp fences lock waits.
+// clock_timestamp is wall time; now() is the transaction's start.
 const crossMintClaimSQL = `WITH candidate AS (
     SELECT decision.id
     FROM loyal_yield.rebalance_decisions decision

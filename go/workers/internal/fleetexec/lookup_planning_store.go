@@ -55,8 +55,6 @@ func lookupManifestHash(addresses []LookupManifestAddress) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// The read-only census and lease share economic ordering so the account reads
-// normally cover the request which wins the lease, including rising priorities.
 const lookupPlanningCandidates = `FROM loyal_yield.lookup_table_provisioning_requests r
  LEFT JOIN LATERAL (SELECT COALESCE(sum(p.annual_yield_gain_usd_micros),0)::numeric yield,COALESCE(sum(p.economic_priority),0)::numeric priority,count(*) consumers FROM loyal_yield.lookup_table_provisioning_request_consumers c JOIN loyal_yield.rebalance_opportunities p ON p.id=c.opportunity_id WHERE c.provisioning_request_id=r.id AND p.opportunity_state='waiting_alt' AND p.expires_at>clock_timestamp()) live ON true
  WHERE r.cluster=$1 AND r.request_status IN ('requested','queued','failed','planning')
@@ -65,8 +63,6 @@ const lookupPlanningCandidates = `FROM loyal_yield.lookup_table_provisioning_req
  AND NOT COALESCE((SELECT paused FROM loyal_yield.lookup_table_provisioner_controls WHERE cluster=$1),false)
  ORDER BY live.yield/GREATEST(1,r.desired_shared_address_count+r.desired_vault_address_count) DESC,live.priority DESC,live.consumers DESC,r.updated_at,r.requested_at,r.id`
 
-// Planning has its own existing request lease. Its live economic priority is
-// recomputed from consumers, rather than trusting stale request priority fields.
 func (s *Store) LeaseLookupPlanningRequest(ctx context.Context, cluster, owner string, ttl time.Duration) (*LookupPlanningRequest, error) {
 	if cluster == "" || owner == "" || ttl < 10*time.Second || ttl > 5*time.Minute || ttl%time.Second != 0 {
 		return nil, errors.New("lookup request lease configuration invalid")
@@ -83,9 +79,6 @@ func (s *Store) LeaseLookupPlanningRequest(ctx context.Context, cluster, owner s
 	return &r, err
 }
 
-// SealLookupVaultDemand unions ALL sealed, non-cancelled source cohorts for the
-// vault. It never lets the current opportunity replace earlier complete demand.
-// The caller must subsequently allocate/queue and advance its request lease.
 func (s *Store) SealLookupVaultDemand(ctx context.Context, request LookupPlanningRequest, sourceSlot int64) (LookupManifest, error) {
 	var result LookupManifest
 	err := db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {

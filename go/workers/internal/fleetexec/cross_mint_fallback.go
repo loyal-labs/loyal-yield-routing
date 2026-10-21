@@ -8,12 +8,8 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc"
 )
 
-// Only a concrete deterministic target admission/policy/simulation refusal may
-// return this sentinel. Transport and provider failures must retain the target.
 var ErrCrossMintTargetUnavailable = errors.New("cross-mint target is deterministically unavailable")
 
-// SetReserveSource configures the fresh reserves a target fallback is chosen
-// from: the planner's catalog, read over RPC.
 func (c *CrossMintController) SetReserveSource(source fleet.ReserveSource) {
 	c.reserves = source
 }
@@ -23,8 +19,6 @@ func crossMintActiveTargetEligible(reserves fleet.MarketSnapshot, m CrossMintMov
 	return ok && r.Mint == m.TargetMint && r.TargetEligible()
 }
 
-// Rust cross_mint.rs:3787 chooses greatest APY, then greatest reserve string.
-// Sunk swap economics are not reapplied while protecting already owned funds.
 func selectCrossMintFallback(reserves fleet.MarketSnapshot, m CrossMintMovement) (fleet.ReserveState, error) {
 	if m.ActiveTargetReserve != m.IntendedTargetReserve {
 		return fleet.ReserveState{}, errors.New("bound fallback cannot rebind again")
@@ -57,8 +51,6 @@ func (c *CrossMintController) rebindFallback(ctx context.Context, l CrossMintCon
 		return err
 	}
 	err = c.store.RebindCrossMintFallbackCapacity(ctx, l, CrossMintCapacityProjection{Cluster: m.Cluster, TargetReserve: candidate.Address, LiquidityMint: m.TargetMint, ObservedSupplyUSDMicros: candidate.TotalSupplyUSDMicros, ObservedSlot: candidate.Slot})
-	// Rebind invalidates the old lease. The next bounded tick must reclaim and
-	// revalidate against the new durable binding before preparing or signing.
 	return err
 }
 

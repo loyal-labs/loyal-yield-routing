@@ -87,8 +87,6 @@ type Diff struct {
 	ChangedFields []string `json:"changed_fields"`
 }
 
-// Decode reads a reserve's snapshot; slotsPerSecond is the chain's measured
-// slot rate its Legacy-basis rates need (kamino.Reserve.Rates).
 func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Account, slotsPerSecond float64) (Snapshot, error) {
 	reserve, err := klend.DecodeReserve(account)
 	if err != nil {
@@ -146,9 +144,6 @@ func Decode(target Target, slot uint64, observedAt time.Time, account *chain.Acc
 	return snapshot, nil
 }
 
-// Compare reports the changed fields. "Nothing changed" is an empty list, as
-// Rust's ReserveDiff.changed_fields Vec is: reserve_updates.changed_fields is
-// TEXT[] NOT NULL and the diff JSON carries [], never null.
 func Compare(previous, current Snapshot) Diff {
 	fields := []string{}
 	checks := []struct {

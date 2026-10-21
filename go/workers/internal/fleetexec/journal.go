@@ -14,21 +14,12 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/db"
 )
 
-// Store is the typed journal over the legacy fleet route tables.
 type Store struct{ pool *pgxpool.Pool }
 
-// NewStore adopts a caller-owned pool. Pool sizing and lifecycle belong to the
-// composition root; this package never opens, migrates, or closes the database.
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-// Pool exposes the caller-owned pool so the composition root retains its
-// lifecycle. The store never closes it.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// RecordBroadcastIntent counts one send on the row before the bytes leave,
-// exactly like the Rust confirmer's prepare_signed_route_broadcast_batch:
-// broadcast_count increments, error_detail marks the intent and the decision
-// moves to confirming. A signed row becomes submitted with its first send.
 func (s *Store) RecordBroadcastIntent(ctx context.Context, lease SubmissionLease) error {
 	return db.WithTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var decision int64
@@ -65,17 +56,12 @@ func (s *Store) RecordBroadcastIntent(ctx context.Context, lease SubmissionLease
 	})
 }
 
-// InflightCount is the number of this cluster's fleet legs signed or sent
-// and not yet terminal.
 func (s *Store) InflightCount(ctx context.Context, cluster string) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM loyal_yield.signed_route_submissions WHERE cluster=$1 AND submission_state NOT IN ('reconciled','expired','failed')`, cluster).Scan(&n)
 	return n, err
 }
 
-// RenewClaimLease extends this owner's confirmation lease without changing
-// its fencing token, so RPC work still in flight does not run on a lapsed
-// lease. Zero rows mean the lease was lost; the caller must re-claim.
 func (s *Store) RenewClaimLease(ctx context.Context, lease SubmissionLease, ttl time.Duration) (time.Time, error) {
 	if ttl <= 0 {
 		return time.Time{}, errors.New("lease renewal requires a positive ttl")
@@ -97,9 +83,6 @@ RETURNING confirmation_lease_expires_at`,
 	return deadline, err
 }
 
-// SubmissionLease is one claimed confirmation/reconciliation work item. The
-// fencing token increments on every claim; advances carry it so a delayed
-// worker can never overwrite newer progress.
 type SubmissionLease struct {
 	Submission   SubmissionRecord
 	Owner        string
@@ -107,23 +90,20 @@ type SubmissionLease struct {
 	ExpiresAt    time.Time
 }
 
-// SubmissionRecord is the execution-owned projection of a signed route row.
 type SubmissionRecord struct {
-	ID                   int64
-	Cluster              string
-	SemanticKey          string
-	OpportunityID        int64
-	DecisionID           *int64
-	Signature            string
-	MessageHash          string
-	RecentBlockhash      string
-	LastValidBlockHeight int64
-	FeePayer             string
-	MovementLeg          string
-	LegPurpose           string
-	LegGeneration        int64
-	// SignedTransaction is the exact immutable bytes this record persisted;
-	// broadcast reuses them and nothing else ever reconstructs a wire.
+	ID                        int64
+	Cluster                   string
+	SemanticKey               string
+	OpportunityID             int64
+	DecisionID                *int64
+	Signature                 string
+	MessageHash               string
+	RecentBlockhash           string
+	LastValidBlockHeight      int64
+	FeePayer                  string
+	MovementLeg               string
+	LegPurpose                string
+	LegGeneration             int64
 	SignedTransaction         []byte
 	State                     SubmissionState
 	BroadcastCount            int
@@ -134,11 +114,9 @@ type SubmissionRecord struct {
 	ExpectedEffect            json.RawMessage
 	ExpectedBalanceAnchors    json.RawMessage
 	ConflictAccountKeys       []string
-	// AttemptCount is confirmation_attempt_count after this claim.
-	AttemptCount int
+	AttemptCount              int
 }
 
-// ClaimRecoveryWork claims up to limit same-mint submissions the family owns.
 func (s *Store) ClaimRecoveryWork(ctx context.Context, cluster, owner string, ttl time.Duration, limit int) ([]SubmissionLease, error) {
 	if cluster == "" || owner == "" || ttl <= 0 || limit <= 0 {
 		return nil, errors.New("incomplete claim request")
@@ -221,7 +199,6 @@ func scanSubmissionLease(rows rowScanner, owner string) (SubmissionLease, error)
 	return lease, err
 }
 
-// Advance is a fenced durable transition for one claimed submission.
 type Advance struct {
 	NextState                 SubmissionState
 	ConfirmedSlot             *int64
@@ -229,9 +206,6 @@ type Advance struct {
 	ErrorDetail               *string
 }
 
-// AdvanceSubmission applies one fenced transition. Zero affected rows mean the
-// caller lost the lease or its fencing token is stale; the durable state is
-// authoritative and the caller must re-claim.
 func (s *Store) AdvanceSubmission(ctx context.Context, lease SubmissionLease, advance Advance) error {
 	if !legalTransition(lease.Submission.State, advance.NextState) {
 		return fmt.Errorf("%w: %s -> %s", ErrNotClaimable, lease.Submission.State, advance.NextState)
@@ -273,7 +247,6 @@ WHERE id=$1
 	return nil
 }
 
-// releaseNotYet hands a claim back after delay, uncounted and with no error.
 func (s *Store) releaseNotYet(ctx context.Context, lease SubmissionLease, delay time.Duration) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE loyal_yield.signed_route_submissions SET confirmation_available_at=clock_timestamp()+$4::interval,confirmation_attempt_count=confirmation_attempt_count-1,confirmation_lease_owner=NULL,confirmation_lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=$1 AND confirmation_lease_owner=$2 AND confirmation_fencing_token=$3 AND confirmation_lease_expires_at>clock_timestamp()`, lease.Submission.ID, lease.Owner, lease.FencingToken, formatInterval(delay))
 	if err == nil && tag.RowsAffected() != 1 {
@@ -282,9 +255,6 @@ func (s *Store) releaseNotYet(ctx context.Context, lease SubmissionLease, delay 
 	return err
 }
 
-// DeferSubmission is Rust's SignedRouteSubmissionAdvance::Deferred: the state
-// and its custody stay, the reason is recorded, the lease is released and the
-// next claim waits until delay has passed.
 func (s *Store) DeferSubmission(ctx context.Context, lease SubmissionLease, delay time.Duration, detail string) error {
 	if delay < 0 || strings.TrimSpace(detail) == "" || len(detail) > 512 {
 		return errors.New("submission deferral requires a nonnegative delay and bounded error")

@@ -9,9 +9,6 @@ import (
 	sdk "github.com/solana-foundation/solana-go/v2"
 )
 
-// External snapshots never acquire a managed ID, family, generation or lease.
-// The source resolver preserves all provider input tables; the actual message
-// chooses contributors and indexes independently from that complete evidence.
 type CrossMintExternalALT = fleet.CrossMintExternalALT
 
 type crossMintExternalALTRecord struct {
@@ -20,13 +17,8 @@ type crossMintExternalALTRecord struct {
 	OrderedAddressHash string `json:"orderedAddressHash"`
 }
 
-// Legacy resolver evidence stores only count/hash. It must be matched to a
-// finalized source read under the live journal fence before first-send adoption.
 var ErrExternalALTObservationRequired = errors.New("external ALT requires finalized source snapshot adoption")
 
-// A registered-only packet keeps its existing fingerprint exactly. External
-// evidence uses a separate versioned domain and preserves both input snapshot
-// order and actual wire order; neither vector is sorted into another meaning.
 func crossMintALTSelectionFingerprint(p CrossMintPreparedLeg) (string, error) {
 	if len(p.ExternalALTs) > 0 {
 		if _, err := crossMintLookupVectors(p.SelectedALTs, p.ExternalALTs, p.Preparation.Transaction.LookupTables); err != nil {

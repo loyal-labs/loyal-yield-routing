@@ -14,10 +14,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Policy transaction decoding, ported from earn_reconciliation.rs
-// decode_laserstream_squads_policy_transaction, parse_earn_max_intent and
-// project_earn_max_memos.
-
 var memoProgram = solana.MustPublicKeyFromBase58("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 
 // Memo is one Earn MAX memo instruction with its chain location
@@ -28,12 +24,9 @@ type Memo struct {
 	Data        []byte
 }
 
-// PolicyTransaction is one successful transaction's Squads and
-// Subscriptions instructions plus its Earn MAX memos.
 type PolicyTransaction struct {
-	Signature string
-	Slot      uint64
-	// Index is the transaction's position in its block.
+	Signature    string
+	Slot         uint64
 	Index        uint64
 	Signers      []solana.PublicKey
 	Instructions []squads.Instruction
@@ -46,8 +39,6 @@ type accountTable struct {
 	requiredSigners, readonlySigners, readonlyUnsigned int
 }
 
-// meta mirrors the account_meta closure: signer and writable flags follow
-// the message header and the loaded-address split.
 func (t accountTable) meta(index int) (solana.AccountMeta, bool) {
 	if index < 0 || index >= len(t.keys) {
 		return solana.AccountMeta{}, false
@@ -91,7 +82,6 @@ func innerMemoIndex(group uint32, inner int) (uint16, error) {
 	return uint16(value), nil
 }
 
-// DecodeStreamPolicyTransaction returns nil for a failed transaction.
 func DecodeStreamPolicyTransaction(info *pb.SubscribeUpdateTransactionInfo, slot uint64) (*PolicyTransaction, error) {
 	if len(info.GetSignature()) != 64 {
 		return nil, errors.New("LaserStream policy transaction signature")
@@ -191,7 +181,6 @@ func validRequestID(value string) bool {
 	return true
 }
 
-// parseEarnMaxIntent is parse_earn_max_intent.
 func parseEarnMaxIntent(data []byte) (*EarnMaxIntent, error) {
 	if !utf8.Valid(data) {
 		return nil, nil
@@ -207,7 +196,6 @@ func parseEarnMaxIntent(data []byte) (*EarnMaxIntent, error) {
 		}
 		var amount *uint64
 		if fields[5] != "max" {
-			// Rust u64::from_str accepts one leading '+'.
 			parsed, err := strconv.ParseUint(strings.TrimPrefix(fields[5], "+"), 10, 64)
 			if err != nil {
 				return nil, errors.New("invalid Earn MAX withdrawal amount")
@@ -226,12 +214,6 @@ func parseEarnMaxIntent(data []byte) (*EarnMaxIntent, error) {
 	return nil, errors.New("malformed Earn MAX intent memo")
 }
 
-// projectEarnMaxMemos records the Earn MAX intents of our routes: a memo
-// counts only when exactly one instruction account is the settings of a memo
-// vault. Anyone can write a memo, so a malformed one, one naming no single
-// vault, or one for settings without an Earn MAX route is logged and skipped;
-// only a database error stops the stream. The multiply worker decides each
-// recorded intent.
 func projectEarnMaxMemos(ctx context.Context, store *Store, logger *slog.Logger, transaction *PolicyTransaction) error {
 	for _, memo := range transaction.Memos {
 		// The SPL Memo program fails unless every account it lists signed, and
@@ -272,9 +254,6 @@ func projectEarnMaxMemos(ctx context.Context, store *Store, logger *slog.Logger,
 	return nil
 }
 
-// RecordEarnMaxIntent inserts one memo intent of an Earn MAX route as
-// pending, once per chain location; false means the settings and vault have
-// no route.
 func (s *Store) RecordEarnMaxIntent(ctx context.Context, settings, vault string, transaction *PolicyTransaction, index uint16, intent *EarnMaxIntent) (bool, error) {
 	var ours bool
 	if err := s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM loyal_yield.multiply_route_states WHERE settings = $1 AND vault = $2)`, settings, vault).Scan(&ours); err != nil || !ours {

@@ -9,23 +9,17 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-// KLend routes. This is the Go port of the official klend-interface builders
-// (Kamino-Finance/klend 23b9f2b, libs/klend-interface) that the retired
-// loyal-klend-proxy child invoked. Byte parity with that Rust proxy is pinned
-// by testdata/klend/golden.json.
-
 type InstructionAccount struct {
 	Address  string `json:"address"`
 	Signer   bool   `json:"signer"`
 	Writable bool   `json:"writable"`
 }
 type RouteInstruction struct {
-	Step     string               `json:"step"`
-	Program  string               `json:"program"`
-	Accounts []InstructionAccount `json:"accounts"`
-	Data     []byte               `json:"-"`
-	// Protected instructions execute as the vault through a Squads policy.
-	Protected bool `json:"-"`
+	Step      string               `json:"step"`
+	Program   string               `json:"program"`
+	Accounts  []InstructionAccount `json:"accounts"`
+	Data      []byte               `json:"-"`
+	Protected bool                 `json:"-"`
 }
 type KaminoPositionAccounts struct {
 	Reserve                   string   `json:"reserve"`
@@ -53,37 +47,24 @@ type KaminoSameMintRouteRequest struct {
 	Target                   KaminoPositionAccounts `json:"target"`
 	WithdrawCollateralAmount uint64                 `json:"withdrawCollateralAmount"`
 	DepositLiquidityAmount   uint64                 `json:"depositLiquidityAmount"`
-	// Same-mint setup facts read from chain with the route. The route itself
-	// initializes a missing target obligation and missing obligation farm
-	// users, paid by Payer; VaultRentTopUpLamports funds the vault, which pays
-	// the obligation's rent from inside its policy.
-	TargetObligationMissing bool   `json:"targetObligationMissing,omitempty"`
-	SourceFarmUserMissing   bool   `json:"sourceFarmUserMissing,omitempty"`
-	TargetFarmUserMissing   bool   `json:"targetFarmUserMissing,omitempty"`
-	Payer                   string `json:"payer,omitempty"`
-	VaultRentTopUpLamports  uint64 `json:"vaultRentTopUpLamports,omitempty"`
+	TargetObligationMissing  bool                   `json:"targetObligationMissing,omitempty"`
+	SourceFarmUserMissing    bool                   `json:"sourceFarmUserMissing,omitempty"`
+	TargetFarmUserMissing    bool                   `json:"targetFarmUserMissing,omitempty"`
+	Payer                    string                 `json:"payer,omitempty"`
+	VaultRentTopUpLamports   uint64                 `json:"vaultRentTopUpLamports,omitempty"`
 }
 
-// KaminoSameMintRoute splits a route into instructions the vault may run
-// directly (Public) and instructions that must be wrapped by its policy
-// (Protected).
 type KaminoSameMintRoute struct {
 	Public    []RouteInstruction `json:"public"`
 	Protected []RouteInstruction `json:"protected"`
 }
 
-// KaminoIdleDepositRequest intentionally has no source or withdrawal amount.
-// The target obligation must already exist and its complete, freshly decoded
-// footprint must be empty or target-only. Initializing missing accounts and
-// taking durable idle/Autodeposit ownership are not this builder's job.
 type KaminoIdleDepositRequest struct {
 	Vault                  string                 `json:"vault"`
 	Target                 KaminoPositionAccounts `json:"target"`
 	DepositLiquidityAmount uint64                 `json:"depositLiquidityAmount"`
 }
 
-// DestinationSetupRequest builds one account-creation stage. It cannot move
-// wallet liquidity or create/update policy permissions.
 type DestinationSetupRequest struct {
 	Stage  string                 `json:"stage"`
 	Vault  string                 `json:"vault"`
@@ -91,19 +72,10 @@ type DestinationSetupRequest struct {
 	Target KaminoPositionAccounts `json:"target"`
 }
 
-// setup reports a route that creates accounts, and so pays rent.
 func (r KaminoSameMintRouteRequest) setup() bool {
 	return r.TargetObligationMissing || r.SourceFarmUserMissing || r.TargetFarmUserMissing
 }
 
-// BuildSameMintRoute builds one atomic same-mint move in the retained
-// worker's order (build_route_execution_plan): refresh both reserves, create a
-// missing source farm user, refresh the source obligation and, for an existing
-// target, create its missing farm user and refresh it; withdraw; then either
-// refresh the target for its reserve or, for a missing target obligation, fund
-// the vault's obligation rent, initialize the obligation and its farm user and
-// refresh it; deposit. Setup is part of the move: withdrawal and deposit share
-// one transaction, so funds never sit idle between transactions (ee8715ad).
 func BuildSameMintRoute(r KaminoSameMintRouteRequest) ([]RouteInstruction, error) {
 	if r.Source.LiquidityMint != r.Target.LiquidityMint || r.Source.VaultLiquidityATA != r.Target.VaultLiquidityATA || r.Source.Reserve == r.Target.Reserve || r.WithdrawCollateralAmount == 0 || r.DepositLiquidityAmount == 0 {
 		return nil, fmt.Errorf("invalid same-mint route lane or amount")
@@ -120,8 +92,6 @@ func BuildSameMintRoute(r KaminoSameMintRouteRequest) ([]RouteInstruction, error
 	if err != nil {
 		return nil, err
 	}
-	// The retained worker refreshes every footprint reserve; this route reads
-	// and refreshes only its own two.
 	for _, reserve := range append(append([]solana.PublicKey{}, s.reserves...), t.reserves...) {
 		if reserve != s.Reserve && reserve != t.Reserve {
 			return nil, fmt.Errorf("obligation footprint reserve %s is outside the route", reserve)
@@ -171,8 +141,6 @@ func BuildSameMintRoute(r KaminoSameMintRouteRequest) ([]RouteInstruction, error
 	return route, nil
 }
 
-// BuildCrossMintLegs builds the independent KLend withdrawal and deposit legs.
-// It does not combine withdrawal, Jupiter swap, and deposit into a transaction.
 func BuildCrossMintLegs(r KaminoSameMintRouteRequest) (KaminoSameMintRoute, error) {
 	if r.Source.LiquidityMint == r.Target.LiquidityMint || r.Source.VaultLiquidityATA == r.Target.VaultLiquidityATA || r.WithdrawCollateralAmount == 0 || r.DepositLiquidityAmount == 0 ||
 		r.TargetObligationMissing || r.SourceFarmUserMissing || r.TargetFarmUserMissing || r.VaultRentTopUpLamports > 0 {
@@ -196,8 +164,6 @@ func BuildCrossMintLegs(r KaminoSameMintRouteRequest) (KaminoSameMintRoute, erro
 	}, nil
 }
 
-// BuildIdleDeposit deposits vault-ATA liquidity into an existing obligation
-// whose footprint is empty or holds only the target reserve.
 func BuildIdleDeposit(r KaminoIdleDepositRequest) (KaminoSameMintRoute, error) {
 	t := &r.Target
 	program, supported := stableTokenProgram(t.LiquidityMint)
@@ -227,9 +193,6 @@ func BuildIdleDeposit(r KaminoIdleDepositRequest) (KaminoSameMintRoute, error) {
 	}, nil
 }
 
-// BuildDestinationSetup builds one destination account-creation stage. The
-// vault ATA and farm stages are public; KLend metadata and obligation creation
-// need the vault's signature and are protected.
 func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, error) {
 	vault, err := solana.PublicKeyFromBase58(r.Vault)
 	if err != nil {
@@ -246,9 +209,6 @@ func BuildDestinationSetup(r DestinationSetupRequest) (KaminoSameMintRoute, erro
 	var ix RouteInstruction
 	switch r.Stage {
 	case "ata":
-		// The source-owned idempotent ATA instruction
-		// (c1aebfc0:crates/autonomous-vaults/src/kamino.rs) with the executor
-		// paying rent.
 		ata, err := deriveATA(r.Vault, r.Target.LiquidityMint, r.Target.LiquidityTokenProgram)
 		payer, payerErr := solana.PublicKeyFromBase58(r.Payer)
 		if err != nil || payerErr != nil || ata != r.Target.VaultLiquidityATA {
@@ -281,9 +241,6 @@ func initObligation(owner solana.PublicKey, t klendPosition, metadata solana.Pub
 		LendingMarket: t.LendingMarket, OwnerUserMetadata: metadata}, 0, 0))
 }
 
-// initObligationFarm creates the obligation's collateral farm user; the payer
-// funds it, so it stays outside the vault's policy. The reserve must have a
-// collateral farm.
 func initObligationFarm(payer string, t klendPosition) (RouteInstruction, error) {
 	key, err := solana.PublicKeyFromBase58(payer)
 	if err != nil || t.ReserveFarmState.IsZero() {
@@ -295,17 +252,12 @@ func initObligationFarm(payer string, t klendPosition) (RouteInstruction, error)
 	}, 0)), nil
 }
 
-// klendPosition is a position's KLend accounts, parsed for the vault.
 type klendPosition struct {
 	kamino.CollateralAccounts
 	oracles  kamino.RefreshReserveAccounts
-	reserves []solana.PublicKey // the obligation footprint, deposits then borrows
+	reserves []solana.PublicKey
 }
 
-// bindKLendPDAs derives the market authority, the vanilla (tag 0, id 0)
-// obligation and the obligation farm user state. Supplied values must equal
-// the derivation; empty values are filled from it. It returns the bound
-// position's parsed accounts.
 func bindKLendPDAs(p *KaminoPositionAccounts, vault solana.PublicKey) (klendPosition, error) {
 	market, err := solana.PublicKeyFromBase58(p.Market)
 	if err != nil {
@@ -347,7 +299,6 @@ func bindKLendPDAs(p *KaminoPositionAccounts, vault solana.PublicKey) (klendPosi
 	return p.klend(vault)
 }
 
-// klend parses the position's addresses; an empty optional one stays zero.
 func (p KaminoPositionAccounts) klend(owner solana.PublicKey) (klendPosition, error) {
 	var err error
 	parse := func(value string, optional bool) solana.PublicKey {
@@ -378,8 +329,6 @@ func refreshReserve(p klendPosition) RouteInstruction {
 	return RouteInstructionOf("kamino_refresh_reserve", kamino.RefreshReserve(p.oracles))
 }
 
-// refreshObligation lists the obligation's complete reserve footprint, or only
-// the target reserve after a deposit into it.
 func refreshObligation(p klendPosition, targetOnly bool) RouteInstruction {
 	reserves := p.reserves
 	if targetOnly {

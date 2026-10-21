@@ -41,13 +41,10 @@ type crossMintAnchors struct {
 	Position *crossMintPositionAnchor `json:"kaminoPosition,omitempty"`
 }
 
-// historyReader lists an address's transactions, newest first.
 type historyReader interface {
 	History(ctx context.Context, address sdk.PublicKey, limit int, before sdk.Signature, commitment rpc.CommitmentType, minContextSlot uint64) ([]chain.Signed, error)
 }
 
-// signatureReader is the signature status and finalized height a no-effect
-// proof rechecks last.
 type signatureReader interface {
 	SignatureState(ctx context.Context, signature string) (chain.SignatureState, error)
 	FinalizedBlockHeight(ctx context.Context) (height, slot uint64, err error)
@@ -130,9 +127,6 @@ func custodyTokenAmount(a *chain.Account, mint, owner string) (int64, error) {
 	return int64(held.Amount), nil
 }
 
-// Token custody requires a recognized signature AT the anchor slot. Empty or
-// truncated history cannot prove attribution. Obligation history uses the
-// source protocol's looser rule: no unrecognized signature since the anchor.
 func verifyCustodyHistory(ctx context.Context, history historyReader, address string, anchor, floor int64, recognized map[string]bool, requireAnchor bool) ([]chain.Signed, error) {
 	key, err := sdk.PublicKeyFromBase58(address)
 	if err != nil {
@@ -238,13 +232,10 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 		history[a.TokenAccount] = statuses
 	}
 	if p := anchors.Position; p != nil {
-		// The anchor may record a closed obligation (full source exit); the
-		// reserve stays required by its envelope check below.
 		observed, actual, e := fleet.ReadAccounts(ctx, v.accounts, []string{p.Reserve, p.Obligation}, rpc.CommitmentFinalized, slot)
 		if e != nil {
 			return nil, e
 		}
-		// The anchor market and obligation must be the actual PDA for this vault.
 		reserve, e := kamino.DecodeReserve(actual[0])
 		if e != nil {
 			return nil, errors.New("cross-mint reserve envelope missing")
@@ -271,8 +262,6 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 		history[p.Obligation] = statuses
 		slot = observed
 	}
-	// Recheck signature history AFTER balances and account history. A late seen
-	// signature (even processed with an error) vetoes no-effect publication.
 	status, err := v.status.SignatureState(ctx, r.Signature)
 	if err != nil {
 		return nil, err
@@ -292,15 +281,11 @@ func (v *crossMintRecovery) inspect(ctx context.Context, r SubmissionRecord, flo
 	return &crossMintNoEffectProof{observedSlot: slot, historySlot: int64(status.ContextSlot), height: int64(height), effectFloor: floor, custodyAnchor: *anchor, signature: r.Signature, owner: owner, anchors: bytes.Clone(r.ExpectedBalanceAnchors), historyEvidence: rawEvidence, observedAt: time.Now().UTC()}, nil
 }
 
-// Receipt and terminal leg transition share one transaction. A crash cannot
-// leave a replaceable generation without its write-once no-effect receipt.
 func (s *Store) expireCrossMint(ctx context.Context, lease SubmissionLease, p *crossMintNoEffectProof) error {
 	r := lease.Submission
 	if p == nil || r.DecisionID == nil || r.MovementLeg == LegRoute || p.signature != r.Signature || r.EffectCheckSlot == nil || r.ExpiryObservedBlockHeight == nil || p.effectFloor != *r.EffectCheckSlot || p.observedSlot < p.effectFloor || p.historySlot < p.observedSlot || p.height < *r.ExpiryObservedBlockHeight || *r.ExpiryObservedBlockHeight <= r.LastValidBlockHeight || !sameJSON(p.anchors, r.ExpectedBalanceAnchors) || time.Since(p.observedAt) > 30*time.Second {
 		return errors.New("cross-mint expiry proof does not bind this custody observation")
 	}
-	// The receipt protocol binds the originally persisted expiry height, even
-	// when finalized block height has advanced during history verification.
 	height := *r.ExpiryObservedBlockHeight
 	hash := sha256.New()
 	hash.Write([]byte("cross-mint-no-effect-receipt-v1"))

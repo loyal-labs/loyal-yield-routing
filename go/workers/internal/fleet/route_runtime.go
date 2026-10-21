@@ -22,7 +22,6 @@ import (
 
 const altProgram = "AddressLookupTab1e1111111111111111111111111"
 
-// revalidationStore is the narrow durable surface Cycle uses.
 type revalidationStore interface {
 	ClaimRevalidation(ctx context.Context, cluster, owner string, ttl time.Duration, includeReady, crossMintEnabled bool, delegatedSigner ...string) (*RevalidationLease, error)
 	CheckRevalidationLease(ctx context.Context, lease RevalidationLease) error
@@ -55,9 +54,8 @@ type RevalidatorConfig struct {
 	CrossMintMaxSlippageBPS  uint16
 	JupiterBuildURL          string
 	JupiterAPIKey            string
-	// FeeOnlyPayers are the mounted fee-only keys (public); the registry says which are eligible.
-	FeeOnlyPayers []string
-	Metrics       ExecutionMetrics
+	FeeOnlyPayers            []string
+	Metrics                  ExecutionMetrics
 }
 
 func NewRevalidator(store *Store, client *chain.Client, config RevalidatorConfig) (*Revalidator, error) {
@@ -91,7 +89,6 @@ func newRevalidator(store revalidationStore, client *chain.Client, config Revali
 	return &Revalidator{store: store, rpc: client, owner: config.Owner, signer: config.DelegatedSigner, leaseTTL: config.LeaseTTL, computeLimit: config.ComputeLimit, crossMintEnabled: config.CrossMintEnabled, crossMintMaxValueLossBPS: config.CrossMintMaxValueLossBPS, crossMintMaxSlippageBPS: config.CrossMintMaxSlippageBPS, jupiter: jupiter, feeOnlyPayers: append([]string(nil), config.FeeOnlyPayers...), metrics: config.Metrics}, nil
 }
 
-// sameMintPreparation is everything an admission needs to commit.
 type sameMintPreparation struct {
 	LastValidBlockHeight int64
 	Evidence             FreshRouteEvidence
@@ -103,16 +100,9 @@ type sameMintPreparation struct {
 	PriorityFee          uint64
 	Tables               []LookupTable
 	Instructions         []RouteInstruction
-	// FeePayer pays this route: the policy signer or a fee-only shard.
-	FeePayer string
+	FeePayer             string
 }
 
-// feePayer is Rust's select_same_mint_route_fee_payer: a mature route goes
-// to the first healthy shard in the vault's rendezvous order; anything else,
-// or no healthy shard, falls back to the policy signer. A route that creates
-// accounts is never mature: the payer funds rent, which a fee-only key never
-// does (b1ad5b1a). Admission rechecks the chosen shard's budget against a
-// fresh balance under its row lock.
 func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease RevalidationLease, mature bool) string {
 	if !mature || len(r.feeOnlyPayers) == 0 {
 		return r.signer
@@ -140,10 +130,6 @@ func (r *Revalidator) feePayer(ctx context.Context, cluster string, lease Revali
 	return r.signer
 }
 
-// prepareSameMint runs the read-only same-mint preparation from fresh chain
-// evidence through the final simulated route. afterEvidence runs once between
-// loadFreshRoute and proxy build: the lease check. The returned stage names
-// the failing step.
 func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease RevalidationLease, afterEvidence func(FreshRouteEvidence) error) (sameMintPreparation, string, error) {
 	var out sameMintPreparation
 	fresh, err := r.loadFreshRoute(ctx, lease)
@@ -174,7 +160,6 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 		return out, "lookup_tables", err
 	}
 	out.Tables = tables
-	// Finalized, as Rust compiles every route; see finalizedBlockhash.
 	hash, lastValidBlockHeight, _, err := r.rpc.Blockhash(ctx, rpc.CommitmentFinalized, 0)
 	if err != nil {
 		return out, "blockhash", err
@@ -265,17 +250,11 @@ func (r *Revalidator) prepareSameMint(ctx context.Context, cluster string, lease
 	return out, "", nil
 }
 
-// sameMintPolicies are the policies a wrapped route executes under.
 type sameMintPolicies struct {
 	settings string
 	accounts []string
 }
 
-// wrapSameMintRoute replaces each protected instruction, in route order, with
-// its own Squads ProgramInteraction execution under an exact constraint:
-// withdrawal and deposit under the route policy; init_obligation under the
-// route policy when it carries a market-scoped init constraint, else under
-// the vault's setup policy (Rust's resolve_init_obligation_policy, ee8715ad).
 func wrapSameMintRoute(route []RouteInstruction, signer string, vaultIndex uint8, routePolicy string, routeAccount *chain.Account, setupPolicy string, setupAccount *chain.Account) ([]RouteInstruction, sameMintPolicies, error) {
 	var used sameMintPolicies
 	decode := func(account *chain.Account) (DecodedSquadsPolicy, error) {
@@ -345,13 +324,6 @@ func wrapSameMintRoute(route []RouteInstruction, signer string, vaultIndex uint8
 	return body, used, nil
 }
 
-// sameMintRouteALTManifest is the requirements manifest Rust records for a
-// same-mint route (fleet-worker lib.rs build_route_execution_plan, resolved
-// at :8038): the route's own instructions, without the compute-budget
-// instructions the final wire adds, paid by the route's selected fee payer,
-// and typed by same_mint_outer_lookup_table_requirements (:18844), which
-// names the route policy and the vault's setup policy. Membership follows the
-// instructions, so the setup policy enters only when init runs under it.
 func sameMintRouteALTManifest(input KaminoSameMintRouteRequest, settings, routePolicy, setupPolicy, feePayer string, body []RouteInstruction) (ALTManifest, error) {
 	policies := []string{routePolicy}
 	if setupPolicy != "" && setupPolicy != routePolicy {
@@ -410,7 +382,6 @@ func computeBudgetInstructions(limit uint32, price uint64) []RouteInstruction {
 	return []RouteInstruction{RouteInstructionOf("compute_unit_limit", spl.SetComputeUnitLimit(limit)), RouteInstructionOf("compute_unit_price", spl.SetComputeUnitPrice(price))}
 }
 
-// RouteInstructionOf is ix as one public route step.
 func RouteInstructionOf(step string, ix *solana.GenericInstruction) RouteInstruction {
 	out := RouteInstruction{Step: step, Program: ix.ProgID.String(), Data: ix.DataBytes}
 	for _, account := range ix.AccountValues {
@@ -425,8 +396,6 @@ func waitingALTPreparation(missing []string, compute uint64) RoutePreparation {
 		Missing []string `json:"missing_alt_addresses"`
 		Compute uint64   `json:"compute_unit_limit"`
 	}{"same_mint_kamino_waiting_alt", canonicalStrings(missing), compute})
-	// Source fingerprints come from the actual route and typed manifest; this
-	// metadata helper cannot invent them from missing keys or compute values.
 	return RoutePreparation{ExecutionPlan: plan}
 }
 
@@ -436,15 +405,12 @@ type decodedRoutePosition struct {
 	FarmUser   string
 }
 
-// freshSameMint is the coherent chain state one same-mint route is built from.
 type freshSameMint struct {
 	input                    KaminoSameMintRouteRequest
 	evidence                 FreshRouteEvidence
 	routePolicy, setupPolicy *chain.Account
 }
 
-// maxObligationRentLamports bounds the payer's rent top-up to the vault
-// (Rust's MAX_KAMINO_OBLIGATION_RENT_LAMPORTS, 515306a9).
 const maxObligationRentLamports = 25_000_000
 
 // vaultRentTopUp is the payer's transfer that lets the vault pay its new
@@ -481,9 +447,6 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if source.Position.LiquidityMint != lease.LiquidityMint || target.Position.LiquidityMint != lease.LiquidityMint {
 		return f, errors.New("fresh reserve mint differs from opportunity")
 	}
-	// A missing target obligation or obligation farm user is setup the route
-	// performs itself, so those reads may be absent. The vault is a Squads PDA
-	// that holds lamports only once funded; its balance decides the rent top-up.
 	addresses := []string{lease.SourceReserve, lease.TargetReserve, source.Obligation, target.Obligation, source.Position.VaultLiquidityATA, lease.PolicyAccount, lease.VaultPubkey}
 	if lease.SetupPolicyAccount != "" {
 		addresses = append(addresses, lease.SetupPolicyAccount)
@@ -562,13 +525,8 @@ func (r *Revalidator) loadFreshRoute(ctx context.Context, lease RevalidationLeas
 	if err != nil {
 		return f, fmt.Errorf("decode fresh target economics: %w", err)
 	}
-	// The route withdraws all source collateral, so it deposits what that
-	// collateral redeems in this bank, not the planning estimate: depositing
-	// the estimate left the interest accrued since planning as vault idle that
-	// nothing drains (the residue Autodeposit tolerates). KLend redeems at
-	// least this exact floor, and its in-transaction refresh only accrues, so
-	// the deposit never consumes pre-existing idle custody. The estimate must
-	// still be backed: a stale high one means the plan no longer holds.
+	// KLend redeems at least this exact floor, and its in-transaction refresh
+	// only accrues, so the deposit never consumes pre-existing idle custody.
 	redeemable, err := redeemableLiquidity(accounts[0], freshSource.Position.Market, lease.LiquidityMint, sourceCollateral)
 	if err != nil {
 		return f, fmt.Errorf("fresh collateral backing: %w", err)
@@ -628,9 +586,6 @@ func decodeRouteReserve(account *chain.Account, vault string) (decodedRoutePosit
 	return decodedRoutePosition{Position: position, Obligation: position.Obligation, FarmUser: position.ObligationFarmUserState}, nil
 }
 
-// DecodeReserveIdentity reads a KLend reserve's account identities: market,
-// mints, supplies, token program, oracles and collateral farm (Rust
-// decode_kamino_reserve_summary). Vault-derived fields stay empty.
 func DecodeReserveIdentity(account *chain.Account) (KaminoPositionAccounts, error) {
 	reserve, err := kamino.DecodeReserve(account)
 	if err != nil {
@@ -648,9 +603,6 @@ func DecodeReserveIdentity(account *chain.Account) (KaminoPositionAccounts, erro
 		SwitchboardTWAPOracle: optional(reserve.SwitchboardTWAPAggregator), ScopePrices: optional(reserve.ScopePriceFeed), ReserveFarmState: optional(reserve.FarmCollateral)}, nil
 }
 
-// DeriveVaultReserveAccounts fills the vault's accounts in a decoded
-// reserve's market: market authority, vanilla obligation, liquidity ATA under
-// the reserve's own token program, and the obligation's collateral farm user.
 func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (KaminoPositionAccounts, error) {
 	marketKey, err := solana.PublicKeyFromBase58(position.Market)
 	if err != nil {
@@ -690,8 +642,6 @@ func DeriveVaultReserveAccounts(position KaminoPositionAccounts, vault string) (
 	return position, nil
 }
 
-// decodeObligation decodes the owner's obligation in market and records its
-// reserve footprint, deposits then borrows, on position.
 func decodeObligation(account *chain.Account, expectedMarket, expectedOwner string, position *KaminoPositionAccounts) (kamino.Obligation, error) {
 	obligation, err := kamino.DecodeObligation(account)
 	if err != nil {
@@ -709,8 +659,6 @@ func decodeObligation(account *chain.Account, expectedMarket, expectedOwner stri
 	return obligation, nil
 }
 
-// redeemableLiquidity is what collateral redeems from reserve, which must
-// still be in market for mint.
 func redeemableLiquidity(account *chain.Account, market, mint string, collateral uint64) (uint64, error) {
 	reserve, err := kamino.DecodeReserve(account)
 	if err != nil {

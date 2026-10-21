@@ -17,18 +17,10 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Confirmed RPC proofs for direct Earn projection, ported from
-// earn_reconciliation.rs resolve_rpc_mutation and its readers. Direct Earn
-// projection follows the confirmed LaserStream frontier.
-
-// errProofPending: the node cannot serve the transaction yet. The durable job
-// queue retries it with backoff; the Rust in-process 2/5/10 s re-reads were a
-// second retry layer on top of that queue and are not carried over.
 var errProofPending = errors.New("transaction proof is not yet available at the requested commitment")
 
 const dustThreshold = 10_000
 
-// obligationOpen reports deposited collateral or any borrow.
 func obligationOpen(obligation kamino.Obligation) bool {
 	for _, deposit := range obligation.Deposits {
 		if deposit.DepositedAmount > 0 {
@@ -38,11 +30,8 @@ func obligationOpen(obligation kamino.Obligation) bool {
 	return len(obligation.BorrowReserves()) > 0
 }
 
-// earnTransaction is a confirmed transaction that succeeded.
 type earnTransaction struct{ chain.Execution }
 
-// readExecution reads a confirmed transaction. A node that cannot serve it
-// yet leaves the proof pending; that is not proof of absence.
 func readExecution(ctx context.Context, rpc *chain.Client, signature string) (chain.Execution, error) {
 	key, err := solana.SignatureFromBase58(signature)
 	if err != nil {
@@ -55,8 +44,6 @@ func readExecution(ctx context.Context, rpc *chain.Client, signature string) (ch
 	return read, err
 }
 
-// readEarnTransaction is read_transaction_json: a confirmed transaction that
-// must have succeeded.
 func readEarnTransaction(ctx context.Context, rpc *chain.Client, signature string) (earnTransaction, error) {
 	read, err := readExecution(ctx, rpc, signature)
 	if err != nil {
@@ -99,8 +86,6 @@ func (t earnTransaction) slotAt(signature string, expected uint64) (uint64, erro
 	return t.Slot, nil
 }
 
-// ownerLamportCredit is transaction_owner_lamport_credit (fee added back for
-// the fee payer).
 func (t earnTransaction) ownerLamportCredit(owner string) uint64 {
 	index := t.keyIndex(owner)
 	if index < 0 {
@@ -129,8 +114,6 @@ func (t earnTransaction) closedAccount(address string) bool {
 	return okPre && pre > 0 && okPost && post == 0
 }
 
-// ownerTokenDelta is transaction_owner_token_delta: an account counts for
-// owner by its post-balance owner, or its pre-balance owner once closed.
 func (t earnTransaction) ownerTokenDelta(mint solana.PublicKey, owner string) *big.Int {
 	delta := new(big.Int)
 	for _, post := range t.Post {
@@ -172,8 +155,6 @@ func (t earnTransaction) hasEarnAnchor(vault watch.Vault) bool {
 	return false
 }
 
-// kaminoWithdrawAccounts lists the accounts of every Kamino withdraw v2 the
-// transaction ran, outer or inner.
 func (t earnTransaction) kaminoWithdrawAccounts() [][]solana.PublicKey {
 	var out [][]solana.PublicKey
 	add := func(program uint16, indexes []uint16, data []byte) {
@@ -214,7 +195,6 @@ type cashFlow struct {
 	refundKind string
 }
 
-// classifyCashFlow is classify_transaction_cash_flow.
 func classifyCashFlow(t earnTransaction, update NormalizedUpdate, vault watch.Vault) (*cashFlow, error) {
 	if update.EventKind == "account_deleted" && update.AccountPubkey != nil {
 		role := ""
@@ -282,7 +262,6 @@ func knownStable(mint solana.PublicKey) bool {
 	return false
 }
 
-// readCleanupProof is read_cleanup_proof.
 func readCleanupProof(ctx context.Context, rpc *chain.Client, vault watch.Vault, minimum uint64) (cleanupProof, error) {
 	addresses := make([]solana.PublicKey, 0, len(vault.Accounts))
 	for _, binding := range vault.Accounts {
@@ -360,8 +339,6 @@ func readCleanupProof(ctx context.Context, rpc *chain.Client, vault watch.Vault,
 	return proof, nil
 }
 
-// blockingTokenInventory is vault_has_blocking_token_inventory: any non-dust
-// or non-product token balance blocks cleanup.
 func blockingTokenInventory(ctx context.Context, rpc *chain.Client, vault solana.PublicKey, minimum uint64) (bool, error) {
 	for _, program := range []solana.PublicKey{tokenProgram, token2022Program} {
 		_, accounts, err := rpc.TokenAccounts(ctx, vault, program, confirmedCommitment, minimum)
@@ -406,7 +383,6 @@ func isPolicyDeletion(update NormalizedUpdate, vault watch.Vault) bool {
 	return false
 }
 
-// resolveMutation is resolve_rpc_mutation.
 func resolveMutation(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, context ReconciliationContext) (EarnMutation, error) {
 	if isPolicyDeletion(update, vault) {
 		if update.Signature == nil {
@@ -437,9 +413,6 @@ func resolveMutation(ctx context.Context, rpc *chain.Client, update NormalizedUp
 			CleanupSignature: signature, ConfirmedSlot: update.Slot}}, nil
 	}
 	if update.Signature == nil {
-		// An unsigned update is a confirmed-state read, the stream's
-		// recovery after a gap past its replay window: it names no
-		// transaction, so it is an observation of the vault's balances.
 		return balancesMutation(ctx, rpc, update, vault, context)
 	}
 	signature := *update.Signature
@@ -490,10 +463,7 @@ type vaultSnapshot struct {
 	observedSlot uint64
 	reserves     []EarnReserveMutation
 	idles        []EarnIdleTokenMutation
-	// empty says the read found the vault's obligations or idle accounts
-	// and nothing in any of them: no deposit in any reserve, listed by the
-	// route policy or not, and no idle cash.
-	empty bool
+	empty        bool
 }
 
 func keySetOf(values []string) (map[solana.PublicKey]struct{}, error) {
@@ -508,17 +478,11 @@ func keySetOf(values []string) (map[solana.PublicKey]struct{}, error) {
 	return out, nil
 }
 
-// metadata describes an observed reserve row: its amount_raw is the
-// liquidity its collateral redeems.
 func metadata(kind string, slot uint64) json.RawMessage {
 	encoded, _ := json.Marshal(map[string]any{"kind": kind, "slot": slot, "amount_semantics": "redeemable_liquidity_amount"})
 	return encoded
 }
 
-// balancesMutation publishes the vault's holdings after an update of one of
-// its obligations or idle token accounts that moved no wallet cash: a fleet
-// move, a Kamino deposit of idle cash, or the confirmed state read after a
-// stream gap. Any other such update changes nothing.
 func balancesMutation(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, context ReconciliationContext) (EarnMutation, error) {
 	if context.RoutePolicy == nil || update.AccountPubkey == nil {
 		return EarnMutation{}, nil
@@ -529,7 +493,6 @@ func balancesMutation(ctx context.Context, rpc *chain.Client, update NormalizedU
 			holding = true
 		}
 	}
-	// Balances already observed at or after the update hold its effect.
 	if !holding || context.ObservedSlot >= update.Slot {
 		return EarnMutation{}, nil
 	}
@@ -541,7 +504,6 @@ func balancesMutation(ctx context.Context, rpc *chain.Client, update NormalizedU
 		ObservedSlot: snapshot.observedSlot, ReserveState: snapshot.reserves, IdleState: snapshot.idles, VaultEmpty: snapshot.empty}}, nil
 }
 
-// readVaultSnapshot is read_complete_vault_snapshot.
 func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault, policy PolicyMatchInput, minimum uint64) (vaultSnapshot, error) {
 	vaultKey, err := solana.PublicKeyFromBase58(vault.Vault)
 	if err != nil {
@@ -586,7 +548,6 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 	}
 	addresses := append(append(append([]solana.PublicKey(nil), obligations...), reserves...), idle...)
 	if len(addresses) == 0 {
-		// Nothing bound: no reserve or idle balance to snapshot.
 		return vaultSnapshot{observedSlot: minimum}, nil
 	}
 	slot, accounts, err := rpc.Accounts(ctx, addresses, confirmedCommitment, max(discoverySlot, minimum))
@@ -683,9 +644,6 @@ func readVaultSnapshot(ctx context.Context, rpc *chain.Client, vault watch.Vault
 	return snapshot, nil
 }
 
-// drainedObligationTarget is read_drained_obligation_withdraw_target: a
-// full withdrawal that closed or emptied the obligation still proves its
-// reserve from the transaction's own Kamino withdraw accounts.
 func drainedObligationTarget(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, policy PolicyMatchInput, transaction earnTransaction, mint string) (*EarnReserveMutation, error) {
 	vaultKey, err := solana.PublicKeyFromBase58(vault.Vault)
 	if err != nil {
@@ -734,8 +692,6 @@ func drainedObligationTarget(ctx context.Context, rpc *chain.Client, update Norm
 	if err != nil {
 		return nil, err
 	}
-	// The PDA may have been funded again since; a transaction that closed it
-	// already proves the drain.
 	if account := accounts[0]; account != nil && !transaction.closedAccount(target.obligation.String()) {
 		if account.Owner != kamino.ProgramID {
 			return nil, fmt.Errorf("full-withdraw obligation %s has unexpected owner %s", target.obligation, account.Owner)
@@ -767,7 +723,6 @@ func drainedObligationTarget(ctx context.Context, rpc *chain.Client, update Norm
 		PlanningMetadata: metadata("earn_laserstream_drained_obligation_withdrawal", slot)}, nil
 }
 
-// readCashFlowProof is read_cash_flow_proof.
 func readCashFlowProof(ctx context.Context, rpc *chain.Client, update NormalizedUpdate, vault watch.Vault, route PolicyMatchInput, setup *PolicyMatchInput, transaction earnTransaction, flow cashFlow) (EarnMutation, error) {
 	signature := *update.Signature
 	snapshot, err := readVaultSnapshot(ctx, rpc, vault, route, update.Slot)

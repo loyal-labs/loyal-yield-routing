@@ -922,8 +922,6 @@ func fingerprintCrossMintManifest(binding CrossMintPolicyBindings, mints []strin
 	return CrossMintManifestFingerprint(binding.Settings, binding.VaultPubkey, binding.DelegatedSigner, binding.VaultIndex, binding.Swap.MaxSlippageBPS, binding.Swap.DailySourceMintSpendingCap, mints, program)
 }
 
-// CrossMintManifestFingerprint is generalized_cross_mint_manifest_fingerprint,
-// shared by the observer projection and the route revalidator.
 func CrossMintManifestFingerprint(settings, vault, delegate string, vaultIndex uint8, maxSlippageBPS uint16, dailyCap uint64, mints []string, program string) string {
 	h := sha256.New()
 	field := func(v string) { h.Write([]byte(v)); h.Write([]byte{0}) }

@@ -18,16 +18,12 @@ const (
 	LookupClose      LookupKind = "close"
 )
 
-// LookupLease is the source operation's owner/fencing lease, not a new lock.
 type LookupLease struct {
 	Owner        string
 	FencingToken int64
 	ExpiresAt    time.Time
 }
 
-// LookupIntent freezes only the fields which determine one ALT mutation.
-// Prefix is ordered physical membership, not a set. Authority and payer must
-// both be the family's standard policy signer; close refunds that same key.
 type LookupIntent struct {
 	Cluster                                   string
 	OperationID, FamilyID, TableID            int64
@@ -40,9 +36,6 @@ type LookupIntent struct {
 	Prefix, Extension                         []string
 }
 
-// LookupOperation is a leased source work item. A signed operation carries
-// its packet identity in the Rust columns and, when Go signed it, the exact
-// bytes in operation_context.
 type LookupOperation struct {
 	Intent                              LookupIntent
 	State                               string
@@ -55,7 +48,6 @@ type LookupOperation struct {
 	LastValidBlockHeight                *int64
 }
 
-// Proof outcomes for one signed packet.
 type LookupAttemptState string
 
 const (
@@ -63,9 +55,6 @@ const (
 	LookupFailed     LookupAttemptState = "failed"
 )
 
-// LookupAttempt is the signed packet a source operation row carries.
-// Wire.SignedTransaction is empty for a packet the Rust provisioner signed:
-// it can be resolved by its signature but never resent.
 type LookupAttempt struct {
 	SigningContextSlot                                                      int64
 	Intent                                                                  LookupIntent
@@ -74,8 +63,6 @@ type LookupAttempt struct {
 	EstimatedFeeLamports, EstimatedRentLamports, EstimatedReclaimedLamports uint64
 }
 
-// LookupSnapshot comes from a coherent finalized account/table+SlotHashes read.
-// Absent is explicit; missing or undecodable RPC evidence never becomes absent.
 type LookupSnapshot struct {
 	Address, Owner                     string
 	Slot                               int64
@@ -89,8 +76,6 @@ type LookupSnapshot struct {
 	SlotHashes                         []uint64
 }
 
-// LookupReceipt retains actual finalized packet and SOL metadata. Every index
-// is resolved against that signed packet before accounting or refund proof.
 type LookupReceipt struct {
 	Signature                 string
 	Slot                      int64

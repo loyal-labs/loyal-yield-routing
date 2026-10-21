@@ -12,9 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// This identity is the retained Rust operation_idempotency_key contract.
-// Addresses are a set for identity, but durable instruction order is verified
-// separately on every reuse. Catalog ordering is not replaced by this hash.
 func lookupOperationKey(i LookupIntent, shard int32, desiredHash string) string {
 	values := []string{i.Cluster, strconv.FormatInt(i.FamilyID, 10), strconv.FormatInt(i.TableID, 10), string(i.Kind), strconv.FormatInt(int64(i.Generation), 10), strconv.FormatInt(int64(shard), 10), strconv.FormatInt(i.MutationEpoch, 10), desiredHash}
 	values = append(values, lookupSortedSet(lookupAddressSet(i.Extension))...)
@@ -41,8 +38,6 @@ type lookupQueuedOperation struct {
 	key                   string
 }
 
-// The caller holds the source family/physical rows and its planning lease.
-// Collision verification happens in the same transaction as the insert.
 func enqueueLookupTx(ctx context.Context, tx pgx.Tx, q lookupQueuedOperation) (int64, error) {
 	i := q.intent
 	if i.TableID <= 0 || i.FamilyID <= 0 || i.MutationEpoch < 0 || i.Generation < 0 || q.shard < 0 || !json.Valid(q.context) || len(i.Extension) > lookupMaximumChunk || len(lookupAddressSet(i.Extension)) != len(i.Extension) {

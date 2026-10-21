@@ -1,11 +1,3 @@
-// Package fleetexec owns durable fleet route execution and recovery.
-//
-// It is the signing capability boundary for fleet planning: internal/fleet
-// compiles and simulates unsigned routes and never receives a private key, and
-// this package never plans. Execution persists exact signed wire before any
-// broadcast, recovers ambiguous sends through the protocol-specific proof for
-// that state, and keeps target capacity reserved until newer market telemetry
-// reflects the movement.
 package fleetexec
 
 import "errors"
@@ -26,9 +18,6 @@ const (
 	StateFailed                SubmissionState = "failed"
 )
 
-// Terminal reports whether the submission can no longer change. Terminal
-// transitions also release the target-capacity reservation through schema
-// triggers, so they are only ever taken with durable proof.
 func (s SubmissionState) Terminal() bool {
 	return s == StateReconciled || s == StateExpired || s == StateFailed
 }
@@ -52,15 +41,8 @@ const (
 )
 
 var (
-	// ErrStaleOwner means the caller lost the confirmation lease or its
-	// fencing token is behind; the row must be re-claimed, never re-advanced.
-	ErrStaleOwner = errors.New("confirmation lease owner or fencing token is stale")
-	// ErrRouteContended means another live submission already owns this
-	// opportunity, semantic key or signature. Never spend twice.
-	ErrRouteContended = errors.New("signed route already contended by another submission")
-	// ErrNotClaimable means the transition is illegal for the durable state.
-	ErrNotClaimable = errors.New("submission state does not permit this transition")
-	// ErrConflictLeaseHeld means a legacy route account conflict lease still
-	// holds a writable account for different work.
+	ErrStaleOwner        = errors.New("confirmation lease owner or fencing token is stale")
+	ErrRouteContended    = errors.New("signed route already contended by another submission")
+	ErrNotClaimable      = errors.New("submission state does not permit this transition")
 	ErrConflictLeaseHeld = errors.New("route account conflict lease held by other work")
 )

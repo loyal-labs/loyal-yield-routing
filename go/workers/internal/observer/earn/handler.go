@@ -69,8 +69,6 @@ func (h *Handler) HandleAccount(ctx context.Context, update *pb.SubscribeUpdate)
 	kind := "account_deleted"
 	info := accountUpdate.GetAccount()
 	if info == nil {
-		// Without the account payload there is no routable pubkey: the update
-		// cannot be attributed to a watched vault and must not fabricate one.
 		return EnqueueOutcome{}, fmt.Errorf("earn update omitted the account payload")
 	}
 	if len(info.GetPubkey()) != 32 {

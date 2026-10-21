@@ -100,11 +100,6 @@ func (c *CatalogClient) Enrich(ctx context.Context, targets []Target) ([]Target,
 	return enriched, nil
 }
 
-// ObservationTargets is the watched reserve set: the stored catalog and Earn
-// MAX targets enriched from the Kamino API, then the pinned supplemental
-// reserves, which Rust appends without any API lookup (merge_observation_targets
-// in kamino-reserve-monitor main.rs; a reserve resolved twice must keep one
-// market/mint identity).
 func (c *CatalogClient) ObservationTargets(ctx context.Context, stored []Target) ([]Target, error) {
 	targets, err := c.Enrich(ctx, stored)
 	if err != nil {
@@ -148,8 +143,6 @@ func (c *CatalogClient) get(ctx context.Context, endpoint string, target any) er
 	return json.NewDecoder(io.LimitReader(response.Body, 32<<20)).Decode(target)
 }
 
-// SupportedReserveRecord is one row of the supported reserve catalog the
-// planners read (loyal-kamino-codec SupportedReserveRecord).
 type SupportedReserveRecord struct {
 	Market, LiquidityMint, Reserve string
 	MarketName, Symbol             string
@@ -195,10 +188,6 @@ var policySupportedMints = map[string]string{
 	"BTRR3sj1Bn2ZjuemgbeQ6SCtf84iXS81CS7UDTSxUCaK": "USCC",
 }
 
-// SupportedReserves is KaminoApi::fetch_supported_reserves: for every policy
-// market and policy mint, the API reserve with the largest totalSupplyUsd
-// (first listed wins a tie), sorted by market, mint and reserve. Any market
-// failure fails the whole catalog, so a partial response is never published.
 func (c *CatalogClient) SupportedReserves(ctx context.Context) ([]SupportedReserveRecord, error) {
 	type scored struct {
 		record SupportedReserveRecord

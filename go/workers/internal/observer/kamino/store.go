@@ -34,10 +34,6 @@ func earnMaxObservationTargets() []Target {
 	return targets
 }
 
-// supplementalObservationTargets are Backyard's lane reserves (its earnLanes
-// registry) in markets the Kamino API catalog does not resolve (the AUTO
-// market): pinned, named by their lanes' protocol, never resolved through the
-// API catalog.
 func supplementalObservationTargets() []Target {
 	resolved := map[string]bool{}
 	for _, market := range policySupportedMarkets {
@@ -150,8 +146,6 @@ func (s *Store) Insert(ctx context.Context, record Record) (InsertOutcome, error
 			return fmt.Errorf("insert Kamino reserve update: %w", err)
 		}
 		outcome.Inserted = true
-		// reserve_current_states is each reserve's newest stored row: a later
-		// slot or a later arrival in the same slot replaces it; a replay never.
 		_, err = tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %[1]s.reserve_current_states AS current(reserve,state_event_id,account_data_hash,state_slot,state_observed_at,state_source)
 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(reserve) DO UPDATE SET state_event_id=EXCLUDED.state_event_id,account_data_hash=EXCLUDED.account_data_hash,state_slot=EXCLUDED.state_slot,state_observed_at=EXCLUDED.state_observed_at,state_source=EXCLUDED.state_source,updated_at=now()
 WHERE (EXCLUDED.state_slot,EXCLUDED.state_event_id)>(current.state_slot,current.state_event_id)`, s.schema), record.Snapshot.Reserve, outcome.EventID, record.AccountHash, int64(record.Snapshot.Slot), record.Snapshot.ObservedAt, record.Source)
@@ -177,11 +171,6 @@ func coalesce(first, second *string) *string {
 // SUPPORTED_RESERVE_CATALOG_LOCK_KEY, shared with the Rust explicit sync.
 const supportedReserveCatalogLockKey int64 = 5_499_540_200_513_620
 
-// RefreshSupportedReserves is TimescaleSink::refresh_supported_reserves (the
-// ExactRefresh publication). It renews fetched_at, the freshness the planners'
-// 300 s catalog age bound reads, only when the API returned exactly the
-// committed decoding identities; a topology change needs the operator's
-// explicit sync. Validation and renewal share one advisory-locked transaction.
 func (s *Store) RefreshSupportedReserves(ctx context.Context, records []SupportedReserveRecord) error {
 	if len(records) == 0 {
 		return fmt.Errorf("supported reserve catalog response must not be empty")
@@ -247,8 +236,6 @@ ON CONFLICT(market,liquidity_mint) DO UPDATE SET reserve=EXCLUDED.reserve,market
 	})
 }
 
-// supportedReserveIdentities rejects a repeated (market, mint) pair or a
-// repeated (market, mint, reserve) identity.
 func supportedReserveIdentities(records []SupportedReserveRecord) (map[[3]string]struct{}, error) {
 	pairs := make(map[[2]string]struct{}, len(records))
 	identities := make(map[[3]string]struct{}, len(records))

@@ -24,7 +24,6 @@ type EnqueueOutcome struct {
 	Cursor                              uint64
 }
 
-// QueuedEvent is one normalized Earn event and the vaults it affects.
 type QueuedEvent struct {
 	EventKey string
 	Slot     uint64
@@ -37,8 +36,6 @@ func (s *Store) Enqueue(ctx context.Context, consumer, eventKey string, slot uin
 	return s.EnqueueBatch(ctx, consumer, []QueuedEvent{{EventKey: eventKey, Slot: slot, Event: event, Vaults: vaults, Account: account}})
 }
 
-// EnqueueBatch commits every event's jobs, Autodeposit demand and the consumer
-// cursor in one transaction, so a batch is captured completely or not at all.
 func (s *Store) EnqueueBatch(ctx context.Context, consumer string, events []QueuedEvent) (EnqueueOutcome, error) {
 	if len(events) == 0 {
 		return EnqueueOutcome{}, fmt.Errorf("earn enqueue batch is empty")
@@ -130,9 +127,6 @@ func (s *Store) ReplayCursor(ctx context.Context, consumer string) (uint64, erro
 	return uint64(value), nil
 }
 
-// ApplicationCursor is capped before the oldest unapplied job. The policy
-// transaction projection has its own cursor and does not prove account-job
-// application. Capture and job inserts share one transaction.
 func (s *Store) ApplicationCursor(ctx context.Context, consumer string) (uint64, error) {
 	var cursor int64
 	err := s.pool.QueryRow(ctx, `SELECT LEAST(

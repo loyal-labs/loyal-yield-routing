@@ -12,11 +12,6 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Policy-family detection, ported from loyal-actions detection.rs
-// (detect_yield_route_policy_create, detect_yield_setup_policy_create,
-// detect_balance_sweep_policy_create, detect_jupiter_cross_mint_policy_action)
-// and the loyal-squads-policy-monitor event builders.
-
 var (
 	loyalHubProgram      = solana.MustPublicKeyFromBase58("LHUB3MMwYEwXqbfMdr1AQ8vkrJoubH37qoBxiy38smH")
 	subscriptionsProgram = solana.MustPublicKeyFromBase58("De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44")
@@ -148,8 +143,6 @@ func keyStrings(keys []solana.PublicKey) []string {
 	return out
 }
 
-// presetFor is detect_yield_route_universe_preset: an exact ordered match of
-// the deduplicated markets against one Kamino Stable risk profile.
 func presetFor(markets []solana.PublicKey) (preset, profile *string) {
 	unique := uniqueKeys(markets)
 	candidate := append([]solana.PublicKey(nil), safeMarkets...)
@@ -432,7 +425,6 @@ func classifyRefreshObligation(constraint squads.InstructionConstraintView, vaul
 	return markets, true
 }
 
-// swapLane is SwapLaneEvent with serde's internally tagged "kind".
 type swapLane struct {
 	Kind                 string  `json:"kind"`
 	ProgramID            string  `json:"program_id,omitempty"`
@@ -506,7 +498,6 @@ func classifyHubSwap(constraint squads.InstructionConstraintView, vault solana.P
 	return mints, &swapLane{Kind: "loyal_hub", HubAuthorizer: authorizer.String(), MaxFeeBPS: &maxFee}, true
 }
 
-// detectYieldRoute is detect_yield_route_policy_create mapped to its event.
 func detectYieldRoute(action squads.SettingsAction) (PolicyMatchInput, bool) {
 	constraints := action.Payload.Constraints
 	if len(constraints) < 2 {
@@ -594,7 +585,6 @@ func detectYieldRoute(action squads.SettingsAction) (PolicyMatchInput, bool) {
 	}, true
 }
 
-// detectYieldSetup is detect_yield_setup_policy_create mapped to its event.
 func detectYieldSetup(action squads.SettingsAction) (PolicyMatchInput, bool) {
 	if len(action.Payload.Constraints) != 1 {
 		return PolicyMatchInput{}, false
@@ -630,7 +620,6 @@ func accountDataKey(constraint squads.AccountConstraintView, offset uint64) (sol
 	return solana.PublicKey{}, false
 }
 
-// detectBalanceSweep is detect_balance_sweep_policy_create mapped to its event.
 func detectBalanceSweep(action squads.SettingsAction) (BalanceSweepPolicyMatchInput, bool) {
 	if len(action.Payload.Constraints) != 1 {
 		return BalanceSweepPolicyMatchInput{}, false
@@ -697,8 +686,6 @@ func detectBalanceSweep(action squads.SettingsAction) (BalanceSweepPolicyMatchIn
 	}, true
 }
 
-// detectCrossMintPolicy is detect_jupiter_cross_mint_policy_action mapped to
-// its manifest event.
 func detectCrossMintPolicy(instruction squads.Instruction) (CrossMintSwapPolicyManifestInput, bool) {
 	action, err := squads.DecodeStrictPolicyAction(instruction)
 	if err != nil || action == nil {

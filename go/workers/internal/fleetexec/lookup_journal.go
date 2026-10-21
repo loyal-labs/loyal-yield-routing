@@ -14,8 +14,6 @@ import (
 	"github.com/mr-tron/base58"
 )
 
-// lookupSignedContext is the part of a signed packet the Rust columns cannot
-// hold. It lives in operation_context next to signedExpectedReclaimedRentLamports.
 type lookupSignedContext struct {
 	SignedTransaction  string `json:"signedTransaction"`
 	SigningContextSlot int64  `json:"signingContextSlot"`
@@ -23,7 +21,6 @@ type lookupSignedContext struct {
 	Reclaimed          uint64 `json:"signedExpectedReclaimedRentLamports"`
 }
 
-// lookupAttemptOf reads the signed packet a source operation carries.
 func lookupAttemptOf(op LookupOperation) (LookupAttempt, error) {
 	if op.Signature == nil || op.MessageHash == nil || op.Blockhash == nil || op.LastValidBlockHeight == nil {
 		return LookupAttempt{}, errors.New("lookup signed packet identity incomplete")
@@ -42,9 +39,6 @@ func lookupAttemptOf(op LookupOperation) (LookupAttempt, error) {
 		return a, err
 	}
 	if len(wire) < 65 || wire[0] == 0 || base58.Encode(wire[1:65]) != *op.Signature {
-		// Rust re-signed this operation after a handover and never clears our
-		// keys: the stored bytes belong to an earlier packet. The columns are
-		// the packet; land it by signature alone.
 		return LookupAttempt{Intent: op.Intent, Wire: a.Wire}, nil
 	}
 	sum := sha256.Sum256(wire)
@@ -125,9 +119,6 @@ func lookupSourceMembership(ctx context.Context, tx pgx.Tx, i LookupIntent) erro
 	return nil
 }
 
-// PersistLookupPrepared writes the signed packet onto its source operation
-// before any send: the Rust identity columns plus the exact bytes in
-// operation_context. A matching source budget reservation must already exist.
 func (s *Store) PersistLookupPrepared(ctx context.Context, operation LookupOperation, prepared LookupAttempt) (LookupAttempt, error) {
 	i := prepared.Intent
 	if operation.Intent.OperationID != i.OperationID || prepared.SigningContextSlot <= 0 || (i.RecentSlot != nil && (*i.RecentSlot > math.MaxInt64 || *i.RecentSlot > uint64(prepared.SigningContextSlot))) || (i.ExpectedDeactivationSlot != nil && *i.ExpectedDeactivationSlot > math.MaxInt64) || prepared.EstimatedFeeLamports > math.MaxInt64 || prepared.EstimatedRentLamports > math.MaxInt64 || prepared.EstimatedReclaimedLamports > math.MaxInt64 {

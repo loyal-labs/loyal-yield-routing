@@ -19,8 +19,6 @@ type LookupPlannerConfig struct {
 	OnHealth                                              func(error)
 }
 
-// LookupPlanner has no signing callback or private key. The provisioner worker
-// independently owns each source operation and authorizes exact packet IO.
 type LookupPlanner struct {
 	store       *Store
 	chain       *chain.Client
@@ -79,7 +77,7 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	}
 	defer func() {
 		if errors.Is(err, chain.ErrBehind) {
-			err = nil // Not yet: a later tick reads again.
+			err = nil
 		}
 		p.report(err)
 	}()
@@ -107,15 +105,6 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 			p.nextCatalog = time.Now().Add(p.config.PollInterval)
 		}
 	}
-	// Existing candidates may publish only through actual bank evidence. This
-	// does not create a new mutation, including in reconcile-only mode.
-	//
-	// As in the source activate_binding_if_ready, a binding is a candidate only
-	// once its table's confirmed membership covers its sealed manifest. A packed
-	// binding reserved while another vault's mutation held the table has no
-	// operation of its own yet; its request re-plan queues that extend once the
-	// table is idle. Such a binding is not ready, and it must not stop this tick
-	// from reaching the planning step that covers it.
 	candidates, err := p.lookupActivationCandidates(ctx)
 	if err != nil {
 		return false, err
@@ -125,8 +114,6 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 		if e != nil {
 			return false, e
 		}
-		// The source defers a head still in use for its own vault; that vault
-		// waits while the next candidate and request planning proceed.
 		e = p.store.ActivateLookupBinding(ctx, c.binding, snapshot)
 		if errors.Is(e, errLookupBindingDeferred) {
 			continue
@@ -140,8 +127,6 @@ func (p *LookupPlanner) Tick(ctx context.Context) (worked bool, err error) {
 	if p.config.ReconcileOnly {
 		return worked, nil
 	}
-	// This census takes no lease and changes no attempt counter. RPC inputs still
-	// precede the actual request lease, but idle families avoid sixteen PDA reads.
 	vault, e := p.store.nextLookupPlanningVault(ctx, p.config.Cluster)
 	if e != nil || vault == 0 {
 		return worked, e
@@ -183,9 +168,6 @@ type lookupActivationCandidate struct {
 	table   string
 }
 
-// lookupActivationCandidates returns a bounded set of newest-revision bindings
-// whose physical table is idle, verified and already contains every sealed
-// manifest address. Rows are read fully before any RPC.
 func (p *LookupPlanner) lookupActivationCandidates(ctx context.Context) ([]lookupActivationCandidate, error) {
 	rows, err := p.store.pool.Query(ctx, `SELECT b.id,t.table_address FROM loyal_yield.lookup_table_vault_bindings b JOIN loyal_yield.lookup_table_families f ON f.id=b.family_id JOIN loyal_yield.route_lookup_tables t ON t.id=b.route_lookup_table_id JOIN loyal_yield.lookup_table_vault_desired_heads h ON h.family_id=b.family_id AND h.vault_id=b.vault_id AND h.binding_ordinal=b.binding_ordinal AND h.manifest_id=b.manifest_id AND h.desired_revision=b.desired_head_revision WHERE f.cluster=$1 AND f.kind='vault_shards' AND f.desired_state='active' AND b.lifecycle_state IN ('preparing','warming') AND t.generation=f.active_generation AND t.desired_state='active' AND t.status='usable' AND t.usable_address_count=t.address_count AND t.last_verified_slot IS NOT NULL AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_operations WHERE route_lookup_table_id=t.id AND operation_state NOT IN ('complete','permanent_failure','cancelled')) AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_manifest_addresses m WHERE m.manifest_id=b.manifest_id AND NOT EXISTS(SELECT 1 FROM loyal_yield.lookup_table_addresses a WHERE a.route_lookup_table_id=t.id AND a.address=m.address)) ORDER BY b.updated_at,b.id LIMIT $2`, p.config.Cluster, lookupActivationBatch)
 	if err != nil {
@@ -203,13 +185,8 @@ func (p *LookupPlanner) lookupActivationCandidates(ctx context.Context) ([]looku
 	return result, rows.Err()
 }
 
-// lookupActivationBatch bounds per-tick snapshot reads when heads are deferred.
 const lookupActivationBatch = 8
 
-// cleanupTick queues deactivation/close for tables already retiring. It
-// never finalizes a rollback: as in the source provisioner, retiring expired
-// standby bindings is the explicit operator transition
-// (--finalize-rollbacks, FinalizeLookupRollback), not a worker inference.
 func (p *LookupPlanner) cleanupTick(ctx context.Context, bank int64) (worked bool, observed uint64, err error) {
 	candidate, e := p.store.nextLookupCleanup(ctx, p.config.Cluster)
 	if e != nil {
@@ -231,7 +208,6 @@ func (p *LookupPlanner) cleanupTick(ctx context.Context, bank int64) (worked boo
 
 func (p *LookupPlanner) planningBank(ctx context.Context, authority string, minSlot int64) (lookupPlanningBank, error) {
 	proof := lookupPlanningBank{authority: authority}
-	// A coherent absent PDA read also contains the actual bank's SlotHashes.
 	address, err := lookupDerivedAddress(authority, uint64(minSlot))
 	if err != nil {
 		return proof, err

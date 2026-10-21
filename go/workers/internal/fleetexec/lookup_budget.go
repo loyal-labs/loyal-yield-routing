@@ -15,9 +15,6 @@ type LookupBudget struct {
 	RollingWindow   time.Duration
 }
 
-// ReserveLookupBudget uses the existing source cluster advisory lock and the
-// reusable operation ledger. Per-operation max(actual,reserved)
-// prevents double charging while overlapping fencing reservations still add.
 func (s *Store) ReserveLookupBudget(ctx context.Context, operation LookupOperation, policy LookupBudget, fee, rent uint64) (bool, error) {
 	if policy.MaximumLamports <= 0 || policy.RollingWindow < time.Second || policy.RollingWindow > 365*24*time.Hour || policy.RollingWindow%time.Second != 0 || fee > math.MaxInt64 || rent > math.MaxInt64 || fee > math.MaxInt64-rent {
 		return false, errors.New("lookup budget policy/accounting invalid")
