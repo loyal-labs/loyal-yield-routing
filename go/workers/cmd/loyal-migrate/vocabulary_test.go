@@ -563,9 +563,9 @@ func leverageRungs(t *testing.T) []rung {
 			switch kve.Key.(*ast.Ident).Name {
 			case "level":
 				r.level = v
-			case "up":
+			case "enterAt":
 				r.up = v
-			case "down":
+			case "leaveBelow":
 				r.down = v
 			}
 		}

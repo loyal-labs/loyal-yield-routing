@@ -42,7 +42,7 @@ func TestReserveUpdateThatOpensRoomWakesATickThatBorrowsIt(t *testing.T) {
 	view.accounts[route.Kamino.DebtReserve] = viewAccount{ConfirmedAccount: debtReserveWithRoom(t, route, 0), slot: 100}
 	worker := &Worker{wake: make(chan struct{}, 1)}
 	var reports []roomUpdate
-	watch := roomWatch{lane: route.Lane, route: route, leverage: true}
+	watch := roomWatch{lane: route.Lane, route: route, belowTarget: true}
 	view.WatchRoom(rwa, []roomWatch{watch}, func(u roomUpdate) { reports = append(reports, u); worker.roomObserved(u) })
 	woke := func() bool {
 		select {
@@ -92,7 +92,7 @@ func TestReserveUpdateThatOpensRoomWakesATickThatBorrowsIt(t *testing.T) {
 	}
 	// A held lane at its target is watched for the gauge only.
 	gauge := watch
-	gauge.leverage = false
+	gauge.belowTarget = false
 	view.WatchRoom(rwa, []roomWatch{gauge}, worker.roomObserved)
 	write(196, 0)
 	write(197, room)
@@ -125,13 +125,13 @@ func TestLeverageRoomWatchesFollowTheLevels(t *testing.T) {
 		t.Fatalf("held lane leverage: %+v", gaps)
 	}
 	watches := leverageRoomWatches(o)
-	if len(watches) != 2 || !watches[0].leverage || watches[1].leverage || watches[1].lane != onreONycUSDC {
+	if len(watches) != 2 || !watches[0].belowTarget || watches[1].belowTarget || watches[1].lane != onreONycUSDC {
 		t.Fatalf("watches: %+v", watches)
 	}
 	// A level below the position wakes nothing; one above it does.
 	o.lanes[1].LeverageTargetLevel = 1.75
 	watches = leverageRoomWatches(o)
-	if len(watches) != 2 || !watches[1].leverage {
+	if len(watches) != 2 || !watches[1].belowTarget {
 		t.Fatalf("a lane below its level is not woken on: %+v", watches)
 	}
 }
@@ -150,11 +150,11 @@ func TestLeverageReactionIsMeasuredFromTheRoomOpening(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	watch := roomWatch{lane: route.Lane, route: route, leverage: true}
+	watch := roomWatch{lane: route.Lane, route: route, belowTarget: true}
 	e.leverageObserved([]laneLeverage{{lane: route.Lane, targeted: true, target: 1.75, current: 1.01, gap: 0.74}})
-	e.roomObserved(roomUpdate{watch: watch, roomRaw: 0, roomUSD: 0, at: now.Add(-time.Minute)})
-	e.roomObserved(roomUpdate{watch: watch, roomRaw: 3_300_000_000, roomUSD: 3300, open: true, opened: true, at: now.Add(-7 * time.Second)})
-	e.roomObserved(roomUpdate{watch: watch, roomRaw: 3_400_000_000, roomUSD: 3400, open: true, at: now.Add(-3 * time.Second)})
+	e.roomObserved(roomUpdate{watch: watch, roomRaw: 0, roomUSD: 0, roomPriced: true, at: now.Add(-time.Minute)})
+	e.roomObserved(roomUpdate{watch: watch, roomRaw: 3_300_000_000, roomUSD: 3300, roomPriced: true, open: true, opened: true, at: now.Add(-7 * time.Second)})
+	e.roomObserved(roomUpdate{watch: watch, roomRaw: 3_400_000_000, roomUSD: 3400, roomPriced: true, open: true, at: now.Add(-3 * time.Second)})
 	e.leverageUpLanded(route.Lane, 3_300_000_000, "sig")
 	families, err := registry.Gather()
 	if err != nil {

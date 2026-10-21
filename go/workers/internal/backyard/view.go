@@ -51,7 +51,9 @@ type View struct {
 	replaying          bool
 	late               int
 
-	rooms map[*Vault]*roomSet
+	rooms      map[*Vault]*roomSet
+	roomOut    []roomDelivery
+	delivering sync.Mutex
 }
 
 type viewAccount struct {
@@ -224,6 +226,7 @@ func (v *View) subscribe(from uint64) (*stream.Manager, time.Time, error) {
 }
 
 func (v *View) Handle(ctx context.Context, update *pb.SubscribeUpdate) error {
+	defer v.flushRooms()
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if ctx != v.sessionCtx {
@@ -280,7 +283,7 @@ func (v *View) apply(write viewAccount) {
 		v.accounts[write.Address] = write
 		for _, set := range v.rooms {
 			if ws := set.watches[write.Address]; len(ws) > 0 {
-				v.deliverRoomLocked(set, ws, write, true)
+				v.queueRoomLocked(set, ws, write, true)
 			}
 		}
 	}
