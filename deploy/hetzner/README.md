@@ -311,9 +311,9 @@ in the journal under `loyal-realtime`.
 sites: the Vite build of `web/apps/loyal` is embedded in it, and every `/api`
 path it does not answer is forwarded to the Next deployment. The Cloudflare
 tunnel `loyal-workers` carries `next.askloyal.com` to `127.0.0.1:10080`
-("Cloudflare tunnel" below); Caddy is not in its path. The unit holds no credentials —
-the proxy phase needs none; the API pilot adds Neon/auth credentials through
-`LoadCredentialEncrypted` drop-ins. Prometheus covers it only through
+("Cloudflare tunnel" below); Caddy is not in its path. The proxy needs no
+credentials; the public Earn stats pilot optionally reads an App Neon credential
+through a `LoadCredentialEncrypted` drop-in. Prometheus covers it only through
 `LoyalUnitDown`/`LoyalUnitRestartLoop`; there is no `/metrics` scrape, and
 its slog JSON logs stay in the journal under `loyal-web`.
 
@@ -325,6 +325,45 @@ The unit pins what the proxy needs: `LOYAL_WEB_ADDRESS=127.0.0.1:10080` and
 `LOYAL_WEB_UPSTREAM=https://app.askloyal.com`. `LOYAL_WEB_APP_HOST` is
 deliberately unset (the test host serves both sites from one hostname); a
 drop-in sets it if the sites split onto separate hostnames.
+
+### Public Earn stats pilot (opt-in)
+
+Without `WEB_APP_DATABASE_URL`, `/api/earn/stats` still forwards to Next.
+Installing that systemd credential switches GET/HEAD on that path to Go.
+It must connect to **App Neon**, where `public.loyal_stats_snapshots` lives,
+using a role with SELECT on that table; it is not the Yield Neon database.
+The reader uses a read-only transaction and a transaction-local 10-second
+statement timeout. Missing, stale (over five minutes), or unreadable snapshots
+return the same 503 error body as Next, with `Cache-Control: no-store`.
+All other API paths, including mobile Earn MAX and authentication, still proxy.
+
+After provisioning the encrypted credential at
+`/etc/credstore.encrypted/loyal-web-app-db`, install
+`/etc/systemd/system/loyal-web.service.d/50-stats-reader.conf`:
+
+```ini
+[Service]
+LoadCredentialEncrypted=WEB_APP_DATABASE_URL:/etc/credstore.encrypted/loyal-web-app-db
+```
+
+`loyal-web-app-db` is the encrypted credential file, not a database name;
+encrypt it with the credential name `WEB_APP_DATABASE_URL`. Do not put the
+connection string in the unit or command arguments. Deploy a binary containing
+the pilot, then run `systemctl daemon-reload && systemctl restart loyal-web`.
+Verify the served release as usual, then run:
+
+```sh
+curl -si https://next.askloyal.com/api/earn/stats
+bun scripts/web/api-diff.ts https://next.askloyal.com https://app.askloyal.com
+```
+
+`X-Loyal-API-Source: go` proves the reader is active; absent means it is still
+proxying (or an older cached response). The comparison uses unique query strings
+and requires this header, matching snapshot timestamps, and equal JSON. A 503
+with the header means the reader is active but cannot serve a fresh snapshot.
+`/readyz` checks the embedded web build, not database health. To restore proxy
+mode, remove this drop-in, daemon-reload, and restart `loyal-web`.
+This is a test-host pilot: keep production DNS and `LOYAL_WEB_UPSTREAM` unchanged.
 
 ### First install (once)
 
