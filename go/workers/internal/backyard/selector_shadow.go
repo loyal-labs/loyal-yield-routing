@@ -8,8 +8,6 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-// There is no write-capable observe method on this reader. The SQL connection
-// itself also rejects writes; this deliberately does not fake an execution lease.
 type shadowJournal struct{ db *Database }
 
 func (r shadowJournal) PostMutationNAVRequired(ctx context.Context, key string) (bool, error) {
@@ -19,9 +17,6 @@ func (r shadowJournal) PostMutationNAVRequired(ctx context.Context, key string) 
 }
 func (r shadowJournal) ReconciledBridgeJournal(ctx context.Context, key string) (ReconciledBridgeJournalState, error) {
 	return r.db.readReconciledBridgeJournal(ctx, key)
-}
-func (r shadowJournal) RecordPositionSnapshot(context.Context, string, Observation) error {
-	return fmt.Errorf("shadow_projection_writes_disabled")
 }
 
 func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.Client, view *View, manifest RouteManifest, vault *vaultState, identity func(context.Context) (programIdentityObservation, error)) (Observation, error) {
@@ -35,8 +30,7 @@ func observeSelectorShadow(ctx context.Context, database *Database, rpc *chain.C
 		return Observation{}, fmt.Errorf("shadow confirmed observation unavailable: %w", err)
 	}
 	observation.planning = planning
-	state := productionObserveState{routeKey: v.RouteKey, journal: shadowJournal{database}, identity: identity, manifest: manifest}
-	if err = state.enrich(ctx, &observation); err != nil {
+	if err = enrichObservation(ctx, shadowJournal{database}, v.RouteKey, identity, &observation); err != nil {
 		return Observation{}, fmt.Errorf("shadow journal or identity unavailable: %w", err)
 	}
 	var pending string
