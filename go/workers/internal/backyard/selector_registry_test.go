@@ -45,7 +45,7 @@ func primePYUSDQuote(in SelectorInput) MoveQuote {
 		MinimumIdleRaw: uint64(in.Snapshot.TotalVaultNAVRaw), BorrowReceiveRaw: 5_000_000, BorrowFeeRaw: 10_000,
 		SourceLane: in.Snapshot.RouteLane, DestinationLane: primePRIMEPYUSD.Lane, ObservationID: in.Snapshot.ObservationID,
 		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
-		EvidenceID: sha256Bytes([]byte("prime-pyusd-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + budgetMaxObservationLagSlots,
+		EvidenceID: sha256Bytes([]byte("prime-pyusd-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + observationLagFloorSlots,
 	})
 }
 

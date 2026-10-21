@@ -23,7 +23,7 @@ func fundedAutoFixture(t *testing.T) SelectorInput {
 		MinimumIdleRaw: uint64(in.Snapshot.TotalVaultNAVRaw), BorrowReceiveRaw: 5_000_000, BorrowFeeRaw: 10_000,
 		SourceLane: in.Snapshot.RouteLane, DestinationLane: testAutoLane, ObservationID: in.Snapshot.ObservationID,
 		EquityRaw: 10_000_000, CostRaw: 10_000, ObservedAt: in.Now,
-		EvidenceID: sha256Bytes([]byte("auto-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + budgetMaxObservationLagSlots,
+		EvidenceID: sha256Bytes([]byte("auto-priced-quote")), SampleSlot: in.Snapshot.Slot, ValidThroughSlot: in.Snapshot.Slot + observationLagFloorSlots,
 	}
 	in.Quotes = []MoveQuote{parBorrow(quote)}
 	return in

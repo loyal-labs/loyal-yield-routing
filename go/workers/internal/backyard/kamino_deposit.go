@@ -21,7 +21,7 @@ func kaminoDepositMinimum(accounts []ConfirmedAccount, route RuntimeRoute, slot 
 		return 0, budgetHoldFrom(err, "deposit_rounding_reserve_unavailable")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
-	if slot <= 0 || slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" || clock.Executable || len(clock.Data) != 40 {
+	if slot <= 0 || slot > math.MaxInt64-observationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" || clock.Executable || len(clock.Data) != 40 {
 		return 0, budgetHold("invalid_deposit_clock")
 	}
 	clockSlot := binary.LittleEndian.Uint64(clock.Data[:8])

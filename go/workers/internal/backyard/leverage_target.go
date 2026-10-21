@@ -207,7 +207,7 @@ func (d leverageDecision) logLine() string {
 		term = fmt.Sprintf("%.2f", d.TermDays)
 	}
 	return fmt.Sprintf("backyard-rwa-worker: leverage decision lane=%s %.2fx->%.2fx spread=%.2f gain=%.0f cost=%.0f (fee=%d in=%d out=%d network=%d) borrow=%d room=%d term_days=%s reason=%s",
-		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, float64(d.Cost.TotalMicros), d.Cost.BorrowFeeMicros, d.Cost.EntrySwapLossMicros, d.Cost.ExitSwapLossMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, term, d.Reason)
+		d.Lane, d.Current, d.Next, float64(d.SpreadBPS)/100, d.GainRaw, float64(d.Cost.TotalMicros), d.Cost.BorrowFeeMicros, d.Cost.EntrySwapCostMicros, d.Cost.ExitSwapCostMicros, d.Cost.NetworkMicros, d.BorrowRaw, d.RoomRaw, term, d.Reason)
 }
 
 type leverageDecisionLog struct {

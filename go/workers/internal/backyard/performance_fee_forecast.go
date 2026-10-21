@@ -8,12 +8,14 @@ import (
 
 const selectorLiveSampleInterval = 15 * time.Second
 
+const voltrHighWaterMarkFractionBits = 48
+
 func selectorFeeBaselineKnown(s Snapshot) bool {
 	if !approvedVoltrFeeTerms(s) || s.VoltrTotalValueRaw < 0 ||
 		s.LPSupplyInclFeesRaw <= 0 || s.FeeAccumulatorRaw < 0 || s.FeeAccumulatorRaw > s.LPSupplyInclFeesRaw {
 		return false
 	}
-	floor := new(big.Int).Lsh(big.NewInt(s.VoltrTotalValueRaw), 48)
+	floor := new(big.Int).Lsh(big.NewInt(s.VoltrTotalValueRaw), voltrHighWaterMarkFractionBits)
 	floor.Quo(floor, big.NewInt(s.LPSupplyInclFeesRaw))
 	return littleInt(s.VoltrHighWaterMarkBits[:]).Cmp(floor) >= 0
 }
@@ -24,13 +26,10 @@ func selectorFeeBaselineKnown(s Snapshot) bool {
 // stage, restore), well under it.
 const selectorEntryReportBound = 64
 
-// selectorFeeReportBound covers hourly routine reports plus every possible
-// fee-bearing report of the entry and its unwind. Initial/pending and
-// terminal reports each get an additional slot. Polls and selector wakeups
-// do not accrue fees. Like the route forecast, this assumes one modeled
-// move, no later capital flows, safety events or foreign cranks.
+const initialAndTerminalReportSlots = 2
+
 func selectorFeeReportBound(horizon time.Duration) int64 {
-	return int64((horizon-1)/routineNAVReportInterval+1) + selectorEntryReportBound + 2
+	return int64((horizon-1)/routineNAVReportInterval+1) + selectorEntryReportBound + initialAndTerminalReportSlots
 }
 
 // selectorFeeReservedGain is a conditional lower estimate under the existing
@@ -65,8 +64,8 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 	if !finite(maxNAV) || !finite(minNAV) || !finite(income) || maxNAV > 1<<53 || minNAV <= 0 || income > 1<<53 {
 		return 0, false
 	}
-	scale := new(big.Int).Lsh(big.NewInt(1), 48)
-	dust := new(big.Int).Lsh(big.NewInt(s.VoltrTotalValueRaw), 48)
+	scale := new(big.Int).Lsh(big.NewInt(1), voltrHighWaterMarkFractionBits)
+	dust := new(big.Int).Lsh(big.NewInt(s.VoltrTotalValueRaw), voltrHighWaterMarkFractionBits)
 	dust.Sub(dust, new(big.Int).Mul(littleInt(s.VoltrHighWaterMarkBits[:]), big.NewInt(s.LPSupplyInclFeesRaw)))
 	dustRaw := new(big.Int)
 	if dust.Sign() > 0 {
@@ -76,10 +75,6 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 	eligible.Add(eligible, big.NewInt(max(s.TotalVaultNAVRaw-s.VoltrTotalValueRaw, 0)))
 	fee := new(big.Rat).SetFrac(new(big.Int).Mul(eligible, big.NewInt(s.ApprovedAdminPerformanceFeeBPS)), big.NewInt(10_000))
 	unit := new(big.Rat).SetFrac(big.NewInt(int64(maxNAV)), big.NewInt(s.LPSupplyInclFeesRaw))
-	// HWM truncation can leave <S/2^48 eligible asset raw after EACH
-	// report, not just the baseline. Bootstrap S <= 2*S0*maxNAV/minNAV:
-	// the reserve below must stay <minNAV/2, so original holders retain
-	// at least half of minNAV throughout the modeled path.
 	dustPerReport := new(big.Rat).SetFrac(
 		new(big.Int).Mul(new(big.Int).Lsh(big.NewInt(s.LPSupplyInclFeesRaw), 1), big.NewInt(int64(maxNAV))),
 		new(big.Int).Mul(big.NewInt(int64(minNAV)), scale))
@@ -88,9 +83,12 @@ func selectorFeeReservedGain(s Snapshot, horizon time.Duration, e pilotEconomics
 	fee.Add(fee, unit).Mul(fee, new(big.Rat).SetFrac(big.NewInt(int64(maxNAV)), big.NewInt(int64(minNAV))))
 	reserve := new(big.Int).Add(fee.Num(), new(big.Int).Sub(fee.Denom(), big.NewInt(1)))
 	reserve.Quo(reserve, fee.Denom())
-	if !reserve.IsInt64() || reserve.Int64() > 1<<53 ||
-		new(big.Int).Lsh(new(big.Int).Set(reserve), 1).Cmp(big.NewInt(int64(minNAV))) >= 0 {
+	if !reserve.IsInt64() || reserve.Int64() > 1<<53 || !reserveLeavesHoldersHalfMinNAV(reserve, int64(minNAV)) {
 		return 0, false
 	}
 	return e.Gain - float64(reserve.Int64()), true
+}
+
+func reserveLeavesHoldersHalfMinNAV(reserve *big.Int, minNAV int64) bool {
+	return new(big.Int).Lsh(new(big.Int).Set(reserve), 1).Cmp(big.NewInt(minNAV)) < 0
 }

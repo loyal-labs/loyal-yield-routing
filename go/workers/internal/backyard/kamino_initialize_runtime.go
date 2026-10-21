@@ -10,7 +10,7 @@ import (
 )
 
 func initializationSnapshotReady(s Snapshot) bool {
-	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
+	if s.ObservationID == "" || s.Slot <= 0 || s.Slot > math.MaxInt64-observationLagCeilingSlots || s.RouteKind != RouteKind || !s.Fresh {
 		return false
 	}
 	if !earnInitializerLane(s.RouteLane) || s.Obligation != obligationAbsent {

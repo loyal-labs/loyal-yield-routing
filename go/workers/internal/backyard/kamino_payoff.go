@@ -35,7 +35,7 @@ func decodeKaminoPayoffWindow(accounts []ConfirmedAccount, route RuntimeRoute, s
 		return bound, budgetHold("invalid_payoff_execution_window")
 	}
 	clock := accountAt(accounts, budgetClockAddress)
-	if slot <= 0 || slot > math.MaxInt64-steps*budgetMaxObservationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
+	if slot <= 0 || slot > math.MaxInt64-steps*observationLagCeilingSlots-1 || clock.Owner != "Sysvar1111111111111111111111111111111111111" ||
 		clock.Executable || len(clock.Data) != 40 {
 		return bound, budgetHold("invalid_payoff_clock")
 	}

@@ -15,20 +15,7 @@ import (
 
 const kaminoReserveHistoryEndpoint = "https://api.kamino.finance/kamino-market/%s/reserves/%s/metrics/history"
 
-// realizedYieldWindow is the trailing window a collateral's native yield is
-// realized over: 30 days, the selector's horizon. The selector forecasts a
-// lane held for 30 days, and the trailing 30 days are the realized record of
-// that length.
-//
-// A 7-day figure does not also gate. On Kamino's history of 2026-10-11,
-// moving the end point across the last 48 hourly points moved the 7-day
-// figure by 0.5-0.7 points for syrupUSDC, AUTO and PRIME against 0.2 for the
-// 30-day one; USDe read -4.1% over 7 days from peg noise alone (-0.7% over
-// 30); and ONyc's price moves in NAV steps, so a 7-day window depends on how
-// many steps it catches. A gate on that noise would flip lanes between samples
-// while what they earn stays the same. A collateral that stops earning or
-// loses value still lowers the 30-day figure in proportion.
-const realizedYieldWindow = 30 * 24 * time.Hour
+const realizedYieldWindow = selectorHorizon
 
 const realizedYieldMaxSpan = realizedYieldWindow + 48*time.Hour
 

@@ -169,7 +169,7 @@ func TestEntryPricesTheExecutorsLegsWithoutMutatingAccounts(t *testing.T) {
 	if q.Unlevered || q.BorrowReceiveRaw != 49_749_999 || q.BorrowValueRaw != q.BorrowReceiveRaw || q.ProceedsValueRaw != q.BorrowReceiveRaw || q.EquityRaw != 100_000_000 || !q.validBorrow() {
 		t.Fatal("entry borrow", q)
 	}
-	if q.Cost.EntrySwapLossMicros != 0 || q.Cost.ExitSwapLossMicros != 0 || q.Cost.NetworkMicros <= 0 || q.Cost.Step.NetworkMicros <= 0 ||
+	if q.Cost.EntrySwapCostMicros != 0 || q.Cost.ExitSwapCostMicros != 0 || q.Cost.NetworkMicros <= 0 || q.Cost.Step.NetworkMicros <= 0 ||
 		q.CostRaw != q.Cost.NetworkMicros+q.Cost.Step.TotalMicros || q.Cost.TotalMicros != q.CostRaw {
 		t.Fatalf("entry cost %+v", q.Cost)
 	}

@@ -13,21 +13,10 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 )
 
-const budgetMaxObservationLagSlots int64 = 32
-
-// Our observation freshness window is ~13 s of chain time, not a fixed 32
-// slots: at ~270 ms slots 32 slots is 8.6 s while observe-to-send takes 9-12 s,
-// so most 09-26 moves failed the final re-check (13 tries, 10 restarts).
-// observationLagSlots is ceil(13 s / measured slot time) clamped to
-// [budgetMaxObservationLagSlots, budgetMaxObservationLagCeilingSlots]; 32 when
-// unmeasured. Window producers and fresh age checks use it; window-width
-// sanity checks on persisted evidence use the fixed ceiling so a later
-// measurement never strands a record. Kamino/adaptor protocol limits stay 32.
-// A lower later measurement only shortens a live window: a quote or recipe
-// wider than the current window is refused and re-priced, never stretched.
 const (
-	budgetMaxObservationLagCeilingSlots int64 = 64
-	observationWindowMillis                   = 13_000
+	observationLagFloorSlots   int64 = 32
+	observationLagCeilingSlots int64 = 64
+	observationWindowMillis          = 13_000
 )
 
 var (
@@ -41,14 +30,14 @@ func observationLagSlots() int64 {
 	if v := observationLag.Load(); v > 0 {
 		return v
 	}
-	return budgetMaxObservationLagSlots
+	return observationLagFloorSlots
 }
 
 func observationLagForSlotMillis(ms float64) int64 {
 	if !(ms > 0) {
-		return budgetMaxObservationLagSlots
+		return observationLagFloorSlots
 	}
-	return min(max(int64(math.Ceil(observationWindowMillis/ms)), budgetMaxObservationLagSlots), budgetMaxObservationLagCeilingSlots)
+	return min(max(int64(math.Ceil(observationWindowMillis/ms)), observationLagFloorSlots), observationLagCeilingSlots)
 }
 
 // refreshObservationLagSlots re-measures the slot time at most once a minute,
@@ -101,7 +90,7 @@ type BudgetPrice struct {
 }
 
 func (p BudgetPrice) valueUpper(raw uint64, mint, program string, slot int64) (int64, error) {
-	if p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > budgetMaxObservationLagCeilingSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
+	if p.Mint != mint || p.TokenProgram != program || p.Decimals > 18 || p.ObservedSlot <= 0 || slot < p.ObservedSlot || slot > p.ValidThroughSlot || p.ValidThroughSlot < p.ObservedSlot || p.ValidThroughSlot-p.ObservedSlot > observationLagCeilingSlots || !sha256Pattern.MatchString(p.EvidenceSHA256) {
 		return 0, budgetHold("missing_stale_or_mismatched_usdc_valuation")
 	}
 	value, err := valueBetweenTokenRaw(raw, p.Decimals, 6, p.TokenUpperSF, p.USDCLowerSF, true)

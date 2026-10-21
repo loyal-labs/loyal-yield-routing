@@ -10,7 +10,7 @@ const budgetClockAddress = "SysvarC1ock11111111111111111111111111111111"
 const budgetPriceMarginBPS uint16 = 100
 
 func decodeBudgetTokenPrice(slot int64, accounts []ConfirmedAccount, config, reference KaminoObservationConfig, reserveAddress, tokenMint, tokenProgram string) (BudgetPrice, error) {
-	if slot > math.MaxInt64-budgetMaxObservationLagCeilingSlots {
+	if slot > math.MaxInt64-observationLagCeilingSlots {
 		return BudgetPrice{}, budgetHold("invalid_price_observation_slot")
 	}
 	clock := accountAt(accounts, budgetClockAddress)

@@ -106,7 +106,7 @@ func TestPhase3KaminoRepaymentProbeMatchesProduction(t *testing.T) {
 		if maximum == 1_001 {
 			clock := accountAt(before, budgetClockAddress)
 			if probe.ExecutionClock.UnixTimestamp-probe.ClockBefore.UnixTimestamp != kaminoPayoffWindowSeconds ||
-				probe.ExecutionClock.Slot-probe.ClockBefore.Slot != uint64(budgetMaxObservationLagSlots) {
+				probe.ExecutionClock.Slot-probe.ClockBefore.Slot != uint64(observationLagFloorSlots) {
 				t.Fatal("missing real execution-horizon clock advance")
 			}
 			// Price at the original clock against the post-borrow reserve, then

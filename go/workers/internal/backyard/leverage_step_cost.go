@@ -22,8 +22,8 @@ import (
 // increment.
 type leverageStepCost struct {
 	BorrowFeeMicros     int64 `json:"borrowFeeMicros"`
-	EntrySwapLossMicros int64 `json:"entrySwapLossMicros"`
-	ExitSwapLossMicros  int64 `json:"exitSwapLossMicros"`
+	EntrySwapCostMicros int64 `json:"entrySwapLossMicros"`
+	ExitSwapCostMicros  int64 `json:"exitSwapLossMicros"`
 	NetworkMicros       int64 `json:"networkMicros"`
 	TotalMicros         int64 `json:"totalMicros"`
 }
@@ -45,7 +45,7 @@ type leverageStepLegs struct {
 // less than zero.
 func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	out := leverageStepCost{BorrowFeeMicros: l.BorrowFeeMicros, NetworkMicros: l.NetworkMicros,
-		EntrySwapLossMicros: l.EntryInMicros - l.EntryOutMicros, ExitSwapLossMicros: l.ExitInMicros - l.ExitOutMicros}
+		EntrySwapCostMicros: l.EntryInMicros - l.EntryOutMicros, ExitSwapCostMicros: l.ExitInMicros - l.ExitOutMicros}
 	if l.BorrowFeeMicros < 0 || l.NetworkMicros <= 0 || l.EntryInMicros <= 0 || l.EntryOutMicros <= 0 || l.ExitInMicros <= 0 || l.ExitOutMicros <= 0 {
 		return out, budgetHold(leverageReasonCostUnavailable)
 	}
@@ -53,7 +53,7 @@ func (l leverageStepLegs) cost() (leverageStepCost, error) {
 	if err != nil {
 		return out, budgetHoldFrom(err, leverageReasonCostUnavailable)
 	}
-	out.TotalMicros = max(fees+out.EntrySwapLossMicros+out.ExitSwapLossMicros, 0)
+	out.TotalMicros = max(fees+out.EntrySwapCostMicros+out.ExitSwapCostMicros, 0)
 	return out, nil
 }
 
@@ -64,8 +64,8 @@ func (c leverageStepCost) plus(d leverageStepCost) (leverageStepCost, error) {
 		a, b int64
 	}{
 		{&out.BorrowFeeMicros, c.BorrowFeeMicros, d.BorrowFeeMicros},
-		{&out.EntrySwapLossMicros, c.EntrySwapLossMicros, d.EntrySwapLossMicros},
-		{&out.ExitSwapLossMicros, c.ExitSwapLossMicros, d.ExitSwapLossMicros},
+		{&out.EntrySwapCostMicros, c.EntrySwapCostMicros, d.EntrySwapCostMicros},
+		{&out.ExitSwapCostMicros, c.ExitSwapCostMicros, d.ExitSwapCostMicros},
 		{&out.NetworkMicros, c.NetworkMicros, d.NetworkMicros},
 		{&out.TotalMicros, c.TotalMicros, d.TotalMicros},
 	} {

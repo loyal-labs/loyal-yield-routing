@@ -167,7 +167,7 @@ func TestSelectorReplayLiveBook(t *testing.T) {
 var (
 	// AUTO/AUTO/PYUSD, 10,000 PYUSD up step on the live batch, every
 	// conversion quoted 5 bps under the batch's prices.
-	replayOldLiveStep     = leverageStepCost{EntrySwapLossMicros: 4_999_356, ExitSwapLossMicros: 4_996_856, NetworkMicros: 4_596, TotalMicros: 10_000_808}
+	replayOldLiveStep     = leverageStepCost{EntrySwapCostMicros: 4_999_356, ExitSwapCostMicros: 4_996_856, NetworkMicros: 4_596, TotalMicros: 10_000_808}
 	replayOldLiveStepGain = 7_531_267.0
 )
 
@@ -195,7 +195,7 @@ func TestSelectorReplayLiveStepCost(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := replayOldLiveStep
-	if got.BorrowFeeMicros != old.BorrowFeeMicros || got.EntrySwapLossMicros != old.EntrySwapLossMicros || got.ExitSwapLossMicros != old.ExitSwapLossMicros {
+	if got.BorrowFeeMicros != old.BorrowFeeMicros || got.EntrySwapCostMicros != old.EntrySwapCostMicros || got.ExitSwapCostMicros != old.ExitSwapCostMicros {
 		t.Fatalf("conversion losses moved: %+v, old %+v", got, old)
 	}
 	if got.NetworkMicros*3 != old.NetworkMicros || got.TotalMicros != old.TotalMicros-old.NetworkMicros+got.NetworkMicros {
