@@ -171,7 +171,7 @@ func BuildCrossMintLegs(r KaminoSameMintRouteRequest) (KaminoSameMintRoute, erro
 
 func BuildIdleDeposit(r KaminoIdleDepositRequest) (KaminoSameMintRoute, error) {
 	t := &r.Target
-	program, supported := stableTokenProgram(t.LiquidityMint)
+	program, supported := EarnStableTokenProgram(t.LiquidityMint)
 	if r.DepositLiquidityAmount == 0 || !supported || program != t.LiquidityTokenProgram || t.Obligation == "" || t.MarketAuthority == "" || len(t.ObligationBorrowReserves) != 0 || len(t.ObligationDepositReserves) > 1 || (t.ReserveFarmState == "") != (t.ObligationFarmUserState == "") {
 		return KaminoSameMintRoute{}, fmt.Errorf("invalid idle deposit amount or obligation footprint")
 	}

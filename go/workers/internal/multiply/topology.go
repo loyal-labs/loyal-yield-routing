@@ -1,12 +1,5 @@
 package multiply
 
-// The fixed Earn MAX topology ported from
-// 91694cd9^:crates/loyal-fleet-worker/src/multiply/config.rs and the loyal-actions
-// constants in crates/loyal-actions/src/{ids.rs,earn_max.rs}. Every address is
-// evidence-backed mainnet state; nothing is derived except the vault, custody,
-// obligation, farm, and policy PDAs, whose seeds mirror
-// loyal_actions::derive_* exactly.
-
 import (
 	"errors"
 	"fmt"

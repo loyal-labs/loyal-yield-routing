@@ -176,16 +176,6 @@ type crossMintPlan struct {
 	Bindings   CrossMintPolicyBindings `json:"policy_bindings"`
 }
 
-func stableTokenProgram(mint string) (string, bool) {
-	switch mint {
-	case CashMint, USDGMint, PYUSDMint:
-		return token2022Program, true
-	case USDCMint, USDTMint, USDSMint:
-		return tokenProgram, true
-	}
-	return "", false
-}
-
 func parseAmount(value string) (uint64, error) {
 	if value == "" {
 		return 0, errors.New("invalid amount")
@@ -340,7 +330,10 @@ func validJupiterFetchedAt(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &unix) == nil && unix.Seconds > 0 && unix.Nanos < 1_000_000_000
 }
 
-func mustStableProgram(mint string) string { program, _ := stableTokenProgram(mint); return program }
+func mustStableProgram(mint string) string {
+	program, _ := EarnStableTokenProgram(mint)
+	return program
+}
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -432,8 +425,8 @@ func validateJupiterSwap(ix RouteInstruction, raw rawJupiterBuild, routes []rawJ
 	if len(ix.Accounts) < core {
 		return "", errors.New("truncated Jupiter accounts")
 	}
-	inputProgram, _ := stableTokenProgram(raw.InputMint)
-	outputProgram, _ := stableTokenProgram(raw.OutputMint)
+	inputProgram, _ := EarnStableTokenProgram(raw.InputMint)
+	outputProgram, _ := EarnStableTokenProgram(raw.OutputMint)
 	if dialect == "route_v2" {
 		expected := []InstructionAccount{{vault, true, false}, {inputATA, false, true}, {outputATA, false, true}, {raw.InputMint, false, false}, {raw.OutputMint, false, false}, {inputProgram, false, false}, {outputProgram, false, false}, {jupiterProgram, false, false}, {jupiterEvent, false, false}, {jupiterProgram, false, false}}
 		if !equalMetas(ix.Accounts[:core], expected) {
@@ -452,8 +445,8 @@ func validateJupiterSwap(ix RouteInstruction, raw rawJupiterBuild, routes []rawJ
 	}
 	expectedCount := core
 	for _, route := range routes {
-		inProgram, _ := stableTokenProgram(route.SwapInfo.InputMint)
-		outProgram, _ := stableTokenProgram(route.SwapInfo.OutputMint)
+		inProgram, _ := EarnStableTokenProgram(route.SwapInfo.InputMint)
+		outProgram, _ := EarnStableTokenProgram(route.SwapInfo.OutputMint)
 		if inProgram == token2022Program && outProgram == token2022Program {
 			return "", errors.New("AlphaQ Token-2022 to Token-2022 route is unsupported")
 		}
@@ -472,8 +465,8 @@ func validateJupiterSwap(ix RouteInstruction, raw rawJupiterBuild, routes []rawJ
 		source = ix.Accounts[3].Address
 	}
 	for i, route := range routes {
-		inProgram, _ := stableTokenProgram(route.SwapInfo.InputMint)
-		outProgram, _ := stableTokenProgram(route.SwapInfo.OutputMint)
+		inProgram, _ := EarnStableTokenProgram(route.SwapInfo.InputMint)
+		outProgram, _ := EarnStableTokenProgram(route.SwapInfo.OutputMint)
 		segLen := 14
 		var token2022Mint string
 		if inProgram == token2022Program {
@@ -539,7 +532,7 @@ func validateIdempotentATA(ix RouteInstruction, vault string) bool {
 	if len(ix.Accounts) != 6 {
 		return false
 	}
-	program, ok := stableTokenProgram(ix.Accounts[3].Address)
+	program, ok := EarnStableTokenProgram(ix.Accounts[3].Address)
 	vaultKey, err := solana.PublicKeyFromBase58(vault)
 	if !ok || err != nil {
 		return false
@@ -727,7 +720,7 @@ func validateStableMintExtensions(extensions []spl.Extension) error {
 // validateStableAccount admits mint's canonical-program account held by
 // owner; a Token-2022 one must carry the extended layout.
 func validateStableAccount(account *chain.Account, mint, owner string) (spl.TokenAccount, error) {
-	program, ok := stableTokenProgram(mint)
+	program, ok := EarnStableTokenProgram(mint)
 	held, err := spl.DecodeTokenAccount(account)
 	if !ok || err != nil || held.Program.String() != program || held.Mint.String() != mint || held.Owner.String() != owner || held.Frozen || program == token2022Program && len(account.Data) <= 165 {
 		return spl.TokenAccount{}, errors.New("stable token account program, binding or state is invalid")
@@ -738,7 +731,7 @@ func validateStableAccount(account *chain.Account, mint, owner string) (spl.Toke
 	return held, nil
 }
 func validateStableMint(account *chain.Account, mint string) error {
-	program, ok := stableTokenProgram(mint)
+	program, ok := EarnStableTokenProgram(mint)
 	decoded, err := spl.DecodeMint(account)
 	if !ok || err != nil || account.Key.String() != mint || decoded.Program.String() != program || decoded.Decimals != 6 || program == token2022Program && len(account.Data) <= 165 {
 		return errors.New("stable mint binding, decimals, or state is invalid")

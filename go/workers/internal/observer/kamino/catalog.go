@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -154,8 +155,7 @@ type supportedMarket struct {
 	riskBaskets  []string
 }
 
-// policySupportedMarkets and policySupportedMints are loyal-kamino-data
-// targets.rs policy_supported_markets and policy_supported_mints, in order.
+// Mirrors loyal-kamino-data targets.rs policy_supported_markets and policy_supported_mints.
 var policySupportedMarkets = []supportedMarket{
 	{"7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF", "Main Market", []string{"safe", "medium", "aggressive"}},
 	{"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA", "Figure Market", []string{"safe", "medium", "aggressive"}},
@@ -186,6 +186,16 @@ var policySupportedMints = map[string]string{
 	"AUSD1jCcCyPLybk1YnvPWsHQSrZ46dxwoMniN4N2UEB9": "AUSD",
 	"3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC": "EUSX",
 	"BTRR3sj1Bn2ZjuemgbeQ6SCtf84iXS81CS7UDTSxUCaK": "USCC",
+}
+
+func PolicyMarkets(riskBasket string) []string {
+	var markets []string
+	for _, market := range policySupportedMarkets {
+		if slices.Contains(market.riskBaskets, riskBasket) {
+			markets = append(markets, market.market)
+		}
+	}
+	return markets
 }
 
 func (c *CatalogClient) SupportedReserves(ctx context.Context) ([]SupportedReserveRecord, error) {

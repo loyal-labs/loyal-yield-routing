@@ -265,10 +265,10 @@ func validateCrossMintPreparationRequest(q CrossMintPreparationRequest, signer, 
 			return plan, errors.New("cross-mint preparation has invalid public identity")
 		}
 	}
-	if _, ok := stableTokenProgram(m.SourceMint); !ok {
+	if _, ok := EarnStableTokenProgram(m.SourceMint); !ok {
 		return plan, errors.New("source mint is not a canonical Earn stable asset")
 	}
-	if _, ok := stableTokenProgram(m.TargetMint); !ok {
+	if _, ok := EarnStableTokenProgram(m.TargetMint); !ok {
 		return plan, errors.New("target mint is not a canonical Earn stable asset")
 	}
 	if _, err := ValidateCrossMintPreflightCertificate(m, now); err != nil {
@@ -573,7 +573,7 @@ func (r *Revalidator) loadCrossMintRouteBank(ctx context.Context, q CrossMintPre
 		if name == m.SourceReserve {
 			mint = m.SourceMint
 		}
-		program, _ := stableTokenProgram(mint)
+		program, _ := EarnStableTokenProgram(mint)
 		if p.Position.LiquidityMint != mint || p.Position.LiquidityTokenProgram != program {
 			return bank, errors.New("cross-mint reserve mint or token program differs from canonical asset")
 		}
@@ -941,7 +941,7 @@ func (s *Store) CheckCrossMintPreparation(ctx context.Context, q CrossMintPrepar
 
 func (r *Revalidator) checkCrossMintCustody(q CrossMintPreparationRequest, bank crossMintPreparationBank) error {
 	m := q.Movement
-	program, _ := stableTokenProgram(m.CustodyMint)
+	program, _ := EarnStableTokenProgram(m.CustodyMint)
 	ata, err := deriveATA(m.VaultPubkey, m.CustodyMint, program)
 	if err != nil || ata != m.CustodyAccount {
 		return errors.New("cross-mint custody is not the canonical vault ATA")
