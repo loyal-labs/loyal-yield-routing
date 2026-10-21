@@ -70,12 +70,6 @@ func TestBridgeInstructionMatchesPinnedVoltrAndAdaptorEnvelopes(t *testing.T) {
 	if inner.program != publicKey(voltr.ProgramID) || len(inner.accounts) != 18 {
 		t.Fatalf("unexpected allocation identity")
 	}
-	// This is the independently generated SDK wire for 1 USDC and ReportV1
-	// sequence=slot=1, NAV=0, digest=01*32. It catches accidental ABI drift.
-	const want = "f65239e283defdf940420f00000000000108000000f223c68952e1f2b60139000000010100000000000000010000000000000000000000000000000101010101010101010101010101010101010101010101010101010101010101"
-	if got := hex.EncodeToString(inner.data); got != want {
-		t.Fatalf("allocation envelope drifted\n got %s\nwant %s", got, want)
-	}
 	if !inner.accounts[0].signer || inner.accounts[0].key != mustKey(bridgeVault) || inner.accounts[3].writable || !inner.accounts[16].writable {
 		t.Fatalf("allocation inner signer/custody roles drifted")
 	}

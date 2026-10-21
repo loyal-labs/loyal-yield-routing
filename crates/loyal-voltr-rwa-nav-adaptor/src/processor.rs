@@ -246,10 +246,10 @@ fn initialize_config(
                 .try_into()
                 .map_err(|_| AdaptorError::InvalidInstruction)?,
         ),
-        last_sequence: 0,
-        last_observed_slot: 0,
-        last_nav_raw: 0,
-        last_snapshot_digest: [0; 32],
+        reserved_sequence: 0,
+        reserved_observed_slot: 0,
+        reserved_nav_raw: 0,
+        reserved_snapshot_digest: [0; 32],
     };
     if config.max_report_nav_raw == 0 || config.max_report_age_slots == 0 {
         return Err(AdaptorError::InvalidConfig);
@@ -520,14 +520,9 @@ fn consume_ticket(ticket: &mut ReportTicket) {
     ticket.active_wire_sha256 = [0; 32];
 }
 
-/// Decode the exact bytes Voltr forwards after selecting the adaptor
-/// discriminator from its `Option<Vec<u8>>` instruction discriminator:
-///
-/// `amount: u64 || additional_args: Option<Vec<u8>>`.
-///
-/// The selected discriminator itself is forwarded unwrapped. The second
-/// option remains Borsh encoded, so a report-bearing capital/NAV call must be
-/// `Some`, must declare exactly 57 bytes, and must have no trailing bytes.
+/// Voltr forwards `amount: u64 || additional_args: Option<Vec<u8>>` after
+/// unwrapping the selected adaptor discriminator; the second option stays
+/// Borsh encoded.
 fn parse_capital_wire(data: &[u8]) -> AdaptorResult<(u64, ReportV1)> {
     const OPTION_TAG_OFFSET: usize = 8;
     const LENGTH_OFFSET: usize = OPTION_TAG_OFFSET + 1;
@@ -732,18 +727,16 @@ fn load_config(program_id: &Pubkey, account: &AccountInfo) -> AdaptorResult<Stra
             .try_borrow_data()
             .map_err(|_| AdaptorError::InvalidConfig)?,
     )?;
-    // v2 keeps the deployed layout stable, but these historical mutable fields
-    // are now reserved and must remain exactly zero forever.
     if config.strategy != *account.key || !reserved_report_state_is_zero(&config) {
         return Err(AdaptorError::InvalidConfig);
     }
     Ok(config)
 }
 fn reserved_report_state_is_zero(config: &StrategyConfig) -> bool {
-    config.last_sequence == 0
-        && config.last_observed_slot == 0
-        && config.last_nav_raw == 0
-        && config.last_snapshot_digest == [0; 32]
+    config.reserved_sequence == 0
+        && config.reserved_observed_slot == 0
+        && config.reserved_nav_raw == 0
+        && config.reserved_snapshot_digest == [0; 32]
 }
 fn reject_duplicate_mutables(accounts: &[AccountInfo]) -> AdaptorResult<()> {
     for (index, account) in accounts.iter().enumerate() {
@@ -802,10 +795,10 @@ mod tests {
             squads_asset_ata: Pubkey::new_unique(),
             max_report_nav_raw: 100,
             max_report_age_slots: 5,
-            last_sequence: 0,
-            last_observed_slot: 0,
-            last_nav_raw: 0,
-            last_snapshot_digest: [0; 32],
+            reserved_sequence: 0,
+            reserved_observed_slot: 0,
+            reserved_nav_raw: 0,
+            reserved_snapshot_digest: [0; 32],
         }
     }
 
@@ -1170,7 +1163,91 @@ mod tests {
     fn historical_report_state_is_zero_reserved() {
         let mut config = config();
         assert!(reserved_report_state_is_zero(&config));
-        config.last_sequence = 1;
+        config.reserved_sequence = 1;
         assert!(!reserved_report_state_is_zero(&config));
+    }
+
+    fn arm_roles() -> Vec<(bool, bool)> {
+        let f = crate::config::tests::fixture();
+        f["arm_report"]["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                (
+                    a["signer"].as_bool().unwrap(),
+                    a["writable"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn arm_outcome(roles: &[(bool, bool)], armed_config: bool, data: &[u8]) -> AdaptorError {
+        let config_key: &'static Pubkey = Box::leak(Box::new(Pubkey::new_unique()));
+        let mut accounts: Vec<AccountInfo<'static>> = roles
+            .iter()
+            .map(|(signer, writable)| test_account(*signer, *writable))
+            .collect();
+        if armed_config {
+            let mut stored = config();
+            stored.strategy = *config_key;
+            let mut bytes = vec![0; CONFIG_LEN];
+            stored.encode(&mut bytes).unwrap();
+            accounts[0] = AccountInfo::new(
+                config_key,
+                roles[0].0,
+                roles[0].1,
+                Box::leak(Box::new(0)),
+                Box::leak(bytes.into_boxed_slice()),
+                &PROGRAM_ID,
+                false,
+                0,
+            );
+        }
+        process_arm_report(&PROGRAM_ID, &accounts, data).unwrap_err()
+    }
+
+    #[test]
+    fn golden_arm_report() {
+        let f = crate::config::tests::fixture();
+        let arm = crate::config::tests::unhex(&f["arm_report"]["data"]);
+        assert_eq!(arm[..8], ARM_REPORT_DISCRIMINATOR);
+        let (amount, report) = parse_capital_wire(&arm[9..]).unwrap();
+        assert_eq!(amount, f["voltr_deposit"]["amount"].as_u64().unwrap());
+        assert_eq!(
+            report.sequence,
+            f["report_v1"]["sequence"].as_u64().unwrap()
+        );
+
+        let envelope = crate::config::tests::unhex(&f["voltr_deposit"]["data"]);
+        assert_eq!(envelope[21..29], DEPOSIT_DISCRIMINATOR);
+        assert_eq!([&envelope[8..16], &envelope[29..]].concat(), arm[9..]);
+
+        let roles = arm_roles();
+        let data = &arm[8..];
+        assert_eq!(
+            arm_outcome(&roles, false, data),
+            AdaptorError::InvalidConfig
+        );
+        assert_eq!(
+            arm_outcome(&roles, true, data),
+            AdaptorError::InvalidSquadsVault
+        );
+        for index in 0..roles.len() {
+            for flip_signer in [true, false] {
+                let mut flipped = roles.clone();
+                if flip_signer {
+                    flipped[index].0 = !flipped[index].0;
+                } else {
+                    flipped[index].1 = !flipped[index].1;
+                }
+                let moved = if index == 0 {
+                    arm_outcome(&flipped, true, data) != AdaptorError::InvalidSquadsVault
+                } else {
+                    arm_outcome(&flipped, false, data) != AdaptorError::InvalidConfig
+                };
+                assert!(moved, "account {index} roles are not pinned");
+            }
+        }
     }
 }

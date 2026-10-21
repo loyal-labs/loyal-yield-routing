@@ -13,9 +13,13 @@ pub const CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR: [u8; 8] = [242, 35, 198, 137, 82
 pub const CUSTOM_ADAPTOR_WITHDRAW_DISCRIMINATOR: [u8; 8] = [183, 18, 70, 156, 148, 109, 161, 34];
 pub const CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR: [u8; 8] = [164, 175, 246, 41, 178, 140, 35, 3];
 const SPL_TRANSFER_CHECKED: u8 = 12;
-const ARM_BOUND_ACCOUNT_INDEXES: &[usize] = &[0, 1];
-const DEPOSIT_BOUND_ACCOUNT_INDEXES: &[usize] = &[0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17];
-const WITHDRAW_BOUND_ACCOUNT_INDEXES: &[usize] = &[0, 2, 5, 6, 9, 12, 13, 14, 15, 16, 17];
+const ARM_CONFIG_TICKET_ACCOUNT_INDEXES: &[usize] = &[0, 1];
+const DEPOSIT_CUSTODY_BRIDGE_ACCOUNT_INDEXES: &[usize] = &[0, 2, 3, 8, 11, 12, 13, 14, 15, 16, 17];
+const WITHDRAW_CUSTODY_BRIDGE_ACCOUNT_INDEXES: &[usize] = &[0, 2, 5, 6, 9, 12, 13, 14, 15, 16, 17];
+const REPORT_V1_LEN: u32 = 57;
+const ADAPTOR_CALL_OFFSET: usize = 16;
+const ADAPTOR_ARGS_OFFSET: usize = ADAPTOR_CALL_OFFSET + 1 + 4 + 8;
+const ENVELOPE_LEN: usize = ADAPTOR_ARGS_OFFSET + 1 + 4 + REPORT_V1_LEN as usize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoltrCustomPolicySeeds {
@@ -220,17 +224,16 @@ fn validate_envelope(
     outer: [u8; 8],
     inner: [u8; 8],
 ) -> Result<(), VoltrCustomPolicyError> {
-    // The v2 adaptor consumes a report-bearing payload.  Only the report
-    // version is static; the sequence, slot, NAV, and digest are deliberately
-    // left unconstrained for the adaptor to authenticate and order.
-    if instruction.data.len() != 91
-        || instruction.data[..8] != outer
-        || instruction.data[16] != 1
-        || instruction.data[17..21] != 8u32.to_le_bytes()
-        || instruction.data[21..29] != inner
-        || instruction.data[29] != 1
-        || instruction.data[30..34] != 57u32.to_le_bytes()
-        || instruction.data[34] != 1
+    let data = &instruction.data;
+    // Only the report version is pinned; sequence, slot, NAV and digest are left for the adaptor to authenticate and order.
+    if data.len() != ENVELOPE_LEN
+        || data[..8] != outer
+        || data[ADAPTOR_CALL_OFFSET] != 1
+        || data[ADAPTOR_CALL_OFFSET + 1..ADAPTOR_CALL_OFFSET + 5] != 8u32.to_le_bytes()
+        || data[ADAPTOR_CALL_OFFSET + 5..ADAPTOR_ARGS_OFFSET] != inner
+        || data[ADAPTOR_ARGS_OFFSET] != 1
+        || data[ADAPTOR_ARGS_OFFSET + 1..ADAPTOR_ARGS_OFFSET + 5] != REPORT_V1_LEN.to_le_bytes()
+        || data[ADAPTOR_ARGS_OFFSET + 5] != 1
     {
         return Err(invalid(operation, "91-byte v2 adaptor envelope"));
     }
@@ -249,7 +252,7 @@ fn voltr_constraint(
     envelope.extend_from_slice(&8u32.to_le_bytes());
     envelope.extend_from_slice(&inner);
     envelope.push(1);
-    envelope.extend_from_slice(&57u32.to_le_bytes());
+    envelope.extend_from_slice(&REPORT_V1_LEN.to_le_bytes());
     envelope.push(1);
     let mut data_constraints = vec![SquadsDataConstraint {
         data_offset: 0,
@@ -258,7 +261,7 @@ fn voltr_constraint(
     }];
     data_constraints.extend(amount_constraints);
     data_constraints.push(SquadsDataConstraint {
-        data_offset: 16,
+        data_offset: ADAPTOR_CALL_OFFSET as u64,
         data_value: SquadsDataValue::U8Slice(envelope),
         operator: SquadsDataOperator::Equals,
     });
@@ -347,14 +350,18 @@ fn arm_constraint(
     data_constraints.extend(amount_constraints);
     data_constraints.push(SquadsDataConstraint {
         data_offset: 17,
-        data_value: SquadsDataValue::U8Slice(vec![1, 57, 0, 0, 0, 1]),
+        data_value: SquadsDataValue::U8Slice(
+            [&[1][..], &REPORT_V1_LEN.to_le_bytes(), &[1]].concat(),
+        ),
         operator: SquadsDataOperator::Equals,
     });
     SquadsInstructionConstraint {
         program_id: instruction.program_id,
-        // The adaptor itself rederives and authenticates Settings/vault/program.
-        // The policy only needs to pin the immutable config and its one-use PDA.
-        account_constraints: selected_account_constraints(instruction, ARM_BOUND_ACCOUNT_INDEXES),
+        // The adaptor rederives and authenticates Settings/vault/program.
+        account_constraints: selected_account_constraints(
+            instruction,
+            ARM_CONFIG_TICKET_ACCOUNT_INDEXES,
+        ),
         data_constraints,
     }
 }
@@ -648,15 +655,13 @@ pub fn create_voltr_custom_policies(
     }
     validate_arm("withdraw", &templates.withdraw_arm, withdraw, identity, 1)?;
 
-    // Voltr validates the receipt/authority PDAs and the adaptor validates every
-    // remaining account against its immutable config. The policy pins the
-    // custody-critical bridge identities without duplicating that whole proof.
+    // Voltr validates the receipt/authority PDAs; the adaptor validates the rest.
     let allocation_constraint = voltr_constraint(
         allocation,
         VOLTR_DEPOSIT,
         CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR,
         bounded_positive(identity.max_amount_raw),
-        DEPOSIT_BOUND_ACCOUNT_INDEXES,
+        DEPOSIT_CUSTODY_BRIDGE_ACCOUNT_INDEXES,
     );
     let refresh_constraint = voltr_constraint(
         refresh,
@@ -667,7 +672,7 @@ pub fn create_voltr_custom_policies(
             data_value: SquadsDataValue::U64Le(0),
             operator: SquadsDataOperator::Equals,
         }],
-        DEPOSIT_BOUND_ACCOUNT_INDEXES,
+        DEPOSIT_CUSTODY_BRIDGE_ACCOUNT_INDEXES,
     );
     let stage_constraint = SquadsInstructionConstraint {
         program_id: stage.program_id,
@@ -700,7 +705,7 @@ pub fn create_voltr_custom_policies(
         VOLTR_WITHDRAW,
         CUSTOM_ADAPTOR_WITHDRAW_DISCRIMINATOR,
         bounded_positive(identity.max_amount_raw),
-        WITHDRAW_BOUND_ACCOUNT_INDEXES,
+        WITHDRAW_CUSTODY_BRIDGE_ACCOUNT_INDEXES,
     );
 
     Ok(VoltrCustomPolicies {
@@ -1049,5 +1054,81 @@ mod tests {
             canonical_policy.create_instruction.data, widened_policy.create_instruction.data,
             "ProgramInteraction constraints serialize pubkey/owner/data only, not writable roles"
         );
+    }
+
+    fn golden_hex(value: &serde_json::Value) -> Vec<u8> {
+        let text = value.as_str().unwrap();
+        (0..text.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&text[index..index + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn golden_envelope() {
+        let f: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../loyal-voltr-rwa-nav-adaptor/fixtures/wire-v1.json"
+        ))
+        .unwrap();
+        let envelope = golden_hex(&f["voltr_deposit"]["data"]);
+        let arm = golden_hex(&f["arm_report"]["data"]);
+        let instruction = |data: Vec<u8>, accounts: usize| Instruction {
+            program_id: key(9),
+            accounts: (0..accounts)
+                .map(|index| AccountMeta::new_readonly(key(index as u8), false))
+                .collect(),
+            data,
+        };
+
+        assert_eq!(ENVELOPE_LEN, envelope.len());
+        assert_eq!(
+            REPORT_V1_LEN as usize,
+            golden_hex(&f["report_v1"]["wire"]).len()
+        );
+        assert_eq!(
+            CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR.to_vec(),
+            golden_hex(&f["discriminators"]["adaptor_deposit"])
+        );
+        assert_eq!(
+            CUSTOM_ADAPTOR_WITHDRAW_DISCRIMINATOR.to_vec(),
+            golden_hex(&f["discriminators"]["adaptor_withdraw"])
+        );
+        assert_eq!(
+            CUSTOM_ADAPTOR_ARM_REPORT_DISCRIMINATOR.to_vec(),
+            golden_hex(&f["discriminators"]["arm_report"])
+        );
+        assert!(validate_envelope(
+            "allocation",
+            &instruction(envelope.clone(), 0),
+            VOLTR_DEPOSIT,
+            CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR
+        )
+        .is_ok());
+
+        let voltr = voltr_constraint(
+            &instruction(envelope.clone(), 18),
+            VOLTR_DEPOSIT,
+            CUSTOM_ADAPTOR_DEPOSIT_DISCRIMINATOR,
+            vec![],
+            DEPOSIT_CUSTODY_BRIDGE_ACCOUNT_INDEXES,
+        );
+        let Some(SquadsDataValue::U8Slice(pinned)) =
+            voltr.data_constraints.last().map(|c| c.data_value.clone())
+        else {
+            panic!("envelope constraint is not a byte slice");
+        };
+        assert_eq!(
+            pinned,
+            envelope[ADAPTOR_CALL_OFFSET..ADAPTOR_CALL_OFFSET + pinned.len()]
+        );
+        assert_eq!(*pinned.last().unwrap(), 1);
+
+        let armed = arm_constraint(&instruction(arm.clone(), 2), vec![]);
+        let Some(SquadsDataValue::U8Slice(pinned)) =
+            armed.data_constraints.last().map(|c| c.data_value.clone())
+        else {
+            panic!("arm constraint is not a byte slice");
+        };
+        assert_eq!(pinned, arm[17..23]);
     }
 }

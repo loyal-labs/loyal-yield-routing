@@ -9,6 +9,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
+	"github.com/mr-tron/base58"
 	"github.com/solana-foundation/solana-go/v2"
 )
 
@@ -38,9 +39,7 @@ type BridgeReport struct {
 }
 
 // BridgeBuildRequest is intentionally closed over the four bridge operations
-// which can run before the Kamino open packet is ready.  The caller supplies a
-// confirmed recent blockhash and the exact delegated executor private key; no
-// environment/key file is read by this package.
+// which can run before the Kamino open packet is ready.
 type BridgeBuildRequest struct {
 	Action    Action
 	AmountRaw uint64
@@ -96,18 +95,10 @@ var (
 	adaptorWithdrawDiscriminator = []byte{183, 18, 70, 156, 148, 109, 161, 34}
 )
 
-// bridgeCapRaw stays the whole-vault bound used by the Kamino basic policies
-// and Voltr withdrawal-receipt admission. bridgeMaxNAV is the strategy-two
-// adaptor config's max reported NAV (the vault maxCap) decoded from confirmed
-// config state. strategyTwoBridgeLegCapRaw is the per-execution operational
-// bound installed on bridge policies 152-155 (200k USDC): every bridge capital
-// leg is built against it. The daily USDC spending limit embedded in those
-// policies is Squads' alone: simulation refuses an over-limit wire before
-// broadcast (squadsSpendingLimitReason).
 const (
-	bridgeCapRaw uint64 = 1_000_000_000_000
-	bridgeMaxNAV uint64 = 1_000_000_000_000
-
+	bridgeCapRaw               uint64 = 1_000_000_000_000
+	bridgeMaxNAV               uint64 = 1_000_000_000_000
+	bridgeDailyCapRaw          uint64 = 200_000_000_000
 	strategyTwoBridgeLegCapRaw uint64 = 200_000_000_000
 )
 
@@ -189,9 +180,6 @@ func bridgeRemainingSlots[T any](r bridgeRemaining[T]) []squads.AccountSlot[T] {
 	return []squads.AccountSlot[T]{squads.ReadOnly(r.Settings), squads.Signing(r.Vault), squads.Writable(r.Custody), squads.Writable(r.Ticket)}
 }
 
-// The adaptor report both bridge legs carry as Voltr's additional_args,
-// Some(Vec<u8>): the option tag and u32 length, then ReportV1, which is its
-// version, sequence, observed slot, NAV after and snapshot digest.
 const (
 	bridgeReportArgsPrefixLen = 1 + 4
 	bridgeReportVersion       = 1
@@ -342,8 +330,6 @@ func allZero(value []byte) bool {
 	return true
 }
 
-const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-
 func decodeKey(value string) (publicKey, error) {
 	raw, err := decodeBase58(value)
 	if err != nil || len(raw) != 32 {
@@ -353,79 +339,12 @@ func decodeKey(value string) (publicKey, error) {
 	copy(key[:], raw)
 	return key, nil
 }
-func decodeBase58(value string) ([]byte, error) {
-	if value == "" {
-		return nil, fmt.Errorf("empty base58")
-	}
-	bytes := []byte{0}
-	for _, char := range []byte(value) {
-		digit := int64(-1)
-		for i := 0; i < len(base58Alphabet); i++ {
-			if base58Alphabet[i] == char {
-				digit = int64(i)
-				break
-			}
-		}
-		if digit < 0 {
-			return nil, fmt.Errorf("invalid base58 character")
-		}
-		carry := digit
-		for i := len(bytes) - 1; i >= 0; i-- {
-			carry += int64(bytes[i]) * 58
-			bytes[i] = byte(carry)
-			carry >>= 8
-		}
-		for carry > 0 {
-			bytes = append([]byte{byte(carry)}, bytes...)
-			carry >>= 8
-		}
-	}
-	zeros := 0
-	for zeros < len(value) && value[zeros] == '1' {
-		zeros++
-	}
-	// The accumulator starts at zero. Strip that sentinel even when the input
-	// is entirely leading-zero digits (for example Solana's system program,
-	// 11111111111111111111111111111111), then restore exactly the encoded
-	// number of leading zero bytes below.
-	for len(bytes) > 0 && bytes[0] == 0 {
-		bytes = bytes[1:]
-	}
-	return append(make([]byte, zeros), bytes...), nil
-}
-func encodeBase58(value []byte) string {
-	if len(value) == 0 {
-		return ""
-	}
-	digits := []byte{0}
-	for _, b := range value {
-		carry := int(b)
-		for i := len(digits) - 1; i >= 0; i-- {
-			carry += int(digits[i]) << 8
-			digits[i] = byte(carry % 58)
-			carry /= 58
-		}
-		for carry > 0 {
-			digits = append([]byte{byte(carry % 58)}, digits...)
-			carry /= 58
-		}
-	}
-	zeros := 0
-	for zeros < len(value) && value[zeros] == 0 {
-		zeros++
-	}
-	out := make([]byte, zeros, zeros+len(digits))
-	for i := range out {
-		out[i] = base58Alphabet[0]
-	}
-	if zeros == len(value) {
-		return string(out)
-	}
-	for _, digit := range digits {
-		out = append(out, base58Alphabet[digit])
-	}
-	return string(out)
-}
+
+var (
+	decodeBase58 = base58.Decode
+	encodeBase58 = base58.Encode
+)
+
 func kaminoLegDiscriminator(leg kaminoPrimeUSDCLeg) []byte {
 	switch leg {
 	case kaminoLegDeposit:

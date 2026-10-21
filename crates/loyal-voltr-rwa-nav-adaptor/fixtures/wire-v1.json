@@ -1,0 +1,42 @@
+{
+  "report_v1": {
+    "sequence": 446295496,
+    "observed_slot": 446295496,
+    "nav_after_raw": 123456789,
+    "snapshot_digest": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "wire": "01c8ed991a00000000c8ed991a0000000015cd5b07000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+  },
+  "voltr_deposit": {
+    "amount": 1000000,
+    "data": "f65239e283defdf940420f00000000000108000000f223c68952e1f2b6013900000001c8ed991a00000000c8ed991a0000000015cd5b07000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+  },
+  "arm_report": {
+    "data": "a4aff629b28c23030040420f0000000000013900000001c8ed991a00000000c8ed991a0000000015cd5b07000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+    "accounts": [
+      { "name": "config", "signer": false, "writable": false },
+      { "name": "ticket", "signer": false, "writable": true },
+      { "name": "squads_settings", "signer": false, "writable": false },
+      { "name": "squads_vault", "signer": true, "writable": false },
+      { "name": "squads_program", "signer": false, "writable": false }
+    ]
+  },
+  "discriminators": {
+    "adaptor_deposit": "f223c68952e1f2b6",
+    "adaptor_withdraw": "b712469c946da122",
+    "arm_report": "a4aff629b28c2303",
+    "report_ticket_state": "f568b6c53ae774ed"
+  },
+  "errors": {
+    "ReportSlot": 9,
+    "TicketReplay": 18
+  },
+  "report_ticket": {
+    "seed": "report_ticket",
+    "program": "FSj27QT2PtP7365pQRtgSAwSwk5h2m2ATCBoXQjwTSxW",
+    "strategy": "DCpR24Eb6xCWxDyaZvCBTkadkxCB2vkqJN1EfYNWtLxY",
+    "pda": "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq",
+    "bump": 255,
+    "state_length": 96,
+    "state_version": 1
+  }
+}

@@ -213,10 +213,7 @@ func jupiterPolicyLeg(v *Vault, lane string, action Action) (policyKey, byte, er
 }
 
 // autoPolicy is an AUTO lane's KLend policy: the klend-loop policy
-// (policy.LoopConstraints) on its collateral and debt reserves. The KLend legs
-// pin the vault, an obligation it owns, and the reserve (or market) and
-// custody they move; the initializer pins every account of the lane's one
-// obligation. KLend checks the rest.
+// (policy.LoopConstraints) on its collateral and debt reserves.
 func autoPolicy(v *Vault, route RuntimeRoute) (squads.Policy, error) {
 	k := route.Kamino
 	out, err := policy.LoopConstraints(kaminoKey(k.Vault), kaminoKey(k.Market), kaminoKey(k.CollateralReserve), kaminoKey(k.CollateralMint),
@@ -242,24 +239,28 @@ const (
 	basicSwapLegs
 )
 
-// basicPolicy is one basic family's policy, shared by the three runtime lanes
-// (OnRe, Prime, Maple, in that order in every pin). Its KLend legs pin the
-// vault, an obligation it owns, each lane's collateral reserve (or market) and
-// the custodies; its swaps pin the vault's custodies of their direction and no
-// fee (vaultSwap).
+// basicPolicy is one basic family's policy, shared by the three runtime lanes.
 func basicPolicy(v *Vault, family BasicPolicyFamily) (squads.Policy, error) {
 	route := func(lane string) RuntimeRoute { r, _ := v.route(lane); return r }
 	onre, prime, maple := route(onreONycUSDC), route(PhaseOneLaneID), route(SelectedRouteID)
+	basicLanes := []RuntimeRoute{onre, prime, maple}
+	pinnedLanes := func(field func(RuntimeRoute) string) squads.Slot {
+		addresses := make([]string, len(basicLanes))
+		for i, lane := range basicLanes {
+			addresses[i] = field(lane)
+		}
+		return pinned(addresses...)
+	}
 	switch family {
 	case BasicCollateralLifecycle:
-		leg := vaultCollateral(v, pinned(onre.Kamino.CollateralReserve, prime.Kamino.CollateralReserve, maple.Kamino.CollateralReserve),
-			pinned(onre.CollateralCustody, prime.CollateralCustody, maple.CollateralCustody))
+		leg := vaultCollateral(v, pinnedLanes(func(r RuntimeRoute) string { return r.Kamino.CollateralReserve }),
+			pinnedLanes(func(r RuntimeRoute) string { return r.CollateralCustody }))
 		var out [basicCollateralLegs]squads.InstructionConstraintView
 		out[basicDeposit] = kamino.DepositV2Allowed(leg, squads.Unpinned)
 		out[basicWithdraw] = kamino.WithdrawV2Allowed(leg, squads.Unpinned)
 		return vaultPolicy(v, out[:]...), nil
 	case BasicDebtLifecycle:
-		leg := vaultDebt(v, pinned(onre.Kamino.Market, prime.Kamino.Market, maple.Kamino.Market),
+		leg := vaultDebt(v, pinnedLanes(func(r RuntimeRoute) string { return r.Kamino.Market }),
 			pinned(v.cash, route(primePRIMEUSDSTemplate.Lane).DebtCustody, route(autoAUTOPYUSDTemplate.Lane).DebtCustody))
 		var out [basicDebtLegs]squads.InstructionConstraintView
 		out[basicBorrow] = kamino.BorrowV2Allowed(leg, squads.Unpinned)
@@ -307,8 +308,7 @@ func initializerPolicy(v *Vault, route RuntimeRoute) (squads.Policy, error) {
 }
 
 // catalogSwaps are the Jupiter policies the catalog lanes, AUTO among them,
-// swap through, each its conversions in constraint order. Each policy's
-// create fits one transaction.
+// swap through, each its conversions in constraint order.
 var catalogSwaps = [][]conversion{
 	{{"USDC", "ONyc"}, {"USDC", "PRIME"}},
 	{{"USDC", "USDe"}, {"USDS", "ONyc"}},
@@ -431,14 +431,10 @@ func pinned(addresses ...string) squads.Slot {
 	return squads.Pin(keys...)
 }
 
-// vaultCollateral is a deposit or withdrawal by the vault on any obligation it
-// owns, at reserve and from or into custody; KLend checks the rest.
 func vaultCollateral(v *Vault, reserve, custody squads.Slot) kamino.CollateralAllowed {
 	return kamino.OwnCollateralAllowed(kaminoKey(v.squads), reserve, custody)
 }
 
-// vaultDebt is a borrow or repayment by the vault on any obligation it owns,
-// in market and into or from custody; KLend checks the rest.
 func vaultDebt(v *Vault, market, custody squads.Slot) kamino.LiquidityAllowed {
 	return kamino.OwnDebtAllowed(kaminoKey(v.squads), market, custody)
 }
@@ -446,30 +442,17 @@ func vaultDebt(v *Vault, market, custody squads.Slot) kamino.LiquidityAllowed {
 var hastraConversions = [policy.HastraLegs]conversion{policy.HastraStakeDeposit: {"wYLDS", "AUTO"}, policy.HastraStakeRedeem: {"AUTO", "wYLDS"},
 	policy.HastraMintDeposit: {"USDC", "wYLDS"}}
 
-// hastraName names the Hastra policy by its conversions in constraint order,
-// as "wYLDS->AUTO/AUTO->wYLDS/USDC->wYLDS".
-func hastraName() string {
-	names := make([]string, len(hastraConversions))
-	for i, c := range hastraConversions {
-		names[i] = c.from + "->" + c.to
-	}
-	return strings.Join(names, "/")
-}
+func hastraName() string { return swapsName(hastraConversions[:]) }
 
 // hastraPolicy is the vault's Hastra conversions between its own associated
-// token accounts, every account pinned (policy.HastraConstraints): the
-// amount is free, by the owner's no-limits choice for conversions.
+// token accounts.
 func hastraPolicy(v *Vault) (squads.Policy, error) {
 	out, _, _, err := policy.HastraConstraints(kaminoKey(v.squads))
 	return vaultPolicy(v, out[:]...), err
 }
 
 // vaultSwap is a shared_accounts_route_v2 by the vault from its custody of
-// any from asset into its custody of any to asset, through any program
-// authority the swap API routes through, with no fee: output reaches only a
-// to custody. The price is not bounded: in_amount, quoted_out_amount,
-// slippage and the route are free, by the owner's no-limits choice for swaps
-// (jupiter.SharedAccountsRouteV2Allowed).
+// any from asset into its custody of any to asset.
 func vaultSwap(v *Vault, from, to []swapAsset, data ...squads.DataConstraintView) squads.InstructionConstraintView {
 	side := func(assets []swapAsset) (custody, programAccount, mint, program squads.Slot) {
 		var custodies, programAccounts, mints, programs []solana.PublicKey
@@ -521,23 +504,9 @@ func bridgePolicyKey(v *Vault, action Action) policyKey {
 	return policyKey{action: action}
 }
 
-// trustfulBridgePolicies are a Trustful vault's two bridge policies, by the
-// action each is looked up by: Deposit (VoltrAllocateToSquads, and NAV
-// reports) and Withdraw (StageSquadsToVoltr). Every leg pins the vault's
-// Squads vault, the Voltr vault and strategy, the Trustful program, the
-// strategy custody and the vault's USDC accounts it moves; it bounds the
-// amount by the per-leg cap and the reported end value by the vault's max.
-// Voltr and the adaptor check the rest. Each also spends at most the daily
-// USDC cap, as the FSj27 bridge's do.
 func trustfulBridgePolicies(v *Vault) map[Action]squads.Policy {
 	pin, free := squads.Pin, squads.Any
 	vault, usdc, custody := solanaKey(v.squads), solanaKey(bridgeUSDC), solanaKey(v.cash)
-	limits := []squads.SpendingLimitView{{Mint: usdc, Period: squads.PeriodDaily, MaxPerPeriod: 200_000_000_000 /* 200k USDC */}}
-	policy := func(legs ...squads.InstructionConstraintView) squads.Policy {
-		out := vaultPolicy(v, legs...)
-		out.SpendingLimits = limits
-		return out
-	}
 	accounts := voltr.StrategyAllowed{Manager: pin(vault), Protocol: free, Vault: pin(solanaKey(v.VoltrVault)), Strategy: pin(solanaKey(v.Strategy)),
 		AdaptorAddReceipt: free, StrategyInitReceipt: free, VaultAssetIdleAuth: free, VaultStrategyAuth: free, AssetMint: pin(usdc),
 		LPMint: free, VaultAssetIdleATA: free, VaultStrategyAssetATA: pin(solanaKey(v.strategyATA)), AssetTokenProgram: pin(solana.TokenProgramID),
@@ -560,7 +529,13 @@ func trustfulBridgePolicies(v *Vault) map[Action]squads.Policy {
 	withdraw[trustfulWithdrawLeg] = voltr.WithdrawStrategyAllowed(accounts,
 		[]squads.AccountSlot[squads.Slot]{squads.ReadOnly(pin(solanaKey(v.holdingAuth))), squads.Writable(pin(solanaKey(v.holding)))},
 		data(voltr.TrustfulWithdrawDiscriminator, 1)...)
-	return map[Action]squads.Policy{VoltrAllocateToSquads: policy(deposit[:]...), StageSquadsToVoltr: policy(withdraw[:]...)}
+	return map[Action]squads.Policy{VoltrAllocateToSquads: bridgePolicy(v, deposit[:]...), StageSquadsToVoltr: bridgePolicy(v, withdraw[:]...)}
+}
+
+func bridgePolicy(v *Vault, legs ...squads.InstructionConstraintView) squads.Policy {
+	out := vaultPolicy(v, legs...)
+	out.SpendingLimits = []squads.SpendingLimitView{{Mint: solanaKey(bridgeUSDC), Period: squads.PeriodDaily, MaxPerPeriod: bridgeDailyCapRaw}}
+	return out
 }
 
 func bridgePolicies(v *Vault) map[Action]squads.Policy {
@@ -570,12 +545,6 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	pin, free := squads.Pin, squads.Any
 	vault, settings, strategy, ticket := solanaKey(v.squads), solanaKey(bridgeSettings), solanaKey(v.Strategy), solanaKey(reportTicketPDA)
 	usdc, custody, strategyATA := solanaKey(bridgeUSDC), solanaKey(v.cash), solanaKey(v.strategyATA)
-	limits := []squads.SpendingLimitView{{Mint: usdc, Period: squads.PeriodDaily, MaxPerPeriod: 200_000_000_000 /* 200k USDC */, Accumulate: false, MaxPerUse: 0, ExactQuantity: false}}
-	policy := func(legs ...squads.InstructionConstraintView) squads.Policy {
-		out := vaultPolicy(v, legs...)
-		out.SpendingLimits = limits
-		return out
-	}
 
 	capital := func(offset uint64) []squads.DataConstraintView {
 		return []squads.DataConstraintView{squads.DataU64(offset, squads.OpGreaterThan, 0), squads.DataU64(offset, squads.OpLessThanOrEqualTo, strategyTwoBridgeLegCapRaw)}
@@ -608,7 +577,7 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 	twoLegs := func(armLeg, capitalLeg squads.InstructionConstraintView) squads.Policy {
 		var legs [bridgeCapitalLegs]squads.InstructionConstraintView
 		legs[bridgeArmLeg], legs[bridgeCapitalLeg] = armLeg, capitalLeg
-		return policy(legs[:]...)
+		return bridgePolicy(v, legs[:]...)
 	}
 	var stage [bridgeStageLegs]squads.InstructionConstraintView
 	stage[bridgeStageLeg] = spl.TransferCheckedAllowed(solana.TokenProgramID, spl.TransferAllowed{Source: pin(custody), Mint: pin(usdc),
@@ -618,6 +587,6 @@ func bridgePolicies(v *Vault) map[Action]squads.Policy {
 		VoltrAllocateToSquads: twoLegs(arm(reportTicketDeposit, capital), move(voltr.DepositStrategyAllowed, adaptorDepositDiscriminator, capital)),
 		ReportNAV:             twoLegs(arm(reportTicketDeposit, nothing), move(voltr.DepositStrategyAllowed, adaptorDepositDiscriminator, nothing)),
 		VoltrRestoreIdle:      twoLegs(arm(reportTicketWithdraw, capital), move(voltr.WithdrawStrategyAllowed, adaptorWithdrawDiscriminator, capital)),
-		StageSquadsToVoltr:    policy(stage[:]...),
+		StageSquadsToVoltr:    bridgePolicy(v, stage[:]...),
 	}
 }

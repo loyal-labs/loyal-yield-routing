@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"time"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
@@ -46,7 +47,7 @@ func decodeObservedAdaptorConfig(v *Vault, account ConfirmedAccount) (observedAd
 		}
 	}
 	if binary.LittleEndian.Uint64(account.Data[400:408]) != bridgeMaxNAV ||
-		binary.LittleEndian.Uint64(account.Data[408:416]) != 32 || !allZero(account.Data[416:472]) {
+		binary.LittleEndian.Uint64(account.Data[408:416]) != uint64(adaptorMaxReportAgeSlots) || !allZero(account.Data[416:472]) {
 		return observedAdaptorConfig{}, fmt.Errorf("adaptor report bounds drifted")
 	}
 	return observedAdaptorConfig{}, nil
@@ -80,13 +81,7 @@ func prepareBridgeFromObservedAccounts(ctx context.Context, rpc *chain.Client, m
 	if err != nil {
 		return Observation{}, BridgeExecutionEvidence{}, err
 	}
-	ticketRequired := !v.trustful() && decision.Action != StageSquadsToVoltr
-	if !v.trustful() && earnHeldLane(route.Lane) {
-		// Reserve the entire bridge exit, including a report after staging:
-		// the existing ticket must be present in this same observation;
-		// admission cannot authorize setup.
-		ticketRequired = true
-	}
+	ticketRequired := !v.trustful() && (decision.Action != StageSquadsToVoltr || earnHeldLane(route.Lane))
 	var ticket observedReportTicket
 	if ticketRequired {
 		ticket, err = decodeObservedReportTicket(v, accountAt(accounts, reportTicketPDA))
@@ -213,15 +208,12 @@ func bridgeExpectedEffects(v *Vault, decision Decision, idle, strategy, squads u
 		return ExpectedEffects{}, 0, 0, fmt.Errorf("unsupported bridge action")
 	}
 	accounts := []ExpectedAccountEffect{
-		{Address: v.idleATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.idleAuth, BeforeRaw: idle, AfterRaw: idleAfter},
 		{Address: v.strategyATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.strategyAuth, BeforeRaw: strategy, AfterRaw: strategyAfter},
 		{Address: v.cash, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.squads, BeforeRaw: squads, AfterRaw: squadsAfter},
 	}
-	// Staging is a direct Squads-authorized SPL transfer. It does not invoke the
-	// adaptor and its receipt therefore contains only the strategy and Squads
-	// token accounts, not the unrelated unchanged vault-idle account.
-	if decision.Action == StageSquadsToVoltr && !v.trustful() {
-		accounts = accounts[1:]
+	invokesAdaptor := decision.Action != StageSquadsToVoltr || v.trustful()
+	if invokesAdaptor {
+		accounts = slices.Insert(accounts, 0, ExpectedAccountEffect{Address: v.idleATA, Owner: bridgeTokenProgram, Mint: bridgeUSDC, Authority: v.idleAuth, BeforeRaw: idle, AfterRaw: idleAfter})
 	}
 	return ExpectedEffects{Schema: "loyal-backyard-rwa-expected-effects/v1", Conserved: true, Accounts: accounts}, strategyAfter, squadsAfter, nil
 }
@@ -293,7 +285,7 @@ func withdrawExcessAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, uint64
 	if position.CollateralDepositedRaw == 0 || position.RedeemablePrimeRaw == 0 || position.DebtRaw == 0 {
 		return 0, 0, fmt.Errorf("position has no withdrawable repayment collateral")
 	}
-	excessPrime, err := withdrawableUnderlyingAtLTV(releaseValuesForPosition(position), ltvBPS)
+	excessPrime, err := withdrawableUnderlyingAtLTV(position, ltvBPS)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -310,14 +302,14 @@ func withdrawExcessAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, uint64
 	return receipt.Uint64(), prime.Uint64(), nil
 }
 
-func withdrawableUnderlyingAtLTV(values kaminoReleaseValues, ltvBPS uint64) (uint64, error) {
+func withdrawableUnderlyingAtLTV(position KaminoPosition, ltvBPS uint64) (uint64, error) {
 	if ltvBPS == 0 || ltvBPS >= 10_000 {
 		return 0, fmt.Errorf("invalid repayment release LTV")
 	}
-	if values.CollateralRaw == 0 || values.DebtRaw == 0 {
+	if position.RedeemablePrimeRaw == 0 || position.DebtRaw == 0 {
 		return 0, fmt.Errorf("position has no withdrawable repayment collateral")
 	}
-	debtValue, err := valueBetweenTokenRaw(values.DebtRaw, values.DebtDecimals, values.DebtDecimals, values.DebtPriceSF, values.DebtPriceSF, true)
+	debtValue, err := valueBetweenTokenRaw(position.DebtRaw, position.DebtDecimals, position.DebtDecimals, position.DebtPriceSF, position.DebtPriceSF, true)
 	if err != nil {
 		return 0, err
 	}
@@ -327,14 +319,14 @@ func withdrawableUnderlyingAtLTV(values kaminoReleaseValues, ltvBPS uint64) (uin
 	if !requiredDebtValue.IsUint64() {
 		return 0, fmt.Errorf("required unwind collateral exceeds u64")
 	}
-	requiredCollateral, err := valueBetweenTokenRaw(requiredDebtValue.Uint64(), values.DebtDecimals, values.CollateralDecimals, values.DebtPriceSF, values.CollateralPriceSF, true)
+	requiredCollateral, err := valueBetweenTokenRaw(requiredDebtValue.Uint64(), position.DebtDecimals, position.CollateralDecimals, position.DebtPriceSF, position.CollateralPriceSF, true)
 	if err != nil {
 		return 0, err
 	}
-	if requiredCollateral >= values.CollateralRaw {
+	if requiredCollateral >= position.RedeemablePrimeRaw {
 		return 0, fmt.Errorf("no collateral excess is safely withdrawable at unwind LTV")
 	}
-	return values.CollateralRaw - requiredCollateral, nil
+	return position.RedeemablePrimeRaw - requiredCollateral, nil
 }
 
 type kaminoCustodyBoundary struct {

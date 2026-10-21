@@ -122,10 +122,10 @@ pub struct StrategyConfig {
     pub squads_asset_ata: Pubkey,
     pub max_report_nav_raw: u64,
     pub max_report_age_slots: u64,
-    pub last_sequence: u64,
-    pub last_observed_slot: u64,
-    pub last_nav_raw: u64,
-    pub last_snapshot_digest: [u8; 32],
+    pub reserved_sequence: u64,
+    pub reserved_observed_slot: u64,
+    pub reserved_nav_raw: u64,
+    pub reserved_snapshot_digest: [u8; 32],
 }
 impl StrategyConfig {
     pub fn encode(&self, output: &mut [u8]) -> AdaptorResult<()> {
@@ -158,14 +158,14 @@ impl StrategyConfig {
         for value in [
             self.max_report_nav_raw,
             self.max_report_age_slots,
-            self.last_sequence,
-            self.last_observed_slot,
-            self.last_nav_raw,
+            self.reserved_sequence,
+            self.reserved_observed_slot,
+            self.reserved_nav_raw,
         ] {
             output[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
             offset += 8;
         }
-        output[offset..offset + 32].copy_from_slice(&self.last_snapshot_digest);
+        output[offset..offset + 32].copy_from_slice(&self.reserved_snapshot_digest);
         Ok(())
     }
     pub fn decode(input: &[u8]) -> AdaptorResult<Self> {
@@ -224,10 +224,10 @@ impl StrategyConfig {
             squads_asset_ata,
             max_report_nav_raw: next_u64(),
             max_report_age_slots: next_u64(),
-            last_sequence: next_u64(),
-            last_observed_slot: next_u64(),
-            last_nav_raw: next_u64(),
-            last_snapshot_digest: input[offset..offset + 32]
+            reserved_sequence: next_u64(),
+            reserved_observed_slot: next_u64(),
+            reserved_nav_raw: next_u64(),
+            reserved_snapshot_digest: input[offset..offset + 32]
                 .try_into()
                 .map_err(|_| AdaptorError::InvalidConfig)?,
         })
@@ -235,8 +235,97 @@ impl StrategyConfig {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::str::FromStr;
+
+    pub(crate) fn fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!("../fixtures/wire-v1.json")).unwrap()
+    }
+
+    pub(crate) fn unhex(value: &serde_json::Value) -> Vec<u8> {
+        let text = value.as_str().unwrap();
+        (0..text.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&text[index..index + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn golden_wire() {
+        let f = fixture();
+        let report = &f["report_v1"];
+        let decoded = ReportV1::decode(&unhex(&report["wire"])).unwrap();
+        assert_eq!(decoded.sequence, report["sequence"].as_u64().unwrap());
+        assert_eq!(
+            decoded.observed_slot,
+            report["observed_slot"].as_u64().unwrap()
+        );
+        assert_eq!(
+            decoded.nav_after_raw,
+            report["nav_after_raw"].as_u64().unwrap()
+        );
+        assert_eq!(
+            decoded.snapshot_digest.to_vec(),
+            unhex(&report["snapshot_digest"])
+        );
+
+        let discriminators = &f["discriminators"];
+        assert_eq!(
+            crate::DEPOSIT_DISCRIMINATOR.to_vec(),
+            unhex(&discriminators["adaptor_deposit"])
+        );
+        assert_eq!(
+            crate::WITHDRAW_DISCRIMINATOR.to_vec(),
+            unhex(&discriminators["adaptor_withdraw"])
+        );
+        assert_eq!(
+            crate::ARM_REPORT_DISCRIMINATOR.to_vec(),
+            unhex(&discriminators["arm_report"])
+        );
+        assert_eq!(
+            REPORT_TICKET_DISCRIMINATOR.to_vec(),
+            unhex(&discriminators["report_ticket_state"])
+        );
+
+        let errors = &f["errors"];
+        assert_eq!(
+            AdaptorError::ReportSlot as u64,
+            errors["ReportSlot"].as_u64().unwrap()
+        );
+        assert_eq!(
+            AdaptorError::TicketReplay as u64,
+            errors["TicketReplay"].as_u64().unwrap()
+        );
+
+        let ticket = &f["report_ticket"];
+        assert_eq!(
+            crate::REPORT_TICKET_SEED,
+            ticket["seed"].as_str().unwrap().as_bytes()
+        );
+        assert_eq!(
+            crate::PROGRAM_ID,
+            Pubkey::from_str(ticket["program"].as_str().unwrap()).unwrap()
+        );
+        let strategy = Pubkey::from_str(ticket["strategy"].as_str().unwrap()).unwrap();
+        let (pda, bump) = Pubkey::find_program_address(
+            &[crate::REPORT_TICKET_SEED, strategy.as_ref()],
+            &crate::PROGRAM_ID,
+        );
+        assert_eq!(
+            pda,
+            Pubkey::from_str(ticket["pda"].as_str().unwrap()).unwrap()
+        );
+        assert_eq!(bump as u64, ticket["bump"].as_u64().unwrap());
+        assert_eq!(
+            REPORT_TICKET_LEN as u64,
+            ticket["state_length"].as_u64().unwrap()
+        );
+        assert_eq!(
+            REPORT_TICKET_VERSION as u64,
+            ticket["state_version"].as_u64().unwrap()
+        );
+    }
 
     #[test]
     fn report_v1_rejects_wrong_version_and_trailing_bytes() {

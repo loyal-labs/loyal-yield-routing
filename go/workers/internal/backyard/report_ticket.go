@@ -10,15 +10,9 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 )
 
-// Report-ticket v1 is the narrow fallback for Voltr not forwarding the Squads
-// vault signer through its adaptor CPI. The direct adaptor instruction and the
-// consuming Voltr instruction must be the first and second instruction of one
-// Squads sync payload; the ticket is never valid across transactions.
-//
-// Pinned to the strategy-two cutover: seed "report_ticket" plus the
-// strategy-two adaptor config under the adaptor program (bump 255), observed
-// disarmed with zero sequences at finalized slot 446295496. It replaces the
-// retired v2 ticket C71BFjq6PfgcWV4geoRudheupKnQBv6yN6uzYKthgAt5 (bump 254).
+// Voltr does not forward the Squads vault signer through its adaptor CPI, so
+// the adaptor instruction arms a ticket that the Voltr instruction of the same
+// Squads payload consumes.
 const (
 	reportTicketPDA         = "8zdYvAsntUxgaSY4CBh2Kmqf5EhUYi13eAMK6yinyJiq"
 	reportTicketStateLength = 96
@@ -97,10 +91,6 @@ func armReportInstruction(v *Vault, action Action, voltrData []byte) (compiledIn
 	return sdkInstruction(solana.NewInstruction(adaptor, accounts, data)), nil
 }
 
-// armReport is the adaptor's ArmReport account set: the strategy-two adaptor
-// config, the report ticket, the Squads settings and the vault that signs;
-// the Squads program follows them. The builder and armReportAllowed read the
-// same slot list.
 type armReport[T any] struct {
 	Strategy, Ticket, Settings, Vault T
 }
@@ -110,8 +100,6 @@ func armReportSlots[T any](a armReport[T], squadsProgram T) []squads.AccountSlot
 		squads.ReadOnly(squadsProgram)}
 }
 
-// ArmReport data: discriminator, operation, then the Voltr capital tail: its
-// amount and the additional_args option carrying the report.
 const (
 	armAmountOffset        = 8 + 1
 	armReportArgsOffset    = armAmountOffset + 8
