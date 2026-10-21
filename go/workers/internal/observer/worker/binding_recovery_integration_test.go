@@ -269,7 +269,7 @@ func TestReconnectAfterProviderWindowClampsAndRecoversBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	edge := uint64(current - laserStreamReplaySlots)
+	edge := uint64(current - stream.ProviderReplaySlots)
 	connector.mu.Lock()
 	froms := append([]uint64(nil), connector.froms...)
 	connector.mu.Unlock()

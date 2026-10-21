@@ -387,10 +387,6 @@ func (r *Runtime) passTimeout() time.Duration {
 	return min(r.cfg.ProgressTimeout/2, 30*time.Second)
 }
 
-// refreshSupportedReserveCatalog is Rust's spawn_supported_reserve_catalog_refresh:
-// the observer owns kamino.supported_reserves and renews fetched_at, which the
-// planners admit for at most 300 s, every CatalogRefresh until ctx ends. A
-// failed pass is reported and the next tick retries, as in Rust.
 func (r *Runtime) refreshSupportedReserveCatalog(ctx context.Context) {
 	ticker := time.NewTicker(r.cfg.CatalogRefresh)
 	defer ticker.Stop()
@@ -426,13 +422,9 @@ func (r *Runtime) publishSupportedReserves(ctx context.Context) (int, error) {
 	return len(records), nil
 }
 
-// LaserStream replays about 216,000 slots; an older from_slot fails every
-// subscribe attempt with OutOfRange.
-const laserStreamReplaySlots uint64 = 200_000
-
 func clampToReplayWindow(start, current uint64) uint64 {
-	if current > laserStreamReplaySlots && start < current-laserStreamReplaySlots {
-		return current - laserStreamReplaySlots
+	if current > stream.ProviderReplaySlots && start < current-stream.ProviderReplaySlots {
+		return current - stream.ProviderReplaySlots
 	}
 	return start
 }
