@@ -143,9 +143,6 @@ func usdcBalance(account solana.PublicKey, amount uint64) multiply.TokenBalance 
 	return multiply.TokenBalance{Account: account.String(), Mint: multiply.USDCMint, TokenProgram: multiply.TokenProgram, AmountRaw: amount}
 }
 
-// SnapshotRecoveryEvent builds the unsigned confirmed-state read for address,
-// recovered without the transaction that changed it. It reports false when no
-// affected vault can complete such a job.
 func SnapshotRecoveryEvent(address string, filters []string, kind, eventKey string, slot uint64, affected []watch.Vault, logger *slog.Logger) (QueuedEvent, bool) {
 	vaults := make([]watch.Vault, 0, len(affected))
 	for _, vault := range affected {
@@ -170,7 +167,6 @@ func snapshotApplicable(vault watch.Vault, address string, deleted bool) bool {
 	return !deleted || !isPolicyDeletion(NormalizedUpdate{EventKind: "account_deleted", AccountPubkey: &address}, vault)
 }
 
-// projectEarnMaxAccountUpdate is project_earn_max_account_update.
 func (a *Application) projectEarnMaxAccountUpdate(ctx context.Context, update NormalizedUpdate, vault watch.Vault) error {
 	idle := false
 	for _, filter := range update.Filters {

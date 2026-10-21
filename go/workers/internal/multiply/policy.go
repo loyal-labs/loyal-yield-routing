@@ -28,6 +28,23 @@ func FamilyForAction(action MultiplyAction) (PolicyFamily, error) {
 	return "", errors.New("action has no strategy policy family")
 }
 
+const (
+	collateralDepositIndex uint8 = iota
+	collateralWithdrawIndex
+)
+
+const (
+	debtBorrowIndex uint8 = iota
+	debtRepayIndex
+)
+
+const (
+	swapUsdToOnycPrimeIndex uint8 = iota
+	swapUsdToPrimeSyrupIndex
+	swapOnycPrimeToUsdIndex
+	swapPrimeSyrupToUsdIndex
+)
+
 func ConstraintIndexes(config StrategyConfig, action MultiplyAction, instructions []Instruction) ([]byte, error) {
 	if len(instructions) != 1 {
 		return nil, errors.New("policy execution must contain exactly one terminal instruction")
@@ -35,13 +52,13 @@ func ConstraintIndexes(config StrategyConfig, action MultiplyAction, instruction
 	var index uint8
 	switch action {
 	case ActionDepositCollateral:
-		index = 0
+		index = collateralDepositIndex
 	case ActionWithdrawCollateral, ActionWithdrawRemainingCollateral:
-		index = 1
+		index = collateralWithdrawIndex
 	case ActionBorrowDebt:
-		index = 0
+		index = debtBorrowIndex
 	case ActionRepayDebt:
-		index = 1
+		index = debtRepayIndex
 	case ActionSwapClaimToCollateral:
 		return routeConstraintIndex(instructions[0], claimToCollateralIndex(config.Key))
 	case ActionSwapDebtToCollateral:
@@ -70,36 +87,36 @@ func routeConstraintIndex(instruction Instruction, index uint8) ([]byte, error) 
 func claimToCollateralIndex(key StrategyKey) uint8 {
 	switch key {
 	case OnycUsdc, OnycUsds, PrimeUsdc, PrimePyusd, PrimeUsds:
-		return 0
+		return swapUsdToOnycPrimeIndex
 	default:
-		return 1
+		return swapUsdToPrimeSyrupIndex
 	}
 }
 
 func debtToCollateralIndex(key StrategyKey) uint8 {
 	switch key {
 	case PrimePyusd, SyrupUsdcUsdc, SyrupUsdcPyusd:
-		return 1
+		return swapUsdToPrimeSyrupIndex
 	default:
-		return 0
+		return swapUsdToOnycPrimeIndex
 	}
 }
 
 func collateralToDebtIndex(key StrategyKey) uint8 {
 	switch key {
 	case PrimePyusd, SyrupUsdcUsdc, SyrupUsdcPyusd:
-		return 3
+		return swapPrimeSyrupToUsdIndex
 	default:
-		return 2
+		return swapOnycPrimeToUsdIndex
 	}
 }
 
 func collateralToClaimIndex(key StrategyKey) uint8 {
 	switch key {
 	case SyrupUsdcUsdc, SyrupUsdcPyusd:
-		return 3
+		return swapPrimeSyrupToUsdIndex
 	default:
-		return 2
+		return swapOnycPrimeToUsdIndex
 	}
 }
 

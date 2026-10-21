@@ -21,7 +21,6 @@ type ObservationReader interface {
 	SlotsPerSecond(ctx context.Context) (float64, error)
 }
 
-// MarketValueSF is a market value as a checked u128 scaled fraction; MarketValueSF{} is unknown, a known 0 is a value.
 type MarketValueSF struct{ value *big.Int }
 
 func knownMarketValue(value *big.Int) MarketValueSF { return MarketValueSF{value} }

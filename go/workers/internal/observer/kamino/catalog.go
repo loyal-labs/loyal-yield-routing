@@ -157,7 +157,6 @@ type supportedMarket struct {
 	riskBaskets  []string
 }
 
-// Mirrors loyal-kamino-data targets.rs policy_supported_markets and policy_supported_mints.
 var policySupportedMarkets = []supportedMarket{
 	{fleet.KaminoMainMarket, "Main Market", []string{"safe", "medium", "aggressive"}},
 	{fleet.KaminoFigureMarket, "Figure Market", []string{"safe", "medium", "aggressive"}},

@@ -11,12 +11,6 @@ import (
 
 const ownedCustodyDeferral = "another family holds open custody on the vault USDC account"
 
-// VaultCustodyHeldElsewhere reports whether funds in the vault USDC account
-// may belong to someone other than this claim: a confirming cross-mint
-// movement (custody_account names the source reserve until the withdraw leg
-// finalizes, while the funds already sit here), an abandoned one whose custody
-// is this account, a cross-mint decision created since sinceAttemptID, or
-// another selected Autodeposit claim on the vault.
 func (s *Store) VaultCustodyHeldElsewhere(ctx context.Context, vaultPubkey, vaultUsdcAta, ownClaimToken string, sinceAttemptID int64) (bool, error) {
 	var held bool
 	err := s.pool.QueryRow(ctx, `

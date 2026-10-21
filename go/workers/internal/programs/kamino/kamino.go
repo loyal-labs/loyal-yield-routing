@@ -1,7 +1,3 @@
-// Package kamino holds the Kamino Lending (KLend) and Kamino Farms facts the
-// workers use: program IDs, the account layouts they read, the PDAs they
-// derive and the instructions they send. Each fact is defined here once.
-// Layouts follow klend-interface 23b9f2b.
 package kamino
 
 import (

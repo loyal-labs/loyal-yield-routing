@@ -114,8 +114,6 @@ func DecodeMint(account *chain.Account) (Mint, error) {
 	return Mint{Program: account.Owner, Decimals: data[44], Extensions: extensions}, nil
 }
 
-// decodeExtensions checks the owner and layout of a token program account
-// whose base is baseLength bytes and returns its Token-2022 extensions.
 func decodeExtensions(account *chain.Account, baseLength int, accountType byte) ([]Extension, error) {
 	if account == nil {
 		return nil, errors.New("token program account is absent")

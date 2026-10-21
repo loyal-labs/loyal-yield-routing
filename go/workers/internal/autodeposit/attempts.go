@@ -55,9 +55,6 @@ func (e *EffectAmbiguousError) Error() string {
 	return "autodeposit transaction effect is ambiguous: " + e.Detail
 }
 
-// ClaimHoldingPullAttemptStates are the attempt states in which funds may
-// already have moved out of the wallet, so the claim stays owned and a
-// restarted worker resumes it.
 var ClaimHoldingPullAttemptStates = []string{string(AttemptPrepared), string(AttemptSubmitted), string(AttemptConfirmed)}
 
 func AttemptHoldsClaim(state AttemptState) bool {
@@ -88,7 +85,6 @@ type TopUpRecoveryInput struct {
 	ConfirmedSiblingDepositsSinceRaw int64
 }
 
-// ClassifyDirectTopUpRecovery decides a resumed deposit leg from the vault balance and the persisted attempt, never a fresh spend.
 func ClassifyDirectTopUpRecovery(in TopUpRecoveryInput) TopUpRecoveryAction {
 	if in.ExistingAttemptState != nil && AttemptHoldsClaim(*in.ExistingAttemptState) {
 		return TopUpReconcilePersisted

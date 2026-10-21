@@ -39,9 +39,6 @@ type Connector interface {
 	Open(context.Context, *pb.SubscribeRequest) (OpenStream, error)
 }
 
-// GRPCConnector connects directly to Helius using the official protobuf
-// surface. Loyal owns reconnection and replay instead of using the SDK's
-// receive-side slot tracker, which can advance ahead of durable processing.
 type GRPCConnector struct {
 	Endpoint    string
 	APIKey      string

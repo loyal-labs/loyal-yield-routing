@@ -238,11 +238,6 @@ func (c *RPCChain) ConfirmedVaultPositionRaw(ctx context.Context, plan DepositPl
 	if reserve.LendingMarket.String() != plan.Market || reserve.LiquidityMint.String() != plan.LiquidityMint {
 		return VaultPosition{}, errors.New("Kamino reserve identity drifted")
 	}
-	// ConfirmedVaultPositionRaw reads the obligation's deposited collateral for
-	// the frozen reserve and converts it to liquidity through the reserve's
-	// collateral exchange value, at one coherent confirmed slot. Borrowed liquidity
-	// and fee liabilities remain in the 60-bit scaled-fraction domain until the
-	// final flooring through the shared KLend decoder.
 	liquidity, err := reserve.CollateralToLiquidity(collateralRaw)
 	if err != nil {
 		return VaultPosition{}, err

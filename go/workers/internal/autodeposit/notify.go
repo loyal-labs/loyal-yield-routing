@@ -32,10 +32,6 @@ func NewSweepNotifier(endpoint, secret string) (*SweepNotifier, error) {
 	return &SweepNotifier{endpoint: endpoint, secret: secret, client: &http.Client{Timeout: sweepNotifyTimeout}}, nil
 }
 
-// NotifyFailed reports one failed scheduled slot exactly as the TS executor's
-// notifyFailedSweep did: {walletAddress, kind: "failed", dedupeKey: "slot-<id>"}
-// with no amount. The result is logged and never changes the sweep's outcome;
-// it reports whether the app accepted the push.
 func (n *SweepNotifier) NotifyFailed(ctx context.Context, wallet string, scheduledSlotID int64) bool {
 	if n == nil {
 		return false
@@ -56,7 +52,6 @@ func (n *SweepNotifier) NotifyFailed(ctx context.Context, wallet string, schedul
 	request.Header.Set("Content-Type", "application/json")
 	response, err := n.client.Do(request)
 	if err != nil {
-		// The endpoint is a credential: log the cause, never the URL.
 		var urlErr *url.Error
 		message := err.Error()
 		if errors.As(err, &urlErr) {

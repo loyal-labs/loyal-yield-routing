@@ -56,11 +56,11 @@ func decodeConfirmedWithdrawalDemand(v *Vault, receipts []programAccount) (int64
 	var total uint64
 	parts := make([]string, 0, len(decoded))
 	for _, receipt := range decoded {
-		if ^uint64(0)-total < receipt.UpperBoundAssetRaw {
+		if ^uint64(0)-total < receipt.UpperBoundAssetRaw() {
 			return 0, "", fmt.Errorf("withdrawal demand overflow")
 		}
-		total += receipt.UpperBoundAssetRaw
-		parts = append(parts, fmt.Sprintf("%s:%d:%d", receipt.Address, receipt.UpperBoundAssetRaw, receipt.WithdrawableFromTS))
+		total += receipt.UpperBoundAssetRaw()
+		parts = append(parts, fmt.Sprintf("%s:%d:%d", receipt.Address, receipt.UpperBoundAssetRaw(), receipt.WithdrawableFromTS))
 	}
 	if total > uint64(^uint64(0)>>1) {
 		return 0, "", fmt.Errorf("withdrawal demand exceeds signed range")

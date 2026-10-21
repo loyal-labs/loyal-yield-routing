@@ -18,8 +18,6 @@ const (
 )
 
 const (
-	// klendSlotsPerSecond is KLend's SLOTS_PER_SECOND, the slot count its
-	// SLOTS_PER_YEAR divides a Legacy-basis annual rate by.
 	klendSlotsPerSecond = 2
 )
 

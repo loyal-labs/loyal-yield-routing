@@ -168,14 +168,6 @@ FOR UPDATE OF claim SKIP LOCKED`,
 	return released, nil
 }
 
-// LoadExecutableTargets returns one scan's dispatch list: pull recovery rows
-// first, then at most one fresh scheduled slot per target, hinted slots first.
-//
-// Recovery precedes fresh work even for a paused target: a claim whose pull
-// already holds wallet custody must be resolved regardless of desired
-// enablement, because the funds are already out of the wallet. Fresh slots
-// require desired_active AND chain_status='active' — desired enablement alone is
-// not observed eligibility.
 func (s *Store) LoadExecutableTargets(ctx context.Context, limit int64, hintedSlotIDs []int64) ([]ExecutableTarget, error) {
 	if s == nil || s.pool == nil {
 		return nil, errors.New("autodeposit store has no database pool")

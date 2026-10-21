@@ -12,8 +12,7 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
-// landWindow bounds one dispatch's landing to a blockhash lifetime.
-var landWindow = 90 * time.Second
+var blockhashLandWindow = 90 * time.Second
 
 type WireBuilder interface {
 	BuildPull(ctx context.Context, request PullWireRequest) (BuiltWire, error)
@@ -134,7 +133,7 @@ func (c *Controller) settle(scope executionScope, attempt DurableAttempt) (Settl
 	if err != nil {
 		return Settlement{}, fmt.Errorf("decode persisted %s wire: %w", attempt.OperationKind, err)
 	}
-	landCtx, cancel := context.WithTimeout(scope.ctx, landWindow)
+	landCtx, cancel := context.WithTimeout(scope.ctx, blockhashLandWindow)
 	out, err := chain.Land(landCtx, c.chain, chain.Attempt{
 		Wire: wire, Signature: attempt.Signature, LastValidBlockHeight: uint64(attempt.LastValidBlockHeight),
 		Required: chain.Confirmed,
@@ -439,7 +438,7 @@ func (c *Controller) ensureDestinationSetup(scope executionScope, claimToken str
 		if err != nil {
 			return false, err
 		}
-		landCtx, cancel := context.WithTimeout(scope.ctx, landWindow)
+		landCtx, cancel := context.WithTimeout(scope.ctx, blockhashLandWindow)
 		out, err := chain.Land(landCtx, c.chain, chain.Attempt{
 			Wire: bytes, Signature: wire.Signature, LastValidBlockHeight: uint64(wire.LastValidBlockHeight), Required: chain.Confirmed,
 		}, chain.LandResendEvery, func(context.Context) error { return c.assertOwnership(scope, claimToken) })

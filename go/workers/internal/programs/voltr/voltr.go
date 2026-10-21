@@ -44,7 +44,7 @@ type Vault struct {
 	ProtocolPerformanceFeeBPS, ProtocolManagementFeeBPS                           uint16
 	FeeAccumulatorManagerRaw, FeeAccumulatorAdminRaw, FeeAccumulatorProtocolRaw   uint64
 	LPSupplyDeadWeightRaw                                                         uint64
-	HighWaterMarkBits                                                             [16]byte // U80F48, little endian
+	HighWaterMarkBits                                                             U80F48
 	LastUpdatedLockedProfitRaw, LastLockedProfitReportUnix                        uint64
 }
 
@@ -61,7 +61,7 @@ func DecodeVault(account *chain.Account) (Vault, error) {
 		ManagerPerformanceFeeBPS: u16(512), AdminPerformanceFeeBPS: u16(514), ManagerManagementFeeBPS: u16(516), AdminManagementFeeBPS: u16(518),
 		RedemptionFeeBPS: u16(520), IssuanceFeeBPS: u16(522), ProtocolPerformanceFeeBPS: u16(524), ProtocolManagementFeeBPS: u16(526),
 		FeeAccumulatorManagerRaw: u64(576), FeeAccumulatorAdminRaw: u64(584), FeeAccumulatorProtocolRaw: u64(592), LPSupplyDeadWeightRaw: u64(616),
-		HighWaterMarkBits: [16]byte(d[624:640]), LastUpdatedLockedProfitRaw: u64(672), LastLockedProfitReportUnix: u64(680),
+		HighWaterMarkBits: U80F48(d[624:640]), LastUpdatedLockedProfitRaw: u64(672), LastLockedProfitReportUnix: u64(680),
 	}, nil
 }
 
@@ -91,14 +91,35 @@ func DecodeStrategyReceipt(account *chain.Account) (StrategyReceipt, error) {
 }
 
 type WithdrawalReceipt struct {
-	Vault, User   solana.PublicKey
-	LPEscrowedRaw uint64
-	// AssetToWithdrawBits is the U80F48 asset amount as an integer of
-	// 2^-48 units; UpperBoundAssetRaw is it rounded up to whole raw units.
-	AssetToWithdrawBits *big.Int
-	UpperBoundAssetRaw  uint64
-	WithdrawableFromTS  uint64
-	Bump, Version       uint8
+	Vault, User        solana.PublicKey
+	LPEscrowedRaw      uint64
+	AssetToWithdraw    U80F48
+	WithdrawableFromTS uint64
+	Bump, Version      uint8
+}
+
+type U80F48 [16]byte
+
+func (v U80F48) Big() *big.Int {
+	be := make([]byte, len(v))
+	for i := range v {
+		be[len(v)-1-i] = v[i]
+	}
+	return new(big.Int).SetBytes(be)
+}
+
+func (v U80F48) IsZero() bool { return v == U80F48{} }
+
+func (v U80F48) CeilRaw() (uint64, bool) {
+	one := new(big.Int).Lsh(big.NewInt(1), 48)
+	upper := new(big.Int).Add(v.Big(), new(big.Int).Sub(one, big.NewInt(1)))
+	upper.Rsh(upper, 48)
+	return upper.Uint64(), upper.IsUint64()
+}
+
+func (r WithdrawalReceipt) UpperBoundAssetRaw() uint64 {
+	raw, _ := r.AssetToWithdraw.CeilRaw()
+	return raw
 }
 
 // DecodeWithdrawalReceipt decodes a version 0 receipt of the deployed 112
@@ -109,23 +130,16 @@ func DecodeWithdrawalReceipt(account *chain.Account) (WithdrawalReceipt, error) 
 		return WithdrawalReceipt{}, errors.New("account is not a funded Voltr withdrawal receipt of the deployed layout")
 	}
 	d := account.Data
-	little := make([]byte, 16)
-	for i := range little {
-		little[i] = d[95-i]
-	}
 	r := WithdrawalReceipt{
 		Vault: key(d, WithdrawalReceiptVaultOffset), User: key(d, 40), LPEscrowedRaw: binary.LittleEndian.Uint64(d[72:]),
-		AssetToWithdrawBits: new(big.Int).SetBytes(little), WithdrawableFromTS: binary.LittleEndian.Uint64(d[96:]), Bump: d[104], Version: d[105],
+		AssetToWithdraw: U80F48(d[80:96]), WithdrawableFromTS: binary.LittleEndian.Uint64(d[96:]), Bump: d[104], Version: d[105],
 	}
-	if r.LPEscrowedRaw == 0 || r.AssetToWithdrawBits.Sign() == 0 || r.WithdrawableFromTS == 0 || r.Version != 0 {
+	if r.LPEscrowedRaw == 0 || r.AssetToWithdraw.IsZero() || r.WithdrawableFromTS == 0 || r.Version != 0 {
 		return WithdrawalReceipt{}, errors.New("voltr withdrawal receipt has an invalid amount, deadline or version")
 	}
-	one := new(big.Int).Lsh(big.NewInt(1), 48)
-	upper := new(big.Int).Add(r.AssetToWithdrawBits, new(big.Int).Sub(one, big.NewInt(1)))
-	if upper.Rsh(upper, 48); !upper.IsUint64() {
+	if _, fits := r.AssetToWithdraw.CeilRaw(); !fits {
 		return WithdrawalReceipt{}, errors.New("voltr withdrawal receipt amount overflows u64")
 	}
-	r.UpperBoundAssetRaw = upper.Uint64()
 	return r, nil
 }
 

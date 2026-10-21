@@ -128,10 +128,9 @@ func RepayV2Allowed(a LiquidityAllowed, fixed func(solana.PublicKey) squads.Slot
 }
 
 func OwnedObligation(owner solana.PublicKey) squads.Slot {
-	program := ProgramID
-	return squads.Slot{Owner: &program, Data: []squads.DataConstraintView{{
+	return squads.Match(ProgramID, squads.DataConstraintView{
 		DataOffset: obligationOwnerOffset, DataValue: squads.DataValueView{Kind: squads.ValueBytes, Bytes: owner.Bytes()}, Operator: squads.OpEquals,
-	}}}
+	})
 }
 
 // OwnCollateralAllowed is a deposit or withdrawal by owner on any obligation
@@ -194,8 +193,6 @@ const (
 	FarmDebt
 )
 
-// InitObligationFarmsForReserve creates the obligation's farm user state for
-// the reserve farm of mode.
 func InitObligationFarmsForReserve(a ObligationFarmsInitAccounts, mode FarmMode) *solana.GenericInstruction {
 	return instruction(InitObligationFarmsForReserveDiscriminator, []byte{byte(mode)}, metas([]squads.AccountSlot[solana.PublicKey]{
 		squads.SigningWritable(a.Payer), squads.ReadOnly(a.Owner), squads.Writable(a.Obligation), squads.ReadOnly(a.LendingMarketAuthority),
