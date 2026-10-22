@@ -18,21 +18,19 @@ func registerMetrics(m *Mux) {
 		Method:      http.MethodGet,
 		Path:        "/api/metrics",
 		Tags:        []string{"metrics"},
-		Parameters:  []*huma.Param{{Name: "section", In: "query", Required: true, Schema: &huma.Schema{Type: "string", Enum: []any{"latency", "dashboard"}}}},
+		Parameters:  []*huma.Param{{Name: "section", In: "query", Required: true, Schema: &huma.Schema{Type: "string", Enum: []any{"dashboard"}}}},
 		Responses: map[string]*huma.Response{"200": {
-			Description: "section=dashboard; section=latency returns EarnRebalanceLatencyData",
+			Description: "section=dashboard",
 			Content: map[string]*huma.MediaType{"application/json": {
 				Schema: m.API.OpenAPI().Components.Schemas.Schema(reflect.TypeFor[MetricsDashboardData](), true, ""),
 			}},
 		}},
 	})
-	Page(m, "/metrics", func(ctx context.Context, d *Deps, _ PageRequest) (EarnRebalanceLatencyData, error) {
-		return metricsLatency(ctx, d), nil
+	Page(m, "/metrics", func(_ context.Context, d *Deps, _ PageRequest) (EarnRebalanceLatencyData, error) {
+		return metricsLatency(d), nil
 	})
 	m.Router.Get("/api/metrics", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("section") {
-		case "latency":
-			writeJSON(w, http.StatusOK, metricsLatency(r.Context(), m.Deps))
 		case "dashboard":
 			url := os.Getenv("LOYAL_ADMIN_CLICKSTACK_URL")
 			if err := m.Deps.Require("ClickStack", m.Deps.ClickStackReadKey); err != nil {
@@ -49,7 +47,7 @@ func registerMetrics(m *Mux) {
 			}
 			writeJSON(w, http.StatusOK, metricsClickStack{client: metricsHTTP, baseURL: url, key: m.Deps.ClickStackReadKey, sourceID: sourceID}.dashboard(r.Context()))
 		default:
-			writeError(w, r, huma.Error400BadRequest("section must be latency or dashboard"))
+			writeError(w, r, huma.Error400BadRequest("section must be dashboard"))
 		}
 	})
 }

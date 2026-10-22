@@ -163,6 +163,7 @@ const metricsLatencySQL = `
       WHERE decision.status = 'confirmed'
         AND decision.source_reserve IS NOT NULL
         AND decision.target_reserve IS NOT NULL
+        AND decision.created_at >= now() - interval '30 days'
     ),
     first_submission AS MATERIALIZED (
       SELECT
@@ -441,10 +442,16 @@ func metricsLatencyUnavailable() EarnRebalanceLatencyData {
 	}
 }
 
-func metricsLatency(ctx context.Context, d *Deps) EarnRebalanceLatencyData {
-	data, err := metricsLoadLatency(ctx, d)
-	if err != nil {
+var metricsLatencyCache = &staleWhileRevalidate[EarnRebalanceLatencyData]{fresh: time.Minute, stale: 15 * time.Minute, wait: 4 * time.Second, budget: readTimeout}
+
+func metricsLatency(d *Deps) EarnRebalanceLatencyData {
+	data, have, err := metricsLatencyCache.get(func(ctx context.Context) (EarnRebalanceLatencyData, error) {
+		return metricsLoadLatency(ctx, d)
+	})
+	if err != nil && !errors.Is(err, errStillRefreshing) {
 		slog.Error("Earn rebalance latency query failed", "error", err)
+	}
+	if !have {
 		return metricsLatencyUnavailable()
 	}
 	return data
