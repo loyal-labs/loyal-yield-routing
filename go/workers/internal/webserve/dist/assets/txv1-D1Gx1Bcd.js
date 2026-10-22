@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-CndCZlyt.js";import{n as t,t as n}from"./txv1-wallet-probe-BdvWywzM.js";import{C as r}from"./wallets-BaLQUmwB.js";var i=e(),a=()=>{let e=r();return e.appEnvironment===`prod`?(0,i.jsx)(t,{}):(0,i.jsx)(n,{rpcEndpoint:e.solanaRpcEndpoint})};export{a as component};

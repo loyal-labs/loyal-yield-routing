@@ -17,6 +17,10 @@ export function registerRouter(router: TanstackRouter): void {
   activeRouter = router;
 }
 
+export function currentRouter(): TanstackRouter | undefined {
+  return activeRouter;
+}
+
 export function navigate(router: TanstackRouter, href: string, replace: boolean, scroll?: boolean): void {
   // TTo pinned to string so href alone is a valid NavigateOptions.
   router

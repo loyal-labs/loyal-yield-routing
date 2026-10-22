@@ -1,0 +1,1 @@
+import{t as e}from"./jsx-runtime-CndCZlyt.js";var t=e();function n(){return(0,t.jsxs)(`main`,{style:{padding:`2rem`,textAlign:`center`},children:[(0,t.jsx)(`h1`,{children:`500`}),(0,t.jsx)(`p`,{children:`Something went wrong.`})]})}var r=n;export{r as component};

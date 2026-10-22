@@ -1,0 +1,1 @@
+import{v as e}from"./tracked-external-link-YvBaciyD.js";var t=e(`arrow-down-to-line`,[[`path`,{d:`M12 17V3`,key:`1cwfxf`}],[`path`,{d:`m6 11 6 6 6-6`,key:`12ii2o`}],[`path`,{d:`M19 21H5`,key:`150jfl`}]]);export{t};
