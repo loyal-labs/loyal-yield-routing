@@ -1,12 +1,11 @@
-import type { EarnMaxActivityItem, EarnMaxSummary } from "../types";
-
 export function isVoltrOperationVisible(
   signature: string,
-  summary: Pick<EarnMaxSummary, "observedSlot"> | null,
-  operations: readonly Pick<
-    EarnMaxActivityItem,
-    "signature" | "status" | "confirmedSlot"
-  >[]
+  summary: { observedSlot?: string } | null,
+  operations: readonly {
+    confirmedSlot?: string;
+    signature: string | null;
+    status: string;
+  }[]
 ): boolean {
   const observedSlot = summary?.observedSlot;
   if (!observedSlot || !/^\d+$/.test(observedSlot)) return false;
