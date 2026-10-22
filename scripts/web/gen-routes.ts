@@ -69,9 +69,13 @@ function adminSource(row: RouteRow): string {
     return `${head.join("\n")}\n\nexport const Route = createFileRoute("${routeId(row)}")({\n  component: Source,\n});\n`;
   }
   return `${head.join("\n")}
+
+import type { ComponentProps } from "react";
 import { pageData, type PageProps } from "@/lib/page-data";
 
 type Props = PageProps<"${pageKey}", typeof Source>;
+
+export const propsMatchView: unknown extends Props ? true : Props extends ComponentProps<typeof Source> ? true : never = true;
 
 export const Route = createFileRoute("${routeId(row)}")({
   loaderDeps: ({ search }) => ({ search }),

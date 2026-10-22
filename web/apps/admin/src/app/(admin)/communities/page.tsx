@@ -1,16 +1,6 @@
-import { unstable_cache } from "next/cache";
 import Link from "next/link";
-import { count, desc, eq, inArray } from "drizzle-orm";
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
 
-import { getDatabase } from "@/lib/core/database";
-import { CACHE_TAGS, DATA_CACHE_TTL_SECONDS } from "@/lib/data-cache";
-import { requireAdminSession } from "@/lib/require-admin-session";
-import {
-  type CommunityParserType,
-  communities,
-  summaries,
-} from "@loyal-labs/db-core/schema";
 import { PageContainer } from "@/components/layout/page-container";
 import { SectionHeader } from "@/components/layout/section-header";
 import {
@@ -29,60 +19,37 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { CommunityParserType } from "@loyal-labs/db-core/schema";
 import { CommunityActiveCheckbox } from "./community-active-checkbox";
 import { CommunityTrendLineChart } from "./community-trend-line-chart";
-import { getCommunityTrendsData } from "./community-trends-data";
 
-export const dynamic = "force-dynamic";
-
-const COMMUNITY_PAGE_SIZE = 20;
 const DEFAULT_PARSER_TYPE: CommunityParserType = "bot";
 
-type HomePageProps = {
-  searchParams?: Promise<{
-    page?: string | string[];
-    parserType?: string | string[];
-  }>;
-};
-
 type PaginationToken = number | "start-ellipsis" | "end-ellipsis";
-type HomeCommunityRow = {
-  id: string;
-  chatTitle: string;
-  chatId: string;
-  isActive: boolean;
-  summaryNotificationsEnabled: boolean;
-  isPublic: boolean;
-};
 
-type HomePageData = {
-  rows: HomeCommunityRow[];
+type CommunitiesPageProps = {
+  rows: Array<{
+    id: string;
+    chatTitle: string;
+    chatId: string;
+    isActive: boolean;
+    summaryNotificationsEnabled: boolean;
+    isPublic: boolean;
+  }>;
   summaryCountByCommunityId: Record<string, number>;
   totalCountByParserType: Record<CommunityParserType, number>;
   currentPage: number;
   totalPages: number;
   hasPreviousPage: boolean;
   hasNextPage: boolean;
+  parserType: CommunityParserType;
+  communityTrends: {
+    chartPoints: Array<{ date: string; summaries: number }>;
+    totals30d: { summaries: number; messages: number };
+    communitiesChartPoints: Array<{ date: string; communities: number }>;
+    communitiesTotals30d: { communities: number; users: number };
+  };
 };
-
-function parsePageParam(value: string | undefined): number {
-  if (!value) return 1;
-
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    return 1;
-  }
-
-  return parsed;
-}
-
-function parseParserTypeParam(value: string | undefined): CommunityParserType {
-  if (value === "bot" || value === "userbot") {
-    return value;
-  }
-
-  return DEFAULT_PARSER_TYPE;
-}
 
 function getPaginationTokens(currentPage: number, totalPages: number): PaginationToken[] {
   if (totalPages <= 7) {
@@ -131,131 +98,17 @@ function getPageHref(page: number, parserType: CommunityParserType): string {
   return `/communities?${searchParams.toString()}`;
 }
 
-async function loadHomePageData(
-  requestedPage: number,
-  parserType: CommunityParserType,
-): Promise<HomePageData> {
-  const db = getDatabase();
-  const totalsByParserTypeRows = await db
-    .select({
-      parserType: communities.parserType,
-      count: count(),
-    })
-    .from(communities)
-    .groupBy(communities.parserType);
-
-  const totalCountByParserType: Record<CommunityParserType, number> = {
-    bot: 0,
-    userbot: 0,
-  };
-  for (const row of totalsByParserTypeRows) {
-    if (row.parserType === "bot" || row.parserType === "userbot") {
-      totalCountByParserType[row.parserType] = Number(row.count) || 0;
-    }
-  }
-
-  const [totals] = await db
-    .select({
-      count: count(),
-    })
-    .from(communities)
-    .where(eq(communities.parserType, parserType));
-
-  const totalCount = Number(totals?.count) || 0;
-  const totalPages = totalCount > 0 ? Math.ceil(totalCount / COMMUNITY_PAGE_SIZE) : 1;
-  const currentPage = Math.min(Math.max(requestedPage, 1), totalPages);
-  const offset = (currentPage - 1) * COMMUNITY_PAGE_SIZE;
-
-  const rows = await db
-    .select({
-      id: communities.id,
-      chatTitle: communities.chatTitle,
-      chatId: communities.chatId,
-      isActive: communities.isActive,
-      summaryNotificationsEnabled: communities.summaryNotificationsEnabled,
-      isPublic: communities.isPublic,
-    })
-    .from(communities)
-    .where(eq(communities.parserType, parserType))
-    .orderBy(desc(communities.activatedAt), desc(communities.id))
-    .limit(COMMUNITY_PAGE_SIZE)
-    .offset(offset);
-
-  const serializedRows: HomeCommunityRow[] = rows.map((row) => ({
-    ...row,
-    chatId: row.chatId.toString(),
-  }));
-
-  const communityIds = serializedRows.map((row) => row.id);
-
-  const summaryCounts =
-    communityIds.length > 0
-      ? await db
-          .select({
-            communityId: summaries.communityId,
-            count: count(),
-          })
-          .from(summaries)
-          .where(inArray(summaries.communityId, communityIds))
-          .groupBy(summaries.communityId)
-      : [];
-
-  const summaryCountByCommunityId: Record<string, number> = Object.fromEntries(
-    summaryCounts.map((row) => [row.communityId, Number(row.count) || 0]),
-  );
-
-  return {
-    rows: serializedRows,
-    summaryCountByCommunityId,
-    totalCountByParserType,
-    currentPage,
-    totalPages,
-    hasPreviousPage: currentPage > 1,
-    hasNextPage: currentPage < totalPages,
-  };
-}
-
-async function getHomePageData(
-  requestedPage: number,
-  parserType: CommunityParserType,
-): Promise<HomePageData> {
-  const getCachedHomePageData = unstable_cache(
-    async () => loadHomePageData(requestedPage, parserType),
-    ["communities-page-data", parserType, String(requestedPage)],
-    {
-      revalidate: DATA_CACHE_TTL_SECONDS,
-      tags: [CACHE_TAGS.communitiesList],
-    },
-  );
-
-  return getCachedHomePageData();
-}
-
-export default async function Home({ searchParams }: HomePageProps) {
-  await requireAdminSession();
-
-  const resolvedSearchParams = (await searchParams) ?? {};
-  const pageParam = Array.isArray(resolvedSearchParams.page)
-    ? resolvedSearchParams.page[0]
-    : resolvedSearchParams.page;
-  const parserTypeParam = Array.isArray(resolvedSearchParams.parserType)
-    ? resolvedSearchParams.parserType[0]
-    : resolvedSearchParams.parserType;
-  const parserType = parseParserTypeParam(parserTypeParam);
-  const requestedPage = parsePageParam(pageParam);
-  const [pageData, communityTrends] = await Promise.all([
-    getHomePageData(requestedPage, parserType),
-    getCommunityTrendsData(),
-  ]);
-  const {
-    rows,
-    summaryCountByCommunityId,
-    totalCountByParserType,
-    currentPage,
-    totalPages,
-    hasPreviousPage,
-    hasNextPage,
-  } = pageData;
+export default function Home({
+  rows,
+  summaryCountByCommunityId,
+  totalCountByParserType,
+  currentPage,
+  totalPages,
+  hasPreviousPage,
+  hasNextPage,
+  parserType,
+  communityTrends,
+}: CommunitiesPageProps) {
   const paginationTokens = getPaginationTokens(currentPage, totalPages);
   const emptyStateLabel = parserType === "bot" ? "bot communities" : "userbot communities";
 
