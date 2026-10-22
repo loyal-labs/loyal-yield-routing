@@ -774,10 +774,29 @@ export function useMainAccountUsdcBalance(args: {
   const balanceScope = `${walletAddress ?? "no-wallet"}:${mint ?? "no-mint"}`;
   const activeBalanceScopeRef = useRef(balanceScope);
   activeBalanceScopeRef.current = balanceScope;
+  const newestSlotRef = useRef({ scope: balanceScope, slot: -1 });
 
-  const readAmountRaw = useCallback(async (): Promise<bigint | null> => {
+  const commitAmountRaw = useCallback(
+    (scope: string, nextAmountRaw: bigint | null, slot: number) => {
+      if (activeBalanceScopeRef.current !== scope) {
+        return;
+      }
+      const newest = newestSlotRef.current;
+      if (newest.scope === scope && slot < newest.slot) {
+        return;
+      }
+      newestSlotRef.current = { scope, slot };
+      setAmountRaw(nextAmountRaw);
+    },
+    []
+  );
+
+  const readAmountRaw = useCallback(async (): Promise<{
+    amountRaw: bigint | null;
+    slot: number;
+  }> => {
     if (!(walletAddress && mint)) {
-      return null;
+      return { amountRaw: null, slot: -1 };
     }
 
     try {
@@ -790,11 +809,17 @@ export function useMainAccountUsdcBalance(args: {
         TOKEN_PROGRAM_ID
       );
 
-      const account = await connection.getAccountInfo(usdcAta, "confirmed");
-      return decodeWalletUsdcAmountRaw(account, usdcMint, owner);
+      const { context, value } = await connection.getAccountInfoAndContext(
+        usdcAta,
+        "confirmed"
+      );
+      return {
+        amountRaw: decodeWalletUsdcAmountRaw(value, usdcMint, owner),
+        slot: context.slot,
+      };
     } catch (error) {
       console.warn("[earn-deposit] failed to load wallet USDC ATA", error);
-      return null;
+      return { amountRaw: null, slot: -1 };
     }
   }, [connection, mint, walletAddress]);
 
@@ -804,27 +829,39 @@ export function useMainAccountUsdcBalance(args: {
         return;
       }
       const requestedScope = balanceScope;
-      const nextAmountRaw = await readAmountRaw();
-      if (activeBalanceScopeRef.current === requestedScope && isCurrent()) {
-        setAmountRaw(nextAmountRaw);
+      const next = await readAmountRaw();
+      if (isCurrent()) {
+        commitAmountRaw(requestedScope, next.amountRaw, next.slot);
       }
     },
-    [balanceScope, readAmountRaw]
+    [balanceScope, commitAmountRaw, readAmountRaw]
   );
 
   useEffect(() => {
     let cancelled = false;
 
-    void readAmountRaw().then((nextAmountRaw) => {
-      if (!cancelled && activeBalanceScopeRef.current === balanceScope) {
-        setAmountRaw(nextAmountRaw);
+    const catchUp = () => {
+      void readAmountRaw().then((next) => {
+        if (!cancelled) {
+          commitAmountRaw(balanceScope, next.amountRaw, next.slot);
+        }
+      });
+    };
+    const catchUpWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        catchUp();
       }
-    });
+    };
+    catchUp();
+    window.addEventListener("online", catchUp);
+    document.addEventListener("visibilitychange", catchUpWhenVisible);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("online", catchUp);
+      document.removeEventListener("visibilitychange", catchUpWhenVisible);
     };
-  }, [balanceScope, readAmountRaw]);
+  }, [balanceScope, commitAmountRaw, readAmountRaw]);
 
   useEffect(() => {
     if (!(walletAddress && mint)) {
@@ -841,12 +878,13 @@ export function useMainAccountUsdcBalance(args: {
     const subscribedScope = balanceScope;
     const subscriptionId = connection.onAccountChange(
       getAssociatedTokenAddressSync(usdcMint, owner, false, TOKEN_PROGRAM_ID),
-      (account) => {
-        if (activeBalanceScopeRef.current !== subscribedScope) {
-          return;
-        }
+      (account, context) => {
         try {
-          setAmountRaw(decodeWalletUsdcAmountRaw(account, usdcMint, owner));
+          commitAmountRaw(
+            subscribedScope,
+            decodeWalletUsdcAmountRaw(account, usdcMint, owner),
+            context.slot
+          );
         } catch (error) {
           console.warn(
             "[earn-deposit] failed to decode wallet USDC ATA",
@@ -859,7 +897,7 @@ export function useMainAccountUsdcBalance(args: {
     return () => {
       void connection.removeAccountChangeListener(subscriptionId);
     };
-  }, [balanceScope, connection, mint, walletAddress]);
+  }, [balanceScope, commitAmountRaw, connection, mint, walletAddress]);
 
   return {
     amount: amountRaw === null ? null : Number(amountRaw) / 1_000_000,
