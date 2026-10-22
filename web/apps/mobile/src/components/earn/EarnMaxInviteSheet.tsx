@@ -49,7 +49,7 @@ export function EarnMaxInviteSheet({
     }
   }, [open]);
 
-  const { redeem, refresh, read } = earnMax;
+  const { connect, redeem, refresh, read } = earnMax;
   const handleRedeem = useCallback(async () => {
     const trimmed = code.trim();
     if (!trimmed || submitting) {
@@ -70,15 +70,26 @@ export function EarnMaxInviteSheet({
     }
   }, [code, redeem, submitting]);
 
+  const handleConnect = useCallback(async () => {
+    if (submitting) {
+      return;
+    }
+    setSubmitting(true);
+    await connect();
+    setSubmitting(false);
+  }, [connect, submitting]);
+
   const handlePrimary = useCallback(() => {
     if (read?.kind === "invite_required") {
       void handleRedeem();
+    } else if (read?.kind === "session_required") {
+      void handleConnect();
     } else if (read?.kind === "failed") {
       void refresh();
     } else {
       sheetRef.current?.dismiss();
     }
-  }, [handleRedeem, read, refresh]);
+  }, [handleConnect, handleRedeem, read, refresh]);
 
   const renderBackdrop = useCallback(
     (props: React.ComponentProps<typeof BottomSheetBackdrop>) => (
@@ -95,9 +106,11 @@ export function EarnMaxInviteSheet({
   const primaryLabel =
     read?.kind === "invite_required"
       ? "Unlock"
+      : read?.kind === "session_required"
+      ? "Sign to open Earn MAX"
       : read?.kind === "failed"
-        ? "Try again"
-        : "Done";
+      ? "Try again"
+      : "Done";
 
   return (
     <BottomSheetModal
@@ -133,6 +146,15 @@ export function EarnMaxInviteSheet({
             />
             {codeError ? (
               <Text style={styles.errorText}>{codeError}</Text>
+            ) : null}
+          </>
+        ) : read.kind === "session_required" ? (
+          <>
+            <Text style={[styles.bodyText, styles.body]}>
+              Sign a message with your wallet to open Earn MAX.
+            </Text>
+            {read.notice ? (
+              <Text style={styles.errorText}>{read.notice}</Text>
             ) : null}
           </>
         ) : read.kind === "failed" ? (

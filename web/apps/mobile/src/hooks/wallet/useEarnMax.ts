@@ -12,6 +12,7 @@ import {
   type EarnMaxVoltrAction,
 } from "@/lib/solana/earn/earn-max";
 import {
+  connectEarnMax,
   type EarnMaxRead,
   readEarnMax,
 } from "@/lib/solana/earn/earn-max-read";
@@ -182,6 +183,23 @@ export function useEarnMax(input: {
     [config, refresh, signer, walletAddress],
   );
 
+  const connect = useCallback(async () => {
+    if (
+      !(
+        walletAddress &&
+        signer &&
+        signer.publicKey.toBase58() === walletAddress
+      )
+    ) {
+      return;
+    }
+    const generation = generationRef.current;
+    const next = await connectEarnMax(walletAddress, signer);
+    if (generationRef.current === generation) {
+      setLoaded({ walletAddress, read: next });
+    }
+  }, [signer, walletAddress]);
+
   const redeem = useCallback(
     async (code: string): Promise<"redeemed" | "invalid" | "error"> => {
       if (!(signer && signer.publicKey.toBase58() === walletAddress)) {
@@ -206,6 +224,7 @@ export function useEarnMax(input: {
     isPending,
     actionError,
     refresh,
+    connect,
     redeem,
     deposit: (amountRaw: bigint) => run({ kind: "deposit", amountRaw }),
     requestWithdrawal: (amountRaw: bigint | "max") =>

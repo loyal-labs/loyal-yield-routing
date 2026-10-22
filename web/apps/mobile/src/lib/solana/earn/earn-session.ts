@@ -215,16 +215,23 @@ async function activeSignerFor(walletAddress: string): Promise<Signer | null> {
   }
 }
 
-export async function silentSession(signer: Signer): Promise<string | null> {
-  const walletAddress = signer.publicKey.toBase58();
+function coolingDown(walletAddress: string): boolean {
   const failedAt = failedMintAt.get(walletAddress);
-  if (
-    !SILENT_SIGNERS.has(signer.kind) ||
-    (failedAt !== undefined && Date.now() - failedAt < FAILED_MINT_COOLDOWN_MS)
-  ) {
-    return null;
-  }
-  return ensureEarnSession(signer);
+  return (
+    failedAt !== undefined && Date.now() - failedAt < FAILED_MINT_COOLDOWN_MS
+  );
+}
+
+export async function deliberateSession(
+  signer: Signer,
+): Promise<string | null> {
+  return coolingDown(signer.publicKey.toBase58())
+    ? null
+    : ensureEarnSession(signer);
+}
+
+export async function silentSession(signer: Signer): Promise<string | null> {
+  return SILENT_SIGNERS.has(signer.kind) ? deliberateSession(signer) : null;
 }
 
 export async function silentEarnToken(

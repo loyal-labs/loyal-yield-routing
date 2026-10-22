@@ -25,6 +25,7 @@ export type EarnMaxErrorCode =
   | "contract_mismatch"
   | "invite_required"
   | "unauthenticated"
+  | "session_required"
   | "smart_account_required"
   | "unsupported_cluster"
   | "rate_limited"
@@ -35,12 +36,12 @@ const REFUSALS: Readonly<
   Record<string, { code: EarnMaxErrorCode; message: string }>
 > = {
   unauthenticated: {
-    code: "unauthenticated",
-    message: "Sign in again to use Earn MAX.",
+    code: "session_required",
+    message: "Sign in to use Earn MAX.",
   },
   invalid_mobile_session: {
-    code: "unauthenticated",
-    message: "Sign in again to use Earn MAX.",
+    code: "session_required",
+    message: "Sign in to use Earn MAX.",
   },
   wallet_required: {
     code: "unauthenticated",

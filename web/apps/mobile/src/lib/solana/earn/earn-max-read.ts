@@ -1,10 +1,8 @@
-import type {
-  EarnMaxActivity,
-  EarnMaxSummaryResponse,
-} from "@loyal-labs/api";
+import type { EarnMaxActivity, EarnMaxSummaryResponse } from "@loyal-labs/api";
 
 import type { Signer } from "@/lib/wallet/signer";
 
+import { deliberateSession } from "./earn-session";
 import {
   EarnMaxError,
   fetchEarnMaxActivity,
@@ -37,6 +35,9 @@ export async function readEarnMax(walletAddress: string): Promise<EarnMaxRead> {
     if (error instanceof EarnMaxError && error.code === "invite_required") {
       return { kind: "invite_required" };
     }
+    if (error instanceof EarnMaxError && error.code === "session_required") {
+      return { kind: "session_required", notice: null };
+    }
     return {
       kind: "failed",
       message:
@@ -47,7 +48,14 @@ export async function readEarnMax(walletAddress: string): Promise<EarnMaxRead> {
 
 export async function connectEarnMax(
   walletAddress: string,
-  _signer: Signer,
+  signer: Signer,
 ): Promise<EarnMaxRead> {
+  const token = await deliberateSession(signer);
+  if (!token) {
+    return {
+      kind: "session_required",
+      notice: "Could not sign in. Try again in a minute.",
+    };
+  }
   return readEarnMax(walletAddress);
 }
