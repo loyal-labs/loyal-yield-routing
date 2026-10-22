@@ -262,11 +262,27 @@ export function FaceliftSidebar({
   const cryptoBalance = splitUsdBalance(cryptoUsd);
   const earnBalance = splitUsdBalance(earnBalanceUsd);
   const earnMaxBalance = splitUsdBalance(earnMaxBalanceUsd);
-  // Only invited, unlocked accounts get an APY; everyone else sees no badge.
+  const [publicEarnMaxApyBps, setPublicEarnMaxApyBps] = useState<number | null>(null);
+  useEffect(() => {
+    if (isSignedIn) return;
+    setPublicEarnMaxApyBps(null);
+    const controller = new AbortController();
+    void fetch("/api/earn-max/apy", { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const data: { apyBps?: unknown } = await response.json();
+        if (typeof data.apyBps === "number" && Number.isFinite(data.apyBps)) {
+          setPublicEarnMaxApyBps(data.apyBps);
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [isSignedIn]);
+  const earnMaxApyBps = isSignedIn
+    ? earnMaxForecastApyBps
+    : publicEarnMaxApyBps;
   const earnMaxApyLabel =
-    earnMaxForecastApyBps === null
-      ? null
-      : formatEarnMaxApyLabel(earnMaxForecastApyBps);
+    earnMaxApyBps === null ? null : formatEarnMaxApyLabel(earnMaxApyBps);
   // Hidden products must not affect the public wallet total.
   const totalBalance = splitUsdBalance(
     data.totalUsd + earnBalanceUsd + (showEarnMax ? earnMaxBalanceUsd : 0)

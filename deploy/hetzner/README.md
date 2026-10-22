@@ -536,6 +536,10 @@ caches the immutable `/assets/*`; `cloudflared.service` connects out from
 the host and hands requests to loyal-web on loopback. Some networks reach
 Hetzner Ashburn at well under 100 KB/s directly; through Cloudflare the same
 page loads in about a second.
+The Go web router trusts `X-Forwarded-Proto` only from loopback peers. When
+Cloudflare reports an HTTP client request, it returns a 308 HTTPS redirect
+before serving the app or API, preserving the host, path, query and method.
+Direct loopback readiness probes without that header remain HTTP.
 
 | File in the repo | On the host |
 |---|---|

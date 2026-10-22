@@ -25,6 +25,21 @@ var securityPolicy = strings.Join([]string{
 	"report-uri /api/csp-report",
 }, "; ")
 
+// Cloudflared reaches this loopback listener with the original client scheme.
+func redirectHTTPS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peer, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if r.TLS == nil && net.ParseIP(peer).IsLoopback() && r.Header.Get("X-Forwarded-Proto") == "http" {
+			target := *r.URL
+			target.Scheme = "https"
+			target.Host = r.Host
+			http.Redirect(w, r, target.String(), http.StatusPermanentRedirect)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // headers sets the security headers when the wrapped handler first writes its
 // status, Set never Add: proxied /api and /ingest responses already carry
 // Vercel's copies of these headers, and a header appearing twice is a browser
