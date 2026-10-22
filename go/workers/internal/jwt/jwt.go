@@ -1,65 +1,160 @@
-// Package jwt signs and verifies compact HS256 tokens on the standard library.
+// Package jwt verifies compact JWS tokens on the standard library.
 package jwt
 
 import (
-	"bytes"
+	"crypto"
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"strings"
+	"time"
 )
 
-type Header struct {
-	Alg string `json:"alg"`
-	Typ string `json:"typ"`
+type Keys struct {
+	rs256 *rsa.PublicKey
+	hs256 []byte
 }
 
-const algHS256 = "HS256"
-
-func encodeSegment(value any) string {
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetEscapeHTML(false)
-	_ = encoder.Encode(value)
-	return base64.RawURLEncoding.EncodeToString(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
+func NewKeys(authSecret, rs256PublicKeyPEM string) (Keys, error) {
+	var keys Keys
+	if authSecret != "" {
+		sum := sha256.Sum256([]byte(authSecret))
+		keys.hs256 = sum[:]
+	}
+	if rs256PublicKeyPEM != "" {
+		key, err := parseRS256PublicKey(rs256PublicKeyPEM)
+		if err != nil {
+			return Keys{}, err
+		}
+		keys.rs256 = key
+	}
+	return keys, nil
 }
 
-func decodeSegment(segment string) ([]byte, bool) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(segment, "="))
-	return raw, err == nil
+func NewRawHMACKeys(key []byte) Keys {
+	return Keys{hs256: append([]byte(nil), key...)}
 }
 
-func mac(key []byte, unsigned string) string {
-	h := hmac.New(sha256.New, key)
-	h.Write([]byte(unsigned))
-	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+func (k Keys) Empty() bool { return k.rs256 == nil && len(k.hs256) == 0 }
+
+type Audience string
+
+const NoAudience Audience = ""
+
+var (
+	ErrMalformed   = errors.New("jwt: malformed token")
+	ErrAlgorithm   = errors.New("jwt: algorithm not accepted by the configured keys")
+	ErrSignature   = errors.New("jwt: signature mismatch")
+	ErrExpired     = errors.New("jwt: token expired")
+	ErrNotYetValid = errors.New("jwt: token not yet valid")
+	ErrAudience    = errors.New("jwt: audience mismatch")
+)
+
+type header struct {
+	Alg  string          `json:"alg"`
+	Crit json.RawMessage `json:"crit"`
 }
 
-// SignHS256 returns the token for claims under a {"alg":"HS256","typ":"JWT"} header.
-func SignHS256(key []byte, claims any) string {
-	unsigned := encodeSegment(Header{Alg: algHS256, Typ: "JWT"}) + "." + encodeSegment(claims)
-	return unsigned + "." + mac(key, unsigned)
+type registered struct {
+	Exp *float64        `json:"exp"`
+	Nbf *float64        `json:"nbf"`
+	Aud json.RawMessage `json:"aud"`
 }
 
-// VerifyHS256 returns the header and the raw claims JSON of a token whose
-// header names HS256 and whose signature matches key. Claims policy is the caller's.
-func VerifyHS256(key []byte, token string) (Header, []byte, bool) {
+func (k Keys) Verify(token string, want Audience, now time.Time) ([]byte, error) {
 	segments := strings.Split(token, ".")
 	if len(segments) != 3 {
-		return Header{}, nil, false
+		return nil, ErrMalformed
 	}
-	rawHeader, ok := decodeSegment(segments[0])
-	var header Header
-	if !ok || json.Unmarshal(rawHeader, &header) != nil || header.Alg != algHS256 {
-		return Header{}, nil, false
+	rawHeader, err := base64.RawURLEncoding.DecodeString(segments[0])
+	if err != nil {
+		return nil, ErrMalformed
 	}
-	if !hmac.Equal([]byte(segments[2]), []byte(mac(key, segments[0]+"."+segments[1]))) {
-		return Header{}, nil, false
+	var h header
+	if json.Unmarshal(rawHeader, &h) != nil {
+		return nil, ErrMalformed
 	}
-	claims, ok := decodeSegment(segments[1])
-	if !ok {
-		return Header{}, nil, false
+	if h.Crit != nil {
+		return nil, ErrAlgorithm
 	}
-	return header, claims, true
+	signature, err := base64.RawURLEncoding.DecodeString(segments[2])
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	digest := sha256.Sum256([]byte(segments[0] + "." + segments[1]))
+	switch {
+	case h.Alg == "RS256" && k.rs256 != nil:
+		if rsa.VerifyPKCS1v15(k.rs256, crypto.SHA256, digest[:], signature) != nil {
+			return nil, ErrSignature
+		}
+	case h.Alg == "HS256" && len(k.hs256) > 0:
+		mac := hmac.New(sha256.New, k.hs256)
+		mac.Write([]byte(segments[0] + "." + segments[1]))
+		if !hmac.Equal(signature, mac.Sum(nil)) {
+			return nil, ErrSignature
+		}
+	default:
+		return nil, ErrAlgorithm
+	}
+	claims, err := base64.RawURLEncoding.DecodeString(segments[1])
+	if err != nil {
+		return nil, ErrMalformed
+	}
+	var object map[string]json.RawMessage
+	var r registered
+	if json.Unmarshal(claims, &object) != nil || object == nil || json.Unmarshal(claims, &r) != nil {
+		return nil, ErrMalformed
+	}
+	seconds := float64(now.Unix())
+	if r.Exp == nil || *r.Exp <= seconds {
+		return nil, ErrExpired
+	}
+	if r.Nbf != nil && *r.Nbf > seconds {
+		return nil, ErrNotYetValid
+	}
+	if !audienceMatches(r.Aud, want) {
+		return nil, ErrAudience
+	}
+	return claims, nil
+}
+
+func audienceMatches(raw json.RawMessage, want Audience) bool {
+	if want == NoAudience {
+		return raw == nil
+	}
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		return one == string(want)
+	}
+	var many []string
+	if json.Unmarshal(raw, &many) != nil {
+		return false
+	}
+	for _, aud := range many {
+		if aud == string(want) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseRS256PublicKey(text string) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(text))
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return nil, errors.New("jwt: RS256 public key is not a PEM PUBLIC KEY block")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, errors.New("jwt: RS256 public key is not valid SPKI")
+	}
+	key, ok := parsed.(*rsa.PublicKey)
+	if !ok || key.N.BitLen() < 2048 {
+		return nil, errors.New("jwt: RS256 public key must be RSA of at least 2048 bits")
+	}
+	return key, nil
 }

@@ -378,6 +378,63 @@ only when the optional systemd credential is installed, using the
 credential name `COINGECKO_API_KEY`. Without them each path keeps forwarding to
 Next. `X-Loyal-API-Source: go` marks a Go response.
 
+### Session auth (opt-in, owner's go)
+
+`loyal-web` verifies the Next sessions (the web cookie and the mobile
+`Authorization: Bearer`) and never signs one. Without `AUTH_JWT_SECRET` and
+`AUTH_JWT_RS256_PUBLIC_KEY` it starts as before, the session routes are not
+registered, and their paths keep proxying to Next. With either one it also
+needs `WEB_APP_DATABASE_URL` (the stats drop-in above), with SELECT on
+`app_users` and `app_user_smart_accounts`, and `WEB_SOLANA_RPC_URL`. At startup
+`loyal-web` checks them once; if any is missing it logs one line and keeps
+proxying the session routes to Next.
+
+| Credential | Required | Use |
+|---|---|---|
+| `AUTH_JWT_SECRET` | yes, until Next signs RS256 | the Next deployment's value; Go verifies HS256 under `sha256(secret)` |
+| `AUTH_JWT_RS256_PUBLIC_KEY` | no | SPKI PEM; verifies RS256 once Next signs with the private key |
+| `WEB_SOLANA_RPC_URL` | yes | reads the smart account's settings signers |
+| `WEB_APP_DATABASE_URL` | yes | App Neon; SELECT on `app_users`, `app_user_smart_accounts`, `earn_max_invite_redemptions` and the telegram tables, INSERT on the invite and push tables |
+| `WEB_YIELD_DATABASE_URL` | no | Yield Neon; SELECT on `multiply_route_states` (Earn MAX routes) |
+
+Encrypt each value from stdin, never from an argument, and never through
+`echo "$VALUE" |`: a value on a command line lands in shell history and `ps`.
+Either read it straight from 1Password (fill the `<placeholders>`):
+
+```sh
+op read 'op://<vault>/<item>/<AUTH_JWT_SECRET field>' | systemd-creds encrypt --with-key=host --name=AUTH_JWT_SECRET - \
+  /etc/credstore.encrypted/loyal-web-auth-jwt-secret
+op read 'op://<vault>/<item>/<WEB_SOLANA_RPC_URL field>' | systemd-creds encrypt --with-key=host --name=WEB_SOLANA_RPC_URL - \
+  /etc/credstore.encrypted/loyal-web-solana-rpc
+```
+
+or paste at the prompt (the terminal echoes it, so do it unwatched; it never
+reaches history), then press Enter and Ctrl-D:
+
+```sh
+systemd-creds encrypt --with-key=host --name=AUTH_JWT_SECRET - \
+  /etc/credstore.encrypted/loyal-web-auth-jwt-secret
+systemd-creds encrypt --with-key=host --name=WEB_SOLANA_RPC_URL - \
+  /etc/credstore.encrypted/loyal-web-solana-rpc
+```
+
+Then install `/etc/systemd/system/loyal-web.service.d/60-session-auth.conf`
+(a `LoadCredentialEncrypted=` line for a file that is not on the host stops
+the unit, so these lines live in a drop-in, not in `loyal-web.service`):
+
+```ini
+[Service]
+LoadCredentialEncrypted=AUTH_JWT_SECRET:/etc/credstore.encrypted/loyal-web-auth-jwt-secret
+LoadCredentialEncrypted=WEB_SOLANA_RPC_URL:/etc/credstore.encrypted/loyal-web-solana-rpc
+```
+
+For RS256, encrypt the PEM the same way with
+`--name=AUTH_JWT_RS256_PUBLIC_KEY` into
+`/etc/credstore.encrypted/loyal-web-auth-rs256-public-key` and add
+`LoadCredentialEncrypted=AUTH_JWT_RS256_PUBLIC_KEY:/etc/credstore.encrypted/loyal-web-auth-rs256-public-key`.
+Run `systemctl daemon-reload && systemctl restart loyal-web`. To go back to
+proxying, remove the drop-in, daemon-reload and restart.
+
 ### First install (once)
 
 `activate.sh` reads the running release from the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -13,6 +14,7 @@ type Execution struct {
 	Receipt
 	Transaction *solana.Transaction
 	Inner       []rpc.InnerInstruction
+	BlockTime   *time.Time
 }
 
 // anyVersion accepts every transaction version the node serves: a reader
@@ -44,6 +46,10 @@ func (c *Client) Execution(ctx context.Context, signature solana.Signature, comm
 		PreLamports: meta.PreBalances, PostLamports: meta.PostBalances,
 		ReturnProgram: meta.ReturnData.ProgramId, ReturnData: meta.ReturnData.Data.Content,
 	}}
+	if out.BlockTime != nil {
+		at := out.BlockTime.Time().UTC()
+		execution.BlockTime = &at
+	}
 	if execution.Pre, err = tokenBalances(keys, meta.PreTokenBalances); err != nil {
 		return Execution{}, err
 	}
