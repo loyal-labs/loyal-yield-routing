@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -39,9 +40,14 @@ func (m *Mux) rebalanceSection(w http.ResponseWriter, r *http.Request) {
 			err = huma.Error400BadRequest("eligibilityFloorRaw is required")
 			break
 		}
-		var floor *string
+		var floor *int64
 		if raw[0] != "null" {
-			floor = &raw[0]
+			parsed, parseErr := strconv.ParseInt(raw[0], 10, 64)
+			if parseErr != nil {
+				err = huma.Error400BadRequest("eligibilityFloorRaw is out of range")
+				break
+			}
+			floor = &parsed
 		}
 		body = map[string]any{"vaultRebalanceFrequency": rebalanceVaultFrequencyWire(r, m.Deps, floor)}
 	case "":
@@ -248,7 +254,7 @@ func rebalanceExecutedWire(r *http.Request, d *Deps) map[string]any {
 	}
 }
 
-func rebalanceVaultFrequencyWire(r *http.Request, d *Deps, floor *string) map[string]any {
+func rebalanceVaultFrequencyWire(r *http.Request, d *Deps, floor *int64) map[string]any {
 	frequency, err := rebalanceEarnVaultFrequency(r.Context(), d, floor, false)
 	if err != nil {
 		slog.Error("Earn vault rebalance frequency query failed", "error", err)

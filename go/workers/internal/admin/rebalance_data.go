@@ -622,13 +622,13 @@ type rebalanceVaultFrequencyData struct {
 	vaultCount  int64
 }
 
-func rebalanceVaultFrequencySQL(floor *string) string {
+func rebalanceVaultFrequencySQL(hasFloor bool) string {
 	gate := "FALSE"
 	eligible := func(string, bool) string { return "TRUE" }
-	if floor != nil {
-		gate = "base.current_deposit_raw < " + *floor + "::bigint AND base.all_count = 0"
+	if hasFloor {
+		gate = "base.current_deposit_raw < $2::bigint AND base.all_count = 0"
 		eligible = func(column string, opportunity bool) string {
-			clause := "(current_deposit_raw >= " + *floor + "::bigint OR " + column + " > 0"
+			clause := "(current_deposit_raw >= $2::bigint OR " + column + " > 0"
 			if opportunity {
 				clause += " OR has_opportunity"
 			}
@@ -644,7 +644,7 @@ func rebalanceVaultFrequencySQL(floor *string) string {
 	).Replace(rebalanceSQLVaultFrequency)
 }
 
-func rebalanceEarnVaultFrequency(ctx context.Context, d *Deps, floor *string, includeDetails bool) (rebalanceVaultFrequencyData, error) {
+func rebalanceEarnVaultFrequency(ctx context.Context, d *Deps, floor *int64, includeDetails bool) (rebalanceVaultFrequencyData, error) {
 	var summaries []struct {
 		RouteMode            string           `json:"route_mode"`
 		LiquidityMint        *string          `json:"liquidity_mint"`
@@ -665,7 +665,11 @@ func rebalanceEarnVaultFrequency(ctx context.Context, d *Deps, floor *string, in
 	if includeDetails {
 		detailLimit = 100
 	}
-	if err := rebalancePayload(ctx, d, rebalanceVaultFrequencySQL(floor), []any{detailLimit}, &summaries, &chart, &details); err != nil {
+	args := []any{detailLimit}
+	if floor != nil {
+		args = append(args, *floor)
+	}
+	if err := rebalancePayload(ctx, d, rebalanceVaultFrequencySQL(floor != nil), args, &summaries, &chart, &details); err != nil {
 		return rebalanceVaultFrequencyData{}, err
 	}
 	out := rebalanceVaultFrequencyData{
