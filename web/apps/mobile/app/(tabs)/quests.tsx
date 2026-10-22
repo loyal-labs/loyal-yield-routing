@@ -12,14 +12,14 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ARTBOARD_BASE_WIDTH } from "@/components/earn/AutodepositHelpSheet";
 import { EarnDog } from "@/components/earn/EarnDog";
 import { QUESTS_ENABLED } from "@/lib/feature-flags";
 import { Text, View } from "@/tw";
 
 import CoinIcon from "../../assets/images/quests/coin_58.svg";
 
-const ART_WIDTH = 400;
-const DOG_HEAD_RATIO = 506 / 400;
+const DOG_HEAD_RATIO = 506 / ARTBOARD_BASE_WIDTH;
 const REVEAL_START_DELAY_MS = 500;
 const DOG_RISE_MS = 800;
 const ENTER_EASING = Easing.bezier(0.22, 1, 0.36, 1);
@@ -66,7 +66,7 @@ function QuestsScreenContent() {
   const { width } = useWindowDimensions();
   const [runId, setRunId] = useState(0);
 
-  const scale = width / ART_WIDTH;
+  const scale = width / ARTBOARD_BASE_WIDTH;
   const dogAreaHeight = Math.round(340 * scale);
   const dogWidth = Math.round(300 * scale);
   const dogHeight = Math.round(dogWidth * DOG_HEAD_RATIO);

@@ -130,3 +130,29 @@ export async function assertOwnVersionedSignature(
     );
   }
 }
+
+/**
+ * Adopt a wallet-returned transaction onto the caller's object. The
+ * wallet-returned bytes are the signed truth — an external wallet may return
+ * a modified transaction (Lighthouse guards, priority fees), so grafting only
+ * its signatures onto the original message would break signature verification.
+ * Callers keep using the objects they passed in (e.g. serializing the original
+ * after signTransaction), so adopt the wallet's message AND signatures onto
+ * the inputs, then verify our signature locally to fail with a precise error
+ * instead of an opaque RPC preflight failure.
+ */
+export async function adoptWalletReturnedTransaction(
+  tx: Transaction | VersionedTransaction,
+  source: Transaction | VersionedTransaction,
+  publicKey: PublicKey,
+  index: number,
+): Promise<void> {
+  if (tx instanceof VersionedTransaction) {
+    const src = source as VersionedTransaction;
+    tx.message = src.message;
+    tx.signatures = src.signatures;
+    await assertOwnVersionedSignature(tx, publicKey, index);
+  } else {
+    (tx as Transaction).signatures = (source as Transaction).signatures;
+  }
+}

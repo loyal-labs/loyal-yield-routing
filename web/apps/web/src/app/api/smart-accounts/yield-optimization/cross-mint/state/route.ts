@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  resolveLoyalClusterForSolanaEnv,
+} from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import { PublicKey } from "@solana/web3.js";
 
@@ -9,8 +12,6 @@ import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-ov
 import { isEarnAutoswapEnrollmentEnabled } from "@/lib/yield-optimization/earn-autoswap-rollout.server";
 import { findEarnCrossMintState } from "@/lib/yield-optimization/earn-cross-mint-repository.server";
 import { hasActiveEarnPosition } from "@/lib/yield-optimization/earn-position-gate.server";
-
-const EARN_VAULT_INDEX = 1;
 
 function jsonError(status: number, code: string, message: string) {
   return NextResponse.json({ error: { code, message } }, { status });

@@ -1,10 +1,11 @@
 import {
+  EARN_VAULT_INDEX,
   getRiskBasketMarketsForCluster,
-  type LoyalCluster,
   resolveLoyalClusterForSolanaEnv,
   RiskBasket,
-  SUBSCRIPTIONS_PROGRAM_ID,
   subscriptionRevokeDelegationData,
+  SUBSCRIPTIONS_PROGRAM_ID,
+  type LoyalCluster,
 } from "@loyal-labs/actions";
 import {
   pda,
@@ -38,8 +39,6 @@ import {
 } from "./earn-policy-refund-state.server";
 import { getEarnProductAssetsForCluster } from "./earn-product-mints.shared";
 import { fetchEarnRpcHoldingsSnapshot } from "./earn-rpc-holdings.client";
-
-const EARN_VAULT_INDEX = 1;
 
 export class EarnPolicyRefundError extends Error {
   readonly status: number;

@@ -3,6 +3,7 @@
 import { bestEffort, bestEffortAsync } from "./best-effort";
 import { journeyTraceparent, type JourneyTraceContext } from "./trace-context";
 
+import { OBSERVABILITY_EXPORT_BUDGET_MS } from "./budget-contract";
 import type { BrowserChunkRecoveryAction } from "./chunk-load-contract";
 import { captureDatadogJourney, getDatadogSessionId } from "./datadog.client";
 import {
@@ -45,8 +46,8 @@ import {
   OBSERVABILITY_METRICS_ENDPOINT,
 } from "./metrics-contract";
 
-const CLIENT_REPORT_TIMEOUT_MS = 1250;
 const CLIENT_BUILD_ID = process.env.NEXT_PUBLIC_GIT_COMMIT_HASH ?? "unknown";
+const LIFECYCLE_REPORT_TIMEOUT_MS = 4 * OBSERVABILITY_EXPORT_BUDGET_MS;
 const JOURNEY_WINDOW_MS = 10 * 60 * 1000;
 const browserJourneys = new Map<
   string,
@@ -167,7 +168,7 @@ async function postBrowserError(envelope: BrowserErrorEnvelope): Promise<void> {
   const controller = new AbortController();
   const timeout = window.setTimeout(
     () => controller.abort(),
-    CLIENT_REPORT_TIMEOUT_MS
+    OBSERVABILITY_EXPORT_BUDGET_MS
   );
 
   await bestEffortAsync(() =>
@@ -190,8 +191,7 @@ async function postBrowserLifecycle(
   const controller = new AbortController();
   const timeout = window.setTimeout(
     () => controller.abort(),
-    // Allow session resolution and the 1.25s exporter budget to return the cohort.
-    5000
+    LIFECYCLE_REPORT_TIMEOUT_MS
   );
 
   const trafficKind = await bestEffortAsync(async () => {
@@ -218,7 +218,7 @@ async function postBrowserLoadingMetric(
   const controller = new AbortController();
   const timeout = window.setTimeout(
     () => controller.abort(),
-    CLIENT_REPORT_TIMEOUT_MS
+    OBSERVABILITY_EXPORT_BUDGET_MS
   );
 
   await bestEffortAsync(() =>

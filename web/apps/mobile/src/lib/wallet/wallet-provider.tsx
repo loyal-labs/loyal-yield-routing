@@ -275,8 +275,7 @@ function WalletProviderCore({
         setState("noWallet");
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when Privy is ready
-  }, [noLegacyWallet, privyReady]);
+  }, [noLegacyWallet, privyReady, privyHasUser, privyEmbedded]);
 
   const backgroundedAt = useRef<number | null>(null);
   const AUTO_LOCK_GRACE_MS = 30_000;
