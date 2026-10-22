@@ -2,7 +2,7 @@
 # shellcheck disable=SC2029 # the remote commands are built here on purpose
 set -euo pipefail
 
-usage="usage: bun run deploy backyard|retail|observer|web|admin [sha] [--migrations-applied] [--stopped]"
+usage="usage: bun run deploy backyard|retail|observer|web|admin|stats [sha] [--migrations-applied] [--stopped]"
 family=${1:-}
 [[ $# -gt 0 ]] && shift
 case $family in
@@ -10,6 +10,7 @@ case $family in
   observer) binary_name=loyal-observer ;;
   web) binary_name=loyal-web ;;
   admin) binary_name=loyal-admin ;;
+  stats) binary_name=loyal-stats ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac
 target=origin/main
@@ -24,7 +25,7 @@ for arg in "$@"; do
   esac
 done
 web_family=no
-[[ $family == web || $family == admin ]] && web_family=yes
+[[ $family == web || $family == admin || $family == stats ]] && web_family=yes
 if [[ $web_family == yes && ( $migrations_applied == yes || $mode == stopped ) ]]; then
   echo "web deploys run no migrations check and no rules step" >&2
   echo "$usage" >&2
