@@ -471,7 +471,10 @@ WHERE send_id = $1 AND ticket_id IS NOT NULL AND ticket_id <> '' ORDER BY create
 		if err != nil {
 			return err
 		}
-		tickets, err = pgx.CollectRows(rows, pgx.RowToStructByPos[pushTicketRow])
+		tickets, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (t pushTicketRow, err error) {
+			err = row.Scan(&t.id, &t.token, &t.ticketID)
+			return t, err
+		})
 		return err
 	}); err != nil {
 		return PushResult{}, err
