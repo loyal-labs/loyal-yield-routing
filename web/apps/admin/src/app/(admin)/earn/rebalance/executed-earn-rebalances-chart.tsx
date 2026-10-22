@@ -100,6 +100,7 @@ export type SerializedExecutedEarnRebalanceSummary = {
   fullyWithdrawnCount7d: number;
   liquidityMint: string | null;
   routeMode: RebalanceRouteMode;
+  routeTotal: boolean;
   swapFeeLamports: string;
   userCount: number;
   userCount30d: number;
@@ -370,7 +371,8 @@ export function ExecutedEarnRebalancesChart({
   ) satisfies ChartConfig;
 
   const routeSummaries = data.summaries.filter(
-    (item) => item.routeMode === routeMode
+    (item) =>
+      item.routeMode === routeMode && item.routeTotal === (liquidityMint === null)
   );
   const exactExecutionCount = routeSummaries.reduce(
     (total, item) =>
@@ -710,7 +712,7 @@ export function ExecutedEarnRebalancesChart({
             amount, and average current deposit.
             {useLogScale && floorPointCount > 0
               ? ` ${floorPointCount.toLocaleString("en-US")} ${
-                  floorPointCount === 1 ? "hour" : "hours"
+                  floorPointCount === 1 ? "dot" : "dots"
                 } with only fully withdrawn users ${
                   floorPointCount === 1 ? "sits" : "sit"
                 } on the axis floor.`

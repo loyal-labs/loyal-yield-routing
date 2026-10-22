@@ -537,6 +537,7 @@ type RebalanceExecutedSummary struct {
 	FullyWithdrawnCount7d  int64              `json:"fullyWithdrawnCount7d"`
 	LiquidityMint          *string            `json:"liquidityMint"`
 	RouteMode              RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	RouteTotal             bool               `json:"routeTotal"`
 	SwapFeeLamports        string             `json:"swapFeeLamports"`
 	UserCount              int64              `json:"userCount"`
 	UserCount30d           int64              `json:"userCount30d"`
@@ -554,6 +555,7 @@ func rebalanceExecutedHistoryData(ctx context.Context, d *Deps, includeDetails b
 	var summaries []struct {
 		RouteMode              string            `json:"route_mode"`
 		LiquidityMint          *string           `json:"liquidity_mint"`
+		RouteTotal             bool              `json:"route_total"`
 		ExecutionCount         rebalanceFlexInt  `json:"execution_count"`
 		ExecutionCount30d      rebalanceFlexInt  `json:"execution_count_30d"`
 		ExecutionCount7d       rebalanceFlexInt  `json:"execution_count_7d"`
@@ -595,6 +597,7 @@ func rebalanceExecutedHistoryData(ctx context.Context, d *Deps, includeDetails b
 			FullyWithdrawnCount7d:  int64(row.FullyWithdrawnCount7d),
 			LiquidityMint:          row.LiquidityMint,
 			RouteMode:              rebalanceRouteModeOf(row.RouteMode),
+			RouteTotal:             row.RouteTotal,
 			SwapFeeLamports:        string(row.SwapFeeLamports),
 			UserCount:              int64(row.UserCount),
 			UserCount30d:           int64(row.UserCount30d),

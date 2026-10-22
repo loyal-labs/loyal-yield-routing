@@ -1049,6 +1049,7 @@ const rebalanceSQLExecutedHistory = `
         SELECT
           route_mode,
           liquidity_mint,
+          GROUPING(liquidity_mint) = 1 AS route_total,
           COUNT(*)::integer AS execution_count,
           COUNT(*) FILTER (
             WHERE executed_at >= now() - interval '30 days'
@@ -1076,16 +1077,17 @@ const rebalanceSQLExecutedHistory = `
           )::integer AS user_count_7d,
           COALESCE(SUM(swap_fee_lamports::bigint), 0)::text AS swap_fee_lamports
         FROM execution_rows
-        GROUP BY route_mode, liquidity_mint
+        GROUP BY GROUPING SETS ((route_mode, liquidity_mint), (route_mode))
       )
       SELECT
         COALESCE(
           (
-            SELECT json_agg(summary_row ORDER BY route_mode, liquidity_mint)
+            SELECT json_agg(summary_row ORDER BY route_total, route_mode, liquidity_mint)
             FROM (
               SELECT
                 route_mode,
                 liquidity_mint,
+                route_total,
                 execution_count,
                 execution_count_30d,
                 execution_count_7d,
