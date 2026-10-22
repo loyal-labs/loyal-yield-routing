@@ -121,8 +121,9 @@ export async function dropRejectedToken(
   walletAddress: string,
   token: string,
 ): Promise<void> {
+  const startedAt = generation;
   const sessions = await loadStored();
-  if (sessions.get(walletAddress)?.token === token) {
+  if (startedAt === generation && sessions.get(walletAddress)?.token === token) {
     sessions.delete(walletAddress);
     await persist(sessions);
   }
@@ -151,6 +152,9 @@ async function mint(
     return null;
   }
   const sessions = await loadStored();
+  if (startedAt !== generation) {
+    return null;
+  }
   sessions.set(auth.walletAddress, {
     expiresAt: payload.expiresAt,
     token: payload.token,
