@@ -1141,7 +1141,6 @@ export function EarnMaxWorkspace({
       activeTab === "Earned" ? (
         <EarnedBarsChart
           bars={buildEarnMaxEarnedBars(view)}
-          currentApyBps={view.realizedApyBps}
           isLoading={view.isLoading}
           isStale={false}
           isUnavailable={false}

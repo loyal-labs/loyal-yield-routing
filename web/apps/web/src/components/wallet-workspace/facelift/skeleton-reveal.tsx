@@ -46,21 +46,16 @@ function PlainSegments({ segments }: { segments: PopDigitsSegment[] }) {
 }
 
 // One APY-fed text: skeleton until revealed, then (optionally) pop the digits
-// once. `isRevealed === undefined` renders the plain text — that keeps shared
-// chart components visually unchanged for old-workspace callers that don't
-// pass the flag.
+// once.
 export function ApyRevealText({
   isRevealed,
   segments,
   withPop = true,
 }: {
-  isRevealed: boolean | undefined;
+  isRevealed: boolean;
   segments: PopDigitsSegment[];
   withPop?: boolean;
 }) {
-  if (isRevealed === undefined) {
-    return <PlainSegments segments={segments} />;
-  }
   return (
     <SkeletonReveal isRevealed={isRevealed}>
       {isRevealed && withPop ? (
