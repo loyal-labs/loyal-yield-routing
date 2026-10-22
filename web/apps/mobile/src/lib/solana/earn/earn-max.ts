@@ -184,13 +184,22 @@ function planFor(action: EarnMaxVoltrAction): VoltrPlanBuilder {
   }
 }
 
+export class EarnMaxWalletChangedError extends Error {
+  constructor() {
+    super("The active wallet changed. Earn MAX action cancelled.");
+    this.name = "EarnMaxWalletChangedError";
+  }
+}
+
 export async function sendEarnMaxVoltr(args: {
   account: EarnMaxAccount;
   action: EarnMaxVoltrAction;
   signer: Signer;
+  assertActive?: () => void;
 }): Promise<SentTransaction> {
   const connection = getConnection();
   const programId = new PublicKey(args.account.programId);
+  args.assertActive?.();
   const operation = await prepareEarnMaxVoltr({
     build: planFor(args.action),
     client: createSmartAccountVaultsClient({ connection, programId }),
@@ -198,6 +207,7 @@ export async function sendEarnMaxVoltr(args: {
     programId,
     settingsPda: new PublicKey(args.account.settingsPda),
   });
+  args.assertActive?.();
   return signAndSendPreparedOperation({
     connection,
     operation,

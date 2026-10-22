@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   EarnMaxError,
+  EarnMaxWalletChangedError,
   fetchEarnMaxActivity,
   fetchEarnMaxInvite,
   fetchEarnMaxSummary,
@@ -73,7 +74,12 @@ export function useEarnMax(input: {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const accountRef = useRef<string | null>(null);
-  accountRef.current = walletAddress;
+  const generationRef = useRef(0);
+  if (accountRef.current !== walletAddress) {
+    accountRef.current = walletAddress;
+    generationRef.current += 1;
+  }
+  const busyRef = useRef(false);
 
   const read =
     walletAddress && loaded?.walletAddress === walletAddress
@@ -82,10 +88,12 @@ export function useEarnMax(input: {
 
   const refresh = useCallback(async () => {
     if (!walletAddress) {
+      setLoaded(null);
       return;
     }
+    const generation = generationRef.current;
     const next = await readEarnMax(walletAddress);
-    if (accountRef.current !== walletAddress) {
+    if (generationRef.current !== generation) {
       return;
     }
     setLoaded({ walletAddress, read: next });
@@ -115,12 +123,25 @@ export function useEarnMax(input: {
     if (!isPending) {
       return;
     }
-    const timer = setInterval(() => {
-      setPending((items) => items.filter((item) => item.expiresAt > Date.now()));
-      void refresh();
-    }, PENDING_POLL_MS);
+    const timer = setInterval(() => void refresh(), PENDING_POLL_MS);
     return () => clearInterval(timer);
   }, [isPending, refresh]);
+
+  useEffect(() => {
+    const mine = pending.filter((item) => item.walletAddress === walletAddress);
+    if (mine.length === 0) {
+      return;
+    }
+    const nextExpiry = Math.min(...mine.map((item) => item.expiresAt));
+    const timer = setTimeout(() => {
+      const live = pending.filter((item) => item.expiresAt > Date.now());
+      setPending(live);
+      if (!live.some((item) => item.walletAddress === walletAddress)) {
+        void refresh();
+      }
+    }, Math.max(0, nextExpiry - Date.now()));
+    return () => clearTimeout(timer);
+  }, [pending, refresh, walletAddress]);
 
   const withdrawal =
     read?.kind === "ready" ? read.summary.summary?.withdrawal : undefined;
@@ -145,11 +166,26 @@ export function useEarnMax(input: {
         setActionError("Connect the authenticated wallet to use Earn MAX.");
         return false;
       }
+      if (busyRef.current) {
+        return false;
+      }
+      busyRef.current = true;
       setIsBusy(true);
       setActionError(null);
+      const generation = generationRef.current;
+      const assertActive = () => {
+        if (generationRef.current !== generation) {
+          throw new EarnMaxWalletChangedError();
+        }
+      };
       try {
         const account = await resolveEarnMaxAccount(walletAddress, config);
-        const sent = await sendEarnMaxVoltr({ account, action, signer });
+        const sent = await sendEarnMaxVoltr({
+          account,
+          action,
+          assertActive,
+          signer,
+        });
         setPending((items) => [
           ...items,
           {
@@ -173,6 +209,7 @@ export function useEarnMax(input: {
         }
         return false;
       } finally {
+        busyRef.current = false;
         setIsBusy(false);
       }
     },
