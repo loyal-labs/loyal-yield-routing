@@ -50,7 +50,7 @@ export type EarnedChartBar = {
 // Earned chart consumes all of it, the wallet-home Earn card only the bars.
 export function useEarnEarnedData(data: EarnPositionData) {
   const publicEnv = usePublicEnv();
-  const earnForecastApy = useEarnForecastApy();
+  const { apy: earnForecastApy } = useEarnForecastApy();
   const hasPositiveCurrentBalance = data.hasPosition && data.earnBalanceUsd > 0;
   const earnEarningsRevalidationKey = data.position?.principalAmountRaw ?? "0";
   const earnEarningsCacheKey = getEarnEarningsCacheKey({
@@ -97,7 +97,7 @@ export function useEarnEarnedData(data: EarnPositionData) {
     apyBps: deriveEstimatedEarnedAmountApyBps({
       earningsData: lifetimeData,
       fallbackApyBps:
-        earnForecastApy.availability === "unavailable"
+        !earnForecastApy || earnForecastApy.availability === "unavailable"
           ? 0
           : earnForecastApy.apyBps,
     }),

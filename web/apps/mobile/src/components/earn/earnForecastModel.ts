@@ -10,8 +10,6 @@ import type {
 
 // Fixed T-Bill benchmark (no live series), matching the web constant.
 export const TBILL_APY_BPS = 365;
-// Fallbacks when the summary hasn't loaded / lacks a series.
-export const LOYAL_FALLBACK_APY_BPS = 1006;
 export const MAIN_FALLBACK_APY_BPS = 559;
 const MIN_APY_BPS = 50;
 
@@ -51,8 +49,13 @@ export function getMainSamples(
   return findSeries(summary, "mainUsdcReserve");
 }
 
-export function getLoyalApyBps(summary: EarnForecastSummary | null): number {
-  return summary?.forecast.apyBps ?? LOYAL_FALLBACK_APY_BPS;
+export function getLoyalApyBps(
+  summary: EarnForecastSummary | null,
+): number | null {
+  const apyBps = summary?.forecast.apyBps;
+  return apyBps !== undefined && Number.isFinite(apyBps) && apyBps > 0
+    ? apyBps
+    : null;
 }
 
 // Latest observed Main Kamino reserve APY, else the web fallback.

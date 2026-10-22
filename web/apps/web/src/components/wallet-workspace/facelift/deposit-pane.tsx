@@ -24,7 +24,7 @@ import { SheetReveal } from "@/components/wallet-workspace/facelift/sheet-reveal
 import { SkeletonReveal } from "@/components/wallet-workspace/facelift/skeleton-reveal";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
-import { useEarnForecastApyStatus } from "@/components/wallet-workspace/facelift/use-earn-forecast-apy-status";
+import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import {
@@ -149,7 +149,7 @@ export function DepositPane({
 }) {
   const data = useWalletDesktopData({});
   const publicEnv = usePublicEnv();
-  const { apy, isLoaded: isApyLoaded } = useEarnForecastApyStatus();
+  const { apy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const { isBalanceHidden } = useBalanceVisibility();
   const [amount, setAmount] = useState("");
   const [isInfoOpen, setIsInfoOpen] = useState(false);
@@ -238,7 +238,8 @@ export function DepositPane({
   const handleSubmit = async () => {
     const didDeposit = await actions.submitDeposit({
       amountLabel: amount,
-      forecastApyBps: apy.availability === "unavailable" ? 0 : apy.apyBps,
+      forecastApyBps:
+        !apy || apy.availability === "unavailable" ? 0 : apy.apyBps,
       mint: selectedSource.mint,
       symbol: selectedSource.symbol,
     });
@@ -511,8 +512,6 @@ export function DepositPane({
                   to Earn
                 </span>
                 <span className="flex items-center">
-                  {/* Skeleton the badge until the real APY lands, then
-                    reveal + pop — the fallback APY would otherwise flash. */}
                   <SkeletonReveal
                     isRevealed={isApyLoaded}
                     skeletonClassName="rounded-lg bg-accent-selected"
@@ -526,25 +525,13 @@ export function DepositPane({
                         src="/wallet-workspace/earn-flash.svg"
                       />
                       <span className="whitespace-nowrap font-medium text-[16px] text-positive leading-5 tracking-[0.06px]">
-                        {isApyLoaded ? (
-                          <PopDigits
-                            segments={[
-                              {
-                                text: formatEarnApyLabel(
-                                  apy.apyBps,
-                                  apy.availability,
-                                  apy.source
-                                ),
-                              },
-                            ]}
-                          />
-                        ) : (
-                          formatEarnApyLabel(
-                            apy.apyBps,
-                            apy.availability,
-                            apy.source
-                          )
-                        )}
+                        <PopDigits
+                          segments={[
+                            {
+                              text: formatEarnApyLabel(apy),
+                            },
+                          ]}
+                        />
                       </span>
                     </span>
                   </SkeletonReveal>
