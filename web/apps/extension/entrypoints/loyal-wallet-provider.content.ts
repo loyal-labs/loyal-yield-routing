@@ -167,7 +167,6 @@ class LoyalWalletImpl implements Wallet {
     };
   }
 
-  // --- standard:connect ---
   #connect = async (
     input?: StandardConnectInput
   ): Promise<StandardConnectOutput> => {
@@ -205,7 +204,6 @@ class LoyalWalletImpl implements Wallet {
     return { accounts: this.accounts };
   };
 
-  // --- standard:disconnect ---
   #disconnect = async (): Promise<void> => {
     window.postMessage(
       {
@@ -223,7 +221,6 @@ class LoyalWalletImpl implements Wallet {
     this.#emit("change", { accounts: this.accounts });
   };
 
-  // --- standard:events ---
   #on: StandardEventsOnMethod = <E extends StandardEventsNames>(
     event: E,
     listener: StandardEventsListeners[E]
@@ -252,7 +249,6 @@ class LoyalWalletImpl implements Wallet {
     }
   }
 
-  // --- solana:signTransaction ---
   #signTransaction = async (
     ...inputs: readonly SolanaSignTransactionInput[]
   ): Promise<readonly SolanaSignTransactionOutput[]> => {
@@ -283,7 +279,6 @@ class LoyalWalletImpl implements Wallet {
     return results;
   };
 
-  // --- solana:signMessage ---
   #signMessage = async (
     ...inputs: readonly SolanaSignMessageInput[]
   ): Promise<readonly SolanaSignMessageOutput[]> => {

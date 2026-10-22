@@ -194,8 +194,6 @@ export function FourDogsMark({ size = 240 }: { size?: number }) {
           fill="black"
         />
 
-        {/* 'o' dog — outer <g> holds the mask (letter-anchored, stationary);
-            nested inner groups stack entrance + idle transforms independently. */}
         <g mask="url(#four-dogs-mask-o)">
           <g className={classFor("o")}>
             <g className="four-dogs-idle-o">

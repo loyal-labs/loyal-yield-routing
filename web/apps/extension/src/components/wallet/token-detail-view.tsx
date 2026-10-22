@@ -242,9 +242,6 @@ export function TokenDetailView({
         </div>
       )}
 
-      {/* Unverified fallback: CoinGecko has no record of this token, so render
-          the on-chain metadata we already have (name/symbol/icon/price) and
-          clearly mark it as unverified instead of failing the whole page. */}
       {notFound && !loading && (
         <div
           style={{
