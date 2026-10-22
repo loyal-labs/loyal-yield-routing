@@ -5,7 +5,6 @@ import {
 } from "@loyal-labs/smart-account-vaults";
 import { PublicKey } from "@solana/web3.js";
 
-import { env } from "@/config/env";
 import { track } from "@/lib/analytics/analytics";
 import { EARN_EVENTS } from "@/lib/analytics/earn-events";
 import { getConnection } from "@/lib/solana/rpc/connection";
@@ -19,7 +18,6 @@ import {
 import { withConnectionRetry } from "./connection-retry";
 import {
   confirmEarnDeposit,
-  confirmEarnDepositSponsored,
   fetchEarnDepositPrepareContext,
   prepareEarnDeposit,
   type EarnAuthFields,
@@ -32,7 +30,6 @@ import {
 import { signEarnAuth, withEarnAuth } from "./earn-auth";
 import {
   signAndSendPreparedOperations,
-  signPreparedOperationsForSponsor,
 } from "./send-prepared";
 import {
   hydratePreparedOperation,
@@ -263,104 +260,6 @@ async function runEarnDeposit(
   const amountRaw = usdToStableRaw(args.amountUsd);
   const walletAddress = args.signer.publicKey;
   const prepareAuth = await signEarnAuth(args.signer, "earn-deposit-prepare");
-
-  // Sponsored flow (flagged): the transactions are compiled with the sponsor
-  // as fee payer, so the server must build them — keep the legacy server
-  // prepare. Sign every stage but send nothing; the sponsored confirm
-  // endpoint sponsor-signs, sends, confirms, and records in one call. Falls
-  // back to the self-paid flow when the backend returns no sponsor (flag off
-  // server-side, older deploy, or sponsor key unconfigured).
-  if (env.earnSponsoredDeposits) {
-    const prepared = await withConnectionRetry(
-      "deposit sponsored prepare",
-      DEPOSIT_NETWORK_MESSAGE,
-      () =>
-        prepareEarnDeposit({
-          auth: prepareAuth,
-          amountRaw,
-          mint: args.mint,
-          sponsored: true,
-          flowId: flow.flowId,
-        }),
-    );
-    const preparedDeposit = prepared.preparedDeposit;
-    if (!preparedDeposit.policySetupPrepared) {
-      flow.setVariant("top_up");
-    }
-    flow.observe("prepare", {
-      policyMode: preparedDeposit.policySetupPrepared ? "create" : "reuse",
-    });
-    // Which sponsor the backend derived from EARN_POLICY_SPONSOR_PK (null =
-    // sponsor not configured → self-paid fallback). Kept as a plain log: the
-    // fee payer of every sponsored tx, essential when debugging sponsor
-    // issues.
-    console.log(
-      "[earn-deposit] sponsorFeePayer:",
-      prepared.sponsorFeePayer ?? null,
-    );
-    if (prepared.sponsorFeePayer) {
-      // Same stage order as the self-paid flow; first-deposit policy stages
-      // are absent for top-ups, so map signed transactions back with a cursor.
-      const signed = await signPreparedOperationsForSponsor({
-        connection: getConnection(),
-        signer: args.signer,
-        feePayer: new PublicKey(prepared.sponsorFeePayer),
-        operations: [
-          preparedDeposit.policySetupPrepared,
-          preparedDeposit.policyFinalizePrepared,
-          preparedDeposit.prepared,
-        ]
-          .filter((stage) => stage != null)
-          .map(hydratePreparedOperation),
-      }).catch((error) => {
-        flow.failFrom("wallet_submit_confirm", error);
-        throw error;
-      });
-      flow.observe("wallet_submit_confirm", {
-        chainState: "submitted",
-        executionMode: signed.length > 1 ? "batch" : "single",
-      });
-      let cursor = 0;
-      const policyTransaction = preparedDeposit.policySetupPrepared
-        ? signed[cursor++]
-        : undefined;
-      const setupPolicyTransaction = preparedDeposit.policyFinalizePrepared
-        ? signed[cursor++]
-        : undefined;
-      const depositTransaction = signed[cursor];
-      const confirmations = await withEarnAuth(
-        args.signer,
-        prepareAuth,
-        "earn-deposit-confirm",
-        (auth) =>
-          confirmEarnDepositSponsored({
-            auth,
-            preparedDeposit,
-            depositTransaction,
-            policyTransaction,
-            setupPolicyTransaction,
-          }),
-      ).catch((error) => {
-        flow.failFrom("backend_confirm", error);
-        throw error;
-      });
-      flow.observe("backend_confirm", {
-        chainState: "confirmed",
-        persistenceState: "recorded",
-      });
-      track(EARN_EVENTS.earnDeposit, { amount_usd: args.amountUsd });
-      flow.complete("ui_commit");
-      return { depositSignature: confirmations.deposit.signature };
-    }
-    return signSendAndConfirmDeposit({
-      signer: args.signer,
-      prepareAuth,
-      amountUsd: args.amountUsd,
-      stages: hydrateWireStages(preparedDeposit),
-      wirePreparedDeposit: preparedDeposit,
-      flow,
-    });
-  }
 
   const context = await withConnectionRetry(
     "deposit prepare-context",

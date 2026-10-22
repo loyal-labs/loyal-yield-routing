@@ -52,6 +52,10 @@ jobs:
           sh scripts/web/build.sh
           sh scripts/web/build.sh admin
           sh scripts/web/build.sh stats
+      - name: web API types match the Go routes
+        run: bun scripts/web/openapi-types.ts --check
+      - name: mobile client paths have server routes
+        run: bun scripts/web/routes-census.ts --check
       - name: admin view props match the Go loaders
         working-directory: web/apps/admin
         run: bun run typecheck
