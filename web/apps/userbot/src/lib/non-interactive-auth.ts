@@ -59,3 +59,14 @@ export function buildReauthGuidance(config: UserbotConfig): string {
 
   return "Run bun run auth:bootstrap.";
 }
+
+export function authFailureGuidance(
+  loadConfig: (env: Record<string, string | undefined>) => UserbotConfig,
+  env: Record<string, string | undefined>
+): string {
+  try {
+    return buildReauthGuidance(loadConfig(env));
+  } catch {
+    return "Run bun run auth:bootstrap.";
+  }
+}

@@ -5,17 +5,18 @@
  *
  * Required end state:
  * - Clicking the sidebar changes the URL and displays the destination shell in
- *   <= 500 ms without waiting for page data.
- * - The first useful section becomes ready in <= 1,500 ms on a warmed server.
+ *   <= NAVIGATION_LIMIT_MS without waiting for page data.
+ * - The first useful section becomes ready in <= FIRST_SECTION_LIMIT_MS on a
+ *   warmed server.
  * - Lower expensive sections do not start before the first section is ready.
  * - Each deferred data request starts exactly once when its section is reached;
  *   scrolling away and back must not repeat it.
  * - Skeletons reserve space only while loading. After data settles, cards use
  *   normal document flow with no overflow, overlap, or oversized empty tail.
- * - Total post-navigation CLS is <= 0.02, and a hard reload settles with the
- *   same healthy layout and no skeletons, hydration errors, or overlays.
- * - Fully loaded candidate content is at least 99.5% similar to merged-main
- *   baseline content backed by the same read-only data.
+ * - Total post-navigation CLS is <= CLS_LIMIT, and a hard reload settles with
+ *   the same healthy layout and no skeletons, hydration errors, or overlays.
+ * - Fully loaded candidate content is at least CONTENT_SIMILARITY_LIMIT
+ *   similar to merged-main baseline content backed by the same read-only data.
  * - The diff adds no cache, revalidation shortcut, table, view, index, or
  *   migration.
  *

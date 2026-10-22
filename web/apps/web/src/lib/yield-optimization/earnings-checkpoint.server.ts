@@ -60,7 +60,6 @@ export function earningsCheckpointTime(firstDepositAt: Date, now: Date) {
   return new Date(Math.floor(closedApyPeriod / day) * day);
 }
 
-// The yield migration increments these counters for inserts, updates and deletes.
 export async function loadEarningsHistoryFingerprint(
   input: { walletAddress: string; settings: string; vaultIndex: number },
   before: Date,

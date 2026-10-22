@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/telegram-topic-name.sh"
+
 TOKEN_FILE="$HOME/.claude/channels/telegram/.env"
 DAEMON_TOPICS="$HOME/.claude/channels/telegram/daemon/topics"
 
@@ -12,9 +14,7 @@ if [ -z "$TOKEN" ]; then
   exit 0
 fi
 
-# Derive topic name (same logic as setup.sh)
-BRANCH="$(git branch --show-current 2>/dev/null)" || true
-TOPIC_NAME="${SUPERSET_WORKSPACE_NAME:-${BRANCH:-$(basename "$(pwd)")}}"
+TOPIC_NAME="$(telegram_topic_name)"
 
 THREAD_ID=""
 CHAT_ID=""

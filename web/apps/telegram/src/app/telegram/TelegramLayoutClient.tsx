@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { AnalyticsBootstrapClient } from "@/components/analytics/AnalyticsBootstrapClient";
-import Header from "@/components/Header";
+import Header, { telegramHeaderHeight } from "@/components/Header";
 import { TelegramAppRootClient } from "@/components/telegram/TelegramAppRootClient";
 import { TelegramProvider } from "@/components/telegram/TelegramProvider";
 import { useDeviceSafeAreaTop } from "@/hooks/useTelegramSafeArea";
@@ -33,8 +33,7 @@ export default function TelegramLayoutClient({
     return () => clearTimeout(timer);
   }, [safeAreaReady]);
 
-  // Header height: safe area + 10px + logo (27px) + padding bottom (16px)
-  const headerHeight = Math.max(safeAreaInsetTop || 0, 12) + 10 + 27 + 16;
+  const headerHeight = telegramHeaderHeight(safeAreaInsetTop);
 
   return (
     <TelegramAppRootClient>

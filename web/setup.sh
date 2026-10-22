@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/telegram-topic-name.sh"
+
 MARKETPLACE="vladzima/claude-telegram-enhanced"
 PLUGIN="telegram-enhanced@claude-telegram-enhanced"
 CHANNEL="plugin:telegram-enhanced@claude-telegram-enhanced"
@@ -65,8 +67,7 @@ else
   fi
 fi
 
-BRANCH="$(git branch --show-current 2>/dev/null)" || true
-TOPIC_NAME="${SUPERSET_WORKSPACE_NAME:-${BRANCH:-$(basename "$(pwd)")}}"
+TOPIC_NAME="$(telegram_topic_name)"
 
 echo "Starting Claude Code with Telegram (topic: ${TOPIC_NAME})..."
 export TELEGRAM_TOPIC_NAME="$TOPIC_NAME"
