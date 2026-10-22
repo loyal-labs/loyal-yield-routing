@@ -194,12 +194,8 @@ function EarnPortfolioRow({
   onDeposit?: () => void;
   onOpen?: () => void;
 }) {
-  const earnForecastApy = useEarnForecastApy();
-  const earnApyLabel = formatEarnApyLabel(
-    earnForecastApy.apyBps,
-    earnForecastApy.availability,
-    earnForecastApy.source
-  );
+  const { apy: earnForecastApy } = useEarnForecastApy();
+  const earnApyLabel = formatEarnApyLabel(earnForecastApy);
   const displayBalance =
     hasPosition && Number.isFinite(balance) ? Math.max(0, balance) : 0;
   const [balanceWhole, balanceFraction] = displayBalance

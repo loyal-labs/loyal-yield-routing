@@ -5,16 +5,14 @@ import {
   writeClientCache,
 } from "@/lib/client-cache/client-cache";
 
-import {
-  FALLBACK_EARN_FORECAST,
-  type EarnForecastApy,
-  type EarnForecastApyHistoryResponse,
-  type EarnForecastSummaryResponse,
+import type {
+  EarnForecastApy,
+  EarnForecastApyHistoryResponse,
+  EarnForecastSummaryResponse,
 } from "./earn-forecast.shared";
 
 const CLIENT_CACHE_TTL_MS = 30 * 60 * 1000;
-// Retry failed loads sooner so a transient outage doesn't pin the fallback.
-const ERROR_CACHE_TTL_MS = 5 * 60 * 1000;
+const FAILURE_BACKOFF_MS = 5 * 60 * 1000;
 const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
 export const REALIZED_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 
@@ -52,13 +50,6 @@ function readPersistedEarnForecastSummary() {
   });
 }
 
-export const FALLBACK_EARN_APY = {
-  apyBps: FALLBACK_EARN_FORECAST.apyBps,
-  availability: "unavailable",
-  rangeHighBps: FALLBACK_EARN_FORECAST.rangeHighBps,
-  rangeLowBps: FALLBACK_EARN_FORECAST.rangeLowBps,
-} as const satisfies EarnForecastApy;
-
 export const EMPTY_EARN_FORECAST_HISTORY: EarnForecastApyHistoryResponse = {
   feeBps: 1,
   generatedAt: "2026-06-01T00:00:00.000Z",
@@ -70,16 +61,12 @@ export const EMPTY_EARN_FORECAST_HISTORY: EarnForecastApyHistoryResponse = {
   },
 };
 
-const FALLBACK_SUMMARY: EarnForecastSummaryResponse = {
-  forecast: FALLBACK_EARN_FORECAST,
-  history: EMPTY_EARN_FORECAST_HISTORY,
-};
-
 let cachedSummary: {
   expiresAt: number;
   value: EarnForecastSummaryResponse;
 } | null = null;
 let inflightSummary: Promise<EarnForecastSummaryResponse> | null = null;
+let failedSummary: { error: unknown; retryAt: number } | null = null;
 
 export function toForecastApy(
   payload: EarnForecastSummaryResponse["forecast"]
@@ -102,12 +89,8 @@ export function toForecastApy(
 
 function validCachedSummary(
   summary: EarnForecastSummaryResponse,
-  now: number,
-  allowUnavailable = false
+  now: number
 ): boolean {
-  if (summary.forecast.availability === "unavailable" && !allowUnavailable) {
-    return false;
-  }
   if (summary.forecast.strategy !== "realized_7d_share_price") {
     return true;
   }
@@ -120,7 +103,7 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummaryRes
   if (
     cachedSummary &&
     cachedSummary.expiresAt > now &&
-    validCachedSummary(cachedSummary.value, now, true)
+    validCachedSummary(cachedSummary.value, now)
   ) {
     return cachedSummary.value;
   }
@@ -142,6 +125,10 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummaryRes
     return persisted.data;
   }
 
+  if (failedSummary && failedSummary.retryAt > now) {
+    throw failedSummary.error;
+  }
+
   inflightSummary = fetch("/api/smart-accounts/earn-forecast/summary", {
     cache: "no-store",
     signal: AbortSignal.timeout(30_000),
@@ -158,41 +145,32 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummaryRes
     .then((summary) => {
       const receivedAt = Date.now();
       const remainingMs =
-        summary.forecast.availability === "unavailable"
-          ? ERROR_CACHE_TTL_MS
-          : summary.forecast.strategy === "realized_7d_share_price"
+        summary.forecast.strategy === "realized_7d_share_price"
           ? REALIZED_MAX_AGE_MS -
             (receivedAt - Date.parse(summary.forecast.updatedAt))
           : CLIENT_CACHE_TTL_MS;
+      failedSummary = null;
       cachedSummary = {
         expiresAt:
           receivedAt + Math.max(0, Math.min(CLIENT_CACHE_TTL_MS, remainingMs)),
         value: summary,
       };
-      if (summary.forecast.availability !== "unavailable") {
-        writeClientCache({
-          key: EARN_FORECAST_CACHE_KEY,
-          version: EARN_FORECAST_CACHE_VERSION,
-          solanaEnv: EARN_FORECAST_CACHE_SCOPE,
-          data: summary,
-          ttlMs: PERSIST_TTL_MS,
-        });
-      }
+      writeClientCache({
+        key: EARN_FORECAST_CACHE_KEY,
+        version: EARN_FORECAST_CACHE_VERSION,
+        solanaEnv: EARN_FORECAST_CACHE_SCOPE,
+        data: summary,
+        ttlMs: PERSIST_TTL_MS,
+      });
       return summary;
     })
     .catch((error) => {
       console.warn("[earn-forecast] failed to load summary", error);
-      // Prefer day-old real data over the hardcoded fallback; never persist
-      // either fallback path.
-      const value =
-        persisted && validCachedSummary(persisted.data, Date.now())
-          ? persisted.data
-          : FALLBACK_SUMMARY;
-      cachedSummary = {
-        expiresAt: Date.now() + ERROR_CACHE_TTL_MS,
-        value,
-      };
-      return value;
+      if (persisted && validCachedSummary(persisted.data, Date.now())) {
+        return persisted.data;
+      }
+      failedSummary = { error, retryAt: Date.now() + FAILURE_BACKOFF_MS };
+      throw error;
     })
     .finally(() => {
       inflightSummary = null;
@@ -208,4 +186,5 @@ export function getCachedEarnForecastSummaryForTests() {
 export function resetEarnForecastSummaryCacheForTests() {
   cachedSummary = null;
   inflightSummary = null;
+  failedSummary = null;
 }

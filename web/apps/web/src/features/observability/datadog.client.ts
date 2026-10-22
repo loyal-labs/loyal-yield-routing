@@ -4,6 +4,7 @@ import type { datadogRum } from "@datadog/browser-rum";
 
 import type { PublicEnv } from "@/lib/core/config/public";
 
+import { bestEffort, bestEffortAsync } from "./best-effort";
 import {
   lifecycleFailureCategory,
   type BrowserLifecycleEnvelope,
@@ -48,24 +49,18 @@ export function captureDatadogJourney(
   event: BrowserLifecycleEnvelope,
   trafficKind?: "external" | "internal" | "synthetic"
 ): void {
-  try {
+  bestEffort(() => {
     const properties = journeyAnalyticsProperties(event, trafficKind);
     if (rum) rum.addAction("loyal.journey", properties);
     else {
       if (pendingActions.length >= 100) pendingActions.shift();
       pendingActions.push(properties);
     }
-  } catch {
-    // Product actions never depend on the RUM SDK.
-  }
+  });
 }
 
 export function getDatadogSessionId(): string | undefined {
-  try {
-    return rum?.getInternalContext()?.session_id;
-  } catch {
-    return undefined;
-  }
+  return bestEffort(() => rum?.getInternalContext()?.session_id);
 }
 
 export function identifyDatadogJourneyUser(wallet: string | null): void {
@@ -73,29 +68,23 @@ export function identifyDatadogJourneyUser(wallet: string | null): void {
   const previous = identity;
   identity = wallet;
   const generation = ++identityGeneration;
-  try {
+  void bestEffortAsync(async () => {
     rum?.clearUser();
     if (previous) {
       pendingActions.length = 0;
       rum?.stopSession();
     }
     if (!wallet || !rum) return;
-    void crypto.subtle
-      .digest(
-        "SHA-256",
-        new Uint8Array(new TextEncoder().encode(wallet)).buffer
-      )
-      .then((digest) => {
-        if (generation !== identityGeneration) return;
-        const id = Array.from(new Uint8Array(digest), (byte) =>
-          byte.toString(16).padStart(2, "0")
-        ).join("");
-        rum?.setUser({ id });
-      })
-      .catch(() => undefined);
-  } catch {
-    // Identity enrichment is best-effort.
-  }
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new Uint8Array(new TextEncoder().encode(wallet)).buffer
+    );
+    if (generation !== identityGeneration) return;
+    const id = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join("");
+    rum?.setUser({ id });
+  });
 }
 
 export function initJourneyDatadog(env: PublicEnv): Promise<void> {

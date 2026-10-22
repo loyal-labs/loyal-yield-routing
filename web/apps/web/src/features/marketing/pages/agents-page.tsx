@@ -80,16 +80,32 @@ export function AgentsPage({
       <Section
         title={dict.whyWeBuilt.title}
         cards={[
-          { size: "lg", body: dict.whyWeBuilt.cards.problem },
-          { size: "lg", body: dict.whyWeBuilt.cards.solution },
+          {
+            id: "whyWeBuilt-problem",
+            size: "lg",
+            body: dict.whyWeBuilt.cards.problem,
+          },
+          {
+            id: "whyWeBuilt-solution",
+            size: "lg",
+            body: dict.whyWeBuilt.cards.solution,
+          },
         ]}
       />
 
       <Section
         title={dict.whatItIs.title}
         cards={[
-          { size: "lg", body: dict.whatItIs.cards.smartAccount },
-          { size: "lg", body: dict.whatItIs.cards.identity },
+          {
+            id: "whatItIs-smartAccount",
+            size: "lg",
+            body: dict.whatItIs.cards.smartAccount,
+          },
+          {
+            id: "whatItIs-identity",
+            size: "lg",
+            body: dict.whatItIs.cards.identity,
+          },
         ]}
       />
 

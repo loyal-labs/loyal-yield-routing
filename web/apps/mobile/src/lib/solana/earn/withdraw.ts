@@ -68,6 +68,13 @@ type EarnWithdrawSendResult = EarnWithdrawResult & {
   withdrawalConfirmedSlots: string[];
 };
 
+function wireTokenProgram(
+  program: string | null | undefined,
+  mint: string,
+): PublicKey {
+  return program ? new PublicKey(program) : tokenProgramForEarnMint(mint);
+}
+
 function hydrateEarnWithdrawInput(
   context: EarnWithdrawPrepareContext,
   walletAddress: PublicKey,
@@ -90,9 +97,10 @@ function hydrateEarnWithdrawInput(
                   id: wire.source.id,
                   mint: new PublicKey(wire.source.mint),
                   tokenAccount: new PublicKey(wire.source.tokenAccount),
-                  tokenProgramId: wire.source.tokenProgramId
-                    ? new PublicKey(wire.source.tokenProgramId)
-                    : tokenProgramForEarnMint(wire.source.mint),
+                  tokenProgramId: wireTokenProgram(
+                    wire.source.tokenProgramId,
+                    wire.source.mint,
+                  ),
                   type: "idle" as const,
                 }
               : {
@@ -105,14 +113,12 @@ function hydrateEarnWithdrawInput(
                 },
         }
       : {}),
-    // The context serializes targets without their token program, so it is
-    // re-derived from the mint here — the SDK requires it on any non-USDC
-    // target and validates it against the reserve account.
     ...(wire.target
       ? {
           target: {
             liquidityMint: new PublicKey(wire.target.liquidityMint),
-            liquidityTokenProgram: tokenProgramForEarnMint(
+            liquidityTokenProgram: wireTokenProgram(
+              wire.target.liquidityTokenProgram,
               wire.target.liquidityMint,
             ),
             market: new PublicKey(wire.target.market),
@@ -130,7 +136,8 @@ function hydrateEarnWithdrawInput(
               ? { amountRaw: BigInt(target.amountRaw) }
               : {}),
             liquidityMint: new PublicKey(target.liquidityMint),
-            liquidityTokenProgram: tokenProgramForEarnMint(
+            liquidityTokenProgram: wireTokenProgram(
+              target.liquidityTokenProgram,
               target.liquidityMint,
             ),
             market: new PublicKey(target.market),

@@ -32,14 +32,6 @@ export type Transaction = {
   swapToAmountUsd?: number;
 };
 
-// Legacy type for internal use - will be removed
-export type IncomingTransaction = {
-  id: string;
-  amountLamports: number;
-  sender: string;
-  username: string;
-};
-
 export type TransactionDetailsData = {
   id: string;
   type: "incoming" | "outgoing";

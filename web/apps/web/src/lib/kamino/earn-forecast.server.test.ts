@@ -62,19 +62,19 @@ describe("realized Earn forecast", () => {
     );
     const forecast = await getMediumFeeAwareEarnForecast(NOW, realizedDeps);
 
-    expect(forecast.summary).toMatchObject({
+    expect(forecast?.summary).toMatchObject({
       apyBps: 650,
       availability: "available",
       source: "realized_7d",
       strategy: "realized_7d_share_price",
     });
-    expect(forecast.history.series?.map((s) => s.key)).toEqual([
+    expect(forecast?.history.series?.map((s) => s.key)).toEqual([
       "loyal",
       "mainUsdcReserve",
     ]);
-    expect(forecast.history.samples.at(-1)?.apyBps).toBe(650);
+    expect(forecast?.history.samples.at(-1)?.apyBps).toBe(650);
     expect(
-      forecast.history.series
+      forecast?.history.series
         ?.find((s) => s.key === "mainUsdcReserve")
         ?.samples.at(-1)?.apyBps
     ).toBe(450);
@@ -93,9 +93,9 @@ describe("realized Earn forecast", () => {
         throw new Error("db down");
       },
     });
-    expect(forecast.summary.strategy).toBe("realized_7d_share_price");
-    expect(forecast.summary.availability).toBe("stale");
-    expect(forecast.summary.apyBps).toBe(650);
+    expect(forecast?.summary.strategy).toBe("realized_7d_share_price");
+    expect(forecast?.summary.availability).toBe("stale");
+    expect(forecast?.summary.apyBps).toBe(650);
     resetEarnForecastCacheForTests();
   });
 
@@ -114,28 +114,14 @@ describe("realized Earn forecast", () => {
       new Date(NOW.getTime() + 2 * HOUR),
       failing
     );
-    expect(stillFresh.summary.strategy).toBe("realized_7d_share_price");
-    expect(stillFresh.summary.availability).toBe("stale");
+    expect(stillFresh?.summary.strategy).toBe("realized_7d_share_price");
+    expect(stillFresh?.summary.availability).toBe("stale");
 
     const stale = await getMediumFeeAwareEarnForecast(
       new Date(NOW.getTime() + 4 * HOUR),
       failing
     );
-    expect(stale.summary.strategy).toBe("safe_no_fees");
-    expect(stale.summary.availability).toBe("unavailable");
-    expect(stale.history.samples).toEqual([]);
-  });
-
-  test("falls back to the conservative constant with no realized data ever", async () => {
-    const { getMediumFeeAwareEarnForecast } = await import(
-      "./earn-forecast.server"
-    );
-    const forecast = await getMediumFeeAwareEarnForecast(NOW, {
-      ...realizedDeps,
-      loadHistories: async () => new Map(),
-    });
-    expect(forecast.summary.apyBps).toBe(600);
-    expect(forecast.summary.strategy).toBe("safe_no_fees");
+    expect(stale).toBeNull();
   });
 
   test("skips the vault history query when the share-price table has no observations", async () => {
@@ -152,6 +138,6 @@ describe("realized Earn forecast", () => {
       },
     });
     expect(allocationReads).toBe(0);
-    expect(forecast.summary.availability).toBe("unavailable");
+    expect(forecast).toBeNull();
   });
 });

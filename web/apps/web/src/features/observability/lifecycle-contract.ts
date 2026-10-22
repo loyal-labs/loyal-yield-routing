@@ -1,3 +1,4 @@
+import { bestEffort } from "./best-effort";
 import { isSpanId, isTraceId, type JourneyTraceContext } from "./trace-context";
 import {
   normalizeResourceValue,
@@ -1054,7 +1055,7 @@ export function createLifecycleTracker(args: {
     if (terminal) return;
     const current = now();
     const timestamp = options.timestamp ?? new Date(current).toISOString();
-    try {
+    bestEffort(() => {
       const event = parseBrowserLifecycleEnvelope(
         {
           ...diagnostics,
@@ -1092,9 +1093,7 @@ export function createLifecycleTracker(args: {
       )
         terminal = outcome;
       args.emit(event);
-    } catch {
-      // Telemetry validation or transport callbacks never affect product code.
-    }
+    });
   };
 
   return {
@@ -1123,7 +1122,7 @@ export function createLifecycleTracker(args: {
       )
         return;
       recoveryEmitted = true;
-      try {
+      bestEffort(() =>
         args.emit(
           parseBrowserLifecycleEnvelope(
             {
@@ -1156,10 +1155,8 @@ export function createLifecycleTracker(args: {
             },
             current
           )
-        );
-      } catch {
-        // Recovery telemetry is best-effort and non-throwing.
-      }
+        )
+      );
     },
     start: (stage, diagnostics, options) =>
       emit("started", stage, diagnostics, options),

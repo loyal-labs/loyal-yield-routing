@@ -11,6 +11,7 @@ import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { RefreshControl, StyleSheet } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { TAB_BAR_HEIGHT } from "@/components/TabBar";
 
 
@@ -32,6 +33,8 @@ function GroupsTab({ count }: { count: number }) {
 
 export default function SummariesListScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const bottomPadding = TAB_BAR_HEIGHT + Math.max(insets.bottom, 12) + 20;
   const [groups, setGroups] = useState<GroupChat[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -76,7 +79,7 @@ export default function SummariesListScreen() {
       <ScrollView
         className="flex-1 bg-white"
         contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT }}
+        contentContainerStyle={{ paddingBottom: bottomPadding }}
       >
         <LogoHeader />
         <Text style={styles.title}>Chat Highlights</Text>
@@ -108,7 +111,7 @@ export default function SummariesListScreen() {
       <ScrollView
         className="flex-1 bg-white"
         contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT }}
+        contentContainerStyle={{ paddingBottom: bottomPadding }}
         refreshControl={
           <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
         }
@@ -126,7 +129,7 @@ export default function SummariesListScreen() {
     <ScrollView
       className="flex-1 bg-white"
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ paddingBottom: TAB_BAR_HEIGHT }}
+      contentContainerStyle={{ paddingBottom: bottomPadding }}
       refreshControl={
         <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
       }

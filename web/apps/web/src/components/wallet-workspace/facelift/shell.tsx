@@ -40,13 +40,16 @@ import {
   PaneReveal,
 } from "@/components/wallet-workspace/facelift/pane-transitions";
 import { SheetReveal } from "@/components/wallet-workspace/facelift/sheet-reveal";
-import {
-  isEscapeGuardedTarget,
-  isTypingTarget,
-} from "@/components/wallet-workspace/facelift/keyboard";
+import { isTypingTarget } from "@/components/wallet-workspace/facelift/keyboard";
 import { LifecycleOnboardingHost } from "@/components/wallet-workspace/facelift/lifecycle-onboarding";
 import { FaceliftSidebar } from "@/components/wallet-workspace/facelift/sidebar";
 import { useEarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
+import {
+  dispatchEscape,
+  useEscapeOverlay,
+  useEscapePage,
+} from "@/components/wallet-workspace/facelift/escape-owner";
+import { useLastValue } from "@/components/wallet-workspace/facelift/use-last-value";
 import { useIsNarrowViewport } from "@/components/wallet-workspace/facelift/use-is-narrow-viewport";
 import { WalletHomePage } from "@/components/wallet-workspace/facelift/wallet-home-page";
 import { WithdrawPane } from "@/components/wallet-workspace/facelift/withdraw-pane";
@@ -81,6 +84,14 @@ const WORKSPACE_PAGES: WorkspacePage[] = [
   "wallet",
 ];
 
+function readStoredPage(): WorkspacePage | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const stored = localStorage.getItem(PAGE_STORAGE_KEY);
+  return WORKSPACE_PAGES.find((page) => page === stored) ?? null;
+}
+
 const SHORTCUT_PAGES: Partial<Record<string, WorkspacePage>> = {
   a: "activity",
   c: "crypto",
@@ -105,35 +116,22 @@ export function WorkspaceFaceliftShell() {
   const [activePage, setActivePage] = useState<WorkspacePage>("earn");
   const { isHydrated, isSignedIn } = useAuthCapability();
   const { open: openSignIn } = useSignInModal();
-  // Reload lands on the last visited page (signed out: Earn or Earn MAX,
-  // the pages that work without a wallet). Restored in an effect (not the
-  // initializer)
-  // so the client's first render matches the server HTML, and only after auth
-  // hydration (the pre-hydration render is the quiet white pane anyway). The
-  // once-ref keeps a later sign-in from yanking the user back to the stored
-  // page mid-session.
+  const [storedPage] = useState(readStoredPage);
   const hasRestoredPageRef = useRef(false);
-  // The persist effect below writes the boot page ("earn") on mount, before
-  // auth hydration lets the restore run — so the pre-clobber value must be
-  // captured the first time either effect touches storage.
-  const storedPageRef = useRef<string | null>(null);
   useEffect(() => {
-    storedPageRef.current ??= localStorage.getItem(PAGE_STORAGE_KEY) ?? "";
     if (!isHydrated || hasRestoredPageRef.current) {
       return;
     }
     hasRestoredPageRef.current = true;
-    const stored = storedPageRef.current as WorkspacePage;
-    if (!WORKSPACE_PAGES.includes(stored) || stored === "earn") {
+    if (storedPage === null || storedPage === "earn") {
       return;
     }
-    if (!isSignedIn && stored !== "earnmax") {
+    if (!isSignedIn && storedPage !== "earnmax") {
       return;
     }
-    setActivePage(stored);
-  }, [isHydrated, isSignedIn]);
+    setActivePage(storedPage);
+  }, [isHydrated, isSignedIn, storedPage]);
   useEffect(() => {
-    storedPageRef.current ??= localStorage.getItem(PAGE_STORAGE_KEY) ?? "";
     localStorage.setItem(PAGE_STORAGE_KEY, activePage);
   }, [activePage]);
   useEffect(() => {
@@ -155,13 +153,7 @@ export function WorkspaceFaceliftShell() {
   const [middleView, setMiddleView] = useState<MiddleView>("earn");
   const [selectedEarnTransaction, setSelectedEarnTransaction] =
     useState<EarnTransactionItem | null>(null);
-  // Keep the closing detail populated until its exit animation finishes.
-  const lastEarnTransactionRef = useRef<EarnTransactionItem | null>(null);
-  if (selectedEarnTransaction) {
-    lastEarnTransactionRef.current = selectedEarnTransaction;
-  }
-  const earnTransactionDetail =
-    selectedEarnTransaction ?? lastEarnTransactionRef.current;
+  const earnTransactionDetail = useLastValue(selectedEarnTransaction);
   const [withdrawSourceKey, setWithdrawSourceKey] = useState<string | null>(
     null
   );
@@ -258,44 +250,18 @@ export function WorkspaceFaceliftShell() {
     null
   );
   const flashTimerRef = useRef<number | null>(null);
-  // Desktop keyboard nav: e/a/c/s jump to sections, Esc backs out of Earn's
-  // action screens (CryptoPage owns Esc for Send/Swap). Skipped while
-  // an input is focused so typing never navigates. Overlays own Esc first:
-  // their handlers preventDefault, checked after dispatch via a microtask.
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        dispatchEscape(event);
+        return;
+      }
       if (
         event.metaKey ||
         event.ctrlKey ||
         event.altKey ||
-        !window.matchMedia("(min-width: 796px)").matches
+        isNarrowViewport
       ) {
-        return;
-      }
-      if (event.key === "Escape") {
-        if (isEscapeGuardedTarget(event.target)) {
-          return;
-        }
-        if (activePage === "activity") {
-          queueMicrotask(() => {
-            if (!event.defaultPrevented) {
-              setActivePage("earn");
-            }
-          });
-          return;
-        }
-        if (
-          activePage === "earn" &&
-          activeMiddleView !== "earn" &&
-          !earnData.actions.pendingApproval &&
-          !earnData.actions.isReconnectPromptOpen
-        ) {
-          queueMicrotask(() => {
-            if (!event.defaultPrevented) {
-              setMiddleView("earn");
-            }
-          });
-        }
         return;
       }
       if (!isSignedIn || isTypingTarget(event.target)) {
@@ -319,23 +285,30 @@ export function WorkspaceFaceliftShell() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
   const activeMiddleView: MiddleView = isSignedIn ? middleView : "earn";
-
-  useEffect(() => {
-    if (!selectedEarnTransaction) {
+  const { isReconnectPromptOpen, pendingApproval } = earnData.actions;
+  const isShellEscapeActive =
+    activePage === "activity" ||
+    (activePage === "earn" &&
+      activeMiddleView !== "earn" &&
+      !pendingApproval &&
+      !isReconnectPromptOpen);
+  useEscapePage(isShellEscapeActive, (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey || isNarrowViewport) {
       return;
     }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (document.activeElement instanceof HTMLElement) {
-          document.activeElement.blur();
-        }
-        setSelectedEarnTransaction(null);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedEarnTransaction]);
+    if (activePage === "activity") {
+      setActivePage("earn");
+    } else {
+      setMiddleView("earn");
+    }
+  });
+
+  useEscapeOverlay(selectedEarnTransaction !== null, () => {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    setSelectedEarnTransaction(null);
+  });
 
   useEffect(() => {
     if (
@@ -346,15 +319,8 @@ export function WorkspaceFaceliftShell() {
     }
   }, [activeMiddleView, activePage, selectedEarnTransaction]);
 
-  // Avoid flashing the zero-state headline on reload: loading covers auth
-  // hydration, the smart-account overview fetch (settingsPda === undefined —
-  // hasResolvedPosition reads true while the position fetch is disabled, so
-  // it can't be trusted before the overview lands), and the position fetch
-  // itself. The account skeleton stays until the real pane can render.
   const isPositionLoading =
-    !isHydrated ||
-    (isSignedIn &&
-      (earnData.settingsPda === undefined || !earnData.hasResolvedPosition));
+    !isHydrated || (isSignedIn && !earnData.hasResolvedPosition);
   const isEarnRootView = activeMiddleView === "earn";
   const isMobileGrayBackground =
     (activePage === "earn" &&

@@ -2,12 +2,24 @@
 
 import type { ReactNode } from "react";
 
+import { CheckIcon } from "@/components/wallet-workspace/facelift/earn-toast";
 import { DogLottie } from "@/components/wallet-workspace/facelift/dog-lottie";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { openTrackedLink } from "@/lib/core/analytics";
 import { getExplorerTxUrl } from "@/lib/solana/explorer";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
+
+const RESULT_DOG_CLASS =
+  "-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:bottom-0 max-[795px]:overflow-clip max-[795px]:rounded-b-3xl";
+
+export function actionPaneOverflowClass(
+  step: "form" | "processing" | "success" | "error"
+): string {
+  return step === "success" || step === "error"
+    ? "max-[795px]:overflow-clip"
+    : "overflow-clip";
+}
 
 // Keeps the SOL a transfer can't spend so the wallet can still pay fees —
 // the same reserve the OG swap form's MAX applies.
@@ -82,7 +94,7 @@ export function ActionSuccessBody({
     <div className="relative flex w-full flex-1 flex-col items-center pt-8 pb-[68px]">
       <div
         aria-hidden="true"
-        className="-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:bottom-0 max-[795px]:overflow-clip max-[795px]:rounded-b-3xl"
+        className={RESULT_DOG_CLASS}
       >
         <DogLottie className="aspect-square w-full max-w-[420px]" variant="calm" />
       </div>
@@ -104,16 +116,7 @@ export function ActionSuccessBody({
             ))}
           </span>
           <span aria-hidden="true" className="t-success-check" data-state="in">
-            <svg className="size-16" fill="none" viewBox="0 0 64 64">
-              <circle cx="32" cy="32" fill="var(--positive)" r="32" />
-              <path
-                d="M20 33l8 8 16-16"
-                stroke="white"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="5"
-              />
-            </svg>
+            <CheckIcon className="size-16" />
           </span>
         </span>
         <p className="text-center font-semibold text-[28px] text-foreground leading-8 tracking-[-0.28px]">
@@ -159,7 +162,7 @@ export function ActionErrorBody({
     <div className="relative flex w-full flex-1 flex-col items-center pt-8 pb-[68px]">
       <div
         aria-hidden="true"
-        className="-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:bottom-0 max-[795px]:overflow-clip max-[795px]:rounded-b-3xl"
+        className={RESULT_DOG_CLASS}
       >
         <DogLottie className="aspect-square w-full max-w-[420px]" variant="calm" />
       </div>

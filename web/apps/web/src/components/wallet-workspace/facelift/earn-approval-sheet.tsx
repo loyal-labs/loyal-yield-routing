@@ -1,7 +1,8 @@
 "use client";
 
+import { useLastValue } from "@/components/wallet-workspace/facelift/use-last-value";
 import { ChevronDown, ChevronUp, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import type {
   ApprovalReviewCollapsible,
@@ -194,13 +195,7 @@ export function EarnApprovalSheet({
 }: {
   approval: PendingEarnApproval | null;
 }) {
-  // Keeps the last approval rendered through the sheet's close animation so
-  // resolving doesn't slide out an empty card (same as the activity detail).
-  const lastApprovalRef = useRef<PendingEarnApproval | null>(null);
-  if (approval) {
-    lastApprovalRef.current = approval;
-  }
-  const sheetApproval = approval ?? lastApprovalRef.current;
+  const sheetApproval = useLastValue(approval);
 
   return (
     <SheetReveal

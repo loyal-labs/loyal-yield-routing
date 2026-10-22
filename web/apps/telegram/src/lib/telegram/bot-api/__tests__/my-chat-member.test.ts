@@ -30,8 +30,6 @@ let mockDb: {
   };
 };
 
-let evictCalls: Array<bigint | number | string> = [];
-
 let upsertShouldThrow = false;
 let removalUpdateShouldThrow = false;
 let insertValuesCaptured: Array<Record<string, unknown>>;
@@ -117,12 +115,6 @@ mock.module("mixpanel", () => ({
         },
       };
     },
-  },
-}));
-
-mock.module("../message-handlers", () => ({
-  evictActiveCommunityCache: (chatId: bigint | number | string) => {
-    evictCalls.push(chatId);
   },
 }));
 
@@ -239,7 +231,6 @@ describe("my chat member onboarding", () => {
     process.env.NEXT_PUBLIC_MIXPANEL_TOKEN = "test-mixpanel-token";
     upsertShouldThrow = false;
     removalUpdateShouldThrow = false;
-    evictCalls = [];
     insertValuesCaptured = [];
     conflictSetCaptured = [];
     conflictTargetCaptured = [];
@@ -318,7 +309,6 @@ describe("my chat member onboarding", () => {
     expect(conflictSetCaptured[0]?.isActive).toBe(false);
     expect(conflictSetCaptured[0]?.isPublic).toBe(false);
     expect(conflictTargetCaptured).toHaveLength(1);
-    expect(evictCalls).toEqual([BigInt(COMMUNITY_CHAT_ID)]);
     expect(sendMessageCalls).toHaveLength(1);
     expect(sendMessageWithAutoCleanupCalls).toHaveLength(1);
     expect(mixpanelTrackCalls[0]?.eventName).toBe(BOT_ADDED_TO_GROUP_EVENT);
@@ -336,7 +326,6 @@ describe("my chat member onboarding", () => {
     expect(insertValuesCaptured).toHaveLength(0);
     expect(removalUpdateValuesCaptured).toHaveLength(0);
     expect(conflictSetCaptured).toHaveLength(0);
-    expect(evictCalls).toHaveLength(0);
     expect(sendMessageCalls).toHaveLength(0);
     expect(mixpanelTrackCalls).toHaveLength(0);
   });
@@ -353,7 +342,6 @@ describe("my chat member onboarding", () => {
     expect(insertValuesCaptured).toHaveLength(0);
     expect(removalUpdateValuesCaptured).toHaveLength(0);
     expect(conflictSetCaptured).toHaveLength(0);
-    expect(evictCalls).toHaveLength(0);
     expect(sendMessageCalls).toHaveLength(0);
     expect(getOrCreateUserCalls).toHaveLength(1);
     expect(privateUserSettingsDisableValuesCaptured).toHaveLength(1);
@@ -375,7 +363,6 @@ describe("my chat member onboarding", () => {
     expect(insertValuesCaptured).toHaveLength(0);
     expect(removalUpdateValuesCaptured).toHaveLength(0);
     expect(conflictSetCaptured).toHaveLength(0);
-    expect(evictCalls).toHaveLength(0);
     expect(sendMessageCalls).toHaveLength(0);
     expect(getOrCreateUserCalls).toHaveLength(0);
     expect(privateUserSettingsDisableValuesCaptured).toHaveLength(0);
@@ -401,7 +388,6 @@ describe("my chat member onboarding", () => {
 
     expect(insertValuesCaptured).toHaveLength(1);
     expect(removalUpdateValuesCaptured).toHaveLength(0);
-    expect(evictCalls).toEqual([BigInt(COMMUNITY_CHAT_ID)]);
     expect(sendMessageCalls).toHaveLength(0);
     expect(consoleErrorMock).toHaveBeenCalledTimes(1);
     expect(mixpanelTrackCalls).toHaveLength(0);
@@ -427,7 +413,6 @@ describe("my chat member onboarding", () => {
     expect(insertValuesCaptured).toHaveLength(1);
     expect(removalUpdateValuesCaptured).toHaveLength(0);
     expect(conflictSetCaptured).toHaveLength(1);
-    expect(evictCalls).toEqual([BigInt(COMMUNITY_CHAT_ID)]);
     expect(consoleErrorMock).toHaveBeenCalledTimes(1);
     expect(mixpanelTrackCalls[0]?.eventName).toBe(BOT_ADDED_TO_GROUP_EVENT);
   });
@@ -447,7 +432,6 @@ describe("my chat member onboarding", () => {
     expect(removalUpdateValuesCaptured[0]?.isActive).toBe(false);
     expect(removalUpdateValuesCaptured[0]?.isPublic).toBe(false);
     expect(removalWhereCalls).toBe(1);
-    expect(evictCalls).toEqual([BigInt(COMMUNITY_CHAT_ID)]);
     expect(sendMessageCalls).toHaveLength(0);
     expect(mixpanelTrackCalls[0]?.eventName).toBe(BOT_REMOVED_FROM_GROUP_EVENT);
   });
@@ -471,7 +455,6 @@ describe("my chat member onboarding", () => {
 
     expect(insertValuesCaptured).toHaveLength(0);
     expect(removalUpdateValuesCaptured).toHaveLength(1);
-    expect(evictCalls).toEqual([BigInt(COMMUNITY_CHAT_ID)]);
     expect(sendMessageCalls).toHaveLength(0);
     expect(consoleErrorMock).toHaveBeenCalledTimes(1);
     expect(mixpanelTrackCalls).toHaveLength(0);

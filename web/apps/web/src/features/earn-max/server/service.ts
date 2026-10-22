@@ -5,16 +5,13 @@ import { NextResponse } from "next/server";
 import { resolveAuthenticatedPrincipalFromRequest } from "@/features/identity/server/auth-session";
 import { assertAuthenticatedWalletControlsSettings } from "@/features/smart-accounts/server/service";
 import { getServerEnv } from "@/lib/core/config/server";
-import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
 
-import { EARN_MAX_BACKEND } from "../constants";
 import {
   readEarnMaxVoltrActivity,
   readEarnMaxVoltrSummary,
 } from "../voltr/summary.server";
 import { redeemInvite } from "./invite.server";
 import { consumeInviteAttempt } from "./invite-rate-limit.server";
-import { readEarnMaxActivity, readEarnMaxSummary } from "./repository.server";
 
 import type { EarnMaxSummaryResponse } from "../types";
 
@@ -55,30 +52,20 @@ async function authenticatedRead<T>(
 
 export function getSummary(request: Request) {
   return authenticatedRead<EarnMaxSummaryResponse>(request, async (settings) =>
-    EARN_MAX_BACKEND === "voltr"
-      ? {
-          // Voltr has no delegated worker signer on the user's account.
-          config: {
-            delegatedSigner: "",
-            programId: getServerEnv().loyalSmartAccounts.programId,
-          },
-          summary: await readEarnMaxVoltrSummary(settings),
-        }
-      : {
-          config: {
-            delegatedSigner: getDeploymentPolicySignerPublicKey().toBase58(),
-            programId: getServerEnv().loyalSmartAccounts.programId,
-          },
-          summary: await readEarnMaxSummary(settings),
-        }
+    ({
+      // Voltr has no delegated worker signer on the user's account.
+      config: {
+        delegatedSigner: "",
+        programId: getServerEnv().loyalSmartAccounts.programId,
+      },
+      summary: await readEarnMaxVoltrSummary(settings),
+    })
   );
 }
 
 export function getActivity(request: Request) {
   return authenticatedRead(request, (settings) =>
-    EARN_MAX_BACKEND === "voltr"
-      ? readEarnMaxVoltrActivity(settings)
-      : readEarnMaxActivity(settings)
+    readEarnMaxVoltrActivity(settings)
   );
 }
 

@@ -79,12 +79,6 @@ export function getEarnProductAssets(solanaEnv: string): EarnProductAsset[] {
   return solanaEnv === "devnet" ? DEVNET_ASSETS : MAINNET_ASSETS;
 }
 
-// The withdraw prepare-context serializes reserve targets without their token
-// program, so hydrators re-derive it from the mint (cluster-agnostic — mint
-// addresses are distinct across clusters). ponytail: unknown mints fall back
-// to the classic token program with a warning — right for any classic-SPL
-// stable added server-side before this catalog updates, and a Token-2022
-// straggler still fails loudly in the SDK's reserve validation.
 export function tokenProgramForEarnMint(mint: string): PublicKey {
   const asset =
     MAINNET_ASSETS.find((candidate) => candidate.mint === mint) ??

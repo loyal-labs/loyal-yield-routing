@@ -12,8 +12,6 @@ import {
 import { resolveActiveBotCommunityId } from "./active-community-cache";
 import { logWebhookHandlerError } from "./webhook-error-log";
 
-export { evictActiveCommunityCache } from "./active-community-cache";
-
 const POSITIVE_REACTIONS = [
   "❤",
   "🔥",

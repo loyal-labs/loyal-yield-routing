@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { Moon, Sun } from "lucide-react";
 import {
@@ -26,7 +27,7 @@ import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { AddEmailNudge } from "@/components/auth/add-email-nudge";
 import { LedgerSignInLink } from "@/components/auth/ledger-sign-in-link";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
-import { useEarnForecastApyStatus } from "@/components/wallet-workspace/facelift/use-earn-forecast-apy-status";
+import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
@@ -161,7 +162,7 @@ export function FaceliftSidebar({
 }) {
   const data = useWalletDesktopData({});
   const publicEnv = usePublicEnv();
-  const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApyStatus();
+  const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const { isHydrated, isSignedIn } = useAuthCapability();
   const { isAuthenticated, logout } = useAuthSession();
   const cherryRuntime = useCherryRuntime();
@@ -179,19 +180,9 @@ export function FaceliftSidebar({
   const [isWalletMenuOpen, setIsWalletMenuOpen] = useState(false);
   const [isReceiveOpen, setIsReceiveOpen] = useState(false);
 
-  useEffect(() => {
-    if (!isWalletMenuOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setIsWalletMenuOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isWalletMenuOpen]);
+  useEscapeOverlay(isWalletMenuOpen, () => {
+    setIsWalletMenuOpen(false);
+  });
 
   const handleDisconnect = () => {
     void Promise.allSettled([logout(), disconnect()]);
@@ -457,7 +448,7 @@ export function FaceliftSidebar({
               >
                 <span className="inline-flex items-center rounded-md bg-positive/[0.14] px-1 py-px">
                   <span className="whitespace-nowrap pt-px font-medium text-positive text-[11px] leading-[13px] tracking-[0.06px]">
-                    {formatEarnApyLabel(earnApy.apyBps)}
+                    {formatEarnApyLabel(earnApy)}
                   </span>
                 </span>
               </SkeletonReveal>
@@ -514,9 +505,6 @@ export function FaceliftSidebar({
               <span className="whitespace-nowrap text-[13px] leading-4 text-muted-foreground">
                 Earn
               </span>
-              {/* Skeleton the whole pill until the real APY lands, then
-                  reveal + pop the digits (the hook's fallback APY is a
-                  hardcoded number that would otherwise flash and re-pop). */}
               <SkeletonReveal
                 isRevealed={isApyLoaded}
                 skeletonClassName="rounded-md bg-accent-selected"
@@ -530,25 +518,13 @@ export function FaceliftSidebar({
                     src="/wallet-workspace/earn-flash.svg"
                   />
                   <span className="whitespace-nowrap pt-px font-medium text-positive text-[11px] leading-[13px] tracking-[0.06px]">
-                    {isApyLoaded ? (
-                      <PopDigits
-                        segments={[
-                          {
-                            text: formatEarnApyLabel(
-                              earnApy.apyBps,
-                              earnApy.availability,
-                              earnApy.source
-                            ),
-                          },
-                        ]}
-                      />
-                    ) : (
-                      formatEarnApyLabel(
-                        earnApy.apyBps,
-                        earnApy.availability,
-                        earnApy.source
-                      )
-                    )}
+                    <PopDigits
+                      segments={[
+                        {
+                          text: formatEarnApyLabel(earnApy),
+                        },
+                      ]}
+                    />
                   </span>
                 </span>
               </SkeletonReveal>
