@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
@@ -75,6 +76,31 @@ func openAppDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+func openAuth(appDB *pgxpool.Pool) (*webapp.Auth, error) {
+	secret, err := engine.OptionalCredential("AUTH_JWT_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	publicKey, err := engine.OptionalCredential("AUTH_JWT_RS256_PUBLIC_KEY")
+	if err != nil {
+		return nil, err
+	}
+	if secret == "" && publicKey == "" {
+		return nil, nil
+	}
+	endpoint, err := engine.OptionalCredential("WEB_SOLANA_RPC_URL")
+	if err != nil {
+		return nil, err
+	}
+	var rpcClient *chain.Client
+	if endpoint != "" {
+		if rpcClient, err = chain.New(endpoint, 10*time.Second); err != nil {
+			return nil, err
+		}
+	}
+	return webapp.NewAuth(secret, publicKey, appDB, rpcClient)
+}
+
 func run(ctx context.Context) error {
 	cfg, err := config()
 	if err != nil {
@@ -87,6 +113,9 @@ func run(ctx context.Context) error {
 	if appDB != nil {
 		defer appDB.Close()
 		cfg.AppDB = appDB
+	}
+	if cfg.Auth, err = openAuth(appDB); err != nil {
+		return err
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
