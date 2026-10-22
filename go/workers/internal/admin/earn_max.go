@@ -796,7 +796,7 @@ func earnMaxLoadApy(ctx context.Context, sharePrice func() (float64, error)) (Ea
 type earnMaxScan struct {
 	computedAt string
 	flows      []EarnMaxLpFlow
-	supply     uint64
+	valueUsd   float64
 }
 
 var (
@@ -805,19 +805,15 @@ var (
 	earnMaxScans     = &staleWhileRevalidate[earnMaxScan]{fresh: time.Minute, stale: 10 * time.Minute, wait: 3 * time.Second, budget: earnMaxEarnedBudget}
 )
 
-func earnMaxLoadVault(sharePrice func() (float64, error)) (EarnMaxVault, error) {
+func earnMaxLoadVault() (EarnMaxVault, error) {
 	scan, have, scanErr := earnMaxScans.get(earnMaxScanVault)
 	if !have {
 		return EarnMaxVault{}, scanErr
 	}
-	price, err := sharePrice()
-	if err != nil {
-		return EarnMaxVault{}, err
-	}
 	value := EarnMaxVault{
 		ComputedAt: scan.computedAt,
 		Flows:      scan.flows,
-		ValueUsd:   float64(scan.supply) * price / 1000 / 1e6,
+		ValueUsd:   scan.valueUsd,
 	}
 	if scanErr != nil {
 		message := earnMaxMessage(scanErr)
@@ -969,7 +965,11 @@ func earnMaxScanVault(ctx context.Context) (earnMaxScan, error) {
 		return earnMaxScan{}, err
 	}
 
-	scan := earnMaxScan{computedAt: readsISO(time.Now()), flows: []EarnMaxLpFlow{}, supply: supply}
+	sharePrice, err := earnMaxSharePrice(ctx)
+	if err != nil {
+		return earnMaxScan{}, err
+	}
+	scan := earnMaxScan{computedAt: readsISO(time.Now()), flows: []EarnMaxLpFlow{}, valueUsd: float64(supply) * sharePrice / 1000 / 1e6}
 	earnMaxFlowMu.Lock()
 	kept := make(map[string]EarnMaxLpFlow, len(signatures))
 	for signature := range signatures {
@@ -1055,7 +1055,7 @@ func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, erro
 	run(func() {
 		page.Balances = earnMaxPart(func() (EarnMaxBalances, error) { return earnMaxLoadBalances(ctx) })
 	})
-	run(func() { page.Vault = earnMaxPart(func() (EarnMaxVault, error) { return earnMaxLoadVault(sharePrice) }) })
+	run(func() { page.Vault = earnMaxPart(func() (EarnMaxVault, error) { return earnMaxLoadVault() }) })
 	run(func() { page.Apy = earnMaxPart(func() (EarnMaxApy, error) { return earnMaxLoadApy(ctx, sharePrice) }) })
 	run(func() {
 		page.Borrowing = earnMaxPart(func() ([]EarnMaxBorrowRow, error) { return earnMaxLoadBorrowing(ctx) })
@@ -1086,12 +1086,15 @@ func (c *staleWhileRevalidate[T]) get(load func(context.Context) (T, error)) (T,
 		c.running = make(chan struct{})
 		go c.refresh(load, c.running)
 	}
-	running, current := c.running, c.value == nil || time.Since(c.at) >= c.stale
+	running, current, wait := c.running, c.value == nil || time.Since(c.at) >= c.stale, c.wait
+	if c.value == nil {
+		wait = c.budget
+	}
 	c.mu.Unlock()
 	if current && running != nil {
 		select {
 		case <-running:
-		case <-time.After(c.wait):
+		case <-time.After(wait):
 		}
 	}
 	c.mu.Lock()
