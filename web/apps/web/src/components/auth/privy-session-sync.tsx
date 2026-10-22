@@ -320,10 +320,6 @@ function Inner({ children }: { children: ReactNode }) {
       lifecycle.observe("completion");
       await exchangePrivySession(address, lifecycle.flowId);
 
-      // The exchange sets the session cookie, so commit the UI before touching
-      // the wallet adapter: a connect that hangs or rejects used to leave the
-      // user signed in on the server and signed out in the browser, with the
-      // sign-in button dead until a reload.
       lifecycle.observe("session_refresh");
       lifecycleStageRef.current = "session_refresh";
       const restoredSession = await refreshSession();
