@@ -29,7 +29,7 @@ import type {
   MetricPoint,
   MetricsDashboardData,
   OperationVolume,
-} from "./metrics-data";
+} from "@/api.gen/types.gen";
 
 /** Fixed slot order; see the --metric-* comment in globals.css. */
 const SERIES_SLOT_COUNT = 6;

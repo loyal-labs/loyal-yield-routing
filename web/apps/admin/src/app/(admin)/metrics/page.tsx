@@ -1,18 +1,16 @@
-import { Suspense } from "react";
+import { Suspense, use } from "react";
 
+import type { Pages } from "@/api.gen/pages";
 import { PageContainer } from "@/components/layout/page-container";
 import { SectionHeader } from "@/components/layout/section-header";
-import { requireAdminSession } from "@/lib/require-admin-session";
+import type { Deferred } from "@/lib/page-data";
 
 import { EarnRebalanceLatency } from "./earn-rebalance-latency";
-import { getEarnRebalanceLatencyData } from "./earn-rebalance-latency-data";
 import { MetricsLatencySkeleton } from "./metrics-loading-skeleton";
 import { MetricsDashboardProgressive } from "./metrics-progressive-page";
 
-export const dynamic = "force-dynamic";
-
-async function MetricsLatencySection() {
-  const data = await getEarnRebalanceLatencyData();
+function MetricsLatencySection({ latency }: { latency: Deferred<Pages["/metrics"]>["data"] }) {
+  const data = use(latency);
 
   return (
     <section
@@ -24,9 +22,7 @@ async function MetricsLatencySection() {
   );
 }
 
-export default async function MetricsPage() {
-  await requireAdminSession();
-
+export default function MetricsPage({ data }: Deferred<Pages["/metrics"]>) {
   return (
     <PageContainer className="max-w-7xl">
       <SectionHeader
@@ -45,7 +41,7 @@ export default async function MetricsPage() {
             </section>
           }
         >
-          <MetricsLatencySection />
+          <MetricsLatencySection latency={data} />
         </Suspense>
         <MetricsDashboardProgressive />
       </div>
