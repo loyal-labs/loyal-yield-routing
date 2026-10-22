@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -104,7 +105,7 @@ func emptyTransaction(t *testing.T, signature string, slot uint64, blockTime int
 
 func operations(t *testing.T, name string, p Position) map[string]*string {
 	t.Helper()
-	h, err := fixtureReader(t, name).History(context.Background(), recordedAuthority)
+	h, err := fixtureReader(t, name).History(context.Background(), recordedAuthority, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,12 +124,12 @@ func deref(s *string) string {
 }
 
 func TestEarnedIsUnknownWhenAFailedSignatureFillsThePage(t *testing.T) {
-	h, err := fixtureReader(t, "truncated").History(context.Background(), recordedAuthority)
+	h, err := fixtureReader(t, "truncated").History(context.Background(), recordedAuthority, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := earned(h, Position{Value: 100_000_000}); e != nil || h.Complete {
-		t.Fatalf("complete=%v earned=%d, want incomplete and unknown", h.Complete, *e)
+	if e := earned(h, Position{Value: 100_000_000}); e != nil || h.Complete() {
+		t.Fatalf("complete=%v earned=%d, want incomplete and unknown", h.Complete(), *e)
 	}
 }
 
@@ -141,15 +142,48 @@ func TestClaimIsChargedOnlyItsOwnPayout(t *testing.T) {
 
 func TestClaimPairsWithTheRequestThatEscrowedItsLP(t *testing.T) {
 	pending := &PendingWithdrawal{EscrowedLP: 107_632, Payout: 40_000_000}
-	got := operations(t, "claim_then_request", Position{Withdrawal: pending})
+	got := operations(t, "claim_then_request", Position{ObservedSlot: 455_763_927, Withdrawal: pending})
 	if deref(got["2gQU31Fn:withdraw_request"]) != "4999425" || deref(got["y7KA89kE:withdraw_request"]) != "40000000" {
 		t.Fatalf("older request=%s newer request=%s", deref(got["2gQU31Fn:withdraw_request"]), deref(got["y7KA89kE:withdraw_request"]))
 	}
 }
 
-func TestHistoryRejectsATransactionServedForAnotherSignature(t *testing.T) {
-	_, err := fixtureReader(t, "reordered").History(context.Background(), recordedAuthority)
-	if err == nil {
-		t.Fatal("history accepted a transaction served for another signature")
+func TestHistoryOmitsATransactionServedForAnotherSignature(t *testing.T) {
+	h, err := fixtureReader(t, "reordered").History(context.Background(), recordedAuthority, 0)
+	if err != nil || h.Complete() || len(activity(h, Position{}, nil, time.Unix(1791800000, 0)).Operations) != 0 {
+		t.Fatalf("err=%v complete=%v entries=%d, want no error, incomplete and no operations", err, h.Complete(), len(h.Entries))
+	}
+}
+
+func TestEarnedCountsOnlyHistoryThePositionHasSeen(t *testing.T) {
+	paid := USDCRaw(100_000_000)
+	h := History{Entries: []Entry{
+		Claim{Flow: Flow{Slot: 300}, Paid: &paid},
+		Deposit{Flow: Flow{Slot: 100}, Amount: 100_000_000},
+	}}
+	got := earned(h, Position{ObservedSlot: 200, Withdrawal: &PendingWithdrawal{Payout: 100_000_000}})
+	if got == nil || *got != 0 {
+		t.Fatalf("earned=%s, want 0", deref(rawString(got)))
+	}
+}
+
+func TestCancelledOrGappedRequestNeverInheritsAnotherPayout(t *testing.T) {
+	got := operations(t, "cancel_across_gap", Position{})
+	if deref(got["4SZL6f7U:withdraw_request"]) != "0" || deref(got["2gQU31Fn:withdraw_request"]) != "unknown" {
+		t.Fatalf("cancelled request=%s request before a gap=%s", deref(got["4SZL6f7U:withdraw_request"]), deref(got["2gQU31Fn:withdraw_request"]))
+	}
+}
+
+func TestUnknownWithdrawalDropsLaterPerformancePoints(t *testing.T) {
+	day := func(d int) time.Time { return time.Date(2026, 10, d, 0, 0, 0, 0, time.UTC) }
+	escrow := &Escrow{LP: 100}
+	h := History{Entries: []Entry{
+		Claim{Flow: Flow{Slot: 3, At: day(3)}, Escrow: escrow},
+		Request{Flow: Flow{Slot: 2, At: day(2)}, Escrow: escrow},
+		Deposit{Flow: Flow{Slot: 1, At: day(1)}, Amount: 100_000_000},
+	}}
+	got := fmt.Sprint(activity(h, Position{ObservedSlot: 3}, nil, day(22)).Performance)
+	if got != "[{100 2026-10-01T00:00:00.000Z} {0 2026-10-22T00:00:00.000Z}]" {
+		t.Fatalf("performance=%s", got)
 	}
 }

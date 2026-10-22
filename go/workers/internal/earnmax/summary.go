@@ -3,6 +3,7 @@ package earnmax
 import (
 	"context"
 	"strconv"
+	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
 	"golang.org/x/sync/errgroup"
@@ -44,6 +45,15 @@ type Summary struct {
 	Withdrawal         *WithdrawalView `json:"withdrawal"`
 }
 
+func (r *Reader) snapshot(ctx context.Context, a Authority, now time.Time) (Position, History, error) {
+	position, err := r.Position(ctx, a, now)
+	if err != nil {
+		return Position{}, History{}, err
+	}
+	history, err := r.History(ctx, a, position.ObservedSlot)
+	return position, history, err
+}
+
 func (r *Reader) Summary(ctx context.Context, settings solana.PublicKey) (Summary, error) {
 	a, err := AuthorityOf(settings)
 	if err != nil {
@@ -57,8 +67,7 @@ func (r *Reader) Summary(ctx context.Context, settings solana.PublicKey) (Summar
 		current  *int64
 	)
 	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() (err error) { position, err = r.Position(groupCtx, a, now); return err })
-	group.Go(func() (err error) { history, err = r.History(groupCtx, a); return err })
+	group.Go(func() (err error) { position, history, err = r.snapshot(groupCtx, a, now); return err })
 	group.Go(func() error { apy = r.APY(); return nil })
 	group.Go(func() error { current, _ = r.CurrentApyBps(groupCtx, now); return nil })
 	if err := group.Wait(); err != nil {
@@ -69,7 +78,7 @@ func (r *Reader) Summary(ctx context.Context, settings solana.PublicKey) (Summar
 		BalanceUsd: float64(position.Value) / 1e6, ClaimAmountRaw: "0", Coverage: "complete", CurrentApyBps: current,
 		ForecastApyBps: apy.Bps, Goal: "active", PolicyAccounts: []PolicyBinding{}, PolicyStatus: "ready", RealizedApyBps: apy.Bps,
 	}
-	if !history.Complete {
+	if !history.Complete() {
 		summary.Coverage = "history_incomplete"
 	}
 	if e := earned(history, position); e != nil {

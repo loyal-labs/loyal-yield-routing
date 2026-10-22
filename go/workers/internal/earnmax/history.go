@@ -57,9 +57,15 @@ type Claim struct {
 	Paid   *USDCRaw
 }
 
+type Cancel struct{ Flow }
+
+type Missing struct{ Flow }
+
 func (e Deposit) flow() Flow { return e.Flow }
 func (e Request) flow() Flow { return e.Flow }
 func (e Claim) flow() Flow   { return e.Flow }
+func (e Cancel) flow() Flow  { return e.Flow }
+func (e Missing) flow() Flow { return e.Flow }
 
 type historyKey struct {
 	signature solana.Signature
@@ -67,13 +73,21 @@ type historyKey struct {
 }
 
 type History struct {
-	Complete bool
-	Entries  []Entry
+	Entries []Entry
 }
 
-func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
-	signatures, err := retryRateLimited(ctx, func() ([]chain.Signed, error) {
-		return r.chain.History(ctx, a.key, historyLimit, solana.Signature{}, rpc.CommitmentConfirmed, 0)
+func (h History) Complete() bool {
+	for _, e := range h.Entries {
+		if _, ok := e.(Missing); ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Reader) History(ctx context.Context, a Authority, atLeast uint64) (History, error) {
+	signatures, err := retryTransient(ctx, func() ([]chain.Signed, error) {
+		return r.chain.History(ctx, a.key, historyLimit, solana.Signature{}, rpc.CommitmentConfirmed, atLeast)
 	})
 	if err != nil {
 		return History{}, err
@@ -84,7 +98,7 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 			landed = append(landed, s)
 		}
 	}
-	history := History{Complete: len(signatures) < historyLimit}
+	var history History
 	user, err := voltr.UserAccounts(Vault, LPMint, a.key)
 	if err != nil {
 		return History{}, err
@@ -109,7 +123,7 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 	group.SetLimit(historyFetchers)
 	for _, s := range missing {
 		group.Go(func() error {
-			execution, err := retryRateLimited(groupCtx, func() (chain.Execution, error) {
+			execution, err := retryTransient(groupCtx, func() (chain.Execution, error) {
 				return r.chain.Execution(groupCtx, s.Signature, rpc.CommitmentConfirmed)
 			})
 			if errors.Is(err, chain.ErrNotFound) {
@@ -119,7 +133,7 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 				return err
 			}
 			if len(execution.Transaction.Signatures) == 0 || execution.Transaction.Signatures[0] != s.Signature {
-				return fmt.Errorf("getTransaction %s returned another transaction", s.Signature)
+				return nil
 			}
 			at := execution.BlockTime
 			if at == nil {
@@ -149,10 +163,16 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 	for _, s := range landed {
 		entries, ok := decoded[historyKey{s.Signature, s.Slot}]
 		if !ok {
-			history.Complete = false
-			continue
+			missing := Missing{Flow{Signature: s.Signature, Slot: s.Slot}}
+			if s.BlockTime != nil {
+				missing.At = *s.BlockTime
+			}
+			entries = []Entry{missing}
 		}
 		history.Entries = append(history.Entries, entries...)
+	}
+	if len(signatures) >= historyLimit {
+		history.Entries = append(history.Entries, Missing{})
 	}
 	return history, nil
 }
@@ -233,6 +253,8 @@ func decodeEntries(execution chain.Execution, signature solana.Signature, at tim
 			entries = append(entries, request)
 		case voltr.WithdrawVaultDiscriminator:
 			entries = append(entries, Claim{Flow: flow, Escrow: burned(moves), Paid: paid(moves)})
+		case voltr.CancelRequestWithdrawVaultDiscriminator:
+			entries = append(entries, Cancel{flow})
 		}
 	}
 	return entries, nil
@@ -253,7 +275,7 @@ func voltrAction(ix call, keys []solana.PublicKey, authority solana.PublicKey) (
 	if !vault || !user {
 		return [8]byte{}, nil, false
 	}
-	for _, d := range [][8]byte{voltr.DepositVaultDiscriminator, voltr.RequestWithdrawVaultDiscriminator, voltr.WithdrawVaultDiscriminator} {
+	for _, d := range [][8]byte{voltr.DepositVaultDiscriminator, voltr.RequestWithdrawVaultDiscriminator, voltr.WithdrawVaultDiscriminator, voltr.CancelRequestWithdrawVaultDiscriminator} {
 		if bytes.HasPrefix(ix.data, d[:]) {
 			return d, ix.data, true
 		}

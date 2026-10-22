@@ -33,16 +33,16 @@ type Activity struct {
 	Performance []PerformancePoint `json:"performance"`
 }
 
-func action(e Entry) string {
+func action(e Entry) (string, bool) {
 	switch e.(type) {
 	case Deposit:
-		return "deposit"
+		return "deposit", true
 	case Request:
-		return "withdraw_request"
+		return "withdraw_request", true
 	case Claim:
-		return "claim"
+		return "claim", true
 	}
-	panic("earnmax: unknown history entry")
+	return "", false
 }
 
 func chronological(entries []Entry) []int {
@@ -76,9 +76,16 @@ func amounts(h History, p Position) []*USDCRaw {
 			open = nil
 		case Request:
 			open, openAt = &e, i
+		case Cancel:
+			if open != nil {
+				out[openAt] = new(USDCRaw)
+			}
+			open = nil
+		case Missing:
+			open = nil
 		}
 	}
-	if open != nil && open.Escrow != nil && p.Withdrawal != nil && open.Escrow.LP == p.Withdrawal.EscrowedLP {
+	if open != nil && open.Escrow != nil && p.Withdrawal != nil && open.Slot <= p.ObservedSlot && open.Escrow.LP == p.Withdrawal.EscrowedLP {
 		out[openAt] = &p.Withdrawal.Payout
 	}
 	return out
@@ -93,7 +100,7 @@ func rawString[T ~int64](v *T) *string {
 }
 
 func earned(h History, p Position) *USDCRaw {
-	if !h.Complete {
+	if !h.Complete() {
 		return nil
 	}
 	total := p.Value
@@ -101,6 +108,9 @@ func earned(h History, p Position) *USDCRaw {
 		total += p.Withdrawal.Payout
 	}
 	for _, e := range h.Entries {
+		if e.flow().Slot > p.ObservedSlot {
+			continue
+		}
 		switch e := e.(type) {
 		case Claim:
 			if e.Paid == nil {
@@ -119,26 +129,41 @@ func earned(h History, p Position) *USDCRaw {
 
 func activity(h History, p Position, dayEnd []DayEnd, now time.Time) Activity {
 	paid := amounts(h, p)
-	out := Activity{Operations: make([]ActivityItem, len(h.Entries)), Performance: []PerformancePoint{}}
+	out := Activity{Operations: make([]ActivityItem, 0, len(h.Entries)), Performance: []PerformancePoint{}}
 	for i, e := range h.Entries {
+		name, ok := action(e)
+		if !ok {
+			continue
+		}
 		f := e.flow()
 		item := ActivityItem{
-			ConfirmedSlot: strconv.FormatUint(f.Slot, 10), Action: action(e), AmountRaw: rawString(paid[i]),
-			ID: f.Signature.String() + ":" + action(e), Signature: f.Signature.String(), Status: "confirmed", Timestamp: iso(f.At),
+			ConfirmedSlot: strconv.FormatUint(f.Slot, 10), Action: name, AmountRaw: rawString(paid[i]),
+			ID: f.Signature.String() + ":" + name, Signature: f.Signature.String(), Status: "confirmed", Timestamp: iso(f.At),
 		}
 		if r, ok := e.(Request); ok {
 			item.RequestedRaw = rawString(r.Requested)
 		}
-		out.Operations[i] = item
+		out.Operations = append(out.Operations, item)
 	}
 	var principal USDCRaw
+	known := true
 	for i := len(h.Entries) - 1; i >= 0; i-- {
-		switch h.Entries[i].(type) {
+		switch e := h.Entries[i].(type) {
 		case Deposit:
-			principal += valueOr(paid[i])
+			principal += e.Amount
 		case Request:
-			principal -= valueOr(paid[i])
+			if paid[i] == nil {
+				known = false
+			} else {
+				principal -= *paid[i]
+			}
+		case Missing:
+			known = false
+			continue
 		default:
+			continue
+		}
+		if !known {
 			continue
 		}
 		out.Performance = append(out.Performance, PerformancePoint{EquityUsd: float64(max(principal, 0)) / 1e6, Timestamp: iso(h.Entries[i].flow().At)})
@@ -147,7 +172,7 @@ func activity(h History, p Position, dayEnd []DayEnd, now time.Time) Activity {
 		return out
 	}
 	opened := out.Performance[0].Timestamp
-	if h.Complete {
+	if h.Complete() {
 		for _, day := range dayEnd {
 			at := iso(day.At)
 			if at <= opened {
@@ -155,7 +180,7 @@ func activity(h History, p Position, dayEnd []DayEnd, now time.Time) Activity {
 			}
 			lpThen := p.LP
 			for _, e := range h.Entries {
-				if f := e.flow(); iso(f.At) > at {
+				if f := e.flow(); iso(f.At) > at && f.Slot <= p.ObservedSlot {
 					lpThen -= f.LPDelta
 				}
 			}
@@ -170,13 +195,6 @@ func activity(h History, p Position, dayEnd []DayEnd, now time.Time) Activity {
 	return out
 }
 
-func valueOr(v *USDCRaw) USDCRaw {
-	if v == nil {
-		return 0
-	}
-	return *v
-}
-
 func (r *Reader) Activity(ctx context.Context, settings solana.PublicKey) (Activity, error) {
 	a, err := AuthorityOf(settings)
 	if err != nil {
@@ -189,8 +207,7 @@ func (r *Reader) Activity(ctx context.Context, settings solana.PublicKey) (Activ
 		apy      APY
 	)
 	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() (err error) { position, err = r.Position(groupCtx, a, now); return err })
-	group.Go(func() (err error) { history, err = r.History(groupCtx, a); return err })
+	group.Go(func() (err error) { position, history, err = r.snapshot(groupCtx, a, now); return err })
 	group.Go(func() error { apy = r.APY(); return nil })
 	if err := group.Wait(); err != nil {
 		return Activity{}, err
