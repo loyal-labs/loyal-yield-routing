@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
@@ -59,75 +60,96 @@ func parseOrigin(name, fallback string) (*url.URL, error) {
 	return origin, nil
 }
 
-func openAppDB(ctx context.Context) (*pgxpool.Pool, error) {
-	dsn, err := engine.OptionalCredential("WEB_APP_DATABASE_URL")
+func openDB(ctx context.Context, credential string) (*pgxpool.Pool, error) {
+	dsn, err := engine.OptionalCredential(credential)
 	if err != nil || dsn == "" {
 		return nil, err
 	}
 	poolConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, errors.New("invalid web app database credential")
+		return nil, fmt.Errorf("invalid %s credential", credential)
 	}
 	poolConfig.MaxConns = 4
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		return nil, errors.New("cannot open web app database pool")
+		return nil, fmt.Errorf("cannot open the %s pool", credential)
 	}
 	return pool, nil
 }
 
-func openAuth(ctx context.Context, appDB *pgxpool.Pool) *webapp.Auth {
-	auth, err := buildAuth(ctx, appDB)
+func openAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, *chain.Client) {
+	auth, rpcClient, err := buildAuth(ctx, appDB)
 	if err != nil {
 		slog.Warn("session routes not served by Go", "reason", err.Error())
+		return nil, nil
 	}
-	return auth
+	return auth, rpcClient
 }
 
-func buildAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, error) {
+func buildAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, *chain.Client, error) {
 	secret, err := engine.OptionalCredential("AUTH_JWT_SECRET")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	publicKey, err := engine.OptionalCredential("AUTH_JWT_RS256_PUBLIC_KEY")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if secret == "" && publicKey == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	endpoint, err := engine.OptionalCredential("WEB_SOLANA_RPC_URL")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if appDB == nil || endpoint == "" {
-		return nil, errors.New("needs WEB_APP_DATABASE_URL and WEB_SOLANA_RPC_URL")
+		return nil, nil, errors.New("needs WEB_APP_DATABASE_URL and WEB_SOLANA_RPC_URL")
 	}
-	missing, err := webapp.MissingGrants(ctx, appDB, webapp.AuthGrants)
-	if err != nil {
-		return nil, fmt.Errorf("grant check failed: %w", err)
-	}
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("web app role lacks grants %v", missing)
+	if !granted(ctx, appDB, "session routes", webapp.AuthGrants) {
+		return nil, nil, errors.New("web app role lacks the session grants")
 	}
 	rpcClient, err := chain.New(endpoint, 10*time.Second)
 	if err != nil {
-		return nil, errors.New("WEB_SOLANA_RPC_URL is not a usable RPC URL")
+		return nil, nil, errors.New("WEB_SOLANA_RPC_URL is not a usable RPC URL")
 	}
-	return webapp.NewAuth(secret, publicKey, appDB, rpcClient)
+	auth, err := webapp.NewAuth(secret, publicKey, appDB, rpcClient)
+	return auth, rpcClient, err
 }
 
-func contentGranted(ctx context.Context, appDB *pgxpool.Pool) bool {
-	missing, err := webapp.MissingGrants(ctx, appDB, webapp.ContentGrants)
+func granted(ctx context.Context, pool *pgxpool.Pool, routes string, grants []webapp.Grant) bool {
+	missing, err := webapp.MissingGrants(ctx, pool, grants)
 	switch {
 	case err != nil:
-		slog.Warn("content reads not served by Go: grant check failed", "error", err)
+		slog.Warn(routes+" not served by Go: grant check failed", "error", err)
 	case len(missing) > 0:
-		slog.Warn("content reads not served by Go: web app role lacks grants", "missing", missing)
+		slog.Warn(routes+" not served by Go: role lacks grants", "missing", missing)
 	default:
 		return true
 	}
 	return false
+}
+
+func earnMax(ctx context.Context, appDB *pgxpool.Pool, rpcClient *chain.Client, yieldDB *pgxpool.Pool) (*webapp.EarnMax, error) {
+	cluster, err := webapp.ParseSolanaCluster(os.Getenv("LOYAL_WEB_SOLANA_CLUSTER"))
+	if err != nil {
+		return nil, err
+	}
+	hashes, err := engine.OptionalCredential("EARN_MAX_INVITE_CODE_HASHES")
+	if err != nil {
+		return nil, err
+	}
+	invites, err := webapp.ParseInviteCodes(hashes)
+	if err != nil {
+		return nil, err
+	}
+	if !granted(ctx, appDB, "Earn MAX routes", webapp.EarnMaxGrants) {
+		return nil, nil
+	}
+	var yield earnmax.Querier
+	if yieldDB != nil && granted(ctx, yieldDB, "Earn MAX route state", webapp.YieldGrants) {
+		yield = yieldDB
+	}
+	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}, nil
 }
 
 func run(ctx context.Context) error {
@@ -138,16 +160,30 @@ func run(ctx context.Context) error {
 	if cfg.CoinGeckoAPIKey, err = engine.OptionalCredential("COINGECKO_API_KEY"); err != nil {
 		return err
 	}
-	appDB, err := openAppDB(ctx)
+	appDB, err := openDB(ctx, "WEB_APP_DATABASE_URL")
 	if err != nil {
 		return err
 	}
 	if appDB != nil {
 		defer appDB.Close()
 		cfg.AppDB = appDB
-		cfg.ContentDB = contentGranted(ctx, appDB)
+		cfg.ContentDB = granted(ctx, appDB, "content reads", webapp.ContentGrants)
 	}
-	cfg.Auth = openAuth(ctx, appDB)
+	auth, rpcClient := openAuth(ctx, appDB)
+	if auth != nil {
+		yieldDB, err := openDB(ctx, "WEB_YIELD_DATABASE_URL")
+		if err != nil {
+			return err
+		}
+		if yieldDB != nil {
+			defer yieldDB.Close()
+		}
+		if cfg.EarnMax, err = earnMax(ctx, appDB, rpcClient, yieldDB); err != nil {
+			return err
+		}
+		cfg.Auth = auth
+		cfg.PushDB = granted(ctx, appDB, "push tokens", webapp.PushGrants)
+	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           webapp.New(cfg),

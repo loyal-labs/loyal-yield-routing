@@ -21,6 +21,21 @@ var ContentGrants = []Grant{
 	{"library_articles", "SELECT"},
 }
 
+var EarnMaxGrants = []Grant{
+	{"earn_max_invite_redemptions", "SELECT"},
+	{"earn_max_invite_redemptions", "INSERT"},
+}
+
+var PushGrants = []Grant{
+	{"push_tokens", "SELECT"},
+	{"push_tokens", "INSERT"},
+	{"push_tokens", "UPDATE"},
+}
+
+var YieldGrants = []Grant{
+	{"loyal_yield.multiply_route_states", "SELECT"},
+}
+
 // MissingGrants lists the grants the connected role lacks; a table that does not exist counts as missing.
 func MissingGrants(ctx context.Context, pool *pgxpool.Pool, want []Grant) ([]Grant, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
