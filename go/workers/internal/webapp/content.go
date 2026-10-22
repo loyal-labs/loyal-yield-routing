@@ -15,14 +15,13 @@ import (
 const contentCacheControl = "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
 
 type ContentHeaders struct {
-	Source       string `header:"X-Loyal-API-Source"`
 	AllowOrigin  string `header:"Access-Control-Allow-Origin"`
 	AllowMethods string `header:"Access-Control-Allow-Methods"`
 	AllowHeaders string `header:"Access-Control-Allow-Headers"`
 }
 
 func newContentHeaders() ContentHeaders {
-	return ContentHeaders{Source: "go", AllowOrigin: "*", AllowMethods: "GET, OPTIONS", AllowHeaders: "Content-Type"}
+	return ContentHeaders{AllowOrigin: "*", AllowMethods: "GET, OPTIONS", AllowHeaders: "Content-Type"}
 }
 
 type contentError struct {
@@ -35,7 +34,6 @@ func (e *contentError) GetStatus() int { return e.status }
 
 func contentFailure(status int, message string) error {
 	return huma.ErrorWithHeaders(&contentError{Message: message, status: status}, http.Header{
-		"X-Loyal-API-Source":           {"go"},
 		"Access-Control-Allow-Origin":  {"*"},
 		"Access-Control-Allow-Methods": {"GET, OPTIONS"},
 		"Access-Control-Allow-Headers": {"Content-Type"},

@@ -40,7 +40,25 @@ func New(cfg Config) http.Handler {
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Get("/readyz", ready(cfg.ready()))
 
-	api := humachi.New(r, apiConfig())
+	r.Group(func(goAPI chi.Router) {
+		goAPI.Use(servedByGo)
+		registerAPI(humachi.New(goAPI, apiConfig()), cfg)
+	})
+	proxied := forward(cfg.Upstream)
+	r.Handle("/api/*", proxied)
+	r.Handle("/ingest/*", proxied)
+	r.Handle("/*", site(cfg))
+	return r
+}
+
+func servedByGo(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Loyal-API-Source", "go")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func registerAPI(api huma.API, cfg Config) {
 	if cfg.AppDB != nil {
 		earnstats.Register(api, cfg.AppDB)
 		if cfg.ContentDB {
@@ -62,11 +80,6 @@ func New(cfg Config) http.Handler {
 	if cfg.CoinGeckoAPIKey != "" {
 		registerTokens(api, newTokenDetails(cfg.CoinGeckoAPIKey))
 	}
-	proxied := forward(cfg.Upstream)
-	r.Handle("/api/*", proxied)
-	r.Handle("/ingest/*", proxied)
-	r.Handle("/*", site(cfg))
-	return r
 }
 
 func (cfg Config) ready() func() bool {
