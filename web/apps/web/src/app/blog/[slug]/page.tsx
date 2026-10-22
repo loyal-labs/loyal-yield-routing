@@ -7,6 +7,7 @@ import { LandingHeader } from "@/components/landing-header";
 import { LandingScrollAnimations } from "@/components/landing-scroll-animations";
 import {
   BlogContent,
+  blogPostModifiedDate,
   formatBlogDate,
   getAllBlogSlugs,
   getBlogPost,
@@ -83,7 +84,7 @@ export default async function BlogPostPage({
     headline: post.title,
     ...(post.description ? { description: post.description } : {}),
     datePublished: post.date,
-    dateModified: post.updated ?? post.date,
+    dateModified: blogPostModifiedDate(post),
     image: `${SITE_ORIGIN}${post.hero}`,
     author: post.author
       ? {

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { THEME_STORAGE_KEY } from "@/lib/theme";
+
 const WIPE_DURATION_MS = 400;
 const WIPE_EASE = "cubic-bezier(0.23, 1, 0.32, 1)";
 
@@ -12,10 +14,6 @@ type ViewTransitionDocument = Document & {
   };
 };
 
-// The pre-paint script in app/layout.tsx owns initial theme resolution
-// (light for everyone unless localStorage "theme" is "dark" — system
-// preference is deliberately ignored); this hook only mirrors and mutates
-// the html.dark class it set.
 export function useTheme() {
   const [isDark, setIsDark] = useState(false);
 
@@ -29,7 +27,7 @@ export function useTheme() {
     const apply = () => {
       root.classList.toggle("dark", next);
       try {
-        localStorage.setItem("theme", next ? "dark" : "light");
+        localStorage.setItem(THEME_STORAGE_KEY, next ? "dark" : "light");
       } catch {
       }
       setIsDark(next);
