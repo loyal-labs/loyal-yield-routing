@@ -25,6 +25,8 @@ type Config struct {
 	Ready       func() bool
 	AppDB       *pgxpool.Pool
 	Auth        *Auth
+	EarnMax     *EarnMax
+	PushDB      bool
 	ContentDB   bool
 	Dist        fs.FS
 	Environment string
@@ -43,6 +45,18 @@ func New(cfg Config) http.Handler {
 		earnstats.Register(api, cfg.AppDB)
 		if cfg.ContentDB {
 			registerContent(api, cfg.AppDB)
+		}
+	}
+	if cfg.Auth != nil && cfg.AppDB != nil {
+		if cfg.EarnMax != nil {
+			routes := newEarnMaxRoutes(cfg.Auth, cfg.AppDB, *cfg.EarnMax, cfg.Release)
+			routes.registerReads(api)
+			if len(cfg.EarnMax.Invites) > 0 {
+				routes.registerRedeem(api)
+			}
+		}
+		if cfg.PushDB {
+			registerPush(api, cfg.Auth, cfg.AppDB)
 		}
 	}
 	if cfg.CoinGeckoAPIKey != "" {
@@ -126,5 +140,9 @@ func OpenAPI() *huma.OpenAPI {
 	earnstats.Register(api, nil)
 	registerContent(api, nil)
 	registerTokens(api, nil)
+	routes := newEarnMaxRoutes(nil, nil, EarnMax{}, "")
+	routes.registerReads(api)
+	routes.registerRedeem(api)
+	registerPush(api, nil, nil)
 	return api.OpenAPI()
 }

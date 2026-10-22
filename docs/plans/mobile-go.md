@@ -278,6 +278,11 @@ fail identically at 568b6632 and at d719f7b6: `prepareEarnUsdcDeposit` x5 and
 policy without scanning on-chain policies." and "Unable to find Settings
 account at 11111111111111111111111111111112". Nothing is filed in Linear.
 
+## Known limits
+
+A push token reassigns to whichever wallet posts it; binding a token to a
+device is a follow-up.
+
 ## Post-deploy verification
 
 Run by the owner after the approved deploy of `loyal-web` to next.askloyal.com.
@@ -325,6 +330,12 @@ The on-device mainnet deposit and withdraw stay on Vlad's preview build.
    follow-on plan for prepare and confirm).
 5. RS256 on Vercel, then remove `AUTH_JWT_SECRET` from Go.
 6. An Earn MAX mobile screen design (none exists).
+
+M-base (one base URL) is on main. Before Vlad's next Earn build from main, two
+things must both be done: (1) the owner gives the go to deploy `loyal-web` with
+its credentials installed; (2) Vlad flips `EXPO_PUBLIC_API_BASE_URL` in
+`eas.json` to https://next.askloyal.com, preview profile first. A build from
+main without both sends Earn calls to the telegram Vercel app.
 
 ## Unknown
 
