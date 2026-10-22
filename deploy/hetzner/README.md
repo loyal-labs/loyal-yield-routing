@@ -648,3 +648,24 @@ cause was fixed or a user was paid. Missing series and expired windows can clear
 alerts; check freshness/down signals before closing an incident. Shared
 Autodeposit and fee-payer alerts also have their own guidance rather than
 withdrawal-specific fallback text.
+
+## Admin credstore (loyal-admin)
+
+`loyal-admin.service` reads these encrypted credentials; encrypt each file
+under its credential name. The unit loads the three required ones; add the
+optional ones in `/etc/systemd/system/loyal-admin.service.d/50-credentials.conf`.
+A missing optional credential disables only the pages that need it.
+
+| Credential name | File in `/etc/credstore.encrypted/` | Needed | Grants |
+|---|---|---|---|
+| `ADMIN_USER` | `loyal-admin-user` | required | the sign-in name |
+| `ADMIN_PASSWORD` | `loyal-admin-password` | required | the sign-in password and the session HMAC key |
+| `ADMIN_APP_DATABASE_URL` | `loyal-admin-app-db` | required | App Neon, DML on the admin tables |
+| `ADMIN_YIELD_DATABASE_URL` | `loyal-admin-yield-db` | optional | Yield Neon, SELECT only |
+| `ADMIN_TIMESCALE_DATABASE_URL` | `loyal-admin-timescale-db` | optional | Timescale, SELECT only |
+| `LIBRARY_UPLOAD_TOKEN` | `loyal-admin-library-upload` | optional | library cover uploads |
+| `CLICKSTACK_READ_KEY` | `loyal-admin-clickstack` | optional | the metrics page |
+| `EXPO_ACCESS_TOKEN` | `loyal-admin-expo` | optional | push broadcasts, if Expo requires a token |
+
+`LOYAL_ADMIN_APP_API_BASE_URL` is not secret; set it as an `Environment=` line
+in the same drop-in.

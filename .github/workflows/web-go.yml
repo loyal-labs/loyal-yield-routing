@@ -8,6 +8,8 @@ on:
       - go/workers/cmd/loyal-web/**
       - go/workers/internal/webapp/**
       - go/workers/internal/webserve/**
+      - go/workers/cmd/loyal-admin/**
+      - go/workers/internal/admin/**
       - scripts/web/**
       - .github/workflows/web-go.yml
 
@@ -38,13 +40,20 @@ jobs:
       - name: install web
         run: cd web && bun install --frozen-lockfile
       - name: every Next page has a route
-        run: bun scripts/web/gen-routes.ts --check
+        run: |
+          bun scripts/web/gen-routes.ts --check
+          bun scripts/web/gen-routes.ts --app admin --check
       - name: build
-        run: sh scripts/web/build.sh
+        run: |
+          sh scripts/web/build.sh
+          sh scripts/web/build.sh admin
+      - name: admin view props match the Go loaders
+        working-directory: web/apps/admin
+        run: bun run typecheck
       - name: Go headers and locale redirects match loyal-app
         run: bun scripts/web/parity.ts
       - name: go
         working-directory: go/workers
         run: |
-          go vet ./cmd/loyal-web ./internal/webapp ./internal/webserve
-          go test -race ./cmd/loyal-web ./internal/webapp ./internal/webserve
+          go vet ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin
+          go test -race ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin
