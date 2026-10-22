@@ -56,7 +56,7 @@ func pushFields(raw []byte) (PushTokenRequest, *PushError) {
 type pushOutput struct{ Body PushTokenSaved }
 
 func registerPush(api huma.API, auth *Auth, appDB *pgxpool.Pool) {
-	responses := errorResponses[routeError](api, 401, 409)
+	responses := errorResponses[routeError](api, 401)
 	maps.Copy(responses, errorResponses[PushError](api, 400, 500))
 	huma.Register(api, huma.Operation{
 		OperationID: "post-push-token",
@@ -65,7 +65,7 @@ func registerPush(api huma.API, auth *Auth, appDB *pgxpool.Pool) {
 		Summary:     "Register the device push token for the signed-in wallet",
 		Responses:   responses,
 	}, func(ctx context.Context, in *pushRequest) (*pushOutput, error) {
-		p, err := auth.Principal(ctx, in.SessionInput)
+		session, err := auth.Session(in.SessionInput)
 		if refusal, ok := authRefusal(err); ok {
 			return nil, refusal
 		}
@@ -81,7 +81,7 @@ func registerPush(api huma.API, auth *Auth, appDB *pgxpool.Pool) {
 		defer cancel()
 		if _, err := appDB.Exec(ctx, `INSERT INTO push_tokens (token, telegram_user_id, wallet_public_key, platform) VALUES ($1, NULL, $2, $3)
 ON CONFLICT (token) DO UPDATE SET telegram_user_id = CASE WHEN push_tokens.wallet_public_key = EXCLUDED.wallet_public_key THEN push_tokens.telegram_user_id END, wallet_public_key = EXCLUDED.wallet_public_key, platform = EXCLUDED.platform, updated_at = now()`,
-			body.Token, p.Wallet.String(), body.Platform); err != nil {
+			body.Token, session.Wallet.String(), body.Platform); err != nil {
 			slog.Warn("push token not saved", "step", "upsert", "error", err)
 			return nil, errPushFailed
 		}
