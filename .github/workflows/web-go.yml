@@ -10,6 +10,9 @@ on:
       - go/workers/internal/webserve/**
       - go/workers/cmd/loyal-admin/**
       - go/workers/internal/admin/**
+      - go/workers/cmd/loyal-stats/**
+      - go/workers/internal/stats/**
+      - go/workers/internal/earnstats/**
       - scripts/web/**
       - .github/workflows/web-go.yml
 
@@ -47,9 +50,13 @@ jobs:
         run: |
           sh scripts/web/build.sh
           sh scripts/web/build.sh admin
+          sh scripts/web/build.sh stats
       - name: admin view props match the Go loaders
         working-directory: web/apps/admin
         run: bun run typecheck
+      - name: stats page types
+        working-directory: web/apps/dashboard
+        run: bun run typecheck:vite
       - name: Go headers and locale redirects match loyal-app
         run: bun scripts/web/parity.ts
       - name: go
