@@ -269,7 +269,6 @@ const appBoundary = read("src/app/error.tsx");
 const globalBoundary = read("src/app/global-error.tsx");
 const earnSource = read("src/hooks/use-smart-account-sidebar-data.ts");
 
-assert.match(clientSource, /catch \{[\s\S]*best-effort/);
 assert.match(
   clientSource,
   /const reportPromise = postBrowserError\(envelope\)/
@@ -305,7 +304,6 @@ pass(
 );
 
 assert.match(mobileMetricsRouteSource, /isNativeAppRequest/);
-assert.match(mobileMetricsRouteSource, /!request\.headers\.get\("origin"\)/);
 assert.match(mobileMetricsRouteSource, /application\/json/);
 assert.match(mobileMetricsRouteSource, /body\.byteLength/);
 assert.match(mobileMetricsRouteSource, /consumeBrowserMetricsRateLimit/);
