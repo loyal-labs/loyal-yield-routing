@@ -9099,6 +9099,11 @@ export function createSmartAccountVaultsClient(
       withdrawDiscriminator: readonly number[];
     };
 
+    type MintBatch = [
+      ProvisionalReserveWithdrawal,
+      ...ProvisionalReserveWithdrawal[]
+    ];
+
     type ProvisionalWithdrawBatch = Omit<
       SmartAccountPreparedEarnUsdcWithdrawStep,
       | "accountingReserve"
@@ -9151,7 +9156,7 @@ export function createSmartAccountVaultsClient(
     // deterministic for the same holdings.
     const chunkReserveWithdrawals = (
       withdrawals: ProvisionalReserveWithdrawal[]
-    ): ProvisionalReserveWithdrawal[][] => {
+    ): MintBatch[] => {
       const groups = new Map<string, ProvisionalReserveWithdrawal[]>();
       for (const withdrawal of withdrawals) {
         const mintKey = withdrawal.target.liquidityMint.toBase58();
@@ -9177,16 +9182,19 @@ export function createSmartAccountVaultsClient(
           return leftMint < rightMint ? -1 : 1;
         }
       );
-      const batches: ProvisionalReserveWithdrawal[][] = [];
+      const batches: MintBatch[] = [];
       for (const [, group] of orderedGroups) {
-        for (
-          let index = 0;
-          index < group.length;
-          index += MAX_EARN_WITHDRAW_RESERVES_PER_APPROVAL
-        ) {
-          batches.push(
-            group.slice(index, index + MAX_EARN_WITHDRAW_RESERVES_PER_APPROVAL)
-          );
+        let current: MintBatch | null = null;
+        for (const withdrawal of group) {
+          if (
+            current &&
+            current.length < MAX_EARN_WITHDRAW_RESERVES_PER_APPROVAL
+          ) {
+            current.push(withdrawal);
+          } else {
+            current = [withdrawal];
+            batches.push(current);
+          }
         }
       }
       return batches;
@@ -9634,32 +9642,23 @@ export function createSmartAccountVaultsClient(
     const finalBatchIndexByMint = new Map<string, number>();
     reserveWithdrawalBatches.forEach((batch, index) => {
       finalBatchIndexByMint.set(
-        batch[0]!.target.liquidityMint.toBase58(),
+        batch[0].target.liquidityMint.toBase58(),
         index
       );
     });
 
     const buildWithdrawBatch = async (
-      batch: ProvisionalReserveWithdrawal[],
+      batch: MintBatch,
       batchIndex: number
     ): Promise<ProvisionalWithdrawBatch> => {
-      const firstWithdrawal = batch[0]!;
+      const firstWithdrawal = batch[0];
       const isFinalBatch = batchIndex === finalBatchIndex;
-      // One approval, one mint. Chunking groups by mint, and this re-asserts it
-      // per batch before any account is derived from `batch[0]`.
       const {
         mint: batchMint,
         tokenProgram: batchTokenProgram,
         vaultAta: batchVaultAta,
         walletAta: batchWalletAta,
       } = resolveMintContext(firstWithdrawal.target);
-      for (const withdrawal of batch) {
-        if (!withdrawal.target.liquidityMint.equals(batchMint)) {
-          throw new Error(
-            "Earn withdrawal batched two liquidity mints into one approval."
-          );
-        }
-      }
       const batchMintKey = batchMint.toBase58();
       const isFinalBatchForMint =
         finalBatchIndexByMint.get(batchMintKey) === batchIndex;
@@ -9792,7 +9791,7 @@ export function createSmartAccountVaultsClient(
         adjustmentAttempt < maxRoundingAdjustmentAttempts;
         adjustmentAttempt += 1
       ) {
-        const withdrawal = batch.length === 1 ? batch[0]! : null;
+        const withdrawal = batch.length === 1 ? batch[0] : null;
         if (!withdrawal) {
           throw new EarnWithdrawUnderfilledError(
             "Kamino could not safely adjust a split partial withdrawal."
@@ -10113,7 +10112,7 @@ export function createSmartAccountVaultsClient(
     // must come from that step's target: on a mixed-mint exit the outer
     // `usdcMint` is only the mint the requested top-level target named.
     const topLevelMintContext = resolveMintContext(
-      reserveWithdrawalBatches[0]![0]!.target
+      reserveWithdrawalBatches[0]![0].target
     );
 
     return {

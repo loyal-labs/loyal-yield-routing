@@ -95,11 +95,7 @@ function sharePriceAt(
   return before.sharePrice * (after.sharePrice / before.sharePrice) ** fraction;
 }
 
-// Signed, unrounded bps. Callers clamp (floor at 0 — a loss must not push
-// the headline negative) and round exactly once, after any weighting, so a
-// reserve with negative growth (loss socialization) still pulls the
-// weighted headline down instead of being floored to 0 per-reserve first.
-function annualizedGrowth(
+function unclampedAnnualizedBps(
   points: readonly SharePricePoint[],
   endMs: number,
   windowMs: number,
@@ -455,7 +451,7 @@ function buildReserveSeries(
 ): RealizedApySample[] {
   const samples: RealizedApySample[] = [];
   for (const hour of seriesHours(nowMs)) {
-    const growth = annualizedGrowth(
+    const growth = unclampedAnnualizedBps(
       points,
       hour,
       REALIZED_WINDOW_MS,

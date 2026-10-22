@@ -361,16 +361,12 @@ export async function reconcileQuestCompletions(args: {
 
 const QUEST_KINDS: QuestKind[] = ["earn_deposit", "first_autodeposit_sweep"];
 
-export type QuestProgressStatus =
-  | "reported"
-  | "pending"
-  | "failed"
-  | "not_started";
+export type QuestProgressStatus = CompletionRow["status"] | "not_started";
 
 export type QuestProgressItem = {
   kind: QuestKind;
   status: QuestProgressStatus;
-  solanaStatus: string | null;
+  solanaStatus: CompletionRow["solanaStatus"];
   reportedAt: string | null;
   attempts: number;
 };
@@ -392,12 +388,7 @@ export async function getQuestProgress(
       .from(solanaWeekQuestCompletions)
       .where(eq(solanaWeekQuestCompletions.walletAddress, wallet));
     for (const row of rows) {
-      if (
-        row.questKind === "earn_deposit" ||
-        row.questKind === "first_autodeposit_sweep"
-      ) {
-        rowByKind.set(row.questKind, row);
-      }
+      rowByKind.set(row.questKind, row);
     }
   }
 

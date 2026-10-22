@@ -66,18 +66,19 @@ export const onboardingCompleted = storage.defineItem<boolean>(
   { fallback: false }
 );
 
-/** Credential version: null = legacy 4-digit PIN, 2 = password. */
-export const credentialVersion = storage.defineItem<number | null>(
-  "local:credentialVersion",
-  { fallback: null }
-);
+export const LEGACY_PIN_CREDENTIAL = null;
+export const PASSWORD_CREDENTIAL = 2;
+
+export const credentialVersion = storage.defineItem<
+  typeof LEGACY_PIN_CREDENTIAL | typeof PASSWORD_CREDENTIAL
+>("local:credentialVersion", { fallback: LEGACY_PIN_CREDENTIAL });
 
 export const failedPinAttempts = storage.defineItem<number>(
   "local:failedPinAttempts",
   { fallback: 0 }
 );
 
-/** Epoch ms until which PIN entry is locked. 0 = not locked. */
+/** Epoch ms until which PIN entry is locked. */
 export const pinLockedUntil = storage.defineItem<number>(
   "local:pinLockedUntil",
   { fallback: 0 }

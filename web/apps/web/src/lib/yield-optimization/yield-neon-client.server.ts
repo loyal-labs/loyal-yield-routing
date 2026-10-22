@@ -1211,14 +1211,17 @@ export const solanaWeekQuestCompletions = loyalYieldSchema.table(
   {
     id: bigserial("id", { mode: "bigint" }).primaryKey(),
     walletAddress: text("wallet_address").notNull(),
-    // Internal quest identifier: 'earn_deposit' | 'first_autodeposit_sweep'.
-    questKind: text("quest_kind").notNull(),
+    questKind: text("quest_kind", {
+      enum: ["earn_deposit", "first_autodeposit_sweep"],
+    }).notNull(),
     // The Solana quest_id we reported (recorded once known/configured).
     questId: text("quest_id"),
-    // Our reporting state: 'pending' | 'reported' | 'failed'.
-    status: text("status").notNull(),
-    // Solana's success kind, when reported: 'completed' | 'already_completed'.
-    solanaStatus: text("solana_status"),
+    status: text("status", {
+      enum: ["pending", "reported", "failed"],
+    }).notNull(),
+    solanaStatus: text("solana_status", {
+      enum: ["completed", "already_completed"],
+    }),
     attempts: integer("attempts").notNull().default(0),
     lastErrorCode: text("last_error_code"),
     lastErrorMessage: text("last_error_message"),
