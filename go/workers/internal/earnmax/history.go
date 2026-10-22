@@ -54,6 +54,11 @@ func (e Deposit) flow() Flow { return e.Flow }
 func (e Request) flow() Flow { return e.Flow }
 func (e Claim) flow() Flow   { return e.Flow }
 
+type historyKey struct {
+	signature solana.Signature
+	slot      uint64
+}
+
 type History struct {
 	Complete bool
 	Entries  []Entry
@@ -76,12 +81,13 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 
 	r.historyMu.Lock()
 	cached := r.history[a.key]
-	decoded := make(map[solana.Signature][]Entry, len(landed))
+	decoded := make(map[historyKey][]Entry, len(landed))
 	var missing []chain.Signed
 	for _, s := range landed {
-		if entries, ok := cached[s.Signature]; ok {
-			decoded[s.Signature] = entries
-		} else if s.BlockTime != nil {
+		key := historyKey{s.Signature, s.Slot}
+		if entries, ok := cached[key]; ok {
+			decoded[key] = entries
+		} else {
 			missing = append(missing, s)
 		}
 	}
@@ -101,12 +107,19 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 			if err != nil {
 				return err
 			}
-			entries, err := decodeEntries(execution, s.Signature, *s.BlockTime, a.key)
+			at := execution.BlockTime
+			if at == nil {
+				at = s.BlockTime
+			}
+			if at == nil {
+				return nil
+			}
+			entries, err := decodeEntries(execution, s.Signature, *at, a.key)
 			if err != nil {
 				return fmt.Errorf("transaction %s: %w", s.Signature, err)
 			}
 			mu.Lock()
-			decoded[s.Signature] = entries
+			decoded[historyKey{s.Signature, s.Slot}] = entries
 			mu.Unlock()
 			return nil
 		})
@@ -120,7 +133,7 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 	}
 
 	for _, s := range landed {
-		entries, ok := decoded[s.Signature]
+		entries, ok := decoded[historyKey{s.Signature, s.Slot}]
 		if !ok {
 			history.Complete = false
 			continue
