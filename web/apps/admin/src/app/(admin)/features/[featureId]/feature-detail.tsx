@@ -1,27 +1,15 @@
-import {
-  type FeatureAppStatus,
-  type FeatureEvidence,
-  type FeatureFlagLink,
-  type FeatureRegistry,
-  type RuntimeFlag,
-} from "@loyal-labs/db-core/schema";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { FeatureStatusBadge } from "../feature-status-badge";
+import type { FeatureAppStatusView, FeatureFlagView, FeatureView } from "../feature-types";
 import { updateFeatureStatus } from "./feature-detail-actions";
 import { FeatureEvidenceForm } from "./feature-evidence-form";
 import { LinkedFlagsPanel } from "./linked-flags-panel";
 
 const APP_ORDER = ["telegram_miniapp", "website", "mobile", "extension"] as const;
 
-type FeatureDetailFeature = FeatureRegistry & {
-  appStatuses: (FeatureAppStatus & { evidence: FeatureEvidence[] })[];
-  flagLinks: (FeatureFlagLink & { flag: RuntimeFlag })[];
-};
-
-function FeatureSummary({ feature }: { feature: FeatureDetailFeature }) {
+function FeatureSummary({ feature }: { feature: FeatureView }) {
   return (
     <section className="rounded-2xl border bg-card p-5">
       <div className="grid gap-4 md:grid-cols-2">
@@ -56,8 +44,8 @@ function FeatureStatusCard({
   feature,
   appStatus,
 }: {
-  feature: FeatureDetailFeature;
-  appStatus?: (FeatureAppStatus & { evidence: FeatureEvidence[] }) | undefined;
+  feature: FeatureView;
+  appStatus?: FeatureAppStatusView | undefined;
 }) {
   const statusOptions = ["missing", "planned", "in_progress", "implemented", "live"] as const;
 
@@ -130,8 +118,8 @@ export function FeatureDetail({
   feature,
   availableFlags,
 }: {
-  feature: FeatureDetailFeature;
-  availableFlags: RuntimeFlag[];
+  feature: FeatureView;
+  availableFlags: FeatureFlagView[];
 }) {
   return (
     <div className="grid gap-6">
