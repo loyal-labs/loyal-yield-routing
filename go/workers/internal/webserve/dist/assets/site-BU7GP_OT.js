@@ -1,1 +1,0 @@
-var e=`https://askloyal.com`;export{e as t};

@@ -1,1 +1,0 @@
-var e=2n**256n-1n,t=({amount:t,decimals:n})=>t===e?`Maximum`:Intl.NumberFormat(void 0,{maximumFractionDigits:n}).format(Number(t)/10**n);export{t};

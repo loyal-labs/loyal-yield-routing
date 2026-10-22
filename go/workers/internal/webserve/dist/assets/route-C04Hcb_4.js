@@ -1,1 +1,0 @@
-import{t as e}from"./jsx-runtime-CndCZlyt.js";import{C as t}from"./index-D9WGhWpz.js";var n=e();function r({children:e}){return(0,n.jsx)(`div`,{lang:`ru`,children:e})}var i=()=>(0,n.jsx)(r,{children:(0,n.jsx)(t,{})});export{i as component};

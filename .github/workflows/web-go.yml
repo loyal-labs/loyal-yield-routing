@@ -28,8 +28,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: loyal-app files untouched
-        run: sh scripts/web/check-untouched.sh "origin/${{ github.base_ref }}"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: web/package.json

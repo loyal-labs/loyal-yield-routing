@@ -1,1 +1,0 @@
-function e(){return null}var t=e;export{t as component};
