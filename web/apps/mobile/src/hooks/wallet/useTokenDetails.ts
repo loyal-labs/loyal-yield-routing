@@ -41,11 +41,6 @@ async function fetchTokenDetailWithRetry(
   throw lastError ?? new Error("Failed to fetch token detail");
 }
 
-// Shared cache of /api/mobile/tokens/:mint responses keyed by mint. Both
-// TokensList (needs market + logo/symbol) and ActivityFeed (needs logo/symbol)
-// read from this to avoid duplicate fetches. The hook is tolerant of errors:
-// failed mints stay absent from the map, and downstream code falls back to
-// Helius-supplied holding data or the KNOWN_TOKEN_* last-resort maps.
 export function useTokenDetails(
   mints: string[],
   resetKey: number = 0,
@@ -57,11 +52,6 @@ export function useTokenDetails(
 
   const [detailsByMint, setDetailsByMint] = useState<TokenDetailsByMint>({});
 
-  // Track mints we've already tried (success or failure) so a persistent
-  // fetch failure doesn't re-fire on every render. Without this, each
-  // setState below produced a new detailsByMint reference, which — if
-  // detailsByMint were in the deps — would re-run the effect forever. We
-  // key the record by `resetKey|mint` so explicit refresh bumps clear it.
   const attemptedRef = useRef<Set<string>>(new Set());
 
   // Keep reset synchronous with the fetch effect below so that bumping
@@ -71,14 +61,6 @@ export function useTokenDetails(
   // showing skeletons against an empty state until `mintsKey` next shifts.
   const lastResetKeyRef = useRef(resetKey);
 
-  // Track mounted state at the hook level — NOT per effect run. The previous
-  // per-run `cancelled` flag discarded a run's in-flight results whenever
-  // `mintsKey` changed (which happens 2-3x during load as holdings then
-  // transactions arrive). Those mints were already marked attempted, so they
-  // were never re-fetched and stayed permanently without market data — that
-  // is the "some tokens never load a price" bug (e.g. USDT). We now only skip
-  // applying results after a real unmount, so a superseded run's valid
-  // results still merge in.
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -91,11 +73,6 @@ export function useTokenDetails(
     if (lastResetKeyRef.current !== resetKey) {
       lastResetKeyRef.current = resetKey;
       attemptedRef.current = new Set();
-      // Do NOT clear detailsByMint here. Wiping the cache on pull-to-
-      // refresh made every icon fall through to KNOWN_TOKEN_ICONS
-      // (which points at a different CoinGecko size variant), producing
-      // a visible SOL-icon flicker while the refetch was in flight.
-      // Stale data is fine to show until fresh results merge in below.
     }
 
     if (mintsKey.length === 0) return;

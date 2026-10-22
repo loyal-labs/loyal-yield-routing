@@ -87,10 +87,6 @@ import {
 } from "@/services/observability";
 import { Text, View } from "@/tw";
 
-// "create" and "login" are the same Privy sign-in (email / Google / Apple);
-// create ends in a new embedded wallet, login hydrates an existing one.
-// "import" is the secret-key + PIN flow, kept for users bringing their own
-// key. All end on the same Privy user as a connected wallet does.
 type Step = OnboardingStartStep | "create" | "login" | "import" | "biometric-setup";
 type TransitionDirection = "forward" | "backward";
 
@@ -111,8 +107,6 @@ const SCREEN_EXITING_ANIMATION = FadeOut.duration(160).easing(
   Easing.out(Easing.quad),
 );
 
-// iOS-only by construction: the deeplink connect mode is only reachable on
-// iOS, where ActionSheetIOS is the native chooser.
 function chooseDeeplinkProvider(
   providers: DeeplinkWalletProvider[],
 ): Promise<DeeplinkWalletProvider | null> {
@@ -132,7 +126,6 @@ function chooseDeeplinkProvider(
   });
 }
 
-// `reason` prop for wallet_connect_failed (contract shared with ASK-2199).
 function connectFailureReason(error: unknown): string {
   if (isWalletSessionError(error)) return error.failure;
   if (error instanceof DeeplinkResponseError) {
@@ -145,9 +138,6 @@ function isUserCancel(error: unknown): boolean {
   return error instanceof WalletRejectedError || isPrivyUserDecline(error);
 }
 
-// The wallet app returned an account other than the one this Privy user is
-// linked to. From the menu's Connect Wallet path this reads as a plain error;
-// after an email login the caller turns it into whereWalletIs().
 class WalletMismatchError extends Error {
   constructor(readonly expected: string) {
     super(
@@ -157,8 +147,6 @@ class WalletMismatchError extends Error {
   }
 }
 
-// Which wallet to sign in with when the Privy user has an external wallet
-// (and maybe an embedded one too). Native alert: two or three buttons.
 function chooseWalletSource(
   e: PrivyExternalWalletError,
   canConnect: boolean,
@@ -196,7 +184,6 @@ function chooseWalletSource(
   });
 }
 
-// User-facing explanation for an external wallet we cannot sign with here.
 function whereWalletIs(e: PrivyExternalWalletError): Error {
   const short = `${e.address.slice(0, 4)}…${e.address.slice(-4)}`;
   const name = walletClientDisplayName(e.clientType);
@@ -263,9 +250,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     useState<TransitionDirection>("forward");
   const [screenAnimationsReady, setScreenAnimationsReady] = useState(false);
 
-  // One sign-in lifecycle flow per onboarding attempt (ASK-1804). Starting a
-  // new attempt cancels the abandoned one; terminal emissions latch, so the
-  // blanket cancel never overwrites a completed/failed flow.
   const authFlowRef = useRef<LifecycleFlow<"auth.sign_in"> | null>(null);
   const beginAuthFlow = useCallback(
     (
@@ -310,8 +294,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     getInstalledDeeplinkWallets().then(setDeeplinkWallets);
   }, []);
 
-  // iCloud Drive wallet backup, if the user made one on a previous install
-  // (iOS only — findCloudBackup resolves null everywhere else).
   const [cloudBackup, setCloudBackup] = useState<WalletBackupEnvelope | null>(
     null,
   );
@@ -325,8 +307,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     setFinalizing(true);
     try {
       await restoreCloudBackup(cloudBackup);
-      // Transitions the provider to "locked"; the auth gate swaps this
-      // screen for the PIN lock screen. The Privy link runs after unlock.
       await refreshFromStorage();
     } catch (e) {
       setFinalizing(false);
@@ -348,8 +328,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     [],
   );
 
-  // ---- Import (secret key + PIN + biometrics) ----
-
   const handleImportComplete = useCallback(
     (keypair: Keypair, pin: string) => {
       authFlowRef.current?.setWalletAddress(keypair.publicKey.toBase58());
@@ -365,9 +343,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     if (!pendingKeypair || !pendingPin) return;
     setFinalizing(true);
     try {
-      // Import stored the keypair already; this unlocks. The provider's
-      // migration effect then links the new local signer to Privy via SIWS
-      // (silent: the app holds the key).
       await finalizeSigner(pendingKeypair, pendingPin, { alreadyStored: true });
       authFlowRef.current?.complete("completion");
     } catch (error) {
@@ -375,8 +350,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
       throw error;
     }
   }, [pendingKeypair, pendingPin, finalizeSigner]);
-
-  // ---- Create (Privy email / OAuth → embedded wallet) ----
 
   const privyAttempt = useCallback(
     async (method: PrivySignInMethod, run: () => Promise<void>) => {
@@ -401,8 +374,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     [privyPending],
   );
 
-  // Embedded wallet → sign in directly. External wallet (Seed Vault, Phantom)
-  // → the email proved identity; now authorize that wallet on this device.
   const connectExternalRef = useRef<(expected?: string) => Promise<void>>(
     async () => {},
   );
@@ -426,8 +397,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
           return;
         }
         if (choice !== "connect") {
-          // Leave no half-session behind: the next launch must not hydrate
-          // the embedded wallet the user did not choose.
           await privyLogout();
           throw new WalletRejectedError("Sign-in was cancelled.");
         }
@@ -435,9 +404,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
           await connectExternalRef.current(e.address);
         } catch (connectError) {
           await privyLogout();
-          // Cancelled, or the phone's wallet app holds a different key
-          // (typical when the linked wallet is a browser extension): both
-          // mean the key is not here.
           if (
             isUserCancel(connectError) ||
             connectError instanceof WalletMismatchError
@@ -486,7 +452,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
           provider,
           disableSignup: step === "login",
         });
-        // Undefined means the user closed the browser sheet.
         if (!user) throw new WalletRejectedError("Sign-in was cancelled.");
         authFlowRef.current?.observe("challenge");
         await finishPrivyLogin(user);
@@ -495,11 +460,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     [privyAttempt, beginAuthFlow, ensurePrivyLoggedOut, finishPrivyLogin, loginWithOAuth, step],
   );
 
-  // ---- Connect wallet (Seed Vault / MWA / deeplink) + Privy SIWS link ----
-
-  // After the legacy connect stored the signer, link it to a Privy user.
-  // "declined"/"failed" leave the wallet connected (the provider already
-  // finalized it) and migration retries on next launch.
   const linkToPrivy = useCallback(
     async (signer: Signer) => {
       authFlowRef.current?.observe("challenge");
@@ -509,8 +469,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
           (a) => a.type === "wallet" && "address" in a && a.address === address,
         );
         if (alreadyLinked) {
-          // e.g. email login found this external wallet and sent the user
-          // here; the session is the right one, no signature needed.
           mmkv.setBoolean(PRIVY_MIGRATION_DONE_KEY, true);
           return;
         }
@@ -521,13 +479,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     [privyUser, privyLogout, siws],
   );
 
-  // Legacy fallback for pre-MWA Seeker builds: authorize a seed directly
-  // with the vault. Opens the vault's seed picker first so the user can
-  // choose WHICH seed to connect; falls back to an already-authorized seed
-  // to recover orphaned auth tokens.
-  // The wallet the user must connect (set by an email/OAuth login that found
-  // an external wallet on the account). Any other account is rejected so the
-  // Privy user and the on-device signer never point at different addresses.
   const assertExpected = useCallback(
     (address: string, expected: string | undefined) => {
       if (expected && address !== expected) {
@@ -578,8 +529,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
   }, [assertExpected, finalizeVaultSigner, linkToPrivy]);
 
   const connectMwa = useCallback(async (expected?: string) => {
-    // Opens the MWA wallet chooser; the user picks the wallet app and
-    // account there. Null means they cancelled or declined — no error.
     const account = await connectMwaWallet();
     if (!account) {
       authFlowRef.current?.cancel("wallet_connect");
@@ -588,15 +537,11 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     try {
       assertExpected(account.publicKey, expected);
     } catch (e) {
-      // Wrong account picked: release the authorization so a retry starts
-      // clean in the wallet app.
       await deauthorizeMwaWallet(account.authToken).catch(() => {});
       throw e;
     }
     authFlowRef.current?.setWalletAddress(account.publicKey);
     authFlowRef.current?.observe("wallet_connect");
-    // Fires when the app regains control with an authorized account
-    // (shared contract with ASK-2202).
     track(WALLET_CONNECT_EVENTS.returned, {
       provider: "mwa",
       surface: "onboarding",
@@ -609,9 +554,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     authFlowRef.current?.complete("completion");
   }, [assertExpected, finalizeMwaSigner, linkToPrivy]);
 
-  // iOS external-wallet connect over Phantom-style deeplinks. Null from the
-  // connect call means the user declined in the wallet or switched back
-  // without answering — a choice, not an error.
   const connectDeeplink = useCallback(async (expected?: string) => {
     const provider = await chooseDeeplinkProvider(deeplinkWallets);
     if (!provider) {

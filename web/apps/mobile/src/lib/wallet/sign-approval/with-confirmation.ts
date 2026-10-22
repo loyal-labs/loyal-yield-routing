@@ -21,17 +21,6 @@ function resolveLabels(source?: ConfirmLabelsSource): ConfirmLabels | undefined 
   return typeof source === "function" ? source() : source;
 }
 
-/**
- * Wraps a Signer so every sign call surfaces a decoded-instruction
- * preview to the user before the underlying signer runs. Works for
- * both keypair wallets (where signing is otherwise silent) and Seeker
- * / Seed Vault (where the native biometric prompt alone hides what is
- * being signed).
- *
- * `labels` may be a static object or a getter. A getter lets callers
- * cache the wrapped signer (e.g. inside a long-lived SDK client) while
- * varying per-operation titles via a ref.
- */
 export function withConfirmation(
   signer: Signer,
   ctx: SignApprovalContextValue,

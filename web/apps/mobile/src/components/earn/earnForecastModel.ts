@@ -3,15 +3,8 @@ import type {
   EarnForecastSummary,
 } from "@/lib/solana/earn/earn-api";
 
-// Real-data model for the APY + Forecast charts, ported from the web
-// `earn-detail-view`. The APY series come from the global forecast summary
-// (loyal + mainUsdcReserve have real histories); T-Bill is a fixed benchmark
-// with no live feed. Forecast lines project a principal forward at each APY.
-
 // Fixed T-Bill benchmark (no live series), matching the web constant.
 export const TBILL_APY_BPS = 365;
-// Fallbacks when the summary hasn't loaded / lacks a series.
-export const LOYAL_FALLBACK_APY_BPS = 1006;
 export const MAIN_FALLBACK_APY_BPS = 559;
 const MIN_APY_BPS = 50;
 
@@ -32,7 +25,6 @@ function findSeries(
   if (series?.samples?.length) {
     return series.samples;
   }
-  // The top-level `samples` is the loyal history when no series array is sent.
   if (key === "loyal" && summary?.history.samples?.length) {
     return summary.history.samples;
   }
@@ -51,8 +43,13 @@ export function getMainSamples(
   return findSeries(summary, "mainUsdcReserve");
 }
 
-export function getLoyalApyBps(summary: EarnForecastSummary | null): number {
-  return summary?.forecast.apyBps ?? LOYAL_FALLBACK_APY_BPS;
+export function getLoyalApyBps(
+  summary: EarnForecastSummary | null,
+): number | null {
+  const apyBps = summary?.forecast.apyBps;
+  return apyBps !== undefined && Number.isFinite(apyBps) && apyBps >= 0
+    ? apyBps
+    : null;
 }
 
 // Latest observed Main Kamino reserve APY, else the web fallback.
@@ -63,7 +60,6 @@ export function getMainApyBps(summary: EarnForecastSummary | null): number {
     : MAIN_FALLBACK_APY_BPS;
 }
 
-// Evenly downsample a sample series to `n` points (keeps first + last).
 export function resampleSamples(
   samples: EarnApySample[],
   n: number,

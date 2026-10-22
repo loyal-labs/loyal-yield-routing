@@ -37,9 +37,6 @@ function basename(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
-// The wallet-side coin of a deposit/withdraw row. Rows carry the moved
-// stablecoin's mint (null on legacy USDC-only rows); non-USDC mints resolve to
-// their pinned remote icon, USDC keeps the bundled asset for instant paint.
 function walletCoinSource(
   liquidityMint: string | null | undefined,
 ): ImageSourcePropType {
@@ -54,9 +51,6 @@ function absoluteUrl(icon: string): string {
   return icon.startsWith("http") ? icon : `${env.apiBaseUrl}${icon}`;
 }
 
-// The red Earn-vault coin, recreated from the web's inline SVG (a rounded-square
-// brand mark). Used big as the single allowance icon and small inline beside the
-// "Earn" label.
 export function EarnYieldIcon({ size = 48 }: { size?: number }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 64 64" fill="none">
@@ -70,10 +64,6 @@ export function EarnYieldIcon({ size = 48 }: { size?: number }) {
   );
 }
 
-// One coin of the compound pair, in its fixed slot. A venue side renders that
-// venue's logo (the lone SVG venue, Maple, is clipped into the slot); otherwise
-// the USDC/Kamino default. Styles go straight on the <Image> — the proven,
-// correctly-aligned layout.
 function CompoundCoin({
   src,
   fallback,
@@ -136,9 +126,6 @@ export function EarnTxCompoundIcon({
     isMovement || item.kind === "deposit"
       ? (item.destination?.icon ?? null)
       : null;
-  // The wallet-side coin shows the actual moved stablecoin (deposits flow
-  // coin -> venue, withdrawals venue -> coin); the venue side comes from the
-  // server-provided icons above.
   const coin = walletCoinSource(item.liquidityMint);
 
   return (
@@ -157,9 +144,6 @@ export function EarnTxCompoundIcon({
   );
 }
 
-// Small inline mark beside a "source -> destination" label. The Earn vault reads
-// as the brand coin; "Main" as the user avatar; venues as their own logo;
-// Autodeposit (no icon) shows nothing — mirroring the web `FlowAccount`.
 export function EarnTxAccountIcon({
   account,
 }: {

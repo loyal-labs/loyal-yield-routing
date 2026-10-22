@@ -23,7 +23,7 @@ import { Pressable, Text, View } from "@/tw";
 import { Image } from "@/tw/image";
 
 const THUMB_SIZE = 72;
-const THUMB_GAP = 16; // 8px on each side
+const THUMB_GAP = 16;
 const ITEM_STRIDE = THUMB_SIZE + THUMB_GAP;
 const RING_SIZE = 80;
 const PREVIEW_ASPECT = 361 / 203;
@@ -55,10 +55,6 @@ export function BalanceBackgroundPicker({
 
   const [previewBg, setPreviewBg] = useState<string | null>(selectedBg);
 
-  // Spacer that puts the first thumb's CENTER at the carousel's center, and
-  // lets the last thumb scroll all the way into the center too. Uses
-  // ITEM_STRIDE (not THUMB_SIZE) so the per-item bounds line up with the
-  // snap-interval grid.
   const sideInset = Math.max(0, (carouselWidth - ITEM_STRIDE) / 2);
 
   const initialIdx = useMemo(() => {
@@ -78,14 +74,10 @@ export function BalanceBackgroundPicker({
     }
   }, [open, selectedBg, initialIdx]);
 
-  // Once the carousel reports its width, set the scroll position so the saved
-  // selection lands in the center ring. Re-fires when the saved selection
-  // changes after open.
   useEffect(() => {
     if (!open) return;
     if (carouselWidth <= 0) return;
     const offset = initialIdx * ITEM_STRIDE;
-    // Run on the next tick so the ScrollView has its content laid out.
     const t = setTimeout(() => {
       carouselScrollRef.current?.scrollTo({ x: offset, animated: false });
     }, 0);
@@ -165,7 +157,6 @@ export function BalanceBackgroundPicker({
       backgroundStyle={{ borderTopLeftRadius: 24, borderTopRightRadius: 24 }}
     >
       <BottomSheetView style={styles.container}>
-        {/* Header */}
         <View style={styles.headerRow}>
           <Text style={styles.title}>Choose your style</Text>
           <Pressable
@@ -177,7 +168,6 @@ export function BalanceBackgroundPicker({
           </Pressable>
         </View>
 
-        {/* Preview card */}
         <View style={styles.previewWrap}>
           <View
             style={[styles.previewCard, { aspectRatio: PREVIEW_ASPECT }]}
@@ -226,10 +216,8 @@ export function BalanceBackgroundPicker({
           </View>
         </View>
 
-        {/* Spacer pushes carousel toward the bottom */}
         <View style={{ flex: 1 }} />
 
-        {/* Carousel — full sheet width so center math is screen-centered */}
         <View
           style={styles.carouselWrap}
           onLayout={handleCarouselLayout}
@@ -314,7 +302,6 @@ export function BalanceBackgroundPicker({
           </GHScrollView>
         </View>
 
-        {/* Done */}
         <Pressable
           onPress={handleDone}
           style={({ pressed }) => [

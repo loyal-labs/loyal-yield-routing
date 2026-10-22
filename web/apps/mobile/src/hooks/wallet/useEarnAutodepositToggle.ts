@@ -112,8 +112,6 @@ export function useEarnAutodepositToggle(args: {
       onReconciledActive: (authoritativeActive) => {
         if (currentTargetKeyRef.current === controllerTargetKey) {
           activeRef.current = authoritativeActive;
-          // refreshAutodeposit has already installed the authoritative record.
-          // Clearing the override lets future background refreshes drive UI.
           setOptimisticActive(null);
         }
       },

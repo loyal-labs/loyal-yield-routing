@@ -31,14 +31,7 @@ import { useChartEntrance } from "./useChartEntrance";
 
 const AnimatedSvg = Animated.createAnimatedComponent(Svg);
 
-// Forecast tab of the Earn chart (Figma 74-19520 resting / 74-19672 scrub).
-// Real data: projects the current Earn balance forward 12 months at each
-// series' APY — Loyal Earn (red, solid) from the live forecast, Main Market
-// (dashed) from the latest Kamino reserve APY, T-Bill (dashed) at the fixed
-// benchmark. Values are projected balances with dimmed cents; scrubbing reads
-// the projection at the point under the finger.
-
-const FORECAST_POINTS = 49; // ~weekly over a 12-month horizon, for a smooth scrub
+const FORECAST_POINTS = 49;
 const YEAR_MS = 365.25 * 24 * 60 * 60 * 1000;
 
 type ForecastSeries = {
@@ -72,6 +65,28 @@ export function ForecastChart({
   summary: EarnForecastSummary | null;
   principalUsd: number | null;
 }) {
+  const loyalApyBps = getLoyalApyBps(summary);
+  if (loyalApyBps === null) {
+    return null;
+  }
+  return (
+    <ForecastChartBody
+      loyalApyBps={loyalApyBps}
+      principalUsd={principalUsd}
+      summary={summary}
+    />
+  );
+}
+
+function ForecastChartBody({
+  loyalApyBps,
+  summary,
+  principalUsd,
+}: {
+  loyalApyBps: number;
+  summary: EarnForecastSummary | null;
+  principalUsd: number | null;
+}) {
   const principal =
     principalUsd != null && Number.isFinite(principalUsd) && principalUsd > 0
       ? principalUsd
@@ -81,11 +96,9 @@ export function ForecastChart({
   const [chartHeight, setChartHeight] = useState(0);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const lastIdxRef = useRef<number | null>(null);
-  // Stable "now" anchor for the forward date labels.
   const nowMs = useMemo(() => Date.now(), []);
 
   const { series, axisMax } = useMemo(() => {
-    const loyalApyBps = getLoyalApyBps(summary);
     const mainApyBps = getMainApyBps(summary);
     const build = (apyBps: number) =>
       buildProjection(principal, apyBps, FORECAST_POINTS);
@@ -109,7 +122,6 @@ export function ForecastChart({
       values.map((v) =>
         ceil > principal ? (v - principal) / (ceil - principal) : 0,
       );
-    // Back-to-front draw order; Loyal (red, solid) on top.
     const built: ForecastSeries[] = [
       {
         color: COLOR_TBILL,
@@ -140,7 +152,7 @@ export function ForecastChart({
       s.norm = toNorm(s.values);
     }
     return { axisMax: ceil, series: built };
-  }, [principal, summary]);
+  }, [loyalApyBps, principal, summary]);
 
   const tbill = series[0];
   const main = series[1];

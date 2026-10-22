@@ -68,7 +68,6 @@ let initialized = false;
 let currentPathname = "/";
 const recentReports = new Map<string, number>();
 
-/** Track the active expo-router pathname so reports name the screen. */
 export function setObservabilityPathname(pathname: string): void {
   if (pathname.startsWith("/")) {
     currentPathname = pathname;
@@ -102,8 +101,6 @@ export function getObservabilityEnvironment(): string {
   return "dev";
 }
 
-// Binary runtime version plus the OTA update that is actually running — the
-// fleet mixes binaries and OTA bundles, so neither alone identifies the code.
 export function getObservabilityRelease(): string {
   const updatePrefix = Updates.updateId?.split("-")[0];
   return (
@@ -197,7 +194,6 @@ export async function postObservabilityJson(
       signal: controller.signal,
     });
   } catch {
-    // Telemetry is best-effort and must never affect the app.
   } finally {
     clearTimeout(timeout);
   }
@@ -236,15 +232,9 @@ function report(
     }
     void postEnvelope(envelope);
   } catch {
-    // Never let the reporter itself throw inside a global error handler.
   }
 }
 
-/**
- * Install the global JS error and unhandled-rejection hooks. Call once on app
- * boot. Chains onto any previously installed handler (Datadog registers its
- * own via `trackErrors`), so both sinks keep receiving errors.
- */
 export function initObservability(): void {
   if (initialized) {
     return;
@@ -391,11 +381,6 @@ export type LifecycleDiagnostics = {
   chainState?: "not_submitted" | "submitted" | "confirmed" | "failed";
   cleanupRequired?: boolean;
   errorCode?: LifecycleErrorCode;
-  /**
-   * Which underlying cause produced a broad `errorCode`. Set automatically by
-   * `failFrom`; only worth passing by hand when a call site knows something
-   * the error shape does not carry.
-   */
   errorDetail?: LifecycleErrorDetail;
   executeNowState?:
     | "requested"
@@ -406,11 +391,6 @@ export type LifecycleDiagnostics = {
     | "released"
     | "canceled";
   executionMode?: "batch" | "sequential" | "single";
-  /**
-   * Status the backend actually answered with. Its presence is the signal that
-   * separates a real server failure from `request_failed` raised without any
-   * response — a dead connection, or a wallet error that never left the device.
-   */
   httpStatus?: number;
   persistenceState?: "not_started" | "recorded" | "failed";
   policyMode?: "create" | "reuse";
@@ -437,18 +417,11 @@ export type LifecycleFlow<F extends LifecycleFlowName> = {
     stage: LifecycleStageMap[F],
     diagnostics?: LifecycleDiagnostics
   ) => void;
-  /**
-   * Terminate the flow from a caught error, classifying it first: a user
-   * declining a wallet prompt latches as `cancelled` (ingested at INFO),
-   * everything else as `failed` (ERROR). Prefer this over `fail` in catch
-   * blocks so no call site has to remember the distinction.
-   */
   failFrom: (
     stage: LifecycleStageMap[F],
     error: unknown,
     diagnostics?: LifecycleDiagnostics
   ) => void;
-  /** Sent as `x-loyal-flow-id` so server-side stages join the same flow. */
   flowId: string;
   observe: (
     stage: LifecycleStageMap[F],
@@ -474,17 +447,11 @@ const WALLET_SESSION_ERROR_CODES: Record<
   unavailable: "wallet_unavailable",
 };
 
-/** Map a flow failure onto the contract's error-code vocabulary. */
 export function mapLifecycleErrorCode(error: unknown): LifecycleErrorCode {
-  // Both wallet checks run before the `code` probe below: a rejection is a user
-  // decision and a dead wallet session never reached the network, yet both
-  // carry a `code` and so would otherwise report as `request_failed` (ASK-1872).
   if (isWalletRejection(error)) return "wallet_rejected";
   if (isWalletSessionError(error)) {
     return WALLET_SESSION_ERROR_CODES[error.failure];
   }
-  // A wallet that can't fee-pay is user state, not an app defect — named so
-  // it neither pages as `unexpected_error` nor hides as `request_failed`.
   if (isInsufficientSolError(error)) return "insufficient_native_sol";
   if (error && typeof error === "object" && "code" in error) {
     const code = (error as { code?: unknown }).code;
@@ -494,11 +461,6 @@ export function mapLifecycleErrorCode(error: unknown): LifecycleErrorCode {
     }
     return "request_failed";
   }
-  // Only a connection-level TypeError is a failed request. Every other one is
-  // a bug in our own code, and calling it `request_failed` both inflated that
-  // code and hid the bug: `request_failed` is deliberately kept out of the
-  // sanitized error ingest, so its message and stack were never reported
-  // anywhere. As `unexpected_error` it reaches that ingest and is diagnosable.
   if (isConnectionFailure(error)) return "request_failed";
   return "unexpected_error";
 }
@@ -522,19 +484,9 @@ function isRpcError(error: unknown): boolean {
   );
 }
 
-/**
- * Name the cause behind a broad `errorCode`. Only a `request_failed` with no
- * `httpStatus` really needs this — nothing answered, so there is no status to
- * explain the failure and four unrelated incidents look identical (ASK-2018).
- *
- * Returns undefined when the cause is genuinely unknown. That is the honest
- * answer and a better one than a token that sends on-call somewhere wrong.
- */
 export function mapLifecycleErrorDetail(
   error: unknown
 ): LifecycleErrorDetail | undefined {
-  // Already classified at the throw site, which saw the cause this layer
-  // cannot: `withConnectionRetry` knows what it retried before giving up.
   const carried = declaredErrorDetail(
     error && typeof error === "object"
       ? (error as { detail?: unknown }).detail
@@ -544,19 +496,12 @@ export function mapLifecycleErrorDetail(
   if (error instanceof Error && error.name === "FetchTimeoutError") {
     return "request_timeout";
   }
-  // Checked before the broader failure test, which also covers timeouts.
   if (isConnectionTimeout(error)) return "request_timeout";
   if (isConnectionFailure(error)) return "network_unreachable";
   if (isRpcError(error)) return "rpc_request_failed";
   return undefined;
 }
 
-/**
- * The HTTP status an API error carried, when the backend actually answered.
- * Duck-typed rather than imported so telemetry stays independent of the Earn
- * API client. Absent for network-level failures, which is the point: a
- * `request_failed` with no status never got a response.
- */
 function httpStatusOf(error: unknown): number | undefined {
   if (!error || typeof error !== "object") return undefined;
   const { status } = error as { status?: unknown };
@@ -574,7 +519,6 @@ function generateFlowId(): string {
   const cryptoApi = (globalThis as { crypto?: { randomUUID?: () => string } })
     .crypto;
   if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
-  // v4-shaped fallback — the id only correlates events within one flow.
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
     const random = Math.trunc(Math.random() * 16);
     const value = char === "x" ? random : (random % 4) + 8;
@@ -596,17 +540,9 @@ const FLOW_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function startLifecycleFlow<F extends LifecycleFlowName>(args: {
-  /**
-   * Adopt the caller's id instead of minting one. The UI starts its loading
-   * metric before this flow exists, so handing that metric's id down here is
-   * what lets a latency point on the metrics dashboard join back to the
-   * lifecycle events and error records that explain it. A malformed id is
-   * ignored rather than propagated: telemetry never breaks the flow it traces.
-   */
   flowId?: string;
   flowName: F;
   flowVariant: LifecycleVariantMap[F];
-  /** Emit a correlated exception record when failFrom maps to unexpected_error. */
   reportUnexpectedErrors?: boolean;
   walletAddress?: string;
 }): LifecycleFlow<F> {
@@ -659,7 +595,6 @@ export function startLifecycleFlow<F extends LifecycleFlowName>(args: {
       }
       void postObservabilityJson("/api/observability/mobile/events", envelope);
     } catch {
-      // Telemetry is best-effort and must never affect the flow it traces.
     }
   };
 
@@ -670,17 +605,11 @@ export function startLifecycleFlow<F extends LifecycleFlowName>(args: {
     failFrom: (stage, error, diagnostics) => {
       if (terminal) return;
       const errorCode = mapLifecycleErrorCode(error);
-      // A wallet decline or known balance shortfall that changed nothing
-      // on-chain is expected user state, so it stays at INFO. A decline after
-      // an earlier step landed leaves confirmed-but-unrecorded state and must
-      // stay at ERROR so on-call still sees it.
       const cancelled =
         (errorCode === "wallet_rejected" ||
           errorCode === "insufficient_native_sol") &&
         !hasLandedProgress(error);
       const httpStatus = httpStatusOf(error);
-      // An explicit `errorDetail` from the call site wins: it was passed
-      // because the caller knew something the error shape does not carry.
       const errorDetail =
         diagnostics?.errorDetail ?? mapLifecycleErrorDetail(error);
       emit(cancelled ? "cancelled" : "failed", stage, {
@@ -690,8 +619,6 @@ export function startLifecycleFlow<F extends LifecycleFlowName>(args: {
         ...(httpStatus !== undefined ? { httpStatus } : {}),
       });
       if (errorCode === "unexpected_error" && args.reportUnexpectedErrors) {
-        // Lifecycle `errorDetail` is deliberately enum-only. Use the existing
-        // sanitized error ingest and add searchable flow context instead.
         report(
           error,
           "mobile.global_error",

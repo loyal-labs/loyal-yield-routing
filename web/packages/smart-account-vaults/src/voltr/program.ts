@@ -113,9 +113,7 @@ export function depositVaultInstruction(
     [126, 224, 21, 255, 228, 53, 117, 33],
     u64(amountRaw),
     [
-      // The SDK marks this read-only; writable is a harmless superset that the
-      // smart-account sync compiler needs (it wants one writable signer).
-      [authority, true, true],
+      [authority, true, false],
       [VOLTR_PROTOCOL, false, false],
       [VOLTR_VAULT, false, true],
       [VOLTR_ASSET_MINT, false, false],

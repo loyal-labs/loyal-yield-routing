@@ -8,9 +8,6 @@ import { ApyChart } from "./ApyChart";
 import { EarnChart, EarnChartContent } from "./EarnChart";
 import { ForecastChart } from "./ForecastChart";
 
-// Segmented control above the Earn chart (Figma 74-19216 / 74-19520): switches
-// the chart between Earned (the bar/odometer chart), APY (multi-series line
-// chart), and Forecast (projection lines).
 type ChartTab = "earnings" | "apy" | "forecast";
 
 const TABS: { key: ChartTab; label: string; enabled: boolean }[] = [
@@ -39,7 +36,6 @@ export function EarnChartTabs({
     !(principalUsd && principalUsd > 0) &&
     !earnMax.earnings?.lifetimeEarnedUsd;
   const activeTab = apyOnly ? "apy" : tab;
-  // Global APY forecast + history feeds the APY and Forecast charts.
   const summary = useEarnForecast();
 
   const handleSelect = useCallback((next: ChartTab, enabled: boolean) => {

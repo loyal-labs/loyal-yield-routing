@@ -46,7 +46,6 @@ function getCloud(): CloudLib | null {
   return cachedLib;
 }
 
-/** True when this binary can talk to iCloud Drive (iOS builds >= this one). */
 export function isCloudBackupSupported(): boolean {
   return getCloud() != null;
 }
@@ -105,7 +104,6 @@ export async function findCloudBackup(): Promise<WalletBackupEnvelope | null> {
         );
         return parseBackupEnvelope(raw);
       } catch {
-        // Likely not downloaded yet — ask iCloud for it and retry.
         await CloudStorage.triggerSync(
           BACKUP_PATH,
           CloudStorageScope.AppData,
@@ -120,11 +118,6 @@ export async function findCloudBackup(): Promise<WalletBackupEnvelope | null> {
   }
 }
 
-/**
- * Write the current wallet (already encrypted) into the iCloud container.
- * Throws when there is no wallet or iCloud is unavailable, so the caller can
- * show a real error instead of a false success.
- */
 export async function writeCloudBackup(): Promise<WalletBackupEnvelope> {
   const cloud = getCloud();
   if (!cloud) throw new Error("iCloud backup is not supported on this build");
@@ -148,17 +141,9 @@ export async function writeCloudBackup(): Promise<WalletBackupEnvelope> {
   return envelope;
 }
 
-/**
- * The single user-facing "iCloud Backup" switch. Drives BOTH backends:
- * the iCloud Keychain mirror (continuous, restores automatically on a new
- * device) and the Drive file (explicit "Restore from iCloud" fallback for
- * users who keep iCloud Keychain disabled). Off deletes both copies.
- */
 export async function setICloudBackupEnabled(enabled: boolean): Promise<void> {
   await setICloudSyncEnabled(enabled);
   if (enabled) {
-    // Best-effort: the keychain mirror is the primary backend; a Drive
-    // failure (no iCloud Drive, offline) must not fail the toggle.
     try {
       await writeCloudBackup();
     } catch (error) {
@@ -173,10 +158,6 @@ export function isICloudBackupEnabled(): boolean {
   return isICloudSyncEnabled();
 }
 
-/**
- * Keep the Drive file in step with wallet changes (create/import/PIN change)
- * while the switch is on. Fire-and-forget from the wallet provider.
- */
 export async function refreshCloudBackupIfEnabled(): Promise<void> {
   if (!isICloudSyncEnabled()) return;
   if (!isCloudBackupSupported()) return;
@@ -187,7 +168,6 @@ export async function refreshCloudBackupIfEnabled(): Promise<void> {
   }
 }
 
-/** Adopt a found backup locally; the user unlocks with the original PIN. */
 export async function restoreCloudBackup(
   envelope: WalletBackupEnvelope,
 ): Promise<void> {

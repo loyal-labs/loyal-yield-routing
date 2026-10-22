@@ -57,7 +57,6 @@ const config: ExpoConfig = {
     // package of the same name, which is the shipped dApp Store build and
     // stays as-is. Must never change after the first App Store release.
     bundleIdentifier: IS_DEV ? "com.askloyal.app.dev" : "com.askloyal.app",
-    // Sign in with Apple through Privy (expo-apple-authentication plugin).
     usesAppleSignIn: true,
     // Answers App Store Connect's export-compliance question at build time.
     // Without it every upload lands in "Missing Compliance" and cannot be
@@ -89,7 +88,7 @@ const config: ExpoConfig = {
       // twitter_int -> 9yg77x724h + n66cz3y3bx, Facebook Ads -> v9wttpbfk9 +
       // n38lu8286q, Google -> cstr6suwn9 + eqhxz8m8av.
       SKAdNetworkItems: [
-        { SKAdNetworkIdentifier: "9yg77x724h.skadnetwork" }, // X Ads
+        { SKAdNetworkIdentifier: "9yg77x724h.skadnetwork" },
         { SKAdNetworkIdentifier: "n66cz3y3bx.skadnetwork" }, // X Ads
         { SKAdNetworkIdentifier: "v9wttpbfk9.skadnetwork" }, // Meta
         { SKAdNetworkIdentifier: "n38lu8286q.skadnetwork" }, // Meta
@@ -260,9 +259,6 @@ const config: ExpoConfig = {
     eas: {
       projectId: "7ecfef22-fa74-4fc9-b2f1-bf80acb81401",
     },
-    // Surfaced to the runtime so the client can hide quests in the public dApp
-    // Store build only (preview/development/Play Store keep them visible). Read
-    // via QUESTS_ENABLED in src/lib/feature-flags.ts.
     isDappStoreBuild: IS_DAPP_STORE,
     ...(OTA_NOTES ? { otaNotes: OTA_NOTES } : {}),
   },

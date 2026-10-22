@@ -16,12 +16,6 @@ export const TELEGRAM_PUBLIC_KEYS = [
   TELEGRAM_PUBLIC_KEY_PROD,
 ];
 
-// SOL price for USD conversions (hardcoded for now)
-export const SOL_PRICE_USD = 180;
-
-// Solana network fee
-export const SOLANA_FEE_SOL = 0.000005;
-
 export const SOLANA_USDC_MINT_MAINNET =
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const SOLANA_USDC_MINT_DEVNET =

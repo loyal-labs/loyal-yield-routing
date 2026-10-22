@@ -17,13 +17,7 @@ import PawPrint from "../../../assets/images/quests/paw_print.svg";
 import SheetCurl from "../../../assets/images/quests/sheet_curl.svg";
 import Snout from "../../../assets/images/quests/snout.svg";
 
-// The notification mirrors Figma 219-78039: a giant red dog over a dark
-// backdrop, with a white panel that overlaps the dog's lower snout. Authored at
-// a 400-wide artboard, so the dog metric scales with the screen width.
 const DOG_HEAD_RATIO = 506 / 400;
-// Fraction of the dog tucked behind the white panel. Sized so the panel's top
-// edge sits above the snout chin (~y438 in the artboard), letting the snout lap
-// over the panel; bump this to make the snout dip further onto the card.
 const DOG_OVERLAP = 0.2;
 const REVEAL_DELAY_MS = 120;
 
@@ -69,12 +63,8 @@ export function QuestCompleteNotification({
 
   const dogWidth = width;
   const dogHeight = Math.round(dogWidth * DOG_HEAD_RATIO);
-  // Pixels of the dog tucked behind the white panel — shared by the dog's
-  // placement and the snout overlay so they stay in exact registration.
   const dogTuck = Math.round(dogHeight * DOG_OVERLAP);
   const panelMinHeight = PANEL_CONTENT + PANEL_PB + insets.bottom;
-  // Distance the composed sheet travels: its full visible height, so it starts
-  // with the dog's ears just below the screen edge and slides all the way up.
   const sheetTravel = panelMinHeight + dogHeight - dogTuck;
 
   const backdrop = useSharedValue(0);
@@ -83,8 +73,6 @@ export function QuestCompleteNotification({
   const pawOpacity = useSharedValue(0);
 
   useEffect(() => {
-    // Park the sheet off-screen whenever it's hidden, so the next open paints
-    // from the hidden state instead of flashing the previous open's last frame.
     if (!visible) {
       backdrop.value = 0;
       sheetY.value = sheetTravel;
@@ -99,13 +87,10 @@ export function QuestCompleteNotification({
     pawOpacity.value = 0;
 
     backdrop.value = withTiming(1, { duration: 240 });
-    // Dog + card are one unit now: a single slide up from the bottom keeps the
-    // snout/curl seam stable instead of drifting on independent springs.
     sheetY.value = withDelay(
       REVEAL_DELAY_MS,
       withSpring(0, { damping: 26, stiffness: 170, mass: 1 }),
     );
-    // Stamp the paw: appears larger, then a stiff spring slams it down to size.
     pawOpacity.value = withDelay(
       PAW_STAMP_DELAY_MS,
       withTiming(1, { duration: 80, easing: Easing.out(Easing.quad) }),
@@ -127,17 +112,13 @@ export function QuestCompleteNotification({
 
   const copy = COPY[variant];
 
-  // Decorations scale with the 400-wide artboard.
   const scale = width / 400;
   const curlW = Math.round(78 * scale);
   const curlH = Math.round(100 * scale);
-  // The snout (Figma 219-78044) is 255×140, anchored at the dog's snout shoulder
-  // (y298, where the snout is exactly 255 wide) and horizontally centred.
   const snoutW = Math.round(255 * scale);
   const snoutH = Math.round(140 * scale);
   const snoutTop = Math.round(298 * scale);
   const snoutLeft = Math.round((dogWidth - snoutW) / 2);
-  // Sit the paw clear above the CTA (panel bottom pad + button + a 24px gap).
   const pawBottom = insets.bottom + PANEL_PB + BUTTON_HEIGHT + 24;
 
   return (
@@ -157,13 +138,10 @@ export function QuestCompleteNotification({
           ]}
         />
 
-        {/* The whole sheet — giant red dog + white card — slides up from the
-            bottom as one unit, so the snout/curl seam never drifts. */}
         <Animated.View
           pointerEvents="box-none"
           style={[StyleSheet.absoluteFill, sheetStyle]}
         >
-          {/* Giant red dog, snout tucked behind the panel. */}
           <View
             pointerEvents="none"
             style={{
@@ -184,8 +162,6 @@ export function QuestCompleteNotification({
             />
           </View>
 
-          {/* White panel with the completion copy. Both top corners are square
-              (the curl defines the top-right); the dog's snout laps over the top. */}
           <View
             style={{
               position: "absolute",
@@ -200,14 +176,12 @@ export function QuestCompleteNotification({
               overflow: "hidden",
             }}
           >
-            {/* Curled top-right corner (red peeks where the sheet curls). */}
             <View
               pointerEvents="none"
               style={{ position: "absolute", top: 0, right: 0 }}
             >
               <SheetCurl width={curlW} height={curlH} />
             </View>
-            {/* Paw, stamped onto the card. */}
             <Animated.View
               pointerEvents="none"
               style={[
@@ -276,10 +250,6 @@ export function QuestCompleteNotification({
             </Pressable>
           </View>
 
-          {/* Snout + nose drawn ON TOP of the panel: the snout laps its chin
-              over the panel's top edge, the nose sits on the snout. Both live in
-              the dog's frame (same box as the dog) so they register exactly with
-              the face behind the panel. */}
           <View
             pointerEvents="none"
             style={{

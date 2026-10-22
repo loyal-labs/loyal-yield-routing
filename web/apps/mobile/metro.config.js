@@ -1,4 +1,3 @@
-// mobile/metro.config.js
 const path = require("path");
 const { getDefaultConfig } = require("expo/metro-config");
 const { withNativewind } = require("nativewind/metro");
@@ -6,12 +5,9 @@ const { withNativewind } = require("nativewind/metro");
 /** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(__dirname);
 
-// Resolve monorepo packages outside /mobile
 const sharedRoot = path.resolve(__dirname, "../../packages/shared");
 const solanaRpcRoot = path.resolve(__dirname, "../../packages/solana-rpc/src");
 const walletCoreRoot = path.resolve(__dirname, "../../packages/wallet-core/src");
-// Smart-account-vaults SDK (device-side Earn autodeposit prepare) and its
-// workspace deps — all resolved from source, same pattern as wallet-core.
 const smartAccountVaultsRoot = path.resolve(
   __dirname,
   "../../packages/smart-account-vaults/src",
@@ -61,7 +57,6 @@ config.resolver.extraNodeModules = {
   "@loyal-labs/solana-instruction-decoder": solanaInstructionDecoderRoot,
 };
 
-// SVG transformer
 config.transformer.babelTransformerPath = require.resolve(
   "react-native-svg-transformer",
 );

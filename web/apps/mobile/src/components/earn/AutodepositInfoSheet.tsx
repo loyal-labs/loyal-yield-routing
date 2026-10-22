@@ -8,13 +8,6 @@ import { useCallback, useEffect, useRef } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-// Pre-flight transparency interstitial, shown BEFORE the Autodeposit setup
-// sheet opens (create and edit — delete lives inside the edit sheet, so every
-// operation passes through here first): what primitive it runs on, what
-// permission it holds, and how it's undone. Exists so the on-chain footprint
-// (token delegate + rent) is understood before the user commits, not something
-// a wallet UI surprises them with later. "Continue" proceeds to the setup
-// sheet; closing any other way cancels.
 const COLOR_CHIP_BG = "#F2F2F7";
 const COLOR_BODY_DIM = "rgba(60, 60, 67, 0.6)";
 const COLOR_BRAND_RED = "#F9363C";
@@ -44,8 +37,6 @@ export function AutodepositInfoSheet({
 }: {
   open: boolean;
   onClose: () => void;
-  // Called when the user accepts — close this sheet, then open the setup
-  // sheet (mirrors AutodepositHelpSheet → setup).
   onContinue: () => void;
 }) {
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -77,8 +68,6 @@ export function AutodepositInfoSheet({
   );
 
   return (
-    // No snap points: dynamic sizing fits the sheet to its short content
-    // (unlike the full-height setup/help sheets).
     <BottomSheetModal
       ref={sheetRef}
       enablePanDownToClose

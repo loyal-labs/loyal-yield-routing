@@ -5,11 +5,6 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 
-/**
- * Unified signing surface. Replaces raw Keypair access so wallet backends
- * (local encrypted keypair, Seeker Seed Vault, etc.) stay interchangeable
- * throughout the app.
- */
 export interface Signer {
   readonly publicKey: PublicKey;
   readonly kind: "local" | "seed-vault" | "mwa" | "deeplink" | "privy";
@@ -39,10 +34,6 @@ async function getTweetNaclSign(): Promise<TweetNaclSign> {
   throw new Error("tweetnacl sign.detached is unavailable");
 }
 
-/**
- * Signer backed by an in-memory @solana/web3.js Keypair. Used for wallets
- * created or imported into the local encrypted store.
- */
 export class LocalKeypairSigner implements Signer {
   readonly kind = "local" as const;
 
@@ -77,10 +68,6 @@ export class LocalKeypairSigner implements Signer {
     return txs;
   }
 
-  /**
-   * Local-only: exposed so users can back up the secret key from the UI.
-   * Not part of the Signer interface — callers must narrow on `kind`.
-   */
   getSecretKeyHex(): string {
     return Array.from(this.keypair.secretKey)
       .map((b) => b.toString(16).padStart(2, "0"))
@@ -94,7 +81,6 @@ type TweetNaclVerify = (
   publicKey: Uint8Array,
 ) => boolean;
 
-// Lazy-loaded for the same reason as getTweetNaclSign above.
 async function getTweetNaclVerify(): Promise<TweetNaclVerify> {
   const mod = (await import("tweetnacl")) as unknown as {
     sign?: { detached?: { verify?: TweetNaclVerify } };

@@ -39,15 +39,12 @@ export function getEarnTransactionRowLabel(
   }
 }
 
-// Money-in (deposits/sweeps) reads green; everything else is neutral black.
 export function getEarnTransactionAmountColor(
   kind: EarnTransactionItem["kind"],
 ): string {
   return kind === "deposit" || kind === "balance_sweep" ? "#34C759" : "#000000";
 }
 
-// Epoch ms for an item, for "newest" comparisons (unread dot). Falls back to 0
-// when neither timestamp parses.
 export function earnTransactionTimestampMs(
   item: Pick<EarnTransactionItem, "confirmedAt" | "sortTimestamp">,
 ): number {
@@ -72,8 +69,6 @@ export function formatEarnRowTime(
   });
 }
 
-// Local-timezone date-section label ("June 29"), mirroring the web. Falls back
-// to the server `dateGroup` when the raw timestamp can't be parsed.
 function earnRowDateGroup(
   item: Pick<
     EarnTransactionItem,

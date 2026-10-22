@@ -6,10 +6,6 @@ import { DEFAULT_SOLANA_DERIVATION_PATH, type VaultAccount } from "./types";
 export { DEFAULT_SOLANA_DERIVATION_PATH } from "./types";
 export type { VaultAccount } from "./types";
 
-// ---------------------------------------------------------------------------
-// Encoding helpers (module-local, no runtime deps).
-// ---------------------------------------------------------------------------
-
 const BASE58_ALPHABET =
   "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -71,16 +67,6 @@ function nativeAuthToken(authToken: string): string | number {
     : Number(authToken);
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Is a Seed Vault implementation available on this device?
- *
- * Returns `false` on iOS and on Android devices without the Seed Vault
- * package installed. Safe to call at UI render time.
- */
 export async function isAvailable(): Promise<boolean> {
   if (Platform.OS !== "android") return false;
   try {
@@ -108,11 +94,6 @@ export async function requestPermission(): Promise<boolean> {
   }
 }
 
-/**
- * Prompt the user to authorize an existing seed already stored in the vault.
- * The vault's picker UI appears; on success we get back an auth token and
- * the public key for the requested derivation path.
- */
 export async function authorizeExistingSeed(
   derivationPath: string = DEFAULT_SOLANA_DERIVATION_PATH,
 ): Promise<VaultAccount> {
@@ -120,12 +101,6 @@ export async function authorizeExistingSeed(
   return toVaultAccount(native);
 }
 
-/**
- * List seeds the vault has *already* authorized for this app — useful to
- * recover orphaned auth tokens (e.g. when a previous authorize flow returned
- * a token but the app failed to persist it). Returns an empty array if no
- * authorizations exist or the platform is not Android.
- */
 export async function listAuthorizedSeeds(
   derivationPath: string = DEFAULT_SOLANA_DERIVATION_PATH,
 ): Promise<VaultAccount[]> {
@@ -149,10 +124,6 @@ export async function createNewSeed(
   return toVaultAccount(native);
 }
 
-/**
- * Prompt the user to import an existing BIP-39 mnemonic into the vault and
- * authorize it for this app.
- */
 export async function importSeed(
   derivationPath: string = DEFAULT_SOLANA_DERIVATION_PATH,
 ): Promise<VaultAccount> {
@@ -168,10 +139,6 @@ export async function deauthorize(authToken: string): Promise<void> {
   await ExpoSeedVault.deauthorize(nativeAuthToken(authToken));
 }
 
-/**
- * Ask the vault to sign a transaction. The vault prompts the user for
- * biometric/PIN confirmation before returning the signature bytes.
- */
 export async function signTransaction(args: {
   authToken: string;
   derivationPath: string;
@@ -219,10 +186,6 @@ export async function signTransactions(args: {
   return sigsB64.map(base64ToUint8);
 }
 
-/**
- * Ask the vault to sign an arbitrary message (used for auth challenges, not
- * for transactions). The vault prompts the user.
- */
 export async function signMessage(args: {
   authToken: string;
   derivationPath: string;
@@ -252,5 +215,4 @@ export async function getPublicKey(args: {
   return encodeBase58(base64ToUint8(b64));
 }
 
-// Exposed for tests.
 export const __test__ = { encodeBase58, uint8ToBase64, base64ToUint8 };

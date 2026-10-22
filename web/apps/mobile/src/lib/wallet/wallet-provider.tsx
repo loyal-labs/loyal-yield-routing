@@ -89,8 +89,6 @@ import {
   storeVaultAccount,
 } from "./vault-account-storage";
 
-// "vault-unlocked" covers every external-wallet signer (Seed Vault legacy,
-// MWA): no local secret, so no lock/unlock lifecycle.
 export type WalletState =
   | "loading"
   | "noWallet"
@@ -98,7 +96,6 @@ export type WalletState =
   | "unlocked"
   | "vault-unlocked";
 
-/** True while the wallet is usable for signing (local unlocked or vault). */
 export function isWalletUnlocked(state: WalletState): boolean {
   return state === "unlocked" || state === "vault-unlocked";
 }
@@ -109,7 +106,6 @@ interface WalletContextValue {
   publicKey: string | null;
   onboardingReplayActive: boolean;
 
-  // Wallet setup
   importWallet: (secretKey: Uint8Array, pin: string) => Promise<Keypair>;
   finalizeSigner: (
     keypair: Keypair,
@@ -119,31 +115,21 @@ interface WalletContextValue {
   finalizeMwaSigner: (account: StoredMwaAccount) => Promise<void>;
   finalizeDeeplinkSigner: (session: StoredDeeplinkSession) => Promise<void>;
   finalizeVaultSigner: (account: VaultAccount) => Promise<void>;
-  /**
-   * Privy email/OAuth sign-in: hydrate or create the embedded wallet, then
-   * unlock. Throws PrivyExternalWalletError when the user's only wallets are
-   * external (connect that wallet instead).
-   */
   finalizePrivySigner: (
     user: PrivyUser,
     opts?: { useEmbedded?: boolean },
   ) => Promise<void>;
-  /** Legacy signer → Privy SIWS link. "idle" until the first attempt settles. */
   privyMigrationStatus: "idle" | PrivyMigrationResult;
 
-  // Lock / unlock
   unlock: (pin: string) => Promise<void>;
   unlockWithBiometrics: () => Promise<boolean>;
   lock: () => void;
 
-  // Biometrics
   biometricEnabled: boolean;
   setBiometricEnabled: (pin: string, enabled: boolean) => Promise<void>;
 
-  // Management
   changePin: (newPin: string) => Promise<void>;
   resetWallet: (opts?: { keepCloudBackup?: boolean }) => Promise<void>;
-  /** Re-read storage after an out-of-band restore (e.g. iCloud backup). */
   refreshFromStorage: () => Promise<void>;
   getSecretKeyHex: () => string | null;
   startOnboardingReplay: () => void;
@@ -152,7 +138,6 @@ interface WalletContextValue {
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
-// Set when a sign-in on this device ended on the Privy embedded wallet.
 const PRIVY_EMBEDDED_KEY = "loyal:privy-embedded-wallet";
 
 export function useWallet(): WalletContextValue {
@@ -161,8 +146,6 @@ export function useWallet(): WalletContextValue {
   return ctx;
 }
 
-// Everything WalletProviderCore needs from Privy, gathered by hooks that only
-// exist under a configured <PrivyProvider>. Null when Privy is not configured.
 type PrivyBindings = {
   isReady: boolean;
   user: PrivyUser | null;
@@ -268,8 +251,6 @@ function WalletProviderCore({
         setBiometricEnabledState(bioEnabled);
         setState("locked");
       } else if (await restoreFromSyncedKeypair()) {
-        // Fresh install, but iCloud Keychain carried a wallet from another
-        // device — land on the lock screen and let the PIN unlock it.
         setPublicKey(await getStoredPublicKey());
         setState("locked");
       } else {
@@ -284,10 +265,6 @@ function WalletProviderCore({
     privyBootDone.current = true;
     (async () => {
       if (privyHasUser && privyEmbedded && mmkv.getBoolean(PRIVY_EMBEDDED_KEY)) {
-        // Only after a sign-in on this device ended on the embedded wallet.
-        // A Privy session alone is not enough: a login that stopped at the
-        // external-wallet handoff would otherwise resurface as the embedded
-        // address on the next launch.
         const provider = await privyEmbedded.getProvider();
         const next = new PrivyEmbeddedSigner(provider, privyEmbedded.address);
         setSigner(next);
@@ -301,13 +278,10 @@ function WalletProviderCore({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when Privy is ready
   }, [noLegacyWallet, privyReady]);
 
-  // Auto-lock with 30s grace period — local signers only.
-  // Vault-backed signers do not auto-lock; the vault prompts for each signature
-  // so there is no in-memory secret to protect.
   const backgroundedAt = useRef<number | null>(null);
   const AUTO_LOCK_GRACE_MS = 30_000;
   const lockInternal = useCallback(() => {
-    if (state === "vault-unlocked") return; // no-op for vault
+    if (state === "vault-unlocked") return;
     setSigner(null);
     clearWalletSignerCache();
     setState("locked");
@@ -336,17 +310,11 @@ function WalletProviderCore({
     return () => subscription.remove();
   }, [state, lockInternal]);
 
-  // Import keypair — encrypts + stores but does NOT unlock.
-  // Caller goes through biometric setup, then finalizeSigner unlocks.
   const importWallet = useCallback(
     async (secretKey: Uint8Array, pin: string) => importKeypair(secretKey, pin),
     [],
   );
 
-  // Called after biometric setup — persists keypair (create) or just unlocks
-  // (import). The Privy SIWS link runs from the migration effect below once
-  // `signer` lands, so an imported key joins a Privy user the same way a
-  // pre-Privy wallet does after unlock.
   const finalizeSigner = useCallback(
     async (kp: Keypair, pin: string, opts?: { alreadyStored?: boolean }) => {
       if (!opts?.alreadyStored) {
@@ -368,15 +336,11 @@ function WalletProviderCore({
           : WALLET_SETUP_EVENTS.walletCreated,
         { source },
       );
-      // Default-on iCloud backup: keep the Drive file in step with the new
-      // wallet. Best-effort; the keychain mirror already ran in storeKeypair.
       void refreshCloudBackupIfEnabled();
     },
     [],
   );
 
-  // MWA accounts finalize without PIN/biometric setup. The user's wallet app
-  // owns all authorization UI going forward.
   const finalizeMwaSigner = useCallback(async (account: StoredMwaAccount) => {
     await storeMwaAccount(account);
     const next = new MwaSigner(
@@ -392,8 +356,6 @@ function WalletProviderCore({
     track(WALLET_SETUP_EVENTS.walletCreated, { source: "mwa" });
   }, []);
 
-  // Deeplink (Phantom/Solflare on iOS) accounts finalize without
-  // PIN/biometric setup, like MWA: the wallet app owns all approval UI.
   const finalizeDeeplinkSigner = useCallback(
     async (session: StoredDeeplinkSession) => {
       await storeDeeplinkSession(session);
@@ -430,8 +392,6 @@ function WalletProviderCore({
     track(WALLET_SETUP_EVENTS.walletCreated, { source: "vault" });
   }, []);
 
-  // Best-effort Loyal session from the Privy identity token. Earn routes still
-  // accept per-request wallet signatures, so a failure here is not fatal.
   const exchangeSession = useCallback(
     async (sessionSigner: Signer) => {
       if (!privy) return;
@@ -503,12 +463,6 @@ function WalletProviderCore({
     [privy, exchangeSession],
   );
 
-  // Link an existing (legacy) signer to a Privy user via SIWS. Runs once per
-  // app session, only while no Privy user is signed in. Local signers reach
-  // here after unlock, so the user has just proven presence; hardware
-  // signers get one approval prompt. Never blocks: see migrateSignerToPrivy.
-  // Keyed by address so a reset → import in the same session links the new
-  // key too, while StrictMode double-effects stay single-shot.
   const migrationAttempted = useRef<string | null>(null);
   useEffect(() => {
     if (!privy || !privy.isReady || privy.user || !signer) return;
@@ -526,8 +480,6 @@ function WalletProviderCore({
     })();
   }, [privy, signer, exchangeSession]);
 
-  // After a restore path wrote the encrypted keypair directly to storage,
-  // transition noWallet -> locked so the normal PIN flow takes over.
   const refreshFromStorage = useCallback(async () => {
     const exists = await hasStoredKeypair();
     if (!exists) return;
@@ -546,9 +498,6 @@ function WalletProviderCore({
     setWalletSigner(next);
     setState("unlocked");
     identifyWallet(pk, "imported");
-    // Restored wallets (iCloud Keychain / Drive backup) skipped onboarding's
-    // biometric setup — re-run it with the PIN we just verified (ASK-2205).
-    // enableBiometrics no-ops without hardware/enrollment, like the create flow.
     if (consumeBiometricRestorePending()) {
       try {
         const enabled = await enableBiometrics(pin);
@@ -600,8 +549,6 @@ function WalletProviderCore({
       if (biometricEnabled) {
         await enableBiometrics(newPin);
       }
-      // The Drive backup holds the old-PIN blob after a PIN change — refresh
-      // it so restore always works with the current PIN.
       void refreshCloudBackupIfEnabled();
     },
     [signer, biometricEnabled],
@@ -610,9 +557,6 @@ function WalletProviderCore({
   const resetWallet = useCallback(
     async (opts?: { keepCloudBackup?: boolean }) => {
       const keepCloudBackup = opts?.keepCloudBackup ?? false;
-      // Deauthorize the external wallet first, if there is one. Swallow errors
-      // — if the wallet rejects (already revoked, etc.), we still want local
-      // cleanup to proceed.
       if (signer instanceof SeedVaultSigner) {
         try {
           await SeedVault.deauthorize(signer.authToken);
@@ -650,9 +594,6 @@ function WalletProviderCore({
       await clearVaultAccount();
       await clearStoredKeypair({ keepSyncedKeychain: keepCloudBackup });
       if (!keepCloudBackup) {
-        // "Delete everywhere" — a later fresh install must not offer to
-        // restore a wallet the user deliberately deleted. "Remove from this
-        // device" keeps the iCloud copies restorable (ASK-2206).
         await deleteCloudBackup();
       }
       await disableBiometrics();

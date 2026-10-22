@@ -2,7 +2,6 @@
 
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
 import { resolveSolanaEnv } from "@loyal-labs/solana-rpc";
-import type { PortfolioPosition } from "@loyal-labs/solana-wallet";
 import { useUnshield } from "@loyal-labs/wallet-core/hooks";
 import type { WalletSigner } from "@loyal-labs/wallet-core/types";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -22,6 +21,7 @@ import {
   type CryptoPaneVariant,
   type CryptoRowActions,
 } from "@/components/wallet-workspace/facelift/crypto-pane";
+import { deriveSwapTokens, selectSwapToken } from "@/components/wallet-sidebar/swap-tokens";
 import { isEscapeGuardedTarget } from "@/components/wallet-workspace/facelift/keyboard";
 import {
   MiddlePaneSlide,
@@ -41,6 +41,7 @@ import {
   SwapTokenSelectPane,
 } from "@/components/wallet-workspace/facelift/swap-pane";
 import { TokenDetailPane } from "@/components/wallet-workspace/facelift/token-detail-pane";
+import { useStablecoinsUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import {
   type ShieldedRow,
   toShieldedRow,
@@ -73,16 +74,6 @@ function tokenRowToSwapToken(token: TokenRow): SwapToken {
     mint: token.id,
     price: Number.parseFloat(token.price.replace(/[$,]/g, "")) || 0,
     symbol: token.symbol,
-  };
-}
-
-function portfolioPositionToSwapToken(position: PortfolioPosition): SwapToken {
-  return {
-    balance: position.publicBalance,
-    icon: position.asset.imageUrl ?? getTokenIconUrl(position.asset.symbol),
-    mint: position.asset.mint,
-    price: position.priceUsd ?? 0,
-    symbol: position.asset.symbol,
   };
 }
 
@@ -153,19 +144,7 @@ export function CryptoPage({
         ),
     [data.positions, page, shieldedBalances, stablecoinMints]
   );
-  // Same numbers the sidebar rows show: stablecoins summed by mint, crypto =
-  // wallet total minus stablecoins.
-  const stablecoinsUsd = useMemo(
-    () =>
-      data.positions.reduce(
-        (sum, position) =>
-          isStablecoinMint(position.asset.mint, stablecoinMints)
-            ? sum + (position.totalValueUsd ?? 0)
-            : sum,
-        0
-      ),
-    [data.positions, stablecoinMints]
-  );
+  const stablecoinsUsd = useStablecoinsUsd(data.positions);
   const pageBalance = splitUsdBalance(
     page === "stables"
       ? stablecoinsUsd
@@ -223,38 +202,10 @@ export function CryptoPage({
     setIsDetailSheetOpen(false);
   }, [page]);
 
-  const derivedTokens = useMemo<SwapToken[]>(() => {
-    const positions = data.positions;
-
-    if (!positions || positions.length === 0) {
-      return fallbackSwapTokens;
-    }
-
-    const tokens: SwapToken[] = positions
-      .filter(
-        (position) =>
-          position.publicBalance > 0 ||
-          ["SOL", "USDC"].includes(position.asset.symbol)
-      )
-      .map(portfolioPositionToSwapToken);
-
-    if (!tokens.some((token) => token.mint === LOYL_TOKEN.mint)) {
-      const loylPosition = positions.find(
-        (position) => position.asset.mint === LOYL_TOKEN.mint
-      );
-      const loyl = loylPosition
-        ? {
-            ...LOYL_TOKEN,
-            balance: loylPosition.publicBalance,
-            price: loylPosition.priceUsd ?? 0,
-          }
-        : LOYL_TOKEN;
-
-      tokens.splice(2, 0, loyl);
-    }
-
-    return tokens;
-  }, [data.positions]);
+  const derivedTokens = useMemo(
+    () => deriveSwapTokens(data.positions),
+    [data.positions]
+  );
   const earnProductAssets = useMemo(
     () =>
       getEarnProductAssetsForCluster(
@@ -420,25 +371,14 @@ export function CryptoPage({
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
 
-  // OG handleTokenSelect collision rule: picking the token already on the
-  // other side swaps the pair instead of duplicating it.
   const handleSwapTokenSelect = useCallback(
     (side: "from" | "to", token: SwapToken) => {
-      if (side === "from") {
-        setSwapToToken((currentTo) =>
-          currentTo.symbol === token.symbol
-            ? swapFromTokenRef.current
-            : currentTo
-        );
-        setSwapFromToken(token);
-      } else {
-        setSwapFromToken((currentFrom) =>
-          currentFrom.symbol === token.symbol
-            ? swapToTokenRef.current
-            : currentFrom
-        );
-        setSwapToToken(token);
-      }
+      const next = selectSwapToken(side, token, {
+        from: swapFromTokenRef.current,
+        to: swapToTokenRef.current,
+      });
+      setSwapFromToken(next.from);
+      setSwapToToken(next.to);
       setSwapSelectSide(null);
     },
     []

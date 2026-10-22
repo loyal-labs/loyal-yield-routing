@@ -75,15 +75,12 @@ export function CategoryScreen({ category }: { category: WalletCategory }) {
   const { tokenHoldings, isHoldingsLoading, refreshTokenHoldings } =
     useTokenHoldings(walletAddress);
   const { signer } = useWallet();
-  // Legacy shielded balances (ASK-2269): Unshield shows only while one exists.
   const {
     balances: shieldedBalances,
     executeUnshield,
     refreshBalances: refreshShieldedBalances,
   } = useUnshield(signer, getSolanaEnv());
 
-  // Source card geometry passed by the wallet grid, so this page can expand out
-  // of (and collapse back into) the tapped card. Absent on direct navigation.
   const params = useLocalSearchParams<{
     sx?: string;
     sy?: string;
@@ -106,8 +103,6 @@ export function CategoryScreen({ category }: { category: WalletCategory }) {
     };
   }, [params.sx, params.sy, params.sw, params.sh, params.su]);
 
-  // Swipe-to-dismiss only engages when the asset list is scrolled to the top, so
-  // it never fights the list's own scrolling.
   const scrollOffset = useSharedValue(0);
   const scrollHandler = useAnimatedScrollHandler((e) => {
     scrollOffset.value = e.contentOffset.y;
@@ -128,8 +123,6 @@ export function CategoryScreen({ category }: { category: WalletCategory }) {
   }, [tokenHoldings, shieldedBalances]);
   const tokenDetailsByMint = useTokenDetails(tokenDetailMints);
 
-  // Shielded balances in this category, listed under the regular holdings so
-  // they stay visible without opening the Unshield sheet.
   const shieldedRows = useMemo(
     () =>
       shieldedBalances
@@ -138,8 +131,6 @@ export function CategoryScreen({ category }: { category: WalletCategory }) {
     [shieldedBalances, tokenHoldings, tokenDetailsByMint, category],
   );
 
-  // Reuse the wallet list's sort + pair grouping, then keep only this
-  // category's holdings (pairs stay adjacent, so connectors still line up).
   const displayHoldings = useMemo(
     () => filterHoldingsByCategory(getDisplayTokenHoldings(tokenHoldings), category),
     [tokenHoldings, category],

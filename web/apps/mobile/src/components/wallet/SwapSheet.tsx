@@ -72,11 +72,6 @@ import SendErrorDog from "../../../assets/images/wallet/send_error_dog.svg";
 import SendSpinnerIcon from "../../../assets/images/wallet/send_spinner_80.svg";
 import SendSuccessDog from "../../../assets/images/wallet/send_success_dog.svg";
 
-// Fixed-height sheet (mirrors SendSheet). A fixed height is what lets each
-// step's `flex-1` regions size + center correctly and keeps the footer pinned.
-// Height and snap point come from useFixedSheetLayout — the same pixel value
-// for both, so the box can never overshoot the visible sheet (it did on
-// iPad/notched iPhones when this was screen-height math vs a "94%" snap).
 const DEFAULT_SOL_MAX_FEE_RESERVE_LAMPORTS = 50_000;
 
 type SwapStep = "form" | "confirm" | "result";
@@ -294,10 +289,6 @@ export function SwapSheet({
   const [step, setStep] = useState<SwapStep>("form");
   const [fromMint, setFromMint] = useState(NATIVE_SOL_MINT);
   const [toMint, setToMint] = useState(getDefaultUsdcMint);
-  // Holds the full token object for a "to" selection that isn't in the user's
-  // holdings or the popular list (e.g. a Jupiter search result), so the form
-  // can still display it. Without this, picking a searched token leaves
-  // toHolding null and the selector falls back to the "Select" placeholder.
   const [selectedToToken, setSelectedToToken] = useState<TokenHolding | null>(
     null
   );
@@ -344,8 +335,6 @@ export function SwapSheet({
     (selectedToToken?.mint === toMint ? selectedToToken : null);
 
   const fromPrice = fromHolding?.priceUsd ?? null;
-  // `amountStr` is the value as typed in the active denomination; the quote and
-  // every downstream check operate on the token amount, so derive it here.
   const amountInput = parseFloat(amountStr) || 0;
   const amountNum =
     currencyMode === "USD"
@@ -357,9 +346,6 @@ export function SwapSheet({
   const isValidAmount = amountNum > 0 && amountNum <= fromBalance;
   const isFormValid = isValidAmount && !!quote && fromMint !== toMint;
 
-  // Reset state on open/close transitions. Other inputs are intentionally
-  // read at open time — re-running mid-flight would clobber the result step
-  // after onSwapComplete refreshes holdings.
   useEffect(() => {
     if (open) {
       const initialMints = resolveInitialSwapMints({
@@ -405,7 +391,6 @@ export function SwapSheet({
     lastSuccessfulFeeEstimateStateRef.current
   );
 
-  // Fetch quote when amount/tokens change
   useEffect(() => {
     if (amountNum <= 0 || fromMint === toMint || !fromHolding) {
       lastSuccessfulFeeEstimateStateRef.current = null;
@@ -537,8 +522,6 @@ export function SwapSheet({
     [focusActiveInput]
   );
 
-  // Re-focus the right input on step / picker transitions (the sheet is
-  // already settled, so `onChange` won't fire again).
   useEffect(() => {
     if (!sheetSettledRef.current) return;
     const id = setTimeout(focusActiveInput, 80);
@@ -566,7 +549,6 @@ export function SwapSheet({
       Number.isFinite(fromHolding.priceUsd) &&
       fromHolding.priceUsd > 0
     ) {
-      // Fallback to input-side USD estimate when output token price is unavailable.
       return amountNum * fromHolding.priceUsd;
     }
     return null;
@@ -614,7 +596,6 @@ export function SwapSheet({
   const handleMax = useCallback(() => {
     if (!fromHolding) return;
     let val = fromBalance;
-    // Reserve the network fee when maxing out SOL.
     const feeReserveSol =
       feeEstimateState.status === "success"
         ? feeEstimateState.estimate.totalLamports / 1_000_000_000
@@ -655,9 +636,6 @@ export function SwapSheet({
       const txBuf = Buffer.from(swapTxResponse.swapTransaction, "base64");
       const transaction = VersionedTransaction.deserialize(txBuf);
       if (!signer) throw new Error("Wallet signer is not available");
-      // The dedicated review step already confirms the swap, so sign directly
-      // — no extra decoded-transaction approval modal. (Seed Vault wallets
-      // still get their own native biometric prompt.)
       await signer.signTransaction(transaction);
 
       const connection = getConnection();
@@ -860,7 +838,6 @@ export function SwapSheet({
   );
 }
 
-// --- Swap token pill (You swap / You receive selector) ---
 function SwapTokenPill({
   holding,
   detailLogoUrl,
@@ -918,7 +895,6 @@ function SwapTokenPill({
   );
 }
 
-// --- Helpers ---
 function popularToHolding(p: PopularToken): TokenHolding {
   return {
     mint: p.mint,
@@ -932,7 +908,6 @@ function popularToHolding(p: PopularToken): TokenHolding {
   };
 }
 
-// --- Token Picker ---
 function TokenPicker({
   mode,
   title,
@@ -955,7 +930,6 @@ function TokenPicker({
   const [isSearching, setIsSearching] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Local filter
   const localFiltered = useMemo(() => {
     const base = tokenHoldings;
     if (!search.trim()) return base;
@@ -968,7 +942,6 @@ function TokenPicker({
     );
   }, [tokenHoldings, search]);
 
-  // Debounced Jupiter search for "to" mode
   useEffect(() => {
     if (mode !== "to" || !searchTokens || search.trim().length < 2) {
       setJupiterResults([]);
@@ -999,7 +972,6 @@ function TokenPicker({
     };
   }, [search, mode, searchTokens, tokenHoldings]);
 
-  // Merge local + Jupiter results (deduplicated)
   const displayTokens = useMemo(() => {
     if (mode !== "to" || jupiterResults.length === 0) return localFiltered;
     const localMints = new Set(localFiltered.map((t) => t.mint));
@@ -1009,7 +981,6 @@ function TokenPicker({
 
   return (
     <View className="w-full">
-      {/* Toolbar: circular back + centered title */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1044,7 +1015,6 @@ function TokenPicker({
         </View>
       </View>
 
-      {/* Search */}
       <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
         <View
           className="flex-row items-center"
@@ -1075,14 +1045,11 @@ function TokenPicker({
         </View>
       </View>
 
-      {/* Token list */}
       {displayTokens.map((token) => {
         const icon = getTokenIcon(
           token,
           tokenDetailsByMint?.[token.mint]?.token.logoUrl
         );
-        // "To" picker chooses what to receive → show the unit price. "From"
-        // picker chooses from holdings → show held balance + its USD value.
         const subLabel =
           mode === "to"
             ? token.symbol
@@ -1142,7 +1109,6 @@ function TokenPicker({
         );
       })}
 
-      {/* Searching indicator */}
       {isSearching ? (
         <View
           className="flex-row items-center justify-center"
@@ -1174,7 +1140,6 @@ function TokenPicker({
   );
 }
 
-// --- Form Step ---
 function FormStep({
   onClose,
   fromHolding,
@@ -1255,9 +1220,6 @@ function FormStep({
 
   const labelStyle = { color: "rgba(60,60,67,0.6)", lineHeight: 20 } as const;
 
-  // CTA state. No amount → dim "Enter amount" (translucent-black fill so the
-  // label stays crisp white); over balance → light-red "Insufficient balance";
-  // valid + quote ready → solid-black "Review".
   const hasAmount = amountNum > 0;
   const overBalance = hasAmount && amountNum > fromBalance;
   let ctaLabel = "Enter amount";
@@ -1278,7 +1240,6 @@ function FormStep({
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Header */}
       <View style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1313,9 +1274,7 @@ function FormStep({
         </View>
       </View>
 
-      {/* Body */}
       <View style={{ flex: 1, paddingHorizontal: 16 }}>
-        {/* You swap */}
         <View style={{ paddingVertical: 10 }}>
           <Text className="text-[15px] font-normal" style={labelStyle}>
             You swap
@@ -1425,7 +1384,6 @@ function FormStep({
           </View>
         </View>
 
-        {/* Divider + flip */}
         <View
           style={{ height: 28, alignItems: "center", justifyContent: "center" }}
         >
@@ -1456,7 +1414,6 @@ function FormStep({
           </Pressable>
         </View>
 
-        {/* You receive */}
         <View style={{ paddingVertical: 12 }}>
           <Text className="text-[15px] font-normal" style={labelStyle}>
             You receive
@@ -1503,7 +1460,6 @@ function FormStep({
         </View>
       </View>
 
-      {/* CTA — pinned to the sheet bottom and rides up with the keyboard. */}
       <Animated.View
         style={[
           {
@@ -1589,7 +1545,6 @@ function ConfirmStep({
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Header */}
       <View style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1624,7 +1579,6 @@ function ConfirmStep({
         </View>
       </View>
 
-      {/* Token pair */}
       <View
         className="flex-row"
         style={{ paddingHorizontal: 16, paddingVertical: 8 }}
@@ -1646,7 +1600,6 @@ function ConfirmStep({
         />
       </View>
 
-      {/* Amounts */}
       <View style={{ paddingHorizontal: 24, paddingBottom: 20, gap: 4 }}>
         <View className="flex-row items-baseline" style={{ gap: 8 }}>
           <Text
@@ -1686,7 +1639,6 @@ function ConfirmStep({
         ) : null}
       </View>
 
-      {/* Rate / slippage / fee */}
       <View style={{ paddingHorizontal: 16 }}>
         <View
           style={{
@@ -1719,7 +1671,6 @@ function ConfirmStep({
 
       <View style={{ flex: 1 }} />
 
-      {/* Footer */}
       <View
         style={{
           paddingHorizontal: 20,
@@ -1917,7 +1868,6 @@ function MascotReveal({ children }: { children: React.ReactNode }) {
   return <Animated.View style={style}>{children}</Animated.View>;
 }
 
-// --- Result Step ---
 function ResultStep({
   isSwapping,
   swapError,
@@ -1952,7 +1902,6 @@ function ResultStep({
 
   return (
     <View className="w-full" style={{ flex: 1 }}>
-      {/* Toolbar */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1987,7 +1936,6 @@ function ResultStep({
         </View>
       </View>
 
-      {/* Centered status: mascot/spinner + copy */}
       <View
         className="flex-1 items-center justify-center"
         style={{ paddingHorizontal: 32, paddingVertical: 24 }}
@@ -2044,7 +1992,6 @@ function ResultStep({
         </View>
       </View>
 
-      {/* Footer: Done + (when available) View transaction */}
       <View
         style={{
           backgroundColor: "#fff",

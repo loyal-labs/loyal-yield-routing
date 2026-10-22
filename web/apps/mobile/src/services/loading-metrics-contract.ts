@@ -18,7 +18,6 @@ export type MobileLoadingOperation = (typeof MOBILE_LOADING_OPERATIONS)[number];
 
 export type MobileLoadingMetricEnvelope = {
   appSessionId: string;
-  /** Stable per-install UUID joining the device's telemetry trail (ASK-2097). */
   deviceId?: string;
   durationMs: number;
   environment: string;

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2029 # the remote commands are built here on purpose
 set -euo pipefail
 
 usage="usage: bun run deploy backyard|retail|observer|web|admin|stats [sha] [--migrations-applied] [--stopped]"
@@ -88,7 +87,10 @@ if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   exit 0
 fi
 
-facts=$(ssh "$host" "id -u; uname -m; echo rules \$(cat $rules_record 2>/dev/null); cat $dropin")
+facts=$(ssh "$host" sh -s -- "$rules_record" "$dropin" <<'REMOTE'
+id -u; uname -m; echo rules $(cat "$1" 2>/dev/null); cat "$2"
+REMOTE
+)
 {
   read -r uid
   read -r arch
@@ -119,7 +121,10 @@ elif [[ -n $rules_sha ]] && ! git merge-base --is-ancestor "$rules_sha" "$sha" 2
 fi
 
 if [[ $running == "$sha" && $mode == running ]]; then
-  state=$(ssh "$host" systemctl is-active "$unit" || true)
+  state=$(ssh "$host" sh -s -- "$unit" <<'REMOTE' || true
+systemctl is-active "$1"
+REMOTE
+)
   if [[ $web_family == yes ]]; then
     echo "$unit already runs $sha ($state); the web app is unchanged"
   else
@@ -186,16 +191,18 @@ if [[ $running != "$sha" || $mode == stopped ]]; then
   fi
 
   dir=$releases/$sha
-  ssh "$host" "mkdir -p $dir"
+  ssh "$host" mkdir -p "$dir"
   scp -q "$binary" "$host:$dir/$binary_name.tmp"
   scp -q "$tree/deploy/hetzner/activate.sh" "$host:$dir/activate.sh.tmp"
-  ssh "$host" "chmod 555 $dir/$binary_name.tmp $dir/activate.sh.tmp &&
-    mv -f $dir/$binary_name.tmp $dir/$binary_name &&
-    mv -f $dir/activate.sh.tmp $dir/activate.sh"
+  ssh "$host" sh -s -- "$dir" "$binary_name" <<'REMOTE'
+chmod 555 "$1/$2.tmp" "$1/activate.sh.tmp" &&
+  mv -f "$1/$2.tmp" "$1/$2" &&
+  mv -f "$1/activate.sh.tmp" "$1/activate.sh"
+REMOTE
 
   set +e
-  ssh "$host" "systemd-run --unit=loyal-deploy-$family-${sha:0:12} --quiet --wait --pipe --collect \
-    /bin/sh $dir/activate.sh $family $sha $sum $mode"
+  ssh "$host" systemd-run --unit="loyal-deploy-$family-${sha:0:12}" --quiet --wait --pipe --collect \
+    /bin/sh "$dir/activate.sh" "$family" "$sha" "$sum" "$mode"
   status=$?
   set -e
   if [[ $status -ne 0 ]]; then
@@ -210,8 +217,8 @@ fi
 upload=$(ssh "$host" "mktemp -d /tmp/loyal-monitoring.XXXXXX")
 scp -q -r "$tree/deploy/hetzner/monitoring" "$tree/deploy/hetzner/install-rules.sh" "$host:$upload/"
 set +e
-ssh "$host" "systemd-run --unit=loyal-deploy-rules-${sha:0:12} --quiet --wait --pipe --collect \
-  /bin/sh $upload/install-rules.sh $sha ${rules_sha:-none} $upload"
+ssh "$host" systemd-run --unit="loyal-deploy-rules-${sha:0:12}" --quiet --wait --pipe --collect \
+  /bin/sh "$upload/install-rules.sh" "$sha" "${rules_sha:-none}" "$upload"
 status=$?
 set -e
 if [[ $status -ne 0 ]]; then

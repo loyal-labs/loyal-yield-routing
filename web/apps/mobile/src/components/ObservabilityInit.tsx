@@ -12,10 +12,6 @@ import {
 } from "@/services/observability";
 import { setMobileLoadingMetricsPathname } from "@/services/loading-metrics";
 
-/**
- * Installs the ClickStack global error hooks and keeps the reporter's
- * pathname in sync with the active route. Renders nothing.
- */
 export function ObservabilityInit() {
   const pathname = usePathname();
 

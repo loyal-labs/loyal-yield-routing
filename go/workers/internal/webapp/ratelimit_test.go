@@ -38,3 +38,26 @@ func TestMobileEarnSigningRouteRefusesOneWalletPastItsBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestMobileEarnSigningRouteIgnoresWalletValuesThatAreNotSolanaAddresses(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	upstream, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(Config{Upstream: upstream})
+	body := `{"walletAddress":"` + strings.Repeat("A", 60000) + `"}`
+	for i := 1; i <= 13; i++ {
+		req := httptest.NewRequest(http.MethodPost, "https://next.askloyal.com/api/smart-accounts/mobile/earn/deposit/prepare", strings.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.Header.Set("CF-Connecting-IP", fmt.Sprintf("198.51.100.%d", i))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("request %d: status %d, want 200 (oversized wallet must not become a bucket key)", i, response.Code)
+		}
+	}
+}

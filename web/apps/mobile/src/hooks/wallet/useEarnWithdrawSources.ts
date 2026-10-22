@@ -5,10 +5,6 @@ import {
   type EarnWithdrawSourceInfo,
 } from "@/lib/solana/earn/earn-api";
 
-// Lazily loads the wallet's Earn withdrawal sources (reserves + idle vault
-// USDC) for the withdraw source picker. Unlike the always-on position/autodeposit
-// hooks, this is fetched on demand (when the user opens withdraw) since most
-// sessions never withdraw.
 export function useEarnWithdrawSources(walletAddress: string | null) {
   const [sources, setSources] = useState<EarnWithdrawSourceInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);

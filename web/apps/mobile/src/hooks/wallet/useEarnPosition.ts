@@ -18,11 +18,6 @@ import {
 // correct value the moment a deposit lands instead of a transient dip.
 const MUTATION_TRUST_MS = 20_000;
 
-// Picks the balance the headline shows. `preferReadModel` (set briefly after a
-// local mutation) keeps the confirm-written read-model; otherwise the live total
-// overrides it. APY/principal/status always come from the read-model. When the
-// live read is unavailable (null) we keep the read-model rather than zeroing a
-// real balance.
 function reconcileBalance(
   position: EarnPosition | null,
   liveTotalRaw: string | null,
@@ -48,16 +43,8 @@ function reconcileBalance(
   return { ...position, currentAmountRaw: liveTotalRaw };
 }
 
-// Reads the wallet's current Earn position (balance + APY) from the backend
-// read-model. Like useTokenHoldings, it takes a read-only wallet address and
-// never signs — the lookup is unauthenticated by design so opening the Earn tab
-// doesn't prompt for a Seed Vault approval.
 export function useEarnPosition(walletAddress: string | null) {
   const [position, setPosition] = useState<EarnPosition | null>(null);
-  // Live per-venue holdings (Kamino obligation(s) + idle USDC) — the same data
-  // the web shows for its per-position breakdown. Exposed alongside `position`
-  // so the positions sheet can render the live split instead of the stale DB
-  // withdraw-sources read.
   const [holdings, setHoldings] = useState<EarnHoldingItem[]>([]);
   // True when the last holdings read hit the server's no-active-policy branch
   // (observedAt === null): the route-policy pair is missing — never created,
@@ -66,18 +53,10 @@ export function useEarnPosition(walletAddress: string | null) {
   // fetch failures (fail-open, like the SOL gate itself).
   const [policyMissing, setPolicyMissing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  // Flips true once a fetch settles for the current wallet. Lets the UI tell
-  // "not loaded yet" (skeleton) apart from "loaded, genuinely empty" ($0) — the
-  // position read can legitimately resolve to null for a wallet with no Earn.
   const [hasLoaded, setHasLoaded] = useState(false);
   const fetchIdRef = useRef(0);
-  // Timestamp of the last local deposit/withdraw. Within MUTATION_TRUST_MS of it
-  // we trust the read-model over the lagging live read (see reconcileBalance).
   const mutatedAtRef = useRef(0);
 
-  // Called by the Earn screen right before/after a deposit or withdraw so the
-  // next reads prefer the freshly-written read-model instead of the mid-sweep
-  // live total.
   const markEarnMutation = useCallback(() => {
     mutatedAtRef.current = Date.now();
   }, []);
@@ -90,9 +69,6 @@ export function useEarnPosition(walletAddress: string | null) {
       const fetchId = ++fetchIdRef.current;
       setIsLoading(true);
       try {
-        // Fetch both concurrently: `state` for APY/principal/status (+ the
-        // post-mutation balance), `holdings` for the live balance once settled. A
-        // holdings failure must not drop the position, so each settles independently.
         const [stateResult, holdingsResult] = await Promise.allSettled([
           fetchEarnState(walletAddress),
           fetchEarnHoldings(walletAddress),

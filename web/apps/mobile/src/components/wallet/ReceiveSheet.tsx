@@ -107,7 +107,6 @@ export function ReceiveSheet({
       backgroundStyle={styles.sheetBackground}
     >
       <BottomSheetView style={[styles.container, { height: sheetHeight }]}>
-        {/* Header: close (left) + centered title */}
         <View className="flex-row items-center justify-between px-4 py-4">
           <Pressable
             onPress={onClose}
@@ -135,7 +134,6 @@ export function ReceiveSheet({
           <View style={styles.iconButtonSpacer} />
         </View>
 
-        {/* QR card, centered in the available space */}
         <View className="flex-1 items-center justify-center">
           <View style={styles.card}>
             {walletAddress ? (
@@ -161,7 +159,6 @@ export function ReceiveSheet({
           </View>
         </View>
 
-        {/* Warning + actions, pinned to the bottom */}
         <View className="px-4" style={{ paddingBottom: insets.bottom + 12 }}>
           <Text
             className="mb-3 px-6 text-center text-[14px]"

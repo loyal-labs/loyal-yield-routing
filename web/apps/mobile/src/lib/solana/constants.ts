@@ -4,10 +4,8 @@ export const SECRET_KEY_STORAGE_KEY = "solana_secret_key";
 export const NATIVE_SOL_MINT = "So11111111111111111111111111111111111111112";
 export const NATIVE_SOL_DECIMALS = 9;
 
-// SOL price for USD conversions (hardcoded fallback)
 export const SOL_PRICE_USD = 180;
 
-// Solana network fee
 export const SOLANA_FEE_SOL = 0.000005;
 
 export const SOLANA_USDC_MINT_MAINNET =

@@ -204,7 +204,6 @@ function findExecutable(candidates: (string | null)[], label: string): string {
       accessSync(candidate, constants.X_OK);
       return candidate;
     } catch {
-      // Try the next candidate.
     }
   }
   throw new Error(`${label} executable was not found.`);
@@ -1693,7 +1692,6 @@ async function main(): Promise<void> {
     const env = verifierEnv();
     const androidRoot = resolve(import.meta.dir, "../android");
     if (existsSync(androidRoot)) {
-      // Reuse the generated native project when it already matches this branch.
     } else {
       run("npx", ["expo", "prebuild", "--platform", "android", "--clean"], {
         env,
@@ -1797,10 +1795,6 @@ async function main(): Promise<void> {
       await driveSeedDeposit();
     }
 
-    // The real-API run deliberately holds back the routing projection until
-    // Android has confirmed and cleaned up. A completed lifecycle therefore
-    // proves the client's optimistic zero while the cross-repo harness later
-    // proves the durable projected zero.
     const afterRawString =
       mode === "withdraw" && requireRealLoyalApi
         ? "0"

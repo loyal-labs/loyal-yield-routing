@@ -39,10 +39,6 @@ function resolveTokenIdentity(
   market: MobileTokenDetailResponse | null,
   holdings: TokenHolding[],
 ): TokenDetailViewModel["token"] {
-  // Keep icon resolution aligned with the token list (TokensList uses
-  // resolveTokenIcon with detailLogoUrl). Without passing the market logo
-  // here, SOL and other tokens pulled a different image on the detail
-  // screen than on the list row.
   const holding = holdings.find((h) => h.mint === position.mint);
   const icon = resolveTokenIcon({
     mint: position.mint,

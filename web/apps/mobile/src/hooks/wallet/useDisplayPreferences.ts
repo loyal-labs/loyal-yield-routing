@@ -26,7 +26,6 @@ export function useDisplayPreferences(): {
     setCachedBalanceBg(bg);
   }, []);
 
-  // Persist currency changes to MMKV synchronously
   const setDisplayCurrencyWrapped: React.Dispatch<
     React.SetStateAction<"USD" | "SOL">
   > = useCallback(

@@ -63,12 +63,9 @@ type PositionsSheetProps = {
     withdrawDisabled: boolean;
   };
   onClose: () => void;
-  // Funded Earn Balance, pre-split so the cents render dimmed (matches footer).
   balanceWhole: string;
   balanceCents: string;
-  // Per-source breakdown — the wallet's current Earn positions.
   sources: EarnWithdrawSourceInfo[];
-  // Close this sheet and open the matching flow (mirrors the footer buttons).
   onDeposit: () => void;
   onWithdraw: () => void;
 };
@@ -87,7 +84,6 @@ export function PositionsSheet({
   const insets = useSafeAreaInsets();
   const regularLayout = useFixedSheetLayout(0.92);
   const { height } = useWindowDimensions();
-  // Leave the existing app bar and tab bar reachable around the expanded card.
   const bottomInset = earnMax ? 70 + Math.max(insets.bottom, 12) : 0;
   const sheetHeight = earnMax
     ? height - insets.top - 60 - bottomInset
@@ -102,7 +98,6 @@ export function PositionsSheet({
     }
   }, [open]);
 
-  // Largest positions first, so the headline market leads the list.
   const positions = useMemo(
     () => [...sources].sort((a, b) => sourceUsd(b) - sourceUsd(a)),
     [sources]

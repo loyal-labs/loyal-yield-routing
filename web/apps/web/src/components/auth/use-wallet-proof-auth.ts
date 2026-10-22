@@ -54,6 +54,8 @@ import {
 
 const WALLET_CONNECTION_SETTLE_MS = 2500;
 const WALLET_SELECTION_SETTLE_MS = 7000;
+const PROOF_FLOW_STAGE = "proof_flow";
+type FailureStage = LifecycleFlowStage | typeof PROOF_FLOW_STAGE;
 
 function hasRejectionWording(value: unknown): boolean {
   const message =
@@ -234,19 +236,15 @@ export function useWalletProofAuth({
     [wallets]
   );
 
-  // `stage` is where the flow actually died. It defaults to `completion` only
-  // for the proof-flow callers, which have already emitted `challenge` and
-  // `wallet_approval` themselves; every pre-proof caller passes its own stage
-  // so a connect failure is not reported as a completion failure (ASK-1857).
   const handleFailure = useCallback(
     (
       error: unknown,
-      options?: { stage?: LifecycleFlowStage; errorCode?: LifecycleErrorCode }
+      options: { stage: FailureStage; errorCode?: LifecycleErrorCode }
     ) => {
       endExplicitWalletConnect(selectedWalletNameRef.current);
       const nextError = mapWalletProofError(error);
       const errorCode =
-        options?.errorCode ??
+        options.errorCode ??
         normalizeLifecycleErrorCode(
           error instanceof AuthApiClientError
             ? error.code
@@ -260,18 +258,21 @@ export function useWalletProofAuth({
         selectedWalletNameRef.current ?? wallet?.adapter.name
       );
       if (nextError.status === "rejected") {
-        // Without an explicit stage this is a proof-flow caller, where a
-        // rejection is always the signature prompt.
-        lifecycleRef.current?.cancel(options?.stage ?? "wallet_approval", {
-          errorCode: "wallet_rejected",
-          walletProvider,
-        });
+        lifecycleRef.current?.cancel(
+          options.stage === PROOF_FLOW_STAGE
+            ? "wallet_approval"
+            : options.stage,
+          { errorCode: "wallet_rejected", walletProvider }
+        );
       } else {
-        lifecycleRef.current?.fail(options?.stage ?? "completion", {
-          errorCode,
-          errorMessage: lifecycleErrorMessage(error),
-          walletProvider,
-        });
+        lifecycleRef.current?.fail(
+          options.stage === PROOF_FLOW_STAGE ? "completion" : options.stage,
+          {
+            errorCode,
+            errorMessage: lifecycleErrorMessage(error),
+            walletProvider,
+          }
+        );
       }
       dispatch({
         type: "failed",
@@ -296,6 +297,13 @@ export function useWalletProofAuth({
     },
     [disconnect, select]
   );
+
+  const finishProofAttempt = useCallback(() => {
+    endExplicitWalletConnect(selectedWalletNameRef.current);
+    // The captcha token is single-use once the challenge consumes it, so
+    // ask the modal to issue a fresh one before any subsequent attempt.
+    onCaptchaConsumedRef.current?.();
+  }, [endExplicitWalletConnect]);
 
   const verifySelectedWalletWithSiws = useCallback(async () => {
     if (!wallet) {
@@ -339,17 +347,14 @@ export function useWalletProofAuth({
       close();
     } catch (error) {
       siwsAttemptedForWalletRef.current = null;
-      handleFailure(error);
+      handleFailure(error, { stage: PROOF_FLOW_STAGE });
     } finally {
-      endExplicitWalletConnect(selectedWalletNameRef.current);
-      // The captcha token is single-use once the challenge consumes it, so
-      // ask the modal to issue a fresh one before any subsequent attempt.
-      onCaptchaConsumedRef.current?.();
+      finishProofAttempt();
     }
   }, [
     authApiClient,
     close,
-    endExplicitWalletConnect,
+    finishProofAttempt,
     handleFailure,
     refreshSession,
     signIn,
@@ -406,12 +411,9 @@ export function useWalletProofAuth({
         close();
       } catch (error) {
         verifyAttemptedForAddressRef.current = null;
-        handleFailure(error);
+        handleFailure(error, { stage: PROOF_FLOW_STAGE });
       } finally {
-        endExplicitWalletConnect(selectedWalletNameRef.current);
-        // The captcha token is single-use once the challenge consumes it, so
-        // ask the modal to issue a fresh one before any subsequent attempt.
-        onCaptchaConsumedRef.current?.();
+        finishProofAttempt();
       }
       return;
     }
@@ -449,18 +451,15 @@ export function useWalletProofAuth({
       close();
     } catch (error) {
       verifyAttemptedForAddressRef.current = null;
-      handleFailure(error);
+      handleFailure(error, { stage: PROOF_FLOW_STAGE });
     } finally {
-      endExplicitWalletConnect(selectedWalletNameRef.current);
-      // The captcha token is single-use once the challenge consumes it, so
-      // ask the modal to issue a fresh one before any subsequent attempt.
-      onCaptchaConsumedRef.current?.();
+      finishProofAttempt();
     }
   }, [
     authApiClient,
     close,
     connected,
-    endExplicitWalletConnect,
+    finishProofAttempt,
     handleFailure,
     publicKey,
     refreshSession,

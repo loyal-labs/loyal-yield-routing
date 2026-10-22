@@ -9,8 +9,6 @@ import {
 } from "@/lib/solana/token-holdings/resolve-token-info";
 import type { TokenHolding } from "@/lib/solana/token-holdings/types";
 
-// Display model for a legacy shielded balance (ASK-2269): shared by the
-// category list row and the Unshield sheet so both render the same numbers.
 export type ShieldedRow = {
   mint: string;
   symbol: string;
