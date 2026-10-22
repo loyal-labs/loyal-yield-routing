@@ -4,10 +4,9 @@ import { QRCodeSVG } from "qrcode.react";
 import { type ReactNode, useEffect, useState } from "react";
 
 import { copyTextToClipboard } from "@/components/wallet-workspace/facelift/copy-text";
-import { SheetReveal } from "@/components/wallet-workspace/facelift/sheet-reveal";
 import { SlidingTabs } from "@/components/wallet-workspace/facelift/sliding-tabs";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
-import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
+import { TitledSheet } from "@/components/wallet-workspace/facelift/titled-sheet";
 import { useEvmDepositAddress } from "@/components/wallet-workspace/facelift/use-evm-deposit-address";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
@@ -69,28 +68,12 @@ export function ReceiveSheet({
   };
 
   return (
-    <SheetReveal
+    <TitledSheet
+      closeLabel="Close receive"
       isOpen={isOpen}
       onClose={onClose}
-      scrimClassName="fixed inset-0 z-50 flex items-center justify-center bg-black/20 p-2 backdrop-blur-[4px] max-[795px]:items-end max-[795px]:bg-white/60 max-[795px]:p-0"
-      sheetClassName="flex w-[400px] min-w-0 flex-col overflow-clip rounded-3xl bg-card max-[795px]:w-full max-[795px]:rounded-b-none max-[795px]:shadow-[0px_-10px_40px_-10px_rgba(0,0,0,0.2)]"
+      title="Receive"
     >
-      <header className="flex w-full items-center p-2">
-        <h2 className="min-w-0 flex-1 truncate py-2.5 pl-4 font-semibold text-[20px] text-foreground leading-6">
-          Receive
-        </h2>
-        <button
-          aria-label="Close receive"
-          className="t-hover flex size-11 shrink-0 items-center justify-center rounded-3xl hover:bg-accent"
-          onClick={onClose}
-          type="button"
-        >
-          <ThemedIcon
-            className="size-6 text-muted-foreground"
-            src={`${ASSET_BASE}/icon-cross.svg`}
-          />
-        </button>
-      </header>
       <div className="flex w-full flex-col items-center gap-6 px-6 pt-2 pb-2">
         {evm.eligible ? (
           <SlidingTabs activeTab={tab} onSelect={setTab} tabs={TABS} />
@@ -148,7 +131,7 @@ export function ReceiveSheet({
           <TextSwap text={copied ? "Copied!" : "Copy Address"} />
         </button>
       </div>
-    </SheetReveal>
+    </TitledSheet>
   );
 }
 

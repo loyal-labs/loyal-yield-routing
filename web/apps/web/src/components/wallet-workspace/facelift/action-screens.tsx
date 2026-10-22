@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 
+import { CheckIcon } from "@/components/wallet-workspace/facelift/earn-toast";
 import { DogLottie } from "@/components/wallet-workspace/facelift/dog-lottie";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { openTrackedLink } from "@/lib/core/analytics";
@@ -104,16 +105,7 @@ export function ActionSuccessBody({
             ))}
           </span>
           <span aria-hidden="true" className="t-success-check" data-state="in">
-            <svg className="size-16" fill="none" viewBox="0 0 64 64">
-              <circle cx="32" cy="32" fill="var(--positive)" r="32" />
-              <path
-                d="M20 33l8 8 16-16"
-                stroke="white"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="5"
-              />
-            </svg>
+            <CheckIcon className="size-16" />
           </span>
         </span>
         <p className="text-center font-semibold text-[28px] text-foreground leading-8 tracking-[-0.28px]">

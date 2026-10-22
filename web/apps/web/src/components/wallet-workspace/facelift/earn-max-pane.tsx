@@ -6,7 +6,6 @@ import {
   Infinity as InfinityIcon,
 } from "lucide-react";
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -65,6 +64,7 @@ import {
   StaggerReveal,
 } from "@/components/wallet-workspace/facelift/stagger-reveal";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
+import { useUnderlineTabs } from "@/components/wallet-workspace/facelift/use-underline-tabs";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import {
   EARN_MAX_STRATEGY_NAME,
@@ -412,9 +412,6 @@ function EarnMaxActivityCard({
     "Transactions"
   );
 
-  // Same tab mechanics as EarnActivityCard: the content height is measured
-  // at click and tweened on the t-resize clock, and the red underline slides
-  // between tabs (transitions.dev tabs sliding).
   const tabContentRef = useRef<HTMLDivElement>(null);
   const outgoingHeightRef = useRef<number | null>(null);
   const resizeTimerRef = useRef<number | null>(null);
@@ -456,41 +453,7 @@ function EarnMaxActivityCard({
     },
     []
   );
-  const tabBarRef = useRef<HTMLDivElement>(null);
-  const underlineRef = useRef<HTMLSpanElement>(null);
-  const hasPaintedTabs = useRef(false);
-  const moveUnderlineToActiveTab = useCallback((animate: boolean) => {
-    const bar = tabBarRef.current;
-    const underline = underlineRef.current;
-    const active = bar?.querySelector<HTMLButtonElement>(
-      '[aria-selected="true"]'
-    );
-    if (!(bar && underline && active)) {
-      return;
-    }
-    const write = () => {
-      underline.style.transform = `translateX(${active.offsetLeft + 12}px)`;
-      underline.style.width = `${active.offsetWidth - 24}px`;
-    };
-    if (animate) {
-      write();
-      return;
-    }
-    const previousTransition = underline.style.transition;
-    underline.style.transition = "none";
-    write();
-    void underline.offsetWidth;
-    underline.style.transition = previousTransition;
-  }, []);
-  useLayoutEffect(() => {
-    moveUnderlineToActiveTab(hasPaintedTabs.current);
-    hasPaintedTabs.current = true;
-  }, [tab, moveUnderlineToActiveTab]);
-  useEffect(() => {
-    const handleResize = () => moveUnderlineToActiveTab(false);
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [moveUnderlineToActiveTab]);
+  const { tabBarRef, underlineRef } = useUnderlineTabs(tab);
 
   const withdrawal = view.withdrawal;
   const needsAttention = withdrawal?.health?.status === "operator_attention";
