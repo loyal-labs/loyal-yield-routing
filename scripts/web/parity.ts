@@ -42,6 +42,7 @@ const GO_ONLY_HEADERS: Record<string, string> = {
   "x-loyal-release": "the build stamp loyal-web adds to every response",
   date: "set by net/http",
   "content-length": "set by net/http",
+  "transfer-encoding": "net/http frames streamed responses, including error-page HTML",
   "content-type": "the static server infers it from the file",
   "cache-control": "the static server sets per-file caching",
   "last-modified": "http.FileServer",
