@@ -156,6 +156,7 @@ export async function runBackfillCommunityPhotosToCdn(options?: {
       await db
         .update(communities)
         .set({
+          // Update only photo fields in JSONB to avoid clobbering concurrent settings writes.
           settings: sql`jsonb_set(
             jsonb_set(
               ${communities.settings} - 'photoBase64' - 'photoMimeType',

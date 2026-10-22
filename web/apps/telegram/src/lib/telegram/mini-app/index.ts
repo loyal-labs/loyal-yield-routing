@@ -212,6 +212,7 @@ export const initTelegram = () => {
       } catch {
       }
 
+      // Also set via native WebApp API (most reliable on Android)
       try {
         const webApp = window.Telegram?.WebApp;
         if (typeof webApp?.setHeaderColor === "function") {

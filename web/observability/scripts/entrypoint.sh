@@ -59,6 +59,8 @@ configure_render_frontend_url() {
 
 configure_render_frontend_url
 
+# HyperDX derives its fallback origin from the internal application port. The
+# public local origin is nginx on PORT, so make that boundary explicit too.
 if [ "${RENDER:-}" != "true" ] && [ -z "${FRONTEND_URL:-}" ]; then
   export FRONTEND_URL="http://localhost:$PORT"
 fi
@@ -123,6 +125,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# tini -g forwards SIGTERM to this shell's entire process group, including all
+# services started by the upstream script and nginx, so databases can flush.
 nginx -t -c /etc/nginx/nginx.conf
 rm -f "$collector_auth_ready_file"
 bash /etc/local/entry.sh &

@@ -200,6 +200,8 @@ function createTopicProgram(
   });
 
   program.setExamples(spec.topicExtraction.examples);
+  // Runtime assertions are enforced in runAxProgram() via `asserts` + normalizeOutput.
+  // Keeping Ax internal addAssert() disabled avoids brittle provider-side repair loops.
 
   return program;
 }
@@ -215,6 +217,8 @@ function createOnelinerProgram(
   });
 
   program.setExamples(spec.oneliner.examples);
+  // Runtime assertions are enforced in runAxProgram() via `asserts` + normalizeOutput.
+  // Keeping Ax internal addAssert() disabled avoids brittle provider-side repair loops.
 
   return program;
 }

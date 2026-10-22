@@ -117,6 +117,11 @@ export function loadConfig(
   };
 }
 
+/**
+ * Mirrors the saved search `select`, in the same order. ClickStack's alert body
+ * is a headerless CSV block, so these names are what turns positional fields
+ * into labelled ones.
+ */
 function alertColumns(raw: string | undefined): string[] {
   if (raw === undefined || raw.trim() === "") {
     return DEFAULT_ALERT_COLUMNS;
@@ -225,6 +230,10 @@ export function createTelegramSender(
       );
     }
 
+    // The JSON `ok` field is the authoritative result, not the status code:
+    // Telegram can answer HTTP 200 with {"ok":false,...}. Accepting that as
+    // delivered would record a cooldown and acknowledge ClickStack, dropping
+    // the alert silently for a full cooldown window.
     if (!isTelegramAcknowledgement(responseText)) {
       throw new Error(
         `Telegram did not acknowledge the message: ${responseText.slice(
@@ -267,6 +276,7 @@ export function createSlackSender(
   };
 }
 
+/** Send each accepted alert to both destinations before acknowledging it. */
 export function createFanoutSender(senders: AlertSender[]): AlertSender {
   return async (payload, context) => {
     const results = await Promise.allSettled(

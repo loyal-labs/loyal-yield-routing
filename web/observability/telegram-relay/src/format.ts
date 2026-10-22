@@ -16,6 +16,11 @@ export const DEFAULT_ALERT_COLUMNS = [
   "Body",
 ];
 
+/**
+ * ClickStack renders alert rows as a CSV block with no header line, so the
+ * relay has to be told which saved-search columns it is looking at. Keep this
+ * list in the same order as the saved search `select`.
+ */
 export interface FormatOptions {
   alertColumns: string[];
   cardinalityColumns?: string[];
@@ -705,6 +710,10 @@ export function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;");
 }
 
+/**
+ * `String.prototype.slice` cuts on UTF-16 units and can leave a dangling high
+ * surrogate, which renders as a replacement character. Drop the split pair.
+ */
 function sliceWholeCodePoints(value: string, maxLength: number): string {
   const sliced = value.slice(0, maxLength);
   const lastCode = sliced.charCodeAt(sliced.length - 1);
