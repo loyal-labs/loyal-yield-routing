@@ -540,10 +540,6 @@ export type PostPushTokenErrors = {
      */
     401: RouteError;
     /**
-     * Conflict
-     */
-    409: RouteError;
-    /**
      * Internal Server Error
      */
     500: PushError;

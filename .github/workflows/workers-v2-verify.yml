@@ -158,6 +158,24 @@ jobs:
           SQUADS_SMART_ACCOUNT_PROGRAM_SO: ${{ github.workspace }}/crates/squads-test-harness/fixtures/squads/squads_smart_account_program.so
           WORKERS_V2_CACHE_DIR: ${{ runner.temp }}/workers-go
         run: bash scripts/verify-workers-v2.sh
+      - name: Create the separate loyal-web test database
+        env:
+          PGHOST: /private/tmp/backyard-phase3-pg.ci
+          PGPORT: '5432'
+          PGUSER: workers_v2
+          PGDATABASE: workers_v2_bootstrap
+        run: |
+          psql -X -v ON_ERROR_STOP=1 -c 'CREATE DATABASE loyal_web_pilot'
+          ln -s /private/tmp/backyard-phase3-pg.ci /tmp/loyal-web-pg-ci
+      - name: Verify loyal-web database behavior
+        working-directory: go/workers
+        env:
+          LOYAL_WEB_TEST_DATABASE_URL: postgresql://workers_v2@/loyal_web_pilot?host=/tmp/loyal-web-pg-ci&port=5432
+          GOTOOLCHAIN: local
+          GOENV: 'off'
+          GOMODCACHE: ${{ runner.temp }}/workers-go/gomod
+          GOCACHE: ${{ runner.temp }}/workers-go/gobuild
+        run: go test -race -count=1 -v -run 'TestPushToken|TestEarnStats' ./internal/webapp/
       - name: Save Go module and build caches
         if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
