@@ -21,8 +21,8 @@ export type ActivityItem = {
 };
 
 export type EarnMaxActivity = {
-    operations: Array<ActivityItem> | null;
-    performance: Array<PerformancePoint> | null;
+    operations: Array<ActivityItem>;
+    performance: Array<PerformancePoint>;
 };
 
 export type EarnMaxConfig = {
@@ -38,7 +38,7 @@ export type EarnMaxErrorDetail = {
 };
 
 export type EarnMaxSummary = {
-    apyHistory: Array<ApyPoint> | null;
+    apyHistory: Array<ApyPoint>;
     apyWindowDays: number | null;
     balanceUsd: number;
     claimAmountRaw: string;
@@ -49,7 +49,7 @@ export type EarnMaxSummary = {
     forecastApyBps: number | null;
     goal: string;
     observedSlot: string;
-    policyAccounts: Array<PolicyBinding> | null;
+    policyAccounts: Array<PolicyBinding>;
     policyStatus: string;
     realizedApyBps: number | null;
     strategyKey: string | null;
