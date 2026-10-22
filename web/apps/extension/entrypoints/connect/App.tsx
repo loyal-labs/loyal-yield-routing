@@ -18,15 +18,7 @@ import type {
 } from "~/src/lib/external-wallet-signer";
 import "@solana/wallet-adapter-react-ui/styles.css";
 
-// ---------------------------------------------------------------------------
-// Solana RPC endpoint (mainnet via public endpoint; adapter only needs it for
-// ConnectionProvider — actual transactions happen elsewhere)
-// ---------------------------------------------------------------------------
 const SOLANA_RPC_ENDPOINT = "https://api.mainnet-beta.solana.com";
-
-// ---------------------------------------------------------------------------
-// Inner component — reacts to wallet connection
-// ---------------------------------------------------------------------------
 
 function ConnectInner() {
   const { publicKey, connected, disconnect, signTransaction } = useWallet();
@@ -34,13 +26,11 @@ function ConnectInner() {
   const [error, setError] = useState<string | null>(null);
   const [signingCount, setSigningCount] = useState(0);
 
-  // Keep a ref to signTransaction so the message listener always has the latest
   const signTxRef = useRef(signTransaction);
   useEffect(() => {
     signTxRef.current = signTransaction;
   }, [signTransaction]);
 
-  // Listen for sign requests from background
   useEffect(() => {
     const listener = (
       message: SignTransactionRequest,
@@ -181,13 +171,7 @@ function ConnectInner() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Root App — sets up Solana wallet adapter providers
-// ---------------------------------------------------------------------------
-
 export default function App() {
-  // Empty array — Wallet Standard auto-detects installed browser wallets.
-  // Only wallets actually present in the browser will appear.
   const wallets = useMemo(() => [], []);
 
   return (
@@ -202,10 +186,6 @@ export default function App() {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Inline styles
-// ---------------------------------------------------------------------------
 
 const styles: Record<string, React.CSSProperties> = {
   page: {

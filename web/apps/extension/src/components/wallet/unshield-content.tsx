@@ -10,8 +10,6 @@ import { useState } from "react";
 const font = "var(--font-geist-sans), sans-serif";
 const secondary = "rgba(60, 60, 67, 0.6)";
 
-// ponytail: shielded-only tokens have no portfolio position; known mints get
-// symbol/decimals here, anything else shows the raw amount + short mint.
 const KNOWN_TOKENS: Record<string, { symbol: string; decimals: number }> = {
   So11111111111111111111111111111111111111112: { symbol: "SOL", decimals: 9 },
   EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: { symbol: "USDC", decimals: 6 },
@@ -59,7 +57,6 @@ export function UnshieldContent({
         .unshield-btn:hover:not(:disabled) { background: rgba(0, 0, 0, 0.85) !important; }
       `}</style>
 
-      {/* Header */}
       <div
         style={{
           display: "flex",
@@ -104,7 +101,6 @@ export function UnshieldContent({
         </button>
       </div>
 
-      {/* Body */}
       <div
         style={{ flex: 1, overflow: "auto", minHeight: 0, padding: "0 12px" }}
       >

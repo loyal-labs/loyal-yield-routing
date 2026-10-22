@@ -34,23 +34,12 @@ import type {
 /** Fixed slot order; see the --metric-* comment in globals.css. */
 const SERIES_SLOT_COUNT = 6;
 
-/**
- * Operations with fewer buckets than this cannot show a trend — a line drawn
- * through two points days apart invents one. They render as value tiles.
- */
 const MIN_BUCKETS_FOR_TREND = 6;
 
-/**
- * How far past the clipped axis the tallest point must sit before clipping is
- * worth a control. Measured against the axis rather than the raw p95: the axis
- * is what renders, so this also guarantees the hidden count is at least one and
- * that toggling actually changes the scale.
- */
 const OUTLIER_RATIO = 1.5;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
-/** Never collapse the axis below this, however short the measured history is. */
 const MIN_WINDOW_MS = DAY_MS;
 
 type Surface = "desktop" | "mobile";
@@ -98,10 +87,6 @@ function humanizePath(value: string): string {
   return value.split(".").map(humanize).join(" · ");
 }
 
-/**
- * Latency spans three orders of magnitude here, so a single unit either hides
- * sub-second dependencies or turns a two-minute withdrawal into "140000".
- */
 function formatDuration(ms: number): string {
   if (!Number.isFinite(ms)) {
     return "—";
@@ -123,7 +108,6 @@ function formatUtcDay(value: number): string {
   }).format(new Date(value));
 }
 
-/** A multi-day axis reads by date; a one-day axis needs the hour to say anything. */
 function formatUtcTick(value: number, spanMs: number): string {
   if (spanMs > 2 * DAY_MS) {
     return formatUtcDay(value);
@@ -167,11 +151,6 @@ function percentile(values: readonly number[], level: number): number {
   return sorted[index];
 }
 
-/**
- * What a series *is*, separate from how it ended. Outcome rides on the line
- * style instead of doubling the colour count and repeating "· completed" on
- * every legend row.
- */
 function seriesIdentity(point: MetricPoint, surface: Surface): string {
   if (surface === "mobile") {
     return point.platform;
@@ -185,10 +164,6 @@ function identityLabel(identity: string): string {
   return humanize(dependency ?? phase);
 }
 
-/**
- * Colour follows the entity, not its position in this card's sorted list, so a
- * dependency keeps one colour across every chart on the surface.
- */
 function buildSlotsByIdentity(
   points: MetricPoint[],
   surface: Surface
@@ -196,8 +171,6 @@ function buildSlotsByIdentity(
   const identities = [
     ...new Set(points.map((point) => seriesIdentity(point, surface))),
   ].sort();
-  // Past the last slot, fall back to the neutral rather than cycling — two
-  // identities wearing the same hue is worse than one wearing none.
   return new Map(
     identities.map((identity, index) => [
       identity,
@@ -212,7 +185,6 @@ function slotColor(slot: number): string {
 
 const Y_AXIS_INTERVALS = 4;
 
-/** Round up to a step that divides cleanly, so ticks are whole numbers. */
 function niceStep(value: number): number {
   if (value <= 0) {
     return 1;
@@ -225,7 +197,6 @@ function niceStep(value: number): number {
   return (step ?? 10) * magnitude;
 }
 
-/** Evenly spaced ticks from a nice step beats whatever Recharts infers from a clamped domain. */
 function buildValueAxis(maxValue: number): { max: number; ticks: number[] } {
   const step = niceStep(Math.max(maxValue, 1) / Y_AXIS_INTERVALS);
   return {
@@ -237,7 +208,6 @@ function buildValueAxis(maxValue: number): { max: number; ticks: number[] } {
   };
 }
 
-/** One unit for the whole axis — mixing "50s" and "1.3m" hides even spacing. */
 function formatAxisValue(ms: number, axisMax: number): string {
   if (ms === 0) {
     return "0";
@@ -252,13 +222,6 @@ function formatAxisValue(ms: number, axisMax: number): string {
   return `${(ms / 60_000).toFixed(1)}m`;
 }
 
-/**
- * One shared axis for every card, trimmed to the first bucket that actually
- * carries a measurement. Instrumentation younger than the window would
- * otherwise leave most of every plot empty, which reads as a broken chart
- * rather than as "not collected yet". The grid grows back to the full window
- * on its own as history accumulates.
- */
 function buildBucketGrid(data: MetricsDashboardData): number[] {
   const bucketMs = data.bucketMinutes * 60 * 1_000;
   const windowStart =
@@ -278,7 +241,6 @@ function buildBucketGrid(data: MetricsDashboardData): number[] {
   const start = Number.isFinite(earliestSample)
     ? Math.max(
         windowStart,
-        // Keep at least a day of context around a single busy afternoon.
         Math.min(
           Math.floor(earliestSample / bucketMs) * bucketMs,
           end - MIN_WINDOW_MS
@@ -376,8 +338,6 @@ function buildOperationCharts({
         valuesByBucket.set(bucketTime, bucket);
       }
 
-      // Every bucket in the window gets a row, so gaps stay gaps instead of
-      // being interpolated into a trend that was never measured.
       const data = bucketGrid.map((bucketTime) => {
         const bucket = valuesByBucket.get(bucketTime);
         const row: Record<string, number | null> = { bucketTime };
@@ -434,10 +394,6 @@ function SeriesSwatch({ spec }: { spec: SeriesSpec }) {
   );
 }
 
-/**
- * The legend carries each series' latest value, so a reader never depends on
- * the colour alone or on hovering to read a number.
- */
 function ChartLegend({
   latestByKey,
   series,
@@ -513,11 +469,6 @@ function MetricTooltip({
   );
 }
 
-/**
- * The WCAG-clean twin of the plot. Three light-mode slots sit below 3:1 against
- * the card, and a tooltip must never be the only way to reach a value, so every
- * measured bucket is readable as text here.
- */
 function MetricTable({ chart }: { chart: OperationChart }) {
   const rows = chart.data.filter((row) =>
     chart.series.some((spec) => typeof row[spec.key] === "number")
@@ -530,8 +481,6 @@ function MetricTable({ chart }: { chart: OperationChart }) {
           <TableRow>
             <TableHead className="whitespace-nowrap">Bucket (UTC)</TableHead>
             {chart.series.map((spec) => (
-              // No swatch here on purpose: this view exists so identity and
-              // value read without colour.
               <TableHead
                 className="text-right whitespace-nowrap"
                 key={spec.key}
@@ -562,7 +511,6 @@ function MetricTable({ chart }: { chart: OperationChart }) {
   );
 }
 
-/** Sparse operations get their numbers directly — a line through 2 points is a lie. */
 function ValueTiles({
   latestByKey,
   series,
@@ -616,14 +564,7 @@ function MetricChartCard({
   const robustMax = percentile(values, 0.95);
   const fullAxis = buildValueAxis(fullMax);
   const clippedAxis = buildValueAxis(robustMax);
-  // Counted against the clipped axis in both states, so the label stays put
-  // instead of dropping to "0 above" the moment the outliers are shown.
   const outlierCount = values.filter((value) => value > clippedAxis.max).length;
-  // Measured against the axis that renders, not the raw p95. Comparing the p95
-  // would disagree with the count, since niceStep rounds the axis up far enough
-  // that it can already contain every point; dropping the ratio entirely would
-  // instead offer the control for ordinary spread, whenever the p95 and the
-  // maximum happen to round to different axes.
   const canClip = robustMax > 0 && fullMax > clippedAxis.max * OUTLIER_RATIO;
   const valueAxis = canClip && !showOutliers ? clippedAxis : fullAxis;
 

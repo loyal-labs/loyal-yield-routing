@@ -25,8 +25,6 @@ function readOptionalString(value: FormDataEntryValue | null): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-// ---------- Sections ----------
-
 export async function addLibrarySection(
   formData: FormData
 ): Promise<ActionResult> {
@@ -87,8 +85,6 @@ export async function deleteLibrarySection(id: string): Promise<ActionResult> {
   revalidatePath("/library");
   return { success: true };
 }
-
-// ---------- Articles ----------
 
 function readArticleFields(formData: FormData): {
   sectionId: string;
@@ -237,8 +233,6 @@ export async function toggleLibraryArticleActive(
   return { success: true };
 }
 
-// ---------- Image upload (proxy to /app) ----------
-
 export async function uploadLibraryCover(
   formData: FormData
 ): Promise<{ url?: string; error?: string }> {
@@ -275,7 +269,6 @@ export async function uploadLibraryCover(
       const data = (await response.json()) as { error?: string };
       if (data.error) message = data.error;
     } catch {
-      // ignore parse error
     }
     return { error: message };
   }

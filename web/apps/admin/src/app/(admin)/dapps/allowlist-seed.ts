@@ -13,7 +13,6 @@ export type AllowlistSeedEntry = {
 };
 
 export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
-  // DEX — Aggregators
   {
     name: "Jupiter",
     host: "jup.ag",
@@ -141,7 +140,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 48,
   },
 
-  // Yield
   {
     name: "MarginFi",
     host: "marginfi.com",
@@ -176,7 +174,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 25,
   },
 
-  // Liquid Staking
   {
     name: "Marinade",
     host: "marinade.finance",
@@ -220,7 +217,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 32,
   },
 
-  // NFT Marketplaces
   {
     name: "Magic Eden",
     host: "magiceden.io",
@@ -258,7 +254,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 38,
   },
 
-  // Launchpads
   {
     name: "Pump.fun",
     host: "pump.fun",
@@ -290,7 +285,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 43,
   },
 
-  // Bridges
   {
     name: "Wormhole Portal",
     host: "portalbridge.com",
@@ -316,7 +310,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 52,
   },
 
-  // Fiat Onramps
   {
     name: "MoonPay",
     host: "moonpay.com",
@@ -342,7 +335,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 56,
   },
 
-  // Explorers
   {
     name: "Solscan",
     host: "solscan.io",
@@ -362,7 +354,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 63,
   },
 
-  // Utilities
   {
     name: "Step Finance",
     host: "app.step.finance",
@@ -479,7 +470,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 100,
   },
 
-  // DePIN
   { name: "Helium", host: "helium.com", category: "DePIN", displayOrder: 75 },
   {
     name: "Render Network",
@@ -497,7 +487,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
   { name: "io.net", host: "io.net", category: "DePIN", displayOrder: 79 },
   { name: "Grass", host: "grass.io", category: "DePIN", displayOrder: 80 },
 
-  // Gaming
   {
     name: "Star Atlas",
     host: "staratlas.com",
@@ -518,7 +507,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 84,
   },
 
-  // Stablecoins / RWA
   {
     name: "Ondo Finance",
     host: "ondo.finance",
@@ -544,7 +532,6 @@ export const ALLOWLIST_SEED: AllowlistSeedEntry[] = [
     displayOrder: 92,
   },
 
-  // Wallets
   {
     name: "Phantom",
     host: "phantom.com",

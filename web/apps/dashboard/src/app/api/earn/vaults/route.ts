@@ -1,6 +1,6 @@
 import { getYieldNeonSql } from "@/lib/yield-optimization/yield-neon-client.server";
 
-export const revalidate = 300; // 5 minutes
+export const revalidate = 300;
 
 const MAX_VAULTS = 50_000;
 

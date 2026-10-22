@@ -1,5 +1,3 @@
-// Message types for dApp <-> extension communication
-
 export interface DappConnectRequest {
   type: "DAPP_CONNECT_REQUEST";
   id: string;
@@ -56,20 +54,17 @@ export interface DappDisconnect {
   origin: string;
 }
 
-/** Union of all messages the background can receive from the content script */
 export type DappToBackgroundMessage =
   | DappConnectRequest
   | DappSignTransactionRequest
   | DappSignMessageRequest
   | DappDisconnect;
 
-/** Union of all responses the background sends back */
 export type BackgroundToDappResponse =
   | DappConnectResponse
   | DappSignTransactionResponse
   | DappSignMessageResponse;
 
-/** Message from popup to background with the user's decision */
 export interface DappApprovalDecision {
   type: "DAPP_APPROVAL_DECISION";
   id: string;

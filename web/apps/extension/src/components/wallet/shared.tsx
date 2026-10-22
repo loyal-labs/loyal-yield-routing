@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, Eye, EyeOff, Search, X } from "lucide-react";
 
-// ---------------------------------------------------------------------------
-// Password Input — replaces PIN input for stronger wallet protection
-// ---------------------------------------------------------------------------
-
 export const MIN_PASSWORD_LENGTH = 6;
 
 export function getPasswordStrength(
