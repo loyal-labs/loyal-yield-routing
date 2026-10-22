@@ -1,15 +1,54 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en" suppressHydrationWarning>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- app-loading-styles -->
     <!-- Pre-paint theme resolution, as in apps/web src/app/layout.tsx. -->
     <script>
-      try{if(localStorage.getItem("theme")==="dark")document.documentElement.classList.add("dark")}catch(e){}
+      try {
+        if (localStorage.getItem("theme") === "dark")
+          document.documentElement.classList.add("dark");
+      } catch (e) {}
+      window.addEventListener(
+        "error",
+        (event) => {
+          if (
+            !(event.target instanceof HTMLScriptElement) ||
+            event.target.type !== "module"
+          )
+            return;
+          const showLoadError = () => {
+            if (!document.getElementById("app-bootstrap")) return;
+            document.getElementById("root").hidden = true;
+            document.getElementById("app-load-error").hidden = false;
+          };
+          if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", showLoadError, {
+              once: true,
+            });
+          } else {
+            showLoadError();
+          }
+        },
+        true
+      );
     </script>
   </head>
-  <body class="antialiased">
-    <div id="root"></div>
+  <body class="antialiased" style="margin: 0">
+    <div id="root">
+      <div id="app-bootstrap" hidden><!-- app-loading-markup --></div>
+    </div>
+    <script>
+      document.getElementById("app-bootstrap").hidden = !/^\/app(?:\/|$)/.test(
+        location.pathname
+      );
+    </script>
+    <noscript>Enable JavaScript to open Loyal.</noscript>
+    <div id="app-load-error" hidden role="alert">
+      <p>Loyal could not load. Check your connection and try again.</p>
+      <a href="">Reload app</a>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
