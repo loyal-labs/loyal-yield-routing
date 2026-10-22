@@ -16,9 +16,31 @@ import (
 )
 
 type Keys struct {
-	RS256 *rsa.PublicKey
-	HS256 []byte
+	rs256 *rsa.PublicKey
+	hs256 []byte
 }
+
+func NewKeys(authSecret, rs256PublicKeyPEM string) (Keys, error) {
+	var keys Keys
+	if authSecret != "" {
+		sum := sha256.Sum256([]byte(authSecret))
+		keys.hs256 = sum[:]
+	}
+	if rs256PublicKeyPEM != "" {
+		key, err := parseRS256PublicKey(rs256PublicKeyPEM)
+		if err != nil {
+			return Keys{}, err
+		}
+		keys.rs256 = key
+	}
+	return keys, nil
+}
+
+func NewRawHMACKeys(key []byte) Keys {
+	return Keys{hs256: append([]byte(nil), key...)}
+}
+
+func (k Keys) Empty() bool { return k.rs256 == nil && len(k.hs256) == 0 }
 
 type Audience string
 
@@ -66,12 +88,12 @@ func (k Keys) Verify(token string, want Audience, now time.Time) ([]byte, error)
 	}
 	digest := sha256.Sum256([]byte(segments[0] + "." + segments[1]))
 	switch {
-	case h.Alg == "RS256" && k.RS256 != nil:
-		if rsa.VerifyPKCS1v15(k.RS256, crypto.SHA256, digest[:], signature) != nil {
+	case h.Alg == "RS256" && k.rs256 != nil:
+		if rsa.VerifyPKCS1v15(k.rs256, crypto.SHA256, digest[:], signature) != nil {
 			return nil, ErrSignature
 		}
-	case h.Alg == "HS256" && len(k.HS256) > 0:
-		mac := hmac.New(sha256.New, k.HS256)
+	case h.Alg == "HS256" && len(k.hs256) > 0:
+		mac := hmac.New(sha256.New, k.hs256)
 		mac.Write([]byte(segments[0] + "." + segments[1]))
 		if !hmac.Equal(signature, mac.Sum(nil)) {
 			return nil, ErrSignature
@@ -121,7 +143,7 @@ func audienceMatches(raw json.RawMessage, want Audience) bool {
 	return false
 }
 
-func ParseRS256PublicKey(text string) (*rsa.PublicKey, error) {
+func parseRS256PublicKey(text string) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode([]byte(text))
 	if block == nil || block.Type != "PUBLIC KEY" {
 		return nil, errors.New("jwt: RS256 public key is not a PEM PUBLIC KEY block")

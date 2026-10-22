@@ -397,12 +397,24 @@ proxying the session routes to Next.
 | `WEB_APP_DATABASE_URL` | yes | App Neon; SELECT on `app_users`, `app_user_smart_accounts`, `earn_max_invite_redemptions` and the telegram tables, INSERT on the invite and push tables |
 | `WEB_YIELD_DATABASE_URL` | no | Yield Neon; SELECT on `multiply_route_states` (Earn MAX routes) |
 
-Encrypt each value from stdin, never from an argument:
+Encrypt each value from stdin, never from an argument, and never through
+`echo "$VALUE" |`: a value on a command line lands in shell history and `ps`.
+Either read it straight from 1Password (fill the `<placeholders>`):
 
 ```sh
-<AUTH_JWT_SECRET on stdin> | systemd-creds encrypt --with-key=host --name=AUTH_JWT_SECRET - \
+op read 'op://<vault>/<item>/<AUTH_JWT_SECRET field>' | systemd-creds encrypt --with-key=host --name=AUTH_JWT_SECRET - \
   /etc/credstore.encrypted/loyal-web-auth-jwt-secret
-<RPC URL on stdin> | systemd-creds encrypt --with-key=host --name=WEB_SOLANA_RPC_URL - \
+op read 'op://<vault>/<item>/<WEB_SOLANA_RPC_URL field>' | systemd-creds encrypt --with-key=host --name=WEB_SOLANA_RPC_URL - \
+  /etc/credstore.encrypted/loyal-web-solana-rpc
+```
+
+or paste at the prompt (the terminal echoes it, so do it unwatched; it never
+reaches history), then press Enter and Ctrl-D:
+
+```sh
+systemd-creds encrypt --with-key=host --name=AUTH_JWT_SECRET - \
+  /etc/credstore.encrypted/loyal-web-auth-jwt-secret
+systemd-creds encrypt --with-key=host --name=WEB_SOLANA_RPC_URL - \
   /etc/credstore.encrypted/loyal-web-solana-rpc
 ```
 

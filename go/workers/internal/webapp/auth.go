@@ -2,7 +2,6 @@ package webapp
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,10 +85,7 @@ type AuthError struct {
 }
 
 func (e *AuthError) Error() string {
-	if e.cause == nil {
-		return e.Failure.Code()
-	}
-	return e.Failure.Code() + ": " + e.cause.Error()
+	return e.Failure.Code()
 }
 
 func (e *AuthError) Unwrap() error { return e.cause }
@@ -108,19 +104,11 @@ func NewAuth(secret, rs256PublicKeyPEM string, appDB *pgxpool.Pool, rpcClient *c
 	if appDB == nil || rpcClient == nil {
 		return nil, errors.New("session auth needs WEB_APP_DATABASE_URL and WEB_SOLANA_RPC_URL")
 	}
-	var keys jwt.Keys
-	if secret != "" {
-		sum := sha256.Sum256([]byte(secret))
-		keys.HS256 = sum[:]
+	keys, err := jwt.NewKeys(secret, strings.ReplaceAll(rs256PublicKeyPEM, `\n`, "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("AUTH_JWT_RS256_PUBLIC_KEY: %w", err)
 	}
-	if rs256PublicKeyPEM != "" {
-		key, err := jwt.ParseRS256PublicKey(strings.ReplaceAll(rs256PublicKeyPEM, `\n`, "\n"))
-		if err != nil {
-			return nil, fmt.Errorf("AUTH_JWT_RS256_PUBLIC_KEY: %w", err)
-		}
-		keys.RS256 = key
-	}
-	if keys.RS256 == nil && len(keys.HS256) == 0 {
+	if keys.Empty() {
 		return nil, errors.New("session auth needs AUTH_JWT_SECRET or AUTH_JWT_RS256_PUBLIC_KEY")
 	}
 	return &Auth{keys: keys, appDB: appDB, chain: rpcClient}, nil

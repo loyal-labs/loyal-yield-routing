@@ -72,7 +72,7 @@ func (a Auth) Verify(token string) (Session, bool) {
 	if token == "" || a.Password == "" {
 		return Session{}, false
 	}
-	claims, err := jwt.Keys{HS256: []byte(a.Password)}.Verify(token, jwt.NoAudience, a.now())
+	claims, err := jwt.NewRawHMACKeys([]byte(a.Password)).Verify(token, jwt.NoAudience, a.now())
 	if err != nil {
 		return Session{}, false
 	}

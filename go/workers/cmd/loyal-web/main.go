@@ -76,7 +76,15 @@ func openAppDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func openAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, error) {
+func openAuth(ctx context.Context, appDB *pgxpool.Pool) *webapp.Auth {
+	auth, err := buildAuth(ctx, appDB)
+	if err != nil {
+		slog.Warn("session routes not served by Go", "reason", err.Error())
+	}
+	return auth
+}
+
+func buildAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, error) {
 	secret, err := engine.OptionalCredential("AUTH_JWT_SECRET")
 	if err != nil {
 		return nil, err
@@ -93,21 +101,18 @@ func openAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, error) {
 		return nil, err
 	}
 	if appDB == nil || endpoint == "" {
-		slog.Warn("session routes not served by Go: needs WEB_APP_DATABASE_URL and WEB_SOLANA_RPC_URL")
-		return nil, nil
+		return nil, errors.New("needs WEB_APP_DATABASE_URL and WEB_SOLANA_RPC_URL")
 	}
 	missing, err := webapp.MissingGrants(ctx, appDB, webapp.AuthGrants)
-	switch {
-	case err != nil:
-		slog.Warn("session routes not served by Go: grant check failed", "error", err)
-		return nil, nil
-	case len(missing) > 0:
-		slog.Warn("session routes not served by Go: web app role lacks grants", "missing", missing)
-		return nil, nil
+	if err != nil {
+		return nil, fmt.Errorf("grant check failed: %w", err)
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("web app role lacks grants %v", missing)
 	}
 	rpcClient, err := chain.New(endpoint, 10*time.Second)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("WEB_SOLANA_RPC_URL is not a usable RPC URL")
 	}
 	return webapp.NewAuth(secret, publicKey, appDB, rpcClient)
 }
@@ -142,9 +147,7 @@ func run(ctx context.Context) error {
 		cfg.AppDB = appDB
 		cfg.ContentDB = contentGranted(ctx, appDB)
 	}
-	if cfg.Auth, err = openAuth(ctx, appDB); err != nil {
-		return err
-	}
+	cfg.Auth = openAuth(ctx, appDB)
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           webapp.New(cfg),
