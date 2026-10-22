@@ -6,9 +6,9 @@ import "./app/globals.css";
 
 import {
   chartBoxClass,
-  EarnAumBarChart,
+  EarnAumChart,
   type WeeklyChartPoint,
-} from "./components/earn-aum-bar-chart";
+} from "./components/earn-aum-chart";
 import { MetricHelpTooltip } from "./components/metric-help-tooltip";
 
 type EarnStats = {
@@ -139,8 +139,8 @@ function DashboardHome() {
               Earn AUM by Week
             </h2>
             {load.state === "ready" ? (
-              <EarnAumBarChart
-                ariaLabel="Earn AUM weekly snapshot bar chart from Jun 15 through the latest data"
+              <EarnAumChart
+                ariaLabel="Earn AUM weekly area chart from Jun 15 through the latest data"
                 metricLabel="Earn AUM"
                 points={load.stats.aumSeries}
               />

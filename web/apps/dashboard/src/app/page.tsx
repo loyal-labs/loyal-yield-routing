@@ -1,7 +1,7 @@
 import { ArrowUpRight } from "lucide-react";
 import Image from "next/image";
 
-import { EarnAumBarChart } from "@/components/earn-aum-bar-chart";
+import { EarnAumChart } from "@/components/earn-aum-chart";
 import { MetricHelpTooltip } from "@/components/metric-help-tooltip";
 import { getPublicPerformanceSnapshot } from "@/lib/performance-snapshot";
 
@@ -79,8 +79,8 @@ export default async function DashboardHome() {
               Weekly snapshot. Current AUM is shown above.
             </p>
           </div>
-          <EarnAumBarChart
-            ariaLabel="Earn AUM weekly snapshot bar chart from Jun 15 through the latest data"
+          <EarnAumChart
+            ariaLabel="Earn AUM weekly area chart from Jun 15 through the latest data"
             metricLabel="Earn AUM"
             points={snapshot.earnAumSeries}
           />
