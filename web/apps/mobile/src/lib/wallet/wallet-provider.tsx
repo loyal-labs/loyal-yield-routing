@@ -32,6 +32,7 @@ import {
 } from "@/lib/analytics/analytics";
 import { WALLET_SETUP_EVENTS } from "@/lib/analytics/wallet-setup-events";
 import { mmkv } from "@/lib/storage";
+import { clearEarnSession } from "@/lib/solana/earn/earn-session";
 import {
   clearWalletSignerCache,
   setWalletSigner,
@@ -658,6 +659,7 @@ function WalletProviderCore({
       setSigner(null);
       setPublicKey(null);
       clearWalletSignerCache();
+      await clearEarnSession();
       setBiometricEnabledState(false);
       setState("noWallet");
       track(WALLET_SETUP_EVENTS.walletReset, {

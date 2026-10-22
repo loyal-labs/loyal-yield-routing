@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 )
 
 type EarnLatencyPoint struct {
@@ -442,13 +444,13 @@ func metricsLatencyUnavailable() EarnRebalanceLatencyData {
 	}
 }
 
-var metricsLatencyCache = &staleWhileRevalidate[EarnRebalanceLatencyData]{fresh: time.Minute, stale: 15 * time.Minute, wait: 4 * time.Second, budget: readTimeout}
+var metricsLatencyCache = &earnmax.StaleWhileRevalidate[EarnRebalanceLatencyData]{Fresh: time.Minute, Stale: 15 * time.Minute, Wait: 4 * time.Second, Budget: readTimeout}
 
 func metricsLatency(d *Deps) EarnRebalanceLatencyData {
-	data, have, err := metricsLatencyCache.get(func(ctx context.Context) (EarnRebalanceLatencyData, error) {
+	data, have, err := metricsLatencyCache.Get(func(ctx context.Context) (EarnRebalanceLatencyData, error) {
 		return metricsLoadLatency(ctx, d)
 	})
-	if err != nil && !errors.Is(err, errStillRefreshing) {
+	if err != nil && !errors.Is(err, earnmax.ErrStillRefreshing) {
 		slog.Error("Earn rebalance latency query failed", "error", err)
 	}
 	if !have {

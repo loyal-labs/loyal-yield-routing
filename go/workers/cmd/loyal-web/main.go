@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
@@ -75,9 +76,66 @@ func openAppDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+func openAuth(ctx context.Context, appDB *pgxpool.Pool) *webapp.Auth {
+	auth, err := buildAuth(ctx, appDB)
+	if err != nil {
+		slog.Warn("session routes not served by Go", "reason", err.Error())
+	}
+	return auth
+}
+
+func buildAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, error) {
+	secret, err := engine.OptionalCredential("AUTH_JWT_SECRET")
+	if err != nil {
+		return nil, err
+	}
+	publicKey, err := engine.OptionalCredential("AUTH_JWT_RS256_PUBLIC_KEY")
+	if err != nil {
+		return nil, err
+	}
+	if secret == "" && publicKey == "" {
+		return nil, nil
+	}
+	endpoint, err := engine.OptionalCredential("WEB_SOLANA_RPC_URL")
+	if err != nil {
+		return nil, err
+	}
+	if appDB == nil || endpoint == "" {
+		return nil, errors.New("needs WEB_APP_DATABASE_URL and WEB_SOLANA_RPC_URL")
+	}
+	missing, err := webapp.MissingGrants(ctx, appDB, webapp.AuthGrants)
+	if err != nil {
+		return nil, fmt.Errorf("grant check failed: %w", err)
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("web app role lacks grants %v", missing)
+	}
+	rpcClient, err := chain.New(endpoint, 10*time.Second)
+	if err != nil {
+		return nil, errors.New("WEB_SOLANA_RPC_URL is not a usable RPC URL")
+	}
+	return webapp.NewAuth(secret, publicKey, appDB, rpcClient)
+}
+
+func contentGranted(ctx context.Context, appDB *pgxpool.Pool) bool {
+	missing, err := webapp.MissingGrants(ctx, appDB, webapp.ContentGrants)
+	switch {
+	case err != nil:
+		slog.Warn("content reads not served by Go: grant check failed", "error", err)
+	case len(missing) > 0:
+		slog.Warn("content reads not served by Go: web app role lacks grants", "missing", missing)
+	default:
+		return true
+	}
+	return false
+}
+
 func run(ctx context.Context) error {
 	cfg, err := config()
 	if err != nil {
+		return err
+	}
+	if cfg.CoinGeckoAPIKey, err = engine.OptionalCredential("COINGECKO_API_KEY"); err != nil {
 		return err
 	}
 	appDB, err := openAppDB(ctx)
@@ -87,7 +145,9 @@ func run(ctx context.Context) error {
 	if appDB != nil {
 		defer appDB.Close()
 		cfg.AppDB = appDB
+		cfg.ContentDB = contentGranted(ctx, appDB)
 	}
+	cfg.Auth = openAuth(ctx, appDB)
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           webapp.New(cfg),
