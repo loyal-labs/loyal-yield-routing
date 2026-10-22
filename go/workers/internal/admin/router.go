@@ -2,12 +2,15 @@ package admin
 
 import (
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
@@ -59,6 +62,19 @@ func headers(release string) func(http.Handler) http.Handler {
 	}
 }
 
+func requestLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		ww := chimw.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+		status := ww.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		slog.Info("loyal-admin request", "method", r.Method, "path", r.URL.Path, "status", status, "duration_ms", time.Since(started).Milliseconds())
+	})
+}
+
 func apiConfig() huma.Config {
 	config := huma.DefaultConfig("Loyal admin API", "1.0.0")
 	config.DocsPath = ""
@@ -88,7 +104,7 @@ func New(cfg Config) http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	r.Group(func(r chi.Router) {
-		r.Use(CSRF, cfg.Auth.Gate)
+		r.Use(requestLog, CSRF, cfg.Auth.Gate)
 		r.Post("/auth/login", cfg.Auth.Login)
 		r.Get("/logout", Logout)
 		r.Post("/logout", Logout)

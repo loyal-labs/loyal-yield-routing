@@ -41,10 +41,29 @@ func optional(name string) (string, error) {
 	return engine.Credential(name)
 }
 
-func openOptional(ctx context.Context, name string, maxConnections int32) (*pgxpool.Pool, error) {
+const minConnections = "2"
+
+func poolDSN(dsn string, extra map[string]string) (string, error) {
+	parsed, err := url.Parse(dsn)
+	if err != nil || parsed.Host == "" {
+		return "", errors.New("want a database URL")
+	}
+	query := parsed.Query()
+	query.Set("pool_min_conns", minConnections)
+	for key, value := range extra {
+		query.Set(key, value)
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
+}
+
+func openOptional(ctx context.Context, name string, maxConnections int32, extra map[string]string) (*pgxpool.Pool, error) {
 	dsn, err := optional(name)
 	if err != nil || dsn == "" {
 		return nil, err
+	}
+	if dsn, err = poolDSN(dsn, extra); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	pool, err := db.Open(ctx, dsn, maxConnections)
 	if err != nil {
@@ -124,19 +143,31 @@ func config(ctx context.Context) (admin.Config, func(), error) {
 	if err != nil {
 		return cfg, closeAll, err
 	}
+	if appDSN, err = poolDSN(appDSN, nil); err != nil {
+		return cfg, closeAll, fmt.Errorf("ADMIN_APP_DATABASE_URL: %w", err)
+	}
 	if cfg.Deps.App, err = db.Open(ctx, appDSN, 4); err != nil {
 		return cfg, closeAll, fmt.Errorf("ADMIN_APP_DATABASE_URL: %w", err)
 	}
 	closers = append(closers, cfg.Deps.App.Close)
 	for _, pool := range []struct {
-		name string
-		into **pgxpool.Pool
-	}{{"ADMIN_YIELD_DATABASE_URL", &cfg.Deps.Yield}, {"ADMIN_TIMESCALE_DATABASE_URL", &cfg.Deps.Timescale}} {
-		if *pool.into, err = openOptional(ctx, pool.name, 4); err != nil {
+		name  string
+		into  **pgxpool.Pool
+		extra map[string]string
+	}{
+		{"ADMIN_YIELD_DATABASE_URL", &cfg.Deps.Yield, map[string]string{"options": admin.SessionTimeoutOptions}},
+		{"ADMIN_TIMESCALE_DATABASE_URL", &cfg.Deps.Timescale, nil},
+	} {
+		if *pool.into, err = openOptional(ctx, pool.name, 8, pool.extra); err != nil {
 			return cfg, closeAll, err
 		}
 		if *pool.into != nil {
 			closers = append(closers, (*pool.into).Close)
+			if pool.extra != nil {
+				if err = admin.CheckSessionTimeout(ctx, *pool.into); err != nil {
+					return cfg, closeAll, fmt.Errorf("%s: %w", pool.name, err)
+				}
+			}
 		} else {
 			slog.Warn("loyal-admin family disabled", "credential", pool.name)
 		}

@@ -687,6 +687,11 @@ func earnSettingsAuthoritySpend(ctx context.Context, url string, addresses []str
 				return map[string]earnWalletSpend{}, failure
 			}
 			for _, row := range rows {
+				if row.BlockTime != nil {
+					if at := int64(*row.BlockTime) * 1000; at < startedMs || at > endedMs {
+						continue
+					}
+				}
 				signatures = append(signatures, row.Signature)
 			}
 			var oldest *int64

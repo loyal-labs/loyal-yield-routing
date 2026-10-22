@@ -134,32 +134,30 @@ GROUP BY to_char((date_trunc('day', occurred_at AT TIME ZONE 'UTC'))::date, 'YYY
 			return err
 		}
 		rows, err := tx.Query(ctx, `SELECT a.id::text, a.created_at, a.solana_env,
+  coalesce(s.signature, a.creation_signature),
+  coalesce(s.user_address, a.subject_address),
   coalesce(
-    (select s.signature from app_smart_account_sponsorship_transactions s
-      where s.solana_env = a.solana_env and s.settings_pda = a.settings_pda
-      order by s.occurred_at desc limit 1),
-    a.creation_signature
-  ),
-  coalesce(
-    (select s.user_address from app_smart_account_sponsorship_transactions s
-      where s.solana_env = a.solana_env and s.settings_pda = a.settings_pda
-      order by s.occurred_at desc limit 1),
-    u.subject_address
-  ),
-  coalesce(
-    (select s.smart_account_address from app_smart_account_sponsorship_transactions s
-      where s.solana_env = a.solana_env and s.settings_pda = a.settings_pda
-      order by s.occurred_at desc limit 1),
+    s.smart_account_address,
     (select c.smart_account_address from app_wallet_auth_completions c
       where c.user_id = a.user_id and c.solana_env = a.solana_env and c.state = 'completed' and c.smart_account_address is not null
       order by c.completed_at desc nulls last limit 1),
-    u.smart_account_address
+    a.user_smart_account_address
   )
-FROM app_user_smart_accounts a
-INNER JOIN app_users u ON u.id = a.user_id
-WHERE a.solana_env = $1 AND a.state = 'ready'
-ORDER BY a.created_at DESC
-LIMIT 100`, smartAccountsSolanaEnv)
+FROM (
+  SELECT a.id, a.user_id, a.created_at, a.solana_env, a.settings_pda, a.creation_signature,
+    u.subject_address, u.smart_account_address AS user_smart_account_address
+  FROM app_user_smart_accounts a
+  INNER JOIN app_users u ON u.id = a.user_id
+  WHERE a.solana_env = $1 AND a.state = 'ready'
+  ORDER BY a.created_at DESC
+  LIMIT 100
+) a
+LEFT JOIN LATERAL (
+  select t.signature, t.user_address, t.smart_account_address from app_smart_account_sponsorship_transactions t
+  where t.solana_env = a.solana_env and t.settings_pda = a.settings_pda
+  order by t.occurred_at desc limit 1
+) s ON true
+ORDER BY a.created_at DESC`, smartAccountsSolanaEnv)
 		if err != nil {
 			return err
 		}
