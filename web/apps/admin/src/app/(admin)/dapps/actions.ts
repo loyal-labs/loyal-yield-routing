@@ -49,9 +49,6 @@ function parseDisplayOrder(value: string | null): number {
   return parsed;
 }
 
-// Accept free-form strings so admins can introduce new categories without
-// a code change. The canonical list lives in `@loyal-labs/shared` and
-// drives the dropdown, but the column stays text.
 function normalizeCategory(value: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();

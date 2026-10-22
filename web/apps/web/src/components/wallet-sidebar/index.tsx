@@ -87,24 +87,20 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     [props.walletDesktopData.totalUsd, props.smartAccountData.totalUsd]
   );
 
-  // Captcha gate for sign-in tab
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const captchaSatisfied =
     publicEnv.captcha.mode === "disabled" || captchaToken !== null;
 
-  // Reset captcha when sidebar closes
   useEffect(() => {
     if (!props.isOpen) {
       setCaptchaToken(null);
     }
   }, [props.isOpen]);
 
-  // Trap wheel events inside the sidebar so page doesn't scroll
   useEffect(() => {
     const el = sidebarRef.current;
     if (!el) return;
     const handler = (e: WheelEvent) => {
-      // Find the nearest scrollable ancestor within the sidebar
       let target = e.target as HTMLElement | null;
       while (target && target !== el) {
         const { overflowY } = getComputedStyle(target);
@@ -113,7 +109,7 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
           const atBottom =
             target.scrollTop + target.clientHeight >= target.scrollHeight - 1 &&
             e.deltaY > 0;
-          if (!atTop && !atBottom) return; // let inner element scroll normally
+          if (!atTop && !atBottom) return;
         }
         target = target.parentElement;
       }
@@ -123,7 +119,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     return () => el.removeEventListener("wheel", handler);
   }, []);
 
-  // Navigation stack: stack[0] = Layer 1, stack[1] = Layer 2
   const [viewStack, setViewStack] = useState<Exclude<SubView, null>[]>([]);
   const [shouldLoadPopularTokens, setShouldLoadPopularTokens] = useState(false);
   const pushView = useCallback((view: Exclude<SubView, null>) => {
@@ -159,12 +154,10 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [popView, props.isOpen, viewStack.length]);
 
-  // Derived: what's at each layer
   const level1View: SubView = viewStack[0] ?? null;
   const level2View: SubView = viewStack[1] ?? null;
   const level3View: SubView = viewStack[2] ?? null;
 
-  // Delayed copies for exit animations
   const [displayLevel1, setDisplayLevel1] = useState<SubView>(null);
   const [displayLevel2, setDisplayLevel2] = useState<SubView>(null);
   const [displayLevel3, setDisplayLevel3] = useState<SubView>(null);
@@ -229,7 +222,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     enabled: shouldLoadPopularTokens,
   });
 
-  // Derive real token list from wallet positions, falling back to mock data
   const derivedTokens = useMemo<SwapToken[]>(() => {
     const positions = props.walletDesktopData.positions;
     if (!positions || positions.length === 0) return fallbackSwapTokens;
@@ -246,7 +238,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
         balance: p.publicBalance,
       }));
 
-    // Inject LOYL at 3rd position if not already present
     if (!tokens.some((t) => t.mint === LOYL_TOKEN.mint)) {
       const loylPosition = positions.find(
         (p) => p.asset.mint === LOYL_TOKEN.mint
@@ -296,7 +287,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
         : undefined,
     [executeVaultSwap, selectedVault]
   );
-  // Cross-fade when switching tabs: fade out → swap content → fade in
   const [crossFadeOpacity, setCrossFadeOpacity] = useState(1);
   const [displayTab, setDisplayTab] = useState(props.activeTab);
   useEffect(() => {
@@ -304,7 +294,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     wasOpenRef.current = props.isOpen;
 
     if (props.activeTab !== displayTab) {
-      // Swap instantly when sidebar is closed, just opening, or transitioning to/from sign-in
       if (
         !props.isOpen ||
         justOpened ||
@@ -317,21 +306,19 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
         setCrossFadeOpacity(1);
         return;
       }
-      setCrossFadeOpacity(0); // fade out
+      setCrossFadeOpacity(0);
       const t = setTimeout(() => {
-        setDisplayTab(props.activeTab); // swap content while near-invisible
+        setDisplayTab(props.activeTab);
         setCrossFadeOpacity(1); // fade in
       }, 200);
       return () => clearTimeout(t);
     }
   }, [props.activeTab, displayTab, props.isOpen]);
 
-  // Reset confirmation when leaving portfolio tab
   useEffect(() => {
     if (displayTab !== "portfolio") setShowDisconnectConfirm(false);
   }, [displayTab]);
 
-  // Swap token state (lifted here so token selection sub-view can update it)
   const [swapFromToken, setSwapFromToken] = useState<SwapToken>(
     derivedTokens[0] ?? fallbackSwapTokens[0]
   );
@@ -341,14 +328,12 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
       (token) => token.mint && token.mint === swapFromToken.mint
     ) ?? swapFromToken;
 
-  // Swap form state
   const [swapFormActive, setSwapFormActive] = useState(true);
   const showSharedTabs = swapFormActive;
   const [swapButtonProps, setSwapButtonProps] =
     useState<FormButtonProps | null>(null);
   const activeButtonProps = swapButtonProps;
 
-  // Send token state
   const [sendToken, setSendToken] = useState<SwapToken>(
     derivedTokens[0] ?? fallbackSwapTokens[0]
   );
@@ -367,7 +352,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     [activeTab, onTabChange, publicEnv]
   );
 
-  // Build contextual actions for each token row on hover
   const getTokenActions = useCallback(
     (token: TokenRow): TokenRowActions | undefined => {
       const isLoyal = token.id === LOYL_TOKEN.mint || token.symbol === "LOYAL";
@@ -394,7 +378,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     [pushView]
   );
 
-  // Update tokens when wallet connects/disconnects (not on every balance refresh)
   const prevHadTokens = useRef(
     derivedTokens.length > 0 && !!derivedTokens[0].mint
   );
@@ -410,16 +393,13 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     prevHadTokens.current = hasTokens;
   }, [derivedTokens]);
 
-  // Derived state
   const hasLevel1 = viewStack.length >= 1;
   const hasLevel2 = viewStack.length >= 2;
   const hasLevel3 = viewStack.length >= 3;
 
-  // Helper to check view type
   const viewType = (v: SubView) =>
     typeof v === "object" && v !== null ? v.type : v;
 
-  // Reset everything when sidebar closes
   useEffect(() => {
     if (!props.isOpen) {
       const t = setTimeout(() => {
@@ -494,7 +474,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     }
   }, []);
 
-  // Render any sub-view by type. Used for both Layer 1 and Layer 2.
   const renderSubView = (
     view: SubView,
     onBack: () => void,
@@ -857,7 +836,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
             </div>
           </div>
 
-          {/* Shared bottom button — stays fixed */}
           {(() => {
             const btnProps = swapButtonProps;
             return btnProps ? (
@@ -940,7 +918,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
               "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
         >
-          {/* Layer 0: Main panel */}
           <div
             style={{
               position: "absolute",
@@ -958,7 +935,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
               pointerEvents: hasLevel1 ? "none" : "auto",
             }}
           >
-            {/* Quick action buttons — shown when hero cards are not visible, hidden on sign-in tab */}
             <div
               style={{
                 display: "flex",
@@ -1043,7 +1019,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
               )}
             </div>
 
-            {/* Disconnect confirmation bar — slides in like quick action buttons */}
             <div
               style={{
                 display: "flex",
@@ -1118,7 +1093,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
               </div>
             </div>
 
-            {/* Content wrapper for cross-fade (bg stays solid) */}
             <div
               style={{
                 display: "flex",
@@ -1182,12 +1156,10 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
                     minHeight: 0,
                   }}
                 >
-                  {/* Shared header — stays fixed, hidden when non-form phase takes over */}
                   {showSharedTabs && (
                     <SwapPanelHeader onClose={props.onClose} />
                   )}
 
-                  {/* Content area */}
                   <div
                     style={{
                       position: "relative",
@@ -1223,7 +1195,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
                     </div>
                   </div>
 
-                  {/* Shared bottom button — stays fixed */}
                   {activeButtonProps && (
                     <div style={{ padding: "16px 20px" }}>
                       <button
@@ -1385,7 +1356,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
             </div>
           </div>
 
-          {/* Layer 1: Sub-views (allTokens / allActivity / tokenSelect) */}
           <div
             style={{
               position: "absolute",
@@ -1411,7 +1381,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
             {renderSubView(displayLevel1, popView)}
           </div>
 
-          {/* Layer 2 */}
           <div
             style={{
               position: "absolute",
@@ -1437,7 +1406,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
             {renderSubView(displayLevel2, popView)}
           </div>
 
-          {/* Layer 3 */}
           <div
             style={{
               position: "absolute",

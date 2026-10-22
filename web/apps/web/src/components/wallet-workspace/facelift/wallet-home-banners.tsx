@@ -22,14 +22,11 @@ type HomeBanner = {
   buttonColor: keyof typeof BUTTON_COLOR_CLASSES;
   buttonLabel: string;
   bg: string;
-  // null → the button runs onSetUpAutodeposit instead of opening a link.
   href: string | null;
   key: string;
   title: string;
 };
 
-// Figma 4978:80682 (X) / 4978:80656 (Jupiter) / 4978:80663 (Telegram) /
-// 4978:80849 (Autodeposit).
 const BANNERS: HomeBanner[] = [
   {
     art: `${ASSET_BASE}/banner-x-art.svg`,
@@ -69,10 +66,6 @@ const BANNERS: HomeBanner[] = [
   },
 ];
 
-// animate-text "soft-blur-in": word-wrapped spans of per-character spans;
-// --banner-char-i drives each character's staggered enter delay while the
-// word wrappers keep line breaks at natural word boundaries. Shared with the
-// desktop Earn banner (earn-banner.tsx).
 export function BannerTitleChars({ title }: { title: string }) {
   let charIndex = 0;
   return (
@@ -102,13 +95,6 @@ export function BannerTitleChars({ title }: { title: string }) {
   );
 }
 
-// Figma 4966:68797 — swipeable promo banner carousel in the mobile wallet
-// home grid's top slot. Native scroll-snap does the swiping; the compact
-// pagination dots float 20px above the card like the design's overlay.
-// Becoming the active slide plays the entrance: title characters via the
-// soft-blur-in recipe, then art + button on the texts-reveal stagger.
-// Figma 5465:83201 — static banner shown before the first Earn/Earn MAX
-// deposit; the carousel takes the slot back afterwards.
 export function FirstDepositBanner() {
   return (
     <div className="flex h-full w-full items-center justify-end overflow-clip rounded-3xl bg-black/[0.04] dark:bg-white/[0.06]">
@@ -134,7 +120,6 @@ export function WalletHomeBanners({
   dotsBelow = false,
   onSetUpAutodeposit,
 }: {
-  /** Mobile home puts the pager dots under the banner (Figma 5465:83340). */
   dotsBelow?: boolean;
   onSetUpAutodeposit: () => void;
 }) {
@@ -149,9 +134,6 @@ export function WalletHomeBanners({
     setHasMounted(true);
   }, []);
 
-  // Autoplay: advance 4s after the last index change, so a manual swipe
-  // resets the countdown (every scroll-driven setActiveIndex re-arms the
-  // timer). Held-down touches pause it; wraps back to the first slide.
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       return;
@@ -181,8 +163,6 @@ export function WalletHomeBanners({
     setActiveIndex(Math.min(Math.max(index, 0), BANNERS.length - 1));
   };
 
-  // Mobile compacts the slides (Figma 5465:83377): no pill — the whole
-  // banner is the tap target — so the button only renders from 796px up.
   const buttonClassName = (banner: HomeBanner) =>
     `t-hover flex min-w-16 items-center justify-center rounded-full px-4 py-2.5 text-center font-medium text-[13px] text-white leading-4 max-[795px]:hidden ${
       BUTTON_COLOR_CLASSES[banner.buttonColor]
@@ -235,9 +215,6 @@ export function WalletHomeBanners({
               className="pointer-events-none absolute inset-0 size-full object-cover"
               src={banner.bg}
             />
-            {/* Mobile compacts the slide (Figma 5465:83377): the whole
-                banner is the tap target, so the pill hides and this overlay
-                link takes over. */}
             {banner.href !== null ? (
               <a
                 aria-label={banner.title}
@@ -258,8 +235,6 @@ export function WalletHomeBanners({
               <h3 className="max-w-[240px] font-semibold text-[20px] text-white leading-5 max-[795px]:text-[16px] max-[795px]:leading-[18px]">
                 <BannerTitleChars title={banner.title} />
               </h3>
-              {/* StaggerLine idiom: the wrapper carries the rise so the
-                  pill keeps its own t-hover transition untouched. */}
               {/* The pill hides on mobile via its own class — the wrapper
                   can't carry it (.t-stagger-line's unlayered display:block
                   outranks the layered hidden utility). */}

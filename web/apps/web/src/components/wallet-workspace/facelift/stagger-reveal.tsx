@@ -2,9 +2,6 @@
 
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 
-// transitions.dev "texts reveal" (frontend/transitions/texts-reveal.md):
-// children marked as StaggerLine rise into view with staggered blur once the
-// group mounts (remove → reflow → add .is-shown, per the recipe's showText).
 export function StaggerReveal({
   children,
   className,
@@ -31,8 +28,6 @@ export function StaggerReveal({
   );
 }
 
-// Dynamic form of the recipe's .t-stagger-line--N helpers: the delay scales
-// with the row's index instead of a fixed class per line.
 export function StaggerLine({
   children,
   index,

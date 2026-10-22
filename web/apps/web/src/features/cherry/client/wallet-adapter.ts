@@ -508,8 +508,6 @@ function resolvedInstructionsEqual(
   );
 }
 
-// Compact structural diff for the MESSAGE_CHANGED error, so telemetry shows
-// what the host/wallet actually altered instead of an opaque byte mismatch.
 function describeMessageChange(
   original: VersionedMessage,
   signed: VersionedMessage

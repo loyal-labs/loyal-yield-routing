@@ -32,7 +32,6 @@ export default defineContentScript({
 
   main(ctx: InstanceType<typeof ContentScriptContext>) {
     const handler = (event: MessageEvent) => {
-      // Only accept messages from this window
       if (event.source !== window) return;
 
       const data = event.data;
@@ -72,17 +71,14 @@ export default defineContentScript({
         return;
       }
 
-      // Disconnect is fire-and-forget — no response expected
       if (payload.type === "DAPP_DISCONNECT") {
         try {
           void browser.runtime.sendMessage(payload);
         } catch {
-          // Context invalidated — ignore silently
         }
         return;
       }
 
-      // All other messages expect a response from background
       if (!requestId) return;
 
       void (async () => {
@@ -117,7 +113,6 @@ export default defineContentScript({
 
     window.addEventListener("message", handler);
 
-    // Clean up when context is invalidated (extension reloaded/updated)
     ctx.signal.addEventListener("abort", () => {
       window.removeEventListener("message", handler);
     });

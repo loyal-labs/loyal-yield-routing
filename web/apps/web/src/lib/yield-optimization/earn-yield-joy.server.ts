@@ -30,9 +30,6 @@ import {
   type EarnJoyState,
 } from "./earn-yield-joy.shared";
 
-// Daily driver for the Earn "joy" pushes (ASK-2091). Earnings are read through
-// the same service the app reads, so a push can never claim a number the Earn
-// screen would not show.
 const EARN_VAULT_INDEX = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WALLET_CONCURRENCY = 5;

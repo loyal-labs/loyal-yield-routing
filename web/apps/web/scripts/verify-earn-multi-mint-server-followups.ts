@@ -40,9 +40,6 @@ for (const testFile of requiredTests) {
   );
 }
 
-// Reserve SQL behavior is exercised against PostgreSQL by the standalone
-// verify-earn-reserve-selection.ts verifier, not inferred from source strings.
-
 const withdrawSource = source(
   "apps/web/src/lib/yield-optimization/earn-withdraw-confirm.server.ts"
 );

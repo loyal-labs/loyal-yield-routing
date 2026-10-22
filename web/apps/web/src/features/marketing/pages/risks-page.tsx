@@ -58,14 +58,12 @@ export function RisksPage({
         locale={locale}
       />
 
-      {/* Hero is light, so the notice sits directly under the header on white */}
       {dict.legalNotice ? (
         <p className="mx-auto w-full max-w-[1560px] px-4 pt-6 text-[16px] leading-[1.3] text-black/60 lg:px-6">
           {dict.legalNotice}
         </p>
       ) : null}
 
-      {/* Block 1 — Hero (light) */}
       <Hero
         tone="light"
         title={dict.hero.title}
@@ -77,7 +75,6 @@ export function RisksPage({
         }}
       />
 
-      {/* Block 2 — What the automation can and can't do */}
       <CardsGrid
         title={dict.automation.title}
         description={dict.automation.description}
@@ -107,7 +104,6 @@ export function RisksPage({
         ]}
       />
 
-      {/* Block 3 — Where the risk sits (table) */}
       <RiskTable
         title={dict.riskTable.title}
         description={dict.riskTable.description}
@@ -115,7 +111,6 @@ export function RisksPage({
         rows={dict.riskRows}
       />
 
-      {/* Block 4 — Comparison (table) */}
       <CompareTable
         title={dict.compareTable.title}
         description={dict.compareTable.description}
@@ -123,7 +118,6 @@ export function RisksPage({
         rows={dict.compareRows}
       />
 
-      {/* Block 5 — Markets */}
       <CardsGrid
         title={dict.markets.title}
         description={dict.markets.description}
@@ -144,7 +138,6 @@ export function RisksPage({
         closingStatement={dict.markets.closing}
       />
 
-      {/* Block 6 — Track record */}
       <CardsThree
         title={dict.trackRecord.title}
         description={dict.trackRecord.description}

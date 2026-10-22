@@ -38,8 +38,6 @@ export class RelayCredentials {
     this.telegramChatId = values.telegramChatId;
     this.slackWebhookUrl = values.slackWebhookUrl;
 
-    // The chat id is not a secret: it is in the Blueprint and in every alert's
-    // delivery target. Redacting it would only make logs harder to read.
     this.#secrets = [
       values.clickStackWebhookSecret,
       values.telegramBotToken,

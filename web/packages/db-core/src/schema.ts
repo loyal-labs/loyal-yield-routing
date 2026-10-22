@@ -15,14 +15,6 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-// ============================================================================
-// TYPES
-// ============================================================================
-
-/**
- * Telegram Business Bot Rights - permissions granted to the bot.
- * All fields are optional booleans.
- */
 export type BusinessBotRights = {
   can_reply?: boolean;
   can_read_messages?: boolean;
@@ -35,48 +27,23 @@ export type BusinessBotRights = {
   can_manage_stories?: boolean;
 };
 
-/**
- * Sender type for bot conversation messages.
- */
 export type SenderType = "user" | "bot" | "system";
 
-/**
- * Thread status for bot conversations.
- */
 export type ThreadStatus = "active" | "archived" | "closed";
 
-/**
- * Allowed user actions for summary voting.
- */
 export type SummaryVoteAction = "LIKE" | "DISLIKE";
 
-/**
- * Delivery state for at-most-once Telegram command responses.
- */
 export type TelegramCommandReceiptStatus =
   | "processing"
   | "completed"
   | "failed";
 
-/**
- * Allowed time-based summary notification frequency options.
- */
 export type SummaryNotificationTimeHours = 24 | 48;
 
-/**
- * Allowed message-count summary notification frequency options.
- */
 export type SummaryNotificationMessageCount = 500 | 1000;
 
-/**
- * Community ingestion parser type.
- */
 export type CommunityParserType = "bot" | "userbot";
 
-/**
- * Encrypted message content stored as JSONB.
- * Supports text now, extensible for images/voice later.
- */
 export type EncryptedMessageContent = {
   type: "text" | "image" | "voice";
   ciphertext: string; // base64 encoded
@@ -84,59 +51,35 @@ export type EncryptedMessageContent = {
   metadata?: {
     fileName?: string;
     fileSize?: number;
-    duration?: number; // for voice messages
+    duration?: number;
     mimeType?: string;
   };
 };
 
-/**
- * Private transfer analytics flow type
- */
 export type PrivateTransferAnalyticsFlow = "shield" | "unshield";
 
-/**
- * Gasless claim analytics transaction type
- */
 export type GaslessClaimTransactionType =
   | "store"
   | "verify_telegram_init_data"
   | "top_up_to_0_01_sol";
 
-/**
- * Solana environment recorded for gasless claim analytics
- */
 export type GaslessClaimSolanaEnv = "mainnet" | "devnet";
 
-/**
- * Supported app-level user providers.
- */
 export type AppUserProvider = "solana";
 
-/**
- * Solana environments tracked for app user smart accounts.
- */
 export type AppUserSmartAccountSolanaEnv =
   | "mainnet"
   | "testnet"
   | "devnet"
   | "localnet";
 
-/**
- * Lifecycle state for app user smart account provisioning.
- */
 export type AppUserSmartAccountState = "provisioning" | "ready" | "failed";
 
-/**
- * Lifecycle state for wallet auth completion attempts.
- */
 export type AppWalletAuthCompletionState =
   | "processing"
   | "completed"
   | "failed";
 
-/**
- * Outcome of env-scoped smart-account ensure/provisioning.
- */
 export type AppWalletAuthProvisioningOutcome =
   | "existing_ready"
   | "delegated_root_signer"
@@ -145,9 +88,6 @@ export type AppWalletAuthProvisioningOutcome =
   | "sponsored_new_record"
   | "retried_failed_record";
 
-/**
- * Lifecycle state for smart-account settings signer changes requested by the app.
- */
 export type AppSmartAccountSettingsChangeRequestStatus =
   | "draft"
   | "submitted"
@@ -156,40 +96,22 @@ export type AppSmartAccountSettingsChangeRequestStatus =
   | "canceled"
   | "superseded";
 
-/**
- * App-supported root Settings signer request actions.
- */
 export type AppSmartAccountSettingsChangeAction =
   | "add_root_signer"
   | "remove_root_signer";
 
-/**
- * Identity-relevant signer scope for app wallet onboarding.
- */
 export type AppSmartAccountSignerScope = "root_settings";
 
-/**
- * Read-model state for app smart-account signer membership.
- */
 export type AppSmartAccountSignerState = "active" | "removed";
 
-/**
- * Stored app chat message roles.
- */
 export type AppChatMessageRole = "user" | "assistant" | "system";
 
-/**
- * Supported apps for feature registry tracking.
- */
 export type FeatureApp =
   | "telegram_miniapp"
   | "website"
   | "mobile"
   | "extension";
 
-/**
- * Lifecycle state for a feature in a specific app.
- */
 export type FeatureStatus =
   | "missing"
   | "planned"
@@ -197,9 +119,6 @@ export type FeatureStatus =
   | "implemented"
   | "live";
 
-/**
- * Evidence types attached to feature status entries.
- */
 export type FeatureEvidenceType =
   | "path"
   | "branch"
@@ -208,14 +127,8 @@ export type FeatureEvidenceType =
   | "commit"
   | "doc";
 
-/**
- * Audience classification for runtime flags.
- */
 export type FlagAudience = "all" | "public" | "team";
 
-/**
- * Environments that runtime flags can target.
- */
 export type FlagTargetEnvironment = "development" | "preview" | "production";
 
 export type ManualPushAudience = "all" | "platform" | "wallet";
@@ -226,15 +139,6 @@ export type PushNotificationSendStatus =
   | "receipt_checked"
   | "failed";
 
-// ============================================================================
-// TABLES
-// ============================================================================
-
-/**
- * Global admins whitelist for privileged community actions.
- * Users in this table can activate/deactivate communities and manage
- * notification settings.
- */
 export const admins = pgTable(
   "admins",
   {
@@ -251,10 +155,6 @@ export const admins = pgTable(
   (table) => [uniqueIndex("admins_telegram_id_idx").on(table.telegramId)]
 );
 
-/**
- * Telegram users who post messages in communities.
- * Created automatically when a user sends their first message.
- */
 export const users = pgTable(
   "users",
   {
@@ -274,10 +174,6 @@ export const users = pgTable(
   (table) => [uniqueIndex("users_telegram_id_idx").on(table.telegramId)]
 );
 
-/**
- * Per-user bot settings for private chat behavior.
- * Linked one-to-one with users.
- */
 export const userSettings = pgTable(
   "user_settings",
   {
@@ -297,10 +193,6 @@ export const userSettings = pgTable(
   (table) => [uniqueIndex("user_settings_user_id_idx").on(table.userId)]
 );
 
-/**
- * Telegram group chats activated for message tracking.
- * Privileged management actions are controlled by the admins whitelist.
- */
 export const communities = pgTable(
   "communities",
   {
@@ -355,10 +247,6 @@ export const communities = pgTable(
   ]
 );
 
-/**
- * Many-to-many relationship between communities and users.
- * Tracks which users are members of which communities.
- */
 export const communityMembers = pgTable(
   "community_members",
   {
@@ -382,10 +270,6 @@ export const communityMembers = pgTable(
   ]
 );
 
-/**
- * Chat messages from tracked communities.
- * High-volume table - optimized with composite indexes for date-range queries.
- */
 export const messages = pgTable(
   "messages",
   {
@@ -405,25 +289,18 @@ export const messages = pgTable(
       .notNull(),
   },
   (table) => [
-    // Primary query pattern: messages by community + date range (for summaries)
     index("messages_community_created_idx").on(
       table.communityId,
       table.createdAt
     ),
-    // Prevent duplicate telegram messages per community
     uniqueIndex("messages_community_telegram_id_idx").on(
       table.communityId,
       table.telegramMessageId
     ),
-    // Secondary: lookup messages by user
     index("messages_user_id_idx").on(table.userId),
   ]
 );
 
-/**
- * Daily AI-generated chat summaries organized by topics.
- * Topics stored as JSONB array: [{title, content, sources[]}]
- */
 export const summaries = pgTable(
   "summaries",
   {
@@ -452,7 +329,6 @@ export const summaries = pgTable(
       .notNull(),
   },
   (table) => [
-    // Find latest summary per community (ORDER BY created_at DESC LIMIT 1)
     index("summaries_community_created_idx").on(
       table.communityId,
       table.createdAt
@@ -468,10 +344,6 @@ export const summaries = pgTable(
   ]
 );
 
-/**
- * User votes for summaries.
- * A user can vote only once per summary.
- */
 export const summaryVotes = pgTable(
   "summary_votes",
   {
@@ -503,10 +375,6 @@ export const summaryVotes = pgTable(
   ]
 );
 
-/**
- * Queue of helper bot messages scheduled for delayed deletion.
- * Entries are consumed by a minutely cron worker.
- */
 export const telegramHelperMessageCleanup = pgTable(
   "telegram_helper_message_cleanup",
   {
@@ -572,10 +440,6 @@ export const telegramCommandReceipts = pgTable(
   ]
 );
 
-/**
- * Singleton read model for /stats. A cron refreshes this row from the canonical
- * app and Yield databases so Telegram webhook handling never runs aggregates.
- */
 export type LoyalStatsAumSeriesPoint = {
   aumRaw: string;
   weekEnd: string;
@@ -627,10 +491,6 @@ export const loyalStatsSnapshots = pgTable(
   ]
 );
 
-/**
- * Telegram Business connections - tracks bot connections to user business accounts.
- * One connection per user; soft-deleted by setting isEnabled to false.
- */
 export const businessConnections = pgTable(
   "business_connections",
   {
@@ -651,17 +511,11 @@ export const businessConnections = pgTable(
       .notNull(),
   },
   (table) => [
-    // One business connection per user
     uniqueIndex("business_connections_user_id_idx").on(table.userId),
-    // Filter by active/inactive connections
     index("business_connections_is_enabled_idx").on(table.isEnabled),
   ]
 );
 
-/**
- * Bot conversation threads - represents a conversation session between user and bot.
- * Supports Telegram's threaded messages via message_thread_id.
- */
 export const botThreads = pgTable(
   "bot_threads",
   {
@@ -681,22 +535,15 @@ export const botThreads = pgTable(
       .notNull(),
   },
   (table) => [
-    // Primary query: find user's threads
     index("bot_threads_user_id_idx").on(table.userId),
-    // Unique thread per telegram chat + thread combination
     uniqueIndex("bot_threads_telegram_unique_idx").on(
       table.telegramChatId,
       table.telegramThreadId
     ),
-    // Filter by status
     index("bot_threads_status_idx").on(table.status),
   ]
 );
 
-/**
- * Individual messages within bot threads.
- * Content is encrypted as JSONB with type discriminators for extensibility.
- */
 export const botMessages = pgTable(
   "bot_messages",
   {
@@ -714,12 +561,10 @@ export const botMessages = pgTable(
       .notNull(),
   },
   (table) => [
-    // Primary query: get thread messages in chronological order
     index("bot_messages_thread_created_idx").on(
       table.threadId,
       table.createdAt
     ),
-    // Lookup by telegram message ID (for deduplication)
     index("bot_messages_telegram_id_idx").on(table.telegramMessageId),
   ]
 );
@@ -875,15 +720,12 @@ export const walletPushSyncState = pgTable("wallet_push_sync_state", {
     .notNull(),
 });
 
-// Retained as historical audit data after incoming-transfer push retirement.
 export const heliusWebhooks = pgTable(
   "helius_webhooks",
   {
     id: uuid("id").defaultRandom().primaryKey(),
     heliusWebhookId: text("helius_webhook_id").notNull(),
     webhookUrl: text("webhook_url").notNull(),
-    // Increment when we need to invalidate all existing addresses
-    // (e.g. authHeader rotation, environment migration).
     generation: integer("generation").default(0).notNull(),
     addressCount: integer("address_count").default(0).notNull(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -932,16 +774,12 @@ export const heliusWebhookDeliveries = pgTable(
   (table) => [primaryKey({ columns: [table.signature, table.walletPublicKey] })]
 );
 
-/**
- * Wallet-first users for the Loyal web frontend.
- */
 export const appUsers = pgTable(
   "app_users",
   {
     id: uuid("id").defaultRandom().primaryKey(),
     provider: text("provider").$type<AppUserProvider>().notNull(),
     subjectAddress: text("subject_address").notNull(),
-    // Contact email collected via Privy (email/Google login or a later link).
     email: text("email"),
     gridUserId: text("grid_user_id"),
     smartAccountAddress: text("smart_account_address"),
@@ -962,9 +800,6 @@ export const appUsers = pgTable(
   ]
 );
 
-/**
- * Verified wallet addresses attached to app users.
- */
 export const appUserWallets = pgTable(
   "app_user_wallets",
   {
@@ -1068,10 +903,6 @@ export const appUserSmartAccounts = pgTable(
   ]
 );
 
-/**
- * Individual sponsored smart-account creation transactions observed from the
- * Loyal web frontend. One row per transaction signature and environment.
- */
 export const appSmartAccountSponsorshipTransactions = pgTable(
   "app_smart_account_sponsorship_transactions",
   {
@@ -1118,11 +949,6 @@ export const appSmartAccountSponsorshipTransactions = pgTable(
   ]
 );
 
-/**
- * Durable lifecycle rows for root Settings signer changes requested by the app.
- * Chain Settings accounts remain the source of truth; these rows record request
- * state, idempotency, and confirmed transaction metadata.
- */
 export const appSmartAccountSettingsChangeRequests = pgTable(
   "app_smart_account_settings_change_requests",
   {
@@ -1265,10 +1091,6 @@ export const appSmartAccountSigners = pgTable(
   ]
 );
 
-/**
- * Idempotency and replay records for wallet auth completion.
- * One row per signed challenge token hash.
- */
 export const appWalletAuthCompletions = pgTable(
   "app_wallet_auth_completions",
   {
@@ -1337,9 +1159,6 @@ export const appCaptchaKeys = pgTable("app_captcha_keys", {
     .notNull(),
 });
 
-/**
- * Persisted chat sessions per app user.
- */
 export const appChats = pgTable(
   "app_chats",
   {
@@ -1369,9 +1188,6 @@ export const appChats = pgTable(
   ]
 );
 
-/**
- * Persisted user and assistant messages for app chats.
- */
 export const appChatMessages = pgTable(
   "app_chat_messages",
   {
@@ -1405,10 +1221,6 @@ export const appChatMessages = pgTable(
   ]
 );
 
-/**
- * Sync state for telegram-private-transfer analytics ingestion.
- * Tracks head sync and long-running historical backfill progress.
- */
 export const privateTransferAnalyticsSyncState = pgTable(
   "private_transfer_analytics_sync_state",
   {
@@ -1438,9 +1250,6 @@ export const privateTransferAnalyticsSyncState = pgTable(
   ]
 );
 
-/**
- * Latest token metadata and pricing for mints observed in private-transfer analytics.
- */
 export const privateTransferTokenCatalog = pgTable(
   "private_transfer_token_catalog",
   {
@@ -1464,9 +1273,6 @@ export const privateTransferTokenCatalog = pgTable(
   ]
 );
 
-/**
- * Raw successful modify_balance instructions observed for telegram-private-transfer.
- */
 export const privateTransferModifyBalanceEvents = pgTable(
   "private_transfer_modify_balance_events",
   {
@@ -1508,10 +1314,6 @@ export const privateTransferModifyBalanceEvents = pgTable(
   ]
 );
 
-/**
- * Current vault token balances observed on base layer for telegram-private-transfer.
- * This table is fully replaced on each successful snapshot refresh.
- */
 export const privateTransferVaultHoldings = pgTable(
   "private_transfer_vault_holdings",
   {
@@ -1539,10 +1341,6 @@ export const privateTransferVaultHoldings = pgTable(
   ]
 );
 
-/**
- * Individual gasless-payer transactions observed for claim flows.
- * One row per transaction signature and environment.
- */
 export const gaslessClaimTransactions = pgTable(
   "gasless_claim_transactions",
   {
@@ -1591,9 +1389,6 @@ export const gaslessClaimTransactions = pgTable(
   ]
 );
 
-/**
- * Canonical feature registry shared across apps.
- */
 export const featureRegistry = pgTable(
   "feature_registry",
   {
@@ -1613,9 +1408,6 @@ export const featureRegistry = pgTable(
   (table) => [uniqueIndex("feature_registry_key_idx").on(table.key)]
 );
 
-/**
- * Per-app feature status rows.
- */
 export const featureAppStatuses = pgTable(
   "feature_app_statuses",
   {
@@ -1649,9 +1441,6 @@ export const featureAppStatuses = pgTable(
   ]
 );
 
-/**
- * Evidence attached to a feature status row.
- */
 export const featureEvidence = pgTable(
   "feature_evidence",
   {
@@ -1681,9 +1470,6 @@ export const featureEvidence = pgTable(
   ]
 );
 
-/**
- * Runtime flags exposed to the frontend.
- */
 export const runtimeFlags = pgTable(
   "runtime_flags",
   {
@@ -1717,9 +1503,6 @@ export const runtimeFlags = pgTable(
   ]
 );
 
-/**
- * Links runtime flags to features.
- */
 export const featureFlagLinks = pgTable(
   "feature_flag_links",
   {
@@ -1742,11 +1525,6 @@ export const featureFlagLinks = pgTable(
   ]
 );
 
-/**
- * Curated dApps shown on the mobile in-app browser home tile grid.
- * Managed via the admin dashboard. Mobile fetches the active list and
- * falls back to a bundled default if the request fails.
- */
 export const trustedDapps = pgTable(
   "trusted_dapps",
   {
@@ -1782,11 +1560,6 @@ export const trustedDapps = pgTable(
   ]
 );
 
-/**
- * Library sections shown on the mobile Library tab.
- * Managed via the admin dashboard. Each section groups a horizontal row
- * of image-only article cards on the Library screen.
- */
 export const librarySections = pgTable(
   "library_sections",
   {
@@ -1809,12 +1582,6 @@ export const librarySections = pgTable(
   ]
 );
 
-/**
- * Library articles shown on the mobile Library tab.
- * Cards render only the cover image (no title overlay). The detail screen
- * renders the cover plus `contentMarkdown`. Articles with `isFeatured=true`
- * also appear in the Featured carousel above the section list.
- */
 export const libraryArticles = pgTable(
   "library_articles",
   {
@@ -1851,10 +1618,6 @@ export const libraryArticles = pgTable(
     ),
   ]
 );
-
-// ============================================================================
-// RELATIONS (for type-safe queries with Drizzle)
-// ============================================================================
 
 export const usersRelations = relations(users, ({ one, many }) => ({
   messages: many(messages),
@@ -2086,10 +1849,6 @@ export const featureFlagLinksRelations = relations(
     }),
   })
 );
-
-// ============================================================================
-// TYPE EXPORTS
-// ============================================================================
 
 export type Admin = typeof admins.$inferSelect;
 export type InsertAdmin = typeof admins.$inferInsert;

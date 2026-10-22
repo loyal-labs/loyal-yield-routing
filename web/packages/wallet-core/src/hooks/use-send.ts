@@ -65,7 +65,6 @@ export function useSend(signer: WalletSigner | null, connection: Connection) {
         const publicKey = signer.publicKey;
         const isSol = currency.toUpperCase() === "SOL";
 
-        // Validate recipient address
         let recipientPubkey: PublicKey;
         try {
           recipientPubkey = new PublicKey(recipientAddress);
@@ -115,7 +114,6 @@ export function useSend(signer: WalletSigner | null, connection: Connection) {
           return { signature, success: true };
         }
 
-        // Send SPL Token
         const resolvedTokenMint = tokenMint || getTokenMint(currency);
         if (!resolvedTokenMint) {
           throw new Error(

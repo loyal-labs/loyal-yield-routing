@@ -8,8 +8,6 @@ import type { FaqItem } from "@/features/marketing/i18n/types";
 
 export type { FaqItem } from "@/features/marketing/i18n/types";
 
-// Answers stay plain strings because they also feed the FAQPage JSON-LD,
-// so on-site URLs inside them are turned into links only at render time.
 const SITE_URL_PATTERN = /(askloyal\.com\/[\w/-]*[\w-])/g;
 
 function linkifyAnswer(answer: string) {
@@ -43,7 +41,6 @@ export function LandingFaq({
   const faqSchema = {
     "@context": "https://schema.org",
     "@type": "FAQPage",
-    // English output is unchanged: the key is only present for other locales.
     ...(locale === "en" ? {} : { inLanguage: LOCALE_TAGS[locale] }),
     mainEntity: faqs.map((faq) => ({
       "@type": "Question",

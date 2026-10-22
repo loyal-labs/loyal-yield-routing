@@ -30,10 +30,6 @@ import {
 } from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
 import { findActiveYieldRoutePolicyPair } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-// Mobile twin of `yield-optimization/deposits/confirm`. The device echoes back
-// the serialized prepared deposit it signed plus each stage's signature+slot;
-// this route rebuilds the canonical confirm payload server-side (the web client
-// does this in-browser) and defers to the shared `verifyConfirmedEarnDeposit`.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 type MobileConfirmFields = {
@@ -125,7 +121,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // Resolve the account (must already exist — prepare provisioned it).
   let smartAccountAddress: string;
   let settingsPda: string;
   try {
@@ -173,10 +168,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // Rebuild + record. Hydrate the echoed prepared deposit, resolve the policy
-  // signature (the active policy's last-seen signature for top-ups, or the
-  // mobile-supplied policy-stage signatures for a first deposit), build the
-  // canonical confirm body, then hand off to the shared recorder.
   try {
     const solanaEnv = getConfiguredSolanaEnv();
     const cluster = resolveLoyalClusterForSolanaEnv(solanaEnv);
@@ -328,9 +319,6 @@ export async function POST(request: Request) {
       input,
     });
 
-    // Best-effort Solana Week attribution: Quest 1 ("connect wallet and deposit
-    // $5+ in Earn"). Deposits under the threshold are a no-op. Idempotent on
-    // Solana's side; never blocks the deposit confirm.
     await reportEarnDepositQuestCompletion(
       walletAddress,
       input.principalAmountRaw,

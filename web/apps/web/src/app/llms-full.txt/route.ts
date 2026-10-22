@@ -2,13 +2,6 @@ import { getAllBlogPosts } from "@/features/blog";
 import { renderBlogSection } from "@/lib/seo/llms-blog";
 import { LLMS_FULL_HEAD, LLMS_FULL_TAIL } from "@/lib/seo/llms-content";
 
-/**
- * /llms-full.txt — the long-form context dump for AI engines.
- *
- * Same arrangement as /llms.txt: generated Blog section, hand-edited prose in
- * src/lib/seo/llms-content.ts, and the static public/llms-full.txt deleted so
- * this route isn't shadowed.
- */
 export const dynamic = "force-static";
 
 export async function GET(): Promise<Response> {

@@ -1530,9 +1530,6 @@ async function runProductionCanary(args: {
       vaultId: args.vaultId,
     });
     assertCanaryMovementPolicyBinding(movement, args.state);
-    // Initial withdrawal publication rechecks the activation gate generation.
-    // Once signed bytes are durably published, user pause may race safely with
-    // finality while recovery remains enabled and independent.
     await waitForPublishedWithdrawal(args.database, movement.id);
     if (args.controlledPause) {
       await pauseAndExpectMovementBlockedDelete({

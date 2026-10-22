@@ -541,8 +541,6 @@ export function EarnVaultRebalanceFrequencyChart({
   const maxDepositAmount =
     positiveDeposits.length > 0 ? Math.max(...positiveDeposits) : 1;
   const logTicks = buildLogTicks(minDepositAmount, maxDepositAmount);
-  // A log axis has nowhere to put a deposit that rounds to zero, so pin those
-  // to the bottom decade instead of dropping the vault off the chart.
   const logFloor = logTicks[0];
   const useLogScale = scale === "log" && positiveDeposits.length > 0;
   const zeroDepositCount = points.length - positiveDeposits.length;

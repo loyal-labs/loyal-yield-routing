@@ -87,7 +87,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: "accepted" });
   }
 
-  // Best-effort + idempotent; never throws.
   await reportFirstAutodepositSweepQuestCompletion(walletAddress, {
     source: "sweep-worker-notify",
   });
@@ -126,9 +125,6 @@ const EXECUTION_AMOUNT_FRESHNESS_MS = 15 * 60 * 1000;
 // push only goes out when this wallet has no row for the sweep yet. Without a
 // `dedupeKey` the campaign falls back to a per-day key, so an older worker
 // build can still only wake the user once a day.
-// ponytail: a write failure sends anyway — a silent auto-deposit failure is
-// the exact trust problem this push exists to fix, and a duplicate is the
-// cheaper error. Revisit if the yield DB ever flaps for hours.
 async function claimFailurePush(
   walletAddress: string,
   rawDedupeKey: unknown

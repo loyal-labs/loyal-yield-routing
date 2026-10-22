@@ -70,10 +70,6 @@ function CollapsibleRows({
   );
 }
 
-// The OG approval review restyled for the facelift (Figma 4813:413106): a
-// 400px right card on the dark scrim with a close button, the paged review
-// content, and the Reject/Approve pair. The mascot's speech bubble renders as
-// a quiet caption above the buttons instead.
 function ApprovalBody({ approval }: { approval: PendingEarnApproval }) {
   const { item } = approval;
   const pages: ApprovalReviewPage[] =

@@ -18,8 +18,6 @@ export type WalletPushPayload = {
 // - MOBILE_PUSH_API_BASE_URL: app deployment origin
 // - MOBILE_PUSH_API_SECRET: must match the app's PUSH_DEBUG_SECRET
 //
-// Best-effort by design: never throws, so confirm routes and webhooks can
-// await it without wrapping.
 export async function sendWalletPush(
   walletAddress: string,
   payload: WalletPushPayload

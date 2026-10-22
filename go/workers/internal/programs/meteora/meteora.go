@@ -97,7 +97,6 @@ func DecodePosition(a *chain.Account) (Position, error) {
 	return p, nil
 }
 
-// BinArrayIndexes are the indexes of the bin arrays holding the position's bins.
 func (p Position) BinArrayIndexes() []int64 {
 	var out []int64
 	for i := BinArrayIndex(p.LowerBinID); i <= BinArrayIndex(p.UpperBinID); i++ {

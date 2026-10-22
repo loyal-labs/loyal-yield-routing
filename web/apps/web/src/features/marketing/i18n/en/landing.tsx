@@ -37,7 +37,6 @@ export const enLanding = {
     animationAriaLabel:
       "Loyal app animation: connect a wallet, watch the balance grow, and set up autodeposit",
     moreInfo: "More info",
-    // {label} is the stat label.
     loadingTemplate: "Loading {label}",
     statsAriaLabel: "Loyal Stats",
     stats: {

@@ -1,4 +1,3 @@
-/** GET /ultra/v1/order query params */
 export type JupiterOrderRequest = {
   inputMint: string;
   outputMint: string;
@@ -6,7 +5,6 @@ export type JupiterOrderRequest = {
   taker: string;
 };
 
-/** Shared fields across aggregator and RFQ order responses */
 type JupiterOrderBase = {
   inputMint: string;
   outputMint: string;
@@ -72,13 +70,11 @@ export type JupiterTokenMetrics = {
   updatedAt?: string;
 };
 
-/** POST /ultra/v1/execute request */
 export type JupiterExecuteRequest = {
   signedTransaction: string;
   requestId: string;
 };
 
-/** POST /ultra/v1/execute success response */
 export type JupiterExecuteResponse = {
   status: "Success" | "Failed";
   signature: string;
@@ -95,7 +91,6 @@ export type JupiterExecuteResponse = {
   error?: string;
 };
 
-/** Params passed from UI to useSwap hook */
 export type SwapParams = {
   fromMint: string;
   toMint: string;
@@ -106,7 +101,6 @@ export type SwapParams = {
   toSymbol: string;
 };
 
-/** Result returned from useSwap hook to UI */
 export type SwapResult = {
   success: boolean;
   signature?: string;

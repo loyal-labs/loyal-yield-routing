@@ -21,13 +21,6 @@ function isTranslatedPath(path: string): boolean {
   return (TRANSLATED_PATHS as readonly string[]).includes(path);
 }
 
-/**
- * The supported locale the browser ranks highest in Accept-Language, or null
- * when it ranks none of them. "ru-RU,ru;q=0.9,en;q=0.8" → "ru";
- * "zh-CN,zh;q=0.9" → "zh"; "en-US,ru;q=0.5" → "en". Only the primary
- * subtag counts, so zh-TW and zh-HK readers are offered the Simplified
- * Chinese pages too; they can switch back to English in the footer.
- */
 function preferredLocale(acceptLanguage: string | null): Locale | null {
   if (!acceptLanguage) {
     return null;
@@ -52,18 +45,6 @@ function preferredLocale(acceptLanguage: string | null): Locale | null {
   return null;
 }
 
-/**
- * Language handling for the marketing host, run from the middleware:
- *
- * 1. `?lang=<locale>` (added by the language switch) stores the choice in a
- *    cookie and redirects to the same URL without the parameter.
- * 2. A visitor without a stored choice whose browser prefers a translated
- *    language (Russian, Chinese) is sent from an English translated page to
- *    its localized twin. Crawlers are left alone so they index every version
- *    through hreflang.
- *
- * Returns null when the request should continue unchanged.
- */
 export function handleLocaleRedirect(
   request: NextRequest
 ): NextResponse | null {

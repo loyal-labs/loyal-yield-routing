@@ -41,8 +41,6 @@ export type PrivyIdentity = {
   wallets: PrivyLinkedWallet[];
 };
 
-// Verifies a Privy identity token and flattens the linked accounts we care
-// about. Signature-only check via Privy's verification key; no user lookup.
 export async function verifyPrivyIdentityToken(
   identityToken: string
 ): Promise<PrivyIdentity> {

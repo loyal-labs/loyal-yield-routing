@@ -34,11 +34,6 @@ export type SendResult = {
   error?: string;
 };
 
-/**
- * Convert token symbol to mint address
- * @param symbol - Token symbol (e.g., "SOL", "USDC")
- * @returns Mint address or undefined if not found
- */
 const getTokenMint = (symbol: string): string | undefined => {
   const normalizedSymbol = symbol.toUpperCase();
   return TOKEN_MINTS[normalizedSymbol];
@@ -77,7 +72,6 @@ export function useSend() {
         const publicKey = walletPublicKey;
         const isSol = currency.toUpperCase() === "SOL";
 
-        // Validate recipient address
         let recipientPubkey: PublicKey;
         try {
           recipientPubkey = new PublicKey(recipientAddress);
@@ -85,12 +79,10 @@ export function useSend() {
           throw new Error("Invalid recipient wallet address");
         }
 
-        // Get latest blockhash for the transaction
         const { blockhash, lastValidBlockHeight } =
           await connection.getLatestBlockhash();
 
         if (isSol) {
-          // Send native SOL
           const amountInLamports = Math.floor(
             Number.parseFloat(amount) * LAMPORTS_PER_SOL
           );
@@ -101,7 +93,6 @@ export function useSend() {
             lamports: amountInLamports,
           });
 
-          // Create VersionedTransaction
           const messageV0 = new TransactionMessage({
             payerKey: publicKey,
             recentBlockhash: blockhash,
@@ -112,7 +103,6 @@ export function useSend() {
 
           const signature = await sendTransaction(transaction, connection);
 
-          // Confirm transaction
           const confirmation = await connection.confirmTransaction(
             {
               signature,
@@ -140,8 +130,6 @@ export function useSend() {
             success: true,
           };
         }
-        // Send SPL Token
-        // Use provided tokenMint if available, otherwise try to look it up
         const resolvedTokenMint = tokenMint || getTokenMint(currency);
         if (!resolvedTokenMint) {
           throw new Error(
@@ -151,7 +139,6 @@ export function useSend() {
 
         const mintPubkey = new PublicKey(resolvedTokenMint);
 
-        // Get decimals for the token - use provided decimals or look up in mapping
         const decimals =
           tokenDecimals ?? TOKEN_DECIMALS[currency.toUpperCase()] ?? 6;
         const amountInSmallestUnit = Math.floor(
@@ -173,38 +160,31 @@ export function useSend() {
           true
         );
 
-        // Check if recipient's ATA exists, create it if not
         let needsATA = false;
 
         try {
           await getAccount(connection, toTokenAccount);
         } catch {
-          // Account doesn't exist, will need to create it
           needsATA = true;
         }
 
-        // Construct transaction instructions
         const instructions = [];
 
-        // Add priority fee and compute budget if creating ATA
         if (needsATA) {
-          // Increase compute budget for ATA creation + transfer
           instructions.push(
             ComputeBudgetProgram.setComputeUnitLimit({
               units: 300_000,
             })
           );
-          // Add priority fee
           instructions.push(
             ComputeBudgetProgram.setComputeUnitPrice({
               microLamports: 1000,
             })
           );
 
-          // Add ATA creation instruction
           instructions.push(
             createAssociatedTokenAccountInstruction(
-              publicKey, // payer
+              publicKey,
               toTokenAccount, // ata
               recipientPubkey, // owner
               mintPubkey // mint
@@ -212,7 +192,6 @@ export function useSend() {
           );
         }
 
-        // Add transfer instruction
         instructions.push(
           createTransferInstruction(
             fromTokenAccount,
@@ -222,7 +201,6 @@ export function useSend() {
           )
         );
 
-        // Create VersionedTransaction
         const messageV0 = new TransactionMessage({
           payerKey: publicKey,
           recentBlockhash: blockhash,
@@ -233,7 +211,6 @@ export function useSend() {
 
         const signature = await sendTransaction(transaction, connection);
 
-        // Confirm transaction
         const confirmation = await connection.confirmTransaction(
           {
             signature,
@@ -264,7 +241,6 @@ export function useSend() {
         let errorMessage = "Send execution failed";
 
         if (err instanceof Error) {
-          // Handle timeout errors specifically
           if (
             err.message.includes("timeout") ||
             err.message.includes("Timeout")

@@ -1,5 +1,3 @@
-// Pure money math for the Earn MAX page. Kept apart so the test can pin it.
-
 export type LpFlow = {
   /** Unix seconds. */
   blockTime: number;
@@ -22,7 +20,7 @@ export function earnedSinceEmpty(flows: LpFlow[], holdersValueUsd: number) {
   let start = 0;
   sorted.forEach((flow, index) => {
     lp += flow.lpNet;
-    if (lp === 0) start = index + 1; // the vault was empty after this flow
+    if (lp === 0) start = index + 1;
   });
   const live = sorted.slice(start);
   const deposits =
@@ -115,7 +113,6 @@ export function apyHistory(
     const years = (point.time - previous.time) / (365 * DAY_MS);
     return {
       at: new Date(point.time).toISOString(),
-      // Today is unfinished: a few hours annualized is noise, so no point.
       dayApy:
         point.day === today
           ? null

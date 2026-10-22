@@ -12,13 +12,6 @@ import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { scanEarnPolicyRefunds } from "@/lib/yield-optimization/earn-policy-refund.server";
 
-// Mobile twin of the session `policy-refunds/scan` route. Like the mobile
-// `earn/transactions` twin this is a passive read keyed by a supplied wallet
-// address, not a signed request — the app auto-scans when the experimental
-// toggle is on, and a wallet signature here would force a Seed Vault biometric
-// prompt on every scan. Everything returned is public chain state plus
-// non-sensitive liveness flags; the prepare twin (which returns a signable
-// transaction) does require a wallet signature.
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 function jsonError(
@@ -53,7 +46,6 @@ export async function GET(request: Request) {
     return jsonError(400, "invalid_request", "walletAddress is required.");
   }
   try {
-    // Throws a 400 WalletAuthError when the address isn't a valid 32-byte key.
     decodeWalletAddress(walletAddress);
   } catch (error) {
     if (error instanceof WalletAuthError) {

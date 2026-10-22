@@ -109,7 +109,6 @@ export function useUnshield(signer: WalletSigner | null, solanaEnv: SolanaEnv) {
     try {
       setBalances(await fetchShieldedBalances(signer.publicKey, solanaEnv));
     } catch {
-      // Best-effort: a read failure must not hide the wallet.
       setBalances([]);
     }
   }, [signer, solanaEnv]);
@@ -119,8 +118,6 @@ export function useUnshield(signer: WalletSigner | null, solanaEnv: SolanaEnv) {
     void refreshBalances();
   }, [pubkey, refreshBalances]);
 
-  // Always unshields the full deposit for `tokenMint`: exit-only, so partial
-  // amounts and the Kamino share math they needed are gone.
   const executeUnshield = useCallback(
     async (tokenMint: string): Promise<UnshieldResult> => {
       if (!signer) {

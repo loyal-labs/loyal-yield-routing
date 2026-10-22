@@ -1,3 +1,4 @@
+import { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "@loyal-labs/shared";
 import type {
   SmartAccountEarnUsdcDepositInput,
   SmartAccountEarnUsdcReserveTargetInput,
@@ -58,7 +59,6 @@ export type EarnDepositYieldRoutingPolicy = NonNullable<
   SmartAccountEarnUsdcDepositInput["yieldRoutingPolicy"]
 >;
 
-// app-wallet-workspace.tsx:256-276
 export const EARN_SYNC_RESOURCES = {
   earnings: "earn.earnings",
   state: "earn.state",
@@ -83,9 +83,9 @@ export const EARN_POLICY_MUTATION_RESOURCES = [
   EARN_SYNC_RESOURCES.state,
 ] as const;
 
-export const DEFAULT_EARN_AUTODEPOSIT_AMOUNT_LABEL = "100,000";
+export const DEFAULT_EARN_AUTODEPOSIT_AMOUNT_LABEL =
+  EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC.toLocaleString("en-US");
 
-// app-wallet-workspace.tsx:278-299
 export function resolveEarnMutationSmartAccountPlan(args: {
   operation: EarnExpectedMutationOperation;
   resources: readonly string[];
@@ -109,7 +109,6 @@ export function resolveEarnMutationSmartAccountPlan(args: {
   return groups.length > 0 ? { ...plan, groups } : null;
 }
 
-// app-wallet-workspace.tsx:301-319
 export function resolveEarnRealtimeResources(
   event: EarnRealtimeInvalidation
 ): string[] {
@@ -130,7 +129,6 @@ export function resolveEarnRealtimeResources(
   return resources;
 }
 
-// app-wallet-workspace.tsx:635-650
 export function parseTokenAmountLabelToRaw(
   amountLabel: string,
   decimals: number
@@ -148,14 +146,12 @@ export function parseTokenAmountLabelToRaw(
   );
 }
 
-// app-wallet-workspace.tsx:739-743
 export function parseOptionalUnsignedBigInt(
   value: string | null | undefined
 ): bigint | undefined {
   return value && /^\d+$/.test(value) ? BigInt(value) : undefined;
 }
 
-// app-wallet-workspace.tsx:1352-1360
 export function isWalletCancellation(error: unknown): boolean {
   const message =
     error instanceof Error
@@ -166,7 +162,6 @@ export function isWalletCancellation(error: unknown): boolean {
   );
 }
 
-// app-wallet-workspace.tsx:3351-3357
 export function getEarnWithdrawDraftAmountRaw(
   draft: Pick<
     EarnWithdrawDraft,
@@ -178,7 +173,6 @@ export function getEarnWithdrawDraftAmountRaw(
     : parseTokenAmountLabelToRaw(draft.amountLabel, draft.tokenDecimals);
 }
 
-// app-wallet-workspace.tsx:1381-1406
 function parseEarnWithdrawPublicKey(
   value: string | null | undefined,
   label: string
@@ -206,7 +200,6 @@ function parseEarnWithdrawAmountRaw(value: string, label: string): bigint {
   }
 }
 
-// app-wallet-workspace.tsx:1408-1446
 export function toEarnWithdrawVaultsSource(
   source: EarnWithdrawSourceOption
 ): EarnWithdrawVaultsSource {
@@ -251,7 +244,6 @@ export function toEarnWithdrawVaultsSource(
   };
 }
 
-// app-wallet-workspace.tsx:1321-1332
 export async function parseEarnAutodepositExecuteError(response: Response) {
   const payload = (await response.json().catch(() => null)) as {
     error?: { code?: string; message?: string };
@@ -265,7 +257,6 @@ export async function parseEarnAutodepositExecuteError(response: Response) {
   };
 }
 
-// app-wallet-workspace.tsx:1334-1350
 export function parseEarnAutodepositExecuteResponse(value: unknown): {
   scheduledSlotId: string;
 } {
@@ -284,7 +275,6 @@ export function parseEarnAutodepositExecuteResponse(value: unknown): {
   return { scheduledSlotId: slotId };
 }
 
-// app-wallet-workspace.tsx:1448-1472
 export function toEarnWithdrawReserveTarget(
   source: EarnWithdrawSourceOption
 ): EarnWithdrawFullWithdrawalTarget {
@@ -329,7 +319,6 @@ export function selectFullExitWithdrawTargets(draft: EarnWithdrawDraft): {
   };
 }
 
-// app-wallet-workspace.tsx:1474-1582
 type EarnDepositTargetCandidate = {
   amountRaw: string;
   liquidityMint: string;
@@ -440,7 +429,6 @@ export function resolveActiveEarnDepositTarget(
     : null;
 }
 
-// app-wallet-workspace.tsx:1584-1606
 function earnHoldingMatchesWithdrawSource(
   holding: ActiveEarnPositionHolding,
   source: EarnWithdrawSourceOption
@@ -465,7 +453,6 @@ function earnHoldingMatchesWithdrawSource(
   );
 }
 
-// app-wallet-workspace.tsx:1608-1714
 export function applySubmittedEarnWithdrawToPosition(args: {
   amountRaw: bigint;
   current: ActiveEarnPosition | null;
@@ -574,7 +561,6 @@ export function applySubmittedEarnWithdrawToPosition(args: {
   };
 }
 
-// app-wallet-workspace.tsx:873-1003
 function hasEarnPositionObservedConfirmedSlot(
   position: ActiveEarnPosition,
   confirmedSlot: string | undefined
@@ -711,8 +697,6 @@ export function buildPostDepositEarnPosition(args: {
   };
 }
 
-// The withdraw source option id for a holding — lets the positions list open
-// the withdraw screen preselecting the hovered row.
 export function getWithdrawSourceKeyForHolding(
   holding: ActiveEarnPositionHolding
 ): string {
@@ -730,7 +714,6 @@ export function getWithdrawSourceKeyForHolding(
   return `${holding.kind}:${sourceId}`;
 }
 
-// earn-detail-view.tsx:1868-1914 (module-private there)
 export function createWithdrawSourceOptions(
   holdings: ActiveEarnPositionHolding[] | undefined
 ): EarnWithdrawSourceOption[] {
@@ -769,7 +752,6 @@ export function createWithdrawSourceOptions(
   });
 }
 
-// app-wallet-workspace.tsx:789-871
 export function useMainAccountUsdcBalance(args: {
   connection: Connection;
   mint: string | null | undefined;

@@ -34,8 +34,6 @@ export function TextSwap({
       void el.offsetHeight;
       el.classList.remove("is-enter-start");
     }, dur);
-    // A newer text mid-swap cancels this commit; the effect re-runs and
-    // re-times the swap against the latest value (`.is-exit` stays on).
     return () => window.clearTimeout(timer);
   }, [text]);
 

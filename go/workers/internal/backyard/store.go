@@ -101,8 +101,6 @@ func openWriter(ctx context.Context, databaseURL string, wait bool) (*Database, 
 	config.ConnConfig.BuildContextWatcherHandler = func(conn *pgconn.PgConn) ctxwatch.Handler {
 		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: 10 * time.Second}
 	}
-	// A failed checkout ping destroys the session; a dead one fails its next
-	// statement anyway.
 	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return false }
 	var dialed atomic.Bool
 	config.BeforeConnect = func(context.Context, *pgx.ConnConfig) error {

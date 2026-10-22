@@ -45,6 +45,10 @@ const BLUR_PADDING = 4;
 const INDICATOR_SIZE = 44;
 const INDICATOR_TOP = (TAB_CELL_HEIGHT + BLUR_PADDING * 2 - INDICATOR_SIZE) / 2;
 
+const TAB_WRAPPER_PADDING_TOP = 8;
+export const TAB_BAR_HEIGHT =
+  TAB_WRAPPER_PADDING_TOP + TAB_CELL_HEIGHT + BLUR_PADDING * 2;
+
 const SPRING_CONFIG = { damping: 20, stiffness: 240, mass: 0.7 };
 
 export function TabBar({ state, navigation }: BottomTabBarProps) {
@@ -223,7 +227,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    paddingTop: 8,
+    paddingTop: TAB_WRAPPER_PADDING_TOP,
     paddingHorizontal: 8,
     backgroundColor: "white",
   },

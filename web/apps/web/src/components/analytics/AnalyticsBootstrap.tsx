@@ -60,8 +60,6 @@ function markXPixelSignupFired(): void {
   try {
     window.localStorage.setItem(X_PIXEL_SIGNUP_STORAGE_KEY, "1");
   } catch {
-    // Storage may be unavailable; we accept that the event may fire again on
-    // a future session rather than swallowing the conversion entirely.
   }
 }
 
@@ -75,7 +73,6 @@ export function fireXPixelSignupIfNeeded(): void {
       xPixelEvent(X_PIXEL_EVENTS.signup);
     })
     .catch(() => {
-      // A blocked marketing module must not affect sign-in.
     });
 }
 

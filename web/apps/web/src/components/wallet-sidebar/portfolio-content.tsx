@@ -414,7 +414,6 @@ function AutodepositStatusCard({
   const secretClickCountRef = useRef(0);
   const secretClickLastAtRef = useRef(0);
 
-  // Hidden trigger: 5 quick taps on the coin image open the mock sheet.
   const handleSecretIconClick = (event: React.MouseEvent<HTMLImageElement>) => {
     event.stopPropagation();
     const now = Date.now();
@@ -1566,7 +1565,6 @@ export function PortfolioContent({
         }
       `}</style>
 
-      {/* SVG pixelation filters */}
       <svg
         aria-hidden="true"
         height="0"
@@ -1645,38 +1643,6 @@ export function PortfolioContent({
               </div>
             ) : null}
           </div>
-          {/* Cmd+K command menu trigger temporarily hidden.
-        {onOpenCommandMenu ? (
-          <button
-            className="portfolio-command-btn"
-            onClick={onOpenCommandMenu}
-            style={{
-              alignItems: "center",
-              background: "transparent",
-              border: "none",
-              borderRadius: "999px",
-              color: "rgba(60, 60, 67, 0.6)",
-              cursor: "pointer",
-              display: "inline-flex",
-              flexShrink: 0,
-              fontFamily: font,
-              fontSize: "12px",
-              fontWeight: 500,
-              gap: "6px",
-              lineHeight: "18px",
-              padding: "5px 7px",
-              transition: "background 0.15s ease",
-            }}
-            type="button"
-          >
-            <span>Try</span>
-            <KbdGroup>
-              <Kbd>Cmd</Kbd>
-              <Kbd>K</Kbd>
-            </KbdGroup>
-          </button>
-        ) : null}
-        */}
           {showHeaderControls && (
             <div
               style={{
@@ -1734,7 +1700,6 @@ export function PortfolioContent({
         </div>
       ) : null}
 
-      {/* Balance */}
       {shouldShowAutodepositAsBalance ? (
         <div
           style={{
@@ -1892,7 +1857,6 @@ export function PortfolioContent({
         </div>
       )}
 
-      {/* Action buttons: receive, send, swap */}
       {showActionButtons && (
         <div
           style={{
@@ -1971,7 +1935,6 @@ export function PortfolioContent({
         </div>
       )}
 
-      {/* Scrollable content */}
       <div
         ref={scrollRef}
         className="portfolio-scroll"
@@ -1994,7 +1957,6 @@ export function PortfolioContent({
           transition: "border-color 0.15s ease, box-shadow 0.15s ease",
         }}
       >
-        {/* Vault section */}
         <div
           style={{ display: "flex", flexDirection: "column", padding: "8px" }}
         >
@@ -2328,12 +2290,10 @@ export function PortfolioContent({
           )}
         </div>
 
-        {/* Approvals section */}
         {showApprovals && (
           <div
             style={{ display: "flex", flexDirection: "column", padding: "8px" }}
           >
-            {/* Section header */}
             <div
               style={{
                 display: "flex",
@@ -2378,7 +2338,6 @@ export function PortfolioContent({
               )}
             </div>
 
-            {/* Approval rows */}
             {smartAccountError ? (
               <SmartAccountInlineError
                 error={smartAccountError}
@@ -2409,7 +2368,6 @@ export function PortfolioContent({
                   background: "transparent",
                 }}
               >
-                {/* Stacked icon: token (40px) + account badge (24px) */}
                 <div
                   style={{
                     position: "relative",
@@ -2461,7 +2419,6 @@ export function PortfolioContent({
                     paddingBottom: "2px",
                   }}
                 >
-                  {/* Top row: action + amount */}
                   <div
                     style={{
                       display: "flex",

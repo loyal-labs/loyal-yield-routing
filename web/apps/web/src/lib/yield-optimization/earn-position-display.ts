@@ -45,9 +45,6 @@ const COMPACT_MARKET_NAMES = new Map(
   ])
 );
 
-// Default coin art for any Kamino market without a dedicated brand icon
-// (Main + JLP/Bitcoin/Superstate/Huma/Solstice/etc.). Specific markets in
-// the Safe basket get their own logo.
 const DEFAULT_MARKET_ICON = "/wallet-workspace/earn-kamino.png";
 
 const MARKET_ICONS = new Map<string, string>([

@@ -8,7 +8,6 @@ import { useMemo } from "react";
 
 export function useSolanaWalletDataClient(
   solanaEnv: SolanaEnv,
-  /** Used as cache-bust key so the client is recreated when the wallet changes */
   walletPublicKey: PublicKey | null
 ): SolanaWalletDataClient {
   return useMemo(() => {

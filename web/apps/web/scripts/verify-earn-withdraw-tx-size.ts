@@ -40,7 +40,6 @@ import {
 // web3.js PACKET_DATA_SIZE — the buffer MessageV0.serialize() encodes into.
 const PACKET_DATA_SIZE = 1232;
 
-// Wallets observed failing in ClickStack between 2026-07-31 and 2026-08-04.
 const KNOWN_AFFECTED_WALLETS = [
   "3zy7sRsejWYX55dcKxxWW3cA734Q3W1RJg26LWRr967J",
   "7uDkTSN6G78v1VDiSmpw77Ck5YbceF2RqeA7GvDERk8B",
@@ -117,12 +116,6 @@ type MeasuredMessage = {
   lookupTables: number;
 };
 
-/**
- * Wraps a Connection so every transaction the SDK hands to
- * `simulateTransaction` is measured before web3.js tries to serialize it.
- * The underlying call is still delegated, so the prepare path behaves exactly
- * as it does in production.
- */
 function instrumentConnection(connection: Connection): {
   connection: Connection;
   measured: MeasuredMessage[];
@@ -305,7 +298,6 @@ async function verifyWallet(args: {
     await client.prepareEarnUsdcWithdraw({
       amountRaw: totalAmountRaw,
       cluster: LoyalCluster.MainnetBeta,
-      // Mobile prepares the full exit and closes policies in a later phase.
       closePoliciesOnFullWithdrawal: false,
       feePayer: walletKey,
       fullWithdrawalTargets,

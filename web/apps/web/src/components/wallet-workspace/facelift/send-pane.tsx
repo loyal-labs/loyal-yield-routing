@@ -31,10 +31,6 @@ import { getTokenIconUrl } from "@/lib/token-icon";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-// --- Recently used recipients ------------------------------------------------
-// The design's "Recently used" list has no backend; a per-wallet localStorage
-// list (most recent first, with a send counter) covers it.
-
 export type SendRecentRecipient = {
   address: string;
   count: number;
@@ -80,7 +76,6 @@ export function useSendRecentRecipients(walletAddress: string | null): {
             JSON.stringify(next)
           );
         } catch {
-          // Storage full/blocked — the list is a convenience only.
         }
         return next;
       });
@@ -91,7 +86,6 @@ export function useSendRecentRecipients(walletAddress: string | null): {
   return { recents, recordSend };
 }
 
-// Wallet stash square shared by the "To" cell and the recent-recipient rows.
 function RecipientStashIcon() {
   return (
     <span className="flex size-11 shrink-0 items-center justify-center rounded-[11px] bg-accent">
@@ -100,10 +94,6 @@ function RecipientStashIcon() {
   );
 }
 
-// Send screen (Figma 4852:38932 / ready 4852:41339): an amount form with a
-// recipient cell under the source asset cell. Execution is the OG
-// SendContent routing through useSend — and the results walk the shared
-// action screens.
 export function SendPane({
   onBack,
   onDone,
@@ -137,8 +127,6 @@ export function SendPane({
   );
   const [txSignature, setTxSignature] = useState<string | null>(null);
 
-  // The selector/recipient panes only make sense against the form — the
-  // parent hides them while a submit runs and on the result screens.
   useEffect(() => {
     onFormActiveChange?.(step === "form");
   }, [step, onFormActiveChange]);
@@ -336,8 +324,6 @@ export function SendPane({
                 </div>
               ) : null}
 
-              {/* Source asset + recipient cells pinned above the CTA, joined
-                  by the little connector (Figma 4852:38981). */}
               <div className="relative mt-auto flex w-full shrink-0 flex-col gap-1 p-2">
                 <span
                   aria-hidden="true"
@@ -481,10 +467,6 @@ export function SendPane({
   );
 }
 
-// "Recipient" pane (Figma 4852:39997 / invalid 4852:40400): the send screen's
-// right pane — a borderless address input with Paste, live validation, and
-// the recently-used list. A valid address (typed, pasted, or picked) commits
-// immediately; the parent closes the pane.
 export function SendRecipientPane({
   onClose,
   onSelect,
@@ -516,7 +498,6 @@ export function SendRecipientPane({
         commitIfValid(text);
       }
     } catch {
-      // Clipboard permission denied — the user can still type the address.
     }
   };
 
@@ -545,8 +526,6 @@ export function SendRecipientPane({
         ) : null}
       </header>
 
-      {/* px-6 = the header's 8px shell padding + 16px, so the input's left
-          edge lines up with the "Recipient" title above it. */}
       <div className="w-full shrink-0 px-6 pt-6 pb-2">
         <div className="flex w-full items-center">
           <input

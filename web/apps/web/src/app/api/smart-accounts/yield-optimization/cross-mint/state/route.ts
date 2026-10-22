@@ -53,8 +53,6 @@ export async function GET(request: Request) {
     try {
       canEnroll = isEarnAutoswapEnrollmentEnabled(principal.walletAddress);
     } catch {
-      // Invalid rollout configuration fails closed for new enrollment while an
-      // existing enrollment remains visible and manageable.
     }
     return NextResponse.json({
       autoswap,

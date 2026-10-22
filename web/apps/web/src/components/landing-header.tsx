@@ -29,8 +29,6 @@ function buildNavLinks(locale: Locale, copy: HeaderCopy): NavItem[] {
       href: localizedHref(locale, "/#developers"),
       label: copy.nav.developers,
     },
-    // Roadmap temporarily hidden — restore by uncommenting
-    // { kind: "anchor", href: "/#roadmap", label: "Roadmap" },
     { kind: "anchor", href: "/blog", label: copy.nav.blog },
     {
       kind: "anchor",

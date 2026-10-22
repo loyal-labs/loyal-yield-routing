@@ -20,13 +20,10 @@ export const MARKETING_PAGE_SLUGS = ["earn", "agents"] as const;
 export type MarketingPageSlug = (typeof MARKETING_PAGE_SLUGS)[number];
 
 export type MarketingPageCopy = {
-  /** Display name shown in the header Features dropdown. */
   title: string;
-  /** One-line subtitle shown under the title in the dropdown. */
   description: string;
 };
 
 export type MarketingPage = MarketingPageCopy & {
-  /** URL slug (used in /<slug>). No leading slash. */
   slug: MarketingPageSlug;
 };

@@ -21,18 +21,13 @@ export function EarnEmptyPane({
   title = "Earn",
   tooltipText = "Earn yield on your idle USDC",
 }: {
-  /** Mobile-only green badge under the title (Figma 5459:71363/71433). */
   apyBadgeLabel?: string;
-  /** Mobile-only back chevron to the wallet home (signed-in screens). */
   onBack?: () => void;
   onDeposit?: () => void;
   onManageAutoswap?: () => void;
   onOpenChart?: () => void;
-  /** Mobile-only gear on the signed-out screen (Figma 5459:71296). */
   onOpenSettings?: () => void;
-  /** Keep the marketing headline and illustration when explicitly requested. */
   staticHeadline?: boolean;
-  /** "Earn MAX" reuses this pane as its logged-out connect screen. */
   title?: string;
   tooltipText?: string;
 }) {
@@ -40,8 +35,6 @@ export function EarnEmptyPane({
   const { isHydrated, isSignedIn } = useAuthCapability();
   const { open: openSignIn } = useSignInModal();
   const showFirstDeposit = isHydrated && isSignedIn && !staticHeadline;
-  // Earn's own forecast backs the default badge; Earn MAX overrides it.
-  // formatEarnApyLabel already carries the "APY" suffix.
   const badgeLabel = apyBadgeLabel ?? formatEarnApyLabel(apy.apyBps);
 
   return (
@@ -65,7 +58,6 @@ export function EarnEmptyPane({
             isHydrated && isSignedIn && onBack ? "max-[795px]:pl-1" : ""
           }`}
         >
-          {/* Figma 5459:71296 — signed-out mobile leads with the wordmark. */}
           {isHydrated && !isSignedIn ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -83,7 +75,6 @@ export function EarnEmptyPane({
               <h1 className="whitespace-nowrap font-semibold text-[24px] text-foreground leading-7">
                 {title}
               </h1>
-              {/* ponytail: mock tooltip copy — real copy comes with the wiring pass */}
               <span className="max-[795px]:hidden">
                 <InfoTooltip
                   iconClassName="size-6"
@@ -92,7 +83,6 @@ export function EarnEmptyPane({
                 />
               </span>
             </div>
-            {/* Figma 5459:71363 / 71433 — APY badge under the title. */}
             {isHydrated && isSignedIn ? (
               <span className="hidden items-center rounded-md bg-positive/[0.14] px-1 py-px max-[795px]:inline-flex">
                 <span className="whitespace-nowrap pt-px font-medium text-[11px] text-positive leading-[13px] tracking-[0.06px]">
@@ -129,7 +119,6 @@ export function EarnEmptyPane({
             />
           </button>
         ) : null}
-        {/* Mobile swaps the title tooltip into the icon cluster. */}
         {isHydrated && isSignedIn ? (
           <span className="hidden size-11 shrink-0 items-center justify-center max-[795px]:flex">
             <InfoTooltip
@@ -199,8 +188,6 @@ export function EarnEmptyPane({
 
             {(() => {
               if (!isHydrated) {
-                // Keep the slot height stable until the auth session hydrates so
-                // the CTA doesn't flash between states.
                 return <div aria-hidden="true" className="h-14" />;
               }
               if (!isSignedIn) {
@@ -246,9 +233,6 @@ export function EarnEmptyPane({
             })()}
           </div>
 
-          {/* Mobile: give the dog only the space left below the controls, so it
-          cannot cover sign-in links in short wallet-browser viewports.
-          Desktop: keep it bottom-anchored across the shell's 8px gap. */}
           <div className="-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:relative max-[795px]:bottom-0 max-[795px]:min-h-0 max-[795px]:w-full max-[795px]:flex-1 max-[795px]:items-end max-[795px]:overflow-clip max-[795px]:rounded-b-3xl">
             {/* Desktop: the dog is a bottom-anchored square, so capping width caps
             height. ~380px of header/headline/CTA sits above it, so shrink with

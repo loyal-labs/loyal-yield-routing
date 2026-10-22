@@ -34,8 +34,6 @@ export function isAutodepositSetupAlreadyCompleteError(
   );
 }
 
-// Pagination guard; setup accounts of a pending target have a handful of
-// transactions (no sweeps ever ran), so one page is the norm.
 const MAX_SIGNATURE_PAGES = 20;
 
 // Oldest successful transaction touching `address` = its creation. Pages run

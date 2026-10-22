@@ -118,9 +118,6 @@ export async function findBestSafeEarnReserveTarget(args: {
   return selectBestSafeEarnReserveTarget({ ...args, rows });
 }
 
-// Catalog changes or a brief stream interruption can momentarily leave a mint
-// without eligible current rows. A short re-read bridges those blips; a real
-// outage still returns null. Devnet selection is deterministic and never retries.
 const RESERVE_SELECTION_RETRIES = 2;
 const RESERVE_SELECTION_RETRY_DELAY_MS = 700;
 
@@ -251,8 +248,6 @@ export async function findEarnReserveTargetIneligibility(args: {
     reserves: [args.reserve],
   });
   if (observations === null) {
-    // Feed not configured in this environment — never brick deposits over a
-    // config gap; the confirm-side alert still surfaces bad targets.
     return null;
   }
 

@@ -230,7 +230,6 @@ export async function handleCaCommand(
     return;
   }
 
-  // Only respond in the designated community chat
   if (chatId !== Number(LOYAL_COMMUNITY_CHAT_ID)) {
     return;
   }
@@ -516,7 +515,6 @@ export async function handleActivateCommunityCommand(
 ): Promise<void> {
   if (!ctx.from || !ctx.chat) return;
 
-  // Delete the command message to keep chat clean
   try {
     await ctx.deleteMessage();
   } catch (error) {
@@ -543,7 +541,6 @@ export async function handleActivateCommunityCommand(
 
     const chatId = BigInt(ctx.chat.id);
 
-    // Fetch community photo (non-blocking on failure)
     const photoUrl = await captureCommunityPhotoToCdn(ctx.chat.id);
     const settings = photoUrl
       ? {
@@ -552,7 +549,6 @@ export async function handleActivateCommunityCommand(
         }
       : {};
 
-    // Check if community already exists
     const existingCommunity = await db.query.communities.findFirst({
       where: eq(communities.chatId, chatId),
     });
@@ -567,14 +563,12 @@ export async function handleActivateCommunityCommand(
       return;
     }
 
-    // Ensure user exists in the users table
     const displayName = getTelegramDisplayName(ctx.from);
     await getOrCreateUser(telegramUserId, {
       username: ctx.from.username || null,
       displayName,
     });
 
-    // Race-safe insert: another request may activate the same chat concurrently.
     const inserted = await db
       .insert(communities)
       .values({
@@ -741,7 +735,6 @@ export async function handleDeactivateCommunityCommand(
 ): Promise<void> {
   if (!ctx.from || !ctx.chat) return;
 
-  // Delete the command message to keep chat clean
   try {
     await ctx.deleteMessage();
   } catch (error) {
@@ -771,7 +764,6 @@ export async function handleDeactivateCommunityCommand(
 
     const chatId = BigInt(ctx.chat.id);
 
-    // Find the community
     const existingCommunity = await db.query.communities.findFirst({
       where: eq(communities.chatId, chatId),
     });
@@ -790,7 +782,6 @@ export async function handleDeactivateCommunityCommand(
       return;
     }
 
-    // Deactivate the community
     await db
       .update(communities)
       .set({ isActive: false, updatedAt: new Date() })

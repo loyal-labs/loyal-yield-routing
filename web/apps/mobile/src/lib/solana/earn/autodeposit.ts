@@ -1,3 +1,4 @@
+import { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "@loyal-labs/shared";
 import { normalizeLoyalCluster } from "@loyal-labs/actions";
 import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
 import { PublicKey } from "@solana/web3.js";
@@ -38,12 +39,8 @@ import {
 } from "./wire";
 
 const USDC_DECIMALS = 6;
-// Per-period recurring-delegation cap, matching the web default
-// (DEFAULT_EARN_AUTODEPOSIT_AMOUNT_LABEL = "10,000" USDC). The cap bounds how
-// much the sweep delegate can pull per month; the threshold (floor) is what the
-// user actually sets.
 const DEFAULT_AMOUNT_PER_PERIOD_RAW = (
-  BigInt(10_000) *
+  BigInt(EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC) *
   BigInt(10) ** BigInt(USDC_DECIMALS)
 ).toString();
 const MAX_SETUP_STAGES = 4;

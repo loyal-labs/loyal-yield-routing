@@ -78,6 +78,7 @@ import { Pressable, Text, View } from "@/tw";
 import AutodepositIcon from "../../assets/images/earn/autodeposit.svg";
 import EarnFlash from "../../assets/images/earn/flash.svg";
 import EarnQuestionmark from "../../assets/images/earn/questionmark.svg";
+import { shouldReloadEarningsChart } from "@/lib/solana/earn/chart-reload";
 
 // Starter-hero principal ("Turn $6,000 into $X"). The guard rate only fires if
 // the forecast API returns a non-positive APY (getLoyalApyBps already falls
@@ -394,8 +395,6 @@ export default function EarnScreen() {
   // Push fresh earnings into a mounted Earned chart only when the balance
   // actually moved (deposit/withdraw/sweep, local or another client). Quiet
   // background refreshes never reload a chart that's on screen.
-  // ponytail: 1-cent epsilon so live yield accrual between 15s reads doesn't
-  // count as a change; only breaks above ~$200k principal.
   const lastChartBalanceRawRef = useRef<number | null>(null);
   useEffect(() => {
     if (!earnPositionLoaded || !walletAddress) {
@@ -408,7 +407,14 @@ export default function EarnScreen() {
     }
     const prev = lastChartBalanceRawRef.current;
     lastChartBalanceRawRef.current = raw;
-    if (prev !== null && Math.abs(raw - prev) >= 10_000) {
+    if (
+      prev !== null &&
+      shouldReloadEarningsChart({
+        prevRaw: prev,
+        nextRaw: raw,
+        intervalMs: EARN_REFRESH_INTERVAL_MS,
+      })
+    ) {
       void refreshEarnEarningsCache(walletAddress, { notify: true });
     }
   }, [position, earnPositionLoaded, walletAddress]);

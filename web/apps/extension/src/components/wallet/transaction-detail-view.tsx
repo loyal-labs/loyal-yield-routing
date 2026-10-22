@@ -21,7 +21,6 @@ export function TransactionDetailView({
   const [copied, setCopied] = useState(false);
   const isSent = detail.activity.type === "sent";
   const title = isSent ? "Sent" : "Received";
-  // Strip the +/− prefix for the large display
   const rawAmount = detail.activity.amount.replace(/^[+\u2212-]/, "");
   const parts = rawAmount.split(" ");
   const amountNum = parts[0];
@@ -39,10 +38,8 @@ export function TransactionDetailView({
         }
       `}</style>
 
-      {/* Header */}
       <SubViewHeader onBack={onBack} onClose={onClose} title={title} />
 
-      {/* Content */}
       <div
         style={{
           flex: 1,
@@ -53,7 +50,6 @@ export function TransactionDetailView({
           overflowY: "auto",
         }}
       >
-        {/* Amount hero */}
         <div
           style={{
             display: "flex",
@@ -127,7 +123,6 @@ export function TransactionDetailView({
           </div>
         </div>
 
-        {/* Details card */}
         <div style={{ width: "100%" }}>
           <div
             style={{
@@ -138,7 +133,6 @@ export function TransactionDetailView({
               flexDirection: "column",
             }}
           >
-            {/* Status */}
             <div style={{ padding: "9px 12px" }}>
               <span
                 style={{
@@ -167,7 +161,6 @@ export function TransactionDetailView({
               </span>
             </div>
 
-            {/* Sender / Recipient */}
             <div style={{ padding: "9px 12px" }}>
               <span
                 style={{
@@ -196,7 +189,6 @@ export function TransactionDetailView({
               </span>
             </div>
 
-            {/* Network Fee */}
             <div style={{ padding: "9px 12px" }}>
               <span
                 style={{
@@ -231,7 +223,6 @@ export function TransactionDetailView({
           </div>
         </div>
 
-        {/* Action buttons */}
         <div
           style={{
             display: "flex",
@@ -241,7 +232,6 @@ export function TransactionDetailView({
             width: "100%",
           }}
         >
-          {/* View in explorer */}
           <div
             style={{
               flex: 1,
@@ -290,7 +280,6 @@ export function TransactionDetailView({
             </span>
           </div>
 
-          {/* Share */}
           <div
             style={{
               flex: 1,

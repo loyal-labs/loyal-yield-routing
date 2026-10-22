@@ -32,7 +32,6 @@ export const zhLanding: LandingDict = {
     animationAriaLabel:
       "Loyal 应用动画：连接钱包，看着余额增长，并设置 Autodeposit",
     moreInfo: "了解更多",
-    // {label} is the stat label.
     loadingTemplate: "正在加载：{label}",
     statsAriaLabel: "Loyal 数据",
     stats: {

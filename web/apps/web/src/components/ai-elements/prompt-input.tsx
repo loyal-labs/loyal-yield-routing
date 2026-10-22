@@ -54,11 +54,9 @@ export const PromptInputTextarea = forwardRef<
     const handleKeyDown: KeyboardEventHandler<HTMLTextAreaElement> = (e) => {
       if (e.key === "Enter") {
         if (e.shiftKey) {
-          // Allow newline
           return;
         }
 
-        // Submit on Enter (without Shift)
         e.preventDefault();
         const form = e.currentTarget.form;
         if (form) {

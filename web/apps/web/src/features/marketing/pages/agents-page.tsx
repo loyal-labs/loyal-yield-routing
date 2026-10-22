@@ -66,7 +66,6 @@ export function AgentsPage({
         locale={locale}
       />
 
-      {/* Block 1 — Hero (dark) */}
       <Hero
         tone="dark"
         title={dict.hero.title}
@@ -78,7 +77,6 @@ export function AgentsPage({
         }}
       />
 
-      {/* Block 2 — Section (why we built this) */}
       <Section
         title={dict.whyWeBuilt.title}
         cards={[
@@ -87,7 +85,6 @@ export function AgentsPage({
         ]}
       />
 
-      {/* Block 3 — Section (what an agent wallet on Loyal is) */}
       <Section
         title={dict.whatItIs.title}
         cards={[
@@ -96,7 +93,6 @@ export function AgentsPage({
         ]}
       />
 
-      {/* Block 4 — Section-5 (three bold permission-tier cards) */}
       <CardsThree
         title={dict.tiers.title}
         description={dict.tiers.description}
@@ -122,7 +118,6 @@ export function AgentsPage({
         ]}
       />
 
-      {/* Block 5 — Section-7 (two muted cards: spending limits + allowlists) */}
       <CardsTwo
         title={dict.limits.title}
         description={dict.limits.description}
@@ -141,7 +136,6 @@ export function AgentsPage({
         ]}
       />
 
-      {/* Block 6 — Section-14 (muted grid: what you can build) */}
       <CardsGrid
         title={dict.build.title}
         description={dict.build.description}
@@ -180,7 +174,6 @@ export function AgentsPage({
         ]}
       />
 
-      {/* Block 7 — Section-16 (muted 2-col grid + closing: security model) */}
       <CardsGrid
         title={dict.security.title}
         description={dict.security.description}
@@ -216,7 +209,6 @@ export function AgentsPage({
         closingStatement={dict.security.closingStatement}
       />
 
-      {/* Block 9 — Section-19 (image-left feature row: get started) */}
       <TextImageHero
         layout="text-right"
         title={dict.getStarted.title}

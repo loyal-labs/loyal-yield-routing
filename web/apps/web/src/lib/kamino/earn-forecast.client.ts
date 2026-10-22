@@ -12,7 +12,6 @@ import {
   type EarnForecastSummaryResponse,
 } from "./earn-forecast.shared";
 
-// APY forecasts move over hours; a 30-minute window is invisible in the UI.
 const CLIENT_CACHE_TTL_MS = 30 * 60 * 1000;
 // Retry failed loads sooner so a transient outage doesn't pin the fallback.
 const ERROR_CACHE_TTL_MS = 5 * 60 * 1000;

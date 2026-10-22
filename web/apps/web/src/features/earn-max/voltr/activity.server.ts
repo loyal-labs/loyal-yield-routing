@@ -32,7 +32,6 @@ type VoltrHistoryEntry = {
   action: string;
   /** Deposit: USDC in. Claim: USDC paid out. Request: filled below. */
   amountRaw: bigint | null;
-  /** Change of the authority's free LP in this transaction (0 on repeats). */
   lpDeltaRaw: bigint;
   /** Request only: USDC value of the escrowed LP when it was requested. */
   requestedRaw?: bigint | null;
@@ -77,8 +76,6 @@ function idleDeltaRaw(transaction: ParsedTransactionWithMeta): bigint {
   );
 }
 
-// The authority's own LP account (not the withdrawal escrow, which the
-// position's value already excludes).
 function lpDeltaRaw(
   transaction: ParsedTransactionWithMeta,
   authority: PublicKey
@@ -158,19 +155,14 @@ function decode(
   return entries;
 }
 
-// Bound history memory now that every wallet can access Earn MAX.
 const MAX_CACHED_HISTORIES = 256;
 const cache = new Map<string, { newest: string; value: EarnMaxVoltrHistory }>();
 
-/** Newest first. Deposits, withdrawal requests and claims of one authority. */
 export async function readVoltrHistory(
   connection: Connection,
   authority: PublicKey
 ): Promise<EarnMaxVoltrHistory> {
   const key = authority.toBase58();
-  // The newest signature is one cheap call: reuse the decoded history only
-  // while no new transaction touched the account (a fresh deposit must never
-  // pair a new balance with a stale, empty list).
   const signatures = (
     await connection.getSignaturesForAddress(authority, {
       limit: HISTORY_LIMIT,
@@ -218,7 +210,6 @@ const DUST_RAW = BigInt(10_000); // 1 cent
 const withoutDust = (raw: bigint) =>
   raw < BigInt(0) && -raw < DUST_RAW ? BigInt(0) : raw;
 
-/** Fills the pending request's amount and derives the feeds the pane charts. */
 export function voltrActivity(
   history: EarnMaxVoltrHistory,
   position: Pick<VoltrPosition, "lpRaw" | "valueRaw" | "withdrawal">,
@@ -246,10 +237,6 @@ export function voltrActivity(
     status: "confirmed",
     timestamp: entry.timestamp,
   }));
-  // Equity after each flow is the running principal (a deposit is worth what
-  // went in at that moment); each finished UTC day adds its closing value
-  // (LP held then x day-end share price) so yield lands on the day it was
-  // earned; the last point is today's value.
   const performance: EarnMaxPerformancePoint[] = [];
   let principal = BigInt(0);
   for (const entry of [...entries].reverse()) {
@@ -264,7 +251,6 @@ export function voltrActivity(
   }
   if (performance.length > 0) {
     const opened = performance[0]!.timestamp;
-    // LP rebuilt backwards from today's free LP; needs the full history.
     for (const day of history.complete ? dayEnd : []) {
       if (day.at <= opened) continue;
       const lpThen = entries

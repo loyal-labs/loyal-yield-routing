@@ -75,10 +75,6 @@ const AUTODEPOSIT_STEPS: readonly FlowStep[] = [
   },
 ];
 
-// "How Autodeposit works" as an overlay: card next to the sidebar below
-// 1204px (Figma 4693:69792), bottom sheet on mobile (Figma 4693:71793) —
-// where it rises on the panel-reveal clock like a native sheet.
-// Also reachable from the Earn screen's mobile "?" (Figma 4693:70364).
 export function AutodepositInfoOverlay({
   isOpen,
   onClose,
@@ -97,11 +93,6 @@ export function AutodepositInfoOverlay({
   );
 }
 
-// Figma 4693:69332 (create, wide) / 4693:75306 (edit: Delete + Confirm) /
-// 4693:75556 (edit, unchanged: "No changes yet") / 4693:69662+69792 (narrow:
-// ? in the header opens the info panel as an overlay). Create/Confirm run
-// through data.actions.saveAutodeposit (floor-only edits are a signature-less
-// rebaseline, like the OG); Delete is the two-click close flow.
 export function AutodepositPane({
   data,
   onBack,
@@ -121,9 +112,6 @@ export function AutodepositPane({
   const [amount, setAmount] = useState(initialAmount);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const { isBalanceHidden } = useBalanceVisibility();
-  // Delete is two-click, mirroring the OG's close-review screen: the first
-  // click flips the rule to "closing" (and pre-prepares the close tx), the
-  // second signs it. Backing out dismisses like the OG's review dismiss.
   const isDeleteArmed = autodeposit?.state === "closing";
   const isSaving = actions.isAutodepositPending;
   const handleDelete = async () => {
@@ -354,8 +342,6 @@ export function AutodepositPane({
               {actions.autodepositError}
             </p>
           ) : null}
-          {/* One persistent pill so the label swaps in place (transitions.dev
-              text states swap); disabled stands in for the old inert div. */}
           <button
             className={`t-hover flex h-12 w-full items-center justify-center rounded-full font-medium text-[16px] leading-5 ${
               hasChanges

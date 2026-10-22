@@ -58,8 +58,6 @@ function DepositSourceOptionRow({
 }) {
   const balance = splitUsdBalance(option.usd);
   const { isBalanceHidden } = useBalanceVisibility();
-  // Nothing to deposit from an empty balance — the row stays visible (so
-  // the product set reads complete) but cannot be picked.
   const isEmpty = option.usd <= 0;
 
   return (
@@ -138,9 +136,6 @@ const DEPOSIT_FOOTNOTE =
 const DEPOSIT_DOCS_URL =
   "https://docs.askloyal.com/automations/routing-and-yield";
 
-// Figma 4693:65815 (empty / below minimum) + 4693:65625 (valid amount) +
-// 4693:70280 (mobile: full-bleed, chart button in the header opens the chart
-// sheet, system num keyboard under the focused amount input).
 export function DepositPane({
   data: earnData,
   initialSourceKey,
@@ -148,8 +143,6 @@ export function DepositPane({
   onOpenChart,
 }: {
   data: EarnPositionData;
-  /** Preselects the deposit source (keys are mints) — e.g. a stables-row
-   * Earn pill. Unknown or absent keys fall back to the default source. */
   initialSourceKey?: string | null;
   onBack: () => void;
   onOpenChart: () => void;
@@ -195,8 +188,6 @@ export function DepositPane({
       };
     });
   }, [actions.mainUsdcAmount, data.positions, publicEnv.solanaEnv]);
-  // Default to USDC, but when it has no balance prefer the funded stablecoin
-  // (largest balance) so a fully swapped wallet doesn't open on a $0 source.
   const defaultSource = useMemo(() => {
     const usdc = sourceOptions.find(
       (source) => source.symbol === Stablecoin.USDC
@@ -214,9 +205,6 @@ export function DepositPane({
   const selectedSource =
     sourceOptions.find((source) => source.key === selectedSourceKey) ??
     defaultSource;
-  // The selector opens upward from the trigger, so funded coins sit at the
-  // bottom (nearest the trigger) and empty ones at the top — stable sort
-  // keeps the product order within each group.
   const listedSourceOptions = useMemo(
     () =>
       [...sourceOptions].sort(
@@ -356,8 +344,6 @@ export function DepositPane({
               </label>
             </div>
 
-            {/* Rent disclaimer only concerns the FIRST deposit — an existing
-              position's accounts already paid it. */}
             {earnData.hasPosition ? null : (
               <div className="w-full px-2">
                 <div className="flex w-full items-start px-4">
@@ -576,8 +562,6 @@ export function DepositPane({
               {actions.depositError}
             </p>
           ) : null}
-          {/* One persistent pill so the label swaps in place (transitions.dev
-            text states swap); disabled stands in for the old inert div. */}
           <button
             className={`t-hover flex h-12 w-full items-center justify-center rounded-full font-medium text-[16px] leading-5 ${
               isValidAmount

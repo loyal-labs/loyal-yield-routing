@@ -121,8 +121,6 @@ export type TimescaleReserveClientTables = {
   supportedReserves: typeof timescaleSupportedReserves;
 };
 
-// Keep the public row/JSON contract unchanged. Capture identities are only
-// needed to join the current pointer to its exact confirmed observation.
 const reserveUpdateColumns = {
   observedAt: timescaleReserveUpdates.observedAt,
   slot: timescaleReserveUpdates.slot,
@@ -337,8 +335,6 @@ export class TimescaleReserveClient {
       ) {
         return false;
       }
-      // Evaluate after the RPC completes so a delayed response cannot renew
-      // evidence that expired in flight. No cached eligibility verdicts.
       const ageMs = Date.now() - blockTime * 1000;
       return ageMs >= 0 && ageMs <= RESERVE_STREAM_MAX_AGE_MS;
     } catch {
@@ -393,8 +389,6 @@ export class TimescaleReserveClient {
           )
         )
     );
-    // Compute progress before narrowing to a requested mint/reserve: a quiet
-    // venue is still current while the observer receives other reserve updates.
     const frontier = this.db
       .$with("reserve_stream_frontier")
       .as(

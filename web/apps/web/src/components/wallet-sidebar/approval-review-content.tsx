@@ -1016,11 +1016,6 @@ function ApprovalMascotNote({ text }: { text: string }) {
             gap: 8px;
             padding: 4px 20px 12px;
           }
-          /* On wide layouts the review pane sits in the grid with the scrim to
-           its left, so the mascot floats outside the pane's left edge,
-           aligned with the pane title. Below 1024px the pane becomes a fixed
-           overlay with no room to the left and the mascot keeps its in-pane
-           spot above the buttons. */
           @media (min-width: 1025px) {
             .approval-mascot-note {
               position: absolute;
@@ -1240,7 +1235,6 @@ function PagedApprovalReview({
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        // Anchors the mascot note when it floats outside the pane edge.
         position: "relative",
       }}
     >

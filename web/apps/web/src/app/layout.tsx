@@ -74,7 +74,6 @@ const siteJsonLd = {
   ],
 };
 
-// Env-tinted favicon: red in prod, yellow on Vercel previews, gray in local dev.
 const faviconPath =
   process.env.VERCEL_ENV === "production"
     ? "/icon.svg"
@@ -138,7 +137,6 @@ export default async function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {/* Pre-paint theme resolution: explicit choice wins, else OS preference. */}
         <script
           dangerouslySetInnerHTML={{
             __html: `try{if(localStorage.getItem("theme")==="dark")document.documentElement.classList.add("dark")}catch(e){}`,

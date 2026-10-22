@@ -298,8 +298,6 @@ async function verifyFleet() {
         })
       );
     }
-    // Refresh membership after each complete pass so an offset shift or a
-    // newly activated scope cannot silently disappear from the final audit.
     scopes = await discoverScopes();
   }
   const counts: Record<string, number> = {};

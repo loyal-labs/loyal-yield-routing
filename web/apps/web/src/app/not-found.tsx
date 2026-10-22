@@ -15,7 +15,6 @@ export default function NotFound() {
         background: "#FFFFFF",
       }}
     >
-      {/* Main content */}
       <main
         style={{
           flex: 1,
@@ -29,7 +28,6 @@ export default function NotFound() {
       >
         <div>
           <div>
-            {/* Logotype */}
             <div style={{ marginBottom: "80px" }}>
               <Link href="/">
                 <Image
@@ -42,7 +40,6 @@ export default function NotFound() {
               </Link>
             </div>
 
-            {/* Heading */}
             <h1
               style={{
                 fontFamily: "var(--font-geist-sans), sans-serif",

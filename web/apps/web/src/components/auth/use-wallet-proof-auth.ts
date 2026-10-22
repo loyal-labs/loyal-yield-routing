@@ -104,14 +104,10 @@ function classifyWalletAdapterError(
     return undefined;
   }
 
-  // The adapter's own timeout. Our settle watchdogs pass their code
-  // explicitly, so this is the only inferred timeout.
   if (error instanceof WalletTimeoutError) {
     return "wallet_connection_timeout";
   }
 
-  // Not installed, disabled, or still injecting — the wallet is genuinely not
-  // reachable. A browser-blocked popup is the same dead end.
   if (
     error instanceof WalletNotReadyError ||
     error instanceof WalletLoadError ||
@@ -120,7 +116,6 @@ function classifyWalletAdapterError(
     return "wallet_unavailable";
   }
 
-  // Resolved, but refused or dropped the connection. Not a timeout.
   if (
     error instanceof WalletConnectionError ||
     error instanceof WalletNotConnectedError ||
@@ -304,8 +299,6 @@ export function useWalletProofAuth({
 
   const verifySelectedWalletWithSiws = useCallback(async () => {
     if (!wallet) {
-      // Our own state guard — no wallet is selected yet. Says nothing about
-      // whether the wallet itself is reachable.
       handleFailure(new Error("Wallet is not selected."), {
         stage: "wallet_select",
         errorCode: "state_not_ready",
@@ -370,7 +363,6 @@ export function useWalletProofAuth({
     }
 
     if (!connected || !publicKey) {
-      // Same: a state guard, not evidence the wallet refused or is missing.
       handleFailure(new Error("Wallet is not connected."), {
         stage: "wallet_connect",
         errorCode: "state_not_ready",
@@ -578,8 +570,6 @@ export function useWalletProofAuth({
         return;
       }
 
-      // The adapter reports connected while the hook does not, and recovery
-      // was already attempted — a desynced adapter, not an absent wallet.
       handleFailure(
         new Error(
           `Could not refresh ${selectedWalletName}. Disconnect it in the extension, then try again.`

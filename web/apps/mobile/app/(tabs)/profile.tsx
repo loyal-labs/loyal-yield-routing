@@ -37,16 +37,11 @@ import { isICloudSyncSupported } from "@/lib/wallet/keypair-storage";
 import { WALLET_PIN_LENGTH } from "@/lib/wallet/pin";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
 import { Pressable, ScrollView, Text, View } from "@/tw";
+import { TAB_BAR_HEIGHT } from "@/components/TabBar";
 
 const SUPPORT_URL = "https://t.me/spacesymmetry";
 const FEEDBACK_URL = "https://tally.so/r/ZjRpev";
 const ANALYTICS_OPT_IN_KEY = "settings_analytics_opt_in";
-
-// Height of the floating tab bar above the home-indicator inset (TabBar.tsx:
-// paddingTop 8 + BLUR_PADDING 4*2 + TAB_CELL_HEIGHT 54). The inset itself is
-// added per-device by the consumer — on an iPhone with a home indicator it is
-// 34pt, which a flat 90 does not cover.
-const TAB_BAR_HEIGHT = 70;
 
 function SettingsSection({ children }: { children: React.ReactNode }) {
   return <View style={styles.section}>{children}</View>;

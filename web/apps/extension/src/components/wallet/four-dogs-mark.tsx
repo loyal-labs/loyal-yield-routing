@@ -1,17 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 
-// ---------------------------------------------------------------------------
-// FourDogsMark — animated "loyal" wordmark with three dog heads peeking up
-// through the letters o / y / a. Each head slides in from below, clipped by a
-// letter-shaped mask so it reads as emerging from inside the letter, then
-// settles into a gentle asynchronous breathing loop. Once the entrance has
-// completed, clicking the mark toggles all three heads between visible and
-// tucked-back-into-the-letters.
-// ---------------------------------------------------------------------------
-
-// Show/hide timings mirror each other — same duration, reversed stagger (o
-// leads the show, a leads the hide) and reversed easing (ease-out for show,
-// ease-in for hide). Last-to-move dog dictates total duration.
 const SHOW_DURATION_MS = 750;
 const SHOW_STAGGER_START_MS = 180;
 const SHOW_STAGGER_STEP_MS = 220;
@@ -185,7 +173,6 @@ export function FourDogsMark({ size = 240 }: { size?: number }) {
           </clipPath>
         </defs>
 
-        {/* "loyal" wordmark */}
         <path
           d="M1248.58 0H1337.36V396.71C1337.36 414.049 1347.07 423.759 1364.41 423.759H1392.15V492.42H1341.52C1286.04 492.42 1248.58 457.743 1248.58 400.178V0Z"
           fill="black"
@@ -207,8 +194,6 @@ export function FourDogsMark({ size = 240 }: { size?: number }) {
           fill="black"
         />
 
-        {/* 'o' dog — outer <g> holds the mask (letter-anchored, stationary);
-            nested inner groups stack entrance + idle transforms independently. */}
         <g mask="url(#four-dogs-mask-o)">
           <g className={classFor("o")}>
             <g className="four-dogs-idle-o">
@@ -233,7 +218,6 @@ export function FourDogsMark({ size = 240 }: { size?: number }) {
           </g>
         </g>
 
-        {/* 'a' dog */}
         <g mask="url(#four-dogs-mask-a)">
           <g className={classFor("a")}>
             <g className="four-dogs-idle-a">
@@ -269,7 +253,6 @@ export function FourDogsMark({ size = 240 }: { size?: number }) {
           </g>
         </g>
 
-        {/* 'y' dog */}
         <g mask="url(#four-dogs-mask-y)">
           <g className={classFor("y")}>
             <g className="four-dogs-idle-y">

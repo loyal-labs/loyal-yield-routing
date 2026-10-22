@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
-// transitions.dev "tabs sliding": the active pill slides between options;
-// JS writes offsetLeft/offsetWidth, globals.css owns the tween.
 export function SlidingTabs<T extends string>({
   activeTab,
   onSelect,
@@ -39,7 +37,6 @@ export function SlidingTabs<T extends string>({
     pill.style.transition = previousTransition;
   }, []);
 
-  // Re-measure when the tab set changes too (Earned appears with a position).
   useLayoutEffect(() => {
     movePillToActiveTab(hasPainted.current);
     hasPainted.current = true;

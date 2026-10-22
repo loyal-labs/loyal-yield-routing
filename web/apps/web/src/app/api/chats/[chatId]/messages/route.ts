@@ -46,7 +46,6 @@ export async function GET(
   const user = await getOrCreateCurrentUser(principal);
   const db = getDatabase();
 
-  // Verify the chat belongs to this user
   const chat = await db.query.appChats.findFirst({
     columns: { id: true },
     where: and(eq(appChats.id, chatId), eq(appChats.userId, user.id)),

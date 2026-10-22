@@ -54,8 +54,6 @@ const ASSET_BASE = "/wallet-workspace/facelift";
 // ponytail: rough fee/rent buffer — tune when a real preflight estimate exists
 const LOW_SOL_WARNING_THRESHOLD = 0.01;
 
-// The purple crypto stash mark, drawn at its 40px art size; smaller usages
-// scale the wrapper (the bar offsets are absolute pixels).
 function CryptoStashIcon({ scale = 1 }: { scale?: number }) {
   return (
     <span
@@ -73,8 +71,6 @@ function CryptoStashIcon({ scale = 1 }: { scale?: number }) {
   );
 }
 
-// Figma 5465:83214/83228 — compact Stablecoins/Crypto summary rows on the
-// mobile home.
 function MobileSummaryRow({
   amount,
   icon,
@@ -90,7 +86,6 @@ function MobileSummaryRow({
   isRevealed: boolean;
   label: string;
   onSelect: () => void;
-  /** Red triangle after the amount (Figma 5465:83239's low-SOL warning). */
   warningLabel?: string | null;
 }) {
   return (
@@ -134,8 +129,6 @@ function MobileSummaryRow({
   );
 }
 
-// Figma 5465:83244 (empty) / 5465:83355 (deposited) — the tall Earn and
-// Earn MAX product cards on the mobile home.
 function MobileProductCard({
   apyBadgeLabel,
   balance,
@@ -147,7 +140,6 @@ function MobileProductCard({
   name,
   onSelect,
 }: {
-  /** null hides the badge (Earn MAX before the invite unlocks it). */
   apyBadgeLabel: string | null;
   balance: { balanceFraction: string; balanceWhole: string };
   earned30dUsd: number | null;
@@ -202,7 +194,6 @@ function MobileProductCard({
         </span>
       ) : (
         <>
-          {/* Centered a touch above the middle, clear of the APY block. */}
           <span className="-translate-x-1/2 -translate-y-1/2 absolute top-[calc(50%-11px)] left-1/2 flex flex-col items-center gap-1">
             <ThemedIcon
               className="size-9 text-tertiary"
@@ -230,11 +221,6 @@ function MobileProductCard({
   );
 }
 
-// Figma 4813:400022 — the mobile wallet home: address chip + total balance
-// over a tile grid (banner, Crypto, Stablecoins, Earn) that fans out to the
-// dedicated screens. It's the tab bar's Wallet destination; on desktop the
-// sidebar covers this, so the page is only reachable below 796px (resizing
-// up mid-visit just shows it as a plain pane).
 export function WalletHomePage({
   earnBalanceUsd,
   earnEarned30dUsd,
@@ -251,7 +237,6 @@ export function WalletHomePage({
 }: {
   onOpenSettings: () => void;
   earnBalanceUsd: number;
-  /** 30-day earned sums for the mobile product cards; null while loading. */
   earnEarned30dUsd: number | null;
   earnMaxBalanceUsd: number;
   earnMaxEarned30dUsd: number | null;
@@ -303,7 +288,6 @@ export function WalletHomePage({
   );
   const earnBalance = splitUsdBalance(earnBalanceUsd);
   const earnMaxBalance = splitUsdBalance(earnMaxBalanceUsd);
-  // Only invited, unlocked accounts get an APY; everyone else sees no badge.
   const earnMaxApyLabel =
     earnMaxForecastApyBps === null
       ? null
@@ -327,7 +311,6 @@ export function WalletHomePage({
     isEarnBalanceRevealed &&
     (!showEarnMax || isEarnMaxBalanceRevealed);
 
-  // Copied feedback, same icon swap the sidebar chip uses.
   const [isCopied, setIsCopied] = useState(false);
   const copiedTimerRef = useRef<number | null>(null);
   useEffect(
@@ -438,8 +421,6 @@ export function WalletHomePage({
                 </div>
               )}
               <div className="flex min-w-0 flex-1 items-center justify-end gap-1 pl-3">
-                {/* Figma 5465:83164 — mobile replaces the quick links with
-                    the settings gear (links live in the sheet). */}
                 <button
                   aria-label="Open settings"
                   className="t-hover hidden size-11 items-center justify-center rounded-3xl hover:bg-accent max-[795px]:flex"
@@ -688,9 +669,6 @@ export function WalletHomePage({
                 ) : null}
               </div>
 
-              {/* Figma 5465:83164 / 5465:83340 — mobile home: banner slot,
-                  Stablecoins/Crypto summary rows, then the tall Earn and
-                  Earn MAX product cards. */}
               <div className="hidden h-full min-h-0 flex-col max-[795px]:flex">
                 <div className="relative h-24 w-full shrink-0">
                   {earnBalanceUsd > 0 ||

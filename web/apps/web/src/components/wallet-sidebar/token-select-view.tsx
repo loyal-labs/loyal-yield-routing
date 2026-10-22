@@ -15,10 +15,7 @@ import {
 import { SearchInput } from "./shared";
 import type { SwapToken } from "./types";
 
-// Typeahead is user-perceived latency; debounce only long enough to collapse a
-// burst of keystrokes into a single request.
 const SEARCH_DEBOUNCE_MS = 120;
-// Remote search and trending only kick in from 2 chars, as before.
 const MIN_SEARCH_LENGTH = 2;
 
 function SectionLabel({ children }: { children: string }) {
@@ -65,8 +62,6 @@ function SelectableTokenRow({
         borderRadius: "16px",
         width: "100%",
         overflow: "visible",
-        // The keyboard-active suggestion reads slightly stronger than hover or
-        // the already-selected token so Enter's target is never ambiguous.
         background: isActive
           ? "rgba(0, 0, 0, 0.06)"
           : isSelected || hovered
@@ -242,7 +237,6 @@ export function TokenSelectView({
   const [search, setSearch] = useState("");
   const [remoteResults, setRemoteResults] = useState<TokenSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  // Hydrated from cache so a warm picker paints trending on the first render.
   const [trending, setTrending] = useState<TokenSearchResult[]>(() =>
     remoteSearchEnabled ? getCachedTrendingTokens() ?? [] : []
   );
@@ -252,8 +246,6 @@ export function TokenSelectView({
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
 
-  // Warm trending on mount; focus re-runs it, which is free while fresh and
-  // revalidates in the background once the cached list goes stale.
   useEffect(() => {
     if (!remoteSearchEnabled) return;
 
@@ -282,9 +274,6 @@ export function TokenSelectView({
       (t.mint && t.mint.toLowerCase().includes(query))
   );
 
-  // Debounced remote typeahead. Each keystroke aborts the in-flight request,
-  // previous results stay painted while a newer one runs, and a response only
-  // commits if its query is still the one in the input.
   useEffect(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     if (!remoteSearchEnabled || !hasQuery) {
@@ -322,8 +311,6 @@ export function TokenSelectView({
     };
   }, [search, hasQuery, remoteSearchEnabled, tokens]);
 
-  // Trending only complements an empty query, and hides tokens already listed.
-  // Mock positions carry no mint, so symbol is the fallback identity.
   const showTrending = remoteSearchEnabled && query.length === 0;
   const ownedKeys = new Set(
     tokens.flatMap((t) => [
@@ -339,8 +326,6 @@ export function TokenSelectView({
       )
     : [];
 
-  // Owned matches stay first in their incoming order; remote hits are ranked
-  // behind them so a token the user holds always wins the top suggestion.
   const sections: { label: string | null; tokens: SwapToken[] }[] = showTrending
     ? [
         ...(localFiltered.length > 0
@@ -365,8 +350,6 @@ export function TokenSelectView({
   );
   const activeToken = hasQuery ? rows[0]?.token : undefined;
 
-  // Typeahead: Enter and Tab both commit the active (top-ranked) suggestion
-  // without rewriting the query the user typed.
   const handleSearchKeyDown = (
     event: React.KeyboardEvent<HTMLInputElement>
   ) => {

@@ -7,13 +7,6 @@ export type PopDigitsSegment = {
   text: string;
 };
 
-// transitions.dev "Number pop-in" (frontend/transitions/number-pop-in.md)
-// adapted to React: every character renders as a .t-digit span, the last two
-// ride the 1×/2× stagger, and a value change replays the animation via the
-// recipe's remove → reflow → re-add cycle. Segments carry per-part colors
-// (e.g. black whole + muted fraction) without breaking the digit run.
-// popOnChange=false pops only on mount — for values that scrub on hover or
-// live-tick, where replaying on every change would flicker.
 export function PopDigits({
   popOnChange = true,
   segments,

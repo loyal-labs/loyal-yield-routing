@@ -42,7 +42,6 @@ export default function Header() {
         boxShadow: "none",
       }}
     >
-      {/* Light gray strip behind the Android status bar so light icons stay visible */}
       {showStatusBarFix && safeAreaInsetTop > 0 && (
         <div
           className="absolute top-0 left-0 right-0"
@@ -61,7 +60,6 @@ export default function Header() {
           willChange: "opacity",
         }}
       />
-      {/* Bottom border line - only visible when scrolled */}
       <div
         className="absolute left-0 right-0 bottom-0 pointer-events-none transition-opacity duration-150"
         style={{

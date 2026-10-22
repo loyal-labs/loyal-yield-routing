@@ -22,9 +22,6 @@ const CHAIN_LABELS: Record<string, string> = {
   bsc: "BNB Chain",
 };
 
-// Facelift take on the OG Receive view (receive-content.tsx): Solana-only
-// warning, QR card with the mascot in the center and the raw address, and a
-// Copy Address pill. Opens as a centered sheet from the sidebar's QR button.
 export function ReceiveSheet({
   isOpen,
   onClose,
@@ -98,9 +95,6 @@ export function ReceiveSheet({
         {evm.eligible ? (
           <SlidingTabs activeTab={tab} onSelect={setTab} tabs={TABS} />
         ) : null}
-        {/* transitions.dev "page side-by-side": both tab bodies share one
-            grid cell; the active one slides in from its side, the other
-            slides out the opposite way with a fade + blur. */}
         <div
           className="t-receive-pages grid w-full justify-items-center"
           data-page={isEvmTab ? "2" : "1"}
@@ -175,9 +169,6 @@ function ReceiveBody({
   page: "1" | "2";
   placeholder: string;
 }) {
-  // transitions.dev "skeleton loader and reveal" on the QR + address slot:
-  // the skeleton pulses while Privy provisions the address, then both layers
-  // cross-fade. Solana's address is known at open, so it reveals at once.
   const revealed = Boolean(address) || Boolean(error);
   return (
     <div

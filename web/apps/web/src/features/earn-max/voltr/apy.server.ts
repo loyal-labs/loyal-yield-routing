@@ -14,11 +14,8 @@ export type EarnMaxVoltrApyPoint = {
 };
 
 export type EarnMaxVoltrApy = {
-  /** Headline: share-price APY over the last 7 days (or since launch). */
   apyBps: number | null;
-  /** Days the headline covers; below 7 while the vault is young. */
   apyWindowDays: number | null;
-  /** Daily share-price APY for the chart, oldest first. */
   daily: EarnMaxVoltrApyPoint[];
   /** Share price (USDC raw per LP raw) at the end of each finished UTC day. */
   dayEnd: { at: string; price: number }[];
@@ -67,12 +64,10 @@ export function shareApy(
     }
   });
   const today = new Date(now).toISOString().slice(0, 10);
-  // Today's row is still moving, so only finished days are day-end prices.
   const dayEnd = points
     .filter((p) => p.date < today)
     .map((p) => ({ at: new Date(p.at).toISOString(), price: p.price }));
   if (live && live.tvl > 0 && live.lp > 0) {
-    // Today's row is live on Voltr too; the vault read is fresher.
     const last = points.at(-1);
     if (last?.date === today) points.pop();
     points.push({ at: now, date: today, price: live.tvl / live.lp });
@@ -99,7 +94,6 @@ export function shareApy(
       .reverse()
       .find((p) => latest.at - p.at >= WINDOW_DAYS * DAY_MS - DAY_MS / 2);
   const from = start ?? points[0];
-  // ponytail: under a day of history the growth is noise; wait for day two.
   const apyBps =
     latest && from && latest.at - from.at >= DAY_MS / 2
       ? annualize(from, latest)

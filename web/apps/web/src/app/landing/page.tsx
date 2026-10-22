@@ -69,7 +69,6 @@ const ChatBotDemo = () => {
   });
   const topics: SidebarTopic[] = [];
 
-  // Handle new chat creation
   const handleNewChat = useCallback(() => {
     // Clear the current messages
     setMessages([]);
@@ -89,7 +88,6 @@ const ChatBotDemo = () => {
     setDarkMode(stored === "dark");
   }, []);
 
-  // apply dark mode
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add("dark");

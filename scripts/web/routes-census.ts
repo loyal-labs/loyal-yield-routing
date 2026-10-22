@@ -20,17 +20,13 @@ const web = join(root, "web");
 const mobile = join(web, "apps/mobile");
 const twinsFile = join(import.meta.dir, "mobile-twins.txt");
 
-// What each base variable of web/apps/mobile/src/config/env.ts reaches. The Go server
-// (`loyal-web`) answers its native routes and proxies the rest to the web Next app.
 const BASES: Record<string, { next: NextApp[]; go: boolean }> = {
   apiBaseUrl: { next: ["web"], go: true },
 };
 const THIRD_PARTY_BASES = new Set(["gridAuthBaseUrl"]);
 
-// Content routes Go serves on their Telegram paths, with no web twin.
 const GO_MOBILE_ROUTES = new Set(["/api/mobile/dapps", "/api/mobile/library", "/api/mobile/tokens/{mint}"]);
 
-// Hand-written client code whose exported types must not repeat a generated one.
 const CLIENT_TYPE_DIRS = [join(mobile, "src"), join(web, "apps/loyal/src")];
 
 type NextApp = "web" | "telegram";
@@ -140,7 +136,6 @@ function clientPaths(): ClientPath[] {
         if (!BASES[base]) {
           if (!THIRD_PARTY_BASES.has(base)) fail(`${at(sf, node)}: env.${base} is a base the census does not know: add it to BASES or THIRD_PARTY_BASES in scripts/web/routes-census.ts`);
         } else if (dynamic && !ts.isCallExpression(node.parent)) {
-          // A dynamic path that is no call argument is an asset URL, not a request.
         } else if (dynamic) {
           let fn: ts.Node | undefined = node;
           while (fn && !ts.isFunctionDeclaration(fn)) fn = fn.parent;
@@ -252,7 +247,6 @@ function checkGeneratedTypes(): void {
 
 export type GoServedCall = { method: string; path: string; at: string };
 
-// Every call the mobile client makes that a Go route answers, one per method and path.
 export function goServedMobileCalls(): GoServedCall[] {
   const go = goRoutes(openapiOf("loyal-web"));
   const calls = new Map<string, GoServedCall>();

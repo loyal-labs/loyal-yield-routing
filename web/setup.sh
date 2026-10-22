@@ -7,10 +7,8 @@ CHANNEL="plugin:telegram-enhanced@claude-telegram-enhanced"
 TOKEN_FILE="$HOME/.claude/channels/telegram/.env"
 TOKEN_VAR="TELEGRAM_BOT_TOKEN"
 
-# 1. Register marketplace and install plugin (idempotent — safe to re-run)
 echo "Ensuring enhanced Telegram plugin is installed..."
 claude plugin marketplace add "$MARKETPLACE" 2>/dev/null || true
-# Pull latest from marketplace repo (marketplace add skips if already on disk)
 MARKETPLACE_DIR="$HOME/.claude/plugins/marketplaces/claude-telegram-enhanced"
 if [ -d "$MARKETPLACE_DIR/.git" ]; then
   git -C "$MARKETPLACE_DIR" pull --ff-only origin main 2>/dev/null || true
@@ -23,7 +21,6 @@ claude plugin install "$PLUGIN" 2>/dev/null || true
 OFFICIAL_PLUGIN="$HOME/.claude/plugins/cache/claude-plugins-official/telegram"
 find "$OFFICIAL_PLUGIN" -name "server.ts" -exec sh -c 'echo "process.exit(0)" > "$1"' _ {} \; 2>/dev/null || true
 
-# 2. Ensure the bot token is configured
 if [ -f "$TOKEN_FILE" ] && grep -q "^${TOKEN_VAR}=" "$TOKEN_FILE" 2>/dev/null; then
   echo "Telegram bot token already configured."
 else
@@ -51,8 +48,6 @@ else
   echo "Token saved."
 fi
 
-# 3. Resolve chat ID for topic creation
-#    On first run, prompt for the chat ID. Saved for future sessions.
 if [ -f "$TOKEN_FILE" ] && grep -q "^TELEGRAM_CHAT_ID=" "$TOKEN_FILE" 2>/dev/null; then
   CHAT_ID=$(grep "^TELEGRAM_CHAT_ID=" "$TOKEN_FILE" | sed 's/^TELEGRAM_CHAT_ID=//')
 else
@@ -70,11 +65,9 @@ else
   fi
 fi
 
-# 4. Derive topic name: Superset display name > git branch > directory name
 BRANCH="$(git branch --show-current 2>/dev/null)" || true
 TOPIC_NAME="${SUPERSET_WORKSPACE_NAME:-${BRANCH:-$(basename "$(pwd)")}}"
 
-# 5. Launch Claude Code with Telegram channel + topic routing
 echo "Starting Claude Code with Telegram (topic: ${TOPIC_NAME})..."
 export TELEGRAM_TOPIC_NAME="$TOPIC_NAME"
 if [ -n "${CHAT_ID:-}" ]; then

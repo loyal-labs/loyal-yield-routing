@@ -37,21 +37,11 @@ const ENABLED_ENV = "SOLANA_WEEK_QUESTS_ENABLED";
 // Round-end hard stop, checked before the env gate: while true, no completion
 // is ever sent to Solana (round 1 ended 2026-07-15).
 const ROUND_ENDED = true;
-// Carve-out so internal preview-build testers can exercise quests end-to-end
-// against the real backend before the public reveal: while ENABLED_ENV is off,
-// completions are still sent for these wallets (comma-separated base58). The
-// wallet is the only discriminator available on every send path — Quest 2 is
-// reported by the external sweep worker, which knows only the wallet. Unset =
-// no carve-out.
 const TESTER_WALLETS_ENV = "SOLANA_WEEK_QUESTS_TESTER_WALLETS";
 
 const ENDPOINT_ENV = "SOLANA_WEEK_QUESTS_COMPLETION_ENDPOINT";
 const API_KEY_ENV = "SOLANA_WEEK_QUESTS_API_KEY";
-// Optional Ed25519 secret key, base58 or base64. Only some credentials require
-// request signing; leave unset unless Solana tells us to sign.
 const SIGNING_KEY_ENV = "SOLANA_WEEK_QUESTS_SIGNING_KEY";
-// Quest 1 ("connect wallet and deposit in Earn") is tracked via the user's
-// manual Earn deposit, which is a prerequisite for autodeposit.
 const QUEST_ID_EARN_DEPOSIT_ENV = "SOLANA_WEEK_QUEST_ID_EARN_DEPOSIT";
 const QUEST_ID_FIRST_AUTODEPOSIT_ENV =
   "SOLANA_WEEK_QUEST_ID_FIRST_AUTODEPOSIT";
@@ -67,20 +57,15 @@ const QUEST_ID_ENV_BY_KIND: Record<QuestKind, string> = {
 };
 
 export type QuestCompletionResult =
-  // Configured and accepted by Solana (idempotent: both map to success).
   | { status: "completed" | "already_completed" }
-  // Not configured (endpoint/key/quest id missing) — intentional no-op.
   | { status: "disabled"; reason: string }
-  // Caller-side guard tripped (e.g. empty/oversized wallet id) — do not retry.
   | { status: "skipped"; reason: string }
-  // 4xx from Solana: bad payload/key/scope/quest. Do NOT retry without a fix.
   | {
       status: "permanent_error";
       httpStatus: number;
       error: string;
       message: string;
     }
-  // Network failure or 5xx: safe to retry with backoff.
   | { status: "retryable_error"; httpStatus?: number; error: string };
 
 export type QuestCompletionMetadata = Record<string, unknown>;
@@ -163,15 +148,9 @@ function buildHeaders(
   return headers;
 }
 
-// Total POST attempts (1 initial + retries) per completion report. Solana
-// classifies 500s as "retry with backoff", so we retry transient failures
-// (network errors and 5xx) inline — real-time reporting (Quest 1 at deposit
-// confirm) clears a brief blip without waiting on the reconcile cron. Bounded
-// and short because the deposit-confirm response awaits this call.
 const MAX_COMPLETION_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 250;
 
-// Exponential backoff between retries: 250ms, then 500ms.
 function retryDelayMs(retryIndex: number): number {
   return RETRY_BASE_DELAY_MS * 2 ** retryIndex;
 }
@@ -182,7 +161,6 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-// A single POST + classification. `postCompletion` wraps this with retries.
 async function attemptCompletion(
   config: ReporterConfig,
   questId: string,
@@ -242,10 +220,6 @@ async function attemptCompletion(
   };
 }
 
-// Reports a completion with bounded exponential backoff on transient failures.
-// Returns immediately on success (2xx) or a permanent 4xx; once attempts are
-// exhausted it returns the last transient result, leaving the row pending for
-// the reconcile cron to retry later.
 async function postCompletion(
   config: ReporterConfig,
   questId: string,
@@ -270,9 +244,6 @@ async function postCompletion(
   return lastResult;
 }
 
-// True when `walletId` is in the comma-separated
-// SOLANA_WEEK_QUESTS_TESTER_WALLETS allowlist — the tester carve-out applied
-// while global reporting is off.
 function isTesterWallet(env: NodeJS.ProcessEnv, walletId: string): boolean {
   const raw = getOptionalEnv(env, TESTER_WALLETS_ENV);
   if (!raw) {
@@ -283,11 +254,6 @@ function isTesterWallet(env: NodeJS.ProcessEnv, walletId: string): boolean {
     .some((entry) => entry.trim().length > 0 && entry.trim() === walletId);
 }
 
-/**
- * Reports a single quest completion. Returns a discriminated result instead of
- * throwing; callers decide whether to retry (see `retryable_error`). For
- * fire-and-forget call sites, prefer the best-effort wrappers below.
- */
 export async function reportQuestCompletion(args: {
   kind: QuestKind;
   walletId: string;
@@ -305,10 +271,6 @@ export async function reportQuestCompletion(args: {
     };
   }
 
-  // Master kill-switch (fail-safe OFF) with a tester carve-out. Gating here
-  // covers every send path at once. While skipped, the local completion row
-  // stays pending, so the reconcile cron backfills it once
-  // SOLANA_WEEK_QUESTS_ENABLED flips to "true".
   const env = args.env ?? process.env;
   const globallyEnabled = getOptionalEnv(env, ENABLED_ENV) === "true";
   if (!globallyEnabled && !isTesterWallet(env, args.walletId.trim())) {

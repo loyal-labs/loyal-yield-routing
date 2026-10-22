@@ -19,11 +19,6 @@ type DogClip =
   | "look-right"
   | "look-left-right";
 
-/**
- * playful — full repertoire: the intro ends on a look-around and the ambient
- * loop occasionally glances sideways (0-balance deposit, connect wallet).
- * calm — no sideways looks at all (tx success/error screens).
- */
 export type DogVariant = "playful" | "calm";
 
 const VARIANT_CLIPS: Record<DogVariant, DogClip[]> = {
@@ -44,11 +39,6 @@ const INTRO_SEQUENCE: Record<DogVariant, DogClip[]> = {
   calm: ["appear", "look-up", "idle", "blink"],
 };
 
-// Ambient behavior after the intro: mostly breathing, regular blinks, an
-// occasional look up, and (playful only) rare sideways glances. Weighted
-// picks run at clip boundaries — every clip starts and ends on the neutral
-// pose, so switching there is seamless and the idle length (2s) naturally
-// jitters the gaps between gestures.
 const AMBIENT_WEIGHTS: Record<DogVariant, [DogClip, number][]> = {
   playful: [
     ["idle", 45],
@@ -70,8 +60,6 @@ function pickAmbientClip(
   previous: DogClip,
   consecutiveBlinks: number
 ): DogClip {
-  // Settle back into a breath after any gesture; a quick double blink is the
-  // one natural exception.
   if (previous === "blink") {
     return consecutiveBlinks < 2 && Math.random() < 0.25 ? "blink" : "idle";
   }
@@ -91,14 +79,6 @@ function pickAmbientClip(
   return "idle";
 }
 
-/**
- * The big red dog, alive: plays the appear intro, then loops an organic
- * blink/look scheduler. All clips share one rig and neutral endpoints, so
- * each state preloads into its own hidden lottie instance and the sequencer
- * flips visibility at clip boundaries — no reparse, no pose jumps.
- *
- * With prefers-reduced-motion the dog renders as the static neutral pose.
- */
 export function DogLottie({
   className,
   variant,

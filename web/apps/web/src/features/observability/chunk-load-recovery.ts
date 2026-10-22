@@ -97,7 +97,6 @@ function findFirstPartyChunkUrl(error: unknown): string | undefined {
         return normalized;
       }
     } catch {
-      // Malformed resource hints cannot claim recovery.
     }
   }
   return undefined;
@@ -140,7 +139,6 @@ export function getBrowserPageSessionId(): string | undefined {
       return stored;
     }
   } catch {
-    // A volatile random ID still helps correlate the current error report.
   }
 
   const generated = createRandomPageSessionId();
@@ -152,7 +150,6 @@ export function getBrowserPageSessionId(): string | undefined {
   try {
     window.sessionStorage.setItem(PAGE_SESSION_ID_STORAGE_KEY, generated);
   } catch {
-    // The separate reload guard fails closed when storage is unavailable.
   }
   return generated;
 }
@@ -181,7 +178,6 @@ function collectDiagnostics(chunkUrl: string): BrowserChunkDiagnostics {
       .getEntriesByName(chunkUrl, "resource")
       .at(-1) as BrowserResourceTiming | undefined;
   } catch {
-    // Resource timing is optional and can be unavailable.
   }
 
   const resourceDurationMs = readNonNegativeNumber(resource?.duration);
@@ -309,10 +305,6 @@ function claimReload(chunkUrl: string): BrowserChunkRecoveryAction {
   }
 }
 
-/**
- * Decides — synchronously, before the report is built — whether this failure
- * will be recovered, so the reported envelope carries the outcome.
- */
 export function planBrowserChunkRecovery(
   chunkUrl: string
 ): BrowserChunkRecoveryAction {

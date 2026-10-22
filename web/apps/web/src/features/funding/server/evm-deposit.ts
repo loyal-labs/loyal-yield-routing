@@ -21,8 +21,6 @@ export const EVM_DEPOSIT_CHAINS = [
   "bsc", // Privy's alias for BNB Chain (eip155:56)
 ] as const;
 export const EVM_DEPOSIT_ASSETS = ["usdc", "usdt", "eth"] as const;
-// Ethereum L1 gas can spike to a few dollars per deposit; below this the
-// bridge eats the deposit. L2s are ~$0.01, no floor there.
 export const EVM_DEPOSIT_MIN_USD_ETHEREUM = 20;
 
 // Privy rejects eth where it is not the native coin; everything else is
@@ -61,7 +59,6 @@ export function buildEvmDepositRequest(
   };
 }
 
-// Long enough for the user to approve in the Privy iframe.
 export const EVM_DEPOSIT_SIGN_WINDOW_MS = 10 * 60 * 1000;
 
 export async function resolveEmbeddedWalletId(walletAddress: string) {
@@ -108,7 +105,6 @@ export async function createEvmDepositAddress(args: {
   rowId: string;
   walletId: string;
   appId: string;
-  /** User's authorization signature over buildEvmDepositRequest(). */
   signature: string;
   requestExpiry: number;
 }): Promise<string> {

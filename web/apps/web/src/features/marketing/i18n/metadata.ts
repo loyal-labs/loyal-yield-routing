@@ -53,7 +53,6 @@ export function buildPageMetadata({
   };
 }
 
-/** "https://askloyal.com" for "/", so the home crumb keeps its existing form. */
 function absoluteUrl(href: string): string {
   return href === "/" ? SITE_URL : `${SITE_URL}${href}`;
 }

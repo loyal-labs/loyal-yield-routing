@@ -49,7 +49,6 @@ export function sortEarningsEvents(events: readonly YieldPositionEvent[]) {
     ) {
       return left.holdingEventId < right.holdingEventId ? -1 : 1;
     }
-    // Plain deposits commute, as do withdrawals with no lifecycle reset.
     if (
       left.type === right.type &&
       !left.initializesPosition &&

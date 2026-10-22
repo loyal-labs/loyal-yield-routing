@@ -699,7 +699,6 @@ export function useActiveEarnPosition({
           suppressSubscriptionRefreshThroughSlotRef.current = nextSlot;
         }
       } catch {
-        // Ignore malformed slot hints; the subscription will refresh normally.
       }
     },
     []

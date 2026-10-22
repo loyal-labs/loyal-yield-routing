@@ -2,14 +2,6 @@ import { getEarnStablecoinSymbol } from "@/lib/earn/stablecoin-monitor.shared";
 
 const MAX_LOG_TICKS = 8;
 
-/**
- * Powers of ten spanning the funded deposits, so the dust decades get the same
- * width as the whale decade instead of collapsing into the left edge.
- *
- * Live deposits run from a single raw unit to six figures, which is thirteen
- * decades. Labelling every one of them overlaps, so decades are thinned to a
- * readable stride while the domain still ends on a real power of ten.
- */
 export function buildLogTicks(
   minAmount: number,
   maxAmount: number
@@ -27,7 +19,6 @@ export function buildLogTicks(
   for (let exponent = lowest; exponent <= highest; exponent += stride) {
     ticks.push(10 ** exponent);
   }
-  // Keep the top of the domain on the axis even when the stride overshoots it.
   const topTick = 10 ** highest;
   if (ticks[ticks.length - 1] !== topTick) {
     ticks.push(topTick);
@@ -41,8 +32,6 @@ export function formatDepositTick(
   liquidityMint: string | null
 ): string {
   const symbol = getEarnStablecoinSymbol(liquidityMint) ?? "USD";
-  // A linear axis puts a tick on zero, and log10(0) is -Infinity, which would
-  // blow up the fraction-digit count below.
   if (!(value > 0)) {
     return `0 ${symbol}`;
   }

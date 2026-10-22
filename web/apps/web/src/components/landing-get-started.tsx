@@ -12,13 +12,6 @@ type Segment = "Extension" | "Mobile" | "Web";
 
 const seekerDappStoreUrl = "solanadappstore://details?id=com.loyal.app";
 
-// ASK-1588: today only Seeker (mobile) and the Web app are active surfaces.
-// The Telegram Mini App and every browser extension are marked "Coming soon"
-// until Earn ships in them. To re-enable once Earn lands there, drop the
-// `disabled` from the relevant cards below and restore their targets:
-//   - extensions  -> href "https://chromewebstore.google.com/detail/cdienfadefhlaknmedckgifkjdbioack"
-//                    + install-conversion tracking via X_PIXEL_EVENTS.installExtension
-//   - Telegram MA -> href "https://t.me/askloyal_tgbot/app?startapp=askloyalcom"
 const browserCards = [
   {
     disabled: true,

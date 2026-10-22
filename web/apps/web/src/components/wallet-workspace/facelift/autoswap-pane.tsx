@@ -19,9 +19,6 @@ import {
 const ASSET_BASE = "/wallet-workspace/facelift";
 const STABLECOIN_DECIMALS = 6;
 
-// The pipeline a cross-mint move travels, told as steps like the Autodeposit
-// explainer — the on-chain limit, the two scoped policies, and how it's
-// undone are folded into the step bodies.
 const AUTOSWAP_STEPS: readonly FlowStep[] = [
   {
     Icon: Gauge,

@@ -12,10 +12,6 @@ import { isNotificationsEnabledForUserId } from "./user-settings";
 
 const bot = await getBot();
 
-/**
- * Handles a business connection update from Telegram.
- * Creates or updates the connection in the database and notifies the user.
- */
 export async function handleBusinessConnection(
   connection: TelegramBusinessConnection
 ): Promise<void> {
@@ -28,13 +24,11 @@ export async function handleBusinessConnection(
     rights,
   } = connection;
 
-  // Ensure user exists in database
   const userId = await getOrCreateUser(BigInt(user.id), {
     username: user.username ?? null,
     displayName: user.first_name + (user.last_name ? ` ${user.last_name}` : ""),
   });
 
-  // Upsert business connection
   await upsertBusinessConnection(userId, {
     businessConnectionId: connectionId,
     userChatId: BigInt(userChatId),
@@ -48,14 +42,9 @@ export async function handleBusinessConnection(
     return;
   }
 
-  // Notify user
   await sendBusinessConnectionMessage(userChatId, isEnabled);
 }
 
-/**
- * Creates or updates a business connection for a user.
- * Only one connection per user; uses atomic upsert to prevent race conditions.
- */
 async function upsertBusinessConnection(
   userId: string,
   data: {
@@ -91,10 +80,6 @@ async function upsertBusinessConnection(
     });
 }
 
-/**
- * Sends a notification message to the user about their connection status.
- * Non-fatal: logs errors but doesn't throw.
- */
 async function sendBusinessConnectionMessage(
   userChatId: number,
   isEnabled: boolean

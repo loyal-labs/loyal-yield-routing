@@ -13,8 +13,6 @@ export const TOKEN_DETAIL_RESPONSE_CACHE_CONTROL = `public, max-age=60, s-maxage
 
 const BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-// ponytail: charset/length check only, not full base58 32-byte decode;
-// CoinGecko handles the rare well-formed-but-nonexistent mint.
 export function isLikelySolanaMint(mint: string): boolean {
   return BASE58_MINT_PATTERN.test(mint);
 }

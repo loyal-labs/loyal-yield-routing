@@ -16,7 +16,6 @@ type SignInModalContextValue = {
   close: () => void;
   /** Open the modal itself, bypassing any registered sign-in handler. */
   openAccount: () => void;
-  /** Open the modal on the legacy wallet flow with the Ledger proof preselected. */
   openLedger: () => void;
   isLedgerMode: boolean;
   /**

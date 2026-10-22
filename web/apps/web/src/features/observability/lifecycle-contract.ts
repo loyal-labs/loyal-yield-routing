@@ -52,8 +52,6 @@ export const LIFECYCLE_VARIANTS = {
   "auth.authenticated_action": ["overview"],
   "auth.session_restore": ["initial", "return", "refresh"],
   "auth.signer_restore": ["return"],
-  // seed_vault/wallet_adapter/import_wallet/new_wallet are the mobile app's
-  // wallet-onboarding modes (Seed Vault, MWA, seed import, fresh keypair).
   "auth.sign_in": [
     "interactive",
     "auto_reauth",
@@ -74,10 +72,8 @@ export const LIFECYCLE_VARIANTS = {
   ],
   "earn.autodeposit.execute_now": ["execute_now"],
   "earn.autoswap.configuration": ["setup", "pause", "resume", "delete"],
-  // Direct wallet-adapter signing vs the smart-account execution context.
   "wallet.swap": ["wallet_adapter", "smart_account"],
   "earn_max.invite": ["redeem"],
-  // Voltr vault actions, each one wallet signature.
   "earn_max.vault": ["deposit", "request_withdrawal", "claim"],
 } as const satisfies Record<LifecycleFlowName, readonly string[]>;
 
@@ -201,15 +197,8 @@ export const LIFECYCLE_ERROR_CODES = [
   "captcha_verification_failed",
   "wallet_selection_timeout",
   "wallet_connection_timeout",
-  // The adapter refused or dropped the connection outright. Distinct from
-  // `wallet_connection_timeout`, which means one of our settle watchdogs
-  // elapsed while the adapter never resolved either way.
   "wallet_connection_failed",
-  // A stored Mobile Wallet Adapter authorization was revoked. The app clears
-  // it and sends the user through reconnect; no backend request was made.
   "wallet_authorization_expired",
-  // MWA reauthorized a different account than the one stored by Loyal. The
-  // app clears the stale account and tells the user to reconnect it.
   "wallet_account_mismatch",
   // The wallet could not produce a signature. Distinct from
   // `invalid_wallet_signature`, which means a signature was produced and the
@@ -220,8 +209,6 @@ export const LIFECYCLE_ERROR_CODES = [
   "invalid_wallet_origin",
   "invalid_wallet_proof_kind",
   "invalid_wallet_signature",
-  // A Sign In With Solana proof reached the backend but did not match the
-  // issued challenge or failed signature verification.
   "invalid_wallet_signin",
   "wallet_auth_completion_in_progress",
   "smart_account_sponsor_not_configured",
@@ -259,9 +246,6 @@ export const LIFECYCLE_ERROR_CODES = [
   "no_scheduled_sweeps",
   "request_failed",
   "progress_read_failed",
-  // Terminal sweep failure codes forwarded from the yield backend's bounded
-  // completion_failure_code set. Codes outside this union still collapse to
-  // `unexpected_error` via `normalizeLifecycleErrorCode`.
   "execution_failed",
   "kamino_top_up_failed",
   "autodeposit_target_closed",
@@ -316,12 +300,8 @@ export const LIFECYCLE_ERROR_DETAILS = [
   // Connection-level fetch failure: DNS, TLS or a reset socket. React Native
   // surfaces all of them as a bare TypeError("Network request failed").
   "network_unreachable",
-  // One of our own client deadlines elapsed, not the server's.
   "request_timeout",
-  // Kamino answered 5xx/429 and kept doing so until the retries ran out. An
-  // upstream incident, not anything wrong on the device.
   "kamino_upstream_unavailable",
-  // A Solana JSON-RPC call returned an error object rather than a result.
   "rpc_request_failed",
 ] as const;
 export type LifecycleErrorDetail = (typeof LIFECYCLE_ERROR_DETAILS)[number];
@@ -352,9 +332,6 @@ export const LIFECYCLE_WALLET_PROVIDERS = [
 export type LifecycleWalletProvider =
   (typeof LIFECYCLE_WALLET_PROVIDERS)[number];
 
-// Maps an adapter's display name ("Coinbase Wallet", "Magic Eden") onto its
-// token. Unknown non-empty names become `other` — still counted, bounded
-// cardinality — while a missing name stays unset.
 export function normalizeLifecycleWalletProvider(
   value: unknown
 ): LifecycleWalletProvider | undefined {
@@ -878,8 +855,6 @@ export function parseBrowserLifecycleEnvelope(
     }
   }
 
-  // Normalized fields always overwrite the raw value; undefined when absent
-  // or normalized away, which downstream treats as "not set".
   return {
     ...record,
     pathname,

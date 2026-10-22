@@ -58,14 +58,12 @@ export default function ConnectBotModal({
 
   const [isWebClient, setIsWebClient] = useState(false);
 
-  // Detect platform on mount
   useEffect(() => {
     let platform: string | undefined;
     try {
       const launchParams = retrieveLaunchParams();
       platform = launchParams.tgWebAppPlatform;
     } catch {
-      // Fallback to hash parsing if SDK fails
       if (typeof window !== "undefined") {
         const hash = window.location.hash.slice(1);
         const params = new URLSearchParams(hash);
@@ -109,7 +107,6 @@ export default function ConnectBotModal({
         hapticFeedback.notificationOccurred("success");
       }
     } catch {
-      // Fallback for older browsers
       const textArea = document.createElement("textarea");
       textArea.value = "askloyal_tgbot";
       document.body.appendChild(textArea);
@@ -129,12 +126,10 @@ export default function ConnectBotModal({
         openTelegramLink("https://t.me/PremiumBot");
       }
     } else {
-      // Native clients: use tg:// deep link
       window.location.href = "tg://premium_offer";
     }
   }, [isWebClient]);
 
-  // Show/hide native Telegram button based on modal open state and premium status
   useEffect(() => {
     if (!open) {
       hideMainButton();
@@ -189,7 +184,6 @@ export default function ConnectBotModal({
           <VisuallyHidden>Connect Loyal Bot</VisuallyHidden>
         </Drawer.Title>
 
-        {/* Close Button */}
         <Modal.Close>
           <div
             onClick={() => {
@@ -206,11 +200,8 @@ export default function ConnectBotModal({
           </div>
         </Modal.Close>
 
-        {/* Content */}
         <div className="flex flex-col items-center p-8">
-          {/* Page Header */}
           <div className="flex flex-col gap-5 items-center w-full">
-            {/* Robot Image */}
             <div className="relative w-[124px] h-[124px]">
               <Image
                 src="/icons/robot.gif"
@@ -221,7 +212,6 @@ export default function ConnectBotModal({
               />
             </div>
 
-            {/* Text Layout */}
             <div className="flex flex-col gap-3 items-center text-center w-full">
               <h2 className="text-2xl font-semibold text-white leading-7">
                 Connect Loyal Bot to Your Account
@@ -233,7 +223,6 @@ export default function ConnectBotModal({
           </div>
         </div>
 
-        {/* Premium Banner (shown for non-premium users) */}
         {!isPremium && (
           <div className="px-4 pb-5">
             <div
@@ -254,9 +243,7 @@ export default function ConnectBotModal({
           </div>
         )}
 
-        {/* Steps */}
         <div className="flex flex-col pb-5">
-          {/* Step 1 */}
           <div className={`flex items-start px-4 py-0 ${!isPremium ? "opacity-50" : ""}`}>
             <div className="flex items-start pl-0 pr-3 py-2">
               <div
@@ -273,7 +260,6 @@ export default function ConnectBotModal({
             </div>
           </div>
 
-          {/* Step 2 */}
           <div className={`flex items-start px-4 py-0 ${!isPremium ? "opacity-50" : ""}`}>
             <div className="flex items-start pl-0 pr-3 py-2 self-stretch">
               <div

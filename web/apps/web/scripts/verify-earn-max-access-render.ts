@@ -8,7 +8,6 @@ import { runInNewContext } from "node:vm";
 import React from "react";
 import ts from "typescript";
 
-// Render the real workspace branches without loading signing SDKs or a session.
 const webRoot = resolve(import.meta.dir, "..");
 const require = createRequire(`${webRoot}/package.json`);
 const { renderToStaticMarkup } = require("react-dom/server");

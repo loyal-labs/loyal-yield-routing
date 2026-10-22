@@ -18,7 +18,6 @@ const TOKEN_MARKETS_CACHE_VERSION = 1;
 // CoinGecko market data is mainnet-token data regardless of the selected
 // Solana cluster, so the persisted cache is intentionally env-independent.
 const TOKEN_MARKETS_CACHE_SCOPE = "global";
-// 24h price-change badges are cosmetic; minutes of staleness is invisible.
 const TOKEN_MARKETS_TTL_MS = 15 * 60 * 1000;
 const TOKEN_MARKETS_PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -107,7 +106,6 @@ export async function fetchTokenMarkets(
         throw new Error(`Markets request failed: ${response.status}`);
       }
     } catch (error) {
-      // Fall back to day-old badges rather than dropping them entirely.
       if (persisted) {
         return persisted.data;
       }

@@ -15,8 +15,6 @@ export function useLoyalPriceUsd(): number | null {
   useEffect(() => {
     let cancelled = false;
 
-    // Paint the last known price instantly, then revalidate (the fetch is a
-    // no-op when the cached price is fresh).
     const cached = readCachedTokenMarketPriceUsd(LOYL_MINT);
     if (cached !== null) {
       setPrice(cached);

@@ -42,15 +42,11 @@ import {
 
 type OnboardingStepId = "welcome" | "deposit" | "autodeposit";
 
-// Funnel order. When several steps are pending at once only the furthest
-// one shows; the earlier ones are remembered as completed.
 const STEP_ORDER: OnboardingStepId[] = ["welcome", "deposit", "autodeposit"];
 
 type StepStatus = "done" | "pending";
 type OnboardingState = Partial<Record<OnboardingStepId, StepStatus>>;
 
-// ponytail: per-wallet localStorage, not backend — a device switch may
-// re-show a step once. Move to user settings if that ever matters.
 const STORAGE_PREFIX = "loyal:lifecycle-onboarding:";
 
 function readState(walletAddress: string): OnboardingState {
@@ -94,11 +90,6 @@ type StepContent = {
   title: string;
 };
 
-// Mixpanel dynamic-config flags serving each step's copy (ASK-1972 A/B
-// plumbing). The variant payload overrides the STEP_CONTENT text below;
-// icons and layout stay in code. Copy is editable in Mixpanel without a
-// deploy once the flag is enabled; a disabled/missing flag (or no network)
-// falls back to STEP_CONTENT with variant "fallback".
 const STEP_FLAG_KEYS: Record<OnboardingStepId, string> = {
   autodeposit: "onboarding_popup_autodeposit",
   deposit: "onboarding_popup_deposit",
@@ -240,8 +231,6 @@ export function LifecycleOnboardingHost({
   hasAutodeposit: boolean;
   hasPosition: boolean;
   isAtEarnRoot: boolean;
-  // Auth session established and the position/overview fetches resolved —
-  // milestones are judged against settled data, never mid-hydration.
   isReady: boolean;
   onOpenAutodeposit: () => void;
   onOpenDeposit: () => void;
@@ -254,7 +243,6 @@ export function LifecycleOnboardingHost({
     variant: string;
   } | null>(null);
   const [isOpen, setIsOpen] = useState(false);
-  // Bumped whenever a signal writes storage so the presenter effect re-runs.
   const [stateVersion, setStateVersion] = useState(0);
 
   const walletRef = useRef(walletAddress);
@@ -274,14 +262,12 @@ export function LifecycleOnboardingHost({
           return;
         }
         state.autodeposit = "pending";
-        // Enabling Autodeposit completes the post-deposit CTA milestone.
         state.deposit = "done";
         writeState(wallet, state);
         setStateVersion((version) => version + 1);
       },
       depositConfirmed: () => {
         const wallet = walletRef.current;
-        // Already running Autodeposit — nothing left to pitch.
         if (!wallet || hasAutodepositRef.current) {
           return;
         }
@@ -299,24 +285,16 @@ export function LifecycleOnboardingHost({
     };
   }, []);
 
-  // A wallet switch mid-display closes the modal; the new wallet's own
-  // state decides what (if anything) shows next.
   useEffect(() => {
     setIsOpen(false);
   }, [walletAddress]);
 
-  // Backfill for established users: an active Autodeposit means every
-  // lesson is already learned; an existing position covers the welcome.
-  // New signed-in wallets get the welcome armed here.
   useEffect(() => {
     if (!(isReady && walletAddress)) {
       return;
     }
     const state = readState(walletAddress);
     if (hasAutodeposit) {
-      // Everything before the autodeposit lesson is learned — but a
-      // pending autodeposit step is the just-enabled modal waiting for the
-      // Earn root, so only backfill it when it was never reached.
       state.welcome = "done";
       state.deposit = "done";
       if (state.autodeposit === undefined) {
@@ -332,10 +310,6 @@ export function LifecycleOnboardingHost({
     setStateVersion((version) => version + 1);
   }, [hasAutodeposit, hasPosition, isReady, walletAddress]);
 
-  // Presenter: on the Earn root with nothing open, show the furthest
-  // pending step, remember it (and everything before it) as done. The
-  // Mixpanel flag variant is resolved first so the modal renders its copy
-  // in one pass; storage only flips to "done" once the popup really shows.
   useEffect(() => {
     if (!(isReady && walletAddress && isAtEarnRoot) || isOpen) {
       return;

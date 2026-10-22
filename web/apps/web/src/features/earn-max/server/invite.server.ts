@@ -27,8 +27,6 @@ export function hashInviteCode(normalizedCode: string): string {
   return createHash("sha256").update(normalizedCode).digest("hex");
 }
 
-// Fail closed: an unset list admits nobody; a malformed entry is a deploy
-// error, not a silently smaller list.
 export function parseInviteCodeHashes(raw: string | undefined): Set<string> {
   const hashes = new Set<string>();
   for (const entry of (raw ?? "").split(",")) {

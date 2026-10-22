@@ -8,7 +8,6 @@ import { resolve } from "node:path";
 import React from "react";
 import ts from "typescript";
 
-// Render the chart's real declarations without loading unrelated wallet SDKs.
 const webRoot = resolve(import.meta.dir, "..");
 const require = createRequire(`${webRoot}/package.json`);
 const { renderToStaticMarkup } = require("react-dom/server");
@@ -73,7 +72,6 @@ const context = {
   require,
   useSyncExternalStore: () => true,
   useEarnForecastApy: () => ({ availability }),
-  // A newly mounted history consumer starts empty, even with a loaded parent.
   useEarnForecastApyHistory: () => ({
     samples: ++historyReads === 1 ? samples : [],
   }),

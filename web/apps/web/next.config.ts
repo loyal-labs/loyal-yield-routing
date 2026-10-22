@@ -54,7 +54,6 @@ const CONTENT_SECURITY_POLICY = [
   "form-action 'self'",
   "child-src https://auth.privy.io https://verify.walletconnect.com https://verify.walletconnect.org",
   "frame-src https://auth.privy.io https://verify.walletconnect.com https://verify.walletconnect.org https://challenges.cloudflare.com https://vercel.live",
-  // Own API + Privy + Solana RPC/WS (Helius) + Jupiter + realtime + analytics.
   "connect-src 'self' https://auth.privy.io https://api.privy.io https://*.rpc.privy.systems wss://relay.walletconnect.com wss://relay.walletconnect.org wss://www.walletlink.org https://explorer-api.walletconnect.com https://*.helius-rpc.com wss://*.helius-rpc.com https://api.mainnet-beta.solana.com https://api.devnet.solana.com https://api.jup.ag https://lite-api.jup.ag https://realtime.askloyal.com https://api.mixpanel.com https://stats.askloyal.com https://analytics.twitter.com https://vercel.live wss://vercel.live",
   "worker-src 'self' blob:",
   "manifest-src 'self'",
@@ -157,8 +156,6 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // Keep clickjacking protection everywhere except the one Cherry entry
-        // that has an explicit frame-ancestors allowlist above.
         source: "/((?!app/cherry/?$).*)",
         headers: [
           ...COMMON_SECURITY_HEADERS,

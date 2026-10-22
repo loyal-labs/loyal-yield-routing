@@ -12,10 +12,6 @@ const CODE_LENGTH = 6;
 
 type InviteError = "invalid" | "error";
 
-// Figma 6015:74177 (empty) / 74280 (typing) / 74388 (checking) / 74497
-// (invalid) / 74658 (mobile). Six cells, auto-submit on the sixth
-// character; no button and no success screen — a valid code reveals the
-// normal Earn MAX view.
 export function EarnMaxInvitePane({
   onBack,
   onRedeem,

@@ -1220,7 +1220,6 @@ export function decodeSolanaTransaction(
       ),
     };
   } catch {
-    // Fall through to legacy transaction decoding.
   }
 
   try {
@@ -1261,7 +1260,6 @@ export function decodeMessagePayload(
       return { value: text, encoding: "utf8" };
     }
   } catch {
-    // Fall back to hex below.
   }
 
   return { value: bytesToHex(bytes), encoding: "hex" };

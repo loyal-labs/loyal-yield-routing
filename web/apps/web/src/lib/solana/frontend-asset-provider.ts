@@ -445,9 +445,6 @@ export function createFrontendAssetProvider(args: {
         // Jupiter only indexes mainnet, so skip the lookup elsewhere.
         (isMainnet ? await fetchJupiterPriceUsd(args.fetchImpl, mint) : null);
 
-      // CoinGecko is the primary source (it also carries price). When it has no
-      // name/symbol for this mint, fall back to the token's own on-chain
-      // metadata so the row shows real info instead of the "TOKEN" placeholder.
       const onchain = coinGeckoSymbol
         ? null
         : await fetchOnchainTokenMetadata(rpcFetch, args.rpcEndpoint, mint);

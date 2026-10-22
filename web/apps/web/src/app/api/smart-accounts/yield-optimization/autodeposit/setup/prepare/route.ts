@@ -100,9 +100,6 @@ export async function POST(request: Request) {
         vaultIndex: 1,
         walletAddress: principal.walletAddress,
       });
-      // A position-paused row is the same fully-built autodeposit (it
-      // auto-resumes on the next state read after a deposit), so it guards
-      // identically.
       if (
         current?.target.lifecycleStatus === "active" ||
         current?.target.lifecycleStatus ===

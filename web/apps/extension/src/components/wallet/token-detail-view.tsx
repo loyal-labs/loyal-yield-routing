@@ -28,10 +28,6 @@ import {
   type TokenDetailData,
 } from "~/src/lib/coingecko";
 
-// ---------------------------------------------------------------------------
-// Format helpers
-// ---------------------------------------------------------------------------
-
 function formatUsd(value: number | null): string {
   if (value === null) return "—";
   if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
@@ -65,10 +61,6 @@ function formatTime(timestamp: number): string {
   return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
-// ---------------------------------------------------------------------------
-// Shared styles
-// ---------------------------------------------------------------------------
-
 const FONT = "var(--font-geist-sans), sans-serif";
 const COLOR_PRIMARY = "#000";
 const COLOR_SECONDARY = "rgba(60, 60, 67, 0.6)";
@@ -98,10 +90,6 @@ const valueStyle: React.CSSProperties = {
   color: COLOR_PRIMARY,
 };
 
-// ---------------------------------------------------------------------------
-// Custom chart tooltip
-// ---------------------------------------------------------------------------
-
 function ChartTooltipContent({ active, payload }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
   const point = payload[0].payload as { timestamp: number; price: number };
@@ -124,10 +112,6 @@ function ChartTooltipContent({ active, payload }: TooltipProps<number, string>) 
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Token Detail View
-// ---------------------------------------------------------------------------
 
 export function TokenDetailView({
   token,
@@ -164,9 +148,6 @@ export function TokenDetailView({
       const data = await fetchTokenDetail(mint);
       setDetail(data);
     } catch (e) {
-      // CoinGecko doesn't list this token: degrade to the on-chain metadata
-      // already carried in `token` and mark it unverified. Any other failure
-      // stays a retryable error so we don't mislabel a legitimate token.
       if (e instanceof CoinGeckoNotFoundError) {
         setNotFound(true);
       } else {
@@ -181,7 +162,6 @@ export function TokenDetailView({
     void loadDetail();
   }, [loadDetail]);
 
-  // Derive 24h change from chart data
   const priceChange =
     detail && detail.chart.length >= 2
       ? ((detail.chart[detail.chart.length - 1].price - detail.chart[0].price) /
@@ -197,7 +177,6 @@ export function TokenDetailView({
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <SubViewHeader title={token.symbol} onBack={onBack} onClose={onClose} />
 
-      {/* Loading state */}
       {loading && (
         <div
           style={{
@@ -220,7 +199,6 @@ export function TokenDetailView({
         </div>
       )}
 
-      {/* Error state */}
       {error && !loading && (
         <div
           style={{
@@ -264,9 +242,6 @@ export function TokenDetailView({
         </div>
       )}
 
-      {/* Unverified fallback: CoinGecko has no record of this token, so render
-          the on-chain metadata we already have (name/symbol/icon/price) and
-          clearly mark it as unverified instead of failing the whole page. */}
       {notFound && !loading && (
         <div
           style={{
@@ -280,7 +255,6 @@ export function TokenDetailView({
             gap: "12px",
           }}
         >
-          {/* Price hero */}
           <div
             style={{
               display: "flex",
@@ -341,19 +315,16 @@ export function TokenDetailView({
             </span>
           </div>
 
-          {/* Action buttons */}
           <ActionButtons
             onSend={onSend}
             onReceive={onReceive}
             onSwap={onSwap}
           />
 
-          {/* Position card */}
           <BalanceCard token={token} />
         </div>
       )}
 
-      {/* Content */}
       {detail && !loading && (
         <div
           style={{
@@ -367,7 +338,6 @@ export function TokenDetailView({
             gap: "12px",
           }}
         >
-          {/* Price hero */}
           <div
             style={{
               display: "flex",
@@ -425,14 +395,12 @@ export function TokenDetailView({
             )}
           </div>
 
-          {/* Action buttons */}
           <ActionButtons
             onSend={onSend}
             onReceive={onReceive}
             onSwap={onSwap}
           />
 
-          {/* Chart */}
           {detail.chart.length >= 2 && (
             <div style={{ ...cardStyle, padding: "12px 0 0" }}>
               <ResponsiveContainer width="100%" height={180}>
@@ -477,10 +445,8 @@ export function TokenDetailView({
             </div>
           )}
 
-          {/* Position card */}
           <BalanceCard token={token} />
 
-          {/* Market stats */}
           <div style={cardStyle}>
             <span style={{ ...labelStyle, display: "block", marginBottom: "12px" }}>
               Market data
@@ -499,11 +465,9 @@ export function TokenDetailView({
             </div>
           </div>
 
-          {/* Token info */}
           <div style={{ ...cardStyle, display: "flex", flexDirection: "column", gap: "12px" }}>
             <span style={labelStyle}>Token info</span>
 
-            {/* Verified status */}
             <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
               <div
                 style={{
@@ -533,7 +497,6 @@ export function TokenDetailView({
               </span>
             </div>
 
-            {/* GT Score */}
             {detail.info.gtScore !== null && (
               <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -568,7 +531,6 @@ export function TokenDetailView({
               </div>
             )}
 
-            {/* Audit flags */}
             <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
               <AuditBadge
                 label="Mint Authority"
@@ -583,7 +545,6 @@ export function TokenDetailView({
             </div>
           </div>
 
-          {/* Holders */}
           {(detail.info.holderCount !== null || detail.info.holderDistribution) && (
             <div style={{ ...cardStyle, display: "flex", flexDirection: "column", gap: "8px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -628,7 +589,6 @@ export function TokenDetailView({
             </div>
           )}
 
-          {/* Links */}
           {(detail.info.websites.length > 0 || detail.info.twitterHandle) && (
             <div style={{ ...cardStyle, display: "flex", flexDirection: "column", gap: "0" }}>
               <span style={{ ...labelStyle, marginBottom: "8px" }}>Links</span>
@@ -661,10 +621,6 @@ export function TokenDetailView({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
 
 function ActionButtons({
   onSend,

@@ -7,7 +7,6 @@ import { createBrowserLifecycleTracker } from "@/features/observability/client";
 const INVITE_PATH = "/api/smart-accounts/earn-max/invite";
 
 export type EarnMaxInviteState = {
-  /** null until the server answered for this wallet. */
   redeemed: boolean | null;
   redeem: (code: string) => Promise<"redeemed" | "invalid" | "error">;
 };

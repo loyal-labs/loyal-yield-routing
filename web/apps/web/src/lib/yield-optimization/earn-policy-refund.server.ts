@@ -39,9 +39,6 @@ import {
 import { getEarnProductAssetsForCluster } from "./earn-product-mints.shared";
 import { fetchEarnRpcHoldingsSnapshot } from "./earn-rpc-holdings.client";
 
-// Core of the policy/account refund flow, shared by the session (web) routes
-// and the mobile wallet-signature twins. Callers own authentication and
-// connection construction; everything here is pure scan/prepare logic.
 const EARN_VAULT_INDEX = 1;
 
 export class EarnPolicyRefundError extends Error {
@@ -89,8 +86,6 @@ function getBlockedReason(args: {
   return null;
 }
 
-// Any non-USDC token balance in the vault, or any USDC parked outside the
-// vault's own idle ATA, means an open position.
 function vaultHoldsChainFunds(
   snapshot: SmartAccountEarnVaultRefundSnapshot
 ): boolean {
@@ -144,9 +139,6 @@ async function vaultHoldsKaminoCollateral(args: {
   );
 }
 
-// The vault entry is refundable only when nothing on chain or in the DB can
-// still use the vault. On-chain collateral is checked first: it is the
-// strongest live-position signal and holds even when the DB rows are stale.
 function buildVaultRefundEntry(args: {
   dbState: {
     hasActiveAutodeposit: boolean;

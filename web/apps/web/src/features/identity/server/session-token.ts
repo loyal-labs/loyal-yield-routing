@@ -109,7 +109,6 @@ export async function verifyAuthSessionTokenMulti(
     try {
       return await verifyAuthSessionTokenRS256(token, options.rs256PublicKey);
     } catch {
-      // Fall through to HS256 verification below.
     }
   }
 

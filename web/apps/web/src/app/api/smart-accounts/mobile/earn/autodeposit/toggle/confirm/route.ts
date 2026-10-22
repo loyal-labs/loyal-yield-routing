@@ -122,7 +122,6 @@ export async function POST(request: Request) {
     });
 
     if (input.active) {
-      // Transactional push (ASK-1651).
       await sendWalletPush(walletAddress, autodepositEnabledPush());
     }
 

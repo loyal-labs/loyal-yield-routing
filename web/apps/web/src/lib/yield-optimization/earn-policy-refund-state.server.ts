@@ -395,7 +395,6 @@ async function inspectRecurringDelegations(args: {
         seenAddresses.add(address);
       }
     } catch {
-      // Invalid persisted addresses are surfaced as missing delegation accounts.
     }
   }
 

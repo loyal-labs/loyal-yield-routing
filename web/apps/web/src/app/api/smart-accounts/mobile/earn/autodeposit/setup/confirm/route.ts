@@ -716,9 +716,6 @@ export async function POST(request: Request) {
     input.setupStage === "create_recurring_delegation" ||
     input.setupStage === "approve_token_delegate"
   ) {
-    // Transactional push (ASK-1651). When the bootstrap sweep already found
-    // idle USDC, the "about to move" push implies auto-deposit is on — send
-    // one push, not two.
     const scheduledSweep =
       bootstrapSweep?.status === "scheduled" ? bootstrapSweep.sweep : undefined;
     await sendWalletPush(

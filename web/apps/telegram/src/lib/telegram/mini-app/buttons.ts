@@ -11,8 +11,6 @@ export type SecondaryButtonOptions = BaseButtonOptions & {
   position?: string;
 };
 
-// --- Reactive button state store ---
-
 export type SingleButtonState = {
   text: string;
   isEnabled: boolean;
@@ -47,8 +45,6 @@ export function getButtonStateSnapshot(): ButtonBarState {
   return buttonBarState;
 }
 
-// --- Haptic-wrapped click handler ---
-
 function wrapWithHaptic(onClick?: () => void): (() => void) | null {
   if (!onClick) return null;
   return () => {
@@ -57,7 +53,6 @@ function wrapWithHaptic(onClick?: () => void): (() => void) | null {
         hapticFeedback.impactOccurred("medium");
       }
     } catch {
-      // Haptic not available outside Telegram
     }
     onClick();
   };
@@ -76,8 +71,6 @@ function syncDomVisibility() {
   const hasButtons = !!(buttonBarState.main || buttonBarState.secondary);
   el.style.display = hasButtons ? "flex" : "none";
 }
-
-// --- Public API (unchanged signatures) ---
 
 export const showMainButton = (options: MainButtonOptions): boolean => {
   buttonBarState = {
@@ -135,8 +128,6 @@ export const hideAllButtons = (): void => {
   hideMainButton();
   hideSecondaryButton();
 };
-
-// --- Preset button combinations ---
 
 type ButtonStyleOptions = Pick<
   BaseButtonOptions,

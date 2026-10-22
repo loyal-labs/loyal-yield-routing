@@ -82,9 +82,6 @@ function isPositiveAmount(amountRaw: string): boolean {
   }
 }
 
-// Maps a live holdings snapshot entry to a withdraw source. Drops entries we
-// can't offer as a withdrawal (zero balance, or missing the identifiers a
-// `withdraw/prepare` call needs to match/build the instruction).
 function holdingToWithdrawSource(
   holding: EarnRpcHolding
 ): WithdrawSource | null {
@@ -174,8 +171,6 @@ export async function GET(request: Request) {
       settingsPda,
     });
 
-    // The live holdings read needs the active Earn route policy (the market
-    // universe to scan). No policy → nothing is deployed yet.
     const policyPair = await findActiveYieldRoutePolicyPair({
       authority: walletAddress,
       cluster,

@@ -26,9 +26,7 @@ export function createTransaction({
   accountIndex: number;
   /** Number of additional signing PDAs required by the transaction. */
   ephemeralSigners: number;
-  /** Transaction message to wrap into a multisig transaction. */
   transactionMessage: TransactionMessage;
-  /** `AddressLookupTableAccount`s referenced in `transaction_message`. */
   addressLookupTableAccounts?: AddressLookupTableAccount[];
   memo?: string;
   programId?: PublicKey;

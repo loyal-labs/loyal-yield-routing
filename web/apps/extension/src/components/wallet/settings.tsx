@@ -33,10 +33,6 @@ const chevronColor = "rgba(60, 60, 67, 0.3)";
 const sectionBg = "#EBEBEB";
 const sectionRadius = "16px";
 
-// ---------------------------------------------------------------------------
-// Reusable row component — matches app ProfileCell pattern
-// ---------------------------------------------------------------------------
-
 function SettingsRow({
   icon,
   title,
@@ -143,10 +139,6 @@ function SettingsRow({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Section wrapper — matches app SettingsSection
-// ---------------------------------------------------------------------------
-
 function Section({
   label,
   children,
@@ -186,10 +178,6 @@ function Section({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Segmented control for network / auto-lock
-// ---------------------------------------------------------------------------
 
 function SegmentedControl<T extends string | number>({
   options,
@@ -245,10 +233,6 @@ function SegmentedControl<T extends string | number>({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main Settings component
-// ---------------------------------------------------------------------------
-
 export function Settings({ onBack }: { onBack: () => void }) {
   const { network, setNetwork, publicKey, lock, resetWallet, getSecretKey } =
     useWalletContext();
@@ -298,7 +282,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
         overflow: "hidden",
       }}
     >
-      {/* Header */}
       <div
         style={{
           display: "flex",
@@ -340,7 +323,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
         <div style={{ width: "36px" }} />
       </div>
 
-      {/* Scrollable content */}
       <div
         style={{
           flex: 1,
@@ -352,7 +334,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
           gap: "20px",
         }}
       >
-        {/* ── Network ── */}
         <Section label="Network">
           <SegmentedControl
             options={[
@@ -368,7 +349,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
           />
         </Section>
 
-        {/* ── Wallet ── */}
         <Section label="Wallet">
           {truncatedKey && (
             <SettingsRow
@@ -539,7 +519,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
             destructive
           />
 
-          {/* Confirmation card */}
           <div
             style={{
               maxHeight: resetAction ? "200px" : "0",
@@ -630,7 +609,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
           </div>
         </Section>
 
-        {/* ── Extension ── */}
         <Section label="Extension">
           {!import.meta.env.FIREFOX && (
             <>
@@ -686,7 +664,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
                   track(SETTINGS_EVENTS.changeViewMode, { view_mode: mode });
                   updateUserProfile({ view_mode: mode });
                   if (mode === "popup") {
-                    // Background opens popup; close this view
                     setTimeout(() => globalThis.close(), 200);
                   } else {
                     // Can't open sidebar programmatically — show instruction
@@ -799,7 +776,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
           </div>
         </Section>
 
-        {/* Version */}
         <div style={{ textAlign: "center", paddingTop: "4px" }}>
           <span
             style={{
@@ -828,7 +804,6 @@ export function Settings({ onBack }: { onBack: () => void }) {
         </div>
       </div>
 
-      {/* Fullscreen overlay for sidebar switch prompt */}
       {switchMessage && (
         <div
           style={{

@@ -159,7 +159,6 @@ export function LandingHero({ copy }: { copy: LandingDict["hero"] }) {
 
   useEffect(() => {
     const container = animationContainerRef.current;
-    // Skip the ~85 KB player + JSON fetch when the container is display:none (mobile).
     if (!container || container.offsetParent === null) return;
 
     let anim: AnimationItem | null = null;

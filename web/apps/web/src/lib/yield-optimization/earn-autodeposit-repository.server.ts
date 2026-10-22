@@ -1985,8 +1985,6 @@ export async function recordAutodepositSetupIntent(
   return target;
 }
 
-// Closing Autodeposit changes the user's desired state immediately. The chain
-// projector records whether the policy and delegation actually closed.
 export async function recordAutodepositCloseIntent(
   input: ConfirmedEarnAutodepositCloseInput,
   dependencies: EarnAutodepositRepositoryDependencies = createDependencies()
@@ -2759,10 +2757,6 @@ export async function recordBalanceSweepExecution(
   return existing;
 }
 
-// Distinct wallet addresses with a balance-sweep execution recorded since
-// `since` (DB insert time). Used by the Solana Week attribution cron to report
-// "first Earn deposit via autodeposit" quest completions. The completion API is
-// idempotent per (wallet, quest), so a generous lookback window is safe.
 export async function findWalletAddressesWithBalanceSweepsSince(
   since: Date,
   dependencies: Pick<

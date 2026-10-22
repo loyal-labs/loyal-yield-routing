@@ -9,10 +9,6 @@ import { useAuthSession } from "@/contexts/auth-session-context";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useCherryRuntime } from "@/features/cherry/client/runtime-context";
 
-// One-time nudge for users signed in through the legacy wallet flow (no Privy
-// user yet). "Add" runs the same wallet through Privy and asks for an email;
-// the cross remembers the dismissal. Expands/collapses on the accordion
-// recipe so it never snaps the layout.
 const DISMISSED_KEY = "loyal:add-email-nudge-dismissed";
 
 export function AddEmailNudge() {
@@ -75,8 +71,6 @@ export function AddEmailNudge() {
               <X className="size-5" />
             </button>
           </div>
-          {/* Gap to whatever follows (room for the banner carousel dots on
-              mobile); inside the panel so it collapses too. */}
           <div className="h-4" />
         </div>
       </div>

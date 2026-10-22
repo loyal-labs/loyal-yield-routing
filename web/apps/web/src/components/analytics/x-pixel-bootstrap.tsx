@@ -16,7 +16,6 @@ export function XPixelBootstrap() {
             if (hasMarketingConsent()) loadXPixel();
           })
           .catch(() => {
-            // Blocking optional marketing code must not prevent app startup.
           });
       }
     };

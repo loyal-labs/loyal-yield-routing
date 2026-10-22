@@ -46,21 +46,13 @@ const getSafeArea = (): SafeAreaInsets => {
   };
 };
 
-/**
- * Hook that returns the device safe area top inset (notch/status bar area).
- * Combines the SDK signal (reactive, populated after async viewport.mount())
- * with the native WebApp value (synchronous best-effort fallback).
- */
 export function useDeviceSafeAreaTop(): number {
-  // SDK signal — reactive, fires when viewport.mount() resolves
   const sdkTop = useSignal(viewport.safeAreaInsetTop as Signal<number>);
 
-  // Native value — synchronous read, updated via Telegram client events
   const [nativeTop, setNativeTop] = useState(getDeviceSafeAreaTopValue);
 
   useEffect(() => {
     const update = () => setNativeTop(getDeviceSafeAreaTopValue());
-    // Re-check in case value appeared between render and effect
     update();
     const webApp = getWebApp();
     webApp?.onEvent?.("safeAreaChanged", update);
@@ -71,13 +63,9 @@ export function useDeviceSafeAreaTop(): number {
     };
   }, []);
 
-  // SDK takes precedence; native value as fallback
   return sdkTop || nativeTop;
 }
 
-/**
- * Hook that provides combined Telegram safe area insets (device + content).
- */
 export function useTelegramSafeArea(): SafeAreaInsets {
   const [insets, setInsets] = useState<SafeAreaInsets>(getSafeArea);
 
@@ -103,10 +91,6 @@ export function useTelegramSafeArea(): SafeAreaInsets {
   return insets;
 }
 
-/**
- * Fixed modal snap point.
- * Using a constant value to prevent any recalculation that could cause jumping.
- */
 export function useModalSnapPoint(): number {
   return 0.92;
 }

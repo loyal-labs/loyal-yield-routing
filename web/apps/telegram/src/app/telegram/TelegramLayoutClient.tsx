@@ -15,11 +15,8 @@ export default function TelegramLayoutClient({
   children: React.ReactNode;
 }) {
   const safeAreaInsetTop = useDeviceSafeAreaTop();
-  // Gate layout visibility until safe area value is known (prevents content jump)
   const [safeAreaReady, setSafeAreaReady] = useState(false);
 
-  // Initialize Telegram SDK + viewport at layout level so safe area
-  // values are available for all pages.
   useEffect(() => {
     initTelegram();
   }, []);
