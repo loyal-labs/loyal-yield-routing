@@ -29,7 +29,7 @@ func open(ctx context.Context, name string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	pool, err := db.Open(ctx, dsn, 4)
+	pool, err := db.OpenLazy(ctx, dsn, 4)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
