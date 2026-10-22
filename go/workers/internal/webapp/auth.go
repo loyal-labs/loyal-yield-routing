@@ -33,6 +33,11 @@ const (
 	smartAccountsSolanaEnv = "mainnet"
 )
 
+var AuthGrants = []Grant{
+	{"app_users", "SELECT"},
+	{"app_user_smart_accounts", "SELECT"},
+}
+
 var previewHost = regexp.MustCompile(`(?i)(^|\.)preview\.askloyal\.com$`)
 
 type Principal struct {

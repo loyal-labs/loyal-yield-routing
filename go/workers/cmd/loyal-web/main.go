@@ -76,7 +76,7 @@ func openAppDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func openAuth(appDB *pgxpool.Pool) (*webapp.Auth, error) {
+func openAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, error) {
 	secret, err := engine.OptionalCredential("AUTH_JWT_SECRET")
 	if err != nil {
 		return nil, err
@@ -92,18 +92,45 @@ func openAuth(appDB *pgxpool.Pool) (*webapp.Auth, error) {
 	if err != nil {
 		return nil, err
 	}
-	var rpcClient *chain.Client
-	if endpoint != "" {
-		if rpcClient, err = chain.New(endpoint, 10*time.Second); err != nil {
-			return nil, err
-		}
+	if appDB == nil || endpoint == "" {
+		slog.Warn("session routes not served by Go: needs WEB_APP_DATABASE_URL and WEB_SOLANA_RPC_URL")
+		return nil, nil
+	}
+	missing, err := webapp.MissingGrants(ctx, appDB, webapp.AuthGrants)
+	switch {
+	case err != nil:
+		slog.Warn("session routes not served by Go: grant check failed", "error", err)
+		return nil, nil
+	case len(missing) > 0:
+		slog.Warn("session routes not served by Go: web app role lacks grants", "missing", missing)
+		return nil, nil
+	}
+	rpcClient, err := chain.New(endpoint, 10*time.Second)
+	if err != nil {
+		return nil, err
 	}
 	return webapp.NewAuth(secret, publicKey, appDB, rpcClient)
+}
+
+func contentGranted(ctx context.Context, appDB *pgxpool.Pool) bool {
+	missing, err := webapp.MissingGrants(ctx, appDB, webapp.ContentGrants)
+	switch {
+	case err != nil:
+		slog.Warn("content reads not served by Go: grant check failed", "error", err)
+	case len(missing) > 0:
+		slog.Warn("content reads not served by Go: web app role lacks grants", "missing", missing)
+	default:
+		return true
+	}
+	return false
 }
 
 func run(ctx context.Context) error {
 	cfg, err := config()
 	if err != nil {
+		return err
+	}
+	if cfg.CoinGeckoAPIKey, err = engine.OptionalCredential("COINGECKO_API_KEY"); err != nil {
 		return err
 	}
 	appDB, err := openAppDB(ctx)
@@ -113,8 +140,9 @@ func run(ctx context.Context) error {
 	if appDB != nil {
 		defer appDB.Close()
 		cfg.AppDB = appDB
+		cfg.ContentDB = contentGranted(ctx, appDB)
 	}
-	if cfg.Auth, err = openAuth(appDB); err != nil {
+	if cfg.Auth, err = openAuth(ctx, appDB); err != nil {
 		return err
 	}
 	server := &http.Server{
