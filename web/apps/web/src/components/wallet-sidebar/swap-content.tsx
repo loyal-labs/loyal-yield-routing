@@ -11,6 +11,7 @@ import {
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { SOL_FEE_RESERVE } from "@/components/wallet-workspace/facelift/action-screens";
 import type { SwapBalanceSnapshot } from "@/features/observability/swap-visibility";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useSwap, type SwapExecutionContext } from "@/hooks/use-swap";
@@ -835,7 +836,7 @@ function SwapTransactionDetail({
                   lineHeight: "20px",
                 }}
               >
-                <span style={{ color: "#000" }}>0.00005 SOL</span>
+                <span style={{ color: "#000" }}>{SOL_FEE_RESERVE} SOL</span>
                 <span style={{ color: secondary }}>≈ $0.00</span>
               </div>
             </div>
@@ -1231,9 +1232,9 @@ export function SwapContent({
         pct === 100 ? fromToken.balance : fromToken.balance * (pct / 100);
       if (
         fromToken.symbol.toUpperCase() === "SOL" &&
-        fromToken.balance - val < 0.00005
+        fromToken.balance - val < SOL_FEE_RESERVE
       ) {
-        val = Math.max(0, fromToken.balance - 0.00005);
+        val = Math.max(0, fromToken.balance - SOL_FEE_RESERVE);
       }
       setFromAmount(val > 0 ? String(Number(val.toFixed(6))) : "");
     },
@@ -1712,7 +1713,7 @@ export function SwapContent({
                     marginTop: "2px",
                   }}
                 >
-                  <span style={{ color: "#000" }}>0.00005 SOL</span>
+                  <span style={{ color: "#000" }}>{SOL_FEE_RESERVE} SOL</span>
                   <span style={{ color: secondary }}>≈ $0.00</span>
                 </div>
               </div>

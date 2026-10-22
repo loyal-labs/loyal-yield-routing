@@ -64,7 +64,6 @@ export function MobileTabBar({
                   : "icon-clock-history.svg"
               }`}
             />
-            {/* Same unseen-activity badge the sidebar clock shows. */}
             <span
               className="t-badge t-badge-tab"
               data-open={showActivityBadge ? "true" : "false"}
