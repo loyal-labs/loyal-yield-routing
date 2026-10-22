@@ -15,8 +15,8 @@ import {
 import { SearchInput } from "./shared";
 import type { SwapToken } from "./types";
 
-const SEARCH_DEBOUNCE_MS = 120;
-const MIN_SEARCH_LENGTH = 2;
+export const TOKEN_SEARCH_DEBOUNCE_MS = 120;
+export const TOKEN_SEARCH_MIN_LENGTH = 2;
 
 function SectionLabel({ children }: { children: string }) {
   return (
@@ -266,7 +266,7 @@ export function TokenSelectView({
   }, [remoteSearchEnabled]);
 
   const query = search.trim().toLowerCase();
-  const hasQuery = query.length >= MIN_SEARCH_LENGTH;
+  const hasQuery = query.length >= TOKEN_SEARCH_MIN_LENGTH;
 
   const localFiltered = tokens.filter(
     (t) =>
@@ -303,7 +303,7 @@ export function TokenSelectView({
         .finally(() => {
           if (!controller.signal.aborted) setIsSearching(false);
         });
-    }, SEARCH_DEBOUNCE_MS);
+    }, TOKEN_SEARCH_DEBOUNCE_MS);
 
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);

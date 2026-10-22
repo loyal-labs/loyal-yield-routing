@@ -1,5 +1,6 @@
 "use client";
 
+import { SelectableRow } from "@/components/wallet-workspace/facelift/selectable-row";
 import {
   type ReactNode,
   useEffect,
@@ -37,6 +38,7 @@ import { useAuthSession } from "@/contexts/auth-session-context";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import type { EarnAutodepositProgress } from "@/features/earn-realtime";
 import type { ActiveEarnPositionHolding } from "@/hooks/use-active-earn-position";
+import { useScheduledSweepNowMs } from "@/components/wallet-workspace/facelift/use-scheduled-sweep-now";
 import { splitUsdBalance } from "@/hooks/use-wallet-desktop-data";
 import { getTokenIconUrl } from "@/lib/token-icon";
 import {
@@ -358,21 +360,10 @@ export function TransactionRow({
     </>
   );
 
-  if (!onSelect) {
-    return (
-      <div className="flex w-full items-center rounded-2xl px-4">{content}</div>
-    );
-  }
   return (
-    <button
-      className={`flex w-full items-center rounded-2xl px-4 text-left outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset ${
-        isSelected ? "bg-accent" : "hover:bg-accent"
-      }`}
-      onClick={onSelect}
-      type="button"
-    >
+    <SelectableRow isSelected={isSelected} onSelect={onSelect}>
       {content}
-    </button>
+    </SelectableRow>
   );
 }
 
@@ -428,25 +419,7 @@ function TransactionsTab({
   const [items, setItems] = useState<EarnTransactionItem[] | null>(null);
   const [hasError, setHasError] = useState(false);
 
-  // Countdown clock for execute-now availability (earn-transactions-pane.tsx:
-  // 1654-1698): ticks every second only while a sweep is still locked.
-  const [scheduledSweepNowMs, setScheduledSweepNowMs] = useState(() =>
-    Date.now()
-  );
-  useEffect(() => {
-    const hasFutureExecuteNow = scheduledSweeps.some((sweep) => {
-      const availableAtMs =
-        getLoadedScheduledSweepExecuteNowAvailableAtMs(sweep);
-      return availableAtMs !== null && availableAtMs > Date.now();
-    });
-    if (!hasFutureExecuteNow) {
-      return;
-    }
-    const intervalId = window.setInterval(() => {
-      setScheduledSweepNowMs(Date.now());
-    }, 1000);
-    return () => window.clearInterval(intervalId);
-  }, [scheduledSweeps]);
+  const scheduledSweepNowMs = useScheduledSweepNowMs(scheduledSweeps);
 
   useEffect(() => {
     if (!(isAuthenticated && isHydrated && settingsPda && walletAddress)) {

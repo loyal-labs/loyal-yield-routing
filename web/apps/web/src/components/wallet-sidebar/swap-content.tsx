@@ -20,6 +20,8 @@ import { getExplorerTxUrl } from "@/lib/solana/explorer";
 
 import type { FormButtonProps, SubView, SwapToken } from "./types";
 
+export const SWAP_QUOTE_DEBOUNCE_MS = 500;
+
 const font = "var(--font-geist-sans), sans-serif";
 const secondary = "rgba(60, 60, 67, 0.6)";
 const red = "#F9363C";
@@ -1068,7 +1070,7 @@ export function SwapContent({
         undefined,
         toToken.mint
       ).finally(() => setIsQuoting(false));
-    }, 500);
+    }, SWAP_QUOTE_DEBOUNCE_MS);
     return () => {
       if (quoteTimerRef.current) clearTimeout(quoteTimerRef.current);
     };
