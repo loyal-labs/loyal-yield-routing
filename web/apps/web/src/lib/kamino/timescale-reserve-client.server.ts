@@ -274,20 +274,24 @@ export async function getCurrentReserveUpdatesByReserve(args: {
   }
 }
 
-// Returns null (not []) when the Timescale feed is not configured so
-// eligibility callers can tell "feed unavailable" from "reserve was never
-// sampled" — the latter is what marks hidden/untracked reserves ineligible.
+export type ReserveObservationFeed =
+  | { feed: "unconfigured" }
+  | { feed: "configured"; rows: TimescaleReservePresenceRow[] };
+
 export async function getLatestReserveObservationsByReserve(args: {
   reserves: readonly string[];
-}): Promise<TimescaleReservePresenceRow[] | null> {
+}): Promise<ReserveObservationFeed> {
   const databaseUrl = getTimescaleReserveDatabaseUrl();
   if (!databaseUrl) {
-    return null;
+    return { feed: "unconfigured" };
   }
 
   const client = new TimescaleReserveClient({ databaseUrl, maxConnections: 1 });
   try {
-    return await client.getLatestReserveObservationsByReserve(args);
+    return {
+      feed: "configured",
+      rows: await client.getLatestReserveObservationsByReserve(args),
+    };
   } finally {
     await client.close();
   }

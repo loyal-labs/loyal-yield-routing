@@ -219,7 +219,7 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     [props.smartAccountData.approvals, selectedApprovalId]
   );
 
-  const { search: searchTokens } = usePopularTokens({
+  usePopularTokens({
     enabled: shouldLoadPopularTokens,
   });
 
@@ -536,7 +536,7 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
           currentToken={field === "from" ? currentFromToken : swapToToken}
           onBack={onBack}
           onClose={props.onClose}
-          onSearch={field === "to" ? searchTokens : undefined}
+          remoteSearch={field === "to"}
           onSelect={handleTokenSelect}
           title={field === "from" ? "You Swap" : "You Receive"}
           tokens={field === "to" ? targetTokens : sourceTokens}

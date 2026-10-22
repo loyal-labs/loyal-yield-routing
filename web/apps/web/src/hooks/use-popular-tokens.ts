@@ -1,13 +1,12 @@
 "use client";
 
 import type { SwapToken } from "@loyal-labs/wallet-core/types";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   getCachedTrendingTokens,
   prefetchTrendingTokens,
   resetTokenSearchCacheForTests,
-  searchTokens,
 } from "@/lib/market/token-search.client";
 
 export async function fetchPopularTokens(): Promise<SwapToken[]> {
@@ -47,14 +46,5 @@ export function usePopularTokens(options: { enabled?: boolean } = {}) {
     };
   }, [enabled]);
 
-  const search = useCallback(async (query: string): Promise<SwapToken[]> => {
-    if (!query || query.length < 2) return [];
-    try {
-      return (await searchTokens(query)).filter((t) => t.isVerified);
-    } catch {
-      return [];
-    }
-  }, []);
-
-  return { tokens, isLoading, search };
+  return { tokens, isLoading };
 }

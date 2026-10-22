@@ -361,25 +361,15 @@ export async function reconcileQuestCompletions(args: {
 
 const QUEST_KINDS: QuestKind[] = ["earn_deposit", "first_autodeposit_sweep"];
 
-export type QuestProgressStatus =
-  | "reported"
-  | "pending"
-  | "failed"
-  | "not_started";
+export type QuestProgressStatus = CompletionRow["status"] | "not_started";
 
 export type QuestProgressItem = {
   kind: QuestKind;
   status: QuestProgressStatus;
-  solanaStatus: string | null;
+  solanaStatus: CompletionRow["solanaStatus"];
   reportedAt: string | null;
   attempts: number;
 };
-
-// Persisted rows are only ever pending/reported/failed (see applyReportResult);
-// anything unexpected collapses to "pending" so the UI never shows a raw value.
-function normalizeRowStatus(status: string): QuestProgressStatus {
-  return status === "reported" || status === "failed" ? status : "pending";
-}
 
 export async function getQuestProgress(
   walletId: string
@@ -392,12 +382,7 @@ export async function getQuestProgress(
       .from(solanaWeekQuestCompletions)
       .where(eq(solanaWeekQuestCompletions.walletAddress, wallet));
     for (const row of rows) {
-      if (
-        row.questKind === "earn_deposit" ||
-        row.questKind === "first_autodeposit_sweep"
-      ) {
-        rowByKind.set(row.questKind, row);
-      }
+      rowByKind.set(row.questKind, row);
     }
   }
 
@@ -414,7 +399,7 @@ export async function getQuestProgress(
     }
     return {
       kind,
-      status: normalizeRowStatus(row.status),
+      status: row.status,
       solanaStatus: row.solanaStatus,
       reportedAt: row.reportedAt ? row.reportedAt.toISOString() : null,
       attempts: row.attempts,

@@ -161,7 +161,7 @@ export function CryptoPage({
   );
   const [swapToToken, setSwapToToken] = useState<SwapToken>(LOYL_TOKEN);
   const [shouldLoadPopularTokens, setShouldLoadPopularTokens] = useState(false);
-  const { tokens: popularTokens, search: searchTokens } = usePopularTokens({
+  const { tokens: popularTokens } = usePopularTokens({
     enabled: shouldLoadPopularTokens,
   });
 
@@ -593,9 +593,7 @@ export function CryptoPage({
                   earnEligibleMints={earnEligibleMints}
                   nameByMint={tokenNameByMint}
                   onClose={() => setSwapSelectSide(null)}
-                  onSearch={
-                    overlaySelectSide === "to" ? searchTokens : undefined
-                  }
+                  remoteSearch={overlaySelectSide === "to"}
                   onSelect={(token) =>
                     handleSwapTokenSelect(overlaySelectSide, token)
                   }
@@ -642,7 +640,7 @@ export function CryptoPage({
             earnEligibleMints={earnEligibleMints}
             nameByMint={tokenNameByMint}
             onClose={() => setSwapSelectSide(null)}
-            onSearch={overlaySelectSide === "to" ? searchTokens : undefined}
+            remoteSearch={overlaySelectSide === "to"}
             onSelect={(token) =>
               handleSwapTokenSelect(overlaySelectSide, token)
             }

@@ -247,11 +247,11 @@ export async function findEarnReserveTargetIneligibility(args: {
   const observations = await getLatestReserveObservationsByReserve({
     reserves: [args.reserve],
   });
-  if (observations === null) {
+  if (observations.feed === "unconfigured") {
     return null;
   }
 
-  const observation = observations.find(
+  const observation = observations.rows.find(
     (candidate) => candidate.reserve === args.reserve
   );
   if (!observation) {

@@ -637,8 +637,8 @@ export function SwapTokenSelectPane({
   earnEligibleMints,
   nameByMint,
   onClose,
-  onSearch,
   onSelect,
+  remoteSearch = false,
   side,
   title,
   tokens,
@@ -646,16 +646,8 @@ export function SwapTokenSelectPane({
   earnEligibleMints?: ReadonlySet<string>;
   nameByMint: Record<string, string>;
   onClose: () => void;
-  /**
-   * Opt-in to the remote search and the Trending section. Presence is the
-   * switch: the request lifecycle (debounce, abort, stale guarding) is owned
-   * here and calls `searchTokens` directly, so the callback itself is never
-   * invoked — it stays accepted for callers passing `usePopularTokens().search`.
-   * Selectors that pass none (Send's asset picker, swap's from side) stay
-   * holdings-only.
-   */
-  onSearch?: (query: string) => Promise<SwapToken[]>;
   onSelect: (token: SwapToken) => void;
+  remoteSearch?: boolean;
   side: "from" | "to";
   title?: string;
   tokens: SwapToken[];
@@ -663,7 +655,7 @@ export function SwapTokenSelectPane({
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<TokenSearchResult[]>([]);
   const [trending, setTrending] = useState<TokenSearchResult[]>(() =>
-    onSearch ? getCachedTrendingTokens() ?? [] : []
+    remoteSearch ? getCachedTrendingTokens() ?? [] : []
   );
   const [activeIndex, setActiveIndex] = useState(0);
   const searchAbortRef = useRef<AbortController | null>(null);
@@ -673,7 +665,7 @@ export function SwapTokenSelectPane({
   // case-sensitive — lowercased for the local symbol/name filter.
   const rawQuery = search.trim();
   const query = rawQuery.toLowerCase();
-  const isRemoteSearchEnabled = Boolean(onSearch);
+  const isRemoteSearchEnabled = remoteSearch;
   const latestQueryRef = useRef(rawQuery);
   latestQueryRef.current = rawQuery;
 
