@@ -1,4 +1,4 @@
-package webapp
+package earnstats
 
 import (
 	"context"
@@ -28,7 +28,7 @@ type EarnStatsPoint struct {
 	Value       float64 `json:"value"`
 }
 
-type earnStatsSnapshot struct {
+type snapshot struct {
 	aumRaw      int64
 	volumeRaw   int64
 	totalUsers  int
@@ -36,7 +36,7 @@ type earnStatsSnapshot struct {
 	series      json.RawMessage
 }
 
-func loadEarnPublicStats(ctx context.Context, pool *pgxpool.Pool) (*EarnPublicStats, error) {
+func Load(ctx context.Context, pool *pgxpool.Pool) (*EarnPublicStats, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
@@ -47,10 +47,10 @@ func loadEarnPublicStats(ctx context.Context, pool *pgxpool.Pool) (*EarnPublicSt
 	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = 10000"); err != nil {
 		return nil, err
 	}
-	var snapshot earnStatsSnapshot
+	var row snapshot
 	err = tx.QueryRow(ctx, `SELECT total_aum_raw, total_optimized_volume_raw, total_users, refreshed_at, earn_aum_series
 FROM public.loyal_stats_snapshots WHERE snapshot_key = 'current' LIMIT 1`).Scan(
-		&snapshot.aumRaw, &snapshot.volumeRaw, &snapshot.totalUsers, &snapshot.refreshedAt, &snapshot.series,
+		&row.aumRaw, &row.volumeRaw, &row.totalUsers, &row.refreshedAt, &row.series,
 	)
 	if err != nil {
 		return nil, err
@@ -58,10 +58,10 @@ FROM public.loyal_stats_snapshots WHERE snapshot_key = 'current' LIMIT 1`).Scan(
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return snapshot.publicStats(time.Now())
+	return row.publicStats(time.Now())
 }
 
-func (s earnStatsSnapshot) publicStats(now time.Time) (*EarnPublicStats, error) {
+func (s snapshot) publicStats(now time.Time) (*EarnPublicStats, error) {
 	// JS Date truncates Postgres timestamps to milliseconds.
 	refreshed := s.refreshedAt.UTC().Truncate(time.Millisecond)
 	if now.Truncate(time.Millisecond).Sub(refreshed) > 5*time.Minute {
