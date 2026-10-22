@@ -21,7 +21,6 @@ export function MetricsProgressiveSection<T>({
   section,
   skeleton,
 }: ProgressiveSectionProps<T>) {
-  const sectionRef = useRef<HTMLDivElement>(null);
   const requestStarted = useRef(false);
   const [data, setData] = useState<T | null>(null);
   const [state, setState] = useState<LoadState>("loading");
@@ -32,7 +31,6 @@ export function MetricsProgressiveSection<T>({
     }
 
     let controller: AbortController | undefined;
-    let observer: IntersectionObserver | undefined;
 
     const load = async () => {
       requestStarted.current = true;
@@ -62,25 +60,9 @@ export function MetricsProgressiveSection<T>({
       }
     };
 
-    if (section === "metrics-dashboard") {
-      observer = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((entry) => entry.isIntersecting)) {
-            observer?.disconnect();
-            void load();
-          }
-        },
-        { rootMargin: "240px 0px" }
-      );
-      if (sectionRef.current) {
-        observer.observe(sectionRef.current);
-      }
-    } else {
-      void load();
-    }
+    void load();
 
     return () => {
-      observer?.disconnect();
       controller?.abort();
     };
   }, [enabled, endpoint, onSettled, section]);
@@ -90,7 +72,6 @@ export function MetricsProgressiveSection<T>({
       className="min-w-0"
       data-progressive-section={section}
       data-progressive-state={state}
-      ref={sectionRef}
     >
       {state === "ready" && data !== null ? (
         children(data)

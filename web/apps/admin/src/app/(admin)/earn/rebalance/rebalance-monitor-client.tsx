@@ -1719,7 +1719,7 @@ function useProgressiveSection<T>(
           void load();
         }
       },
-      { rootMargin: "0px" }
+      { rootMargin: "600px 0px" }
     );
     observer.observe(element);
     return () => {
@@ -1878,12 +1878,10 @@ export function RebalanceMonitorClient() {
     { enabled: overview.status === "ready" }
   );
   const operations = useProgressiveSection<RebalanceOperationsWireData>(
-    "/api/earn/rebalance?section=operations",
-    { enabled: overview.status === "ready" }
+    "/api/earn/rebalance?section=operations"
   );
   const executions = useProgressiveSection<RebalanceExecutionsWireData>(
-    "/api/earn/rebalance?section=executions",
-    { enabled: overview.status === "ready" }
+    "/api/earn/rebalance?section=executions"
   );
   const frequencyEndpoint = overview.data
     ? `/api/earn/rebalance?section=frequency&eligibilityFloorRaw=${
@@ -1895,8 +1893,7 @@ export function RebalanceMonitorClient() {
     { enabled: overview.status === "ready" }
   );
   const audit = useProgressiveSection<AuditApiData>(
-    "/api/earn/rebalance/audit?errorFilter=all&range=24h&routeMode=same_mint&view=completed_rebalances",
-    { enabled: overview.status === "ready" }
+    "/api/earn/rebalance/audit?errorFilter=all&range=24h&routeMode=same_mint&view=completed_rebalances"
   );
   const [selectedMint, setSelectedMint] = useState("USDC");
   const overviewData = overview.data
