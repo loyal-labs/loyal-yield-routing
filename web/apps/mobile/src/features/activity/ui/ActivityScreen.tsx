@@ -18,8 +18,8 @@ import { ActivityListSkeleton } from "./ActivityListSkeleton";
 import { ActivitySegmentedControl } from "./ActivitySegmentedControl";
 import { EarnActivityList } from "./EarnActivityList";
 import { WalletActivityList } from "./WalletActivityList";
+import { TAB_BAR_HEIGHT } from "@/components/TabBar";
 
-const TAB_BAR_HEIGHT = 90;
 
 // The Earn feed can be hundreds of icon-heavy rows. The screen is a plain
 // ScrollView (not virtualized), so rendering them all at once blocks the tab

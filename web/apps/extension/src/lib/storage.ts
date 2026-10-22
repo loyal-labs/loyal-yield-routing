@@ -35,7 +35,6 @@ export const autoLockTimeout = storage.defineItem<number>(
   { fallback: 15 }
 );
 
-/** Extension view mode: sidebar or popup */
 export const viewMode = storage.defineItem<"sidebar" | "popup">(
   "local:viewMode",
   { fallback: "sidebar" }
@@ -47,13 +46,11 @@ export const lastActivityAt = storage.defineItem<number>(
   { fallback: 0 }
 );
 
-/** Origins that the user has approved for dApp connect */
 export const connectedDappOrigins = storage.defineItem<string[]>(
   "local:connectedDappOrigins",
   { fallback: [] }
 );
 
-/** Pending dApp approval request shown in the popup/sidepanel */
 export const pendingDappApproval = storage.defineItem<{
   id: string;
   nonce: string;
@@ -64,7 +61,6 @@ export const pendingDappApproval = storage.defineItem<{
   message?: string; // base64, for signMessage
 } | null>(`${SESSION_AREA}:pendingDappApproval`, { fallback: null });
 
-/** Whether the user has completed (or skipped) the onboarding carousel */
 export const onboardingCompleted = storage.defineItem<boolean>(
   "local:onboardingCompleted",
   { fallback: false }
@@ -76,7 +72,6 @@ export const credentialVersion = storage.defineItem<number | null>(
   { fallback: null }
 );
 
-/** Number of consecutive failed unlock attempts. Reset on success. */
 export const failedPinAttempts = storage.defineItem<number>(
   "local:failedPinAttempts",
   { fallback: 0 }
@@ -88,13 +83,11 @@ export const pinLockedUntil = storage.defineItem<number>(
   { fallback: 0 }
 );
 
-/** Whether the confetti animation has been shown for the current wallet. */
 export const confettiShown = storage.defineItem<boolean>(
   "local:confettiShown",
   { fallback: false }
 );
 
-/** Flag set by background on fresh install; cleared after UI fires the Mixpanel event. */
 export const installEventPending = storage.defineItem<boolean>(
   "local:installEventPending",
   { fallback: false }

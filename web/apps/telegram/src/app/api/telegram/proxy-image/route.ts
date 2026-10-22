@@ -22,12 +22,24 @@ export async function GET(req: NextRequest) {
       "cdn5.telesco.pe",
     ];
 
-    // Simple host check - can be improved
-    if (!allowedHosts.some((host) => targetUrl.hostname.endsWith(host))) {
+    if (
+      targetUrl.protocol !== "https:" ||
+      !allowedHosts.some(
+        (host) =>
+          targetUrl.hostname === host || targetUrl.hostname.endsWith(`.${host}`)
+      )
+    ) {
       return NextResponse.json({ error: "Invalid host" }, { status: 400 });
     }
 
-    const response = await fetch(url);
+    const response = await fetch(targetUrl, { redirect: "manual" });
+
+    if (response.status >= 300 && response.status < 400) {
+      return NextResponse.json(
+        { error: "Redirects are not followed" },
+        { status: 502 }
+      );
+    }
 
     if (!response.ok) {
       return NextResponse.json(

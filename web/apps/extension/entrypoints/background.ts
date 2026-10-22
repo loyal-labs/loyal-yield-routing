@@ -27,10 +27,8 @@ import {
 let sessionSecretKey: string | null = null;
 const SESSION_SECRET_KEY_STORAGE_KEY = "walletSessionSecretKey";
 
-// Track the connect tab so we can route signing requests to it
 let connectTabId: number | null = null;
 
-// Pending sign requests: id -> sendResponse callback
 const pendingSignRequests = new Map<
   string,
   (response: SignTransactionResponse) => void
@@ -145,7 +143,6 @@ function base64ToUint8Array(b64: string): Uint8Array {
   return bytes;
 }
 
-/** Extract the browser-verified page origin from the message sender. */
 function getVerifiedOrigin(
   sender: browser.runtime.MessageSender
 ): string | null {
@@ -180,10 +177,8 @@ function createApprovalToken(): string {
 }
 
 export default defineBackground(() => {
-  // --- Offboarding: redirect to questionnaire on uninstall ---
   void browser.runtime.setUninstallURL("https://tally.so/r/RGJY6K");
 
-  // --- Install tracking: flag for UI to fire Mixpanel event ---
   browser.runtime.onInstalled.addListener((details) => {
     if (details.reason === "install") {
       void installEventPending.setValue(true);
@@ -205,13 +200,10 @@ export default defineBackground(() => {
   });
 
   if (hasSidePanel) {
-    // Chrome: apply saved view mode on startup
     viewMode.getValue().then((mode) => applyViewMode(mode));
 
-    // Track popup window so we can close it when sidebar opens
     let popupWindowId: number | null = null;
 
-    // React to view mode changes from settings — switch on the fly
     viewMode.watch(async (mode) => {
       await applyViewMode(mode);
       if (mode === "popup") {
@@ -229,7 +221,6 @@ export default defineBackground(() => {
       }
     });
 
-    // When sidebar opens: clear badge and close leftover popup window
     browser.runtime.onConnect.addListener((port) => {
       if (port.name === "sidepanel") {
         void browser.action.setBadgeText({ text: "" });
@@ -240,19 +231,16 @@ export default defineBackground(() => {
       }
     });
 
-    // Clear tracked ID if popup is closed manually
     browser.windows.onRemoved.addListener((windowId) => {
       if (windowId === popupWindowId) popupWindowId = null;
     });
   }
 
-  // --- Auto-lock: periodic alarm check ---
   browser.alarms.create(LOCK_ALARM, { periodInMinutes: 1 });
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === LOCK_ALARM) void checkAutoLock();
   });
 
-  // --- Auto-lock: system idle / screen lock ---
   browser.idle.setDetectionInterval(60);
   browser.idle.onStateChanged.addListener((state) => {
     if (state === "locked") {
@@ -263,14 +251,12 @@ export default defineBackground(() => {
     }
   });
 
-  // --- Auto-lock: activity heartbeat from UI ---
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "ACTIVITY_HEARTBEAT") {
       void lastActivityAt.setValue(Date.now());
       return;
     }
 
-    // --- Session keypair: kept only for the current unlocked browser session ---
     if (message.type === "STORE_SESSION_KEYPAIR") {
       if (!isTrustedExtensionPageSender(sender)) return;
       if (typeof message.secretKey !== "string") return;
@@ -298,7 +284,6 @@ export default defineBackground(() => {
     }
   });
 
-  // Clean up tracked tab and reject pending sign requests when it closes
   browser.tabs.onRemoved.addListener((tabId) => {
     if (tabId === connectTabId) {
       connectTabId = null;
@@ -314,7 +299,6 @@ export default defineBackground(() => {
   });
 
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // --- Wallet connection from connect tab ---
     if (message.type === "WALLET_CONNECTED" && message.publicKey) {
       connectTabId = sender.tab?.id ?? null;
       void connectedExternalWallet.setValue(message.publicKey);
@@ -322,7 +306,6 @@ export default defineBackground(() => {
       return;
     }
 
-    // --- Sign request from popup/sidepanel ---
     if (message.type === "SIGN_TRANSACTION") {
       const request = message as SignTransactionRequest;
 
@@ -336,10 +319,8 @@ export default defineBackground(() => {
         return;
       }
 
-      // Store the callback so we can resolve when the tab responds
       pendingSignRequests.set(request.id, sendResponse);
 
-      // Forward to the connect tab
       browser.tabs.sendMessage(connectTabId, request).catch((err: unknown) => {
         pendingSignRequests.delete(request.id);
         sendResponse({
@@ -354,7 +335,6 @@ export default defineBackground(() => {
       return true;
     }
 
-    // --- Sign response from connect tab ---
     if (message.type === "SIGN_TRANSACTION_RESPONSE") {
       const response = message as SignTransactionResponse;
       const pending = pendingSignRequests.get(response.id);
@@ -371,7 +351,6 @@ export default defineBackground(() => {
   async function isExtensionUiOpen(): Promise<boolean> {
     // Fast path: in-memory counter (accurate unless SW restarted)
     if (uiConnectionCount > 0) return true;
-    // Authoritative check: query live extension contexts (survives SW restart)
     try {
       const contexts = await (
         chrome.runtime as typeof chrome.runtime
@@ -405,7 +384,6 @@ export default defineBackground(() => {
     });
   }
 
-  /** Reject any existing pending dApp request before accepting a new one. */
   function rejectStalePendingRequests() {
     for (const [approvalId, req] of pendingDappRequests) {
       const responseId = req.externalRequestId;
@@ -435,9 +413,7 @@ export default defineBackground(() => {
     }
   }
 
-  // --- dApp connect / sign requests from content scripts ---
   browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // --- Connect request from dApp ---
     if (message.type === "DAPP_CONNECT_REQUEST") {
       const { id: externalRequestId, favicon } = message;
       const origin = getVerifiedOrigin(sender);
@@ -455,7 +431,6 @@ export default defineBackground(() => {
       void (async () => {
         const origins = await connectedDappOrigins.getValue();
         if (origins.includes(origin)) {
-          // Already approved — auto-respond with public key
           const publicKey = await getStoredPublicKey();
           sendResponse({
             type: "DAPP_CONNECT_RESPONSE",
@@ -466,7 +441,6 @@ export default defineBackground(() => {
           return;
         }
 
-        // Need user approval — reject any stale request, park this one
         const approvalId = createApprovalToken();
         const approvalNonce = createApprovalToken();
         rejectStalePendingRequests();
@@ -492,7 +466,6 @@ export default defineBackground(() => {
       return true;
     }
 
-    // --- Sign transaction request from dApp ---
     if (message.type === "DAPP_SIGN_TRANSACTION_REQUEST") {
       const { id: externalRequestId, favicon, transaction } = message;
       const origin = getVerifiedOrigin(sender);
@@ -508,7 +481,6 @@ export default defineBackground(() => {
       }
 
       void (async () => {
-        // Reject if the origin has not been approved via connect
         const approvedOrigins = await connectedDappOrigins.getValue();
         if (!approvedOrigins.includes(origin)) {
           sendResponse({
@@ -547,7 +519,6 @@ export default defineBackground(() => {
       return true;
     }
 
-    // --- Sign message request from dApp ---
     if (message.type === "DAPP_SIGN_MESSAGE_REQUEST") {
       const { id: externalRequestId, favicon, message: msg } = message;
       const origin = getVerifiedOrigin(sender);
@@ -563,7 +534,6 @@ export default defineBackground(() => {
       }
 
       void (async () => {
-        // Reject if the origin has not been approved via connect
         const approvedOrigins = await connectedDappOrigins.getValue();
         if (!approvedOrigins.includes(origin)) {
           sendResponse({
@@ -602,7 +572,6 @@ export default defineBackground(() => {
       return true;
     }
 
-    // --- Disconnect from dApp ---
     if (message.type === "DAPP_DISCONNECT") {
       const origin = getVerifiedOrigin(sender);
       if (!origin) return;
@@ -615,7 +584,6 @@ export default defineBackground(() => {
       return;
     }
 
-    // --- Approval decision from popup/sidepanel ---
     if (message.type === "DAPP_APPROVAL_DECISION") {
       if (!isTrustedExtensionPageSender(sender)) return;
 
@@ -671,7 +639,6 @@ export default defineBackground(() => {
         pendingDappRequests.delete(approvalId);
 
         if (!approved) {
-          // User denied — resolve with denied response
           if (pending.kind === "connect") {
             pending.respond({
               type: "DAPP_CONNECT_RESPONSE",
@@ -714,7 +681,6 @@ export default defineBackground(() => {
                 publicKey,
               } satisfies DappConnectResponse);
             } else {
-              // User approved — sign with the current unlocked session keypair
               const secretKey = await readActiveSessionSecretKey();
               if (!secretKey) throw new Error("Wallet is locked.");
 
@@ -729,12 +695,10 @@ export default defineBackground(() => {
                 let signedBytes: Uint8Array;
 
                 try {
-                  // Try VersionedTransaction first
                   const vtx = VersionedTransaction.deserialize(txBytes);
                   vtx.sign([keypair]);
                   signedBytes = vtx.serialize();
                 } catch {
-                  // Fall back to legacy Transaction
                   const tx = Transaction.from(txBytes);
                   tx.partialSign(keypair);
                   signedBytes = tx.serialize({

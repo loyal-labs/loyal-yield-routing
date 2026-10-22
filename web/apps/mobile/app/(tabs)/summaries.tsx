@@ -11,8 +11,8 @@ import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { RefreshControl, StyleSheet } from "react-native";
+import { TAB_BAR_HEIGHT } from "@/components/TabBar";
 
-const TAB_BAR_HEIGHT = 90;
 
 function GroupsTab({ count }: { count: number }) {
   return (

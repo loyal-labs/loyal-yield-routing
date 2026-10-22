@@ -68,10 +68,6 @@ import {
 import { WALLET_SETUP_EVENTS } from "./wallet-setup-analytics";
 import { PORTFOLIO_EVENTS } from "./portfolio-analytics";
 
-// ---------------------------------------------------------------------------
-// Default token constants
-// ---------------------------------------------------------------------------
-
 const SOL_TOKEN: SwapToken = {
   mint: "So11111111111111111111111111111111111111112",
   symbol: "SOL",
@@ -79,10 +75,6 @@ const SOL_TOKEN: SwapToken = {
   price: 0,
   balance: 0,
 };
-
-// ---------------------------------------------------------------------------
-// Tab definitions
-// ---------------------------------------------------------------------------
 
 const TABS = [
   { id: "portfolio", label: "Portfolio", Icon: Wallet },
@@ -146,20 +138,14 @@ function getDefaultSwapTarget(
     : loyalTarget;
 }
 
-// Identity comparison for swap tokens — prefer mint, fall back to symbol.
 function isSameSwapToken(a: SwapToken, b: SwapToken): boolean {
   return a.mint && b.mint ? a.mint === b.mint : a.symbol === b.symbol;
 }
-
-// ---------------------------------------------------------------------------
-// 3-layer sliding navigation
-// ---------------------------------------------------------------------------
 
 function layerStyle(layer: number, activeLayer: number): React.CSSProperties {
   const transition =
     "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1)";
   if (layer > activeLayer) {
-    // Off-screen to the right
     return {
       transform: "translateX(105%)",
       opacity: 0,
@@ -168,14 +154,12 @@ function layerStyle(layer: number, activeLayer: number): React.CSSProperties {
     };
   }
   if (layer === activeLayer) {
-    // Fully visible
     return {
       transform: "translateX(0)",
       opacity: 1,
       transition,
     };
   }
-  // Behind the active layer — shift slightly left (matches frontend's -6px)
   return {
     transform: "translateX(-6px)",
     opacity: 1,
@@ -191,10 +175,6 @@ function getActiveLayer(subView: SubView): number {
   }
   return 1;
 }
-
-// ---------------------------------------------------------------------------
-// Shared UI atoms
-// ---------------------------------------------------------------------------
 
 function ConfettiOverlay({ onComplete }: { onComplete?: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -224,10 +204,6 @@ function ConfettiOverlay({ onComplete }: { onComplete?: () => void }) {
     />
   );
 }
-
-// ---------------------------------------------------------------------------
-// Create / Import wallet screen
-// ---------------------------------------------------------------------------
 
 function CreateWalletScreen({
   initialMode = "create",
@@ -368,7 +344,6 @@ function CreateWalletScreen({
 
   return (
     <div style={{ position: "relative", height: "100%", overflow: "hidden" }}>
-      {/* PIN / create flow */}
       <div
         style={{
           position: "absolute",
@@ -384,12 +359,10 @@ function CreateWalletScreen({
           transition: "opacity 0.3s ease, transform 0.3s ease",
         }}
       >
-        {/* Branding cluster */}
         <div style={{ marginBottom: "32px" }}>
           <FourDogsMark size={320} />
         </div>
 
-        {/* Tab toggle */}
         <div
           style={{
             display: "flex",
@@ -458,7 +431,6 @@ function CreateWalletScreen({
           </button>
         </div>
 
-        {/* Password input */}
         <PasswordInput
           value={step === "enter" ? password : confirmPassword}
           onChange={step === "enter" ? setPassword : setConfirmPassword}
@@ -472,7 +444,6 @@ function CreateWalletScreen({
           autoFocus
         />
 
-        {/* Continue button */}
         {!showImportField && (
           <button
             type="button"
@@ -513,7 +484,6 @@ function CreateWalletScreen({
           </button>
         )}
 
-        {/* Back button — always rendered to reserve space and prevent layout shift */}
         <button
           type="button"
           onClick={handleBack}
@@ -537,7 +507,6 @@ function CreateWalletScreen({
           Re-enter password
         </button>
 
-        {/* Import key field + button — animated reveal after PIN is confirmed */}
         <div
           style={{
             width: "100%",
@@ -617,7 +586,6 @@ function CreateWalletScreen({
             )}
           </div>
 
-          {/* Import button */}
           {(() => {
             const isDisabled = loading || !secretKeyInput.trim();
             return (
@@ -652,7 +620,6 @@ function CreateWalletScreen({
         </div>
       </div>
 
-      {/* Backup key screen — slides in from right */}
       <div
         style={{
           position: "absolute",
@@ -668,7 +635,6 @@ function CreateWalletScreen({
           transition: "opacity 0.3s ease, transform 0.3s ease",
         }}
       >
-        {/* Warning icon */}
         <div
           style={{
             width: "56px",
@@ -713,7 +679,6 @@ function CreateWalletScreen({
           if you lose it, your funds are gone forever.
         </span>
 
-        {/* Key display */}
         <div style={{ width: "100%", marginTop: "20px", position: "relative" }}>
           <textarea
             readOnly
@@ -738,7 +703,6 @@ function CreateWalletScreen({
           />
         </div>
 
-        {/* Copy + Download buttons */}
         <div
           style={{
             display: "flex",
@@ -799,7 +763,6 @@ function CreateWalletScreen({
           </button>
         </div>
 
-        {/* Confirm button */}
         <button
           type="button"
           onClick={handleBackupConfirmed}
@@ -830,10 +793,6 @@ function CreateWalletScreen({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Unlock screen
-// ---------------------------------------------------------------------------
-
 function formatLockoutRemaining(ms: number): string {
   const totalSeconds = Math.ceil(ms / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
@@ -854,7 +813,6 @@ function UnlockScreen() {
   const [lockoutRemaining, setLockoutRemaining] = useState(0);
   const [showForgot, setShowForgot] = useState(false);
 
-  // Check lockout on mount and tick countdown
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -938,7 +896,6 @@ function UnlockScreen() {
         overflow: "hidden",
       }}
     >
-      {/* Branding cluster */}
       <div
         style={{
           display: "flex",
@@ -963,7 +920,6 @@ function UnlockScreen() {
         )}
       </div>
 
-      {/* Password input */}
       <PasswordInput
         value={password}
         onChange={setPassword}
@@ -1014,7 +970,6 @@ function UnlockScreen() {
         {loading ? "Unlocking..." : "Unlock"}
       </button>
 
-      {/* Forgot password link */}
       <button
         type="button"
         onClick={() => setShowForgot(true)}
@@ -1034,7 +989,6 @@ function UnlockScreen() {
         Forgot password?
       </button>
 
-      {/* Forgot password overlay */}
       <div
         style={{
           position: "absolute",
@@ -1172,10 +1126,6 @@ function UnlockScreen() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main wallet interface (unlocked state)
-// ---------------------------------------------------------------------------
-
 function WalletInterface() {
   const { balanceHidden, toggleBalanceHidden, publicKey, signer, network } =
     useWalletContext();
@@ -1188,10 +1138,8 @@ function WalletInterface() {
     client: walletDataClient,
     solanaEnv,
   });
-  // Exit-only path for the sunset private-transfer program (ASK-2269).
   const unshield = useUnshield(signer, solanaEnv);
 
-  // Navigation state
   const [activeTab, setActiveTab] = useState<TabId>("portfolio");
   const [subView, setSubView] = useState<SubView>(null);
   const [fromToken, setFromToken] = useState<SwapToken>(SOL_TOKEN);
@@ -1202,7 +1150,6 @@ function WalletInterface() {
     string | null
   >(null);
 
-  // Watch for pending dApp approval requests from storage
   useEffect(() => {
     function applyApprovalRequest(
       req: Awaited<ReturnType<typeof pendingDappApproval.getValue>>
@@ -1232,10 +1179,8 @@ function WalletInterface() {
       }
     }
 
-    // Check current value on mount
     void pendingDappApproval.getValue().then(applyApprovalRequest);
 
-    // Watch for changes
     const unwatch = pendingDappApproval.watch(applyApprovalRequest);
 
     return unwatch;
@@ -1256,14 +1201,13 @@ function WalletInterface() {
 
   const activeLayer = getActiveLayer(subView);
 
-  // Cross-fade when switching tabs: fade out → swap content → fade in
   const [crossFadeOpacity, setCrossFadeOpacity] = useState(1);
   const [displayTab, setDisplayTab] = useState(activeTab);
   useEffect(() => {
     if (activeTab !== displayTab) {
-      setCrossFadeOpacity(0); // fade out
+      setCrossFadeOpacity(0);
       const t = setTimeout(() => {
-        setDisplayTab(activeTab); // swap content while near-invisible
+        setDisplayTab(activeTab);
         setCrossFadeOpacity(1); // fade in
       }, 100);
       return () => clearTimeout(t);
@@ -1306,7 +1250,6 @@ function WalletInterface() {
     setSubView(null);
   }, []);
 
-  // In the extension, "close" goes back to portfolio (no sidebar to dismiss)
   const handleClose = useCallback(() => {
     setActiveTab("portfolio");
     setSubView(null);
@@ -1327,7 +1270,6 @@ function WalletInterface() {
     positions,
   } = walletData;
 
-  // Enrich token rows with 24h price change from CoinGecko
   const [priceChanges, setPriceChanges] = useState<Record<string, number>>({});
   useEffect(() => {
     const mints = allTokenRows
@@ -1361,7 +1303,6 @@ function WalletInterface() {
     });
   }, [tokenRows, priceChanges]);
 
-  // Convert allTokenRows to SwapToken[] for token-select views
   const swapTokens: SwapToken[] = positions.map((p) => ({
     mint: p.asset.mint,
     symbol: p.asset.symbol,
@@ -1370,7 +1311,6 @@ function WalletInterface() {
     balance: p.totalBalance,
   }));
 
-  // Merge user's held tokens with popular tokens for swap target selection
   const { tokens: popularTokens, search: searchTokens } = usePopularTokens();
   const swapTargetTokens = useMemo<SwapToken[]>(() => {
     const heldMints = new Set(swapTokens.map((t) => t.mint).filter(Boolean));
@@ -1379,14 +1319,11 @@ function WalletInterface() {
     );
     const combined = [...swapTokens, ...extras];
 
-    // LOYAL must always sit at the very top of the receive list — pin it,
-    // reusing the held entry (real price/balance) when available.
     const loyal =
       combined.find((t) => t.mint === LOYL_TOKEN.mint) ?? LOYL_TOKEN;
     return [loyal, ...combined.filter((t) => t.mint !== LOYL_TOKEN.mint)];
   }, [swapTokens, popularTokens]);
 
-  // Sync token state when real positions load
   useEffect(() => {
     if (swapTokens.length > 0 && swapTokens[0].mint) {
       const nextFrom = swapTokens[0];
@@ -1394,7 +1331,6 @@ function WalletInterface() {
       setSendToken(nextFrom);
       const loyalTarget =
         swapTokens.find((t) => t.mint === LOYL_TOKEN.mint) ?? LOYL_TOKEN;
-      // Never default to a self-swap when the top holding is already LOYAL.
       setToToken(
         isSameSwapToken(loyalTarget, nextFrom)
           ? swapTokens.find((t) => !isSameSwapToken(t, nextFrom)) ?? SOL_TOKEN
@@ -1439,7 +1375,6 @@ function WalletInterface() {
     [handleTabChange, openSwapFromToken, swapTokens]
   );
 
-  // Tab content with real components (uses displayTab for cross-fade)
   const renderTabContent = () => {
     switch (displayTab) {
       case "portfolio":
@@ -1513,7 +1448,6 @@ function WalletInterface() {
     }
   };
 
-  // Sub-view content (layer 1)
   const renderSubView = () => {
     if (subView === null) return null;
 
@@ -1579,13 +1513,11 @@ function WalletInterface() {
           currentToken={subView.field === "from" ? fromToken : toToken}
           onSelect={(token) => {
             if (subView.field === "from") {
-              // Avoid from === to by flipping the receive side to the old from.
               if (isSameSwapToken(token, toToken)) {
                 setToToken(fromToken);
               }
               setFromToken(token);
             } else {
-              // Avoid to === from by flipping the pay side to the old to.
               if (isSameSwapToken(token, fromToken)) {
                 setFromToken(toToken);
               }
@@ -1672,7 +1604,6 @@ function WalletInterface() {
     return null;
   };
 
-  // Transaction detail content (layer 2)
   const renderTransactionDetail = () => {
     if (
       subView === null ||
@@ -1692,9 +1623,7 @@ function WalletInterface() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Navigation layers container */}
       <div style={{ position: "relative", flex: 1, overflow: "hidden" }}>
-        {/* Layer 0 — main tab content with cross-fade */}
         <div
           style={{
             position: "absolute",
@@ -1722,7 +1651,6 @@ function WalletInterface() {
           </div>
         </div>
 
-        {/* Layer 1 — sub-views */}
         <div
           style={{
             position: "absolute",
@@ -1739,7 +1667,6 @@ function WalletInterface() {
           {renderSubView()}
         </div>
 
-        {/* Layer 2 — transaction detail */}
         <div
           style={{
             position: "absolute",
@@ -1753,7 +1680,6 @@ function WalletInterface() {
           {renderTransactionDetail()}
         </div>
 
-        {/* Settings overlay */}
         <div
           style={{
             position: "absolute",
@@ -1776,10 +1702,6 @@ function WalletInterface() {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Password upgrade screen — shown after unlock for legacy PIN users
-// ---------------------------------------------------------------------------
 
 function PasswordUpgradeScreen({ onComplete }: { onComplete: () => void }) {
   const { changePassword } = useWalletContext();
@@ -1950,10 +1872,6 @@ function PasswordUpgradeScreen({ onComplete }: { onComplete: () => void }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Root WalletApp component
-// ---------------------------------------------------------------------------
-
 function WalletAppInner() {
   const { state, resetMode } = useWalletContext();
   const prevStateRef = useRef(state);
@@ -1967,7 +1885,6 @@ function WalletAppInner() {
     void initAnalytics().then(() => flushInstallEvent());
   }, []);
 
-  // Check onboarding flag on mount
   useEffect(() => {
     void onboardingCompleted.getValue().then((done) => {
       setShowOnboarding(!done);
@@ -1978,11 +1895,9 @@ function WalletAppInner() {
     const prev = prevStateRef.current;
     prevStateRef.current = state;
 
-    // Cross-fade when unlocking (locked→unlocked or noWallet→unlocked)
     if (state === "unlocked" && (prev === "locked" || prev === "noWallet")) {
       setTransitioning(true);
 
-      // Check if legacy PIN user needs password upgrade
       const upgradeCheck =
         prev === "locked"
           ? credentialVersionStorage.getValue()
@@ -2082,7 +1997,6 @@ export default function WalletApp() {
         @keyframes sidebar-spin {
           to { transform: rotate(360deg); }
         }
-        /* Firefox: strip native button appearance and hidden inner padding/border */
         button, input, textarea {
           -moz-appearance: none;
           appearance: none;

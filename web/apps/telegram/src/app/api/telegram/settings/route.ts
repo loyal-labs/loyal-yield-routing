@@ -62,7 +62,6 @@ async function authenticateAndGetUserId(
   return { userId };
 }
 
-/** GET – return current user settings */
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -110,7 +109,6 @@ export async function GET(req: Request) {
   }
 }
 
-/** PATCH – update a user setting */
 export async function PATCH(req: Request) {
   try {
     const body = await req.json();

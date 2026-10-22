@@ -26,7 +26,6 @@ export function AllTokensView({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* SVG pixelation filter for balance-hidden mode */}
       <svg aria-hidden="true" style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}>
         <defs>
           <filter id="rs-pixelate-sm" x="0" y="0" width="100%" height="100%">

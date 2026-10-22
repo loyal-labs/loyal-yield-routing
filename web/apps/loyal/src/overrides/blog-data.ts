@@ -8,10 +8,6 @@
 // post bodies must stay in one lazy chunk that the blog pages pull.
 import type { BlogPageResult, BlogPost, BlogPostFull } from "@/features/blog/types";
 
-/**
- * Number of posts shown per page on the blog listing.
- * The Figma layout is a 3-column grid; 9 fills three rows on desktop.
- */
 export const BLOG_POSTS_PER_PAGE = 9;
 
 let allPostsPromise: Promise<BlogPostFull[]> | undefined;
@@ -37,10 +33,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-/**
- * Returns one page of blog posts plus pagination metadata. The requested page
- * is clamped into the valid range, so callers can pass a raw `?page=` value.
- */
 export async function getBlogPosts({
   page = 1,
   perPage = BLOG_POSTS_PER_PAGE,
@@ -55,13 +47,11 @@ export async function getBlogPosts({
   return { posts, page: safePage, perPage, total, totalPages };
 }
 
-/** Returns the full post (metadata + markdown body) for a slug, or null. */
 export async function getBlogPost(slug: string): Promise<BlogPostFull | null> {
   const allPosts = await loadAllPosts();
   return allPosts.find((post) => post.slug === slug) ?? null;
 }
 
-/** Returns the most recent posts excluding the given slug (for "More articles"). */
 export async function getMoreArticles(
   slug: string,
   count = 3
@@ -73,19 +63,11 @@ export async function getMoreArticles(
     .map(toMeta);
 }
 
-/** Returns every post slug, for static generation. */
 export async function getAllBlogSlugs(): Promise<string[]> {
   const allPosts = await loadAllPosts();
   return allPosts.map((post) => post.slug);
 }
 
-/**
- * Returns metadata for every post, newest first, unpaginated.
- *
- * The sitemap and the llms.txt files enumerate the whole archive, so they read
- * from here rather than walking getBlogPosts() page by page. Sharing the loader
- * is the point: a post that exists on disk is in the sitemap by construction.
- */
 export async function getAllBlogPosts(): Promise<BlogPost[]> {
   const allPosts = await loadAllPosts();
   return allPosts.map(toMeta);

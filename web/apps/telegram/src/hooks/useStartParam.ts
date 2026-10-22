@@ -25,23 +25,12 @@ function getNativeStartParam(): string | undefined {
   }
 }
 
-/**
- * Parse startParam and return the mapped route.
- *
- * Tries three sources in order:
- * 1. Native Telegram WebApp bridge (most reliable, always set by Telegram)
- * 2. SDK retrieveLaunchParams (multi-source: href, perf entries, localStorage)
- * 3. Manual URL hash / search-param parsing (legacy fallback)
- *
- * @returns The mapped route path if startParam is valid, undefined otherwise.
- */
 export function getStartParamRoute(): string | undefined {
   if (typeof window === "undefined") return undefined;
 
   const mapStartParamToRoute = (
     startParam: string | null | undefined
   ): string | undefined => {
-    // Check for verification deeplink (vr_<userId>) first
     const verifyUserId = parseVerifyStartParam(startParam);
     if (verifyUserId) {
       return `/telegram/verify?userId=${verifyUserId}`;
@@ -60,14 +49,12 @@ export function getStartParamRoute(): string | undefined {
     return `/telegram/summaries/feed?${params.toString()}`;
   };
 
-  // 1. Native Telegram WebApp bridge (most reliable)
   const nativeParam = getNativeStartParam();
   const routeFromNative = mapStartParamToRoute(nativeParam);
   if (routeFromNative) {
     return routeFromNative;
   }
 
-  // 2. SDK extraction (handles various client hash formats)
   try {
     const launchParams = retrieveLaunchParams();
     const routeFromSdk = mapStartParamToRoute(launchParams.tgWebAppStartParam);
@@ -75,10 +62,8 @@ export function getStartParamRoute(): string | undefined {
       return routeFromSdk;
     }
   } catch {
-    // SDK extraction failed (e.g. not in Telegram context) — fall through
   }
 
-  // 3. Manual hash / search-param parsing for tgWebAppStartParam
   try {
     const hash = window.location.hash;
     if (hash) {
@@ -126,26 +111,19 @@ export function getStartParamRoute(): string | undefined {
 
 const CONSUMED_KEY = "deeplink_consumed_route";
 
-/**
- * Returns the deeplink route only if it hasn't been consumed yet.
- * Use this in UI consumers to avoid re-triggering redirects on page refresh.
- */
 export function getUnconsumedStartParamRoute(): string | undefined {
   const route = getStartParamRoute();
   if (!route) return undefined;
   try {
     if (sessionStorage.getItem(CONSUMED_KEY) === route) return undefined;
   } catch {
-    // sessionStorage not available
   }
   return route;
 }
 
-/** Mark the deeplink route as consumed so page refreshes don't re-trigger it. */
 export function markStartParamConsumed(route: string): void {
   try {
     sessionStorage.setItem(CONSUMED_KEY, route);
   } catch {
-    // sessionStorage not available
   }
 }

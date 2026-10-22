@@ -27,8 +27,6 @@ export const Route = createRootRoute({
       </PublicEnvProvider>
     </>
   ),
-  // NotFound's Footer reads the public env; the root notFoundComponent renders
-  // outside the component tree above.
   notFoundComponent: () => (
     <PublicEnvProvider value={publicEnv}>
       <NotFound />

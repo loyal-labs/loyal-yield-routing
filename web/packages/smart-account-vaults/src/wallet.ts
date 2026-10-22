@@ -246,8 +246,6 @@ async function sendSignedTransactionWithReconciliation(args: {
       ) {
         throw statusError;
       }
-      // A secondary status-RPC failure cannot prove the signed transaction was
-      // absent. Preserve the original send outcome classification below.
     }
 
     if (isDeterministicPreflightRejection(sendError)) {
@@ -343,8 +341,6 @@ async function confirmSubmittedTransaction(args: {
       ) {
         throw statusError;
       }
-      // Preserve the original confirmation failure below. A secondary RPC
-      // failure is not evidence that the transaction was absent.
     }
 
     const error = new Error(

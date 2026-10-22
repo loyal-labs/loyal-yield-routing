@@ -15,8 +15,8 @@ import {
 } from "@/features/library/content";
 import { Pressable, ScrollView, Text, View } from "@/tw";
 import { Image } from "@/tw/image";
+import { TAB_BAR_HEIGHT } from "@/components/TabBar";
 
-const TAB_BAR_HEIGHT = 90;
 const FEATURED_CARD_WIDTH = 296;
 const FEATURED_CARD_HEIGHT = Math.round(FEATURED_CARD_WIDTH / LIBRARY_IMAGE_ASPECT);
 const ARTICLE_CARD_WIDTH = 184;

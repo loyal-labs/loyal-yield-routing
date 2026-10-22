@@ -2,7 +2,6 @@ import { escapeHtml } from "./format.ts";
 
 const REDACTED = "<redacted>";
 
-/** Matches the token only where it sits in the Telegram API URL. */
 const BOT_TOKEN_URL_SOURCE = String.raw`bot\d+:[\w-]+`;
 const SLACK_WEBHOOK_URL_SOURCE = String.raw`https://hooks\.slack\.com/services/[A-Za-z0-9/_-]+`;
 /**
@@ -65,11 +64,6 @@ export function stripSecrets(text: string, secrets: string[]): string {
   return redactSpans(text, spans);
 }
 
-/**
- * A stretch of text to remove. `priority` decides which marker a merged span
- * keeps: the URL forms name what was redacted (`bot<redacted>`), which is worth
- * preserving when one of them is the outermost match of the merge.
- */
 interface RedactionSpan {
   start: number;
   end: number;
@@ -91,11 +85,6 @@ function patternSpans(
   }));
 }
 
-/**
- * Every occurrence of every credential, overlapping ones included — the search
- * advances by one character rather than past the match it just found, so a
- * secret that overlaps itself is fully covered too.
- */
 function literalSpans(text: string, secrets: string[]): RedactionSpan[] {
   const spans: RedactionSpan[] = [];
 
@@ -123,9 +112,6 @@ function redactSpans(text: string, spans: RedactionSpan[]): string {
     return text;
   }
 
-  // Leftmost first; at the same start the widest match leads, and between equals
-  // the more specific pattern does, so a bot-token URL keeps its marker even
-  // though the token literal inside it matches at the same time.
   const ordered = [...spans].sort(
     (left, right) =>
       left.start - right.start ||
@@ -142,8 +128,6 @@ function redactSpans(text: string, spans: RedactionSpan[]): string {
     let end = span.end;
     let next = index + 1;
 
-    // Touching counts as overlapping: contiguous credential material must not be
-    // broken into two markers with a fragment of text conjured between them.
     while (next < ordered.length && ordered[next].start <= end) {
       end = Math.max(end, ordered[next].end);
       next += 1;
@@ -157,19 +141,6 @@ function redactSpans(text: string, spans: RedactionSpan[]): string {
   return result + text.slice(cursor);
 }
 
-/**
- * Every spelling of a credential that can reach a log line. Alert text is HTML
- * escaped before it is logged, so a secret containing `&`, `<` or `>` arrives in
- * escaped form and the raw literal would miss it entirely. The Slack rendering
- * reverses that escaping, so both forms have to go.
- *
- * There is no minimum length. A short or word-like secret makes log lines noisy
- * — every innocent occurrence of that word is redacted too — and that is the
- * intended direction: skipping it to keep logs readable is what turns "every
- * credential is redacted" into a claim that quietly does not hold. An empty
- * secret is the one exclusion: it matches at every position, and redacting it
- * would replace the whole message with markers.
- */
 function secretForms(secret: string): string[] {
   const literal = secret.trim();
   if (literal.length === 0) {

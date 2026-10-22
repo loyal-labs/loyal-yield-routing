@@ -1,23 +1,5 @@
 import { spawnSync } from "node:child_process";
 
-/**
- * Read-only discovery for the pr-merge-drift-advisor daemon.
- *
- * For every open, non-draft pull request it reports:
- *   - GitHub mergeability (mergeable / mergeStateStatus)
- *   - the merge-base between the PR head and its current base
- *   - the PR's own changed files (head vs merge-base)
- *   - the files changed on base since the merge-base (with attributing commits)
- *   - the overlap between those two file sets
- *   - a drift tier: 0 (ignore), 1 (early warning), 2 (conflicting)
- *
- * The daemon uses this as a candidate list; it does not mutate anything.
- *
- * Usage:
- *   bun .agents/daemons/pr-merge-drift-advisor/scripts/find-drift-candidates.ts \
- *     [--repo <owner/repo>] [--max-pages N] [--unknown-retries N] [--unknown-retry-delay-ms N]
- */
-
 const USAGE =
   "Usage: bun .agents/daemons/pr-merge-drift-advisor/scripts/find-drift-candidates.ts [--repo <owner/repo>] [--max-pages N] [--unknown-retries N] [--unknown-retry-delay-ms N]";
 
@@ -341,12 +323,10 @@ function buildCandidate(args: Args, pr: PullRequest): Candidate {
   };
 
   try {
-    // PR diff (head vs merge-base) + the merge-base sha.
     const prCompare = compare(args, base, head);
     const mergeBase = prCompare.mergeBaseSha;
     if (!mergeBase) return { ...baseline, error: "no merge-base" };
 
-    // What changed on base since the merge-base.
     const baseCompare = compare(args, mergeBase, base);
     const baseAhead = baseCompare.commits.length > 0;
 
@@ -397,11 +377,7 @@ async function main(): Promise<void> {
           tier1Count: tier1.length,
           tier2Count: tier2.length,
         },
-        unknownPullRequests: unknown.map((p) => ({
-          number: p.number,
-          url: p.url,
-        })),
-        // Tier-2 first: conflicting PRs are the priority payload.
+        unknownPullRequests: unknown.map((p) => ({ number: p.number, url: p.url })),
         candidates: [...tier2, ...tier1],
       },
       null,

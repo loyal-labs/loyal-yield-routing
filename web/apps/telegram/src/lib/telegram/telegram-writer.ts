@@ -1,13 +1,4 @@
-/**
- * Telegram message writer abstraction.
- * Handles sendMessageDraft for streaming, with fallback to regular messages.
- */
-
 import type { Bot } from "grammy";
-
-// ============================================================================
-// TYPES
-// ============================================================================
 
 export interface SendDraftParams {
   chatId: number;
@@ -24,21 +15,9 @@ export interface SendMessageParams {
   parseMode?: "Markdown" | "MarkdownV2" | "HTML";
 }
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 1000;
 
-// ============================================================================
-// INTERNAL HELPERS
-// ============================================================================
-
-/**
- * Retry wrapper with exponential backoff.
- * Handles Telegram rate limits (429) and transient errors.
- */
 async function withRetry<T>(
   fn: () => Promise<T>,
   retries: number = MAX_RETRIES
@@ -51,7 +30,6 @@ async function withRetry<T>(
     } catch (error) {
       lastError = error as Error;
 
-      // Check for rate limiting
       const apiError = error as {
         error_code?: number;
         parameters?: { retry_after?: number };
@@ -63,12 +41,10 @@ async function withRetry<T>(
         continue;
       }
 
-      // Check for user blocked bot (403)
       if (apiError.error_code === 403) {
         throw new Error("User blocked the bot");
       }
 
-      // Exponential backoff for other errors
       if (attempt < retries - 1) {
         const delay = BASE_RETRY_DELAY_MS * Math.pow(2, attempt);
         console.warn(`Telegram API error, retrying in ${delay}ms:`, error);
@@ -83,10 +59,6 @@ async function withRetry<T>(
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-// ============================================================================
-// PUBLIC API
-// ============================================================================
 
 /**
  * Sends a message draft for streaming display.
@@ -116,24 +88,12 @@ export async function sendDraft(
   });
 }
 
-/**
- * Generates a unique draft ID for a streaming session.
- * Uses timestamp + random to ensure uniqueness.
- */
 export function generateDraftId(): number {
-  // Use lower 31 bits of timestamp + random to stay in safe integer range
   return (
     (Date.now() & 0x7fffffff) ^ Math.floor(Math.random() * 0x7fffffff) || 1
   );
 }
 
-/**
- * Sends a final message (after streaming is complete).
- *
- * @param bot - Grammy bot instance
- * @param params - Message parameters
- * @returns Message ID of the sent message
- */
 export async function sendMessage(
   bot: Bot,
   params: SendMessageParams
@@ -148,16 +108,6 @@ export async function sendMessage(
   });
 }
 
-/**
- * Edits an existing message text.
- * Used as fallback when sendMessageDraft is not available.
- *
- * @param bot - Grammy bot instance
- * @param chatId - Chat ID
- * @param messageId - Message ID to edit
- * @param text - New text content
- * @param parseMode - Optional parse mode
- */
 export async function editMessage(
   bot: Bot,
   chatId: number,

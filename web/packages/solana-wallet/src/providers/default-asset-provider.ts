@@ -87,7 +87,6 @@ async function enrichAssetsWithJupiterPrices(
 
   let prices: Map<string, number>;
   try {
-    // Fetch prices in parallel using the token search endpoint (no auth required)
     const results = await Promise.all(
       uniqueMints.map(async (mint) => {
         const url = `${JUPITER_TOKEN_SEARCH_URL}?query=${mint}`;

@@ -34,7 +34,6 @@ const ensureSdkInitialized = async (sdk: TelegramSdkModule): Promise<void> => {
   try {
     sdk.init();
   } catch {
-    // SDK may already be initialized or unavailable in non-Telegram contexts.
   } finally {
     sdkInitialized = true;
   }

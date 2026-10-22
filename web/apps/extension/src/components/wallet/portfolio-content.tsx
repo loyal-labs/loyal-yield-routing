@@ -143,7 +143,6 @@ export function PortfolioContent({
   onSend: () => void;
   onReceive: () => void;
   onSwap: () => void;
-  /** Only set when the wallet still holds shielded balances (ASK-2269). */
   onUnshield?: () => void;
   onSettings: () => void;
   tokenRows: TokenRow[];
@@ -183,7 +182,6 @@ export function PortfolioContent({
           }
         `}</style>
 
-        {/* Balance skeleton */}
         <div
           style={{
             display: "flex",
@@ -208,7 +206,6 @@ export function PortfolioContent({
           </div>
         </div>
 
-        {/* Tokens skeleton */}
         <div
           style={{
             flex: 1,
@@ -233,7 +230,6 @@ export function PortfolioContent({
             <SkeletonTokenRow />
           </div>
 
-          {/* Activity skeleton */}
           <div
             style={{
               display: "flex",
@@ -255,7 +251,6 @@ export function PortfolioContent({
 
   return (
     <>
-      {/* SVG pixelation filters */}
       <svg
         aria-hidden="true"
         height="0"
@@ -285,7 +280,6 @@ export function PortfolioContent({
         </defs>
       </svg>
 
-      {/* Balance section */}
       <div
         style={{
           display: "flex",
@@ -504,7 +498,6 @@ export function PortfolioContent({
         </button>
       </div>
 
-      {/* Action buttons — matching app design */}
       <div
         style={{
           display: "flex",
@@ -594,7 +587,6 @@ export function PortfolioContent({
         ))}
       </div>
 
-      {/* Scrollable content area */}
       <div
         style={{
           flex: 1,
@@ -603,12 +595,10 @@ export function PortfolioContent({
           overflowX: "hidden",
         }}
       >
-        {/* Banners */}
         <div style={{ padding: "4px 0 8px" }}>
           <BannerCarousel />
         </div>
 
-        {/* Tokens section */}
         <div
           style={{
             display: "flex",
@@ -680,7 +670,6 @@ export function PortfolioContent({
           ))}
         </div>
 
-        {/* Activity section */}
         <div
           style={{
             display: "flex",
@@ -776,7 +765,6 @@ export function PortfolioContent({
         </div>
       </div>
 
-      {/* Download CTA */}
       <div style={{ padding: "8px 16px 12px", flexShrink: 0 }}>
         <button
           type="button"

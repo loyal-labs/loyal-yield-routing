@@ -39,7 +39,6 @@ const rawPosts = import.meta.glob<string>(
 
 const POST_FILENAME = "post.md";
 
-/** Splits raw file content into parsed YAML frontmatter and the markdown body. */
 function splitFrontmatter(raw: string): { data: unknown; content: string } {
   const match = raw.match(FRONTMATTER_RE);
   if (!match) {
@@ -51,16 +50,11 @@ function splitFrontmatter(raw: string): { data: unknown; content: string } {
   return { data, content: raw.slice(match[0].length) };
 }
 
-/** Estimates reading time in minutes from the markdown body (~200 wpm). */
 function estimateReadingTime(markdown: string): number {
   const words = markdown.trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.round(words / WORDS_PER_MINUTE));
 }
 
-/**
- * Resolves a frontmatter media reference to a servable URL. Absolute paths and
- * full URLs pass through; bare/relative names resolve against the post folder.
- */
 function resolveMedia(slug: string, ref: string): string {
   if (/^(https?:)?\/\//.test(ref) || ref.startsWith("/")) {
     return ref;

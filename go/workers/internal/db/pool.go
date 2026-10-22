@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// OpenLazy returns a pool that dials on first use, so a database that is down
-// fails the queries that need it instead of the process that holds the pool.
 func OpenLazy(ctx context.Context, dsn string, maxConnections int32) (*pgxpool.Pool, error) {
 	if dsn == "" || maxConnections < 1 {
 		return nil, errors.New("missing bounded database configuration")

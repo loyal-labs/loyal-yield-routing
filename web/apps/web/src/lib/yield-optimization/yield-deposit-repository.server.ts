@@ -9,7 +9,7 @@ import {
   type YieldRouteSetupPolicyPlan,
 } from "@loyal-labs/actions";
 import { PublicKey } from "@solana/web3.js";
-import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, type SQL, sql } from "drizzle-orm";
 
 import {
   EarningsPrincipalHistoryError,
@@ -697,50 +697,20 @@ export async function recordConfirmedEarnCleanup(
   ]);
 }
 
-// `vault_position_snapshots_one_current_idx` (a UNIQUE index on `vault_id`
-// WHERE `is_current`, declared in loyal-yield-routing's migration 0001) allows
-// exactly one current snapshot per vault. Every writer reaches that state in
-// two steps — demote whatever is current, then promote the row it just
-// inserted — and each `db.batch` is its own transaction, so B's demote can
-// miss A's uncommitted promote and then promote on top of it. Two current
-// rows, and Postgres fails the second batch. That surfaced as a 500 on
-// `mobile/earn/withdraw/prepare-context`, which fans into holdings, and paged
-// as `earn.withdrawal.prepare.failed` (ASK-1902).
-//
-// A transaction-scoped advisory lock keyed on the vault makes the demote and
-// the promote inseparable: the loser waits at the head of its batch and
-// re-reads a settled table. It only binds writers that take it, so this must
-// be the FIRST statement of EVERY batch in this module that touches
-// `is_current` — today `recordCurrentVaultSourceWithdrawal` (confirmed
-// withdrawal) and `recordReconciledYieldVaultSnapshot` (holdings reconcile),
-// which race each other, not just themselves.
-//
-// What this lock does NOT do, so nobody reads it as more than it is: it
-// serializes the SWAP, not the state the swap was built from. Both callers
-// compute their rows from a read taken in an earlier transaction —
-// `resolveWithdrawalSource` selects `reserveRows` in its own batch, then
-// `recordCurrentVaultSourceWithdrawal` subtracts in JS — so two confirmed
-// withdrawals can each read 1000, debit 300 and 400, and serialize here to
-// leave 600 instead of 300. That lost update predates this lock (the demote
-// only collided in the narrow window where it ran before the other promote
-// committed; the common interleaving always just clobbered), and closing it
-// needs the debit to happen in SQL against the live row, not in JS against a
-// stale copy. Tracked separately — do not treat concurrent Earn accounting as
-// safe because this lock exists.
-//
-// Scope note: loyal-yield-routing's orchestrator
-// (`crates/loyal-yield-orchestrator/src/store.rs`) writes this same invariant
-// in this same shape from a different process and does not take this lock yet.
 const CURRENT_VAULT_SNAPSHOT_LOCK_NAMESPACE =
   "loyal_yield.vault_position_snapshots.is_current";
 
-function lockCurrentVaultSnapshot(
+function writeCurrentVaultSnapshot(
   db: YieldDepositRepositoryDependencies["client"]["db"],
-  vaultId: bigint
+  vaultId: bigint,
+  statements: never[]
 ) {
-  return db.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`${CURRENT_VAULT_SNAPSHOT_LOCK_NAMESPACE}:${vaultId}`}, 0))`
-  );
+  return db.batch([
+    db.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${CURRENT_VAULT_SNAPSHOT_LOCK_NAMESPACE} || ':' || ${vaultId.toString()}::bigint::text, 0))`
+    ) as never,
+    ...statements,
+  ]);
 }
 
 async function recordCurrentVaultSourceWithdrawal(args: {
@@ -749,37 +719,26 @@ async function recordCurrentVaultSourceWithdrawal(args: {
   resolution: WithdrawalSourceResolution;
 }): Promise<void> {
   const { dependencies, input, resolution } = args;
+  const { db } = dependencies.client;
   const observedAt = dependencies.now();
+  const vaultId = resolution.vault.id.toString();
+  const slot = input.confirmedSlot.toString();
 
   if (resolution.sourceType === "idle") {
     const idleRow = resolution.selectedIdleRow;
     if (!idleRow) {
       return;
     }
-    // A row observed strictly after the withdrawal slot (a concurrent
-    // reconcile's chain read) already reflects the withdrawal — debiting it
-    // again would double-count.
-    if (idleRow.observedSlot > input.confirmedSlot) {
-      return;
-    }
-    await dependencies.client.db
-      .update(vaultIdleTokenBalancesCurrent)
-      .set({
-        amountRaw:
-          idleRow.amountRaw > input.withdrawnAmountRaw
-            ? idleRow.amountRaw - input.withdrawnAmountRaw
-            : BigInt(0),
-        observedAt,
-        observedSlot: input.confirmedSlot,
-        sourceCommitment: "confirmed_withdrawal",
-        updatedAt: observedAt,
-      })
-      .where(
-        and(
-          eq(vaultIdleTokenBalancesCurrent.vaultId, resolution.vault.id),
-          eq(vaultIdleTokenBalancesCurrent.mint, idleRow.mint)
-        )
-      );
+    await db.execute(sql`
+      UPDATE ${vaultIdleTokenBalancesCurrent}
+      SET amount_raw = GREATEST(amount_raw - ${input.withdrawnAmountRaw.toString()}::bigint, 0),
+          observed_at = ${observedAt.toISOString()}::timestamptz,
+          observed_slot = ${slot}::bigint,
+          source_commitment = 'confirmed_withdrawal',
+          updated_at = ${observedAt.toISOString()}::timestamptz
+      WHERE vault_id = ${vaultId}::bigint
+        AND mint = ${idleRow.mint}
+        AND observed_slot <= ${slot}::bigint`);
     return;
   }
 
@@ -787,173 +746,149 @@ async function recordCurrentVaultSourceWithdrawal(args: {
   if (!selectedReserve || resolution.reserveRows.length === 0) {
     return;
   }
-  // Same freshness guard as the idle path. Strict: fallback rows built from
-  // the withdrawal itself carry observedSlot === confirmedSlot and must
-  // still project.
-  if (selectedReserve.observedSlot > input.confirmedSlot) {
-    return;
-  }
-  const sourceDebitAmountRaw = getWithdrawalSourceDebitAmountRaw(
-    input,
-    "reserve"
-  );
-
-  const nextRows = resolution.reserveRows.map((row) => {
-    const nextAmountRaw = reserveRowsRepresentSameHolding(row, selectedReserve)
-      ? row.amountRaw > sourceDebitAmountRaw
-        ? row.amountRaw - sourceDebitAmountRaw
-        : BigInt(0)
-      : row.amountRaw;
-    return {
-      ...row,
-      amountRaw: nextAmountRaw,
-      hasValue: nextAmountRaw > BigInt(0),
-      observedAt,
-      observedSlot: input.confirmedSlot,
-      planningMetadata: {
-        ...row.planningMetadata,
-        source: "frontend_source_withdrawal",
-        withdrawalSignature: input.withdrawalSignature,
-      },
-    };
+  const debit = getWithdrawalSourceDebitAmountRaw(input, "reserve").toString();
+  const sourceAmount = (input.sourceAmountRaw ?? BigInt(0)).toString();
+  const at = observedAt.toISOString();
+  const patch = JSON.stringify({
+    source: "frontend_source_withdrawal",
+    withdrawalSignature: input.withdrawalSignature,
   });
+  const relabel = JSON.stringify({
+    amountSemantics: "kamino_redeemable_liquidity",
+    amount_semantics: "kamino_redeemable_liquidity",
+  });
+  const fallbackAmount = (
+    selectedReserve.amountRaw > BigInt(debit)
+      ? selectedReserve.amountRaw - BigInt(debit)
+      : BigInt(0)
+  ).toString();
+  const userFacing = (column: SQL) =>
+    sql`COALESCE(NULLIF(${column}->>'amountSemantics', ''), NULLIF(${column}->>'amount_semantics', '')) = 'kamino_redeemable_liquidity'`;
+  const current = sql.raw("current_row");
+  const [allocated] = getExecuteRows(
+    await db.execute(
+      sql`SELECT nextval(pg_get_serial_sequence('loyal_yield.vault_position_snapshots', 'id'))::text AS id`
+    )
+  );
+  const snapshotId = String(allocated?.id);
+  const snapshotWritten = sql`EXISTS (SELECT 1 FROM ${vaultPositionSnapshots} WHERE id = ${snapshotId}::bigint)`;
+  const vaultIdleDeltaRaw = input.confirmedVaultIdleDeltaRaw ?? BigInt(0);
 
-  const [snapshot] = await dependencies.client.db
-    .insert(vaultPositionSnapshots)
-    .values({
-      chainSlot: input.confirmedSlot,
-      context: {
+  const statements: never[] = [
+    db.execute(sql`
+      INSERT INTO ${vaultPositionSnapshots}
+        (id, vault_id, policy_id, observed_slot, observed_at, chain_slot, is_current, context)
+      SELECT ${snapshotId}::bigint, ${vaultId}::bigint, ${resolution.vault.activePolicyId.toString()}::bigint,
+             ${slot}::bigint, ${at}::timestamptz, ${slot}::bigint, false, ${JSON.stringify(
+      {
         source: "frontend_source_withdrawal",
         sourceId: resolution.sourceId,
         sourceType: resolution.sourceType,
         withdrawalSignature: input.withdrawalSignature,
-      },
-      isCurrent: false,
-      observedAt,
-      observedSlot: input.confirmedSlot,
-      policyId: resolution.vault.activePolicyId,
-      vaultId: resolution.vault.id,
-    })
-    .returning({ id: vaultPositionSnapshots.id });
-  if (!snapshot) {
-    return;
-  }
-
-  // History keeps only funded reserves; the current-state rows below keep
-  // the full set. Readers treat a missing history row as zero.
-  const snapshotPositionValues = nextRows
-    .filter((row) => row.amountRaw > BigInt(0))
-    .map((row) => ({
-      amountRaw: row.amountRaw,
-      borrowApyBps: row.borrowApyBps,
-      hasValue: row.hasValue,
-      liquidityMint: row.liquidityMint,
-      market: row.market,
-      planningMetadata: row.planningMetadata,
-      reserve: row.reserve,
-      snapshotId: snapshot.id,
-      supplyApyBps: row.supplyApyBps,
-    }));
-  const currentPositionValues = nextRows.map((row) => ({
-    amountRaw: row.amountRaw,
-    borrowApyBps: row.borrowApyBps,
-    hasValue: row.hasValue,
-    liquidityMint: row.liquidityMint,
-    market: row.market,
-    observedAt,
-    observedSlot: input.confirmedSlot,
-    planningMetadata: row.planningMetadata,
-    reserve: row.reserve,
-    snapshotId: snapshot.id,
-    supplyApyBps: row.supplyApyBps,
-    vaultId: resolution.vault.id,
-  }));
-
-  await dependencies.client.db.batch([
-    // Must stay first — see lockCurrentVaultSnapshot. A confirmed withdrawal
-    // and a holdings reconcile land on the same vault routinely.
-    lockCurrentVaultSnapshot(
-      dependencies.client.db,
-      resolution.vault.id
-    ) as never,
-    dependencies.client.db
-      .update(vaultPositionSnapshots)
-      .set({ isCurrent: false })
-      .where(
-        and(
-          eq(vaultPositionSnapshots.vaultId, resolution.vault.id),
-          eq(vaultPositionSnapshots.isCurrent, true)
-        )
-      ) as never,
-    ...(snapshotPositionValues.length > 0
-      ? [
-          dependencies.client.db
-            .insert(vaultPositionSnapshotPositions)
-            .values(snapshotPositionValues) as never,
-        ]
-      : []),
-    dependencies.client.db
-      .delete(vaultReservePositionsCurrent)
-      .where(
-        eq(vaultReservePositionsCurrent.vaultId, resolution.vault.id)
-      ) as never,
-    dependencies.client.db
-      .insert(vaultReservePositionsCurrent)
-      .values(currentPositionValues) as never,
-    dependencies.client.db
-      .update(vaultPositionSnapshots)
-      .set({ isCurrent: true })
-      .where(eq(vaultPositionSnapshots.id, snapshot.id)) as never,
-  ]);
-
-  const vaultIdleDeltaRaw = input.confirmedVaultIdleDeltaRaw ?? BigInt(0);
-  if (vaultIdleDeltaRaw <= BigInt(0) || !input.confirmedVaultIdleTokenAccount) {
-    return;
-  }
-
-  const [existingIdleRow] = await dependencies.client.db
-    .select()
-    .from(vaultIdleTokenBalancesCurrent)
-    .where(
-      and(
-        eq(vaultIdleTokenBalancesCurrent.vaultId, resolution.vault.id),
-        eq(vaultIdleTokenBalancesCurrent.mint, input.liquidityMint)
+      }
+    )}::jsonb
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ${vaultReservePositionsCurrent}
+        WHERE vault_id = ${vaultId}::bigint
+          AND reserve = ${selectedReserve.reserve}
+          AND observed_slot > ${slot}::bigint
+          AND planning_metadata->>'source' IS DISTINCT FROM 'frontend_source_withdrawal'
       )
-    )
-    .limit(1);
+      AND NOT EXISTS (
+        SELECT 1 FROM ${vaultPositionSnapshots}
+        WHERE vault_id = ${vaultId}::bigint
+          AND context->>'source' = 'frontend_source_withdrawal'
+          AND context->>'withdrawalSignature' = ${input.withdrawalSignature}
+      )`) as never,
+    db.execute(sql`
+      DELETE FROM ${vaultReservePositionsCurrent}
+      WHERE vault_id = ${vaultId}::bigint
+        AND reserve <> ${selectedReserve.reserve}
+        AND NOT (${userFacing(sql.raw("planning_metadata"))} AND amount_raw > 0)
+        AND ${snapshotWritten}`) as never,
+    db.execute(sql`
+      INSERT INTO ${vaultReservePositionsCurrent} AS ${current}
+        (vault_id, reserve, market, liquidity_mint, amount_raw, has_value, supply_apy_bps,
+         borrow_apy_bps, snapshot_id, observed_slot, observed_at, planning_metadata)
+      SELECT ${vaultId}::bigint, ${selectedReserve.reserve}, ${
+      selectedReserve.market
+    },
+             ${
+               selectedReserve.liquidityMint
+             }, ${fallbackAmount}::bigint, ${fallbackAmount}::bigint > 0,
+             ${selectedReserve.supplyApyBps?.toString() ?? null}::bigint,
+             ${selectedReserve.borrowApyBps?.toString() ?? null}::bigint,
+             ${snapshotId}::bigint, ${slot}::bigint, ${at}::timestamptz,
+             ${JSON.stringify(
+               selectedReserve.planningMetadata
+             )}::jsonb || ${patch}::jsonb
+      WHERE ${snapshotWritten}
+      ON CONFLICT (vault_id, reserve) DO UPDATE SET
+        amount_raw = CASE
+          WHEN ${userFacing(
+            sql`${current}.planning_metadata`
+          )} AND ${current}.amount_raw > 0
+            THEN GREATEST(${current}.amount_raw - ${debit}::bigint, 0)
+          ELSE GREATEST(GREATEST(${current}.amount_raw, ${sourceAmount}::bigint, ${debit}::bigint) - ${debit}::bigint, 0)
+        END,
+        snapshot_id = EXCLUDED.snapshot_id,
+        observed_slot = EXCLUDED.observed_slot,
+        observed_at = EXCLUDED.observed_at,
+        planning_metadata = ${current}.planning_metadata || ${relabel}::jsonb || ${patch}::jsonb`) as never,
+    db.execute(sql`
+      UPDATE ${vaultReservePositionsCurrent}
+      SET snapshot_id = ${snapshotId}::bigint,
+          observed_slot = ${slot}::bigint,
+          observed_at = ${at}::timestamptz,
+          has_value = amount_raw > 0,
+          planning_metadata = planning_metadata || ${patch}::jsonb
+      WHERE vault_id = ${vaultId}::bigint
+        AND (reserve <> ${selectedReserve.reserve} OR snapshot_id = ${snapshotId}::bigint)
+        AND ${snapshotWritten}`) as never,
+    db.execute(sql`
+      INSERT INTO ${vaultPositionSnapshotPositions}
+        (snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps,
+         borrow_apy_bps, has_value, planning_metadata)
+      SELECT snapshot_id, reserve, market, liquidity_mint, amount_raw, supply_apy_bps,
+             borrow_apy_bps, has_value, planning_metadata
+      FROM ${vaultReservePositionsCurrent}
+      WHERE vault_id = ${vaultId}::bigint
+        AND snapshot_id = ${snapshotId}::bigint
+        AND amount_raw > 0`) as never,
+    db.execute(sql`
+      UPDATE ${vaultPositionSnapshots}
+      SET is_current = (id = ${snapshotId}::bigint)
+      WHERE vault_id = ${vaultId}::bigint
+        AND (is_current OR id = ${snapshotId}::bigint)
+        AND ${snapshotWritten}`) as never,
+  ];
 
-  if (existingIdleRow) {
-    await dependencies.client.db
-      .update(vaultIdleTokenBalancesCurrent)
-      .set({
-        amountRaw: existingIdleRow.amountRaw + vaultIdleDeltaRaw,
-        observedAt,
-        observedSlot: input.confirmedSlot,
-        owner: input.vaultPubkey,
-        sourceCommitment: "confirmed_withdrawal",
-        tokenAccount: input.confirmedVaultIdleTokenAccount,
-        updatedAt: observedAt,
-      })
-      .where(
-        and(
-          eq(vaultIdleTokenBalancesCurrent.vaultId, resolution.vault.id),
-          eq(vaultIdleTokenBalancesCurrent.mint, input.liquidityMint)
-        )
-      );
-    return;
+  if (vaultIdleDeltaRaw > BigInt(0) && input.confirmedVaultIdleTokenAccount) {
+    statements.push(
+      db.execute(sql`
+        INSERT INTO ${vaultIdleTokenBalancesCurrent} AS ${current}
+          (vault_id, mint, amount_raw, observed_at, observed_slot, owner,
+           source_commitment, token_account, updated_at)
+        SELECT ${vaultId}::bigint, ${
+        input.liquidityMint
+      }, ${vaultIdleDeltaRaw.toString()}::bigint,
+               ${at}::timestamptz, ${slot}::bigint, ${
+        input.vaultPubkey
+      }, 'confirmed_withdrawal',
+               ${input.confirmedVaultIdleTokenAccount}, ${at}::timestamptz
+        WHERE ${snapshotWritten}
+        ON CONFLICT (vault_id, mint) DO UPDATE SET
+          amount_raw = ${current}.amount_raw + EXCLUDED.amount_raw,
+          observed_at = EXCLUDED.observed_at,
+          observed_slot = EXCLUDED.observed_slot,
+          owner = EXCLUDED.owner,
+          source_commitment = EXCLUDED.source_commitment,
+          token_account = EXCLUDED.token_account,
+          updated_at = EXCLUDED.updated_at`) as never
+    );
   }
 
-  await dependencies.client.db.insert(vaultIdleTokenBalancesCurrent).values({
-    amountRaw: vaultIdleDeltaRaw,
-    mint: input.liquidityMint,
-    observedAt,
-    observedSlot: input.confirmedSlot,
-    owner: input.vaultPubkey,
-    sourceCommitment: "confirmed_withdrawal",
-    tokenAccount: input.confirmedVaultIdleTokenAccount,
-    updatedAt: observedAt,
-    vaultId: resolution.vault.id,
-  });
+  await writeCurrentVaultSnapshot(db, resolution.vault.id, statements);
 }
 
 function assertDuplicateWithdrawalField<T extends string | bigint | number>(
@@ -1238,16 +1173,6 @@ function buildIdempotentWithdrawalRepairInput(
       readStoredWithdrawalSourceMetadataString(withdrawal, "tokenAccount"),
     sourceType,
   };
-}
-
-// The one-current partial unique index rejects the loser when two snapshot
-// writers (withdraw confirm vs. position reconcile / rebalance sync) both run
-// flip-all-current → set-one-current on the same vault concurrently.
-function isCurrentSnapshotWriteRace(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message.includes("vault_position_snapshots_one_current_idx")
-  );
 }
 
 function isIdempotentWithdrawalSourceAlreadyApplied(error: unknown): boolean {
@@ -2999,7 +2924,11 @@ export async function findCompleteYieldVaultExposureSnapshots(
     .where(
       and(
         eq(vaultPositionSnapshots.vaultId, vault.id),
-        input.observedSince ? sql`${vaultPositionSnapshots.observedAt} >= ${input.observedSince.toISOString()}::timestamptz` : undefined,
+        input.observedSince
+          ? sql`${
+              vaultPositionSnapshots.observedAt
+            } >= ${input.observedSince.toISOString()}::timestamptz`
+          : undefined,
         sql`${vaultPositionSnapshots.context}->>'publication_scope' = 'complete_product_vault'`
       )
     )
@@ -3037,7 +2966,9 @@ export async function findCompleteYieldVaultExposureSnapshots(
         and(
           inArray(
             vaultPositionSnapshotPositions.snapshotId,
-            snapshots.slice(offset, offset + 1000).map((snapshot) => snapshot.id)
+            snapshots
+              .slice(offset, offset + 1000)
+              .map((snapshot) => snapshot.id)
           ),
           eq(vaultPositionSnapshotPositions.hasValue, true)
         )
@@ -3728,9 +3659,6 @@ export async function recordReconciledYieldVaultSnapshot(
   );
 
   const statements: never[] = [
-    // Must stay first: everything after it is only safe once this vault's
-    // demote/promote pair is exclusive to this transaction.
-    lockCurrentVaultSnapshot(dependencies.client.db, input.vaultId) as never,
     dependencies.client.db
       .update(vaultPositionSnapshots)
       .set({ isCurrent: false })
@@ -3797,7 +3725,11 @@ export async function recordReconciledYieldVaultSnapshot(
       .where(eq(managedVaults.id, input.vaultId)) as never
   );
 
-  await dependencies.client.db.batch(statements as [never, ...never[]]);
+  await writeCurrentVaultSnapshot(
+    dependencies.client.db,
+    input.vaultId,
+    statements
+  );
 
   return { snapshotId: snapshot.id };
 }
@@ -4430,37 +4362,11 @@ export async function recordConfirmedYieldWithdrawal(
     status: "active",
   });
 
-  try {
-    await recordCurrentVaultSourceWithdrawal({
-      dependencies,
-      input,
-      resolution: withdrawalSource,
-    });
-  } catch (error) {
-    if (!isCurrentSnapshotWriteRace(error)) {
-      throw error;
-    }
-    // A concurrent snapshot writer won the one-current index mid-projection.
-    // The withdrawal ledger above is already committed; re-resolve against
-    // the winner's fresh current rows and re-apply the debit. The freshness
-    // guard inside recordCurrentVaultSourceWithdrawal skips it entirely when
-    // the winner's chain read already reflects this withdrawal.
-    try {
-      const retryResolution = await resolveWithdrawalSource(
-        input,
-        dependencies
-      );
-      await recordCurrentVaultSourceWithdrawal({
-        dependencies,
-        input,
-        resolution: retryResolution,
-      });
-    } catch (retryError) {
-      if (!isIdempotentWithdrawalSourceAlreadyApplied(retryError)) {
-        throw retryError;
-      }
-    }
-  }
+  await recordCurrentVaultSourceWithdrawal({
+    dependencies,
+    input,
+    resolution: withdrawalSource,
+  });
 
   if (position.principalAmountRaw !== nextPrincipal) {
     return position;

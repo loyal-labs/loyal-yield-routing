@@ -18,8 +18,6 @@ export function buildEarnMaxDailySeries(view: {
     isCurrent: boolean;
   }[];
 } {
-  // First and last confirmed equity per calendar day — the first one anchors
-  // the position's opening day so its intra-day earnings still chart.
   const equityByDay = new Map<string, { first: number; last: number }>();
   for (const point of view.performance) {
     const date = new Date(point.timestamp);
@@ -59,8 +57,6 @@ export function buildEarnMaxDailySeries(view: {
         (sign * Number(operation.amountRaw)) / 1_000_000
     );
   }
-  // Fixed window ending today, like the Earn earnings API — days without a
-  // position render as empty bars so young positions still read as 30 days.
   const now = new Date();
   const days: {
     date: Date;
@@ -92,8 +88,6 @@ export function buildEarnMaxDailySeries(view: {
     const key = dayKey(date);
     const dayEquity = equityByDay.get(key);
     const equity: number | null = dayEquity?.last ?? carryEquity;
-    // The opening day starts from zero, so every flow that day (the first
-    // deposit, a same-day top-up or withdrawal) is subtracted, never earned.
     const raw =
       equity === null
         ? 0

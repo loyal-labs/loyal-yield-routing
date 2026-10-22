@@ -138,7 +138,6 @@ export function initDatadog() {
     },
   });
 
-  // Forward any real errors captured before DD SDK initialized
   if (window.__dd_early_errors?.length) {
     for (const err of window.__dd_early_errors) {
       datadogLogs.logger.error("Early boot error", {

@@ -5,12 +5,6 @@ import { cn } from "@/lib/utils";
 
 export type DepositScale = "linear" | "log";
 
-/**
- * Log/linear selector for the deposit axis, shared by the Earn rebalance scatter
- * charts. Both ends are labelled because neither reading is the obvious
- * default: log is right for the fleet's long dust tail, linear is right when
- * you care about absolute size.
- */
 export function DepositScaleSwitch({
   id,
   onScaleChange,

@@ -888,7 +888,6 @@ export async function runSyncOnce(
       where: and(...whereClauses),
     });
 
-    // Keep runtime filtering explicit for auditability in tests and logs.
     const chatIdFilter =
       resolvedOptions.chatIds === null
         ? null

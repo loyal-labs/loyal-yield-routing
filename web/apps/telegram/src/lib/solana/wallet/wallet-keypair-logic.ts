@@ -57,14 +57,11 @@ const fetchStoredKeypairStrings = async (): Promise<
     getCloudValue(SECRET_KEY_STORAGE_KEY),
   ]);
 
-  // null = cloud storage didn't respond properly
   if (publicKey === null || secretKey === null) return "unavailable";
 
-  // Non-string = unexpected response shape
   if (typeof publicKey !== "string" || typeof secretKey !== "string")
     return "unavailable";
 
-  // Empty strings = keys genuinely don't exist (new user)
   if (!publicKey || !secretKey) return "not_found";
 
   return { publicKey, secretKey };
@@ -77,16 +74,13 @@ const fetchStoredKeypairWithRetry = async (): Promise<
     try {
       const result = await fetchStoredKeypairStrings();
 
-      // Definitive answers — no need to retry
       if (result === "not_found") return "not_found";
       if (result !== "unavailable") return result;
 
-      // "unavailable" — retry after delay
       if (attempt < READ_RETRY_ATTEMPTS) {
         await wait(READ_RETRY_DELAY_MS * attempt);
       }
     } catch {
-      // getCloudValue threw — retry
       if (attempt < READ_RETRY_ATTEMPTS) {
         await wait(READ_RETRY_DELAY_MS * attempt);
       }
@@ -159,7 +153,6 @@ export const ensureWalletKeypair = async (): Promise<WalletKeypairResult> => {
     if (existing) {
       return { keypair: existing, isNew: false };
     }
-    // Keys exist but are corrupted — fall through to generate new
   }
 
   const generatedKeypair = Keypair.generate();

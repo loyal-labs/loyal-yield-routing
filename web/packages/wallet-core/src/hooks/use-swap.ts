@@ -5,7 +5,6 @@ import { useCallback, useRef, useState } from "react";
 import { TOKEN_DECIMALS, TOKEN_MINTS } from "../constants/token-mints";
 import type { WalletSigner } from "../types/signer";
 
-// Debug logger that only emits in development
 const logger = {
   debug: (...args: unknown[]) => {
     if (

@@ -49,6 +49,7 @@ func New(cfg Config) http.Handler {
 		registerAPI(humachi.New(goAPI, apiConfig()), cfg)
 	})
 	proxied := forward(cfg.Upstream)
+	r.Handle(mobileEarnPrefix+"*", limitMobileEarn(proxied))
 	r.Handle("/api/*", proxied)
 	r.Handle("/ingest/*", proxied)
 	r.Handle("/*", site(cfg))

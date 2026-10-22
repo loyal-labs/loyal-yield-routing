@@ -16,8 +16,6 @@ type ChartPoint = WeeklyChartPoint & {
 
 type Size = { height: number; width: number };
 
-// The chart draws in CSS pixels, so its box sets the height and the loading
-// skeleton reuses this class to hold the same space.
 export const chartBoxClass = "mt-6 h-64 md:h-80 lg:h-[26rem]";
 
 const chartPadding = {

@@ -11,7 +11,6 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 
-/** Re-runs the server component every minute; the page itself is static. */
 export function EarnMaxRefresh() {
   const router = useRouter();
 

@@ -5,22 +5,12 @@ function getHeaders(): HeadersInit {
   return apiKey ? { "x-cg-pro-api-key": apiKey } : {};
 }
 
-/**
- * Thrown when CoinGecko has no record of a token (HTTP 404). Callers can treat
- * this distinctly from transient/auth failures and fall back to on-chain
- * metadata while marking the token as unverified. Any other failure should
- * surface as a retryable error rather than mislabeling a legitimate token.
- */
 export class CoinGeckoNotFoundError extends Error {
   constructor(public readonly mint: string) {
     super(`Token not found on CoinGecko: ${mint}`);
     this.name = "CoinGeckoNotFoundError";
   }
 }
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 export interface CoinGeckoTokenData {
   name: string;
@@ -63,10 +53,6 @@ export interface TokenDetailData {
   chart: CoinGeckoChartPoint[];
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 function parseNumber(value: string | number | null | undefined): number | null {
   if (value == null) return null;
   const n = typeof value === "string" ? Number.parseFloat(value) : value;
@@ -76,10 +62,6 @@ function parseNumber(value: string | number | null | undefined): number | null {
 function stripSolanaPrefix(poolId: string): string {
   return poolId.startsWith("solana_") ? poolId.slice("solana_".length) : poolId;
 }
-
-// ---------------------------------------------------------------------------
-// API functions
-// ---------------------------------------------------------------------------
 
 export async function fetchTokenData(
   mint: string
@@ -229,10 +211,6 @@ export async function fetchPriceChanges(
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Cache (5-minute TTL, in-memory)
-// ---------------------------------------------------------------------------
-
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const cache = new Map<string, { data: TokenDetailData; expiresAt: number }>();
 const inflight = new Map<string, Promise<TokenDetailData>>();
@@ -272,7 +250,6 @@ async function fetchTokenDetailUncached(
     if (token.coingeckoCoinId) {
       const result = await fetchChart(token.coingeckoCoinId);
       chart = result.points;
-      // Prefer aggregated volume from main API over onchain pool volume
       if (result.volume24h !== null) {
         token.volumeUsd24h = result.volume24h;
       }
@@ -280,7 +257,6 @@ async function fetchTokenDetailUncached(
       chart = await fetchPoolOhlcv(token.topPoolIds[0]);
     }
   } catch {
-    // Chart data is best-effort; don't fail the entire detail fetch
   }
 
   return { token, info, chart };

@@ -35,7 +35,6 @@ export function ReceiveContent({
         }
       `}</style>
 
-      {/* Header */}
       <div
         style={{
           display: "flex",
@@ -87,7 +86,6 @@ export function ReceiveContent({
         </button>
       </div>
 
-      {/* Body */}
       <div
         style={{
           flex: 1,
@@ -99,7 +97,6 @@ export function ReceiveContent({
           minHeight: 0,
         }}
       >
-        {/* Solana icon + warning */}
         <div
           style={{
             display: "flex",
@@ -125,7 +122,6 @@ export function ReceiveContent({
           </p>
         </div>
 
-        {/* QR Code card */}
         <div
           style={{
             marginTop: "24px",
@@ -149,7 +145,6 @@ export function ReceiveContent({
                 size={192}
                 value={address}
               />
-              {/* Dog logo in center */}
               <div
                 style={{
                   position: "absolute",
@@ -200,7 +195,6 @@ export function ReceiveContent({
         </div>
       </div>
 
-      {/* Copy Address button */}
       <div style={{ padding: "16px 20px" }}>
         <button
           className="receive-copy-btn"
