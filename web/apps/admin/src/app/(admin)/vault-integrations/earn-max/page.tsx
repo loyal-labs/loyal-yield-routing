@@ -19,20 +19,18 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { requireAdminSession } from "@/lib/require-admin-session";
 import { cn } from "@/lib/utils";
 
 import { EarnMaxRefresh, TimeChart } from "./earn-max-charts";
 import {
   CUSTODY,
   type EarnMaxData,
-  getEarnMaxData,
+  earnMaxData,
+  type EarnMaxProps,
   IDLE_ATA,
   type Part,
 } from "./earn-max-data";
 import { loanToValue } from "./earn-max-math";
-
-export const dynamic = "force-dynamic";
 
 const ALERT_LTV = 0.45;
 const WITHDRAWAL_STEP_LTV = 0.55;
@@ -119,9 +117,8 @@ function dateTime(iso: string | null | undefined) {
 
 const levelLabel = (level: number) => `${level}x`;
 
-export default async function EarnMaxPage() {
-  await requireAdminSession();
-  const data = await getEarnMaxData();
+export default function EarnMaxPage(props: EarnMaxProps) {
+  const data = earnMaxData(props);
   const now = Date.parse(data.loadedAt);
   const route = data.route.ok ? data.route.value : null;
   const openLatches = data.latches.ok ? data.latches.value.open : null;

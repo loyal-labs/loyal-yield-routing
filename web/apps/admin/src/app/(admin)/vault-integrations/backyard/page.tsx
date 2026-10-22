@@ -20,11 +20,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { requireAdminSession } from "@/lib/require-admin-session";
 
-import { getBackyardVaultData } from "./backyard-vault-data";
-
-export const dynamic = "force-dynamic";
+import {
+  backyardVaultData,
+  type BackyardVaultProps,
+} from "./backyard-vault-data";
 
 function formatUsdMicros(value: bigint | null) {
   if (value === null) return "—";
@@ -73,9 +73,8 @@ function actionKind(action: string) {
   return action.replaceAll("_", " ");
 }
 
-export default async function BackyardVaultPage() {
-  await requireAdminSession();
-  const data = await getBackyardVaultData();
+export default function BackyardVaultPage(props: BackyardVaultProps) {
+  const data = backyardVaultData(props);
 
   return (
     <PageContainer className="max-w-6xl space-y-6">

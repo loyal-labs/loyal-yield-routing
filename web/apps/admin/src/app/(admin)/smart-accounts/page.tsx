@@ -7,28 +7,21 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { requireAdminSession } from "@/lib/require-admin-session";
 import { RecentRegistrationsTable } from "./recent-registrations-table";
 import { SmartAccountCreationsChart } from "./smart-account-creations-chart";
 import { SmartAccountSponsorshipSpendChart } from "./smart-account-sponsorship-spend-chart";
-import { getSmartAccountsData } from "./smart-accounts-data";
+import type { SmartAccountsData } from "./smart-accounts-data";
 
-export const dynamic = "force-dynamic";
-
-export default async function SmartAccountsPage() {
-  await requireAdminSession();
-
-  const {
-    creationPoints,
-    registrations,
-    solPriceUsd,
-    spendPoints,
-    totalAccounts,
-    totalCreated30d,
-    totalSpentSol30d,
-    totalSpentUsd30d,
-  } = await getSmartAccountsData();
-
+export default function SmartAccountsPage({
+  creationPoints,
+  registrations,
+  solPriceUsd,
+  spendPoints,
+  totalAccounts,
+  totalCreated30d,
+  totalSpentSol30d,
+  totalSpentUsd30d,
+}: SmartAccountsData) {
   return (
     <PageContainer>
       <SectionHeader
