@@ -1,12 +1,15 @@
 package webapp
 
 import (
+	"encoding/json"
 	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -89,7 +92,23 @@ func (cfg Config) ready() func() bool {
 	if cfg.Ready != nil {
 		return cfg.Ready
 	}
-	return webserve.New(cfg.Dist).Ready
+	pages := pagePaths(cfg.Dist)
+	return func() bool { return len(pages) > 0 && webserve.New(cfg.Dist).Ready() }
+}
+
+func pagePaths(dist fs.FS) []string {
+	if dist == nil {
+		return nil
+	}
+	body, err := fs.ReadFile(dist, "page-paths.json")
+	if err != nil {
+		return nil
+	}
+	var pages []string
+	if json.Unmarshal(body, &pages) != nil {
+		return nil
+	}
+	return pages
 }
 
 func ready(ok func() bool) http.HandlerFunc {
@@ -104,13 +123,26 @@ func ready(ok func() bool) http.HandlerFunc {
 
 func site(cfg Config) http.Handler {
 	app := webserve.New(cfg.Dist)
+	pages := pagePaths(cfg.Dist)
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		switch pagePath := path.Clean(r.URL.Path); {
+		case len(pages) == 0:
+			http.Error(w, "web page manifest missing or invalid", http.StatusServiceUnavailable)
 		case pagePath == "/500":
 			app.Shell(w, r, http.StatusInternalServerError)
 		case pagePath == "/dev/txv1" && cfg.Environment == "prod":
 			app.Shell(w, r, http.StatusNotFound)
 		default:
+			if slices.Contains(pages, pagePath) {
+				r = r.Clone(r.Context())
+				r.URL.Path = "/"
+			} else {
+				info, err := fs.Stat(cfg.Dist, strings.TrimPrefix(pagePath, "/"))
+				if err != nil || info.IsDir() {
+					app.Shell(w, r, http.StatusNotFound)
+					return
+				}
+			}
 			app.ServeHTTP(w, r)
 		}
 	}
