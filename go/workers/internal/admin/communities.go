@@ -13,6 +13,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -205,6 +206,18 @@ func communitiesDailyCounts(ctx context.Context, d *Deps, query string, args ...
 	return counts, err
 }
 
+func communitiesDailyCountsAll(ctx context.Context, d *Deps, queries []string, args ...any) ([]map[string]int, error) {
+	byDay := make([]map[string]int, len(queries))
+	group, ctx := errgroup.WithContext(ctx)
+	for i, query := range queries {
+		group.Go(func() (err error) {
+			byDay[i], err = communitiesDailyCounts(ctx, d, query, args...)
+			return err
+		})
+	}
+	return byDay, group.Wait()
+}
+
 func loadCommunityTrends(ctx context.Context, d *Deps) (CommunityTrends, error) {
 	start, end, days := communitiesWindow(time.Now())
 	trends := CommunityTrends{ChartPoints: []CommunitySummariesPoint{}, CommunitiesChartPoints: []CommunityGrowthPoint{}}
@@ -215,12 +228,9 @@ func loadCommunityTrends(ctx context.Context, d *Deps) (CommunityTrends, error) 
 		communitiesDayQuery("communities", "updated_at", "count(*)::int", "", 1),
 		communitiesDayQuery("users", "created_at", "count(*)::int", "", 1),
 	}
-	var byDay [4]map[string]int
-	for i, query := range queries {
-		var err error
-		if byDay[i], err = communitiesDailyCounts(ctx, d, query, start, end); err != nil {
-			return trends, err
-		}
+	byDay, err := communitiesDailyCountsAll(ctx, d, queries, start, end)
+	if err != nil {
+		return trends, err
 	}
 	summariesByDay, messagesByDay, communitiesByDay, usersByDay := byDay[0], byDay[1], byDay[2], byDay[3]
 
@@ -460,11 +470,9 @@ WHERE summary_id = ANY($1::uuid[]) GROUP BY summary_id, action`, ids)
 		communitiesDayQuery("messages", "created_at", "count(*)::int", communitiesScoped, 2),
 		communitiesDayQuery("messages", "created_at", "count(DISTINCT user_id)::int", communitiesScoped, 2),
 	}
-	var byDay [3]map[string]int
-	for i, query := range queries {
-		if byDay[i], err = communitiesDailyCounts(ctx, d, query, id, start, end); err != nil {
-			return page, err
-		}
+	byDay, err := communitiesDailyCountsAll(ctx, d, queries, id, start, end)
+	if err != nil {
+		return page, err
 	}
 	summariesByDay, messagesByDay, activeByDay := byDay[0], byDay[1], byDay[2]
 
