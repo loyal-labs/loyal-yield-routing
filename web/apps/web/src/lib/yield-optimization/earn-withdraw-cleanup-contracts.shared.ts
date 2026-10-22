@@ -1,14 +1,12 @@
-import type {
-  SmartAccountEarnUsdcCleanupMetadata,
-  SmartAccountPreparedEarnUsdcCleanup,
-} from "@loyal-labs/smart-account-vaults";
-import { PublicKey } from "@solana/web3.js";
-
 import {
   hydratePreparedOperation,
   serializePreparedOperation,
+  type SmartAccountEarnUsdcCleanupMetadata,
+  type SmartAccountPreparedEarnUsdcCleanup,
   type WirePreparedLoyalSmartAccountsOperation,
-} from "@/lib/smart-accounts/prepared-operation-wire.shared";
+} from "@loyal-labs/smart-account-vaults";
+import { PublicKey } from "@solana/web3.js";
+
 import {
   hydratePreparedEarnUsdcAutodepositClose,
   serializePreparedEarnUsdcAutodepositClose,

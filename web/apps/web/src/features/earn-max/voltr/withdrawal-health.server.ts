@@ -7,7 +7,7 @@ import { getYieldOptimizationClient } from "@/lib/yield-optimization/yield-neon-
 
 import type { EarnMaxWithdrawalHealth } from "../types";
 import { EARN_MAX_BACKYARD_ROUTE_KEY } from "./current-apy.server";
-import { VOLTR_PROGRAM_ID, VOLTR_VAULT } from "./program";
+import { VOLTR_PROGRAM_ID, VOLTR_VAULT } from "@loyal-labs/smart-account-vaults";
 import { parseWithdrawalHealth } from "./withdrawal-health";
 
 /** Display-only, for authenticated users of the configured pooled Voltr vault. */
