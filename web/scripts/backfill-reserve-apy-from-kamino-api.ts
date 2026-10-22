@@ -1,5 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 
+import { DEFAULT_MAX_SUPPLY_APY } from "../apps/web/src/lib/kamino/max-supply-apy";
+
 // Backfills kamino.reserve_apy_backfill (sidecar to the worker-owned
 // kamino.reserve_updates ingestion stream — we never write to that table)
 // from Kamino's public reserve metrics/history REST API. Used for reserves
@@ -10,9 +12,9 @@ import { neon } from "@neondatabase/serverless";
 // (getReserveApyHistorySamplesForReserves).
 
 const TIMESCALE_URL_ENV_NAME = "TIMESCALEDB_URL";
-// Mirrors DEFAULT_MAX_SUPPLY_APY in timescale-reserve-client.server.ts —
-// rows at/above this are ignored by the read path, so refuse to store them.
-const MAX_SUPPLY_APY = 0.5;
+// Rows at/above DEFAULT_MAX_SUPPLY_APY are ignored by the read path, so
+// refuse to store them.
+const MAX_SUPPLY_APY = DEFAULT_MAX_SUPPLY_APY;
 const MAX_GAP_HOURS_TOLERATED = 36;
 
 const CREATE_TABLE_SQL = `

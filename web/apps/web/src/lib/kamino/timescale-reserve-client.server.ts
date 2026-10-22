@@ -31,6 +31,7 @@ import {
 } from "drizzle-orm/pg-core";
 import postgres, { type Sql } from "postgres";
 
+import { DEFAULT_MAX_SUPPLY_APY } from "@/lib/kamino/max-supply-apy";
 import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 
@@ -159,7 +160,6 @@ export type CurrentBestApyReserveByStablecoin = TimescaleReserveUpdateRow & {
 export type CurrentEligibleSafeReserve = CurrentBestApyReserveByStablecoin;
 
 const DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE = 100_000;
-const DEFAULT_MAX_SUPPLY_APY = 0.5;
 // Bound both receipt age and the frontier's actual chain age. The observer
 // timestamps replays when received, so receipt alone cannot prove catch-up.
 const RESERVE_STREAM_MAX_AGE_MS = 240 * 1000;

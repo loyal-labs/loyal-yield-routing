@@ -8,6 +8,7 @@ import type { Deferred } from "@/lib/page-data";
 import { EarnRebalanceLatency } from "./earn-rebalance-latency";
 import { MetricsLatencySkeleton } from "./metrics-loading-skeleton";
 import { MetricsDashboardProgressive } from "./metrics-progressive-page";
+import { METRIC_SERIES_CSS } from "./metrics-series";
 
 function MetricsLatencySection({ latency }: { latency: Deferred<Pages["/metrics"]>["data"] }) {
   const data = use(latency);
@@ -31,6 +32,7 @@ export default function MetricsPage({ data }: Deferred<Pages["/metrics"]>) {
         subtitle="Production p95 latency in two-hour UTC buckets over the last 7 days, busiest operations first."
       />
       <div className="space-y-10" data-progressive-page="/metrics">
+        <style>{METRIC_SERIES_CSS}</style>
         <Suspense
           fallback={
             <section

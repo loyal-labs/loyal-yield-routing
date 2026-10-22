@@ -7,8 +7,13 @@ import yaml from "js-yaml";
 import { z } from "zod";
 
 import type { BlogPageResult, BlogPost, BlogPostFull } from "./types";
+import {
+  BLOG_POSTS_PER_PAGE,
+  toBlogPageResult,
+  toBlogPostMeta,
+} from "./blog-pagination";
 
-export const BLOG_POSTS_PER_PAGE = 9;
+export { BLOG_POSTS_PER_PAGE };
 
 /**
  * Each post is a folder `public/blog/<slug>/` holding the markdown body
@@ -124,35 +129,12 @@ function loadAllPosts(): Promise<BlogPostFull[]> {
   return postsCache;
 }
 
-function toMeta(post: BlogPostFull): BlogPost {
-  return {
-    slug: post.slug,
-    title: post.title,
-    date: post.date,
-    updated: post.updated,
-    hero: post.hero,
-    description: post.description,
-    author: post.author,
-    readingTime: post.readingTime,
-  };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
 export async function getBlogPosts({
   page = 1,
   perPage = BLOG_POSTS_PER_PAGE,
 }: { page?: number; perPage?: number } = {}): Promise<BlogPageResult> {
   const all = await loadAllPosts();
-  const total = all.length;
-  const totalPages = Math.max(1, Math.ceil(total / perPage));
-  const safePage = clamp(Math.trunc(page) || 1, 1, totalPages);
-  const start = (safePage - 1) * perPage;
-  const posts = all.slice(start, start + perPage).map(toMeta);
-
-  return { posts, page: safePage, perPage, total, totalPages };
+  return toBlogPageResult(all, { page, perPage });
 }
 
 export async function getBlogPost(slug: string): Promise<BlogPostFull | null> {
@@ -168,7 +150,7 @@ export async function getMoreArticles(
   return all
     .filter((post) => post.slug !== slug)
     .slice(0, count)
-    .map(toMeta);
+    .map(toBlogPostMeta);
 }
 
 export async function getAllBlogSlugs(): Promise<string[]> {
@@ -178,5 +160,5 @@ export async function getAllBlogSlugs(): Promise<string[]> {
 
 export async function getAllBlogPosts(): Promise<BlogPost[]> {
   const all = await loadAllPosts();
-  return all.map(toMeta);
+  return all.map(toBlogPostMeta);
 }

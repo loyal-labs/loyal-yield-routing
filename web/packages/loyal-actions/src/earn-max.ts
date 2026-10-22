@@ -15,6 +15,10 @@ import {
 
 import { clusterConfigFor } from "./cluster.ts";
 import {
+  KAMINO_FARMS_PROGRAM_ID,
+  KAMINO_LEND_PROGRAM_ID,
+} from "./constants.ts";
+import {
   createProgramInteractionPolicyInstruction,
 } from "./internal/squads.ts";
 import { LoyalCluster } from "./types.ts";
@@ -25,8 +29,8 @@ const FARM_USER_SEED = new TextEncoder().encode("user");
 export const EARN_MAX_MANIFEST_VERSION = "earn-max-v2";
 export const EARN_MAX_VAULT_INDEX = 0;
 
-const KLEND = new PublicKey("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
-const FARMS = new PublicKey("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr");
+const KLEND = KAMINO_LEND_PROGRAM_ID;
+const FARMS = KAMINO_FARMS_PROGRAM_ID;
 const TOKEN = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const TOKEN_2022 = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 const ASSOCIATED_TOKEN = new PublicKey(
