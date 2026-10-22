@@ -83,7 +83,9 @@ async function seedVault(admin: postgres.Sql, idleAmountRaw = 0) {
     await admin`
       INSERT INTO loyal_yield.vault_idle_token_balances_current
         (vault_id, mint, amount_raw, owner, token_account, observed_slot, observed_at, source_commitment, updated_at)
-      VALUES (${vault.id}, ${mint}, ${idleAmountRaw}, ${vaultPubkey}, ${`idle-${suffix}`}, 100, now(), 'confirmed', now())`;
+      VALUES (${
+        vault.id
+      }, ${mint}, ${idleAmountRaw}, ${vaultPubkey}, ${`idle-${suffix}`}, 100, now(), 'confirmed', now())`;
   }
   await admin`
     INSERT INTO loyal_yield.user_yield_positions
@@ -97,15 +99,32 @@ async function seedVault(admin: postgres.Sql, idleAmountRaw = 0) {
       1000, ${`deposit-${suffix}`}, ${`deposit-${suffix}`}, 100, 'active', now(), now(),
       ${reserve}, 'market', ${mint}, 1000, 100, now())`;
 
-  return { mint, policyId: BigInt(policy.id), reserve, settings, suffix, vaultId: vault.id, vaultPubkey, wallet };
+  return {
+    mint,
+    policyId: BigInt(policy.id),
+    reserve,
+    settings,
+    suffix,
+    vaultId: vault.id,
+    vaultPubkey,
+    wallet,
+  };
 }
 
 test.skipIf(!databaseUrl)(
   "concurrent confirmed withdrawals both debit the current reserve row",
   async () => {
     const admin = postgres(databaseUrl!, { max: 1, onnotice: () => {} });
-    const { mint, policyId, reserve, settings, suffix, vaultId, vaultPubkey, wallet } =
-      await seedVault(admin);
+    const {
+      mint,
+      policyId,
+      reserve,
+      settings,
+      suffix,
+      vaultId,
+      vaultPubkey,
+      wallet,
+    } = await seedVault(admin);
     const arrivals = new Map<number, Arrival>();
     const writers = [
       lockstepWriter(databaseUrl!, arrivals),
