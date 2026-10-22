@@ -154,7 +154,7 @@ export function CryptoPage({
         ),
     [data.positions, page, shieldedBalances, stablecoinMints]
   );
-  const stablecoinsUsd = useStablecoinsUsd();
+  const stablecoinsUsd = useStablecoinsUsd(data.positions);
   const pageBalance = splitUsdBalance(
     page === "stables"
       ? stablecoinsUsd

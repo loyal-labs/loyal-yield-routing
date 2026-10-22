@@ -256,7 +256,7 @@ export function WalletHomePage({
   const { isBalanceHidden, toggleBalanceHidden } = useBalanceVisibility();
   const { open: openSignIn, openAccount } = useSignInModal();
 
-  const stablecoinsUsd = useStablecoinsUsd();
+  const stablecoinsUsd = useStablecoinsUsd(data.positions);
   const stablecoinsBalance = splitUsdBalance(stablecoinsUsd);
   const cryptoBalance = splitUsdBalance(
     Math.max(data.totalUsd - stablecoinsUsd, 0)
