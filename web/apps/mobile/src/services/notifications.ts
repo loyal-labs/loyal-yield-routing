@@ -73,6 +73,11 @@ export async function registerForPushNotifications(): Promise<string | null> {
       return null;
     }
 
+    // In standalone / dapp-store builds expoConfig.extra may be stripped
+    // once the app goes through a real publish. Constants.easConfig is the
+    // documented fallback — falling through to a hard-coded projectId is a
+    // last-resort so we never quietly generate tokens under the wrong
+    // Expo project (which silently fail to deliver).
     const projectId =
       Constants.expoConfig?.extra?.eas?.projectId ??
       (Constants as unknown as { easConfig?: { projectId?: string } })

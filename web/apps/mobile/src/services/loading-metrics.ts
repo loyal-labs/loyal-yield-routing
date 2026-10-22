@@ -18,6 +18,12 @@ export type { MobileLoadingOperation } from "./loading-metrics-contract";
 export type MobileLoadingAttempt = {
   completeAfterPaint: () => void;
   failAfterPaint: () => void;
+  /**
+   * Pass to `startLifecycleFlow` so this attempt's metric point and the
+   * lifecycle events it wraps share one `loyal.flow.id`. Without that the two
+   * live in disjoint id spaces and a failed point on the metrics dashboard
+   * cannot be traced to the error that caused it.
+   */
   flowId: string;
 };
 

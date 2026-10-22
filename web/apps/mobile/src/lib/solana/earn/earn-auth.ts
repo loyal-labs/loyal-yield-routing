@@ -35,6 +35,10 @@ const RETRYABLE_AUTH_CODES = new Set([
   "invalid_mobile_signature",
 ]);
 
+// Runs an Earn API call with the flow's already-signed auth message — the
+// backend's confirm endpoints accept the flow's prepare signature, so one
+// wallet prompt covers prepare + confirms. If the backend rejects the reuse,
+// signs a fresh `purpose`-scoped auth once (one extra prompt) and retries.
 export async function withEarnAuth<T>(
   signer: Signer,
   flowAuth: EarnAuthFields,

@@ -1,5 +1,6 @@
 import type { Href } from "expo-router";
 
+/** On-screen rectangle of a wallet card, in window coordinates. */
 export type CardRect = { x: number; y: number; width: number; height: number };
 
 export type CardSourceRect = CardRect & { usd: number };

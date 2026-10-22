@@ -150,6 +150,10 @@ export async function fetchLibrary(): Promise<Get["/api/mobile/library"]> {
   return response.json();
 }
 
+/**
+ * Transform flat summaries array into deduplicated group list.
+ * Keeps the most recent summary per group (input assumed sorted newest-first from API).
+ */
 export function transformSummariesToGroups(
   summaries: Summary[],
 ): GroupChat[] {

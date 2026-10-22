@@ -1,3 +1,12 @@
+// Explicit iCloud Drive wallet backup (ASK-2163). Writes the already
+// PIN-encrypted keypair blob into the app's hidden iCloud container
+// (CloudStorageScope.AppData — no folder appears in the Files app), and
+// restores it on a fresh install. Accepted risk per the Linear issue: the
+// backup keeps the existing PIN-based encryption, no extra password.
+//
+// react-native-cloud-storage is a TurboModule; it is loaded lazily so OTA
+// bundles running on binaries without it (and Jest) degrade to
+// "unsupported" instead of throwing at import time.
 import {
   adoptEncryptedKeypair,
   getStoredBackupPayload,
@@ -41,6 +50,11 @@ export function isCloudBackupSupported(): boolean {
   return getCloud() != null;
 }
 
+/**
+ * Validates a raw backup file. The file crosses a trust boundary (any app of
+ * the same team could write into the container, and iCloud may hand back a
+ * truncated file), so nothing is assumed about its shape.
+ */
 export function parseBackupEnvelope(raw: string): WalletBackupEnvelope | null {
   try {
     const data = JSON.parse(raw) as unknown;

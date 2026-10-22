@@ -49,6 +49,8 @@ function nativeErrorCode(error: unknown): string | number | undefined {
     : undefined;
 }
 
+// The vault signs the message bytes, not the full serialized transaction
+// (which would include the empty signature slots).
 function transactionMessageBytes(
   tx: Transaction | VersionedTransaction,
 ): Uint8Array {

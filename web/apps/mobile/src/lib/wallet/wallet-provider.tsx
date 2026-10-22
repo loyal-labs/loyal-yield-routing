@@ -405,6 +405,14 @@ function WalletProviderCore({
     [privy],
   );
 
+  // Email / OAuth sign-in landed on a Privy user. Works from the `user` the
+  // login call returned and the Privy client directly: the hook state
+  // (`privy.user`, `privy.wallet`) still reflects the pre-login session in
+  // this tick. Hydrates the embedded wallet when the user has one, creates
+  // it for a brand-new user, and hands off to wallet connect when the only
+  // linked wallets are external (Seed Vault, Phantom): minting a second
+  // address next to the user's funds would leave the app signing with the
+  // wrong one.
   const finalizePrivySigner = useCallback(
     async (user: PrivyUser, opts?: { useEmbedded?: boolean }) => {
       if (!privy) throw new Error("Privy is not configured.");

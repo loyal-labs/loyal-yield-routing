@@ -12,7 +12,7 @@ export type WalletTransfer = {
   status: "success" | "failed";
   counterparty?: string;
   tokenMint?: string;
-  tokenAmount?: string;
+  tokenAmount?: string; // human-readable (decimal-adjusted, truncated for display)
   tokenDecimals?: number;
   swapFromMint?: string;
   swapFromAmount?: string;

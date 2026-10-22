@@ -52,6 +52,12 @@ function thresholdUsdToRaw(thresholdUsd: number): string {
   return BigInt(Math.round(thresholdUsd * 10 ** USDC_DECIMALS)).toString();
 }
 
+// The confirm routes re-check the signature with getSignatureStatuses on
+// their own RPC right after the device saw the tx confirm — the same
+// propagation race as send-prepared.ts, but server-side. A transient
+// "unconfirmed_signature" 400 is retried briefly instead of surfacing: the
+// on-chain state has already moved, so losing the confirm strands the DB row
+// (setup stuck pending / a deleted autodeposit that still shows).
 const CONFIRM_RETRY_ATTEMPTS = 4;
 const CONFIRM_RETRY_DELAY_MS = 1500;
 
@@ -362,6 +368,8 @@ export async function updateEarnAutodepositThreshold(args: {
   }
 }
 
+// Enable/disable an existing Autodeposit (the delegation stays in place; the
+// sweep worker honors `active`). DB-only on the backend.
 export async function setEarnAutodepositActive(args: {
   signer: Signer;
   active: boolean;
@@ -556,6 +564,13 @@ async function runEarnAutodepositClose(
   });
 }
 
+// Trigger the pending scheduled Autodeposit sweep to run now instead of waiting
+// out its ~1h window. DB-only on the backend (it advances `eligibleAfter` so the
+// sweep worker picks it up); no on-chain signing beyond the auth signature.
+// Returns the still-open lifecycle flow: the request only advances the
+// sweep's eligibility (the worker runs it later), so "done" is when the
+// caller observes the worker's result tx — it completes the flow then, and
+// the flow's elapsedMs captures the true request→done duration.
 export async function executeEarnAutodepositScheduledSweep(args: {
   signer: Signer;
   flowId?: string;

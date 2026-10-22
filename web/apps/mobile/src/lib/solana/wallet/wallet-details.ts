@@ -10,6 +10,7 @@ import type { Signer } from "@/lib/wallet/signer";
 import { getConnection } from "../rpc/connection";
 import { SimpleWallet } from "./wallet-implementation";
 
+// Lazy-loaded to avoid top-level Buffer usage in React Native runtime
 async function getSplToken() {
   return await import("@solana/spl-token");
 }

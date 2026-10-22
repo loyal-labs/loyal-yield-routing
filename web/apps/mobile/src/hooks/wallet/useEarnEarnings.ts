@@ -53,6 +53,9 @@ function fetchIntoCache(walletAddress: string): Promise<void> {
   return entry.promise;
 }
 
+// Refreshes the cache. Silent by default (mounted charts keep their snapshot);
+// `notify: true` also pushes the fresh data into mounted charts — use it only
+// when the earn balance explicitly changed.
 export async function refreshEarnEarningsCache(
   walletAddress: string,
   { notify = false }: { notify?: boolean } = {},

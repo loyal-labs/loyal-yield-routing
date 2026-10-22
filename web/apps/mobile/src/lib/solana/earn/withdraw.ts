@@ -43,6 +43,12 @@ import {
 } from "./wire";
 
 const USDC_DECIMALS = 6;
+// The wallet fee-pays every withdrawal transaction itself. Observed prod cost
+// is ~57k lamports for a withdraw step + cleanup (priority fees included);
+// 0.001 SOL clears that with wide headroom while staying too small to block
+// anyone plausible. ponytail: does NOT cover re-creating a closed wallet USDC
+// ATA (~0.002 SOL rent) — that rare case still surfaces as the raw prefix
+// simulation error; raise the floor if it ever shows up in ClickStack.
 const WITHDRAW_MIN_FEE_LAMPORTS = 1_000_000;
 const MAX_WITHDRAW_AUTODEPOSIT_CLOSES = 4;
 
@@ -217,6 +223,10 @@ const RETRYABLE_CLEANUP_CONTEXT_CODES = new Set([
 const CLEANUP_CONTEXT_ATTEMPTS = 8;
 const CLEANUP_CONTEXT_RETRY_DELAY_MS = 2_500;
 
+// The cleanup confirm 503s (`full_exit_verification_retryable`) while the
+// backend's RPC catches up to the cleanup slot for its zero proof. A dropped
+// confirm leaves the position row active-at-$0 (a ghost) until yield routing
+// reconciles it, so retry here first.
 const RETRYABLE_CLEANUP_CONFIRM_CODES = new Set([
   "full_exit_verification_retryable",
 ]);
@@ -436,11 +446,23 @@ async function serverPrepareWithdraw(
   return preparedWithdraw;
 }
 
+// Real on-chain Earn withdrawal from the caller's smart account (same position
+// as web). The withdraw transactions are built ON-DEVICE with the
+// smart-account-vaults SDK (mirroring the deposit and autodeposit flows): the
+// backend `prepare-context` call keeps source selection and reconcile, and the
+// RPC-heavy instruction build runs on the device's own RPC/IP allowance. A
+// full exit may span multiple Kamino reserves (one signed step each).
+//
+// `mode` "full" tells the backend to use the exact on-chain source amount (the
+// passed `amountUsd` is only authoritative for "partial").
 export async function executeEarnWithdraw(args: {
   signer: Signer;
   amountUsd: number;
   flowId?: string;
   mode: EarnWithdrawMode;
+  // The chosen source. Omitted/null lets the backend auto-select when there's
+  // exactly one source; required (from the picker) when the position spans
+  // multiple sources.
   source?: EarnWithdrawSource | null;
 }): Promise<EarnWithdrawResult> {
   const flow = startLifecycleFlow({

@@ -42,6 +42,10 @@ const SIGNING_DECLINED_MESSAGE =
 const CANCELLED_MESSAGE =
   "The wallet request was cancelled. Try again and approve the prompt in your wallet app.";
 
+// How long after the app returns to the foreground we still wait for the
+// wallet's redirect to deliver a URL event before treating the switch-back as
+// a cancellation. The redirect's URL event lands right around activation, so
+// real approvals never wait this long.
 const RETURN_WITHOUT_RESPONSE_GRACE_MS = 4_000;
 
 /**

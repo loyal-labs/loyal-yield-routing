@@ -34,6 +34,13 @@ export function walletClientDisplayName(clientType?: string): string | null {
   return WALLET_CLIENT_NAMES[clientType] ?? null;
 }
 
+/**
+ * Thrown when a Privy login lands on a user whose primary Solana wallet is
+ * external (Seed Vault, Phantom, a browser extension, ...). Privy holds only
+ * the address, never the key, so the caller must connect that wallet from an
+ * app on this phone rather than mint an embedded wallet next to the user's
+ * funds. Message is a fallback for callers that do not handle it.
+ */
 export class PrivyExternalWalletError extends Error {
   constructor(
     readonly address: string,

@@ -23,7 +23,7 @@ type Props = {
 };
 
 const HEX_REGEX = /^[0-9a-fA-F]+$/;
-const SECRET_KEY_BYTES = 64;
+const SECRET_KEY_BYTES = 64; // Solana ed25519 keypair: 32-byte seed + 32-byte pubkey
 const SECRET_KEY_HEX_LENGTH = SECRET_KEY_BYTES * 2;
 
 function parseSecretKey(

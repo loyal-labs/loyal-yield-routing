@@ -267,6 +267,9 @@ export class MwaSigner implements Signer {
     op: (wallet: Web3MobileWallet) => Promise<T>,
   ): Promise<T> {
     const { transact } = await getMwa();
+    // Set once the wallet session is open — `transact` only runs the callback
+    // after `startSession` resolves. Tells a wallet that never connected apart
+    // from one that connected and then failed the signing call.
     let sessionEstablished = false;
     try {
       return await transact(async (wallet) => {

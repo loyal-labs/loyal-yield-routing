@@ -77,6 +77,8 @@ export function EarnDog({
   blinkOnly = false,
 }: {
   runId: number;
+  // Delay (ms) before the gaze starts rising — kept in sync with the screen's
+  // reveal delay so the eyes look up as the dog rises and the copy appears.
   startDelay?: number;
   width: number;
   height: number;

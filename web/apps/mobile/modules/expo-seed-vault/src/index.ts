@@ -113,6 +113,10 @@ export async function listAuthorizedSeeds(
   }
 }
 
+/**
+ * Prompt the user to generate a new seed inside the vault and authorize it
+ * for this app. The fresh 24-word seed never leaves the vault.
+ */
 export async function createNewSeed(
   derivationPath: string = DEFAULT_SOLANA_DERIVATION_PATH,
 ): Promise<VaultAccount> {
@@ -127,6 +131,10 @@ export async function importSeed(
   return toVaultAccount(native);
 }
 
+/**
+ * Release this app's authorization for the given seed. The seed itself stays
+ * in the vault and can be re-authorized later.
+ */
 export async function deauthorize(authToken: string): Promise<void> {
   await ExpoSeedVault.deauthorize(nativeAuthToken(authToken));
 }
@@ -144,6 +152,12 @@ export async function signTransaction(args: {
   return base64ToUint8(sigB64);
 }
 
+/**
+ * Ask the vault to sign a batch of transactions in a single authorization —
+ * one biometric/PIN prompt for the whole batch. Signatures come back in
+ * input order. Callers must respect the vault's per-prompt request limit
+ * (3 on current Saga/Seeker devices).
+ */
 export async function signTransactions(args: {
   authToken: string;
   derivationPath: string;
@@ -185,6 +199,11 @@ export async function signMessage(args: {
   return base64ToUint8(sigB64);
 }
 
+/**
+ * Look up the public key for an already-authorized derivation path without
+ * prompting the user. Only works for paths the vault has pre-derived at
+ * authorization time (the Solana defaults are pre-derived).
+ */
 export async function getPublicKey(args: {
   authToken: string;
   derivationPath: string;

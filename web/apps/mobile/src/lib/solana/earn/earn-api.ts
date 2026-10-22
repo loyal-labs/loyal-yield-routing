@@ -9,6 +9,11 @@ import type { LifecycleErrorDetail } from "@/services/observability";
 import { earnHeaders, earnWalletRead } from "./earn-session";
 import type { WirePreparedOperation } from "./wire";
 
+// A first-ever deposit provisions the smart account inline on the server
+// (finalized-creation wait plus reservation-conflict retries), which can
+// exceed the platform's default request ceiling — iOS aborts at ~60s. Give
+// prepare its own generous deadline; provisioning keeps running server-side,
+// so a retry after a timeout lands on the fast path.
 const PREPARE_TIMEOUT_MS = 120_000;
 
 export type EarnAuthFields = {
@@ -31,6 +36,8 @@ function earnAuthParts(auth: EarnAuthFields | EarnSessionAuth): {
     : { bodyFields: { ...auth }, headers: {} };
 }
 
+// The serialized prepared deposit. Only the fields mobile needs to sign+send are
+// typed; the whole object is echoed back to `confirm` opaquely.
 export type WirePreparedEarnDeposit = {
   nativeSolRequirement?: SmartAccountNativeSolRequirement;
   prepared: WirePreparedOperation;
@@ -347,6 +354,10 @@ export async function fetchEarnWithdrawPrepareContext(args: {
   return (await res.json()) as EarnWithdrawPrepareContext;
 }
 
+// Fresh post-withdraw inputs for the device-side cleanup prepare. The backend
+// verifies that no Kamino holding remains at or after `minContextSlot` and
+// returns the full vault token-account inventory (any product mint, either
+// token program); it does not build a transaction.
 export type EarnWithdrawCleanupPrepareContext = {
   cluster: string;
   programId: string;
@@ -801,6 +812,12 @@ export async function fetchEarnState(
   return (await res.json()) as EarnStateResponse;
 }
 
+// Live on-chain Earn holdings snapshot — the same read the web does for its
+// headline balance (the vault's Kamino obligations + idle USDC, summed live via
+// RPC). Used to override `fetchEarnState`'s `currentAmountRaw`, which reads a DB
+// read-model that lags the chain and omits non-idle venue holdings (so the
+// native balance showed stale/low values). All amounts are USDC base units
+// (6 decimals) as strings. Wallet-keyed, read-only, no signature — like `state`.
 export type EarnHoldingItem = {
   kind: "kamino" | "idle";
   label: string;

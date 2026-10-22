@@ -140,6 +140,13 @@ async function signSendAndConfirmDeposit(args: {
   return { depositSignature: deposit.signature };
 }
 
+// Policies are immutable permission records, so a legacy (classic-token-only)
+// Earn route policy is "updated" by creating a NEW owner-neutral route+setup
+// pair at the next seed — two signed transactions, one wallet prompt (the
+// Seed Vault batches them). The legacy pair stays on-chain and only strands
+// its rent. No dedicated confirm endpoint: `deposit/confirm` adopts a
+// chain-discovered policy pair (creation signature resolved from chain) when
+// the re-prepared deposit references one the DB doesn't know.
 async function runEarnPolicyUpdate(args: {
   client: ReturnType<typeof createSmartAccountVaultsClient>;
   context: { cluster: string; policySigner: string; settingsPda: string };
@@ -262,6 +269,9 @@ async function runEarnDeposit(
     connection: getConnection(),
     programId: new PublicKey(context.programId),
   });
+  // After a policy update the DB-known route (the legacy pair) is stale, so
+  // the retry prepares WITHOUT the known route: the SDK's policy scan sorts
+  // compatible pairs first and picks up the freshly created one from chain.
   const prepareOnDevice = (options: { scanPolicies: boolean }) =>
     withConnectionRetry("deposit device prepare", DEPOSIT_NETWORK_MESSAGE, () =>
       client.prepareEarnUsdcDeposit({

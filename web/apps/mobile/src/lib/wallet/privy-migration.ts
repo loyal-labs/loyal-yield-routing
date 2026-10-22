@@ -6,6 +6,8 @@ import { isWalletRejection } from "./rejection";
 import type { Signer } from "./signer";
 
 export const PRIVY_MIGRATION_DONE_KEY = "loyal:privy-migration-done";
+// Domain/uri are echoed into the SIWS message; Privy validates the domain
+// against the app's allowed origins.
 export const SIWS_DOMAIN = "askloyal.com";
 export const SIWS_URI = "https://askloyal.com/mobile";
 
