@@ -2,19 +2,16 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
+import { EARN_BANNER_ASSET_VERSION_QUERY } from "@/components/wallet-workspace/facelift/earn-banner-assets";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { BannerTitleChars } from "@/components/wallet-workspace/facelift/wallet-home-banners";
 import { LOYAL_TOKEN_MINT } from "@/lib/market/loyal-token-ticker.shared";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
-// Banner art remounts on every carousel rotation, so it is served immutable
-// (see the cache rule in next.config.ts). The commit hash is what invalidates
-// it: a deploy changes the URL, so a rotation never re-hits the network but a
-// release never serves stale artwork.
 const ASSET_VERSION = process.env.NEXT_PUBLIC_GIT_COMMIT_HASH ?? "dev";
 
 function bannerAsset(file: string): string {
-  return `${ASSET_BASE}/${file}?v=${ASSET_VERSION}`;
+  return `${ASSET_BASE}/${file}?${EARN_BANNER_ASSET_VERSION_QUERY}=${ASSET_VERSION}`;
 }
 
 // Same autoplay clock as the mobile home carousel; the story pill fill reads
