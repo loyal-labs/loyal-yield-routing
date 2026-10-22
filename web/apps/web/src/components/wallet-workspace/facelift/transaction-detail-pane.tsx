@@ -13,7 +13,6 @@ import { copyTextToClipboard } from "@/components/wallet-workspace/facelift/copy
 import {
   DualIcon,
   resolveEarnCoinIconSrc,
-  UsdcCoinImage,
 } from "@/components/wallet-workspace/facelift/earn-activity-card";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { usePublicEnv } from "@/contexts/public-env-context";
@@ -60,34 +59,11 @@ function RouteRow({
   );
 }
 
-// The wallet side ("Main") renders as the same USDC coin art the activity
-// rows use — the API's icon for it is the legacy agent avatar. Market sides
-// carry their own logos; abstract sides (Earn / Autodeposit) fall back to the
-// Earn glyph.
 function RouteTile({
-  coinSrc = null,
   side,
 }: {
-  coinSrc?: string | null;
   side: EarnTransactionItem["source"];
 }) {
-  if (side.label === "Main") {
-    return (
-      <span className="relative block size-11 overflow-hidden rounded-full">
-        {coinSrc ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            alt=""
-            aria-hidden="true"
-            className="size-11 rounded-full object-cover"
-            src={coinSrc}
-          />
-        ) : (
-          <UsdcCoinImage />
-        )}
-      </span>
-    );
-  }
   if (side.icon) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
@@ -261,7 +237,7 @@ export function EarnTransactionDetailPane({
         )}
         <div className="relative w-full px-2 pb-2">
           <RouteRow
-            icon={<RouteTile coinSrc={coinSrc} side={item.source} />}
+            icon={<RouteTile side={item.source} />}
             label="From"
             value={item.source.label}
             valueSuffix={
@@ -269,7 +245,7 @@ export function EarnTransactionDetailPane({
             }
           />
           <RouteRow
-            icon={<RouteTile coinSrc={coinSrc} side={item.destination} />}
+            icon={<RouteTile side={item.destination} />}
             label="To"
             value={item.destination.label}
             valueSuffix={
