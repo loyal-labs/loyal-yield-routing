@@ -15,7 +15,6 @@ import { Check, ChevronDown, X } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Dimensions,
   Image,
   Keyboard,
   Platform,
@@ -29,6 +28,17 @@ import Animated, {
   useAnimatedStyle,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  amountFieldStyles,
+  amountToUsd,
+  fitUsdAmountFontSize,
+  focusInputAfterSheetSettles,
+  formatAmountDisplay,
+  presentSheetWhenOpen,
+  sanitizeAmount,
+  usdBalanceFormatter,
+  useCaretBlink,
+} from "@/components/sheets/sheetFacts";
 import { useFixedSheetLayout } from "@/hooks/useFixedSheetLayout";
 import { useKeyboardRescueFocus } from "@/hooks/useKeyboardRescueFocus";
 
@@ -102,57 +112,6 @@ const COLOR_BLACK = "#000";
 const COLOR_ERROR_BG = "rgba(249, 54, 60, 0.14)";
 const COLOR_ERROR_TEXT = "#F9363C";
 
-const SCREEN_WIDTH = Dimensions.get("screen").width;
-
-const AMOUNT_MAX_FONT_SIZE = 48;
-const AMOUNT_MIN_FONT_SIZE = 22;
-const AMOUNT_CHAR_WIDTH_RATIO = 0.6;
-
-const BALANCE_FORMATTER = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-
-function sanitizeAmount(input: string): string {
-  let cleaned = input.replace(/[^0-9.]/g, "");
-  const parts = cleaned.split(".");
-  if (parts.length > 2) {
-    cleaned = `${parts[0]}.${parts.slice(1).join("")}`;
-  }
-  const [intPart, decPart] = cleaned.split(".");
-  const normalizedInt = intPart ? intPart.replace(/^0+(?=\d)/, "") : intPart;
-  const trimmedDec = decPart !== undefined ? decPart.slice(0, 2) : undefined;
-  return trimmedDec !== undefined
-    ? `${normalizedInt || "0"}.${trimmedDec}`
-    : normalizedInt;
-}
-
-function formatAmountDisplay(raw: string): string {
-  if (!raw) {
-    return "";
-  }
-  const trailingDot = raw.endsWith(".") && !raw.slice(0, -1).includes(".");
-  const [intPart, decPart] = raw.split(".");
-  const intNum = Number(intPart || "0");
-  const intText = Number.isFinite(intNum)
-    ? intNum.toLocaleString("en-US")
-    : intPart || "0";
-  if (trailingDot) {
-    return `${intText}.`;
-  }
-  return decPart !== undefined ? `${intText}.${decPart}` : intText;
-}
-
-function amountToUsd(raw: string): number {
-  if (!raw) {
-    return 0;
-  }
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 function sourceBalanceUsd(source: EarnWithdrawSourceInfo): number {
   const raw = Number(source.amountRaw);
   return Number.isFinite(raw) ? raw / 1_000_000 : 0;
@@ -204,7 +163,7 @@ export function WithdrawSheet({
   const insets = useSafeAreaInsets();
   const [amount, setAmount] = useState("");
   const [isFocused, setIsFocused] = useState(false);
-  const [caretOn, setCaretOn] = useState(true);
+  const caretOn = useCaretBlink(isFocused);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
@@ -243,14 +202,12 @@ export function WithdrawSheet({
       : liveTotal ?? selectedBalanceUsd;
 
   useEffect(() => {
+    presentSheetWhenOpen(sheetRef.current, open);
     if (open) {
       setAmount("");
       setSubmitError(null);
       setSelectedSourceId(null);
       setMaxSelected(false);
-      sheetRef.current?.present();
-    } else {
-      sheetRef.current?.dismiss();
     }
   }, [open]);
 
@@ -267,19 +224,8 @@ export function WithdrawSheet({
     setSelectedSourceId(largest?.id ?? null);
   }, [open, sourceList, selectedSourceId]);
 
-  useEffect(() => {
-    if (!isFocused) {
-      setCaretOn(true);
-      return;
-    }
-    const id = setInterval(() => setCaretOn((v) => !v), 530);
-    return () => clearInterval(id);
-  }, [isFocused]);
-
   const handleSheetChange = useCallback((index: number) => {
-    if (index >= 0) {
-      setTimeout(() => inputRef.current?.focus(), 120);
-    }
+    focusInputAfterSheetSettles(() => inputRef.current?.focus(), index);
   }, []);
 
   const handleAmountChange = useCallback((text: string) => {
@@ -386,17 +332,10 @@ export function WithdrawSheet({
 
   const displayValue = formatAmountDisplay(amount);
 
-  const amountFontSize = useMemo(() => {
-    const text = `$${displayValue || "0"}`;
-    const availableWidth = SCREEN_WIDTH - 48;
-    const fitted = Math.floor(
-      availableWidth / (text.length * AMOUNT_CHAR_WIDTH_RATIO)
-    );
-    return Math.max(
-      AMOUNT_MIN_FONT_SIZE,
-      Math.min(AMOUNT_MAX_FONT_SIZE, fitted)
-    );
-  }, [displayValue]);
+  const amountFontSize = useMemo(
+    () => fitUsdAmountFontSize(displayValue),
+    [displayValue]
+  );
 
   const keyboard = useAnimatedKeyboard();
   const animatedFooterStyle = useAnimatedStyle(() => ({
@@ -450,13 +389,13 @@ export function WithdrawSheet({
           <View style={styles.body}>
             <View style={styles.amountInputWrap}>
               <Pressable
-                style={[styles.amountRow, earnMax && styles.maxAmountRow]}
+                style={[amountFieldStyles.row, earnMax && styles.maxAmountRow]}
                 onPress={openKeyboard}
               >
-                <View style={styles.amountVisual} pointerEvents="none">
+                <View style={amountFieldStyles.visual} pointerEvents="none">
                   <Text
                     style={[
-                      styles.amountText,
+                      amountFieldStyles.text,
                       earnMax && styles.maxAmountText,
                       { fontSize: amountFontSize },
                     ]}
@@ -465,7 +404,7 @@ export function WithdrawSheet({
                   </Text>
                   <Text
                     style={[
-                      styles.amountText,
+                      amountFieldStyles.text,
                       earnMax && styles.maxAmountText,
                       { fontSize: amountFontSize },
                     ]}
@@ -474,7 +413,7 @@ export function WithdrawSheet({
                   </Text>
                   <View
                     style={[
-                      styles.caret,
+                      amountFieldStyles.caret,
                       { opacity: isFocused && caretOn ? 1 : 0 },
                     ]}
                   />
@@ -490,7 +429,7 @@ export function WithdrawSheet({
                   maxLength={15}
                   caretHidden
                   pointerEvents="none"
-                  style={styles.overlayInput}
+                  style={amountFieldStyles.overlayInput}
                   accessibilityLabel="Withdraw amount"
                 />
               </Pressable>
@@ -567,13 +506,13 @@ export function WithdrawSheet({
                   <Text style={styles.balanceAmount}>
                     {earnMax ? (
                       <>
-                        {BALANCE_FORMATTER.format(available).split(".")[0]}
+                        {usdBalanceFormatter.format(available).split(".")[0]}
                         <Text style={{ color: "rgba(60,60,67,0.4)" }}>
-                          .{BALANCE_FORMATTER.format(available).split(".")[1]}
+                          .{usdBalanceFormatter.format(available).split(".")[1]}
                         </Text>
                       </>
                     ) : (
-                      BALANCE_FORMATTER.format(available)
+                      usdBalanceFormatter.format(available)
                     )}
                   </Text>
                   {!earnMax && (
@@ -685,7 +624,7 @@ export function WithdrawSheet({
                       {label}
                     </Text>
                     <Text style={styles.sourceRowBalance}>
-                      {BALANCE_FORMATTER.format(sourceBalanceUsd(source))}
+                      {usdBalanceFormatter.format(sourceBalanceUsd(source))}
                     </Text>
                   </View>
                   {isSelected ? (
@@ -771,46 +710,6 @@ const styles = StyleSheet.create({
   },
   amountInputWrap: {
     paddingBottom: 24,
-  },
-  amountRow: {
-    position: "relative",
-    // Matches the amount text's 58pt line box (see amountText).
-    height: 58,
-    justifyContent: "flex-end",
-  },
-  amountVisual: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-  },
-  amountText: {
-    fontFamily: "Geist_600SemiBold",
-    fontSize: 48,
-    // iOS clips Geist's ascenders when lineHeight == fontSize (Android
-    // forgave it via includeFontPadding). Bottom alignment keeps the
-    // baseline and caret in place; the headroom goes to the top.
-    lineHeight: 58,
-    color: COLOR_BLACK,
-    includeFontPadding: false,
-  },
-  caret: {
-    width: 2,
-    height: 40,
-    marginHorizontal: 2,
-    // Centered like the glyphs: both platforms center text in the 58pt line
-    // box, so a bottom-pinned caret rendered below the digits on iOS.
-    alignSelf: "center",
-    borderRadius: 1,
-    backgroundColor: COLOR_BLACK,
-  },
-  overlayInput: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    opacity: 0,
-    padding: 0,
-    fontSize: 48,
   },
   balanceCell: {
     flexDirection: "row",

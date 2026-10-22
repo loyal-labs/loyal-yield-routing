@@ -9,7 +9,6 @@ import { Info, Trash2, Wallet, X } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Dimensions,
   Keyboard,
   Pressable,
   StyleSheet,
@@ -21,16 +20,24 @@ import Animated, {
   useAnimatedStyle,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  amountFieldStyles,
+  amountToUsd,
+  computeSolShortfall,
+  fitUsdAmountFontSize,
+  focusInputAfterSheetSettles,
+  formatAmountDisplay,
+  formatSolAmountCompact,
+  formatSolTopUpCta,
+  presentSheetWhenOpen,
+  sanitizeAmount,
+  solShortfallBlocks,
+  useCaretBlink,
+} from "@/components/sheets/sheetFacts";
 import { useFixedSheetLayout } from "@/hooks/useFixedSheetLayout";
 import { useKeyboardRescueFocus } from "@/hooks/useKeyboardRescueFocus";
 
 import AutodepositIcon from "../../../assets/images/earn/autodeposit.svg";
-
-const SCREEN_WIDTH = Dimensions.get("screen").width;
-
-const AMOUNT_MAX_FONT_SIZE = 48;
-const AMOUNT_MIN_FONT_SIZE = 22;
-const AMOUNT_CHAR_WIDTH_RATIO = 0.6;
 
 const COLOR_BLACK = "#000";
 const COLOR_LABEL_DIM = "rgba(60, 60, 67, 0.6)";
@@ -39,44 +46,6 @@ const COLOR_CHIP_BG = "#F2F2F7";
 const COLOR_RED = "#F9363C";
 const COLOR_WALLET_GREEN = "#32B67C";
 const COLOR_CONNECTOR = "rgba(0, 0, 0, 0.14)";
-
-function sanitizeAmount(input: string): string {
-  let cleaned = input.replace(/[^0-9.]/g, "");
-  const parts = cleaned.split(".");
-  if (parts.length > 2) {
-    cleaned = `${parts[0]}.${parts.slice(1).join("")}`;
-  }
-  const [intPart, decPart] = cleaned.split(".");
-  const normalizedInt = intPart ? intPart.replace(/^0+(?=\d)/, "") : intPart;
-  const trimmedDec = decPart !== undefined ? decPart.slice(0, 2) : undefined;
-  return trimmedDec !== undefined
-    ? `${normalizedInt || "0"}.${trimmedDec}`
-    : normalizedInt;
-}
-
-function formatAmountDisplay(raw: string): string {
-  if (!raw) {
-    return "";
-  }
-  const trailingDot = raw.endsWith(".") && !raw.slice(0, -1).includes(".");
-  const [intPart, decPart] = raw.split(".");
-  const intNum = Number(intPart || "0");
-  const intText = Number.isFinite(intNum)
-    ? intNum.toLocaleString("en-US")
-    : intPart || "0";
-  if (trailingDot) {
-    return `${intText}.`;
-  }
-  return decPart !== undefined ? `${intText}.${decPart}` : intText;
-}
-
-function amountToUsd(raw: string): number {
-  if (!raw) {
-    return 0;
-  }
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
 
 function splitDollars(value: number): { whole: string; cents: string } {
   const [whole, cents] = value.toFixed(2).split(".");
@@ -99,24 +68,10 @@ function shortenAddress(address: string | null): string {
 // when the Autodeposit is deleted.
 const SETUP_MIN_SOL = 0.02;
 
-// How much SOL the wallet is missing to cover setup rent/fees. Returns null
-// when covered — or when the balance hasn't loaded yet, so the gate fails open
-// instead of blocking a funded wallet on slow data. (Mirrors DepositSheet's
-// computeFirstDepositSolShortfall.)
 export function computeAutodepositSetupSolShortfall(
   solBalance: number | null,
 ): number | null {
-  if (solBalance == null || !Number.isFinite(solBalance)) {
-    return null;
-  }
-  const shortfall = SETUP_MIN_SOL - solBalance;
-  if (shortfall <= 0) return null;
-  // Ceil at 4 decimals so the ">" prompt stays true after rounding.
-  return Math.ceil(shortfall * 1e4) / 1e4;
-}
-
-function formatSolAmount(sol: number): string {
-  return sol.toFixed(4).replace(/\.?0+$/, "");
+  return computeSolShortfall(SETUP_MIN_SOL, solBalance);
 }
 
 export function AutodepositSetupSheet({
@@ -150,7 +105,7 @@ export function AutodepositSetupSheet({
   const insets = useSafeAreaInsets();
   const [amount, setAmount] = useState("");
   const [isFocused, setIsFocused] = useState(false);
-  const [caretOn, setCaretOn] = useState(true);
+  const caretOn = useCaretBlink(isFocused);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -167,11 +122,7 @@ export function AutodepositSetupSheet({
   // effect while `open` were still true, it would re-present a sheet the user
   // just closed (the delete dismisses imperatively before onClose propagates).
   useEffect(() => {
-    if (open) {
-      sheetRef.current?.present();
-    } else {
-      sheetRef.current?.dismiss();
-    }
+    presentSheetWhenOpen(sheetRef.current, open);
   }, [open]);
 
   useEffect(() => {
@@ -185,19 +136,8 @@ export function AutodepositSetupSheet({
     setSubmitting(false);
   }, [open, mode, initialThresholdUsd]);
 
-  useEffect(() => {
-    if (!isFocused) {
-      setCaretOn(true);
-      return;
-    }
-    const id = setInterval(() => setCaretOn((v) => !v), 530);
-    return () => clearInterval(id);
-  }, [isFocused]);
-
   const handleSheetChange = useCallback((index: number) => {
-    if (index >= 0) {
-      setTimeout(() => inputRef.current?.focus(), 120);
-    }
+    focusInputAfterSheetSettles(() => inputRef.current?.focus(), index);
   }, []);
 
   const handleAmountChange = useCallback((text: string) => {
@@ -241,7 +181,7 @@ export function AutodepositSetupSheet({
   // outright (independent of the typed threshold) — same UX as DepositSheet's
   // first-deposit gate. Otherwise the design's only validation: a $0 threshold
   // can't create an autodeposit.
-  const needsSolTopUp = mode === "create" && (setupSolShortfall ?? 0) > 0;
+  const needsSolTopUp = mode === "create" && solShortfallBlocks(setupSolShortfall);
   const disabled = needsSolTopUp || thresholdUsd <= 0;
 
   const handleConfirm = useCallback(async () => {
@@ -287,22 +227,15 @@ export function AutodepositSetupSheet({
   const fromParts = splitDollars(balance);
   const toParts = splitDollars(earnBalance);
   const ctaLabel = needsSolTopUp
-    ? `Deposit > ${formatSolAmount(setupSolShortfall as number)} SOL to create Autodeposit`
+    ? formatSolTopUpCta(setupSolShortfall as number, "create Autodeposit")
     : mode === "edit"
       ? "Confirm"
       : "Create Autodeposit";
 
-  const amountFontSize = useMemo(() => {
-    const text = `$${displayValue || "0"}`;
-    const availableWidth = SCREEN_WIDTH - 48;
-    const fitted = Math.floor(
-      availableWidth / (text.length * AMOUNT_CHAR_WIDTH_RATIO),
-    );
-    return Math.max(
-      AMOUNT_MIN_FONT_SIZE,
-      Math.min(AMOUNT_MAX_FONT_SIZE, fitted),
-    );
-  }, [displayValue]);
+  const amountFontSize = useMemo(
+    () => fitUsdAmountFontSize(displayValue),
+    [displayValue],
+  );
 
   const keyboard = useAnimatedKeyboard();
   const animatedFooterStyle = useAnimatedStyle(() => ({
@@ -361,17 +294,17 @@ export function AutodepositSetupSheet({
 
         <View style={styles.body}>
           <Text style={styles.inputLabel}>Deposit anything above</Text>
-          <Pressable style={styles.amountRow} onPress={openKeyboard}>
-            <View style={styles.amountVisual} pointerEvents="none">
-              <Text style={[styles.amountText, { fontSize: amountFontSize }]}>
+          <Pressable style={[amountFieldStyles.row, { marginTop: 4 }]} onPress={openKeyboard}>
+            <View style={amountFieldStyles.visual} pointerEvents="none">
+              <Text style={[amountFieldStyles.text, { fontSize: amountFontSize }]}>
                 $
               </Text>
-              <Text style={[styles.amountText, { fontSize: amountFontSize }]}>
+              <Text style={[amountFieldStyles.text, { fontSize: amountFontSize }]}>
                 {displayValue || "0"}
               </Text>
               <View
                 style={[
-                  styles.caret,
+                  amountFieldStyles.caret,
                   { opacity: isFocused && caretOn ? 1 : 0 },
                 ]}
               />
@@ -387,7 +320,7 @@ export function AutodepositSetupSheet({
               maxLength={15}
               caretHidden
               pointerEvents="none"
-              style={styles.overlayInput}
+              style={amountFieldStyles.overlayInput}
               accessibilityLabel="Autodeposit threshold"
             />
           </Pressable>
@@ -446,7 +379,7 @@ export function AutodepositSetupSheet({
 
           {mode === "create" ? (
             <Text style={styles.solHint}>
-              Setting up Autodeposit takes ~{formatSolAmount(SETUP_MIN_SOL)}{" "}
+              Setting up Autodeposit takes ~{formatSolAmountCompact(SETUP_MIN_SOL)}{" "}
               SOL from your wallet for Solana account rent — it is returned
               when you remove Autodeposit.
             </Text>
@@ -537,47 +470,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
     color: COLOR_LABEL_DIM,
-  },
-  amountRow: {
-    position: "relative",
-    // Matches the amount text's 58pt line box (see amountText).
-    height: 58,
-    justifyContent: "flex-end",
-    marginTop: 4,
-  },
-  amountVisual: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-  },
-  amountText: {
-    fontFamily: "Geist_600SemiBold",
-    fontSize: 48,
-    // iOS clips Geist's ascenders when lineHeight == fontSize (Android
-    // forgave it via includeFontPadding). Bottom alignment keeps the
-    // baseline and caret in place; the headroom goes to the top.
-    lineHeight: 58,
-    color: COLOR_BLACK,
-    includeFontPadding: false,
-  },
-  caret: {
-    width: 2,
-    height: 40,
-    marginHorizontal: 2,
-    // Centered like the glyphs: both platforms center text in the 58pt line
-    // box, so a bottom-pinned caret rendered below the digits on iOS.
-    alignSelf: "center",
-    borderRadius: 1,
-    backgroundColor: COLOR_BLACK,
-  },
-  overlayInput: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    opacity: 0,
-    padding: 0,
-    fontSize: 48,
   },
   caption: {
     flexDirection: "row",
