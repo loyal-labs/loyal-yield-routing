@@ -11,18 +11,16 @@ import {
 } from "@solana/web3.js";
 
 import {
+  hydratePreparedOperation,
   sendPreparedWithWallet,
   type WalletAdapterLike,
+  type WirePreparedLoyalSmartAccountsOperation,
 } from "../packages/smart-account-vaults/src/index.ts";
 import {
   getSolanaEndpoints,
   resolveSolanaEnv,
 } from "../packages/solana-rpc/src/index.ts";
 import { compilePreparedOperation } from "../packages/loyal-smart-accounts-core/src/index.ts";
-import {
-  hydratePreparedOperation,
-  type WirePreparedLoyalSmartAccountsOperation,
-} from "../apps/web/src/lib/smart-accounts/prepared-operation-wire.shared.ts";
 
 mock.module("server-only", () => ({}));
 

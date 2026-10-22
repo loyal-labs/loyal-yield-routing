@@ -16,7 +16,7 @@ import {
   VOLTR_PROGRAM_ID,
   VOLTR_VAULT,
   type VoltrPosition,
-} from "./program";
+} from "@loyal-labs/smart-account-vaults";
 
 const HISTORY_LIMIT = 100;
 

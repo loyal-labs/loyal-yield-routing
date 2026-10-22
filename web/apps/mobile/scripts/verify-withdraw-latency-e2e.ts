@@ -27,6 +27,7 @@ import {
 } from "@solana/spl-token";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 
+import type { BrowserLifecycleEnvelope } from "../../web/src/features/observability/lifecycle-contract";
 import { buildOtlpLifecyclePayload } from "../../web/src/features/observability/otlp";
 
 const APP_PACKAGE = "com.loyal.app.dev";
@@ -53,22 +54,22 @@ const MAINNET_USDC_MINT = new PublicKey(
 
 type Mode = "withdraw" | "seed-position" | "insufficient-sol";
 
-type LifecycleEvent = {
-  chainState?: string;
-  durationMs: number;
-  elapsedMs: number;
-  errorCode?: string;
-  errorDetail?: string;
-  flowId: string;
-  flowName: string;
-  flowVariant: string;
-  outcome: string;
-  persistenceState?: string;
-  recoveryRequired?: boolean;
-  stage: string;
-  timestamp: string;
-  walletAddress?: string;
-};
+type LifecycleEvent = Pick<
+  BrowserLifecycleEnvelope,
+  | "chainState"
+  | "durationMs"
+  | "elapsedMs"
+  | "errorCode"
+  | "errorDetail"
+  | "flowId"
+  | "flowName"
+  | "flowVariant"
+  | "outcome"
+  | "persistenceState"
+  | "recoveryRequired"
+  | "stage"
+  | "timestamp"
+> & { walletAddress?: string };
 
 type ApiTiming = {
   durationMs: number;
@@ -477,26 +478,10 @@ function openDepositSheetInVerifierBundle(): void {
     1,
     "The seed verifier could not locate the selected balance state."
   );
-  let boundedSheetSource = initializedAndResetSheetSource.replace(
+  const boundedSheetSource = initializedAndResetSheetSource.replace(
     availableMarker,
     `  const available = ${seededAmount};`
   );
-  if (mode === "insufficient-sol") {
-    const topUpMarker =
-      "const needsSolTopUp = (firstDepositSolShortfall ?? 0) > 0;";
-    assert.equal(
-      boundedSheetSource.split(topUpMarker).length - 1,
-      1,
-      "The insufficient-SOL verifier could not locate the generic SOL preflight."
-    );
-    // Exercise the SDK's exact dynamic rent requirement instead of the UI's
-    // coarse first-deposit estimate. This mutation exists only in the Metro
-    // verifier bundle and is restored in finally.
-    boundedSheetSource = boundedSheetSource.replace(
-      topUpMarker,
-      "const needsSolTopUp = false;"
-    );
-  }
   const handlerMarker =
     "  }, [amount, available, onDeposit, selectedSource.mint]);";
   assert.equal(

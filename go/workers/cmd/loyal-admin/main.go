@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -27,19 +26,6 @@ import (
 
 //go:embed all:dist
 var embedded embed.FS
-
-func optional(name string) (string, error) {
-	dir := os.Getenv("CREDENTIALS_DIRECTORY")
-	if dir == "" {
-		return "", nil
-	}
-	if _, err := os.Stat(filepath.Join(dir, name)); errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	} else if err != nil {
-		return "", fmt.Errorf("cannot inspect credential %s", name)
-	}
-	return engine.Credential(name)
-}
 
 const minConnections = "2"
 
@@ -58,7 +44,7 @@ func poolDSN(dsn string, extra map[string]string) (string, error) {
 }
 
 func openOptional(ctx context.Context, name string, maxConnections int32, extra map[string]string) (*pgxpool.Pool, error) {
-	dsn, err := optional(name)
+	dsn, err := engine.OptionalCredential(name)
 	if err != nil || dsn == "" {
 		return nil, err
 	}
@@ -82,11 +68,11 @@ func httpsURL(name string, allowPath bool) (*url.URL, error) {
 }
 
 func r2Config() (*admin.R2Config, error) {
-	id, err := optional("R2_ACCESS_KEY_ID")
+	id, err := engine.OptionalCredential("R2_ACCESS_KEY_ID")
 	if err != nil {
 		return nil, err
 	}
-	secret, err := optional("R2_SECRET_ACCESS_KEY")
+	secret, err := engine.OptionalCredential("R2_SECRET_ACCESS_KEY")
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +158,7 @@ func config(ctx context.Context) (admin.Config, func(), error) {
 			slog.Warn("loyal-admin family disabled", "credential", pool.name)
 		}
 	}
-	if cfg.Deps.ClickStackReadKey, err = optional("CLICKSTACK_READ_KEY"); err != nil {
+	if cfg.Deps.ClickStackReadKey, err = engine.OptionalCredential("CLICKSTACK_READ_KEY"); err != nil {
 		return cfg, closeAll, err
 	}
 	if cfg.Deps.ClickStackReadKey == "" {

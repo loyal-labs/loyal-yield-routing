@@ -2,7 +2,7 @@ name: loyal-web
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, mobile-go/**]
     paths:
       - web/**
       - go/workers/cmd/loyal-web/**
@@ -65,3 +65,24 @@ jobs:
         run: |
           go vet ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax
           go test -race ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax
+
+  mobile:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: web/package.json
+      - name: install web workspace
+        run: cd web && bun install --frozen-lockfile
+      - name: install mobile
+        working-directory: web/apps/mobile
+        run: bun install --frozen-lockfile
+      - name: mobile tsc
+        working-directory: web/apps/mobile
+        run: bunx tsc --noEmit
+      - name: mobile jest
+        working-directory: web/apps/mobile
+        run: bun run test

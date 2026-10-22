@@ -1,15 +1,13 @@
-import type {
-  SmartAccountEarnUsdcWithdrawMetadata,
-  SmartAccountPreparedEarnUsdcWithdraw,
+import {
+  hydratePreparedOperation,
+  serializePreparedOperation,
+  type SmartAccountEarnUsdcWithdrawMetadata,
+  type SmartAccountPreparedEarnUsdcWithdraw,
+  type WirePreparedLoyalSmartAccountsOperation,
 } from "@loyal-labs/smart-account-vaults";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
 
-import {
-  hydratePreparedOperation,
-  serializePreparedOperation,
-  type WirePreparedLoyalSmartAccountsOperation,
-} from "@/lib/smart-accounts/prepared-operation-wire.shared";
 import {
   hydratePreparedEarnUsdcAutodepositClose,
   serializePreparedEarnUsdcAutodepositClose,
