@@ -163,7 +163,7 @@ type RebalanceDecision struct {
 	EstimatedEdgeBps    *int64             `json:"estimatedEdgeBps"`
 	ID                  string             `json:"id"`
 	LiquidityMint       *string            `json:"liquidityMint"`
-	RebalanceRouteMode  RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	RouteMode           RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
 	Signature           *string            `json:"signature"`
 	SourceLiquidityMint *string            `json:"sourceLiquidityMint"`
 	SourceApyBps        *int64             `json:"sourceApyBps"`
@@ -195,7 +195,7 @@ func rebalanceRecentDecisions(ctx context.Context, d *Deps) ([]RebalanceDecision
 		CreatedAt           time.Time `db:"created_at"`
 		UpdatedAt           time.Time `db:"updated_at"`
 		ExecutionKind       *string   `db:"execution_kind"`
-		RebalanceRouteMode  *string   `db:"route_mode"`
+		RouteMode           *string   `db:"route_mode"`
 	}](ctx, d, rebalanceSQLRecentDecisions)
 	out := make([]RebalanceDecision, len(rows))
 	for i, row := range rows {
@@ -205,8 +205,8 @@ func rebalanceRecentDecisions(ctx context.Context, d *Deps) ([]RebalanceDecision
 			decisionType = &rebalance
 		}
 		mode := ""
-		if row.RebalanceRouteMode != nil {
-			mode = *row.RebalanceRouteMode
+		if row.RouteMode != nil {
+			mode = *row.RouteMode
 		}
 		out[i] = RebalanceDecision{
 			AbandonReason:       row.AbandonReason,
@@ -218,7 +218,7 @@ func rebalanceRecentDecisions(ctx context.Context, d *Deps) ([]RebalanceDecision
 			EstimatedEdgeBps:    rebalanceIntPtr(row.EstimatedEdgeBps),
 			ID:                  row.ID,
 			LiquidityMint:       row.LiquidityMint,
-			RebalanceRouteMode:  rebalanceRouteModeOf(mode),
+			RouteMode:           rebalanceRouteModeOf(mode),
 			Signature:           row.Signature,
 			SourceLiquidityMint: row.SourceLiquidityMint,
 			SourceApyBps:        rebalanceIntPtr(row.SourceApyBps),
@@ -242,14 +242,14 @@ type RebalanceActivityPoint struct {
 	FailedOpportunities int64              `json:"failedOpportunities"`
 	FleetClaims         int64              `json:"fleetClaims"`
 	MaxSwapFeeLamports  string             `json:"maxSwapFeeLamports"`
-	RebalanceRouteMode  RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	RouteMode           RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
 	SwapFeeLamports     string             `json:"swapFeeLamports"`
 	TerminalAttempts    int64              `json:"terminalAttempts"`
 }
 
 func rebalanceActivity(ctx context.Context, d *Deps) ([]RebalanceActivityPoint, error) {
 	rows, err := rebalanceRows[struct {
-		RebalanceRouteMode  string    `db:"route_mode"`
+		RouteMode           string    `db:"route_mode"`
 		BucketStartedAt     time.Time `db:"bucket_started_at"`
 		Confirmed           string    `db:"confirmed"`
 		TerminalAttempts    string    `db:"terminal_attempts"`
@@ -272,7 +272,7 @@ func rebalanceActivity(ctx context.Context, d *Deps) ([]RebalanceActivityPoint, 
 			FailedOpportunities: rebalanceInt(row.FailedOpportunities),
 			FleetClaims:         rebalanceInt(row.FleetClaims),
 			MaxSwapFeeLamports:  row.MaxSwapFeeLamports,
-			RebalanceRouteMode:  rebalanceRouteModeOf(row.RebalanceRouteMode),
+			RouteMode:           rebalanceRouteModeOf(row.RouteMode),
 			SwapFeeLamports:     row.SwapFeeLamports,
 			TerminalAttempts:    rebalanceInt(row.TerminalAttempts),
 		}
@@ -364,29 +364,29 @@ func rebalanceOptimizationVolumeSeries(ctx context.Context, d *Deps) ([]Rebalanc
 }
 
 type RebalanceLast30DaysPoint struct {
-	Confirmed          int64              `json:"confirmed"`
-	Date               string             `json:"date"`
-	Failed             int64              `json:"failed"`
-	RebalanceRouteMode RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
-	TerminalAttempts   int64              `json:"terminalAttempts"`
+	Confirmed        int64              `json:"confirmed"`
+	Date             string             `json:"date"`
+	Failed           int64              `json:"failed"`
+	RouteMode        RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	TerminalAttempts int64              `json:"terminalAttempts"`
 }
 
 func rebalanceLast30DaysSeries(ctx context.Context, d *Deps) ([]RebalanceLast30DaysPoint, error) {
 	rows, err := rebalanceRows[struct {
-		RebalanceRouteMode string `db:"route_mode"`
-		Date               string `db:"date"`
-		Confirmed          string `db:"confirmed"`
-		Failed             string `db:"failed"`
-		TerminalAttempts   string `db:"terminal_attempts"`
+		RouteMode        string `db:"route_mode"`
+		Date             string `db:"date"`
+		Confirmed        string `db:"confirmed"`
+		Failed           string `db:"failed"`
+		TerminalAttempts string `db:"terminal_attempts"`
 	}](ctx, d, rebalanceSQLLast30Days)
 	out := make([]RebalanceLast30DaysPoint, len(rows))
 	for i, row := range rows {
 		out[i] = RebalanceLast30DaysPoint{
-			Confirmed:          rebalanceInt(row.Confirmed),
-			Date:               row.Date,
-			Failed:             rebalanceInt(row.Failed),
-			RebalanceRouteMode: rebalanceRouteModeOf(row.RebalanceRouteMode),
-			TerminalAttempts:   rebalanceInt(row.TerminalAttempts),
+			Confirmed:        rebalanceInt(row.Confirmed),
+			Date:             row.Date,
+			Failed:           rebalanceInt(row.Failed),
+			RouteMode:        rebalanceRouteModeOf(row.RouteMode),
+			TerminalAttempts: rebalanceInt(row.TerminalAttempts),
 		}
 	}
 	return out, err
@@ -468,7 +468,7 @@ type RebalanceExecuted struct {
 	ExecutedAt          string             `json:"executedAt"`
 	ID                  string             `json:"id"`
 	LiquidityMint       *string            `json:"liquidityMint"`
-	RebalanceRouteMode  RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	RouteMode           RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
 	SourceReserve       string             `json:"sourceReserve"`
 	SourceLiquidityMint *string            `json:"sourceLiquidityMint"`
 	SwapFeeLamports     string             `json:"swapFeeLamports"`
@@ -486,7 +486,7 @@ func rebalanceExecutedFromTuple(t rebalanceTuple) RebalanceExecuted {
 		ExecutedAt:          t.iso(4),
 		ID:                  t.str(5),
 		LiquidityMint:       t.text(6),
-		RebalanceRouteMode:  rebalanceRouteModeOf(t.str(7)),
+		RouteMode:           rebalanceRouteModeOf(t.str(7)),
 		SourceReserve:       t.str(8),
 		SourceLiquidityMint: t.text(9),
 		SwapFeeLamports:     t.big(10),
@@ -504,7 +504,7 @@ type RebalanceExecutedSummary struct {
 	FullyWithdrawnCount30d int64              `json:"fullyWithdrawnCount30d"`
 	FullyWithdrawnCount7d  int64              `json:"fullyWithdrawnCount7d"`
 	LiquidityMint          *string            `json:"liquidityMint"`
-	RebalanceRouteMode     RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	RouteMode              RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
 	SwapFeeLamports        string             `json:"swapFeeLamports"`
 	UserCount              int64              `json:"userCount"`
 }
@@ -518,7 +518,7 @@ type rebalanceExecutedHistory struct {
 
 func rebalanceExecutedHistoryData(ctx context.Context, d *Deps, includeDetails bool) (rebalanceExecutedHistory, error) {
 	var summaries []struct {
-		RebalanceRouteMode     string            `json:"route_mode"`
+		RouteMode              string            `json:"route_mode"`
 		LiquidityMint          *string           `json:"liquidity_mint"`
 		ExecutionCount         rebalanceFlexInt  `json:"execution_count"`
 		ExecutionCount30d      rebalanceFlexInt  `json:"execution_count_30d"`
@@ -558,7 +558,7 @@ func rebalanceExecutedHistoryData(ctx context.Context, d *Deps, includeDetails b
 			FullyWithdrawnCount30d: int64(row.FullyWithdrawnCount30d),
 			FullyWithdrawnCount7d:  int64(row.FullyWithdrawnCount7d),
 			LiquidityMint:          row.LiquidityMint,
-			RebalanceRouteMode:     rebalanceRouteModeOf(row.RebalanceRouteMode),
+			RouteMode:              rebalanceRouteModeOf(row.RouteMode),
 			SwapFeeLamports:        string(row.SwapFeeLamports),
 			UserCount:              int64(row.UserCount),
 		}
@@ -567,34 +567,34 @@ func rebalanceExecutedHistoryData(ctx context.Context, d *Deps, includeDetails b
 }
 
 type RebalanceVaultFrequency struct {
-	AllCount           int64              `json:"allCount"`
-	CurrentDepositRaw  string             `json:"currentDepositRaw"`
-	CurrentReserve     *string            `json:"currentReserve"`
-	DepositRank        int64              `json:"depositRank"`
-	Last12hCount       int64              `json:"last12hCount"`
-	Last2hCount        int64              `json:"last2hCount"`
-	Last7dCount        int64              `json:"last7dCount"`
-	LiquidityMint      *string            `json:"liquidityMint"`
-	PositionCount      int64              `json:"positionCount"`
-	RebalanceRouteMode RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
-	VaultID            string             `json:"vaultId"`
-	VaultPubkey        string             `json:"vaultPubkey"`
+	AllCount          int64              `json:"allCount"`
+	CurrentDepositRaw string             `json:"currentDepositRaw"`
+	CurrentReserve    *string            `json:"currentReserve"`
+	DepositRank       int64              `json:"depositRank"`
+	Last12hCount      int64              `json:"last12hCount"`
+	Last2hCount       int64              `json:"last2hCount"`
+	Last7dCount       int64              `json:"last7dCount"`
+	LiquidityMint     *string            `json:"liquidityMint"`
+	PositionCount     int64              `json:"positionCount"`
+	RouteMode         RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	VaultID           string             `json:"vaultId"`
+	VaultPubkey       string             `json:"vaultPubkey"`
 }
 
 func rebalanceFrequencyFromTuple(t rebalanceTuple) RebalanceVaultFrequency {
 	return RebalanceVaultFrequency{
-		AllCount:           t.num(0),
-		CurrentDepositRaw:  t.big(1),
-		CurrentReserve:     t.text(2),
-		DepositRank:        t.num(3),
-		Last12hCount:       t.num(4),
-		Last2hCount:        t.num(5),
-		Last7dCount:        t.num(6),
-		LiquidityMint:      t.text(7),
-		PositionCount:      t.num(8),
-		RebalanceRouteMode: rebalanceRouteModeOf(t.str(9)),
-		VaultID:            t.str(10),
-		VaultPubkey:        t.str(11),
+		AllCount:          t.num(0),
+		CurrentDepositRaw: t.big(1),
+		CurrentReserve:    t.text(2),
+		DepositRank:       t.num(3),
+		Last12hCount:      t.num(4),
+		Last2hCount:       t.num(5),
+		Last7dCount:       t.num(6),
+		LiquidityMint:     t.text(7),
+		PositionCount:     t.num(8),
+		RouteMode:         rebalanceRouteModeOf(t.str(9)),
+		VaultID:           t.str(10),
+		VaultPubkey:       t.str(11),
 	}
 }
 
@@ -610,7 +610,7 @@ type RebalanceVaultFrequencySummary struct {
 	Rebalance7dCount     int64              `json:"rebalance7dCount"`
 	RebalanceAllCount    int64              `json:"rebalanceAllCount"`
 	RebalancedVaultCount int64              `json:"rebalancedVaultCount"`
-	RebalanceRouteMode   RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	RouteMode            RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
 	VaultCount           int64              `json:"vaultCount"`
 }
 
@@ -646,7 +646,7 @@ func rebalanceVaultFrequencySQL(floor *string) string {
 
 func rebalanceEarnVaultFrequency(ctx context.Context, d *Deps, floor *string, includeDetails bool) (rebalanceVaultFrequencyData, error) {
 	var summaries []struct {
-		RebalanceRouteMode   string           `json:"route_mode"`
+		RouteMode            string           `json:"route_mode"`
 		LiquidityMint        *string          `json:"liquidity_mint"`
 		VaultCount           rebalanceFlexInt `json:"vault_count"`
 		EligibleCount        rebalanceFlexInt `json:"eligible_count"`
@@ -693,7 +693,7 @@ func rebalanceEarnVaultFrequency(ctx context.Context, d *Deps, floor *string, in
 			Rebalance7dCount:     int64(row.Rebalance7dCount),
 			RebalanceAllCount:    int64(row.RebalanceAllCount),
 			RebalancedVaultCount: int64(row.RebalancedVaultCount),
-			RebalanceRouteMode:   rebalanceRouteModeOf(row.RebalanceRouteMode),
+			RouteMode:            rebalanceRouteModeOf(row.RouteMode),
 			VaultCount:           int64(row.VaultCount),
 		}
 		out.vaultCount += int64(row.VaultCount)
@@ -702,33 +702,33 @@ func rebalanceEarnVaultFrequency(ctx context.Context, d *Deps, floor *string, in
 }
 
 type RebalanceVaultOpportunityCounts struct {
-	AllCount           int64              `json:"allCount"`
-	Last12hCount       int64              `json:"last12hCount"`
-	Last2hCount        int64              `json:"last2hCount"`
-	Last7dCount        int64              `json:"last7dCount"`
-	RebalanceRouteMode RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
-	VaultID            string             `json:"vaultId"`
+	AllCount     int64              `json:"allCount"`
+	Last12hCount int64              `json:"last12hCount"`
+	Last2hCount  int64              `json:"last2hCount"`
+	Last7dCount  int64              `json:"last7dCount"`
+	RouteMode    RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	VaultID      string             `json:"vaultId"`
 }
 
 func rebalanceEarnVaultOpportunityCounts(ctx context.Context, d *Deps, vaultID string, mode RebalanceRouteMode) (*RebalanceVaultOpportunityCounts, error) {
 	rows, err := rebalanceRows[struct {
-		VaultID            string `db:"vault_id"`
-		RebalanceRouteMode string `db:"route_mode"`
-		AllCount           int32  `db:"all_count"`
-		Last7dCount        int32  `db:"last_7d_count"`
-		Last12hCount       int32  `db:"last_12h_count"`
-		Last2hCount        int32  `db:"last_2h_count"`
+		VaultID      string `db:"vault_id"`
+		RouteMode    string `db:"route_mode"`
+		AllCount     int32  `db:"all_count"`
+		Last7dCount  int32  `db:"last_7d_count"`
+		Last12hCount int32  `db:"last_12h_count"`
+		Last2hCount  int32  `db:"last_2h_count"`
 	}](ctx, d, rebalanceSQLVaultOpportunityCounts, vaultID, mode.executionKind())
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
 	row := rows[0]
 	return &RebalanceVaultOpportunityCounts{
-		AllCount:           int64(row.AllCount),
-		Last12hCount:       int64(row.Last12hCount),
-		Last2hCount:        int64(row.Last2hCount),
-		Last7dCount:        int64(row.Last7dCount),
-		RebalanceRouteMode: rebalanceRouteModeOf(row.RebalanceRouteMode),
-		VaultID:            row.VaultID,
+		AllCount:     int64(row.AllCount),
+		Last12hCount: int64(row.Last12hCount),
+		Last2hCount:  int64(row.Last2hCount),
+		Last7dCount:  int64(row.Last7dCount),
+		RouteMode:    rebalanceRouteModeOf(row.RouteMode),
+		VaultID:      row.VaultID,
 	}, nil
 }

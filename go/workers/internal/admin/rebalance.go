@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -55,20 +56,95 @@ func (m *Mux) rebalanceSection(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-func (m *Mux) rebalanceOverview(*http.Request) (any, error) {
-	return nil, Disabled("the reserve monitor")
+func (m *Mux) rebalanceOverview(r *http.Request) (any, error) {
+	statuses, err := m.Deps.CurrentSafeReserveApyStatuses(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	if statuses == nil {
+		statuses = []SafeReserveApyStatusRow{}
+	}
+	routes, err := rebalanceActiveReserveRoutes(r.Context(), m.Deps)
+	if err != nil {
+		return nil, err
+	}
+	decisions, err := rebalanceRecentDecisions(r.Context(), m.Deps)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"decisions": decisions, "eligibilityFloorRaw": rebalanceEligibilityFloorRaw(statuses),
+		"routes": routes, "statuses": statuses,
+	}, nil
 }
 
-func (m *Mux) rebalanceApyHistory(*http.Request) (any, error) {
-	return nil, Disabled("the reserve monitor")
+func (m *Mux) rebalanceApyHistory(r *http.Request) (any, error) {
+	raw := r.URL.Query().Get("statuses")
+	if raw == "" {
+		return nil, huma.Error400BadRequest("statuses is required")
+	}
+	var statuses []SafeReserveApyStatusRow
+	if err := json.Unmarshal([]byte(raw), &statuses); err != nil || statuses == nil {
+		return nil, huma.Error400BadRequest("Invalid statuses payload")
+	}
+	data, err := m.Deps.SafeReserveApyMonitorDataFromStatuses(r.Context(), statuses, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"apyData": rebalanceSerializeApyData(data)}, nil
 }
 
 func (m *Mux) rebalanceApySamples(w http.ResponseWriter, r *http.Request) {
-	writeError(w, r, Disabled("the reserve monitor"))
+	data, err := m.Deps.SafeReserveApyMonitorData(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 func (m *Mux) rebalanceDetails(w http.ResponseWriter, r *http.Request) {
-	writeError(w, r, Disabled("the reserve monitor"))
+	query := r.URL.Query()
+	mint, filtered := query["liquidityMint"]
+	if filtered {
+		if _, ok := EarnStablecoinByMint(mint[0]); !ok {
+			writeError(w, r, huma.Error400BadRequest("Invalid stablecoin mint."))
+			return
+		}
+	}
+	matches := func(mode RebalanceRouteMode, liquidityMint *string) bool {
+		return !filtered || mode == rebalanceCrossMint || (liquidityMint != nil && *liquidityMint == mint[0])
+	}
+	switch query.Get("kind") {
+	case "executed":
+		history, err := rebalanceExecutedHistoryData(r.Context(), m.Deps, true)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		details := []RebalanceExecuted{}
+		for _, row := range history.details {
+			if matches(row.RouteMode, row.LiquidityMint) {
+				details = append(details, row)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"details": details})
+	case "frequency":
+		frequency, err := rebalanceEarnVaultFrequency(r.Context(), m.Deps, nil, true)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		details := []RebalanceVaultFrequency{}
+		for _, row := range frequency.details {
+			if matches(row.RouteMode, row.LiquidityMint) {
+				details = append(details, row)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"details": details})
+	default:
+		writeError(w, r, huma.Error400BadRequest("Invalid rebalance detail kind."))
+	}
 }
 
 type rebalanceOperationsAutodepositPoint struct {
@@ -158,7 +234,7 @@ func rebalanceExecutedWire(r *http.Request, d *Deps) map[string]any {
 		for i, e := range rows {
 			out[i] = []any{
 				e.AmountRaw, table.must(e.Authority), e.ConfirmedSlot, e.CurrentDepositRaw, e.ExecutedAt, e.ID,
-				table.of(e.LiquidityMint), e.RebalanceRouteMode, table.must(e.SourceReserve), table.of(e.SourceLiquidityMint),
+				table.of(e.LiquidityMint), e.RouteMode, table.must(e.SourceReserve), table.of(e.SourceLiquidityMint),
 				e.SwapFeeLamports, table.must(e.TargetReserve), table.of(e.TargetLiquidityMint), e.UserRank,
 			}
 		}
@@ -186,7 +262,7 @@ func rebalanceVaultFrequencyWire(r *http.Request, d *Deps, floor *string) map[st
 		for i, v := range rows {
 			out[i] = []any{
 				v.AllCount, v.CurrentDepositRaw, v.CurrentReserve, v.DepositRank, v.Last12hCount, v.Last2hCount,
-				v.Last7dCount, v.LiquidityMint, v.PositionCount, v.RebalanceRouteMode, v.VaultID, v.VaultPubkey,
+				v.Last7dCount, v.LiquidityMint, v.PositionCount, v.RouteMode, v.VaultID, v.VaultPubkey,
 			}
 		}
 		return out
