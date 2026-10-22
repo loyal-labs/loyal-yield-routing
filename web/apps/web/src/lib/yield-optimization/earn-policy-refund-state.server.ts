@@ -1,5 +1,5 @@
 import {
-  SUBSCRIPTIONS_PROGRAM_ID,
+  EARN_VAULT_INDEX,
   SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET,
   SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET,
   SUBSCRIPTION_RECURRING_DELEGATION_AUTHORITY_OFFSET,
@@ -9,6 +9,7 @@ import {
   SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR,
   SUBSCRIPTION_RECURRING_DELEGATION_DISCRIMINATOR_OFFSET,
   SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET,
+  SUBSCRIPTIONS_PROGRAM_ID,
 } from "@loyal-labs/actions";
 import { PublicKey, type AccountInfo, type Connection } from "@solana/web3.js";
 import bs58 from "bs58";
@@ -25,8 +26,6 @@ import {
   routePolicies,
   userYieldPositions,
 } from "@/lib/yield-optimization/yield-neon-client.server";
-
-const EARN_VAULT_INDEX = 1;
 
 type AutodepositPolicyRow = {
   policyAccount: string | null;

@@ -2,7 +2,10 @@ import {
   withRequestLifecycle,
   type RequestLifecycle,
 } from "@/features/observability/lifecycle.server";
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  resolveLoyalClusterForSolanaEnv,
+} from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
@@ -29,8 +32,6 @@ import {
   serializePreparedEarnUsdcWithdraw,
 } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
 import type { RoutePolicyRecord } from "@/lib/yield-optimization/yield-deposit-repository.server";
-
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 const connectionCache = new Map<SolanaEnv, Connection>();
 
@@ -118,7 +119,7 @@ async function handleRequest(
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const settingsPda = new PublicKey(principal.settingsPda);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda,
     });

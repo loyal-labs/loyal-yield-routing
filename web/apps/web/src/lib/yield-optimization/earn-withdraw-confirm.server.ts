@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  EARN_VAULT_INDEX,
   normalizeLoyalCluster,
   resolveLoyalClusterForSolanaEnv,
 } from "@loyal-labs/actions";
@@ -25,8 +26,6 @@ import {
   applyConfirmedWithdrawalTransactionProof,
   type ConfirmedWithdrawalTransactionProof,
 } from "@/lib/yield-optimization/earn-withdraw-proof.shared";
-
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 export type EarnWithdrawConfirmPrincipal = {
   walletAddress: string;
@@ -285,7 +284,7 @@ export function createCanonicalWithdrawalInput(
   })[0];
   const expectedVault = pda.getSmartAccountPda({
     settingsPda: settings,
-    accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+    accountIndex: EARN_VAULT_INDEX,
   })[0];
   const hasSetupPolicyMetadata =
     (requestInput.setupPolicyId !== undefined &&
@@ -374,7 +373,7 @@ export function createCanonicalWithdrawalInput(
       : {}),
     targetReserve: target.targetReserve,
     smartAccountAddress: expectedVault.toBase58(),
-    vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+    vaultIndex: EARN_VAULT_INDEX,
     vaultPubkey: expectedVault.toBase58(),
   };
 

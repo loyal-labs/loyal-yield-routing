@@ -1,6 +1,7 @@
 import "server-only";
 
 import { sql } from "drizzle-orm";
+import { EARN_MAX_VAULT_INDEX } from "@loyal-labs/actions";
 
 import { getYieldOptimizationClient } from "@/lib/yield-optimization/yield-neon-client.server";
 
@@ -10,8 +11,6 @@ import type {
   EarnMaxSummary,
   EarnMaxWithdrawalView,
 } from "../types";
-
-const EARN_MAX_VAULT_INDEX = 0;
 
 type QueryResult = { rows?: unknown[] } | unknown[];
 
