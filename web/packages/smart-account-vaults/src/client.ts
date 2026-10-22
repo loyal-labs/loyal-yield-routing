@@ -305,6 +305,19 @@ type AsyncPolicyTransactionPayloadLike = {
   transactionMessage: Uint8Array;
 };
 
+type InjectableRpcMethod =
+  | "getBalance"
+  | "getFeeForMessage"
+  | "getLatestBlockhash"
+  | "getMultipleAccountsInfo"
+  | "getTokenAccountBalance"
+  | "getTokenAccountsByOwner";
+
+type InjectableConnection = Omit<Connection, InjectableRpcMethod> &
+  Partial<Pick<Connection, InjectableRpcMethod>> & {
+    _rpcRequest?: (methodName: string, args: unknown[]) => Promise<unknown>;
+  };
+
 const EARN_DEPOSIT_VAULT_INDEX = 1 as const;
 const EARN_SAME_MINT_INSTRUCTION_CONSTRAINT_INDEXES = [0, 1] as const;
 const EARN_POLICY_PACKET_DATA_SIZE = 1232;
@@ -753,15 +766,7 @@ async function estimatePreparedFeeLamports(args: {
   prepared: PreparedLoyalSmartAccountsOperation<string>;
 }): Promise<bigint> {
   const fallback = getFallbackPreparedFeeLamports(args.prepared);
-  const connectionWithFees = args.connection as Connection & {
-    getFeeForMessage?: (
-      message: ReturnType<typeof compilePreparedOperation>["message"],
-      commitment?: "confirmed"
-    ) => Promise<{ value: number | null } | number | null>;
-    getLatestBlockhash?: (
-      commitment?: "confirmed"
-    ) => Promise<{ blockhash: string }>;
-  };
+  const connectionWithFees: InjectableConnection = args.connection;
 
   if (typeof connectionWithFees.getFeeForMessage !== "function") {
     return fallback;
@@ -801,12 +806,7 @@ async function getExistingAccountSet(args: {
     return existing;
   }
 
-  const connectionWithBatch = args.connection as Connection & {
-    getMultipleAccountsInfo?: (
-      publicKeys: PublicKey[],
-      commitment?: "confirmed"
-    ) => Promise<Array<AccountInfo<Buffer> | null>>;
-  };
+  const connectionWithBatch: InjectableConnection = args.connection;
 
   if (typeof connectionWithBatch.getMultipleAccountsInfo === "function") {
     try {
@@ -852,12 +852,7 @@ async function getAccountInfoMap(args: {
     return results;
   }
 
-  const connectionWithBatch = args.connection as Connection & {
-    getMultipleAccountsInfo?: (
-      publicKeys: PublicKey[],
-      commitment?: "confirmed"
-    ) => Promise<Array<AccountInfo<Buffer> | null>>;
-  };
+  const connectionWithBatch: InjectableConnection = args.connection;
 
   if (typeof connectionWithBatch.getMultipleAccountsInfo === "function") {
     try {
@@ -901,11 +896,7 @@ async function estimateNativeSolRequirement(args: {
   const unknownRentCandidates = rentCandidates.filter(
     (candidate) => candidate.exists === undefined
   );
-  const connectionWithBlockhash = args.connection as Connection & {
-    getLatestBlockhash?: (
-      commitment?: "confirmed"
-    ) => Promise<{ blockhash: string }>;
-  };
+  const connectionWithBlockhash: InjectableConnection = args.connection;
   let latestBlockhashPromise: Promise<{ blockhash: string }> | null = null;
   const getSharedLatestBlockhash =
     typeof connectionWithBlockhash.getLatestBlockhash === "function"
@@ -3140,11 +3131,8 @@ function createEarnFullWithdrawCleanupInstructions(args: {
   return instructions;
 }
 
-// Prepare-time read of the vault PDA's SOL for the final-exit sweep. Feature-
-// checked like the deposit-side top-up read: some injected connections don't
-// implement getBalance — sweeping 0 there simply skips the refund.
 async function getVaultSweepLamportsOrZero(
-  connection: Connection,
+  connection: InjectableConnection,
   vaultPda: PublicKey
 ): Promise<bigint> {
   if (typeof connection.getBalance !== "function") {
@@ -3158,14 +3146,11 @@ async function getVaultSweepLamportsOrZero(
 }
 
 async function getTokenAccountAmountOrZero(
-  connection: Connection,
+  connection: InjectableConnection,
   tokenAccount: PublicKey
 ): Promise<bigint> {
-  const getTokenAccountBalance = (
-    connection as {
-      getTokenAccountBalance?: Connection["getTokenAccountBalance"];
-    }
-  ).getTokenAccountBalance;
+  const getTokenAccountBalance: InjectableConnection["getTokenAccountBalance"] =
+    connection.getTokenAccountBalance;
   if (typeof getTokenAccountBalance !== "function") {
     return BigInt(0);
   }
@@ -3822,9 +3807,7 @@ async function getProgramAccountsCompat(
   }
 ): Promise<readonly { pubkey: PublicKey; account: AccountInfo<Buffer> }[]> {
   const rpcRequest = (
-    connection as Connection & {
-      _rpcRequest?: (methodName: string, args: unknown[]) => Promise<unknown>;
-    }
+    connection as InjectableConnection
   )._rpcRequest?.bind(connection);
   if (!rpcRequest) {
     return connection.getProgramAccounts(programId, config);
@@ -9137,47 +9120,61 @@ export function createSmartAccountVaultsClient(
       });
     };
 
-    // One approval = one mint: a batch carries a single vault ATA, wallet ATA
-    // and token program, so mints are grouped first and only then chunked.
-    // Groups run largest total first (mint base58 breaks ties) so step order is
-    // deterministic for the same holdings.
-    const chunkReserveWithdrawals = (
+    const groupReserveWithdrawalsByMint = (
       withdrawals: ProvisionalReserveWithdrawal[]
-    ): ProvisionalReserveWithdrawal[][] => {
-      const groups = new Map<string, ProvisionalReserveWithdrawal[]>();
+    ): {
+      mint: string;
+      totalAmountRaw: bigint;
+      withdrawals: ProvisionalReserveWithdrawal[];
+    }[] => {
+      const withdrawalsByMint = new Map<
+        string,
+        ProvisionalReserveWithdrawal[]
+      >();
       for (const withdrawal of withdrawals) {
-        const mintKey = withdrawal.target.liquidityMint.toBase58();
-        const group = groups.get(mintKey);
+        const mint = withdrawal.target.liquidityMint.toBase58();
+        const group = withdrawalsByMint.get(mint);
         if (group) {
           group.push(withdrawal);
         } else {
-          groups.set(mintKey, [withdrawal]);
+          withdrawalsByMint.set(mint, [withdrawal]);
         }
       }
-      const totalAmountRaw = (group: ProvisionalReserveWithdrawal[]) =>
-        group.reduce(
-          (total, withdrawal) => total + withdrawal.amountRaw,
-          BigInt(0)
+      return Array.from(withdrawalsByMint.entries())
+        .map(([mint, group]) => ({
+          mint,
+          totalAmountRaw: group.reduce(
+            (total, withdrawal) => total + withdrawal.amountRaw,
+            BigInt(0)
+          ),
+          withdrawals: group,
+        }))
+        .sort((left, right) =>
+          left.totalAmountRaw !== right.totalAmountRaw
+            ? left.totalAmountRaw > right.totalAmountRaw
+              ? -1
+              : 1
+            : left.mint < right.mint
+              ? -1
+              : 1
         );
-      const orderedGroups = Array.from(groups.entries()).sort(
-        ([leftMint, left], [rightMint, right]) => {
-          const leftTotal = totalAmountRaw(left);
-          const rightTotal = totalAmountRaw(right);
-          if (leftTotal !== rightTotal) {
-            return leftTotal > rightTotal ? -1 : 1;
-          }
-          return leftMint < rightMint ? -1 : 1;
-        }
-      );
+    };
+
+    const chunkReserveWithdrawals = (
+      withdrawals: ProvisionalReserveWithdrawal[]
+    ): ProvisionalReserveWithdrawal[][] => {
       const batches: ProvisionalReserveWithdrawal[][] = [];
-      for (const [, group] of orderedGroups) {
+      for (const group of groupReserveWithdrawalsByMint(withdrawals)) {
         for (
           let index = 0;
-          index < group.length;
+          index < group.withdrawals.length;
           index += MAX_EARN_WITHDRAW_RESERVES_PER_APPROVAL
         ) {
           batches.push(
-            group.slice(index, index + MAX_EARN_WITHDRAW_RESERVES_PER_APPROVAL)
+            group.withdrawals.slice(
+              index,
+              index + MAX_EARN_WITHDRAW_RESERVES_PER_APPROVAL
+            )
           );
         }
       }
@@ -10377,11 +10374,8 @@ export function createSmartAccountVaultsClient(
       TOKEN_PROGRAM_ID
     );
 
-    const getTokenAccountsByOwner = (
-      config.connection as {
-        getTokenAccountsByOwner?: Connection["getTokenAccountsByOwner"];
-      }
-    ).getTokenAccountsByOwner;
+    const getTokenAccountsByOwner: InjectableConnection["getTokenAccountsByOwner"] =
+      config.connection.getTokenAccountsByOwner;
     const [lamports, tokenAccountsResponse, token2022AccountsResponse] =
       await Promise.all([
         getVaultSweepLamportsOrZero(config.connection, vaultPda),
