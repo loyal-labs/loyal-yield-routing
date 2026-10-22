@@ -1,4 +1,3 @@
-// Package jwt verifies compact JWS tokens on the standard library.
 package jwt
 
 import (

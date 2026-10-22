@@ -1,16 +1,3 @@
-// Screenshot every route of the route table on one origin, and report the ones
-// that error. Run with the web workspace's Playwright:
-//
-//   bun scripts/web/sweep.ts --base https://askloyal.com --out ~/loyal/artifacts/web-go/baseline
-//
-// --app-base sets the origin for app routes (default: --base). The blog slug
-// route uses --slug (default: the first post folder in web/apps/web/public/blog).
-//
-//   bun scripts/web/sweep.ts --app admin --base https://admin.example --out <dir> \
-//     --param communityId=<id>
-//
-// signs in first with ADMIN_USER and ADMIN_PASSWORD from the environment, then
-// screenshots every page under web/apps/admin/src/app/(admin).
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 

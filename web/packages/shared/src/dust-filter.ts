@@ -33,18 +33,11 @@ export const SOL_DUST_THRESHOLD_LAMPORTS = 100_000;
 export const TOKEN_DUST_NORMALIZED_THRESHOLD = 0.0001;
 
 export type SolDustInput = {
-  /** Did the current wallet sign this transaction? */
   isUserSigned: boolean;
-  /** Is there a non-zero token balance change alongside this SOL change? */
   hasTokenChange: boolean;
-  /** Net lamport delta on the wallet (signed). */
   lamports: number;
 };
 
-/**
- * Suppress SOL-only inbound transfers that nudge the balance by an
- * imperceptible amount — typically rent-exempt dust or spam.
- */
 export function isDustSolTransfer(input: SolDustInput): boolean {
   if (input.isUserSigned) return false;
   if (input.hasTokenChange) return false;
@@ -59,10 +52,6 @@ export type TokenDustInput = {
   decimals: number;
 };
 
-/**
- * Hide inbound token pings whose normalized amount falls under the dust
- * threshold and that the user did not sign.
- */
 export function isDustTokenTransfer(input: TokenDustInput): boolean {
   if (input.isUserSigned) return false;
   if (input.direction !== "in") return false;

@@ -11,7 +11,6 @@ export function createProposal({
   programId = PROGRAM_ID,
 }: {
   settingsPda: PublicKey;
-  /** Member of the multisig that is creating the proposal. */
   creator: PublicKey;
   /** Payer for the proposal account rent. If not provided, `creator` is used. */
   rentPayer?: PublicKey;

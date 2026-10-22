@@ -40,7 +40,6 @@ const JUPITER_TOKEN_SEARCH_URL = "https://lite-api.jup.ag/tokens/v2/search";
 const LOYL_ICON_URL =
   "https://avatars.githubusercontent.com/u/210601628?s=200&v=4";
 
-// In-memory local activity store (no localStorage dependency)
 const localActivityStore = new Map<
   string,
   { rows: ActivityRow[]; details: Record<string, TransactionDetail> }
@@ -327,7 +326,6 @@ export function useWalletData(params: {
     Record<string, TransactionDetail>
   >({});
 
-  // Load local activity from in-memory store when wallet connects
   useEffect(() => {
     if (!walletAddress) {
       setLocalRows([]);
@@ -455,7 +453,6 @@ export function useWalletData(params: {
     };
   }, [client, connected, publicKey]);
 
-  // Fetch LOYAL token price from Jupiter for the always-visible placeholder row
   const [loylPriceUsd, setLoylPriceUsd] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;

@@ -71,9 +71,6 @@ export class CompiledKeys {
     return new CompiledKeys(payer, keyMetaMap);
   }
 
-  /**
-   * Compiles instructions without a payer.
-   */
   static compileWithoutPayer(
     instructions: Array<TransactionInstruction>
   ): CompiledKeys {
@@ -93,8 +90,6 @@ export class CompiledKeys {
     };
 
     for (const ix of instructions) {
-      // This is the only difference from the original.
-      // getOrInsertDefault(ix.programId).isInvoked = true;
       getOrInsertDefault(ix.programId).isInvoked = false;
       for (const accountMeta of ix.keys) {
         const keyMeta = getOrInsertDefault(accountMeta.pubkey);
@@ -129,7 +124,6 @@ export class CompiledKeys {
       numReadonlyUnsignedAccounts: readonlyNonSigners.length,
     };
 
-    // sanity checks
     {
       assert(
         writableSigners.length > 0,
@@ -170,7 +164,6 @@ export class CompiledKeys {
           !keyMeta.isSigner && !keyMeta.isInvoked && !keyMeta.isWritable
       );
 
-    // Don't extract lookup if no keys were found
     if (writableIndexes.length === 0 && readonlyIndexes.length === 0) {
       return;
     }
@@ -188,7 +181,6 @@ export class CompiledKeys {
     ];
   }
 
-  /** @internal */
   private drainKeysFoundInLookupTable(
     lookupTableEntries: Array<PublicKey>,
     keyMetaFilter: (keyMeta: CompiledKeyMeta) => boolean

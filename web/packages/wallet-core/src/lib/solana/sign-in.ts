@@ -12,7 +12,7 @@ const NONCE_CHARSET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const NONCE_LENGTH = 32;
 const NONCE_REGEX = /^[A-Za-z0-9]{8,64}$/;
-const SIGN_IN_VALIDITY_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const SIGN_IN_VALIDITY_WINDOW_MS = 10 * 60 * 1000;
 
 const isByteArray = (value: unknown): value is number[] =>
   Array.isArray(value) &&

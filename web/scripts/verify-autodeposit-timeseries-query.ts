@@ -1,22 +1,3 @@
-/**
- * Verifies that the restructured `getAutodepositTimeSeries` query is both
- * equivalent to and faster than the version it replaces (ASK-1971).
- *
- * Both variants are extracted from source rather than pasted here, so the
- * script always measures what actually ships:
- *   - candidate: the working tree copy of rebalance-data.ts
- *   - baseline:  the same file at --baseline-ref (default origin/main)
- *
- * Equivalence is checked inside a single REPEATABLE READ transaction, so both
- * variants observe one snapshot and one now() — the ranges are relative to
- * now() and the underlying tables are written continuously, so comparing
- * across transactions would flake.
- *
- * Usage:
- *   NEON_DATABASE_URL=postgres://... bun scripts/verify-autodeposit-timeseries-query.ts
- *   ... --runs 7 --baseline-ref origin/main --min-speedup 2
- */
-
 const ROOT = new URL("../", import.meta.url);
 const SOURCE_PATH =
   "apps/admin/src/app/(admin)/earn/rebalance/rebalance-data.ts";
@@ -69,11 +50,6 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-/**
- * Pulls the single template literal out of the named query function. The query
- * is a plain literal with no ${} interpolation, so a backtick scan is enough;
- * we assert that explicitly rather than assuming it.
- */
 function extractQuery(source: string, origin: string): string {
   const functionIndex = source.indexOf(
     `export async function ${FUNCTION_NAME}(`
@@ -170,10 +146,6 @@ async function gitShow(ref: string, path: string): Promise<string> {
   return stdout;
 }
 
-/**
- * Runs both variants against one snapshot and one now(), so any difference in
- * output is a real semantic difference rather than concurrent writes.
- */
 async function compareResults(
   baseline: string,
   candidate: string
@@ -281,15 +253,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Warm the cache once per variant so the first measured run of whichever
-  // variant happens to go first is not penalised for cold buffers.
   await measureOnce(baseline);
   await measureOnce(candidate);
 
   const timings: Record<Variant, number[]> = { baseline: [], candidate: [] };
   for (let run = 0; run < args.runs; run += 1) {
-    // Alternate order each iteration so neither variant systematically
-    // benefits from the other having just warmed shared buffers.
     const order: Variant[] =
       run % 2 === 0 ? ["baseline", "candidate"] : ["candidate", "baseline"];
 

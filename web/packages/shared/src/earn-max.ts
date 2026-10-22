@@ -34,7 +34,6 @@ export type EarnMaxWithdrawalView = {
   amountRaw: string;
   canCancel: boolean;
   canClaim: boolean;
-  /** Mature but awaiting verified pooled liquidity; no completion ETA. */
   claimBlockedReason?: "insufficient_liquidity" | "liquidity_unavailable";
   health?: EarnMaxWithdrawalHealth;
   readyBy: string;
@@ -50,14 +49,11 @@ export type EarnMaxApyPoint = {
 
 export type EarnMaxSummary = {
   observedSlot?: string;
-  /** Daily vault share-price APY for the chart; empty when unknown. */
   apyHistory?: EarnMaxApyPoint[];
-  /** Days the headline APY covers (7 once the vault is a week old). */
   apyWindowDays?: number | null;
   balanceUsd: number;
   claimAmountRaw: string;
   coverage: EarnMaxCoverage;
-  /** Net APY of the live position now (worker); null = unknown. */
   currentApyBps?: number | null;
   currentOperationId: string | null;
   earnedUsd: number | null;

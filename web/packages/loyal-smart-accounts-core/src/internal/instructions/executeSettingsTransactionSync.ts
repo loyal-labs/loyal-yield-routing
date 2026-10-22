@@ -38,7 +38,6 @@ export function executeSettingsTransactionSync({
     },
     programId
   );
-  // Append each of the signers into ix.keys
   ix.keys.push(
     ...signers.map((signer) => ({
       pubkey: signer,

@@ -233,8 +233,6 @@ export type SendPreparedBatchWithWalletArgs = {
     index: number;
     prepared: PreparedLoyalSmartAccountsOperation<string>;
     signature: string;
-    // Confirmation-context slot when the transport reported one; see
-    // SendPreparedWithWalletArgs["onTransactionConfirmed"].
     slot?: number;
   }) => Promise<void> | void;
   onTransactionSent?: (args: {
