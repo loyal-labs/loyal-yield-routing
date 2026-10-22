@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { NextRequest } from "next/server";
+
 import { GET } from "./route";
 
 afterEach(() => {
