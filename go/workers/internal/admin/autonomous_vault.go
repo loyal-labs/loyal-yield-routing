@@ -20,9 +20,9 @@ import (
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
-const publicMainnetRPC = "https://api.mainnet-beta.solana.com"
+const autonomousVaultDefaultRPC = "https://api.mainnet-beta.solana.com"
 
-var vaultManifest = struct {
+var autonomousVaultManifest = struct {
 	kaminoMarket, kaminoObligation, kaminoReserve solana.PublicKey
 	loyalMint, usdcMint                           solana.PublicKey
 	meteoraPool, meteoraPosition                  solana.PublicKey
@@ -40,7 +40,7 @@ var vaultManifest = struct {
 
 type AutonomousVaultPage struct {
 	ObservedAt string                   `json:"observedAt"`
-	Error      string                   `json:"error,omitempty"`
+	Error      string                   `json:"error"`
 	Snapshot   *AutonomousVaultSnapshot `json:"snapshot,omitempty"`
 }
 
@@ -74,8 +74,12 @@ type AutonomousVaultMeteora struct {
 	UsdcRaw           string  `json:"usdcRaw"`
 }
 
+func autonomousVaultRPCURL() string {
+	return cmp.Or(os.Getenv("LOYAL_ADMIN_SOLANA_RPC_URL"), autonomousVaultDefaultRPC)
+}
+
 func registerAutonomousVault(m *Mux) {
-	client, err := chain.New(cmp.Or(os.Getenv("LOYAL_ADMIN_SOLANA_RPC_URL"), publicMainnetRPC), readTimeout)
+	client, err := chain.New(autonomousVaultRPCURL(), readTimeout)
 	Page(m, "/earn/autonomous-vault", func(ctx context.Context, _ *Deps, _ PageRequest) (AutonomousVaultPage, error) {
 		if err != nil {
 			return AutonomousVaultPage{}, err
@@ -83,7 +87,7 @@ func registerAutonomousVault(m *Mux) {
 		page := AutonomousVaultPage{ObservedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00")}
 		ctx, cancel := context.WithTimeout(ctx, readTimeout)
 		defer cancel()
-		snapshot, err := readAutonomousVault(ctx, client)
+		snapshot, err := autonomousVaultRead(ctx, client)
 		if err != nil {
 			page.Error = chain.Scrub(err.Error())
 			return page, nil
@@ -93,8 +97,8 @@ func registerAutonomousVault(m *Mux) {
 	})
 }
 
-func readAutonomousVault(ctx context.Context, client *chain.Client) (AutonomousVaultSnapshot, error) {
-	m := vaultManifest
+func autonomousVaultRead(ctx context.Context, client *chain.Client) (AutonomousVaultSnapshot, error) {
+	m := autonomousVaultManifest
 	vaultUsdc, err := spl.AssociatedTokenAddress(m.vault, m.usdcMint, solana.TokenProgramID)
 	if err != nil {
 		return AutonomousVaultSnapshot{}, err
@@ -147,11 +151,11 @@ func readAutonomousVault(ctx context.Context, client *chain.Client) (AutonomousV
 		binArrays[array.Index] = array
 	}
 
-	idleUsdc, err := vaultTokenAmount(usdcAccount, "Vault USDC account", m.usdcMint)
+	idleUsdc, err := autonomousVaultTokenAmount(usdcAccount, "Vault USDC account", m.usdcMint)
 	if err != nil {
 		return AutonomousVaultSnapshot{}, err
 	}
-	idleLoyal, err := vaultTokenAmount(loyalAccount, "Vault LOYAL account", m.loyalMint)
+	idleLoyal, err := autonomousVaultTokenAmount(loyalAccount, "Vault LOYAL account", m.loyalMint)
 	if err != nil {
 		return AutonomousVaultSnapshot{}, err
 	}
@@ -186,7 +190,7 @@ func readAutonomousVault(ctx context.Context, client *chain.Client) (AutonomousV
 	if pool.TokenXMint != m.loyalMint || pool.TokenYMint != m.usdcMint {
 		return AutonomousVaultSnapshot{}, errors.New("Meteora pool mints differ from the manifest.")
 	}
-	price, err := poolPrice(pool, loyalMintAccount, usdcMintAccount)
+	price, err := autonomousVaultPoolPrice(pool, loyalMintAccount, usdcMintAccount)
 	if err != nil {
 		return AutonomousVaultSnapshot{}, err
 	}
@@ -227,7 +231,7 @@ func readAutonomousVault(ctx context.Context, client *chain.Client) (AutonomousV
 	}, nil
 }
 
-func vaultTokenAmount(account *chain.Account, label string, mint solana.PublicKey) (uint64, error) {
+func autonomousVaultTokenAmount(account *chain.Account, label string, mint solana.PublicKey) (uint64, error) {
 	if account == nil {
 		return 0, fmt.Errorf("%s is missing from finalized mainnet state.", label)
 	}
@@ -238,13 +242,13 @@ func vaultTokenAmount(account *chain.Account, label string, mint solana.PublicKe
 	if err != nil {
 		return 0, err
 	}
-	if token.Owner != vaultManifest.vault || token.Mint != mint {
+	if token.Owner != autonomousVaultManifest.vault || token.Mint != mint {
 		return 0, fmt.Errorf("%s does not match the autonomous vault manifest.", label)
 	}
 	return token.Amount, nil
 }
 
-func poolPrice(pool meteora.LbPair, loyalMintAccount, usdcMintAccount *chain.Account) (float64, error) {
+func autonomousVaultPoolPrice(pool meteora.LbPair, loyalMintAccount, usdcMintAccount *chain.Account) (float64, error) {
 	if loyalMintAccount == nil || usdcMintAccount == nil {
 		return 0, errors.New("Meteora pool mints are missing from finalized mainnet state.")
 	}
