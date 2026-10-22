@@ -306,6 +306,8 @@ export class DeeplinkSigner implements Signer {
           throw new WalletRejectedError(SIGNING_DECLINED_MESSAGE);
         }
         if (error.isUnauthorized) {
+          // The user disconnected this app inside the wallet — the same dead
+          // authorization as MWA's ERROR_AUTHORIZATION_FAILED.
           throw await forgetWalletAuthorization(
             clearDeeplinkSession,
             "authorization_expired",

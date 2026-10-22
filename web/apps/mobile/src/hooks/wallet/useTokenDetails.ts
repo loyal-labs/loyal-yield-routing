@@ -48,11 +48,6 @@ async function fetchTokenDetailWithRetry(
   throw lastError ?? new Error("Failed to fetch token detail");
 }
 
-/**
- * The mints whose token details a wallet surface primes: the base wallet
- * tokens (SOL, Loyal, the environment's USDC) plus every held mint, and the
- * shielded balances when the surface shows them.
- */
 export function useTokenDetailMints(
   tokenHoldings: readonly { mint: string }[],
   shieldedBalances?: readonly { tokenMint: string }[],
