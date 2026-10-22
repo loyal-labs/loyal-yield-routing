@@ -206,7 +206,7 @@ func run(ctx context.Context) error {
 	if appDB != nil {
 		defer appDB.Close()
 	}
-	yieldDB := openDB(ctx, "Earn MAX routes", "WEB_YIELD_DATABASE_URL")
+	yieldDB := openDB(ctx, "Earn MAX APY", "WEB_YIELD_DATABASE_URL")
 	if yieldDB != nil {
 		defer yieldDB.Close()
 	}
