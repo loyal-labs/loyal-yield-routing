@@ -39,7 +39,10 @@ import {
   MoreActionsSheet,
 } from "@/features/wallet-categories/ui/MoreActionsSheet";
 import { useSolPrice } from "@/hooks/wallet/useSolPrice";
-import { useTokenDetails } from "@/hooks/wallet/useTokenDetails";
+import {
+  useTokenDetailMints,
+  useTokenDetails,
+} from "@/hooks/wallet/useTokenDetails";
 import { useTokenHoldings } from "@/hooks/wallet/useTokenHoldings";
 import { useWalletBalance } from "@/hooks/wallet/useWalletBalance";
 import { useWalletInit } from "@/hooks/wallet/useWalletInit";
@@ -571,11 +574,9 @@ export default function TokenDetailScreen() {
   // so sheets launched from here (send/swap) can resolve icons via
   // `detailLogoUrl` rather than falling back to Helius metadata or the
   // SOL-logo placeholder.
-  const sheetTokenDetailMints = useMemo(
-    () => Array.from(new Set(tokenHoldings.map((h) => h.mint))),
-    [tokenHoldings],
+  const tokenDetailsByMint = useTokenDetails(
+    useTokenDetailMints(tokenHoldings),
   );
-  const tokenDetailsByMint = useTokenDetails(sheetTokenDetailMints);
 
   const {
     viewModel,

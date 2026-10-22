@@ -72,3 +72,18 @@ export function isWalletSessionError(
 ): error is WalletSessionError {
   return error instanceof WalletSessionError;
 }
+
+/**
+ * Drop the stored authorization behind a dead wallet session and produce the
+ * error to throw. Clearing is the half that matters: without it the app keeps
+ * presenting a connected wallet whose every signature is refused.
+ */
+export async function forgetWalletAuthorization(
+  clearStoredAuthorization: () => Promise<void>,
+  failure: "authorization_expired" | "account_mismatch",
+  walletCode: string | number | undefined,
+  cause?: unknown,
+): Promise<WalletSessionError> {
+  await clearStoredAuthorization();
+  return new WalletSessionError(failure, walletCode, cause);
+}

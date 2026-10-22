@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  LOYAL_TOKEN_MINT,
+  NATIVE_SOL_MINT,
+  SOLANA_USDC_MINT_DEVNET,
+  SOLANA_USDC_MINT_MAINNET,
+} from "@/lib/solana/constants";
+import { getSolanaEnv } from "@/lib/solana/rpc/connection";
+import {
   fetchTokenDetailMarket,
   type MobileTokenDetailResponse,
 } from "@/services/api";
@@ -39,6 +46,26 @@ async function fetchTokenDetailWithRetry(
 
   if (lastDetail) return lastDetail;
   throw lastError ?? new Error("Failed to fetch token detail");
+}
+
+export function useTokenDetailMints(
+  tokenHoldings: readonly { mint: string }[],
+  shieldedBalances?: readonly { tokenMint: string }[],
+): string[] {
+  return useMemo(() => {
+    const mints = new Set<string>([
+      NATIVE_SOL_MINT,
+      LOYAL_TOKEN_MINT,
+      getSolanaEnv() === "mainnet"
+        ? SOLANA_USDC_MINT_MAINNET
+        : SOLANA_USDC_MINT_DEVNET,
+    ]);
+    for (const holding of tokenHoldings) mints.add(holding.mint);
+    if (shieldedBalances !== undefined) {
+      for (const balance of shieldedBalances) mints.add(balance.tokenMint);
+    }
+    return Array.from(mints);
+  }, [tokenHoldings, shieldedBalances]);
 }
 
 export function useTokenDetails(

@@ -21,8 +21,8 @@ import {
   type StoredDeeplinkSession,
 } from "./deeplink-session-storage";
 import { WalletRejectedError } from "./rejection";
-import { assertOwnVersionedSignature, type Signer } from "./signer";
-import { WalletSessionError } from "./wallet-session-error";
+import { adoptWalletReturnedTransaction, type Signer } from "./signer";
+import { forgetWalletAuthorization, WalletSessionError } from "./wallet-session-error";
 
 export const DEEPLINK_WALLET_LABELS: Record<DeeplinkWalletProvider, string> = {
   phantom: "Phantom",
@@ -272,24 +272,17 @@ export class DeeplinkSigner implements Signer {
     return txs;
   }
 
-  // Same rule as MwaSigner: the wallet-returned bytes are the signed truth —
-  // the wallet may return a modified transaction (Lighthouse guards, priority
-  // fees), so adopt its message AND signatures onto the caller's object, then
-  // verify our signature locally.
   private async adoptSignedTransaction(
     tx: Transaction | VersionedTransaction,
     encoded: string,
     index: number,
   ): Promise<void> {
     const bytes = bs58.decode(encoded);
-    if (tx instanceof VersionedTransaction) {
-      const src = VersionedTransaction.deserialize(bytes);
-      tx.message = src.message;
-      tx.signatures = src.signatures;
-      await assertOwnVersionedSignature(tx, this.publicKey, index);
-    } else {
-      tx.signatures = Transaction.from(bytes).signatures;
-    }
+    const source =
+      tx instanceof VersionedTransaction
+        ? VersionedTransaction.deserialize(bytes)
+        : Transaction.from(bytes);
+    await adoptWalletReturnedTransaction(tx, source, this.publicKey, index);
   }
 
   private async request(
@@ -314,11 +307,9 @@ export class DeeplinkSigner implements Signer {
         }
         if (error.isUnauthorized) {
           // The user disconnected this app inside the wallet — the same dead
-          // authorization as MWA's ERROR_AUTHORIZATION_FAILED. Clearing the
-          // stored session is the half that matters: without it the app keeps
-          // presenting a connected wallet whose every signature is refused.
-          await clearDeeplinkSession();
-          throw new WalletSessionError(
+          // authorization as MWA's ERROR_AUTHORIZATION_FAILED.
+          throw await forgetWalletAuthorization(
+            clearDeeplinkSession,
             "authorization_expired",
             error.errorCode,
             error,
