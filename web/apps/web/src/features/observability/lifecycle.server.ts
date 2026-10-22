@@ -14,6 +14,7 @@ import {
   type LifecycleFlowVariant,
   type LifecycleTracker,
 } from "./lifecycle-contract";
+import { bestEffortAsync } from "./best-effort";
 import { reportBrowserLifecycleEnvelope } from "./server";
 import { parseJourneyTraceparent } from "./trace-context";
 
@@ -104,10 +105,8 @@ export async function withRequestLifecycle(args: {
         httpStatus: response.status,
       });
     } else if (lifecycle) {
-      const body: { error?: { code?: unknown } } | null = await response
-        .clone()
-        .json()
-        .catch(() => null);
+      const body: { error?: { code?: unknown } } | null =
+        (await bestEffortAsync(() => response.clone().json())) ?? null;
       lifecycle.tracker.fail(args.stage, {
         errorCode: normalizeLifecycleErrorCode(body?.error?.code),
         httpStatus: response.status,
