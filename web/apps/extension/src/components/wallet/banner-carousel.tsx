@@ -2,10 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import bannerFollowImg from "~/assets/banner-follow.png";
 
-// ---------------------------------------------------------------------------
-// Types & config
-// ---------------------------------------------------------------------------
-
 interface Banner {
   id: string;
   title: string;
@@ -18,10 +14,6 @@ const AUTO_ROTATE_MS = 4000;
 const SLIDE_DURATION_MS = 250;
 
 const FONT = "var(--font-geist-sans), sans-serif";
-
-// ---------------------------------------------------------------------------
-// Banner card
-// ---------------------------------------------------------------------------
 
 function BannerCard({ banner }: { banner: Banner }) {
   const [btnHovered, setBtnHovered] = useState(false);
@@ -40,7 +32,6 @@ function BannerCard({ banner }: { banner: Banner }) {
         height: "96px",
       }}
     >
-      {/* Text + CTA */}
       <div
         style={{
           flex: 1,
@@ -94,7 +85,6 @@ function BannerCard({ banner }: { banner: Banner }) {
         </button>
       </div>
 
-      {/* Image */}
       <div
         style={{
           position: "absolute",
@@ -122,10 +112,6 @@ function BannerCard({ banner }: { banner: Banner }) {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Carousel
-// ---------------------------------------------------------------------------
 
 export function BannerCarousel() {
   const banners: Banner[] = [
@@ -161,7 +147,6 @@ export function BannerCarousel() {
     goTo(nextIdx, "left");
   }, [activeIndex, banners.length, goTo]);
 
-  // Auto-rotate
   useEffect(() => {
     timerRef.current = setInterval(next, AUTO_ROTATE_MS);
     return () => {
@@ -173,7 +158,6 @@ export function BannerCarousel() {
 
   return (
     <div style={{ padding: "0 8px", width: "100%", boxSizing: "border-box" }}>
-      {/* Banner */}
       <div
         style={{
           position: "relative",
@@ -193,7 +177,6 @@ export function BannerCarousel() {
         </div>
       </div>
 
-      {/* Dots */}
       {banners.length > 1 && (
         <div
           style={{
@@ -223,7 +206,6 @@ export function BannerCarousel() {
         </div>
       )}
 
-      {/* Slide animations */}
       <style>{`
         @keyframes banner-slide-left {
           from { opacity: 0; transform: translateX(30px); }

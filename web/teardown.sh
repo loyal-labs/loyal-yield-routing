@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Close the Telegram topic associated with this workspace.
-# Called by Superset when the workspace is terminated.
-
 TOKEN_FILE="$HOME/.claude/channels/telegram/.env"
 DAEMON_TOPICS="$HOME/.claude/channels/telegram/daemon/topics"
 
-# Load bot token
 if [ ! -f "$TOKEN_FILE" ]; then
   exit 0
 fi
@@ -20,7 +16,6 @@ fi
 BRANCH="$(git branch --show-current 2>/dev/null)" || true
 TOPIC_NAME="${SUPERSET_WORKSPACE_NAME:-${BRANCH:-$(basename "$(pwd)")}}"
 
-# Find the topic's thread ID from persisted metadata
 THREAD_ID=""
 CHAT_ID=""
 if [ -d "$DAEMON_TOPICS" ]; then
@@ -48,7 +43,6 @@ if [ -z "$THREAD_ID" ] || [ -z "$CHAT_ID" ]; then
   exit 0
 fi
 
-# Close the topic (archive, not delete — preserves conversation history)
 echo "Closing Telegram topic '$TOPIC_NAME' (thread_id: $THREAD_ID)..."
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/closeForumTopic" \
   -d "chat_id=${CHAT_ID}" \

@@ -138,7 +138,6 @@ export class VoltrClaimLiquidityError extends Error {
   }
 }
 
-/** Claim into the vault PDA's USDC account, then sweep it to the wallet. */
 export async function voltrClaimPlan(
   connection: Connection,
   { authority, owner }: PlanContext

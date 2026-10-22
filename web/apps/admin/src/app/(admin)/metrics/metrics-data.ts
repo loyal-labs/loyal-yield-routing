@@ -35,7 +35,6 @@ export type MetricPoint = {
   p95Ms: number;
 };
 
-/** Measurements behind each operation, so a p95 drawn from one sample is obvious. */
 export type OperationVolume = {
   completed: number;
   failed: number;

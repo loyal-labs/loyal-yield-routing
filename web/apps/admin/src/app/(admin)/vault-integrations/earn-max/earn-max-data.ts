@@ -10,7 +10,6 @@ export const CUSTODY = {
   collateral: "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G",
 } as const;
 
-/** Every source loads on its own: one failure never hides the others. */
 export type Part<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function part<T>(source: {

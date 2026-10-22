@@ -78,19 +78,15 @@ export function isStaticWritableIndex(
   const { numSigners, numWritableSigners, numWritableNonSigners } = message;
 
   if (index >= numAccountKeys) {
-    // `index` is not a part of static `accountKeys`.
     return false;
   }
 
   if (index < numWritableSigners) {
-    // `index` is within the range of writable signer keys.
     return true;
   }
 
   if (index >= numSigners) {
-    // `index` is within the range of non-signer keys.
     const indexIntoNonSigners = index - numSigners;
-    // Whether `index` is within the range of writable non-signer keys.
     return indexIntoNonSigners < numWritableNonSigners;
   }
 
@@ -104,7 +100,6 @@ export function isSignerIndex(
   return index < message.numSigners;
 }
 
-/** We use custom serialization for `transaction_message` that ensures as small byte size as possible. */
 export function transactionMessageToMultisigTransactionMessageBytes({
   message,
   addressLookupTableAccounts,
@@ -135,11 +130,7 @@ export function transactionMessageToMultisigTransactionMessageBytes({
     instructions: message.instructions,
     addressLookupTableAccounts,
   });
-  // const compiledMessage = message.compileToV0Message(
-  //   addressLookupTableAccounts
-  // );
 
-  // We use custom serialization for `transaction_message` that ensures as small byte size as possible.
   const [transactionMessageBytes] = transactionMessageBeet.serialize({
     numSigners: compiledMessage.header.numRequiredSignatures,
     numWritableSigners:
@@ -244,7 +235,6 @@ export function instructionsToSynchronousTransactionDetailsV2WithHooks({
     accounts,
   };
 }
-/** Populate remaining accounts required for execution of the transaction. */
 export async function accountsForTransactionExecute({
   connection,
   transactionPda,
@@ -260,9 +250,7 @@ export async function accountsForTransactionExecute({
   transactionPda: PublicKey;
   programId?: PublicKey;
 }): Promise<{
-  /** Account metas used in the `message`. */
   accountMetas: AccountMeta[];
-  /** Address lookup table accounts used in the `message`. */
   lookupTableAccounts: AddressLookupTableAccount[];
 }> {
   const ephemeralSignerPdas = ephemeralSignerBumps.map(
@@ -292,7 +280,6 @@ export async function accountsForTransactionExecute({
     )
   );
 
-  // Populate account metas required for execution of the transaction.
   const accountMetas: AccountMeta[] = [];
   // First add the lookup table accounts used by the transaction. They are needed for on-chain validation.
   accountMetas.push(

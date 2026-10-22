@@ -40,7 +40,6 @@ function ChartStyle({ id, config }: { id: string; config: ChartConfig }) {
 
   return (
     <style
-      // This is scoped to a single chart container via data-chart.
       dangerouslySetInnerHTML={{
         __html: `[data-chart="${id}"] {\n${styles}\n}`,
       }}

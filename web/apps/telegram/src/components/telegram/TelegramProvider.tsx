@@ -21,7 +21,6 @@ import {
 
 import { BottomButtonBar } from './BottomButtonBar';
 
-// Patch console.error to suppress specific Telegram SDK errors
 if (typeof window !== 'undefined') {
   const originalError = console.error;
   console.error = (...args) => {
@@ -73,7 +72,6 @@ function TelegramProviderInner({ children }: PropsWithChildren) {
   const [isRestored, setIsRestored] = useState(false);
 
   useEffect(() => {
-    // Initialize Telegram SDK
     try {
       init();
     } catch (error) {
@@ -88,12 +86,10 @@ function TelegramProviderInner({ children }: PropsWithChildren) {
     }
   }, []);
 
-  // Mark as restored immediately - splash screen handles initial navigation
   useEffect(() => {
     setIsRestored(true);
   }, []);
 
-  // Save page
   useEffect(() => {
     if (!isRestored || !pathname) return;
     if (pathname.startsWith('/telegram') && !pathname.startsWith('/telegram/verify')) {
@@ -108,7 +104,6 @@ function TelegramProviderInner({ children }: PropsWithChildren) {
     [rawInitData]
   );
 
-  // Load avatar from localStorage immediately (synchronous, no size limit)
   useEffect(() => {
     try {
       const stored = localStorage.getItem(USER_AVATAR_CACHE_KEY);
@@ -116,7 +111,6 @@ function TelegramProviderInner({ children }: PropsWithChildren) {
         setCachedAvatar(stored);
       }
     } catch {
-      // localStorage may be unavailable in some contexts
     } finally {
       setIsAvatarLoading(false);
     }
@@ -171,7 +165,6 @@ function TelegramProviderInner({ children }: PropsWithChildren) {
 }
 
 export function TelegramProvider(props: PropsWithChildren) {
-  // Wait for client-side mount before initializing
   const didMount = useDidMount();
 
   return didMount ? (

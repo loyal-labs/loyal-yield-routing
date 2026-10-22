@@ -2,10 +2,6 @@ import { browser } from "#imports";
 import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
 import type { WalletSigner } from "@loyal-labs/wallet-core/types";
 
-// ---------------------------------------------------------------------------
-// Message types for cross-context transaction signing
-// ---------------------------------------------------------------------------
-
 export interface SignTransactionRequest {
   type: "SIGN_TRANSACTION";
   id: string;
@@ -19,11 +15,6 @@ export interface SignTransactionResponse {
   serializedTx?: number[];
   error?: string;
 }
-
-// ---------------------------------------------------------------------------
-// ExternalWalletSigner — signs transactions via message-passing to a browser
-// tab where the Solana Wallet Adapter has access to the connected wallet.
-// ---------------------------------------------------------------------------
 
 export function createExternalWalletSigner(
   publicKeyBase58: string

@@ -103,7 +103,6 @@ link_state_directory /data/db "$mongo_state"
 # Render Logs contains ClickHouse, MongoDB, collector, and HyperDX output.
 component_logs="/var/log/clickhouse.log /var/log/mongod.log /var/log/otel-collector.log /var/log/app.log"
 clickhouse_fatal_logs="/var/log/clickhouse-server/clickhouse-server.log /var/log/clickhouse-server/clickhouse-server.err.log"
-# Follow only newly appended lines so startup never replays historical output.
 (tail -n 0 -F $component_logs \
   | awk '!/^==> .* <==$/ && !/SSLHandshakeFailed|end connection/ { print; fflush() }') &
 tail_pid=$!
@@ -192,8 +191,6 @@ wait_for_collector_authentication() {
 wait_for_collector_authentication
 
 if [ "${CLICKSTACK_INTERNAL_SMOKE_ENABLED:-false}" = "true" ]; then
-  # Keep a failed security, ingestion, or persistence smoke from becoming a
-  # deceptively healthy Render instance.
   /usr/local/bin/loyal-clickstack-smoke-live
 fi
 

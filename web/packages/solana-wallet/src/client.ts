@@ -439,7 +439,6 @@ export function createSolanaWalletDataClient(
             activityCache.delete(cacheKey);
           }
         } catch {
-          // Ignore unparseable keys; they aren't owned by this code path.
         }
       }
     }

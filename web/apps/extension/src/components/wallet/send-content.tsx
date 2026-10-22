@@ -243,7 +243,6 @@ function SendTransactionDetail({
       <SendStatusHeader onClose={onClose} title={`Send to ${displayRecipient}`} />
 
       <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", alignItems: "center", padding: "8px", overflowY: "auto" }}>
-        {/* Amount hero */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "32px 12px 24px", width: "100%" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: "4px", width: "100%" }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: "8px", fontFamily: font, fontWeight: 600, whiteSpace: "nowrap" }}>
@@ -255,7 +254,6 @@ function SendTransactionDetail({
           </div>
         </div>
 
-        {/* Details card */}
         <div style={{ width: "100%" }}>
           <div style={{ background: "rgba(0, 0, 0, 0.04)", borderRadius: "16px", padding: "4px 0", display: "flex", flexDirection: "column" }}>
             <div style={{ padding: "9px 12px" }}>
@@ -276,7 +274,6 @@ function SendTransactionDetail({
           </div>
         </div>
 
-        {/* Action buttons */}
         <div style={{ display: "flex", alignItems: "center", paddingTop: "20px", paddingBottom: "16px", width: "100%" }}>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "8px" }}>
             <button
@@ -314,7 +311,6 @@ function SendTransactionDetail({
         </div>
       </div>
 
-      {/* Done button */}
       <div style={{ padding: "16px 20px" }}>
         <button
           className="send-tx-done-btn"
@@ -424,7 +420,6 @@ export function SendContent({
     }
   }, [hasAmount, numericAmount, token.price, token.symbol, token.mint, recipientTrimmed, executeSend]);
 
-  // Cross-fade between phases
   const [phaseOpacity, setPhaseOpacity] = useState(1);
   const [displayPhase, setDisplayPhase] = useState<SendPhase>(phase);
   const prevPhase = useRef(phase);
@@ -472,7 +467,6 @@ export function SendContent({
       );
     }
 
-    // Form phase
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
         <style>{`
@@ -482,7 +476,6 @@ export function SendContent({
             .clear-btn:hover { opacity: 0.7; }
         `}</style>
 
-        {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px" }}>
           <div style={{ flex: 1, paddingLeft: "12px", paddingTop: "4px", paddingBottom: "4px" }}>
             <span style={{ fontFamily: font, fontSize: "18px", fontWeight: 600, lineHeight: "28px", color: "#000" }}>Send</span>
@@ -497,9 +490,7 @@ export function SendContent({
           </button>
         </div>
 
-        {/* Body */}
         <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: "16px", overflow: "auto", padding: "8px 8px 16px" }}>
-          {/* Amount card */}
           <div style={{ display: "flex", flexDirection: "column" }}>
             <div style={{ background: "#fff", borderRadius: "16px", padding: "10px 12px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontFamily: font, fontWeight: 400, lineHeight: "20px", whiteSpace: "nowrap" }}>
@@ -564,7 +555,6 @@ export function SendContent({
               </div>
             </div>
 
-            {/* Recipient section */}
             <div style={{ padding: "12px 12px 8px" }}>
               <span style={{ fontFamily: font, fontSize: "16px", fontWeight: 400, lineHeight: "20px", color: secondary }}>Recipient</span>
             </div>
@@ -600,7 +590,6 @@ export function SendContent({
           </div>
         </div>
 
-        {/* Bottom button */}
         <div style={{ padding: "16px 20px" }}>
           <button
             className="confirm-btn"

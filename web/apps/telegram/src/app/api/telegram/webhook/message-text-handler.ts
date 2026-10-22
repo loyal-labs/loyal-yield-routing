@@ -17,7 +17,6 @@ export async function handleWebhookTextMessage(
   const chatType = ctx.chat?.type;
 
   if (chatType && deps.isPrivateChat(chatType)) {
-    // Commands are handled by bot.command() handlers.
     if (!ctx.message?.text?.startsWith("/")) {
       await deps.handleDirectMessage(ctx, bot);
     }
@@ -27,7 +26,6 @@ export async function handleWebhookTextMessage(
   // Community ingest is critical and must fail webhook processing for retries.
   await deps.handleCommunityMessage(ctx);
 
-  // Reactions are non-critical and should not block message ingestion.
   void deps.handleGLoyalReaction(ctx, bot).catch((error) => {
     const updateId =
       "update_id" in ctx.update && typeof ctx.update.update_id === "number"

@@ -9,11 +9,8 @@ type KnownUser = {
   hasAvatar: boolean;
 };
 
-// Cache of known users (telegramId string -> user metadata)
 const knownUsers = new Map<string, KnownUser>();
-// In-flight dedupe for get/create operations (telegramId string -> Promise<userUUID>)
 const inFlightUsers = new Map<string, Promise<string>>();
-// In-flight dedupe for avatar backfills (telegramId string -> Promise<didUpdate>)
 const inFlightAvatarBackfills = new Map<string, Promise<boolean>>();
 
 async function backfillUserAvatar(
@@ -136,11 +133,6 @@ async function resolveOrCreateUser(
   return userRecord.id;
 }
 
-/**
- * Gets or creates a user by their Telegram ID.
- * Uses in-memory caches to reduce duplicate DB/network work.
- * Returns the user's UUID.
- */
 export async function getOrCreateUser(
   telegramId: bigint,
   userData: {

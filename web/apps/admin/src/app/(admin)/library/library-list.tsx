@@ -59,10 +59,6 @@ type ArticleRow = {
 
 type ActionResult = { error?: string; success?: boolean };
 
-// ============================================================================
-// Sections
-// ============================================================================
-
 function SectionForm({
   initial,
   onSubmit,
@@ -286,10 +282,6 @@ function SectionsPanel({ sections }: { sections: SectionRow[] }) {
     </section>
   );
 }
-
-// ============================================================================
-// Articles
-// ============================================================================
 
 function ArticleForm({
   sections,
@@ -673,10 +665,6 @@ function ArticlesPanel({
     </section>
   );
 }
-
-// ============================================================================
-// Root
-// ============================================================================
 
 export function LibraryList({
   sections,

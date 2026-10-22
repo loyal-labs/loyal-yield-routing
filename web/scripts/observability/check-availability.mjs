@@ -1,4 +1,3 @@
-// Read-only checks: no wallet, signing, transaction submission, or session mutation.
 import assert from "node:assert/strict";
 
 const checks = [

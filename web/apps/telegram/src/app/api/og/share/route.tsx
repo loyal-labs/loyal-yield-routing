@@ -91,7 +91,6 @@ export async function GET(request: Request) {
             fontFamily: "Geist",
           }}
         >
-          {/* Background image */}
           <img
             src={backgroundBase64}
             alt=""
@@ -104,7 +103,6 @@ export async function GET(request: Request) {
             }}
           />
 
-          {/* Top section */}
           <div
             style={{
               display: "flex",
@@ -120,7 +118,6 @@ export async function GET(request: Request) {
                 gap: "20px",
               }}
             >
-              {/* Red circle icon with arrow */}
               <div
                 style={{
                   width: 72,
@@ -180,7 +177,6 @@ export async function GET(request: Request) {
             </span>
           </div>
 
-          {/* Bottom section */}
           <div
             style={{
               display: "flex",
@@ -189,7 +185,6 @@ export async function GET(request: Request) {
               zIndex: 1,
             }}
           >
-            {/* Amount section */}
             <div
               style={{
                 display: "flex",
@@ -220,7 +215,6 @@ export async function GET(request: Request) {
               </div>
             </div>
 
-            {/* From/To section - stacked vertically */}
             <div
               style={{
                 display: "flex",

@@ -428,10 +428,6 @@ function detectEarnActivity(args: {
     }
   }
 
-  // The sweep's setup leg: a standalone ATA create funded by the wallet for
-  // an account it doesn't own (the vault). Regular token sends that create a
-  // recipient ATA also carry a token transfer, so they classify as
-  // token_transfer with a real counterparty before Earn detection matters.
   let isVaultAtaSetup = false;
   if (!hasEarnProgram) {
     for (const instruction of instructions) {

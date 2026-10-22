@@ -180,7 +180,6 @@ export function TokenRowItem({
           )}
         </div>
       </div>
-      {/* Right side: balance (default) or action icons (on hover) */}
       <div
         style={{
           position: "relative",
@@ -192,7 +191,6 @@ export function TokenRowItem({
           minWidth: "100px",
         }}
       >
-        {/* Balance — fades out on hover */}
         <div
           style={{
             display: "flex",
@@ -239,7 +237,6 @@ export function TokenRowItem({
           </span>
         </div>
 
-        {/* Action icons — appear on hover */}
         {actions && (
           <div
             style={{

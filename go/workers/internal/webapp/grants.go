@@ -40,7 +40,6 @@ var YieldGrants = []Grant{
 	{"loyal_yield.multiply_route_states", "SELECT"},
 }
 
-// MissingGrants lists the grants the connected role lacks; a table that does not exist counts as missing.
 func MissingGrants(ctx context.Context, pool *pgxpool.Pool, want []Grant) ([]Grant, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
