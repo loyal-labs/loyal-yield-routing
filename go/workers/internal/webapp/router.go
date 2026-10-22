@@ -24,6 +24,7 @@ type Config struct {
 	Release     string
 	Ready       func() bool
 	AppDB       *pgxpool.Pool
+	Auth        *Auth
 	ContentDB   bool
 	Dist        fs.FS
 	Environment string
