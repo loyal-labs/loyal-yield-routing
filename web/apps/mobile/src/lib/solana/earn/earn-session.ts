@@ -1,18 +1,20 @@
+import bs58 from "bs58";
+import { Buffer } from "buffer";
+
 import { env } from "@/config/env";
+import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
+import type { Signer } from "@/lib/wallet/signer";
 
-import { earnHeaders, type EarnAuthFields } from "./earn-api";
-
-// Mobile Earn session (ASK-1846): a backend-minted bearer token that lets the
-// DB-only Autodeposit calls (execute-now, threshold, pause/resume) skip the
-// per-request wallet-signed auth message — i.e. skip the Seed Vault/MWA
-// approval prompt the signature costs. Minted opportunistically from auth
-// messages the user is already signing for real Earn flows (signEarnAuth), so
-// obtaining it never costs a prompt of its own. Web parity: these actions ride
-// a session cookie there.
+import type { EarnAuthFields } from "./earn-api";
+import type { EarnAuthPurpose } from "./earn-auth";
 
 const STORAGE_KEY = "earn.session.v1";
-// Don't present a token that's about to expire mid-flow.
 const EXPIRY_SAFETY_MS = 5 * 60 * 1000;
+const SESSION_PURPOSE: EarnAuthPurpose = "earn-max";
+const PROMPT_FREE_SIGNERS: ReadonlySet<Signer["kind"]> = new Set([
+  "privy",
+  "local",
+]);
 
 type StoredEarnSession = {
   walletAddress: string;
@@ -20,12 +22,38 @@ type StoredEarnSession = {
   expiresAt: string;
 };
 
-// undefined = SecureStore not read yet this launch.
 let cached: StoredEarnSession | null | undefined;
-let mintInFlight: Promise<void> | null = null;
+const mints = new Map<string, Promise<string | null>>();
 
-// Lazy-loaded so the native module never loads at module top-level (mirrors
-// the tweetnacl pattern in wallet/signer.ts; also keeps jest imports inert).
+export function earnHeaders(flowId?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (env.vercelProtectionBypass) {
+    headers["x-vercel-protection-bypass"] = env.vercelProtectionBypass;
+  }
+  if (flowId) {
+    headers["x-loyal-flow-id"] = flowId;
+  }
+  return headers;
+}
+
+export async function signEarnAuthFields(
+  signer: Signer,
+  purpose: EarnAuthPurpose,
+): Promise<EarnAuthFields> {
+  const walletAddress = signer.publicKey.toBase58();
+  const issuedAt = new Date().toISOString();
+  const message = [
+    "Loyal Mobile Earn",
+    `purpose: ${purpose}`,
+    `wallet: ${walletAddress}`,
+    `issuedAt: ${issuedAt}`,
+  ].join("\n");
+  const signature = await signer.signMessage(Buffer.from(message, "utf8"));
+  return { walletAddress, signature: bs58.encode(signature), issuedAt };
+}
+
 async function secureStore() {
   return await import("expo-secure-store");
 }
@@ -55,9 +83,6 @@ function isUsable(
   );
 }
 
-// The cached token for this wallet, or null when a signed auth message (and a
-// wallet prompt) is needed. A stale token for a different wallet is ignored —
-// it gets overwritten by that wallet's next opportunistic mint.
 export async function getEarnSessionToken(
   walletAddress: string,
 ): Promise<string | null> {
@@ -65,58 +90,126 @@ export async function getEarnSessionToken(
   return stored && isUsable(stored, walletAddress) ? stored.token : null;
 }
 
-// Drop the cached token (server rejected it, or hygiene).
 export async function clearEarnSession(): Promise<void> {
   cached = null;
   try {
     await (await secureStore()).deleteItemAsync(STORAGE_KEY);
-  } catch {
-    // Nothing usable remains cached either way.
+  } catch {}
+}
+
+async function dropRejectedToken(token: string): Promise<void> {
+  if ((await loadStored())?.token === token) {
+    await clearEarnSession();
   }
 }
 
-// Trade an already-signed auth message for a session token, in the background.
-// Never throws and never prompts; a failed mint just means the next DB-only
-// action falls back to a signed message (the status quo).
-export function maybeMintEarnSession(auth: EarnAuthFields): void {
-  if (mintInFlight) {
-    return;
+async function mint(auth: EarnAuthFields): Promise<string | null> {
+  const res = await fetch(
+    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/session`,
+    {
+      method: "POST",
+      headers: earnHeaders(),
+      body: JSON.stringify(auth),
+    },
+  );
+  if (!res.ok) {
+    return null;
   }
-  mintInFlight = (async () => {
-    try {
-      if (await getEarnSessionToken(auth.walletAddress)) {
-        return;
-      }
-      const res = await fetch(
-        `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/session`,
-        {
-          method: "POST",
-          headers: earnHeaders(),
-          body: JSON.stringify({ ...auth }),
-        },
-      );
-      if (!res.ok) {
-        return;
-      }
-      const payload = (await res.json()) as {
-        token?: string;
-        expiresAt?: string;
-      };
-      if (!payload.token || !payload.expiresAt) {
-        return;
-      }
-      cached = {
-        expiresAt: payload.expiresAt,
-        token: payload.token,
-        walletAddress: auth.walletAddress,
-      };
-      await (
-        await secureStore()
-      ).setItemAsync(STORAGE_KEY, JSON.stringify(cached));
-    } catch {
-      // Best-effort by design.
-    } finally {
-      mintInFlight = null;
-    }
-  })();
+  const payload = (await res.json()) as {
+    token?: string;
+    expiresAt?: string;
+  };
+  if (!payload.token || !payload.expiresAt) {
+    return null;
+  }
+  cached = {
+    expiresAt: payload.expiresAt,
+    token: payload.token,
+    walletAddress: auth.walletAddress,
+  };
+  await (
+    await secureStore()
+  ).setItemAsync(STORAGE_KEY, JSON.stringify(cached));
+  return payload.token;
+}
+
+function mintOnce(
+  walletAddress: string,
+  sign: () => Promise<EarnAuthFields>,
+): Promise<string | null> {
+  const inFlight = mints.get(walletAddress);
+  if (inFlight) {
+    return inFlight;
+  }
+  const minting = (async () =>
+    (await getEarnSessionToken(walletAddress)) ?? mint(await sign()))()
+    .catch(() => null)
+    .finally(() => mints.delete(walletAddress));
+  mints.set(walletAddress, minting);
+  return minting;
+}
+
+export function ensureEarnSession(signer: Signer): Promise<string | null> {
+  return mintOnce(signer.publicKey.toBase58(), () =>
+    signEarnAuthFields(signer, SESSION_PURPOSE),
+  );
+}
+
+export function maybeMintEarnSession(auth: EarnAuthFields): void {
+  void mintOnce(auth.walletAddress, async () => auth);
+}
+
+async function activeSignerFor(walletAddress: string): Promise<Signer | null> {
+  try {
+    const signer = await getWalletSigner();
+    return signer.publicKey.toBase58() === walletAddress ? signer : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readToken(walletAddress: string): Promise<string | null> {
+  const token = await getEarnSessionToken(walletAddress);
+  if (token) {
+    return token;
+  }
+  const signer = await activeSignerFor(walletAddress);
+  return signer && PROMPT_FREE_SIGNERS.has(signer.kind)
+    ? ensureEarnSession(signer)
+    : null;
+}
+
+function getWithBearer(url: string, token: string | null): Promise<Response> {
+  return fetch(url, {
+    method: "GET",
+    headers: token
+      ? { ...earnHeaders(), Authorization: `Bearer ${token}` }
+      : earnHeaders(),
+  });
+}
+
+async function isInvalidSession(res: Response): Promise<boolean> {
+  if (res.status !== 401) {
+    return false;
+  }
+  const payload = (await res
+    .clone()
+    .json()
+    .catch(() => null)) as { error?: { code?: string } } | null;
+  return payload?.error?.code === "invalid_mobile_session";
+}
+
+export async function earnWalletRead(
+  walletAddress: string,
+  url: string,
+): Promise<Response> {
+  const token = await readToken(walletAddress);
+  const res = await getWithBearer(url, token);
+  if (!token || !(await isInvalidSession(res))) {
+    return res;
+  }
+  await dropRejectedToken(token);
+  const signer = await activeSignerFor(walletAddress);
+  const fresh = signer ? await ensureEarnSession(signer) : null;
+  return fresh ? getWithBearer(url, fresh) : res;
 }

@@ -1,4 +1,6 @@
 import { env } from "@/config/env";
+import { earnHeaders, ensureEarnSession } from "@/lib/solana/earn/earn-session";
+import type { Signer } from "@/lib/wallet/signer";
 
 export class PrivySessionError extends Error {
   constructor(
@@ -10,24 +12,19 @@ export class PrivySessionError extends Error {
   }
 }
 
-// Exchanges the Privy identity token for a Loyal session on the Earn backend
-// (same route web uses). Keeps the Loyal user keyed by wallet address.
 export async function exchangePrivySession(
   identityToken: string,
-  walletAddress: string,
+  signer: Signer,
 ): Promise<void> {
   const res = await fetch(`${env.earnApiBaseUrl}/api/auth/privy/complete`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "privy-id-token": identityToken,
-      ...(env.vercelProtectionBypass
-        ? { "x-vercel-protection-bypass": env.vercelProtectionBypass }
-        : {}),
-    },
-    body: JSON.stringify({ walletAddress }),
+    headers: { ...earnHeaders(), "privy-id-token": identityToken },
+    body: JSON.stringify({ walletAddress: signer.publicKey.toBase58() }),
   });
-  if (res.ok) return;
+  if (res.ok) {
+    await ensureEarnSession(signer);
+    return;
+  }
   const body = (await res.json().catch(() => null)) as {
     error?: { code?: string; message?: string };
   } | null;

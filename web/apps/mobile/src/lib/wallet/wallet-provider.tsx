@@ -432,11 +432,11 @@ function WalletProviderCore({
   // Best-effort Loyal session from the Privy identity token. Earn routes still
   // accept per-request wallet signatures, so a failure here is not fatal.
   const exchangeSession = useCallback(
-    async (address: string) => {
+    async (sessionSigner: Signer) => {
       if (!privy) return;
       try {
         const token = await privy.getIdentityToken();
-        if (token) await exchangePrivySession(token, address);
+        if (token) await exchangePrivySession(token, sessionSigner);
       } catch (error) {
         console.warn("[privy] session exchange failed", error);
       }
@@ -491,7 +491,7 @@ function WalletProviderCore({
       );
       const next = new PrivyEmbeddedSigner(provider, account.address);
       mmkv.setBoolean(PRIVY_EMBEDDED_KEY, true);
-      void exchangeSession(account.address);
+      void exchangeSession(next);
       setSigner(next);
       setPublicKey(account.address);
       setWalletSigner(next);
@@ -519,7 +519,7 @@ function WalletProviderCore({
       const result = await migrateSignerToPrivy(signer, privy.siws);
       setPrivyMigrationStatus(result);
       if (result === "done") {
-        void exchangeSession(signer.publicKey.toBase58());
+        void exchangeSession(signer);
         track(WALLET_SETUP_EVENTS.walletCreated, { source: "privy_migration" });
       }
     })();
