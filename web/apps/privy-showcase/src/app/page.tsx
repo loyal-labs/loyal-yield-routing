@@ -274,7 +274,6 @@ export default function Home() {
         );
         return;
       } catch {
-        // At least one stage is missing. Resume with the saved nonce and seed.
       }
     }
 

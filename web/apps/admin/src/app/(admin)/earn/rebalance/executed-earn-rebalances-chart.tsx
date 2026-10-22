@@ -398,9 +398,6 @@ export function ExecutedEarnRebalancesChart({
     .map((point) => point.depositAmount)
     .filter((amount) => amount > 0 && Number.isFinite(amount));
   const useLogScale = scale === "log" && positiveDeposits.length > 0;
-  // Users who fully withdrew after rebalancing now hold nothing, and a log axis
-  // has no room for zero. Pin them to one decade below the smallest real
-  // deposit so the execution still shows up instead of being dropped.
   const logFloor = useLogScale
     ? 10 ** (Math.floor(Math.log10(Math.min(...positiveDeposits))) - 1)
     : 1;

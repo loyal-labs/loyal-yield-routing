@@ -56,9 +56,7 @@ export function OnboardingScreen({
   onComplete: () => void;
 }) {
   const [current, setCurrent] = useState(0);
-  // "enter" = slide fading in, "idle" = visible, "exit" = slide fading out
   const [phase, setPhase] = useState<"enter" | "idle" | "exit">("enter");
-  // Whether the whole screen is fading out before completing
   const [exiting, setExiting] = useState(false);
 
   const isLast = current === SLIDES.length - 1;
@@ -67,7 +65,6 @@ export function OnboardingScreen({
     track(ONBOARDING_EVENTS.started);
   }, []);
 
-  // Trigger enter→idle on mount and after each slide change
   useEffect(() => {
     if (phase === "enter") {
       const t = requestAnimationFrame(() => {
@@ -96,10 +93,8 @@ export function OnboardingScreen({
       finish();
       return;
     }
-    // Phase 1: fade out current
     setPhase("exit");
     setTimeout(() => {
-      // Phase 2: swap content, start entering from right
       track(ONBOARDING_EVENTS.slideViewed, {
         slide_index: current + 1,
         slide_title: SLIDES[current + 1].title,
@@ -111,7 +106,6 @@ export function OnboardingScreen({
 
   const slide = SLIDES[current];
 
-  // Transform values per phase
   const slideTransform =
     phase === "enter"
       ? "translateX(30px)"
@@ -135,7 +129,6 @@ export function OnboardingScreen({
         transition: "opacity 0.3s ease",
       }}
     >
-      {/* Header — pagination dots centered, Skip on right, vertically aligned */}
       <div
         style={{
           position: "absolute",
@@ -154,7 +147,6 @@ export function OnboardingScreen({
       >
         <PaginationDots current={current} total={SLIDES.length} />
 
-        {/* Skip button — hidden on last slide, vertically centered in header */}
         <button
           type="button"
           onClick={finish}
@@ -180,7 +172,6 @@ export function OnboardingScreen({
         </button>
       </div>
 
-      {/* Slide content — centered */}
       <div
         style={{
           flex: 1,
@@ -200,7 +191,6 @@ export function OnboardingScreen({
               : "opacity 0.25s ease, transform 0.25s ease",
         }}
       >
-        {/* Preview image */}
         <div
           style={{
             width: "100%",
@@ -222,7 +212,6 @@ export function OnboardingScreen({
           />
         </div>
 
-        {/* Text */}
         <div
           style={{
             display: "flex",
@@ -261,7 +250,6 @@ export function OnboardingScreen({
         </div>
       </div>
 
-      {/* Bottom button */}
       <div
         style={{
           position: "absolute",

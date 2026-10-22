@@ -10,10 +10,6 @@ const font = "var(--font-geist-sans), sans-serif";
 const secondary = "rgba(60, 60, 67, 0.6)";
 const mono = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace";
 
-// ---------------------------------------------------------------------------
-// Known program addresses
-// ---------------------------------------------------------------------------
-
 const KNOWN_PROGRAMS: Record<string, string> = {
   "11111111111111111111111111111111": "System Program",
   TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA: "Token Program",
@@ -32,10 +28,6 @@ function truncateAddress(addr: string): string {
 function programName(address: string): string {
   return KNOWN_PROGRAMS[address] ?? truncateAddress(address);
 }
-
-// ---------------------------------------------------------------------------
-// Transaction decoder
-// ---------------------------------------------------------------------------
 
 interface InstructionSummary {
   program: string;
@@ -102,7 +94,6 @@ async function decodeTransaction(
           });
           continue;
         } catch {
-          // Not a transfer — fall through
         }
       }
 
@@ -125,7 +116,6 @@ function decodeMessage(base64: string): string {
   try {
     const bytes = base64ToUint8Array(base64);
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    // If it's printable text, show it; otherwise fall back to hex
     if (/^[\x20-\x7E\n\r\t]+$/.test(text)) return text;
     return Array.from(bytes)
       .map((b) => b.toString(16).padStart(2, "0"))
@@ -137,10 +127,6 @@ function decodeMessage(base64: string): string {
       .join(" ");
   }
 }
-
-// ---------------------------------------------------------------------------
-// UI helpers
-// ---------------------------------------------------------------------------
 
 function getTitle(kind: "connect" | "signTransaction" | "signMessage"): string {
   switch (kind) {
@@ -202,10 +188,6 @@ function extractHostname(origin: string): string {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Transaction details component
-// ---------------------------------------------------------------------------
-
 function TransactionDetails({
   base64,
   summaries,
@@ -264,7 +246,6 @@ function TransactionDetails({
         </div>
       </div>
 
-      {/* Collapsible raw data */}
       <div style={{ padding: "4px 12px 9px" }}>
         <button
           type="button"
@@ -344,10 +325,6 @@ function MessageDetails({ base64 }: { base64: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
-
 export function DappApprovalView({
   kind,
   origin,
@@ -417,10 +394,8 @@ export function DappApprovalView({
         }
       `}</style>
 
-      {/* Header */}
       <SubViewHeader onBack={handleDeny} onClose={onClose} title={title} />
 
-      {/* Content */}
       <div
         style={{
           flex: 1,
@@ -431,7 +406,6 @@ export function DappApprovalView({
           overflowY: "auto",
         }}
       >
-        {/* Hero area */}
         <div
           style={{
             display: "flex",
@@ -442,7 +416,6 @@ export function DappApprovalView({
             width: "100%",
           }}
         >
-          {/* Favicon */}
           {favicon ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -505,7 +478,6 @@ export function DappApprovalView({
           </div>
         </div>
 
-        {/* Details card */}
         <div style={{ width: "100%" }}>
           <div
             style={{
@@ -516,7 +488,6 @@ export function DappApprovalView({
               flexDirection: "column",
             }}
           >
-            {/* Status */}
             <div style={{ padding: "9px 12px" }}>
               <span
                 style={{
@@ -545,7 +516,6 @@ export function DappApprovalView({
               </span>
             </div>
 
-            {/* Permissions / Action */}
             <div style={{ padding: "9px 12px" }}>
               <span
                 style={{
@@ -574,7 +544,6 @@ export function DappApprovalView({
               </span>
             </div>
 
-            {/* Transaction details */}
             {kind === "signTransaction" && transactionBase64 && (
               <TransactionDetails
                 base64={transactionBase64}
@@ -582,7 +551,6 @@ export function DappApprovalView({
               />
             )}
 
-            {/* Message details */}
             {kind === "signMessage" && messageBase64 && (
               <MessageDetails base64={messageBase64} />
             )}
@@ -590,7 +558,6 @@ export function DappApprovalView({
         </div>
       </div>
 
-      {/* Bottom buttons */}
       <div style={{ padding: "16px 20px" }}>
         <div style={{ display: "flex", gap: "10px", width: "100%" }}>
           <button

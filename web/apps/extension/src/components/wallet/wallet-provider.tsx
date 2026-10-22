@@ -47,34 +47,22 @@ function getRpcUrl(network: Network): string {
   return RPC_ENDPOINTS[network];
 }
 
-// ---------------------------------------------------------------------------
-// Wallet state
-// ---------------------------------------------------------------------------
-
 export type WalletState = "loading" | "noWallet" | "locked" | "unlocked";
 
 interface WalletContextValue {
-  /** Current wallet lifecycle state */
   state: WalletState;
   /** Active signer — only available when state === "unlocked" */
   signer: WalletSigner | null;
-  /** Solana RPC connection for the active network */
   connection: Connection;
-  /** Currently selected network */
   network: Network;
-  /** Whether the portfolio balance display is hidden */
   balanceHidden: boolean;
-  /** Stored public key (available once keypair exists, even if locked) */
   publicKey: string | null;
 
-  // Actions
   createWallet: (pin: string) => Promise<void>;
   importWallet: (secretKey: Uint8Array, pin: string) => Promise<void>;
   unlock: (pin: string) => Promise<void>;
   lock: () => void;
-  /** Wipe stored keypair and return to the create wallet screen */
   resetWallet: (initialMode?: "create" | "import") => Promise<void>;
-  /** The mode the create screen should open in after a reset */
   resetMode: "create" | "import";
   setNetwork: (network: Network) => Promise<void>;
   toggleBalanceHidden: () => Promise<void>;
@@ -82,7 +70,6 @@ interface WalletContextValue {
   changePassword: (newPassword: string) => Promise<void>;
   /** Returns the secret key as a byte array. Only available when unlocked. */
   getSecretKey: () => Uint8Array | null;
-  /** Activate a previously-generated keypair (used after backup confirmation) */
   finalizeSigner: (keypair: Keypair) => void;
 }
 
@@ -102,26 +89,19 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [network, setNetworkState] = useState<Network>("mainnet");
   const [balanceHidden, setBalanceHidden] = useState(false);
   const [publicKey, setPublicKey] = useState<string | null>(null);
-  // Keep the active keypair in memory so we can rebuild the signer on network change
   const [activeKeypair, setActiveKeypair] =
     useState<Awaited<ReturnType<typeof loadKeypair>>>(null);
 
-  // Derive connection from network
   const connection = useMemo(
     () => new Connection(getRpcUrl(network), "confirmed"),
     [network]
   );
 
-  // Rebuild signer whenever connection or active keypair changes
   useEffect(() => {
     if (activeKeypair && state === "unlocked") {
       setSigner(createKeypairSigner(activeKeypair, connection));
     }
   }, [connection, activeKeypair, state]);
-
-  // -----------------------------------------------------------------------
-  // Initialise: read persisted storage on mount
-  // -----------------------------------------------------------------------
 
   useEffect(() => {
     let cancelled = false;
@@ -142,7 +122,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setNetworkState(net);
       setBalanceHidden(hidden);
 
-      // Auto-unlock from the current unlocked browser session keypair
       if (sessionResponse?.secretKey) {
         try {
           const keypair = Keypair.fromSecretKey(
@@ -151,7 +130,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           buildSigner(keypair);
           return;
         } catch {
-          // Fall through to normal locked state
         }
       }
 
@@ -164,10 +142,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // -----------------------------------------------------------------------
-  // Watch storage changes (reactive across popup / side panel)
-  // -----------------------------------------------------------------------
-
   useEffect(() => {
     const unwatchNetwork = networkSelection.watch((value) => {
       setNetworkState(value);
@@ -175,7 +149,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     const unwatchBalance = isBalanceHiddenStorage.watch((value) => {
       setBalanceHidden(value);
     });
-    // Background worker may set this to false on idle/timeout
     const unwatchUnlocked = isWalletUnlockedStorage.watch((value) => {
       if (!value && state === "unlocked") {
         track(WALLET_SETUP_EVENTS.walletLocked, {
@@ -194,10 +167,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     };
   }, [state]);
 
-  // -----------------------------------------------------------------------
-  // Activity heartbeat — throttled, updates last-activity for auto-lock
-  // -----------------------------------------------------------------------
-
   useEffect(() => {
     if (state !== "unlocked") return;
     let lastSent = Date.now();
@@ -215,10 +184,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     };
   }, [state]);
 
-  // -----------------------------------------------------------------------
-  // Actions
-  // -----------------------------------------------------------------------
-
   const buildSigner = useCallback(
     (keypair: Awaited<ReturnType<typeof loadKeypair>>) => {
       if (!keypair) return;
@@ -229,7 +194,6 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setState("unlocked");
       void isWalletUnlockedStorage.setValue(true);
       void lastActivityAtStorage.setValue(Date.now());
-      // Send keypair to background for the current unlocked browser session.
       void browser.runtime.sendMessage({
         type: "STORE_SESSION_KEYPAIR",
         secretKey: JSON.stringify(Array.from(keypair.secretKey)),

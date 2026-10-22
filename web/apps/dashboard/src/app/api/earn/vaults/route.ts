@@ -1,12 +1,9 @@
 import { getYieldNeonSql } from "@/lib/yield-optimization/yield-neon-client.server";
 
-export const revalidate = 300; // 5 minutes
+export const revalidate = 300;
 
 const MAX_VAULTS = 50_000;
 
-// Loyal treasury autonomous vault — not in user_yield_positions.
-// Same pubkey as admin MANIFEST.vault in
-// admin/src/app/(admin)/earn/autonomous-vault/autonomous-vault-data.ts
 const TREASURY_VAULTS = [
   "F7zuL14omw4JJfS1cvsWXVb3wh48dvsonMJgoc9tYu3e",
 ] as const;

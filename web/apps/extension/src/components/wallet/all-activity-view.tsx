@@ -31,7 +31,6 @@ export function AllActivityView({
       a.type.toLowerCase().includes(search.toLowerCase()),
   );
 
-  // Group by date
   const grouped: { date: string; items: ActivityRow[] }[] = [];
   for (const item of filtered) {
     const existing = grouped.find((g) => g.date === item.date);
@@ -57,7 +56,6 @@ export function AllActivityView({
       >
         {grouped.map((group) => (
           <div key={group.date}>
-            {/* Date header */}
             <div style={{ padding: "12px 12px 8px" }}>
               <span
                 style={{

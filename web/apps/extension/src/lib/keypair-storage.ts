@@ -2,7 +2,6 @@ import { storage } from "#imports";
 import { Keypair } from "@solana/web3.js";
 import { failedPinAttempts, pinLockedUntil } from "./storage";
 
-// Store encrypted keypair in chrome.storage.local
 const encryptedKeypair = storage.defineItem<string | null>("local:encryptedKeypair", {
   fallback: null,
 });
@@ -11,10 +10,8 @@ const walletPublicKey = storage.defineItem<string | null>("local:walletPublicKey
   fallback: null,
 });
 
-// Lockout durations in ms, indexed by (failedAttempts - 6).
-// Attempts 1–5 have no lockout. 6 → 15s, 7 → 30s, 8 → 1m, 9 → 5m, 10+ → 15m.
 const LOCKOUT_DURATIONS_MS = [
-  15_000,   // 6th failure   → 15 s
+  15_000,
   30_000,   // 7th failure   → 30 s
   60_000,   // 8th failure   → 1 min
   300_000,  // 9th failure   → 5 min
@@ -109,7 +106,6 @@ async function storeKeypair(keypair: Keypair, password: string): Promise<void> {
   await walletPublicKey.setValue(keypair.publicKey.toBase58());
 }
 
-// AES-GCM encryption/decryption using Web Crypto API
 async function deriveKey(pin: string, salt: Uint8Array): Promise<CryptoKey> {
   const keyMaterial = await crypto.subtle.importKey(
     "raw",

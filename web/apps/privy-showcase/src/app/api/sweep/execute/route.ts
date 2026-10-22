@@ -70,11 +70,6 @@ export async function POST(request: Request) {
       cluster: DEMO_CLUSTER,
       memo: `Privy showcase sweep ${intent.nonce}`,
     });
-    // The signed intent fixes the finalized state, exact amount, memo nonce,
-    // fee payer, and recent blockhash. Every server instance therefore builds
-    // byte-identical transactions with the same Ed25519 signature. Concurrent
-    // replay can only rebroadcast that one Solana transaction, never execute a
-    // second transfer.
     const transaction = compileDeterministicPolicyTransaction({
       prepared: pull.prepared,
       blockhash: intent.blockhash,

@@ -49,9 +49,6 @@ function parseDisplayOrder(value: string | null): number {
   return parsed;
 }
 
-// Accept free-form strings so admins can introduce new categories without
-// a code change. The canonical list lives in `@loyal-labs/shared` and
-// drives the dropdown, but the column stays text.
 function normalizeCategory(value: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -173,12 +170,6 @@ export async function toggleTrustedDappActive(
   return { success: true };
 }
 
-/**
- * Inserts the v0.1 allowlist into `trusted_dapps`. Existing rows keyed by
- * origin are left alone *except* their `category` is backfilled when NULL,
- * so pre-category rows (Jupiter, Loyal) get grouped correctly without
- * clobbering admin edits (name / isActive / displayOrder).
- */
 export async function seedAllowlist(): Promise<SeedResult> {
   await requireAdminSession();
 

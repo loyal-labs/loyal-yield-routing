@@ -40,7 +40,6 @@ const LIQUIDATION_LTV = 0.8;
 // Routine NAV reports are hourly; allow 15 minutes for reporting/reconciliation.
 const STALE_REPORT_S = 75 * 60;
 
-// Worker journal actions in plain words.
 const ACTION_WORDS: Record<string, string> = {
   DELEVER_PRIME_USDC_STEP: "Repaid or withdrew on Kamino",
   DELEVER_ROUTE_STEP: "Repaid or withdrew on Kamino",
@@ -63,7 +62,6 @@ const ACTION_WORDS: Record<string, string> = {
   VOLTR_RESTORE_IDLE: "Returned cash to the vault",
 };
 
-// Selector reasons in plain words; anything else shows with spaces.
 const SELECTOR_REASONS: Record<string, string> = {
   advantage_not_yet_persistent:
     "a better market has not lasted long enough yet",
@@ -130,7 +128,6 @@ export default function EarnMaxPage(props: EarnMaxProps) {
     route?.navUsd != null && route.debtUsd != null && custodyUsd !== null
       ? loanToValue(route.navUsd, route.debtUsd, custodyUsd)
       : null;
-  // Actual leverage = collateral / equity = (NAV + debt) / NAV.
   const leverageNow =
     route?.currentApy?.level ??
     (route?.navUsd && route.debtUsd != null
@@ -193,7 +190,6 @@ export default function EarnMaxPage(props: EarnMaxProps) {
   );
 }
 
-/** First sentence or HTTP status of an error, never raw JSON. */
 function shortError(message: string) {
   const text = message
     .split(/[{\n]|\. /)[0]
@@ -323,7 +319,6 @@ function RightNow({
       ? "RPC rate limit"
       : shortError(earnedError)
     : null;
-  // Without a fresh scan the headline is the last good figure or the loop NAV.
   const earnedNote = !earnedReason
     ? null
     : vault
@@ -343,8 +338,6 @@ function RightNow({
         health
           ? `${health.navReconciled} of ${health.navAll} NAV reports landed in the last 24 hours.`
           : "",
-        // accounting_first only means this tick was a NAV report; it says
-        // nothing about markets, so it is not shown.
         route?.selectorAction && route.selectorReason !== "accounting_first"
           ? `Optimizer: ${words(route.selectorAction)} (${
               (route.selectorReason &&

@@ -1,11 +1,3 @@
-// Direct-HTTP Mixpanel client for the extension.
-//
-// The Chrome Web Store rejected a previous submission because the
-// `mixpanel-browser` SDK ships minified/obfuscated code that gets bundled
-// into the extension. This module replaces the SDK with direct calls to
-// Mixpanel's `/track` and `/engage` HTTP endpoints, keeping analytics
-// intact without any third-party bundle.
-
 type AnalyticsPrimitive = boolean | null | number | string;
 type AnalyticsProperties = Record<string, unknown>;
 type AnalyticsListPrimitive = boolean | number | string;
@@ -38,7 +30,6 @@ function generateAnonymousId(): string {
   if (cryptoObj && typeof cryptoObj.randomUUID === "function") {
     return `$device:${cryptoObj.randomUUID()}`;
   }
-  // Fallback: random base36 string
   return `$device:${Date.now().toString(36)}${Math.random()
     .toString(36)
     .slice(2, 10)}`;
@@ -62,7 +53,6 @@ function writeStoredDistinctId(id: string | null): void {
       window.localStorage.setItem(DISTINCT_ID_KEY, id);
     }
   } catch {
-    // Storage unavailable — analytics degrades to per-session identity.
   }
 }
 
@@ -111,7 +101,6 @@ function sendPayload(endpoint: "track" | "engage", payload: unknown): void {
 
 export function initAnalytics(): Promise<void> {
   if (!canTrack()) return Promise.resolve();
-  // Ensure distinct_id exists so subsequent events are attributable.
   getDistinctId();
   return Promise.resolve();
 }
@@ -187,15 +176,10 @@ export function resetAnalytics(): void {
   lastIdentifiedDistinctId = null;
   writeStoredDistinctId(null);
   if (canTrack()) {
-    // Seed a fresh anonymous id so subsequent events still flow.
     getDistinctId();
   }
 }
 
-/**
- * Check if a fresh-install event is pending (set by background on
- * chrome.runtime.onInstalled) and fire it once from the UI context.
- */
 export async function flushInstallEvent(): Promise<void> {
   const { installEventPending } = await import("~/src/lib/storage");
   const pending = await installEventPending.getValue();
