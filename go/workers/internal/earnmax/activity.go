@@ -29,8 +29,8 @@ type PerformancePoint struct {
 }
 
 type Activity struct {
-	Operations  []ActivityItem     `json:"operations"`
-	Performance []PerformancePoint `json:"performance"`
+	Operations  []ActivityItem     `json:"operations" nullable:"false"`
+	Performance []PerformancePoint `json:"performance" nullable:"false"`
 }
 
 func action(e Entry) (string, bool) {
