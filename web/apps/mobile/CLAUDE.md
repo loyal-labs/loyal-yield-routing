@@ -162,8 +162,9 @@ All HTTP calls go through `src/services/api.ts` to `env.apiBaseUrl` (loyal-web).
 The existing `earn-max.ts` Go-contract client stays separate; the imported
 mobile screens use `/api/smart-accounts/mobile/earn-max`, currently proxied to Next. A cached
 mobile Earn bearer session avoids prompts; an expired token falls back to a
-purpose-scoped wallet signature. Sign-in must have provisioned the canonical
-smart account before transaction preparation.
+purpose-scoped wallet signature. Context reuses the canonical smart account or
+provisions it after verifying at least $1 of spendable mainnet USDC. Passive
+summary/activity reads never provision an account.
 
 The mainnet-only backend checks wallet ownership; mobile does not require an invite. Device
 preparation reuses the web Voltr plans from `@loyal-labs/smart-account-vaults`
