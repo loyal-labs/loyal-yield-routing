@@ -24,13 +24,13 @@ const shape = (ix: ReturnType<typeof depositVaultInstruction>) =>
 describe("Voltr instruction wire format", () => {
   test("PDAs match mainnet", () => {
     expect(VOLTR_LP_MINT.toBase58()).toBe(
-      "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb",
+      "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
     );
     expect(user.receipt.toBase58()).toBe(
-      "62zEJ11nMuuHiJcbHhfE1bmQeAKsjP6rYSbfGEQ1dPkr",
+      "62zEJ11nMuuHiJcbHhfE1bmQeAKsjP6rYSbfGEQ1dPkr"
     );
     expect(user.escrowLpAta.toBase58()).toBe(
-      "EmKc4CopsN4YFiEEUW5Qc926x4WkUa7LY3p7BTuJe8i9",
+      "EmKc4CopsN4YFiEEUW5Qc926x4WkUa7LY3p7BTuJe8i9"
     );
   });
 

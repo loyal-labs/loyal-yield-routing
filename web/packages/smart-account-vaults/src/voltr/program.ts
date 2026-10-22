@@ -183,6 +183,35 @@ export function withdrawVaultInstruction(
 }
 
 const BPS = BigInt(10_000);
+const SECONDS_PER_YEAR = BigInt(365 * 24 * 60 * 60);
+
+const ceilDiv = (a: bigint, b: bigint) => (a + b - BigInt(1)) / b;
+
+function unrealisedManagementFeeLp(
+  totalLp: bigint,
+  totalValue: bigint,
+  lastUpdateTs: bigint,
+  feeBps: bigint,
+  nowSec: bigint
+): bigint {
+  const elapsed = nowSec - lastUpdateTs;
+  if (
+    lastUpdateTs === BigInt(0) ||
+    totalValue === BigInt(0) ||
+    feeBps === BigInt(0) ||
+    elapsed <= BigInt(0)
+  ) {
+    return BigInt(0);
+  }
+  const feeAsset = ceilDiv(
+    totalValue * elapsed * feeBps,
+    BPS * SECONDS_PER_YEAR
+  );
+  if (feeAsset >= totalValue) {
+    throw new Error("Voltr accrued management fee exceeds vault value.");
+  }
+  return ceilDiv(feeAsset * totalLp, totalValue - feeAsset);
+}
 const readU64 = (data: Buffer, offset: number) => data.readBigUInt64LE(offset);
 const readU16 = (data: Buffer, offset: number) =>
   BigInt(data.readUInt16LE(offset));
@@ -272,8 +301,7 @@ export async function readVoltrPosition(
       ) {
         idleAssetRaw = account.amount;
       }
-    } catch {
-    }
+    } catch {}
   }
   const v = vault.data;
   const nowSec = BigInt(Math.floor(Date.now() / 1000));
@@ -285,18 +313,25 @@ export async function readVoltrPosition(
     lockedDuration === BigInt(0) || sinceReport >= lockedDuration
       ? BigInt(0)
       : sinceReport <= BigInt(0)
-      ? lockedAmount
-      : (lockedAmount * (lockedDuration - sinceReport)) / lockedDuration;
+        ? lockedAmount
+        : (lockedAmount * (lockedDuration - sinceReport)) / lockedDuration;
   const unlockedValue = readU64(v, 168) - lockedProfit;
   const redemptionKeepBps = BPS - readU16(v, 520);
-  // ponytail: unrealised management-fee LP is ignored (fees are 0 on this
-  // vault); add the SDK's calculateUnrealisedLpFees if a fee is ever set.
-  const totalLp =
+  const accountedLp =
     lpMint.data.readBigUInt64LE(36) +
     readU64(v, 576) +
     readU64(v, 584) +
     readU64(v, 592) +
     readU64(v, 616);
+  const totalLp =
+    accountedLp +
+    unrealisedManagementFeeLp(
+      accountedLp,
+      readU64(v, 168),
+      readU64(v, 568),
+      readU16(v, 516) + readU16(v, 518) + readU16(v, 526),
+      nowSec
+    );
   const lpToAssets = (lp: bigint) =>
     totalLp === BigInt(0)
       ? BigInt(0)
