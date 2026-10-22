@@ -481,6 +481,9 @@ describe("Earn deposit confirm route", () => {
     depositCalls = [];
     reconcileCalls = [];
     withdrawalCalls = [];
+    Connection.prototype.getSignaturesForAddress = mock(async () => [
+      { err: null, signature: "policy-creation-signature", slot: 250 },
+    ]) as never;
     Connection.prototype.getSignatureStatuses = mock(async () => ({
       value: [
         {

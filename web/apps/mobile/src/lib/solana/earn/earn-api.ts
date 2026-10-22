@@ -1015,10 +1015,6 @@ export type EarnDepositConfirmArgs = {
   preparedDeposit: WirePreparedEarnDeposit;
   depositSignature: string;
   confirmedSlot: string;
-  policySignature?: string;
-  policyConfirmedSlot?: string;
-  setupPolicySignature?: string;
-  setupPolicyConfirmedSlot?: string;
 };
 
 export async function confirmEarnDeposit(
