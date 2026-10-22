@@ -32,3 +32,10 @@ test("proxy-image accepts only exact allowed hosts or dot-boundary subdomains", 
   );
   expect(await status("https://t.me/redir.png")).not.toBe(200);
 });
+
+test("proxy-image refuses upstream responses that are not images", async () => {
+  spyOn(globalThis, "fetch").mockImplementation(
+    async () => new Response("<html></html>", { headers: { "content-type": "text/html" } })
+  );
+  expect(await status("https://t.me/some/page")).toBe(415);
+});
