@@ -68,13 +68,14 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const failures: string[] = [];
 
 if (app === "admin") {
-  const login = await page.request.post(`${base}/auth/login`, {
-    form: { login: process.env.ADMIN_USER ?? "", password: process.env.ADMIN_PASSWORD ?? "", next: "/overview" },
-    headers: { Origin: base },
-    maxRedirects: 0,
-  });
+  // Sign in through the login form: Playwright's request client under Bun
+  // stalls on the empty 303 that /auth/login answers.
+  await page.goto(`${base}/login?next=%2Foverview`, { waitUntil: "domcontentloaded" });
+  await page.fill('input[name="login"]', process.env.ADMIN_USER ?? "");
+  await page.fill('input[name="password"]', process.env.ADMIN_PASSWORD ?? "");
+  await Promise.all([page.waitForURL(`${base}/overview`), page.click('button[type="submit"]')]);
   const signedIn = (await page.context().cookies(base)).some((cookie) => cookie.name === "loyal_admin_session");
-  if (login.status() !== 303 || !signedIn) throw new Error(`admin sign-in failed: ${login.status()} ${login.headers().location ?? ""}`);
+  if (!signedIn) throw new Error(`admin sign-in failed at ${page.url()}`);
 }
 
 for (const { path, url } of targets) {
