@@ -12,6 +12,8 @@ import { env } from "@/config/env";
 import { getConnection } from "@/lib/solana/rpc/connection";
 import type { Signer } from "@/lib/wallet/signer";
 
+import type { EarnMaxSummaryResponse } from "@loyal-labs/api";
+
 import type * as NextEarnMax from "../../../../../web/src/features/earn-max/types";
 import { fetchEarnState } from "./earn-api";
 import { earnHeaders, earnWalletRead, ensureEarnSession } from "./earn-session";
@@ -20,17 +22,7 @@ import {
   type SentTransaction,
 } from "./send-prepared";
 
-export type EarnMaxSummary = NextEarnMax.EarnMaxSummary;
 export type EarnMaxActivityResponse = NextEarnMax.EarnMaxActivityResponse;
-export type EarnMaxSummaryResponse = Omit<
-  NextEarnMax.EarnMaxSummaryResponse,
-  "config"
-> & {
-  config: NextEarnMax.EarnMaxSummaryResponse["config"] & {
-    settingsPda?: string;
-    walletAddress?: string;
-  };
-};
 export type EarnMaxInviteResponse = { redeemed: boolean };
 
 export const EARN_MAX_CONTRACT = "earn-max-v4";

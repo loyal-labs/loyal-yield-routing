@@ -1,3 +1,4 @@
+import type { EarnMaxSummaryResponse } from "@loyal-labs/api";
 import {
   isVoltrOperationVisible,
   VoltrClaimLiquidityError,
@@ -14,7 +15,6 @@ import {
   resolveEarnMaxAccount,
   sendEarnMaxVoltr,
   type EarnMaxActivityResponse,
-  type EarnMaxSummaryResponse,
   type EarnMaxVoltrAction,
 } from "@/lib/solana/earn/earn-max";
 import type { Signer } from "@/lib/wallet/signer";
