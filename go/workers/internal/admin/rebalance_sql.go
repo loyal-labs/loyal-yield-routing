@@ -1,6 +1,6 @@
 package admin
 
-const sqlAuditRowsCTE = `
+const rebalanceSQLAuditRowsCTE = `
   WITH audit_rows AS (
     SELECT
       'decision'::text AS record_type,
@@ -166,7 +166,7 @@ const sqlAuditRowsCTE = `
   )
 `
 
-const sqlActiveReserveRoutes = `
+const rebalanceSQLActiveReserveRoutes = `
       WITH reserve_rows AS (
         SELECT
           reserve.reserve AS current_reserve,
@@ -221,7 +221,7 @@ const sqlActiveReserveRoutes = `
       ORDER BY COALESCE(SUM(normalized_amount_raw), 0) DESC
 `
 
-const sqlRecentDecisions = `
+const rebalanceSQLRecentDecisions = `
       WITH ranked_decisions AS MATERIALIZED (
         SELECT
           decision.*,
@@ -260,7 +260,7 @@ const sqlRecentDecisions = `
       ORDER BY created_at DESC, id DESC
 `
 
-const sqlRebalanceActivity = `
+const rebalanceSQLActivity = `
       WITH bounds AS (
         SELECT
           now() - interval '72 hours' AS window_started_at,
@@ -464,7 +464,7 @@ const sqlRebalanceActivity = `
       ORDER BY bucket.route_mode ASC, bucket.bucket_started_at ASC
 `
 
-const sqlAutodepositTimeSeries = `
+const rebalanceSQLAutodepositTimeSeries = `
       WITH params AS (
         SELECT now() AT TIME ZONE 'UTC' AS utc_now
       ),
@@ -726,7 +726,7 @@ const sqlAutodepositTimeSeries = `
         bucket.bucket_started_at ASC
 `
 
-const sqlOptimizationVolume = `
+const rebalanceSQLOptimizationVolume = `
       WITH confirmed_daily AS (
         SELECT
           (decision.updated_at AT TIME ZONE 'UTC')::date AS date,
@@ -772,7 +772,7 @@ const sqlOptimizationVolume = `
       ORDER BY date ASC
 `
 
-const sqlLast30DaysRebalances = `
+const rebalanceSQLLast30Days = `
       WITH bounds AS (
         SELECT
           date_trunc('day', now() AT TIME ZONE 'UTC') - interval '29 days'
@@ -828,7 +828,7 @@ const sqlLast30DaysRebalances = `
       ORDER BY day.route_mode ASC, day.date ASC
 `
 
-const sqlExecutedHistory = `
+const rebalanceSQLExecutedHistory = `
       WITH executed AS MATERIALIZED (
         SELECT
           decision.id,
@@ -1130,7 +1130,7 @@ const sqlExecutedHistory = `
         ) AS details
 `
 
-const sqlVaultFrequency = `
+const rebalanceSQLVaultFrequency = `
       WITH active_vaults AS MATERIALIZED (
         SELECT
           vault.id,
@@ -1496,7 +1496,7 @@ const sqlVaultFrequency = `
         ) AS details
 `
 
-const sqlVaultOpportunityCounts = `
+const rebalanceSQLVaultOpportunityCounts = `
       WITH target_vault AS MATERIALIZED (
         SELECT vault.id, policy.cluster
         FROM loyal_yield.managed_vaults AS vault
@@ -1529,7 +1529,7 @@ const sqlVaultOpportunityCounts = `
       GROUP BY target.id
 `
 
-const sqlAuditSummary = `
+const rebalanceSQLAuditSummary = `
       SELECT
         COUNT(*) FILTER (
           WHERE audit.record_type = 'decision'

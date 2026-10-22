@@ -31,10 +31,10 @@ func (m *Mux) rebalanceSection(w http.ResponseWriter, r *http.Request) {
 	case "operations":
 		body, err = rebalanceOperations(r, m.Deps)
 	case "executions":
-		body = map[string]any{"executedRebalances": executedRebalancesWire(r, m.Deps)}
+		body = map[string]any{"executedRebalances": rebalanceExecutedWire(r, m.Deps)}
 	case "frequency":
 		raw, present := query["eligibilityFloorRaw"]
-		if !present || (raw[0] != "null" && !digits.MatchString(raw[0])) {
+		if !present || (raw[0] != "null" && !rebalanceDigits.MatchString(raw[0])) {
 			err = huma.Error400BadRequest("eligibilityFloorRaw is required")
 			break
 		}
@@ -42,7 +42,7 @@ func (m *Mux) rebalanceSection(w http.ResponseWriter, r *http.Request) {
 		if raw[0] != "null" {
 			floor = &raw[0]
 		}
-		body = map[string]any{"vaultRebalanceFrequency": vaultFrequencyWire(r, m.Deps, floor)}
+		body = map[string]any{"vaultRebalanceFrequency": rebalanceVaultFrequencyWire(r, m.Deps, floor)}
 	case "":
 		err = huma.Error400BadRequest("section is required")
 	default:
@@ -71,7 +71,7 @@ func (m *Mux) rebalanceDetails(w http.ResponseWriter, r *http.Request) {
 	writeError(w, r, Disabled("the reserve monitor"))
 }
 
-type operationsAutodepositPoint struct {
+type rebalanceOperationsAutodepositPoint struct {
 	AccountNotFound       int64  `json:"accountNotFound"`
 	BucketStartedAt       string `json:"bucketStartedAt"`
 	ConfirmationOrTimeout int64  `json:"confirmationOrTimeout"`
@@ -82,10 +82,10 @@ type operationsAutodepositPoint struct {
 	PostPullKaminoTopUp   int64  `json:"postPullKaminoTopUp"`
 }
 
-type operationsAutodepositRange struct {
-	BucketHours int64                        `json:"bucketHours"`
-	Key         string                       `json:"key"`
-	Points      []operationsAutodepositPoint `json:"points"`
+type rebalanceOperationsAutodepositRange struct {
+	BucketHours int64                                 `json:"bucketHours"`
+	Key         string                                `json:"key"`
+	Points      []rebalanceOperationsAutodepositPoint `json:"points"`
 }
 
 func rebalanceOperations(r *http.Request, d *Deps) (any, error) {
@@ -93,19 +93,19 @@ func rebalanceOperations(r *http.Request, d *Deps) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	last30, err := last30DaysRebalanceSeries(r.Context(), d)
+	last30, err := rebalanceLast30DaysSeries(r.Context(), d)
 	if err != nil {
 		return nil, err
 	}
-	ranges, err := autodepositTimeSeries(r.Context(), d)
+	ranges, err := rebalanceAutodepositTimeSeries(r.Context(), d)
 	if err != nil {
 		return nil, err
 	}
-	autodeposit := make([]operationsAutodepositRange, len(ranges))
+	autodeposit := make([]rebalanceOperationsAutodepositRange, len(ranges))
 	for i, rng := range ranges {
-		points := make([]operationsAutodepositPoint, len(rng.points))
+		points := make([]rebalanceOperationsAutodepositPoint, len(rng.points))
 		for j, p := range rng.points {
-			points[j] = operationsAutodepositPoint{
+			points[j] = rebalanceOperationsAutodepositPoint{
 				AccountNotFound:       p.accountNotFound,
 				BucketStartedAt:       p.bucketStartedAt,
 				ConfirmationOrTimeout: p.confirmationOrTimeout,
@@ -116,17 +116,17 @@ func rebalanceOperations(r *http.Request, d *Deps) (any, error) {
 				PostPullKaminoTopUp:   p.postPullKaminoTopUp,
 			}
 		}
-		autodeposit[i] = operationsAutodepositRange{BucketHours: rng.bucketHours, Key: rng.key, Points: points}
+		autodeposit[i] = rebalanceOperationsAutodepositRange{BucketHours: rng.bucketHours, Key: rng.key, Points: points}
 	}
 	return map[string]any{"activity": activity, "autodeposit": autodeposit, "last30DaysRebalances": last30}, nil
 }
 
-type stringTable struct {
+type rebalanceStringTable struct {
 	strings []string
 	index   map[string]int
 }
 
-func (t *stringTable) of(value *string) *int {
+func (t *rebalanceStringTable) of(value *string) *int {
 	if value == nil {
 		return nil
 	}
@@ -139,26 +139,26 @@ func (t *stringTable) of(value *string) *int {
 	return &i
 }
 
-func (t *stringTable) must(value string) int {
+func (t *rebalanceStringTable) must(value string) int {
 	return *t.of(&value)
 }
 
-func executedRebalancesWire(r *http.Request, d *Deps) map[string]any {
-	history, err := executedRebalanceHistory(r.Context(), d, false)
+func rebalanceExecutedWire(r *http.Request, d *Deps) map[string]any {
+	history, err := rebalanceExecutedHistoryData(r.Context(), d, false)
 	if err != nil {
 		slog.Error("Executed Earn rebalance history query failed", "error", err)
 		return map[string]any{
-			"chartPoints": []any{}, "details": []any{}, "generatedAt": isoTime(time.Now()),
+			"chartPoints": []any{}, "details": []any{}, "generatedAt": rebalanceISOTime(time.Now()),
 			"status": "unavailable", "strings": []string{}, "summaries": []any{},
 		}
 	}
-	table := &stringTable{strings: []string{}, index: map[string]int{}}
-	serialize := func(rows []ExecutedRebalance) [][]any {
+	table := &rebalanceStringTable{strings: []string{}, index: map[string]int{}}
+	serialize := func(rows []RebalanceExecuted) [][]any {
 		out := make([][]any, len(rows))
 		for i, e := range rows {
 			out[i] = []any{
 				e.AmountRaw, table.must(e.Authority), e.ConfirmedSlot, e.CurrentDepositRaw, e.ExecutedAt, e.ID,
-				table.of(e.LiquidityMint), e.RouteMode, table.must(e.SourceReserve), table.of(e.SourceLiquidityMint),
+				table.of(e.LiquidityMint), e.RebalanceRouteMode, table.must(e.SourceReserve), table.of(e.SourceLiquidityMint),
 				e.SwapFeeLamports, table.must(e.TargetReserve), table.of(e.TargetLiquidityMint), e.UserRank,
 			}
 		}
@@ -172,21 +172,21 @@ func executedRebalancesWire(r *http.Request, d *Deps) map[string]any {
 	}
 }
 
-func vaultFrequencyWire(r *http.Request, d *Deps, floor *string) map[string]any {
-	frequency, err := earnVaultRebalanceFrequency(r.Context(), d, floor, false)
+func rebalanceVaultFrequencyWire(r *http.Request, d *Deps, floor *string) map[string]any {
+	frequency, err := rebalanceEarnVaultFrequency(r.Context(), d, floor, false)
 	if err != nil {
 		slog.Error("Earn vault rebalance frequency query failed", "error", err)
 		return map[string]any{
-			"generatedAt": isoTime(time.Now()), "status": "unavailable",
+			"generatedAt": rebalanceISOTime(time.Now()), "status": "unavailable",
 			"chartPoints": []any{}, "details": []any{}, "summaries": []any{}, "vaultCount": 0,
 		}
 	}
-	serialize := func(rows []VaultRebalanceFrequency) [][]any {
+	serialize := func(rows []RebalanceVaultFrequency) [][]any {
 		out := make([][]any, len(rows))
 		for i, v := range rows {
 			out[i] = []any{
 				v.AllCount, v.CurrentDepositRaw, v.CurrentReserve, v.DepositRank, v.Last12hCount, v.Last2hCount,
-				v.Last7dCount, v.LiquidityMint, v.PositionCount, v.RouteMode, v.VaultID, v.VaultPubkey,
+				v.Last7dCount, v.LiquidityMint, v.PositionCount, v.RebalanceRouteMode, v.VaultID, v.VaultPubkey,
 			}
 		}
 		return out
@@ -198,7 +198,7 @@ func vaultFrequencyWire(r *http.Request, d *Deps, floor *string) map[string]any 
 	}
 }
 
-func queryEnum(value, fallback string, allowed ...string) (string, bool) {
+func rebalanceQueryEnum(value, fallback string, allowed ...string) (string, bool) {
 	if value == "" {
 		return fallback, true
 	}
@@ -212,46 +212,46 @@ func queryEnum(value, fallback string, allowed ...string) (string, bool) {
 
 func (m *Mux) rebalanceAudit(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	view, okView := queryEnum(query.Get("view"), "errors", "completed_rebalances", "completed_deposits", "errors")
-	auditRange, okRange := queryEnum(query.Get("range"), "24h", "24h", "7d", "30d", "all")
-	mode, okMode := queryEnum(query.Get("routeMode"), "same_mint", "same_mint", "cross_mint")
-	errorFilter, okFilter := queryEnum(query.Get("errorFilter"), "all", "all", "rebalance", "deposit", "needs_review")
-	cursor := decodeAuditCursor(query.Get("cursor"))
-	activeCursor := decodeAuditCursor(query.Get("activeCursor"))
+	view, okView := rebalanceQueryEnum(query.Get("view"), "errors", "completed_rebalances", "completed_deposits", "errors")
+	auditRange, okRange := rebalanceQueryEnum(query.Get("range"), "24h", "24h", "7d", "30d", "all")
+	mode, okMode := rebalanceQueryEnum(query.Get("routeMode"), "same_mint", "same_mint", "cross_mint")
+	errorFilter, okFilter := rebalanceQueryEnum(query.Get("errorFilter"), "all", "all", "rebalance", "deposit", "needs_review")
+	cursor := rebalanceDecodeAuditCursor(query.Get("cursor"))
+	activeCursor := rebalanceDecodeAuditCursor(query.Get("activeCursor"))
 	if !okView || !okRange || !okMode || !okFilter ||
 		(query.Get("cursor") != "" && cursor == nil) || (query.Get("activeCursor") != "" && activeCursor == nil) {
 		writeError(w, r, huma.Error400BadRequest("Invalid rebalance audit query."))
 		return
 	}
-	routeMode := RouteMode(mode)
+	routeMode := RebalanceRouteMode(mode)
 	summary, err := rebalanceAuditSummary(r.Context(), m.Deps, auditRange, routeMode)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	page, err := rebalanceAuditPage(r.Context(), m.Deps, auditViewPredicate(view, errorFilter), auditRange, routeMode, cursor)
+	page, err := rebalanceAuditPage(r.Context(), m.Deps, rebalanceAuditViewPredicate(view, errorFilter), auditRange, routeMode, cursor)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	activePage, err := rebalanceAuditPage(r.Context(), m.Deps, auditActiveStatus, auditRange, routeMode, activeCursor)
+	activePage, err := rebalanceAuditPage(r.Context(), m.Deps, rebalanceAuditActiveStatus, auditRange, routeMode, activeCursor)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"activePage": activePage, "generatedAt": isoTime(time.Now()), "page": page, "summary": summary,
+		"activePage": activePage, "generatedAt": rebalanceISOTime(time.Now()), "page": page, "summary": summary,
 	})
 }
 
 func (m *Mux) rebalanceVaultOpportunities(w http.ResponseWriter, r *http.Request) {
 	vaultID := r.URL.Query().Get("vaultId")
 	mode := r.URL.Query().Get("routeMode")
-	if !digits.MatchString(vaultID) || (mode != string(SameMint) && mode != string(CrossMint)) {
+	if !rebalanceDigits.MatchString(vaultID) || (mode != string(rebalanceSameMint) && mode != string(rebalanceCrossMint)) {
 		writeError(w, r, huma.Error400BadRequest("Invalid vault opportunity query."))
 		return
 	}
-	counts, err := earnVaultOpportunityCounts(r.Context(), m.Deps, vaultID, RouteMode(mode))
+	counts, err := rebalanceEarnVaultOpportunityCounts(r.Context(), m.Deps, vaultID, RebalanceRouteMode(mode))
 	if err == nil && counts == nil {
 		err = huma.Error404NotFound("Active Earn vault not found.")
 	}

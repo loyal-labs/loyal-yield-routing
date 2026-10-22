@@ -11,15 +11,15 @@ import (
 	"time"
 )
 
-type auditCursor struct {
+type rebalanceAuditCursor struct {
 	CreatedAt  string `json:"createdAt"`
 	ID         string `json:"id"`
 	SourceRank int64  `json:"sourceRank"`
 }
 
-var digits = regexp.MustCompile(`^\d+$`)
+var rebalanceDigits = regexp.MustCompile(`^\d+$`)
 
-func decodeAuditCursor(value string) *auditCursor {
+func rebalanceDecodeAuditCursor(value string) *rebalanceAuditCursor {
 	if value == "" {
 		return nil
 	}
@@ -44,7 +44,7 @@ func decodeAuditCursor(value string) *auditCursor {
 		return nil
 	}
 	id, ok := decoded.ID.(string)
-	if !ok || !digits.MatchString(id) {
+	if !ok || !rebalanceDigits.MatchString(id) {
 		return nil
 	}
 	rank := 1.0
@@ -56,15 +56,15 @@ func decodeAuditCursor(value string) *auditCursor {
 	if rank != math.Trunc(rank) || rank < 1 || rank > 3 {
 		return nil
 	}
-	return &auditCursor{CreatedAt: isoTime(parsed), ID: id, SourceRank: int64(rank)}
+	return &rebalanceAuditCursor{CreatedAt: rebalanceISOTime(parsed), ID: id, SourceRank: int64(rank)}
 }
 
-func (c auditCursor) encode() string {
+func (c rebalanceAuditCursor) encode() string {
 	raw, _ := json.Marshal(c)
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
-func auditRangePredicate(auditRange string) string {
+func rebalanceAuditRangePredicate(auditRange string) string {
 	switch auditRange {
 	case "24h":
 		return "audit.event_at >= now() - interval '24 hours'"
@@ -76,7 +76,7 @@ func auditRangePredicate(auditRange string) string {
 	return "TRUE"
 }
 
-func auditRouteModePredicate(mode RouteMode) string {
+func rebalanceAuditRouteModePredicate(mode RebalanceRouteMode) string {
 	return `(
     audit.record_type <> 'decision'
     OR audit.movement_source <> 'rebalance'
@@ -85,12 +85,12 @@ func auditRouteModePredicate(mode RouteMode) string {
 }
 
 const (
-	auditCompletedRebalances = `
+	rebalanceAuditCompletedRebalances = `
     audit.record_type = 'decision'
     AND audit.movement_source = 'rebalance'
     AND audit.status = 'confirmed'
   `
-	auditCompletedDeposits = `
+	rebalanceAuditCompletedDeposits = `
     (
       audit.record_type = 'yield_deposit'
       AND audit.status = 'confirmed'
@@ -102,12 +102,12 @@ const (
       AND audit.status = 'confirmed'
     )
   `
-	auditRebalanceErrors = `
+	rebalanceAuditRebalanceErrors = `
     audit.record_type = 'decision'
     AND audit.movement_source = 'rebalance'
     AND audit.status IN ('failed', 'abandoned')
   `
-	auditDepositErrors = `
+	rebalanceAuditDepositErrors = `
     (
       audit.record_type = 'decision'
       AND audit.movement_source = 'idle_vault_deposit'
@@ -119,34 +119,34 @@ const (
       AND audit.status = 'failed'
     )
   `
-	auditNeedsReview = `
+	rebalanceAuditNeedsReview = `
     audit.record_type = 'decision'
     AND (audit.movement_source = 'needs_review' OR audit.record_type = 'decision' AND audit.status NOT IN (
     'planned', 'simulating', 'ready', 'submitted', 'confirming',
     'confirmed', 'failed', 'abandoned', 'skipped'
   ))
   `
-	auditActiveStatus = `audit.record_type = 'decision' AND audit.status IN (
+	rebalanceAuditActiveStatus = `audit.record_type = 'decision' AND audit.status IN (
   'planned', 'simulating', 'ready', 'submitted', 'confirming'
 )`
 )
 
-func auditViewPredicate(view, errorFilter string) string {
+func rebalanceAuditViewPredicate(view, errorFilter string) string {
 	switch view {
 	case "completed_rebalances":
-		return auditCompletedRebalances
+		return rebalanceAuditCompletedRebalances
 	case "completed_deposits":
-		return auditCompletedDeposits
+		return rebalanceAuditCompletedDeposits
 	}
 	switch errorFilter {
 	case "rebalance":
-		return auditRebalanceErrors
+		return rebalanceAuditRebalanceErrors
 	case "deposit":
-		return auditDepositErrors
+		return rebalanceAuditDepositErrors
 	case "needs_review":
-		return auditNeedsReview
+		return rebalanceAuditNeedsReview
 	}
-	return "(" + auditRebalanceErrors + " OR " + auditDepositErrors + " OR " + auditNeedsReview + ")"
+	return "(" + rebalanceAuditRebalanceErrors + " OR " + rebalanceAuditDepositErrors + " OR " + rebalanceAuditNeedsReview + ")"
 }
 
 type RebalanceAuditRow struct {
@@ -182,7 +182,7 @@ type RebalanceAuditPage struct {
 	Rows       []RebalanceAuditRow `json:"rows"`
 }
 
-type auditSQLRow struct {
+type rebalanceAuditSQLRow struct {
 	RecordType          string     `db:"record_type"`
 	ID                  string     `db:"id"`
 	SortID              int64      `db:"sort_id"`
@@ -215,14 +215,14 @@ type auditSQLRow struct {
 	IsIdleFallback      *bool      `db:"is_idle_fallback"`
 }
 
-func auditLane(value *string) string {
+func rebalanceAuditLane(value *string) string {
 	if value != nil && (*value == "rebalance" || *value == "deposit") {
 		return *value
 	}
 	return "needs_review"
 }
 
-func auditSource(value *string) string {
+func rebalanceAuditSource(value *string) string {
 	if value != nil {
 		switch *value {
 		case "autodeposit", "idle_vault_deposit", "manual_deposit", "rebalance":
@@ -232,45 +232,45 @@ func auditSource(value *string) string {
 	return "needs_review"
 }
 
-func (row auditSQLRow) wire() RebalanceAuditRow {
+func (row rebalanceAuditSQLRow) wire() RebalanceAuditRow {
 	return RebalanceAuditRow{
 		AbandonReason:       row.AbandonReason,
-		AmountRaw:           bigText(row.AmountRaw),
-		ConfirmedSlot:       bigText(row.ConfirmedSlot),
-		CreatedAt:           isoTimeOrEmpty(row.CreatedAt),
+		AmountRaw:           rebalanceBigText(row.AmountRaw),
+		ConfirmedSlot:       rebalanceBigText(row.ConfirmedSlot),
+		CreatedAt:           rebalanceISOTimeOrEmpty(row.CreatedAt),
 		DecisionReason:      row.DecisionReason,
 		EstimatedEdgeBps:    row.EstimatedEdgeBps,
 		ID:                  row.ID,
-		Lane:                auditLane(row.Lane),
+		Lane:                rebalanceAuditLane(row.Lane),
 		LiquidityMint:       row.LiquidityMint,
 		MovementKind:        row.ExecutionKind,
-		Source:              auditSource(row.MovementSource),
+		Source:              rebalanceAuditSource(row.MovementSource),
 		SourceLiquidityMint: row.SourceLiquidityMint,
 		Signature:           row.Signature,
 		SecondarySignature:  row.SecondarySignature,
 		SourceApyBps:        row.SourceApyBps,
 		SourceReserve:       row.SourceReserve,
 		Status:              row.Status,
-		SubmittedSlot:       bigText(row.SubmittedSlot),
+		SubmittedSlot:       rebalanceBigText(row.SubmittedSlot),
 		TargetApyBps:        row.TargetApyBps,
 		TargetLiquidityMint: row.TargetLiquidityMint,
 		TargetReserve:       row.TargetReserve,
-		UpdatedAt:           isoTimeOrEmpty(row.UpdatedAt),
+		UpdatedAt:           rebalanceISOTimeOrEmpty(row.UpdatedAt),
 		VaultID:             row.VaultID,
-		VaultIndex:          intTextPtr(row.VaultIndex),
+		VaultIndex:          rebalanceIntPtr(row.VaultIndex),
 		VaultPubkey:         row.VaultPubkey,
 	}
 }
 
-const auditPageLimit = 25
+const rebalanceAuditPageLimit = 25
 
-func rebalanceAuditPage(ctx context.Context, d *Deps, predicate, auditRange string, mode RouteMode, cursor *auditCursor) (RebalanceAuditPage, error) {
-	query := sqlAuditRowsCTE + `
+func rebalanceAuditPage(ctx context.Context, d *Deps, predicate, auditRange string, mode RebalanceRouteMode, cursor *rebalanceAuditCursor) (RebalanceAuditPage, error) {
+	query := rebalanceSQLAuditRowsCTE + `
       SELECT
         audit.*
       FROM audit_rows AS audit
-      WHERE ` + auditRangePredicate(auditRange) + `
-        AND ` + auditRouteModePredicate(mode) + `
+      WHERE ` + rebalanceAuditRangePredicate(auditRange) + `
+        AND ` + rebalanceAuditRouteModePredicate(mode) + `
         AND ` + predicate
 	args := []any{}
 	if cursor != nil {
@@ -280,16 +280,16 @@ func rebalanceAuditPage(ctx context.Context, d *Deps, predicate, auditRange stri
 	}
 	query += `
       ORDER BY audit.event_at DESC, audit.sort_source DESC, audit.sort_id DESC
-      LIMIT ` + strconv.Itoa(auditPageLimit+1)
-	rows, err := yieldRows[auditSQLRow](ctx, d, query, args...)
+      LIMIT ` + strconv.Itoa(rebalanceAuditPageLimit+1)
+	rows, err := rebalanceRows[rebalanceAuditSQLRow](ctx, d, query, args...)
 	if err != nil {
 		return RebalanceAuditPage{}, err
 	}
 	page := RebalanceAuditPage{Rows: []RebalanceAuditRow{}}
-	if len(rows) > auditPageLimit {
-		rows = rows[:auditPageLimit]
+	if len(rows) > rebalanceAuditPageLimit {
+		rows = rows[:rebalanceAuditPageLimit]
 		last := rows[len(rows)-1]
-		next := auditCursor{CreatedAt: isoTimeOrEmpty(last.EventAt), ID: strconv.FormatInt(last.SortID, 10), SourceRank: int64(last.SortSource)}.encode()
+		next := rebalanceAuditCursor{CreatedAt: rebalanceISOTimeOrEmpty(last.EventAt), ID: strconv.FormatInt(last.SortID, 10), SourceRank: int64(last.SortSource)}.encode()
 		page.NextCursor = &next
 	}
 	for _, row := range rows {
@@ -309,11 +309,11 @@ type RebalanceAuditSummary struct {
 	StaleActive         int64 `json:"staleActive"`
 }
 
-func rebalanceAuditSummary(ctx context.Context, d *Deps, auditRange string, mode RouteMode) (RebalanceAuditSummary, error) {
-	query := sqlAuditRowsCTE + sqlAuditSummary + `
-      WHERE ` + auditRangePredicate(auditRange) + `
-        AND ` + auditRouteModePredicate(mode)
-	rows, err := yieldRows[struct {
+func rebalanceAuditSummary(ctx context.Context, d *Deps, auditRange string, mode RebalanceRouteMode) (RebalanceAuditSummary, error) {
+	query := rebalanceSQLAuditRowsCTE + rebalanceSQLAuditSummary + `
+      WHERE ` + rebalanceAuditRangePredicate(auditRange) + `
+        AND ` + rebalanceAuditRouteModePredicate(mode)
+	rows, err := rebalanceRows[struct {
 		CompletedRebalances string `db:"completed_rebalances"`
 		CompletedDeposits   string `db:"completed_deposits"`
 		RebalanceErrors     string `db:"rebalance_errors"`
@@ -328,13 +328,13 @@ func rebalanceAuditSummary(ctx context.Context, d *Deps, auditRange string, mode
 	}
 	row := rows[0]
 	return RebalanceAuditSummary{
-		Active:              intText(row.Active),
-		CompletedDeposits:   intText(row.CompletedDeposits),
-		CompletedRebalances: intText(row.CompletedRebalances),
-		DepositErrors:       intText(row.DepositErrors),
-		Errors:              intText(row.Errors),
-		NeedsReview:         intText(row.NeedsReview),
-		RebalanceErrors:     intText(row.RebalanceErrors),
-		StaleActive:         intText(row.StaleActive),
+		Active:              rebalanceInt(row.Active),
+		CompletedDeposits:   rebalanceInt(row.CompletedDeposits),
+		CompletedRebalances: rebalanceInt(row.CompletedRebalances),
+		DepositErrors:       rebalanceInt(row.DepositErrors),
+		Errors:              rebalanceInt(row.Errors),
+		NeedsReview:         rebalanceInt(row.NeedsReview),
+		RebalanceErrors:     rebalanceInt(row.RebalanceErrors),
+		StaleActive:         rebalanceInt(row.StaleActive),
 	}, nil
 }

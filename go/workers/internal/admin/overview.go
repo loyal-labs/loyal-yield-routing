@@ -11,25 +11,25 @@ type OverviewAutodepositPoint struct {
 type OverviewAutodepositRange struct {
 	BucketHours int64                      `json:"bucketHours"`
 	Key         string                     `json:"key" enum:"2d,7d,30d"`
-	Points      []OverviewAutodepositPoint `json:"points"`
+	Points      []OverviewAutodepositPoint `json:"points" nullable:"false"`
 }
 
 type OverviewProps struct {
-	Autodeposit        []OverviewAutodepositRange `json:"autodeposit"`
-	OptimizationVolume []OptimizationVolumePoint  `json:"optimizationVolume"`
+	Autodeposit        []OverviewAutodepositRange         `json:"autodeposit" nullable:"false"`
+	OptimizationVolume []RebalanceOptimizationVolumePoint `json:"optimizationVolume" nullable:"false"`
 }
 
 func registerOverview(m *Mux) {
-	Page(m, "/", loadOverview)
-	Page(m, "/overview", loadOverview)
+	Page(m, "/", overviewLoad)
+	Page(m, "/overview", overviewLoad)
 }
 
-func loadOverview(ctx context.Context, d *Deps, _ PageRequest) (OverviewProps, error) {
-	ranges, err := autodepositTimeSeries(ctx, d)
+func overviewLoad(ctx context.Context, d *Deps, _ PageRequest) (OverviewProps, error) {
+	ranges, err := rebalanceAutodepositTimeSeries(ctx, d)
 	if err != nil {
 		return OverviewProps{}, err
 	}
-	volume, err := optimizationVolumeSeries(ctx, d)
+	volume, err := rebalanceOptimizationVolumeSeries(ctx, d)
 	if err != nil {
 		return OverviewProps{}, err
 	}
