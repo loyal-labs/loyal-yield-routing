@@ -41,8 +41,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/loyal-labs/loyal-app.git",
-    "directory": "packages/smart-account-vaults"
+    "url": "https://github.com/loyal-labs/loyal-yield-routing.git",
+    "directory": "web/packages/smart-account-vaults"
   },
   "publishConfig": {
     "access": "public"

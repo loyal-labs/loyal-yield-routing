@@ -8,10 +8,7 @@ const generatedAppMirrorKinds = new Set([
   "wxt-extension",
 ]);
 
-const generatorPaths = [
-  ".github/workflows/sync-mirror-repos.yml",
-  "scripts/mirror-repos",
-];
+const generatorPaths = ["scripts/mirror-repos"];
 
 const ignoredRootFiles = new Set([
   "bun.lock",
@@ -48,7 +45,13 @@ export function selectMirrorsForChangedPaths(
 ): MirrorConfig[] {
   const selected = new Set<MirrorConfig>();
 
-  for (const filePath of changedPaths) {
+  for (const changedPath of changedPaths) {
+    if (changedPath === ".github/workflows/sync-mirror-repos.yml") {
+      return [...mirrors];
+    }
+    // Git diff paths are repository-relative even when invoked from web/.
+    if (!changedPath.startsWith("web/")) continue;
+    const filePath = changedPath.slice("web/".length);
     if (ignoredRootFiles.has(filePath)) {
       continue;
     }

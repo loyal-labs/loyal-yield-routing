@@ -23,6 +23,7 @@ const publishablePackageDirs = [
   "packages/loyal-smart-accounts-core",
   "packages/loyal-smart-accounts",
   "packages/solana-instruction-decoder",
+  "packages/loyal-actions",
   "packages/smart-account-vaults",
   "packages/wallet-core",
 ] as const;
@@ -179,9 +180,7 @@ function main(): void {
   const dryRun = process.argv.includes("--dry-run");
   const packages = publishablePackageDirs.map(readPackageInfo);
   const versionsByName = new Map(
-    packages.map(
-      (info) => [info.packageJson.name, info.packageJson.version]
-    )
+    packages.map((info) => [info.packageJson.name, info.packageJson.version])
   );
 
   for (const info of packages) {
