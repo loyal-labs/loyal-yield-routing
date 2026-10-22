@@ -3,9 +3,6 @@ import type { ReactNode } from "react";
 
 import { Pressable, Text } from "@/tw";
 
-// The pill buttons on the wallet/category action bars (Figma 141:5940). Primary
-// = black Send; secondary = light-gray Receive / icon-only "More". Shared so the
-// wallet screen and the stablecoins/crypto screens stay byte-for-byte identical.
 export function ActionBarButton({
   icon,
   label,

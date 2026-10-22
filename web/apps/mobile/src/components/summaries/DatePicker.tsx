@@ -74,8 +74,6 @@ export function DatePicker({
 
   const selectedMonthKey = getMonthKey(selectedDate);
 
-  // Month labels: selected month travels with selected date,
-  // earlier months on their last date, later months on their first
   const monthLabelDates = useMemo(() => {
     const labels = new Map<string, string>();
     const monthGroups = new Map<string, string[]>();
@@ -100,7 +98,6 @@ export function DatePicker({
     return labels;
   }, [dates, selectedDate, selectedMonthKey]);
 
-  // Scroll to center the selected date
   useEffect(() => {
     const index = dates.indexOf(selectedDate);
     if (index === -1) return;
@@ -141,7 +138,6 @@ export function DatePicker({
     [availableDateSet, selectedDate, onDateSelect, todayKey],
   );
 
-  // When scroll settles, select the centered date (or snap back from future)
   const handleScrollEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       if (!isUserScrolling.current) return;
@@ -164,8 +160,6 @@ export function DatePicker({
         }
         onDateSelect(date);
       } else {
-        // Scrolled to a non-selectable date — find the closest selectable one
-        // searching backwards (towards today/past)
         let fallbackDate: string | null = null;
         for (let i = clamped; i >= 0; i--) {
           const d = dates[i];
@@ -178,7 +172,6 @@ export function DatePicker({
         if (fallbackDate && fallbackDate !== selectedDate) {
           onDateSelect(fallbackDate);
         } else {
-          // Snap back to current selection
           const selIdx = dates.indexOf(selectedDate);
           if (selIdx !== -1) {
             flatListRef.current?.scrollToOffset({
@@ -211,7 +204,6 @@ export function DatePicker({
             alignItems: "center",
           }}
         >
-          {/* Month label row */}
           <View style={{ height: 20, justifyContent: "flex-start" }}>
             {monthLabel ? (
               <Text
@@ -226,7 +218,6 @@ export function DatePicker({
             ) : null}
           </View>
 
-          {/* Red dot (6px) */}
           <View
             style={{
               height: 6,
@@ -246,7 +237,6 @@ export function DatePicker({
             ) : null}
           </View>
 
-          {/* Date circle (40px) — using overflow hidden with borderRadius */}
           <View
             style={{
               width: 40,

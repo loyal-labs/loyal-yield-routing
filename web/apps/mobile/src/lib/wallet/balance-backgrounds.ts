@@ -1,15 +1,10 @@
 import type { ImageSourcePropType } from "react-native";
 
 export type BalanceBackgroundOption = {
-  /** null = no background (solid card). */
   id: string | null;
-  /** Full-bleed image rendered behind the balance card. */
   source: ImageSourcePropType | null;
-  /** Smaller circular preview rendered in the picker carousel. */
   thumb: ImageSourcePropType | null;
-  /** Hand-picked dominant color used by the scroll-morph header. */
   dominantColor: string;
-  /** Text color paired with `dominantColor` for legibility. */
   dominantTextColor: string;
 };
 

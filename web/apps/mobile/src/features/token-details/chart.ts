@@ -6,7 +6,6 @@ export function normalizeTokenChartTimestamp(timestamp: number) {
   return timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp;
 }
 
-// Scrub label under the finger, e.g. "Jun 18, 6:00 PM" (Figma 316:9540).
 export function formatTokenChartTimeLabel(timestamp: number) {
   const date = new Date(normalizeTokenChartTimestamp(timestamp));
 
@@ -83,13 +82,6 @@ export function buildTokenChartPath(
     .join(" ");
 }
 
-/**
- * Bucket-average raw price points down to ~targetCount samples to suppress
- * sub-bucket noise. Each output bucket carries the mean priceUsd and the
- * timestamp of its first point (so timeline labels stay anchored to real
- * trades). When the input is already <= targetCount, the array is returned
- * unchanged.
- */
 export function downsampleTokenChartPoints(
   points: TokenChartPoint[],
   targetCount: number,
@@ -113,12 +105,6 @@ export function downsampleTokenChartPoints(
   return out;
 }
 
-/**
- * Emit an SVG path that connects the coordinates with a monotone cubic
- * spline (Fritsch–Carlson tangents). Produces visually smooth curves
- * without overshooting peaks/troughs — important so smoothing doesn't lie
- * about the price ever exceeding the data range.
- */
 export function buildTokenChartSplinePath(
   coordinates: { x: number; y: number }[],
 ) {
@@ -129,7 +115,6 @@ export function buildTokenChartSplinePath(
     return `M ${p.x.toFixed(2)} ${p.y.toFixed(2)}`;
   }
 
-  // Slopes of the secant lines.
   const dx: number[] = new Array(n - 1);
   const dy: number[] = new Array(n - 1);
   const slope: number[] = new Array(n - 1);
@@ -139,7 +124,6 @@ export function buildTokenChartSplinePath(
     slope[i] = dx[i] === 0 ? 0 : dy[i] / dx[i];
   }
 
-  // Tangent at each point — Fritsch–Carlson monotone cubic interpolation.
   const m: number[] = new Array(n);
   m[0] = slope[0];
   m[n - 1] = slope[n - 2];

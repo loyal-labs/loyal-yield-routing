@@ -4,23 +4,11 @@ import type { DeeplinkWalletProvider } from "./deeplink-protocol";
 
 const DEEPLINK_SESSION_KEY = "loyal.deeplinkWalletSession";
 
-/**
- * Persistent record of a Phantom/Solflare deeplink authorization. The keys
- * stay inside the wallet app; we remember the opaque session token, the
- * resolved base58 Solana address, and the encryption material every follow-up
- * request needs: the x25519 shared secret derived during connect and the dapp
- * public key the wallet indexes it by. The dapp secret key is NOT kept — once
- * the shared secret exists it has no further use, so it dies with connect.
- */
 export type StoredDeeplinkSession = {
   provider: DeeplinkWalletProvider;
-  /** Base58-encoded Solana public key. */
   publicKey: string;
-  /** Opaque wallet session token, sent with every request. */
   session: string;
-  /** Base58 nacl.box shared secret for request/response encryption. */
   sharedSecret: string;
-  /** Base58 dapp x25519 public key the wallet maps to the shared secret. */
   dappPublicKey: string;
 };
 

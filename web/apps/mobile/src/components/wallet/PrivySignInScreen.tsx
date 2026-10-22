@@ -14,7 +14,6 @@ import { Pressable, SafeAreaView, Text, View } from "@/tw";
 export type PrivySignInMethod = "email" | "google" | "apple";
 
 type Props = {
-  /** Copy only: Privy login is login-or-signup either way. */
   intent: "create" | "login";
   pending: PrivySignInMethod | null;
   error: string | null;
@@ -24,9 +23,6 @@ type Props = {
   onBack: () => void;
 };
 
-// "Create New Wallet" step: a Privy account (email / Google / Apple) backs a
-// new embedded wallet, so there is no seed phrase to write down. Layout and
-// type mirror ImportWalletScreen so the two flows feel like one product.
 export function PrivySignInScreen({
   intent,
   pending,

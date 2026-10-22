@@ -39,15 +39,12 @@ export function getEarnTransactionRowLabel(
   }
 }
 
-// Money-in (deposits/sweeps) reads green; everything else is neutral black.
 export function getEarnTransactionAmountColor(
   kind: EarnTransactionItem["kind"],
 ): string {
   return kind === "deposit" || kind === "balance_sweep" ? "#34C759" : "#000000";
 }
 
-// Epoch ms for an item, for "newest" comparisons (unread dot). Falls back to 0
-// when neither timestamp parses.
 export function earnTransactionTimestampMs(
   item: Pick<EarnTransactionItem, "confirmedAt" | "sortTimestamp">,
 ): number {
@@ -57,10 +54,6 @@ export function earnTransactionTimestampMs(
   return Number.isNaN(ms) ? 0 : ms;
 }
 
-// The backend's `timestamp`/`dateGroup` strings are formatted in the server's
-// timezone; the Wallet feed renders in device-local time, so format Earn rows
-// the same way from the raw `confirmedAt` (ISO). Falls back to the server string
-// if the raw timestamp is missing/unparseable.
 export function formatEarnRowTime(
   item: Pick<EarnTransactionItem, "confirmedAt" | "sortTimestamp" | "timestamp">,
 ): string {
@@ -72,8 +65,6 @@ export function formatEarnRowTime(
   });
 }
 
-// Local-timezone date-section label ("June 29"), mirroring the web. Falls back
-// to the server `dateGroup` when the raw timestamp can't be parsed.
 function earnRowDateGroup(
   item: Pick<
     EarnTransactionItem,
@@ -93,10 +84,6 @@ export type EarnTransactionGroup = {
   items: EarnTransactionItem[];
 };
 
-// Groups a pre-sorted (newest-first) list into consecutive date sections. Uses a
-// device-local date label (not the server `dateGroup`) so the headers line up
-// with the local per-row times — otherwise a tx near midnight could sit under a
-// header a day off from its displayed time.
 export function groupEarnTransactions(
   items: EarnTransactionItem[],
 ): EarnTransactionGroup[] {

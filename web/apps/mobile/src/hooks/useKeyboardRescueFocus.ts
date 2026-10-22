@@ -39,8 +39,6 @@ export function useKeyboardRescueFocus(
   }, []);
 
   const openKeyboard = useCallback(() => {
-    // Keyboard already up: the input is focused and typing works — a tap on
-    // the row must not bounce the keyboard.
     if (keyboardVisible.current) return;
     const input = inputRef.current;
     if (!input) return;

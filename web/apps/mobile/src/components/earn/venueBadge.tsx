@@ -4,10 +4,6 @@ import type { EarnVenueKey } from "@/lib/solana/earn/earn-position-display";
 
 import MapleVenue from "../../../assets/images/earn/venues/earn-maple.svg";
 
-// Per-market brand badges shown over the token coin on Earn positions/sources
-// (Positions sheet + Withdraw picker). Every market without a dedicated badge
-// falls back to the Kamino mark (`venue: "kamino"`). Kept in one place so the
-// asset map isn't copied per sheet.
 const VENUE_PNG: Record<Exclude<EarnVenueKey, "maple">, number> = {
   kamino: require("../../../assets/images/earn/venues/earn-kamino.png"),
   prime: require("../../../assets/images/earn/venues/earn-prime.png"),

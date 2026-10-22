@@ -11,9 +11,6 @@ export const SECURE_MAINNET_RPC_URL =
   process.env.EXPO_PUBLIC_SOLANA_MAINNET_RPC_URL?.trim() ||
   "https://fredra-z7l52f-fast-mainnet.helius-rpc.com";
 
-// Mobile does not open Solana WebSocket subscriptions. This endpoint is still
-// passed to Anchor providers, which require a websocketEndpoint config even
-// when they never call onAccountChange/onLogs. The public fallback is fine.
 export const SECURE_MAINNET_RPC_WS = "wss://api.mainnet-beta.solana.com";
 
 export const SECURE_DEVNET_RPC_URL =

@@ -56,8 +56,6 @@ export function useTokenDetail({
     }
   }, [mint, timeframe]);
 
-  // Drop stale data when the token changes, but keep the previous chart on
-  // timeframe switches so the page doesn't flash back to its loading state.
   useEffect(() => {
     setMarket(null);
   }, [mint]);

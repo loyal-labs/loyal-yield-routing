@@ -112,9 +112,6 @@ export default function SummaryFeedScreen() {
     };
   }, [availableDates, selectedDate, summariesByDate]);
 
-  // ── Slide transition (dual-layer, matching web app) ──
-  // Keep oldTopics synced with current topics so the overlay is ready for next swipe.
-  // Skip sync during transitions to avoid overwriting the frozen old content.
   const [oldTopics, setOldTopics] = useState<SummaryTopic[]>([]);
   const isTransitioning = useRef(false);
   useEffect(() => {
@@ -125,7 +122,7 @@ export default function SummaryFeedScreen() {
 
   const slideInX = useSharedValue(0);
   const slideOutX = useSharedValue(0);
-  const overlayVisible = useSharedValue(0); // 0 = hidden, 1 = visible
+  const overlayVisible = useSharedValue(0);
 
   const newContentStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: slideInX.value }],
@@ -135,7 +132,6 @@ export default function SummaryFeedScreen() {
     transform: [{ translateX: slideOutX.value }],
     opacity: overlayVisible.value,
   }));
-  // Hide peek panels when overlay is active (driven by shared value, not React state)
   const peekStyle = useAnimatedStyle(() => ({
     opacity: overlayVisible.value === 0 ? 0.5 : 0,
   }));
@@ -173,7 +169,6 @@ export default function SummaryFeedScreen() {
     handleDateSelect(toDateKey(new Date().toISOString()));
   }, [handleDateSelect]);
 
-  // ── Drag gesture (peek + commit) ──
   const translateX = useSharedValue(0);
   const canGoPrev = useSharedValue(false);
   const canGoNext = useSharedValue(false);
@@ -184,7 +179,6 @@ export default function SummaryFeedScreen() {
     canGoNext.value = idx > 0;
   }, [availableDates, selectedDate]);
 
-  // Only handles React state — no animations (those start in the worklet)
   const commitSwipeState = useCallback(
     (direction: "prev" | "next") => {
       const idx = availableDates.indexOf(selectedDate);
@@ -232,7 +226,6 @@ export default function SummaryFeedScreen() {
       const dur = SLIDE_MS;
 
       if (raw > SWIPE_THRESHOLD && canGoPrev.value) {
-        // All animations start immediately on UI thread — no React delay
         overlayVisible.value = 1;
         translateX.value = withTiming(0, { duration: dur });
         slideOutX.value = offset;
@@ -261,7 +254,6 @@ export default function SummaryFeedScreen() {
     transform: [{ translateX: translateX.value }],
   }));
 
-  // ── Render ──
   if (isLoading) {
     return (
       <>
@@ -299,7 +291,6 @@ export default function SummaryFeedScreen() {
         style={{ flex: 1, backgroundColor: "#fff" }}
         contentInsetAdjustmentBehavior="automatic"
       >
-        {/* Group info header */}
         <View className="px-4 pt-4 pb-2 flex-row items-center gap-3">
           {groupPhoto ? (
             <Image
@@ -364,19 +355,15 @@ export default function SummaryFeedScreen() {
           </Pressable>
         </View>
 
-        {/* Date picker */}
         <DatePicker
           availableDates={availableDates}
           selectedDate={selectedDate}
           onDateSelect={handleDateSelect}
         />
 
-        {/* Swipeable content area */}
         <GestureDetector gesture={swipeGesture}>
           <Animated.View style={{ overflow: "hidden", minHeight: 200 }}>
-            {/* Drag wrapper — moves content + peek panels with finger */}
             <Animated.View style={dragStyle}>
-              {/* Prev day peek (left of content) — hidden via shared value during slide */}
               {prevTopics.length > 0 && (
                 <Animated.View
                   style={[
@@ -397,7 +384,6 @@ export default function SummaryFeedScreen() {
                 </Animated.View>
               )}
 
-              {/* Main content — always has newContentStyle (no-op when slideInX=0) */}
               <Animated.View
                 style={[
                   { paddingHorizontal: 16, gap: 12, paddingBottom: 32 },
@@ -425,7 +411,6 @@ export default function SummaryFeedScreen() {
                 )}
               </Animated.View>
 
-              {/* Next day peek (right of content) */}
               {nextTopics.length > 0 && (
                 <Animated.View
                   style={[
@@ -447,7 +432,6 @@ export default function SummaryFeedScreen() {
               )}
             </Animated.View>
 
-            {/* Old content overlay — always rendered, visibility via shared value */}
             <Animated.View
               style={[
                 {

@@ -86,17 +86,8 @@ const COLOR_BLACK = "#000";
 const COLOR_ERROR_BG = "rgba(249, 54, 60, 0.14)";
 const COLOR_ERROR_TEXT = "#F9363C";
 
-// `Dimensions.get('screen')` returns the full physical screen height — does
-// NOT shrink when the keyboard opens (unlike `useWindowDimensions`, which
-// follows the window and can be racy inside the modal portal). This lets us
-// pin BottomSheetView to a definite height matching the modal's snap point.
 const SCREEN_WIDTH = Dimensions.get("screen").width;
 
-// Amount auto-shrink: when "$12,345.67" gets too wide for the row, the font
-// scales down so it stays on one line, while `lineHeight` stays pinned at the
-// max size (so the baseline/vertical metrics don't shift). RN has no
-// synchronous text measurement, so width is approximated from the character
-// count — close enough for the decimal-pad character set.
 const AMOUNT_MAX_FONT_SIZE = 48;
 const AMOUNT_MIN_FONT_SIZE = 22;
 const AMOUNT_CHAR_WIDTH_RATIO = 0.6;
@@ -109,7 +100,6 @@ const BALANCE_FORMATTER = new Intl.NumberFormat("en-US", {
 });
 
 function sanitizeAmount(input: string): string {
-  // Drop commas (used for display) and any other non-numeric characters.
   let cleaned = input.replace(/[^0-9.]/g, "");
   const parts = cleaned.split(".");
   if (parts.length > 2) {
@@ -125,7 +115,6 @@ function sanitizeAmount(input: string): string {
 
 function formatAmountDisplay(raw: string): string {
   if (!raw) return "";
-  // Preserve a trailing decimal point while the user is mid-typing.
   const trailingDot = raw.endsWith(".") && !raw.slice(0, -1).includes(".");
   const [intPart, decPart] = raw.split(".");
   const intNum = Number(intPart || "0");
@@ -145,18 +134,10 @@ function amountToUsd(raw: string): number {
 type DepositSheetProps = {
   open: boolean;
   onClose: () => void;
-  // Called with the entered USD amount and the selected stablecoin's mint
-  // when the user taps Deposit (after the minimum/balance checks pass). May
-  // return a Promise — while it's pending the Deposit button shows a loading
-  // spinner and the sheet stays open; it dismisses on success and surfaces
-  // the error in-place on failure.
   onDeposit?: (amountUsd: number, mint: string) => void | Promise<void>;
   // The wallet's spendable balance per Earn product mint (token units ≈
   // dollars). `null`/missing entries render as $0.00 while holdings load.
   stableBalancesByMint?: Record<string, number> | null;
-  // SOL still needed to cover the first-deposit minimum (see
-  // computeFirstDepositSolShortfall). Non-null disables the CTA with a top-up
-  // prompt; parents pass null when this isn't the wallet's first deposit.
   firstDepositSolShortfall?: number | null;
   // True when the next deposit runs first-time setup — no position yet, or
   // the route-policy pair is missing (torn down by a full exit) — shows the
@@ -179,8 +160,6 @@ export function DepositSheet({
 }: DepositSheetProps) {
   const sheetRef = useRef<BottomSheetModal>(null);
   const sourceSheetRef = useRef<BottomSheetModal>(null);
-  // The underlying input is gesture-handler's TextInput (forwarded through
-  // @gorhom/bottom-sheet); only `.focus()` is called here.
   const inputRef = useRef<{ focus: () => void; blur?: () => void } | null>(
     null
   );
@@ -192,8 +171,6 @@ export function DepositSheet({
   const [caretOn, setCaretOn] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  // First deposits provision a smart account server-side (finalized-creation
-  // wait), which can take tens of seconds — reassure instead of looking hung.
   const [slowSetupHint, setSlowSetupHint] = useState(false);
 
   useEffect(() => {
@@ -240,9 +217,6 @@ export function DepositSheet({
       setAmount("");
       setSubmitError(null);
       setSubmitting(false);
-      // Default selection: USDC when funded, else the largest funded stable,
-      // else USDC. Chosen once per open so the pill doesn't jump under the
-      // user's finger when balances refresh mid-entry.
       const options = sourceOptions;
       const usdc = options.find((option) => option.symbol === "USDC");
       const richest = [...options].sort((a, b) => b.usd - a.usd)[0];
@@ -261,7 +235,6 @@ export function DepositSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Custom caret blink — native caret is hidden so we control timing/size.
   useEffect(() => {
     if (!isFocused) {
       setCaretOn(true);
@@ -305,8 +278,6 @@ export function DepositSheet({
   const selectSource = useCallback((symbol: string) => {
     void Haptics.selectionAsync();
     setSelectedSymbol(symbol);
-    // The cap moves with the coin — start the amount over instead of carrying
-    // a value the newly selected balance may not cover.
     setAmount("");
     sourceSheetRef.current?.dismiss();
   }, []);
@@ -320,13 +291,10 @@ export function DepositSheet({
     Keyboard.dismiss();
     setSubmitError(null);
     const result = onDeposit?.(usd, selectedSource.mint);
-    // Synchronous handler (or none) → close immediately, as before.
     if (!(result instanceof Promise)) {
       sheetRef.current?.dismiss();
       return;
     }
-    // Async on-chain deposit: stay open, show the button loading, then dismiss
-    // on success or surface the error in-place.
     setSubmitting(true);
     try {
       await result;
@@ -356,10 +324,6 @@ export function DepositSheet({
 
   const displayValue = formatAmountDisplay(amount);
   const enteredUsd = amountToUsd(amount);
-  // First deposit without enough SOL for rent/fees blocks the CTA outright
-  // (independent of the typed amount). Otherwise: below the minimum (incl. the
-  // empty/zero state) → "Minimum"; at/above it but over the wallet balance →
-  // "Insufficient balance". All render the same red, non-pressable CTA.
   const needsSolTopUp = (firstDepositSolShortfall ?? 0) > 0;
   const belowMinimum = enteredUsd < MIN_DEPOSIT_USD;
   const insufficientFunds = !belowMinimum && enteredUsd > available;
@@ -374,8 +338,6 @@ export function DepositSheet({
     ? "Insufficient balance"
     : "Deposit";
 
-  // Scale the amount text down to fit the row; line-height stays pinned at the
-  // max size (see AMOUNT_* constants) so the baseline doesn't move.
   const amountFontSize = useMemo(() => {
     const text = `$${displayValue || "0"}`;
     const availableWidth = SCREEN_WIDTH - 48;
@@ -417,11 +379,6 @@ export function DepositSheet({
         onChange={handleSheetChange}
         handleComponent={null}
         backgroundStyle={styles.sheetBackground}
-        // Keep the sheet at its 94% snap when the keyboard opens — neither
-        // gorhom nor the OS pans it. Footer is animated separately via
-        // `useAnimatedKeyboard` below, so the sheet itself doesn't need to
-        // move. `adjustResize` lets the system keep the focused input visible
-        // without panning the sheet content into the status bar.
         keyboardBehavior="extend"
         keyboardBlurBehavior="restore"
         android_keyboardInputMode="adjustResize"
@@ -761,9 +718,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 38,
   },
   container: {
-    // Definite height matching the modal's snap point. Without an explicit
-    // height, BottomSheetView sizes to content and absolute `bottom: 0`
-    // children land at the content's bottom, not the sheet's bottom.
     backgroundColor: "#FFF",
     borderTopLeftRadius: 38,
     borderTopRightRadius: 38,
@@ -810,9 +764,6 @@ const styles = StyleSheet.create({
   },
   amountVisual: {
     flexDirection: "row",
-    // Bottom-align so the "$", digits, and caret share a baseline. Pinning
-    // each Text's `lineHeight` to its `fontSize` makes line-box-bottom ≈
-    // baseline (no descenders in "$" / 0–9), so flex-end reads as baseline.
     alignItems: "flex-end",
   },
   amountText: {

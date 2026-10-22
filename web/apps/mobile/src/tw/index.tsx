@@ -27,7 +27,6 @@ const MONO_FONT_FAMILY = Platform.select({
   default: "monospace",
 });
 
-// CSS-enabled Link
 export const Link = (
   props: React.ComponentProps<typeof RouterLink> & { className?: string }
 ) => {
@@ -39,13 +38,11 @@ Link.Menu = RouterLink.Menu;
 Link.MenuAction = RouterLink.MenuAction;
 Link.Preview = RouterLink.Preview;
 
-// CSS Variable hook
 export const useCSSVariable =
   process.env.EXPO_OS !== "web"
     ? useFunctionalVariable
     : (variable: string) => `var(${variable})`;
 
-// View
 export type ViewProps = React.ComponentProps<typeof RNView> & {
   className?: string;
 };
@@ -55,7 +52,6 @@ export const View = (props: ViewProps) => {
 };
 View.displayName = "CSS(View)";
 
-// Text
 export const Text = (
   props: React.ComponentProps<typeof RNText> & { className?: string }
 ) => {
@@ -74,7 +70,6 @@ export const Text = (
 };
 Text.displayName = "CSS(Text)";
 
-// ScrollView
 export const ScrollView = (
   props: React.ComponentProps<typeof RNScrollView> & {
     className?: string;
@@ -88,7 +83,6 @@ export const ScrollView = (
 };
 ScrollView.displayName = "CSS(ScrollView)";
 
-// Pressable
 export const Pressable = (
   props: React.ComponentProps<typeof RNPressable> & { className?: string }
 ) => {
@@ -96,7 +90,6 @@ export const Pressable = (
 };
 Pressable.displayName = "CSS(Pressable)";
 
-// TextInput
 export const TextInput = (
   props: React.ComponentProps<typeof RNTextInput> & { className?: string }
 ) => {
@@ -115,7 +108,6 @@ export const TextInput = (
 };
 TextInput.displayName = "CSS(TextInput)";
 
-// SafeAreaView
 export const SafeAreaView = (
   props: React.ComponentProps<typeof RNSafeAreaView> & { className?: string }
 ) => {
@@ -123,7 +115,6 @@ export const SafeAreaView = (
 };
 SafeAreaView.displayName = "CSS(SafeAreaView)";
 
-// AnimatedScrollView
 export const AnimatedScrollView = (
   props: React.ComponentProps<typeof Animated.ScrollView> & {
     className?: string;
@@ -139,7 +130,6 @@ export const AnimatedScrollView = (
   });
 };
 
-// TouchableHighlight with underlayColor extraction
 function XXTouchableHighlight(
   props: React.ComponentProps<typeof RNTouchableHighlight>
 ) {

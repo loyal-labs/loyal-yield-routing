@@ -18,18 +18,10 @@ export type { MobileLoadingOperation } from "./loading-metrics-contract";
 export type MobileLoadingAttempt = {
   completeAfterPaint: () => void;
   failAfterPaint: () => void;
-  /**
-   * Pass to `startLifecycleFlow` so this attempt's metric point and the
-   * lifecycle events it wraps share one `loyal.flow.id`. Without that the two
-   * live in disjoint id spaces and a failed point on the metrics dashboard
-   * cannot be traced to the error that caused it.
-   */
   flowId: string;
 };
 
 declare global {
-  // Initialized in mobile/index.js before expo-router loads route modules.
-  // `var` is required for a global declaration merged into JavaScript globals.
   var __loyalMobileAppStartedAtMs: number | undefined;
 }
 
@@ -93,7 +85,6 @@ function reportMetric(args: {
     });
     void postObservabilityJson(MOBILE_METRICS_PATH, envelope);
   } catch {
-    // Metrics are best-effort and must never alter application behavior.
   }
 }
 

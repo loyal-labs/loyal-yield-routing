@@ -18,12 +18,6 @@ import { earnNetworkError } from "./earn-api";
 const NETWORK_RETRY_ATTEMPTS = 3;
 const NETWORK_RETRY_DELAY_MS = 1_000;
 
-// Device prepare calls Kamino's instruction API directly (RN bypasses the web
-// proxy), once per reserve — so a full exit fans out several of these and any
-// one transient failure used to sink the whole prepare, which is where the
-// ~24 % full-exit prepare failure rate came from (ASK-1887). 5xx and 429 are
-// the upstream having a bad moment; a 4xx is a rejected request and will be
-// rejected identically on every retry.
 function isRetryableKaminoStatus(status: number): boolean {
   return status >= 500 || status === 429;
 }
@@ -57,12 +51,6 @@ function isRpcError(error: unknown): error is Error {
 }
 
 function isRetryableNetworkError(error: unknown): error is Error {
-  // The message is matched, not just the TypeError type. This helper wraps
-  // whole SDK prepare calls, so a TypeError arriving here is as likely a bug
-  // in our own transaction building as a dead socket — and treating one as a
-  // network blip retried it three times, then replaced it with an
-  // `EarnApiError` telling the user to check their connection while the real
-  // fault sat in our code. A bug now throws straight through, message intact.
   if (isConnectionFailure(error)) {
     return true;
   }
@@ -72,21 +60,11 @@ function isRetryableNetworkError(error: unknown): error is Error {
   return isKaminoUpstreamError(error) && isRetryableKaminoStatus(error.status);
 }
 
-// The exhausted error replaces whatever we were retrying, so without this the
-// cause is gone by the time telemetry sees it and a Kamino outage is
-// indistinguishable from a phone with no signal (ASK-2018). Kamino is checked
-// here rather than in the shared classifier because the retryable-status rule
-// lives in this file.
-//
-// Only the shapes `isRetryableNetworkError` accepts can reach here, since
-// nothing else is ever retried — the undefined return is a safe default, not a
-// reachable case.
 function exhaustedErrorDetail(
   lastError: unknown,
 ): LifecycleErrorDetail | undefined {
   if (isKaminoUpstreamError(lastError)) return "kamino_upstream_unavailable";
   if (isRpcError(lastError)) return "rpc_request_failed";
-  // Checked before the broader failure test, which also covers timeouts.
   if (isConnectionTimeout(lastError)) return "request_timeout";
   if (isConnectionFailure(lastError)) return "network_unreachable";
   return undefined;

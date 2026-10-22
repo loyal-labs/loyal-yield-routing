@@ -28,20 +28,12 @@ export const KNOWN_TOKEN_ICONS: Record<string, string> = {
     "https://assets.coingecko.com/coins/images/6319/standard/usdc.png",
   [SOLANA_USDT_MINT_MAINNET]:
     "https://assets.coingecko.com/coins/images/325/standard/Tether.png",
-  // Earn product stablecoins (mint literals; canonical PublicKeys live in
-  // @loyal-labs/actions). Art pinned to match the web catalog's icon
-  // overrides — CASH isn't listed on CoinGecko, and the issuer art for
-  // USDG/PYUSD is the canonical current mark (ASK-1355).
-  // CASH
   CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH:
     "https://token-metadata.bridge.xyz/images/cash.png",
-  // USDG
   "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH":
     "https://424565.fs1.hubspotusercontent-na1.net/hubfs/424565/GDN-USDG-Token-512x512.png",
-  // PYUSD
   "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo":
     "https://424565.fs1.hubspotusercontent-na1.net/hubfs/424565/PYUSDLOGO.png",
-  // USDS
   USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA:
     "https://coin-images.coingecko.com/coins/images/39926/large/usds.webp",
 };

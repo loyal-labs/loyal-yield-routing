@@ -29,7 +29,6 @@ export function BrowserHomeScreen() {
         );
       })
       .catch(() => {
-        // Keep local fallback list when the network call fails.
       });
     return () => {
       cancelled = true;

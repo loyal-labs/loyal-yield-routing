@@ -9,8 +9,6 @@ import { Pressable, Text, View } from "@/tw";
 
 const MUTED = "rgba(60, 60, 67, 0.6)";
 
-// Legacy shielded balance in the category asset list (ASK-2269). Same anatomy
-// as CategoryAssetRow plus a shield badge on the token icon.
 export function ShieldedAssetRow({
   row,
   onPress,

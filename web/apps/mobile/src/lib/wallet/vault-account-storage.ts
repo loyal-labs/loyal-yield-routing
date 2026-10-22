@@ -14,7 +14,6 @@ const VAULT_ACCOUNT_KEY = "loyal.seedVaultAccount";
 export type StoredVaultAccount = {
   authToken: string;
   derivationPath: string;
-  /** Base58-encoded Solana public key. */
   publicKey: string;
 };
 

@@ -34,8 +34,6 @@ function generateUuid(): string {
   });
 }
 
-// `mmkv` falls back to in-memory storage when the native module is missing,
-// so at worst the id is stable for one session instead of the install.
 export function getObservabilityDeviceId(): string {
   const existing = mmkv.getString(DEVICE_ID_KEY);
   if (existing && UUID_V4_PATTERN.test(existing)) return existing;

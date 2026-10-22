@@ -35,8 +35,6 @@ export function buildWalletSetupActions(
   connectMode: WalletConnectMode,
   hasCloudBackup = false,
 ): WalletSetupAction[] {
-  // A found iCloud backup outranks everything: the user already has a wallet
-  // and almost certainly wants it back, so restore renders as the primary.
   const restore: WalletSetupAction[] = hasCloudBackup
     ? [
         {
@@ -53,10 +51,6 @@ export function buildWalletSetupActions(
     { id: "import", label: "Import Existing Wallet" },
   ];
 
-  // No external wallet backend (iOS: no Seed Vault, no Mobile Wallet
-  // Adapter). Drop the action entirely rather than rendering a disabled
-  // primary CTA — a dead first button that names another mobile platform is
-  // both a bad first impression and an App Review flag.
   if (connectMode === "none") return [...restore, ...createAndImport];
 
   return [

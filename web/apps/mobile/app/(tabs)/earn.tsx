@@ -85,32 +85,20 @@ import EarnQuestionmark from "../../assets/images/earn/questionmark.svg";
 const HERO_PRINCIPAL_USD = 6_000;
 const FALLBACK_APY_PCT = 8.46;
 
-// Earn is a money-sensitive view and the user expects the balance to track the
-// chain promptly, so poll faster than the wallet's 60s safety-net interval.
 const EARN_REFRESH_INTERVAL_MS = 15_000;
 
 const COLOR_BADGE_GREEN = "#32B67C";
 const COLOR_AUTODEPOSIT_RED = "#F9363C";
 const COLOR_HEADLINE_DIM = "rgba(255, 255, 255, 0.6)";
 
-// The dog is authored at 400×506 (full head). It sits full-bleed at the bottom
-// of the black hero; its lower jaw (below head-y 410) is clipped by the white
-// balance card that meets it. DOG_CLIP is that 96px (506−410) overflow as a
-// ratio of width so the clip scales with the screen (Figma 3883:18252).
 const DOG_NATURAL_RATIO = 506 / 400;
 const DOG_CLIP_RATIO = 96 / 400;
-// Sunk start state: the dog drops until only its ears (head above ~y150) peek
-// over the card; the reveal rises it back to rest.
 const DOG_EARS_HEAD_Y = 150;
 const DOG_SINK_RATIO = (410 - DOG_EARS_HEAD_Y) / 400;
 
 const ENTER_EASING = Easing.bezier(0.22, 1, 0.36, 1);
-// Overshoot for the APY badge pop (animate-text `spring-scale-in`).
 const BADGE_EASING = Easing.bezier(0.34, 1.56, 0.64, 1);
 
-// Reveal choreography: hold on just the ears for a beat, then the dog rises
-// while the three headline lines stagger in (animate-text `mask-reveal-up`),
-// then the APY badge pops last.
 const REVEAL_START_DELAY_MS = 700;
 const DOG_RISE_MS = 800;
 const LINE_FROM_Y = 24;
@@ -120,15 +108,9 @@ const LINES_START_MS = 200;
 const BADGE_START_MS = 2050;
 const BADGE_MS = 500;
 
-// Cross-fade between the promo hero (shown to everyone while the balance loads)
-// and the funded Earn layout, so the swap when the balance arrives reads as a
-// dissolve rather than a hard cut. Also drives the bottom card's corner radius.
 const STATE_FADE_MS = 480;
 const FUNDED_CARD_RADIUS = 26;
 
-// Maps a live on-chain holding to the source shape the positions sheet renders
-// (display-only: it reads market/liquidityMint/amountRaw and `id` as the row
-// key). The withdraw flow continues to use the real `withdrawSources`.
 function earnHoldingToDisplaySource(
   holding: EarnHoldingItem
 ): EarnWithdrawSourceInfo {
@@ -149,9 +131,6 @@ export default function EarnScreen() {
   const { width } = useWindowDimensions();
   const appReady = useAppReady();
   const { publicKey, signer, state } = useWallet();
-  // Read-only holdings (no signer) so the Deposit sheet can show the wallet's
-  // real USDC balance. Passing a signer here would trigger a Seed Vault
-  // hardware prompt on Seeker — balance display must stay passive.
   const walletAddress = isWalletUnlocked(state) ? publicKey : null;
   const {
     tokenHoldings,
@@ -178,9 +157,6 @@ export default function EarnScreen() {
     }
     return balances;
   }, [tokenHoldings]);
-  // Real on-chain Earn position (read-only, no signing). Drives the funded
-  // state + balance once it loads; the optimistic just-deposited value below
-  // bridges the gap until the read-model catches up.
   const {
     position,
     holdings,
@@ -189,19 +165,8 @@ export default function EarnScreen() {
     refreshEarnPosition,
     markEarnMutation,
   } = useEarnPosition(walletAddress);
-  // Skeleton the number only until the FIRST read settles. The post-mutation
-  // reconciliation lives in useEarnPosition (it trusts the freshly-written
-  // read-model right after a deposit/withdraw), so the headline is already
-  // correct on the next read — no settling skeleton needed. Routine background
-  // refreshes (focus/interval/push) keep the last value on screen and update it
-  // in place. Only while a wallet is connected — a locked wallet has no balance.
   const balanceLoading = walletAddress != null && !earnPositionLoaded;
-  // Global "loyal" APY forecast — the same source the APY chart (and the web)
-  // show as the headline rate, so the badge below matches them instead of the
-  // position's raw reserve supply APY.
   const forecastSummary = useEarnForecast();
-  // Withdrawal sources (reserves + idle vault USDC) — fetched lazily when the
-  // user opens withdraw; drives the source picker.
   const { sources: withdrawSources, refreshSources: refreshWithdrawSources } =
     useEarnWithdrawSources(walletAddress);
   // Per-position breakdown for the positions sheet, derived from the live
@@ -220,9 +185,6 @@ export default function EarnScreen() {
   const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [positionsOpen, setPositionsOpen] = useState(false);
   const [hasDeposit, setHasDeposit] = useState(false);
-  // Real on-chain Autodeposit state (read-only, wallet-keyed). The threshold +
-  // on/off are derived from it; the create/edit/delete/toggle handlers below
-  // drive the on-chain policy and refresh this.
   const {
     autodeposit,
     hasLoaded: autodepositLoaded,
@@ -249,14 +211,8 @@ export default function EarnScreen() {
   const [autodepositSetupMode, setAutodepositSetupMode] = useState<
     "create" | "edit"
   >("create");
-  // "How Autodeposit works" pre-flight interstitial: every path into the
-  // setup sheet (create or edit — delete lives inside the edit sheet) opens
-  // this first; its Continue proceeds to the setup sheet in the mode captured
-  // at initiation.
   const [autodepositInfoOpen, setAutodepositInfoOpen] = useState(false);
   const autodepositInfoModeRef = useRef<"create" | "edit">("create");
-  // Principal just deposited, used as the funded Earn Balance until the real
-  // on-chain position is wired (see .context/earn-deposit-findings.md, step b).
   const [depositedUsd, setDepositedUsd] = useState<number | null>(null);
   // First-deposit SOL gate: opening a position costs SOL (rent/fees), so with
   // no existing position the wallet must hold FIRST_DEPOSIT_MIN_SOL. SOL
@@ -273,15 +229,12 @@ export default function EarnScreen() {
     if (!sol) return null;
     return computeFirstDepositSolShortfall(sol.balance);
   }, [earnPositionLoaded, hasDeposit, earnPolicyMissing, tokenHoldings]);
-  // Creating an Autodeposit also costs SOL (policy + delegation account rent) —
-  // same fail-open gate. The sheet only applies it in "create" mode.
   const autodepositSolShortfall = useMemo(() => {
     const sol = tokenHoldings.find((h) => h.mint === NATIVE_SOL_MINT);
     if (!sol) return null;
     return computeAutodepositSetupSolShortfall(sol.balance);
   }, [tokenHoldings]);
   const [isFocused, setIsFocused] = useState(false);
-  // Bumped to (re)play the reveal each time the tab becomes visible.
   const [runId, setRunId] = useState(0);
 
   useEffect(() => {
@@ -302,7 +255,6 @@ export default function EarnScreen() {
     autodepositLoaded,
   ]);
 
-  // Quests deep-links here to open a sheet (?open=deposit | autodeposit).
   const router = useRouter();
 
   // Refundable closed Earn accounts (empty when nothing is refundable).
@@ -343,8 +295,6 @@ export default function EarnScreen() {
       );
       return;
     }
-    // Pull the live wallet USDC + Earn position so both flow balances are
-    // current by the time the user continues past the info sheet.
     refreshTokenHoldings(true);
     refreshEarnPosition();
     autodepositInfoModeRef.current = "create";
@@ -356,7 +306,6 @@ export default function EarnScreen() {
     refreshEarnPosition,
   ]);
 
-  // Info accepted — open the setup sheet in the mode captured at initiation.
   const handleAutodepositInfoContinue = useCallback(() => {
     setAutodepositSetupMode(autodepositInfoModeRef.current);
     setAutodepositSetupOpen(true);
@@ -381,35 +330,21 @@ export default function EarnScreen() {
 
   const dogHeight = width * DOG_NATURAL_RATIO;
 
-  // Cross-fade drivers between the promo hero and the funded layout. heroFade
-  // starts opaque (promo shows first); fundedFade starts hidden and also drives
-  // the bottom card's corner radius (0 → 26). `showHero` keeps the promo mounted
-  // through its fade-out, then drops it.
   const heroFade = useSharedValue(1);
   const fundedFade = useSharedValue(0);
   const [showHero, setShowHero] = useState(true);
 
-  // Reveal drivers. riseY starts sunk so the first paint already shows just the
-  // ears; the line/badge progress values run 0 → 1.
   const riseY = useSharedValue(width * DOG_SINK_RATIO);
   const line0 = useSharedValue(0);
   const line1 = useSharedValue(0);
   const line2 = useSharedValue(0);
   const badge = useSharedValue(0);
 
-  // Keep the Earn position + autodeposit in sync with the chain via the shared
-  // refresh coordinator (focus, app-foreground, push-on-transfer, interval). This
-  // is what makes the balance update the moment it changes — including a withdraw
-  // done on another client (web) while this tab sits open — instead of only on
-  // focus. `requestRefresh("mutation")` is reused below for local deposit/withdraw.
   const refreshEarnData = useCallback(
     async (_reason: WalletRefreshReason) => {
       await Promise.allSettled([
         refreshEarnPosition(),
         refreshAutodeposit(),
-        // Preload the Earned chart's data at app open and keep its cache warm
-        // in the background (TTL-throttled inside). Silent: a mounted chart
-        // keeps its snapshot and only reloads on the balance-change push below.
         ...(walletAddress ? [refreshEarnEarningsCache(walletAddress)] : []),
       ]);
     },
@@ -421,9 +356,6 @@ export default function EarnScreen() {
     intervalMs: EARN_REFRESH_INTERVAL_MS,
   });
 
-  // Track focus; reset to the pre-deposit, pre-reveal state on leave so the tab
-  // always reopens on a clean pitch. (The coordinator above handles the on-focus
-  // data refresh.)
   useFocusEffect(
     useCallback(() => {
       setIsFocused(true);
@@ -445,7 +377,6 @@ export default function EarnScreen() {
   // chosen the right source (read-model right after a mutation, else live), so we
   // render its value directly — no per-read guessing here.
   useEffect(() => {
-    // Wait for the first real fetch so we don't clear during initial load.
     if (!earnPositionLoaded) {
       return;
     }
@@ -482,9 +413,6 @@ export default function EarnScreen() {
     }
   }, [position, earnPositionLoaded, walletAddress]);
 
-  // Cross-fade the promo hero ↔ funded layout whenever the funded state flips.
-  // Forward (balance loaded) is the common path: funded fades in while the promo
-  // fades out and then unmounts. Reverse (a full withdraw) fades the promo back.
   useEffect(() => {
     if (hasDeposit) {
       fundedFade.value = withTiming(1, {
@@ -513,15 +441,12 @@ export default function EarnScreen() {
     }
   }, [hasDeposit, heroFade, fundedFade]);
 
-  // Only (re)play once the tab is focused AND visible (splash/lock cleared), so
-  // the reveal never runs hidden during boot.
   useEffect(() => {
     if (isFocused && appReady) {
       setRunId((id) => id + 1);
     }
   }, [isFocused, appReady]);
 
-  // The reveal itself, keyed to runId.
   useEffect(() => {
     if (runId === 0) {
       return;
@@ -598,9 +523,6 @@ export default function EarnScreen() {
 
   const handleOpenDeposit = useCallback(() => {
     void Haptics.selectionAsync();
-    // Pull the live wallet USDC so the sheet's available balance is current, not
-    // cached from before the latest deposit/sweep (matches the autodeposit/
-    // withdraw open handlers).
     refreshTokenHoldings(true);
     setDepositOpen(true);
   }, [refreshTokenHoldings]);
@@ -612,8 +534,6 @@ export default function EarnScreen() {
   const handleDepositConfirmed = useCallback(
     async (amountUsd: number, mint: string) => {
       const metric = startMobileLoadingMetric("earn.deposit");
-      // Runs inline while the Deposit button shows its loading state — no
-      // separate process screen. Throwing surfaces the error in the sheet.
       try {
         if (!signer || !isWalletUnlocked(state)) {
           throw new Error("Unlock your wallet to deposit.");
@@ -628,19 +548,11 @@ export default function EarnScreen() {
         // executeEarnDeposit, just awaited) wrote it with the deposited total, so
         // the next `/state` read is correct immediately while live `/holdings` lags.
         markEarnMutation();
-        // The confirm also records quest progress — check now so a completion
-        // celebrates immediately instead of on the watcher's next poll tick.
         nudgeQuestProgressCheck();
-        // Reveal the funded layout immediately. The optimistic total (prior balance
-        // + deposit; correct for top-ups too) bridges the network round-trip until
-        // the refresh lands the reconciled read-model value (= the same total).
         const expectedUsd = (depositedUsd ?? 0) + amountUsd;
         setDepositedUsd(expectedUsd);
         setHasDeposit(true);
         try {
-          // Mutation metrics require the reads that drive the visible Earn state.
-          // Ambient refresh remains best-effort, but this path must distinguish a
-          // real UI reconciliation from a swallowed read failure.
           await Promise.all([
             refreshEarnPosition({ throwOnError: true }),
             refreshAutodeposit({ throwOnError: true }),
@@ -679,16 +591,12 @@ export default function EarnScreen() {
     setWithdrawOpen(false);
   }, []);
 
-  // The footer drag handle opens the positions sheet (same mechanics as
-  // Deposit/Withdraw). Pull the per-source breakdown so the list is fresh.
   const handleOpenPositions = useCallback(() => {
     void Haptics.selectionAsync();
     refreshWithdrawSources();
     setPositionsOpen(true);
   }, [refreshWithdrawSources]);
 
-  // Deposit/Withdraw inside the positions sheet hand off to the existing flows:
-  // close this sheet, then open the target (mirrors AutodepositHelpSheet → setup).
   const handlePositionsDeposit = useCallback(() => {
     setPositionsOpen(false);
     setDepositOpen(true);
@@ -722,8 +630,6 @@ export default function EarnScreen() {
         // read, which lags HIGH right after a withdraw (funds still in the obligation
         // mid-redeem). This keeps the balance from briefly bouncing back up.
         markEarnMutation();
-        // Optimistic clear only when this empties the whole position (single
-        // source); for multi-source the read-model refresh reconciles the rest.
         if (mode === "full" && withdrawSources.length <= 1) {
           setHasDeposit(false);
           setDepositedUsd(null);
@@ -775,7 +681,6 @@ export default function EarnScreen() {
     setAutodepositHelpOpen(true);
   }, []);
 
-  // Help sheet "Set up autodeposit" → close help, open the create flow.
   const handleAutodepositHelpSetUp = useCallback(() => {
     setAutodepositHelpOpen(false);
     openAutodepositCreate();
@@ -794,9 +699,6 @@ export default function EarnScreen() {
     }
   }, [requestAutodepositToggle]);
 
-  // Returns a Promise so the setup sheet can show its loading state. Create
-  // stands up the on-chain policy; edit changes the threshold (DB-only). The
-  // sheet dismisses itself on success.
   const handleAutodepositConfirm = useCallback(
     async (thresholdUsd: number) => {
       const metric = startMobileLoadingMetric(
@@ -949,7 +851,6 @@ export default function EarnScreen() {
 
   return (
     <View style={styles.root}>
-      {/* Black tab: the root's `auto` (dark) icons vanish here. */}
       {isFocused && <StatusBar style="light" />}
       <View style={[styles.topArea, { paddingTop: insets.top }]}>
         <EarnHeader
@@ -1051,7 +952,6 @@ export default function EarnScreen() {
               heroLayerStyle,
             ]}
           >
-            {/* Behind the copy so the headline + badge always sit on top. */}
             <Animated.View
               pointerEvents="none"
               style={[
@@ -1179,13 +1079,9 @@ const styles = StyleSheet.create({
     position: "relative",
     overflow: "hidden",
   },
-  // Funded layout, cross-faded in over the promo hero. flex:1 so it fills the
-  // top area the same way the bare funded children used to (EarnChartTabs pins
-  // the autodeposit row to the bottom).
   fundedLayer: {
     flex: 1,
   },
-  // Pre-deposit hero (Figma 3883:18252).
   hero: {
     marginTop: 52,
     paddingHorizontal: 20,
@@ -1219,8 +1115,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 2,
     paddingHorizontal: 12,
-    // The 48pt line box below already carries the vertical breathing room;
-    // pill height stays ~the same as the old 40+3+3.
     paddingVertical: 0,
     borderRadius: 48,
     backgroundColor: COLOR_BADGE_GREEN,
@@ -1241,9 +1135,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
   },
-  // Header shown in the deposited state (Figma 3883:18253 header).
-  // Autodeposit cell — sits in the dark area below the chart, above the white
-  // balance card (Figma 74:19891). EarnChart's flex:1 pins it to the bottom.
   autodepositSection: {
     width: "100%",
     paddingVertical: 8,
@@ -1276,7 +1167,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.165,
     color: COLOR_HEADLINE_DIM,
   },
-  // On/off switch shown once Autodeposit is set up (Figma 74:20731).
   toggleTrack: {
     width: 52,
     height: 32,

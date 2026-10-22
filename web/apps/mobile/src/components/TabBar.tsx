@@ -21,7 +21,6 @@ import { Pressable, View } from "@/tw";
 import EarnTabIcon from "../../assets/images/earn/tab-bar-icon.svg";
 import EarnTabIconActive from "../../assets/images/earn/tab-bar-icon-active.svg";
 
-// Home and its Earn detail screens share the dog navigation item.
 const EARN_ROUTE_NAME = "index";
 
 const TAB_ORDER = [
@@ -62,8 +61,6 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
         .filter(
           ({ route }) =>
             (TAB_ORDER as readonly string[]).includes(route.name) &&
-            // handlePress already no-ops on a disabled quests tab, but the
-            // icon still rendered — drop the cell entirely instead.
             (QUESTS_ENABLED || route.name !== "quests")
         )
         .sort(
@@ -105,7 +102,6 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
       if (animate) {
         indicatorX.value = withSpring(targetX, SPRING_CONFIG);
       } else {
-        // First settle (cells just measured) — jump, don't animate from 0.
         indicatorX.value = targetX;
       }
       indicatorOpacity.value = 1;
@@ -117,8 +113,6 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
     (visI: number) => (e: LayoutChangeEvent) => {
       tabXs.current[visI] = e.nativeEvent.layout.x;
       tabWidths.current[visI] = e.nativeEvent.layout.width;
-      // The active cell just measured — snap into place without an animation
-      // so the indicator doesn't fly in from x=0 on mount.
       if (visI === visibleIndex && indicatorOpacity.value === 0) {
         settleIndicator(false);
       }
@@ -142,8 +136,6 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
 
   const handlePress = useCallback(
     (routeName: string, originalIndex: number) => {
-      // Quests is deactivated until the Seeker Season reveal — the icon stays
-      // in the bar, but tapping it is a no-op. See docs/quests-launch-toggle.md.
       if (!QUESTS_ENABLED && routeName === "quests") return;
 
       const event = navigation.emit({
@@ -163,7 +155,6 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
   if (!isWalletUnlocked(wallet.state)) return null;
 
   const focusedRouteName = visibleRoutes[visibleIndex]?.route.name;
-  // Earn supplies its own active pill (the SVG), so no circle behind it.
   const showSlider = focusedRouteName !== EARN_ROUTE_NAME;
 
   return (

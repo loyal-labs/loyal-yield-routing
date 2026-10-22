@@ -73,7 +73,6 @@ const CHIP_BG = "#f5f5f5";
 const ICON_BORDER = "rgba(0, 0, 0, 0.08)";
 
 const CHART_HEIGHT = 200;
-// Clearance so the line's end dot never clips against the SVG bounds.
 const CHART_DOT_CLEARANCE = 6;
 
 const TIMEFRAMES: { key: TokenDetailTimeframe; label: string }[] = [
@@ -126,7 +125,6 @@ function formatPercent(value: number) {
   return `${sign}${value.toFixed(2)}%`;
 }
 
-// "$73.65" -> { whole: "$73", decimals: ".65" } so the fraction renders dimmed.
 function splitSpotPrice(value: number | null) {
   const formatted = formatUsdSpotPrice(value);
   const dotIndex = formatted.indexOf(".");
@@ -228,9 +226,6 @@ function TokenLineChart({
     },
     [plotWidth, onActivePointIndexChange, points],
   );
-  // Downsample raw points (often 1/min over 24h = 1440) into ~120 buckets so
-  // sub-bucket noise stops dominating the line shape, then render with a
-  // monotone cubic spline so the result reads as a smooth trend curve.
   const smoothedPoints = useMemo(
     () => downsampleTokenChartPoints(points, 120),
     [points],
@@ -259,8 +254,6 @@ function TokenLineChart({
     { topInset: 4, bottomInset: 4 },
   );
   const path = buildTokenChartSplinePath(coordinates);
-  // The scrub indexes into the RAW point array (parent passes raw index in).
-  // Map that back to the nearest smoothed coord so the dot sits on the curve.
   const activeSmoothedIdx =
     activePointIndex != null && points.length > 1 && smoothedPoints.length > 1
       ? Math.min(
@@ -318,7 +311,6 @@ function TokenLineChart({
           ) : null}
           {activePoint ? (
             <>
-              {/* Dim everything to the right of the finger (Figma 316:9545). */}
               <Rect
                 x={activePoint.x}
                 y={0}
@@ -659,7 +651,6 @@ export default function TokenDetailScreen() {
 
   return (
     <View className="flex-1 bg-white">
-      {/* App bar: back / (scrolled title) / scan */}
       <View
         className="z-10 flex-row items-center bg-white px-4 pb-2"
         style={{ paddingTop: insets.top + 8 }}
@@ -710,7 +701,6 @@ export default function TokenDetailScreen() {
           setShowBarTitle(event.nativeEvent.contentOffset.y > 96);
         }}
       >
-        {/* Token identity + price */}
         <View className="px-4 pb-2">
           <View className="flex-row items-center">
             <View className="py-2 pr-3">
@@ -803,7 +793,6 @@ export default function TokenDetailScreen() {
           </View>
         </View>
 
-        {/* Chart: high label / plot / low label / timeframe pills */}
         <View className="pb-4">
           <View className="flex-row items-center justify-between px-4 pb-1">
             <Text className="text-[15px]" style={{ color: MUTED, lineHeight: 20 }}>
@@ -939,7 +928,6 @@ export default function TokenDetailScreen() {
         />
       </ScrollView>
 
-      {/* Pinned action bar */}
       <View
         className="flex-row items-center gap-2 px-4 pt-2"
         style={{ paddingBottom: insets.bottom + 8 }}

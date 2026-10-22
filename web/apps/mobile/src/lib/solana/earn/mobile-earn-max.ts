@@ -20,7 +20,6 @@ import { signEarnAuth, withEarnAuth } from "./earn-auth";
 import { clearEarnSession, getEarnSessionToken } from "./earn-session";
 import { signAndSendPreparedOperation } from "./send-prepared";
 
-/** No wallet prompt while a usable mobile Earn session exists. */
 export async function readMobileEarnMax<A extends keyof MobileEarnMaxResponses>(
   signer: Signer,
   action: A
@@ -59,7 +58,6 @@ export type MobileEarnMaxOperation =
 
 const activeWallets = new Set<string>();
 
-/** One atomic wallet-signed transaction; history is subsequently read from chain. */
 export async function executeMobileEarnMax(
   signer: Signer,
   operation: MobileEarnMaxOperation

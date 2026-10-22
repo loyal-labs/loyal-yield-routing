@@ -28,13 +28,6 @@ const initSettled = new Promise<void>((resolve) => {
   markInitSettled = resolve;
 });
 
-/**
- * Initialize the OneSignal SDK. Call once on app boot, before rendering the
- * main content. No-ops when EXPO_PUBLIC_ONESIGNAL_APP_ID is unset or the
- * native module is missing. Does NOT request push permission — the Expo
- * notifications flow (PushTokenRegistrar, wallet-gated) owns the OS prompt,
- * and OneSignal picks up the app-level grant on its own.
- */
 export async function initOneSignal(): Promise<void> {
   try {
     if (!env.oneSignalAppId) {
@@ -55,7 +48,6 @@ export async function initOneSignal(): Promise<void> {
   }
 }
 
-/** Tie the OneSignal user to our identity (e.g. wallet public key). */
 export async function loginOneSignal(externalId: string): Promise<void> {
   await initSettled;
   const mod = await getOneSignal();

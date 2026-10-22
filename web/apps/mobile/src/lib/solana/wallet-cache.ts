@@ -4,12 +4,8 @@ import { mmkv } from "@/lib/storage";
 
 import { BALANCE_BG_KEY, DISPLAY_CURRENCY_KEY } from "./constants";
 
-// --- In-memory caches (not persisted) ---
-
 export const walletTransactionsCache = new Map<string, Transaction[]>();
 export const walletBalanceListeners = new Set<(lamports: number) => void>();
-
-// --- Wallet address (MMKV-backed) ---
 
 const WALLET_ADDRESS_KEY = "walletAddress";
 
@@ -24,8 +20,6 @@ export const setCachedWalletAddress = (address: string | null): void => {
     mmkv.delete(WALLET_ADDRESS_KEY);
   }
 };
-
-// --- Wallet balance (MMKV-backed, keyed by address) ---
 
 const balanceKey = (addr: string) => `walletBalance:${addr}`;
 
@@ -44,8 +38,6 @@ export const setCachedWalletBalance = (
   if (!walletAddress) return;
   mmkv.setNumber(balanceKey(walletAddress), lamports);
 };
-
-// --- SOL price (MMKV-backed with TTL) ---
 
 const SOL_PRICE_KEY = "cachedSolPriceUsd";
 const SOL_PRICE_TS_KEY = "solPriceFetchedAt";
@@ -73,8 +65,6 @@ export const setCachedSolPrice = (price: number): void => {
   mmkv.setNumber(SOL_PRICE_TS_KEY, Date.now());
 };
 
-// --- Display currency preference (MMKV-backed) ---
-
 export const getCachedDisplayCurrency = (): "USD" | "SOL" | null => {
   const val = mmkv.getString(DISPLAY_CURRENCY_KEY);
   if (val === "USD" || val === "SOL") return val;
@@ -91,10 +81,8 @@ export const setCachedDisplayCurrency = (
   }
 };
 
-// --- Balance background preference (MMKV-backed) ---
-
 export const getCachedBalanceBg = (): string | null | undefined => {
-  if (!mmkv.contains(BALANCE_BG_KEY)) return undefined; // not loaded yet
+  if (!mmkv.contains(BALANCE_BG_KEY)) return undefined;
   const val = mmkv.getString(BALANCE_BG_KEY);
   if (val === "none") return null;
   return val ?? null;
@@ -104,8 +92,6 @@ export const setCachedBalanceBg = (bg: string | null | undefined): void => {
   if (bg === undefined) return;
   mmkv.setString(BALANCE_BG_KEY, bg ?? "none");
 };
-
-// --- Check if we have enough cached data ---
 
 export const hasCachedWalletData = (): boolean => {
   if (!cachedWalletAddress) return false;
