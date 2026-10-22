@@ -94,9 +94,11 @@ mobile Earn MAX commit `5fe09749` was ported by PR #554.
   context-bearing RPC response; its offline contract passes.
 - Local shared-type re-exports are an optional cleanup; current web types and
   imported mobile shared types remain intact. Do not overwrite newer web types.
-- Quests UI/assets, sidebar/tab/shell edits and AGENTS.md changes have a separate,
-  unconfirmed owner. They remain in the source checkout, outside this workflow
-  change. Reconcile them with their owner before archiving loyal-app.
+- Quests UI/assets and sidebar/tab/shell edits belong to the existing
+  [Quests PR #841](https://github.com/loyal-labs/loyal-app/pull/841), authored by
+  Vlad (`ask-2335-add-quests-webapp-ui-and-responsive-navigation`). They remain
+  in the source checkout, outside this workflow change. Reconcile that PR and
+  local AGENTS.md changes before archiving loyal-app.
 - Root `app.json`, local `.context`, `docs/handoffs` and the local post-checkout
   hook are not silently promoted into product source.
 
