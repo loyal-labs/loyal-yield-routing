@@ -24,7 +24,8 @@ RestartSec=5s
 TimeoutStopSec=60s
 
 Environment=LOYAL_ADMIN_ADDRESS=127.0.0.1:10081
-# LOYAL_ADMIN_APP_API_BASE_URL (library cover uploads) is set in a drop-in.
+# Every other LOYAL_ADMIN_* and *_PUBLIC_KEY name is set in a host drop-in
+# (60-env.conf) outside the repo; the list is in the README.
 LoadCredentialEncrypted=ADMIN_USER:/etc/credstore.encrypted/loyal-admin-user
 LoadCredentialEncrypted=ADMIN_PASSWORD:/etc/credstore.encrypted/loyal-admin-password
 LoadCredentialEncrypted=ADMIN_APP_DATABASE_URL:/etc/credstore.encrypted/loyal-admin-app-db

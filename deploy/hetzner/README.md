@@ -667,5 +667,24 @@ A missing optional credential disables only the pages that need it.
 | `CLICKSTACK_READ_KEY` | `loyal-admin-clickstack` | optional | the metrics page |
 | `EXPO_ACCESS_TOKEN` | `loyal-admin-expo` | optional | push broadcasts, if Expo requires a token |
 
-`LOYAL_ADMIN_APP_API_BASE_URL` is not secret; set it as an `Environment=` line
-in the same drop-in.
+### Admin environment (loyal-admin)
+
+The unit sets only `LOYAL_ADMIN_ADDRESS`. Everything below goes in the host
+drop-in `/etc/systemd/system/loyal-admin.service.d/60-env.conf` as
+`Environment=` lines, never in the repo, because the hosts and keyed URLs are
+private. An unset name disables only the page or panel that needs it.
+
+| Name | Needed | What it is |
+|---|---|---|
+| `LOYAL_ADMIN_APP_API_BASE_URL` | optional | https base of the App API for library cover uploads |
+| `LOYAL_ADMIN_SOLANA_RPC_URL` | optional | Solana RPC for the Earn max, autonomous vault and funding pages; may embed a key; unset, Earn max and the autonomous vault use the public mainnet endpoint and the funding page skips its RPC reads |
+| `LOYAL_ADMIN_CLICKSTACK_URL` | optional | ClickStack base URL for the metrics dashboard and the journeys events |
+| `LOYAL_ADMIN_CLICKSTACK_METRICS_SOURCE_ID` | optional | ClickStack source id for the metrics dashboard; unset uses the built-in id |
+| `LOYAL_ADMIN_JOURNEYS_URL` | optional | UI base the journeys page links to; the journeys page is unavailable without it |
+| `EARN_SETTINGS_AUTHORITY_PUBLIC_KEY` | optional | public key, comma separated; the Earn settings authority wallet to check |
+| `SMART_ACCOUNT_SPONSOR_PUBLIC_KEY` | optional | public key; the smart-account sponsorship wallet |
+| `EARN_POLICY_SIGNER_PUBLIC_KEY` | optional | public key; the Earn policy signer (`EARN_YIELD_ROUTER_PUBLIC_KEY` is read when it is unset) |
+| `DEPLOYMENT_PUBLIC_KEY` | optional | public key; the gasless deployment payer |
+
+The public-key names have no built-in default: unset, the Earn funding page
+shows that role as unconfigured.
