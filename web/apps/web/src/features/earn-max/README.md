@@ -94,9 +94,6 @@ redemption records and the legacy code-redemption endpoint are retained.
 The current UI does not request or render invite codes. Voltr history uses a
 256-account LRU cache per server instance; eviction only causes a fresh read.
 
-Verify access and ownership boundaries with
-`bun scripts/verify-web-earn-max-access.ts` from `apps/web`.
-
 First-deposit setup checks: `bun scripts/verify-mobile-earn-max.ts` and
 `bun scripts/verify-earn-max-wallet-balance.ts`. Web sign-in already provisions
 the smart account before issuing its session; no ordinary Earn deposit is

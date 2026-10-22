@@ -1,5 +1,4 @@
 import {
-  BottomSheetBackdrop,
   BottomSheetModal,
   BottomSheetScrollView,
   BottomSheetTextInput,
@@ -10,7 +9,7 @@ import {
   type BarcodeScanningResult,
   useCameraPermissions,
 } from "expo-camera";
-import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import {
@@ -24,7 +23,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Dimensions,
   Image,
   Keyboard,
   Linking,
@@ -34,19 +32,34 @@ import {
   useWindowDimensions,
 } from "react-native";
 import Animated, {
-  cancelAnimation,
-  Easing,
   useAnimatedKeyboard,
   useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSpring,
-  withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFixedSheetLayout } from "@/hooks/useFixedSheetLayout";
 import { useKeyboardRescueFocus } from "@/hooks/useKeyboardRescueFocus";
 
+import {
+  amountFieldStyles,
+  BASE58_ADDRESS_PATTERN,
+  fitAmountFontSize,
+  focusInputAfterSheetSettles,
+  formatAmountInputDisplay,
+  formatSolAmount,
+  formatTokenAmount,
+  formatUsdAmount,
+  isValidSolanaAddress,
+  MascotReveal,
+  SCREEN_WIDTH,
+  presentSheetWhenOpen,
+  SendingSpinner,
+  SheetBackdrop,
+  solscanExplorerUrl,
+  stripAmountInput,
+  truncateAmountTo6Decimals,
+  useCaretBlink,
+  useSheetSettledRefocus,
+} from "@/components/sheets/sheetFacts";
 import { useWalletTransactions } from "@/hooks/wallet/useWalletTransactions";
 import { track } from "@/lib/analytics/analytics";
 import { SEND_EVENTS } from "@/lib/analytics/send-events";
@@ -55,7 +68,6 @@ import {
   NATIVE_SOL_MINT,
   SOLANA_FEE_SOL,
 } from "@/lib/solana/constants";
-import { getSolanaEnv } from "@/lib/solana/rpc/connection";
 import type { TokenDetailsByMint } from "@/hooks/wallet/useTokenDetails";
 import { resolveTokenIcon } from "@/lib/solana/token-holdings/resolve-token-info";
 import type { TokenHolding } from "@/lib/solana/token-holdings/types";
@@ -68,20 +80,7 @@ import type { Transaction } from "@/types/wallet";
 import SwapCurrencyIcon from "../../../assets/images/icons/swap_currency_28.svg";
 import XCloseIcon from "../../../assets/images/icons/x_close_24.svg";
 import SendErrorDog from "../../../assets/images/wallet/send_error_dog.svg";
-import SendSpinnerIcon from "../../../assets/images/wallet/send_spinner_80.svg";
 import SendSuccessDog from "../../../assets/images/wallet/send_success_dog.svg";
-
-// Basic Solana address validation (base58, 32-44 chars)
-const isValidSolanaAddress = (address: string): boolean => {
-  const base58Regex = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-  if (!base58Regex.test(address)) return false;
-  try {
-    new PublicKey(address);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 function formatRecipientLabel(value: string): string {
   return formatSenderAddress(value.trim());
@@ -89,69 +88,10 @@ function formatRecipientLabel(value: string): string {
 
 const INVALID_RECIPIENT_HINT = "Invalid Solana address";
 
-function formatWithCommas(value: number, minFrac: number, maxFrac: number): string {
-  const safe = Number.isFinite(value) ? value : 0;
-  const [intPart, fracPartRaw = ""] = safe.toFixed(maxFrac).split(".");
-  let fracPart = fracPartRaw;
-  while (fracPart.length > minFrac && fracPart.endsWith("0")) {
-    fracPart = fracPart.slice(0, -1);
-  }
-  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return fracPart ? `${withCommas}.${fracPart}` : withCommas;
-}
-
-function formatTokenAmount(value: number, minFrac = 2): string {
-  return formatWithCommas(value, minFrac, 4);
-}
-
-function formatUsdAmount(value: number): string {
-  return `$${formatWithCommas(value, 2, 2)}`;
-}
-
-// SOL amounts need more precision than tokens — the network fee is 0.000005
-// SOL, so the review "Total amount" must keep up to 6 decimals to surface it.
-function formatSolAmount(value: number): string {
-  return formatWithCommas(value, 0, 6);
-}
-
 function formatFeeUsd(feeUsd: number | null): string {
   if (feeUsd === null) return "";
   if (feeUsd < 0.01) return "<$0.01";
   return `≈ ${formatUsdAmount(feeUsd)}`;
-}
-
-const SCREEN_WIDTH = Dimensions.get("screen").width;
-
-// Amount auto-shrink (ported from DepositSheet): keep the big amount on one
-// line by scaling the font down; lineHeight stays pinned so the baseline holds.
-const AMOUNT_MAX_FONT_SIZE = 48;
-const AMOUNT_MIN_FONT_SIZE = 22;
-const AMOUNT_CHAR_WIDTH_RATIO = 0.6;
-
-// Strip an amount field to clean numeric text (no commas, single dot). Unlike
-// DepositSheet we don't cap decimals — token amounts need more precision.
-function stripAmountInput(input: string): string {
-  let cleaned = input.replace(/[^0-9.]/g, "");
-  const parts = cleaned.split(".");
-  if (parts.length > 2) {
-    cleaned = `${parts[0]}.${parts.slice(1).join("")}`;
-  }
-  const [intPart, decPart] = cleaned.split(".");
-  const normalizedInt = intPart ? intPart.replace(/^0+(?=\d)/, "") : intPart;
-  return decPart !== undefined
-    ? `${normalizedInt || "0"}.${decPart}`
-    : normalizedInt;
-}
-
-// Thousands-separated display for the amount field, preserving a trailing dot
-// while the user is mid-typing.
-function formatAmountInputDisplay(raw: string): string {
-  if (!raw) return "";
-  const trailingDot = raw.endsWith(".") && !raw.slice(0, -1).includes(".");
-  const [intPart, decPart] = raw.split(".");
-  const intText = formatWithCommas(Number(intPart || "0"), 0, 0);
-  if (trailingDot) return `${intText}.`;
-  return decPart !== undefined ? `${intText}.${decPart}` : intText;
 }
 
 function getFriendlyError(raw: string): string {
@@ -223,7 +163,7 @@ type SendAsset = {
   imageUrl: string | null;
 };
 
-const SOL_ADDRESS_CANDIDATE_REGEX = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
+const SOL_ADDRESS_CANDIDATE_REGEX = new RegExp(BASE58_ADDRESS_PATTERN.source.slice(1, -1), "g");
 
 function safeDecodeUriComponent(value: string): string {
   try {
@@ -439,9 +379,38 @@ export function SendSheet({
     };
   }, []);
 
+  const handleOpenQrScanner = useCallback(async () => {
+    Keyboard.dismiss();
+    setScanError(null);
+    setShowTokenPicker(false);
+    setShowQrScanner(true);
+
+    let granted = cameraPermission?.granted ?? false;
+    if (!granted) {
+      const response = await requestCameraPermission();
+      granted = response.granted;
+    }
+
+    if (!granted) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
+    scanLockRef.current = false;
+    if (scanUnlockTimerRef.current) {
+      clearTimeout(scanUnlockTimerRef.current);
+      scanUnlockTimerRef.current = null;
+    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }, [cameraPermission, requestCameraPermission]);
+
+  const prevOpenRef = useRef<boolean | null>(null);
   useEffect(() => {
+    const wasOpen = prevOpenRef.current;
+    prevOpenRef.current = open;
+    if (wasOpen === open) return;
+    presentSheetWhenOpen(bottomSheetRef.current, open);
     if (open) {
-      bottomSheetRef.current?.present();
       setStep("recipient");
       setShowQrScanner(false);
       setShowTokenPicker(false);
@@ -461,11 +430,8 @@ export function SendSheet({
       if (initialShowScanner) {
         void handleOpenQrScanner();
       }
-    } else {
-      bottomSheetRef.current?.dismiss();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, sendAssets, initialMint, initialShowScanner, handleOpenQrScanner]);
 
   const handleSend = useCallback(async () => {
     if (!isFormValid || isSending) return;
@@ -556,31 +522,6 @@ export function SendSheet({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }, []);
 
-  const handleOpenQrScanner = useCallback(async () => {
-    Keyboard.dismiss();
-    setScanError(null);
-    setShowTokenPicker(false);
-    setShowQrScanner(true);
-
-    let granted = cameraPermission?.granted ?? false;
-    if (!granted) {
-      const response = await requestCameraPermission();
-      granted = response.granted;
-    }
-
-    if (!granted) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      return;
-    }
-
-    scanLockRef.current = false;
-    if (scanUnlockTimerRef.current) {
-      clearTimeout(scanUnlockTimerRef.current);
-      scanUnlockTimerRef.current = null;
-    }
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }, [cameraPermission, requestCameraPermission]);
-
   const handleBarcodeScanned = useCallback(
     (event: BarcodeScanningResult) => {
       if (scanLockRef.current) return;
@@ -622,11 +563,7 @@ export function SendSheet({
 
       const maxAmount = maxSpendableInToken;
       const raw = pct === 100 ? maxAmount : maxAmount * (pct / 100);
-      // Truncate (never round) to avoid floating-point rounding pushing the
-      // amount past the balance minus fee reserve, which caused
-      // "insufficient funds" when tapping MAX.
-      const displayScale = 1e6;
-      const truncatedTokens = Math.floor(raw * displayScale) / displayScale;
+      const truncatedTokens = truncateAmountTo6Decimals(raw);
 
       if (currencyMode === "TOKEN") {
         setAmountStr(truncatedTokens > 0 ? String(truncatedTokens) : "");
@@ -641,18 +578,6 @@ export function SendSheet({
     [selectedAsset, maxSpendableInToken, currencyMode, tokenPriceUsd],
   );
 
-  const renderBackdrop = useCallback(
-    (props: React.ComponentProps<typeof BottomSheetBackdrop>) => (
-      <BottomSheetBackdrop
-        {...props}
-        disappearsOnIndex={-1}
-        appearsOnIndex={0}
-        opacity={0.3}
-      />
-    ),
-    [],
-  );
-
   const focusActiveInput = useCallback(() => {
     if (step === "recipient") {
       recipientInputRef.current?.focus();
@@ -664,20 +589,11 @@ export function SendSheet({
   const handleSheetChange = useCallback(
     (index: number) => {
       sheetSettledRef.current = index >= 0;
-      // Focus once the sheet is at its snap point — focusing during the
-      // present animation pushes the keyboard above the sheet.
-      if (index >= 0) {
-        setTimeout(focusActiveInput, 120);
-      }
+      focusInputAfterSheetSettles(focusActiveInput, index);
     },
     [focusActiveInput],
   );
-
-  useEffect(() => {
-    if (!sheetSettledRef.current) return;
-    const id = setTimeout(focusActiveInput, 80);
-    return () => clearTimeout(id);
-  }, [focusActiveInput]);
+  useSheetSettledRefocus(sheetSettledRef, focusActiveInput);
 
   return (
     <>
@@ -686,7 +602,7 @@ export function SendSheet({
       snapPoints={snapPoints}
       enableDynamicSizing={false}
       enablePanDownToClose={step !== "result" || !isSending}
-      backdropComponent={renderBackdrop}
+      backdropComponent={SheetBackdrop}
       onDismiss={onClose}
       onChange={handleSheetChange}
       handleComponent={null}
@@ -1151,18 +1067,8 @@ function AmountStep({
     transform: [{ translateY: -keyboard.height.value }],
   }));
 
-  // Custom blinking caret — the real input's caret is hidden (it's a
-  // transparent overlay). Mirrors DepositSheet.
   const [isFocused, setIsFocused] = useState(false);
-  const [caretOn, setCaretOn] = useState(true);
-  useEffect(() => {
-    if (!isFocused) {
-      setCaretOn(true);
-      return;
-    }
-    const id = setInterval(() => setCaretOn((v) => !v), 530);
-    return () => clearInterval(id);
-  }, [isFocused]);
+  const caretOn = useCaretBlink(isFocused);
 
   const symbol = selectedAsset?.symbol ?? "TOKEN";
   const selectedAssetMint = selectedAsset?.mint ?? NATIVE_SOL_MINT;
@@ -1184,25 +1090,19 @@ function AmountStep({
       ? `${formatTokenAmount(amountInToken, 0)} ${symbol}`
       : formatUsdAmount(amountInUsd);
 
-  // Scale the amount text down so it stays on one line; lineHeight stays pinned
-  // at the max size so the baseline doesn't move.
-  const amountFontSize = useMemo(() => {
-    const text = `${currencyMode === "USD" ? "$" : ""}${displayAmount || "0"}`;
-    const availableWidth = SCREEN_WIDTH - 32 - 52; // px-16*2 + swap button
-    const fitted = Math.floor(
-      availableWidth / (text.length * AMOUNT_CHAR_WIDTH_RATIO),
-    );
-    return Math.max(AMOUNT_MIN_FONT_SIZE, Math.min(AMOUNT_MAX_FONT_SIZE, fitted));
-  }, [currencyMode, displayAmount]);
+  const amountFontSize = useMemo(
+    () =>
+      fitAmountFontSize(
+        `${currencyMode === "USD" ? "$" : ""}${displayAmount || "0"}`,
+        SCREEN_WIDTH - 32 - 52, // px-16*2 + swap button
+      ),
+    [currencyMode, displayAmount],
+  );
 
   const amountTextStyle = {
-    fontFamily: "Geist_600SemiBold",
+    ...amountFieldStyles.text,
     fontSize: amountFontSize,
-    // 58pt line box: iOS clips Geist's ascenders at lineHeight == fontSize.
-    lineHeight: 58,
-    color: "#000",
-    includeFontPadding: false,
-  } as const;
+  };
 
   return (
     <View className="w-full" style={{ flex: 1 }}>
@@ -1247,34 +1147,22 @@ function AmountStep({
       </View>
 
       <View style={{ paddingTop: 36, paddingHorizontal: 16 }}>
-        <Pressable
-          style={{ position: "relative", height: 58, justifyContent: "flex-end" }}
-          onPress={openKeyboard}
-        >
+        <Pressable style={amountFieldStyles.row} onPress={openKeyboard}>
           <View
-            style={{
-              flexDirection: "row",
-              alignItems: "flex-end",
-              paddingRight: 52,
-              pointerEvents: "none",
-            }}
+            style={[
+              amountFieldStyles.visual,
+              { paddingRight: 52, pointerEvents: "none" },
+            ]}
           >
             {currencyMode === "USD" ? (
               <Text style={amountTextStyle}>$</Text>
             ) : null}
             <Text style={amountTextStyle}>{displayAmount || "0"}</Text>
             <View
-              style={{
-                width: 2,
-                height: 40,
-                marginHorizontal: 2,
-                // Centered like the glyphs — both platforms center text in
-                // the 58pt line box; bottom-pinned sat below the digits.
-                alignSelf: "center",
-                borderRadius: 1,
-                backgroundColor: "#000",
-                opacity: isFocused && caretOn ? 1 : 0,
-              }}
+              style={[
+                amountFieldStyles.caret,
+                { opacity: isFocused && caretOn ? 1 : 0 },
+              ]}
             />
           </View>
           <BottomSheetTextInput
@@ -1288,16 +1176,7 @@ function AmountStep({
             maxLength={15}
             caretHidden
             pointerEvents="none"
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              opacity: 0,
-              padding: 0,
-              fontSize: 48,
-            }}
+            style={amountFieldStyles.overlayInput}
             accessibilityLabel="Send amount"
           />
           {tokenPriceUsd ? (
@@ -2074,47 +1953,6 @@ function ConfirmStep({
   );
 }
 
-function SendingSpinner() {
-  const rotation = useSharedValue(0);
-  useEffect(() => {
-    rotation.value = withRepeat(
-      withTiming(360, { duration: 900, easing: Easing.linear }),
-      -1,
-      false,
-    );
-    return () => cancelAnimation(rotation);
-  }, [rotation]);
-  const style = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${rotation.value}deg` }],
-  }));
-  return (
-    <Animated.View style={[{ width: 80, height: 80 }, style]}>
-      <SendSpinnerIcon width={80} height={80} />
-    </Animated.View>
-  );
-}
-
-function MascotReveal({ children }: { children: React.ReactNode }) {
-  const scale = useSharedValue(0.3);
-  const opacity = useSharedValue(0);
-  useEffect(() => {
-    opacity.value = withTiming(1, {
-      duration: 160,
-      easing: Easing.out(Easing.quad),
-    });
-    scale.value = withSpring(1, { damping: 8, stiffness: 220, mass: 0.6 });
-    return () => {
-      cancelAnimation(scale);
-      cancelAnimation(opacity);
-    };
-  }, [scale, opacity]);
-  const style = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ scale: scale.value }],
-  }));
-  return <Animated.View style={style}>{children}</Animated.View>;
-}
-
 function ResultStep({
   isSending,
   sendError,
@@ -2137,9 +1975,7 @@ function ResultStep({
   const status = isSending ? "sending" : sendError ? "error" : "success";
 
   const explorerUrl = txSignature
-    ? `https://solscan.io/tx/${txSignature}${
-        getSolanaEnv() === "mainnet" ? "" : `?cluster=${getSolanaEnv()}`
-      }`
+    ? solscanExplorerUrl(txSignature)
     : null;
 
   return (

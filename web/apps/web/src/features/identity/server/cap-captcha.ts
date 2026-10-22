@@ -10,6 +10,7 @@ import {
   type ValidateChallengeResult,
 } from "capjs-core";
 
+import { CAP_SECRET_ENV_NAME } from "@/lib/core/config/public";
 import {
   getOptionalEnv,
   type EnvSource,
@@ -17,8 +18,6 @@ import {
 } from "@/lib/core/config/shared";
 
 import { consumeCaptchaKey, putCaptchaKey } from "./captcha-key-store";
-
-const CAP_SECRET_ENV_NAME = "CAP_SECRET";
 
 const CHALLENGE_SCOPE = "wallet-signin";
 
@@ -74,8 +73,7 @@ function deriveCapTokenKey(token: string): string | null {
 }
 
 /**
- * Server-side enforcement for the Cap captcha. Mirrors the client mode
- * resolution in `lib/core/config/public.ts`:
+ * Server-side enforcement for the Cap captcha:
  *
  * - explicit non-production local bypass + loopback request → authenticate
  *   without solving a captcha, matching the previous Turnstile behavior.

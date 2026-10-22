@@ -54,8 +54,7 @@ export function LockScreen() {
       .finally(() => {
         biometricInFlight.current = false;
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [biometricEnabled, unlockWithBiometrics]);
 
   // Re-trigger biometric when the app becomes active.
   //

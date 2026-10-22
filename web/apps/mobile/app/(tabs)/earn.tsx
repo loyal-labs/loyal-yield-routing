@@ -60,7 +60,6 @@ import { env } from "@/config/env";
 import { executeEarnDeposit } from "@/lib/solana/earn/deposit";
 import { getEarnProductAssets } from "@/lib/solana/earn/earn-product-mints";
 import { executeEarnWithdraw } from "@/lib/solana/earn/withdraw";
-import { useEarnAutodeposit } from "@/hooks/wallet/useEarnAutodeposit";
 import { useEarnAutodepositToggle } from "@/hooks/wallet/useEarnAutodepositToggle";
 import { useEarnForecast } from "@/hooks/wallet/useEarnForecast";
 import { useEarnWithdrawSources } from "@/hooks/wallet/useEarnWithdrawSources";
@@ -80,11 +79,7 @@ import EarnFlash from "../../assets/images/earn/flash.svg";
 import EarnQuestionmark from "../../assets/images/earn/questionmark.svg";
 import { shouldReloadEarningsChart } from "@/lib/solana/earn/chart-reload";
 
-// Starter-hero principal ("Turn $6,000 into $X"). The guard rate only fires if
-// the forecast API returns a non-positive APY (getLoyalApyBps already falls
-// back to its marketing rate while loading).
 const HERO_PRINCIPAL_USD = 6_000;
-const FALLBACK_APY_PCT = 8.46;
 
 const EARN_REFRESH_INTERVAL_MS = 15_000;
 
@@ -188,9 +183,10 @@ export default function EarnScreen() {
   const [hasDeposit, setHasDeposit] = useState(false);
   const {
     autodeposit,
-    hasLoaded: autodepositLoaded,
+    autodepositLoaded,
+    earnRefunds,
     refreshAutodeposit,
-  } = useEarnAutodeposit(walletAddress);
+  } = useActivity();
   const {
     active: autodepositEnabled,
     requestToggle: requestAutodepositToggle,
@@ -263,14 +259,6 @@ export default function EarnScreen() {
   // empty hero only, routing to the Earn activity feed where the refund rows
   // live. Funded state shows nothing — the rent comes back when the position
   // closes, so there's nothing actionable while a deposit is live.
-  // `refreshAutodeposit` is renamed: the Activity feed keeps its own
-  // Autodeposit read (it drives the "Scheduled" row), separate from this
-  // screen's `useEarnAutodeposit` instance below.
-  const {
-    earnRefunds,
-    expectScheduledSweep,
-    refreshAutodeposit: refreshActivityAutodeposit,
-  } = useActivity();
   const handleOpenRefunds = useCallback(() => {
     router.navigate({
       pathname: "/(tabs)/activity",
@@ -745,13 +733,7 @@ export default function EarnScreen() {
           // Criteria met for immediate execution → the backend scheduled a bootstrap
           // sweep. Take the user straight to Activity so the pending transaction (and
           // its "Execute now" shortcut) is visible, instead of leaving them guessing.
-          // The Activity feed reads Autodeposit state through its own hook instance,
-          // which hasn't seen the new sweep yet: flag the expectation (the feed shows
-          // a skeleton "Scheduled" row immediately) and warm its read in the
-          // background so the real row lands without waiting for a manual refresh.
           if (getVisibleEarnScheduledSweeps(fresh.scheduledSweeps).length > 0) {
-            expectScheduledSweep();
-            void refreshActivityAutodeposit();
             router.navigate({
               pathname: "/(tabs)/activity",
               params: { section: "earn" },
@@ -774,8 +756,6 @@ export default function EarnScreen() {
       autodepositSetupMode,
       autodeposit,
       refreshAutodeposit,
-      expectScheduledSweep,
-      refreshActivityAutodeposit,
       router,
     ]
   );
@@ -814,8 +794,11 @@ export default function EarnScreen() {
   // supply APY (which reads lower). The starter hero's "into $X" projects the
   // $6,000 principal at the same rate so the headline always matches the badge.
   const { apyLabel, heroTargetLabel } = useMemo(() => {
-    const raw = getLoyalApyBps(forecastSummary) / 100;
-    const pct = Number.isFinite(raw) && raw > 0 ? raw : FALLBACK_APY_PCT;
+    const apyBps = getLoyalApyBps(forecastSummary);
+    if (apyBps === null) {
+      return { apyLabel: "— APY", heroTargetLabel: "—" };
+    }
+    const pct = apyBps / 100;
     const target = Math.round(HERO_PRINCIPAL_USD * (1 + pct / 100));
     return {
       apyLabel: `${pct.toFixed(2)}% APY`,

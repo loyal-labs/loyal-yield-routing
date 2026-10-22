@@ -3,7 +3,7 @@
 import { DogLottie } from "@/components/wallet-workspace/facelift/dog-lottie";
 import { InfoTooltip } from "@/components/wallet-workspace/facelift/info-tooltip";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
-import { useEarnForecastApyStatus } from "@/components/wallet-workspace/facelift/use-earn-forecast-apy-status";
+import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { LedgerSignInLink } from "@/components/auth/ledger-sign-in-link";
 import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { useAuthCapability } from "@/lib/auth/capability";
@@ -31,11 +31,11 @@ export function EarnEmptyPane({
   title?: string;
   tooltipText?: string;
 }) {
-  const { apy } = useEarnForecastApyStatus();
+  const { apy } = useEarnForecastApy();
   const { isHydrated, isSignedIn } = useAuthCapability();
   const { open: openSignIn } = useSignInModal();
   const showFirstDeposit = isHydrated && isSignedIn && !staticHeadline;
-  const badgeLabel = apyBadgeLabel ?? formatEarnApyLabel(apy.apyBps);
+  const badgeLabel = apyBadgeLabel ?? formatEarnApyLabel(apy);
 
   return (
     <section className="relative flex h-full min-w-0 flex-1 flex-col items-center rounded-3xl bg-card max-[795px]:overflow-x-hidden max-[795px]:overflow-y-auto max-[795px]:rounded-none">

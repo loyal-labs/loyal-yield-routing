@@ -57,8 +57,12 @@ type svmAutodepositFixture struct {
 func loadSVMAutodepositFixture(t *testing.T) svmAutodepositFixture {
 	t.Helper()
 	path := os.Getenv("AUTODEPOSIT_TEST_SVM_FIXTURE_PATH")
-	if path == "" || os.Getenv("SVM_HARNESS") == "" {
-		t.Fatal("both AUTODEPOSIT_TEST_SVM_FIXTURE_PATH and SVM_HARNESS are required")
+	harness := os.Getenv("SVM_HARNESS")
+	if path == "" && harness == "" {
+		t.Skip("AUTODEPOSIT_TEST_SVM_FIXTURE_PATH and SVM_HARNESS are unset; generate the SVM fixture to run this")
+	}
+	if path == "" || harness == "" {
+		t.Fatal("both AUTODEPOSIT_TEST_SVM_FIXTURE_PATH and SVM_HARNESS are required when either is set")
 	}
 	data, e := os.ReadFile(path)
 	if e != nil {

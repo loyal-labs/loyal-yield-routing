@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   useEffect,
   useLayoutEffect,
@@ -19,7 +20,7 @@ import { EarnedChart } from "@/components/wallet-workspace/facelift/earned-chart
 import { InfoTooltip } from "@/components/wallet-workspace/facelift/info-tooltip";
 import { SlidingTabs } from "@/components/wallet-workspace/facelift/sliding-tabs";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
-import { useEarnForecastApyStatus } from "@/components/wallet-workspace/facelift/use-earn-forecast-apy-status";
+import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import { useIsNarrowViewport } from "@/components/wallet-workspace/facelift/use-is-narrow-viewport";
 import { useEarnForecastApyHistory } from "@/hooks/use-earn-forecast-apy-history";
@@ -37,10 +38,6 @@ export type ChartCardCustomContent = {
   tabs: readonly ChartTab[];
 };
 
-// transitions.dev "Tabs sliding" (frontend/transitions/tabs-sliding.md): the
-// white active pill is one absolutely-positioned span that tweens between the
-// measured offset/width of the selected tab. First paint and resizes write
-// the position with transitions suspended so the pill snaps, never flies in.
 function ChartBody({
   activeTab,
   apy,
@@ -50,7 +47,7 @@ function ChartBody({
   mainUsdcReserveApyBps,
 }: {
   activeTab: ChartTab;
-  apy: EarnForecastApy;
+  apy: EarnForecastApy | undefined;
   earnData: EarnPositionData;
   isApyLoaded: boolean;
   isExpanded?: boolean;
@@ -74,12 +71,12 @@ function ChartBody({
           axisTickCount={isExpanded && !isNarrowViewport ? 8 : 2}
           rangeId="30D"
         />
-      ) : apy.availability === "unavailable" ? (
+      ) : !apy || apy.availability === "unavailable" ? (
         <div
           className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground"
           role="status"
         >
-          APY forecast unavailable
+          {isApyLoaded ? "APY forecast unavailable" : null}
         </div>
       ) : (
         <>
@@ -90,7 +87,7 @@ function ChartBody({
           ) : null}
           <ForecastChart
             apy={apy}
-            apyDataRevealed={isApyLoaded}
+            apyDataRevealed
             isBalanceHidden={isBalanceHidden && earnData.hasPosition}
             key={forecastPrincipal}
             mainUsdcReserveApyBps={mainUsdcReserveApyBps}
@@ -142,7 +139,7 @@ export function EarnChartCard({
     : hasEarnedTab
     ? "Earned"
     : "APY";
-  const { apy, isLoaded: isApyLoaded } = useEarnForecastApyStatus();
+  const { apy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const apyHistory = useEarnForecastApyHistory();
   const mainUsdcReserveApyBps = deriveMainUsdcReserveForecastApyBps(apyHistory);
 
@@ -368,19 +365,9 @@ export function EarnChartPane({
   selectedTab: ChartTab | null;
   statsPanel?: ReactNode;
 }) {
-  useEffect(() => {
-    if (!isExpanded) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onExpandedChange(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isExpanded, onExpandedChange]);
+  useEscapeOverlay(isExpanded, () => {
+    onExpandedChange(false);
+  });
 
   return (
     <>

@@ -124,18 +124,11 @@ export class CompiledKeys {
       numReadonlyUnsignedAccounts: readonlyNonSigners.length,
     };
 
-    {
+    if (this.payer) {
       assert(
-        writableSigners.length > 0,
-        "Expected at least one writable signer key"
+        writableSigners[0]?.[0] === this.payer.toBase58(),
+        "Expected first writable signer key to be the fee payer"
       );
-      const [payerAddress] = writableSigners[0];
-      if (this.payer) {
-        assert(
-          payerAddress === this.payer.toBase58(),
-          "Expected first writable signer key to be the fee payer"
-        );
-      }
     }
 
     const staticAccountKeys = [

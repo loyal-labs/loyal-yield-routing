@@ -43,14 +43,11 @@ export type EarnedChartBar = {
   startAt: string;
 };
 
-// The "good old" Earned chart re-skinned for the facelift right pane. Data and
-// derivations mirror EarnDetailView/EarningsBlock exactly (same hook, same
-// cache key recipe, same live-estimate math) — only the markup is new.
 // Shared wiring for everything derived from the Earn earnings feed — the
 // Earned chart consumes all of it, the wallet-home Earn card only the bars.
 export function useEarnEarnedData(data: EarnPositionData) {
   const publicEnv = usePublicEnv();
-  const earnForecastApy = useEarnForecastApy();
+  const { apy: earnForecastApy } = useEarnForecastApy();
   const hasPositiveCurrentBalance = data.hasPosition && data.earnBalanceUsd > 0;
   const earnEarningsRevalidationKey = data.position?.principalAmountRaw ?? "0";
   const earnEarningsCacheKey = getEarnEarningsCacheKey({
@@ -97,7 +94,7 @@ export function useEarnEarnedData(data: EarnPositionData) {
     apyBps: deriveEstimatedEarnedAmountApyBps({
       earningsData: lifetimeData,
       fallbackApyBps:
-        earnForecastApy.availability === "unavailable"
+        !earnForecastApy || earnForecastApy.availability === "unavailable"
           ? 0
           : earnForecastApy.apyBps,
     }),
@@ -115,8 +112,8 @@ export function useEarnEarnedData(data: EarnPositionData) {
   const hasRealBars = (realBars?.length ?? 0) > 0;
   const showEarningsLoader = isEarningsLoading && !hasRealBars;
   const estimatedTodayEarnedUsd = estimatedEarnedAmounts.todayEarnedUsd;
-  // Reconcile the in-progress bar against the live estimate, same as the old
-  // EarningsBlock — prior bars stay daily (non-cumulative) values.
+  // Reconcile the in-progress bar against the live estimate — prior bars stay
+  // daily (non-cumulative) values.
   const dailyBars = useMemo(
     () =>
       (realBars ?? []).map((bar) =>

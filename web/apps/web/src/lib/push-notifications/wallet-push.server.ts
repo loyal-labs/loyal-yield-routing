@@ -65,7 +65,31 @@ function formatUsdcAmountRaw(amountRaw: bigint): string {
   return `$${usd.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 }
 
-// Copy comes from ASK-1651 — keep in sync with the ticket.
+// Copy comes from ASK-1651 — keep in sync with the ticket. The ticket's
+// dynamic values ($X earned, N quests left, end date) are static for now;
+// per-wallet enrichment is a follow-up.
+export const MIXPANEL_COHORT_CAMPAIGNS: Record<string, WalletPushPayload> = {
+  "quest-1-nudge": {
+    body: "Add $5 to your account and it's done.",
+    title: "You're one step from Quest 1.",
+  },
+  "quest-2-nudge": {
+    body: "Enable auto-deposit and your USDC earns while it sits. Quest 2, done.",
+    title: "One quest left.",
+  },
+  "seeker-summer-ending": {
+    body: "Less than 48 hours left on your quests. Don't leave the rewards on the table.",
+    title: "Seeker's Summer is almost over.",
+  },
+  "earning-while-away": {
+    body: "It's been adding up. Come take a look.",
+    title: "Your USDC kept earning while you were out.",
+  },
+  "still-earning": {
+    body: "Your USDC has been earning since you last checked in. Pick up where you left off.",
+    title: "Still working for you.",
+  },
+};
 
 export function autodepositEnabledPush(): WalletPushPayload {
   return {

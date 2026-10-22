@@ -24,7 +24,7 @@ import {
 } from "@/components/wallet-workspace/facelift/skeleton-reveal";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
-import { useEarnForecastApyStatus } from "@/components/wallet-workspace/facelift/use-earn-forecast-apy-status";
+import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import { formatEarnApyLabel } from "@/lib/kamino/earn-forecast.shared";
 import { formatAutodepositUsdLabel } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
@@ -60,7 +60,7 @@ export function EarnPositionPane({
   selectedChartTab: ChartTab | null;
   selectedTransactionId: string | null;
 }) {
-  const { apy, isLoaded: isApyLoaded } = useEarnForecastApyStatus();
+  const { apy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const autodeposit = data.autodepositConfig;
   const autoswap = data.autoswapConfig;
   const { isBalanceHidden } = useBalanceVisibility();
@@ -192,11 +192,7 @@ export function EarnPositionPane({
                       isRevealed={isApyLoaded}
                       segments={[
                         {
-                          text: formatEarnApyLabel(
-                            apy.apyBps,
-                            apy.availability,
-                            apy.source
-                          ),
+                          text: formatEarnApyLabel(apy),
                         },
                       ]}
                     />
