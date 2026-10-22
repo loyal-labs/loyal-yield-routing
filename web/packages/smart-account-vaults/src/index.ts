@@ -5,3 +5,8 @@ export * from "./simulation-diagnostics";
 export * from "./spending-limits";
 export * from "./types";
 export * from "./wallet";
+export * from "./voltr/plans";
+export * from "./voltr/prepare";
+export * from "./voltr/program";
+export * from "./voltr/visibility";
+export * from "./wire/prepared-operation-wire.shared";

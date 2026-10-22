@@ -4,7 +4,7 @@ import {
   hydratePreparedOperation,
   serializePreparedOperation,
   type WirePreparedLoyalSmartAccountsOperation,
-} from "@/lib/smart-accounts/prepared-operation-wire.shared";
+} from "@loyal-labs/smart-account-vaults";
 
 export type EarnPolicyRefundRecurringDelegationStatus =
   | "active"
