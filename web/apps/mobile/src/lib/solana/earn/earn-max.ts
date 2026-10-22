@@ -25,7 +25,48 @@ export type EarnMaxErrorCode =
   | "contract_mismatch"
   | "invite_required"
   | "unauthenticated"
+  | "smart_account_required"
+  | "unsupported_cluster"
+  | "rate_limited"
+  | "unavailable"
   | "request_failed";
+
+const REFUSALS: Readonly<
+  Record<string, { code: EarnMaxErrorCode; message: string }>
+> = {
+  unauthenticated: {
+    code: "unauthenticated",
+    message: "Sign in again to use Earn MAX.",
+  },
+  invalid_mobile_session: {
+    code: "unauthenticated",
+    message: "Sign in again to use Earn MAX.",
+  },
+  wallet_required: {
+    code: "unauthenticated",
+    message: "Sign in with a Solana wallet to use Earn MAX.",
+  },
+  smart_account_required: {
+    code: "smart_account_required",
+    message: "Set up your smart account to use Earn MAX.",
+  },
+  invite_required: {
+    code: "invite_required",
+    message: "Earn MAX needs an invite.",
+  },
+  unsupported_cluster: {
+    code: "unsupported_cluster",
+    message: "Earn MAX is only available on mainnet.",
+  },
+  rate_limited: {
+    code: "rate_limited",
+    message: "Too many attempts. Try again in a minute.",
+  },
+  earn_max_unavailable: {
+    code: "unavailable",
+    message: "Earn MAX is temporarily unavailable. Try again soon.",
+  },
+};
 
 export class EarnMaxError extends Error {
   readonly code: EarnMaxErrorCode;
@@ -47,15 +88,9 @@ async function errorCodeOf(res: Response): Promise<string | undefined> {
 async function readEarnMax<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const code = await errorCodeOf(res);
-    if (res.status === 403 && code === "invite_required") {
-      throw new EarnMaxError("invite_required", "Earn MAX needs an invite.", 403);
-    }
-    if (res.status === 401) {
-      throw new EarnMaxError(
-        "unauthenticated",
-        "Sign in again to use Earn MAX.",
-        401,
-      );
+    const refusal = code ? REFUSALS[code] : undefined;
+    if (refusal) {
+      throw new EarnMaxError(refusal.code, refusal.message, res.status);
     }
     throw new EarnMaxError(
       "request_failed",
@@ -117,8 +152,11 @@ export async function redeemEarnMaxInvite(
     headers: { ...earnHeaders(), Authorization: `Bearer ${token}` },
     body: JSON.stringify({ code }),
   });
-  if (res.status === 400 || res.status === 409) {
-    return "invalid";
+  if (!res.ok) {
+    const code = await errorCodeOf(res.clone());
+    if (code === "invalid_code" || code === "code_used") {
+      return "invalid";
+    }
   }
   await readEarnMax<Post["/api/smart-accounts/earn-max/invite"]>(res);
   return "redeemed";
