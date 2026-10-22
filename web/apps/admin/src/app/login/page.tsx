@@ -1,44 +1,11 @@
 import Image from "next/image"
+import { useSearchParams } from "next/navigation"
 import { LoginForm } from "@/components/login-form"
-import { ADMIN_SESSION_COOKIE, getSafeNextPath, verifySessionToken } from "@/lib/admin-auth"
-import { cookies, headers } from "next/headers"
-import { redirect } from "next/navigation"
 
-type LoginPageProps = {
-  searchParams?: Promise<{
-    next?: string | string[]
-    error?: string | string[]
-  }>
-}
-
-function toSingleValue(value: string | string[] | undefined) {
-  if (Array.isArray(value)) {
-    return value[0]
-  }
-  return value
-}
-
-export default async function LoginPage({ searchParams }: LoginPageProps) {
-  const resolvedSearchParams = (await searchParams) ?? {}
-  const nextPathValue = toSingleValue(resolvedSearchParams.next)
-  const errorValue = toSingleValue(resolvedSearchParams.error)
-  const headerStore = await headers()
-  const host = headerStore.get("host")
-  const forwardedProtocol = headerStore.get("x-forwarded-proto")
-  const protocol = forwardedProtocol?.split(",")[0]?.trim() || "https"
-  const requestBaseUrl = host ? `${protocol}://${host}` : undefined
-  const safeNextPath = requestBaseUrl
-    ? getSafeNextPath(nextPathValue, requestBaseUrl)
-    : null
-  const nextPath = safeNextPath === "/" ? "/overview" : safeNextPath ?? undefined
-
-  const cookieStore = await cookies()
-  const sessionToken = cookieStore.get(ADMIN_SESSION_COOKIE)?.value
-  const session = await verifySessionToken(sessionToken)
-
-  if (session) {
-    redirect(nextPath ?? "/overview")
-  }
+export default function LoginPage() {
+  const params = useSearchParams()
+  const next = params.get("next")
+  const nextPath = next === "/" ? "/overview" : next?.startsWith("/") ? next : undefined
 
   return (
     <div className="bg-muted flex min-h-svh flex-col items-center justify-center gap-6 p-6 md:p-10">
@@ -51,7 +18,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           className="h-7 w-auto self-center"
           priority
         />
-        <LoginForm hasError={errorValue === "invalid"} nextPath={nextPath} />
+        <LoginForm hasError={params.get("error") === "invalid"} nextPath={nextPath} />
       </div>
     </div>
   )
