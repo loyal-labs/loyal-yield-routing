@@ -55,7 +55,7 @@ INSERT INTO public.stats_fixture VALUES ('current', 100000001, 999999999, 12, no
 	}))
 	defer upstream.Close()
 	upstreamURL, _ := url.Parse(upstream.URL)
-	handler := New(Config{AppDB: pool, Upstream: upstreamURL})
+	handler := New(Config{AppDB: pool, StatsDB: true, Upstream: upstreamURL})
 	get := func(h http.Handler, path string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
