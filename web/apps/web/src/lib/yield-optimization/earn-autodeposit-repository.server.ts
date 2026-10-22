@@ -172,6 +172,7 @@ export type EarnAutodepositHistoryEventRecord = {
   confirmedSlot: bigint;
   depositSignature: string | null;
   id: string;
+  liquidityMint: string;
   policyAccount: string;
   recurringDelegation: string | null;
   signature: string;
@@ -190,6 +191,7 @@ type EarnAutodepositHistoryTarget = Pick<
   | "policyConfirmedSlot"
   | "policySignature"
   | "recurringDelegation"
+  | "tokenMint"
   | "walletBalanceFloorRaw"
 >;
 
@@ -1324,6 +1326,7 @@ export async function findEarnAutodepositHistoryEvents(
         ? execution.decodedEvidence.kaminoDepositSignature
         : null,
     id: `autodeposit:sweep:${execution.id.toString()}`,
+    liquidityMint: target.tokenMint,
     policyAccount: target.policyAccount,
     recurringDelegation: target.recurringDelegation,
     signature: execution.signature,
@@ -1357,6 +1360,7 @@ export function buildEarnAutodepositTargetHistoryEvents(
       confirmedSlot: target.policyConfirmedSlot,
       depositSignature: null,
       id: `autodeposit:create:${target.id.toString()}`,
+      liquidityMint: target.tokenMint,
       policyAccount: target.policyAccount,
       recurringDelegation: target.recurringDelegation,
       signature: target.policySignature,
@@ -1377,6 +1381,7 @@ export function buildEarnAutodepositTargetHistoryEvents(
       confirmedSlot: target.closeSlot,
       depositSignature: null,
       id: `autodeposit:close:${target.id.toString()}`,
+      liquidityMint: target.tokenMint,
       policyAccount: target.policyAccount,
       recurringDelegation: target.recurringDelegation,
       signature: target.closeSignature,
@@ -1386,41 +1391,6 @@ export function buildEarnAutodepositTargetHistoryEvents(
   }
 
   return history;
-}
-
-// The sweep worker's notify payload only carries the wallet address; the
-// execution row it just recorded carries the amount. Callers should treat a
-// stale `recordedAt` as "no amount" rather than attribute an old sweep.
-export async function findLatestEarnAutodepositExecutionForWallet(
-  walletAddress: string,
-  dependencies: Pick<
-    EarnAutodepositRepositoryDependencies,
-    "client"
-  > = createDependencies()
-): Promise<{ amountRaw: bigint; recordedAt: Date } | null> {
-  const rows = await dependencies.client.db
-    .select({
-      amountRaw: balanceSweepExecutions.amountRaw,
-      decodedAt: balanceSweepExecutions.decodedAt,
-      receivedAt: balanceSweepExecutions.receivedAt,
-    })
-    .from(balanceSweepExecutions)
-    .innerJoin(
-      balanceSweepTargets,
-      eq(balanceSweepExecutions.targetId, balanceSweepTargets.id)
-    )
-    .where(eq(balanceSweepTargets.wallet, walletAddress))
-    .orderBy(desc(balanceSweepExecutions.id))
-    .limit(1);
-
-  const row = rows[0];
-  if (!row) {
-    return null;
-  }
-  return {
-    amountRaw: row.amountRaw,
-    recordedAt: row.decodedAt ?? row.receivedAt,
-  };
 }
 
 function targetValuesFromSetup(
