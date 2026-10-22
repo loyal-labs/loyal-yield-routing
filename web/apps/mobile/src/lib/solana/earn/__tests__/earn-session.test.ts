@@ -88,4 +88,39 @@ describe("earn session", () => {
 
     expect(store.has(SESSIONS_KEY)).toBe(false);
   });
+
+  it("leaves no mint cooldown when a logout lands during the rejected retry", async () => {
+    store.set(SESSIONS_KEY, JSON.stringify({ [WALLET]: session("stale") }));
+    let retryStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => (retryStarted = resolve));
+    let releaseRetry: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (releaseRetry = resolve));
+    let gets = 0;
+    global.fetch = jest.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        mints += 1;
+        return new Response(JSON.stringify(session(`fresh-${mints}`)), {
+          status: 200,
+        });
+      }
+      gets += 1;
+      if (gets === 2) {
+        retryStarted();
+        await gate;
+      }
+      return new Response(
+        JSON.stringify({ error: { code: "invalid_mobile_session" } }),
+        { status: 401 },
+      );
+    }) as unknown as typeof fetch;
+
+    const reading = earn.earnWalletRead(WALLET, "https://example.test/read");
+    await started;
+    await earn.clearEarnSession();
+    releaseRetry();
+    await reading;
+    await earn.silentSession(privySigner());
+
+    expect(mints).toBe(2);
+  });
 });
