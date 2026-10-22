@@ -19,17 +19,17 @@ Goal: every comment in scope is classed DELETE, MUST KILL or KEEP, and the MUST 
 ## Scope
 
 - Read from a detached worktree at `origin/main` (`git worktree add --detach .claude/worktrees/comment-sweep-ro origin/main`), never the owner's checkout. Record the sha.
-- In scope: `go/`, `crates/`, `tools/`, `deploy/`, `scripts/`, `src/`, `web/apps/loyal/`, root config. Extensions go, rs, ts, tsx, js, mjs, sh, py.
-- Out of scope: everything else under `web/`. loyal-app is its writer and sync merges overwrite it (`scripts/web/check-untouched.sh`); comments there are pruned in loyal-app. Also out: tests (`_test.go`, `*.test.ts`, `tests/`), generated code, vendored programs, fixtures.
+- In scope: the whole tracked tree, extensions go, rs, ts, tsx, js, mjs, sh, py. `web/` is yield's own code since #490 deleted the loyal-app sync; `web/LOYAL_APP_BASE` and its daily check keep loyal-app from writing it.
+- Out of scope: tests (`_test.go`, `*.test.ts(x)`, `*.spec.ts`, `tests/`, `__tests__`, `testdata`), generated code (`web/packages/api/src/generated`, `*.d.ts`, `*.gen.*`), vendored programs, fixtures, `node_modules`, `dist`.
+- Delta mode: when the brief carries `BASE: <sha>` and a previous sweep dir, scope is every file changed since BASE plus the trees the brief names as never swept. Rows already listed in the previous sweep's `OPEN.md` are owner calls; leave them out of the plan.
 - Sweep dir outside the repo: `~/loyal/yield-comment-sweep-<yyyy-mm-dd>/`. It holds `scope.txt`, `slices/<X>.txt`, `out/<X>.md`, `PLAN.md`.
-
 ## Swarm
 
 Follow `/swarm` phases A–D.
 
 1. Frame. Count comment lines per file (`grep -cE '^\s*(//|/\*|\*|#[^!]|--)'`). Cut 5–7 slices of about 1,800 comment lines each, keeping a package whole unless it alone exceeds one slice. Shape: partition, no race.
 2. Fan out. One `sonnet-lane` per slice, `run_in_background: true`, at most 5 at once, refilling as they finish. Each brief is, in order: the full text of `~/.claude/skills/no-comments/references/comment-sicko.md`; the Sweeper brief below with WT, SLICEFILE and OUTFILE filled in.
-3. Aggregate. For each slice: every file in SLICEFILE has rows or a zero line; spot-check 8 MUST KILL and 5 KEEP rows against the code with the `/no-comments` step 2 rejection rules (scope escapes, misstated reasons, keeps on our own code, foreign gotchas not proven live). A slice that fails completeness or two spot-checks is respawned once with the failure named; a second failure is a gap.
+3. Aggregate. For each slice: every file in SLICEFILE has rows or a zero line; spot-check 8 MUST KILL and 5 KEEP rows against the code with the `/no-comments` step 2 rejection rules (scope escapes, misstated reasons, keeps on our own code, foreign gotchas not proven live). A slice that fails completeness or two spot-checks is respawned once with the failure named; a second failure is a gap. Then run the scent pass: every DELETE row whose comment holds a rule word (must, never, only, before, after, invariant, order), a unit word (bps, lamports, decimals, seconds, ms, slots, UTC) or a foreign-system name (Squads, Kamino, KLend, Voltr, Jupiter, Solana, serde, Privy, Expo, React Native, Metro, Hermes, iOS, Android, Next, Vercel, Telegram) goes to one `sonnet-lane` re-judge; flips land in `rejudge.tsv`. Short DELETE rows hid rules and units in the Oct 20 sweep (~8% flipped).
 4. Report. Write `PLAN.md`, then return the summary below.
 
 ## Sweeper brief
@@ -62,7 +62,8 @@ Return at most 600 words to the caller; the full detail is in `PLAN.md`.
 
 ## Apply mode (only with `MODE: apply` and the owner's go in the brief)
 
-- Deletions are applied by `path:line` ranges from the findings at the recorded sha, never by matching comment text: a content-matching codemod re-cuts repaired text when rerun. A row whose line moved since the sha is re-judged, not guessed.
-- One branch and PR per package group, squash-merged when green per AGENTS.md. Each package's gates pass (`go vet ./... && go test ./...` in `go/workers`, `cargo check` for touched crates, `bun run lint` for TS).
+- Deletions are applied by `path:line` ranges from the findings at the recorded sha, never by matching comment text: a content-matching codemod re-cuts repaired text when rerun. A row whose line moved since the sha is re-judged, not guessed. The tools from the Oct 20 sweep (`~/loyal/yield-comment-sweep-2026-10-20/tools/`: `apply_deletes.py`, `astpin`, `nongo_pin.py`, `restore_hunks.py`) do this; run `astpin` and `nongo_pin.py` after every comment edit.
+- Before merge, one `review` reads the delete diff for KEEP losses (foreign gotchas, units, constraint links). Restore with `restore_hunks.py`, never `git apply -R --unidiff-zero`, which misplaces hunks.
+- One branch and PR per package group, squash-merged when green per AGENTS.md. Each package's gates pass (`go vet ./... && go test ./...` in `go/workers`, `cargo check` for touched crates, `bun run lint` and the app's `tsc` for TS; mobile jest for `web/apps/mobile`).
 - MUST KILL refactors follow the poteto Refactor playbook, one theme per PR, after the deletes land. A theme that turns out to be a bug goes to the Bug fix playbook and the owner.
 - A rule that lived only in a comment and is still true moves to AGENTS.md or becomes a check; it is never just dropped.
