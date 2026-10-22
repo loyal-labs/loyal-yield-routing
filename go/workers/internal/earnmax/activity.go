@@ -45,22 +45,41 @@ func action(e Entry) string {
 	panic("earnmax: unknown history entry")
 }
 
+func chronological(entries []Entry) []int {
+	order := make([]int, 0, len(entries))
+	for end := len(entries); end > 0; {
+		start := end - 1
+		for start > 0 && entries[start-1].flow().Signature == entries[end-1].flow().Signature {
+			start--
+		}
+		for i := start; i < end; i++ {
+			order = append(order, i)
+		}
+		end = start
+	}
+	return order
+}
+
 func amounts(h History, p Position) []*USDCRaw {
 	out := make([]*USDCRaw, len(h.Entries))
-	var laterClaim *USDCRaw
-	for i, e := range h.Entries {
-		switch e := e.(type) {
+	var open *Request
+	var openAt int
+	for _, i := range chronological(h.Entries) {
+		switch e := h.Entries[i].(type) {
 		case Deposit:
 			out[i] = &e.Amount
 		case Claim:
-			out[i] = &e.Paid
-			laterClaim = &e.Paid
-		case Request:
-			out[i], laterClaim = laterClaim, nil
-			if out[i] == nil && p.Withdrawal != nil {
-				out[i] = &p.Withdrawal.Payout
+			out[i] = e.Paid
+			if open != nil && open.Escrow != nil && e.Escrow != nil && *open.Escrow == *e.Escrow {
+				out[openAt] = e.Paid
 			}
+			open = nil
+		case Request:
+			open, openAt = &e, i
 		}
+	}
+	if open != nil && open.Escrow != nil && p.Withdrawal != nil && open.Escrow.LP == p.Withdrawal.EscrowedLP {
+		out[openAt] = &p.Withdrawal.Payout
 	}
 	return out
 }
@@ -84,7 +103,10 @@ func earned(h History, p Position) *USDCRaw {
 	for _, e := range h.Entries {
 		switch e := e.(type) {
 		case Claim:
-			total += e.Paid
+			if e.Paid == nil {
+				return nil
+			}
+			total += *e.Paid
 		case Deposit:
 			total -= e.Amount
 		}
