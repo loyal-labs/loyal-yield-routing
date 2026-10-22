@@ -371,6 +371,12 @@ export type QuestProgressItem = {
   attempts: number;
 };
 
+// Persisted rows are only ever pending/reported/failed (see applyReportResult);
+// anything unexpected collapses to "pending" so the UI never shows a raw value.
+function normalizeRowStatus(status: string): QuestProgressStatus {
+  return status === "reported" || status === "failed" ? status : "pending";
+}
+
 export async function getQuestProgress(
   walletId: string
 ): Promise<QuestProgressItem[]> {
@@ -399,7 +405,7 @@ export async function getQuestProgress(
     }
     return {
       kind,
-      status: row.status,
+      status: normalizeRowStatus(row.status),
       solanaStatus: row.solanaStatus,
       reportedAt: row.reportedAt ? row.reportedAt.toISOString() : null,
       attempts: row.attempts,
