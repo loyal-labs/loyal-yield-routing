@@ -1,3 +1,4 @@
+import { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "@loyal-labs/shared";
 import type {
   SmartAccountEarnUsdcDepositInput,
   SmartAccountEarnUsdcReserveTargetInput,
@@ -83,7 +84,8 @@ export const EARN_POLICY_MUTATION_RESOURCES = [
   EARN_SYNC_RESOURCES.state,
 ] as const;
 
-export const DEFAULT_EARN_AUTODEPOSIT_AMOUNT_LABEL = "100,000";
+export const DEFAULT_EARN_AUTODEPOSIT_AMOUNT_LABEL =
+  EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC.toLocaleString("en-US");
 
 // app-wallet-workspace.tsx:278-299
 export function resolveEarnMutationSmartAccountPlan(args: {
