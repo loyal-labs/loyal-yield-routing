@@ -47,7 +47,7 @@ mobile/
       env.ts               # Environment config (API base URL)
     hooks/                 # Custom hooks
     services/
-      api.ts               # API client (fetch from /app backend)
+      api.ts               # API client (fetch from the loyal-web apiBaseUrl)
       notifications.ts     # Push notification setup
     tw/                    # NativeWind/Tailwind utility wrappers
     global.css             # Tailwind CSS entry
@@ -57,7 +57,7 @@ mobile/
 
 ### Auth
 
-Privy (`@privy-io/expo`) is the identity layer; `src/components/wallet/PrivyProviderRoot.tsx` mounts it when `EXPO_PUBLIC_PRIVY_APP_ID` is set. Sign-in in `OnboardingGate` is email, Google, Apple (iOS), or a Seeker / MWA / deeplink wallet via SIWS. Email and OAuth users sign with the Privy embedded wallet (`PrivyEmbeddedSigner`). Wallet users keep their legacy signer; `src/lib/wallet/privy-migration.ts` links that signer to a Privy user on first unlock by signing a SIWS message, never blocks the app, and retries on the next launch if declined or offline. The Loyal session comes from `POST /api/auth/privy/complete` on the Earn backend.
+Privy (`@privy-io/expo`) is the identity layer; `src/components/wallet/PrivyProviderRoot.tsx` mounts it when `EXPO_PUBLIC_PRIVY_APP_ID` is set. Sign-in in `OnboardingGate` is email, Google, Apple (iOS), or a Seeker / MWA / deeplink wallet via SIWS. Email and OAuth users sign with the Privy embedded wallet (`PrivyEmbeddedSigner`). Wallet users keep their legacy signer; `src/lib/wallet/privy-migration.ts` links that signer to a Privy user on first unlock by signing a SIWS message, never blocks the app, and retries on the next launch if declined or offline. The Loyal session comes from `POST /api/auth/privy/complete` on `apiBaseUrl` (loyal-web, default `https://next.askloyal.com`, the one API base for content, Earn and push).
 # failed: doc still described create/import keypair onboarding after the Privy switch (2026-09-09)
 # outcome: rewritten to match the shipped auth flow
 # recurred: 0

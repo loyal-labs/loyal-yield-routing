@@ -95,9 +95,12 @@ session JWT (POST `mobile/earn/session`, audience `loyal-mobile-earn`,
 `identity/server/mobile-earn-session.ts`), which the app keeps in SecureStore
 per wallet (`earn.sessions.v2`) and sends as `Authorization: Bearer`. The app
 mints silently at Privy sign-in and on a rejected token for Privy and local
-signers; a hardware signer (mwa, Seed Vault, deeplink) mints on its first Earn
-action, since minting asks the wallet to sign. A mint that is still rejected
-starts a 60 s cooldown. The web cookie
+signers. A hardware signer (mwa, Seed Vault, deeplink) never mints without a
+tap, since minting asks the wallet to sign. An Earn deposit or withdraw mints
+as part of its own signing. Opening Earn MAX with no session reads as
+`session_required`, and the sheet shows one button, "Sign to open Earn MAX",
+which signs once and re-reads. A mint that is still rejected, or a declined
+prompt, starts a 60 s cooldown that the button respects with a message. The web cookie
 `loyal_wallet_session` is signed by the same code path and differs only by
 audience. Both follow one env switch. With `AUTH_JWT_RS256_PRIVATE_KEY` set the
 token is RS256. Otherwise it is HS256 under `AUTH_JWT_SECRET`
@@ -181,8 +184,10 @@ RN app ──► loyal-web (Go) ──native──► Earn MAX reads, Earn reads
   one SQL lookup in ready smart accounts (`app_users`,
   `app_user_smart_accounts`). Both paths check
   `squads.SmartAccountAddress(settings, 0)` and that the signers contain the
-  wallet, else 409 `smart_account_required`. Email-only cookie sessions get 401
-  `wallet_required`. A refused cookie is 401 `unauthenticated` and a refused
+  wallet, else 409 `smart_account_required`. That holds for every route that
+  takes a `Principal`. `POST /api/push-tokens` takes only the session wallet
+  (`Auth.Session`, #544): no smart account and no 409. Email-only cookie
+  sessions get 401 `wallet_required`. A refused cookie is 401 `unauthenticated` and a refused
   bearer 401 `invalid_mobile_session`, the code mobile drops its cached token
   on. Handlers take a `Principal` and never parse tokens.
   Minting stays in Next (`mobile/earn/session`, `auth/privy/complete`) until a
@@ -306,7 +311,9 @@ account at 11111111111111111111111111111112". Nothing is filed in Linear.
 
 Before Vlad's next Earn build from main, in this order:
 
-1. The owner's go to deploy `loyal-web`, with every credential installed
+1. The owner's go to deploy `loyal-web` from main at 5aee428a or later. #545
+   puts the `X-Loyal-API-Source: go` header on every Go response, which the
+   step-2 preflight asserts, so an older build fails it. Install every credential first
    (`AUTH_JWT_SECRET`, `WEB_APP_DATABASE_URL`, `WEB_YIELD_DATABASE_URL`,
    `WEB_SOLANA_RPC_URL`, `EARN_MAX_INVITE_CODE_HASHES`, `COINGECKO_API_KEY`,
    and the database grants). The startup log has no `not served by Go` WARN
@@ -335,6 +342,9 @@ which the app rejects as "answered for a different wallet".
 - The preflight sends `{}` to the two POST paths, so it proves routing and
   the `X-Loyal-API-Source` header, not that a push token saves or an invite
   redeems. It needs the Go toolchain (the census reads the Go OpenAPI).
+- A grant check that times out at boot (8 s, for example a slow Neon wake)
+  leaves its routes proxied until the next restart, and `/readyz` stays green.
+  The signal is the WARN line at startup.
 - Minting a mobile session stays in Next. A Next outage stops sign-in and
   hardware-wallet Earn actions, not reads with a cached token.
 
