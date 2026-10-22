@@ -109,9 +109,14 @@ moves to RS256, then the secret is dropped. RS256 stays the target, where one
 verifier holding the public key authenticates both clients. Until then:
 
 - Go verifies only and never signs. Minting stays in Next.
-- Keys are tried in Next's order. The RS256 public key comes first when
-  `AUTH_JWT_RS256_PUBLIC_KEY` is configured (optional). Then HS256, with the
-  key `sha256(AUTH_JWT_SECRET)`.
+- Each key verifies only its own algorithm: the RS256 public key when
+  `AUTH_JWT_RS256_PUBLIC_KEY` is configured (optional), and HS256 under
+  `sha256(AUTH_JWT_SECRET)`. The header's `alg` picks the key, which accepts
+  the same tokens as Next's RS256-then-HS256 order and never checks one
+  algorithm with the other's key.
+- `exp` is required, `nbf` is enforced, with no clock tolerance (jose's
+  default). A cookie token must carry no `aud`; a bearer must carry
+  `loyal-mobile-earn`.
 - `AUTH_JWT_SECRET` arrives as a systemd `LoadCredentialEncrypted` credential.
 - Without it the Principal routes are not registered, and those paths keep
   proxying to Next.
@@ -170,7 +175,9 @@ RN app ──► loyal-web (Go) ──native──► Earn MAX reads, Earn reads
   `app_user_smart_accounts`). Both paths check
   `squads.SmartAccountAddress(settings, 0)` and that the signers contain the
   wallet, else 409 `smart_account_required`. Email-only cookie sessions get 401
-  `wallet_required`. Handlers take a `Principal` and never parse tokens.
+  `wallet_required`. A refused cookie is 401 `unauthenticated` and a refused
+  bearer 401 `invalid_mobile_session`, the code mobile drops its cached token
+  on. Handlers take a `Principal` and never parse tokens.
   Minting stays in Next (`mobile/earn/session`, `auth/privy/complete`) until a
   later unit, so Go holds no private key.
 - Paths: Go serves the web paths (`/api/smart-accounts/earn-max/summary`,

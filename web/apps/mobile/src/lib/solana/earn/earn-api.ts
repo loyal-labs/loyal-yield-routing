@@ -6,6 +6,7 @@ import {
 } from "@/lib/network/fetch-with-timeout";
 import type { LifecycleErrorDetail } from "@/services/observability";
 
+import { earnHeaders, earnWalletRead } from "./earn-session";
 import type { WirePreparedOperation } from "./wire";
 
 // A first-ever deposit provisions the smart account inline on the server
@@ -61,21 +62,6 @@ export type EarnDepositPrepareResponse = {
   smartAccountAddress: string;
   preparedDeposit: WirePreparedEarnDeposit;
 };
-
-export function earnHeaders(flowId?: string): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (env.vercelProtectionBypass) {
-    headers["x-vercel-protection-bypass"] = env.vercelProtectionBypass;
-  }
-  // Joins server-side lifecycle stages (e.g. smart-account provisioning) to
-  // the device flow that triggered them (ASK-1804).
-  if (flowId) {
-    headers["x-loyal-flow-id"] = flowId;
-  }
-  return headers;
-}
 
 // Carries the backend's error `code` so flows can react to specific failures
 // (e.g. re-sign a fresh auth message on `stale_mobile_auth`), plus the response
@@ -528,11 +514,11 @@ export type EarnWithdrawSourcesResponse = {
 export async function fetchEarnWithdrawSources(
   walletAddress: string,
 ): Promise<EarnWithdrawSourcesResponse> {
-  const res = await fetch(
+  const res = await earnWalletRead(
+    walletAddress,
     `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/sources?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
-    { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn withdrawal sources.");
@@ -639,11 +625,11 @@ export type EarnAutodepositStateResponse = {
 export async function fetchEarnAutodepositState(
   walletAddress: string,
 ): Promise<EarnAutodepositStateResponse> {
-  const res = await fetch(
+  const res = await earnWalletRead(
+    walletAddress,
     `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/state?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
-    { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Autodeposit state.");
@@ -818,11 +804,11 @@ export async function fetchEarnAutodepositSweepProgress(
   slotId: string,
 ): Promise<EarnAutodepositSweepProgress | null> {
   try {
-    const res = await fetch(
+    const res = await earnWalletRead(
+      walletAddress,
       `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/sweeps/execute?walletAddress=${encodeURIComponent(
         walletAddress,
       )}&slotId=${encodeURIComponent(slotId)}`,
-      { method: "GET", headers: earnHeaders() },
     );
     if (!res.ok) {
       return null;
@@ -870,11 +856,11 @@ export type EarnStateResponse = {
 export async function fetchEarnState(
   walletAddress: string,
 ): Promise<EarnStateResponse> {
-  const res = await fetch(
+  const res = await earnWalletRead(
+    walletAddress,
     `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/state?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
-    { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn state.");
@@ -910,11 +896,11 @@ export type EarnHoldingsResponse = {
 export async function fetchEarnHoldings(
   walletAddress: string,
 ): Promise<EarnHoldingsResponse> {
-  const res = await fetch(
+  const res = await earnWalletRead(
+    walletAddress,
     `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/holdings?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
-    { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn holdings.");
@@ -972,11 +958,11 @@ export async function fetchEarnEarnings(
   walletAddress: string,
 ): Promise<EarnEarningsResponse> {
   const timezone = deviceTimezone();
-  const res = await fetch(
+  const res = await earnWalletRead(
+    walletAddress,
     `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/earnings?walletAddress=${encodeURIComponent(
       walletAddress,
     )}${timezone ? `&timezone=${encodeURIComponent(timezone)}` : ""}`,
-    { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn earnings.");
@@ -1042,11 +1028,11 @@ export type EarnTransactionsResponse = {
 export async function fetchEarnTransactions(
   walletAddress: string,
 ): Promise<EarnTransactionsResponse> {
-  const res = await fetch(
+  const res = await earnWalletRead(
+    walletAddress,
     `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/transactions?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
-    { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn transactions.");
@@ -1146,11 +1132,11 @@ export type SolanaWeekQuestProgressResponse = {
 export async function fetchSolanaWeekQuestProgress(
   walletAddress: string,
 ): Promise<SolanaWeekQuestProgressResponse> {
-  const res = await fetch(
+  const res = await earnWalletRead(
+    walletAddress,
     `${env.earnApiBaseUrl}/api/solana-week/progress?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
-    { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load quest progress.");
@@ -1189,11 +1175,11 @@ export type EarnRefundScanResponse = {
 export async function fetchEarnRefundScan(
   walletAddress: string,
 ): Promise<EarnRefundScanResponse> {
-  const res = await fetch(
+  const res = await earnWalletRead(
+    walletAddress,
     `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/policy-refunds/scan?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
-    { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to scan for refunds.");
