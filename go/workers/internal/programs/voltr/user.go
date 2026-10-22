@@ -14,10 +14,11 @@ import (
 )
 
 var (
-	DepositVaultDiscriminator              = anchor.Instruction("deposit_vault")
-	RequestWithdrawVaultDiscriminator      = anchor.Instruction("request_withdraw_vault")
-	WithdrawVaultDiscriminator             = anchor.Instruction("withdraw_vault")
-	RequestWithdrawVaultEventDiscriminator = [8]byte{59, 94, 26, 38, 47, 131, 158, 162}
+	DepositVaultDiscriminator               = anchor.Instruction("deposit_vault")
+	RequestWithdrawVaultDiscriminator       = anchor.Instruction("request_withdraw_vault")
+	WithdrawVaultDiscriminator              = anchor.Instruction("withdraw_vault")
+	CancelRequestWithdrawVaultDiscriminator = anchor.Instruction("cancel_request_withdraw_vault")
+	RequestWithdrawVaultEventDiscriminator  = [8]byte{59, 94, 26, 38, 47, 131, 158, 162}
 )
 
 const (
