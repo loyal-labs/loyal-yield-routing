@@ -39,10 +39,11 @@ import { getEarnStablecoinSymbol } from "@/lib/earn/stablecoin-monitor.shared";
 import type {
   EarnLatencyChartPoint,
   EarnLatencyPoint,
-  EarnLatencyStageKey,
   EarnLatencyStageSummary,
   EarnRebalanceLatencyData,
-} from "./earn-rebalance-latency-data";
+} from "@/api.gen/types.gen";
+
+type EarnLatencyStageKey = EarnLatencyStageSummary["key"];
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 

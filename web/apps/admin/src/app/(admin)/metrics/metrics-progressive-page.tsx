@@ -1,7 +1,7 @@
 "use client";
 
 import { MetricsDashboard } from "./metrics-dashboard";
-import type { MetricsDashboardData } from "./metrics-data";
+import type { MetricsDashboardData } from "@/api.gen/types.gen";
 import { MetricsDashboardSkeleton } from "./metrics-loading-skeleton";
 import { MetricsProgressiveSection } from "./metrics-progressive-section";
 

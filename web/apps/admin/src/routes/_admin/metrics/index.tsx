@@ -3,15 +3,16 @@ import { createFileRoute } from "@tanstack/react-router";
 import Source from "@/app/(admin)/metrics/page";
 
 import type { ComponentProps } from "react";
-import { pageData, type PageProps } from "@/lib/page-data";
+import type { Pages } from "@/api.gen/pages";
+import { deferPageData, type Deferred } from "@/lib/page-data";
 
-type Props = PageProps<"/metrics", typeof Source>;
+type Props = Deferred<Pages["/metrics"]>;
 
-export const propsMatchView: unknown extends Props ? true : Props extends ComponentProps<typeof Source> ? true : never = true;
+export const propsMatchView: Props extends ComponentProps<typeof Source> ? true : never = true;
 
 export const Route = createFileRoute("/_admin/metrics/")({
   loaderDeps: ({ search }) => ({ search }),
-  loader: ({ location }) => pageData<Props>(location),
+  loader: ({ location }) => deferPageData<Pages["/metrics"]>(location),
   component: function Page() {
     return <Source {...Route.useLoaderData()} />;
   },
