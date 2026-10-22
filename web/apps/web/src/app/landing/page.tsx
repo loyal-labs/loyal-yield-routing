@@ -36,6 +36,7 @@ import {
 } from "@/components/ai-elements/source";
 import { TopicsSidebar } from "@/components/ai-elements/topics-sidebar";
 import { GrpcChatTransport } from "@/lib/query/transport";
+import { isDarkTheme, readStoredTheme } from "@/lib/theme";
 
 const models = [
   {
@@ -78,14 +79,8 @@ const ChatBotDemo = () => {
     setModel(models[0].value);
   }, [setMessages]);
 
-  // Light is the default for everyone regardless of system preference;
-  // dark only via the explicit theme toggle (stored "theme" = "dark").
   useEffect(() => {
-    let stored: string | null = null;
-    try {
-      stored = localStorage.getItem("theme");
-    } catch {}
-    setDarkMode(stored === "dark");
+    setDarkMode(isDarkTheme(readStoredTheme()));
   }, []);
 
   useEffect(() => {

@@ -73,16 +73,32 @@ export function EarnPage({
         title={dict.howItEarns.title}
         description={dict.howItEarns.description}
         cards={[
-          { size: "lg", body: dict.howItEarns.cards.optimized },
-          { size: "lg", body: dict.howItEarns.cards.bounded },
+          {
+            id: "howItEarns-optimized",
+            size: "lg",
+            body: dict.howItEarns.cards.optimized,
+          },
+          {
+            id: "howItEarns-bounded",
+            size: "lg",
+            body: dict.howItEarns.cards.bounded,
+          },
         ]}
       />
 
       <Section
         title={dict.dollars.title}
         cards={[
-          { size: "lg", body: dict.dollars.cards.interchangeable },
-          { size: "lg", body: dict.dollars.cards.rotation },
+          {
+            id: "dollars-interchangeable",
+            size: "lg",
+            body: dict.dollars.cards.interchangeable,
+          },
+          {
+            id: "dollars-rotation",
+            size: "lg",
+            body: dict.dollars.cards.rotation,
+          },
         ]}
       />
 
@@ -90,16 +106,32 @@ export function EarnPage({
         title={dict.rateSpikes.title}
         description={dict.rateSpikes.description}
         cards={[
-          { size: "lg", body: dict.rateSpikes.cards.supplyUtilization },
-          { size: "lg", body: dict.rateSpikes.cards.opening },
+          {
+            id: "rateSpikes-supplyUtilization",
+            size: "lg",
+            body: dict.rateSpikes.cards.supplyUtilization,
+          },
+          {
+            id: "rateSpikes-opening",
+            size: "lg",
+            body: dict.rateSpikes.cards.opening,
+          },
         ]}
       />
 
       <Section
         title={dict.routing.title}
         cards={[
-          { size: "lg", body: dict.routing.cards.motion },
-          { size: "lg", body: dict.routing.cards.automation },
+          {
+            id: "routing-motion",
+            size: "lg",
+            body: dict.routing.cards.motion,
+          },
+          {
+            id: "routing-automation",
+            size: "lg",
+            body: dict.routing.cards.automation,
+          },
         ]}
       />
 
@@ -131,8 +163,16 @@ export function EarnPage({
         title={dict.policy.title}
         description={dict.policy.description}
         cards={[
-          { size: "lg", body: dict.policy.cards.intents },
-          { size: "lg", body: dict.policy.cards.autoApproved },
+          {
+            id: "policy-intents",
+            size: "lg",
+            body: dict.policy.cards.intents,
+          },
+          {
+            id: "policy-autoApproved",
+            size: "lg",
+            body: dict.policy.cards.autoApproved,
+          },
         ]}
       />
 

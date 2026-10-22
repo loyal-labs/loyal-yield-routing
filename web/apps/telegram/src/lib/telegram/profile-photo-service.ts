@@ -16,14 +16,6 @@ type CaptureProfilePhotoOptions = {
   timeoutMs?: number;
 };
 
-export function resolveAvatarObjectKey(
-  telegramId: bigint,
-  contentType: string
-): string {
-  // Backward-compatible wrapper kept for existing tests/import sites.
-  return resolveUserAvatarObjectKey(telegramId, contentType);
-}
-
 async function withTimeout<T>(
   operation: Promise<T>,
   timeoutMs: number
@@ -72,7 +64,7 @@ async function captureTelegramProfilePhotoToCdnInternal(
   }
 
   const photoFile = await downloadTelegramFile(firstPhoto.file_id);
-  const key = resolveAvatarObjectKey(telegramId, photoFile.contentType);
+  const key = resolveUserAvatarObjectKey(telegramId, photoFile.contentType);
 
   await getCloudflareR2UploadClientFromEnv().uploadImage({
     key,

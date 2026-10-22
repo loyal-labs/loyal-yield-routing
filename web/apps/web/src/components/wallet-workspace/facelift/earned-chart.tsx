@@ -50,7 +50,7 @@ export type EarnedChartBar = {
 // Earned chart consumes all of it, the wallet-home Earn card only the bars.
 export function useEarnEarnedData(data: EarnPositionData) {
   const publicEnv = usePublicEnv();
-  const earnForecastApy = useEarnForecastApy();
+  const { apy: earnForecastApy } = useEarnForecastApy();
   const hasPositiveCurrentBalance = data.hasPosition && data.earnBalanceUsd > 0;
   const earnEarningsRevalidationKey = data.position?.principalAmountRaw ?? "0";
   const earnEarningsCacheKey = getEarnEarningsCacheKey({
@@ -97,7 +97,7 @@ export function useEarnEarnedData(data: EarnPositionData) {
     apyBps: deriveEstimatedEarnedAmountApyBps({
       earningsData: lifetimeData,
       fallbackApyBps:
-        earnForecastApy.availability === "unavailable"
+        !earnForecastApy || earnForecastApy.availability === "unavailable"
           ? 0
           : earnForecastApy.apyBps,
     }),
@@ -146,7 +146,6 @@ export function EarnedChart({ data }: { data: EarnPositionData }) {
   return (
     <EarnedBarsChart
       bars={earned.dailyBars}
-      currentApyBps={earned.currentApyBps}
       isLoading={earned.showEarningsLoader}
       isStale={earned.earningsStale}
       isUnavailable={earned.earningsUnavailable}
@@ -166,8 +165,6 @@ export function EarnedBarsChart({
   onRetry,
 }: {
   bars: EarnedChartBar[];
-  // Unused since the hover subtitle dropped APY (#777); callers still pass it.
-  currentApyBps?: number | null;
   isLoading: boolean;
   isStale: boolean;
   isUnavailable: boolean;

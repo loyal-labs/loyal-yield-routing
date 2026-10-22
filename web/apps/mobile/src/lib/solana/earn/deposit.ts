@@ -85,10 +85,7 @@ async function signSendAndConfirmDeposit(args: {
     chainState: "confirmed",
     executionMode: operations.length > 1 ? "batch" : "single",
   });
-  let cursor = 0;
-  const policy = args.stages.policySetup ? sent[cursor++] : undefined;
-  const setupPolicy = args.stages.policyFinalize ? sent[cursor++] : undefined;
-  const deposit = sent[cursor];
+  const deposit = sent[sent.length - 1];
 
   const CONFIRM_ATTEMPTS = 3;
   let confirmRecorded = false;
@@ -104,10 +101,6 @@ async function signSendAndConfirmDeposit(args: {
             preparedDeposit: args.wirePreparedDeposit,
             depositSignature: deposit.signature,
             confirmedSlot: deposit.confirmedSlot,
-            policySignature: policy?.signature,
-            policyConfirmedSlot: policy?.confirmedSlot,
-            setupPolicySignature: setupPolicy?.signature,
-            setupPolicyConfirmedSlot: setupPolicy?.confirmedSlot,
           }),
       );
       confirmRecorded = true;

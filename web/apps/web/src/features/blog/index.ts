@@ -7,7 +7,7 @@ export {
   getMoreArticles,
 } from "./data";
 export { ibmPlexSans } from "./fonts";
-export { formatBlogDate } from "./format";
+export { blogPostModifiedDate, formatBlogDate } from "./format";
 export type { BlogAuthor, BlogPageResult, BlogPost, BlogPostFull } from "./types";
 export { BlogCard } from "./ui/blog-card";
 export { BlogContent } from "./ui/blog-content";

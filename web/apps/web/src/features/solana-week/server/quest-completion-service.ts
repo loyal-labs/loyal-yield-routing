@@ -145,11 +145,7 @@ export async function recordAndReportQuestCompletion(args: {
     return "reported";
   }
 
-  const result = await reportQuestCompletion({
-    kind: args.kind,
-    walletId,
-    metadata: args.metadata,
-  });
+  const result = await reportQuestCompletion();
   const status = await applyReportResult(row.id, result);
   // Quest 1 push (ASK-1651 P2): fires at most once — the row transitions to
   // 'reported' a single time, and already-reported rows return above. Quest 2
@@ -303,11 +299,7 @@ export async function reconcileQuestCompletions(args: {
   for (const row of pendingRows) {
     summary.retriedRows += 1;
     try {
-      const result = await reportQuestCompletion({
-        kind: row.questKind as QuestKind,
-        walletId: row.walletAddress,
-        metadata: row.metadata ?? undefined,
-      });
+      const result = await reportQuestCompletion();
       tally(await applyReportResult(row.id, result));
     } catch (error) {
       summary.stillPending += 1;

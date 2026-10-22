@@ -3,6 +3,7 @@ import {
   MAX_METRICS_REQUEST_BYTES,
   parseMobileLoadingMetricEnvelope,
 } from "@/features/observability/metrics-contract";
+import { isNativeAppRequest } from "@/features/observability/native-gate.server";
 import { consumeBrowserMetricsRateLimit } from "@/features/observability/rate-limit.server";
 import { reportMobileLoadingMetricEnvelope } from "@/features/observability/server";
 
@@ -15,14 +16,6 @@ function jsonResponse(
   status: number
 ): Response {
   return Response.json(body, { headers: NO_STORE_HEADERS, status });
-}
-
-// Native fetch does not send browser origin metadata. Rejecting either header
-// keeps web pages from using this public, unauthenticated mobile relay.
-function isNativeAppRequest(request: Request): boolean {
-  return (
-    !request.headers.get("origin") && !request.headers.get("sec-fetch-site")
-  );
 }
 
 function isJsonRequest(request: Request): boolean {
