@@ -554,6 +554,9 @@ func applyBalances(ctx context.Context, tx pgx.Tx, m EarnBalancesMutation) error
 }
 
 func applyObservedBalances(ctx context.Context, tx pgx.Tx, vault managedVault, reserves []EarnReserveMutation, idles []EarnIdleTokenMutation, empty bool, observedSlot int64, observedAt time.Time) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('loyal_yield.vault_position_snapshots.is_current' || ':' || $1::bigint::text, 0))`, vault.id); err != nil {
+		return err
+	}
 	var current, currentID int64
 	var currentEmpty bool
 	err := tx.QueryRow(ctx, `SELECT observed_slot, id, COALESCE((context->>'vault_empty')::boolean, false) FROM loyal_yield.vault_position_snapshots WHERE vault_id = $1 AND is_current FOR UPDATE`, vault.id).Scan(&current, &currentID, &currentEmpty)
