@@ -7,7 +7,6 @@ import { isCommunityChat, isPrivateChat } from "@/lib/telegram/utils";
 
 import { createBotTrackingProperties, trackBotEvent } from "./analytics";
 import { sendMessageWithAutoCleanup } from "./helper-message-cleanup";
-import { evictActiveCommunityCache } from "./message-handlers";
 import { disableNotificationsForTelegramUser } from "./user-settings";
 
 const ONBOARDING_MESSAGE =
@@ -160,8 +159,6 @@ export async function handleMyChatMemberUpdate(ctx: Context): Promise<void> {
       "Failed to update community state from my_chat_member update",
       error
     );
-  } finally {
-    evictActiveCommunityCache(chatId);
   }
 
   if (!isDatabaseOperationSuccessful) {
