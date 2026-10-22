@@ -99,7 +99,7 @@ export function identifyWallet(
   publicKey: string,
   source: "created" | "imported" | "vault" | "mwa" | "deeplink" | "privy",
 ): void {
-  const distinctId = `${MOBILE_DISTINCT_ID_PREFIX}:${publicKey}`;
+  const distinctId = `${MOBILE_DISTINCT_ID_PREFIX}${publicKey}`;
   identifyDatadogUser({
     id: distinctId,
     extraInfo: {
