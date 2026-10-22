@@ -22,7 +22,7 @@ const (
 	reserveMonitorStaleTTL = 15 * time.Minute
 )
 
-var excludedGraphReserves = map[string]bool{
+var kaminoExcludedGraphReserves = map[string]bool{
 	"CAPsU1H49e6WuiQdte1ZU6zJaSGWXBSogAa1w6mhiKo2": true,
 }
 
@@ -73,7 +73,7 @@ type SafeReserveApyMonitorData struct {
 	Window                SafeReserveApyWindow       `json:"window"`
 }
 
-type currentCandidate struct {
+type kaminoCurrentCandidate struct {
 	liquidityMint          string
 	market                 string
 	marketName             *string
@@ -84,7 +84,7 @@ type currentCandidate struct {
 	totalSupplyUsdEstimate *float64
 }
 
-func classifyCandidate(row currentCandidate) string {
+func kaminoClassifyCandidate(row kaminoCurrentCandidate) string {
 	if row.observedAt == nil {
 		return "no-current-row"
 	}
@@ -97,15 +97,15 @@ func classifyCandidate(row currentCandidate) string {
 	return "eligible"
 }
 
-func finiteOrNil(v *float64) *float64 {
+func kaminoFiniteOrNil(v *float64) *float64 {
 	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) {
 		return nil
 	}
 	return v
 }
 
-func apyPercent(v *float64) *float64 {
-	v = finiteOrNil(v)
+func kaminoApyPercent(v *float64) *float64 {
+	v = kaminoFiniteOrNil(v)
 	if v == nil {
 		return nil
 	}
@@ -113,7 +113,7 @@ func apyPercent(v *float64) *float64 {
 	return &p
 }
 
-func compareLocale(left, right string) int {
+func kaminoCompareLocale(left, right string) int {
 	l, r := strings.ToLower(left), strings.ToLower(right)
 	if c := strings.Compare(l, r); c != 0 {
 		return c
@@ -121,14 +121,14 @@ func compareLocale(left, right string) int {
 	return -strings.Compare(left, right)
 }
 
-func deref(s *string) string {
+func kaminoDeref(s *string) string {
 	if s == nil {
 		return ""
 	}
 	return *s
 }
 
-func reserveLabel(row SafeReserveApyStatusRow) string {
+func kaminoReserveLabel(row SafeReserveApyStatusRow) string {
 	symbol, ok := EarnStablecoinSymbol(row.LiquidityMint)
 	if !ok {
 		symbol = "Unknown"
@@ -147,7 +147,7 @@ func reserveLabel(row SafeReserveApyStatusRow) string {
 	return fmt.Sprintf("%s · %s · %s", symbol, market, r)
 }
 
-func createStatusRows(rows []currentCandidate) []SafeReserveApyStatusRow {
+func kaminoCreateStatusRows(rows []kaminoCurrentCandidate) []SafeReserveApyStatusRow {
 	out := make([]SafeReserveApyStatusRow, 0, len(rows))
 	for _, row := range rows {
 		var observed *string
@@ -161,25 +161,25 @@ func createStatusRows(rows []currentCandidate) []SafeReserveApyStatusRow {
 			Market:                 row.market,
 			MarketName:             row.marketName,
 			Reserve:                row.reserve,
-			Status:                 classifyCandidate(row),
-			SupplyApyPercent:       apyPercent(row.supplyApy),
+			Status:                 kaminoClassifyCandidate(row),
+			SupplyApyPercent:       kaminoApyPercent(row.supplyApy),
 			Symbol:                 row.symbol,
-			TotalSupplyUsdEstimate: finiteOrNil(row.totalSupplyUsdEstimate),
+			TotalSupplyUsdEstimate: kaminoFiniteOrNil(row.totalSupplyUsdEstimate),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if c := compareLocale(deref(out[i].MarketName), deref(out[j].MarketName)); c != 0 {
+		if c := kaminoCompareLocale(kaminoDeref(out[i].MarketName), kaminoDeref(out[j].MarketName)); c != 0 {
 			return c < 0
 		}
-		if c := compareLocale(out[i].Market, out[j].Market); c != 0 {
+		if c := kaminoCompareLocale(out[i].Market, out[j].Market); c != 0 {
 			return c < 0
 		}
-		return compareLocale(out[i].Reserve, out[j].Reserve) < 0
+		return kaminoCompareLocale(out[i].Reserve, out[j].Reserve) < 0
 	})
 	return out
 }
 
-func stablecoinMints() []string {
+func kaminoStablecoinMints() []string {
 	mints := make([]string, len(EarnStablecoins))
 	for i, coin := range EarnStablecoins {
 		mints[i] = coin.Mint
@@ -188,7 +188,7 @@ func stablecoinMints() []string {
 }
 
 func (d *Deps) CurrentSafeReserveApyStatuses(ctx context.Context) ([]SafeReserveApyStatusRow, error) {
-	var rows []currentCandidate
+	var rows []kaminoCurrentCandidate
 	err := d.TimescaleRead(ctx, func(tx pgx.Tx) error {
 		res, err := tx.Query(ctx, `
     SELECT
@@ -220,13 +220,13 @@ func (d *Deps) CurrentSafeReserveApyStatuses(ctx context.Context) ([]SafeReserve
     WHERE supported.active = true
       AND supported.liquidity_mint = ANY($2::text[])
       AND supported.market = ANY($3::text[])
-  `, VerifiedReserveMaxAge.Seconds(), stablecoinMints(), safeRiskBasketMarkets)
+  `, VerifiedReserveMaxAge.Seconds(), kaminoStablecoinMints(), earnSafeRiskBasketMarkets)
 		if err != nil {
 			return err
 		}
 		defer res.Close()
 		for res.Next() {
-			var row currentCandidate
+			var row kaminoCurrentCandidate
 			if err := res.Scan(&row.liquidityMint, &row.market, &row.marketName, &row.observedAt, &row.reserve, &row.supplyApy, &row.symbol, &row.totalSupplyUsdEstimate); err != nil {
 				return err
 			}
@@ -237,16 +237,16 @@ func (d *Deps) CurrentSafeReserveApyStatuses(ctx context.Context) ([]SafeReserve
 	if err != nil {
 		return nil, err
 	}
-	return createStatusRows(rows), nil
+	return kaminoCreateStatusRows(rows), nil
 }
 
-type apyHistoryRow struct {
+type kaminoApyHistoryRow struct {
 	observedAt time.Time
 	reserve    string
 	supplyApy  float64
 }
 
-func (d *Deps) loadApyHistoryRows(ctx context.Context, startedAt, endedAt time.Time, reserves []string) ([]apyHistoryRow, error) {
+func (d *Deps) kaminoLoadApyHistoryRows(ctx context.Context, startedAt, endedAt time.Time, reserves []string) ([]kaminoApyHistoryRow, error) {
 	if len(reserves) == 0 {
 		return nil, nil
 	}
@@ -258,7 +258,7 @@ func (d *Deps) loadApyHistoryRows(ctx context.Context, startedAt, endedAt time.T
 			ids = append(ids, r)
 		}
 	}
-	var rows []apyHistoryRow
+	var rows []kaminoApyHistoryRow
 	err := d.TimescaleRead(ctx, func(tx pgx.Tx) error {
 		res, err := tx.Query(ctx, `
     WITH reserve_ids AS (
@@ -324,7 +324,7 @@ func (d *Deps) loadApyHistoryRows(ctx context.Context, startedAt, endedAt time.T
 		}
 		defer res.Close()
 		for res.Next() {
-			var row apyHistoryRow
+			var row kaminoApyHistoryRow
 			if err := res.Scan(&row.observedAt, &row.reserve, &row.supplyApy); err != nil {
 				return err
 			}
@@ -335,8 +335,8 @@ func (d *Deps) loadApyHistoryRows(ctx context.Context, startedAt, endedAt time.T
 	return rows, err
 }
 
-func createChartPoints(startedAt, endedAt time.Time, history []apyHistoryRow, series []SafeReserveApySeries) []SafeReserveApyChartPoint {
-	byReserve := map[string][]apyHistoryRow{}
+func kaminoCreateChartPoints(startedAt, endedAt time.Time, history []kaminoApyHistoryRow, series []SafeReserveApySeries) []SafeReserveApyChartPoint {
+	byReserve := map[string][]kaminoApyHistoryRow{}
 	for _, row := range history {
 		byReserve[row.reserve] = append(byReserve[row.reserve], row)
 	}
@@ -375,7 +375,7 @@ func createChartPoints(startedAt, endedAt time.Time, history []apyHistoryRow, se
 	return points
 }
 
-func average(values []float64) *float64 {
+func kaminoAverage(values []float64) *float64 {
 	if len(values) == 0 {
 		return nil
 	}
@@ -387,7 +387,7 @@ func average(values []float64) *float64 {
 	return &avg
 }
 
-func withApySummaries(points []SafeReserveApyChartPoint, endedAt time.Time, series []SafeReserveApySeries, statuses []SafeReserveApyStatusRow) []SafeReserveApyStatusRow {
+func kaminoWithApySummaries(points []SafeReserveApyChartPoint, endedAt time.Time, series []SafeReserveApySeries, statuses []SafeReserveApyStatusRow) []SafeReserveApyStatusRow {
 	keyByReserve := map[string]string{}
 	for _, s := range series {
 		keyByReserve[s.Reserve] = s.Key
@@ -411,8 +411,8 @@ func withApySummaries(points []SafeReserveApyChartPoint, endedAt time.Time, seri
 				values24h = append(values24h, value)
 			}
 		}
-		out[i].Average24hApyPercent = average(values24h)
-		out[i].Average7dApyPercent = average(values7d)
+		out[i].Average24hApyPercent = kaminoAverage(values24h)
+		out[i].Average7dApyPercent = kaminoAverage(values7d)
 	}
 	return out
 }
@@ -422,7 +422,7 @@ func (d *Deps) SafeReserveApyMonitorDataFromStatuses(ctx context.Context, curren
 	startedAt := endedAt.Add(-reserveWindow)
 	base := make([]SafeReserveApyStatusRow, 0, len(current))
 	for _, status := range current {
-		if !excludedGraphReserves[status.Reserve] {
+		if !kaminoExcludedGraphReserves[status.Reserve] {
 			base = append(base, status)
 		}
 	}
@@ -431,24 +431,24 @@ func (d *Deps) SafeReserveApyMonitorDataFromStatuses(ctx context.Context, curren
 	for i, row := range base {
 		series[i] = SafeReserveApySeries{
 			Key:           fmt.Sprintf("reserve%d", i+1),
-			Label:         reserveLabel(row),
+			Label:         kaminoReserveLabel(row),
 			LiquidityMint: row.LiquidityMint,
 			MarketName:    row.MarketName,
 			Reserve:       row.Reserve,
 		}
 		reserves[i] = row.Reserve
 	}
-	history, err := d.loadApyHistoryRows(ctx, startedAt, endedAt, reserves)
+	history, err := d.kaminoLoadApyHistoryRows(ctx, startedAt, endedAt, reserves)
 	if err != nil {
 		return SafeReserveApyMonitorData{}, err
 	}
-	points := createChartPoints(startedAt, endedAt, history, series)
+	points := kaminoCreateChartPoints(startedAt, endedAt, history, series)
 	return SafeReserveApyMonitorData{
 		ChartPoints:           points,
 		GeneratedAt:           earnISO(now),
 		SampleIntervalMinutes: int(reserveSampleInterval.Minutes()),
 		Series:                series,
-		Statuses:              withApySummaries(points, endedAt, series, base),
+		Statuses:              kaminoWithApySummaries(points, endedAt, series, base),
 		Window:                SafeReserveApyWindow{EndedAt: earnISO(endedAt), StartedAt: earnISO(startedAt)},
 	}, nil
 }
@@ -461,7 +461,7 @@ func (d *Deps) SafeReserveApyMonitorDataAt(ctx context.Context, now time.Time) (
 	return d.SafeReserveApyMonitorDataFromStatuses(ctx, current, now)
 }
 
-var reserveMonitorCache struct {
+var kaminoReserveMonitorCache struct {
 	sync.Mutex
 	value      SafeReserveApyMonitorData
 	expiresAt  time.Time
@@ -471,7 +471,7 @@ var reserveMonitorCache struct {
 }
 
 func (d *Deps) SafeReserveApyMonitorData(ctx context.Context) (SafeReserveApyMonitorData, error) {
-	c := &reserveMonitorCache
+	c := &kaminoReserveMonitorCache
 	c.Lock()
 	now := time.Now()
 	if c.loaded && now.Before(c.expiresAt) {
@@ -482,20 +482,20 @@ func (d *Deps) SafeReserveApyMonitorData(ctx context.Context) (SafeReserveApyMon
 		defer c.Unlock()
 		if !c.refreshing {
 			c.refreshing = true
-			go d.refreshReserveMonitor()
+			go d.kaminoRefreshReserveMonitor()
 		}
 		return c.value, nil
 	}
 	c.Unlock()
-	return d.refreshReserveMonitorFrom(ctx)
+	return d.kaminoRefreshReserveMonitorFrom(ctx)
 }
 
-func (d *Deps) refreshReserveMonitor() {
-	_, _ = d.refreshReserveMonitorFrom(context.Background())
+func (d *Deps) kaminoRefreshReserveMonitor() {
+	_, _ = d.kaminoRefreshReserveMonitorFrom(context.Background())
 }
 
-func (d *Deps) refreshReserveMonitorFrom(ctx context.Context) (SafeReserveApyMonitorData, error) {
-	c := &reserveMonitorCache
+func (d *Deps) kaminoRefreshReserveMonitorFrom(ctx context.Context) (SafeReserveApyMonitorData, error) {
+	c := &kaminoReserveMonitorCache
 	data, err := d.SafeReserveApyMonitorDataAt(ctx, time.Now())
 	c.Lock()
 	defer c.Unlock()
@@ -553,7 +553,7 @@ func SummarizeSafeReserveEligibilityByMint(statuses []SafeReserveApyStatusRow) [
 			})
 			continue
 		}
-		reason, status := describeIneligibleReserves(rows)
+		reason, status := kaminoDescribeIneligibleReserves(rows)
 		out = append(out, SafeReserveMintEligibilitySummary{
 			LiquidityMint: coin.Mint,
 			Reason:        reason,
@@ -564,7 +564,7 @@ func SummarizeSafeReserveEligibilityByMint(statuses []SafeReserveApyStatusRow) [
 	return out
 }
 
-func describeIneligibleReserves(rows []SafeReserveApyStatusRow) (reason, status string) {
+func kaminoDescribeIneligibleReserves(rows []SafeReserveApyStatusRow) (reason, status string) {
 	if len(rows) == 0 {
 		return "No supported Safe reserve", "no-supported-reserve"
 	}

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-const stablecoinDecimals = 6
+const earnStablecoinDecimals = 6
 
 type EarnStablecoin struct {
 	Decimals int    `json:"decimals"`
@@ -14,15 +14,15 @@ type EarnStablecoin struct {
 }
 
 var EarnStablecoins = []EarnStablecoin{
-	{stablecoinDecimals, "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "CASH"},
-	{stablecoinDecimals, "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "USDG"},
-	{stablecoinDecimals, "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "PYUSD"},
-	{stablecoinDecimals, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC"},
-	{stablecoinDecimals, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "USDT"},
-	{stablecoinDecimals, "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", "USDS"},
+	{earnStablecoinDecimals, "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH", "CASH"},
+	{earnStablecoinDecimals, "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH", "USDG"},
+	{earnStablecoinDecimals, "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", "PYUSD"},
+	{earnStablecoinDecimals, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC"},
+	{earnStablecoinDecimals, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "USDT"},
+	{earnStablecoinDecimals, "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", "USDS"},
 }
 
-var safeRiskBasketMarkets = []string{
+var earnSafeRiskBasketMarkets = []string{
 	"7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF",
 	"CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA",
 	"6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y",
