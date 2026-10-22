@@ -8,7 +8,13 @@ import { routeTree } from "./routeTree.gen";
 
 document.body.classList.add(GeistSans.variable, GeistMono.variable);
 
-const router = createRouter({ routeTree, defaultPreload: "intent", scrollRestoration: true });
+const router = createRouter({
+  routeTree,
+  defaultPreload: "intent",
+  scrollRestoration: true,
+  defaultPendingMs: 0,
+  defaultPendingMinMs: 0,
+});
 registerRouter(router);
 
 declare module "@tanstack/react-router" {
@@ -17,4 +23,6 @@ declare module "@tanstack/react-router" {
   }
 }
 
-createRoot(document.getElementById("root")!).render(<RouterProvider router={router} />);
+createRoot(document.getElementById("root")!).render(
+  <RouterProvider router={router} />
+);

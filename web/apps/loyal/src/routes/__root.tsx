@@ -5,7 +5,6 @@ import { createRootRoute, HeadContent, Outlet } from "@tanstack/react-router";
 import AppError from "@/app/error";
 import NotFound from "@/app/not-found";
 import { XPixelBootstrap } from "@/components/analytics/x-pixel-bootstrap";
-import { AppTransitionBridge } from "@/components/app-transition/app-transition-bridge";
 import { PublicEnvProvider } from "@/contexts/public-env-context";
 import { createPublicEnv } from "@/lib/core/config/public";
 
@@ -24,7 +23,6 @@ export const Route = createRootRoute({
       <HeadContent />
       <PublicEnvProvider value={publicEnv}>
         <XPixelBootstrap />
-        <AppTransitionBridge />
         <Outlet />
       </PublicEnvProvider>
     </>
