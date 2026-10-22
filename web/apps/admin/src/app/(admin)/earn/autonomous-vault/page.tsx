@@ -2,7 +2,6 @@ import { AddressLink } from "@/components/blockchain/address-link";
 import { PageContainer } from "@/components/layout/page-container";
 import { SectionHeader } from "@/components/layout/section-header";
 import { Badge } from "@/components/ui/badge";
-import { requireAdminSession } from "@/lib/require-admin-session";
 import {
   Card,
   CardContent,
@@ -12,9 +11,73 @@ import {
 } from "@/components/ui/card";
 import type { ReactNode } from "react";
 
-import { getAutonomousVaultData } from "./autonomous-vault-data";
+import type { Pages } from "@/api.gen/pages";
 
-export const dynamic = "force-dynamic";
+type AutonomousVaultProps = Pages["/earn/autonomous-vault"];
+
+type AutonomousVaultData =
+  | {
+      available: false;
+      error: string;
+      observedAt: string;
+    }
+  | {
+      available: true;
+      deployedUsdcRaw: bigint;
+      idle: {
+        loyalRaw: bigint;
+        usdcRaw: bigint;
+      };
+      kamino: {
+        reserve: string;
+        valueUsdcRaw: bigint;
+      };
+      meteora: {
+        activeBin: number;
+        loyalRaw: bigint;
+        position: string;
+        priceUsdcPerLoyal: number;
+        usdcRaw: bigint;
+      };
+      observedAt: string;
+      observedSlot: number;
+      status: "attention" | "healthy";
+      totalLoyalRaw: bigint;
+      totalUsdcRaw: bigint;
+      vault: string;
+    };
+
+function autonomousVaultData({
+  error,
+  observedAt,
+  snapshot,
+}: AutonomousVaultProps): AutonomousVaultData {
+  if (!snapshot) {
+    return { available: false, error, observedAt };
+  }
+
+  return {
+    ...snapshot,
+    available: true,
+    deployedUsdcRaw: BigInt(snapshot.deployedUsdcRaw),
+    idle: {
+      loyalRaw: BigInt(snapshot.idle.loyalRaw),
+      usdcRaw: BigInt(snapshot.idle.usdcRaw),
+    },
+    kamino: {
+      reserve: snapshot.kamino.reserve,
+      valueUsdcRaw: BigInt(snapshot.kamino.valueUsdcRaw),
+    },
+    meteora: {
+      ...snapshot.meteora,
+      loyalRaw: BigInt(snapshot.meteora.loyalRaw),
+      usdcRaw: BigInt(snapshot.meteora.usdcRaw),
+    },
+    observedAt,
+    totalLoyalRaw: BigInt(snapshot.totalLoyalRaw),
+    totalUsdcRaw: BigInt(snapshot.totalUsdcRaw),
+  };
+}
 
 const TOKEN_SCALE = BigInt(1_000_000);
 
@@ -68,10 +131,8 @@ function ValueCard({
   );
 }
 
-export default async function AutonomousVaultPage() {
-  await requireAdminSession();
-
-  const data = await getAutonomousVaultData();
+export default function AutonomousVaultPage(props: AutonomousVaultProps) {
+  const data = autonomousVaultData(props);
 
   return (
     <PageContainer className="max-w-6xl">
