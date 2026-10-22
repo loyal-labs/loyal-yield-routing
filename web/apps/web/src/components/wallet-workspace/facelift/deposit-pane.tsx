@@ -8,7 +8,7 @@ import {
 } from "@loyal-labs/actions";
 import { resolveSolanaEnv } from "@loyal-labs/solana-rpc";
 import { CircleDollarSign, Landmark, PenLine, TrendingUp } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { sanitizeBucksAmountInput } from "@/components/wallet-sidebar/earn-detail-view";
 import {
@@ -160,12 +160,6 @@ export function DepositPane({
     initialSourceKey ?? ""
   );
   const { actions } = earnData;
-  // The funding balance is only auto-refreshed after Earn transactions, so
-  // re-read it on open to pick up swaps and external transfers (ASK-2096).
-  const { refreshMainUsdcAmount } = actions;
-  useEffect(() => {
-    void refreshMainUsdcAmount();
-  }, [refreshMainUsdcAmount]);
 
   const sourceOptions = useMemo<DepositSourceOption[]>(() => {
     const cluster = resolveLoyalClusterForSolanaEnv(

@@ -10,15 +10,8 @@ import {
   getAssociatedTokenAddressSync,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { type Connection, PublicKey } from "@solana/web3.js";
-import {
-  type Dispatch,
-  type SetStateAction,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type AccountInfo, type Connection, PublicKey } from "@solana/web3.js";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type EarnWithdrawDraft,
@@ -752,6 +745,21 @@ export function createWithdrawSourceOptions(
   });
 }
 
+function decodeWalletUsdcAmountRaw(
+  account: AccountInfo<Buffer> | null,
+  usdcMint: PublicKey,
+  owner: PublicKey
+): bigint {
+  if (!(account && account.owner.equals(TOKEN_PROGRAM_ID))) {
+    return BigInt(0);
+  }
+  const decoded = AccountLayout.decode(account.data);
+  if (!(decoded.mint.equals(usdcMint) && decoded.owner.equals(owner))) {
+    return BigInt(0);
+  }
+  return BigInt(decoded.amount.toString());
+}
+
 export function useMainAccountUsdcBalance(args: {
   connection: Connection;
   mint: string | null | undefined;
@@ -760,7 +768,6 @@ export function useMainAccountUsdcBalance(args: {
   amount: number | null;
   amountRaw: bigint | null;
   refresh: (isCurrent?: () => boolean) => Promise<void>;
-  setAmountRaw: Dispatch<SetStateAction<bigint | null>>;
 } {
   const { connection, mint, walletAddress } = args;
   const [amountRaw, setAmountRaw] = useState<bigint | null>(null);
@@ -784,16 +791,7 @@ export function useMainAccountUsdcBalance(args: {
       );
 
       const account = await connection.getAccountInfo(usdcAta, "confirmed");
-      if (!(account && account.owner.equals(TOKEN_PROGRAM_ID))) {
-        return BigInt(0);
-      }
-
-      const decoded = AccountLayout.decode(account.data);
-      if (!(decoded.mint.equals(usdcMint) && decoded.owner.equals(owner))) {
-        return BigInt(0);
-      }
-
-      return BigInt(decoded.amount.toString());
+      return decodeWalletUsdcAmountRaw(account, usdcMint, owner);
     } catch (error) {
       console.warn("[earn-deposit] failed to load wallet USDC ATA", error);
       return null;
@@ -828,10 +826,44 @@ export function useMainAccountUsdcBalance(args: {
     };
   }, [balanceScope, readAmountRaw]);
 
+  useEffect(() => {
+    if (!(walletAddress && mint)) {
+      return;
+    }
+    let owner: PublicKey;
+    let usdcMint: PublicKey;
+    try {
+      owner = new PublicKey(walletAddress);
+      usdcMint = new PublicKey(mint);
+    } catch {
+      return;
+    }
+    const subscribedScope = balanceScope;
+    const subscriptionId = connection.onAccountChange(
+      getAssociatedTokenAddressSync(usdcMint, owner, false, TOKEN_PROGRAM_ID),
+      (account) => {
+        if (activeBalanceScopeRef.current !== subscribedScope) {
+          return;
+        }
+        try {
+          setAmountRaw(decodeWalletUsdcAmountRaw(account, usdcMint, owner));
+        } catch (error) {
+          console.warn(
+            "[earn-deposit] failed to decode wallet USDC ATA",
+            error
+          );
+        }
+      },
+      "confirmed"
+    );
+    return () => {
+      void connection.removeAccountChangeListener(subscriptionId);
+    };
+  }, [balanceScope, connection, mint, walletAddress]);
+
   return {
     amount: amountRaw === null ? null : Number(amountRaw) / 1_000_000,
     amountRaw,
     refresh,
-    setAmountRaw,
   };
 }

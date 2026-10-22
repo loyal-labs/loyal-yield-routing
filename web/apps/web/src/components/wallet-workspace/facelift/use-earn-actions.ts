@@ -176,7 +176,6 @@ export type EarnActions = {
   isReconnectPromptOpen: boolean;
   isWithdrawPending: boolean;
   mainUsdcAmount: number | null;
-  refreshMainUsdcAmount: () => Promise<void>;
   pendingApproval: PendingEarnApproval | null;
   pendingTransactionSignatures: string[];
   requestAutodepositClose: () => void;
@@ -212,7 +211,6 @@ export function useEarnActions(deps: {
   mainUsdc: {
     amount: number | null;
     refresh: (isCurrent?: () => boolean) => Promise<void>;
-    setAmountRaw: Dispatch<SetStateAction<bigint | null>>;
   };
   position: ActiveEarnPosition | null;
   rpcObservation?: EarnRpcObservation | null;
@@ -457,34 +455,6 @@ export function useEarnActions(deps: {
   const trackedKaminoUsdcMint = useMemo(
     () => resolveTrackedKaminoUsdcMint(publicEnv.solanaEnv),
     [publicEnv.solanaEnv]
-  );
-  const setMainUsdcAmountRaw = mainUsdc.setAmountRaw;
-  const refreshMainUsdc = mainUsdc.refresh;
-  // Swaps and other non-Earn flows change the wallet's stablecoin balances
-  // without passing through this hook's onAfterTx refresh, so consumers (the
-  // deposit pane) re-read the funding balance on demand.
-  const refreshMainUsdcAmount = useCallback(
-    () => refreshMainUsdc(),
-    [refreshMainUsdc]
-  );
-  const debitMainAccountUsdcBalance = useCallback(
-    (amountRaw: bigint) => {
-      setMainUsdcAmountRaw((current) => {
-        if (current === null) {
-          return current;
-        }
-        return current > amountRaw ? current - amountRaw : BigInt(0);
-      });
-    },
-    [setMainUsdcAmountRaw]
-  );
-  const creditMainAccountUsdcBalance = useCallback(
-    (amountRaw: bigint) => {
-      setMainUsdcAmountRaw((current) =>
-        current === null ? current : current + amountRaw
-      );
-    },
-    [setMainUsdcAmountRaw]
   );
 
   const settingsPda = smartAccountData.overview?.settingsPda;
@@ -1046,12 +1016,6 @@ export function useEarnActions(deps: {
             preparedDeposit: commit.preparedDeposit,
           })
         );
-        if (
-          trackedKaminoUsdcMint ===
-          commit.preparedDeposit.persistence.depositMint
-        ) {
-          debitMainAccountUsdcBalance(commit.amountRaw);
-        }
         suppressPositionRefreshThroughSlot(commit.result.confirmedSlot);
         if (walletSubmittedAtMs !== null) {
           captureBrowserLoadingMetricAfterPaint({
@@ -1487,7 +1451,6 @@ export function useEarnActions(deps: {
     [
       canMutateAccount,
       connection.rpcEndpoint,
-      debitMainAccountUsdcBalance,
       depositSource,
       ensureCanSignAccountAction,
       expectEarnTransaction,
@@ -1498,7 +1461,6 @@ export function useEarnActions(deps: {
       setPosition,
       smartAccountData,
       suppressPositionRefreshThroughSlot,
-      trackedKaminoUsdcMint,
       walletAddress,
     ]
   );
@@ -1632,9 +1594,6 @@ export function useEarnActions(deps: {
           setPosition((current) =>
             applySubmittedEarnWithdrawToPosition({ amountRaw, current, draft })
           );
-          if (draft.source.liquidityMint === trackedKaminoUsdcMint) {
-            creditMainAccountUsdcBalance(amountRaw);
-          }
           suppressPositionRefreshThroughSlot(latestConfirmedSlot);
           if (walletSubmittedAtMs !== null) {
             captureBrowserLoadingMetricAfterPaint({
@@ -1785,7 +1744,6 @@ export function useEarnActions(deps: {
             draft.mode === "partial" &&
             draft.source.liquidityMint === trackedKaminoUsdcMint
           ) {
-            creditMainAccountUsdcBalance(amountRaw);
             suppressPositionRefreshThroughSlot(result.confirmedSlot);
           }
           if (walletSubmittedAtMs !== null) {
@@ -1892,7 +1850,6 @@ export function useEarnActions(deps: {
       }
     },
     [
-      creditMainAccountUsdcBalance,
       connection.rpcEndpoint,
       ensureCanSignAccountAction,
       expectEarnTransaction,
@@ -2884,7 +2841,6 @@ export function useEarnActions(deps: {
     isReconnectPromptOpen,
     isWithdrawPending,
     mainUsdcAmount: mainUsdc.amount,
-    refreshMainUsdcAmount,
     pendingApproval,
     pendingTransactionSignatures,
     requestAutodepositClose,
