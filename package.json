@@ -13,7 +13,6 @@
     "deploy": "bash scripts/deploy-workers.sh",
     "web:build": "bash scripts/web/build.sh",
     "web:dev": "cd web/apps/loyal && bun run dev",
-    "web:sync": "bash scripts/web/sync.sh",
     "same-mint:alt-cleanup-paginated": "bun scripts/route-lookup-table-cleanup-paginated.ts",
     "hub:cli": "cargo run -p loyal-hub-cli --",
     "hub:devnet-smoke": "bash scripts/devnet-test-loyal-hub-swap-program.sh",

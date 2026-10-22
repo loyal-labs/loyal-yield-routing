@@ -9,6 +9,7 @@
     "routes:check": "bun ../../../scripts/web/gen-routes.ts --check"
   },
   "devDependencies": {
+    "@hey-api/openapi-ts": "0.99.0",
     "@tanstack/react-router": "^1.170.32",
     "@tanstack/router-plugin": "^1.168.35",
     "@vitejs/plugin-react": "^6.1.0",

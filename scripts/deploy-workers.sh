@@ -2,13 +2,14 @@
 # shellcheck disable=SC2029 # the remote commands are built here on purpose
 set -euo pipefail
 
-usage="usage: bun run deploy backyard|retail|observer|web [sha] [--migrations-applied] [--stopped]"
+usage="usage: bun run deploy backyard|retail|observer|web|admin [sha] [--migrations-applied] [--stopped]"
 family=${1:-}
 [[ $# -gt 0 ]] && shift
 case $family in
   backyard | retail) binary_name=loyal-engine ;;
   observer) binary_name=loyal-observer ;;
   web) binary_name=loyal-web ;;
+  admin) binary_name=loyal-admin ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac
 target=origin/main
@@ -22,7 +23,9 @@ for arg in "$@"; do
     *) target=$arg ;;
   esac
 done
-if [[ $family == web && ( $migrations_applied == yes || $mode == stopped ) ]]; then
+web_family=no
+[[ $family == web || $family == admin ]] && web_family=yes
+if [[ $web_family == yes && ( $migrations_applied == yes || $mode == stopped ) ]]; then
   echo "web deploys run no migrations check and no rules step" >&2
   echo "$usage" >&2
   exit 2
@@ -30,8 +33,8 @@ fi
 
 build_web_release() {
   GOOS=linux GOARCH=$1 CGO_ENABLED=0 \
-    sh "$build/src/scripts/web/build.sh" "$build/loyal-web" >/dev/null
-  binary=$build/loyal-web
+    sh "$build/src/scripts/web/build.sh" "${family/web/loyal}" "$build/$binary_name" >/dev/null
+  binary=$build/$binary_name
 }
 
 host=${LOYAL_WORKERS_SSH:-loyal-workers}
@@ -46,7 +49,7 @@ sha=$(git rev-parse --verify --quiet "${target}^{commit}") || {
   echo "unknown commit '$target'" >&2
   exit 1
 }
-if [[ $family == web && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
+if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   :
 elif ! git merge-base --is-ancestor "$sha" origin/main; then
   echo "$sha is not on origin/main; deploy only merged commits" >&2
@@ -60,10 +63,12 @@ if [[ $family == web ]]; then
     echo "run the deploy under: op run --env-file=.env.1password -- bun run deploy web [sha]" >&2
     exit 1
   fi
+fi
+if [[ $web_family == yes ]]; then
   export NEXT_PUBLIC_GIT_COMMIT_HASH=$sha NEXT_PUBLIC_GIT_BRANCH=main
 fi
 
-if [[ $family == web && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
+if [[ $web_family == yes && ${LOYAL_DEPLOY_DRY_RUN:-} == 1 ]]; then
   mkdir -p "$HOME/.loyal"
   build=$(mktemp -d "$HOME/.loyal/deploy-build.XXXXXX")
   trap 'git worktree remove --force "$build/src" >/dev/null 2>&1 || true; rm -rf "$build"' EXIT
@@ -105,7 +110,7 @@ echo "host $host runs $running; deploying $sha"
 
 rules_sha=$(sed -n 's/^rules \([0-9a-f]\{40\}\)$/\1/p' <<<"$facts")
 install_rules=yes
-if [[ $family == web ]]; then
+if [[ $web_family == yes ]]; then
   install_rules=no
 elif [[ -n $rules_sha ]] && ! git merge-base --is-ancestor "$rules_sha" "$sha" 2>/dev/null; then
   install_rules=no
@@ -114,7 +119,7 @@ fi
 
 if [[ $running == "$sha" && $mode == running ]]; then
   state=$(ssh "$host" systemctl is-active "$unit" || true)
-  if [[ $family == web ]]; then
+  if [[ $web_family == yes ]]; then
     echo "$unit already runs $sha ($state); the web app is unchanged"
   else
     echo "$unit already runs $sha ($state); the engine is unchanged"
@@ -125,7 +130,7 @@ if [[ $running == "$sha" && $mode == running ]]; then
   if [[ $install_rules != yes ]]; then
     exit 0
   fi
-elif [[ $family != web ]]; then
+elif [[ $web_family != yes ]]; then
   if ! git cat-file -e "${running}^{commit}" 2>/dev/null; then
     echo "running release $running is not in this clone; cannot compare migrations" >&2
     exit 1
@@ -144,7 +149,7 @@ fi
 
 mkdir -p "$HOME/.loyal"
 build=$(mktemp -d "$HOME/.loyal/deploy-build.XXXXXX")
-if [[ $family == web ]]; then
+if [[ $web_family == yes ]]; then
   trap 'git worktree remove --force "$build/src" >/dev/null 2>&1 || true; rm -rf "$build"' EXIT
   git worktree add --detach --quiet "$build/src" "$sha"
   (cd "$build/src/web" && bun install --frozen-lockfile >/dev/null)
@@ -160,7 +165,7 @@ if [[ ! -f $tree/deploy/hetzner/activate.sh || ! -f $tree/deploy/hetzner/install
 fi
 
 if [[ $running != "$sha" || $mode == stopped ]]; then
-  if [[ $family == web ]]; then
+  if [[ $web_family == yes ]]; then
     build_web_release "$goarch"
     if ! LC_ALL=C grep -qa "$sha" "$binary"; then
       echo "built binary does not carry $sha" >&2

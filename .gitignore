@@ -59,8 +59,14 @@ AGENTS.override.md
 
 # loyal-web build outputs (scripts/web/build.sh)
 /bin/
-/go/workers/internal/webserve/dist/*
-!/go/workers/internal/webserve/dist/.keep
+/go/workers/cmd/loyal-web/dist/*
+!/go/workers/cmd/loyal-web/dist/.keep
+/go/workers/cmd/loyal-admin/dist/*
+!/go/workers/cmd/loyal-admin/dist/.keep
+/web/apps/admin/dist/
+/web/apps/admin/src/routeTree.gen.ts
+/web/apps/admin/src/api.gen/
+/web/apps/admin/openapi.json
 /web/apps/loyal/dist/
 /web/apps/loyal/node_modules/
 /web/apps/loyal/src/routeTree.gen.ts

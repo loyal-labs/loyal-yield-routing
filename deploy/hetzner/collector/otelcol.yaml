@@ -14,6 +14,7 @@ receivers:
       - loyal-observer.service
       - loyal-retail.service
       - loyal-backyard.service
+      - loyal-admin.service
       - xstock-bot.service
       - xstock-pools.service
       - xstock-rank.service

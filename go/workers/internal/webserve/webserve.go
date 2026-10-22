@@ -1,26 +1,12 @@
 package webserve
 
 import (
-	"embed"
 	"io/fs"
 	"net/http"
 	"path"
+	"runtime/debug"
 	"strings"
 )
-
-//go:embed all:dist
-var embedded embed.FS
-
-var appEnvironment = "prod"
-
-var (
-	dist    fs.FS
-	distErr error
-)
-
-func init() {
-	dist, distErr = fs.Sub(embedded, "dist")
-}
 
 const (
 	immutableCacheControl  = "public, max-age=31536000, immutable"
@@ -29,72 +15,60 @@ const (
 	noStore                = "no-store"
 )
 
-func Ready() bool {
-	if distErr != nil {
-		return false
-	}
-	_, err := fs.Stat(dist, "index.html")
+type Site struct {
+	dist  fs.FS
+	files http.Handler
+}
+
+func New(dist fs.FS) Site {
+	return Site{dist: dist, files: http.FileServerFS(dist)}
+}
+
+func (s Site) Ready() bool {
+	_, err := fs.Stat(s.dist, "index.html")
 	return err == nil
 }
 
-func Handler() http.Handler {
-	if distErr != nil {
-		panic(distErr)
+func (s Site) Shell(w http.ResponseWriter, r *http.Request, status int) {
+	w.Header().Set("Cache-Control", noStore)
+	body, err := fs.ReadFile(s.dist, "index.html")
+	if err != nil {
+		http.Error(w, "web build missing", http.StatusServiceUnavailable)
+		return
 	}
-	return handler(dist, appEnvironment)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
 }
 
-func handler(dist fs.FS, environment string) http.Handler {
-	files := http.FileServerFS(dist)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pagePath := path.Clean(r.URL.Path)
-		status := 0
-		switch {
-		case pagePath == "/500":
-			status = http.StatusInternalServerError
-		case pagePath == "/dev/txv1" && environment == "prod":
-			status = http.StatusNotFound
-		}
-		if status != 0 {
+func (s Site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	if name == "" {
+		name = "index.html"
+	}
+	if info, err := fs.Stat(s.dist, name); err != nil || info.IsDir() {
+		if path.Ext(name) != "" {
 			w.Header().Set("Cache-Control", noStore)
-			body, err := fs.ReadFile(dist, "index.html")
-			if err != nil {
-				http.Error(w, "web build missing", http.StatusServiceUnavailable)
-				return
-			}
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(status)
-			if r.Method != http.MethodHead {
-				_, _ = w.Write(body)
-			}
+			http.NotFound(w, r)
 			return
 		}
-		name := strings.TrimPrefix(pagePath, "/")
-		if name == "" {
-			name = "index.html"
-		}
-		if info, err := fs.Stat(dist, name); err != nil || info.IsDir() {
-			if path.Ext(name) != "" {
-				w.Header().Set("Cache-Control", noStore)
-				http.NotFound(w, r)
-				return
-			}
-			r = r.Clone(r.Context())
-			r.URL.Path = "/"
-			name = "index.html"
-		}
-		switch {
-		case name == "index.html":
-			w.Header().Set("Cache-Control", noCache)
-		case strings.HasPrefix(name, "assets/"):
-			w.Header().Set("Cache-Control", immutableCacheControl)
-		case publicFile(name):
-			w.Header().Set("Cache-Control", publicFileCacheControl)
-		default:
-			w.Header().Set("Cache-Control", noCache)
-		}
-		files.ServeHTTP(w, r)
-	})
+		r = r.Clone(r.Context())
+		r.URL.Path = "/"
+		name = "index.html"
+	}
+	switch {
+	case name == "index.html":
+		w.Header().Set("Cache-Control", noCache)
+	case strings.HasPrefix(name, "assets/"):
+		w.Header().Set("Cache-Control", immutableCacheControl)
+	case publicFile(name):
+		w.Header().Set("Cache-Control", publicFileCacheControl)
+	default:
+		w.Header().Set("Cache-Control", noCache)
+	}
+	s.files.ServeHTTP(w, r)
 }
 
 func publicFile(name string) bool {
@@ -103,4 +77,29 @@ func publicFile(name string) bool {
 		return true
 	}
 	return false
+}
+
+var stamp string
+
+func Release() string {
+	if stamp != "" {
+		return stamp
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	var revision, modified string
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value
+		}
+	}
+	if revision == "" || modified == "true" {
+		return "dirty"
+	}
+	return revision
 }

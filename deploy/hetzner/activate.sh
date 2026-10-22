@@ -5,12 +5,12 @@ family=${1:-}
 sha=${2:-}
 want=${3:-}
 mode=${4:-running}
-case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; web) binary=loyal-web ;; *) family=bad ;; esac
+case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; web) binary=loyal-web ;; admin) binary=loyal-admin ;; *) family=bad ;; esac
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
 case $want in *[!0-9a-f]* | '') want=bad ;; esac
 case $mode in running | stopped) ;; *) mode=bad ;; esac
 if [ "$family" = bad ] || [ ${#sha} -ne 40 ] || [ ${#want} -ne 64 ] || [ "$mode" = bad ]; then
-	echo "usage: activate.sh backyard|retail|observer|web <40-hex commit sha> <64-hex sha256> [stopped]" >&2
+	echo "usage: activate.sh backyard|retail|observer|web|admin <40-hex commit sha> <64-hex sha256> [stopped]" >&2
 	exit 2
 fi
 unit=loyal-$family
@@ -78,10 +78,12 @@ if [ "$family" = backyard ]; then
 		sed -n 's/^LoadCredentialEncrypted=\(BACKYARD_DATABASE_URL:[^ ]*\)$/\1/p' | tail -n 1)
 	[ -n "$dbcred" ] || fail "no BACKYARD_DATABASE_URL in $unit's LoadCredentialEncrypted"
 fi
-if [ "$family" = web ]; then
+web_family=no
+case $family in web) web_family=yes addrvar=LOYAL_WEB_ADDRESS ;; admin) web_family=yes addrvar=LOYAL_ADMIN_ADDRESS ;; esac
+if [ "$web_family" = yes ]; then
 	webaddr=$(systemctl cat "$unit" |
-		sed -n 's/^Environment=LOYAL_WEB_ADDRESS=\([^ ]*\)$/\1/p' | tail -n 1)
-	[ -n "$webaddr" ] || fail "no LOYAL_WEB_ADDRESS in $unit; cannot check /readyz"
+		sed -n "s/^Environment=$addrvar=\([^ ]*\)\$/\1/p" | tail -n 1)
+	[ -n "$webaddr" ] || fail "no $addrvar in $unit; cannot check /readyz"
 fi
 in_flight() {
 	if [ "$family" != backyard ]; then
@@ -174,7 +176,7 @@ else
 	up="stay active without restarting for 20 s"
 fi
 
-if [ "$family" = web ] && [ "$started" = yes ]; then
+if [ "$web_family" = yes ] && [ "$started" = yes ]; then
 	say "waiting for http://$webaddr/readyz to name $sha (up to 30 s)"
 	deadline=$(($(date +%s) + 30))
 	ready=no

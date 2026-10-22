@@ -20,3 +20,11 @@ export function IBM_Plex_Sans(options: GoogleFontOptions = {}): NextFont {
     style: { fontFamily: "'IBM Plex Sans', sans-serif" },
   };
 }
+
+export function Geist(_options: GoogleFontOptions = {}): NextFont {
+  return { className: "", variable: "font-geist-sans", style: { fontFamily: "'Geist Sans', sans-serif" } };
+}
+
+export function Geist_Mono(_options: GoogleFontOptions = {}): NextFont {
+  return { className: "", variable: "font-geist-mono", style: { fontFamily: "'Geist Mono', monospace" } };
+}

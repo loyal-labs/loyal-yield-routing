@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "incremental": false,
+    "plugins": [],
+    "types": ["vite/client"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@tanstack/react-router": ["../loyal/node_modules/@tanstack/react-router"],
+      "vite/client": ["../loyal/node_modules/vite/client"],
+      "next/link": ["../loyal/src/next-compat/link.tsx"],
+      "next/image": ["../loyal/src/next-compat/image.tsx"],
+      "next/navigation": ["../loyal/src/next-compat/navigation.ts"],
+      "next/dynamic": ["../loyal/src/next-compat/dynamic.tsx"],
+      "next/font/google": ["../loyal/src/next-compat/font-google.ts"],
+      "server-only": ["../loyal/src/next-compat/server-only.ts"]
+    }
+  },
+  "include": ["src/main.tsx", "src/routes", "src/lib/page-data.ts", "src/routeTree.gen.ts", "src/api.gen"],
+  "exclude": ["dist", "node_modules"]
+}

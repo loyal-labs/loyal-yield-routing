@@ -1,4 +1,4 @@
-package webserve
+package webapp
 
 import (
 	"net/http"
@@ -23,7 +23,7 @@ func TestErrorPagesPreserveShellAndHTTPStatus(t *testing.T) {
 		for _, method := range []string{http.MethodGet, http.MethodHead} {
 			t.Run(tc.path+"/"+tc.environment+"/"+method, func(t *testing.T) {
 				w := httptest.NewRecorder()
-				handler(files, tc.environment).ServeHTTP(w, httptest.NewRequest(method, tc.path, nil))
+				site(Config{Dist: files, Environment: tc.environment}).ServeHTTP(w, httptest.NewRequest(method, tc.path, nil))
 				if w.Code != tc.status {
 					t.Fatalf("status = %d, want %d", w.Code, tc.status)
 				}
@@ -36,19 +36,19 @@ func TestErrorPagesPreserveShellAndHTTPStatus(t *testing.T) {
 				if method == http.MethodHead && w.Body.Len() != 0 {
 					t.Fatal("HEAD returned a body")
 				}
-				if tc.status >= 400 && w.Header().Get("Cache-Control") != noStore {
+				if tc.status >= 400 && w.Header().Get("Cache-Control") != "no-store" {
 					t.Fatal("error response must not be cached")
 				}
 			})
 		}
 	}
 	w := httptest.NewRecorder()
-	handler(files, "prod").ServeHTTP(w, httptest.NewRequest("GET", "/assets/app.js", nil))
-	if w.Code != 200 || w.Header().Get("Cache-Control") != immutableCacheControl {
+	site(Config{Dist: files, Environment: "prod"}).ServeHTTP(w, httptest.NewRequest("GET", "/assets/app.js", nil))
+	if w.Code != 200 || w.Header().Get("Cache-Control") != "public, max-age=31536000, immutable" {
 		t.Fatal("asset cache behavior changed")
 	}
 	w = httptest.NewRecorder()
-	handler(fstest.MapFS{}, "prod").ServeHTTP(w, httptest.NewRequest("GET", "/500", nil))
+	site(Config{Dist: fstest.MapFS{}, Environment: "prod"}).ServeHTTP(w, httptest.NewRequest("GET", "/500", nil))
 	if w.Code != 503 {
 		t.Fatalf("missing build returned %d instead of 503", w.Code)
 	}

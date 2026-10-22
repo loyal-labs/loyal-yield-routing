@@ -1,9 +1,11 @@
 package webapp
 
 import (
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -15,12 +17,14 @@ import (
 )
 
 type Config struct {
-	Addr     string
-	Upstream *url.URL
-	AppHost  string
-	Release  string
-	Ready    func() bool
-	AppDB    *pgxpool.Pool
+	Addr        string
+	Upstream    *url.URL
+	AppHost     string
+	Release     string
+	Ready       func() bool
+	AppDB       *pgxpool.Pool
+	Dist        fs.FS
+	Environment string
 }
 
 func New(cfg Config) http.Handler {
@@ -44,7 +48,7 @@ func (cfg Config) ready() func() bool {
 	if cfg.Ready != nil {
 		return cfg.Ready
 	}
-	return webserve.Ready
+	return webserve.New(cfg.Dist).Ready
 }
 
 func ready(ok func() bool) http.HandlerFunc {
@@ -58,20 +62,30 @@ func ready(ok func() bool) http.HandlerFunc {
 }
 
 func site(cfg Config) http.Handler {
-	app := webserve.Handler()
+	app := webserve.New(cfg.Dist)
+	serve := func(w http.ResponseWriter, r *http.Request) {
+		switch pagePath := path.Clean(r.URL.Path); {
+		case pagePath == "/500":
+			app.Shell(w, r, http.StatusInternalServerError)
+		case pagePath == "/dev/txv1" && cfg.Environment == "prod":
+			app.Shell(w, r, http.StatusNotFound)
+		default:
+			app.ServeHTTP(w, r)
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cfg.AppHost != "" && requestHost(r) == cfg.AppHost {
 			if r.URL.Path == "/" {
 				http.Redirect(w, r, (&url.URL{Path: "/app", RawQuery: r.URL.RawQuery}).String(), http.StatusFound)
 				return
 			}
-			app.ServeHTTP(w, r)
+			serve(w, r)
 			return
 		}
 		if !skippedByNextMatcher(r.URL.Path) && localeRedirect(w, r) {
 			return
 		}
-		app.ServeHTTP(w, r)
+		serve(w, r)
 	})
 }
 

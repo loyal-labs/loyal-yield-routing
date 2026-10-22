@@ -2,31 +2,42 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime/debug"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
+
+//go:embed all:dist
+var embedded embed.FS
+
+var appEnvironment = "prod"
 
 func config() (webapp.Config, error) {
 	cfg := webapp.Config{
-		Addr:    envOr("LOYAL_WEB_ADDRESS", "127.0.0.1:8080"),
-		AppHost: os.Getenv("LOYAL_WEB_APP_HOST"),
-		Release: release(),
+		Addr:        envOr("LOYAL_WEB_ADDRESS", "127.0.0.1:8080"),
+		AppHost:     os.Getenv("LOYAL_WEB_APP_HOST"),
+		Release:     webserve.Release(),
+		Environment: appEnvironment,
 	}
 	var err error
+	if cfg.Dist, err = fs.Sub(embedded, "dist"); err != nil {
+		return cfg, err
+	}
 	if cfg.Upstream, err = parseOrigin("LOYAL_WEB_UPSTREAM", "https://app.askloyal.com"); err != nil {
 		return cfg, err
 	}
@@ -46,31 +57,6 @@ func parseOrigin(name, fallback string) (*url.URL, error) {
 		return nil, fmt.Errorf("%s: want an origin like https://host", name)
 	}
 	return origin, nil
-}
-
-var stamp string
-
-func release() string {
-	if stamp != "" {
-		return stamp
-	}
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
-	}
-	var revision, modified string
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			revision = setting.Value
-		case "vcs.modified":
-			modified = setting.Value
-		}
-	}
-	if revision == "" || modified == "true" {
-		return "dirty"
-	}
-	return revision
 }
 
 func openAppDB(ctx context.Context) (*pgxpool.Pool, error) {
