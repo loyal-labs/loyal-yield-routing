@@ -39,7 +39,7 @@ config.watchFolders = [
 ];
 config.resolver.nodeModulesPaths = [
   path.resolve(__dirname, "node_modules"),
-  path.resolve(__dirname, ".."),
+  path.resolve(__dirname, "../../node_modules"),
 ];
 config.resolver.extraNodeModules = {
   "@loyal-labs/solana-rpc": solanaRpcRoot,
@@ -57,6 +57,17 @@ config.resolver.extraNodeModules = {
   "@loyal-labs/solana-instruction-decoder": solanaInstructionDecoderRoot,
 };
 
+const dedupedPackages = new Set([
+  "@solana/web3.js",
+]);
+
+function packageNameOf(moduleName) {
+  if (moduleName.startsWith(".") || path.isAbsolute(moduleName)) return null;
+  if (!moduleName.startsWith("@")) return moduleName.split("/")[0];
+  const parts = moduleName.split("/");
+  return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+}
+
 config.transformer.babelTransformerPath = require.resolve(
   "react-native-svg-transformer",
 );
@@ -73,6 +84,15 @@ const nativewindConfig = withNativewind(config, {
 
 const nativewindResolveRequest = nativewindConfig.resolver.resolveRequest;
 nativewindConfig.resolver.resolveRequest = (context, moduleName, platform) => {
+  const dedupePackageName = packageNameOf(moduleName);
+  if (dedupePackageName != null && dedupedPackages.has(dedupePackageName)) {
+    return context.resolveRequest(
+      { ...context, disableHierarchicalLookup: true },
+      moduleName,
+      platform,
+    );
+  }
+
   // The SDK's webcrypto.ts guards a `await import("node:crypto")` behind a
   // Node-only runtime check, but Metro still walks the import graph eagerly.
   // Shim it to an empty module so the bundler stops complaining; the guard

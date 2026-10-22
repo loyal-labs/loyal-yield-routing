@@ -15,6 +15,7 @@ import { env } from "@/config/env";
 import {
   isConnectionFailure,
   isConnectionTimeout,
+  isRpcError,
 } from "@/lib/network/connection-failure";
 import { isInsufficientSolError } from "@/lib/wallet/insufficient-sol-error";
 import { hasLandedProgress, isWalletRejection } from "@/lib/wallet/rejection";
@@ -22,6 +23,10 @@ import {
   isWalletSessionError,
   type WalletSessionFailure,
 } from "@/lib/wallet/wallet-session-error";
+import {
+  getObservabilityDeviceId,
+  getObservabilityDevicePlatform,
+} from "@/services/device-identity";
 
 type MobileErrorOperation =
   | "mobile.global_error"
@@ -74,20 +79,20 @@ export function setObservabilityPathname(pathname: string): void {
   }
 }
 
-// Injected from `@/services/device-identity` at app init rather than imported:
-// this module must stay free of react-native/storage imports so its test
-// suite only has to mock expo-updates (ASK-2097). Envelopes sent before the
-// injection simply omit the fields — the ingest treats them as optional.
 let deviceIdentity: {
   deviceId: string;
   devicePlatform: "android" | "ios";
 } | null = null;
 
-export function setObservabilityDeviceIdentity(identity: {
+function currentDeviceIdentity(): {
   deviceId: string;
   devicePlatform: "android" | "ios";
-}): void {
-  deviceIdentity = identity;
+} {
+  deviceIdentity ??= {
+    deviceId: getObservabilityDeviceId(),
+    devicePlatform: getObservabilityDevicePlatform(),
+  };
+  return deviceIdentity;
 }
 
 // Same channel → environment mapping as `src/lib/datadog/datadog.ts`
@@ -212,7 +217,7 @@ function report(
     const normalized = normalizeError(error);
     const envelope: MobileErrorEnvelope = {
       ...normalized,
-      ...(deviceIdentity ?? {}),
+      ...currentDeviceIdentity(),
       environment: getObservabilityEnvironment(),
       ...(messagePrefix
         ? {
@@ -471,19 +476,6 @@ function declaredErrorDetail(value: unknown): LifecycleErrorDetail | undefined {
     : undefined;
 }
 
-// web3.js throws SolanaJSONRPCError with a numeric `code` and no HTTP status,
-// so it lands in `request_failed` looking exactly like a dead connection.
-// Brand-checked by name for the same reason as KaminoUpstreamError: Metro can
-// resolve web3.js to more than one module instance, which would quietly make
-// `instanceof` false.
-function isRpcError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.name === "SolanaJSONRPCError" &&
-    typeof (error as { code?: unknown }).code === "number"
-  );
-}
-
 export function mapLifecycleErrorDetail(
   error: unknown
 ): LifecycleErrorDetail | undefined {
@@ -569,7 +561,7 @@ export function startLifecycleFlow<F extends LifecycleFlowName>(args: {
       const current = Date.now();
       const envelope = {
         ...diagnostics,
-        ...(deviceIdentity ?? {}),
+        ...currentDeviceIdentity(),
         durationMs: Math.min(900_000, Math.max(0, current - lastAt)),
         elapsedMs: Math.min(86_400_000, Math.max(0, current - startedAt)),
         environment: getObservabilityEnvironment(),
