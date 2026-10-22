@@ -42,6 +42,7 @@ func TestEveryGoAPIResponseNamesItsSource(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/openapi.json", http.StatusOK, "go"},
 		{http.MethodGet, "/api/smart-accounts/earn-max/summary", http.StatusUnauthorized, "go"},
+		{http.MethodGet, "/api/smart-accounts/earn-max/invite", http.StatusUnauthorized, "go"},
 		{http.MethodGet, "/api/smart-accounts/earn-max/activity", http.StatusUnauthorized, "go"},
 		{http.MethodPost, "/api/push-tokens", http.StatusUnauthorized, "go"},
 		{http.MethodGet, "/api/auth/session", http.StatusAccepted, ""},
