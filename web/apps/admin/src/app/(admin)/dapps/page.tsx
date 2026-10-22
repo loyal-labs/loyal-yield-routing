@@ -1,34 +1,27 @@
-import { asc } from "drizzle-orm";
-
 import { PageContainer } from "@/components/layout/page-container";
 import { SectionHeader } from "@/components/layout/section-header";
-import { getDatabase } from "@/lib/core/database";
-import { requireAdminSession } from "@/lib/require-admin-session";
-import { trustedDapps } from "@loyal-labs/db-core/schema";
 
 import { DappList } from "./dapp-list";
 
-export const dynamic = "force-dynamic";
+type DappsPageProps = {
+  dapps: Array<{
+    id: string;
+    origin: string;
+    name: string;
+    startUrl: string;
+    category: string | null;
+    displayOrder: number;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+};
 
-export default async function DappsPage() {
-  await requireAdminSession();
-
-  const db = getDatabase();
-  const rows = await db
-    .select()
-    .from(trustedDapps)
-    .orderBy(asc(trustedDapps.displayOrder), asc(trustedDapps.name));
-
-  const serializedRows = rows.map((row) => ({
-    ...row,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-  }));
-
+export default function DappsPage({ dapps }: DappsPageProps) {
   return (
     <PageContainer>
       <SectionHeader title="dApps" breadcrumbs={[{ label: "dApps" }]} />
-      <DappList dapps={serializedRows} />
+      <DappList dapps={dapps} />
     </PageContainer>
   );
 }
