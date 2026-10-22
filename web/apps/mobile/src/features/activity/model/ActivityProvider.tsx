@@ -345,7 +345,11 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
   }, [earnTransactions, sweepMorph]);
 
   // While the morph is unresolved, poll the Earn feed so the result tx is picked
-  // up without waiting for the 15s background tick. Bounded.
+  // up without waiting for the 15s background tick. Bounded. Deliberately only
+  // the feed (a backend read) — NOT `refreshAutodepositAndHoldings`, which
+  // force-refreshes token holdings over the Solana RPC: the morph resolves
+  // purely off the feed, and adding holdings reads here (on top of the
+  // due-sweep poll) was pressuring the rate-limited RPC into 429s.
   useEffect(() => {
     if (!sweepMorph || sweepMorph.resultTx) {
       return;
