@@ -14,7 +14,7 @@ verify a preview and API parity before changing its production source.
 
 ## Repository consolidation
 
-- Published loyal-app main through `3875075d` is reconciled. The shared Voltr
+- Published loyal-app main through `3c545490` is reconciled. The shared Voltr
   SDK import replaces the old app-local import; web gate removal and skeleton
   changes already landed here. `web/LOYAL_APP_BASE` records that published pin.
 - Local mobile commit `5fe09749d99d5e52b69d06d5f798f9d574897fed` was ported
@@ -28,26 +28,21 @@ verify a preview and API parity before changing its production source.
   `web/` working directories and path filters. Imported nested workflows do
   not run on GitHub.
 
-### Remaining workflow and deployment handoff
+### Workflow and deployment handoff
 
-| Workflow | Before activation here |
-|---|---|
-| Extension CI | Move to root, prefix paths with `web/`, verify extension API/telemetry secrets and release tags |
-| Release Packages | Move to root, run in `web/`, set Changesets `cwd: web`; provide `NPM_TOKEN` and `RELEASE_GITHUB_TOKEN`; stop old publisher first |
-| Sync Mirror Repos | Move after package publishing, run in `web/`, verify changed-path selection under the prefix and `MIRROR_SYNC_TOKEN` |
-| Preview Domain | Move after Vercel source change and provide `VERCEL_TOKEN` |
-| Trusted Vercel Previews | Move after Vercel source change and configure `TRUSTED_VERCEL_PREVIEW_USERS` |
-| Claude / Pullfrog | Retain inactive until maintainers choose whether to migrate the bots and their credentials |
+Extension, package release, mirror sync, preview-domain and trusted-preview
+workflows now live in root `.github/workflows`, with `web/` working directories
+and paths. Publishing and preview mutations default off behind repository
+variables; merging workflow files alone does not transfer ownership. The mirror
+selector handles repository-relative `web/` paths, and npm package metadata
+points to this repository. The publisher includes the shared Loyal Actions
+package required by the vault SDK.
 
-The destination repository currently lists no repository-level Actions secrets
-or variables; organization-level access still needs verification. GitHub cannot
-export old secret values. Reuse the approved secret source rather than copying
-credentials into files or asking for them in chat.
-
-Before archiving loyal-app: finish those workflow handoffs, reconcile any further
-local/unpublished edits with their owner, verify the Vercel preview and production
-source switch, then stop the old workflows. The source pin does not claim that
-uncommitted changes have been imported.
+Follow [web-workflow-handoff.md](web-workflow-handoff.md) for the credential
+transfer, activation order, checks and unpublished-work inventory. The retained
+Vercel project's source switch is still separate. Keep loyal-app available until
+that switch and the outstanding local work are reconciled. The source pin does
+not claim uncommitted changes have been imported.
 
 ## Original pilot acceptance criteria
 
@@ -102,15 +97,15 @@ uncommitted changes have been imported.
 
 ## Lanes
 
-| Lane | Owns | Acceptance |
-|---|---|---|
-| G1 next-compat | `web/apps/loyal/src/next-compat/**` | Link routes in-app hrefs through TanStack (external → `<a>`); Image handles fill/priority/static imports; navigation matches Next semantics; dynamic; Geist and IBM Plex faces load and define their CSS variables; `headFromMetadata` maps title (incl. templates), description, openGraph, twitter, alternates.canonical, icons |
-| G2 app routes | `src/routes/app/**`, `src/routes/dev/**` | `/app`, `/app/policies`, `/app/settings`, `/app/cherry`, `/dev/txv1` render with apps/web's providers; signed-in dashboard shows data on the test host |
-| G3 site routes | `src/routes/{index.tsx,500,agents,earn,landing,privacy-policy,risks,trust,ru,zh}/**` | every site page renders with head equal to Vercel's; locale redirect behaviour of apps/web `features/marketing/i18n/locale-redirect.ts` reproduced (G3 writes the spec, G5 implements the server half) |
-| G4 blog + static | `src/routes/blog/**`, `src/overrides/blog-data.ts`, `scripts/web/static-files.ts` | blog index (with `?page=`) and every slug render from `public/blog/*/post.md` read at build; sitemap.xml, robots.txt, llms.txt, llms-full.txt emitted into dist equal to Vercel's |
-| G5 Go server | `go/workers/cmd/loyal-web/**`, `go/workers/internal/{webapp/{router,proxy,headers}.go,webserve/**}` | proxy contract (method/body/query/cookies through, Host to upstream, Set-Cookie untouched, SSE flushes, same-origin Origin rewritten to upstream's); `/ingest/*` as apps/web next.config rewrites; CSP Report-Only and frame-ancestors equal to next.config.ts:44-72,150-167; cache tiers of wen webserve.go; `go vet`, `go test -race` green |
-| G6 deploy | `deploy/hetzner/systemd/loyal-web.service`, the `web` case in `scripts/deploy-workers.sh`, `deploy/hetzner/caddy/loyal-web.caddy`, README section | `bun run deploy web <sha>` builds linux/amd64, ships, activates under the host lock, checks `/readyz` and the release, restores the previous binary on failure; unit limits (MemoryMax, CPUQuota, Nice); no IPs in the repo |
-| G7 Go API pilot | `go/workers/internal/webapp/api_*.go`, `web/packages/api` generation, `scripts/web/api-diff.ts` | one yield read family on the same path as its Next handler, JSON equal to Vercel's for the test account |
+| Lane             | Owns                                                                                                                                              | Acceptance                                                                                                                                                                                                                                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1 next-compat   | `web/apps/loyal/src/next-compat/**`                                                                                                               | Link routes in-app hrefs through TanStack (external → `<a>`); Image handles fill/priority/static imports; navigation matches Next semantics; dynamic; Geist and IBM Plex faces load and define their CSS variables; `headFromMetadata` maps title (incl. templates), description, openGraph, twitter, alternates.canonical, icons             |
+| G2 app routes    | `src/routes/app/**`, `src/routes/dev/**`                                                                                                          | `/app`, `/app/policies`, `/app/settings`, `/app/cherry`, `/dev/txv1` render with apps/web's providers; signed-in dashboard shows data on the test host                                                                                                                                                                                        |
+| G3 site routes   | `src/routes/{index.tsx,500,agents,earn,landing,privacy-policy,risks,trust,ru,zh}/**`                                                              | every site page renders with head equal to Vercel's; locale redirect behaviour of apps/web `features/marketing/i18n/locale-redirect.ts` reproduced (G3 writes the spec, G5 implements the server half)                                                                                                                                        |
+| G4 blog + static | `src/routes/blog/**`, `src/overrides/blog-data.ts`, `scripts/web/static-files.ts`                                                                 | blog index (with `?page=`) and every slug render from `public/blog/*/post.md` read at build; sitemap.xml, robots.txt, llms.txt, llms-full.txt emitted into dist equal to Vercel's                                                                                                                                                             |
+| G5 Go server     | `go/workers/cmd/loyal-web/**`, `go/workers/internal/{webapp/{router,proxy,headers}.go,webserve/**}`                                               | proxy contract (method/body/query/cookies through, Host to upstream, Set-Cookie untouched, SSE flushes, same-origin Origin rewritten to upstream's); `/ingest/*` as apps/web next.config rewrites; CSP Report-Only and frame-ancestors equal to next.config.ts:44-72,150-167; cache tiers of wen webserve.go; `go vet`, `go test -race` green |
+| G6 deploy        | `deploy/hetzner/systemd/loyal-web.service`, the `web` case in `scripts/deploy-workers.sh`, `deploy/hetzner/caddy/loyal-web.caddy`, README section | `bun run deploy web <sha>` builds linux/amd64, ships, activates under the host lock, checks `/readyz` and the release, restores the previous binary on failure; unit limits (MemoryMax, CPUQuota, Nice); no IPs in the repo                                                                                                                   |
+| G7 Go API pilot  | `go/workers/internal/webapp/api_*.go`, `web/packages/api` generation, `scripts/web/api-diff.ts`                                                   | one yield read family on the same path as its Next handler, JSON equal to Vercel's for the test account                                                                                                                                                                                                                                       |
 
 Shared files (`routes.table.ts`, `__root.tsx`, `main.tsx`, `vite.config.ts`,
 `index.html`, `go.mod`, `internal/webapp/api.go`) belong

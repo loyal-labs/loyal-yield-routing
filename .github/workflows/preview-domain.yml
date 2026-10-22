@@ -14,23 +14,28 @@ permissions:
 
 jobs:
   domain:
+    if: >-
+      vars.LOYAL_VERCEL_PREVIEWS_ENABLED == 'true' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_TEAM_ID: team_CWDtWDIyqqcfgsOfzt4AWU5w
       VERCEL_PROJECT: loyal-frontend
+      EVENT_ACTION: ${{ github.event.action }}
       BRANCH: ${{ github.head_ref }}
     steps:
       - name: Attach or remove branch preview domain
         run: |
           set -euo pipefail
           # Vercel branch domains are lowercase hostnames; branch names are not.
+          : "${VERCEL_TOKEN:?VERCEL_TOKEN is required}"
           name="$(tr '[:upper:]' '[:lower:]' <<<"$BRANCH" | tr -c 'a-z0-9-\n' '-' | cut -c1-63 | sed 's/-*$//')"
           domain="${name}.preview.askloyal.com"
           api="https://api.vercel.com"
           auth=(-H "Authorization: Bearer $VERCEL_TOKEN")
 
-          if [[ "${{ github.event.action }}" == "closed" ]]; then
+          if [[ "$EVENT_ACTION" == "closed" ]]; then
             code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${auth[@]}" \
               "$api/v9/projects/$VERCEL_PROJECT/domains/$domain?teamId=$VERCEL_TEAM_ID")"
             echo "delete $domain -> $code"
@@ -40,7 +45,7 @@ jobs:
 
           code="$(curl -s -o /tmp/out.json -w '%{http_code}' -X POST "${auth[@]}" \
             -H 'content-type: application/json' \
-            -d "{\"name\":\"$domain\",\"gitBranch\":\"$BRANCH\"}" \
+            -d "$(jq -nc --arg name "$domain" --arg branch "$BRANCH" '{name: $name, gitBranch: $branch}')" \
             "$api/v10/projects/$VERCEL_PROJECT/domains?teamId=$VERCEL_TEAM_ID")"
           echo "add $domain -> $code"
           # 409: already attached (reopened PR) — fine.

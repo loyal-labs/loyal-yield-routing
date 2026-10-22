@@ -27,8 +27,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/loyal-labs/loyal-app.git",
-    "directory": "packages/flags"
+    "url": "https://github.com/loyal-labs/loyal-yield-routing.git",
+    "directory": "web/packages/flags"
   },
   "publishConfig": {
     "access": "public"

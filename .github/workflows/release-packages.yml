@@ -3,8 +3,18 @@ name: Release Packages
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "observability/**"
+    paths:
+      - "web/**"
+      - ".github/workflows/release-packages.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: web
+
+concurrency:
+  group: web-package-release
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -13,6 +23,7 @@ permissions:
 
 jobs:
   release:
+    if: github.ref == 'refs/heads/main' && vars.LOYAL_PACKAGE_RELEASES_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,7 +48,7 @@ jobs:
             echo "NPM_TOKEN is required to publish packages."
             exit 1
           fi
-          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          printf '%s\n' '//registry.npmjs.org/:_authToken=${NPM_TOKEN}' > ~/.npmrc
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -54,6 +65,8 @@ jobs:
         id: changesets
         uses: changesets/action@v1
         with:
+          github-token: ${{ secrets.RELEASE_GITHUB_TOKEN }}
+          cwd: web
           version: bun run version-packages
           publish: bun run release-packages
           commit: "chore(release): version packages"

@@ -19,19 +19,19 @@ export const mirrors = [
     source: "apps/web",
     repo: "loyal-labs/loyal-webapp",
     kind: "next-app",
-    description: "Generated mirror of loyal-app/frontend",
+    description: "Generated mirror of loyal-yield-routing/web/apps/web",
   },
   {
     source: "apps/telegram",
     repo: "loyal-labs/loyal-telegram-app",
     kind: "telegram-app",
-    description: "Generated mirror of loyal-app/app",
+    description: "Generated mirror of loyal-yield-routing/web/apps/telegram",
   },
   {
     source: "apps/mobile",
     repo: "loyal-labs/loyal-mobile",
     kind: "expo-app",
-    description: "Generated mirror of loyal-app/mobile",
+    description: "Generated mirror of loyal-yield-routing/web/apps/mobile",
     // Operator e2e verifier; hardcodes monorepo-relative package paths that
     // trip the generated-mirror safety check.
     excludePaths: ["apps/mobile/scripts/verify-withdraw-latency-e2e.ts"],
@@ -40,20 +40,20 @@ export const mirrors = [
     source: "apps/extension",
     repo: "loyal-labs/loyal-extension",
     kind: "wxt-extension",
-    description: "Generated mirror of loyal-app/extension",
+    description: "Generated mirror of loyal-yield-routing/web/apps/extension",
   },
   {
     source: "packages",
     repo: "loyal-labs/loyal-packages",
     kind: "source-tree",
-    description: "Generated mirror of loyal-app/packages",
+    description: "Generated mirror of loyal-yield-routing/web/packages",
     excludePaths: ["packages/private-transactions"],
   },
   {
     source: "crates",
     repo: "loyal-labs/loyal-cli",
     kind: "rust-cli",
-    description: "Generated mirror of loyal-app/crates",
+    description: "Generated mirror of loyal-yield-routing/web/crates",
     excludePaths: ["crates/private-transfers-cli"],
   },
 ] as const satisfies readonly MirrorConfig[];

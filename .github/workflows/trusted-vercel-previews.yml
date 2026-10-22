@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   preview:
+    if: vars.LOYAL_VERCEL_PREVIEWS_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

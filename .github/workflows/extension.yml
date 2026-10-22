@@ -1,0 +1,77 @@
+name: Extension CI
+on:
+  push:
+    paths:
+      [
+        "web/apps/extension/**",
+        "web/packages/**",
+        "web/bun.lock",
+        ".github/workflows/extension.yml",
+      ]
+  pull_request:
+    paths:
+      [
+        "web/apps/extension/**",
+        "web/packages/**",
+        "web/bun.lock",
+        ".github/workflows/extension.yml",
+      ]
+defaults:
+  run:
+    working-directory: web
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build:solana-packages
+      - run: cd packages/wallet-core && bun run typecheck && bun run build
+      - id: version
+        run: echo "v=$(jq -r .version apps/extension/package.json)" >> "$GITHUB_OUTPUT"
+      - name: Validate release configuration
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LOYAL_EXTENSION_RELEASES_ENABLED == 'true'
+        env:
+          VITE_COINGECKO_API_KEY: ${{ secrets.VITE_COINGECKO_API_KEY }}
+          VITE_MIXPANEL_TOKEN: ${{ secrets.VITE_MIXPANEL_TOKEN }}
+        run: |
+          : "${VITE_COINGECKO_API_KEY:?VITE_COINGECKO_API_KEY is required for releases}"
+          : "${VITE_MIXPANEL_TOKEN:?VITE_MIXPANEL_TOKEN is required for releases}"
+      - name: Build Chrome extension
+        run: bun run --cwd apps/extension build
+        env:
+          VITE_COINGECKO_API_KEY: ${{ github.ref == 'refs/heads/main' && vars.LOYAL_EXTENSION_RELEASES_ENABLED == 'true' && secrets.VITE_COINGECKO_API_KEY || '' }}
+          VITE_MIXPANEL_TOKEN: ${{ github.ref == 'refs/heads/main' && vars.LOYAL_EXTENSION_RELEASES_ENABLED == 'true' && secrets.VITE_MIXPANEL_TOKEN || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loyal-ext-universal-v${{ steps.version.outputs.v }}
+          path: web/apps/extension/.output/chrome-mv3/
+      - name: Build Firefox extension
+        run: bun run --cwd apps/extension build:firefox
+        env:
+          VITE_COINGECKO_API_KEY: ${{ github.ref == 'refs/heads/main' && vars.LOYAL_EXTENSION_RELEASES_ENABLED == 'true' && secrets.VITE_COINGECKO_API_KEY || '' }}
+          VITE_MIXPANEL_TOKEN: ${{ github.ref == 'refs/heads/main' && vars.LOYAL_EXTENSION_RELEASES_ENABLED == 'true' && secrets.VITE_MIXPANEL_TOKEN || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loyal-ext-firefox-v${{ steps.version.outputs.v }}
+          path: web/apps/extension/.output/firefox-mv2/
+      - name: Create release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LOYAL_EXTENSION_RELEASES_ENABLED == 'true'
+        run: |
+          cd apps/extension/.output
+          zip -r loyal-ext-universal-v${{ steps.version.outputs.v }}.zip chrome-mv3/
+          zip -r loyal-ext-firefox-v${{ steps.version.outputs.v }}.zip firefox-mv2/
+      - uses: softprops/action-gh-release@v2
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.LOYAL_EXTENSION_RELEASES_ENABLED == 'true'
+        with:
+          tag_name: ext-v${{ steps.version.outputs.v }}
+          name: Extension v${{ steps.version.outputs.v }}
+          make_latest: false
+          files: |
+            web/apps/extension/.output/loyal-ext-universal-v${{ steps.version.outputs.v }}.zip
+            web/apps/extension/.output/loyal-ext-firefox-v${{ steps.version.outputs.v }}.zip

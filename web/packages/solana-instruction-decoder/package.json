@@ -33,8 +33,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/loyal-labs/loyal-app.git",
-    "directory": "packages/solana-instruction-decoder"
+    "url": "https://github.com/loyal-labs/loyal-yield-routing.git",
+    "directory": "web/packages/solana-instruction-decoder"
   },
   "publishConfig": {
     "access": "public"

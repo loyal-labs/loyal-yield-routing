@@ -82,7 +82,6 @@ function copyTrackedPrefix(
   }
 }
 
-
 function writeMirrorSource(
   mirror: MirrorConfig,
   destinationRoot: string
@@ -91,13 +90,13 @@ function writeMirrorSource(
     path.join(destinationRoot, "MIRROR_SOURCE.md"),
     `# Mirror Source
 
-This repository is generated from \`loyal-labs/loyal-app\`.
+This repository is generated from \`loyal-labs/loyal-yield-routing\`.
 
-- Source path: \`${mirror.source}\`
+- Source path: \`web/${mirror.source}\`
 - Source commit: \`${getHeadSha()}\`
 - Generated at: \`${new Date().toISOString()}\`
 
-Do not edit this repository directly. Changes should land in \`loyal-app\`.
+Do not edit this repository directly. Changes should land in \`loyal-yield-routing/web\`.
 `
   );
 }
@@ -340,7 +339,11 @@ function pushMirror(
     runGit(["config", "user.name", "loyal mirror bot"], cloneRoot);
     runGit(["config", "user.email", "mirror-bot@loyal.app"], cloneRoot);
     runGit(
-      ["commit", "-m", `chore(sync): mirror loyal-app ${getShortHeadSha()}`],
+      [
+        "commit",
+        "-m",
+        `chore(sync): mirror loyal-yield-routing ${getShortHeadSha()}`,
+      ],
       cloneRoot
     );
     runGit(["push", "origin", "main"], cloneRoot);

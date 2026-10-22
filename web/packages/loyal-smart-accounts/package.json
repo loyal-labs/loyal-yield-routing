@@ -37,13 +37,13 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/loyal-labs/loyal-app.git",
-    "directory": "packages/loyal-smart-accounts"
+    "url": "https://github.com/loyal-labs/loyal-yield-routing.git",
+    "directory": "web/packages/loyal-smart-accounts"
   },
   "bugs": {
-    "url": "https://github.com/loyal/loyal-app/issues"
+    "url": "https://github.com/loyal-labs/loyal-yield-routing/issues"
   },
-  "homepage": "https://github.com/loyal/loyal-app/tree/main/sdk/loyal-smart-accounts#readme",
+  "homepage": "https://github.com/loyal-labs/loyal-yield-routing/tree/main/web/packages/loyal-smart-accounts#readme",
   "peerDependencies": {
     "@solana/web3.js": "^1.99.0"
   },

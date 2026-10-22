@@ -34,8 +34,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/loyal-labs/loyal-app.git",
-    "directory": "packages/solana-wallet"
+    "url": "https://github.com/loyal-labs/loyal-yield-routing.git",
+    "directory": "web/packages/solana-wallet"
   },
   "publishConfig": {
     "access": "public"
