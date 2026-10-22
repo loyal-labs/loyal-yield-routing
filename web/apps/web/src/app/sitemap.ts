@@ -1,11 +1,12 @@
 import type { MetadataRoute } from "next";
 
-import { getAllBlogPosts } from "@/features/blog";
+import { blogPostModifiedDate, getAllBlogPosts } from "@/features/blog";
 import {
   alternateLanguages,
   type Locale,
   localizedHref,
   type TranslatedPath,
+  TRANSLATED_PATHS,
 } from "@/features/marketing/i18n/locale";
 import { siteUrl } from "@/lib/seo/site";
 
@@ -38,35 +39,37 @@ import { siteUrl } from "@/lib/seo/site";
  */
 type TranslationDates = Partial<Record<Exclude<Locale, "en">, string>>;
 
+const TRANSLATED_ROUTE_DATES = {
+  "/": {
+    lastModified: "2026-09-22",
+    translations: { ru: "2026-10-03", zh: "2026-10-10" },
+  },
+  "/earn": {
+    lastModified: "2026-09-22",
+    translations: { ru: "2026-10-03", zh: "2026-10-10" },
+  },
+  "/agents": {
+    lastModified: "2026-05-28",
+    translations: { ru: "2026-10-03", zh: "2026-10-10" },
+  },
+  "/trust": {
+    lastModified: "2026-09-22",
+    translations: { ru: "2026-10-03", zh: "2026-10-10" },
+  },
+  "/risks": {
+    lastModified: "2026-09-22",
+    translations: { ru: "2026-10-03", zh: "2026-10-10" },
+  },
+} satisfies Record<
+  TranslatedPath,
+  { lastModified: string; translations: TranslationDates }
+>;
+
 const STATIC_ROUTES: ReadonlyArray<
   | { path: string; lastModified: string; translations?: undefined }
   | { path: TranslatedPath; lastModified: string; translations: TranslationDates }
 > = [
-  {
-    path: "/",
-    lastModified: "2026-09-22",
-    translations: { ru: "2026-10-03", zh: "2026-10-10" },
-  },
-  {
-    path: "/earn",
-    lastModified: "2026-09-22",
-    translations: { ru: "2026-10-03", zh: "2026-10-10" },
-  },
-  {
-    path: "/agents",
-    lastModified: "2026-05-28",
-    translations: { ru: "2026-10-03", zh: "2026-10-10" },
-  },
-  {
-    path: "/trust",
-    lastModified: "2026-09-22",
-    translations: { ru: "2026-10-03", zh: "2026-10-10" },
-  },
-  {
-    path: "/risks",
-    lastModified: "2026-09-22",
-    translations: { ru: "2026-10-03", zh: "2026-10-10" },
-  },
+  ...TRANSLATED_PATHS.map((path) => ({ path, ...TRANSLATED_ROUTE_DATES[path] })),
   { path: "/privacy-policy", lastModified: "2026-02-23" },
 ];
 
@@ -92,14 +95,12 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const newest = posts.at(0);
   const blogIndex = {
     url: siteUrl("/blog"),
-    lastModified: newest ? (newest.updated ?? newest.date) : undefined,
+    lastModified: newest ? blogPostModifiedDate(newest) : undefined,
   };
 
   const postEntries = posts.map((post) => ({
     url: siteUrl(`/blog/${post.slug}`),
-    // Same expression the post page uses for its JSON-LD dateModified, so the
-    // two can't disagree about when a post last changed.
-    lastModified: post.updated ?? post.date,
+    lastModified: blogPostModifiedDate(post),
   }));
 
   return [...staticEntries, blogIndex, ...postEntries];
