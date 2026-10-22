@@ -19,6 +19,7 @@ import (
 const (
 	vaultsFresh   = 5 * time.Minute
 	vaultsStale   = time.Minute
+	vaultsBackoff = 5 * time.Second
 	vaultsTimeout = 10 * time.Second
 	treasuryVault = "F7zuL14omw4JJfS1cvsWXVb3wh48dvsonMJgoc9tYu3e"
 )
@@ -35,32 +36,62 @@ type vaultsPage struct {
 }
 
 type vaultList struct {
-	pool *pgxpool.Pool
-	mu   sync.Mutex
-	last vaultsPage
+	pool     *pgxpool.Pool
+	mu       sync.Mutex
+	last     vaultsPage
+	inflight chan struct{}
+	failed   time.Time
 }
 
 func newVaultList(pool *pgxpool.Pool) *vaultList {
 	return &vaultList{pool: pool}
 }
 
-func (v *vaultList) page(ctx context.Context, now time.Time) (vaultsPage, bool) {
+// page never holds mu across the read. A usable page is returned at once while
+// the single refresh runs detached; without one the caller waits for that
+// refresh or its own ctx, and a failed refresh is not retried for vaultsBackoff.
+func (v *vaultList) page(ctx context.Context) (vaultsPage, bool) {
 	v.mu.Lock()
-	defer v.mu.Unlock()
+	now := time.Now()
 	age := now.Sub(v.last.fetched)
 	if v.last.body != nil && age < vaultsFresh {
-		return v.last, true
+		last := v.last
+		v.mu.Unlock()
+		return last, true
 	}
-	body, err := v.read(context.WithoutCancel(ctx), now)
-	if err == nil {
+	if v.inflight == nil && now.Sub(v.failed) >= vaultsBackoff {
+		v.inflight = make(chan struct{})
+		go v.refresh(v.inflight)
+	}
+	last, inflight := v.last, v.inflight
+	v.mu.Unlock()
+	if last.body != nil && age < vaultsFresh+vaultsStale {
+		return last, true
+	}
+	if inflight == nil {
+		return vaultsPage{}, false
+	}
+	select {
+	case <-inflight:
+		return v.page(ctx)
+	case <-ctx.Done():
+		return vaultsPage{}, false
+	}
+}
+
+func (v *vaultList) refresh(done chan struct{}) {
+	now := time.Now()
+	body, err := v.read(context.Background(), now)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if err != nil {
+		slog.Warn("vault list unavailable", "error", err)
+		v.failed = time.Now()
+	} else {
 		v.last = vaultsPage{body: body, fetched: now}
-		return v.last, true
 	}
-	slog.Warn("vault list unavailable", "error", err)
-	if v.last.body != nil && age < vaultsFresh+vaultsStale {
-		return v.last, true
-	}
-	return vaultsPage{}, false
+	v.inflight = nil
+	close(done)
 }
 
 func (v *vaultList) read(ctx context.Context, now time.Time) ([]byte, error) {
@@ -100,7 +131,7 @@ LIMIT 50000`)
 func (v *vaultList) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
-	page, ok := v.page(r.Context(), time.Now())
+	page, ok := v.page(r.Context())
 	if !ok {
 		h.Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusServiceUnavailable)
