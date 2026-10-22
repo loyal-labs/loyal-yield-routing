@@ -3,10 +3,13 @@
 //
 //   bun scripts/web/gen-routes.ts [--app loyal|admin]          write route files that do not exist yet
 //   bun scripts/web/gen-routes.ts [--app loyal|admin] --check  fail on a row without a route file,
-//                                                              or a Next page/layout without a row
+//                                                              or a Next page/layout without a row,
+//                                                              or (admin) a loading.tsx its route file does not wire
 //
 // A scaffolded file belongs to its row's lane afterwards; this never rewrites
-// an existing file.
+// an existing file. A Next loading.tsx beside a page is its route's
+// pendingComponent: scaffolded files import it, and --check fails an existing
+// route file that does not.
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
@@ -56,17 +59,24 @@ function adminRows(): RouteRow[] {
     });
 }
 
+function adminLoading(row: RouteRow): string | null {
+  const loading = join(dirname(row.next), "loading.tsx");
+  return row.kind === "page" && existsSync(join(nextApp, loading)) ? `@/app/${loading.replace(/\.tsx$/, "")}` : null;
+}
+
 function adminSource(row: RouteRow): string {
   const module = `@/app/${row.next.replace(/\.tsx$/, "")}`;
+  const loading = adminLoading(row);
+  const pending = loading ? "\n  pendingComponent: Loading," : "";
   const pageKey = row.next.startsWith(`${adminGroup}/`)
     ? `/${dirname(row.next).split("/").slice(1).map((segment) => segment.replace(/^\[(\w+)\]$/, "{$1}")).join("/")}`
     : null;
-  const head = [`import { createFileRoute${row.kind === "layout" ? ", Outlet" : ""} } from "@tanstack/react-router";`, "", `import Source from "${module}";`];
+  const head = [`import { createFileRoute${row.kind === "layout" ? ", Outlet" : ""} } from "@tanstack/react-router";`, "", `import Source from "${module}";`, ...(loading ? [`import Loading from "${loading}";`] : [])];
   if (row.kind === "layout") {
     return `${head.join("\n")}\n\nexport const Route = createFileRoute("${routeId(row)}")({\n  component: () => (\n    <Source>\n      <Outlet />\n    </Source>\n  ),\n});\n`;
   }
   if (!pageKey) {
-    return `${head.join("\n")}\n\nexport const Route = createFileRoute("${routeId(row)}")({\n  component: Source,\n});\n`;
+    return `${head.join("\n")}\n\nexport const Route = createFileRoute("${routeId(row)}")({\n  component: Source,${pending}\n});\n`;
   }
   return `${head.join("\n")}
 
@@ -82,7 +92,7 @@ export const Route = createFileRoute("${routeId(row)}")({
   loader: ({ location }) => pageData<Props>(location),
   component: function Page() {
     return <Source {...Route.useLoaderData()} />;
-  },
+  },${pending}
 });
 `;
 }
@@ -105,7 +115,13 @@ for (const file of nextFiles(nextApp)) {
 const check = process.argv.includes("--check");
 for (const row of table) {
   const file = routeFile(row);
-  if (existsSync(file)) continue;
+  if (existsSync(file)) {
+    const loading = app === "admin" ? adminLoading(row) : null;
+    if (check && loading && !readFileSync(file, "utf8").includes(`from "${loading}"`)) {
+      problems.push(`${relative(root, file)} does not wire ${loading} as pendingComponent`);
+    }
+    continue;
+  }
   if (check) {
     problems.push(`no route file ${relative(root, file)} for ${row.next}`);
     continue;

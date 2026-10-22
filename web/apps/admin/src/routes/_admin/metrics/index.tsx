@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import Source from "@/app/(admin)/metrics/page";
+import Loading from "@/app/(admin)/metrics/loading";
 
 import type { ComponentProps } from "react";
 import type { Pages } from "@/api.gen/pages";
@@ -16,4 +17,5 @@ export const Route = createFileRoute("/_admin/metrics/")({
   component: function Page() {
     return <Source {...Route.useLoaderData()} />;
   },
+  pendingComponent: Loading,
 });
