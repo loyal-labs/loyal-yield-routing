@@ -1003,22 +1003,28 @@ const rebalanceSQLExecutedHistory = `
       ),
       chart_rows AS (
         SELECT
-          id,
-          executed_at,
-          amount_raw,
+          date_trunc('hour', executed_at, 'UTC') AS bucket_at,
+          route_mode,
+          liquidity_mint,
           source_reserve,
           target_reserve,
-          liquidity_mint,
           source_liquidity_mint,
           target_liquidity_mint,
-          route_mode,
-          swap_fee_lamports,
-          confirmed_slot,
-          authority,
-          current_deposit_raw::text AS current_deposit_raw,
-          user_rank
+          COUNT(*)::integer AS execution_count,
+          COUNT(DISTINCT authority)::integer AS user_count,
+          SUM(amount_raw::numeric)::text AS amount_raw,
+          ROUND(AVG(current_deposit_raw::numeric))::text AS avg_deposit_raw,
+          SUM(swap_fee_lamports::numeric)::text AS swap_fee_lamports
         FROM execution_rows
         WHERE executed_at >= now() - interval '90 days'
+        GROUP BY
+          date_trunc('hour', executed_at, 'UTC'),
+          route_mode,
+          liquidity_mint,
+          source_reserve,
+          target_reserve,
+          source_liquidity_mint,
+          target_liquidity_mint
       ),
       detail_rows AS (
         SELECT
@@ -1062,6 +1068,12 @@ const rebalanceSQLExecutedHistory = `
               AND executed_at >= now() - interval '7 days'
           )::integer AS fully_withdrawn_count_7d,
           COUNT(DISTINCT authority)::integer AS user_count,
+          COUNT(DISTINCT authority) FILTER (
+            WHERE executed_at >= now() - interval '30 days'
+          )::integer AS user_count_30d,
+          COUNT(DISTINCT authority) FILTER (
+            WHERE executed_at >= now() - interval '7 days'
+          )::integer AS user_count_7d,
           COALESCE(SUM(swap_fee_lamports::bigint), 0)::text AS swap_fee_lamports
         FROM execution_rows
         GROUP BY route_mode, liquidity_mint
@@ -1081,6 +1093,8 @@ const rebalanceSQLExecutedHistory = `
                 fully_withdrawn_count_30d,
                 fully_withdrawn_count_7d,
                 user_count,
+                user_count_30d,
+                user_count_7d,
                 swap_fee_lamports
               FROM summary_rows
             ) AS summary_row
@@ -1091,22 +1105,24 @@ const rebalanceSQLExecutedHistory = `
           (
             SELECT json_agg(
               json_build_array(
-                chart_row.amount_raw,
-                chart_row.authority,
-                chart_row.confirmed_slot,
-                chart_row.current_deposit_raw,
-                chart_row.executed_at,
-                chart_row.id,
-                chart_row.liquidity_mint,
+                chart_row.bucket_at,
                 chart_row.route_mode,
+                chart_row.liquidity_mint,
                 chart_row.source_reserve,
-                chart_row.source_liquidity_mint,
-                chart_row.swap_fee_lamports,
                 chart_row.target_reserve,
+                chart_row.source_liquidity_mint,
                 chart_row.target_liquidity_mint,
-                chart_row.user_rank
+                chart_row.execution_count,
+                chart_row.user_count,
+                chart_row.amount_raw,
+                chart_row.avg_deposit_raw,
+                chart_row.swap_fee_lamports
               )
-              ORDER BY chart_row.executed_at ASC, chart_row.id ASC
+              ORDER BY
+                chart_row.bucket_at ASC,
+                chart_row.source_reserve ASC,
+                chart_row.target_reserve ASC,
+                chart_row.route_mode ASC
             )
             FROM chart_rows AS chart_row
           ),

@@ -68,8 +68,23 @@ export type SerializedExecutedEarnRebalanceRow = {
   userRank: number;
 };
 
+export type SerializedExecutedEarnRebalanceBucket = {
+  amountRaw: string;
+  avgDepositRaw: string;
+  executedAt: string;
+  executionCount: number;
+  liquidityMint: string | null;
+  routeMode: RebalanceRouteMode;
+  sourceReserve: string;
+  sourceLiquidityMint: string | null;
+  swapFeeLamports: string;
+  targetReserve: string;
+  targetLiquidityMint: string | null;
+  userCount: number;
+};
+
 export type SerializedExecutedEarnRebalanceHistory = {
-  chartPoints: SerializedExecutedEarnRebalanceRow[];
+  chartPoints: SerializedExecutedEarnRebalanceBucket[];
   details: SerializedExecutedEarnRebalanceRow[];
   generatedAt: string;
   status: "available" | "unavailable";
@@ -87,9 +102,11 @@ export type SerializedExecutedEarnRebalanceSummary = {
   routeMode: RebalanceRouteMode;
   swapFeeLamports: string;
   userCount: number;
+  userCount30d: number;
+  userCount7d: number;
 };
 
-type ChartPoint = SerializedExecutedEarnRebalanceRow & {
+type ChartPoint = SerializedExecutedEarnRebalanceBucket & {
   depositAmount: number;
   executedAtMs: number;
 };
@@ -185,12 +202,18 @@ function ExecutedRebalanceTooltip({
   return (
     <div className="grid min-w-[17rem] gap-1 rounded-lg border border-border/70 bg-background px-3 py-2 text-xs shadow-xl">
       <div className="font-medium">
-        {formatUtcTimestamp(point.executedAtMs)}
+        {formatUtcTimestamp(point.executedAtMs)} · 1 hour
       </div>
       <div className="text-muted-foreground">
         {source} → {target}
       </div>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 pt-1">
+        <dt className="text-muted-foreground">Executions</dt>
+        <dd className="text-right font-medium tabular-nums">
+          {point.executionCount.toLocaleString("en-US")} ·{" "}
+          {point.userCount.toLocaleString("en-US")}{" "}
+          {point.userCount === 1 ? "user" : "users"}
+        </dd>
         <dt className="text-muted-foreground">Executed</dt>
         <dd className="text-right font-medium tabular-nums">
           {formatStablecoinRaw(
@@ -208,24 +231,16 @@ function ExecutedRebalanceTooltip({
               →{" "}
               {getEarnStablecoinSymbol(point.targetLiquidityMint) ?? "Unknown"}
             </dd>
-            <dt className="text-muted-foreground">Swap fee</dt>
+            <dt className="text-muted-foreground">Swap fees</dt>
             <dd className="text-right font-medium tabular-nums">
               {formatSwapFee(point.swapFeeLamports)}
             </dd>
           </>
         ) : null}
-        <dt className="text-muted-foreground">User deposit now</dt>
+        <dt className="text-muted-foreground">Avg user deposit now</dt>
         <dd className="text-right font-medium tabular-nums">
-          {formatStablecoinRaw(point.currentDepositRaw, null)}
+          {formatStablecoinRaw(point.avgDepositRaw, null)}
         </dd>
-        <dt className="text-muted-foreground">User</dt>
-        <dd className="text-right font-mono">
-          {formatShortAddress(point.authority)} · rank {point.userRank}
-        </dd>
-        <dt className="text-muted-foreground">Decision</dt>
-        <dd className="text-right font-mono">{point.id}</dd>
-        <dt className="text-muted-foreground">Confirmed slot</dt>
-        <dd className="text-right font-mono">{point.confirmedSlot}</dd>
       </dl>
     </div>
   );
@@ -256,8 +271,7 @@ export function ExecutedEarnRebalancesChart({
         .map((execution) => ({
           ...execution,
           depositAmount:
-            Number(BigInt(execution.currentDepositRaw)) /
-            10 ** STABLECOIN_DECIMALS,
+            Number(BigInt(execution.avgDepositRaw)) / 10 ** STABLECOIN_DECIMALS,
           executedAtMs: Date.parse(execution.executedAt),
         }))
         .filter((execution) => Number.isFinite(execution.executedAtMs)),
@@ -368,19 +382,16 @@ export function ExecutedEarnRebalancesChart({
         : item.executionCount7d),
     0
   );
-  const exactFullyWithdrawnCount = routeSummaries.reduce(
+  const distinctUserCount = routeSummaries.reduce(
     (total, item) =>
       total +
       (range === "all"
-        ? item.fullyWithdrawnCount
+        ? item.userCount
         : range === "30d"
-        ? item.fullyWithdrawnCount30d
-        : item.fullyWithdrawnCount7d),
+        ? item.userCount30d
+        : item.userCount7d),
     0
   );
-  const distinctUserCount = new Set(
-    filteredPoints.map((point) => point.authority)
-  ).size;
   const positiveDeposits = filteredPoints
     .map((point) => point.depositAmount)
     .filter((amount) => amount > 0 && Number.isFinite(amount));
@@ -401,6 +412,9 @@ export function ExecutedEarnRebalancesChart({
     ...point,
     logDepositAmount: point.depositAmount > 0 ? point.depositAmount : logFloor,
   }));
+  const floorPointCount = filteredPoints.filter(
+    (point) => point.depositAmount <= 0
+  ).length;
   const tableRows = filteredDetails.slice(0, 50);
   const swapFeeLamports = routeSummaries
     .reduce((total, item) => total + BigInt(item.swapFeeLamports), BigInt(0))
@@ -434,10 +448,10 @@ export function ExecutedEarnRebalancesChart({
               Executed Earn rebalances
             </CardTitle>
             <CardDescription>
-              One dot per confirmed{" "}
+              One dot per hour and reserve-to-reserve route of confirmed{" "}
               {routeMode === "cross_mint" ? "Crossmint" : "same-mint"}{" "}
-              reserve-to-reserve decision. Y is the user&rsquo;s current Earn
-              deposit, on a log or linear scale. Times are UTC.
+              decisions. Y is the average current Earn deposit of the users who
+              executed in that hour, on a log or linear scale. Times are UTC.
             </CardDescription>
           </div>
           <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
@@ -692,15 +706,13 @@ export function ExecutedEarnRebalancesChart({
             {useLogScale
               ? "Y-axis is a log scale of current deposit amounts"
               : "Y-axis labels sample current deposit amounts"}
-            ; hover a dot for the exact wallet, current deposit, route, amount,
-            decision, and slot.
-            {useLogScale && exactFullyWithdrawnCount > 0
-              ? ` ${exactFullyWithdrawnCount.toLocaleString(
-                  "en-US"
-                )} fully withdrawn ${
-                  exactFullyWithdrawnCount === 1
-                    ? "execution sits"
-                    : "executions sit"
+            ; hover a dot for the hour&rsquo;s execution count, route, total
+            amount, and average current deposit.
+            {useLogScale && floorPointCount > 0
+              ? ` ${floorPointCount.toLocaleString("en-US")} ${
+                  floorPointCount === 1 ? "hour" : "hours"
+                } with only fully withdrawn users ${
+                  floorPointCount === 1 ? "sits" : "sit"
                 } on the axis floor.`
               : ""}
           </p>

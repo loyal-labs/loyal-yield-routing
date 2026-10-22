@@ -247,7 +247,14 @@ func rebalanceExecutedWire(r *http.Request, d *Deps) map[string]any {
 		}
 		return out
 	}
-	chart := serialize(history.chartPoints)
+	chart := make([][]any, len(history.chartPoints))
+	for i, b := range history.chartPoints {
+		chart[i] = []any{
+			b.ExecutedAt, b.RouteMode, table.of(b.LiquidityMint), table.must(b.SourceReserve), table.must(b.TargetReserve),
+			table.of(b.SourceLiquidityMint), table.of(b.TargetLiquidityMint), b.ExecutionCount, b.UserCount,
+			b.AmountRaw, b.AvgDepositRaw, b.SwapFeeLamports,
+		}
+	}
 	details := serialize(history.details)
 	return map[string]any{
 		"chartPoints": chart, "details": details, "generatedAt": history.generatedAt,

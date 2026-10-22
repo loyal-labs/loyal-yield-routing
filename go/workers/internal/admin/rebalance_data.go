@@ -496,6 +496,38 @@ func rebalanceExecutedFromTuple(t rebalanceTuple) RebalanceExecuted {
 	}
 }
 
+type RebalanceExecutedBucket struct {
+	AmountRaw           string             `json:"amountRaw"`
+	AvgDepositRaw       string             `json:"avgDepositRaw"`
+	ExecutedAt          string             `json:"executedAt"`
+	ExecutionCount      int64              `json:"executionCount"`
+	LiquidityMint       *string            `json:"liquidityMint"`
+	RouteMode           RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
+	SourceReserve       string             `json:"sourceReserve"`
+	SourceLiquidityMint *string            `json:"sourceLiquidityMint"`
+	SwapFeeLamports     string             `json:"swapFeeLamports"`
+	TargetReserve       string             `json:"targetReserve"`
+	TargetLiquidityMint *string            `json:"targetLiquidityMint"`
+	UserCount           int64              `json:"userCount"`
+}
+
+func rebalanceExecutedBucketFromTuple(t rebalanceTuple) RebalanceExecutedBucket {
+	return RebalanceExecutedBucket{
+		ExecutedAt:          t.iso(0),
+		RouteMode:           rebalanceRouteModeOf(t.str(1)),
+		LiquidityMint:       t.text(2),
+		SourceReserve:       t.str(3),
+		TargetReserve:       t.str(4),
+		SourceLiquidityMint: t.text(5),
+		TargetLiquidityMint: t.text(6),
+		ExecutionCount:      t.num(7),
+		UserCount:           t.num(8),
+		AmountRaw:           t.big(9),
+		AvgDepositRaw:       t.big(10),
+		SwapFeeLamports:     t.big(11),
+	}
+}
+
 type RebalanceExecutedSummary struct {
 	ExecutionCount         int64              `json:"executionCount"`
 	ExecutionCount30d      int64              `json:"executionCount30d"`
@@ -507,10 +539,12 @@ type RebalanceExecutedSummary struct {
 	RouteMode              RebalanceRouteMode `json:"routeMode" enum:"same_mint,cross_mint"`
 	SwapFeeLamports        string             `json:"swapFeeLamports"`
 	UserCount              int64              `json:"userCount"`
+	UserCount30d           int64              `json:"userCount30d"`
+	UserCount7d            int64              `json:"userCount7d"`
 }
 
 type rebalanceExecutedHistory struct {
-	chartPoints []RebalanceExecuted
+	chartPoints []RebalanceExecutedBucket
 	details     []RebalanceExecuted
 	generatedAt string
 	summaries   []RebalanceExecutedSummary
@@ -527,6 +561,8 @@ func rebalanceExecutedHistoryData(ctx context.Context, d *Deps, includeDetails b
 		FullyWithdrawnCount30d rebalanceFlexInt  `json:"fully_withdrawn_count_30d"`
 		FullyWithdrawnCount7d  rebalanceFlexInt  `json:"fully_withdrawn_count_7d"`
 		UserCount              rebalanceFlexInt  `json:"user_count"`
+		UserCount30d           rebalanceFlexInt  `json:"user_count_30d"`
+		UserCount7d            rebalanceFlexInt  `json:"user_count_7d"`
 		SwapFeeLamports        rebalanceFlexText `json:"swap_fee_lamports"`
 	}
 	var chart, details []rebalanceTuple
@@ -538,13 +574,13 @@ func rebalanceExecutedHistoryData(ctx context.Context, d *Deps, includeDetails b
 		return rebalanceExecutedHistory{}, err
 	}
 	history := rebalanceExecutedHistory{
-		chartPoints: make([]RebalanceExecuted, len(chart)),
+		chartPoints: make([]RebalanceExecutedBucket, len(chart)),
 		details:     make([]RebalanceExecuted, len(details)),
 		generatedAt: rebalanceISOTime(time.Now()),
 		summaries:   make([]RebalanceExecutedSummary, len(summaries)),
 	}
 	for i, row := range chart {
-		history.chartPoints[i] = rebalanceExecutedFromTuple(row)
+		history.chartPoints[i] = rebalanceExecutedBucketFromTuple(row)
 	}
 	for i, row := range details {
 		history.details[i] = rebalanceExecutedFromTuple(row)
@@ -561,6 +597,8 @@ func rebalanceExecutedHistoryData(ctx context.Context, d *Deps, includeDetails b
 			RouteMode:              rebalanceRouteModeOf(row.RouteMode),
 			SwapFeeLamports:        string(row.SwapFeeLamports),
 			UserCount:              int64(row.UserCount),
+			UserCount30d:           int64(row.UserCount30d),
+			UserCount7d:            int64(row.UserCount7d),
 		}
 	}
 	return history, nil

@@ -56,7 +56,9 @@ import {
 } from "./earn-vault-rebalance-frequency-chart";
 import {
   ExecutedEarnRebalancesChart,
+  type SerializedExecutedEarnRebalanceBucket,
   type SerializedExecutedEarnRebalanceHistory,
+  type SerializedExecutedEarnRebalanceRow,
 } from "./executed-earn-rebalances-chart";
 import { Last30DaysRebalanceChart } from "./last-30-days-rebalance-chart";
 import { RebalanceActivityChart } from "./rebalance-activity-chart";
@@ -145,6 +147,21 @@ type SerializedExecutedRebalanceTuple = readonly [
   userRank: number
 ];
 
+type SerializedExecutedBucketTuple = readonly [
+  executedAt: string,
+  routeMode: RebalanceRouteMode,
+  liquidityMintIndex: number | null,
+  sourceReserveIndex: number,
+  targetReserveIndex: number,
+  sourceLiquidityMintIndex: number | null,
+  targetLiquidityMintIndex: number | null,
+  executionCount: number,
+  userCount: number,
+  amountRaw: string,
+  avgDepositRaw: string,
+  swapFeeLamports: string
+];
+
 type SerializedVaultFrequencyTuple = readonly [
   allCount: number,
   currentDepositRaw: string,
@@ -169,7 +186,7 @@ type RebalanceApiWireData = Omit<
     SerializedExecutedEarnRebalanceHistory,
     "chartPoints" | "details"
   > & {
-    chartPoints: ReadonlyArray<SerializedExecutedRebalanceTuple>;
+    chartPoints: ReadonlyArray<SerializedExecutedBucketTuple>;
     details: ReadonlyArray<SerializedExecutedRebalanceTuple>;
     strings: string[];
   };
@@ -200,7 +217,7 @@ function deserializeExecutedRebalance(
     userRank,
   ]: SerializedExecutedRebalanceTuple,
   strings: readonly string[]
-): SerializedExecutedEarnRebalanceHistory["chartPoints"][number] {
+): SerializedExecutedEarnRebalanceRow {
   return {
     amountRaw,
     authority: strings[authorityIndex] ?? "",
@@ -223,6 +240,46 @@ function deserializeExecutedRebalance(
         : strings[targetLiquidityMintIndex] ?? null,
     targetReserve: strings[targetReserveIndex] ?? "",
     userRank,
+  };
+}
+
+function deserializeExecutedBucket(
+  [
+    executedAt,
+    routeMode,
+    liquidityMintIndex,
+    sourceReserveIndex,
+    targetReserveIndex,
+    sourceLiquidityMintIndex,
+    targetLiquidityMintIndex,
+    executionCount,
+    userCount,
+    amountRaw,
+    avgDepositRaw,
+    swapFeeLamports,
+  ]: SerializedExecutedBucketTuple,
+  strings: readonly string[]
+): SerializedExecutedEarnRebalanceBucket {
+  return {
+    amountRaw,
+    avgDepositRaw,
+    executedAt,
+    executionCount,
+    liquidityMint:
+      liquidityMintIndex === null ? null : strings[liquidityMintIndex] ?? null,
+    routeMode,
+    sourceLiquidityMint:
+      sourceLiquidityMintIndex === null
+        ? null
+        : strings[sourceLiquidityMintIndex] ?? null,
+    sourceReserve: strings[sourceReserveIndex] ?? "",
+    swapFeeLamports,
+    targetLiquidityMint:
+      targetLiquidityMintIndex === null
+        ? null
+        : strings[targetLiquidityMintIndex] ?? null,
+    targetReserve: strings[targetReserveIndex] ?? "",
+    userCount,
   };
 }
 
@@ -1841,7 +1898,7 @@ function deserializeExecutionsData(
   return {
     ...wireData.executedRebalances,
     chartPoints: wireData.executedRebalances.chartPoints.map((row) =>
-      deserializeExecutedRebalance(row, wireData.executedRebalances.strings)
+      deserializeExecutedBucket(row, wireData.executedRebalances.strings)
     ),
     details: wireData.executedRebalances.details.map((row) =>
       deserializeExecutedRebalance(row, wireData.executedRebalances.strings)
