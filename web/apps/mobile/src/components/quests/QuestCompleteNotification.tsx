@@ -31,11 +31,20 @@ const PANEL_PB = 40;
 // The paw is stamped onto the card after the slide-in spring has settled (~120ms
 // delay + ~540ms spring), so it reads as a distinct beat — the sheet lands, then
 // the paw presses down.
-const PAW_STAMP_DELAY_MS = REVEAL_DELAY_MS + 540;
+const SHEET_SPRING = { damping: 26, stiffness: 170, mass: 1 } as const;
+const SPRING_SETTLE_AMPLITUDE = 0.0009;
+const SHEET_SPRING_SETTLE_MS = Math.ceil(
+  ((2 * SHEET_SPRING.mass * 1000) / SHEET_SPRING.damping) *
+    Math.log(1 / SPRING_SETTLE_AMPLITUDE),
+);
+const PAW_STAMP_DELAY_MS = REVEAL_DELAY_MS + SHEET_SPRING_SETTLE_MS;
 
 export type QuestCompleteVariant = "single" | "all";
 
-const COPY: Record<QuestCompleteVariant, { title: string; body: string; cta: string }> = {
+const COPY: Record<
+  QuestCompleteVariant,
+  { title: string; body: string; cta: string }
+> = {
   single: {
     title: "Task complete",
     body: "You completed a Seeker Summer task",
@@ -87,10 +96,7 @@ export function QuestCompleteNotification({
     pawOpacity.value = 0;
 
     backdrop.value = withTiming(1, { duration: 240 });
-    sheetY.value = withDelay(
-      REVEAL_DELAY_MS,
-      withSpring(0, { damping: 26, stiffness: 170, mass: 1 }),
-    );
+    sheetY.value = withDelay(REVEAL_DELAY_MS, withSpring(0, SHEET_SPRING));
     pawOpacity.value = withDelay(
       PAW_STAMP_DELAY_MS,
       withTiming(1, { duration: 80, easing: Easing.out(Easing.quad) }),

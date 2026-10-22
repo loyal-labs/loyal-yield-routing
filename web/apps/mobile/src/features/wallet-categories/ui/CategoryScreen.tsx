@@ -9,7 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { StyleSheet, View as MeasureView } from "react-native";
+import { View as MeasureView } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   useAnimatedScrollHandler,
@@ -24,16 +24,13 @@ import { resolveShieldedRow } from "@/components/wallet/shielded-balance";
 import { UnshieldSheet } from "@/components/wallet/UnshieldSheet";
 import { buildTokenDetailHref } from "@/features/token-details/routes";
 import { useSolPrice } from "@/hooks/wallet/useSolPrice";
-import { useTokenDetails } from "@/hooks/wallet/useTokenDetails";
+import {
+  useTokenDetailMints,
+  useTokenDetails,
+} from "@/hooks/wallet/useTokenDetails";
 import { useTokenHoldings } from "@/hooks/wallet/useTokenHoldings";
 import { useWalletBalance } from "@/hooks/wallet/useWalletBalance";
 import { useWalletInit } from "@/hooks/wallet/useWalletInit";
-import {
-  LOYAL_TOKEN_MINT,
-  NATIVE_SOL_MINT,
-  SOLANA_USDC_MINT_DEVNET,
-  SOLANA_USDC_MINT_MAINNET,
-} from "@/lib/solana/constants";
 import { getSolanaEnv } from "@/lib/solana/rpc/connection";
 import {
   getDisplayTokenHoldings,
@@ -41,7 +38,7 @@ import {
 } from "@/lib/solana/token-holdings/display-holdings";
 import { useWallet } from "@/lib/wallet/wallet-provider";
 import { Pressable, Text, View } from "@/tw";
-
+import EllipsisIcon from "../../../../assets/images/icons/ellipsis.svg";
 import {
   filterHoldingsByCategory,
   isStablecoinHolding,
@@ -53,24 +50,31 @@ import type { CardSourceRect } from "../routes";
 import { ActionBarButton } from "./ActionBarButton";
 import { CardExpandTransition } from "./CardExpandTransition";
 import { CategoryAssetRow } from "./CategoryAssetRow";
+import { CategoryCardFace } from "./CategoryCardFace";
 import { CryptoGlyph, StablecoinsGlyph } from "./CategoryGlyphs";
 import { type MoreActionsAnchor, MoreActionsSheet } from "./MoreActionsSheet";
 import { ShieldedAssetRow } from "./ShieldedAssetRow";
 
-import EllipsisIcon from "../../../../assets/images/icons/ellipsis.svg";
-
 const MUTED = "rgba(60, 60, 67, 0.6)";
 const CENTS_DIM = "rgba(60, 60, 67, 0.4)";
-// Opaque equivalent of the grid card's soft gray (rgba(0,0,0,0.03) over white) —
-// opaque so the morph box fully covers the real card behind the transparent
+// Opaque so the morph box fully covers the real card behind the transparent
 // modal at t=0, avoiding a double-image as it expands.
-const CARD_COLOR = "#F7F7F7";
+const GRID_CARD_GRAY_ALPHA = 0.03;
+const toOpaqueOverWhite = (alpha: number): string => {
+  const channel = Math.round(255 * (1 - alpha));
+  return `#${((channel << 16) | (channel << 8) | channel)
+    .toString(16)
+    .padStart(6, "0")
+    .toUpperCase()}`;
+};
+const CARD_COLOR = toOpaqueOverWhite(GRID_CARD_GRAY_ALPHA);
 
 export function CategoryScreen({ category }: { category: WalletCategory }) {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { walletAddress } = useWalletInit();
-  const { solBalanceLamports, refreshBalance } = useWalletBalance(walletAddress);
+  const { solBalanceLamports, refreshBalance } =
+    useWalletBalance(walletAddress);
   const { solPriceUsd } = useSolPrice();
   const { tokenHoldings, isHoldingsLoading, refreshTokenHoldings } =
     useTokenHoldings(walletAddress);
@@ -109,30 +113,25 @@ export function CategoryScreen({ category }: { category: WalletCategory }) {
   });
   const scrollGesture = useMemo(() => Gesture.Native(), []);
 
-  const tokenDetailMints = useMemo(() => {
-    const mints = new Set<string>([
-      NATIVE_SOL_MINT,
-      LOYAL_TOKEN_MINT,
-      getSolanaEnv() === "mainnet"
-        ? SOLANA_USDC_MINT_MAINNET
-        : SOLANA_USDC_MINT_DEVNET,
-    ]);
-    for (const holding of tokenHoldings) mints.add(holding.mint);
-    for (const balance of shieldedBalances) mints.add(balance.tokenMint);
-    return Array.from(mints);
-  }, [tokenHoldings, shieldedBalances]);
+  const tokenDetailMints = useTokenDetailMints(tokenHoldings, shieldedBalances);
   const tokenDetailsByMint = useTokenDetails(tokenDetailMints);
 
   const shieldedRows = useMemo(
     () =>
       shieldedBalances
         .map((b) => resolveShieldedRow(b, tokenHoldings, tokenDetailsByMint))
-        .filter((row) => isStablecoinHolding(row) === (category === "stablecoins")),
+        .filter(
+          (row) => isStablecoinHolding(row) === (category === "stablecoins"),
+        ),
     [shieldedBalances, tokenHoldings, tokenDetailsByMint, category],
   );
 
   const displayHoldings = useMemo(
-    () => filterHoldingsByCategory(getDisplayTokenHoldings(tokenHoldings), category),
+    () =>
+      filterHoldingsByCategory(
+        getDisplayTokenHoldings(tokenHoldings),
+        category,
+      ),
     [tokenHoldings, category],
   );
   const pairPositions = useMemo(
@@ -189,26 +188,12 @@ export function CategoryScreen({ category }: { category: WalletCategory }) {
 
   // Collapsed "card face" drawn over the box at the start/end of the morph —
   // mirrors the wallet grid card (glyph top, label + value bottom).
-  const faceParts = splitUsd(sourceRect?.usd ?? 0);
   const face = (
-    <>
-      <View>
-        {category === "stablecoins" ? (
-          <StablecoinsGlyph size={40} />
-        ) : (
-          <CryptoGlyph size={40} />
-        )}
-      </View>
-      <View style={{ gap: 4 }}>
-        <Text className="text-[15px]" style={{ color: MUTED, lineHeight: 20 }}>
-          {title}
-        </Text>
-        <Text style={styles.faceValue} numberOfLines={1}>
-          {faceParts.whole}
-          <Text style={styles.faceCents}>{faceParts.cents}</Text>
-        </Text>
-      </View>
-    </>
+    <CategoryCardFace
+      category={category}
+      title={title}
+      usd={sourceRect?.usd ?? 0}
+    />
   );
 
   return (
@@ -450,17 +435,3 @@ export function CategoryScreen({ category }: { category: WalletCategory }) {
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  faceValue: {
-    fontFamily: "Geist_600SemiBold",
-    fontSize: 20,
-    lineHeight: 24,
-    letterSpacing: -0.22,
-    color: "#000000",
-  },
-  faceCents: {
-    fontFamily: "Geist_600SemiBold",
-    color: CENTS_DIM,
-  },
-});
