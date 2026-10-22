@@ -1,7 +1,11 @@
 package admin
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -49,16 +53,27 @@ func (a Auth) NewSession(user string) Session {
 	return Session{Sub: user, Iat: issued, Exp: issued + SessionTTLSeconds}
 }
 
-func (a Auth) Sign(session Session) string {
-	return jwt.SignHS256([]byte(a.Password), session)
+func (a Auth) sign(session Session) string {
+	unsigned := segment(map[string]string{"alg": "HS256", "typ": "JWT"}) + "." + segment(session)
+	mac := hmac.New(sha256.New, []byte(a.Password))
+	mac.Write([]byte(unsigned))
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func segment(value any) string {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(value)
+	return base64.RawURLEncoding.EncodeToString(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 }
 
 func (a Auth) Verify(token string) (Session, bool) {
 	if token == "" || a.Password == "" {
 		return Session{}, false
 	}
-	header, claims, ok := jwt.VerifyHS256([]byte(a.Password), token)
-	if !ok || header.Typ != "JWT" {
+	claims, err := jwt.Keys{HS256: []byte(a.Password)}.Verify(token, jwt.NoAudience, a.now())
+	if err != nil {
 		return Session{}, false
 	}
 	var payload struct {
@@ -67,9 +82,6 @@ func (a Auth) Verify(token string) (Session, bool) {
 		Exp *float64 `json:"exp"`
 	}
 	if json.Unmarshal(claims, &payload) != nil || payload.Sub == nil || payload.Iat == nil || payload.Exp == nil {
-		return Session{}, false
-	}
-	if *payload.Exp <= float64(a.now().Unix()) {
 		return Session{}, false
 	}
 	return Session{Sub: *payload.Sub, Iat: int64(*payload.Iat), Exp: int64(*payload.Exp)}, true
@@ -85,7 +97,7 @@ func (a Auth) session(r *http.Request) (Session, bool) {
 
 func (a Auth) setCookie(w http.ResponseWriter, user string) {
 	http.SetCookie(w, &http.Cookie{
-		Name: SessionCookie, Value: a.Sign(a.NewSession(user)), Path: "/",
+		Name: SessionCookie, Value: a.sign(a.NewSession(user)), Path: "/",
 		MaxAge: SessionTTLSeconds, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 }
