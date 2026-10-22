@@ -1,3 +1,4 @@
+import type { FloorCount } from "./format.ts";
 import { redactBotToken } from "./redact.ts";
 
 export interface ClickStackWebhookPayload {
@@ -43,17 +44,12 @@ export interface DailySummary {
   since: number;
   until: number;
   eventCount: number;
-  /**
-   * Rows the relay could actually read over the period. Below `eventCount`
-   * whenever ClickStack truncated a row block, which makes every per-row
-   * statistic a lower bound rather than a total.
-   */
   sampledRows: number;
   deliveries: number;
   alertsPosted: number;
   signatures: DailySignatureSummary[];
   omittedSignatures: number;
-  uniqueValues: Record<string, number>;
+  uniqueValues: Record<string, FloorCount>;
   cappedValues: string[];
 }
 
@@ -61,9 +57,6 @@ export type AlertSender = (
   payload: ClickStackWebhookPayload,
   context: AlertContext
 ) => Promise<void>;
-
-/** Kept as an alias for callers and tests written before Slack fan-out. */
-export type TelegramSender = AlertSender;
 
 export interface SignatureSummary {
   count: number;
@@ -83,19 +76,9 @@ export interface WindowSummary {
   lastEventAt: number;
   eventCount: number;
   suppressedAlerts: number;
-  /**
-   * Rows the relay could actually read. ClickStack truncates the row block, so
-   * this falls below `eventCount` during a burst, and any per-row statistic
-   * derived from it is a lower bound rather than an exact count.
-   */
   sampledRows: number;
   signatures: SignatureSummary[];
-  uniqueValues: Record<string, number>;
-  /**
-   * Columns whose value set hit its cap, so their count is a floor. Separate
-   * from the truncation `sampledRows` reveals: a column can be capped even
-   * when every row ClickStack sent was read.
-   */
+  uniqueValues: Record<string, FloorCount>;
   cappedValues: string[];
   buckets: number[];
   peakBucket: number;
@@ -360,25 +343,7 @@ export class AlertRelay {
         const addedEvents = accumulate(window, payload, analysis, now);
         this.countDelivery(payload, analysis, now, addedEvents);
         this.rememberIdempotencyKey(idempotencyKey, now);
-
-        // The escalation is an extra notification inside an already-open
-        // window, not part of ingest. Failing the webhook for it would be
-        // worse than useless: the delivery is already counted, and ClickStack's
-        // retry carries the same Idempotency-Key, so it would be answered as a
-        // duplicate without ever resending the escalation. Swallowing the
-        // failure and leaving `escalations` untouched makes the next
-        // over-threshold delivery try again.
-        if (!this.inRestartGrace(now) && this.shouldEscalate(window)) {
-          await reportFailure("alert_escalation_failed", async () => {
-            await this.sender(payload, {
-              kind: "escalation",
-              window: summarize(window),
-              silent: false,
-            });
-            window.escalations += 1;
-            this.daily.alertsPosted += 1;
-          });
-        }
+        await this.sendEscalationBestEffort(payload, window, now);
 
         return { outcome: "suppressed" as const };
       });
@@ -633,6 +598,25 @@ export class AlertRelay {
     );
   }
 
+  private async sendEscalationBestEffort(
+    payload: ClickStackWebhookPayload,
+    window: AlertWindow,
+    now: number
+  ): Promise<void> {
+    if (this.inRestartGrace(now) || !this.shouldEscalate(window)) {
+      return;
+    }
+    await reportFailure("alert_escalation_failed", async () => {
+      await this.sender(payload, {
+        kind: "escalation",
+        window: summarize(window),
+        silent: false,
+      });
+      window.escalations += 1;
+      this.daily.alertsPosted += 1;
+    });
+  }
+
   private trimWindows(now: number): void {
     if (this.windows.size <= this.options.maxCacheEntries) {
       return;
@@ -860,12 +844,6 @@ function record(
   return addedEvents;
 }
 
-/**
- * Merges distinct values into bounded sets, recording every column that had to
- * drop one. A column that hit the cap can only be reported as a floor: saying
- * "500 unique wallets" when the 501st was thrown away is a wrong number, not a
- * rounded one.
- */
 function mergeBoundedValues(
   target: Map<string, Set<string>>,
   capped: Set<string>,
@@ -931,7 +909,7 @@ function summarizeDaily(daily: DailyTally, until: number): DailySummary {
   const signatures = [...daily.signatures.values()].sort(
     (left, right) => right.count - left.count || right.lastAt - left.lastAt
   );
-  const uniqueValues: Record<string, number> = {};
+  const uniqueValues: Record<string, FloorCount> = {};
   for (const [label, values] of daily.uniqueValues) {
     uniqueValues[label] = values.size;
   }
@@ -988,7 +966,7 @@ function summarize(window: AlertWindow): WindowSummary {
   const signatures = [...window.signatures.values()].sort(
     (left, right) => right.count - left.count
   );
-  const uniqueValues: Record<string, number> = {};
+  const uniqueValues: Record<string, FloorCount> = {};
   for (const [label, values] of window.uniqueValues) {
     uniqueValues[label] = values.size;
   }

@@ -6,6 +6,7 @@ import {
   type FormattedMessage,
   formatPlainTelegramMessage,
   formatTelegramMessage,
+  TELEGRAM_MESSAGE_LIMIT,
 } from "./format.ts";
 import { RelayCredentials } from "./credentials.ts";
 import { redactBotToken } from "./redact.ts";
@@ -15,7 +16,6 @@ import {
   type AlertSender,
   AlertRelay,
   type ClickStackWebhookPayload,
-  type TelegramSender,
 } from "./relay.ts";
 
 export { formatPlainTelegramMessage, formatTelegramMessage } from "./format.ts";
@@ -24,19 +24,11 @@ export { redactBotToken } from "./redact.ts";
 const TELEGRAM_REQUEST_TIMEOUT_MS = 10_000;
 const SLACK_REQUEST_TIMEOUT_MS = 10_000;
 const TELEGRAM_MAX_RETRY_AFTER_MS = 5_000;
-/**
- * Well under the default MAX_BODY_BYTES so that a payload this validator
- * accepts cannot be rejected by Bun's byte-counted body cap first (multi-byte
- * text costs 2-4 bytes per character). Anything past the Telegram limit is
- * truncated for delivery anyway.
- */
 const MAX_BODY_FIELD_LENGTH = 8192;
-/**
- * Telegram's own per-message ceiling, which the formatter already fits inside,
- * so a logged message is the whole message rather than a clipped sample. The
- * Slack rendering is a substitution over the same text and stays within it too.
- */
-const MAX_LOGGED_TEXT_LENGTH = 4096;
+const MAX_UTF8_BYTES_PER_CHAR = 4;
+const DEFAULT_MAX_BODY_BYTES =
+  2 * MAX_BODY_FIELD_LENGTH * MAX_UTF8_BYTES_PER_CHAR;
+const MAX_LOGGED_TEXT_LENGTH = TELEGRAM_MESSAGE_LIMIT;
 
 export interface ServerConfig {
   host: string;
@@ -84,7 +76,11 @@ export function loadConfig(
       10000,
       "MAX_CACHE_ENTRIES"
     ),
-    maxBodyBytes: positiveInteger(env.MAX_BODY_BYTES, 65536, "MAX_BODY_BYTES"),
+    maxBodyBytes: positiveInteger(
+      env.MAX_BODY_BYTES,
+      DEFAULT_MAX_BODY_BYTES,
+      "MAX_BODY_BYTES"
+    ),
     alertColumns: alertColumns(env.ALERT_COLUMNS),
     cardinalityColumns: columnList(env.CARDINALITY_COLUMNS),
     dailyRecapEnabled: booleanValue(
@@ -148,7 +144,7 @@ export function createTelegramSender(
     Partial<Pick<ServerConfig, "cardinalityColumns" | "recapSilent">>,
   fetchImpl: FetchLike = fetch,
   sleep: (ms: number) => Promise<void> = defaultSleep
-): TelegramSender {
+): AlertSender {
   const logMessage = createOutgoingMessageLogger(
     "telegram",
     config.credentials
@@ -465,7 +461,7 @@ export function createRequestHandler(
       return jsonResponse({ ok: false, error: "invalid_json" }, 400);
     }
 
-    const validation = validatePayload(rawPayload);
+    const validation = validatePayload(rawPayload, MAX_BODY_FIELD_LENGTH);
     if (!validation.ok) {
       trace("request_rejected", {
         reason: "invalid_payload",
@@ -522,7 +518,10 @@ type PayloadValidationResult =
   | { ok: true; payload: ClickStackWebhookPayload }
   | { ok: false; issues: string[] };
 
-export function validatePayload(input: unknown): PayloadValidationResult {
+export function validatePayload(
+  input: unknown,
+  maxBodyLength: number = MAX_BODY_FIELD_LENGTH
+): PayloadValidationResult {
   if (!isRecord(input)) {
     return { ok: false, issues: ["payload must be a JSON object"] };
   }
@@ -541,8 +540,8 @@ export function validatePayload(input: unknown): PayloadValidationResult {
   } else if (title.trim().length === 0) {
     issues.push("title must contain non-whitespace text");
   }
-  if (!isBoundedString(body, 0, MAX_BODY_FIELD_LENGTH)) {
-    issues.push(stringIssue("body", body, 0, MAX_BODY_FIELD_LENGTH));
+  if (!isBoundedString(body, 0, maxBodyLength)) {
+    issues.push(stringIssue("body", body, 0, maxBodyLength));
   }
   if (!isBoundedString(link, 0, 4096)) {
     issues.push(stringIssue("link", link, 0, 4096));

@@ -16,6 +16,8 @@ export const DEFAULT_ALERT_COLUMNS = [
   "Body",
 ];
 
+export type FloorCount = number;
+
 /**
  * ClickStack renders alert rows as a CSV block with no header line, so the
  * relay has to be told which saved-search columns it is looking at. Keep this
@@ -344,16 +346,11 @@ function formatDailyRecap(daily: DailySummary): FormattedMessage {
   return { text: lines.join("\n"), parseMode: "HTML" };
 }
 
-/**
- * "≥3 unique wallets" across the whole reporting period. The floor marker
- * matters as much here as on an alert: ClickStack truncates row blocks, so a
- * period can match far more lines than the relay was ever able to read.
- */
 function dailyCardinalityLabels(daily: DailySummary): string[] {
   return renderCardinality(
     daily.uniqueValues,
     daily.cappedValues,
-    daily.sampledRows < daily.eventCount
+    rowsTruncated(daily)
   );
 }
 
@@ -429,26 +426,20 @@ function withLink(lines: string[], link: string): FormattedMessage {
   };
 }
 
-/**
- * ClickStack truncates the row block it sends, so distinct values counted from
- * those rows are a floor, not a total. Say so rather than implying precision
- * the relay does not have.
- */
+function rowsTruncated(summary: WindowSummary | DailySummary): boolean {
+  return summary.sampledRows < summary.eventCount;
+}
+
 function cardinalityLabels(window: WindowSummary): string[] {
   return renderCardinality(
     window.uniqueValues,
     window.cappedValues,
-    window.sampledRows < window.eventCount
+    rowsTruncated(window)
   );
 }
 
-/**
- * A count is a floor when ClickStack truncated the rows it sent, and also when
- * the relay itself stopped retaining distinct values. Both have to show, or a
- * capped column reads as an exact total.
- */
 function renderCardinality(
-  uniqueValues: Record<string, number>,
+  uniqueValues: Record<string, FloorCount>,
   cappedValues: string[],
   truncated: boolean
 ): string[] {
