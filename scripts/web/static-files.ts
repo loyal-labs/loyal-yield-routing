@@ -1,11 +1,12 @@
-// Writes the three SEO files that are Next routes in apps/web into the built
-// Vite dist, so the Go server can serve them as plain files:
+// Writes the SEO files and page manifest into the built Vite dist, so Go can
+// serve the files and distinguish page routes from missing URLs:
 //
 //   bun scripts/web/static-files.ts <dist-dir>   (default: web/apps/loyal/dist)
 //
 //   sitemap.xml     apps/web src/app/sitemap.ts (default export)
 //   llms.txt        apps/web src/app/llms.txt/route.ts (GET)
 //   llms-full.txt   apps/web src/app/llms-full.txt/route.ts (GET)
+//   page-paths.json Vite page routes with blog slugs expanded from the archive
 //
 // Both llms handlers and the sitemap read the blog archive through apps/web's
 // own loader, so their output here is by construction what Vercel serves. The
@@ -18,6 +19,8 @@
 import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { routes } from "../../web/apps/loyal/src/routes.table";
+
 const root = join(import.meta.dir, "../..");
 const dist = resolve(process.argv[2] ?? join(root, "web/apps/loyal/dist"));
 const webApp = join(root, "web/apps/web");
@@ -29,7 +32,10 @@ const fontGoogleCompat = join(
 Bun.plugin({
   name: "loyal-web-static-files",
   setup(build) {
-    build.module("server-only", () => ({ contents: "export {};", loader: "js" }));
+    build.module("server-only", () => ({
+      contents: "export {};",
+      loader: "js",
+    }));
     build.module("next/font/google", () => ({
       contents: `export * from ${JSON.stringify(fontGoogleCompat)};`,
       loader: "ts",
@@ -70,7 +76,9 @@ function serializeSitemap(entries: SitemapEntry[]): string {
       entry.alternates?.languages ?? {}
     )) {
       lines.push(
-        `<xhtml:link rel="alternate" hreflang="${xmlEscape(hreflang)}" href="${xmlEscape(href)}" />`
+        `<xhtml:link rel="alternate" hreflang="${xmlEscape(
+          hreflang
+        )}" href="${xmlEscape(href)}" />`
       );
     }
     if (entry.lastModified !== undefined) {
@@ -90,16 +98,33 @@ function serializeSitemap(entries: SitemapEntry[]): string {
     return lines.join("\n");
   });
 
-  return [
-    `<?xml version="1.0" encoding="UTF-8"?>`,
-    `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">`,
-    ...urls,
-    `</urlset>`,
-  ].join("\n") + "\n";
+  return (
+    [
+      `<?xml version="1.0" encoding="UTF-8"?>`,
+      `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">`,
+      ...urls,
+      `</urlset>`,
+    ].join("\n") + "\n"
+  );
 }
 
 const { default: sitemap } = await import(join(webApp, "src/app/sitemap.ts"));
 writeFileSync(join(dist, "sitemap.xml"), serializeSitemap(await sitemap()));
+
+const { getAllBlogSlugs } = await import(
+  join(webApp, "src/features/blog/data.ts")
+);
+const blogSlugs: string[] = await getAllBlogSlugs();
+const pagePaths = routes
+  .filter((route) => route.kind === "page")
+  .flatMap((route) => {
+    if (route.path === "/blog/$slug")
+      return blogSlugs.map((slug) => `/blog/${slug}`);
+    if (route.path.includes("$"))
+      throw new Error(`Unexpanded page route: ${route.path}`);
+    return [route.path];
+  });
+writeFileSync(join(dist, "page-paths.json"), JSON.stringify(pagePaths));
 
 for (const name of ["llms.txt", "llms-full.txt"]) {
   const route = await import(join(webApp, `src/app/${name}/route.ts`));

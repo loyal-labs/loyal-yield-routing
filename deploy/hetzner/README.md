@@ -317,6 +317,12 @@ through a `LoadCredentialEncrypted` drop-in. Prometheus covers it only through
 `LoyalUnitDown`/`LoyalUnitRestartLoop`; there is no `/metrics` scrape, and
 its slog JSON logs stay in the journal under `loyal-web`.
 
+The build writes `page-paths.json` from the Vite route table and the blog
+archive. Unknown page URLs return the existing error screen with HTTP 404 and
+`Cache-Control: no-store`; valid pages and public files keep their normal status.
+The embedded page manifest is required for readiness, so a build without it
+cannot be activated by the deployment script.
+
 | Unit | Binary | Release |
 |---|---|---|
 | `loyal-web.service` | `loyal-web` | `/opt/loyal/releases/web/<sha>/loyal-web` |
