@@ -22,6 +22,19 @@ const preset = nextSpa({
 
 export default defineConfig({
   ...preset,
+  build: {
+    ...preset.build,
+    rolldownOptions: {
+      ...preset.build?.rolldownOptions,
+      output: {
+        // UI module names can match blocker filters; optional trackers stay blockable.
+        chunkFileNames: (chunk) =>
+          /^(x-pixel|mixpanel\.|datadog)/.test(chunk.name)
+            ? "assets/[name]-[hash].js"
+            : "assets/[hash].js",
+      },
+    },
+  },
   plugins: [
     ...(preset.plugins ?? []),
     {

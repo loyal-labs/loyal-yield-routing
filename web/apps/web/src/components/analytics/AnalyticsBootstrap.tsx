@@ -15,7 +15,6 @@ import {
   trackAuthSignInSucceeded,
   trackPageView,
 } from "@/lib/core/analytics";
-import { X_PIXEL_EVENTS, xPixelEvent } from "@/lib/core/x-pixel";
 
 export type ShouldTrackFrontendPageViewParams = {
   pathname: string | null;
@@ -70,8 +69,14 @@ export function fireXPixelSignupIfNeeded(): void {
   if (hasXPixelSignupBeenFired()) {
     return;
   }
-  xPixelEvent(X_PIXEL_EVENTS.signup);
   markXPixelSignupFired();
+  void import("@/lib/core/x-pixel")
+    .then(({ X_PIXEL_EVENTS, xPixelEvent }) => {
+      xPixelEvent(X_PIXEL_EVENTS.signup);
+    })
+    .catch(() => {
+      // A blocked marketing module must not affect sign-in.
+    });
 }
 
 export function AnalyticsBootstrap() {

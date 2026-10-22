@@ -2,8 +2,6 @@
 
 import { useEffect } from "react";
 
-import { loadXPixel } from "@/lib/core/x-pixel";
-
 import {
   COOKIE_CONSENT_CHANGED_EVENT,
   hasMarketingConsent,
@@ -13,7 +11,13 @@ export function XPixelBootstrap() {
   useEffect(() => {
     const tryLoad = () => {
       if (hasMarketingConsent()) {
-        loadXPixel();
+        void import("@/lib/core/x-pixel")
+          .then(({ loadXPixel }) => {
+            if (hasMarketingConsent()) loadXPixel();
+          })
+          .catch(() => {
+            // Blocking optional marketing code must not prevent app startup.
+          });
       }
     };
 
