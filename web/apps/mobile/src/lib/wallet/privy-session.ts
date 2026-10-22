@@ -16,7 +16,7 @@ export async function exchangePrivySession(
   identityToken: string,
   signer: Signer,
 ): Promise<void> {
-  const res = await fetch(`${env.earnApiBaseUrl}/api/auth/privy/complete`, {
+  const res = await fetch(`${env.apiBaseUrl}/api/auth/privy/complete`, {
     method: "POST",
     headers: { ...earnHeaders(), "privy-id-token": identityToken },
     body: JSON.stringify({ walletAddress: signer.publicKey.toBase58() }),

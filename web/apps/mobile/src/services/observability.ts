@@ -190,7 +190,7 @@ export async function postObservabilityJson(
     if (env.vercelProtectionBypass) {
       headers["x-vercel-protection-bypass"] = env.vercelProtectionBypass;
     }
-    await fetch(`${env.earnApiBaseUrl}${path}`, {
+    await fetch(`${env.apiBaseUrl}${path}`, {
       body: JSON.stringify(payload),
       headers,
       method: "POST",

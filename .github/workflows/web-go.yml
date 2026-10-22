@@ -2,7 +2,7 @@ name: loyal-web
 
 on:
   pull_request:
-    branches: [main, mobile-go/**]
+    branches: [main]
     paths:
       - web/**
       - go/workers/cmd/loyal-web/**

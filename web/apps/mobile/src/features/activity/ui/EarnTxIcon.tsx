@@ -51,7 +51,7 @@ function walletCoinSource(
 }
 
 function absoluteUrl(icon: string): string {
-  return icon.startsWith("http") ? icon : `${env.earnApiBaseUrl}${icon}`;
+  return icon.startsWith("http") ? icon : `${env.apiBaseUrl}${icon}`;
 }
 
 // The red Earn-vault coin, recreated from the web's inline SVG (a rounded-square

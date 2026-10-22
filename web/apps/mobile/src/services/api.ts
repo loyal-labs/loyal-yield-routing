@@ -1,5 +1,9 @@
-import type { MobileTokenDetailResponse } from "@loyal-labs/api";
-import type { ChatSummary, SummariesApiResponse } from "@loyal-labs/shared";
+import type {
+  Get,
+  MobileTokenDetailResponse,
+  MobileTrustedDapp,
+  Summary,
+} from "@loyal-labs/api";
 
 import { env } from "@/config/env";
 
@@ -20,12 +24,12 @@ export type { MobileTokenDetailResponse } from "@loyal-labs/api";
 /**
  * Fetch all summaries from the API.
  */
-export async function fetchSummaries(): Promise<ChatSummary[]> {
+export async function fetchSummaries(): Promise<Summary[]> {
   const response = await fetch(`${env.apiBaseUrl}/api/summaries`);
   if (!response.ok) {
     throw new Error(`Failed to fetch summaries: ${response.status}`);
   }
-  const data: SummariesApiResponse = await response.json();
+  const data: Get["/api/summaries"] = await response.json();
   return data.summaries;
 }
 
@@ -34,14 +38,14 @@ export async function fetchSummaries(): Promise<ChatSummary[]> {
  */
 export async function fetchSummariesByGroup(
   groupChatId: string,
-): Promise<ChatSummary[]> {
+): Promise<Summary[]> {
   const response = await fetch(
     `${env.apiBaseUrl}/api/summaries?groupChatId=${encodeURIComponent(groupChatId)}`,
   );
   if (!response.ok) {
     throw new Error(`Failed to fetch summaries: ${response.status}`);
   }
-  const data: SummariesApiResponse = await response.json();
+  const data: Get["/api/summaries"] = await response.json();
   return data.summaries;
 }
 
@@ -60,62 +64,25 @@ export async function fetchTokenDetailMarket(
   return response.json();
 }
 
-export type RemoteTrustedDapp = {
-  id: string;
-  origin: string;
-  name: string;
-  startUrl: string;
-  category: string | null;
-  displayOrder: number;
-};
-
-export type TrustedDappsResponse = {
-  dapps: RemoteTrustedDapp[];
-};
-
-export async function fetchTrustedDapps(): Promise<RemoteTrustedDapp[]> {
+export async function fetchTrustedDapps(): Promise<MobileTrustedDapp[]> {
   const response = await fetch(`${env.apiBaseUrl}/api/mobile/dapps`);
 
   if (!response.ok) {
     throw new Error(`Failed to fetch trusted dapps: ${response.status}`);
   }
 
-  const data = (await response.json()) as TrustedDappsResponse;
+  const data: Get["/api/mobile/dapps"] = await response.json();
   return data.dapps;
 }
 
-export type RemoteLibraryArticle = {
-  id: string;
-  sectionId: string;
-  title: string;
-  coverImageUrl: string;
-  contentMarkdown: string;
-  excerpt: string | null;
-  isFeatured: boolean;
-  displayOrder: number;
-  publishedAt: string | null;
-};
-
-export type RemoteLibrarySection = {
-  id: string;
-  title: string;
-  displayOrder: number;
-  articles: RemoteLibraryArticle[];
-};
-
-export type LibraryResponse = {
-  featured: RemoteLibraryArticle[];
-  sections: RemoteLibrarySection[];
-};
-
-export async function fetchLibrary(): Promise<LibraryResponse> {
+export async function fetchLibrary(): Promise<Get["/api/mobile/library"]> {
   const response = await fetch(`${env.apiBaseUrl}/api/mobile/library`);
 
   if (!response.ok) {
     throw new Error(`Failed to fetch library: ${response.status}`);
   }
 
-  return (await response.json()) as LibraryResponse;
+  return response.json();
 }
 
 /**
@@ -123,7 +90,7 @@ export async function fetchLibrary(): Promise<LibraryResponse> {
  * Keeps the most recent summary per group (input assumed sorted newest-first from API).
  */
 export function transformSummariesToGroups(
-  summaries: ChatSummary[],
+  summaries: Summary[],
 ): GroupChat[] {
   const groupMap = new Map<string, GroupChat>();
 

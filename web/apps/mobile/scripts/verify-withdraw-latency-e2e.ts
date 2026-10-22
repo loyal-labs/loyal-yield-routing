@@ -1008,11 +1008,7 @@ function verifierEnv(): NodeJS.ProcessEnv {
     ANDROID_HOME: androidRoot,
     ANDROID_SDK_ROOT: androidRoot,
     APP_VARIANT: "development",
-    EXPO_PUBLIC_API_BASE_URL: isIsolatedLocalnet
-      ? `http://127.0.0.1:${proxyPort}`
-      : process.env.EXPO_PUBLIC_API_BASE_URL ??
-        "https://solana-telegram-transactions.vercel.app",
-    EXPO_PUBLIC_EARN_API_BASE_URL: `http://127.0.0.1:${proxyPort}`,
+    EXPO_PUBLIC_API_BASE_URL: `http://127.0.0.1:${proxyPort}`,
     EXPO_PUBLIC_SOLANA_ENV: solanaEnv,
     JAVA_HOME:
       process.env.JAVA_HOME ??

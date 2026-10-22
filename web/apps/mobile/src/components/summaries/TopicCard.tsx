@@ -1,10 +1,10 @@
-import type { Topic } from "@loyal-labs/shared";
+import type { SummaryTopic } from "@loyal-labs/api";
 
 import { Text, View } from "@/tw";
 
 import { SourceAvatars } from "./SourceAvatars";
 
-export function TopicCard({ topic }: { topic: Topic }) {
+export function TopicCard({ topic }: { topic: SummaryTopic }) {
   return (
     <View
       style={{

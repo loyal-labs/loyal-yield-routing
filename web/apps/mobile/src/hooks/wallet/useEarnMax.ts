@@ -1,4 +1,7 @@
-import type { EarnMaxSummaryResponse } from "@loyal-labs/api";
+import type {
+  EarnMaxActivity,
+  EarnMaxSummaryResponse,
+} from "@loyal-labs/api";
 import {
   isVoltrOperationVisible,
   VoltrClaimLiquidityError,
@@ -14,7 +17,6 @@ import {
   redeemEarnMaxInvite,
   resolveEarnMaxAccount,
   sendEarnMaxVoltr,
-  type EarnMaxActivityResponse,
   type EarnMaxVoltrAction,
 } from "@/lib/solana/earn/earn-max";
 import type { Signer } from "@/lib/wallet/signer";
@@ -24,7 +26,7 @@ export type EarnMaxRead =
   | {
       kind: "ready";
       summary: EarnMaxSummaryResponse;
-      activity: EarnMaxActivityResponse;
+      activity: EarnMaxActivity;
     }
   | { kind: "failed"; message: string };
 
@@ -105,7 +107,7 @@ export function useEarnMax(input: {
             !isVoltrOperationVisible(
               item.signature,
               next.summary.summary,
-              next.activity.operations,
+              next.activity.operations ?? [],
             ),
         ),
       );

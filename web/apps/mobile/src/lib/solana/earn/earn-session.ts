@@ -133,7 +133,7 @@ async function mint(
   startedAt: number,
 ): Promise<string | null> {
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/session`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/session`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -223,7 +223,9 @@ async function silentSession(signer: Signer): Promise<string | null> {
   return ensureEarnSession(signer);
 }
 
-async function readToken(walletAddress: string): Promise<string | null> {
+export async function silentEarnToken(
+  walletAddress: string,
+): Promise<string | null> {
   const token = await getEarnSessionToken(walletAddress);
   if (token) {
     return token;
@@ -256,7 +258,7 @@ export async function earnWalletRead(
   walletAddress: string,
   url: string,
 ): Promise<Response> {
-  const token = await readToken(walletAddress);
+  const token = await silentEarnToken(walletAddress);
   const res = await getWithBearer(url, token);
   if (!token || !(await isInvalidSession(res))) {
     return res;

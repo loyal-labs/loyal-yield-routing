@@ -3,23 +3,14 @@ import {
   resolveSolanaEnv,
 } from "@loyal-labs/solana-rpc";
 
-// API base URL — points to the deployed Next.js app
-// In development, use your local network IP or tunnel URL
-// In production, use the deployed Vercel URL
+// loyal-web: one API server for content, Earn and push. In development, use your local network IP or tunnel URL.
 const API_BASE_URL =
-  process.env.EXPO_PUBLIC_API_BASE_URL ??
-  "https://solana-telegram-transactions.vercel.app";
+  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://next.askloyal.com";
 const GRID_AUTH_BASE_URL =
   process.env.EXPO_PUBLIC_GRID_AUTH_BASE_URL ??
   "https://auth.askloyal.com";
 const SOLANA_ENV = resolveSolanaEnv(process.env.EXPO_PUBLIC_SOLANA_ENV);
 
-// Earn backend (the web `frontend` app at https://askloyal.com) — hosts the
-// wallet-signed mobile Earn deposit/state endpoints (merged to main via PR
-// #342). Distinct from API_BASE_URL, which points at the chat/wallet `/app`
-// backend.
-const EARN_API_BASE_URL =
-  process.env.EXPO_PUBLIC_EARN_API_BASE_URL ?? "https://askloyal.com";
 // Vercel deployment-protection bypass — only needed for protected preview
 // deploys (e.g. a staging branch). Production askloyal.com is public, so this
 // is empty by default; set EXPO_PUBLIC_VERCEL_PROTECTION_BYPASS to test against
@@ -27,12 +18,6 @@ const EARN_API_BASE_URL =
 // non-empty.
 const VERCEL_PROTECTION_BYPASS =
   process.env.EXPO_PUBLIC_VERCEL_PROTECTION_BYPASS ?? "";
-// Sponsored Earn deposits (PR #452 backend): the device signs but the server
-// fee-pays and sends. Rollback switch — anything but "true" keeps the
-// self-paid sign-and-send flow, and the flow also falls back per-deposit when
-// the backend doesn't return a sponsor fee payer.
-const EARN_SPONSORED_DEPOSITS =
-  process.env.EXPO_PUBLIC_EARN_SPONSORED_DEPOSITS === "true";
 
 // Hardcoded identity for MVP (auth deferred)
 const TELEGRAM_USER_ID = "2131567542";
@@ -51,8 +36,6 @@ const PRIVY_CLIENT_ID = process.env.EXPO_PUBLIC_PRIVY_CLIENT_ID ?? "";
 
 export const env = {
   apiBaseUrl: API_BASE_URL,
-  earnApiBaseUrl: EARN_API_BASE_URL,
-  earnSponsoredDeposits: EARN_SPONSORED_DEPOSITS,
   vercelProtectionBypass: VERCEL_PROTECTION_BYPASS,
   gridAuthBaseUrl: GRID_AUTH_BASE_URL,
   solanaEnv: SOLANA_ENV,
