@@ -163,7 +163,7 @@ type SendAsset = {
   imageUrl: string | null;
 };
 
-const SOL_ADDRESS_CANDIDATE_REGEX = new RegExp(BASE58_ADDRESS_PATTERN.source, "g");
+const SOL_ADDRESS_CANDIDATE_REGEX = new RegExp(BASE58_ADDRESS_PATTERN.source.slice(1, -1), "g");
 
 function safeDecodeUriComponent(value: string): string {
   try {
