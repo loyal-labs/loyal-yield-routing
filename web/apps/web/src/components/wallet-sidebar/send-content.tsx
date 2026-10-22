@@ -22,6 +22,8 @@ import type { SubView, SwapToken } from "./types";
 const font = "var(--font-geist-sans), sans-serif";
 const secondary = "rgba(60, 60, 67, 0.6)";
 const red = "#F9363C";
+const VAULT_RENT_EXEMPT_CUSHION_SOL = 0.001;
+const WALLET_FEE_RESERVE_SOL = 0.00005;
 
 export function isValidSolanaAddress(value: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
@@ -892,11 +894,9 @@ export function SendContent({
     (pct: number) => {
       let val = pct === 100 ? token.balance : token.balance * (pct / 100);
       if (token.symbol.toUpperCase() === "SOL") {
-        // Vault PDAs must keep a rent-exempt minimum (~0.00089 SOL for a
-        // bare system account); leave a slightly larger cushion so the
-        // multisig transfer doesn't fail with "insufficient funds for rent".
-        // For User-wallet sends only the per-tx fee needs to stay behind.
-        const reserve = vaultContext ? 0.001 : 0.00005;
+        const reserve = vaultContext
+          ? VAULT_RENT_EXEMPT_CUSHION_SOL
+          : WALLET_FEE_RESERVE_SOL;
         if (token.balance - val < reserve) {
           val = Math.max(0, token.balance - reserve);
         }

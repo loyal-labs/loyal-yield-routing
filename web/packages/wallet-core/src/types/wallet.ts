@@ -31,8 +31,7 @@ export interface ActivityRow {
   timestamp: string;
   date: string;
   icon: string;
-  /** Epoch milliseconds for sort order — absent in legacy localStorage rows */
-  rawTimestamp?: number;
+  rawTimestampMs?: number;
   titleOverride?: string;
   subtitle?: string;
 }

@@ -44,6 +44,7 @@ const PERCENTAGE_MULTIPLIER = 100;
 
 // Jupiter route slippage tolerance (0.5%).
 const SLIPPAGE_BPS = 50;
+const PRIORITY_FEE_MAX_LAMPORTS = 50_000_000;
 
 // Jupiter aggregator custom error 6001 (0x1771) — SlippageToleranceExceeded:
 // the route's output fell below the quote's minimum-out by execution time.
@@ -409,7 +410,7 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
                 prioritizationFeeLamports: {
                   priorityLevelWithMaxLamports: {
                     priorityLevel: "veryHigh",
-                    maxLamports: 50_000_000, // 0.05 SOL max for priority
+                    maxLamports: PRIORITY_FEE_MAX_LAMPORTS,
                     global: true, // Use global fee market
                   },
                 },

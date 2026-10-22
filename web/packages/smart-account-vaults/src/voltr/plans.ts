@@ -36,6 +36,7 @@ type PlanContext = { authority: PublicKey; owner: PublicKey };
 // allocates 112 bytes (measured on mainnet), not the SDK's
 // getRequestWithdrawVaultReceiptSize() of 106.
 const RECEIPT_SPACE = 112;
+const CLAIM_ROUNDING_HEADROOM_RAW = BigInt(1);
 
 export function voltrDepositPlan(
   { authority, owner }: PlanContext,
@@ -150,10 +151,10 @@ export async function voltrClaimPlan(
   }
   if (blocked) throw new VoltrClaimLiquidityError(blocked);
   const walletAta = getAssociatedTokenAddressSync(VOLTR_ASSET_MINT, owner);
-  // One raw unit of headroom absorbs program-side fixed-point rounding; any
-  // dust stays in the vault account and rides the next sweep.
   const payout =
-    pending.payoutRaw > BigInt(0) ? pending.payoutRaw - BigInt(1) : BigInt(0);
+    pending.payoutRaw > BigInt(0)
+      ? pending.payoutRaw - CLAIM_ROUNDING_HEADROOM_RAW
+      : BigInt(0);
   return {
     outer: [
       createAssociatedTokenAccountIdempotentInstruction(

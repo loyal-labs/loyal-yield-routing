@@ -623,7 +623,7 @@ export function normalizeParsedTransaction(args: {
     isDustTokenTransfer({
       isUserSigned: isSigner,
       direction: tokenChange.direction,
-      rawAmount: tokenChange.absRaw,
+      absRaw: tokenChange.absRaw,
       decimals: tokenChange.decimals,
     })
   ) {

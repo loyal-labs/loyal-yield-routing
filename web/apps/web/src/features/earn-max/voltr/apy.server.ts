@@ -1,11 +1,16 @@
 import "server-only";
 
-import { VOLTR_VAULT } from "@loyal-labs/smart-account-vaults";
+import {
+  VOLTR_ASSET_DECIMALS,
+  VOLTR_VAULT,
+} from "@loyal-labs/smart-account-vaults";
 
 const CACHE_MS = 5 * 60 * 1000;
 const TIMEOUT_MS = 3_000;
 const WINDOW_DAYS = 7;
 const DAY_MS = 86_400_000;
+const VOLTR_LP_DECIMALS = 9;
+const SHARE_PRICE_SCALE = 10 ** (VOLTR_LP_DECIMALS - VOLTR_ASSET_DECIMALS);
 
 export type EarnMaxVoltrApyPoint = {
   /** Annualized share-price growth into this UTC day, basis points. */
@@ -127,14 +132,12 @@ export async function readEarnMaxVoltrApy(): Promise<EarnMaxVoltrApy> {
     const stats = (detail as { vault?: { dailyStats?: DailyStats } } | null)
       ?.vault?.dailyStats;
     if (!stats) return cached?.value ?? EMPTY;
-    // sharePrice is per 1 LP unit scaled by 1e9/1e6 decimals; derive live LP
-    // from it so both points use the same TVL/LP definition.
     const live = (
       price as { data?: { sharePrice?: number; totalValue?: number } } | null
     )?.data;
     const lpNow =
       live?.sharePrice && live.totalValue
-        ? live.totalValue / (live.sharePrice / 1000)
+        ? live.totalValue / (live.sharePrice / SHARE_PRICE_SCALE)
         : null;
     const value = shareApy(
       stats,

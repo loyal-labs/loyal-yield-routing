@@ -56,6 +56,7 @@ export function toBigInt(number: bignum): bigint {
 
 const MAX_TX_SIZE_BYTES = 1232;
 const STRING_LEN_SIZE = 4;
+const COMPACT_U16_LENGTH_HEADROOM_BYTES = 1;
 export function getAvailableMemoSize(
   txWithoutMemo: VersionedTransaction
 ): number {
@@ -64,9 +65,7 @@ export function getAvailableMemoSize(
     MAX_TX_SIZE_BYTES -
     txSize -
     STRING_LEN_SIZE -
-    // Sometimes long memo can trigger switching from 1 to 2 bytes length encoding in Compact-u16,
-    // so we reserve 1 extra byte to make sure.
-    1
+    COMPACT_U16_LENGTH_HEADROOM_BYTES
   );
 }
 

@@ -37,8 +37,9 @@ const ALERT_LTV = 0.45;
 const WITHDRAWAL_STEP_LTV = 0.55;
 const HARD_RULE_LTV = 0.6;
 const LIQUIDATION_LTV = 0.8;
-// Routine NAV reports are hourly; allow 15 minutes for reporting/reconciliation.
-const STALE_REPORT_S = 75 * 60;
+const HOURLY_REPORT_S = 60 * 60;
+const REPORT_GRACE_S = 15 * 60;
+const STALE_REPORT_S = HOURLY_REPORT_S + REPORT_GRACE_S;
 
 const ACTION_WORDS: Record<string, string> = {
   DELEVER_PRIME_USDC_STEP: "Repaid or withdrew on Kamino",

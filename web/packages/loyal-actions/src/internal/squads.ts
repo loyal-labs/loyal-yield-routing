@@ -10,6 +10,7 @@ import { BytesEncoder } from "./bytes.ts";
 
 const SQUADS_SEED_PREFIX = new TextEncoder().encode("smart_account");
 const SQUADS_SEED_POLICY = new TextEncoder().encode("policy");
+const SQUADS_PERIOD_V2_DAILY = 1;
 const SQUADS_FULL_PERMISSIONS_MASK = 7;
 const SQUADS_SYNC_SIGNER_COUNT = 1;
 const POLICY_CREATION_PAYLOAD_LEGACY_PROGRAM_INTERACTION = 3;
@@ -384,7 +385,7 @@ function encodeLegacyProgramInteractionPayload(
     encoder.pushOption<bigint>(undefined, (expiration) =>
       encoder.pushI64(expiration)
     );
-    encoder.pushU8(1);
+    encoder.pushU8(SQUADS_PERIOD_V2_DAILY);
     encoder.pushU64(spendingLimit.maxPerPeriod);
   });
 }
@@ -429,8 +430,7 @@ function encodeProgramInteractionPayload(
     encoder.pushOption<bigint>(undefined, (expiration) =>
       encoder.pushI64(expiration)
     );
-    // Squads PeriodV2::Daily.
-    encoder.pushU8(1);
+    encoder.pushU8(SQUADS_PERIOD_V2_DAILY);
     encoder.pushU64(spendingLimit.maxPerPeriod);
   });
 }

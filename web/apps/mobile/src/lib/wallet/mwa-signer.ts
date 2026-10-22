@@ -1,4 +1,5 @@
 import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
+import type { SolanaMobileWalletAdapterProtocolErrorCode } from "@solana-mobile/mobile-wallet-adapter-protocol";
 import type { Web3MobileWallet } from "@solana-mobile/mobile-wallet-adapter-protocol-web3js";
 import { Buffer } from "buffer";
 import type { TurboModule } from "react-native";
@@ -90,9 +91,17 @@ function isAssociationCancellation(error: unknown): boolean {
   );
 }
 
+const MWA_ERROR = {
+  ERROR_AUTHORIZATION_FAILED: -1,
+  ERROR_NOT_SIGNED: -3,
+} as const satisfies Pick<
+  typeof SolanaMobileWalletAdapterProtocolErrorCode,
+  "ERROR_AUTHORIZATION_FAILED" | "ERROR_NOT_SIGNED"
+>;
+
 function isUserCancellation(error: unknown): boolean {
   return (
-    isAssociationCancellation(error) || hasErrorCode(error, -1) // ERROR_AUTHORIZATION_FAILED
+    isAssociationCancellation(error) || hasErrorCode(error, MWA_ERROR.ERROR_AUTHORIZATION_FAILED)
   );
 }
 
@@ -273,11 +282,10 @@ export class MwaSigner implements Signer {
       if (isSessionCancellation(error)) {
         throw new WalletRejectedError(SIGNING_CANCELLED_MESSAGE);
       }
-      if (hasErrorCode(error, -3)) {
-        // ERROR_NOT_SIGNED: the user tapped decline in the wallet app.
+      if (hasErrorCode(error, MWA_ERROR.ERROR_NOT_SIGNED)) {
         throw new WalletRejectedError(SIGNING_DECLINED_MESSAGE);
       }
-      if (hasErrorCode(error, -1)) {
+      if (hasErrorCode(error, MWA_ERROR.ERROR_AUTHORIZATION_FAILED)) {
         // ERROR_AUTHORIZATION_FAILED raised by the signing call rather than by
         // `authorize`: some wallets accept the reauthorization and only refuse
         // the privileged method, so `reauthorize`'s recovery never runs. It is
@@ -306,7 +314,7 @@ export class MwaSigner implements Signer {
         auth_token: this.authToken,
       });
     } catch (error) {
-      if (!hasErrorCode(error, -1)) throw error;
+      if (!hasErrorCode(error, MWA_ERROR.ERROR_AUTHORIZATION_FAILED)) throw error;
       throw await forgetWalletAuthorization(
         clearMwaAccount,
         "authorization_expired",

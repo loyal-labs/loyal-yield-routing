@@ -3,11 +3,6 @@ import * as SecureStore from "expo-secure-store";
 const VAULT_ACCOUNT_KEY = "loyal.seedVaultAccount";
 
 /**
- * Persistent record of a Seed Vault authorization. The seed itself stays
- * inside the vault; we only need to remember the auth token, which
- * derivation path we authorized, and the resolved base58 Solana address
- * so the wallet can display it before any signing operation runs.
- *
  * `authToken` is a native Kotlin Long carried as a decimal string — a JS
  * number would corrupt values above 2^53.
  */

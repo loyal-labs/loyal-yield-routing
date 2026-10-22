@@ -75,9 +75,13 @@ const DIGIT_HEIGHT = 48; // matches the value line's lineHeight
 const DIGIT_STRIP = [
   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
 ];
-const SMALLEST_PLACE = 0.00001; // the 5th decimal
-const WHOLE_FACTOR = 100_000; // whole dollars
-const DECIMAL_FACTORS = [10_000, 1000, 100, 10, 1]; // .1 → .00001
+const DISPLAY_DECIMALS = 5;
+const WHOLE_FACTOR = 10 ** DISPLAY_DECIMALS;
+const SMALLEST_PLACE = 1 / WHOLE_FACTOR;
+const DECIMAL_FACTORS = Array.from(
+  { length: DISPLAY_DECIMALS },
+  (_, place) => WHOLE_FACTOR / 10 ** (place + 1),
+);
 const TICK_MS = 240;
 const TICK_EASING = Easing.out(Easing.cubic);
 

@@ -33,6 +33,11 @@ export const VOLTR_ASSET_MINT = new PublicKey(
 export const VOLTR_ASSET_DECIMALS = 6;
 /** Smart-account vault index for Earn MAX. */
 export const EARN_MAX_VOLTR_ACCOUNT_INDEX = 2;
+const IS_AMOUNT_IN_LP = 1;
+const VAULT_TOTAL_VALUE_OFFSET = 168;
+const VAULT_LOCKED_PROFIT_DURATION_OFFSET = 448;
+const VAULT_LOCKED_PROFIT_OFFSET = 672;
+const VAULT_LAST_REPORT_OFFSET = 680;
 
 function voltrPda(...seeds: Buffer[]): PublicKey {
   return PublicKey.findProgramAddressSync(seeds, VOLTR_PROGRAM_ID)[0];
@@ -142,8 +147,7 @@ export function requestWithdrawVaultInstruction(args: {
     [248, 225, 47, 22, 116, 144, 23, 143],
     Buffer.concat([
       u64(args.amountLpRaw),
-      // isAmountInLp = true, the only mode our callers and Voltr tooling use.
-      Buffer.from([1, args.withdrawAll ? 1 : 0]),
+      Buffer.from([IS_AMOUNT_IN_LP, args.withdrawAll ? 1 : 0]),
     ]),
     [
       [args.payer, true, true],
@@ -186,6 +190,9 @@ const BPS = BigInt(10_000);
 const readU64 = (data: Buffer, offset: number) => data.readBigUInt64LE(offset);
 const readU16 = (data: Buffer, offset: number) =>
   BigInt(data.readUInt16LE(offset));
+const readU80F48 = (data: Buffer, offset: number) =>
+  (readU64(data, offset) | (readU64(data, offset + 8) << BigInt(64))) >>
+  BigInt(48);
 
 export type VoltrPosition = {
   observedSlot?: string;
@@ -277,17 +284,16 @@ export async function readVoltrPosition(
   }
   const v = vault.data;
   const nowSec = BigInt(Math.floor(Date.now() / 1000));
-  // Locked profit decays linearly from lastReport over the degradation window.
-  const lockedDuration = readU64(v, 448);
-  const lockedAmount = readU64(v, 672);
-  const sinceReport = nowSec - readU64(v, 680);
+  const lockedDuration = readU64(v, VAULT_LOCKED_PROFIT_DURATION_OFFSET);
+  const lockedAmount = readU64(v, VAULT_LOCKED_PROFIT_OFFSET);
+  const sinceReport = nowSec - readU64(v, VAULT_LAST_REPORT_OFFSET);
   const lockedProfit =
     lockedDuration === BigInt(0) || sinceReport >= lockedDuration
       ? BigInt(0)
       : sinceReport <= BigInt(0)
       ? lockedAmount
       : (lockedAmount * (lockedDuration - sinceReport)) / lockedDuration;
-  const unlockedValue = readU64(v, 168) - lockedProfit;
+  const unlockedValue = readU64(v, VAULT_TOTAL_VALUE_OFFSET) - lockedProfit;
   const redemptionKeepBps = BPS - readU16(v, 520);
   // ponytail: unrealised management-fee LP is ignored (fees are 0 on this
   // vault); add the SDK's calculateUnrealisedLpFees if a fee is ever set.
@@ -306,9 +312,7 @@ export async function readVoltrPosition(
   if (receipt) {
     const r = receipt.data;
     const escrowedLpRaw = readU64(r, 72);
-    // amountAssetToWithdrawDecimalBits is U80F48 in raw asset units.
-    const atRequest =
-      (readU64(r, 80) | (readU64(r, 88) << BigInt(64))) >> BigInt(48);
+    const atRequest = readU80F48(r, 80);
     const atPresent = lpToAssets(escrowedLpRaw);
     withdrawal = {
       escrowedLpRaw,
