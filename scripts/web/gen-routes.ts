@@ -75,7 +75,7 @@ import { pageData, type PageProps } from "@/lib/page-data";
 
 type Props = PageProps<"${pageKey}", typeof Source>;
 
-export const propsMatchView: unknown extends Props ? true : Props extends ComponentProps<typeof Source> ? true : never = true;
+export const propsMatchView: Props extends ComponentProps<typeof Source> ? true : never = true;
 
 export const Route = createFileRoute("${routeId(row)}")({
   loaderDeps: ({ search }) => ({ search }),
