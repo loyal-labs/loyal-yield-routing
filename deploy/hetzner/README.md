@@ -672,8 +672,10 @@ A missing optional credential disables only the pages that need it.
 The first release goes in by hand exactly as `loyal-web`'s (First install,
 above), with `admin` for `web`, `scripts/web/build.sh admin` and port 10081;
 after that `bun run deploy admin [<sha>]` deploys and rolls back. The tunnel
-serves it at `admin-next.askloyal.com` (`cloudflared/config.yml`), with the
-DNS record from `tunnel route dns loyal-workers admin-next.askloyal.com`.
+serves it at `admin.askloyal.com` and `admin-next.askloyal.com`
+(`cloudflared/config.yml`), with the DNS records from `tunnel route dns
+loyal-workers <host>` (`--overwrite-dns` replaced the old `admin` CNAME).
+Rollback is pointing the `admin` record back at its old target.
 `LOYAL_ADMIN_CLICKSTACK_URL` is the ClickStack external API base, which on
 the self-hosted ClickStack sits under `/api/api/v2` (the UI proxies `/api`).
 
