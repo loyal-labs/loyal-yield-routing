@@ -28,6 +28,7 @@ import {
 } from "@/components/earn/DepositSheet";
 import { EarnChartTabs } from "@/components/earn/EarnChartTabs";
 import { EarnDog } from "@/components/earn/EarnDog";
+import { EarnMaxInviteSheet } from "@/components/earn/EarnMaxInviteSheet";
 import { getLoyalApyBps } from "@/components/earn/earnForecastModel";
 import { PositionsSheet } from "@/components/earn/PositionsSheet";
 import { WithdrawSheet } from "@/components/earn/WithdrawSheet";
@@ -257,6 +258,7 @@ export default function EarnScreen() {
   // this first; its Continue proceeds to the setup sheet in the mode captured
   // at initiation.
   const [autodepositInfoOpen, setAutodepositInfoOpen] = useState(false);
+  const [earnMaxOpen, setEarnMaxOpen] = useState(false);
   const autodepositInfoModeRef = useRef<"create" | "edit">("create");
   // Principal just deposited, used as the funded Earn Balance until the real
   // on-chain position is wired (see .context/earn-deposit-findings.md, step b).
@@ -309,7 +311,7 @@ export default function EarnScreen() {
     autodepositLoaded,
   ]);
 
-  // Quests deep-links here to open a sheet (?open=deposit | autodeposit).
+  // Quests deep-links here to open a sheet (?open=deposit | autodeposit | earn-max).
   const router = useRouter();
 
   // Refundable closed Earn accounts (empty when nothing is refundable).
@@ -377,6 +379,8 @@ export default function EarnScreen() {
       } else {
         openAutodepositCreate();
       }
+    } else if (open === "earn-max") {
+      setEarnMaxOpen(true);
     }
     router.setParams({ open: "" });
   }, [openParam.open, autodepositEnabled, openAutodepositCreate, router]);
@@ -1264,6 +1268,12 @@ export default function EarnScreen() {
         open={autodepositInfoOpen}
         onClose={() => setAutodepositInfoOpen(false)}
         onContinue={handleAutodepositInfoContinue}
+      />
+      <EarnMaxInviteSheet
+        open={earnMaxOpen}
+        onClose={() => setEarnMaxOpen(false)}
+        walletAddress={walletAddress}
+        signer={signer}
       />
     </View>
   );
