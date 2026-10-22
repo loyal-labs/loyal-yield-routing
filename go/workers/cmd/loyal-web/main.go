@@ -159,6 +159,7 @@ func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdict
 		grants []webapp.Grant
 	}{
 		{&v.Content, appDB, "content reads", webapp.ContentGrants},
+		{&v.Stats, appDB, "earn stats", webapp.StatsGrants},
 		{&v.Session, appDB, "session routes", webapp.AuthGrants},
 		{&v.EarnMax, appDB, "Earn MAX routes", webapp.EarnMaxGrants},
 		{&v.Push, appDB, "push tokens", webapp.PushGrants},
@@ -213,6 +214,7 @@ func run(ctx context.Context) error {
 	if appDB != nil {
 		cfg.AppDB = appDB
 		cfg.ContentDB = grants.Content
+		cfg.StatsDB = grants.Stats
 	}
 	if auth, rpcClient := openAuth(appDB, grants.Session); auth != nil {
 		cfg.Auth = auth
