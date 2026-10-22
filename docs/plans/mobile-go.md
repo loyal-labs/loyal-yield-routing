@@ -234,6 +234,49 @@ Go only if the owner wants Go to hold that key. That is a separate plan.
   time-boxed adapter for builds we cannot update (installed apps on old JS).
   M7 deletes them once Vercel mobile traffic has been 0 for 14 days.
 
+## Earn MAX activity bugs: fixed in Go/Vite, still live in loyal-app Next until cutover
+
+Per the owner (2026-10-22), Loyal web bugs are fixed in the Vite+Go frontend
+(`web/apps/loyal` and `loyal-web`), not in loyal-app Next. These live in
+`web/apps/web/src/features/earn-max/voltr/` and stay until cutover.
+
+1. Truncated history reported complete (`activity.server.ts:174-178`, `:203`).
+   The page is 100 signatures but failed ones are dropped before the count, so
+   `complete` reads true. Repro: 100 signatures, one failed, an older $100
+   deposit outside the page, $100 still held. Result: "$100 earned" instead of
+   unknown.
+2. A claim is charged the whole transaction's idle-account change
+   (`activity.server.ts:66-79`, used at `:147`). Repro: one tx claims $100 and
+   deposits $40, so the claim shows $60. Several users' claims in one tx share
+   the total.
+3. Claim and request are paired by instruction order (`activity.server.ts:193-199`).
+   Repro: claim an old $100 withdrawal, then request $40 in the same tx; the
+   request shows $100.
+4. Batch reorder pairing (`activity.server.ts:182-188`, results paired with
+   `signatures[index]`). Repro: a 09-28 transaction (zgk1Rw, slot 451324332)
+   showed as a 10-11 deposit when the RPC reordered the batch.
+5. A transaction with no blockTime anywhere is written as the 1970 epoch
+   (`activity.server.ts:132`, `?? 0`). Go skips it and marks history
+   incomplete.
+6. A finite annualized APY of 2^63 bps or more (`apy.server.ts:86-88`). Next prints the
+   number, Go emits null.
+
+The Go fixes for 1 to 3 land in a separate PR (G-money, branch
+`mobile-go/g-earnmax-money`), and the Go reorder keying is proved there.
+
+The browser fix for the same reorder bug in the wallet activity provider
+(`web/packages/solana-wallet/src/providers/default-activity-provider.ts`) keys
+each parsed transaction by its own `transaction.signatures[0]` and drops one
+whose signature was not requested. Its sibling in the mobile app,
+`web/apps/mobile/src/lib/solana/rpc/get-account-txn-history.ts:658-678`,
+pairs by index too and is left to the mobile owner (outside this lane).
+
+Eight tests in `web/packages/smart-account-vaults/src/client.test.ts` already
+fail identically at 568b6632 and at d719f7b6: `prepareEarnUsdcDeposit` x5 and
+`prepareEarnUsdcWithdraw` x3. Messages include "Cannot safely prepare an Earn
+policy without scanning on-chain policies." and "Unable to find Settings
+account at 11111111111111111111111111111112". Nothing is filed in Linear.
+
 ## Owner calls
 
 1. Decided 2026-10-22 (M2): Go holds `AUTH_JWT_SECRET` until Vercel moves to

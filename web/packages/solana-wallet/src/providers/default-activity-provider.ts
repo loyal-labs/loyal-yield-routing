@@ -1,4 +1,9 @@
-import { Connection, type Commitment, PublicKey } from "@solana/web3.js";
+import {
+  Connection,
+  type Commitment,
+  type ParsedTransactionWithMeta,
+  PublicKey,
+} from "@solana/web3.js";
 
 import { normalizeParsedTransaction } from "../parsers/activity-parser";
 import type {
@@ -87,9 +92,16 @@ export function createRpcActivityProvider(args: {
         { maxSupportedTransactionVersion: 1 }
       );
 
-      for (let index = 0; index < parsedTransactions.length; index += 1) {
-        const parsedTransaction = parsedTransactions[index];
-        const signature = signatureList[index];
+      const bySignature = new Map<string, ParsedTransactionWithMeta>();
+      for (const parsedTransaction of parsedTransactions) {
+        const own = parsedTransaction?.transaction.signatures[0];
+        if (parsedTransaction && own) {
+          bySignature.set(own, parsedTransaction);
+        }
+      }
+
+      for (const signature of signatureList) {
+        const parsedTransaction = bySignature.get(signature);
         if (!parsedTransaction) {
           continue;
         }
