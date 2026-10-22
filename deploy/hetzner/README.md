@@ -331,7 +331,9 @@ drop-in sets it if the sites split onto separate hostnames.
 Without `WEB_APP_DATABASE_URL`, `/api/earn/stats` still forwards to Next.
 Installing that systemd credential switches GET/HEAD on that path to Go.
 It must connect to **App Neon**, where `public.loyal_stats_snapshots` lives,
-using a role with SELECT on that table; it is not the Yield Neon database.
+using a role with SELECT on that table (and, for the mobile content reads below,
+on `summaries`, `communities`, `trusted_dapps`, `library_sections` and
+`library_articles`); it is not the Yield Neon database.
 The reader uses a read-only transaction and a transaction-local 10-second
 statement timeout. Missing, stale (over five minutes), or unreadable snapshots
 return the same 503 error body as Next, with `Cache-Control: no-store`.
@@ -370,8 +372,9 @@ This is a test-host pilot: keep production DNS and `LOYAL_WEB_UPSTREAM` unchange
 With `WEB_APP_DATABASE_URL` installed, GET/HEAD/OPTIONS on `/api/summaries`,
 `/api/mobile/dapps` and `/api/mobile/library` are served by Go; the role needs
 SELECT on `summaries`, `communities`, `trusted_dapps`, `library_sections` and
-`library_articles`. `/api/mobile/tokens/{mint}` is served by Go only when the
-optional systemd credential is installed, using the
+`library_articles`. At startup `loyal-web` checks those grants once; if any is
+missing it logs one line naming them and keeps proxying those paths to Next. `/api/mobile/tokens/{mint}` is served by Go
+only when the optional systemd credential is installed, using the
 credential name `COINGECKO_API_KEY`. Without them each path keeps forwarding to
 Next. `X-Loyal-API-Source: go` marks a Go response.
 

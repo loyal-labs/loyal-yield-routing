@@ -75,12 +75,25 @@ func openAppDB(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+func contentGranted(ctx context.Context, appDB *pgxpool.Pool) bool {
+	missing, err := webapp.MissingGrants(ctx, appDB, webapp.ContentGrants)
+	switch {
+	case err != nil:
+		slog.Warn("content reads not served by Go: grant check failed", "error", err)
+	case len(missing) > 0:
+		slog.Warn("content reads not served by Go: web app role lacks grants", "missing", missing)
+	default:
+		return true
+	}
+	return false
+}
+
 func run(ctx context.Context) error {
 	cfg, err := config()
 	if err != nil {
 		return err
 	}
-	if cfg.CoinGeckoAPIKey, err = optionalCredential("COINGECKO_API_KEY"); err != nil {
+	if cfg.CoinGeckoAPIKey, err = engine.OptionalCredential("COINGECKO_API_KEY"); err != nil {
 		return err
 	}
 	appDB, err := openAppDB(ctx)
@@ -90,6 +103,7 @@ func run(ctx context.Context) error {
 	if appDB != nil {
 		defer appDB.Close()
 		cfg.AppDB = appDB
+		cfg.ContentDB = contentGranted(ctx, appDB)
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -135,15 +149,4 @@ func main() {
 		slog.Error("loyal-web stopped", "error", err)
 		os.Exit(1)
 	}
-}
-
-func optionalCredential(name string) (string, error) {
-	dir := os.Getenv("CREDENTIALS_DIRECTORY")
-	if dir == "" {
-		return "", nil
-	}
-	if _, err := os.Stat(filepath.Join(dir, name)); errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	return engine.Credential(name)
 }

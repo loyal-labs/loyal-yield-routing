@@ -24,6 +24,7 @@ type Config struct {
 	Release     string
 	Ready       func() bool
 	AppDB       *pgxpool.Pool
+	ContentDB   bool
 	Dist        fs.FS
 	Environment string
 
@@ -39,7 +40,9 @@ func New(cfg Config) http.Handler {
 	api := humachi.New(r, apiConfig())
 	if cfg.AppDB != nil {
 		earnstats.Register(api, cfg.AppDB)
-		registerContent(api, cfg.AppDB)
+		if cfg.ContentDB {
+			registerContent(api, cfg.AppDB)
+		}
 	}
 	if cfg.CoinGeckoAPIKey != "" {
 		registerTokens(api, newTokenDetails(cfg.CoinGeckoAPIKey))

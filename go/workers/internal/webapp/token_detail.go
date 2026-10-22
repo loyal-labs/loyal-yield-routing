@@ -249,6 +249,17 @@ type geckoInfo struct {
 	mintAuthority, freezeAuthority *string
 }
 
+type lenient[T any] struct{ value *T }
+
+func (l *lenient[T]) UnmarshalJSON(raw []byte) error {
+	l.value = nil
+	var v T
+	if json.Unmarshal(raw, &v) == nil && string(raw) != "null" {
+		l.value = &v
+	}
+	return nil
+}
+
 type looseNumber struct{ value *float64 }
 
 func (n *looseNumber) UnmarshalJSON(raw []byte) error {
@@ -341,22 +352,22 @@ func (d *tokenDetails) info(ctx context.Context, mint string) *geckoInfo {
 	var resp struct {
 		Data struct {
 			Attributes struct {
-				Websites       []string    `json:"websites"`
-				TwitterHandle  *string     `json:"twitter_handle"`
-				DiscordURL     *string     `json:"discord_url"`
-				TelegramHandle *string     `json:"telegram_handle"`
-				Description    *string     `json:"description"`
-				GtScore        looseNumber `json:"gt_score"`
-				GtVerified     *bool       `json:"gt_verified"`
-				Holders        *struct {
-					Count        *float64 `json:"count"`
-					Distribution *struct {
-						Top10 *string `json:"top_10"`
-						Rest  *string `json:"rest"`
-					} `json:"distribution_percentage"`
-				} `json:"holders"`
-				MintAuthority   *string `json:"mint_authority"`
-				FreezeAuthority *string `json:"freeze_authority"`
+				Websites       lenient[[]string] `json:"websites"`
+				TwitterHandle  lenient[string]   `json:"twitter_handle"`
+				DiscordURL     lenient[string]   `json:"discord_url"`
+				TelegramHandle lenient[string]   `json:"telegram_handle"`
+				Description    lenient[string]   `json:"description"`
+				GtScore        looseNumber       `json:"gt_score"`
+				GtVerified     lenient[bool]     `json:"gt_verified"`
+				Holders        lenient[struct {
+					Count        looseNumber `json:"count"`
+					Distribution lenient[struct {
+						Top10 lenient[string] `json:"top_10"`
+						Rest  lenient[string] `json:"rest"`
+					}] `json:"distribution_percentage"`
+				}] `json:"holders"`
+				MintAuthority   lenient[string] `json:"mint_authority"`
+				FreezeAuthority lenient[string] `json:"freeze_authority"`
 			} `json:"attributes"`
 		} `json:"data"`
 	}
@@ -365,19 +376,22 @@ func (d *tokenDetails) info(ctx context.Context, mint string) *geckoInfo {
 	}
 	a := resp.Data.Attributes
 	info := &geckoInfo{
-		websites: a.Websites, twitterHandle: a.TwitterHandle, discordURL: a.DiscordURL, telegramHandle: a.TelegramHandle,
-		gtScore: a.GtScore.value, gtVerified: a.GtVerified != nil && *a.GtVerified,
-		mintAuthority: a.MintAuthority, freezeAuthority: a.FreezeAuthority,
+		twitterHandle: a.TwitterHandle.value, discordURL: a.DiscordURL.value, telegramHandle: a.TelegramHandle.value,
+		gtScore: a.GtScore.value, mintAuthority: a.MintAuthority.value, freezeAuthority: a.FreezeAuthority.value,
 	}
-	if a.Description != nil {
-		if trimmed := strings.TrimSpace(*a.Description); trimmed != "" {
+	if a.Websites.value != nil {
+		info.websites = *a.Websites.value
+	}
+	info.gtVerified = a.GtVerified.value != nil && *a.GtVerified.value
+	if a.Description.value != nil {
+		if trimmed := strings.TrimSpace(*a.Description.value); trimmed != "" {
 			info.description = &trimmed
 		}
 	}
-	if a.Holders != nil {
-		info.holderCount = a.Holders.Count
-		if dist := a.Holders.Distribution; dist != nil && dist.Top10 != nil && dist.Rest != nil {
-			info.holderDistribution = &MobileTokenHolderDistribution{Top10: *dist.Top10, Rest: *dist.Rest}
+	if holders := a.Holders.value; holders != nil {
+		info.holderCount = holders.Count.value
+		if dist := holders.Distribution.value; dist != nil && dist.Top10.value != nil && dist.Rest.value != nil {
+			info.holderDistribution = &MobileTokenHolderDistribution{Top10: *dist.Top10.value, Rest: *dist.Rest.value}
 		}
 	}
 	return info

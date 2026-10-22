@@ -68,7 +68,7 @@ func registerReads[I, O any](api huma.API, id, path, summary string, handler fun
 	registerPreflight(api, path)
 }
 
-func readContent(ctx context.Context, pool *pgxpool.Pool, read func(pgx.Tx) error) error {
+func readContent(ctx context.Context, pool *pgxpool.Pool, read func(context.Context, pgx.Tx) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
@@ -76,7 +76,10 @@ func readContent(ctx context.Context, pool *pgxpool.Pool, read func(pgx.Tx) erro
 		return err
 	}
 	defer tx.Rollback(ctx)
-	return read(tx)
+	if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = 10000"); err != nil {
+		return err
+	}
+	return read(ctx, tx)
 }
 
 func isoMillis(t time.Time) string {
@@ -161,7 +164,7 @@ type SummaryTopic struct {
 
 func loadSummaries(ctx context.Context, pool *pgxpool.Pool, chatID *int64) (*SummariesResponse, error) {
 	body := &SummariesResponse{Summaries: []Summary{}}
-	err := readContent(ctx, pool, func(tx pgx.Tx) error {
+	err := readContent(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT s.id::text, c.chat_id::text, s.chat_title, s.message_count, s.oneliner, c.settings, s.topics, s.created_at
 FROM summaries s JOIN communities c ON c.id = s.community_id
 WHERE c.is_public AND ($1::bigint IS NULL OR c.chat_id = $1)
@@ -181,6 +184,9 @@ ORDER BY s.created_at DESC, s.id`, chatID)
 			s.PhotoURL, s.PhotoBase64, s.PhotoMime = settingString(settings, "photoUrl"), settingString(settings, "photoBase64"), settingString(settings, "photoMimeType")
 			for i := range topics {
 				topics[i].ID = s.ID + "-" + strconv.Itoa(i)
+				if topics[i].Sources == nil {
+					topics[i].Sources = []string{}
+				}
 			}
 			s.Topics, s.CreatedAt = topics, isoMillis(created)
 			body.Summaries = append(body.Summaries, s)
@@ -218,7 +224,7 @@ type MobileTrustedDapp struct {
 
 func loadTrustedDapps(ctx context.Context, pool *pgxpool.Pool) (*MobileTrustedDappsResponse, error) {
 	body := &MobileTrustedDappsResponse{Dapps: []MobileTrustedDapp{}}
-	err := readContent(ctx, pool, func(tx pgx.Tx) error {
+	err := readContent(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT id::text, origin, name, start_url, category, display_order
 FROM trusted_dapps WHERE is_active ORDER BY display_order, name, id`)
 		if err != nil {
@@ -263,7 +269,7 @@ type MobileLibraryArticle struct {
 
 func loadLibrary(ctx context.Context, pool *pgxpool.Pool) (*MobileLibraryResponse, error) {
 	body := &MobileLibraryResponse{Featured: []MobileLibraryArticle{}, Sections: []MobileLibrarySection{}}
-	err := readContent(ctx, pool, func(tx pgx.Tx) error {
+	err := readContent(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `SELECT id::text, title, display_order FROM library_sections
 WHERE is_active ORDER BY display_order, title, id`)
 		if err != nil {
