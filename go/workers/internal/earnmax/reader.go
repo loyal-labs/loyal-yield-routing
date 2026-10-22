@@ -25,7 +25,7 @@ type Reader struct {
 	now   func() time.Time
 
 	historyMu sync.Mutex
-	history   map[solana.PublicKey]map[solana.Signature][]Entry
+	history   map[solana.PublicKey]map[historyKey][]Entry
 	apy       StaleWhileRevalidate[APY]
 }
 
@@ -34,7 +34,7 @@ func NewReader(client *chain.Client, yield Querier) *Reader {
 		chain:   client,
 		yield:   yield,
 		now:     time.Now,
-		history: map[solana.PublicKey]map[solana.Signature][]Entry{},
+		history: map[solana.PublicKey]map[historyKey][]Entry{},
 		apy:     StaleWhileRevalidate[APY]{Fresh: apyCacheFor, Stale: apyCacheFor, Wait: apyTimeout, Budget: apyTimeout},
 	}
 }

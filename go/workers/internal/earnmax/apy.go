@@ -14,7 +14,7 @@ const (
 )
 
 type APYPoint struct {
-	APYBps int64  `json:"apyBps"`
+	APYBps *int64 `json:"apyBps"`
 	Date   string `json:"date"`
 }
 
@@ -62,21 +62,21 @@ func ShareAPY(days []DailyStat, live *LiveShare, now time.Time) APY {
 		}
 		points = append(points, sharePoint{atMs: nowMs, date: today, price: live.TVL / live.LP})
 	}
-	annualize := func(from, to sharePoint) *int64 {
+	annualize := func(from, to sharePoint) (bps *int64, defined bool) {
 		years := float64(to.atMs-from.atMs) / (365 * dayMs)
 		if years <= 0 {
-			return nil
+			return nil, false
 		}
 		growth := (math.Pow(to.price/from.price, 1/years) - 1) * 10_000
 		if math.IsInf(growth, 0) || math.IsNaN(growth) || math.Abs(growth) >= math.MaxInt64 {
-			return nil
+			return nil, true
 		}
-		bps := roundHalfUp(growth)
-		return &bps
+		rounded := roundHalfUp(growth)
+		return &rounded, true
 	}
 	for i := 1; i < len(points); i++ {
-		if bps := annualize(points[i-1], points[i]); bps != nil {
-			out.Daily = append(out.Daily, APYPoint{APYBps: *bps, Date: points[i].date})
+		if bps, defined := annualize(points[i-1], points[i]); defined {
+			out.Daily = append(out.Daily, APYPoint{APYBps: bps, Date: points[i].date})
 		}
 	}
 	if len(points) == 0 {
@@ -89,10 +89,11 @@ func ShareAPY(days []DailyStat, live *LiveShare, now time.Time) APY {
 			break
 		}
 	}
+	defined := false
 	if latest.atMs-from.atMs >= dayMs/2 {
-		out.Bps = annualize(from, latest)
+		out.Bps, defined = annualize(from, latest)
 	}
-	if out.Bps != nil {
+	if defined {
 		window := min(apyWindowDays, roundHalfUp(float64(latest.atMs-from.atMs)/dayMs))
 		out.WindowDays = &window
 	}
