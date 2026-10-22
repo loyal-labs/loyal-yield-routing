@@ -92,8 +92,8 @@ func openDB(ctx context.Context, routes, credential string) (pool *pgxpool.Pool,
 	return pool, true
 }
 
-func openAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, *chain.Client) {
-	auth, rpcClient, err := buildAuth(ctx, appDB)
+func openAuth(appDB *pgxpool.Pool, sessionGranted bool) (*webapp.Auth, *chain.Client) {
+	auth, rpcClient, err := buildAuth(appDB, sessionGranted)
 	if err != nil {
 		degraded("session routes", err)
 		return nil, nil
@@ -101,7 +101,7 @@ func openAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, *chain.Cl
 	return auth, rpcClient
 }
 
-func buildAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, *chain.Client, error) {
+func buildAuth(appDB *pgxpool.Pool, sessionGranted bool) (*webapp.Auth, *chain.Client, error) {
 	secret, err := engine.OptionalCredential("AUTH_JWT_SECRET")
 	if err != nil {
 		return nil, nil, err
@@ -120,7 +120,7 @@ func buildAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, *chain.C
 	if appDB == nil || endpoint == "" {
 		return nil, nil, errors.New("needs WEB_APP_DATABASE_URL and WEB_SOLANA_RPC_URL")
 	}
-	if !granted(ctx, appDB, "session routes", webapp.AuthGrants) {
+	if !sessionGranted {
 		return nil, nil, errors.New("web app role lacks the session grants")
 	}
 	rpcClient, err := chain.New(endpoint, 10*time.Second)
@@ -144,15 +144,38 @@ func granted(ctx context.Context, pool *pgxpool.Pool, routes string, grants []we
 	return false
 }
 
-func earnMax(ctx context.Context, appDB *pgxpool.Pool, rpcClient *chain.Client) (*webapp.EarnMax, *pgxpool.Pool) {
+type grantVerdicts struct{ Content, Session, EarnMax, Push, Yield bool }
+
+func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdicts {
+	var v grantVerdicts
+	for _, c := range []struct {
+		ok     *bool
+		pool   *pgxpool.Pool
+		routes string
+		grants []webapp.Grant
+	}{
+		{&v.Content, appDB, "content reads", webapp.ContentGrants},
+		{&v.Session, appDB, "session routes", webapp.AuthGrants},
+		{&v.EarnMax, appDB, "Earn MAX routes", webapp.EarnMaxGrants},
+		{&v.Push, appDB, "push tokens", webapp.PushGrants},
+		{&v.Yield, yieldDB, "Earn MAX route state", webapp.YieldGrants},
+	} {
+		if c.pool != nil {
+			*c.ok = granted(ctx, c.pool, c.routes, c.grants)
+		}
+	}
+	return v
+}
+
+func earnMax(rpcClient *chain.Client, grants grantVerdicts, yieldDB *pgxpool.Pool, yieldOK bool) *webapp.EarnMax {
 	const routes = "Earn MAX routes"
 	cluster, err := webapp.ParseSolanaCluster(os.Getenv("LOYAL_WEB_SOLANA_CLUSTER"))
 	if err != nil {
 		degraded(routes, err)
-		return nil, nil
+		return nil
 	}
-	if !granted(ctx, appDB, routes, webapp.EarnMaxGrants) {
-		return nil, nil
+	if !grants.EarnMax {
+		return nil
 	}
 	var invites webapp.InviteCodes
 	if hashes, ok := optionalCredential("Earn MAX invite redemption", "EARN_MAX_INVITE_CODE_HASHES"); ok {
@@ -160,15 +183,14 @@ func earnMax(ctx context.Context, appDB *pgxpool.Pool, rpcClient *chain.Client) 
 			degraded("Earn MAX invite redemption", err)
 		}
 	}
-	yieldDB, ok := openDB(ctx, routes, "WEB_YIELD_DATABASE_URL")
-	if !ok {
-		return nil, nil
+	if !yieldOK {
+		return nil
 	}
 	var yield earnmax.Querier
-	if yieldDB != nil && granted(ctx, yieldDB, "Earn MAX route state", webapp.YieldGrants) {
+	if yieldDB != nil && grants.Yield {
 		yield = yieldDB
 	}
-	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}, yieldDB
+	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}
 }
 
 func run(ctx context.Context) error {
@@ -180,17 +202,20 @@ func run(ctx context.Context) error {
 	appDB, _ := openDB(ctx, "app database routes", "WEB_APP_DATABASE_URL")
 	if appDB != nil {
 		defer appDB.Close()
-		cfg.AppDB = appDB
-		cfg.ContentDB = granted(ctx, appDB, "content reads", webapp.ContentGrants)
 	}
-	auth, rpcClient := openAuth(ctx, appDB)
-	if auth != nil {
-		var yieldDB *pgxpool.Pool
-		if cfg.EarnMax, yieldDB = earnMax(ctx, appDB, rpcClient); yieldDB != nil {
-			defer yieldDB.Close()
-		}
+	yieldDB, yieldOK := openDB(ctx, "Earn MAX routes", "WEB_YIELD_DATABASE_URL")
+	if yieldDB != nil {
+		defer yieldDB.Close()
+	}
+	grants := checkGrants(ctx, appDB, yieldDB)
+	if appDB != nil {
+		cfg.AppDB = appDB
+		cfg.ContentDB = grants.Content
+	}
+	if auth, rpcClient := openAuth(appDB, grants.Session); auth != nil {
 		cfg.Auth = auth
-		cfg.PushDB = granted(ctx, appDB, "push tokens", webapp.PushGrants)
+		cfg.EarnMax = earnMax(rpcClient, grants, yieldDB, yieldOK)
+		cfg.PushDB = grants.Push
 	}
 	server := &http.Server{
 		Addr:              cfg.Addr,
@@ -237,3 +262,5 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+var grantBound = 8 * time.Second
