@@ -21,6 +21,10 @@ var ContentGrants = []Grant{
 	{"library_articles", "SELECT"},
 }
 
+var StatsGrants = []Grant{
+	{"public.loyal_stats_snapshots", "SELECT"},
+}
+
 var EarnMaxGrants = []Grant{
 	{"earn_max_invite_redemptions", "SELECT"},
 	{"earn_max_invite_redemptions", "INSERT"},

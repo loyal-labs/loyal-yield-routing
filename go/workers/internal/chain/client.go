@@ -63,8 +63,11 @@ type slotRate struct {
 const SlotSamplePeriod = 60 * time.Second
 
 func New(endpoint string, timeout time.Duration) (*Client, error) {
-	if endpoint == "" || timeout <= 0 {
-		return nil, errors.New("chain client requires an endpoint and a timeout")
+	if timeout <= 0 {
+		return nil, errors.New("chain client requires a timeout")
+	}
+	if parsed, err := url.Parse(endpoint); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, errors.New("chain client requires an http or https endpoint")
 	}
 	return &Client{rpc: rpc.NewWithCustomRPCClient(jsonrpc.NewClientWithOpts(endpoint, &jsonrpc.RPCClientOpts{HTTPClient: keyedURLClient(timeout)}))}, nil
 }

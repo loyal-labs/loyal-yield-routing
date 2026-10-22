@@ -452,3 +452,11 @@ func TestLaggingNodeIsNotYetAndNeverAskedAgain(t *testing.T) {
 		t.Fatalf("next call: slot %d after %d calls: %v", slot, calls, err)
 	}
 }
+
+func TestNewRejectsAnEndpointThatIsNotAnHTTPURL(t *testing.T) {
+	for _, endpoint := range []string{"not a url", "ftp://host/rpc", "http://", "/relative"} {
+		if _, err := New(endpoint, time.Second); err == nil {
+			t.Errorf("New(%q) accepted an endpoint no request can reach", endpoint)
+		}
+	}
+}

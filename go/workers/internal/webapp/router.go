@@ -28,6 +28,7 @@ type Config struct {
 	EarnMax     *EarnMax
 	PushDB      bool
 	ContentDB   bool
+	StatsDB     bool
 	Dist        fs.FS
 	Environment string
 
@@ -60,7 +61,9 @@ func servedByGo(next http.Handler) http.Handler {
 
 func registerAPI(api huma.API, cfg Config) {
 	if cfg.AppDB != nil {
-		earnstats.Register(api, cfg.AppDB)
+		if cfg.StatsDB {
+			earnstats.Register(api, cfg.AppDB)
+		}
 		if cfg.ContentDB {
 			registerContent(api, cfg.AppDB)
 		}
