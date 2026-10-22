@@ -30,7 +30,7 @@ type Mux struct {
 }
 
 var families = []func(*Mux){
-	registerFlags, registerDapps, registerLibrary, registerAdmins, registerFeatures, registerCommunities, registerPush,
+	registerDapps, registerLibrary, registerCommunities,
 	registerOverview, registerJourneys, registerSmartAccounts,
 	registerEarn, registerRebalance, registerAutonomousVault, registerBackyard, registerEarnMax, registerMetrics,
 }
