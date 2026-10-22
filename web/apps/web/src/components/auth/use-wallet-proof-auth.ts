@@ -300,6 +300,8 @@ export function useWalletProofAuth({
 
   const finishProofAttempt = useCallback(() => {
     endExplicitWalletConnect(selectedWalletNameRef.current);
+    // The captcha token is single-use once the challenge consumes it, so
+    // ask the modal to issue a fresh one before any subsequent attempt.
     onCaptchaConsumedRef.current?.();
   }, [endExplicitWalletConnect]);
 

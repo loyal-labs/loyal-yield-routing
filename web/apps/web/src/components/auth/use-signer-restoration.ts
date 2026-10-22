@@ -181,6 +181,7 @@ export function useSignerRestoration({
       return;
     }
     if (entry.adapter.connected) {
+      // The adapter can be ready one render before WalletProvider catches up.
       if (entry.adapter.publicKey?.toBase58() !== address) {
         finish("wallet_account_mismatch");
         return;
