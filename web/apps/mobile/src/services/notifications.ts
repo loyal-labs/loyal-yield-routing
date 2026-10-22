@@ -2,6 +2,7 @@ import Constants from "expo-constants";
 import * as Device from "expo-device";
 
 import { env } from "@/config/env";
+import { earnHeaders, silentEarnToken } from "@/lib/solana/earn/earn-session";
 
 /**
  * Lazily load expo-notifications to avoid crash in Expo Go (SDK 53+).
@@ -126,22 +127,26 @@ export async function addNotificationResponseListener(
 }
 
 /**
- * Send the push token to our backend for storage, keyed by the caller's
- * wallet public key. The backend upserts on `token`, so re-registering
- * with the same token after a wallet change flips the identity.
+ * Send the push token to loyal-web, which keys it by the wallet in the
+ * bearer. A wallet with no session token yet (an external wallet before its
+ * first mint) is skipped without a prompt; the registrar retries on the next
+ * app start.
  */
 export async function registerPushToken(
   token: string,
   walletPublicKey: string,
 ): Promise<void> {
-  const url = `${env.apiBaseUrl}/api/push-tokens`;
   try {
-    const response = await fetch(url, {
+    const bearer = await silentEarnToken(walletPublicKey);
+    if (!bearer) {
+      console.log("[push] No Earn session for this wallet yet, skipping");
+      return;
+    }
+    const response = await fetch(`${env.apiBaseUrl}/api/push-tokens`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { ...earnHeaders(), Authorization: `Bearer ${bearer}` },
       body: JSON.stringify({
         token,
-        walletPublicKey,
         platform: process.env.EXPO_OS ?? "unknown",
       }),
     });

@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
-import {
-  fetchLibrary,
-  type LibraryResponse,
-  type RemoteLibraryArticle,
-  type RemoteLibrarySection,
-} from "@/services/api";
+import type { MobileLibraryArticle, MobileLibrarySection } from "@loyal-labs/api";
 
-export type LibraryArticle = RemoteLibraryArticle;
-export type LibrarySection = RemoteLibrarySection;
+import { fetchLibrary } from "@/services/api";
+
+export type LibraryArticle = MobileLibraryArticle;
+export type LibrarySection = MobileLibrarySection;
 
 export type LibraryContent = {
   featured: LibraryArticle[];
@@ -76,7 +73,7 @@ async function loadLibrary({ isRefresh }: { isRefresh: boolean }): Promise<void>
 
   inflight = (async () => {
     try {
-      const response: LibraryResponse = await fetchLibrary();
+      const response = await fetchLibrary();
       setStoreState({
         content: {
           featured: response.featured,

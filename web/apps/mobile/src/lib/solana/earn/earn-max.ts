@@ -1,3 +1,4 @@
+import type { Get, Post, RouteError } from "@loyal-labs/api";
 import {
   createSmartAccountVaultsClient,
   prepareEarnMaxVoltr,
@@ -12,26 +13,11 @@ import { env } from "@/config/env";
 import { getConnection } from "@/lib/solana/rpc/connection";
 import type { Signer } from "@/lib/wallet/signer";
 
-import type * as NextEarnMax from "../../../../../web/src/features/earn-max/types";
-import { fetchEarnState } from "./earn-api";
 import { earnHeaders, earnWalletRead, ensureEarnSession } from "./earn-session";
 import {
   signAndSendPreparedOperation,
   type SentTransaction,
 } from "./send-prepared";
-
-export type EarnMaxSummary = NextEarnMax.EarnMaxSummary;
-export type EarnMaxActivityResponse = NextEarnMax.EarnMaxActivityResponse;
-export type EarnMaxSummaryResponse = Omit<
-  NextEarnMax.EarnMaxSummaryResponse,
-  "config"
-> & {
-  config: NextEarnMax.EarnMaxSummaryResponse["config"] & {
-    settingsPda?: string;
-    walletAddress?: string;
-  };
-};
-export type EarnMaxInviteResponse = { redeemed: boolean };
 
 export const EARN_MAX_CONTRACT = "earn-max-v4";
 
@@ -54,9 +40,7 @@ export class EarnMaxError extends Error {
 }
 
 async function errorCodeOf(res: Response): Promise<string | undefined> {
-  const payload = (await res.json().catch(() => null)) as {
-    error?: { code?: string };
-  } | null;
+  const payload = (await res.json().catch(() => null)) as Partial<RouteError> | null;
   return payload?.error?.code;
 }
 
@@ -90,29 +74,30 @@ async function readEarnMax<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-function readPath<T>(walletAddress: string, path: string): Promise<T> {
-  return earnWalletRead(
-    walletAddress,
-    `${env.earnApiBaseUrl}/api/smart-accounts/earn-max/${path}`,
-  ).then((res) => readEarnMax<T>(res));
+type EarnMaxReadPath = Extract<
+  keyof Get,
+  `/api/smart-accounts/earn-max/${string}`
+>;
+
+function readPath<P extends EarnMaxReadPath>(
+  walletAddress: string,
+  path: P,
+): Promise<Get[P]> {
+  return earnWalletRead(walletAddress, `${env.apiBaseUrl}${path}`).then((res) =>
+    readEarnMax<Get[P]>(res),
+  );
 }
 
-export function fetchEarnMaxSummary(
-  walletAddress: string,
-): Promise<EarnMaxSummaryResponse> {
-  return readPath(walletAddress, "summary");
+export function fetchEarnMaxSummary(walletAddress: string) {
+  return readPath(walletAddress, "/api/smart-accounts/earn-max/summary");
 }
 
-export function fetchEarnMaxActivity(
-  walletAddress: string,
-): Promise<EarnMaxActivityResponse> {
-  return readPath(walletAddress, "activity");
+export function fetchEarnMaxActivity(walletAddress: string) {
+  return readPath(walletAddress, "/api/smart-accounts/earn-max/activity");
 }
 
-export function fetchEarnMaxInvite(
-  walletAddress: string,
-): Promise<EarnMaxInviteResponse> {
-  return readPath(walletAddress, "invite");
+export function fetchEarnMaxInvite(walletAddress: string) {
+  return readPath(walletAddress, "/api/smart-accounts/earn-max/invite");
 }
 
 export async function redeemEarnMaxInvite(
@@ -127,7 +112,7 @@ export async function redeemEarnMaxInvite(
       null,
     );
   }
-  const res = await fetch(`${env.earnApiBaseUrl}/api/smart-accounts/earn-max/invite`, {
+  const res = await fetch(`${env.apiBaseUrl}/api/smart-accounts/earn-max/invite`, {
     method: "POST",
     headers: { ...earnHeaders(), Authorization: `Bearer ${token}` },
     body: JSON.stringify({ code }),
@@ -135,7 +120,7 @@ export async function redeemEarnMaxInvite(
   if (res.status === 400 || res.status === 409) {
     return "invalid";
   }
-  await readEarnMax<EarnMaxInviteResponse>(res);
+  await readEarnMax<Post["/api/smart-accounts/earn-max/invite"]>(res);
   return "redeemed";
 }
 
@@ -143,25 +128,16 @@ export type EarnMaxAccount = { programId: string; settingsPda: string };
 
 export async function resolveEarnMaxAccount(
   walletAddress: string,
-  config: EarnMaxSummaryResponse["config"],
+  config: Get["/api/smart-accounts/earn-max/summary"]["config"],
 ): Promise<EarnMaxAccount> {
-  if (config.walletAddress && config.walletAddress !== walletAddress) {
+  if (config.walletAddress !== walletAddress) {
     throw new EarnMaxError(
       "unauthenticated",
       "Earn MAX answered for a different wallet.",
       null,
     );
   }
-  const settingsPda =
-    config.settingsPda ?? (await fetchEarnState(walletAddress)).settingsPda;
-  if (!settingsPda) {
-    throw new EarnMaxError(
-      "request_failed",
-      "This wallet has no smart account for Earn MAX yet.",
-      null,
-    );
-  }
-  return { programId: config.programId, settingsPda };
+  return { programId: config.programId, settingsPda: config.settingsPda };
 }
 
 export type EarnMaxVoltrAction =

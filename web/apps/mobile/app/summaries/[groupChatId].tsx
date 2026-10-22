@@ -1,4 +1,4 @@
-import type { ChatSummary, Topic } from "@loyal-labs/shared";
+import type { Summary, SummaryTopic } from "@loyal-labs/api";
 
 import * as Haptics from "expo-haptics";
 import { Stack, useLocalSearchParams } from "expo-router";
@@ -46,7 +46,7 @@ export default function SummaryFeedScreen() {
   const { groupChatId } = useLocalSearchParams<{ groupChatId: string }>();
   const { width: screenWidth } = useWindowDimensions();
 
-  const [summaries, setSummaries] = useState<ChatSummary[]>([]);
+  const [summaries, setSummaries] = useState<Summary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -115,7 +115,7 @@ export default function SummaryFeedScreen() {
   // ── Slide transition (dual-layer, matching web app) ──
   // Keep oldTopics synced with current topics so the overlay is ready for next swipe.
   // Skip sync during transitions to avoid overwriting the frozen old content.
-  const [oldTopics, setOldTopics] = useState<Topic[]>([]);
+  const [oldTopics, setOldTopics] = useState<SummaryTopic[]>([]);
   const isTransitioning = useRef(false);
   useEffect(() => {
     if (!isTransitioning.current) {
