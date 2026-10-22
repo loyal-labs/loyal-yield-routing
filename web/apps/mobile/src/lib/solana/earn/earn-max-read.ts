@@ -3,6 +3,8 @@ import type {
   EarnMaxSummaryResponse,
 } from "@loyal-labs/api";
 
+import type { Signer } from "@/lib/wallet/signer";
+
 import {
   EarnMaxError,
   fetchEarnMaxActivity,
@@ -17,6 +19,7 @@ export type EarnMaxRead =
       summary: EarnMaxSummaryResponse;
       activity: EarnMaxActivity;
     }
+  | { kind: "session_required"; notice: string | null }
   | { kind: "failed"; message: string };
 
 export async function readEarnMax(walletAddress: string): Promise<EarnMaxRead> {
@@ -40,4 +43,11 @@ export async function readEarnMax(walletAddress: string): Promise<EarnMaxRead> {
         error instanceof Error ? error.message : "Earn MAX failed to load.",
     };
   }
+}
+
+export async function connectEarnMax(
+  walletAddress: string,
+  _signer: Signer,
+): Promise<EarnMaxRead> {
+  return readEarnMax(walletAddress);
 }
