@@ -17,7 +17,7 @@ import type { WirePreparedOperation } from "./wire";
 const PREPARE_TIMEOUT_MS = 120_000;
 
 // Client for the wallet-signed mobile Earn endpoints on the `frontend` backend
-// (env.earnApiBaseUrl, e.g. staging.askloyal.com). These are NOT the `/app`
+// (env.apiBaseUrl, e.g. staging.askloyal.com). These are NOT the `/app`
 // chat backend, so they don't go through `src/services/api.ts`.
 
 export type EarnAuthFields = {
@@ -156,7 +156,7 @@ export async function fetchEarnDepositPrepareContext(args: {
   let res: Response;
   try {
     res = await fetchWithTimeout(
-      `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/deposit/prepare-context`,
+      `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/deposit/prepare-context`,
       {
         method: "POST",
         headers: earnHeaders(args.flowId),
@@ -195,7 +195,7 @@ export async function prepareEarnDeposit(args: {
   let res: Response;
   try {
     res = await fetchWithTimeout(
-      `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/deposit/prepare`,
+      `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/deposit/prepare`,
       {
         method: "POST",
         headers: earnHeaders(args.flowId),
@@ -275,7 +275,7 @@ export async function prepareEarnWithdraw(args: {
   source?: EarnWithdrawSource;
 }): Promise<EarnWithdrawPrepareResponse> {
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/prepare`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/prepare`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -368,7 +368,7 @@ export async function fetchEarnWithdrawPrepareContext(args: {
   flowId?: string;
 }): Promise<EarnWithdrawPrepareContext | null> {
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/prepare-context`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/prepare-context`,
     {
       method: "POST",
       headers: earnHeaders(args.flowId),
@@ -420,7 +420,7 @@ export async function fetchEarnWithdrawCleanupPrepareContext(args: {
   flowId?: string;
 }): Promise<EarnWithdrawCleanupPrepareContext> {
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/cleanup/prepare-context`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/cleanup/prepare-context`,
     {
       method: "POST",
       headers: earnHeaders(args.flowId),
@@ -447,7 +447,7 @@ export async function confirmEarnWithdrawCleanup(
 ): Promise<void> {
   const { auth, ...rest } = args;
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/cleanup/confirm`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/cleanup/confirm`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -475,7 +475,7 @@ export async function confirmEarnWithdraw(
 ): Promise<void> {
   const { auth, ...rest } = args;
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/confirm`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/confirm`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -516,7 +516,7 @@ export async function fetchEarnWithdrawSources(
 ): Promise<EarnWithdrawSourcesResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/sources?walletAddress=${encodeURIComponent(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/sources?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
   );
@@ -627,7 +627,7 @@ export async function fetchEarnAutodepositState(
 ): Promise<EarnAutodepositStateResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/state?walletAddress=${encodeURIComponent(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/state?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
   );
@@ -646,7 +646,7 @@ export async function confirmEarnAutodepositSetup(args: {
 }): Promise<void> {
   const { auth, ...rest } = args;
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/setup/confirm`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/setup/confirm`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -668,7 +668,7 @@ export async function updateEarnAutodepositFloor(args: {
   const { auth, ...rest } = args;
   const { headers, bodyFields } = earnAuthParts(auth);
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/floor/confirm`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/floor/confirm`,
     {
       method: "POST",
       headers: { ...earnHeaders(), ...headers },
@@ -691,7 +691,7 @@ export async function toggleEarnAutodeposit(args: {
   const { auth, flowId, ...rest } = args;
   const { headers, bodyFields } = earnAuthParts(auth);
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/toggle/confirm`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/toggle/confirm`,
     {
       method: "POST",
       headers: { ...earnHeaders(flowId), ...headers },
@@ -711,7 +711,7 @@ export async function confirmEarnAutodepositClose(args: {
 }): Promise<void> {
   const { auth, ...rest } = args;
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/close/confirm`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/close/confirm`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -752,7 +752,7 @@ export async function requestEarnAutodepositSweepExecute(args: {
 }): Promise<EarnAutodepositSweepExecuteResponse> {
   const { headers, bodyFields } = earnAuthParts(args.auth);
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/sweeps/execute`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/sweeps/execute`,
     {
       method: "POST",
       headers: { ...earnHeaders(), ...headers },
@@ -806,7 +806,7 @@ export async function fetchEarnAutodepositSweepProgress(
   try {
     const res = await earnWalletRead(
       walletAddress,
-      `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/sweeps/execute?walletAddress=${encodeURIComponent(
+      `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/sweeps/execute?walletAddress=${encodeURIComponent(
         walletAddress,
       )}&slotId=${encodeURIComponent(slotId)}`,
     );
@@ -858,7 +858,7 @@ export async function fetchEarnState(
 ): Promise<EarnStateResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/state?walletAddress=${encodeURIComponent(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/state?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
   );
@@ -898,7 +898,7 @@ export async function fetchEarnHoldings(
 ): Promise<EarnHoldingsResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/holdings?walletAddress=${encodeURIComponent(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/holdings?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
   );
@@ -960,7 +960,7 @@ export async function fetchEarnEarnings(
   const timezone = deviceTimezone();
   const res = await earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/earnings?walletAddress=${encodeURIComponent(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/earnings?walletAddress=${encodeURIComponent(
       walletAddress,
     )}${timezone ? `&timezone=${encodeURIComponent(timezone)}` : ""}`,
   );
@@ -1030,7 +1030,7 @@ export async function fetchEarnTransactions(
 ): Promise<EarnTransactionsResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/transactions?walletAddress=${encodeURIComponent(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/transactions?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
   );
@@ -1066,7 +1066,7 @@ export type EarnForecastSummary = {
 
 export async function fetchEarnForecastSummary(): Promise<EarnForecastSummary> {
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/earn-forecast/summary`,
+    `${env.apiBaseUrl}/api/smart-accounts/earn-forecast/summary`,
     { method: "GET", headers: earnHeaders() },
   );
   if (!res.ok) {
@@ -1093,7 +1093,7 @@ export async function confirmEarnDeposit(
 ): Promise<void> {
   const { auth, ...rest } = args;
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/deposit/confirm`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/deposit/confirm`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -1134,7 +1134,7 @@ export async function fetchSolanaWeekQuestProgress(
 ): Promise<SolanaWeekQuestProgressResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}/api/solana-week/progress?walletAddress=${encodeURIComponent(
+    `${env.apiBaseUrl}/api/solana-week/progress?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
   );
@@ -1177,7 +1177,7 @@ export async function fetchEarnRefundScan(
 ): Promise<EarnRefundScanResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/policy-refunds/scan?walletAddress=${encodeURIComponent(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/policy-refunds/scan?walletAddress=${encodeURIComponent(
       walletAddress,
     )}`,
   );
@@ -1208,7 +1208,7 @@ export async function prepareEarnRefund(args: {
   request: EarnRefundPrepareRequest;
 }): Promise<EarnRefundPrepareResponse> {
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/policy-refunds/prepare`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/policy-refunds/prepare`,
     {
       method: "POST",
       headers: earnHeaders(),

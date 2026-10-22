@@ -17,7 +17,7 @@ jest.mock("expo-updates", () => ({
   updateId: undefined,
 }));
 jest.mock("@/config/env", () => ({
-  env: { earnApiBaseUrl: "https://example.test" },
+  env: { apiBaseUrl: "https://example.test" },
 }));
 
 type Envelope = {

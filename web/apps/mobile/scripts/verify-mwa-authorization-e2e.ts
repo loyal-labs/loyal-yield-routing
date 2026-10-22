@@ -191,7 +191,6 @@ function envForVerifier(): NodeJS.ProcessEnv {
     ANDROID_SDK_ROOT: sdk,
     APP_VARIANT: "development",
     EXPO_PUBLIC_API_BASE_URL: `http://127.0.0.1:${proxyPort}`,
-    EXPO_PUBLIC_EARN_API_BASE_URL: `http://127.0.0.1:${proxyPort}`,
     EXPO_PUBLIC_MWA_AUTHORIZATION_E2E: "1",
     EXPO_PUBLIC_SOLANA_ENV: "devnet",
     JAVA_HOME:

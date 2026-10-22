@@ -79,23 +79,18 @@ Expo uses `EXPO_PUBLIC_` prefix for client-accessible env vars.
 
 **Local development** (`.env`, gitignored):
 ```env
-EXPO_PUBLIC_API_BASE_URL=https://your-app.vercel.app
+EXPO_PUBLIC_API_BASE_URL=https://next.askloyal.com
 EXPO_PUBLIC_GRID_AUTH_BASE_URL=https://auth.askloyal.com
-EXPO_PUBLIC_EARN_API_BASE_URL=https://askloyal.com
 EXPO_PUBLIC_SOLANA_ENV=mainnet
 ```
 
-- `EXPO_PUBLIC_API_BASE_URL` selects the chat/wallet API; its fallback is
-  `https://solana-telegram-transactions.vercel.app`.
+- `EXPO_PUBLIC_API_BASE_URL` selects loyal-web, the one API server for content,
+  Earn and push; its fallback is `https://next.askloyal.com`.
 - `EXPO_PUBLIC_GRID_AUTH_BASE_URL` selects the passkey auth domain; its fallback
   is `https://auth.askloyal.com`.
-- `EXPO_PUBLIC_EARN_API_BASE_URL` selects the mobile Earn API; its fallback is
-  `https://askloyal.com`.
 - `EXPO_PUBLIC_SOLANA_ENV` selects the Solana cluster.
 - `EXPO_PUBLIC_VERCEL_PROTECTION_BYPASS` is optional and is sent only when
   testing a protected preview deployment.
-- `EXPO_PUBLIC_EARN_SPONSORED_DEPOSITS` enables sponsored deposits only when set
-  to `true`; other values keep the self-paid flow.
 - `EXPO_PUBLIC_PRIVY_APP_ID` and `EXPO_PUBLIC_PRIVY_CLIENT_ID` identify the Privy app (shared with web) and its mobile app client. Both are public and set in every `eas.json` profile; when unset, Privy sign-in is disabled and only existing legacy wallets work.
 # failed: env list lacked the Privy ids when they were added (2026-09-09)
 # outcome: listed with the same wording as env.ts

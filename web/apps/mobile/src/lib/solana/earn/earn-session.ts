@@ -133,7 +133,7 @@ async function mint(
   startedAt: number,
 ): Promise<string | null> {
   const res = await fetch(
-    `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/session`,
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/session`,
     {
       method: "POST",
       headers: earnHeaders(),

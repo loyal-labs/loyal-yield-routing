@@ -21,10 +21,9 @@ const mobile = join(web, "apps/mobile");
 const twinsFile = join(import.meta.dir, "mobile-twins.txt");
 
 // What each base variable of web/apps/mobile/src/config/env.ts reaches. The Go server
-// (`loyal-web`) answers behind the same host as the Next app it replaces.
+// (`loyal-web`) answers its native routes and proxies the rest to the web Next app.
 const BASES: Record<string, { next: NextApp[]; go: boolean }> = {
-  apiBaseUrl: { next: ["telegram"], go: true },
-  earnApiBaseUrl: { next: ["web"], go: true },
+  apiBaseUrl: { next: ["web"], go: true },
 };
 const THIRD_PARTY_BASES = new Set(["gridAuthBaseUrl"]);
 
