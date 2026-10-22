@@ -73,4 +73,19 @@ describe("earn session", () => {
 
     expect(mints).toBe(1);
   });
+
+  it("keeps storage empty when a logout lands while a rejected token is dropped", async () => {
+    store.set(
+      SESSIONS_KEY,
+      JSON.stringify({ [WALLET]: session("stale"), other: session("kept") }),
+    );
+
+    await earn.getEarnSessionToken(WALLET);
+
+    const dropping = earn.dropRejectedToken(WALLET, "stale");
+    const clearing = earn.clearEarnSession();
+    await Promise.all([dropping, clearing]);
+
+    expect(store.has(SESSIONS_KEY)).toBe(false);
+  });
 });
