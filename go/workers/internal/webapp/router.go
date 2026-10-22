@@ -49,7 +49,11 @@ func New(cfg Config) http.Handler {
 	}
 	if cfg.Auth != nil && cfg.AppDB != nil {
 		if cfg.EarnMax != nil {
-			registerEarnMax(api, cfg.Auth, cfg.AppDB, *cfg.EarnMax, cfg.Release)
+			routes := newEarnMaxRoutes(cfg.Auth, cfg.AppDB, *cfg.EarnMax, cfg.Release)
+			routes.registerReads(api)
+			if len(cfg.EarnMax.Invites) > 0 {
+				routes.registerRedeem(api)
+			}
 		}
 		if cfg.PushDB {
 			registerPush(api, cfg.Auth, cfg.AppDB)
@@ -136,7 +140,9 @@ func OpenAPI() *huma.OpenAPI {
 	earnstats.Register(api, nil)
 	registerContent(api, nil)
 	registerTokens(api, nil)
-	registerEarnMax(api, nil, nil, EarnMax{}, "")
+	routes := newEarnMaxRoutes(nil, nil, EarnMax{}, "")
+	routes.registerReads(api)
+	routes.registerRedeem(api)
 	registerPush(api, nil, nil)
 	return api.OpenAPI()
 }

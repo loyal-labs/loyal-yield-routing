@@ -3,8 +3,11 @@ package webapp
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -41,7 +44,7 @@ func ParseSolanaCluster(raw string) (SolanaCluster, error) {
 	return "", errors.New("LOYAL_WEB_SOLANA_CLUSTER: want mainnet or devnet")
 }
 
-type InviteCodes map[string]struct{}
+type InviteCodes [][sha256.Size]byte
 
 var (
 	inviteCodePattern = regexp.MustCompile(`^[A-Z0-9]{6}$`)
@@ -49,7 +52,7 @@ var (
 )
 
 func ParseInviteCodes(raw string) (InviteCodes, error) {
-	codes := InviteCodes{}
+	var codes InviteCodes
 	for entry := range strings.SplitSeq(raw, ",") {
 		hash := strings.ToLower(strings.TrimSpace(entry))
 		if hash == "" {
@@ -58,7 +61,9 @@ func ParseInviteCodes(raw string) (InviteCodes, error) {
 		if !inviteHashPattern.MatchString(hash) {
 			return nil, errors.New("EARN_MAX_INVITE_CODE_HASHES has a malformed entry")
 		}
-		codes[hash] = struct{}{}
+		var sum [sha256.Size]byte
+		hex.Decode(sum[:], []byte(hash))
+		codes = append(codes, sum)
 	}
 	return codes, nil
 }
@@ -72,9 +77,11 @@ func (c InviteCodes) admit(code *string) (string, bool) {
 		return "", false
 	}
 	sum := sha256.Sum256([]byte(normalized))
-	hash := hex.EncodeToString(sum[:])
-	_, ok := c[hash]
-	return hash, ok
+	ok := 0
+	for _, allowed := range c {
+		ok |= subtle.ConstantTimeCompare(sum[:], allowed[:])
+	}
+	return hex.EncodeToString(sum[:]), ok == 1
 }
 
 type EarnMax struct {
@@ -186,15 +193,15 @@ func (h earnMaxRoutes) redeemed(ctx context.Context, wallet string) (bool, error
 }
 
 func (h earnMaxRoutes) admit(ctx context.Context, p Principal) error {
-	if h.cfg.Cluster != Mainnet {
-		return h.fail(http.StatusConflict, "unsupported_cluster", "Earn MAX requires mainnet.")
-	}
 	redeemed, err := h.redeemed(ctx, p.Wallet.String())
 	if err != nil {
 		return h.unavailable("invite", err)
 	}
 	if !redeemed {
 		return h.fail(http.StatusForbidden, "invite_required", "")
+	}
+	if h.cfg.Cluster != Mainnet {
+		return h.fail(http.StatusConflict, "unsupported_cluster", "Earn MAX requires mainnet.")
 	}
 	return nil
 }
@@ -230,16 +237,44 @@ type inviteOutput struct {
 
 type sessionRequest struct{ SessionInput }
 
-type redeemRequest struct {
-	SessionInput
-	Body *InviteRequest `required:"false"`
+const maxJSONBody = 1 << 20
+
+type rawJSON struct{ data []byte }
+
+func (r *rawJSON) Resolve(ctx huma.Context) []error {
+	r.data, _ = io.ReadAll(io.LimitReader(ctx.BodyReader(), maxJSONBody))
+	return nil
 }
 
-func registerEarnMax(api huma.API, auth *Auth, appDB *pgxpool.Pool, cfg EarnMax, release string) {
+type redeemRequest struct {
+	SessionInput
+	Raw rawJSON
+}
+
+func documentJSONBody[T any](api huma.API, path string) {
+	api.OpenAPI().Paths[path].Post.RequestBody = &huma.RequestBody{Content: map[string]*huma.MediaType{
+		"application/json": {Schema: api.OpenAPI().Components.Schemas.Schema(reflect.TypeFor[T](), true, "")},
+	}}
+}
+
+func inviteCode(raw []byte) *string {
+	var body struct {
+		Code *string `json:"code"`
+	}
+	if json.Unmarshal(raw, &body) != nil {
+		return nil
+	}
+	return body.Code
+}
+
+func newEarnMaxRoutes(auth *Auth, appDB *pgxpool.Pool, cfg EarnMax, release string) earnMaxRoutes {
 	if release == "" {
 		release = "unknown"
 	}
-	h := earnMaxRoutes{auth: auth, appDB: appDB, cfg: cfg, headers: EarnMaxHeaders{earnMaxContract, release}, tries: newInviteAttempts()}
+	return earnMaxRoutes{auth: auth, appDB: appDB, cfg: cfg, headers: EarnMaxHeaders{earnMaxContract, release}, tries: newInviteAttempts()}
+}
+
+func (h earnMaxRoutes) registerReads(api huma.API) {
 	errs := func(codes ...int) map[string]*huma.Response {
 		return errorResponses[routeError](api, codes...)
 	}
@@ -257,7 +292,7 @@ func registerEarnMax(api huma.API, auth *Auth, appDB *pgxpool.Pool, cfg EarnMax,
 		if err := h.admit(ctx, p); err != nil {
 			return nil, err
 		}
-		summary, err := cfg.Reader.Summary(ctx, p.Settings)
+		summary, err := h.cfg.Reader.Summary(ctx, p.Settings)
 		if err != nil {
 			return nil, h.unavailable("summary", err)
 		}
@@ -280,7 +315,7 @@ func registerEarnMax(api huma.API, auth *Auth, appDB *pgxpool.Pool, cfg EarnMax,
 		if err := h.admit(ctx, p); err != nil {
 			return nil, err
 		}
-		activity, err := cfg.Reader.Activity(ctx, p.Settings)
+		activity, err := h.cfg.Reader.Activity(ctx, p.Settings)
 		if err != nil {
 			return nil, h.unavailable("activity", err)
 		}
@@ -289,7 +324,7 @@ func registerEarnMax(api huma.API, auth *Auth, appDB *pgxpool.Pool, cfg EarnMax,
 	huma.Register(api, huma.Operation{
 		OperationID: "get-earn-max-invite",
 		Method:      http.MethodGet,
-		Path:        "/api/smart-accounts/earn-max/invite",
+		Path:        invitePath,
 		Summary:     "Whether the signed-in wallet has redeemed an Earn MAX invite",
 		Responses:   errs(401, 409, 503),
 	}, func(ctx context.Context, in *sessionRequest) (*inviteOutput, error) {
@@ -303,12 +338,17 @@ func registerEarnMax(api huma.API, auth *Auth, appDB *pgxpool.Pool, cfg EarnMax,
 		}
 		return &inviteOutput{h.headers, InviteStatus{Redeemed: redeemed}}, nil
 	})
+}
+
+const invitePath = "/api/smart-accounts/earn-max/invite"
+
+func (h earnMaxRoutes) registerRedeem(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "post-earn-max-invite",
 		Method:      http.MethodPost,
-		Path:        "/api/smart-accounts/earn-max/invite",
+		Path:        invitePath,
 		Summary:     "Redeem an Earn MAX invite code for the signed-in wallet",
-		Responses:   errs(400, 401, 409, 429, 503),
+		Responses:   errorResponses[routeError](api, 400, 401, 409, 429, 503),
 	}, func(ctx context.Context, in *redeemRequest) (*inviteOutput, error) {
 		p, err := h.auth.Principal(ctx, in.SessionInput)
 		if err != nil {
@@ -317,11 +357,7 @@ func registerEarnMax(api huma.API, auth *Auth, appDB *pgxpool.Pool, cfg EarnMax,
 		if !h.tries.consume(p.Wallet.String(), time.Now()) {
 			return nil, h.fail(http.StatusTooManyRequests, "rate_limited", "")
 		}
-		var code *string
-		if in.Body != nil {
-			code = in.Body.Code
-		}
-		hash, ok := cfg.Invites.admit(code)
+		hash, ok := h.cfg.Invites.admit(inviteCode(in.Raw.data))
 		if !ok {
 			return nil, h.fail(http.StatusBadRequest, "invalid_code", "")
 		}
@@ -334,6 +370,7 @@ func registerEarnMax(api huma.API, auth *Auth, appDB *pgxpool.Pool, cfg EarnMax,
 		}
 		return &inviteOutput{h.headers, InviteStatus{Redeemed: true}}, nil
 	})
+	documentJSONBody[InviteRequest](api, invitePath)
 }
 
 func errorResponses[T any](api huma.API, codes ...int) map[string]*huma.Response {
@@ -351,12 +388,13 @@ func errorResponses[T any](api huma.API, codes ...int) map[string]*huma.Response
 const (
 	inviteWindow      = 10 * time.Minute
 	inviteMaxAttempts = 10
-	inviteMaxTracked  = 4096
+	inviteSweepEvery  = time.Minute
 )
 
 type inviteAttempts struct {
-	mu   sync.Mutex
-	seen map[string]inviteWindowCount
+	mu      sync.Mutex
+	seen    map[string]inviteWindowCount
+	sweepAt time.Time
 }
 
 type inviteWindowCount struct {
@@ -379,18 +417,13 @@ func (a *inviteAttempts) consume(key string, now time.Time) bool {
 		a.seen[key] = current
 		return true
 	}
-	if len(a.seen) >= inviteMaxTracked {
+	if !now.Before(a.sweepAt) {
 		for k, v := range a.seen {
 			if !v.resetAt.After(now) {
 				delete(a.seen, k)
 			}
 		}
-		for k := range a.seen {
-			if len(a.seen) < inviteMaxTracked {
-				break
-			}
-			delete(a.seen, k)
-		}
+		a.sweepAt = now.Add(inviteSweepEvery)
 	}
 	a.seen[key] = inviteWindowCount{count: 1, resetAt: now.Add(inviteWindow)}
 	return true

@@ -396,7 +396,7 @@ proxying the session routes to Next.
 | `WEB_SOLANA_RPC_URL` | yes | reads the smart account's settings signers |
 | `WEB_APP_DATABASE_URL` | yes | App Neon; SELECT on `app_users` and `app_user_smart_accounts` (sessions), SELECT and INSERT on `earn_max_invite_redemptions` (Earn MAX routes), SELECT, INSERT and UPDATE on `push_tokens` (`/api/push-tokens`) |
 | `WEB_YIELD_DATABASE_URL` | no | Yield Neon; SELECT on `loyal_yield.multiply_route_states`; without it Earn MAX reads show no current APY and no withdrawal health |
-| `EARN_MAX_INVITE_CODE_HASHES` | no | the Next deployment's value: comma-separated sha256 hex of the invite codes; unset admits no new invite, a malformed entry stops `loyal-web` |
+| `EARN_MAX_INVITE_CODE_HASHES` | no | the Next deployment's value: comma-separated sha256 hex of the invite codes; unset or malformed, `POST /api/smart-accounts/earn-max/invite` keeps proxying to Next (a malformed entry logs one line) |
 
 With sessions verified, Go serves `GET /api/smart-accounts/earn-max/summary`,
 `GET /api/smart-accounts/earn-max/activity` and `GET`/`POST
@@ -405,7 +405,10 @@ With sessions verified, Go serves `GET /api/smart-accounts/earn-max/summary`,
 once at startup, logs the grants it lacks and keeps proxying that group to Next.
 `LOYAL_WEB_SOLANA_CLUSTER` (plain environment, `mainnet` or `devnet`, default
 `mainnet`) gates the Earn MAX reads: anything but `mainnet` answers 409
-`unsupported_cluster`. Install `EARN_MAX_INVITE_CODE_HASHES` like the
+`unsupported_cluster` after the invite check; an invalid value logs one line and
+keeps proxying every Earn MAX path. A malformed or unreadable
+`WEB_YIELD_DATABASE_URL` does the same; an unset one serves without APY.
+An unreadable `COINGECKO_API_KEY` or `WEB_APP_DATABASE_URL` likewise logs one line and keeps proxying; none of these stops `loyal-web`. Install `EARN_MAX_INVITE_CODE_HASHES` like the
 credentials below, into `/etc/credstore.encrypted/loyal-web-earn-max-invites`,
 with a matching `LoadCredentialEncrypted=` line in the drop-in, and
 `WEB_YIELD_DATABASE_URL` into `/etc/credstore.encrypted/loyal-web-yield-db`.
