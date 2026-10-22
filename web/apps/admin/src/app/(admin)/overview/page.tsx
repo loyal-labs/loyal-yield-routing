@@ -1,18 +1,24 @@
 import { PageContainer } from "@/components/layout/page-container";
 import { SectionHeader } from "@/components/layout/section-header";
-import { requireAdminSession } from "@/lib/require-admin-session";
 
-import { AutodepositActivityChart } from "./autodeposit-activity-chart";
-import { OptimizationVolumeChart } from "./optimization-volume-chart";
-import { getOverviewData } from "./overview-data";
+import {
+  AutodepositActivityChart,
+  type SerializedAutodepositTimeSeriesRange,
+} from "./autodeposit-activity-chart";
+import {
+  OptimizationVolumeChart,
+  type SerializedOptimizationVolumePoint,
+} from "./optimization-volume-chart";
 
-export const dynamic = "force-dynamic";
+export type OverviewPageProps = {
+  autodeposit: SerializedAutodepositTimeSeriesRange[];
+  optimizationVolume: SerializedOptimizationVolumePoint[];
+};
 
-export default async function OverviewPage() {
-  await requireAdminSession();
-
-  const { autodeposit, optimizationVolume } = await getOverviewData();
-
+export default function OverviewPage({
+  autodeposit,
+  optimizationVolume,
+}: OverviewPageProps) {
   return (
     <PageContainer>
       <SectionHeader title="Overview" breadcrumbs={[{ label: "Overview" }]} />

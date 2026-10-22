@@ -1,11 +1,5 @@
-import { requireAdminSession } from "@/lib/require-admin-session";
+import OverviewPage, { type OverviewPageProps } from "./overview/page";
 
-import OverviewPage from "./overview/page";
-
-export const dynamic = "force-dynamic";
-
-export default async function Home() {
-  await requireAdminSession();
-
-  return <OverviewPage />;
+export default function Home(props: OverviewPageProps) {
+  return <OverviewPage {...props} />;
 }
