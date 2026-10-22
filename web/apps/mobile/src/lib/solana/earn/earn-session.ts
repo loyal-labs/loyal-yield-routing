@@ -211,7 +211,7 @@ async function activeSignerFor(walletAddress: string): Promise<Signer | null> {
   }
 }
 
-async function silentSession(signer: Signer): Promise<string | null> {
+export async function silentSession(signer: Signer): Promise<string | null> {
   const walletAddress = signer.publicKey.toBase58();
   const failedAt = failedMintAt.get(walletAddress);
   if (

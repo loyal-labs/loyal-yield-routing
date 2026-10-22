@@ -1,5 +1,5 @@
 import { env } from "@/config/env";
-import { earnHeaders, ensureEarnSession } from "@/lib/solana/earn/earn-session";
+import { earnHeaders, silentSession } from "@/lib/solana/earn/earn-session";
 import type { Signer } from "@/lib/wallet/signer";
 
 export class PrivySessionError extends Error {
@@ -22,7 +22,7 @@ export async function exchangePrivySession(
     body: JSON.stringify({ walletAddress: signer.publicKey.toBase58() }),
   });
   if (res.ok) {
-    await ensureEarnSession(signer);
+    await silentSession(signer);
     return;
   }
   const body = (await res.json().catch(() => null)) as {
