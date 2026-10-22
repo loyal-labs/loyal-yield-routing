@@ -9,7 +9,6 @@ import type {
 
 export const TELEGRAM_MESSAGE_LIMIT = 4096;
 
-/** Columns ClickStack projects by default when a saved search sets no `select`. */
 export const DEFAULT_ALERT_COLUMNS = [
   "Timestamp",
   "ServiceName",
@@ -24,10 +23,6 @@ export const DEFAULT_ALERT_COLUMNS = [
  */
 export interface FormatOptions {
   alertColumns: string[];
-  /**
-   * Columns whose distinct values are worth counting, such as a wallet
-   * address. Rendered as "N unique <column>" rather than as a value list.
-   */
   cardinalityColumns?: string[];
   context?: AlertContext;
 }
@@ -37,7 +32,6 @@ export interface FormattedMessage {
   parseMode?: "HTML";
 }
 
-/** Enough rows to see a pattern, few enough to stay readable in a chat. */
 const MAX_RENDERED_ROWS = 8;
 /** Headroom for the "and N more" footer while rows are being fitted. */
 const FOOTER_RESERVE = 48;
@@ -67,10 +61,6 @@ export function formatTelegramMessage(
   );
 }
 
-/**
- * Verbatim ClickStack text. Used when the payload does not carry a parseable
- * CSV block and as the resend body when Telegram rejects HTML entities.
- */
 export function formatPlainTelegramMessage(
   payload: ClickStackWebhookPayload
 ): string {
@@ -91,9 +81,6 @@ export function formatPlainTelegramMessage(
     return fullMessage;
   }
 
-  // A partial URL is worse than none: it looks clickable, resolves nowhere, and
-  // hides the alert title behind it. When the link cannot fit whole, drop it and
-  // keep the text; otherwise reserve it in full and truncate only the text.
   if (suffix.length + 1 > TELEGRAM_MESSAGE_LIMIT) {
     return `${sliceWholeCodePoints(main, TELEGRAM_MESSAGE_LIMIT - 1)}…`;
   }
@@ -102,7 +89,6 @@ export function formatPlainTelegramMessage(
   return `${sliceWholeCodePoints(main, availableMainLength)}…${suffix}`;
 }
 
-// Explicit summary blocks avoid interpreting headerless CSV with another alert's schema.
 function journeySummary(payload: ClickStackWebhookPayload): string | null {
   const preamble = payload.body.split("```")[0] ?? "";
   const summary = /\[journey-summary\]([\s\S]*?)\[\/journey-summary\]/
@@ -146,10 +132,6 @@ function formatJourneySummary(
     : { text: formatPlainTelegramMessage(payload) };
 }
 
-/**
- * Everything the relay needs to count a delivery: how many lines matched, what
- * each row is about, and the distinct values of the cardinality columns.
- */
 export function analyzeAlert(
   payload: ClickStackWebhookPayload,
   options: Pick<FormatOptions, "alertColumns" | "cardinalityColumns">
@@ -238,10 +220,6 @@ function signatureOf(fields: RowField[]): SignatureInput {
   };
 }
 
-/**
- * Two messages describing the same failure differ only in identifiers, so
- * addresses, hashes and numbers are collapsed before they are compared.
- */
 export function normalizeHeadline(headline: string): string {
   return headline
     .replace(/https?:\/\/\S+/g, "<url>")
@@ -267,8 +245,6 @@ function formatPrettyMessage(
     return null;
   }
 
-  // A column list that disagrees with what ClickStack actually sent would
-  // mislabel every field, which is worse than the raw block.
   if (parsed.rows.some((row) => row.length !== columns.length)) {
     return null;
   }
@@ -314,7 +290,6 @@ function formatPrettyMessage(
   };
 }
 
-/** "12 events · ≥4 unique wallet · muted 60m" under the first message. */
 function openingStats(window: WindowSummary): string {
   const parts = [countLabel(window.eventCount, "event")];
   parts.push(...cardinalityLabels(window));
@@ -322,11 +297,6 @@ function openingStats(window: WindowSummary): string {
   return parts.join(" · ");
 }
 
-/**
- * The one scheduled message: every signature seen since the last recap, with
- * how often it fired. This is the only place a non-repeating error is ever
- * counted, so it lists frequencies rather than summarizing a single incident.
- */
 function formatDailyRecap(daily: DailySummary): FormattedMessage {
   const span = formatDuration(daily.until - daily.since);
   const lines = [
@@ -347,8 +317,6 @@ function formatDailyRecap(daily: DailySummary): FormattedMessage {
   let shown = 0;
 
   for (const signature of daily.signatures) {
-    // One line per signature, so an embedded newline (a stack trace, a chunk
-    // load error carrying its URL) must not break the layout.
     const line = `<b>×${signature.count}</b> ${escapeHtml(
       truncate(signature.headline.replace(/\s+/g, " ").trim(), 110)
     )}${
@@ -411,10 +379,6 @@ function formatEscalation(window: WindowSummary): FormattedMessage {
   return withLink(lines, window.link);
 }
 
-/**
- * One message for the whole post-restart burst. ClickStack re-sends every live
- * alert within seconds of a deploy, and the team has already seen them all.
- */
 function formatRestartRecap(
   payload: ClickStackWebhookPayload,
   windows: WindowSummary[]
@@ -598,10 +562,6 @@ function parseAlertBody(body: string): ParsedAlertBody | null {
   };
 }
 
-/**
- * RFC 4180 parsing rather than `split(",")`: a log body can legitimately
- * contain commas, quotes, and newlines inside one quoted field.
- */
 function parseCsv(input: string): string[][] | null {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -729,11 +689,6 @@ function severityIcon(severity: string): string {
   }
 }
 
-/**
- * ClickStack timestamps carry nanosecond precision, which `Date` does not
- * accept, so trim to milliseconds before parsing and keep the raw value when
- * the column turns out not to be a timestamp at all.
- */
 function formatTimestamp(value: string): string {
   if (!value) {
     return "";
@@ -748,11 +703,6 @@ function formatTimestamp(value: string): string {
   return `${parsed.toISOString().slice(11, 19)} UTC`;
 }
 
-/**
- * Exported because redaction has to match it: a secret that reaches the log
- * through formatted text arrives escaped, so `stripSecrets` strips this form of
- * every credential as well as the raw one. Two escapers would drift.
- */
 export function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")

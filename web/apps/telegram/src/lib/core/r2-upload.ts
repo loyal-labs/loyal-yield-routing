@@ -48,7 +48,6 @@ function createS3Client(config: CloudflareR2UploadClientConfig): S3Client {
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
     },
-    // Ensures requests target the account endpoint format documented by Cloudflare.
     forcePathStyle: true,
   });
 }

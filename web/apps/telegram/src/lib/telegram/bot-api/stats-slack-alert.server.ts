@@ -94,7 +94,6 @@ export async function sendLoyalStatsAumAlert(
         return { alert, status: "failed" };
       }
     } catch {
-      // Retry transient network failures within this cron invocation.
     }
   }
 

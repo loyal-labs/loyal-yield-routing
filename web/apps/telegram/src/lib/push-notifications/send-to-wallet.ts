@@ -11,13 +11,6 @@ export type WalletPushPayload = {
   data?: Record<string, unknown>;
 };
 
-/**
- * Send a push notification to every device registered under a wallet
- * public key. Returns the number of Expo tokens we dispatched to. Used
- * by wallet-event triggers (incoming transfers, claims, etc.) where
- * the addressable subject is a Solana public key rather than a
- * Telegram user.
- */
 export async function sendPushToWallet(
   walletPublicKey: string,
   payload: WalletPushPayload

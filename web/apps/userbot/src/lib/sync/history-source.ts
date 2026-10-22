@@ -47,7 +47,6 @@ export async function* fetchUnseenMessages(
       limit: INITIAL_BACKFILL_LIMIT,
     });
 
-    // Keep first-sync deterministic in ascending message-id order.
     const orderedInitialBatch = [...initialBatch].sort((left, right) => {
       const leftId = readMessageId(left);
       const rightId = readMessageId(right);

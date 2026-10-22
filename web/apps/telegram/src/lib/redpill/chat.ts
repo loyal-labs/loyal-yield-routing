@@ -41,7 +41,6 @@ export async function* chatCompletionStream(
         const content = data.choices?.[0]?.delta?.content;
         if (content) yield content;
       } catch {
-        // Skip malformed JSON
       }
     }
   }

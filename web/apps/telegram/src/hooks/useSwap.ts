@@ -50,7 +50,6 @@ export function useSwap(getKeypair: () => Promise<Keypair>) {
         const keypair = await getKeypair();
         const userPublicKey = keypair.publicKey.toBase58();
 
-        // Step 1: Get order (quote + unsigned transaction)
         const orderResponse = await fetchJson<OrderApiResponse>(
           "/api/jupiter/order",
           {
@@ -73,14 +72,12 @@ export function useSwap(getKeypair: () => Promise<Keypair>) {
           return { success: false, error: orderResponse.error };
         }
 
-        // Step 2: Sign transaction client-side
         setState("signing");
         const signedTransaction = signTransaction(
           orderResponse.transaction,
           keypair
         );
 
-        // Step 3: Execute via Jupiter (handles broadcasting + confirmation)
         setState("confirming");
         const executeResponse = await fetchJson<ExecuteApiResponse>(
           "/api/jupiter/execute",

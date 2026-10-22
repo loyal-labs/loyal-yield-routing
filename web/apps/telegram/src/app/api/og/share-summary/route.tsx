@@ -88,17 +88,14 @@ export async function GET(request: Request) {
 
     const truncatedText = truncateText(text, 200);
 
-    // Randomize theme and dog variant
     const theme = THEMES[Math.floor(Math.random() * THEMES.length)];
     const dogVariant =
       DOG_VARIANTS[Math.floor(Math.random() * DOG_VARIANTS.length)];
     const config = THEME_CONFIG[theme];
 
-    // Strip {img} markers for font loading
     const plainText = truncatedText.replace(/\{img\}/g, " ");
     const allText = `${date}Summary${plainText}`;
 
-    // Select brand URL based on theme
     const brandUrl = brandUrls[config.brandKey];
 
     const [fontMedium, fontRegular, backgroundData, dogData] = await Promise.all([
@@ -116,7 +113,6 @@ export async function GET(request: Request) {
     const backgroundBase64 = `data:image/png;base64,${backgroundData.toString("base64")}`;
     const dogBase64 = `data:image/png;base64,${dogData.toString("base64")}`;
 
-    // Parse text with {img} placeholders into interleaved words and images
     const textSegments = truncatedText.split("{img}");
     const IMG_SIZE = 52;
 
@@ -144,7 +140,6 @@ export async function GET(request: Request) {
             fontFamily: "Geist",
           }}
         >
-          {/* Background */}
           <img
             src={backgroundBase64}
             alt=""
@@ -157,7 +152,6 @@ export async function GET(request: Request) {
             }}
           />
 
-          {/* Date - top right */}
           <div
             style={{
               position: "absolute",
@@ -192,7 +186,6 @@ export async function GET(request: Request) {
             </div>
           </div>
 
-          {/* Main text with inline images */}
           <div
             style={{
               position: "absolute",
@@ -233,7 +226,6 @@ export async function GET(request: Request) {
             )}
           </div>
 
-          {/* Dog mascot */}
           <img
             src={dogBase64}
             alt=""
@@ -248,7 +240,6 @@ export async function GET(request: Request) {
             }}
           />
 
-          {/* Brand - bottom left (only if provided) */}
           {brandUrl && (
             <img
               src={brandUrl}

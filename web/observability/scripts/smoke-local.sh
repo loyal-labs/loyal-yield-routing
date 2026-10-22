@@ -112,8 +112,6 @@ bootstrap_local_team() {
 }
 
 build_payloads() {
-  # Semantic metrics and traces payload checks belong in this disposable test,
-  # not in the production startup gate.
   seconds="$(date +%s)"
   payload="{\"resourceLogs\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"loyal-clickstack-smoke\"}}]},\"scopeLogs\":[{\"scope\":{\"name\":\"loyal-clickstack-verifier\"},\"logRecords\":[{\"timeUnixNano\":\"${seconds}000000000\",\"severityText\":\"INFO\",\"body\":{\"stringValue\":\"$marker\"}}]}]}]}"
   metrics_payload="{\"resourceMetrics\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"loyal-clickstack-smoke\"}}]},\"scopeMetrics\":[{\"scope\":{\"name\":\"loyal-clickstack-verifier\"},\"metrics\":[{\"name\":\"loyal.clickstack.smoke\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"${seconds}000000000\",\"asInt\":\"1\",\"attributes\":[{\"key\":\"smoke.marker\",\"value\":{\"stringValue\":\"$marker\"}}]}]}}]}]}]}"

@@ -1,4 +1,3 @@
-// Offline contract check: run with bun, without database/RPC credentials.
 import assert from "node:assert/strict";
 
 import { mock, spyOn } from "bun:test";

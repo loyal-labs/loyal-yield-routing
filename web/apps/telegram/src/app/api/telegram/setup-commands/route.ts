@@ -23,7 +23,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Use timing-safe comparison to prevent timing attacks
   const expected = Buffer.from(`Bearer ${expectedToken}`);
   const provided = Buffer.from(authHeader);
   if (

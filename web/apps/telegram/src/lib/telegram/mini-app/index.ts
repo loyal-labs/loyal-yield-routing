@@ -9,11 +9,9 @@ import {
   viewport,
 } from "@telegram-apps/sdk-react";
 
-// Initialize once
 let initialized = false;
 let viewportMounted = false;
 
-// Type for Telegram WebApp
 interface TelegramWebApp {
   ready: () => void;
   version: string;
@@ -46,9 +44,6 @@ declare global {
   }
 }
 
-/**
- * Get safe area values from native WebApp API (most reliable)
- */
 const getNativeInsets = () => {
   const webApp =
     typeof window !== "undefined" ? window.Telegram?.WebApp : undefined;
@@ -69,45 +64,33 @@ const getNativeInsets = () => {
   };
 };
 
-/**
- * Get safe area values from SDK signals (with native fallback)
- */
 const getInsets = () => {
   try {
-    // Try SDK signals first (if mounted)
     if (viewportMounted) {
       const contentTop = viewport.contentSafeAreaInsetTop?.() ?? 0;
       const contentBottom = viewport.contentSafeAreaInsetBottom?.() ?? 0;
       const deviceTop = viewport.safeAreaInsetTop?.() ?? 0;
       const deviceBottom = viewport.safeAreaInsetBottom?.() ?? 0;
 
-      // If SDK returns values, use them
       if (contentTop > 0 || deviceTop > 0) {
         return { contentTop, contentBottom, deviceTop, deviceBottom };
       }
     }
   } catch {
-    // Ignore SDK errors
   }
 
-  // Fallback to native WebApp API
   return getNativeInsets();
 };
 
-/**
- * Apply safe area insets as CSS custom properties on document root.
- */
 const applySafeAreaInsets = () => {
   if (typeof document === "undefined") return;
 
   try {
     const { contentTop, contentBottom, deviceTop, deviceBottom } = getInsets();
 
-    // Combine both for total safe area
     const totalTop = contentTop + deviceTop;
     const totalBottom = contentBottom + deviceBottom;
 
-    // Set CSS custom properties
     document.documentElement.style.setProperty(
       "--app-safe-top",
       `${totalTop}px`
@@ -146,30 +129,23 @@ const applySafeAreaInsets = () => {
   }
 };
 
-/**
- * Mount viewport and set up safe area handling.
- */
 const mountViewport = async () => {
   if (viewportMounted) return;
 
   try {
-    // Mount viewport if available
     if (viewport.mount.isAvailable()) {
       await viewport.mount();
       viewportMounted = true;
       console.debug("Viewport mounted successfully");
     }
 
-    // Bind CSS variables for viewport dimensions
     if (viewport.bindCssVars.isAvailable()) {
       viewport.bindCssVars();
       console.debug("Viewport CSS vars bound");
     }
 
-    // Apply initial safe area insets
     applySafeAreaInsets();
 
-    // Subscribe to safe area changes using signal's .sub() method
     const unsubContentTop =
       viewport.contentSafeAreaInsetTop?.sub?.(applySafeAreaInsets);
     const unsubContentBottom =
@@ -179,7 +155,6 @@ const mountViewport = async () => {
     const unsubDeviceBottom =
       viewport.safeAreaInsetBottom?.sub?.(applySafeAreaInsets);
 
-    // Store cleanup functions if needed
     if (typeof window !== "undefined") {
       (
         window as unknown as { __cleanupSafeArea?: () => void }
@@ -195,15 +170,11 @@ const mountViewport = async () => {
   }
 };
 
-/**
- * Subscribe to native WebApp safe area events
- */
 const subscribeToNativeEvents = () => {
   const webApp =
     typeof window !== "undefined" ? window.Telegram?.WebApp : undefined;
   if (!webApp) return;
 
-  // Subscribe to safe area change events
   webApp.onEvent("contentSafeAreaChanged", applySafeAreaInsets);
   webApp.onEvent("safeAreaChanged", applySafeAreaInsets);
   webApp.onEvent("viewportChanged", applySafeAreaInsets);
@@ -229,7 +200,6 @@ export const initTelegram = () => {
       try {
         miniApp.ready();
       } catch {
-        // Gracefully handle if SDK init was incomplete
       }
 
       // Set header color to white so Android uses dark status bar icons.
@@ -240,7 +210,6 @@ export const initTelegram = () => {
           miniApp.setHeaderColor("bg_color");
         }
       } catch {
-        // Ignore SDK errors
       }
 
       // Also set via native WebApp API (most reliable on Android)
@@ -253,27 +222,20 @@ export const initTelegram = () => {
           webApp.setBackgroundColor("#ffffff");
         }
       } catch {
-        // Ignore if not supported
       }
 
-      // Also call native ready() for good measure
       window.Telegram?.WebApp?.ready();
 
-      // Apply insets immediately from native API (sync, reliable)
       applySafeAreaInsets();
 
-      // Subscribe to native events
       subscribeToNativeEvents();
 
-      // Mount viewport async for SDK features
       void mountViewport().catch((e) => {
         console.debug("Viewport mount failed:", (e as Error).message);
       });
     } else {
-      // Running outside Telegram - features will be unavailable
       console.debug("Running in non-Telegram environment");
 
-      // Set default CSS variables for non-TMA environment
       if (typeof document !== "undefined") {
         document.documentElement.style.setProperty("--app-safe-top", "0px");
         document.documentElement.style.setProperty("--app-safe-bottom", "0px");
@@ -302,16 +264,10 @@ export const initTelegram = () => {
   }
 };
 
-/**
- * Force refresh safe area insets. Call this when modals open or viewport changes.
- */
 export const refreshSafeAreaInsets = () => {
   applySafeAreaInsets();
 };
 
-/**
- * Get current safe area values (for components that need direct access)
- */
 export const getSafeAreaInsets = () => {
   const { contentTop, contentBottom, deviceTop, deviceBottom } = getInsets();
   return {
@@ -324,19 +280,13 @@ export const getSafeAreaInsets = () => {
   };
 };
 
-/**
- * Check if viewport is mounted and ready.
- */
 export const isViewportMounted = () => viewportMounted;
 
-// Core functions
 export const isInMiniApp = () => {
   if (typeof window === "undefined") return false;
 
-  // Initialize if not already done
   initTelegram();
 
-  // Check if miniApp is available after init
   return miniApp.isSupported();
 };
 

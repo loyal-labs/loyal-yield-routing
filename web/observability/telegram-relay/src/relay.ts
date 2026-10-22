@@ -23,22 +23,14 @@ export interface RelayResult {
 
 export type AlertMessageKind = "new" | "escalation" | "daily" | "restart";
 
-/**
- * Everything the sender needs beyond the raw payload. `new` and `escalation`
- * carry the live window, `daily` the tally for the reporting period, and
- * `restart` the set of signatures that were already firing when the process
- * came up.
- */
 export interface AlertContext {
   kind: AlertMessageKind;
   window?: WindowSummary;
   windows?: WindowSummary[];
   daily?: DailySummary;
-  /** Recaps are informational; they must not buzz every phone in the chat. */
   silent: boolean;
 }
 
-/** One error signature's frequency over the reporting period. */
 export interface DailySignatureSummary {
   count: number;
   service: string;
@@ -48,10 +40,8 @@ export interface DailySignatureSummary {
 }
 
 export interface DailySummary {
-  /** Start of the period being reported. */
   since: number;
   until: number;
-  /** Matched log lines over the period, deduplicated per evaluation range. */
   eventCount: number;
   /**
    * Rows the relay could actually read over the period. Below `eventCount`
@@ -59,15 +49,11 @@ export interface DailySummary {
    * statistic a lower bound rather than a total.
    */
   sampledRows: number;
-  /** Webhook deliveries ClickStack made over the period. */
   deliveries: number;
-  /** Alerts posted to the chat over the period, recaps excluded. */
   alertsPosted: number;
   signatures: DailySignatureSummary[];
-  /** Signatures dropped from `signatures` because the tally is bounded. */
   omittedSignatures: number;
   uniqueValues: Record<string, number>;
-  /** Columns whose value set hit its cap, so their count is a floor. */
   cappedValues: string[];
 }
 
@@ -95,9 +81,7 @@ export interface WindowSummary {
   expiresAt: number;
   firstEventAt: number;
   lastEventAt: number;
-  /** Matched log lines across distinct ClickStack evaluation ranges. */
   eventCount: number;
-  /** Webhook deliveries that were answered without posting to Telegram. */
   suppressedAlerts: number;
   /**
    * Rows the relay could actually read. ClickStack truncates the row block, so
@@ -118,7 +102,6 @@ export interface WindowSummary {
   bucketMs: number;
 }
 
-/** One row's contribution, as read out of the ClickStack row block. */
 export interface SignatureInput {
   key: string;
   service: string;
@@ -127,10 +110,8 @@ export interface SignatureInput {
 }
 
 export interface AlertAnalysis {
-  /** ClickStack's own matched-line count for this delivery. */
   eventCount: number;
   signatures: SignatureInput[];
-  /** Column label to the distinct values seen in this delivery. */
   uniqueValues: Record<string, string[]>;
 }
 
@@ -144,12 +125,6 @@ export interface AlertRelayOptions {
   maxCacheEntries: number;
   now?: () => number;
   analyze?: AlertAnalyzer;
-  /**
-   * Post one recap per day listing every signature and how often it fired.
-   * Windows themselves always close silently: a per-window recap repeated what
-   * its own opening alert had already said, and half of them summarized a
-   * single suppressed delivery.
-   */
   dailyRecapEnabled?: boolean;
   /** Minutes past UTC midnight at which the daily recap is posted. */
   dailyRecapAtMinutes?: number;
@@ -165,22 +140,14 @@ export interface AlertRelayOptions {
    */
   restartGraceMs?: number;
   startedAt?: number;
-  /** Cap on how many sweeps will retry a recap that Telegram rejected. */
   maxFlushAttempts?: number;
 }
 
 const DEFAULT_DAILY_RECAP_AT_MINUTES = 6 * 60;
 const DAY_MS = 86_400_000;
 
-/** Keeps a window readable when a storm produces hundreds of distinct rows. */
 const MAX_TRACKED_SIGNATURES = 20;
-/**
- * A day sees far more distinct signatures than one window, and the recap is
- * the only place they are reported now, so the daily tally is allowed to hold
- * many more of them than a window is.
- */
 const MAX_DAILY_SIGNATURES = 200;
-/** Distinct values retained per cardinality column, purely to bound memory. */
 const MAX_TRACKED_VALUES = 500;
 const BUCKET_COUNT = 6;
 const MAX_ESCALATIONS_PER_WINDOW = 2;
@@ -198,11 +165,6 @@ interface DailySignatureState extends SignatureState {
   lastAt: number;
 }
 
-/**
- * Counts every signature seen since the last recap, independently of windows.
- * Windows exist to decide what to post right now; this exists to report what
- * happened, so an error that never repeated still shows up with a count of 1.
- */
 interface DailyTally {
   since: number;
   eventCount: number;
@@ -211,10 +173,8 @@ interface DailyTally {
   alertsPosted: number;
   signatures: Map<string, DailySignatureState>;
   uniqueValues: Map<string, Set<string>>;
-  /** Cardinality columns whose distinct-value set hit its cap. */
   cappedValues: Set<string>;
   omittedSignatures: Set<string>;
-  /** Most recent delivery counted, used as the recap's link target. */
   lastPayload?: ClickStackWebhookPayload;
 }
 
@@ -240,22 +200,17 @@ interface AlertWindow {
   firstEventAt: number;
   lastEventAt: number;
   eventCount: number;
-  /** Highest matched-line snapshot seen for each ClickStack evaluation range. */
   evaluationCounts: Map<string, number>;
-  /** Highest matched-line count reported by one evaluation. */
   peakEvaluationEventCount: number;
-  /** Events in the delivery that opened the window, the escalation baseline. */
   openingEventCount: number;
   suppressedAlerts: number;
   sampledRows: number;
   signatures: Map<string, SignatureState>;
   uniqueValues: Map<string, Set<string>>;
-  /** Cardinality columns whose distinct-value set hit its cap. */
   cappedValues: Set<string>;
   buckets: number[];
   escalations: number;
   flushAttempts: number;
-  /** Opened during the restart grace period and not yet recapped. */
   deferred: boolean;
 }
 
@@ -294,10 +249,6 @@ class ExpiringCache {
     this.entries.set(key, expiresAt);
   }
 
-  /**
-   * Full O(n) sweep. Kept off the request path: `has` expires entries lazily,
-   * and the periodic timer reclaims whatever is never read again.
-   */
   evictExpired(now: number): void {
     for (const [key, expiresAt] of this.entries) {
       if (expiresAt <= now) {
@@ -324,11 +275,6 @@ export class AlertRelay {
   private nextRecapAt: number;
   private recapAttempts = 0;
   private recapInFlight = false;
-  /**
-   * A period that has closed but whose recap Telegram has not accepted yet.
-   * Held separately from the live tally so a retry re-sends the period that
-   * came due rather than a period that keeps growing underneath it.
-   */
   private pendingRecap: { tally: DailyTally; until: number } | null = null;
 
   constructor(
@@ -355,10 +301,6 @@ export class AlertRelay {
         return { outcome: "duplicate" as const };
       }
 
-      // Recoveries are not actionable in chat and must not shorten the window
-      // either: a flapping alert resolves and re-fires every evaluation
-      // interval, so clearing it here would post that event on every cycle
-      // instead of once per window.
       if (payload.state === "OK") {
         this.rememberIdempotencyKey(idempotencyKey, now);
         return { outcome: "resolved" as const };
@@ -443,12 +385,6 @@ export class AlertRelay {
     });
   }
 
-  /**
-   * Posts whatever is due: the restart recap once the grace period is over,
-   * and the daily recap once its scheduled time has passed. Closing expired
-   * windows is silent. A failed recap is retried on the next sweep rather than
-   * dropping the counters it carries.
-   */
   async sweep(now = this.now()): Promise<void> {
     this.idempotencyKeys.evictExpired(now);
     await reportFailure("restart_recap_failed", () =>
@@ -460,8 +396,6 @@ export class AlertRelay {
         continue;
       }
       await this.withLock(this.eventLocks, key, async () => {
-        // `handle` may have closed and replaced this window while the sweep
-        // waited for the lock.
         if (this.windows.get(key) === window) {
           this.closeWindow(window);
         }
@@ -482,7 +416,6 @@ export class AlertRelay {
     dailySignatures: number;
     dailyEvents: number;
     nextRecapAt: number;
-    /** Events sitting in a recap Telegram has not accepted yet. */
     pendingRecapEvents: number;
   } {
     return {
@@ -495,7 +428,6 @@ export class AlertRelay {
     };
   }
 
-  /** Serializable window state, for the optional restart snapshot. */
   exportState(now = this.now()): PersistedState {
     const windows: PersistedWindow[] = [];
     for (const window of this.windows.values()) {
@@ -520,10 +452,6 @@ export class AlertRelay {
     };
   }
 
-  /**
-   * Restores windows saved before a restart. Entries that have already expired
-   * are dropped, so a stale snapshot cannot mute a signature indefinitely.
-   */
   importState(state: PersistedState, now = this.now()): number {
     if (state.version !== STATE_VERSION) {
       return 0;
@@ -538,11 +466,6 @@ export class AlertRelay {
       restored += 1;
     }
 
-    // The tally is what a deploy would otherwise erase. A deadline that passed
-    // while the process was down is kept, not dropped: the next sweep posts
-    // the recap late, which beats losing the period entirely. Only a snapshot
-    // older than a full period is discarded, since nobody could place its
-    // counts against a date by then.
     if (state.daily && state.nextRecapAt && now - state.nextRecapAt < DAY_MS) {
       this.daily = deserializeTally(state.daily);
       this.nextRecapAt = state.nextRecapAt;
@@ -593,11 +516,6 @@ export class AlertRelay {
     }
   }
 
-  /**
-   * A window's only job is to keep the chat quiet while an incident repeats.
-   * Everything it counted has already been folded into the daily tally at
-   * ingest, so closing it posts nothing.
-   */
   private closeWindow(window: AlertWindow): void {
     this.windows.delete(window.key);
   }
@@ -646,7 +564,6 @@ export class AlertRelay {
       this.nextRecapAt = nextRecapTime(now, this.recapAtMinutes());
       this.recapAttempts = 0;
 
-      // Nothing fired: the schedule still advances, but silence is the report.
       if (
         (this.options.dailyRecapEnabled ?? true) === false ||
         tally.signatures.size === 0 ||
@@ -682,8 +599,6 @@ export class AlertRelay {
         throw error;
       }
 
-      // Give up rather than retry forever, and say so: the counts in this
-      // recap are gone, and only the log records that they existed.
       console.error(
         JSON.stringify({
           event: "daily_recap_dropped",
@@ -718,11 +633,6 @@ export class AlertRelay {
     );
   }
 
-  /**
-   * Windows are bounded like the other caches. Closed windows that owe nothing
-   * go first, so a flood of new signatures cannot evict one still holding an
-   * unsent digest.
-   */
   private trimWindows(now: number): void {
     if (this.windows.size <= this.options.maxCacheEntries) {
       return;
@@ -780,10 +690,6 @@ function emptyAnalysis(): AlertAnalysis {
   return { eventCount: 1, signatures: [], uniqueValues: {} };
 }
 
-/**
- * The sweep runs on a timer with nobody to return an error to, so a failed
- * send is logged and swallowed. State is left untouched for the next tick.
- */
 async function reportFailure(
   event: string,
   action: () => Promise<void>
@@ -803,13 +709,6 @@ async function reportFailure(
   }
 }
 
-/**
- * ClickStack groups alerts by service but sends a row block that is not
- * filtered to that group, so one incident arrives as several deliveries with
- * different `eventId`s and identical rows. Keying on the rows collapses those
- * into a single window. A delivery with no readable rows falls back to the
- * `eventId` and behaves exactly as it did before.
- */
 export function dedupKey(
   payload: ClickStackWebhookPayload,
   analysis: AlertAnalysis
@@ -835,10 +734,8 @@ export function dedupKey(
   return `${normalizeTitle(payload.title)}::${fnv1a(signatures.join("\n"))}`;
 }
 
-/** A quoted CSV field that is `latched` or ends in `.latched`, e.g. a stage or body. */
 const LATCHED_FIELD = /"(?:[^"\n]*\.)?latched"/;
 
-/** Drops the emoji and the matched-line count so only the alert name is left. */
 export function normalizeTitle(title: string): string {
   return title
     .replace(/\s*-\s*\d+\s+lines?\s+found\s*$/i, "")
@@ -856,13 +753,6 @@ function fnv1a(input: string): string {
   return hash.toString(16).padStart(8, "0");
 }
 
-/**
- * A signature stays quiet until the next recap, so an incident that lasts all
- * day is announced once and its volume is reported once, rather than being
- * re-announced every hour. `cooldownMs` is the floor: an error that first
- * fires minutes before a recap would otherwise be free to alert again almost
- * immediately, so the window rolls to the following period instead.
- */
 function windowExpiry(
   now: number,
   options: AlertRelayOptions,
@@ -909,7 +799,6 @@ function openWindow(
   return window;
 }
 
-/** Returns the matched lines this delivery added beyond what was known. */
 function accumulate(
   window: AlertWindow,
   payload: ClickStackWebhookPayload,
@@ -941,8 +830,6 @@ function record(
   window.eventCount += addedEvents;
   window.buckets[bucketIndex(window, now)] += addedEvents;
 
-  // The row block is part of the same evaluation snapshot. Reprocessing it
-  // would inflate signature/sample statistics just like re-adding its count.
   if (addedEvents > 0) {
     window.sampledRows += analysis.signatures.length;
 
@@ -964,8 +851,6 @@ function record(
     }
   }
 
-  // Keep the union even when ClickStack returns a different truncated row
-  // sample for the same evaluation range and matched-line count.
   mergeBoundedValues(
     window.uniqueValues,
     window.cappedValues,
@@ -1005,11 +890,6 @@ function mergeBoundedValues(
   }
 }
 
-/**
- * Folds one counted delivery into the reporting period. Called from the same
- * branch that updates the window, so the evaluation-range deduplication that
- * keeps a window's counters honest keeps the daily frequencies honest too.
- */
 function recordDaily(
   daily: DailyTally,
   analysis: AlertAnalysis,
@@ -1027,7 +907,6 @@ function recordDaily(
       continue;
     }
     if (daily.signatures.size >= MAX_DAILY_SIGNATURES) {
-      // Remembered by key so the recap can say how much it is not showing.
       daily.omittedSignatures.add(signature.key);
       continue;
     }
@@ -1182,7 +1061,6 @@ export interface PersistedState {
   windows: PersistedWindow[];
   daily?: PersistedTally;
   nextRecapAt?: number;
-  /** A closed period whose recap Telegram had not accepted before shutdown. */
   pendingRecap?: { tally: PersistedTally; until: number };
 }
 

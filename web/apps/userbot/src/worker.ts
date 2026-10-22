@@ -148,7 +148,6 @@ export function createUserbotWorker(overrides: Partial<WorkerDeps> = {}) {
         );
 
         bundle.client.onRawUpdate.add(() => {
-          // Intentionally noop in foundation PR.
         });
 
         activeBundle = bundle;
@@ -253,7 +252,6 @@ export async function runWorkerCli(
     await worker.start();
 
     await new Promise<never>(() => {
-      // intentionally unresolved; process exits through signal handlers
     });
   } catch (error) {
     let guidance = "Run bun run auth:bootstrap.";

@@ -28,10 +28,6 @@ function chunk<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
-/**
- * Send push notifications via Expo Push API.
- * Docs: https://docs.expo.dev/push-notifications/sending-notifications/
- */
 export async function sendExpoPushNotifications(
   messages: ExpoPushMessage[],
   options: { source?: string } = {}

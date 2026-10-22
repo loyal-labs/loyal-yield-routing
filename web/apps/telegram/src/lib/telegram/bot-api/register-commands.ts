@@ -56,7 +56,6 @@ export async function registerCommandsForLoyalChat(bot: Bot): Promise<void> {
 }
 
 export async function registerBotCommands(bot: Bot): Promise<void> {
-  // Commands for private chats
   await bot.api.setMyCommands(
     [
       { command: "start", description: "Start the bot and get help" },
@@ -68,7 +67,6 @@ export async function registerBotCommands(bot: Bot): Promise<void> {
     { scope: { type: "all_private_chats" } }
   );
 
-  // Commands for group chats
   await bot.api.setMyCommands(GLOBAL_GROUP_COMMANDS, {
     scope: { type: "all_group_chats" },
   });

@@ -61,8 +61,6 @@ case "$health_status" in
   *) fail "UI health timeout" ;;
 esac
 
-# Keep blocking startup checks schema-minimal. Full signal payload canaries run
-# in smoke-local.sh so a canary construction bug cannot take down the service.
 probe_payload='{"resourceLogs":[]}'
 metrics_probe_payload='{"resourceMetrics":[]}'
 traces_probe_payload='{"resourceSpans":[]}'

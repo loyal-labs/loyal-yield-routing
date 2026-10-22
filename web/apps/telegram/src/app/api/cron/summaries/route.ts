@@ -235,7 +235,6 @@ export async function runDailyCommunitySummaries(
       stats.deliverySucceeded += 1;
 
       if (options.forwardDeliveredSummary) {
-        // Quality-control forwarding is intentionally non-blocking.
         try {
           await options.forwardDeliveredSummary(
             generationResult.summaryId,

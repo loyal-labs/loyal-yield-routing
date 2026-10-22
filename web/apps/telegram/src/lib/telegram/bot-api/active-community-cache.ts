@@ -40,7 +40,6 @@ function findActiveCommunity(
 export function evictActiveCommunityCache(
   _chatId: bigint | number | string
 ): void {
-  // no-op
 }
 
 export async function resolveActiveBotCommunityId(

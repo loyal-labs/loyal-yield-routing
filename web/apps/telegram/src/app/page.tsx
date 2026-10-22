@@ -37,7 +37,6 @@ export default function SplashPage() {
         xmlns="http://www.w3.org/2000/svg"
         className="animate-logo"
       >
-        {/* Red geometric shape */}
         <g className="animate-icon">
           <path
             d="M5.24998 24.4999L0 12.25H15.75V0L22.7499 12.25L24.4999 0L34.9999 27.9999L5.24998 24.4999Z"
@@ -45,7 +44,6 @@ export default function SplashPage() {
           />
         </g>
 
-        {/* Eye (white + pupil) - blinks together */}
         <g className="animate-eye">
           <path
             d="M19.369 15.141C22.2645 15.2927 24.5052 17.45 24.3737 19.9595L13.8881 19.41C14.0196 16.9005 16.4735 14.9892 19.369 15.141Z"
@@ -76,14 +74,12 @@ export default function SplashPage() {
           </g>
         </g>
 
-        {/* Text "loyal" - stroke draws, fill follows with delay */}
         <defs>
           <clipPath id="text-reveal">
             <rect className="text-reveal-rect" x="41" y="0" width="52" height="30" />
           </clipPath>
         </defs>
 
-        {/* Stroke layer - draws left to right */}
         <g className="animate-text">
           <path
             className="text-stroke"
@@ -122,7 +118,6 @@ export default function SplashPage() {
           />
         </g>
 
-        {/* Fill layer - reveals left to right with delay */}
         <g className="animate-text" clipPath="url(#text-reveal)">
           <path
             d="M41.9846 7H45.1102V20.9674C45.1102 21.5779 45.452 21.9197 46.0625 21.9197H47.0393V24.3372H45.2567C43.3032 24.3372 41.9846 23.1162 41.9846 21.0895V7Z"

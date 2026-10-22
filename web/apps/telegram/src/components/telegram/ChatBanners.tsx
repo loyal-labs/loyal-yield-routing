@@ -7,10 +7,6 @@ interface ConnectBotBannerProps {
   onConnectBot: () => void;
 }
 
-/**
- * Banner prompting users to connect the Loyal Bot to their Telegram account.
- * Shown on Direct and Spam tabs when the bot is not connected yet.
- */
 export function ConnectBotBanner({ onConnectBot }: ConnectBotBannerProps) {
   return (
     <div className="px-3 py-2">
@@ -44,10 +40,6 @@ interface BotDisconnectedBannerProps {
   onReconnect: () => void;
 }
 
-/**
- * Banner shown when the Loyal Bot has been disconnected from Telegram Business settings.
- * Has a red/error background styling to indicate the problem.
- */
 export function BotDisconnectedBanner({ onReconnect }: BotDisconnectedBannerProps) {
   const handleReconnect = () => {
     if (hapticFeedback.impactOccurred.isAvailable()) {
@@ -62,14 +54,11 @@ export function BotDisconnectedBanner({ onReconnect }: BotDisconnectedBannerProp
         className="flex items-start px-3 py-1 rounded-2xl"
         style={{ backgroundColor: "rgba(255, 51, 71, 0.14)" }}
       >
-        {/* Left - Icon */}
         <div className="flex items-center pl-0 pr-3 py-2">
           <CloudOff size={24} strokeWidth={1.5} className="text-white" />
         </div>
 
-        {/* Content Middle */}
         <div className="flex-1 flex flex-col gap-3 items-start justify-center py-2.5">
-          {/* Text Layout */}
           <div className="flex flex-col gap-0.5 w-full">
             <p className="text-base font-medium text-white leading-5 tracking-[-0.176px]">
               Loyal Bot is Disconnected
@@ -79,7 +68,6 @@ export function BotDisconnectedBanner({ onReconnect }: BotDisconnectedBannerProp
             </p>
           </div>
 
-          {/* Button */}
           <div>
             <button
               onClick={handleReconnect}
