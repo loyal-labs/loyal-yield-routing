@@ -162,7 +162,7 @@ function getValueLabels(points: ChartPoint[], size: Size) {
     return { half, index, text, x, y: Math.max(chartPadding.top - 12, lineTop - 12) };
   };
 
-  const peak = points.reduce((best, point) => (point.value > points[best].value ? point.index : best), 0);
+  const peak = points.reduce((best, point) => (point.value >= points[best].value ? point.index : best), 0);
   const latest = place(last);
   if (peak === last) {
     return [latest];
@@ -417,6 +417,7 @@ export function EarnAumChart({
           fill="transparent"
           height={plotHeight}
           onBlur={() => setActiveIndex(null)}
+          onFocus={() => setActiveIndex(lastIndex)}
           onKeyDown={(event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
               return;
@@ -429,12 +430,18 @@ export function EarnAumChart({
           onPointerLeave={() => setActiveIndex(null)}
           onPointerMove={(event) => setActiveIndex(nearestIndex(event.clientX))}
           role="button"
+          style={{ touchAction: "pan-y" }}
           tabIndex={0}
           width={size.width - chartPadding.left - chartPadding.right}
           x={chartPadding.left}
           y={chartPadding.top}
         />
       </svg>
+      <p aria-live="polite" className="sr-only">
+        {activePoint
+          ? `${activePoint.periodLabel}: ${formatCurrency(activePoint.value)}${weeklyChange === null ? "" : `, ${formatChange(weeklyChange)} vs prior week`}`
+          : ""}
+      </p>
     </div>
   );
 }
