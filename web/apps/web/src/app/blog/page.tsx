@@ -9,6 +9,7 @@ import {
   blogPostModifiedDate,
   getBlogPosts,
 } from "@/features/blog";
+import { JsonLd } from "@/lib/seo/json-ld";
 
 const PAGE_TITLE = "Blog | Loyal";
 const PAGE_DESCRIPTION =
@@ -108,11 +109,8 @@ export default async function BlogPage({
 
   return (
     <main className="min-h-screen overflow-x-clip bg-white text-black">
-      {/* JSON-LD as script children (XSS-safe; React escapes <>&) — schema has no such chars */}
-      <script type="application/ld+json">
-        {JSON.stringify(breadcrumbJsonLd)}
-      </script>
-      <script type="application/ld+json">{JSON.stringify(blogJsonLd)}</script>
+      <JsonLd data={breadcrumbJsonLd} />
+      <JsonLd data={blogJsonLd} />
 
       <LandingScrollAnimations />
       <LandingHeader />

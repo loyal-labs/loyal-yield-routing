@@ -31,6 +31,7 @@ import type { AgentsDict } from "@/features/marketing/i18n/en/agents";
 import type { CommonDict } from "@/features/marketing/i18n/en/common";
 import type { Locale } from "@/features/marketing/i18n/locale";
 import { buildBreadcrumbJsonLd } from "@/features/marketing/i18n/metadata";
+import { JsonLd } from "@/lib/seo/json-ld";
 
 export const AGENTS_OG_IMAGE = {
   url: "/marketing/agents/og-agents.13a73749.png",
@@ -55,10 +56,7 @@ export function AgentsPage({
 
   return (
     <main className="min-h-screen overflow-x-clip bg-white text-black">
-      {/* JSON-LD as script children (XSS-safe; React escapes <>&) — schema has no such chars */}
-      <script type="application/ld+json">
-        {JSON.stringify(breadcrumbJsonLd)}
-      </script>
+      <JsonLd data={breadcrumbJsonLd} />
 
       <LandingScrollAnimations />
       <LandingHeader
