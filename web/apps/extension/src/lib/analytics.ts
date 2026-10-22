@@ -1,3 +1,11 @@
+// Direct-HTTP Mixpanel client for the extension.
+//
+// The Chrome Web Store rejected a previous submission because the
+// `mixpanel-browser` SDK ships minified/obfuscated code that gets bundled
+// into the extension. This module replaces the SDK with direct calls to
+// Mixpanel's `/track` and `/engage` HTTP endpoints, keeping analytics
+// intact without any third-party bundle.
+
 type AnalyticsPrimitive = boolean | null | number | string;
 type AnalyticsProperties = Record<string, unknown>;
 type AnalyticsListPrimitive = boolean | number | string;

@@ -31,6 +31,8 @@ export function getPrivyWithdrawalBoundary(args: {
       true,
       TOKEN_PROGRAM_ID
     ),
+    // The API intentionally has no destination argument. The only possible
+    // destination is canonical mainnet USDC owned by the root Privy wallet.
     destinationAta: getAssociatedTokenAddressSync(
       CANONICAL_USDC_MINT,
       args.wallet,

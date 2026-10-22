@@ -170,6 +170,12 @@ export async function toggleTrustedDappActive(
   return { success: true };
 }
 
+/**
+ * Inserts the v0.1 allowlist into `trusted_dapps`. Existing rows keyed by
+ * origin are left alone *except* their `category` is backfilled when NULL,
+ * so pre-category rows (Jupiter, Loyal) get grouped correctly without
+ * clobbering admin edits (name / isActive / displayOrder).
+ */
 export async function seedAllowlist(): Promise<SeedResult> {
   await requireAdminSession();
 

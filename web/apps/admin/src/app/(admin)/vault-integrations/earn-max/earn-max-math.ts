@@ -1,6 +1,7 @@
 export type LpFlow = {
   /** Unix seconds. */
   blockTime: number;
+  /** LP minted (> 0, a deposit) or burned (< 0, a withdrawal) in the tx. */
   lpNet: number;
   /** Raw change of the vault idle USDC account in the same tx. */
   idleDelta: number;
@@ -40,6 +41,11 @@ export function earnedSinceEmpty(flows: LpFlow[], holdersValueUsd: number) {
   };
 }
 
+/**
+ * Obligation LTV: collateral actually in Kamino = NAV + debt - cash held in
+ * the worker's custody (repay buffer, tokens waiting to be deposited). USD at
+ * ~$1 is good enough for a gauge; the worker itself uses oracle prices.
+ */
 export function loanToValue(
   navUsd: number,
   debtUsd: number,

@@ -183,7 +183,7 @@ export async function fetchPoolOhlcv(
 
   return ohlcvList.map((candle) => ({
     timestamp: candle[0],
-    price: candle[4],
+    price: candle[4], // close price
   }));
 }
 

@@ -116,6 +116,7 @@ const hasSidePanel = typeof browser.sidePanel !== "undefined";
 
 async function applyViewMode(mode: "sidebar" | "popup") {
   if (!hasSidePanel) {
+    // Firefox: always use popup mode (no sidePanel API)
     await browser.action.setPopup({ popup: "/popup.html" });
     return;
   }
@@ -348,6 +349,7 @@ export default defineBackground(() => {
   let approvalPopupId: number | null = null;
 
   async function isExtensionUiOpen(): Promise<boolean> {
+    // Fast path: in-memory counter (accurate unless SW restarted)
     if (uiConnectionCount > 0) return true;
     try {
       const contexts = await (

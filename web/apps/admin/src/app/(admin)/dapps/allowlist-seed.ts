@@ -1,5 +1,10 @@
 import type { TrustedDappCategory } from "@loyal-labs/shared";
 
+// v0.1 allowlist seed — mirrors `mobile/dapp-allowlist-v0.1 (1).md`.
+// `displayOrder` uses the master numbering from that document so the
+// curated order is preserved across envs. Keep this file append-only;
+// version the file name when the allowlist is next bumped.
+
 export type AllowlistSeedEntry = {
   name: string;
   host: string;
