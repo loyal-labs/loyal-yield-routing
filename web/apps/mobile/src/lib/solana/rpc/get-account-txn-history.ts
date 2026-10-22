@@ -662,11 +662,18 @@ export const getAccountTransactionHistory = async (
     },
   );
 
+  const bySignature = new Map<string, ParsedTransactionWithMeta>();
+  for (const tx of parsedTransactions) {
+    const own = tx?.transaction.signatures[0];
+    if (tx && own) {
+      bySignature.set(own, tx);
+    }
+  }
+
   const transfers: WalletTransfer[] = [];
 
-  for (let i = 0; i < parsedTransactions.length; i++) {
-    const tx = parsedTransactions[i];
-    const signature = signatureList[i];
+  for (const signature of signatureList) {
+    const tx = bySignature.get(signature);
     if (!tx) continue;
 
     const transfer = mapTransactionToTransfer(

@@ -117,7 +117,7 @@ export async function clearEarnSession(): Promise<void> {
   } catch {}
 }
 
-async function dropRejectedToken(
+export async function dropRejectedToken(
   walletAddress: string,
   token: string,
 ): Promise<void> {

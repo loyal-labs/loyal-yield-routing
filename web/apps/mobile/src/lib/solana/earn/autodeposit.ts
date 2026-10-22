@@ -27,7 +27,7 @@ import {
   updateEarnAutodepositFloor,
 } from "./earn-api";
 import { type EarnAuthPurpose, signEarnAuth, withEarnAuth } from "./earn-auth";
-import { clearEarnSession, getEarnSessionToken } from "./earn-session";
+import { dropRejectedToken, getEarnSessionToken } from "./earn-session";
 import {
   signAndSendPreparedOperation,
   signAndSendPreparedOperations,
@@ -113,7 +113,7 @@ async function withEarnSessionOrAuth<T>(
       ) {
         throw error;
       }
-      await clearEarnSession();
+      await dropRejectedToken(signer.publicKey.toBase58(), sessionToken);
     }
   }
   return call(await signEarnAuth(signer, purpose));
