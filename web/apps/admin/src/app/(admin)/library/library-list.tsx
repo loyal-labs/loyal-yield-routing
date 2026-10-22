@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useRef, useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -139,7 +138,6 @@ function SectionForm({
 }
 
 function SectionsPanel({ sections }: { sections: SectionRow[] }) {
-  const router = useRouter();
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -150,7 +148,6 @@ function SectionsPanel({ sections }: { sections: SectionRow[] }) {
     return addLibrarySection(fd).then((result) => {
       if (result.success) {
         setIsAdding(false);
-        router.refresh();
       }
       return result;
     });
@@ -161,7 +158,6 @@ function SectionsPanel({ sections }: { sections: SectionRow[] }) {
       updateLibrarySection(id, fd).then((result) => {
         if (result.success) {
           setEditingId(null);
-          router.refresh();
         }
         return result;
       });
@@ -175,7 +171,6 @@ function SectionsPanel({ sections }: { sections: SectionRow[] }) {
         setDeleteError(result.error);
       } else {
         setDeletingId(null);
-        router.refresh();
       }
     });
   }
@@ -509,7 +504,6 @@ function ArticlesPanel({
   sections: SectionRow[];
   articles: ArticleRow[];
 }) {
-  const router = useRouter();
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -521,7 +515,6 @@ function ArticlesPanel({
     return addLibraryArticle(fd).then((result) => {
       if (result.success) {
         setIsAdding(false);
-        router.refresh();
       }
       return result;
     });
@@ -532,7 +525,6 @@ function ArticlesPanel({
       updateLibraryArticle(id, fd).then((result) => {
         if (result.success) {
           setEditingId(null);
-          router.refresh();
         }
         return result;
       });
@@ -542,14 +534,12 @@ function ArticlesPanel({
     startTransition(async () => {
       await deleteLibraryArticle(id);
       setDeletingId(null);
-      router.refresh();
     });
   }
 
   function handleToggle(id: string, next: boolean) {
     startTransition(async () => {
       await toggleLibraryArticleActive(id, next);
-      router.refresh();
     });
   }
 
