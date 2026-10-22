@@ -92,6 +92,9 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if cfg.CoinGeckoAPIKey, err = optionalCredential("COINGECKO_API_KEY"); err != nil {
+		return err
+	}
 	appDB, err := openAppDB(ctx)
 	if err != nil {
 		return err
@@ -144,4 +147,15 @@ func main() {
 		slog.Error("loyal-web stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func optionalCredential(name string) (string, error) {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	if dir == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, name)); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	return engine.Credential(name)
 }

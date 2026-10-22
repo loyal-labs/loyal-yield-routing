@@ -26,6 +26,8 @@ type Config struct {
 	AppDB       *pgxpool.Pool
 	Dist        fs.FS
 	Environment string
+
+	CoinGeckoAPIKey string
 }
 
 func New(cfg Config) http.Handler {
@@ -37,6 +39,10 @@ func New(cfg Config) http.Handler {
 	api := humachi.New(r, apiConfig())
 	if cfg.AppDB != nil {
 		earnstats.Register(api, cfg.AppDB)
+		registerContent(api, cfg.AppDB)
+	}
+	if cfg.CoinGeckoAPIKey != "" {
+		registerTokens(api, newTokenDetails(cfg.CoinGeckoAPIKey))
 	}
 	proxied := forward(cfg.Upstream)
 	r.Handle("/api/*", proxied)
@@ -114,5 +120,7 @@ func apiConfig() huma.Config {
 func OpenAPI() *huma.OpenAPI {
 	api := humachi.New(chi.NewRouter(), apiConfig())
 	earnstats.Register(api, nil)
+	registerContent(api, nil)
+	registerTokens(api, nil)
 	return api.OpenAPI()
 }

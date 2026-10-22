@@ -365,6 +365,16 @@ with the header means the reader is active but cannot serve a fresh snapshot.
 mode, remove this drop-in, daemon-reload, and restart `loyal-web`.
 This is a test-host pilot: keep production DNS and `LOYAL_WEB_UPSTREAM` unchanged.
 
+### Mobile content reads (opt-in)
+
+With `WEB_APP_DATABASE_URL` installed, GET/HEAD/OPTIONS on `/api/summaries`,
+`/api/mobile/dapps` and `/api/mobile/library` are served by Go; the role needs
+SELECT on `summaries`, `communities`, `trusted_dapps`, `library_sections` and
+`library_articles`. `/api/mobile/tokens/{mint}` is served by Go only when the
+optional systemd credential is installed, using the
+credential name `COINGECKO_API_KEY`. Without them each path keeps forwarding to
+Next. `X-Loyal-API-Source: go` marks a Go response.
+
 ### First install (once)
 
 `activate.sh` reads the running release from the
