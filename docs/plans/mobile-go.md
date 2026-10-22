@@ -283,6 +283,41 @@ account at 11111111111111111111111111111112". Nothing is filed in Linear.
 A push token reassigns to whichever wallet posts it; binding a token to a
 device is a follow-up.
 
+## Post-deploy verification
+
+Run by the owner after the approved deploy of `loyal-web` to next.askloyal.com.
+Neither script runs in CI. Both print no key, token or cookie. Setup once:
+`cd web && bun install --frozen-lockfile`.
+
+Parity, Go (next.askloyal.com) against Next (app.askloyal.com). Take the web
+session cookie from a signed-in browser on app.askloyal.com (DevTools,
+Application, Cookies, the `loyal_wallet_session` value) and paste it at the
+silent prompt. `POLICY_KEYPAIR` (the test wallet) comes from `op run`; the
+bearer is minted from it at the Next origin.
+
+```sh
+read -rs LOYAL_WEB_SESSION_COOKIE && export LOYAL_WEB_SESSION_COOKIE
+op run --env-file=.env.1password -- bun scripts/web/api-diff.ts https://next.askloyal.com https://app.askloyal.com
+```
+
+It prints PASS or KNOWN per row and exits 1 on any FAIL. Each passing row
+asserts `X-Loyal-API-Source: go`; summary and activity fail as "parity
+unverified: fixture has no position" when the test wallet holds nothing.
+KNOWN rows are the Go fixes listed above. `--auth bearer` skips the cookie rows;
+`--writes` adds the invite POST and push-token rows, off by default.
+`bun scripts/web/api-diff.ts --help` prints the route table.
+
+Mobile against Go. Mints a session, reads summary, activity and invite with the
+bearer, builds a 1 USDC Earn MAX deposit with `prepareEarnMaxVoltr` and
+simulates it. It never signs or sends. `SOLANA_RPC_URL` comes from the same env
+file. The deposit needs the test wallet to hold 1 USDC and SOL for fees.
+
+```sh
+op run --env-file=.env.1password -- bun --tsconfig-override web/apps/mobile/tsconfig.json scripts/web/mobile-go-check.ts
+```
+
+The on-device mainnet deposit and withdraw stay on Vlad's preview build.
+
 ## Owner calls
 
 1. Decided 2026-10-22 (M2): Go holds `AUTH_JWT_SECRET` until Vercel moves to
