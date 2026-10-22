@@ -82,9 +82,10 @@ Implementation alone does not satisfy criterion 5: activation and live parity
 verification remain deployment steps. No generated client is introduced for
 this pilot; existing frontend callers keep the same URL and response contract.
 
-Mobile feature work can proceed against the existing backend. New mobile
-Earn MAX backend/shared SDK changes from loyal-app must be synced here before
-porting those API families; they are outside this public read pilot.
+Mobile feature work can proceed against the existing backend. The pin in
+`web/LOYAL_APP_BASE` and the daily loyal-app-pin job (PR #527) tell us when
+loyal-app changes need porting here. Those API families are outside this public
+read pilot.
 
 ## Later, not in this phase
 

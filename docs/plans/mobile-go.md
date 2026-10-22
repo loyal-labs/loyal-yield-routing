@@ -102,9 +102,20 @@ token is RS256. Otherwise it is HS256 under `AUTH_JWT_SECRET`
 
 Settled 2026-10-21. Production currently signs mobile session tokens HS256. One
 live mint against askloyal.com with the test wallet returned header alg
-HS256, and the web cookie uses the same switch. The target is RS256 only, where
-one verifier holding the public key authenticates both clients. Whether Go gets
-`AUTH_JWT_SECRET` or production switches to RS256 is an open owner call.
+HS256, and the web cookie uses the same switch.
+
+Owner decision, 2026-10-22, option A. Go holds `AUTH_JWT_SECRET` until Vercel
+moves to RS256, then the secret is dropped. RS256 stays the target, where one
+verifier holding the public key authenticates both clients. Until then:
+
+- Go verifies only and never signs. Minting stays in Next.
+- Keys are tried in Next's order. The RS256 public key comes first when
+  `AUTH_JWT_RS256_PUBLIC_KEY` is configured (optional). Then HS256, with the
+  key `sha256(AUTH_JWT_SECRET)`.
+- `AUTH_JWT_SECRET` arrives as a systemd `LoadCredentialEncrypted` credential.
+- Without it the Principal routes are not registered, and those paths keep
+  proxying to Next.
+- Installing the credential on the host waits on the owner's go.
 
 ### Third parties, direct from the device
 
@@ -152,11 +163,16 @@ RN app ──► loyal-web (Go) ──native──► Earn MAX reads, Earn reads
 ```
 
 - One edge verifier in Go, `internal/webapp/auth.go`, reads the
-  `loyal_wallet_session` cookie or `Authorization: Bearer`, verifies RS256 with
-  the public key and the expected audience, and yields
-  `Principal{Wallet, Audience}`. Handlers take a `Principal` and never parse
-  tokens. Minting stays in Next (`mobile/earn/session`, `auth/privy/complete`)
-  until a later unit, so Go holds no private key.
+  `loyal_wallet_session` cookie or `Authorization: Bearer`, verifies the token
+  (see Auth) and yields `Principal{Wallet, Settings, SmartAccount}`, always
+  fully resolved. The cookie carries the settings account. The bearer path does
+  one SQL lookup in ready smart accounts (`app_users`,
+  `app_user_smart_accounts`). Both paths check
+  `squads.SmartAccountAddress(settings, 0)` and that the signers contain the
+  wallet, else 409 `smart_account_required`. Email-only cookie sessions get 401
+  `wallet_required`. Handlers take a `Principal` and never parse tokens.
+  Minting stays in Next (`mobile/earn/session`, `auth/privy/complete`) until a
+  later unit, so Go holds no private key.
 - Paths: Go serves the web paths (`/api/smart-accounts/earn-max/summary`,
   `…/yield-optimization/earn-state`, and so on). Mobile moves to them. Go never
   implements a `/mobile/` path. Installed builds on older JS keep calling
@@ -177,10 +193,10 @@ shows equal JSON for the test account against the Next handler it replaces.
 | Unit | Change | Done when |
 |---|---|---|
 | M0 ownership | `web/LOYAL_APP_BASE` pins the loyal-app commit (552f22c4). A daily job (`.github/workflows/loyal-app-pin.yml`, `scripts/web/loyal-app-pin.ts`) fails when loyal-app main gains commits touching `apps/mobile` or the moved package paths. `sync.sh` and `check-untouched.sh` were deleted in #490, so nothing syncs. EAS, builds and the mirror stay Vlad's | The job is green on the pin and red when loyal-app main moves a mobile path. Its error says to port the range into `web/` and bump the pin |
-| M1 one base URL | `EXPO_PUBLIC_EARN_API_BASE_URL` points at `https://next.askloyal.com` in preview builds. The production build flips on the owner's go. Proxy only; Go serves nothing new | Every Earn flow on a preview APK passes through Go (`X-Loyal-Release` on the responses); deposit and withdraw land on mainnet with the test wallet |
-| M2 Go verifier | `internal/webapp/auth.go`, RS256 only with the public key, matching `mobile-earn-session.ts` and `session-token.ts`. Production signs HS256 today, so M2 waits on the owner's call (see Auth) | An RS256 token minted by Next verifies in Go for both audiences; a tampered, expired or cross-audience one is refused |
+| M1 one base URL | `API_BASE_URL` in `src/config/env.ts` defaults to `https://next.askloyal.com`. A codemod renames `earnApiBaseUrl` to `apiBaseUrl`, and `EARN_API_BASE_URL` is deleted. `eas.json` stays Vlad's, with no per-build edits from us. The production build flips on the owner's go. Proxy only; Go serves nothing new | Every Earn flow on a preview APK passes through Go (`X-Loyal-Release` on the responses); deposit and withdraw land on mainnet with the test wallet |
+| M2 Go verifier | `internal/webapp/auth.go`, verify only, matching `mobile-earn-session.ts` and `session-token.ts`. RS256 public key first when configured, then HS256 under `sha256(AUTH_JWT_SECRET)` (see Auth). Without the secret the Principal routes stay unregistered | A token minted by Next verifies in Go for both audiences; a tampered, expired or cross-audience one is refused |
 | M3 Earn MAX reads | `summary` and `activity` in Go from the `earn_max.go` loaders and `programs/voltr`, on the web paths | Parity with `features/earn-max/server/mobile.ts`; the web Earn MAX page reads Go too |
-| M4 Earn MAX on device | `voltr/{program,plans}.ts` and the Earn MAX types to `web/packages/earn-max`; RN Earn MAX screen builds Voltr deposits and withdrawals on device; `context` served by Go | A preview APK deposits into and withdraws from Earn MAX on mainnet with the test wallet |
+| M4 Earn MAX on device | `voltr/{program,plans}.ts` and the Earn MAX types to `web/packages/smart-account-vaults/src/voltr/`, with the wire serializer in `src/wire/`; RN Earn MAX screen builds Voltr deposits and withdrawals on device; `context` served by Go | A preview APK deposits into and withdraws from Earn MAX on mainnet with the test wallet |
 | M5 content and push | `dapps`, `library`, `summaries`, `tokens/{mint}` and `push-tokens` native in Go; push takes the wallet from the session | `API_BASE_URL` is gone from `env.ts`; the rebind repro is refused |
 | M6 Earn reads | `earn-state`, `holdings`, `earnings`, `transactions`, `withdraw/sources`, `earn-forecast/summary` and `solana-week/progress` in Go, with types generated from OpenAPI | Parity per route; the hand-copied types are gone from `earn-api.ts` |
 | M7 delete | Once Vercel `/api/smart-accounts/mobile/*` traffic is 0 for 14 days, delete the Next mobile twins and the server-built deposit and withdraw routes. The delete lands in loyal-app, which Vercel builds | Vercel `/api/smart-accounts/mobile/*` traffic is 0 for 14 days; `smart-accounts/mobile/` has only routes still minted in Next |
@@ -213,11 +229,16 @@ Go only if the owner wants Go to hold that key. That is a separate plan.
 
 ## Owner calls
 
-1. Give Go `AUTH_JWT_SECRET`, or switch production to RS256 (M2).
-2. Go to flip the production mobile build's base URL, after the preview canary
+1. Decided 2026-10-22 (M2): Go holds `AUTH_JWT_SECRET` until Vercel moves to
+   RS256, then the secret is dropped.
+2. Go to deploy `loyal-web` and to install the credentials and grants,
+   including the `AUTH_JWT_SECRET` credential.
+3. Go to flip the production mobile build's base URL, after the preview canary
    (M1). The build is Vlad's.
-3. Decide whether Go may ever hold the deployment-policy signer (the
+4. Decide whether Go may ever hold the deployment-policy signer (the
    follow-on plan for prepare and confirm).
+5. RS256 on Vercel, then remove `AUTH_JWT_SECRET` from Go.
+6. An Earn MAX mobile screen design (none exists).
 
 ## Unknown
 
