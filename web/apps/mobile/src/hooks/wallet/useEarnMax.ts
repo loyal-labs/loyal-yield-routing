@@ -1,7 +1,3 @@
-import type {
-  EarnMaxActivity,
-  EarnMaxSummaryResponse,
-} from "@loyal-labs/api";
 import {
   isVoltrOperationVisible,
   VoltrClaimLiquidityError,
@@ -9,26 +5,17 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  EarnMaxError,
   EarnMaxWalletChangedError,
-  fetchEarnMaxActivity,
-  fetchEarnMaxInvite,
-  fetchEarnMaxSummary,
   redeemEarnMaxInvite,
   resolveEarnMaxAccount,
   sendEarnMaxVoltr,
   type EarnMaxVoltrAction,
 } from "@/lib/solana/earn/earn-max";
+import {
+  type EarnMaxRead,
+  readEarnMax,
+} from "@/lib/solana/earn/earn-max-read";
 import type { Signer } from "@/lib/wallet/signer";
-
-export type EarnMaxRead =
-  | { kind: "invite_required" }
-  | {
-      kind: "ready";
-      summary: EarnMaxSummaryResponse;
-      activity: EarnMaxActivity;
-    }
-  | { kind: "failed"; message: string };
 
 type PendingOperation = {
   signature: string;
@@ -38,29 +25,6 @@ type PendingOperation = {
 
 const PENDING_VISIBILITY_MS = 60_000;
 const PENDING_POLL_MS = 3_000;
-
-async function readEarnMax(walletAddress: string): Promise<EarnMaxRead> {
-  try {
-    const invite = await fetchEarnMaxInvite(walletAddress);
-    if (!invite.redeemed) {
-      return { kind: "invite_required" };
-    }
-    const [summary, activity] = await Promise.all([
-      fetchEarnMaxSummary(walletAddress),
-      fetchEarnMaxActivity(walletAddress),
-    ]);
-    return { kind: "ready", summary, activity };
-  } catch (error) {
-    if (error instanceof EarnMaxError && error.code === "invite_required") {
-      return { kind: "invite_required" };
-    }
-    return {
-      kind: "failed",
-      message:
-        error instanceof Error ? error.message : "Earn MAX failed to load.",
-    };
-  }
-}
 
 export function useEarnMax(input: {
   walletAddress: string | null;
