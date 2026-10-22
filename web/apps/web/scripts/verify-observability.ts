@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { OBSERVABILITY_EXPORT_BUDGET_MS } from "../src/features/observability/budget-contract";
 import {
   createBrowserErrorEnvelope,
   createErrorDeduplicator,
@@ -281,9 +282,11 @@ assert.match(clientSource, /keepalive: true/);
 assert.match(clientInstrumentation, /installBrowserErrorListeners\(\)/);
 pass("browser capture is one-time, rejection-safe, and wired before hydration");
 
-const timeoutMatch = serverSource.match(/EXPORT_TIMEOUT_MS\s*=\s*(\d+)/);
+const timeoutMatch = serverSource.match(
+  /OBSERVABILITY_EXPORT_BUDGET_MS/g
+);
 assert.ok(timeoutMatch, "server exporter timeout constant is missing");
-assert.ok(Number(timeoutMatch[1]) <= 1500);
+assert.ok(OBSERVABILITY_EXPORT_BUDGET_MS <= 1500);
 assert.match(serverSource, /catch \{\s*return false;/);
 assert.doesNotMatch(serverSource, /NEXT_PUBLIC_[A-Z_]*(?:KEY|TOKEN)/);
 assert.match(serverSource, /authorization: config\.ingestionKey/);

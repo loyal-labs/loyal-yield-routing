@@ -25,3 +25,5 @@ export type * from "./earn-max";
 export { buildEarnMaxDailySeries } from "./earn-max-history";
 
 export { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "./earn-autodeposit";
+
+export { MOBILE_DISTINCT_ID_PREFIX } from "./analytics-core";
