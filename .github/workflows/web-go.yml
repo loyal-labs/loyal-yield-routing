@@ -90,3 +90,9 @@ jobs:
       - name: mobile jest
         working-directory: web/apps/mobile
         run: bun run test
+      - name: solana-wallet tests
+        working-directory: web
+        run: |
+          bun run --cwd packages/shared build
+          bun run --cwd packages/solana-rpc build
+          bun run --cwd packages/solana-wallet test
