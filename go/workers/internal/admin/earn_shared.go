@@ -54,8 +54,8 @@ func EarnStablecoinSymbol(mint string) (string, bool) {
 }
 
 type StablecoinHealthWarning struct {
-	Code    string `json:"code"`
-	Level   string `json:"level"`
+	Code    string `json:"code" enum:"no_eligible_reserve"`
+	Level   string `json:"level" enum:"info,warning,critical"`
 	Message string `json:"message"`
 }
 
