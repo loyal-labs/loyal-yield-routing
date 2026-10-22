@@ -43,6 +43,11 @@ export class CherrySignedTransactionValidationError extends Error {
   }
 }
 
+/**
+ * Loads the browser-only Cherry adapter on demand. The returned adapter keeps
+ * Cherry's connect and signing surface, but Loyal remains the only RPC
+ * submitter and validates the signed transaction before any broadcast.
+ */
 export async function createLoyalCherryWalletAdapter(
   operationLease: CherryOperationLease = createCherryOperationLease()
 ): Promise<CherryWalletAdapterType> {
@@ -366,6 +371,8 @@ function isBenignWalletModification(
     return false;
   }
 
+  // Identical lookups keep loaded-account positions comparable across the
+  // two messages, which the resolved instruction comparison relies on.
   if (
     !addressTableLookupsEqual(
       original.addressTableLookups,
@@ -388,6 +395,8 @@ function isBenignWalletModification(
     return false;
   }
 
+  // Every original key must survive with its signer/writable class intact;
+  // any new key must be an allowlisted program in the readonly section.
   const signedIndexByKey = new Map(
     signed.staticAccountKeys.map((key, index) => [key.toBase58(), index])
   );

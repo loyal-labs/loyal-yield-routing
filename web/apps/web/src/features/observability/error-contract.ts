@@ -154,6 +154,8 @@ export type NormalizedErrorEvent = {
   release: string;
   runtime: ObservabilityRuntime;
   serviceName: "loyal-frontend" | "loyal-mobile";
+  // Defaults to ERROR. WARN keeps a record out of the error alerts (e.g. CSP
+  // report-only violations, which are informational until enforced).
   severity?: "ERROR" | "WARN";
   timestamp: string;
 };
@@ -285,6 +287,10 @@ export function createBrowserErrorEnvelope(
   };
 }
 
+// True when a stack is made up solely of browser-extension frames, meaning no
+// Loyal code took part in the failure. Only ambient listeners are filtered:
+// an explicit operation such as `earn.deposit.execute` reporting a wallet
+// provider error is a real signal even though the stack points at the wallet.
 export function isThirdPartyExtensionError(
   operation: BrowserErrorOperation,
   stack: string | undefined
@@ -299,6 +305,11 @@ export function isThirdPartyExtensionError(
   );
 }
 
+// The Cap captcha widget (@cap.js/widget) rejects with this internal error
+// when it is torn down mid-solve: its worker pool is nulled while a solve
+// promise is still in flight. Not a Loyal failure. `_ensureSize` is a Cap
+// worker-pool method distinctive enough to match on message alone — the stack
+// only shows a hash-named first-party chunk, so it cannot anchor the match.
 const CAP_WIDGET_ERROR_PATTERN = /\b_ensureSize\b/;
 
 export function isCapWidgetInternalError(
@@ -476,6 +487,12 @@ export function parseBrowserErrorEnvelope(
   };
 }
 
+/**
+ * The chunk-load context is diagnostic enrichment, not the report itself.
+ * Rejecting the whole envelope over it would drop the very ChunkLoadError we
+ * need, so anything that fails validation is dropped and the error still
+ * reaches ClickStack. Required envelope fields stay strictly validated.
+ */
 function readBrowserClientContext(
   record: Record<string, unknown>,
   expectedChunkOrigin: string

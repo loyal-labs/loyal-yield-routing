@@ -8,6 +8,7 @@ const WINDOW_DAYS = 7;
 const DAY_MS = 86_400_000;
 
 export type EarnMaxVoltrApyPoint = {
+  /** Annualized share-price growth into this UTC day, basis points. */
   apyBps: number;
   date: string;
 };
@@ -16,6 +17,7 @@ export type EarnMaxVoltrApy = {
   apyBps: number | null;
   apyWindowDays: number | null;
   daily: EarnMaxVoltrApyPoint[];
+  /** Share price (USDC raw per LP raw) at the end of each finished UTC day. */
   dayEnd: { at: string; price: number }[];
 };
 
@@ -34,6 +36,12 @@ type DailyStats = {
   tvlData?: unknown;
 };
 
+/**
+ * Share price = end-of-day TVL / LP supply (Voltr dailyStats) plus the live
+ * vault value. Compounded growth over the window, annualized. Voltr's own
+ * 1-day figure swings with every NAV report on a small vault, so the badge
+ * uses 7 days.
+ */
 export function shareApy(
   stats: DailyStats,
   live: { lp: number; tvl: number } | null,

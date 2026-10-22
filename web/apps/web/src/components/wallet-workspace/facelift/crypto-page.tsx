@@ -397,6 +397,8 @@ export function CryptoPage({
       ) {
         return;
       }
+      // Overlays (info sheets) preventDefault their own Esc; checked after
+      // dispatch so listener registration order can't matter.
       queueMicrotask(() => {
         if (event.defaultPrevented) {
           return;
@@ -450,6 +452,8 @@ export function CryptoPage({
     return map;
   }, [data.positions]);
 
+  // Wrapped so flow callbacks' own arguments never leak into refresh's
+  // isCurrent parameter.
   const refreshWalletData = data.refresh;
   const refreshWallet = useCallback(
     () => refreshWalletData(),

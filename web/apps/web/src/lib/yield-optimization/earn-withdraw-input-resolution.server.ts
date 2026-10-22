@@ -31,6 +31,12 @@ async function waitForPolicyProjection(delayMs: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 }
 
+// Resolution failures the routes surface as specific HTTP responses rather
+// than a generic 500. Every rejection that describes the CALLER's state — no
+// policy, no position, no source, a source that no longer covers the amount —
+// belongs here: answering 500 for those made a stale client balance page the
+// team as a server fault, and the device reported it as `request_failed` with
+// `httpStatus: 500` (ASK-1903). Only genuine server faults fall through.
 export class EarnWithdrawResolveError extends Error {
   readonly status: number;
   readonly code: string;
@@ -394,6 +400,9 @@ export async function resolveEarnUsdcWithdrawInput(args: {
     logTag,
   } = args;
   const settingsPdaKey = new PublicKey(settingsPda);
+  // Policy identity is durable setup metadata. The money position itself is
+  // derived from the live chain snapshot below, so a newly finalized deposit
+  // can be withdrawn before LaserStream has projected its aggregate row.
   let policyResult: Awaited<ReturnType<typeof findActiveYieldRoutePolicyPair>> =
     null;
   for (const delayMs of POLICY_PROJECTION_RETRY_DELAYS_MS) {
@@ -412,6 +421,8 @@ export async function resolveEarnUsdcWithdrawInput(args: {
     }
   }
   if (!policyResult?.routePolicy) {
+    // A completed cleanup is not projection lag. Keep the retry window above
+    // for new setups, but never tell a stale client to retry an inactive vault.
     if (
       await hasInactiveYieldRoutePolicyForVault({
         authority: walletAddress,
@@ -570,6 +581,7 @@ export async function resolveEarnUsdcWithdrawInput(args: {
     settingsPda: settingsPdaKey,
     target: withdrawTarget,
     ...(fullWithdrawalTargets.length > 0 ? { fullWithdrawalTargets } : {}),
+    // Full withdrawal and policy close are intentionally separate phases.
     closePoliciesOnFullWithdrawal: false,
     source:
       selectedSource.type === "idle"

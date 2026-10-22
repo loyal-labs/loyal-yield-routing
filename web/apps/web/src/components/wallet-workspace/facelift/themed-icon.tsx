@@ -1,5 +1,7 @@
 import type { CSSProperties } from "react";
 
+// Renders a monochrome SVG asset in the current text color via CSS mask
+// (see .icon-themed in globals.css), so baked-in fills follow the theme.
 export function ThemedIcon({
   className,
   label,

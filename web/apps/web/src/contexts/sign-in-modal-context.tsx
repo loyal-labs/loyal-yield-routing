@@ -18,6 +18,11 @@ type SignInModalContextValue = {
   openAccount: () => void;
   openLedger: () => void;
   isLedgerMode: boolean;
+  /**
+   * Register a sign-in handler. When set, `open()` calls it instead of
+   * showing the modal (Privy opens its own modal). Return false to fall
+   * through to the modal.
+   */
   registerHandler: (handler: (() => boolean) | null) => void;
 };
 

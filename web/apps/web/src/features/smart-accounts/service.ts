@@ -410,6 +410,10 @@ async function sponsorRecord(args: {
         return reconciledRecord.record;
       }
 
+      // Concurrent-signup index race: another user's create landed on the
+      // settings PDA this record had reserved, so our create failed and the
+      // PDA now belongs to them. Reserve the next index and retry once
+      // instead of surfacing a transient error to the user.
       if (reconciledRecord.kind === "owner_mismatch" && attempt === 0) {
         const reservation = await reserveProvisioningRecord({
           userId: record.userId,

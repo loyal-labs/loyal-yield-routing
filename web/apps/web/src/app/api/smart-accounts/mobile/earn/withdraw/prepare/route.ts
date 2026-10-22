@@ -24,6 +24,14 @@ import {
   serializePreparedEarnUsdcWithdraw,
 } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
 
+// Mobile twin of `yield-optimization/withdrawals/prepare`. Identical source
+// selection + prepare logic, but authenticated by a wallet signature (no
+// captcha/session) and it resolves the caller's smart account itself instead
+// of reading it from a session principal. Withdrawing requires an existing
+// account, so (unlike deposit) it never provisions. Source selection lives in
+// `earn-withdraw-input-resolution.server.ts`, shared with `../prepare-context`
+// (the on-device build twin) — this route remains for app versions that
+// predate on-device prepare.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 const connectionCache = new Map<SolanaEnv, Connection>();

@@ -480,6 +480,9 @@ export function useActiveEarnPosition({
   const refreshInFlightScopeRef = useRef<string | null>(null);
   const suppressSubscriptionRefreshThroughSlotRef = useRef<bigint | null>(null);
 
+  // Advance identity synchronously during render. A response that resolves
+  // between this render and passive-effect cleanup must not commit into the
+  // newly selected wallet/settings scope (including a rapid A -> B -> A).
   if (activePositionScopeRef.current !== positionScope) {
     activePositionScopeRef.current = positionScope;
     refreshGenerationRef.current += 1;
@@ -1055,6 +1058,8 @@ function createPositionFromRpcHolding(
       reserve,
       supplyApyBps: holding.supplyApyBps,
     },
+    // RPC exposure is not a principal ledger. The earnings endpoint remains
+    // unavailable until a confirmed deposit/withdrawal record supplies basis.
     principalAmountRaw: "0",
     status: "active",
   };

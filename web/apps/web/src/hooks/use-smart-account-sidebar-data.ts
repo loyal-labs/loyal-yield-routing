@@ -5179,6 +5179,13 @@ export function useSmartAccountSidebarData(
     async (args: {
       signerAddress: string;
       permissions: SmartAccountSignerPermission[];
+      /**
+       * When set, the helper updates this signer's permissions inside a
+       * SpendingLimit policy (PolicyUpdate). When omitted, the helper
+       * updates the root signer entry on the settings PDA
+       * (RemoveSigner+AddSigner). Root + policy live in different lists,
+       * so the caller picks based on signer scope.
+       */
       policyAddress?: string | null;
       accountIndex?: number;
     }) => {
@@ -5651,6 +5658,8 @@ export function useSmartAccountSidebarData(
           };
         }
 
+        // threshold-1: read settings to learn the proposal's transactionIndex,
+        // then approve + execute as separate signs.
         const settingsAfterPropose =
           await client.sdk.smartAccounts.queries.fetchSettings(settingsPda);
         const transactionIndex = BigInt(
@@ -5910,6 +5919,10 @@ export function useSmartAccountSidebarData(
   );
 
   const executeEarnPolicySetup = useCallback(
+    // `force` skips the has-policy short-circuit so a wallet whose only
+    // route pair is the legacy single-token-program generation can create
+    // the owner-neutral pair required for Token-2022 deposits (ASK-2108).
+    // The legacy pair is never mutated; the new pair lands at the next seed.
     async (options?: { force?: boolean }): Promise<EarnPolicySetupResult> => {
       if (!wallet.publicKey) {
         return {
@@ -7908,6 +7921,8 @@ export function useSmartAccountSidebarData(
               | undefined;
 
             try {
+              // Keep the one-prompt signAll UX, but confirm and record each
+              // setup stage before sending the next dependent transaction.
               await sendPreparedBatchWithWallet({
                 connection,
                 wallet: walletBridge,
@@ -8124,6 +8139,8 @@ export function useSmartAccountSidebarData(
                 preparedSetup,
                 refreshImmediateStartTimestamp:
                   requestedStartTimestamp === undefined,
+                // Undefined means "immediate"; let the builder resolve it
+                // after policy confirmation so the delegation start is not stale.
                 startTimestamp: requestedStartTimestamp,
                 walletBalanceFloorRaw: request.walletBalanceFloorRaw,
               })

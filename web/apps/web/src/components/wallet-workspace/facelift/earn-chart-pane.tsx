@@ -271,6 +271,9 @@ function ExpandedChartOverlay({
     if (isSlideViewport) {
       slide.dataset.state = "closed";
     }
+    // Read after the state flip so the computed duration reflects the
+    // closed-state (and viewport-specific) animation; on mobile the sheet's
+    // slide-down (panel clock) can outlast the scrim fade.
     const scrimDur =
       Number.parseFloat(getComputedStyle(container).animationDuration) * 1000 ||
       150;

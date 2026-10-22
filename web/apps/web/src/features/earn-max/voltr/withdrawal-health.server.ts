@@ -33,6 +33,7 @@ export async function readEarnMaxWithdrawalHealth(): Promise<EarnMaxWithdrawalHe
       : null;
     return parseWithdrawalHealth(health, scope);
   } catch {
+    // Missing/stale worker evidence never clears a block or permits a claim.
     return parseWithdrawalHealth(null, scope);
   }
 }

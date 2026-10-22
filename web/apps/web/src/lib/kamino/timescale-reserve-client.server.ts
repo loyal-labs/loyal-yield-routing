@@ -160,6 +160,8 @@ export type CurrentEligibleSafeReserve = CurrentBestApyReserveByStablecoin;
 
 const DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE = 100_000;
 const DEFAULT_MAX_SUPPLY_APY = 0.5;
+// Bound both receipt age and the frontier's actual chain age. The observer
+// timestamps replays when received, so receipt alone cannot prove catch-up.
 const RESERVE_STREAM_MAX_AGE_MS = 240 * 1000;
 
 let reserveBlockTimeConnection: Connection | undefined;
@@ -347,6 +349,8 @@ export class TimescaleReserveClient {
   private currentConfirmedReserves() {
     const { reserveUpdates, reserveCurrentStates, supportedReserves } =
       this.tables;
+    // Join by the complete observation identity, including observed_at for
+    // Timescale chunk pruning, instead of expanding latest_reserve_updates.
     const current = this.db.$with("confirmed_current_reserves").as(
       this.db
         .select(reserveUpdateColumns)
@@ -394,6 +398,8 @@ export class TimescaleReserveClient {
           .orderBy(desc(current.slot), desc(current.observedAt))
           .limit(1)
       );
+    // Use the database statement clock: rows committed while the connection
+    // opens are not future observations relative to this query's snapshot.
     const now = sql`statement_timestamp()`;
     const freshness = and(
       gte(
@@ -681,6 +687,11 @@ export class TimescaleReserveClient {
 
     const { current, frontier, freshness } = this.currentConfirmedReserves();
 
+    // Deliberately no stale-flag or APY-bounds filters: presence in the
+    // observer's active current state is the eligibility signal (a hidden
+    // reserve is never sampled at all), and a transiently stale row must not fail
+    // deposits — that flakiness is why #381 removed the old APY-ranked
+    // picker.
     const rows = await this.db
       .with(current, frontier)
       .select({

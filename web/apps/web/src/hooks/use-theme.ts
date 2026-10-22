@@ -48,6 +48,10 @@ export function useTheme() {
       return;
     }
 
+    // The attribute scopes the snapshot freeze in globals.css to this wipe,
+    // so other view transitions keep their default crossfade. A rapid
+    // re-toggle can drop the freeze early (the first transition's cleanup
+    // races the second's run) — the fallback is just a crossfade, fine.
     root.setAttribute("data-theme-wipe", "");
     const transition = doc.startViewTransition(apply);
     transition.ready

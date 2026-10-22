@@ -22,6 +22,7 @@ export type TokenDetailChartPoint = {
   priceUsd: number;
 };
 
+// CoinGecko market_chart `days` values the chart range tabs map to.
 export const TOKEN_CHART_DAYS = ["1", "7", "30", "365", "max"] as const;
 
 export type TokenChartDays = (typeof TOKEN_CHART_DAYS)[number];
@@ -515,6 +516,8 @@ export async function fetchTokenDetailByMint(
   return request;
 }
 
+// Pool OHLCV fallback granularity per range (used when the token has no
+// CoinGecko coin id — market_chart picks granularity from `days` on its own).
 const POOL_OHLCV_BY_DAYS: Record<
   TokenChartDays,
   { limit: number; timeframe: "hour" | "day" }

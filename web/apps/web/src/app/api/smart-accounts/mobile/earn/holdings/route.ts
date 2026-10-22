@@ -19,6 +19,29 @@ import {
   findActiveYieldRoutePolicyPair,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
+// Read-only mobile twin of the web client's live on-chain Earn holdings read
+// (`earn-rpc-holdings.client.ts`, summed by the sidebar for its headline
+// balance). The DB snapshot that `mobile/earn/state` reads lags the chain (and
+// doesn't track non-idle venue holdings), so the native balance was stale; this
+// reads the vault's current holdings — Kamino obligations plus every policy
+// mint's idle ATA — directly
+// from the chain via the same `fetchEarnRpcHoldingsSnapshot` the web uses.
+//
+// Keyed by wallet address (the native app holds no signer, to avoid a Seed Vault
+// prompt on a passive balance view) — this only reads public on-chain accounts
+// for a vault the caller already knows, and never provisions or writes. Returns
+// an empty snapshot when the wallet has no app user, smart account, or active
+// Earn policy yet.
+//
+// Stale-read protection: the RPC pool can serve a lagging node whose account
+// view predates a deposit the DB already confirmed, and the client trusts a
+// successful live read over the read-model. Primary defense: every chain read
+// carries minContextSlot = the position's last confirmed slot, so a lagging
+// node errors instead of answering (a max-observed-slot check alone cannot
+// catch a mixed read where only the obligation request hit a lagging node).
+// Fallbacks: one retry on rejection, then 502 → the client keeps the
+// read-model balance; plus a residual observedAt: null suppression should a
+// stale snapshot slip through anyway.
 const EARN_VAULT_INDEX = 1;
 const connectionCache = new Map<SolanaEnv, Connection>();
 

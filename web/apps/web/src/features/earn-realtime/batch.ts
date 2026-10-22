@@ -139,6 +139,8 @@ export class EarnRealtimeInvalidationBatcher {
     this.epoch += 1;
     this.cancelTimer?.();
     this.cancelTimer = null;
+    // Pending and in-flight work stay unacknowledged so a scope change cannot
+    // advance the old identity's cursor after its UI commits were disabled.
   }
 
   reset(): void {

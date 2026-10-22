@@ -28,7 +28,7 @@ export function PopDigits({
       return;
     }
     group.classList.remove("is-animating");
-    void group.offsetHeight;
+    void group.offsetHeight; // force reflow so the animation replays
     group.classList.add("is-animating");
   }, [popOnChange, value]);
 

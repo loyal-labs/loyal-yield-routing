@@ -5,6 +5,34 @@ import nacl from "tweetnacl";
 
 import { getOptionalEnv } from "@/lib/core/config/shared";
 
+/**
+ * Reports Solana Week "challenge quest" completions to the Solana dApp Store
+ * Quests API (see `mobile/solana-week.md` → "Challenge Quest Completion API").
+ *
+ * Backend-only by mandate: the completion API key must never reach the mobile
+ * client. Only call this from server code (route handlers, server actions,
+ * workers).
+ *
+ * Feature-gated: if the endpoint, API key, or the relevant quest id is not
+ * configured the reporter no-ops (`status: "disabled"`). That makes it safe to
+ * ship before Solana finalizes the per-integration credentials and quest ids —
+ * fill the env vars in and it starts reporting with no code change.
+ *
+ * The completion API is idempotent per `(wallet_id, quest_id)`; both
+ * `completed` (201) and `already_completed` (200) are success.
+ */
+
+// Server-only secrets/config. Never expose any of these with NEXT_PUBLIC_.
+// Master kill-switch for ALL Solana-side reporting. Fail-safe OFF: a completion
+// is sent to Solana only when SOLANA_WEEK_QUESTS_ENABLED is exactly "true" OR
+// the wallet is in the tester allowlist (TESTER_WALLETS_ENV below). Quests are
+// hidden for the Solana dApp Store launch until the official reveal; flip this
+// env var (no code change) to go live — see mobile/docs/quests-launch-toggle.md.
+// Every send path (Quest 1 deposit-confirm, Quest 2 sweep-notify, the reconcile
+// cron) funnels through reportQuestCompletion below, so this one gate covers
+// them all. The external sweep worker keeps calling /sweep-notify regardless;
+// while disabled those reports just no-op here ("disabled"), leaving the local
+// row pending.
 const ENABLED_ENV = "SOLANA_WEEK_QUESTS_ENABLED";
 // Round-end hard stop, checked before the env gate: while true, no completion
 // is ever sent to Solana (round 1 ended 2026-07-15).
@@ -49,6 +77,8 @@ type ReporterConfig = {
   questIdByKind: Record<QuestKind, string | undefined>;
 };
 
+// Accepts a base58 or base64 Ed25519 secret key. A 64-byte value is used as the
+// full secret key; a 32-byte value is treated as a seed and expanded.
 function decodeSigningSecretKey(raw: string): Uint8Array {
   const tryDecoders: Array<(value: string) => Uint8Array> = [
     (value) => bs58.decode(value),
@@ -112,6 +142,7 @@ function buildHeaders(
   };
   if (config.signingSecretKey) {
     const signature = nacl.sign.detached(bodyBytes, config.signingSecretKey);
+    // The API accepts base64, base58, or hex; base64 is the simplest universal.
     headers["x-signature"] = Buffer.from(signature).toString("base64");
   }
   return headers;
@@ -157,6 +188,10 @@ async function attemptCompletion(
     };
   }
 
+  // 201 = recorded synchronously; 202 = accepted for asynchronous processing
+  // (the API started responding "202 Accepted" when the round opened on
+  // 2026-07-08 — previously misclassified as a permanent error, stranding
+  // rows as `failed`). Both mean Solana took the completion.
   if (response.status === 201 || response.status === 202) {
     return { status: "completed" };
   }
@@ -225,6 +260,10 @@ export async function reportQuestCompletion(args: {
   metadata?: QuestCompletionMetadata;
   env?: NodeJS.ProcessEnv;
 }): Promise<QuestCompletionResult> {
+  // Seeker Summer round 1 ended 2026-07-15: reporting to the Solana
+  // completions API is permanently off, overriding the env kill-switch and
+  // the tester carve-out. Local completion rows still record (in-app progress
+  // display keeps working); flip this back for a future round.
   if (ROUND_ENDED) {
     return {
       status: "disabled",

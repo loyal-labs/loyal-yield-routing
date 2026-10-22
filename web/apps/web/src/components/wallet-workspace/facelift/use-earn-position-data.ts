@@ -141,6 +141,8 @@ export function useEarnPositionData(): EarnPositionData {
   >(null);
   const toggleInFlightRef = useRef(false);
 
+  // Fresh loaded state wins over the overlay — but not while the request is
+  // still in flight (a background refresh mid-flight would snap the knob back).
   useEffect(() => {
     if (!toggleInFlightRef.current) {
       setAutodepositOverride(null);
@@ -312,6 +314,9 @@ export function useEarnPositionData(): EarnPositionData {
   }, [autoswapConfig, executeAutoswapDelete]);
   const autoswapStatus = loadedAutoswapConfig?.status;
 
+  // The chain confirmation deliberately precedes the worker's finalized
+  // policy-catalog observation. Poll only that short-lived reconciliation
+  // state so the card turns on without requiring a page reload.
   useEffect(() => {
     if (autoswapStatus !== "finalizing") {
       return;

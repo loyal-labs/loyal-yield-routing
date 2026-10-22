@@ -20,6 +20,8 @@ const MOCK_STEPS = [
 
 const OPEN_EVENT = "loyal:autodeposit-mock-sheet-open";
 
+/** Opens the sheet from anywhere; the surface is mounted once in the app shell
+ * so it survives viewport-driven remounts of the pane that triggered it. */
 export function openAutodepositMockSheet() {
   window.dispatchEvent(new Event(OPEN_EVENT));
 }

@@ -146,6 +146,9 @@ export class EarnEarningsUnavailableError extends Error {
   }
 }
 
+// Portfolio observations can precede the persisted deposit confirmation. Carry
+// the last known state into the earning interval, without earning before it or
+// requiring APY coverage for observations outside that interval.
 export function normalizeEarningsPortfolioSnapshots(args: {
   snapshots: readonly YieldPortfolioSnapshot[];
   start: Date;

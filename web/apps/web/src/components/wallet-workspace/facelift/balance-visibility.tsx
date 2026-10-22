@@ -49,6 +49,10 @@ export function useBalanceVisibility() {
   return useContext(BalanceVisibilityContext);
 }
 
+// Hidden numbers scramble into ASCII symbols instead of blurring (the
+// motion.dev scramble-text look). The resting mask hashes character POSITION
+// and a per-element seed — never the digit it replaces — so it looks random
+// yet can't be reversed and stays identical across live value refreshes.
 const SCRAMBLE_SYMBOLS = "!#$%&()*+/:;<=>?@[]^_{|}~abcdefghjkmnpqrstuvwxyz";
 const SCRAMBLE_TICK_MS = 30;
 

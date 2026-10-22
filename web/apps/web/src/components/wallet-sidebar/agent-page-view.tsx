@@ -273,6 +273,11 @@ export function AgentPageView({
   variant?: "sidebar" | "workspace";
   showSpendingLimit?: boolean;
   showTopUpAction?: boolean;
+  /**
+   * Persist a new access level for this signer. Triggers a multisig
+   * settings change (1 sign at threshold-1, more for higher thresholds).
+   * When omitted, the radio is read-only.
+   */
   onAccessLevelChange?: (level: AccessLevel) => Promise<void>;
   isAccessLevelPending?: boolean;
 }) {

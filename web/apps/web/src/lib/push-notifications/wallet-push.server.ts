@@ -45,6 +45,7 @@ export async function sendWalletPush(
         signal: AbortSignal.timeout(5_000),
       }
     );
+    // 404 = no devices registered for this wallet (web-only user); expected.
     if (!response.ok && response.status !== 404) {
       console.warn("[wallet-push] push send rejected", {
         status: response.status,
@@ -99,6 +100,10 @@ export function autodepositSweepExecutedPush(
   };
 }
 
+// The sweep either never reached Kamino or was blocked before it could:
+// either way the user was promised a move that did not land, and a silent
+// failure is what kills trust in automation (ASK-2091). The worker only
+// reports failures it will retry, so the copy promises the retry.
 export function autodepositSweepFailedPush(
   amountRaw: bigint | null
 ): WalletPushPayload {
@@ -119,6 +124,15 @@ function formatUsd(amountUsd: number): string {
   })}`;
 }
 
+// Earn "joy" layer (ASK-2091): the pushes that exist to make yield felt.
+// Every one of them carries a real number, because a reminder without an
+// amount is the marketing push these are meant not to be.
+//
+// Deliberately token-neutral, unlike the auto-deposit copy above: auto-deposit
+// sweeps one fixed mint (`getKaminoUsdcEarnTargetForCluster`), but Earn takes
+// any enabled stablecoin and the earnings these report are a USD total across
+// every position a wallet holds. Naming a token here would be wrong for a
+// USDG holder and unanswerable for a wallet holding two.
 export function firstYieldPush(amountUsd: number): WalletPushPayload {
   return {
     body: `${formatUsd(amountUsd)} so far, and it keeps going on its own.`,

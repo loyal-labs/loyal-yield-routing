@@ -289,6 +289,7 @@ export function TokenSelectView({
       void searchTokens(search, controller.signal)
         .then((results) => {
           if (controller.signal.aborted) return;
+          // Keep the picker's verified-only contract and drop owned tokens.
           const localMints = new Set(tokens.map((t) => t.mint).filter(Boolean));
           setRemoteResults(
             results.filter(
@@ -354,6 +355,8 @@ export function TokenSelectView({
   ) => {
     if (!hasQuery || !activeToken) return;
     if (event.key !== "Enter" && event.key !== "Tab") return;
+    // Don't swallow keys an IME is still composing with, and keep Tab from
+    // also moving focus after the commit.
     if (event.nativeEvent.isComposing) return;
     event.preventDefault();
 

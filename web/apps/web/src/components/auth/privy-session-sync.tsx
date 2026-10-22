@@ -226,6 +226,9 @@ function Inner({ children }: { children: ReactNode }) {
     login({ loginMethods: ["wallet"], walletChainType: "solana-only" });
   }, [authenticated, closeSignInModal, linkEmail, login, setWantsSession]);
 
+  // "Connect" anywhere on the page goes straight to Privy while signed out;
+  // signed in, the modal shows the Account view as before. Cherry never opens
+  // the Privy modal: features/cherry/client/privy-sign-in owns that path.
   useEffect(() => {
     if (isCherryEmbedded) return;
     registerHandler(() => {
@@ -307,6 +310,7 @@ function Inner({ children }: { children: ReactNode }) {
         } else {
           const { wallet } = await createWallet();
           address = wallet.address;
+          // Re-issue the identity token so it lists the new wallet.
           await refreshUser();
         }
       }

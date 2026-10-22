@@ -328,6 +328,7 @@ function floorToBucks(value: number) {
     return 0;
   }
 
+  // toFixed(4) absorbs float noise (8.83 * 100 === 882.9999…) before flooring.
   return Math.floor(Number((value * 100).toFixed(4))) / 100;
 }
 
@@ -347,6 +348,10 @@ export function formatEarnWithdrawMaxAmountLabel(value: number): string {
   return Number(roundedToCents) > 0 ? roundedToCents : value.toFixed(6);
 }
 
+// Sanitizes free-form amount typing. This helper never compares against a
+// balance: deposit inputs allow over-balance amounts (the submit button
+// switches to "Insufficient balance"), while the withdraw input clamps to the
+// max withdrawable amount at its call site.
 export function sanitizeBucksAmountInput(
   rawValue: string,
   previousValue: string
@@ -1220,6 +1225,9 @@ function EarningsBlock({
   const hasRealBars = realBars.length > 0;
   const showEarningsLoader = isEarningsLoading && !hasRealBars;
   const bars = realBars;
+  // Each bar carries the amount earned within that day. Reconcile the current
+  // in-progress bar against the live estimate without turning prior bars into
+  // cumulative values.
   const dailyBars = useMemo(() => {
     const reconciledBars = bars.map((bar) =>
       bar.isCurrent
@@ -1747,6 +1755,9 @@ export function AutodepositToggle({
   isPending?: boolean;
   onToggle?: () => void;
 }) {
+  // transitions-dev "toggle": .is-init gates the bounce keyframes so the off
+  // animation doesn't play at mount — armed once isOn first changes, which
+  // covers both click-driven and server-driven flips.
   const [isInit, setIsInit] = useState(false);
   const previousIsOn = useRef(isOn);
   useEffect(() => {
@@ -1782,6 +1793,7 @@ export function AutodepositToggle({
       }}
       type="button"
     >
+      {/* Thumb travel (20px) lives in the t-toggle CSS in globals.css. */}
       <span
         className="t-toggle-thumb"
         style={{
@@ -3404,6 +3416,9 @@ function BucksAmountInput({
           onChange={(event) => onValueChange(event.target.value)}
           placeholder="0"
           ref={inputRef}
+          // size=1 keeps the input's intrinsic width from inflating the grid
+          // track; the hidden replica alone sizes the cell, so the two-tone
+          // layer stays flush under the typed digits.
           size={1}
           style={{
             ...amountTextStyle,
@@ -3486,6 +3501,10 @@ export function EarnWithdrawView({
   const effectiveWithdrawAmountLabel = hasWithdrawAmount
     ? withdrawAmount
     : formatDepositAmount(selectedSourceMaxAmount);
+  // MAX (or typing the visible floored max) must submit mode "full" for every
+  // source type. Reserve sources used to be pinned to "partial", which drained
+  // the reserve to $0 without the final-exit path — position, policies, vault
+  // ATA, and autodeposit all stayed behind.
   const effectiveWithdrawMode = deriveEarnWithdrawMode({
     amount: effectiveWithdrawAmount,
     sources: sourceOptions,
@@ -5254,6 +5273,9 @@ export function ForecastChart({
   const chartWidth = chartSize.width;
   const chartHeight = chartSize.height;
   const hasChartArea = chartWidth > 2 && chartHeight > 2;
+  // The 28px nowrap money values need ~440px across three columns; narrower
+  // hosts (e.g. the 400px workspace chart pane) get the compact summary that
+  // the <=760px viewport media query alone can't detect.
   const isCompactSummary = chartWidth > 0 && chartWidth < 440;
   const xForIndex = (index: number) =>
     1 + (index / Math.max(points.length - 1, 1)) * (chartWidth - 2);

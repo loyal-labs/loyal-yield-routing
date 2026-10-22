@@ -8,6 +8,18 @@ import {
   type BalanceSweepTargetRecord,
 } from "./earn-autodeposit-repository.server";
 
+/**
+ * Heal for the orphaned-setup trap: the SDK's setup prepare throws when the
+ * policy, recurring delegation, AND token approval all already exist on-chain
+ * (nothing left to sign). That state is reachable when the on-chain setup
+ * succeeded but the stage confirms were lost in flight, leaving the target
+ * row stuck in a pending lifecycle — the app then shows the Create sheet and
+ * every retry rethrows, which is user-unrecoverable (e.g. wallet BgFJ…syuk,
+ * target 779: policy created Jul 8, confirm never landed). The heal backfills
+ * the lost confirmations from chain history and activates the row, so prepare
+ * can answer with the existing `autodeposit_already_active` contract.
+ */
+
 // Thrown by prepareEarnUsdcAutodepositSetup in @loyal-labs/smart-account-vaults
 // when every setup artifact already exists on-chain.
 const AUTODEPOSIT_SETUP_ALREADY_COMPLETE_MESSAGE =
@@ -24,6 +36,9 @@ export function isAutodepositSetupAlreadyCompleteError(
 
 const MAX_SIGNATURE_PAGES = 20;
 
+// Oldest successful transaction touching `address` = its creation. Pages run
+// newest -> oldest, so keep overwriting with each page's last non-failed
+// entry.
 async function findCreationSignature(
   connection: Connection,
   address: string

@@ -15,6 +15,16 @@ import {
   pushCampaignSends,
 } from "@/lib/yield-optimization/yield-neon-client.server";
 
+// Internal backend-to-backend endpoint the autodeposit sweep worker calls the
+// moment it records a confirmed sweep, so Quest 2 ("first Earn deposit via
+// autodeposit") is reported in real time instead of waiting for the cron, and
+// the wallet's devices get the transactional push (ASK-1651).
+// Authenticated with SOLANA_WEEK_NOTIFY_SECRET (Bearer).
+// Body: { walletAddress, kind?: "scheduled" | "executed", amountRaw?: string }.
+// `kind` defaults to "executed" (the only event the worker sent historically);
+// "scheduled" and "failed" are push-only and skip quest reporting. A failed
+// sweep is retried every cycle, so failures carry `dedupeKey` (the scheduled
+// slot id) and the sent-log keeps the push at-most-once per sweep (ASK-2091).
 function isAuthorized(request: Request): boolean {
   const secret = getOptionalEnv(process.env, "SOLANA_WEEK_NOTIFY_SECRET");
   if (!secret) {

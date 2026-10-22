@@ -186,6 +186,8 @@ export function EarnedBarsChart({
     () => dailyBars.reduce((max, bar) => Math.max(max, bar.earnedUsd), 0),
     [dailyBars]
   );
+  // Earn's feed never goes below zero; Earn MAX equity can (drawdowns), so
+  // the scale gains a baseline and loss bars drop under it in red.
   const minDailyEarnedUsd = useMemo(
     () => dailyBars.reduce((min, bar) => Math.min(min, bar.earnedUsd), 0),
     [dailyBars]

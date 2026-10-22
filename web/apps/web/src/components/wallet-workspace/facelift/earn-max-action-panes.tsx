@@ -117,6 +117,7 @@ export function EarnMaxInfoFaqsCard({ className }: { className: string }) {
   );
 }
 
+// "1,010.22" → 1010220000n (USDC's 6 decimals); null when not a plain amount.
 function parseUsdcRaw(value: string): bigint | null {
   const cleaned = value.replaceAll(",", "");
   if (!/^\d+(?:\.\d{0,6})?$/.test(cleaned)) {
@@ -476,6 +477,8 @@ export function EarnMaxWithdrawPane({
   };
   const handleSubmit = async () => {
     if (!isValidAmount || view.isBusy) return;
+    // A cent-floored full fill means "everything" — send max so dust and
+    // accrued yield unwind too.
     const useMax = amountUsd >= maxFillUsd && maxFillUsd > 0;
     const raw = parseUsdcRaw(amount);
     if (!useMax && (!raw || raw <= BigInt(0))) {

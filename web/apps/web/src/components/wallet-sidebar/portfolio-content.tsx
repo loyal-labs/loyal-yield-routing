@@ -1989,6 +1989,9 @@ export function PortfolioContent({
                   if (!mainSigner) {
                     return null;
                   }
+                  // The root signer is mirrored into every vault, so render the
+                  // single Main Account row only for the first vault that has
+                  // it — otherwise it duplicates once per vault.
                   const firstVaultWithMainAccount =
                     sortedVaultEntries.findIndex((candidate) =>
                       candidate.signers.some(

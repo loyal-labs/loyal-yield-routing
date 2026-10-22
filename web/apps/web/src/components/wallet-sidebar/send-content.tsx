@@ -788,6 +788,11 @@ export type SendContentVaultExecuteResult = {
   success: boolean;
   signature?: string;
   error?: string;
+  /**
+   * "executed" — funds actually moved.
+   * "proposed" — proposal queued on chain.
+   * "draft" — local-only preview created in Approvals; no on-chain action yet.
+   */
   status?: "executed" | "proposed" | "draft";
 };
 

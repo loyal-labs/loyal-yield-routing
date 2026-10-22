@@ -2,6 +2,7 @@ const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
   year: "numeric",
+  // Format in UTC so an ISO date like "2026-02-06" never shifts a day.
   timeZone: "UTC",
 });
 

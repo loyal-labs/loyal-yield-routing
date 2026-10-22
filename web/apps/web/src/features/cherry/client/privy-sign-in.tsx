@@ -71,12 +71,15 @@ export function CherryPrivyAuthController({
           a.address === verifiedAddress
       );
     if (authenticated && !linked) {
+      // Another Privy account is open in this WebView; never reuse it.
       await logout();
     }
     if (!linked) {
       setStatus("signing");
       const message = await generateSiwsMessage({ address: verifiedAddress });
       const signature = await signMessage(new TextEncoder().encode(message));
+      // Privy's own SIWS flow sends the signature base64-encoded (not base58);
+      // anything else fails server-side as "Invalid SIWS message and/or nonce".
       await loginWithSiws({
         message,
         signature: btoa(String.fromCharCode(...signature)),

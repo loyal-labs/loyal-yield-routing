@@ -31,6 +31,8 @@ const LOYAL_THEME = {
   dark: { theme: "#1D1B20", accentColor: "#FF5050" },
 } as const;
 
+// Follows html.dark, which use-theme.ts toggles. Privy rebuilds its palette
+// whenever the config prop changes, so this is all the modal needs.
 function usePrivyTheme() {
   const [isDark, setIsDark] = useState(false);
   useEffect(() => {
@@ -59,6 +61,7 @@ function PrivyEmbeddedWalletBridge() {
       if (!("isPrivyWallet" in wallet) || !wallet.isPrivyWallet) continue;
       if (registered.has(wallet.name)) continue;
       registered.add(wallet.name);
+      // WalletProvider subscribes in a sibling effect; let it attach first.
       queueMicrotask(() => registerWallet(wallet));
     }
   }, [ready, wallets]);

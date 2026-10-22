@@ -86,6 +86,9 @@ async function loadEarnPublicStats(): Promise<EarnPublicStats> {
   };
 }
 
+// The route-level CDN cache handles response caching. This loader deliberately
+// performs only a single-row app database read so cold functions never rebuild
+// Yield aggregates.
 export async function getEarnPublicStats(): Promise<EarnPublicStats> {
   return loadEarnPublicStats();
 }

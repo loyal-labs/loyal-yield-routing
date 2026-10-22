@@ -6,6 +6,8 @@ const CLIENT_BUILD_ID_PATTERN = /^[0-9a-f]{40}$/;
 const PAGE_SESSION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CONNECTION_EFFECTIVE_TYPES = new Set(["slow-2g", "2g", "3g", "4g"]);
+// Recorded before the report leaves the browser so ClickStack can separate a
+// failure we tried to recover from one we deliberately left alone.
 const RECOVERY_ACTIONS = new Set([
   "guarded",
   "offline",

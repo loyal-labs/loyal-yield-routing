@@ -26,6 +26,20 @@ import {
   trackFrontendAnalyticsEvent,
 } from "@/lib/core/analytics";
 
+// ASK-1972 — one-time lifecycle onboarding pop-ups rendered through
+// EarnModal (desktop bottom-right card, mobile bottom sheet). Three
+// milestones, each shown once per wallet:
+//   welcome     — first signed-in visit, explains Earn, CTA to deposit
+//   deposit     — a deposit reached its confirmed state, CTA to Autodeposit
+//   autodeposit — Autodeposit was created, explains how it behaves
+//
+// use-earn-actions.ts reports the deposit/autodeposit milestones through
+// the `lifecycleOnboarding` emitter (same module-listener pattern as
+// earnToast); the host mounted in shell.tsx decides what to show. A
+// milestone is stored as "pending" until the user is back on the Earn root
+// — pop-ups never cover an in-progress action screen — and flips to "done"
+// the moment its modal is shown, so reloads and reconnects never repeat it.
+
 type OnboardingStepId = "welcome" | "deposit" | "autodeposit";
 
 const STEP_ORDER: OnboardingStepId[] = ["welcome", "deposit", "autodeposit"];
@@ -56,9 +70,13 @@ type LifecycleListener = {
 let listener: LifecycleListener | null = null;
 
 export const lifecycleOnboarding = {
+  // Call only when a brand-new Autodeposit is confirmed active (not on
+  // updates to an existing one).
   autodepositCreated() {
     listener?.autodepositCreated();
   },
+  // Call only from the canonical confirmed deposit state — never on
+  // submission or optimistic UI.
   depositConfirmed() {
     listener?.depositConfirmed();
   },

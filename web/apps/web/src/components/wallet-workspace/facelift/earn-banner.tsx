@@ -7,6 +7,10 @@ import { BannerTitleChars } from "@/components/wallet-workspace/facelift/wallet-
 import { LOYAL_TOKEN_MINT } from "@/lib/market/loyal-token-ticker.shared";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
+// Banner art remounts on every carousel rotation, so it is served immutable
+// (see the cache rule in next.config.ts). The commit hash is what invalidates
+// it: a deploy changes the URL, so a rotation never re-hits the network but a
+// release never serves stale artwork.
 const ASSET_VERSION = process.env.NEXT_PUBLIC_GIT_COMMIT_HASH ?? "dev";
 
 function bannerAsset(file: string): string {
@@ -17,6 +21,9 @@ function bannerAsset(file: string): string {
 // it too, so the bar always lands exactly when the banner rolls.
 const ROLL_INTERVAL_MS = 4000;
 
+// A collapse is remembered as the generation it happened in. Bump the
+// generation and deploy to force-expand the banners for every user (new
+// campaign, changed banner set); collapsing again stores the new value.
 const COLLAPSE_GENERATION = "1";
 const COLLAPSE_STORAGE_KEY = "loyal:earn-banner-collapsed";
 
@@ -114,6 +121,8 @@ const BANNERS: EarnBannerConfig[] = [
   },
   {
     accent: "#5f0019",
+    // The mascot's chin (bottom ~463 of 500) tucks behind the white CTA
+    // (Figma 5079:139084) — the art is drawn before the button on purpose.
     art: (
       <div className="absolute inset-[48%_15.13%_7.36%_15.13%]">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -213,6 +222,8 @@ export function EarnBanners({
     }
   };
 
+  // is-shown lands a frame after each roll remounts the slide, so the
+  // entrance transitions instead of rendering pre-revealed (mobile pattern).
   const [shownIndex, setShownIndex] = useState(-1);
   useEffect(() => {
     const frame = requestAnimationFrame(() =>

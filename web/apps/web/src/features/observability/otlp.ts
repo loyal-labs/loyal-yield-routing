@@ -44,6 +44,12 @@ const EXPECTED_LOCAL_FAILURES = new Set([
   "wallet_unavailable",
 ]);
 
+/**
+ * The generic Errors alert is a service-health page, not a feed of every
+ * user-visible failure. Keep expected device/session and caller-state failures
+ * observable at INFO while failing closed for unknown causes, our own bugs,
+ * upstream/RPC incidents and anything that may need money-movement recovery.
+ */
 export function isAlertableLifecycleEvent(
   event: NormalizedLifecycleEvent
 ): boolean {
@@ -76,6 +82,8 @@ export function isAlertableLifecycleEvent(
   ) {
     return false;
   }
+  // Old clients do not carry a cause token. Keep unknown statusless failures
+  // alertable until their cause is known rather than silently hiding a bug.
   return true;
 }
 
@@ -321,6 +329,8 @@ export function buildOtlpLifecyclePayload(event: NormalizedLifecycleEvent) {
   };
 }
 
+// Step spans measure the interval since the previous lifecycle checkpoint.
+// The attempt span measures the whole browser flow or backend request.
 export function buildOtlpJourneyTracePayload(
   event: NormalizedLifecycleEvent
 ): unknown | null {

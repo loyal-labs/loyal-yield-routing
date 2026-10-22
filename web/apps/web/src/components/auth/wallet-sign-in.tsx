@@ -35,6 +35,9 @@ export function WalletSignIn({
     return () => clearTimeout(timer);
   }, [captchaToken]);
 
+  // The widget stays mounted through the collapse (so its checkmark is
+  // visible while folding), but a fresh solve needs a fresh widget — remount
+  // it whenever a consumed token reopens the block.
   const [widgetEpoch, setWidgetEpoch] = useState(0);
 
   return (

@@ -22,6 +22,10 @@ function LedgerModeToggle({
 }) {
   const labelId = useId();
   const descriptionId = useId();
+  // transitions-dev "checkbox check": the box fills, then the checkmark draws
+  // via stroke-dashoffset. The recipe wants aria-checked on the .t-check
+  // button itself, so the row is a plain div that forwards clicks (the
+  // button's own clicks — mouse or Space/Enter — bubble up to it too).
   return (
     <div
       className={`flex items-start gap-3 rounded-2xl bg-secondary px-4 py-3 text-left text-foreground text-sm ${

@@ -55,6 +55,16 @@ function resolveTimescaleReserveForPosition(position: UserYieldPositionRecord) {
   return position.currentReserve;
 }
 
+// The wallet can hold one active position row per product mint (ASK-1355), so
+// the headline balance is the sum of every ACTIVE position row — exactly what
+// the deposit/withdraw confirms write synchronously, which is the value the
+// mobile client trusts in its short post-mutation window before live holdings
+// catch up. The vault snapshot tables are deliberately NOT used here: the
+// routing worker records reserve rows in collateral-unit semantics
+// (`kamino_obligation_collateral_deposited_amount`), which the user-facing
+// filter drops wholesale, collapsing that "total" to idle dust — the $0.00
+// balance regression right after a USDG deposit (2026-08-14). Falls back to
+// the reconciled single row's amount when the plural read is empty or fails.
 async function loadCurrentTotalAmountRaw(args: {
   cluster: ReturnType<typeof resolveConfiguredCluster>;
   position: UserYieldPositionRecord;

@@ -1,5 +1,6 @@
 import React from "react";
 
+// Shared by the initial Vite HTML, router fallback and session hydration.
 export function WorkspacePaneSkeleton() {
   return (
     <section

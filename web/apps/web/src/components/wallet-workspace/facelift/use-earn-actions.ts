@@ -1144,6 +1144,12 @@ export function useEarnActions(deps: {
           if (!(error instanceof EarnPolicyUpdateRequiredClientError)) {
             throw error;
           }
+          // The wallet's legacy route policy cannot authorize this
+          // Token-2022 mint (ASK-2108). Create the owner-neutral pair as an
+          // inline toast step — the legacy pair is never mutated — then
+          // re-prepare: the server resolves the new pair after confirm. A
+          // second update-required failure falls through to the normal
+          // error path, so this cannot loop.
           earnToast.begin("deposit-policy-update");
           earnToast.loading("Updating Earn policy");
           const policySetup = await smartAccountData.executeEarnPolicySetup({
@@ -1845,6 +1851,8 @@ export function useEarnActions(deps: {
         } else if (error instanceof EarnPrepareRequestError) {
           tracker.fail("prepare", getEarnPrepareLifecycleDiagnostics(error));
           if (error.code === "earn_policy_inactive") {
+            // Another tab/device may have completed full-exit cleanup. Re-read
+            // authoritative state; don't optimistically erase a newer deposit.
             void refreshAllEarnResources().catch(() => {
               console.warn("[earn-sync] inactive policy refresh failed");
             });

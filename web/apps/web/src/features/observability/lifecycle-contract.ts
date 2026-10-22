@@ -161,6 +161,8 @@ export const LIFECYCLE_STAGES = {
     "state_observed",
     "ui_commit",
   ],
+  // Setup/delete sign wallet transactions (two shard policies on setup, one
+  // revocation on delete); pause/resume are backend-only generation bumps.
   "earn.autoswap.configuration": [
     "intent",
     "prepare",
@@ -198,6 +200,9 @@ export const LIFECYCLE_ERROR_CODES = [
   "wallet_connection_failed",
   "wallet_authorization_expired",
   "wallet_account_mismatch",
+  // The wallet could not produce a signature. Distinct from
+  // `invalid_wallet_signature`, which means a signature was produced and the
+  // backend rejected it during verification.
   "wallet_signing_failed",
   "wallet_signing_unsupported",
   "wallet_rejected",
@@ -224,6 +229,8 @@ export const LIFECYCLE_ERROR_CODES = [
   "wallet_unavailable",
   "wallet_mismatch",
   "simulation_failed",
+  // Kamino KTX could not provide enough collateral to preserve the exact
+  // partial Earn withdrawal output after bounded rounding adjustments.
   "earn_withdraw_underfilled",
   // The route's output fell below the quote's minimum-out (Jupiter 6001).
   "slippage_exceeded",
@@ -252,8 +259,27 @@ export const LIFECYCLE_ERROR_CODES = [
 ] as const;
 export type LifecycleErrorCode = (typeof LIFECYCLE_ERROR_CODES)[number];
 
+// Underlying causes behind a broad `errorCode`. Every value is a token this
+// repo defines — never a string forwarded from a vendor SDK — so nothing a
+// client holds can reach `loyal.error.detail`. Emitters map their native error
+// onto one of these; add a token here when a new cause needs telling apart.
+//
+// `mwa_*` are Mobile Wallet Adapter session failures, whose native codes are
+// EUNSPECIFIED (the module's catch-all), ERROR_WALLET_NOT_FOUND,
+// ERROR_SESSION_TIMEOUT, ERROR_SESSION_CLOSED, "Timed out waiting for local
+// association to be ready", and "Failed to end session".
+//
+// The rest name what went wrong behind a `request_failed` that carries no
+// `httpStatus` — meaning no response ever arrived, so the status that usually
+// explains a failure is absent. Four unrelated incidents look identical
+// without them: the device is offline, our own client timeout elapsed, Kamino
+// is down, or an RPC answered with an error (ASK-2018).
 export const MAX_LIFECYCLE_ERROR_MESSAGE_LENGTH = 256;
 
+// Where a browser flow ran. Bounded and derived by our own detection code —
+// never a raw user-agent string, which is both high-cardinality and a
+// fingerprinting liability. Server (`node`) and app (`mobile` runtime) events
+// simply leave it unset.
 export const LIFECYCLE_CLIENT_PLATFORMS = ["desktop", "mobile"] as const;
 export type LifecycleClientPlatform =
   (typeof LIFECYCLE_CLIENT_PLATFORMS)[number];
@@ -367,7 +393,31 @@ export type LifecycleDiagnostics = {
   chainState?: (typeof CHAIN_STATES)[number];
   cleanupRequired?: boolean;
   errorCode?: LifecycleErrorCode;
+  /**
+   * Which underlying cause produced `errorCode`, for codes that several
+   * distinct causes collapse into — every mobile wallet-session failure, for
+   * instance. Names the cause without minting a lifecycle code per vendor
+   * error.
+   *
+   * An enum, not a string: clients map their native error onto one of the
+   * tokens below and anything else is dropped. Character-level sanitizing
+   * would not do — base58 addresses, JWTs and API keys consist entirely of
+   * token-safe characters, so a free-text field would export them intact.
+   */
   errorDetail?: LifecycleErrorDetail;
+  /**
+   * The underlying error's own words, for failures whose `errorCode` names a
+   * category several vendor errors collapse into and no `errorDetail` token
+   * exists yet — a wallet refusing to sign said *something*, and without it
+   * the two Brave events in ASK-2049 were undiagnosable.
+   *
+   * Free text is admissible here where it was not for `errorDetail` because
+   * it takes the same path as `exception.message` in the error channel:
+   * `sanitizeTelemetryText` at the parse boundary redacts base58/hex/encoded
+   * identifiers, bearer tokens and secret-shaped values before export, and
+   * the result is capped at MAX_LIFECYCLE_ERROR_MESSAGE_LENGTH. Only kept on
+   * `failed`/`cancelled` outcomes; dropped elsewhere, never costing the event.
+   */
   errorMessage?: string;
   executeNowState?: ExecuteNowState;
   executionMode?: (typeof EXECUTION_MODES)[number];
@@ -494,6 +544,15 @@ function assertOptionalBoolean(
   }
 }
 
+/**
+ * Keep a reported detail only when it is one of our own tokens, else drop it.
+ *
+ * Dropping (rather than rejecting the envelope) because the field only ever
+ * annotates an event, so an unrecognized value must not cost the event it
+ * describes. Matching against the enum (rather than sanitizing characters)
+ * because base58 addresses, JWTs and API keys are made entirely of token-safe
+ * characters and would survive any character filter intact.
+ */
 function normalizeErrorDetail(
   value: unknown
 ): LifecycleErrorDetail | undefined {
@@ -643,6 +702,9 @@ export function parseBrowserLifecycleEnvelope(
 
   assertOptionalEnum(record.errorCode, LIFECYCLE_ERROR_CODES);
   const errorDetail = normalizeErrorDetail(record.errorDetail);
+  // Sanitized on every parse — the client tracker and the ingest route share
+  // this function, so a message is redacted before it leaves the browser and
+  // again before it reaches the exporter.
   const errorMessage =
     (record.outcome === "failed" || record.outcome === "cancelled") &&
     typeof record.errorMessage === "string"
@@ -657,6 +719,9 @@ export function parseBrowserLifecycleEnvelope(
   )
     ? record.clientPlatform
     : undefined;
+  // Exact-token match only: at the ingest boundary an unrecognized value is
+  // dropped, never bucketed into `other` — mapping display names onto tokens
+  // is the emitter's job via normalizeLifecycleWalletProvider.
   const walletProvider = includes(
     LIFECYCLE_WALLET_PROVIDERS,
     record.walletProvider

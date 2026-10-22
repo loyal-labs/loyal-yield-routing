@@ -89,6 +89,8 @@ export class SafeEarnRealtimeCursorStore {
       this.primary.removeItem(this.key);
       primaryCursorTombstones.delete(this.key);
     } catch {
+      // Keep the tombstone across hook unmount/remount so a readable-but-not-
+      // removable stale cursor cannot be resurrected by a new store instance.
       primaryCursorTombstones.add(this.key);
     }
   }

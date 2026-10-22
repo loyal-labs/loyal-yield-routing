@@ -106,6 +106,7 @@ function DepositSourceOptionRow({
   );
 }
 
+// The selected asset remains the same mint through deposit and routing.
 const createDepositSteps = (symbol: string): readonly FlowStep[] => [
   {
     Icon: CircleDollarSign,

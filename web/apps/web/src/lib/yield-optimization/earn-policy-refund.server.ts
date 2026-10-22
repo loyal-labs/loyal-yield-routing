@@ -67,6 +67,10 @@ function getBlockedReason(args: {
   referencedByActivePosition: boolean;
   vaultHoldsChainFunds: boolean;
 }): string | null {
+  // The DB flags below are a read model that can lag or miss a deposit
+  // entirely (ASK-2252: a PYUSD deposit was never projected, the scan offered
+  // both policies as refundable, and the user closed the only policies that
+  // could withdraw). Funds visible on chain block every policy refund.
   if (args.vaultHoldsChainFunds) {
     return "Vault still holds funds on chain";
   }
@@ -92,6 +96,9 @@ function vaultHoldsChainFunds(
   );
 }
 
+// Kamino collateral is not a vault token balance: it lives in the vault's
+// obligation per market. Read every Safe market for every product mint, with
+// no dependence on DB policy rows (they may be missing, ASK-2252).
 async function vaultHoldsKaminoCollateral(args: {
   cluster: LoyalCluster;
   connection: Connection;

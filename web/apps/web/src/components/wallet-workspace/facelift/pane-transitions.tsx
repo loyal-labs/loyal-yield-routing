@@ -46,6 +46,12 @@ export function PaneReveal({ children }: { children: ReactNode }) {
   );
 }
 
+// transitions.dev "page side-by-side" (frontend/transitions/page-side-by-side.md):
+// the root pane (page 1) and the action screens (page 2) slide between each
+// other. Page 2 mounts in its exit-right state, flips in after a forced
+// reflow, and unmounts once the exit completes; the settled page drops its
+// transform so fixed overlays inside (mobile sheets) anchor to the viewport —
+// same escape PaneReveal uses.
 export function MiddlePaneSlide({
   actionPane,
   children,
@@ -84,6 +90,7 @@ export function MiddlePaneSlide({
       rootPageRef.current?.classList.remove("is-settled");
       actionPageRef.current?.style.removeProperty("width");
       actionPageRef.current?.style.removeProperty("z-index");
+      // Doubles as the forced reflow the entrance transition needs.
       actionWidthRef.current = container.offsetWidth;
       container.dataset.page = "2";
       timerRef.current = window.setTimeout(() => {

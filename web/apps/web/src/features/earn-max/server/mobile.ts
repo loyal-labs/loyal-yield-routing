@@ -140,6 +140,7 @@ export async function postMobileEarnMax(request: Request) {
     ) {
       return failure(error.status, error.code, error.message);
     }
+    // Never log the request body: it can contain an auth signature.
     console.error("[mobile-earn-max] request failed", {
       errorName: error instanceof Error ? error.name : typeof error,
     });

@@ -12,6 +12,9 @@ type MobileWallet = {
   browseUrl?: (url: string) => string;
 };
 
+// Icons are local copies of each wallet's official mark: phantom.app and
+// solflare.com stopped serving the favicons this list used to hotlink (404
+// and 403), which rendered as broken images in the modal.
 const MOBILE_WALLETS: MobileWallet[] = [
   {
     name: "Phantom",

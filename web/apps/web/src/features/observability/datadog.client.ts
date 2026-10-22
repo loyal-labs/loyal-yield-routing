@@ -15,6 +15,7 @@ let identity: string | null = null;
 let identityGeneration = 0;
 const pendingActions: ReturnType<typeof journeyAnalyticsProperties>[] = [];
 
+// Deliberately exclude error text, wallet addresses, URLs and transaction data.
 export function journeyAnalyticsProperties(
   event: BrowserLifecycleEnvelope,
   trafficKind: "external" | "internal" | "synthetic" | "unknown" = "unknown"
@@ -118,6 +119,8 @@ export function initJourneyDatadog(env: PublicEnv): Promise<void> {
         trackResources: false,
         trackLongTasks: false,
         beforeSend(event) {
+          // Existing ClickStack handles errors. Automatic SDK errors can contain
+          // wallet/RPC payloads; RUM receives only our allowlisted custom actions.
           if (event.type !== "action" && event.type !== "view") return false;
           event.view.url = `${window.location.origin}/app`;
           event.view.name = "/app";

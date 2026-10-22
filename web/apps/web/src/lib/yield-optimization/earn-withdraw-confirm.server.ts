@@ -636,6 +636,10 @@ export async function verifyConfirmedEarnWithdrawal(args: {
   }
 
   if (input.confirmedSlot !== confirmedSlot) {
+    // The client-supplied slot can be its confirmation context slot (RPC-lag
+    // fallback), not the landing slot. The server-resolved status slot is
+    // canonical — rejecting on this mismatch strands the withdrawal out of
+    // the read-model (balance shows too high).
     console.warn("[earn-withdraw-confirm] corrected client slot", {
       ...rejectionContext,
       clientSlot: input.confirmedSlot.toString(),

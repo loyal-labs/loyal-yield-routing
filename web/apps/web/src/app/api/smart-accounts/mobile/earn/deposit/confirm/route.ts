@@ -284,6 +284,8 @@ export async function POST(request: Request) {
       preparedDeposit,
     });
     if ("error" in resolution) {
+      // This 400 strands the on-chain deposit until yield routing observes and
+      // reconciles it — never let it pass silently.
       console.error(
         "[mobile-earn-deposit-confirm] policy signature unresolved",
         {

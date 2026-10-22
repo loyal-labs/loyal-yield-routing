@@ -7,6 +7,10 @@ import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 const ASSET_BASE = "/wallet-workspace/facelift";
 const CLIP_PADDING_PX = 8;
 
+// The bubble is centered on the trigger; when that would cross the nearest
+// clipping ancestor (scroll panes, overflow-clip cards), --tt-shift nudges it
+// just enough to fit. Measured from layout widths (offsetWidth + wrap rect),
+// not the bubble's rect, so the resting scale transform can't skew it.
 function clampTooltipShift(wrap: HTMLElement, bubble: HTMLElement) {
   let clipLeft = 0;
   let clipRight = window.innerWidth;

@@ -182,6 +182,8 @@ export async function POST(req: Request) {
     },
   });
 
+  // Persist the turn BEFORE starting the AI stream so DB errors
+  // return a proper 500 instead of being swallowed mid-stream.
   let chatId: string;
   let chatWasCreated = false;
   let turnId: string;

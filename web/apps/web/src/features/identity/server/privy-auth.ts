@@ -82,6 +82,9 @@ export type PrivyAuthCompletion = {
   sessionToken: string;
 };
 
+// Exchange a verified Privy identity for a Loyal session. The user stays keyed
+// by wallet address (provider "solana"), so an extension user who now logs in
+// through Privy lands on the same app_users row and the same smart account.
 export async function completePrivyAuth(args: {
   identityToken: string;
   request: Request;

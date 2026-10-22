@@ -262,6 +262,11 @@ type HeliusGetAssetResponse = {
   };
 };
 
+// CoinGecko has no listing for many new/long-tail mints. Read the token's own
+// on-chain metadata via the Helius DAS `getAsset` method (the configured RPC is
+// Helius for mainnet/devnet) so the row shows the real name/symbol/icon instead
+// of the generic "TOKEN" placeholder. Returns null on localnet or for mints
+// without metadata, leaving the existing placeholder behavior intact.
 async function fetchOnchainTokenMetadata(
   rpcFetch: typeof fetch,
   rpcEndpoint: string,
@@ -536,6 +541,10 @@ export function createFrontendAssetProvider(args: {
         })
       );
 
+      // On mainnet a token with no USD price from CoinGecko or Jupiter is not
+      // tradable — NFTs and airdrop-spam mints (e.g. "by-*" Token-2022 drops)
+      // land here — so keep them out of the wallet's asset list. Devnet and
+      // localnet test tokens have no price source at all, so they stay.
       assets.push(
         ...tokenAssets.filter((asset) => !isMainnet || asset.priceUsd !== null)
       );

@@ -554,6 +554,12 @@ function TransactionsTab({
         </div>
       ) : null}
       {pendingRows.length > 0 ? (
+        // A just-confirmed deposit/withdrawal not yet in the indexed list:
+        // hold its slot at the top with a pulsing row until the refetch
+        // brings the real one (which then grows in via NewRowReveal).
+        // Plain direct children of t-skel-rows — the pulse targets them, and
+        // t-stagger-line must not be used here (it stays opacity:0 outside a
+        // StaggerReveal parent).
         <div className="t-skel-rows flex flex-col gap-2 px-4 py-3">
           {pendingRows.map((signature) => (
             <div

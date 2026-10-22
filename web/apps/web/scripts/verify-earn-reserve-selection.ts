@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 
+// Runs the real Drizzle queries against disposable in-memory PostgreSQL.
+// Pass an installed @electric-sql/pglite module path as argv[2]; no database
+// credentials are read and no production database or RPC is contacted.
 import assert from "node:assert/strict";
 
 import {

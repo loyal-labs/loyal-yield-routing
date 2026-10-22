@@ -55,6 +55,7 @@ export async function loadEarnAllocationHistory(
     .where(
       and(
         eq(earnFleetAllocationsHourly.cluster, cluster),
+        // Range on the primary key; observed_at lies inside its hour.
         gte(
           earnFleetAllocationsHourly.observedHour,
           new Date(

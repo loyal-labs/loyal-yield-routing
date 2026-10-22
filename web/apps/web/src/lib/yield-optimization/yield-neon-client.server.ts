@@ -661,6 +661,8 @@ export const earnApyHourlySnapshots = loyalYieldSchema.table(
   ]
 );
 
+// Hourly Kamino reserve share prices (liquidity per collateral token).
+// Migration owned by loyal-yield-routing (0084_earn_reserve_share_prices).
 export const earnReserveSharePrices = loyalYieldSchema.table(
   "earn_reserve_share_prices",
   {
@@ -687,6 +689,7 @@ export const earnReserveSharePrices = loyalYieldSchema.table(
   ]
 );
 
+// Migration owned by loyal-yield-routing (0086_earn_fleet_allocations_hourly).
 export const earnFleetAllocationsHourly = loyalYieldSchema.table(
   "earn_fleet_allocations_hourly",
   {
@@ -1239,6 +1242,9 @@ export const solanaWeekQuestCompletions = loyalYieldSchema.table(
   ]
 );
 
+// Push-campaign sent log (ASK-1651 P2/P3): one row per (wallet, campaign).
+// Mixpanel cohort webhooks re-send members after mid-sync failures, so the
+// receiver inserts here first and only pushes when the insert lands.
 export const pushCampaignSends = loyalYieldSchema.table(
   "push_campaign_sends",
   {

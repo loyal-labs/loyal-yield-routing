@@ -12,6 +12,8 @@ export type EarnFleetAllocationHistorySample = {
 
 const MAX_EXCLUDED_CAPITAL_SHARE = 0.01;
 
+// Weights are compared as JS numbers; raw six-decimal stablecoin totals stay
+// exact far beyond any realistic fleet size.
 function safeWeight(value: unknown): number | null {
   if (typeof value !== "string" || !RAW_AMOUNT_PATTERN.test(value)) {
     return null;

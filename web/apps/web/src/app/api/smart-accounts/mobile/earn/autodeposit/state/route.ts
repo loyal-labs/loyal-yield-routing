@@ -50,6 +50,10 @@ function getConfiguredSolanaEnv(): SolanaEnv {
   return resolveLoyalWebSolanaEnvFromEnv(process.env);
 }
 
+// Everything the device needs to run the SDK's autodeposit prepare locally
+// (client-side instruction building) instead of calling `setup/prepare`.
+// Null when the deployment isn't configured for it (missing signer env or an
+// unsupported cluster) — the read-only state above must still be served.
 function buildPrepareContext(): {
   cluster: string;
   policySigner: string;

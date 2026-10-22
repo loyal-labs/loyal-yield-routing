@@ -5,6 +5,11 @@ import { flushSync } from "react-dom";
 
 import { readCssDurationMs } from "@/components/wallet-workspace/facelift/css-duration";
 
+// transitions.dev "text states swap" (frontend/transitions/text-states-swap.md):
+// when `text` changes, the old text exits up with blur, then the new text
+// enters from below. flushSync commits the new text between the exit and
+// enter phases so the class sequence runs against the right content, exactly
+// like the recipe's imperative swapText().
 export function TextSwap({
   className,
   text,

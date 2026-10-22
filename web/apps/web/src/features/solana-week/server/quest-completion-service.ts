@@ -151,6 +151,10 @@ export async function recordAndReportQuestCompletion(args: {
     metadata: args.metadata,
   });
   const status = await applyReportResult(row.id, result);
+  // Quest 1 push (ASK-1651 P2): fires at most once — the row transitions to
+  // 'reported' a single time, and already-reported rows return above. Quest 2
+  // gets no push here; the P1 "$X moved to EARN" push lands at that same
+  // moment from the sweep notify.
   if (status === "reported" && args.kind === "earn_deposit") {
     await sendWalletPush(walletId, quest1DonePush());
   }
@@ -185,6 +189,10 @@ async function reportBestEffort(
   }
 }
 
+/**
+ * Minimum qualifying deposit for Quest 1: $5 USDC (6 decimals). Deposits below
+ * this don't earn the badge, so we neither create a completion row nor report.
+ */
 export const MIN_EARN_DEPOSIT_QUEST_USDC_RAW = BigInt(5_000_000);
 
 export function reportEarnDepositQuestCompletion(
@@ -248,6 +256,9 @@ async function findQualifyingDepositWalletsWithoutQuestRowSince(
   return rows.map((row) => row.wallet);
 }
 
+// Quest 1 is mobile-only attribution and deposits don't record their surface;
+// a push-token registration (app DB) is the mobile discriminator, so web
+// deposits stay excluded by design.
 async function filterToMobileWallets(wallets: string[]): Promise<string[]> {
   if (wallets.length === 0) {
     return [];

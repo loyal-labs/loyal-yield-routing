@@ -39,6 +39,9 @@ import {
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
+// Rows revealed per scroll step; the full list is already client-side (the
+// earn-transactions response has no pagination), so "loading on scroll" is
+// windowed rendering over the shared 5-minute cache.
 const PAGE_SIZE = 30;
 
 type ActivityFeedEntry =
@@ -165,6 +168,9 @@ export function ActivityPage({
   }, [entries, visibleCount]);
   const hasMore = items !== null && entries.length > visibleCount;
 
+  // Extends the window when the tail sentinel nears the viewport. Re-created
+  // per visibleCount so a still-intersecting sentinel (list shorter than the
+  // viewport) re-fires through the fresh observer's initial callback.
   const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -337,6 +343,11 @@ export function ActivityPage({
         )}
       </div>
       <MobileTabBar activeTab="activity" onSelect={onSelectPage} />
+      {/* Below 1204px the right pane is gone, so the same selection opens the
+          detail as a sheet: a 400px right-pinned card on the dark scrim, a
+          full bottom sheet on the white one below 796px. On desktop the scrim
+          is display:none, so the mounted sheet is inert while the aside shows
+          the detail. */}
       <SheetReveal
         isOpen={selectedItem !== null}
         onClose={() => setSelectedItem(null)}

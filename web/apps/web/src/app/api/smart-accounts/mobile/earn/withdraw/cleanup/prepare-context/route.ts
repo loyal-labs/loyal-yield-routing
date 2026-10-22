@@ -161,6 +161,9 @@ export async function POST(request: Request) {
     }
 
     const connection = getConnection(solanaEnv);
+    // The client obtained this slot from its confirmed withdrawal. The zero
+    // proof below is authoritative, so cleanup must not wait for LaserStream
+    // to insert the corresponding withdrawal row first.
     const minContextSlot = requestedMinContextSlot;
 
     let proof: Awaited<ReturnType<typeof verifyEarnFullExitZeroBalances>>;

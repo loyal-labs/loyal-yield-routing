@@ -88,6 +88,15 @@ function isRejectedWalletRequest(error: unknown): boolean {
   return hasRejectionWording(error);
 }
 
+// Maps a wallet-adapter failure onto the lifecycle vocabulary so connect-time
+// problems stop collapsing into `unexpected_error`.
+//
+// Every branch must name what actually happened. An adapter that threw
+// immediately is not a timeout, and a wallet that could not produce a
+// signature is not an invalid signature — emitting either would make the
+// dashboard confidently wrong, which is worse than the `unexpected_error` this
+// replaces. Anything we cannot name returns undefined so the caller's
+// normalization records `unexpected_error` honestly.
 function classifyWalletAdapterError(
   error: unknown
 ): LifecycleErrorCode | undefined {
@@ -115,6 +124,8 @@ function classifyWalletAdapterError(
     return "wallet_connection_failed";
   }
 
+  // The wallet failed to sign. Not `invalid_wallet_signature`, which is
+  // reserved for a signature the backend verified and rejected.
   if (
     error instanceof WalletSignInError ||
     error instanceof WalletSignMessageError ||
@@ -243,6 +254,8 @@ export function useWalletProofAuth({
             ? error.code
             : classifyWalletAdapterError(error)
         );
+      // Connected-wallet verification never sets selectedWalletNameRef, so
+      // fall back to the adapter the hook currently holds.
       const walletProvider = normalizeLifecycleWalletProvider(
         selectedWalletNameRef.current ?? wallet?.adapter.name
       );

@@ -15,6 +15,8 @@ export type TokenMarketsResponse = {
 };
 
 const TOKEN_MARKETS_CACHE_VERSION = 1;
+// CoinGecko market data is mainnet-token data regardless of the selected
+// Solana cluster, so the persisted cache is intentionally env-independent.
 const TOKEN_MARKETS_CACHE_SCOPE = "global";
 const TOKEN_MARKETS_TTL_MS = 15 * 60 * 1000;
 const TOKEN_MARKETS_PERSIST_TTL_MS = 24 * 60 * 60 * 1000;

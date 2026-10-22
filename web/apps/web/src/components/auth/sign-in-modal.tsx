@@ -152,6 +152,11 @@ function SignInDialog({ privyModalOpen = false }: { privyModalOpen?: boolean }) 
     [close]
   );
 
+  // transitions-dev "modal open/close": the raw Radix content carries the
+  // t-modal hooks (like autodeposit-mock-sheet) instead of shadcn's
+  // DialogContent, whose baked-in animate-in/out classes would fight the
+  // recipe keyframes. t-modal-center keeps the scale below 640px too — this
+  // surface stays centered on mobile, it never becomes a bottom sheet.
   return (
     <Dialog
       modal={!privyModalOpen}
@@ -162,6 +167,7 @@ function SignInDialog({ privyModalOpen = false }: { privyModalOpen?: boolean }) 
         <DialogOverlay className="t-modal-overlay" />
         <DialogPrimitive.Content
           className="t-modal t-modal-center fixed top-[50%] left-[50%] z-[70] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] overflow-hidden rounded-[32px] border border-border bg-card text-card-foreground shadow-[0_24px_70px_rgba(0,0,0,0.2)] outline-none sm:max-w-[480px]"
+          // Keep Account open behind Privy's portalled dialog.
           onInteractOutside={(event) => {
             if (privyModalOpen || document.querySelector("#privy-dialog")) {
               event.preventDefault();

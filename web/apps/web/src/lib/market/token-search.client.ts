@@ -8,6 +8,7 @@ import {
 } from "@/lib/client-cache/client-cache";
 
 export type TokenSearchResult = Omit<SwapToken, "mint"> & {
+  /** Jupiter always returns a mint (`id`) for search hits, so this is required. */
   mint: string;
   name: string;
   isVerified: boolean;
@@ -65,6 +66,10 @@ function composeRequestSignal(signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
+/**
+ * Rejects as soon as `signal` aborts, even when `promise` is shared with other
+ * callers (in-flight dedup) and therefore outlives this one.
+ */
 function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(signal.reason);
@@ -244,6 +249,8 @@ function loadTrendingTokensFromNetwork(): Promise<TokenSearchResult[]> {
   )
     .then((results) => {
       trendingCache = results.filter((t): t is TokenSearchResult => t !== null);
+      // Only persist complete lists so a partial outage never pins a
+      // degraded picker for the full TTL.
       if (trendingCache.length === TRENDING_SYMBOLS.length) {
         writeClientCache({
           key: TRENDING_TOKENS_CACHE_KEY,

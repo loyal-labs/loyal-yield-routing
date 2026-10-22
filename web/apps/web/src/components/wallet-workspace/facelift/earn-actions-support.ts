@@ -299,6 +299,9 @@ export function toEarnWithdrawReserveTarget(
   };
 }
 
+// app-wallet-workspace.tsx:5006-5012 — selected-source targeting. A full exit
+// is possible only when the selected source is the vault's sole positive
+// holding; cleanup is authorized later by a fresh all-source zero proof.
 export function selectFullExitWithdrawTargets(draft: EarnWithdrawDraft): {
   fullWithdrawalTargets: EarnWithdrawFullWithdrawalTarget[];
   target: EarnWithdrawFullWithdrawalTarget | null;

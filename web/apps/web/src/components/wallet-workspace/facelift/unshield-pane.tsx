@@ -30,6 +30,10 @@ import { getTokenIconUrl } from "@/lib/token-icon";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
+// A shielded position resolved for display. Symbol/decimals/price come from
+// the held position when the wallet also holds the token publicly, else the
+// static token tables; unknown mints show the raw base units so a wrong
+// scale never misreads the balance.
 export type ShieldedRow = {
   amount: number | null;
   amountLabel: string;
@@ -184,6 +188,8 @@ export function UnshieldPane({
         {step === "confirm" && row ? (
           <>
             <div className="flex min-h-0 w-full flex-1 flex-col">
+              {/* Hero amount (Send's amount block, read-only): the full
+                  shielded balance is what leaves — there is no partial. */}
               <div className="flex w-full flex-1 flex-col items-center justify-center gap-4 p-8">
                 <ShieldedTokenIcon icon={row.icon} size={16} />
                 <div className="flex flex-col items-center gap-1">

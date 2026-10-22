@@ -42,6 +42,7 @@ function cleanSolanaErrorMessage(message: string): string {
 
 const PERCENTAGE_MULTIPLIER = 100;
 
+// Jupiter route slippage tolerance (0.5%).
 const SLIPPAGE_BPS = 50;
 
 // Jupiter aggregator custom error 6001 (0x1771) — SlippageToleranceExceeded:
@@ -363,6 +364,10 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
       try {
         logger.debug("Executing swap with quote:", quoteResponse);
 
+        // The stored quote is as old as the user's review pause + wallet
+        // approval, so its minimum-out can trail the live market. Refresh it
+        // right before building the transaction; on failure fall back to the
+        // quote we already have rather than blocking the swap.
         const refreshQuoteResponse =
           async (): Promise<JupiterQuoteResponse | null> => {
             try {
@@ -379,6 +384,8 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
             }
           };
 
+        // Price can still move between signing and landing — retry exactly
+        // once with another fresh quote when the route slips (Jupiter 6001).
         let activeQuote = quoteResponse;
         for (let attempt = 0; ; attempt++) {
           activeQuote = (await refreshQuoteResponse()) ?? activeQuote;

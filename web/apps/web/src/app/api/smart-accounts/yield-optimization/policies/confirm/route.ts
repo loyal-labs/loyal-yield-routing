@@ -75,6 +75,10 @@ function createCanonicalPolicyInput(
     settingsPda: settings,
     accountIndex: EARN_POLICY_VAULT_INDEX,
   })[0];
+  // Prepare routes each mint to the best Safe reserve, not one fixed market
+  // (multi-mint rollout), so validate the reserve the same way deposit
+  // confirm does: supported mint + Safe-universe market. Pinning the main
+  // USDC market here rejected every first deposit routed elsewhere.
   const productAsset = resolveEarnProductAsset({
     cluster,
     mint: requestInput.liquidityMint,

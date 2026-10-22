@@ -154,6 +154,13 @@ function SignatureCell({ signature }: { signature: string }) {
   );
 }
 
+// Earn transaction detail in the wallet detail's design (Figma 4879:69018
+// Deposited / 4880:74343 Withdrawn): identity header, amount hero, From → To
+// route rows, details card, explorer button pinned bottom. Covers every
+// indexed Earn event — create & deposit, deposit, withdraw, withdraw & close,
+// create/remove allowance, balance sweep, rebalanced, reconciled. Allowance
+// events skip the hero (their indexed amount is always $0.00) and rebalances
+// without a signature drop the signature cell and explorer button.
 export function EarnTransactionDetailPane({
   item,
   onClose,

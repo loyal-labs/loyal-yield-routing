@@ -74,6 +74,7 @@ export function resolveEarnProductAsset(args: {
   return asset;
 }
 
+/** The browser sends only money intent. Trusted code derives all metadata. */
 export function buildEarnDepositIntent(args: {
   amountRaw: bigint;
   mint: PublicKey;

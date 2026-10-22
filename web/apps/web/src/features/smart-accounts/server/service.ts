@@ -82,6 +82,10 @@ export async function ensureWalletUserSmartAccount(args: {
   return ensureUserSmartAccount(args, createServiceDependencies());
 }
 
+// Provisioning lifecycle twin of the web wallet-onboarding instrumentation:
+// mobile routes provision outside a browser session, so the events are
+// emitted here, joined to the caller's flow via its `x-loyal-flow-id` header
+// (no header → no lifecycle → plain ensure).
 export async function ensureWalletUserSmartAccountTraced(args: {
   userId: string;
   walletAddress: string;

@@ -34,6 +34,8 @@ export function ReceiveSheet({
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<Tab>("Solana");
   const evm = useEvmDepositAddress(walletAddress);
+  // Privy provisions the 0x address on first request; only ask once the
+  // user actually opens the tab.
   useEffect(() => {
     if (isOpen && tab === "Other chains") void evm.load();
   }, [evm, isOpen, tab]);

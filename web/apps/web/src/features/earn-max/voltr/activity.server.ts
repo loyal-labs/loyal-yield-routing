@@ -20,6 +20,7 @@ import {
 
 const HISTORY_LIMIT = 100;
 
+// First 8 data bytes of the Voltr instructions a user signs (program.ts).
 const ACTIONS: [action: string, discriminator: number[]][] = [
   ["deposit", [126, 224, 21, 255, 228, 53, 117, 33]],
   ["withdraw_request", [248, 225, 47, 22, 116, 144, 23, 143]],
@@ -183,6 +184,8 @@ export async function readVoltrHistory(
       ? decode(transaction, signatures[index]!.signature, authority)
       : []
   );
+  // A request moves LP, not USDC: show what its claim paid (or the pending
+  // payout). Entries are newest first, so the claim precedes its request.
   let laterClaimRaw: bigint | null = null;
   for (const entry of entries) {
     if (entry.action === "claim") laterClaimRaw = entry.amountRaw;
@@ -191,6 +194,8 @@ export async function readVoltrHistory(
       laterClaimRaw = null;
     }
   }
+  // ponytail: first 100 signatures only; page with `before` once an account
+  // outgrows that (the UI then treats history as incomplete).
   const value = { complete: signatures.length < HISTORY_LIMIT, entries };
   cache.delete(key);
   cache.set(key, { newest, value });
@@ -201,7 +206,7 @@ export async function readVoltrHistory(
   return value;
 }
 
-const DUST_RAW = BigInt(10_000);
+const DUST_RAW = BigInt(10_000); // 1 cent
 const withoutDust = (raw: bigint) =>
   raw < BigInt(0) && -raw < DUST_RAW ? BigInt(0) : raw;
 
@@ -269,6 +274,9 @@ export function voltrActivity(
       .reduce((total, e) => total + (e.amountRaw ?? BigInt(0)), BigInt(0));
   const pendingRaw = position.withdrawal?.payoutRaw ?? BigInt(0);
   return {
+    // Lifetime: what the user holds + is owed + got back, minus what went in.
+    // Voltr rounds deposit LP down, so a fresh position reads a few raw
+    // units under its deposit; hide that dust (< 1 cent), keep real losses.
     earnedRaw: history.complete
       ? withoutDust(
           position.valueRaw + pendingRaw + sum("claim") - sum("deposit")

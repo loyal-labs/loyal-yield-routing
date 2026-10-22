@@ -41,6 +41,7 @@ export function useEarnMaxInvite(walletAddress: string | null): EarnMaxInviteSta
   }, [walletAddress]);
 
   const redeem = useCallback(async (code: string) => {
+    // Never the code itself: only the outcome and HTTP status.
     const tracker = createBrowserLifecycleTracker({
       flowName: "earn_max.invite",
       flowVariant: "redeem",
@@ -62,6 +63,10 @@ export function useEarnMaxInvite(walletAddress: string | null): EarnMaxInviteSta
         );
         return "redeemed" as const;
       }
+      // 400 invalid, 409 already used by another wallet: both read as
+      // "Invalid code" in the design.
+      // request_failed + a 4xx status stays INFO (a mistyped code must not
+      // page); a 5xx pages through the Errors alert.
       tracker.fail("redeem", {
         errorCode: "request_failed",
         httpStatus: response.status,

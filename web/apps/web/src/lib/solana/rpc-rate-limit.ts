@@ -486,6 +486,8 @@ async function runRpcFetch(
       }
     }
 
+    // Endpoint-wide 429/TypeError cooldown is enforced by the queue. Keep a
+    // local delay only for transient upstream 5xx responses.
     if (response?.status !== 429 && response !== null) {
       await wait(getRetryDelayMs(response, attempt));
     }

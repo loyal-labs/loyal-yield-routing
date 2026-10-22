@@ -51,6 +51,7 @@ export function checkpointSeed(
   };
 }
 
+// APY buckets are anchored to the first deposit. Only completed buckets are stable.
 export function earningsCheckpointTime(firstDepositAt: Date, now: Date) {
   const day = 86_400_000;
   const closedApyPeriod =

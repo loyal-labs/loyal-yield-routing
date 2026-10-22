@@ -208,6 +208,7 @@ export function useSignerRestoration({
           entry.adapter.publicKey?.toBase58() !== address
         )
           finish("wallet_account_mismatch");
+        // Success is emitted by the effect after the matching context renders.
       })
       .catch((error: unknown) => {
         finish(

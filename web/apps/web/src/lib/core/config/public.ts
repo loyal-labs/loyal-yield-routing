@@ -54,6 +54,10 @@ export type PublicEnv = {
 
 const DEFAULT_MIXPANEL_PROXY_PATH = "/ingest";
 
+// Resolved server-side (root layout) and passed down via PublicEnvProvider.
+// Local development follows the old Turnstile contract: authentication stays
+// wired, but the captcha itself is optional. Deployed environments still fail
+// closed when CAP_SECRET is missing.
 function resolveCaptchaConfig(
   env: EnvSource,
   appEnvironment: AppEnvironment

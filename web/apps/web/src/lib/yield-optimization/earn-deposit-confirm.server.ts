@@ -23,6 +23,13 @@ import {
 } from "@/lib/yield-optimization/earn-reserve-target.server";
 import { type ConfirmedYieldDepositInput } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
+// Shared core of the Earn deposit "confirm" step. Both the session-authed web
+// route (`yield-optimization/deposits/confirm`) and the wallet-signed mobile
+// route (`mobile/earn/deposit/confirm`) call `verifyConfirmedEarnDeposit` so the
+// security-critical canonicalization + on-chain slot verification can never
+// drift between surfaces. Finalized LaserStream projection is the sole writer of
+// Earn policy, deposit, holding, and position state. This compatibility endpoint
+// verifies and acknowledges released-client requests without racing that writer.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 const connectionCache = new Map<SolanaEnv, Connection>();
@@ -49,6 +56,9 @@ export async function pollRpcRead<T>(
   return null;
 }
 
+// Every rejection here strands a confirmed on-chain deposit outside the
+// read-model until yield routing observes and reconciles it — so a rejection
+// must never be silent (the launch-night 400s were).
 function rejectConfirm(args: {
   status: number;
   code: string;
@@ -201,6 +211,10 @@ function createCanonicalDepositInput(
     market: requestInput.market,
     targetReserve: requestInput.targetReserve,
   });
+  // Best-effort alarm, never a gate: the deposit already landed on-chain, so
+  // rejecting the confirm would only make it invisible. Prepare-time routing
+  // refuses ineligible reserves; a confirm that still names one means a
+  // client bypassed prepare or the guard has a hole (ASK-1764).
   void findEarnReserveTargetIneligibility({
     cluster,
     reserve: target.targetReserve,
@@ -379,6 +393,10 @@ function getConnection(cluster: SolanaEnv): Connection {
   return connection;
 }
 
+// A route policy can exist on-chain without DB rows (the deposit that created
+// it landed but its confirm failed), so a reuse confirm has no recorded
+// creation signature to cite. Recover it from the chain: the policy account's
+// oldest successful transaction is the one that created it.
 export async function resolvePolicyCreationSignatureFromChain(args: {
   cluster: SolanaEnv;
   policyAccount: string;
@@ -595,6 +613,10 @@ export async function verifyConfirmedEarnDeposit(args: {
   }
 
   if (input.confirmedSlot !== confirmedSlot) {
+    // The client-supplied slot can be its confirmation context slot (the
+    // client's RPC-lag fallback), not the landing slot. The server-resolved
+    // status slot is canonical — rejecting on this mismatch stranded valid
+    // launch-night deposits invisibly.
     console.warn("[earn-deposit-confirm] corrected client slot", {
       ...rejectionContext,
       clientSlot: input.confirmedSlot.toString(),

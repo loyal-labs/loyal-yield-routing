@@ -127,6 +127,8 @@ export function WalletHomeBanners({
   const [activeIndex, setActiveIndex] = useState(0);
   const isPointerDownRef = useRef(false);
 
+  // is-shown only lands after the first paint so the initial slide's
+  // entrance actually transitions instead of rendering pre-revealed.
   const [hasMounted, setHasMounted] = useState(false);
   useEffect(() => {
     setHasMounted(true);

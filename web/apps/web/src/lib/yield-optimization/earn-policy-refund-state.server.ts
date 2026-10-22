@@ -704,6 +704,11 @@ export async function findEarnPolicyRefundDbState(args: {
   };
 }
 
+// Vault-level (not per-policy) liveness flags gating the vault-accounts
+// refund: sweeping the vault's SOL and closing its token accounts is only
+// safe once nothing can still deposit into or hold funds in the vault. Any
+// non-closed autodeposit target counts — including pending_delegation rows
+// mid-setup.
 export async function findEarnVaultRefundDbState(args: {
   settings: string;
 }): Promise<{

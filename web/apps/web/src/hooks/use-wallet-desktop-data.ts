@@ -39,6 +39,7 @@ export type BalanceHistoryPoint = {
 };
 
 export type WalletPortfolioChange24h = {
+  /** Net 24h change as a percentage of the prior portfolio value (e.g. -1.23). */
   percent: number;
   usdAmount: number;
 };

@@ -1,3 +1,8 @@
+// Realized Earn APY from Kamino reserve share prices (liquidity per
+// collateral token). Signed share-price growth measures realized reserve
+// returns; the headline annualizes the observed fleet allocation's return.
+// No rate samples or routing simulation are involved.
+
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const YEAR_MS = 365 * DAY_MS;
@@ -47,6 +52,7 @@ export type RealizedApyResult = {
 };
 
 export type RealizedApyInput = {
+  // Ascending by observedAtMs.
   histories: ReadonlyMap<string, readonly SharePricePoint[]>;
   allocations: EarnAllocationHistory;
   benchmarkReserve: string;
@@ -311,6 +317,8 @@ export function computeRealizedApy(
   if (input.allocations.currentIdleMismatch) {
     return null;
   }
+  // Never let a future-dated recorder row set the measurement time or supply
+  // the interpolation point for a return that has not yet happened.
   const boundedInput: RealizedApyInput = {
     ...input,
     histories: new Map(

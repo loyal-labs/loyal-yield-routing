@@ -103,6 +103,9 @@ export const earnToast = {
   loading(message: string) {
     listener?.show({ message, phase: "loading" });
   },
+  // Close the toast if it is still in its loading phase — the flow ended
+  // without an outcome worth announcing (wallet cancel, review decline,
+  // sign-in gate). Safe to call unconditionally from `finally` blocks.
   settle() {
     listener?.settle();
   },

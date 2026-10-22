@@ -671,6 +671,8 @@ export function SwapTokenSelectPane({
   const searchAbortRef = useRef<AbortController | null>(null);
   const { isBalanceHidden } = useBalanceVisibility();
 
+  // Raw (case-preserved) for the remote search and ranking — base58 mints are
+  // case-sensitive — lowercased for the local symbol/name filter.
   const rawQuery = search.trim();
   const query = rawQuery.toLowerCase();
   const isRemoteSearchEnabled = Boolean(onSearch);
