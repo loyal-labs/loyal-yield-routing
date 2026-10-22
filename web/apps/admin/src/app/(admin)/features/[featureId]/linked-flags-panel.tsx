@@ -9,22 +9,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { linkFeatureFlag, unlinkFeatureFlag } from "./feature-detail-actions";
-import {
-  type FeatureFlagLink,
-  type FeatureRegistry,
-  type RuntimeFlag,
-} from "@loyal-labs/db-core/schema";
-
-type FeatureWithFlags = FeatureRegistry & {
-  flagLinks: (FeatureFlagLink & { flag: RuntimeFlag })[];
-};
+import type { FeatureFlagView, FeatureView } from "../feature-types";
 
 export function LinkedFlagsPanel({
   feature,
   availableFlags,
 }: {
-  feature: FeatureWithFlags;
-  availableFlags: RuntimeFlag[];
+  feature: FeatureView;
+  availableFlags: FeatureFlagView[];
 }) {
   const linkedFlagIds = new Set(feature.flagLinks.map((link) => link.flagId));
   const linkableFlags = availableFlags.filter((flag) => !linkedFlagIds.has(flag.id));

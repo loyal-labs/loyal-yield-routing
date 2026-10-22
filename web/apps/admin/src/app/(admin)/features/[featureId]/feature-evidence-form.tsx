@@ -1,13 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { addFeatureEvidence } from "./feature-detail-actions";
-import {
-  type FeatureAppStatus,
-  type FeatureEvidence,
-  type FeatureRegistry,
-} from "@loyal-labs/db-core/schema";
-
-type FeatureEvidenceStatus = FeatureAppStatus & { evidence: FeatureEvidence[] };
+import type { FeatureAppStatusView, FeatureView } from "../feature-types";
 
 const EVIDENCE_TYPES = ["path", "branch", "pr", "linear", "commit", "doc"] as const;
 
@@ -15,8 +9,8 @@ export function FeatureEvidenceForm({
   feature,
   appStatus,
 }: {
-  feature: FeatureRegistry;
-  appStatus: FeatureEvidenceStatus;
+  feature: FeatureView;
+  appStatus: FeatureAppStatusView;
 }) {
   return (
     <div className="space-y-4">
