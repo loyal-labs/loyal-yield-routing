@@ -7,7 +7,9 @@ import {
   StyleSheet,
 } from "react-native";
 
-import { LogoHeader } from "@/components/LogoHeader";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { EarnMaxActivityList } from "@/features/earn-max/EarnMaxActivityList";
+import { useEarnMax } from "@/features/earn-max/EarnMaxProvider";
 import { ScrollView, Text, View } from "@/tw";
 
 import type { ActivitySection } from "../model/activity-unread";
@@ -33,6 +35,12 @@ export function ActivityScreen({
 }: {
   initialSection?: ActivitySection;
 }) {
+  const insets = useSafeAreaInsets();
+  const {
+    refresh: refreshMax,
+    markSeen: markMaxSeen,
+    unread: maxUnread,
+  } = useEarnMax();
   const {
     walletUnread,
     earnUnread,
@@ -44,7 +52,7 @@ export function ActivityScreen({
     clearSweepMorph,
   } = useActivity();
   const [section, setSection] = useState<ActivitySection>(
-    initialSection ?? "wallet",
+    initialSection ?? "wallet"
   );
   // How many Earn rows are currently rendered. Reset to one page each time the
   // Earn section is (re)entered so the switch stays cheap; grows on scroll.
@@ -70,7 +78,8 @@ export function ActivityScreen({
   // or new items arrive while the screen is focused, so it stays cleared.
   useFocusEffect(
     useCallback(() => {
-      markSeen(section);
+      if (section === "earn-max") markMaxSeen();
+      else markSeen(section);
       // The provider fetches Autodeposit state once at mount, so a sweep
       // scheduled afterwards (e.g. landing here right after setup) wouldn't show
       // until something refetches it. Re-read it whenever the Earn section is
@@ -78,7 +87,7 @@ export function ActivityScreen({
       if (section === "earn") {
         void refreshAutodeposit();
       }
-    }, [section, markSeen, refreshAutodeposit]),
+    }, [section, markSeen, markMaxSeen, refreshAutodeposit])
   );
 
   // Once the user leaves the Activity screen, retire any sweep-execution morph so
@@ -87,7 +96,7 @@ export function ActivityScreen({
   useFocusEffect(
     useCallback(() => {
       return () => clearSweepMorph();
-    }, [clearSweepMorph]),
+    }, [clearSweepMorph])
   );
 
   // Each time the Earn section becomes active, start from the first page so the
@@ -113,16 +122,18 @@ export function ActivityScreen({
         return;
       }
       setEarnLimit((n) =>
-        n < earnTransactions.length ? n + EARN_PAGE_SIZE : n,
+        n < earnTransactions.length ? n + EARN_PAGE_SIZE : n
       );
     },
-    [section, earnTransactions.length],
+    [section, earnTransactions.length]
   );
 
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      await (section === "earn"
+      await (section === "earn-max"
+        ? refreshMax()
+        : section === "earn"
         ? Promise.all([refreshEarnTransactions(), refreshAutodeposit()])
         : loadWalletTransactions({ force: true }));
     } finally {
@@ -130,14 +141,14 @@ export function ActivityScreen({
     }
   }, [
     section,
+    refreshMax,
     loadWalletTransactions,
     refreshEarnTransactions,
     refreshAutodeposit,
   ]);
 
   return (
-    <View className="flex-1 bg-white">
-      <LogoHeader />
+    <View className="flex-1 bg-white" style={{ paddingTop: insets.top }}>
       <ScrollView
         className="flex-1 bg-white"
         contentContainerStyle={styles.contentContainer}
@@ -153,12 +164,15 @@ export function ActivityScreen({
             value={section}
             onChange={setSection}
             earnUnread={earnUnread}
+            earnMaxUnread={maxUnread}
             walletUnread={walletUnread}
           />
         </View>
 
         {isSwitching ? (
           <ActivityListSkeleton />
+        ) : deferredSection === "earn-max" ? (
+          <EarnMaxActivityList />
         ) : deferredSection === "wallet" ? (
           <WalletActivityList />
         ) : (
@@ -176,13 +190,13 @@ const styles = StyleSheet.create({
   headerBlock: {
     gap: 16,
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingTop: 16,
+    paddingBottom: 12,
   },
   pageTitle: {
     color: "#000",
-    fontFamily: "Geist_700Bold",
-    fontSize: 32,
-    letterSpacing: -0.7,
+    fontFamily: "Geist_600SemiBold",
+    fontSize: 22,
+    lineHeight: 28,
   },
 });

@@ -32,7 +32,7 @@ export function buildCryptoHref(rect?: CardSourceRect): Href {
   return withRect("/wallet/crypto", rect);
 }
 
-// Earn lives on the home tab (the route group's index).
+// Earn is reached from the home product card.
 export function buildEarnHref(): Href {
-  return "/(tabs)" as Href;
+  return "/(tabs)/earn" as Href;
 }

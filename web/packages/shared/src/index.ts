@@ -20,3 +20,6 @@ export type {
   ExpoPushTicket,
 } from "./expo-push";
 export type { ChatSummary, SummariesApiResponse, Topic } from "./summaries";
+export type * from "./earn-max";
+
+export { buildEarnMaxDailySeries } from "./earn-max-history";

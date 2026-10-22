@@ -18,7 +18,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
  * content-box height makes divergence impossible, on every device shape.
  * The top-inset clamp keeps the sheet from reaching under the notch.
  */
-export function useFixedSheetLayout(fraction = 0.94): {
+export function useFixedSheetLayout(
+  fraction = 0.94,
+  topGap = 12
+): {
   sheetHeight: number;
   snapPoints: [number];
 } {
@@ -27,8 +30,8 @@ export function useFixedSheetLayout(fraction = 0.94): {
   return useMemo(() => {
     const sheetHeight = Math.min(
       Math.floor(height * fraction),
-      Math.floor(height - insets.top - 12),
+      Math.floor(height - insets.top - topGap)
     );
     return { sheetHeight, snapPoints: [sheetHeight] };
-  }, [height, insets.top, fraction]);
+  }, [height, insets.top, fraction, topGap]);
 }

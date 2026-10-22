@@ -1,12 +1,55 @@
 # loyal-web: the Loyal web app on Go + Vite
 
-Owner decisions (Oct 20 2026): loyal-app lives in this repo under `web/`;
-databases stay on Neon; Vercel stays production. Both sites (app and
-marketing) are built with Vite + TanStack Router and served by the Go binary
-`loyal-web` on the loyal-workers host, at a test hostname, for the owner to
-open and test. No DNS flip, no move off Vercel in this phase.
+## Current production state (Oct 22 2026)
 
-## Acceptance criteria
+`app.askloyal.com` and `next.askloyal.com` serve Go + Vite on loyal-workers.
+`askloyal.com/app` redirects to the app host. Marketing remains on Vercel;
+`backend.askloyal.com` keeps the Next API reachable without a proxy loop.
+Go serves public Earn statistics; remaining production API families still
+proxy to Next. Go auth/Earn MAX activation is a separate rollout.
+
+The retained `loyal-frontend` Vercel project still builds `loyal-app/apps/web`.
+Changing its Git source to this repo and root to `web/apps/web` is pending;
+verify a preview and API parity before changing its production source.
+
+## Repository consolidation
+
+- Published loyal-app main through `3875075d` is reconciled. The shared Voltr
+  SDK import replaces the old app-local import; web gate removal and skeleton
+  changes already landed here. `web/LOYAL_APP_BASE` records that published pin.
+- Local mobile commit `5fe09749d99d5e52b69d06d5f798f9d574897fed` was ported
+  separately, including the updated home, Earn MAX screens, history and shared
+  types. Its source checkout and Android OTA channels are unchanged. The local
+  dApp Store OTA note was also preserved. This does not publish an OTA.
+- Keep both API contracts during consolidation: imported mobile screens use the
+  existing `/api/smart-accounts/mobile/earn-max` route through loyal-web; the Go
+  `earn-max-v4` client remains available. Both use `env.apiBaseUrl`.
+- Commit-style and web-journey checks move to root `.github/workflows` with
+  `web/` working directories and path filters. Imported nested workflows do
+  not run on GitHub.
+
+### Remaining workflow and deployment handoff
+
+| Workflow | Before activation here |
+|---|---|
+| Extension CI | Move to root, prefix paths with `web/`, verify extension API/telemetry secrets and release tags |
+| Release Packages | Move to root, run in `web/`, set Changesets `cwd: web`; provide `NPM_TOKEN` and `RELEASE_GITHUB_TOKEN`; stop old publisher first |
+| Sync Mirror Repos | Move after package publishing, run in `web/`, verify changed-path selection under the prefix and `MIRROR_SYNC_TOKEN` |
+| Preview Domain | Move after Vercel source change and provide `VERCEL_TOKEN` |
+| Trusted Vercel Previews | Move after Vercel source change and configure `TRUSTED_VERCEL_PREVIEW_USERS` |
+| Claude / Pullfrog | Retain inactive until maintainers choose whether to migrate the bots and their credentials |
+
+The destination repository currently lists no repository-level Actions secrets
+or variables; organization-level access still needs verification. GitHub cannot
+export old secret values. Reuse the approved secret source rather than copying
+credentials into files or asking for them in chat.
+
+Before archiving loyal-app: finish those workflow handoffs, reconcile any further
+local/unpublished edits with their owner, verify the Vercel preview and production
+source switch, then stop the old workflows. The source pin does not claim that
+uncommitted changes have been imported.
+
+## Original pilot acceptance criteria
 
 1. `web/` holds loyal-app with its history. (Done: #399.) `scripts/web/sync.sh`
    was deleted in #490, so nothing syncs, but loyal-app still receives pushes.
@@ -34,8 +77,8 @@ open and test. No DNS flip, no move off Vercel in this phase.
 - `go/workers/cmd/loyal-web` (in the workers module: only it may import
   `go/workers/internal`) serves the embedded build (`internal/webserve`),
   the `/api` routes Go owns (`internal/webapp`, huma on chi), and forwards
-  every other `/api/*` to the Next deployment (`LOYAL_WEB_UPSTREAM`, default
-  `https://app.askloyal.com`).
+  every other `/api/*` to the Next deployment (`LOYAL_WEB_UPSTREAM`, set to
+  `https://backend.askloyal.com` in production).
 - `bun run web:build` builds it all into `bin/loyal-web`, including the normalized
   frontend app environment. Go serves `/500` with HTTP 500 and the disabled
   `/dev/txv1` page with HTTP 404 in production; both retain the SPA shell and
@@ -90,8 +133,15 @@ Mobile feature work can proceed against the existing backend. The pin in
 loyal-app changes need porting here. Those API families are outside this public
 read pilot.
 
-## Later, not in this phase
+## Remaining migration sequence
 
-Repoint Vercel and archive loyal-app (then loyal-app's workflows move here);
-codemod next-compat away and delete the Next pages; prerender marketing for
-SEO; DNS flip; move the remaining `/api` families to Go.
+1. Complete repository/workflow consolidation and the retained Next Vercel source
+   switch described above. Archive loyal-app only after those checks pass.
+2. Move remaining API families to Go in separate contract-checked rollouts,
+   keeping mobile endpoints compatible. Remove their Next proxies after parity.
+3. Prerender and verify marketing for SEO, then switch the marketing hostname.
+4. Remove the Next compatibility layer and retired Next implementation once
+   neither production traffic nor retained API handlers need them.
+
+Live deposit/withdrawal testing belongs to the owner and is not an agent-side
+blocker for repository consolidation.

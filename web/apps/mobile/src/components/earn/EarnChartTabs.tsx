@@ -1,11 +1,11 @@
 import * as Haptics from "expo-haptics";
-import { useCallback, useState } from "react";
+import { useCallback, useState, type ComponentProps } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useEarnForecast } from "@/hooks/wallet/useEarnForecast";
 
 import { ApyChart } from "./ApyChart";
-import { EarnChart } from "./EarnChart";
+import { EarnChart, EarnChartContent } from "./EarnChart";
 import { ForecastChart } from "./ForecastChart";
 
 // Segmented control above the Earn chart (Figma 74-19216 / 74-19520): switches
@@ -22,11 +22,23 @@ const TABS: { key: ChartTab; label: string; enabled: boolean }[] = [
 export function EarnChartTabs({
   principalUsd,
   walletAddress,
+  earnMax,
 }: {
   principalUsd: number | null;
   walletAddress: string | null;
+  earnMax?: {
+    earnings: ComponentProps<typeof EarnChartContent>["earnings"];
+    status: ComponentProps<typeof EarnChartContent>["status"];
+    history: { date: string; apyBps: number }[];
+    apyBps: number | null;
+  };
 }) {
-  const [tab, setTab] = useState<ChartTab>("forecast");
+  const [tab, setTab] = useState<ChartTab>(earnMax ? "earnings" : "forecast");
+  const apyOnly =
+    !!earnMax &&
+    !(principalUsd && principalUsd > 0) &&
+    !earnMax.earnings?.lifetimeEarnedUsd;
+  const activeTab = apyOnly ? "apy" : tab;
   // Global APY forecast + history feeds the APY and Forecast charts.
   const summary = useEarnForecast();
 
@@ -39,40 +51,57 @@ export function EarnChartTabs({
   }, []);
 
   return (
-    <View style={styles.root}>
-      <View style={styles.controlWrap}>
-        <View style={styles.track}>
-          {TABS.map(({ key, label, enabled }) => {
-            const active = tab === key;
-            return (
-              <Pressable
-                key={key}
-                onPress={() => handleSelect(key, enabled)}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: active, disabled: !enabled }}
-                accessibilityLabel={label}
-                style={({ pressed }) => [
-                  styles.segment,
-                  active && styles.segmentActive,
-                  { opacity: pressed && enabled ? 0.8 : 1 },
-                ]}
-              >
-                <Text
-                  style={[styles.segmentText, active && styles.segmentTextActive]}
-                >
-                  {label}
-                </Text>
-              </Pressable>
-            );
-          })}
+    <View style={[styles.root, earnMax && { paddingBottom: 16 }]}>
+      {!apyOnly && (
+        <View style={styles.controlWrap}>
+          <View style={styles.track}>
+            {TABS.filter(({ key }) => !earnMax || key !== "forecast").map(
+              ({ key, label, enabled }) => {
+                const active = activeTab === key;
+                return (
+                  <Pressable
+                    key={key}
+                    onPress={() => handleSelect(key, enabled)}
+                    accessibilityRole="tab"
+                    accessibilityState={{
+                      selected: active,
+                      disabled: !enabled,
+                    }}
+                    accessibilityLabel={label}
+                    style={({ pressed }) => [
+                      styles.segment,
+                      active && styles.segmentActive,
+                      { opacity: pressed && enabled ? 0.8 : 1 },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.segmentText,
+                        active && styles.segmentTextActive,
+                      ]}
+                    >
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              }
+            )}
+          </View>
         </View>
-      </View>
+      )}
 
       <View style={styles.chart}>
-        {tab === "apy" ? (
-          <ApyChart summary={summary} />
-        ) : tab === "forecast" ? (
+        {activeTab === "apy" ? (
+          <ApyChart summary={summary} earnMax={earnMax} />
+        ) : activeTab === "forecast" ? (
           <ForecastChart summary={summary} principalUsd={principalUsd} />
+        ) : earnMax ? (
+          <EarnChartContent
+            settled
+            earnings={earnMax.earnings}
+            status={earnMax.status}
+            fetchedAtMs={0}
+          />
         ) : (
           <EarnChart walletAddress={walletAddress} />
         )}

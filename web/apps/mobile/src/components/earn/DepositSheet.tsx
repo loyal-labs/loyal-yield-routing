@@ -1,3 +1,7 @@
+import { EarnMaxTransferDestination } from "@/features/earn-max/EarnMaxTransferDestination";
+import DepositClose from "../../../assets/images/earn-max/deposit-close.svg";
+import DepositInfo from "../../../assets/images/earn-max/info.svg";
+import DepositSelect from "../../../assets/images/earn-max/select.svg";
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -6,19 +10,14 @@ import {
 } from "@gorhom/bottom-sheet";
 import * as Haptics from "expo-haptics";
 import { Check, ChevronDown, X } from "lucide-react-native";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Dimensions,
   Image,
   type ImageSourcePropType,
   Keyboard,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -65,7 +64,7 @@ const FIRST_DEPOSIT_MIN_SOL = 0.06;
 // Returns null when covered — or when the balance hasn't loaded yet, so the
 // gate fails open instead of blocking a funded wallet on slow data.
 export function computeFirstDepositSolShortfall(
-  solBalance: number | null,
+  solBalance: number | null
 ): number | null {
   if (solBalance == null || !Number.isFinite(solBalance)) {
     return null;
@@ -164,6 +163,8 @@ type DepositSheetProps = {
   // always-visible note that it takes ~FIRST_DEPOSIT_MIN_SOL of SOL and that
   // it comes back on full withdrawal.
   isFirstDeposit?: boolean;
+  earnMax?: boolean;
+  earnMaxApyBps?: number | null;
 };
 
 export function DepositSheet({
@@ -173,13 +174,15 @@ export function DepositSheet({
   stableBalancesByMint,
   firstDepositSolShortfall,
   isFirstDeposit,
+  earnMax = false,
+  earnMaxApyBps,
 }: DepositSheetProps) {
   const sheetRef = useRef<BottomSheetModal>(null);
   const sourceSheetRef = useRef<BottomSheetModal>(null);
   // The underlying input is gesture-handler's TextInput (forwarded through
   // @gorhom/bottom-sheet); only `.focus()` is called here.
   const inputRef = useRef<{ focus: () => void; blur?: () => void } | null>(
-    null,
+    null
   );
   const { openKeyboard } = useKeyboardRescueFocus(inputRef);
   const insets = useSafeAreaInsets();
@@ -202,28 +205,31 @@ export function DepositSheet({
     return () => clearTimeout(timer);
   }, [submitting, isFirstDeposit]);
 
-  const { sheetHeight, snapPoints } = useFixedSheetLayout();
+  const { sheetHeight, snapPoints } = useFixedSheetLayout(
+    earnMax ? 1 : 0.94,
+    earnMax ? 1 : 12
+  );
   // One row per Earn product asset, funded coins first (the sheet opens
   // downward, so funded rows sit nearest the trigger); product order within
   // each group. Empty rows stay visible but disabled so the coin set reads
   // complete — mirrors the web deposit selector.
   const sourceOptions = useMemo<DepositSourceOption[]>(() => {
-    const options = getEarnProductAssets(env.solanaEnv).map((asset) => {
-      const balance = stableBalancesByMint?.[asset.mint];
-      return {
-        symbol: asset.symbol,
-        mint: asset.mint,
-        logo:
-          asset.symbol === "USDC"
-            ? usdcLogo
-            : { uri: KNOWN_TOKEN_ICONS[asset.mint] ?? DEFAULT_TOKEN_ICON },
-        usd: Number.isFinite(balance ?? NaN) ? (balance as number) : 0,
-      };
-    });
-    return options.sort(
-      (a, b) => (b.usd > 0 ? 1 : 0) - (a.usd > 0 ? 1 : 0),
-    );
-  }, [stableBalancesByMint]);
+    const options = getEarnProductAssets(earnMax ? "mainnet" : env.solanaEnv)
+      .filter((asset) => !earnMax || asset.symbol === "USDC")
+      .map((asset) => {
+        const balance = stableBalancesByMint?.[asset.mint];
+        return {
+          symbol: asset.symbol,
+          mint: asset.mint,
+          logo:
+            asset.symbol === "USDC"
+              ? usdcLogo
+              : { uri: KNOWN_TOKEN_ICONS[asset.mint] ?? DEFAULT_TOKEN_ICON },
+          usd: Number.isFinite(balance ?? NaN) ? (balance as number) : 0,
+        };
+      });
+    return options.sort((a, b) => (b.usd > 0 ? 1 : 0) - (a.usd > 0 ? 1 : 0));
+  }, [stableBalancesByMint, earnMax]);
   const selectedSource =
     sourceOptions.find((option) => option.symbol === selectedSymbol) ??
     sourceOptions[0];
@@ -244,8 +250,8 @@ export function DepositSheet({
         usdc && usdc.usd > 0
           ? "USDC"
           : richest && richest.usd > 0
-            ? richest.symbol
-            : "USDC",
+          ? richest.symbol
+          : "USDC"
       );
       sheetRef.current?.present();
     } else {
@@ -287,7 +293,7 @@ export function DepositSheet({
 
   const handleMax = useCallback(() => {
     void Haptics.selectionAsync();
-    setAmount(available.toFixed(2));
+    setAmount((Math.floor(available * 100) / 100).toFixed(2));
   }, [available]);
 
   const openSourceList = useCallback(() => {
@@ -329,7 +335,7 @@ export function DepositSheet({
       setSubmitError(
         error instanceof Error
           ? error.message
-          : "Deposit failed. Please try again.",
+          : "Deposit failed. Please try again."
       );
     } finally {
       setSubmitting(false);
@@ -345,7 +351,7 @@ export function DepositSheet({
         opacity={0.2}
       />
     ),
-    [],
+    []
   );
 
   const displayValue = formatAmountDisplay(amount);
@@ -359,12 +365,14 @@ export function DepositSheet({
   const insufficientFunds = !belowMinimum && enteredUsd > available;
   const hasError = needsSolTopUp || belowMinimum || insufficientFunds;
   const ctaLabel = needsSolTopUp
-    ? `Deposit > ${formatSolAmount(firstDepositSolShortfall as number)} SOL to open deposit`
+    ? `Deposit > ${formatSolAmount(
+        firstDepositSolShortfall as number
+      )} SOL to open deposit`
     : belowMinimum
-      ? `Minimum deposit is $${MIN_DEPOSIT_USD}`
-      : insufficientFunds
-        ? "Insufficient balance"
-        : "Deposit";
+    ? `Minimum deposit is $${MIN_DEPOSIT_USD}`
+    : insufficientFunds
+    ? "Insufficient balance"
+    : "Deposit";
 
   // Scale the amount text down to fit the row; line-height stays pinned at the
   // max size (see AMOUNT_* constants) so the baseline doesn't move.
@@ -372,9 +380,12 @@ export function DepositSheet({
     const text = `$${displayValue || "0"}`;
     const availableWidth = SCREEN_WIDTH - 48;
     const fitted = Math.floor(
-      availableWidth / (text.length * AMOUNT_CHAR_WIDTH_RATIO),
+      availableWidth / (text.length * AMOUNT_CHAR_WIDTH_RATIO)
     );
-    return Math.max(AMOUNT_MIN_FONT_SIZE, Math.min(AMOUNT_MAX_FONT_SIZE, fitted));
+    return Math.max(
+      AMOUNT_MIN_FONT_SIZE,
+      Math.min(AMOUNT_MAX_FONT_SIZE, fitted)
+    );
   }, [displayValue]);
 
   // gorhom's BottomSheetFooter zeroes out keyboard height on Android with
@@ -386,6 +397,12 @@ export function DepositSheet({
   const keyboard = useAnimatedKeyboard();
   const animatedFooterStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: -keyboard.height.value }],
+    ...(earnMax
+      ? {
+          paddingBottom:
+            keyboard.height.value > 0 ? 24 : Math.max(insets.bottom + 12, 24),
+        }
+      : {}),
   }));
 
   return (
@@ -423,7 +440,11 @@ export function DepositSheet({
               ]}
               hitSlop={12}
             >
-              <X size={24} color="#1C1C1E" strokeWidth={2} />
+              {earnMax ? (
+                <DepositClose />
+              ) : (
+                <X size={24} color="#1C1C1E" strokeWidth={2} />
+              )}
             </Pressable>
             <Text style={styles.toolbarTitle}>Deposit</Text>
             <View style={styles.iconButtonSpacer} />
@@ -435,12 +456,27 @@ export function DepositSheet({
               re-focusing. The value is entered in dollars (USDC ≈ $1). */}
           <View style={styles.body}>
             <View style={styles.amountInputWrap}>
-              <Pressable style={styles.amountRow} onPress={openKeyboard}>
+              <Pressable
+                style={[styles.amountRow, earnMax && styles.maxAmountRow]}
+                onPress={openKeyboard}
+              >
                 <View style={styles.amountVisual} pointerEvents="none">
-                  <Text style={[styles.amountText, { fontSize: amountFontSize }]}>
+                  <Text
+                    style={[
+                      styles.amountText,
+                      earnMax && styles.maxAmountText,
+                      { fontSize: amountFontSize },
+                    ]}
+                  >
                     $
                   </Text>
-                  <Text style={[styles.amountText, { fontSize: amountFontSize }]}>
+                  <Text
+                    style={[
+                      styles.amountText,
+                      earnMax && styles.maxAmountText,
+                      { fontSize: amountFontSize },
+                    ]}
+                  >
                     {displayValue || "0"}
                   </Text>
                   <View
@@ -470,6 +506,15 @@ export function DepositSheet({
                   accessibilityLabel="Deposit amount"
                 />
               </Pressable>
+              {earnMax && isFirstDeposit ? (
+                <View style={styles.maxRentCaption}>
+                  <DepositInfo />
+                  <Text style={styles.maxRentText}>
+                    Your first deposit creates Solana accounts and requires SOL
+                    in your wallet for account rent and transaction fees.
+                  </Text>
+                </View>
+              ) : null}
             </View>
           </View>
 
@@ -480,6 +525,7 @@ export function DepositSheet({
             style={[
               styles.footerAbsolute,
               { paddingBottom: insets.bottom + 12 },
+              earnMax && styles.maxFooter,
               animatedFooterStyle,
             ]}
           >
@@ -487,46 +533,87 @@ export function DepositSheet({
                 selected coin's available balance and a MAX shortcut. Lives
                 directly above the CTA (not under the input) and rides up with
                 the keyboard alongside the button. */}
-            <View style={styles.balanceCell}>
-              <Pressable
-                onPress={openSourceList}
-                accessibilityRole="button"
-                accessibilityLabel="Choose deposit stablecoin"
-                style={({ pressed }) => [
-                  styles.selectorPill,
-                  { opacity: pressed ? 0.8 : 1 },
-                ]}
-                hitSlop={8}
+            <View style={earnMax && styles.maxTransferRows}>
+              <View
+                style={[styles.balanceCell, earnMax && styles.maxBalanceCell]}
               >
-                <Image
-                  source={selectedSource.logo}
-                  style={styles.tokenLogo}
-                  accessibilityLabel={selectedSource.symbol}
-                />
-                <ChevronDown size={16} color={COLOR_LABEL_DIM} strokeWidth={2} />
-              </Pressable>
-              <View style={styles.balanceMiddle}>
-                <Text style={styles.balanceAmount}>
-                  {BALANCE_FORMATTER.format(available)}
-                </Text>
-                <Text style={styles.balanceAvailable} numberOfLines={1}>
-                  {`${selectedSource.symbol} available`}
-                </Text>
+                <Pressable
+                  onPress={openSourceList}
+                  accessibilityRole="button"
+                  accessibilityLabel="Choose deposit stablecoin"
+                  style={({ pressed }) => [
+                    styles.selectorPill,
+                    earnMax && styles.maxSourceIcon,
+                    { opacity: pressed ? 0.8 : 1 },
+                  ]}
+                  hitSlop={8}
+                >
+                  <Image
+                    source={earnMax ? usdcLogo : selectedSource.logo}
+                    style={[styles.tokenLogo, earnMax && styles.maxTokenLogo]}
+                    accessibilityLabel={selectedSource.symbol}
+                  />
+                  {!earnMax && (
+                    <ChevronDown
+                      size={16}
+                      color={COLOR_LABEL_DIM}
+                      strokeWidth={2}
+                    />
+                  )}
+                </Pressable>
+                <View style={styles.balanceMiddle}>
+                  {earnMax && (
+                    <Text style={styles.balanceAvailable}>
+                      from USDC balance
+                    </Text>
+                  )}
+                  <Text style={styles.balanceAmount}>
+                    {earnMax ? (
+                      <>
+                        {BALANCE_FORMATTER.format(available).split(".")[0]}
+                        <Text style={styles.maxCents}>
+                          .{BALANCE_FORMATTER.format(available).split(".")[1]}
+                        </Text>
+                      </>
+                    ) : (
+                      BALANCE_FORMATTER.format(available)
+                    )}
+                  </Text>
+                  {!earnMax && (
+                    <Text style={styles.balanceAvailable} numberOfLines={1}>
+                      {`${selectedSource.symbol} available`}
+                    </Text>
+                  )}
+                </View>
+                <Pressable
+                  onPress={handleMax}
+                  accessibilityRole="button"
+                  accessibilityLabel="Use maximum balance"
+                  style={({ pressed }) => [
+                    styles.maxBadge,
+                    { opacity: pressed ? 0.8 : 1 },
+                  ]}
+                  hitSlop={8}
+                >
+                  <Text style={styles.maxBadgeText}>MAX</Text>
+                </Pressable>
+                {earnMax && (
+                  <Pressable
+                    onPress={openSourceList}
+                    accessibilityRole="button"
+                    accessibilityLabel="Choose deposit stablecoin"
+                    hitSlop={8}
+                  >
+                    <DepositSelect />
+                  </Pressable>
+                )}
               </View>
-              <Pressable
-                onPress={handleMax}
-                accessibilityRole="button"
-                accessibilityLabel="Use maximum balance"
-                style={({ pressed }) => [
-                  styles.maxBadge,
-                  { opacity: pressed ? 0.8 : 1 },
-                ]}
-                hitSlop={8}
-              >
-                <Text style={styles.maxBadgeText}>MAX</Text>
-              </Pressable>
-            </View>
 
+              {earnMax ? (
+                <EarnMaxTransferDestination apyBps={earnMaxApyBps} />
+              ) : null}
+              {earnMax && <View style={styles.maxConnector} />}
+            </View>
             {submitError ? (
               <Text style={styles.submitError}>{submitError}</Text>
             ) : null}
@@ -538,11 +625,12 @@ export function DepositSheet({
               </Text>
             ) : null}
 
-            {isFirstDeposit ? (
+            {isFirstDeposit && !earnMax ? (
               <Text style={styles.solHint}>
                 This deposit sets up your Earn account and takes ~
-                {formatSolAmount(FIRST_DEPOSIT_MIN_SOL)} SOL from your wallet for
-                Solana account rent — it is returned when you fully withdraw.
+                {formatSolAmount(FIRST_DEPOSIT_MIN_SOL)} SOL from your wallet
+                for Solana account rent — it is returned when you fully
+                withdraw.
               </Text>
             ) : null}
 
@@ -553,6 +641,7 @@ export function DepositSheet({
               disabled={hasError || submitting}
               style={({ pressed }) => [
                 styles.cta,
+                earnMax && styles.maxCta,
                 hasError ? styles.ctaError : styles.ctaEnabled,
                 !hasError && !submitting && pressed && styles.ctaPressed,
               ]}
@@ -561,7 +650,9 @@ export function DepositSheet({
                 <ActivityIndicator color="#FFF" />
               ) : (
                 <Text
-                  style={hasError ? styles.ctaLabelError : styles.ctaLabelEnabled}
+                  style={
+                    hasError ? styles.ctaLabelError : styles.ctaLabelEnabled
+                  }
                 >
                   {ctaLabel}
                 </Text>
@@ -627,6 +718,43 @@ export function DepositSheet({
 }
 
 const styles = StyleSheet.create({
+  maxFooter: { paddingHorizontal: 0 },
+  maxAmountRow: { height: Platform.OS === "ios" ? 58 : 48 },
+  maxAmountText: { lineHeight: Platform.OS === "ios" ? 58 : 48 },
+  maxTransferRows: { gap: 8 },
+  maxBalanceCell: { marginHorizontal: 16, marginBottom: 0, height: 60 },
+  maxSourceIcon: {
+    padding: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingVertical: 0,
+    backgroundColor: "transparent",
+  },
+  maxTokenLogo: { width: 48, height: 48, borderRadius: 24 },
+  maxCents: { color: "rgba(60,60,67,0.4)" },
+  maxConnector: {
+    position: "absolute",
+    width: 2,
+    height: 17,
+    left: 39,
+    top: 57,
+    borderRadius: 2,
+    backgroundColor: "rgba(0,0,0,0.14)",
+  },
+  maxCta: { marginHorizontal: 20, marginTop: 16 },
+  maxRentCaption: {
+    flexDirection: "row",
+    gap: 8,
+    paddingVertical: 8,
+    marginTop: 4,
+  },
+  maxRentText: {
+    flex: 1,
+    fontFamily: "Geist_400Regular",
+    fontSize: 15,
+    lineHeight: 20,
+    color: "#8A8A8E",
+  },
   sheetBackground: {
     backgroundColor: "#FFF",
     borderTopLeftRadius: 38,

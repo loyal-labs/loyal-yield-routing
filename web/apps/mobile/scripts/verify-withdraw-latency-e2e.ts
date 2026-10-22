@@ -363,7 +363,7 @@ function injectIncidentNativeSolRequirement(): void {
 function openDepositSheetInVerifierBundle(): void {
   if (mode === "withdraw") return;
   if (mode === "seed-position") {
-    const path = resolve(import.meta.dir, "../app/(tabs)/index.tsx");
+    const path = resolve(import.meta.dir, "../app/(tabs)/earn.tsx");
     const source = readFileSync(path, "utf8");
     const marker = "const [depositOpen, setDepositOpen] = useState(false);";
     assert.equal(
@@ -383,7 +383,7 @@ function openDepositSheetInVerifierBundle(): void {
     );
     seededDepositSources.push({ path, source });
   } else {
-    const path = resolve(import.meta.dir, "../app/(tabs)/index.tsx");
+    const path = resolve(import.meta.dir, "../app/(tabs)/earn.tsx");
     const source = readFileSync(path, "utf8");
     const logBoxMarker =
       'import { Alert, StyleSheet, useWindowDimensions } from "react-native";';
@@ -510,7 +510,7 @@ function openDepositSheetInVerifierBundle(): void {
 
 function openWithdrawSheetInVerifierBundle(): void {
   if (mode !== "withdraw") return;
-  const path = resolve(import.meta.dir, "../app/(tabs)/index.tsx");
+  const path = resolve(import.meta.dir, "../app/(tabs)/earn.tsx");
   const source = readFileSync(path, "utf8");
   const marker = "const [withdrawOpen, setWithdrawOpen] = useState(false);";
   assert.equal(
