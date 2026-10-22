@@ -349,6 +349,10 @@
         "ultracite": "^7.0.10",
       },
     },
+    "packages/api": {
+      "name": "@loyal-labs/api",
+      "version": "0.0.0",
+    },
     "packages/auth-core": {
       "name": "@loyal-labs/auth-core",
       "version": "0.1.1",
@@ -1252,6 +1256,8 @@
     "@lit/reactive-element": ["@lit/reactive-element@2.1.2", "", { "dependencies": { "@lit-labs/ssr-dom-shim": "^1.5.0" } }, "sha512-pbCDiVMnne1lYUIaYNN5wrwQXDtHaYtg7YEFPeW+hws6U47WeFvISGUWekPGKWOP1ygrs0ef0o1VJMk1exos5A=="],
 
     "@loyal-labs/actions": ["@loyal-labs/actions@workspace:packages/loyal-actions"],
+
+    "@loyal-labs/api": ["@loyal-labs/api@workspace:packages/api"],
 
     "@loyal-labs/auth-core": ["@loyal-labs/auth-core@workspace:packages/auth-core"],
 

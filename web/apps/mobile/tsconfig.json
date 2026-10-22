@@ -4,6 +4,9 @@
     "strict": true,
     "allowImportingTsExtensions": true,
     "paths": {
+      "@loyal-labs/api": [
+        "../../packages/api/src/index.ts"
+      ],
       "@/*": [
         "./src/*"
       ],
