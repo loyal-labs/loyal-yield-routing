@@ -28,7 +28,7 @@ type WithdrawalView struct {
 
 type Summary struct {
 	ObservedSlot       string          `json:"observedSlot"`
-	APYHistory         []APYPoint      `json:"apyHistory"`
+	APYHistory         []APYPoint      `json:"apyHistory" nullable:"false"`
 	APYWindowDays      *int64          `json:"apyWindowDays"`
 	BalanceUsd         float64         `json:"balanceUsd"`
 	ClaimAmountRaw     string          `json:"claimAmountRaw"`
@@ -38,7 +38,7 @@ type Summary struct {
 	EarnedUsd          *float64        `json:"earnedUsd"`
 	ForecastApyBps     *int64          `json:"forecastApyBps"`
 	Goal               string          `json:"goal"`
-	PolicyAccounts     []PolicyBinding `json:"policyAccounts"`
+	PolicyAccounts     []PolicyBinding `json:"policyAccounts" nullable:"false"`
 	PolicyStatus       string          `json:"policyStatus"`
 	RealizedApyBps     *int64          `json:"realizedApyBps"`
 	StrategyKey        *string         `json:"strategyKey"`
