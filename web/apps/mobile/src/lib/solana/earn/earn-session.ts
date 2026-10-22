@@ -8,22 +8,20 @@ import type { Signer } from "@/lib/wallet/signer";
 import type { EarnAuthFields } from "./earn-api";
 import type { EarnAuthPurpose } from "./earn-auth";
 
-const STORAGE_KEY = "earn.session.v1";
+const STORAGE_KEY = "earn.sessions.v2";
+const LEGACY_STORAGE_KEY = "earn.session.v1";
 const EXPIRY_SAFETY_MS = 5 * 60 * 1000;
+const FAILED_MINT_COOLDOWN_MS = 60 * 1000;
 const SESSION_PURPOSE: EarnAuthPurpose = "earn-max";
-const PROMPT_FREE_SIGNERS: ReadonlySet<Signer["kind"]> = new Set([
-  "privy",
-  "local",
-]);
+const SILENT_SIGNERS: ReadonlySet<Signer["kind"]> = new Set(["privy", "local"]);
 
-type StoredEarnSession = {
-  walletAddress: string;
-  token: string;
-  expiresAt: string;
-};
+type StoredEarnSession = { token: string; expiresAt: string };
+type LegacyRecord = StoredEarnSession & { walletAddress: string };
 
-let cached: StoredEarnSession | null | undefined;
+let cached: Map<string, StoredEarnSession> | undefined;
+let generation = 0;
 const mints = new Map<string, Promise<string | null>>();
+const failedMintAt = new Map<string, number>();
 
 export function earnHeaders(flowId?: string): Record<string, string> {
   const headers: Record<string, string> = {
@@ -58,52 +56,82 @@ async function secureStore() {
   return await import("expo-secure-store");
 }
 
-async function loadStored(): Promise<StoredEarnSession | null> {
-  if (cached !== undefined) {
+async function loadStored(): Promise<Map<string, StoredEarnSession>> {
+  if (cached) {
     return cached;
   }
+  const loaded = new Map<string, StoredEarnSession>();
   try {
-    const raw = await (await secureStore()).getItemAsync(STORAGE_KEY);
-    cached = raw ? (JSON.parse(raw) as StoredEarnSession) : null;
-  } catch {
-    cached = null;
-  }
+    const store = await secureStore();
+    const raw = await store.getItemAsync(STORAGE_KEY);
+    if (raw) {
+      for (const [wallet, entry] of Object.entries(
+        JSON.parse(raw) as Record<string, StoredEarnSession>,
+      )) {
+        loaded.set(wallet, entry);
+      }
+    } else {
+      const legacy = await store.getItemAsync(LEGACY_STORAGE_KEY);
+      if (legacy) {
+        const { walletAddress, ...entry } = JSON.parse(legacy) as LegacyRecord;
+        loaded.set(walletAddress, entry);
+      }
+    }
+  } catch {}
+  cached ??= loaded;
   return cached;
 }
 
-function isUsable(
-  session: StoredEarnSession,
-  walletAddress: string,
-): boolean {
+async function persist(sessions: Map<string, StoredEarnSession>) {
+  const snapshot = JSON.stringify(Object.fromEntries(sessions));
+  try {
+    const store = await secureStore();
+    await store.setItemAsync(STORAGE_KEY, snapshot);
+    await store.deleteItemAsync(LEGACY_STORAGE_KEY);
+  } catch {}
+}
+
+function isUsable(session: StoredEarnSession): boolean {
   const expiresAtMs = Date.parse(session.expiresAt);
   return (
-    session.walletAddress === walletAddress &&
-    Number.isFinite(expiresAtMs) &&
-    expiresAtMs - EXPIRY_SAFETY_MS > Date.now()
+    Number.isFinite(expiresAtMs) && expiresAtMs - EXPIRY_SAFETY_MS > Date.now()
   );
 }
 
 export async function getEarnSessionToken(
   walletAddress: string,
 ): Promise<string | null> {
-  const stored = await loadStored();
-  return stored && isUsable(stored, walletAddress) ? stored.token : null;
+  const stored = (await loadStored()).get(walletAddress);
+  return stored && isUsable(stored) ? stored.token : null;
 }
 
 export async function clearEarnSession(): Promise<void> {
-  cached = null;
+  generation += 1;
+  cached = new Map();
+  mints.clear();
+  failedMintAt.clear();
   try {
-    await (await secureStore()).deleteItemAsync(STORAGE_KEY);
+    const store = await secureStore();
+    await store.deleteItemAsync(STORAGE_KEY);
+    await store.deleteItemAsync(LEGACY_STORAGE_KEY);
   } catch {}
 }
 
-async function dropRejectedToken(token: string): Promise<void> {
-  if ((await loadStored())?.token === token) {
-    await clearEarnSession();
+async function dropRejectedToken(
+  walletAddress: string,
+  token: string,
+): Promise<void> {
+  const sessions = await loadStored();
+  if (sessions.get(walletAddress)?.token === token) {
+    sessions.delete(walletAddress);
+    await persist(sessions);
   }
 }
 
-async function mint(auth: EarnAuthFields): Promise<string | null> {
+async function mint(
+  auth: EarnAuthFields,
+  startedAt: number,
+): Promise<string | null> {
   const res = await fetch(
     `${env.earnApiBaseUrl}/api/smart-accounts/mobile/earn/session`,
     {
@@ -119,17 +147,15 @@ async function mint(auth: EarnAuthFields): Promise<string | null> {
     token?: string;
     expiresAt?: string;
   };
-  if (!payload.token || !payload.expiresAt) {
+  if (!payload.token || !payload.expiresAt || startedAt !== generation) {
     return null;
   }
-  cached = {
+  const sessions = await loadStored();
+  sessions.set(auth.walletAddress, {
     expiresAt: payload.expiresAt,
     token: payload.token,
-    walletAddress: auth.walletAddress,
-  };
-  await (
-    await secureStore()
-  ).setItemAsync(STORAGE_KEY, JSON.stringify(cached));
+  });
+  await persist(sessions);
   return payload.token;
 }
 
@@ -141,10 +167,27 @@ function mintOnce(
   if (inFlight) {
     return inFlight;
   }
-  const minting = (async () =>
-    (await getEarnSessionToken(walletAddress)) ?? mint(await sign()))()
+  const startedAt = generation;
+  const minting: Promise<string | null> = (async () => {
+    const existing = await getEarnSessionToken(walletAddress);
+    if (existing) {
+      return existing;
+    }
+    const auth = await sign();
+    return startedAt === generation ? await mint(auth, startedAt) : null;
+  })()
     .catch(() => null)
-    .finally(() => mints.delete(walletAddress));
+    .then((token) => {
+      if (!token && startedAt === generation) {
+        failedMintAt.set(walletAddress, Date.now());
+      }
+      return token;
+    })
+    .finally(() => {
+      if (mints.get(walletAddress) === minting) {
+        mints.delete(walletAddress);
+      }
+    });
   mints.set(walletAddress, minting);
   return minting;
 }
@@ -168,15 +211,25 @@ async function activeSignerFor(walletAddress: string): Promise<Signer | null> {
   }
 }
 
+async function silentSession(signer: Signer): Promise<string | null> {
+  const walletAddress = signer.publicKey.toBase58();
+  const failedAt = failedMintAt.get(walletAddress);
+  if (
+    !SILENT_SIGNERS.has(signer.kind) ||
+    (failedAt !== undefined && Date.now() - failedAt < FAILED_MINT_COOLDOWN_MS)
+  ) {
+    return null;
+  }
+  return ensureEarnSession(signer);
+}
+
 async function readToken(walletAddress: string): Promise<string | null> {
   const token = await getEarnSessionToken(walletAddress);
   if (token) {
     return token;
   }
   const signer = await activeSignerFor(walletAddress);
-  return signer && PROMPT_FREE_SIGNERS.has(signer.kind)
-    ? ensureEarnSession(signer)
-    : null;
+  return signer ? silentSession(signer) : null;
 }
 
 function getWithBearer(url: string, token: string | null): Promise<Response> {
@@ -208,8 +261,8 @@ export async function earnWalletRead(
   if (!token || !(await isInvalidSession(res))) {
     return res;
   }
-  await dropRejectedToken(token);
+  await dropRejectedToken(walletAddress, token);
   const signer = await activeSignerFor(walletAddress);
-  const fresh = signer ? await ensureEarnSession(signer) : null;
+  const fresh = signer ? await silentSession(signer) : null;
   return fresh ? getWithBearer(url, fresh) : res;
 }
