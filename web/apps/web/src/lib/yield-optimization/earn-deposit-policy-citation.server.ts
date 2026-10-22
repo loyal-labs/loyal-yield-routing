@@ -57,19 +57,22 @@ export async function citeEarnDepositPolicies(args: {
     recorded: pair?.routePolicy,
     solanaEnv,
   });
-  if (!route) {
+  const unresolved = (policyAccount: string) => {
     console.error("[earn-deposit-confirm] policy citation unresolved", {
       depositSignature: input.depositSignature,
-      policyAccount: input.policyAccount,
+      policyAccount,
       policyInitialization: input.policyInitialization,
       walletAddress: principal.walletAddress,
     });
-    throw new EarnDepositConfirmError({
+    return new EarnDepositConfirmError({
       code: "policy_signature_unresolved",
       message:
         "We couldn't verify your Earn policy on-chain. Your deposit is safe — please try again in a moment.",
       status: 400,
     });
+  };
+  if (!route) {
+    throw unresolved(input.policyAccount);
   }
   const setup = input.setupPolicyAccount
     ? await citePolicy({
@@ -78,6 +81,9 @@ export async function citeEarnDepositPolicies(args: {
         solanaEnv,
       })
     : null;
+  if (!setup && input.policyInitialization === "create") {
+    throw unresolved(input.setupPolicyAccount ?? input.policyAccount);
+  }
 
   return {
     ...input,
