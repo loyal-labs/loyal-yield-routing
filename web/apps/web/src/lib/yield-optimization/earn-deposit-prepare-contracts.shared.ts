@@ -6,7 +6,6 @@ import {
   type SmartAccountPreparedEarnUsdcDeposit,
   type WirePreparedLoyalSmartAccountsOperation,
 } from "@loyal-labs/smart-account-vaults";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
 
 export type EarnDepositPrepareRequestBody = {
@@ -37,8 +36,7 @@ export type WireSmartAccountPreparedEarnUsdcDeposit = {
   prepared: WirePreparedLoyalSmartAccountsOperation;
   targetReserve: {
     liquidityMint: string;
-    // Absent on legacy mobile wires (pre-token-2022, always USDC — ASK-2099).
-    liquidityTokenProgram?: string;
+    liquidityTokenProgram: string;
     market: string;
     obligation: string;
     reserve: string;
@@ -81,9 +79,7 @@ function readUnsignedIntegerString(
 
 export function parseEarnDepositPrepareRequestBody(body: unknown): {
   amountRaw: bigint;
-  // null = legacy client that predates mint selection; those bodies always
-  // meant USDC and the product-asset resolver defaults accordingly (ASK-2099).
-  mint: string | null;
+  mint: string;
 } {
   const record = assertRequestObject(body);
   const amountRaw = BigInt(readUnsignedIntegerString(record, "amountRaw"));
@@ -93,9 +89,6 @@ export function parseEarnDepositPrepareRequestBody(body: unknown): {
   }
 
   const mintValue = record.mint;
-  if (mintValue === undefined) {
-    return { amountRaw, mint: null };
-  }
   if (typeof mintValue !== "string") {
     throw new Error("mint must be a mint public key.");
   }
@@ -194,11 +187,9 @@ export function hydratePreparedEarnUsdcDeposit(
     prepared: hydratePreparedOperation(wire.prepared),
     targetReserve: {
       liquidityMint: new PublicKey(wire.targetReserve.liquidityMint),
-      // Legacy mobile wires predate token-2022 mints and omit the field; they
-      // are always classic-token USDC (ASK-2099).
-      liquidityTokenProgram: wire.targetReserve.liquidityTokenProgram
-        ? new PublicKey(wire.targetReserve.liquidityTokenProgram)
-        : TOKEN_PROGRAM_ID,
+      liquidityTokenProgram: new PublicKey(
+        wire.targetReserve.liquidityTokenProgram
+      ),
       market: new PublicKey(wire.targetReserve.market),
       obligation: new PublicKey(wire.targetReserve.obligation),
       reserve: new PublicKey(wire.targetReserve.reserve),

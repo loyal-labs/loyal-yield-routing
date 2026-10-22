@@ -1,5 +1,7 @@
+import { MOBILE_BUILD_HEADER } from "@loyal-labs/shared";
 import bs58 from "bs58";
 import { Buffer } from "buffer";
+import Constants from "expo-constants";
 
 import { env } from "@/config/env";
 import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
@@ -33,6 +35,7 @@ export function earnHeaders(flowId?: string): Record<string, string> {
   if (flowId) {
     headers["x-loyal-flow-id"] = flowId;
   }
+  headers[MOBILE_BUILD_HEADER] = Constants.nativeBuildVersion ?? "0";
   return headers;
 }
 

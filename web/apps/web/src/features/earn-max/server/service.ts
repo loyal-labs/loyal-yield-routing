@@ -85,7 +85,6 @@ export function getActivity(request: Request) {
 export async function getInvite(request: Request) {
   const principal = await principalFor(request);
   if (!principal) return unauthenticated();
-  // Older web bundles still use this endpoint to decide whether to show Earn MAX.
   return json({ redeemed: true });
 }
 

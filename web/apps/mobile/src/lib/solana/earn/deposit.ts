@@ -19,13 +19,11 @@ import { withConnectionRetry } from "./connection-retry";
 import {
   confirmEarnDeposit,
   fetchEarnDepositPrepareContext,
-  prepareEarnDeposit,
   type EarnAuthFields,
   type WirePreparedEarnDeposit,
 } from "./earn-api";
 import {
   EARN_PRODUCT_DECIMALS,
-  tokenProgramForEarnMint,
 } from "./earn-product-mints";
 import { signEarnAuth, withEarnAuth } from "./earn-auth";
 import {
@@ -232,36 +230,6 @@ async function runEarnDeposit(
         flowId: flow.flowId,
       }),
   );
-  if (!context) {
-    // Backend predates `prepare-context` — legacy server-side prepare.
-    const prepared = await withConnectionRetry(
-      "deposit server prepare",
-      DEPOSIT_NETWORK_MESSAGE,
-      () =>
-        prepareEarnDeposit({
-          auth: prepareAuth,
-          amountRaw,
-          mint: args.mint,
-          flowId: flow.flowId,
-        }),
-    );
-    const stages = hydrateWireStages(prepared.preparedDeposit);
-    if (!stages.policySetup) {
-      flow.setVariant("top_up");
-    }
-    flow.observe("prepare", {
-      policyMode: stages.policySetup ? "create" : "reuse",
-    });
-    return signSendAndConfirmDeposit({
-      signer: args.signer,
-      prepareAuth,
-      amountUsd: args.amountUsd,
-      stages,
-      wirePreparedDeposit: prepared.preparedDeposit,
-      flow,
-    });
-  }
-
   if (context.yieldRoutingPolicy) {
     flow.setVariant("top_up");
   }
@@ -289,10 +257,7 @@ async function runEarnDeposit(
               target: {
                 liquidityMint: new PublicKey(context.target.liquidityMint),
                 liquidityTokenProgram: new PublicKey(
-                  context.target.liquidityTokenProgram ??
-                    tokenProgramForEarnMint(
-                      context.target.liquidityMint,
-                    ).toBase58(),
+                  context.target.liquidityTokenProgram,
                 ),
                 market: new PublicKey(context.target.market),
                 reserve: new PublicKey(context.target.reserve),

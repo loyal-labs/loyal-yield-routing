@@ -25,3 +25,8 @@ export type * from "./earn-max";
 export { buildEarnMaxDailySeries } from "./earn-max-history";
 
 export { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "./earn-autodeposit";
+export {
+  isMobileBuildSupported,
+  MIN_SUPPORTED_MOBILE_BUILD,
+  MOBILE_BUILD_HEADER,
+} from "./client-floor";
