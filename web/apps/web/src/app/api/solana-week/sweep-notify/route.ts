@@ -9,7 +9,6 @@ import {
   autodepositSweepScheduledPush,
   sendWalletPush,
 } from "@/lib/push-notifications/wallet-push.server";
-import { findLatestEarnAutodepositExecutionForWallet } from "@/lib/yield-optimization/earn-autodeposit-repository.server";
 import {
   getYieldOptimizationClient,
   pushCampaignSends,
@@ -69,7 +68,7 @@ export async function POST(request: Request) {
     record.kind === "scheduled" || record.kind === "failed"
       ? record.kind
       : "executed";
-  let amountRaw = parseAmountRaw(record.amountRaw);
+  const amountRaw = parseAmountRaw(record.amountRaw);
 
   if (kind === "scheduled") {
     await sendWalletPush(
@@ -91,35 +90,10 @@ export async function POST(request: Request) {
     source: "sweep-worker-notify",
   });
 
-  if (amountRaw === null) {
-    // Worker payloads don't carry the amount yet; the execution row the
-    // worker just recorded does. Only trust it while fresh so a delayed
-    // notify can't attribute a previous sweep's amount.
-    try {
-      const execution =
-        await findLatestEarnAutodepositExecutionForWallet(walletAddress);
-      if (
-        execution &&
-        Date.now() - execution.recordedAt.getTime() <
-          EXECUTION_AMOUNT_FRESHNESS_MS
-      ) {
-        amountRaw = execution.amountRaw;
-      }
-    } catch (error) {
-      console.warn("[sweep-notify] execution amount lookup failed", {
-        errorMessage:
-          error instanceof Error ? error.message : "Unknown lookup error.",
-        walletAddress,
-      });
-    }
-  }
-
   await sendWalletPush(walletAddress, autodepositSweepExecutedPush(amountRaw));
 
   return NextResponse.json({ status: "accepted" });
 }
-
-const EXECUTION_AMOUNT_FRESHNESS_MS = 15 * 60 * 1000;
 
 // Insert-first sent-log, same pattern as the Mixpanel cohort receiver: the
 // push only goes out when this wallet has no row for the sweep yet. Without a

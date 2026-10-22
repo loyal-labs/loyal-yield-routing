@@ -21,6 +21,7 @@ describe("Earn allowance history", () => {
       policyConfirmedSlot: BigInt(110),
       policySignature: "create-signature",
       recurringDelegation: "recurring-delegation",
+      tokenMint: "usdc-mint",
       walletBalanceFloorRaw: BigInt(5_000_000),
     });
 
