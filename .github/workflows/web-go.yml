@@ -10,6 +10,7 @@ on:
       - go/workers/internal/webserve/**
       - go/workers/cmd/loyal-admin/**
       - go/workers/internal/admin/**
+      - go/workers/internal/earnmax/**
       - go/workers/cmd/loyal-stats/**
       - go/workers/internal/stats/**
       - go/workers/internal/earnstats/**
@@ -66,8 +67,8 @@ jobs:
       - name: go
         working-directory: go/workers
         run: |
-          go vet ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin
-          go test -race ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin
+          go vet ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax
+          go test -race ./cmd/loyal-web ./cmd/loyal-admin ./internal/webapp ./internal/webserve ./internal/admin ./internal/earnmax
 
   mobile:
     runs-on: ubuntu-24.04
