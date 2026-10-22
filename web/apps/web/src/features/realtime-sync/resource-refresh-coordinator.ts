@@ -98,7 +98,6 @@ export class ResourceRefreshCoordinator {
               () => undefined
             );
           } catch {
-            // The active invocation owns error reporting for this resource.
           }
         } else {
           existing.dirty = true;

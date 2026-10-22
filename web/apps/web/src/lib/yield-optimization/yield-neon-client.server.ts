@@ -661,8 +661,6 @@ export const earnApyHourlySnapshots = loyalYieldSchema.table(
   ]
 );
 
-// Hourly Kamino reserve share prices (liquidity per collateral token).
-// Migration owned by loyal-yield-routing (0084_earn_reserve_share_prices).
 export const earnReserveSharePrices = loyalYieldSchema.table(
   "earn_reserve_share_prices",
   {
@@ -689,7 +687,6 @@ export const earnReserveSharePrices = loyalYieldSchema.table(
   ]
 );
 
-// Migration owned by loyal-yield-routing (0086_earn_fleet_allocations_hourly).
 export const earnFleetAllocationsHourly = loyalYieldSchema.table(
   "earn_fleet_allocations_hourly",
   {
@@ -1206,9 +1203,6 @@ export const routeLookupTables = loyalYieldSchema.table(
   ]
 );
 
-// Solana Week (dApp Store quests) attribution: our local mirror of the quest
-// completions we report to Solana. Idempotent per (wallet, quest_kind); also the
-// data source for in-app quest progress without hitting Solana's read API.
 export const solanaWeekQuestCompletions = loyalYieldSchema.table(
   "solana_week_quest_completions",
   {
@@ -1239,16 +1233,12 @@ export const solanaWeekQuestCompletions = loyalYieldSchema.table(
       table.walletAddress,
       table.questKind
     ),
-    // Lets the reconciler cheaply find rows still needing a (re)report.
     index("solana_week_quest_completion_unreported_idx")
       .on(table.updatedAt)
       .where(sql`${table.status} <> 'reported'`),
   ]
 );
 
-// Push-campaign sent log (ASK-1651 P2/P3): one row per (wallet, campaign).
-// Mixpanel cohort webhooks re-send members after mid-sync failures, so the
-// receiver inserts here first and only pushes when the insert lands.
 export const pushCampaignSends = loyalYieldSchema.table(
   "push_campaign_sends",
   {

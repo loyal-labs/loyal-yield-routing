@@ -54,7 +54,6 @@ export function formatEarnMaxUsdcAmount(amountRaw: string): string {
   });
 }
 
-/** "requested 470.00" when a withdrawal paid out a different amount. */
 export function earnMaxRequestedNote(item: EarnMaxActivityItem): string | null {
   if (item.action !== "withdraw_request" || !item.requestedRaw || !item.amountRaw) {
     return null;

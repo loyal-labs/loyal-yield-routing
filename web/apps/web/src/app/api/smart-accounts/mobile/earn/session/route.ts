@@ -7,14 +7,6 @@ import {
 } from "@/features/identity/server/mobile-wallet-auth";
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
 
-// Mints the mobile Earn session token (ASK-1846): trade one wallet-signed auth
-// message — scoped to ANY Earn purpose, so the app can piggyback on a
-// signature the user is already making for a real flow — for a long-lived
-// bearer token that the DB-only Autodeposit twins (sweeps/execute, floor,
-// toggle) accept without further wallet prompts. Signature-gated proof of
-// wallet control, no DB access; the token authorizes nothing a fresh signed
-// message wouldn't.
-
 function jsonError(
   status: number,
   code: string,

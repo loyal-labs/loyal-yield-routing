@@ -1,7 +1,5 @@
 import "server-only";
 
-// ponytail: in-memory per-instance window; a distributed limiter is only
-// worth it if guessing ever shows up (36^6 codes, 50 valid).
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 10;
 const MAX_TRACKED = 4096;

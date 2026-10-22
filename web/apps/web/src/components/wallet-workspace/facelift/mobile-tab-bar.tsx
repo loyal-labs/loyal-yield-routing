@@ -4,10 +4,6 @@ import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-// Figma 5465:83296 — mobile-only bottom tab bar: bone (future quests,
-// inactive) · mascot pill (the wallet home) · Activity. Earn and Earn MAX are
-// subscreens behind the home's product cards, not tabs. Input screens
-// (deposit/withdraw/autodeposit, send/swap) hide the bar under the keyboard.
 export function MobileTabBar({
   activeTab,
   onSelect,
@@ -20,7 +16,6 @@ export function MobileTabBar({
   return (
     <div className="cherry-mobile-tab-bar w-full shrink-0 bg-card px-4 min-[796px]:hidden">
       <div className="flex w-full items-center gap-4">
-        {/* Future quests slot — decorative until the feature ships. */}
         <div
           aria-hidden="true"
           className="flex flex-1 flex-col items-center justify-center py-4 opacity-40"

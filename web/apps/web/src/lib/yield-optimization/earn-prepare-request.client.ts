@@ -1,9 +1,6 @@
 import { lifecycleFlowHeaders } from "@/features/observability/client";
 import type { LifecycleErrorDetail } from "@/features/observability/lifecycle-contract";
 
-// Prepare routes legitimately run long (Safe reserve selection + Kamino RPC
-// round trips measured at ~10s in production, longer on dev cold compiles),
-// so the bound only guards against a hung connection, not a slow prepare.
 const EARN_PREPARE_REQUEST_TIMEOUT_MS = 45_000;
 
 export class EarnPrepareRequestError extends Error {

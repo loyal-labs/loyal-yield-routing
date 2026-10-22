@@ -6,16 +6,10 @@ import { cn } from "@/lib/utils";
 
 type PageItem = number | "ellipsis-left" | "ellipsis-right";
 
-/** Link target for a given page (page 1 stays on the clean /blog URL). */
 function pageHref(page: number): string {
   return page <= 1 ? "/blog" : `/blog?page=${page}`;
 }
 
-/**
- * Windowed page list: always shows the first and last page, the current page
- * and its neighbours, and collapses the gaps into ellipses. Small page counts
- * (<= 7) are shown in full.
- */
 function buildPageItems(current: number, total: number): PageItem[] {
   if (total <= 7) {
     return Array.from({ length: total }, (_, i) => i + 1);

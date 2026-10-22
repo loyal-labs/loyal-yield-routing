@@ -1,7 +1,3 @@
-// Hourly Loyal Earn fleet allocation samples, recorded by the Go observer in
-// loyal_yield.earn_fleet_allocations_hourly, mapped into the allocation
-// history realized APY weights every past hour by.
-
 import type { EarnAllocationHistory } from "./earn-realized-apy.shared";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -14,12 +10,8 @@ export type EarnFleetAllocationHistorySample = {
   excludedAmountRaw: string;
 };
 
-// A sample still measures its hours while the last-known capital of the
-// vaults it left out stays within this share of the capital it covers.
 const MAX_EXCLUDED_CAPITAL_SHARE = 0.01;
 
-// Weights are compared as JS numbers; raw six-decimal stablecoin totals stay
-// exact far beyond any realistic fleet size.
 function safeWeight(value: unknown): number | null {
   if (typeof value !== "string" || !RAW_AMOUNT_PATTERN.test(value)) {
     return null;
@@ -28,12 +20,6 @@ function safeWeight(value: unknown): number | null {
   return Number.isSafeInteger(amount) ? amount : null;
 }
 
-// The recorded samples become one synthetic "fleet" vault for the realized
-// APY calculation. A sample that holds an unreadable amount, or left out more
-// capital than MAX_EXCLUDED_CAPITAL_SHARE allows, is unsupported: where the
-// fleet's capital sat is unknown, so the hours it covers cannot be measured.
-// Vaults without a complete snapshot have no known capital and do not count
-// against a sample.
 export function earnAllocationHistoryFromSamples(
   samples: readonly EarnFleetAllocationHistorySample[],
   sinceMs: number

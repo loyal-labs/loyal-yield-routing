@@ -196,7 +196,6 @@ export function VaultAccountPageView({
         }
       `}</style>
 
-      {/* SVG pixelation filters */}
       <svg
         aria-hidden="true"
         height="0"
@@ -226,7 +225,6 @@ export function VaultAccountPageView({
         </defs>
       </svg>
 
-      {/* Header: back + close */}
       <div
         style={{
           display: "flex",
@@ -277,7 +275,6 @@ export function VaultAccountPageView({
         </button>
       </div>
 
-      {/* Account info: icon + label + balance */}
       <div
         style={{ display: "flex", alignItems: "center", padding: "8px 20px" }}
       >
@@ -368,7 +365,6 @@ export function VaultAccountPageView({
         </div>
       </div>
 
-      {/* Scrollable content */}
       <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
         {addressRows.length > 0 && (
           <div
@@ -421,7 +417,6 @@ export function VaultAccountPageView({
           </div>
         )}
 
-        {/* "In this vault" section */}
         <div
           style={{
             display: "flex",
@@ -619,7 +614,6 @@ export function VaultAccountPageView({
           )}
         </div>
 
-        {/* Tokens section */}
         <div
           style={{
             display: "flex",
@@ -680,7 +674,6 @@ export function VaultAccountPageView({
           ))}
         </div>
 
-        {/* Activity section */}
         <div
           style={{
             display: "flex",

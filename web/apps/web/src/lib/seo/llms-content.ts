@@ -1,24 +1,3 @@
-/**
- * Curated copy for /llms.txt and /llms-full.txt.
- *
- * These files were static assets in public/ until the blog outgrew them: 32
- * posts had accumulated with none of them listed, because nothing tied the
- * files to the post directory. The prose below is still hand-written and
- * hand-edited; only the Blog section is generated, from the same loader the
- * blog listing uses, so a new post can never be missed again.
- *
- * Written against Loyal Branding Guidelines.md and Loyal Blurb.md: Earn leads,
- * privacy is mentioned last as a property of the product rather than the pitch,
- * the deprioritised products are labelled as such, no em dashes, no blacklisted
- * words, and no APY figure is ever quoted. Re-read those two documents before
- * editing rather than patching around what is already here.
- *
- * Each file is split into the copy before and after its generated section:
- * llms.txt takes Blog just before "## Source code", llms-full.txt just before
- * "## Resources". Edit the prose here; the routes in src/app/llms.txt/ and
- * src/app/llms-full.txt/ join the halves.
- */
-
 export const LLMS_INDEX_HEAD = `# Loyal
 
 > Self-custodial finance automations on Solana. Loyal Earn moves idle stablecoins into lower-risk yield and rebalances as rates change, inside on-chain policy rails the owner sets. Open source, built by Loyal DAO LLC.

@@ -4,7 +4,6 @@ import { sql } from "drizzle-orm";
 
 import { getYieldOptimizationClient } from "@/lib/yield-optimization/yield-neon-client.server";
 
-// The Backyard RWA worker route that manages the Voltr vault's strategy.
 export const EARN_MAX_BACKYARD_ROUTE_KEY =
   "rwa-multiply:ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh";
 const MAX_AGE_MS = 30 * 60 * 1000;
@@ -12,11 +11,6 @@ const CACHE_MS = 60 * 1000;
 
 let cached: { at: number; value: number | null } | null = null;
 
-/**
- * Net APY of the vault's live position right now (token yield on the
- * collateral minus borrow cost, at the current leverage), as the worker
- * computes and stores it. Null when missing, stale or the vault is flat.
- */
 export async function readEarnMaxCurrentApyBps(): Promise<number | null> {
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.value;
   let value: number | null = null;
@@ -46,7 +40,6 @@ export async function readEarnMaxCurrentApyBps(): Promise<number | null> {
       value = Math.round(apy.apyBps);
     }
   } catch {
-    // The badge falls back to the 7-day APY.
     return cached?.value ?? null;
   }
   cached = { at: Date.now(), value };

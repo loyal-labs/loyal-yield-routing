@@ -96,7 +96,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     return [{ url: siteUrl(path), lastModified, alternates }, ...translated];
   });
 
-  // Posts come back newest first, so the head of the list dates the listing.
   const newest = posts.at(0);
   const blogIndex = {
     url: siteUrl("/blog"),

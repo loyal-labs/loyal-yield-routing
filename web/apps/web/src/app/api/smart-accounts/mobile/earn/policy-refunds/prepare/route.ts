@@ -19,11 +19,6 @@ import {
   type EarnPolicyRefundPrepareRequestBody,
 } from "@/lib/yield-optimization/earn-policy-refund-contracts.shared";
 
-// Mobile twin of the session `policy-refunds/prepare` route: same shared core,
-// but authenticated by a wallet signature instead of a session. The prepared
-// transaction pays out to (and must be signed by) the authenticated wallet,
-// so a stolen request body cannot redirect a refund. Refunding requires an
-// existing smart account; this never provisions.
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 function jsonError(

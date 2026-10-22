@@ -44,8 +44,6 @@ export function persistCookieConsent(choices: ConsentChoices): void {
       JSON.stringify(choices)
     );
   } catch {
-    // Storage may be unavailable (private mode, quota exceeded). The DOM event
-    // below still lets in-memory listeners react during the current session.
   }
 
   window.dispatchEvent(

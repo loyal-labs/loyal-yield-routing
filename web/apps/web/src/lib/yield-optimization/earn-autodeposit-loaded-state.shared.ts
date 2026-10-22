@@ -239,9 +239,6 @@ export function earnAutodepositConfigFromLoadedState(
   };
 }
 
-// Moved verbatim from app-wallet-workspace.tsx so redesigned views can reuse
-// the exact same display logic without importing the workspace monolith.
-
 export const EARN_AUTODEPOSIT_MIN_VISIBLE_SCHEDULED_SWEEP_RAW = BigInt(10_000);
 
 export function formatAutodepositUsdLabel(

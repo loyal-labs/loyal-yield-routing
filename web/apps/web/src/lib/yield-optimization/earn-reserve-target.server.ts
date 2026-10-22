@@ -118,9 +118,6 @@ export async function findBestSafeEarnReserveTarget(args: {
   return selectBestSafeEarnReserveTarget({ ...args, rows });
 }
 
-// Catalog changes or a brief stream interruption can momentarily leave a mint
-// without eligible current rows. A short re-read bridges those blips; a real
-// outage still returns null. Devnet selection is deterministic and never retries.
 const RESERVE_SELECTION_RETRIES = 2;
 const RESERVE_SELECTION_RETRY_DELAY_MS = 700;
 
@@ -233,17 +230,11 @@ export function earnReserveTargetFromActivePosition(
   };
 }
 
-// ASK-1764: an external rebalance execution seeded a $3 line in a HIDDEN
-// Kamino reserve; the read model adopted it as current_reserve and deposit
-// top-ups then routed $7.3k into a ~0%-APY venue. Deposit targets must be
-// reserves our indexer actually tracks (hidden reserves are never sampled)
-// with real liquidity behind them. Returns null when eligible.
 export async function findEarnReserveTargetIneligibility(args: {
   cluster: LoyalCluster;
   reserve: string;
 }): Promise<EarnReserveIneligibilityReason | null> {
   if (args.cluster !== LoyalCluster.MainnetBeta) {
-    // The Timescale reserve feed only tracks mainnet reserves.
     return null;
   }
 
@@ -251,8 +242,6 @@ export async function findEarnReserveTargetIneligibility(args: {
     reserves: [args.reserve],
   });
   if (observations === null) {
-    // Feed not configured in this environment — never brick deposits over a
-    // config gap; the confirm-side alert still surfaces bad targets.
     return null;
   }
 

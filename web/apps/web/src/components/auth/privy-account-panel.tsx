@@ -38,11 +38,6 @@ function usePrivyAppConfig(appId: string | undefined) {
   return config;
 }
 
-/**
- * Account panel body when Privy is on: linked email / Google, embedded-wallet
- * key export, MFA. Every Privy action runs in Privy's own modal; after a
- * link/unlink the Loyal session is re-issued so `user.email` follows.
- */
 export function PrivyAccountPanel() {
   const { user: privyUser } = usePrivy();
   const privyAuth = usePrivyAuth();
@@ -80,8 +75,6 @@ export function PrivyAccountPanel() {
   const { showMfaEnrollmentModal } = useMfaEnrollment();
 
   if (!privyUser) {
-    // Legacy wallet session (signed in before Privy): one row that logs the
-    // same wallet into Privy and asks for an email.
     return (
       <div className="flex flex-col gap-1">
         <Row
@@ -112,7 +105,6 @@ export function PrivyAccountPanel() {
   // Privy refuses to unlink the last linked account; mirror that in the UI.
   const canUnlink = linked.length > 1;
   const mfaOn = privyUser.mfaMethods.length > 0;
-  // Dashboard toggles: rows for methods that are off would only error.
   const googleEnabled = appConfig?.google_oauth === true;
   const mfaEnabled = (appConfig?.mfa_methods?.length ?? 0) > 0;
 

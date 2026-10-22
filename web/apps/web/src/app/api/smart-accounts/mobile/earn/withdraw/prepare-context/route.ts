@@ -23,13 +23,6 @@ import {
   parseEarnWithdrawPrepareRequestBody,
 } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
 
-// Context twin of `../prepare` for ON-DEVICE withdraw prepare: same auth and
-// source-selection/reconcile logic (shared via
-// `earn-withdraw-input-resolution.server.ts`), but instead of building the
-// withdrawal here it returns the resolved SDK input so the device runs
-// `prepareEarnUsdcWithdraw` on its own RPC/IP allowance — mirroring the
-// deposit `prepare-context` and the on-device autodeposit flows. `../prepare`
-// stays for app versions that predate on-device prepare.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 const connectionCache = new Map<SolanaEnv, Connection>();
@@ -98,8 +91,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // Withdrawing requires an already-provisioned smart account (you can't
-  // withdraw from one that was never created). Resolve it; never provision.
   let settingsPda: string;
   let smartAccountAddress: string;
   try {

@@ -52,8 +52,6 @@ const WALLET_ICONS: Readonly<Record<string, string>> = {
   zerion: "wallet-zerion.svg",
 };
 
-// Same destinations the old workspace's bottom rail linked to. The mobile
-// settings sheet reuses these entries with its own labels.
 export const SIDEBAR_LINKS = [
   {
     href: "https://x.com/loyal_hq",
@@ -110,7 +108,6 @@ export function SplitAmount({
             ]}
           />
         ) : (
-          // Invisible placeholder sizes the skeleton bar.
           `${whole}${fraction}`
         )}
       </SkeletonReveal>
@@ -118,8 +115,6 @@ export function SplitAmount({
   );
 }
 
-// Hover-revealed kbd hint for the section shortcuts; lights up red when the
-// shell reports the key was just pressed.
 function ShortcutKey({
   isFlashed,
   letter,
@@ -132,7 +127,6 @@ function ShortcutKey({
       className={`flex h-4 min-w-4 items-center justify-center rounded-[5px] px-0.5 font-medium font-sans text-[11px] leading-none ${
         isFlashed
           ? // A keypress lands instantly, so its feedback must too — only the
-            // fade-out (the unflashed state's transition) is animated.
             "bg-primary text-white opacity-100 transition-none"
           : "bg-accent-selected text-muted-foreground opacity-0 transition-opacity duration-150 group-hover:opacity-100"
       }`}
@@ -158,7 +152,6 @@ export function FaceliftSidebar({
   earnBalanceUsd: number;
   earnMaxBalanceUsd: number;
   earnMaxForecastApyBps: number | null;
-  /** Section whose shortcut key was just pressed — flashes its kbd hint. */
   flashedShortcut: WorkspacePage | null;
   isEarnBalanceLoading: boolean;
   isEarnMaxBalanceLoading: boolean;
@@ -204,11 +197,6 @@ export function FaceliftSidebar({
     void Promise.allSettled([logout(), disconnect()]);
   };
 
-  // Unseen-activity badge: activity is a lazy fetch, so kick it once the
-  // wallet lands; "seen" is the newest row timestamp at the last Activity
-  // visit, persisted per wallet. ponytail: the Activity page fetches through
-  // its own hook instance — both read the same client cache, so the newest
-  // row here is close enough to mark seen from.
   const loadActivity = data.loadActivity;
   useEffect(() => {
     if (data.walletAddress) {
@@ -236,8 +224,6 @@ export function FaceliftSidebar({
   }, [activePage, activitySeenKey, latestActivityAt]);
   const hasUnseenActivity =
     activePage !== "activity" && latestActivityAt > activitySeenAt;
-  // The sidebar stays mounted (CSS-hidden) below 796px, so it keeps owning
-  // the unseen state; the shell mirrors it for the mobile tab bar's badge.
   useEffect(() => {
     onUnseenActivityChange?.(hasUnseenActivity);
   }, [hasUnseenActivity, onUnseenActivityChange]);
@@ -283,7 +269,6 @@ export function FaceliftSidebar({
     : publicEarnMaxApyBps;
   const earnMaxApyLabel =
     earnMaxApyBps === null ? null : formatEarnMaxApyLabel(earnMaxApyBps);
-  // Hidden products must not affect the public wallet total.
   const totalBalance = splitUsdBalance(
     data.totalUsd + earnBalanceUsd + (showEarnMax ? earnMaxBalanceUsd : 0)
   );
@@ -292,11 +277,6 @@ export function FaceliftSidebar({
     ? `${data.walletAddress.slice(0, 4)}…${data.walletAddress.slice(-4)}`
     : "No account";
 
-  // Skeleton every non-final value on boot instead of animating through
-  // intermediate states: hydration gates the address; the wallet fetch gates
-  // stablecoins/crypto; the position resolve gates earn; Total needs BOTH
-  // (it used to pop three times: 0 → wallet-only → wallet+earn). Signed-out
-  // zeros after hydration ARE final, so they reveal immediately.
   const isAddressRevealed =
     isHydrated && (!isSignedIn || data.walletAddress !== null);
   const isWalletDataRevealed =
@@ -326,7 +306,6 @@ export function FaceliftSidebar({
     });
   }, [isSignedIn, isTotalRevealed]);
 
-  // Copied feedback: the copy icon swaps to a check, then back.
   const [isCopied, setIsCopied] = useState(false);
   const copiedTimerRef = useRef<number | null>(null);
   useEffect(
@@ -348,8 +327,6 @@ export function FaceliftSidebar({
     }, 1500);
   };
 
-  // Figma 5429:36627 — signed out the sidebar drops the balance blocks and
-  // shows just the Earn / Earn MAX product cells (APY-only, switchable).
   const isSignedOutNav = isHydrated && !isSignedIn;
 
   const handleCopyAddress = () => {
@@ -366,7 +343,6 @@ export function FaceliftSidebar({
 
   return (
     <aside className="flex h-full w-[360px] shrink-0 flex-col overflow-clip p-2 max-[795px]:hidden">
-      {/* Figma 4768:102489 — logo on top, wallet chip moved to the bottom. */}
       <div className="flex h-[60px] w-full shrink-0 items-center">
         <ThemedIcon
           className="ml-4 h-6 w-14 text-foreground"
@@ -411,7 +387,6 @@ export function FaceliftSidebar({
             <p className="whitespace-nowrap text-[16px] leading-5 text-muted-foreground">
               Total balance
             </p>
-            {/* ponytail: mock tooltip copy — real copy comes with the wiring pass */}
             <InfoTooltip text="Wallet and Earn balances combined" />
           </div>
           <div className="flex items-center gap-3">
@@ -432,7 +407,6 @@ export function FaceliftSidebar({
                     ]}
                   />
                 ) : (
-                  // Invisible placeholder sizes the skeleton bar.
                   `${totalBalance.balanceWhole}${totalBalance.balanceFraction}`
                 )}
               </SkeletonReveal>
@@ -812,7 +786,6 @@ export function FaceliftSidebar({
                   <TextSwap text={addressLabel} />
                 </SkeletonReveal>
               </span>
-              {/* transitions.dev icon swap: copy ↔ check while isCopied. */}
               <span
                 className="t-icon-swap size-6 shrink-0 cursor-pointer"
                 data-state={isCopied ? "b" : "a"}
@@ -869,8 +842,6 @@ export function FaceliftSidebar({
               }
               className="t-hover flex size-11 items-center justify-center rounded-3xl text-tertiary hover:bg-accent"
               onClick={(event) => {
-                // Wipe from the toggle itself (also right for keyboard
-                // activation, where click coords are unreliable).
                 const rect = event.currentTarget.getBoundingClientRect();
                 toggleTheme({
                   x: rect.left + rect.width / 2,
@@ -895,7 +866,6 @@ export function FaceliftSidebar({
               type="button"
             />
           ) : null}
-          {/* Same frosted sheet treatment as the withdraw source select. */}
           <DropdownReveal
             className="absolute bottom-[calc(100%+4px)] left-0 z-30 flex w-60 flex-col rounded-2xl bg-popover/70 p-2 shadow-[0px_0px_2px_0px_rgba(0,0,0,0.08),0px_4px_16px_0px_rgba(0,0,0,0.08)] backdrop-blur-[16px]"
             isOpen={cherryRuntime.mode === "standalone" && isWalletMenuOpen}

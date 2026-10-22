@@ -36,7 +36,6 @@ function failure(status: number, code: string, message: string) {
   return json({ error: { code, message } }, status);
 }
 
-/** Native auth resolves the canonical account server-side; callers cannot select it. */
 export async function postMobileEarnMax(request: Request) {
   const body = await request.json().catch(() => null);
   if (!body || !["summary", "activity", "context"].includes(body.action)) {
@@ -141,7 +140,6 @@ export async function postMobileEarnMax(request: Request) {
     ) {
       return failure(error.status, error.code, error.message);
     }
-    // Never log the request body: it can contain an auth signature.
     console.error("[mobile-earn-max] request failed", {
       errorName: error instanceof Error ? error.name : typeof error,
     });
@@ -153,9 +151,6 @@ export async function postMobileEarnMax(request: Request) {
   }
 }
 
-/** Same passive wallet-address read contract as mobile Earn state/earnings.
- * Returns on-chain-derived data only; never provisions accounts or prepares transactions.
- */
 export async function getMobileEarnMax(request: Request) {
   const params = new URL(request.url).searchParams;
   const action = params.get("action");

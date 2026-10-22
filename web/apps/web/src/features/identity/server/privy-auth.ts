@@ -41,8 +41,6 @@ export type PrivyIdentity = {
   wallets: PrivyLinkedWallet[];
 };
 
-// Verifies a Privy identity token and flattens the linked accounts we care
-// about. Signature-only check via Privy's verification key; no user lookup.
 export async function verifyPrivyIdentityToken(
   identityToken: string
 ): Promise<PrivyIdentity> {
@@ -84,9 +82,6 @@ export type PrivyAuthCompletion = {
   sessionToken: string;
 };
 
-// Exchange a verified Privy identity for a Loyal session. The user stays keyed
-// by wallet address (provider "solana"), so an extension user who now logs in
-// through Privy lands on the same app_users row and the same smart account.
 export async function completePrivyAuth(args: {
   identityToken: string;
   request: Request;

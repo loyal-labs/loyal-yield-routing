@@ -16,12 +16,6 @@ import {
   type PendingEarnAutodepositScheduledSweepRecord,
 } from "@/lib/yield-optimization/earn-autodeposit-repository.server";
 
-// Read-only mobile autodeposit state, keyed by wallet address (no signature, no
-// provisioning) — mirrors `mobile/earn/state`. Drives the native Autodeposit
-// control: whether it's set up, the threshold (walletBalanceFloorRaw), the
-// on/off state, and the policy/delegation the floor/toggle/close calls need.
-// The Go autodeposit engine owns target status, artifact proofs and sweep
-// scheduling; this read never writes.
 const EARN_VAULT_INDEX = 1 as const;
 
 function jsonError(
@@ -56,10 +50,6 @@ function getConfiguredSolanaEnv(): SolanaEnv {
   return resolveLoyalWebSolanaEnvFromEnv(process.env);
 }
 
-// Everything the device needs to run the SDK's autodeposit prepare locally
-// (client-side instruction building) instead of calling `setup/prepare`.
-// Null when the deployment isn't configured for it (missing signer env or an
-// unsupported cluster) — the read-only state above must still be served.
 function buildPrepareContext(): {
   cluster: string;
   policySigner: string;

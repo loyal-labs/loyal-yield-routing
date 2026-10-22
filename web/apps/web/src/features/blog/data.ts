@@ -8,10 +8,6 @@ import { z } from "zod";
 
 import type { BlogPageResult, BlogPost, BlogPostFull } from "./types";
 
-/**
- * Number of posts shown per page on the blog listing.
- * The Figma layout is a 3-column grid; 9 fills three rows on desktop.
- */
 export const BLOG_POSTS_PER_PAGE = 9;
 
 /**
@@ -40,7 +36,6 @@ const FrontmatterSchema = z.object({
   readingTime: z.number().int().positive().optional(),
 });
 
-/** Splits raw file content into parsed YAML frontmatter and the markdown body. */
 function splitFrontmatter(raw: string): { data: unknown; content: string } {
   const match = raw.match(FRONTMATTER_RE);
   if (!match) {
@@ -52,16 +47,11 @@ function splitFrontmatter(raw: string): { data: unknown; content: string } {
   return { data, content: raw.slice(match[0].length) };
 }
 
-/** Estimates reading time in minutes from the markdown body (~200 wpm). */
 function estimateReadingTime(markdown: string): number {
   const words = markdown.trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.round(words / WORDS_PER_MINUTE));
 }
 
-/**
- * Resolves a frontmatter media reference to a servable URL. Absolute paths and
- * full URLs pass through; bare/relative names resolve against the post folder.
- */
 function resolveMedia(slug: string, ref: string): string {
   if (/^(https?:)?\/\//.test(ref) || ref.startsWith("/")) {
     return ref;
@@ -69,7 +59,6 @@ function resolveMedia(slug: string, ref: string): string {
   return `/blog/${slug}/${ref.replace(/^\.\//, "")}`;
 }
 
-/** Reads and parses a single post directory; returns null if it has no post.md. */
 async function loadPost(slug: string): Promise<BlogPostFull | null> {
   const file = path.join(BLOG_CONTENT_DIR, slug, POST_FILENAME);
   let raw: string;
@@ -108,7 +97,6 @@ async function loadPost(slug: string): Promise<BlogPostFull | null> {
   };
 }
 
-/** Returns the names of the post subdirectories (empty if the dir is missing). */
 async function readPostSlugs(): Promise<string[]> {
   try {
     const dirents = await fs.readdir(BLOG_CONTENT_DIR, { withFileTypes: true });
@@ -122,7 +110,6 @@ async function readPostSlugs(): Promise<string[]> {
 
 let postsCache: Promise<BlogPostFull[]> | null = null;
 
-/** Reads every post once and caches the parsed result for the process lifetime. */
 function loadAllPosts(): Promise<BlogPostFull[]> {
   postsCache ??= (async () => {
     const slugs = await readPostSlugs();
@@ -130,14 +117,12 @@ function loadAllPosts(): Promise<BlogPostFull[]> {
       (post): post is BlogPostFull => post !== null
     );
 
-    // Newest first.
     return posts.sort((a, b) => b.date.localeCompare(a.date));
   })();
 
   return postsCache;
 }
 
-/** Strips the markdown body, leaving listing-friendly post metadata. */
 function toMeta(post: BlogPostFull): BlogPost {
   return {
     slug: post.slug,
@@ -155,10 +140,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-/**
- * Returns one page of blog posts plus pagination metadata. The requested page
- * is clamped into the valid range, so callers can pass a raw `?page=` value.
- */
 export async function getBlogPosts({
   page = 1,
   perPage = BLOG_POSTS_PER_PAGE,
@@ -173,13 +154,11 @@ export async function getBlogPosts({
   return { posts, page: safePage, perPage, total, totalPages };
 }
 
-/** Returns the full post (metadata + markdown body) for a slug, or null. */
 export async function getBlogPost(slug: string): Promise<BlogPostFull | null> {
   const all = await loadAllPosts();
   return all.find((post) => post.slug === slug) ?? null;
 }
 
-/** Returns the most recent posts excluding the given slug (for "More articles"). */
 export async function getMoreArticles(
   slug: string,
   count = 3
@@ -191,19 +170,11 @@ export async function getMoreArticles(
     .map(toMeta);
 }
 
-/** Returns every post slug, for static generation. */
 export async function getAllBlogSlugs(): Promise<string[]> {
   const all = await loadAllPosts();
   return all.map((post) => post.slug);
 }
 
-/**
- * Returns metadata for every post, newest first, unpaginated.
- *
- * The sitemap and the llms.txt files enumerate the whole archive, so they read
- * from here rather than walking getBlogPosts() page by page. Sharing the loader
- * is the point: a post that exists on disk is in the sitemap by construction.
- */
 export async function getAllBlogPosts(): Promise<BlogPost[]> {
   const all = await loadAllPosts();
   return all.map(toMeta);

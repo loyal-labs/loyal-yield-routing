@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 
 import { getEarnPublicStats } from "@/lib/yield-optimization/earn-public-stats.server";
 
-// Public protocol stats (same numbers as the public dashboard) — no auth.
 export async function GET() {
   try {
     const stats = await getEarnPublicStats();

@@ -8,11 +8,6 @@ import { usePublicEnv } from "@/contexts/public-env-context";
 import { CapWidget } from "./cap-widget";
 import { WalletTab } from "./wallet-tab";
 
-/**
- * Wallet sign-in content (captcha first, then the wallet list). Shared
- * between the sign-in modal and the on-page signed-out pane so the captcha
- * coordination lives in one place.
- */
 export function WalletSignIn({
   defaultUseLedgerProof = false,
 }: {
@@ -30,9 +25,6 @@ export function WalletSignIn({
     connected ||
     wallets.some((candidate) => candidate.readyState === "Installed");
 
-  // Collapse the verification block a beat AFTER solving so the widget's
-  // checkmark lands before the accordion folds; a consumed token (sign-in
-  // attempt) reopens it immediately.
   const [isCollapsed, setIsCollapsed] = useState(false);
   useEffect(() => {
     if (captchaToken === null) {
@@ -43,9 +35,6 @@ export function WalletSignIn({
     return () => clearTimeout(timer);
   }, [captchaToken]);
 
-  // The widget stays mounted through the collapse (so its checkmark is
-  // visible while folding), but a fresh solve needs a fresh widget — remount
-  // it whenever a consumed token reopens the block.
   const [widgetEpoch, setWidgetEpoch] = useState(0);
 
   return (

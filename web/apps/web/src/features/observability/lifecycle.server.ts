@@ -86,7 +86,6 @@ export function createRequestLifecycle(args: {
   };
 }
 
-// Keep response/error semantics unchanged; export remains best-effort via after().
 export async function withRequestLifecycle(args: {
   request: Request;
   flowName: LifecycleFlowName;

@@ -22,9 +22,6 @@ const CHAIN_LABELS: Record<string, string> = {
   bsc: "BNB Chain",
 };
 
-// Facelift take on the OG Receive view (receive-content.tsx): Solana-only
-// warning, QR card with the mascot in the center and the raw address, and a
-// Copy Address pill. Opens as a centered sheet from the sidebar's QR button.
 export function ReceiveSheet({
   isOpen,
   onClose,
@@ -37,8 +34,6 @@ export function ReceiveSheet({
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<Tab>("Solana");
   const evm = useEvmDepositAddress(walletAddress);
-  // Privy provisions the 0x address on first request; only ask once the
-  // user actually opens the tab.
   useEffect(() => {
     if (isOpen && tab === "Other chains") void evm.load();
   }, [evm, isOpen, tab]);
@@ -175,9 +170,6 @@ function ReceiveBody({
   page: "1" | "2";
   placeholder: string;
 }) {
-  // transitions.dev "skeleton loader and reveal" on the QR + address slot:
-  // the skeleton pulses while Privy provisions the address, then both layers
-  // cross-fade. Solana's address is known at open, so it reveals at once.
   const revealed = Boolean(address) || Boolean(error);
   return (
     <div

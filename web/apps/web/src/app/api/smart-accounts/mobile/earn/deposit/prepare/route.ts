@@ -158,14 +158,6 @@ export async function POST(request: Request) {
   // product mint, which defaults those to USDC.
   mint = productMint.mint.toBase58();
 
-  // Resolve (provisioning if needed) the canonical smart account for this
-  // wallet — the same account the web flow uses, so Earn is one position
-  // everywhere. `ensureWalletUserSmartAccount` is idempotent: an account
-  // created on web is reused at no cost. The *first-ever* provisioning is
-  // sponsored (Loyal pays rent), so gate it behind real funds — the wallet must
-  // already hold the selected mint it is depositing. This makes free-account spam
-  // economically infeasible (each new account needs a distinct funded wallet)
-  // without depending on the captcha or external rate-limit infra.
   let settingsPda: string;
   let smartAccountAddress: string;
   try {

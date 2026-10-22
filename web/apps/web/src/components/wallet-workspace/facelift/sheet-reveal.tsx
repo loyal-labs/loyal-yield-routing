@@ -11,13 +11,6 @@ import { createPortal } from "react-dom";
 
 import { readCssDurationMs } from "@/components/wallet-workspace/facelift/css-duration";
 
-// transitions.dev "panel reveal" (frontend/transitions/panel-reveal.md) as
-// the sheet/overlay motion: the surface rises into view on the panel clock —
-// the scrim cross-fading on the same clock — and slides back down before
-// unmounting. Runs on the keyframe mechanism (data-state flips, fill-mode
-// both) exactly like the expanded-chart overlay: keyframes play whenever the
-// selector matches, so the close can't be starved the way the transition
-// form was. Mounting with data-state="open" plays the entrance on insertion.
 export function SheetReveal({
   children,
   isOpen,
@@ -50,8 +43,6 @@ export function SheetReveal({
       timerRef.current = null;
     }
     if (isOpen) {
-      // No-op on first mount (JSX renders "open"); flips a mid-close reopen
-      // back to the entrance animation.
       scrim.dataset.state = "open";
       sheet.dataset.state = "open";
       return;
@@ -104,9 +95,6 @@ export function SheetReveal({
   );
 }
 
-// The same rise/slide-down mechanism for panes that live INSIDE the
-// workspace layout (no portal, no scrim) — the caller keeps the layout slot
-// reserved so only the panel surface animates (swap's token selector aside).
 export function InlineSheetReveal({
   children,
   className,

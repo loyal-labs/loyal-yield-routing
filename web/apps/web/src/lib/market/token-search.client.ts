@@ -7,13 +7,7 @@ import {
   writeClientCache,
 } from "@/lib/client-cache/client-cache";
 
-/**
- * Jupiter search hit enriched with the display/quality fields the shared
- * `SwapToken` type drops. Still assignable to `SwapToken`, so token pickers
- * that only read mint/symbol/icon/price keep working unchanged.
- */
 export type TokenSearchResult = Omit<SwapToken, "mint"> & {
-  /** Jupiter always returns a mint (`id`) for search hits, so this is required. */
   mint: string;
   name: string;
   isVerified: boolean;
@@ -22,8 +16,6 @@ export type TokenSearchResult = Omit<SwapToken, "mint"> & {
 
 const JUPITER_SEARCH_URL = "https://lite-api.jup.ag/tokens/v2/search";
 const JUPITER_SEARCH_LIMIT = 10;
-// Typeahead requests are user-perceived latency; past this the user has already
-// kept typing, so the result would be discarded anyway.
 const SEARCH_TIMEOUT_MS = 8 * 1000;
 const SEARCH_CACHE_LIMIT = 50;
 const SEARCH_FRESH_MS = 5 * 60 * 1000;
@@ -73,10 +65,6 @@ function composeRequestSignal(signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-/**
- * Rejects as soon as `signal` aborts, even when `promise` is shared with other
- * callers (in-flight dedup) and therefore outlives this one.
- */
 function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(signal.reason);
@@ -113,8 +101,6 @@ async function fetchJupiterSearch(
   return data.map(toTokenSearchResult);
 }
 
-// LRU keyed by normalized query. Insertion order doubles as recency, so
-// re-inserting on read keeps hot queries at the tail for eviction.
 let searchCache = new Map<
   string,
   { expiresAt: number; value: TokenSearchResult[] }
@@ -244,7 +230,6 @@ function loadTrendingTokensFromNetwork(): Promise<TokenSearchResult[]> {
     TRENDING_SYMBOLS.map(async (symbol) => {
       try {
         const tokens = await fetchJupiterSearch(symbol);
-        // Pick exact symbol match with highest mcap
         const exact = tokens
           .filter(
             (t) =>
@@ -259,8 +244,6 @@ function loadTrendingTokensFromNetwork(): Promise<TokenSearchResult[]> {
   )
     .then((results) => {
       trendingCache = results.filter((t): t is TokenSearchResult => t !== null);
-      // Only persist complete lists so a partial outage never pins a
-      // degraded picker for the full TTL.
       if (trendingCache.length === TRENDING_SYMBOLS.length) {
         writeClientCache({
           key: TRENDING_TOKENS_CACHE_KEY,
@@ -292,8 +275,6 @@ export async function prefetchTrendingTokens(): Promise<TokenSearchResult[]> {
   if (persisted) {
     trendingCache = persisted.data;
     if (Date.now() - persisted.savedAt >= TRENDING_TOKENS_FRESH_MS) {
-      // Stale but usable: serve instantly and revalidate in the background
-      // for the next consumer.
       void loadTrendingTokensFromNetwork().catch(() => {});
     }
     return trendingCache;

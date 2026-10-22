@@ -221,9 +221,6 @@ function assertSetupHasPolicy(input: ConfirmedEarnAutodepositSetupInput) {
   }
 }
 
-// Legacy system pause written by the removed Apps state-read reconcile when
-// the wallet's Earn route policy pair was gone. Migration 0059 folds it into
-// chain_status 'pending'; reads still treat it as paused.
 export const EARN_AUTODEPOSIT_PAUSED_MISSING_POSITION =
   "paused_missing_position" as const;
 
@@ -1927,9 +1924,6 @@ export async function recordConfirmedAutodepositTokenApproval(
   return target;
 }
 
-// Released clients still call setup confirmation after the transaction lands.
-// Persist only the user's configuration. LaserStream owns chain_status,
-// signatures, observed slots, policy rows, and delegation projection.
 export async function recordAutodepositSetupIntent(
   input: ConfirmedEarnAutodepositSetupInput,
   dependencies: EarnAutodepositRepositoryDependencies = createDependencies()
@@ -1985,8 +1979,6 @@ export async function recordAutodepositSetupIntent(
   return target;
 }
 
-// Closing Autodeposit changes the user's desired state immediately. The chain
-// projector records whether the policy and delegation actually closed.
 export async function recordAutodepositCloseIntent(
   input: ConfirmedEarnAutodepositCloseInput,
   dependencies: EarnAutodepositRepositoryDependencies = createDependencies()
@@ -2546,12 +2538,6 @@ export async function updateAutodepositTargetActive(
   return target;
 }
 
-// Promotes a setup-stranded target (pending_policy/pending_delegation) to
-// active by recording setup confirmations that were lost in flight. Only the
-// orphaned-setup heal calls this, after verifying on-chain that the full
-// setup (policy + delegation + token approval) exists. Conditional on the
-// row still being in a pending lifecycle so it can never race a concurrent
-// confirm or close.
 export async function activateAutodepositTargetWithBackfilledSetup(
   input: {
     policyAccount: string;
@@ -2759,10 +2745,6 @@ export async function recordBalanceSweepExecution(
   return existing;
 }
 
-// Distinct wallet addresses with a balance-sweep execution recorded since
-// `since` (DB insert time). Used by the Solana Week attribution cron to report
-// "first Earn deposit via autodeposit" quest completions. The completion API is
-// idempotent per (wallet, quest), so a generous lookback window is safe.
 export async function findWalletAddressesWithBalanceSweepsSince(
   since: Date,
   dependencies: Pick<

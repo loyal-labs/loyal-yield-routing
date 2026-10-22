@@ -145,9 +145,6 @@ export type EarnAutodepositConfigView = Omit<
     | "resuming";
 };
 
-// null = no override (show loaded state); { config } = optimistic overlay,
-// where config === null force-clears the rule (post-close) until the loaded
-// state catches up.
 export type EarnAutodepositOverride = {
   config: EarnAutodepositConfigView | null;
 } | null;
@@ -161,7 +158,6 @@ export type EarnActions = {
   authenticatedWalletAddress: string | null;
   closeReconnectPrompt: () => void;
   confirmAutodepositClose: () => Promise<boolean>;
-  /** Opens sign-in or the reconnect prompt; false means do not sign yet. */
   ensureCanSignAccountAction: () => boolean;
   depositError: string | null;
   depositSource: EarnDepositSourceOption;
@@ -198,8 +194,6 @@ export type EarnActions = {
   withdrawSources: EarnWithdrawSourceOption[];
 };
 
-// The OG right-pane review restored as a modal gate: a flow parks here after
-// prepare and awaits the user's Approve/Reject before signing.
 export type PendingEarnApproval = {
   approve: () => void;
   item: ApprovalReviewDisplayItem;
@@ -252,7 +246,6 @@ export function useEarnActions(deps: {
   const { isHydrated, isSignedIn } = useAuthCapability();
   const { open: openSignIn } = useSignInModal();
 
-  // app-wallet-workspace.tsx:1730-1735, 4377-4409
   const hasSmartAccountSession =
     isSignedIn && Boolean(user?.smartAccountAddress && user?.settingsPda);
   const canMutateAccount = hasSmartAccountSession;
@@ -263,8 +256,6 @@ export function useEarnActions(deps: {
     connectedWalletAddress === authenticatedWalletAddress;
   const [isReconnectPromptOpen, setIsReconnectPromptOpen] = useState(false);
 
-  // Approval gate: flows await the resolved promise between prepare and
-  // sign; the shell renders the sheet from this state.
   const [pendingApproval, setPendingApproval] =
     useState<PendingEarnApproval | null>(null);
   const requestApproval = useCallback(
@@ -331,8 +322,6 @@ export function useEarnActions(deps: {
   const [isAutodepositPending, setIsAutodepositPending] = useState(false);
   const [isExecuteNowPending, setIsExecuteNowPending] = useState(false);
   const [executeNowError, setExecuteNowError] = useState<string | null>(null);
-  // Per-slot execute-now progress (app-wallet-workspace.tsx:1899-1906,
-  // 2558-2561): drives the sweep row's state labels and the fallback poll.
   const [activeScheduledSweepSlotId, setActiveScheduledSweepSlotId] = useState<
     string | null
   >(null);
@@ -465,9 +454,6 @@ export function useEarnActions(deps: {
   } | null>(null);
   const autodepositFloorInFlightRef = useRef(false);
 
-  // ---- Wallet USDC funding balance (app-wallet-workspace.tsx:1765-1805) ----
-  // The ATA-read hook itself lives in use-earn-position-data so its refresh
-  // can feed useSmartAccountSidebarData's onAfterTx.
   const trackedKaminoUsdcMint = useMemo(
     () => resolveTrackedKaminoUsdcMint(publicEnv.solanaEnv),
     [publicEnv.solanaEnv]
@@ -501,7 +487,6 @@ export function useEarnActions(deps: {
     [setMainUsdcAmountRaw]
   );
 
-  // ---- Realtime refresh stack (app-wallet-workspace.tsx:1907-2224) ----
   const settingsPda = smartAccountData.overview?.settingsPda;
   const earnVaultAddress = smartAccountData.earnVaultPubkey;
   const refreshSmartAccountGroups = smartAccountData.refreshGroups;
@@ -719,10 +704,6 @@ export function useEarnActions(deps: {
     earnMutationSequenceRef.current = 0;
     return () => registry?.reset();
   }, [earnRealtimeScope]);
-  // Execute-now progress plumbing (app-wallet-workspace.tsx:2018-2302): SSE
-  // autodeposit events update the per-slot progress map + lifecycle tracker;
-  // when SSE is not connected a bounded fallback poll fetches progress and
-  // feeds it through the same invalidation batch so the UI refreshes live.
   const applyEarnAutodepositProgress = useCallback(
     (progress: EarnAutodepositProgress) => {
       const scheduledSlotId = progress.scheduledSlotId;
@@ -888,7 +869,6 @@ export function useEarnActions(deps: {
     recordExecuteNowProgress,
   ]);
 
-  // ---- Deposit source (app-wallet-workspace.tsx earnDepositSources "main") --
   const depositSource = useMemo<EarnDepositSourceOption>(() => {
     const balance = mainUsdc.amount ?? 0;
     const [whole = "0", fraction = "00"] = balance
@@ -927,7 +907,6 @@ export function useEarnActions(deps: {
     []
   );
 
-  // ---- Deposit (app-wallet-workspace.tsx:5165-5332 + 5508-5843) ----
   const submitDeposit = useCallback(
     async (args: {
       amountLabel: string;
@@ -1013,7 +992,6 @@ export function useEarnActions(deps: {
               }
             );
           }
-          // Continue the existing error UI; the tracker preserves this cause.
         }
         if (result.errorCode !== "insufficient_native_sol") {
           return false;
@@ -1166,12 +1144,6 @@ export function useEarnActions(deps: {
           if (!(error instanceof EarnPolicyUpdateRequiredClientError)) {
             throw error;
           }
-          // The wallet's legacy route policy cannot authorize this
-          // Token-2022 mint (ASK-2108). Create the owner-neutral pair as an
-          // inline toast step — the legacy pair is never mutated — then
-          // re-prepare: the server resolves the new pair after confirm. A
-          // second update-required failure falls through to the normal
-          // error path, so this cannot loop.
           earnToast.begin("deposit-policy-update");
           earnToast.loading("Updating Earn policy");
           const policySetup = await smartAccountData.executeEarnPolicySetup({
@@ -1194,9 +1166,6 @@ export function useEarnActions(deps: {
           reviewBypassed: hasPosition,
         });
 
-        // Only first deposits gate on the approval sheet; top-ups skip it
-        // even when the prepare bundles policy repair — the wallet still
-        // prompts per signature.
         if (hasPosition) {
           captureBrowserLoadingMetric({
             durationMs: Math.max(
@@ -1270,9 +1239,6 @@ export function useEarnActions(deps: {
           return true;
         }
 
-        // Policy-setup flow. The old workspace pauses here for the review
-        // overlay; the facelift chains straight into the staged signing the
-        // overlay's Continue button would run.
         let reviewState = createSubmittedEarnDepositReviewState({
           draft,
           preparedDeposit,
@@ -1337,9 +1303,6 @@ export function useEarnActions(deps: {
                   EARN_DEPOSIT_POLICY_CONFIRMED_BUT_NOT_RECORDED_MESSAGE
                 );
               }
-              // ponytail: the monolith resumes from batchResult.resumeStage on
-              // retry; here a retry re-prepares and the confirmed policy is
-              // simply reused by the backend.
               throw new Error(batchResult.error ?? "Earn deposit failed.");
             }
             const policySignature =
@@ -1360,7 +1323,6 @@ export function useEarnActions(deps: {
           }
         }
 
-        // Sequential fallback: sign each policy stage, then the deposit.
         for (;;) {
           if (stage === "policy" || stage === "policy-finalize") {
             tracker.observe(stage === "policy" ? "policy" : "policy_finalize", {
@@ -1454,10 +1416,7 @@ export function useEarnActions(deps: {
           return true;
         }
       } catch (error) {
-        // The user-facing copy below rewrites the underlying failure; keep the
-        // raw error findable in the console for support/debugging.
         console.error(`[earn.deposit] ${phase} failed`, error);
-        // app-wallet-workspace.tsx:5300-5312 (prepare) / 5804-5825 (signing)
         const raw = getEarnDepositUserErrorMessage(
           error,
           phase === "prepare" ? "Failed to prepare Earn deposit." : undefined
@@ -1538,7 +1497,6 @@ export function useEarnActions(deps: {
     ]
   );
 
-  // ---- Withdraw (app-wallet-workspace.tsx:5334-5473 + 5845-6054) ----
   const withdrawSources = useMemo(
     () => createWithdrawSourceOptions(position?.holdings),
     [position?.holdings]
@@ -1578,9 +1536,6 @@ export function useEarnActions(deps: {
           draft.mode === "partial" &&
           !preparedWithdraw.autodepositClosePrepared;
 
-        // Only full withdrawals gate on the approval sheet; partials skip
-        // it even when they carry an autodeposit close — the wallet still
-        // prompts per signature.
         if (draft.mode === "full") {
           earnToast.loading("Waiting for approval");
           const approvalPromise = requestApproval(
@@ -1706,9 +1661,6 @@ export function useEarnActions(deps: {
           return true;
         }
 
-        // Staged path (full withdrawals, or a partial that carries an
-        // autodeposit close). The old workspace signs one stage per review
-        // click; the facelift chains the stages.
         let stage: EarnWithdrawReviewStage =
           preparedWithdraw.autodepositClosePrepared
             ? "autodeposit"
@@ -1841,7 +1793,6 @@ export function useEarnActions(deps: {
           if (draft.mode === "full") {
             fullWithdrawalConfirmedSlotRef.current =
               result.confirmedSlot ?? null;
-            // The flow stays open: the rent-cleanup phase completes it.
             if (confirmationRecordFailed)
               tracker.fail("backend_confirm", {
                 chainState: "confirmed",
@@ -1894,8 +1845,6 @@ export function useEarnActions(deps: {
         } else if (error instanceof EarnPrepareRequestError) {
           tracker.fail("prepare", getEarnPrepareLifecycleDiagnostics(error));
           if (error.code === "earn_policy_inactive") {
-            // Another tab/device may have completed full-exit cleanup. Re-read
-            // authoritative state; don't optimistically erase a newer deposit.
             void refreshAllEarnResources().catch(() => {
               console.warn("[earn-sync] inactive policy refresh failed");
             });
@@ -1952,14 +1901,11 @@ export function useEarnActions(deps: {
     ]
   );
 
-  // ---- Cleanup phase (app-wallet-workspace.tsx:5475-5506 + 6056-6132) ----
   const cleanupCandidate = hasEarnCleanupCandidate({
     hasEarnPolicy: Boolean(smartAccountData.earnPolicy),
     hasEarnPosition: hasPosition,
   });
   const runCleanup = useCallback(async (): Promise<boolean> => {
-    // ponytail: the monolith splits prepare ("Close policies") and sign
-    // (review approve) into two clicks; one button covers both here.
     const tracker =
       withdrawTrackerRef.current ??
       createBrowserLifecycleTracker({
@@ -2113,7 +2059,6 @@ export function useEarnActions(deps: {
     waitForWithdrawalVisibility,
   ]);
 
-  // ---- Autodeposit save (app-wallet-workspace.tsx:4411-4602 + 6134-6395) ----
   const saveAutodeposit = useCallback(
     async (keepAmountLabel: string): Promise<boolean> => {
       if (autodepositFloorInFlightRef.current) {
@@ -2183,7 +2128,6 @@ export function useEarnActions(deps: {
       }
       setAutodepositError(null);
 
-      // Floor-only change on a live rule: off-chain rebaseline, no signature.
       if (
         canUseFloorUpdate &&
         autodepositConfig &&
@@ -2250,7 +2194,6 @@ export function useEarnActions(deps: {
         }
       }
 
-      // Signature path: create, or resume a pending setup.
       const existingPolicySeed =
         autodepositConfig?.policySeed || autodepositConfig?.nonce || undefined;
       const draftNonce =
@@ -2496,8 +2439,6 @@ export function useEarnActions(deps: {
         if (isWalletCancellation(error)) {
           tracker.cancel("wallet_approval", { errorCode: "wallet_rejected" });
         } else if (isConfirmedSlotUnavailableError(error)) {
-          // The transaction landed; only the slot probe timed out. Name the
-          // real stage so alerts don't read as backend persistence failures.
           tracker.fail("slot_resolve", {
             chainState: "confirmed",
             errorCode: "slot_resolution_failed",
@@ -2547,7 +2488,6 @@ export function useEarnActions(deps: {
     ]
   );
 
-  // ---- Autodeposit close (app-wallet-workspace.tsx:4621-4666 + 6407-6503) --
   const requestAutodepositClose = useCallback(() => {
     if (
       !autodepositConfig ||
@@ -2823,10 +2763,6 @@ export function useEarnActions(deps: {
     smartAccountData,
   ]);
 
-  // Execute a scheduled sweep immediately (app-wallet-workspace.tsx:
-  // 4750-4847). Signature-less server request; per-slot progress then arrives
-  // over SSE or the fallback poll above, which also refreshes the earn
-  // resources so the row resolves into the executed transaction live.
   const executeScheduledSweep = useCallback(
     async (sweep: LoadedEarnAutodepositScheduledSweep) => {
       if (autodepositFloorInFlightRef.current || isExecuteNowPending) {

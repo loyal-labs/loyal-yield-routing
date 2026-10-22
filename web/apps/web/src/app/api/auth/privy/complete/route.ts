@@ -15,8 +15,6 @@ const bodySchema = z.object({
   walletAddress: z.string().min(32).max(64),
 });
 
-// Exchanges a Privy identity token (header `privy-id-token`) for the Loyal
-// session cookie. Everything downstream (routes, refresh, logout) is unchanged.
 export async function POST(request: Request) {
   return withRequestLifecycle({
     request,

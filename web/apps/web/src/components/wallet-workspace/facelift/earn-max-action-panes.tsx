@@ -36,11 +36,9 @@ const ASSET_BASE = "/wallet-workspace/facelift";
 const MIN_DEPOSIT_USD = 1;
 
 export function formatEarnMaxApyLabel(bps: number | null): string {
-  // Realized Voltr APY only; no made-up fallback before history exists.
   return bps === null ? "— APY" : `${(bps / 100).toFixed(2)}% APY`;
 }
 
-/** Red Earn MAX marker (the strategy's infinity glyph on the brand red). */
 export function EarnMaxInfinityBadge({ className }: { className: string }) {
   return (
     <span
@@ -103,7 +101,6 @@ const EARN_MAX_FLOW_STEPS: readonly FlowStep[] = [
   },
 ];
 
-/** Shared explainer for the Earn MAX workspace, deposit and withdrawal panes. */
 export function EarnMaxInfoFaqsCard({ className }: { className: string }) {
   return (
     <div className={`flex-col overflow-clip rounded-3xl bg-card ${className}`}>
@@ -120,7 +117,6 @@ export function EarnMaxInfoFaqsCard({ className }: { className: string }) {
   );
 }
 
-// "1,010.22" → 1010220000n (USDC's 6 decimals); null when not a plain amount.
 function parseUsdcRaw(value: string): bigint | null {
   const cleaned = value.replaceAll(",", "");
   if (!/^\d+(?:\.\d{0,6})?$/.test(cleaned)) {
@@ -265,10 +261,6 @@ function SubmitBar({
   );
 }
 
-// Figma 5429:37670 — Earn MAX deposit: USDC-only funding from the main
-// wallet balance into the RWA Loop strategy. The first deposit also installs
-// the Earn MAX policies (that's the rent the caption explains), so submit
-// runs install → deposit as two wallet approvals.
 export function EarnMaxDepositPane({
   actions,
   data: earnData,
@@ -438,8 +430,6 @@ export function EarnMaxDepositPane({
   );
 }
 
-// Figma 5433:65237 — Earn MAX withdraw: requests an unwind back to the main
-// wallet as USDC; funds are claimed from the transaction list once ready.
 export function EarnMaxWithdrawPane({
   actions,
   data: earnData,
@@ -476,8 +466,6 @@ export function EarnMaxWithdrawPane({
   // One unwind at a time — the strategy queues a single withdrawal request.
   const hasPendingWithdrawal =
     view.withdrawal !== null && view.withdrawal.status !== "claimed";
-  // The rounded Max fill may sit a fraction of a cent above the balance;
-  // it is sent as "max", so only amounts beyond it are insufficient.
   const isInsufficient = amountUsd > Math.max(balanceUsd, maxFillUsd);
   const isValidAmount =
     amountUsd > 0 && !isInsufficient && !hasPendingWithdrawal;
@@ -490,8 +478,6 @@ export function EarnMaxWithdrawPane({
   };
   const handleSubmit = async () => {
     if (!isValidAmount || view.isBusy) return;
-    // A cent-floored full fill means "everything" — send max so dust and
-    // accrued yield unwind too.
     const useMax = amountUsd >= maxFillUsd && maxFillUsd > 0;
     const raw = parseUsdcRaw(amount);
     if (!useMax && (!raw || raw <= BigInt(0))) {

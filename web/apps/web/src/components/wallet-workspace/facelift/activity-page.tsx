@@ -39,18 +39,8 @@ import {
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-// Rows revealed per scroll step; the full list is already client-side (the
-// earn-transactions response has no pagination), so "loading on scroll" is
-// windowed rendering over the shared 5-minute cache.
 const PAGE_SIZE = 30;
 
-// Activity screen: the Earn feed in full — deposits, withdrawals and
-// rebalances rendered with the same rows as the Earn page's activity card,
-// date-grouped, extending as the user scrolls. Data comes through
-// fetchEarnTransactions, so Earn ↔ Activity switches reuse one cache and the
-// realtime stack's refreshKey bump refetches after a confirmed mutation.
-// One feed over two indexers: Kamino Earn transactions and Earn MAX
-// operations, merged client-side and sorted by confirmation time.
 type ActivityFeedEntry =
   | { at: number; item: EarnTransactionItem; type: "earn" }
   | { at: number; item: EarnMaxActivityItem; type: "earnmax" };
@@ -175,9 +165,6 @@ export function ActivityPage({
   }, [entries, visibleCount]);
   const hasMore = items !== null && entries.length > visibleCount;
 
-  // Extends the window when the tail sentinel nears the viewport. Re-created
-  // per visibleCount so a still-intersecting sentinel (list shorter than the
-  // viewport) re-fires through the fresh observer's initial callback.
   const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const sentinel = sentinelRef.current;
@@ -196,9 +183,6 @@ export function ActivityPage({
     return () => observer.disconnect();
   }, [hasMore, visibleCount]);
 
-  // Only the first loaded batch rides the mount stagger; groups appearing on
-  // scroll-extends or refetches render in place with no reveal (they enter
-  // off-screen anyway). Same decide-once mechanics as the earn activity card.
   const hasRenderedRowsRef = useRef(false);
   const groupKindsRef = useRef(new Map<string, "plain" | "stagger">());
   useEffect(() => {
@@ -231,8 +215,6 @@ export function ActivityPage({
             </header>
             <div className="flex w-full flex-1 flex-col px-2 pb-2">
               {items === null && !hasError ? (
-                // transitions.dev skeleton pulse, same rows the earn activity
-                // card skeletons with.
                 <div className="t-skel-rows flex flex-col gap-2 px-2 py-1">
                   {[0, 1, 2].map((index) => (
                     <div

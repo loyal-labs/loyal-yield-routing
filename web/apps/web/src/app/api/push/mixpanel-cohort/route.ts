@@ -18,17 +18,12 @@ import {
 // in batches of up to 1000 members, with optional Basic auth. The response must
 // echo { action, status } (https://docs.mixpanel.com/docs/cohort-sync/webhooks).
 //
-// A cohort is mapped to a push campaign by naming it "push: <campaign>" in
-// Mixpanel, where <campaign> is a key of CAMPAIGNS below. Every send is
-// recorded in loyal_yield.push_campaign_sends BEFORE sending, so re-syncs and
-// Mixpanel's re-sends after mid-sync failures never push twice.
 
 // Copy comes from ASK-1651 — keep in sync with the ticket. The ticket's
 // dynamic values ($X earned, N quests left, end date) are static for now;
 // per-wallet enrichment is a follow-up.
 const COHORT_PREFIX = "push: ";
 const CAMPAIGNS: Record<string, WalletPushPayload> = {
-  // P2 — quest funnel
   "quest-1-nudge": {
     body: "Add $5 to your account and it's done.",
     title: "You're one step from Quest 1.",
@@ -41,7 +36,6 @@ const CAMPAIGNS: Record<string, WalletPushPayload> = {
     body: "Less than 48 hours left on your quests. Don't leave the rewards on the table.",
     title: "Seeker's Summer is almost over.",
   },
-  // P3 — retention
   "earning-while-away": {
     body: "It's been adding up. Come take a look.",
     title: "Your USDC kept earning while you were out.",
@@ -57,8 +51,6 @@ const CAMPAIGNS: Record<string, WalletPushPayload> = {
 const MOBILE_DISTINCT_ID_PREFIX = "mob:";
 const SEND_CONCURRENCY = 10;
 
-// Batches are ≤1000 members and each send is network-bound (5s timeout in
-// sendWalletPush); Mixpanel retries 5xx and the sent-log makes retries converge.
 export const maxDuration = 300;
 
 function isAuthorized(request: Request): boolean {
@@ -70,7 +62,6 @@ function isAuthorized(request: Request): boolean {
   if (!header?.startsWith("Basic ")) {
     return false;
   }
-  // Mixpanel's Basic auth is username:password; only the password is checked.
   const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
   const password = decoded.slice(decoded.indexOf(":") + 1);
   const expected = Buffer.from(secret);
@@ -118,7 +109,6 @@ export async function POST(request: Request) {
     return failure(action, 401, "Unauthorized.");
   }
 
-  // Leaving a cohort never un-sends a push; membership isn't mirrored.
   if (action === "remove_members") {
     return success(action);
   }
@@ -174,9 +164,6 @@ export async function POST(request: Request) {
     const chunk = queue.splice(0, SEND_CONCURRENCY);
     await Promise.all(
       chunk.map(async (walletAddress) => {
-        // Insert-first sent-log: at-most-once per (wallet, campaign). If the
-        // send itself fails after the insert, it is not retried — pushes are
-        // best-effort.
         const inserted = await db
           .insert(pushCampaignSends)
           .values({ campaign, cohortId, walletAddress })

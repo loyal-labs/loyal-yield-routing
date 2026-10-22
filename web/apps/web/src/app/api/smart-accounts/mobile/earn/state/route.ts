@@ -17,19 +17,6 @@ import {
   type UserYieldPositionRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-// Read-only mobile twin of the session `yield-optimization/{earn-state,position}`
-// routes. The native Earn tab shows balance passively, with no signer held (a
-// wallet signature would force a Seed Vault biometric prompt on every view), so
-// this lookup is keyed by a supplied wallet address rather than a signed
-// request. That is safe because it:
-//   - never writes or provisions a smart account (no sponsor/SOL cost — the
-//     abuse vector that the deposit-prepare path has to guard does not exist
-//     here), and
-//   - returns only public, on-chain-derived data (vault balance + live APY) for
-//     a wallet the caller already knows. The wallet -> smart-account mapping it
-//     reveals is already discoverable from that wallet's on-chain tx history.
-// If the wallet has no app user / smart account / position yet, it returns an
-// empty state instead of creating anything.
 const EARN_VAULT_INDEX = 1;
 
 function jsonError(
@@ -68,16 +55,6 @@ function resolveTimescaleReserveForPosition(position: UserYieldPositionRecord) {
   return position.currentReserve;
 }
 
-// The wallet can hold one active position row per product mint (ASK-1355), so
-// the headline balance is the sum of every ACTIVE position row — exactly what
-// the deposit/withdraw confirms write synchronously, which is the value the
-// mobile client trusts in its short post-mutation window before live holdings
-// catch up. The vault snapshot tables are deliberately NOT used here: the
-// routing worker records reserve rows in collateral-unit semantics
-// (`kamino_obligation_collateral_deposited_amount`), which the user-facing
-// filter drops wholesale, collapsing that "total" to idle dust — the $0.00
-// balance regression right after a USDG deposit (2026-08-14). Falls back to
-// the reconciled single row's amount when the plural read is empty or fails.
 async function loadCurrentTotalAmountRaw(args: {
   cluster: ReturnType<typeof resolveConfiguredCluster>;
   position: UserYieldPositionRecord;
@@ -105,8 +82,6 @@ async function loadCurrentTotalAmountRaw(args: {
   }
 }
 
-// Best-effort: the funded balance is the headline number; APY is supplementary,
-// so a missing/empty Timescale read just yields null rather than failing.
 async function loadCurrentSupplyApyBps(
   position: UserYieldPositionRecord
 ): Promise<string | null> {
@@ -130,7 +105,6 @@ export async function GET(request: Request) {
     return jsonError(400, "invalid_request", "walletAddress is required.");
   }
   try {
-    // Throws a 400 WalletAuthError when the address isn't a valid 32-byte key.
     decodeWalletAddress(walletAddress);
   } catch (error) {
     if (error instanceof WalletAuthError) {

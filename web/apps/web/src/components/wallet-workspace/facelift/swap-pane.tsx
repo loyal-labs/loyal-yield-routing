@@ -57,9 +57,6 @@ function formatTokenPrice(price: number): string {
   return price.toLocaleString("en-US", { maximumSignificantDigits: 5 });
 }
 
-// transitions.dev icon swap adapted for changing sources: the incoming icon
-// lands in the inactive slot, then the a/b flip cross-fades — same recipe
-// the sidebar copy ↔ check button rides.
 function TokenIconSwap({ src }: { src: string }) {
   const [slots, setSlots] = useState<{
     a: string;
@@ -96,9 +93,6 @@ function TokenIconSwap({ src }: { src: string }) {
   );
 }
 
-// Figma 4819:414647 — the token pill inside an amount block; the darker fill
-// marks the side the selector pane is currently picking for. Selecting a
-// different token cross-fades the icon and swaps the symbol in place.
 function SwapTokenPill({
   isActive,
   onClick,
@@ -167,8 +161,6 @@ export function SwapPane({
   } = useSwap(visibleBalances);
 
   const [amountInput, setAmountInput] = useState("");
-  // The refresh glyph under the amount flips the input between token units
-  // and USD; the other representation renders on the sub-line.
   const [isUsdInput, setIsUsdInput] = useState(false);
   const [isQuoting, setIsQuoting] = useState(false);
   const [isSwapping, setIsSwapping] = useState(false);
@@ -229,7 +221,6 @@ export function SwapPane({
     tokenAmount,
   ]);
 
-  // Quote output when available, price-ratio estimate while it loads.
   const toAmount = useMemo(() => {
     if (!hasAmount) {
       return 0;
@@ -244,7 +235,6 @@ export function SwapPane({
   }, [hasAmount, quote, tokenAmount, fromToken.price, toToken.price]);
   const toUsd = toAmount * toToken.price;
 
-  // 1 <receive token> priced in the paid token — quote-implied when live.
   const rate =
     toAmount > 0 && hasAmount
       ? tokenAmount / toAmount
@@ -288,8 +278,6 @@ export function SwapPane({
   };
 
   const handleFlip = () => {
-    // Token-mode input converts so the USD value carries over; USD-mode
-    // input already is that value.
     if (!isUsdInput && tokenAmount > 0) {
       setAmountInput(
         toToken.price > 0
@@ -321,7 +309,6 @@ export function SwapPane({
     setErrorMessage(null);
     setTxSignature(null);
     if (activeSelectSide) {
-      // Toggling the active side closes the token selector pane.
       onRequestSelect(activeSelectSide);
     }
     setStep("processing");
@@ -650,13 +637,6 @@ function toSelectorToken(
   };
 }
 
-// Token selector (Figma 4819:414935 right pane / 4819:413827 <1204 overlay):
-// search + token list with prices. The local filter over the passed list stays
-// instant; a debounced remote Jupiter search merges into it (deduped by mint)
-// and the merged rows are tiered by rankSearchResults. An empty query lists
-// trending tokens above the holdings, and while a typeahead is live the
-// top-ranked row is the active suggestion (Enter/Tab commit it). Held tokens
-// surface their portfolio names via nameByMint.
 export function SwapTokenSelectPane({
   earnEligibleMints,
   nameByMint,
@@ -667,7 +647,6 @@ export function SwapTokenSelectPane({
   title,
   tokens,
 }: {
-  /** Mints the Earn product accepts — badged "Can earn" on the receive side. */
   earnEligibleMints?: ReadonlySet<string>;
   nameByMint: Record<string, string>;
   onClose: () => void;
@@ -682,12 +661,10 @@ export function SwapTokenSelectPane({
   onSearch?: (query: string) => Promise<SwapToken[]>;
   onSelect: (token: SwapToken) => void;
   side: "from" | "to";
-  /** Overrides the swap-side header copy (e.g. Send's "Select asset"). */
   title?: string;
   tokens: SwapToken[];
 }) {
   const [search, setSearch] = useState("");
-  // Superseded results stay painted until the next set commits.
   const [searchResults, setSearchResults] = useState<TokenSearchResult[]>([]);
   const [trending, setTrending] = useState<TokenSearchResult[]>(() =>
     onSearch ? getCachedTrendingTokens() ?? [] : []
@@ -696,13 +673,9 @@ export function SwapTokenSelectPane({
   const searchAbortRef = useRef<AbortController | null>(null);
   const { isBalanceHidden } = useBalanceVisibility();
 
-  // Raw (case-preserved) for the remote search and ranking — base58 mints are
-  // case-sensitive — lowercased for the local symbol/name filter.
   const rawQuery = search.trim();
   const query = rawQuery.toLowerCase();
   const isRemoteSearchEnabled = Boolean(onSearch);
-  // Read back when a response lands, so a late resolver can't commit for a
-  // query the user has already moved past.
   const latestQueryRef = useRef(rawQuery);
   latestQueryRef.current = rawQuery;
 
@@ -734,7 +707,6 @@ export function SwapTokenSelectPane({
     () => searchResults.filter((token) => !heldMints.has(token.mint)),
     [heldMints, searchResults]
   );
-  // Trending fills an empty query only, and never repeats a held token.
   const trendingRows = useMemo(() => {
     if (!isRemoteSearchEnabled || query) {
       return [];
@@ -742,9 +714,6 @@ export function SwapTokenSelectPane({
     return trending.filter((token) => !heldMints.has(token.mint));
   }, [heldMints, isRemoteSearchEnabled, query, trending]);
 
-  // With a query the merged rows are tiered (exact symbol, then symbol/name
-  // prefix, then mint); empty keeps the holdings order — ranking by mcap would
-  // reshuffle the user's own assets.
   const list = useMemo(() => {
     if (!query) {
       return [...trendingRows, ...ownedTokens];
@@ -758,9 +727,6 @@ export function SwapTokenSelectPane({
       : null;
   const activeToken = activeSuggestion === null ? null : list[activeSuggestion];
 
-  // Trending warms on mount and again on focus (the pane can sit open long
-  // enough for the cache to go stale); the sync cache read paints instantly
-  // and the prefetch promise fills it in.
   const refreshTrending = useCallback(() => {
     if (!isRemoteSearchEnabled) {
       return;
@@ -808,7 +774,6 @@ export function SwapTokenSelectPane({
   }, [isRemoteSearchEnabled, rawQuery]);
 
   const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    // Don't swallow keys an IME is still composing with.
     if (event.nativeEvent.isComposing || activeSuggestion === null) {
       return;
     }
@@ -825,8 +790,6 @@ export function SwapTokenSelectPane({
       );
       return;
     }
-    // Enter/Tab commit the highlighted suggestion straight away; the input
-    // keeps whatever the user typed.
     if (event.key === "Enter" || event.key === "Tab") {
       event.preventDefault();
       onSelect(list[activeSuggestion]);
@@ -866,8 +829,6 @@ export function SwapTokenSelectPane({
         </span>
       </span>
       {side === "from" ? (
-        // Figma 4852:39653 — the source side lists what you hold:
-        // USD value on top (gray fraction), token amount below.
         <span className="flex shrink-0 flex-col items-end justify-center gap-0.5 py-[11px] pl-3">
           <span className="whitespace-nowrap text-right font-medium text-[16px] text-foreground leading-5">
             <ScrambleText

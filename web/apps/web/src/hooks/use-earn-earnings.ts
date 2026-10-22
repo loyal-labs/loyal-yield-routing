@@ -330,9 +330,6 @@ export async function fetchEarnEarningsRangeSet(
     return cached.value;
   }
 
-  // The server response is already verified against its source principal. A
-  // client-side principal revision must not split one canonical network read
-  // into two requests while the position refresh commits a new value.
   const inflightKey = `${cacheKey}:request`;
   const fallbackBeforeFetch =
     cached?.value ?? readPersistentEarnEarningsCache(cacheKey, scope);

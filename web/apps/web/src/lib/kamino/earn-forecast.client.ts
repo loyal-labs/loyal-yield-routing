@@ -12,7 +12,6 @@ import {
   type EarnForecastSummaryResponse,
 } from "./earn-forecast.shared";
 
-// APY forecasts move over hours; a 30-minute window is invisible in the UI.
 const CLIENT_CACHE_TTL_MS = 30 * 60 * 1000;
 // Retry failed loads sooner so a transient outage doesn't pin the fallback.
 const ERROR_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -21,8 +20,6 @@ export const REALIZED_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 
 const EARN_FORECAST_CACHE_KEY = "loyal.earnForecastSummary.v2";
 const EARN_FORECAST_CACHE_VERSION = 2;
-// The forecast route reads cluster-scoped data; NEXT_PUBLIC_SOLANA_ENV is
-// inlined at build time, so this statically resolves per deployment.
 const EARN_FORECAST_CACHE_SCOPE =
   process.env.NEXT_PUBLIC_SOLANA_ENV ?? "mainnet";
 
@@ -183,8 +180,6 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummaryRes
     })
     .catch((error) => {
       console.warn("[earn-forecast] failed to load summary", error);
-      // Prefer day-old real data over the hardcoded fallback; never persist
-      // either fallback path.
       const value =
         persisted && validCachedSummary(persisted.data, Date.now())
           ? persisted.data

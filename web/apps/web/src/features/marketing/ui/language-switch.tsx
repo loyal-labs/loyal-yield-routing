@@ -18,14 +18,6 @@ const LOCALE_NAMES: Record<Locale, string> = {
   zh: "简体中文",
 };
 
-/**
- * Language dropdown. The button shows the current locale; the menu links to
- * the same page in each locale. Pages without a translation pass path="/",
- * so the links lead to each locale's home page.
- *
- * Built as a disclosure (button + list of links) rather than an ARIA menu,
- * because the items are plain navigation links.
- */
 export function LanguageSwitch({
   locale,
   path,
@@ -130,8 +122,6 @@ export function LanguageSwitch({
                 className={`flex items-center justify-between gap-4 whitespace-nowrap rounded-[12px] px-3 py-2 transition-colors duration-150 ease-out hover:bg-black/[0.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-black ${
                   isCurrent ? "font-medium" : "font-normal"
                 }`}
-                // ?lang= makes the middleware remember the choice, so the
-                // browser-language redirect stops overriding it.
                 href={`${localizedHref(target, path)}?${LOCALE_PARAM}=${target}`}
                 hrefLang={LOCALE_TAGS[target]}
                 lang={LOCALE_TAGS[target]}

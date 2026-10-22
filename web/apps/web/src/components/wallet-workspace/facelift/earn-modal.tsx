@@ -14,14 +14,6 @@ export type EarnModalStep = {
   title: string;
 };
 
-// Figma 4901:27541 (icon + title + description + steps) / 4901:30592 (no
-// steps) / 4901:46408 (title only) + 4901:50395 (mobile bottom sheet):
-// promo/info modal. Left column stacks an optional red icon tile, title,
-// description, lucide-icon step rows, and one action button. With the
-// mascot, the card is 724 wide and pinned to the viewport's bottom-right
-// corner (8px margins, art bleeding off the corner); without it, the card
-// is 400 wide and centered. Mobile renders the same content as a standard
-// bottom sheet either way.
 export function EarnModal({
   buttonLabel,
   description,
@@ -129,8 +121,6 @@ export function EarnModal({
         </div>
 
         {withMascot ? (
-          // Mascot column — the art bleeds off the modal's bottom-right
-          // corner (clipped by the sheet's overflow); desktop only.
           <div className="relative min-h-full w-[324px] shrink-0 self-stretch max-[795px]:hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img

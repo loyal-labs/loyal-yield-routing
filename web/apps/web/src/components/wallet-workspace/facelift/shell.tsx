@@ -60,8 +60,6 @@ import { useEarnMax } from "@/features/earn-max";
 import { useAuthCapability } from "@/lib/auth/capability";
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
 
-// "wallet" is the mobile-only wallet home (the tab bar's Wallet tab); the
-// sidebar navigates straight to crypto/stables instead.
 export type WorkspacePage =
   | "crypto"
   | "stables"
@@ -83,7 +81,6 @@ const WORKSPACE_PAGES: WorkspacePage[] = [
   "wallet",
 ];
 
-// Desktop section shortcuts — surfaced as the sidebar's hover kbd hints.
 const SHORTCUT_PAGES: Partial<Record<string, WorkspacePage>> = {
   a: "activity",
   c: "crypto",
@@ -103,11 +100,7 @@ const SHORTCUT_PAGES: Partial<Record<string, WorkspacePage>> = {
 export function WorkspaceFaceliftShell() {
   const publicEnv = usePublicEnv();
   const [isChartExpanded, setIsChartExpanded] = useState(false);
-  // Mobile settings sheet (Figma 5462:75016 / 5462:74914) — opened by the
-  // header gears on the home and signed-out screens.
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  // One shared tab choice for every chart card (compact right pane, mobile
-  // inline card, enlarged overlay) — enlarging must not reset the tab.
   const [chartTab, setChartTab] = useState<ChartTab | null>(null);
   const [activePage, setActivePage] = useState<WorkspacePage>("earn");
   const { isHydrated, isSignedIn } = useAuthCapability();
@@ -134,8 +127,6 @@ export function WorkspaceFaceliftShell() {
     if (!WORKSPACE_PAGES.includes(stored) || stored === "earn") {
       return;
     }
-    // Signed out only the Earn products render — every other stored page
-    // needs a session, so those reloads fall back to Earn.
     if (!isSignedIn && stored !== "earnmax") {
       return;
     }
@@ -145,8 +136,6 @@ export function WorkspaceFaceliftShell() {
     storedPageRef.current ??= localStorage.getItem(PAGE_STORAGE_KEY) ?? "";
     localStorage.setItem(PAGE_STORAGE_KEY, activePage);
   }, [activePage]);
-  // Signing out mid-session snaps back to the Earn products — the only
-  // pages that work without a wallet (their connect panes carry the CTA).
   useEffect(() => {
     if (
       isHydrated &&
@@ -157,9 +146,6 @@ export function WorkspaceFaceliftShell() {
       setActivePage("earn");
     }
   }, [activePage, isHydrated, isSignedIn]);
-  // The wallet home is mobile-only (tab bar's Wallet tab) — no sidebar entry
-  // can leave it, so growing past the breakpoint (resize or a desktop reload
-  // restoring a stored "wallet") snaps back to the Earn home.
   const isNarrowViewport = useIsNarrowViewport();
   useEffect(() => {
     if (!isNarrowViewport && activePage === "wallet") {
@@ -176,13 +162,9 @@ export function WorkspaceFaceliftShell() {
   }
   const earnTransactionDetail =
     selectedEarnTransaction ?? lastEarnTransactionRef.current;
-  // Set when a positions-tab row's Withdraw pill opened the screen — the
-  // withdraw pane preselects that source; header Withdraw clears it.
   const [withdrawSourceKey, setWithdrawSourceKey] = useState<string | null>(
     null
   );
-  // Same contract for deposit: a stables-row Earn pill preselects its coin
-  // (keys are mints); every other deposit entry point clears it.
   const [depositSourceKey, setDepositSourceKey] = useState<string | null>(null);
   // Mirrored from the sidebar (which owns the unseen-activity computation)
   // so the mobile tab bar's clock shows the same badge.
@@ -193,8 +175,6 @@ export function WorkspaceFaceliftShell() {
     settingsPda: earnMaxAvailable ? earnData.settingsPda : undefined,
     walletAddress: earnMaxAvailable ? earnData.walletAddress : null,
   });
-  // Signing actions go through the same sign-in / reconnect-wallet prompt as
-  // Earn, instead of failing with "Connect the authenticated wallet".
   const { ensureCanSignAccountAction } = earnData.actions;
   const earnMax = useMemo(() => {
     const signed =
@@ -212,8 +192,6 @@ export function WorkspaceFaceliftShell() {
       },
     };
   }, [earnMaxRawActions, earnMaxView, ensureCanSignAccountAction]);
-  // 30-day earned figures for the mobile home product cards (Figma
-  // 5465:83340) — same feeds the Earned charts render, just summed.
   const earnEarned = useEarnEarnedData(earnData);
   const earnEarned30dUsd =
     earnEarned.showEarningsLoader || earnEarned.earningsUnavailable
@@ -229,8 +207,6 @@ export function WorkspaceFaceliftShell() {
           ),
     [earnMax.view]
   );
-  // Bumped on every sidebar selection so CryptoPage abandons its in-progress
-  // Send/Swap screens — including re-selecting the page it's already on.
   const [navigationNonce, setNavigationNonce] = useState(0);
   useEffect(() => {
     const walletAddress = earnData.walletAddress;
@@ -267,22 +243,17 @@ export function WorkspaceFaceliftShell() {
     if (!EARN_MAX_VISIBLE && page === "earnmax") {
       return;
     }
-    // Disconnected wallets can browse Earn and Earn MAX — every other page
-    // needs a session, so tapping one opens the connect-wallet modal instead.
     if (!isSignedIn && page !== "earn" && page !== "earnmax") {
       openSignIn();
       return;
     }
-    // Re-selecting Activity toggles it closed, back to the Earn home.
     setActivePage(
       page === "activity" && activePage === "activity" ? "earn" : page
     );
-    // Leaving Earn abandons any in-progress action screen or detail.
     setMiddleView("earn");
     setSelectedEarnTransaction(null);
     setNavigationNonce((nonce) => nonce + 1);
   };
-  // Briefly lights the pressed key's sidebar hint red as activation feedback.
   const [flashedShortcut, setFlashedShortcut] = useState<WorkspacePage | null>(
     null
   );
@@ -302,11 +273,9 @@ export function WorkspaceFaceliftShell() {
         return;
       }
       if (event.key === "Escape") {
-        // Numbers-only amount fields don't swallow Esc — only free text does.
         if (isEscapeGuardedTarget(event.target)) {
           return;
         }
-        // Activity is an Earn detour — Esc backs out to the Earn home.
         if (activePage === "activity") {
           queueMicrotask(() => {
             if (!event.defaultPrevented) {
@@ -349,7 +318,6 @@ export function WorkspaceFaceliftShell() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   });
-  // Deposit requires a session; fall back to the Earn state on sign-out.
   const activeMiddleView: MiddleView = isSignedIn ? middleView : "earn";
 
   useEffect(() => {
@@ -393,8 +361,6 @@ export function WorkspaceFaceliftShell() {
       isEarnRootView &&
       earnData.hasPosition &&
       !isPositionLoading) ||
-    // Earn MAX main view runs card-on-gray too (Figma 5459:71906); its
-    // action screens are full-bleed white cards so gray never peeks through.
     (EARN_MAX_VISIBLE &&
       activePage === "earnmax" &&
       isSignedIn &&
@@ -506,9 +472,6 @@ export function WorkspaceFaceliftShell() {
               navigationNonce={navigationNonce}
               onBack={() => handleSelectPage("wallet")}
               onEarn={(sourceMint) => {
-                // The stables Earn buttons jump straight to the deposit
-                // screen, not the Earn root — with the clicked coin
-                // preselected as the deposit source.
                 setDepositSourceKey(sourceMint ?? null);
                 setActivePage("earn");
                 setMiddleView("deposit");

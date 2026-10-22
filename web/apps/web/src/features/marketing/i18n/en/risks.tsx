@@ -17,7 +17,6 @@ export const enRisks = {
     ogImageAlt: "Loyal Earn risks",
   } satisfies PageMeta,
   breadcrumb: { home: "Home", page: "Risks" } satisfies BreadcrumbCopy,
-  // Empty in English. Translations may set a notice rendered above the page body.
   legalNotice: "",
   hero: {
     title: "Loyal Earn risks, in plain terms",
@@ -139,8 +138,6 @@ export const enRisks = {
       },
     },
   },
-  // Every layer a Loyal Earn deposit touches, in the order money flows through
-  // them. Keep this in sync with the Earn policy in packages/loyal-actions.
   riskRows: [
     {
       layer: "Kamino lending reserves",

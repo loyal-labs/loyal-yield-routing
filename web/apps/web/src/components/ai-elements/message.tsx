@@ -31,7 +31,6 @@ export const MessageContent = ({
     className={cn(
       "flex flex-col gap-2 overflow-hidden rounded-lg px-4 py-3 text-sm",
       "group-[.is-user]:bg-primary group-[.is-user]:text-primary-foreground",
-      // Dark glassmorphic background for assistant messages
       "group-[.is-assistant]:border group-[.is-assistant]:border-white/10 group-[.is-assistant]:backdrop-blur-[10px]",
       className
     )}

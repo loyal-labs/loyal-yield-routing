@@ -118,8 +118,6 @@ export function WalletAutoReauth() {
           return;
         }
 
-        // Reset so user can retry later if needed. Network/CORS/API errors
-        // are silently ignored so they don't block wallet usage.
         attemptedAddressRef.current = null;
         setStatus("idle");
         lifecycle.fail("completion", {
@@ -147,7 +145,6 @@ export function WalletAutoReauth() {
     wallet,
   ]);
 
-  // Auto-dismiss "done" banner after delay
   useEffect(() => {
     if (status !== "done") {
       return;

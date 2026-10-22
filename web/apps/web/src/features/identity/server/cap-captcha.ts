@@ -20,7 +20,6 @@ import { consumeCaptchaKey, putCaptchaKey } from "./captcha-key-store";
 
 const CAP_SECRET_ENV_NAME = "CAP_SECRET";
 
-/** Binds challenges to the wallet sign-in flow on both generate and validate. */
 const CHALLENGE_SCOPE = "wallet-signin";
 
 const NONCE_KEY_PREFIX = "cap-nonce:";
@@ -30,7 +29,6 @@ export function getCapSecret(env: EnvSource = process.env): string | undefined {
   return getOptionalEnv(env, CAP_SECRET_ENV_NAME);
 }
 
-/** Proof-of-work + instrumentation challenge for the widget. */
 export function createCapChallenge(secret: string): Promise<ChallengeResult> {
   return generateChallenge(secret, {
     scope: CHALLENGE_SCOPE,
@@ -38,10 +36,6 @@ export function createCapChallenge(secret: string): Promise<ChallengeResult> {
   });
 }
 
-/**
- * Validates a solved challenge (with single-use nonce consumption) and stores
- * the redeem token key so `verifyCaptchaToken` can consume it exactly once.
- */
 export async function redeemCapChallenge(
   secret: string,
   body: ValidateChallengeBody

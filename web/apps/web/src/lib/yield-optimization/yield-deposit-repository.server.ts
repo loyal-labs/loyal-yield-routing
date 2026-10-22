@@ -293,12 +293,6 @@ export type SnapshotReconciliationInput = {
   sourceSnapshotId: bigint;
 };
 
-// Sub-cent idle USDC must not block a final exit. Shared by the withdraw
-// prepare routes (which close the on-chain policies on this basis) and the
-// confirm-side resolveWithdrawalSource (which releases the DB policy rows).
-// Prepare and confirm MUST agree: when prepare closes the policies but confirm
-// keeps the DB pair active, the next deposit adopts dead policy accounts and
-// every subsequent withdraw prepare fails with "Unable to find Policy account".
 export const EARN_FINAL_EXIT_IDLE_DUST_TOLERANCE_RAW = BigInt(10_000); // $0.01
 
 const REDEEMABLE_LIQUIDITY_AMOUNT_SEMANTICS = new Set([
@@ -756,9 +750,6 @@ async function recordCurrentVaultSourceWithdrawal(args: {
     if (!idleRow) {
       return;
     }
-    // A row observed strictly after the withdrawal slot (a concurrent
-    // reconcile's chain read) already reflects the withdrawal — debiting it
-    // again would double-count.
     if (idleRow.observedSlot > input.confirmedSlot) {
       return;
     }
@@ -787,9 +778,6 @@ async function recordCurrentVaultSourceWithdrawal(args: {
   if (!selectedReserve || resolution.reserveRows.length === 0) {
     return;
   }
-  // Same freshness guard as the idle path. Strict: fallback rows built from
-  // the withdrawal itself carry observedSlot === confirmedSlot and must
-  // still project.
   if (selectedReserve.observedSlot > input.confirmedSlot) {
     return;
   }
@@ -839,8 +827,6 @@ async function recordCurrentVaultSourceWithdrawal(args: {
     return;
   }
 
-  // History keeps only funded reserves; the current-state rows below keep
-  // the full set. Readers treat a missing history row as zero.
   const snapshotPositionValues = nextRows
     .filter((row) => row.amountRaw > BigInt(0))
     .map((row) => ({
@@ -1240,9 +1226,6 @@ function buildIdempotentWithdrawalRepairInput(
   };
 }
 
-// The one-current partial unique index rejects the loser when two snapshot
-// writers (withdraw confirm vs. position reconcile / rebalance sync) both run
-// flip-all-current → set-one-current on the same vault concurrently.
 function isCurrentSnapshotWriteRace(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -1503,13 +1486,6 @@ async function resolveWithdrawalSource(
 
   return {
     idleRows: currentIdleRows,
-    // This is an accounting event classification only. It never authorizes
-    // closing the position, vault, or policies; cleanup owns that transition
-    // after a minContextSlot-safe chain-wide zero proof.
-    // A non-final step of a multi-market full exit proves funds survive in
-    // another market even when the reserve read-model has no row for it
-    // (ASK-1765), so it must never claim the final-exit label — a false
-    // `withdrawal_full` zeroes reconstructed principal for good.
     isFinalExit:
       input.mode === "full" &&
       input.isFinalStep !== false &&
@@ -3011,15 +2987,12 @@ export async function findCompleteYieldVaultExposureSnapshots(
   if (snapshots.length === 0) {
     return [];
   }
-  // Read in covering-index order, then restore chain order without a DB sort.
   snapshots.sort((left, right) => {
     if (left.observedSlot !== right.observedSlot) {
       return left.observedSlot < right.observedSlot ? -1 : 1;
     }
     return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
   });
-  // Bound each indexed positions read; one giant ID list or full-history join
-  // can exceed the query timeout for long-lived vaults.
   const reserveRowsBySnapshotId = new Map<
     bigint,
     { amountRaw: bigint; liquidityMint: string; reserve: string }[]
@@ -3355,8 +3328,6 @@ export async function findActiveYieldRoutePolicyPair(
   };
 }
 
-// Only inspect the vault's current policy pointer, not historical policy
-// generations: an old closed policy must not classify a new setup as inactive.
 export async function hasInactiveYieldRoutePolicyForVault(
   input: {
     authority: string;
@@ -3666,8 +3637,6 @@ export async function recordReconciledYieldVaultSnapshot(
   if (idleTokenBalances.length === 0) {
     throw new Error("A complete Earn snapshot requires idle token balances.");
   }
-  // Keep the idle amount with its source snapshot: current balance rows can
-  // advance independently before the hourly APY recorder reads this history.
   const snapshotContext: Record<string, unknown> = {
     ...input.context,
     idle_vault_liquidity_amount_raw: idleTokenBalances
@@ -3722,7 +3691,6 @@ export async function recordReconciledYieldVaultSnapshot(
     supplyApyBps: position.supplyApyBps,
     vaultId: input.vaultId,
   }));
-  // History keeps only funded reserves; current-state keeps the full set.
   const fundedSnapshotPositionValues = snapshotPositionValues.filter(
     (position) => position.amountRaw > BigInt(0)
   );
@@ -3781,8 +3749,6 @@ export async function recordReconciledYieldVaultSnapshot(
   statements.push(
     dependencies.client.db
       .update(vaultPositionSnapshots)
-      // Publish completeness only with the positions and idle balances in
-      // this batch; the recorder must never see the staged empty snapshot.
       .set({ context: snapshotContext, isCurrent: true })
       .where(eq(vaultPositionSnapshots.id, snapshot.id)) as never
   );
@@ -3899,7 +3865,6 @@ export async function findYieldPositionEvents(
     type: "deposit" | "withdrawal",
     sourceType?: string | null
   ) => {
-    // Missing links may be legacy data; duplicate links are contradictory evidence.
     if (!matches) return {};
     if (matches.length !== 1) {
       throw new EarningsPrincipalHistoryError(
@@ -3959,7 +3924,6 @@ export async function findYieldPositionEvents(
         sql`${userYieldPositionHoldingEvents.principalDeltaRaw} IS NOT NULL`,
         sql`${userYieldPositionHoldingEvents.sourceDepositId} IS NULL`,
         sql`${userYieldPositionHoldingEvents.sourceWithdrawalId} IS NULL`,
-        // Preview reserve snapshots are not evidence that the entire vault closed.
         sql`(${userYieldPositionHoldingEvents.sourceSignature} IS NOT NULL OR EXISTS (
         SELECT 1 FROM loyal_yield.vault_position_snapshots s
         WHERE s.id = ${userYieldPositionHoldingEvents.sourceSnapshotId}
@@ -4011,7 +3975,6 @@ export async function findYieldPositionHistoryEvents(
     client: getYieldOptimizationClient(),
   }
 ): Promise<UserYieldPositionHistoryEventRecord[]> {
-  // Closed positions (full withdrawals) must keep their history visible.
   const position = await findYieldPosition(input, dependencies);
   if (!position) {
     return [];

@@ -21,9 +21,6 @@ import {
 const MOBILE_AUTH_MAX_AGE_MS = 5 * 60 * 1000;
 const MOBILE_AUTH_MAX_FUTURE_SKEW_MS = 60 * 1000;
 
-// Runtime list so the session mint route can accept a signature scoped to ANY
-// Earn purpose (every purpose proves control of the same wallet key; the
-// scoping exists to stop cross-endpoint replay, not to grade trust).
 export const MOBILE_WALLET_AUTH_PURPOSES = [
   "earn-deposit-prepare",
   "earn-deposit-confirm",
@@ -106,7 +103,6 @@ export async function authenticateMobileWalletRequest(args: {
     args.body
   );
 
-  // Throws a 400 WalletAuthError when the address isn't a valid 32-byte key.
   decodeWalletAddress(walletAddress);
 
   const issuedAtMs = Date.parse(issuedAt);

@@ -431,9 +431,6 @@ export async function fetchEarnRpcHoldingsSnapshot(args: {
   minContextSlot?: number;
   policy: EarnRpcPolicyMetadata | null | undefined;
   programId: PublicKey;
-  // Closure verification cannot treat an unreadable reserve backing a
-  // discovered obligation deposit as zero. Ordinary display reads retain the
-  // historical best-effort behavior; full-exit proof opts into fail-closed.
   requireCompleteReserveReads?: boolean;
   settingsPda: PublicKey;
   now?: () => Date;

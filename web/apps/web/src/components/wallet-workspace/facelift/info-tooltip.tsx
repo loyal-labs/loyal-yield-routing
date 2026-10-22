@@ -7,10 +7,6 @@ import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 const ASSET_BASE = "/wallet-workspace/facelift";
 const CLIP_PADDING_PX = 8;
 
-// The bubble is centered on the trigger; when that would cross the nearest
-// clipping ancestor (scroll panes, overflow-clip cards), --tt-shift nudges it
-// just enough to fit. Measured from layout widths (offsetWidth + wrap rect),
-// not the bubble's rect, so the resting scale transform can't skew it.
 function clampTooltipShift(wrap: HTMLElement, bubble: HTMLElement) {
   let clipLeft = 0;
   let clipRight = window.innerWidth;
@@ -42,9 +38,6 @@ function clampTooltipShift(wrap: HTMLElement, bubble: HTMLElement) {
   bubble.style.setProperty("--tt-shift", `${Math.round(shift)}px`);
 }
 
-// transitions.dev "Tooltip open/close" (frontend/transitions/tooltip.md):
-// pure CSS — the wrap is the hover target, keyboard focus on the trigger
-// also shows the bubble. The trigger is a no-op button so it's focusable.
 export function InfoTooltip({
   iconClassName = "size-5",
   placement = "top",

@@ -58,11 +58,6 @@ export type PrepareGrpcReconnectToStreamRequest = (options: {
       baseUrl?: string;
     }>;
 
-/**
- * Options for the `GrpcChatTransport` class.
- *
- * @param UI_MESSAGE - The type of message to be used in the chat.
- */
 export type GrpcChatTransportInitOptions<UI_MESSAGE extends UIMessage> = {
   /**
    * The gRPC server base URL.
@@ -161,7 +156,6 @@ export class GrpcChatTransport<UI_MESSAGE extends UIMessage>
       messageId: options.messageId,
     });
 
-    // Helper function to normalize headers
     const normalizeHeaders = (
       headers: Record<string, string> | Headers | undefined
     ): Record<string, string> | undefined => {
@@ -185,7 +179,6 @@ export class GrpcChatTransport<UI_MESSAGE extends UIMessage>
 
     const client = this.createClient(baseUrl, headers);
 
-    // Convert UI messages to protobuf DialogEntry format
     const dialogEntries: DialogEntry[] = options.messages.map((msg) =>
       create(DialogEntrySchema, {
         role: create(RoleSchema, {
@@ -196,7 +189,6 @@ export class GrpcChatTransport<UI_MESSAGE extends UIMessage>
       })
     );
 
-    // Get the latest user message as the query
     const lastUserMessage = options.messages
       .slice()
       .reverse()
@@ -206,7 +198,6 @@ export class GrpcChatTransport<UI_MESSAGE extends UIMessage>
       throw new Error("No user message found to send as query");
     }
 
-    // Create the gRPC request
     const request = create(QueryRequestSchema, {
       dialog: dialogEntries,
       query: lastUserMessage.parts.find((p) => p.type === "text")?.text ?? "",
@@ -217,7 +208,6 @@ export class GrpcChatTransport<UI_MESSAGE extends UIMessage>
         signal: abortSignal,
       });
 
-      // Convert the gRPC response to the expected ReadableStream format
       return this.processGrpcResponse(response, options.chatId);
     } catch (error) {
       throw new Error(
@@ -244,7 +234,6 @@ export class GrpcChatTransport<UI_MESSAGE extends UIMessage>
           id: `${chatId}-response-${Date.now()}`,
         });
         try {
-          // Create a single chunk with the complete response
           const chunk: UIMessageChunk = {
             type: "text-delta",
             delta: response.response,

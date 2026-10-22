@@ -31,13 +31,8 @@ import { formatAutodepositUsdLabel } from "@/lib/yield-optimization/earn-autodep
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
-// Autoswap is hidden for now; flip to false to bring the row back.
 export const AUTOSWAP_HIDDEN = true;
 
-// Figma 4693:67399 (Transactions) / 4693:67728 (Positions) — Earn middle pane
-// when a position exists: balance + autodeposit card, then the activity card.
-// On mobile (Figma 4693:70364) the header actions move to a sticky bottom bar,
-// the chart card renders inline between them, and the cards run full-bleed.
 export function EarnPositionPane({
   data,
   onBack,
@@ -53,7 +48,6 @@ export function EarnPositionPane({
   selectedTransactionId,
 }: {
   data: EarnPositionData;
-  /** Mobile back chevron to the wallet home. */
   onBack: () => void;
   onDeposit: () => void;
   onOpenAutodeposit: () => void;
@@ -92,8 +86,6 @@ export function EarnPositionPane({
   );
   const isAutoswapToggling =
     autoswap?.status === "pausing" || autoswap?.status === "resuming";
-  // Unknown until the first Earn state lands; the row shows as a skeleton
-  // instead of popping in after Autodeposit.
   const isAutoswapResolved =
     data.autoswapAvailable !== null || autoswap !== null;
   const autoswapLabel = autoswap
@@ -119,7 +111,6 @@ export function EarnPositionPane({
       <div className="flex min-h-0 w-full flex-1 flex-col gap-2 overflow-y-auto">
         <section className="flex w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card max-[795px]:rounded-t-none">
           <header className="flex w-full items-center p-2">
-            {/* Figma 5459:71689 — mobile treats Earn as a subscreen. */}
             <button
               aria-label="Back"
               className="t-hover hidden size-11 shrink-0 items-center justify-center rounded-3xl hover:bg-accent max-[795px]:flex"
@@ -135,7 +126,6 @@ export function EarnPositionPane({
               <h1 className="whitespace-nowrap font-semibold text-[24px] text-foreground leading-7">
                 Earn
               </h1>
-              {/* ponytail: mock tooltip copy — real copy comes with the wiring pass */}
               <span className="max-[795px]:hidden">
                 <InfoTooltip
                   iconClassName="size-6"
@@ -449,7 +439,6 @@ export function EarnPositionPane({
         />
       </div>
 
-      {/* Mobile sticky action bar (Figma 4693:70601). */}
       <div className="hidden w-full shrink-0 bg-card px-4 py-2 max-[795px]:block">
         <div className="flex w-full gap-2">
           <button

@@ -1,6 +1,5 @@
 import type { LifecycleErrorCode } from "./lifecycle-contract";
 
-// Classify before executors replace SDK errors with user-facing copy.
 export function classifyTransactionFailure(error: unknown): LifecycleErrorCode {
   if (!error || typeof error !== "object") return "unexpected_error";
   if (

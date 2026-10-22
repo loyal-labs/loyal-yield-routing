@@ -165,7 +165,6 @@ export function FeatureFlagsProvider({
             setManifest(payload);
           }
         } catch {
-          // Keep serving the last known manifest or the false default.
         } finally {
           clearTimeout(timeoutId);
           controller.signal.removeEventListener("abort", abortRequest);

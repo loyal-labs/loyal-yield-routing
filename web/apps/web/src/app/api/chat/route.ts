@@ -144,7 +144,6 @@ export async function POST(req: Request) {
 
       throw error;
     }
-    // Local dev: swallow auth errors (third-party cookies may not work)
   }
 
   if (!principal && !isLocal) {
@@ -159,7 +158,6 @@ export async function POST(req: Request) {
     );
   }
 
-  // Local dev: use a deterministic dev principal so chat persistence still works
   if (!principal && isLocal) {
     principal = LOCAL_DEV_PRINCIPAL;
   }
@@ -184,8 +182,6 @@ export async function POST(req: Request) {
     },
   });
 
-  // Persist the turn BEFORE starting the AI stream so DB errors
-  // return a proper 500 instead of being swallowed mid-stream.
   let chatId: string;
   let chatWasCreated = false;
   let turnId: string;

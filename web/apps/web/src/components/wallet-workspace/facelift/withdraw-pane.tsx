@@ -44,9 +44,6 @@ import {
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-// The exit path told as steps — the same route the deposit explainer walks,
-// run backwards from lending market through the vault to Main Account,
-// ending on the rent-cleanup phase after a full exit.
 function createWithdrawSteps(symbol: string): readonly FlowStep[] {
   return [
     {
@@ -83,8 +80,6 @@ const WITHDRAW_FOOTNOTE =
 const WITHDRAW_DOCS_URL =
   "https://docs.askloyal.com/automations/exit-and-lifecycle";
 
-// Display label matching the facelift rows: "Main Kamino USDC" for reserves
-// (the OG source label is "<market> reserve"), the OG label for idle vaults.
 function sourceDisplayLabel(source: EarnWithdrawSourceOption) {
   const symbol = resolveEarnPositionDisplay({
     liquidityMint: source.liquidityMint,
@@ -116,8 +111,6 @@ function SourceOptionRow({
 }) {
   const amount = splitUsdBalance(option.usd);
   const { isBalanceHidden } = useBalanceVisibility();
-  // $0.00 dust cannot be withdrawn on its own (Max-exit cleanup collects
-  // it) — the row stays listed but is not selectable.
   const isDust = option.usd < 0.005;
   return (
     <button
@@ -153,13 +146,6 @@ function SourceOptionRow({
   );
 }
 
-// Figma 4693:66727 (positions pane, empty amount) + 4693:66028 (valid amount)
-// + 4693:66297 (source select opens as an anchored dropdown action-sheet).
-// Renders the middle Withdraw card at its usual width (the "How Withdraw
-// works" explainer holds the right slot) with the position select opening
-// in-pane at every desktop width (bottom sheet on mobile). Withdrawals run
-// through data.actions (OG protocol); after a full exit the pane flips into
-// the rent-cleanup phase ("Close policies").
 export function WithdrawPane({
   data,
   initialSourceKey,
@@ -171,8 +157,6 @@ export function WithdrawPane({
 }) {
   const [amount, setAmount] = useState("");
   const [maxSourceKey, setMaxSourceKey] = useState<string | null>(null);
-  // Preselects the positions-row source that opened the screen; otherwise
-  // defaults to the first eligible source (options[0] fallback below).
   const [selectedKey, setSelectedKey] = useState(initialSourceKey ?? "");
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
@@ -184,8 +168,6 @@ export function WithdrawPane({
     ? `${data.walletAddress.slice(0, 4)}…${data.walletAddress.slice(-4)}`
     : "";
 
-  // Every positive idle or reserve holding is an independently selectable
-  // withdrawal source, matching the old workspace's withdraw view.
   const sources = data.actions.withdrawSources;
   const options = useMemo<WithdrawSourceOption[]>(
     () =>
@@ -218,8 +200,6 @@ export function WithdrawPane({
       ),
     [options]
   );
-  // Null while no sources exist (cleanup-only phase after a full exit).
-  // The fallback prefers a withdrawable source over $0.00 dust.
   const selectedOption =
     options.find((option) => option.key === selectedKey) ??
     options.find((option) => option.usd >= 0.005) ??
@@ -244,7 +224,6 @@ export function WithdrawPane({
     () => sources.filter((source) => source.type === "reserve"),
     [sources]
   );
-  // A picked row maps 1:1 to its source, same as the OG picker.
   const draftSource = selectedOption?.source ?? null;
   const selectedSymbol = draftSource
     ? resolveEarnPositionDisplay({
@@ -299,9 +278,6 @@ export function WithdrawPane({
     if (didWithdraw && draft.mode === "partial") {
       onBack();
     }
-    // A full exit stays here: the pane flips into cleanup-only mode so the
-    // rent-refund phase ("Close policies") is one click away, like the OG's
-    // re-opened withdraw view.
   };
   const handleCleanup = async () => {
     const didCleanup = await data.actions.runCleanup();
@@ -466,7 +442,6 @@ export function WithdrawPane({
                 type="button"
               >
                 <span className="flex items-center py-2 pr-3">
-                  {/* Cleanup-only phase has no sources; keep a sane cell. */}
                   {selectedOption?.icon ?? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img

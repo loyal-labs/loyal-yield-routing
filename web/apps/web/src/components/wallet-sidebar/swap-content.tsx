@@ -700,7 +700,6 @@ function SwapTransactionDetail({
           overflowX: "hidden",
         }}
       >
-        {/* Amount hero */}
         <div
           style={{
             display: "flex",
@@ -774,7 +773,6 @@ function SwapTransactionDetail({
           </div>
         </div>
 
-        {/* Details card */}
         <div style={{ width: "100%" }}>
           <div
             style={{
@@ -844,7 +842,6 @@ function SwapTransactionDetail({
           </div>
         </div>
 
-        {/* Action buttons */}
         <div
           style={{
             display: "flex",
@@ -951,7 +948,6 @@ function SwapTransactionDetail({
         </div>
       </div>
 
-      {/* Done button */}
       <div style={{ padding: "16px 20px" }}>
         <button
           className="swap-tx-done-btn"
@@ -1039,7 +1035,6 @@ export function SwapContent({
 
   const numericFrom = Number.parseFloat(fromAmount) || 0;
 
-  // Use quote output amount when available, fall back to price ratio estimate
   const toAmount = useMemo(() => {
     if (numericFrom <= 0) return 0;
     if (quote?.outputAmount) return Number.parseFloat(quote.outputAmount);
@@ -1054,7 +1049,6 @@ export function SwapContent({
   const hasAmount = numericFrom > 0;
   const insufficientFunds = numericFrom > fromToken.balance;
 
-  // Debounced quote fetching
   useEffect(() => {
     if (quoteTimerRef.current) clearTimeout(quoteTimerRef.current);
     if (!hasAmount || insufficientFunds || phase !== "form") {
@@ -1196,7 +1190,6 @@ export function SwapContent({
     toToken.symbol,
   ]);
 
-  // Report form button props to parent when chrome is managed externally
   useEffect(() => {
     if (!hideFormChrome || !onFormButtonChange) return;
     if (phase !== "form") {
@@ -1217,15 +1210,14 @@ export function SwapContent({
     handleConfirm,
   ]);
 
-  // Cross-fade between phases
   const [phaseOpacity, setPhaseOpacity] = useState(1);
   const [displayPhase, setDisplayPhase] = useState<SwapPhase>(phase);
   const prevPhase = useRef(phase);
   useEffect(() => {
     if (phase !== prevPhase.current) {
-      setPhaseOpacity(0); // fade out
+      setPhaseOpacity(0);
       const t = setTimeout(() => {
-        setDisplayPhase(phase); // swap content while near-invisible
+        setDisplayPhase(phase);
         setPhaseOpacity(1); // fade in
         prevPhase.current = phase;
       }, 200);
@@ -1305,10 +1297,8 @@ export function SwapContent({
           }
         `}</style>
 
-        {/* Header — hidden when parent owns chrome */}
         {!hideFormChrome && <SwapPanelHeader onClose={onClose} />}
 
-        {/* Body */}
         <div
           style={{
             flex: 1,
@@ -1319,7 +1309,6 @@ export function SwapContent({
             padding: "8px 8px 16px",
           }}
         >
-          {/* Swap inputs container */}
           <div
             style={{
               display: "flex",
@@ -1330,7 +1319,6 @@ export function SwapContent({
               overflow: "visible",
             }}
           >
-            {/* From card */}
             <div
               style={{
                 border: "1px solid rgba(0, 0, 0, 0.08)",
@@ -1510,7 +1498,6 @@ export function SwapContent({
                 </span>
               </div>
 
-              {/* Swap circle */}
               <button
                 className="swap-circle"
                 onClick={handleSwapTokens}
@@ -1537,7 +1524,6 @@ export function SwapContent({
               </button>
             </div>
 
-            {/* To card */}
             <div
               style={{
                 border: "1px solid rgba(0, 0, 0, 0.08)",
@@ -1632,7 +1618,6 @@ export function SwapContent({
             </div>
           </div>
 
-          {/* Details card (only when amount entered) */}
           {hasAmount && (
             <div
               style={{
@@ -1735,7 +1720,6 @@ export function SwapContent({
           )}
         </div>
 
-        {/* Bottom button — hidden when parent owns chrome */}
         {!hideFormChrome && (
           <div style={{ padding: "16px 20px" }}>
             <button

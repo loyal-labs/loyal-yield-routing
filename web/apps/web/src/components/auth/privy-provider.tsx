@@ -31,8 +31,6 @@ const LOYAL_THEME = {
   dark: { theme: "#1D1B20", accentColor: "#FF5050" },
 } as const;
 
-// Follows html.dark, which use-theme.ts toggles. Privy rebuilds its palette
-// whenever the config prop changes, so this is all the modal needs.
 function usePrivyTheme() {
   const [isDark, setIsDark] = useState(false);
   useEffect(() => {
@@ -61,7 +59,6 @@ function PrivyEmbeddedWalletBridge() {
       if (!("isPrivyWallet" in wallet) || !wallet.isPrivyWallet) continue;
       if (registered.has(wallet.name)) continue;
       registered.add(wallet.name);
-      // WalletProvider subscribes in a sibling effect; let it attach first.
       queueMicrotask(() => registerWallet(wallet));
     }
   }, [ready, wallets]);
@@ -131,9 +128,6 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
           // Privy render it twice (duplicate React keys) when it is installed.
           walletList: ["detected_solana_wallets"],
         },
-        // Spike: 'off' so wallet users get no embedded wallet; email/Google
-        // users get one via useCreateWallet() in the modal (matches decision
-        // "least friction, existing users keep their wallet").
         embeddedWallets: { solana: { createOnLogin: "off" } },
         externalWallets: {
           solana: { connectors: toSolanaWalletConnectors() },

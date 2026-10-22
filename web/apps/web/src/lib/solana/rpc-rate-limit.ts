@@ -486,8 +486,6 @@ async function runRpcFetch(
       }
     }
 
-    // Endpoint-wide 429/TypeError cooldown is enforced by the queue. Keep a
-    // local delay only for transient upstream 5xx responses.
     if (response?.status !== 429 && response !== null) {
       await wait(getRetryDelayMs(response, attempt));
     }
@@ -623,7 +621,6 @@ export function getFrontendSolanaRpcMaxRequestsPerWindow(): number {
     }
   }
 
-  // Honor a legacy min-interval override as an equivalent per-second ceiling.
   const rawInterval = env?.[FRONTEND_SOLANA_RPC_MIN_INTERVAL_ENV_NAME];
   if (rawInterval) {
     const parsed = Number.parseInt(rawInterval, 10);

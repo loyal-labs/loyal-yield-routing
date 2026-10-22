@@ -61,11 +61,6 @@ function StatValue({
   );
 }
 
-// The AUM bar chart (Figma 4884:37898 / hover 4884:36726): weekly buckets —
-// the same series the public dashboard renders. Hovering highlights the bar
-// and surfaces its week label top-left; the y-max rides top-right. The hover
-// index lives in the panel so the AUM header can scrub to the hovered week
-// (ASK-1915).
 function AumBarChart({
   hoveredIndex,
   onHoveredIndexChange,
@@ -156,14 +151,9 @@ function AumBarChart({
   );
 }
 
-// Protocol-wide public stats card under the chart card (Figma 4884:37898) —
-// the same numbers the public dashboard shows, via /api/earn/stats. Not
-// user-scoped, so balance visibility does not scramble them.
 export function EarnStatsPanel() {
   const [stats, setStats] = useState<EarnPublicStats | null>(null);
   const [hasError, setHasError] = useState(false);
-  // Hovering an AUM bar scrubs the header to that week's value and its
-  // vs-prior-week delta (ASK-1915); unhovered shows the live numbers.
   const [hoveredAumIndex, setHoveredAumIndex] = useState<number | null>(null);
   const hoveredAumPoint =
     stats !== null && hoveredAumIndex !== null
@@ -255,8 +245,6 @@ export function EarnStatsPanel() {
                   {formatSignedUsd(displayedAumDeltaUsd)} vs prior week
                 </p>
               ) : (
-                // Keeps the slot height while scrubbing the first bucket,
-                // which has no prior week to diff against.
                 <p
                   aria-hidden="true"
                   className="invisible text-[16px] leading-5"

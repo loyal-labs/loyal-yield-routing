@@ -454,9 +454,7 @@ export type VaultTransferRequest = {
   accountIndex: number;
   mint: string;
   symbol: string;
-  /** Human-readable token amount, e.g. 1.5 SOL or 100 USDC. */
   amount: number;
-  /** Base58 wallet address of recipient. */
   recipientAddress: string;
 };
 
@@ -464,10 +462,6 @@ export type VaultTransferResult = {
   success: boolean;
   signature?: string;
   error?: string;
-  /**
-   * "executed" — funds actually moved on chain (threshold-1 or spending-limit path).
-   * "proposed" — proposal was queued; funds move once threshold is reached.
-   */
   status?: "executed" | "proposed";
 };
 
@@ -805,10 +799,6 @@ export function isWalletCancellationError(error: unknown): boolean {
   );
 }
 
-// Shared failure reporting for wallet-signed action executors: a denial is a
-// user decision, not an app failure, so it stays out of error-level
-// telemetry; everything else is captured so it is queryable in ClickStack
-// alongside the flow-lifecycle .failed event (ASK-2038).
 function reportWalletActionFailure(
   label: string,
   operation: BrowserErrorOperation,
@@ -1035,9 +1025,7 @@ export type VaultTransferCapability =
   | {
       kind: "settings";
       threshold: number;
-      /** Threshold 1, no time lock, signer can vote and execute. */
       canExecuteSync: boolean;
-      /** Number of wallet signs the user will need to perform. */
       expectedSigns: number;
     }
   | {
@@ -1068,7 +1056,6 @@ export type SmartAccountSidebarData = {
   overview: SmartAccountOverview | null;
   earnAutodeposit: EarnStateResponse["autodeposit"];
   earnAutoswap: EarnStateResponse["autoswap"];
-  /** null while the Earn state is still loading — lets the UI skeleton the row. */
   earnAutoswapAvailable: boolean | null;
   earnOnboarding: EarnStateResponse["onboarding"] | null;
   earnPolicy: EarnStateResponse["policy"];
@@ -1106,16 +1093,9 @@ export type SmartAccountSidebarData = {
     invalidateAddresses?: string[];
     readCache?: boolean;
   }) => Promise<void>;
-  /** Refresh only the authoritative groups affected by a mutation or event. */
   refreshGroups: (request: SmartAccountRefreshGroupsRequest) => Promise<void>;
-  /** Refresh a confirmed mutation and schedule its one policy consistency read. */
   refreshMutationPlan: (plan: SmartAccountRefreshPlan) => Promise<void>;
   refreshEarnState: () => Promise<void>;
-  /**
-   * Invalidate caches and re-fetch portfolio + activity after an on-chain tx.
-   * Pass the affected vault/signer addresses to make sure their balances
-   * refresh on the next read; otherwise only the connected wallet refreshes.
-   */
   refreshAfterTx: (args: {
     accountIndex?: number;
     groups?: readonly SmartAccountRefreshGroup[];
@@ -1127,11 +1107,6 @@ export type SmartAccountSidebarData = {
   executeProposal: (proposal: SmartAccountProposalSnapshot) => Promise<void>;
   addInitiateSigner: (args: {
     signerAddress: string;
-    /**
-     * Permissions to grant the new signer in the spending-limit policy.
-     * Defaults to `["initiate"]` (the legacy "Suggest" tier). Pass
-     * richer sets for "Sign" or "Execute" tiers.
-     */
     permissions?: SmartAccountSignerPermission[];
   }) => Promise<void>;
   /**
@@ -1143,12 +1118,6 @@ export type SmartAccountSidebarData = {
   updateSignerPermissions: (args: {
     signerAddress: string;
     permissions: SmartAccountSignerPermission[];
-    /**
-     * When provided, the change goes through a PolicyUpdate against this
-     * spending-limit policy (covers Agent rows). When omitted, the change
-     * goes through RemoveSigner+AddSigner on the settings PDA top-level
-     * signer list (covers User + root Signer rows).
-     */
     policyAddress?: string | null;
     accountIndex?: number;
   }) => Promise<void>;
@@ -1174,12 +1143,6 @@ export type SmartAccountSidebarData = {
     spendingLimitAddress: string;
     signerAddress: string;
   }) => Promise<void>;
-  /**
-   * Inspect what transfer paths the connected wallet can use for the
-   * given vault + mint + amount + destination. Returns the path that
-   * executeVaultTransfer would take. Used by the UI to render the
-   * correct button state and notice ahead of submit.
-   */
   evaluateVaultTransferCapability: (args: {
     accountIndex: number;
     mint: string;
@@ -1247,11 +1210,6 @@ export type SmartAccountSidebarData = {
   requiresEarnPolicySetupForDeposit: boolean;
   pendingProposalId: string | null;
   pendingSpendingLimitActionKey: string | null;
-  /**
-   * Per-signer (non-User) portfolio + activity. Populated lazily; call
-   * `loadSignerPortfolio(address)` on selection. Vault-only signers have
-   * their own wallet balance + history independent of the vault.
-   */
   signerPortfolioByAddress: Record<string, SmartAccountSignerPortfolioView>;
   loadSignerPortfolio: (
     signerAddress: string,
@@ -1512,8 +1470,6 @@ const SMART_ACCOUNT_OVERVIEW_CACHE_VERSION = 1;
 const SMART_ACCOUNT_OVERVIEW_CACHE_PREFIX = "loyal.smartAccountOverview.v1";
 const DEFAULT_BEST_APY_RESERVES_RISK_PROFILE = "safe";
 const SMART_ACCOUNT_OVERVIEW_GROUP_TTL_MS = 30 * 1000;
-// Best-APY reserve rankings move over hours; 30 minutes of staleness is
-// invisible while it skips a Kamino-backed request on most reopens.
 const SMART_ACCOUNT_BEST_APY_RESERVES_TTL_MS = 30 * 60 * 1000;
 
 function getSmartAccountOverviewCacheKey(args: {
@@ -2495,14 +2451,7 @@ function resolveSignerSpendingLimit(args: {
 function mapSignersToEntries(args: {
   signers: SmartAccountSignerSnapshot[];
   authenticatedWalletAddress: string | null | undefined;
-  /**
-   * Full portfolio total (USD) for fallback display of the authenticated user.
-   */
   authenticatedUserTotalUsd?: number | null;
-  /**
-   * Public stablecoin subtotal (USD) for the authenticated user. When present,
-   * the Main Account row shows available cash instead of the whole portfolio.
-   */
   authenticatedUserCashUsd?: number | null;
   solPriceUsd: number;
   spendingLimits?: SmartAccountSpendingLimitSnapshot[];
@@ -2814,9 +2763,6 @@ function createWalletAdapterBridge(
     return null;
   }
 
-  // earnToast.signed() advances a visible "Confirm in wallet" Earn toast to
-  // "Confirming" the moment the user approves in the wallet; it is a no-op
-  // for every other flow that signs through this bridge.
   return {
     publicKey: wallet.publicKey,
     signTransaction: async <T extends Transaction | VersionedTransaction>(
@@ -2874,8 +2820,6 @@ const CONFIRMED_SIGNATURE_SLOT_RETRY_MAX_MS = 5000;
 const CONFIRMED_SLOT_UNAVAILABLE_MESSAGE =
   "Confirmed transaction slot is unavailable";
 
-// True when the transaction landed but the RPC never surfaced its slot within
-// the polling budget — chain state is fine, only recording fell behind.
 export function isConfirmedSlotUnavailableError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -5235,13 +5179,6 @@ export function useSmartAccountSidebarData(
     async (args: {
       signerAddress: string;
       permissions: SmartAccountSignerPermission[];
-      /**
-       * When set, the helper updates this signer's permissions inside a
-       * SpendingLimit policy (PolicyUpdate). When omitted, the helper
-       * updates the root signer entry on the settings PDA
-       * (RemoveSigner+AddSigner). Root + policy live in different lists,
-       * so the caller picks based on signer scope.
-       */
       policyAddress?: string | null;
       accountIndex?: number;
     }) => {
@@ -5626,7 +5563,6 @@ export function useSmartAccountSidebarData(
           return { success: true, signature, status: "executed" };
         }
 
-        // capability.kind === "settings"
         if (capability.canExecuteSync) {
           const syncOp = isSol
             ? await client.prepareSolTransferSync({
@@ -5715,8 +5651,6 @@ export function useSmartAccountSidebarData(
           };
         }
 
-        // threshold-1: read settings to learn the proposal's transactionIndex,
-        // then approve + execute as separate signs.
         const settingsAfterPropose =
           await client.sdk.smartAccounts.queries.fetchSettings(settingsPda);
         const transactionIndex = BigInt(
@@ -5976,10 +5910,6 @@ export function useSmartAccountSidebarData(
   );
 
   const executeEarnPolicySetup = useCallback(
-    // `force` skips the has-policy short-circuit so a wallet whose only
-    // route pair is the legacy single-token-program generation can create
-    // the owner-neutral pair required for Token-2022 deposits (ASK-2108).
-    // The legacy pair is never mutated; the new pair lands at the next seed.
     async (options?: { force?: boolean }): Promise<EarnPolicySetupResult> => {
       if (!wallet.publicKey) {
         return {
@@ -6405,8 +6335,6 @@ export function useSmartAccountSidebarData(
         earnToast.begin("autoswap-delete");
         earnToast.loading("Preparing removal");
         tracker.observe("prepare");
-        // The backend commits the pause and checks movement readiness. The
-        // browser then builds the revocation from public chain/account data.
         const removal = await fetchEarnAutoswapDeleteReadiness({
           ...request,
           observabilityFlowId: tracker.flowId,
@@ -7980,8 +7908,6 @@ export function useSmartAccountSidebarData(
               | undefined;
 
             try {
-              // Keep the one-prompt signAll UX, but confirm and record each
-              // setup stage before sending the next dependent transaction.
               await sendPreparedBatchWithWallet({
                 connection,
                 wallet: walletBridge,
@@ -8146,8 +8072,6 @@ export function useSmartAccountSidebarData(
         if (!setupSend.success) {
           return setupSend;
         }
-        // The confirmation already carries the slot; the status-probe
-        // fallback only runs when the transport did not report one.
         const confirmedSlot =
           walletConfirmedSlot ??
           (await resolveConfirmedSignatureSlot({
@@ -8200,8 +8124,6 @@ export function useSmartAccountSidebarData(
                 preparedSetup,
                 refreshImmediateStartTimestamp:
                   requestedStartTimestamp === undefined,
-                // Undefined means "immediate"; let the builder resolve it
-                // after policy confirmation so the delegation start is not stale.
                 startTimestamp: requestedStartTimestamp,
                 walletBalanceFloorRaw: request.walletBalanceFloorRaw,
               })

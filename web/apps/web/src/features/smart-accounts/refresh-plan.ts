@@ -42,11 +42,6 @@ export function resolveSmartAccountRefreshError(
   );
 }
 
-/**
- * Latest-started-wins ordering within an already identity-scoped hook. The
- * caller still checks its identity generation; this class prevents a slow
- * full read from committing after a newer targeted read for the same group.
- */
 export class SmartAccountRefreshOrder {
   readonly #latestByGroup = new Map<SmartAccountRefreshOrderGroup, number>();
   #nextOrder = 0;
@@ -72,7 +67,6 @@ export type SmartAccountReadModelLoadToken = Readonly<{
   order: number;
 }>;
 
-/** Prevents an older server read from publishing over a newer forced read. */
 export class SmartAccountReadModelLoadOrder {
   readonly #latestByKey = new Map<string, number>();
   #nextOrder = 0;
@@ -147,7 +141,6 @@ const defaultSchedulePolicyFollowUp: SchedulePolicyFollowUp = (
   return () => globalThis.clearTimeout(timer);
 };
 
-/** Coalesces the one policy-only confirmed-RPC follow-up per identity. */
 export class SmartAccountPolicyFollowUp {
   #cancel: (() => void) | null = null;
   #generation = 0;
@@ -193,11 +186,6 @@ export type SmartAccountScopeSnapshot = Readonly<{
   scope: string;
 }>;
 
-/**
- * Tracks identity changes independently from the identity text. The generation
- * prevents work captured by an earlier A identity from becoming current again
- * after an A -> B -> A transition.
- */
 export class SmartAccountScopeGeneration {
   #current: SmartAccountScopeSnapshot;
 
@@ -231,12 +219,6 @@ type SmartAccountRefreshFlight = {
   started: boolean;
 };
 
-/**
- * Coalesces identical group reads without hiding failures. An invalidation
- * during an active read produces one trailing authoritative read.
- * Settled reads are never reused because a later invalidation is causal proof
- * that a post-event read is required.
- */
 export class SmartAccountRefreshSingleflight {
   readonly #flights = new Map<string, SmartAccountRefreshFlight>();
 
@@ -364,11 +346,6 @@ function plan(args: {
   };
 }
 
-/**
- * Resolve the smallest authoritative read set after a confirmed mutation.
- * Balance and activity reads stay outside the overview groups so a proposal-only
- * mutation cannot accidentally fan out into wallet, Earn, or market requests.
- */
 export function resolveSmartAccountMutationRefreshPlan(
   input: SmartAccountMutationRefreshInput
 ): SmartAccountRefreshPlan {

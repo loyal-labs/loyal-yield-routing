@@ -264,8 +264,6 @@ assert.equal(
   parseMobileLifecycleEnvelope(mobileEnvelope(), NOW).walletAddress,
   undefined
 );
-// The browser envelope has no wallet field: the events route reads it from the
-// verified session, so a client-supplied address must be rejected outright.
 assert.throws(() =>
   parseBrowserLifecycleEnvelope({ ...baseEvent(), walletAddress: wallet }, NOW)
 );

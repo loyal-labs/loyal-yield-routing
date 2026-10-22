@@ -146,9 +146,6 @@ export class EarnEarningsUnavailableError extends Error {
   }
 }
 
-// Portfolio observations can precede the persisted deposit confirmation. Carry
-// the last known state into the earning interval, without earning before it or
-// requiring APY coverage for observations outside that interval.
 export function normalizeEarningsPortfolioSnapshots(args: {
   snapshots: readonly YieldPortfolioSnapshot[];
   start: Date;
@@ -1229,7 +1226,6 @@ export async function readEarnEarningsRangeSet(
           .filter((item) => item.observedAt < nextCheckpointAt)
           .at(-1)
       : undefined;
-    // A complete-vault observation must exist before we stop replaying holdings.
     const completeBeforeCheckpoint =
       checkpoint ||
       (nextCheckpointAt &&

@@ -27,8 +27,6 @@ export function hashInviteCode(normalizedCode: string): string {
   return createHash("sha256").update(normalizedCode).digest("hex");
 }
 
-// Fail closed: an unset list admits nobody; a malformed entry is a deploy
-// error, not a silently smaller list.
 export function parseInviteCodeHashes(raw: string | undefined): Set<string> {
   const hashes = new Set<string>();
   for (const entry of (raw ?? "").split(",")) {
@@ -50,8 +48,6 @@ export async function hasRedeemedInvite(walletAddress: string) {
   return row !== undefined;
 }
 
-// One use per code and one code per wallet are enforced by the unique
-// indexes; the insert races safely and the loser is classified by re-reading.
 export async function redeemInvite(input: {
   code: unknown;
   settingsPda: string;

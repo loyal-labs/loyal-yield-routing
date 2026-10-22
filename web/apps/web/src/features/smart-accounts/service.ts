@@ -324,9 +324,6 @@ async function reserveProvisioningRecord(args: {
     }
   }
 
-  // Still contended after every retry. The message reaches the user mid-deposit,
-  // so say what they can do about it; the PDA detail only ever meant something
-  // to us, and is kept in the log.
   console.warn("[smart-accounts] settings PDA reservation exhausted", {
     attempts: RESERVATION_RETRY_DELAYS_MS.length + 1,
     errorMessage:
@@ -413,10 +410,6 @@ async function sponsorRecord(args: {
         return reconciledRecord.record;
       }
 
-      // Concurrent-signup index race: another user's create landed on the
-      // settings PDA this record had reserved, so our create failed and the
-      // PDA now belongs to them. Reserve the next index and retry once
-      // instead of surfacing a transient error to the user.
       if (reconciledRecord.kind === "owner_mismatch" && attempt === 0) {
         const reservation = await reserveProvisioningRecord({
           userId: record.userId,

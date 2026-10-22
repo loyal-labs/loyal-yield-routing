@@ -80,8 +80,6 @@ export function UsdcCoinImage() {
   );
 }
 
-// Non-USDC holdings show their mint's coin icon in the coin slot; USDC keeps
-// the designed vault art (`UsdcCoinImage`) through the null fallback.
 export function resolveEarnCoinIconSrc(args: {
   liquidityMint: string;
   market: string | null;
@@ -306,8 +304,6 @@ export function TransactionRow({
   const { isBalanceHidden } = useBalanceVisibility();
   const isMovement =
     item.kind === "rebalance" || item.kind === "reconciliation";
-  // Non-USDC events put the mint's coin icon in the coin slot (the slot the
-  // fallbacks would otherwise fill with the USDC vault art).
   const coinSrc = item.liquidityMint
     ? resolveEarnCoinIconSrc({
         liquidityMint: item.liquidityMint,
@@ -362,9 +358,6 @@ export function TransactionRow({
     </>
   );
 
-  // Without a select handler (the Earn card's recent-5 list) the row stays a
-  // plain, non-interactive cell; the Activity feed passes one to open the
-  // transaction detail.
   if (!onSelect) {
     return (
       <div className="flex w-full items-center rounded-2xl px-4">{content}</div>
@@ -383,11 +376,6 @@ export function TransactionRow({
   );
 }
 
-// A row arriving after the initial load (a just-confirmed mutation) pushes
-// the list down and reveals: the slot grows 0fr → 1fr on the resize clock
-// (accordion mechanics, frontend/transitions/accordion.md) while the row
-// replays the texts-reveal rise. Mounted closed + pre-reveal, flipped after
-// a forced reflow.
 function NewRowReveal({ children }: { children: ReactNode }) {
   const growRef = useRef<HTMLDivElement>(null);
   const lineRef = useRef<HTMLDivElement>(null);
@@ -487,8 +475,6 @@ function TransactionsTab({
     isAuthenticated,
     isHydrated,
     publicEnv.solanaEnv,
-    // Bumped by the realtime stack after a confirmed Earn mutation so the
-    // list refetches (the client cache was invalidated just before).
     refreshKey,
     settingsPda,
     walletAddress,
@@ -503,10 +489,6 @@ function TransactionsTab({
     [items]
   );
 
-  // Just-confirmed mutations the indexed list hasn't caught up with yet
-  // (~5s): each shows a skeleton row at the top until its signature lands in
-  // a refetch. Only counted once the list is loaded — the initial-load
-  // skeleton below already covers items === null.
   const pendingRows =
     items === null
       ? []
@@ -514,10 +496,6 @@ function TransactionsTab({
           (signature) => !items.some((item) => item.signature === signature)
         );
 
-  // Wrapper choice per row must stay stable across re-renders, so each key's
-  // reveal kind is decided once, when it first appears: rows in the first
-  // loaded batch ride the group's mount stagger; rows appearing on later
-  // refetches grow into the list via NewRowReveal instead.
   const hasRenderedRowsRef = useRef(false);
   const revealKindsRef = useRef(new Map<string, "insert" | "stagger">());
   useEffect(() => {
@@ -566,8 +544,6 @@ function TransactionsTab({
       ) : null}
 
       {items === null && !hasError ? (
-        // transitions.dev skeleton pulse (t-skel-rows rides the recipe's
-        // pulse clock); the loaded rows below reveal with the texts stagger.
         <div className="t-skel-rows flex flex-col gap-2 px-4 py-3">
           {[0, 1, 2].map((index) => (
             <div
@@ -578,12 +554,6 @@ function TransactionsTab({
         </div>
       ) : null}
       {pendingRows.length > 0 ? (
-        // A just-confirmed deposit/withdrawal not yet in the indexed list:
-        // hold its slot at the top with a pulsing row until the refetch
-        // brings the real one (which then grows in via NewRowReveal).
-        // Plain direct children of t-skel-rows — the pulse targets them, and
-        // t-stagger-line must not be used here (it stays opacity:0 outside a
-        // StaggerReveal parent).
         <div className="t-skel-rows flex flex-col gap-2 px-4 py-3">
           {pendingRows.map((signature) => (
             <div
@@ -605,8 +575,6 @@ function TransactionsTab({
       ) : null}
 
       {items !== null && groups.length > 0 ? (
-        // Mounts only once the fetch lands, so the stagger plays right as the
-        // skeleton rows leave.
         <StaggerReveal className="flex w-full flex-col">
           {(() => {
             let lineIndex = 0;
@@ -698,9 +666,6 @@ function PositionsTab({
               }`;
         const usd = rawTokenAmountToNumber(holding.amountRaw, 6);
         const amount = splitUsdBalance(usd);
-        // Dust that displays as $0.00 — shown grayed for completeness, but
-        // without hover affordances: withdrawing $0.00 is meaningless (the
-        // Max-exit cleanup path collects dust).
         const isDust = usd < 0.005;
         return (
           <StaggerLine index={holdingIndex} key={holding.sourceId}>
@@ -780,7 +745,6 @@ export function EarnActivityCard({
   onViewAllActivity: () => void;
   onWithdrawSource: (sourceKey: string) => void;
   pendingSignatures: string[];
-  /** Earn MAX mock: swaps the Positions tab for a non-functional gray tab. */
   placeholderSecondaryTab?: string;
   refreshKey: number;
   scheduledSweeps: LoadedEarnAutodepositScheduledSweep[];
@@ -824,9 +788,6 @@ export function EarnActivityCard({
     void el.offsetHeight;
     el.style.height = `${toHeight}px`;
     const dur = readCssDurationMs("--resize-dur", 300);
-    // Async content (the transactions fetch) can land mid-tween, so the
-    // pinned height retargets to the new content height instead of stalling
-    // at the skeleton's and snapping on release.
     const observer = new ResizeObserver(() => {
       const content = el.firstElementChild as HTMLElement | null;
       if (!content) {
@@ -879,7 +840,6 @@ export function EarnActivityCard({
     if (!(bar && underline && active)) {
       return;
     }
-    // 12px inset matches the old per-button underline's inset-x-3.
     const write = () => {
       underline.style.transform = `translateX(${active.offsetLeft + 12}px)`;
       underline.style.width = `${active.offsetWidth - 24}px`;
@@ -907,8 +867,6 @@ export function EarnActivityCard({
   }, [moveUnderlineToActiveTab]);
 
   return (
-    // On mobile the card grows to meet the sticky action bar and drops its
-    // bottom rounding (Figma 4693:70498).
     <section className="flex w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card max-[795px]:flex-1 max-[795px]:rounded-b-none">
       <div
         className="relative flex w-full items-center px-2 pt-2"
@@ -935,7 +893,6 @@ export function EarnActivityCard({
               }`}
               key={tab}
               onClick={() => {
-                // The placeholder tab is a mock — never switches content.
                 if (!placeholderSecondaryTab) {
                   selectTab(tab as ActivityTab);
                 }

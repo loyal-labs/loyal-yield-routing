@@ -14,10 +14,6 @@ import {
 } from "@/lib/yield-optimization/earn-withdraw-confirm.server";
 import type { ConfirmedYieldWithdrawalInput } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-// Session (web) Earn withdrawal confirm. Auth comes from the wallet session;
-// validation is shared with the released-mobile compatibility route
-// core, which the mobile twin (`mobile/earn/withdraw/confirm`) also uses so the
-// security-critical canonicalization can't drift between the two.
 function jsonError(
   status: number,
   code: string,

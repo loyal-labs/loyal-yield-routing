@@ -67,8 +67,6 @@ async function readJsonBody(request: Request): Promise<unknown> {
   }
 }
 
-// The wallet is taken from the verified session, never from the request body,
-// so a caller cannot attribute its events to somebody else's address.
 async function resolveWalletAddress(
   request: Request
 ): Promise<string | undefined> {

@@ -1,8 +1,3 @@
-// Realized Earn APY from Kamino reserve share prices (liquidity per
-// collateral token). Signed share-price growth measures realized reserve
-// returns; the headline annualizes the observed fleet allocation's return.
-// No rate samples or routing simulation are involved.
-
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const YEAR_MS = 365 * DAY_MS;
@@ -14,8 +9,6 @@ const LIVE_MIN_WINDOW_MS = 6 * HOUR_MS;
 const MAX_INTERPOLATION_GAP_MS = 6 * HOUR_MS;
 const MAX_STALENESS_MS = 3 * HOUR_MS;
 const MAX_ALLOCATION_GAP_MS = 6 * HOUR_MS;
-// Reserves lacking history may be ignored only while the rest still
-// represents this share of Earn AUM.
 const MIN_COVERED_WEIGHT_SHARE = 0.9;
 const IDLE_RESERVE = "__idle__";
 
@@ -54,7 +47,6 @@ export type RealizedApyResult = {
 };
 
 export type RealizedApyInput = {
-  // Ascending by observedAtMs.
   histories: ReadonlyMap<string, readonly SharePricePoint[]>;
   allocations: EarnAllocationHistory;
   benchmarkReserve: string;
@@ -93,7 +85,6 @@ function sharePriceAt(
   if (gapMs > MAX_INTERPOLATION_GAP_MS) {
     return null;
   }
-  // Log-linear: interest compounds, so price is geometric in time.
   const fraction = (atMs - before.observedAtMs) / gapMs;
   return before.sharePrice * (after.sharePrice / before.sharePrice) ** fraction;
 }
@@ -271,8 +262,6 @@ function coveredSegmentGrowth(
   return weightedSum / coveredWeight;
 }
 
-// Deposits and withdrawals change size; reserve moves change only subsequent
-// returns. Full vault snapshots supply the allocation at each segment boundary.
 function portfolioAnnualizedGrowth(
   input: RealizedApyInput,
   timeline: readonly AllocationPoint[],
@@ -322,8 +311,6 @@ export function computeRealizedApy(
   if (input.allocations.currentIdleMismatch) {
     return null;
   }
-  // Never let a future-dated recorder row set the measurement time or supply
-  // the interpolation point for a return that has not yet happened.
   const boundedInput: RealizedApyInput = {
     ...input,
     histories: new Map(
@@ -342,8 +329,6 @@ export function computeRealizedApy(
   if (!Number.isFinite(measurementEndMs)) {
     return null;
   }
-  // A price may lag a later fleet sweep. Resolve the allocation as of the
-  // shared price timestamp, stepping back if active reserves differ there.
   let aligned = false;
   for (let attempt = 0; attempt <= timeline.length; attempt++) {
     const state = timeline[allocationIndexAt(timeline, measurementEndMs)];
@@ -404,9 +389,6 @@ export function computeRealizedApy(
     return null;
   }
 
-  // Prefer the 7-day figure. The 24h rate is noisy and taking the max of the
-  // two would surface every short spike; live is only a stand-in until a full
-  // 7-day window exists.
   const useRealized = realized7dBps !== null;
 
   return {

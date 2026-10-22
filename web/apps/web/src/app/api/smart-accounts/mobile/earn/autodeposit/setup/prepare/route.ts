@@ -172,9 +172,6 @@ export async function POST(request: Request) {
       connection: getConnection(solanaEnv),
       programId: new PublicKey(serverEnv.loyalSmartAccounts.programId),
     });
-    // Resume a half-finished setup. Reusing the recorded seed + nonce makes the
-    // SDK's chain-driven stage machine return only the missing stage for the
-    // SAME policy/delegation pair.
     let policySeed = parsed.policySeed;
     let nonce = parsed.nonce;
     let periodLengthSeconds = parsed.periodLengthSeconds;

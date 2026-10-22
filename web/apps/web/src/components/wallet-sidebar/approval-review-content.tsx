@@ -1240,7 +1240,6 @@ function PagedApprovalReview({
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        // Anchors the mascot note when it floats outside the pane edge.
         position: "relative",
       }}
     >

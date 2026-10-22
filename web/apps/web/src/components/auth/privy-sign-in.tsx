@@ -9,11 +9,8 @@ import {
 import { usePrivyAuth } from "./privy-session-sync";
 import { WalletSignIn } from "./wallet-sign-in";
 
-/** Sign-in modal body when Privy is on. The flow itself lives in
- *  PrivyAuthController so it survives this modal closing. */
 export function PrivySignIn() {
   const auth = usePrivyAuth();
-  // Hooks run before the early return below.
   const needsMobileWalletBrowser = useNeedsMobileWalletBrowser();
   // Privy's Solana login is SIWS (off-chain message signing), which Ledger's
   // Solana app refuses, so hardware-wallet users need the legacy proof flow

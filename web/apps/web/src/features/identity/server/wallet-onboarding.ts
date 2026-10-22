@@ -730,8 +730,6 @@ export async function completeWalletOnboarding(
           : isSmartAccountProvisioningError(error)
           ? error.code
           : // The proof already verified; anything raw here is an
-            // infrastructure failure inside provisioning (RPC, DB), not an
-            // unknown condition.
             "smart_account_provisioning_failed"
       ),
     });
@@ -790,10 +788,6 @@ export async function completeWalletOnboarding(
       throw error;
     }
 
-    // A raw error here (RPC outage, DB failure) would bubble out of the route
-    // as a bare 500 with no error envelope, showing the user a generic
-    // failure for a signature that already verified — which reads as a wallet
-    // problem and sends them down the wrong path (ASK-1961).
     console.error("[wallet-onboarding] wallet onboarding failed unexpectedly", {
       challengeHash,
       walletAddress,

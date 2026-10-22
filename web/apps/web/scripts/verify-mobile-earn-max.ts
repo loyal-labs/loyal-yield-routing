@@ -182,7 +182,6 @@ console.log(
   "Passive Earn MAX reads need no session; context remains authenticated (offline)."
 );
 
-// Missing-account setup must remain behind auth, cluster and on-chain funding gates.
 cluster = "mainnet";
 accountExists = false;
 userExists = false;

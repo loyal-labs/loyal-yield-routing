@@ -1,4 +1,3 @@
-/** A confirmed deposit is visible only after an RPC read at or beyond its slot. */
 export function isDepositVisible(
   holdings:
     | readonly {

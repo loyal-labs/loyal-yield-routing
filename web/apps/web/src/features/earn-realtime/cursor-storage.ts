@@ -75,7 +75,6 @@ export class SafeEarnRealtimeCursorStore {
       this.primary.setItem(this.key, next);
       primaryCursorTombstones.delete(this.key);
     } catch {
-      // The identity-scoped in-memory cursor remains authoritative this session.
       primaryCursorTombstones.add(this.key);
     }
   }
@@ -90,8 +89,6 @@ export class SafeEarnRealtimeCursorStore {
       this.primary.removeItem(this.key);
       primaryCursorTombstones.delete(this.key);
     } catch {
-      // Keep the tombstone across hook unmount/remount so a readable-but-not-
-      // removable stale cursor cannot be resurrected by a new store instance.
       primaryCursorTombstones.add(this.key);
     }
   }
@@ -104,7 +101,6 @@ export function createEarnRealtimeCursorStore(
   try {
     primary = globalThis.sessionStorage;
   } catch {
-    // Use the module-local identity-scoped fallback.
   }
   return new SafeEarnRealtimeCursorStore(key, primary);
 }

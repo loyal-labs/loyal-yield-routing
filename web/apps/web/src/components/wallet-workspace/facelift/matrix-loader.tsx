@@ -13,9 +13,6 @@ type LottieLightPlayer = {
   }) => AnimationItem;
 };
 
-// The player chunk and the animation JSON are fetched once, at module
-// evaluation (i.e. while the page is still hydrating), so the animation can
-// start the moment a loader mounts instead of after two sequential fetches.
 let warmupPromise: Promise<[LottieLightPlayer, unknown]> | null = null;
 
 function loadMatrixLoaderAssets(): Promise<[LottieLightPlayer, unknown]> {
@@ -31,24 +28,20 @@ function loadMatrixLoaderAssets(): Promise<[LottieLightPlayer, unknown]> {
 }
 
 if (typeof window !== "undefined") {
-  // Failed warmup resets the cache so a later mount retries the fetch.
   loadMatrixLoaderAssets().catch(() => {
     warmupPromise = null;
   });
 }
 
-// The lottie's two cell colors are baked for a white surface; in dark the
-// pale cells glare, so the palette remaps at mount (the loader is transient,
-// so a mid-flight theme toggle isn't re-themed until remount).
 const DARK_CELL_REMAP: [from: number[], to: number[]][] = [
   [
     [249, 54, 60],
     [255, 80, 80],
-  ], // brand red -> dark accent #FF5050
+  ],
   [
     [227, 201, 202],
     [85, 49, 54],
-  ], // pale pink -> #553136, same lift off #2B2930 as the pink has off white
+  ],
 ];
 
 function remapDarkCellColors(node: unknown): void {
@@ -83,8 +76,6 @@ function remapDarkCellColors(node: unknown): void {
   }
 }
 
-// Brand-red "Matrix Loader" lottie. Shared by the sign-in wallet wait and the
-// Earn shell boot loader.
 export function MatrixLoader() {
   const containerRef = useRef<HTMLDivElement>(null);
 

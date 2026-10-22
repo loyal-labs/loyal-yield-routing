@@ -60,8 +60,6 @@ const CHART_RANGES = [
 
 type ChartRangeLabel = (typeof CHART_RANGES)[number]["label"];
 
-// Session caches so re-selecting a token doesn't refetch (the server caches
-// CoinGecko for 5 minutes too).
 const DETAIL_CACHE_TTL_MS = 5 * 60 * 1000;
 const detailCache = new Map<string, { savedAt: number; value: TokenDetail }>();
 const chartRangeCache = new Map<
@@ -121,7 +119,6 @@ function formatTokenBalance(value: number): string {
   return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
 }
 
-// Hourly ranges show the time of day; daily ones the date.
 function formatPointTime(timestamp: number, range: ChartRangeLabel): string {
   const date = new Date(timestamp);
   if (range === "1D" || range === "1W") {
@@ -150,9 +147,6 @@ function normalizeChartPoints(points: ChartPoint[]): ChartPoint[] {
     .sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// Polyline in a 100×44 stretched viewBox (the OG token-detail projection),
-// plus the min/max labels and every point's y ratio so the scrub dot can
-// ride the line.
 function buildChartGeometry(points: ChartPoint[]) {
   if (points.length < 2) {
     return null;
@@ -201,7 +195,6 @@ function CircleActionButton({
   onClick,
 }: {
   icon: string;
-  /** text-* class rendering the icon as a themed mask; omit = raw img. */
   iconColorClass?: string;
   label: string;
   onClick: () => void;
@@ -296,12 +289,6 @@ function LinkChip({
   );
 }
 
-// Figma 4826:439625 — the Crypto/Stablecoins right pane: market header +
-// price, range chart, stats chips, the wallet's balance with quick actions,
-// then the About block with link chips.
-// Market data rides the OG /api/tokens/[mint] CoinGecko proxy. Passing
-// onClose renders the <1204 sheet variant (Figma 4826:440136): X in the
-// header and the actions pinned in a bottom bar instead of inline.
 export function TokenDetailPane({
   hideChart,
   icon,
@@ -314,7 +301,6 @@ export function TokenDetailPane({
   publicBalance,
   symbol,
 }: {
-  /** Stablecoins skip the price chart — a flat $1 line is just noise. */
   hideChart?: boolean;
   icon: string;
   mint: string;
@@ -372,7 +358,6 @@ export function TokenDetailPane({
     };
   }, [mint, retryNonce]);
 
-  // Non-24h ranges fetch their chart on first visit; 1D reuses the detail's.
   useEffect(() => {
     const range = CHART_RANGES.find((entry) => entry.label === activeRange);
     if (!range || range.label === "1D") {
@@ -421,8 +406,6 @@ export function TokenDetailPane({
     [normalizedPoints]
   );
 
-  // Scrubbing: the dot rides the line under the cursor and the big price
-  // shows that point; resting state parks the dot on the latest point.
   const chartAreaRef = useRef<HTMLDivElement>(null);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const lastIndex = normalizedPoints ? normalizedPoints.length - 1 : 0;
@@ -448,8 +431,6 @@ export function TokenDetailPane({
   const chartColor = isNegative ? "var(--destructive)" : "var(--positive)";
   const displayPrice = detail?.market.priceUsd ?? price;
   const priceParts = splitPrice(hoveredPoint?.priceUsd ?? displayPrice);
-  // The pop-in mounts once the real price is known (or the fetch settled),
-  // so the entrance plays on the actual value — scrub updates render plain.
   const isPriceRevealed = detail !== null || hasDetailError || price > 0;
 
   const statChips = useMemo(() => {
@@ -642,7 +623,6 @@ export function TokenDetailPane({
             </div>
             <div className="relative h-[200px] w-full pr-4">
               {geometry && normalizedPoints ? (
-                // Re-keyed per chart so token/range switches replay the draw.
                 <div
                   className="relative h-full w-full cursor-crosshair [touch-action:none]"
                   key={`${mint}:${activeRange}`}
@@ -885,8 +865,6 @@ export function TokenDetailPane({
       </div>
 
       {isSheet ? (
-        // Sheet variant pins the actions under the scroll area (Figma
-        // 4834:440680): labeled Swap/Send pills.
         <div className="flex w-full shrink-0 items-center gap-2 bg-card px-4 pt-2 pb-4">
           <button
             className="flex shrink-0 items-center justify-center gap-2 rounded-full bg-foreground p-2.5"

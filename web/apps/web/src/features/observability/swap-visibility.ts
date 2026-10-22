@@ -17,7 +17,6 @@ export function isSwapVisible(
   const inputAfter = balance(after, inputMint);
   const outputBefore = balance(before, outputMint);
   const outputAfter = balance(after, outputMint);
-  // Display precision or concurrent transfers can conservatively delay proof.
   return (
     [inputBefore, inputAfter, outputBefore, outputAfter].every(
       (value) => Number.isFinite(value) && value >= 0

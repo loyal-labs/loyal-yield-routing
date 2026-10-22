@@ -9,10 +9,6 @@ import { useSignInModal } from "@/contexts/sign-in-modal-context";
 import { CherryPrivyAuthController } from "./privy-sign-in";
 import { useCherryRuntime } from "./runtime-context";
 
-/**
- * Cherry sign-in entry. With Privy on, runs the headless SIWS flow; with
- * Privy off, opens the legacy CAPTCHA + wallet-proof UI once (no bypass).
- */
 export function CherryAuthPrompt({ children }: { children: ReactNode }) {
   const runtime = useCherryRuntime();
   const { privyAppId } = usePublicEnv();

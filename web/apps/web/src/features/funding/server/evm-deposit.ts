@@ -7,26 +7,16 @@ import { getPrivyClient } from "@/features/identity/server/privy-auth";
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
 import { getDatabase } from "@/lib/core/database";
 
-/**
- * "Deposit from any chain" (ASK-2266): one Privy-provisioned 0x address per
- * embedded Solana wallet. Anything sent there (USDC/USDT/ETH on the chains
- * below) is bridged by Privy and lands as USDC in the user's Solana wallet.
- * App pays the bridge gas, so this is only offered to Privy-native wallets.
- */
 export const EVM_DEPOSIT_CHAINS = [
   "ethereum",
   "base",
   "arbitrum",
   "polygon",
-  "bsc", // Privy's alias for BNB Chain (eip155:56)
+  "bsc",
 ] as const;
 export const EVM_DEPOSIT_ASSETS = ["usdc", "usdt", "eth"] as const;
-// Ethereum L1 gas can spike to a few dollars per deposit; below this the
-// bridge eats the deposit. L2s are ~$0.01, no floor there.
 export const EVM_DEPOSIT_MIN_USD_ETHEREUM = 20;
 
-// Privy rejects eth where it is not the native coin; everything else is
-// accepted on every chain.
 const NO_ETH_CHAINS = new Set<string>(["polygon", "bsc"]);
 const SOURCE_ASSETS = EVM_DEPOSIT_CHAINS.flatMap((chain) =>
   EVM_DEPOSIT_ASSETS.filter(
@@ -61,7 +51,6 @@ export function buildEvmDepositRequest(
   };
 }
 
-// Long enough for the user to approve in the Privy iframe.
 export const EVM_DEPOSIT_SIGN_WINDOW_MS = 10 * 60 * 1000;
 
 export async function resolveEmbeddedWalletId(walletAddress: string) {
@@ -108,7 +97,6 @@ export async function createEvmDepositAddress(args: {
   rowId: string;
   walletId: string;
   appId: string;
-  /** User's authorization signature over buildEvmDepositRequest(). */
   signature: string;
   requestExpiry: number;
 }): Promise<string> {

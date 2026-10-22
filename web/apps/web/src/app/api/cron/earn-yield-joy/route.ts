@@ -4,10 +4,6 @@ import { runEarnYieldJoy } from "@/lib/yield-optimization/earn-yield-joy.server"
 
 import { validateCronAuthHeader } from "../_shared/auth";
 
-// Daily driver for the Earn "joy" pushes (ASK-2091): first yield, total-earned
-// milestones, the Loyal anniversary, and the self-tuning "+$X earned" digest.
-// A wallet gets at most one of them per run. `?dryRun=1` decides without
-// sending or writing state.
 export const maxDuration = 300;
 
 async function handleCronRequest(request: Request) {

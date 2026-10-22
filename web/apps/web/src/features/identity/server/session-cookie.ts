@@ -93,9 +93,6 @@ function toRefreshAfterIsoString(iat: number): string {
   return new Date(iat * 1000 + SESSION_REFRESH_MIN_AGE_MS).toISOString();
 }
 
-// Local development hosts: localhost/loopback plus RFC1918 LAN addresses —
-// dev servers are routinely opened from other devices via the machine's
-// network IP, and those hosts can never be a production domain.
 function isLocalDevelopmentHostname(hostname: string): boolean {
   return (
     hostname === "localhost" ||

@@ -69,7 +69,6 @@ export function ConnectRequestContent({
           }
         `}</style>
 
-        {/* Header */}
         <div
           style={{
             display: "flex",
@@ -120,7 +119,6 @@ export function ConnectRequestContent({
           </button>
         </div>
 
-        {/* Success content */}
         <div
           style={{
             flex: 1,
@@ -187,7 +185,6 @@ export function ConnectRequestContent({
           </div>
         </div>
 
-        {/* Done button */}
         <div style={{ padding: "16px 20px" }}>
           <button
             className="connect-done-btn"
@@ -230,7 +227,6 @@ export function ConnectRequestContent({
         }
       `}</style>
 
-      {/* Header */}
       <div
         style={{
           display: "flex",
@@ -273,7 +269,6 @@ export function ConnectRequestContent({
         </button>
       </div>
 
-      {/* Content */}
       <div
         style={{
           flex: 1,
@@ -284,7 +279,6 @@ export function ConnectRequestContent({
           overflowY: "auto",
         }}
       >
-        {/* Agent label */}
         <div
           style={{
             display: "flex",
@@ -343,7 +337,6 @@ export function ConnectRequestContent({
           </div>
         </div>
 
-        {/* Details card */}
         <div style={{ width: "100%" }}>
           <div
             style={{
@@ -354,7 +347,6 @@ export function ConnectRequestContent({
               flexDirection: "column",
             }}
           >
-            {/* Status */}
             <div style={{ padding: "9px 12px" }}>
               <span
                 style={{
@@ -383,7 +375,6 @@ export function ConnectRequestContent({
               </span>
             </div>
 
-            {/* Additional information */}
             <div style={{ padding: "9px 12px" }}>
               <span
                 style={{
@@ -416,7 +407,6 @@ export function ConnectRequestContent({
         </div>
       </div>
 
-      {/* Bottom buttons */}
       <div style={{ padding: "16px 20px" }}>
         <div style={{ display: "flex", gap: "10px", width: "100%" }}>
           <button

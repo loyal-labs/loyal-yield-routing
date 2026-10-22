@@ -15,8 +15,6 @@ import {
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-// The Stablecoins screen (Figma 4813:339437) is this same pane with a green
-// stash tile, ticker subtitles, gray Swap and a black Earn action added.
 export type CryptoPaneVariant = "crypto" | "stables";
 
 export type CryptoRowActions = {
@@ -26,7 +24,6 @@ export type CryptoRowActions = {
   onSwap: (token: TokenRow) => void;
 };
 
-// $9,884.55 → black whole + gray fraction, scrambled while hidden.
 export function SplitUsd({
   isHidden,
   value,
@@ -51,8 +48,6 @@ function formatChangeLabel(change: number): string {
   return `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`;
 }
 
-// Header action pill; label optionally collapses to icon-only when the pane
-// is downsized (Figma 4813:339147 / 4813:339683).
 function HeaderPill({
   hideLabel,
   icon,
@@ -63,7 +58,6 @@ function HeaderPill({
 }: {
   hideLabel?: boolean;
   icon: string;
-  /** text-* class rendering the icon as a themed mask; omit = raw img. */
   iconColorClass?: string;
   isBlack?: boolean;
   label: string;
@@ -104,7 +98,6 @@ function HeaderPill({
   );
 }
 
-// Hover-revealed row action: label pill wide, icon circle when downsized.
 function RowPill({
   icon,
   iconColorClass,
@@ -113,7 +106,6 @@ function RowPill({
   onClick,
 }: {
   icon: string;
-  /** text-* class rendering the icon as a themed mask; omit = raw img. */
   iconColorClass?: string;
   isBlack?: boolean;
   label: string;
@@ -127,8 +119,6 @@ function RowPill({
           : "bg-accent text-foreground hover:bg-accent-active"
       }`}
       onClick={(event) => {
-        // Don't bubble into the row click — below 1204px that would slide
-        // the token detail sheet over the action pane being opened.
         event.stopPropagation();
         onClick();
       }}
@@ -153,9 +143,6 @@ function RowPill({
   );
 }
 
-// Figma 4813:338887..338935 — one asset row. Every row hover-reveals its
-// action pills replacing the amounts (Send/Swap); the stables variant
-// appends a black Earn pill and shows the ticker instead of price.
 function TokenCell({
   actions,
   isBalanceHidden,
@@ -169,9 +156,6 @@ function TokenCell({
 }) {
   const isStables = variant === "stables";
   return (
-    // Row click selects the token for the detail right pane; the action
-    // pills stop propagation (the page's row actions select the token
-    // themselves without opening the <1204 detail sheet).
     <div
       className="group relative flex w-full cursor-pointer items-center rounded-2xl px-4 transition-colors duration-150 hover:bg-accent"
       onClick={() => actions.onSelect?.(row)}
@@ -258,9 +242,6 @@ function TokenCell({
   );
 }
 
-// A balance still held in the sunset private-transfer program, listed under
-// the public assets so it is visible without opening the exit flow. Click
-// opens Unshield with this token preselected.
 function ShieldedCell({
   isBalanceHidden,
   onUnshield,
@@ -306,9 +287,6 @@ function ShieldedCell({
   );
 }
 
-// Figma 4813:338844 (wide) / 4813:339148 (downsized) — the Crypto middle
-// pane, and via variant="stables" the Stablecoins one (4813:339437 /
-// 4813:339683): header actions, the stash balance cell, then the asset list.
 export function CryptoPane({
   balanceFraction,
   balanceWhole,
@@ -330,10 +308,8 @@ export function CryptoPane({
   onEarn?: () => void;
   onSend: () => void;
   onSwap: () => void;
-  /** Exit path for legacy shielded balances; only passed when the wallet holds some. */
   onUnshield?: (mint?: string) => void;
   rowActions: CryptoRowActions;
-  /** Balances still held in the private-transfer program, listed under the assets. */
   shieldedRows?: ShieldedRow[];
   tokenRows: TokenRow[];
   variant: CryptoPaneVariant;
@@ -417,7 +393,6 @@ export function CryptoPane({
                   src={`${ASSET_BASE}/stash-stablecoins.svg`}
                 />
               ) : (
-                // Figma "Stash" tile — three white bars on purple.
                 <span className="relative block size-16 overflow-clip rounded-2xl bg-[#9946fc]">
                   <span className="absolute top-8 left-[10.67px] h-[21.33px] w-2 rounded-[2.667px] bg-white" />
                   <span className="absolute top-[10.67px] left-7 h-[42.67px] w-2 rounded-[2.667px] bg-white" />

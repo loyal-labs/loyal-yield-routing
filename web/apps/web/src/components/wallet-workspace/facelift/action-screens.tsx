@@ -24,10 +24,6 @@ export function formatUsdAmount(value: number): string {
   });
 }
 
-// Confetti burst for the success screen. Deterministic index-scrambled fan
-// (no Math.random, so strict-mode double renders agree): each particle gets
-// an angle with jitter, a distance ring, spin, stagger and a palette color,
-// read by the t-confetti keyframes as inline custom props.
 const CONFETTI_COLORS = ["#f9363c", "#ffb800", "#34c759", "#0a84ff", "#bf5af2"];
 const CONFETTI_PARTICLES = Array.from({ length: 18 }, (_, index) => {
   const angle = (index / 18) * Math.PI * 2 + ((index % 5) - 2) * 0.11;
@@ -42,10 +38,6 @@ const CONFETTI_PARTICLES = Array.from({ length: 18 }, (_, index) => {
   };
 });
 
-// The action flows share their result screens; each pane mounts these
-// inside its own step-keyed PaneReveal so screen changes replay the rise.
-
-// Figma 4813:405472 / 4822:422952 — centered pair icons + animated ellipsis.
 export function ActionProcessingBody({
   icons,
   label,
@@ -70,11 +62,6 @@ export function ActionProcessingBody({
   );
 }
 
-// Figma 4813:406464 — success check + confetti burst, actions, and the
-// front dog rising from the pane bottom. Like the earn empty pane's dog, on
-// desktop it drops by the shell's 8px gap (-bottom-2, the host pane unclips
-// for result steps) to sit flush with the viewport bottom; on mobile it clips
-// to the rounded pane bottom instead.
 export function ActionSuccessBody({
   label,
   onDone,
@@ -157,10 +144,6 @@ export function ActionSuccessBody({
   );
 }
 
-// Figma 4813:407564 — failed X with the error under it and the dog rising
-// from the pane bottom (same layout as success — the message moved in-flow so
-// it stays on white instead of over the red dog, and the dog gets the same
-// viewport-bottom drop); Back returns to the form for a retry.
 export function ActionErrorBody({
   message,
   onBack,

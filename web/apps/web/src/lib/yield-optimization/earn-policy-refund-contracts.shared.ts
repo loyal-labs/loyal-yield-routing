@@ -69,10 +69,6 @@ export type EarnVaultRefundTokenAccount = {
   mint: string;
 };
 
-// The Earn vault's own refundable rent: the SOL sitting on the vault PDA (the
-// unspent Kamino setup buffer) plus the rent locked in its token accounts.
-// Everything here is chain-derived, so it surfaces even when the DB rows for
-// the position are long gone.
 export type EarnPolicyRefundVaultEntry = {
   account: string;
   blockedReason: string | null;

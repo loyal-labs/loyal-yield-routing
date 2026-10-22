@@ -19,17 +19,6 @@ import {
 import { serializeRoutePolicyState } from "@/lib/yield-optimization/earn-state-serializers.server";
 import { findActiveYieldRoutePolicyPair } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-// Read-only list of the wallet's Earn withdrawal sources (per-reserve positions
-// + one idle account per policy mint), keyed by wallet address.
-//
-// Sourced from the LIVE on-chain holdings snapshot (`fetchEarnRpcHoldingsSnapshot`
-// — the same read `/holdings` and the positions sheet use), NOT the DB
-// read-model. The read-model can't follow a cross-market rebalance (its reconcile
-// only re-checks reserves it already knows), so it reported a stale
-// reserve/market/amount that the picker showed and `withdraw/prepare` then
-// rejected. The snapshot scans the policy's markets and reflects reality. Each
-// item still carries the prepare-source identifiers (type/id/reserve/
-// tokenAccount/mint) so a `withdraw/prepare` call can match it.
 const EARN_VAULT_INDEX = 1 as const;
 
 const connectionCache = new Map<SolanaEnv, Connection>();
@@ -82,9 +71,6 @@ function isPositiveAmount(amountRaw: string): boolean {
   }
 }
 
-// Maps a live holdings snapshot entry to a withdraw source. Drops entries we
-// can't offer as a withdrawal (zero balance, or missing the identifiers a
-// `withdraw/prepare` call needs to match/build the instruction).
 function holdingToWithdrawSource(
   holding: EarnRpcHolding
 ): WithdrawSource | null {
@@ -174,8 +160,6 @@ export async function GET(request: Request) {
       settingsPda,
     });
 
-    // The live holdings read needs the active Earn route policy (the market
-    // universe to scan). No policy → nothing is deployed yet.
     const policyPair = await findActiveYieldRoutePolicyPair({
       authority: walletAddress,
       cluster,

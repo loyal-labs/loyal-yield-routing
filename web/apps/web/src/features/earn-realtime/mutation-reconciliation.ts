@@ -128,13 +128,6 @@ function matchesHistoricalExpectedMutation(
   return matchesExpectedMutation(expected, event);
 }
 
-/**
- * Correlates a successful local mutation with its durable invalidation. The
- * event owns the canonical read when it arrives; otherwise exactly one bounded
- * fallback owns it. A fallback that began before a late event never suppresses
- * that event: the coordinator must run/await a post-event trailing read before
- * the event can be acknowledged.
- */
 export class EarnMutationReconciliationRegistry {
   private readonly entries = new Map<string, ExpectedEntry>();
   private nextOrder = 0;
@@ -212,9 +205,6 @@ export class EarnMutationReconciliationRegistry {
       ])
         .then(() => {
           if (this.entries.get(entry.key) !== entry) return;
-          // This was the one missed-event fallback. Remove correlation state so
-          // any event arriving later owns a fresh causal read instead of being
-          // suppressed by a request that may have started before that event.
           this.remove(entry.key);
         })
         .catch((error) => {
@@ -240,9 +230,6 @@ export class EarnMutationReconciliationRegistry {
     const registrationOrderAtPlan = this.nextOrder;
 
     for (const planned of events) {
-      // Every durable event keeps ownership of its canonical resource read.
-      // Correlation only cancels the mutation's missed-event fallback; it must
-      // never suppress a cursor-owning event without a producer version/signature.
       for (const resource of planned.resources) resources.add(resource);
       const matches = Array.from(this.entries.values()).filter((entry) =>
         matchesExpectedMutation(entry, planned.event)
@@ -320,10 +307,6 @@ export class EarnMutationReconciliationRegistry {
           if (accepted && isCovered(entry)) this.remove(entry.key);
         }
         if (accepted) {
-          // A mutation can finish registering while its already-received SSE
-          // event is awaiting the canonical coordinator read. Reconcile that
-          // late registration with the accepted read so its timer cannot issue
-          // a duplicate fallback.
           for (let index = 0; index < events.length; index += 1) {
             const planned = events[index];
             const recent = acceptedRecent[index];

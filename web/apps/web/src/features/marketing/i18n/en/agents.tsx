@@ -10,14 +10,12 @@ export const enAgents = {
     ogImageAlt: "Loyal Smart Accounts for AI Agents on Solana",
   } satisfies PageMeta,
   breadcrumb: { home: "Home", page: "Agents" } satisfies BreadcrumbCopy,
-  // Block 1 — Hero (dark)
   hero: {
     title: "Smart Accounts for AI Agents",
     body: "Every wallet address in Loyal is a Smart Account with its own policies and spending caps, so your agents can't spend more or send funds somewhere you didn't approve.",
     cta: "Get started",
     imageAlt: "Loyal agent permission ladder with spending limit card",
   },
-  // Block 2 — Section (why we built this)
   whyWeBuilt: {
     title: "Why we built this",
     cards: {
@@ -41,7 +39,6 @@ export const enAgents = {
       ),
     },
   },
-  // Block 3 — Section (what an agent wallet on Loyal is)
   whatItIs: {
     title: "What an agent wallet on Loyal is",
     cards: {
@@ -72,7 +69,6 @@ export const enAgents = {
       ),
     },
   },
-  // Block 4 — Section-5 (three bold permission-tier cards)
   tiers: {
     title: "The three permission tiers",
     description:
@@ -92,7 +88,6 @@ export const enAgents = {
       },
     },
   },
-  // Block 5 — Section-7 (two muted cards: spending limits + allowlists)
   limits: {
     title: "Spending limits and allowlists",
     description: (
@@ -117,7 +112,6 @@ export const enAgents = {
       },
     },
   },
-  // Block 6 — Section-14 (muted grid: what you can build)
   build: {
     title: "What you can build",
     description:
@@ -163,7 +157,6 @@ export const enAgents = {
       },
     },
   },
-  // Block 7 — Section-16 (muted 2-col grid + closing: security model)
   security: {
     title: "Security model",
     description: "Every constraint is enforced on Solana, not on a Loyal server:",
@@ -210,7 +203,6 @@ export const enAgents = {
     closingStatement:
       "The result is a safe wallet for autonomous agent behavior at scale: every constraint is in code, on-chain, with no off-chain authority Loyal or anyone else can override.",
   },
-  // Block 9 — Section-19 (image-left feature row: get started)
   getStarted: {
     title: "Get started",
     body: "Runs in the web app, browser extension, Telegram mini-app, and Android app, all backed by the same Squads Smart Account. Supported assets: USDC, SOL, USDT.",

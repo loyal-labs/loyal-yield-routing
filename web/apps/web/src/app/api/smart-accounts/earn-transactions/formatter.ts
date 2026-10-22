@@ -245,8 +245,6 @@ export function serializeEarnTransactionEvent(
   const positionMarketIcon = resolveEarnTransactionMarketIcon({
     market: event.market,
   });
-  // Rebalances move funds between two Kamino markets, so each side carries its
-  // own market logo. Deposits/withdrawals use the actual Earn-side market too.
   const sourceIcon = isMovement
     ? resolveEarnTransactionMarketIcon({ market: event.sourceMarket })
     : kind === "deposit"

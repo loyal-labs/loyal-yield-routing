@@ -8,8 +8,6 @@ async function loadLottieLight() {
   return mod.default ?? mod;
 }
 
-/** Seeker Earn phone animation for the "Multiple wallets, one smart account"
- * landing section. Lazy-inits when scrolled into view, pauses off-screen. */
 export function LandingPhoneLottie({ ariaLabel }: { ariaLabel: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<AnimationItem | null>(null);

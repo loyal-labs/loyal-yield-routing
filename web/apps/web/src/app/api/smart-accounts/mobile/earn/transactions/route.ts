@@ -17,12 +17,6 @@ import {
   type SerializedEarnTransaction,
 } from "@/app/api/smart-accounts/earn-transactions/formatter";
 
-// Mobile twin of the session `earn-transactions` route. The native Activity >
-// Earn tab lists Earn vault history passively, with no signer held (a wallet
-// signature would force a Seed Vault biometric prompt on every view), so this
-// lookup is keyed by a supplied wallet address rather than a signed request.
-// The only write here is an idempotent server-side projection from confirmed
-// optimizer decisions into history rows; it never provisions a smart account.
 const EARN_VAULT_INDEX = 1;
 
 function jsonError(status: number, code: string, message: string): NextResponse {
@@ -65,7 +59,6 @@ export async function GET(request: Request) {
     return jsonError(400, "invalid_request", "walletAddress is required.");
   }
   try {
-    // Throws a 400 WalletAuthError when the address isn't a valid 32-byte key.
     decodeWalletAddress(walletAddress);
   } catch (error) {
     if (error instanceof WalletAuthError) {

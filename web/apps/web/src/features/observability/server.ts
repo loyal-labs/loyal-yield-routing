@@ -346,7 +346,6 @@ export async function reportMobileLifecycleEnvelope(
   }
 }
 
-/** Independent of user traffic; the cron response also exposes exporter failure. */
 export async function reportTelemetryHeartbeat(): Promise<boolean> {
   const timeUnixNano = String(BigInt(Date.now()) * BigInt(1_000_000));
   return exportOtlpPayload(

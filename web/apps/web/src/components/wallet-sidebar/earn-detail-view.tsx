@@ -59,9 +59,6 @@ const secondary = "var(--muted-foreground)";
 const decimalGray = "var(--tertiary)";
 const POSITIVE_AMOUNT_COLOR = "var(--positive)";
 const LOYAL_EARN_BRAND_COLOR = "var(--primary)";
-// USDC mark badged onto the Main Account icon when a row reflects only the
-// account's USDC balance (deposit/withdraw/autodeposit), so it isn't confused
-// with the account's full multi-token value.
 const USDC_BADGE_ICON_URL = getTokenIconUrl("USDC");
 
 const TOP_EARN_VAULT = {
@@ -331,7 +328,6 @@ function floorToBucks(value: number) {
     return 0;
   }
 
-  // toFixed(4) absorbs float noise (8.83 * 100 === 882.9999…) before flooring.
   return Math.floor(Number((value * 100).toFixed(4))) / 100;
 }
 
@@ -351,10 +347,6 @@ export function formatEarnWithdrawMaxAmountLabel(value: number): string {
   return Number(roundedToCents) > 0 ? roundedToCents : value.toFixed(6);
 }
 
-// Sanitizes free-form amount typing. This helper never compares against a
-// balance: deposit inputs allow over-balance amounts (the submit button
-// switches to "Insufficient balance"), while the withdraw input clamps to the
-// max withdrawable amount at its call site.
 export function sanitizeBucksAmountInput(
   rawValue: string,
   previousValue: string
@@ -363,7 +355,6 @@ export function sanitizeBucksAmountInput(
     return "";
   }
 
-  // A lone dot in an empty field starts a decimal entry as "0.".
   if (rawValue === ".") {
     return "0.";
   }
@@ -372,8 +363,6 @@ export function sanitizeBucksAmountInput(
     return null;
   }
 
-  // Backspace collapses a stranded trailing dot so deleting "8.83" walks
-  // 8.8 -> 8 -> "" in one press per symbol instead of pausing on "8.".
   const isDeletion = rawValue.length < previousValue.length;
   const nextValue = (
     isDeletion && rawValue.endsWith(".") ? rawValue.slice(0, -1) : rawValue
@@ -392,8 +381,6 @@ export function sanitizeBucksAmountInput(
   return nextValue;
 }
 
-// Splits a typed amount so the fractional part can render muted, matching the
-// gray fraction of the total balance in the portfolio pane.
 function splitBucksAmountParts(value: string) {
   const dotIndex = value.indexOf(".");
   if (dotIndex === -1) {
@@ -500,9 +487,6 @@ const EARN_COMPARISON_SERIES: {
   },
 ];
 
-// Design palette/labels shared by the reworked APY + Forecast charts (Figma
-// file YTJOPpIYC7FEctch7b43Jz). EARN_COMPARISON_SERIES above keeps the legacy
-// colors still used by the deposit sheet chart.
 const EARN_SERIES_DISPLAY: Record<
   EarnComparisonSeriesKey,
   { color: string; label: string }
@@ -692,9 +676,6 @@ function ApyBadge({ value }: { value: string }) {
   );
 }
 
-// 48px Main Account icon with a small USDC badge at the bottom-right. Used in
-// flows where the amount next to it is the account's USDC-only balance, so the
-// same wallet icon isn't mistaken for the full multi-token account value.
 function MainAccountUsdcIcon({ src }: { src: string }) {
   return (
     <span
@@ -969,8 +950,6 @@ export function EarnGrowingBalance({
   );
 }
 
-// Past-day bars top out slightly below the dashed "today" bar (295/300 in the
-// Figma spec) so the in-progress day always reads as the full-height cap.
 const EARNINGS_BAR_MAX_FRACTION = 295 / 300;
 const EARNINGS_BAR_MIN_HEIGHT_PX = 4;
 export const EARNINGS_LIFETIME_RANGE_ID = "ALL" satisfies EarningsRangeId;
@@ -1140,9 +1119,6 @@ const EARN_CHART_TABS: readonly {
   { id: "Earnings", label: "Earned" },
 ];
 
-// Indeterminate ring spinner that echoes the landing -> app splash loader (faint
-// track + accent arc), minus the dog logo. Shown while the Earned chart is still
-// fetching its bars.
 export function EarningsChartLoader() {
   const SIZE = 56;
   const STROKE = 5;
@@ -1242,13 +1218,8 @@ function EarningsBlock({
   const forecastAmount = forecastPrincipalAmount;
   const realBars = earningsData?.bars ?? EMPTY_EARNINGS_BARS;
   const hasRealBars = realBars.length > 0;
-  // Show the loader only while we have nothing real to paint yet; cached/persisted
-  // bars revalidating in the background keep rendering instead of flashing a spinner.
   const showEarningsLoader = isEarningsLoading && !hasRealBars;
   const bars = realBars;
-  // Each bar carries the amount earned within that day. Reconcile the current
-  // in-progress bar against the live estimate without turning prior bars into
-  // cumulative values.
   const dailyBars = useMemo(() => {
     const reconciledBars = bars.map((bar) =>
       bar.isCurrent
@@ -1291,8 +1262,6 @@ function EarningsBlock({
   } else {
     headerSubtitle = hoveredDateLabel;
   }
-  // The hovered date renders next to the scale label only while the subtitle
-  // slot is occupied by the APY line.
   const hoveredDateRowLabel =
     hoveredBarEntry && hoveredApyBps !== null ? hoveredDateLabel : "";
 
@@ -1778,9 +1747,6 @@ export function AutodepositToggle({
   isPending?: boolean;
   onToggle?: () => void;
 }) {
-  // transitions-dev "toggle": .is-init gates the bounce keyframes so the off
-  // animation doesn't play at mount — armed once isOn first changes, which
-  // covers both click-driven and server-driven flips.
   const [isInit, setIsInit] = useState(false);
   const previousIsOn = useRef(isOn);
   useEffect(() => {
@@ -1816,7 +1782,6 @@ export function AutodepositToggle({
       }}
       type="button"
     >
-      {/* Thumb travel (20px) lives in the t-toggle CSS in globals.css. */}
       <span
         className="t-toggle-thumb"
         style={{
@@ -2012,9 +1977,6 @@ function AutodepositCard({
     : `Keeps ${
         floorLabel ?? "$0"
       } in ${floorAccountLabel}, moves the rest to the best earn position`;
-  // Only the configured Smart Account status carries balance numbers; the
-  // creating/closing/pausing/resuming/paused statuses are plain text and must
-  // not blur.
   const statusLabelHasAmount = !(isBusy || isToggling) && state !== "paused";
   const renderTitleWithHelp = (title: string) => (
     <span
@@ -2200,8 +2162,6 @@ function AutodepositCard({
                 </button>
                 <AutodepositToggle
                   disabled={isBusy || isToggling}
-                  // While toggling, the knob optimistically shows the target
-                  // position; on failure the workspace reverts the state.
                   isOn={
                     isToggling
                       ? state === "resuming"
@@ -2695,7 +2655,6 @@ export function EarnDetailView({
         width: "100%",
       }}
     >
-      {/* SVG pixelation filters */}
       <svg
         aria-hidden="true"
         height="0"
@@ -3445,9 +3404,6 @@ function BucksAmountInput({
           onChange={(event) => onValueChange(event.target.value)}
           placeholder="0"
           ref={inputRef}
-          // size=1 keeps the input's intrinsic width from inflating the grid
-          // track; the hidden replica alone sizes the cell, so the two-tone
-          // layer stays flush under the typed digits.
           size={1}
           style={{
             ...amountTextStyle,
@@ -3530,10 +3486,6 @@ export function EarnWithdrawView({
   const effectiveWithdrawAmountLabel = hasWithdrawAmount
     ? withdrawAmount
     : formatDepositAmount(selectedSourceMaxAmount);
-  // MAX (or typing the visible floored max) must submit mode "full" for every
-  // source type. Reserve sources used to be pinned to "partial", which drained
-  // the reserve to $0 without the final-exit path — position, policies, vault
-  // ATA, and autodeposit all stayed behind.
   const effectiveWithdrawMode = deriveEarnWithdrawMode({
     amount: effectiveWithdrawAmount,
     sources: sourceOptions,
@@ -4593,10 +4545,6 @@ function nearestHistoricalApyPercent(
   ).apyPercent;
 }
 
-// Figma draws the chart vectors as Catmull-Rom splines (cubic Béziers whose
-// control points sit at one-third of each segment), so straight polylines
-// look jagged next to the design; this mirrors that smoothing while still
-// passing through every data point.
 function smoothChartLinePath(
   points: readonly { x: number; y: number }[]
 ): string {
@@ -4610,10 +4558,6 @@ function smoothChartLinePath(
     const current = points[index];
     const next = points[index + 1];
     const afterNext = points[index + 2] ?? next;
-    // Uneven x spacing (a long flat pad next to short daily steps) makes the
-    // raw tangents reach past the neighbouring point and loop backwards.
-    // Shorten each tangent so its control point stays inside this segment;
-    // the direction is kept, and evenly spaced data is unchanged.
     const span = next.x - current.x;
     const out1 = Math.min(1, span / Math.max((next.x - previous.x) / 6, 1e-9));
     const out2 = Math.min(
@@ -4633,10 +4577,6 @@ function smoothChartLinePath(
   return path.join(" ");
 }
 
-// Real 30D history arrives at a much higher frequency than the design's
-// ~5px-per-point vectors, so the raw polyline reads as high-frequency steps no
-// matter how segments are joined. Averaging into at most this many buckets
-// removes that noise and gives the spline room to render visibly smooth.
 const HISTORICAL_APY_MAX_LINE_POINTS = 110;
 
 function downsampleHistoricalApySamples(
@@ -4657,8 +4597,6 @@ function downsampleHistoricalApySamples(
       start + 1
     );
     const bucket = samples.slice(start, end);
-    // First/last buckets keep the exact range timestamps so the axis labels
-    // and chart edges stay anchored to the true data window.
     const observedAtMs =
       index === 0
         ? bucket[0].observedAtMs
@@ -4675,10 +4613,6 @@ function downsampleHistoricalApySamples(
   return buckets;
 }
 
-// APY tab chart per Figma (4098:21423 default / 4098:21648 hover): the three
-// lines render solid with dots at their endpoints; hovering veils the chart
-// right of the cursor with 60% white, draws a dashed cursor line, moves the
-// dots to the hovered time, and swaps the header stats to the hovered values.
 const HISTORICAL_AXIS_DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
   day: "numeric",
   month: "short",
@@ -4712,8 +4646,6 @@ type HistoricalApyChartProps = {
   // (undefined keeps the legacy render byte-identical).
   apyDataRevealed?: boolean;
   axisTickCount?: number;
-  // Earn MAX variant: swaps the fetched Loyal series for a supplied one and
-  // renames the primary legend entry; the benchmark lines stay as-is.
   primaryLabel?: string;
   primarySamples?: HistoricalApySample[];
   rangeId: EarningsRangeId;
@@ -4795,8 +4727,6 @@ function HydratedHistoricalApyChart({
   apyHistory: EarnForecastApyHistoryResponse;
   samples: HistoricalApySample[];
 }) {
-  // Unique per instance so simultaneously mounted charts (e.g. compact pane +
-  // expanded overlay) don't resolve each other's reveal clip rects.
   const revealClipId = `historical-chart-reveal-clip-${useId().replace(
     /[^a-zA-Z0-9_-]/g,
     ""
@@ -4858,9 +4788,6 @@ function HydratedHistoricalApyChart({
     })),
   ];
 
-  // Scale max rounds the highest line up to a round percent (labelled at the
-  // chart's top right); the bottom pads ~20% of the spread below the lowest
-  // line so the flattest benchmark keeps breathing room, as in the Figma spec.
   const scaleValues = [
     ...samples.map((sample) => sample.apyPercent),
     ...(mainUsdcSamples.length > 0
@@ -4903,7 +4830,6 @@ function HydratedHistoricalApyChart({
   const hasChartArea = chartWidth > 2 && chartHeight > 2;
   const startedAtMs = samples[0]?.observedAtMs ?? 0;
   const endedAtMs = samples[samples.length - 1]?.observedAtMs ?? startedAtMs;
-  // 1px inset on every side keeps the 2px round-cap strokes from clipping.
   const xForObservedAtMs = (observedAtMs: number) => {
     const progress =
       endedAtMs > startedAtMs
@@ -4935,7 +4861,6 @@ function HydratedHistoricalApyChart({
     const y = yForValue(value).toFixed(2);
     return `M1,${y} L${(chartWidth - 1).toFixed(2)},${y}`;
   };
-  // Loyal renders last (on top), matching the Figma layer order.
   const plotLines = [
     ...benchmarks
       .map((benchmark) => ({
@@ -5239,10 +5164,6 @@ function HydratedHistoricalApyChart({
   );
 }
 
-// Forecast tab chart per Figma (4098:21881 default / 4098:22109 hover):
-// resting state draws the Loyal line solid and benchmarks dashed with dots at
-// the line endpoints; hovering turns every line solid, veils the future side
-// with 60% white, and moves the dashed cursor line + dots to the hovered date.
 export function ForecastChart({
   apy = FALLBACK_EARN_APY,
   apyDataRevealed,
@@ -5268,8 +5189,6 @@ export function ForecastChart({
     isBalanceHidden && scrambleHiddenValues
       ? maskBalanceText(text, seed)
       : text;
-  // Unique per instance so simultaneously mounted charts (e.g. compact pane +
-  // expanded overlay) don't resolve each other's reveal clip rects.
   const revealClipId = `forecast-tab-reveal-clip-${useId().replace(
     /[^a-zA-Z0-9_-]/g,
     ""
@@ -5305,8 +5224,6 @@ export function ForecastChart({
 
   const loyalApyBps = getEarnComparisonApyBps(apy.apyBps, null);
   const loyalTarget = principal * getEarnForecastTargetMultiplier(loyalApyBps);
-  // Scale max is the Loyal endpoint rounded up to a round amount so the red
-  // line nearly touches the top of the chart, as in the Figma spec.
   const scaleRange = Math.max(loyalTarget - principal, 0.01);
   const scaleQuantum = Math.max(
     10 ** (Math.floor(Math.log10(scaleRange)) - 1),
@@ -5332,17 +5249,12 @@ export function ForecastChart({
     key: series.key,
     label: EARN_SERIES_DISPLAY[series.key].label,
   }));
-  // Loyal renders last (on top) in the plot, matching the Figma layer order.
   const lineSeries = [...EARN_COMPARISON_SERIES].reverse();
 
   const chartWidth = chartSize.width;
   const chartHeight = chartSize.height;
   const hasChartArea = chartWidth > 2 && chartHeight > 2;
-  // The 28px nowrap money values need ~440px across three columns; narrower
-  // hosts (e.g. the 400px workspace chart pane) get the compact summary that
-  // the <=760px viewport media query alone can't detect.
   const isCompactSummary = chartWidth > 0 && chartWidth < 440;
-  // 1px inset on every side keeps the 2px round-cap strokes from clipping.
   const xForIndex = (index: number) =>
     1 + (index / Math.max(points.length - 1, 1)) * (chartWidth - 2);
   const yForValue = (value: number) => {
@@ -6898,8 +6810,6 @@ function AutodepositAmountChips({
   );
 }
 
-// Large borderless amount input shared by the deposit goal and the minimum
-// balance fields. Clicking anywhere in the row focuses and selects the input.
 function AutodepositAmountInputRow({
   disabled = false,
   inputRef,
@@ -6941,8 +6851,6 @@ function AutodepositAmountInputRow({
   );
 }
 
-// Green bar-chart "Earn" badge, drawn inline to match the design exactly
-// without depending on an exported asset.
 function AutodepositEarnIcon() {
   return (
     <span
@@ -7062,8 +6970,6 @@ function AutodepositSummaryRow({
   );
 }
 
-// Autodeposit setup / edit pane. The signed allowance is fixed elsewhere for
-// now; this pane only edits the Main Account balance floor.
 export function AutodepositSetupView({
   earnBalance = 0,
   earnVaultAddressLabel,
@@ -7424,8 +7330,6 @@ export function AutodepositSetupView({
           aria-busy={isSubmitting}
           className="autodeposit-submit"
           disabled={!canSubmit}
-          // A stranded trailing dot ("8.") is valid mid-typing but not a
-          // valid amount label downstream, so it is dropped on submit.
           onClick={() => onSubmit?.(keepAmount.replace(/\.$/, ""))}
           style={{
             alignItems: "center",

@@ -34,12 +34,6 @@ export function useCherryPrivyAuth(): CherryPrivyAuthState | null {
   return useContext(CherryPrivyAuthContext);
 }
 
-/**
- * Headless Privy sign-in for the Cherry embed: no Privy modal, no captcha.
- * The verified Cherry wallet signs Privy's SIWS message, then the identity
- * token is exchanged for the Loyal session through the same route the web
- * app uses. Auto-starts once when signed out; Retry re-arms it.
- */
 export function CherryPrivyAuthController({
   children,
 }: {
@@ -77,15 +71,12 @@ export function CherryPrivyAuthController({
           a.address === verifiedAddress
       );
     if (authenticated && !linked) {
-      // Another Privy account is open in this WebView; never reuse it.
       await logout();
     }
     if (!linked) {
       setStatus("signing");
       const message = await generateSiwsMessage({ address: verifiedAddress });
       const signature = await signMessage(new TextEncoder().encode(message));
-      // Privy's own SIWS flow sends the signature base64-encoded (not base58);
-      // anything else fails server-side as "Invalid SIWS message and/or nonce".
       await loginWithSiws({
         message,
         signature: btoa(String.fromCharCode(...signature)),
@@ -147,7 +138,6 @@ export function CherryPrivyAuthController({
   );
 }
 
-/** Sign-in modal body in Cherry mode when Privy is on. */
 export function CherryPrivySignIn() {
   const auth = useCherryPrivyAuth();
   if (!auth) return null;

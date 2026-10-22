@@ -1,8 +1,5 @@
 #!/usr/bin/env bun
 
-// Runs the real Drizzle queries against disposable in-memory PostgreSQL.
-// Pass an installed @electric-sql/pglite module path as argv[2]; no database
-// credentials are read and no production database or RPC is contacted.
 import assert from "node:assert/strict";
 
 import {
@@ -50,8 +47,6 @@ const client = new TimescaleReserveClient({
     return value ?? null;
   },
 });
-// Only the transport is replaced. Query construction, predicates, decoding,
-// ranking and public return values all execute through the production methods.
 let beforeQuery: (() => Promise<void>) | null = null;
 Object.defineProperty(client, "db", {
   value: drizzle(async (sql, params) => {
@@ -175,8 +170,6 @@ const presence = (reserves: string[]) =>
   client.getLatestReserveObservationsByReserve({ reserves });
 
 try {
-  // Deliberately no legacy verification table or view: the regression cannot
-  // pass by accidentally reading the retired data source.
   await database.exec(`
     CREATE SCHEMA kamino;
     CREATE TABLE kamino.reserve_updates (

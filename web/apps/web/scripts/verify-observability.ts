@@ -342,9 +342,6 @@ const changedObservabilitySources = [
   appBoundary,
   globalBoundary,
 ].join("\n");
-// walletAddress is deliberately absent from this list: wallet addresses are
-// now exported in plaintext as `loyal.wallet.address`. Everything below stays
-// prohibited — signatures, transaction payloads, and raw request echoes.
 for (const prohibited of [
   "JSON.stringify(request",
   "headers: request.headers",

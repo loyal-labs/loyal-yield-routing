@@ -89,7 +89,6 @@ export default async function BlogPostPage({
       ? {
           "@type": "Person",
           name: post.author.name,
-          // No fabricated personal sameAs; tie the byline to the Loyal entity.
           affiliation: { "@id": `${SITE_ORIGIN}/#organization` },
         }
       : { "@id": `${SITE_ORIGIN}/#organization` },

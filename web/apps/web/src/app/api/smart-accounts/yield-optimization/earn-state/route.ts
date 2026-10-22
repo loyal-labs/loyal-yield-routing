@@ -194,8 +194,6 @@ export async function GET(request: Request) {
         if (!state) {
           return null;
         }
-        // The Go autodeposit engine owns target status, artifact proofs and
-        // sweep scheduling; this read never writes.
         const [depositedThisPeriodRaw, scheduledSweeps] = await Promise.all([
           sumEarnAutodepositCurrentPeriodDeposits(state.target),
           state.status !== "active"

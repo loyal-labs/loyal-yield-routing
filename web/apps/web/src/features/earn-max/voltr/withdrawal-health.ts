@@ -48,7 +48,6 @@ export function parseWithdrawalHealth(
   return {
     lastKnownAttention,
     observedAt: new Date(timestamp).toISOString(),
-    // A current user receipt and a worker's older empty queue disagree.
     status:
       state.status === "waiting" || state.status === "operator_attention"
         ? state.status

@@ -31,9 +31,6 @@ const FORECAST_PRINCIPAL_USD = 6000;
 
 export type ChartTab = (typeof CHART_TABS)[number];
 
-// Product variant slot: Earn MAX reuses the whole chart card / expanded
-// overlay machinery (tabs pill, resize/entrance motion, Esc handling) but
-// brings its own tab set and body renderers.
 export type ChartCardCustomContent = {
   defaultTab: ChartTab;
   renderBody: (activeTab: ChartTab, isExpanded: boolean) => ReactNode;
@@ -72,8 +69,6 @@ function ChartBody({
       {activeTab === "Earned" ? (
         <EarnedChart data={earnData} />
       ) : activeTab === "APY" ? (
-        // The wide overlay fits the design's 8 date ticks (Figma 4693:65002);
-        // the compact pane and the mobile sheet keep the start/end pair.
         <HistoricalApyChart
           apyDataRevealed={isApyLoaded}
           axisTickCount={isExpanded && !isNarrowViewport ? 8 : 2}
@@ -108,9 +103,6 @@ function ChartBody({
   );
 }
 
-// One chart card = tabs header + action icon + chart body, with its own tab
-// state. Used three ways: the desktop right pane, the mobile inline card on
-// the Earn screen, and the expanded overlay/bottom sheet.
 export function EarnChartCard({
   actionAriaLabel,
   actionIconSrc,
@@ -130,19 +122,12 @@ export function EarnChartCard({
   earnData: EarnPositionData;
   footer?: ReactNode;
   isExpanded?: boolean;
-  // Logged-out visitors get no tab bar — just the APY chart under an "APY"
-  // title (Figma 4884:36664); Forecast needs a session's balance context.
   isLoggedOut?: boolean;
   onAction: () => void;
-  // Tab choice lives in the shell so the compact pane, the mobile inline
-  // card and the enlarged overlay all show the same tab.
   onSelectTab: (tab: ChartTab) => void;
   sectionClassName: string | ((activeTab: ChartTab) => string);
   selectedTab: ChartTab | null;
 }) {
-  // The Earned tab only exists once a position holds a balance (Figma
-  // 4693:67592); it becomes the default view when it appears, unless the
-  // user already picked a tab by hand.
   const hasEarnedTab = earnData.hasPosition;
   const visibleTabs: readonly ChartTab[] = custom
     ? custom.tabs
@@ -158,8 +143,6 @@ export function EarnChartCard({
     : hasEarnedTab
     ? "Earned"
     : "APY";
-  // Forecast + history ride the same cached summary fetch, so one loaded
-  // flag gates every APY-fed number in the chart pane.
   const { apy, isLoaded: isApyLoaded } = useEarnForecastApyStatus();
   const apyHistory = useEarnForecastApyHistory();
   const mainUsdcReserveApyBps = deriveMainUsdcReserveForecastApyBps(apyHistory);
@@ -181,8 +164,6 @@ export function EarnChartCard({
               </h2>
               <InfoTooltip
                 iconClassName="size-6"
-                // Bottom placement: this header sits at the very top of its
-                // card/sheet, so an upward bubble gets clipped.
                 placement="bottom"
                 text="Historical APY of the Loyal Earn strategy over the last 30 days."
               />
@@ -226,13 +207,6 @@ export function EarnChartCard({
   );
 }
 
-// Figma 4693:64989 — enlarged chart covers the middle + right panes; the
-// scrim blurs the rest of the page. On mobile it becomes a bottom sheet on a
-// white scrim (Figma 4693:70200 / 4693:71231).
-// Motion: the scrim cross-fades on the modal recipe's backdrop clock, and at
-// ≥1204px the overlay card mounts congruent with the compact right-pane card
-// then enlarges leftward on the t-resize clock (transitions.dev card resize).
-// Kept mounted while closing so the fade-out plays before unmount.
 function ExpandedChartOverlay({
   custom,
   earnData,
@@ -273,10 +247,6 @@ function ExpandedChartOverlay({
     const isSlideViewport = window.matchMedia("(max-width: 1203px)").matches;
     if (isOpen) {
       container.dataset.state = "open";
-      // Below 1204px the surface rises (and slides back down on close) on
-      // the panel-reveal keyframes — bottom sheet on mobile, right-pinned
-      // card in between. At ≥1204px the attribute never lands, so nothing
-      // rises there: the congruent width tween below owns that entrance.
       if (isSlideViewport) {
         slide.dataset.state = "open";
       }
@@ -301,9 +271,6 @@ function ExpandedChartOverlay({
     if (isSlideViewport) {
       slide.dataset.state = "closed";
     }
-    // Read after the state flip so the computed duration reflects the
-    // closed-state (and viewport-specific) animation; on mobile the sheet's
-    // slide-down (panel clock) can outlast the scrim fade.
     const scrimDur =
       Number.parseFloat(getComputedStyle(container).animationDuration) * 1000 ||
       150;
@@ -342,9 +309,6 @@ function ExpandedChartOverlay({
       <div className="t-sheet-panel flex h-full w-full min-w-0" ref={slideRef}>
         <div
           aria-modal="true"
-          // Below 1204px (no compact pane) the overlay is the right-pane
-          // sized card pinned to the right edge (Figma 4693:88126); at full
-          // width it covers the middle + right panes (Figma 4693:64989).
           className="t-resize flex h-full w-full min-w-0 max-[1203px]:ml-auto max-[1203px]:w-[400px] max-[795px]:ml-0 max-[795px]:w-full"
           onClick={(event) => event.stopPropagation()}
           ref={dialogRef}
@@ -392,20 +356,14 @@ export function EarnChartPane({
   statsPanel,
 }: {
   custom?: ChartCardCustomContent;
-  // Optional promo banner (EarnBanners) overlaying the bottom of the right
-  // pane — Earn root only; slotted in so the shell owns its actions.
   banner?: ReactNode;
   earnData: EarnPositionData;
-  // Action screens (deposit) drop the right chart/stats column but keep the
-  // expanded overlay reachable from their own chart button.
   hideAside?: boolean;
   isExpanded: boolean;
   isLoggedOut?: boolean;
   onExpandedChange: (isExpanded: boolean) => void;
   onSelectTab: (tab: ChartTab) => void;
   selectedTab: ChartTab | null;
-  // The Stats card rendered under the chart card (Figma 4884:36662). Slotted
-  // in so the overlay portal can stay outside the responsive-hidden column.
   statsPanel?: ReactNode;
 }) {
   useEffect(() => {

@@ -20,7 +20,6 @@ import {
 
 const HISTORY_LIMIT = 100;
 
-// First 8 data bytes of the Voltr instructions a user signs (program.ts).
 const ACTIONS: [action: string, discriminator: number[]][] = [
   ["deposit", [126, 224, 21, 255, 228, 53, 117, 33]],
   ["withdraw_request", [248, 225, 47, 22, 116, 144, 23, 143]],
@@ -32,7 +31,6 @@ type VoltrHistoryEntry = {
   action: string;
   /** Deposit: USDC in. Claim: USDC paid out. Request: filled below. */
   amountRaw: bigint | null;
-  /** Change of the authority's free LP in this transaction (0 on repeats). */
   lpDeltaRaw: bigint;
   /** Request only: USDC value of the escrowed LP when it was requested. */
   requestedRaw?: bigint | null;
@@ -77,8 +75,6 @@ function idleDeltaRaw(transaction: ParsedTransactionWithMeta): bigint {
   );
 }
 
-// The authority's own LP account (not the withdrawal escrow, which the
-// position's value already excludes).
 function lpDeltaRaw(
   transaction: ParsedTransactionWithMeta,
   authority: PublicKey
@@ -158,19 +154,14 @@ function decode(
   return entries;
 }
 
-// Bound history memory now that every wallet can access Earn MAX.
 const MAX_CACHED_HISTORIES = 256;
 const cache = new Map<string, { newest: string; value: EarnMaxVoltrHistory }>();
 
-/** Newest first. Deposits, withdrawal requests and claims of one authority. */
 export async function readVoltrHistory(
   connection: Connection,
   authority: PublicKey
 ): Promise<EarnMaxVoltrHistory> {
   const key = authority.toBase58();
-  // The newest signature is one cheap call: reuse the decoded history only
-  // while no new transaction touched the account (a fresh deposit must never
-  // pair a new balance with a stale, empty list).
   const signatures = (
     await connection.getSignaturesForAddress(authority, {
       limit: HISTORY_LIMIT,
@@ -192,8 +183,6 @@ export async function readVoltrHistory(
       ? decode(transaction, signatures[index]!.signature, authority)
       : []
   );
-  // A request moves LP, not USDC: show what its claim paid (or the pending
-  // payout). Entries are newest first, so the claim precedes its request.
   let laterClaimRaw: bigint | null = null;
   for (const entry of entries) {
     if (entry.action === "claim") laterClaimRaw = entry.amountRaw;
@@ -202,8 +191,6 @@ export async function readVoltrHistory(
       laterClaimRaw = null;
     }
   }
-  // ponytail: first 100 signatures only; page with `before` once an account
-  // outgrows that (the UI then treats history as incomplete).
   const value = { complete: signatures.length < HISTORY_LIMIT, entries };
   cache.delete(key);
   cache.set(key, { newest, value });
@@ -214,11 +201,10 @@ export async function readVoltrHistory(
   return value;
 }
 
-const DUST_RAW = BigInt(10_000); // 1 cent
+const DUST_RAW = BigInt(10_000);
 const withoutDust = (raw: bigint) =>
   raw < BigInt(0) && -raw < DUST_RAW ? BigInt(0) : raw;
 
-/** Fills the pending request's amount and derives the feeds the pane charts. */
 export function voltrActivity(
   history: EarnMaxVoltrHistory,
   position: Pick<VoltrPosition, "lpRaw" | "valueRaw" | "withdrawal">,
@@ -246,10 +232,6 @@ export function voltrActivity(
     status: "confirmed",
     timestamp: entry.timestamp,
   }));
-  // Equity after each flow is the running principal (a deposit is worth what
-  // went in at that moment); each finished UTC day adds its closing value
-  // (LP held then x day-end share price) so yield lands on the day it was
-  // earned; the last point is today's value.
   const performance: EarnMaxPerformancePoint[] = [];
   let principal = BigInt(0);
   for (const entry of [...entries].reverse()) {
@@ -264,7 +246,6 @@ export function voltrActivity(
   }
   if (performance.length > 0) {
     const opened = performance[0]!.timestamp;
-    // LP rebuilt backwards from today's free LP; needs the full history.
     for (const day of history.complete ? dayEnd : []) {
       if (day.at <= opened) continue;
       const lpThen = entries
@@ -288,9 +269,6 @@ export function voltrActivity(
       .reduce((total, e) => total + (e.amountRaw ?? BigInt(0)), BigInt(0));
   const pendingRaw = position.withdrawal?.payoutRaw ?? BigInt(0);
   return {
-    // Lifetime: what the user holds + is owed + got back, minus what went in.
-    // Voltr rounds deposit LP down, so a fresh position reads a few raw
-    // units under its deposit; hide that dust (< 1 cent), keep real losses.
     earnedRaw: history.complete
       ? withoutDust(
           position.valueRaw + pendingRaw + sum("claim") - sum("deposit")

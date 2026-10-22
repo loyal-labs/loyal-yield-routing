@@ -9,10 +9,6 @@ import {
 } from "./chunk-load-contract";
 
 const CLIENT_REPORT_GRACE_MS = 250;
-// A tab left open across several deploys must stay recoverable, so the guard
-// ages out instead of latching for the whole tab lifetime. Retrying the exact
-// chunk a reload already failed to fix is what would loop, so that stays
-// blocked for the full window regardless of the remaining attempt budget.
 const RELOAD_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_RELOADS_PER_COOLDOWN = 2;
 const PAGE_SESSION_ID_STORAGE_KEY = "loyal.observability.page-session-id";
@@ -97,7 +93,6 @@ function findFirstPartyChunkUrl(error: unknown): string | undefined {
         return normalized;
       }
     } catch {
-      // Malformed resource hints cannot claim recovery.
     }
   }
   return undefined;
@@ -140,7 +135,6 @@ export function getBrowserPageSessionId(): string | undefined {
       return stored;
     }
   } catch {
-    // A volatile random ID still helps correlate the current error report.
   }
 
   const generated = createRandomPageSessionId();
@@ -152,7 +146,6 @@ export function getBrowserPageSessionId(): string | undefined {
   try {
     window.sessionStorage.setItem(PAGE_SESSION_ID_STORAGE_KEY, generated);
   } catch {
-    // The separate reload guard fails closed when storage is unavailable.
   }
   return generated;
 }
@@ -181,7 +174,6 @@ function collectDiagnostics(chunkUrl: string): BrowserChunkDiagnostics {
       .getEntriesByName(chunkUrl, "resource")
       .at(-1) as BrowserResourceTiming | undefined;
   } catch {
-    // Resource timing is optional and can be unavailable.
   }
 
   const resourceDurationMs = readNonNegativeNumber(resource?.duration);
@@ -225,9 +217,6 @@ export function inspectBrowserChunkLoadError(
   };
 }
 
-// Session storage is attacker- and corruption-reachable, so a stored guard is
-// either provably within the budget or not usable as a budget at all. Anything
-// malformed must fail closed rather than silently restart the allowance.
 type ReloadGuardState =
   | { kind: "absent" }
   | { kind: "invalid" }
@@ -235,9 +224,6 @@ type ReloadGuardState =
 
 function readReloadGuard(): ReloadGuardState {
   const raw = window.sessionStorage.getItem(RELOAD_GUARD_STORAGE_KEY);
-  // Only a missing key is an absent guard. An empty or otherwise unparsable
-  // value is corrupt state, and treating it as absent would hand back a fresh
-  // reload budget — the same fail-open a malformed count would cause.
   if (raw === null) {
     return { kind: "absent" };
   }
@@ -309,15 +295,9 @@ function claimReload(chunkUrl: string): BrowserChunkRecoveryAction {
   }
 }
 
-/**
- * Decides — synchronously, before the report is built — whether this failure
- * will be recovered, so the reported envelope carries the outcome.
- */
 export function planBrowserChunkRecovery(
   chunkUrl: string
 ): BrowserChunkRecoveryAction {
-  // Reloading an offline browser swaps a broken page for the browser's own
-  // network error page, which is strictly worse and cannot recover on its own.
   if (window.navigator.onLine === false) {
     return "offline";
   }

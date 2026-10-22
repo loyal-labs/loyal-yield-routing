@@ -25,8 +25,6 @@ const BalanceVisibilityContext = createContext<BalanceVisibility>({
   toggleBalanceHidden: () => {},
 });
 
-// One shell-wide flag so the sidebar eye hides every user-related number, the
-// same way the old workspace's single isBalanceHidden state did.
 export function BalanceVisibilityProvider({
   children,
 }: {
@@ -51,10 +49,6 @@ export function useBalanceVisibility() {
   return useContext(BalanceVisibilityContext);
 }
 
-// Hidden numbers scramble into ASCII symbols instead of blurring (the
-// motion.dev scramble-text look). The resting mask hashes character POSITION
-// and a per-element seed — never the digit it replaces — so it looks random
-// yet can't be reversed and stays identical across live value refreshes.
 const SCRAMBLE_SYMBOLS = "!#$%&()*+/:;<=>?@[]^_{|}~abcdefghjkmnpqrstuvwxyz";
 const SCRAMBLE_TICK_MS = 30;
 
@@ -66,8 +60,6 @@ function scrambleSymbolAt(index: number, seed: number): string {
   return SCRAMBLE_SYMBOLS[(hash >>> 0) % SCRAMBLE_SYMBOLS.length];
 }
 
-// String seeds hash to a number so equal-length values at different sites
-// mask differently (same length + same seed = identical mask).
 function toSeedNumber(seed: number | string): number {
   if (typeof seed === "number") {
     return seed;
@@ -89,13 +81,7 @@ export function maskBalanceText(
   ).join("");
 }
 
-// Sweep runner: on an eye toggle the characters lock left-to-right into the
-// target (mask or real text) while the unlocked tail churns random symbols.
-// Between sweeps the display is derived straight from props, so live value
-// updates never lag a frame or trigger a scramble of their own.
 function useScramble(text: string, isHidden: boolean) {
-  // Mount-stable random seed: sibling amounts mask differently instead of
-  // repeating one pattern, without jitter on re-renders.
   const seedRef = useRef(Math.floor(Math.random() * 0xffffffff));
   const target = isHidden ? maskBalanceText(text, seedRef.current) : text;
   const [churn, setChurn] = useState<string | null>(null);
@@ -103,8 +89,6 @@ function useScramble(text: string, isHidden: boolean) {
   targetRef.current = target;
   const hiddenRef = useRef(isHidden);
 
-  // Layout effect so the first painted frame after a toggle is already
-  // churning instead of flashing the settled target.
   useLayoutEffect(() => {
     if (hiddenRef.current === isHidden) {
       return;
@@ -145,7 +129,6 @@ function useScramble(text: string, isHidden: boolean) {
   return { display: churn ?? target, isSettled: churn === null };
 }
 
-// Plain-text sites: renders the value, its mask, or the churn in between.
 export function ScrambleText({
   isHidden,
   text,
@@ -157,9 +140,6 @@ export function ScrambleText({
   return <>{display}</>;
 }
 
-// PopDigits sites: scrambles across the joined segments (so the sweep runs
-// continuously through whole + fraction) and suppresses the pop replay while
-// hidden or churning — the pop resumes for real value changes once revealed.
 export function ScrambledPopDigits({
   isHidden,
   popOnChange = true,

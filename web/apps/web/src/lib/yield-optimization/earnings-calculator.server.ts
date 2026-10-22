@@ -28,9 +28,6 @@ export class EarningsPrincipalHistoryError extends Error {
   }
 }
 
-// Timestamps define chart boundaries; slots and the shared holding ledger order
-// accounting transitions inside a boundary. Separate deposit/withdrawal IDs are
-// not comparable. Missing ordering evidence must not choose a money path.
 export function sortEarningsEvents(events: readonly YieldPositionEvent[]) {
   return [...events].sort((left, right) => {
     const timeDelta = left.confirmedAt.getTime() - right.confirmedAt.getTime();
@@ -49,7 +46,6 @@ export function sortEarningsEvents(events: readonly YieldPositionEvent[]) {
     ) {
       return left.holdingEventId < right.holdingEventId ? -1 : 1;
     }
-    // Plain deposits commute, as do withdrawals with no lifecycle reset.
     if (
       left.type === right.type &&
       !left.initializesPosition &&
@@ -450,8 +446,6 @@ function getApyAt(
     const found = lastIndexAtOrBefore(index.all.times, atMs);
     return found === -1 ? null : index.all.apys[found];
   }
-  // Reserve-scoped lookups also match unscoped samples; on ties the later
-  // array position wins, matching the old overwrite-in-order scan.
   const scoped = index.byReserve.get(reserve);
   const scopedFound = scoped ? lastIndexAtOrBefore(scoped.times, atMs) : -1;
   const unscopedFound = lastIndexAtOrBefore(index.unscoped.times, atMs);

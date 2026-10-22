@@ -19,7 +19,6 @@ export const metadata: Metadata = {
   title: "Loyal: Solana Wallet That Earns Yield Automatically",
   description:
     "Self-custody Solana wallet that routes your stablecoins to the best available yield automatically. Agent guardrails, private transfers, open-source.",
-  // Landing CTAs navigate directly to the canonical app hostname.
   alternates: {
     canonical: "https://app.askloyal.com",
   },
@@ -69,7 +68,6 @@ export default function AppLayout({
                     <CherryAuthPrompt>
                       <WalletAutoReauth />
                       <AnalyticsBootstrap />
-                      {/* Header/main nav is hidden for the wallet workspace redesign. */}
                       <RealtimeSyncProvider>
                         <AppWorkspaceShell />
                         {children}

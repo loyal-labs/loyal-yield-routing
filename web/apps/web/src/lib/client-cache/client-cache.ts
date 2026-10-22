@@ -158,7 +158,6 @@ export function writeClientCache<T>(args: {
   try {
     storage.setItem(args.key, JSON.stringify(envelope));
   } catch {
-    // Cache writes are best-effort only.
   }
 }
 
@@ -175,6 +174,5 @@ export function removeClientCache(args: {
   try {
     storage.removeItem(args.key);
   } catch {
-    // Cache removal is best-effort only.
   }
 }

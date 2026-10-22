@@ -4,7 +4,6 @@ import type { Components } from "react-markdown";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-/** Resolves a markdown image src against the post folder when it's relative. */
 function resolveSrc(slug: string, src: string): string {
   if (/^(https?:)?\/\//.test(src) || src.startsWith("/")) {
     return src;
@@ -15,11 +14,6 @@ function resolveSrc(slug: string, src: string): string {
 const linkClass =
   "font-medium underline underline-offset-4 transition-colors hover:text-[#f9363c]";
 
-/**
- * Builds the element→component map that renders markdown into the exact Figma
- * post typography. Vertical rhythm uses padding (mirroring the design's pt/pb),
- * which — unlike margins — stacks additively between adjacent blocks.
- */
 function buildComponents(slug: string): Components {
   return {
     h1: ({ children }) => (

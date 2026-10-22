@@ -19,29 +19,6 @@ import {
   findActiveYieldRoutePolicyPair,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-// Read-only mobile twin of the web client's live on-chain Earn holdings read
-// (`earn-rpc-holdings.client.ts`, summed by the sidebar for its headline
-// balance). The DB snapshot that `mobile/earn/state` reads lags the chain (and
-// doesn't track non-idle venue holdings), so the native balance was stale; this
-// reads the vault's current holdings — Kamino obligations plus every policy
-// mint's idle ATA — directly
-// from the chain via the same `fetchEarnRpcHoldingsSnapshot` the web uses.
-//
-// Keyed by wallet address (the native app holds no signer, to avoid a Seed Vault
-// prompt on a passive balance view) — this only reads public on-chain accounts
-// for a vault the caller already knows, and never provisions or writes. Returns
-// an empty snapshot when the wallet has no app user, smart account, or active
-// Earn policy yet.
-//
-// Stale-read protection: the RPC pool can serve a lagging node whose account
-// view predates a deposit the DB already confirmed, and the client trusts a
-// successful live read over the read-model. Primary defense: every chain read
-// carries minContextSlot = the position's last confirmed slot, so a lagging
-// node errors instead of answering (a max-observed-slot check alone cannot
-// catch a mixed read where only the obligation request hit a lagging node).
-// Fallbacks: one retry on rejection, then 502 → the client keeps the
-// read-model balance; plus a residual observedAt: null suppression should a
-// stale snapshot slip through anyway.
 const EARN_VAULT_INDEX = 1;
 const connectionCache = new Map<SolanaEnv, Connection>();
 
@@ -81,7 +58,6 @@ export async function GET(request: Request) {
     return jsonError(400, "invalid_request", "walletAddress is required.");
   }
   try {
-    // Throws a 400 WalletAuthError when the address isn't a valid 32-byte key.
     decodeWalletAddress(walletAddress);
   } catch (error) {
     if (error instanceof WalletAuthError) {
@@ -131,8 +107,6 @@ export async function GET(request: Request) {
       settingsPda,
     });
 
-    // The live holdings read needs the active Earn route policy (the Safe
-    // Kamino market universe to scan); without one there's nothing deployed yet.
     const policyPair = await findActiveYieldRoutePolicyPair({
       authority: walletAddress,
       cluster,
@@ -190,10 +164,6 @@ export async function GET(request: Request) {
       if (minContextSlot === undefined) {
         throw error;
       }
-      // A node behind the freshness floor rejects the read — retry once, the
-      // next request usually lands on a caught-up node. A second failure falls
-      // through to the outer catch (502), and the client keeps the read-model
-      // balance instead of showing stale chain state.
       console.warn("[mobile-earn-holdings] snapshot read retried", {
         errorMessage:
           error instanceof Error ? error.message : "Unknown read error.",

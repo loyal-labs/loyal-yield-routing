@@ -4,18 +4,6 @@ import { useEffect, useRef, useState } from "react";
 
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 
-// Single-slot toast for the Earn action flows (deposit / withdraw /
-// autodeposit). use-earn-actions.ts reports lifecycle moments through
-// `earnToast`; the host mounted in shell.tsx renders them as a
-// bottom-center pill (transitions.dev toast recipe). The status icon is a
-// three-way icon-swap: pending spinner (a) morphs into the success check
-// (b) or the error cross (c).
-//
-// Multi-stage flows can additionally begin() a step script: the pill then
-// renders as a task-steps card listing every stage upfront (pending dot /
-// spinner / check / cross per row), and each loading() message lights up
-// its step. Success collapses the card back into the plain success pill.
-
 type EarnToastPhase = "error" | "loading" | "success";
 
 type EarnToastDetail = { message: string; phase: EarnToastPhase };
@@ -90,9 +78,6 @@ const FLOW_STEPS: Record<EarnFlowId, readonly string[]> = {
     CONFIRM_IN_WALLET_MESSAGE,
     "Confirming",
   ],
-  // The deposit script re-armed mid-flow when a legacy-policy wallet needs
-  // the Token-2022 policy update (ASK-2108) — normal deposits never list
-  // the extra step.
   "deposit-policy-update": [
     "Preparing deposit",
     "Updating Earn policy",
@@ -109,9 +94,6 @@ const FLOW_STEPS: Record<EarnFlowId, readonly string[]> = {
 };
 
 export const earnToast = {
-  // Arm the step script for the flow that is about to start. The following
-  // loading()/success()/error()/settle() calls need no changes — messages
-  // resolve to steps, terminal calls end the flow.
   begin(flow: EarnFlowId) {
     listener?.begin(flow);
   },
@@ -121,15 +103,9 @@ export const earnToast = {
   loading(message: string) {
     listener?.show({ message, phase: "loading" });
   },
-  // Close the toast if it is still in its loading phase — the flow ended
-  // without an outcome worth announcing (wallet cancel, review decline,
-  // sign-in gate). Safe to call unconditionally from `finally` blocks.
   settle() {
     listener?.settle();
   },
-  // The wallet finished signing: advance a visible "Confirm in wallet"
-  // toast to "Confirming" (submission + chain/backend confirm). No-op for
-  // any other toast state, so non-Earn signature flows never surface one.
   signed() {
     listener?.signed();
   },
@@ -196,8 +172,6 @@ export function EarnToastHost() {
           setStepIndex(index);
         }
       } else if (next.phase === "success") {
-        // Collapse the step card into the plain success pill; errors keep
-        // the card so the failed step shows where the flow stopped.
         disarm();
       }
       setDetail(next);
@@ -253,10 +227,6 @@ export function EarnToastHost() {
         className={`t-toast t-toast-resize flex flex-col justify-center overflow-hidden bg-popover font-medium text-[14px] text-foreground leading-5 shadow-[0px_0px_2px_0px_rgba(0,0,0,0.08),0px_4px_16px_0px_rgba(0,0,0,0.08)] ${
           isOpen ? "is-open" : ""
         }`}
-        // Top-anchored, so the pill drops in from above its resting spot
-        // (the recipe's default +16px rises from below). Height/radius are
-        // inline so the card ⇄ pill morph rides the resize clock, same as
-        // t-earn-banner.
         style={{
           ["--toast-distance" as never]: "-16px",
           borderRadius: PILL_HEIGHT_PX / 2,

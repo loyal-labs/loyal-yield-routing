@@ -73,8 +73,6 @@ export function CapWidgetContent({ captcha, onVerify }: CapWidgetContentProps) {
     );
   }
 
-  // Sized and styled globally (globals.css `cap-widget` block) — a
-  // full-width h-12 row matching the facelift card language.
   return <CapWidgetElement onVerify={onVerify} />;
 }
 
