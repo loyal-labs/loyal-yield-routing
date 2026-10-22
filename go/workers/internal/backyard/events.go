@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 )
 
@@ -47,7 +48,7 @@ func newEvents(log *slog.Logger, facts *engine.Facts, vault string) *events {
 	return &events{log: log.With("family", string(engine.FamilyBackyard), "vault", vault), facts: facts, vault: vault, now: time.Now}
 }
 
-func (e *events) withdrawalHealthStored(h WithdrawalHealth) {
+func (e *events) withdrawalHealthStored(h earnmax.WithdrawalHealth) {
 	if e == nil || e.facts == nil || h.Status == "unavailable" {
 		return
 	}

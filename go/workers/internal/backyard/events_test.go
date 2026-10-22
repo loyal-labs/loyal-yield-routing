@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -90,8 +91,8 @@ func TestWithdrawalMetricsKeepAttentionAndClockWhenEvidenceUnavailable(t *testin
 	registry := prometheus.NewRegistry()
 	e := newEvents(slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)), engine.NewFacts(registry), "rwa")
 	now := time.Unix(1000, 0)
-	e.withdrawalHealthStored(WithdrawalHealth{RouteKey: productionRouteKey, Status: "operator_attention", ObservedAt: now})
-	e.withdrawalHealthStored(WithdrawalHealth{RouteKey: productionRouteKey, Status: "unavailable", ObservedAt: now.Add(time.Minute)})
+	e.withdrawalHealthStored(earnmax.WithdrawalHealth{RouteKey: productionRouteKey, Status: "operator_attention", ObservedAt: now})
+	e.withdrawalHealthStored(earnmax.WithdrawalHealth{RouteKey: productionRouteKey, Status: "unavailable", ObservedAt: now.Add(time.Minute)})
 	check := func(attention, observed float64) {
 		t.Helper()
 		families, err := registry.Gather()
@@ -109,6 +110,6 @@ func TestWithdrawalMetricsKeepAttentionAndClockWhenEvidenceUnavailable(t *testin
 		}
 	}
 	check(1, 1000)
-	e.withdrawalHealthStored(WithdrawalHealth{RouteKey: productionRouteKey, Status: "waiting", ObservedAt: now.Add(2 * time.Minute)})
+	e.withdrawalHealthStored(earnmax.WithdrawalHealth{RouteKey: productionRouteKey, Status: "waiting", ObservedAt: now.Add(2 * time.Minute)})
 	check(0, 1120)
 }
