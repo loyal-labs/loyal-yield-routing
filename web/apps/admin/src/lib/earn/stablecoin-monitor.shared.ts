@@ -1,11 +1,20 @@
-import { Stablecoin, STABLECOIN_MINTS } from "@loyal-labs/actions";
+import { Stablecoin } from "@loyal-labs/actions/types";
 
 export const STABLECOIN_DECIMALS = 6;
+
+const STABLECOIN_MINT_ADDRESSES: Record<Stablecoin, string> = {
+  [Stablecoin.CASH]: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+  [Stablecoin.USDG]: "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+  [Stablecoin.PYUSD]: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+  [Stablecoin.USDC]: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  [Stablecoin.USDT]: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+  [Stablecoin.USDS]: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+};
 
 export const EARN_STABLECOIN_DESCRIPTORS = Object.freeze(
   Object.values(Stablecoin).map((symbol) => ({
     decimals: STABLECOIN_DECIMALS,
-    mint: STABLECOIN_MINTS[symbol].toBase58(),
+    mint: STABLECOIN_MINT_ADDRESSES[symbol],
     symbol,
   }))
 );
