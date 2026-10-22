@@ -16,8 +16,6 @@ export const DEFAULT_ALERT_COLUMNS = [
   "Body",
 ];
 
-export type FloorCount = number;
-
 /**
  * ClickStack renders alert rows as a CSV block with no header line, so the
  * relay has to be told which saved-search columns it is looking at. Keep this
@@ -439,7 +437,7 @@ function cardinalityLabels(window: WindowSummary): string[] {
 }
 
 function renderCardinality(
-  uniqueValues: Record<string, FloorCount>,
+  uniqueValues: Record<string, number>,
   cappedValues: string[],
   truncated: boolean
 ): string[] {

@@ -461,7 +461,7 @@ export function createRequestHandler(
       return jsonResponse({ ok: false, error: "invalid_json" }, 400);
     }
 
-    const validation = validatePayload(rawPayload, MAX_BODY_FIELD_LENGTH);
+    const validation = validatePayload(rawPayload);
     if (!validation.ok) {
       trace("request_rejected", {
         reason: "invalid_payload",
@@ -518,10 +518,7 @@ type PayloadValidationResult =
   | { ok: true; payload: ClickStackWebhookPayload }
   | { ok: false; issues: string[] };
 
-export function validatePayload(
-  input: unknown,
-  maxBodyLength: number = MAX_BODY_FIELD_LENGTH
-): PayloadValidationResult {
+export function validatePayload(input: unknown): PayloadValidationResult {
   if (!isRecord(input)) {
     return { ok: false, issues: ["payload must be a JSON object"] };
   }
@@ -540,8 +537,8 @@ export function validatePayload(
   } else if (title.trim().length === 0) {
     issues.push("title must contain non-whitespace text");
   }
-  if (!isBoundedString(body, 0, maxBodyLength)) {
-    issues.push(stringIssue("body", body, 0, maxBodyLength));
+  if (!isBoundedString(body, 0, MAX_BODY_FIELD_LENGTH)) {
+    issues.push(stringIssue("body", body, 0, MAX_BODY_FIELD_LENGTH));
   }
   if (!isBoundedString(link, 0, 4096)) {
     issues.push(stringIssue("link", link, 0, 4096));

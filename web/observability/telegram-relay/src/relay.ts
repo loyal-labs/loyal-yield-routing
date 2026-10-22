@@ -1,4 +1,3 @@
-import type { FloorCount } from "./format.ts";
 import { redactBotToken } from "./redact.ts";
 
 export interface ClickStackWebhookPayload {
@@ -49,7 +48,7 @@ export interface DailySummary {
   alertsPosted: number;
   signatures: DailySignatureSummary[];
   omittedSignatures: number;
-  uniqueValues: Record<string, FloorCount>;
+  uniqueValues: Record<string, number>;
   cappedValues: string[];
 }
 
@@ -78,7 +77,7 @@ export interface WindowSummary {
   suppressedAlerts: number;
   sampledRows: number;
   signatures: SignatureSummary[];
-  uniqueValues: Record<string, FloorCount>;
+  uniqueValues: Record<string, number>;
   cappedValues: string[];
   buckets: number[];
   peakBucket: number;
@@ -598,6 +597,13 @@ export class AlertRelay {
     );
   }
 
+  // The escalation is an extra notification inside an already-open
+  // window, not part of ingest. Failing the webhook for it would be
+  // worse than useless: the delivery is already counted, and ClickStack's
+  // retry carries the same Idempotency-Key, so it would be answered as a
+  // duplicate without ever resending the escalation. Swallowing the
+  // failure and leaving `escalations` untouched makes the next
+  // over-threshold delivery try again.
   private async sendEscalationBestEffort(
     payload: ClickStackWebhookPayload,
     window: AlertWindow,
@@ -909,7 +915,7 @@ function summarizeDaily(daily: DailyTally, until: number): DailySummary {
   const signatures = [...daily.signatures.values()].sort(
     (left, right) => right.count - left.count || right.lastAt - left.lastAt
   );
-  const uniqueValues: Record<string, FloorCount> = {};
+  const uniqueValues: Record<string, number> = {};
   for (const [label, values] of daily.uniqueValues) {
     uniqueValues[label] = values.size;
   }
@@ -966,7 +972,7 @@ function summarize(window: AlertWindow): WindowSummary {
   const signatures = [...window.signatures.values()].sort(
     (left, right) => right.count - left.count
   );
-  const uniqueValues: Record<string, FloorCount> = {};
+  const uniqueValues: Record<string, number> = {};
   for (const [label, values] of window.uniqueValues) {
     uniqueValues[label] = values.size;
   }
