@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,4 +40,19 @@ func Credential(name string) (string, error) {
 		return "", fmt.Errorf("credential %s is empty", name)
 	}
 	return value, nil
+}
+
+// OptionalCredential is Credential for a secret that may be absent: no
+// credentials directory, or no file of that name, reads as "".
+func OptionalCredential(name string) (string, error) {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	if dir == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(filepath.Join(dir, name)); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("cannot inspect credential %s", name)
+	}
+	return Credential(name)
 }

@@ -1,17 +1,14 @@
-import type {
-  SmartAccountEarnUsdcAutodepositCloseMetadata,
-  SmartAccountEarnUsdcAutodepositSetupMetadata,
-  SmartAccountNativeSolRequirement,
-  SmartAccountPreparedEarnUsdcAutodepositClose,
-  SmartAccountPreparedEarnUsdcAutodepositSetup,
-} from "@loyal-labs/smart-account-vaults";
-import { PublicKey } from "@solana/web3.js";
-
 import {
   hydratePreparedOperation,
   serializePreparedOperation,
+  type SmartAccountEarnUsdcAutodepositCloseMetadata,
+  type SmartAccountEarnUsdcAutodepositSetupMetadata,
+  type SmartAccountNativeSolRequirement,
+  type SmartAccountPreparedEarnUsdcAutodepositClose,
+  type SmartAccountPreparedEarnUsdcAutodepositSetup,
   type WirePreparedLoyalSmartAccountsOperation,
-} from "@/lib/smart-accounts/prepared-operation-wire.shared";
+} from "@loyal-labs/smart-account-vaults";
+import { PublicKey } from "@solana/web3.js";
 
 export type EarnAutodepositSetupPrepareRequestBody = {
   amountRaw: string;
