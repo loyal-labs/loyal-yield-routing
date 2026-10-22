@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -147,7 +148,10 @@ func granted(ctx context.Context, pool *pgxpool.Pool, routes string, grants []we
 type grantVerdicts struct{ Content, Session, EarnMax, Push, Yield bool }
 
 func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdicts {
+	ctx, cancel := context.WithTimeout(ctx, grantBound)
+	defer cancel()
 	var v grantVerdicts
+	var wg sync.WaitGroup
 	for _, c := range []struct {
 		ok     *bool
 		pool   *pgxpool.Pool
@@ -161,9 +165,10 @@ func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdict
 		{&v.Yield, yieldDB, "Earn MAX route state", webapp.YieldGrants},
 	} {
 		if c.pool != nil {
-			*c.ok = granted(ctx, c.pool, c.routes, c.grants)
+			wg.Go(func() { *c.ok = granted(ctx, c.pool, c.routes, c.grants) })
 		}
 	}
+	wg.Wait()
 	return v
 }
 
