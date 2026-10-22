@@ -266,5 +266,12 @@ export async function earnWalletRead(
   await dropRejectedToken(walletAddress, token);
   const signer = await activeSignerFor(walletAddress);
   const fresh = signer ? await silentSession(signer) : null;
-  return fresh ? getWithBearer(url, fresh) : res;
+  if (!fresh) {
+    return res;
+  }
+  const retried = await getWithBearer(url, fresh);
+  if (await isInvalidSession(retried)) {
+    failedMintAt.set(walletAddress, Date.now());
+  }
+  return retried;
 }
