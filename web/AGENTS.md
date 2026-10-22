@@ -728,6 +728,11 @@ bun test src/lib/core/__tests__/object-path.test.ts src/lib/core/__tests__/cdn-u
 
 ### App loading
 
+App startup must tolerate blocked marketing modules. Load the X pixel only via
+caught dynamic imports. The Vite app uses hashed UI chunk names to avoid blocker
+false positives on component filenames; optional X pixel, Mixpanel and Datadog
+chunks retain recognizable names and their network requests remain blockable.
+
 Landing CTAs navigate directly to the app hostname without a timed splash.
 The Vite entry HTML and router pending state render `WorkspaceSkeleton`; the
 workspace keeps it until auth hydration settles, then uses a pane skeleton for
