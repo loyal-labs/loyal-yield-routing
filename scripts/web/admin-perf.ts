@@ -1,6 +1,6 @@
 // Admin load-time harness: signs in, then times every admin route from the browser.
 //
-//   ADMIN_USER=... ADMIN_PASSWORD=... bun scripts/web/admin-perf.ts <host> --set warm|cold|nav \
+//   ADMIN_USER=... ADMIN_PASSWORD=... bun scripts/web/admin-perf.ts <host> --set warm|cold|nav|rebalance-all \
 //     [--routes /overview,/earn] [--samples 5] [--param featureId=<id> --param communityId=<id>] \
 //     [--idle <seconds slept before this process, recorded only>] [--json out.json]
 //
@@ -9,6 +9,7 @@
 // cold: one fresh browser, one route, one sample. The caller sleeps first (outside any lock) and
 //   passes --idle; the sign-in happens right before the measured load and only the login page and
 //   POST /auth/login are fetched during it, so the first admin request is the measured one.
+// rebalance-all: one load of /earn/rebalance scrolled to the bottom, printing each /api/ call's start, end and duration.
 // nav: loads a "from" route, waits for it to settle, clicks the sidebar link to the target and
 //   times the click to the new route's DOM; 3 pairs x --samples (3) passes.
 //
@@ -68,7 +69,7 @@ function flag(name: string): string | undefined {
 const host = (process.argv[2] ?? "").replace(/\/$/, "");
 if (!/^https?:\/\//.test(host)) throw new Error("usage: admin-perf.ts <https://admin-host> --set warm|cold|nav");
 const set = flag("set");
-if (set !== "warm" && set !== "cold" && set !== "nav") throw new Error("--set warm|cold|nav is required");
+if (set !== "warm" && set !== "cold" && set !== "nav" && set !== "rebalance-all") throw new Error("--set warm|cold|nav|rebalance-all is required");
 const user = process.env.ADMIN_USER;
 const password = process.env.ADMIN_PASSWORD;
 if (!user || !password) throw new Error("ADMIN_USER and ADMIN_PASSWORD are required in the environment");
@@ -92,7 +93,7 @@ function adminRoutes(dir: string): string[] {
   });
 }
 const allRoutes = adminRoutes(routesDir).sort();
-const routes = routeFilter ? allRoutes.filter((route) => routeFilter.includes(route)) : allRoutes;
+const routes = set === "rebalance-all" ? ["/earn/rebalance"] : routeFilter ? allRoutes.filter((route) => routeFilter.includes(route)) : allRoutes;
 if (routes.length === 0) throw new Error(`no route matches --routes; known: ${allRoutes.join(", ")}`);
 if (set === "cold" && routes.length !== 1) throw new Error("--set cold takes exactly one route per process");
 
@@ -362,10 +363,11 @@ async function collect(page: Page, tracker: Tracker, base: { route: string; url:
   };
 }
 
-async function loadSample(route: string, path: string, pass: number, discarded: boolean): Promise<Sample> {
+async function loadSample(route: string, path: string, pass: number, discarded: boolean, scrollToBottom = false): Promise<Sample> {
   const page = await context.newPage();
   await page.bringToFront();
   await page.addInitScript(probeSource);
+  if (scrollToBottom) await page.addInitScript(() => setInterval(() => document.documentElement && window.scrollTo(0, document.documentElement.scrollHeight), 100));
   const tracker = track(page);
   const utcStart = new Date().toISOString();
   await page.goto(`${host}${path}`, { waitUntil: "commit", timeout: 60_000 }).catch(() => undefined);
@@ -420,6 +422,8 @@ if (set === "warm") {
       await new Promise((resolveWait) => setTimeout(resolveWait, 300));
     }
   }
+} else if (set === "rebalance-all") {
+  samples.push(await loadSample(routes[0]!, routes[0]!, 1, false, true));
 } else if (set === "cold") {
   for (const target of targets) samples.push(await loadSample(target.template, target.path, 1, false));
 } else {
@@ -502,6 +506,13 @@ for (const row of rows) {
   const slow = row.slowest ? `${row.slowest.label} ${row.slowest.ms}ms` : "-";
   console.log(`${pad(name, 40)}${pad(row.n, 3)}${pad(set === "nav" ? row.newDomMs : row.shellMs, 8)}${pad(row.dataMs, 8)}${pad(row.contentMs, 8)}${pad(row.shellBeforeData, 11)}${pad(slow.slice(0, 46), 48)}${pad(kb(row.apiWire), 10)}${row.errors}`);
   for (const call of row.api) console.log(`    ${pad(call.label.slice(0, 60), 62)}${pad(`${call.medianMs}ms`, 8)}${pad(`${call.minMs}-${call.maxMs}`, 12)}${pad(kb(call.wireBytes), 10)}${call.status}`);
+}
+if (set === "rebalance-all") {
+  const calls = [...samples[0]!.api].sort((a, b) => a.startMs - b.startMs);
+  console.log(`${pad("start", 8)}${pad("end", 8)}${pad("dur", 8)}${pad("status", 8)}${pad("wire", 10)}request`);
+  for (const call of calls) console.log(`${pad(call.startMs, 8)}${pad(call.endMs, 8)}${pad(call.durMs, 8)}${pad(call.status, 8)}${pad(kb(call.wireBytes), 10)}${call.url.slice(0, 90)}`);
+  const peak = Math.max(...calls.map((call) => calls.filter((other) => other.startMs <= call.startMs && other.endMs > call.startMs).length));
+  console.log(`requests ${calls.length} peak in flight ${peak}`);
 }
 console.log(`totals ${JSON.stringify(totals)}`);
 if (skipped.length) console.log(`skipped ${skipped.join("; ")}`);
