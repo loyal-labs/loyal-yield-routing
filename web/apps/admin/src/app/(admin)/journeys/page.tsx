@@ -10,25 +10,40 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { requireAdminSession } from "@/lib/require-admin-session";
 
-import { getJourneyData, journeyEvidenceUrl } from "./journey-data";
-import { journeyFlowMetrics } from "./journey-summary";
+import { journeyEvidenceUrl } from "./journey-data";
+import {
+  type JourneyEvent,
+  journeyFlowMetrics,
+  journeyStepMetrics,
+  summarizeJourneys,
+} from "./journey-summary";
 
-export const dynamic = "force-dynamic";
+type JourneysPageProps = {
+  cohort: "external" | "internal" | "synthetic";
+  coverage: "available" | "truncated" | "unavailable";
+  events: JourneyEvent[];
+  evidenceUrl: string;
+  fetchedAt: number;
+  logSourceId: string;
+};
 
-export default async function JourneysPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ cohort?: string }>;
-}) {
-  await requireAdminSession();
-  const query = await searchParams;
-  const cohort =
-    query.cohort === "internal" || query.cohort === "synthetic"
-      ? query.cohort
-      : "external";
-  const data = await getJourneyData(cohort);
+export default function JourneysPage({
+  cohort,
+  coverage,
+  events,
+  evidenceUrl,
+  fetchedAt,
+  logSourceId,
+}: JourneysPageProps) {
+  const journeys = summarizeJourneys(events, fetchedAt).filter(
+    (journey) => journey.trafficKind === cohort
+  );
+  const data = {
+    coverage,
+    journeys,
+    steps: journeyStepMetrics(events, journeys),
+  };
   const metrics = journeyFlowMetrics(data.journeys);
   return (
     <PageContainer className="max-w-7xl">
@@ -223,6 +238,8 @@ export default async function JourneysPage({
                       <a
                         className="underline underline-offset-4"
                         href={journeyEvidenceUrl(
+                          evidenceUrl,
+                          logSourceId,
                           (journey.failure ?? journey.stall ?? journey.last)
                             .attemptId
                         )}
