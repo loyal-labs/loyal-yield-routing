@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import { setCommunityActiveStatus } from "./community-list-actions";
@@ -16,7 +15,6 @@ export function CommunityActiveCheckbox({
   initialChecked,
   ariaLabel = "Toggle community active status",
 }: CommunityActiveCheckboxProps) {
-  const router = useRouter();
   const [checked, setChecked] = useState(initialChecked);
   const [pending, startTransition] = useTransition();
 
@@ -34,8 +32,6 @@ export function CommunityActiveCheckbox({
         setChecked(previousChecked);
         return;
       }
-
-      router.refresh();
     });
   }
 

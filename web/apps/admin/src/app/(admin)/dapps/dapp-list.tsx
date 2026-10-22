@@ -1,7 +1,6 @@
 "use client";
 
 import { TRUSTED_DAPP_CATEGORIES } from "@loyal-labs/shared";
-import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -172,7 +171,6 @@ function DappForm({
 }
 
 export function DappList({ dapps }: { dapps: DappRow[] }) {
-  const router = useRouter();
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -184,7 +182,6 @@ export function DappList({ dapps }: { dapps: DappRow[] }) {
     return addTrustedDapp(fd).then((result) => {
       if (result.success) {
         setIsAdding(false);
-        router.refresh();
       }
       return result;
     });
@@ -195,7 +192,6 @@ export function DappList({ dapps }: { dapps: DappRow[] }) {
       updateTrustedDapp(id, fd).then((result) => {
         if (result.success) {
           setEditingId(null);
-          router.refresh();
         }
         return result;
       });
@@ -205,14 +201,12 @@ export function DappList({ dapps }: { dapps: DappRow[] }) {
     startTransition(async () => {
       await deleteTrustedDapp(id);
       setDeletingId(null);
-      router.refresh();
     });
   }
 
   function handleToggle(id: string, next: boolean) {
     startTransition(async () => {
       await toggleTrustedDappActive(id, next);
-      router.refresh();
     });
   }
 
@@ -227,7 +221,6 @@ export function DappList({ dapps }: { dapps: DappRow[] }) {
       setSeedStatus(
         `Inserted ${result.inserted} · backfilled ${result.backfilled} · skipped ${result.skipped}`,
       );
-      router.refresh();
     });
   }
 

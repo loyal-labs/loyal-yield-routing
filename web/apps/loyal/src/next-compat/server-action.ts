@@ -29,6 +29,6 @@ export async function callAction(url: string, args: unknown[], headers: Record<s
     else window.location.assign(reply.redirect);
     return undefined;
   }
-  if (router) await router.invalidate();
+  if (router) void router.invalidate();
   return reply.value;
 }
