@@ -584,7 +584,7 @@ const server = Bun.serve({
         const body = (await request.json()) as { withdrawalSignature?: string };
         if (!body.withdrawalSignature)
           return json({ error: { code: "invalid_request" } }, 400);
-        const slot = await assertFinalized(body.withdrawalSignature);
+        const slot = await assertConfirmed(body.withdrawalSignature);
         appendFileSync(
           args.transactions!,
           `${JSON.stringify({
