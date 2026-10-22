@@ -24,9 +24,17 @@ npx eas build --profile development --platform ios
 # Preview APK (Android, internal distribution)
 npx eas build --profile preview --platform android
 
+# Standalone dApp Store test APK, installed alongside production as Loyal (Dev)
+npx eas build --profile dapp-store-development --platform android
+
 # Production build
 npx eas build --profile production --platform all
 ```
+
+`dapp-store-development` inherits the preview/mainnet configuration and bundles
+JavaScript (no Metro connection required). It uses `com.loyal.app.dev`, remote
+development signing credentials, and its own update channel; it does not publish
+to the dApp Store or update the production channel.
 
 ## Architecture
 
@@ -59,7 +67,9 @@ mobile/
 
 Privy (`@privy-io/expo`) is the identity layer; `src/components/wallet/PrivyProviderRoot.tsx` mounts it when `EXPO_PUBLIC_PRIVY_APP_ID` is set. Sign-in in `OnboardingGate` is email, Google, Apple (iOS), or a Seeker / MWA / deeplink wallet via SIWS. Email and OAuth users sign with the Privy embedded wallet (`PrivyEmbeddedSigner`). Wallet users keep their legacy signer; `src/lib/wallet/privy-migration.ts` links that signer to a Privy user on first unlock by signing a SIWS message, never blocks the app, and retries on the next launch if declined or offline. The Loyal session comes from `POST /api/auth/privy/complete` on `apiBaseUrl` (loyal-web, default `https://next.askloyal.com`, the one API base for content, Earn and push).
 # failed: doc still described create/import keypair onboarding after the Privy switch (2026-09-09)
+
 # outcome: rewritten to match the shipped auth flow
+
 # recurred: 0
 
 ### Key Conventions
@@ -78,6 +88,7 @@ Privy (`@privy-io/expo`) is the identity layer; `src/components/wallet/PrivyProv
 Expo uses `EXPO_PUBLIC_` prefix for client-accessible env vars.
 
 **Local development** (`.env`, gitignored):
+
 ```env
 EXPO_PUBLIC_API_BASE_URL=https://next.askloyal.com
 EXPO_PUBLIC_GRID_AUTH_BASE_URL=https://auth.askloyal.com
@@ -92,9 +103,13 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
 - `EXPO_PUBLIC_VERCEL_PROTECTION_BYPASS` is optional and is sent only when
   testing a protected preview deployment.
 - `EXPO_PUBLIC_PRIVY_APP_ID` and `EXPO_PUBLIC_PRIVY_CLIENT_ID` identify the Privy app (shared with web) and its mobile app client. Both are public and set in every `eas.json` profile; when unset, Privy sign-in is disabled and only existing legacy wallets work.
+
 # failed: env list lacked the Privy ids when they were added (2026-09-09)
+
 # outcome: listed with the same wording as env.ts
+
 # recurred: 0
+
 - `EXPO_PUBLIC_MIXPANEL_TOKEN` and `EXPO_PUBLIC_ONESIGNAL_APP_ID` configure
   optional telemetry and push notification services. The EAS profiles currently
   set `EXPO_PUBLIC_API_BASE_URL`, `EXPO_PUBLIC_SOLANA_ENV=mainnet`, and
@@ -137,3 +152,49 @@ EXPO_PUBLIC_SOLANA_ENV=mainnet
   - generic shared types go in `@loyal-labs/shared`
   - Grid runtime helpers go in `@loyal-labs/grid-core`
   - WebAuthn/passkey browser flow logic stays in `passkey`
+
+### Earn MAX
+
+`src/lib/solana/earn/mobile-earn-max.ts` exposes `readMobileEarnMax` for summary, activity and prepare context, and `executeMobileEarnMax`
+for deposit, withdrawal request and claim. Amounts are bigint raw USDC units
+(6 decimals); withdrawal also accepts `"max"`. They power `app/(tabs)/earn-max.tsx` and the Earn MAX activity tab.
+All HTTP calls go through `src/services/api.ts` to `env.apiBaseUrl` (loyal-web).
+The existing `earn-max.ts` Go-contract client stays separate; the imported
+mobile screens use `/api/smart-accounts/mobile/earn-max`, currently proxied to Next. A cached
+mobile Earn bearer session avoids prompts; an expired token falls back to a
+purpose-scoped wallet signature. Sign-in must have provisioned the canonical
+smart account before transaction preparation.
+
+The mainnet-only backend checks wallet ownership; mobile does not require an invite. Device
+preparation reuses the web Voltr plans from `@loyal-labs/smart-account-vaults`
+and the existing native signer/confirmation path, using vault index 2. Claim
+preparation rechecks cooldown and liquidity. Transactions are self-paid and
+return a confirmed signature/slot; the provider refreshes summary/activity after
+success, clears stale data on wallet changes/read failures, and polls every
+15 seconds while foregrounded. A cooldown expiry alone does not mean liquidity is ready.
+No confirmation write endpoint is needed: Voltr history is read from chain.
+
+The dog tab is the wallet-based home; Library replaces Wallet in the tab bar.
+Home's Earn and Earn MAX balances use the shared pulsing Skeleton while loading;
+Earn MAX waits for its first completed read before showing the empty-deposit state.
+Ordinary Earn now lives at `/(tabs)/earn`, with the old wallet route redirecting
+to Home. Earn MAX reuses the Earn amount sheets, positions sheet, and charts.
+Deposits accept mainnet USDC with a $1 minimum. Withdrawal requests have a
+10-minute cooldown, then require a separate Claim from Activity when liquidity
+is available. Another request is blocked while a withdrawal is pending.
+Activity's Check status action disables itself and shows a spinner while it
+refreshes, then acknowledges a successful read with a last-checked time. Failed
+or superseded reads do not show a success timestamp.
+Earn MAX summary and activity use passive wallet-address GET reads, matching
+ordinary Earn. Opening the screen and foreground polling never authenticate or
+sign messages. Transaction context remains authenticated via POST. Both screens
+render `EarnScreenControls` and `EarnChartTabs`, with back navigation and
+full-width balance actions. MAX shows only APY without a funded position or
+nonzero lifetime earnings; funded positions always expose Earned/APY. Until
+reported earnings reach the chart's $0.00001 display precision, Earned shows an
+explanation instead of an empty chart. MAX charts leave 16px below their date
+labels. Ordinary Earn keeps Forecast and Autodeposit.
+MAX refreshes the shared wallet token holdings on focus and on either Deposit
+entry point. Its amount and positions sheets use the supplied Figma assets and
+layout; the expanded positions card leaves the header and tab bar accessible.
+Earnings use the same cash-flow-adjusted daily series as web.

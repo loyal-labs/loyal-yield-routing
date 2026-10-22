@@ -6,6 +6,7 @@ import type { ActivitySection } from "../model/activity-unread";
 
 const SEGMENTS: { key: ActivitySection; label: string }[] = [
   { key: "earn", label: "Earn" },
+  { key: "earn-max", label: "Earn MAX" },
   { key: "wallet", label: "Wallet" },
 ];
 
@@ -16,11 +17,13 @@ export function ActivitySegmentedControl({
   value,
   onChange,
   earnUnread,
+  earnMaxUnread,
   walletUnread,
 }: {
   value: ActivitySection;
   onChange: (section: ActivitySection) => void;
   earnUnread: boolean;
+  earnMaxUnread: boolean;
   walletUnread: boolean;
 }) {
   const handleSelect = useCallback(
@@ -31,14 +34,19 @@ export function ActivitySegmentedControl({
       }
       onChange(section);
     },
-    [value, onChange],
+    [value, onChange]
   );
 
   return (
     <View style={styles.track}>
       {SEGMENTS.map(({ key, label }) => {
         const active = value === key;
-        const unread = key === "earn" ? earnUnread : walletUnread;
+        const unread =
+          key === "earn"
+            ? earnUnread
+            : key === "wallet"
+            ? walletUnread
+            : earnMaxUnread;
         return (
           <Pressable
             key={key}

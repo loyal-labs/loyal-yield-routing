@@ -1,8 +1,9 @@
+import { useEarnMax } from "@/features/earn-max/EarnMaxProvider";
 import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 
 import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
-import { Bone, Clock, Compass, Wallet } from "lucide-react-native";
+import { Bone, Clock, Compass, BookOpen } from "lucide-react-native";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { type LayoutChangeEvent, StyleSheet } from "react-native";
 import Animated, {
@@ -20,12 +21,11 @@ import { Pressable, View } from "@/tw";
 import EarnTabIcon from "../../assets/images/earn/tab-bar-icon.svg";
 import EarnTabIconActive from "../../assets/images/earn/tab-bar-icon-active.svg";
 
-// The Earn screen lives at /(tabs)/index so it's the cold-start default,
-// and the original wallet screen moved to /(tabs)/wallet.
+// Home and its Earn detail screens share the dog navigation item.
 const EARN_ROUTE_NAME = "index";
 
 const TAB_ORDER = [
-  "wallet",
+  "library",
   "quests",
   EARN_ROUTE_NAME,
   "activity",
@@ -35,7 +35,7 @@ const TAB_ORDER = [
 type TabName = (typeof TAB_ORDER)[number];
 
 const LUCIDE_ICONS = {
-  wallet: Wallet,
+  library: BookOpen,
   quests: Bone,
   activity: Clock,
   browser: Compass,
@@ -44,14 +44,15 @@ const LUCIDE_ICONS = {
 const TAB_CELL_HEIGHT = 54;
 const BLUR_PADDING = 4;
 const INDICATOR_SIZE = 44;
-const INDICATOR_TOP =
-  (TAB_CELL_HEIGHT + BLUR_PADDING * 2 - INDICATOR_SIZE) / 2;
+const INDICATOR_TOP = (TAB_CELL_HEIGHT + BLUR_PADDING * 2 - INDICATOR_SIZE) / 2;
 
 const SPRING_CONFIG = { damping: 20, stiffness: 240, mass: 0.7 };
 
 export function TabBar({ state, navigation }: BottomTabBarProps) {
   const wallet = useWallet();
-  const { anyUnread } = useActivity();
+  const { anyUnread: otherUnread } = useActivity();
+  const { unread: maxUnread } = useEarnMax();
+  const anyUnread = otherUnread || maxUnread;
   const insets = useSafeAreaInsets();
 
   const visibleRoutes = useMemo(
@@ -63,19 +64,25 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
             (TAB_ORDER as readonly string[]).includes(route.name) &&
             // handlePress already no-ops on a disabled quests tab, but the
             // icon still rendered — drop the cell entirely instead.
-            (QUESTS_ENABLED || route.name !== "quests"),
+            (QUESTS_ENABLED || route.name !== "quests")
         )
         .sort(
           (left, right) =>
             TAB_ORDER.indexOf(left.route.name as TabName) -
-            TAB_ORDER.indexOf(right.route.name as TabName),
+            TAB_ORDER.indexOf(right.route.name as TabName)
         ),
-    [state.routes],
+    [state.routes]
   );
 
   const visibleIndex = useMemo(
-    () => visibleRoutes.findIndex(({ index }) => index === state.index),
-    [visibleRoutes, state.index],
+    () =>
+      visibleRoutes.findIndex(
+        ({ index, route }) =>
+          index === state.index ||
+          (["earn", "earn-max"].includes(state.routes[state.index]?.name) &&
+            route.name === "index")
+      ),
+    [visibleRoutes, state.index, state.routes]
   );
 
   // Measured tab-cell layouts. `layout.x` and `layout.width` are reported in
@@ -103,7 +110,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
       }
       indicatorOpacity.value = 1;
     },
-    [visibleIndex, indicatorX, indicatorOpacity],
+    [visibleIndex, indicatorX, indicatorOpacity]
   );
 
   const handleTabLayout = useCallback(
@@ -116,7 +123,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
         settleIndicator(false);
       }
     },
-    [visibleIndex, indicatorOpacity, settleIndicator],
+    [visibleIndex, indicatorOpacity, settleIndicator]
   );
 
   useEffect(() => {
@@ -130,7 +137,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
 
   const wrapperStyle = useMemo(
     () => [styles.wrapper, { paddingBottom: Math.max(insets.bottom, 12) }],
-    [insets.bottom],
+    [insets.bottom]
   );
 
   const handlePress = useCallback(
@@ -150,7 +157,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
         navigation.navigate(routeName);
       }
     },
-    [navigation, state],
+    [navigation, state]
   );
 
   if (!isWalletUnlocked(wallet.state)) return null;
@@ -174,7 +181,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
         )}
 
         {visibleRoutes.map(({ route, index: originalIndex }, visI) => {
-          const isFocused = state.index === originalIndex;
+          const isFocused = visI === visibleIndex;
           const name = route.name as TabName;
           const isEarn = name === EARN_ROUTE_NAME;
 
@@ -186,7 +193,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
               onLayout={handleTabLayout(visI)}
               accessibilityRole="tab"
               accessibilityState={isFocused ? { selected: true } : {}}
-              accessibilityLabel={isEarn ? "Earn" : undefined}
+              accessibilityLabel={isEarn ? "Home" : route.name}
             >
               {isEarn ? (
                 isFocused ? (
@@ -196,8 +203,7 @@ export function TabBar({ state, navigation }: BottomTabBarProps) {
                 )
               ) : (
                 (() => {
-                  const Icon =
-                    LUCIDE_ICONS[name as keyof typeof LUCIDE_ICONS];
+                  const Icon = LUCIDE_ICONS[name as keyof typeof LUCIDE_ICONS];
                   const showDot = name === "activity" && anyUnread;
                   return (
                     <View style={styles.iconWrap}>
@@ -227,12 +233,13 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     paddingTop: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 8,
+    backgroundColor: "white",
   },
   blur: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(242, 242, 247, 0.94)",
+    backgroundColor: "white",
     borderRadius: 9999,
     padding: BLUR_PADDING,
     overflow: "hidden",

@@ -124,7 +124,7 @@ function normalizeError(error: unknown): {
     return {
       message: truncate(
         error.message || "Unknown error.",
-        MAX_ERROR_MESSAGE_LENGTH,
+        MAX_ERROR_MESSAGE_LENGTH
       ),
       name: truncate(error.name || "Error", MAX_ERROR_NAME_LENGTH),
       ...(error.stack
@@ -178,7 +178,7 @@ function isDuplicate(envelope: MobileErrorEnvelope): boolean {
 
 export async function postObservabilityJson(
   path: string,
-  payload: unknown,
+  payload: unknown
 ): Promise<void> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REPORT_TIMEOUT_MS);
@@ -210,7 +210,7 @@ function postEnvelope(envelope: MobileErrorEnvelope): Promise<void> {
 function report(
   error: unknown,
   operation: MobileErrorOperation,
-  messagePrefix?: string,
+  messagePrefix?: string
 ): void {
   try {
     const normalized = normalizeError(error);
@@ -222,7 +222,7 @@ function report(
         ? {
             message: truncate(
               `${messagePrefix} ${normalized.message}`,
-              MAX_ERROR_MESSAGE_LENGTH,
+              MAX_ERROR_MESSAGE_LENGTH
             ),
           }
         : {}),
@@ -285,6 +285,7 @@ export function initObservability(): void {
 // from it is silently dropped, so keep the vocabularies below in sync.
 
 type LifecycleVariantMap = {
+  "earn_max.vault": "deposit" | "request_withdrawal" | "claim";
   "auth.sign_in":
     | "seed_vault"
     | "wallet_adapter"
@@ -304,6 +305,7 @@ type LifecycleVariantMap = {
 };
 
 type LifecycleStageMap = {
+  "earn_max.vault": "intent" | "prepare" | "wallet_submit_confirm";
   "auth.sign_in":
     | "intent"
     | "wallet_connect"
@@ -358,6 +360,7 @@ type LifecycleErrorCode =
   | "backend_confirmation_failed"
   | "send_failed"
   | "earn_withdraw_underfilled"
+  | "earn_max_liquidity_unavailable"
   | "insufficient_native_sol"
   | "wallet_rejected"
   | "wallet_account_mismatch"
@@ -424,15 +427,15 @@ export type LifecycleDiagnostics = {
 export type LifecycleFlow<F extends LifecycleFlowName> = {
   cancel: (
     stage: LifecycleStageMap[F],
-    diagnostics?: LifecycleDiagnostics,
+    diagnostics?: LifecycleDiagnostics
   ) => void;
   complete: (
     stage: LifecycleStageMap[F],
-    diagnostics?: LifecycleDiagnostics,
+    diagnostics?: LifecycleDiagnostics
   ) => void;
   fail: (
     stage: LifecycleStageMap[F],
-    diagnostics?: LifecycleDiagnostics,
+    diagnostics?: LifecycleDiagnostics
   ) => void;
   /**
    * Terminate the flow from a caught error, classifying it first: a user
@@ -443,19 +446,19 @@ export type LifecycleFlow<F extends LifecycleFlowName> = {
   failFrom: (
     stage: LifecycleStageMap[F],
     error: unknown,
-    diagnostics?: LifecycleDiagnostics,
+    diagnostics?: LifecycleDiagnostics
   ) => void;
   /** Sent as `x-loyal-flow-id` so server-side stages join the same flow. */
   flowId: string;
   observe: (
     stage: LifecycleStageMap[F],
-    diagnostics?: LifecycleDiagnostics,
+    diagnostics?: LifecycleDiagnostics
   ) => void;
   setVariant: (variant: LifecycleVariantMap[F]) => void;
   setWalletAddress: (walletAddress: string) => void;
   start: (
     stage: LifecycleStageMap[F],
-    diagnostics?: LifecycleDiagnostics,
+    diagnostics?: LifecycleDiagnostics
   ) => void;
 };
 
@@ -528,14 +531,14 @@ function isRpcError(error: unknown): boolean {
  * answer and a better one than a token that sends on-call somewhere wrong.
  */
 export function mapLifecycleErrorDetail(
-  error: unknown,
+  error: unknown
 ): LifecycleErrorDetail | undefined {
   // Already classified at the throw site, which saw the cause this layer
   // cannot: `withConnectionRetry` knows what it retried before giving up.
   const carried = declaredErrorDetail(
     error && typeof error === "object"
       ? (error as { detail?: unknown }).detail
-      : undefined,
+      : undefined
   );
   if (carried) return carried;
   if (error instanceof Error && error.name === "FetchTimeoutError") {
@@ -623,7 +626,7 @@ export function startLifecycleFlow<F extends LifecycleFlowName>(args: {
   const emit = (
     outcome: "started" | "observed" | "completed" | "failed" | "cancelled",
     stage: LifecycleStageMap[F],
-    diagnostics: LifecycleDiagnostics = {},
+    diagnostics: LifecycleDiagnostics = {}
   ): void => {
     try {
       if (terminal) return;
@@ -692,7 +695,7 @@ export function startLifecycleFlow<F extends LifecycleFlowName>(args: {
         report(
           error,
           "mobile.global_error",
-          `[flow_id=${flowId} flow_name=${args.flowName} flow_stage=${stage}]`,
+          `[flow_id=${flowId} flow_name=${args.flowName} flow_stage=${stage}]`
         );
       }
     },

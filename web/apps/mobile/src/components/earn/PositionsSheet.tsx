@@ -1,3 +1,6 @@
+import Loop from "../../../assets/images/earn-max/loop.svg";
+import MaxPlus from "../../../assets/images/earn-max/plus.svg";
+import MaxWithdraw from "../../../assets/images/earn-max/withdraw.svg";
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -12,6 +15,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFixedSheetLayout } from "@/hooks/useFixedSheetLayout";
@@ -33,7 +37,6 @@ const COLOR_LABEL_DIM = "rgba(60, 60, 67, 0.6)";
 const COLOR_VALUE_DIM = "rgba(60, 60, 67, 0.4)";
 const COLOR_WITHDRAW_BG = "#F5F5F5";
 
-
 // Round to integer cents BEFORE splitting — trunc-then-round-cents renders
 // 3.999999 (Kamino floor-valued $4) as "$3.100" (see the Earn balance twin).
 function splitUsd(value: number): { whole: string; cents: string } {
@@ -54,6 +57,11 @@ function sourceUsd(source: EarnWithdrawSourceInfo): number {
 
 type PositionsSheetProps = {
   open: boolean;
+  earnMax?: {
+    apyBps: number | null;
+    earnedUsd: number | null;
+    withdrawDisabled: boolean;
+  };
   onClose: () => void;
   // Funded Earn Balance, pre-split so the cents render dimmed (matches footer).
   balanceWhole: string;
@@ -67,6 +75,7 @@ type PositionsSheetProps = {
 
 export function PositionsSheet({
   open,
+  earnMax,
   onClose,
   balanceWhole,
   balanceCents,
@@ -76,7 +85,14 @@ export function PositionsSheet({
 }: PositionsSheetProps) {
   const sheetRef = useRef<BottomSheetModal>(null);
   const insets = useSafeAreaInsets();
-  const { sheetHeight, snapPoints } = useFixedSheetLayout(0.92);
+  const regularLayout = useFixedSheetLayout(0.92);
+  const { height } = useWindowDimensions();
+  // Leave the existing app bar and tab bar reachable around the expanded card.
+  const bottomInset = earnMax ? 70 + Math.max(insets.bottom, 12) : 0;
+  const sheetHeight = earnMax
+    ? height - insets.top - 60 - bottomInset
+    : regularLayout.sheetHeight;
+  const snapPoints = useMemo(() => [sheetHeight], [sheetHeight]);
 
   useEffect(() => {
     if (open) {
@@ -89,7 +105,7 @@ export function PositionsSheet({
   // Largest positions first, so the headline market leads the list.
   const positions = useMemo(
     () => [...sources].sort((a, b) => sourceUsd(b) - sourceUsd(a)),
-    [sources],
+    [sources]
   );
 
   const handleDeposit = useCallback(() => {
@@ -111,7 +127,7 @@ export function PositionsSheet({
         opacity={0.2}
       />
     ),
-    [],
+    []
   );
 
   return (
@@ -120,7 +136,8 @@ export function PositionsSheet({
       snapPoints={snapPoints}
       enableDynamicSizing={false}
       enablePanDownToClose
-      backdropComponent={renderBackdrop}
+      backdropComponent={earnMax ? undefined : renderBackdrop}
+      bottomInset={bottomInset}
       onDismiss={onClose}
       handleComponent={null}
       backgroundStyle={styles.sheetBackground}
@@ -134,7 +151,9 @@ export function PositionsSheet({
           <View style={styles.dragHandle} />
         </View>
 
-        <View style={styles.balanceCell}>
+        <View
+          style={[styles.balanceCell, earnMax && { paddingTop: 0, gap: 0 }]}
+        >
           <Text style={styles.balanceLabel}>Earn Balance</Text>
           <Text style={styles.balanceValue}>
             <Text style={styles.balanceValueStrong}>{balanceWhole}</Text>
@@ -153,11 +172,16 @@ export function PositionsSheet({
             ]}
           >
             <View style={styles.iconWrap}>
-              <Plus size={20} color="#FFF" strokeWidth={2.2} />
+              {earnMax ? (
+                <MaxPlus />
+              ) : (
+                <Plus size={20} color="#FFF" strokeWidth={2.2} />
+              )}
             </View>
             <Text style={styles.depositLabel}>Deposit</Text>
           </Pressable>
           <Pressable
+            disabled={earnMax?.withdrawDisabled}
             onPress={handleWithdraw}
             accessibilityRole="button"
             accessibilityLabel="Withdraw"
@@ -167,16 +191,87 @@ export function PositionsSheet({
             ]}
           >
             <View style={styles.iconWrap}>
-              <ArrowUp size={20} color="#000" strokeWidth={2.2} opacity={0.6} />
+              {earnMax ? (
+                <MaxWithdraw />
+              ) : (
+                <ArrowUp
+                  size={20}
+                  color="#000"
+                  strokeWidth={2.2}
+                  opacity={0.6}
+                />
+              )}
             </View>
             <Text style={styles.withdrawLabel}>Withdraw</Text>
           </Pressable>
         </View>
 
-        <View style={styles.groupHeader}>
+        <View
+          style={[
+            styles.groupHeader,
+            earnMax && { paddingTop: 13, paddingBottom: 9 },
+          ]}
+        >
           <Text style={styles.groupHeaderText}>Current positions</Text>
         </View>
 
+        {earnMax ? (
+          <View style={styles.positionCell}>
+            <View
+              style={{
+                width: 48,
+                height: 48,
+                marginRight: 12,
+                borderRadius: 12,
+                backgroundColor: "rgba(0,0,0,0.04)",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Loop />
+            </View>
+            <View
+              style={{
+                flex: 1,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <Text style={styles.positionTitle}>Looping</Text>
+              <View style={styles.maxApyBadge}>
+                <Text style={styles.maxApyText}>
+                  {earnMax.apyBps == null
+                    ? "—"
+                    : `${(earnMax.apyBps / 100).toFixed(2)}% APY`}
+                </Text>
+              </View>
+            </View>
+            <View style={{ alignItems: "flex-end", paddingVertical: 11 }}>
+              <Text style={styles.positionValue}>
+                {balanceWhole}
+                <Text style={styles.positionValueDim}>{balanceCents}</Text>
+              </Text>
+              <Text
+                style={[
+                  styles.positionSubtitle,
+                  {
+                    color:
+                      earnMax.earnedUsd != null && earnMax.earnedUsd < 0
+                        ? "#F9363C"
+                        : "#4BB34B",
+                  },
+                ]}
+              >
+                {earnMax.earnedUsd == null
+                  ? "—"
+                  : `${earnMax.earnedUsd < 0 ? "−" : "+"}$${Math.abs(
+                      earnMax.earnedUsd
+                    ).toFixed(2)}`}
+              </Text>
+            </View>
+          </View>
+        ) : null}
         {positions.map((source) => {
           const { marketName, mintSymbol, venue } = resolveEarnPositionDisplay({
             market: source.market,
@@ -213,6 +308,20 @@ export function PositionsSheet({
 }
 
 const styles = StyleSheet.create({
+  maxApyBadge: {
+    paddingHorizontal: 4,
+    paddingTop: 2,
+    paddingBottom: 1,
+    borderRadius: 6,
+    backgroundColor: "rgba(52,199,89,0.14)",
+  },
+  maxApyText: {
+    fontFamily: "Geist_500Medium",
+    fontSize: 11,
+    lineHeight: 13,
+    letterSpacing: 0.06,
+    color: "#4BB34B",
+  },
   sheetBackground: {
     backgroundColor: "#FFF",
     borderTopLeftRadius: 26,

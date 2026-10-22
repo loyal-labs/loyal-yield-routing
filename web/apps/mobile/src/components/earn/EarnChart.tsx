@@ -51,8 +51,18 @@ const AXIS_HEADROOM = 1.12;
 const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 
 const SHORT_MONTHS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
 ];
 
 // Swipe hint over the chart, shown on every open while "Show tips" is enabled.
@@ -92,9 +102,9 @@ function formatGain(value: number): string {
 }
 
 function splitDollars(value: number, decimals = 2) {
-  const [whole, cents] = value.toFixed(decimals).split(".");
+  const [whole, cents] = Math.abs(value).toFixed(decimals).split(".");
   return {
-    whole: `$${Number(whole).toLocaleString("en-US")}`,
+    whole: `${value < 0 ? "−" : ""}$${Number(whole).toLocaleString("en-US")}`,
     cents: `.${cents}`,
   };
 }
@@ -159,7 +169,7 @@ function ChartBar({
       progress.value,
       [start, start + GROW_WINDOW],
       [0, 1],
-      Extrapolation.CLAMP,
+      Extrapolation.CLAMP
     );
     return { transform: [{ scaleY: grow }] };
   });
@@ -226,9 +236,9 @@ function RollingDigit({
             cell.value = normalized;
             translateY.value = -normalized * DIGIT_HEIGHT;
           }
-        },
+        }
       );
-    },
+    }
   );
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -332,17 +342,20 @@ function EarningsValue({
 // that day. The current (in-progress) bar is reconciled against the live total
 // so it reflects earnings beyond the prior recorded days, without turning the
 // earlier bars into a running total — mirrors the web Earnings chart.
-function buildDailyValues(bars: EarnEarningsBar[], liveTotal: number): number[] {
+function buildDailyValues(
+  bars: EarnEarningsBar[],
+  liveTotal: number
+): number[] {
   const safeTotal = Math.max(0, liveTotal);
   const nonCurrentRecorded = bars.reduce(
     (sum, bar) => (bar.isCurrent ? sum : sum + Math.max(0, bar.earnedUsd)),
-    0,
+    0
   );
   const currentResidual = Math.max(0, safeTotal - nonCurrentRecorded);
   return bars.map((bar) =>
     bar.isCurrent
       ? Math.max(0, bar.earnedUsd, currentResidual)
-      : Math.max(0, bar.earnedUsd),
+      : Math.max(0, bar.earnedUsd)
   );
 }
 
@@ -353,7 +366,10 @@ const SKELETON_BAR_COUNT = 30;
 // A static, believable bar silhouette so the placeholder reads as the earnings
 // chart. Deterministic wave (no random) so it never reflows between renders.
 const SKELETON_BAR_RATIOS = Array.from({ length: SKELETON_BAR_COUNT }, (_, i) =>
-  Math.max(0.18, Math.min(1, 0.55 + 0.4 * Math.sin(i * 0.7) * Math.cos(i * 0.27))),
+  Math.max(
+    0.18,
+    Math.min(1, 0.55 + 0.4 * Math.sin(i * 0.7) * Math.cos(i * 0.27))
+  )
 );
 
 // Loading placeholder mirroring the chart's anatomy — headline value, subtitle +
@@ -371,7 +387,10 @@ function ChartSkeleton() {
         {SKELETON_BAR_RATIOS.map((ratio, i) => (
           <View
             key={i}
-            style={[styles.skeletonBar, { height: `${Math.round(ratio * 100)}%` }]}
+            style={[
+              styles.skeletonBar,
+              { height: `${Math.round(ratio * 100)}%` },
+            ]}
           />
         ))}
       </Skeleton>
@@ -401,6 +420,21 @@ function ChartUnavailable() {
 
 export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
   const { earnings, fetchedAtMs, status } = useEarnEarnings(walletAddress);
+  return (
+    <EarnChartContent
+      earnings={earnings}
+      fetchedAtMs={fetchedAtMs}
+      status={status}
+    />
+  );
+}
+
+export function EarnChartContent({
+  earnings,
+  fetchedAtMs,
+  status,
+  settled = false,
+}: ReturnType<typeof useEarnEarnings> & { settled?: boolean }) {
   const bars = useMemo(() => earnings?.bars ?? [], [earnings]);
   const barCount = bars.length;
   const lastIndex = Math.max(0, barCount - 1);
@@ -423,11 +457,13 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
   // excluding the in-progress current bar, which can spike — recomputed only
   // when data lands.
   const { daily, axisMax } = useMemo(() => {
-    const values = buildDailyValues(bars, baseEarned);
+    const values = settled
+      ? bars.map((bar) => bar.earnedUsd)
+      : buildDailyValues(bars, baseEarned);
     let max = 0;
     for (let i = 0; i < bars.length; i += 1) {
       if (!bars[i].isCurrent) {
-        max = Math.max(max, values[i]);
+        max = Math.max(max, Math.abs(values[i]));
       }
     }
     // Day one: no completed day has earnings yet, so the historical ceiling is
@@ -435,11 +471,11 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
     // bar instead so the first day's accrual reads as a real bar.
     if (max <= 0) {
       for (const value of values) {
-        max = Math.max(max, value);
+        max = Math.max(max, Math.abs(value));
       }
     }
     return { daily: values, axisMax: niceAxisMax(max) };
-  }, [bars, baseEarned]);
+  }, [bars, baseEarned, settled]);
 
   // Default selection is the current (today) bar; scrubbing moves it. `scrubbing`
   // drives the red highlight; `live` (today selected) drives the odometer.
@@ -507,8 +543,8 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
       withSequence(
         withTiming(-HINT_NUDGE, { duration: 260, easing: ENTER_EASING }),
         withTiming(HINT_NUDGE, { duration: 460, easing: ENTER_EASING }),
-        withTiming(0, { duration: 260, easing: ENTER_EASING }),
-      ),
+        withTiming(0, { duration: 260, easing: ENTER_EASING })
+      )
     );
     const timer = setTimeout(dismissHint, HINT_VISIBLE_MS);
     return () => {
@@ -539,7 +575,7 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
       setScrubbing(true);
       const ratio = Math.max(
         0,
-        Math.min(1, event.nativeEvent.locationX / chartWidth),
+        Math.min(1, event.nativeEvent.locationX / chartWidth)
       );
       const nextIdx = Math.min(lastIndex, Math.floor(ratio * barCount));
       if (lastIdxRef.current === nextIdx) {
@@ -549,7 +585,7 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
       void Haptics.selectionAsync();
       setActiveIdx(nextIdx);
     },
-    [chartWidth, hasData, lastIndex, barCount, dismissHint],
+    [chartWidth, hasData, lastIndex, barCount, dismissHint]
   );
 
   const handleReleaseBar = useCallback(() => {
@@ -576,15 +612,36 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
   if (status === "unavailable" && !hasData) {
     return <ChartUnavailable />;
   }
+  if (
+    settled &&
+    status === "ready" &&
+    earnings &&
+    Math.abs(earnings.lifetimeEarnedUsd) < SMALLEST_PLACE &&
+    bars.every((bar) => Math.abs(bar.earnedUsd) < SMALLEST_PLACE)
+  ) {
+    return (
+      <View style={[styles.root, styles.unavailableRoot]}>
+        <Text style={styles.unavailableTitle}>Earnings are not yet visible</Text>
+        <Text style={styles.unavailableBody}>
+          Earnings will appear here once the vault reports an amount of at least
+          $0.00001.
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <Animated.View style={[styles.root, rootAnimatedStyle]}>
       <EarningsValue
-        live={live}
+        live={!settled && live}
         baseValue={daily[lastIndex] ?? 0}
         ratePerSecond={ratePerSecond}
         anchorMs={fetchedAtMs}
-        staticValue={daily[activeIdx] ?? 0}
+        staticValue={
+          settled && !scrubbing
+            ? earnings?.lifetimeEarnedUsd ?? 0
+            : daily[activeIdx] ?? 0
+        }
       />
 
       <View style={styles.subtitleRow}>
@@ -594,7 +651,9 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
           </Text>
         ) : (
           <Text style={styles.subtitleGain}>
-            {`+${formatGain(rangeEarned)} past month`}
+            {`${rangeEarned < 0 ? "−" : "+"}${formatGain(
+              Math.abs(rangeEarned)
+            )} past month`}
           </Text>
         )}
         <Text style={styles.axisMax}>{formatAxisLabel(axisMax)}</Text>
@@ -621,12 +680,12 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
           // can't overflow past the chart height.
           const ratio =
             axisMax > 0
-              ? Math.min(1, Math.max(MIN_BAR_RATIO, value / axisMax))
+              ? Math.min(1, Math.max(MIN_BAR_RATIO, Math.abs(value) / axisMax))
               : MIN_BAR_RATIO;
           // While scrubbing, only the selected bar reads as earned (red); the
           // rest stay a calm dim white. At rest the whole series is dim white.
           const earned = scrubbing && i === activeIdx;
-          const color = earned ? COLOR_RED : COLOR_WHITE;
+          const color = earned || value < 0 ? COLOR_RED : COLOR_WHITE;
           const opacity = scrubbing
             ? earned
               ? OPACITY_EARNED
@@ -661,7 +720,11 @@ export function EarnChart({ walletAddress }: { walletAddress: string | null }) {
             <View style={styles.swipeHintPill}>
               <ArrowLeft size={16} color={COLOR_DIM_WHITE_60} strokeWidth={2} />
               <Text style={styles.swipeHintText}>Swipe</Text>
-              <ArrowRight size={16} color={COLOR_DIM_WHITE_60} strokeWidth={2} />
+              <ArrowRight
+                size={16}
+                color={COLOR_DIM_WHITE_60}
+                strokeWidth={2}
+              />
             </View>
           </Animated.View>
         ) : null}

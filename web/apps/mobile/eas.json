@@ -82,6 +82,19 @@
         "credentialsSource": "local"
       }
     },
+    "dapp-store-development": {
+      "extends": "preview",
+      "channel": "dapp-store-development",
+      "developmentClient": false,
+      "env": {
+        "APP_VARIANT": "development",
+        "DAPP_STORE_BUILD": "true"
+      },
+      "android": {
+        "buildType": "apk",
+        "credentialsSource": "remote"
+      }
+    },
     "development-simulator": {
       "autoIncrement": true,
       "developmentClient": true,

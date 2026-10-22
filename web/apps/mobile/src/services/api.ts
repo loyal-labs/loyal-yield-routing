@@ -1,3 +1,4 @@
+import type { MobileEarnMaxResponses } from "@loyal-labs/shared";
 import type {
   Get,
   MobileTokenDetailResponse,
@@ -5,7 +6,74 @@ import type {
   Summary,
 } from "@loyal-labs/api";
 
+import { earnHeaders } from "@/lib/solana/earn/earn-session";
+
 import { env } from "@/config/env";
+import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
+import {
+  EarnApiError,
+  type EarnAuthFields,
+  type EarnSessionAuth,
+} from "@/lib/solana/earn/earn-api";
+
+export async function fetchEarnMaxApy(): Promise<number | null> {
+  const response = await fetchWithTimeout(
+    `${env.apiBaseUrl}/api/earn-max/apy`,
+    { headers: earnHeaders() }
+  );
+  if (!response.ok) throw new Error("Earn MAX APY is unavailable.");
+  const payload = await response.json();
+  return typeof payload.apyBps === "number" && Number.isFinite(payload.apyBps)
+    ? payload.apyBps
+    : null;
+}
+
+/** Public on-chain display data, like the ordinary Earn state/earnings reads. */
+export async function fetchMobileEarnMax<A extends "summary" | "activity">(
+  action: A, walletAddress: string
+): Promise<MobileEarnMaxResponses[A]> {
+  const response = await fetchWithTimeout(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn-max?action=${action}&walletAddress=${encodeURIComponent(walletAddress)}`,
+    { headers: earnHeaders() }
+  );
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload) throw new EarnApiError(
+    payload?.error?.message ?? "Unable to update Earn MAX. Please try again.",
+    payload?.error?.code ?? "earn_max_unavailable", response.status
+  );
+  return payload as MobileEarnMaxResponses[A];
+}
+
+export async function requestEarnMax<A extends keyof MobileEarnMaxResponses>(
+  action: A,
+  auth: EarnAuthFields | EarnSessionAuth | { walletAddress: string }
+): Promise<MobileEarnMaxResponses[A]> {
+  const session = "sessionToken" in auth;
+  const response = await fetchWithTimeout(
+    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn-max`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        ...earnHeaders(),
+        ...(session ? { Authorization: `Bearer ${auth.sessionToken}` } : {}),
+      },
+      body: JSON.stringify({
+        ...(!session ? auth : {}),
+        action,
+      }),
+    }
+  );
+  const payload = await response.json().catch(() => null);
+  if (!payload || !response.ok) {
+    throw new EarnApiError(
+      payload?.error?.message ?? "Earn MAX is temporarily unavailable. Please try again later.",
+      payload?.error?.code ?? "earn_max_unavailable",
+      response.status
+    );
+  }
+  return payload as MobileEarnMaxResponses[A];
+}
 
 export type GroupChat = {
   id: string;
@@ -40,7 +108,9 @@ export async function fetchSummariesByGroup(
   groupChatId: string,
 ): Promise<Summary[]> {
   const response = await fetch(
-    `${env.apiBaseUrl}/api/summaries?groupChatId=${encodeURIComponent(groupChatId)}`,
+    `${env.apiBaseUrl}/api/summaries?groupChatId=${encodeURIComponent(
+      groupChatId
+    )}`
   );
   if (!response.ok) {
     throw new Error(`Failed to fetch summaries: ${response.status}`);
@@ -51,10 +121,12 @@ export async function fetchSummariesByGroup(
 
 export async function fetchTokenDetailMarket(
   mint: string,
-  timeframe: TokenDetailTimeframe = "1d",
+  timeframe: TokenDetailTimeframe = "1d"
 ): Promise<MobileTokenDetailResponse> {
   const response = await fetch(
-    `${env.apiBaseUrl}/api/mobile/tokens/${encodeURIComponent(mint)}?timeframe=${timeframe}`,
+    `${env.apiBaseUrl}/api/mobile/tokens/${encodeURIComponent(
+      mint
+    )}?timeframe=${timeframe}`
   );
 
   if (!response.ok) {

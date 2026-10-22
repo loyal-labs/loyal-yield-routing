@@ -48,10 +48,19 @@ type ApySeries = {
 };
 
 function formatPct(value: number): string {
-  return `${value.toFixed(2)}%`;
+  return Number.isFinite(value) ? `${value.toFixed(2)}%` : "—";
 }
 
-export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
+export function ApyChart({
+  summary,
+  earnMax,
+}: {
+  summary: EarnForecastSummary | null;
+  earnMax?: {
+    history: { date: string; apyBps: number }[];
+    apyBps: number | null;
+  };
+}) {
   const [chartWidth, setChartWidth] = useState(0);
   const [chartHeight, setChartHeight] = useState(0);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
@@ -60,7 +69,15 @@ export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
   // Loyal history is the reference timeline; Main is aligned to the same count;
   // T-Bill is a flat benchmark across it.
   const { series, dates, axisMaxPct } = useMemo(() => {
-    const loyal = resampleSamples(getLoyalSamples(summary), POINT_COUNT);
+    const loyal = resampleSamples(
+      earnMax
+        ? earnMax.history.map((point) => ({
+            observedAt: `${point.date}T00:00:00Z`,
+            apyBps: point.apyBps,
+          }))
+        : getLoyalSamples(summary),
+      POINT_COUNT
+    );
     const main = resampleSamples(getMainSamples(summary), POINT_COUNT);
     const n = loyal.length;
     const loyalPct = loyal.map((s) => s.apyBps / 100);
@@ -77,12 +94,27 @@ export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
       dates: loyal.map((s) => new Date(s.observedAt)),
       // Back-to-front draw order; Loyal (red) on top.
       series: [
-        { color: COLOR_TBILL, label: "T-Bill", pct: tbillPct, norm: toNorm(tbillPct) },
-        { color: COLOR_MAIN, label: "Main Market", pct: mainPct, norm: toNorm(mainPct) },
-        { color: COLOR_LOYAL, label: "Loyal Earn", pct: loyalPct, norm: toNorm(loyalPct) },
+        {
+          color: COLOR_TBILL,
+          label: "T-Bill",
+          pct: tbillPct,
+          norm: toNorm(tbillPct),
+        },
+        {
+          color: COLOR_MAIN,
+          label: "Main Market",
+          pct: mainPct,
+          norm: toNorm(mainPct),
+        },
+        {
+          color: COLOR_LOYAL,
+          label: earnMax ? "Earn MAX" : "Loyal Earn",
+          pct: loyalPct,
+          norm: toNorm(loyalPct),
+        },
       ] as ApySeries[],
     };
-  }, [summary]);
+  }, [summary, earnMax]);
 
   const main = series[1];
   const loyal = series[2];
@@ -95,7 +127,12 @@ export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
 
   // Header readouts: the scrubbed point, or the latest (fallback to the live
   // forecast APYs while the history loads).
-  const loyalValue = hasData ? loyal.pct[idx] : getLoyalApyBps(summary) / 100;
+  const loyalValue =
+    earnMax && !scrubbing
+      ? (earnMax.apyBps ?? NaN) / 100
+      : hasData
+      ? loyal.pct[idx]
+      : (earnMax ? earnMax.apyBps ?? NaN : getLoyalApyBps(summary)) / 100;
   const mainValue = hasData ? main.pct[idx] : getMainApyBps(summary) / 100;
   const tbillValue = TBILL_APY_BPS / 100;
 
@@ -106,7 +143,7 @@ export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
       }
       const ratio = Math.max(
         0,
-        Math.min(1, event.nativeEvent.locationX / chartWidth),
+        Math.min(1, event.nativeEvent.locationX / chartWidth)
       );
       const nextIndex = Math.round(ratio * lastIndex);
       if (lastIdxRef.current === nextIndex) {
@@ -116,7 +153,7 @@ export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
       void Haptics.selectionAsync();
       setActiveIndex(nextIndex);
     },
-    [chartWidth, hasData, lastIndex],
+    [chartWidth, hasData, lastIndex]
   );
 
   const handleRelease = useCallback(() => {
@@ -132,7 +169,7 @@ export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
     chartWidth > 0 && lastIndex > 0 ? (idx / lastIndex) * plotWidth : 0;
   const dotX = activeX;
   const { rootStyle, chartStyle } = useChartEntrance(
-    chartWidth > 0 && chartHeight > 0 && hasData,
+    chartWidth > 0 && chartHeight > 0 && hasData
   );
 
   return (
@@ -142,7 +179,9 @@ export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
           <Text style={styles.bigValue}>{formatPct(loyalValue)}</Text>
           <View style={styles.subtitle}>
             <View style={[styles.dot, { backgroundColor: COLOR_LOYAL }]} />
-            <Text style={styles.subtitleLabel}>Loyal Earn</Text>
+            <Text style={styles.subtitleLabel}>
+              {earnMax ? "Earn MAX" : "Loyal Earn"}
+            </Text>
           </View>
         </View>
         <View style={styles.smallRow}>
@@ -187,7 +226,11 @@ export function ApyChart({ summary }: { summary: EarnForecastSummary | null }) {
         onResponderTerminate={handleRelease}
       >
         {chartWidth > 0 && chartHeight > 0 && hasData ? (
-          <AnimatedSvg style={[styles.chartGrow, chartStyle]} width={chartWidth} height={chartHeight}>
+          <AnimatedSvg
+            style={[styles.chartGrow, chartStyle]}
+            width={chartWidth}
+            height={chartHeight}
+          >
             {series.map((s) => (
               <Path
                 key={s.label}

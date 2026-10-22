@@ -1,4 +1,10 @@
 import {
+  EarnMaxTransferDestination,
+  EarnMaxWithdrawalIcon,
+} from "@/features/earn-max/EarnMaxTransferDestination";
+import MaxClose from "../../../assets/images/earn-max/deposit-close.svg";
+import MaxInfo from "../../../assets/images/earn-max/withdraw-info.svg";
+import {
   BottomSheetBackdrop,
   BottomSheetModal,
   BottomSheetTextInput,
@@ -12,6 +18,7 @@ import {
   Dimensions,
   Image,
   Keyboard,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -183,11 +190,13 @@ type WithdrawSheetProps = {
   onWithdraw?: (
     amountUsd: number,
     source: EarnWithdrawSourceInfo | null,
-    mode: "full" | "partial",
+    mode: "full" | "partial"
   ) => void | Promise<void>;
   // The user's withdrawable Earn balance (token units ≈ dollars). Used as the
   // cap when no per-source breakdown is available.
   availableUsdc?: number | null;
+  earnMax?: boolean;
+  earnMaxWallet?: { address: string | null; balance: number };
   // Per-source breakdown; when more than one, the cell becomes a source picker.
   sources?: EarnWithdrawSourceInfo[];
 };
@@ -197,12 +206,14 @@ export function WithdrawSheet({
   onClose,
   onWithdraw,
   availableUsdc,
+  earnMax = false,
+  earnMaxWallet,
   sources,
 }: WithdrawSheetProps) {
   const sheetRef = useRef<BottomSheetModal>(null);
   const sourceSheetRef = useRef<BottomSheetModal>(null);
   const inputRef = useRef<{ focus: () => void; blur?: () => void } | null>(
-    null,
+    null
   );
   const { openKeyboard } = useKeyboardRescueFocus(inputRef);
   const submitInFlightRef = useRef(false);
@@ -217,7 +228,10 @@ export function WithdrawSheet({
   // balance (5.939), so we display a floored value but submit the exact amount.
   const [maxSelected, setMaxSelected] = useState(false);
 
-  const { sheetHeight, snapPoints } = useFixedSheetLayout();
+  const { sheetHeight, snapPoints } = useFixedSheetLayout(
+    earnMax ? 1 : 0.94,
+    earnMax ? 1 : 12
+  );
   const sourceList = useMemo(() => sources ?? [], [sources]);
   const hasPicker = sourceList.length > 0;
   const isDropdown = sourceList.length > 1;
@@ -242,7 +256,7 @@ export function WithdrawSheet({
   const available =
     sourceList.length > 1 && selectedSource && sourcesReconcileWithLiveTotal
       ? selectedBalanceUsd
-      : (liveTotal ?? selectedBalanceUsd);
+      : liveTotal ?? selectedBalanceUsd;
 
   useEffect(() => {
     if (open) {
@@ -266,7 +280,7 @@ export function WithdrawSheet({
       return;
     }
     const largest = [...sourceList].sort(
-      (a, b) => sourceBalanceUsd(b) - sourceBalanceUsd(a),
+      (a, b) => sourceBalanceUsd(b) - sourceBalanceUsd(a)
     )[0];
     setSelectedSourceId(largest?.id ?? null);
   }, [open, sourceList, selectedSourceId]);
@@ -354,20 +368,27 @@ export function WithdrawSheet({
       await onWithdraw?.(
         amountToWithdraw,
         selectedSource,
-        isMax ? "full" : "partial",
+        isMax ? "full" : "partial"
       );
       sheetRef.current?.dismiss();
     } catch (error) {
       setSubmitError(
         error instanceof Error
           ? error.message
-          : "Withdrawal failed. Please try again.",
+          : "Withdrawal failed. Please try again."
       );
     } finally {
       releaseSubmitLock();
       setSubmitting(false);
     }
-  }, [disabled, enteredUsd, maxSelected, available, onWithdraw, selectedSource]);
+  }, [
+    disabled,
+    enteredUsd,
+    maxSelected,
+    available,
+    onWithdraw,
+    selectedSource,
+  ]);
 
   const renderBackdrop = useCallback(
     (props: React.ComponentProps<typeof BottomSheetBackdrop>) => (
@@ -378,7 +399,7 @@ export function WithdrawSheet({
         opacity={0.2}
       />
     ),
-    [],
+    []
   );
 
   const displayValue = formatAmountDisplay(amount);
@@ -387,17 +408,23 @@ export function WithdrawSheet({
     const text = `$${displayValue || "0"}`;
     const availableWidth = SCREEN_WIDTH - 48;
     const fitted = Math.floor(
-      availableWidth / (text.length * AMOUNT_CHAR_WIDTH_RATIO),
+      availableWidth / (text.length * AMOUNT_CHAR_WIDTH_RATIO)
     );
     return Math.max(
       AMOUNT_MIN_FONT_SIZE,
-      Math.min(AMOUNT_MAX_FONT_SIZE, fitted),
+      Math.min(AMOUNT_MAX_FONT_SIZE, fitted)
     );
   }, [displayValue]);
 
   const keyboard = useAnimatedKeyboard();
   const animatedFooterStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: -keyboard.height.value }],
+    ...(earnMax
+      ? {
+          paddingBottom:
+            keyboard.height.value > 0 ? 24 : Math.max(insets.bottom + 12, 24),
+        }
+      : {}),
   }));
 
   return (
@@ -428,7 +455,11 @@ export function WithdrawSheet({
               ]}
               hitSlop={12}
             >
-              <X size={24} color="#1C1C1E" strokeWidth={2} />
+              {earnMax ? (
+                <MaxClose />
+              ) : (
+                <X size={24} color="#1C1C1E" strokeWidth={2} />
+              )}
             </Pressable>
             <Text style={styles.toolbarTitle}>Withdraw</Text>
             <View style={styles.iconButtonSpacer} />
@@ -436,15 +467,26 @@ export function WithdrawSheet({
 
           <View style={styles.body}>
             <View style={styles.amountInputWrap}>
-              <Pressable style={styles.amountRow} onPress={openKeyboard}>
+              <Pressable
+                style={[styles.amountRow, earnMax && styles.maxAmountRow]}
+                onPress={openKeyboard}
+              >
                 <View style={styles.amountVisual} pointerEvents="none">
                   <Text
-                    style={[styles.amountText, { fontSize: amountFontSize }]}
+                    style={[
+                      styles.amountText,
+                      earnMax && styles.maxAmountText,
+                      { fontSize: amountFontSize },
+                    ]}
                   >
                     $
                   </Text>
                   <Text
-                    style={[styles.amountText, { fontSize: amountFontSize }]}
+                    style={[
+                      styles.amountText,
+                      earnMax && styles.maxAmountText,
+                      { fontSize: amountFontSize },
+                    ]}
                   >
                     {displayValue || "0"}
                   </Text>
@@ -470,6 +512,15 @@ export function WithdrawSheet({
                   accessibilityLabel="Withdraw amount"
                 />
               </Pressable>
+              {earnMax && (
+                <View style={styles.maxCaption}>
+                  <MaxInfo />
+                  <Text style={styles.maxCaptionText}>
+                    Withdrawals have a 10-minute cooldown. Once ready, claim
+                    your funds from Activity when liquidity is available.
+                  </Text>
+                </View>
+              )}
             </View>
           </View>
 
@@ -477,70 +528,105 @@ export function WithdrawSheet({
             style={[
               styles.footerAbsolute,
               { paddingBottom: insets.bottom + 12 },
+              earnMax && styles.maxFooter,
               animatedFooterStyle,
             ]}
           >
-            <View style={styles.balanceCell}>
-              {hasPicker ? (
-                <Pressable
-                  onPress={openSourceList}
-                  disabled={!isDropdown}
-                  accessibilityRole={isDropdown ? "button" : undefined}
-                  accessibilityLabel="Choose withdrawal source"
-                  style={({ pressed }) => [
-                    styles.selectorPill,
-                    { opacity: pressed && isDropdown ? 0.8 : 1 },
-                  ]}
-                  hitSlop={8}
-                >
-                  {selectedSource ? (
-                    <SourceIcon source={selectedSource} tokenSize={28} />
-                  ) : (
+            <View style={earnMax && { gap: 8 }}>
+              <View
+                style={[styles.balanceCell, earnMax && styles.maxBalanceCell]}
+              >
+                {earnMax ? (
+                  <EarnMaxWithdrawalIcon />
+                ) : hasPicker ? (
+                  <Pressable
+                    onPress={openSourceList}
+                    disabled={!isDropdown}
+                    accessibilityRole={isDropdown ? "button" : undefined}
+                    accessibilityLabel="Choose withdrawal source"
+                    style={({ pressed }) => [
+                      styles.selectorPill,
+                      { opacity: pressed && isDropdown ? 0.8 : 1 },
+                    ]}
+                    hitSlop={8}
+                  >
+                    {selectedSource ? (
+                      <SourceIcon source={selectedSource} tokenSize={28} />
+                    ) : (
+                      <Image
+                        source={usdcLogo}
+                        style={styles.tokenLogo}
+                        accessibilityLabel="USDC"
+                      />
+                    )}
+                    {isDropdown ? (
+                      <ChevronDown
+                        size={16}
+                        color={COLOR_LABEL_DIM}
+                        strokeWidth={2}
+                      />
+                    ) : null}
+                  </Pressable>
+                ) : (
+                  <View style={styles.logoChip}>
                     <Image
                       source={usdcLogo}
                       style={styles.tokenLogo}
                       accessibilityLabel="USDC"
                     />
+                  </View>
+                )}
+                <View style={styles.balanceMiddle}>
+                  {earnMax && (
+                    <Text style={styles.balanceAvailable}>
+                      from RWA Loop USDC
+                    </Text>
                   )}
-                  {isDropdown ? (
-                    <ChevronDown
-                      size={16}
-                      color={COLOR_LABEL_DIM}
-                      strokeWidth={2}
-                    />
-                  ) : null}
-                </Pressable>
-              ) : (
-                <View style={styles.logoChip}>
-                  <Image
-                    source={usdcLogo}
-                    style={styles.tokenLogo}
-                    accessibilityLabel="USDC"
-                  />
+                  <Text style={styles.balanceAmount}>
+                    {earnMax ? (
+                      <>
+                        {BALANCE_FORMATTER.format(available).split(".")[0]}
+                        <Text style={{ color: "rgba(60,60,67,0.4)" }}>
+                          .{BALANCE_FORMATTER.format(available).split(".")[1]}
+                        </Text>
+                      </>
+                    ) : (
+                      BALANCE_FORMATTER.format(available)
+                    )}
+                  </Text>
+                  {!earnMax && (
+                    <Text style={styles.balanceAvailable} numberOfLines={1}>
+                      {earnMax
+                        ? "from RWA Loop · USDC"
+                        : selectedSource
+                        ? sourceLabel(selectedSource)
+                        : "Available"}
+                    </Text>
+                  )}
                 </View>
-              )}
-              <View style={styles.balanceMiddle}>
-                <Text style={styles.balanceAmount}>
-                  {BALANCE_FORMATTER.format(available)}
-                </Text>
-                <Text style={styles.balanceAvailable} numberOfLines={1}>
-                  {selectedSource ? sourceLabel(selectedSource) : "Available"}
-                </Text>
+                <Pressable
+                  onPress={handleMax}
+                  accessibilityRole="button"
+                  accessibilityLabel="Use maximum balance"
+                  style={({ pressed }) => [
+                    styles.maxBadge,
+                    { opacity: pressed ? 0.8 : 1 },
+                  ]}
+                  hitSlop={8}
+                >
+                  <Text style={styles.maxBadgeText}>MAX</Text>
+                </Pressable>
               </View>
-              <Pressable
-                onPress={handleMax}
-                accessibilityRole="button"
-                accessibilityLabel="Use maximum balance"
-                style={({ pressed }) => [
-                  styles.maxBadge,
-                  { opacity: pressed ? 0.8 : 1 },
-                ]}
-                hitSlop={8}
-              >
-                <Text style={styles.maxBadgeText}>MAX</Text>
-              </Pressable>
-            </View>
 
+              {earnMax ? (
+                <EarnMaxTransferDestination
+                  withdrawal
+                  walletAddress={earnMaxWallet?.address}
+                  walletBalance={earnMaxWallet?.balance}
+                />
+              ) : null}
+              {earnMax && <View style={styles.maxConnector} />}
+            </View>
             {submitError ? (
               <Text style={styles.submitError}>{submitError}</Text>
             ) : null}
@@ -552,6 +638,7 @@ export function WithdrawSheet({
               disabled={disabled || submitting}
               style={({ pressed }) => [
                 styles.cta,
+                earnMax && styles.maxCta,
                 hasError ? styles.ctaError : styles.ctaEnabled,
                 !disabled && !submitting && pressed && styles.ctaPressed,
               ]}
@@ -632,6 +719,33 @@ export function WithdrawSheet({
 }
 
 const styles = StyleSheet.create({
+  maxFooter: { paddingHorizontal: 0 },
+  maxAmountRow: { height: Platform.OS === "ios" ? 58 : 48 },
+  maxAmountText: { lineHeight: Platform.OS === "ios" ? 58 : 48 },
+  maxBalanceCell: { marginHorizontal: 16, marginBottom: 0, height: 60 },
+  maxConnector: {
+    position: "absolute",
+    width: 2,
+    height: 17,
+    left: 39,
+    top: 57,
+    borderRadius: 2,
+    backgroundColor: "rgba(0,0,0,0.14)",
+  },
+  maxCta: { marginHorizontal: 20, marginTop: 16 },
+  maxCaption: {
+    flexDirection: "row",
+    gap: 8,
+    paddingVertical: 8,
+    marginTop: 4,
+  },
+  maxCaptionText: {
+    flex: 1,
+    fontFamily: "Geist_400Regular",
+    fontSize: 15,
+    lineHeight: 20,
+    color: "#F9363C",
+  },
   sheetBackground: {
     backgroundColor: "#FFF",
     borderTopLeftRadius: 38,

@@ -75,7 +75,7 @@ export function LogoHeader({
       return;
     }
     router.navigate({
-      pathname: "/(tabs)/wallet",
+      pathname: "/(tabs)",
       params: { scan: String(Date.now()) },
     });
   };

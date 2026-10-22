@@ -2,14 +2,18 @@ name: Web journey contracts
 on:
   pull_request:
     paths:
-      - "apps/web/**"
-      - "apps/admin/src/app/(admin)/journeys/**"
-      - "packages/smart-account-vaults/**"
+      - "web/apps/web/**"
+      - "web/apps/admin/src/app/(admin)/journeys/**"
+      - "web/packages/smart-account-vaults/**"
       - ".github/workflows/web-journeys.yml"
-      - "scripts/observability/**"
+      - "web/scripts/observability/**"
   workflow_dispatch:
   schedule:
     - cron: "23 */6 * * *"
+defaults:
+  run:
+    working-directory: web
+
 permissions:
   contents: read
 concurrency:
@@ -40,15 +44,18 @@ jobs:
       - run: bun run build:solana-packages
       - run: bun run --cwd packages/wallet-core build
       - run: bun run --cwd packages/loyal-smart-accounts-core build
+      - run: bun run --cwd packages/loyal-smart-accounts build
+      - run: bun run --cwd packages/loyal-actions build
+      - run: bun run --cwd packages/solana-instruction-decoder build
       - run: bun test packages/smart-account-vaults/src/wallet.test.ts --test-name-pattern fresh-wallet
       - run: bun test apps/web/src/features/observability/
       - run: bunx playwright install --with-deps chromium
-        working-directory: apps/web
+        working-directory: web/apps/web
       - run: bun run test:journeys
-        working-directory: apps/web
+        working-directory: web/apps/web
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: journey-contract-failure
-          path: apps/web/test-results
+          path: web/apps/web/test-results
           retention-days: 7
