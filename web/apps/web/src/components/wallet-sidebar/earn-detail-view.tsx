@@ -1431,7 +1431,7 @@ function EarningsBlock({
               width: "100%",
             }}
           >
-            <HistoricalApyChart key="30D" rangeId="30D" />
+            <HistoricalApyChart apyDataRevealed key="30D" rangeId="30D" />
           </div>
         </div>
         <div
@@ -1469,6 +1469,7 @@ function EarningsBlock({
                 ) : null}
                 <ForecastChart
                   apy={apy}
+                  apyDataRevealed
                   isBalanceHidden={isBalanceHidden}
                   key={forecastAmount}
                   principal={forecastAmount}
@@ -4661,9 +4662,7 @@ function historicalApyValueSegments(
 }
 
 type HistoricalApyChartProps = {
-  // Facelift-only: skeleton the header values until the APY summary loads
-  // (undefined keeps the legacy render byte-identical).
-  apyDataRevealed?: boolean;
+  apyDataRevealed: boolean;
   axisTickCount?: number;
   primaryLabel?: string;
   primarySamples?: HistoricalApySample[];
@@ -5189,25 +5188,15 @@ export function ForecastChart({
   isBalanceHidden = false,
   mainUsdcReserveApyBps = 559,
   principal = 1000,
-  scrambleHiddenValues = false,
 }: {
   apy?: EarnForecastApy;
-  // Facelift-only: skeleton the summary values until the APY summary loads
-  // (undefined keeps the legacy render byte-identical).
-  apyDataRevealed?: boolean;
+  apyDataRevealed: boolean;
   isBalanceHidden?: boolean;
   mainUsdcReserveApyBps?: number;
   principal?: number;
-  // Facelift-only: hidden values mask to ASCII scramble instead of the
-  // legacy pixelate/blur filter (default keeps the OG views unchanged).
-  scrambleHiddenValues?: boolean;
 }) {
-  const hiddenValueFilter =
-    isBalanceHidden && !scrambleHiddenValues ? "url(#rs-pixelate-sm)" : "none";
   const maskIfHidden = (text: string, seed: string) =>
-    isBalanceHidden && scrambleHiddenValues
-      ? maskBalanceText(text, seed)
-      : text;
+    isBalanceHidden ? maskBalanceText(text, seed) : text;
   const revealClipId = `forecast-tab-reveal-clip-${useId().replace(
     /[^a-zA-Z0-9_-]/g,
     ""
@@ -5431,7 +5420,6 @@ export function ForecastChart({
                   color: isBalanceHidden
                     ? "var(--tertiary)"
                     : "var(--foreground)",
-                  filter: hiddenValueFilter,
                   fontFamily: font,
                   fontSize: isPrimary ? "28px" : "16px",
                   fontWeight: 600,
@@ -5520,7 +5508,6 @@ export function ForecastChart({
         <span
           style={{
             color: "var(--tertiary)",
-            filter: hiddenValueFilter,
             whiteSpace: "nowrap",
           }}
         >
@@ -6376,7 +6363,7 @@ function EarnDepositChartsSection({
               width: "100%",
             }}
           >
-            <HistoricalApyChart rangeId="30D" />
+            <HistoricalApyChart apyDataRevealed rangeId="30D" />
           </div>
         </div>
       </div>
