@@ -192,14 +192,7 @@ func (h earnMaxRoutes) redeemed(ctx context.Context, wallet string) (bool, error
 	return redeemed, err
 }
 
-func (h earnMaxRoutes) admit(ctx context.Context, p Principal) error {
-	redeemed, err := h.redeemed(ctx, p.Wallet.String())
-	if err != nil {
-		return h.unavailable("invite", err)
-	}
-	if !redeemed {
-		return h.fail(http.StatusForbidden, "invite_required", "")
-	}
+func (h earnMaxRoutes) admit() error {
 	if h.cfg.Cluster != Mainnet {
 		return h.fail(http.StatusConflict, "unsupported_cluster", "Earn MAX requires mainnet.")
 	}
@@ -289,7 +282,7 @@ func (h earnMaxRoutes) registerReads(api huma.API) {
 		if err != nil {
 			return nil, h.refused(err)
 		}
-		if err := h.admit(ctx, p); err != nil {
+		if err := h.admit(); err != nil {
 			return nil, err
 		}
 		summary, err := h.cfg.Reader.Summary(ctx, p.Settings)
@@ -312,7 +305,7 @@ func (h earnMaxRoutes) registerReads(api huma.API) {
 		if err != nil {
 			return nil, h.refused(err)
 		}
-		if err := h.admit(ctx, p); err != nil {
+		if err := h.admit(); err != nil {
 			return nil, err
 		}
 		activity, err := h.cfg.Reader.Activity(ctx, p.Settings)
@@ -328,15 +321,12 @@ func (h earnMaxRoutes) registerReads(api huma.API) {
 		Summary:     "Whether the signed-in wallet has redeemed an Earn MAX invite",
 		Responses:   errs(401, 409, 503),
 	}, func(ctx context.Context, in *sessionRequest) (*inviteOutput, error) {
-		p, err := h.auth.Principal(ctx, in.SessionInput)
+		_, err := h.auth.Principal(ctx, in.SessionInput)
 		if err != nil {
 			return nil, h.refused(err)
 		}
-		redeemed, err := h.redeemed(ctx, p.Wallet.String())
-		if err != nil {
-			return nil, h.unavailable("invite", err)
-		}
-		return &inviteOutput{h.headers, InviteStatus{Redeemed: redeemed}}, nil
+		// Older web bundles still check this endpoint before showing Earn MAX.
+		return &inviteOutput{h.headers, InviteStatus{Redeemed: true}}, nil
 	})
 }
 
