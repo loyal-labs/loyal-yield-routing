@@ -86,7 +86,6 @@ export function EarnProgressiveClient({
     useState<ProgressiveState>("loading");
   const [positionsState, setPositionsState] =
     useState<ProgressiveState>("loading");
-  const fundingRequested = useRef(false);
   const fundingRef = useRef<HTMLDivElement>(null);
   const activityRef = useRef<HTMLDivElement>(null);
   const positionsRef = useRef<HTMLDivElement>(null);
@@ -129,6 +128,26 @@ export function EarnProgressiveClient({
   ]);
 
   useEffect(() => {
+    let cancelled = false;
+    fetch("/api/earn/progressive?section=funding")
+      .then(async (response) => {
+        if (!response.ok) throw new Error("funding request failed");
+        return response.json();
+      })
+      .then((payload: { data: unknown }) => {
+        if (cancelled) return;
+        setFunding(revive(payload.data) as EarnFundingData);
+        setFundingState("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setFundingState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (monitoringState !== "ready") return;
     const observer = new IntersectionObserver(
       (entries) => {
@@ -137,24 +156,11 @@ export function EarnProgressiveClient({
           const section = entry.target.getAttribute("data-progressive-section");
           if (section === "earn-activity") setActivityState("ready");
           if (section === "earn-positions") setPositionsState("ready");
-          if (section === "earn-funding" && !fundingRequested.current) {
-            fundingRequested.current = true;
-            fetch("/api/earn/progressive?section=funding")
-              .then(async (response) => {
-                if (!response.ok) throw new Error("funding request failed");
-                return response.json();
-              })
-              .then((payload: { data: unknown }) => {
-                setFunding(revive(payload.data) as EarnFundingData);
-                setFundingState("ready");
-              })
-              .catch(() => setFundingState("error"));
-          }
         }
       },
       { rootMargin: "160px 0px" }
     );
-    [fundingRef.current, activityRef.current, positionsRef.current].forEach(
+    [activityRef.current, positionsRef.current].forEach(
       (section) => section && observer.observe(section)
     );
     return () => observer.disconnect();
