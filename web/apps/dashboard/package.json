@@ -9,6 +9,9 @@
     "dev:1pass:main": "op run --env-file=../../.env.mainnet.1password --env-file=../../../loyal-yield-routing/.env.1password -- sh -c 'bun dev'",
     "prebuild": "bun run --cwd ../.. build:packages",
     "build": "next build",
+    "build:vite": "../loyal/node_modules/.bin/vite build",
+    "dev:vite": "../loyal/node_modules/.bin/vite",
+    "typecheck:vite": "tsc --noEmit -p tsconfig.vite.json",
     "start": "next start",
     "lint": "next lint"
   },

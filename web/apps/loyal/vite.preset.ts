@@ -28,6 +28,7 @@ export type NextSpaOptions = {
   serverOnly?: { mode: "error" | "warn"; root: string };
   devPort: number;
   devProxy: string[];
+  router?: boolean;
 };
 
 function overridesPlugin(overrides: Record<string, string>): Plugin {
@@ -75,7 +76,7 @@ export function nextSpa(options: NextSpaOptions): UserConfig {
       ...(options.serverOnly ? [serverOnlyPlugin(options.serverOnly)] : []),
       overridesPlugin(options.overrides ?? {}),
       sharedDepsPlugin(),
-      tanstackRouter({ target: "react", autoCodeSplitting: true }),
+      ...(options.router === false ? [] : [tanstackRouter({ target: "react", autoCodeSplitting: true })]),
       react(),
     ],
     resolve: {

@@ -6,7 +6,6 @@ export type WeeklyChartPoint = {
   label: string;
   periodLabel: string;
   value: number;
-  valueRaw: string;
 };
 
 type ChartPoint = WeeklyChartPoint & {

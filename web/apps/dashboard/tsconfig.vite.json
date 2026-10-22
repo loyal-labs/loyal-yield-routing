@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "incremental": false,
+    "plugins": [],
+    "types": ["vite/client"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "vite/client": ["../loyal/node_modules/vite/client"]
+    }
+  },
+  "include": ["src/main.tsx"],
+  "exclude": ["dist", "node_modules"]
+}
