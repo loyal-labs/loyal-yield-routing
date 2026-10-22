@@ -627,6 +627,28 @@ describe("Earn deposit confirm route", () => {
     expect(depositCalls).toEqual([]);
   });
 
+  test("rejects a first deposit whose setup policy cannot be cited as unresolved", async () => {
+    const { POST } = await import("../../deposits/confirm/route");
+    Connection.prototype.getSignaturesForAddress = mock(
+      async (address: PublicKey) =>
+        address.toBase58() === canonical.setupPolicyAccount
+          ? []
+          : [{ err: null, signature: "policy-creation-signature", slot: 250 }]
+    ) as never;
+
+    const response = await POST(
+      new Request("http://localhost/api/deposits/confirm", {
+        body: JSON.stringify({}),
+        method: "POST",
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: "policy_signature_unresolved" },
+    });
+  });
+
   test("rejects missing sessions before recording", async () => {
     const { POST } = await import("../../deposits/confirm/route");
     resolvedPrincipal = null;
