@@ -40,7 +40,7 @@ type Config struct {
 
 func New(cfg Config) http.Handler {
 	r := chi.NewRouter()
-	r.Use(headers(cfg))
+	r.Use(headers(cfg), redirectHTTPS)
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Get("/readyz", ready(cfg.ready()))
 
