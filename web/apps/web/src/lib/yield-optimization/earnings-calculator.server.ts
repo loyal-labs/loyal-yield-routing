@@ -551,10 +551,10 @@ function deriveApyBps(args: {
 //   store keeps one running total clamped at zero.
 // - "per-mint": a top-up in a new mint opened its own position, so each mint
 //   is clamped at zero separately.
-// The ledger does not record which position an event hit, so the read service
-// picks whichever clamp reproduces the stored principal.
-export const PRINCIPAL_CLAMPS = ["total", "per-mint"] as const;
-export type PrincipalClamp = (typeof PRINCIPAL_CLAMPS)[number] | "position";
+export const LEGACY_PRINCIPAL_CLAMPS = ["total", "per-mint"] as const;
+export type PrincipalClamp =
+  | (typeof LEGACY_PRINCIPAL_CLAMPS)[number]
+  | "position";
 
 type PrincipalIndex = {
   totals: bigint[];

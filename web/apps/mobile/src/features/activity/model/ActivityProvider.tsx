@@ -29,6 +29,7 @@ import {
   fetchEarnAutodepositSweepProgress,
   fetchEarnRefundScan,
   type EarnAutodepositScheduledSweep,
+  type EarnAutodepositState,
   type EarnAutodepositSweepProgressState,
   type EarnRefundPrepareRequest,
   type EarnTransactionItem,
@@ -60,18 +61,16 @@ type ActivityContextValue = {
   isFetchingEarn: boolean;
   hasLoadedEarn: boolean;
   refreshEarnTransactions: () => Promise<void>;
-  refreshAutodeposit: () => Promise<unknown>;
+  autodeposit: EarnAutodepositState | null;
+  autodepositLoaded: boolean;
+  refreshAutodeposit: (options?: {
+    throwOnError?: boolean;
+  }) => Promise<EarnAutodepositState | null>;
+  refreshAutodepositAndHoldings: () => Promise<unknown>;
   earnScheduledSweeps: EarnAutodepositScheduledSweep[];
   autodepositPausedMissingPosition: boolean;
   isExecutingSweep: boolean;
   executeScheduledSweep: () => Promise<void>;
-  /**
-   * True while a just-created Autodeposit's scheduled sweep is expected to
-   * appear but this provider's own Autodeposit read hasn't caught up yet — the
-   * Earn feed shows a skeleton "Scheduled" row instead of nothing.
-   */
-  expectingScheduledSweep: boolean;
-  expectScheduledSweep: () => void;
   sweepMorph: SweepMorph | null;
   clearSweepMorph: () => void;
   sweepProgressState: EarnAutodepositSweepProgressState | null;
@@ -152,8 +151,11 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
     hasLoaded: hasLoadedEarn,
     refresh: refreshEarnTransactions,
   } = useEarnActivity(publicKey);
-  const { autodeposit, refreshAutodeposit: refreshAutodepositState } =
-    useEarnAutodeposit(publicKey);
+  const {
+    autodeposit,
+    hasLoaded: autodepositLoaded,
+    refreshAutodeposit: refreshAutodepositState,
+  } = useEarnAutodeposit(publicKey);
 
   useWalletAutoRefresh({
     walletAddress: publicKey,
@@ -214,7 +216,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
   // can linger server-side, so only a fresh balance (now back at the floor) lets
   // the cap drop the row — a stale cached balance keeps showing it. No-op when
   // there's no candidate sweep (the holdings hook is idle with a null address).
-  const refreshAutodeposit = useCallback(async () => {
+  const refreshAutodepositAndHoldings = useCallback(async () => {
     await Promise.all([refreshAutodepositState(), refreshTokenHoldings(true)]);
   }, [refreshAutodepositState, refreshTokenHoldings]);
 
@@ -225,41 +227,14 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
     }
     let polls = 0;
     const intervalId = setInterval(() => {
-      void refreshAutodeposit();
+      void refreshAutodepositAndHoldings();
       polls += 1;
       if (polls >= MAX_DUE_SWEEP_POLLS) {
         clearInterval(intervalId);
       }
     }, DUE_SWEEP_POLL_MS);
     return () => clearInterval(intervalId);
-  }, [hasDueScheduledSweep, refreshAutodeposit]);
-
-  // After an Autodeposit create schedules a bootstrap sweep, the Earn tab
-  // routes here before this provider's own Autodeposit read has caught up.
-  // The expectation flag keeps a skeleton "Scheduled" row on screen until the
-  // real sweep lands; the timeout gives up so a backend hiccup (or a sweep the
-  // surplus cap hides because it already executed) can't pin a skeleton forever.
-  const EXPECTED_SWEEP_TIMEOUT_MS = 30_000;
-  const [expectingScheduledSweep, setExpectingScheduledSweep] = useState(false);
-  const expectScheduledSweep = useCallback(
-    () => setExpectingScheduledSweep(true),
-    [],
-  );
-  const hasVisibleScheduledSweep = earnScheduledSweeps.length > 0;
-  useEffect(() => {
-    if (!expectingScheduledSweep) {
-      return;
-    }
-    if (hasVisibleScheduledSweep) {
-      setExpectingScheduledSweep(false);
-      return;
-    }
-    const timeoutId = setTimeout(
-      () => setExpectingScheduledSweep(false),
-      EXPECTED_SWEEP_TIMEOUT_MS,
-    );
-    return () => clearTimeout(timeoutId);
-  }, [expectingScheduledSweep, hasVisibleScheduledSweep]);
+  }, [hasDueScheduledSweep, refreshAutodepositAndHoldings]);
 
   const [isExecutingSweep, setIsExecutingSweep] = useState(false);
   const [sweepMorph, setSweepMorph] = useState<SweepMorph | null>(null);
@@ -316,7 +291,10 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
           startedAtMs: Date.now(),
         });
       }
-      await Promise.all([refreshAutodeposit(), refreshEarnTransactions()]);
+      await Promise.all([
+        refreshAutodepositAndHoldings(),
+        refreshEarnTransactions(),
+      ]);
     } catch (error) {
       failPendingSweep();
       console.warn("[autodeposit] execute scheduled sweep failed", error);
@@ -341,7 +319,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
     isExecutingSweep,
     earnScheduledSweeps,
     earnTransactions,
-    refreshAutodeposit,
+    refreshAutodepositAndHoldings,
     refreshEarnTransactions,
     failPendingSweep,
   ]);
@@ -368,10 +346,10 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
 
   // While the morph is unresolved, poll the Earn feed so the result tx is picked
   // up without waiting for the 15s background tick. Bounded. Deliberately only
-  // the feed (a backend read) — NOT `refreshAutodeposit`, which force-refreshes
-  // token holdings over the Solana RPC: the morph resolves purely off the feed,
-  // and adding holdings reads here (on top of the due-sweep poll) was pressuring
-  // the rate-limited RPC into 429s.
+  // the feed (a backend read) — NOT `refreshAutodepositAndHoldings`, which
+  // force-refreshes token holdings over the Solana RPC: the morph resolves
+  // purely off the feed, and adding holdings reads here (on top of the
+  // due-sweep poll) was pressuring the rate-limited RPC into 429s.
   useEffect(() => {
     if (!sweepMorph || sweepMorph.resultTx) {
       return;
@@ -401,7 +379,6 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     failPendingSweep();
     setSweepMorph(null);
-    setExpectingScheduledSweep(false);
   }, [publicKey, failPendingSweep]);
 
   const [sweepProgressState, setSweepProgressState] =
@@ -473,7 +450,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
           }
           if (SWEEP_PROGRESS_END_STATES.has(progress.state) || bouncedBack) {
             clearInterval(intervalId);
-            void refreshAutodeposit();
+            void refreshAutodepositAndHoldings();
             void refreshEarnTransactions();
           }
         })
@@ -488,7 +465,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
   }, [
     publicKey,
     watchedSweepSlotId,
-    refreshAutodeposit,
+    refreshAutodepositAndHoldings,
     refreshEarnTransactions,
   ]);
 
@@ -721,13 +698,14 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
       isFetchingEarn,
       hasLoadedEarn,
       refreshEarnTransactions,
-      refreshAutodeposit,
+      autodeposit,
+      autodepositLoaded,
+      refreshAutodeposit: refreshAutodepositState,
+      refreshAutodepositAndHoldings,
       earnScheduledSweeps,
       isExecutingSweep,
       executeScheduledSweep,
       autodepositPausedMissingPosition,
-      expectingScheduledSweep,
-      expectScheduledSweep,
       sweepMorph,
       clearSweepMorph,
       sweepProgressState,
@@ -753,13 +731,14 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
       isFetchingEarn,
       hasLoadedEarn,
       refreshEarnTransactions,
-      refreshAutodeposit,
+      autodeposit,
+      autodepositLoaded,
+      refreshAutodepositState,
+      refreshAutodepositAndHoldings,
       earnScheduledSweeps,
       isExecutingSweep,
       executeScheduledSweep,
       autodepositPausedMissingPosition,
-      expectingScheduledSweep,
-      expectScheduledSweep,
       sweepMorph,
       clearSweepMorph,
       sweepProgressState,

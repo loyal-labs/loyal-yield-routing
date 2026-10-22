@@ -1,3 +1,5 @@
+import type { BlogPost } from "./types";
+
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
@@ -11,4 +13,10 @@ export function formatBlogDate(isoDate: string): string {
   return Number.isNaN(parsed.getTime())
     ? isoDate
     : DATE_FORMATTER.format(parsed);
+}
+
+export function blogPostModifiedDate(
+  post: Pick<BlogPost, "date" | "updated">
+): string {
+  return post.updated ?? post.date;
 }

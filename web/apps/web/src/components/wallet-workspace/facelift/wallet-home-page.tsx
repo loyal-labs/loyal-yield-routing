@@ -1,9 +1,7 @@
 "use client";
 
-import { useWallet } from "@solana/wallet-adapter-react";
 import {
   useEffect,
-  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -26,9 +24,12 @@ import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { AddEmailNudge } from "@/components/auth/add-email-nudge";
 import { LedgerSignInLink } from "@/components/auth/ledger-sign-in-link";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
-import { useEarnForecastApyStatus } from "@/components/wallet-workspace/facelift/use-earn-forecast-apy-status";
+import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
+import { useSessionDisconnect } from "@/components/wallet-workspace/facelift/use-session-disconnect";
+import { useStablecoinsUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import {
   FirstDepositBanner,
+  MOBILE_BANNER_SLOT_CLASS,
   WalletHomeBanners,
 } from "@/components/wallet-workspace/facelift/wallet-home-banners";
 import { useAuthSession } from "@/contexts/auth-session-context";
@@ -44,10 +45,6 @@ import {
   formatEarnApyLabel,
   formatEarnApyPercent,
 } from "@/lib/kamino/earn-forecast.shared";
-import {
-  getStablecoinMintSetForSolanaEnv,
-  isStablecoinMint,
-} from "@/lib/wallet/stablecoin-classification";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
@@ -250,38 +247,16 @@ export function WalletHomePage({
 }) {
   const data = useWalletDesktopData({});
   const publicEnv = usePublicEnv();
-  const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApyStatus();
+  const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const { isHydrated, isSignedIn } = useAuthCapability();
-  const { isAuthenticated, logout } = useAuthSession();
+  const { isAuthenticated } = useAuthSession();
   const cherryRuntime = useCherryRuntime();
-  const { connected: isWalletConnected, disconnect } = useWallet();
-  // Same half-connected limbo rule as the sidebar: the adapter can
-  // auto-reconnect without an auth session, so disconnect stays clickable
-  // whenever either side is live.
-  const canDisconnect = isAuthenticated || isWalletConnected;
+  const { canDisconnect, disconnectAll: handleDisconnect } =
+    useSessionDisconnect();
   const { isBalanceHidden, toggleBalanceHidden } = useBalanceVisibility();
   const { open: openSignIn, openAccount } = useSignInModal();
 
-  const handleDisconnect = () => {
-    void Promise.allSettled([logout(), disconnect()]);
-  };
-
-  // Same split the sidebar computes: stablecoins by mint, crypto = rest.
-  const stablecoinMints = useMemo(
-    () => getStablecoinMintSetForSolanaEnv(publicEnv.solanaEnv),
-    [publicEnv.solanaEnv]
-  );
-  const stablecoinsUsd = useMemo(
-    () =>
-      data.positions.reduce(
-        (sum, position) =>
-          isStablecoinMint(position.asset.mint, stablecoinMints)
-            ? sum + (position.totalValueUsd ?? 0)
-            : sum,
-        0
-      ),
-    [data.positions, stablecoinMints]
-  );
+  const stablecoinsUsd = useStablecoinsUsd(data.positions);
   const stablecoinsBalance = splitUsdBalance(stablecoinsUsd);
   const cryptoBalance = splitUsdBalance(
     Math.max(data.totalUsd - stablecoinsUsd, 0)
@@ -570,25 +545,13 @@ export function WalletHomePage({
                             src="/wallet-workspace/earn-flash.svg"
                           />
                           <span className="whitespace-nowrap pt-px font-medium text-positive text-[11px] leading-[13px] tracking-[0.06px]">
-                            {isApyLoaded ? (
-                              <PopDigits
-                                segments={[
-                                  {
-                                    text: formatEarnApyLabel(
-                                      earnApy.apyBps,
-                                      earnApy.availability,
-                                      earnApy.source
-                                    ),
-                                  },
-                                ]}
-                              />
-                            ) : (
-                              formatEarnApyLabel(
-                                earnApy.apyBps,
-                                earnApy.availability,
-                                earnApy.source
-                              )
-                            )}
+                            <PopDigits
+                              segments={[
+                                {
+                                  text: formatEarnApyLabel(earnApy),
+                                },
+                              ]}
+                            />
                           </span>
                         </span>
                       </SkeletonReveal>
@@ -670,7 +633,7 @@ export function WalletHomePage({
               </div>
 
               <div className="hidden h-full min-h-0 flex-col max-[795px]:flex">
-                <div className="relative h-24 w-full shrink-0">
+                <div className={MOBILE_BANNER_SLOT_CLASS}>
                   {earnBalanceUsd > 0 ||
                   (showEarnMax && earnMaxBalanceUsd > 0) ? (
                     <WalletHomeBanners
@@ -720,8 +683,10 @@ export function WalletHomePage({
                 >
                   <MobileProductCard
                     apyBadgeLabel={
-                      earnBalanceUsd > 0
-                        ? formatEarnApyLabel(earnApy.apyBps)
+                      earnBalanceUsd > 0 ||
+                      !earnApy ||
+                      earnApy.availability === "unavailable"
+                        ? formatEarnApyLabel(earnApy)
                         : formatEarnApyPercent(earnApy.apyBps)
                     }
                     balance={earnBalance}

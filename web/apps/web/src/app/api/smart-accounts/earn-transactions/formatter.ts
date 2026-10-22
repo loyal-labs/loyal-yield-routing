@@ -8,7 +8,7 @@ import type { UserYieldPositionHistoryEventRecord } from "@/lib/yield-optimizati
 const AUTODEPOSIT_LABEL = "Autodeposit";
 const MAIN_USDC_LABEL = "Main";
 const EARN_VAULT_LABEL = "Earn";
-const MAIN_USDC_ICON = "/agents/Agent-01.svg";
+const MAIN_USDC_ICON = "/wallet-workspace/earn-vault-usdc.png";
 const EARN_VAULT_ICON = null;
 
 export type EarnTransactionKind =
@@ -39,9 +39,7 @@ export type SerializedEarnTransaction = {
     | "balance_sweep";
   id: string;
   kind: EarnTransactionKind;
-  // Mint of the position the event belongs to; null for autodeposit action
-  // rows (USDC-only flows). Lets the client render per-mint coin icons.
-  liquidityMint: string | null;
+  liquidityMint: string;
   rawAmount: string;
   signature: string;
   sortTimestamp: string;
@@ -196,7 +194,7 @@ function serializeAutodepositActionEvent(
       : "autodeposit_closed",
     id: event.id,
     kind: isBalanceSweep ? "balance_sweep" : "autodeposit_action",
-    liquidityMint: null,
+    liquidityMint: event.liquidityMint,
     rawAmount: formatExactUsdcAmount(transactionAmountRaw),
     signature: event.signature,
     sortTimestamp: event.confirmedAt.toISOString(),

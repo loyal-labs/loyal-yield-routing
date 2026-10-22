@@ -29,10 +29,10 @@ import type {
   EarnForecastApyHistorySample,
   EarnForecastApyHistorySeries,
 } from "@/lib/kamino/earn-forecast.shared";
+import { YIELD_OPTIMIZATION_DATABASE_URL_ENV_NAME } from "@/lib/yield-optimization/yield-neon.shared";
 import type { EarnEarningsRangeSetResponse } from "./earnings.shared";
 
 const loyalYieldSchema = pgSchema("loyal_yield");
-const YIELD_OPTIMIZATION_DATABASE_URL_ENV_NAME = "NEON_DATABASE_URL";
 const LOCAL_YIELD_OPTIMIZATION_DATABASE_URL_ENV_NAME =
   "YIELD_OPTIMIZATION_LOCAL_DATABASE_URL";
 

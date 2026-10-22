@@ -1,6 +1,3 @@
-const FALLBACK_UPDATED_AT = "2026-06-01T00:00:00.000Z";
-const DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
-
 export type EarnForecastResponse = {
   strategy:
     | "safe_no_fees"
@@ -47,29 +44,11 @@ export type EarnForecastSummaryResponse = {
   history: EarnForecastApyHistoryResponse;
 };
 
-export const FALLBACK_EARN_FORECAST: EarnForecastResponse = {
-  availability: "unavailable",
-  apyBps: 600,
-  rangeHighBps: 600,
-  rangeLowBps: 600,
-  strategy: "safe_no_fees",
-  updatedAt: FALLBACK_UPDATED_AT,
-  window: {
-    endedAt: FALLBACK_UPDATED_AT,
-    startedAt: new Date(
-      Date.parse(FALLBACK_UPDATED_AT) - DEFAULT_WINDOW_MS
-    ).toISOString(),
-  },
-};
-
-export function formatEarnApyLabel(
-  apyBps: number,
-  availability: EarnForecastResponse["availability"] = "available",
-  source?: EarnForecastResponse["source"]
-): string {
-  if (availability === "unavailable") {
+export function formatEarnApyLabel(apy: EarnForecastApy | undefined): string {
+  if (!apy || apy.availability === "unavailable") {
     return "APY unavailable";
   }
+  const { apyBps, availability, source } = apy;
   const qualifiers = [
     ...(source === "live" ? ["6–24h live"] : []),
     ...(availability === "stale" ? ["stale"] : []),

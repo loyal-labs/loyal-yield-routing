@@ -18,7 +18,6 @@ import {
 } from "@/features/smart-accounts/server/service";
 import { getServerEnv } from "@/lib/core/config/server";
 
-import { EARN_MAX_BACKEND } from "../constants";
 import {
   readEarnMaxVoltrActivity,
   readEarnMaxVoltrSummary,
@@ -62,10 +61,7 @@ export async function postMobileEarnMax(request: Request) {
       return failure(401, "wallet_mismatch", "Sign in with the active wallet.");
     }
     const config = getServerEnv();
-    if (
-      EARN_MAX_BACKEND !== "voltr" ||
-      !["mainnet", "mainnet-beta"].includes(config.solanaEnv)
-    ) {
+    if (!["mainnet", "mainnet-beta"].includes(config.solanaEnv)) {
       return failure(409, "unsupported_cluster", "Earn MAX requires mainnet.");
     }
     let user = await findCurrentUser({
@@ -161,10 +157,7 @@ export async function getMobileEarnMax(request: Request) {
   try {
     decodeWalletAddress(walletAddress);
     const config = getServerEnv();
-    if (
-      EARN_MAX_BACKEND !== "voltr" ||
-      !["mainnet", "mainnet-beta"].includes(config.solanaEnv)
-    )
+    if (!["mainnet", "mainnet-beta"].includes(config.solanaEnv))
       return failure(409, "unsupported_cluster", "Earn MAX requires mainnet.");
     const user = await findCurrentUser({
       provider: "solana",

@@ -461,6 +461,11 @@ export type KaminoReserveTokenAccounts = {
   reserveLiquidityTokenProgram: PublicKey;
 };
 
+function observed<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => undefined);
+  return promise;
+}
+
 function resolveKaminoEarnTarget(
   cluster: LoyalCluster,
   target?: SmartAccountEarnUsdcReserveTargetInput
@@ -6809,11 +6814,11 @@ export function createSmartAccountVaultsClient(
     settingsPda: PublicKey;
     signer: PublicKey;
   }): Promise<ResolvedEarnYieldRoutingPolicy> {
-    const settingsPromise =
-      smartAccountsClient.smartAccounts.queries.fetchSettings(args.settingsPda);
     // A guard below can throw before this promise is awaited; keep its
     // rejection observed so it can't surface as an unhandled rejection.
-    settingsPromise.catch(() => undefined);
+    const settingsPromise = observed(
+      smartAccountsClient.smartAccounts.queries.fetchSettings(args.settingsPda)
+    );
     const vault = pda.getSmartAccountPda({
       programId: smartAccountsClient.programId,
       settingsPda: args.settingsPda,
@@ -6980,8 +6985,9 @@ export function createSmartAccountVaultsClient(
     }
     // Start the policy scan while the settings read resolves — the scan does
     // not depend on it.
-    const policiesPromise = listRawPolicies({ settingsPda: args.settingsPda });
-    policiesPromise.catch(() => undefined);
+    const policiesPromise = observed(
+      listRawPolicies({ settingsPda: args.settingsPda })
+    );
     const settings = await settingsPromise;
     const currentPolicySeed =
       settings.policySeed == null ? BigInt(0) : toBigInt(settings.policySeed);

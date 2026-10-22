@@ -1,5 +1,7 @@
 "use client";
 
+import { floorToCents } from "@/components/wallet-workspace/facelift/floor-to-cents";
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   resolveLoyalClusterForSolanaEnv,
   Stablecoin,
@@ -24,7 +26,7 @@ import { SheetReveal } from "@/components/wallet-workspace/facelift/sheet-reveal
 import { SkeletonReveal } from "@/components/wallet-workspace/facelift/skeleton-reveal";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
-import { useEarnForecastApyStatus } from "@/components/wallet-workspace/facelift/use-earn-forecast-apy-status";
+import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import {
@@ -149,7 +151,7 @@ export function DepositPane({
 }) {
   const data = useWalletDesktopData({});
   const publicEnv = usePublicEnv();
-  const { apy, isLoaded: isApyLoaded } = useEarnForecastApyStatus();
+  const { apy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const { isBalanceHidden } = useBalanceVisibility();
   const [amount, setAmount] = useState("");
   const [isInfoOpen, setIsInfoOpen] = useState(false);
@@ -238,7 +240,8 @@ export function DepositPane({
   const handleSubmit = async () => {
     const didDeposit = await actions.submitDeposit({
       amountLabel: amount,
-      forecastApyBps: apy.availability === "unavailable" ? 0 : apy.apyBps,
+      forecastApyBps:
+        !apy || apy.availability === "unavailable" ? 0 : apy.apyBps,
       mint: selectedSource.mint,
       symbol: selectedSource.symbol,
     });
@@ -251,19 +254,9 @@ export function DepositPane({
     setIsSourceSheetOpen(false);
   };
 
-  useEffect(() => {
-    if (!isSourceSheetOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setIsSourceSheetOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isSourceSheetOpen]);
+  useEscapeOverlay(isSourceSheetOpen, () => {
+    setIsSourceSheetOpen(false);
+  });
 
   return (
     <>
@@ -469,12 +462,7 @@ export function DepositPane({
                   className="t-hover min-w-16 rounded-full bg-accent px-4 py-2.5 text-center font-medium text-[13px] text-foreground leading-4 hover:bg-accent-active"
                   onClick={() => {
                     if (sourceUsd > 0) {
-                      // Floor to cents so the fill never rounds above the real
-                      // balance (toFixed would turn 1.8699 into an
-                      // "insufficient" 1.87), same as the withdraw pane's MAX.
-                      handleAmountChange(
-                        (Math.floor(sourceUsd * 100) / 100).toFixed(2)
-                      );
+                      handleAmountChange(floorToCents(sourceUsd));
                     }
                   }}
                   type="button"
@@ -511,8 +499,6 @@ export function DepositPane({
                   to Earn
                 </span>
                 <span className="flex items-center">
-                  {/* Skeleton the badge until the real APY lands, then
-                    reveal + pop — the fallback APY would otherwise flash. */}
                   <SkeletonReveal
                     isRevealed={isApyLoaded}
                     skeletonClassName="rounded-lg bg-accent-selected"
@@ -526,25 +512,13 @@ export function DepositPane({
                         src="/wallet-workspace/earn-flash.svg"
                       />
                       <span className="whitespace-nowrap font-medium text-[16px] text-positive leading-5 tracking-[0.06px]">
-                        {isApyLoaded ? (
-                          <PopDigits
-                            segments={[
-                              {
-                                text: formatEarnApyLabel(
-                                  apy.apyBps,
-                                  apy.availability,
-                                  apy.source
-                                ),
-                              },
-                            ]}
-                          />
-                        ) : (
-                          formatEarnApyLabel(
-                            apy.apyBps,
-                            apy.availability,
-                            apy.source
-                          )
-                        )}
+                        <PopDigits
+                          segments={[
+                            {
+                              text: formatEarnApyLabel(apy),
+                            },
+                          ]}
+                        />
                       </span>
                     </span>
                   </SkeletonReveal>

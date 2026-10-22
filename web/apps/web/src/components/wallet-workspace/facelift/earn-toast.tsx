@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { readCssDurationMs } from "@/components/wallet-workspace/facelift/css-duration";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 
 type EarnToastPhase = "error" | "loading" | "success";
@@ -119,9 +120,7 @@ export const earnToast = {
 
 const SUCCESS_DISMISS_MS = 2500;
 const ERROR_DISMISS_MS = 5000;
-// Outlives --toast-close (250ms) so content stays mounted through the
-// close transition instead of emptying the pill mid-flight.
-const CLEAR_AFTER_CLOSE_MS = 300;
+const CLEAR_AFTER_CLOSE_SLACK_MS = 50;
 
 const ICON_STATE: Record<EarnToastPhase, "a" | "b" | "c"> = {
   error: "c",
@@ -162,7 +161,7 @@ export function EarnToastHost() {
       timersRef.current.clear = setTimeout(() => {
         setDetail(null);
         disarm();
-      }, CLEAR_AFTER_CLOSE_MS);
+      }, readCssDurationMs("--toast-close", 250) + CLEAR_AFTER_CLOSE_SLACK_MS);
     };
     const show = (next: EarnToastDetail) => {
       clearTimers();
@@ -302,7 +301,6 @@ export function EarnToastHost() {
               <span className="t-icon" data-icon="a">
                 <SpinnerIcon className="size-5" />
               </span>
-              {/* Same circle + check pair as ActionSuccessBody's t-success-check. */}
               <span className="t-icon" data-icon="b">
                 <CheckIcon className="size-5" />
               </span>
@@ -346,7 +344,7 @@ function SpinnerIcon({ className }: { className?: string }) {
   );
 }
 
-function CheckIcon({ className }: { className?: string }) {
+export function CheckIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 64 64">
       <circle cx="32" cy="32" fill="var(--positive)" r="32" />

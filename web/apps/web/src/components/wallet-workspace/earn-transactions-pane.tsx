@@ -1,5 +1,6 @@
 "use client";
 
+import { useScheduledSweepNowMs } from "@/components/wallet-workspace/facelift/use-scheduled-sweep-now";
 import { sendPreparedWithWallet } from "@loyal-labs/smart-account-vaults";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
@@ -1641,9 +1642,6 @@ export function EarnTransactionsPane({
   const renderedScheduledSweepsFeedKeyRef = useRef<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [scheduledSweepNowMs, setScheduledSweepNowMs] = useState(() =>
-    Date.now()
-  );
   const [policyRefundPolicies, setPolicyRefundPolicies] = useState<
     EarnPolicyRefundScanPolicy[] | null
   >(null);
@@ -1669,23 +1667,7 @@ export function EarnTransactionsPane({
     activeScheduledSweepProgress &&
       !isEarnAutodepositTerminalState(activeScheduledSweepProgress.state)
   );
-
-  useEffect(() => {
-    const hasFutureExecuteNow = renderedScheduledSweeps.some((sweep) => {
-      const availableAtMs =
-        getLoadedScheduledSweepExecuteNowAvailableAtMs(sweep);
-      return availableAtMs !== null && availableAtMs > Date.now();
-    });
-    if (!hasFutureExecuteNow) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      setScheduledSweepNowMs(Date.now());
-    }, 1000);
-
-    return () => window.clearInterval(intervalId);
-  }, [renderedScheduledSweeps]);
+  const scheduledSweepNowMs = useScheduledSweepNowMs(renderedScheduledSweeps);
 
   useEffect(() => {
     const feedKey = `${solanaEnv}:${settingsPda ?? ""}:${walletAddress ?? ""}`;

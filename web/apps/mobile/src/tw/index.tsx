@@ -19,6 +19,7 @@ import {
   TextInput as RNTextInput,
   StyleSheet,
   type TextStyle,
+  type ViewStyle,
 } from "react-native";
 import { SafeAreaView as RNSafeAreaView } from "react-native-safe-area-context";
 
@@ -130,11 +131,18 @@ export const AnimatedScrollView = (
   });
 };
 
+type RemappedHighlightStyle = ViewStyle &
+  Partial<{
+    underlayColor: React.ComponentProps<
+      typeof RNTouchableHighlight
+    >["underlayColor"];
+  }>;
+
 function XXTouchableHighlight(
   props: React.ComponentProps<typeof RNTouchableHighlight>
 ) {
-  // @ts-expect-error: underlayColor extracted from flattened style but not in ViewStyle type
-  const { underlayColor, ...style } = StyleSheet.flatten(props.style) || {};
+  const { underlayColor, ...style } =
+    (StyleSheet.flatten(props.style) || {}) as RemappedHighlightStyle;
   return (
     <RNTouchableHighlight
       underlayColor={underlayColor}

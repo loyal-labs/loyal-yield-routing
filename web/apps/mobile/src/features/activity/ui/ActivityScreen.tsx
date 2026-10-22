@@ -45,7 +45,7 @@ export function ActivityScreen({
     earnTransactions,
     loadWalletTransactions,
     refreshEarnTransactions,
-    refreshAutodeposit,
+    refreshAutodepositAndHoldings,
     markSeen,
     clearSweepMorph,
   } = useActivity();
@@ -73,14 +73,10 @@ export function ActivityScreen({
     useCallback(() => {
       if (section === "earn-max") markMaxSeen();
       else markSeen(section);
-      // The provider fetches Autodeposit state once at mount, so a sweep
-      // scheduled afterwards (e.g. landing here right after setup) wouldn't show
-      // until something refetches it. Re-read it whenever the Earn section is
-      // focused so the "Scheduled" row appears without a manual pull.
       if (section === "earn") {
-        void refreshAutodeposit();
+        void refreshAutodepositAndHoldings();
       }
-    }, [section, markSeen, markMaxSeen, refreshAutodeposit])
+    }, [section, markSeen, markMaxSeen, refreshAutodepositAndHoldings])
   );
 
   useFocusEffect(
@@ -124,7 +120,7 @@ export function ActivityScreen({
       await (section === "earn-max"
         ? refreshMax()
         : section === "earn"
-        ? Promise.all([refreshEarnTransactions(), refreshAutodeposit()])
+        ? Promise.all([refreshEarnTransactions(), refreshAutodepositAndHoldings()])
         : loadWalletTransactions({ force: true }));
     } finally {
       setIsRefreshing(false);
@@ -134,7 +130,7 @@ export function ActivityScreen({
     refreshMax,
     loadWalletTransactions,
     refreshEarnTransactions,
-    refreshAutodeposit,
+    refreshAutodepositAndHoldings,
   ]);
 
   return (

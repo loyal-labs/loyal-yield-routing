@@ -49,3 +49,5 @@ export function createWorkspaceProfileUpdate(
     },
   };
 }
+
+export const MOBILE_DISTINCT_ID_PREFIX = "mob:";
