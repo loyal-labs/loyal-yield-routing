@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,6 +51,52 @@ func openOptional(ctx context.Context, name string, maxConnections int32) (*pgxp
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return pool, nil
+}
+
+func httpsURL(name string, allowPath bool) (*url.URL, error) {
+	parsed, err := url.Parse(os.Getenv(name))
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(!allowPath && strings.Trim(parsed.Path, "/") != "") {
+		return nil, fmt.Errorf("%s: want an https URL with a host", name)
+	}
+	return parsed, nil
+}
+
+func r2Config() (*admin.R2Config, error) {
+	id, err := optional("R2_ACCESS_KEY_ID")
+	if err != nil {
+		return nil, err
+	}
+	secret, err := optional("R2_SECRET_ACCESS_KEY")
+	if err != nil {
+		return nil, err
+	}
+	bucket := strings.TrimSpace(os.Getenv("LOYAL_ADMIN_R2_BUCKET"))
+	if id == "" || secret == "" || bucket == "" || os.Getenv("LOYAL_ADMIN_R2_ENDPOINT") == "" || os.Getenv("LOYAL_ADMIN_CDN_BASE_URL") == "" {
+		return nil, nil
+	}
+	cfg := &admin.R2Config{AccessKeyID: id, SecretAccessKey: secret, Bucket: bucket}
+	if strings.Contains(bucket, "/") {
+		return nil, errors.New("LOYAL_ADMIN_R2_BUCKET: want a bucket name")
+	}
+	if cfg.Endpoint, err = httpsURL("LOYAL_ADMIN_R2_ENDPOINT", false); err != nil {
+		return nil, err
+	}
+	if cfg.CDNBase, err = httpsURL("LOYAL_ADMIN_CDN_BASE_URL", true); err != nil {
+		return nil, err
+	}
+	var prefix []string
+	for _, segment := range strings.Split(os.Getenv("LOYAL_ADMIN_R2_PREFIX"), "/") {
+		switch segment = strings.TrimSpace(segment); segment {
+		case "":
+		case ".", "..":
+			return nil, errors.New("LOYAL_ADMIN_R2_PREFIX: contains an invalid path segment")
+		default:
+			prefix = append(prefix, segment)
+		}
+	}
+	cfg.Prefix = strings.Join(prefix, "/")
+	return cfg, nil
 }
 
 func config(ctx context.Context) (admin.Config, func(), error) {
@@ -98,23 +145,21 @@ func config(ctx context.Context) (admin.Config, func(), error) {
 		name string
 		into *string
 	}{
-		{"LIBRARY_UPLOAD_TOKEN", &cfg.Deps.LibraryUploadToken},
 		{"CLICKSTACK_READ_KEY", &cfg.Deps.ClickStackReadKey},
 		{"EXPO_ACCESS_TOKEN", &cfg.Deps.ExpoAccessToken},
 	} {
 		if *value.into, err = optional(value.name); err != nil {
 			return cfg, closeAll, err
 		}
-		if *value.into == "" {
+		if *value.into == "" && value.name == "CLICKSTACK_READ_KEY" {
 			slog.Warn("loyal-admin family disabled", "credential", value.name)
 		}
 	}
-	if base := os.Getenv("LOYAL_ADMIN_APP_API_BASE_URL"); base != "" {
-		parsed, err := url.Parse(base)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-			return cfg, closeAll, errors.New("LOYAL_ADMIN_APP_API_BASE_URL: want an origin like https://host")
-		}
-		cfg.Deps.AppAPIBaseURL = parsed
+	if cfg.Deps.R2, err = r2Config(); err != nil {
+		return cfg, closeAll, err
+	}
+	if cfg.Deps.R2 == nil {
+		slog.Warn("loyal-admin family disabled", "family", "library upload")
 	}
 	return cfg, closeAll, nil
 }

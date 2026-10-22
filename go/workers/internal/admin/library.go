@@ -1,13 +1,11 @@
 package admin
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +19,7 @@ const (
 	libraryModule         = "library/actions"
 	libraryForeignKeyCode = "23503"
 	libraryUploadTimeout  = 60 * time.Second
+	libraryUploadMaxBytes = 5 << 20
 )
 
 type LibraryPage struct {
@@ -173,66 +172,57 @@ FROM library_articles ORDER BY display_order, title, id`)
 	return page, err
 }
 
+var libraryCoverTypes = map[string]string{"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+
 func libraryUpload(ctx context.Context, d *Deps, call Call) (*LibraryUploadResult, error) {
-	if err := d.Require("library upload", d.LibraryUploadToken); err != nil {
-		return nil, err
-	}
-	if d.AppAPIBaseURL == nil {
+	if d.R2 == nil {
 		return nil, Disabled("library upload")
 	}
 	if call.Form == nil || len(call.Form.File["file"]) == 0 {
 		return &LibraryUploadResult{Error: "No file provided"}, nil
 	}
 	header := call.Form.File["file"][0]
+	contentType, _, _ := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	extension, ok := libraryCoverTypes[contentType]
+	if !ok {
+		return &LibraryUploadResult{Error: "Unsupported content type; allowed: image/png, image/jpeg, image/webp"}, nil
+	}
+	if header.Size <= 0 {
+		return &LibraryUploadResult{Error: "Uploaded file is empty"}, nil
+	}
+	if header.Size > libraryUploadMaxBytes {
+		return &LibraryUploadResult{Error: "File exceeds 5MB limit"}, nil
+	}
 	src, err := header.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer src.Close()
-
-	var body bytes.Buffer
-	form := multipart.NewWriter(&body)
-	part, err := form.CreatePart(header.Header)
+	body, err := io.ReadAll(io.LimitReader(src, libraryUploadMaxBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if _, err := io.Copy(part, src); err != nil {
+	id, err := newObjectID()
+	if err != nil {
 		return nil, err
 	}
-	if err := form.Close(); err != nil {
-		return nil, err
-	}
+	key := d.R2.objectKey("library/" + id + "." + extension)
 
 	ctx, cancel := context.WithTimeout(ctx, libraryUploadTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, d.AppAPIBaseURL.JoinPath("api/admin/library/upload").String(), &body)
+	request, err := d.R2.objectRequest(key, body, contentType)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Content-Type", form.FormDataContentType())
-	request.Header.Set("Authorization", "Bearer "+d.LibraryUploadToken)
-	response, err := http.DefaultClient.Do(request)
+	response, err := http.DefaultClient.Do(request.WithContext(ctx))
 	if err != nil {
 		return &LibraryUploadResult{Error: "Upload request failed"}, nil
 	}
 	defer response.Body.Close()
-
-	var reply struct {
-		URL   string `json:"url"`
-		Error string `json:"error"`
-	}
-	decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&reply)
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		message := fmt.Sprintf("Upload failed (%d)", response.StatusCode)
-		if decodeErr == nil && reply.Error != "" {
-			message = reply.Error
-		}
-		return &LibraryUploadResult{Error: message}, nil
+		return &LibraryUploadResult{Error: fmt.Sprintf("Upload failed (%d)", response.StatusCode)}, nil
 	}
-	if decodeErr != nil || reply.URL == "" {
-		return &LibraryUploadResult{Error: "Upload returned no URL"}, nil
-	}
-	return &LibraryUploadResult{URL: reply.URL}, nil
+	return &LibraryUploadResult{URL: d.R2.publicURL(key)}, nil
 }
 
 func registerLibrary(m *Mux) {

@@ -663,7 +663,8 @@ A missing optional credential disables only the pages that need it.
 | `ADMIN_APP_DATABASE_URL` | `loyal-admin-app-db` | required | App Neon, DML on the admin tables |
 | `ADMIN_YIELD_DATABASE_URL` | `loyal-admin-yield-db` | optional | Yield Neon, SELECT only |
 | `ADMIN_TIMESCALE_DATABASE_URL` | `loyal-admin-timescale-db` | optional | Timescale, SELECT only |
-| `LIBRARY_UPLOAD_TOKEN` | `loyal-admin-library-upload` | optional | library cover uploads |
+| `R2_ACCESS_KEY_ID` | `loyal-admin-r2-access-key-id` | optional | library cover uploads |
+| `R2_SECRET_ACCESS_KEY` | `loyal-admin-r2-secret-access-key` | optional | library cover uploads |
 | `CLICKSTACK_READ_KEY` | `loyal-admin-clickstack` | optional | the metrics page |
 | `EXPO_ACCESS_TOKEN` | `loyal-admin-expo` | optional | push broadcasts, if Expo requires a token |
 
@@ -688,7 +689,10 @@ private. An unset name disables only the page or panel that needs it.
 
 | Name | Needed | What it is |
 |---|---|---|
-| `LOYAL_ADMIN_APP_API_BASE_URL` | optional | https base of the App API for library cover uploads |
+| `LOYAL_ADMIN_R2_ENDPOINT` | optional | https origin of the R2 S3 API, `https://<account>.r2.cloudflarestorage.com`; library cover uploads need it with both R2 credentials, the bucket and the CDN base |
+| `LOYAL_ADMIN_R2_BUCKET` | optional | R2 bucket the covers go to |
+| `LOYAL_ADMIN_R2_PREFIX` | optional | key prefix inside the bucket, joined ahead of `library/` |
+| `LOYAL_ADMIN_CDN_BASE_URL` | optional | https base URL the stored covers are served from; may have a path |
 | `LOYAL_ADMIN_SOLANA_RPC_URL` | optional | Solana RPC for the Earn max, autonomous vault and funding pages; may embed a key; unset, Earn max and the autonomous vault use the public mainnet endpoint and the funding page skips its RPC reads |
 | `LOYAL_ADMIN_CLICKSTACK_URL` | optional | ClickStack base URL for the metrics dashboard and the journeys events |
 | `LOYAL_ADMIN_CLICKSTACK_METRICS_SOURCE_ID` | optional | ClickStack source id for the metrics dashboard; unset uses the built-in id |

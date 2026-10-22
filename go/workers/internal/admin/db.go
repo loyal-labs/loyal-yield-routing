@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -18,10 +17,9 @@ type Deps struct {
 	Yield     *pgxpool.Pool
 	Timescale *pgxpool.Pool
 
-	LibraryUploadToken string
-	AppAPIBaseURL      *url.URL
-	ClickStackReadKey  string
-	ExpoAccessToken    string
+	R2                *R2Config
+	ClickStackReadKey string
+	ExpoAccessToken   string
 }
 
 const readTimeout = 30 * time.Second
