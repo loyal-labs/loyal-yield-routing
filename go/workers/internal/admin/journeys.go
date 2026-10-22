@@ -137,7 +137,7 @@ func loadJourneys(ctx context.Context, d *Deps, req PageRequest) (JourneysPage, 
 		Cohort: cohort, Coverage: "unavailable", Events: []JourneyEvent{},
 		EvidenceURL: evidence, FetchedAt: now.UnixMilli(), LogSourceID: journeysLogSourceID,
 	}
-	api := strings.TrimRight(os.Getenv("LOYAL_ADMIN_CLICKSTACK_API_URL"), "/")
+	api := strings.TrimRight(os.Getenv("LOYAL_ADMIN_CLICKSTACK_URL"), "/")
 	if api == "" || d.ClickStackReadKey == "" {
 		return page, nil
 	}
