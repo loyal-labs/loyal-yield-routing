@@ -28,7 +28,7 @@ type Worker struct {
 }
 
 type tickRuntime struct {
-	withdrawalHealth        func(context.Context, WithdrawalHealth) error
+	withdrawalHealth        func(context.Context, withdrawalAssessment) error
 	observeWithdrawalHealth func(context.Context) (Observation, error)
 	persistedNAVReport      func(context.Context, string) (navReport, bool, error)
 	prepareInitialization   func(context.Context, RouteManifest, Decision, Observation) (Observation, KaminoInitializationRequest, error)

@@ -23,18 +23,12 @@ import (
 	"github.com/solana-foundation/solana-go/v2/rpc/jsonrpc"
 
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/spl"
 )
 
 const (
-	earnMaxDefaultRPC  = "https://api.mainnet-beta.solana.com"
-	earnMaxSquadsVault = "ST999VUTo5QExYEX9bz1oDDoKGkjXG9zpphy4Hj7VWh"
-	earnMaxRouteKey    = "rwa-multiply:" + earnMaxSquadsVault
-	earnMaxVoltrVault  = "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
-	earnMaxLPMint      = "6tNheTBYSpQkfMLhcczKgmTLSGffK54npKMG1WQR2tvb"
-	earnMaxIdleATA     = "6LATwaB4yRwGURCBDyFeJGqofaXxb6xXws9wBGbr3RBh"
-	earnMaxCustodyDebt = "J4YFQzxhQ3pht2RRYes5yv1spPYBqvHzxn4zMX7iriHn"
-	earnMaxCustodyColl = "9tDh95ofQ7B83bHAou1XJGJNnfRTs3hLfX8uyKW6u97G"
+	earnMaxDefaultRPC = "https://api.mainnet-beta.solana.com"
 
 	earnMaxHTTPTimeout  = 10 * time.Second
 	earnMaxRPCTimeout   = 15 * time.Second
@@ -424,7 +418,7 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
 		err := tx.QueryRow(ctx, `SELECT state, lease_owner,
        extract(epoch FROM now() - updated_at)::int AS updated_age_s,
        extract(epoch FROM now() - (state->'observation'->>'reportObservedAt')::timestamptz)::int AS report_age_s
-     FROM loyal_yield.multiply_route_states WHERE route_key = $1`, earnMaxRouteKey).
+     FROM loyal_yield.multiply_route_states WHERE route_key = $1`, earnmax.RouteKey).
 			Scan(&raw, &route.LeaseOwner, &route.UpdatedAgeS, &route.ReportAgeS)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -437,7 +431,7 @@ func earnMaxLoadRoute(ctx context.Context, d *Deps) (EarnMaxRoute, error) {
 		err = tx.QueryRow(ctx, `SELECT expected_effects #>> '{decision,reason}' AS reason
      FROM loyal_yield.multiply_operations
      WHERE route_key = $1 AND action = 'HOLD' AND created_at > now() - interval '1 hour'
-     ORDER BY created_at DESC LIMIT 1`, earnMaxRouteKey).Scan(&reason)
+     ORDER BY created_at DESC LIMIT 1`, earnmax.RouteKey).Scan(&reason)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -540,7 +534,7 @@ func earnMaxLoadNavSeries(ctx context.Context, d *Deps) ([]EarnMaxNavPoint, erro
 		func(rows pgx.Rows) (report, error) {
 			var r report
 			return r, rows.Scan(&r.at, &r.request)
-		}, earnMaxRouteKey)
+		}, earnmax.RouteKey)
 	series := []EarnMaxNavPoint{}
 	for _, r := range reports {
 		if nav, ok := earnMaxDecodeReport(r.request); ok {
@@ -556,7 +550,7 @@ func earnMaxLoadHealth(ctx context.Context, d *Deps) (EarnMaxHealth, error) {
 		nav, err := tx.Query(ctx, `SELECT status, recovery_reason AS reason, count(*)::int AS count
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND action = 'REPORT_NAV' AND created_at > now() - interval '24 hours'
-       GROUP BY 1, 2 ORDER BY 3 DESC`, earnMaxRouteKey)
+       GROUP BY 1, 2 ORDER BY 3 DESC`, earnmax.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -589,7 +583,7 @@ func earnMaxLoadHealth(ctx context.Context, d *Deps) (EarnMaxHealth, error) {
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND status = 'failed' AND created_at > now() - interval '24 hours'
          AND action NOT IN ('HOLD', 'REPORT_NAV')
-       GROUP BY 1 ORDER BY 2 DESC`, earnMaxRouteKey)
+       GROUP BY 1 ORDER BY 2 DESC`, earnmax.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -607,7 +601,7 @@ func earnMaxLoadHealth(ctx context.Context, d *Deps) (EarnMaxHealth, error) {
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND status = 'failed' AND transaction_signature IS NULL
          AND created_at > now() - interval '24 hours'
-         AND action NOT IN ('HOLD', 'REPORT_NAV')`, earnMaxRouteKey).Scan(&health.RefusedBeforeSending)
+         AND action NOT IN ('HOLD', 'REPORT_NAV')`, earnmax.RouteKey).Scan(&health.RefusedBeforeSending)
 		return err
 	})
 	return health, err
@@ -635,7 +629,7 @@ func earnMaxLoadMoves(ctx context.Context, d *Deps) ([]EarnMaxMove, error) {
 			err := rows.Scan(&m.Action, &m.Status, &m.StrategyKey, &m.Signature, &created, &m.AmountRaw, &m.Reason)
 			m.At = readsISO(created)
 			return m, err
-		}, earnMaxRouteKey, earnMaxSquadsVault)
+		}, earnmax.RouteKey, earnmax.SquadsVault.String())
 	if moves == nil {
 		moves = []EarnMaxMove{}
 	}
@@ -646,7 +640,7 @@ func earnMaxLoadLatches(ctx context.Context, d *Deps) (EarnMaxLatches, error) {
 	latches := EarnMaxLatches{Cleared: []EarnMaxClearedLatch{}, Open: []EarnMaxOpenLatch{}}
 	err := d.YieldRead(ctx, func(tx pgx.Tx) error {
 		open, err := tx.Query(ctx, `SELECT reason, latched_at FROM loyal_yield.backyard_manual_recovery_latches
-       WHERE route_key = $1 AND cleared_at IS NULL`, earnMaxRouteKey)
+       WHERE route_key = $1 AND cleared_at IS NULL`, earnmax.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -665,7 +659,7 @@ func earnMaxLoadLatches(ctx context.Context, d *Deps) (EarnMaxLatches, error) {
 		cleared, err := tx.Query(ctx, `SELECT expected_effects AS effects, created_at
        FROM loyal_yield.multiply_operations
        WHERE route_key = $1 AND action = 'HOLD_CLEARED'
-       ORDER BY created_at DESC LIMIT 10`, earnMaxRouteKey)
+       ORDER BY created_at DESC LIMIT 10`, earnmax.RouteKey)
 		if err != nil {
 			return err
 		}
@@ -706,7 +700,7 @@ func earnMaxLoadHistory(ctx context.Context, d *Deps) ([]EarnMaxHistoryRow, erro
 			err := rows.Scan(&hour, &p.EquityUsd, &p.LtvPct)
 			p.At = readsISO(hour)
 			return p, err
-		}, earnMaxRouteKey)
+		}, earnmax.RouteKey)
 	if points == nil {
 		points = []EarnMaxHistoryRow{}
 	}
@@ -718,11 +712,7 @@ func earnMaxLoadBalances(ctx context.Context) (EarnMaxBalances, error) {
 	if err != nil {
 		return EarnMaxBalances{}, err
 	}
-	addresses := []string{earnMaxCustodyDebt, earnMaxCustodyColl, earnMaxIdleATA}
-	keys := make([]solana.PublicKey, len(addresses))
-	for i, address := range addresses {
-		keys[i] = solana.MustPublicKeyFromBase58(address)
-	}
+	keys := []solana.PublicKey{earnmax.CustodyDebt, earnmax.CustodyCollat, earnmax.IdleATA}
 	accounts, err := earnMaxRetry(ctx, func() ([]*chain.Account, error) {
 		_, accounts, err := client.Accounts(ctx, keys, rpc.CommitmentConfirmed, 0)
 		return accounts, err
@@ -733,11 +723,11 @@ func earnMaxLoadBalances(ctx context.Context) (EarnMaxBalances, error) {
 	var amounts [3]float64
 	for i, account := range accounts {
 		if account == nil {
-			return EarnMaxBalances{}, fmt.Errorf("Token account %s is unreadable.", addresses[i])
+			return EarnMaxBalances{}, fmt.Errorf("Token account %s is unreadable.", keys[i])
 		}
 		token, err := spl.DecodeTokenAccount(account)
 		if err != nil {
-			return EarnMaxBalances{}, fmt.Errorf("Token account %s is unreadable.", addresses[i])
+			return EarnMaxBalances{}, fmt.Errorf("Token account %s is unreadable.", keys[i])
 		}
 		amounts[i] = float64(token.Amount) / 1e6
 	}
@@ -745,15 +735,8 @@ func earnMaxLoadBalances(ctx context.Context) (EarnMaxBalances, error) {
 }
 
 func earnMaxSharePrice(ctx context.Context) (float64, error) {
-	var body map[string]any
-	if err := earnMaxGet(ctx, "https://api.voltr.xyz/vault/"+earnMaxVoltrVault+"/share-price", &body); err != nil {
-		return 0, err
-	}
-	price := earnMaxNum(earnMaxRec(body["data"])["sharePrice"])
-	if price == nil {
-		return 0, errors.New("Voltr returned no share price.")
-	}
-	return *price, nil
+	price, err := earnmax.FetchSharePrice(ctx)
+	return price.PerLP, err
 }
 
 func earnMaxLoadApy(ctx context.Context, sharePrice func() (float64, error)) (EarnMaxApy, error) {
@@ -764,8 +747,7 @@ func earnMaxLoadApy(ctx context.Context, sharePrice func() (float64, error)) (Ea
 		defer close(done)
 		price, priceErr = sharePrice()
 	}()
-	var vault map[string]any
-	vaultErr := earnMaxGet(ctx, "https://api.voltr.xyz/vault/"+earnMaxVoltrVault, &vault)
+	days, vaultErr := earnmax.FetchDailyStats(ctx)
 	<-done
 	if vaultErr != nil {
 		return EarnMaxApy{}, vaultErr
@@ -773,22 +755,10 @@ func earnMaxLoadApy(ctx context.Context, sharePrice func() (float64, error)) (Ea
 	if priceErr != nil {
 		return EarnMaxApy{}, priceErr
 	}
-	stats := earnMaxRec(earnMaxRec(vault["vault"])["dailyStats"])
-	days, _ := stats["dateLabels"].([]any)
-	tvl, _ := stats["tvlData"].([]any)
-	lp, _ := stats["lpData"].([]any)
 	apy := EarnMaxApy{Daily: []EarnMaxDailyPrice{}, SharePrice: price}
-	at := func(list []any, i int) *float64 {
-		if i < len(list) {
-			return earnMaxNum(list[i])
-		}
-		return nil
-	}
-	for i, raw := range days {
-		day, ok := raw.(string)
-		t, l := at(tvl, i), at(lp, i)
-		if ok && t != nil && *t != 0 && l != nil && *l != 0 {
-			apy.Daily = append(apy.Daily, EarnMaxDailyPrice{Day: day, Price: *t / *l})
+	for _, day := range days {
+		if day.TVLRaw != 0 && day.LPRaw != 0 {
+			apy.Daily = append(apy.Daily, EarnMaxDailyPrice{Day: day.Day, Price: day.TVLRaw / day.LPRaw})
 		}
 	}
 	return apy, nil
@@ -803,11 +773,11 @@ type earnMaxScan struct {
 var (
 	earnMaxFlowMu    sync.Mutex
 	earnMaxFlowCache = map[string]EarnMaxLpFlow{}
-	earnMaxScans     = &staleWhileRevalidate[earnMaxScan]{fresh: time.Minute, stale: 10 * time.Minute, wait: 3 * time.Second, budget: earnMaxEarnedBudget}
+	earnMaxScans     = &earnmax.StaleWhileRevalidate[earnMaxScan]{Fresh: time.Minute, Stale: 10 * time.Minute, Wait: 3 * time.Second, Budget: earnMaxEarnedBudget}
 )
 
 func earnMaxLoadVault() (EarnMaxVault, error) {
-	scan, have, scanErr := earnMaxScans.get(earnMaxScanVault)
+	scan, have, scanErr := earnMaxScans.Get(earnMaxScanVault)
 	if !have {
 		return EarnMaxVault{}, scanErr
 	}
@@ -833,18 +803,16 @@ func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solan
 	if err != nil {
 		return EarnMaxLpFlow{}, err
 	}
-	lpMint := solana.MustPublicKeyFromBase58(earnMaxLPMint)
-	idle := solana.MustPublicKeyFromBase58(earnMaxIdleATA)
 	var lpNet, idleDelta int64
 	for _, side := range []struct {
 		balances map[solana.PublicKey]chain.TokenBalance
 		sign     int64
 	}{{execution.Post, 1}, {execution.Pre, -1}} {
 		for key, balance := range side.balances {
-			if balance.Mint == lpMint {
+			if balance.Mint == earnmax.LPMint {
 				lpNet += side.sign * int64(balance.Amount)
 			}
-			if key == idle {
+			if key == earnmax.IdleATA {
 				idleDelta += side.sign * int64(balance.Amount)
 			}
 		}
@@ -865,7 +833,7 @@ func earnMaxScanVault(ctx context.Context) (earnMaxScan, error) {
 	if err != nil {
 		return earnMaxScan{}, err
 	}
-	mintKey := solana.MustPublicKeyFromBase58(earnMaxLPMint)
+	mintKey := earnmax.LPMint
 	accounts, err := earnMaxRetry(ctx, func() ([]*chain.Account, error) {
 		_, accounts, err := client.Accounts(ctx, []solana.PublicKey{mintKey}, rpc.CommitmentConfirmed, 0)
 		return accounts, err
@@ -1069,60 +1037,4 @@ func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, erro
 
 func registerEarnMax(m *Mux) {
 	Page(m, "/vault-integrations/earn-max", loadEarnMax)
-}
-
-var errStillRefreshing = errors.New("Still refreshing; try again shortly.")
-
-type staleWhileRevalidate[T any] struct {
-	fresh, stale, wait, budget time.Duration
-
-	mu      sync.Mutex
-	value   *T
-	at      time.Time
-	err     error
-	running chan struct{}
-}
-
-func (c *staleWhileRevalidate[T]) get(load func(context.Context) (T, error)) (T, bool, error) {
-	c.mu.Lock()
-	if c.running == nil && (c.value == nil || time.Since(c.at) >= c.fresh) {
-		c.running = make(chan struct{})
-		go c.refresh(load, c.running)
-	}
-	running, current, wait := c.running, c.value == nil || time.Since(c.at) >= c.stale, c.wait
-	if c.value == nil {
-		wait = c.budget
-	}
-	c.mu.Unlock()
-	if current && running != nil {
-		select {
-		case <-running:
-		case <-time.After(wait):
-		}
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	err := c.err
-	if err == nil && (c.value == nil || time.Since(c.at) >= c.stale) {
-		err = errStillRefreshing
-	}
-	if c.value == nil {
-		var zero T
-		return zero, false, err
-	}
-	return *c.value, true, err
-}
-
-func (c *staleWhileRevalidate[T]) refresh(load func(context.Context) (T, error), done chan struct{}) {
-	ctx, cancel := context.WithTimeout(context.Background(), c.budget)
-	defer cancel()
-	value, err := load(ctx)
-	c.mu.Lock()
-	if err == nil {
-		c.value, c.at = &value, time.Now()
-	}
-	c.err = err
-	c.running = nil
-	c.mu.Unlock()
-	close(done)
 }

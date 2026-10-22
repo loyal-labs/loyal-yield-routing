@@ -8,33 +8,25 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/voltr"
 )
 
-type WithdrawalHealth struct {
+type withdrawalAssessment struct {
+	earnmax.WithdrawalHealth
 	preserveAttention bool
-	Version           int        `json:"version"`
-	Cluster           string     `json:"cluster"`
-	Vault             string     `json:"vault"`
-	Program           string     `json:"program"`
-	RouteKey          string     `json:"routeKey"`
-	Status            string     `json:"status"`
-	Reason            string     `json:"reason"`
-	ObservedAt        time.Time  `json:"observedAt"`
-	ObservedSlot      int64      `json:"observedSlot"`
-	BlockedSince      *time.Time `json:"blockedSince"`
 }
 
-func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr error) (WithdrawalHealth, bool) {
+func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr error) (withdrawalAssessment, bool) {
 	s := o.Snapshot
 	// Health-hold snapshots carry no decoded custody/demand; zero is not evidence.
 	if o.Validate() != nil || !s.Fresh || s.ManualReason != "" || s.StrategyReceiptIntegrityFault ||
 		s.WithdrawalDemandRaw < 0 || s.VoltrIdleRaw < 0 {
-		return WithdrawalHealth{}, false
+		return withdrawalAssessment{}, false
 	}
-	h := WithdrawalHealth{Version: 1, Cluster: "mainnet-beta", Vault: v.VoltrVault,
+	h := withdrawalAssessment{WithdrawalHealth: earnmax.WithdrawalHealth{Version: 1, Cluster: "mainnet-beta", Vault: v.VoltrVault,
 		Program: voltr.ProgramID.String(), RouteKey: v.RouteKey,
-		ObservedAt: o.ObservedAt.UTC(), ObservedSlot: s.Slot}
+		ObservedAt: o.ObservedAt.UTC(), ObservedSlot: s.Slot}}
 	switch {
 	case s.WithdrawalDemandRaw == 0:
 		h.Status, h.Reason = "none", "no_withdrawal_demand"
@@ -54,12 +46,12 @@ func assessWithdrawalHealth(v *Vault, o Observation, decision Decision, tickErr 
 	return h, true
 }
 
-func mergeWithdrawalHealth(previous *WithdrawalHealth, next WithdrawalHealth) WithdrawalHealth {
+func mergeWithdrawalHealth(previous *earnmax.WithdrawalHealth, next withdrawalAssessment) withdrawalAssessment {
 	if previous != nil && previous.Version == next.Version && previous.Cluster == next.Cluster &&
 		previous.Vault == next.Vault && previous.Program == next.Program && previous.RouteKey == next.RouteKey {
 		if next.ObservedSlot < previous.ObservedSlot || next.ObservedAt.Before(previous.ObservedAt) ||
 			(next.Status == "unavailable" || next.preserveAttention) && previous.Status == "operator_attention" {
-			return *previous
+			return withdrawalAssessment{WithdrawalHealth: *previous}
 		}
 		if next.Status == "operator_attention" && previous.Status == "operator_attention" {
 			next.BlockedSince = previous.BlockedSince
@@ -72,7 +64,7 @@ func mergeWithdrawalHealth(previous *WithdrawalHealth, next WithdrawalHealth) Wi
 	return next
 }
 
-func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHealth) error {
+func (d *Database) RecordWithdrawalHealth(ctx context.Context, next withdrawalAssessment) error {
 	v, err := vaultOfRoute(next.RouteKey)
 	if err != nil || next.Version != 1 || next.Cluster != "mainnet-beta" || next.Vault != v.VoltrVault || next.Program != voltr.ProgramID.String() {
 		return fmt.Errorf("withdrawal health is not a Backyard vault route's")
@@ -82,14 +74,14 @@ func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHe
 		if err := tx.QueryRow(ctx, `SELECT state->'withdrawalHealth' FROM loyal_yield.multiply_route_states WHERE route_key=$1 FOR UPDATE`, next.RouteKey).Scan(&raw); err != nil {
 			return err
 		}
-		var previous *WithdrawalHealth
+		var previous *earnmax.WithdrawalHealth
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &previous); err != nil {
 				return err
 			}
 		}
 		next = mergeWithdrawalHealth(previous, next)
-		raw, err := json.Marshal(next)
+		raw, err := json.Marshal(next.WithdrawalHealth)
 		if err != nil {
 			return err
 		}
@@ -98,7 +90,7 @@ func (d *Database) RecordWithdrawalHealth(ctx context.Context, next WithdrawalHe
 	}); err != nil {
 		return err
 	}
-	d.events[next.RouteKey].withdrawalHealthStored(next)
+	d.events[next.RouteKey].withdrawalHealthStored(next.WithdrawalHealth)
 	return nil
 }
 
