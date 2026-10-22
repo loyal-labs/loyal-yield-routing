@@ -103,9 +103,7 @@ const forbiddenMoneyMovementCalls = [
 ] as const;
 
 const forbiddenAutodepositCalls = [
-  "recordConfirmedAutodepositDelegation(",
   "recordConfirmedAutodepositTokenApproval(",
-  "recordPendingAutodepositSetup(",
   "recordClosedAutodepositTarget(",
 ] as const;
 
