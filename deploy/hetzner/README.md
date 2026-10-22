@@ -704,3 +704,53 @@ private. An unset name disables only the page or panel that needs it.
 
 The public-key names have no built-in default: unset, the Earn funding page
 shows that role as unconfigured.
+
+## Stats (loyal-stats)
+
+`loyal-stats.service` runs `loyal-stats`, the public performance dashboard:
+the Vite build of `web/apps/dashboard` embedded in a Go binary that answers
+`/api/earn/stats` (the snapshot reader loyal-web uses) and the partner-facing
+`/api/earn/vaults` itself, read-only. It listens on `127.0.0.1:10082`; the
+tunnel serves it at `stats-next.askloyal.com` and, once DNS moves,
+`stats.askloyal.com`. The snapshot row is written by the telegram app's Vercel
+cron, which this move does not touch.
+
+| Credential name | File in `/etc/credstore.encrypted/` | Grants |
+|---|---|---|
+| `STATS_APP_DATABASE_URL` | `loyal-stats-app-db` | App Neon, reads `public.loyal_stats_snapshots` |
+| `STATS_YIELD_DATABASE_URL` | `loyal-stats-yield-db` | Yield Neon, reads `loyal_yield.user_yield_positions` |
+
+Both are required. They hold the same values as admin's App and Yield
+credentials, so seal them on the host from those without the value leaving it:
+
+```sh
+ssh loyal-workers 'cd /etc/credstore.encrypted &&
+  systemd-creds decrypt --name=ADMIN_APP_DATABASE_URL loyal-admin-app-db - |
+    systemd-creds encrypt --name=STATS_APP_DATABASE_URL - loyal-stats-app-db &&
+  systemd-creds decrypt --name=ADMIN_YIELD_DATABASE_URL loyal-admin-yield-db - |
+    systemd-creds encrypt --name=STATS_YIELD_DATABASE_URL - loyal-stats-yield-db'
+```
+
+The first release goes in by hand exactly as `loyal-web`'s (First install,
+above), with `stats` for `web`, `scripts/web/build.sh stats` and port 10082;
+after that `bun run deploy stats [<sha>]` deploys and rolls back. The deploy
+needs no `op run`: the dashboard inlines no `NEXT_PUBLIC_*`.
+
+`/api/earn/vaults` keeps the Next route's contract (documented in
+`web/apps/dashboard/README.md`): a value is fresh for five minutes; after a
+failed refresh the previous value is served until it is six minutes old, then
+503 `{"error":"vault list unavailable"}` with `Cache-Control: no-store`.
+`/readyz` checks the embedded build, not the databases.
+
+### Stats DNS cutover and rollback
+
+Add the test host, then, after parity, move the public name:
+
+```sh
+cloudflared tunnel --origincert ~/.cloudflared/askloyal-cert.pem route dns loyal-workers stats-next.askloyal.com
+cloudflared tunnel --origincert ~/.cloudflared/askloyal-cert.pem route dns --overwrite-dns loyal-workers stats.askloyal.com
+```
+
+Rollback is pointing the `stats` record back at the DNS-only CNAME
+`9bcddf8368ddf2b0.vercel-dns-016.com` (TTL 300); the Vercel project keeps
+serving until it is retired.

@@ -5,12 +5,12 @@ family=${1:-}
 sha=${2:-}
 want=${3:-}
 mode=${4:-running}
-case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; web) binary=loyal-web ;; admin) binary=loyal-admin ;; *) family=bad ;; esac
+case $family in backyard | retail) binary=loyal-engine ;; observer) binary=loyal-observer ;; web) binary=loyal-web ;; admin) binary=loyal-admin ;; stats) binary=loyal-stats ;; *) family=bad ;; esac
 case $sha in *[!0-9a-f]* | '') sha=bad ;; esac
 case $want in *[!0-9a-f]* | '') want=bad ;; esac
 case $mode in running | stopped) ;; *) mode=bad ;; esac
 if [ "$family" = bad ] || [ ${#sha} -ne 40 ] || [ ${#want} -ne 64 ] || [ "$mode" = bad ]; then
-	echo "usage: activate.sh backyard|retail|observer|web|admin <40-hex commit sha> <64-hex sha256> [stopped]" >&2
+	echo "usage: activate.sh backyard|retail|observer|web|admin|stats <40-hex commit sha> <64-hex sha256> [stopped]" >&2
 	exit 2
 fi
 unit=loyal-$family
@@ -79,7 +79,7 @@ if [ "$family" = backyard ]; then
 	[ -n "$dbcred" ] || fail "no BACKYARD_DATABASE_URL in $unit's LoadCredentialEncrypted"
 fi
 web_family=no
-case $family in web) web_family=yes addrvar=LOYAL_WEB_ADDRESS ;; admin) web_family=yes addrvar=LOYAL_ADMIN_ADDRESS ;; esac
+case $family in web) web_family=yes addrvar=LOYAL_WEB_ADDRESS ;; admin) web_family=yes addrvar=LOYAL_ADMIN_ADDRESS ;; stats) web_family=yes addrvar=LOYAL_STATS_ADDRESS ;; esac
 if [ "$web_family" = yes ]; then
 	webaddr=$(systemctl cat "$unit" |
 		sed -n "s/^Environment=$addrvar=\([^ ]*\)\$/\1/p" | tail -n 1)

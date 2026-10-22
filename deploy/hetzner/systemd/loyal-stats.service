@@ -1,0 +1,71 @@
+# Loyal stats (Go). One static binary: the Vite build of web/apps/dashboard
+# is embedded in it and it answers /api/earn/stats and /api/earn/vaults
+# itself, read-only. It listens on loopback only; the tunnel carries
+# stats.askloyal.com and stats-next.askloyal.com to it.
+# Releases ship in /opt/loyal/releases/stats/<sha>/loyal-stats and are switched
+# by scripts/deploy-workers.sh through the 40-verified-release.conf drop-in.
+# Credentials come from the loyal-stats credstore (see README); both are required.
+[Unit]
+Description=Loyal stats (Go)
+Documentation=https://github.com/loyal-labs/loyal-yield-routing/tree/main/deploy/hetzner
+Wants=network-online.target
+After=network-online.target
+# Never give up restarting; restart loops are an alert, not a stop.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+# Placeholder release path; the verified-release drop-in overrides it, as on
+# the other units (see loyal-observer.service).
+ExecStart=/opt/loyal/bin/loyal-stats
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=60s
+
+Environment=LOYAL_STATS_ADDRESS=127.0.0.1:10082
+LoadCredentialEncrypted=STATS_APP_DATABASE_URL:/etc/credstore.encrypted/loyal-stats-app-db
+LoadCredentialEncrypted=STATS_YIELD_DATABASE_URL:/etc/credstore.encrypted/loyal-stats-yield-db
+
+DynamicUser=yes
+User=loyal-stats
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=loyal-stats
+
+MemoryMax=256M
+CPUWeight=20
+CPUQuota=100%
+Nice=15
+TasksMax=256
+LimitCORE=0
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
