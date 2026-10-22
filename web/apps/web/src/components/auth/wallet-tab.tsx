@@ -133,7 +133,6 @@ export function WalletTab({
     [connectWallet]
   );
 
-  // Delay showing errors so transient failures during connection don't flash
   const isErrorState =
     state.status === "rejected" ||
     state.status === "unsupported" ||

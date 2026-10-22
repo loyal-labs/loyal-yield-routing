@@ -26,19 +26,14 @@ import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { rawTokenAmountToNumber } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
 import { deriveEarnEarningsDisplayAmounts } from "@/lib/yield-optimization/earnings-display.shared";
 
-// Figma 4693:67592 (compact) / 4693:68575 (expanded) — bars are flex-1 so the
-// wider expanded pane thickens them without extra layout rules.
 const BAR_COLOR = "color-mix(in srgb, var(--positive) 40%, transparent)";
 const BAR_HOVER_COLOR = "color-mix(in srgb, var(--positive) 16%, transparent)";
 const TODAY_BAR_BORDER_COLOR = "var(--positive)";
 const TODAY_BAR_HOVER_FILL =
   "linear-gradient(180deg, color-mix(in srgb, var(--positive) 60%, transparent) 0%, transparent 100%)";
-// Tallest bar tops out at 290/300 of the chart height in the Figma spec.
 const BAR_MAX_FRACTION = 290 / 300;
 const BAR_MIN_HEIGHT_PX = 4;
 
-// One rendered daily bar — the shape EarnedBarsChart consumes. Earn feeds it
-// from the earnings API; Earn MAX derives it from position snapshots.
 export type EarnedChartBar = {
   apyBps: number | null;
   earnedUsd: number;
@@ -161,9 +156,6 @@ export function EarnedChart({ data }: { data: EarnPositionData }) {
   );
 }
 
-// Presentational half of the Earned chart — header, hover states and the
-// animated daily bars. Earn and Earn MAX both render through this so the two
-// products share one Earned chart implementation.
 export function EarnedBarsChart({
   bars,
   isLoading,
@@ -180,7 +172,6 @@ export function EarnedBarsChart({
   isStale: boolean;
   isUnavailable: boolean;
   lifetimeEarnedUsd: number;
-  // Short muted line under the total, e.g. Earn MAX's "can dip" notice.
   note?: string;
   onRetry?: () => void;
 }) {
@@ -203,7 +194,6 @@ export function EarnedBarsChart({
   );
   const hasNegativeBars = minDailyEarnedUsd < 0;
   const valueRange = maxDailyEarnedUsd - minDailyEarnedUsd;
-  // Fraction of the chart height sitting below the zero line.
   const baselineFraction =
     hasNegativeBars && valueRange > 0
       ? Math.abs(minDailyEarnedUsd) / valueRange
@@ -238,8 +228,6 @@ export function EarnedBarsChart({
           padding: 0;
           position: relative;
         }
-        /* Full-height column track behind the bar — hover feedback stays
-           visible even when the day's bar is tiny or absent. */
         .earned-bar-track {
           background: var(--accent);
           border-radius: 4px;
@@ -289,8 +277,6 @@ export function EarnedBarsChart({
           ) : (
             <SkeletonReveal isRevealed={!showEarningsLoader}>
               {showEarningsLoader ? (
-                // Invisible placeholder sizes the skeleton bar like a real
-                // six-decimal earnings value.
                 "$0.000000"
               ) : (
                 <ScrambledPopDigits
@@ -339,8 +325,6 @@ export function EarnedBarsChart({
                 ? (Math.abs(clampedValue) / scale) * BAR_MAX_FRACTION * 100
                 : 0;
             const isLoss = clampedValue < 0;
-            // With losses in range every bar anchors to the shared zero
-            // line; without them the original bottom-anchored layout stays.
             const anchorStyle = hasNegativeBars
               ? isLoss
                 ? {
@@ -416,7 +400,6 @@ export function EarnedBarsChart({
       <div className="flex w-full justify-between pt-2 text-[13px] leading-4 text-tertiary">
         <span className="whitespace-nowrap">{dailyBars[0]?.label ?? ""}</span>
         {hasNegativeBars ? (
-          // Loss floor reference (Figma 5459:71906's −$1.00 axis mark).
           <span className="whitespace-nowrap">
             <ScrambleText
               isHidden={isBalanceHidden}

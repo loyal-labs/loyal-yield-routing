@@ -1229,7 +1229,6 @@ export async function readEarnEarningsRangeSet(
           .filter((item) => item.observedAt < nextCheckpointAt)
           .at(-1)
       : undefined;
-    // A complete-vault observation must exist before we stop replaying holdings.
     const completeBeforeCheckpoint =
       checkpoint ||
       (nextCheckpointAt &&

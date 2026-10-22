@@ -81,7 +81,6 @@ export async function GET(request: Request) {
     return jsonError(400, "invalid_request", "walletAddress is required.");
   }
   try {
-    // Throws a 400 WalletAuthError when the address isn't a valid 32-byte key.
     decodeWalletAddress(walletAddress);
   } catch (error) {
     if (error instanceof WalletAuthError) {
@@ -131,8 +130,6 @@ export async function GET(request: Request) {
       settingsPda,
     });
 
-    // The live holdings read needs the active Earn route policy (the Safe
-    // Kamino market universe to scan); without one there's nothing deployed yet.
     const policyPair = await findActiveYieldRoutePolicyPair({
       authority: walletAddress,
       cluster,
@@ -190,10 +187,6 @@ export async function GET(request: Request) {
       if (minContextSlot === undefined) {
         throw error;
       }
-      // A node behind the freshness floor rejects the read — retry once, the
-      // next request usually lands on a caught-up node. A second failure falls
-      // through to the outer catch (502), and the client keeps the read-model
-      // balance instead of showing stale chain state.
       console.warn("[mobile-earn-holdings] snapshot read retried", {
         errorMessage:
           error instanceof Error ? error.message : "Unknown read error.",

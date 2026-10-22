@@ -81,7 +81,6 @@ for (const endpoint of [getSummary, getActivity, getInvite]) {
 assert.equal(inviteReads, 0);
 assert.equal((await (await getInvite(request)).json()).redeemed, true);
 
-// Exercise cache eviction and freshness through the reader's RPC boundary.
 const { readVoltrHistory } = await import(
   "../src/features/earn-max/voltr/activity.server"
 );

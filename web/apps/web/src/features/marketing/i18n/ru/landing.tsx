@@ -33,7 +33,6 @@ export const ruLanding: LandingDict = {
     animationAriaLabel:
       "Анимация приложения Loyal: подключите кошелёк, посмотрите, как растёт баланс, и настройте Autodeposit",
     moreInfo: "Подробнее",
-    // {label} is the stat label.
     loadingTemplate: "Загрузка: {label}",
     statsAriaLabel: "Статистика Loyal",
     stats: {

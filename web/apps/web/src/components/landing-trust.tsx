@@ -6,7 +6,6 @@ import { type Locale, localizedHref } from "@/features/marketing/i18n/locale";
 
 const SQUADS_URL = "https://squads.so";
 
-// Links the first "Squads" mention so the copy can stay a plain string.
 function withSquadsLink(text: string) {
   const index = text.indexOf("Squads");
   if (index === -1) {

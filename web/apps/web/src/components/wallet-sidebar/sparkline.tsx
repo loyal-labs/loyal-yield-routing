@@ -90,7 +90,6 @@ function SparklineInner({
       return () => clearTimeout(timeout);
     }
 
-    // After initial reveal, clear dash props so the line renders normally
     line.style.strokeDasharray = "";
     line.style.strokeDashoffset = "";
     line.style.transition = "";

@@ -11,7 +11,6 @@ export const enEarn = {
       "Loyal earns the best available stablecoin yield on Solana, automatically",
   } satisfies PageMeta,
   breadcrumb: { home: "Home", page: "Earn" } satisfies BreadcrumbCopy,
-  // Block 1 — Hero (dark)
   hero: {
     title: "Earn the Best Available Stablecoin Yield on Solana, Automatically",
     body: "Lending rates on Solana move all the time. Loyal routes your dollars to whichever reputable lending reserve currently pays the most, bounded by an on-chain policy, so you earn the best available rate without giving up custody. You deposit dollars, set how much goes to earning, and it works from there.",
@@ -19,7 +18,6 @@ export const enEarn = {
     imageAlt:
       "Loyal optimizer routing dollars to the highest-paying Kamino lending reserve on Solana",
   },
-  // Block 2 — Section: How your dollars earn with Loyal
   howItEarns: {
     title: "How your dollars earn with Loyal",
     description: "Deposit dollars and let the optimizer do the rotating.",
@@ -51,7 +49,6 @@ export const enEarn = {
       ),
     },
   },
-  // Block 3 — Section: Your stablecoins are all just dollars
   dollars: {
     title: "Your stablecoins are all just dollars",
     cards: {
@@ -76,7 +73,6 @@ export const enEarn = {
       ),
     },
   },
-  // Block 4 — Section: Why lending rates spike
   rateSpikes: {
     title: "Why lending rates spike (and how that's the opening)",
     description: "This part is usually explained badly, so here it is plainly.",
@@ -105,7 +101,6 @@ export const enEarn = {
       ),
     },
   },
-  // Block 5 — Section: How Loyal routes to the best rate
   routing: {
     title: "How Loyal routes to the best rate",
     cards: {
@@ -132,7 +127,6 @@ export const enEarn = {
       ),
     },
   },
-  // Block 6 — CardsGrid (3 cols, muted): The three approaches we ruled out
   ruledOut: {
     title: "Why not a big contract, a backend key, or a vault",
     description:
@@ -152,7 +146,6 @@ export const enEarn = {
       },
     },
   },
-  // Block 7 — Section: How the policy keeps it safe (Loyal's answer)
   policy: {
     title: "How the policy keeps it safe",
     description:
@@ -189,7 +182,6 @@ export const enEarn = {
       ),
     },
   },
-  // Block 8 — CardsGrid (muted, 2 cols): Risk
   risks: {
     title: "Understanding the risks",
     description: (
@@ -240,7 +232,6 @@ export const enEarn = {
       },
     },
   },
-  // Block 9 — CardsGrid (muted, 2 cols): Who optimizes yield
   audiences: {
     title: "Who optimizes yield with Loyal",
     cards: {
@@ -284,7 +275,6 @@ export const enEarn = {
       },
     },
   },
-  // Block 10 — TextImageHero (text-left): How it's built
   howItsBuilt: {
     title: "How it's built",
     body: (
@@ -323,7 +313,6 @@ export const enEarn = {
     imageAlt:
       "Loyal open-source monorepo and SDK for stablecoin yield routing",
   },
-  // Block 11 — TextImageHero (text-right): Start earning
   startEarning: {
     title: "Start earning",
     body: (

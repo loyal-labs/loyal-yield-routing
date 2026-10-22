@@ -26,12 +26,6 @@ import {
   type ConfirmedWithdrawalTransactionProof,
 } from "@/lib/yield-optimization/earn-withdraw-proof.shared";
 
-// Shared core for confirming an Earn withdrawal, used by BOTH the session
-// (`yield-optimization/withdrawals/confirm`) and mobile
-// (`mobile/earn/withdraw/confirm`) routes. The canonicalization here is
-// security-critical (it re-derives every PDA/reserve from the settings and
-// rejects any client-supplied metadata that doesn't match), so it must not
-// drift between the two entry points — hence the single shared module.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 export type EarnWithdrawConfirmPrincipal = {
@@ -54,9 +48,6 @@ export class EarnWithdrawConfirmError extends Error {
 
 const connectionCache = new Map<SolanaEnv, Connection>();
 
-// Every rejection here leaves the read-model stale while the on-chain
-// withdrawal already happened — never let one pass silently (the launch-night
-// deposit-confirm 400s were invisible for exactly this reason).
 function rejectWithdrawConfirm(args: {
   status: number;
   code: string;
@@ -277,8 +268,6 @@ async function resolveConfirmedWithdrawalTransactionProof(args: {
   };
 }
 
-// Re-derives the canonical withdrawal metadata from the settings PDA and
-// asserts every client-supplied field matches. Throws on any mismatch.
 export function createCanonicalWithdrawalInput(
   requestInput: ConfirmedYieldWithdrawalInput
 ): ConfirmedYieldWithdrawalInput {
@@ -575,8 +564,6 @@ function toSafeContextSlot(slot: bigint): number {
   return value;
 }
 
-// Validates a confirmed Earn withdrawal against the authenticated principal.
-// LaserStream is the only writer of the resulting Earn state.
 export async function verifyConfirmedEarnWithdrawal(args: {
   principal: EarnWithdrawConfirmPrincipal;
   input: ConfirmedYieldWithdrawalInput;

@@ -23,7 +23,6 @@ import {
   type SwapBalanceSnapshot,
 } from "@/features/observability/swap-visibility";
 
-// Debug logger that only emits in development
 const logger = {
   debug: (...args: unknown[]) => {
     if (process.env.NODE_ENV === "development") {
@@ -41,7 +40,6 @@ function cleanSolanaErrorMessage(message: string): string {
   return message;
 }
 
-// Constants
 const PERCENTAGE_MULTIPLIER = 100;
 
 // Jupiter route slippage tolerance (0.5%).
@@ -53,8 +51,6 @@ function isSlippageExceededError(message: string): boolean {
   return message.includes('"Custom":6001') || message.includes("0x1771");
 }
 
-// Maps a swap failure onto its lifecycle error code — a bounded enum, so raw
-// error strings never reach telemetry.
 function swapLifecycleErrorCode(message: string): LifecycleErrorCode {
   if (isSlippageExceededError(message)) {
     return "slippage_exceeded";
@@ -94,15 +90,9 @@ export type SwapExecutionContext = {
   userPublicKey: PublicKey | string | null;
 };
 
-// Use Jupiter Swap v1 API with paid tier endpoint
 const JUPITER_QUOTE_API_URL = "https://api.jup.ag/swap/v1/quote";
 const JUPITER_SWAP_API_URL = "https://api.jup.ag/swap/v1/swap";
 
-/**
- * Convert token symbol to mint address
- * @param symbol - Token symbol (e.g., "SOL", "USDC")
- * @returns Mint address or undefined if not found
- */
 const getTokenMint = (symbol: string): string | undefined => {
   const normalizedSymbol = symbol.toUpperCase();
   return TOKEN_MINTS[normalizedSymbol];
@@ -243,8 +233,6 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
           throw new Error(swapConfig.reason);
         }
 
-        // Convert token symbols to mint addresses
-        // Use provided mints if available, otherwise look up
         const inputMint = fromTokenMint || getTokenMint(fromToken);
         const outputMint = toTokenMint || getTokenMint(toToken);
 
@@ -257,8 +245,6 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
           throw new Error(`Unknown token: ${toToken}`);
         }
 
-        // Convert amount to lamports (smallest unit)
-        // Use provided decimals if available, otherwise fetch from mint account
         const inputDecimalsPromise = fromTokenDecimals
           ? Promise.resolve(fromTokenDecimals)
           : getTokenDecimals(inputMint);
@@ -280,7 +266,6 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
           decimals: inputDecimals,
         });
 
-        // Build Jupiter Quote API URL
         const url = `${JUPITER_QUOTE_API_URL}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountInSmallestUnit}&slippageBps=${SLIPPAGE_BPS}`;
         logger.debug("Fetching quote from Jupiter API:", url);
 
@@ -299,10 +284,8 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
         const data: JupiterQuoteResponse = await response.json();
         logger.debug("Jupiter Quote response:", data);
 
-        // Store the full quote response for later use in executeSwap
         setQuoteResponse(data);
 
-        // Convert output amount from smallest unit back to tokens
         const outputDecimals = await outputDecimalsPromise;
         const outputAmount = (
           Number.parseInt(data.outAmount, 10) /
@@ -367,8 +350,6 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
       setLoading(true);
       setError(null);
 
-      // Same flow-lifecycle telemetry as the auth/earn flows, so swap
-      // failures land in ClickStack instead of only the browser console.
       const tracker = createBrowserLifecycleTracker({
         flowName: "wallet.swap",
         flowVariant: executionContext ? "smart_account" : "wallet_adapter",
@@ -411,7 +392,6 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
           lifecycleStage = "quote_refresh";
           tracker.observe("quote_refresh", { stageIndex: attempt });
           try {
-            // Step 1: Call Jupiter Swap API to get transaction
             logger.debug("Calling Jupiter Swap API...");
             lifecycleStage = "build";
 
@@ -452,12 +432,10 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
               throw new Error("No transaction returned from Jupiter Swap API");
             }
 
-            // Step 2: Deserialize transaction
             const txBuffer = Buffer.from(serializedTx, "base64");
             const transaction = VersionedTransaction.deserialize(txBuffer);
             tracker.observe("build", { stageIndex: attempt });
 
-            // Step 3: Sign and send transaction using wallet-adapter
             logger.debug("Signing and sending transaction...");
             lifecycleStage = "wallet_submit_confirm";
             const executionResult = executionContext
@@ -480,7 +458,6 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
             );
 
             if (!executionContext && signature) {
-              // Step 4: Confirm transaction with proper strategy
               logger.debug("Confirming transaction...");
               const latestBlockhash = await connection.getLatestBlockhash(
                 "confirmed"
@@ -574,7 +551,6 @@ export function useSwap(visibleBalances: SwapBalanceSnapshot) {
         }
 
         if (err instanceof Error) {
-          // Handle timeout errors specifically
           if (
             err.message.includes("timeout") ||
             err.message.includes("Timeout")

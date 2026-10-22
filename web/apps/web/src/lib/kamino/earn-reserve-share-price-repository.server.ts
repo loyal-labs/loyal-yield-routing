@@ -15,8 +15,6 @@ import type {
   SharePricePoint,
 } from "./earn-realized-apy.shared";
 
-// The observed_at index can establish absence before touching the much larger
-// vault snapshot history. In particular, a new recorder has no history yet.
 export async function hasEarnSharePriceHistory(
   cluster: string,
   sinceMs: number,
@@ -40,9 +38,6 @@ export async function hasEarnSharePriceHistory(
 const HOUR_MS = 60 * 60 * 1000;
 const ALLOCATION_SEED_LOOKBACK_MS = 6 * HOUR_MS;
 
-// Hourly fleet allocation samples written by the Go observer. Reading
-// them is bounded by the window length (one row per hour), not by fleet size
-// or snapshot history.
 export async function loadEarnAllocationHistory(
   cluster: string,
   sinceMs: number,

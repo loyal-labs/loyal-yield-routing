@@ -34,12 +34,6 @@ export function useCherryPrivyAuth(): CherryPrivyAuthState | null {
   return useContext(CherryPrivyAuthContext);
 }
 
-/**
- * Headless Privy sign-in for the Cherry embed: no Privy modal, no captcha.
- * The verified Cherry wallet signs Privy's SIWS message, then the identity
- * token is exchanged for the Loyal session through the same route the web
- * app uses. Auto-starts once when signed out; Retry re-arms it.
- */
 export function CherryPrivyAuthController({
   children,
 }: {
@@ -147,7 +141,6 @@ export function CherryPrivyAuthController({
   );
 }
 
-/** Sign-in modal body in Cherry mode when Privy is on. */
 export function CherryPrivySignIn() {
   const auth = useCherryPrivyAuth();
   if (!auth) return null;

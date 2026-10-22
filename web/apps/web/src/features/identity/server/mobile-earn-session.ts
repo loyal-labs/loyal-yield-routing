@@ -87,7 +87,6 @@ async function verifyMobileEarnSessionToken(
         return payload.sub;
       }
     } catch {
-      // Fall through to HS256 verification below.
     }
   }
 

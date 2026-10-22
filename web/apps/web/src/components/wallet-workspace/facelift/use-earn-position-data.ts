@@ -64,9 +64,6 @@ export type EarnPositionData = {
   walletAddress: string | null;
 };
 
-// Composes the same standalone hooks the old workspace monolith wires up, so
-// the redesigned panes read identical data — plus the Earn mutation actions,
-// which need this exact smart-account/position instance pair.
 export function useEarnPositionData(): EarnPositionData {
   const publicEnv = usePublicEnv();
   const { connection } = useConnection();
@@ -75,9 +72,6 @@ export function useEarnPositionData(): EarnPositionData {
   const walletAddress =
     user?.walletAddress ?? wallet.publicKey?.toBase58() ?? null;
 
-  // Wallet USDC ATA read (the deposit funding balance); its refresh doubles as
-  // the smart-account hook's onAfterTx, mirroring the monolith's
-  // refreshMainAccountBalances wiring.
   const trackedKaminoUsdcMint = useMemo(
     () => resolveTrackedKaminoUsdcMint(publicEnv.solanaEnv),
     [publicEnv.solanaEnv]
@@ -140,9 +134,6 @@ export function useEarnPositionData(): EarnPositionData {
     [smartAccountData.earnAutodeposit]
   );
 
-  // Optimistic overlay shared by the toggle and the mutation actions:
-  // { config } overrides the loaded state ({ config: null } force-clears it
-  // after a close), and fresh loaded state wins once its request settles.
   const [autodepositOverride, setAutodepositOverride] =
     useState<EarnAutodepositOverride>(null);
   const [autodepositToggleError, setAutodepositToggleError] = useState<
@@ -348,8 +339,6 @@ export function useEarnPositionData(): EarnPositionData {
       window.clearTimeout(timer);
     };
   }, [autoswapStatus, refreshEarnState]);
-  // ponytail: walletBalance caps not wired yet — null reproduces the existing
-  // "balance not loaded" path (threshold-only filtering) of the old workspace.
   const scheduledSweeps = useMemo(
     () =>
       autodepositConfig

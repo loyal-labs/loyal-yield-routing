@@ -324,9 +324,6 @@ async function reserveProvisioningRecord(args: {
     }
   }
 
-  // Still contended after every retry. The message reaches the user mid-deposit,
-  // so say what they can do about it; the PDA detail only ever meant something
-  // to us, and is kept in the log.
   console.warn("[smart-accounts] settings PDA reservation exhausted", {
     attempts: RESERVATION_RETRY_DELAYS_MS.length + 1,
     errorMessage:

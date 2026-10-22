@@ -162,8 +162,6 @@ async function verifyServerRouteProbe(): Promise<void> {
     );
 
   assert.equal((await post(previewOrigin, envelope)).status, 202);
-  // A foreign chunk URL must cost the report its diagnostics, not the whole
-  // ChunkLoadError: dropping the event would erase the signal we ship this for.
   assert.equal(
     (
       await post(ORIGIN, {
@@ -290,8 +288,6 @@ async function verify(): Promise<void> {
   );
   pass("re-failing the same chunk after a reload is reported, never retried");
 
-  // The old guard latched for the whole tab lifetime, so a long-lived tab was
-  // stuck broken after any later deploy. A different chunk stays recoverable.
   const secondChunk = installBrowser({
     randomUUID: SESSION_IDS[1],
     storage: sessionStorage,
@@ -321,9 +317,6 @@ async function verify(): Promise<void> {
   );
   pass("a later distinct chunk stays recoverable, but attempts stay bounded");
 
-  // Session storage is corruptible and same-origin writable. A malformed guard
-  // must not be readable as budget: a negative count would otherwise sit below
-  // the ceiling forever and reload on every distinct chunk.
   for (const [tag, stored] of [
     [
       "negative-count",
@@ -356,7 +349,6 @@ async function verify(): Promise<void> {
       "unavailable",
       tag
     );
-    // Failing closed must not quietly hand back a fresh budget either.
     assert.equal(
       corruptStorage.values.get("loyal.observability.chunk-reload-guard"),
       typeof stored === "string" ? stored : JSON.stringify(stored),
@@ -450,9 +442,6 @@ async function verify(): Promise<void> {
     parseOptions
   );
   assert.deepEqual(parsed, firstEnvelope);
-  // Every one of these used to throw, which turned a bad diagnostic field into
-  // a 400 and lost the ChunkLoadError itself. The enrichment is dropped, the
-  // error survives, and nothing unvalidated reaches OTLP.
   const assertDegraded = (overrides: Record<string, unknown>) => {
     const degraded = contract.parseBrowserErrorEnvelope(
       { ...firstEnvelope, ...overrides },
@@ -493,7 +482,6 @@ async function verify(): Promise<void> {
     assert.equal(degraded.diagnostics, undefined);
     assert.equal(degraded.clientBuildId, CLIENT_BUILD_ID);
   }
-  // Required fields stay strict — degradation is scoped to the enrichment.
   assert.throws(
     () =>
       contract.parseBrowserErrorEnvelope(

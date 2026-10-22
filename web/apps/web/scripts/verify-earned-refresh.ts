@@ -1,4 +1,3 @@
-// Run with: bun scripts/verify-earned-refresh.ts
 import assert from "node:assert/strict";
 import { chromium } from "@playwright/test";
 

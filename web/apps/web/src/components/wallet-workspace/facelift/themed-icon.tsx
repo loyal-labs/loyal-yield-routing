@@ -8,7 +8,6 @@ export function ThemedIcon({
   src,
 }: {
   className?: string;
-  /** Accessible name; omitted = decorative (aria-hidden). */
   label?: string;
   src: string;
 }) {

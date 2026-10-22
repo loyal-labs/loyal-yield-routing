@@ -12,7 +12,6 @@ const OG_IMAGE = "/og-image.png";
 
 type BlogSearchParams = { page?: string };
 
-/** Parse the raw `?page=` value into a positive integer, defaulting to 1. */
 function parsePage(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
@@ -24,8 +23,6 @@ export async function generateMetadata({
   searchParams: Promise<BlogSearchParams>;
 }): Promise<Metadata> {
   const { page } = await searchParams;
-  // Clamp through the same source the page uses, so an out-of-range ?page=
-  // canonicalizes to the real last page instead of a URL that renders no posts.
   const { page: pageNumber } = await getBlogPosts({ page: parsePage(page) });
   // Each paginated page self-canonicalizes (page 2 -> /blog?page=2), which is
   // the SEO-correct pattern for a series rather than canonicalizing back to /blog.
@@ -84,7 +81,6 @@ export default async function BlogPage({
     page: parsePage(page),
   });
 
-  // Blog collection schema so AI engines can enumerate the posts on this page.
   const blogJsonLd = {
     "@context": "https://schema.org",
     "@type": "Blog",

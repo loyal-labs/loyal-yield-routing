@@ -75,7 +75,6 @@ export function identifyDatadogJourneyUser(wallet: string | null): void {
   const generation = ++identityGeneration;
   try {
     rum?.clearUser();
-    // Anonymous -> authenticated stays in the same session; user switches do not.
     if (previous) {
       pendingActions.length = 0;
       rum?.stopSession();

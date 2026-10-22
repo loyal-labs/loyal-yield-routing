@@ -371,10 +371,6 @@ function CompoundMarketImage({ src }: { src: string }) {
   );
 }
 
-// Reads source (back, top-left) -> destination (front, bottom-right):
-// deposits flow USDC -> Kamino, withdrawals flow Kamino -> USDC. Rebalances
-// pass explicit market logos (backSrc/frontSrc) so each Kamino market shows
-// its own brand icon instead of the generic vault art.
 function CompoundIcon({
   backSrc = null,
   frontSrc = null,
@@ -533,9 +529,6 @@ function EarnTransactionRow({
     >
       <span style={{ display: "flex", padding: "6px 12px 6px 0" }}>
         {item.kind === "autodeposit_action" ? (
-          // Allowance create/remove moves no funds, so a single Earn coin
-          // reads better than the USDC <-> Kamino flow pair. Clipped round
-          // to match the other transaction icons.
           <span
             style={{
               borderRadius: "9999px",
@@ -1546,9 +1539,6 @@ function EarnMascotPanel({
   );
 }
 
-// Mount-time reveal for rows that arrive after the initial load: the slot
-// expands first (pushing the rest of the list down), then the content fades
-// in. Rows present at mount render statically (`initial: false`).
 function EnterReveal({
   children,
   isEntering,
@@ -2093,7 +2083,6 @@ export function EarnTransactionsPane({
           }
         }
       `}</style>
-      {/* SVG pixelation filters */}
       <svg
         aria-hidden="true"
         height="0"

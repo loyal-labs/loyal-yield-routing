@@ -22,20 +22,6 @@ import {
   type QuestKind,
 } from "./quest-completion-reporter";
 
-/**
- * DB-backed orchestration around the stateless quest-completion reporter.
- *
- * Every qualifying event (manual Earn deposit; autodeposit sweep) is recorded in
- * `loyal_yield.solana_week_quest_completions` keyed by (wallet, quest_kind) and
- * then reported to Solana. The local row is:
- *   - the idempotency guard (a 'reported' row never re-hits Solana),
- *   - the retry state for the reconciliation cron,
- *   - the data source for in-app quest progress (no per-view Solana GET).
- *
- * Solana stays authoritative for badge earned/locked and claim state; this table
- * only mirrors "the user did the action + our reporting status".
- */
-
 type CompletionRow = typeof solanaWeekQuestCompletions.$inferSelect;
 
 export type RecordAndReportStatus =
@@ -65,7 +51,6 @@ async function findCompletionRow(
   return row ?? null;
 }
 
-// Insert a pending row (idempotent) and return the current row.
 async function ensureCompletionRow(
   walletId: string,
   kind: QuestKind,
@@ -93,7 +78,6 @@ async function ensureCompletionRow(
   return row;
 }
 
-// Apply a report result to a row and normalize the outcome.
 async function applyReportResult(
   rowId: bigint,
   result: QuestCompletionResult
@@ -132,7 +116,6 @@ async function applyReportResult(
       return "failed";
     case "disabled":
     case "skipped":
-      // Not configured / guard tripped — leave pending for the reconciler.
       await db()
         .update(solanaWeekQuestCompletions)
         .set({ ...base, status: "pending", lastErrorCode: result.reason })
@@ -147,10 +130,6 @@ async function applyReportResult(
   }
 }
 
-/**
- * Records the quest completion locally (idempotent) and reports it to Solana
- * unless already reported. Returns the normalized local status.
- */
 export async function recordAndReportQuestCompletion(args: {
   walletId: string;
   kind: QuestKind;
@@ -200,7 +179,6 @@ async function reportBestEffort(
       });
     }
   } catch (error) {
-    // Best-effort: never break the calling flow on a reporting/DB failure.
     console.error("[solana-week] quest completion threw", {
       kind,
       walletId,
@@ -217,10 +195,6 @@ async function reportBestEffort(
  */
 export const MIN_EARN_DEPOSIT_QUEST_USDC_RAW = BigInt(5_000_000);
 
-/**
- * Best-effort Quest 1 (connect wallet + Earn deposit of at least $5). A deposit
- * under the threshold is not a qualifying action and is a no-op. Never throws.
- */
 export function reportEarnDepositQuestCompletion(
   walletId: string,
   depositedUsdcRaw: bigint,
@@ -232,7 +206,6 @@ export function reportEarnDepositQuestCompletion(
   return reportBestEffort("earn_deposit", walletId, metadata);
 }
 
-/** Best-effort Quest 2 (first Earn deposit via autodeposit). Never throws. */
 export function reportFirstAutodepositSweepQuestCompletion(
   walletId: string,
   metadata?: QuestCompletionMetadata
@@ -251,9 +224,6 @@ export type ReconcileSummary = {
 
 const RETRY_BATCH_LIMIT = 500;
 
-// Deposit backfill: qualifying manual deposits whose inline confirm hook never
-// produced an earn_deposit row. The hook is best-effort — a swallowed DB error
-// or a killed function loses it silently, and nothing else re-creates it.
 async function findQualifyingDepositWalletsWithoutQuestRowSince(
   since: Date
 ): Promise<string[]> {
@@ -302,12 +272,6 @@ async function filterToMobileWallets(wallets: string[]): Promise<string[]> {
     .filter((wallet): wallet is string => Boolean(wallet));
 }
 
-/**
- * Reconciliation backstop for the cron: (1) retry every row not yet reported,
- * (2) backfill autodeposit sweeps that never produced a row (e.g. a missed
- * real-time worker notify) within `sweepLookbackMs`. Idempotent throughout —
- * already-reported wallets short-circuit without a Solana call.
- */
 export async function reconcileQuestCompletions(args: {
   sweepLookbackMs: number;
 }): Promise<ReconcileSummary> {
@@ -330,7 +294,6 @@ export async function reconcileQuestCompletions(args: {
     }
   };
 
-  // (1) Retry rows that aren't reported yet.
   const pendingRows = await db()
     .select()
     .from(solanaWeekQuestCompletions)
@@ -356,7 +319,6 @@ export async function reconcileQuestCompletions(args: {
     }
   }
 
-  // (2) Backfill autodeposit sweeps lacking a completion row (idempotent).
   const since = new Date(Date.now() - args.sweepLookbackMs);
   const sweptWallets = await findWalletAddressesWithBalanceSweepsSince(since);
   for (const wallet of sweptWallets) {
@@ -379,10 +341,6 @@ export async function reconcileQuestCompletions(args: {
     }
   }
 
-  // (3) Backfill qualifying manual deposits that never produced an
-  // earn_deposit row (lost best-effort confirm hook), mobile wallets only.
-  // Idempotent like (2); a newly reported wallet gets the Quest 1 push once
-  // via recordAndReportQuestCompletion, same as the inline path.
   const depositWallets = await filterToMobileWallets(
     await findQualifyingDepositWalletsWithoutQuestRowSince(since)
   );
@@ -431,12 +389,6 @@ function normalizeRowStatus(status: string): QuestProgressStatus {
   return status === "reported" || status === "failed" ? status : "pending";
 }
 
-/**
- * Read-only quest progress for one wallet, for the in-app quest page. Returns
- * one item per quest kind ("not_started" when no row exists yet). Solana stays
- * authoritative for badge earned/locked and claim state; this only mirrors "the
- * wallet did the action + our local reporting status".
- */
 export async function getQuestProgress(
   walletId: string
 ): Promise<QuestProgressItem[]> {

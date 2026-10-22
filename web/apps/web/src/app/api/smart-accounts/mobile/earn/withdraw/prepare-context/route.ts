@@ -98,8 +98,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // Withdrawing requires an already-provisioned smart account (you can't
-  // withdraw from one that was never created). Resolve it; never provision.
   let settingsPda: string;
   let smartAccountAddress: string;
   try {

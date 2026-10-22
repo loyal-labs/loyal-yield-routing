@@ -84,8 +84,6 @@ export function toShieldedRow(
   };
 }
 
-// Token avatar with the shield badge that marks a balance as still held in
-// the private-transfer program.
 export function ShieldedTokenIcon({
   icon,
   size = 11,
@@ -113,9 +111,6 @@ export function ShieldedTokenIcon({
   );
 }
 
-// Exit-only screen for the sunset private-transfer program (ASK-2269): a
-// Send-style confirm for one shielded token at a time — full balance, one
-// signature. Results walk the shared action screens like Send/Swap.
 export function UnshieldPane({
   executeUnshield,
   initialMint,
@@ -226,7 +221,6 @@ export function UnshieldPane({
                 </div>
               </div>
 
-              {/* Source cell pinned above the CTA, like Send's asset cell. */}
               <div className="mt-auto flex w-full shrink-0 flex-col gap-1 p-2">
                 <button
                   className={`flex w-full items-center rounded-2xl px-4 text-left ${

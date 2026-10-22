@@ -45,7 +45,6 @@ export function AutodepositMockSheet() {
         >
           <DialogTitle className="sr-only">Title</DialogTitle>
 
-          {/* Desktop content */}
           <div className="hidden min-h-0 w-full flex-col items-start sm:flex">
             <div className="flex h-[452px] w-full items-center justify-center bg-[#f5f5f5]">
               <ImagePlaceholderIcon
@@ -63,7 +62,6 @@ export function AutodepositMockSheet() {
             </div>
           </div>
 
-          {/* Mobile content */}
           <div className="flex min-h-0 w-full flex-col items-start overflow-y-auto p-2 sm:hidden">
             <div className="flex w-full flex-col gap-7 p-3">
               {/* eslint-disable-next-line @next/next/no-img-element */}

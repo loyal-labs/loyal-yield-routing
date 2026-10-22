@@ -111,7 +111,6 @@ export function useEarnMaxVoltr(input: {
       }
     } catch (nextError) {
       if (accountRef.current !== account) return;
-      // A failed status read must not leave a stale "Ready to claim" state.
       setSummary(null);
       setError(
         nextError instanceof Error
@@ -127,7 +126,6 @@ export function useEarnMaxVoltr(input: {
     void refresh();
   }, [refresh]);
 
-  // Flip a pending request to claimable without a manual reload.
   const readyBy = summary?.summary?.withdrawal?.readyBy;
   const canClaim = summary?.summary?.withdrawal?.canClaim;
   useEffect(() => {
@@ -156,7 +154,6 @@ export function useEarnMaxVoltr(input: {
           !(wallet.publicKey && input.settingsPda && programId) ||
           wallet.publicKey.toBase58() !== input.walletAddress
         ) {
-          // Local wallet state, not a service fault: stays INFO, never pages.
           tracker.fail("prepare", {
             chainState: "not_submitted",
             errorCode: "wallet_unavailable",
@@ -215,7 +212,6 @@ export function useEarnMaxVoltr(input: {
         await refresh();
         return true;
       } catch (nextError) {
-        // The tracker ignores this after a terminal fail above.
         if (nextError instanceof VoltrClaimLiquidityError) {
           tracker.fail("prepare", {
             chainState: "not_submitted",
@@ -261,7 +257,6 @@ export function useEarnMaxVoltr(input: {
   const actions = useMemo<EarnMaxActions>(
     () => ({
       refresh,
-      // Pooled vault: no per-user install or close step.
       install: async () => true,
       close: async () => true,
       cancelWithdrawal: async () => false,
@@ -271,7 +266,6 @@ export function useEarnMaxVoltr(input: {
         run("request_withdrawal", (context) =>
           voltrRequestWithdrawalPlan(connection, context, amountRaw)
         ),
-      // One signature: claim, then sweep the vault's USDC to the wallet.
       claim: () =>
         run("claim", (context) => voltrClaimPlan(connection, context)),
     }),

@@ -124,8 +124,6 @@ function PanelHeader({ title }: { title: string }) {
   );
 }
 
-// Figma 5429:36915 — Earn MAX empty/logged-out rail: the Strategies card on
-// top of the shared Loyal Stats card (same live /api/earn/stats as Earn).
 export function EarnMaxStrategiesCard({
   apy,
 }: {
@@ -193,9 +191,6 @@ export function EarnMaxStrategiesCard({
   );
 }
 
-// Earn MAX rides the shared Earn chart machinery (EarnChartPane: tabs pill,
-// enlarged overlay, card motion) with its own two tabs and data — Earned bars
-// derived from confirmed position snapshots, APY from the summary.
 const EARN_MAX_CHART_TABS: readonly ChartTab[] = ["APY", "Earned"];
 
 // ponytail: daily "earned" ≈ equity delta minus confirmed same-day flows
@@ -205,9 +200,6 @@ const EARN_MAX_CHART_TABS: readonly ChartTab[] = ["APY", "Earned"];
 const EARN_MAX_TOOLTIP_TEXT =
   "Higher-yield strategies through your own smart account";
 
-// A wallet that never touched Earn MAX gets the first-deposit screen; any
-// history (even fully withdrawn) keeps the full workspace for its records.
-// The shell shares this to pick the mobile background.
 export function isEarnMaxUntouched(view: EarnMaxViewModel): boolean {
   return (
     !view.isLoading &&
@@ -233,8 +225,6 @@ function buildEarnMaxDailySeries(view: EarnMaxViewModel): {
     isCurrent: boolean;
   }[];
 } {
-  // First and last confirmed equity per calendar day — the first one anchors
-  // the position's opening day so its intra-day earnings still chart.
   const equityByDay = new Map<string, { first: number; last: number }>();
   for (const point of view.performance) {
     const date = new Date(point.timestamp);
@@ -273,8 +263,6 @@ function buildEarnMaxDailySeries(view: EarnMaxViewModel): {
       (flowsByDay.get(key) ?? 0) + (sign * Number(operation.amountRaw)) / 1_000_000
     );
   }
-  // Fixed window ending today, like the Earn earnings API — days without a
-  // position render as empty bars so young positions still read as 30 days.
   const now = new Date();
   const days: {
     date: Date;
@@ -290,13 +278,10 @@ function buildEarnMaxDailySeries(view: EarnMaxViewModel): {
     const key = dayKey(date);
     const dayEquity = equityByDay.get(key);
     const equity: number | null = dayEquity?.last ?? carryEquity;
-    // The opening day starts from zero, so every flow that day (the first
-    // deposit, a same-day top-up or withdrawal) is subtracted, never earned.
     const raw =
       equity === null
         ? 0
         : equity - (carryEquity ?? 0) - (flowsByDay.get(key) ?? 0);
-    // Deposit rounding dust (< 1 cent) is not a loss; real losses still chart.
     const earned = raw < 0 && raw > -0.01 ? 0 : raw;
     days.push({
       date,
@@ -397,8 +382,6 @@ function GroupHeaderWithIcon({
   );
 }
 
-// Figma 5429:37504 — Transactions | Positions card with the withdrawal
-// lifecycle (claim / cancel) pinned on top of the confirmed history.
 const TRANSACTIONS_LIMIT = 5;
 
 function minutesLeftLabel(readyBy: string): string {
@@ -523,8 +506,6 @@ function EarnMaxActivityCard({
     : withdrawal?.claimBlockedReason === "insufficient_liquidity"
     ? "The vault does not have enough available USDC to pay this withdrawal yet. Check again later."
     : "Vault liquidity could not be verified. Check status before claiming.";
-  // Recent-N card like the Earn activity card — the full feed lives on the
-  // Activity page.
   const groups: { items: EarnMaxActivityItem[]; label: string }[] = [];
   for (const item of view.activity.slice(0, TRANSACTIONS_LIMIT)) {
     const label = item.timestamp
@@ -602,9 +583,6 @@ function EarnMaxActivityCard({
                       </span>
                     </p>
                   </div>
-                  {/* Reveal rides a short delay so quick pointer passes don't
-                      flash the pill; un-hover drops the delay and hides at
-                      once. */}
                   <div className="pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
                     <PendingWithdrawalTooltip pending={!!withdrawal && withdrawal.status !== "claimed"}>
                       <SmallPill
@@ -624,7 +602,6 @@ function EarnMaxActivityCard({
             </p>
           )
         ) : view.isLoading && groups.length === 0 && !withdrawal ? (
-          // Same pulse skeletons the Earn activity card boots with.
           <div className="t-skel-rows flex flex-col gap-2 px-4 py-3">
             {[0, 1, 2].map((index) => (
               <div className="h-[60px] w-full rounded-2xl bg-accent" key={index} />
@@ -780,8 +757,6 @@ function EarnMaxActivityCard({
   );
 }
 
-// Figma 5429:37403 — signed-in Earn MAX home: balance + strategies card and
-// the transactions card below it.
 function EarnMaxMainPane({
   actions,
   chartCustom,
@@ -813,7 +788,6 @@ function EarnMaxMainPane({
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
   const balance = splitUsdBalance(view.balanceUsd);
-  // Sign outside the dollar sign; a rounded -0.00 reads as +$0.00.
   const earnedCents =
     view.earnedUsd === null ? null : Math.round(view.earnedUsd * 100);
   const earnedLabel =
@@ -833,7 +807,6 @@ function EarnMaxMainPane({
       <div className="flex min-h-0 w-full flex-1 flex-col gap-2 overflow-y-auto">
       <div className="flex w-full shrink-0 flex-col rounded-3xl bg-card max-[795px]:rounded-t-none">
         <header className="flex w-full items-center p-2">
-          {/* Figma 5459:71906 — mobile treats Earn MAX as a subscreen. */}
           <button
             aria-label="Back"
             className="t-hover hidden size-11 shrink-0 items-center justify-center rounded-3xl hover:bg-accent max-[795px]:flex"
@@ -849,8 +822,6 @@ function EarnMaxMainPane({
             <h1 className="whitespace-nowrap font-semibold text-[24px] text-foreground leading-7">
               Earn MAX
             </h1>
-            {/* ponytail: mock tooltip copy — real copy comes with the
-                content pass */}
             <span className="max-[795px]:hidden">
               <InfoTooltip
                 iconClassName="size-6"
@@ -941,10 +912,6 @@ function EarnMaxMainPane({
           </div>
         </div>
         <div className="flex w-full flex-col p-2 pt-0">
-          {/* Hover swaps the value for the row-scoped Withdraw/Deposit
-              pills (Figma 5465:82773) — same delayed reveal as the stables
-              rows: quick pointer passes don't flash the buttons, un-hover
-              drops the delay and hides immediately. */}
           <div className="group flex w-full items-center rounded-2xl px-4 transition-colors duration-150 hover:bg-accent">
             <span className="flex items-center py-2">
               <GrayInfinityIcon />
@@ -1049,9 +1016,6 @@ function EarnMaxMainPane({
           ) : null}
         </div>
       </div>
-      {/* Mobile inline chart card between balance and activity (same slot
-          Earn's position pane uses); on desktop the chart lives in the
-          right pane. */}
       <EarnChartCard
         actionAriaLabel="Expand chart"
         actionIconSrc={`${ASSET_BASE}/icon-expand.svg`}
@@ -1072,8 +1036,6 @@ function EarnMaxMainPane({
       />
       </div>
 
-      {/* Mobile sticky action bar — same contract as Earn's (Figma
-          5459:71906 bottom buttons). */}
       <div className="hidden w-full shrink-0 bg-card px-4 py-2 max-[795px]:block">
         <div className="flex w-full gap-2">
           <button
@@ -1111,8 +1073,6 @@ function EarnMaxMainPane({
   );
 }
 
-// The Earn MAX section: connect teaser + strategy rail when signed out;
-// APY and position workspace for signed-in wallets (main / deposit / withdraw).
 export function EarnMaxWorkspace({
   earnData,
   earnMax,
@@ -1122,9 +1082,7 @@ export function EarnMaxWorkspace({
 }: {
   earnData: EarnPositionData;
   earnMax: { actions: EarnMaxActions; view: EarnMaxViewModel };
-  /** Mobile back chevron to the wallet home. */
   onBack: () => void;
-  /** Mobile settings gear on the signed-out screen. */
   onOpenSettings: () => void;
   onViewAllActivity: () => void;
 }) {
@@ -1234,8 +1192,6 @@ export function EarnMaxWorkspace({
         ) : !isHydrated ? (
           <section className="flex h-full min-w-0 flex-1 rounded-3xl bg-card max-[795px]:rounded-none" />
         ) : isVirgin ? (
-          // Figma 5459:71433 — a wallet with no Earn MAX history gets the
-          // first-deposit screen (same pane Earn's empty state uses).
           <PaneReveal>
             <EarnEmptyPane
               apyBadgeLabel={formatEarnMaxApyLabel(view.forecastApyBps)}
@@ -1273,8 +1229,6 @@ export function EarnMaxWorkspace({
           </PaneReveal>
         )}
       </MiddlePaneSlide>
-      {/* Below 1204px the transaction detail rides the same sheet the Earn
-          shell uses (bottom sheet on mobile, right sheet in between). */}
       <SheetReveal
         isOpen={selectedTransaction !== null && screen === "main"}
         onClose={() => setSelectedTransaction(null)}
@@ -1293,8 +1247,6 @@ export function EarnMaxWorkspace({
       {screen !== "main" ? null : !isHydrated ||
         !isSignedIn ||
         isVirgin ? (
-        // Explain Earn MAX before sign-in; show strategies to wallets without a
-        // position. Keep the shared Loyal Stats below both.
         <aside className="hidden h-full w-[400px] shrink-0 flex-col gap-2 overflow-y-auto [scrollbar-width:none] min-[1204px]:flex [&::-webkit-scrollbar]:hidden">
           {isHydrated && isSignedIn ? (
             <EarnMaxStrategiesCard apy={view} />

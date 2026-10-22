@@ -1,8 +1,7 @@
-// components/topics-sidebar.tsx
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area"; // shadcn/ui
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 type Topic = { id: string; title: string; updatedAt: string };
 
@@ -22,7 +21,6 @@ function QRCodeMockup() {
       xmlns="http://www.w3.org/2000/svg"
     >
       <title id="qr-code-title">QR code to connect with Loyal miniapp</title>
-      {/* Corner squares */}
       <rect fill="currentColor" height="25" width="25" x="5" y="5" />
       <rect fill="white" height="15" width="15" x="10" y="10" />
       <rect fill="currentColor" height="9" width="9" x="13" y="13" />
@@ -35,7 +33,6 @@ function QRCodeMockup() {
       <rect fill="white" height="15" width="15" x="10" y="75" />
       <rect fill="currentColor" height="9" width="9" x="13" y="78" />
 
-      {/* Random pattern */}
       <rect fill="currentColor" height="5" width="5" x="35" y="5" />
       <rect fill="currentColor" height="5" width="5" x="45" y="5" />
       <rect fill="currentColor" height="5" width="5" x="55" y="5" />
@@ -54,12 +51,10 @@ function QRCodeMockup() {
       <rect fill="currentColor" height="5" width="5" x="15" y="60" />
       <rect fill="currentColor" height="5" width="5" x="25" y="55" />
 
-      {/* Center pattern */}
       <rect fill="currentColor" height="30" width="30" x="35" y="35" />
       <rect fill="white" height="20" width="20" x="40" y="40" />
       <rect fill="currentColor" height="10" width="10" x="45" y="45" />
 
-      {/* Right side pattern */}
       <rect fill="currentColor" height="5" width="5" x="70" y="35" />
       <rect fill="currentColor" height="5" width="5" x="80" y="40" />
       <rect fill="currentColor" height="5" width="5" x="90" y="35" />
@@ -68,7 +63,6 @@ function QRCodeMockup() {
       <rect fill="currentColor" height="5" width="5" x="70" y="60" />
       <rect fill="currentColor" height="5" width="5" x="90" y="60" />
 
-      {/* Bottom pattern */}
       <rect fill="currentColor" height="5" width="5" x="35" y="70" />
       <rect fill="currentColor" height="5" width="5" x="45" y="75" />
       <rect fill="currentColor" height="5" width="5" x="55" y="70" />
@@ -92,7 +86,6 @@ export function TopicsSidebar({ topics, onNewChat }: TopicsSidebarProps) {
         <Button onClick={onNewChat}>New chat</Button>
       </div>
 
-      {/* QR Code Section */}
       <div className="flex flex-col items-center gap-3 border-b p-4">
         <div className="rounded-lg border bg-white p-2">
           <QRCodeMockup />

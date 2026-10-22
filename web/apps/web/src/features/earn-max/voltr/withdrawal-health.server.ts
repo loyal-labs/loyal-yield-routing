@@ -10,7 +10,6 @@ import { EARN_MAX_BACKYARD_ROUTE_KEY } from "./current-apy.server";
 import { VOLTR_PROGRAM_ID, VOLTR_VAULT } from "@loyal-labs/smart-account-vaults";
 import { parseWithdrawalHealth } from "./withdrawal-health";
 
-/** Display-only, for authenticated users of the configured pooled Voltr vault. */
 export async function readEarnMaxWithdrawalHealth(): Promise<EarnMaxWithdrawalHealth> {
   const environment = getServerEnv().solanaEnv;
   const scope = {

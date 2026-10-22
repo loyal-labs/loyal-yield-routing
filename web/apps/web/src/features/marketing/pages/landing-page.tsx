@@ -9,8 +9,6 @@ import { LandingGetStarted } from "@/components/landing-get-started";
 import { LandingHeader } from "@/components/landing-header";
 import { LandingHero } from "@/components/landing-hero";
 import { LandingPhoneLottie } from "@/components/landing-phone-lottie";
-// Roadmap temporarily hidden — restore by uncommenting
-// import { LandingRoadmap } from "@/components/landing-roadmap";
 import { LandingScrollAnimations } from "@/components/landing-scroll-animations";
 import { LandingSupportedBy } from "@/components/landing-supported-by";
 import { LandingTrust } from "@/components/landing-trust";
@@ -197,9 +195,6 @@ export function LandingPage({
           </article>
         </div>
       </section>
-
-      {/* Roadmap temporarily hidden — restore by uncommenting */}
-      {/* <LandingRoadmap /> */}
 
       <LandingTrust copy={dict.trust} locale={locale} />
 

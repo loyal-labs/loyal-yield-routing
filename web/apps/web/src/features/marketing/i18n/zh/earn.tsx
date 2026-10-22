@@ -10,7 +10,6 @@ export const zhEarn: EarnDict = {
     ogImageAlt: "Loyal 自动赚取 Solana 上最优的稳定币收益",
   },
   breadcrumb: { home: "首页", page: "Earn" },
-  // Block 1 — Hero (dark)
   hero: {
     title: "自动赚取 Solana 上最优的稳定币收益",
     body: "Solana 上的借贷利率时刻在变。Loyal 会把你的美元稳定币分配到当前利率最高的可靠借贷储备池，整个过程受链上策略约束，所以你既能拿到当前最优的利率，又不用放弃资金控制权。你只需存入资金，设定其中多大比例用于赚取收益，剩下的交给它。",
@@ -18,7 +17,6 @@ export const zhEarn: EarnDict = {
     imageAlt:
       "Loyal 优化器把资金分配到 Solana 上利率最高的 Kamino 借贷储备池",
   },
-  // Block 2 — Section: How your dollars earn with Loyal
   howItEarns: {
     title: "你的资金如何在 Loyal 赚取收益",
     description: "存入资金，让优化器负责轮换。",
@@ -46,7 +44,6 @@ export const zhEarn: EarnDict = {
       ),
     },
   },
-  // Block 3 — Section: Your stablecoins are all just dollars
   dollars: {
     title: "你的稳定币，说到底都是美元",
     cards: {
@@ -64,7 +61,6 @@ export const zhEarn: EarnDict = {
       ),
     },
   },
-  // Block 4 — Section: Why lending rates spike
   rateSpikes: {
     title: "借贷利率为什么会飙升（以及机会在哪里）",
     description: "这部分通常都讲得很糟，所以这里直白地说一遍。",
@@ -86,7 +82,6 @@ export const zhEarn: EarnDict = {
       ),
     },
   },
-  // Block 5 — Section: How Loyal routes to the best rate
   routing: {
     title: "Loyal 如何把资金调度到最优利率",
     cards: {
@@ -106,7 +101,6 @@ export const zhEarn: EarnDict = {
       ),
     },
   },
-  // Block 6 — CardsGrid (3 cols, muted): The three approaches we ruled out
   ruledOut: {
     title: "为什么不用一个大合约、一把后端私钥或一个金库",
     description:
@@ -126,7 +120,6 @@ export const zhEarn: EarnDict = {
       },
     },
   },
-  // Block 7 — Section: How the policy keeps it safe (Loyal's answer)
   policy: {
     title: "策略如何保证安全",
     description: "Loyal 的方案保留了上述做法中有用的部分，去掉了其中的风险。",
@@ -157,7 +150,6 @@ export const zhEarn: EarnDict = {
       ),
     },
   },
-  // Block 8 — CardsGrid (muted, 2 cols): Risk
   risks: {
     title: "理解风险",
     description: (
@@ -206,7 +198,6 @@ export const zhEarn: EarnDict = {
       },
     },
   },
-  // Block 9 — CardsGrid (muted, 2 cols): Who optimizes yield
   audiences: {
     title: "谁在用 Loyal 优化收益",
     cards: {
@@ -244,7 +235,6 @@ export const zhEarn: EarnDict = {
       },
     },
   },
-  // Block 10 — TextImageHero (text-left): How it's built
   howItsBuilt: {
     title: "它是怎么构建的",
     body: (
@@ -280,7 +270,6 @@ export const zhEarn: EarnDict = {
     cta: "阅读文档",
     imageAlt: "Loyal 的开源单一仓库和用于稳定币收益调度的 SDK",
   },
-  // Block 11 — TextImageHero (text-right): Start earning
   startEarning: {
     title: "开始赚取收益",
     body: (

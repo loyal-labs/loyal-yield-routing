@@ -24,7 +24,6 @@ import {
 } from "@loyal-labs/smart-account-vaults";
 import { normalizeLifecycleErrorCode } from "../src/features/observability/lifecycle-contract";
 
-// Synthetic account snapshots only. No network connection, signing or secrets.
 const authority = Keypair.generate().publicKey;
 const owner = Keypair.generate().publicKey;
 const user = voltrUserAccounts(authority);
@@ -75,11 +74,9 @@ assert.equal(voltrClaimBlockReason(funded), null);
 assert.equal(voltrClaimBlockReason(funded, 0), "not_ready");
 await voltrClaimPlan(connection, context);
 
-// A formerly claimable summary must not authorize a now-unfunded prepare.
-// Leave enough for the post-headroom sweep, but not the full pool payout.
 idleData.writeBigUInt64LE(payout - BigInt(1), 64);
 const unfunded = await readVoltrPosition(connection, authority);
-assert.ok(unfunded.assetRaw > payout); // User dust must not fund pool coverage.
+assert.ok(unfunded.assetRaw > payout);
 assert.equal(voltrClaimBlockReason(unfunded), "insufficient_liquidity");
 await assert.rejects(
   voltrClaimPlan(connection, context),
@@ -87,7 +84,6 @@ await assert.rejects(
 );
 assert.equal(voltrClaimBlockReason(unfunded, 0), "not_ready");
 
-// Nullable or invalid pool accounts must never enable signing.
 const wrongMint = Buffer.from(idleData);
 owner.toBuffer().copy(wrongMint, 0);
 const wrongAuthority = Buffer.from(idleData);

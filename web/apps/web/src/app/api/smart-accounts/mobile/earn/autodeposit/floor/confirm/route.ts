@@ -142,8 +142,6 @@ export async function POST(request: Request) {
     });
 
     if (result.rebaselineSweep.status === "scheduled") {
-      // Transactional push (ASK-1651): lowering the floor freed up USDC and a
-      // sweep got scheduled.
       await sendWalletPush(
         walletAddress,
         autodepositSweepScheduledPush(

@@ -18,17 +18,10 @@ export type FlowStep = {
   title: string;
 };
 
-// Walkthrough clock: the spotlight advances every STEP_MS, dwells on the
-// completed pipeline so it can be read as a whole, then fades back and loops.
 const STEP_MS = 1300;
 const LAST_DWELL_MS = 2000;
 const RESET_MS = 500;
 
-// Animated step diagram for the "How … works" explainer panes: each step is a
-// node on a vertical pipeline, the active node lights up in sequence and the
-// connector fills top-down like funds moving through it (CSS under t-flow in
-// globals.css). Rows enter on the texts-reveal stagger; prefers-reduced-motion
-// pins the finished all-lit state instead of cycling.
 export function FlowDiagram({
   docsHref,
   footnote,
@@ -145,7 +138,6 @@ export function FlowDiagram({
   );
 }
 
-// Action-specific help opens beside the sidebar, or as a bottom sheet on mobile.
 export function FlowExplainerOverlay({
   children,
   isOpen,

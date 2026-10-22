@@ -355,8 +355,6 @@ function readRequiredString(
   return value;
 }
 
-// Release/environment identify the reporting build in OTLP resource
-// attributes; restrict them to a safe identifier alphabet.
 export function normalizeResourceValue(
   value: string,
   maxLength: number

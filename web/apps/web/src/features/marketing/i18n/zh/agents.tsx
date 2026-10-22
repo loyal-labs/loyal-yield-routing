@@ -10,14 +10,12 @@ export const zhAgents: AgentsDict = {
     ogImageAlt: "Loyal：Solana 上面向 AI 代理的智能账户",
   },
   breadcrumb: { home: "首页", page: "Agents" },
-  // Block 1 — Hero (dark)
   hero: {
     title: "面向 AI 代理的智能账户",
     body: "Loyal 中的每一个钱包地址都是一个智能账户，有自己的策略和支出上限，所以你的代理既不能超额花费，也不能把资金发往你未批准的地方。",
     cta: "开始使用",
     imageAlt: "Loyal 代理权限阶梯，带有支出限额卡片",
   },
-  // Block 2 — Section (why we built this)
   whyWeBuilt: {
     title: "我们为什么做这个",
     cards: {
@@ -36,7 +34,6 @@ export const zhAgents: AgentsDict = {
       ),
     },
   },
-  // Block 3 — Section (what an agent wallet on Loyal is)
   whatItIs: {
     title: "Loyal 上的代理钱包是什么",
     cards: {
@@ -58,7 +55,6 @@ export const zhAgents: AgentsDict = {
       ),
     },
   },
-  // Block 4 — Section-5 (three bold permission-tier cards)
   tiers: {
     title: "三个权限等级",
     description:
@@ -78,7 +74,6 @@ export const zhAgents: AgentsDict = {
       },
     },
   },
-  // Block 5 — Section-7 (two muted cards: spending limits + allowlists)
   limits: {
     title: "支出限额与地址白名单",
     description: (
@@ -100,7 +95,6 @@ export const zhAgents: AgentsDict = {
       },
     },
   },
-  // Block 6 — Section-14 (muted grid: what you can build)
   build: {
     title: "你可以构建什么",
     description:
@@ -143,7 +137,6 @@ export const zhAgents: AgentsDict = {
       },
     },
   },
-  // Block 7 — Section-16 (muted 2-col grid + closing: security model)
   security: {
     title: "安全模型",
     description: "每一项约束都在 Solana 上执行，而不是在 Loyal 的服务器上：",
@@ -188,7 +181,6 @@ export const zhAgents: AgentsDict = {
     closingStatement:
       "结果是一个能让自主代理行为安全地规模化的钱包：每一项约束都写在代码里、在链上，没有任何 Loyal 或其他人可以凌驾其上的链下权限。",
   },
-  // Block 9 — Section-19 (image-left feature row: get started)
   getStarted: {
     title: "开始使用",
     body: "可在网页应用、浏览器扩展、Telegram 小程序和 Android 应用中运行，全部基于同一个 Squads 智能账户。支持的资产：USDC、SOL、USDT。",

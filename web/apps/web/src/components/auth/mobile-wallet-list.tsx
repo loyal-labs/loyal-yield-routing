@@ -7,10 +7,8 @@ import { useEffect, useMemo, useState } from "react";
 import { TrackedExternalLink } from "@/components/analytics/tracked-external-link";
 
 type MobileWallet = {
-  /** Wallet-adapter name, so an injected build of this wallet is recognized. */
   name: string;
   icon: string;
-  /** Absent when the wallet publishes no link that opens a URL in its browser. */
   browseUrl?: (url: string) => string;
 };
 

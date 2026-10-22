@@ -119,7 +119,6 @@ async function probe(
     if (!signature) {
       return { ...row, result: "returned without our signature" };
     }
-    // Simulate only; the probe never sends.
     const simulation = await createSolanaRpc(rpcEndpoint)
       .simulateTransaction(getBase64EncodedWireTransaction(signed), {
         encoding: "base64",

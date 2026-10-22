@@ -106,7 +106,6 @@ export async function authenticateMobileWalletRequest(args: {
     args.body
   );
 
-  // Throws a 400 WalletAuthError when the address isn't a valid 32-byte key.
   decodeWalletAddress(walletAddress);
 
   const issuedAtMs = Date.parse(issuedAt);

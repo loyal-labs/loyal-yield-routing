@@ -19,9 +19,6 @@ import {
   findEarnCleanupVaultState,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-// Phase two of a full mobile withdrawal. The backend only resolves a fresh,
-// post-withdraw chain context; the device builds and signs the cleanup with
-// prepareEarnUsdcCleanup, matching the other on-device Earn prepare flows.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 const connectionCache = new Map<SolanaEnv, Connection>();

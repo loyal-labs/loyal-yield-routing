@@ -53,7 +53,6 @@ const EXPECTED_LOCAL_FAILURES = new Set([
 export function isAlertableLifecycleEvent(
   event: NormalizedLifecycleEvent
 ): boolean {
-  // Synthetic failures are evaluated by the dedicated canary alert.
   if (event.trafficKind === "synthetic") return false;
   if (event.recoveryRequired === true) return true;
   if (event.outcome !== "failed") return false;

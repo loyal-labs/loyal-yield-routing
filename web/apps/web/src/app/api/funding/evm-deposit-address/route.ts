@@ -17,8 +17,6 @@ import {
 } from "@/features/identity/server/auth-session";
 import { getServerEnv } from "@/lib/core/config/server";
 
-// Two-step: GET returns the stored address, or the Privy request the user must
-// sign; POST takes that signature and creates the address.
 const bodySchema = z.object({
   signature: z.string().min(1),
   requestExpiry: z.number().int().positive(),

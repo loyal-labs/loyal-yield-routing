@@ -623,7 +623,6 @@ export function getFrontendSolanaRpcMaxRequestsPerWindow(): number {
     }
   }
 
-  // Honor a legacy min-interval override as an equivalent per-second ceiling.
   const rawInterval = env?.[FRONTEND_SOLANA_RPC_MIN_INTERVAL_ENV_NAME];
   if (rawInterval) {
     const parsed = Number.parseInt(rawInterval, 10);

@@ -30,8 +30,6 @@ export async function GET(
   const chartDays = new URL(request.url).searchParams.get("chartDays");
 
   try {
-    // ?chartDays=<1|7|30|365|max> returns just that range's chart points; the
-    // plain request keeps returning the full detail (with the 24h chart).
     if (chartDays) {
       if (!TOKEN_CHART_DAYS.includes(chartDays as TokenChartDays)) {
         return NextResponse.json(

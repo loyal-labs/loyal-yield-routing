@@ -10,8 +10,6 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-// Internal test page for ASK-2292: which wallets can sign Solana v1
-// transactions. Not linked anywhere; 404 on the production app environment.
 export default function TxV1ProbePage() {
   const env = getPublicEnv();
   if (env.appEnvironment === "prod") {

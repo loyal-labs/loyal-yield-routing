@@ -46,8 +46,6 @@ type PrivyAuthState = {
   step: Step;
   error: string | null;
   start: () => void;
-  // Signed in through the legacy wallet flow (no Privy user yet): log the
-  // same wallet into Privy, re-issue the session, then prompt for email.
   addEmail: () => void;
 };
 
@@ -70,7 +68,6 @@ export async function exchangePrivySession(
     headers: {
       "content-type": "application/json",
       "privy-id-token": identityToken,
-      // Joins the route's smart-account provisioning events to this flow.
       ...(flowId ? lifecycleFlowHeaders(flowId) : {}),
     },
     body: JSON.stringify({ walletAddress }),
@@ -83,16 +80,6 @@ export async function exchangePrivySession(
   }
 }
 
-/**
- * Owns the Privy <-> Loyal session handshake. Mounted once at layout level so
- * it survives the sign-in modal closing while Privy's own modal is up.
- *
- * - `start()` (from the modal button): open Privy if needed, then once Privy
- *   is authenticated pick the wallet (login wallet -> linked external ->
- *   linked embedded -> create embedded), exchange the identity token for the
- *   Loyal cookie, and select that wallet in wallet-adapter.
- * - Loyal session gone while Privy still authenticated -> Privy logout.
- */
 export function PrivyAuthController({ children }: { children: ReactNode }) {
   const { privyAppId } = usePublicEnv();
   if (!privyAppId) return children;
@@ -111,8 +98,6 @@ function Inner({ children }: { children: ReactNode }) {
     useAuthSession();
   const { close: closeSignInModal, registerHandler } = useSignInModal();
 
-  // Wallet-only users get Privy's "Connect your email" modal right after
-  // sign-in; on success the Loyal session is re-issued so user.email lands.
   const { linkEmail } = useLinkAccount({
     onSuccess: async ({ user }) => {
       const wallet = user.linkedAccounts.find(
@@ -168,7 +153,6 @@ function Inner({ children }: { children: ReactNode }) {
     lifecycleRef.current = lifecycle;
     lifecycleStageRef.current = "wallet_approval";
     lifecycle.start("intent");
-    // A deadline marks a stall, not a failed authentication or user abandonment.
     lifecycleDeadlineRef.current = setTimeout(
       () =>
         lifecycle.timeout(lifecycleStageRef.current, {
@@ -297,8 +281,6 @@ function Inner({ children }: { children: ReactNode }) {
         (embedded && "address" in embedded ? embedded.address : null);
       loginAddressRef.current = null;
 
-      // Add-email from a legacy session: Privy must have been logged in with
-      // the wallet that session is on, else we'd silently switch accounts.
       if (user?.walletAddress) {
         if (!linkedAddresses.has(user.walletAddress)) {
           await logout();
@@ -358,7 +340,6 @@ function Inner({ children }: { children: ReactNode }) {
       lifecycle.observe("backend_session_valid");
       closeSignInModal();
 
-      // Share the render-aware signer path with returning sessions.
       setSignerLifecycle(lifecycle);
       if (!hasEmail) linkEmail();
     },
@@ -374,7 +355,6 @@ function Inner({ children }: { children: ReactNode }) {
     ]
   );
 
-  // Sign-in: run once everything is ready, whichever order it arrives in.
   useEffect(() => {
     if (!wantsSession || !authenticated || !walletsReady || !privyUser) return;
     if (runningRef.current) return;
@@ -420,7 +400,6 @@ function Inner({ children }: { children: ReactNode }) {
     onSettled: finishSignerRestoration,
   });
 
-  // Sign-out: Loyal session gone while Privy still authenticated.
   useEffect(() => {
     if (!isHydrated || !ready) return;
     if (isAuthenticated) {

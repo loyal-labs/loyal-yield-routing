@@ -127,7 +127,6 @@ export function AuthSessionProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // A known-expired session must bypass the ordinary return-visit throttle.
       const isExpired =
         session !== null && Date.parse(session.expiresAt) <= Date.now();
       if (

@@ -86,22 +86,14 @@ function portfolioPositionToSwapToken(position: PortfolioPosition): SwapToken {
   };
 }
 
-// Crypto screen (Figma 4813:338843) and, via page="stables", the Stablecoins
-// one (4813:339437): the root token list plus the action flows — the
-// redesigned Send and Swap screens — mounted as the page-slide action
-// screen. All handler logic is ported from the workspace monolith's
-// personal-wallet slice; the stables Earn buttons jump to the Earn page's
-// deposit screen.
 export function CryptoPage({
   navigationNonce,
   onBack,
   onEarn,
   page,
 }: {
-  /** Bumped by the shell on every sidebar selection — abandons open actions. */
   navigationNonce: number;
   onBack: () => void;
-  /** Row-level Earn passes the clicked coin's mint; the header button none. */
   onEarn: (sourceMint?: string | null) => void;
   page: CryptoPaneVariant;
 }) {
@@ -120,9 +112,6 @@ export function CryptoPage({
     [data.walletAddress, data.positions]
   );
 
-  // --- legacy shielded-balance exit (ASK-2269) ---
-  // Only wallets still holding deposits in the sunset private-transfer
-  // program see the Unshield entry; reading balances needs no signature.
   const wallet = useWallet();
   const unshieldSigner = useMemo<WalletSigner | null>(
     () =>
@@ -186,7 +175,6 @@ export function CryptoPage({
     isHydrated &&
     (!isSignedIn || (data.walletAddress !== null && !data.isLoading));
 
-  // --- action flow state (ported from the monolith's personal-wallet slice) ---
   const [viewStack, setViewStack] = useState<ActionView[]>([]);
   const [sendToken, setSendToken] = useState<SwapToken>(fallbackSwapTokens[0]);
   const [swapFromToken, setSwapFromToken] = useState<SwapToken>(
@@ -198,13 +186,10 @@ export function CryptoPage({
     enabled: shouldLoadPopularTokens,
   });
 
-  // --- redesigned Send screen (Figma 4852:38932) ---
   const [sendRecipient, setSendRecipient] = useState<string | null>(null);
-  // Which selector occupies Send's right pane; null = the empty reserved slot.
   const [sendSelect, setSendSelect] = useState<"asset" | "recipient" | null>(
     null
   );
-  // Keeps the selector content rendered through the pane's close slide.
   const sendSelectRef = useRef<"asset" | "recipient">("recipient");
   if (sendSelect) {
     sendSelectRef.current = sendSelect;
@@ -221,21 +206,16 @@ export function CryptoPage({
   const { recents: sendRecents, recordSend: recordSendRecent } =
     useSendRecentRecipients(data.walletAddress);
 
-  // --- redesigned Swap screen (Figma 4819:414629) ---
   const [isSwapOpen, setIsSwapOpen] = useState(false);
   const [swapSelectSide, setSwapSelectSide] = useState<"from" | "to" | null>(
     null
   );
-  // Keeps the selector content rendered through the overlay's close slide.
   const swapSelectSideRef = useRef<"from" | "to">("to");
   if (swapSelectSide) {
     swapSelectSideRef.current = swapSelectSide;
   }
   const overlaySelectSide = swapSelectSide ?? swapSelectSideRef.current;
 
-  // --- token detail right pane (Figma 4826:439625) ---
-  // Row click selects (and opens the <1204 sheet); a page switch resets to
-  // that page's default token.
   const [detailToken, setDetailToken] = useState<SwapToken | null>(null);
   const [isDetailSheetOpen, setIsDetailSheetOpen] = useState(false);
   useEffect(() => {
@@ -275,8 +255,6 @@ export function CryptoPage({
 
     return tokens;
   }, [data.positions]);
-  // Stables the Earn product currently accepts — badged "Can earn" in the
-  // receive selector and ranked right after LOYAL.
   const earnProductAssets = useMemo(
     () =>
       getEarnProductAssetsForCluster(
@@ -299,10 +277,6 @@ export function CryptoPage({
     const heldMints = new Set(
       derivedTokens.map((token) => token.mint).filter(Boolean)
     );
-    // Earn stables missing from held+trending (e.g. CASH) still belong in
-    // the receive list: synthesize them from the canonical product assets.
-    // The picker price is indicative only (quotes come by mint), so a flat
-    // $1 for a USD stable is fine.
     const listedMints = new Set([
       ...heldMints,
       ...popularTokens.map((token) => token.mint),
@@ -316,8 +290,6 @@ export function CryptoPage({
         price: 1,
         symbol: asset.symbol,
       }));
-    // LOYAL first, then the Earn-eligible stables, then everything else —
-    // held-first order is preserved within each group (stable sort).
     const rank = (token: SwapToken) =>
       token.mint === LOYL_TOKEN.mint
         ? 0
@@ -330,7 +302,6 @@ export function CryptoPage({
     );
   }, [derivedTokens, earnEligibleMints, earnProductAssets, popularTokens]);
 
-  // Seed the flow tokens once the wallet's real tokens land.
   const prevHadTokensRef = useRef(false);
   useEffect(() => {
     const firstToken = derivedTokens[0];
@@ -356,8 +327,6 @@ export function CryptoPage({
     setViewStack([view]);
   }, []);
 
-  // Every Send entry lands on a fresh form: no carried-over recipient, the
-  // right pane back to its empty reserved slot.
   const openSend = useCallback(
     (token?: SwapToken) => {
       if (token) {
@@ -372,8 +341,6 @@ export function CryptoPage({
     [openAction]
   );
 
-  // Ref mirrors so the swap open/select callbacks read the latest pair
-  // without re-creating per selection.
   const swapFromTokenRef = useRef(swapFromToken);
   swapFromTokenRef.current = swapFromToken;
   const swapToTokenRef = useRef(swapToToken);
@@ -383,8 +350,6 @@ export function CryptoPage({
     setShouldLoadPopularTokens(true);
     if (from) {
       setSwapFromToken(from);
-      // Opening from a row that already sits on the receive side would pair
-      // a token with itself — hand the receive side the previous from.
       setSwapToToken((current) =>
         current.symbol === from.symbol ? swapFromTokenRef.current : current
       );
@@ -427,7 +392,6 @@ export function CryptoPage({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
         event.key !== "Escape" ||
-        // Numbers-only amount fields don't swallow Esc — only free text does.
         isEscapeGuardedTarget(event.target) ||
         (viewStack.length === 0 && !isSwapOpen && !isUnshieldOpen)
       ) {
@@ -480,8 +444,6 @@ export function CryptoPage({
     []
   );
 
-  // Portfolio names for the selector rows — SwapToken itself only carries a
-  // symbol; popular/searched tokens fall back to the ticker.
   const tokenNameByMint = useMemo(() => {
     const map: Record<string, string> = {};
     for (const position of data.positions) {
@@ -498,13 +460,9 @@ export function CryptoPage({
     [refreshWalletData]
   );
 
-  // Detail pane inputs: the wallet position (when held) supplies the
-  // balance and the app-pipeline price the list rows use.
   const pageTokenRows =
     page === "stables" ? data.cashTokenRows : data.investmentTokenRows;
   const firstPageRow = pageTokenRows[0];
-  // LOYAL anchors the crypto default, USDC the stables one; the page's first
-  // row covers wallets whose derived list is missing those entries.
   const detailDefault =
     (page === "stables"
       ? derivedTokens.find((token) => token.symbol === "USDC")
@@ -519,8 +477,6 @@ export function CryptoPage({
   const detailPublicBalance =
     detailPosition?.publicBalance ?? detailBase?.balance ?? 0;
   const detailPrice = detailPosition?.priceUsd ?? detailBase?.price ?? 0;
-  // Shared by the desktop aside and the <1204 sheet; actions leave the
-  // detail context, so they always drop the sheet first.
   const openDetailSwap = () => {
     if (!detailBase) {
       return;
@@ -539,14 +495,10 @@ export function CryptoPage({
     });
   };
 
-  // Row actions also select the token (without opening the <1204 detail
-  // sheet) so the desktop aside shows its detail once the action closes.
   const selectRowDetail = (row: TokenRow) =>
     setDetailToken(tokenRowToSwapToken(row));
 
   const rowActions: CryptoRowActions = {
-    // Row-level Earn lands on the deposit screen with the clicked coin
-    // preselected as the source; the header button keeps the default.
     onEarn: (row) => {
       selectRowDetail(row);
       onEarn(row.id);
@@ -572,8 +524,6 @@ export function CryptoPage({
   const actionType = actionView === null ? null : viewType(actionView);
   const isSendOpen = actionType === "sendPanel";
 
-  // Shared by the desktop aside and the <1204 sheet — one selector, two
-  // geometries (same split as swap's token selector).
   const renderSendSelectPane = () =>
     overlaySendSelect === "asset" ? (
       <SwapTokenSelectPane
@@ -680,9 +630,6 @@ export function CryptoPage({
           </PaneReveal>
         </MiddlePaneSlide>
         {isSendOpen ? (
-          // Send's right pane (Figma 4852:39600 / 4852:39997): the reserved
-          // 400px slot hosts either the asset selector or the recipient
-          // pane; both slide out while a submit runs and on result screens.
           <div className="hidden h-full w-[400px] shrink-0 min-[1204px]:block">
             <InlineSheetReveal
               className="flex h-full w-full min-w-0 flex-col overflow-clip rounded-3xl bg-card"
@@ -696,9 +643,6 @@ export function CryptoPage({
         ) : actionView !== null ? null : isUnshieldOpen ? (
           <aside className="hidden h-full w-[400px] shrink-0 rounded-3xl bg-card min-[1204px]:block" />
         ) : isSwapOpen ? (
-          // Swap's right pane: a reserved 400px slot (Figma 4813:403499
-          // keeps it empty) the selector panel-reveals into and out of;
-          // switching sides replays the content reveal on the open panel.
           <div className="hidden h-full w-[400px] shrink-0 min-[1204px]:block">
             <InlineSheetReveal
               className="flex h-full w-full min-w-0 flex-col overflow-clip rounded-3xl bg-card"
@@ -726,8 +670,6 @@ export function CryptoPage({
             </InlineSheetReveal>
           </div>
         ) : detailBase && detailMint ? (
-          // Token detail pane (Figma 4826:439625); re-keyed per mint so
-          // switching tokens replays the panel reveal.
           <aside className="hidden h-full w-[400px] shrink-0 min-[1204px]:block">
             <PaneReveal key={detailMint}>
               <div className="flex h-full w-full min-w-0 flex-col overflow-clip rounded-3xl bg-card">
@@ -749,9 +691,6 @@ export function CryptoPage({
           <aside className="hidden h-full w-[400px] shrink-0 rounded-3xl bg-card min-[1204px]:block" />
         )}
       </div>
-      {/* Below 1204px the selector opens as the right-pinned card over the
-          dark scrim (Figma 4819:413827) — the chart-enlarge geometry; on
-          desktop the scrim is display:none while the aside shows it. */}
       <SheetReveal
         isOpen={isSwapOpen && swapSelectSide !== null}
         onClose={() => setSwapSelectSide(null)}
@@ -774,7 +713,6 @@ export function CryptoPage({
           />
         </PaneReveal>
       </SheetReveal>
-      {/* Send's <1204 selector/recipient pane: same geometry as swap's. */}
       <SheetReveal
         isOpen={isSendOpen && sendSelect !== null && isSendFormActive}
         onClose={() => setSendSelect(null)}
@@ -785,9 +723,6 @@ export function CryptoPage({
           {renderSendSelectPane()}
         </PaneReveal>
       </SheetReveal>
-      {/* Token detail sheet (Figma 4826:440136) — row taps below 1204px open
-          the pane in the token-selector sheet geometry; the desktop aside
-          covers ≥1204 so the scrim hides there. */}
       {detailBase && detailMint ? (
         <SheetReveal
           isOpen={isDetailSheetOpen}

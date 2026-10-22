@@ -64,7 +64,6 @@ export function AccountPageView({
         }
       `}</style>
 
-      {/* SVG pixelation filters */}
       <svg aria-hidden="true" height="0" style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }} width="0">
         <defs>
           <filter id="acct-pixelate" x="0" y="0" width="100%" height="100%">
@@ -84,7 +83,6 @@ export function AccountPageView({
         </defs>
       </svg>
 
-      {/* Header: back + close */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px" }}>
         <button
           className="acct-back-btn"
@@ -104,7 +102,6 @@ export function AccountPageView({
         </button>
       </div>
 
-      {/* Account info: icon + label + balance */}
       <div style={{ display: "flex", alignItems: "center", padding: "8px 20px" }}>
         <Image
           alt={accountLabel}
@@ -150,7 +147,6 @@ export function AccountPageView({
         </div>
       </div>
 
-      {/* Action buttons */}
       <div style={{ display: "flex", gap: "16px", alignItems: "center", padding: "8px 20px" }}>
         <button
           className="acct-action-btn"
@@ -178,9 +174,7 @@ export function AccountPageView({
         </button>
       </div>
 
-      {/* Scrollable content: Tokens + Activity */}
       <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
-        {/* Tokens section */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "8px", width: "100%" }}>
           <div style={{ width: "100%", padding: "12px 12px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontFamily: font, fontSize: "16px", fontWeight: 500, lineHeight: "20px", color: "#000", letterSpacing: "-0.176px" }}>
@@ -205,7 +199,6 @@ export function AccountPageView({
           ))}
         </div>
 
-        {/* Activity section */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "8px", width: "100%" }}>
           <div style={{ width: "100%", padding: "12px 12px 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span style={{ fontFamily: font, fontSize: "16px", fontWeight: 500, lineHeight: "20px", color: "#000", letterSpacing: "-0.176px" }}>

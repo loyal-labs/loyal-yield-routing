@@ -18,7 +18,6 @@ export async function GET(
   const normalizedMint = mint?.trim();
 
   if (!normalizedMint || !isLikelySolanaMint(normalizedMint)) {
-    // Deterministic per-URL, so let the CDN absorb repeated invalid-mint spam.
     return NextResponse.json(
       { error: "Invalid token mint" },
       { headers: CACHE_HEADERS, status: 400 }

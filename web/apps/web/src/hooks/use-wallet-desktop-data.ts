@@ -41,7 +41,6 @@ export type BalanceHistoryPoint = {
 export type WalletPortfolioChange24h = {
   /** Net 24h change as a percentage of the prior portfolio value (e.g. -1.23). */
   percent: number;
-  /** Net 24h USD change (current value minus value 24 hours ago). */
   usdAmount: number;
 };
 
@@ -50,7 +49,6 @@ export type WalletDesktopData = {
   isConnected: boolean;
   isLoading: boolean;
   totalUsd: number;
-  /** Wallet SOL balance; null until the first portfolio fetch lands. */
   totalSol: number | null;
   balanceWhole: string;
   balanceFraction: string;
@@ -62,8 +60,6 @@ export type WalletDesktopData = {
   investmentTokenRows: TokenRow[];
   activityRows: ActivityRow[];
   allActivityRows: ActivityRow[];
-  // Raw activities backing the rows — swap entries keep both token legs,
-  // which the mapped ActivityRow shape drops.
   walletActivities: WalletActivity[];
   transactionDetails: Record<string, TransactionDetail>;
   positions: PortfolioPosition[];
@@ -343,10 +339,6 @@ function mapActivityToRowAndDetail(
 
   const rowType: ActivityRow["type"] = isReceived ? "received" : "sent";
 
-  // Earn (Kamino) operations read as the operation itself, not a generic
-  // send: "Earn Deposit" instead of "Sent to Unknown". Fee-only legs
-  // (autodeposit machinery) carry no token change — the row's SOL amount is
-  // just the network fee — and read as "Earn Vault Operation".
   const earnActivity =
     activity.type === "program_action" &&
     (activity.action === "earn_deposit" || activity.action === "earn_withdraw")
@@ -371,8 +363,6 @@ function mapActivityToRowAndDetail(
                 : "Earn Withdrawal",
           }
         : {
-            // Fee-only SOL legs (autodeposit machinery) aren't a user
-            // deposit/withdrawal — label them as generic vault operations.
             subtitle: "Network fee",
             titleOverride: "Earn Vault Operation",
           }
@@ -754,13 +744,10 @@ export function useWalletDesktopData(
     };
   }, [client, ownerPublicKey, applyPortfolioState, enabled, hasRequestedActivity]);
 
-  // Fetch LOYAL token price for the always-visible placeholder row.
   const [loylPriceUsd, setLoylPriceUsd] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
 
-    // Paint the last known price instantly, then revalidate via the shared
-    // client (deduped with other LOYL price consumers; no-op when fresh).
     const cached = readCachedTokenMarketPriceUsd(LOYL_MINT);
     if (cached !== null) {
       setLoylPriceUsd(cached);
@@ -841,7 +828,6 @@ export function useWalletDesktopData(
       }
       const pct = priceChange24hByMint.get(position.asset.mint);
       if (typeof pct !== "number") {
-        // Treat unknown 24h change as flat — token still counts toward base.
         totalPrevUsd += valueUsd;
         continue;
       }
@@ -891,14 +877,12 @@ export function useWalletDesktopData(
     const targetLoylIndex = Math.min(2, rows.length);
     const existingLoylIndex = rows.findIndex((r) => r.id === LOYL_MINT);
     if (existingLoylIndex >= 0) {
-      // Already in rows (has balance) — move to index 2
       if (existingLoylIndex !== targetLoylIndex) {
         const [loylRow] = rows.splice(existingLoylIndex, 1);
         rows.splice(Math.min(2, rows.length), 0, loylRow);
       }
     } else {
       const loylPosition = positions.find((p) => p.asset.mint === LOYL_MINT);
-      // Not in rows — create placeholder with Jupiter price
       const loylRow: TokenRow = loylPosition
         ? mapPositionToTokenRow(loylPosition)
         : {
@@ -944,15 +928,12 @@ export function useWalletDesktopData(
     return { rows, details };
   }, [activities, positions, totals.effectiveSolPriceUsd]);
 
-  // Lock balance history to the initial fetch so WebSocket subscription
-  // updates don't cause jarring redraws of the sparkline.
   const balanceHistoryRef = useRef<BalanceHistoryPoint[]>([]);
   const balanceHistoryKeyRef = useRef<string | null>(null);
 
   const balanceHistory = useMemo((): BalanceHistoryPoint[] => {
     if (activities.length === 0 || totals.totalUsd <= 0) return [];
 
-    // Only recompute when the wallet changes, not on subscription updates
     const key = walletAddress ?? "";
     if (
       balanceHistoryKeyRef.current === key &&

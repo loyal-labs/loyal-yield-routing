@@ -42,9 +42,6 @@ function clampTooltipShift(wrap: HTMLElement, bubble: HTMLElement) {
   bubble.style.setProperty("--tt-shift", `${Math.round(shift)}px`);
 }
 
-// transitions.dev "Tooltip open/close" (frontend/transitions/tooltip.md):
-// pure CSS — the wrap is the hover target, keyboard focus on the trigger
-// also shows the bubble. The trigger is a no-op button so it's focusable.
 export function InfoTooltip({
   iconClassName = "size-5",
   placement = "top",

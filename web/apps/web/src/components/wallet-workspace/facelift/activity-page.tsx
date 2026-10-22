@@ -44,13 +44,6 @@ const ASSET_BASE = "/wallet-workspace/facelift";
 // windowed rendering over the shared 5-minute cache.
 const PAGE_SIZE = 30;
 
-// Activity screen: the Earn feed in full — deposits, withdrawals and
-// rebalances rendered with the same rows as the Earn page's activity card,
-// date-grouped, extending as the user scrolls. Data comes through
-// fetchEarnTransactions, so Earn ↔ Activity switches reuse one cache and the
-// realtime stack's refreshKey bump refetches after a confirmed mutation.
-// One feed over two indexers: Kamino Earn transactions and Earn MAX
-// operations, merged client-side and sorted by confirmation time.
 type ActivityFeedEntry =
   | { at: number; item: EarnTransactionItem; type: "earn" }
   | { at: number; item: EarnMaxActivityItem; type: "earnmax" };
@@ -196,9 +189,6 @@ export function ActivityPage({
     return () => observer.disconnect();
   }, [hasMore, visibleCount]);
 
-  // Only the first loaded batch rides the mount stagger; groups appearing on
-  // scroll-extends or refetches render in place with no reveal (they enter
-  // off-screen anyway). Same decide-once mechanics as the earn activity card.
   const hasRenderedRowsRef = useRef(false);
   const groupKindsRef = useRef(new Map<string, "plain" | "stagger">());
   useEffect(() => {
@@ -231,8 +221,6 @@ export function ActivityPage({
             </header>
             <div className="flex w-full flex-1 flex-col px-2 pb-2">
               {items === null && !hasError ? (
-                // transitions.dev skeleton pulse, same rows the earn activity
-                // card skeletons with.
                 <div className="t-skel-rows flex flex-col gap-2 px-2 py-1">
                   {[0, 1, 2].map((index) => (
                     <div
@@ -324,8 +312,6 @@ export function ActivityPage({
         </PaneReveal>
         {selectedItem ? (
           <aside className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
-            {/* Keyed by tx so switching rows replays the reveal — same as
-                the send flow's per-step PaneReveal. */}
             <PaneReveal key={selectedItem.item.id}>
               {selectedItem.type === "earn" ? (
                 <EarnTransactionDetailPane

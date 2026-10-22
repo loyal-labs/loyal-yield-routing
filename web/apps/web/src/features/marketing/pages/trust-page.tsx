@@ -22,8 +22,6 @@ import type { TrustDict } from "@/features/marketing/i18n/en/trust";
 import type { Locale } from "@/features/marketing/i18n/locale";
 import { buildBreadcrumbJsonLd } from "@/features/marketing/i18n/metadata";
 
-// TODO: replace with /marketing/trust/og-trust.<hash>.png once the designer
-// ships the per-page 1200x630 card.
 export const TRUST_OG_IMAGE = {
   url: "/og-image.png",
   width: 1200,
@@ -61,7 +59,6 @@ export function TrustPage({
         locale={locale}
       />
 
-      {/* Block 1 — Hero (light) */}
       <Hero
         tone="light"
         title={dict.hero.title}
@@ -73,7 +70,6 @@ export function TrustPage({
         }}
       />
 
-      {/* Block 2 — What secures your funds */}
       <CardsGrid
         title={dict.secures.title}
         description={dict.secures.description}
@@ -103,7 +99,6 @@ export function TrustPage({
         ]}
       />
 
-      {/* Block 3 — No lock-in */}
       <TextImageHero
         title={dict.noLockIn.title}
         body={dict.noLockIn.body}
@@ -117,7 +112,6 @@ export function TrustPage({
         }}
       />
 
-      {/* Block 4 — Verify it yourself */}
       <CardsGrid
         title={dict.verify.title}
         description={dict.verify.description}
@@ -138,7 +132,6 @@ export function TrustPage({
         closingStatement={dict.verify.closing}
       />
 
-      {/* Block 5 — Track record */}
       <CardsThree
         title={dict.trackRecord.title}
         description={dict.trackRecord.description}
@@ -162,7 +155,6 @@ export function TrustPage({
         ]}
       />
 
-      {/* Block 6 — On the record */}
       <CardsGrid
         title={dict.onTheRecord.title}
         description={dict.onTheRecord.description}

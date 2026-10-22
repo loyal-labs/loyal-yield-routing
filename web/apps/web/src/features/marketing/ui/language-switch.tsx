@@ -18,14 +18,6 @@ const LOCALE_NAMES: Record<Locale, string> = {
   zh: "简体中文",
 };
 
-/**
- * Language dropdown. The button shows the current locale; the menu links to
- * the same page in each locale. Pages without a translation pass path="/",
- * so the links lead to each locale's home page.
- *
- * Built as a disclosure (button + list of links) rather than an ARIA menu,
- * because the items are plain navigation links.
- */
 export function LanguageSwitch({
   locale,
   path,

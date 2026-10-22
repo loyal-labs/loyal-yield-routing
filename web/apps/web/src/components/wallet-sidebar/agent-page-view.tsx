@@ -282,10 +282,6 @@ export function AgentPageView({
   isAccessLevelPending?: boolean;
 }) {
   const isWorkspace = variant === "workspace";
-  // `accessLevel` here is the *draft* level the user has picked in the
-  // radio. It only diverges from `initialAccessLevel` while the user is
-  // mid-edit. Successful save → parent re-renders with new
-  // `initialAccessLevel` → effect below resyncs the draft.
   const [accessLevel, setAccessLevel] =
     useState<AccessLevel>(initialAccessLevel);
   const [isAccessExpanded, setIsAccessExpanded] = useState(false);
@@ -541,7 +537,6 @@ export function AgentPageView({
         }
       `}</style>
 
-      {/* SVG pixelation filters */}
       <svg
         aria-hidden="true"
         height="0"
@@ -700,7 +695,6 @@ export function AgentPageView({
         </div>
       )}
 
-      {/* Scrollable content */}
       <div
         ref={scrollRef}
         className="agent-scroll"
@@ -937,7 +931,6 @@ export function AgentPageView({
           </div>
         )}
 
-        {/* Agent Access section — collapsible */}
         <div
           style={{
             display: "flex",
@@ -1004,7 +997,6 @@ export function AgentPageView({
             />
           </button>
 
-          {/* Options list (collapsible) */}
           <div
             style={{
               width: "100%",
@@ -1047,7 +1039,6 @@ export function AgentPageView({
                   role="button"
                   tabIndex={isReadOnly ? -1 : 0}
                 >
-                  {/* Icon */}
                   <div
                     style={{
                       padding: "10px 0",
@@ -1057,7 +1048,6 @@ export function AgentPageView({
                   >
                     <AccessLevelIcon level={option.id} />
                   </div>
-                  {/* Text */}
                   <div
                     style={{
                       flex: 1,
@@ -1091,8 +1081,6 @@ export function AgentPageView({
                       {option.description}
                     </span>
                   </div>
-                  {/* Confirm button (only on the row whose draft differs
-                      from persisted state) */}
                   {showConfirm && (
                     <button
                       onClick={(event) => {
@@ -1124,7 +1112,6 @@ export function AgentPageView({
                       {isAccessLevelPending ? "Confirming…" : "Confirm"}
                     </button>
                   )}
-                  {/* Radio */}
                   <div style={{ paddingLeft: "12px", flexShrink: 0 }}>
                     <div
                       style={{
@@ -1147,7 +1134,6 @@ export function AgentPageView({
 
           {showSpendingLimit && (
             <>
-              {/* Spending Limit — collapsible */}
               <button
                 className="agent-limit-header"
                 onClick={() => setIsLimitExpanded((v) => !v)}
@@ -1237,7 +1223,6 @@ export function AgentPageView({
                 />
               </button>
 
-              {/* Expanded limit content */}
               <div
                 style={{
                   width: "100%",
@@ -1578,7 +1563,6 @@ export function AgentPageView({
                         </span>
                       </div>
                     </div>
-                    {/* Progress bar */}
                     <div style={{ padding: "8px 0 11px" }}>
                       <div
                         style={{
@@ -1678,7 +1662,6 @@ export function AgentPageView({
           )}
         </div>
 
-        {/* Tokens section */}
         <div
           style={{
             display: "flex",

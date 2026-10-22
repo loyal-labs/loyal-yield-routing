@@ -371,7 +371,6 @@ function observeDependencyEntries(): DependencyEntryCollector | null {
           );
           observer.disconnect();
         } catch {
-          // A partial observation still describes the preparation window.
         }
         return observed;
       },
@@ -430,7 +429,6 @@ function summarizeDependencyEntries(args: {
       current.requestCount += 1;
     }
   } catch {
-    // Resource Timing is optional; zero-count metrics still describe coverage.
   }
 
   return totals;

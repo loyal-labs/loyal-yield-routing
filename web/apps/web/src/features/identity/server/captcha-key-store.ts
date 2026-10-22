@@ -28,7 +28,6 @@ export async function putCaptchaKey(
   return inserted.length > 0;
 }
 
-/** Deletes the key, returning whether it existed and was unexpired. */
 export async function consumeCaptchaKey(key: string): Promise<boolean> {
   const db = getDatabase();
   const deleted = await db

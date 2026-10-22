@@ -78,8 +78,6 @@ type ConfirmedDepositTransactionProof = {
   principalAmountRaw: bigint;
 };
 
-// Carries an HTTP status + stable error code so each route can map failures to
-// the same response it returned before this logic was extracted.
 export class EarnDepositConfirmError extends Error {
   readonly status: number;
   readonly code: string;
@@ -202,9 +200,6 @@ function createCanonicalDepositInput(
       requestInput.setupPolicySeed !== null);
   const requiresSetupPolicyMetadata =
     requestInput.policyInitialization === "create" || hasSetupPolicyMetadata;
-  // The mint must be one of the supported Earn product mints (throws
-  // otherwise) and the reserve market must sit in the Safe universe — the
-  // same strictness the USDC-only assert enforced, per deposit mint.
   const productAsset = resolveEarnProductAsset({
     cluster,
     mint: requestInput.liquidityMint,
@@ -421,7 +416,6 @@ export async function resolvePolicyCreationSignatureFromChain(args: {
     }
     return { signature: creation.signature, slot: creation.slot.toString() };
   } catch {
-    // Best-effort recovery; the caller falls back to the original error.
     return null;
   }
 }
@@ -439,7 +433,6 @@ async function resolveConfirmedSignatureSlot(args: {
     const status = value[0];
 
     if (status?.err) {
-      // Executed and failed on-chain — permanent, no point polling.
       throw new Error(`${args.operation} transaction failed on-chain.`);
     }
 

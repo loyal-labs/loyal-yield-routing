@@ -24,11 +24,6 @@ import {
   type RoutePolicyRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-// Source selection + SDK-input assembly for a mobile Earn withdrawal,
-// extracted VERBATIM from `mobile/earn/withdraw/prepare` so the route (server
-// build) and `mobile/earn/withdraw/prepare-context` (on-device build) resolve
-// the exact same input. Everything here is the decision "WHAT to withdraw";
-// the caller decides where the instruction build ("HOW") runs.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 const POLICY_PROJECTION_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000] as const;
 
@@ -327,11 +322,6 @@ function snapshotFullWithdrawalTargets(holdings: EarnRpcHolding[]): {
   return targets;
 }
 
-// ---------------------------------------------------------------------------
-
-// Build withdrawal sources from the live on-chain holdings snapshot. The DB
-// read-model cannot follow a cross-market rebalance. Drop entries missing the
-// identifiers a withdrawal needs to match or build.
 function buildSnapshotWithdrawSources(
   holdings: EarnRpcHolding[]
 ): SelectedEarnWithdrawSource[] {
@@ -380,7 +370,6 @@ function buildSnapshotWithdrawSources(
 }
 
 export type ResolvedEarnUsdcWithdraw = {
-  // Complete SDK input, ready for `client.prepareEarnUsdcWithdraw(input)`.
   input: SmartAccountEarnUsdcWithdrawInput;
   policy: RoutePolicyRecord;
   effectiveAmountRaw: bigint;
@@ -399,7 +388,6 @@ export async function resolveEarnUsdcWithdrawInput(args: {
   // Set for legacy `{ amountRaw, mode, source }` bodies (ASK-2099); resolved
   // with the legacy matcher instead of an exact sourceId match.
   legacyRequest?: EarnWithdrawLegacyPrepareRequest | null;
-  // Route-specific log prefix so on-call greps keep working per endpoint.
   logTag: string;
 }): Promise<ResolvedEarnUsdcWithdraw> {
   const {

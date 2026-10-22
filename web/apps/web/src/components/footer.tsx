@@ -119,7 +119,6 @@ export function Footer() {
           padding: "64px 16px 32px",
         }}
       >
-        {/* Social Links */}
         <div
           style={{
             display: "flex",
@@ -164,7 +163,6 @@ export function Footer() {
           ))}
         </div>
 
-        {/* Regular Links */}
         <div
           style={{
             display: "flex",
@@ -218,13 +216,11 @@ export function Footer() {
           </button>
         </div>
 
-        {/* Stay Loyal + Copyright wrapper */}
         <div
           style={{
             position: "relative",
           }}
         >
-          {/* Stay Loyal - large background text */}
           <div
             style={{
               position: "relative",
@@ -246,7 +242,6 @@ export function Footer() {
             >
               Stay Loyal
             </h2>
-            {/* Gradient fade to white at bottom */}
             <div
               style={{
                 position: "absolute",
@@ -261,7 +256,6 @@ export function Footer() {
             />
           </div>
 
-          {/* Copyright and Status */}
           <div
             id="footer-copyright"
             style={{

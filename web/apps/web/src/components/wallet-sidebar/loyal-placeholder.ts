@@ -20,11 +20,6 @@ function formatPrice(priceUsd: number | null | undefined): string {
   });
 }
 
-/**
- * Single-row placeholder for empty token lists. Surfaces LOYAL with zero
- * balance so the surface stays consistent with the populated state and acts
- * as a soft prompt to discover the token.
- */
 export function buildLoyalPlaceholderRow(priceUsd?: number | null): TokenRow {
   return {
     id: LOYL_MINT,

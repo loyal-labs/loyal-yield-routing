@@ -8,8 +8,6 @@ import {
 } from "@/lib/kamino/earn-forecast.client";
 import type { EarnForecastSummaryResponse } from "@/lib/kamino/earn-forecast.shared";
 
-// One refresh lifecycle feeds the APY, chart history, and loaded-state hooks.
-// The underlying fetch also deduplicates requests from mounted consumers.
 export function useEarnForecastSummary(): {
   summary: EarnForecastSummaryResponse | null;
   isLoaded: boolean;
@@ -36,7 +34,6 @@ export function useEarnForecastSummary(): {
 
     void refresh();
     const interval = window.setInterval(() => {
-      // Re-render even if the request hangs, so an old measurement expires.
       setState((current) => ({ ...current }));
       void refresh();
     }, 60_000);

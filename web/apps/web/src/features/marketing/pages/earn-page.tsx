@@ -24,8 +24,6 @@ import type { EarnDict } from "@/features/marketing/i18n/en/earn";
 import type { Locale } from "@/features/marketing/i18n/locale";
 import { buildBreadcrumbJsonLd } from "@/features/marketing/i18n/metadata";
 
-// TODO: replace with /marketing/earn/og-earn.<hash>.png once the
-// per-page 1200x630 card ships (designer to brand-redraw the routing diagram).
 export const EARN_OG_IMAGE = {
   url: "/og-image.png",
   width: 1200,
@@ -60,22 +58,17 @@ export function EarnPage({
         locale={locale}
       />
 
-      {/* Block 1 — Hero (dark) */}
       <Hero
         tone="dark"
         title={dict.hero.title}
         body={dict.hero.body}
         cta={{ label: dict.hero.cta, href: "https://app.askloyal.com" }}
         image={{
-          // TODO: replace with /marketing/earn/hero-routing-diagram.<hash>.png
-          // (brand-style redraw of the Kamino APY-spike chart from
-          // loom-recordings/part-2-yield-routing/diagrams/01-kamino-market-overview.png).
           src: "/landing/figma/feature-yield-card.png",
           alt: dict.hero.imageAlt,
         }}
       />
 
-      {/* Block 2 — Section: How your dollars earn with Loyal */}
       <Section
         title={dict.howItEarns.title}
         description={dict.howItEarns.description}
@@ -85,7 +78,6 @@ export function EarnPage({
         ]}
       />
 
-      {/* Block 3 — Section: Your stablecoins are all just dollars */}
       <Section
         title={dict.dollars.title}
         cards={[
@@ -94,7 +86,6 @@ export function EarnPage({
         ]}
       />
 
-      {/* Block 4 — Section: Why lending rates spike */}
       <Section
         title={dict.rateSpikes.title}
         description={dict.rateSpikes.description}
@@ -104,7 +95,6 @@ export function EarnPage({
         ]}
       />
 
-      {/* Block 5 — Section: How Loyal routes to the best rate */}
       <Section
         title={dict.routing.title}
         cards={[
@@ -113,7 +103,6 @@ export function EarnPage({
         ]}
       />
 
-      {/* Block 6 — CardsGrid (3 cols, muted): The three approaches we ruled out */}
       <CardsGrid
         title={dict.ruledOut.title}
         description={dict.ruledOut.description}
@@ -138,7 +127,6 @@ export function EarnPage({
         ]}
       />
 
-      {/* Block 7 — Section: How the policy keeps it safe (Loyal's answer) */}
       <Section
         title={dict.policy.title}
         description={dict.policy.description}
@@ -148,7 +136,6 @@ export function EarnPage({
         ]}
       />
 
-      {/* Block 8 — CardsGrid (muted, 2 cols): Risk */}
       <CardsGrid
         title={dict.risks.title}
         description={dict.risks.description}
@@ -178,7 +165,6 @@ export function EarnPage({
         ]}
       />
 
-      {/* Block 9 — CardsGrid (muted, 2 cols): Who optimizes yield */}
       <CardsGrid
         title={dict.audiences.title}
         variant="muted"
@@ -207,7 +193,6 @@ export function EarnPage({
         ]}
       />
 
-      {/* Block 10 — TextImageHero (text-left): How it's built */}
       <TextImageHero
         title={dict.howItsBuilt.title}
         body={dict.howItsBuilt.body}
@@ -221,7 +206,6 @@ export function EarnPage({
         }}
       />
 
-      {/* Block 11 — TextImageHero (text-right): Start earning */}
       <TextImageHero
         layout="text-right"
         title={dict.startEarning.title}

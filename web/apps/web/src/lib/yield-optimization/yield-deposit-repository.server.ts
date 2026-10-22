@@ -2947,8 +2947,6 @@ export async function findCompleteYieldVaultExposureSnapshots(
     }
     return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
   });
-  // Bound each indexed positions read; one giant ID list or full-history join
-  // can exceed the query timeout for long-lived vaults.
   const reserveRowsBySnapshotId = new Map<
     bigint,
     { amountRaw: bigint; liquidityMint: string; reserve: string }[]
@@ -3597,8 +3595,6 @@ export async function recordReconciledYieldVaultSnapshot(
   if (idleTokenBalances.length === 0) {
     throw new Error("A complete Earn snapshot requires idle token balances.");
   }
-  // Keep the idle amount with its source snapshot: current balance rows can
-  // advance independently before the hourly APY recorder reads this history.
   const snapshotContext: Record<string, unknown> = {
     ...input.context,
     idle_vault_liquidity_amount_raw: idleTokenBalances
@@ -3653,7 +3649,6 @@ export async function recordReconciledYieldVaultSnapshot(
     supplyApyBps: position.supplyApyBps,
     vaultId: input.vaultId,
   }));
-  // History keeps only funded reserves; current-state keeps the full set.
   const fundedSnapshotPositionValues = snapshotPositionValues.filter(
     (position) => position.amountRaw > BigInt(0)
   );
@@ -3831,7 +3826,6 @@ export async function findYieldPositionEvents(
     type: "deposit" | "withdrawal",
     sourceType?: string | null
   ) => {
-    // Missing links may be legacy data; duplicate links are contradictory evidence.
     if (!matches) return {};
     if (matches.length !== 1) {
       throw new EarningsPrincipalHistoryError(
@@ -3891,7 +3885,6 @@ export async function findYieldPositionEvents(
         sql`${userYieldPositionHoldingEvents.principalDeltaRaw} IS NOT NULL`,
         sql`${userYieldPositionHoldingEvents.sourceDepositId} IS NULL`,
         sql`${userYieldPositionHoldingEvents.sourceWithdrawalId} IS NULL`,
-        // Preview reserve snapshots are not evidence that the entire vault closed.
         sql`(${userYieldPositionHoldingEvents.sourceSignature} IS NOT NULL OR EXISTS (
         SELECT 1 FROM loyal_yield.vault_position_snapshots s
         WHERE s.id = ${userYieldPositionHoldingEvents.sourceSnapshotId}

@@ -22,9 +22,7 @@ type ComponentProps = {
   [key: string]: unknown;
 };
 
-// Markdown components matching Figma design system
 const customComponents = {
-  // Headings - Geist SemiBold
   h1: ({ children, ...props }: ComponentProps) => (
     <h1
       style={{
@@ -116,7 +114,6 @@ const customComponents = {
     </h6>
   ),
 
-  // Paragraph - Geist Regular
   p: ({ children, ...props }: ComponentProps) => (
     <p
       style={{
@@ -133,7 +130,6 @@ const customComponents = {
     </p>
   ),
 
-  // Lists - Geist Regular with 24px indentation per level
   ul: ({ children, ...props }: ComponentProps) => (
     <ul
       style={{
@@ -184,7 +180,6 @@ const customComponents = {
     </li>
   ),
 
-  // Inline elements
   strong: ({ children, ...props }: ComponentProps) => (
     <strong
       style={{
@@ -213,7 +208,6 @@ const customComponents = {
     </TrackedExternalLink>
   ),
 
-  // Divider
   hr: ({ ...props }: ComponentProps) => (
     <hr
       style={{
@@ -226,7 +220,6 @@ const customComponents = {
     />
   ),
 
-  // Blockquote
   blockquote: ({ children, ...props }: ComponentProps) => (
     <blockquote
       style={{
@@ -242,7 +235,6 @@ const customComponents = {
     </blockquote>
   ),
 
-  // Table - matching Figma design (14px, 20px line-height, 36px row height)
   table: ({ children, ...props }: ComponentProps) => (
     <div style={{ overflowX: "auto", margin: "8px 0" }}>
       <table
@@ -323,7 +315,6 @@ const customComponents = {
     </td>
   ),
 
-  // Code blocks - Geist Mono with dark background
   pre: ({ children, ...props }: ComponentProps) => (
     <pre
       style={{
@@ -339,7 +330,6 @@ const customComponents = {
     </pre>
   ),
   code: ({ children, className, ...props }: ComponentProps) => {
-    // Check if it's an inline code or block code
     const isInline = !className;
     if (isInline) {
       return (

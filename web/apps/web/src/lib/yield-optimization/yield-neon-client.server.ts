@@ -1206,9 +1206,6 @@ export const routeLookupTables = loyalYieldSchema.table(
   ]
 );
 
-// Solana Week (dApp Store quests) attribution: our local mirror of the quest
-// completions we report to Solana. Idempotent per (wallet, quest_kind); also the
-// data source for in-app quest progress without hitting Solana's read API.
 export const solanaWeekQuestCompletions = loyalYieldSchema.table(
   "solana_week_quest_completions",
   {
@@ -1239,7 +1236,6 @@ export const solanaWeekQuestCompletions = loyalYieldSchema.table(
       table.walletAddress,
       table.questKind
     ),
-    // Lets the reconciler cheaply find rows still needing a (re)report.
     index("solana_week_quest_completion_unreported_idx")
       .on(table.updatedAt)
       .where(sql`${table.status} <> 'reported'`),

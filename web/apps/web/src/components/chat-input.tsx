@@ -42,17 +42,12 @@ export interface ChatInputProps {
   dogNice?: boolean;
 }
 
-// All dog SVG paths use 980x784 viewBox (displayed at 160x128)
-// Body is shared; only face features (white shape, black shape, sweat lines) differ per mood
-
 const DOG_BODY = "M147 686L0 343H441V0L637 343L686 0L980 784L147 686Z";
 
-// Pupil center in 980x784 space and max travel
 const PUPIL_CX = 539;
 const PUPIL_CY = 488;
 const MAX_OFFSET = 37; // ~6px scaled up (6 * 980/160)
 
-// White eye/mouth shapes per mood
 const WHITE_MAIN =
   "M542.333 423.938C623.408 428.186 686.147 488.592 682.464 558.856L388.867 543.47C392.549 473.205 461.259 419.689 542.333 423.938Z";
 const WHITE_UPSET =
@@ -62,8 +57,6 @@ const WHITE_SCARED =
 const WHITE_HUH =
   "M545.961 549.928C468.295 545.857 407.468 490.255 405.726 423.817L684.867 480.064C660.001 524.136 606.422 553.096 545.961 549.928Z";
 
-// Black pupil/mouth shapes per mood (circle approximated as path for morphing)
-// Main: circle at (539, 488) r≈66 — same as scared pupil but bigger for eye-tracking
 const BLACK_MAIN =
   "M605 488C605 524.451 575.451 554 539 554C502.549 554 473 524.451 473 488C473 451.549 502.549 422 539 422C575.451 422 605 451.549 605 488Z";
 const BLACK_UPSET =
@@ -73,7 +66,6 @@ const BLACK_SCARED =
 const BLACK_HUH =
   "M546.253 494.915C514.649 493.258 489.4 469.676 484.453 439.682L605.697 464.111C593.335 483.7 571.03 496.213 546.253 494.915Z";
 
-// Scared-only sweat lines
 const SWEAT_LINES = [
   "M826.872 270.112C805.027 295.225 765.01 330.015 840.96 356.475",
   "M765.672 437.907C770.822 405.023 786.497 367.47 841.01 399.32",
@@ -81,33 +73,26 @@ const SWEAT_LINES = [
   "M747.861 243.103C761.275 273.565 781.079 316.312 700.699 319.053",
 ];
 
-// Eyelid rects in 980x784 space (scaled from 160x128 originals)
 const EYELID_TOP = { x: 368, y: 288, w: 343, h: 135 };
 const EYELID_BOT = { x: 368, y: 558, w: 343, h: 86 };
-const EYELID_TOP_SQUINT_Y = 86; // translateY when squinting
+const EYELID_TOP_SQUINT_Y = 86;
 const EYELID_BOT_SQUINT_Y = -61;
 
-// Excited dog — big grin with star sparkle in eye
 const WHITE_EXCITED =
   "M542.333 423.938C623.407 428.187 686.146 488.592 682.464 558.857L388.867 543.47C392.549 473.205 461.258 419.689 542.333 423.938Z";
 const BLACK_EXCITED =
   "M542.532 435.643C586.259 437.935 619.849 475.241 617.557 518.967C616.87 532.087 613.028 544.293 606.809 554.892L466.142 547.52C461.065 536.329 458.522 523.788 459.209 510.669C461.501 466.942 498.805 433.352 542.532 435.643Z";
-// Star sparkle path (white) — excited only
 const EXCITED_STAR =
   "M562.108 543.399C562.108 523.779 546.203 507.874 526.583 507.874C546.203 507.874 562.108 491.969 562.108 472.349C562.108 491.969 578.014 507.874 597.633 507.874C578.014 507.874 562.108 523.779 562.108 543.399Z";
-// Eye highlight circle — excited only
 const EXCITED_HIGHLIGHT = { cx: 588.44, cy: 477.861, r: 9.1875 };
 
-// Cry dog — squished eye with teardrop
 const WHITE_CRY =
   "M689.959 497.366C694.187 510.305 696.131 524.014 695.392 538.122L401.794 522.737C404.112 478.5 432.208 440.906 472.933 420.181L689.959 497.366Z";
 const BLACK_CRY =
   "M614.204 470.422C615.446 476.089 615.964 482.015 615.645 488.089C614.715 505.838 606.865 521.584 594.852 532.856L499.522 527.86C488.754 515.394 482.597 498.913 483.527 481.163C484.561 461.447 494.126 444.203 508.458 432.817L614.204 470.422Z";
-// Teardrop path (white) — cry only
 const CRY_TEARDROP =
   "M583.617 615.154C583.617 632.744 569.358 647.004 551.767 647.004C534.177 647.004 519.917 632.744 519.917 615.154C519.917 597.564 551.767 554.516 551.767 554.516C551.767 554.516 583.617 597.564 583.617 615.154Z";
 
-// Nice dog — satisfied smile after wallet loads
 const WHITE_NICE =
   "M542.334 423.938C623.409 428.186 686.148 488.592 682.465 558.856L388.868 543.47C392.551 473.205 461.26 419.689 542.334 423.938Z";
 const BLACK_NICE =
@@ -152,7 +137,6 @@ function useMorphPath(paths: Record<DogMood, string>, mood: DogMood) {
     const to = paths[mood];
     prevMoodRef.current = mood;
 
-    // Lazy-import flubber to keep bundle split
     let cancelled = false;
     void import("flubber").then(({ interpolate }) => {
       if (cancelled) return;
@@ -165,7 +149,6 @@ function useMorphPath(paths: Record<DogMood, string>, mood: DogMood) {
           (now - startRef.current) / (MORPH_DURATION * 1000),
           1
         );
-        // Ease-in-out cubic
         const eased = t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
         setCurrent(interp(eased));
         if (t < 1) rafRef.current = requestAnimationFrame(tick);
@@ -202,11 +185,9 @@ export function DogWithMood({
   const reactionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scaredClicksRef = useRef(0);
 
-  // Morph paths
   const whitePath = useMorphPath(WHITES, mood);
   const blackPath = useMorphPath(BLACKS, mood);
 
-  // Eye tracking (only active in main mood)
   const handleMouseMove = useCallback(
     (e: MouseEvent) => {
       if (mood !== "main") return;
@@ -237,12 +218,10 @@ export function DogWithMood({
     return () => window.removeEventListener("mousemove", handleMouseMove);
   }, [handleMouseMove]);
 
-  // Reset eye offset when leaving main mood
   useEffect(() => {
     if (mood !== "main") setEyeOffset({ x: 0, y: 0 });
   }, [mood]);
 
-  // Idle timer
   const resetIdleTimer = useCallback(() => {
     if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
     if (disableIdleMood) return;
@@ -263,7 +242,6 @@ export function DogWithMood({
     resetIdleTimer();
   }, [resetIdleTimer]);
 
-  // Excited and nice auto-return to main after REACTION_DURATION
   useEffect(() => {
     if (mood === "excited" || mood === "nice") {
       const t = setTimeout(returnToMain, REACTION_DURATION);
@@ -271,7 +249,6 @@ export function DogWithMood({
     }
   }, [mood, returnToMain]);
 
-  // Cry trigger from parent (wallet disconnect)
   const prevCryRef = useRef(cry);
   useEffect(() => {
     const justStartedCrying = cry && !prevCryRef.current;
@@ -285,7 +262,6 @@ export function DogWithMood({
     }
   }, [cry, returnToMain]);
 
-  // Nice trigger from parent (wallet finished loading) — shows excited face
   const prevNiceRef = useRef(nice);
   useEffect(() => {
     const justBecameNice = nice && !prevNiceRef.current;
@@ -298,12 +274,10 @@ export function DogWithMood({
     }
   }, [nice, returnToMain]);
 
-  // Activity listener — waking up from upset triggers excited
   useEffect(() => {
     const handleActivity = () => {
       setMood((prev) => {
         if (prev === "upset") return "excited";
-        // Don't interrupt excited — let its timer handle return to main
         return prev;
       });
       resetIdleTimer();
@@ -337,7 +311,7 @@ export function DogWithMood({
 
   const handleDogClick = useCallback(() => {
     if (disableClickMood) return;
-    if (mood === "cry") return; // Don't interrupt cry
+    if (mood === "cry") return;
     if (reactionTimerRef.current) clearTimeout(reactionTimerRef.current);
 
     if (mood === "scared") {
@@ -372,13 +346,10 @@ export function DogWithMood({
       onClick={handleDogClick}
       style={{ cursor: disableClickMood ? "default" : "pointer" }}
     >
-      {/* Shared body */}
       <path d={DOG_BODY} fill="#F9363C" />
 
-      {/* Morphing white eye/mouth */}
       <path d={whitePath} fill="white" />
 
-      {/* Morphing black pupil/mouth — with eye tracking transform in main mood */}
       <path
         d={blackPath}
         fill="black"
@@ -394,7 +365,6 @@ export function DogWithMood({
         }}
       />
 
-      {/* Eyelids (squint) — clipped to body, only visible in main mood */}
       <defs>
         <clipPath id="dog-body-clip-m">
           <path d={DOG_BODY} />
@@ -433,7 +403,6 @@ export function DogWithMood({
         />
       </g>
 
-      {/* Sweat lines — scared only, fade in/out */}
       {SWEAT_LINES.map((d, i) => (
         <path
           d={d}
@@ -448,7 +417,6 @@ export function DogWithMood({
         />
       ))}
 
-      {/* Excited extras — star sparkle + eye highlight */}
       <path
         d={EXCITED_STAR}
         fill="white"
@@ -468,7 +436,6 @@ export function DogWithMood({
         }}
       />
 
-      {/* Cry teardrop */}
       <path
         d={CRY_TEARDROP}
         fill="white"
@@ -500,7 +467,6 @@ export function ChatInput(props: ChatInputProps) {
 
   return (
     <>
-      {/* SVG pixelation filters for balance hiding */}
       <svg
         aria-hidden="true"
         height="0"
@@ -513,7 +479,6 @@ export function ChatInput(props: ChatInputProps) {
         width="0"
       >
         <defs>
-          {/* Large pixel filter for main dollar balance */}
           <filter id="pixelate-lg" x="0" y="0" width="100%" height="100%">
             <feFlood x="4" y="4" height="2" width="2" />
             <feComposite width="10" height="10" />
@@ -521,7 +486,6 @@ export function ChatInput(props: ChatInputProps) {
             <feComposite in="SourceGraphic" in2="a" operator="in" />
             <feMorphology operator="dilate" radius="5" />
           </filter>
-          {/* Smaller pixel filter for SOL balance */}
           <filter id="pixelate-sm" x="0" y="0" width="100%" height="100%">
             <feFlood x="3" y="3" height="2" width="2" />
             <feComposite width="8" height="8" />
@@ -532,7 +496,6 @@ export function ChatInput(props: ChatInputProps) {
         </defs>
       </svg>
 
-      {/* Chat Input Container - animates between center and bottom */}
       <div
         style={{
           position: props.isChatMode
@@ -565,7 +528,6 @@ export function ChatInput(props: ChatInputProps) {
             : "transform 0.3s ease-out",
         }}
       >
-        {/* Dog illustration */}
         {!props.isChatMode && !props.isInputStuckToBottom && (
           <div
             style={{
@@ -581,7 +543,6 @@ export function ChatInput(props: ChatInputProps) {
               cry={props.dogCry}
               nice={props.dogNice}
             />
-            {/* Red loading spinner on dog's ear */}
             <div
               style={{
                 position: "absolute",
@@ -630,7 +591,6 @@ export function ChatInput(props: ChatInputProps) {
           </div>
         )}
 
-        {/* Input form - liquid glass style with integrated send button */}
         <form
           onSubmit={props.onSubmit}
           style={{
@@ -663,7 +623,6 @@ export function ChatInput(props: ChatInputProps) {
                 width: "100%",
               }}
             >
-              {/* Input field area */}
               <div
                 style={{
                   flex: 1,
@@ -681,11 +640,10 @@ export function ChatInput(props: ChatInputProps) {
                   onChange={(e) => {
                     props.onPendingTextChange(e.target.value);
 
-                    // Auto-resize textarea based on content
                     if (props.inputRef.current) {
                       props.inputRef.current.style.height = "auto";
                       const scrollHeight = props.inputRef.current.scrollHeight;
-                      const maxHeight = 336; // 368 - 32 (padding)
+                      const maxHeight = 336;
                       if (scrollHeight > maxHeight) {
                         props.inputRef.current.style.height = `${maxHeight}px`;
                         props.inputRef.current.style.overflowY = "auto";
@@ -696,7 +654,6 @@ export function ChatInput(props: ChatInputProps) {
                     }
                   }}
                   onKeyDown={(e) => {
-                    // Allow Shift+Enter to create new lines
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       if (props.hasUsableInput && !props.isLoading) {
@@ -730,7 +687,6 @@ export function ChatInput(props: ChatInputProps) {
                 />
               </div>
 
-              {/* Submit button wrapper */}
               <div
                 style={{
                   display: "flex",
@@ -745,7 +701,6 @@ export function ChatInput(props: ChatInputProps) {
                   onClick={(e) => {
                     e.preventDefault();
                     if (props.isLoading) {
-                      // TODO: Implement stop functionality
                     } else if (props.hasUsableInput) {
                       props.onSubmit(e as unknown as React.FormEvent);
                     }
@@ -802,7 +757,6 @@ export function ChatInput(props: ChatInputProps) {
           </div>
         </form>
 
-        {/* Wallet + Action Cards — hidden on mobile */}
         {!props.isChatMode && !props.isInputStuckToBottom && (
           <div
             className="hero-wallet-cards"
@@ -1076,7 +1030,6 @@ export function ChatInput(props: ChatInputProps) {
                 transition: "opacity 0.3s ease",
               }}
             >
-              {/* Recent Activity Card */}
               <div
                 className="action-card"
                 onClick={() => props.onOpenRightSidebar("portfolio")}
@@ -1134,7 +1087,6 @@ export function ChatInput(props: ChatInputProps) {
                 </div>
               </div>
 
-              {/* Approval Request Card */}
               <div
                 className="action-card"
                 onClick={() => props.onOpenRightSidebar("portfolio")}
@@ -1190,7 +1142,6 @@ export function ChatInput(props: ChatInputProps) {
       </div>
 
       <style jsx>{`
-        /* Custom scrollbar for textarea */
         textarea::-webkit-scrollbar {
           width: 6px;
         }

@@ -482,7 +482,6 @@ function SendTransactionDetail({
           overflowX: "hidden",
         }}
       >
-        {/* Amount hero */}
         <div
           style={{
             display: "flex",
@@ -552,7 +551,6 @@ function SendTransactionDetail({
           </div>
         </div>
 
-        {/* Details card */}
         <div style={{ width: "100%" }}>
           <div
             style={{
@@ -650,7 +648,6 @@ function SendTransactionDetail({
           </div>
         </div>
 
-        {/* Action buttons */}
         <div
           style={{
             display: "flex",
@@ -759,7 +756,6 @@ function SendTransactionDetail({
         </div>
       </div>
 
-      {/* Done button */}
       <div style={{ padding: "16px 20px" }}>
         <button
           className="send-tx-done-btn"
@@ -812,7 +808,6 @@ export type SendContentVaultContext =
   | {
       mode: "ready";
       execute: SendContentVaultExecutor;
-      /** Optional notice rendered above the submit button (e.g. expected sign count). */
       notice?: string;
     };
 
@@ -913,7 +908,6 @@ export function SendContent({
 
   const handleConfirm = useCallback(async () => {
     if (vaultContext?.mode === "blocked") {
-      // Defense-in-depth: button should already be disabled.
       return;
     }
     const currentAmount = hasAmount ? String(numericAmount) : "0";
@@ -987,9 +981,6 @@ export function SendContent({
     }
 
     if (result.success) {
-      // Multisig draft path: workspace already routed the user to the
-      // Approvals preview. Close the form silently — no success screen, no
-      // balance refresh (nothing moved on chain yet).
       if (result.status === "draft") {
         setAmount("");
         setRecipient("");
@@ -1030,7 +1021,6 @@ export function SendContent({
     vaultContext,
   ]);
 
-  // Cross-fade between phases
   const [phaseOpacity, setPhaseOpacity] = useState(1);
   const [displayPhase, setDisplayPhase] = useState<SendPhase>(phase);
   const prevPhase = useRef(phase);
@@ -1046,8 +1036,6 @@ export function SendContent({
     }
   }, [phase]);
 
-  // Auto-close the form shortly after a successful send. Cancelled if the user
-  // jumps to the transaction-details view within the window.
   useEffect(() => {
     if (phase !== "success") return;
     const t = setTimeout(() => {
@@ -1088,7 +1076,6 @@ export function SendContent({
       );
     }
 
-    // Form phase
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
         <style jsx>{`
@@ -1107,7 +1094,6 @@ export function SendContent({
           }
         `}</style>
 
-        {/* Header */}
         <div
           style={{
             display: "flex",
@@ -1181,7 +1167,6 @@ export function SendContent({
           </button>
         </div>
 
-        {/* Body */}
         <div
           style={{
             flex: 1,
@@ -1192,7 +1177,6 @@ export function SendContent({
             padding: "8px 8px 16px",
           }}
         >
-          {/* Amount card */}
           <div style={{ display: "flex", flexDirection: "column" }}>
             <div
               style={{
@@ -1438,7 +1422,6 @@ export function SendContent({
               </div>
             </div>
 
-            {/* Recipient section */}
             <div style={{ padding: "12px 12px 8px" }}>
               <span
                 style={{
@@ -1619,7 +1602,6 @@ export function SendContent({
 
         </div>
 
-        {/* Bottom button */}
         <div style={{ padding: "16px 20px" }}>
           {vaultContext?.mode === "ready" && vaultContext.notice ? (
             <div

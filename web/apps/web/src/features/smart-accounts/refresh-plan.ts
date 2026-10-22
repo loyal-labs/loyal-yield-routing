@@ -72,7 +72,6 @@ export type SmartAccountReadModelLoadToken = Readonly<{
   order: number;
 }>;
 
-/** Prevents an older server read from publishing over a newer forced read. */
 export class SmartAccountReadModelLoadOrder {
   readonly #latestByKey = new Map<string, number>();
   #nextOrder = 0;
@@ -147,7 +146,6 @@ const defaultSchedulePolicyFollowUp: SchedulePolicyFollowUp = (
   return () => globalThis.clearTimeout(timer);
 };
 
-/** Coalesces the one policy-only confirmed-RPC follow-up per identity. */
 export class SmartAccountPolicyFollowUp {
   #cancel: (() => void) | null = null;
   #generation = 0;

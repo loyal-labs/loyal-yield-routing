@@ -4,12 +4,6 @@ import { reconcileQuestCompletions } from "@/features/solana-week/server/quest-c
 
 import { validateCronAuthHeader } from "../_shared/auth";
 
-// Reconciliation backstop for Solana Week quest reporting. Real-time reporting
-// already happens inline at manual deposit confirm (Quest 1) and via the sweep
-// worker's notify call (Quest 2); this cron only retries rows not yet reported
-// and backfills sweeps (Quest 2) and qualifying mobile deposits (Quest 1) that
-// never produced a row (e.g. a missed notify or a lost best-effort confirm
-// hook). Fully idempotent — already-reported wallets cost a cheap DB read.
 const DEFAULT_SWEEP_LOOKBACK_HOURS = 168; // 7 days — covers a week-long event.
 
 function resolveSweepLookbackMs(): number {

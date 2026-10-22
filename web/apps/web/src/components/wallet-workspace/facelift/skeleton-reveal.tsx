@@ -7,11 +7,6 @@ import {
   type PopDigitsSegment,
 } from "@/components/wallet-workspace/facelift/pop-digits";
 
-// transitions.dev "Skeleton loader and reveal"
-// (frontend/transitions/skeleton-reveal.md) adapted for inline text slots:
-// the content layer sizes the wrap (t-skel-inline), the skeleton bar overlays
-// it, and flipping isRevealed cross-fades the two. Mount pop-in content only
-// when revealed so its own animation runs together with the reveal.
 export function SkeletonReveal({
   children,
   isRevealed,
@@ -24,8 +19,6 @@ export function SkeletonReveal({
   return (
     <span
       className={`t-skel t-skel-inline ${isRevealed ? "is-revealed" : ""}`}
-      // The recipe's demo reveals after a fixed pulse count; our fetches have
-      // no known duration, so the pulse loops until the reveal lands.
       style={{ ["--pulse-count" as never]: "infinite" }}
     >
       <span aria-hidden="true" className="t-skel-skeleton is-pulsing">

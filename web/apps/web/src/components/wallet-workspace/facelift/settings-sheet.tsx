@@ -17,8 +17,6 @@ const LINK_BY_ICON = Object.fromEntries(
   SIDEBAR_LINKS.map((link) => [link.icon, link])
 );
 
-// Figma 5462:75016 / 5462:74914 — the sheet uses its own row labels over the
-// sidebar's shared destinations.
 const LINK_GROUPS: { href: string; icon: string; label: string }[][] = [
   [
     { ...LINK_BY_ICON["icon-docs.svg"], label: "See documentation" },
@@ -90,7 +88,6 @@ export function SettingsSheet({
         <button
           className="t-hover flex h-[60px] w-full items-center gap-3 rounded-[20px] bg-accent px-4 hover:bg-accent-selected"
           onClick={(event) => {
-            // Wipe from the row itself, same as the sidebar toggle.
             const rect = event.currentTarget.getBoundingClientRect();
             toggleTheme({
               x: rect.left + rect.width / 2,

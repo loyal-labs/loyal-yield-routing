@@ -63,9 +63,6 @@ export function MiddlePaneSlide({
   const rootPageRef = useRef<HTMLDivElement>(null);
   const actionPageRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<number | null>(null);
-  // Container width while the action screen is open — the close-time freeze
-  // below needs it, and by the time the close effect runs the shell has
-  // already remounted the chart pane and narrowed the container.
   const actionWidthRef = useRef<number | null>(null);
   const [isActionMounted, setIsActionMounted] = useState(false);
   const lastActionPaneRef = useRef<ReactNode>(null);
@@ -86,15 +83,11 @@ export function MiddlePaneSlide({
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    // The second pane of multi-pane action screens lags by --page-stagger,
-    // so settling/unmounting waits for the delayed transition too.
     const slideDur =
       readCssDurationMs("--page-slide-dur", 250) +
       readCssDurationMs("--page-stagger", 0);
     if (isActionOpen) {
       rootPageRef.current?.classList.remove("is-settled");
-      // Reopening mid-exit: drop the exit freeze so inset-0 tracks the
-      // container again.
       actionPageRef.current?.style.removeProperty("width");
       actionPageRef.current?.style.removeProperty("z-index");
       // Doubles as the forced reflow the entrance transition needs.
@@ -130,7 +123,6 @@ export function MiddlePaneSlide({
     }, slideDur);
   }, [isActionOpen, isActionMounted]);
 
-  // Keep the freeze width current across window resizes while open.
   useEffect(() => {
     if (!isActionOpen) {
       return;
@@ -167,8 +159,6 @@ export function MiddlePaneSlide({
         <div className="flex min-w-0 flex-1">{children}</div>
       </div>
       {isActionMounted ? (
-        // gap-2 restores the shell row's gap for the action panes' sibling
-        // sections (withdraw/autodeposit render two panes themselves).
         <div
           className="t-page flex gap-2 max-[795px]:gap-0"
           data-page-id="2"

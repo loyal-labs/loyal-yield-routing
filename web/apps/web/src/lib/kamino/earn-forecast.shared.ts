@@ -7,7 +7,6 @@ export type EarnForecastResponse = {
     | "safe_fee_aware_1bps"
     | "medium_fee_aware_1bps"
     | "realized_7d_share_price";
-  // Which measurement won for the realized strategy; absent otherwise.
   source?: "realized_7d" | "live";
   availability?: "available" | "stale" | "unavailable";
   apyBps: number;
@@ -48,9 +47,6 @@ export type EarnForecastSummaryResponse = {
   history: EarnForecastApyHistoryResponse;
 };
 
-// Shown only when no realized measurement has ever loaded. Deliberately
-// below the measured realized APY (6.44%, 2026-09-22) so an outage cannot
-// overpromise.
 export const FALLBACK_EARN_FORECAST: EarnForecastResponse = {
   availability: "unavailable",
   apyBps: 600,

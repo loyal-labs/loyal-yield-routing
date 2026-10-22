@@ -103,7 +103,6 @@ export async function readCachedEarnEarningsRangeSet(
   const refresh = async () => {
     let result: EarnEarningsRangeSetResponse | undefined;
     await deps.withLock(key, async () => {
-      // Another instance may have finished between the read and lock acquisition.
       const latest = await deps.loadSnapshot(scope, timezone);
       const latestRevision = await deps.loadSourceRevision(scope);
       if (
