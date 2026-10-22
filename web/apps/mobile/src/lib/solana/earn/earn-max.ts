@@ -35,8 +35,6 @@ export type EarnMaxInviteResponse = { redeemed: boolean };
 
 export const EARN_MAX_CONTRACT = "earn-max-v4";
 
-const EARN_MAX_PATH = "/api/smart-accounts/earn-max";
-
 export type EarnMaxErrorCode =
   | "contract_mismatch"
   | "invite_required"
@@ -95,7 +93,7 @@ async function readEarnMax<T>(res: Response): Promise<T> {
 function readPath<T>(walletAddress: string, path: string): Promise<T> {
   return earnWalletRead(
     walletAddress,
-    `${env.earnApiBaseUrl}${EARN_MAX_PATH}/${path}`,
+    `${env.earnApiBaseUrl}/api/smart-accounts/earn-max/${path}`,
   ).then((res) => readEarnMax<T>(res));
 }
 
@@ -129,7 +127,7 @@ export async function redeemEarnMaxInvite(
       null,
     );
   }
-  const res = await fetch(`${env.earnApiBaseUrl}${EARN_MAX_PATH}/invite`, {
+  const res = await fetch(`${env.earnApiBaseUrl}/api/smart-accounts/earn-max/invite`, {
     method: "POST",
     headers: { ...earnHeaders(), Authorization: `Bearer ${token}` },
     body: JSON.stringify({ code }),
