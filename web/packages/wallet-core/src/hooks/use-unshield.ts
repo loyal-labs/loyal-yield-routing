@@ -15,8 +15,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WalletSigner } from "../types/signer";
 
+// Exit-only path for the sunset private-transfer program (ASK-2269). Users
+// still hold shielded balances on-chain; this lets them move funds back to
+// their wallet. Shield / private send are intentionally not exposed.
+//
+// Runs against the deprecated npm tarball `@loyal-labs/private-transactions`
+// 0.2.11 — the source lives in the private legacy repo. Do not add features.
+
 export type ShieldedBalance = {
   tokenMint: string;
+  /** Raw base-unit amount held in the deposit PDA. */
   amountRaw: bigint;
 };
 

@@ -286,6 +286,9 @@ async function sendVersionedTransaction(args: {
   });
 }
 
+// Resolves with the confirmation's slot when the transport reported one —
+// the slot is authoritative here, while status probes can lag the
+// confirmation on a busy RPC indexer.
 async function confirmSubmittedTransaction(args: {
   blockhash: string;
   connection: PreparedConnection;
@@ -412,6 +415,8 @@ export async function sendPreparedBatchWithWallet({
   if (sendMode === "sign-and-confirm-each") {
     const signatures: string[] = [];
     for (const [index, operation] of prepared.entries()) {
+      // Fetch a fresh blockhash and request approval only after the preceding
+      // transaction and its confirmation callback have completed.
       const signature = await sendPreparedWithWallet({
         connection,
         wallet,

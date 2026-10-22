@@ -701,6 +701,10 @@ export const pushNotificationTickets = pgTable(
   ]
 );
 
+/**
+ * @deprecated 2026-05-22 — the per-wallet polling cron was removed. This
+ * historical cursor is retained only for rollback/audit compatibility.
+ */
 export const walletPushSyncState = pgTable("wallet_push_sync_state", {
   walletPublicKey: text("wallet_public_key").primaryKey(),
   lastSignature: text("last_signature"),
@@ -1022,6 +1026,11 @@ export const appSmartAccountSettingsChangeRequests = pgTable(
   ]
 );
 
+/**
+ * Active/removed root Settings signer read model used by wallet onboarding.
+ * A signer row can be linked to an app user only after wallet auth proves
+ * ownership of signerAddress.
+ */
 export const appSmartAccountSigners = pgTable(
   "app_smart_account_signers",
   {
@@ -1138,6 +1147,10 @@ export const appWalletAuthCompletions = pgTable(
   ]
 );
 
+/**
+ * Single-use keys for the Cap captcha (challenge nonces + redeem tokens).
+ * Rows are consumed by delete-on-read; expiry is enforced at read time.
+ */
 export const appCaptchaKeys = pgTable("app_captcha_keys", {
   key: text("key").primaryKey(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -1519,6 +1532,10 @@ export const trustedDapps = pgTable(
     origin: text("origin").notNull(),
     name: text("name").notNull(),
     startUrl: text("start_url").notNull(),
+    // Free-form category label shown as a section header in the mobile
+    // browser. Kept as text (not an enum) so admins can add new categories
+    // without a migration; the canonical list lives in
+    // `@loyal-labs/shared/dapp-categories`.
     category: text("category"),
     displayOrder: integer("display_order").default(0).notNull(),
     isActive: boolean("is_active").default(true).notNull(),

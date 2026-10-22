@@ -224,6 +224,8 @@ export function voltrClaimBlockReason(
   const pending = position.withdrawal;
   if (!pending || nowSec < pending.withdrawableFromTs) return "not_ready";
   if (position.idleAssetRaw === null) return "liquidity_unavailable";
+  // SDK withdrawals.ts uses min(request quote, redemption-fee-adjusted value).
+  // Cover the full payout, not the smaller wallet sweep or existing user dust.
   return position.idleAssetRaw < pending.payoutRaw
     ? "insufficient_liquidity"
     : null;

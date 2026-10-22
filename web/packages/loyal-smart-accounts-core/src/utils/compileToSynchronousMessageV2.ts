@@ -205,6 +205,7 @@ function serializeCompiledInstruction(ix: {
   // SmallVec<u16, u8> for data
   buffer = Buffer.concat([
     buffer,
+    // Length prefix as u16 (little endian)
     Buffer.from(new Uint16Array([ix.data.length]).buffer),
     ix.data,
   ]);

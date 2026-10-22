@@ -184,6 +184,7 @@ async function fetchOpenPullsWithRetry(args: Args): Promise<PullRequest[]> {
   return pulls;
 }
 
+/** GET /repos/{o}/{r}/compare/{base}...{head} (three-dot: head vs merge-base). */
 function compare(args: Args, base: string, head: string): {
   mergeBaseSha: string | null;
   files: string[];

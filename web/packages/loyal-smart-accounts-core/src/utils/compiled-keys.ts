@@ -16,6 +16,10 @@ export type CompiledKeyMeta = {
 
 type KeyMetaMap = Map<string, CompiledKeyMeta>;
 
+/**
+ *  This is almost completely copy-pasted from solana-web3.js and slightly adapted to work with "wrapped" transaction messaged such as in VaultTransaction.
+ *  @see https://github.com/solana-labs/solana-web3.js/blob/87d33ac68e2453b8a01cf8c425aa7623888434e8/packages/library-legacy/src/message/compiled-keys.ts
+ */
 export class CompiledKeys {
   payer?: PublicKey;
   keyMetaMap: KeyMetaMap;
@@ -54,6 +58,8 @@ export class CompiledKeys {
     payerKeyMeta.isWritable = true;
 
     for (const ix of instructions) {
+      // This is the only difference from the original.
+      // getOrInsertDefault(ix.programId).isInvoked = true;
       getOrInsertDefault(ix.programId).isInvoked = false;
       for (const accountMeta of ix.keys) {
         const keyMeta = getOrInsertDefault(accountMeta.pubkey);

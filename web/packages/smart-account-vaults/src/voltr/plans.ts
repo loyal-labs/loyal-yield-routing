@@ -23,6 +23,8 @@ import {
   withdrawVaultInstruction,
 } from "./program";
 
+/** `outer` is wallet-signed and runs first; `vault` runs as the index-2
+ * smart-account vault inside one executeTransactionSyncV2. */
 export type VoltrPlan = {
   outer: TransactionInstruction[];
   vault: TransactionInstruction[];
