@@ -4,7 +4,8 @@ import { reconcileQuestCompletions } from "@/features/solana-week/server/quest-c
 
 import { validateCronAuthHeader } from "../_shared/auth";
 
-const DEFAULT_SWEEP_LOOKBACK_HOURS = 168; // 7 days — covers a week-long event.
+const SOLANA_WEEK_EVENT_DAYS = 7;
+const DEFAULT_SWEEP_LOOKBACK_HOURS = SOLANA_WEEK_EVENT_DAYS * 24;
 
 function resolveSweepLookbackMs(): number {
   const raw = process.env.SOLANA_WEEK_SWEEP_LOOKBACK_HOURS;

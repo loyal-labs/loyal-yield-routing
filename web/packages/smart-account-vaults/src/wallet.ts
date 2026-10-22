@@ -52,19 +52,24 @@ function translateSimulationLogs(logs: string[]): Error | null {
   }
 }
 
+const WALLET_USER_REJECTED_CODE = 4001;
+
+function isUserRejection(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === WALLET_USER_REJECTED_CODE
+  );
+}
+
 async function getSimulationDiagnosticError(args: {
   connection: PreparedConnection;
   error: unknown;
   prepared: PreparedOperation;
   transaction: VersionedTransaction;
 }): Promise<Error | null> {
-  // An explicit user denial must not become a failure of a dependent transaction.
-  if (
-    args.error &&
-    typeof args.error === "object" &&
-    "code" in args.error &&
-    args.error.code === 4001
-  ) {
+  if (isUserRejection(args.error)) {
     return null;
   }
   if (typeof args.connection.simulateTransaction !== "function") {

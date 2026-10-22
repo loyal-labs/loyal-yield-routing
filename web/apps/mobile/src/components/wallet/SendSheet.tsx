@@ -121,6 +121,8 @@ function formatFeeUsd(feeUsd: number | null): string {
 }
 
 const SCREEN_WIDTH = Dimensions.get("screen").width;
+const AMOUNT_ROW_PADDING_X = 16;
+const SWAP_BUTTON_WIDTH = 52;
 
 // Amount auto-shrink (ported from DepositSheet): keep the big amount on one
 // line by scaling the font down; lineHeight stays pinned so the baseline holds.
@@ -1188,7 +1190,8 @@ function AmountStep({
   // at the max size so the baseline doesn't move.
   const amountFontSize = useMemo(() => {
     const text = `${currencyMode === "USD" ? "$" : ""}${displayAmount || "0"}`;
-    const availableWidth = SCREEN_WIDTH - 32 - 52; // px-16*2 + swap button
+    const availableWidth =
+      SCREEN_WIDTH - 2 * AMOUNT_ROW_PADDING_X - SWAP_BUTTON_WIDTH;
     const fitted = Math.floor(
       availableWidth / (text.length * AMOUNT_CHAR_WIDTH_RATIO),
     );
@@ -1246,7 +1249,7 @@ function AmountStep({
         </View>
       </View>
 
-      <View style={{ paddingTop: 36, paddingHorizontal: 16 }}>
+      <View style={{ paddingTop: 36, paddingHorizontal: AMOUNT_ROW_PADDING_X }}>
         <Pressable
           style={{ position: "relative", height: 58, justifyContent: "flex-end" }}
           onPress={openKeyboard}
@@ -1255,7 +1258,7 @@ function AmountStep({
             style={{
               flexDirection: "row",
               alignItems: "flex-end",
-              paddingRight: 52,
+              paddingRight: SWAP_BUTTON_WIDTH,
               pointerEvents: "none",
             }}
           >

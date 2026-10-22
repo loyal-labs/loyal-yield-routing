@@ -2592,7 +2592,7 @@ function mapVaultActivity(
       timestamp: timestamp.time,
       date: timestamp.date,
       icon,
-      rawTimestamp: activity.timestamp ?? undefined,
+      rawTimestampMs: activity.timestamp ?? undefined,
     },
     detail: {
       activity: {
@@ -2603,7 +2603,7 @@ function mapVaultActivity(
         timestamp: timestamp.time,
         date: timestamp.date,
         icon,
-        rawTimestamp: activity.timestamp ?? undefined,
+        rawTimestampMs: activity.timestamp ?? undefined,
       },
       usdValue,
       status: activity.status === "failed" ? "Failed" : "Completed",

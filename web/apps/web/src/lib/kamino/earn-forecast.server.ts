@@ -21,9 +21,7 @@ import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-ov
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CROSS_MINT_FEE_BPS = 1;
-// Extra lookback so the point just before the first series hour's window
-// start is not dropped, which would null the first realized-series sample(s).
-const HISTORY_LOOKBACK_SLACK_MS = 2 * 60 * 60 * 1000;
+const PRE_WINDOW_POINT_LOOKBACK_MS = 2 * 60 * 60 * 1000;
 // Diagnostic-only threshold for the "realized APY unavailable" warning below;
 // mirrors computeRealizedApy's own staleness cutoff so the log reports the
 // same reserves it silently excluded.
@@ -143,7 +141,7 @@ export async function getRealizedEarnForecastFromDependencies(
     now.getTime() -
     SERIES_WINDOW_MS -
     REALIZED_WINDOW_MS -
-    HISTORY_LOOKBACK_SLACK_MS;
+    PRE_WINDOW_POINT_LOOKBACK_MS;
   if (deps.hasRecentPrices && !(await deps.hasRecentPrices(sinceMs))) {
     return null;
   }

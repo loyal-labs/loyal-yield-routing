@@ -41,8 +41,7 @@ export interface ServerConfig {
   alertColumns: string[];
   cardinalityColumns: string[];
   dailyRecapEnabled: boolean;
-  /** Minutes past UTC midnight at which the daily recap is posted. */
-  dailyRecapAtMinutes: number;
+  dailyRecapAtUtcMinutes: number;
   recapSilent: boolean;
   escalationMultiplier: number;
   restartGraceMs: number;
@@ -88,7 +87,7 @@ export function loadConfig(
       true,
       "DAILY_RECAP_ENABLED"
     ),
-    dailyRecapAtMinutes: clockMinutes(
+    dailyRecapAtUtcMinutes: utcClockMinutes(
       env.DAILY_RECAP_AT,
       6 * 60,
       "DAILY_RECAP_AT"
@@ -296,22 +295,6 @@ export function createFanoutSender(senders: AlertSender[]): AlertSender {
   };
 }
 
-/**
- * Logs the message text before it is handed to the destination, not after,
- * because the send is exactly what this is for: a rejected message (a bad HTML
- * entity, a chat that vanished) is the case where the text matters most, and
- * after a throw there is nothing left to log it from. Unconditional rather than
- * behind `TRACE_LOGS`: alerts are rate limited to a handful a day by the
- * cooldown, and an operator reading Render logs should not have to redeploy the
- * relay to find out what it said.
- *
- * Redaction goes through the same `RelayCredentials` the sender posts with, so
- * it always covers the credentials actually in use — including the other
- * destination's, since both render the same text. That text is assembled from
- * other services' log lines, so it can carry anything they logged, including a
- * bot token with no `bot` prefix in front of it, which the URL-shaped redaction
- * alone would miss.
- */
 function createOutgoingMessageLogger(
   destination: "telegram" | "slack",
   credentials: RelayCredentials
@@ -641,8 +624,7 @@ function wholeNumber(
   return value;
 }
 
-/** "HH:MM" in UTC, as minutes past midnight. */
-function clockMinutes(
+function utcClockMinutes(
   raw: string | undefined,
   fallback: number,
   name: string

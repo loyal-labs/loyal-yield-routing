@@ -206,6 +206,8 @@ export type PendingEarnApproval = {
 // monolith; the one structural change is that the review overlay's
 // per-stage "Continue" clicks are auto-chained after a single up-front
 // approval gate — the wallet still prompts per signature.
+const PENDING_SIGNATURE_CAP_MS = 20_000;
+
 export function useEarnActions(deps: {
   autodepositConfig: EarnAutodepositConfigView | null;
   hasPosition: boolean;
@@ -304,13 +306,11 @@ export function useEarnActions(deps: {
     setPendingTransactionSignatures((current) =>
       current.includes(signature) ? current : [...current, signature]
     );
-    // ponytail: 20s cap — the indexer lag is ~5s, and a mismatch must never
-    // pin a skeleton row for long.
     window.setTimeout(() => {
       setPendingTransactionSignatures((current) =>
         current.filter((existing) => existing !== signature)
       );
-    }, 20_000);
+    }, PENDING_SIGNATURE_CAP_MS);
   }, []);
 
   const [depositError, setDepositError] = useState<string | null>(null);

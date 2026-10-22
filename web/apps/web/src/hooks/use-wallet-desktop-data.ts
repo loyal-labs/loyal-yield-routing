@@ -355,7 +355,7 @@ function mapActivityToRowAndDetail(
     timestamp: timestamp.time,
     date: timestamp.date,
     icon: display.icon,
-    rawTimestamp: activity.timestamp ?? undefined,
+    rawTimestampMs: activity.timestamp ?? undefined,
     ...(earnActivity
       ? earnActivity.token
         ? {
