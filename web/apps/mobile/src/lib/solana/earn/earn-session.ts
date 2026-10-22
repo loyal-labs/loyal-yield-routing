@@ -269,6 +269,7 @@ export async function earnWalletRead(
   walletAddress: string,
   url: string,
 ): Promise<Response> {
+  const startedAt = generation;
   const token = await silentEarnToken(walletAddress);
   const res = await getWithBearer(url, token);
   if (!token || !(await isInvalidSession(res))) {
@@ -281,7 +282,8 @@ export async function earnWalletRead(
     return res;
   }
   const retried = await getWithBearer(url, fresh);
-  if (await isInvalidSession(retried)) {
+  const rejected = await isInvalidSession(retried);
+  if (rejected && startedAt === generation) {
     failedMintAt.set(walletAddress, Date.now());
   }
   return retried;
