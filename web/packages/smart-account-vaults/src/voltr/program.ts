@@ -331,7 +331,7 @@ export async function readVoltrPosition(
     accountedLp +
     unrealisedManagementFeeLp(
       accountedLp,
-      readU64(v, 168),
+      readU64(v, VAULT_TOTAL_VALUE_OFFSET),
       readU64(v, 568),
       readU16(v, 516) + readU16(v, 518) + readU16(v, 526),
       nowSec,
