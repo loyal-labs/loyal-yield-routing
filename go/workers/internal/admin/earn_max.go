@@ -39,7 +39,6 @@ const (
 	earnMaxHTTPTimeout  = 10 * time.Second
 	earnMaxRPCTimeout   = 15 * time.Second
 	earnMaxEarnedBudget = 90 * time.Second
-	earnMaxEarnedTTL    = 10 * time.Minute
 	earnMaxFetchers     = 8
 	earnMaxMaxBody      = 16 << 20
 )
@@ -756,13 +755,13 @@ func earnMaxSharePrice(ctx context.Context) (float64, error) {
 	return *price, nil
 }
 
-func earnMaxLoadApy(ctx context.Context) (EarnMaxApy, error) {
+func earnMaxLoadApy(ctx context.Context, sharePrice func() (float64, error)) (EarnMaxApy, error) {
 	var price float64
 	var priceErr error
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		price, priceErr = earnMaxSharePrice(ctx)
+		price, priceErr = sharePrice()
 	}()
 	var vault map[string]any
 	vaultErr := earnMaxGet(ctx, "https://api.voltr.xyz/vault/"+earnMaxVoltrVault, &vault)
@@ -794,35 +793,33 @@ func earnMaxLoadApy(ctx context.Context) (EarnMaxApy, error) {
 	return apy, nil
 }
 
-type earnMaxEarnedState struct {
-	at       time.Time
-	lpSupply string
-	value    EarnMaxVault
+type earnMaxScan struct {
+	computedAt string
+	flows      []EarnMaxLpFlow
+	valueUsd   float64
 }
 
 var (
 	earnMaxFlowMu    sync.Mutex
 	earnMaxFlowCache = map[string]EarnMaxLpFlow{}
-	earnMaxEarned    *earnMaxEarnedState
+	earnMaxScans     = &staleWhileRevalidate[earnMaxScan]{fresh: time.Minute, stale: 10 * time.Minute, wait: 3 * time.Second, budget: earnMaxEarnedBudget}
 )
 
-func earnMaxLoadVault(ctx context.Context) (EarnMaxVault, error) {
-	ctx, cancel := context.WithTimeout(ctx, earnMaxEarnedBudget)
-	defer cancel()
-	value, err := earnMaxScanVault(ctx)
-	if err == nil {
-		return value, nil
+func earnMaxLoadVault() (EarnMaxVault, error) {
+	scan, have, scanErr := earnMaxScans.get(earnMaxScanVault)
+	if !have {
+		return EarnMaxVault{}, scanErr
 	}
-	earnMaxFlowMu.Lock()
-	cached := earnMaxEarned
-	earnMaxFlowMu.Unlock()
-	if cached == nil {
-		return EarnMaxVault{}, err
+	value := EarnMaxVault{
+		ComputedAt: scan.computedAt,
+		Flows:      scan.flows,
+		ValueUsd:   scan.valueUsd,
 	}
-	message := earnMaxMessage(err)
-	stale := cached.value
-	stale.Error = &message
-	return stale, nil
+	if scanErr != nil {
+		message := earnMaxMessage(scanErr)
+		value.Error = &message
+	}
+	return value, nil
 }
 
 func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solana.Signature) (EarnMaxLpFlow, error) {
@@ -862,10 +859,10 @@ func earnMaxFetchFlow(ctx context.Context, client *chain.Client, signature solan
 	return flow, nil
 }
 
-func earnMaxScanVault(ctx context.Context) (EarnMaxVault, error) {
+func earnMaxScanVault(ctx context.Context) (earnMaxScan, error) {
 	client, err := earnMaxChain()
 	if err != nil {
-		return EarnMaxVault{}, err
+		return earnMaxScan{}, err
 	}
 	mintKey := solana.MustPublicKeyFromBase58(earnMaxLPMint)
 	accounts, err := earnMaxRetry(ctx, func() ([]*chain.Account, error) {
@@ -873,22 +870,14 @@ func earnMaxScanVault(ctx context.Context) (EarnMaxVault, error) {
 		return accounts, err
 	})
 	if err != nil {
-		return EarnMaxVault{}, err
+		return earnMaxScan{}, err
 	}
 	if len(accounts) != 1 || accounts[0] == nil || len(accounts[0].Data) < 82 {
-		return EarnMaxVault{}, errors.New("The LP mint is unreadable.")
+		return earnMaxScan{}, errors.New("The LP mint is unreadable.")
 	}
 	supply := uint64(0)
 	for i := 7; i >= 0; i-- {
 		supply = supply<<8 | uint64(accounts[0].Data[36+i])
-	}
-	supplyText := strconv.FormatUint(supply, 10)
-
-	earnMaxFlowMu.Lock()
-	cached := earnMaxEarned
-	earnMaxFlowMu.Unlock()
-	if cached != nil && cached.lpSupply == supplyText && time.Since(cached.at) < earnMaxEarnedTTL {
-		return cached.value, nil
 	}
 
 	largest, err := earnMaxRetry(ctx, func() (*rpc.GetTokenLargestAccountsResult, error) {
@@ -899,19 +888,19 @@ func earnMaxScanVault(ctx context.Context) (EarnMaxVault, error) {
 		return out, nil
 	})
 	if err != nil {
-		return EarnMaxVault{}, err
+		return earnMaxScan{}, err
 	}
 	holders := largest.Value
 	var scanned uint64
 	for _, holder := range holders {
 		amount, err := strconv.ParseUint(holder.Amount, 10, 64)
 		if err != nil {
-			return EarnMaxVault{}, errors.New("holder_scan_incomplete")
+			return earnMaxScan{}, errors.New("holder_scan_incomplete")
 		}
 		scanned += amount
 	}
 	if scanned != supply || len(holders) >= 20 {
-		return EarnMaxVault{}, errors.New("holder_scan_incomplete")
+		return earnMaxScan{}, errors.New("holder_scan_incomplete")
 	}
 	signatures := map[solana.Signature]bool{}
 	for _, holder := range holders {
@@ -919,7 +908,7 @@ func earnMaxScanVault(ctx context.Context) (EarnMaxVault, error) {
 			return client.History(ctx, holder.Address, 1000, solana.Signature{}, rpc.CommitmentConfirmed, 0)
 		})
 		if err != nil {
-			return EarnMaxVault{}, err
+			return earnMaxScan{}, err
 		}
 		for _, s := range found {
 			if !s.Failed {
@@ -970,30 +959,29 @@ func earnMaxScanVault(ctx context.Context) (EarnMaxVault, error) {
 	}
 	wg.Wait()
 	if firstErr != nil {
-		return EarnMaxVault{}, firstErr
+		return earnMaxScan{}, firstErr
 	}
 	if err := ctx.Err(); err != nil {
-		return EarnMaxVault{}, err
+		return earnMaxScan{}, err
 	}
 
 	sharePrice, err := earnMaxSharePrice(ctx)
 	if err != nil {
-		return EarnMaxVault{}, err
+		return earnMaxScan{}, err
 	}
-	value := EarnMaxVault{
-		ComputedAt: readsISO(time.Now()),
-		Flows:      []EarnMaxLpFlow{},
-		ValueUsd:   float64(supply) * sharePrice / 1000 / 1e6,
-	}
+	scan := earnMaxScan{computedAt: readsISO(time.Now()), flows: []EarnMaxLpFlow{}, valueUsd: float64(supply) * sharePrice / 1000 / 1e6}
 	earnMaxFlowMu.Lock()
+	kept := make(map[string]EarnMaxLpFlow, len(signatures))
 	for signature := range signatures {
-		if flow := earnMaxFlowCache[signature.String()]; flow.LpNet != 0 {
-			value.Flows = append(value.Flows, flow)
+		flow := earnMaxFlowCache[signature.String()]
+		kept[signature.String()] = flow
+		if flow.LpNet != 0 {
+			scan.flows = append(scan.flows, flow)
 		}
 	}
-	earnMaxEarned = &earnMaxEarnedState{at: time.Now(), lpSupply: supplyText, value: value}
+	earnMaxFlowCache = kept
 	earnMaxFlowMu.Unlock()
-	return value, nil
+	return scan, nil
 }
 
 func earnMaxLoadBorrowing(ctx context.Context) ([]EarnMaxBorrowRow, error) {
@@ -1043,6 +1031,7 @@ func earnMaxLoadBorrowing(ctx context.Context) ([]EarnMaxBorrowRow, error) {
 
 func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, error) {
 	page := EarnMaxPage{LoadedAt: readsISO(time.Now())}
+	sharePrice := sync.OnceValues(func() (float64, error) { return earnMaxSharePrice(ctx) })
 	var wg sync.WaitGroup
 	run := func(load func()) {
 		wg.Add(1)
@@ -1066,8 +1055,8 @@ func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, erro
 	run(func() {
 		page.Balances = earnMaxPart(func() (EarnMaxBalances, error) { return earnMaxLoadBalances(ctx) })
 	})
-	run(func() { page.Vault = earnMaxPart(func() (EarnMaxVault, error) { return earnMaxLoadVault(ctx) }) })
-	run(func() { page.Apy = earnMaxPart(func() (EarnMaxApy, error) { return earnMaxLoadApy(ctx) }) })
+	run(func() { page.Vault = earnMaxPart(func() (EarnMaxVault, error) { return earnMaxLoadVault() }) })
+	run(func() { page.Apy = earnMaxPart(func() (EarnMaxApy, error) { return earnMaxLoadApy(ctx, sharePrice) }) })
 	run(func() {
 		page.Borrowing = earnMaxPart(func() ([]EarnMaxBorrowRow, error) { return earnMaxLoadBorrowing(ctx) })
 	})
@@ -1077,4 +1066,60 @@ func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, erro
 
 func registerEarnMax(m *Mux) {
 	Page(m, "/vault-integrations/earn-max", loadEarnMax)
+}
+
+var errStillRefreshing = errors.New("Still refreshing; try again shortly.")
+
+type staleWhileRevalidate[T any] struct {
+	fresh, stale, wait, budget time.Duration
+
+	mu      sync.Mutex
+	value   *T
+	at      time.Time
+	err     error
+	running chan struct{}
+}
+
+func (c *staleWhileRevalidate[T]) get(load func(context.Context) (T, error)) (T, bool, error) {
+	c.mu.Lock()
+	if c.running == nil && (c.value == nil || time.Since(c.at) >= c.fresh) {
+		c.running = make(chan struct{})
+		go c.refresh(load, c.running)
+	}
+	running, current, wait := c.running, c.value == nil || time.Since(c.at) >= c.stale, c.wait
+	if c.value == nil {
+		wait = c.budget
+	}
+	c.mu.Unlock()
+	if current && running != nil {
+		select {
+		case <-running:
+		case <-time.After(wait):
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	err := c.err
+	if err == nil && (c.value == nil || time.Since(c.at) >= c.stale) {
+		err = errStillRefreshing
+	}
+	if c.value == nil {
+		var zero T
+		return zero, false, err
+	}
+	return *c.value, true, err
+}
+
+func (c *staleWhileRevalidate[T]) refresh(load func(context.Context) (T, error), done chan struct{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.budget)
+	defer cancel()
+	value, err := load(ctx)
+	c.mu.Lock()
+	if err == nil {
+		c.value, c.at = &value, time.Now()
+	}
+	c.err = err
+	c.running = nil
+	c.mu.Unlock()
+	close(done)
 }
