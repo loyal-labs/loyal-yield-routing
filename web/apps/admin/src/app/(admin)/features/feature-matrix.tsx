@@ -1,12 +1,6 @@
 import Link from "next/link";
 
-import {
-  type FeatureAppStatus,
-  type FeatureFlagLink,
-  type FeatureRegistry,
-  type RuntimeFlag,
-} from "@loyal-labs/db-core/schema";
-
+import type { FeatureView } from "./feature-types";
 import { FeatureStatusBadge } from "./feature-status-badge";
 
 const APPS = [
@@ -16,12 +10,7 @@ const APPS = [
   "extension",
 ] as const;
 
-type FeatureWithStatuses = FeatureRegistry & {
-  appStatuses: FeatureAppStatus[];
-  flagLinks: (FeatureFlagLink & { flag: RuntimeFlag })[];
-};
-
-export function FeatureMatrix({ features }: { features: FeatureWithStatuses[] }) {
+export function FeatureMatrix({ features }: { features: FeatureView[] }) {
   return (
     <div className="overflow-x-auto rounded-xl border bg-card">
       <table className="w-full text-sm">
