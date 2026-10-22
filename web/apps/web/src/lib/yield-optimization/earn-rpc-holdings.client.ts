@@ -7,12 +7,13 @@
 // it). The client hook imports it just the same.
 
 import {
+  EARN_VAULT_INDEX,
   getKaminoUsdcEarnTargetForCluster,
   getRiskBasketMarketsForCluster,
   KAMINO_VANILLA_OBLIGATION_ID,
   KAMINO_VANILLA_OBLIGATION_TAG,
-  type LoyalCluster,
   RiskBasket,
+  type LoyalCluster,
 } from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import {
@@ -39,7 +40,6 @@ import {
   getEarnProductAssetsForCluster,
 } from "./earn-product-mints.shared";
 
-const EARN_VAULT_INDEX = 1;
 const GET_MULTIPLE_ACCOUNTS_LIMIT = 100;
 const SOURCE_COMMITMENT: Commitment = "confirmed";
 const DEFAULT_PUBKEY = PublicKey.default;

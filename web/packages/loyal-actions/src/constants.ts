@@ -46,6 +46,8 @@ export const STABLECOINS = [
   Stablecoin.USDS,
 ] as const;
 
+export const EARN_VAULT_INDEX: 1 = 1;
+
 export const KAMINO_MAIN_MARKET = new PublicKey(
   "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
 );

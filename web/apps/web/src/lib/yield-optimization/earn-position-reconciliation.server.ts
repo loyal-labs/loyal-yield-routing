@@ -3,7 +3,7 @@ import "server-only";
 import type { LoyalCluster } from "@loyal-labs/actions";
 import type { Connection } from "@solana/web3.js";
 import { PublicKey } from "@solana/web3.js";
-
+import { EARN_VAULT_INDEX } from "@loyal-labs/actions";
 import { resolveLoyalSmartAccountsProgramIdFromEnv } from "@/lib/core/config/server";
 import { fetchEarnRpcHoldingsSnapshot } from "./earn-rpc-holdings.client";
 import {
@@ -12,7 +12,6 @@ import {
   recordReconciledYieldVaultSnapshot,
 } from "./yield-deposit-repository.server";
 
-const EARN_VAULT_INDEX = 1;
 const RECONCILE_CACHE_MS = 5 * 60 * 1000;
 const SOURCE_COMMITMENT = "confirmed";
 

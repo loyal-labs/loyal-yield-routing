@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  resolveLoyalClusterForSolanaEnv,
+} from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
@@ -27,7 +30,6 @@ import {
   findLatestFullYieldWithdrawalForVault,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 const PROJECTION_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000] as const;
 
 const connectionCache = new Map<SolanaEnv, Connection>();
@@ -90,14 +92,14 @@ export async function POST(request: Request) {
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const settingsPda = new PublicKey(principal.settingsPda);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda,
     });
     const cleanupState = await findEarnCleanupVaultState({
       authority: principal.walletAddress,
       settings: principal.settingsPda,
-      vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       vaultPubkey: earnVaultPda.toBase58(),
     });
     if (!cleanupState) {
@@ -143,7 +145,7 @@ export async function POST(request: Request) {
         }
         latestFullWithdrawal = await findLatestFullYieldWithdrawalForVault({
           settings: principal.settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+          vaultIndex: EARN_VAULT_INDEX,
           vaultPubkey: earnVaultPda.toBase58(),
           walletAddress: principal.walletAddress,
         });
@@ -207,7 +209,7 @@ export async function POST(request: Request) {
     const client = createSmartAccountVaultsClient({ connection, programId });
     const autodepositState = await findCurrentEarnAutodepositState({
       settings: principal.settingsPda,
-      vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       walletAddress: principal.walletAddress,
     });
     let autodepositClose:
@@ -240,7 +242,7 @@ export async function POST(request: Request) {
         await reconcileMissingOnChainEarnAutodepositPolicy({
           policyAccount: autodepositState.target.policyAccount,
           settings: principal.settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+          vaultIndex: EARN_VAULT_INDEX,
           walletAddress: principal.walletAddress,
         });
       }

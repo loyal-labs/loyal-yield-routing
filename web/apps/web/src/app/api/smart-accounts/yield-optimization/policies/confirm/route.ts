@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  EARN_VAULT_INDEX,
   normalizeLoyalCluster,
   resolveLoyalClusterForSolanaEnv,
 } from "@loyal-labs/actions";
@@ -16,7 +17,6 @@ import { resolveEarnProductAsset } from "@/lib/yield-optimization/earn-product-m
 import { assertSafeEarnReserveMetadata } from "@/lib/yield-optimization/earn-reserve-target.server";
 import { type ConfirmedYieldRoutePolicyInput } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-const EARN_POLICY_VAULT_INDEX = 1;
 const CONFIRMED_SIGNATURE_STATUS_ATTEMPTS = 12;
 const CONFIRMED_SIGNATURE_STATUS_RETRY_MS = 350;
 const CONFIRMED_SIGNATURE_STATUS_RETRY_MAX_MS = 5000;
@@ -73,7 +73,7 @@ function createCanonicalPolicyInput(
   })[0];
   const expectedVault = pda.getSmartAccountPda({
     settingsPda: settings,
-    accountIndex: EARN_POLICY_VAULT_INDEX,
+    accountIndex: EARN_VAULT_INDEX,
   })[0];
   // Prepare routes each mint to the best Safe reserve, not one fixed market
   // (multi-mint rollout), so validate the reserve the same way deposit
@@ -102,7 +102,7 @@ function createCanonicalPolicyInput(
     setupPolicyId: expectedSetupPolicySeed,
     setupPolicySeed: expectedSetupPolicySeed,
     targetReserve: earnTarget.targetReserve,
-    vaultIndex: EARN_POLICY_VAULT_INDEX,
+    vaultIndex: EARN_VAULT_INDEX,
     vaultPubkey: expectedVault.toBase58(),
   };
 

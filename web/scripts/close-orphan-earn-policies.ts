@@ -9,6 +9,7 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 import {
+  EARN_VAULT_INDEX,
   getKaminoUsdcEarnTargetForCluster,
   resolveLoyalClusterForSolanaEnv,
 } from "../packages/loyal-actions/src/index.ts";
@@ -32,7 +33,6 @@ import {
   type SolanaEnv,
 } from "../packages/solana-rpc/src/index.ts";
 
-const EARN_VAULT_INDEX = 1;
 const YIELD_DATABASE_URL_ENV_NAME = "NEON_DATABASE_URL";
 
 type ParsedArgs = {
