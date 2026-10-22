@@ -1,5 +1,7 @@
 "use client";
 
+import { useLastValue } from "@/components/wallet-workspace/facelift/use-last-value";
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -74,30 +76,10 @@ export function ActivityPage({
   const [selectedItem, setSelectedItem] = useState<ActivityFeedEntry | null>(
     null
   );
-  // Keeps the last detail rendered through the sheet's close animation so
-  // deselecting doesn't slide out an empty sheet.
-  const lastItemRef = useRef<ActivityFeedEntry | null>(null);
-  if (selectedItem) {
-    lastItemRef.current = selectedItem;
-  }
-  const sheetItem = selectedItem ?? lastItemRef.current;
-
-  // An open detail owns Esc: preventDefault marks it handled so the shell's
-  // Esc → Earn handoff (checked via microtask) stays put until the second
-  // press.
-  useEffect(() => {
-    if (!selectedItem) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setSelectedItem(null);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedItem]);
+  const sheetItem = useLastValue(selectedItem);
+  useEscapeOverlay(selectedItem !== null, () => {
+    setSelectedItem(null);
+  });
 
   useEffect(() => {
     if (!(isAuthenticated && isHydrated && settingsPda && walletAddress)) {

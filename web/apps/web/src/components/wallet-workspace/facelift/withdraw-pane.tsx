@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   CircleDollarSign,
   Landmark,
@@ -7,7 +8,7 @@ import {
   Undo2,
   Wallet,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import {
   deriveEarnWithdrawMode,
@@ -288,19 +289,9 @@ export function WithdrawPane({
     }
   };
 
-  useEffect(() => {
-    if (!isSheetOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setIsSheetOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isSheetOpen]);
+  useEscapeOverlay(isSheetOpen, () => {
+    setIsSheetOpen(false);
+  });
 
   return (
     <>
