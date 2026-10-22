@@ -1,7 +1,7 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import { Moon, Sun } from "lucide-react";
-import { useEffect } from "react";
 
 import { SIDEBAR_LINKS } from "@/components/wallet-workspace/facelift/sidebar";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
@@ -42,19 +42,7 @@ export function SettingsSheet({
   const { open: openSignIn } = useSignInModal();
   const { canDisconnect, disconnectAll } = useSessionDisconnect();
 
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  useEscapeOverlay(isOpen, onClose);
 
   return (
     <TitledSheet

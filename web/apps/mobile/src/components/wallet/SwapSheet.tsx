@@ -1,5 +1,4 @@
 import {
-  BottomSheetBackdrop,
   BottomSheetModal,
   BottomSheetScrollView,
   BottomSheetTextInput,
@@ -23,14 +22,8 @@ import {
   TextInput,
 } from "react-native";
 import Animated, {
-  cancelAnimation,
-  Easing,
   useAnimatedKeyboard,
   useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSpring,
-  withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -67,9 +60,26 @@ import type { TokenDetailsByMint } from "@/hooks/wallet/useTokenDetails";
 import { useWallet } from "@/lib/wallet/wallet-provider";
 import { Pressable, Text, View } from "@/tw";
 
+import {
+  focusInputAfterSheetSettles,
+  formatAmountInputDisplay,
+  formatSolAmount,
+  formatTokenAmount,
+  formatUsdAmount,
+  formatWithCommas,
+  MascotReveal,
+  presentSheetWhenOpen,
+  SendingSpinner,
+  SheetBackdrop,
+  solscanExplorerUrl,
+  stripAmountInput,
+  truncateAmountTo6Decimals,
+  useCaretBlink,
+  useSheetSettledRefocus,
+} from "@/components/sheets/sheetFacts";
+
 import SwapCurrencyIcon from "../../../assets/images/icons/swap_currency_28.svg";
 import SendErrorDog from "../../../assets/images/wallet/send_error_dog.svg";
-import SendSpinnerIcon from "../../../assets/images/wallet/send_spinner_80.svg";
 import SendSuccessDog from "../../../assets/images/wallet/send_success_dog.svg";
 
 const DEFAULT_SOL_MAX_FEE_RESERVE_LAMPORTS = 50_000;
@@ -124,35 +134,6 @@ function getFriendlyError(raw: string): string {
   return raw;
 }
 
-// Number formatting + amount-field helpers, mirrored from SendSheet so the Swap
-// amount field behaves identically (thousands separators, mid-typing dot, etc.).
-function formatWithCommas(
-  value: number,
-  minFrac: number,
-  maxFrac: number
-): string {
-  const safe = Number.isFinite(value) ? value : 0;
-  const [intPart, fracPartRaw = ""] = safe.toFixed(maxFrac).split(".");
-  let fracPart = fracPartRaw;
-  while (fracPart.length > minFrac && fracPart.endsWith("0")) {
-    fracPart = fracPart.slice(0, -1);
-  }
-  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return fracPart ? `${withCommas}.${fracPart}` : withCommas;
-}
-
-function formatTokenAmount(value: number, minFrac = 2): string {
-  return formatWithCommas(value, minFrac, 4);
-}
-
-function formatUsdAmount(value: number): string {
-  return `$${formatWithCommas(value, 2, 2)}`;
-}
-
-function formatSolAmount(value: number): string {
-  return formatWithCommas(value, 0, 6);
-}
-
 function formatLamportsAsSol(lamports: number): string {
   return formatSolAmount(lamports / 1_000_000_000);
 }
@@ -196,28 +177,6 @@ function formatUnitPrice(price: number | null | undefined): string {
   return price >= 1
     ? `$${formatWithCommas(price, 2, 2)}`
     : `$${formatWithCommas(price, 2, 5)}`;
-}
-
-function stripAmountInput(input: string): string {
-  let cleaned = input.replace(/[^0-9.]/g, "");
-  const parts = cleaned.split(".");
-  if (parts.length > 2) {
-    cleaned = `${parts[0]}.${parts.slice(1).join("")}`;
-  }
-  const [intPart, decPart] = cleaned.split(".");
-  const normalizedInt = intPart ? intPart.replace(/^0+(?=\d)/, "") : intPart;
-  return decPart !== undefined
-    ? `${normalizedInt || "0"}.${decPart}`
-    : normalizedInt;
-}
-
-function formatAmountInputDisplay(raw: string): string {
-  if (!raw) return "";
-  const trailingDot = raw.endsWith(".") && !raw.slice(0, -1).includes(".");
-  const [intPart, decPart] = raw.split(".");
-  const intText = formatWithCommas(Number(intPart || "0"), 0, 0);
-  if (trailingDot) return `${intText}.`;
-  return decPart !== undefined ? `${intText}.${decPart}` : intText;
 }
 
 function resolveInitialSwapMints(params: {
@@ -346,7 +305,11 @@ export function SwapSheet({
   const isValidAmount = amountNum > 0 && amountNum <= fromBalance;
   const isFormValid = isValidAmount && !!quote && fromMint !== toMint;
 
+  const prevOpenRef = useRef<boolean | null>(null);
   useEffect(() => {
+    const wasOpen = prevOpenRef.current;
+    prevOpenRef.current = open;
+    if (wasOpen === open) return;
     if (open) {
       const initialMints = resolveInitialSwapMints({
         initialFromMint,
@@ -354,7 +317,7 @@ export function SwapSheet({
         holdings: tokenHoldings,
         toPickerTokens,
       });
-      bottomSheetRef.current?.present();
+      presentSheetWhenOpen(bottomSheetRef.current, open);
       setStep("form");
       setFromMint(initialMints.fromMint);
       setToMint(initialMints.toMint);
@@ -372,10 +335,9 @@ export function SwapSheet({
       setShowFromPicker(false);
       setShowToPicker(false);
     } else {
-      bottomSheetRef.current?.dismiss();
+      presentSheetWhenOpen(bottomSheetRef.current, open);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, initialFromMint, initialToMint, tokenHoldings, toPickerTokens]);
 
   const feeEstimateFlowKey = useMemo(
     () =>
@@ -504,8 +466,6 @@ export function SwapSheet({
     };
   }, [feeEstimateConnection, feeEstimateFlowKey, feeEstimateKey]);
 
-  // Focus the amount input once the sheet has settled at its snap point.
-  // Focusing during the present animation pushes the keyboard above the sheet.
   const focusActiveInput = useCallback(() => {
     if (step === "form" && !showFromPicker && !showToPicker) {
       swapInputRef.current?.focus();
@@ -515,18 +475,11 @@ export function SwapSheet({
   const handleSheetChange = useCallback(
     (index: number) => {
       sheetSettledRef.current = index >= 0;
-      if (index >= 0) {
-        setTimeout(focusActiveInput, 120);
-      }
+      focusInputAfterSheetSettles(focusActiveInput, index);
     },
     [focusActiveInput]
   );
-
-  useEffect(() => {
-    if (!sheetSettledRef.current) return;
-    const id = setTimeout(focusActiveInput, 80);
-    return () => clearTimeout(id);
-  }, [focusActiveInput]);
+  useSheetSettledRefocus(sheetSettledRef, focusActiveInput);
 
   const outAmount = useMemo(() => {
     if (!quote || !toHolding) return null;
@@ -606,8 +559,7 @@ export function SwapSheet({
     ) {
       val = Math.max(0, fromBalance - feeReserveSol);
     }
-    // Truncate (never round) so float rounding can't push past the balance.
-    const truncated = Math.floor(val * 1e6) / 1e6;
+    const truncated = truncateAmountTo6Decimals(val);
     if (truncated <= 0) {
       setAmountStr("");
     } else if (currencyMode === "USD" && fromPrice && fromPrice > 0) {
@@ -672,18 +624,6 @@ export function SwapSheet({
     onClose();
   }, [onClose]);
 
-  const renderBackdrop = useCallback(
-    (props: React.ComponentProps<typeof BottomSheetBackdrop>) => (
-      <BottomSheetBackdrop
-        {...props}
-        disappearsOnIndex={-1}
-        appearsOnIndex={0}
-        opacity={0.3}
-      />
-    ),
-    []
-  );
-
   const selectFromToken = useCallback(
     (mint: string) => {
       setFromMint(mint);
@@ -725,7 +665,7 @@ export function SwapSheet({
       snapPoints={snapPoints}
       enableDynamicSizing={false}
       enablePanDownToClose={step !== "result" || !isSwapping}
-      backdropComponent={renderBackdrop}
+      backdropComponent={SheetBackdrop}
       onDismiss={onClose}
       onChange={handleSheetChange}
       handleComponent={null}
@@ -1194,18 +1134,8 @@ function FormStep({
   const fromSymbol = fromHolding?.symbol ?? "";
   const toBalance = toHolding?.balance ?? 0;
 
-  // Custom blinking caret — the real input's caret is hidden (it's a
-  // transparent overlay over the formatted amount). Mirrors SendSheet.
   const [isFocused, setIsFocused] = useState(false);
-  const [caretOn, setCaretOn] = useState(true);
-  useEffect(() => {
-    if (!isFocused) {
-      setCaretOn(true);
-      return;
-    }
-    const id = setInterval(() => setCaretOn((v) => !v), 530);
-    return () => clearInterval(id);
-  }, [isFocused]);
+  const caretOn = useCaretBlink(isFocused);
 
   const swapDisplay = formatAmountInputDisplay(amountStr) || "0";
   const swapBig = currencyMode === "USD" ? `$${swapDisplay}` : swapDisplay;
@@ -1825,49 +1755,6 @@ function ConfirmRow({
   );
 }
 
-// Continuously rotating red spinner arc, shown while the swap is in flight.
-function SwappingSpinner() {
-  const rotation = useSharedValue(0);
-  useEffect(() => {
-    rotation.value = withRepeat(
-      withTiming(360, { duration: 900, easing: Easing.linear }),
-      -1,
-      false
-    );
-    return () => cancelAnimation(rotation);
-  }, [rotation]);
-  const style = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${rotation.value}deg` }],
-  }));
-  return (
-    <Animated.View style={[{ width: 80, height: 80 }, style]}>
-      <SendSpinnerIcon width={80} height={80} />
-    </Animated.View>
-  );
-}
-
-// Mascot entrance: rapid zoom-in with a spring overshoot (bounce) + fade-in.
-function MascotReveal({ children }: { children: React.ReactNode }) {
-  const scale = useSharedValue(0.3);
-  const opacity = useSharedValue(0);
-  useEffect(() => {
-    opacity.value = withTiming(1, {
-      duration: 160,
-      easing: Easing.out(Easing.quad),
-    });
-    scale.value = withSpring(1, { damping: 8, stiffness: 220, mass: 0.6 });
-    return () => {
-      cancelAnimation(scale);
-      cancelAnimation(opacity);
-    };
-  }, [scale, opacity]);
-  const style = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ scale: scale.value }],
-  }));
-  return <Animated.View style={style}>{children}</Animated.View>;
-}
-
 function ResultStep({
   isSwapping,
   swapError,
@@ -1888,9 +1775,7 @@ function ResultStep({
   const toSymbol = toHolding?.symbol ?? "";
 
   const explorerUrl = txSignature
-    ? `https://solscan.io/tx/${txSignature}${
-        getSolanaEnv() === "mainnet" ? "" : `?cluster=${getSolanaEnv()}`
-      }`
+    ? solscanExplorerUrl(txSignature)
     : null;
 
   const title =
@@ -1942,7 +1827,7 @@ function ResultStep({
       >
         <View className="w-full items-center" style={{ gap: 20 }}>
           {status === "swapping" ? (
-            <SwappingSpinner />
+            <SendingSpinner />
           ) : status === "success" ? (
             <MascotReveal>
               <SendSuccessDog width={100} height={80} />
