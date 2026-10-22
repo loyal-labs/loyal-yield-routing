@@ -4,13 +4,18 @@ import { createRoot } from "react-dom/client";
 
 import "./app/globals.css";
 
-import { EarnAumBarChart, type WeeklyChartPoint } from "./components/earn-aum-bar-chart";
+import {
+  chartBoxClass,
+  EarnAumBarChart,
+  type WeeklyChartPoint,
+} from "./components/earn-aum-bar-chart";
 import { MetricHelpTooltip } from "./components/metric-help-tooltip";
 
 type EarnStats = {
   aumUsd: number;
   aumSeries: WeeklyChartPoint[];
   optimizationVolumeUsd: number;
+  refreshedAt: string;
   totalUsers: number;
 };
 
@@ -25,29 +30,42 @@ const usd = new Intl.NumberFormat("en-US", {
 
 const users = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 
-function metrics(stats: EarnStats) {
-  return [
-    {
-      label: "Earn AUM",
-      value: usd.format(stats.aumUsd),
-      detail: "Current normalized Earn AUM.",
-      tooltip: "Cumulative value deposited into our active Earn routing policies.",
-    },
-    {
-      label: "Optimization Volume",
-      value: usd.format(stats.optimizationVolumeUsd),
-      detail: "Cumulative confirmed moved volume.",
-      tooltip:
-        "Total USDC reallocated by confirmed Earn optimizations. This measures routing throughput across reserves, so the same deposited dollar can add to volume again when it is moved by a later optimization.",
-    },
-    {
-      label: "Total Users",
-      value: users.format(stats.totalUsers),
-      detail: "Registered Loyal users.",
-      tooltip: "Total wallet-based user accounts registered with Loyal.",
-    },
-  ];
+const pacific = new Intl.DateTimeFormat("en-US", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "America/Los_Angeles",
+});
+
+function updatedAgo(refreshedAt: string) {
+  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(refreshedAt)) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
 }
+
+const metrics = [
+  {
+    label: "Earn AUM",
+    value: (stats: EarnStats) => usd.format(stats.aumUsd),
+    detail: "Current normalized Earn AUM.",
+    tooltip: "Current value held in our active Earn routing policies.",
+  },
+  {
+    label: "Optimization Volume",
+    value: (stats: EarnStats) => usd.format(stats.optimizationVolumeUsd),
+    detail: "Cumulative confirmed moved volume.",
+    tooltip:
+      "Total USDC reallocated by confirmed Earn optimizations. This measures routing throughput across reserves, so the same deposited dollar can add to volume again when it is moved by a later optimization.",
+    },
+  {
+    label: "Total Users",
+    value: (stats: EarnStats) => users.format(stats.totalUsers),
+    detail: "Registered Loyal users.",
+    tooltip: "Total wallet-based user accounts registered with Loyal.",
+  },
+];
 
 function DashboardHome() {
   const [load, setLoad] = useState<Load>({ state: "loading" });
@@ -96,9 +114,13 @@ function DashboardHome() {
             </a>
           </header>
 
-          {load.state === "ready" ? (
+          {load.state === "failed" ? (
+            <p className="border-t pt-7 text-center text-sm text-muted-foreground">
+              Stats are unavailable right now.
+            </p>
+          ) : (
             <div className="grid gap-x-8 gap-y-6 border-t pt-7 md:grid-cols-3">
-              {metrics(load.stats).map((metric) => (
+              {metrics.map((metric) => (
                 <div className="min-w-0 text-center" key={metric.label}>
                   <div className="flex min-w-0 items-center justify-center gap-2">
                     <p className="min-w-0 text-sm font-medium text-muted-foreground">
@@ -109,42 +131,56 @@ function DashboardHome() {
                       tooltip={metric.tooltip}
                     />
                   </div>
-                  <p className="mt-2 text-3xl font-semibold tracking-normal">
-                    {metric.value}
-                  </p>
+                  {load.state === "ready" ? (
+                    <p className="mt-2 text-3xl font-semibold tracking-normal">
+                      {metric.value(load.stats)}
+                    </p>
+                  ) : (
+                    <div className="mx-auto mt-2 h-9 w-48 animate-pulse rounded-md bg-muted" />
+                  )}
                   <p className="mt-1 text-sm leading-6 text-muted-foreground">
                     {metric.detail}
                   </p>
                 </div>
               ))}
             </div>
-          ) : (
-            <p className="border-t pt-7 text-center text-sm text-muted-foreground">
-              {load.state === "failed" ? "Stats are unavailable right now." : "Loading…"}
-            </p>
           )}
         </div>
       </section>
 
-      {load.state === "ready" ? (
-        <section className="mx-auto w-full max-w-5xl px-6 py-12 lg:px-10">
+      {load.state === "failed" ? null : (
+        <section className="mx-auto w-full max-w-7xl px-6 py-12 lg:px-10">
           <div className="min-w-0">
             <div className="flex flex-col gap-1">
               <h2 className="text-xl font-semibold tracking-normal">
                 Earn AUM by Week
               </h2>
-              <p className="text-sm leading-6 text-muted-foreground">
-                Weekly snapshot. Current AUM is shown above.
-              </p>
+              {load.state === "ready" ? (
+                <p className="text-sm leading-6 text-muted-foreground">
+                  Weekly snapshot. Red is this week so far.{" "}
+                  <time
+                    dateTime={load.stats.refreshedAt}
+                    title={`${pacific.format(new Date(load.stats.refreshedAt))} PT`}
+                  >
+                    Updated {updatedAgo(load.stats.refreshedAt)}.
+                  </time>
+                </p>
+              ) : (
+                <div className="my-1 h-4 w-72 max-w-full animate-pulse rounded bg-muted" />
+              )}
             </div>
-            <EarnAumBarChart
-              ariaLabel="Earn AUM weekly snapshot bar chart from Jun 15 through the latest data"
-              metricLabel="Earn AUM"
-              points={load.stats.aumSeries}
-            />
+            {load.state === "ready" ? (
+              <EarnAumBarChart
+                ariaLabel="Earn AUM weekly snapshot bar chart from Jun 15 through the latest data"
+                metricLabel="Earn AUM"
+                points={load.stats.aumSeries}
+              />
+            ) : (
+              <div className={`${chartBoxClass} animate-pulse rounded-lg bg-muted`} />
+            )}
           </div>
         </section>
-      ) : null}
+      )}
     </main>
   );
 }
