@@ -1,0 +1,1 @@
+ALTER TABLE "push_tokens" ADD CONSTRAINT "push_tokens_platform_check" CHECK ("push_tokens"."platform" IN ('ios', 'android')) NOT VALID;

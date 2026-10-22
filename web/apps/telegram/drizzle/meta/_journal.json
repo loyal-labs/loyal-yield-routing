@@ -225,6 +225,13 @@
       "when": 1790353528832,
       "tag": "0031_earn_max_invite_redemptions",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1792710549552,
+      "tag": "0032_push_tokens_platform_check",
+      "breakpoints": true
     }
   ]
 }

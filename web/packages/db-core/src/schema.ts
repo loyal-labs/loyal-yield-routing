@@ -582,7 +582,7 @@ export const pushTokens = pgTable(
     token: text("token").notNull(),
     telegramUserId: bigint("telegram_user_id", { mode: "bigint" }),
     walletPublicKey: text("wallet_public_key"),
-    platform: text("platform").notNull(), // "ios" | "android"
+    platform: text("platform", { enum: ["ios", "android"] }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -594,6 +594,10 @@ export const pushTokens = pgTable(
     uniqueIndex("push_tokens_token_unique").on(table.token),
     index("push_tokens_telegram_user_id_idx").on(table.telegramUserId),
     index("push_tokens_wallet_public_key_idx").on(table.walletPublicKey),
+    check(
+      "push_tokens_platform_check",
+      sql`${table.platform} IN ('ios', 'android')`
+    ),
   ]
 );
 
