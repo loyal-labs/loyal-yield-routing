@@ -281,4 +281,8 @@ if (errors.length > 0) {
   console.error(errors.map((error) => `routes census: ${error}`).join("\n"));
   process.exit(1);
 }
+const shape = (path: string) => segments(path).map((part) => (isDynamic(part) ? "*" : part)).join("/");
+const goShapes = new Set(go.map((route) => shape(route.path)));
+const deletable = (Object.keys(next) as NextApp[]).flatMap((app) => next[app].filter((route) => goShapes.has(shape(route.path))).map((route) => `${app} ${route.path}`));
+if (deletable.length > 0) console.log(`routes census: Go serves these; the Next twin is deletable: ${deletable.join(", ")}`);
 console.log(`routes census: ${next.web.length + next.telegram.length} Next + ${go.length} Go server routes, ${total} client paths, ${matched} matched`);
