@@ -1,7 +1,9 @@
 "use client";
 
+import { bestEffort, bestEffortAsync } from "./best-effort";
 import { journeyTraceparent, type JourneyTraceContext } from "./trace-context";
 
+import { OBSERVABILITY_EXPORT_BUDGET_MS } from "./budget-contract";
 import type { BrowserChunkRecoveryAction } from "./chunk-load-contract";
 import { captureDatadogJourney, getDatadogSessionId } from "./datadog.client";
 import {
@@ -44,8 +46,8 @@ import {
   OBSERVABILITY_METRICS_ENDPOINT,
 } from "./metrics-contract";
 
-const CLIENT_REPORT_TIMEOUT_MS = 1250;
 const CLIENT_BUILD_ID = process.env.NEXT_PUBLIC_GIT_COMMIT_HASH ?? "unknown";
+const LIFECYCLE_REPORT_TIMEOUT_MS = 4 * OBSERVABILITY_EXPORT_BUDGET_MS;
 const JOURNEY_WINDOW_MS = 10 * 60 * 1000;
 const browserJourneys = new Map<
   string,
@@ -62,14 +64,12 @@ let identityEpoch = 0;
 
 function persistBrowserJourneys(): void {
   if (!journeyOwner || typeof window === "undefined") return;
-  try {
+  bestEffort(() =>
     window.sessionStorage.setItem(
       JOURNEY_STORAGE_KEY,
       JSON.stringify({ owner: journeyOwner, journeys: [...browserJourneys] })
-    );
-  } catch {
-    /* Storage restrictions must not block a user action. */
-  }
+    )
+  );
 }
 
 export async function restoreBrowserJourneys(
@@ -77,7 +77,7 @@ export async function restoreBrowserJourneys(
 ): Promise<void> {
   if (typeof window === "undefined") return;
   const epoch = identityEpoch;
-  try {
+  await bestEffortAsync(async () => {
     const digest = walletAddress
       ? await crypto.subtle.digest(
           "SHA-256",
@@ -131,9 +131,7 @@ export async function restoreBrowserJourneys(
     }
     journeyOwner = owner;
     persistBrowserJourneys();
-  } catch {
-    /* Corrupt storage or unavailable hashing disables reload continuity. */
-  }
+  });
 }
 
 let authenticatedActionState: "idle" | "running" | "complete" = "idle";
@@ -150,11 +148,7 @@ const attemptContexts = new Map<
 export function resetBrowserJourneys(): void {
   identityEpoch += 1;
   journeyOwner = undefined;
-  try {
-    window.sessionStorage.removeItem(JOURNEY_STORAGE_KEY);
-  } catch {
-    /* SSR/private browsing. */
-  }
+  bestEffort(() => window.sessionStorage.removeItem(JOURNEY_STORAGE_KEY));
   authenticatedActionState = "idle";
   attemptContexts.clear();
   browserJourneys.clear();
@@ -174,11 +168,11 @@ async function postBrowserError(envelope: BrowserErrorEnvelope): Promise<void> {
   const controller = new AbortController();
   const timeout = window.setTimeout(
     () => controller.abort(),
-    CLIENT_REPORT_TIMEOUT_MS
+    OBSERVABILITY_EXPORT_BUDGET_MS
   );
 
-  try {
-    await fetch(OBSERVABILITY_ERROR_ENDPOINT, {
+  await bestEffortAsync(() =>
+    fetch(OBSERVABILITY_ERROR_ENDPOINT, {
       body: JSON.stringify(envelope),
       cache: "no-store",
       credentials: "same-origin",
@@ -186,12 +180,9 @@ async function postBrowserError(envelope: BrowserErrorEnvelope): Promise<void> {
       keepalive: true,
       method: "POST",
       signal: controller.signal,
-    });
-  } catch {
-    // Telemetry is best-effort and must never affect the user flow.
-  } finally {
-    window.clearTimeout(timeout);
-  }
+    })
+  );
+  window.clearTimeout(timeout);
 }
 
 async function postBrowserLifecycle(
@@ -200,11 +191,10 @@ async function postBrowserLifecycle(
   const controller = new AbortController();
   const timeout = window.setTimeout(
     () => controller.abort(),
-    // Allow session resolution and the 1.25s exporter budget to return the cohort.
-    5000
+    LIFECYCLE_REPORT_TIMEOUT_MS
   );
 
-  try {
+  const trafficKind = await bestEffortAsync(async () => {
     const response = await fetch(OBSERVABILITY_LIFECYCLE_ENDPOINT, {
       body: JSON.stringify(envelope),
       cache: "no-store",
@@ -217,11 +207,9 @@ async function postBrowserLifecycle(
     const body = await response.json().catch(() => null);
     if (["external", "internal", "synthetic"].includes(body?.trafficKind))
       return body.trafficKind;
-  } catch {
-    // Lifecycle telemetry is best-effort and must never affect the user flow.
-  } finally {
-    window.clearTimeout(timeout);
-  }
+  });
+  window.clearTimeout(timeout);
+  return trafficKind;
 }
 
 async function postBrowserLoadingMetric(
@@ -230,11 +218,11 @@ async function postBrowserLoadingMetric(
   const controller = new AbortController();
   const timeout = window.setTimeout(
     () => controller.abort(),
-    CLIENT_REPORT_TIMEOUT_MS
+    OBSERVABILITY_EXPORT_BUDGET_MS
   );
 
-  try {
-    await fetch(OBSERVABILITY_METRICS_ENDPOINT, {
+  await bestEffortAsync(() =>
+    fetch(OBSERVABILITY_METRICS_ENDPOINT, {
       body: JSON.stringify(envelope),
       cache: "no-store",
       credentials: "same-origin",
@@ -242,12 +230,9 @@ async function postBrowserLoadingMetric(
       keepalive: true,
       method: "POST",
       signal: controller.signal,
-    });
-  } catch {
-    // Performance telemetry is best-effort and must never affect the flow.
-  } finally {
-    window.clearTimeout(timeout);
-  }
+    })
+  );
+  window.clearTimeout(timeout);
 }
 
 export type CaptureBrowserLoadingMetricArgs = {
@@ -264,16 +249,15 @@ export type CaptureBrowserLoadingMetricArgs = {
 export function captureBrowserLoadingMetric(
   args: CaptureBrowserLoadingMetricArgs
 ): void {
-  try {
-    const envelope = createBrowserLoadingMetricEnvelope({
-      ...args,
-      outcome: args.outcome ?? "completed",
-      pageSessionId: getBrowserPageSessionId(),
-    });
-    void postBrowserLoadingMetric(envelope).catch(() => undefined);
-  } catch {
-    // Performance capture itself is never allowed to throw.
-  }
+  void bestEffortAsync(() =>
+    postBrowserLoadingMetric(
+      createBrowserLoadingMetricEnvelope({
+        ...args,
+        outcome: args.outcome ?? "completed",
+        pageSessionId: getBrowserPageSessionId(),
+      })
+    )
+  );
 }
 
 export function getBrowserPerformanceNow(): number {
@@ -363,15 +347,14 @@ function observeDependencyEntries(): DependencyEntryCollector | null {
 
     return {
       collect: () => {
-        try {
+        bestEffort(() => {
           // Entries recorded just before disconnect are still queued for the
           // callback task, so drain them before dropping the observer.
           observed.push(
             ...(observer.takeRecords() as unknown as BrowserResourceEntry[])
           );
           observer.disconnect();
-        } catch {
-        }
+        });
         return observed;
       },
     };
@@ -407,7 +390,7 @@ function summarizeDependencyEntries(args: {
       (dependency) => [dependency, { durationMs: 0, requestCount: 0 }]
     )
   );
-  try {
+  bestEffort(() => {
     for (const entry of args.entries) {
       if (
         entry.startTime < args.startedAtMs ||
@@ -428,8 +411,7 @@ function summarizeDependencyEntries(args: {
       current.durationMs += Math.max(0, entry.duration);
       current.requestCount += 1;
     }
-  } catch {
-  }
+  });
 
   return totals;
 }
@@ -475,19 +457,13 @@ export async function measureBrowserLoadingDependencies<T>(args: {
 export function captureBrowserLifecycle(
   envelope: BrowserLifecycleEnvelope
 ): void {
-  try {
+  void bestEffortAsync(async () => {
     const epoch = identityEpoch;
     const rumSessionId = getDatadogSessionId();
     if (rumSessionId) envelope = { ...envelope, rumSessionId };
-    void postBrowserLifecycle(envelope)
-      .then((trafficKind) => {
-        if (identityEpoch === epoch)
-          captureDatadogJourney(envelope, trafficKind);
-      })
-      .catch(() => undefined);
-  } catch {
-    // Lifecycle capture itself is never allowed to throw.
-  }
+    const trafficKind = await postBrowserLifecycle(envelope);
+    if (identityEpoch === epoch) captureDatadogJourney(envelope, trafficKind);
+  });
 }
 
 // Client Hints where available, user-agent tokens otherwise. iPadOS reports a
@@ -624,8 +600,8 @@ export function createBrowserErrorProcessor(
   const deduplicator = options.deduplicator ?? createErrorDeduplicator();
 
   return {
-    process: async (error, operation) => {
-      try {
+    process: (error, operation) =>
+      bestEffortAsync(async () => {
         const chunkFailure = inspectBrowserChunkLoadError(
           error,
           CLIENT_BUILD_ID
@@ -661,10 +637,7 @@ export function createBrowserErrorProcessor(
         }
 
         await reportPromise;
-      } catch {
-        // Error capture and recovery must never affect the user flow.
-      }
-    },
+      }),
   };
 }
 
@@ -674,11 +647,7 @@ export function captureBrowserError(
   error: unknown,
   operation: BrowserErrorOperation
 ): void {
-  try {
-    void browserErrorProcessor.process(error, operation).catch(() => undefined);
-  } catch {
-    // Error capture itself is never allowed to throw.
-  }
+  void bestEffortAsync(() => browserErrorProcessor.process(error, operation));
 }
 
 export function installBrowserErrorListeners(): void {

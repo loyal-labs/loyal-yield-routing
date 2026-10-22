@@ -27,8 +27,8 @@ import HelpDog from "../../../assets/images/earn/help-dog.svg";
 
 // Hero artboard is 400×500 in Figma; everything below is expressed in that base
 // space and scaled by `s = heroWidth / 400` so the layout stays pixel-faithful.
-const HERO_BASE_WIDTH = 400;
-const HERO_ASPECT = 500 / 400;
+export const ARTBOARD_BASE_WIDTH = 400;
+const HERO_ASPECT = 500 / ARTBOARD_BASE_WIDTH;
 const COIN_BASE_WIDTH = 90.6403;
 const COIN_BASE_HEIGHT = 149.556;
 
@@ -144,7 +144,7 @@ export function AutodepositHelpSheet({
 
   const heroWidth = windowWidth;
   const heroHeight = heroWidth * HERO_ASPECT;
-  const heroScale = heroWidth / HERO_BASE_WIDTH;
+  const heroScale = heroWidth / ARTBOARD_BASE_WIDTH;
 
   useEffect(() => {
     if (open) {

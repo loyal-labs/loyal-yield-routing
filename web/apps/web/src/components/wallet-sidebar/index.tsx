@@ -50,6 +50,7 @@ import type {
   TokenRow,
   TransactionDetail,
 } from "./types";
+import { deriveSwapTokens, selectSwapToken } from "./swap-tokens";
 import { LOYL_TOKEN, swapTokens as fallbackSwapTokens } from "./types";
 
 export type { RightSidebarTab } from "./types";
@@ -218,42 +219,14 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     [props.smartAccountData.approvals, selectedApprovalId]
   );
 
-  const { search: searchTokens } = usePopularTokens({
+  usePopularTokens({
     enabled: shouldLoadPopularTokens,
   });
 
-  const derivedTokens = useMemo<SwapToken[]>(() => {
-    const positions = props.walletDesktopData.positions;
-    if (!positions || positions.length === 0) return fallbackSwapTokens;
-
-    const tokens: SwapToken[] = positions
-      .filter(
-        (p) => p.publicBalance > 0 || ["SOL", "USDC"].includes(p.asset.symbol)
-      )
-      .map((p) => ({
-        mint: p.asset.mint,
-        symbol: p.asset.symbol,
-        icon: p.asset.imageUrl ?? getTokenIconUrl(p.asset.symbol),
-        price: p.priceUsd ?? 0,
-        balance: p.publicBalance,
-      }));
-
-    if (!tokens.some((t) => t.mint === LOYL_TOKEN.mint)) {
-      const loylPosition = positions.find(
-        (p) => p.asset.mint === LOYL_TOKEN.mint
-      );
-      const loyl = loylPosition
-        ? {
-            ...LOYL_TOKEN,
-            price: loylPosition.priceUsd ?? 0,
-            balance: loylPosition.publicBalance,
-          }
-        : LOYL_TOKEN;
-      tokens.splice(2, 0, loyl as SwapToken);
-    }
-
-    return tokens;
-  }, [props.walletDesktopData.positions]);
+  const derivedTokens = useMemo(
+    () => deriveSwapTokens(props.walletDesktopData.positions),
+    [props.walletDesktopData.positions]
+  );
 
   // Held tokens only: the selector renders the trending list as its own
   // section, so inlining popular tokens here would both empty that section
@@ -417,17 +390,12 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     (token: SwapToken) => {
       const topView = viewStack[viewStack.length - 1];
       if (typeof topView === "object" && topView?.type === "tokenSelect") {
-        if (topView.field === "from") {
-          if (token.symbol === swapToToken.symbol) {
-            setSwapToToken(swapFromToken);
-          }
-          setSwapFromToken(token);
-        } else {
-          if (token.symbol === swapFromToken.symbol) {
-            setSwapFromToken(swapToToken);
-          }
-          setSwapToToken(token);
-        }
+        const next = selectSwapToken(topView.field, token, {
+          from: swapFromToken,
+          to: swapToToken,
+        });
+        setSwapFromToken(next.from);
+        setSwapToToken(next.to);
       }
     },
     [viewStack, swapFromToken, swapToToken]
@@ -568,7 +536,7 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
           currentToken={field === "from" ? currentFromToken : swapToToken}
           onBack={onBack}
           onClose={props.onClose}
-          onSearch={field === "to" ? searchTokens : undefined}
+          remoteSearch={field === "to"}
           onSelect={handleTokenSelect}
           title={field === "from" ? "You Swap" : "You Receive"}
           tokens={field === "to" ? targetTokens : sourceTokens}

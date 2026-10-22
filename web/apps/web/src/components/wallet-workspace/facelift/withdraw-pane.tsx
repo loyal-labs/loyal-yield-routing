@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   CircleDollarSign,
   Landmark,
@@ -7,7 +8,7 @@ import {
   Undo2,
   Wallet,
 } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import {
   deriveEarnWithdrawMode,
@@ -36,6 +37,7 @@ import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import { useStablecoinsUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
+import { useWalletDesktopData } from "@/hooks/use-wallet-desktop-data";
 import { splitUsdBalance } from "@/hooks/use-wallet-desktop-data";
 import {
   resolveEarnPositionDisplay,
@@ -162,7 +164,8 @@ export function WithdrawPane({
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const { isBalanceHidden } = useBalanceVisibility();
 
-  const stablecoinsUsd = useStablecoinsUsd();
+  const walletData = useWalletDesktopData({});
+  const stablecoinsUsd = useStablecoinsUsd(walletData.positions);
   const stablecoinsBalance = splitUsdBalance(stablecoinsUsd);
   const addressLabel = data.walletAddress
     ? `${data.walletAddress.slice(0, 4)}…${data.walletAddress.slice(-4)}`
@@ -286,19 +289,9 @@ export function WithdrawPane({
     }
   };
 
-  useEffect(() => {
-    if (!isSheetOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setIsSheetOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isSheetOpen]);
+  useEscapeOverlay(isSheetOpen, () => {
+    setIsSheetOpen(false);
+  });
 
   return (
     <>

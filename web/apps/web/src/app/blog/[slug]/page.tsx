@@ -7,6 +7,7 @@ import { LandingHeader } from "@/components/landing-header";
 import { LandingScrollAnimations } from "@/components/landing-scroll-animations";
 import {
   BlogContent,
+  blogPostModifiedDate,
   formatBlogDate,
   getAllBlogSlugs,
   getBlogPost,
@@ -14,6 +15,7 @@ import {
   ibmPlexSans,
   MoreArticles,
 } from "@/features/blog";
+import { JsonLd } from "@/lib/seo/json-ld";
 import { cn } from "@/lib/utils";
 
 const SITE_ORIGIN = "https://askloyal.com";
@@ -83,7 +85,7 @@ export default async function BlogPostPage({
     headline: post.title,
     ...(post.description ? { description: post.description } : {}),
     datePublished: post.date,
-    dateModified: post.updated ?? post.date,
+    dateModified: blogPostModifiedDate(post),
     image: `${SITE_ORIGIN}${post.hero}`,
     author: post.author
       ? {
@@ -121,11 +123,8 @@ export default async function BlogPostPage({
 
   return (
     <main className="min-h-screen overflow-x-clip bg-white text-black">
-      {/* JSON-LD as script children (XSS-safe; React escapes <>&) */}
-      <script type="application/ld+json">{JSON.stringify(articleJsonLd)}</script>
-      <script type="application/ld+json">
-        {JSON.stringify(breadcrumbJsonLd)}
-      </script>
+      <JsonLd data={articleJsonLd} />
+      <JsonLd data={breadcrumbJsonLd} />
 
       <LandingScrollAnimations />
       <LandingHeader />

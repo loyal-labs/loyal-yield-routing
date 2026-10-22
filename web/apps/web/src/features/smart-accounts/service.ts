@@ -259,11 +259,6 @@ async function maybePromoteRecord(args: {
 // but one lose the settings_pda unique index. The prediction becomes valid
 // again as soon as the winner's create lands and the counter moves — a second
 // or two — so the loser only has to look again.
-//
-// The old policy gave up after 3 tries inside ~450ms, far shorter than a create
-// takes to land, so a burst of signups hard-failed everyone but the winner with
-// a 409 on their FIRST DEPOSIT. Wait long enough to outlive a landing create
-// (and a short queue of them) instead.
 const RESERVATION_RETRY_DELAYS_MS = [400, 900, 1_800, 2_700, 3_600];
 
 async function reserveProvisioningRecord(args: {

@@ -6,6 +6,8 @@ import { createBrowserLifecycleTracker } from "@/features/observability/client";
 import type { LifecycleTracker } from "@/features/observability/lifecycle-contract";
 import { classifyTransactionFailure } from "@/features/observability/transaction-failure";
 
+const MISSED_CONNECT_RECOVERY_MS = 2500;
+
 type Attempt = {
   address: string;
   tracker: LifecycleTracker;
@@ -185,7 +187,6 @@ export function useSignerRestoration({
         return;
       }
       if (current.recoveredStaleAdapter) return;
-      // Recover a missed connect event only after normal context updates settle.
       const recoveryTimer = setTimeout(() => {
         if (attemptRef.current !== current || targetRef.current !== address) return;
         current.recoveredStaleAdapter = true;
@@ -194,7 +195,7 @@ export function useSignerRestoration({
         current.tracker.observe("wallet_connect");
         // Replay the verified connection; disconnecting revokes extension authorization.
         entry.adapter.emit("connect", connectedKey);
-      }, 2500);
+      }, MISSED_CONNECT_RECOVERY_MS);
       return () => clearTimeout(recoveryTimer);
     }
     current.connecting = true;

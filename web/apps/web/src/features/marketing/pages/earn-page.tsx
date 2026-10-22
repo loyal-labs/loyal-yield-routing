@@ -23,6 +23,7 @@ import type { CommonDict } from "@/features/marketing/i18n/en/common";
 import type { EarnDict } from "@/features/marketing/i18n/en/earn";
 import type { Locale } from "@/features/marketing/i18n/locale";
 import { buildBreadcrumbJsonLd } from "@/features/marketing/i18n/metadata";
+import { JsonLd } from "@/lib/seo/json-ld";
 
 export const EARN_OG_IMAGE = {
   url: "/og-image.png",
@@ -47,10 +48,7 @@ export function EarnPage({
 
   return (
     <main className="min-h-screen overflow-x-clip bg-white text-black">
-      {/* JSON-LD as script children (XSS-safe; React escapes <>&) — schema has no such chars */}
-      <script type="application/ld+json">
-        {JSON.stringify(breadcrumbJsonLd)}
-      </script>
+      <JsonLd data={breadcrumbJsonLd} />
 
       <LandingScrollAnimations />
       <LandingHeader
@@ -73,16 +71,32 @@ export function EarnPage({
         title={dict.howItEarns.title}
         description={dict.howItEarns.description}
         cards={[
-          { size: "lg", body: dict.howItEarns.cards.optimized },
-          { size: "lg", body: dict.howItEarns.cards.bounded },
+          {
+            id: "howItEarns-optimized",
+            size: "lg",
+            body: dict.howItEarns.cards.optimized,
+          },
+          {
+            id: "howItEarns-bounded",
+            size: "lg",
+            body: dict.howItEarns.cards.bounded,
+          },
         ]}
       />
 
       <Section
         title={dict.dollars.title}
         cards={[
-          { size: "lg", body: dict.dollars.cards.interchangeable },
-          { size: "lg", body: dict.dollars.cards.rotation },
+          {
+            id: "dollars-interchangeable",
+            size: "lg",
+            body: dict.dollars.cards.interchangeable,
+          },
+          {
+            id: "dollars-rotation",
+            size: "lg",
+            body: dict.dollars.cards.rotation,
+          },
         ]}
       />
 
@@ -90,16 +104,32 @@ export function EarnPage({
         title={dict.rateSpikes.title}
         description={dict.rateSpikes.description}
         cards={[
-          { size: "lg", body: dict.rateSpikes.cards.supplyUtilization },
-          { size: "lg", body: dict.rateSpikes.cards.opening },
+          {
+            id: "rateSpikes-supplyUtilization",
+            size: "lg",
+            body: dict.rateSpikes.cards.supplyUtilization,
+          },
+          {
+            id: "rateSpikes-opening",
+            size: "lg",
+            body: dict.rateSpikes.cards.opening,
+          },
         ]}
       />
 
       <Section
         title={dict.routing.title}
         cards={[
-          { size: "lg", body: dict.routing.cards.motion },
-          { size: "lg", body: dict.routing.cards.automation },
+          {
+            id: "routing-motion",
+            size: "lg",
+            body: dict.routing.cards.motion,
+          },
+          {
+            id: "routing-automation",
+            size: "lg",
+            body: dict.routing.cards.automation,
+          },
         ]}
       />
 
@@ -131,8 +161,16 @@ export function EarnPage({
         title={dict.policy.title}
         description={dict.policy.description}
         cards={[
-          { size: "lg", body: dict.policy.cards.intents },
-          { size: "lg", body: dict.policy.cards.autoApproved },
+          {
+            id: "policy-intents",
+            size: "lg",
+            body: dict.policy.cards.intents,
+          },
+          {
+            id: "policy-autoApproved",
+            size: "lg",
+            body: dict.policy.cards.autoApproved,
+          },
         ]}
       />
 

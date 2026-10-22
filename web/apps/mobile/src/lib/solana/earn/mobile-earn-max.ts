@@ -103,13 +103,9 @@ export async function executeMobileEarnMax(
     if (getSolanaEnv() !== "mainnet")
       throw new Error("Earn MAX requires mainnet.");
     const connection = getConnection();
-    // SDK and app installs have distinct private web3 type fields but the same Connection API.
-    const sdkConnection = connection as unknown as Parameters<
-      typeof createSmartAccountVaultsClient
-    >[0]["connection"];
     const settingsPda = new PublicKey(context.settingsPda);
     const client = createSmartAccountVaultsClient({
-      connection: sdkConnection,
+      connection,
       programId: new PublicKey(context.programId),
     });
     const settings = await client.sdk.smartAccounts.queries.fetchSettings(
@@ -129,11 +125,11 @@ export async function executeMobileEarnMax(
         ? voltrDepositPlan(planContext, operation.amountRaw)
         : operation.action === "request_withdrawal"
         ? await voltrRequestWithdrawalPlan(
-            sdkConnection,
+            connection,
             planContext,
             operation.amountRaw
           )
-        : await voltrClaimPlan(sdkConnection, planContext);
+        : await voltrClaimPlan(connection, planContext);
     const prepared = await client.prepareCustomInstructionSync({
       accountIndex: EARN_MAX_VOLTR_ACCOUNT_INDEX,
       feePayer: signer.publicKey,

@@ -145,11 +145,7 @@ export async function recordAndReportQuestCompletion(args: {
     return "reported";
   }
 
-  const result = await reportQuestCompletion({
-    kind: args.kind,
-    walletId,
-    metadata: args.metadata,
-  });
+  const result = await reportQuestCompletion();
   const status = await applyReportResult(row.id, result);
   // Quest 1 push (ASK-1651 P2): fires at most once — the row transitions to
   // 'reported' a single time, and already-reported rows return above. Quest 2
@@ -303,11 +299,7 @@ export async function reconcileQuestCompletions(args: {
   for (const row of pendingRows) {
     summary.retriedRows += 1;
     try {
-      const result = await reportQuestCompletion({
-        kind: row.questKind as QuestKind,
-        walletId: row.walletAddress,
-        metadata: row.metadata ?? undefined,
-      });
+      const result = await reportQuestCompletion();
       tally(await applyReportResult(row.id, result));
     } catch (error) {
       summary.stillPending += 1;
@@ -369,16 +361,12 @@ export async function reconcileQuestCompletions(args: {
 
 const QUEST_KINDS: QuestKind[] = ["earn_deposit", "first_autodeposit_sweep"];
 
-export type QuestProgressStatus =
-  | "reported"
-  | "pending"
-  | "failed"
-  | "not_started";
+export type QuestProgressStatus = CompletionRow["status"] | "not_started";
 
 export type QuestProgressItem = {
   kind: QuestKind;
   status: QuestProgressStatus;
-  solanaStatus: string | null;
+  solanaStatus: CompletionRow["solanaStatus"];
   reportedAt: string | null;
   attempts: number;
 };
@@ -400,12 +388,7 @@ export async function getQuestProgress(
       .from(solanaWeekQuestCompletions)
       .where(eq(solanaWeekQuestCompletions.walletAddress, wallet));
     for (const row of rows) {
-      if (
-        row.questKind === "earn_deposit" ||
-        row.questKind === "first_autodeposit_sweep"
-      ) {
-        rowByKind.set(row.questKind, row);
-      }
+      rowByKind.set(row.questKind, row);
     }
   }
 

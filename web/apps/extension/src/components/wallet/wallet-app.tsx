@@ -29,7 +29,11 @@ import {
   getPinLockoutRemaining,
   PinLockedError,
 } from "~/src/lib/keypair-storage";
-import { credentialVersion as credentialVersionStorage } from "~/src/lib/storage";
+import {
+  credentialVersion as credentialVersionStorage,
+  LEGACY_PIN_CREDENTIAL,
+  PASSWORD_CREDENTIAL,
+} from "~/src/lib/storage";
 import { useWalletContext, WalletProvider } from "./wallet-provider";
 import { FourDogsMark } from "./four-dogs-mark";
 import { MIN_PASSWORD_LENGTH, PasswordInput } from "./shared";
@@ -233,7 +237,7 @@ function CreateWalletScreen({
     setLoading(true);
     try {
       const keypair = await generateKeypair(finalPassword);
-      await credentialVersionStorage.setValue(2);
+      await credentialVersionStorage.setValue(PASSWORD_CREDENTIAL);
       setPendingKeypair(keypair);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create wallet");
@@ -313,7 +317,7 @@ function CreateWalletScreen({
       setKeyError(null);
       setLoading(true);
       await importWallet(bytes, password);
-      await credentialVersionStorage.setValue(2);
+      await credentialVersionStorage.setValue(PASSWORD_CREDENTIAL);
       const importedKeypair = Keypair.fromSecretKey(bytes);
       identifyWallet(importedKeypair.publicKey.toBase58(), "imported");
       track(WALLET_SETUP_EVENTS.walletImported);
@@ -1731,7 +1735,7 @@ function PasswordUpgradeScreen({ onComplete }: { onComplete: () => void }) {
         setLoading(true);
         try {
           await changePassword(entered);
-          await credentialVersionStorage.setValue(2);
+          await credentialVersionStorage.setValue(PASSWORD_CREDENTIAL);
           onComplete();
         } catch (e) {
           setError(
@@ -1901,10 +1905,10 @@ function WalletAppInner() {
       const upgradeCheck =
         prev === "locked"
           ? credentialVersionStorage.getValue()
-          : Promise.resolve(2 as number | null);
+          : Promise.resolve(PASSWORD_CREDENTIAL);
 
       void upgradeCheck.then(async (version) => {
-        const needsUpgrade = version === null;
+        const needsUpgrade = version === LEGACY_PIN_CREDENTIAL;
         if (needsUpgrade) setShowPasswordUpgrade(true);
         const alreadyShown = await confettiShown.getValue();
         setTimeout(() => {

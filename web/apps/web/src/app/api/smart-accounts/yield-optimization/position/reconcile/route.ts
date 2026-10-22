@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  resolveLoyalClusterForSolanaEnv,
+} from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -11,7 +14,6 @@ import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { reconcileEarnVaultPosition } from "@/lib/yield-optimization/earn-position-reconciliation.server";
 
-const EARN_VAULT_INDEX = 1;
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 function jsonError(

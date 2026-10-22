@@ -15,8 +15,8 @@ import {
   calculateEarnEarnings,
   EARNINGS_RANGE_IDS,
   EarningsPrincipalHistoryError,
+  LEGACY_PRINCIPAL_CLAMPS,
   normalizeEarningsTimezone,
-  PRINCIPAL_CLAMPS,
   principalAt,
   sortEarningsEvents,
   type PrincipalClamp,
@@ -1078,7 +1078,7 @@ export async function readEarnEarningsRangeSet(
     }
     const candidateClamps: readonly PrincipalClamp[] = hasPositionHistory
       ? ["position"]
-      : PRINCIPAL_CLAMPS;
+      : LEGACY_PRINCIPAL_CLAMPS;
     const matchingClamps = candidateClamps.filter(
       (clamp) =>
         principalAt(effectiveLedgerEvents, now, clamp) === storedPrincipal

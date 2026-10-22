@@ -14,7 +14,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { BackHandler, StyleSheet, useWindowDimensions, View } from "react-native";
+import {
+  BackHandler,
+  StyleSheet,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import Animated, {
   Easing,
   runOnJS,
@@ -35,8 +40,6 @@ export type MoreActionsAnchor = {
 };
 
 const ROW_TRAVEL = 18;
-// Normalized stagger between rows and per-row reveal window (must satisfy
-// (maxRank * STAGGER) + WINDOW <= 1 so the last row finishes by progress 1).
 const STAGGER = 0.09;
 const WINDOW = 0.6;
 const FILL_FRACTION = 0.6;
@@ -83,7 +86,10 @@ function AnimatedActionRow({
         className="h-[50px] flex-row items-center justify-end gap-3 pl-2 pr-2"
         style={{ transform: [{ scale: pressed ? 0.96 : 1 }] }}
       >
-        <Text className="text-[20px] font-medium text-black" style={{ lineHeight: 24 }}>
+        <Text
+          className="text-[20px] font-medium text-black"
+          style={{ lineHeight: 24 }}
+        >
           {action.label}
         </Text>
         {action.icon}
@@ -165,7 +171,14 @@ export function MoreActionsSheet({
     actions.push({
       key: "unshield",
       label: "Unshield",
-      icon: <ShieldOff size={28} color="#000" strokeWidth={2} opacity={ICON_OPACITY} />,
+      icon: (
+        <ShieldOff
+          size={28}
+          color="#000"
+          strokeWidth={2}
+          opacity={ICON_OPACITY}
+        />
+      ),
       run: onUnshield,
     });
   }
@@ -173,7 +186,14 @@ export function MoreActionsSheet({
     actions.push({
       key: "swap",
       label: "Swap",
-      icon: <ArrowLeftRight size={28} color="#000" strokeWidth={2} opacity={ICON_OPACITY} />,
+      icon: (
+        <ArrowLeftRight
+          size={28}
+          color="#000"
+          strokeWidth={2}
+          opacity={ICON_OPACITY}
+        />
+      ),
       run: onSwap,
     });
   }
@@ -181,7 +201,14 @@ export function MoreActionsSheet({
     actions.push({
       key: "receive",
       label: "Receive",
-      icon: <ArrowDown size={28} color="#000" strokeWidth={2} opacity={ICON_OPACITY} />,
+      icon: (
+        <ArrowDown
+          size={28}
+          color="#000"
+          strokeWidth={2}
+          opacity={ICON_OPACITY}
+        />
+      ),
       run: onReceive,
     });
   }
@@ -189,9 +216,24 @@ export function MoreActionsSheet({
     actions.push({
       key: "send",
       label: "Send",
-      icon: <ArrowUp size={28} color="#000" strokeWidth={2} opacity={ICON_OPACITY} />,
+      icon: (
+        <ArrowUp
+          size={28}
+          color="#000"
+          strokeWidth={2}
+          opacity={ICON_OPACITY}
+        />
+      ),
       run: onSend,
     });
+  }
+
+  const lastRowEndsAt = (actions.length - 1) * STAGGER + WINDOW;
+  if (__DEV__ && lastRowEndsAt > 1) {
+    throw new Error(
+      `MoreActionsSheet stagger overshoots: last of ${actions.length} rows ` +
+        `ends at progress ${lastRowEndsAt} — lower STAGGER or WINDOW`,
+    );
   }
 
   const runAction = (run: () => void) => {
@@ -258,7 +300,11 @@ export function MoreActionsSheet({
           style={StyleSheet.absoluteFill}
           onPress={onClose}
         >
-          <BlurView intensity={32} tint="light" style={StyleSheet.absoluteFill} />
+          <BlurView
+            intensity={32}
+            tint="light"
+            style={StyleSheet.absoluteFill}
+          />
           <View
             style={[
               StyleSheet.absoluteFill,

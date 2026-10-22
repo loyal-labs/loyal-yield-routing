@@ -31,7 +31,7 @@ export const VOLTR_ASSET_MINT = new PublicKey(
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 );
 export const VOLTR_ASSET_DECIMALS = 6;
-/** Smart-account vault index for Earn MAX (Earn uses 1, legacy Earn MAX 0). */
+/** Smart-account vault index for Earn MAX. */
 export const EARN_MAX_VOLTR_ACCOUNT_INDEX = 2;
 
 function voltrPda(...seeds: Buffer[]): PublicKey {
@@ -113,9 +113,7 @@ export function depositVaultInstruction(
     [126, 224, 21, 255, 228, 53, 117, 33],
     u64(amountRaw),
     [
-      // The SDK marks this read-only; writable is a harmless superset that the
-      // smart-account sync compiler needs (it wants one writable signer).
-      [authority, true, true],
+      [authority, true, false],
       [VOLTR_PROTOCOL, false, false],
       [VOLTR_VAULT, false, true],
       [VOLTR_ASSET_MINT, false, false],

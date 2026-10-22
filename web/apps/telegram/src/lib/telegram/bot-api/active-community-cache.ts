@@ -36,12 +36,6 @@ function findActiveCommunity(
   });
 }
 
-// Backward-compatible no-op: active community cache was removed to reduce bug surface.
-export function evictActiveCommunityCache(
-  _chatId: bigint | number | string
-): void {
-}
-
 export async function resolveActiveBotCommunityId(
   db: CommunityQueryDb,
   chatId: bigint

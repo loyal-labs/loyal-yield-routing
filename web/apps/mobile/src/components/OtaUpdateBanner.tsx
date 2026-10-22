@@ -11,6 +11,8 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { TAB_BAR_HEIGHT } from "@/components/TabBar";
+
 const CHECK_COOLDOWN_MS = 10 * 60 * 1000;
 
 const GENERIC_NOTES =
@@ -128,7 +130,10 @@ export function OtaUpdateBanner() {
       // both the floating tab bar and the home-indicator inset itself —
       // otherwise it covers the tab buttons and its Restart button lands in
       // the strip where iOS owns the first upward swipe.
-      style={[styles.overlay, { bottom: Math.max(insets.bottom, 12) + 94 }]}
+      style={[
+        styles.overlay,
+        { bottom: Math.max(insets.bottom, 12) + TAB_BAR_HEIGHT + 24 },
+      ]}
     >
       <View style={styles.banner}>
         <View style={styles.copy}>

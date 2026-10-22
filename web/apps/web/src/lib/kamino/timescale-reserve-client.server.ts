@@ -159,7 +159,7 @@ export type CurrentBestApyReserveByStablecoin = TimescaleReserveUpdateRow & {
 };
 export type CurrentEligibleSafeReserve = CurrentBestApyReserveByStablecoin;
 
-const DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE = 100_000;
+export const DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE = 100_000;
 // Bound both receipt age and the frontier's actual chain age. The observer
 // timestamps replays when received, so receipt alone cannot prove catch-up.
 const RESERVE_STREAM_MAX_AGE_MS = 240 * 1000;
@@ -274,20 +274,24 @@ export async function getCurrentReserveUpdatesByReserve(args: {
   }
 }
 
-// Returns null (not []) when the Timescale feed is not configured so
-// eligibility callers can tell "feed unavailable" from "reserve was never
-// sampled" — the latter is what marks hidden/untracked reserves ineligible.
+export type ReserveObservationFeed =
+  | { feed: "unconfigured" }
+  | { feed: "configured"; rows: TimescaleReservePresenceRow[] };
+
 export async function getLatestReserveObservationsByReserve(args: {
   reserves: readonly string[];
-}): Promise<TimescaleReservePresenceRow[] | null> {
+}): Promise<ReserveObservationFeed> {
   const databaseUrl = getTimescaleReserveDatabaseUrl();
   if (!databaseUrl) {
-    return null;
+    return { feed: "unconfigured" };
   }
 
   const client = new TimescaleReserveClient({ databaseUrl, maxConnections: 1 });
   try {
-    return await client.getLatestReserveObservationsByReserve(args);
+    return {
+      feed: "configured",
+      rows: await client.getLatestReserveObservationsByReserve(args),
+    };
   } finally {
     await client.close();
   }

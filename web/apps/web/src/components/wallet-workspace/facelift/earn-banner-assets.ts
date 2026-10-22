@@ -1,0 +1,1 @@
+export const EARN_BANNER_ASSET_VERSION_QUERY = "v";

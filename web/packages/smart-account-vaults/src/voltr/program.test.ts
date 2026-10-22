@@ -39,7 +39,7 @@ describe("Voltr instruction wire format", () => {
       126, 224, 21, 255, 228, 53, 117, 33, 64, 66, 15, 0, 0, 0, 0, 0,
     ]);
     const keys = shape(ix);
-    expect(keys[0]).toEqual([authority.toBase58(), true, true]);
+    expect(keys[0]).toEqual([authority.toBase58(), true, false]);
     expect(keys[5]).toEqual([user.assetAta.toBase58(), false, true]);
     expect(keys[6]).toEqual([VOLTR_IDLE_ATA.toBase58(), false, true]);
     expect(keys[8]).toEqual([user.lpAta.toBase58(), false, true]);

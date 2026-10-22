@@ -68,8 +68,6 @@ class FetchTimeoutError extends Error {
   }
 }
 
-// web3.js resolves to more than one module instance under Metro, so the real
-// class is brand-checked by name rather than `instanceof` — mirror that here.
 class SolanaJSONRPCError extends Error {
   readonly code: number;
 

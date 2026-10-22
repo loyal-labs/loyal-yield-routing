@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  EARN_VAULT_INDEX,
   normalizeLoyalCluster,
   resolveLoyalClusterForSolanaEnv,
 } from "@loyal-labs/actions";
@@ -30,7 +31,6 @@ import { type ConfirmedYieldDepositInput } from "@/lib/yield-optimization/yield-
 // drift between surfaces. Finalized LaserStream projection is the sole writer of
 // Earn policy, deposit, holding, and position state. This compatibility endpoint
 // verifies and acknowledges released-client requests without racing that writer.
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 const connectionCache = new Map<SolanaEnv, Connection>();
 
@@ -189,7 +189,7 @@ function createCanonicalDepositInput(
   })[0];
   const expectedVault = pda.getSmartAccountPda({
     settingsPda: settings,
-    accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+    accountIndex: EARN_VAULT_INDEX,
   })[0];
   const hasSetupPolicyMetadata =
     (requestInput.setupPolicyId !== undefined &&
@@ -258,7 +258,7 @@ function createCanonicalDepositInput(
     targetReserve: target.targetReserve,
     targetSupplyApyBps: requestInput.targetSupplyApyBps,
     smartAccountAddress: expectedVault.toBase58(),
-    vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+    vaultIndex: EARN_VAULT_INDEX,
     vaultPubkey: expectedVault.toBase58(),
   };
 

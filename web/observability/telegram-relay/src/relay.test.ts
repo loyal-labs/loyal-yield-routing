@@ -5,9 +5,9 @@ import {
   type AlertContext,
   type AlertMessageKind,
   AlertRelay,
+  type AlertSender,
   type ClickStackWebhookPayload,
   type PersistedState,
-  type TelegramSender,
 } from "./relay.ts";
 
 const alertPayload: ClickStackWebhookPayload = {
@@ -28,7 +28,7 @@ const alertPayload: ClickStackWebhookPayload = {
 const RECAP_AT = 6 * 60 * 60 * 1000;
 
 function createRelay(
-  sender: TelegramSender,
+  sender: AlertSender,
   now: () => number,
   options: Partial<ConstructorParameters<typeof AlertRelay>[1]> = {}
 ) {

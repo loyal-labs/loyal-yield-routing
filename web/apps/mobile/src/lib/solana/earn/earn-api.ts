@@ -296,12 +296,14 @@ export type EarnWithdrawPrepareContext = {
       reserve: string;
       market: string;
       liquidityMint: string;
+      liquidityTokenProgram?: string | null;
       supplyApyBps: string | null;
     } | null;
     fullWithdrawalTargets:
       | {
           amountRaw: string | null;
           liquidityMint: string;
+          liquidityTokenProgram?: string | null;
           market: string;
           reserve: string;
           reserveCollateralMint: string | null;
@@ -1015,10 +1017,6 @@ export type EarnDepositConfirmArgs = {
   preparedDeposit: WirePreparedEarnDeposit;
   depositSignature: string;
   confirmedSlot: string;
-  policySignature?: string;
-  policyConfirmedSlot?: string;
-  setupPolicySignature?: string;
-  setupPolicyConfirmedSlot?: string;
 };
 
 export async function confirmEarnDeposit(
