@@ -2,7 +2,6 @@
 
 import {
   type ReactNode,
-  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -10,6 +9,7 @@ import {
   useState,
 } from "react";
 
+import { useUnderlineTabs } from "@/components/wallet-workspace/facelift/use-underline-tabs";
 import { EarnYieldIcon } from "@/components/wallet-sidebar/portfolio-content";
 import {
   formatEarnTransactionTimestamp,
@@ -829,46 +829,7 @@ export function EarnActivityCard({
     []
   );
 
-  // Same measure-and-tween mechanics as the chart tabs' sliding pill
-  // (transitions.dev tabs sliding), skinned as the red underline. First paint
-  // and resizes write the position with transitions suspended.
-  const tabBarRef = useRef<HTMLDivElement>(null);
-  const underlineRef = useRef<HTMLSpanElement>(null);
-  const hasPaintedTabs = useRef(false);
-  const moveUnderlineToActiveTab = useCallback((animate: boolean) => {
-    const bar = tabBarRef.current;
-    const underline = underlineRef.current;
-    const active = bar?.querySelector<HTMLButtonElement>(
-      '[aria-selected="true"]'
-    );
-    if (!(bar && underline && active)) {
-      return;
-    }
-    const write = () => {
-      underline.style.transform = `translateX(${active.offsetLeft + 12}px)`;
-      underline.style.width = `${active.offsetWidth - 24}px`;
-    };
-    if (animate) {
-      write();
-      return;
-    }
-    const previousTransition = underline.style.transition;
-    underline.style.transition = "none";
-    write();
-    void underline.offsetWidth;
-    underline.style.transition = previousTransition;
-  }, []);
-
-  useLayoutEffect(() => {
-    moveUnderlineToActiveTab(hasPaintedTabs.current);
-    hasPaintedTabs.current = true;
-  }, [activeTab, moveUnderlineToActiveTab]);
-
-  useEffect(() => {
-    const handleResize = () => moveUnderlineToActiveTab(false);
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [moveUnderlineToActiveTab]);
+  const { tabBarRef, underlineRef } = useUnderlineTabs(activeTab);
 
   return (
     <section className="flex w-full shrink-0 flex-col overflow-clip rounded-3xl bg-card max-[795px]:flex-1 max-[795px]:rounded-b-none">

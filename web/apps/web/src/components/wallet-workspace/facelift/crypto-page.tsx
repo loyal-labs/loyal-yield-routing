@@ -41,6 +41,7 @@ import {
   SwapTokenSelectPane,
 } from "@/components/wallet-workspace/facelift/swap-pane";
 import { TokenDetailPane } from "@/components/wallet-workspace/facelift/token-detail-pane";
+import { useStablecoinsUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import {
   type ShieldedRow,
   toShieldedRow,
@@ -153,19 +154,7 @@ export function CryptoPage({
         ),
     [data.positions, page, shieldedBalances, stablecoinMints]
   );
-  // Same numbers the sidebar rows show: stablecoins summed by mint, crypto =
-  // wallet total minus stablecoins.
-  const stablecoinsUsd = useMemo(
-    () =>
-      data.positions.reduce(
-        (sum, position) =>
-          isStablecoinMint(position.asset.mint, stablecoinMints)
-            ? sum + (position.totalValueUsd ?? 0)
-            : sum,
-        0
-      ),
-    [data.positions, stablecoinMints]
-  );
+  const stablecoinsUsd = useStablecoinsUsd(data.positions);
   const pageBalance = splitUsdBalance(
     page === "stables"
       ? stablecoinsUsd

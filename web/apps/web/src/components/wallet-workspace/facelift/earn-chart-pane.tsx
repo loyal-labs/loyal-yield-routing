@@ -37,10 +37,6 @@ export type ChartCardCustomContent = {
   tabs: readonly ChartTab[];
 };
 
-// transitions.dev "Tabs sliding" (frontend/transitions/tabs-sliding.md): the
-// white active pill is one absolutely-positioned span that tweens between the
-// measured offset/width of the selected tab. First paint and resizes write
-// the position with transitions suspended so the pill snaps, never flies in.
 function ChartBody({
   activeTab,
   apy,
