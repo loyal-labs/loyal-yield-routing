@@ -17,17 +17,13 @@ export type Transaction = {
   networkFeeLamports?: number;
   signature?: string;
   transferType?: WalletTransactionTransferType;
-  // Optional SPL token transfer fields
   tokenMint?: string;
   tokenAmount?: string;
   tokenDecimals?: number;
-  // For incoming transactions
   sender?: string;
   username?: string;
-  // For outgoing transactions
   recipient?: string;
   timestamp: number;
-  // For swap transactions
   swapFromMint?: string;
   swapToMint?: string;
   swapFromSymbol?: string;
@@ -49,24 +45,20 @@ export type TransactionDetailsData = {
   type: "incoming" | "outgoing";
   amountLamports: number;
   transferType?: WalletTransactionTransferType;
-  // Optional SPL token transfer fields
   tokenMint?: string;
   tokenAmount?: string;
   tokenDecimals?: number;
-  // For outgoing transactions
   recipient?: string;
   recipientUsername?: string;
   recipientAvatar?: string;
-  // For incoming transactions
   sender?: string;
   senderUsername?: string;
   senderAvatar?: string;
-  // Metadata
   status: TransactionStatus;
   timestamp: number;
   networkFeeLamports?: number;
   comment?: string;
-  signature?: string; // Transaction signature for explorer link
+  signature?: string;
   // For swap transactions
   swapFromMint?: string;
   swapToMint?: string;

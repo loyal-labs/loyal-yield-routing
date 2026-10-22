@@ -102,8 +102,6 @@ export function buildSummaryFeedMiniAppUrl(
   return `${MINI_APP_LINK}?startapp=${encodeURIComponent(startParam)}`;
 }
 
-// --- Verification deeplink ("vr_<telegramUserId>") ---
-
 const VERIFY_START_PARAM_PREFIX = "vr_";
 const VERIFY_USER_ID_REGEX = /^\d+$/;
 

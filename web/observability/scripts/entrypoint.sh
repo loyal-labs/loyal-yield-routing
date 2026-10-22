@@ -59,8 +59,6 @@ configure_render_frontend_url() {
 
 configure_render_frontend_url
 
-# HyperDX derives its fallback origin from the internal application port. The
-# public local origin is nginx on PORT, so make that boundary explicit too.
 if [ "${RENDER:-}" != "true" ] && [ -z "${FRONTEND_URL:-}" ]; then
   export FRONTEND_URL="http://localhost:$PORT"
 fi
@@ -103,7 +101,6 @@ link_state_directory /data/db "$mongo_state"
 # Render Logs contains ClickHouse, MongoDB, collector, and HyperDX output.
 component_logs="/var/log/clickhouse.log /var/log/mongod.log /var/log/otel-collector.log /var/log/app.log"
 clickhouse_fatal_logs="/var/log/clickhouse-server/clickhouse-server.log /var/log/clickhouse-server/clickhouse-server.err.log"
-# Follow only newly appended lines so startup never replays historical output.
 (tail -n 0 -F $component_logs \
   | awk '!/^==> .* <==$/ && !/SSLHandshakeFailed|end connection/ { print; fflush() }') &
 tail_pid=$!
@@ -126,8 +123,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# tini -g forwards SIGTERM to this shell's entire process group, including all
-# services started by the upstream script and nginx, so databases can flush.
 nginx -t -c /etc/nginx/nginx.conf
 rm -f "$collector_auth_ready_file"
 bash /etc/local/entry.sh &
@@ -192,8 +187,6 @@ wait_for_collector_authentication() {
 wait_for_collector_authentication
 
 if [ "${CLICKSTACK_INTERNAL_SMOKE_ENABLED:-false}" = "true" ]; then
-  # Keep a failed security, ingestion, or persistence smoke from becoming a
-  # deceptively healthy Render instance.
   /usr/local/bin/loyal-clickstack-smoke-live
 fi
 

@@ -81,13 +81,11 @@ export async function handleCommunityMessage(ctx: Context): Promise<void> {
     const telegramUserId = BigInt(message.from.id);
     const displayName = getTelegramDisplayName(message.from);
 
-    // Get or create user
     const userId = await getOrCreateUser(telegramUserId, {
       username: message.from.username || null,
       displayName,
     });
 
-    // Ensure community membership exists (use onConflictDoNothing for race condition safety)
     await db
       .insert(communityMembers)
       .values({
@@ -96,7 +94,6 @@ export async function handleCommunityMessage(ctx: Context): Promise<void> {
       })
       .onConflictDoNothing();
 
-    // Store message (use onConflictDoNothing for duplicate message handling)
     await db
       .insert(messages)
       .values({

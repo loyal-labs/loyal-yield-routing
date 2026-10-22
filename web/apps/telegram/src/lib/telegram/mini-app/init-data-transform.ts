@@ -5,7 +5,6 @@ import { TELEGRAM_BOT_ID, TELEGRAM_PUBLIC_KEYS } from "@/lib/constants";
 
 export const cleanInitData = (initData: string) => {
   const cleanInitData = qs.parse(initData);
-  // sort the object by keys
   const sortedInitData = Object.keys(cleanInitData)
     .sort()
     .reduce((obj: Record<string, unknown>, key: string) => {

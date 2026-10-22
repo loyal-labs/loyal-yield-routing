@@ -26,7 +26,6 @@ const SAFETY_STEPS = [
   "If someone gets your private key, they will have full control over your wallet and funds.",
 ];
 
-// iOS-style sheet timing (matching the old wallet sheets)
 const SHEET_TRANSITION = "transform 0.4s cubic-bezier(0.32, 0.72, 0, 1)";
 const OVERLAY_TRANSITION = "opacity 0.3s ease";
 const COPIED_RESET_TIMEOUT = 2000;
@@ -60,7 +59,6 @@ function PrivateKeySheet({
     setMounted(true);
   }, []);
 
-  // Load private key when sheet opens
   useEffect(() => {
     if (!open) return;
     getWalletKeypair()
@@ -72,7 +70,6 @@ function PrivateKeySheet({
       });
   }, [open]);
 
-  // Open: mount elements, force layout, then trigger CSS transition
   useEffect(() => {
     if (open) {
       isClosing.current = false;
@@ -87,7 +84,6 @@ function PrivateKeySheet({
     }
   }, [rendered, open, show]);
 
-  // Measure header
   useEffect(() => {
     if (!open) return;
     const header = document.querySelector("header");
@@ -96,7 +92,6 @@ function PrivateKeySheet({
     }
   }, [open]);
 
-  // Copied reset timer
   useEffect(() => {
     if (!copied) return undefined;
     const timeoutId = window.setTimeout(
@@ -140,7 +135,6 @@ function PrivateKeySheet({
     [unmount],
   );
 
-  // Pull-down-to-close
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     isDragging.current = true;
     dragStartY.current = e.touches[0].clientY;
@@ -209,7 +203,6 @@ function PrivateKeySheet({
     }
   }, [privateKey]);
 
-  // Lock body scroll
   useEffect(() => {
     if (rendered) {
       document.body.style.overflow = "hidden";
@@ -225,7 +218,6 @@ function PrivateKeySheet({
 
   const content = (
     <>
-      {/* Overlay */}
       <div
         ref={overlayRef}
         onClick={closeSheet}
@@ -237,7 +229,6 @@ function PrivateKeySheet({
         }}
       />
 
-      {/* Sheet */}
       <div
         ref={sheetRef}
         onTransitionEnd={handleTransitionEnd}
@@ -249,7 +240,6 @@ function PrivateKeySheet({
           boxShadow: "0px -4px 40px rgba(0, 0, 0, 0.08)",
         }}
       >
-        {/* Handle bar — pull down to close */}
         <div
           className="flex justify-center pt-2 pb-1 shrink-0 cursor-grab active:cursor-grabbing"
           onTouchStart={handleTouchStart}
@@ -262,17 +252,14 @@ function PrivateKeySheet({
           />
         </div>
 
-        {/* Header — wallet pill + close button, also draggable */}
         <div
           className="relative flex items-center justify-between px-4 pb-2 shrink-0"
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         >
-          {/* Invisible spacer for centering */}
           <div className="w-11 h-11 opacity-0" />
 
-          {/* Wallet address pill */}
           <div className="flex items-center bg-[#f2f2f7] rounded-full pl-1.5 pr-4">
             <div className="flex items-center pr-2">
               <div className="w-8 h-8 flex items-center justify-center">
@@ -284,7 +271,6 @@ function PrivateKeySheet({
             </p>
           </div>
 
-          {/* Close button */}
           <button
             onClick={closeSheet}
             className="w-11 h-11 rounded-full flex items-center justify-center active:scale-95 transition-all duration-150"
@@ -298,12 +284,10 @@ function PrivateKeySheet({
           </button>
         </div>
 
-        {/* Content — scrollable */}
         <div
           className="flex-1 overflow-y-auto overscroll-contain"
           style={{ paddingBottom: Math.max(safeBottom, 24) + 80 }}
         >
-          {/* Title */}
           <div className="px-4 pt-4 pb-1">
             <div className="flex flex-col gap-1 py-2 pr-3">
               <h2 className="text-2xl font-semibold leading-7 text-black">
@@ -316,7 +300,6 @@ function PrivateKeySheet({
             </div>
           </div>
 
-          {/* Key reveal area */}
           <div className="px-4 py-2">
             {revealed && privateKey ? (
               <div className="bg-[#f2f2f7] rounded-[20px] p-4">
@@ -329,7 +312,6 @@ function PrivateKeySheet({
                 onClick={handleReveal}
                 className="w-full h-[92px] bg-[#f2f2f7] rounded-[20px] relative overflow-hidden flex items-center justify-center gap-3 active:opacity-80 transition-opacity"
               >
-                {/* Fake blurred key text behind the reveal button */}
                 <div className="absolute inset-x-4 top-3 text-[15px] font-mono leading-5 text-black/40 blur-[6px] select-none pointer-events-none text-left">
                   <p>3xKm9Rz7VdQpN8wLfA2hYbUcTjE5sGnE4vMa</p>
                   <p>Co6XiWtHqFe1uJkBr8yPdZ0mSxRlI7gNvQ2w</p>
@@ -347,7 +329,6 @@ function PrivateKeySheet({
             )}
           </div>
 
-          {/* Safety steps */}
           <div className="pb-5">
             {SAFETY_STEPS.map((step, index) => (
               <div
@@ -371,7 +352,6 @@ function PrivateKeySheet({
           </div>
         </div>
 
-        {/* Bottom button — pinned */}
         <div
           className="shrink-0 px-8 pt-4 bg-gradient-to-b from-transparent to-white"
           style={{ paddingBottom: Math.max(safeBottom, 24) }}
@@ -400,7 +380,6 @@ export default function SunsetPage() {
   const [hasWallet, setHasWallet] = useState<boolean | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
 
-  // Load wallet address on mount (present only for existing users)
   useEffect(() => {
     getWalletPublicKey()
       .then((pubkey) => {
@@ -433,7 +412,6 @@ export default function SunsetPage() {
   return (
     <main className="min-h-screen bg-white font-sans overflow-hidden relative">
       <div className="pb-32 max-w-md mx-auto flex flex-col min-h-screen">
-        {/* Title */}
         <div className="px-4 pt-4 pb-1">
           <div className="flex flex-col gap-1 py-2 pr-3">
             <h1 className="text-2xl font-semibold leading-7 text-black">
@@ -446,7 +424,6 @@ export default function SunsetPage() {
           </div>
         </div>
 
-        {/* Open askloyal.com */}
         <div className="px-8 pt-4">
           <button
             onClick={handleOpenAskloyal}
@@ -458,7 +435,6 @@ export default function SunsetPage() {
           </button>
         </div>
 
-        {/* Export Wallet (existing users only) */}
         {hasWallet && walletAddress && (
           <div className="px-4 mt-6">
             <div className="px-3 pt-3 pb-2">
@@ -487,14 +463,12 @@ export default function SunsetPage() {
                   </p>
                 </div>
               </button>
-              {/* Invisible plug to keep card half-width */}
               <div className="flex-1" />
             </div>
           </div>
         )}
       </div>
 
-      {/* Private Key Sheet */}
       {walletAddress && (
         <PrivateKeySheet
           walletAddress={truncateAddress(walletAddress)}

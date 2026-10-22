@@ -23,7 +23,6 @@ export { redactBotToken } from "./redact.ts";
 
 const TELEGRAM_REQUEST_TIMEOUT_MS = 10_000;
 const SLACK_REQUEST_TIMEOUT_MS = 10_000;
-/** Longest `retry_after` we absorb in-process before handing the retry back. */
 const TELEGRAM_MAX_RETRY_AFTER_MS = 5_000;
 /**
  * Well under the default MAX_BODY_BYTES so that a payload this validator
@@ -42,12 +41,6 @@ const MAX_LOGGED_TEXT_LENGTH = 4096;
 export interface ServerConfig {
   host: string;
   port: number;
-  /**
-   * Every credential, and the redaction built over them, as one inseparable
-   * value. They are deliberately not four loose string fields plus a redactor:
-   * that shape let a caller override one credential while keeping redaction
-   * built over the old set. See `RelayCredentials`.
-   */
   credentials: RelayCredentials;
   cooldownMs: number;
   idempotencyTtlMs: number;
@@ -72,8 +65,6 @@ export function loadConfig(
   return {
     host: env.HOST?.trim() || "127.0.0.1",
     port: positiveInteger(env.PORT, 3000, "PORT"),
-    // Reading all four together is what keeps redaction and the credentials in
-    // use from ever drifting apart.
     credentials: new RelayCredentials({
       clickStackWebhookSecret: required(env, "CLICKSTACK_WEBHOOK_SECRET"),
       telegramBotToken: required(env, "TELEGRAM_BOT_TOKEN"),
@@ -126,11 +117,6 @@ export function loadConfig(
   };
 }
 
-/**
- * Mirrors the saved search `select`, in the same order. ClickStack's alert body
- * is a headerless CSV block, so these names are what turns positional fields
- * into labelled ones.
- */
 function alertColumns(raw: string | undefined): string[] {
   if (raw === undefined || raw.trim() === "") {
     return DEFAULT_ALERT_COLUMNS;
@@ -150,7 +136,6 @@ function columnList(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
-/** Only the call signature, so tests can inject a plain function. */
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 export function createTelegramSender(
@@ -181,8 +166,6 @@ export function createTelegramSender(
     );
 
   return async (payload, context) => {
-    // Recaps carry no new failure, so they land without a notification unless
-    // an operator turns that off.
     const silent = context.silent && (config.recapSilent ?? true);
     const message = formatTelegramMessage(payload, {
       alertColumns: config.alertColumns,
@@ -242,10 +225,6 @@ export function createTelegramSender(
       );
     }
 
-    // The JSON `ok` field is the authoritative result, not the status code:
-    // Telegram can answer HTTP 200 with {"ok":false,...}. Accepting that as
-    // delivered would record a cooldown and acknowledge ClickStack, dropping
-    // the alert silently for a full cooldown window.
     if (!isTelegramAcknowledgement(responseText)) {
       throw new Error(
         `Telegram did not acknowledge the message: ${responseText.slice(
@@ -288,7 +267,6 @@ export function createSlackSender(
   };
 }
 
-/** Send each accepted alert to both destinations before acknowledging it. */
 export function createFanoutSender(senders: AlertSender[]): AlertSender {
   return async (payload, context) => {
     const results = await Promise.allSettled(
@@ -373,10 +351,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Fails closed on unparseable bodies. A false negative costs a duplicate
- * message after ClickStack retries; a false positive loses the alert.
- */
 function isTelegramAcknowledgement(responseText: string): boolean {
   try {
     const parsed: unknown = JSON.parse(responseText);
@@ -406,11 +380,6 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Reads counts, row signatures and high-cardinality values out of a delivery.
- * The relay stays free of CSV knowledge; this is the only place that knows how
- * a ClickStack alert body is shaped.
- */
 export function createAlertAnalyzer(
   config: Pick<ServerConfig, "alertColumns" | "cardinalityColumns">
 ): AlertAnalyzer {
@@ -515,9 +484,6 @@ export function createRequestHandler(
       trace("request_completed", { outcome: result.outcome });
       return jsonResponse({ ok: true, outcome: result.outcome });
     } catch (error) {
-      // These logs are the only record of a delivery failure: the relay does
-      // not export to ClickStack. Without the message a timeout, a rate limit,
-      // and an invalid chat ID are indistinguishable here.
       console.error(
         JSON.stringify({
           event: "alert_delivery_failed",
@@ -636,8 +602,6 @@ function positiveInteger(
     return fallback;
   }
 
-  // Deliberately stricter than Number(): "0x10", "1e3" and " 12 " should be
-  // reported as typos rather than silently parsed into a surprising value.
   const trimmed = raw.trim();
   if (!/^\d+$/.test(trimmed)) {
     throw new Error(`${name} must be a positive integer`);
@@ -650,7 +614,6 @@ function positiveInteger(
   return value;
 }
 
-/** Like `positiveInteger`, but `0` is meaningful: it disables the feature. */
 function wholeNumber(
   raw: string | undefined,
   fallback: number,

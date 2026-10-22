@@ -41,8 +41,6 @@ const relay = new AlertRelay(
 
 const restored = await restoreState(config, relay);
 
-// Sweeping posts the restart and daily recaps when they come due, so it is not
-// optional bookkeeping the way the old cache eviction was.
 const sweepTimer = setInterval(() => {
   void sweep();
 }, config.sweepIntervalMs);
@@ -53,11 +51,6 @@ async function sweep(): Promise<void> {
   await persistState(config, relay);
 }
 
-/**
- * Window state is in-process, so a deploy would otherwise re-alert everything
- * that is still firing. With no `STATE_FILE` the relay falls back to the
- * restart grace period, which folds that burst into a single message.
- */
 async function restoreState(
   serverConfig: ServerConfig,
   target: AlertRelay
@@ -74,9 +67,6 @@ async function restoreState(
     const state = (await file.json()) as PersistedState;
     return target.importState(state);
   } catch (error) {
-    // A corrupt or unreadable snapshot must never stop the relay from
-    // accepting alerts; it only costs the duplicate messages it would have
-    // prevented.
     console.error(
       JSON.stringify({
         event: "state_restore_failed",
@@ -151,8 +141,6 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   // `false` keeps active connections alive until their handler resolves.
   await server.stop(false);
 
-  // Written after the drain so the snapshot includes whatever those last
-  // requests accumulated.
   await persistState(config, relay);
 
   console.info(JSON.stringify({ event: "server_stopped", signal }));
