@@ -6,7 +6,6 @@ const USAGE =
 const DEFAULT_MAX_PAGES = 25;
 const DEFAULT_UNKNOWN_RETRIES = 2;
 const DEFAULT_UNKNOWN_RETRY_DELAY_MS = 1500;
-// GitHub's compare endpoint paginates files; cap the per-PR file scan.
 const COMPARE_FILE_LIMIT = 300;
 
 type Args = {
@@ -32,7 +31,12 @@ type PullRequest = {
 
 type Attribution = {
   file: string;
-  commits: { sha: string; author: string | null; pr: number | null; message: string }[];
+  commits: {
+    sha: string;
+    author: string | null;
+    pr: number | null;
+    message: string;
+  }[];
 };
 
 type Candidate = {
@@ -81,7 +85,11 @@ function gh(args: string[]): string {
   }
   if (result.status !== 0) {
     const stderr = result.stderr.trim();
-    fail(stderr.length > 0 ? `gh ${args.join(" ")} failed: ${stderr}` : `gh ${args.join(" ")} failed`);
+    fail(
+      stderr.length > 0
+        ? `gh ${args.join(" ")} failed: ${stderr}`
+        : `gh ${args.join(" ")} failed`,
+    );
   }
   return result.stdout;
 }
@@ -116,16 +124,26 @@ function parseArgs(argv: string[]): Args {
     i += 1;
   }
 
-  if (!Number.isInteger(maxPages) || maxPages <= 0) fail("--max-pages must be a positive integer.");
-  if (!Number.isInteger(unknownRetries) || unknownRetries < 0) fail("--unknown-retries must be >= 0.");
+  if (!Number.isInteger(maxPages) || maxPages <= 0)
+    fail("--max-pages must be a positive integer.");
+  if (!Number.isInteger(unknownRetries) || unknownRetries < 0)
+    fail("--unknown-retries must be >= 0.");
   if (!Number.isInteger(unknownRetryDelayMs) || unknownRetryDelayMs < 0)
     fail("--unknown-retry-delay-ms must be >= 0.");
 
   if (!repoRaw) {
-    repoRaw = gh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim();
+    repoRaw = gh([
+      "repo",
+      "view",
+      "--json",
+      "nameWithOwner",
+      "--jq",
+      ".nameWithOwner",
+    ]).trim();
   }
   const [owner, repo, extra] = repoRaw.split("/");
-  if (!owner || !repo || extra) fail(`Invalid --repo value: ${repoRaw}. Expected owner/repo.`);
+  if (!owner || !repo || extra)
+    fail(`Invalid --repo value: ${repoRaw}. Expected owner/repo.`);
 
   return { owner, repo, maxPages, unknownRetries, unknownRetryDelayMs };
 }
@@ -151,7 +169,14 @@ function fetchOpenPulls(args: Args): PullRequest[] {
 
     const parsed = JSON.parse(gh(ghArgs)) as {
       errors?: unknown[];
-      data?: { repository?: { pullRequests?: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: PullRequest[] } } };
+      data?: {
+        repository?: {
+          pullRequests?: {
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+            nodes: PullRequest[];
+          };
+        };
+      };
     };
     if (Array.isArray(parsed.errors) && parsed.errors.length > 0) {
       fail(`GitHub GraphQL errors: ${JSON.stringify(parsed.errors)}`);
@@ -184,30 +209,61 @@ async function fetchOpenPullsWithRetry(args: Args): Promise<PullRequest[]> {
   return pulls;
 }
 
-/** GET /repos/{o}/{r}/compare/{base}...{head} (three-dot: head vs merge-base). */
-function compare(args: Args, base: string, head: string): {
+type ComparePage = {
+  merge_base_commit?: { sha?: string };
+  files?: { filename: string }[];
+  commits?: {
+    sha: string;
+    commit: { message: string };
+    author: { login: string } | null;
+  }[];
+};
+
+export function readCompare(
+  fetchPage: (page: number, perPage: number) => ComparePage,
+  perPage: number,
+): {
   mergeBaseSha: string | null;
   files: string[];
   commits: { sha: string; author: string | null; message: string }[];
 } {
-  const raw = gh([
-    "api",
-    `repos/${args.owner}/${args.repo}/compare/${base}...${head}?per_page=${COMPARE_FILE_LIMIT}`,
-  ]);
-  const parsed = JSON.parse(raw) as {
-    merge_base_commit?: { sha?: string };
-    files?: { filename: string }[];
-    commits?: { sha: string; commit: { message: string }; author: { login: string } | null }[];
-  };
+  const first = fetchPage(1, perPage);
+  const files = [...(first.files ?? [])];
+  const commits = [...(first.commits ?? [])];
+  let last = first;
+  for (
+    let page = 2;
+    (last.files?.length ?? 0) >= perPage ||
+    (last.commits?.length ?? 0) >= perPage;
+    page += 1
+  ) {
+    last = fetchPage(page, perPage);
+    files.push(...(last.files ?? []));
+    commits.push(...(last.commits ?? []));
+  }
   return {
-    mergeBaseSha: parsed.merge_base_commit?.sha ?? null,
-    files: (parsed.files ?? []).map((f) => f.filename),
-    commits: (parsed.commits ?? []).map((c) => ({
+    mergeBaseSha: first.merge_base_commit?.sha ?? null,
+    files: files.map((f) => f.filename),
+    commits: commits.map((c) => ({
       sha: c.sha,
       author: c.author?.login ?? null,
       message: c.commit.message.split("\n", 1)[0] ?? "",
     })),
   };
+}
+
+/** GET /repos/{o}/{r}/compare/{base}...{head} (three-dot: head vs merge-base). */
+function compare(args: Args, base: string, head: string) {
+  return readCompare(
+    (page, perPage) =>
+      JSON.parse(
+        gh([
+          "api",
+          `repos/${args.owner}/${args.repo}/compare/${base}...${head}?per_page=${perPage}&page=${page}`,
+        ]),
+      ) as ComparePage,
+    COMPARE_FILE_LIMIT,
+  );
 }
 
 const PR_IN_MESSAGE = /\(#(\d+)\)/;
@@ -226,7 +282,9 @@ function attribute(
   const commits = baseCommits.map((c) => ({
     sha: c.sha.slice(0, 12),
     author: c.author,
-    pr: PR_IN_MESSAGE.exec(c.message)?.[1] ? Number(PR_IN_MESSAGE.exec(c.message)?.[1]) : null,
+    pr: PR_IN_MESSAGE.exec(c.message)?.[1]
+      ? Number(PR_IN_MESSAGE.exec(c.message)?.[1])
+      : null,
     message: c.message,
   }));
   return overlapFiles
@@ -234,7 +292,11 @@ function attribute(
     .map((file) => ({ file, commits }));
 }
 
-function classify(pr: PullRequest, overlapCount: number, baseAhead: boolean): 0 | 1 | 2 {
+function classify(
+  pr: PullRequest,
+  overlapCount: number,
+  baseAhead: boolean,
+): 0 | 1 | 2 {
   if (pr.mergeable === "CONFLICTING") return 2;
   if (baseAhead && overlapCount > 0) return 1;
   return 0;
@@ -279,10 +341,16 @@ function buildCandidate(args: Args, pr: PullRequest): Candidate {
       baseSinceMergeBaseFileCount: baseCompare.files.length,
       overlapFiles,
       tier,
-      attributions: tier === 0 ? [] : attribute(overlapFiles, baseCompare.files, baseCompare.commits),
+      attributions:
+        tier === 0
+          ? []
+          : attribute(overlapFiles, baseCompare.files, baseCompare.commits),
     };
   } catch (error) {
-    return { ...baseline, error: error instanceof Error ? error.message : "compare failed" };
+    return {
+      ...baseline,
+      error: error instanceof Error ? error.message : "compare failed",
+    };
   }
 }
 
@@ -318,7 +386,11 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : "drift scan failed"}\n`);
-  process.exitCode = 1;
-});
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    process.stderr.write(
+      `${error instanceof Error ? error.message : "drift scan failed"}\n`,
+    );
+    process.exitCode = 1;
+  });
+}
