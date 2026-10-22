@@ -9,13 +9,7 @@
 export type VaultAccount = {
   authToken: string;
   derivationPath: string;
-  /** Base58-encoded public key (Solana address). */
   publicKey: string;
 };
 
-/**
- * Default Solana derivation path: `m/44'/501'/0'/0'`.
- * Matches Phantom and Solflare; the Seed Vault pre-derives this path at
- * authorization time, so public-key lookups do not require extra prompts.
- */
 export const DEFAULT_SOLANA_DERIVATION_PATH = "m/44'/501'/0'/0'";

@@ -28,8 +28,6 @@ export type MobileLoadingAttempt = {
 };
 
 declare global {
-  // Initialized in mobile/index.js before expo-router loads route modules.
-  // `var` is required for a global declaration merged into JavaScript globals.
   var __loyalMobileAppStartedAtMs: number | undefined;
 }
 
@@ -93,7 +91,6 @@ function reportMetric(args: {
     });
     void postObservabilityJson(MOBILE_METRICS_PATH, envelope);
   } catch {
-    // Metrics are best-effort and must never alter application behavior.
   }
 }
 

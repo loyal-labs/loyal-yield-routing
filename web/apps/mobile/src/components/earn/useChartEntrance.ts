@@ -13,11 +13,6 @@ const APPEAR_DURATION = 360;
 const APPEAR_RISE = 8;
 const GROW_DURATION = 720;
 
-// Entrance animation for the Earn line charts (APY, Forecast) — parity with the
-// Earnings bar chart, which fades + rises in and grows its bars up from the
-// baseline. `rootStyle` fades + rises the whole panel (headline + chart);
-// `chartStyle` grows the plotted lines up from the baseline once measured.
-// Pass `ready` (chart measured + has data) to kick off the grow.
 export function useChartEntrance(ready: boolean) {
   const appear = useSharedValue(0);
   const grow = useSharedValue(0);

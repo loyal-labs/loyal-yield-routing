@@ -72,7 +72,6 @@ export function getVisibleEarnScheduledSweeps(
   return visibleSweeps;
 }
 
-// "334.48 USDC" — mirrors the web `formatScheduledSweepAmount`.
 export function formatScheduledSweepAmount(rawAmount: string): string {
   const raw = parseUnsignedRaw(rawAmount);
   if (raw === null) {
@@ -85,8 +84,6 @@ export function formatScheduledSweepAmount(rawAmount: string): string {
     .padStart(2, "0")} USDC`;
 }
 
-// "Tomorrow at 18:06" — the Figma's relative-day + 24h time for the scheduled
-// Autodeposit subtitle. Past tomorrow it falls back to a short date ("Jun 15").
 export function formatScheduledSweepTime(eligibleAfter: string): string {
   const date = new Date(eligibleAfter);
   if (Number.isNaN(date.getTime())) {
@@ -172,13 +169,6 @@ export function formatScheduledSweepAvailableIn(
   return remainingSeconds > 0 ? `Available in ${remainingSeconds}s` : null;
 }
 
-// The sweep's execution window has arrived (`eligibleAfter` passed) — true the
-// moment "Execute now" is tapped, since the backend advances `eligibleAfter` to
-// now. Drives how long the Activity feed keeps polling for the row to resolve:
-// after an execute the worker may sweep (backend drops the slot) or bounce it
-// back to "scheduled" with no surplus (the fresh-balance surplus cap then hides
-// it) — both land outside the "Executing…" status, so a status-based poll would
-// stop too early. Distinct from the status-based "Executing…" label.
 export function isScheduledSweepDue(
   sweep: EarnAutodepositScheduledSweep,
 ): boolean {

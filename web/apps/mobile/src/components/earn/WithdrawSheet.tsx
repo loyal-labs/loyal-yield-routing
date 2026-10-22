@@ -61,8 +61,6 @@ function sourceLabel(source: EarnWithdrawSourceInfo): string {
 // the web withdraw pane's dust rule).
 const DUST_SOURCE_USD = 0.005;
 
-// Token coin with the market's venue badge overlaid (same stack as the Positions
-// sheet). `tokenSize` sets the coin diameter; the box grows to fit the badge.
 function SourceIcon({
   source,
   tokenSize = 32,
@@ -97,13 +95,6 @@ function SourceIcon({
   );
 }
 
-// Withdraw shares Deposit's visual language (toolbar, "$" amount input with a
-// custom caret, balance/source cell + MAX, keyboard-riding CTA). When the Earn
-// position spans multiple sources (reserves + idle vault USDC), the balance cell
-// becomes a source picker (adapted from the Deposit source selector, Figma
-// 74-18786): a tappable token pill with a chevron opens a source list, and the
-// amount/MAX/validation key off the selected source — one source per withdrawal,
-// matching the web flow.
 const COLOR_LABEL_DIM = "rgba(60, 60, 67, 0.6)";
 const COLOR_CHIP_BG = "#F2F2F7";
 const COLOR_CHIP_SOFT = "rgba(0, 0, 0, 0.04)";
@@ -181,12 +172,6 @@ function floorTo2(value: number): number {
 type WithdrawSheetProps = {
   open: boolean;
   onClose: () => void;
-  // May return a Promise — the button shows a loading spinner while pending.
-  // `source` is the selected withdrawal source (null when the position has a
-  // single implicit source / sources haven't loaded). `mode` is decided here —
-  // the sheet is the only place that has both the MAX intent and the balance
-  // the input validated against; "full" means "empty this source" and the
-  // backend then uses its own exact on-chain amount, ignoring `amountUsd`.
   onWithdraw?: (
     amountUsd: number,
     source: EarnWithdrawSourceInfo | null,
@@ -197,7 +182,6 @@ type WithdrawSheetProps = {
   availableUsdc?: number | null;
   earnMax?: boolean;
   earnMaxWallet?: { address: string | null; balance: number };
-  // Per-source breakdown; when more than one, the cell becomes a source picker.
   sources?: EarnWithdrawSourceInfo[];
 };
 
@@ -270,8 +254,6 @@ export function WithdrawSheet({
     }
   }, [open]);
 
-  // Default the selection to the largest source once they load (or stay put if
-  // the user already picked one that's still present).
   useEffect(() => {
     if (!open || sourceList.length === 0) {
       return;

@@ -7,6 +7,3 @@ export const fetchSolUsdPrice = async (): Promise<number> => {
   }
   return price;
 };
-
-// Temporary backwards-compatibility export; prefer fetchSolUsdPrice going forward.
-export const fetchSolPriceUsd = fetchSolUsdPrice;

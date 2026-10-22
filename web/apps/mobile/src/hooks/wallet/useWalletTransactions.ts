@@ -228,7 +228,6 @@ export function useWalletTransactions(walletAddress: string | null) {
     [mapTransferToTransaction, walletAddress],
   );
 
-  // Initial transaction load
   useEffect(() => {
     if (!walletAddress) return;
     void loadWalletTransactions();

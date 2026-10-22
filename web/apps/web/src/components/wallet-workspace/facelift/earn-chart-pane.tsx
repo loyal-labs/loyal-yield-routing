@@ -90,11 +90,11 @@ function ChartBody({
           ) : null}
           <ForecastChart
             apy={apy}
+            apyDataRevealed
             isBalanceHidden={isBalanceHidden && earnData.hasPosition}
             key={forecastPrincipal}
             mainUsdcReserveApyBps={mainUsdcReserveApyBps}
             principal={forecastPrincipal}
-            scrambleHiddenValues
           />
         </>
       )}

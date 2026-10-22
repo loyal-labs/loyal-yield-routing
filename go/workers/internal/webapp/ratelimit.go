@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,9 +137,18 @@ func clientIP(r *http.Request) string {
 	return peer
 }
 
+func solanaAddressOrEmpty(s string) string {
+	if len(s) < 32 || len(s) > 44 || strings.Trim(s, base58Alphabet) != "" {
+		return ""
+	}
+	return s
+}
+
+const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
 func walletOf(r *http.Request) string {
 	if wallet := r.URL.Query().Get("walletAddress"); wallet != "" {
-		return wallet
+		return solanaAddressOrEmpty(wallet)
 	}
 	if r.Body == nil || r.Body == http.NoBody {
 		return ""
@@ -157,7 +167,7 @@ func walletOf(r *http.Request) string {
 	if json.Unmarshal(peek, &fields) != nil {
 		return ""
 	}
-	return fields.WalletAddress
+	return solanaAddressOrEmpty(fields.WalletAddress)
 }
 
 type statusRecorder struct {

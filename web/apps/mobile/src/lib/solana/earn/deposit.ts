@@ -40,7 +40,6 @@ import {
 const DEPOSIT_NETWORK_MESSAGE =
   "We couldn't reach the network to prepare the deposit. No funds moved — check your connection and try again.";
 
-// Every Earn product stablecoin is 6-decimal, so one conversion covers them all.
 function usdToStableRaw(amountUsd: number): string {
   if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
     throw new Error("Deposit amount must be greater than 0.");
@@ -52,27 +51,17 @@ export type EarnDepositResult = {
   depositSignature: string;
 };
 
-// The flow's stage transactions in send order. First-deposit policy stages
-// are null for top-ups.
 type EarnDepositStages = {
   policySetup: HydratedPreparedOperation | null;
   policyFinalize: HydratedPreparedOperation | null;
   deposit: HydratedPreparedOperation;
 };
 
-// Shared back half of the self-paid flow: sign every stage in ONE wallet
-// prompt (Seed Vault batches them), send strictly in order (the policy stages
-// must land before the deposit), then record into the web read-model via the
-// confirm call — best-effort with retries, never undoing a confirmed on-chain
-// deposit because the DB write failed (yield routing adopts any deposit whose
-// confirm is still lost after observing the account update).
 async function signSendAndConfirmDeposit(args: {
   signer: Signer;
   prepareAuth: EarnAuthFields;
   amountUsd: number;
   stages: EarnDepositStages;
-  // Echoed to `deposit/confirm` verbatim — the server-prepared wire object or
-  // the device-prepared serialization (identical shapes).
   wirePreparedDeposit: WirePreparedEarnDeposit;
   flow: LifecycleFlow<"earn.deposit">;
 }): Promise<EarnDepositResult> {
@@ -101,11 +90,6 @@ async function signSendAndConfirmDeposit(args: {
   const setupPolicy = args.stages.policyFinalize ? sent[cursor++] : undefined;
   const deposit = sent[cursor];
 
-  // Retried because a confirm loss makes the deposit invisible in the app
-  // until yield routing reconciles it (launch night: ~10% of confirms were
-  // lost to RPC-lag rejections; the server now retries its reads too, but
-  // network drops on this call remain). Each attempt is idempotent
-  // server-side.
   const CONFIRM_ATTEMPTS = 3;
   let confirmRecorded = false;
   for (let attempt = 1; attempt <= CONFIRM_ATTEMPTS; attempt += 1) {
@@ -150,7 +134,6 @@ async function signSendAndConfirmDeposit(args: {
         }),
   });
 
-  // Tracked here (not in the sheets) so every deposit entry point counts once.
   track(EARN_EVENTS.earnDeposit, { amount_usd: args.amountUsd });
 
   args.flow.complete("ui_commit");
@@ -181,8 +164,6 @@ async function runEarnPolicyUpdate(args: {
         walletAddress: args.signer.publicKey,
       }),
   );
-  // Route policy create must land before the setup finalize; strict order is
-  // what signAndSendPreparedOperations guarantees.
   await signAndSendPreparedOperations({
     connection: getConnection(),
     signer: args.signer,
@@ -192,7 +173,6 @@ async function runEarnPolicyUpdate(args: {
   });
 }
 
-// Hydrate a server-prepared deposit's stages for the self-paid sign-and-send.
 function hydrateWireStages(
   preparedDeposit: WirePreparedEarnDeposit,
 ): EarnDepositStages {
@@ -207,35 +187,16 @@ function hydrateWireStages(
   };
 }
 
-// Real on-chain Earn deposit into the caller's smart account (same position
-// as web). The deposit transactions are built ON-DEVICE with the
-// smart-account-vaults SDK (mirroring the autodeposit setup/close flows): the
-// backend `prepare-context` call only authenticates, provisions, and returns
-// the DB-side inputs, so the ~16-RPC-call instruction build runs on the
-// device's own RPC/IP allowance instead of the server's shared rate-limited
-// pipe. A first-ever deposit also creates the yield-routing policy
-// (policySetup) and Kamino obligation (policyFinalize) as separate signed
-// transactions; a top-up is just the deposit. The deposited USDC routes into
-// Kamino Safe via the Earn vault.
 export async function executeEarnDeposit(args: {
   signer: Signer;
   amountUsd: number;
-  // The Earn product stablecoin being deposited (base58 mint, from the
-  // deposit sheet's coin selector).
   mint: string;
-  // The caller's loading-metric flow id, so the metric point and this flow's
-  // events share one `loyal.flow.id`.
   flowId?: string;
 }): Promise<EarnDepositResult> {
   const flow = startLifecycleFlow({
     ...(args.flowId ? { flowId: args.flowId } : {}),
     flowName: "earn.deposit",
     flowVariant: "initial",
-    // Deposit runs the same SDK prepare through the same retry helper as
-    // withdrawal, so a bug surfaces here the same way: as `unexpected_error`,
-    // whose message and stack only reach the sanitized error ingest when this
-    // is set (ASK-2018). Without it the withdrawal twin was diagnosable and
-    // this was not, for no reason beyond which flow the exception landed in.
     reportUnexpectedErrors: true,
     walletAddress: args.signer.publicKey.toBase58(),
   });
@@ -243,7 +204,6 @@ export async function executeEarnDeposit(args: {
   try {
     return await runEarnDeposit(args, flow);
   } catch (error) {
-    // Latched to a no-op when an inner stage already failed the flow.
     flow.failFrom("prepare", error);
     throw error;
   }
@@ -368,11 +328,6 @@ async function runEarnDeposit(
   try {
     preparedDeposit = await prepareOnDevice({ scanPolicies: false });
   } catch (error) {
-    // A route policy from before Token-2022 support pins the liquidity mint's
-    // owner to the classic token program and cannot authorize CASH/USDG/PYUSD
-    // deposits. The remedy runs inline (mirroring web's forced policy setup):
-    // create a new owner-neutral pair, then re-prepare once — a second
-    // update-required error propagates normally.
     if (!isEarnPolicyUpdateRequiredError(error)) {
       throw error;
     }

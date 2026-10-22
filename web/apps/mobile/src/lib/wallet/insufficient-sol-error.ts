@@ -29,7 +29,6 @@ export class InsufficientSolError extends Error {
   }
 }
 
-/** True when `error` is the wallet-can't-fee-pay condition above. */
 export function isInsufficientSolError(
   error: unknown,
 ): error is InsufficientSolError {
@@ -39,7 +38,6 @@ export function isInsufficientSolError(
   );
 }
 
-/** Block a prepared Earn action before the wallet sees an underfunded tx. */
 export function assertNativeSolRequirement(
   requirement: SmartAccountNativeSolRequirement | null | undefined,
 ): void {
@@ -57,9 +55,6 @@ export function assertNativeSolRequirement(
   );
 }
 
-// Fails ONLY on evidence: an RPC error here must not block a flow the real
-// prepare path might still complete — the guard exists to convert one known
-// dead end into advice, not to add a new way to fail.
 export async function assertSolForFees(
   connection: Connection,
   owner: PublicKey,

@@ -1,9 +1,3 @@
-// Datadog RUM + Logs setup for the mobile app. Mirrors the web setup in
-// `/app/src/lib/core/datadog.ts` but uses the native React Native SDK.
-//
-// Sourcemap upload is not yet wired — stack traces will reference minified
-// bundle positions until we add a build-time upload via datadog-ci.
-
 import {
   DatadogProviderConfiguration,
   DdSdkReactNative,
@@ -18,9 +12,6 @@ const SITE = "US5";
 const SERVICE = "mobile-app";
 
 function getDatadogEnv(): string {
-  // Updates.channel is set by EAS based on the build profile's `channel`.
-  // Fallback to "dev" when running in the Expo dev client locally, where
-  // Updates.channel is an empty string.
   const channel = Updates.channel ?? "";
   if (channel === "production") return "prod";
   if (channel === "preview") return "preview";

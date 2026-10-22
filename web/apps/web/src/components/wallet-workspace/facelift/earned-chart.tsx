@@ -146,7 +146,6 @@ export function EarnedChart({ data }: { data: EarnPositionData }) {
   return (
     <EarnedBarsChart
       bars={earned.dailyBars}
-      currentApyBps={earned.currentApyBps}
       isLoading={earned.showEarningsLoader}
       isStale={earned.earningsStale}
       isUnavailable={earned.earningsUnavailable}
@@ -166,8 +165,6 @@ export function EarnedBarsChart({
   onRetry,
 }: {
   bars: EarnedChartBar[];
-  // Unused since the hover subtitle dropped APY (#777); callers still pass it.
-  currentApyBps?: number | null;
   isLoading: boolean;
   isStale: boolean;
   isUnavailable: boolean;

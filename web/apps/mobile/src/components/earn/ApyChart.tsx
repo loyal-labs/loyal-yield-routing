@@ -34,16 +34,10 @@ import { useChartEntrance } from "./useChartEntrance";
 
 const AnimatedSvg = Animated.createAnimatedComponent(Svg);
 
-// APY tab of the Earn chart (Figma 74-19216 resting / 74-19367 scrub). Real
-// data: Loyal Earn + Main Market APY histories come from the global forecast
-// summary; T-Bill is a fixed benchmark (flat line). Dragging scrubs a
-// crosshair: the header reads the APY at the point under the finger, a
-// timestamp appears, and everything to the right of the finger dims.
-
 type ApySeries = {
   color: string;
   label: string;
-  pct: number[]; // APY percent per point
+  pct: number[];
   norm: number[]; // normalized height per point
 };
 
@@ -66,8 +60,6 @@ export function ApyChart({
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const lastIdxRef = useRef<number | null>(null);
 
-  // Loyal history is the reference timeline; Main is aligned to the same count;
-  // T-Bill is a flat benchmark across it.
   const { series, dates, axisMaxPct } = useMemo(() => {
     const loyal = resampleSamples(
       earnMax
@@ -92,7 +84,6 @@ export function ApyChart({
     return {
       axisMaxPct: ceil,
       dates: loyal.map((s) => new Date(s.observedAt)),
-      // Back-to-front draw order; Loyal (red) on top.
       series: [
         {
           color: COLOR_TBILL,
@@ -125,8 +116,6 @@ export function ApyChart({
   const scrubbing = activeIndex !== null;
   const idx = Math.min(activeIndex ?? lastIndex, lastIndex);
 
-  // Header readouts: the scrubbed point, or the latest (fallback to the live
-  // forecast APYs while the history loads).
   const loyalValue =
     earnMax && !scrubbing
       ? (earnMax.apyBps ?? NaN) / 100
@@ -161,9 +150,6 @@ export function ApyChart({
     setActiveIndex(null);
   }, []);
 
-  // Inset the plot's right edge so endpoint dots sit fully on-screen AND on the
-  // line end — lines, dots, and the scrubber all map into [0, plotWidth].
-  // Matches ForecastChart; without it the resting dot floats off the line edge.
   const plotWidth = Math.max(0, chartWidth - DOT_RADIUS - 1);
   const activeX =
     chartWidth > 0 && lastIndex > 0 ? (idx / lastIndex) * plotWidth : 0;

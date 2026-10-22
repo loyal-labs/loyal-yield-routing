@@ -1,5 +1,3 @@
-// CoinGecko free API — no auth required.
-// Jupiter Price API v2 is deprecated and now returns 401 without an API key.
 const COINGECKO_API =
   "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd";
 

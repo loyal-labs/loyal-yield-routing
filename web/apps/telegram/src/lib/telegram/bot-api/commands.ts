@@ -27,7 +27,6 @@ import {
 } from "./ca-command";
 import { LOYAL_COMMUNITY_CHAT_ID } from "./constants";
 import { replyWithAutoCleanup } from "./helper-message-cleanup";
-import { evictActiveCommunityCache } from "./message-handlers";
 import { sendNotificationSettingsMessage } from "./notification-settings";
 import { formatStatsCommandMessage } from "./stats-command";
 import {
@@ -787,7 +786,6 @@ export async function handleDeactivateCommunityCommand(
       .set({ isActive: false, updatedAt: new Date() })
       .where(eq(communities.id, existingCommunity.id));
 
-    evictActiveCommunityCache(chatId);
     await replyCommunitySuccess(
       ctx,
       "Community deactivated. Message tracking has been disabled."

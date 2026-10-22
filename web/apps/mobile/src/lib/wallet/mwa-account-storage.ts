@@ -2,18 +2,9 @@ import * as SecureStore from "expo-secure-store";
 
 const MWA_ACCOUNT_KEY = "loyal.mwaAccount";
 
-/**
- * Persistent record of a Mobile Wallet Adapter authorization. The keys stay
- * inside the user's wallet app (Phantom, Solflare, Seed Vault Wallet, …); we
- * only remember the auth token for silent reauthorization and the resolved
- * base58 Solana address so the wallet can display it before any signing
- * operation runs.
- */
 export type StoredMwaAccount = {
   authToken: string;
-  /** Base58-encoded Solana public key. */
   publicKey: string;
-  /** Wallet-provided display label, e.g. "Phantom". */
   label?: string;
 };
 

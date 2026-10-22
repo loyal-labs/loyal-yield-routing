@@ -50,9 +50,6 @@ const USDC_DECIMALS = 6;
 // ATA (~0.002 SOL rent) — that rare case still surfaces as the raw prefix
 // simulation error; raise the floor if it ever shows up in ClickStack.
 const WITHDRAW_MIN_FEE_LAMPORTS = 1_000_000;
-// A wallet normally has one live Autodeposit, but historic duplicate setups
-// left some with several; each re-prepare surfaces the next one. The cap
-// guards against a close that never sticks in the read-model.
 const MAX_WITHDRAW_AUTODEPOSIT_CLOSES = 4;
 
 function usdToUsdcRaw(amountUsd: number): string {
@@ -71,11 +68,6 @@ type EarnWithdrawSendResult = EarnWithdrawResult & {
   withdrawalConfirmedSlots: string[];
 };
 
-// Rebuild the SDK withdraw input from the `prepare-context` wire form. The
-// context's `autodepositClose` is handled by the close-first loop in
-// `executeEarnWithdraw` and deliberately NOT passed to the SDK — mobile
-// closes the Autodeposit as its own flow (with its own confirms) and
-// re-resolves, instead of merging the close into the withdraw transaction.
 function hydrateEarnWithdrawInput(
   context: EarnWithdrawPrepareContext,
   walletAddress: PublicKey,
@@ -224,12 +216,6 @@ function hydrateEarnWithdrawCleanupInput(
 const WITHDRAW_NETWORK_MESSAGE =
   "We couldn't reach the network to prepare the withdrawal. Your funds are safe — check your connection and try again.";
 
-// The cleanup context read races the backend's RPC catching up to the
-// withdrawal slot — the route 5xxs (`context_failed`/`resolve_failed`) until
-// its node reaches `minContextSlot`. Those and network blips heal on retry;
-// 4xx codes (missing endpoint, genuine leftover sources) never do. The user
-// is already on the success screen here, so the budget is generous: giving up
-// strands the rent refund until yield routing observes and reconciles it.
 const RETRYABLE_CLEANUP_CONTEXT_CODES = new Set([
   "context_failed",
   "resolve_failed",
@@ -267,11 +253,6 @@ function prepareSubstage(
   };
 }
 
-// `withConnectionRetry` converts an exhausted retryable failure (transport,
-// Kamino upstream, RPC) into an `EarnApiError` carrying no backend code and no
-// HTTP status; semantic failures (validation, policy, simulation) throw
-// through it untouched. That shape split gates the server-prepare recovery
-// path: only retry exhaustion falls back (ASK-2095).
 function isRetryExhaustion(error: unknown): error is EarnApiError {
   return (
     error instanceof EarnApiError &&
@@ -280,8 +261,6 @@ function isRetryExhaustion(error: unknown): error is EarnApiError {
   );
 }
 
-// Retries `run` on network errors and the listed backend codes; an
-// `EarnApiError` outside `retryableCodes` (or with no code) throws through.
 async function retryEarnApiCall<T>(args: {
   attempts: number;
   delayMs: number;
@@ -296,8 +275,6 @@ async function retryEarnApiCall<T>(args: {
     try {
       return await args.run();
     } catch (error) {
-      // `run` can re-sign a stale auth message, which re-prompts the wallet.
-      // Retrying a decline would just re-prompt a user who already said no.
       if (isWalletRejection(error)) {
         throw error;
       }
@@ -338,26 +315,16 @@ async function fetchCleanupContextWithRetry(args: {
   });
 }
 
-// Shared back half: sign every step in one wallet prompt (Seed Vault batches
-// them), send strictly in order, then record each landed step best-effort —
-// the on-chain withdrawal is the source of truth and the backend reconciler
-// backfills any recording this misses.
 async function signSendAndConfirmWithdraw(args: {
   signer: Signer;
   prepareAuth: EarnAuthFields;
-  // Step operations in send order (a single-step withdrawal passes one).
   operations: HydratedPreparedOperation[];
-  // Whether `operations` came from `withdrawSteps` (confirms then carry the
-  // step index) or the single top-level prepared op.
   hasSteps: boolean;
-  // Echoed to `withdraw/confirm` verbatim — the server-prepared wire object
-  // or the device-prepared serialization (identical shapes).
   wirePreparedWithdraw: WirePreparedEarnWithdraw;
   flow: LifecycleFlow<"earn.withdrawal">;
 }): Promise<EarnWithdrawSendResult> {
   const connection = getConnection();
 
-  // Confirms reuse the flow's prepare auth — no extra wallet prompt.
   let confirmLost = false;
   const confirmStep = async (
     withdrawalSignature: string,
@@ -425,10 +392,6 @@ async function signSendAndConfirmWithdraw(args: {
   return { withdrawalConfirmedSlots, withdrawalSignatures };
 }
 
-// Server-side prepare (`withdraw/prepare`) with the Autodeposit close-first
-// loop. Two callers: the legacy path for backends that predate
-// `prepare-context`, and the recovery path when on-device preparation
-// exhausts its retry budget (ASK-2095).
 async function serverPrepareWithdraw(
   args: {
     signer: Signer;
@@ -495,8 +458,6 @@ async function serverPrepareWithdraw(
 export async function executeEarnWithdraw(args: {
   signer: Signer;
   amountUsd: number;
-  // The caller's loading-metric flow id, so the metric point and this flow's
-  // events share one `loyal.flow.id`.
   flowId?: string;
   mode: EarnWithdrawMode;
   // The chosen source. Omitted/null lets the backend auto-select when there's
@@ -515,7 +476,6 @@ export async function executeEarnWithdraw(args: {
   try {
     return await runEarnWithdraw(args, flow);
   } catch (error) {
-    // Latched to a no-op when an inner stage already failed the flow.
     flow.failFrom("prepare", error);
     throw error;
   }
@@ -531,10 +491,6 @@ async function runEarnWithdraw(
   flow: LifecycleFlow<"earn.withdrawal">,
 ): Promise<EarnWithdrawResult> {
   const amountRaw = usdToUsdcRaw(args.amountUsd);
-  // A 0-lamport wallet doesn't exist on-chain and can't fee-pay, so on-device
-  // prepare would only die later in prefix simulation with a bare
-  // "AccountNotFound" (ASK-2107). Check before the wallet-auth prompt so the
-  // user gets advice instead of a biometric prompt for a doomed flow.
   await assertSolForFees(
     getConnection(),
     args.signer.publicKey,
@@ -568,9 +524,6 @@ async function runEarnWithdraw(
 
   let context = await fetchContext();
 
-  // A full exit of a position with an active Autodeposit also tears down the
-  // recurring delegation (mirrors web): close it via the Autodeposit close
-  // flow first, then re-resolve the withdrawal against the post-close state.
   for (let round = 0; context?.withdrawInput.autodepositClose; round++) {
     if (round >= MAX_WITHDRAW_AUTODEPOSIT_CLOSES) {
       throw new Error(
@@ -598,8 +551,6 @@ async function runEarnWithdraw(
       connection: getConnection(),
       programId: new PublicKey(context.programId),
     });
-    // Policy close is now a separate server phase, so this flag is always false.
-    // Cleanup prepare gates full exits after the zero-balance proof.
     const needsSeparateCleanup = context.withdrawInput.mode === "full";
     const withdrawInput = hydrateEarnWithdrawInput(
       context,
@@ -626,10 +577,6 @@ async function runEarnWithdraw(
         serializePreparedEarnUsdcWithdraw(preparedWithdraw);
       flow.observe("prepare");
     } catch (error) {
-      // Semantic failures (validation, policy, simulation) surface normally;
-      // only an exhausted retryable cause earns the server-side recovery
-      // path — the device demonstrably cannot build the transaction, but the
-      // backend's own RPC allowance usually still can (ASK-2095).
       if (!isRetryExhaustion(error)) {
         flow.failFrom("prepare", error, prepareSubstage("device_prepare"));
         throw error;
@@ -657,8 +604,6 @@ async function runEarnWithdraw(
         (step) => hydratePreparedOperation(step.prepared),
       );
       wirePreparedWithdraw = serverPrepared;
-      // The observed `prepare` names the recovery substage and carries the
-      // bounded cause the device path was abandoned for.
       flow.observe("prepare", {
         ...prepareSubstage("server_prepare"),
         ...(error.detail !== undefined ? { errorDetail: error.detail } : {}),
@@ -682,11 +627,6 @@ async function runEarnWithdraw(
     const minContextSlot = withdrawResult.withdrawalConfirmedSlots.reduce(
       (latest, slot) => (BigInt(slot) > BigInt(latest) ? slot : latest),
     );
-    // The withdrawal is on-chain past this point: a cleanup failure (backend
-    // without the endpoint yet, RPC lag, user declining the second prompt)
-    // must NOT present as a failed withdrawal. Skipping cleanup only strands
-    // reclaimables — the next deposit reuses the still-open policies and the
-    // refund scan surfaces the idle vault USDC and rents.
     let cleanupSignature: string | undefined;
     try {
       const cleanupContext = await fetchCleanupContextWithRetry({

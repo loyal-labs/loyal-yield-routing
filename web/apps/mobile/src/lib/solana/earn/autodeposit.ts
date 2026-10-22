@@ -43,8 +43,6 @@ const DEFAULT_AMOUNT_PER_PERIOD_RAW = (
   BigInt(EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC) *
   BigInt(10) ** BigInt(USDC_DECIMALS)
 ).toString();
-// At most three setup stages (init authority -> create policy -> create
-// recurring delegation); guard against a stage that never advances.
 const MAX_SETUP_STAGES = 4;
 
 function thresholdUsdToRaw(thresholdUsd: number): string {
@@ -81,18 +79,11 @@ async function withUnconfirmedRetry<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-// The token was rejected (expired/invalid), or the deployed backend predates
-// bearer support and choked on a body without auth fields — either way, drop
-// the cached session and fall back to the signed path.
 const SESSION_FALLBACK_CODES = new Set([
   "invalid_mobile_session",
   "invalid_mobile_auth",
 ]);
 
-// Runs a DB-only Autodeposit call with the cached mobile Earn session when one
-// exists (no wallet prompt); otherwise — or when the server rejects the token —
-// falls back to a freshly signed auth message, which also re-mints a session
-// for next time via signEarnAuth's opportunistic mint.
 async function withEarnSessionOrAuth<T>(
   signer: Signer,
   purpose: EarnAuthPurpose,
@@ -116,9 +107,6 @@ async function withEarnSessionOrAuth<T>(
   return call(await signEarnAuth(signer, purpose));
 }
 
-// Deployment inputs for the device-side SDK prepare, resolved from the
-// bearer-authenticated `/state` read (which also carries the resume metadata
-// of a half-finished setup).
 type AutodepositPrepareContext = {
   cluster: ReturnType<typeof normalizeLoyalCluster>;
   policySigner: PublicKey;
@@ -150,23 +138,9 @@ async function loadAutodepositPrepareContext(walletAddress: string): Promise<{
   };
 }
 
-// Create an Autodeposit: stands up the on-chain recurring-delegation policy that
-// sweeps wallet USDC above `thresholdUsd` into Earn. The setup instructions are
-// built ON-DEVICE with the smart-account-vaults SDK (mirroring the web client);
-// only the per-stage confirms still hit the backend. Multi-stage — the SDK's
-// chain-driven stage machine returns the one-time subscription-authority init as
-// its own round when needed, then create_policy AND create_recurring_delegation
-// together, so the device signs both in ONE wallet prompt and sends them before
-// confirming. Existing broken setups (policy + delegation live but the wallet
-// ATA's token approval missing/foreign) get an approval-only repair stage
-// instead. One auth message covers all confirms. The nonce is fixed for the
-// whole flow; the policy seed is threaded across rounds, and a half-finished
-// setup resumes from the seed/nonce/window recorded in `/state`.
 export async function executeEarnAutodepositSetup(args: {
   signer: Signer;
   thresholdUsd: number;
-  // The caller's loading-metric flow id, so the metric point and this flow's
-  // events share one `loyal.flow.id`.
   flowId?: string;
 }): Promise<void> {
   const flow = startLifecycleFlow({
@@ -179,15 +153,11 @@ export async function executeEarnAutodepositSetup(args: {
   try {
     await runEarnAutodepositSetup(args, flow);
   } catch (error) {
-    // Latched to a no-op when an inner stage already failed the flow.
     flow.failFrom("prepare", error);
     throw error;
   }
 }
 
-// The SDK's chain-driven stage names, mapped onto the lifecycle contract's
-// configuration-flow stages (`initialize_subscription_authority` is the
-// one-time authority bootstrap; the approval repair recreates the delegate).
 const SETUP_STAGE_TO_LIFECYCLE = {
   approve_token_delegate: "create_recurring_delegation",
   create_policy: "create_policy",
@@ -214,19 +184,12 @@ async function runEarnAutodepositSetup(
     programId: context.programId,
   });
 
-  // A live Autodeposit must be deleted, not set up over: a fresh setup would
-  // mint a second policy seed and stand up a duplicate on-chain policy that
-  // delete/withdraw flows then trip over. `/state` reconciles against chain,
-  // so this read is authoritative even if the sheet was opened on stale UI.
   if (state.autodeposit?.lifecycleStatus === "active") {
     throw new Error(
       "An Autodeposit is already active for this wallet. Delete it before creating a new one.",
     );
   }
 
-  // Resume a half-finished setup: reusing the recorded seed + nonce makes the
-  // SDK return only the missing stage for the SAME policy/delegation pair
-  // (mirrors the backend `setup/prepare` resume logic).
   const target = state.autodeposit;
   const resume =
     target &&
@@ -276,10 +239,6 @@ async function runEarnAutodepositSetup(
     }
     flow.observe("prepare");
 
-    // The SDK reports the exact rent the stage accounts need. If the wallet
-    // can't cover it, fail with the amount to top up instead of letting the
-    // transaction dump a raw simulation error (the sheet's SOL gate normally
-    // catches this earlier, but it fails open while balances load).
     const requiredLamports = stages.reduce(
       (total, stage) =>
         total + BigInt(stage.nativeSolRequirement.requiredLamports),
@@ -374,16 +333,12 @@ async function runEarnAutodepositSetup(
   throw new Error("Autodeposit setup did not complete after all stages.");
 }
 
-// Change the threshold on an existing Autodeposit. DB-only on the backend (no
-// on-chain change), but still wallet-signature authenticated.
 export async function updateEarnAutodepositThreshold(args: {
   signer: Signer;
   thresholdUsd: number;
   policyAccount: string;
   recurringDelegation: string;
   vaultIndex: number;
-  // The caller's loading-metric flow id, so the metric point and this flow's
-  // events share one `loyal.flow.id`.
   flowId?: string;
 }): Promise<void> {
   const flow = startLifecycleFlow({
@@ -421,8 +376,6 @@ export async function setEarnAutodepositActive(args: {
   policyAccount: string;
   recurringDelegation: string;
   vaultIndex: number;
-  // The caller's loading-metric flow id, so the metric point and this flow's
-  // events share one `loyal.flow.id`.
   flowId?: string;
 }): Promise<void> {
   const flow = startLifecycleFlow({
@@ -459,28 +412,15 @@ export async function setEarnAutodepositActive(args: {
   );
 }
 
-// A wallet normally has one live Autodeposit row, but historic duplicate
-// setups left some with several; deleting only the surfaced one leaves the
-// leftover silently sweeping and blocking full withdrawals.
 const MAX_DUPLICATE_CLOSES = 4;
 
-// Delete an Autodeposit: tears down the on-chain recurring delegation (one
-// signed tx per policy, built on-device with the SDK) and records each closed
-// target via the backend confirm. After the requested close, any leftover
-// live row `/state` still surfaces is closed too, so "delete" means no live
-// Autodeposit remains.
 export async function executeEarnAutodepositClose(args: {
   signer: Signer;
   policy: string;
   recurringDelegation: string;
   source?: "deleted" | "withdraw";
-  // The caller's loading-metric flow id, so the metric point and this flow's
-  // events share one `loyal.flow.id`. Ignored for the nested withdrawal close,
-  // which emits no flow of its own.
   flowId?: string;
 }): Promise<void> {
-  // A close nested inside a withdrawal is already traced as that flow's
-  // `autodeposit_close` stage — only a standalone delete gets its own flow.
   const flow =
     args.source === "withdraw"
       ? null
@@ -491,10 +431,6 @@ export async function executeEarnAutodepositClose(args: {
           walletAddress: args.signer.publicKey.toBase58(),
         });
   flow?.start("prepare");
-  // A close transaction can land before the wallet is prompted again for the
-  // backend-confirm auth message. Keep only signatures that have not yet been
-  // recorded by the backend so a post-submit decline stays loud without
-  // turning a later, genuinely pre-submit decline into an error.
   const unrecordedSignatures: string[] = [];
   try {
     await runEarnAutodepositClose(args, flow, unrecordedSignatures);
@@ -504,7 +440,6 @@ export async function executeEarnAutodepositClose(args: {
       error,
       unrecordedSignatures,
     );
-    // Latched to a no-op when an inner stage already failed the flow.
     flow?.failFrom("prepare", classified);
     throw classified;
   }
@@ -546,8 +481,6 @@ async function runEarnAutodepositClose(
     programId: context.programId,
   });
 
-  // One auth message covers every confirm; signed lazily after the first close
-  // tx so a rejected wallet prompt doesn't burn an auth signature.
   let flowAuth: Awaited<ReturnType<typeof signEarnAuth>> | null = null;
   const closeOne = async (policy: string, recurringDelegation: string) => {
     const preparedClose = await client.prepareEarnUsdcAutodepositClose({
@@ -611,10 +544,6 @@ async function runEarnAutodepositClose(
 
   await closeOne(args.policy, args.recurringDelegation);
 
-  // Sweep duplicates: `/state` surfaces the next live row once the previous
-  // close is recorded. Rows without a recorded delegation can't be closed
-  // here (and don't block withdrawals); the seen-set stops a stale read from
-  // looping on an already-closed policy.
   const closed = new Set([args.policy]);
   for (let round = 0; round < MAX_DUPLICATE_CLOSES; round++) {
     const { autodeposit } = await fetchEarnAutodepositState(
@@ -644,8 +573,6 @@ async function runEarnAutodepositClose(
 // the flow's elapsedMs captures the true request→done duration.
 export async function executeEarnAutodepositScheduledSweep(args: {
   signer: Signer;
-  // The caller's loading-metric flow id, so the metric point and this flow's
-  // events share one `loyal.flow.id`.
   flowId?: string;
 }): Promise<{
   flow: LifecycleFlow<"earn.autodeposit.execute_now">;

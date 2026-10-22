@@ -69,8 +69,6 @@ function formatPriceChange(
     return { text: null, tone: null };
   }
 
-  // Round before deciding sign so values like -0.001 render as "0.00%" with
-  // neutral tone instead of "-0.00%" in red.
   const rounded = Math.round(value * 100) / 100;
   if (rounded === 0) {
     return { text: "0.00%", tone: "neutral" };

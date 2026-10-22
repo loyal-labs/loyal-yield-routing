@@ -49,10 +49,6 @@ export async function setupNotificationHandler(): Promise<void> {
   }
 }
 
-/**
- * Register for push notifications and return the Expo push token.
- * Returns null if registration fails, device doesn't support push, or running in Expo Go.
- */
 export async function registerForPushNotifications(): Promise<string | null> {
   try {
     if (!Device.isDevice) {
@@ -108,9 +104,6 @@ export async function registerForPushNotifications(): Promise<string | null> {
   }
 }
 
-/**
- * Listen for notification taps. Returns a cleanup function, or null if unavailable.
- */
 export async function addNotificationResponseListener(
   callback: (data: Record<string, unknown>) => void,
 ): Promise<(() => void) | null> {
@@ -126,12 +119,6 @@ export async function addNotificationResponseListener(
   return () => subscription.remove();
 }
 
-/**
- * Send the push token to loyal-web, which keys it by the wallet in the
- * bearer. A wallet with no session token yet (an external wallet before its
- * first mint) is skipped without a prompt; the registrar retries on the next
- * app start.
- */
 export async function registerPushToken(
   token: string,
   walletPublicKey: string,

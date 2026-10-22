@@ -21,30 +21,15 @@ import type { CardRect } from "../routes";
 const CARD_RADIUS = 24;
 const OPEN_MS = 440;
 const CLOSE_MS = 260;
-// The root's window offset (status bar / insets) is constant for the app, so
-// cache it across opens: the first open measures it; every open after starts
-// already positioned, with no measurement delay.
 let cachedOrigin: { x: number; y: number } | null = null;
-// Cross-fade windows in box `progress` space (0 = card, 1 = full screen), kept
-// disjoint so the card "face" and the page are never both visible at once.
 const FACE_FADE: [number, number] = [0, 0.22];
 const CONTENT_FADE: [number, number] = [0.5, 0.85];
-// How far you must drag down to fully collapse, and the release threshold.
 const DRAG_FACTOR = 0.45;
 const DISMISS_DISTANCE = 130;
 const DISMISS_VELOCITY = 900;
 
 type Children = ReactNode | ((api: { close: () => void }) => ReactNode);
 
-// Morphs a destination screen out of (and back into) the card the user tapped.
-// A single `progress` value (0 = card, 1 = full screen) drives a box from the
-// source rect to the whole window — straightening corners, fading gray→white —
-// while the card "face" cross-fades out and the page cross-fades in.
-//
-// The box lands exactly on the real card (offset-corrected) and is opaque, so it
-// covers the real card behind it — no need to hide the source card, and the real
-// card simply fills the brief pre-measurement gap on open. Without a `sourceRect`
-// (deep link) it just renders the page full size.
 export function CardExpandTransition({
   sourceRect,
   cardColor,
@@ -55,11 +40,8 @@ export function CardExpandTransition({
 }: {
   sourceRect?: CardRect;
   cardColor: string;
-  /** Collapsed card contents, shown at the start/end of the morph. */
   face?: ReactNode;
-  /** Inner scroll position, so swipe-to-dismiss only engages at the top. */
   scrollOffset?: SharedValue<number>;
-  /** The inner scroll view's native gesture, for simultaneous recognition. */
   scrollGesture?: GestureType;
   children: Children;
 }) {
@@ -68,8 +50,6 @@ export function CardExpandTransition({
   const { width: W, height: H } = useWindowDimensions();
 
   const progress = useSharedValue(sourceRect ? 0 : 1);
-  // Guards against re-entrancy: once we start collapsing, the `beforeRemove`
-  // listener must let the eventual `router.back()` through.
   const closingRef = useRef(false);
   const openedRef = useRef(false);
 
@@ -114,9 +94,6 @@ export function CardExpandTransition({
     );
   }, [sourceRect, router, finishClose, progress]);
 
-  // Open animation — starts once the root offset is measured, so the expand
-  // begins exactly from the real card position. `inOut` easing reads as a
-  // deliberate expand rather than a pop.
   useEffect(() => {
     if (sourceRect && origin && !openedRef.current) {
       openedRef.current = true;
@@ -127,9 +104,6 @@ export function CardExpandTransition({
     }
   }, [sourceRect, origin, progress]);
 
-  // Play the collapse for every dismissal path (header back button, hardware
-  // back) by intercepting the navigation removal and re-issuing it once the
-  // animation has finished.
   useEffect(() => {
     const unsubscribe = navigation.addListener("beforeRemove", (e) => {
       if (closingRef.current) return;
@@ -168,9 +142,6 @@ export function CardExpandTransition({
 
   const boxStyle = useAnimatedStyle(() => {
     const p = progress.value;
-    // Card end: subtract the root's own window offset so the window-space card
-    // rect lands exactly on the real card inside this root. Full-screen end:
-    // (0,0) to fill the root.
     const ox = origin?.x ?? 0;
     const oy = origin?.y ?? 0;
     return {
@@ -197,8 +168,6 @@ export function CardExpandTransition({
   return (
     <GestureDetector gesture={pan}>
       <View style={styles.root}>
-        {/* Measures this root's window position so the box can correct for any
-            status-bar / inset offset. pointerEvents none — measurement only. */}
         <View
           ref={rootRef}
           onLayout={handleRootLayout}

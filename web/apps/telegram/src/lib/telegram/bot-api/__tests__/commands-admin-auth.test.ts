@@ -24,7 +24,6 @@ let mockDb: {
 };
 
 let captureCommunityPhotoCalls: Array<bigint | number | string> = [];
-let evictCalls: Array<bigint | number | string> = [];
 let notificationSettingsCalls: Community[] = [];
 
 mock.module("@/lib/core/database", () => ({
@@ -40,12 +39,6 @@ mock.module("@/lib/telegram/community-photo-service", () => ({
 
 mock.module("@/lib/telegram/user-service", () => ({
   getOrCreateUser: async () => "user-1",
-}));
-
-mock.module("../message-handlers", () => ({
-  evictActiveCommunityCache: (chatId: bigint | number | string) => {
-    evictCalls.push(chatId);
-  },
 }));
 
 mock.module("../helper-message-cleanup", () => ({
@@ -141,7 +134,6 @@ describe("commands admin authorization", () => {
     communityFindResults = [];
     insertReturningRows = [{ id: "new-community" }];
     captureCommunityPhotoCalls = [];
-    evictCalls = [];
     notificationSettingsCalls = [];
     insertValuesCaptured = [];
     updateValuesCaptured = [];
@@ -185,7 +177,6 @@ describe("commands admin authorization", () => {
 
     expect(insertValuesCaptured).toHaveLength(0);
     expect(updateValuesCaptured).toHaveLength(0);
-    expect(evictCalls).toHaveLength(0);
     expect(replyCalls).toHaveLength(0);
   });
 
@@ -223,7 +214,6 @@ describe("commands admin authorization", () => {
 
     expect(updateValuesCaptured).toHaveLength(1);
     expect(updateValuesCaptured[0]?.isActive).toBe(false);
-    expect(evictCalls).toEqual([BigInt(ctx.chat.id)]);
   });
 
   test("hide and unhide mutate only active rows that need a visibility change", async () => {
