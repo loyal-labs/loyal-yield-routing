@@ -40,7 +40,7 @@ export function dispatchEscape(event: KeyboardEvent) {
     overlay.current(event);
     return;
   }
-  if (isEscapeGuardedTarget(event.target)) {
+  if (event.defaultPrevented || isEscapeGuardedTarget(event.target)) {
     return;
   }
   pages.at(-1)?.current(event);
