@@ -15,7 +15,6 @@ type EarnStats = {
   aumUsd: number;
   aumSeries: WeeklyChartPoint[];
   optimizationVolumeUsd: number;
-  refreshedAt: string;
   totalUsers: number;
 };
 
@@ -29,14 +28,6 @@ const usd = new Intl.NumberFormat("en-US", {
 });
 
 const users = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
-
-const pacific = new Intl.DateTimeFormat("en-US", {
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  month: "short",
-  timeZone: "America/Los_Angeles",
-});
 
 const metrics = [
   {
@@ -144,21 +135,9 @@ function DashboardHome() {
       {load.state === "failed" ? null : (
         <section className="mx-auto w-full max-w-7xl px-6 py-12 lg:px-10">
           <div className="min-w-0">
-            <div className="flex flex-col gap-1">
-              <h2 className="text-xl font-semibold tracking-normal">
-                Earn AUM by Week
-              </h2>
-              {load.state === "ready" ? (
-                <p className="text-sm leading-6 text-muted-foreground">
-                  Weekly snapshot. Red is this week so far.{" "}
-                  <time dateTime={load.stats.refreshedAt}>
-                    Updated {pacific.format(new Date(load.stats.refreshedAt))} PT.
-                  </time>
-                </p>
-              ) : (
-                <div className="my-1 h-4 w-72 max-w-full animate-pulse rounded bg-muted" />
-              )}
-            </div>
+            <h2 className="text-xl font-semibold tracking-normal">
+              Earn AUM by Week
+            </h2>
             {load.state === "ready" ? (
               <EarnAumBarChart
                 ariaLabel="Earn AUM weekly snapshot bar chart from Jun 15 through the latest data"
