@@ -31,19 +31,12 @@ const usd = new Intl.NumberFormat("en-US", {
 const users = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 
 const pacific = new Intl.DateTimeFormat("en-US", {
-  dateStyle: "medium",
-  timeStyle: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  month: "short",
   timeZone: "America/Los_Angeles",
 });
-
-function updatedAgo(refreshedAt: string) {
-  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(refreshedAt)) / 60_000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours} h ago`;
-  return `${Math.round(hours / 24)} days ago`;
-}
 
 const metrics = [
   {
@@ -158,11 +151,8 @@ function DashboardHome() {
               {load.state === "ready" ? (
                 <p className="text-sm leading-6 text-muted-foreground">
                   Weekly snapshot. Red is this week so far.{" "}
-                  <time
-                    dateTime={load.stats.refreshedAt}
-                    title={`${pacific.format(new Date(load.stats.refreshedAt))} PT`}
-                  >
-                    Updated {updatedAgo(load.stats.refreshedAt)}.
+                  <time dateTime={load.stats.refreshedAt}>
+                    Updated {pacific.format(new Date(load.stats.refreshedAt))} PT.
                   </time>
                 </p>
               ) : (

@@ -142,20 +142,13 @@ function getDateLabelStep(points: WeeklyChartPoint[], slotWidth: number) {
   return Math.max(1, Math.ceil((widest + labelGap) / slotWidth));
 }
 
-function getValueLabels(points: ChartPoint[], slotWidth: number, size: Size) {
+function getValueLabels(points: ChartPoint[], size: Size) {
   const last = points.length - 1;
   if (last < 0 || points[last].value <= 0) {
     return [];
   }
 
-  const peak = points.reduce((best, point) => (point.value > points[best].value ? point.index : best), 0);
-  const labelWidth = Math.max(
-    textWidth(formatCompactCurrency(points[last].value), valueFontSize),
-    textWidth(formatCompactCurrency(points[peak].value), valueFontSize)
-  );
-  const peakFits = Math.abs(last - peak) * slotWidth >= labelWidth + labelGap;
-
-  return (peakFits ? [peak, last] : [last]).map((index) => {
+  const place = (index: number) => {
     const point = points[index];
     const text = formatCompactCurrency(point.value);
     const half = textWidth(text, valueFontSize) / 2;
@@ -166,8 +159,18 @@ function getValueLabels(points: ChartPoint[], slotWidth: number, size: Size) {
         .map((other) => other.y)
     );
 
-    return { index, text, x, y: Math.max(chartPadding.top - 12, topUnderLabel - 8) };
-  });
+    return { half, index, text, x, y: Math.max(chartPadding.top - 12, topUnderLabel - 8) };
+  };
+
+  const peak = points.reduce((best, point) => (point.value > points[best].value ? point.index : best), 0);
+  const latest = place(last);
+  if (peak === last) {
+    return [latest];
+  }
+
+  const top = place(peak);
+  const peakFits = Math.abs(latest.x - top.x) >= latest.half + top.half + labelGap;
+  return peakFits ? [top, latest] : [latest];
 }
 
 function getTooltipPosition(point: ChartPoint, size: Size) {
@@ -225,7 +228,7 @@ export function EarnAumBarChart({
   const slotWidth =
     (size.width - chartPadding.left - chartPadding.right) / Math.max(points.length, 1);
   const dateLabelStep = getDateLabelStep(points, slotWidth);
-  const valueLabels = getValueLabels(chartPoints, slotWidth, size);
+  const valueLabels = getValueLabels(chartPoints, size);
   const lastIndex = chartPoints.length - 1;
   const activePoint =
     activeIndex === null ? null : chartPoints[activeIndex] ?? null;
