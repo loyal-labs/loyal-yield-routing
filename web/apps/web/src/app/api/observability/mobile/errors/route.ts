@@ -3,6 +3,7 @@ import {
   MAX_OBSERVABILITY_REQUEST_BYTES,
   parseMobileErrorEnvelope,
 } from "@/features/observability/error-contract";
+import { isNativeAppRequest } from "@/features/observability/native-gate.server";
 import { consumeBrowserErrorRateLimit } from "@/features/observability/rate-limit.server";
 import { reportMobileErrorEnvelope } from "@/features/observability/server";
 
@@ -15,15 +16,6 @@ function jsonResponse(
   status: number
 ): Response {
   return Response.json(body, { headers: NO_STORE_HEADERS, status });
-}
-
-// Mirror image of the browser route's same-origin gate: native fetch never
-// sends Origin or Sec-Fetch-Site, while browsers always send them on
-// cross-site POSTs — so their presence marks traffic this route is not for.
-function isNativeAppRequest(request: Request): boolean {
-  return (
-    !request.headers.get("origin") && !request.headers.get("sec-fetch-site")
-  );
 }
 
 function isJsonRequest(request: Request): boolean {

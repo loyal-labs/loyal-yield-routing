@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { LoyalCluster } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  LoyalCluster,
+} from "@loyal-labs/actions";
 import { PROGRAM_ID, pda } from "@loyal-labs/loyal-smart-accounts";
 import {
   Settings,
@@ -24,7 +27,6 @@ const EXECUTE_ACK = "mainnet-autoswap-isolated-setup-delete";
 const YIELD_DATABASE_ENDPOINT_SHA256 =
   "f5bf9367f769718e58899375cb0c5ada166190f87b7141402d2057c9cfd3fd66";
 const CLUSTER = "mainnet-beta";
-const VAULT_INDEX = 1;
 const DAILY_CAP_RAW = BigInt(100_000_000);
 const MAX_SLIPPAGE_BPS = 50;
 const PROJECTION_TIMEOUT_MS = 180_000;
@@ -156,7 +158,7 @@ async function chooseIsolatedSettings(args: {
       continue;
     }
     const vaultPubkey = pda.getSmartAccountPda({
-      accountIndex: VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId: PROGRAM_ID,
       settingsPda,
     })[0];
@@ -176,7 +178,7 @@ async function chooseIsolatedSettings(args: {
         )::text AS "fundedCount"
       FROM loyal_yield.user_yield_positions
       WHERE settings = ${scope.settings}
-        AND vault_index = ${VAULT_INDEX}
+        AND vault_index = ${EARN_VAULT_INDEX}
         AND vault_pubkey = ${scope.vaultPubkey}
     `;
     if (
@@ -383,7 +385,7 @@ async function fetchProjection(
     WHERE cluster = ${CLUSTER}
       AND settings = ${scope.settings}
       AND authority = ${scope.walletAddress}
-      AND vault_index = ${VAULT_INDEX}
+      AND vault_index = ${EARN_VAULT_INDEX}
       AND vault_pubkey = ${scope.vaultPubkey}
     ORDER BY policy_seed
   `;
@@ -392,7 +394,7 @@ async function fetchProjection(
     FROM loyal_yield.cross_mint_vault_opt_ins
     WHERE cluster = ${CLUSTER}
       AND settings = ${scope.settings}
-      AND vault_index = ${VAULT_INDEX}
+      AND vault_index = ${EARN_VAULT_INDEX}
       AND vault_pubkey = ${scope.vaultPubkey}
   `;
   return { optInCount: Number(optIn?.count ?? "0"), policies };
@@ -453,7 +455,7 @@ async function printExplicitIdentity(): Promise<void> {
     );
   }
   const vaultPubkey = pda.getSmartAccountPda({
-    accountIndex: VAULT_INDEX,
+    accountIndex: EARN_VAULT_INDEX,
     programId: PROGRAM_ID,
     settingsPda,
   })[0];
@@ -543,7 +545,7 @@ async function main() {
     const settingsPda = new PublicKey(settings);
     verifiedSettingsPda = settingsPda;
     const vaultPubkey = pda.getSmartAccountPda({
-      accountIndex: VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId: PROGRAM_ID,
       settingsPda,
     })[0];
@@ -611,7 +613,7 @@ async function main() {
           )::text AS "fundedCount"
         FROM loyal_yield.user_yield_positions
         WHERE settings = ${scope.settings}
-          AND vault_index = ${VAULT_INDEX}
+          AND vault_index = ${EARN_VAULT_INDEX}
           AND vault_pubkey = ${scope.vaultPubkey}
       `;
       if (
@@ -758,7 +760,7 @@ async function main() {
           updated_at = CURRENT_TIMESTAMP
       WHERE cluster = ${CLUSTER}
         AND settings = ${scope.settings}
-        AND vault_index = ${VAULT_INDEX}
+        AND vault_index = ${EARN_VAULT_INDEX}
         AND vault_pubkey = ${scope.vaultPubkey}
         AND enabled
       RETURNING generation::text AS generation
@@ -842,7 +844,7 @@ async function main() {
                 updated_at = CURRENT_TIMESTAMP
             WHERE cluster = ${CLUSTER}
               AND settings = ${verifiedSettingsPda.toBase58()}
-              AND vault_index = ${VAULT_INDEX}
+              AND vault_index = ${EARN_VAULT_INDEX}
               AND enabled
           `;
         }

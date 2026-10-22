@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { LoyalCluster } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  LoyalCluster,
+} from "@loyal-labs/actions";
 
 import { resolveAuthenticatedPrincipalFromRequest } from "@/features/identity/server/auth-session";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
@@ -13,8 +16,6 @@ import {
   serializeEarnTransactionEvent,
   type SerializedEarnTransaction,
 } from "./formatter";
-
-const EARN_VAULT_INDEX = 1;
 
 function resolveConfiguredCluster(): LoyalCluster {
   const solanaEnv = resolveLoyalWebSolanaEnvFromEnv(process.env);

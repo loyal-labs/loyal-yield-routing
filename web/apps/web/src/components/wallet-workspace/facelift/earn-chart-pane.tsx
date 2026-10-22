@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   useEffect,
   useLayoutEffect,
@@ -364,19 +365,9 @@ export function EarnChartPane({
   selectedTab: ChartTab | null;
   statsPanel?: ReactNode;
 }) {
-  useEffect(() => {
-    if (!isExpanded) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onExpandedChange(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isExpanded, onExpandedChange]);
+  useEscapeOverlay(isExpanded, () => {
+    onExpandedChange(false);
+  });
 
   return (
     <>

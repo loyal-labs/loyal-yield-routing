@@ -1,6 +1,5 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
 import { importPKCS8, importSPKI, jwtVerify, SignJWT } from "jose";
 
 import { getServerEnv } from "@/lib/core/config/server";
@@ -11,6 +10,7 @@ import {
 } from "./mobile-wallet-auth";
 import { WalletAuthError } from "./wallet-auth-errors";
 import { decodeWalletAddress } from "./wallet-auth-signature";
+import { createSecretKey } from "./session-token";
 
 // Mobile Earn session (ASK-1846): a long-lived bearer token that lets the
 // native app call the DB-only Autodeposit endpoints (sweeps/execute, floor,
@@ -31,12 +31,6 @@ const MOBILE_EARN_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const RS256_ALG = "RS256";
 const HS256_ALG = "HS256";
 
-// Same secret derivation as session-token.ts so AUTH_JWT_SECRET behaves
-// identically for both token kinds.
-function hs256Key(secret: string): Uint8Array {
-  return createHash("sha256").update(secret).digest();
-}
-
 export async function issueMobileEarnSessionToken(
   walletAddress: string
 ): Promise<{ token: string; expiresAt: string }> {
@@ -56,7 +50,7 @@ export async function issueMobileEarnSessionToken(
   } else if (authJwtSecret) {
     token = await jwt
       .setProtectedHeader({ alg: HS256_ALG, typ: "JWT" })
-      .sign(hs256Key(authJwtSecret));
+      .sign(createSecretKey(authJwtSecret));
   } else {
     throw new Error(
       "Mobile Earn session signing is not configured. Set AUTH_JWT_SECRET or AUTH_JWT_RS256_PRIVATE_KEY."
@@ -92,7 +86,7 @@ async function verifyMobileEarnSessionToken(
 
   if (authJwtSecret) {
     try {
-      const { payload } = await jwtVerify(token, hs256Key(authJwtSecret), {
+      const { payload } = await jwtVerify(token, createSecretKey(authJwtSecret), {
         algorithms: [HS256_ALG],
         audience: MOBILE_EARN_SESSION_AUDIENCE,
       });

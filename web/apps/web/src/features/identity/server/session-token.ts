@@ -17,7 +17,7 @@ import {
 
 export type AuthSessionTokenClaims = JWTPayload & AuthSessionTokenClaimsData;
 
-function createSecretKey(secret: string): Uint8Array {
+export function createSecretKey(secret: string): Uint8Array {
   return createHash("sha256").update(secret).digest();
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { Moon, Sun } from "lucide-react";
 import {
@@ -179,19 +180,9 @@ export function FaceliftSidebar({
   const [isWalletMenuOpen, setIsWalletMenuOpen] = useState(false);
   const [isReceiveOpen, setIsReceiveOpen] = useState(false);
 
-  useEffect(() => {
-    if (!isWalletMenuOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setIsWalletMenuOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isWalletMenuOpen]);
+  useEscapeOverlay(isWalletMenuOpen, () => {
+    setIsWalletMenuOpen(false);
+  });
 
   const handleDisconnect = () => {
     void Promise.allSettled([logout(), disconnect()]);

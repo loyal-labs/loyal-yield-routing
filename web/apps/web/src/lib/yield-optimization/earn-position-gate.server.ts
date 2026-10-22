@@ -1,6 +1,6 @@
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import { PublicKey } from "@solana/web3.js";
-
+import { EARN_VAULT_INDEX } from "@loyal-labs/actions";
 import { getServerEnv } from "@/lib/core/config/server";
 
 import {
@@ -15,7 +15,6 @@ import {
 // as a perpetual worker failure ("no active Earn route policy") that the app
 // renders as "Executing…" forever. Callers fail OPEN on thrown lookup errors —
 // the client pre-gates setup and the worker's refusal remains the last line.
-const EARN_VAULT_INDEX = 1;
 
 export const EARN_POSITION_REQUIRED_ERROR = {
   code: "earn_position_required",

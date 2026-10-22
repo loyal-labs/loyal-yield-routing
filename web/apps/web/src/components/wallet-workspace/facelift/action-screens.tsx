@@ -10,6 +10,17 @@ import { getExplorerTxUrl } from "@/lib/solana/explorer";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
+const RESULT_DOG_CLASS =
+  "-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:bottom-0 max-[795px]:overflow-clip max-[795px]:rounded-b-3xl";
+
+export function actionPaneOverflowClass(
+  step: "form" | "processing" | "success" | "error"
+): string {
+  return step === "success" || step === "error"
+    ? "max-[795px]:overflow-clip"
+    : "overflow-clip";
+}
+
 // Keeps the SOL a transfer can't spend so the wallet can still pay fees —
 // the same reserve the OG swap form's MAX applies.
 export const SOL_FEE_RESERVE = 0.00005;
@@ -83,7 +94,7 @@ export function ActionSuccessBody({
     <div className="relative flex w-full flex-1 flex-col items-center pt-8 pb-[68px]">
       <div
         aria-hidden="true"
-        className="-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:bottom-0 max-[795px]:overflow-clip max-[795px]:rounded-b-3xl"
+        className={RESULT_DOG_CLASS}
       >
         <DogLottie className="aspect-square w-full max-w-[420px]" variant="calm" />
       </div>
@@ -151,7 +162,7 @@ export function ActionErrorBody({
     <div className="relative flex w-full flex-1 flex-col items-center pt-8 pb-[68px]">
       <div
         aria-hidden="true"
-        className="-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:bottom-0 max-[795px]:overflow-clip max-[795px]:rounded-b-3xl"
+        className={RESULT_DOG_CLASS}
       >
         <DogLottie className="aspect-square w-full max-w-[420px]" variant="calm" />
       </div>

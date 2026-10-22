@@ -52,7 +52,8 @@ import {
 } from "@/components/wallet-workspace/facelift/earned-chart";
 import { InfoTooltip } from "@/components/wallet-workspace/facelift/info-tooltip";
 import { PendingWithdrawalTooltip } from "@/components/wallet-workspace/facelift/pending-withdrawal-tooltip";
-import { isEscapeGuardedTarget } from "@/components/wallet-workspace/facelift/keyboard";
+import { useEscapePage } from "@/components/wallet-workspace/facelift/escape-owner";
+import { useLastValue } from "@/components/wallet-workspace/facelift/use-last-value";
 import {
   MiddlePaneSlide,
   PaneReveal,
@@ -1055,13 +1056,7 @@ export function EarnMaxWorkspace({
   const [isChartExpanded, setIsChartExpanded] = useState(false);
   const [selectedTransaction, setSelectedTransaction] =
     useState<EarnMaxActivityItem | null>(null);
-  // Keep the closing detail populated until its exit animation finishes
-  // (same trick the shell uses for the Earn transaction detail).
-  const lastTransactionRef = useRef<EarnMaxActivityItem | null>(null);
-  if (selectedTransaction) {
-    lastTransactionRef.current = selectedTransaction;
-  }
-  const transactionDetail = selectedTransaction ?? lastTransactionRef.current;
+  const transactionDetail = useLastValue(selectedTransaction);
   const { view, actions } = earnMax;
   const isVirgin = isEarnMaxUntouched(view);
   useEffect(() => {
@@ -1074,30 +1069,13 @@ export function EarnMaxWorkspace({
       setSelectedTransaction(null);
     }
   }, [isSignedIn, screen, selectedTransaction]);
-  // Esc closes the transaction detail first, then backs out of the action
-  // screens (same contract as the Earn page).
-  useEffect(() => {
-    if (screen === "main" && !selectedTransaction) {
-      return;
+  useEscapePage(screen !== "main" || selectedTransaction !== null, () => {
+    if (selectedTransaction) {
+      setSelectedTransaction(null);
+    } else {
+      setScreen("main");
     }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || isEscapeGuardedTarget(event.target)) {
-        return;
-      }
-      queueMicrotask(() => {
-        if (event.defaultPrevented) {
-          return;
-        }
-        if (selectedTransaction) {
-          setSelectedTransaction(null);
-        } else {
-          setScreen("main");
-        }
-      });
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [screen, selectedTransaction]);
+  });
   const chartCustom: ChartCardCustomContent = {
     defaultTab: "Earned",
     renderBody: (activeTab) =>

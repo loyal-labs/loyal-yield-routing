@@ -6,13 +6,14 @@ import {
   type SmartAccountEarnUsdcWithdrawInput,
 } from "@loyal-labs/smart-account-vaults";
 import { type Connection, PublicKey } from "@solana/web3.js";
-
+import { EARN_VAULT_INDEX } from "@loyal-labs/actions";
 import { type EarnUsdcReserveTarget } from "@/lib/yield-optimization/earn-reserve-target.server";
 import {
   type EarnRpcHolding,
   fetchEarnRpcHoldingsSnapshot,
 } from "@/lib/yield-optimization/earn-rpc-holdings.client";
 import { serializeRoutePolicyState } from "@/lib/yield-optimization/earn-state-serializers.server";
+import { snapshotFullWithdrawalTargets } from "@/lib/yield-optimization/earn-withdraw-input-resolution.shared";
 import type {
   EarnWithdrawLegacyPrepareRequest,
   EarnWithdrawLegacySourceRequest,
@@ -24,7 +25,6 @@ import {
   type RoutePolicyRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 const POLICY_PROJECTION_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000] as const;
 
 async function waitForPolicyProjection(delayMs: number): Promise<void> {
@@ -224,29 +224,6 @@ function selectLegacyEarnWithdrawSource(
     : null;
 }
 
-function publicKeyFromMetadata(
-  metadata: Record<string, unknown> | null | undefined,
-  keys: string[]
-): PublicKey | null {
-  if (!metadata) {
-    return null;
-  }
-
-  for (const key of keys) {
-    const value = metadata[key];
-    if (typeof value !== "string" || value.trim().length === 0) {
-      continue;
-    }
-    try {
-      return new PublicKey(value);
-    } catch {
-      continue;
-    }
-  }
-
-  return null;
-}
-
 // Reserve target the legacy contract attached to idle-source withdrawals so
 // the device SDK always had a routing venue.
 function snapshotReserveTarget(
@@ -273,55 +250,6 @@ function snapshotReserveTarget(
     reserve: new PublicKey(kamino.reserve),
     supplyApyBps,
   };
-}
-
-// Legacy full exit unwinds EVERY market the wallet holds; the aggregate target
-// list drives the SDK's multi-market full-withdrawal build.
-function snapshotFullWithdrawalTargets(holdings: EarnRpcHolding[]): {
-  amountRaw: bigint;
-  liquidityMint: PublicKey;
-  liquidityTokenProgram: PublicKey;
-  market: PublicKey;
-  reserve: PublicKey;
-  reserveCollateralMint?: PublicKey;
-  supplyApyBps: bigint | null;
-}[] {
-  const targets = [];
-  for (const holding of holdings) {
-    if (holding.kind !== "kamino" || !holding.reserve || !holding.market) {
-      continue;
-    }
-    let amountRaw: bigint;
-    try {
-      amountRaw = BigInt(holding.amountRaw);
-    } catch {
-      continue;
-    }
-    if (amountRaw <= BigInt(0)) {
-      continue;
-    }
-    let supplyApyBps: bigint | null = null;
-    if (holding.supplyApyBps) {
-      try {
-        supplyApyBps = BigInt(holding.supplyApyBps);
-      } catch {
-        supplyApyBps = null;
-      }
-    }
-    const reserveCollateralMint = publicKeyFromMetadata(holding.provenance, [
-      "reserveCollateralMint",
-    ]);
-    targets.push({
-      amountRaw,
-      liquidityMint: new PublicKey(holding.liquidityMint),
-      liquidityTokenProgram: new PublicKey(holding.tokenProgramId),
-      market: new PublicKey(holding.market),
-      reserve: new PublicKey(holding.reserve),
-      ...(reserveCollateralMint ? { reserveCollateralMint } : {}),
-      supplyApyBps,
-    });
-  }
-  return targets;
 }
 
 function buildSnapshotWithdrawSources(
@@ -415,7 +343,7 @@ export async function resolveEarnUsdcWithdrawInput(args: {
       authority: walletAddress,
       cluster,
       settings: settingsPda,
-      vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       vaultPubkey: earnVaultPda.toBase58(),
     });
     if (policyResult?.routePolicy) {
@@ -430,7 +358,7 @@ export async function resolveEarnUsdcWithdrawInput(args: {
         authority: walletAddress,
         cluster,
         settings: settingsPda,
-        vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+        vaultIndex: EARN_VAULT_INDEX,
         vaultPubkey: earnVaultPda.toBase58(),
       })
     ) {
@@ -443,7 +371,7 @@ export async function resolveEarnUsdcWithdrawInput(args: {
     console.warn(`[${logTag}] Earn policy projection still pending`, {
       cluster,
       settings: settingsPda,
-      vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       walletAddress,
     });
     throw new EarnWithdrawResolveError(

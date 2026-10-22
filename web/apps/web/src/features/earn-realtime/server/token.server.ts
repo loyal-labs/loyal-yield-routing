@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createHmac } from "node:crypto";
+import { EARN_VAULT_INDEX } from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { PublicKey } from "@solana/web3.js";
@@ -12,7 +13,6 @@ const TOKEN_ISSUER = "loyal-apps";
 const TOKEN_AUDIENCE = "loyal-yield-realtime";
 const TOKEN_LIFETIME_SECONDS = 300;
 const MAX_TOKEN_LIFETIME_SECONDS = 300;
-const EARN_VAULT_INDEX = 1;
 
 export type EarnRealtimeTokenClaims = {
   v: typeof TOKEN_VERSION;

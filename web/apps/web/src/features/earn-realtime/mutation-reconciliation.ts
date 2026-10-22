@@ -114,15 +114,22 @@ function matchesExpectedMutation(
   return false;
 }
 
+type SignatureOnlyExpectedMutation = ExpectedEarnMutation & {
+  signature: string;
+  targetId?: undefined;
+};
+
+function isSignatureOnlyExpectedMutation(
+  expected: ExpectedEarnMutation
+): expected is SignatureOnlyExpectedMutation {
+  return expected.signature !== undefined && !expected.targetId;
+}
+
 function matchesHistoricalExpectedMutation(
   expected: ExpectedEarnMutation,
   event: EarnRealtimeInvalidation
 ): boolean {
-  if (expected.signature !== undefined && !expected.targetId) {
-    // A signature-only mutation may use event type/reason as a causal match
-    // only when it was already registered before the event was planned. The
-    // current producer does not echo signatures, so a pre-registration event
-    // cannot prove that it belongs to this later local mutation.
+  if (isSignatureOnlyExpectedMutation(expected)) {
     return false;
   }
   return matchesExpectedMutation(expected, event);

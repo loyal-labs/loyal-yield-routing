@@ -5,6 +5,7 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { type Plugin, type UserConfig } from "vite";
 
+import { resolveVercelEnv } from "../web/src/lib/vercel-env";
 import { type ServerActionsOptions, serverActionsPlugin } from "./vite/server-actions";
 import { serverOnlyPlugin } from "./vite/server-only";
 
@@ -64,9 +65,7 @@ export function nextSpa(options: NextSpaOptions): UserConfig {
 
   // layout.tsx tints the favicon by VERCEL_ENV, which Next reads on the server.
   // Here the build stands in for the server: a prod build is Vercel's production.
-  const vercelEnv =
-    process.env.VERCEL_ENV ??
-    ((process.env.NEXT_PUBLIC_APP_ENVIRONMENT ?? "prod") === "prod" ? "production" : "development");
+  const vercelEnv = resolveVercelEnv(process.env);
 
   const apiOrigin = process.env.LOYAL_WEB_ORIGIN || "http://127.0.0.1:8080";
 

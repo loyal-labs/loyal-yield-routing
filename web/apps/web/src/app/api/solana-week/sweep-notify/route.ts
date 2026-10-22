@@ -1,29 +1,20 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
-import { reportFirstAutodepositSweepQuestCompletion } from "@/features/solana-week/server/quest-completion-service";
 import { getOptionalEnv } from "@/lib/core/config/shared";
 import {
-  autodepositSweepExecutedPush,
   autodepositSweepFailedPush,
-  autodepositSweepScheduledPush,
   sendWalletPush,
 } from "@/lib/push-notifications/wallet-push.server";
-import {
-  getYieldOptimizationClient,
-  pushCampaignSends,
-} from "@/lib/yield-optimization/yield-neon-client.server";
+import { claimPushCampaignSend } from "@/lib/push-notifications/push-campaign-send-log.server";
 
-// Internal backend-to-backend endpoint the autodeposit sweep worker calls the
-// moment it records a confirmed sweep, so Quest 2 ("first Earn deposit via
-// autodeposit") is reported in real time instead of waiting for the cron, and
-// the wallet's devices get the transactional push (ASK-1651).
+// Internal backend-to-backend endpoint the autodeposit sweep worker calls
+// (go/workers/internal/autodeposit/notify.go).
 // Authenticated with SOLANA_WEEK_NOTIFY_SECRET (Bearer).
-// Body: { walletAddress, kind?: "scheduled" | "executed", amountRaw?: string }.
-// `kind` defaults to "executed" (the only event the worker sent historically);
-// "scheduled" and "failed" are push-only and skip quest reporting. A failed
-// sweep is retried every cycle, so failures carry `dedupeKey` (the scheduled
-// slot id) and the sent-log keeps the push at-most-once per sweep (ASK-2091).
+// Body: { walletAddress, kind: "failed", amountRaw?: string }.
+// A failed sweep is retried every cycle, so failures carry `dedupeKey` (the
+// scheduled slot id) and the sent-log keeps the push at-most-once per sweep
+// (ASK-2091).
 function isAuthorized(request: Request): boolean {
   const secret = getOptionalEnv(process.env, "SOLANA_WEEK_NOTIFY_SECRET");
   if (!secret) {
@@ -64,41 +55,25 @@ export async function POST(request: Request) {
     );
   }
 
-  const kind =
-    record.kind === "scheduled" || record.kind === "failed"
-      ? record.kind
-      : "executed";
+  if (record.kind !== "failed") {
+    return NextResponse.json(
+      { error: "invalid_request", message: 'kind must be "failed".' },
+      { status: 400 }
+    );
+  }
+
   const amountRaw = parseAmountRaw(record.amountRaw);
 
-  if (kind === "scheduled") {
-    await sendWalletPush(
-      walletAddress,
-      autodepositSweepScheduledPush(amountRaw)
-    );
-    return NextResponse.json({ status: "accepted" });
+  if (!(await claimFailurePush(walletAddress, record.dedupeKey))) {
+    return NextResponse.json({ status: "deduped" });
   }
-
-  if (kind === "failed") {
-    if (!(await claimFailurePush(walletAddress, record.dedupeKey))) {
-      return NextResponse.json({ status: "deduped" });
-    }
-    await sendWalletPush(walletAddress, autodepositSweepFailedPush(amountRaw));
-    return NextResponse.json({ status: "accepted" });
-  }
-
-  await reportFirstAutodepositSweepQuestCompletion(walletAddress, {
-    source: "sweep-worker-notify",
-  });
-
-  await sendWalletPush(walletAddress, autodepositSweepExecutedPush(amountRaw));
+  await sendWalletPush(walletAddress, autodepositSweepFailedPush(amountRaw));
 
   return NextResponse.json({ status: "accepted" });
 }
 
-// Insert-first sent-log, same pattern as the Mixpanel cohort receiver: the
-// push only goes out when this wallet has no row for the sweep yet. Without a
-// `dedupeKey` the campaign falls back to a per-day key, so an older worker
-// build can still only wake the user once a day.
+// Without a `dedupeKey` the campaign falls back to a per-day key, so an older
+// worker build can still only wake the user once a day.
 async function claimFailurePush(
   walletAddress: string,
   rawDedupeKey: unknown
@@ -108,12 +83,10 @@ async function claimFailurePush(
       ? rawDedupeKey.trim().slice(0, 120)
       : new Date().toISOString().slice(0, 10);
   try {
-    const inserted = await getYieldOptimizationClient()
-      .db.insert(pushCampaignSends)
-      .values({ campaign: `autodeposit-failed:${dedupeKey}`, walletAddress })
-      .onConflictDoNothing()
-      .returning({ id: pushCampaignSends.id });
-    return inserted.length > 0;
+    return await claimPushCampaignSend({
+      campaign: `autodeposit-failed:${dedupeKey}`,
+      walletAddress,
+    });
   } catch (error) {
     console.warn("[sweep-notify] failure sent-log write failed", {
       errorMessage:

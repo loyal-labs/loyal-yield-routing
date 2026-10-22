@@ -34,8 +34,9 @@ import {
 import {
   deriveEarnVaultPda,
   fetchEarnRpcHoldingsSnapshot,
-  type EarnRpcHolding,
 } from "@/lib/yield-optimization/earn-rpc-holdings.client";
+import { snapshotFullWithdrawalTargets } from "@/lib/yield-optimization/earn-withdraw-input-resolution.shared";
+import { YIELD_OPTIMIZATION_DATABASE_URL_ENV_NAME } from "@/lib/yield-optimization/yield-neon.shared";
 
 // web3.js PACKET_DATA_SIZE — the buffer MessageV0.serialize() encodes into.
 const PACKET_DATA_SIZE = 1232;
@@ -152,39 +153,6 @@ function instrumentConnection(connection: Connection): {
   });
 
   return { connection: proxy, measured };
-}
-
-// Mirrors `snapshotFullWithdrawalTargets` in
-// frontend/src/lib/yield-optimization/earn-withdraw-input-resolution.server.ts
-// — the full-exit fan-out the mobile prepare-context endpoint sends to the SDK.
-function snapshotFullWithdrawalTargets(holdings: EarnRpcHolding[]) {
-  const targets = [];
-  for (const holding of holdings) {
-    if (holding.kind !== "kamino" || !holding.reserve || !holding.market) {
-      continue;
-    }
-    let amountRaw: bigint;
-    try {
-      amountRaw = BigInt(holding.amountRaw);
-    } catch {
-      continue;
-    }
-    if (amountRaw <= BigInt(0)) {
-      continue;
-    }
-    const reserveCollateralMint = holding.provenance?.reserveCollateralMint;
-    targets.push({
-      amountRaw,
-      liquidityMint: new PublicKey(holding.liquidityMint),
-      market: new PublicKey(holding.market),
-      reserve: new PublicKey(holding.reserve),
-      ...(reserveCollateralMint
-        ? { reserveCollateralMint: new PublicKey(reserveCollateralMint) }
-        : {}),
-      supplyApyBps: holding.supplyApyBps ? BigInt(holding.supplyApyBps) : null,
-    });
-  }
-  return targets;
 }
 
 async function loadRoutePolicyPair(
@@ -401,12 +369,11 @@ async function main() {
     throw new Error("NEXT_PUBLIC_SOLANA_RPC_ENDPOINT is required");
   }
   // `loyal_yield` lives in the yield Neon project, which the app reads through
-  // NEON_DATABASE_URL — see YIELD_OPTIMIZATION_DATABASE_URL_ENV_NAME in
-  // frontend/src/lib/yield-optimization/yield-neon-client.server.ts. DATABASE_URL
+  // NEON_DATABASE_URL. DATABASE_URL
   // points at the app database and does not carry the route_policies table.
-  const databaseUrl = process.env.NEON_DATABASE_URL;
+  const databaseUrl = process.env[YIELD_OPTIMIZATION_DATABASE_URL_ENV_NAME];
   if (!databaseUrl) {
-    throw new Error("NEON_DATABASE_URL is required");
+    throw new Error(`${YIELD_OPTIMIZATION_DATABASE_URL_ENV_NAME} is required`);
   }
   const sql = neon(databaseUrl);
 

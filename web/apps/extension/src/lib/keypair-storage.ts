@@ -25,9 +25,7 @@ function getLockoutDuration(attempts: number): number {
 }
 
 export async function getPinLockoutRemaining(): Promise<number> {
-  const lockedUntil = await pinLockedUntil.getValue();
-  if (lockedUntil === 0) return 0;
-  return Math.max(0, lockedUntil - Date.now());
+  return Math.max(0, (await pinLockedUntil.getValue()) - Date.now());
 }
 
 async function recordFailedAttempt(): Promise<void> {

@@ -1,6 +1,8 @@
 import { execSync } from "node:child_process";
 import type { NextConfig } from "next";
 
+import { EARN_BANNER_ASSET_VERSION_QUERY } from "./src/components/wallet-workspace/facelift/earn-banner-assets";
+
 const FULL_GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 
 function normalizeGitCommit(value: string | undefined): string | undefined {
@@ -133,11 +135,9 @@ const nextConfig: NextConfig = {
         // The Earn banner carousel remounts its artwork every few seconds, and
         // Next serves /public with `max-age=0, must-revalidate`, so each
         // rotation cost a revalidation round-trip per asset (ASK-2214).
-        // earn-banner.tsx requests these with a ?v=<commit> buster, so a deploy
-        // always produces a fresh URL — hence immutable is safe here, and the
-        // `has` guard keeps it off unversioned (hand-typed) requests.
+        // The `has` guard keeps it off unversioned (hand-typed) requests.
         source: "/wallet-workspace/facelift/:asset(earn-banner-.*)",
-        has: [{ type: "query", key: "v" }],
+        has: [{ type: "query", key: EARN_BANNER_ASSET_VERSION_QUERY }],
         headers: [
           {
             key: "Cache-Control",

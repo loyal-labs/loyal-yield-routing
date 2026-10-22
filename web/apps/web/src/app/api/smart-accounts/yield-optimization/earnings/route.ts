@@ -1,5 +1,8 @@
 import { after, NextResponse } from "next/server";
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  resolveLoyalClusterForSolanaEnv,
+} from "@loyal-labs/actions";
 
 import { resolveAuthenticatedPrincipalFromRequest } from "@/features/identity/server/auth-session";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
@@ -7,7 +10,6 @@ import { EarnEarningsUnavailableError } from "@/lib/yield-optimization/earnings-
 import { readCachedEarnEarningsRangeSet } from "@/lib/yield-optimization/earnings-cache.server";
 import type { EarnEarningsUnavailableResponse } from "@/lib/yield-optimization/earnings.shared";
 
-const EARN_VAULT_INDEX = 1;
 export const maxDuration = 300;
 
 export async function GET(request: Request) {

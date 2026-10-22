@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  resolveLoyalClusterForSolanaEnv,
+} from "@loyal-labs/actions";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
 
@@ -16,8 +19,6 @@ import {
 } from "@/lib/yield-optimization/earn-cleanup-confirm.server";
 import { parseEarnWithdrawCleanupConfirmRequestBody } from "@/lib/yield-optimization/earn-withdraw-cleanup-contracts.shared";
 import { findEarnCleanupVaultState } from "@/lib/yield-optimization/yield-deposit-repository.server";
-
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 const connectionCache = new Map<SolanaEnv, Connection>();
 
@@ -89,7 +90,7 @@ export async function POST(request: Request) {
   if (
     persistence.walletAddress !== principal.walletAddress ||
     persistence.settings !== principal.settingsPda ||
-    persistence.vaultIndex !== EARN_DEPOSIT_VAULT_INDEX
+    persistence.vaultIndex !== EARN_VAULT_INDEX
   ) {
     return jsonError(
       403,
@@ -230,7 +231,7 @@ export async function POST(request: Request) {
         policyAccount: persistence.autodepositClose.policyAccount,
         recurringDelegation: persistence.autodepositClose.recurringDelegation,
         settings: persistence.settings,
-        vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+        vaultIndex: EARN_VAULT_INDEX,
         vaultPubkey: persistence.vaultPubkey,
         walletAddress: persistence.walletAddress,
       });
