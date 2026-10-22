@@ -12,6 +12,7 @@ import { PublicKey } from "@solana/web3.js";
 
 import {
   type CurrentBestApyReserveByStablecoin,
+  DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE,
   getCurrentBestApyReserveByStablecoin,
   getLatestReserveObservationsByReserve,
 } from "@/lib/kamino/timescale-reserve-client.server";
@@ -23,10 +24,7 @@ import type { UserYieldPositionRecord } from "./yield-deposit-repository.server"
 
 // A reserve this small cannot be a deliberate Earn venue — the hidden OnRe
 // USDC reserve that swallowed a user's top-ups (ASK-1764) held ~$17k and
-// later ~$37. Matches DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE used for
-// APY-ranked selection.
-const MIN_ELIGIBLE_RESERVE_TOTAL_SUPPLY_USD = 100_000;
-
+// later ~$37.
 export type EarnReserveIneligibilityReason =
   | "below_liquidity_floor"
   | "unsampled_reserve";
@@ -258,7 +256,7 @@ export async function findEarnReserveTargetIneligibility(args: {
     return "unsampled_reserve";
   }
   if (
-    observation.totalSupplyUsdEstimate <= MIN_ELIGIBLE_RESERVE_TOTAL_SUPPLY_USD
+    observation.totalSupplyUsdEstimate <= DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE
   ) {
     return "below_liquidity_floor";
   }

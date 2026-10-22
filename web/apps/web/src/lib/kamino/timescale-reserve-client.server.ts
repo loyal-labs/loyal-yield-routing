@@ -158,7 +158,7 @@ export type CurrentBestApyReserveByStablecoin = TimescaleReserveUpdateRow & {
 };
 export type CurrentEligibleSafeReserve = CurrentBestApyReserveByStablecoin;
 
-const DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE = 100_000;
+export const DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE = 100_000;
 const DEFAULT_MAX_SUPPLY_APY = 0.5;
 // Bound both receipt age and the frontier's actual chain age. The observer
 // timestamps replays when received, so receipt alone cannot prove catch-up.
