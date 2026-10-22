@@ -12,7 +12,6 @@ export function createBatch({
   programId = PROGRAM_ID,
 }: {
   settingsPda: PublicKey;
-  /** Member of the multisig that is creating the batch. */
   creator: PublicKey;
   /** Payer for the batch account rent. If not provided, `creator` is used. */
   rentPayer?: PublicKey;

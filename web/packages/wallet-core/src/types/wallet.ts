@@ -19,9 +19,7 @@ export interface TokenRow {
   totalValueDisplay?: string | null;
   publicAmountDisplay?: string | null;
   publicValueDisplay?: string | null;
-  /** USD value earned since principal was recorded (formatted, signed). */
   earnedValueDisplay?: string | null;
-  /** USD value of principal (formatted) — shown next to earned delta. */
   principalValueDisplay?: string | null;
 }
 
@@ -35,9 +33,7 @@ export interface ActivityRow {
   icon: string;
   /** Epoch milliseconds for sort order — absent in legacy localStorage rows */
   rawTimestamp?: number;
-  /** Replaces the type-derived row title (e.g. "Earn Deposit"). */
   titleOverride?: string;
-  /** Replaces the default "to/from <counterparty>" subtitle (e.g. "Network fee"). */
   subtitle?: string;
 }
 

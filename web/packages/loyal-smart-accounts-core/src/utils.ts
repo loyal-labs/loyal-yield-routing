@@ -78,19 +78,15 @@ export function isStaticWritableIndex(
   const { numSigners, numWritableSigners, numWritableNonSigners } = message;
 
   if (index >= numAccountKeys) {
-    // `index` is not a part of static `accountKeys`.
     return false;
   }
 
   if (index < numWritableSigners) {
-    // `index` is within the range of writable signer keys.
     return true;
   }
 
   if (index >= numSigners) {
-    // `index` is within the range of non-signer keys.
     const indexIntoNonSigners = index - numSigners;
-    // Whether `index` is within the range of writable non-signer keys.
     return indexIntoNonSigners < numWritableNonSigners;
   }
 
@@ -104,7 +100,6 @@ export function isSignerIndex(
   return index < message.numSigners;
 }
 
-/** We use custom serialization for `transaction_message` that ensures as small byte size as possible. */
 export function transactionMessageToMultisigTransactionMessageBytes({
   message,
   addressLookupTableAccounts,
@@ -117,29 +112,13 @@ export function transactionMessageToMultisigTransactionMessageBytes({
   transactionMessageBytes: Uint8Array;
   compiledMessage: MessageV0;
 } {
-  // // Make sure authority is marked as non-signer in all instructions,
-  // // otherwise the message will be serialized in incorrect format.
-  // message.instructions.forEach((instruction) => {
-  //   instruction.keys.forEach((key) => {
-  //     if (key.pubkey.equals(vaultPda)) {
-  //       key.isSigner = false;
-  //     }
-  //   });
-  // });
-
-  // Use custom implementation of `message.compileToV0Message` that allows instruction programIds
-  // to also be loaded from `addressLookupTableAccounts`.
   const compiledMessage = compileToWrappedMessageV0({
     payerKey: message.payerKey,
     recentBlockhash: message.recentBlockhash,
     instructions: message.instructions,
     addressLookupTableAccounts,
   });
-  // const compiledMessage = message.compileToV0Message(
-  //   addressLookupTableAccounts
-  // );
 
-  // We use custom serialization for `transaction_message` that ensures as small byte size as possible.
   const [transactionMessageBytes] = transactionMessageBeet.serialize({
     numSigners: compiledMessage.header.numRequiredSignatures,
     numWritableSigners:
@@ -244,7 +223,6 @@ export function instructionsToSynchronousTransactionDetailsV2WithHooks({
     accounts,
   };
 }
-/** Populate remaining accounts required for execution of the transaction. */
 export async function accountsForTransactionExecute({
   connection,
   transactionPda,
@@ -260,9 +238,7 @@ export async function accountsForTransactionExecute({
   transactionPda: PublicKey;
   programId?: PublicKey;
 }): Promise<{
-  /** Account metas used in the `message`. */
   accountMetas: AccountMeta[];
-  /** Address lookup table accounts used in the `message`. */
   lookupTableAccounts: AddressLookupTableAccount[];
 }> {
   const ephemeralSignerPdas = ephemeralSignerBumps.map(
@@ -292,7 +268,6 @@ export async function accountsForTransactionExecute({
     )
   );
 
-  // Populate account metas required for execution of the transaction.
   const accountMetas: AccountMeta[] = [];
   // First add the lookup table accounts used by the transaction. They are needed for on-chain validation.
   accountMetas.push(
@@ -300,7 +275,6 @@ export async function accountsForTransactionExecute({
       return { pubkey: key, isSigner: false, isWritable: false };
     })
   );
-  // Then add static account keys included into the message.
   for (const [accountIndex, accountKey] of message.accountKeys.entries()) {
     accountMetas.push({
       pubkey: accountKey,
@@ -313,7 +287,6 @@ export async function accountsForTransactionExecute({
         !ephemeralSignerPdas.find((k) => accountKey.equals(k)),
     });
   }
-  // Then add accounts that will be loaded with address lookup tables.
   for (const lookup of message.addressTableLookups) {
     const lookupTableAccount = addressLookupTableAccounts.get(
       lookup.accountKey.toBase58()
@@ -336,7 +309,6 @@ export async function accountsForTransactionExecute({
       accountMetas.push({
         pubkey,
         isWritable: true,
-        // Accounts in address lookup tables can not be signers.
         isSigner: false,
       });
     }
@@ -353,7 +325,6 @@ export async function accountsForTransactionExecute({
       accountMetas.push({
         pubkey,
         isWritable: false,
-        // Accounts in address lookup tables can not be signers.
         isSigner: false,
       });
     }

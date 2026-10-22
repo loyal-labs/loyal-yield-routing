@@ -43,8 +43,6 @@ export async function prepareEarnMaxVoltr(input: {
   const settings =
     await client.sdk.smartAccounts.queries.fetchSettings(settingsPda);
   if (Number(settings.threshold) > 1 || Number(settings.timeLock) > 0) {
-    // ponytail: sync execute only; add the propose/approve/execute
-    // fallback if multi-signer accounts ever get Earn MAX invites.
     throw new EarnMaxVoltrPrepareError("multi_signer_unsupported");
   }
   const authority = deriveEarnMaxVoltrAuthority(settingsPda, programId);

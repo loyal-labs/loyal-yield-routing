@@ -16,10 +16,6 @@ export type CompiledKeyMeta = {
 
 type KeyMetaMap = Map<string, CompiledKeyMeta>;
 
-/**
- *  This is almost completely copy-pasted from solana-web3.js and slightly adapted to work with "wrapped" transaction messaged such as in VaultTransaction.
- *  @see https://github.com/solana-labs/solana-web3.js/blob/87d33ac68e2453b8a01cf8c425aa7623888434e8/packages/library-legacy/src/message/compiled-keys.ts
- */
 export class CompiledKeys {
   payer?: PublicKey;
   keyMetaMap: KeyMetaMap;
@@ -58,8 +54,6 @@ export class CompiledKeys {
     payerKeyMeta.isWritable = true;
 
     for (const ix of instructions) {
-      // This is the only difference from the original.
-      // getOrInsertDefault(ix.programId).isInvoked = true;
       getOrInsertDefault(ix.programId).isInvoked = false;
       for (const accountMeta of ix.keys) {
         const keyMeta = getOrInsertDefault(accountMeta.pubkey);
@@ -71,9 +65,6 @@ export class CompiledKeys {
     return new CompiledKeys(payer, keyMetaMap);
   }
 
-  /**
-   * Compiles instructions without a payer.
-   */
   static compileWithoutPayer(
     instructions: Array<TransactionInstruction>
   ): CompiledKeys {
@@ -93,8 +84,6 @@ export class CompiledKeys {
     };
 
     for (const ix of instructions) {
-      // This is the only difference from the original.
-      // getOrInsertDefault(ix.programId).isInvoked = true;
       getOrInsertDefault(ix.programId).isInvoked = false;
       for (const accountMeta of ix.keys) {
         const keyMeta = getOrInsertDefault(accountMeta.pubkey);
@@ -129,7 +118,6 @@ export class CompiledKeys {
       numReadonlyUnsignedAccounts: readonlyNonSigners.length,
     };
 
-    // sanity checks
     {
       assert(
         writableSigners.length > 0,
@@ -170,7 +158,6 @@ export class CompiledKeys {
           !keyMeta.isSigner && !keyMeta.isInvoked && !keyMeta.isWritable
       );
 
-    // Don't extract lookup if no keys were found
     if (writableIndexes.length === 0 && readonlyIndexes.length === 0) {
       return;
     }
@@ -188,7 +175,6 @@ export class CompiledKeys {
     ];
   }
 
-  /** @internal */
   private drainKeysFoundInLookupTable(
     lookupTableEntries: Array<PublicKey>,
     keyMetaFilter: (keyMeta: CompiledKeyMeta) => boolean

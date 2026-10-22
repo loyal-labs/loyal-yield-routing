@@ -189,11 +189,8 @@ export const compiledMsInstructionBeet =
   );
 
 export type MessageAddressTableLookup = {
-  /** Address lookup table account key */
   accountKey: PublicKey;
-  /** List of indexes used to load writable account addresses */
   writableIndexes: number[];
-  /** List of indexes used to load readonly account addresses */
   readonlyIndexes: number[];
 };
 

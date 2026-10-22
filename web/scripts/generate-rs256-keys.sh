@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generate RS256 key pair for JWT session token signing/verification.
-# Output: single-line PEM strings ready for .env files (newlines replaced with \n literals).
-
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 

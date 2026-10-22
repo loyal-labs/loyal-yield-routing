@@ -126,10 +126,6 @@ function normalizeText(value: string): string {
         /\b(?:just now|\d+ (?:seconds?|minutes?) ago)\b/gi,
         "<relative-time>"
       )
-      // Baseline and candidate query the same live sources sequentially, so APYs,
-      // balances, slots, and counts can legitimately move between snapshots.
-      // Compare the complete labels/structure here; request payload shape and
-      // section completeness are checked independently above.
       .replace(/\b\d+(?:[.,]\d+)*%?\b/g, "<number>")
       .replace(/\s+/g, " ")
       .trim()

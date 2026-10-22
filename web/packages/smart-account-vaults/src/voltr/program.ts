@@ -66,7 +66,6 @@ export function deriveEarnMaxVoltrAuthority(
   })[0];
 }
 
-/** Accounts owned by one userTransferAuthority (the smart-account vault). */
 export function voltrUserAccounts(authority: PublicKey) {
   const receipt = voltrPda(
     Buffer.from("request_withdraw_vault_receipt"),
@@ -199,7 +198,6 @@ export type VoltrPosition = {
   escrowLpAtaExists: boolean;
   /** Validated pooled idle USDC, or null when unavailable. Not a reservation. */
   idleAssetRaw: bigint | null;
-  /** Free LP in the smart-account vault's LP ATA. */
   lpRaw: bigint;
   /** USDC raw the free LP redeems for right now. */
   valueRaw: bigint;
@@ -226,8 +224,6 @@ export function voltrClaimBlockReason(
   const pending = position.withdrawal;
   if (!pending || nowSec < pending.withdrawableFromTs) return "not_ready";
   if (position.idleAssetRaw === null) return "liquidity_unavailable";
-  // SDK withdrawals.ts uses min(request quote, redemption-fee-adjusted value).
-  // Cover the full payout, not the smaller wallet sweep or existing user dust.
   return position.idleAssetRaw < pending.payoutRaw
     ? "insufficient_liquidity"
     : null;
@@ -266,8 +262,6 @@ export async function readVoltrPosition(
     throw new Error("Voltr vault is not available on this cluster.");
   }
   let idleAssetRaw: bigint | null = null;
-  // This vault uses classic SPL USDC. Reject malformed, frozen or unrelated
-  // accounts instead of presenting unverifiable liquidity as claimable.
   if (idle && !idle.executable && idle.data.length === ACCOUNT_SIZE) {
     try {
       const account = unpackAccount(VOLTR_IDLE_ATA, idle, TOKEN_PROGRAM_ID);
@@ -279,7 +273,6 @@ export async function readVoltrPosition(
         idleAssetRaw = account.amount;
       }
     } catch {
-      // Unknown liquidity blocks claims but need not hide the position.
     }
   }
   const v = vault.data;

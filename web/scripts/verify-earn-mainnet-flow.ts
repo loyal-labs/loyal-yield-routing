@@ -68,26 +68,6 @@ import BN from "bn.js";
 
 mock.module("server-only", () => ({}));
 
-// Usage:
-// EARN_VERIFY_OFFLINE_POLICY=1 NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_PHASE=initial-deposit-from-clean EARN_VERIFY_DRY_RUN=1 bun scripts/verify-earn-mainnet-flow.ts
-//
-// op run --env-file=.env.mainnet.1password -- sh -c 'NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_PHASE=policy-resume-readiness EARN_VERIFY_DRY_RUN=1 EARN_VERIFY_WALLET_ADDRESS=DPGXnygHY5VpYqi8ceUK3rTNX8nKZ5N8fD3Hyd8pPFSS EARN_SETTINGS_PDA=EXKgiSsCERMNAAS46wvFkqUTMGb9FXvHYpfjryjLfLSr EARN_FIRST_DEPOSIT_RAW=700000000 bun scripts/verify-earn-mainnet-flow.ts'
-// op run --env-file=.env.mainnet.1password -- sh -c 'NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_PHASE=full-withdraw-cleanup EARN_VERIFY_DRY_RUN=1 bun scripts/verify-earn-mainnet-flow.ts'
-// op run --env-file=.env.mainnet.1password -- sh -c 'NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_PHASE=top-up-partial-smoke EARN_VERIFY_DRY_RUN=1 bun scripts/verify-earn-mainnet-flow.ts'
-// op run --env-file=.env.mainnet.1password -- sh -c 'NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_FRONTEND_BASE_URL=http://localhost:3000 EARN_VERIFY_PHASE=same-mint-frontend-sdk-live EARN_VERIFY_DRY_RUN=1 bun scripts/verify-earn-mainnet-flow.ts'
-// NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_PHASE=rpc-holdings-withdrawal-preview EARN_VERIFY_DRY_RUN=1 bun scripts/verify-earn-mainnet-flow.ts
-//
-// Approved live lifecycle:
-// op run --env-file=.env.mainnet.1password -- sh -c 'NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_PHASE=initial-deposit-then-withdraw-cleanup bun scripts/verify-earn-mainnet-flow.ts'
-// op run --env-file=.env.mainnet.1password -- sh -c 'NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_FRONTEND_BASE_URL=http://localhost:3000 EARN_VERIFY_PHASE=same-mint-frontend-sdk-live bun scripts/verify-earn-mainnet-flow.ts'
-// op run --env-file=.env.mainnet.1password -- sh -c 'NEXT_PUBLIC_SOLANA_ENV=mainnet EARN_VERIFY_FRONTEND_BASE_URL=http://localhost:3000 EARN_VERIFY_PHASE=source-lifecycle-withdrawals bun scripts/verify-earn-mainnet-flow.ts'
-//
-// Keep SOLANA_TESTING_PK and database/RPC secrets inside the op run subprocess.
-// Remove EARN_VERIFY_DRY_RUN only for an approved live lifecycle run. Dry-run
-// "all" is intentionally rejected because simulated cleanup cannot make the
-// current mainnet wallet clean for the following initial-deposit-from-clean
-// phase.
-
 type VerifyPhase =
   | "full-withdraw-cleanup"
   | "initial-deposit-from-clean"

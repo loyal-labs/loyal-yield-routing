@@ -402,9 +402,6 @@ type KaminoDepositInstructionResponse = {
     data?: unknown;
     programAddress?: unknown;
   }>;
-  // Kamino ships the address lookup tables that cover the reserve/market/farm
-  // accounts its instructions touch. Dropping them forces every one of those
-  // accounts inline and overruns the 1232-byte packet on multi-reserve exits.
   lutsByAddress?: unknown;
 };
 
@@ -821,7 +818,6 @@ async function getExistingAccountSet(args: {
       });
       return existing;
     } catch {
-      // Fall back to single-account reads below.
     }
   }
 
@@ -836,7 +832,6 @@ async function getExistingAccountSet(args: {
         existing.add(account.toBase58());
       }
     } catch {
-      // Missing account probes are best effort; unknown accounts are treated as missing.
     }
   }
 
@@ -872,7 +867,6 @@ async function getAccountInfoMap(args: {
       });
       return results;
     } catch {
-      // Fall back to single-account reads below.
     }
   }
 
@@ -909,8 +903,6 @@ async function estimateNativeSolRequirement(args: {
       commitment?: "confirmed"
     ) => Promise<{ blockhash: string }>;
   };
-  // One blockhash serves every prepared-transaction fee estimate; fetching it
-  // per estimate just multiplies round-trips.
   let latestBlockhashPromise: Promise<{ blockhash: string }> | null = null;
   const getSharedLatestBlockhash =
     typeof connectionWithBlockhash.getLatestBlockhash === "function"
@@ -922,8 +914,6 @@ async function estimateNativeSolRequirement(args: {
     args.balanceLamports === undefined &&
     args.checkBalance !== false &&
     typeof args.connection.getBalance === "function";
-  // The existing-account scan, fee estimates, and payer balance don't depend
-  // on each other — only the items assembly below needs them all.
   const [existingAccounts, feeLamportsByIndex, queriedBalanceLamports] =
     await Promise.all([
       getExistingAccountSet({
@@ -2648,12 +2638,6 @@ function readKaminoDepositInstruction(
   ).instruction;
 }
 
-// A non-OK response from Kamino's instruction API used to be a bare `Error`,
-// indistinguishable from a build/validation bug by anything upstream. Callers
-// need that distinction to decide whether retrying can help: a full exit fans
-// one of these calls out per reserve, so a single transient 5xx would
-// otherwise fail the whole prepare (ASK-1887). `status` is carried so the
-// caller — not this module — owns the retry policy.
 export class KaminoUpstreamError extends Error {
   readonly status: number;
 
@@ -2664,13 +2648,6 @@ export class KaminoUpstreamError extends Error {
   }
 }
 
-// Kamino instruction templates are a pure function of (wallet, market,
-// reserve, amount) over short horizons, so a small single-flight TTL cache
-// lets a UI prefetch absorb the API round-trip and dedupes back-to-back
-// prepares of the same request. Only the raw response is cached — every
-// caller re-parses it into fresh instruction objects, so cache hits never
-// share mutable state. A template that goes stale mid-TTL fails the same
-// validation/simulation it would have failed if fetched moments earlier.
 const KAMINO_INSTRUCTION_RESPONSE_TTL_MS = 45_000;
 const KAMINO_INSTRUCTION_RESPONSE_CACHE_MAX_ENTRIES = 8;
 const kaminoInstructionResponseCache = new Map<
@@ -2682,9 +2659,6 @@ function fetchKaminoInstructionResponseCached(
   cacheKey: string,
   load: () => Promise<KaminoInstructionResponse>
 ): Promise<KaminoInstructionResponse> {
-  // Only browser sessions benefit: that's where a prefetch precedes the
-  // prepare. Server processes get no cross-request reuse worth the staleness
-  // and test-isolation trade-offs.
   if (typeof window === "undefined") {
     return load();
   }
@@ -3135,13 +3109,6 @@ function createEarnFullWithdrawCleanupInstructions(args: {
     )
   );
 
-  // Refund the vault PDA's SOL on final exit. The first deposit tops the vault
-  // up with KAMINO_EARN_SETUP_RENT_BUFFER_LAMPORTS but the Kamino setup only
-  // spends part of it — without this sweep the remainder (~0.024 SOL) strands
-  // on the vault forever. The Kamino obligation and farms user-state rents are
-  // NOT recoverable: klend/kfarms have no close instructions; those accounts
-  // are reused by the wallet's next deposit. Amount is the prepare-time
-  // balance: anything that lands later stays as dust for the next exit.
   const vaultSweepLamports = args.vaultSweepLamports ?? BigInt(0);
   if (vaultSweepLamports > BigInt(0)) {
     instructions.push(
@@ -4484,13 +4451,6 @@ function compareProposalSnapshotsByRecency(
   return left.proposalAddress.localeCompare(right.proposalAddress);
 }
 
-// An account sitting at a derived autodeposit policy PDA is only safe to
-// adopt (setup) or close when it really is a subscription-sweep policy. A
-// stale Settings read can resolve a policy seed that collides with the
-// wallet's live Earn ROUTE policy — closing that one strands the wallet's
-// Earn funds behind `missing_earn_policy` (ASK-1802). Sweep policies are
-// ProgramInteraction policies whose every instruction constraint targets the
-// subscriptions program; route policies never do.
 function isSubscriptionSweepPolicy(policy: Policy): boolean {
   if (policy.policyState.__kind !== "ProgramInteraction") {
     return false;
@@ -5851,9 +5811,6 @@ export function createSmartAccountVaultsClient(
     });
   }
 
-  // Threshold-1, timeLock-0 accounts whose signer holds initiate+vote+execute
-  // can run the vault transfer in one executeTransactionSyncV2 instead of
-  // propose/approve/execute. The program rejects anything else on chain.
   async function prepareVaultTransferSync(args: {
     operation: string;
     settingsPda: PublicKey;
@@ -6809,10 +6766,6 @@ export function createSmartAccountVaultsClient(
     };
   }
 
-  // Policy creation and its control-plane confirmation cannot be atomic. The
-  // chain is therefore authoritative on every first-deposit/resume prepare:
-  // validate known deterministic PDAs directly, otherwise scan for a complete
-  // pair, and create only after authoritative reads prove the target absent.
   async function resolveEarnYieldRoutingPolicyForPreparation(args: {
     cluster: LoyalCluster;
     feePayer: PublicKey;
@@ -6919,9 +6872,6 @@ export function createSmartAccountVaultsClient(
         settingsPda: args.settingsPda,
         policySeed: Number(setupSeed),
       })[0];
-      // The settings, route-policy, and setup-policy reads are independent;
-      // fetching them concurrently keeps the common top-up prepare at one
-      // round-trip instead of three.
       const [settings, routeEntry, setupEntry] = await Promise.all([
         settingsPromise,
         fetchRawPolicyAtAddress({
@@ -6936,7 +6886,6 @@ export function createSmartAccountVaultsClient(
       const currentPolicySeed =
         settings.policySeed == null ? BigInt(0) : toBigInt(settings.policySeed);
       if (!routeEntry) {
-        // A confirmed exit can leave stale persistence; rediscover before creating anything.
         return resolveEarnYieldRoutingPolicyForPreparation({
           ...args,
           knownRoute: undefined,
@@ -7039,9 +6988,6 @@ export function createSmartAccountVaultsClient(
           constraint.programId.equals(target.lendProgramId)
         )
       ) {
-        // Not a route/setup candidate (e.g. an autodeposit sweep policy also
-        // touches this vault). Skip it — throwing here would brick deposits
-        // for every wallet that has any unrelated policy on the Earn vault.
         continue;
       }
 
@@ -7062,12 +7008,6 @@ export function createSmartAccountVaultsClient(
         setups.push(entry);
         continue;
       }
-      // Kamino-shaped but not canonical: a legacy-format pair created by an
-      // older client (seen live 2026-07-29: external routing service recreated
-      // a pair with a single-mint allowlist). Skip it so a fresh canonical
-      // pair can be created at the next seed — policies are permission
-      // records, not fund holders, so leaving the legacy pair behind only
-      // costs its rent. Log so drift stays visible.
       console.warn(
         `[smart-account-vaults] skipping non-canonical Earn policy ${entry.address.toBase58()} (seed ${seed.toString()}) during policy scan`
       );
@@ -7312,10 +7252,6 @@ export function createSmartAccountVaultsClient(
       });
     }
 
-    // No SpendingLimit policy exists for this vault yet (fresh vault). Bundle a
-    // PolicyCreate with the new signer so they can be authorized before the
-    // owner configures actual spend limits. Defaults to a zero-amount monthly
-    // SOL policy that the owner can edit later via the spending-limit flow.
     const flags = toPermissionFlags(requestedPermissions);
     if (flags.length === 0) {
       throw new Error("Signer must have at least one permission.");
@@ -7725,7 +7661,6 @@ export function createSmartAccountVaultsClient(
         wallet: vaultPda,
       });
     } catch {
-      // Prefetch must never surface errors.
     }
   }
 
@@ -7837,10 +7772,6 @@ export function createSmartAccountVaultsClient(
             settingsPda: args.settingsPda,
           });
     const earnPolicyPromise = resolveEarnPolicyForDeposit();
-    // Legacy route policies are valid for classic SPL Token deposits but
-    // cannot authorize Token-2022. Resolve that capability before asking
-    // Kamino to construct a deposit transaction so callers get the stable
-    // update-required result without any misleading transaction payload.
     const token2022PolicyPreflight = liquidityTokenProgram.equals(
       TOKEN_2022_PROGRAM_ID
     )
@@ -7866,8 +7797,6 @@ export function createSmartAccountVaultsClient(
 
           return reserveTokenAccounts;
         })());
-    // Validate caller funds, policy capability, and the selected reserve's
-    // on-chain owner/mint/program identity before constructing instructions.
     const [balanceLeg, policyLeg, reserveLeg] = await Promise.allSettled([
       assertWalletUsdcCoversDeposit(),
       token2022PolicyPreflight
@@ -8122,9 +8051,6 @@ export function createSmartAccountVaultsClient(
         usdcMint,
         liquidityTokenProgram
       ),
-      // The Kamino deposit CPI receives reserve collateral (cTokens) into the
-      // vault's collateral ATA, so it must exist and be Token-owned before the
-      // smart-account program validates the interaction. Create it idempotently.
       ...(inferredVaultCollateralAccounts
         ? [
             createAssociatedTokenAccountIdempotentInstruction(
@@ -8743,11 +8669,6 @@ export function createSmartAccountVaultsClient(
       false,
       liquidityTokenProgram
     );
-    // A vault can legitimately hold several stablecoins at once: the yield
-    // optimizer rebalances across mints and a user can deposit a second one. A
-    // full exit unwinds every one of them, but each approval stays single-mint,
-    // so every target resolves its own vault/wallet accounts instead of
-    // borrowing the top-level ones above.
     const resolveMintContext = (target: {
       liquidityMint: PublicKey;
       liquidityTokenProgram: PublicKey;
@@ -8827,9 +8748,6 @@ export function createSmartAccountVaultsClient(
           sourceType: args.source.type,
         }
       : undefined;
-    // A full exit can span several stablecoins. The autodeposit sweep only
-    // ever moves USDC, so close it whenever the exit unwinds USDC — not only
-    // when USDC is the mint the top-level target happens to name.
     const exitLiquidityMints =
       !idleSource && args.mode === "full" && args.fullWithdrawalTargets?.length
         ? args.fullWithdrawalTargets.map((target) => target.liquidityMint)
@@ -9024,11 +8942,6 @@ export function createSmartAccountVaultsClient(
         market.toBase58()
       )
     );
-    // Only a full exit spans mints. A single-source withdrawal pairs the
-    // source's mint with the TOP-LEVEL target's token program below, so those
-    // two must name the same mint — an ATA is derived per token program, so a
-    // mismatch would point at an account belonging to the other program. The
-    // single-mint assert used to cover this before mixed exits relaxed it.
     const isMixedMintExit = Boolean(
       args.mode === "full" && args.fullWithdrawalTargets?.length
     );
@@ -9086,12 +8999,6 @@ export function createSmartAccountVaultsClient(
           ? targetInput.vaultCollateralAta ?? null
           : null;
 
-      // A full exit spans mints ACROSS steps, so a target no longer has to
-      // match one liquidity mint. Two things must still hold: the resolved
-      // mint is one the caller requested (`resolveKaminoEarnTarget` falls back
-      // to the cluster default target), and every target for a mint agrees on
-      // that mint's token program — batching groups by mint and derives each
-      // step's vault/wallet accounts from it.
       const mintKey = target.liquidityMint.toBase58();
       if (!requestedLiquidityMints.has(mintKey)) {
         throw new Error(
@@ -9240,8 +9147,6 @@ export function createSmartAccountVaultsClient(
       obligation: PublicKey;
       target: KaminoEarnTarget;
     }): Promise<ProvisionalReserveWithdrawal[]> => {
-      // Every account this step touches belongs to the plan's own mint, not
-      // the top-level one: a mixed-mint exit runs one plan per mint.
       const {
         mint: planMint,
         tokenProgram: planTokenProgram,
@@ -9628,8 +9533,6 @@ export function createSmartAccountVaultsClient(
       return reserveWithdrawals;
     };
 
-    // Each mint keeps its own idle vault balance, so the final-exit remainder
-    // is read per mint; the lamport sweep stays one read for the vault PDA.
     const withdrawMintContexts = Array.from(
       new Map(
         withdrawPlans.map((plan) => {
@@ -9638,8 +9541,6 @@ export function createSmartAccountVaultsClient(
         })
       ).values()
     );
-    // The final-exit vault reads and the per-plan withdraw collection are
-    // independent; overlap them instead of reading the vault first.
     const [
       fullWithdrawVaultRemainderEntries,
       fullWithdrawVaultSweepLamports,
@@ -9677,8 +9578,6 @@ export function createSmartAccountVaultsClient(
     const reserveWithdrawalBatches =
       chunkReserveWithdrawals(reserveWithdrawals);
     const finalBatchIndex = reserveWithdrawalBatches.length - 1;
-    // Mint groups are contiguous, so the last batch carrying a mint is that
-    // mint's own final batch: where its vault/collateral ATAs get closed.
     const finalBatchIndexByMint = new Map<string, number>();
     reserveWithdrawalBatches.forEach((batch, index) => {
       finalBatchIndexByMint.set(
@@ -9709,8 +9608,6 @@ export function createSmartAccountVaultsClient(
         }
       }
       const batchMintKey = batchMint.toBase58();
-      // Each mint's own last batch closes that mint's vault and collateral
-      // ATAs; only the overall last batch sweeps the vault and closes policies.
       const isFinalBatchForMint =
         finalBatchIndexByMint.get(batchMintKey) === batchIndex;
       const batchAmountRaw = batch.reduce(
@@ -9729,11 +9626,6 @@ export function createSmartAccountVaultsClient(
         isFinalExit && isFinalBatchForMint
           ? fullWithdrawVaultRemainderByMint.get(batchMintKey) ?? BigInt(0)
           : BigInt(0);
-      // A prior full exit's cleanup closes the vault's USDC and collateral
-      // ATAs while sweeps/rebalances can still land funds afterwards; klend's
-      // withdraw requires both destination token accounts to exist, so
-      // recreate them idempotently. Non-ATA collateral accounts are skipped:
-      // they only pass instruction validation when they already exist.
       const vaultAtaSetupInstructions = [
         createAssociatedTokenAccountIdempotentInstruction(
           args.feePayer,
@@ -9942,8 +9834,6 @@ export function createSmartAccountVaultsClient(
           : isFinalBatchForMint
           ? batchVaultUsdcRemainderRaw + redeemedTransferAmountRaw
           : redeemedTransferAmountRaw;
-      // Close only THIS mint's collateral ATAs, in this mint's own final
-      // batch: another mint's reserves are still unwinding in a later step.
       const closeableCollateralAtas =
         isFinalExit && isFinalBatchForMint
           ? (
@@ -9990,8 +9880,6 @@ export function createSmartAccountVaultsClient(
           ? createEarnFullWithdrawCleanupInstructions({
               vaultCollateralAtas: uniqueCloseableCollateralAtas,
               vaultPda,
-              // Sweeping the vault is one-time final-exit work: it must run
-              // after the last mint's withdraw, not after each mint's.
               vaultSweepLamports: isFinalBatch ? vaultSweepLamports : BigInt(0),
               vaultUsdcAta: batchVaultAta,
               liquidityTokenProgram: batchTokenProgram,
@@ -10161,9 +10049,6 @@ export function createSmartAccountVaultsClient(
     const resolvedVaultCollateralAta = firstWithdrawStep.collateralAta;
     const prepared = firstWithdrawStep.prepared;
     const topLevelAccountingReserve = firstWithdrawStep.accountingReserve;
-    // The top-level summary describes the FIRST step, so its mint accounts
-    // must come from that step's target: on a mixed-mint exit the outer
-    // `usdcMint` is only the mint the requested top-level target named.
     const topLevelMintContext = resolveMintContext(
       reserveWithdrawalBatches[0]![0]!.target
     );
@@ -10275,10 +10160,6 @@ export function createSmartAccountVaultsClient(
       account.address.equals(vaultUsdcAta)
     );
 
-    // Same final-exit refund as the full-withdraw path: return the unspent
-    // Kamino setup buffer sitting on the vault PDA (see
-    // createEarnFullWithdrawCleanupInstructions for why the obligation and
-    // farms rents cannot be reclaimed).
     const vaultSweepLamports = await getVaultSweepLamportsOrZero(
       config.connection,
       vaultPda
@@ -10865,10 +10746,6 @@ export function createSmartAccountVaultsClient(
   type EarnAutodepositSetupAccountState = {
     delegationAccount: AccountInfo<Buffer> | null;
     policyAccountExists: boolean;
-    // The raw policy account when this run actually read it from RPC —
-    // undefined on the account-evidence fast path (the policy was created by
-    // an earlier stage of this same flow). Lets the collision guard validate
-    // without an extra fetch.
     policyAccountInfo?: AccountInfo<Buffer> | null;
     walletUsdcAtaAccount: AccountInfo<Buffer> | null;
     vaultUsdcAtaExists: boolean | undefined;
@@ -11219,14 +11096,6 @@ export function createSmartAccountVaultsClient(
     if (expectedSubscriptionAuthorityInitId === null) {
       throw new Error("Subscription authority init id is unavailable.");
     }
-    // The stage machine treats an existing account at the derived policy PDA
-    // as "policy stage done". When a stale Settings read resolves a colliding
-    // seed, that account is the wallet's live Earn ROUTE policy — adopting it
-    // half-lands the setup and later feeds the route policy to the close
-    // flow, which destroys the wallet's Earn access (ASK-1802). Only adopt an
-    // account that verifies as a sweep policy. (Skipped on the
-    // account-evidence fast path — an earlier stage of this flow created the
-    // policy, so there is nothing foreign to adopt.)
     if (accountState.policyAccountInfo) {
       const [existingPolicy] = Policy.fromAccountInfo(
         accountState.policyAccountInfo
@@ -11632,12 +11501,6 @@ export function createSmartAccountVaultsClient(
       settingsPda: args.settingsPda,
       accountIndex: EARN_DEPOSIT_VAULT_INDEX,
     })[0];
-    // The close input's `policy` travels through DB/state rows that a seed
-    // collision can leave pointing at the wallet's live Earn ROUTE policy
-    // (see the setup-stage guard). Closing that policy strands the wallet's
-    // Earn funds behind `missing_earn_policy` (ASK-1802), so verify the
-    // on-chain shape first. A missing account passes through — the close
-    // then only revokes the delegation and the token approval.
     const policyAccountInfo = await config.connection.getAccountInfo(
       args.policy
     );
@@ -11656,10 +11519,6 @@ export function createSmartAccountVaultsClient(
       policies: [args.policy],
       memo: args.memo,
     });
-    // A setup abandoned before its final stage leaves the policy on-chain with
-    // the recurring delegation never created; revoking the missing delegation
-    // fails simulation ("invalid account owner") and strands the close. Only
-    // revoke a delegation that actually exists.
     const delegationAccount = await config.connection.getAccountInfo(
       args.recurringDelegation
     );
@@ -11958,9 +11817,6 @@ export function createSmartAccountVaultsClient(
     );
   }
 
-  // Earn final-exit cleanup must tolerate policies a prior exit already closed
-  // on-chain (a stale DB pair can hand out dead accounts): closing nothing is
-  // success, not an error. Returns null when no listed policy exists anymore.
   async function prepareCloseLiveYieldRoutingPoliciesSync(
     args: SmartAccountClosePoliciesSyncInput
   ): Promise<PreparedLoyalSmartAccountsOperation<string> | null> {

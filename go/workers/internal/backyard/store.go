@@ -70,13 +70,6 @@ var errWriterSessionLost = errors.New("writer session lost")
 
 const writerLockKey = `hashtextextended('loyal-family:'||$1, 0)`
 
-// OpenDatabase opens the Backyard writer: one database session that takes
-// Backyard's one-writer lock (the family advisory lock) when it connects,
-// waiting while another process holds it, and keeps it for the session's life.
-// Every read and write of the engine goes through that session. The pool
-// never opens a second one: once the session ends, every later call fails with
-// errWriterSessionLost, the engine exits, and its supervisor restarts it into
-// a fresh wait.
 func OpenDatabase(ctx context.Context, databaseURL engine.DirectDSN) (*Database, error) {
 	return openWriter(ctx, string(databaseURL), true)
 }
@@ -101,8 +94,6 @@ func openWriter(ctx context.Context, databaseURL string, wait bool) (*Database, 
 	config.ConnConfig.BuildContextWatcherHandler = func(conn *pgconn.PgConn) ctxwatch.Handler {
 		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: 10 * time.Second}
 	}
-	// A failed checkout ping destroys the session; a dead one fails its next
-	// statement anyway.
 	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return false }
 	var dialed atomic.Bool
 	config.BeforeConnect = func(context.Context, *pgx.ConnConfig) error {

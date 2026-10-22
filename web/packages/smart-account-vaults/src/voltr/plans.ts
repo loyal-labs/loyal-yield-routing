@@ -23,8 +23,6 @@ import {
   withdrawVaultInstruction,
 } from "./program";
 
-/** `outer` is wallet-signed and runs first; `vault` runs as the index-2
- * smart-account vault inside one executeTransactionSyncV2. */
 export type VoltrPlan = {
   outer: TransactionInstruction[];
   vault: TransactionInstruction[];
@@ -138,7 +136,6 @@ export class VoltrClaimLiquidityError extends Error {
   }
 }
 
-/** Claim into the vault PDA's USDC account, then sweep it to the wallet. */
 export async function voltrClaimPlan(
   connection: Connection,
   { authority, owner }: PlanContext

@@ -17,17 +17,12 @@ export function compileToSynchronousMessageAndAccountsV2({
   instructions: Uint8Array;
   accounts: AccountMeta[];
 } {
-  // Compile instructions to get account mapping
   const compiledKeys = CompiledKeys.compileWithoutPayer(instructions);
 
-  // Get message components
   const [header, staticAccountKeys] = compiledKeys.getMessageComponents();
 
-  // Mark the vault as non-signer if it exists
-  // Create remaining accounts array starting with vault
   const remainingAccounts: AccountMeta[] = [];
 
-  // Add all other accounts
   staticAccountKeys.forEach((key, index) => {
     remainingAccounts.push({
       pubkey: key,
@@ -41,18 +36,14 @@ export function compileToSynchronousMessageAndAccountsV2({
     });
   });
 
-  // Mark the vault as non-signer if it exists
   if (remainingAccounts.find((acc) => acc.pubkey.equals(vaultPda))) {
     remainingAccounts.find((acc) => acc.pubkey.equals(vaultPda))!.isSigner =
       false;
   }
-  // Compile instructions with updated indices
   let args_buffer = Buffer.alloc(0);
 
-  // Insert instruction length as u8 as first byte
   args_buffer = Buffer.concat([Buffer.from([instructions.length])]);
 
-  // Serialize each instruction
   instructions.forEach((ix) => {
     const accounts = ix.keys.map((key) => {
       const index = remainingAccounts.findIndex((acc) =>
@@ -81,7 +72,6 @@ export function compileToSynchronousMessageAndAccountsV2({
       data: ix.data,
     });
 
-    // Concatenate the serialized instruction to the buffer
     args_buffer = Buffer.concat([args_buffer, serialized_ix]);
   });
 
@@ -116,17 +106,12 @@ export function compileToSynchronousMessageAndAccountsV2WithHooks({
   instructions: Uint8Array;
   accounts: AccountMeta[];
 } {
-  // Compile instructions to get account mapping
   const compiledKeys = CompiledKeys.compileWithoutPayer(instructions);
 
-  // Get message components
   const [header, staticAccountKeys] = compiledKeys.getMessageComponents();
 
-  // Mark the vault as non-signer if it exists
-  // Create remaining accounts array starting with vault
   const remainingAccounts: AccountMeta[] = [];
 
-  // Add all other accounts
   staticAccountKeys.forEach((key, index) => {
     remainingAccounts.push({
       pubkey: key,
@@ -140,18 +125,14 @@ export function compileToSynchronousMessageAndAccountsV2WithHooks({
     });
   });
 
-  // Mark the vault as non-signer if it exists
   if (remainingAccounts.find((acc) => acc.pubkey.equals(vaultPda))) {
     remainingAccounts.find((acc) => acc.pubkey.equals(vaultPda))!.isSigner =
       false;
   }
-  // Compile instructions with updated indices
   let args_buffer = Buffer.alloc(0);
 
-  // Insert instruction length as u8 as first byte
   args_buffer = Buffer.concat([Buffer.from([instructions.length])]);
 
-  // Serialize each instruction
   instructions.forEach((ix) => {
     const accounts = ix.keys.map((key) => {
       const index = remainingAccounts.findIndex((acc) =>
@@ -180,7 +161,6 @@ export function compileToSynchronousMessageAndAccountsV2WithHooks({
       data: ix.data,
     });
 
-    // Concatenate the serialized instruction to the buffer
     args_buffer = Buffer.concat([args_buffer, serialized_ix]);
   });
 
@@ -211,27 +191,21 @@ function serializeCompiledInstruction(ix: {
   accountIndexes: number[];
   data: Buffer | Uint8Array;
 }) {
-  // Create a buffer to hold the serialized instruction
   let buffer = Buffer.alloc(0);
 
-  // Add program id index (u8)
   buffer = Buffer.concat([buffer, Buffer.from([ix.programIdIndex])]);
 
   // SmallVec<u8, u8> for account indexes
   buffer = Buffer.concat([
     buffer,
-    // Length prefix as u8
     Buffer.from([ix.accountIndexes.length]),
-    // The account indexes
     Buffer.from(ix.accountIndexes),
   ]);
 
   // SmallVec<u16, u8> for data
   buffer = Buffer.concat([
     buffer,
-    // Length prefix as u16 (little endian)
     Buffer.from(new Uint16Array([ix.data.length]).buffer),
-    // The actual data bytes
     ix.data,
   ]);
 

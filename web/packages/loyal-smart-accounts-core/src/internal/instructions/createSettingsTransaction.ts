@@ -17,7 +17,6 @@ export function createSettingsTransaction({
   programId = PROGRAM_ID,
 }: {
   settingsPda: PublicKey;
-  /** Member of the multisig that is creating the transaction. */
   creator: PublicKey;
   /** Payer for the transaction account rent. If not provided, `creator` is used. */
   rentPayer?: PublicKey;
