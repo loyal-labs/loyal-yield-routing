@@ -74,7 +74,9 @@ test.skipIf(!databaseUrl)(
     await admin`
       INSERT INTO loyal_yield.vault_reserve_positions_current
         (vault_id, reserve, market, liquidity_mint, amount_raw, has_value, snapshot_id, observed_slot, observed_at, planning_metadata)
-      VALUES (${vault.id}, ${reserve}, 'market', ${mint}, 1000, true, ${snapshot.id}, 100, now(),
+      VALUES (${vault.id}, ${reserve}, 'market', ${mint}, 1000, true, ${
+      snapshot.id
+    }, 100, now(),
         ${admin.json({ amountSemantics: "kamino_redeemable_liquidity" })})`;
     await admin`
       INSERT INTO loyal_yield.user_yield_positions
@@ -82,7 +84,9 @@ test.skipIf(!databaseUrl)(
          policy_seed, initial_reserve, initial_liquidity_mint, deposit_mint, principal_amount_raw,
          first_deposit_signature, last_deposit_signature, last_confirmed_slot, status, created_at, updated_at,
          current_reserve, current_market, current_liquidity_mint, current_amount_raw, current_observed_slot, current_observed_at)
-      VALUES (${wallet}, ${settings}, ${settings}, 0, ${vaultPubkey}, ${policy.id}, ${`policy-${suffix}`}, 1, ${reserve}, ${mint}, ${mint},
+      VALUES (${wallet}, ${vaultPubkey}, ${settings}, 0, ${vaultPubkey}, ${
+      policy.id
+    }, ${`policy-${suffix}`}, 1, ${reserve}, ${mint}, ${mint},
         1000, ${`deposit-${suffix}`}, ${`deposit-${suffix}`}, 100, 'active', now(), now(),
         ${reserve}, 'market', ${mint}, 1000, 100, now())`;
 
@@ -105,7 +109,7 @@ test.skipIf(!databaseUrl)(
           policyId: BigInt(policy.id),
           policySeed: BigInt(1),
           settings,
-          smartAccountAddress: settings,
+          smartAccountAddress: vaultPubkey,
           sourceAmountRaw: BigInt(1000),
           sourceId: reserve,
           sourceType: "reserve",
