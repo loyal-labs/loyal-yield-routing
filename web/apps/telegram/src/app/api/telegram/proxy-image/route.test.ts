@@ -38,4 +38,10 @@ test("proxy-image refuses upstream responses that are not images", async () => {
     async () => new Response("<html></html>", { headers: { "content-type": "text/html" } })
   );
   expect(await status("https://t.me/some/page")).toBe(415);
+
+  spyOn(globalThis, "fetch").mockRestore();
+  spyOn(globalThis, "fetch").mockImplementation(
+    async () => new Response("<svg/>", { headers: { "content-type": "image/svg+xml" } })
+  );
+  expect(await status("https://t.me/a.svg")).toBe(415);
 });

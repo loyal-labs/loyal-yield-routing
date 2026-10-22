@@ -49,7 +49,10 @@ export async function GET(req: NextRequest) {
     }
 
     const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.startsWith("image/")) {
+    if (
+      !contentType.startsWith("image/") ||
+      contentType.startsWith("image/svg+xml")
+    ) {
       return NextResponse.json(
         { error: "Upstream is not an image" },
         { status: 415 }
