@@ -1,4 +1,4 @@
-package webapp
+package earnstats
 
 import (
 	"context"
@@ -25,7 +25,7 @@ type earnStatsUnavailable struct {
 func (e *earnStatsUnavailable) Error() string  { return e.Detail.Message }
 func (e *earnStatsUnavailable) GetStatus() int { return http.StatusServiceUnavailable }
 
-func RegisterAPI(api huma.API, appDB *pgxpool.Pool) {
+func Register(api huma.API, appDB *pgxpool.Pool) {
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		huma.Register(api, huma.Operation{
 			OperationID: method + "-earn-stats",
@@ -33,7 +33,7 @@ func RegisterAPI(api huma.API, appDB *pgxpool.Pool) {
 			Path:        "/api/earn/stats",
 			Summary:     "Public Loyal Earn statistics",
 		}, func(ctx context.Context, _ *struct{}) (*earnStatsOutput, error) {
-			stats, err := loadEarnPublicStats(ctx, appDB)
+			stats, err := Load(ctx, appDB)
 			if err != nil {
 				slog.Warn("earn stats unavailable")
 				unavailable := &earnStatsUnavailable{}

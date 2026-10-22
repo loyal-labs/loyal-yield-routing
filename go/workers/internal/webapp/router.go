@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnstats"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
 
@@ -35,7 +36,7 @@ func New(cfg Config) http.Handler {
 
 	api := humachi.New(r, apiConfig())
 	if cfg.AppDB != nil {
-		RegisterAPI(api, cfg.AppDB)
+		earnstats.Register(api, cfg.AppDB)
 	}
 	proxied := forward(cfg.Upstream)
 	r.Handle("/api/*", proxied)
@@ -112,6 +113,6 @@ func apiConfig() huma.Config {
 
 func OpenAPI() *huma.OpenAPI {
 	api := humachi.New(chi.NewRouter(), apiConfig())
-	RegisterAPI(api, nil)
+	earnstats.Register(api, nil)
 	return api.OpenAPI()
 }
