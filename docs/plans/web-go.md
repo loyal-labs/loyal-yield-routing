@@ -51,6 +51,9 @@ open and test. No DNS flip, no move off Vercel in this phase.
   some networks; deploy/hetzner/README.md, "Cloudflare tunnel").
 - `/api/observability/events` checks `Origin` against its own URL; the proxy
   must present a same-origin request's Origin as the upstream origin.
+- Wallet challenge and completion keep the browser's original `Origin`, so
+  SIWS names the public app even when Next is reached through a separate
+  backend hostname. Both requests must use the same origin.
 - `web/` packages ship from `dist/`: the app's build runs `build:packages`
   first, as apps/web's `prebuild` does.
 
