@@ -170,7 +170,7 @@ func requestBase(r *http.Request) *url.URL {
 func (a Auth) postLoginPath(value string, r *http.Request) string {
 	next, ok := SafeNextPath(value, requestBase(r))
 	if !ok || next == "/" {
-		return "/overview"
+		return landingPath
 	}
 	return next
 }
@@ -180,7 +180,7 @@ func loginRedirect(nextPath string, invalid bool) string {
 	if invalid {
 		query.Set("error", "invalid")
 	}
-	if nextPath != "" && nextPath != "/overview" {
+	if nextPath != "" && nextPath != landingPath {
 		query.Set("next", nextPath)
 	}
 	if len(query) == 0 {
@@ -191,10 +191,10 @@ func loginRedirect(nextPath string, invalid bool) string {
 
 func (a Auth) Login(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(1 << 20); err != nil && err != http.ErrNotMultipart {
-		http.Redirect(w, r, loginRedirect("/overview", true), http.StatusSeeOther)
+		http.Redirect(w, r, loginRedirect(landingPath, true), http.StatusSeeOther)
 		return
 	}
-	nextPath := "/overview"
+	nextPath := landingPath
 	if values, ok := r.PostForm["next"]; ok && len(values) > 0 {
 		nextPath = a.postLoginPath(values[0], r)
 	}
@@ -238,7 +238,7 @@ func (a Auth) Gate(next http.Handler) http.Handler {
 			}
 			destination, safe := SafeNextPath(r.URL.Query().Get("next"), requestBase(r))
 			if !safe || destination == "/" || destination == "/login" {
-				destination = "/overview"
+				destination = landingPath
 			}
 			a.setCookie(w, session.Sub)
 			http.Redirect(w, r, destination, http.StatusFound)

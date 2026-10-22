@@ -1,7 +1,7 @@
 // Admin load-time harness: signs in, then times every admin route from the browser.
 //
 //   ADMIN_USER=... ADMIN_PASSWORD=... bun scripts/web/admin-perf.ts <host> --set warm|cold|nav|rebalance-all \
-//     [--routes /overview,/earn] [--samples 5] [--param featureId=<id> --param communityId=<id>] \
+//     [--routes /earn/rebalance,/earn] [--samples 5] [--param communityId=<id>] \
 //     [--idle <seconds slept before this process, recorded only>] [--json out.json]
 //
 // warm: one browser, one sign-in, a discarded pass over the routes, then --samples (5) passes;
@@ -98,8 +98,8 @@ if (routes.length === 0) throw new Error(`no route matches --routes; known: ${al
 if (set === "cold" && routes.length !== 1) throw new Error("--set cold takes exactly one route per process");
 
 const navPairs: [string, string][] = [
-  ["/earn", "/overview"],
-  ["/overview", "/earn/rebalance"],
+  ["/earn", "/earn/rebalance"],
+  ["/earn/rebalance", "/vault-integrations/earn-max"],
   ["/metrics", "/earn"],
 ];
 
@@ -198,7 +198,7 @@ await context.route("**/*", (route) => {
 
 async function signIn(): Promise<void> {
   const page = await context.newPage();
-  await page.goto(`${host}/login?next=%2Foverview`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${host}/login`, { waitUntil: "domcontentloaded" });
   await page.fill('input[name="login"]', user ?? "");
   await page.fill('input[name="password"]', password ?? "");
   await Promise.all([page.waitForResponse((response) => new URL(response.url()).pathname === "/auth/login"), page.click('button[type="submit"]')]);

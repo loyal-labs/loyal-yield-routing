@@ -55,9 +55,9 @@ export async function middleware(request: NextRequest) {
     const requestedNextPath = request.nextUrl.searchParams.get("next");
     const safeNextPath = getSafeNextPath(requestedNextPath, request.url);
     const destinationCandidate =
-      !safeNextPath || safeNextPath === "/" ? "/overview" : safeNextPath;
+      !safeNextPath || safeNextPath === "/" ? "/earn" : safeNextPath;
     const destination =
-      destinationCandidate === "/login" ? "/overview" : destinationCandidate;
+      destinationCandidate === "/login" ? "/earn" : destinationCandidate;
 
     return renewSession(
       NextResponse.redirect(new URL(destination, request.url), {

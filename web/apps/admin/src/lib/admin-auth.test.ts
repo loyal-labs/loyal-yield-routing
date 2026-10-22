@@ -27,7 +27,7 @@ describe("admin next path validation", () => {
         "https://admin.example/login"
       )
     ).toBe("/communities?page=2#latest");
-    expect(isSafeNextPath("/overview", "https://admin.example/login")).toBe(
+    expect(isSafeNextPath("/earn", "https://admin.example/login")).toBe(
       true
     );
   });

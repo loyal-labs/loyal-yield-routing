@@ -2,7 +2,6 @@ import {
   AddressLink,
   ShortAddressText,
 } from "@/components/blockchain/address-link";
-import { PageContainer } from "@/components/layout/page-container";
 import { SectionHeader } from "@/components/layout/section-header";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -73,13 +72,13 @@ function actionKind(action: string) {
   return action.replaceAll("_", " ");
 }
 
-export default function BackyardVaultPage(props: BackyardVaultProps) {
+export function BackyardVault(props: BackyardVaultProps) {
   const data = backyardVaultData(props);
 
   return (
-    <PageContainer className="max-w-6xl space-y-6">
+    <>
       <SectionHeader
-        breadcrumbs={[{ label: "Vault integrations" }, { label: "Backyard" }]}
+        breadcrumbs={[]}
         subtitle="Read-only view of the Voltr vault, its bound Squads smart account, and the Backyard RWA worker projection."
         title="Backyard vault"
       />
@@ -305,7 +304,7 @@ export default function BackyardVaultPage(props: BackyardVaultProps) {
           </Card>
         </>
       )}
-    </PageContainer>
+    </>
   );
 }
 

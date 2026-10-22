@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/chart";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import type { AutodepositTimeSeriesRangeKey } from "../earn/rebalance/rebalance-data";
+import type { AutodepositTimeSeriesRangeKey } from "./rebalance-data";
 
 export type SerializedAutodepositTimeSeriesPoint = {
   bucketStartedAt: string;

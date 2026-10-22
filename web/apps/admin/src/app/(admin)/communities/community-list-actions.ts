@@ -54,7 +54,6 @@ export async function setCommunityActiveStatus(
 
   revalidateTag(communityTag(communityId));
   revalidateTag(CACHE_TAGS.communitiesList);
-  revalidateTag(CACHE_TAGS.overview);
   revalidatePath(`/communities/${communityId}`);
 
   return { success: true };

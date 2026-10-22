@@ -59,6 +59,7 @@ type EarnMaxPart[T any] struct {
 
 type EarnMaxPage struct {
 	Apy       EarnMaxPart[EarnMaxApy]          `json:"apy"`
+	Backyard  BackyardPage                     `json:"backyard"`
 	Balances  EarnMaxPart[EarnMaxBalances]     `json:"balances"`
 	Borrowing EarnMaxPart[[]EarnMaxBorrowRow]  `json:"borrowing"`
 	Health    EarnMaxPart[EarnMaxHealth]       `json:"health"`
@@ -1031,6 +1032,7 @@ func earnMaxLoadBorrowing(ctx context.Context) ([]EarnMaxBorrowRow, error) {
 
 func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, error) {
 	page := EarnMaxPage{LoadedAt: readsISO(time.Now())}
+	var backyardErr error
 	sharePrice := sync.OnceValues(func() (float64, error) { return earnMaxSharePrice(ctx) })
 	var wg sync.WaitGroup
 	run := func(load func()) {
@@ -1040,6 +1042,7 @@ func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, erro
 			load()
 		}()
 	}
+	run(func() { page.Backyard, backyardErr = loadBackyard(ctx, d) })
 	run(func() { page.Route = earnMaxPart(func() (EarnMaxRoute, error) { return earnMaxLoadRoute(ctx, d) }) })
 	run(func() {
 		page.NavSeries = earnMaxPart(func() ([]EarnMaxNavPoint, error) { return earnMaxLoadNavSeries(ctx, d) })
@@ -1061,7 +1064,7 @@ func loadEarnMax(ctx context.Context, d *Deps, _ PageRequest) (EarnMaxPage, erro
 		page.Borrowing = earnMaxPart(func() ([]EarnMaxBorrowRow, error) { return earnMaxLoadBorrowing(ctx) })
 	})
 	wg.Wait()
-	return page, nil
+	return page, backyardErr
 }
 
 func registerEarnMax(m *Mux) {

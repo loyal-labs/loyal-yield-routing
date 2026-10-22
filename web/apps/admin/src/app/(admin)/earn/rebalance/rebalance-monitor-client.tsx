@@ -47,7 +47,12 @@ import type {
 
 import { SafeReserveApyChart } from "../safe-reserve-apy-chart";
 import {
+  AutodepositActivityChart,
+  type SerializedAutodepositTimeSeriesPoint,
+} from "./autodeposit-activity-chart";
+import {
   AutodepositFailuresChart,
+  type SerializedAutodepositFailurePoint,
   type SerializedAutodepositFailureRange,
 } from "./autodeposit-failures-chart";
 import {
@@ -61,6 +66,10 @@ import {
   type SerializedExecutedEarnRebalanceRow,
 } from "./executed-earn-rebalances-chart";
 import { Last30DaysRebalanceChart } from "./last-30-days-rebalance-chart";
+import {
+  OptimizationVolumeChart,
+  type SerializedOptimizationVolumePoint,
+} from "./optimization-volume-chart";
 import { RebalanceActivityChart } from "./rebalance-activity-chart";
 import type {
   EarnActiveReserveRouteRow,
@@ -110,10 +119,19 @@ type SerializedRebalanceActivityPoint = Omit<
   swapFeeLamports: string;
 };
 
+type SerializedAutodepositRange = Omit<
+  SerializedAutodepositFailureRange,
+  "points"
+> & {
+  points: Array<
+    SerializedAutodepositFailurePoint & SerializedAutodepositTimeSeriesPoint
+  >;
+};
+
 type RebalanceApiData = {
   activity: SerializedRebalanceActivityPoint[];
   apyData: SafeReserveApyMonitorData;
-  autodeposit: SerializedAutodepositFailureRange[];
+  autodeposit: SerializedAutodepositRange[];
   decisions: SerializedRebalanceDecisionRow[];
   executedRebalances: SerializedExecutedEarnRebalanceHistory;
   initialAudit: AuditApiData;
@@ -1690,6 +1708,9 @@ type RebalanceOperationsWireData = Pick<
   RebalanceApiWireData,
   "activity" | "autodeposit" | "last30DaysRebalances"
 >;
+type RebalanceVolumeWireData = {
+  optimizationVolume: SerializedOptimizationVolumePoint[];
+};
 type RebalanceExecutionsWireData = Pick<
   RebalanceApiWireData,
   "executedRebalances"
@@ -1807,6 +1828,7 @@ function ProgressiveSection<T>({
     "rebalance-frequency": "h-[48rem]",
     "rebalance-operations": "min-h-[44rem]",
     "rebalance-overview": "h-[42rem]",
+    "rebalance-volume": "h-[26rem]",
   };
   const reservedHeight =
     section.status === "idle" || section.status === "loading"
@@ -1840,6 +1862,10 @@ function ProgressiveSection<T>({
 
 function OperationsFallback() {
   return <Skeleton className="h-[44rem] w-full" />;
+}
+
+function VolumeFallback() {
+  return <Skeleton className="h-[26rem] w-full" />;
 }
 
 function ExecutionsFallback() {
@@ -1936,6 +1962,9 @@ export function RebalanceMonitorClient() {
   );
   const operations = useProgressiveSection<RebalanceOperationsWireData>(
     "/api/earn/rebalance?section=operations"
+  );
+  const volume = useProgressiveSection<RebalanceVolumeWireData>(
+    "/api/earn/rebalance?section=volume"
   );
   const executions = useProgressiveSection<RebalanceExecutionsWireData>(
     "/api/earn/rebalance?section=executions"
@@ -2172,6 +2201,15 @@ export function RebalanceMonitorClient() {
         ) : null}
       </ProgressiveSection>
       <ProgressiveSection
+        fallback={<VolumeFallback />}
+        name="rebalance-volume"
+        section={volume}
+      >
+        {volume.data ? (
+          <OptimizationVolumeChart data={volume.data.optimizationVolume} />
+        ) : null}
+      </ProgressiveSection>
+      <ProgressiveSection
         fallback={<ExecutionsFallback />}
         name="rebalance-executions"
         section={executions}
@@ -2199,17 +2237,19 @@ export function RebalanceMonitorClient() {
           />
         ) : null}
       </ProgressiveSection>
-      <div className={`grid gap-6 ${operationsData ? "" : "min-h-[52rem]"}`}>
+      <div className={`grid gap-6 ${operationsData ? "" : "min-h-[84rem]"}`}>
         {operationsData ? (
           <>
             <Last30DaysRebalanceChart
               data={operationsData.last30DaysRebalances}
             />
+            <AutodepositActivityChart data={operationsData.autodeposit} />
             <AutodepositFailuresChart data={operationsData.autodeposit} />
           </>
         ) : (
           <>
             <Skeleton className="h-[26rem] w-full" />
+            <Skeleton className="h-[30rem] w-full" />
             <Skeleton className="h-[25rem] w-full" />
           </>
         )}

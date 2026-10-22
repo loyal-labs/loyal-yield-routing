@@ -60,7 +60,7 @@ export default function CommunityPage({
       <SectionHeader
         title={community.chatTitle}
         breadcrumbs={[
-          { label: "Community", href: "/" },
+          { label: "Community", href: "/communities" },
           { label: community.chatTitle },
         ]}
         subtitle={`Telegram ID: ${String(community.chatId)}`}

@@ -14,7 +14,7 @@ function getPostLoginPath(
 ) {
   const safeNextPath = getSafeNextPath(nextPathValue, requestUrl);
   if (!safeNextPath || safeNextPath === "/") {
-    return "/overview";
+    return "/earn";
   }
 
   return safeNextPath;
@@ -29,7 +29,7 @@ function getLoginRedirectUrl(
   if (error) {
     url.searchParams.set("error", error);
   }
-  if (nextPath && nextPath !== "/overview") {
+  if (nextPath && nextPath !== "/earn") {
     url.searchParams.set("next", nextPath);
   }
   return url;
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
   const nextPath =
     typeof nextPathValue === "string"
       ? getPostLoginPath(nextPathValue, request.url)
-      : "/overview";
+      : "/earn";
 
   if (typeof login !== "string" || typeof password !== "string") {
     return NextResponse.redirect(

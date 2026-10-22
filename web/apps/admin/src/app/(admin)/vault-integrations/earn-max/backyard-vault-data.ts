@@ -1,6 +1,6 @@
 import type { Pages } from "@/api.gen/pages";
 
-export type BackyardVaultProps = Pages["/vault-integrations/backyard"];
+export type BackyardVaultProps = Pages["/vault-integrations/earn-max"]["backyard"];
 
 type OperationRow = BackyardVaultProps["history"][number];
 type VaultSettings = BackyardVaultProps["settings"];
