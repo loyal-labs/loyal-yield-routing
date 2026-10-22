@@ -28,6 +28,7 @@ type Config struct {
 	EarnMax     *EarnMax
 	PushDB      bool
 	ContentDB   bool
+	StatsDB     bool
 	Dist        fs.FS
 	Environment string
 

@@ -145,7 +145,7 @@ func granted(ctx context.Context, pool *pgxpool.Pool, routes string, grants []we
 	return false
 }
 
-type grantVerdicts struct{ Content, Session, EarnMax, Push, Yield bool }
+type grantVerdicts struct{ Content, Stats, Session, EarnMax, Push, Yield bool }
 
 func checkGrants(ctx context.Context, appDB, yieldDB *pgxpool.Pool) grantVerdicts {
 	ctx, cancel := context.WithTimeout(ctx, grantBound)
