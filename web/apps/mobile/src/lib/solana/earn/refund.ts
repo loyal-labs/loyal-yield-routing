@@ -10,12 +10,6 @@ export type EarnRefundResult = {
   signature: string;
 };
 
-// Execute one rent refund (a dead policy, a revoked recurring delegation, or
-// the closed vault's leftover SOL + token-account rents). The backend
-// re-verifies that the target is not in active use before preparing; the
-// device wallet is the fee payer and the refund destination, so it signs and
-// sends. Nothing is recorded server-side — the refund lands as plain SOL in
-// the wallet, and the caller rescans to drop the row.
 export async function executeEarnRefund(args: {
   signer: Signer;
   request: EarnRefundPrepareRequest;

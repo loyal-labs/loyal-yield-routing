@@ -35,7 +35,6 @@ function getNative(): NativeSyncedKeychain | null {
   return cached;
 }
 
-/** True when the running binary contains the native module (iOS only). */
 export function isAvailable(): boolean {
   return getNative() != null;
 }

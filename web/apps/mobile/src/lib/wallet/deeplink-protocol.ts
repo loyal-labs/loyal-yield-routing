@@ -30,17 +30,12 @@ export type DeeplinkMethod =
   | "signTransaction"
   | "signAllTransactions";
 
-/** Everything needed to encrypt/decrypt and authorize follow-up requests. */
 export type DeeplinkConnectResult = {
-  /** Base58 Solana public key the user approved. */
   walletPublicKey: string;
-  /** Opaque session token the wallet requires on every subsequent method. */
   session: string;
-  /** Base58 nacl.box shared secret derived from the wallet's x25519 key. */
   sharedSecret: string;
 };
 
-/** The wallet answered with an error instead of a payload. */
 export class DeeplinkResponseError extends Error {
   constructor(
     readonly errorCode: string,
@@ -86,8 +81,6 @@ type TweetNacl = {
   randomBytes(length: number): Uint8Array;
 };
 
-// Lazy-loaded so tweetnacl's Buffer access never runs at module top-level
-// (same pattern as signer.ts).
 async function getNacl(): Promise<TweetNacl> {
   const mod = (await import("tweetnacl")) as unknown as {
     box?: TweetNaclBox;
@@ -101,7 +94,6 @@ async function getNacl(): Promise<TweetNacl> {
   throw new Error("tweetnacl box is unavailable");
 }
 
-/** New x25519 keypair for a connect handshake, both halves base58-encoded. */
 export async function generateDappKeypair(): Promise<{
   publicKey: string;
   secretKey: string;
@@ -138,10 +130,6 @@ export function buildConnectUrl(args: {
   return `${DEEPLINK_BASE_URLS[args.provider]}/connect?${query}`;
 }
 
-/**
- * Encrypt `payload` and build the universal link for any post-connect method.
- * A fresh random nonce per request, as the spec requires.
- */
 export async function buildRequestUrl(args: {
   provider: DeeplinkWalletProvider;
   method: Exclude<DeeplinkMethod, "connect">;
@@ -177,14 +165,12 @@ function param(
   return undefined;
 }
 
-/** Throw the wallet's error response, if the redirect carries one. */
 export function throwIfErrorResponse(params: Record<string, unknown>): void {
   const errorCode = param(params, "errorCode");
   if (errorCode === undefined) return;
   throw new DeeplinkResponseError(errorCode, param(params, "errorMessage") ?? "");
 }
 
-/** Decrypt the `data` param of an approve response and parse it as JSON. */
 export async function decryptResponseData(
   params: Record<string, unknown>,
   sharedSecret: string,
@@ -213,10 +199,6 @@ export async function decryptResponseData(
   return parsed as Record<string, unknown>;
 }
 
-/**
- * Handle a connect redirect: derive the shared secret from the wallet's
- * x25519 public key + our secret key, then decrypt the session grant.
- */
 export async function parseConnectResponse(args: {
   provider: DeeplinkWalletProvider;
   params: Record<string, unknown>;

@@ -71,8 +71,7 @@ export function CardsThree({
             <CardView
               card={card}
               index={i}
-              // biome-ignore lint/suspicious/noArrayIndexKey: cards are positionally meaningful
-              key={i}
+              key={card.title}
               variant={variant}
             />
           ))}

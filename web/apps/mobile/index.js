@@ -14,8 +14,6 @@ if (typeof globalThis.__loyalMobileAppStartedAtMs !== "number") {
   globalThis.__loyalMobileAppStartedAtMs = Date.now();
 }
 
-// Polyfills must load before any route module evaluation.
 require("./src/polyfills");
 
-// Standard expo-router entry
 require("expo-router/entry");

@@ -4,14 +4,11 @@ import { NextResponse } from "next/server";
 import { MOBILE_DISTINCT_ID_PREFIX } from "@loyal-labs/shared";
 
 import { getOptionalEnv } from "@/lib/core/config/shared";
+import { claimPushCampaignSend } from "@/lib/push-notifications/push-campaign-send-log.server";
 import {
   MIXPANEL_COHORT_CAMPAIGNS,
   sendWalletPush,
 } from "@/lib/push-notifications/wallet-push.server";
-import {
-  getYieldOptimizationClient,
-  pushCampaignSends,
-} from "@/lib/yield-optimization/yield-neon-client.server";
 
 // Mixpanel Custom Webhook receiver for the ASK-1651 P2/P3 push cohorts.
 // Mixpanel syncs each connected cohort every ~30 minutes, POSTing
@@ -133,7 +130,6 @@ export async function POST(request: Request) {
       ? String(rawCohortId)
       : null;
 
-  const db = getYieldOptimizationClient().db;
   let sent = 0;
   let deduped = 0;
   const queue = [...wallets];
@@ -141,15 +137,11 @@ export async function POST(request: Request) {
     const chunk = queue.splice(0, SEND_CONCURRENCY);
     await Promise.all(
       chunk.map(async (walletAddress) => {
-        // Insert-first sent-log: at-most-once per (wallet, campaign). If the
-        // send itself fails after the insert, it is not retried — pushes are
-        // best-effort.
-        const inserted = await db
-          .insert(pushCampaignSends)
-          .values({ campaign, cohortId, walletAddress })
-          .onConflictDoNothing()
-          .returning({ id: pushCampaignSends.id });
-        if (inserted.length === 0) {
+        // If the send itself fails after the insert, it is not retried —
+        // pushes are best-effort.
+        if (
+          !(await claimPushCampaignSend({ campaign, cohortId, walletAddress }))
+        ) {
           deduped += 1;
           return;
         }

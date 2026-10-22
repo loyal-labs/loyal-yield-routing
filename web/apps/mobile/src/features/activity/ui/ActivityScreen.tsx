@@ -26,8 +26,6 @@ import { TAB_BAR_HEIGHT } from "@/components/TabBar";
 // switch for seconds even though the data is already loaded. Render a page at a
 // time and grow as the user scrolls toward the bottom (infinite scroll).
 const EARN_PAGE_SIZE = 20;
-// Start loading the next page this many px before the end so it's ready by the
-// time the user reaches it (no visible gap).
 const EARN_LOAD_AHEAD_PX = 600;
 
 export function ActivityScreen({
@@ -47,7 +45,7 @@ export function ActivityScreen({
     earnTransactions,
     loadWalletTransactions,
     refreshEarnTransactions,
-    refreshAutodeposit,
+    refreshAutodepositAndHoldings,
     markSeen,
     clearSweepMorph,
   } = useActivity();
@@ -65,34 +63,22 @@ export function ActivityScreen({
   const isSwitching = deferredSection !== section;
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Deep links (e.g. landing here right after setting up an Autodeposit) select
-  // a section via route param; honor it when it changes without fighting manual
-  // taps afterwards.
   useEffect(() => {
     if (initialSection) {
       setSection(initialSection);
     }
   }, [initialSection]);
 
-  // Viewing a section clears its dot. Re-runs when the active section changes
-  // or new items arrive while the screen is focused, so it stays cleared.
   useFocusEffect(
     useCallback(() => {
       if (section === "earn-max") markMaxSeen();
       else markSeen(section);
-      // The provider fetches Autodeposit state once at mount, so a sweep
-      // scheduled afterwards (e.g. landing here right after setup) wouldn't show
-      // until something refetches it. Re-read it whenever the Earn section is
-      // focused so the "Scheduled" row appears without a manual pull.
       if (section === "earn") {
-        void refreshAutodeposit();
+        void refreshAutodepositAndHoldings();
       }
-    }, [section, markSeen, markMaxSeen, refreshAutodeposit])
+    }, [section, markSeen, markMaxSeen, refreshAutodepositAndHoldings])
   );
 
-  // Once the user leaves the Activity screen, retire any sweep-execution morph so
-  // its result tx settles back into its normal date group on the next visit.
-  // Separate from the section effect above so toggling segments doesn't drop it.
   useFocusEffect(
     useCallback(() => {
       return () => clearSweepMorph();
@@ -134,7 +120,7 @@ export function ActivityScreen({
       await (section === "earn-max"
         ? refreshMax()
         : section === "earn"
-        ? Promise.all([refreshEarnTransactions(), refreshAutodeposit()])
+        ? Promise.all([refreshEarnTransactions(), refreshAutodepositAndHoldings()])
         : loadWalletTransactions({ force: true }));
     } finally {
       setIsRefreshing(false);
@@ -144,7 +130,7 @@ export function ActivityScreen({
     refreshMax,
     loadWalletTransactions,
     refreshEarnTransactions,
-    refreshAutodeposit,
+    refreshAutodepositAndHoldings,
   ]);
 
   return (

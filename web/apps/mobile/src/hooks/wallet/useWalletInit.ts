@@ -80,7 +80,6 @@ export function useWalletInit(): {
     const alreadyLoadedForCurrentKey = loadedForKeyRef.current === publicKey;
     const hasWalletAddressInState = walletAddress === publicKey;
 
-    // Skip if already loaded for this key (unless retrying)
     if (
       alreadyLoadedForCurrentKey &&
       retryCount === 0 &&

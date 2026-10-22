@@ -3,7 +3,12 @@ import type { Metadata } from "next";
 import { LandingFooter } from "@/components/landing-footer";
 import { LandingHeader } from "@/components/landing-header";
 import { LandingScrollAnimations } from "@/components/landing-scroll-animations";
-import { BlogCard, BlogPagination, getBlogPosts } from "@/features/blog";
+import {
+  BlogCard,
+  BlogPagination,
+  blogPostModifiedDate,
+  getBlogPosts,
+} from "@/features/blog";
 
 const PAGE_TITLE = "Blog | Loyal";
 const PAGE_DESCRIPTION =
@@ -94,7 +99,7 @@ export default async function BlogPage({
       headline: post.title,
       url: `https://askloyal.com/blog/${post.slug}`,
       datePublished: post.date,
-      dateModified: post.updated ?? post.date,
+      dateModified: blogPostModifiedDate(post),
       image: `https://askloyal.com${post.hero}`,
       ...(post.description ? { description: post.description } : {}),
       ...(post.author ? { author: { "@type": "Person", name: post.author.name } } : {}),

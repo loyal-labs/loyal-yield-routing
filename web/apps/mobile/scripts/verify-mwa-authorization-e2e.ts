@@ -112,7 +112,6 @@ async function waitFor<T>(
       const value = await read();
       if (value) return value;
     } catch {
-      /* retry */
     }
     await Bun.sleep(500);
   }
@@ -125,7 +124,6 @@ function executable(candidates: string[], label: string): string {
       accessSync(candidate, constants.X_OK);
       return candidate;
     } catch {
-      /* next */
     }
   }
   throw new Error(`${label} executable was not found.`);

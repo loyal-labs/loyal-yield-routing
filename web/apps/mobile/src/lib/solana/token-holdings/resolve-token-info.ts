@@ -10,7 +10,6 @@ import type { TokenHolding } from "./types";
 type TokenIconSource = {
   mint: string;
   imageUrl?: string | null;
-  // Preferred source: normalized PNG/JPG from /api/mobile/tokens/:mint
   detailLogoUrl?: string | null;
 };
 

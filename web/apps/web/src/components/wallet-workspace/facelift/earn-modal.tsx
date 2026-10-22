@@ -1,7 +1,7 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import type { LucideIcon } from "lucide-react";
-import { useEffect } from "react";
 
 import { SheetReveal } from "@/components/wallet-workspace/facelift/sheet-reveal";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
@@ -35,21 +35,7 @@ export function EarnModal({
   title: string;
   withMascot?: boolean;
 }) {
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        // Marks the press handled so page-level Esc handlers stay put while
-        // this overlay is up.
-        event.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  useEscapeOverlay(isOpen, onClose);
 
   return (
     <SheetReveal

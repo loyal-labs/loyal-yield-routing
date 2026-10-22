@@ -32,7 +32,6 @@ mock.module("@/lib/core/database", () => ({
 }));
 
 mock.module("../active-community-cache", () => ({
-  evictActiveCommunityCache: () => {},
   resolveActiveBotCommunityId: (db: unknown, chatId: bigint) =>
     resolveActiveBotCommunityIdImpl(db, chatId),
 }));

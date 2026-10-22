@@ -81,9 +81,6 @@ function EarnTransactionRow({ item }: { item: EarnTransactionItem }) {
   );
 }
 
-// A pending Autodeposit "bootstrap" sweep (Figma 74:18455): wallet surplus the
-// backend will move into Earn after its window, with an "Execute now" shortcut
-// to run it immediately. Funds flow Main -> Earn, so it shows the deposit icon.
 function EarnScheduledRow({
   sweep,
   isExecuting,
@@ -94,12 +91,7 @@ function EarnScheduledRow({
   sweep: EarnAutodepositScheduledSweep;
   isExecuting: boolean;
   onExecute: () => void;
-  // True once the sweep has been kicked off and we're waiting on its result tx,
-  // even after it drops out of the live pending list — keeps the row showing
-  // "Executing…" (disabled) instead of falling back to "Execute now".
   forceExecuting?: boolean;
-  // Granular in-flight state from the progress poll (null when unavailable) —
-  // upgrades "Executing…" to "Depositing…" once the worker confirmed the pull.
   progressState?: string | null;
 }) {
   const awaiting = forceExecuting || isScheduledSweepAwaitingExecution(sweep);
@@ -177,44 +169,6 @@ function EarnScheduledRow({
   );
 }
 
-// Placeholder mirroring EarnScheduledRow's geometry, shown the instant the user
-// lands here after creating an Autodeposit — the provider's own Autodeposit
-// read is still catching up, and an empty slot reads as "nothing happened".
-function EarnScheduledSkeletonRow() {
-  return (
-    <View className="flex-row items-start px-4 py-2.5">
-      <View
-        className="h-12 w-12 rounded-full"
-        style={{ backgroundColor: "#f2f2f7" }}
-      />
-      <View className="ml-3 flex-1">
-        <View
-          className="h-4 w-28 rounded"
-          style={{ backgroundColor: "#f2f2f7" }}
-        />
-        <View
-          className="mt-1.5 h-3.5 w-40 rounded"
-          style={{ backgroundColor: "#f2f2f7" }}
-        />
-        <View
-          className="mt-2 h-[30px] w-28 rounded-full"
-          style={{ backgroundColor: "#f2f2f7" }}
-        />
-      </View>
-      <View className="ml-3 items-end">
-        <View
-          className="h-4 w-16 rounded"
-          style={{ backgroundColor: "#f2f2f7" }}
-        />
-        <View
-          className="mt-1 h-3 w-20 rounded"
-          style={{ backgroundColor: "#f2f2f7" }}
-        />
-      </View>
-    </View>
-  );
-}
-
 function formatRefundSol(lamports: number): string {
   return (lamports / 1e9).toFixed(4).replace(/\.?0+$/, "");
 }
@@ -225,8 +179,6 @@ const REFUND_SUBTITLES: Record<EarnRefundItem["kind"], string> = {
   vault: "Earn account rent",
 };
 
-// A refundable closed Earn account: rent we can return to the
-// wallet. Funds flow Earn -> Main, so it shows the withdraw icon.
 function EarnRefundRow({
   item,
   isRefunding,
@@ -270,12 +222,6 @@ function EarnRefundRow({
   );
 }
 
-// Rent the refund scan reports as blocked by the wallet's Autodeposit — it
-// becomes refundable the moment the Autodeposit is deleted. When that close
-// can run from here (paused Autodeposit), the row offers Delete directly: the
-// Earn tab's own Delete control only renders once a deposit exists, so for
-// the position-closed wallets this rent strands on, this row is the only
-// reachable surface.
 function EarnLockedRefundRow({
   lamports,
   canDelete,
@@ -323,11 +269,6 @@ function EarnLockedRefundRow({
   );
 }
 
-// The backend paused the Autodeposit because a full withdrawal closed the
-// Earn position it sweeps into (nothing can execute until a deposit recreates
-// it, at which point it resumes by itself). Purely informational, like
-// EarnLockedRefundRow — without it the feed just goes quiet and users report
-// the Autodeposit as stuck.
 function EarnAutodepositPausedRow() {
   return (
     <View className="flex-row items-start px-4 py-2.5">
@@ -350,11 +291,6 @@ function EarnAutodepositPausedRow() {
 
 const noop = () => {};
 
-// Renders an executed sweep morphing in place into its result tx. Holds the
-// "executing" face (Scheduled header + executing row) until the worker's
-// `balance_sweep` tx lands, then cross-dissolves to that tx row: fade out → swap
-// content while invisible (so the height change between the tall executing row
-// and the short tx row doesn't jump) → fade back in.
 function SweepMorphSection({
   morph,
   isRequesting,
@@ -386,8 +322,6 @@ function SweepMorphSection({
   const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
 
   return (
-    // `layout` animates the height collapse when the tall executing row swaps for
-    // the short result row, so the feed below glides up instead of snapping.
     <Animated.View style={animatedStyle} layout={LinearTransition.duration(260)}>
 
       {showResult && morph.resultTx ? (
@@ -423,7 +357,6 @@ export function EarnActivityList({ limit }: { limit: number }) {
     earnScheduledSweeps,
     isExecutingSweep,
     executeScheduledSweep,
-    expectingScheduledSweep,
     autodepositPausedMissingPosition,
     sweepMorph,
     sweepProgressState,
@@ -435,19 +368,10 @@ export function EarnActivityList({ limit }: { limit: number }) {
     deletingAutodeposit,
     deleteAutodepositForRefund,
   } = useActivity();
-  // While a morph is in progress it owns the top slot (the executed sweeps), so
-  // suppress the live "Scheduled" section to avoid rendering the same row twice.
   const hasScheduled = !sweepMorph && earnScheduledSweeps.length > 0;
   const hasRefunds = earnRefunds.length > 0;
   const hasLockedRefunds = earnLockedRefundLamports > 0;
-  // A just-created Autodeposit's sweep is on its way but the provider's read
-  // hasn't caught up — hold its slot with a skeleton so the user who was just
-  // routed here sees the row forming instead of an unchanged feed.
-  const showScheduledSkeleton =
-    expectingScheduledSweep && !hasScheduled && !sweepMorph;
 
-  // Skeleton only on the cold load (before the first fetch settles). Background
-  // 15s polls keep the feed fresh without flashing the skeleton on each tick.
   if (
     !hasLoadedEarn &&
     earnTransactions.length === 0 &&
@@ -455,8 +379,7 @@ export function EarnActivityList({ limit }: { limit: number }) {
     !sweepMorph &&
     !hasRefunds &&
     !hasLockedRefunds &&
-    !autodepositPausedMissingPosition &&
-    !showScheduledSkeleton
+    !autodepositPausedMissingPosition
   ) {
     return (
       <View className="px-4">
@@ -498,8 +421,7 @@ export function EarnActivityList({ limit }: { limit: number }) {
     !sweepMorph &&
     !hasRefunds &&
     !hasLockedRefunds &&
-    !autodepositPausedMissingPosition &&
-    !showScheduledSkeleton
+    !autodepositPausedMissingPosition
   ) {
     return (
       <View className="items-center px-4 py-12">
@@ -516,9 +438,6 @@ export function EarnActivityList({ limit }: { limit: number }) {
     );
   }
 
-  // The morph renders the result tx itself (pinned at the top), so drop it from
-  // the date groups to avoid showing it twice. Filter before slicing so it
-  // doesn't consume a render-window slot.
   const morphResultId = sweepMorph?.resultTx?.id;
   const groupedTxns = morphResultId
     ? earnTransactions.filter((tx) => tx.id !== morphResultId)
@@ -580,16 +499,6 @@ export function EarnActivityList({ limit }: { limit: number }) {
               progressState={sweepProgressState}
             />
           ))}
-        </View>
-      ) : showScheduledSkeleton ? (
-        <View>
-          <Text
-            className="px-4 pb-2 pt-3 text-[17px]"
-            style={{ color: SECONDARY, letterSpacing: -0.187 }}
-          >
-            Scheduled
-          </Text>
-          <EarnScheduledSkeletonRow />
         </View>
       ) : null}
       {groups.map((group) => (

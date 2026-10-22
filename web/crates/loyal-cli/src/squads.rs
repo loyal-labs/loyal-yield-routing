@@ -173,22 +173,18 @@ struct SmartAccountMessageAddressTableLookupBytes {
 }
 
 #[derive(BorshSerialize)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
 enum CreateTransactionArgs {
-    #[allow(dead_code)]
-    TransactionPayload(TransactionPayload),
-    PolicyPayload {
-        payload: PolicyPayload,
-    },
+    PolicyPayload { payload: PolicyPayload } = 1,
 }
 
 #[derive(BorshSerialize)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
 enum PolicyPayload {
-    #[allow(dead_code)]
-    InternalFundTransfer,
-    ProgramInteraction(ProgramInteractionPayload),
-    SpendingLimit(SpendingLimitPayload),
-    #[allow(dead_code)]
-    SettingsChange,
+    ProgramInteraction(ProgramInteractionPayload) = 1,
+    SpendingLimit(SpendingLimitPayload) = 2,
 }
 
 #[derive(BorshSerialize)]

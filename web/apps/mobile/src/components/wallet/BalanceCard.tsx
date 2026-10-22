@@ -22,9 +22,7 @@ type BalanceCardProps = {
   onRetry?: () => void;
   showTopUpAction?: boolean;
   onTopUpPress?: () => void;
-  /** id of the active balance background (null = no image). */
   balanceBg?: string | null;
-  /** Hide brush button until preference has been hydrated. */
   bgLoaded?: boolean;
   onOpenBgPicker?: () => void;
 };
@@ -91,8 +89,6 @@ export function BalanceCard({
 
   const showSkeleton = isLoading || solBalanceLamports === null;
 
-  // Headline balance — the full portfolio in USD (Figma 141:5879 shows no SOL,
-  // and renders the cents smaller than the dollars on the same baseline).
   const formattedBalance = usdBalance.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -150,7 +146,6 @@ export function BalanceCard({
           </View>
         ) : (
           <View className="h-full justify-between p-4">
-            {/* Wallet address */}
             <View className="gap-0.5">
               {isLoading || !walletAddress ? (
                 <>
@@ -181,7 +176,6 @@ export function BalanceCard({
               )}
             </View>
 
-            {/* Balance */}
             <View className="gap-1">
               {showSkeleton ? (
                 <View className="gap-2">

@@ -135,9 +135,6 @@ export function EarnBalanceCard({
               disabled={depositDisabled}
               style={({ pressed }) => [
                 styles.depositButton,
-                // Full-width on the empty hero (split half-and-half with
-                // Refund SOL when refunds exist); stays content-width beside
-                // Withdraw once a deposit exists (per Figma 3883:18293).
                 !hasDeposit || fullWidthActions
                   ? styles.depositButtonFull
                   : null,
@@ -227,18 +224,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
   },
-  // Footer content wrapped by the swipe-to-open gesture; keeps the original
-  // 8px rhythm between handle, balance, and action buttons.
   footerInner: {
     gap: 8,
   },
-  // Top drag handle on the funded footer — taps open the positions sheet
-  // (Figma 74:20241 / 75:33852).
   handleHit: {
     alignItems: "center",
     justifyContent: "center",
-    // Generous strip so the handle is easy to tap or swipe up, even though the
-    // visible pill stays small.
     paddingTop: 8,
     paddingBottom: 10,
   },
@@ -276,9 +267,6 @@ const styles = StyleSheet.create({
     lineHeight: 48,
     color: COLOR_BALANCE_DIM,
   },
-  // Stand-in for the balance number while it loads. Sized to the 48px line box
-  // (36 + 6 + 6) so swapping in the real figure doesn't shift the layout. Tint
-  // comes from Skeleton's light-surface default (this card is white).
   balanceSkeleton: {
     height: 36,
     width: 150,
@@ -317,8 +305,6 @@ const styles = StyleSheet.create({
     backgroundColor: COLOR_WITHDRAW_BG,
     overflow: "hidden",
   },
-  // Refund SOL beside Deposit on the empty hero — Withdraw's pill without the
-  // icon, splitting the action row half-and-half.
   refundActionButton: {
     flex: 1,
     alignItems: "center",

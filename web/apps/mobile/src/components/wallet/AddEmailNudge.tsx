@@ -12,7 +12,6 @@ import { Text, View } from "@/tw";
 
 const DISMISSED_KEY = "loyal:add-email-nudge-dismissed";
 
-/** Email from any linked email/Google/Apple account, or null. */
 export function privyEmail(user: PrivyUser | null): string | null {
   for (const a of user?.linked_accounts ?? []) {
     if (a.type === "email") return a.address;
@@ -23,8 +22,6 @@ export function privyEmail(user: PrivyUser | null): string | null {
   return null;
 }
 
-// One-time nudge for users who reached Privy through a wallet (migration or
-// wallet sign-in) and have no email to recover with on a new phone.
 export function AddEmailNudge() {
   if (!isPrivyConfigured()) return null;
   return <Inner />;
@@ -58,7 +55,6 @@ function Inner() {
   );
 }
 
-/** Inline email + code entry that links an email to the current Privy user. */
 export function LinkEmailForm({ onLinked }: { onLinked?: () => void } = {}) {
   const { sendCode, linkWithCode } = useLinkEmail();
   const [email, setEmail] = useState("");

@@ -1,5 +1,4 @@
 import {
-  BottomSheetBackdrop,
   BottomSheetModal,
   BottomSheetScrollView,
   BottomSheetTextInput,
@@ -23,14 +22,8 @@ import {
   TextInput,
 } from "react-native";
 import Animated, {
-  cancelAnimation,
-  Easing,
   useAnimatedKeyboard,
   useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withSpring,
-  withTiming,
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -67,16 +60,28 @@ import type { TokenDetailsByMint } from "@/hooks/wallet/useTokenDetails";
 import { useWallet } from "@/lib/wallet/wallet-provider";
 import { Pressable, Text, View } from "@/tw";
 
+import {
+  focusInputAfterSheetSettles,
+  formatAmountInputDisplay,
+  formatSolAmount,
+  formatTokenAmount,
+  formatUsdAmount,
+  formatWithCommas,
+  MascotReveal,
+  presentSheetWhenOpen,
+  SendingSpinner,
+  SheetBackdrop,
+  solscanExplorerUrl,
+  stripAmountInput,
+  truncateAmountTo6Decimals,
+  useCaretBlink,
+  useSheetSettledRefocus,
+} from "@/components/sheets/sheetFacts";
+
 import SwapCurrencyIcon from "../../../assets/images/icons/swap_currency_28.svg";
 import SendErrorDog from "../../../assets/images/wallet/send_error_dog.svg";
-import SendSpinnerIcon from "../../../assets/images/wallet/send_spinner_80.svg";
 import SendSuccessDog from "../../../assets/images/wallet/send_success_dog.svg";
 
-// Fixed-height sheet (mirrors SendSheet). A fixed height is what lets each
-// step's `flex-1` regions size + center correctly and keeps the footer pinned.
-// Height and snap point come from useFixedSheetLayout — the same pixel value
-// for both, so the box can never overshoot the visible sheet (it did on
-// iPad/notched iPhones when this was screen-height math vs a "94%" snap).
 const DEFAULT_SOL_MAX_FEE_RESERVE_LAMPORTS = 50_000;
 
 type SwapStep = "form" | "confirm" | "result";
@@ -129,35 +134,6 @@ function getFriendlyError(raw: string): string {
   return raw;
 }
 
-// Number formatting + amount-field helpers, mirrored from SendSheet so the Swap
-// amount field behaves identically (thousands separators, mid-typing dot, etc.).
-function formatWithCommas(
-  value: number,
-  minFrac: number,
-  maxFrac: number
-): string {
-  const safe = Number.isFinite(value) ? value : 0;
-  const [intPart, fracPartRaw = ""] = safe.toFixed(maxFrac).split(".");
-  let fracPart = fracPartRaw;
-  while (fracPart.length > minFrac && fracPart.endsWith("0")) {
-    fracPart = fracPart.slice(0, -1);
-  }
-  const withCommas = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return fracPart ? `${withCommas}.${fracPart}` : withCommas;
-}
-
-function formatTokenAmount(value: number, minFrac = 2): string {
-  return formatWithCommas(value, minFrac, 4);
-}
-
-function formatUsdAmount(value: number): string {
-  return `$${formatWithCommas(value, 2, 2)}`;
-}
-
-function formatSolAmount(value: number): string {
-  return formatWithCommas(value, 0, 6);
-}
-
 function formatLamportsAsSol(lamports: number): string {
   return formatSolAmount(lamports / 1_000_000_000);
 }
@@ -201,28 +177,6 @@ function formatUnitPrice(price: number | null | undefined): string {
   return price >= 1
     ? `$${formatWithCommas(price, 2, 2)}`
     : `$${formatWithCommas(price, 2, 5)}`;
-}
-
-function stripAmountInput(input: string): string {
-  let cleaned = input.replace(/[^0-9.]/g, "");
-  const parts = cleaned.split(".");
-  if (parts.length > 2) {
-    cleaned = `${parts[0]}.${parts.slice(1).join("")}`;
-  }
-  const [intPart, decPart] = cleaned.split(".");
-  const normalizedInt = intPart ? intPart.replace(/^0+(?=\d)/, "") : intPart;
-  return decPart !== undefined
-    ? `${normalizedInt || "0"}.${decPart}`
-    : normalizedInt;
-}
-
-function formatAmountInputDisplay(raw: string): string {
-  if (!raw) return "";
-  const trailingDot = raw.endsWith(".") && !raw.slice(0, -1).includes(".");
-  const [intPart, decPart] = raw.split(".");
-  const intText = formatWithCommas(Number(intPart || "0"), 0, 0);
-  if (trailingDot) return `${intText}.`;
-  return decPart !== undefined ? `${intText}.${decPart}` : intText;
 }
 
 function resolveInitialSwapMints(params: {
@@ -294,10 +248,6 @@ export function SwapSheet({
   const [step, setStep] = useState<SwapStep>("form");
   const [fromMint, setFromMint] = useState(NATIVE_SOL_MINT);
   const [toMint, setToMint] = useState(getDefaultUsdcMint);
-  // Holds the full token object for a "to" selection that isn't in the user's
-  // holdings or the popular list (e.g. a Jupiter search result), so the form
-  // can still display it. Without this, picking a searched token leaves
-  // toHolding null and the selector falls back to the "Select" placeholder.
   const [selectedToToken, setSelectedToToken] = useState<TokenHolding | null>(
     null
   );
@@ -344,8 +294,6 @@ export function SwapSheet({
     (selectedToToken?.mint === toMint ? selectedToToken : null);
 
   const fromPrice = fromHolding?.priceUsd ?? null;
-  // `amountStr` is the value as typed in the active denomination; the quote and
-  // every downstream check operate on the token amount, so derive it here.
   const amountInput = parseFloat(amountStr) || 0;
   const amountNum =
     currencyMode === "USD"
@@ -357,10 +305,11 @@ export function SwapSheet({
   const isValidAmount = amountNum > 0 && amountNum <= fromBalance;
   const isFormValid = isValidAmount && !!quote && fromMint !== toMint;
 
-  // Reset state on open/close transitions. Other inputs are intentionally
-  // read at open time — re-running mid-flight would clobber the result step
-  // after onSwapComplete refreshes holdings.
+  const prevOpenRef = useRef<boolean | null>(null);
   useEffect(() => {
+    const wasOpen = prevOpenRef.current;
+    prevOpenRef.current = open;
+    if (wasOpen === open) return;
     if (open) {
       const initialMints = resolveInitialSwapMints({
         initialFromMint,
@@ -368,7 +317,7 @@ export function SwapSheet({
         holdings: tokenHoldings,
         toPickerTokens,
       });
-      bottomSheetRef.current?.present();
+      presentSheetWhenOpen(bottomSheetRef.current, open);
       setStep("form");
       setFromMint(initialMints.fromMint);
       setToMint(initialMints.toMint);
@@ -386,10 +335,9 @@ export function SwapSheet({
       setShowFromPicker(false);
       setShowToPicker(false);
     } else {
-      bottomSheetRef.current?.dismiss();
+      presentSheetWhenOpen(bottomSheetRef.current, open);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, initialFromMint, initialToMint, tokenHoldings, toPickerTokens]);
 
   const feeEstimateFlowKey = useMemo(
     () =>
@@ -405,7 +353,6 @@ export function SwapSheet({
     lastSuccessfulFeeEstimateStateRef.current
   );
 
-  // Fetch quote when amount/tokens change
   useEffect(() => {
     if (amountNum <= 0 || fromMint === toMint || !fromHolding) {
       lastSuccessfulFeeEstimateStateRef.current = null;
@@ -519,8 +466,6 @@ export function SwapSheet({
     };
   }, [feeEstimateConnection, feeEstimateFlowKey, feeEstimateKey]);
 
-  // Focus the amount input once the sheet has settled at its snap point.
-  // Focusing during the present animation pushes the keyboard above the sheet.
   const focusActiveInput = useCallback(() => {
     if (step === "form" && !showFromPicker && !showToPicker) {
       swapInputRef.current?.focus();
@@ -530,20 +475,11 @@ export function SwapSheet({
   const handleSheetChange = useCallback(
     (index: number) => {
       sheetSettledRef.current = index >= 0;
-      if (index >= 0) {
-        setTimeout(focusActiveInput, 120);
-      }
+      focusInputAfterSheetSettles(focusActiveInput, index);
     },
     [focusActiveInput]
   );
-
-  // Re-focus the right input on step / picker transitions (the sheet is
-  // already settled, so `onChange` won't fire again).
-  useEffect(() => {
-    if (!sheetSettledRef.current) return;
-    const id = setTimeout(focusActiveInput, 80);
-    return () => clearTimeout(id);
-  }, [focusActiveInput]);
+  useSheetSettledRefocus(sheetSettledRef, focusActiveInput);
 
   const outAmount = useMemo(() => {
     if (!quote || !toHolding) return null;
@@ -566,7 +502,6 @@ export function SwapSheet({
       Number.isFinite(fromHolding.priceUsd) &&
       fromHolding.priceUsd > 0
     ) {
-      // Fallback to input-side USD estimate when output token price is unavailable.
       return amountNum * fromHolding.priceUsd;
     }
     return null;
@@ -614,7 +549,6 @@ export function SwapSheet({
   const handleMax = useCallback(() => {
     if (!fromHolding) return;
     let val = fromBalance;
-    // Reserve the network fee when maxing out SOL.
     const feeReserveSol =
       feeEstimateState.status === "success"
         ? feeEstimateState.estimate.totalLamports / 1_000_000_000
@@ -625,8 +559,7 @@ export function SwapSheet({
     ) {
       val = Math.max(0, fromBalance - feeReserveSol);
     }
-    // Truncate (never round) so float rounding can't push past the balance.
-    const truncated = Math.floor(val * 1e6) / 1e6;
+    const truncated = truncateAmountTo6Decimals(val);
     if (truncated <= 0) {
       setAmountStr("");
     } else if (currencyMode === "USD" && fromPrice && fromPrice > 0) {
@@ -655,9 +588,6 @@ export function SwapSheet({
       const txBuf = Buffer.from(swapTxResponse.swapTransaction, "base64");
       const transaction = VersionedTransaction.deserialize(txBuf);
       if (!signer) throw new Error("Wallet signer is not available");
-      // The dedicated review step already confirms the swap, so sign directly
-      // — no extra decoded-transaction approval modal. (Seed Vault wallets
-      // still get their own native biometric prompt.)
       await signer.signTransaction(transaction);
 
       const connection = getConnection();
@@ -693,18 +623,6 @@ export function SwapSheet({
     bottomSheetRef.current?.dismiss();
     onClose();
   }, [onClose]);
-
-  const renderBackdrop = useCallback(
-    (props: React.ComponentProps<typeof BottomSheetBackdrop>) => (
-      <BottomSheetBackdrop
-        {...props}
-        disappearsOnIndex={-1}
-        appearsOnIndex={0}
-        opacity={0.3}
-      />
-    ),
-    []
-  );
 
   const selectFromToken = useCallback(
     (mint: string) => {
@@ -747,7 +665,7 @@ export function SwapSheet({
       snapPoints={snapPoints}
       enableDynamicSizing={false}
       enablePanDownToClose={step !== "result" || !isSwapping}
-      backdropComponent={renderBackdrop}
+      backdropComponent={SheetBackdrop}
       onDismiss={onClose}
       onChange={handleSheetChange}
       handleComponent={null}
@@ -860,7 +778,6 @@ export function SwapSheet({
   );
 }
 
-// --- Swap token pill (You swap / You receive selector) ---
 function SwapTokenPill({
   holding,
   detailLogoUrl,
@@ -918,7 +835,6 @@ function SwapTokenPill({
   );
 }
 
-// --- Helpers ---
 function popularToHolding(p: PopularToken): TokenHolding {
   return {
     mint: p.mint,
@@ -932,7 +848,6 @@ function popularToHolding(p: PopularToken): TokenHolding {
   };
 }
 
-// --- Token Picker ---
 function TokenPicker({
   mode,
   title,
@@ -955,7 +870,6 @@ function TokenPicker({
   const [isSearching, setIsSearching] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Local filter
   const localFiltered = useMemo(() => {
     const base = tokenHoldings;
     if (!search.trim()) return base;
@@ -968,7 +882,6 @@ function TokenPicker({
     );
   }, [tokenHoldings, search]);
 
-  // Debounced Jupiter search for "to" mode
   useEffect(() => {
     if (mode !== "to" || !searchTokens || search.trim().length < 2) {
       setJupiterResults([]);
@@ -999,7 +912,6 @@ function TokenPicker({
     };
   }, [search, mode, searchTokens, tokenHoldings]);
 
-  // Merge local + Jupiter results (deduplicated)
   const displayTokens = useMemo(() => {
     if (mode !== "to" || jupiterResults.length === 0) return localFiltered;
     const localMints = new Set(localFiltered.map((t) => t.mint));
@@ -1009,7 +921,6 @@ function TokenPicker({
 
   return (
     <View className="w-full">
-      {/* Toolbar: circular back + centered title */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1044,7 +955,6 @@ function TokenPicker({
         </View>
       </View>
 
-      {/* Search */}
       <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
         <View
           className="flex-row items-center"
@@ -1075,14 +985,11 @@ function TokenPicker({
         </View>
       </View>
 
-      {/* Token list */}
       {displayTokens.map((token) => {
         const icon = getTokenIcon(
           token,
           tokenDetailsByMint?.[token.mint]?.token.logoUrl
         );
-        // "To" picker chooses what to receive → show the unit price. "From"
-        // picker chooses from holdings → show held balance + its USD value.
         const subLabel =
           mode === "to"
             ? token.symbol
@@ -1142,7 +1049,6 @@ function TokenPicker({
         );
       })}
 
-      {/* Searching indicator */}
       {isSearching ? (
         <View
           className="flex-row items-center justify-center"
@@ -1174,7 +1080,6 @@ function TokenPicker({
   );
 }
 
-// --- Form Step ---
 function FormStep({
   onClose,
   fromHolding,
@@ -1229,18 +1134,8 @@ function FormStep({
   const fromSymbol = fromHolding?.symbol ?? "";
   const toBalance = toHolding?.balance ?? 0;
 
-  // Custom blinking caret — the real input's caret is hidden (it's a
-  // transparent overlay over the formatted amount). Mirrors SendSheet.
   const [isFocused, setIsFocused] = useState(false);
-  const [caretOn, setCaretOn] = useState(true);
-  useEffect(() => {
-    if (!isFocused) {
-      setCaretOn(true);
-      return;
-    }
-    const id = setInterval(() => setCaretOn((v) => !v), 530);
-    return () => clearInterval(id);
-  }, [isFocused]);
+  const caretOn = useCaretBlink(isFocused);
 
   const swapDisplay = formatAmountInputDisplay(amountStr) || "0";
   const swapBig = currencyMode === "USD" ? `$${swapDisplay}` : swapDisplay;
@@ -1255,9 +1150,6 @@ function FormStep({
 
   const labelStyle = { color: "rgba(60,60,67,0.6)", lineHeight: 20 } as const;
 
-  // CTA state. No amount → dim "Enter amount" (translucent-black fill so the
-  // label stays crisp white); over balance → light-red "Insufficient balance";
-  // valid + quote ready → solid-black "Review".
   const hasAmount = amountNum > 0;
   const overBalance = hasAmount && amountNum > fromBalance;
   let ctaLabel = "Enter amount";
@@ -1278,7 +1170,6 @@ function FormStep({
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Header */}
       <View style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1313,9 +1204,7 @@ function FormStep({
         </View>
       </View>
 
-      {/* Body */}
       <View style={{ flex: 1, paddingHorizontal: 16 }}>
-        {/* You swap */}
         <View style={{ paddingVertical: 10 }}>
           <Text className="text-[15px] font-normal" style={labelStyle}>
             You swap
@@ -1425,7 +1314,6 @@ function FormStep({
           </View>
         </View>
 
-        {/* Divider + flip */}
         <View
           style={{ height: 28, alignItems: "center", justifyContent: "center" }}
         >
@@ -1456,7 +1344,6 @@ function FormStep({
           </Pressable>
         </View>
 
-        {/* You receive */}
         <View style={{ paddingVertical: 12 }}>
           <Text className="text-[15px] font-normal" style={labelStyle}>
             You receive
@@ -1503,7 +1390,6 @@ function FormStep({
         </View>
       </View>
 
-      {/* CTA — pinned to the sheet bottom and rides up with the keyboard. */}
       <Animated.View
         style={[
           {
@@ -1589,7 +1475,6 @@ function ConfirmStep({
 
   return (
     <View style={{ flex: 1 }}>
-      {/* Header */}
       <View style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1624,7 +1509,6 @@ function ConfirmStep({
         </View>
       </View>
 
-      {/* Token pair */}
       <View
         className="flex-row"
         style={{ paddingHorizontal: 16, paddingVertical: 8 }}
@@ -1646,7 +1530,6 @@ function ConfirmStep({
         />
       </View>
 
-      {/* Amounts */}
       <View style={{ paddingHorizontal: 24, paddingBottom: 20, gap: 4 }}>
         <View className="flex-row items-baseline" style={{ gap: 8 }}>
           <Text
@@ -1686,7 +1569,6 @@ function ConfirmStep({
         ) : null}
       </View>
 
-      {/* Rate / slippage / fee */}
       <View style={{ paddingHorizontal: 16 }}>
         <View
           style={{
@@ -1719,7 +1601,6 @@ function ConfirmStep({
 
       <View style={{ flex: 1 }} />
 
-      {/* Footer */}
       <View
         style={{
           paddingHorizontal: 20,
@@ -1874,50 +1755,6 @@ function ConfirmRow({
   );
 }
 
-// Continuously rotating red spinner arc, shown while the swap is in flight.
-function SwappingSpinner() {
-  const rotation = useSharedValue(0);
-  useEffect(() => {
-    rotation.value = withRepeat(
-      withTiming(360, { duration: 900, easing: Easing.linear }),
-      -1,
-      false
-    );
-    return () => cancelAnimation(rotation);
-  }, [rotation]);
-  const style = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${rotation.value}deg` }],
-  }));
-  return (
-    <Animated.View style={[{ width: 80, height: 80 }, style]}>
-      <SendSpinnerIcon width={80} height={80} />
-    </Animated.View>
-  );
-}
-
-// Mascot entrance: rapid zoom-in with a spring overshoot (bounce) + fade-in.
-function MascotReveal({ children }: { children: React.ReactNode }) {
-  const scale = useSharedValue(0.3);
-  const opacity = useSharedValue(0);
-  useEffect(() => {
-    opacity.value = withTiming(1, {
-      duration: 160,
-      easing: Easing.out(Easing.quad),
-    });
-    scale.value = withSpring(1, { damping: 8, stiffness: 220, mass: 0.6 });
-    return () => {
-      cancelAnimation(scale);
-      cancelAnimation(opacity);
-    };
-  }, [scale, opacity]);
-  const style = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ scale: scale.value }],
-  }));
-  return <Animated.View style={style}>{children}</Animated.View>;
-}
-
-// --- Result Step ---
 function ResultStep({
   isSwapping,
   swapError,
@@ -1938,9 +1775,7 @@ function ResultStep({
   const toSymbol = toHolding?.symbol ?? "";
 
   const explorerUrl = txSignature
-    ? `https://solscan.io/tx/${txSignature}${
-        getSolanaEnv() === "mainnet" ? "" : `?cluster=${getSolanaEnv()}`
-      }`
+    ? solscanExplorerUrl(txSignature)
     : null;
 
   const title =
@@ -1952,7 +1787,6 @@ function ResultStep({
 
   return (
     <View className="w-full" style={{ flex: 1 }}>
-      {/* Toolbar */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1987,14 +1821,13 @@ function ResultStep({
         </View>
       </View>
 
-      {/* Centered status: mascot/spinner + copy */}
       <View
         className="flex-1 items-center justify-center"
         style={{ paddingHorizontal: 32, paddingVertical: 24 }}
       >
         <View className="w-full items-center" style={{ gap: 20 }}>
           {status === "swapping" ? (
-            <SwappingSpinner />
+            <SendingSpinner />
           ) : status === "success" ? (
             <MascotReveal>
               <SendSuccessDog width={100} height={80} />
@@ -2044,7 +1877,6 @@ function ResultStep({
         </View>
       </View>
 
-      {/* Footer: Done + (when available) View transaction */}
       <View
         style={{
           backgroundColor: "#fff",

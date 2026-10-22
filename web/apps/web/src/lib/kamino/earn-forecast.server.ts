@@ -14,10 +14,9 @@ import {
   loadEarnAllocationHistory,
   loadReserveSharePriceHistories,
 } from "./earn-reserve-share-price-repository.server";
-import {
-  FALLBACK_EARN_FORECAST,
-  type EarnForecastApyHistoryResponse,
-  type EarnForecastResponse,
+import type {
+  EarnForecastApyHistoryResponse,
+  EarnForecastResponse,
 } from "./earn-forecast.shared";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
 
@@ -35,7 +34,6 @@ export const KAMINO_MAIN_MARKET_USDC_MINT =
 const REALIZED_STRATEGY = "realized_7d_share_price";
 const REALIZED_METRIC = "realized_7d_apy_bps";
 const SAFE_RISK_PROFILE = "safe";
-const MEDIUM_RISK_PROFILE = "medium";
 
 export type MediumFeeAwareEarnForecastResult = {
   history: EarnForecastApyHistoryResponse;
@@ -44,7 +42,7 @@ export type MediumFeeAwareEarnForecastResult = {
 
 let cache: {
   expiresAt: number;
-  value: MediumFeeAwareEarnForecastResult;
+  value: MediumFeeAwareEarnForecastResult | null;
 } | null = null;
 let lastRealized: MediumFeeAwareEarnForecastResult | null = null;
 
@@ -52,40 +50,6 @@ function resolveEarnForecastCluster(): string {
   return resolveLoyalWebSolanaEnvFromEnv(process.env) === "devnet"
     ? "devnet"
     : "mainnet-beta";
-}
-
-function fallbackResult(now: Date): MediumFeeAwareEarnForecastResult {
-  return {
-    history: {
-      feeBps: CROSS_MINT_FEE_BPS,
-      generatedAt: now.toISOString(),
-      riskProfile: MEDIUM_RISK_PROFILE,
-      samples: [],
-      series: [
-        {
-          key: "loyal",
-          label: "Loyal Earn",
-          metadata: {
-            metric: "cumulative_annualized_apy_bps",
-          },
-          samples: [],
-        },
-        {
-          key: "mainUsdcReserve",
-          label: "Kamino Main USDC",
-          metadata: {
-            liquidityMint: KAMINO_MAIN_MARKET_USDC_MINT,
-            market: KAMINO_MAIN_MARKET,
-            metric: "cumulative_annualized_apy_bps",
-            reserve: KAMINO_MAIN_MARKET_USDC_RESERVE,
-          },
-          samples: [],
-        },
-      ],
-      window: FALLBACK_EARN_FORECAST.window,
-    },
-    summary: FALLBACK_EARN_FORECAST,
-  };
 }
 
 export function resetEarnForecastCacheForTests() {
@@ -221,7 +185,7 @@ export async function getRealizedEarnForecastFromDependencies(
 export async function getMediumFeeAwareEarnForecast(
   now = new Date(),
   deps: RealizedEarnForecastDependencies = createRealizedDependencies()
-): Promise<MediumFeeAwareEarnForecastResult> {
+): Promise<MediumFeeAwareEarnForecastResult | null> {
   if (cache && cache.expiresAt > now.getTime()) {
     return cache.value;
   }
@@ -252,9 +216,9 @@ export async function getMediumFeeAwareEarnForecast(
             availability: "stale" as const,
           },
         }
-      : fallbackResult(now));
+      : null);
   const remainingFreshMs =
-    value.summary.availability === "unavailable"
+    value === null
       ? CACHE_TTL_MS
       : Math.max(
           0,

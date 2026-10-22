@@ -137,12 +137,6 @@ export type LibrarySiblingArticles = {
   next: LibraryArticle | null;
 };
 
-/**
- * For a given article, resolve its section and the neighboring articles
- * (in `displayOrder` as served by the API). Returns nulls when there is
- * no matching section or when the article is at a boundary. Featured-only
- * articles (not attached to any section) return `section: null`.
- */
 export function findLibrarySiblings(
   content: LibraryContent,
   id: string,

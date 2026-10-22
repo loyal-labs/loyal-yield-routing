@@ -136,12 +136,6 @@ function getBuildInfo(): BuildInfo {
   const channel = Updates.channel || "dev";
   const updateId = Updates.updateId ?? "embedded";
 
-  // When the native build number isn't stamped into the binary (local
-  // `expo run`, or EAS profiles without `autoIncrement`), fall back to
-  // the first 7 chars of the OTA update id — still unique enough to
-  // tell two installs apart — or the channel name if no OTA has been
-  // applied yet. This keeps the settings footer actionable instead of
-  // showing "?" for every dev/preview install.
   const buildLabel =
     nativeBuild ??
     (updateId !== "embedded" ? updateId.slice(0, 7) : channel);
@@ -232,11 +226,9 @@ export default function ProfileScreen() {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
       if (!value) {
-        // Disabling — no PIN needed
         wallet.setBiometricEnabled("", false);
         return;
       }
-      // Enabling — need PIN confirmation
       setBioPin("");
       setBioPinError(null);
       setShowBioPinInput(true);
@@ -248,8 +240,6 @@ export default function ProfileScreen() {
     if (process.env.EXPO_OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    // Optimistic — drives both backends (keychain mirror + Drive file);
-    // failures are logged and the switch reverts.
     setICloudBackupOn(value);
     setICloudBackupEnabled(value).catch((error) => {
       console.warn("[settings] iCloud backup toggle failed", error);
@@ -311,12 +301,8 @@ export default function ProfileScreen() {
     }
     const finishReset = async (keepCloudBackup: boolean) => {
       await wallet.resetWallet({ keepCloudBackup });
-      // Land on the wallet tab so re-onboarding completion reveals the
-      // wallet UI rather than the Settings page the user just left.
       router.replace("/");
     };
-    // iCloud backup ON (iOS, local wallet): resetting only this device must
-    // not silently delete the user's iCloud backup (ASK-2206).
     if (!isVaultBacked && isICloudSyncSupported() && isICloudBackupEnabled()) {
       Alert.alert(
         "Reset Wallet",
@@ -360,7 +346,6 @@ export default function ProfileScreen() {
         }}
       >
         <View style={styles.container}>
-        {/* Language + Push Notifications */}
         <SettingsSection>
           <ProfileCell
             icon={<Globe size={28} strokeWidth={1.5} color="rgba(0,0,0,0.6)" />}
@@ -378,7 +363,6 @@ export default function ProfileScreen() {
           />
         </SettingsSection>
 
-        {/* Tips */}
         <SettingsSection>
           <ProfileCell
             icon={
@@ -393,7 +377,6 @@ export default function ProfileScreen() {
           />
         </SettingsSection>
 
-        {/* Support */}
         <SettingsSection>
           <ProfileCell
             icon={<CircleHelp size={28} strokeWidth={1.5} color="rgba(0,0,0,0.6)" />}
@@ -418,9 +401,6 @@ export default function ProfileScreen() {
           />
         </SettingsSection>
 
-        {/* Wallet Management — only when unlocked. Vault-backed wallets hide
-            biometrics (vault prompts on every signature) and export (the
-            secret never leaves the vault). */}
         {isUnlocked && (
           <SettingsSection>
             <PrivyAccountCell
@@ -519,8 +499,6 @@ export default function ProfileScreen() {
           />
         </SettingsSection>
 
-        {/* Tap-to-copy build string so users can report exactly which
-            native binary + OTA bundle they're running. */}
         <Pressable onPress={handleCopyBuildInfo} style={styles.versionRow}>
           <Text style={styles.versionText}>
             {versionCopied ? "Copied" : buildInfo.short}
@@ -553,7 +531,6 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   cellPressable: {
-    // Pressable wraps cell for tap feedback
   },
   cellLeft: {
     flexDirection: "row",

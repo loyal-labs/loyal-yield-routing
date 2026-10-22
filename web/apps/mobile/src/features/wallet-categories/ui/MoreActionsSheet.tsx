@@ -27,16 +27,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Pressable, Text } from "@/tw";
 
-// Full-screen frosted "..." action menu (Figma 195:34783 / overlay 195:34942).
-// The frosted layer slides up to fill the screen (directional, not a fade); the
-// rows reveal bottom-to-top and reverse on close, all driven by one shared
-// `progress` value so the animation is interruptible. The "✕" close button is
-// anchored to the trigger's measured position so it lands exactly where "..."
-// was. Rendered inline (not in a Modal) so the trigger and the overlay share one
-// coordinate space — the overlay root's measured origin converts the trigger's
-// window coordinates into overlay-local ones with no Modal-window mismatch.
-
-// Window coordinates of the "..." trigger, so the close button can sit on top.
 export type MoreActionsAnchor = {
   x: number;
   y: number;
@@ -44,15 +34,11 @@ export type MoreActionsAnchor = {
   height: number;
 };
 
-// Slide distance for each row (kept small — exits should feel subtle).
 const ROW_TRAVEL = 18;
 // Normalized stagger between rows and per-row reveal window (must satisfy
 // (maxRank * STAGGER) + WINDOW <= 1 so the last row finishes by progress 1).
 const STAGGER = 0.09;
 const WINDOW = 0.6;
-// Fraction of the timeline over which the frosted layer finishes rising. Kept
-// below 1 so the fill leads the row reveals (no row flashes over un-frosted
-// content above the trigger).
 const FILL_FRACTION = 0.6;
 const ICON_OPACITY = 0.6;
 
@@ -121,17 +107,12 @@ export function MoreActionsSheet({
   onSend?: () => void;
   onReceive?: () => void;
   onSwap?: () => void;
-  // Exit-only path for legacy shielded balances; callers pass it only when
-  // the wallet still holds one (ASK-2269).
   onUnshield?: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const { width: screenW, height: screenH } = useWindowDimensions();
   const progress = useSharedValue(0);
-  // Keep the overlay mounted through the close animation, then unmount.
   const [mounted, setMounted] = useState(false);
-  // Window origin of the overlay root, used to translate the trigger's window
-  // coordinates into the overlay's coordinate space.
   const rootRef = useRef<ComponentRef<typeof View>>(null);
   const [origin, setOrigin] = useState({ x: 0, y: 0 });
 
@@ -164,7 +145,6 @@ export function MoreActionsSheet({
     }
   }, [open, mounted, progress]);
 
-  // Close on Android hardware back while open.
   useEffect(() => {
     if (!mounted || !open) {
       return;
@@ -180,7 +160,6 @@ export function MoreActionsSheet({
     rootRef.current?.measureInWindow((x, y) => setOrigin({ x, y }));
   };
 
-  // Design order, top -> bottom. Only render the actions the screen supplies.
   const actions: QuestAction[] = [];
   if (onUnshield) {
     actions.push({
@@ -221,8 +200,6 @@ export function MoreActionsSheet({
     run();
   };
 
-  // The frosted layer slides up from the bottom to fill the screen (directional
-  // reveal); opacity ramps quickly so there's no hard edge as it enters.
   const backdropStyle = useAnimatedStyle(() => {
     const fill = Math.min(1, progress.value / FILL_FRACTION);
     return {
@@ -235,8 +212,6 @@ export function MoreActionsSheet({
     transform: [{ scale: 0.85 + 0.15 * progress.value }],
   }));
 
-  // Trigger position in the overlay's coordinate space (window coords minus the
-  // overlay root's own window origin). Fall back to the bottom-right.
   const closeTop = anchor ? anchor.y - origin.y : null;
   const closeLeft = anchor ? anchor.x - origin.x : null;
   const closePos =

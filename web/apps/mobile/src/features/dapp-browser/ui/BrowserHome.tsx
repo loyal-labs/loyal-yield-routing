@@ -26,12 +26,6 @@ type CategoryGroup = {
   dapps: TrustedDapp[];
 };
 
-/**
- * Preserves the order in which each category first appears in the input.
- * The API returns rows sorted by displayOrder, so a category's position
- * is determined by its lowest-ranked member — matches the allowlist's
- * master numbering while staying resilient to admin reordering.
- */
 function groupByCategory(dapps: TrustedDapp[]): CategoryGroup[] {
   const buckets = new Map<string, CategoryGroup>();
   for (const dapp of dapps) {
@@ -43,7 +37,6 @@ function groupByCategory(dapps: TrustedDapp[]): CategoryGroup[] {
       buckets.set(label, { label, dapps: [dapp] });
     }
   }
-  // Push "Other" to the bottom when mixed with real categories.
   const groups = Array.from(buckets.values());
   const otherIdx = groups.findIndex((g) => g.label === OTHER_CATEGORY);
   if (otherIdx >= 0 && groups.length > 1) {
@@ -98,8 +91,6 @@ export function BrowserHome({
       contentContainerClassName="px-5"
       contentContainerStyle={{
         paddingTop: insets.top + 16,
-        // Clears the floating tab bar (70pt) plus the home-indicator inset;
-        // the previous flat pb-10 (40pt) left the last dapp row unreachable.
         paddingBottom: Math.max(insets.bottom, 12) + 90,
       }}
       keyboardShouldPersistTaps="handled"

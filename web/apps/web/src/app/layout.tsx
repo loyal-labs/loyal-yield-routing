@@ -6,8 +6,11 @@ import { GeistSans } from "geist/font/sans";
 
 import { XPixelBootstrap } from "@/components/analytics/x-pixel-bootstrap";
 import { PublicEnvProvider } from "@/contexts/public-env-context";
+import { enLanding } from "@/features/marketing/i18n/en/landing";
 import { createPublicEnv } from "@/lib/core/config/public";
 import { SITE_URL } from "@/lib/seo/site";
+import { initialThemeScript } from "@/lib/theme";
+import { faviconForEnv } from "@/lib/vercel-env";
 
 const geistSans = GeistSans;
 const geistMono = GeistMono;
@@ -74,17 +77,12 @@ const siteJsonLd = {
   ],
 };
 
-const faviconPath =
-  process.env.VERCEL_ENV === "production"
-    ? "/icon.svg"
-    : process.env.VERCEL_ENV === "preview"
-      ? "/icon-preview.svg"
-      : "/icon-dev.svg";
+const faviconPath = faviconForEnv(process.env.VERCEL_ENV);
+const landingMeta = enLanding.meta;
 
 export const metadata: Metadata = {
-  title: "Loyal: Solana Wallet That Earns Yield Automatically",
-  description:
-    "Self-custody Solana wallet that routes your stablecoins to the best available yield automatically. Agent guardrails, private transfers, open-source.",
+  title: landingMeta.title,
+  description: landingMeta.description,
   metadataBase: new URL(SITE_URL),
   alternates: {
     canonical: "/",
@@ -99,27 +97,25 @@ export const metadata: Metadata = {
     url: "https://askloyal.com/",
     siteName: "Loyal",
     locale: "en_US",
-    title: "Loyal: Solana Wallet That Earns Yield Automatically",
-    description:
-      "Self-custody Solana wallet that routes your stablecoins to the best available yield automatically. Agent guardrails, private transfers, open-source.",
+    title: landingMeta.title,
+    description: landingMeta.description,
     images: [
       {
         url: "https://askloyal.com/og-home-2026-08.png",
         width: 1200,
         height: 640,
-        alt: "Loyal: Solana wallet that earns stablecoin yield automatically",
+        alt: landingMeta.ogImageAlt,
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Loyal: Solana Wallet That Earns Yield Automatically",
-    description:
-      "Self-custody Solana wallet that routes your stablecoins to the best available yield automatically. Agent guardrails, private transfers, open-source.",
+    title: landingMeta.title,
+    description: landingMeta.description,
     images: [
       {
         url: "https://askloyal.com/og-home-2026-08.png",
-        alt: "Loyal: Solana wallet that earns stablecoin yield automatically",
+        alt: landingMeta.ogImageAlt,
       },
     ],
   },
@@ -138,9 +134,7 @@ export default async function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <script
-          dangerouslySetInnerHTML={{
-            __html: `try{if(localStorage.getItem("theme")==="dark")document.documentElement.classList.add("dark")}catch(e){}`,
-          }}
+          dangerouslySetInnerHTML={{ __html: initialThemeScript }}
         />
         <script
           type="application/ld+json"

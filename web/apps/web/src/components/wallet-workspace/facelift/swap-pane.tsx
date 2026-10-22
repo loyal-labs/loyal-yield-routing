@@ -11,6 +11,11 @@ import {
 } from "react";
 
 import { sanitizeBucksAmountInput } from "@/components/wallet-sidebar/earn-detail-view";
+import { SWAP_QUOTE_DEBOUNCE_MS } from "@/components/wallet-sidebar/swap-content";
+import {
+  TOKEN_SEARCH_DEBOUNCE_MS,
+  TOKEN_SEARCH_MIN_LENGTH,
+} from "@/components/wallet-sidebar/token-select-view";
 import type { SwapToken } from "@/components/wallet-sidebar/types";
 import {
   ActionErrorBody,
@@ -42,12 +47,6 @@ import {
 import { getTokenIconUrl } from "@/lib/token-icon";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
-
-// Typeahead cadence: two characters before a remote search starts (as the OG
-// token-select did), after a debounce short enough to stay attached to the
-// keystrokes.
-const SEARCH_DEBOUNCE_MS = 120;
-const SEARCH_MIN_QUERY_LENGTH = 2;
 
 // $63.83 / $0.99866 — two decimals above a dollar, significant digits below.
 function formatTokenPrice(price: number): string {
@@ -181,7 +180,6 @@ export function SwapPane({
   const hasAmount = tokenAmount > 0;
   const insufficientFunds = tokenAmount > fromToken.balance;
 
-  // Debounced quote fetch — OG SwapContent's 500ms cadence.
   useEffect(() => {
     if (quoteTimerRef.current !== null) {
       window.clearTimeout(quoteTimerRef.current);
@@ -202,7 +200,7 @@ export function SwapPane({
         undefined,
         toToken.mint
       ).finally(() => setIsQuoting(false));
-    }, 500);
+    }, SWAP_QUOTE_DEBOUNCE_MS);
     return () => {
       if (quoteTimerRef.current !== null) {
         window.clearTimeout(quoteTimerRef.current);
@@ -722,7 +720,7 @@ export function SwapTokenSelectPane({
   }, [ownedTokens, query, rawQuery, remoteTokens, trendingRows]);
 
   const activeSuggestion =
-    query.length >= SEARCH_MIN_QUERY_LENGTH && list.length > 0
+    query.length >= TOKEN_SEARCH_MIN_LENGTH && list.length > 0
       ? Math.min(activeIndex, list.length - 1)
       : null;
   const activeToken = activeSuggestion === null ? null : list[activeSuggestion];
@@ -747,7 +745,7 @@ export function SwapTokenSelectPane({
   // Debounced remote search. Each keystroke aborts the request before it; a
   // failed or aborted one leaves the previous results on screen.
   useEffect(() => {
-    if (!isRemoteSearchEnabled || rawQuery.length < SEARCH_MIN_QUERY_LENGTH) {
+    if (!isRemoteSearchEnabled || rawQuery.length < TOKEN_SEARCH_MIN_LENGTH) {
       searchAbortRef.current?.abort();
       searchAbortRef.current = null;
       setSearchResults([]);
@@ -765,7 +763,7 @@ export function SwapTokenSelectPane({
           setSearchResults(results.filter((token) => token.isVerified));
         })
         .catch(() => {});
-    }, SEARCH_DEBOUNCE_MS);
+    }, TOKEN_SEARCH_DEBOUNCE_MS);
     return () => {
       isCurrent = false;
       window.clearTimeout(timer);

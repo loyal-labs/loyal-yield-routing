@@ -26,7 +26,6 @@ import { Image } from "@/tw/image";
 
 type Props = {
   onDone: () => void;
-  /** Distinguishes fresh setup from a replay-from-settings view in analytics. */
   surface?: "setup" | "replay";
 };
 

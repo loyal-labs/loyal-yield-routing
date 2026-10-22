@@ -1,5 +1,6 @@
 "use client";
 
+import { SelectableRow } from "@/components/wallet-workspace/facelift/selectable-row";
 import { Infinity as InfinityIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -218,24 +219,10 @@ export function OperationRow({
       </span>
     </>
   );
-  // Same interaction contract as the Earn activity rows (TransactionRow):
-  // without a handler the row is a plain cell; with one it hovers/selects
-  // and opens the transaction detail.
-  if (!onSelect) {
-    return (
-      <div className="flex w-full items-center rounded-2xl px-4">{content}</div>
-    );
-  }
   return (
-    <button
-      className={`flex w-full items-center rounded-2xl px-4 text-left outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset ${
-        isSelected ? "bg-accent" : "hover:bg-accent"
-      }`}
-      onClick={onSelect}
-      type="button"
-    >
+    <SelectableRow isSelected={isSelected} onSelect={onSelect}>
       {content}
-    </button>
+    </SelectableRow>
   );
 }
 

@@ -838,10 +838,7 @@ function earnMaxIntent(
     throw new Error("Earn MAX intent is too large.");
   return new TransactionInstruction({
     programId: MEMO,
-    // The synchronous Smart Account compiler requires its signing vault to be
-    // writable. Memo does not mutate it, but the outer execution must still
-    // carry the vault through the writable-signer account class.
-    keys: [{ pubkey: vault, isSigner: true, isWritable: true }],
+    keys: [{ pubkey: vault, isSigner: true, isWritable: false }],
     data: Buffer.from(value, "utf8"),
   });
 }

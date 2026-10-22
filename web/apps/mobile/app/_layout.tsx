@@ -16,7 +16,6 @@ import { AppReadyProvider } from "@/lib/app-ready";
 import { SignApprovalProvider } from "@/lib/wallet/sign-approval";
 import { WalletProvider } from "@/lib/wallet/wallet-provider";
 import {
-  // addNotificationResponseListener, // Summaries — kept for reinstatement
   setupNotificationHandler,
 } from "@/services/notifications";
 import { initOneSignal } from "@/services/onesignal";
@@ -41,27 +40,20 @@ export default function RootLayout() {
     Geist_900Black: require("@expo-google-fonts/geist/900Black/Geist_900Black.ttf"),
   });
 
-  // Hide native splash once fonts are ready — Lottie takes over
   useEffect(() => {
     if (fontsLoaded) {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded]);
 
-  // One-time display config (Android channel, handler). Per-wallet token
-  // registration happens inside <PushTokenRegistrar /> below.
   useEffect(() => {
     void setupNotificationHandler();
     void initOneSignal();
   }, []);
 
-  // Initialize Mixpanel as early as possible so identify/track from wallet
-  // boot are not lost. "App Opened" fires on cold start and every foreground —
-  // retention cohorts (ASK-1651) key off its recency.
   useEffect(() => {
     void initAnalytics();
     track(APP_EVENTS.opened);
-    // twclid/utm_* capture from deep links + Android install referrer.
     const removeAttributionListener = initAttribution();
     const subscription = AppState.addEventListener("change", (next) => {
       if (next === "active") {
@@ -73,22 +65,6 @@ export default function RootLayout() {
       removeAttributionListener();
     };
   }, []);
-
-  // Handle notification tap while app is running
-  // Summaries navigation commented out — kept for potential reinstatement
-  // useEffect(() => {
-  //   let cleanup: (() => void) | null = null;
-  //
-  //   addNotificationResponseListener((data) => {
-  //     if (data?.screen === "summaries") {
-  //       router.push("/");
-  //     }
-  //   }).then((remove) => {
-  //     cleanup = remove;
-  //   });
-  //
-  //   return () => cleanup?.();
-  // }, [router]);
 
   const handleSplashFinish = useCallback(() => {
     setShowSplash(false);
@@ -152,8 +128,6 @@ export default function RootLayout() {
                     name="browser/site"
                     options={{ headerShown: false }}
                   />
-                  {/* Summaries detail screen commented out — kept for potential reinstatement */}
-                  {/* <Stack.Screen name="summaries/[groupChatId]" /> */}
                 </Stack>
               </AppReadyProvider>
               <OtaUpdateBanner />

@@ -19,7 +19,6 @@ type Step = "pin" | "confirm" | "import";
 
 type Props = {
   onComplete: (keypair: Keypair, pin: string) => void;
-  /** Leave the import flow from its first step. */
   onBack: () => void;
 };
 
@@ -27,17 +26,6 @@ const HEX_REGEX = /^[0-9a-fA-F]+$/;
 const SECRET_KEY_BYTES = 64; // Solana ed25519 keypair: 32-byte seed + 32-byte pubkey
 const SECRET_KEY_HEX_LENGTH = SECRET_KEY_BYTES * 2;
 
-/**
- * Accept Solana secret keys in any of the three formats users paste:
- *   - Base58 (miniapp `bs58.encode(keypair.secretKey)`, Phantom, Solflare).
- *     The standard 64-byte secret encodes to 87–88 base58 chars.
- *   - Hex (extension, with optional 0x prefix). Exactly 128 chars.
- *   - JSON byte array `[n, n, …]` (solana-keygen default). Exactly 64 numbers.
- *
- * We detect shape first, then validate length. Returns Uint8Array of length
- * 64 on success. The error strings are user-facing so they hint at the
- * accepted formats when input is ambiguous.
- */
 function parseSecretKey(
   raw: string,
 ): { bytes: Uint8Array | null; error: string | null } {
@@ -93,7 +81,6 @@ function parseSecretKey(
     }
     return { bytes: new Uint8Array(decoded), error: null };
   } catch {
-    // fall through to the format-hint error below
   }
 
   return {
@@ -172,7 +159,6 @@ export function ImportWalletScreen({ onComplete, onBack }: Props) {
     }
   }, [hexKey, pin, importWallet, onComplete]);
 
-  // Full-screen loading while encrypting + storing
   if (isImporting) {
     return (
       <Animated.View
@@ -192,7 +178,6 @@ export function ImportWalletScreen({ onComplete, onBack }: Props) {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <View className="flex-1 px-6 pt-4">
-          {/* Header */}
           <View className="mb-8 flex-row items-center">
             <Pressable onPress={handleBack} hitSlop={12} className="mr-3">
               <ArrowLeft size={24} color="#000" strokeWidth={1.5} />
@@ -200,7 +185,6 @@ export function ImportWalletScreen({ onComplete, onBack }: Props) {
             <View className="flex-1" />
           </View>
 
-          {/* Step: PIN */}
           {step === "pin" && (
             <View className="flex-1 justify-center pb-16">
               <Text style={styles.title}>Create PIN</Text>
@@ -217,7 +201,6 @@ export function ImportWalletScreen({ onComplete, onBack }: Props) {
             </View>
           )}
 
-          {/* Step: Confirm */}
           {step === "confirm" && (
             <View className="flex-1 justify-center pb-16">
               <Text style={styles.title}>Confirm PIN</Text>
@@ -236,7 +219,6 @@ export function ImportWalletScreen({ onComplete, onBack }: Props) {
             </View>
           )}
 
-          {/* Step: Import */}
           {step === "import" && (
             <View className="flex-1">
               <Text style={styles.title}>Import Secret Key</Text>

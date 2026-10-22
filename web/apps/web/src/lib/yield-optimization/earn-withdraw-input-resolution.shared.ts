@@ -30,6 +30,7 @@ function publicKeyFromMetadata(
 export function snapshotFullWithdrawalTargets(holdings: EarnRpcHolding[]): {
   amountRaw: bigint;
   liquidityMint: PublicKey;
+  liquidityTokenProgram: PublicKey;
   market: PublicKey;
   reserve: PublicKey;
   reserveCollateralMint?: PublicKey;
@@ -63,6 +64,7 @@ export function snapshotFullWithdrawalTargets(holdings: EarnRpcHolding[]): {
     targets.push({
       amountRaw,
       liquidityMint: new PublicKey(holding.liquidityMint),
+      liquidityTokenProgram: new PublicKey(holding.tokenProgramId),
       market: new PublicKey(holding.market),
       reserve: new PublicKey(holding.reserve),
       ...(reserveCollateralMint ? { reserveCollateralMint } : {}),

@@ -16,14 +16,6 @@ type CaptureCommunityPhotoOptions = {
   timeoutMs?: number;
 };
 
-export function resolveCommunityPhotoObjectKey(
-  chatId: number | string,
-  contentType: string
-): string {
-  // Backward-compatible wrapper kept for existing tests/import sites.
-  return resolveCommunityPhotoObjectKeyFromPath(chatId, contentType);
-}
-
 async function withTimeout<T>(
   operation: Promise<T>,
   timeoutMs: number

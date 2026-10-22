@@ -18,3 +18,11 @@ export function renderBlogSection(posts: readonly BlogPost[]): string {
     "",
   ].join("\n");
 }
+
+export function joinLlmsHalves(
+  head: string,
+  posts: readonly BlogPost[],
+  tail: string
+): string {
+  return `${head}${renderBlogSection(posts)}\n${tail}`;
+}

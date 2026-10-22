@@ -1,5 +1,6 @@
 "use client";
 
+import { floorToCents } from "@/components/wallet-workspace/facelift/floor-to-cents";
 import {
   Infinity as InfinityIcon,
   Landmark,
@@ -365,11 +366,7 @@ export function EarnMaxDepositPane({
                   className="t-hover min-w-16 rounded-full bg-accent px-4 py-2.5 text-center font-medium text-[13px] text-foreground leading-4 hover:bg-accent-active"
                   onClick={() => {
                     if (sourceUsd > 0) {
-                      // Floor to cents so the fill never rounds above the
-                      // real balance, same as the Earn deposit pane's MAX.
-                      handleAmountChange(
-                        (Math.floor(sourceUsd * 100) / 100).toFixed(2)
-                      );
+                      handleAmountChange(floorToCents(sourceUsd));
                     }
                   }}
                   type="button"

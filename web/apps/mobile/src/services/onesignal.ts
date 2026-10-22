@@ -55,7 +55,6 @@ export async function initOneSignal(): Promise<void> {
   }
 }
 
-/** Tie the OneSignal user to our identity (e.g. wallet public key). */
 export async function loginOneSignal(externalId: string): Promise<void> {
   await initSettled;
   const mod = await getOneSignal();

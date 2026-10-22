@@ -325,13 +325,6 @@ export async function fetchTokenHoldings(
     return cached!.holdings;
   }
 
-  // Coalesce concurrent fetches for the same wallet — including forced ones.
-  // One holdings fetch fans out into several RPC calls; with many mounted
-  // useTokenHoldings instances and several `forceRefresh` callers firing
-  // together (deposit/withdraw/sweep + mutation refresh + polls), letting forced
-  // calls skip this dedup launched that whole fan-out in parallel and tripped
-  // Helius into 429s with a single user. An in-flight request is already a live
-  // fetch, so joining it returns equally-fresh data without duplicating load.
   const inflight = inflightRequests.get(publicKey);
   if (inflight) {
     return inflight;

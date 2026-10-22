@@ -3,7 +3,6 @@ import { SystemProgram, Transaction } from "@solana/web3.js";
 
 import type { Signer } from "@/lib/wallet/signer";
 
-// Lazy-load @solana/spl-token to avoid top-level Buffer usage
 async function getSplToken() {
   return await import("@solana/spl-token");
 }
