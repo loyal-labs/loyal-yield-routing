@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export type WeeklyChartPoint = {
   label: string;
@@ -14,20 +14,34 @@ type ChartPoint = WeeklyChartPoint & {
   centerX: number;
   height: number;
   index: number;
+  slotX: number;
   x: number;
   y: number;
 };
 
-const chartWidth = 1120;
-const chartHeight = 560;
+type Size = { height: number; width: number };
+
+// The chart draws in CSS pixels, so its box sets the height and the loading
+// skeleton reuses this class to hold the same space.
+export const chartBoxClass = "mt-6 h-64 md:h-80 lg:h-[26rem]";
+
 const chartPadding = {
-  top: 58,
-  right: 42,
-  bottom: 86,
-  left: 108,
+  top: 32,
+  right: 4,
+  bottom: 32,
+  left: 52,
 };
-const tooltipWidth = 238;
-const tooltipHeight = 94;
+const tickFontSize = 12;
+const dateFontSize = 12;
+const valueFontSize = 13;
+const labelGap = 10;
+const tooltipWidth = 184;
+const tooltipHeight = 74;
+const brandRed = "#f9363c";
+
+function textWidth(text: string, fontSize: number) {
+  return text.length * fontSize * 0.62;
+}
 
 function formatCurrencyTick(value: number) {
   if (value === 0) {
@@ -95,17 +109,18 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function getChartPoints(points: WeeklyChartPoint[], maxValue: number) {
-  const plotWidth = chartWidth - chartPadding.left - chartPadding.right;
-  const plotHeight = chartHeight - chartPadding.top - chartPadding.bottom;
+function getChartPoints(points: WeeklyChartPoint[], maxValue: number, size: Size) {
+  const plotWidth = size.width - chartPadding.left - chartPadding.right;
+  const plotHeight = size.height - chartPadding.top - chartPadding.bottom;
   const baseline = chartPadding.top + plotHeight;
   const slotWidth = plotWidth / Math.max(points.length, 1);
-  const barWidth = Math.min(92, Math.max(32, slotWidth * 0.64));
+  const barWidth = Math.min(56, slotWidth * 0.64);
 
   return points.map((point, index) => {
     const rawHeight = (Math.min(point.value, maxValue) / maxValue) * plotHeight;
     const barHeight = point.value > 0 ? Math.max(rawHeight, 2) : 0;
-    const x = chartPadding.left + index * slotWidth + (slotWidth - barWidth) / 2;
+    const slotX = chartPadding.left + index * slotWidth;
+    const x = slotX + (slotWidth - barWidth) / 2;
     const y = baseline - barHeight;
 
     return {
@@ -115,20 +130,54 @@ function getChartPoints(points: WeeklyChartPoint[], maxValue: number) {
       centerX: x + barWidth / 2,
       height: barHeight,
       index,
+      slotX,
       x,
       y,
     };
   });
 }
 
-function getTooltipPosition(point: ChartPoint) {
-  const maxX = chartWidth - chartPadding.right - tooltipWidth;
+function getDateLabelStep(points: WeeklyChartPoint[], slotWidth: number) {
+  const widest = Math.max(...points.map((point) => textWidth(point.label, dateFontSize)), 0);
+  return Math.max(1, Math.ceil((widest + labelGap) / slotWidth));
+}
+
+function getValueLabels(points: ChartPoint[], slotWidth: number, size: Size) {
+  const last = points.length - 1;
+  if (last < 0 || points[last].value <= 0) {
+    return [];
+  }
+
+  const peak = points.reduce((best, point) => (point.value > points[best].value ? point.index : best), 0);
+  const labelWidth = Math.max(
+    textWidth(formatCompactCurrency(points[last].value), valueFontSize),
+    textWidth(formatCompactCurrency(points[peak].value), valueFontSize)
+  );
+  const peakFits = Math.abs(last - peak) * slotWidth >= labelWidth + labelGap;
+
+  return (peakFits ? [peak, last] : [last]).map((index) => {
+    const point = points[index];
+    const text = formatCompactCurrency(point.value);
+    const half = textWidth(text, valueFontSize) / 2;
+    const x = clamp(point.centerX, chartPadding.left + half, size.width - half);
+    const topUnderLabel = Math.min(
+      ...points
+        .filter((other) => other.x < x + half && other.x + other.barWidth > x - half)
+        .map((other) => other.y)
+    );
+
+    return { index, text, x, y: Math.max(chartPadding.top - 12, topUnderLabel - 8) };
+  });
+}
+
+function getTooltipPosition(point: ChartPoint, size: Size) {
+  const maxX = size.width - chartPadding.right - tooltipWidth;
   const x = clamp(point.centerX - tooltipWidth / 2, chartPadding.left, maxX);
-  const preferredY = point.y - tooltipHeight - 14;
+  const preferredY = point.y - tooltipHeight - 12;
   const y =
     preferredY >= chartPadding.top
       ? preferredY
-      : point.y + Math.min(point.height + 18, 44);
+      : point.y + Math.min(point.height + 12, 36);
 
   return { x, y };
 }
@@ -142,59 +191,80 @@ export function EarnAumBarChart({
   metricLabel: string;
   points: WeeklyChartPoint[];
 }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<Size | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) {
+      return;
+    }
+
+    const observer = new ResizeObserver(([entry]) => {
+      const { height, width } = entry.contentRect;
+      setSize({ height: Math.round(height), width: Math.round(width) });
+    });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
+
   const chartMaxValue = useMemo(
     () => getNiceChartMax(Math.max(...points.map((point) => point.value), 0)),
     [points]
   );
   const chartTicks = useMemo(() => getChartTicks(chartMaxValue), [chartMaxValue]);
-  const chartPoints = useMemo(
-    () => getChartPoints(points, chartMaxValue),
-    [chartMaxValue, points]
-  );
+
+  if (!size || size.width === 0) {
+    return <div className={chartBoxClass} ref={boxRef} />;
+  }
+
+  const chartPoints = getChartPoints(points, chartMaxValue, size);
+  const plotHeight = size.height - chartPadding.top - chartPadding.bottom;
+  const baseline = size.height - chartPadding.bottom;
+  const slotWidth =
+    (size.width - chartPadding.left - chartPadding.right) / Math.max(points.length, 1);
+  const dateLabelStep = getDateLabelStep(points, slotWidth);
+  const valueLabels = getValueLabels(chartPoints, slotWidth, size);
+  const lastIndex = chartPoints.length - 1;
   const activePoint =
     activeIndex === null ? null : chartPoints[activeIndex] ?? null;
   const previousPoint =
     activeIndex === null ? null : chartPoints[activeIndex - 1] ?? null;
   const weeklyChange =
     activePoint && previousPoint ? activePoint.value - previousPoint.value : null;
-  const tooltipPosition = activePoint ? getTooltipPosition(activePoint) : null;
-  const baseline =
-    chartHeight - chartPadding.bottom;
+  const tooltipPosition = activePoint ? getTooltipPosition(activePoint, size) : null;
 
   return (
-    <div className="mt-6">
+    <div className={chartBoxClass} ref={boxRef}>
       <svg
         aria-label={ariaLabel}
-        className="h-auto w-full overflow-visible"
+        className="block overflow-visible"
+        height={size.height}
         role="img"
-        viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+        viewBox={`0 0 ${size.width} ${size.height}`}
+        width={size.width}
       >
         {chartTicks.map((tick) => {
-          const plotHeight =
-            chartHeight - chartPadding.top - chartPadding.bottom;
-          const y =
-            chartPadding.top +
-            plotHeight -
-            (tick / chartMaxValue) * plotHeight;
+          const y = chartPadding.top + plotHeight - (tick / chartMaxValue) * plotHeight;
 
           return (
             <g key={tick}>
               <line
                 stroke="#dce3ea"
-                strokeDasharray="7 9"
-                strokeWidth="1.5"
+                strokeDasharray="4 6"
+                strokeWidth="1"
                 x1={chartPadding.left}
-                x2={chartWidth - chartPadding.right}
+                x2={size.width - chartPadding.right}
                 y1={y}
                 y2={y}
               />
               <text
                 fill="#6f7782"
-                fontSize="20"
+                fontSize={tickFontSize}
                 textAnchor="end"
-                x={chartPadding.left - 18}
-                y={y + 7}
+                x={chartPadding.left - 10}
+                y={y + 4}
               >
                 {formatCurrencyTick(tick)}
               </text>
@@ -203,34 +273,33 @@ export function EarnAumBarChart({
         })}
 
         {chartPoints.map((point, index) => {
-          const active = index === activeIndex;
+          const highlighted = index === activeIndex || index === lastIndex;
 
           return (
             <g key={point.label}>
               <rect
-                fill={active ? "#f9363c" : "#0b0d0f"}
+                fill={highlighted ? brandRed : "#0b0d0f"}
                 height={point.barHeight}
-                rx="7"
+                rx={Math.min(6, point.barWidth / 3)}
                 x={point.x}
                 y={point.y}
                 width={point.barWidth}
               />
-              {point.value > 0 ? (
+              {(lastIndex - index) % dateLabelStep === 0 ? (
                 <text
-                  fill={active ? "#f9363c" : "#101418"}
-                  fontSize="18"
-                  fontWeight="650"
+                  fill={index === lastIndex ? brandRed : "#6f7782"}
+                  fontSize={dateFontSize}
                   textAnchor="middle"
                   x={point.centerX}
-                  y={Math.max(chartPadding.top - 18, point.y - 14)}
+                  y={size.height - 10}
                 >
-                  {formatCompactCurrency(point.value)}
+                  {point.label}
                 </text>
               ) : null}
               <rect
                 aria-label={`${point.periodLabel}: ${formatCurrency(point.value)} ${metricLabel}`}
                 fill="transparent"
-                height={baseline - chartPadding.top}
+                height={size.height - chartPadding.top}
                 onBlur={() => setActiveIndex(null)}
                 onFocus={() => setActiveIndex(index)}
                 onPointerEnter={() => setActiveIndex(index)}
@@ -238,29 +307,35 @@ export function EarnAumBarChart({
                 onPointerMove={() => setActiveIndex(index)}
                 role="button"
                 tabIndex={0}
-                x={point.x - 10}
+                x={point.slotX}
                 y={chartPadding.top}
-                width={point.barWidth + 20}
+                width={slotWidth}
               />
-              <text
-                fill="#6f7782"
-                fontSize="18"
-                textAnchor="middle"
-                x={point.centerX}
-                y={chartHeight - 24}
-              >
-                {point.label}
-              </text>
             </g>
           );
         })}
 
+        {valueLabels.map((label) => (
+          <text
+            fill={label.index === lastIndex || label.index === activeIndex ? brandRed : "#101418"}
+            fontSize={valueFontSize}
+            fontWeight="650"
+            key={label.index}
+            pointerEvents="none"
+            textAnchor="middle"
+            x={label.x}
+            y={label.y}
+          >
+            {label.text}
+          </text>
+        ))}
+
         {activePoint && tooltipPosition ? (
           <g pointerEvents="none">
             <line
-              stroke="#f9363c"
-              strokeDasharray="4 6"
-              strokeWidth="1.5"
+              stroke={brandRed}
+              strokeDasharray="3 5"
+              strokeWidth="1"
               x1={activePoint.centerX}
               x2={activePoint.centerX}
               y1={chartPadding.top}
@@ -270,9 +345,9 @@ export function EarnAumBarChart({
               cx={activePoint.centerX}
               cy={activePoint.y}
               fill="#ffffff"
-              r="5"
-              stroke="#f9363c"
-              strokeWidth="3"
+              r="4"
+              stroke={brandRed}
+              strokeWidth="2"
             />
             <rect
               fill="#101418"
@@ -284,18 +359,18 @@ export function EarnAumBarChart({
             />
             <text
               fill="#cdd4dc"
-              fontSize="15"
-              x={tooltipPosition.x + 16}
-              y={tooltipPosition.y + 25}
+              fontSize="12"
+              x={tooltipPosition.x + 12}
+              y={tooltipPosition.y + 20}
             >
               {activePoint.periodLabel}
             </text>
             <text
               fill="#ffffff"
-              fontSize="24"
+              fontSize="18"
               fontWeight="700"
-              x={tooltipPosition.x + 16}
-              y={tooltipPosition.y + 56}
+              x={tooltipPosition.x + 12}
+              y={tooltipPosition.y + 44}
             >
               {formatCurrency(activePoint.value)}
             </text>
@@ -305,9 +380,9 @@ export function EarnAumBarChart({
                   ? "#8ff0c0"
                   : "#ffb0b0"
               }
-              fontSize="15"
-              x={tooltipPosition.x + 16}
-              y={tooltipPosition.y + 80}
+              fontSize="12"
+              x={tooltipPosition.x + 12}
+              y={tooltipPosition.y + 63}
             >
               {weeklyChange === null
                 ? "First data point"
