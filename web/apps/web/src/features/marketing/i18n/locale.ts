@@ -1,13 +1,20 @@
+import { MARKETING_PAGE_SLUGS, type MarketingPageSlug } from "../registry";
+
 export const LOCALES = ["en", "ru", "zh"] as const;
 export type Locale = (typeof LOCALES)[number];
 
 export const LOCALE_COOKIE = "loyal_locale";
 export const LOCALE_PARAM = "lang";
 
+type MarketingPath = `/${MarketingPageSlug}`;
+
+const MARKETING_PATHS: readonly MarketingPath[] = MARKETING_PAGE_SLUGS.map(
+  (slug): MarketingPath => `/${slug}`
+);
+
 export const TRANSLATED_PATHS = [
   "/",
-  "/earn",
-  "/agents",
+  ...MARKETING_PATHS,
   "/trust",
   "/risks",
 ] as const;
