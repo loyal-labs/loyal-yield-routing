@@ -17,8 +17,6 @@ export function isPrivyUserDecline(error: unknown): boolean {
   );
 }
 
-// Privy `wallet_client_type` → display name. Unlisted types (and "unknown")
-// fall back to "another device" so we never name a wallet we cannot identify.
 const WALLET_CLIENT_NAMES: Record<string, string> = {
   Loyal: "the Loyal browser extension",
   phantom: "Phantom",
@@ -47,7 +45,6 @@ export class PrivyExternalWalletError extends Error {
   constructor(
     readonly address: string,
     readonly clientType?: string,
-    /** The user also has a Privy embedded wallet; the caller may offer it. */
     readonly embeddedAddress?: string,
   ) {
     super(

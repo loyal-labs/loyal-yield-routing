@@ -64,7 +64,6 @@ export function BrowserSiteScreen({ initialUrl }: BrowserSiteScreenProps) {
         trustedOriginsRef.current = remote.map((dapp) => dapp.origin);
       })
       .catch(() => {
-        // Keep bundled fallback when the network call fails.
       });
     return () => {
       cancelled = true;
@@ -221,7 +220,6 @@ export function BrowserSiteScreen({ initialUrl }: BrowserSiteScreenProps) {
             );
           }
         } catch {
-          // Ignore malformed messages that cannot be associated with a request id.
         }
       }
     },

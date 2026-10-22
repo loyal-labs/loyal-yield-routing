@@ -13,9 +13,6 @@ type CellProps = {
   onPress?: () => void;
 };
 
-// Profile "Account" row: shows the Privy email, or opens the link-email form
-// when there is none. Renders nothing without a Privy user (unconfigured
-// build, or a legacy wallet that has not migrated yet).
 export function PrivyAccountCell({
   render,
 }: {

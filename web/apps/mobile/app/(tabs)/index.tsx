@@ -107,16 +107,11 @@ export default function WalletScreen() {
     hasLoaded: earnLoaded,
     refreshEarnPosition,
   } = useEarnPosition(walletAddress);
-  // The Earn balance reads from a lagging read-model, so skeleton the card's
-  // figure until a read settles (and again while one is in flight) instead of
-  // flashing $0. Only while a wallet is connected.
   const earnLoading = walletAddress != null && (isEarnLoading || !earnLoaded);
   // Loyal APY forecast — the Earn card shows the same headline rate as the Earn
   // screen / APY chart / web, not the position's raw reserve supply APY.
   const forecastSummary = useEarnForecast();
   const { signer, state } = useWallet();
-  // Legacy shielded balances (ASK-2269): the Unshield action only appears while
-  // the wallet still holds one.
   const {
     balances: shieldedBalances,
     executeUnshield,
@@ -144,18 +139,11 @@ export default function WalletScreen() {
     refresh: doFullRefresh,
   });
 
-  // Re-fetch everything when the Solana network is switched in Settings
   const [networkLoading, setNetworkLoading] = useState(false);
   const [networkKey, setNetworkKey] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [tokenMarketRefreshKey, setTokenMarketRefreshKey] = useState(0);
-  // Replays the Earn card chart grow-in on pull-to-refresh. (Focus replay is
-  // handled inside the chart via useIsFocused so it doesn't re-render the whole
-  // wallet screen mid tab-transition.)
 
-  // Shared cache of /api/mobile/tokens/:mint for the mints the send/swap
-  // pickers can surface — the held tokens plus the SOL/LOYAL/USDC prefills so
-  // they never render raw token-list SVGs or the "Token" symbol fallback.
   const tokenDetailMints = useMemo(() => {
     const mints = new Set<string>();
     mints.add(NATIVE_SOL_MINT);
@@ -230,7 +218,6 @@ export default function WalletScreen() {
     return hasValuation ? total : null;
   }, [tokenHoldings, earnPosition, earnMaxSummary]);
 
-  // Portfolio split into the three overview buckets (Figma 141:5888).
   const stablecoinsUsd = useMemo(
     () =>
       sumHoldingsUsd(filterHoldingsByCategory(tokenHoldings, "stablecoins")),
@@ -245,8 +232,6 @@ export default function WalletScreen() {
     return Number.isFinite(raw) ? raw / 1e6 : 0;
   }, [earnPosition]);
   const earnApyBps = useMemo(() => {
-    // Show the loyal forecast rate (matching the Earn screen + APY chart) when
-    // funded; no badge when there's no Earn position.
     if (!earnPosition) {
       return null;
     }
@@ -302,9 +287,6 @@ export default function WalletScreen() {
     setIsSendOpen(true);
   }, []);
 
-  // The header scan button on Library/Settings routes here with a fresh `scan`
-  // token; open the Send flow straight into the QR scanner, then clear the
-  // param so returning to the tab later doesn't reopen it.
   const handledScanRef = useRef<string | null>(null);
   useEffect(() => {
     const token = params.scan;
@@ -318,10 +300,6 @@ export default function WalletScreen() {
     setIsRefreshing(true);
     setTokenMarketRefreshKey((k) => k + 1);
 
-    // Wall-clock deadline so even a socket-level hang (fetch without
-    // AbortController, stuck websocket) can't trap the spinner. Work
-    // itself runs through the coordinator which de-dupes against any
-    // ambient refresh already in flight.
     const REFRESH_DEADLINE_MS = 15_000;
     const work = requestRefresh("manual");
     const deadline = new Promise<"deadline">((resolve) =>
@@ -356,8 +334,6 @@ export default function WalletScreen() {
     setCachedBalanceBg(bg);
   }, []);
 
-  // Deposit straight into Earn from the card's "+" — runs inline while the
-  // sheet's button shows its loading state, so there's no jerky tab-hop.
   const handleDepositConfirmed = useCallback(
     async (amountUsd: number, mint: string) => {
       if (!signer || !isWalletUnlocked(state)) {
@@ -365,8 +341,6 @@ export default function WalletScreen() {
       }
       await executeEarnDeposit({ signer, amountUsd, mint });
       void refreshEarnPosition();
-      // The confirm also records quest progress — check now so a completion
-      // celebrates immediately instead of on the watcher's next poll tick.
       nudgeQuestProgressCheck();
     },
     [signer, state, refreshEarnPosition]
@@ -437,8 +411,6 @@ export default function WalletScreen() {
             onOpenBgPicker={() => setIsBgPickerOpen(true)}
           />
 
-          {/* Portfolio overview — Earn / Stablecoins / Crypto. Cells flex to
-              fill the screen height between balance and actions. */}
           <View style={{ flex: 1, marginTop: 16 }}>
             <WalletCategoryGrid
               earnUsd={earnUsd}
@@ -459,7 +431,6 @@ export default function WalletScreen() {
             />
           </View>
 
-          {/* Action bar — operates across the whole portfolio (Figma 141:5940) */}
           <View
             className="flex-row items-center gap-2 px-4"
             style={{ paddingTop: 16 }}

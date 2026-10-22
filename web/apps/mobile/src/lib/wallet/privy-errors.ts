@@ -26,8 +26,6 @@ export function privyErrorMessage(error: unknown): string {
   if (/network request failed|failed to fetch/i.test(message)) {
     return "No connection. Check your network and try again.";
   }
-  // Privy SDK errors carry a `code`; plain Errors thrown by our own code are
-  // already written for users (wallet mismatch, no wallet app, ...).
   if (typeof e?.code === "string") return FALLBACK;
   return message || FALLBACK;
 }

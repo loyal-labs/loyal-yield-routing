@@ -20,22 +20,13 @@
 // the actual failure instead of a blanket `request_failed`.
 
 export type WalletSessionFailure =
-  /** The wallet revoked the stored authorization; reconnect is required. */
   | "authorization_expired"
-  /** The wallet reauthorized a different account; reconnect is required. */
   | "account_mismatch"
-  /** No MWA-capable wallet app is installed. */
   | "unavailable"
-  /** The wallet app never connected back — the session never opened. */
   | "connection_failed"
-  /** The wallet app was reachable but did not answer in time. */
   | "timeout"
-  /** The wallet-native signer errored while producing the signature. */
   | "signing_failed";
 
-// What the user is told, per failure. Owned here so the advice can never drift
-// from the reason: telling someone to update a wallet app that simply was not
-// running sends them down the wrong path.
 const WALLET_SESSION_MESSAGES: Record<WalletSessionFailure, string> = {
   account_mismatch:
     "Wallet authorization is no longer valid. Reset your wallet in Settings and reconnect your wallet.",
@@ -64,8 +55,6 @@ export class WalletSessionError extends Error {
   constructor(
     failure: WalletSessionFailure,
     walletCode?: string | number,
-    // The native rejection this replaces. The message is user-facing copy, so
-    // without this the original message and stack would be lost to debugging.
     cause?: unknown,
   ) {
     super(
@@ -78,7 +67,6 @@ export class WalletSessionError extends Error {
   }
 }
 
-/** True when `error` is a wallet session that failed before or during signing. */
 export function isWalletSessionError(
   error: unknown,
 ): error is WalletSessionError {

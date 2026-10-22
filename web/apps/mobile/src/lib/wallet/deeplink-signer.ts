@@ -24,13 +24,6 @@ import { WalletRejectedError } from "./rejection";
 import { assertOwnVersionedSignature, type Signer } from "./signer";
 import { WalletSessionError } from "./wallet-session-error";
 
-// External-wallet signing on iOS, where MWA cannot exist: every operation is
-// a full app switch — we open a phantom.app/solflare.com universal link, the
-// wallet shows its approval UI, and redirects back to our /ul/wallet/<action>
-// return link with the (encrypted) response in query params. Protocol
-// encoding/encryption lives in deeplink-protocol.ts; this module owns the
-// app-switch round trip and the Signer implementation.
-
 export const DEEPLINK_WALLET_LABELS: Record<DeeplinkWalletProvider, string> = {
   phantom: "Phantom",
   solflare: "Solflare",
@@ -41,8 +34,6 @@ const WALLET_PROBE_SCHEMES: Record<DeeplinkWalletProvider, string> = {
   solflare: "solflare://",
 };
 
-// Shown in the wallet's connect approval dialog and stored in its session
-// token for validation.
 const APP_URL = "https://askloyal.com";
 
 const SIGNING_DECLINED_MESSAGE =
@@ -115,8 +106,6 @@ function performDeeplinkRequest(
   action: DeeplinkMethod,
   url: string,
 ): Promise<Record<string, unknown>> {
-  // A stale pending request (the user came back without responding, then
-  // retried) must not swallow the new request's response.
   pendingRequests.get(action)?.cancel();
 
   return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -142,18 +131,12 @@ function performDeeplinkRequest(
     pendingRequests.set(action, entry);
 
     const urlSub = Linking.addEventListener("url", ({ url: incoming }) => {
-      // Accept both the universal link (https://askloyal.com/ul/wallet/…)
-      // and the custom-scheme dev fallback (loyal[-dev]://ul/wallet/…).
       const match = /ul\/wallet\/([A-Za-z]+)/.exec(incoming);
       if (!match || match[1] !== action) return;
       const { queryParams } = Linking.parse(incoming);
       finish(() => resolve((queryParams ?? {}) as Record<string, unknown>));
     });
 
-    // The user can switch back without answering the wallet's prompt; no URL
-    // means no answer, so once the app is active and the grace window passes
-    // without a redirect, treat it as a cancellation instead of spinning
-    // forever.
     const appStateSub = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
       if (graceTimer !== undefined) clearTimeout(graceTimer);
@@ -174,12 +157,6 @@ function isUserCancellation(error: unknown): boolean {
   );
 }
 
-/**
- * Run the connect handshake with the chosen wallet app. Returns the session
- * to persist, or null when the user declined in the wallet or switched back
- * without answering. A fresh x25519 keypair per attempt, per the spec; the
- * secret key is dropped once the shared secret exists.
- */
 export async function connectDeeplinkWallet(
   provider: DeeplinkWalletProvider,
 ): Promise<StoredDeeplinkSession | null> {
@@ -207,14 +184,10 @@ export async function connectDeeplinkWallet(
     };
   } catch (error) {
     if (isUserCancellation(error)) return null;
-    // Wallet-reported connect errors keep their own identity: the wallet WAS
-    // reachable, so none of the wallet-session failure messages fit, and the
-    // wallet's errorMessage is already user-readable copy.
     throw error;
   }
 }
 
-/** Best-effort disconnect used by wallet reset. Opens the wallet app. */
 export async function disconnectDeeplinkWallet(
   session: StoredDeeplinkSession,
 ): Promise<void> {
@@ -238,14 +211,6 @@ function serializeForSigning(tx: Transaction | VersionedTransaction): string {
   return bs58.encode(bytes);
 }
 
-/**
- * Signer backed by an external wallet app over Phantom-style deeplinks
- * (Phantom, Solflare). Keys never reach this app; each sign call opens the
- * wallet app, which shows its own approval UI and redirects back with the
- * encrypted result. If the wallet revoked our session the stored record is
- * cleared so the next launch lands in reconnect onboarding, and a reconnect
- * instruction is thrown instead of the raw error (same recovery as MwaSigner).
- */
 export class DeeplinkSigner implements Signer {
   readonly kind = "deeplink" as const;
   readonly publicKey: PublicKey;

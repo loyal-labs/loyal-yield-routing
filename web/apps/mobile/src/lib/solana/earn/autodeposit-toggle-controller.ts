@@ -4,8 +4,6 @@ export type AutodepositToggleController = {
 
 export type AutodepositToggleControllerOptions = {
   debounceMs?: number;
-  // `flowId` comes from the submission handle below, so the loading metric for
-  // this press and the lifecycle flow the submit starts share one id.
   submit(active: boolean, flowId?: string): Promise<void>;
   refresh(): Promise<boolean | null>;
   onSubmissionStart?(active: boolean): {
@@ -33,10 +31,6 @@ function createPendingCycle(): PendingCycle {
   return { promise, resolve, reject };
 }
 
-// Coalesces an interactive switch into a serialized latest-value queue.
-// Before the first request starts, debounce replaces the pending value. Once a
-// request is in flight, presses replace one follow-up slot; the loop submits
-// only the final value seen after the active request settles.
 export function createAutodepositToggleController(
   options: AutodepositToggleControllerOptions
 ): AutodepositToggleController {
@@ -69,8 +63,6 @@ export function createAutodepositToggleController(
         terminalError = error;
       }
 
-      // A press arrived while the request was active. Skip every intermediate
-      // value and immediately submit the latest one.
       if (latestRequested !== submittedActive) {
         if (submitSucceeded) {
           submission?.complete();
@@ -88,9 +80,6 @@ export function createAutodepositToggleController(
         refreshError = error;
       }
 
-      // A press can also arrive while the final refresh is in flight. The
-      // refreshed value is already stale in that case, so continue the same
-      // serialized cycle and refresh again only after its true final request.
       if (latestRequested !== submittedActive) {
         continue;
       }

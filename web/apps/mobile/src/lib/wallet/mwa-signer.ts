@@ -77,8 +77,6 @@ function errorCodeOf(error: unknown): string | number | undefined {
 // the message too keeps this working if that string is ever reworded.
 const ASSOCIATION_CANCELLED_TEXT = "Local association cancelled by user";
 
-// Backing out of the association UI, in either shape the native module reports
-// it: the symbolic code, or the sentence-as-code above.
 function isAssociationCancellation(error: unknown): boolean {
   const code = errorCodeOf(error);
   return (
@@ -88,8 +86,6 @@ function isAssociationCancellation(error: unknown): boolean {
   );
 }
 
-// The user backing out of the wallet's association or authorization UI is a
-// choice, not a failure.
 function isUserCancellation(error: unknown): boolean {
   return (
     isAssociationCancellation(error) ||
@@ -172,11 +168,6 @@ function fromBase64Address(address: string): string {
   return new PublicKey(Buffer.from(address, "base64")).toBase58();
 }
 
-/**
- * Open the wallet chooser and request a fresh authorization. Returns the
- * account to persist, or null when the user cancelled or declined in the
- * wallet app.
- */
 export async function connectMwaWallet(): Promise<StoredMwaAccount | null> {
   try {
     const { transact } = await getMwa();
@@ -195,13 +186,10 @@ export async function connectMwaWallet(): Promise<StoredMwaAccount | null> {
     });
   } catch (error) {
     if (isUserCancellation(error)) return null;
-    // Connecting is a single session, so a session-layer rejection here
-    // happened before it opened. Protocol errors keep their own identity.
     throw toWalletSessionError(error, false) ?? error;
   }
 }
 
-/** Best-effort disconnect used by wallet reset. Opens a wallet session. */
 export async function deauthorizeMwaWallet(authToken: string): Promise<void> {
   const { transact } = await getMwa();
   await transact(async (wallet) => {
@@ -209,17 +197,6 @@ export async function deauthorizeMwaWallet(authToken: string): Promise<void> {
   });
 }
 
-/**
- * Signer backed by an external wallet app over Mobile Wallet Adapter.
- *
- * Keys never reach this app; each sign call opens an MWA session with the
- * user's wallet app (Phantom, Solflare, Seed Vault Wallet, …), which shows
- * its own approval UI. Every session starts by reauthorizing with the stored
- * auth token — silent when the authorization is still valid. If the wallet
- * rotated the token it is persisted; if the wallet revoked our authorization
- * the stored account is cleared so the next launch lands in reconnect
- * onboarding, and a reconnect instruction is thrown instead of the raw error.
- */
 export class MwaSigner implements Signer {
   readonly kind = "mwa" as const;
   readonly publicKey: PublicKey;
@@ -319,23 +296,10 @@ export class MwaSigner implements Signer {
         // retry failed identically (ASK-1872 follow-up).
         throw await this.forgetAuthorization("authorization_expired", error);
       }
-      // Only session-layer rejections become wallet-session failures. Protocol
-      // errors, `reauthorize`'s reconnect instructions and our signature checks
-      // all keep their own identity so they stay alertable.
       throw toWalletSessionError(error, sessionEstablished) ?? error;
     }
   }
 
-  /**
-   * Drop the stored authorization so the next launch lands in reconnect
-   * onboarding, and return the instruction to show the user. Returns the error
-   * rather than throwing it so call sites keep an explicit `throw` and stay
-   * readable as terminal branches.
-   *
-   * Clearing is the half that matters: without it the app keeps presenting a
-   * connected wallet whose every signature is refused, and the user has no way
-   * to reach the reconnect flow from inside the failing screen.
-   */
   private async forgetAuthorization(
     failure: "account_mismatch" | "authorization_expired",
     cause?: unknown,
@@ -353,14 +317,11 @@ export class MwaSigner implements Signer {
         auth_token: this.authToken,
       });
     } catch (error) {
-      // ERROR_AUTHORIZATION_FAILED: the wallet revoked our authorization
-      // (the user disconnected this app). Transient session errors rethrow.
       if (!hasErrorCode(error, -1)) throw error;
       throw await this.forgetAuthorization("authorization_expired", error);
     }
     const base64Address = toBase64Address(this.publicKey);
     if (!result.accounts.some((a) => a.address === base64Address)) {
-      // The wallet reauthorized a different account than the one connected.
       throw await this.forgetAuthorization("account_mismatch");
     }
     if (result.auth_token !== this.authToken) {

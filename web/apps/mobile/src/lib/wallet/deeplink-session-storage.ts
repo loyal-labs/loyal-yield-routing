@@ -14,13 +14,9 @@ const DEEPLINK_SESSION_KEY = "loyal.deeplinkWalletSession";
  */
 export type StoredDeeplinkSession = {
   provider: DeeplinkWalletProvider;
-  /** Base58-encoded Solana public key. */
   publicKey: string;
-  /** Opaque wallet session token, sent with every request. */
   session: string;
-  /** Base58 nacl.box shared secret for request/response encryption. */
   sharedSecret: string;
-  /** Base58 dapp x25519 public key the wallet maps to the shared secret. */
   dappPublicKey: string;
 };
 

@@ -28,11 +28,6 @@ const CONFIRMED_SLOT_RETRY_MS = 600;
 // few quick reads before surfacing the expiry.
 const POST_EXPIRY_ATTEMPTS = 3;
 
-// Earn txs carried NO priority fee, so under network load they'd sit unincluded
-// until the blockhash expired ("Signature has expired"). A modest priority fee
-// lets them compete for block space. We don't set a compute-unit LIMIT (the
-// prepared instructions don't, and their default has been landing), so the
-// per-tx fee stays well under ~0.0002 SOL.
 const PRIORITY_FEE_MICRO_LAMPORTS = 100_000;
 // Solana's max serialized transaction size. The backend prepares txs up to this
 // limit, so prepending the priority-fee instruction (~44 bytes) can push a fat
@@ -53,8 +48,6 @@ export const REBROADCAST_MAX_ELAPSED_MS = 60_000;
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-// One status read. Returns the landing slot when confirmed/finalized, null when
-// the node hasn't caught up yet, and throws only on a real on-chain failure.
 async function readConfirmedSlot(
   connection: Connection,
   signature: string,
@@ -77,8 +70,6 @@ async function readConfirmedSlot(
   return null;
 }
 
-// Polls the signature status up to `attempts` times, tolerating RPC propagation
-// lag. Returns the landing slot, or null if it never reads as confirmed.
 async function pollConfirmedSlot(
   connection: Connection,
   signature: string,
@@ -96,9 +87,6 @@ async function pollConfirmedSlot(
   return null;
 }
 
-// Waits for confirmation and resolves the landing slot for the read-model.
-// Tolerant of RPC propagation lag and false blockheight-expiries (a WS
-// notification missed for a tx that actually landed).
 async function confirmSentTransaction(
   connection: Connection,
   signature: string,
@@ -144,8 +132,6 @@ async function confirmSentTransaction(
   return { signature, confirmedSlot: slot ?? String(contextSlot) };
 }
 
-// Compiles a hydrated prepared operation into a v0 transaction, prepending a
-// priority fee when it fits within the transaction size limit.
 function compilePreparedOperation(
   operation: HydratedPreparedOperation,
   blockhash: string,
@@ -187,8 +173,6 @@ async function startSendingSignedTransaction(
   transaction: VersionedTransaction,
 ): Promise<InFlightTransaction> {
   const rawTransaction = transaction.serialize();
-  // First send runs preflight so a genuinely invalid tx fails fast; resends skip
-  // it. `maxRetries: 0` — we own the rebroadcast cadence, not the RPC.
   const signature = await connection.sendRawTransaction(rawTransaction, {
     skipPreflight: false,
     maxRetries: 0,
@@ -221,7 +205,6 @@ async function startSendingSignedTransaction(
           maxRetries: 0,
         });
       } catch {
-        // Best-effort — the confirmation path is the source of truth.
       }
     }
   })();
@@ -236,8 +219,6 @@ async function startSendingSignedTransaction(
   };
 }
 
-// Sends an already-signed transaction (with rebroadcast so it lands under
-// load) and waits for confirmation.
 async function sendSignedTransaction(
   connection: Connection,
   transaction: VersionedTransaction,
@@ -307,10 +288,6 @@ export async function signAndSendPreparedOperations(args: {
         });
         sent.push(confirmed);
       } catch (error) {
-        // Each stage is its own wallet session, so the user can approve stage 1
-        // and decline stage 2. That is not a clean cancellation: stage 1 is
-        // already on-chain and no confirm has run for it, so tag the rejection
-        // with what landed and let telemetry keep treating it as a failure.
         if (sent.length > 0 && error instanceof WalletRejectedError) {
           throw withLandedSignatures(
             error,
@@ -350,8 +327,6 @@ export async function signAndSendPreparedOperations(args: {
       }
       return sent;
     } finally {
-      // Stops every rebroadcast loop, including in-flight ones a send or
-      // confirm failure left behind.
       for (const flight of inFlight) {
         await flight.stop();
       }
@@ -372,7 +347,6 @@ export async function signAndSendPreparedOperations(args: {
   return sent;
 }
 
-// Single-operation convenience over the batch path (one wallet prompt).
 export async function signAndSendPreparedOperation(args: {
   connection: Connection;
   signer: Signer;

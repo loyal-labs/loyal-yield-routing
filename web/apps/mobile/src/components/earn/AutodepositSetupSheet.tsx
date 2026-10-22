@@ -26,10 +26,6 @@ import { useKeyboardRescueFocus } from "@/hooks/useKeyboardRescueFocus";
 
 import AutodepositIcon from "../../../assets/images/earn/autodeposit.svg";
 
-// Autodeposit set-up sheet (Figma 74-18887). Enter the wallet balance to keep;
-// anything above it auto-routes to Earn. The "edit" mode (settings icon on the
-// control) is identical except the CTA reads "Confirm". Mirrors DepositSheet's
-// input + keyboard-riding footer mechanics.
 const SCREEN_WIDTH = Dimensions.get("screen").width;
 
 const AMOUNT_MAX_FONT_SIZE = 48;
@@ -137,7 +133,6 @@ export function AutodepositSetupSheet({
 }: {
   open: boolean;
   onClose: () => void;
-  // May return a Promise — the CTA shows a spinner while it's pending.
   onConfirm: (thresholdUsd: number) => void | Promise<void>;
   onDelete?: () => void | Promise<void>;
   mode: "create" | "edit";
@@ -145,10 +140,6 @@ export function AutodepositSetupSheet({
   availableUsdc: number | null;
   earnBalanceUsd: number | null;
   walletAddress: string | null;
-  // SOL still needed to cover setup rent/fees (see
-  // computeAutodepositSetupSolShortfall). Non-null blocks the create CTA with
-  // a top-up prompt instead of letting the transaction fail in simulation.
-  // Ignored in edit mode (threshold changes are DB-only).
   setupSolShortfall?: number | null;
 }) {
   const sheetRef = useRef<BottomSheetModal>(null);
@@ -164,9 +155,6 @@ export function AutodepositSetupSheet({
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const { sheetHeight, snapPoints } = useFixedSheetLayout();
-  // The two flow cells show the CURRENT balances of the two accounts (wallet
-  // USDC → Earn), so they reflect reality and don't move as you type a
-  // threshold. The threshold only governs the future sweep, not these numbers.
   const balance = Number.isFinite(availableUsdc ?? NaN)
     ? (availableUsdc as number)
     : 0;
@@ -186,8 +174,6 @@ export function AutodepositSetupSheet({
     }
   }, [open]);
 
-  // Seed the form when the sheet opens (or its target threshold changes while
-  // open) — separate from present/dismiss so it can't reopen a closing sheet.
   useEffect(() => {
     if (!open) return;
     setAmount(
@@ -631,8 +617,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 16,
   },
-  // Side-by-side from → to (was stacked): the keyboard-riding footer must stay
-  // short enough that it doesn't cover the body's red caption on small screens.
   flow: {
     flexDirection: "row",
     alignItems: "center",
@@ -680,7 +664,6 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     color: COLOR_CENTS_DIM,
   },
-  // Short horizontal tick joining the two cells in the row.
   connector: {
     width: 14,
     height: 2,

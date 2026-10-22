@@ -10,9 +10,6 @@ const SEGMENTS: { key: ActivitySection; label: string }[] = [
   { key: "wallet", label: "Wallet" },
 ];
 
-// Top segmented control on the Activity screen (Figma 74:18150): switches
-// between the Earn and Wallet activity feeds. A red dot trails a segment's
-// label when that section has unseen items.
 export function ActivitySegmentedControl({
   value,
   onChange,

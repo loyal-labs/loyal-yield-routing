@@ -16,8 +16,6 @@ const VERIFIED_COLOR = "#34C759";
 const UNVERIFIED_COLOR = "#FFA000";
 const MUTED = "rgba(60, 60, 67, 0.6)";
 
-// Small explainer sheet opened by tapping the verified/unverified badge next
-// to the token name (Figma 316:9729 / 316:9741).
 export function TokenVerificationSheet({
   open,
   onClose,

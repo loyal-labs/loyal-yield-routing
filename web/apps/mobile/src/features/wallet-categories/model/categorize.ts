@@ -15,7 +15,7 @@ const STABLECOIN_MINTS = new Set<string>([
   SOLANA_USDC_MINT_MAINNET,
   SOLANA_USDC_MINT_DEVNET,
   SOLANA_USDT_MINT_MAINNET,
-  "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo", // PayPal USD (PYUSD)
+  "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
   "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA", // USDS
 ]);
 

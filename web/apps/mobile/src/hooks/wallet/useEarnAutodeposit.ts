@@ -5,9 +5,6 @@ import {
   type EarnAutodepositState,
 } from "@/lib/solana/earn/earn-api";
 
-// Reads the wallet's current Autodeposit state (threshold + on/off + the
-// policy/delegation the floor/toggle/close calls need) from the read-only
-// backend endpoint. Like useEarnPosition: wallet-address-keyed, never signs.
 export function useEarnAutodeposit(walletAddress: string | null) {
   const [autodeposit, setAutodeposit] = useState<EarnAutodepositState | null>(
     null,

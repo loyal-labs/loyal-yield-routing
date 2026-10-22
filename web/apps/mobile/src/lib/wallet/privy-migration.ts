@@ -11,7 +11,6 @@ export const PRIVY_MIGRATION_DONE_KEY = "loyal:privy-migration-done";
 export const SIWS_DOMAIN = "askloyal.com";
 export const SIWS_URI = "https://askloyal.com/mobile";
 
-/** Subset of `useLoginWithSiws()` from @privy-io/expo. */
 export type SiwsLogin = {
   generateMessage(args: {
     wallet: { address: string };
@@ -27,11 +26,6 @@ type DoneFlag = {
 
 export type PrivyMigrationResult = "done" | "skipped" | "declined" | "failed";
 
-/**
- * Sign a Privy SIWS message with the existing signer so this device's wallet
- * becomes a linked account on a Privy user. Never throws: the caller keeps
- * the legacy signer regardless, and "declined" / "failed" retry next launch.
- */
 export async function migrateSignerToPrivy(
   signer: Signer,
   siws: SiwsLogin,

@@ -3,15 +3,8 @@ import type { Href } from "expo-router";
 /** On-screen rectangle of a wallet card, in window coordinates. */
 export type CardRect = { x: number; y: number; width: number; height: number };
 
-/** A card rect plus the USD value shown on it — enough to draw the collapsed
- * "card face" while the destination page expands out of it. */
 export type CardSourceRect = CardRect & { usd: number };
 
-// Encode the source rect as query params so the category page can morph out of
-// (and collapse back into) the card that was tapped. Geometry keeps subpixel
-// precision so the final collapsed overlay aligns with the real card underneath;
-// the USD value keeps its cents so the morph's card "face" renders identically
-// to the real card. Without a rect the page just opens normally.
 function withRect(path: string, rect?: CardSourceRect): Href {
   if (!rect) return path as Href;
   const q = [
@@ -32,7 +25,6 @@ export function buildCryptoHref(rect?: CardSourceRect): Href {
   return withRect("/wallet/crypto", rect);
 }
 
-// Earn is reached from the home product card.
 export function buildEarnHref(): Href {
   return "/(tabs)/earn" as Href;
 }

@@ -16,8 +16,6 @@ const CHECK_COOLDOWN_MS = 10 * 60 * 1000;
 const GENERIC_NOTES =
   "We are constantly improving the app, optimizing performance and fixing issues. Please update now to have the latest version running!";
 
-// The incoming update's manifest embeds the app config published with it —
-// including `extra.otaNotes`, the free-form release notes from ota-notes.txt.
 function readManifestNotes(manifest: unknown): string | null {
   const extra = (
     manifest as

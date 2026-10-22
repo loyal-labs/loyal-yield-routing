@@ -22,30 +22,23 @@ export function LockScreen() {
   const [biometricFailed, setBiometricFailed] = useState(false);
   const [lockCountdown, setLockCountdown] = useState(0);
 
-  // Track whether biometric auth should be attempted.
-  // Only on initial mount when app is already active — NOT when
-  // transitioning to background or when user manually locked.
   const didAttemptBiometric = useRef(false);
 
   // Set only on a real background transition, so returning from the system
   // biometric sheet (inactive -> active) does not count as a re-entry.
   const wasBackgrounded = useRef(false);
 
-  // Guards against two overlapping prompts (mount effect + AppState listener).
   const biometricInFlight = useRef(false);
 
-  // Resolve biometric type on mount
   useEffect(() => {
     if (biometricEnabled) {
       getBiometricType().then(setBiometricType);
     }
   }, [biometricEnabled]);
 
-  // Attempt biometric only when app is active and screen first appears
   useEffect(() => {
     if (!biometricEnabled || didAttemptBiometric.current) return;
 
-    // Only auto-trigger if app is in foreground
     if (AppState.currentState !== "active") return;
 
     didAttemptBiometric.current = true;
@@ -57,7 +50,6 @@ export function LockScreen() {
           setBiometricFailed(true);
           setUnlocking(false);
         }
-        // If ok, state transitions to unlocked — component unmounts
       })
       .finally(() => {
         biometricInFlight.current = false;
@@ -93,7 +85,6 @@ export function LockScreen() {
       wasBackgrounded.current = false;
       didAttemptBiometric.current = true;
 
-      // A prompt raised by the mount effect may still be on screen.
       if (biometricInFlight.current) return;
       biometricInFlight.current = true;
 
@@ -112,7 +103,6 @@ export function LockScreen() {
     return () => subscription.remove();
   }, [biometricEnabled, unlockWithBiometrics]);
 
-  // Countdown timer for lockout
   useEffect(() => {
     if (lockCountdown <= 0) return;
     const interval = setInterval(() => {
@@ -132,7 +122,6 @@ export function LockScreen() {
     setError(null);
     try {
       await unlock(value);
-      // State transitions to unlocked — component unmounts
     } catch (e) {
       if (e instanceof PinLockedError) {
         const seconds = Math.ceil(e.remainingMs / 1000);
@@ -174,7 +163,6 @@ export function LockScreen() {
   const isFaceId = biometricType === "faceid";
   const BiometricIcon = isFaceId ? Scan : Fingerprint;
 
-  // Full-screen loading overlay while decrypting
   if (unlocking) {
     return (
       <Animated.View

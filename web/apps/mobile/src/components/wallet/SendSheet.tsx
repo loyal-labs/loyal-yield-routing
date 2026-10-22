@@ -83,16 +83,12 @@ const isValidSolanaAddress = (address: string): boolean => {
   }
 };
 
-// Truncate addresses as 2fKB...Nhtj (matches the activity feed's formatting).
 function formatRecipientLabel(value: string): string {
   return formatSenderAddress(value.trim());
 }
 
-// Shown under the recipient input when the value isn't a valid Solana address.
 const INVALID_RECIPIENT_HINT = "Invalid Solana address";
 
-// Thousands-separated number formatting without relying on Intl (Hermes
-// support is uneven). Trims trailing zeros down to `minFrac`.
 function formatWithCommas(value: number, minFrac: number, maxFrac: number): string {
   const safe = Number.isFinite(value) ? value : 0;
   const [intPart, fracPartRaw = ""] = safe.toFixed(maxFrac).split(".");
@@ -118,19 +114,12 @@ function formatSolAmount(value: number): string {
   return formatWithCommas(value, 0, 6);
 }
 
-// Fee in USD for the review card. Mirrors the design's "<$0.01" treatment for
-// sub-cent fees; otherwise an approximate dollar value.
 function formatFeeUsd(feeUsd: number | null): string {
   if (feeUsd === null) return "";
   if (feeUsd < 0.01) return "<$0.01";
   return `≈ ${formatUsdAmount(feeUsd)}`;
 }
 
-// Sheet is pinned to a definite height so the absolute keyboard-riding
-// footer's `bottom: 0` lands at the sheet bottom rather than the content
-// bottom. Height + snap point both come from useFixedSheetLayout so they can
-// never diverge (screen-height math overshot the sheet on iPad/notched
-// iPhones and clipped the CTA).
 const SCREEN_WIDTH = Dimensions.get("screen").width;
 
 // Amount auto-shrink (ported from DepositSheet): keep the big amount on one
@@ -182,14 +171,10 @@ function getFriendlyError(raw: string): string {
 type SendStep = "recipient" | "form" | "confirm" | "result";
 
 type RecentRecipient = {
-  /** Full Solana address. */
   address: string;
-  /** Number of past outgoing sends to this recipient. */
   sendCount: number;
 };
 
-// Build the "Recently used" list from wallet activity: dedupe outgoing
-// transfers by recipient, count sends, and sort most-recent first.
 function deriveRecentRecipients(transactions: Transaction[]): RecentRecipient[] {
   const byRecipient = new Map<
     string,
@@ -224,7 +209,6 @@ type SendSheetProps = {
   tokenDetailsByMint?: TokenDetailsByMint;
   onSendComplete?: () => void;
   initialMint?: string;
-  /** Open straight into the QR scanner (used by the header scan button). */
   initialShowScanner?: boolean;
 };
 
@@ -272,7 +256,6 @@ function extractSolanaAddressFromScan(rawData: string): string | null {
         if (isValidSolanaAddress(normalizedValue)) return normalizedValue;
       }
     } catch {
-      // Not a URL; continue with regex candidate scan.
     }
 
     const candidates = input.match(SOL_ADDRESS_CANDIDATE_REGEX) ?? [];
@@ -324,7 +307,6 @@ function buildSendAssets(
     }
   }
 
-  // Native SOL balance comes from the wallet balance, not holdings.
   const solBalance = solBalanceLamports ? solBalanceLamports / LAMPORTS_PER_SOL : 0;
   if (solBalance > 0) {
     const existingSol = assetsByKey.get(NATIVE_SOL_MINT);
@@ -392,9 +374,6 @@ export function SendSheet({
   const [sendError, setSendError] = useState<string | null>(null);
   const [txSignature, setTxSignature] = useState<string | null>(null);
 
-  // Recent recipients are derived from wallet activity. Gate the fetch on
-  // `open` (pass null while closed) so screens that don't otherwise load
-  // activity don't trigger a background history fetch until Send is opened.
   const { walletTransactions } = useWalletTransactions(open ? publicKey : null);
   const recentRecipients = useMemo(
     () => deriveRecentRecipients(walletTransactions),
@@ -460,10 +439,6 @@ export function SendSheet({
     };
   }, []);
 
-  // Reset state on open/close transitions. Other derived inputs (sendAssets,
-  // initialMint) are intentionally read at open time — re-running the reset
-  // mid-flight would clobber the result step after onSendComplete refreshes
-  // holdings.
   useEffect(() => {
     if (open) {
       bottomSheetRef.current?.present();
@@ -508,9 +483,6 @@ export function SendSheet({
       if (!signer) {
         throw new Error("Wallet signer is not available");
       }
-      // The dedicated review step already confirms the transfer, so sign
-      // directly — no extra decoded-transaction approval modal. (Seed Vault
-      // wallets still get their own native biometric prompt.)
       let sig: string;
       if (selectedAsset.mint === NATIVE_SOL_MINT) {
         sig = await sendSolTransaction(
@@ -701,8 +673,6 @@ export function SendSheet({
     [focusActiveInput],
   );
 
-  // Re-focus the right input on step / picker transitions (the sheet is
-  // already settled, so `onChange` won't fire again).
   useEffect(() => {
     if (!sheetSettledRef.current) return;
     const id = setTimeout(focusActiveInput, 80);
@@ -835,7 +805,6 @@ export function SendSheet({
   );
 }
 
-// --- Recipient step (first step of the send flow) ---
 function RecipientGroupHeader({ title }: { title: string }) {
   return (
     <View style={{ paddingHorizontal: 16 }}>
@@ -944,7 +913,6 @@ function RecipientStep({
 
   return (
     <View className="w-full" style={{ flex: 1 }}>
-      {/* Toolbar */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -987,7 +955,6 @@ function RecipientStep({
         </View>
       </View>
 
-      {/* Recipient input */}
       <View style={{ paddingTop: 36, paddingHorizontal: 16, paddingBottom: 16 }}>
         <View className="flex-row items-start" style={{ minHeight: 48 }}>
           <BottomSheetTextInput
@@ -1059,8 +1026,6 @@ function RecipientStep({
         ) : null}
       </View>
 
-      {/* Results: exact match for a valid address, otherwise recently used
-          (shown for both the empty and invalid states). */}
       <BottomSheetScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 96 }}
@@ -1094,7 +1059,6 @@ function RecipientStep({
         ) : null}
       </BottomSheetScrollView>
 
-      {/* Proceed CTA — rides up with the keyboard. */}
       <Animated.View
         style={[
           {
@@ -1138,7 +1102,6 @@ function RecipientStep({
   );
 }
 
-// --- Amount step (second step of the send flow) ---
 function AmountStep({
   recipientLabel,
   onBack,
@@ -1243,7 +1206,6 @@ function AmountStep({
 
   return (
     <View className="w-full" style={{ flex: 1 }}>
-      {/* Toolbar */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1284,9 +1246,6 @@ function AmountStep({
         </View>
       </View>
 
-      {/* Amount input — transparent overlay BottomSheetTextInput captures
-          taps/keyboard; the visible "$"+digits + custom caret render on top
-          (pointerEvents="none"). */}
       <View style={{ paddingTop: 36, paddingHorizontal: 16 }}>
         <Pressable
           style={{ position: "relative", height: 58, justifyContent: "flex-end" }}
@@ -1373,8 +1332,6 @@ function AmountStep({
         </Text>
       </View>
 
-      {/* Footer: token selector + balance + MAX, then the Review CTA. Pinned to
-          the sheet bottom and rides up with the keyboard. */}
       <Animated.View
         style={[
           {
@@ -1492,7 +1449,6 @@ function AmountStep({
   );
 }
 
-// --- Asset selection sheet ---
 function AssetPickerStep({
   assets,
   tokenDetailsByMint,
@@ -1519,7 +1475,6 @@ function AssetPickerStep({
 
   return (
     <View className="w-full">
-      {/* Toolbar */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -1554,7 +1509,6 @@ function AssetPickerStep({
         </View>
       </View>
 
-      {/* Search */}
       <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
         <View
           className="flex-row items-center"
@@ -1585,7 +1539,6 @@ function AssetPickerStep({
         </View>
       </View>
 
-      {/* Token list */}
       {filteredAssets.map((asset) => {
         const icon = resolveTokenIcon({
           mint: asset.mint,
@@ -1679,8 +1632,6 @@ function QrScannerModal({
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const frameSize = Math.min(280, Math.round(screenWidth * 0.72));
-  // Center the frame slightly above geometric middle so the instruction text
-  // and permission UI have breathing room below.
   const sideStripHeight = Math.max(0, (screenHeight - frameSize) / 2 - 40);
 
   const handleGrantPermission = useCallback(async () => {
@@ -1707,7 +1658,6 @@ function QrScannerModal({
           />
         ) : null}
 
-        {/* Dim overlay with centered transparent frame */}
         <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
           <View style={[qrScannerStyles.dim, { height: sideStripHeight }]} />
           <View style={[qrScannerStyles.middleRow, { height: frameSize }]}>
@@ -1727,7 +1677,6 @@ function QrScannerModal({
           <View style={[qrScannerStyles.dim, qrScannerStyles.flex1]} />
         </View>
 
-        {/* Header: title + close */}
         <View
           style={{
             position: "absolute",
@@ -1764,7 +1713,6 @@ function QrScannerModal({
           </Pressable>
         </View>
 
-        {/* Footer: instruction + permission CTA + error */}
         <View
           style={{
             position: "absolute",
@@ -1870,7 +1818,6 @@ const qrScannerStyles = StyleSheet.create({
   },
 });
 
-// --- Confirm / review step ---
 function ConfirmRow({
   label,
   value,
@@ -1964,9 +1911,6 @@ function ConfirmStep({
     isNativeSol ? formatSolAmount(value) : formatTokenAmount(value, 0);
 
   const feeUsd = solPriceUsd !== null ? feeSol * solPriceUsd : null;
-  // The fee is paid in SOL. For a native-SOL send it folds into the token
-  // total; for an SPL send the token amount stands alone (the fee is broken
-  // out in its own row) and the all-in cost is carried by the USD figure.
   const totalToken = isNativeSol ? amountInToken + feeSol : amountInToken;
   const totalUsd = isNativeSol
     ? totalToken * (solPriceUsd ?? 0)
@@ -1976,7 +1920,6 @@ function ConfirmStep({
 
   return (
     <View className="w-full" style={{ flex: 1 }}>
-      {/* Toolbar */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -2017,7 +1960,6 @@ function ConfirmStep({
         </View>
       </View>
 
-      {/* Asset icon */}
       <View
         className="w-full flex-row items-start"
         style={{ padding: 16 }}
@@ -2030,7 +1972,6 @@ function ConfirmStep({
         </View>
       </View>
 
-      {/* Amount being sent */}
       <View style={{ paddingTop: 16, paddingHorizontal: 16 }}>
         <View style={{ paddingBottom: 20, paddingHorizontal: 8 }}>
           <View className="flex-row items-baseline" style={{ gap: 8 }}>
@@ -2071,7 +2012,6 @@ function ConfirmStep({
         </View>
       </View>
 
-      {/* Details card */}
       <BottomSheetScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 8 }}
@@ -2097,7 +2037,6 @@ function ConfirmStep({
 
       </BottomSheetScrollView>
 
-      {/* Confirm CTA */}
       <View
         style={{
           backgroundColor: "#fff",
@@ -2135,9 +2074,6 @@ function ConfirmStep({
   );
 }
 
-// --- Result step (sending / sent / error) ---
-
-// Continuously rotating red spinner arc, shown while the transfer is in flight.
 function SendingSpinner() {
   const rotation = useSharedValue(0);
   useEffect(() => {
@@ -2158,7 +2094,6 @@ function SendingSpinner() {
   );
 }
 
-// Mascot entrance: rapid zoom-in with a spring overshoot (bounce) + fade-in.
 function MascotReveal({ children }: { children: React.ReactNode }) {
   const scale = useSharedValue(0.3);
   const opacity = useSharedValue(0);
@@ -2209,7 +2144,6 @@ function ResultStep({
 
   return (
     <View className="w-full" style={{ flex: 1 }}>
-      {/* Toolbar */}
       <View className="w-full" style={{ paddingVertical: 16 }}>
         <View className="flex-row items-center justify-between px-4">
           <Pressable
@@ -2250,7 +2184,6 @@ function ResultStep({
         </View>
       </View>
 
-      {/* Centered status: mascot/spinner + copy */}
       <View
         className="flex-1 items-center justify-center"
         style={{ paddingHorizontal: 32, paddingVertical: 24 }}
@@ -2311,7 +2244,6 @@ function ResultStep({
         </View>
       </View>
 
-      {/* Footer: Done + (when available) View transaction */}
       <View
         style={{
           backgroundColor: "#fff",

@@ -16,8 +16,6 @@ import type { Transaction } from "@/types/wallet";
 
 import { useActivity } from "../model/ActivityProvider";
 
-// The Wallet section of the Activity screen: the full wallet transactions list,
-// the same rows the wallet page used to show, now uncapped on its own tab.
 export function WalletActivityList() {
   const { walletAddress, walletTransactions, isFetchingTransactions } =
     useActivity();

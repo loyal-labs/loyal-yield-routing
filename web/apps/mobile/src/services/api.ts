@@ -28,7 +28,6 @@ export async function fetchEarnMaxApy(): Promise<number | null> {
     : null;
 }
 
-/** Public on-chain display data, like the ordinary Earn state/earnings reads. */
 export async function fetchMobileEarnMax<A extends "summary" | "activity">(
   action: A, walletAddress: string
 ): Promise<MobileEarnMaxResponses[A]> {
@@ -89,9 +88,6 @@ export type TokenDetailTimeframe = "1d" | "1w" | "1m" | "1y";
 
 export type { MobileTokenDetailResponse } from "@loyal-labs/api";
 
-/**
- * Fetch all summaries from the API.
- */
 export async function fetchSummaries(): Promise<Summary[]> {
   const response = await fetch(`${env.apiBaseUrl}/api/summaries`);
   if (!response.ok) {
@@ -101,9 +97,6 @@ export async function fetchSummaries(): Promise<Summary[]> {
   return data.summaries;
 }
 
-/**
- * Fetch summaries for a specific group chat.
- */
 export async function fetchSummariesByGroup(
   groupChatId: string,
 ): Promise<Summary[]> {

@@ -38,7 +38,6 @@ export function BiometricSetupScreen({ pin, onComplete }: Props) {
     try {
       await setBiometricEnabled(pin, true);
     } catch {
-      // Biometric enrollment failed — continue without
     }
     onComplete();
   }, [pin, setBiometricEnabled, onComplete]);

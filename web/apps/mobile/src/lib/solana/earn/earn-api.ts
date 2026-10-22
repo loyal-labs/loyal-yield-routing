@@ -16,23 +16,14 @@ import type { WirePreparedOperation } from "./wire";
 // so a retry after a timeout lands on the fast path.
 const PREPARE_TIMEOUT_MS = 120_000;
 
-// Client for the wallet-signed mobile Earn endpoints on loyal-web
-// (env.apiBaseUrl); they do not go through `src/services/api.ts`.
-
 export type EarnAuthFields = {
   walletAddress: string;
   signature: string;
   issuedAt: string;
 };
 
-// Bearer alternative for the DB-only Autodeposit endpoints: a cached mobile
-// Earn session token (see earn-session.ts) instead of a per-request
-// wallet-signed message — no wallet prompt.
 export type EarnSessionAuth = { sessionToken: string };
 
-// Splits either credential kind into request parts: signed auth fields spread
-// into the body (the historical contract); a session token rides the
-// Authorization header with no body auth fields.
 function earnAuthParts(auth: EarnAuthFields | EarnSessionAuth): {
   headers: Record<string, string>;
   bodyFields: Record<string, string>;
@@ -62,19 +53,9 @@ export type EarnDepositPrepareResponse = {
   preparedDeposit: WirePreparedEarnDeposit;
 };
 
-// Carries the backend's error `code` so flows can react to specific failures
-// (e.g. re-sign a fresh auth message on `stale_mobile_auth`), plus the response
-// `status` when one arrived. Telemetry reports `status` as `httpStatus`, which
-// is what separates a real backend failure from an error raised with no
-// response at all (ASK-1872).
 export class EarnApiError extends Error {
   readonly code?: string;
   readonly status?: number;
-  /**
-   * Why the request failed, for the throws that carry no `status` and would
-   * otherwise reach telemetry as an unexplained `request_failed` (ASK-2018).
-   * Set at the throw site, which is the only place that still knows.
-   */
   readonly detail?: LifecycleErrorDetail;
 
   constructor(
@@ -91,11 +72,6 @@ export class EarnApiError extends Error {
   }
 }
 
-/**
- * An Earn failure that never got a response — no backend code, no HTTP status,
- * just a named cause. Spelling out the two undefineds at every call site would
- * bury the one argument that carries information.
- */
 export function earnNetworkError(
   message: string,
   detail?: LifecycleErrorDetail,
@@ -221,12 +197,8 @@ export async function prepareEarnDeposit(args: {
   return (await res.json()) as EarnDepositPrepareResponse;
 }
 
-// --- Withdraw -------------------------------------------------------------
-
 export type EarnWithdrawMode = "partial" | "full";
 
-// Which Earn source to withdraw from. Omitted/null lets the backend auto-select
-// when there's exactly one source (the common single-reserve case).
 export type EarnWithdrawSource = {
   type: "reserve" | "idle";
   id: string;
@@ -238,16 +210,10 @@ export type EarnWithdrawSource = {
   tokenAccount?: string;
 } | null;
 
-// Serialized prepared withdrawal. Only the fields mobile signs/sends are typed;
-// the whole object is echoed back to `confirm` opaquely (the backend rebuilds
-// the canonical confirm payload from it).
 export type WirePreparedEarnWithdrawStep = {
   prepared: WirePreparedOperation;
 };
 
-// The Autodeposit teardown bundled into a full exit. Mobile only reads the
-// identifiers and re-prepares the close on-device via the close flow; the rest
-// of the wire payload is ignored.
 export type WireEarnWithdrawAutodepositClose = {
   policy: { account: string };
   subscription: { recurringDelegation: string };
@@ -461,7 +427,6 @@ export async function confirmEarnWithdrawCleanup(
 export type EarnWithdrawConfirmArgs = {
   auth: EarnAuthFields;
   preparedWithdraw: WirePreparedEarnWithdraw;
-  // Index into `withdrawSteps` for a multi-step withdrawal; omitted for single.
   stepIndex?: number;
   withdrawalSignature: string;
   confirmedSlot: string;
@@ -486,11 +451,6 @@ export async function confirmEarnWithdraw(
   }
 }
 
-// A withdrawable Earn source (a Kamino reserve position or an idle vault
-// stablecoin balance), with both display fields and the identifiers
-// `withdraw/prepare` needs. `sourceId` is the new-style stable identifier
-// (`reserve:<reserve>` / `idle:<tokenAccount>`); requests still use the
-// legacy `{ mode, source }` shape, which the backend keeps supporting.
 export type EarnWithdrawSourceInfo = {
   type: "reserve" | "idle";
   id: string;
@@ -509,7 +469,6 @@ export type EarnWithdrawSourcesResponse = {
   smartAccountAddress: string | null;
 };
 
-// Read-only list of withdrawal sources for the wallet (no signature).
 export async function fetchEarnWithdrawSources(
   walletAddress: string,
 ): Promise<EarnWithdrawSourcesResponse> {
@@ -525,7 +484,6 @@ export async function fetchEarnWithdrawSources(
   return (await res.json()) as EarnWithdrawSourcesResponse;
 }
 
-// Maps a source list entry to the `withdraw/prepare` source identifier shape.
 export function toWithdrawPrepareSource(
   info: EarnWithdrawSourceInfo,
 ): EarnWithdrawSource {
@@ -541,17 +499,12 @@ export function toWithdrawPrepareSource(
   };
 }
 
-// --- Autodeposit ----------------------------------------------------------
-
 export type EarnAutodepositSetupStage =
   | "initialize_subscription_authority"
   | "approve_token_delegate"
   | "create_policy"
   | "create_recurring_delegation";
 
-// Only the fields the mobile orchestrator reads are typed; the whole object is
-// echoed back to `setup/confirm` opaquely (the backend rebuilds the canonical
-// confirm payload from it).
 export type WirePreparedEarnAutodepositSetup = {
   prepared: WirePreparedOperation;
   stage: EarnAutodepositSetupStage;
@@ -620,7 +573,6 @@ export type EarnAutodepositStateResponse = {
   smartAccountAddress: string | null;
 };
 
-// Read-only autodeposit state, keyed by wallet address (no signature).
 export async function fetchEarnAutodepositState(
   walletAddress: string,
 ): Promise<EarnAutodepositStateResponse> {
@@ -742,10 +694,6 @@ export type EarnAutodepositSweepExecuteResponse = {
   };
 };
 
-// Ask the sweep worker to run the pending scheduled Autodeposit sweep now
-// instead of waiting out its ~1h window. The target is resolved from the
-// wallet's active policy (no body params beyond the signed auth). Mirrors the
-// web `yield-optimization/autodeposit/sweeps/execute` route.
 export async function requestEarnAutodepositSweepExecute(args: {
   auth: EarnAuthFields | EarnSessionAuth;
 }): Promise<EarnAutodepositSweepExecuteResponse> {
@@ -849,9 +797,6 @@ export type EarnStateResponse = {
   smartAccountAddress: string | null;
 };
 
-// Read-only balance lookup keyed by wallet address — no signature, so it never
-// triggers a Seed Vault prompt on passive Earn-tab views (the server resolves
-// the wallet's smart account itself and only returns public on-chain data).
 export async function fetchEarnState(
   walletAddress: string,
 ): Promise<EarnStateResponse> {
@@ -907,10 +852,6 @@ export async function fetchEarnHoldings(
   return (await res.json()) as EarnHoldingsResponse;
 }
 
-// Per-user Earn earnings for the Earnings chart (read-only, keyed by wallet
-// address — no signature, like `state`). `bars` are per-day earned amounts; the
-// chart plots them per-day (each bar = that day's earnings). The live odometer
-// anchors to the client fetch time.
 export type EarnEarningsBar = {
   apyBps: number | null;
   avgPrincipalUsd: number;
@@ -972,8 +913,6 @@ export async function fetchEarnEarnings(
   return "ranges" in payload ? payload.ranges["30D"] : payload;
 }
 
-// --- Earn transactions (activity) ----------------------------------------
-
 export type EarnTransactionKind =
   | "autodeposit_action"
   | "balance_sweep"
@@ -1021,9 +960,6 @@ export type EarnTransactionsResponse = {
   transactions: EarnTransactionItem[];
 };
 
-// Read-only Earn transaction history, keyed by wallet address (no signature,
-// like `state`/`earnings`). Wallet-keyed twin of the web session
-// `earn-transactions` route.
 export async function fetchEarnTransactions(
   walletAddress: string,
 ): Promise<EarnTransactionsResponse> {
@@ -1076,8 +1012,6 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummary> {
 
 export type EarnDepositConfirmArgs = {
   auth: EarnAuthFields;
-  // Echoed back verbatim from the prepare response; the backend rebuilds the
-  // canonical confirm payload from it.
   preparedDeposit: WirePreparedEarnDeposit;
   depositSignature: string;
   confirmedSlot: string;
@@ -1104,9 +1038,6 @@ export async function confirmEarnDeposit(
   }
 }
 
-// Solana Week quest progress (read-only, keyed by wallet — same `frontend`
-// backend and no-signature pattern as `fetchEarnState`). Powers the in-app
-// quest test page; Solana stays authoritative for the actual badge/claim state.
 export type SolanaWeekQuestKind = "earn_deposit" | "first_autodeposit_sweep";
 
 export type SolanaWeekQuestStatus =
@@ -1142,15 +1073,6 @@ export async function fetchSolanaWeekQuestProgress(
   }
   return (await res.json()) as SolanaWeekQuestProgressResponse;
 }
-
-// --- Rent refunds -----------------------------------------------------------
-//
-// Scan for closed Earn accounts still holding refundable rent: dead vault
-// policies, revoked/expired recurring delegations, and the vault itself
-// (stranded setup SOL + token-account rents). Wallet-keyed and read-only —
-// no signature (like `state`), so the auto-scan never prompts
-// Seed Vault. Only `prepare` (which returns a signable transaction) is
-// wallet-signed.
 
 export type EarnRefundScanItem = {
   account: string;

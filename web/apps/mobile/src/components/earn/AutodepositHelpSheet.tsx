@@ -25,9 +25,6 @@ import { useFixedSheetLayout } from "@/hooks/useFixedSheetLayout";
 import HelpCoin from "../../../assets/images/earn/help-coin.svg";
 import HelpDog from "../../../assets/images/earn/help-dog.svg";
 
-// Autodeposit "?" help sheet (Figma 137-6178). Red dog mascot peeking up with
-// three gold coins floating above its head; each coin hovers independently.
-
 // Hero artboard is 400×500 in Figma; everything below is expressed in that base
 // space and scaled by `s = heroWidth / 400` so the layout stays pixel-faithful.
 const HERO_BASE_WIDTH = 400;
@@ -38,8 +35,6 @@ const COIN_BASE_HEIGHT = 149.556;
 const COLOR_CHIP_BG = "#F2F2F7";
 const COLOR_BODY_DIM = "rgba(60, 60, 67, 0.6)";
 
-// Coin box (top-left + rotation) in 400×500 base space, plus an independent
-// bob/wobble cadence per coin so they never float in sync.
 const COINS = [
   {
     left: 258.79,

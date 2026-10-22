@@ -6,10 +6,6 @@ import type {
 
 import type { Signer } from "@/lib/wallet/signer";
 
-/**
- * Thin WalletLike adapter over a Signer, suitable for AnchorProvider.
- * Delegates all signing to the underlying signer (local keypair or vault).
- */
 export class SimpleWallet {
   constructor(readonly signer: Signer) {}
 

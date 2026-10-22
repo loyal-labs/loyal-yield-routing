@@ -28,25 +28,20 @@ import type { EarnEarningsBar } from "@/lib/solana/earn/earn-api";
 import { getShowTips } from "@/lib/settings";
 
 const COLOR_WHITE = "#FFFFFF";
-const COLOR_RED = "#F9363C"; // Figma "Brand Red" — the scrub highlight
+const COLOR_RED = "#F9363C";
 const COLOR_GREEN = "#32B67C"; // the "+$X past month" gain subtitle
 const COLOR_DIM_WHITE_40 = "rgba(255, 255, 255, 0.4)";
 const COLOR_DIM_WHITE_60 = "rgba(255, 255, 255, 0.6)";
 
-// Bar opacities, relative to the scrub cursor (Figma 74-20800). Default (not
-// scrubbing) every bar is a calm dim white; while scrubbing, only the selected
-// bar reads as earned (brighter), every other bar stays dim.
 const OPACITY_DEFAULT = 0.32;
-const OPACITY_EARNED = 0.85; // the selected bar while scrubbing (red)
+const OPACITY_EARNED = 0.85;
 const OPACITY_BEYOND = 0.2; // every non-selected bar while scrubbing (white)
 
 const BAR_RADIUS = 6;
-const BAR_GAP = 3; // ~30 daily bars pack tightly
+const BAR_GAP = 3;
 // Flat zero baseline for ~zero bars so a just-funded position still reads as a
 // dashed baseline (Figma 74-19824 "new") rather than nothing.
 const MIN_BAR_RATIO = 4 / 336;
-// The tallest daily bar stops short of the top, leaving headroom under the
-// axis-max label.
 const AXIS_HEADROOM = 1.12;
 const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 
@@ -65,12 +60,10 @@ const SHORT_MONTHS = [
   "Dec",
 ];
 
-// Swipe hint over the chart, shown on every open while "Show tips" is enabled.
 const HINT_FADE_MS = 300;
 const HINT_VISIBLE_MS = 2000;
 const HINT_NUDGE = 12;
 
-// Reveal motion.
 const ENTER_EASING = Easing.bezier(0.22, 1, 0.36, 1);
 const BARS_GROW_DURATION = 720;
 const STAGGER_SPREAD = 0.55;
@@ -78,8 +71,6 @@ const GROW_WINDOW = 0.45;
 const APPEAR_DURATION = 360;
 const APPEAR_RISE = 8;
 
-// Rolling odometer for the live value: each digit is a clipped 0–9 strip that
-// ticks up one cell as earnings accrue (see RollingDigit).
 const DIGIT_HEIGHT = 48; // matches the value line's lineHeight
 const DIGIT_STRIP = [
   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
@@ -114,9 +105,6 @@ function formatShortDate(iso: string): string {
   return `${SHORT_MONTHS[date.getMonth()]} ${date.getDate()}`;
 }
 
-// Axis ceiling: a round amount just above the tallest daily bar so it stops
-// short of the top. Scales to the data at any magnitude — no fixed floor — so
-// sub-cent earnings (e.g. $0.0002) aren't crushed against a $0.01 axis.
 function niceAxisMax(maxValue: number): number {
   if (!Number.isFinite(maxValue) || maxValue <= 0) {
     return 0;
@@ -127,9 +115,6 @@ function niceAxisMax(maxValue: number): number {
   return Math.ceil(padded / quantum) * quantum;
 }
 
-// Axis-ceiling label. Whole amounts drop decimals ("$140"); regular amounts show
-// cents ("$0.14"); sub-cent ceilings show just enough precision (matching the
-// headline odometer) so a tiny ceiling isn't flattened to a misleading "$0.00".
 function formatAxisLabel(value: number): string {
   if (!Number.isFinite(value) || value <= 0) {
     return "$0.00";
@@ -144,8 +129,6 @@ function formatAxisLabel(value: number): string {
   return `$${value.toFixed(5).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
-// One bar. Reads the shared `progress` and maps an index-based slice of it to its
-// scaleY, producing the staggered left-to-right grow without per-frame layout.
 function ChartBar({
   index,
   barCount,
@@ -197,8 +180,6 @@ function ChartBar({
   );
 }
 
-// One odometer wheel for the digit at `place`. It watches that place's integer
-// digit and, whenever it increments, rolls up one cell with a quick tick.
 function RollingDigit({
   value,
   factor,
@@ -258,9 +239,6 @@ function RollingDigit({
   );
 }
 
-// The live headline value as a rolling odometer: "$", a whole-dollar wheel
-// (white), the decimal point, and five decimal wheels (dimmed) that scroll as
-// earnings accrue.
 function RollingOdometer({ value }: { value: SharedValue<number> }) {
   return (
     <View style={styles.odometer}>
@@ -279,12 +257,6 @@ function RollingOdometer({ value }: { value: SharedValue<number> }) {
   );
 }
 
-// The headline earnings value. While `live` (the current/today bar is selected)
-// it rolls up in real time from `baseValue` at `ratePerSecond` (seeded with the
-// time elapsed since the data was fetched); otherwise it shows the scrubbed
-// bar's static per-day value. A single shared value, advanced each frame on
-// the UI thread, drives the odometer — so the per-frame scroll never re-renders
-// the bars.
 function EarningsValue({
   live,
   baseValue,
@@ -327,8 +299,6 @@ function EarningsValue({
     return <RollingOdometer value={value} />;
   }
 
-  // Per-day earnings are often sub-cent, so match the live odometer's 5-decimal
-  // precision rather than rounding a real value to "$0.00".
   const { whole, cents } = splitDollars(staticValue, 5);
   return (
     <Text style={styles.valueLine} numberOfLines={1}>
@@ -338,10 +308,6 @@ function EarningsValue({
   );
 }
 
-// Per-bar daily earned (NOT cumulative): each bar is the amount earned within
-// that day. The current (in-progress) bar is reconciled against the live total
-// so it reflects earnings beyond the prior recorded days, without turning the
-// earlier bars into a running total — mirrors the web Earnings chart.
 function buildDailyValues(
   bars: EarnEarningsBar[],
   liveTotal: number
@@ -359,12 +325,8 @@ function buildDailyValues(
   );
 }
 
-// Dark-surface skeleton tint — the chart lives on the black Earn hero, so the
-// light-surface default would glare.
 const SKELETON_TINT = "rgba(255, 255, 255, 0.12)";
 const SKELETON_BAR_COUNT = 30;
-// A static, believable bar silhouette so the placeholder reads as the earnings
-// chart. Deterministic wave (no random) so it never reflows between renders.
 const SKELETON_BAR_RATIOS = Array.from({ length: SKELETON_BAR_COUNT }, (_, i) =>
   Math.max(
     0.18,
@@ -372,9 +334,6 @@ const SKELETON_BAR_RATIOS = Array.from({ length: SKELETON_BAR_COUNT }, (_, i) =>
   )
 );
 
-// Loading placeholder mirroring the chart's anatomy — headline value, subtitle +
-// axis label, the bar field, and the date axis — each pulsing. Same paddings as
-// the real chart so the swap-in doesn't shift anything.
 function ChartSkeleton() {
   return (
     <View style={styles.root}>
@@ -402,10 +361,6 @@ function ChartSkeleton() {
   );
 }
 
-// Shown when the backend can't verify the wallet's earnings history yet. We
-// deliberately show no number: every input to the odometer (earned-to-date, the
-// daily bars) comes from the payload we didn't get, so a live "$0.00 and
-// counting" would just be a different wrong number.
 function ChartUnavailable() {
   return (
     <View style={[styles.root, styles.unavailableRoot]}>
@@ -439,23 +394,14 @@ export function EarnChartContent({
   const barCount = bars.length;
   const lastIndex = Math.max(0, barCount - 1);
   const hasData = barCount > 0;
-  // Show the skeleton only until the first read settles. Once it has, we never
-  // fall back to it — so a quiet refresh of an already-drawn chart doesn't
-  // blink. A settled read with no bars is either a truthful zero (empty chart)
-  // or an unavailable one (see below).
   const showSkeleton = !hasData && status === "loading";
 
-  // Live odometer inputs.
   const principalUsd = earnings?.principalUsd ?? 0;
   const apyBps = earnings?.currentApyBps ?? 0;
   const ratePerSecond = (apyBps / 10_000) * (principalUsd / SECONDS_PER_YEAR);
   const baseEarned = earnings?.sinceLastDepositEarnedUsd ?? 0;
   const rangeEarned = earnings?.rangeEarnedUsd ?? 0;
 
-  // Bars show per-day earnings (static per load); the headline odometer ticks
-  // live above. The axis ceiling tracks the tallest *historical* daily bar —
-  // excluding the in-progress current bar, which can spike — recomputed only
-  // when data lands.
   const { daily, axisMax } = useMemo(() => {
     const values = settled
       ? bars.map((bar) => bar.earnedUsd)
@@ -466,9 +412,6 @@ export function EarnChartContent({
         max = Math.max(max, Math.abs(values[i]));
       }
     }
-    // Day one: no completed day has earnings yet, so the historical ceiling is
-    // 0 and every bar collapses to the minimum sliver. Scale to the in-progress
-    // bar instead so the first day's accrual reads as a real bar.
     if (max <= 0) {
       for (const value of values) {
         max = Math.max(max, Math.abs(value));
@@ -477,15 +420,12 @@ export function EarnChartContent({
     return { daily: values, axisMax: niceAxisMax(max) };
   }, [bars, baseEarned, settled]);
 
-  // Default selection is the current (today) bar; scrubbing moves it. `scrubbing`
-  // drives the red highlight; `live` (today selected) drives the odometer.
   const [activeIdx, setActiveIdx] = useState(lastIndex);
   const [scrubbing, setScrubbing] = useState(false);
   const lastIdxRef = useRef(lastIndex);
   const [chartWidth, setChartWidth] = useState(0);
   const [barsAreaHeight, setBarsAreaHeight] = useState(0);
 
-  // Keep the selection pinned to the latest bar as data loads/changes.
   useEffect(() => {
     if (!scrubbing) {
       setActiveIdx(lastIndex);
@@ -594,21 +534,14 @@ export function EarnChartContent({
     setActiveIdx(lastIndex);
   }, [lastIndex]);
 
-  // Resting on the latest bar shows the live cumulative odometer; scrubbing any
-  // bar (today included) shows that bar's static per-day value.
   const live = hasData && !scrubbing && activeIdx === lastIndex;
   const selectedBar = bars[activeIdx];
   const cursorCenterX =
     barCount > 0 ? ((activeIdx + 0.5) / barCount) * chartWidth : 0;
 
-  // Placed after all hooks so the hook order stays stable across the swap.
   if (showSkeleton) {
     return <ChartSkeleton />;
   }
-  // The server couldn't verify this wallet's earnings history and we have no
-  // earlier snapshot to fall back on. Rendering the chart here would draw a
-  // $0.00 odometer over a real position — say what's happening instead. The
-  // balance itself is read live from chain and is unaffected.
   if (status === "unavailable" && !hasData) {
     return <ChartUnavailable />;
   }
@@ -676,14 +609,10 @@ export function EarnChartContent({
         onResponderTerminate={handleReleaseBar}
       >
         {daily.map((value, i) => {
-          // Clamp the top so the in-progress current bar (excluded from axisMax)
-          // can't overflow past the chart height.
           const ratio =
             axisMax > 0
               ? Math.min(1, Math.max(MIN_BAR_RATIO, Math.abs(value) / axisMax))
               : MIN_BAR_RATIO;
-          // While scrubbing, only the selected bar reads as earned (red); the
-          // rest stay a calm dim white. At rest the whole series is dim white.
           const earned = scrubbing && i === activeIdx;
           const color = earned || value < 0 ? COLOR_RED : COLOR_WHITE;
           const opacity = scrubbing
@@ -904,8 +833,6 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
   },
-  // Loading skeleton — sized to the 48px value line box (36 + 6 + 6) and the
-  // surrounding rows so the real chart drops in without a layout jump.
   skeletonValue: {
     height: 36,
     width: 170,

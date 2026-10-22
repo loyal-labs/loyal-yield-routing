@@ -37,7 +37,6 @@ export function ChatItem({
       className="flex-row items-center px-4 py-1.5 active:opacity-80"
       onPress={onPress}
     >
-      {/* Avatar */}
       {photoUri ? (
         <Image
           source={{ uri: photoUri }}
@@ -52,7 +51,6 @@ export function ChatItem({
         </View>
       )}
 
-      {/* Text content */}
       <View
         className="flex-1 ml-3 py-2.5 overflow-visible"
         style={styles.textContainer}

@@ -35,11 +35,6 @@ function isInvalidAuthTokenError(error: unknown): boolean {
   );
 }
 
-/**
- * True when a vault call failed because the user dismissed or denied its
- * system UI. Exported so non-signer vault calls (the connect-time seed picker
- * in OnboardingGate) can classify a back-out the same way.
- */
 export function isSeedVaultUserDecline(error: unknown): boolean {
   return error instanceof Error && USER_DECLINED_RESULT.test(error.message);
 }
@@ -64,21 +59,6 @@ function transactionMessageBytes(
     : tx.serializeMessage();
 }
 
-/**
- * Signer backed by the Solana Mobile Seed Vault.
- *
- * The seed never leaves the vault; each sign call delegates to the native
- * bridge, which prompts the user for biometric/PIN approval through the
- * vault's own system UI. Batch signing uses the vault's plural
- * `signTransactions` API — one prompt per chunk of transactions.
- *
- * If the vault rejects our auth token (RESULT_INVALID_AUTH_TOKEN), the
- * signer recovers the live token for the same address from the vault's
- * authorized-seeds table, persists it, and retries once. If no live
- * authorization exists (the user deauthorized the app), the stored vault
- * account is cleared so the next launch lands in reconnect onboarding, and
- * a reconnect instruction is thrown instead of the raw vault error.
- */
 export class SeedVaultSigner implements Signer {
   readonly kind = "seed-vault" as const;
   readonly publicKey: PublicKey;
@@ -177,12 +157,6 @@ export class SeedVaultSigner implements Signer {
     }
   }
 
-  /**
-   * Look up the vault's live authorization for this signer's address and
-   * adopt its token. Returns false when the vault holds no usable
-   * replacement (app deauthorized, or the "fresh" token is the one that
-   * just failed).
-   */
   private async refreshAuthToken(): Promise<boolean> {
     const seeds = await SeedVault.listAuthorizedSeeds(this.derivationPath);
     const match = seeds.find(

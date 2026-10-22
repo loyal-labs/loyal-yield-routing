@@ -110,7 +110,6 @@ export const TransactionDetailsSheet = forwardRef<
     >
       <BottomSheetView>
         <View className="px-6 pb-10 pt-2">
-          {/* Header */}
           <View className="items-center pb-5">
             <Text
               className="text-[17px] font-semibold text-black"
@@ -130,7 +129,6 @@ export const TransactionDetailsSheet = forwardRef<
             </Text>
           </View>
 
-          {/* Details card */}
           <View
             className="rounded-2xl px-4"
             style={{ backgroundColor: "rgba(0, 0, 0, 0.03)" }}
@@ -193,7 +191,6 @@ export const TransactionDetailsSheet = forwardRef<
             ) : null}
           </View>
 
-          {/* Explorer link */}
           {explorerUrl ? (
             <Pressable
               onPress={() => Linking.openURL(explorerUrl)}

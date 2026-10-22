@@ -1,10 +1,3 @@
-// Mixpanel client for the mobile app.
-//
-// Unlike the extension (which ships a hand-rolled HTTP client to avoid
-// Chrome Web Store obfuscation-rejection), mobile uses the official
-// mixpanel-react-native SDK. The public surface mirrors the extension's
-// `src/lib/analytics.ts` so call sites look identical across targets.
-
 import { Mixpanel } from "mixpanel-react-native";
 
 import { env } from "@/config/env";
@@ -62,8 +55,6 @@ export function getWorkspaceEventName(event: string): string {
   return event.startsWith(prefix) ? event : `${prefix}${event}`;
 }
 
-// Merged into the init-time super props too, so registrations that happen
-// before the client finishes initializing are not lost.
 export function registerSuperProperties(
   properties: AnalyticsProperties,
 ): void {

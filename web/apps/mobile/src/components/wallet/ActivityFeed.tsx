@@ -24,7 +24,6 @@ type ActivityFeedProps = {
   onTransactionPress: (transaction: Transaction) => void;
   onShowAll: () => void;
   maxItems?: number;
-  /** Hide the internal "Activity" heading (e.g. when the screen supplies its own). */
   hideHeading?: boolean;
 };
 
@@ -136,11 +135,9 @@ function TransactionRow({
     );
   }
 
-  // Standard send/receive
   const amountColor = isIncoming ? "#34c759" : "#000";
   const directionSign = isIncoming ? "+" : "\u2212";
 
-  // Token transfer display
   if (transaction.tokenMint && transaction.tokenAmount) {
     const holding = tokenHoldings.find(
       (h) => h.mint === transaction.tokenMint,
@@ -190,8 +187,6 @@ function TransactionRow({
     );
   }
 
-  // Native SOL transfer: keep the existing zero-guard since amountLamports is
-  // the actual transferred amount here.
   const solPrefix = isEffectivelyZero ? "" : directionSign;
   const solHolding = tokenHoldings.find((h) => h.mint === NATIVE_SOL_MINT);
   const solIcon = resolveTokenIcon({

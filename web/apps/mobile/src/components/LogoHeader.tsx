@@ -40,24 +40,13 @@ function IconButton({
 }
 
 type LogoHeaderProps = {
-  /**
-   * Override the scan button. When omitted, the button routes to the Wallet tab
-   * and asks it to open the Send flow's QR scanner — so "scan an address" works
-   * from any screen the header appears on (wallet, library, settings).
-   */
   onScanPress?: () => void;
-  /** Override the settings button. Defaults to the Settings (profile) tab. */
   onSettingsPress?: () => void;
-  /** Override the library button. Defaults to the Library tab. */
   onLibraryPress?: () => void;
-  /** Hide the library button (e.g. on the Library screen itself). */
   showLibrary?: boolean;
-  /** Hide the settings button (e.g. on the Settings screen itself). */
   showSettings?: boolean;
 };
 
-// Shared top toolbar: the `loyal` wordmark on the left, library + scan +
-// settings on the right. Present on Wallet, Library, Quests, and Settings.
 export function LogoHeader({
   onScanPress,
   onSettingsPress,

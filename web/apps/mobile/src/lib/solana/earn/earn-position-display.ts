@@ -21,8 +21,6 @@ const KAMINO_SUPERSTATE_OPENING_BELL_MARKET =
 const KAMINO_HUMA_MARKET = "52FSGeeokLpgvgAMdqxyt5Hoc2TbUYj5b8yxrEdZ37Vf";
 const KAMINO_SOLSTICE_MARKET = "9Y7uwXgQ68mGqRtZfuFaP4hc4fxeJ7cE9zTtqTxVhfGU";
 
-// Markets that ship a dedicated brand badge; every other Kamino market falls
-// back to the Kamino mark (`venue: "kamino"`).
 export type EarnVenueKey = "kamino" | "prime" | "maple" | "onre" | "ethena";
 
 const MARKET_NAMES: Record<string, string> = {
@@ -70,9 +68,6 @@ export type EarnPositionDisplay = {
   venue: EarnVenueKey;
 };
 
-// Maps a withdrawal source / position (Kamino market pubkey + liquidity mint) to
-// its display fields. `market` is null for idle vault balances — the undeployed
-// cash still sitting in the Kamino-backed Earn vault.
 export function resolveEarnPositionDisplay(args: {
   market: string | null;
   liquidityMint: string;

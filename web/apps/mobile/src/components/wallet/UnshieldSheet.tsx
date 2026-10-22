@@ -25,10 +25,6 @@ import { Pressable, Text, View } from "@/tw";
 import SendErrorDog from "../../../assets/images/wallet/send_error_dog.svg";
 import SendSuccessDog from "../../../assets/images/wallet/send_success_dog.svg";
 
-// Exit-only unshield for the sunset private-transfer program (ASK-2269):
-// review the full shielded balance of one token, then move it back to the
-// wallet. Mirrors SendSheet's confirm / result steps.
-
 const MUTED = "rgba(60,60,67,0.6)";
 
 type UnshieldSheetProps = {
@@ -59,7 +55,6 @@ export function UnshieldSheet({
   const [phase, setPhase] = useState<Phase>("confirm");
   const [selectedMint, setSelectedMint] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
-  // Captured before executing: the balance list drops the token on success.
   const [outcome, setOutcome] = useState<{ row: ShieldedRow; result: UnshieldResult } | null>(null);
 
   const rows = useMemo(
