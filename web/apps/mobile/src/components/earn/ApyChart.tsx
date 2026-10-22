@@ -121,7 +121,7 @@ export function ApyChart({
       ? (earnMax.apyBps ?? NaN) / 100
       : hasData
       ? loyal.pct[idx]
-      : (earnMax ? earnMax.apyBps ?? NaN : getLoyalApyBps(summary)) / 100;
+      : ((earnMax ? earnMax.apyBps : getLoyalApyBps(summary)) ?? NaN) / 100;
   const mainValue = hasData ? main.pct[idx] : getMainApyBps(summary) / 100;
   const tbillValue = TBILL_APY_BPS / 100;
 

@@ -346,15 +346,8 @@ export function WorkspaceFaceliftShell() {
     }
   }, [activeMiddleView, activePage, selectedEarnTransaction]);
 
-  // Avoid flashing the zero-state headline on reload: loading covers auth
-  // hydration, the smart-account overview fetch (settingsPda === undefined —
-  // hasResolvedPosition reads true while the position fetch is disabled, so
-  // it can't be trusted before the overview lands), and the position fetch
-  // itself. The account skeleton stays until the real pane can render.
   const isPositionLoading =
-    !isHydrated ||
-    (isSignedIn &&
-      (earnData.settingsPda === undefined || !earnData.hasResolvedPosition));
+    !isHydrated || (isSignedIn && !earnData.hasResolvedPosition);
   const isEarnRootView = activeMiddleView === "earn";
   const isMobileGrayBackground =
     (activePage === "earn" &&

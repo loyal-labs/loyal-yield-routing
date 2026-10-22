@@ -24,7 +24,7 @@ import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { AddEmailNudge } from "@/components/auth/add-email-nudge";
 import { LedgerSignInLink } from "@/components/auth/ledger-sign-in-link";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
-import { useEarnForecastApyStatus } from "@/components/wallet-workspace/facelift/use-earn-forecast-apy-status";
+import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { useSessionDisconnect } from "@/components/wallet-workspace/facelift/use-session-disconnect";
 import { useStablecoinsUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import {
@@ -247,7 +247,7 @@ export function WalletHomePage({
 }) {
   const data = useWalletDesktopData({});
   const publicEnv = usePublicEnv();
-  const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApyStatus();
+  const { apy: earnApy, isLoaded: isApyLoaded } = useEarnForecastApy();
   const { isHydrated, isSignedIn } = useAuthCapability();
   const { isAuthenticated } = useAuthSession();
   const cherryRuntime = useCherryRuntime();
@@ -545,25 +545,13 @@ export function WalletHomePage({
                             src="/wallet-workspace/earn-flash.svg"
                           />
                           <span className="whitespace-nowrap pt-px font-medium text-positive text-[11px] leading-[13px] tracking-[0.06px]">
-                            {isApyLoaded ? (
-                              <PopDigits
-                                segments={[
-                                  {
-                                    text: formatEarnApyLabel(
-                                      earnApy.apyBps,
-                                      earnApy.availability,
-                                      earnApy.source
-                                    ),
-                                  },
-                                ]}
-                              />
-                            ) : (
-                              formatEarnApyLabel(
-                                earnApy.apyBps,
-                                earnApy.availability,
-                                earnApy.source
-                              )
-                            )}
+                            <PopDigits
+                              segments={[
+                                {
+                                  text: formatEarnApyLabel(earnApy),
+                                },
+                              ]}
+                            />
                           </span>
                         </span>
                       </SkeletonReveal>
@@ -695,8 +683,10 @@ export function WalletHomePage({
                 >
                   <MobileProductCard
                     apyBadgeLabel={
-                      earnBalanceUsd > 0
-                        ? formatEarnApyLabel(earnApy.apyBps)
+                      earnBalanceUsd > 0 ||
+                      !earnApy ||
+                      earnApy.availability === "unavailable"
+                        ? formatEarnApyLabel(earnApy)
                         : formatEarnApyPercent(earnApy.apyBps)
                     }
                     balance={earnBalance}

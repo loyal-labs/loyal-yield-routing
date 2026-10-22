@@ -65,6 +65,28 @@ export function ForecastChart({
   summary: EarnForecastSummary | null;
   principalUsd: number | null;
 }) {
+  const loyalApyBps = getLoyalApyBps(summary);
+  if (loyalApyBps === null) {
+    return null;
+  }
+  return (
+    <ForecastChartBody
+      loyalApyBps={loyalApyBps}
+      principalUsd={principalUsd}
+      summary={summary}
+    />
+  );
+}
+
+function ForecastChartBody({
+  loyalApyBps,
+  summary,
+  principalUsd,
+}: {
+  loyalApyBps: number;
+  summary: EarnForecastSummary | null;
+  principalUsd: number | null;
+}) {
   const principal =
     principalUsd != null && Number.isFinite(principalUsd) && principalUsd > 0
       ? principalUsd
@@ -77,7 +99,6 @@ export function ForecastChart({
   const nowMs = useMemo(() => Date.now(), []);
 
   const { series, axisMax } = useMemo(() => {
-    const loyalApyBps = getLoyalApyBps(summary);
     const mainApyBps = getMainApyBps(summary);
     const build = (apyBps: number) =>
       buildProjection(principal, apyBps, FORECAST_POINTS);
@@ -131,7 +152,7 @@ export function ForecastChart({
       s.norm = toNorm(s.values);
     }
     return { axisMax: ceil, series: built };
-  }, [principal, summary]);
+  }, [loyalApyBps, principal, summary]);
 
   const tbill = series[0];
   const main = series[1];

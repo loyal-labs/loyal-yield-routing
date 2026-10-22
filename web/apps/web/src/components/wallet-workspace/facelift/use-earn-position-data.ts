@@ -92,9 +92,8 @@ export function useEarnPositionData(): EarnPositionData {
   });
   const settingsPda = smartAccountData.overview?.settingsPda;
 
-  const isPositionFetchEnabled = Boolean(settingsPda && walletAddress);
   const {
-    hasResolved,
+    hasResolved: hasResolvedPosition,
     position,
     refresh: refreshPosition,
     rpcObservation,
@@ -103,24 +102,12 @@ export function useEarnPositionData(): EarnPositionData {
   } = useActiveEarnPosition({
     connection,
     earnPolicy: smartAccountData.earnPolicy,
-    enabled: isPositionFetchEnabled,
+    enabled: Boolean(walletAddress),
     programId: smartAccountData.overview?.programId,
     settingsPda,
     solanaEnv: publicEnv.solanaEnv,
     walletAddress,
   });
-  // hasResolved reads stale-true for a frame right after the fetch enables:
-  // the hook only clears it in a useEffect, i.e. after that frame paints.
-  // Track the enabled transition synchronously so consumers never see
-  // "resolved" for inputs the hook hasn't reacted to yet (the zero-state
-  // pane would flash during boot otherwise).
-  const previousFetchEnabledRef = useRef(isPositionFetchEnabled);
-  useEffect(() => {
-    previousFetchEnabledRef.current = isPositionFetchEnabled;
-  });
-  const hasResolvedPosition =
-    hasResolved &&
-    !(isPositionFetchEnabled && !previousFetchEnabledRef.current);
 
   const hasPosition = isActiveEarnPosition(position);
   const earnBalanceUsd =

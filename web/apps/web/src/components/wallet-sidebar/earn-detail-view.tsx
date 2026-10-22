@@ -38,7 +38,6 @@ import { useEarnForecastApyHistory } from "@/hooks/use-earn-forecast-apy-history
 import {
   type EarnForecastApy,
   type EarnForecastApyHistoryResponse,
-  FALLBACK_EARN_FORECAST,
   formatEarnApyLabel,
   formatEarnApyPercent,
   getEarnForecastTargetMultiplier,
@@ -85,11 +84,6 @@ const EARN_NUMBER_FLOW_PLUGINS = [continuous];
 const MOBILE_EARN_FORM_MEDIA_QUERY = "(max-width: 760px)";
 const EARN_CLEANUP_MASCOT_TEXT =
   "You've already withdrawn the USDC. I can close the remaining Earn accounts and refund rent where possible.";
-const FALLBACK_EARN_APY = {
-  apyBps: FALLBACK_EARN_FORECAST.apyBps,
-  rangeHighBps: FALLBACK_EARN_FORECAST.rangeHighBps,
-  rangeLowBps: FALLBACK_EARN_FORECAST.rangeLowBps,
-} as const satisfies EarnForecastApy;
 
 function shouldAutoFocusEarnFormInput() {
   if (typeof window.matchMedia !== "function") {
@@ -436,7 +430,7 @@ const FORECAST_DATES = [
 
 export function buildEarnChartPoints(
   principal: number,
-  apy: EarnForecastApy = FALLBACK_EARN_APY
+  apy: EarnForecastApy
 ): EarnChartPoint[] {
   const months = 12;
   const target = principal * getEarnForecastTargetMultiplier(apy.apyBps);
@@ -522,7 +516,7 @@ function getEarnComparisonApyBps(
 
 export function buildEarnComparisonPoints(
   principal: number,
-  apy: EarnForecastApy = FALLBACK_EARN_APY,
+  apy: EarnForecastApy,
   apyOverrides: EarnComparisonApyOverrides = {}
 ): EarnComparisonPoint[] {
   const months = 12;
@@ -1190,7 +1184,7 @@ function EarningsBlock({
   earningsStale = false,
   onRetryEarnings,
 }: {
-  apy: EarnForecastApy;
+  apy: EarnForecastApy | undefined;
   earningsData: EarnEarningsResponse | null;
   estimatedRangeEarnedUsd: number;
   estimatedTodayEarnedUsd: number;
@@ -1458,7 +1452,7 @@ function EarningsBlock({
               width: "100%",
             }}
           >
-            {apy.availability === "unavailable" ? (
+            {!apy || apy.availability === "unavailable" ? (
               <div role="status">APY forecast unavailable</div>
             ) : (
               <>
@@ -2542,7 +2536,7 @@ export function EarnDetailView({
   principalAmount?: number;
   statusMessage?: string | null;
 }) {
-  const earnForecastApy = useEarnForecastApy();
+  const { apy: earnForecastApy } = useEarnForecastApy();
   const hasPositiveCurrentBalance =
     hasCurrentPosition && currentBalanceAmount > 0;
   const {
@@ -2587,7 +2581,7 @@ export function EarnDetailView({
   const estimatedEarnedAmountApyBps = deriveEstimatedEarnedAmountApyBps({
     earningsData,
     fallbackApyBps:
-      earnForecastApy.availability === "unavailable"
+      !earnForecastApy || earnForecastApy.availability === "unavailable"
         ? 0
         : earnForecastApy.apyBps,
   });
@@ -4679,7 +4673,7 @@ export function HistoricalApyChart(props: HistoricalApyChartProps) {
     getHistoricalChartClientSnapshot,
     getHistoricalChartServerSnapshot
   );
-  const forecast = useEarnForecastApy();
+  const { apy: forecast } = useEarnForecastApy();
   const history = useEarnForecastApyHistory();
 
   const rangeStartMs =
@@ -4691,7 +4685,8 @@ export function HistoricalApyChart(props: HistoricalApyChartProps) {
       (sample) => sample.observedAtMs >= rangeStartMs
     );
   if (
-    (props.primarySamples === undefined && forecast.availability === "unavailable") ||
+    (props.primarySamples === undefined &&
+      (!forecast || forecast.availability === "unavailable")) ||
     visibleSamples.length === 0
   ) {
     return (
@@ -4699,7 +4694,7 @@ export function HistoricalApyChart(props: HistoricalApyChartProps) {
         className="flex min-h-0 w-full flex-1 items-center justify-center text-muted-foreground"
         role="status"
       >
-        {props.primarySamples === undefined && forecast.source === "live"
+        {props.primarySamples === undefined && forecast?.source === "live"
           ? "Historical 7-day APY unavailable; live APY uses 6–24h"
           : "Historical APY unavailable"}
       </div>
@@ -4717,7 +4712,7 @@ export function HistoricalApyChart(props: HistoricalApyChartProps) {
 
   return (
     <>
-      {props.primarySamples === undefined && forecast.availability === "stale" ? (
+      {props.primarySamples === undefined && forecast?.availability === "stale" ? (
         <span className="text-xs text-muted-foreground">APY data is stale</span>
       ) : null}
       {visibleSamples[0].observedAtMs > rangeStartMs + 2 * 60 * 60 * 1000 ? (
@@ -5183,13 +5178,13 @@ function HydratedHistoricalApyChart({
 }
 
 export function ForecastChart({
-  apy = FALLBACK_EARN_APY,
+  apy,
   apyDataRevealed,
   isBalanceHidden = false,
   mainUsdcReserveApyBps = 559,
   principal = 1000,
 }: {
-  apy?: EarnForecastApy;
+  apy: EarnForecastApy;
   apyDataRevealed: boolean;
   isBalanceHidden?: boolean;
   mainUsdcReserveApyBps?: number;
@@ -5657,12 +5652,12 @@ export function ForecastChart({
 }
 
 function DepositChart({
-  apy = FALLBACK_EARN_APY,
+  apy,
   isBalanceHidden = false,
   mainUsdcReserveApyBps = 559,
   principal = 1000,
 }: {
-  apy?: EarnForecastApy;
+  apy: EarnForecastApy;
   isBalanceHidden?: boolean;
   mainUsdcReserveApyBps?: number;
   principal?: number;
@@ -6157,7 +6152,7 @@ function EarnDepositChartsSection({
   forecastAmountLabel,
   mainUsdcReserveApyBps,
 }: {
-  apy: EarnForecastApy;
+  apy: EarnForecastApy | undefined;
   defaultActiveTab?: EarnDepositChartTab;
   forecastAmount: number;
   forecastAmountLabel: string;
@@ -6321,7 +6316,7 @@ function EarnDepositChartsSection({
           }}
         >
           <div style={{ padding: "12px", width: "100%" }}>
-            {apy.availability === "unavailable" ? (
+            {!apy || apy.availability === "unavailable" ? (
               <div role="status">APY forecast unavailable</div>
             ) : (
               <>
@@ -6396,16 +6391,12 @@ export function EarnDepositView({
   submitCtaLabel?: string | null;
   submitError?: string | null;
 }) {
-  const earnForecastApy = useEarnForecastApy();
+  const { apy: earnForecastApy } = useEarnForecastApy();
   const earnForecastApyHistory = useEarnForecastApyHistory();
   const mainUsdcReserveApyBps = deriveMainUsdcReserveForecastApyBps(
     earnForecastApyHistory
   );
-  const earnApyLabel = formatEarnApyLabel(
-    earnForecastApy.apyBps,
-    earnForecastApy.availability,
-    earnForecastApy.source
-  );
+  const earnApyLabel = formatEarnApyLabel(earnForecastApy);
   const amountInputRef = useRef<HTMLInputElement | null>(null);
   const sourceOptions =
     sources.length > 0 ? sources : FALLBACK_EARN_DEPOSIT_SOURCES;
@@ -6455,7 +6446,7 @@ export function EarnDepositView({
     amount: effectiveDepositAmount,
     amountLabel: effectiveDepositAmountLabel,
     forecastApyBps:
-      earnForecastApy.availability === "unavailable"
+      !earnForecastApy || earnForecastApy.availability === "unavailable"
         ? 0
         : earnForecastApy.apyBps,
     source: selectedSource,
