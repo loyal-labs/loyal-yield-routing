@@ -48,8 +48,16 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const contentType =
-      response.headers.get("content-type") || "application/octet-stream";
+    const contentType = response.headers.get("content-type") ?? "";
+    if (
+      !contentType.startsWith("image/") ||
+      contentType.startsWith("image/svg+xml")
+    ) {
+      return NextResponse.json(
+        { error: "Upstream is not an image" },
+        { status: 415 }
+      );
+    }
     const buffer = await response.arrayBuffer();
 
     return new NextResponse(buffer, {

@@ -295,7 +295,7 @@ export type SnapshotReconciliationInput = {
 
 // Sub-cent idle USDC must not block a final exit. Shared by the withdraw
 // prepare routes (which close the on-chain policies on this basis) and the
-// confirm-side resolveWithdrawalSource (which releases the DB policy rows).
+// confirm-side recordConfirmedYieldWithdrawal (which releases the DB policy rows).
 // Prepare and confirm MUST agree: when prepare closes the policies but confirm
 // keeps the DB pair active, the next deposit adopts dead policy accounts and
 // every subsequent withdraw prepare fails with "Unable to find Policy account".
@@ -700,36 +700,43 @@ export async function recordConfirmedEarnCleanup(
 const CURRENT_VAULT_SNAPSHOT_LOCK_NAMESPACE =
   "loyal_yield.vault_position_snapshots.is_current";
 
+function lockCurrentVaultSnapshot(
+  db: YieldDepositRepositoryDependencies["client"]["db"],
+  vaultId: bigint
+) {
+  return db.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${CURRENT_VAULT_SNAPSHOT_LOCK_NAMESPACE} || ':' || ${vaultId.toString()}::bigint::text, 0))`
+  ) as never;
+}
+
 function writeCurrentVaultSnapshot(
   db: YieldDepositRepositoryDependencies["client"]["db"],
   vaultId: bigint,
   statements: never[]
 ) {
-  return db.batch([
-    db.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${CURRENT_VAULT_SNAPSHOT_LOCK_NAMESPACE} || ':' || ${vaultId.toString()}::bigint::text, 0))`
-    ) as never,
-    ...statements,
-  ]);
+  return db.batch([lockCurrentVaultSnapshot(db, vaultId), ...statements]);
 }
 
-async function recordCurrentVaultSourceWithdrawal(args: {
-  dependencies: Pick<YieldDepositRepositoryDependencies, "client" | "now">;
+function currentVaultSourceWithdrawalStatements(args: {
+  db: YieldDepositRepositoryDependencies["client"]["db"];
   input: ConfirmedYieldWithdrawalInput;
+  observedAt: Date;
   resolution: WithdrawalSourceResolution;
-}): Promise<void> {
-  const { dependencies, input, resolution } = args;
-  const { db } = dependencies.client;
-  const observedAt = dependencies.now();
+  snapshotId: string;
+  withdrawalWritten: SQL;
+}): never[] {
+  const { db, input, observedAt, resolution, snapshotId, withdrawalWritten } =
+    args;
   const vaultId = resolution.vault.id.toString();
   const slot = input.confirmedSlot.toString();
 
   if (resolution.sourceType === "idle") {
     const idleRow = resolution.selectedIdleRow;
     if (!idleRow) {
-      return;
+      return [];
     }
-    await db.execute(sql`
+    return [
+      db.execute(sql`
       UPDATE ${vaultIdleTokenBalancesCurrent}
       SET amount_raw = GREATEST(amount_raw - ${input.withdrawnAmountRaw.toString()}::bigint, 0),
           observed_at = ${observedAt.toISOString()}::timestamptz,
@@ -738,13 +745,14 @@ async function recordCurrentVaultSourceWithdrawal(args: {
           updated_at = ${observedAt.toISOString()}::timestamptz
       WHERE vault_id = ${vaultId}::bigint
         AND mint = ${idleRow.mint}
-        AND observed_slot <= ${slot}::bigint`);
-    return;
+        AND observed_slot <= ${slot}::bigint
+        AND ${withdrawalWritten}`) as never,
+    ];
   }
 
   const selectedReserve = resolution.selectedReserveRow;
   if (!selectedReserve || resolution.reserveRows.length === 0) {
-    return;
+    return [];
   }
   const debit = getWithdrawalSourceDebitAmountRaw(input, "reserve").toString();
   const sourceAmount = (input.sourceAmountRaw ?? BigInt(0)).toString();
@@ -765,12 +773,6 @@ async function recordCurrentVaultSourceWithdrawal(args: {
   const userFacing = (column: SQL) =>
     sql`COALESCE(NULLIF(${column}->>'amountSemantics', ''), NULLIF(${column}->>'amount_semantics', '')) = 'kamino_redeemable_liquidity'`;
   const current = sql.raw("current_row");
-  const [allocated] = getExecuteRows(
-    await db.execute(
-      sql`SELECT nextval(pg_get_serial_sequence('loyal_yield.vault_position_snapshots', 'id'))::text AS id`
-    )
-  );
-  const snapshotId = String(allocated?.id);
   const snapshotWritten = sql`EXISTS (SELECT 1 FROM ${vaultPositionSnapshots} WHERE id = ${snapshotId}::bigint)`;
   const vaultIdleDeltaRaw = input.confirmedVaultIdleDeltaRaw ?? BigInt(0);
 
@@ -794,12 +796,7 @@ async function recordCurrentVaultSourceWithdrawal(args: {
           AND observed_slot > ${slot}::bigint
           AND planning_metadata->>'source' IS DISTINCT FROM 'frontend_source_withdrawal'
       )
-      AND NOT EXISTS (
-        SELECT 1 FROM ${vaultPositionSnapshots}
-        WHERE vault_id = ${vaultId}::bigint
-          AND context->>'source' = 'frontend_source_withdrawal'
-          AND context->>'withdrawalSignature' = ${input.withdrawalSignature}
-      )`) as never,
+      AND ${withdrawalWritten}`) as never,
     db.execute(sql`
       DELETE FROM ${vaultReservePositionsCurrent}
       WHERE vault_id = ${vaultId}::bigint
@@ -888,7 +885,7 @@ async function recordCurrentVaultSourceWithdrawal(args: {
     );
   }
 
-  await writeCurrentVaultSnapshot(db, resolution.vault.id, statements);
+  return statements;
 }
 
 function assertDuplicateWithdrawalField<T extends string | bigint | number>(
@@ -1117,110 +1114,6 @@ function maxBigInt(values: bigint[]): bigint {
   );
 }
 
-function readStoredWithdrawalSourceType(
-  value: string | null
-): "reserve" | "idle" | null {
-  return value === "reserve" || value === "idle" ? value : null;
-}
-
-function readStoredWithdrawalSourceAmountRaw(
-  withdrawal: UserYieldPositionWithdrawalRecord
-): bigint | null {
-  const amountRaw = withdrawal.sourceMetadata?.amountRaw;
-  if (typeof amountRaw !== "string" || !/^\d+$/.test(amountRaw)) {
-    return null;
-  }
-
-  return BigInt(amountRaw);
-}
-
-function readStoredWithdrawalSourceMetadataString(
-  withdrawal: UserYieldPositionWithdrawalRecord,
-  key: string
-): string | null {
-  const value = withdrawal.sourceMetadata?.[key];
-  return typeof value === "string" && value.trim().length > 0
-    ? value.trim()
-    : null;
-}
-
-function buildIdempotentWithdrawalRepairInput(
-  input: ConfirmedYieldWithdrawalInput,
-  withdrawal: UserYieldPositionWithdrawalRecord
-): ConfirmedYieldWithdrawalInput | null {
-  const sourceAmountRaw =
-    input.sourceAmountRaw ?? readStoredWithdrawalSourceAmountRaw(withdrawal);
-  if (sourceAmountRaw === null) {
-    return null;
-  }
-
-  const sourceType =
-    input.sourceType ?? readStoredWithdrawalSourceType(withdrawal.sourceType);
-  if (!sourceType) {
-    return null;
-  }
-
-  return {
-    ...input,
-    sourceAmountRaw,
-    sourceId: input.sourceId ?? withdrawal.sourceId,
-    sourceMetadata: input.sourceMetadata ?? withdrawal.sourceMetadata ?? {},
-    sourceMint:
-      input.sourceMint ??
-      readStoredWithdrawalSourceMetadataString(withdrawal, "mint"),
-    sourceTokenAccount:
-      input.sourceTokenAccount ??
-      readStoredWithdrawalSourceMetadataString(withdrawal, "tokenAccount"),
-    sourceType,
-  };
-}
-
-function isIdempotentWithdrawalSourceAlreadyApplied(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  return (
-    error.message === "No active Earn vault exists for this withdrawal." ||
-    error.message ===
-      "Withdrawal source does not match a reconciled reserve." ||
-    error.message === "Withdrawal source does not match idle vault USDC." ||
-    error.message === "Withdrawal source amount changed before confirmation." ||
-    error.message === "Withdrawal exceeds the selected Earn source amount."
-  );
-}
-
-async function repairCurrentVaultSourceWithdrawalForIdempotentRecord(args: {
-  dependencies: YieldDepositRepositoryDependencies;
-  input: ConfirmedYieldWithdrawalInput;
-  withdrawal: UserYieldPositionWithdrawalRecord;
-}): Promise<void> {
-  const repairInput = buildIdempotentWithdrawalRepairInput(
-    args.input,
-    args.withdrawal
-  );
-  if (!repairInput) {
-    return;
-  }
-
-  try {
-    const resolution = await resolveWithdrawalSource(
-      repairInput,
-      args.dependencies
-    );
-    await recordCurrentVaultSourceWithdrawal({
-      dependencies: args.dependencies,
-      input: repairInput,
-      resolution,
-    });
-  } catch (error) {
-    if (isIdempotentWithdrawalSourceAlreadyApplied(error)) {
-      return;
-    }
-    throw error;
-  }
-}
-
 function buildStoredWithdrawalSourceMetadata(args: {
   sourceAmountRaw: bigint;
   sourceMetadata: Record<string, unknown>;
@@ -1239,11 +1132,8 @@ function buildStoredWithdrawalSourceMetadata(args: {
 
 type WithdrawalSourceResolution = {
   idleRows: CurrentYieldVaultIdleTokenBalanceRecord[];
-  isFinalExit: boolean;
   selectedIdleRow: CurrentYieldVaultIdleTokenBalanceRecord | null;
   selectedReserveRow: CurrentYieldVaultReservePositionRecord | null;
-  remainingIdleAmountRaw: bigint;
-  remainingReserveAmountRaw: bigint;
   sourceAmountRaw: bigint;
   sourceId: string;
   sourceMetadata: Record<string, unknown>;
@@ -1379,69 +1269,8 @@ async function resolveWithdrawalSource(
     throw new Error("Withdrawal exceeds the selected Earn source amount.");
   }
 
-  const remainingReserveRaw = currentReserveRows.reduce((total, row) => {
-    if (
-      source.sourceType === "reserve" &&
-      selectedReserveRow &&
-      reserveRowsRepresentSameHolding(row, selectedReserveRow)
-    ) {
-      return (
-        total +
-        (selectedReserveRow.amountRaw > sourceDebitAmountRaw
-          ? selectedReserveRow.amountRaw - sourceDebitAmountRaw
-          : BigInt(0))
-      );
-    }
-    return total + row.amountRaw;
-  }, BigInt(0));
-  const fallbackRemainingReserveRaw =
-    source.sourceType === "reserve" &&
-    selectedReserveRow &&
-    !selectedCurrentReserveRow
-      ? selectedReserveRow.amountRaw > sourceDebitAmountRaw
-        ? selectedReserveRow.amountRaw - sourceDebitAmountRaw
-        : BigInt(0)
-      : BigInt(0);
-  const remainingIdleRaw = currentIdleRows.reduce((total, row) => {
-    if (
-      source.sourceType === "idle" &&
-      row.tokenAccount === selectedIdleRow!.tokenAccount
-    ) {
-      return (
-        total +
-        (row.amountRaw > input.withdrawnAmountRaw
-          ? row.amountRaw - input.withdrawnAmountRaw
-          : BigInt(0))
-      );
-    }
-    return total + row.amountRaw;
-  }, BigInt(0));
-  const remainingReserveAmountRaw =
-    remainingReserveRaw + fallbackRemainingReserveRaw;
-  const reserveVaultIdleDeltaRaw =
-    source.sourceType === "reserve" &&
-    input.confirmedVaultIdleDeltaRaw !== undefined &&
-    input.confirmedVaultIdleDeltaRaw !== null &&
-    input.confirmedVaultIdleDeltaRaw > BigInt(0)
-      ? input.confirmedVaultIdleDeltaRaw
-      : BigInt(0);
-
   return {
     idleRows: currentIdleRows,
-    // This is an accounting event classification only. It never authorizes
-    // closing the position, vault, or policies; cleanup owns that transition
-    // after a minContextSlot-safe chain-wide zero proof.
-    // A non-final step of a multi-market full exit proves funds survive in
-    // another market even when the reserve read-model has no row for it
-    // (ASK-1765), so it must never claim the final-exit label — a false
-    // `withdrawal_full` zeroes reconstructed principal for good.
-    isFinalExit:
-      input.mode === "full" &&
-      input.isFinalStep !== false &&
-      remainingReserveAmountRaw <= BigInt(0) &&
-      remainingIdleRaw < EARN_FINAL_EXIT_IDLE_DUST_TOLERANCE_RAW,
-    remainingIdleAmountRaw: remainingIdleRaw + reserveVaultIdleDeltaRaw,
-    remainingReserveAmountRaw,
     selectedIdleRow,
     selectedReserveRow,
     sourceAmountRaw,
@@ -4188,11 +4017,6 @@ export async function recordConfirmedYieldWithdrawal(
     dependencies
   );
   if (idempotentWithdrawal) {
-    await repairCurrentVaultSourceWithdrawalForIdempotentRecord({
-      dependencies,
-      input,
-      withdrawal: idempotentWithdrawal.withdrawal,
-    });
     return idempotentWithdrawal.position;
   }
 
@@ -4285,87 +4109,110 @@ export async function recordConfirmedYieldWithdrawal(
     withdrawalSignature: input.withdrawalSignature,
     withdrawnAmountRaw: input.withdrawnAmountRaw,
   };
-  const nextPrincipal =
-    existingPosition.principalAmountRaw > input.withdrawnAmountRaw
-      ? existingPosition.principalAmountRaw - input.withdrawnAmountRaw
-      : BigInt(0);
-  const insertedWithdrawals = await client.db
-    .insert(userYieldPositionWithdrawals)
-    .values(withdrawalValues)
-    .onConflictDoNothing({
-      target: [userYieldPositionWithdrawals.withdrawalSignature],
-    })
-    .returning({ id: userYieldPositionWithdrawals.id });
+  const [allocated] = getExecuteRows(
+    await client.db.execute(sql`
+      SELECT nextval(pg_get_serial_sequence('loyal_yield.user_yield_position_withdrawals', 'id'))::text AS withdrawal_id,
+             nextval(pg_get_serial_sequence('loyal_yield.user_yield_position_holding_events', 'id'))::text AS event_id,
+             nextval(pg_get_serial_sequence('loyal_yield.vault_position_snapshots', 'id'))::text AS snapshot_id`)
+  );
+  const withdrawalId = BigInt(String(allocated?.withdrawal_id));
+  const eventId = String(allocated?.event_id);
+  const withdrawalWritten = sql`EXISTS (SELECT 1 FROM ${userYieldPositionWithdrawals} WHERE id = ${withdrawalId.toString()}::bigint)`;
+  const positionId = existingPosition.id.toString();
+  const vaultId = withdrawalSource.vault.id.toString();
+  const withdrawn = input.withdrawnAmountRaw.toString();
+  const at = now.toISOString();
+  const position = sql.raw("position_row");
+  const holding = sql.raw("holding");
+  const userFacingReserve = sql`COALESCE(NULLIF(planning_metadata->>'amountSemantics', ''), NULLIF(planning_metadata->>'amount_semantics', '')) = 'kamino_redeemable_liquidity'`;
+  const mayBeFinalExit = input.mode === "full" && input.isFinalStep !== false;
 
-  if (insertedWithdrawals.length === 0) {
-    const duplicateWithdrawal = await findIdempotentWithdrawalPosition(
+  const results = await client.db.batch([
+    client.db.execute(
+      sql`SELECT id FROM ${userYieldPositions} WHERE id = ${positionId}::bigint FOR UPDATE`
+    ) as never,
+    lockCurrentVaultSnapshot(client.db, withdrawalSource.vault.id),
+    client.db
+      .insert(userYieldPositionWithdrawals)
+      .values({ ...withdrawalValues, id: withdrawalId })
+      .onConflictDoNothing({
+        target: [userYieldPositionWithdrawals.withdrawalSignature],
+      }) as never,
+    ...currentVaultSourceWithdrawalStatements({
+      db: client.db,
       input,
-      dependencies
-    );
-    if (duplicateWithdrawal) {
-      await repairCurrentVaultSourceWithdrawalForIdempotentRecord({
-        dependencies,
-        input,
-        withdrawal: duplicateWithdrawal.withdrawal,
-      });
-      return duplicateWithdrawal.position;
-    }
-    return existingPosition;
+      observedAt: now,
+      resolution: withdrawalSource,
+      snapshotId: String(allocated?.snapshot_id),
+      withdrawalWritten,
+    }),
+    client.db.execute(sql`
+      INSERT INTO ${userYieldPositionHoldingEvents}
+        (id, position_id, event_type, reserve, market, liquidity_mint, amount_raw,
+         principal_delta_raw, holding_delta_raw, observed_slot, observed_at,
+         source_signature, source_withdrawal_id, created_at)
+      SELECT ${eventId}::bigint, ${position}.id,
+             (CASE WHEN ${mayBeFinalExit}::boolean AND ${holding}.reserve_raw <= 0
+                        AND ${holding}.idle_raw < ${EARN_FINAL_EXIT_IDLE_DUST_TOLERANCE_RAW.toString()}::bigint
+                   THEN 'withdrawal_full' ELSE 'withdrawal_partial' END)::loyal_yield.user_yield_holding_event_type,
+             ${
+               withdrawalSource.selectedReserveRow?.reserve ??
+               existingPosition.currentReserve
+             },
+             ${
+               withdrawalSource.selectedReserveRow?.market ??
+               existingPosition.currentMarket
+             },
+             ${
+               withdrawalSource.selectedReserveRow?.liquidityMint ??
+               existingPosition.currentLiquidityMint
+             },
+             ${holding}.reserve_raw + ${holding}.idle_raw,
+             -LEAST(${position}.principal_amount_raw, ${withdrawn}::bigint),
+             ${holding}.reserve_raw + ${holding}.idle_raw - ${position}.current_amount_raw,
+             ${input.confirmedSlot.toString()}::bigint, ${at}::timestamptz,
+             ${
+               input.withdrawalSignature
+             }, ${withdrawalId.toString()}::bigint, ${at}::timestamptz
+      FROM ${userYieldPositions} AS ${position},
+           (SELECT
+              (SELECT COALESCE(SUM(amount_raw), 0) FROM ${vaultReservePositionsCurrent}
+                WHERE vault_id = ${vaultId}::bigint AND amount_raw > 0 AND ${userFacingReserve}) AS reserve_raw,
+              (SELECT COALESCE(SUM(amount_raw), 0) FROM ${vaultIdleTokenBalancesCurrent}
+                WHERE vault_id = ${vaultId}::bigint AND amount_raw > 0) AS idle_raw) AS ${holding}
+      WHERE ${position}.id = ${positionId}::bigint
+        AND ${withdrawalWritten}`) as never,
+    client.db.execute(sql`
+      UPDATE ${userYieldPositions} AS ${position}
+      SET principal_amount_raw = GREATEST(${position}.principal_amount_raw - ${withdrawn}::bigint, 0),
+          current_amount_raw = event.amount_raw,
+          current_liquidity_mint = event.liquidity_mint,
+          current_market = event.market,
+          current_observed_at = event.observed_at,
+          current_observed_slot = event.observed_slot,
+          current_reserve = event.reserve,
+          last_holding_event_id = event.id,
+          last_confirmed_slot = event.observed_slot,
+          status = 'active',
+          updated_at = ${at}::timestamptz
+      FROM ${userYieldPositionHoldingEvents} AS event
+      WHERE event.id = ${eventId}::bigint
+        AND ${position}.id = event.position_id`) as never,
+    client.db
+      .select()
+      .from(userYieldPositions)
+      .where(eq(userYieldPositions.id, existingPosition.id)) as never,
+  ]);
+
+  const [recorded] = results[results.length - 1] as UserYieldPositionRecord[];
+  if (recorded?.lastHoldingEventId?.toString() === eventId) {
+    return recorded;
   }
-
-  const [insertedWithdrawal] = insertedWithdrawals;
-  const nextHoldingAmountRaw =
-    withdrawalSource.remainingReserveAmountRaw +
-    withdrawalSource.remainingIdleAmountRaw;
-  const principalDeltaRaw = -(existingPosition.principalAmountRaw >
-  input.withdrawnAmountRaw
-    ? input.withdrawnAmountRaw
-    : existingPosition.principalAmountRaw);
-  const event = await insertHoldingEvent({
-    amountRaw: nextHoldingAmountRaw,
-    client,
-    createdAt: now,
-    eventType: withdrawalSource.isFinalExit
-      ? "withdrawal_full"
-      : "withdrawal_partial",
-    holdingDeltaRaw: nextHoldingAmountRaw - existingPosition.currentAmountRaw,
-    liquidityMint:
-      withdrawalSource.selectedReserveRow?.liquidityMint ??
-      existingPosition.currentLiquidityMint,
-    market:
-      withdrawalSource.selectedReserveRow?.market ??
-      existingPosition.currentMarket,
-    observedAt: now,
-    observedSlot: input.confirmedSlot,
-    positionId: existingPosition.id,
-    principalDeltaRaw,
-    reserve:
-      withdrawalSource.selectedReserveRow?.reserve ??
-      existingPosition.currentReserve,
-    sourceSignature: input.withdrawalSignature,
-    sourceWithdrawalId: insertedWithdrawal.id,
-  });
-
-  const position = await applyHoldingEventToPosition({
-    client,
-    event,
-    lastConfirmedSlot: input.confirmedSlot,
-    now,
-    principalAmountRaw: nextPrincipal,
-    status: "active",
-  });
-
-  await recordCurrentVaultSourceWithdrawal({
-    dependencies,
+  const duplicateWithdrawal = await findIdempotentWithdrawalPosition(
     input,
-    resolution: withdrawalSource,
-  });
-
-  if (position.principalAmountRaw !== nextPrincipal) {
-    return position;
-  }
-
-  return position;
+    dependencies
+  );
+  return duplicateWithdrawal?.position ?? existingPosition;
 }
 
 export async function recordConfirmedYieldRebalance(

@@ -75,6 +75,8 @@ type UseWalletDesktopDataOptions = {
 
 const EMPTY_POSITIONS: PortfolioPosition[] = [];
 const WALLET_ACTIVITY_INITIAL_LIMIT = 10;
+export const LOYL_LIST_INDEX = 2;
+
 const LOYL_MINT = "LYLikzBQtpa9ZgVrJsqYGQpR3cC1WMJrBHaXGrQmeta";
 
 const LOYL_ICON_URL =
@@ -873,13 +875,12 @@ export function useWalletDesktopData(
       }
     }
 
-    // Ensure LOYL appears at 3rd position (index 2) always.
-    const targetLoylIndex = Math.min(2, rows.length);
+    const targetLoylIndex = Math.min(LOYL_LIST_INDEX, rows.length);
     const existingLoylIndex = rows.findIndex((r) => r.id === LOYL_MINT);
     if (existingLoylIndex >= 0) {
       if (existingLoylIndex !== targetLoylIndex) {
         const [loylRow] = rows.splice(existingLoylIndex, 1);
-        rows.splice(Math.min(2, rows.length), 0, loylRow);
+        rows.splice(targetLoylIndex, 0, loylRow);
       }
     } else {
       const loylPosition = positions.find((p) => p.asset.mint === LOYL_MINT);

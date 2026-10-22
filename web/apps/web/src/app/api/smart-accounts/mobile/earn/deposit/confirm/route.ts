@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { PublicKey } from "@solana/web3.js";
@@ -9,7 +8,6 @@ import { authenticateMobileWalletRequest } from "@/features/identity/server/mobi
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
 import { findReadyCurrentUserSmartAccount } from "@/features/smart-accounts/server/service";
 import { reportEarnDepositQuestCompletion } from "@/features/solana-week/server/quest-completion-service";
-import { getServerEnv } from "@/lib/core/config/server";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
 import {
   buildEarnDepositConfirmRequestBody,
@@ -18,17 +16,12 @@ import {
 import {
   EarnDepositConfirmError,
   verifyConfirmedEarnDeposit,
-  resolvePolicyCreationSignatureFromChain,
 } from "@/lib/yield-optimization/earn-deposit-confirm.server";
-import {
-  resolveEarnDepositConfirmPolicySignature,
-  type EarnDepositPolicySignatureSource,
-} from "@/lib/yield-optimization/earn-deposit-flow.shared";
+import { citeEarnDepositPolicies } from "@/lib/yield-optimization/earn-deposit-policy-citation.server";
 import {
   hydratePreparedEarnUsdcDeposit,
   type WireSmartAccountPreparedEarnUsdcDeposit,
 } from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
-import { findActiveYieldRoutePolicyPair } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 
@@ -36,10 +29,6 @@ type MobileConfirmFields = {
   preparedDeposit: WireSmartAccountPreparedEarnUsdcDeposit;
   depositSignature: string;
   confirmedSlot: string;
-  policySignature?: string;
-  policyConfirmedSlot?: string;
-  setupPolicySignature?: string;
-  setupPolicyConfirmedSlot?: string;
 };
 
 function jsonError(
@@ -48,10 +37,6 @@ function jsonError(
   message: string
 ): NextResponse {
   return NextResponse.json({ error: { code, message } }, { status });
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function parseMobileConfirmFields(body: unknown): MobileConfirmFields {
@@ -76,10 +61,6 @@ function parseMobileConfirmFields(body: unknown): MobileConfirmFields {
       record.preparedDeposit as WireSmartAccountPreparedEarnUsdcDeposit,
     depositSignature: record.depositSignature,
     confirmedSlot: record.confirmedSlot,
-    policySignature: optionalString(record.policySignature),
-    policyConfirmedSlot: optionalString(record.policyConfirmedSlot),
-    setupPolicySignature: optionalString(record.setupPolicySignature),
-    setupPolicyConfirmedSlot: optionalString(record.setupPolicyConfirmedSlot),
   };
 }
 
@@ -170,154 +151,23 @@ export async function POST(request: Request) {
 
   try {
     const solanaEnv = getConfiguredSolanaEnv();
-    const cluster = resolveLoyalClusterForSolanaEnv(solanaEnv);
     const preparedDeposit = hydratePreparedEarnUsdcDeposit(
       fields.preparedDeposit
     );
-
-    const programId = new PublicKey(
-      getServerEnv().loyalSmartAccounts.programId
-    );
-    const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
-      programId,
-      settingsPda: new PublicKey(settingsPda),
-    });
-    const policyPair = await findActiveYieldRoutePolicyPair({
-      authority: walletAddress,
-      cluster,
-      settings: settingsPda,
-      vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
-      vaultPubkey: earnVaultPda.toBase58(),
-    });
-    let activePolicy: EarnDepositPolicySignatureSource = policyPair?.routePolicy
-      ? {
-          account: policyPair.routePolicy.policyAccount,
-          seed: policyPair.routePolicy.policySeed.toString(),
-          lastSeenSignature: policyPair.routePolicy.lastSeenSignature,
-          lastSeenSlot: policyPair.routePolicy.lastSeenSlot?.toString() ?? null,
-        }
-      : null;
-    // Recovery path: prepare can reuse a policy pair it discovered on-chain
-    // when a prior confirm failure left no DB rows — then there is no recorded
-    // creation signature for the reuse resolution to cite. Resolve it from the
-    // chain so this confirm can adopt the policy instead of failing.
-    const reusedPolicyAccount = preparedDeposit.policy.account.toBase58();
-    let adoptedSetupPolicy: { signature: string; slot: string } | null = null;
-    if (
-      !preparedDeposit.policySetupPrepared &&
-      !preparedDeposit.policyFinalizePrepared &&
-      preparedDeposit.persistence.policyInitialization !== "create" &&
-      (!activePolicy ||
-        activePolicy.account !== reusedPolicyAccount ||
-        !activePolicy.lastSeenSignature)
-    ) {
-      const creation = await resolvePolicyCreationSignatureFromChain({
-        cluster: solanaEnv,
-        policyAccount: reusedPolicyAccount,
-      });
-      if (creation) {
-        activePolicy = {
-          account: reusedPolicyAccount,
-          seed: preparedDeposit.policy.seed.toString(),
-          lastSeenSignature: creation.signature,
-          lastSeenSlot: creation.slot,
-        };
-        // Adopt the setup policy of the reused pair too: the recorder only
-        // writes the managed-vault row — which every Earn read (holdings,
-        // withdraw sources) keys on — when the confirm carries complete
-        // setup-policy metadata (account/seed from prepare's persistence plus
-        // a creation signature+slot, resolved from chain here).
-        const setupPolicyAccount =
-          preparedDeposit.persistence.setupPolicyAccount;
-        if (setupPolicyAccount) {
-          adoptedSetupPolicy = await resolvePolicyCreationSignatureFromChain({
-            cluster: solanaEnv,
-            policyAccount: setupPolicyAccount,
-          });
-        }
-      }
-    }
-
-    // Resumed first deposit: a prior attempt landed the policy-create stage
-    // and then died (e.g. SOL shortfall at finalize), so this prepare carries
-    // policyFinalizePrepared and/or the deposit but no policySetupPrepared —
-    // the device has no policy signature to echo, and the shared resolution
-    // treats the remaining stages as a first deposit and rejects without one.
-    // Adopt the policy's creation signature (DB row when present, otherwise
-    // resolved from chain) so the retry records instead of stranding the
-    // on-chain deposit invisibly.
-    let adoptedPolicyCreation: {
-      signature: string;
-      slot: string | null;
-    } | null = null;
-    if (
-      !fields.policySignature &&
-      !preparedDeposit.policySetupPrepared &&
-      (preparedDeposit.policyFinalizePrepared ||
-        preparedDeposit.persistence.policyInitialization === "create")
-    ) {
-      if (
-        activePolicy?.account === reusedPolicyAccount &&
-        activePolicy.lastSeenSignature
-      ) {
-        adoptedPolicyCreation = {
-          signature: activePolicy.lastSeenSignature,
-          slot: activePolicy.lastSeenSlot ?? null,
-        };
-      } else {
-        adoptedPolicyCreation = await resolvePolicyCreationSignatureFromChain({
-          cluster: solanaEnv,
-          policyAccount: reusedPolicyAccount,
-        });
-      }
-    }
-
-    const resolution = resolveEarnDepositConfirmPolicySignature({
-      activePolicy,
-      policySignature:
-        fields.policySignature ?? adoptedPolicyCreation?.signature,
-      policyConfirmedSlot:
-        fields.policyConfirmedSlot ?? adoptedPolicyCreation?.slot ?? undefined,
-      setupPolicySignature: fields.setupPolicySignature,
-      setupPolicyConfirmedSlot: fields.setupPolicyConfirmedSlot,
-      preparedDeposit,
-    });
-    if ("error" in resolution) {
-      // This 400 strands the on-chain deposit until yield routing observes and
-      // reconciles it — never let it pass silently.
-      console.error(
-        "[mobile-earn-deposit-confirm] policy signature unresolved",
-        {
-          depositSignature: fields.depositSignature,
-          message: resolution.error,
-          policyAccount: reusedPolicyAccount,
-          policyInitialization:
-            preparedDeposit.persistence.policyInitialization,
-          walletAddress,
-        }
-      );
-      return jsonError(400, "policy_signature_unresolved", resolution.error);
-    }
 
     const confirmBody = buildEarnDepositConfirmRequestBody({
       preparedDeposit,
       signature: fields.depositSignature,
       confirmedSlot: fields.confirmedSlot,
       smartAccountAddress,
-      policySignature: resolution.policySignature,
-      policyConfirmedSlot: resolution.policyConfirmedSlot,
-      setupPolicySignature:
-        resolution.setupPolicySignature ?? adoptedSetupPolicy?.signature,
-      setupPolicyConfirmedSlot:
-        resolution.setupPolicyConfirmedSlot ?? adoptedSetupPolicy?.slot,
     });
-    const input = parseEarnDepositConfirmRequestBody(confirmBody);
+    const principal = { walletAddress, smartAccountAddress, settingsPda };
+    const input = await citeEarnDepositPolicies({
+      input: parseEarnDepositConfirmRequestBody(confirmBody),
+      principal,
+    });
 
-    const position = await verifyConfirmedEarnDeposit({
-      principal: { walletAddress, smartAccountAddress, settingsPda },
-      input,
-    });
+    const position = await verifyConfirmedEarnDeposit({ principal, input });
 
     await reportEarnDepositQuestCompletion(
       walletAddress,

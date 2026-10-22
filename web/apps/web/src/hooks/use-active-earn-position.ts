@@ -458,7 +458,7 @@ export function useActiveEarnPosition({
   const [position, setPositionState] = useState<ActiveEarnPosition | null>(
     null
   );
-  const [hasResolved, setHasResolved] = useState(false);
+  const [resolvedScope, setResolvedScope] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [watchedAccounts, setWatchedAccounts] = useState<
     EarnRpcWatchedAccount[]
@@ -503,7 +503,7 @@ export function useActiveEarnPosition({
       if (activePositionScopeRef.current !== positionScope) {
         return;
       }
-      setHasResolved(true);
+      setResolvedScope(positionScope);
       setIsLoading(false);
       setPositionState((current) => {
         if (activePositionScopeRef.current !== positionScope) {
@@ -571,7 +571,7 @@ export function useActiveEarnPosition({
       positionRef.current = next.position;
       setWatchedAccounts(next.watchedAccounts);
       setPositionState(next.position);
-      setHasResolved(true);
+      setResolvedScope(positionScope);
       setIsLoading(false);
     },
     [positionScope, settingsPda, solanaEnv, walletAddress]
@@ -588,7 +588,7 @@ export function useActiveEarnPosition({
           confirmed: nextPosition,
         })
       ) {
-        setHasResolved(true);
+        setResolvedScope(positionScope);
         setIsLoading(false);
         return;
       }
@@ -604,7 +604,7 @@ export function useActiveEarnPosition({
       positionRef.current = nextPosition;
       setWatchedAccounts([]);
       setPositionState(nextPosition);
-      setHasResolved(true);
+      setResolvedScope(positionScope);
       setIsLoading(false);
     },
     [positionScope, settingsPda, solanaEnv, walletAddress]
@@ -643,7 +643,7 @@ export function useActiveEarnPosition({
               commitRpcPosition(next);
               result = next.position;
             } else {
-              setHasResolved(true);
+              setResolvedScope(positionScope);
               result = positionRef.current;
             }
           } catch (error) {
@@ -715,21 +715,21 @@ export function useActiveEarnPosition({
         if (fallback?.position) {
           positionRef.current = fallback.position;
           setPositionState(fallback.position);
-          setHasResolved(true);
+          setResolvedScope(positionScope);
           setIsLoading(false);
           return;
         }
       }
 
       if (enabled && walletAddress) {
-        setHasResolved(false);
+        setResolvedScope(null);
         setIsLoading(true);
         return;
       }
 
       positionRef.current = null;
       setPositionState(null);
-      setHasResolved(true);
+      setResolvedScope(positionScope);
       setIsLoading(false);
       return;
     }
@@ -742,11 +742,11 @@ export function useActiveEarnPosition({
     if (cached) {
       positionRef.current = cached;
       setPositionState(cached);
-      setHasResolved(true);
+      setResolvedScope(positionScope);
     } else {
       positionRef.current = null;
       setPositionState(null);
-      setHasResolved(false);
+      setResolvedScope(null);
     }
     setIsLoading(true);
 
@@ -808,7 +808,7 @@ export function useActiveEarnPosition({
         return;
       }
 
-      setHasResolved(true);
+      setResolvedScope(positionScope);
       setIsLoading(false);
     };
 
@@ -820,7 +820,7 @@ export function useActiveEarnPosition({
         "[earn-position] failed to load live active position",
         error
       );
-      setHasResolved(true);
+      setResolvedScope(positionScope);
       setIsLoading(false);
     });
 
@@ -940,7 +940,7 @@ export function useActiveEarnPosition({
   return {
     rpcObservation:
       rpcObservation?.scope === positionScope ? rpcObservation : null,
-    hasResolved,
+    hasResolved: resolvedScope === positionScope,
     isLoading,
     position,
     refresh,

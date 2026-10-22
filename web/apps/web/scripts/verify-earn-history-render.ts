@@ -71,7 +71,7 @@ const context = {
   exports: {} as { Chart: React.ComponentType<{ rangeId: string }> },
   require,
   useSyncExternalStore: () => true,
-  useEarnForecastApy: () => ({ availability }),
+  useEarnForecastApy: () => ({ apy: { availability }, isLoaded: true }),
   useEarnForecastApyHistory: () => ({
     samples: ++historyReads === 1 ? samples : [],
   }),

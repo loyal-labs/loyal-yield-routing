@@ -6,9 +6,9 @@ import { LOYAL_TOKEN_MINT } from "@/lib/market/loyal-token-ticker.shared";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-// Gap between slides; the scroll handler needs it to map scrollLeft to an
-// active dot, so keep it in sync with the scroller's gap class.
 const SLIDE_GAP_PX = 8;
+
+export const MOBILE_BANNER_SLOT_CLASS = "relative h-24 w-full shrink-0";
 
 const AUTOPLAY_INTERVAL_MS = 4000;
 
@@ -169,8 +169,6 @@ export function WalletHomeBanners({
     }`;
 
   return (
-    // h-full matters outside the desktop grid: the mobile slot is a fixed
-    // 96px box and every slide/art size derives from this root's height.
     <div className="relative col-span-2 h-full">
       <div
         aria-hidden="true"
@@ -188,7 +186,7 @@ export function WalletHomeBanners({
         ))}
       </div>
       <div
-        className="scrollbar-hide flex h-full snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain"
+        className="scrollbar-hide flex h-full snap-x snap-mandatory overflow-x-auto overscroll-x-contain"
         onPointerCancel={() => {
           isPointerDownRef.current = false;
         }}
@@ -200,6 +198,7 @@ export function WalletHomeBanners({
         }}
         onScroll={handleScroll}
         ref={scrollerRef}
+        style={{ gap: SLIDE_GAP_PX }}
       >
         {BANNERS.map((banner, index) => (
           <section

@@ -55,20 +55,14 @@ test("a measured APY expires on its source timestamp and an unavailable response
   }
 });
 
-test("an outage fallback is cached for its retry interval", async () => {
+test("a failed summary fetch with nothing persisted yields no APY", async () => {
   const originalFetch = globalThis.fetch;
-  let calls = 0;
   globalThis.fetch = (async () => {
-    calls += 1;
     throw new Error("offline");
   }) as unknown as typeof fetch;
   try {
     resetEarnForecastSummaryCacheForTests();
-    const first = await fetchEarnForecastSummary();
-    const second = await fetchEarnForecastSummary();
-    expect(toForecastApy(first.forecast).availability).toBe("unavailable");
-    expect(second).toBe(first);
-    expect(calls).toBe(1);
+    await expect(fetchEarnForecastSummary()).rejects.toThrow("offline");
   } finally {
     resetEarnForecastSummaryCacheForTests();
     globalThis.fetch = originalFetch;

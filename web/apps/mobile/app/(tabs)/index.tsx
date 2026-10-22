@@ -235,8 +235,7 @@ export default function WalletScreen() {
     if (!earnPosition) {
       return null;
     }
-    const bps = getLoyalApyBps(forecastSummary);
-    return Number.isFinite(bps) && bps > 0 ? bps : null;
+    return getLoyalApyBps(forecastSummary);
   }, [earnPosition, forecastSummary]);
 
   // First-deposit SOL gate: opening the first Earn position costs SOL

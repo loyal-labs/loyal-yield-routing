@@ -11,6 +11,7 @@ import {
   voltrDepositPlan,
   type VoltrPlanBuilder,
   voltrRequestWithdrawalPlan,
+  type WalletAdapterLike,
 } from "@loyal-labs/smart-account-vaults";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
@@ -27,7 +28,76 @@ import type {
   EarnMaxSummaryResponse,
   EarnMaxViewModel,
 } from "./types";
-import { readJson, viewModel, walletBridge } from "./use-earn-max";
+
+export async function readJson<T>(path: string): Promise<T> {
+  const response = await fetch(path, {
+    cache: "no-store",
+    credentials: "include",
+  });
+  const body = (await response.json()) as T;
+  if (!response.ok) {
+    throw new Error(`Earn MAX request failed (${response.status}).`);
+  }
+  return body;
+}
+
+export function walletBridge(
+  wallet: ReturnType<typeof useWallet>
+): WalletAdapterLike {
+  if (!wallet.publicKey || !wallet.signTransaction) {
+    throw new Error("Connected wallet cannot sign Earn MAX transactions.");
+  }
+  return {
+    publicKey: wallet.publicKey,
+    signTransaction: wallet.signTransaction,
+    ...(wallet.signAllTransactions
+      ? { signAllTransactions: wallet.signAllTransactions }
+      : {}),
+    ...(wallet.sendTransaction
+      ? { sendTransaction: wallet.sendTransaction }
+      : {}),
+  };
+}
+
+export function viewModel(input: {
+  activity: EarnMaxActivityResponse | null;
+  busy: boolean;
+  error: string | null;
+  loading: boolean;
+  summary: EarnMaxSummaryResponse | null;
+}): EarnMaxViewModel {
+  const summary = input.summary?.summary;
+  const strategyLabels: Record<string, string> = {
+    onyc_usdc: "ONyc / USDC",
+    onyc_usds: "ONyc / USDS",
+    prime_usdc: "PRIME / USDC",
+    prime_pyusd: "PRIME / PYUSD",
+    prime_usds: "PRIME / USDS",
+    syrup_usdc_usdc: "syrupUSDC / USDC",
+    syrup_usdc_pyusd: "syrupUSDC / PYUSD",
+  };
+  return {
+    activity: input.activity?.operations ?? [],
+    apyHistory: summary?.apyHistory ?? [],
+    apyWindowDays: summary?.apyWindowDays ?? null,
+    balanceUsd: summary?.balanceUsd ?? 0,
+    coverage: summary?.coverage ?? "history_incomplete",
+    currentApyBps: summary?.currentApyBps ?? null,
+    earnedUsd: summary?.earnedUsd ?? null,
+    error: input.error,
+    forecastApyBps: summary?.forecastApyBps ?? null,
+    isBusy: input.busy || Boolean(summary?.currentOperationId),
+    isLoading: input.loading,
+    performance: input.activity?.performance ?? [],
+    policyStatus: summary?.policyStatus ?? null,
+    realizedApyBps: summary?.realizedApyBps ?? null,
+    status: summary?.goal ?? "not_installed",
+    strategyLabel:
+      (summary?.strategyKey && strategyLabels[summary.strategyKey]) ??
+      "Earn MAX",
+    withdrawal: summary?.withdrawal ?? null,
+  };
+}
 
 export function useEarnMaxVoltr(input: {
   settingsPda: string | null | undefined;

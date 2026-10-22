@@ -280,6 +280,7 @@ function snapshotReserveTarget(
 function snapshotFullWithdrawalTargets(holdings: EarnRpcHolding[]): {
   amountRaw: bigint;
   liquidityMint: PublicKey;
+  liquidityTokenProgram: PublicKey;
   market: PublicKey;
   reserve: PublicKey;
   reserveCollateralMint?: PublicKey;
@@ -313,6 +314,7 @@ function snapshotFullWithdrawalTargets(holdings: EarnRpcHolding[]): {
     targets.push({
       amountRaw,
       liquidityMint: new PublicKey(holding.liquidityMint),
+      liquidityTokenProgram: new PublicKey(holding.tokenProgramId),
       market: new PublicKey(holding.market),
       reserve: new PublicKey(holding.reserve),
       ...(reserveCollateralMint ? { reserveCollateralMint } : {}),
@@ -658,6 +660,8 @@ export function serializeEarnUsdcWithdrawInput(
     target: input.target
       ? {
           liquidityMint: input.target.liquidityMint.toBase58(),
+          liquidityTokenProgram:
+            input.target.liquidityTokenProgram?.toBase58() ?? null,
           market: input.target.market.toBase58(),
           reserve: input.target.reserve.toBase58(),
           supplyApyBps: input.target.supplyApyBps?.toString() ?? null,
@@ -667,6 +671,7 @@ export function serializeEarnUsdcWithdrawInput(
       input.fullWithdrawalTargets?.map((target) => ({
         amountRaw: target.amountRaw?.toString() ?? null,
         liquidityMint: target.liquidityMint.toBase58(),
+        liquidityTokenProgram: target.liquidityTokenProgram?.toBase58() ?? null,
         market: target.market.toBase58(),
         reserve: target.reserve.toBase58(),
         reserveCollateralMint: target.reserveCollateralMint?.toBase58() ?? null,
