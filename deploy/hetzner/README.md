@@ -667,6 +667,16 @@ A missing optional credential disables only the pages that need it.
 | `CLICKSTACK_READ_KEY` | `loyal-admin-clickstack` | optional | the metrics page |
 | `EXPO_ACCESS_TOKEN` | `loyal-admin-expo` | optional | push broadcasts, if Expo requires a token |
 
+### Admin first install and host (loyal-admin)
+
+The first release goes in by hand exactly as `loyal-web`'s (First install,
+above), with `admin` for `web`, `scripts/web/build.sh admin` and port 10081;
+after that `bun run deploy admin [<sha>]` deploys and rolls back. The tunnel
+serves it at `admin-next.askloyal.com` (`cloudflared/config.yml`), with the
+DNS record from `tunnel route dns loyal-workers admin-next.askloyal.com`.
+`LOYAL_ADMIN_CLICKSTACK_URL` is the ClickStack external API base, which on
+the self-hosted ClickStack sits under `/api/api/v2` (the UI proxies `/api`).
+
 ### Admin environment (loyal-admin)
 
 The unit sets only `LOYAL_ADMIN_ADDRESS`. Everything below goes in the host
