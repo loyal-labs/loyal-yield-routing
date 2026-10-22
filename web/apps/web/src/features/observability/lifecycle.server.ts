@@ -104,12 +104,10 @@ export async function withRequestLifecycle(args: {
         httpStatus: response.status,
       });
     } else if (lifecycle) {
-      let body: { error?: { code?: unknown } } | null = null;
-      try {
-        body = await response.clone().json();
-      } catch {
-        /* Telemetry must not change the response. */
-      }
+      const body: { error?: { code?: unknown } } | null = await response
+        .clone()
+        .json()
+        .catch(() => null);
       lifecycle.tracker.fail(args.stage, {
         errorCode: normalizeLifecycleErrorCode(body?.error?.code),
         httpStatus: response.status,
