@@ -761,14 +761,22 @@ const rebalanceSQLOptimizationVolume = `
           COALESCE(confirmed.daily_amount_raw, 0)::bigint AS daily_amount_raw
         FROM days AS day
         LEFT JOIN confirmed_daily AS confirmed USING (date)
+      ),
+      cumulative AS (
+        SELECT
+          date,
+          confirmed_count,
+          daily_amount_raw,
+          SUM(daily_amount_raw) OVER (ORDER BY date ASC) AS cumulative_amount_raw
+        FROM daily
       )
       SELECT
         to_char(date, 'YYYY-MM-DD') AS date,
         confirmed_count::text AS confirmed_count,
         daily_amount_raw::text AS daily_amount_raw,
-        SUM(daily_amount_raw) OVER (ORDER BY date ASC)::text
-          AS cumulative_amount_raw
-      FROM daily
+        cumulative_amount_raw::text AS cumulative_amount_raw
+      FROM cumulative
+      WHERE date > (now() AT TIME ZONE 'UTC')::date - 90
       ORDER BY date ASC
 `
 
@@ -1010,6 +1018,7 @@ const rebalanceSQLExecutedHistory = `
           current_deposit_raw::text AS current_deposit_raw,
           user_rank
         FROM execution_rows
+        WHERE executed_at >= now() - interval '90 days'
       ),
       detail_rows AS (
         SELECT
