@@ -44,8 +44,6 @@ export default function TabsLayout() {
             animation: "shift",
           }}
         >
-          {/* index.tsx renders the wallet home — it's the route group's default so
-            cold start (URL "/") lands here without any extra config. */}
           <Tabs.Screen name="index" />
           <Tabs.Screen name="wallet" options={{ href: null }} />
           <Tabs.Screen name="earn" options={{ href: null }} />
@@ -54,14 +52,9 @@ export default function TabsLayout() {
           <Tabs.Screen name="activity" />
           <Tabs.Screen name="browser" />
           <Tabs.Screen name="library" />
-          {/* Profile/Settings dropped from the bottom nav (reachable from the
-            header gear), but kept registered so direct navigation still works. */}
           <Tabs.Screen name="profile" />
           <Tabs.Screen name="summaries" options={{ href: null }} />
         </Tabs>
-        {/* QuestCompletionWatcher unmounted: Seeker Summer round 1 ended
-          2026-07-15, no new completions can be reported. Component kept for a
-          potential round 2. */}
       </ActivityProvider>
     </EarnMaxProvider>
   );

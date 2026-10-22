@@ -168,8 +168,6 @@ export function CardExpandTransition({
   return (
     <GestureDetector gesture={pan}>
       <View style={styles.root}>
-        {/* Measures this root's window position so the box can correct for any
-            status-bar / inset offset. pointerEvents none — measurement only. */}
         <View
           ref={rootRef}
           onLayout={handleRootLayout}

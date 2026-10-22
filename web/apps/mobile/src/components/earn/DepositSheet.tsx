@@ -384,8 +384,6 @@ export function DepositSheet({
         android_keyboardInputMode="adjustResize"
       >
         <BottomSheetView style={[styles.container, { height: sheetHeight }]}>
-          {/* Toolbar — three flex children so the absolute title doesn't eat
-              taps on the close button (the bug in the previous version). */}
           <View style={styles.toolbar}>
             <Pressable
               onPress={handleClose}
@@ -407,10 +405,6 @@ export function DepositSheet({
             <View style={styles.iconButtonSpacer} />
           </View>
 
-          {/* Amount input — a transparent BottomSheetTextInput covers the row
-              and captures taps/keyboard. The visible "$" + digits + caret are
-              rendered on top via pointerEvents="none" so they don't block
-              re-focusing. The value is entered in dollars (USDC ≈ $1). */}
           <View style={styles.body}>
             <View style={styles.amountInputWrap}>
               <Pressable
@@ -443,11 +437,6 @@ export function DepositSheet({
                     ]}
                   />
                 </View>
-                {/* Transparent overlay input. pointerEvents none: taps go to
-                    the wrapping Pressable, whose openKeyboard blur+focus
-                    escapes the iPad stuck-responder state (dismiss key hides
-                    the keyboard without blurring). Typing still reaches the
-                    focused input. */}
                 <BottomSheetTextInput
                   ref={inputRef as unknown as React.Ref<never>}
                   value={displayValue}
@@ -475,9 +464,6 @@ export function DepositSheet({
             </View>
           </View>
 
-          {/* CTA: absolute at the sheet's bottom, translated up by keyboard
-              height via `useAnimatedKeyboard`. Stays glued to the keyboard
-              top when it's open, and to the safe-area bottom when it's not. */}
           <Animated.View
             style={[
               styles.footerAbsolute,
@@ -486,10 +472,6 @@ export function DepositSheet({
               animatedFooterStyle,
             ]}
           >
-            {/* Balance cell — a tappable stablecoin pill (logo + chevron), the
-                selected coin's available balance and a MAX shortcut. Lives
-                directly above the CTA (not under the input) and rides up with
-                the keyboard alongside the button. */}
             <View style={earnMax && styles.maxTransferRows}>
               <View
                 style={[styles.balanceCell, earnMax && styles.maxBalanceCell]}

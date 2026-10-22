@@ -138,8 +138,6 @@ export function QuestCompleteNotification({
           ]}
         />
 
-        {/* The whole sheet — giant red dog + white card — slides up from the
-            bottom as one unit, so the snout/curl seam never drifts. */}
         <Animated.View
           pointerEvents="box-none"
           style={[StyleSheet.absoluteFill, sheetStyle]}
@@ -164,8 +162,6 @@ export function QuestCompleteNotification({
             />
           </View>
 
-          {/* White panel with the completion copy. Both top corners are square
-              (the curl defines the top-right); the dog's snout laps over the top. */}
           <View
             style={{
               position: "absolute",
@@ -254,10 +250,6 @@ export function QuestCompleteNotification({
             </Pressable>
           </View>
 
-          {/* Snout + nose drawn ON TOP of the panel: the snout laps its chin
-              over the panel's top edge, the nose sits on the snout. Both live in
-              the dog's frame (same box as the dog) so they register exactly with
-              the face behind the panel. */}
           <View
             pointerEvents="none"
             style={{

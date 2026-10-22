@@ -406,9 +406,6 @@ export default function ProfileScreen() {
           />
         </SettingsSection>
 
-        {/* Wallet Management — only when unlocked. Vault-backed wallets hide
-            biometrics (vault prompts on every signature) and export (the
-            secret never leaves the vault). */}
         {isUnlocked && (
           <SettingsSection>
             <PrivyAccountCell
@@ -507,8 +504,6 @@ export default function ProfileScreen() {
           />
         </SettingsSection>
 
-        {/* Tap-to-copy build string so users can report exactly which
-            native binary + OTA bundle they're running. */}
         <Pressable onPress={handleCopyBuildInfo} style={styles.versionRow}>
           <Text style={styles.versionText}>
             {versionCopied ? "Copied" : buildInfo.short}

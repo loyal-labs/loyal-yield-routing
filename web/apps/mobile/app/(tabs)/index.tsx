@@ -411,8 +411,6 @@ export default function WalletScreen() {
             onOpenBgPicker={() => setIsBgPickerOpen(true)}
           />
 
-          {/* Portfolio overview — Earn / Stablecoins / Crypto. Cells flex to
-              fill the screen height between balance and actions. */}
           <View style={{ flex: 1, marginTop: 16 }}>
             <WalletCategoryGrid
               earnUsd={earnUsd}

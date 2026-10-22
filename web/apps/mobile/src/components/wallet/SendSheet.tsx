@@ -1026,8 +1026,6 @@ function RecipientStep({
         ) : null}
       </View>
 
-      {/* Results: exact match for a valid address, otherwise recently used
-          (shown for both the empty and invalid states). */}
       <BottomSheetScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 96 }}
@@ -1248,9 +1246,6 @@ function AmountStep({
         </View>
       </View>
 
-      {/* Amount input — transparent overlay BottomSheetTextInput captures
-          taps/keyboard; the visible "$"+digits + custom caret render on top
-          (pointerEvents="none"). */}
       <View style={{ paddingTop: 36, paddingHorizontal: 16 }}>
         <Pressable
           style={{ position: "relative", height: 58, justifyContent: "flex-end" }}
@@ -1337,8 +1332,6 @@ function AmountStep({
         </Text>
       </View>
 
-      {/* Footer: token selector + balance + MAX, then the Review CTA. Pinned to
-          the sheet bottom and rides up with the keyboard. */}
       <Animated.View
         style={[
           {
