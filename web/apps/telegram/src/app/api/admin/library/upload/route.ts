@@ -77,19 +77,17 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  const key = `library/${randomUUID()}.${extension}`;
+  const unprefixedKey = `library/${randomUUID()}.${extension}`;
 
   const r2 = getCloudflareR2UploadClientFromEnv();
   await r2.uploadImage({
-    key,
+    key: unprefixedKey,
     body: buffer,
     contentType: file.type,
   });
 
-  // R2 client and CDN client both apply CLOUDFLARE_R2_UPLOAD_PREFIX.
-  // Pass the original (unprefixed) key to the CDN resolver to avoid a double prefix.
   const cdn = getCloudflareCdnUrlClientFromEnv();
-  const url = cdn.resolveUrl({ key });
+  const url = cdn.resolveUrl({ key: unprefixedKey });
 
   return NextResponse.json({ url });
 }

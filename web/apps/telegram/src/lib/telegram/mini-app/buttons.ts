@@ -29,6 +29,7 @@ const listeners = new Set<() => void>();
 function emitChange() {
   // Create new reference so useSyncExternalStore detects the change
   buttonBarState = { ...buttonBarState };
+  syncDomVisibility();
   for (const listener of listeners) {
     listener();
   }
@@ -58,11 +59,6 @@ function wrapWithHaptic(onClick?: () => void): (() => void) | null {
   };
 }
 
-// --- Immediate DOM sync ---
-// React re-renders are async (useEffect → store update → scheduled render).
-// To avoid the button bar lingering after a modal closes, we directly toggle
-// the DOM element's display before React catches up.
-
 const BUTTON_BAR_ID = "bottom-button-bar";
 
 function syncDomVisibility() {
@@ -82,7 +78,6 @@ export const showMainButton = (options: MainButtonOptions): boolean => {
       showLoader: options.showLoader ?? false,
     },
   };
-  syncDomVisibility();
   emitChange();
   return true;
 };
@@ -92,7 +87,6 @@ export const hideMainButton = (): boolean => {
     ...buttonBarState,
     main: null,
   };
-  syncDomVisibility();
   emitChange();
   return true;
 };
@@ -109,7 +103,6 @@ export const showSecondaryButton = (
       showLoader: options.showLoader ?? false,
     },
   };
-  syncDomVisibility();
   emitChange();
   return true;
 };
@@ -119,7 +112,6 @@ export const hideSecondaryButton = (): boolean => {
     ...buttonBarState,
     secondary: null,
   };
-  syncDomVisibility();
   emitChange();
   return true;
 };

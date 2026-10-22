@@ -256,13 +256,9 @@ async function installLayoutShiftObserver(page: Page) {
   });
 }
 
-async function readCls(
-  page: Page,
-  reset: boolean,
-  since = 0
-): Promise<ClsState> {
+async function readCls(page: Page, since = 0): Promise<ClsState> {
   return page.evaluate(
-    ({ shouldReset, startedAt }) => {
+    ({ startedAt }) => {
       const state = (
         window as typeof window & {
           __adminProgressiveCls?: ClsState;
@@ -274,14 +270,12 @@ async function readCls(
         shifts,
         value: shifts.reduce((total, shift) => total + shift.value, 0),
       };
-      if (shouldReset) {
-        state.entries.length = 0;
-        state.shifts.length = 0;
-        state.value = 0;
-      }
+      state.entries.length = 0;
+      state.shifts.length = 0;
+      state.value = 0;
       return snapshot;
     },
-    { shouldReset: reset, startedAt: since }
+    { startedAt: since }
   );
 }
 
@@ -523,7 +517,7 @@ async function verifyRoute(
     await page.waitForTimeout(500);
     requests.length = 0;
     consoleErrors.length = 0;
-    await readCls(page, true);
+    await readCls(page);
 
     const target = page.locator(`a[href="${route.href}"]`).first();
     await target.waitFor();
@@ -557,7 +551,7 @@ async function verifyRoute(
   const navigationMs = median(navigationSamples);
   const firstSectionMs = median(firstSectionSamples);
   await page.waitForTimeout(250);
-  const measuredCls: ClsState = await readCls(page, true);
+  const measuredCls: ClsState = await readCls(page);
   const earlyDeferred = route.deferred
     .filter((item) => item.request)
     .filter((item) =>
@@ -579,9 +573,7 @@ async function verifyRoute(
     const sectionMeasurementStartedAt = await page.evaluate(() =>
       performance.now()
     );
-    // Automated scrolling can generate synthetic shift records in headless
-    // Chrome. Discard the transition, then measure only content settlement.
-    await readCls(page, true, sectionMeasurementStartedAt);
+    await readCls(page, sectionMeasurementStartedAt);
     await page.waitForFunction(
       (sectionName) =>
         document
@@ -590,7 +582,7 @@ async function verifyRoute(
       deferred.section
     );
     await page.waitForTimeout(250);
-    await readCls(page, true, sectionMeasurementStartedAt);
+    await readCls(page, sectionMeasurementStartedAt);
     if (deferred.request) {
       const count = requests.filter((request) =>
         matchesRequest(request.url, deferred.request!)

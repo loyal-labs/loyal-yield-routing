@@ -225,7 +225,7 @@ function preserveCompletedAumWeeks(
   );
 }
 
-async function loadEarnMaxAumRaw(): Promise<bigint> {
+async function loadEarnMaxPoolNavUsdcRaw(): Promise<bigint> {
   const response = await fetch(
     `https://api.voltr.xyz/vault/${EARN_MAX_VAULT}/share-price`,
     {
@@ -247,8 +247,8 @@ async function loadEarnMaxAumRaw(): Promise<bigint> {
   ) {
     throw new Error("Invalid Earn MAX valuation returned by Voltr");
   }
-  // Pool NAV is raw USDC, including pending claims until they leave the vault.
-  return BigInt(value);
+  const earnMaxPoolNavUsdcRaw = BigInt(value);
+  return earnMaxPoolNavUsdcRaw;
 }
 
 export async function loadLoyalStats(): Promise<LoyalStatsRefresh | null> {
@@ -259,7 +259,7 @@ export async function loadLoyalStats(): Promise<LoyalStatsRefresh | null> {
     userCountRows,
     existingSnapshotRows,
     transactionResults,
-    earnMaxAumRaw,
+    earnMaxPoolNavUsdcRaw,
   ] = await Promise.all([
     database.select({ value: count() }).from(appUsers),
     database
@@ -385,7 +385,7 @@ export async function loadLoyalStats(): Promise<LoyalStatsRefresh | null> {
         WHERE acquired
         `),
     ]),
-    loadEarnMaxAumRaw(),
+    loadEarnMaxPoolNavUsdcRaw(),
   ]);
 
   const totalUsers = userCountRows[0]?.value;
@@ -399,7 +399,8 @@ export async function loadLoyalStats(): Promise<LoyalStatsRefresh | null> {
   }
 
   const totalAumRaw =
-    parseRawMetric(yieldStats.total_aum_raw, "total AUM") + earnMaxAumRaw;
+    parseRawMetric(yieldStats.total_aum_raw, "total AUM") +
+    earnMaxPoolNavUsdcRaw;
   const currentAumSeries = parseAumSeries(yieldStats.earn_aum_series);
   const currentWeek = currentAumSeries.at(-1);
   if (currentWeek) {

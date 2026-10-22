@@ -28,9 +28,7 @@ const FrontmatterSchema = z.object({
 });
 
 /**
- * Every post body, read once at build time. Entries come back keyed by path
- * and in path order, i.e. slug-ascending, which is the tie the date-desc sort
- * below keeps when two posts share a date — the order Vercel's listing shows.
+ * Every post body, read once at build time.
  */
 const rawPosts = import.meta.glob<string>(
   "../../../web/public/blog/*/post.md",
@@ -100,4 +98,6 @@ function loadPost(file: string, raw: string): BlogPostFull | null {
 export const allPosts: BlogPostFull[] = Object.entries(rawPosts)
   .map(([file, raw]) => loadPost(file, raw))
   .filter((post): post is BlogPostFull => post !== null)
-  .sort((a, b) => b.date.localeCompare(a.date));
+  .sort(
+    (a, b) => b.date.localeCompare(a.date) || a.slug.localeCompare(b.slug)
+  );

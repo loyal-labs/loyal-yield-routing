@@ -83,6 +83,34 @@ Decomposition:
 - Acceptance: the baseline reproduces the 2.8 s blank overview and a cold
   metrics loader over 15 s.
 
+Run (usage and metric definitions are owned here, not in the script header):
+
+    ADMIN_USER=... ADMIN_PASSWORD=... bun scripts/web/admin-perf.ts <host> \
+      --set warm|cold|nav|rebalance-all \
+      [--routes /earn/rebalance,/earn] [--samples 5] [--param communityId=<id>] \
+      [--idle <seconds slept before this process, recorded only>] [--json out.json]
+
+Sets: warm signs in once and, after a discarded pass, takes --samples hard
+loads in fresh pages; cold is one fresh browser, one route, one sample, taken
+after the caller sleeps outside any lock and passes --idle, so only the login
+page and POST /auth/login are fetched before the measured load; nav settles a
+from-route, clicks the sidebar link to the target and times the click to the
+new route's DOM; rebalance-all loads /earn/rebalance scrolled to the bottom
+and prints each /api/ call's start, end and duration. The viewport is
+1440x8000 so sections that load when scrolled into view start on mount;
+page.route disables the browser HTTP cache, so every load fetches its assets.
+Read-only: every non-GET request to the host except the sign-in POST is
+aborted and counted.
+
+Metrics per sample: shellMs = sidebar visible (since navigation start), dataMs =
+end of the last /api/ response, contentMs = first moment at or after dataMs with
+main rendered and no skeleton in it, plus every /api/ call with status, duration
+and wire bytes. Navs time from the click; newDomMs = first moment on the target
+path with a skeleton or a changed h1/h2 in main. Selectors:
+[data-slot=sidebar-inner] (sidebar), [data-slot=sidebar-inset] (main),
+[data-slot=skeleton] and .animate-pulse (skeletons).
+
+
 ### F1: shell, saves, bundle (sonnet-lane)
 Owns:
 - `web/apps/admin/src/main.tsx`

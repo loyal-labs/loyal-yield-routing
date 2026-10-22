@@ -1,28 +1,3 @@
-// Admin load-time harness: signs in, then times every admin route from the browser.
-//
-//   ADMIN_USER=... ADMIN_PASSWORD=... bun scripts/web/admin-perf.ts <host> --set warm|cold|nav|rebalance-all \
-//     [--routes /earn/rebalance,/earn] [--samples 5] [--param communityId=<id>] \
-//     [--idle <seconds slept before this process, recorded only>] [--json out.json]
-//
-// warm: one browser, one sign-in, a discarded pass over the routes, then --samples (5) passes;
-//   each sample is a hard load in a fresh page (server warm, browser HTTP cache off, see below).
-// cold: one fresh browser, one route, one sample. The caller sleeps first (outside any lock) and
-//   passes --idle; the sign-in happens right before the measured load and only the login page and
-//   POST /auth/login are fetched during it, so the first admin request is the measured one.
-// rebalance-all: one load of /earn/rebalance scrolled to the bottom, printing each /api/ call's start, end and duration.
-// nav: loads a "from" route, waits for it to settle, clicks the sidebar link to the target and
-//   times the click to the new route's DOM; 3 pairs x --samples (3) passes.
-//
-// Per sample: shellMs = first time the sidebar is visible (since navigation start), dataMs = end of
-// the last /api/ response, contentMs = first time at or after dataMs with main rendered and no
-// skeleton in it, plus every /api/ call with status, duration and wire bytes (encodedBodySize).
-// A sample settles after 1.5 s without an /api/ request in flight. For navs, times are from the
-// click, and newDomMs = first moment on the target path with a skeleton or a changed h1/h2 in main.
-// The viewport is 1440x8000 so sections that load when scrolled into view (metrics, earn) start on mount.
-// Read-only: every non-GET request to the host except the sign-in POST is aborted and counted.
-// Page.route disables the browser HTTP cache, so every load fetches its assets.
-// Selectors: [data-slot=sidebar-inner] (sidebar), [data-slot=sidebar-inset] (main),
-// [data-slot=skeleton] and .animate-pulse (skeletons).
 import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
@@ -178,7 +153,9 @@ let loginPosts = 0;
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1440, height: 8000 } });
 let signingIn = true;
-await context.route("**/*", (route) => {
+const readGetOnlyWithHttpCacheOff: Parameters<typeof context.route>[1] = (
+  route
+) => {
   const request = route.request();
   const url = request.url();
   if (!url.startsWith(host)) return route.continue();
@@ -194,7 +171,9 @@ await context.route("**/*", (route) => {
   if (request.method() === "GET") return route.continue();
   aborted.push({ method: request.method(), url });
   return route.abort();
-});
+};
+
+await context.route("**/*", readGetOnlyWithHttpCacheOff);
 
 async function signIn(): Promise<void> {
   const page = await context.newPage();
