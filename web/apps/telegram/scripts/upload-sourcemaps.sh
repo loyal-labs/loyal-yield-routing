@@ -6,11 +6,7 @@ if [ -z "$DATADOG_API_KEY" ]; then
   exit 0
 fi
 
-# Derive the same short commit hash used in datadogRum.init({ version })
-COMMIT_HASH="${VERCEL_GIT_COMMIT_SHA:0:7}"
-if [ -z "$COMMIT_HASH" ]; then
-  COMMIT_HASH=$(git rev-parse --short HEAD)
-fi
+COMMIT_HASH="$(bun -e 'process.stdout.write(require("./scripts/release-version.ts").resolveReleaseVersion())')"
 
 echo "Uploading source maps for version $COMMIT_HASH"
 

@@ -19,6 +19,7 @@ import type {
   MobileLoadingMetricEnvelope,
   NormalizedLoadingMetric,
 } from "./metrics-contract";
+import { OBSERVABILITY_EXPORT_BUDGET_MS } from "./budget-contract";
 import {
   buildOtlpErrorPayload,
   buildOtlpLifecyclePayload,
@@ -26,7 +27,6 @@ import {
   buildOtlpLoadingMetricPayload,
 } from "./otlp";
 
-const EXPORT_TIMEOUT_MS = 1250;
 const MAX_METHOD_LENGTH = 16;
 const MAX_RELEASE_LENGTH = 80;
 const MAX_ENVIRONMENT_LENGTH = 32;
@@ -115,7 +115,10 @@ async function exportOtlpPayload(
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), EXPORT_TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    OBSERVABILITY_EXPORT_BUDGET_MS
+  );
 
   try {
     const response = await fetch(config.endpoint, {

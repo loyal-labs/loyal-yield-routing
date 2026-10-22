@@ -3,6 +3,7 @@ import "server-only";
 import {
   computeRealizedApy,
   type EarnAllocationHistory,
+  MAX_STALENESS_MS,
   REALIZED_WINDOW_MS,
   type RealizedApyResult,
   SERIES_WINDOW_MS,
@@ -25,10 +26,6 @@ const CROSS_MINT_FEE_BPS = 1;
 // Extra lookback so the point just before the first series hour's window
 // start is not dropped, which would null the first realized-series sample(s).
 const HISTORY_LOOKBACK_SLACK_MS = 2 * 60 * 60 * 1000;
-// Diagnostic-only threshold for the "realized APY unavailable" warning below;
-// mirrors computeRealizedApy's own staleness cutoff so the log reports the
-// same reserves it silently excluded.
-const REALIZED_APY_STALE_LOG_THRESHOLD_MS = 3 * 60 * 60 * 1000;
 export const KAMINO_MAIN_MARKET =
   "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF";
 export const KAMINO_MAIN_MARKET_USDC_RESERVE =
@@ -208,7 +205,7 @@ export async function getRealizedEarnForecastFromDependencies(
         const latest = points?.[points.length - 1];
         return (
           !latest ||
-          nowMs - latest.observedAtMs > REALIZED_APY_STALE_LOG_THRESHOLD_MS
+          nowMs - latest.observedAtMs > MAX_STALENESS_MS
         );
       }
     );
@@ -242,7 +239,7 @@ export async function getMediumFeeAwareEarnForecast(
   const recentLastRealized =
     lastRealized &&
     now.getTime() - Date.parse(lastRealized.summary.updatedAt) <=
-      REALIZED_APY_STALE_LOG_THRESHOLD_MS
+      MAX_STALENESS_MS
       ? lastRealized
       : null;
   const value =
@@ -261,7 +258,7 @@ export async function getMediumFeeAwareEarnForecast(
       ? CACHE_TTL_MS
       : Math.max(
           0,
-          REALIZED_APY_STALE_LOG_THRESHOLD_MS -
+          MAX_STALENESS_MS -
             (now.getTime() - Date.parse(value.summary.updatedAt))
         );
   cache = {

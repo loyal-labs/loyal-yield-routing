@@ -1,10 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
+import { MOBILE_DISTINCT_ID_PREFIX } from "@loyal-labs/shared";
+
 import { getOptionalEnv } from "@/lib/core/config/shared";
 import {
+  MIXPANEL_COHORT_CAMPAIGNS,
   sendWalletPush,
-  type WalletPushPayload,
 } from "@/lib/push-notifications/wallet-push.server";
 import {
   getYieldOptimizationClient,
@@ -19,40 +21,10 @@ import {
 // echo { action, status } (https://docs.mixpanel.com/docs/cohort-sync/webhooks).
 //
 // A cohort is mapped to a push campaign by naming it "push: <campaign>" in
-// Mixpanel, where <campaign> is a key of CAMPAIGNS below. Every send is
-// recorded in loyal_yield.push_campaign_sends BEFORE sending, so re-syncs and
-// Mixpanel's re-sends after mid-sync failures never push twice.
-
-// Copy comes from ASK-1651 — keep in sync with the ticket. The ticket's
-// dynamic values ($X earned, N quests left, end date) are static for now;
-// per-wallet enrichment is a follow-up.
+// Mixpanel, where <campaign> is a key of MIXPANEL_COHORT_CAMPAIGNS. Every send
+// is recorded in loyal_yield.push_campaign_sends BEFORE sending, so re-syncs
+// and Mixpanel's re-sends after mid-sync failures never push twice.
 const COHORT_PREFIX = "push: ";
-const CAMPAIGNS: Record<string, WalletPushPayload> = {
-  "quest-1-nudge": {
-    body: "Add $5 to your account and it's done.",
-    title: "You're one step from Quest 1.",
-  },
-  "quest-2-nudge": {
-    body: "Enable auto-deposit and your USDC earns while it sits. Quest 2, done.",
-    title: "One quest left.",
-  },
-  "seeker-summer-ending": {
-    body: "Less than 48 hours left on your quests. Don't leave the rewards on the table.",
-    title: "Seeker's Summer is almost over.",
-  },
-  "earning-while-away": {
-    body: "It's been adding up. Come take a look.",
-    title: "Your USDC kept earning while you were out.",
-  },
-  "still-earning": {
-    body: "Your USDC has been earning since you last checked in. Pick up where you left off.",
-    title: "Still working for you.",
-  },
-};
-
-// Mobile distinct ids are "mob:<wallet>" (set by the app's analytics client);
-// only those map to registered push devices.
-const MOBILE_DISTINCT_ID_PREFIX = "mob:";
 const SEND_CONCURRENCY = 10;
 
 export const maxDuration = 300;
@@ -129,7 +101,7 @@ export async function POST(request: Request) {
   const campaign = cohortName.startsWith(COHORT_PREFIX)
     ? cohortName.slice(COHORT_PREFIX.length).trim()
     : null;
-  const payload = campaign ? CAMPAIGNS[campaign] : undefined;
+  const payload = campaign ? MIXPANEL_COHORT_CAMPAIGNS[campaign] : undefined;
   if (!campaign || !payload) {
     return failure(
       action,

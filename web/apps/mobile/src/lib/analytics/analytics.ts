@@ -7,6 +7,8 @@
 
 import { Mixpanel } from "mixpanel-react-native";
 
+import { MOBILE_DISTINCT_ID_PREFIX } from "@loyal-labs/shared";
+
 import { env } from "@/config/env";
 import { clearDatadogUser, identifyDatadogUser } from "@/lib/datadog/datadog";
 
@@ -97,7 +99,7 @@ export function identifyWallet(
   publicKey: string,
   source: "created" | "imported" | "vault" | "mwa" | "deeplink" | "privy",
 ): void {
-  const distinctId = `mob:${publicKey}`;
+  const distinctId = `${MOBILE_DISTINCT_ID_PREFIX}:${publicKey}`;
   identifyDatadogUser({
     id: distinctId,
     extraInfo: {
