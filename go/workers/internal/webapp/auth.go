@@ -114,17 +114,28 @@ func NewAuth(secret, rs256PublicKeyPEM string, appDB *pgxpool.Pool, rpcClient *c
 	return &Auth{keys: keys, appDB: appDB, chain: rpcClient}, nil
 }
 
-func (a *Auth) Principal(ctx context.Context, in SessionInput) (Principal, error) {
-	var claimed Principal
-	var err error
+type Session struct {
+	Wallet  solana.PublicKey
+	account func(context.Context) (settings, smartAccount solana.PublicKey, err error)
+}
+
+func (a *Auth) Session(in SessionInput) (Session, error) {
 	if token, ok := in.bearer(); ok {
-		claimed, err = a.bearerClaim(ctx, token)
-	} else {
-		claimed, err = a.cookieClaim(in)
+		return a.bearerSession(token)
 	}
+	return a.cookieSession(in)
+}
+
+func (a *Auth) Principal(ctx context.Context, in SessionInput) (Principal, error) {
+	session, err := a.Session(in)
 	if err != nil {
 		return Principal{}, err
 	}
+	settings, smartAccount, err := session.account(ctx)
+	if err != nil {
+		return Principal{}, err
+	}
+	claimed := Principal{Wallet: session.Wallet, Settings: settings, SmartAccount: smartAccount}
 	if err := a.controls(ctx, claimed); err != nil {
 		return Principal{}, err
 	}
@@ -163,14 +174,14 @@ func headerCookie(header, name string) string {
 	return ""
 }
 
-func (a *Auth) cookieClaim(in SessionInput) (Principal, error) {
+func (a *Auth) cookieSession(in SessionInput) (Session, error) {
 	token := headerCookie(in.Cookie, in.cookieName())
 	if token == "" {
-		return Principal{}, refuse(Unauthenticated, nil)
+		return Session{}, refuse(Unauthenticated, nil)
 	}
 	raw, err := a.keys.Verify(token, jwt.NoAudience, time.Now())
 	if err != nil {
-		return Principal{}, refuse(Unauthenticated, err)
+		return Session{}, refuse(Unauthenticated, err)
 	}
 	var claims struct {
 		AuthMethod          string  `json:"authMethod"`
@@ -182,57 +193,62 @@ func (a *Auth) cookieClaim(in SessionInput) (Principal, error) {
 		SettingsPda         string  `json:"settingsPda"`
 	}
 	if json.Unmarshal(raw, &claims) != nil || claims.SubjectAddress == "" || claims.DisplayAddress == "" {
-		return Principal{}, refuse(Unauthenticated, errors.New("session claims do not match the web session schema"))
+		return Session{}, refuse(Unauthenticated, errors.New("session claims do not match the web session schema"))
 	}
 	switch claims.AuthMethod {
 	case "wallet":
 	case "email":
-		return Principal{}, refuse(WalletRequired, nil)
+		return Session{}, refuse(WalletRequired, nil)
 	default:
-		return Principal{}, refuse(Unauthenticated, errors.New("unknown authMethod"))
+		return Session{}, refuse(Unauthenticated, errors.New("unknown authMethod"))
 	}
 	if claims.Provider != nil && *claims.Provider != "solana" {
-		return Principal{}, refuse(WalletRequired, errors.New("session provider is not solana"))
+		return Session{}, refuse(WalletRequired, errors.New("session provider is not solana"))
 	}
 	wallet, err := solana.PublicKeyFromBase58(claims.WalletAddress)
 	if err != nil || claims.SubjectAddress != claims.WalletAddress {
-		return Principal{}, refuse(Unauthenticated, errors.New("session wallet is not its subject"))
+		return Session{}, refuse(Unauthenticated, errors.New("session wallet is not its subject"))
 	}
 	if claims.SettingsPda == "" || claims.SmartAccountAddress == "" {
-		return Principal{}, refuse(SmartAccountRequired, nil)
+		return Session{Wallet: wallet, account: noSmartAccount}, nil
 	}
 	settings, settingsErr := solana.PublicKeyFromBase58(claims.SettingsPda)
 	smartAccount, smartAccountErr := solana.PublicKeyFromBase58(claims.SmartAccountAddress)
 	if settingsErr != nil || smartAccountErr != nil {
-		return Principal{}, refuse(Unauthenticated, errors.New("session smart account is not a public key"))
+		return Session{}, refuse(Unauthenticated, errors.New("session smart account is not a public key"))
 	}
-	return Principal{Wallet: wallet, Settings: settings, SmartAccount: smartAccount}, nil
+	return Session{Wallet: wallet, account: func(context.Context) (solana.PublicKey, solana.PublicKey, error) {
+		return settings, smartAccount, nil
+	}}, nil
 }
 
-func (a *Auth) bearerClaim(ctx context.Context, token string) (Principal, error) {
+func noSmartAccount(context.Context) (solana.PublicKey, solana.PublicKey, error) {
+	return solana.PublicKey{}, solana.PublicKey{}, refuse(SmartAccountRequired, nil)
+}
+
+func (a *Auth) bearerSession(token string) (Session, error) {
 	raw, err := a.keys.Verify(token, mobileEarnAudience, time.Now())
 	if err != nil {
-		return Principal{}, refuse(InvalidMobileSession, err)
+		return Session{}, refuse(InvalidMobileSession, err)
 	}
 	var claims struct {
 		Sub string `json:"sub"`
 	}
 	if json.Unmarshal(raw, &claims) != nil {
-		return Principal{}, refuse(InvalidMobileSession, errors.New("mobile session sub is not a string"))
+		return Session{}, refuse(InvalidMobileSession, errors.New("mobile session sub is not a string"))
 	}
 	wallet, err := solana.PublicKeyFromBase58(claims.Sub)
 	if err != nil {
-		return Principal{}, refuse(InvalidMobileSession, errors.New("mobile session sub is not a wallet"))
+		return Session{}, refuse(InvalidMobileSession, errors.New("mobile session sub is not a wallet"))
 	}
-	settings, err := a.readySettings(ctx, wallet)
-	if err != nil {
-		return Principal{}, err
-	}
-	smartAccount, _, err := squads.SmartAccountAddress(settings, 0)
-	if err != nil {
-		return Principal{}, err
-	}
-	return Principal{Wallet: wallet, Settings: settings, SmartAccount: smartAccount}, nil
+	return Session{Wallet: wallet, account: func(ctx context.Context) (solana.PublicKey, solana.PublicKey, error) {
+		settings, err := a.readySettings(ctx, wallet)
+		if err != nil {
+			return solana.PublicKey{}, solana.PublicKey{}, err
+		}
+		smartAccount, _, err := squads.SmartAccountAddress(settings, 0)
+		return settings, smartAccount, err
+	}}, nil
 }
 
 func (a *Auth) readySettings(ctx context.Context, wallet solana.PublicKey) (solana.PublicKey, error) {
