@@ -269,7 +269,8 @@ The browser fix for the same reorder bug in the wallet activity provider
 each parsed transaction by its own `transaction.signatures[0]` and drops one
 whose signature was not requested. Its sibling in the mobile app,
 `web/apps/mobile/src/lib/solana/rpc/get-account-txn-history.ts:658-678`,
-pairs by index too and is left to the mobile owner (outside this lane).
+pairs by index too and is fixed in this PR the same way, with a reordered-batch
+test beside it.
 
 Eight tests in `web/packages/smart-account-vaults/src/client.test.ts` already
 fail identically at 568b6632 and at d719f7b6: `prepareEarnUsdcDeposit` x5 and
