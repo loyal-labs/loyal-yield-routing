@@ -1,8 +1,3 @@
-// Lives in this dependency-free leaf so both the retry helper and the
-// telemetry classifier can share one definition: a value import from
-// `@/services/observability` would pull the storage/native-module graph into
-// `lib/solana/earn/connection-retry` and break its test suite.
-
 // The two — and only two — TypeErrors RN's fetch rejects with for a
 // connection-level failure, from the whatwg-fetch polyfill's `xhr.onerror` and
 // `xhr.ontimeout` handlers. `xhr.onabort` rejects with a DOMException instead,
@@ -24,4 +19,12 @@ export function isConnectionFailure(error: unknown): boolean {
 
 export function isConnectionTimeout(error: unknown): boolean {
   return error instanceof TypeError && CONNECTION_TIMED_OUT.test(error.message);
+}
+
+export function isRpcError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.name === "SolanaJSONRPCError" &&
+    typeof (error as { code?: unknown }).code === "number"
+  );
 }
