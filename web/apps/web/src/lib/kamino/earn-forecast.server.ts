@@ -37,7 +37,6 @@ export const KAMINO_MAIN_MARKET_USDC_MINT =
 const REALIZED_STRATEGY = "realized_7d_share_price";
 const REALIZED_METRIC = "realized_7d_apy_bps";
 const SAFE_RISK_PROFILE = "safe";
-const MEDIUM_RISK_PROFILE = "medium";
 
 export type MediumFeeAwareEarnForecastResult = {
   history: EarnForecastApyHistoryResponse;
