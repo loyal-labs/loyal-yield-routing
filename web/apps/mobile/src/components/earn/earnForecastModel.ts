@@ -47,7 +47,7 @@ export function getLoyalApyBps(
   summary: EarnForecastSummary | null,
 ): number | null {
   const apyBps = summary?.forecast.apyBps;
-  return apyBps !== undefined && Number.isFinite(apyBps) && apyBps > 0
+  return apyBps !== undefined && Number.isFinite(apyBps) && apyBps >= 0
     ? apyBps
     : null;
 }

@@ -12,6 +12,7 @@ import type {
 } from "./earn-forecast.shared";
 
 const CLIENT_CACHE_TTL_MS = 30 * 60 * 1000;
+const FAILURE_BACKOFF_MS = 5 * 60 * 1000;
 const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
 export const REALIZED_MAX_AGE_MS = 3 * 60 * 60 * 1000;
 
@@ -65,6 +66,7 @@ let cachedSummary: {
   value: EarnForecastSummaryResponse;
 } | null = null;
 let inflightSummary: Promise<EarnForecastSummaryResponse> | null = null;
+let failedSummary: { error: unknown; retryAt: number } | null = null;
 
 export function toForecastApy(
   payload: EarnForecastSummaryResponse["forecast"]
@@ -123,6 +125,10 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummaryRes
     return persisted.data;
   }
 
+  if (failedSummary && failedSummary.retryAt > now) {
+    throw failedSummary.error;
+  }
+
   inflightSummary = fetch("/api/smart-accounts/earn-forecast/summary", {
     cache: "no-store",
     signal: AbortSignal.timeout(30_000),
@@ -143,6 +149,7 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummaryRes
           ? REALIZED_MAX_AGE_MS -
             (receivedAt - Date.parse(summary.forecast.updatedAt))
           : CLIENT_CACHE_TTL_MS;
+      failedSummary = null;
       cachedSummary = {
         expiresAt:
           receivedAt + Math.max(0, Math.min(CLIENT_CACHE_TTL_MS, remainingMs)),
@@ -162,6 +169,7 @@ export async function fetchEarnForecastSummary(): Promise<EarnForecastSummaryRes
       if (persisted && validCachedSummary(persisted.data, Date.now())) {
         return persisted.data;
       }
+      failedSummary = { error, retryAt: Date.now() + FAILURE_BACKOFF_MS };
       throw error;
     })
     .finally(() => {
@@ -178,4 +186,5 @@ export function getCachedEarnForecastSummaryForTests() {
 export function resetEarnForecastSummaryCacheForTests() {
   cachedSummary = null;
   inflightSummary = null;
+  failedSummary = null;
 }

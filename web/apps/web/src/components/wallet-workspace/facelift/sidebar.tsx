@@ -170,6 +170,8 @@ export function FaceliftSidebar({
     publicKey?.toBase58() === data.walletAddress
       ? WALLET_ICONS[wallet?.adapter.name.toLowerCase() ?? ""]
       : undefined;
+  // The adapter can auto-reconnect without an auth session (stale dev state);
+  // disconnect must stay clickable in that half-connected limbo to clear it.
   const canDisconnect = isAuthenticated || isWalletConnected;
   const { isBalanceHidden, toggleBalanceHidden } = useBalanceVisibility();
   const { open: openSignIn, openAccount } = useSignInModal();
