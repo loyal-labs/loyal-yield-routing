@@ -252,3 +252,29 @@ indexes, which are additive.
 - Real page views: request logs only start at the Oct 22 cutover. Lane B2's
   log line starts that record.
 - Whether the autonomous vault is still funded.
+
+## Decisions
+
+The owner's calls of Oct 22.
+
+- **O1 Windows.** Metrics latency covers 30 days. The overview volume chart and
+  the executions chart cover 90 days. All-time totals stay, as counts. The
+  executions chart points are bucketed hourly per route on the server, to bring
+  the response under the 100 kB target.
+- **O2 Removals.** Flags, Features (including the feature detail page), Admins
+  and Push notifications are removed: routes, views, loaders, RPCs and nav
+  entries. The push page goes whole, token counts included; the counts only
+  sized the manual send form and nothing else reads them. The autonomous vault
+  stays. Every table stays (`runtime_flags`, `feature_registry`,
+  `feature_flag_links`, `admins`, `push_tokens`, `push_notification_sends`);
+  dropping them is a separate migration on the owner's go. Login does not read
+  the `admins` table: auth takes `ADMIN_USER` and `ADMIN_PASSWORD` from the
+  credentials directory.
+- **O3 Design changes.** Yes to all three, built by a later lane. `/` lands on
+  `/earn` and Overview leaves the nav. Backyard and Earn Max merge into one page
+  with every section kept, and the old URL redirects. Overview's two charts fold
+  into Rebalance, and `/overview`, `overview.go` and its page entry go.
+- **O4 Deploy.** The main session deploys after the end-of-feature review, and
+  applies migration 0122 with `bun run yield:migrate` at deploy.
+- **B2 finding.** The admin database credentials are the database owner, so the
+  per-read transaction stays until SELECT-only roles exist. Owner follow-up.

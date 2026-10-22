@@ -666,7 +666,6 @@ A missing optional credential disables only the pages that need it.
 | `R2_ACCESS_KEY_ID` | `loyal-admin-r2-access-key-id` | optional | library cover uploads |
 | `R2_SECRET_ACCESS_KEY` | `loyal-admin-r2-secret-access-key` | optional | library cover uploads |
 | `CLICKSTACK_READ_KEY` | `loyal-admin-clickstack` | optional | the metrics page |
-| `EXPO_ACCESS_TOKEN` | `loyal-admin-expo` | optional | push broadcasts, if Expo requires a token |
 
 ### Admin first install and host (loyal-admin)
 

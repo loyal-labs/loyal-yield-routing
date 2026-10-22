@@ -19,7 +19,6 @@ type Deps struct {
 
 	R2                *R2Config
 	ClickStackReadKey string
-	ExpoAccessToken   string
 }
 
 const readTimeout = 30 * time.Second

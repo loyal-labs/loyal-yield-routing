@@ -5,7 +5,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   AppWindowIcon,
-  BellRingIcon,
   BookOpenIcon,
   CircleDollarSignIcon,
   GaugeIcon,
@@ -13,7 +12,6 @@ import {
   LandmarkIcon,
   LogOutIcon,
   RouteIcon,
-  ShieldUserIcon,
   TrendingUpIcon,
   UsersRoundIcon,
   WalletCardsIcon,
@@ -53,8 +51,6 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/metrics", icon: GaugeIcon, label: "Metrics" },
       { href: "/journeys", icon: RouteIcon, label: "User journeys" },
       { href: "/communities", icon: UsersRoundIcon, label: "Communities" },
-      // { href: "/features", icon: ListChecksIcon, label: "Features" },
-      // { href: "/flags", icon: FlagIcon, label: "Flags" },
     ],
   },
   {
@@ -93,17 +89,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Mobile",
     items: [
       { href: "/dapps", icon: AppWindowIcon, label: "dApps" },
-      {
-        href: "/push-notifications",
-        icon: BellRingIcon,
-        label: "Push notifications",
-      },
       { href: "/library", icon: BookOpenIcon, label: "Library" },
     ],
-  },
-  {
-    label: "Access",
-    items: [{ href: "/admins", icon: ShieldUserIcon, label: "Admins" }],
   },
 ];
 

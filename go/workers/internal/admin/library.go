@@ -11,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const (
@@ -223,6 +225,22 @@ func libraryUpload(ctx context.Context, d *Deps, call Call) (*LibraryUploadResul
 		return &LibraryUploadResult{Error: fmt.Sprintf("Upload failed (%d)", response.StatusCode)}, nil
 	}
 	return &LibraryUploadResult{URL: d.R2.publicURL(key)}, nil
+}
+
+func uuidArg(call Call, i int) (pgtype.UUID, error) {
+	var raw string
+	if err := call.Arg(i, &raw); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return parseUUID(raw)
+}
+
+func parseUUID(raw string) (pgtype.UUID, error) {
+	var id pgtype.UUID
+	if err := id.Scan(raw); err != nil {
+		return id, huma.Error400BadRequest("invalid id")
+	}
+	return id, nil
 }
 
 func registerLibrary(m *Mux) {

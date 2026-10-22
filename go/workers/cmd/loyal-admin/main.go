@@ -172,19 +172,11 @@ func config(ctx context.Context) (admin.Config, func(), error) {
 			slog.Warn("loyal-admin family disabled", "credential", pool.name)
 		}
 	}
-	for _, value := range []struct {
-		name string
-		into *string
-	}{
-		{"CLICKSTACK_READ_KEY", &cfg.Deps.ClickStackReadKey},
-		{"EXPO_ACCESS_TOKEN", &cfg.Deps.ExpoAccessToken},
-	} {
-		if *value.into, err = optional(value.name); err != nil {
-			return cfg, closeAll, err
-		}
-		if *value.into == "" && value.name == "CLICKSTACK_READ_KEY" {
-			slog.Warn("loyal-admin family disabled", "credential", value.name)
-		}
+	if cfg.Deps.ClickStackReadKey, err = optional("CLICKSTACK_READ_KEY"); err != nil {
+		return cfg, closeAll, err
+	}
+	if cfg.Deps.ClickStackReadKey == "" {
+		slog.Warn("loyal-admin family disabled", "credential", "CLICKSTACK_READ_KEY")
 	}
 	if cfg.Deps.R2, err = r2Config(); err != nil {
 		return cfg, closeAll, err
