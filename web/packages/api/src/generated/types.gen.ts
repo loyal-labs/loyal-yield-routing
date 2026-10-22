@@ -4,6 +4,63 @@ export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});
 };
 
+export type ApyPoint = {
+    apyBps: number | null;
+    date: string;
+};
+
+export type ActivityItem = {
+    action: string;
+    amountRaw: string | null;
+    confirmedSlot: string;
+    id: string;
+    requestedRaw: string | null;
+    signature: string;
+    status: string;
+    timestamp: string;
+};
+
+export type EarnMaxActivity = {
+    operations: Array<ActivityItem> | null;
+    performance: Array<PerformancePoint> | null;
+};
+
+export type EarnMaxConfig = {
+    delegatedSigner: string;
+    programId: string;
+    settingsPda: string;
+    walletAddress: string;
+};
+
+export type EarnMaxErrorDetail = {
+    code: string;
+    message?: string;
+};
+
+export type EarnMaxSummary = {
+    apyHistory: Array<ApyPoint> | null;
+    apyWindowDays: number | null;
+    balanceUsd: number;
+    claimAmountRaw: string;
+    coverage: string;
+    currentApyBps: number | null;
+    currentOperationId: string | null;
+    earnedUsd: number | null;
+    forecastApyBps: number | null;
+    goal: string;
+    observedSlot: string;
+    policyAccounts: Array<PolicyBinding> | null;
+    policyStatus: string;
+    realizedApyBps: number | null;
+    strategyKey: string | null;
+    withdrawal: WithdrawalView;
+};
+
+export type EarnMaxSummaryResponse = {
+    config: EarnMaxConfig;
+    summary: EarnMaxSummary;
+};
+
 export type EarnPublicStats = {
     aumDeltaVsPriorWeekUsd: number | null;
     aumSeries: Array<EarnStatsPoint> | null;
@@ -59,6 +116,21 @@ export type ErrorModel = {
      * A URI reference to human-readable documentation for the error.
      */
     type?: string;
+};
+
+export type HealthView = {
+    lastKnownAttention: boolean;
+    observedAt: string | null;
+    status: string;
+};
+
+export type InviteRequest = {
+    code?: string;
+    [key: string]: unknown;
+};
+
+export type InviteStatus = {
+    redeemed: boolean;
 };
 
 export type MobileLibraryArticle = {
@@ -156,6 +228,35 @@ export type MobileTrustedDappsResponse = {
     dapps: Array<MobileTrustedDapp>;
 };
 
+export type PerformancePoint = {
+    equityUsd: number;
+    timestamp: string;
+};
+
+export type PolicyBinding = {
+    account: string;
+    matches: boolean;
+    seed: string;
+};
+
+export type PushError = {
+    error: string;
+};
+
+export type PushTokenRequest = {
+    platform?: string;
+    token?: string;
+    [key: string]: unknown;
+};
+
+export type PushTokenSaved = {
+    success: boolean;
+};
+
+export type RouteError = {
+    error: EarnMaxErrorDetail;
+};
+
 export type SummariesResponse = {
     summaries: Array<Summary>;
 };
@@ -184,6 +285,17 @@ export type SummaryTopic = {
     id: string;
     sources: Array<string>;
     title: string;
+};
+
+export type WithdrawalView = {
+    amountRaw: string;
+    canCancel: boolean;
+    canClaim: boolean;
+    claimBlockedReason?: string;
+    health?: HealthView;
+    readyBy: string;
+    requestId: string;
+    status: string;
 };
 
 export type GetEarnStatsData = {
@@ -405,6 +517,216 @@ export type HeadMobileTokenDetailResponses = {
 };
 
 export type HeadMobileTokenDetailResponse = HeadMobileTokenDetailResponses[keyof HeadMobileTokenDetailResponses];
+
+export type PostPushTokenData = {
+    body?: PushTokenRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/push-tokens';
+};
+
+export type PostPushTokenErrors = {
+    /**
+     * Bad Request
+     */
+    400: PushError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: PushError;
+};
+
+export type PostPushTokenError = PostPushTokenErrors[keyof PostPushTokenErrors];
+
+export type PostPushTokenResponses = {
+    /**
+     * OK
+     */
+    200: PushTokenSaved;
+};
+
+export type PostPushTokenResponse = PostPushTokenResponses[keyof PostPushTokenResponses];
+
+export type GetEarnMaxActivityData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/activity';
+};
+
+export type GetEarnMaxActivityErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetEarnMaxActivityError = GetEarnMaxActivityErrors[keyof GetEarnMaxActivityErrors];
+
+export type GetEarnMaxActivityResponses = {
+    /**
+     * OK
+     */
+    200: EarnMaxActivity;
+};
+
+export type GetEarnMaxActivityResponse = GetEarnMaxActivityResponses[keyof GetEarnMaxActivityResponses];
+
+export type GetEarnMaxInviteData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/invite';
+};
+
+export type GetEarnMaxInviteErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetEarnMaxInviteError = GetEarnMaxInviteErrors[keyof GetEarnMaxInviteErrors];
+
+export type GetEarnMaxInviteResponses = {
+    /**
+     * OK
+     */
+    200: InviteStatus;
+};
+
+export type GetEarnMaxInviteResponse = GetEarnMaxInviteResponses[keyof GetEarnMaxInviteResponses];
+
+export type PostEarnMaxInviteData = {
+    body?: InviteRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/invite';
+};
+
+export type PostEarnMaxInviteErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Too Many Requests
+     */
+    429: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnMaxInviteError = PostEarnMaxInviteErrors[keyof PostEarnMaxInviteErrors];
+
+export type PostEarnMaxInviteResponses = {
+    /**
+     * OK
+     */
+    200: InviteStatus;
+};
+
+export type PostEarnMaxInviteResponse = PostEarnMaxInviteResponses[keyof PostEarnMaxInviteResponses];
+
+export type GetEarnMaxSummaryData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/summary';
+};
+
+export type GetEarnMaxSummaryErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetEarnMaxSummaryError = GetEarnMaxSummaryErrors[keyof GetEarnMaxSummaryErrors];
+
+export type GetEarnMaxSummaryResponses = {
+    /**
+     * OK
+     */
+    200: EarnMaxSummaryResponse;
+};
+
+export type GetEarnMaxSummaryResponse = GetEarnMaxSummaryResponses[keyof GetEarnMaxSummaryResponses];
 
 export type GetSummariesData = {
     body?: never;

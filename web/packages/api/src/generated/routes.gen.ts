@@ -5,7 +5,13 @@ export type Get = {
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
   "/api/mobile/library": Types.MobileLibraryResponse;
   "/api/mobile/tokens/{mint}": Types.MobileTokenDetailResponse;
+  "/api/smart-accounts/earn-max/activity": Types.EarnMaxActivity;
+  "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
+  "/api/smart-accounts/earn-max/summary": Types.EarnMaxSummaryResponse;
   "/api/summaries": Types.SummariesResponse;
 };
 
-export type Post = Record<never, never>;
+export type Post = {
+  "/api/push-tokens": Types.PushTokenSaved;
+  "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
+};
