@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"golang.org/x/sync/errgroup"
 )
 
 func registerRebalance(m *Mux) {
@@ -63,20 +64,20 @@ func (m *Mux) rebalanceSection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Mux) rebalanceOverview(r *http.Request) (any, error) {
-	statuses, err := m.Deps.CurrentSafeReserveApyStatuses(r.Context())
-	if err != nil {
+	var (
+		statuses  []SafeReserveApyStatusRow
+		routes    []RebalanceActiveReserveRoute
+		decisions []RebalanceDecision
+	)
+	g, ctx := errgroup.WithContext(r.Context())
+	g.Go(func() (err error) { statuses, err = m.Deps.CurrentSafeReserveApyStatuses(ctx); return err })
+	g.Go(func() (err error) { routes, err = rebalanceActiveReserveRoutes(ctx, m.Deps); return err })
+	g.Go(func() (err error) { decisions, err = rebalanceRecentDecisions(ctx, m.Deps); return err })
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 	if statuses == nil {
 		statuses = []SafeReserveApyStatusRow{}
-	}
-	routes, err := rebalanceActiveReserveRoutes(r.Context(), m.Deps)
-	if err != nil {
-		return nil, err
-	}
-	decisions, err := rebalanceRecentDecisions(r.Context(), m.Deps)
-	if err != nil {
-		return nil, err
 	}
 	return map[string]any{
 		"decisions": decisions, "eligibilityFloorRaw": rebalanceEligibilityFloorRaw(statuses),
@@ -171,16 +172,16 @@ type rebalanceOperationsAutodepositRange struct {
 }
 
 func rebalanceOperations(r *http.Request, d *Deps) (any, error) {
-	activity, err := rebalanceActivity(r.Context(), d)
-	if err != nil {
-		return nil, err
-	}
-	last30, err := rebalanceLast30DaysSeries(r.Context(), d)
-	if err != nil {
-		return nil, err
-	}
-	ranges, err := rebalanceAutodepositTimeSeries(r.Context(), d)
-	if err != nil {
+	var (
+		activity []RebalanceActivityPoint
+		last30   []RebalanceLast30DaysPoint
+		ranges   []rebalanceAutodepositRange
+	)
+	g, ctx := errgroup.WithContext(r.Context())
+	g.Go(func() (err error) { activity, err = rebalanceActivity(ctx, d); return err })
+	g.Go(func() (err error) { last30, err = rebalanceLast30DaysSeries(ctx, d); return err })
+	g.Go(func() (err error) { ranges, err = rebalanceAutodepositTimeSeries(ctx, d); return err })
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
 	autodeposit := make([]rebalanceOperationsAutodepositRange, len(ranges))
@@ -306,18 +307,24 @@ func (m *Mux) rebalanceAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	routeMode := RebalanceRouteMode(mode)
-	summary, err := rebalanceAuditSummary(r.Context(), m.Deps, auditRange, routeMode)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	page, err := rebalanceAuditPage(r.Context(), m.Deps, rebalanceAuditViewPredicate(view, errorFilter), auditRange, routeMode, cursor)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	activePage, err := rebalanceAuditPage(r.Context(), m.Deps, rebalanceAuditActiveStatus, auditRange, routeMode, activeCursor)
-	if err != nil {
+	var (
+		summary          RebalanceAuditSummary
+		page, activePage RebalanceAuditPage
+	)
+	g, ctx := errgroup.WithContext(r.Context())
+	g.Go(func() (err error) {
+		summary, err = rebalanceAuditSummary(ctx, m.Deps, auditRange, routeMode)
+		return err
+	})
+	g.Go(func() (err error) {
+		page, err = rebalanceAuditPage(ctx, m.Deps, rebalanceAuditViewPredicate(view, errorFilter), auditRange, routeMode, cursor)
+		return err
+	})
+	g.Go(func() (err error) {
+		activePage, err = rebalanceAuditPage(ctx, m.Deps, rebalanceAuditActiveStatus, auditRange, routeMode, activeCursor)
+		return err
+	})
+	if err := g.Wait(); err != nil {
 		writeError(w, r, err)
 		return
 	}
