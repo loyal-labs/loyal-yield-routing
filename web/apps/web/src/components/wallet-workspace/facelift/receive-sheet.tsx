@@ -1,5 +1,6 @@
 "use client";
 
+import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import { QRCodeSVG } from "qrcode.react";
 import { type ReactNode, useEffect, useState } from "react";
 
@@ -41,19 +42,7 @@ export function ReceiveSheet({
   const isEvmTab = tab === "Other chains";
   const shownAddress = isEvmTab ? evm.info?.address ?? null : walletAddress;
 
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  useEscapeOverlay(isOpen, onClose);
 
   const handleCopy = () => {
     if (!shownAddress) {
