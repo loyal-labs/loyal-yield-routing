@@ -63,7 +63,7 @@ func (r *Reader) Position(ctx context.Context, a Authority, now time.Time) (Posi
 	}
 	keys := []solana.PublicKey{Vault, LPMint, user.LPATA, user.Receipt, IdleATA}
 	var slot uint64
-	accounts, err := retryRateLimited(ctx, func() ([]*chain.Account, error) {
+	accounts, err := retryTransient(ctx, func() ([]*chain.Account, error) {
 		var accounts []*chain.Account
 		var err error
 		slot, accounts, err = r.chain.Accounts(ctx, keys, rpc.CommitmentConfirmed, 0)

@@ -60,27 +60,42 @@ func parseOrigin(name, fallback string) (*url.URL, error) {
 	return origin, nil
 }
 
-func openDB(ctx context.Context, credential string) (*pgxpool.Pool, error) {
-	dsn, err := engine.OptionalCredential(credential)
-	if err != nil || dsn == "" {
-		return nil, err
+func degraded(routes string, err error) {
+	slog.Warn(routes+" not served by Go", "reason", err.Error())
+}
+
+func optionalCredential(routes, name string) (string, bool) {
+	value, err := engine.OptionalCredential(name)
+	if err != nil {
+		degraded(routes, err)
+		return "", false
+	}
+	return value, true
+}
+
+func openDB(ctx context.Context, routes, credential string) (pool *pgxpool.Pool, ok bool) {
+	dsn, ok := optionalCredential(routes, credential)
+	if !ok || dsn == "" {
+		return nil, ok
 	}
 	poolConfig, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("invalid %s credential", credential)
+		degraded(routes, fmt.Errorf("invalid %s credential", credential))
+		return nil, false
 	}
 	poolConfig.MaxConns = 4
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	pool, err = pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		return nil, fmt.Errorf("cannot open the %s pool", credential)
+		degraded(routes, fmt.Errorf("cannot open the %s pool", credential))
+		return nil, false
 	}
-	return pool, nil
+	return pool, true
 }
 
 func openAuth(ctx context.Context, appDB *pgxpool.Pool) (*webapp.Auth, *chain.Client) {
 	auth, rpcClient, err := buildAuth(ctx, appDB)
 	if err != nil {
-		slog.Warn("session routes not served by Go", "reason", err.Error())
+		degraded("session routes", err)
 		return nil, nil
 	}
 	return auth, rpcClient
@@ -129,27 +144,31 @@ func granted(ctx context.Context, pool *pgxpool.Pool, routes string, grants []we
 	return false
 }
 
-func earnMax(ctx context.Context, appDB *pgxpool.Pool, rpcClient *chain.Client, yieldDB *pgxpool.Pool) (*webapp.EarnMax, error) {
+func earnMax(ctx context.Context, appDB *pgxpool.Pool, rpcClient *chain.Client) (*webapp.EarnMax, *pgxpool.Pool) {
+	const routes = "Earn MAX routes"
 	cluster, err := webapp.ParseSolanaCluster(os.Getenv("LOYAL_WEB_SOLANA_CLUSTER"))
 	if err != nil {
-		return nil, err
+		degraded(routes, err)
+		return nil, nil
 	}
-	hashes, err := engine.OptionalCredential("EARN_MAX_INVITE_CODE_HASHES")
-	if err != nil {
-		return nil, err
+	if !granted(ctx, appDB, routes, webapp.EarnMaxGrants) {
+		return nil, nil
 	}
-	invites, err := webapp.ParseInviteCodes(hashes)
-	if err != nil {
-		return nil, err
+	var invites webapp.InviteCodes
+	if hashes, ok := optionalCredential("Earn MAX invite redemption", "EARN_MAX_INVITE_CODE_HASHES"); ok {
+		if invites, err = webapp.ParseInviteCodes(hashes); err != nil {
+			degraded("Earn MAX invite redemption", err)
+		}
 	}
-	if !granted(ctx, appDB, "Earn MAX routes", webapp.EarnMaxGrants) {
+	yieldDB, ok := openDB(ctx, routes, "WEB_YIELD_DATABASE_URL")
+	if !ok {
 		return nil, nil
 	}
 	var yield earnmax.Querier
 	if yieldDB != nil && granted(ctx, yieldDB, "Earn MAX route state", webapp.YieldGrants) {
 		yield = yieldDB
 	}
-	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}, nil
+	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}, yieldDB
 }
 
 func run(ctx context.Context) error {
@@ -157,13 +176,8 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if cfg.CoinGeckoAPIKey, err = engine.OptionalCredential("COINGECKO_API_KEY"); err != nil {
-		return err
-	}
-	appDB, err := openDB(ctx, "WEB_APP_DATABASE_URL")
-	if err != nil {
-		return err
-	}
+	cfg.CoinGeckoAPIKey, _ = optionalCredential("token detail routes", "COINGECKO_API_KEY")
+	appDB, _ := openDB(ctx, "app database routes", "WEB_APP_DATABASE_URL")
 	if appDB != nil {
 		defer appDB.Close()
 		cfg.AppDB = appDB
@@ -171,15 +185,9 @@ func run(ctx context.Context) error {
 	}
 	auth, rpcClient := openAuth(ctx, appDB)
 	if auth != nil {
-		yieldDB, err := openDB(ctx, "WEB_YIELD_DATABASE_URL")
-		if err != nil {
-			return err
-		}
-		if yieldDB != nil {
+		var yieldDB *pgxpool.Pool
+		if cfg.EarnMax, yieldDB = earnMax(ctx, appDB, rpcClient); yieldDB != nil {
 			defer yieldDB.Close()
-		}
-		if cfg.EarnMax, err = earnMax(ctx, appDB, rpcClient, yieldDB); err != nil {
-			return err
 		}
 		cfg.Auth = auth
 		cfg.PushDB = granted(ctx, appDB, "push tokens", webapp.PushGrants)
