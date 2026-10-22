@@ -17,7 +17,8 @@ import (
 //   - method, body, query and cookies pass through;
 //   - the outbound Host is the upstream's host (Vercel routes by it);
 //   - X-Forwarded-For/Host/Proto describe the inbound request;
-//   - an Origin whose host equals the inbound Host is presented as the
+//   - wallet challenge/completion Origins stay public so SIWS names the app;
+//   - other Origins whose host equals the inbound Host are presented as the
 //     upstream origin: /api/observability/events rejects an Origin that is
 //     not its own URL origin, which through the proxy means the upstream's;
 //   - Set-Cookie comes back untouched, Domain=askloyal.com and all;
@@ -40,6 +41,10 @@ func forward(upstream *url.URL) http.Handler {
 }
 
 func presentOrigin(r *httputil.ProxyRequest, upstream *url.URL) {
+	// Wallets bind SIWS to the browser origin, not the private API upstream.
+	if r.In.URL.Path == "/api/auth/wallet/challenge" || r.In.URL.Path == "/api/auth/wallet/complete" {
+		return
+	}
 	origin := r.Out.Header.Get("Origin")
 	if origin == "" {
 		return
