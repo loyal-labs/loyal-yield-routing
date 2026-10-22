@@ -25,7 +25,7 @@ export type NextSpaOptions = {
   nextApp: string;
   overrides?: Record<string, string>;
   serverActions?: ServerActionsOptions;
-  serverOnly?: { mode: "error" | "warn"; pages: string };
+  serverOnly?: { mode: "error" | "warn"; root: string };
   devPort: number;
   devProxy: string[];
 };
@@ -38,6 +38,19 @@ function overridesPlugin(overrides: Record<string, string>): Plugin {
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
       const target = resolved && overrides[resolved.id];
       return target ? { id: target } : null;
+    },
+  };
+}
+
+function sharedDepsPlugin(): Plugin {
+  const anchor = here("src/main.tsx");
+  const toolchain = here(".");
+  return {
+    name: "loyal-shared-deps",
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (source !== "@tanstack/react-router" || !importer || importer.startsWith(toolchain)) return null;
+      return this.resolve(source, anchor, { ...options, skipSelf: true });
     },
   };
 }
@@ -61,6 +74,7 @@ export function nextSpa(options: NextSpaOptions): UserConfig {
       ...(options.serverActions ? [serverActionsPlugin(options.serverActions)] : []),
       ...(options.serverOnly ? [serverOnlyPlugin(options.serverOnly)] : []),
       overridesPlugin(options.overrides ?? {}),
+      sharedDepsPlugin(),
       tanstackRouter({ target: "react", autoCodeSplitting: true }),
       react(),
     ],

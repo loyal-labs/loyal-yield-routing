@@ -25,21 +25,23 @@ function stub(file: string, code: string): string {
     }
   }
   const fail = `() => { throw new Error(${JSON.stringify(`server module in the client bundle: ${file}`)}); }`;
+  const local = [...code.matchAll(valueImport)].map((match) => match[1]).filter((spec) => /^(?:\.|@\/)/.test(spec));
   return [
+    ...local.map((spec) => `import ${JSON.stringify(spec)};`),
     `const serverOnly = new Proxy(${fail}, { get: ${fail}, apply: ${fail} });`,
     ...[...names].map((name) => `export const ${name} = serverOnly;`),
     /^export\s+default\b/m.test(code) ? "export default serverOnly;" : "",
   ].join("\n");
 }
 
-export function serverOnlyPlugin(options: { mode: "error" | "warn"; pages: string }): Plugin {
+export function serverOnlyPlugin(options: { mode: "error" | "warn"; root: string }): Plugin {
   const server = new Map<string, string[]>();
   return {
     name: "loyal-server-only",
     enforce: "pre",
     load(id) {
       const file = id.split("?")[0];
-      if (!/\.tsx?$/.test(file) || !file.startsWith(options.pages) || file.includes("/node_modules/")) return null;
+      if (!/\.tsx?$/.test(file) || !file.startsWith(options.root) || file.includes("/node_modules/")) return null;
       const code = readFileSync(file, "utf8");
       if (isServerActionModule(code)) return null;
       const imports = serverImports(code);
@@ -49,7 +51,7 @@ export function serverOnlyPlugin(options: { mode: "error" | "warn"; pages: strin
     },
     buildEnd() {
       if (!server.size) return;
-      const pages = [...this.getModuleIds()].filter((id) => /\/(?:page|layout)\.tsx$/.test(id) && id.startsWith(options.pages));
+      const pages = [...this.getModuleIds()].filter((id) => id.startsWith(options.root) && /\/app\/(?:.*\/)?(?:page|layout)\.tsx$/.test(id));
       const lines: string[] = [];
       for (const page of pages.sort()) {
         const found = new Set<string>();
@@ -57,17 +59,14 @@ export function serverOnlyPlugin(options: { mode: "error" | "warn"; pages: strin
         const walk = (id: string) => {
           if (seen.has(id)) return;
           seen.add(id);
-          if (server.has(id)) {
-            found.add(id);
-            return;
-          }
+          if (server.has(id)) found.add(id);
           const info = this.getModuleInfo(id);
           for (const next of info?.importedIds ?? []) walk(next);
         };
         walk(page);
         if (!found.size) continue;
-        lines.push(relative(options.pages, page));
-        for (const id of [...found].sort()) lines.push(`  ${relative(options.pages, id)}  (${server.get(id)!.join(", ")})`);
+        lines.push(relative(options.root, page));
+        for (const id of [...found].sort()) lines.push(`  ${relative(options.root, id)}  (${server.get(id)!.join(", ")})`);
       }
       const report = `server modules still imported by client pages (${server.size} modules):\n${lines.join("\n")}`;
       if (options.mode === "error") this.error(report);

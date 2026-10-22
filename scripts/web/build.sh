@@ -25,6 +25,7 @@ if [ "$app" = loyal ]; then
   app_environment=$(cd "$root" && bun -e 'import { resolveAppEnvironment } from "./web/apps/web/src/lib/core/config/shared.ts"; console.log(resolveAppEnvironment(process.env.NEXT_PUBLIC_APP_ENVIRONMENT))')
   ldflags="$ldflags -X main.appEnvironment=$app_environment"
 else
+  (cd "$root/web/apps/loyal" && bun install --frozen-lockfile >/dev/null)
   (cd "$root/web/apps/admin" && bun run build)
 fi
 rsync -a --delete --exclude .keep "$root/web/apps/$app/dist/" "$root/go/workers/cmd/$binary/dist/"
