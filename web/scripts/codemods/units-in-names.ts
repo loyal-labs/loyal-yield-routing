@@ -320,20 +320,20 @@ const PLAN: FileOps[] = [
     file: `${MOBILE}/src/components/wallet/SendSheet.tsx`,
     ops: [
       replace(
-        'const SCREEN_WIDTH = Dimensions.get("screen").width;\n',
-        'const SCREEN_WIDTH = Dimensions.get("screen").width;\nconst AMOUNT_ROW_PADDING_X = 16;\nconst SWAP_BUTTON_WIDTH = 52;\n'
+        'const INVALID_RECIPIENT_HINT = "Invalid Solana address";\n',
+        'const INVALID_RECIPIENT_HINT = "Invalid Solana address";\nconst AMOUNT_ROW_PADDING_X = 16;\nconst SWAP_BUTTON_WIDTH = 52;\n'
       ),
       replace(
-        "const availableWidth = SCREEN_WIDTH - 32 - 52; // px-16*2 + swap button",
-        "const availableWidth =\n      SCREEN_WIDTH - 2 * AMOUNT_ROW_PADDING_X - SWAP_BUTTON_WIDTH;"
+        "SCREEN_WIDTH - 32 - 52, // px-16*2 + swap button",
+        "SCREEN_WIDTH - 2 * AMOUNT_ROW_PADDING_X - SWAP_BUTTON_WIDTH,"
       ),
       replace(
-        '      <View style={{ paddingTop: 36, paddingHorizontal: 16 }}>\n        <Pressable\n          style={{ position: "relative", height: 58',
-        '      <View style={{ paddingTop: 36, paddingHorizontal: AMOUNT_ROW_PADDING_X }}>\n        <Pressable\n          style={{ position: "relative", height: 58'
+        "      <View style={{ paddingTop: 36, paddingHorizontal: 16 }}>\n        <Pressable style={amountFieldStyles.row} onPress={openKeyboard}>",
+        "      <View style={{ paddingTop: 36, paddingHorizontal: AMOUNT_ROW_PADDING_X }}>\n        <Pressable style={amountFieldStyles.row} onPress={openKeyboard}>"
       ),
       replace(
-        '              paddingRight: 52,\n              pointerEvents: "none",',
-        '              paddingRight: SWAP_BUTTON_WIDTH,\n              pointerEvents: "none",'
+        '{ paddingRight: 52, pointerEvents: "none" },',
+        '{ paddingRight: SWAP_BUTTON_WIDTH, pointerEvents: "none" },'
       ),
     ],
   },
