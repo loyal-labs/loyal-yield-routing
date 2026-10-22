@@ -62,9 +62,9 @@ func (r *Reader) routeState(ctx context.Context, field string) ([]byte, error) {
 	return raw, err
 }
 
-func retryRateLimited[T any](ctx context.Context, call func() (T, error)) (T, error) {
+func retryTransient[T any](ctx context.Context, call func() (T, error)) (T, error) {
 	value, err := call()
-	if !errors.Is(err, chain.ErrRateLimited) {
+	if !errors.Is(err, chain.ErrRateLimited) && !errors.Is(err, chain.ErrBehind) {
 		return value, err
 	}
 	select {

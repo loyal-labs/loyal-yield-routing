@@ -40,19 +40,32 @@ type Deposit struct {
 	Amount USDCRaw
 }
 
+type Escrow struct {
+	Account solana.PublicKey
+	LP      LPRaw
+}
+
 type Request struct {
 	Flow
+	Escrow    *Escrow
 	Requested *USDCRaw
 }
 
 type Claim struct {
 	Flow
-	Paid USDCRaw
+	Escrow *Escrow
+	Paid   *USDCRaw
 }
+
+type Cancel struct{ Flow }
+
+type Missing struct{ Flow }
 
 func (e Deposit) flow() Flow { return e.Flow }
 func (e Request) flow() Flow { return e.Flow }
 func (e Claim) flow() Flow   { return e.Flow }
+func (e Cancel) flow() Flow  { return e.Flow }
+func (e Missing) flow() Flow { return e.Flow }
 
 type historyKey struct {
 	signature solana.Signature
@@ -60,13 +73,21 @@ type historyKey struct {
 }
 
 type History struct {
-	Complete bool
-	Entries  []Entry
+	Entries []Entry
 }
 
-func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
-	signatures, err := retryRateLimited(ctx, func() ([]chain.Signed, error) {
-		return r.chain.History(ctx, a.key, historyLimit, solana.Signature{}, rpc.CommitmentConfirmed, 0)
+func (h History) Complete() bool {
+	for _, e := range h.Entries {
+		if _, ok := e.(Missing); ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Reader) History(ctx context.Context, a Authority, atLeast uint64) (History, error) {
+	signatures, err := retryTransient(ctx, func() ([]chain.Signed, error) {
+		return r.chain.History(ctx, a.key, historyLimit, solana.Signature{}, rpc.CommitmentConfirmed, atLeast)
 	})
 	if err != nil {
 		return History{}, err
@@ -77,7 +98,11 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 			landed = append(landed, s)
 		}
 	}
-	history := History{Complete: len(landed) < historyLimit}
+	var history History
+	user, err := voltr.UserAccounts(Vault, LPMint, a.key)
+	if err != nil {
+		return History{}, err
+	}
 
 	r.historyMu.Lock()
 	cached := r.history[a.key]
@@ -98,7 +123,7 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 	group.SetLimit(historyFetchers)
 	for _, s := range missing {
 		group.Go(func() error {
-			execution, err := retryRateLimited(groupCtx, func() (chain.Execution, error) {
+			execution, err := retryTransient(groupCtx, func() (chain.Execution, error) {
 				return r.chain.Execution(groupCtx, s.Signature, rpc.CommitmentConfirmed)
 			})
 			if errors.Is(err, chain.ErrNotFound) {
@@ -107,6 +132,9 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 			if err != nil {
 				return err
 			}
+			if len(execution.Transaction.Signatures) == 0 || execution.Transaction.Signatures[0] != s.Signature {
+				return nil
+			}
 			at := execution.BlockTime
 			if at == nil {
 				at = s.BlockTime
@@ -114,7 +142,7 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 			if at == nil {
 				return nil
 			}
-			entries, err := decodeEntries(execution, s.Signature, *at, a.key)
+			entries, err := decodeEntries(execution, s.Signature, *at, a.key, user.LPATA)
 			if err != nil {
 				return fmt.Errorf("transaction %s: %w", s.Signature, err)
 			}
@@ -135,26 +163,66 @@ func (r *Reader) History(ctx context.Context, a Authority) (History, error) {
 	for _, s := range landed {
 		entries, ok := decoded[historyKey{s.Signature, s.Slot}]
 		if !ok {
-			history.Complete = false
-			continue
+			missing := Missing{Flow{Signature: s.Signature, Slot: s.Slot}}
+			if s.BlockTime != nil {
+				missing.At = *s.BlockTime
+			}
+			entries = []Entry{missing}
 		}
 		history.Entries = append(history.Entries, entries...)
+	}
+	if len(signatures) >= historyLimit {
+		history.Entries = append(history.Entries, Missing{})
 	}
 	return history, nil
 }
 
-func decodeEntries(execution chain.Execution, signature solana.Signature, at time.Time, authority solana.PublicKey) ([]Entry, error) {
-	keys := execution.Keys
-	var instructions []solana.CompiledInstruction
-	instructions = append(instructions, execution.Transaction.Message.Instructions...)
+type call struct {
+	program  uint16
+	accounts []uint16
+	data     []byte
+}
+
+type invocation struct {
+	call
+	inner []call
+}
+
+func invocations(execution chain.Execution) []invocation {
+	groups := map[uint16][]rpc.CompiledInstruction{}
 	for _, group := range execution.Inner {
-		for _, ix := range group.Instructions {
-			instructions = append(instructions, solana.CompiledInstruction{ProgramIDIndex: ix.ProgramIDIndex, Accounts: ix.Accounts, Data: ix.Data})
+		groups[group.Index] = append(groups[group.Index], group.Instructions...)
+	}
+	var out []invocation
+	for i, ix := range execution.Transaction.Message.Instructions {
+		group := groups[uint16(i)]
+		calls := make([]call, len(group))
+		nested := true
+		for j, c := range group {
+			calls[j] = call{c.ProgramIDIndex, c.Accounts, c.Data}
+			nested = nested && c.StackHeight > 1
+		}
+		out = append(out, invocation{call{ix.ProgramIDIndex, ix.Accounts, ix.Data}, calls})
+		for j, c := range group {
+			end := j + 1
+			for end < len(group) && group[end].StackHeight > c.StackHeight {
+				end++
+			}
+			var inner []call
+			if nested {
+				inner = calls[j+1 : end]
+			}
+			out = append(out, invocation{calls[j], inner})
 		}
 	}
+	return out
+}
+
+func decodeEntries(execution chain.Execution, signature solana.Signature, at time.Time, authority, lpATA solana.PublicKey) ([]Entry, error) {
+	keys := execution.Keys
 	var entries []Entry
-	for _, ix := range instructions {
-		discriminator, data, ok := voltrAction(ix, keys, authority)
+	for _, ix := range invocations(execution) {
+		discriminator, data, ok := voltrAction(ix.call, keys, authority)
 		if !ok {
 			continue
 		}
@@ -166,6 +234,7 @@ func decodeEntries(execution chain.Execution, signature solana.Signature, at tim
 			}
 			flow.LPDelta = delta
 		}
+		moves := tokenMoves(ix.inner, keys)
 		switch discriminator {
 		case voltr.DepositVaultDiscriminator:
 			if len(data) < depositAmountAt+8 {
@@ -177,24 +246,26 @@ func decodeEntries(execution chain.Execution, signature solana.Signature, at tim
 			}
 			entries = append(entries, Deposit{Flow: flow, Amount: amount})
 		case voltr.RequestWithdrawVaultDiscriminator:
-			request := Request{Flow: flow}
-			if flow.LPDelta < 0 {
-				request.Requested = requestedFromLogs(execution.Logs, uint64(-flow.LPDelta))
+			request := Request{Flow: flow, Escrow: escrowed(moves, lpATA)}
+			if request.Escrow != nil {
+				request.Requested = requestedFromLogs(execution.Logs, uint64(request.Escrow.LP))
 			}
 			entries = append(entries, request)
 		case voltr.WithdrawVaultDiscriminator:
-			entries = append(entries, Claim{Flow: flow, Paid: -idleDelta(execution)})
+			entries = append(entries, Claim{Flow: flow, Escrow: burned(moves), Paid: paid(moves)})
+		case voltr.CancelRequestWithdrawVaultDiscriminator:
+			entries = append(entries, Cancel{flow})
 		}
 	}
 	return entries, nil
 }
 
-func voltrAction(ix solana.CompiledInstruction, keys []solana.PublicKey, authority solana.PublicKey) ([8]byte, []byte, bool) {
-	if int(ix.ProgramIDIndex) >= len(keys) || keys[ix.ProgramIDIndex] != voltr.ProgramID {
+func voltrAction(ix call, keys []solana.PublicKey, authority solana.PublicKey) ([8]byte, []byte, bool) {
+	if int(ix.program) >= len(keys) || keys[ix.program] != voltr.ProgramID {
 		return [8]byte{}, nil, false
 	}
 	var vault, user bool
-	for _, index := range ix.Accounts {
+	for _, index := range ix.accounts {
 		if int(index) >= len(keys) {
 			return [8]byte{}, nil, false
 		}
@@ -204,16 +275,111 @@ func voltrAction(ix solana.CompiledInstruction, keys []solana.PublicKey, authori
 	if !vault || !user {
 		return [8]byte{}, nil, false
 	}
-	for _, d := range [][8]byte{voltr.DepositVaultDiscriminator, voltr.RequestWithdrawVaultDiscriminator, voltr.WithdrawVaultDiscriminator} {
-		if bytes.HasPrefix(ix.Data, d[:]) {
-			return d, ix.Data, true
+	for _, d := range [][8]byte{voltr.DepositVaultDiscriminator, voltr.RequestWithdrawVaultDiscriminator, voltr.WithdrawVaultDiscriminator, voltr.CancelRequestWithdrawVaultDiscriminator} {
+		if bytes.HasPrefix(ix.data, d[:]) {
+			return d, ix.data, true
 		}
 	}
 	return [8]byte{}, nil, false
 }
 
-func idleDelta(execution chain.Execution) USDCRaw {
-	return USDCRaw(int64(execution.Post[IdleATA].Amount) - int64(execution.Pre[IdleATA].Amount))
+type tokenMove struct {
+	source, destination, mint solana.PublicKey
+	amount                    uint64
+	burn                      bool
+}
+
+func tokenMoves(calls []call, keys []solana.PublicKey) []tokenMove {
+	if calls == nil {
+		return nil
+	}
+	moves := []tokenMove{}
+	for _, c := range calls {
+		if int(c.program) >= len(keys) || keys[c.program] != solana.TokenProgramID || len(c.data) == 0 {
+			continue
+		}
+		var source, mint, destination int
+		switch c.data[0] {
+		case splTransfer:
+			source, mint, destination = 0, -1, 1
+		case splTransferChecked:
+			source, mint, destination = 0, 1, 2
+		case splBurn, splBurnChecked:
+			source, mint, destination = 0, 1, -1
+		default:
+			continue
+		}
+		if len(c.data) < 9 || len(c.accounts) <= max(source, mint, destination) {
+			return nil
+		}
+		key := func(at int) solana.PublicKey {
+			if at < 0 || int(c.accounts[at]) >= len(keys) {
+				return solana.PublicKey{}
+			}
+			return keys[c.accounts[at]]
+		}
+		moves = append(moves, tokenMove{
+			source: key(source), destination: key(destination), mint: key(mint),
+			amount: binary.LittleEndian.Uint64(c.data[1:9]), burn: destination < 0,
+		})
+	}
+	return moves
+}
+
+const (
+	splTransfer        = 3
+	splBurn            = 8
+	splTransferChecked = 12
+	splBurnChecked     = 15
+)
+
+func onlyMove(moves []tokenMove, match func(tokenMove) bool) (tokenMove, bool) {
+	var found []tokenMove
+	for _, m := range moves {
+		if match(m) {
+			found = append(found, m)
+		}
+	}
+	if len(found) != 1 {
+		return tokenMove{}, false
+	}
+	return found[0], true
+}
+
+func escrow(account solana.PublicKey, amount uint64) *Escrow {
+	lp, err := signed[LPRaw](amount)
+	if err != nil {
+		return nil
+	}
+	return &Escrow{Account: account, LP: lp}
+}
+
+func escrowed(moves []tokenMove, lpATA solana.PublicKey) *Escrow {
+	m, ok := onlyMove(moves, func(m tokenMove) bool { return !m.burn && m.source == lpATA })
+	if !ok || (!m.mint.IsZero() && m.mint != LPMint) {
+		return nil
+	}
+	return escrow(m.destination, m.amount)
+}
+
+func burned(moves []tokenMove) *Escrow {
+	m, ok := onlyMove(moves, func(m tokenMove) bool { return m.burn && m.mint == LPMint })
+	if !ok {
+		return nil
+	}
+	return escrow(m.source, m.amount)
+}
+
+func paid(moves []tokenMove) *USDCRaw {
+	m, ok := onlyMove(moves, func(m tokenMove) bool { return !m.burn && m.source == IdleATA })
+	if !ok || (!m.mint.IsZero() && m.mint != AssetMint) {
+		return nil
+	}
+	amount, err := signed[USDCRaw](m.amount)
+	if err != nil {
+		return nil
+	}
+	return &amount
 }
 
 func lpDelta(execution chain.Execution, authority solana.PublicKey) (LPRaw, error) {
