@@ -57,7 +57,7 @@ export function EarnProgressiveClient({
   positionSort,
   selectedMint: selectedMintParam,
 }: {
-  initialMonitoring?: { data: unknown; rows: unknown; snapshot: unknown };
+  initialMonitoring?: { data: unknown; rows: unknown; snapshot?: unknown };
   initialMonitoringError?: boolean;
   positionDirection?: string;
   positionSort?: string;
@@ -72,9 +72,8 @@ export function EarnProgressiveClient({
       ? {
           data: revive(initialMonitoring.data) as EarnData,
           rows: revive(initialMonitoring.rows) as EarnStablecoinHealthRow[],
-          snapshot: revive(
-            initialMonitoring.snapshot
-          ) as AdminEarnSnapshot | null,
+          snapshot: (revive(initialMonitoring.snapshot) ??
+            null) as AdminEarnSnapshot | null,
         }
       : null
   );
@@ -112,11 +111,11 @@ export function EarnProgressiveClient({
         if (!response.ok) throw new Error("monitoring request failed");
         return response.json();
       })
-      .then((payload: { data: unknown; rows: unknown; snapshot: unknown }) => {
+      .then((payload: { data: unknown; rows: unknown; snapshot?: unknown }) => {
         setMonitoring({
           data: revive(payload.data) as EarnData,
           rows: revive(payload.rows) as EarnStablecoinHealthRow[],
-          snapshot: revive(payload.snapshot) as AdminEarnSnapshot | null,
+          snapshot: (revive(payload.snapshot) ?? null) as AdminEarnSnapshot | null,
         });
         setMonitoringState("ready");
       })
