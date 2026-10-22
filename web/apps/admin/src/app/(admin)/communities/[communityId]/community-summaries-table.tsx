@@ -28,7 +28,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { CommunitySummaryRow } from "./community-summaries-data";
+
+type CommunitySummaryRow = {
+  id: string;
+  createdAt: string;
+  oneliner: string;
+  topics: Array<{ title: string; content: string; sources: string[] }>;
+  likesCount: number;
+  dislikesCount: number;
+};
 
 type CommunitySummariesTableProps = {
   summaries: CommunitySummaryRow[];
