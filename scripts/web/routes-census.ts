@@ -250,38 +250,58 @@ function checkGeneratedTypes(): void {
   }
 }
 
-const next: Record<NextApp, Server[]> = { web: nextRoutes("web"), telegram: nextRoutes("telegram") };
-const go = goRoutes(openapiOf("loyal-web"));
-const paths = clientPaths();
+export type GoServedCall = { method: string; path: string; at: string };
 
-const seen = new Set<string>();
-let matched = 0;
-let total = 0;
-for (const client of paths) {
-  const key = `${client.base} ${client.method ?? "*"} ${client.path}`;
-  if (seen.has(key)) continue;
-  seen.add(key);
-  total++;
-  const servers = [...BASES[client.base].next.flatMap((app) => next[app]), ...(BASES[client.base].go ? go : [])];
-  const byPath = servers.filter((server) => answers(server, client));
-  if (byPath.length === 0) {
-    fail(`${client.at}: ${client.method ?? ""} ${client.path} (env.${client.base}) is answered by no server (${[...BASES[client.base].next.map((app) => `${app} app`), "Go"].join(", ")}): add the route or delete the call`);
-  } else if (client.method && !byPath.some((server) => server.methods.includes(client.method!))) {
-    fail(`${client.at}: ${client.path} (env.${client.base}) is served (${byPath.map((s) => s.origin).join(", ")}) without ${client.method}: export ${client.method} from the route or change the call`);
-  } else {
-    matched++;
+// Every call the mobile client makes that a Go route answers, one per method and path.
+export function goServedMobileCalls(): GoServedCall[] {
+  const go = goRoutes(openapiOf("loyal-web"));
+  const calls = new Map<string, GoServedCall>();
+  for (const client of clientPaths()) {
+    if (!BASES[client.base].go) continue;
+    const served = go.filter((server) => answers(server, client));
+    const method = client.method ?? (served.some((s) => s.methods.includes("GET")) ? "GET" : served[0]?.methods[0]);
+    if (!method || !served.some((server) => server.methods.includes(method))) continue;
+    calls.set(`${method} ${client.path}`, { method, path: client.path, at: client.at });
   }
+  return [...calls.values()];
 }
-checkTwins(next);
-checkGoMobile(go);
-checkGeneratedTypes();
 
-if (errors.length > 0) {
-  console.error(errors.map((error) => `routes census: ${error}`).join("\n"));
-  process.exit(1);
+function main(): void {
+  const next: Record<NextApp, Server[]> = { web: nextRoutes("web"), telegram: nextRoutes("telegram") };
+  const go = goRoutes(openapiOf("loyal-web"));
+  const paths = clientPaths();
+
+  const seen = new Set<string>();
+  let matched = 0;
+  let total = 0;
+  for (const client of paths) {
+    const key = `${client.base} ${client.method ?? "*"} ${client.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    total++;
+    const servers = [...BASES[client.base].next.flatMap((app) => next[app]), ...(BASES[client.base].go ? go : [])];
+    const byPath = servers.filter((server) => answers(server, client));
+    if (byPath.length === 0) {
+      fail(`${client.at}: ${client.method ?? ""} ${client.path} (env.${client.base}) is answered by no server (${[...BASES[client.base].next.map((app) => `${app} app`), "Go"].join(", ")}): add the route or delete the call`);
+    } else if (client.method && !byPath.some((server) => server.methods.includes(client.method!))) {
+      fail(`${client.at}: ${client.path} (env.${client.base}) is served (${byPath.map((s) => s.origin).join(", ")}) without ${client.method}: export ${client.method} from the route or change the call`);
+    } else {
+      matched++;
+    }
+  }
+  checkTwins(next);
+  checkGoMobile(go);
+  checkGeneratedTypes();
+
+  if (errors.length > 0) {
+    console.error(errors.map((error) => `routes census: ${error}`).join("\n"));
+    process.exit(1);
+  }
+  const shape = (path: string) => segments(path).map((part) => (isDynamic(part) ? "*" : part)).join("/");
+  const goShapes = new Set(go.map((route) => shape(route.path)));
+  const deletable = (Object.keys(next) as NextApp[]).flatMap((app) => next[app].filter((route) => goShapes.has(shape(route.path))).map((route) => `${app} ${route.path}`));
+  if (deletable.length > 0) console.log(`routes census: Go serves these; the Next twin is deletable: ${deletable.join(", ")}`);
+  console.log(`routes census: ${next.web.length + next.telegram.length} Next + ${go.length} Go server routes, ${total} client paths, ${matched} matched`);
 }
-const shape = (path: string) => segments(path).map((part) => (isDynamic(part) ? "*" : part)).join("/");
-const goShapes = new Set(go.map((route) => shape(route.path)));
-const deletable = (Object.keys(next) as NextApp[]).flatMap((app) => next[app].filter((route) => goShapes.has(shape(route.path))).map((route) => `${app} ${route.path}`));
-if (deletable.length > 0) console.log(`routes census: Go serves these; the Next twin is deletable: ${deletable.join(", ")}`);
-console.log(`routes census: ${next.web.length + next.telegram.length} Next + ${go.length} Go server routes, ${total} client paths, ${matched} matched`);
+
+if (import.meta.main) main();

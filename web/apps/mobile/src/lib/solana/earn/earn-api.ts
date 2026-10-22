@@ -16,9 +16,8 @@ import type { WirePreparedOperation } from "./wire";
 // so a retry after a timeout lands on the fast path.
 const PREPARE_TIMEOUT_MS = 120_000;
 
-// Client for the wallet-signed mobile Earn endpoints on the `frontend` backend
-// (env.apiBaseUrl, e.g. staging.askloyal.com). These are NOT the `/app`
-// chat backend, so they don't go through `src/services/api.ts`.
+// Client for the wallet-signed mobile Earn endpoints on loyal-web
+// (env.apiBaseUrl); they do not go through `src/services/api.ts`.
 
 export type EarnAuthFields = {
   walletAddress: string;

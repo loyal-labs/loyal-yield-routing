@@ -120,8 +120,8 @@ async function withEarnSessionOrAuth<T>(
 }
 
 // Deployment inputs for the device-side SDK prepare, resolved from the
-// unauthenticated `/state` read (which also carries the resume metadata of a
-// half-finished setup).
+// bearer-authenticated `/state` read (which also carries the resume metadata
+// of a half-finished setup).
 type AutodepositPrepareContext = {
   cluster: ReturnType<typeof normalizeLoyalCluster>;
   policySigner: PublicKey;

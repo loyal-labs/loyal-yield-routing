@@ -121,8 +121,9 @@ export async function dropRejectedToken(
   walletAddress: string,
   token: string,
 ): Promise<void> {
+  const startedAt = generation;
   const sessions = await loadStored();
-  if (sessions.get(walletAddress)?.token === token) {
+  if (startedAt === generation && sessions.get(walletAddress)?.token === token) {
     sessions.delete(walletAddress);
     await persist(sessions);
   }
@@ -151,6 +152,9 @@ async function mint(
     return null;
   }
   const sessions = await loadStored();
+  if (startedAt !== generation) {
+    return null;
+  }
   sessions.set(auth.walletAddress, {
     expiresAt: payload.expiresAt,
     token: payload.token,
@@ -211,16 +215,23 @@ async function activeSignerFor(walletAddress: string): Promise<Signer | null> {
   }
 }
 
-async function silentSession(signer: Signer): Promise<string | null> {
-  const walletAddress = signer.publicKey.toBase58();
+function coolingDown(walletAddress: string): boolean {
   const failedAt = failedMintAt.get(walletAddress);
-  if (
-    !SILENT_SIGNERS.has(signer.kind) ||
-    (failedAt !== undefined && Date.now() - failedAt < FAILED_MINT_COOLDOWN_MS)
-  ) {
-    return null;
-  }
-  return ensureEarnSession(signer);
+  return (
+    failedAt !== undefined && Date.now() - failedAt < FAILED_MINT_COOLDOWN_MS
+  );
+}
+
+export async function deliberateSession(
+  signer: Signer,
+): Promise<string | null> {
+  return coolingDown(signer.publicKey.toBase58())
+    ? null
+    : ensureEarnSession(signer);
+}
+
+export async function silentSession(signer: Signer): Promise<string | null> {
+  return SILENT_SIGNERS.has(signer.kind) ? deliberateSession(signer) : null;
 }
 
 export async function silentEarnToken(
@@ -258,6 +269,7 @@ export async function earnWalletRead(
   walletAddress: string,
   url: string,
 ): Promise<Response> {
+  const startedAt = generation;
   const token = await silentEarnToken(walletAddress);
   const res = await getWithBearer(url, token);
   if (!token || !(await isInvalidSession(res))) {
@@ -266,5 +278,13 @@ export async function earnWalletRead(
   await dropRejectedToken(walletAddress, token);
   const signer = await activeSignerFor(walletAddress);
   const fresh = signer ? await silentSession(signer) : null;
-  return fresh ? getWithBearer(url, fresh) : res;
+  if (!fresh) {
+    return res;
+  }
+  const retried = await getWithBearer(url, fresh);
+  const rejected = await isInvalidSession(retried);
+  if (rejected && startedAt === generation) {
+    failedMintAt.set(walletAddress, Date.now());
+  }
+  return retried;
 }
