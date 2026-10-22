@@ -8,10 +8,11 @@ open and test. No DNS flip, no move off Vercel in this phase.
 
 ## Acceptance criteria
 
-1. `web/` holds loyal-app with its history; `scripts/web/sync.sh` re-run on an
-   unchanged loyal-app reports "already merged". (Done: #399.)
-2. `scripts/web/check-untouched.sh` passes: no commit outside a sync merge
-   changes loyal-app's files under `web/` (only `web/apps/loyal` is ours).
+1. `web/` holds loyal-app with its history. (Done: #399.) `scripts/web/sync.sh`
+   was deleted in #490, so nothing syncs, but loyal-app still receives pushes.
+2. `scripts/web/check-untouched.sh` was deleted in #490. The pin file
+   `web/LOYAL_APP_BASE` and the daily `loyal-app-pin` job fail when loyal-app
+   main gains commits touching `apps/mobile` or the moved package paths.
 3. `loyal-web` runs under systemd on loyal-workers; `/readyz` is 200 at the
    test host and `X-Loyal-Release` is the deployed main sha.
 4. `scripts/web/sweep.ts` renders all 25 pages of the route table on the test
@@ -81,9 +82,10 @@ Implementation alone does not satisfy criterion 5: activation and live parity
 verification remain deployment steps. No generated client is introduced for
 this pilot; existing frontend callers keep the same URL and response contract.
 
-Mobile feature work can proceed against the existing backend. New mobile
-Earn MAX backend/shared SDK changes from loyal-app must be synced here before
-porting those API families; they are outside this public read pilot.
+Mobile feature work can proceed against the existing backend. The pin in
+`web/LOYAL_APP_BASE` and the daily loyal-app-pin job (PR #527) tell us when
+loyal-app changes need porting here. Those API families are outside this public
+read pilot.
 
 ## Later, not in this phase
 

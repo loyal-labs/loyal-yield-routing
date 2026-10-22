@@ -1,16 +1,14 @@
 package admin
 
 import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/jwt"
 )
 
 const (
@@ -23,13 +21,6 @@ type Session struct {
 	Iat int64  `json:"iat"`
 	Exp int64  `json:"exp"`
 }
-
-type sessionHeader struct {
-	Alg string `json:"alg"`
-	Typ string `json:"typ"`
-}
-
-var jwtHeader = sessionHeader{Alg: "HS256", Typ: "JWT"}
 
 type Auth struct {
 	User     string
@@ -58,47 +49,16 @@ func (a Auth) NewSession(user string) Session {
 	return Session{Sub: user, Iat: issued, Exp: issued + SessionTTLSeconds}
 }
 
-func encodeJSON(value any) string {
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetEscapeHTML(false)
-	_ = encoder.Encode(value)
-	return base64.RawURLEncoding.EncodeToString(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
-}
-
-func (a Auth) sign(unsigned string) string {
-	mac := hmac.New(sha256.New, []byte(a.Password))
-	mac.Write([]byte(unsigned))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-}
-
 func (a Auth) Sign(session Session) string {
-	unsigned := encodeJSON(jwtHeader) + "." + encodeJSON(session)
-	return unsigned + "." + a.sign(unsigned)
-}
-
-func decodeSegment(segment string, into any) bool {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(segment, "="))
-	if err != nil {
-		return false
-	}
-	return json.Unmarshal(raw, into) == nil
+	return jwt.SignHS256([]byte(a.Password), session)
 }
 
 func (a Auth) Verify(token string) (Session, bool) {
 	if token == "" || a.Password == "" {
 		return Session{}, false
 	}
-	segments := strings.Split(token, ".")
-	if len(segments) != 3 {
-		return Session{}, false
-	}
-	var header sessionHeader
-	if !decodeSegment(segments[0], &header) || header != jwtHeader {
-		return Session{}, false
-	}
-	expected := a.sign(segments[0] + "." + segments[1])
-	if subtle.ConstantTimeCompare([]byte(segments[2]), []byte(expected)) != 1 {
+	header, claims, ok := jwt.VerifyHS256([]byte(a.Password), token)
+	if !ok || header.Typ != "JWT" {
 		return Session{}, false
 	}
 	var payload struct {
@@ -106,7 +66,7 @@ func (a Auth) Verify(token string) (Session, bool) {
 		Iat *float64 `json:"iat"`
 		Exp *float64 `json:"exp"`
 	}
-	if !decodeSegment(segments[1], &payload) || payload.Sub == nil || payload.Iat == nil || payload.Exp == nil {
+	if json.Unmarshal(claims, &payload) != nil || payload.Sub == nil || payload.Iat == nil || payload.Exp == nil {
 		return Session{}, false
 	}
 	if *payload.Exp <= float64(a.now().Unix()) {

@@ -11,10 +11,6 @@ import {
 } from "@solana/web3.js";
 
 import {
-  VoltrClaimLiquidityError,
-  voltrClaimPlan,
-} from "../src/features/earn-max/voltr/plans";
-import {
   readVoltrPosition,
   VOLTR_ASSET_MINT,
   VOLTR_IDLE_ATA,
@@ -22,8 +18,10 @@ import {
   VOLTR_LP_MINT,
   VOLTR_VAULT,
   voltrClaimBlockReason,
+  VoltrClaimLiquidityError,
+  voltrClaimPlan,
   voltrUserAccounts,
-} from "../src/features/earn-max/voltr/program";
+} from "@loyal-labs/smart-account-vaults";
 import { normalizeLifecycleErrorCode } from "../src/features/observability/lifecycle-contract";
 
 // Synthetic account snapshots only. No network connection, signing or secrets.

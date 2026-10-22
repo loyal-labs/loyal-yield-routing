@@ -1,6 +1,6 @@
 import "server-only";
 
-import { VOLTR_VAULT } from "./program";
+import { VOLTR_VAULT } from "@loyal-labs/smart-account-vaults";
 
 const CACHE_MS = 5 * 60 * 1000;
 const TIMEOUT_MS = 3_000;

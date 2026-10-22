@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isVoltrOperationVisible } from "../earn-max/voltr/visibility";
+import { isVoltrOperationVisible } from "@loyal-labs/smart-account-vaults";
 import { isSwapVisible } from "./swap-visibility";
 
 import {
