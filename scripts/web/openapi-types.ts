@@ -42,11 +42,15 @@ export type GenerateOptions = {
   extra?: (openapi: Openapi) => Record<string, string>;
 };
 
+export function openapiOf(cmd: string): Openapi {
+  return JSON.parse(run("go", ["run", `./cmd/${cmd}`, "openapi"], workers)) as Openapi;
+}
+
 export function generate({ cmd, out, check, extra }: GenerateOptions): Openapi {
   const scratch = mkdtempSync(join(tmpdir(), "openapi-types-"));
   const dest = check ? join(scratch, "out") : out;
   const spec = join(scratch, "openapi.json");
-  const openapi = JSON.parse(run("go", ["run", `./cmd/${cmd}`, "openapi"], workers)) as Openapi;
+  const openapi = openapiOf(cmd);
   writeFileSync(spec, JSON.stringify(openapi));
   mkdirSync(dest, { recursive: true });
   run(openapiTs, ["-i", spec, "-o", dest, "-p", "@hey-api/typescript", "-s", "--no-log-file"], web);
