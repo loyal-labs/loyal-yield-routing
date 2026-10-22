@@ -337,6 +337,7 @@ type Signed struct {
 	Signature solana.Signature
 	Slot      uint64
 	Failed    bool
+	BlockTime *time.Time
 }
 
 // History lists up to limit of address's transactions at commitment, newest
@@ -355,7 +356,12 @@ func (c *Client) History(ctx context.Context, address solana.PublicKey, limit in
 		if row == nil || row.Signature.IsZero() || row.Slot == 0 {
 			return nil, errors.New("getSignaturesForAddress: incomplete signature")
 		}
-		history = append(history, Signed{Signature: row.Signature, Slot: row.Slot, Failed: row.Err != nil})
+		signed := Signed{Signature: row.Signature, Slot: row.Slot, Failed: row.Err != nil}
+		if row.BlockTime != nil {
+			at := row.BlockTime.Time().UTC()
+			signed.BlockTime = &at
+		}
+		history = append(history, signed)
 	}
 	return history, nil
 }
