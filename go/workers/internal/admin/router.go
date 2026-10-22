@@ -31,8 +31,16 @@ type Mux struct {
 
 var families = []func(*Mux){
 	registerDapps, registerLibrary, registerCommunities,
-	registerOverview, registerJourneys, registerSmartAccounts,
-	registerEarn, registerRebalance, registerAutonomousVault, registerBackyard, registerEarnMax, registerMetrics,
+	registerJourneys, registerSmartAccounts,
+	registerEarn, registerRebalance, registerAutonomousVault, registerEarnMax, registerMetrics,
+}
+
+const landingPath = "/earn"
+
+var redirects = map[string]string{
+	"/":                            landingPath,
+	"/overview":                    landingPath,
+	"/vault-integrations/backyard": "/vault-integrations/earn-max",
 }
 
 var securityPolicy = strings.Join([]string{
@@ -108,6 +116,9 @@ func New(cfg Config) http.Handler {
 		r.Post("/auth/login", cfg.Auth.Login)
 		r.Get("/logout", Logout)
 		r.Post("/logout", Logout)
+		for from, to := range redirects {
+			r.Get(from, func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, to, http.StatusFound) })
+		}
 		register(r, cfg.Deps)
 		r.Handle("/api/*", http.NotFoundHandler())
 		r.Handle("/*", site)

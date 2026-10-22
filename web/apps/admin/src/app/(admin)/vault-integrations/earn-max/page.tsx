@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
+import { BackyardVault } from "./backyard-vault";
 import { EarnMaxRefresh, TimeChart } from "./earn-max-charts";
 import {
   CUSTODY,
@@ -181,6 +182,8 @@ export default function EarnMaxPage(props: EarnMaxProps) {
         <WorkerHealth data={data} now={now} />
         <Latches data={data} now={now} />
       </section>
+
+      <BackyardVault {...props.backyard} />
 
       <p className="text-xs text-muted-foreground">
         Loaded {dateTime(data.loadedAt)}. Sources: Yield database, Solana RPC,

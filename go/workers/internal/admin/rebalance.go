@@ -33,6 +33,8 @@ func (m *Mux) rebalanceSection(w http.ResponseWriter, r *http.Request) {
 		body, err = m.rebalanceApyHistory(r)
 	case "operations":
 		body, err = rebalanceOperations(r, m.Deps)
+	case "volume":
+		body, err = rebalanceVolume(r, m.Deps)
 	case "executions":
 		body = map[string]any{"executedRebalances": rebalanceExecutedWire(r, m.Deps)}
 	case "frequency":
@@ -158,11 +160,13 @@ type rebalanceOperationsAutodepositPoint struct {
 	AccountNotFound       int64  `json:"accountNotFound"`
 	BucketStartedAt       string `json:"bucketStartedAt"`
 	ConfirmationOrTimeout int64  `json:"confirmationOrTimeout"`
+	DepositedAmountRaw    string `json:"depositedAmountRaw"`
 	InsufficientRent      int64  `json:"insufficientRent"`
 	MissingTokenDelegate  int64  `json:"missingTokenDelegate"`
 	NoLinkedError         int64  `json:"noLinkedError"`
 	OtherPrePull          int64  `json:"otherPrePull"`
 	PostPullKaminoTopUp   int64  `json:"postPullKaminoTopUp"`
+	Successful            int64  `json:"successful"`
 }
 
 type rebalanceOperationsAutodepositRange struct {
@@ -192,16 +196,26 @@ func rebalanceOperations(r *http.Request, d *Deps) (any, error) {
 				AccountNotFound:       p.accountNotFound,
 				BucketStartedAt:       p.bucketStartedAt,
 				ConfirmationOrTimeout: p.confirmationOrTimeout,
+				DepositedAmountRaw:    p.depositedAmountRaw,
 				InsufficientRent:      p.insufficientRent,
 				MissingTokenDelegate:  p.missingTokenDelegate,
 				NoLinkedError:         p.noLinkedError,
 				OtherPrePull:          p.otherPrePull,
 				PostPullKaminoTopUp:   p.postPullKaminoTopUp,
+				Successful:            p.successful,
 			}
 		}
 		autodeposit[i] = rebalanceOperationsAutodepositRange{BucketHours: rng.bucketHours, Key: rng.key, Points: points}
 	}
 	return map[string]any{"activity": activity, "autodeposit": autodeposit, "last30DaysRebalances": last30}, nil
+}
+
+func rebalanceVolume(r *http.Request, d *Deps) (any, error) {
+	volume, err := rebalanceOptimizationVolumeSeries(r.Context(), d)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"optimizationVolume": volume}, nil
 }
 
 type rebalanceStringTable struct {

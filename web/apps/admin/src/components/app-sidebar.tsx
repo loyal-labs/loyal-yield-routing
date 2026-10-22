@@ -8,7 +8,6 @@ import {
   BookOpenIcon,
   CircleDollarSignIcon,
   GaugeIcon,
-  LayoutDashboardIcon,
   LandmarkIcon,
   LogOutIcon,
   RouteIcon,
@@ -47,7 +46,6 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Core",
     items: [
-      { href: "/overview", icon: LayoutDashboardIcon, label: "Overview" },
       { href: "/metrics", icon: GaugeIcon, label: "Metrics" },
       { href: "/journeys", icon: RouteIcon, label: "User journeys" },
       { href: "/communities", icon: UsersRoundIcon, label: "Communities" },
@@ -73,11 +71,6 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Vault integrations",
     items: [
-      {
-        href: "/vault-integrations/backyard",
-        icon: LandmarkIcon,
-        label: "Backyard vault",
-      },
       {
         href: "/vault-integrations/earn-max",
         icon: TrendingUpIcon,

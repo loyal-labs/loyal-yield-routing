@@ -195,7 +195,7 @@ func backyardScalarSettings(state []byte) []BackyardSetting {
 	return settings
 }
 
-func loadBackyard(ctx context.Context, d *Deps, _ PageRequest) (BackyardPage, error) {
+func loadBackyard(ctx context.Context, d *Deps) (BackyardPage, error) {
 	page := BackyardPage{
 		ObservedAt: readsISO(time.Now()), History: []BackyardOperation{}, Settings: []BackyardSetting{},
 		VaultCapRaw: backyardVaultCapRaw, WithdrawalWaitSeconds: backyardWithdrawalWaitSecond,
@@ -292,8 +292,4 @@ func loadBackyard(ctx context.Context, d *Deps, _ PageRequest) (BackyardPage, er
 		}
 	}
 	return page, nil
-}
-
-func registerBackyard(m *Mux) {
-	Page(m, "/vault-integrations/backyard", loadBackyard)
 }

@@ -88,6 +88,5 @@ export async function updateCommunityNotificationSettings(
 
   revalidateTag(communityTag(communityId));
   revalidateTag(CACHE_TAGS.communitiesList);
-  revalidateTag(CACHE_TAGS.overview);
   revalidatePath(`/communities/${communityId}`);
 }
