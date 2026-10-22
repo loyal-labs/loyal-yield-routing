@@ -63,7 +63,10 @@ AGENTS.override.md
 !/go/workers/cmd/loyal-web/dist/.keep
 /go/workers/cmd/loyal-admin/dist/*
 !/go/workers/cmd/loyal-admin/dist/.keep
+/go/workers/cmd/loyal-stats/dist/*
+!/go/workers/cmd/loyal-stats/dist/.keep
 /web/apps/admin/dist/
+/web/apps/dashboard/dist/
 /web/apps/admin/src/routeTree.gen.ts
 /web/apps/admin/src/api.gen/
 /web/apps/admin/openapi.json
