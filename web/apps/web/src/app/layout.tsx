@@ -8,6 +8,7 @@ import { XPixelBootstrap } from "@/components/analytics/x-pixel-bootstrap";
 import { PublicEnvProvider } from "@/contexts/public-env-context";
 import { enLanding } from "@/features/marketing/i18n/en/landing";
 import { createPublicEnv } from "@/lib/core/config/public";
+import { JsonLd } from "@/lib/seo/json-ld";
 import { SITE_URL } from "@/lib/seo/site";
 import { initialThemeScript } from "@/lib/theme";
 import { faviconForEnv } from "@/lib/vercel-env";
@@ -136,15 +137,7 @@ export default async function RootLayout({
         <script
           dangerouslySetInnerHTML={{ __html: initialThemeScript }}
         />
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify(siteJsonLd).replace(
-              /</g,
-              "\\u003c"
-            ),
-          }}
-        />
+        <JsonLd data={siteJsonLd} />
         <PublicEnvProvider value={publicEnv}>
           <XPixelBootstrap />
           {children}
