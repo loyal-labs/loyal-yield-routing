@@ -7,7 +7,7 @@
 // route uses --slug (default: the first post folder in web/apps/web/public/blog).
 //
 //   bun scripts/web/sweep.ts --app admin --base https://admin.example --out <dir> \
-//     --param featureId=<id> --param communityId=<id>
+//     --param communityId=<id>
 //
 // signs in first with ADMIN_USER and ADMIN_PASSWORD from the environment, then
 // screenshots every page under web/apps/admin/src/app/(admin).

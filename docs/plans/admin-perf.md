@@ -259,8 +259,8 @@ The owner's calls of Oct 22.
 
 - **O1 Windows.** Metrics latency covers 30 days. The overview volume chart and
   the executions chart cover 90 days. All-time totals stay, as counts. The
-  executions chart points are bucketed hourly per route on the server, so the
-  response stays under 100 kB.
+  executions chart points are bucketed hourly per route on the server, to bring
+  the response under the 100 kB target.
 - **O2 Removals.** Flags, Features (including the feature detail page), Admins
   and Push notifications are removed: routes, views, loaders, RPCs and nav
   entries. The push page goes whole, token counts included; the counts only
