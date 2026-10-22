@@ -1,50 +1,34 @@
-import { asc } from "drizzle-orm";
-
 import { PageContainer } from "@/components/layout/page-container";
 import { SectionHeader } from "@/components/layout/section-header";
-import { getDatabase } from "@/lib/core/database";
-import { requireAdminSession } from "@/lib/require-admin-session";
-import { featureRegistry, runtimeFlags } from "@loyal-labs/db-core/schema";
+import type { FlagAudience, FlagTargetEnvironment } from "@loyal-labs/db-core/schema";
 
 import { FlagForm } from "./flag-form";
 import { FlagList } from "./flag-list";
 
-export const dynamic = "force-dynamic";
+type FlagsPageProps = {
+  flags: Array<{
+    id: string;
+    key: string;
+    description: string;
+    enabled: boolean;
+    audience: FlagAudience;
+    targetEnvironments: FlagTargetEnvironment[];
+    notes: string | null;
+    linkedFeatures: Array<{
+      linkId: string;
+      id: string;
+      title: string;
+      key: string;
+    }>;
+  }>;
+  availableFeatures: Array<{
+    id: string;
+    title: string;
+    key: string;
+  }>;
+};
 
-export default async function FlagsPage() {
-  await requireAdminSession();
-
-  const db = getDatabase();
-  const features = await db.query.featureRegistry.findMany({
-    orderBy: [asc(featureRegistry.title)],
-  });
-  const flags = await db.query.runtimeFlags.findMany({
-    orderBy: [asc(runtimeFlags.key)],
-    with: {
-      featureLinks: {
-        with: {
-          feature: true,
-        },
-      },
-    },
-  });
-
-  const serializedFlags = flags.map((flag) => ({
-    id: flag.id,
-    key: flag.key,
-    description: flag.description,
-    enabled: flag.enabled,
-    audience: flag.audience,
-    targetEnvironments: flag.targetEnvironments,
-    notes: flag.notes,
-    linkedFeatures: flag.featureLinks.map((link) => ({
-      linkId: link.id,
-      id: link.feature.id,
-      title: link.feature.title,
-      key: link.feature.key,
-    })),
-  }));
-
+export default function FlagsPage({ flags, availableFeatures }: FlagsPageProps) {
   return (
     <PageContainer className="space-y-6">
       <SectionHeader
@@ -54,14 +38,7 @@ export default async function FlagsPage() {
       />
 
       <FlagForm />
-      <FlagList
-        flags={serializedFlags}
-        availableFeatures={features.map((feature) => ({
-          id: feature.id,
-          title: feature.title,
-          key: feature.key,
-        }))}
-      />
+      <FlagList flags={flags} availableFeatures={availableFeatures} />
     </PageContainer>
   );
 }
