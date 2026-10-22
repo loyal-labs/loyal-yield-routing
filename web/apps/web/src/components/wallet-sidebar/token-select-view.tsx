@@ -216,7 +216,7 @@ export function TokenSelectView({
   onSelect,
   onBack,
   tokens,
-  onSearch,
+  remoteSearch = false,
   isTokenSelected,
 }: {
   title: string;
@@ -225,15 +225,10 @@ export function TokenSelectView({
   onBack: () => void;
   onClose: () => void;
   tokens: SwapToken[];
-  /**
-   * Opts this picker into remote token search (and therefore trending).
-   * Search is run in here via `searchTokens`, so the callback itself is unused
-   * beyond acting as the flag — kept so existing callers keep compiling.
-   */
-  onSearch?: (query: string) => Promise<SwapToken[]>;
+  remoteSearch?: boolean;
   isTokenSelected?: (token: SwapToken) => boolean;
 }) {
-  const remoteSearchEnabled = Boolean(onSearch);
+  const remoteSearchEnabled = remoteSearch;
   const [search, setSearch] = useState("");
   const [remoteResults, setRemoteResults] = useState<TokenSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);

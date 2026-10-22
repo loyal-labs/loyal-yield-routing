@@ -7,13 +7,14 @@ import { Platform, TurboModuleRegistry } from "react-native";
 import { env } from "@/config/env";
 
 import { WalletRejectedError } from "./rejection";
-import { assertOwnVersionedSignature, type Signer } from "./signer";
+import { adoptWalletReturnedTransaction, type Signer } from "./signer";
 import {
   clearMwaAccount,
   storeMwaAccount,
   type StoredMwaAccount,
 } from "./mwa-account-storage";
 import {
+  forgetWalletAuthorization,
   WalletSessionError,
   type WalletSessionFailure,
 } from "./wallet-session-error";
@@ -48,7 +49,9 @@ const SIGNING_DECLINED_MESSAGE =
  */
 export function isMwaSupported(): boolean {
   if (Platform.OS !== "android") return false;
-  return TurboModuleRegistry.get<TurboModule>("SolanaMobileWalletAdapter") != null;
+  return (
+    TurboModuleRegistry.get<TurboModule>("SolanaMobileWalletAdapter") != null
+  );
 }
 
 async function getMwa() {
@@ -82,14 +85,14 @@ function isAssociationCancellation(error: unknown): boolean {
   return (
     code === "ERROR_ASSOCIATION_CANCELLED" ||
     (typeof code === "string" && code.includes(ASSOCIATION_CANCELLED_TEXT)) ||
-    (error instanceof Error && error.message.includes(ASSOCIATION_CANCELLED_TEXT))
+    (error instanceof Error &&
+      error.message.includes(ASSOCIATION_CANCELLED_TEXT))
   );
 }
 
 function isUserCancellation(error: unknown): boolean {
   return (
-    isAssociationCancellation(error) ||
-    hasErrorCode(error, -1) // ERROR_AUTHORIZATION_FAILED
+    isAssociationCancellation(error) || hasErrorCode(error, -1) // ERROR_AUTHORIZATION_FAILED
   );
 }
 
@@ -241,24 +244,13 @@ export class MwaSigner implements Signer {
         "Wallet returned a mismatched number of signed transactions.",
       );
     }
-    // The wallet-returned bytes are the signed truth — an MWA wallet may
-    // return a modified transaction, so grafting only its signatures onto our
-    // original message would break signature verification. Callers keep using
-    // the objects they passed in (e.g. serializing the original after
-    // signTransaction), so adopt the wallet's message AND signatures onto the
-    // inputs, then verify our signature locally to fail with a precise error
-    // instead of an opaque RPC preflight failure.
     for (let index = 0; index < txs.length; index++) {
-      const tx = txs[index];
-      const source = signed[index];
-      if (tx instanceof VersionedTransaction) {
-        const src = source as VersionedTransaction;
-        tx.message = src.message;
-        tx.signatures = src.signatures;
-        await assertOwnVersionedSignature(tx, this.publicKey, index);
-      } else {
-        (tx as Transaction).signatures = (source as Transaction).signatures;
-      }
+      await adoptWalletReturnedTransaction(
+        txs[index],
+        signed[index],
+        this.publicKey,
+        index,
+      );
     }
     return txs;
   }
@@ -294,18 +286,15 @@ export class MwaSigner implements Signer {
         // to `request_failed` — naming an HTTP failure for a call that never
         // reached the network, and leaving the stale token in place so every
         // retry failed identically (ASK-1872 follow-up).
-        throw await this.forgetAuthorization("authorization_expired", error);
+        throw await forgetWalletAuthorization(
+          clearMwaAccount,
+          "authorization_expired",
+          errorCodeOf(error),
+          error,
+        );
       }
       throw toWalletSessionError(error, sessionEstablished) ?? error;
     }
-  }
-
-  private async forgetAuthorization(
-    failure: "account_mismatch" | "authorization_expired",
-    cause?: unknown,
-  ): Promise<WalletSessionError> {
-    await clearMwaAccount();
-    return new WalletSessionError(failure, errorCodeOf(cause), cause);
   }
 
   private async reauthorize(wallet: Web3MobileWallet): Promise<void> {
@@ -318,11 +307,20 @@ export class MwaSigner implements Signer {
       });
     } catch (error) {
       if (!hasErrorCode(error, -1)) throw error;
-      throw await this.forgetAuthorization("authorization_expired", error);
+      throw await forgetWalletAuthorization(
+        clearMwaAccount,
+        "authorization_expired",
+        errorCodeOf(error),
+        error,
+      );
     }
     const base64Address = toBase64Address(this.publicKey);
     if (!result.accounts.some((a) => a.address === base64Address)) {
-      throw await this.forgetAuthorization("account_mismatch");
+      throw await forgetWalletAuthorization(
+        clearMwaAccount,
+        "account_mismatch",
+        undefined,
+      );
     }
     if (result.auth_token !== this.authToken) {
       this.authToken = result.auth_token;

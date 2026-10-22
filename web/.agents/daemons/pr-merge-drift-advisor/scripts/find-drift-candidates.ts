@@ -25,8 +25,16 @@ type PullRequest = {
   headRefName: string;
   headRefOid: string;
   isCrossRepository: boolean;
-  mergeable: string; // MERGEABLE | CONFLICTING | UNKNOWN
-  mergeStateStatus: string; // CLEAN | DIRTY | BEHIND | BLOCKED | ...
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  mergeStateStatus:
+    | "BEHIND"
+    | "BLOCKED"
+    | "CLEAN"
+    | "DIRTY"
+    | "DRAFT"
+    | "HAS_HOOKS"
+    | "UNKNOWN"
+    | "UNSTABLE";
 };
 
 type Attribution = {
@@ -46,8 +54,8 @@ type Candidate = {
   base: string;
   headOid: string;
   isCrossRepository: boolean;
-  mergeable: string;
-  mergeStateStatus: string;
+  mergeable: PullRequest["mergeable"];
+  mergeStateStatus: PullRequest["mergeStateStatus"];
   mergeBase: string | null;
   prFileCount: number;
   baseSinceMergeBaseFileCount: number;

@@ -1,4 +1,5 @@
 import {
+  EARN_VAULT_INDEX,
   getKaminoUsdcEarnTargetForCluster,
   LoyalCluster,
   resolveLoyalClusterForSolanaEnv,
@@ -22,7 +23,6 @@ import {
   type UserYieldPositionRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-const EARN_VAULT_INDEX = 1;
 const CURRENT_RESERVE_LOOKUP_RETRIES = 2;
 const CURRENT_RESERVE_LOOKUP_RETRY_DELAY_MS = 250;
 

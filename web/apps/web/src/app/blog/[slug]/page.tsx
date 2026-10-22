@@ -15,6 +15,7 @@ import {
   ibmPlexSans,
   MoreArticles,
 } from "@/features/blog";
+import { JsonLd } from "@/lib/seo/json-ld";
 import { cn } from "@/lib/utils";
 
 const SITE_ORIGIN = "https://askloyal.com";
@@ -122,11 +123,8 @@ export default async function BlogPostPage({
 
   return (
     <main className="min-h-screen overflow-x-clip bg-white text-black">
-      {/* JSON-LD as script children (XSS-safe; React escapes <>&) */}
-      <script type="application/ld+json">{JSON.stringify(articleJsonLd)}</script>
-      <script type="application/ld+json">
-        {JSON.stringify(breadcrumbJsonLd)}
-      </script>
+      <JsonLd data={articleJsonLd} />
+      <JsonLd data={breadcrumbJsonLd} />
 
       <LandingScrollAnimations />
       <LandingHeader />

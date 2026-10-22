@@ -8,9 +8,11 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 import {
+  deriveSubscriptionAuthority,
+  EARN_VAULT_INDEX,
+  getStablecoinMintForCluster,
+  resolveLoyalClusterForSolanaEnv,
   Stablecoin,
-  SUBSCRIPTIONS_PROGRAM_ID,
-  SUBSCRIPTIONS_TRANSFER_RECURRING,
   SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PER_PERIOD_OFFSET,
   SUBSCRIPTION_RECURRING_DELEGATION_AMOUNT_PULLED_OFFSET,
   SUBSCRIPTION_RECURRING_DELEGATION_AUTHORITY_OFFSET,
@@ -22,10 +24,9 @@ import {
   SUBSCRIPTION_RECURRING_DELEGATION_MINT_OFFSET,
   SUBSCRIPTION_TRANSFER_DELEGATOR_OFFSET,
   SUBSCRIPTION_TRANSFER_MINT_OFFSET,
-  deriveSubscriptionAuthority,
-  getStablecoinMintForCluster,
-  resolveLoyalClusterForSolanaEnv,
   subscriptionRevokeDelegationData,
+  SUBSCRIPTIONS_PROGRAM_ID,
+  SUBSCRIPTIONS_TRANSFER_RECURRING,
 } from "../packages/loyal-actions/src/index.ts";
 import {
   createSmartAccountVaultsClient,
@@ -43,8 +44,6 @@ import {
   resolveSolanaEnv,
   type SolanaEnv,
 } from "../packages/solana-rpc/src/index.ts";
-
-const EARN_VAULT_INDEX = 1;
 
 type ParsedArgs = {
   execute: boolean;

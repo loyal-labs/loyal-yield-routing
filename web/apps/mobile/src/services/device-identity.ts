@@ -4,10 +4,6 @@
 // telemetry trail across sessions and wallets — the wallet address alone
 // misses everything that happens before auth, and the error channel carried
 // no correlator at all.
-//
-// Lives outside `observability.ts` so that module stays free of react-native
-// and storage imports (its test suite mocks only expo-updates); consumers
-// inject the identity via `setObservabilityDeviceIdentity`.
 
 import { Platform } from "react-native";
 

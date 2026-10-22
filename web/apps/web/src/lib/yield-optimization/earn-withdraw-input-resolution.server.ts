@@ -6,7 +6,7 @@ import {
   type SmartAccountEarnUsdcWithdrawInput,
 } from "@loyal-labs/smart-account-vaults";
 import { type Connection, PublicKey } from "@solana/web3.js";
-
+import { EARN_VAULT_INDEX } from "@loyal-labs/actions";
 import { type EarnUsdcReserveTarget } from "@/lib/yield-optimization/earn-reserve-target.server";
 import {
   type EarnRpcHolding,
@@ -25,7 +25,6 @@ import {
   type RoutePolicyRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 const POLICY_PROJECTION_RETRY_DELAYS_MS = [0, 100, 250, 500, 1_000] as const;
 
 async function waitForPolicyProjection(delayMs: number): Promise<void> {
@@ -344,7 +343,7 @@ export async function resolveEarnUsdcWithdrawInput(args: {
       authority: walletAddress,
       cluster,
       settings: settingsPda,
-      vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       vaultPubkey: earnVaultPda.toBase58(),
     });
     if (policyResult?.routePolicy) {
@@ -359,7 +358,7 @@ export async function resolveEarnUsdcWithdrawInput(args: {
         authority: walletAddress,
         cluster,
         settings: settingsPda,
-        vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+        vaultIndex: EARN_VAULT_INDEX,
         vaultPubkey: earnVaultPda.toBase58(),
       })
     ) {
@@ -372,7 +371,7 @@ export async function resolveEarnUsdcWithdrawInput(args: {
     console.warn(`[${logTag}] Earn policy projection still pending`, {
       cluster,
       settings: settingsPda,
-      vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       walletAddress,
     });
     throw new EarnWithdrawResolveError(

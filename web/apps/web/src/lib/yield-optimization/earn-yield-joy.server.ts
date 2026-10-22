@@ -1,6 +1,9 @@
 import "server-only";
 
-import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
+import {
+  EARN_VAULT_INDEX,
+  resolveLoyalClusterForSolanaEnv,
+} from "@loyal-labs/actions";
 import {
   appUsers,
   appUserSmartAccounts,
@@ -30,7 +33,6 @@ import {
   type EarnJoyState,
 } from "./earn-yield-joy.shared";
 
-const EARN_VAULT_INDEX = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WALLET_CONCURRENCY = 5;
 // Leaves headroom under the route's 300s ceiling for the final state writes.

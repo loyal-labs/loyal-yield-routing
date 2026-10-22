@@ -1,17 +1,13 @@
 import type { BottomSheetModal } from "@gorhom/bottom-sheet";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { ActivityFeed } from "@/components/wallet/ActivityFeed";
 import { TransactionDetailsSheet } from "@/components/wallet/TransactionDetailsSheet";
-import { useTokenDetails } from "@/hooks/wallet/useTokenDetails";
-import { useTokenHoldings } from "@/hooks/wallet/useTokenHoldings";
 import {
-  LOYAL_TOKEN_MINT,
-  NATIVE_SOL_MINT,
-  SOLANA_USDC_MINT_DEVNET,
-  SOLANA_USDC_MINT_MAINNET,
-} from "@/lib/solana/constants";
-import { getSolanaEnv } from "@/lib/solana/rpc/connection";
+  useTokenDetailMints,
+  useTokenDetails,
+} from "@/hooks/wallet/useTokenDetails";
+import { useTokenHoldings } from "@/hooks/wallet/useTokenHoldings";
 import type { Transaction } from "@/types/wallet";
 
 import { useActivity } from "../model/ActivityProvider";
@@ -21,20 +17,7 @@ export function WalletActivityList() {
     useActivity();
   const { tokenHoldings } = useTokenHoldings(walletAddress);
 
-  // Resolve token icons/symbols for held tokens plus the SOL/LOYAL/USDC
-  // prefills, mirroring the wallet page so rows never fall back to raw symbols.
-  const tokenDetailMints = useMemo(() => {
-    const mints = new Set<string>();
-    mints.add(NATIVE_SOL_MINT);
-    mints.add(LOYAL_TOKEN_MINT);
-    mints.add(
-      getSolanaEnv() === "mainnet"
-        ? SOLANA_USDC_MINT_MAINNET
-        : SOLANA_USDC_MINT_DEVNET,
-    );
-    for (const holding of tokenHoldings) mints.add(holding.mint);
-    return Array.from(mints);
-  }, [tokenHoldings]);
+  const tokenDetailMints = useTokenDetailMints(tokenHoldings);
   const tokenDetailsByMint = useTokenDetails(tokenDetailMints);
 
   const [selectedTransaction, setSelectedTransaction] =

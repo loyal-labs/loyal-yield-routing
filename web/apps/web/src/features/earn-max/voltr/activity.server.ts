@@ -21,7 +21,10 @@ import {
 const HISTORY_LIMIT = 100;
 
 // First 8 data bytes of the Voltr instructions a user signs (program.ts).
-const ACTIONS: [action: string, discriminator: number[]][] = [
+const ACTIONS: [
+  action: VoltrHistoryEntry["action"],
+  discriminator: number[]
+][] = [
   ["deposit", [126, 224, 21, 255, 228, 53, 117, 33]],
   ["withdraw_request", [248, 225, 47, 22, 116, 144, 23, 143]],
   ["claim", [135, 7, 237, 120, 149, 94, 95, 7]],
@@ -29,15 +32,17 @@ const ACTIONS: [action: string, discriminator: number[]][] = [
 
 type VoltrHistoryEntry = {
   confirmedSlot?: string;
-  action: string;
-  /** Deposit: USDC in. Claim: USDC paid out. Request: filled below. */
-  amountRaw: bigint | null;
   lpDeltaRaw: bigint;
-  /** Request only: USDC value of the escrowed LP when it was requested. */
-  requestedRaw?: bigint | null;
   signature: string;
   timestamp: string;
-};
+} & (
+  | { action: "deposit" | "claim"; amountRaw: bigint }
+  | {
+      action: "withdraw_request";
+      amountRaw: bigint | null;
+      requestedRaw: bigint | null;
+    }
+);
 
 export type EarnMaxVoltrHistory = {
   complete: boolean;
@@ -47,7 +52,7 @@ export type EarnMaxVoltrHistory = {
 function voltrAction(
   instruction: PartiallyDecodedInstruction,
   authority: PublicKey
-): { action: string; data: Buffer } | null {
+): { action: VoltrHistoryEntry["action"]; data: Buffer } | null {
   if (
     !instruction.programId.equals(VOLTR_PROGRAM_ID) ||
     !instruction.accounts.some((key) => key.equals(VOLTR_VAULT)) ||
@@ -134,23 +139,32 @@ function decode(
     if (!match) continue;
     const lpDelta =
       entries.length === 0 ? lpDeltaRaw(transaction, authority) : BigInt(0);
-    entries.push({
+    const base = {
       confirmedSlot: String(transaction.slot),
-      action: match.action,
-      amountRaw:
-        match.action === "deposit"
-          ? match.data.readBigUInt64LE(8)
-          : match.action === "claim"
-          ? -idleDeltaRaw(transaction)
-          : null,
       lpDeltaRaw: lpDelta,
-      requestedRaw:
-        match.action === "withdraw_request" && lpDelta < BigInt(0)
-          ? requestedRawFromLogs(transaction, -lpDelta)
-          : null,
       signature,
       timestamp,
-    });
+    };
+    entries.push(
+      match.action === "withdraw_request"
+        ? {
+            ...base,
+            action: match.action,
+            amountRaw: null,
+            requestedRaw:
+              lpDelta < BigInt(0)
+                ? requestedRawFromLogs(transaction, -lpDelta)
+                : null,
+          }
+        : {
+            ...base,
+            action: match.action,
+            amountRaw:
+              match.action === "deposit"
+                ? match.data.readBigUInt64LE(8)
+                : -idleDeltaRaw(transaction),
+          }
+    );
   }
   return entries;
 }
@@ -232,7 +246,9 @@ export function voltrActivity(
     amountRaw: entry.amountRaw === null ? null : entry.amountRaw.toString(),
     id: `${entry.signature}:${entry.action}`,
     requestedRaw:
-      entry.requestedRaw == null ? null : entry.requestedRaw.toString(),
+      entry.action === "withdraw_request" && entry.requestedRaw !== null
+        ? entry.requestedRaw.toString()
+        : null,
     signature: entry.signature,
     status: "confirmed",
     timestamp: entry.timestamp,
@@ -240,7 +256,7 @@ export function voltrActivity(
   const performance: EarnMaxPerformancePoint[] = [];
   let principal = BigInt(0);
   for (const entry of [...entries].reverse()) {
-    if (entry.action === "deposit") principal += entry.amountRaw ?? BigInt(0);
+    if (entry.action === "deposit") principal += entry.amountRaw;
     else if (entry.action === "withdraw_request")
       principal -= entry.amountRaw ?? BigInt(0);
     else continue;
@@ -268,7 +284,7 @@ export function voltrActivity(
     });
     performance.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   }
-  const sum = (action: string) =>
+  const sum = (action: VoltrHistoryEntry["action"]) =>
     entries
       .filter((e) => e.action === action)
       .reduce((total, e) => total + (e.amountRaw ?? BigInt(0)), BigInt(0));

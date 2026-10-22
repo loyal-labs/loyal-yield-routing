@@ -31,7 +31,7 @@ export const VOLTR_ASSET_MINT = new PublicKey(
   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 );
 export const VOLTR_ASSET_DECIMALS = 6;
-/** Smart-account vault index for Earn MAX (Earn uses 1, legacy Earn MAX 0). */
+/** Smart-account vault index for Earn MAX. */
 export const EARN_MAX_VOLTR_ACCOUNT_INDEX = 2;
 
 function voltrPda(...seeds: Buffer[]): PublicKey {
