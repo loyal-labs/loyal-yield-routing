@@ -22,13 +22,13 @@ import { Buffer } from "buffer";
 // requestWithdrawVaultReceipt.ts, instructions/*).
 
 export const VOLTR_PROGRAM_ID = new PublicKey(
-  "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8"
+  "vVoLTRjQmtFpiYoegx285Ze4gsLJ8ZxgFKVcuvmG1a8",
 );
 export const VOLTR_VAULT = new PublicKey(
-  "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA"
+  "HXtk15EA5pBg3rSKxBm8sWPExScPkTknSRp37fXNHgNA",
 );
 export const VOLTR_ASSET_MINT = new PublicKey(
-  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 );
 export const VOLTR_ASSET_DECIMALS = 6;
 /** Smart-account vault index for Earn MAX. */
@@ -47,22 +47,22 @@ const vaultSeed = VOLTR_VAULT.toBuffer();
 export const VOLTR_PROTOCOL = voltrPda(Buffer.from("protocol"));
 export const VOLTR_IDLE_AUTH = voltrPda(
   Buffer.from("vault_asset_idle_auth"),
-  vaultSeed
+  vaultSeed,
 );
 export const VOLTR_LP_MINT = voltrPda(Buffer.from("vault_lp_mint"), vaultSeed);
 export const VOLTR_LP_MINT_AUTH = voltrPda(
   Buffer.from("vault_lp_mint_auth"),
-  vaultSeed
+  vaultSeed,
 );
 export const VOLTR_IDLE_ATA = getAssociatedTokenAddressSync(
   VOLTR_ASSET_MINT,
   VOLTR_IDLE_AUTH,
-  true
+  true,
 );
 
 export function deriveEarnMaxVoltrAuthority(
   settingsPda: PublicKey | string,
-  smartAccountProgramId: PublicKey | string
+  smartAccountProgramId: PublicKey | string,
 ): PublicKey {
   return pda.getSmartAccountPda({
     accountIndex: EARN_MAX_VOLTR_ACCOUNT_INDEX,
@@ -75,7 +75,7 @@ export function voltrUserAccounts(authority: PublicKey) {
   const receipt = voltrPda(
     Buffer.from("request_withdraw_vault_receipt"),
     vaultSeed,
-    authority.toBuffer()
+    authority.toBuffer(),
   );
   return {
     assetAta: getAssociatedTokenAddressSync(VOLTR_ASSET_MINT, authority, true),
@@ -90,7 +90,7 @@ type Meta = [pubkey: PublicKey, isSigner: boolean, isWritable: boolean];
 function voltrInstruction(
   discriminator: readonly number[],
   args: Buffer,
-  metas: Meta[]
+  metas: Meta[],
 ): TransactionInstruction {
   return new TransactionInstruction({
     data: Buffer.concat([Buffer.from(discriminator), args]),
@@ -111,7 +111,7 @@ function u64(value: bigint): Buffer {
 
 export function depositVaultInstruction(
   authority: PublicKey,
-  amountRaw: bigint
+  amountRaw: bigint,
 ): TransactionInstruction {
   const user = voltrUserAccounts(authority);
   return voltrInstruction(
@@ -131,7 +131,7 @@ export function depositVaultInstruction(
       [TOKEN_PROGRAM_ID, false, false],
       [TOKEN_PROGRAM_ID, false, false],
       [SystemProgram.programId, false, false],
-    ]
+    ],
   );
 }
 
@@ -160,13 +160,13 @@ export function requestWithdrawVaultInstruction(args: {
       [user.receipt, false, true],
       [TOKEN_PROGRAM_ID, false, false],
       [SystemProgram.programId, false, false],
-    ]
+    ],
   );
 }
 
 /** Claim: burns the escrowed LP and pays USDC to the authority's ATA. */
 export function withdrawVaultInstruction(
-  authority: PublicKey
+  authority: PublicKey,
 ): TransactionInstruction {
   const user = voltrUserAccounts(authority);
   return voltrInstruction([135, 7, 237, 120, 149, 94, 95, 7], Buffer.alloc(0), [
@@ -187,6 +187,35 @@ export function withdrawVaultInstruction(
 }
 
 const BPS = BigInt(10_000);
+const SECONDS_PER_YEAR = BigInt(365 * 24 * 60 * 60);
+
+const ceilDiv = (a: bigint, b: bigint) => (a + b - BigInt(1)) / b;
+
+function unrealisedManagementFeeLp(
+  totalLp: bigint,
+  totalValue: bigint,
+  lastUpdateTs: bigint,
+  feeBps: bigint,
+  nowSec: bigint,
+): bigint {
+  const elapsed = nowSec - lastUpdateTs;
+  if (
+    lastUpdateTs === BigInt(0) ||
+    totalValue === BigInt(0) ||
+    feeBps === BigInt(0) ||
+    elapsed <= BigInt(0)
+  ) {
+    return BigInt(0);
+  }
+  const feeAsset = ceilDiv(
+    totalValue * elapsed * feeBps,
+    BPS * SECONDS_PER_YEAR,
+  );
+  if (feeAsset >= totalValue) {
+    throw new Error("Voltr accrued management fee exceeds vault value.");
+  }
+  return ceilDiv(feeAsset * totalLp, totalValue - feeAsset);
+}
 const readU64 = (data: Buffer, offset: number) => data.readBigUInt64LE(offset);
 const readU16 = (data: Buffer, offset: number) =>
   BigInt(data.readUInt16LE(offset));
@@ -217,14 +246,12 @@ export type VoltrPosition = {
 };
 
 export type VoltrClaimBlockReason =
-  | "not_ready"
-  | "insufficient_liquidity"
-  | "liquidity_unavailable";
+  "not_ready" | "insufficient_liquidity" | "liquidity_unavailable";
 
 /** Cooldown alone does not make invested vault assets available to claim. */
 export function voltrClaimBlockReason(
   position: VoltrPosition,
-  nowSec = Date.now() / 1000
+  nowSec = Date.now() / 1000,
 ): VoltrClaimBlockReason | null {
   const pending = position.withdrawal;
   if (!pending || nowSec < pending.withdrawableFromTs) return "not_ready";
@@ -239,7 +266,7 @@ export function voltrClaimBlockReason(
 /** One getMultipleAccountsInfo snapshot of an authority's Voltr position. */
 export async function readVoltrPosition(
   connection: Connection,
-  authority: PublicKey
+  authority: PublicKey,
 ): Promise<VoltrPosition> {
   const user = voltrUserAccounts(authority);
   const snapshot = await connection.getMultipleAccountsInfoAndContext(
@@ -253,7 +280,7 @@ export async function readVoltrPosition(
       authority,
       VOLTR_IDLE_ATA,
     ],
-    { commitment: "confirmed" }
+    { commitment: "confirmed" },
   );
   const [
     vault,
@@ -279,8 +306,7 @@ export async function readVoltrPosition(
       ) {
         idleAssetRaw = account.amount;
       }
-    } catch {
-    }
+    } catch {}
   }
   const v = vault.data;
   const nowSec = BigInt(Math.floor(Date.now() / 1000));
@@ -291,18 +317,25 @@ export async function readVoltrPosition(
     lockedDuration === BigInt(0) || sinceReport >= lockedDuration
       ? BigInt(0)
       : sinceReport <= BigInt(0)
-      ? lockedAmount
-      : (lockedAmount * (lockedDuration - sinceReport)) / lockedDuration;
+        ? lockedAmount
+        : (lockedAmount * (lockedDuration - sinceReport)) / lockedDuration;
   const unlockedValue = readU64(v, VAULT_TOTAL_VALUE_OFFSET) - lockedProfit;
   const redemptionKeepBps = BPS - readU16(v, 520);
-  // ponytail: unrealised management-fee LP is ignored (fees are 0 on this
-  // vault); add the SDK's calculateUnrealisedLpFees if a fee is ever set.
-  const totalLp =
+  const accountedLp =
     lpMint.data.readBigUInt64LE(36) +
     readU64(v, 576) +
     readU64(v, 584) +
     readU64(v, 592) +
     readU64(v, 616);
+  const totalLp =
+    accountedLp +
+    unrealisedManagementFeeLp(
+      accountedLp,
+      readU64(v, 168),
+      readU64(v, 568),
+      readU16(v, 516) + readU16(v, 518) + readU16(v, 526),
+      nowSec,
+    );
   const lpToAssets = (lp: bigint) =>
     totalLp === BigInt(0)
       ? BigInt(0)

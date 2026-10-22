@@ -1,10 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { PublicKey } from "@solana/web3.js";
+import { describe, expect, setSystemTime, test } from "bun:test";
+import { type Connection, PublicKey } from "@solana/web3.js";
 
 import {
   depositVaultInstruction,
   requestWithdrawVaultInstruction,
   VOLTR_IDLE_ATA,
+  readVoltrPosition,
   VOLTR_LP_MINT,
   voltrUserAccounts,
   withdrawVaultInstruction,
@@ -73,5 +74,42 @@ describe("Voltr instruction wire format", () => {
     expect(keys[8]).toEqual([user.assetAta.toBase58(), false, true]);
     expect(keys[9]).toEqual([user.receipt.toBase58(), false, true]);
     expect(keys).toHaveLength(13);
+  });
+});
+
+describe("Voltr position value", () => {
+  test("a management fee dilutes the LP value like the SDK quote", async () => {
+    const now = 1_800_000_000;
+    const vault = Buffer.alloc(1024);
+    vault.writeBigUInt64LE(BigInt(1_000_000), 168);
+    vault.writeUInt16LE(1_000, 516);
+    vault.writeBigUInt64LE(BigInt(now - 365 * 24 * 60 * 60), 568);
+    const lpMint = Buffer.alloc(82);
+    lpMint.writeBigUInt64LE(BigInt(1_000_000), 36);
+    const lpAta = Buffer.alloc(165);
+    lpAta.writeBigUInt64LE(BigInt(1_000_000), 64);
+    const info = (data: Buffer) => ({ data, executable: false, lamports: 1 });
+    const connection = {
+      getMultipleAccountsInfoAndContext: async () => ({
+        context: { slot: 1 },
+        value: [
+          info(vault),
+          info(lpMint),
+          null,
+          info(lpAta),
+          null,
+          null,
+          null,
+          null,
+        ],
+      }),
+    } as unknown as Connection;
+    setSystemTime(new Date(now * 1000));
+    try {
+      const position = await readVoltrPosition(connection, authority);
+      expect(position.valueRaw).toBe(BigInt(899_999));
+    } finally {
+      setSystemTime();
+    }
   });
 });
