@@ -9,10 +9,7 @@ import {
   autodepositSweepScheduledPush,
   sendWalletPush,
 } from "@/lib/push-notifications/wallet-push.server";
-import {
-  getYieldOptimizationClient,
-  pushCampaignSends,
-} from "@/lib/yield-optimization/yield-neon-client.server";
+import { claimPushCampaignSend } from "@/lib/push-notifications/push-campaign-send-log.server";
 
 // Internal backend-to-backend endpoint the autodeposit sweep worker calls the
 // moment it records a confirmed sweep, so Quest 2 ("first Earn deposit via
@@ -95,10 +92,8 @@ export async function POST(request: Request) {
   return NextResponse.json({ status: "accepted" });
 }
 
-// Insert-first sent-log, same pattern as the Mixpanel cohort receiver: the
-// push only goes out when this wallet has no row for the sweep yet. Without a
-// `dedupeKey` the campaign falls back to a per-day key, so an older worker
-// build can still only wake the user once a day.
+// Without a `dedupeKey` the campaign falls back to a per-day key, so an older
+// worker build can still only wake the user once a day.
 async function claimFailurePush(
   walletAddress: string,
   rawDedupeKey: unknown
@@ -108,12 +103,10 @@ async function claimFailurePush(
       ? rawDedupeKey.trim().slice(0, 120)
       : new Date().toISOString().slice(0, 10);
   try {
-    const inserted = await getYieldOptimizationClient()
-      .db.insert(pushCampaignSends)
-      .values({ campaign: `autodeposit-failed:${dedupeKey}`, walletAddress })
-      .onConflictDoNothing()
-      .returning({ id: pushCampaignSends.id });
-    return inserted.length > 0;
+    return await claimPushCampaignSend({
+      campaign: `autodeposit-failed:${dedupeKey}`,
+      walletAddress,
+    });
   } catch (error) {
     console.warn("[sweep-notify] failure sent-log write failed", {
       errorMessage:
