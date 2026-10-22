@@ -24,7 +24,7 @@ type Deps struct {
 	ExpoAccessToken    string
 }
 
-const readTimeout = 10 * time.Second
+const readTimeout = 30 * time.Second
 
 func Disabled(what string) error {
 	return huma.Error503ServiceUnavailable(fmt.Sprintf("%s is not configured on this host", what))
@@ -37,7 +37,7 @@ func readOnly(ctx context.Context, pool *pgxpool.Pool, what string, fn func(pgx.
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	return db.WithTx(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL statement_timeout = 10000"); err != nil {
+		if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL statement_timeout = %d", readTimeout.Milliseconds())); err != nil {
 			return err
 		}
 		return fn(tx)

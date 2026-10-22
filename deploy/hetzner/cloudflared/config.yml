@@ -1,5 +1,7 @@
 # Locally managed tunnel loyal-workers, set up as robinx-prod's: Cloudflare
-# serves next.askloyal.com and cloudflared carries it to loyal-web on loopback.
+# serves next.askloyal.com and admin-next.askloyal.com, and cloudflared carries
+# them to loyal-web and loyal-admin on loopback. No httpHostHeader on admin:
+# its CSRF check compares Origin with Host.
 # The credentials file is the one `cloudflared tunnel create` wrote; it lives
 # only on the host (deploy/hetzner/README.md, "Web (loyal-web)").
 tunnel: 6db5af77-f25b-40de-85aa-89ff2151a053
@@ -7,4 +9,6 @@ credentials-file: /etc/cloudflared/loyal-workers.json
 ingress:
   - hostname: next.askloyal.com
     service: http://127.0.0.1:10080
+  - hostname: admin-next.askloyal.com
+    service: http://127.0.0.1:10081
   - service: http_status:404
