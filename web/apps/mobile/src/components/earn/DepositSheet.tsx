@@ -67,14 +67,6 @@ const FIRST_DEPOSIT_MIN_SOL = 0.06;
 export function computeFirstDepositSolShortfall(
   solBalance: number | null,
 ): number | null {
-  // Sponsored deposits: the sponsor fee-pays and funds first-deposit rent
-  // (policy accounts, ATAs), so a USDC-only wallet with no SOL is the intended
-  // case — skip the gate for every entry point. The flow still falls back to
-  // self-paid when the backend returns no sponsor; the on-chain error is the
-  // guard then, same as before this gate existed.
-  if (env.earnSponsoredDeposits) {
-    return null;
-  }
   if (solBalance == null || !Number.isFinite(solBalance)) {
     return null;
   }
