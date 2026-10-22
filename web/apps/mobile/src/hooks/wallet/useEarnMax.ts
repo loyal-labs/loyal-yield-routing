@@ -107,7 +107,7 @@ export function useEarnMax(input: {
             !isVoltrOperationVisible(
               item.signature,
               next.summary.summary,
-              next.activity.operations ?? [],
+              next.activity.operations,
             ),
         ),
       );
