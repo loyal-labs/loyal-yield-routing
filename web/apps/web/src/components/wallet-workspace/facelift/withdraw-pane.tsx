@@ -393,9 +393,6 @@ export function WithdrawPane({
                 />
               ))}
             </DropdownReveal>
-            {/* Mobile: the source select is a bottom sheet instead of the
-                anchored dropdown (Figma 4693:71494); it rises on the
-                panel-reveal clock like a native sheet. */}
             <SheetReveal
               isOpen={isSheetOpen}
               onClose={() => setIsSheetOpen(false)}
@@ -550,9 +547,6 @@ export function WithdrawPane({
           ) : null}
           {isCleanupOnly ? (
             <>
-              {/* Phase 2 of a full exit (slot-pinned zero proof happens
-                  server-side in the prepare): close the empty Earn accounts
-                  and reclaim their SOL rent. */}
               <p className="px-4 pb-2 text-[13px] text-muted-foreground leading-4">
                 Your funds are withdrawn. Close the empty Earn accounts to
                 reclaim their SOL rent.
@@ -595,11 +589,6 @@ export function WithdrawPane({
           )}
         </div>
       </section>
-
-      {/* Explainer fills the slot the positions column vacated (the shell
-        renders no chart pane here), so the middle pane keeps its usual
-        width; overlay via the header ? below 1204px — same split Deposit
-        and Autodeposit use. */}
 
       <FlowExplainerOverlay
         isOpen={isInfoOpen}

@@ -367,8 +367,6 @@ export function FaceliftSidebar({
                 className="size-6 text-tertiary"
                 src={`${ASSET_BASE}/icon-clock-history.svg`}
               />
-              {/* transitions.dev notification badge: pops in when wallet
-                activity newer than the last Activity visit lands. */}
               <span
                 className="t-badge t-badge-activity"
                 data-open={hasUnseenActivity ? "true" : "false"}
@@ -433,8 +431,6 @@ export function FaceliftSidebar({
 
       {isSignedOutNav ? (
         <nav className="flex w-full flex-col py-2">
-          {/* Figma 5429:36643 — same 60px cell metrics as the signed-in rows
-              (44px icon in a py-2 wrapper), single line: label + APY badge. */}
           <button
             className={`t-hover flex w-full items-center rounded-2xl px-4 text-left ${
               activePage === "earn" ? "bg-accent" : "hover:bg-accent"
@@ -685,8 +681,6 @@ export function FaceliftSidebar({
       </nav>
       )}
 
-      {/* Figma 5429:36693 / 5429:37228 — the link list sits directly under
-          the product cells; the spacer below pushes the wallet row down. */}
       <div className="flex w-full flex-col py-2">
         {SIDEBAR_LINKS.map((link) => (
           <a
@@ -711,9 +705,6 @@ export function FaceliftSidebar({
 
       <div aria-hidden="true" className="w-full min-h-0 flex-1" />
 
-      {/* Figma 4768:102489 — bottom rail: wallet chip left, Receive +
-          Settings right; the wallet menu now grows upward from the chip.
-          Signed out it shows the Connect wallet chip + theme toggle. */}
       {isHydrated && !isSignedIn ? (
         <div className="flex w-full shrink-0 items-center gap-2">
           <button
@@ -721,8 +712,6 @@ export function FaceliftSidebar({
             onClick={openSignIn}
             type="button"
           >
-            {/* Figma 5429:36740 — plain wallet chip replaces the agent
-                avatar on the redesigned logged-out sidebar. */}
             <span className="mr-3 flex size-11 shrink-0 items-center justify-center rounded-[11px] bg-accent">
               <ThemedIcon
                 className="size-7 text-tertiary"

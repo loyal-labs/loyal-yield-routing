@@ -1643,38 +1643,6 @@ export function PortfolioContent({
               </div>
             ) : null}
           </div>
-          {/* Cmd+K command menu trigger temporarily hidden.
-        {onOpenCommandMenu ? (
-          <button
-            className="portfolio-command-btn"
-            onClick={onOpenCommandMenu}
-            style={{
-              alignItems: "center",
-              background: "transparent",
-              border: "none",
-              borderRadius: "999px",
-              color: "rgba(60, 60, 67, 0.6)",
-              cursor: "pointer",
-              display: "inline-flex",
-              flexShrink: 0,
-              fontFamily: font,
-              fontSize: "12px",
-              fontWeight: 500,
-              gap: "6px",
-              lineHeight: "18px",
-              padding: "5px 7px",
-              transition: "background 0.15s ease",
-            }}
-            type="button"
-          >
-            <span>Try</span>
-            <KbdGroup>
-              <Kbd>Cmd</Kbd>
-              <Kbd>K</Kbd>
-            </KbdGroup>
-          </button>
-        ) : null}
-        */}
           {showHeaderControls && (
             <div
               style={{

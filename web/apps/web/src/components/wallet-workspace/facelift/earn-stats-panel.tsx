@@ -81,9 +81,6 @@ function AumBarChart({
 
   return (
     <div className="flex w-full flex-col px-2 pb-2">
-      {/* Same rise as the Earned chart's bars (earned-chart.tsx): scaleY from
-          the baseline on a per-bar stagger. Fill stays "backwards" so the
-          finished animation releases opacity back to the hover dimming. */}
       <style jsx>{`
         .stats-bar-fill {
           transform-origin: center bottom;

@@ -226,8 +226,6 @@ export function EarnedBarsChart({
           padding: 0;
           position: relative;
         }
-        /* Full-height column track behind the bar — hover feedback stays
-           visible even when the day's bar is tiny or absent. */
         .earned-bar-track {
           background: var(--accent);
           border-radius: 4px;

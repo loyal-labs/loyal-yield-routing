@@ -12,13 +12,6 @@ import { siteUrl } from "@/lib/seo/site";
 /**
  * The sitemap, generated from the routes and the blog archive.
  *
- * This replaces a hand-maintained public/sitemap.xml that listed six URLs and
- * had fallen behind the site: /trust was missing, and so were /blog and all 32
- * posts, because adding a post means adding a directory and nothing tied that
- * to the sitemap. Deriving the post list from the blog loader closes that gap
- * permanently. The translated marketing pages are also listed under /ru and
- * /zh, each group carrying language alternates.
- *
  * Static by design. It reads post markdown through the blog loader, and
  * next.config.ts only traces public/blog/**\/*.md into the /blog function, so a
  * runtime sitemap would find no posts in production. Being generated at build

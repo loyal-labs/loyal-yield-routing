@@ -207,8 +207,6 @@ function TokenCell({
             </p>
           )}
         </div>
-        {/* Reveal rides a short delay so quick pointer passes don't flash the
-            buttons; un-hover drops the delay and hides immediately. */}
         <div className="pointer-events-none absolute right-0 flex items-center gap-2 rounded-[40px] bg-secondary opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100">
           <RowPill
             icon="icon-arrow-up-circle.svg"
@@ -321,8 +319,6 @@ export function CryptoPane({
     <div className="flex h-full min-w-0 flex-1 flex-col">
       <section className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto rounded-3xl bg-card max-[795px]:rounded-none">
         <header className="flex w-full shrink-0 items-center p-2">
-          {/* Mobile (Figma 4813:365930 / 4813:366091) — a pushed screen: back
-              arrow to the wallet home, no header pills. */}
           <div className="hidden shrink-0 items-center pr-3 max-[795px]:flex">
             <button
               aria-label="Back"
@@ -454,8 +450,6 @@ export function CryptoPane({
         </div>
       </section>
 
-      {/* Mobile action bar (Figma 4813:366048 / 4813:366180) — the header
-          pills' actions pinned under the list; same trio on both variants. */}
       <div className="hidden w-full shrink-0 gap-2 bg-card px-4 pt-2 pb-4 max-[795px]:flex">
         <button
           className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-foreground p-2.5"

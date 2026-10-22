@@ -93,9 +93,6 @@ export function ReceiveSheet({
         {evm.eligible ? (
           <SlidingTabs activeTab={tab} onSelect={setTab} tabs={TABS} />
         ) : null}
-        {/* transitions.dev "page side-by-side": both tab bodies share one
-            grid cell; the active one slides in from its side, the other
-            slides out the opposite way with a fade + blur. */}
         <div
           className="t-receive-pages grid w-full justify-items-center"
           data-page={isEvmTab ? "2" : "1"}

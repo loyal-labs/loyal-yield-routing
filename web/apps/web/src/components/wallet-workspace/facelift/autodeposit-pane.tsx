@@ -342,8 +342,6 @@ export function AutodepositPane({
               {actions.autodepositError}
             </p>
           ) : null}
-          {/* One persistent pill so the label swaps in place (transitions.dev
-              text states swap); disabled stands in for the old inert div. */}
           <button
             className={`t-hover flex h-12 w-full items-center justify-center rounded-full font-medium text-[16px] leading-5 ${
               hasChanges

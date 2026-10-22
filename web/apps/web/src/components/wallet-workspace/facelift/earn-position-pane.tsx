@@ -249,8 +249,6 @@ export function EarnPositionPane({
                 <p className="truncate font-medium text-[16px] text-foreground leading-5 tracking-[-0.176px]">
                   Autodeposit
                 </p>
-                {/* No truncate: the setup teaser must wrap on narrow screens
-                    instead of clipping mid-word. */}
                 <p className="text-[13px] leading-4 text-muted-foreground">
                   {/* Hiding masks the amount-bearing label through TextSwap's
                       own swap animation (churning it would thrash the swap). */}
@@ -407,8 +405,6 @@ export function EarnPositionPane({
           </div>
         </section>
 
-        {/* Mobile inline chart card between balance and activity
-            (Figma 4693:70364); on desktop the chart lives in the right pane. */}
         <EarnChartCard
           actionAriaLabel="Expand chart"
           actionIconSrc={`${ASSET_BASE}/icon-expand.svg`}

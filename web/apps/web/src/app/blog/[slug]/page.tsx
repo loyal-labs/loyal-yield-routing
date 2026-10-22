@@ -143,8 +143,6 @@ export default async function BlogPostPage({
                 {post.description}
               </p>
             ) : null}
-            {/* Meta: desktop is one row (author · reading · date); mobile
-                stacks to reading·date (16px) above the author (20px). */}
             <div className="flex flex-col gap-4 text-[20px] tracking-[-0.4px] sm:flex-row sm:flex-wrap sm:items-center">
               {post.author ? (
                 <span className="order-2 flex items-center gap-3 sm:order-1 sm:gap-4">

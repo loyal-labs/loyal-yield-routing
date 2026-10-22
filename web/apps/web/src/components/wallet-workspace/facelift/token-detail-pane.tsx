@@ -606,8 +606,6 @@ export function TokenDetailPane({
         {hideChart ? null : (
           <div className="flex w-full shrink-0 flex-col pb-4">
             <div className="flex w-full items-center justify-between px-4 pb-1">
-              {/* Hovered point's datetime rides the chart's top row (the empty
-                space left of the max label), so it can't shift the layout. */}
               <p
                 className={`min-h-4 text-[12px] leading-4 text-muted-foreground transition-opacity duration-150 ${
                   hoveredPoint ? "opacity-100" : "opacity-0"
@@ -648,8 +646,6 @@ export function TokenDetailPane({
                       vectorEffect="non-scaling-stroke"
                     />
                   </svg>
-                  {/* The veil dims the line past the active point; the dot
-                    rides the line there (cursor x, or the latest point). */}
                   <span
                     aria-hidden="true"
                     className="token-chart-trail absolute inset-y-0 right-0 bg-card/60"

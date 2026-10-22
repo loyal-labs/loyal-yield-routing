@@ -583,9 +583,6 @@ function EarnMaxActivityCard({
                       </span>
                     </p>
                   </div>
-                  {/* Reveal rides a short delay so quick pointer passes don't
-                      flash the pill; un-hover drops the delay and hides at
-                      once. */}
                   <div className="pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
                     <PendingWithdrawalTooltip pending={!!withdrawal && withdrawal.status !== "claimed"}>
                       <SmallPill
@@ -825,8 +822,6 @@ function EarnMaxMainPane({
             <h1 className="whitespace-nowrap font-semibold text-[24px] text-foreground leading-7">
               Earn MAX
             </h1>
-            {/* ponytail: mock tooltip copy — real copy comes with the
-                content pass */}
             <span className="max-[795px]:hidden">
               <InfoTooltip
                 iconClassName="size-6"
@@ -917,10 +912,6 @@ function EarnMaxMainPane({
           </div>
         </div>
         <div className="flex w-full flex-col p-2 pt-0">
-          {/* Hover swaps the value for the row-scoped Withdraw/Deposit
-              pills (Figma 5465:82773) — same delayed reveal as the stables
-              rows: quick pointer passes don't flash the buttons, un-hover
-              drops the delay and hides immediately. */}
           <div className="group flex w-full items-center rounded-2xl px-4 transition-colors duration-150 hover:bg-accent">
             <span className="flex items-center py-2">
               <GrayInfinityIcon />
@@ -1025,9 +1016,6 @@ function EarnMaxMainPane({
           ) : null}
         </div>
       </div>
-      {/* Mobile inline chart card between balance and activity (same slot
-          Earn's position pane uses); on desktop the chart lives in the
-          right pane. */}
       <EarnChartCard
         actionAriaLabel="Expand chart"
         actionIconSrc={`${ASSET_BASE}/icon-expand.svg`}
@@ -1048,8 +1036,6 @@ function EarnMaxMainPane({
       />
       </div>
 
-      {/* Mobile sticky action bar — same contract as Earn's (Figma
-          5459:71906 bottom buttons). */}
       <div className="hidden w-full shrink-0 bg-card px-4 py-2 max-[795px]:block">
         <div className="flex w-full gap-2">
           <button
@@ -1243,8 +1229,6 @@ export function EarnMaxWorkspace({
           </PaneReveal>
         )}
       </MiddlePaneSlide>
-      {/* Below 1204px the transaction detail rides the same sheet the Earn
-          shell uses (bottom sheet on mobile, right sheet in between). */}
       <SheetReveal
         isOpen={selectedTransaction !== null && screen === "main"}
         onClose={() => setSelectedTransaction(null)}

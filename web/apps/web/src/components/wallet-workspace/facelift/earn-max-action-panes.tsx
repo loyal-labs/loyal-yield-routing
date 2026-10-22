@@ -423,8 +423,6 @@ export function EarnMaxDepositPane({
         />
       </section>
 
-      {/* The vacated chart column shows the Info & FAQs card (Figma
-        5429:37670), same slot the Earn deposit uses for its explainer. */}
       <EarnMaxInfoFaqsCard className="hidden h-full w-[400px] shrink-0 min-[1204px]:flex" />
     </>
   );
@@ -595,9 +593,6 @@ export function EarnMaxWithdrawPane({
       />
       </section>
 
-      {/* Same vacated-chart-column card the deposit screen shows (the
-        design's withdraw frame carries the identical 400px right panel,
-        node 5433:65287). */}
       <EarnMaxInfoFaqsCard className="hidden h-full w-[400px] shrink-0 min-[1204px]:flex" />
     </>
   );

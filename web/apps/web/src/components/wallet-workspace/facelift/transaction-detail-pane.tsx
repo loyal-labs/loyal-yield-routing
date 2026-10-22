@@ -198,8 +198,6 @@ export function EarnTransactionDetailPane({
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
       <header className="flex w-full shrink-0 items-center p-2">
-        {/* pl-4 puts the icon on the same 24px inset as the route rows and
-            cards below (title lands on their 80px text column). */}
         <div className="flex shrink-0 items-center pl-4 pr-3">
           {isAllowanceAction ? (
             <span className="inline-flex size-11 shrink-0 overflow-hidden rounded-full">

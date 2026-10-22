@@ -32,8 +32,6 @@ export function MobileTabBar({
           onClick={() => onSelect("wallet")}
           type="button"
         >
-          {/* The mascot pill IS the wallet: dark when the home is open
-              (Figma 5465:83302), light-red tint elsewhere. */}
           <span
             className={`relative mx-auto block h-11 w-full max-w-16 overflow-hidden rounded-full ${
               activeTab === "wallet" ? "bg-foreground" : "bg-primary/[0.14]"

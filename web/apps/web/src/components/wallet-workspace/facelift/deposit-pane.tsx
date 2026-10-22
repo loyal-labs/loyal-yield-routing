@@ -343,8 +343,6 @@ export function DepositPane({
               </label>
             </div>
 
-            {/* Rent disclaimer only concerns the FIRST deposit — an existing
-              position's accounts already paid it. */}
             {earnData.hasPosition ? null : (
               <div className="w-full px-2">
                 <div className="flex w-full items-start px-4">
@@ -563,8 +561,6 @@ export function DepositPane({
               {actions.depositError}
             </p>
           ) : null}
-          {/* One persistent pill so the label swaps in place (transitions.dev
-            text states swap); disabled stands in for the old inert div. */}
           <button
             className={`t-hover flex h-12 w-full items-center justify-center rounded-full font-medium text-[16px] leading-5 ${
               isValidAmount

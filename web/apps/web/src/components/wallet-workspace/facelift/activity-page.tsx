@@ -306,8 +306,6 @@ export function ActivityPage({
         </PaneReveal>
         {selectedItem ? (
           <aside className="hidden h-full w-[400px] shrink-0 flex-col overflow-clip rounded-3xl bg-card min-[1204px]:flex">
-            {/* Keyed by tx so switching rows replays the reveal — same as
-                the send flow's per-step PaneReveal. */}
             <PaneReveal key={selectedItem.item.id}>
               {selectedItem.type === "earn" ? (
                 <EarnTransactionDetailPane
@@ -339,11 +337,6 @@ export function ActivityPage({
         )}
       </div>
       <MobileTabBar activeTab="activity" onSelect={onSelectPage} />
-      {/* Below 1204px the right pane is gone, so the same selection opens the
-          detail as a sheet: a 400px right-pinned card on the dark scrim, a
-          full bottom sheet on the white one below 796px. On desktop the scrim
-          is display:none, so the mounted sheet is inert while the aside shows
-          the detail. */}
       <SheetReveal
         isOpen={selectedItem !== null}
         onClose={() => setSelectedItem(null)}

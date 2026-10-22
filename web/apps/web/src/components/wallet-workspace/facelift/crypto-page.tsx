@@ -687,9 +687,6 @@ export function CryptoPage({
           <aside className="hidden h-full w-[400px] shrink-0 rounded-3xl bg-card min-[1204px]:block" />
         )}
       </div>
-      {/* Below 1204px the selector opens as the right-pinned card over the
-          dark scrim (Figma 4819:413827) — the chart-enlarge geometry; on
-          desktop the scrim is display:none while the aside shows it. */}
       <SheetReveal
         isOpen={isSwapOpen && swapSelectSide !== null}
         onClose={() => setSwapSelectSide(null)}
@@ -722,9 +719,6 @@ export function CryptoPage({
           {renderSendSelectPane()}
         </PaneReveal>
       </SheetReveal>
-      {/* Token detail sheet (Figma 4826:440136) — row taps below 1204px open
-          the pane in the token-selector sheet geometry; the desktop aside
-          covers ≥1204 so the scrim hides there. */}
       {detailBase && detailMint ? (
         <SheetReveal
           isOpen={isDetailSheetOpen}

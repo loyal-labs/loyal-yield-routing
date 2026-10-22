@@ -233,9 +233,6 @@ export function EarnEmptyPane({
             })()}
           </div>
 
-          {/* Mobile: give the dog only the space left below the controls, so it
-          cannot cover sign-in links in short wallet-browser viewports.
-          Desktop: keep it bottom-anchored across the shell's 8px gap. */}
           <div className="-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:relative max-[795px]:bottom-0 max-[795px]:min-h-0 max-[795px]:w-full max-[795px]:flex-1 max-[795px]:items-end max-[795px]:overflow-clip max-[795px]:rounded-b-3xl">
             {/* Desktop: the dog is a bottom-anchored square, so capping width caps
             height. ~380px of header/headline/CTA sits above it, so shrink with

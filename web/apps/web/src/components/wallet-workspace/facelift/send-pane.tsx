@@ -324,8 +324,6 @@ export function SendPane({
                 </div>
               ) : null}
 
-              {/* Source asset + recipient cells pinned above the CTA, joined
-                  by the little connector (Figma 4852:38981). */}
               <div className="relative mt-auto flex w-full shrink-0 flex-col gap-1 p-2">
                 <span
                   aria-hidden="true"
@@ -528,8 +526,6 @@ export function SendRecipientPane({
         ) : null}
       </header>
 
-      {/* px-6 = the header's 8px shell padding + 16px, so the input's left
-          edge lines up with the "Recipient" title above it. */}
       <div className="w-full shrink-0 px-6 pt-6 pb-2">
         <div className="flex w-full items-center">
           <input

@@ -421,8 +421,6 @@ export function WalletHomePage({
                 </div>
               )}
               <div className="flex min-w-0 flex-1 items-center justify-end gap-1 pl-3">
-                {/* Figma 5465:83164 — mobile replaces the quick links with
-                    the settings gear (links live in the sheet). */}
                 <button
                   aria-label="Open settings"
                   className="t-hover hidden size-11 items-center justify-center rounded-3xl hover:bg-accent max-[795px]:flex"
@@ -671,9 +669,6 @@ export function WalletHomePage({
                 ) : null}
               </div>
 
-              {/* Figma 5465:83164 / 5465:83340 — mobile home: banner slot,
-                  Stablecoins/Crypto summary rows, then the tall Earn and
-                  Earn MAX product cards. */}
               <div className="hidden h-full min-h-0 flex-col max-[795px]:flex">
                 <div className="relative h-24 w-full shrink-0">
                   {earnBalanceUsd > 0 ||

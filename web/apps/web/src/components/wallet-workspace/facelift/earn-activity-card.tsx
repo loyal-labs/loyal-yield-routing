@@ -702,8 +702,6 @@ function PositionsTab({
                   </span>
                 </p>
               </div>
-              {/* Reveal rides a short delay so quick pointer passes don't
-                  flash the pill; un-hover drops the delay and hides at once. */}
               {isDust ? null : (
                 <div className="pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100">
                   <button

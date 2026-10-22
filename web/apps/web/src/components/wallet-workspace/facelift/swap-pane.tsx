@@ -391,8 +391,6 @@ export function SwapPane({
         </div>
       </header>
 
-      {/* Keyed by step so each screen change replays the panel-reveal rise —
-          the same replay-on-mount convention the selector pane rides. */}
       <PaneReveal key={step}>
         {step === "form" ? (
           <>

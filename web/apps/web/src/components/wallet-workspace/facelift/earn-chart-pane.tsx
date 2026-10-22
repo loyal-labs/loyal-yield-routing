@@ -382,10 +382,6 @@ export function EarnChartPane({
 
   return (
     <>
-      {/* Hidden below 1204px so the middle pane never shrinks the dog under
-          420px (Figma 4693:65423); the chart stays reachable via the overlay.
-          Every tab shares the Earned hug height (527px, Figma 4693:68847);
-          the Stats card scrolls into view below it (Figma 4884:36662). */}
       {/* hideAside (deposit): the action pane brings its own 400px explainer
           aside in the chart column's place, so no reserved slot is needed —
           only the expanded overlay below stays mounted. */}
@@ -403,9 +399,6 @@ export function EarnChartPane({
             selectedTab={selectedTab}
           />
           {statsPanel}
-          {/* Last flow child + sticky bottom: pinned to the pane's bottom
-              edge while scrolling, yet it reserves its own height so the
-              cards above stay fully reachable at the end of the scroll. */}
           {banner}
         </div>
       )}

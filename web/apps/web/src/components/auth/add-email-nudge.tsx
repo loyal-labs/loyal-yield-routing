@@ -71,8 +71,6 @@ export function AddEmailNudge() {
               <X className="size-5" />
             </button>
           </div>
-          {/* Gap to whatever follows (room for the banner carousel dots on
-              mobile); inside the panel so it collapses too. */}
           <div className="h-4" />
         </div>
       </div>

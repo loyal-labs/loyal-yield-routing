@@ -1076,8 +1076,6 @@ export function AgentPageView({
                       {option.description}
                     </span>
                   </div>
-                  {/* Confirm button (only on the row whose draft differs
-                      from persisted state) */}
                   {showConfirm && (
                     <button
                       onClick={(event) => {

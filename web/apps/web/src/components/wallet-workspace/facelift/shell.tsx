@@ -375,27 +375,18 @@ export function WorkspaceFaceliftShell() {
           optical centering (the shell's side rails are asymmetric). */}
       <div className="cherry-mobile-workspace facelift-shell flex h-dvh w-full overflow-clip bg-muted text-foreground">
         <HiddenBalanceFilterDefs />
-        {/* Wrong-wallet guard for Earn actions — same prompt the old
-            workspace mounts (ensureCanSignAccountAction opens it). */}
         <WalletReconnectPrompt
           expectedWalletAddress={earnData.actions.authenticatedWalletAddress}
           onClose={earnData.actions.closeReconnectPrompt}
           onReady={earnData.actions.closeReconnectPrompt}
           open={earnData.actions.isReconnectPromptOpen}
         />
-        {/* OG-style approval review for Earn deposit/withdraw/autodeposit —
-            flows park between prepare and sign until the user responds. */}
         <EarnApprovalSheet approval={earnData.actions.pendingApproval} />
-        {/* Status pill for Earn deposit/withdraw/autodeposit flows —
-            use-earn-actions.ts drives it through the earnToast emitter. */}
         <EarnToastHost />
         <SettingsSheet
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
         />
-        {/* ASK-1972 — one-time lifecycle onboarding pop-ups (welcome /
-            post-deposit / autodeposit-enabled), shown only on the Earn
-            root so they never cover an in-progress action screen. */}
         <LifecycleOnboardingHost
           hasAutodeposit={earnData.autodepositConfig !== null}
           hasPosition={earnData.hasPosition}
@@ -592,9 +583,6 @@ export function WorkspaceFaceliftShell() {
                   ) : null}
                 </SheetReveal>
               ) : null}
-              {/* No tab bar here — Earn is a subscreen behind the home's
-                  product card (Figma 5459:71689: back arrow + bottom
-                  Deposit/Withdraw bar instead). */}
             </>
           )}
         </div>
