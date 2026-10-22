@@ -71,8 +71,7 @@ export function CardsGrid({
             <CardView
               card={card}
               forceCol3={columns === 3 && hasFiveCards && i === 4}
-              // biome-ignore lint/suspicious/noArrayIndexKey: cards are positionally meaningful
-              key={i}
+              key={card.title}
               variant={variant}
             />
           ))}

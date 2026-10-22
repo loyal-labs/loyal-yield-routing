@@ -103,13 +103,8 @@ function StackedCardsTwo({
             variant === "bare" ? "gap-10 md:gap-y-12" : "gap-6"
           )}
         >
-          {cards.map((card, i) => (
-            <CardView
-              card={card}
-              // biome-ignore lint/suspicious/noArrayIndexKey: cards are positionally meaningful
-              key={i}
-              variant={variant}
-            />
+          {cards.map((card) => (
+            <CardView card={card} key={card.title} variant={variant} />
           ))}
         </div>
       </div>
@@ -146,14 +141,8 @@ function InlineCardsTwo({
             </div>
           ) : null}
         </div>
-        {cards.map((card, i) => (
-          <CardView
-            card={card}
-            // biome-ignore lint/suspicious/noArrayIndexKey: cards are positionally meaningful
-            key={i}
-            stretch
-            variant={variant}
-          />
+        {cards.map((card) => (
+          <CardView card={card} key={card.title} stretch variant={variant} />
         ))}
       </div>
     </section>

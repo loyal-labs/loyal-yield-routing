@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 export type SectionCardSize = "lg" | "md";
 
 export type SectionCard = {
+  id: string;
   size: SectionCardSize;
   body: ReactNode;
 };
@@ -40,12 +41,11 @@ export function Section({ title, description, cards }: SectionProps) {
           )}
         </div>
         <div className="grid grid-cols-1 gap-10 md:grid-cols-2 md:gap-x-6">
-          {cards.map((card, i) => (
+          {cards.map((card) => (
             <div
               className="flex flex-col md:pr-10"
               data-card-size={card.size}
-              // biome-ignore lint/suspicious/noArrayIndexKey: cards are positionally meaningful and length-fixed
-              key={i}
+              key={card.id}
             >
               <p className={cn("font-normal", CARD_STYLES[card.size])}>
                 {card.body}

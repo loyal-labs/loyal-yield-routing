@@ -8,7 +8,7 @@ import type { UserYieldPositionHistoryEventRecord } from "@/lib/yield-optimizati
 const AUTODEPOSIT_LABEL = "Autodeposit";
 const MAIN_USDC_LABEL = "Main";
 const EARN_VAULT_LABEL = "Earn";
-const MAIN_USDC_ICON = "/agents/Agent-01.svg";
+const MAIN_USDC_ICON = "/wallet-workspace/earn-vault-usdc.png";
 const EARN_VAULT_ICON = null;
 
 export type EarnTransactionKind =
