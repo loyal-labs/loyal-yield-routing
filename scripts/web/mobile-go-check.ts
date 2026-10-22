@@ -1,3 +1,4 @@
+import { type GoServedCall, goServedMobileCalls } from "./routes-census";
 import { mintMobileSession, register, scrub, walletKeyFromEnv } from "./wallet-session";
 
 const CONTRACT = "earn-max-v4";
@@ -7,9 +8,11 @@ const HELP = `Usage: bun --tsconfig-override web/apps/mobile/tsconfig.json scrip
 
 Mobile against Go, with the test wallet. Read-only: nothing is signed or sent.
   1. mint   POST /api/smart-accounts/mobile/earn/session, signed by POLICY_KEYPAIR
-  2. read   GET Earn MAX summary, activity and invite with the bearer
-  3. prepare  prepareEarnMaxVoltr builds a Voltr deposit (the app's own call)
-  4. simulate  simulateTransaction on the unsigned deposit (sigVerify off)
+  2. preflight  every mobile client path the routes census lists as Go-served (needs the Go
+                toolchain) answers with X-Loyal-API-Source: go and not 404; POSTs send {} and are refused
+  3. read   GET Earn MAX summary, activity and invite with the bearer
+  4. prepare  prepareEarnMaxVoltr builds a Voltr deposit (the app's own call)
+  5. simulate  simulateTransaction on the unsigned deposit (sigVerify off)
 Each read asserts HTTP 200, x-loyal-earn-max-contract: ${CONTRACT} and X-Loyal-API-Source: go.
 
 Flags
@@ -59,6 +62,30 @@ async function readJson(base: string, path: string, bearer: string) {
   return { response, body };
 }
 
+const SAMPLE_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+export async function preflight(base: string, bearer: string, calls: GoServedCall[]): Promise<string[]> {
+  const failures: string[] = [];
+  for (const call of calls) {
+    const label = `${call.method} ${call.path} (${call.at})`;
+    try {
+      const response = await fetch(new URL(call.path.replaceAll("{}", SAMPLE_MINT), base), {
+        method: call.method,
+        redirect: "error",
+        signal: AbortSignal.timeout(20_000),
+        headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+        body: call.method === "GET" ? undefined : "{}",
+      });
+      const source = response.headers.get("X-Loyal-API-Source");
+      if (response.status === 404) failures.push(`${label} answered 404: its Go route is not registered (credential or dependency missing)`);
+      else if (source !== "go") failures.push(`${label} was not served by Go (X-Loyal-API-Source is ${source ?? "absent"}, HTTP ${response.status}): it proxies to Next`);
+    } catch (error) {
+      failures.push(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return failures;
+}
+
 function readStep(name: string, path: string, res: Awaited<ReturnType<typeof readJson>>, extra: (body: any) => string | null) {
   const { response, body } = res;
   if (!response.ok) {
@@ -97,6 +124,12 @@ async function main(): Promise<number> {
     return 1;
   }
   report("mint", true, `session for ${key.address} minted at ${base}; expires ${session.expiresAt}`);
+
+  const calls = goServedMobileCalls();
+  const refused = await preflight(base, session.token, calls);
+  for (const problem of refused) report("preflight", false, problem);
+  if (refused.length > 0) return 1;
+  report("preflight", true, `${calls.length} Go-served mobile calls answered by Go at ${base}`);
 
   const summaryPath = "/api/smart-accounts/earn-max/summary";
   const summary = await readJson(base, summaryPath, session.token);
@@ -173,7 +206,7 @@ async function main(): Promise<number> {
   return steps.every((step) => step.ok) ? 0 : 1;
 }
 
-process.exitCode = await main()
+if (import.meta.main) process.exitCode = await main()
   .catch((error) => {
     console.error(scrub(error instanceof Error ? error.message : String(error)));
     return 1;
