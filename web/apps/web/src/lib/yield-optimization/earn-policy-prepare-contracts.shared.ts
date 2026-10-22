@@ -1,14 +1,11 @@
-import type {
-  SmartAccountEarnUsdcYieldRoutingPolicyMetadata,
-  SmartAccountPreparedEarnUsdcYieldRoutingPolicy,
-} from "@loyal-labs/smart-account-vaults";
-import { PublicKey } from "@solana/web3.js";
-
 import {
   hydratePreparedOperation,
   serializePreparedOperation,
+  type SmartAccountEarnUsdcYieldRoutingPolicyMetadata,
+  type SmartAccountPreparedEarnUsdcYieldRoutingPolicy,
   type WirePreparedLoyalSmartAccountsOperation,
-} from "@/lib/smart-accounts/prepared-operation-wire.shared";
+} from "@loyal-labs/smart-account-vaults";
+import { PublicKey } from "@solana/web3.js";
 
 export type WireSmartAccountPreparedEarnUsdcYieldRoutingPolicy = {
   finalizePrepared?: WirePreparedLoyalSmartAccountsOperation;

@@ -2,7 +2,15 @@
 
 import {
   createSmartAccountVaultsClient,
+  EarnMaxVoltrPrepareError,
+  isVoltrOperationVisible,
+  prepareEarnMaxVoltr,
   sendPreparedWithWallet,
+  VoltrClaimLiquidityError,
+  voltrClaimPlan,
+  voltrDepositPlan,
+  type VoltrPlanBuilder,
+  voltrRequestWithdrawalPlan,
 } from "@loyal-labs/smart-account-vaults";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
@@ -20,18 +28,6 @@ import type {
   EarnMaxViewModel,
 } from "./types";
 import { readJson, viewModel, walletBridge } from "./use-earn-max";
-import { isVoltrOperationVisible } from "./voltr/visibility";
-import {
-  VoltrClaimLiquidityError,
-  voltrClaimPlan,
-  voltrDepositPlan,
-  type VoltrPlan,
-  voltrRequestWithdrawalPlan,
-} from "./voltr/plans";
-import {
-  deriveEarnMaxVoltrAuthority,
-  EARN_MAX_VOLTR_ACCOUNT_INDEX,
-} from "./voltr/program";
 
 export function useEarnMaxVoltr(input: {
   settingsPda: string | null | undefined;
@@ -144,10 +140,7 @@ export function useEarnMaxVoltr(input: {
   const run = useCallback(
     async (
       variant: "claim" | "deposit" | "request_withdrawal",
-      build: (context: {
-        authority: PublicKey;
-        owner: PublicKey;
-      }) => Promise<VoltrPlan>
+      build: VoltrPlanBuilder
     ) => {
       setIsBusy(true);
       setError(null);
@@ -172,44 +165,34 @@ export function useEarnMaxVoltr(input: {
         }
         const owner = wallet.publicKey;
         const settingsPda = new PublicKey(input.settingsPda);
+        const smartAccountProgramId = new PublicKey(programId);
         const client = createSmartAccountVaultsClient({
           connection,
-          programId: new PublicKey(programId),
+          programId: smartAccountProgramId,
         });
-        const settings = await client.sdk.smartAccounts.queries.fetchSettings(
-          settingsPda
-        );
-        if (Number(settings.threshold) > 1 || Number(settings.timeLock) > 0) {
-          // ponytail: sync execute only; add the propose/approve/execute
-          // fallback if multi-signer accounts ever get Earn MAX invites.
-          throw new Error(
-            "Earn MAX needs a single-signer smart account without a time lock."
-          );
-        }
-        const authority = deriveEarnMaxVoltrAuthority(settingsPda, programId);
-        const { outer, vault } = await build({ authority, owner });
-        const prepared = await client.prepareCustomInstructionSync({
-          accountIndex: EARN_MAX_VOLTR_ACCOUNT_INDEX,
-          feePayer: owner,
-          instructions: vault,
+        const prepared = await prepareEarnMaxVoltr({
+          build,
+          client,
+          owner,
+          programId: smartAccountProgramId,
           settingsPda,
-          signer: owner,
+        }).catch((prepareError: unknown) => {
+          if (
+            prepareError instanceof EarnMaxVoltrPrepareError &&
+            prepareError.code === "transaction_too_large"
+          ) {
+            tracker.fail("prepare", {
+              chainState: "not_submitted",
+              errorCode: "transaction_too_large",
+            });
+          }
+          throw prepareError;
         });
-        if (!prepared) {
-          tracker.fail("prepare", {
-            chainState: "not_submitted",
-            errorCode: "transaction_too_large",
-          });
-          throw new Error("Earn MAX transaction is too large.");
-        }
         stage = "wallet_submit_confirm";
         const signature = await sendPreparedWithWallet({
           confirm: true,
           connection,
-          prepared: {
-            ...prepared,
-            instructions: [...outer, ...prepared.instructions],
-          },
+          prepared,
           wallet: walletBridge(wallet),
         });
         tracker.observe("wallet_submit_confirm", { chainState: "confirmed" });

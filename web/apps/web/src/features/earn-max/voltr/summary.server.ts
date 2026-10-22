@@ -15,7 +15,7 @@ import {
   readVoltrPosition,
   voltrClaimBlockReason,
   voltrUserAccounts,
-} from "./program";
+} from "@loyal-labs/smart-account-vaults";
 
 import { readEarnMaxWithdrawalHealth } from "./withdrawal-health.server";
 
