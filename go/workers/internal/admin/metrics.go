@@ -5,9 +5,12 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 )
+
+var metricsHTTP = &http.Client{Timeout: 20 * time.Second}
 
 func registerMetrics(m *Mux) {
 	m.API.OpenAPI().AddOperation(&huma.Operation{
@@ -44,7 +47,7 @@ func registerMetrics(m *Mux) {
 			if sourceID == "" {
 				sourceID = metricsDefaultSourceID
 			}
-			writeJSON(w, http.StatusOK, metricsClickStack{client: http.DefaultClient, baseURL: url, key: m.Deps.ClickStackReadKey, sourceID: sourceID}.dashboard(r.Context()))
+			writeJSON(w, http.StatusOK, metricsClickStack{client: metricsHTTP, baseURL: url, key: m.Deps.ClickStackReadKey, sourceID: sourceID}.dashboard(r.Context()))
 		default:
 			writeError(w, r, huma.Error400BadRequest("section must be latency or dashboard"))
 		}

@@ -151,6 +151,9 @@ func SafeNextPath(value string, base *url.URL) (string, bool) {
 		return "", false
 	}
 	next := target.EscapedPath()
+	if strings.HasPrefix(next, "//") {
+		return "", false
+	}
 	if target.RawQuery != "" || target.ForceQuery {
 		next += "?" + target.RawQuery
 	}

@@ -261,11 +261,13 @@ func pushReserve(ctx context.Context, d *Deps, v pushDraft) (sendID string, toke
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, pushLockKey); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM push_notification_sends
+		if v.platform != "wallet" {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM push_notification_sends
 WHERE source = 'admin' AND status = 'sending' AND title = $1 AND body = $2 AND audience = $3
 AND platform IS NOT DISTINCT FROM $4 AND created_at > now() - interval '1 hour')`,
-			v.title, v.body, v.audience(), v.platformColumn()).Scan(&busy); err != nil || busy {
-			return err
+				v.title, v.body, v.audience(), v.platformColumn()).Scan(&busy); err != nil || busy {
+				return err
+			}
 		}
 		var query string
 		var arg []any
@@ -324,6 +326,7 @@ func pushDeliver(ctx context.Context, d *Deps, v pushDraft, sendID string, token
 	var sent []pushSentTicket
 	receiptIDs := 0
 	var stale []string
+	var deliveryErr error
 	for _, batch := range pushChunks(tokens, pushBatchSize) {
 		messages := make([]message, len(batch))
 		for i, token := range batch {
@@ -333,7 +336,11 @@ func pushDeliver(ctx context.Context, d *Deps, v pushDraft, sendID string, token
 			Data []json.RawMessage `json:"data"`
 		}
 		if err := pushExpoPost(ctx, d, "/--/api/v2/push/send", messages, &reply); err != nil {
-			return PushResult{}, err
+			if len(sent) == 0 {
+				return PushResult{}, err
+			}
+			deliveryErr = err
+			break
 		}
 		for i, raw := range reply.Data {
 			var ticket pushTicket
@@ -393,6 +400,10 @@ SELECT $1, t.* FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::t
 			errorMessage = &firstError
 		}
 	}
+	if deliveryErr != nil {
+		partial := fmt.Sprintf("Expo failed after %d of %d tokens: %v", len(sent), len(tokens), deliveryErr)
+		errorMessage = &partial
+	}
 	if err := d.AppWrite(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE push_notification_sends SET status = $2, ticket_count = $3, device_not_registered_count = $4,
 error_message = $5, sent_at = now(), updated_at = now() WHERE id = $1`, sendID, status, len(sent), len(stale), errorMessage)
@@ -405,6 +416,9 @@ error_message = $5, sent_at = now(), updated_at = now() WHERE id = $1`, sendID, 
 			firstError = "no receipt IDs were returned"
 		}
 		return PushResult{Error: "Expo rejected all push tickets: " + firstError}, nil
+	}
+	if deliveryErr != nil {
+		return PushResult{Error: fmt.Sprintf("Expo failed partway: accepted %d/%d push tickets before the error. Do not resend; the delivered tickets are recorded.", receiptIDs, len(tokens))}, nil
 	}
 	return PushResult{Success: true, Message: fmt.Sprintf("Accepted %d/%d push tickets. Pruned %d dead tokens.", receiptIDs, len(tokens), len(stale))}, nil
 }
