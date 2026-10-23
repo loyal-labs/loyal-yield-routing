@@ -137,7 +137,7 @@ async function mint(
   startedAt: number,
 ): Promise<string | null> {
   const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/session`,
+    `${env.apiBaseUrl}/api/smart-accounts/earn/session`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -248,9 +248,16 @@ export async function silentEarnToken(
   return signer ? silentSession(signer) : null;
 }
 
-function getWithBearer(url: string, token: string | null): Promise<Response> {
+type BearerInit = { body?: string; method?: "GET" | "POST" };
+
+function getWithBearer(
+  url: string,
+  token: string | null,
+  init: BearerInit,
+): Promise<Response> {
   return fetch(url, {
-    method: "GET",
+    body: init.body,
+    method: init.method ?? "GET",
     headers: token
       ? { ...earnHeaders(), Authorization: `Bearer ${token}` }
       : earnHeaders(),
@@ -271,10 +278,11 @@ async function isInvalidSession(res: Response): Promise<boolean> {
 export async function earnWalletRead(
   walletAddress: string,
   url: string,
+  init: BearerInit = {},
 ): Promise<Response> {
   const startedAt = generation;
   const token = await silentEarnToken(walletAddress);
-  const res = await getWithBearer(url, token);
+  const res = await getWithBearer(url, token, init);
   if (!token || !(await isInvalidSession(res))) {
     return res;
   }
@@ -284,7 +292,7 @@ export async function earnWalletRead(
   if (!fresh) {
     return res;
   }
-  const retried = await getWithBearer(url, fresh);
+  const retried = await getWithBearer(url, fresh, init);
   const rejected = await isInvalidSession(retried);
   if (rejected && startedAt === generation) {
     failedMintAt.set(walletAddress, Date.now());

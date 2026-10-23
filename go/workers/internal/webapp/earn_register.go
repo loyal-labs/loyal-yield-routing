@@ -30,6 +30,7 @@ var earnFamilies = []earnFamily{
 	earnAutodepositFamily,
 	earnRefundsFamily,
 	earnWprepFamily,
+	earnDprepFamily,
 }
 
 func notPorted(earnRoutes) bool { return false }
