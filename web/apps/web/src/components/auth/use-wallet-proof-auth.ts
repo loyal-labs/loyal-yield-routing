@@ -252,8 +252,6 @@ export function useWalletProofAuth({
             ? error.code
             : classifyWalletAdapterError(error)
         );
-      // Connected-wallet verification never sets selectedWalletNameRef, so
-      // fall back to the adapter the hook currently holds.
       const walletProvider = normalizeLifecycleWalletProvider(
         selectedWalletNameRef.current ?? wallet?.adapter.name
       );
