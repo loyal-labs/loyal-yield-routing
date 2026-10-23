@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,7 +48,9 @@ type autodepositTargetRow struct {
 	DelegatedSigners        []string
 }
 
-const autodepositTargetColumns = `id, active, balance_sweep_policy_id, chain_status, policy_account, recurring_delegation, wallet_balance_floor_raw,
+// The targets table's active flag is desired_active and its lifecycle column
+// is chain_status (migrations/yield/0059_autodeposit_single_target_state.sql:6).
+const autodepositTargetColumns = `id, desired_active, balance_sweep_policy_id, chain_status, policy_account, recurring_delegation, wallet_balance_floor_raw,
 	settings, wallet, vault_index, vault_pubkey, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata, vault_token_ata,
 	subscription_authority, last_seen_signature, start_timestamp, recurring_delegation_nonce, delegated_signers`
 
@@ -562,7 +565,7 @@ func (h earnRoutes) recordAutodepositCloseIntent(ctx context.Context, in autodep
 		return autodepositTargetRow{}, err
 	}
 	updated, err := scanAutodepositTarget(tx.QueryRow(ctx,
-		`UPDATE loyal_yield.balance_sweep_targets SET active = false WHERE id = $1 RETURNING `+autodepositTargetColumns,
+		`UPDATE loyal_yield.balance_sweep_targets SET desired_active = false WHERE id = $1 RETURNING `+autodepositTargetColumns,
 		target.ID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return autodepositTargetRow{}, errors.New("Failed to record autodeposit close intent.")
@@ -686,7 +689,7 @@ func (h earnRoutes) updateAutodepositTargetActive(ctx context.Context, in autode
 	}
 
 	updated, err := scanAutodepositTarget(h.YieldDB.QueryRow(ctx,
-		`UPDATE loyal_yield.balance_sweep_targets SET active = $1 WHERE policy_account = $2 RETURNING `+autodepositTargetColumns,
+		`UPDATE loyal_yield.balance_sweep_targets SET desired_active = $1 WHERE policy_account = $2 RETURNING `+autodepositTargetColumns,
 		in.Active, in.PolicyAccount))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return autodepositTargetRow{}, errors.New("Failed to update autodeposit target active state.")
@@ -696,6 +699,334 @@ func (h earnRoutes) updateAutodepositTargetActive(ctx context.Context, in autode
 	}
 	return updated, nil
 }
+
+// ---- floor rebaseline write (:1759) ----
+
+// autodepositFloorSweep is the raw scheduled rebaseline sweep, mirroring the
+// columns the floor CTE's inserted_lot CTE returns.
+type autodepositFloorSweep struct {
+	Classification        string
+	Confidence            string
+	EligibleAfter         time.Time
+	ExecuteNowAvailableAt *time.Time
+	SlotID                int64
+	OriginalAmountRaw     int64
+	Reason                string
+	RemainingAmountRaw    int64
+	Status                string
+}
+
+// autodepositFloorRebaseline is EarnAutodepositFloorRebaselineSweepResult:
+// status is "scheduled" (with the sweep) or "skipped" (with the reason).
+type autodepositFloorRebaseline struct {
+	Status string
+	Reason *string
+	Sweep  *autodepositFloorSweep
+}
+
+type autodepositFloorUpdateResult struct {
+	Rebaseline autodepositFloorRebaseline
+	Target     autodepositTargetRow
+}
+
+// updateAutodepositWalletBalanceFloor ports updateAutodepositWalletBalanceFloor
+// (earn-autodeposit-repository.server.ts:1759). One CTE statement locks the
+// active target row, flips the floor, suppresses the open lots the old floor
+// allowed, and — only when the projected wallet balance still clears the new
+// floor — books the rebaseline event, its scheduled slot and the surplus lot.
+// A crash mid-statement rolls the whole chain back.
+func (h earnRoutes) updateAutodepositWalletBalanceFloor(ctx context.Context, in autodepositFloorInput) (autodepositFloorUpdateResult, error) {
+	existing, err := h.findAutodepositTargetByPolicy(ctx, in.PolicyAccount)
+	if err != nil {
+		return autodepositFloorUpdateResult{}, err
+	}
+	if existing == nil {
+		return autodepositFloorUpdateResult{}, errors.New("Autodeposit target does not exist.")
+	}
+	target := *existing
+	if target.Settings != in.Settings || target.Wallet != in.WalletAddress || int(target.VaultIndex) != in.VaultIndex {
+		return autodepositFloorUpdateResult{}, errors.New("Autodeposit target does not match the wallet.")
+	}
+	if target.LifecycleStatus == "closed" {
+		return autodepositFloorUpdateResult{}, errors.New("Closed autodeposit targets cannot be updated.")
+	}
+	if !target.Active || target.LifecycleStatus != "active" {
+		return autodepositFloorUpdateResult{}, errors.New("Pending autodeposit targets cannot be updated.")
+	}
+	if target.RecurringDelegation == nil || *target.RecurringDelegation != in.RecurringDelegation {
+		return autodepositFloorUpdateResult{}, errors.New("Autodeposit recurring delegation does not match target.")
+	}
+
+	now := time.Now()
+	eligibleAfter := resolveAutodepositSweepEligibleAfter(target.StartTimestamp, now.Add(time.Hour))
+	var previousFloor *string
+	if target.WalletBalanceFloorRaw != nil {
+		text := strconv.FormatUint(*target.WalletBalanceFloorRaw, 10)
+		previousFloor = &text
+	}
+	floorText := strconv.FormatUint(in.WalletBalanceFloorRaw, 10)
+
+	var (
+		projectionAmountRaw   *int64
+		lotClassification     *string
+		lotConfidence         *string
+		lotEligibleAfter      *time.Time
+		lotID                 *int64
+		lotSlotID             *int64
+		lotOriginalAmountRaw  *int64
+		lotReason             *string
+		lotRemainingAmountRaw *int64
+		lotStatus             *string
+		skippedReason         *string
+	)
+	err = h.YieldDB.QueryRow(ctx, autodepositFloorRebaselineSQL,
+		target.ID, in.PolicyAccount, in.Settings, in.WalletAddress, in.VaultIndex,
+		in.RecurringDelegation, int64(in.WalletBalanceFloorRaw), now,
+		previousFloor, floorText, eligibleAfter).
+		Scan(&projectionAmountRaw, &lotClassification, &lotConfidence, &lotEligibleAfter,
+			&lotID, &lotSlotID, &lotOriginalAmountRaw, &lotReason, &lotRemainingAmountRaw,
+			&lotStatus, &skippedReason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return autodepositFloorUpdateResult{}, errors.New("Failed to update autodeposit wallet balance floor.")
+	}
+	if err != nil {
+		return autodepositFloorUpdateResult{}, err
+	}
+
+	target.WalletBalanceFloorRaw = &in.WalletBalanceFloorRaw
+	if lotID != nil {
+		reason := ""
+		if lotReason != nil {
+			reason = *lotReason
+		}
+		sweep := &autodepositFloorSweep{
+			Classification:        derefString(lotClassification),
+			Confidence:            derefString(lotConfidence),
+			EligibleAfter:         derefTime(lotEligibleAfter),
+			ExecuteNowAvailableAt: resolveEarnAutodepositDelegationReadyAt(target.StartTimestamp),
+			SlotID:                derefInt64(lotSlotID),
+			OriginalAmountRaw:     derefInt64(lotOriginalAmountRaw),
+			Reason:                reason,
+			RemainingAmountRaw:    derefInt64(lotRemainingAmountRaw),
+			Status:                derefString(lotStatus),
+		}
+		return autodepositFloorUpdateResult{
+			Rebaseline: autodepositFloorRebaseline{Status: "scheduled", Sweep: sweep},
+			Target:     target,
+		}, nil
+	}
+	reason := "wallet_balance_projection_missing"
+	if skippedReason != nil && *skippedReason == "wallet_balance_at_or_below_floor" {
+		reason = *skippedReason
+	}
+	return autodepositFloorUpdateResult{
+		Rebaseline: autodepositFloorRebaseline{Status: "skipped", Reason: &reason},
+		Target:     target,
+	}, nil
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func derefInt64(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func derefTime(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return *value
+}
+
+// autodepositFloorRebaselineSQL is the retained Apps floor-rebaseline CTE,
+// ported statement for statement from
+// earn-autodeposit-repository.server.ts:1812-2004 (locked_target through the
+// final projection join). Event IDs come from the reserved negative floor
+// sequence (migrations/yield/0069_autodeposit_event_id_ranges.sql:13).
+const autodepositFloorRebaselineSQL = `WITH locked_target AS (
+  SELECT target.id
+  FROM loyal_yield.balance_sweep_targets target
+  WHERE target.id = $1
+    AND target.policy_account = $2
+    AND target.settings = $3
+    AND target.wallet = $4
+    AND target.vault_index = $5
+    AND target.desired_active = true
+    AND target.chain_status = 'active'
+    AND target.recurring_delegation = $6
+  FOR UPDATE
+),
+updated_target AS (
+  UPDATE loyal_yield.balance_sweep_targets
+  SET wallet_balance_floor_raw = $7
+  WHERE id IN (SELECT id FROM locked_target)
+  RETURNING id, wallet, wallet_token_ata, wallet_usdc_ata
+),
+suppressed_lots AS (
+  UPDATE loyal_yield.balance_sweep_surplus_lots lot
+  SET status = 'suppressed'::loyal_yield.balance_sweep_surplus_lot_status,
+      updated_at = $8
+  WHERE lot.target_id IN (SELECT id FROM updated_target)
+    AND lot.status = 'open'::loyal_yield.balance_sweep_surplus_lot_status
+    AND lot.remaining_amount_raw > 0
+  RETURNING lot.id
+),
+projection AS (
+  SELECT current_balance.*
+  FROM loyal_yield.balance_sweep_wallet_balances_current current_balance
+  INNER JOIN updated_target
+    ON updated_target.id = current_balance.target_id
+),
+inserted_event AS (
+  INSERT INTO loyal_yield.balance_sweep_wallet_balance_events (
+    event_id,
+    target_id,
+    wallet,
+    wallet_usdc_ata,
+    wallet_token_ata,
+    mint,
+    previous_amount_raw,
+    amount_raw,
+    delta_amount_raw,
+    observed_slot,
+    observed_at,
+    source,
+    source_commitment,
+    txn_signature,
+    account_data_hash,
+    raw_evidence,
+    projected_at
+  )
+  SELECT
+    nextval('loyal_yield.balance_sweep_floor_rebaseline_event_id_seq'::regclass)::bigint,
+    projection.target_id,
+    projection.wallet,
+    projection.wallet_usdc_ata,
+    projection.wallet_token_ata,
+    projection.mint,
+    projection.amount_raw,
+    projection.amount_raw,
+    0,
+    projection.observed_slot,
+    projection.observed_at,
+    'app_autodeposit_floor_rebaseline',
+    projection.source_commitment,
+    NULL,
+    projection.account_data_hash,
+    jsonb_build_object(
+      'floorRebaseline', true,
+      'previousWalletBalanceFloorRaw', $9::text,
+      'walletBalanceFloorRaw', $10::text,
+      'suppressedOpenLotCount', (SELECT COUNT(*) FROM suppressed_lots)
+    ),
+    $8
+  FROM projection
+  WHERE projection.amount_raw > $7
+  RETURNING event_id
+),
+scheduled_slot AS (
+  -- A target has at most one scheduled slot (unique index). Every open lot of
+  -- the target was suppressed above, so the slot's idle clock and error
+  -- belonged to lots that no longer count.
+  INSERT INTO loyal_yield.balance_sweep_scheduled_slots AS slot (
+    target_id,
+    token_mint,
+    eligible_after,
+    status,
+    created_at,
+    updated_at
+  )
+  SELECT
+    projection.target_id,
+    projection.mint,
+    $11,
+    'scheduled',
+    $8,
+    $8
+  FROM projection
+  CROSS JOIN inserted_event
+  WHERE true
+  ON CONFLICT (target_id) WHERE status = 'scheduled' DO UPDATE
+  SET eligible_after = GREATEST(slot.eligible_after, EXCLUDED.eligible_after),
+      idle_blocked_since = NULL,
+      last_error = NULL,
+      updated_at = EXCLUDED.updated_at
+  RETURNING
+    slot.id,
+    slot.eligible_after,
+    slot.status::text AS status
+),
+inserted_lot AS (
+  INSERT INTO loyal_yield.balance_sweep_surplus_lots (
+    target_id,
+    scheduled_slot_id,
+    source_event_id,
+    source_signature,
+    original_amount_raw,
+    remaining_amount_raw,
+    classification,
+    eligible_after,
+    status,
+    confidence,
+    reason,
+    created_at,
+    updated_at
+  )
+  SELECT
+    projection.target_id,
+    scheduled_slot.id,
+    inserted_event.event_id,
+    NULL,
+    projection.amount_raw - $7,
+    projection.amount_raw - $7,
+    'floor_rebaseline'::loyal_yield.balance_sweep_surplus_classification,
+    $11,
+    'open'::loyal_yield.balance_sweep_surplus_lot_status,
+    'confirmed_projection',
+    'Autodeposit floor update rebaseline',
+    $8,
+    $8
+  FROM projection
+  CROSS JOIN inserted_event
+  CROSS JOIN scheduled_slot
+  RETURNING
+    classification::text AS "lotClassification",
+    confidence AS "lotConfidence",
+    eligible_after AS "lotEligibleAfter",
+    id AS "lotId",
+    scheduled_slot_id AS "lotSlotId",
+    original_amount_raw AS "lotOriginalAmountRaw",
+    reason AS "lotReason",
+    remaining_amount_raw AS "lotRemainingAmountRaw",
+    (SELECT status FROM scheduled_slot) AS "lotStatus"
+)
+SELECT
+  projection.amount_raw AS "projectionAmountRaw",
+  inserted_lot."lotClassification",
+  inserted_lot."lotConfidence",
+  inserted_lot."lotEligibleAfter",
+  inserted_lot."lotId",
+  inserted_lot."lotSlotId",
+  inserted_lot."lotOriginalAmountRaw",
+  inserted_lot."lotReason",
+  inserted_lot."lotRemainingAmountRaw",
+  inserted_lot."lotStatus",
+  CASE
+    WHEN projection.target_id IS NULL THEN 'wallet_balance_projection_missing'
+    WHEN projection.amount_raw <= $7 THEN 'wallet_balance_at_or_below_floor'
+    ELSE NULL
+  END AS "skippedReason"
+FROM updated_target
+LEFT JOIN projection ON true
+LEFT JOIN inserted_lot ON true`
 
 // ensureScheduledAutodepositSlotTx ports ensureScheduledAutodepositSlot
 // (:457): the same three steps as the Go worker's openSlotFor — take the
