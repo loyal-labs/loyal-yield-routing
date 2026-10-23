@@ -7,20 +7,17 @@ jest.mock("rpc-websockets", () => ({
   WebSocket: jest.fn(),
 }));
 
-const prepareEarnUsdcWithdraw = jest.fn();
 const prepareEarnUsdcCleanup = jest.fn();
 const createSmartAccountVaultsClient = jest.fn(() => ({
   prepareEarnUsdcCleanup,
-  prepareEarnUsdcWithdraw,
 }));
 const fetchEarnWithdrawCleanupPrepareContext = jest.fn();
-const fetchEarnWithdrawPrepareContext = jest.fn();
 const confirmEarnWithdraw = jest.fn();
 const confirmEarnWithdrawCleanup = jest.fn();
 const signAndSendPreparedOperations = jest.fn();
 const observeLifecycle = jest.fn();
 const failFromLifecycle = jest.fn();
-const prepareEarnWithdrawServer = jest.fn();
+const prepareEarnWithdraw = jest.fn();
 
 // Mirrors the real EarnApiError so withdraw.ts's instanceof/code checks that
 // gate cleanup-context retries stay exercised.
@@ -47,28 +44,11 @@ jest.mock(
   { virtual: true },
 );
 
-// Mirrors the real KaminoUpstreamError; connection-retry.ts instanceof-checks
-// it to decide whether a device-prepare failure is worth retrying.
-class MockKaminoUpstreamError extends Error {
-  readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.name = "KaminoUpstreamError";
-    this.status = status;
-  }
-}
-
 jest.mock(
   "@loyal-labs/smart-account-vaults",
   () => ({
     createSmartAccountVaultsClient,
-    getEarnProductAssetsForCluster: jest.requireActual(
-      "@loyal-labs/smart-account-vaults",
-    ).getEarnProductAssetsForCluster,
-    hydratePreparedOperation: (operation: unknown) => operation,
-    KaminoUpstreamError: MockKaminoUpstreamError,
-    serializePreparedEarnUsdcWithdraw: () => ({ wire: "withdraw" }),
+    hydratePreparedEarnUsdcWithdraw: (wire: unknown) => wire,
   }),
   { virtual: true },
 );
@@ -100,14 +80,10 @@ jest.mock("../earn-api", () => ({
   EarnApiError: MockEarnApiError,
   confirmEarnWithdraw,
   confirmEarnWithdrawCleanup,
-  // Real connection-retry runs inside these tests; its exhaustion error must
-  // keep the real shape (no code, no status, detail carried) so the
-  // server-prepare fallback gate in withdraw.ts is exercised for real.
   earnNetworkError: (message: string, detail?: string) =>
     new MockEarnApiError(message, undefined, undefined, detail),
   fetchEarnWithdrawCleanupPrepareContext,
-  fetchEarnWithdrawPrepareContext,
-  prepareEarnWithdraw: prepareEarnWithdrawServer,
+  prepareEarnWithdraw,
 }));
 
 jest.mock("../earn-auth", () => ({
@@ -142,52 +118,31 @@ const withdrawOperation = { operation: "withdraw" };
 const cleanupOperation = { operation: "cleanup" };
 const signer = { publicKey: PublicKey.default } as never;
 
-function fullFinalExitContext() {
-  return {
-    cluster: "mainnet-beta",
-    programId: address,
-    settingsPda: address,
-    smartAccountAddress: address,
-    withdrawInput: {
-      amountRaw: "1000000",
-      closePoliciesOnFullWithdrawal: false,
-      fullWithdrawalTargets: [
-        {
-          amountRaw: "1000000",
-          liquidityMint: address,
-          market: address,
-          reserve: address,
-          supplyApyBps: null,
-        },
-      ],
-      mode: "full",
-      policySigner: address,
-      source: {
-        amountRaw: "1000000",
-        id: address,
-        liquidityMint: address,
-        market: address,
-        reserve: address,
-        type: "reserve",
+const preparedWithdraw = {
+  autodepositClosePrepared: null,
+  mode: "full",
+  persistence: {
+    sourceTokenAccount: address,
+    targetReserve: address,
+    vaultPubkey: address,
+  },
+  prepared: withdrawOperation,
+  withdrawSteps: [
+    {
+      persistence: {
+        sourceTokenAccount: address,
+        targetReserve: address,
+        vaultPubkey: address,
       },
-      target: {
-        liquidityMint: address,
-        market: address,
-        reserve: address,
-        supplyApyBps: null,
-      },
-      yieldRoutingPolicy: {
-        account: address,
-        seed: "1",
-      },
+      prepared: withdrawOperation,
     },
-  };
-}
+  ],
+};
 
 describe("executeEarnWithdraw", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    fetchEarnWithdrawPrepareContext.mockResolvedValue(fullFinalExitContext());
+    prepareEarnWithdraw.mockResolvedValue({ preparedWithdraw });
     fetchEarnWithdrawCleanupPrepareContext.mockResolvedValue({
       cleanupInput: {
         policySigner: address,
@@ -210,10 +165,6 @@ describe("executeEarnWithdraw", () => {
       programId: address,
       settingsPda: address,
     });
-    prepareEarnUsdcWithdraw.mockResolvedValue({
-      prepared: withdrawOperation,
-      withdrawSteps: [{ prepared: withdrawOperation }],
-    });
     prepareEarnUsdcCleanup.mockResolvedValue({
       prepared: cleanupOperation,
     });
@@ -234,13 +185,11 @@ describe("executeEarnWithdraw", () => {
       amountUsd: 1,
       mode: "full",
       signer,
+      sourceId: "source-1",
     });
 
-    expect(prepareEarnUsdcWithdraw).toHaveBeenCalledWith(
-      expect.objectContaining({
-        closePoliciesOnFullWithdrawal: false,
-        mode: "full",
-      }),
+    expect(prepareEarnWithdraw).toHaveBeenCalledWith(
+      expect.objectContaining({ amountRaw: "max", sourceId: "source-1" }),
     );
     expect(confirmEarnWithdraw).toHaveBeenCalledTimes(1);
     expect(confirmEarnWithdrawCleanup).toHaveBeenCalledWith({
@@ -283,6 +232,7 @@ describe("executeEarnWithdraw", () => {
       amountUsd: 1,
       mode: "full",
       signer,
+      sourceId: "source-1",
     });
 
     expect(fetchEarnWithdrawCleanupPrepareContext).toHaveBeenCalledTimes(1);
@@ -312,6 +262,7 @@ describe("executeEarnWithdraw", () => {
       amountUsd: 1,
       mode: "full",
       signer,
+      sourceId: "source-1",
     });
 
     expect(result).toEqual({
@@ -343,6 +294,7 @@ describe("executeEarnWithdraw", () => {
       amountUsd: 1,
       mode: "full",
       signer,
+      sourceId: "source-1",
     });
 
     expect(fetchEarnWithdrawCleanupPrepareContext).toHaveBeenCalledTimes(2);
@@ -362,6 +314,7 @@ describe("executeEarnWithdraw", () => {
       amountUsd: 1,
       mode: "full",
       signer,
+      sourceId: "source-1",
     });
 
     expect(fetchEarnWithdrawCleanupPrepareContext).toHaveBeenCalledTimes(1);
@@ -373,20 +326,11 @@ describe("executeEarnWithdraw", () => {
   });
 
   test("keeps partial withdrawals single-phase", async () => {
-    const context = fullFinalExitContext();
-    fetchEarnWithdrawPrepareContext.mockResolvedValue({
-      ...context,
-      withdrawInput: {
-        ...context.withdrawInput,
-        closePoliciesOnFullWithdrawal: false,
-        mode: "partial",
-      },
-    });
-
     const result = await executeEarnWithdraw({
       amountUsd: 1,
       mode: "partial",
       signer,
+      sourceId: "source-1",
     });
 
     expect(fetchEarnWithdrawCleanupPrepareContext).not.toHaveBeenCalled();
@@ -395,77 +339,5 @@ describe("executeEarnWithdraw", () => {
     expect(result).toEqual({
       withdrawalSignatures: ["withdraw-signature"],
     });
-  });
-
-  test("recovers via server prepare when device prepare exhausts its retry budget", async () => {
-    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
-    const context = fullFinalExitContext();
-    fetchEarnWithdrawPrepareContext.mockResolvedValue({
-      ...context,
-      withdrawInput: { ...context.withdrawInput, mode: "partial" },
-    });
-    // Kamino keeps answering 503 until the real retry budget runs out.
-    prepareEarnUsdcWithdraw.mockRejectedValue(
-      new MockKaminoUpstreamError(503, "Kamino unavailable"),
-    );
-    const serverOperation = { operation: "server-withdraw" };
-    prepareEarnWithdrawServer.mockResolvedValue({
-      preparedWithdraw: { prepared: serverOperation },
-    });
-
-    const result = await executeEarnWithdraw({
-      amountUsd: 1,
-      mode: "partial",
-      signer,
-    });
-
-    expect(prepareEarnWithdrawServer).toHaveBeenCalledTimes(1);
-    expect(prepareEarnWithdrawServer).toHaveBeenCalledWith(
-      expect.objectContaining({ amountRaw: "1000000", mode: "partial" }),
-    );
-    expect(signAndSendPreparedOperations).toHaveBeenCalledWith(
-      expect.objectContaining({ operations: [serverOperation] }),
-    );
-    expect(observeLifecycle).toHaveBeenCalledWith(
-      "prepare",
-      expect.objectContaining({
-        errorDetail: "kamino_upstream_unavailable",
-        stageCount: 4,
-        stageIndex: 3,
-      }),
-    );
-    expect(result).toEqual({
-      withdrawalSignatures: ["withdraw-signature"],
-    });
-    warn.mockRestore();
-  }, 15_000);
-
-  test("does not fall back to server prepare on a semantic device-prepare failure", async () => {
-    const context = fullFinalExitContext();
-    fetchEarnWithdrawPrepareContext.mockResolvedValue({
-      ...context,
-      withdrawInput: { ...context.withdrawInput, mode: "partial" },
-    });
-    // A semantic SDK error is not a transport blip: connection-retry throws
-    // it through unretried even when it carries a stable telemetry code.
-    const semanticError = Object.assign(
-      new Error(
-        "Kamino withdrawal simulation produced less liquidity than requested.",
-      ),
-      { code: "earn_withdraw_underfilled" },
-    );
-    prepareEarnUsdcWithdraw.mockRejectedValue(semanticError);
-
-    await expect(
-      executeEarnWithdraw({ amountUsd: 1, mode: "partial", signer }),
-    ).rejects.toThrow(semanticError.message);
-
-    expect(prepareEarnWithdrawServer).not.toHaveBeenCalled();
-    expect(signAndSendPreparedOperations).not.toHaveBeenCalled();
-    expect(failFromLifecycle).toHaveBeenCalledWith(
-      "prepare",
-      semanticError,
-      expect.objectContaining({ stageCount: 4, stageIndex: 2 }),
-    );
   });
 });

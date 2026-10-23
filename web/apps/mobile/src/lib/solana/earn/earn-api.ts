@@ -1,5 +1,7 @@
 import type {
   EarnPolicyRefundPrepareResponse,
+  EarnWithdrawConfirmRequest,
+  EarnWithdrawPrepareResponse,
   EarnPolicyRefundScanResponse,
   EarnStateResponse,
   EarningsBar,
@@ -19,6 +21,7 @@ import {
   type SerializedEarnTransaction,
 } from "@loyal-labs/shared";
 import type {
+  SmartAccountEarnUsdcReserveWithdrawalMetadata,
   SmartAccountNativeSolRequirement,
   WirePreparedLoyalSmartAccountsOperation as WirePreparedOperation,
 } from "@loyal-labs/smart-account-vaults";
@@ -177,155 +180,28 @@ export async function fetchEarnDepositPrepareContext(args: {
 
 export type EarnWithdrawMode = "partial" | "full";
 
-export type EarnWithdrawSource = {
-  type: "reserve" | "idle";
-  id: string;
-  amountRaw?: string;
-  liquidityMint?: string;
-  market?: string | null;
-  mint?: string;
-  reserve?: string;
-  tokenAccount?: string;
-} | null;
-
-export type WirePreparedEarnWithdrawStep = {
-  prepared: WirePreparedOperation;
-};
-
-export type WireEarnWithdrawAutodepositClose = {
-  policy: { account: string };
-  subscription: { recurringDelegation: string };
-};
-
-export type WirePreparedEarnWithdraw = {
-  prepared: WirePreparedOperation;
-  withdrawSteps?: WirePreparedEarnWithdrawStep[];
-  autodepositClosePrepared?: WireEarnWithdrawAutodepositClose | null;
-};
-
-export type EarnWithdrawPrepareResponse = {
-  cluster: string;
-  programId: string;
-  settingsPda: string;
-  smartAccountAddress: string;
-  preparedWithdraw: WirePreparedEarnWithdraw;
-};
-
 export async function prepareEarnWithdraw(args: {
-  auth: EarnAuthFields;
+  walletAddress: string;
   amountRaw: string;
-  mode: EarnWithdrawMode;
-  source?: EarnWithdrawSource;
+  flowId?: string;
+  sourceId: string;
 }): Promise<EarnWithdrawPrepareResponse> {
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/prepare`,
+  const res = await earnWalletRead(
+    args.walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/withdrawals/prepare`,
     {
-      method: "POST",
-      headers: earnHeaders(),
       body: JSON.stringify({
-        ...args.auth,
         amountRaw: args.amountRaw,
-        mode: args.mode,
-        source: args.source ?? null,
+        sourceId: args.sourceId,
       }),
+      flowId: args.flowId,
+      method: "POST",
     },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to prepare Earn withdrawal.");
   }
   return (await res.json()) as EarnWithdrawPrepareResponse;
-}
-
-// The resolved SDK input for an ON-DEVICE withdraw prepare, serialized by
-// `withdraw/prepare-context` (`earn-withdraw-input-resolution.server.ts`) —
-// the server keeps source selection/reconcile; the device builds the
-// transactions. Hydrated in `withdraw.ts`.
-export type EarnWithdrawPrepareContext = {
-  cluster: string;
-  programId: string;
-  settingsPda: string;
-  smartAccountAddress: string;
-  withdrawInput: {
-    amountRaw: string;
-    mode: EarnWithdrawMode;
-    closePoliciesOnFullWithdrawal: boolean;
-    policySigner: string;
-    source:
-      | {
-          type: "reserve";
-          id: string;
-          amountRaw: string;
-          liquidityMint: string;
-          market: string;
-          reserve: string;
-        }
-      | {
-          type: "idle";
-          id: string;
-          amountRaw: string;
-          mint: string;
-          tokenAccount: string;
-          tokenProgramId: string;
-        }
-      | null;
-    target: {
-      reserve: string;
-      market: string;
-      liquidityMint: string;
-      liquidityTokenProgram?: string | null;
-      supplyApyBps: string | null;
-    } | null;
-    fullWithdrawalTargets:
-      | {
-          amountRaw: string | null;
-          liquidityMint: string;
-          liquidityTokenProgram?: string | null;
-          market: string;
-          reserve: string;
-          reserveCollateralMint: string | null;
-          reserveLiquiditySupply: string | null;
-          supplyApyBps: string | null;
-          vaultCollateralAta: string | null;
-        }[]
-      | null;
-    yieldRoutingPolicy: {
-      account: string;
-      seed: string;
-      setupPolicy: { account: string; seed: string } | null;
-    };
-    autodepositClose: {
-      policy: string;
-      recurringDelegation: string;
-    } | null;
-  };
-};
-
-// Resolves the on-device withdraw prepare context (auth + source selection
-// only — no instruction building server-side).
-export async function fetchEarnWithdrawPrepareContext(args: {
-  auth: EarnAuthFields;
-  amountRaw: string;
-  mode: EarnWithdrawMode;
-  source?: EarnWithdrawSource;
-  flowId?: string;
-}): Promise<EarnWithdrawPrepareContext> {
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/prepare-context`,
-    {
-      method: "POST",
-      headers: earnHeaders(args.flowId),
-      body: JSON.stringify({
-        ...args.auth,
-        amountRaw: args.amountRaw,
-        mode: args.mode,
-        source: args.source ?? null,
-      }),
-    },
-  );
-  if (!res.ok) {
-    return throwEarnError(res, "Failed to prepare Earn withdrawal.");
-  }
-  return (await res.json()) as EarnWithdrawPrepareContext;
 }
 
 // Fresh post-withdraw inputs for the device-side cleanup prepare. The backend
@@ -398,27 +274,21 @@ export async function confirmEarnWithdrawCleanup(
   }
 }
 
-export type EarnWithdrawConfirmArgs = {
-  auth: EarnAuthFields;
-  preparedWithdraw: WirePreparedEarnWithdraw;
-  stepIndex?: number;
-  withdrawalSignature: string;
-  confirmedSlot: string;
-  autodepositCloseSignature?: string;
-  autodepositCloseConfirmedSlot?: string;
+export type EarnWithdrawConfirmBody = Omit<
+  EarnWithdrawConfirmRequest,
+  "reserveWithdrawals"
+> & {
+  reserveWithdrawals?: SmartAccountEarnUsdcReserveWithdrawalMetadata[];
 };
 
-export async function confirmEarnWithdraw(
-  args: EarnWithdrawConfirmArgs,
-): Promise<void> {
-  const { auth, ...rest } = args;
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/confirm`,
-    {
-      method: "POST",
-      headers: earnHeaders(),
-      body: JSON.stringify({ ...auth, ...rest }),
-    },
+export async function confirmEarnWithdraw(args: {
+  walletAddress: string;
+  body: EarnWithdrawConfirmBody;
+}): Promise<void> {
+  const res = await earnWalletRead(
+    args.walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/withdrawals/confirm`,
+    { body: JSON.stringify(args.body), method: "POST" },
   );
   if (!res.ok) {
     await throwEarnError(res, "Failed to confirm Earn withdrawal.");
@@ -436,21 +306,6 @@ export type EarnWithdrawSourceInfo = {
   reserve: string | null;
   tokenAccount: string | null;
 };
-
-export function toWithdrawPrepareSource(
-  info: EarnWithdrawSourceInfo,
-): EarnWithdrawSource {
-  return {
-    type: info.type,
-    id: info.id,
-    amountRaw: info.amountRaw,
-    liquidityMint: info.liquidityMint,
-    market: info.market,
-    reserve: info.reserve ?? undefined,
-    tokenAccount: info.tokenAccount ?? undefined,
-    mint: info.type === "idle" ? info.liquidityMint : undefined,
-  };
-}
 
 export type EarnAutodepositSetupStage =
   | "initialize_subscription_authority"
