@@ -22,6 +22,7 @@ module.exports = {
       "<rootDir>/../../packages/solana-instruction-decoder/src/index",
     "^(\\.{1,2}/.*)\\.js$": "$1",
     "^expo-constants$": "<rootDir>/test/expo-constants.js",
+    "^expo-hardware-key$": "<rootDir>/modules/expo-hardware-key/src/index",
     "^expo-seed-vault$": "<rootDir>/modules/expo-seed-vault/src/index",
     "^react-native-mmkv$": "<rootDir>/test/react-native-mmkv.js",
     "^react-native$": "<rootDir>/test/react-native.js",

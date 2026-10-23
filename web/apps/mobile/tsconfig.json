@@ -43,6 +43,9 @@
       "@loyal-labs/solana-instruction-decoder": [
         "../../packages/solana-instruction-decoder/src/index.ts"
       ],
+      "expo-hardware-key": [
+        "./modules/expo-hardware-key/src/index.ts"
+      ],
       "expo-seed-vault": [
         "./modules/expo-seed-vault/src/index.ts"
       ]
