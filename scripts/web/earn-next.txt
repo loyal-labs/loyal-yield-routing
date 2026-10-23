@@ -9,7 +9,6 @@ POST /api/observability/mobile/events
 POST /api/observability/mobile/metrics
 GET /api/smart-accounts/earn-forecast/summary
 GET /api/smart-accounts/earn-transactions
-GET /api/smart-accounts/mobile/earn-max
 POST /api/smart-accounts/mobile/earn-max
 POST /api/smart-accounts/mobile/earn/autodeposit/close/confirm
 POST /api/smart-accounts/mobile/earn/autodeposit/floor/confirm
