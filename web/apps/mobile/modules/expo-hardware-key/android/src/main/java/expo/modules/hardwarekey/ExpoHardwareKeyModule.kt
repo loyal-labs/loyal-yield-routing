@@ -44,7 +44,7 @@ class ExpoHardwareKeyModule : Module() {
     }
 
     AsyncFunction("replaceKey") { alias: String, auth: String ->
-      keyStore().deleteEntry(ALIAS_PREFIX + alias)
+      deleteAlias(alias)
       createKey(alias, auth)
     }
 
@@ -84,11 +84,15 @@ class ExpoHardwareKeyModule : Module() {
     }
 
     AsyncFunction("deleteKey") { alias: String ->
-      keyStore().deleteEntry(ALIAS_PREFIX + alias)
+      deleteAlias(alias)
     }
   }
 
   private fun keyStore(): KeyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+
+  private fun deleteAlias(alias: String) {
+    runCatching { keyStore().deleteEntry(ALIAS_PREFIX + alias) }
+  }
 
   private fun secretKey(alias: String): SecretKey? =
     keyStore().getKey(ALIAS_PREFIX + alias, null) as? SecretKey

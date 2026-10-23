@@ -1,4 +1,3 @@
-import * as Clipboard from "expo-clipboard";
 import { useState } from "react";
 
 import { Pressable, ScrollView, Text, View } from "@/tw";
@@ -26,9 +25,6 @@ export function SeedBackupScreen({ secretKeyHex, onComplete }: Props) {
           <Text selectable className="font-mono text-[13px]">
             {secretKeyHex}
           </Text>
-          <Pressable onPress={() => void Clipboard.setStringAsync(secretKeyHex)}>
-            <Text className="text-[15px] font-semibold text-[#007AFF]">Copy</Text>
-          </Pressable>
         </View>
       ) : (
         <Pressable

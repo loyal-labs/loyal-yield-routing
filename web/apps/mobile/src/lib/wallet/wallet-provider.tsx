@@ -42,11 +42,12 @@ import {
   authenticateWithBiometrics,
   disableBiometrics,
   enableBiometrics,
-  hasLegacyBiometricPin,
+  deleteLegacyBiometricPin,
   isBiometricEnabled,
 } from "./biometrics";
 import {
   clearStoredKeypair,
+  resetAttempts,
   getLockoutRemaining,
   getStoredPublicKey,
   hasStoredKeypair,
@@ -480,15 +481,7 @@ function WalletProviderCore({
     setWalletSigner(next);
     setState("unlocked");
     identifyWallet(pk, "imported");
-    if (await hasLegacyBiometricPin()) {
-      try {
-        setBiometricEnabledState(await enableBiometrics(kp.secretKey));
-      } catch (error) {
-        console.warn("[wallet] biometric rewrap failed", error);
-        await disableBiometrics();
-        setBiometricEnabledState(false);
-      }
-    }
+    await deleteLegacyBiometricPin();
   }, []);
 
   const unlockWithBiometrics = useCallback(async () => {
@@ -508,6 +501,7 @@ function WalletProviderCore({
       setWalletSigner(next);
       setState("unlocked");
       identifyWallet(pk, "imported");
+      await resetAttempts();
       return true;
     } catch {
       return false;

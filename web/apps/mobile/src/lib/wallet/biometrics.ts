@@ -30,7 +30,10 @@ export async function getBiometricType(): Promise<"faceid" | "fingerprint" | "no
 
 export async function enableBiometrics(secretKey: Uint8Array): Promise<boolean> {
   const available = await isBiometricAvailable();
-  if (!available) return false;
+  if (!available) {
+    await disableBiometrics();
+    return false;
+  }
 
   await HardwareKey.replaceKey(BIOMETRIC_KEY_ALIAS, "biometry");
   const wrapped = await HardwareKey.wrap(
@@ -57,10 +60,8 @@ export async function isBiometricEnabled(): Promise<boolean> {
   return (await SecureStore.getItemAsync(BIOMETRIC_KEYPAIR_KEY)) !== null;
 }
 
-export async function hasLegacyBiometricPin(): Promise<boolean> {
-  const value = await SecureStore.getItemAsync(BIOMETRIC_ENABLED_KEY);
-  if (value !== "true") return false;
-  return (await SecureStore.getItemAsync(BIOMETRIC_KEYPAIR_KEY)) === null;
+export async function deleteLegacyBiometricPin(): Promise<void> {
+  await SecureStore.deleteItemAsync(LEGACY_BIOMETRIC_PIN_KEY);
 }
 
 export async function authenticateWithBiometrics(): Promise<Uint8Array | null> {
