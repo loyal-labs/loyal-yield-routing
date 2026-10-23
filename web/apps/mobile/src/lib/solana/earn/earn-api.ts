@@ -10,6 +10,7 @@ import {
   type SerializedEarnTransaction,
 } from "@loyal-labs/shared";
 import type {
+  EarnRpcPolicyMetadata,
   SmartAccountNativeSolRequirement,
   WirePreparedLoyalSmartAccountsOperation as WirePreparedOperation,
 } from "@loyal-labs/smart-account-vaults";
@@ -428,27 +429,6 @@ export type EarnWithdrawSourceInfo = {
   tokenAccount: string | null;
 };
 
-export type EarnWithdrawSourcesResponse = {
-  sources: EarnWithdrawSourceInfo[];
-  settingsPda: string | null;
-  smartAccountAddress: string | null;
-};
-
-export async function fetchEarnWithdrawSources(
-  walletAddress: string,
-): Promise<EarnWithdrawSourcesResponse> {
-  const res = await earnWalletRead(
-    walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/sources?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}`,
-  );
-  if (!res.ok) {
-    return throwEarnError(res, "Failed to load Earn withdrawal sources.");
-  }
-  return (await res.json()) as EarnWithdrawSourcesResponse;
-}
-
 export function toWithdrawPrepareSource(
   info: EarnWithdrawSourceInfo,
 ): EarnWithdrawSource {
@@ -715,7 +695,9 @@ export type EarnPosition = {
 };
 
 export type EarnStateResponse = {
+  policy?: EarnRpcPolicyMetadata | null;
   position: EarnPosition | null;
+  programId?: string | null;
   settingsPda: string | null;
   smartAccountAddress: string | null;
 };
@@ -733,46 +715,6 @@ export async function fetchEarnState(
     return throwEarnError(res, "Failed to load Earn state.");
   }
   return (await res.json()) as EarnStateResponse;
-}
-
-// Live on-chain Earn holdings snapshot — the same read the web does for its
-// headline balance (the vault's Kamino obligations + idle USDC, summed live via
-// RPC). Used to override `fetchEarnState`'s `currentAmountRaw`, which reads a DB
-// read-model that lags the chain and omits non-idle venue holdings (so the
-// native balance showed stale/low values). All amounts are USDC base units
-// (6 decimals) as strings. Wallet-keyed, read-only, no signature — like `state`.
-export type EarnHoldingItem = {
-  kind: "kamino" | "idle";
-  label: string;
-  amountRaw: string;
-  liquidityMint: string;
-  market: string | null;
-  marketName: string | null;
-  reserve: string | null;
-};
-
-export type EarnHoldingsResponse = {
-  currentTotalAmountRaw: string;
-  holdings: EarnHoldingItem[];
-  observedAt: string | null;
-  observedSlot: string | null;
-  settingsPda: string | null;
-  smartAccountAddress: string | null;
-};
-
-export async function fetchEarnHoldings(
-  walletAddress: string,
-): Promise<EarnHoldingsResponse> {
-  const res = await earnWalletRead(
-    walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/holdings?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}`,
-  );
-  if (!res.ok) {
-    return throwEarnError(res, "Failed to load Earn holdings.");
-  }
-  return (await res.json()) as EarnHoldingsResponse;
 }
 
 export type EarnEarningsBar = {

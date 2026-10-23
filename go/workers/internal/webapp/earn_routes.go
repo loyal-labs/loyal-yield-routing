@@ -20,6 +20,7 @@ type Earn struct {
 	PolicySigner solana.PublicKey
 	Session      *jwt.Signer
 	Sponsor      *earnprep.Sponsor
+	SponsorChain SponsorChain
 	HTTP         *http.Client
 	OTLP         *OTLP
 	Privy        *Privy
@@ -45,6 +46,9 @@ type earnRoutes struct {
 func newEarnRoutes(auth *Auth, appDB *pgxpool.Pool, earn Earn) earnRoutes {
 	if earn.HTTP == nil {
 		earn.HTTP = &http.Client{Timeout: 15 * time.Second}
+	}
+	if earn.SponsorChain == nil && earn.Chain != nil {
+		earn.SponsorChain = earn.Chain
 	}
 	return earnRoutes{auth: auth, appDB: appDB, Earn: earn}
 }

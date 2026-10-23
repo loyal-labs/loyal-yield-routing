@@ -117,3 +117,19 @@ export type {
   MobileTelemetryReleaseContext,
   TelemetryDeviceIdentity,
 } from "./telemetry-contract";
+
+export {
+  EARN_FORECAST_REALIZED_MAX_AGE_MS,
+  earnAutodepositLabel,
+  earnWithdrawSourceKey,
+  earnWithdrawSources,
+  formatEarnApyLabel,
+  formatEarnApyPercent,
+  toForecastApy,
+} from "./earn-view";
+export type {
+  EarnAutodepositViewState,
+  EarnForecastApy,
+  EarnHoldingInput,
+  EarnWithdrawSourceModel,
+} from "./earn-view";

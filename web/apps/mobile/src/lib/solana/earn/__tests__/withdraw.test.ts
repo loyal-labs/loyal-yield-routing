@@ -63,6 +63,9 @@ jest.mock(
   "@loyal-labs/smart-account-vaults",
   () => ({
     createSmartAccountVaultsClient,
+    getEarnProductAssetsForCluster: jest.requireActual(
+      "@loyal-labs/smart-account-vaults",
+    ).getEarnProductAssetsForCluster,
     hydratePreparedOperation: (operation: unknown) => operation,
     KaminoUpstreamError: MockKaminoUpstreamError,
     serializePreparedEarnUsdcWithdraw: () => ({ wire: "withdraw" }),

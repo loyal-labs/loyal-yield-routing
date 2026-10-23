@@ -42,7 +42,6 @@ import {
   authenticateWithBiometrics,
   disableBiometrics,
   enableBiometrics,
-  deleteLegacyBiometricPin,
   isBiometricEnabled,
 } from "./biometrics";
 import {
@@ -103,7 +102,7 @@ interface WalletContextValue {
   publicKey: string | null;
   onboardingReplayActive: boolean;
 
-  importWallet: (secretKey: Uint8Array, pin: string) => Promise<Keypair>;
+  importWallet: (secretKey: Uint8Array, pin: string, expectedPublicKey?: string) => Promise<Keypair>;
   finalizeSigner: (
     keypair: Keypair,
     pin: string,
@@ -303,7 +302,15 @@ function WalletProviderCore({
   }, [state, lockInternal]);
 
   const importWallet = useCallback(
-    async (secretKey: Uint8Array, pin: string) => importKeypair(secretKey, pin),
+    async (secretKey: Uint8Array, pin: string, expectedPublicKey?: string) => {
+      const keypair = await importKeypair(secretKey, pin, expectedPublicKey);
+      if (expectedPublicKey) {
+        // The replacement is stored; the old biometric PIN may now be stale.
+        await disableBiometrics();
+        setBiometricEnabledState(false);
+      }
+      return keypair;
+    },
     [],
   );
 
@@ -481,7 +488,6 @@ function WalletProviderCore({
     setWalletSigner(next);
     setState("unlocked");
     identifyWallet(pk, "imported");
-    await deleteLegacyBiometricPin();
   }, []);
 
   const unlockWithBiometrics = useCallback(async () => {

@@ -1,0 +1,56 @@
+{
+  "route": "policies",
+  "branch": "no-body route; settings policySeed read from chain, next route seed 23 + setup seed 24",
+  "processEnv": {
+    "NEXT_PUBLIC_SOLANA_ENV": "mainnet"
+  },
+  "request": {
+    "body": null
+  },
+  "principal": {
+    "walletAddress": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+    "settingsPda": "EEA8aso4Vky11KYsL66jsBujUW8quseSr9GinxAPpmvw",
+    "smartAccountAddress": "F7zuL14omw4JJfS1cvsWXVb3wh48dvsonMJgoc9tYu3e"
+  },
+  "serverEnv": {
+    "loyalSmartAccounts": {
+      "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+    },
+    "earnYieldRouterPublicKey": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+    "deploymentPrivateKey": null
+  },
+  "boundary": {},
+  "transport": [
+    {
+      "kind": "rpc",
+      "method": "getAccountInfo",
+      "params": [
+        "EEA8aso4Vky11KYsL66jsBujUW8quseSr9GinxAPpmvw",
+        {
+          "encoding": "base64",
+          "commitment": "confirmed"
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "result": {
+          "context": {
+            "slot": 460571593,
+            "apiVersion": "4.3.0-alpha.2"
+          },
+          "value": {
+            "lamports": 2060160,
+            "data": [
+              "37OjvrHgQ61vqQcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/AQAAAEqfn1TocmZtfD2N1uBt5n7F+JU8DGRh/Vk1U9SNSPtABwABFgAAAAAAAAAA",
+              "base64"
+            ],
+            "owner": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
+            "executable": false,
+            "rentEpoch": 18446744073709552000,
+            "space": 168
+          }
+        }
+      }
+    }
+  ]
+}
