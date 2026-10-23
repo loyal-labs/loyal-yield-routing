@@ -173,25 +173,7 @@ func newEarningsError(code string, detailCode *string) *earningsError {
 const (
 	earningsUnavailableCode = "earnings_unavailable"
 	earningsIncompleteCode  = "history_incomplete"
-
-	detailAPYCoverageIncomplete = "apy_coverage_incomplete"
-	detailDepositIncomplete     = "deposit_history_incomplete"
-	detailPrincipalAmbiguous    = "principal_history_ambiguous"
-	detailPrincipalMismatch     = "principal_history_mismatch"
 )
-
-type earningsUnavailable struct {
-	code       string
-	message    string
-	detailCode string
-	coverage   *EarningsCoverage
-}
-
-func (e *earningsUnavailable) Error() string { return e.message }
-
-func unavailableErr(detailCode, message string) *earningsUnavailable {
-	return &earningsUnavailable{code: earningsIncompleteCode, message: message, detailCode: detailCode}
-}
 
 // ---- JS-compatible canonical JSON (fingerprints and revisions) ----
 
