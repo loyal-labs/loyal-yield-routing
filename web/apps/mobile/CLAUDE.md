@@ -45,6 +45,8 @@ The dApp Store profile produces an APK file without a store submission.
 These profiles and `dapp-store-development` pin Bun 1.3.11. The mobile
 `eas-build-pre-install` hook installs the parent `web/` workspace with its frozen
 lockfile so shared packages resolve in the monorepo before the mobile install.
+The hook skips this parent install in the standalone mobile mirror, where EAS
+installs the app's dependencies directly.
 Production uses the app-version runtime, now 0.6.0. Development retains the
 `0.5.0-hardware-wallet-v1` runtime used by dev build 11 and its biometric OTA;
 change it when the development native module set changes.
