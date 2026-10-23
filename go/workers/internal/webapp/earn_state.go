@@ -203,7 +203,7 @@ func (h earnRoutes) earnState(ctx context.Context, in *sessionRequest) (*earnSta
 	}
 
 	canEnroll := false
-	if raw := os.Getenv("EARN_AUTOSWAP_ENROLLMENT_WALLETS"); raw != "" {
+	if raw := os.Getenv("EARN_AUTOSWAP_ENABLED_WALLETS"); raw != "" {
 		enabled, envErr := earnAutoswapEnrollmentEnabled(raw, wallet)
 		if envErr != nil {
 			slog.Warn("earn-state autoswap enrollment configuration is invalid", "error", envErr)
