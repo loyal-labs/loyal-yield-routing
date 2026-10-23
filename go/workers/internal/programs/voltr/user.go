@@ -23,6 +23,7 @@ var (
 
 const (
 	bps                     = 10_000
+	secondsPerYear          = 365 * 24 * 60 * 60
 	requestEventLPOffset    = 114
 	requestEventAssetOffset = 122
 	requestEventSize        = 138
@@ -83,6 +84,11 @@ func (v Vault) LPToAssets(lpRaw, lpMintSupplyRaw uint64, now time.Time) (uint64,
 	for _, raw := range []uint64{v.FeeAccumulatorManagerRaw, v.FeeAccumulatorAdminRaw, v.FeeAccumulatorProtocolRaw, v.LPSupplyDeadWeightRaw} {
 		totalLP.Add(totalLP, new(big.Int).SetUint64(raw))
 	}
+	feeLP, err := v.unrealisedManagementFeeLP(totalLP, now)
+	if err != nil {
+		return 0, err
+	}
+	totalLP.Add(totalLP, feeLP)
 	if totalLP.Sign() == 0 {
 		return 0, nil
 	}
@@ -95,4 +101,29 @@ func (v Vault) LPToAssets(lpRaw, lpMintSupplyRaw uint64, now time.Time) (uint64,
 		return 0, errors.New("voltr vault value does not redeem LP to a u64 asset amount")
 	}
 	return assets.Uint64(), nil
+}
+
+func ceilDiv(a, b *big.Int) *big.Int {
+	q, r := new(big.Int).QuoRem(a, b, new(big.Int))
+	if r.Sign() > 0 {
+		q.Add(q, big.NewInt(1))
+	}
+	return q
+}
+
+func (v Vault) unrealisedManagementFeeLP(accountedLP *big.Int, now time.Time) (*big.Int, error) {
+	feeBPS := uint64(v.ManagerManagementFeeBPS) + uint64(v.AdminManagementFeeBPS) + uint64(v.ProtocolManagementFeeBPS)
+	elapsed := now.Unix() - int64(v.LastManagementFeeUpdateUnix)
+	if v.LastManagementFeeUpdateUnix == 0 || v.TotalValueRaw == 0 || feeBPS == 0 || elapsed <= 0 {
+		return new(big.Int), nil
+	}
+	totalValue := new(big.Int).SetUint64(v.TotalValueRaw)
+	feeAsset := new(big.Int).Mul(totalValue, big.NewInt(elapsed))
+	feeAsset.Mul(feeAsset, new(big.Int).SetUint64(feeBPS))
+	feeAsset = ceilDiv(feeAsset, big.NewInt(bps*secondsPerYear))
+	if feeAsset.Cmp(totalValue) >= 0 {
+		return nil, errors.New("voltr accrued management fee exceeds vault value")
+	}
+	feeLP := new(big.Int).Mul(feeAsset, accountedLP)
+	return ceilDiv(feeLP, totalValue.Sub(totalValue, feeAsset)), nil
 }

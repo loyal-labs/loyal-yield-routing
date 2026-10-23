@@ -34,6 +34,12 @@ const (
 	UpgradedStrategyReceiptVersion = 2
 
 	discriminatorLen = 8
+
+	totalValueOffset              = 168
+	managerManagementFeeOffset    = 516
+	adminManagementFeeOffset      = 518
+	protocolManagementFeeOffset   = 526
+	lastManagementFeeUpdateOffset = 568
 )
 
 type Vault struct {
@@ -46,6 +52,7 @@ type Vault struct {
 	LPSupplyDeadWeightRaw                                                         uint64
 	HighWaterMarkBits                                                             U80F48
 	LastUpdatedLockedProfitRaw, LastLockedProfitReportUnix                        uint64
+	LastManagementFeeUpdateUnix                                                   uint64
 }
 
 func DecodeVault(account *chain.Account) (Vault, error) {
@@ -57,11 +64,12 @@ func DecodeVault(account *chain.Account) (Vault, error) {
 	u64 := func(at int) uint64 { return binary.LittleEndian.Uint64(d[at:]) }
 	return Vault{
 		AssetMint: key(d, 104), IdleATA: key(d, 136), LPMint: key(d, 272), Manager: key(d, 368), Admin: key(d, 400),
-		TotalValueRaw: u64(168), LockedProfitDegradationSeconds: u64(448), WithdrawalWaitingPeriodSeconds: u64(456),
-		ManagerPerformanceFeeBPS: u16(512), AdminPerformanceFeeBPS: u16(514), ManagerManagementFeeBPS: u16(516), AdminManagementFeeBPS: u16(518),
-		RedemptionFeeBPS: u16(520), IssuanceFeeBPS: u16(522), ProtocolPerformanceFeeBPS: u16(524), ProtocolManagementFeeBPS: u16(526),
+		TotalValueRaw: u64(totalValueOffset), LockedProfitDegradationSeconds: u64(448), WithdrawalWaitingPeriodSeconds: u64(456),
+		ManagerPerformanceFeeBPS: u16(512), AdminPerformanceFeeBPS: u16(514), ManagerManagementFeeBPS: u16(managerManagementFeeOffset), AdminManagementFeeBPS: u16(adminManagementFeeOffset),
+		RedemptionFeeBPS: u16(520), IssuanceFeeBPS: u16(522), ProtocolPerformanceFeeBPS: u16(524), ProtocolManagementFeeBPS: u16(protocolManagementFeeOffset),
 		FeeAccumulatorManagerRaw: u64(576), FeeAccumulatorAdminRaw: u64(584), FeeAccumulatorProtocolRaw: u64(592), LPSupplyDeadWeightRaw: u64(616),
 		HighWaterMarkBits: U80F48(d[624:640]), LastUpdatedLockedProfitRaw: u64(672), LastLockedProfitReportUnix: u64(680),
+		LastManagementFeeUpdateUnix: u64(lastManagementFeeUpdateOffset),
 	}, nil
 }
 
