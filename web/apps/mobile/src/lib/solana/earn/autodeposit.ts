@@ -1,15 +1,11 @@
 import { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "@loyal-labs/shared";
-import { normalizeLoyalCluster } from "@loyal-labs/actions";
-import {
-  createSmartAccountVaultsClient,
-  serializePreparedEarnUsdcAutodepositClose,
-  serializePreparedEarnUsdcAutodepositSetup,
-} from "@loyal-labs/smart-account-vaults";
+import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
+import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
 import { PublicKey } from "@solana/web3.js";
 
 import { track } from "@/lib/analytics/analytics";
 import { EARN_EVENTS } from "@/lib/analytics/earn-events";
-import { getConnection } from "@/lib/solana/rpc/connection";
+import { getConnection, getSolanaEnv } from "@/lib/solana/rpc/connection";
 import {
   WalletRejectedError,
   withLandedSignatures,
@@ -24,15 +20,12 @@ import {
   confirmEarnAutodepositClose,
   confirmEarnAutodepositSetup,
   EarnApiError,
-  type EarnAuthFields,
-  type EarnSessionAuth,
   fetchEarnAutodepositState,
   requestEarnAutodepositSweepExecute,
   toggleEarnAutodeposit,
   updateEarnAutodepositFloor,
 } from "./earn-api";
-import { type EarnAuthPurpose, signEarnAuth, withEarnAuth } from "./earn-auth";
-import { dropRejectedToken, getEarnSessionToken } from "./earn-session";
+import { ensureEarnSession } from "./earn-session";
 import {
   signAndSendPreparedOperation,
   signAndSendPreparedOperations,
@@ -79,36 +72,8 @@ async function withUnconfirmedRetry<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-const SESSION_FALLBACK_CODES = new Set([
-  "invalid_mobile_session",
-  "invalid_mobile_auth",
-]);
-
-async function withEarnSessionOrAuth<T>(
-  signer: Signer,
-  purpose: EarnAuthPurpose,
-  call: (auth: EarnAuthFields | EarnSessionAuth) => Promise<T>,
-): Promise<T> {
-  const sessionToken = await getEarnSessionToken(signer.publicKey.toBase58());
-  if (sessionToken) {
-    try {
-      return await call({ sessionToken });
-    } catch (error) {
-      if (
-        !(error instanceof EarnApiError) ||
-        error.code === undefined ||
-        !SESSION_FALLBACK_CODES.has(error.code)
-      ) {
-        throw error;
-      }
-      await dropRejectedToken(signer.publicKey.toBase58(), sessionToken);
-    }
-  }
-  return call(await signEarnAuth(signer, purpose));
-}
-
 type AutodepositPrepareContext = {
-  cluster: ReturnType<typeof normalizeLoyalCluster>;
+  cluster: ReturnType<typeof resolveLoyalClusterForSolanaEnv>;
   policySigner: PublicKey;
   programId: PublicKey;
   settingsPda: PublicKey;
@@ -122,16 +87,16 @@ async function loadAutodepositPrepareContext(walletAddress: string): Promise<{
   if (!state.settingsPda) {
     throw new Error("No provisioned smart account for this wallet.");
   }
-  if (!state.prepareContext) {
+  if (!state.policySigner) {
     throw new Error(
       "Autodeposit isn't available right now — the backend didn't provide prepare parameters.",
     );
   }
   return {
     context: {
-      cluster: normalizeLoyalCluster(state.prepareContext.cluster),
-      policySigner: new PublicKey(state.prepareContext.policySigner),
-      programId: new PublicKey(state.prepareContext.programId),
+      cluster: resolveLoyalClusterForSolanaEnv(getSolanaEnv()),
+      policySigner: new PublicKey(state.policySigner),
+      programId: new PublicKey(state.programId),
       settingsPda: new PublicKey(state.settingsPda),
     },
     state,
@@ -196,11 +161,11 @@ async function runEarnAutodepositSetup(
     (target.lifecycleStatus === "pending_delegation" ||
       target.lifecycleStatus === "pending_policy") &&
     target.policySeed &&
-    target.recurringDelegationNonce
+    target.nonce
       ? target
       : null;
   const nonce = resume
-    ? BigInt(resume.recurringDelegationNonce!)
+    ? BigInt(resume.nonce!)
     : BigInt(Date.now());
   let policySeed = resume ? BigInt(resume.policySeed!) : undefined;
   const periodLengthSeconds = resume?.periodLengthSeconds
@@ -209,14 +174,11 @@ async function runEarnAutodepositSetup(
   const startTimestamp = resume?.startTimestamp
     ? BigInt(resume.startTimestamp)
     : undefined;
-  const expiryTimestamp = resume?.recurringDelegationExpiryTimestamp
-    ? BigInt(resume.recurringDelegationExpiryTimestamp)
+  const expiryTimestamp = resume?.expiryTimestamp
+    ? BigInt(resume.expiryTimestamp)
     : undefined;
 
-  const flowAuth = await signEarnAuth(
-    args.signer,
-    "earn-autodeposit-setup-confirm",
-  );
+  await ensureEarnSession(args.signer);
 
   for (let round = 0; round < MAX_SETUP_STAGES; round++) {
     const stages = await client.prepareEarnUsdcAutodepositSetupBatch({
@@ -279,19 +241,12 @@ async function runEarnAutodepositSetup(
     for (let i = 0; i < stages.length; i++) {
       const stage = stages[i];
       await withUnconfirmedRetry(() =>
-        withEarnAuth(
-          args.signer,
-          flowAuth,
-          "earn-autodeposit-setup-confirm",
-          (auth) =>
-            confirmEarnAutodepositSetup({
-              auth,
-              preparedSetup: serializePreparedEarnUsdcAutodepositSetup(stage),
-              setupSignature: sent[i].signature,
-              confirmedSlot: sent[i].confirmedSlot,
-              walletBalanceFloorRaw,
-            }),
-        ),
+        confirmEarnAutodepositSetup({
+          preparedSetup: stage,
+          setupSignature: sent[i].signature,
+          confirmedSlot: sent[i].confirmedSlot,
+          walletBalanceFloorRaw,
+        }),
       ).catch((error) => {
         flow.failFrom("backend_confirm", error);
         throw error;
@@ -349,18 +304,14 @@ export async function updateEarnAutodepositThreshold(args: {
   });
   flow.start("intent");
   try {
-    await withEarnSessionOrAuth(
-      args.signer,
-      "earn-autodeposit-floor-confirm",
-      (auth) =>
-        updateEarnAutodepositFloor({
-          auth,
-          policyAccount: args.policyAccount,
-          recurringDelegation: args.recurringDelegation,
-          vaultIndex: args.vaultIndex,
-          walletBalanceFloorRaw: thresholdUsdToRaw(args.thresholdUsd),
-        }),
-    );
+    await ensureEarnSession(args.signer);
+    await updateEarnAutodepositFloor({
+      walletAddress: args.signer.publicKey.toBase58(),
+      policyAccount: args.policyAccount,
+      recurringDelegation: args.recurringDelegation,
+      vaultIndex: args.vaultIndex,
+      walletBalanceFloorRaw: thresholdUsdToRaw(args.thresholdUsd),
+    });
     flow.complete("backend_confirm");
   } catch (error) {
     flow.failFrom("backend_confirm", error);
@@ -386,19 +337,15 @@ export async function setEarnAutodepositActive(args: {
   });
   flow.start("intent");
   try {
-    await withEarnSessionOrAuth(
-      args.signer,
-      "earn-autodeposit-toggle-confirm",
-      (auth) =>
-        toggleEarnAutodeposit({
-          auth,
-          flowId: flow.flowId,
-          active: args.active,
-          policyAccount: args.policyAccount,
-          recurringDelegation: args.recurringDelegation,
-          vaultIndex: args.vaultIndex,
-        }),
-    );
+    await ensureEarnSession(args.signer);
+    await toggleEarnAutodeposit({
+      walletAddress: args.signer.publicKey.toBase58(),
+      flowId: flow.flowId,
+      active: args.active,
+      policyAccount: args.policyAccount,
+      recurringDelegation: args.recurringDelegation,
+      vaultIndex: args.vaultIndex,
+    });
     flow.complete("backend_confirm");
   } catch (error) {
     flow.failFrom("backend_confirm", error);
@@ -481,7 +428,6 @@ async function runEarnAutodepositClose(
     programId: context.programId,
   });
 
-  let flowAuth: Awaited<ReturnType<typeof signEarnAuth>> | null = null;
   const closeOne = async (policy: string, recurringDelegation: string) => {
     const preparedClose = await client.prepareEarnUsdcAutodepositClose({
       cluster: context.cluster,
@@ -510,25 +456,13 @@ async function runEarnAutodepositClose(
     flow?.observe("wallet_approval", { chainState: "confirmed" });
 
     try {
-      flowAuth ??= await signEarnAuth(
-        args.signer,
-        "earn-autodeposit-close-confirm",
-      );
-      const auth = flowAuth;
+      await ensureEarnSession(args.signer);
       await withUnconfirmedRetry(() =>
-        withEarnAuth(
-          args.signer,
-          auth,
-          "earn-autodeposit-close-confirm",
-          (retryAuth) =>
-            confirmEarnAutodepositClose({
-              auth: retryAuth,
-              preparedClose:
-                serializePreparedEarnUsdcAutodepositClose(preparedClose),
-              closeSignature: sent.signature,
-              confirmedSlot: sent.confirmedSlot,
-            }),
-        ),
+        confirmEarnAutodepositClose({
+          preparedClose,
+          closeSignature: sent.signature,
+          confirmedSlot: sent.confirmedSlot,
+        }),
       );
     } catch (error) {
       const classified = attachUnrecordedCloseProgress(
@@ -586,10 +520,9 @@ export async function executeEarnAutodepositScheduledSweep(args: {
   });
   flow.start("intent");
   try {
-    const response = await withEarnSessionOrAuth(
-      args.signer,
-      "earn-autodeposit-sweep-execute",
-      (auth) => requestEarnAutodepositSweepExecute({ auth }),
+    await ensureEarnSession(args.signer);
+    const response = await requestEarnAutodepositSweepExecute(
+      args.signer.publicKey.toBase58(),
     );
     flow.observe("request", { executeNowState: "requested" });
     return { flow, scheduledSlotId: response.sweepRequest.slotId };

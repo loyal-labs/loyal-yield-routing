@@ -1,16 +1,9 @@
 // Protects the Autodeposit lifecycle boundary behind ASK-1859. A wallet
-// decline before any chain write is a clean cancellation, while a second
-// auth-prompt decline after a close transaction lands is a real
-// confirmed-but-unrecorded failure that must keep paging.
+// decline before any chain write is a clean cancellation.
 
 const mockTrack = jest.fn();
 const mockFetchState = jest.fn();
-const mockToggleAutodeposit = jest.fn();
 const mockConfirmClose = jest.fn();
-const mockSignEarnAuth = jest.fn();
-const mockWithEarnAuth = jest.fn();
-const mockGetSessionToken = jest.fn();
-const mockClearSession = jest.fn();
 const mockPrepareClose = jest.fn();
 const mockSendPreparedOperation = jest.fn();
 
@@ -25,7 +18,7 @@ jest.mock("@/config/env", () => ({
 jest.mock(
   "@loyal-labs/actions",
   () => ({
-    normalizeLoyalCluster: (cluster: unknown) => cluster,
+    resolveLoyalClusterForSolanaEnv: (env: unknown) => env,
   }),
   { virtual: true },
 );
@@ -36,8 +29,6 @@ jest.mock(
       prepareEarnUsdcAutodepositClose: (...args: unknown[]) =>
         mockPrepareClose(...args),
     }),
-    serializePreparedEarnUsdcAutodepositClose: () => ({ serialized: true }),
-    serializePreparedEarnUsdcAutodepositSetup: jest.fn(),
   }),
   { virtual: true },
 );
@@ -60,6 +51,7 @@ jest.mock("@/lib/analytics/earn-events", () => ({
 }));
 jest.mock("@/lib/solana/rpc/connection", () => ({
   getConnection: () => ({}),
+  getSolanaEnv: () => "mainnet",
 }));
 jest.mock("../earn-api", () => {
   class EarnApiError extends Error {
@@ -74,18 +66,12 @@ jest.mock("../earn-api", () => {
     confirmEarnAutodepositSetup: jest.fn(),
     fetchEarnAutodepositState: (...args: unknown[]) => mockFetchState(...args),
     requestEarnAutodepositSweepExecute: jest.fn(),
-    toggleEarnAutodeposit: (...args: unknown[]) =>
-      mockToggleAutodeposit(...args),
+    toggleEarnAutodeposit: jest.fn(),
     updateEarnAutodepositFloor: jest.fn(),
   };
 });
-jest.mock("../earn-auth", () => ({
-  signEarnAuth: (...args: unknown[]) => mockSignEarnAuth(...args),
-  withEarnAuth: (...args: unknown[]) => mockWithEarnAuth(...args),
-}));
 jest.mock("../earn-session", () => ({
-  clearEarnSession: (...args: unknown[]) => mockClearSession(...args),
-  getEarnSessionToken: (...args: unknown[]) => mockGetSessionToken(...args),
+  ensureEarnSession: jest.fn(),
 }));
 jest.mock("../send-prepared", () => ({
   signAndSendPreparedOperation: (...args: unknown[]) =>
@@ -134,13 +120,9 @@ function terminal(envelopes: Envelope[]): Envelope[] {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockGetSessionToken.mockResolvedValue(null);
   mockFetchState.mockResolvedValue({
-    prepareContext: {
-      cluster: "mainnet",
-      policySigner: "policy-signer",
-      programId: "program-id",
-    },
+    policySigner: "policy-signer",
+    programId: "program-id",
     settingsPda: "settings-pda",
   });
   mockPrepareClose.mockResolvedValue({ prepared: { instructions: [] } });
@@ -151,33 +133,6 @@ beforeEach(() => {
 });
 
 describe("Autodeposit wallet rejection lifecycle", () => {
-  it("reports the exact resume auth rejection as cancelled without calling the backend", async () => {
-    const envelopes = captureEnvelopes();
-    const rejection = new WalletRejectedError();
-    mockSignEarnAuth.mockRejectedValueOnce(rejection);
-
-    await expect(
-      setEarnAutodepositActive({
-        active: true,
-        policyAccount: "policy",
-        recurringDelegation: "delegation",
-        signer,
-        vaultIndex: 1,
-      }),
-    ).rejects.toBe(rejection);
-
-    expect(mockToggleAutodeposit).not.toHaveBeenCalled();
-    expect(terminal(envelopes)).toEqual([
-      expect.objectContaining({
-        errorCode: "wallet_rejected",
-        flowName: "earn.autodeposit.configuration",
-        flowVariant: "resume",
-        outcome: "cancelled",
-        stage: "backend_confirm",
-      }),
-    ]);
-  });
-
   it("keeps a pre-submit close rejection as a clean cancellation", async () => {
     const envelopes = captureEnvelopes();
     const rejection = new WalletRejectedError();
@@ -191,7 +146,6 @@ describe("Autodeposit wallet rejection lifecycle", () => {
       }),
     ).rejects.toBe(rejection);
 
-    expect(mockSignEarnAuth).not.toHaveBeenCalled();
     expect(mockConfirmClose).not.toHaveBeenCalled();
     expect(terminal(envelopes)).toEqual([
       expect.objectContaining({
@@ -202,59 +156,5 @@ describe("Autodeposit wallet rejection lifecycle", () => {
         stage: "wallet_approval",
       }),
     ]);
-  });
-
-  it("keeps a post-submit close auth rejection failed at backend_confirm", async () => {
-    const envelopes = captureEnvelopes();
-    mockSignEarnAuth.mockRejectedValueOnce(new WalletRejectedError());
-
-    let thrown: unknown;
-    try {
-      await executeEarnAutodepositClose({
-        policy: "policy",
-        recurringDelegation: "delegation",
-        signer,
-      });
-    } catch (error) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(WalletRejectedError);
-    expect((thrown as WalletRejectedError).landedSignatures).toEqual([
-      "landed-close-signature",
-    ]);
-    expect(mockConfirmClose).not.toHaveBeenCalled();
-    expect(terminal(envelopes)).toEqual([
-      expect.objectContaining({
-        errorCode: "wallet_rejected",
-        flowName: "earn.autodeposit.configuration",
-        flowVariant: "close",
-        outcome: "failed",
-        stage: "backend_confirm",
-      }),
-    ]);
-  });
-
-  it("carries post-submit close progress into a parent withdrawal flow", async () => {
-    captureEnvelopes();
-    mockSignEarnAuth.mockRejectedValueOnce(new WalletRejectedError());
-
-    let thrown: unknown;
-    try {
-      await executeEarnAutodepositClose({
-        policy: "policy",
-        recurringDelegation: "delegation",
-        signer,
-        source: "withdraw",
-      });
-    } catch (error) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(WalletRejectedError);
-    expect((thrown as WalletRejectedError).landedSignatures).toEqual([
-      "landed-close-signature",
-    ]);
-    expect(mockConfirmClose).not.toHaveBeenCalled();
   });
 });
