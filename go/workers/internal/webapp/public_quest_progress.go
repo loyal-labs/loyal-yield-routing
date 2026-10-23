@@ -107,8 +107,6 @@ WHERE wallet_address = $1`, wallet)
 	return out, rows.Err()
 }
 
-func strPtr(v string) *string { return &v }
-
 // questProgressResponse ports getQuestProgress
 // (quest-completion-service.ts:376-410): one item per known kind, rows folded
 // by kind with the last row winning, unexpected statuses collapsing to
