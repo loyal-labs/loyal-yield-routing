@@ -321,6 +321,102 @@ export type DprepVault = {
     usdcAta: string;
 };
 
+export type EarnCleanupAutodepositCloseWire = {
+    persistence: EarnCleanupClosePersistenceWire;
+    policy: EarnCleanupAutodepositCloseWirePolicyStruct;
+    prepared: WirePreparedOperation;
+    subscription: EarnCleanupAutodepositCloseWireSubscriptionStruct;
+    vault: EarnCleanupAutodepositCloseWireVaultStruct;
+};
+
+export type EarnCleanupAutodepositCloseWirePolicyStruct = {
+    account: string;
+};
+
+export type EarnCleanupAutodepositCloseWireSubscriptionStruct = {
+    recurringDelegation: string;
+};
+
+export type EarnCleanupAutodepositCloseWireVaultStruct = {
+    accountIndex: number;
+    pubkey: string;
+};
+
+export type EarnCleanupClosePersistenceWire = {
+    cluster: string;
+    delegatedSigner: string;
+    policyAccount: string;
+    recurringDelegation: string;
+    settings: string;
+    vaultIndex: number;
+    vaultPubkey: string;
+    walletAddress: string;
+};
+
+export type EarnCleanupConfirmRequest = {
+    autodepositCloseConfirmedSlot?: string;
+    autodepositCloseSignature?: string;
+    cleanupSignature?: string;
+    confirmedSlot?: string;
+    preparedCleanup?: {
+        [key: string]: unknown;
+    };
+};
+
+export type EarnCleanupConfirmResponse = {
+    ok: boolean;
+    status: string;
+};
+
+export type EarnCleanupPersistenceWire = {
+    autodepositClose: EarnCleanupClosePersistenceWire | null;
+    closedCollateralAtas: Array<string> | null;
+    closedVaultUsdcAta: boolean;
+    cluster: string;
+    delegatedSigner: string;
+    idleTransferAmountRaw: string;
+    policyAccount: string;
+    policyId: string;
+    policySeed: string;
+    settings: string;
+    setupPolicyAccount?: string;
+    setupPolicyId?: string;
+    setupPolicySeed?: string;
+    vaultIndex: number;
+    vaultPubkey: string;
+    walletAddress: string;
+};
+
+export type EarnCleanupPolicyWire = {
+    account: string;
+    id: string;
+    seed: string;
+};
+
+export type EarnCleanupPrepareRequest = {
+    minContextSlot?: string;
+};
+
+export type EarnCleanupPrepareResponse = {
+    preparedCleanup: EarnCleanupPrepareWire;
+};
+
+export type EarnCleanupPrepareWire = {
+    autodepositClosePrepared: EarnCleanupAutodepositCloseWire | null;
+    estimatedRefundLamports: number | null;
+    persistence: EarnCleanupPersistenceWire;
+    policy: EarnCleanupPolicyWire;
+    prepared: WirePreparedOperation;
+    setupPolicy?: EarnCleanupPolicyWire;
+    vault: EarnCleanupVaultWire;
+};
+
+export type EarnCleanupVaultWire = {
+    accountIndex: number;
+    pubkey: string;
+    usdcAta: string;
+};
+
 export type EarnDepositConfirmCurrentHolding = {
     amountRaw: string;
     liquidityMint: string;
@@ -3245,6 +3341,102 @@ export type PostEarnRealtimeTokenResponses = {
 };
 
 export type PostEarnRealtimeTokenResponse = PostEarnRealtimeTokenResponses[keyof PostEarnRealtimeTokenResponses];
+
+export type PostEarnWithdrawalsCleanupConfirmData = {
+    body?: EarnCleanupConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm';
+};
+
+export type PostEarnWithdrawalsCleanupConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnWithdrawalsCleanupConfirmError = PostEarnWithdrawalsCleanupConfirmErrors[keyof PostEarnWithdrawalsCleanupConfirmErrors];
+
+export type PostEarnWithdrawalsCleanupConfirmResponses = {
+    /**
+     * OK
+     */
+    200: EarnCleanupConfirmResponse;
+};
+
+export type PostEarnWithdrawalsCleanupConfirmResponse = PostEarnWithdrawalsCleanupConfirmResponses[keyof PostEarnWithdrawalsCleanupConfirmResponses];
+
+export type PostEarnWithdrawalsCleanupPrepareData = {
+    body?: EarnCleanupPrepareRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare';
+};
+
+export type PostEarnWithdrawalsCleanupPrepareErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnWithdrawalsCleanupPrepareError = PostEarnWithdrawalsCleanupPrepareErrors[keyof PostEarnWithdrawalsCleanupPrepareErrors];
+
+export type PostEarnWithdrawalsCleanupPrepareResponses = {
+    /**
+     * OK
+     */
+    200: EarnCleanupPrepareResponse;
+};
+
+export type PostEarnWithdrawalsCleanupPrepareResponse = PostEarnWithdrawalsCleanupPrepareResponses[keyof PostEarnWithdrawalsCleanupPrepareResponses];
 
 export type PostEarnWithdrawConfirmData = {
     body?: EarnWithdrawConfirmRequest;

@@ -42,6 +42,8 @@ export type Post = {
   "/api/smart-accounts/yield-optimization/policy-refunds/scan": Types.EarnPolicyRefundScanResponse;
   "/api/smart-accounts/yield-optimization/position/reconcile": Types.EarnPositionReconcileResponse;
   "/api/smart-accounts/yield-optimization/realtime/token": Types.RealtimeTokenResponse;
+  "/api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm": Types.EarnCleanupConfirmResponse;
+  "/api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare": Types.EarnCleanupPrepareResponse;
   "/api/smart-accounts/yield-optimization/withdrawals/confirm": Types.EarnWithdrawConfirmResponse;
   "/api/smart-accounts/yield-optimization/withdrawals/prepare": Types.EarnWithdrawPrepareResponse;
 };
