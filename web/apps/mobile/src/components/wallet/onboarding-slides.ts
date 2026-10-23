@@ -5,7 +5,7 @@ export type OnboardingSlide = {
 };
 
 export type WalletSetupAction = {
-  id: "connect-wallet" | "create" | "login" | "import" | "restore-icloud";
+  id: "connect-wallet" | "create" | "login" | "import";
   label: string;
   helperText?: string;
 };
@@ -33,28 +33,16 @@ export const ONBOARDING_SLIDES: OnboardingSlide[] = [
 
 export function buildWalletSetupActions(
   connectMode: WalletConnectMode,
-  hasCloudBackup = false,
 ): WalletSetupAction[] {
-  const restore: WalletSetupAction[] = hasCloudBackup
-    ? [
-        {
-          id: "restore-icloud",
-          label: "Restore from iCloud",
-          helperText: "Wallet backup found in your iCloud",
-        },
-      ]
-    : [];
-
   const createAndImport: WalletSetupAction[] = [
     { id: "create", label: "Create New Wallet" },
     { id: "login", label: "Log In with Email" },
     { id: "import", label: "Import Existing Wallet" },
   ];
 
-  if (connectMode === "none") return [...restore, ...createAndImport];
+  if (connectMode === "none") return createAndImport;
 
   return [
-    ...restore,
     connectMode === "seed-vault"
       ? { id: "connect-wallet", label: "Use Seed Vault" }
       : {
