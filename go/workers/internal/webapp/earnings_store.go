@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -580,4 +581,355 @@ WHERE vault_id = $1`, vaultRef.id)
 		out = append(out, snapshot)
 	}
 	return out, nil
+}
+
+// ---- Holding-event history (findYieldPositionHistoryEventsForVault) ----
+
+type earningsPositionRow struct {
+	id                   int64
+	initialReserve       string
+	initialMarket        *string
+	initialLiquidityMint string
+}
+
+// loadEarningsHoldingEvents ports findYieldPositionHistoryEventsForVault
+// (repository:3775): every holding event across the scope's positions replayed
+// into the descending history the checkpoint path builder consumes.
+func loadEarningsHoldingEvents(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput) ([]earningsHoldingEvent, error) {
+	const positionsQ = `SELECT id, initial_reserve, initial_market, initial_liquidity_mint
+FROM ` + earningsSchema + `.user_yield_positions
+WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3
+ORDER BY updated_at DESC, id DESC`
+	positionRows, err := pool.Query(ctx, positionsQ, input.settings, input.vaultIndex, input.walletAddress)
+	if err != nil {
+		return nil, err
+	}
+	var positions []earningsPositionRow
+	for positionRows.Next() {
+		var position earningsPositionRow
+		if err := positionRows.Scan(&position.id, &position.initialReserve, &position.initialMarket, &position.initialLiquidityMint); err != nil {
+			positionRows.Close()
+			return nil, err
+		}
+		positions = append(positions, position)
+	}
+	if err := positionRows.Err(); err != nil {
+		positionRows.Close()
+		return nil, err
+	}
+	positionRows.Close()
+
+	history := make([]earningsHoldingEvent, 0, 64)
+	for _, position := range positions {
+		events, err := loadPositionHoldingEvents(ctx, pool, position)
+		if err != nil {
+			return nil, err
+		}
+		history = append(history, events...)
+	}
+	sortEarningsHoldingEventsDescending(history)
+	return history, nil
+}
+
+// loadPositionHoldingEvents ports findYieldPositionHistoryEventsForPosition
+// (repository:3815): one position's events in chronological order, enriched
+// with the cash amounts behind their source links and a running principal.
+func loadPositionHoldingEvents(ctx context.Context, pool *pgxpool.Pool, position earningsPositionRow) ([]earningsHoldingEvent, error) {
+	const eventsQ = `SELECT amount_raw, observed_at, observed_slot, event_type, id, liquidity_mint,
+  market, principal_delta_raw, reserve, source_signature, source_deposit_id,
+  source_rebalance_decision_id, source_snapshot_id, source_withdrawal_id
+FROM ` + earningsSchema + `.user_yield_position_holding_events
+WHERE position_id = $1`
+	rows, err := pool.Query(ctx, eventsQ, position.id)
+	if err != nil {
+		return nil, err
+	}
+	type rawEvent struct {
+		amountRaw        int64
+		confirmedAt      time.Time
+		confirmedSlot    int64
+		eventType        string
+		id               int64
+		liquidityMint    string
+		market           *string
+		principalDelta   *int64
+		reserve          string
+		signature        *string
+		sourceDeposit    *int64
+		rebalanceID      *int64
+		sourceSnapshot   *int64
+		sourceWithdrawal *int64
+	}
+	var chronological []rawEvent
+	for rows.Next() {
+		var event rawEvent
+		if err := rows.Scan(&event.amountRaw, &event.confirmedAt, &event.confirmedSlot, &event.eventType, &event.id,
+			&event.liquidityMint, &event.market, &event.principalDelta, &event.reserve, &event.signature,
+			&event.sourceDeposit, &event.rebalanceID, &event.sourceSnapshot, &event.sourceWithdrawal); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		event.confirmedAt = msTime(event.confirmedAt)
+		chronological = append(chronological, event)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	sort.SliceStable(chronological, func(i, j int) bool {
+		if chronological[i].confirmedSlot != chronological[j].confirmedSlot {
+			return chronological[i].confirmedSlot < chronological[j].confirmedSlot
+		}
+		if !chronological[i].confirmedAt.Equal(chronological[j].confirmedAt) {
+			return chronological[i].confirmedAt.UnixMilli() < chronological[j].confirmedAt.UnixMilli()
+		}
+		return chronological[i].id < chronological[j].id
+	})
+
+	collectIDs := func(pick func(rawEvent) *int64) []int64 {
+		var ids []int64
+		for _, event := range chronological {
+			if id := pick(event); id != nil {
+				ids = append(ids, *id)
+			}
+		}
+		return ids
+	}
+	depositAmounts := map[int64]int64{}
+	if ids := collectIDs(func(e rawEvent) *int64 { return e.sourceDeposit }); len(ids) > 0 {
+		if err := scanEarningsAmountMap(ctx, pool,
+			`SELECT id, principal_amount_raw FROM `+earningsSchema+`.user_yield_position_deposits WHERE id = ANY($1::bigint[])`,
+			ids, depositAmounts); err != nil {
+			return nil, err
+		}
+	}
+	rebalanceAmounts := map[int64]int64{}
+	if ids := collectIDs(func(e rawEvent) *int64 { return e.rebalanceID }); len(ids) > 0 {
+		if err := scanEarningsAmountMap(ctx, pool,
+			`SELECT id, amount_raw FROM `+earningsSchema+`.rebalance_decisions WHERE id = ANY($1::bigint[])`,
+			ids, rebalanceAmounts); err != nil {
+			return nil, err
+		}
+	}
+	type withdrawalInfo struct {
+		mode               string
+		withdrawnAmountRaw int64
+	}
+	withdrawals := map[int64]withdrawalInfo{}
+	if ids := collectIDs(func(e rawEvent) *int64 { return e.sourceWithdrawal }); len(ids) > 0 {
+		withdrawalRows, err := pool.Query(ctx,
+			`SELECT id, mode, withdrawn_amount_raw FROM `+earningsSchema+`.user_yield_position_withdrawals WHERE id = ANY($1::bigint[])`, ids)
+		if err != nil {
+			return nil, err
+		}
+		for withdrawalRows.Next() {
+			var id int64
+			var info withdrawalInfo
+			if err := withdrawalRows.Scan(&id, &info.mode, &info.withdrawnAmountRaw); err != nil {
+				withdrawalRows.Close()
+				return nil, err
+			}
+			withdrawals[id] = info
+		}
+		if err := withdrawalRows.Err(); err != nil {
+			withdrawalRows.Close()
+			return nil, err
+		}
+		withdrawalRows.Close()
+	}
+
+	previousReserve := position.initialReserve
+	previousMarket := position.initialMarket
+	previousLiquidityMint := position.initialLiquidityMint
+	var principalAmountRaw int64
+	history := make([]earningsHoldingEvent, 0, len(chronological))
+	for _, event := range chronological {
+		eventKind := "deposit"
+		switch event.eventType {
+		case "rebalance_confirmed":
+			eventKind = "rebalance"
+		case "snapshot_reconciled":
+			eventKind = "reconciliation"
+		case "withdrawal_partial", "withdrawal_full":
+			eventKind = "withdrawal"
+		}
+		converted := earningsHoldingEvent{
+			amountRaw:         event.amountRaw,
+			confirmedAt:       event.confirmedAt,
+			confirmedSlot:     event.confirmedSlot,
+			eventType:         event.eventType,
+			id:                event.id,
+			liquidityMint:     event.liquidityMint,
+			market:            event.market,
+			principalDeltaRaw: event.principalDelta,
+			reserve:           event.reserve,
+			positionID:        position.id,
+			eventKind:         eventKind,
+		}
+		if eventKind == "rebalance" || eventKind == "reconciliation" {
+			converted.sourceReserve = &previousReserve
+			converted.sourceMarket = previousMarket
+			converted.sourceLiquidityMint = &previousLiquidityMint
+			converted.destinationReserve = &event.reserve
+			converted.destinationMarket = event.market
+			converted.destinationLiquidityMint = &event.liquidityMint
+		}
+		if eventKind == "deposit" {
+			principalDelta := event.principalDelta
+			if event.sourceDeposit != nil {
+				if amount, ok := depositAmounts[*event.sourceDeposit]; ok {
+					principalDelta = &amount
+				}
+			}
+			if principalDelta != nil && *principalDelta > 0 {
+				principalAmountRaw += *principalDelta
+			}
+		} else if eventKind == "withdrawal" {
+			var withdrawal *withdrawalInfo
+			if event.sourceWithdrawal != nil {
+				if info, ok := withdrawals[*event.sourceWithdrawal]; ok {
+					withdrawal = &info
+				}
+			}
+			if (withdrawal != nil && withdrawal.mode == "full") || event.eventType == "withdrawal_full" {
+				principalAmountRaw = 0
+			} else {
+				principalDelta := int64(0)
+				if event.principalDelta != nil {
+					principalDelta = *event.principalDelta
+				}
+				withdrawnPrincipal := int64(0)
+				if withdrawal != nil {
+					withdrawnPrincipal = withdrawal.withdrawnAmountRaw
+				} else if principalDelta < 0 {
+					withdrawnPrincipal = -principalDelta
+				}
+				if principalAmountRaw > withdrawnPrincipal {
+					principalAmountRaw -= withdrawnPrincipal
+				} else {
+					principalAmountRaw = 0
+				}
+			}
+			if event.sourceWithdrawal != nil {
+				if info, ok := withdrawals[*event.sourceWithdrawal]; ok {
+					amount := info.withdrawnAmountRaw
+					converted.withdrawnAmountRaw = &amount
+				}
+			}
+		}
+		converted.principalAmountRaw = principalAmountRaw
+		if event.rebalanceID != nil {
+			if amount, ok := rebalanceAmounts[*event.rebalanceID]; ok {
+				converted.rebalanceAmountRaw = &amount
+			}
+		}
+		if event.signature != nil {
+			converted.signature = *event.signature
+		} else {
+			converted.signature = strings.Join(earningsNonEmpty([]string{
+				eventKind,
+				earningsIDString(event.sourceDeposit),
+				earningsIDString(event.sourceWithdrawal),
+				earningsIDString(event.rebalanceID),
+				earningsIDString(event.sourceSnapshot),
+			}), ":")
+		}
+		previousReserve = event.reserve
+		previousMarket = event.market
+		previousLiquidityMint = event.liquidityMint
+		history = append(history, converted)
+	}
+	return history, nil
+}
+
+func scanEarningsAmountMap(ctx context.Context, pool *pgxpool.Pool, q string, ids []int64, into map[int64]int64) error {
+	rows, err := pool.Query(ctx, q, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, amount int64
+		if err := rows.Scan(&id, &amount); err != nil {
+			return err
+		}
+		into[id] = amount
+	}
+	return rows.Err()
+}
+
+func earningsIDString(id *int64) string {
+	if id == nil {
+		return ""
+	}
+	return formatInt64(*id)
+}
+
+// earningsNonEmpty drops empty entries, as the TS filter(Boolean) does.
+func earningsNonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+// sortEarningsHoldingEventsDescending ports
+// sortYieldPositionHistoryEventsDescending (repository:436): newest first,
+// then signature ascending, then id ascending.
+func sortEarningsHoldingEventsDescending(events []earningsHoldingEvent) {
+	sort.SliceStable(events, func(i, j int) bool {
+		if !events[i].confirmedAt.Equal(events[j].confirmedAt) {
+			return events[i].confirmedAt.UnixMilli() > events[j].confirmedAt.UnixMilli()
+		}
+		if events[i].signature != events[j].signature {
+			return events[i].signature < events[j].signature
+		}
+		return events[i].id < events[j].id
+	})
+}
+
+// ---- Read-dependency wiring (createEarnEarningsReadDependencies) ----
+
+// newEarningsReadDependencies ports createEarnEarningsReadDependencies
+// (read-service:916): the real store loaders over the yield pool, the
+// timescale APY reader over TIMESCALEDB_URL, and the 8s APY budget. readOnly
+// mirrors the TS flag: no snapshot reads or writes.
+func newEarningsReadDependencies(pool *pgxpool.Pool, readOnly bool) earningsReadDeps {
+	deps := earningsReadDeps{
+		apyTimeout:     8 * time.Second,
+		loadApySamples: newEarningsApyLoader(),
+		loadLedgerEvents: func(ctx context.Context, input earningsReadInput) ([]earningsEvent, error) {
+			return loadEarningsLedgerEvents(ctx, pool, input)
+		},
+		loadHoldingEvents: func(ctx context.Context, input earningsReadInput) ([]earningsHoldingEvent, error) {
+			return loadEarningsHoldingEvents(ctx, pool, input)
+		},
+		loadPositions: func(ctx context.Context, input earningsReadInput) ([]earningsPosition, error) {
+			return loadEarningsPositions(ctx, pool, input)
+		},
+		loadPortfolioSnapshots: func(ctx context.Context, input earningsReadInput, observedSince *time.Time) ([]earningsPortfolioSnapshot, error) {
+			return loadCompleteEarningsVaultSnapshots(ctx, pool, input, observedSince)
+		},
+		loadSourceRevision: func(ctx context.Context, input earningsReadInput) (string, error) {
+			return loadEarningsSourceRevision(ctx, pool, input)
+		},
+		loadHistoryFingerprint: func(ctx context.Context, input earningsReadInput, before time.Time) (string, error) {
+			return loadEarningsHistoryFingerprint(ctx, pool, input, before)
+		},
+		now: func() time.Time { return time.Now() },
+	}
+	if readOnly {
+		return deps
+	}
+	deps.loadSnapshot = func(ctx context.Context, input earningsReadInput, timezone string) (*earningsSnapshotRecord, error) {
+		return loadEarningsSnapshot(ctx, pool, input, timezone)
+	}
+	deps.saveSnapshot = func(ctx context.Context, args earningsSaveArgs) error {
+		return saveEarningsSnapshot(ctx, pool, args)
+	}
+	return deps
 }
