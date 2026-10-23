@@ -45,17 +45,11 @@ import {
   isBiometricEnabled,
 } from "./biometrics";
 import {
-  deleteCloudBackup,
-  refreshCloudBackupIfEnabled,
-} from "./icloud-backup";
-import {
   clearStoredKeypair,
-  consumeBiometricRestorePending,
   getStoredPublicKey,
   hasStoredKeypair,
   importKeypair,
   loadKeypair,
-  restoreFromSyncedKeychain as restoreFromSyncedKeypair,
   storeKeypair,
   changePin as changeKeypairPin,
 } from "./keypair-storage";
@@ -129,8 +123,7 @@ interface WalletContextValue {
   setBiometricEnabled: (pin: string, enabled: boolean) => Promise<void>;
 
   changePin: (newPin: string) => Promise<void>;
-  resetWallet: (opts?: { keepCloudBackup?: boolean }) => Promise<void>;
-  refreshFromStorage: () => Promise<void>;
+  resetWallet: () => Promise<void>;
   getSecretKeyHex: () => string | null;
   startOnboardingReplay: () => void;
   finishOnboardingReplay: () => void;
@@ -250,9 +243,6 @@ function WalletProviderCore({
         const bioEnabled = await isBiometricEnabled();
         setBiometricEnabledState(bioEnabled);
         setState("locked");
-      } else if (await restoreFromSyncedKeypair()) {
-        setPublicKey(await getStoredPublicKey());
-        setState("locked");
       } else {
         setNoLegacyWallet(true);
       }
@@ -335,7 +325,6 @@ function WalletProviderCore({
           : WALLET_SETUP_EVENTS.walletCreated,
         { source },
       );
-      void refreshCloudBackupIfEnabled();
     },
     [],
   );
@@ -479,14 +468,6 @@ function WalletProviderCore({
     })();
   }, [privy, signer, exchangeSession]);
 
-  const refreshFromStorage = useCallback(async () => {
-    const exists = await hasStoredKeypair();
-    if (!exists) return;
-    setPublicKey(await getStoredPublicKey());
-    setBiometricEnabledState(await isBiometricEnabled());
-    setState("locked");
-  }, []);
-
   const unlock = useCallback(async (pin: string) => {
     const kp = await loadKeypair(pin);
     if (!kp) throw new Error("Incorrect PIN");
@@ -497,14 +478,6 @@ function WalletProviderCore({
     setWalletSigner(next);
     setState("unlocked");
     identifyWallet(pk, "imported");
-    if (consumeBiometricRestorePending()) {
-      try {
-        const enabled = await enableBiometrics(pin);
-        setBiometricEnabledState(enabled);
-      } catch (error) {
-        console.warn("[wallet] biometric re-enable after restore failed", error);
-      }
-    }
   }, []);
 
   const unlockWithBiometrics = useCallback(async () => {
@@ -548,14 +521,12 @@ function WalletProviderCore({
       if (biometricEnabled) {
         await enableBiometrics(newPin);
       }
-      void refreshCloudBackupIfEnabled();
     },
     [signer, biometricEnabled],
   );
 
   const resetWallet = useCallback(
-    async (opts?: { keepCloudBackup?: boolean }) => {
-      const keepCloudBackup = opts?.keepCloudBackup ?? false;
+    async () => {
       if (signer instanceof SeedVaultSigner) {
         try {
           await SeedVault.deauthorize(signer.authToken);
@@ -591,10 +562,7 @@ function WalletProviderCore({
       await clearMwaAccount();
       await clearDeeplinkSession();
       await clearVaultAccount();
-      await clearStoredKeypair({ keepSyncedKeychain: keepCloudBackup });
-      if (!keepCloudBackup) {
-        await deleteCloudBackup();
-      }
+      await clearStoredKeypair();
       await disableBiometrics();
       setSigner(null);
       setPublicKey(null);
@@ -602,9 +570,7 @@ function WalletProviderCore({
       await clearEarnSession();
       setBiometricEnabledState(false);
       setState("noWallet");
-      track(WALLET_SETUP_EVENTS.walletReset, {
-        scope: keepCloudBackup ? "device" : "everywhere",
-      });
+      track(WALLET_SETUP_EVENTS.walletReset);
       resetAnalytics();
     },
     [signer, privy],
@@ -643,7 +609,6 @@ function WalletProviderCore({
       setBiometricEnabled,
       changePin: changePinAction,
       resetWallet,
-      refreshFromStorage,
       getSecretKeyHex,
       startOnboardingReplay,
       finishOnboardingReplay,
@@ -667,7 +632,6 @@ function WalletProviderCore({
       setBiometricEnabled,
       changePinAction,
       resetWallet,
-      refreshFromStorage,
       getSecretKeyHex,
       startOnboardingReplay,
       finishOnboardingReplay,

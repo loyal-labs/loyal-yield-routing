@@ -31,26 +31,22 @@ import { Image } from "@/tw/image";
 
 type Props = {
   connectMode: WalletConnectMode;
-  hasCloudBackup?: boolean;
   connectWalletPending?: boolean;
   connectWalletError?: string | null;
   onConnectWallet: () => void;
   onCreateWallet: () => void;
   onLogin: () => void;
   onImportWallet: () => void;
-  onRestoreCloudBackup?: () => void;
 };
 
 export function WalletSetupOnboardingScreen({
   connectMode,
-  hasCloudBackup = false,
   connectWalletPending = false,
   connectWalletError = null,
   onConnectWallet,
   onCreateWallet,
   onLogin,
   onImportWallet,
-  onRestoreCloudBackup,
 }: Props) {
   const scrollRef = useRef<ScrollView>(null);
   const { bottom } = useSafeAreaInsets();
@@ -61,8 +57,8 @@ export function WalletSetupOnboardingScreen({
   const currentIndex = playbackState.currentIndex;
 
   const actions = useMemo(
-    () => buildWalletSetupActions(connectMode, hasCloudBackup),
-    [connectMode, hasCloudBackup],
+    () => buildWalletSetupActions(connectMode),
+    [connectMode],
   );
   const imageHeight = useMemo(
     () => Math.min(Math.max(height * 0.34, 220), 340),
@@ -78,7 +74,7 @@ export function WalletSetupOnboardingScreen({
 
   const wrapWithEnded = useCallback(
     (
-      flow: "connect-wallet" | "create" | "login" | "import" | "restore-icloud",
+      flow: "connect-wallet" | "create" | "login" | "import",
       handler: () => void,
     ) =>
       () => {
@@ -98,17 +94,12 @@ export function WalletSetupOnboardingScreen({
       create: wrapWithEnded("create", onCreateWallet),
       login: wrapWithEnded("login", onLogin),
       import: wrapWithEnded("import", onImportWallet),
-      "restore-icloud": wrapWithEnded(
-        "restore-icloud",
-        onRestoreCloudBackup ?? (() => {}),
-      ),
     }),
     [
       onConnectWallet,
       onCreateWallet,
       onLogin,
       onImportWallet,
-      onRestoreCloudBackup,
       wrapWithEnded,
     ],
   );

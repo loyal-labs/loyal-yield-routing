@@ -52,11 +52,6 @@ import {
   getInstalledDeeplinkWallets,
 } from "@/lib/wallet/deeplink-signer";
 import {
-  findCloudBackup,
-  restoreCloudBackup,
-  type WalletBackupEnvelope,
-} from "@/lib/wallet/icloud-backup";
-import {
   connectMwaWallet,
   deauthorizeMwaWallet,
   isMwaSupported,
@@ -216,7 +211,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     finalizeDeeplinkSigner,
     finalizeVaultSigner,
     finalizePrivySigner,
-    refreshFromStorage,
   } = useWallet();
   const { user: privyUser, logout: privyLogout } = usePrivy();
   const { sendCode, loginWithCode } = useLoginWithEmail();
@@ -293,28 +287,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     if (Platform.OS !== "ios") return;
     getInstalledDeeplinkWallets().then(setDeeplinkWallets);
   }, []);
-
-  const [cloudBackup, setCloudBackup] = useState<WalletBackupEnvelope | null>(
-    null,
-  );
-  useEffect(() => {
-    if (mode !== "setup") return;
-    findCloudBackup().then(setCloudBackup);
-  }, [mode]);
-
-  const handleRestoreCloudBackup = useCallback(async () => {
-    if (!cloudBackup) return;
-    setFinalizing(true);
-    try {
-      await restoreCloudBackup(cloudBackup);
-      await refreshFromStorage();
-    } catch (e) {
-      setFinalizing(false);
-      setConnectWalletError(
-        e instanceof Error ? e.message : "Restoring the backup failed",
-      );
-    }
-  }, [cloudBackup, refreshFromStorage]);
 
   useEffect(() => {
     setScreenAnimationsReady(true);
@@ -675,12 +647,8 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     content = (
       <WalletSetupOnboardingScreen
         connectMode={connectMode}
-        hasCloudBackup={cloudBackup != null}
         connectWalletPending={connectWalletPending}
         connectWalletError={connectWalletError}
-        onRestoreCloudBackup={() => {
-          void handleRestoreCloudBackup();
-        }}
         onConnectWallet={() => {
           void handleConnectWallet();
         }}
