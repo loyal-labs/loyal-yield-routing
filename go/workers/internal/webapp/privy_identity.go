@@ -120,6 +120,9 @@ func (c *privyJWKSCache) key(ctx context.Context, client *http.Client, appID, ki
 	c.keys, c.fetchedAt = keys, now
 	k, ok := keys[kid]
 	if !ok {
+		// Cool down on a miss too, like jose's remote JWK set: an unknown kid
+		// must not refetch Privy's JWKS on every request.
+		c.failedAt = now
 		return privyKey{}, fmt.Errorf("privy: JWKS has no key %q", kid)
 	}
 	return k, nil
