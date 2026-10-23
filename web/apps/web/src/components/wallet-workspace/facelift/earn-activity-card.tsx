@@ -15,13 +15,17 @@ import {
 import { useUnderlineTabs } from "@/components/wallet-workspace/facelift/use-underline-tabs";
 import { EarnYieldIcon } from "@/components/wallet-sidebar/portfolio-content";
 import {
+  type EarnCompoundIconSlot,
   formatEarnTransactionTimestamp,
   formatScheduledSweepAmount,
   formatScheduledSweepTime,
   getAutodepositProgressButtonLabel,
+  getEarnSweepDelegationWindow,
+  getEarnSweepProgressPhase,
   getEarnTransactionAmountColor,
   groupEarnTransactions,
   isPersistedScheduledSweepRetryable,
+  resolveEarnCompoundIconSlots,
   resolveEarnTransactionDisplayTimeZone,
   shouldShowScheduledSweepsSection,
 } from "@/components/wallet-workspace/earn-transactions-pane";
@@ -93,7 +97,25 @@ export function resolveEarnCoinIconSrc(args: {
   return symbol === "USDC" ? null : getTokenIconUrl(symbol);
 }
 
-// Same fallback rules as the old pane's CompoundIcon, at the redesign's 44px.
+export function EarnDualIcon({
+  destination,
+  source,
+}: {
+  destination: ReactNode;
+  source: ReactNode;
+}) {
+  return (
+    <span className="relative block size-11 shrink-0">
+      <span className="absolute top-0 left-0 block size-[30px] overflow-hidden rounded-full">
+        {source}
+      </span>
+      <span className="absolute right-0 bottom-0 block size-[30px] overflow-hidden rounded-full">
+        {destination}
+      </span>
+    </span>
+  );
+}
+
 export function DualIcon({
   backSrc = null,
   frontSrc = null,
@@ -103,34 +125,27 @@ export function DualIcon({
   frontSrc?: string | null;
   isWithdraw?: boolean;
 }) {
-  const back = backSrc ? (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img alt="" className="absolute inset-0 size-full" src={backSrc} />
-  ) : isWithdraw ? (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img alt="" className="absolute inset-0 size-full" src={KAMINO_ICON} />
-  ) : (
-    <UsdcCoinImage />
-  );
-  const front = frontSrc ? (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img alt="" className="absolute inset-0 size-full" src={frontSrc} />
-  ) : isWithdraw ? (
-    <UsdcCoinImage />
-  ) : (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img alt="" className="absolute inset-0 size-full" src={KAMINO_ICON} />
-  );
+  const { back: backSlot, front: frontSlot } = resolveEarnCompoundIconSlots({
+    backSrc,
+    frontSrc,
+    isWithdraw,
+  });
+  const renderSlot = (slot: EarnCompoundIconSlot) =>
+    slot.kind === "market" ? (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img alt="" className="absolute inset-0 size-full" src={slot.src} />
+    ) : slot.kind === "kamino" ? (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img alt="" className="absolute inset-0 size-full" src={KAMINO_ICON} />
+    ) : (
+      <UsdcCoinImage />
+    );
 
   return (
-    <span className="relative block size-11 shrink-0">
-      <span className="absolute top-0 left-0 block size-[30px] overflow-hidden rounded-full">
-        {back}
-      </span>
-      <span className="absolute right-0 bottom-0 block size-[30px] overflow-hidden rounded-full">
-        {front}
-      </span>
-    </span>
+    <EarnDualIcon
+      destination={renderSlot(frontSlot)}
+      source={renderSlot(backSlot)}
+    />
   );
 }
 
@@ -167,6 +182,50 @@ export function GroupHeader({ label }: { label: string }) {
   );
 }
 
+export function EarnPositionRow({
+  action = null,
+  actionWrapClassName = null,
+  amountFraction,
+  amountWhole,
+  icon,
+  isDimmed = false,
+  isHidden,
+  label,
+}: {
+  action?: ReactNode;
+  actionWrapClassName?: string | null;
+  amountFraction: string;
+  amountWhole: string;
+  icon: ReactNode;
+  isDimmed?: boolean;
+  isHidden: boolean;
+  label: string;
+}) {
+  return (
+    <div
+      className={`flex w-full items-center rounded-2xl px-4 ${
+        isDimmed ? "opacity-40" : "group t-hover hover:bg-accent"
+      }`}
+    >
+      <div className="flex items-center py-2 pr-3">{icon}</div>
+      <div className="flex h-[60px] min-w-0 flex-1 flex-col gap-0.5 py-[9px]">
+        <span className="whitespace-nowrap text-[13px] text-muted-foreground leading-4">
+          {label}
+        </span>
+        <p className="whitespace-nowrap font-semibold text-[20px] text-foreground leading-6">
+          <ScrambleText isHidden={isHidden} text={amountWhole} />
+          <span className="text-tertiary">
+            <ScrambleText isHidden={isHidden} text={amountFraction} />
+          </span>
+        </p>
+      </div>
+      {action && actionWrapClassName ? (
+        <div className={actionWrapClassName}>{action}</div>
+      ) : null}
+    </div>
+  );
+}
+
 export type ExecuteNowControls = {
   error: string | null;
   isPending: boolean;
@@ -174,9 +233,6 @@ export type ExecuteNowControls = {
   run: (sweep: LoadedEarnAutodepositScheduledSweep) => Promise<boolean>;
 };
 
-// OG behavior (earn-transactions-pane.tsx ScheduledTransactionRow) in the
-// facelift row styling: countdown until execute-now unlocks, per-slot
-// progress labels while the sweep runs, retry states after failure.
 function ScheduledSweepRow({
   executeNow,
   nowMs,
@@ -190,24 +246,17 @@ function ScheduledSweepRow({
   const { isBalanceHidden } = useBalanceVisibility();
   const progress = executeNow.progressBySlot[sweep.slotId ?? sweep.id];
   const progressButtonLabel = getAutodepositProgressButtonLabel(progress);
-  const isProgressActive = Boolean(
-    progress &&
-      ["requesting", "requested", "selected", "pull_confirmed"].includes(
-        progress.state
-      )
-  );
-  const isProgressComplete = progress?.state === "completed";
-  const isProgressRetryable = Boolean(
-    progress && ["failed", "released", "canceled"].includes(progress.state)
-  );
+  const {
+    isActive: isProgressActive,
+    isComplete: isProgressComplete,
+    isRetryable: isProgressRetryable,
+  } = getEarnSweepProgressPhase(progress);
   const isRetryable = isPersistedScheduledSweepRetryable(sweep);
-  const executeNowAvailableAtMs =
-    getLoadedScheduledSweepExecuteNowAvailableAtMs(sweep);
-  const availableInLabel =
-    executeNowAvailableAtMs === null
-      ? null
-      : formatLoadedScheduledSweepAvailableIn(executeNowAvailableAtMs, nowMs);
-  const isWaitingForDelegation = availableInLabel !== null;
+  const { availableInLabel, isWaitingForDelegation } =
+    getEarnSweepDelegationWindow(
+      getLoadedScheduledSweepExecuteNowAvailableAtMs(sweep),
+      nowMs
+    );
   const isButtonDisabled =
     executeNow.isPending ||
     isProgressActive ||
@@ -619,12 +668,26 @@ function PositionsTab({
         const isDust = usd < 0.005;
         return (
           <StaggerLine index={holdingIndex} key={holding.sourceId}>
-            <div
-              className={`flex w-full items-center rounded-2xl px-4 ${
-                isDust ? "opacity-40" : "group t-hover hover:bg-accent"
-              }`}
-            >
-              <div className="flex items-center py-2 pr-3">
+            <EarnPositionRow
+              action={
+                <button
+                  className="t-hover min-w-16 rounded-full bg-accent px-4 py-2.5 text-center font-medium text-[13px] text-foreground leading-4 hover:bg-accent-active"
+                  onClick={() =>
+                    onWithdrawSource(getWithdrawSourceKeyForHolding(holding))
+                  }
+                  type="button"
+                >
+                  Withdraw
+                </button>
+              }
+              actionWrapClassName={
+                isDust
+                  ? null
+                  : "pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100"
+              }
+              amountFraction={amount.balanceFraction}
+              amountWhole={amount.balanceWhole}
+              icon={
                 <DualIcon
                   backSrc={resolveEarnCoinIconSrc({
                     liquidityMint: holding.liquidityMint,
@@ -634,38 +697,11 @@ function PositionsTab({
                     market: holding.market,
                   })}
                 />
-              </div>
-              <div className="flex h-[60px] min-w-0 flex-1 flex-col gap-0.5 py-[9px]">
-                <span className="whitespace-nowrap text-[13px] text-muted-foreground leading-4">
-                  {label}
-                </span>
-                <p className="whitespace-nowrap font-semibold text-[20px] text-foreground leading-6">
-                  <ScrambleText
-                    isHidden={isBalanceHidden}
-                    text={amount.balanceWhole}
-                  />
-                  <span className="text-tertiary">
-                    <ScrambleText
-                      isHidden={isBalanceHidden}
-                      text={amount.balanceFraction}
-                    />
-                  </span>
-                </p>
-              </div>
-              {isDust ? null : (
-                <div className="pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100">
-                  <button
-                    className="t-hover min-w-16 rounded-full bg-accent px-4 py-2.5 text-center font-medium text-[13px] text-foreground leading-4 hover:bg-accent-active"
-                    onClick={() =>
-                      onWithdrawSource(getWithdrawSourceKeyForHolding(holding))
-                    }
-                    type="button"
-                  >
-                    Withdraw
-                  </button>
-                </div>
-              )}
-            </div>
+              }
+              isDimmed={isDust}
+              isHidden={isBalanceHidden}
+              label={label}
+            />
           </StaggerLine>
         );
       })}

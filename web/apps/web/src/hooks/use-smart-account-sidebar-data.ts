@@ -61,7 +61,10 @@ import type {
   TokenRow,
   TransactionDetail,
 } from "@/components/wallet-sidebar/types";
-import { earnToast } from "@/components/wallet-workspace/facelift/earn-toast";
+import {
+  EARN_TOAST_WALLET_SIGN_STAGE,
+  earnToast,
+} from "@/components/wallet-workspace/facelift/earn-toast";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import {
@@ -2761,7 +2764,7 @@ function createWalletAdapterBridge(
       }
 
       const signed = await wallet.signTransaction(transaction);
-      earnToast.signed();
+      earnToast.signed(EARN_TOAST_WALLET_SIGN_STAGE);
       return signed;
     },
     ...(wallet.signAllTransactions
@@ -2772,7 +2775,7 @@ function createWalletAdapterBridge(
             transactions: T[]
           ): Promise<T[]> => {
             const signed = await wallet.signAllTransactions!(transactions);
-            earnToast.signed();
+            earnToast.signed(EARN_TOAST_WALLET_SIGN_STAGE);
             return signed;
           },
         }
@@ -2790,7 +2793,7 @@ function createWalletAdapterBridge(
               nextConnection,
               sendOptions
             );
-            earnToast.signed();
+            earnToast.signed(EARN_TOAST_WALLET_SIGN_STAGE);
             return signature;
           },
         }),

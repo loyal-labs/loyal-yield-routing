@@ -414,17 +414,20 @@ export function selectEarnFullExitSources(
   return [draft.source];
 }
 
-// Facelift-only: the exact display EarnGrowingBalance renders (dust-snapped,
-// 6 decimals, grouped, $-prefixed), split so the redesigned pane can pop the
-// digits with a muted fraction. Keep in sync with the NumberFlow format below.
+const EARN_BALANCE_DISPLAY_FORMAT = {
+  maximumFractionDigits: EARN_BALANCE_DECIMALS,
+  minimumFractionDigits: EARN_BALANCE_DECIMALS,
+  useGrouping: true,
+} as const;
+
 export function splitEarnBalanceDisplay(baseAmount: number): {
   fraction: string;
   whole: string;
 } {
-  const formatted = snapDollarDisplayDust(baseAmount).toLocaleString("en-US", {
-    maximumFractionDigits: EARN_BALANCE_DECIMALS,
-    minimumFractionDigits: EARN_BALANCE_DECIMALS,
-  });
+  const formatted = snapDollarDisplayDust(baseAmount).toLocaleString(
+    "en-US",
+    EARN_BALANCE_DISPLAY_FORMAT
+  );
   const [whole, fraction] = formatted.split(".");
   return { fraction: `.${fraction}`, whole: `$${whole}` };
 }
@@ -446,29 +449,15 @@ export function EarnGrowingBalance({
           --number-flow-mask-width: 0.24em;
           color: ${isHidden ? "#BBBBC0" : "#000"};
           font-family: ${font};
-          font-size: 40px;
-          font-variant-numeric: tabular-nums;
-          font-weight: 600;
-          line-height: 46px;
         }
         :global(.earn-growing-balance-flow::part(decimal)),
         :global(.earn-growing-balance-flow::part(fraction)) {
           color: ${isHidden ? "#BBBBC0" : "rgba(60, 60, 67, 0.4)"};
         }
-        @media (max-width: 760px) {
-          :global(.earn-growing-balance-flow) {
-            font-size: clamp(30px, 9.5vw, 40px);
-            line-height: 1.08;
-          }
-        }
       `}</style>
       <NumberFlow
-        className="earn-growing-balance-flow"
-        format={{
-          maximumFractionDigits: EARN_BALANCE_DECIMALS,
-          minimumFractionDigits: EARN_BALANCE_DECIMALS,
-          useGrouping: true,
-        }}
+        className="earn-growing-balance-flow earn-growing-balance-type"
+        format={EARN_BALANCE_DISPLAY_FORMAT}
         opacityTiming={{ duration: 0, easing: "linear" }}
         plugins={EARN_NUMBER_FLOW_PLUGINS}
         prefix="$"
