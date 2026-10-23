@@ -7,6 +7,9 @@ import type {
   AutodepositSweepsProgressResponse,
   AutodepositToggleConfirmRequest,
   DprepResponse,
+  EarnCleanupConfirmRequest,
+  EarnCleanupPrepareRequest,
+  EarnCleanupPrepareResponse,
   EarnDepositConfirmRequest,
   EarnPolicyConfirmRequest,
   EarnPolicyPrepareResponse,
@@ -175,70 +178,37 @@ export async function prepareEarnWithdraw(args: {
   return (await res.json()) as EarnWithdrawPrepareResponse;
 }
 
-// Fresh post-withdraw inputs for the device-side cleanup prepare. The backend
-// verifies that no Kamino holding remains at or after `minContextSlot` and
-// returns the full vault token-account inventory (any product mint, either
-// token program); it does not build a transaction.
-export type EarnWithdrawCleanupPrepareContext = {
-  cluster: string;
-  programId: string;
-  settingsPda: string;
-  cleanupInput: {
-    policySigner: string;
-    vaultTokenAccounts: {
-      address: string;
-      amountRaw: string;
-      decimals: number;
-      mint: string;
-      tokenProgramId: string;
-    }[];
-    yieldRoutingPolicy: {
-      account: string;
-      seed: string;
-      setupPolicy: { account: string; seed: string } | null;
-    };
-  };
-};
-
-export async function fetchEarnWithdrawCleanupPrepareContext(args: {
-  auth: EarnAuthFields;
-  minContextSlot: string;
+export async function prepareEarnWithdrawCleanup(args: {
+  walletAddress: string;
+  minContextSlot?: string;
   flowId?: string;
-}): Promise<EarnWithdrawCleanupPrepareContext> {
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/cleanup/prepare-context`,
+}): Promise<EarnCleanupPrepareResponse> {
+  const body: EarnCleanupPrepareRequest = args.minContextSlot
+    ? { minContextSlot: args.minContextSlot }
+    : {};
+  const res = await earnWalletRead(
+    args.walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare`,
     {
+      body: JSON.stringify(body),
+      flowId: args.flowId,
       method: "POST",
-      headers: earnHeaders(args.flowId),
-      body: JSON.stringify({
-        ...args.auth,
-        minContextSlot: args.minContextSlot,
-      }),
     },
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to prepare Earn account cleanup.");
   }
-  return (await res.json()) as EarnWithdrawCleanupPrepareContext;
+  return (await res.json()) as EarnCleanupPrepareResponse;
 }
 
-export type EarnWithdrawCleanupConfirmArgs = {
-  auth: EarnAuthFields;
-  cleanupSignature: string;
-  confirmedSlot: string;
-};
-
-export async function confirmEarnWithdrawCleanup(
-  args: EarnWithdrawCleanupConfirmArgs,
-): Promise<void> {
-  const { auth, ...rest } = args;
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/cleanup/confirm`,
-    {
-      method: "POST",
-      headers: earnHeaders(),
-      body: JSON.stringify({ ...auth, ...rest }),
-    },
+export async function confirmEarnWithdrawCleanup(args: {
+  walletAddress: string;
+  body: EarnCleanupConfirmRequest;
+}): Promise<void> {
+  const res = await earnWalletRead(
+    args.walletAddress,
+    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm`,
+    { body: JSON.stringify(args.body), method: "POST" },
   );
   if (!res.ok) {
     await throwEarnError(res, "Failed to confirm Earn account cleanup.");
