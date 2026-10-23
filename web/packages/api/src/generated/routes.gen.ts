@@ -37,5 +37,6 @@ export type Post = {
   "/api/smart-accounts/yield-optimization/policy-refunds/prepare": Types.EarnPolicyRefundPrepareResponse;
   "/api/smart-accounts/yield-optimization/policy-refunds/scan": Types.EarnPolicyRefundScanResponse;
   "/api/smart-accounts/yield-optimization/position/reconcile": Types.EarnPositionReconcileResponse;
+  "/api/smart-accounts/yield-optimization/withdrawals/confirm": Types.EarnWithdrawConfirmResponse;
   "/api/smart-accounts/yield-optimization/withdrawals/prepare": Types.EarnWithdrawPrepareResponse;
 };

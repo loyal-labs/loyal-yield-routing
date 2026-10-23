@@ -867,6 +867,95 @@ export type EarnWithdrawAccountingReserve = {
     reserve: string;
 };
 
+export type EarnWithdrawConfirmPosition = {
+    currentHolding: EarnWithdrawConfirmedHolding;
+    currentTotalAmountRaw: string;
+    id: string;
+    initialHolding: EarnWithdrawConfirmedInitial;
+    principalAmountRaw: string;
+    status: string;
+};
+
+export type EarnWithdrawConfirmRemainingHolding = {
+    amountRaw: string;
+    kind: string;
+    liquidityMint: string;
+    market: string | null;
+    reserve: string | null;
+};
+
+export type EarnWithdrawConfirmRequest = {
+    accountingReserve?: string;
+    autodepositClose?: EarnWithdrawConfirmRequestAutodepositCloseStruct;
+    cluster?: string;
+    confirmedSlot?: string;
+    delegatedSigner?: string;
+    executionReserve?: string;
+    isFinalStep?: boolean;
+    liquidityMint?: string;
+    market?: string;
+    mode?: string;
+    policyAccount?: string;
+    policyId?: string;
+    policySeed?: string;
+    requestedWithdrawAmountRaw?: string;
+    reserveWithdrawals?: Array<Item>;
+    settings?: string;
+    setupPolicyAccount?: string;
+    setupPolicyId?: string;
+    setupPolicySeed?: string;
+    smartAccountAddress?: string;
+    sourceAmountRaw?: string;
+    sourceId?: string;
+    sourceMetadata?: {
+        [key: string]: unknown;
+    };
+    sourceMint?: string;
+    sourceTokenAccount?: string;
+    sourceType?: string;
+    stepCount?: number;
+    stepIndex?: number;
+    targetReserve?: string;
+    vaultIndex?: number;
+    vaultPubkey?: string;
+    walletAddress?: string;
+    withdrawalSignature?: string;
+    withdrawnAmountRaw?: string;
+};
+
+export type EarnWithdrawConfirmRequestAutodepositCloseStruct = {
+    [key: string]: never;
+};
+
+export type EarnWithdrawConfirmResponse = {
+    blockingTokenAccounts: Array<WithdrawBlockingTokenAccount> | null;
+    position: EarnWithdrawConfirmPosition;
+    remainingHoldings: Array<EarnWithdrawConfirmRemainingHolding> | null;
+    status: string;
+};
+
+export type EarnWithdrawConfirmedHolding = {
+    amountRaw: string;
+    liquidityMint: string;
+    market: string | null;
+    observedAt: string;
+    observedSlot: string;
+    provenance: EarnWithdrawConfirmedProvenance;
+    reserve: string;
+};
+
+export type EarnWithdrawConfirmedInitial = {
+    liquidityMint: string;
+    market: string | null;
+    reserve: string;
+    supplyApyBps: string | null;
+};
+
+export type EarnWithdrawConfirmedProvenance = {
+    lastHoldingEventId: string | null;
+    lastRebalanceDecisionId: string | null;
+};
+
 export type EarnWithdrawExecutionReserve = {
     liquidityMint: string;
     market: string;
@@ -1134,6 +1223,10 @@ export type InviteRequest = {
 
 export type InviteStatus = {
     redeemed: boolean;
+};
+
+export type Item = {
+    [key: string]: never;
 };
 
 export type MobileLibraryArticle = {
@@ -1404,6 +1497,13 @@ export type WirePreparedOperation = {
     payer: string;
     programId: string;
     requiresConfirmation: boolean;
+};
+
+export type WithdrawBlockingTokenAccount = {
+    address: string;
+    amountRaw: string;
+    mint: string;
+    tokenProgramId: string;
 };
 
 export type WithdrawalView = {
@@ -2792,6 +2892,52 @@ export type PostEarnPositionReconcileResponses = {
 };
 
 export type PostEarnPositionReconcileResponse = PostEarnPositionReconcileResponses[keyof PostEarnPositionReconcileResponses];
+
+export type PostEarnWithdrawConfirmData = {
+    body?: EarnWithdrawConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/withdrawals/confirm';
+};
+
+export type PostEarnWithdrawConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnWithdrawConfirmError = PostEarnWithdrawConfirmErrors[keyof PostEarnWithdrawConfirmErrors];
+
+export type PostEarnWithdrawConfirmResponses = {
+    /**
+     * OK
+     */
+    200: EarnWithdrawConfirmResponse;
+};
+
+export type PostEarnWithdrawConfirmResponse = PostEarnWithdrawConfirmResponses[keyof PostEarnWithdrawConfirmResponses];
 
 export type PostEarnWithdrawalsPrepareData = {
     body?: EarnWithdrawPrepareRequest;

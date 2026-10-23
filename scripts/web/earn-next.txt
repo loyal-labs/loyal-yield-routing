@@ -21,4 +21,3 @@ POST /api/smart-accounts/yield-optimization/deposits/confirm
 POST /api/smart-accounts/yield-optimization/realtime/token
 POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm
 POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare
-POST /api/smart-accounts/yield-optimization/withdrawals/confirm
