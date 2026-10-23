@@ -497,6 +497,9 @@ export class AlertRelay {
   }
 
   private async flushDailyRecap(now: number): Promise<void> {
+    // `pendingRecap` is swapped in synchronously below, but the send that
+    // follows is not: without this flag two sweeps overlapping on the timer
+    // would both reach the same unsent recap and post it twice.
     if (this.recapInFlight) {
       return;
     }
@@ -646,6 +649,8 @@ export class AlertRelay {
     const tail = previous.then(() => gate);
     locks.set(key, tail);
 
+    // `await previous` sits inside the try so that a rejection can never skip
+    // `release()` and strand every later waiter on this key.
     try {
       await previous;
       return await action();
@@ -922,6 +927,11 @@ function summarizeDaily(daily: DailyTally, until: number): DailySummary {
   };
 }
 
+/**
+ * The next occurrence of the configured wall-clock minute, strictly after
+ * `from`. Strictly, so a relay that starts exactly on the boundary does not
+ * immediately post a recap for a period it did not observe.
+ */
 export function nextRecapTime(from: number, atMinutes: number): number {
   const offset = ((atMinutes % 1440) + 1440) % 1440;
   const midnight = Math.floor(from / DAY_MS) * DAY_MS;

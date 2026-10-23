@@ -3112,6 +3112,8 @@ export async function findActiveYieldRoutePolicyPair(
   };
 }
 
+// Only inspect the vault's current policy pointer, not historical policy
+// generations: an old closed policy must not classify a new setup as inactive.
 export async function hasInactiveYieldRoutePolicyForVault(
   input: {
     authority: string;
@@ -3530,6 +3532,8 @@ export async function recordReconciledYieldVaultSnapshot(
   statements.push(
     dependencies.client.db
       .update(vaultPositionSnapshots)
+      // Publish completeness only with the positions and idle balances in
+      // this batch; the recorder must never see the staged empty snapshot.
       .set({ context: snapshotContext, isCurrent: true })
       .where(eq(vaultPositionSnapshots.id, snapshot.id)) as never
   );
@@ -3760,6 +3764,7 @@ export async function findYieldPositionHistoryEvents(
     client: getYieldOptimizationClient(),
   }
 ): Promise<UserYieldPositionHistoryEventRecord[]> {
+  // Closed positions (full withdrawals) must keep their history visible.
   const position = await findYieldPosition(input, dependencies);
   if (!position) {
     return [];

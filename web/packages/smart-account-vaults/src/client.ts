@@ -8119,6 +8119,8 @@ export function createSmartAccountVaultsClient(
       strayDelegateRevokeInstruction &&
       (preparedLength === null || preparedLength > EARN_POLICY_PACKET_DATA_SIZE)
     ) {
+      // The heal rider must never sink a deposit: drop it when the tx is at
+      // the packet ceiling — a later deposit or delete re-heals the wallet.
       prepared = freezeDeposit(depositInstructions);
       preparedLength = preparedPacketLength(prepared);
     }
@@ -9121,6 +9123,10 @@ export function createSmartAccountVaultsClient(
       });
     };
 
+    // One approval = one mint: a batch carries a single vault ATA, wallet ATA
+    // and token program, so mints are grouped first and only then chunked.
+    // Groups run largest total first (mint base58 breaks ties) so step order is
+    // deterministic for the same holdings.
     const chunkReserveWithdrawals = (
       withdrawals: ProvisionalReserveWithdrawal[]
     ): MintBatch[] => {
@@ -9604,6 +9610,8 @@ export function createSmartAccountVaultsClient(
     const reserveWithdrawalBatches =
       chunkReserveWithdrawals(reserveWithdrawals);
     const finalBatchIndex = reserveWithdrawalBatches.length - 1;
+    // Mint groups are contiguous, so the last batch carrying a mint is that
+    // mint's own final batch: where its vault/collateral ATAs get closed.
     const finalBatchIndexByMint = new Map<string, number>();
     reserveWithdrawalBatches.forEach((batch, index) => {
       finalBatchIndexByMint.set(
@@ -10071,6 +10079,9 @@ export function createSmartAccountVaultsClient(
     const resolvedVaultCollateralAta = firstWithdrawStep.collateralAta;
     const prepared = firstWithdrawStep.prepared;
     const topLevelAccountingReserve = firstWithdrawStep.accountingReserve;
+    // The top-level summary describes the FIRST step, so its mint accounts
+    // must come from that step's target: on a mixed-mint exit the outer
+    // `usdcMint` is only the mint the requested top-level target named.
     const topLevelMintContext = resolveMintContext(
       reserveWithdrawalBatches[0]![0].target
     );
