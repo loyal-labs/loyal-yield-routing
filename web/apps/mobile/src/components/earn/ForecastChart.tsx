@@ -27,6 +27,7 @@ import {
   getMainApyBps,
   TBILL_APY_BPS,
 } from "./earnForecastModel";
+import { earnForecastChartAxisCeiling } from "@loyal-labs/shared";
 import { useChartEntrance } from "./useChartEntrance";
 
 const AnimatedSvg = Animated.createAnimatedComponent(Svg);
@@ -103,20 +104,9 @@ function ForecastChartBody({
     const build = (apyBps: number) =>
       buildProjection(principal, apyBps, FORECAST_POINTS);
     const loyalValues = build(loyalApyBps);
-    const loyalTarget = loyalValues[loyalValues.length - 1];
-    // Axis ceiling = the Loyal endpoint rounded up to a fine quantum so the red
-    // line nearly touches the top, scaling tightly to the data (matches the web
-    // forecast chart). The old `principal + 10` / nearest-$10 logic crushed
-    // small positions (e.g. a $5 deposit projected to ~$5.50) into the bottom
-    // of a $0–15 axis.
-    const scaleRange = Math.max(loyalTarget - principal, 0.01);
-    const scaleQuantum = Math.max(
-      10 ** (Math.floor(Math.log10(scaleRange)) - 1),
-      0.01,
-    );
-    const ceil = Math.max(
-      Math.ceil(loyalTarget / scaleQuantum) * scaleQuantum,
-      principal + scaleRange,
+    const ceil = earnForecastChartAxisCeiling(
+      principal,
+      loyalValues[loyalValues.length - 1],
     );
     const toNorm = (values: number[]) =>
       values.map((v) =>

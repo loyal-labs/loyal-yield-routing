@@ -63,6 +63,7 @@ export function formatEarnApyPercent(apyBps: number): string {
   return `${(apyBps / 100).toFixed(2)}%`;
 }
 
-export function getEarnForecastTargetMultiplier(apyBps: number): number {
-  return 1 + apyBps / 10_000;
-}
+export {
+  deriveMainUsdcReserveApyBps as deriveMainUsdcReserveForecastApyBps,
+  getEarnForecastTargetMultiplier,
+} from "@loyal-labs/shared";
