@@ -38,7 +38,7 @@ var obsBrowserErrorOperations = []string{
 // The ambient window listeners observe wallet extensions too; their
 // extension-only crashes never reach the error alert (error-contract.ts:76).
 var obsAmbientErrorOperations = map[string]bool{
-	"browser.window.error":     true,
+	"browser.window.error":        true,
 	"browser.unhandled_rejection": true,
 }
 
