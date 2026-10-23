@@ -21,7 +21,7 @@ import (
 
 var earnObservabilityFamily = earnFamily{
 	name:     "observability ingest",
-	ready:    func(earnRoutes) bool { return true },
+	ready:    func(h earnRoutes) bool { return h.OTLP != nil },
 	register: earnRoutes.registerObservability,
 }
 

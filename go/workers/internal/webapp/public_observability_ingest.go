@@ -80,8 +80,8 @@ func journeyTrafficKind(wallet string) string {
 		return "synthetic"
 	}
 	if wallet != "" {
-		allowlist := os.Getenv("OBSERVABILITY_INTERNAL_WALLETS")
-		if allowlist == "" {
+		allowlist, set := os.LookupEnv("OBSERVABILITY_INTERNAL_WALLETS")
+		if !set {
 			allowlist = obsInternalWalletDefault
 		}
 		for _, value := range strings.Split(allowlist, ",") {
