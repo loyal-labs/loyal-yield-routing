@@ -296,7 +296,6 @@ type cleanupCloseInput struct {
 	SetupPolicyAccount *solana.PublicKey
 	SetupPolicySeed    *uint64
 	AutodepositClose   *cleanupAutodepositCloseInput
-	AutodepositClient  withdrawConfirmChain
 }
 
 // buildEarnUsdcCleanup ports prepareEarnUsdcCleanup (client.ts:10168-10331):
