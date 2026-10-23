@@ -34,33 +34,50 @@ func earnUSDCMint(cluster LoyalCluster) solana.PublicKey {
 	return mainnetUSDCMint
 }
 
-// base58CollationOrder is the order JavaScript's localeCompare puts the 58
-// base58 characters in (ICU root collation: primary weights first, then case
-// with lowercase before uppercase — verified against the TS runtime). Byte
-// order differs, e.g. 'H' < 'a' in bytes but 'a' < 'H' here, and the wire
-// sort feeds both the response array and the close-account order.
-const base58CollationOrder = "123456789aAbBcCdDeEfFgGhHijJkKLmMnNopPqQrRsStTuUvVwWxXyYzZ"
+// localeCompare ranks base58 strings by ICU root collation, which decides in
+// two stages (verified against the JS runtime): primary weights across the
+// whole string first — digits 1-9 before letters, letters by alphabet ignoring
+// case ("Ab" < "aZ" because b < z even though 'a' < 'A' in bytes) — and only on
+// a full primary tie the first differing position, where lowercase sorts
+// before uppercase ("aB" < "Ab"). Byte order differs on both counts, and the
+// wire sort feeds both the response array and the close-account order.
 
-var base58CollationRank = func() map[byte]int {
-	ranks := make(map[byte]int, len(base58CollationOrder))
-	for i := 0; i < len(base58CollationOrder); i++ {
-		ranks[base58CollationOrder[i]] = i
+// base58PrimaryRank maps a character to its case-folded primary weight; a
+// miss (rank 0) can only come from a non-base58 byte, which never reaches this
+// code from a pubkey.
+var base58PrimaryRank = func() map[byte]int {
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+	ranks := make(map[byte]int, len(alphabet))
+	for i := 0; i < len(alphabet); i++ {
+		if c := alphabet[i]; c <= '9' {
+			ranks[c] = i + 1
+		} else {
+			ranks[alphabet[i]] = 10 + int(alphabet[i]|0x20) - 'a'
+		}
 	}
 	return ranks
 }()
 
-// collationLess compares base58 strings the way localeCompare does: the first
-// differing position decides, prefix sorts first. Any character outside the
-// alphabet cannot come from a base58 pubkey and falls back to byte order.
+// collationLess compares base58 strings the way localeCompare does: primary
+// weights first with the shorter prefix first, then the case tiebreak.
 func collationLess(left, right string) bool {
 	n := min(len(left), len(right))
 	for i := 0; i < n; i++ {
-		l, r := base58CollationRank[left[i]], base58CollationRank[right[i]]
+		l, r := base58PrimaryRank[left[i]], base58PrimaryRank[right[i]]
 		if l != r {
 			return l < r
 		}
 	}
-	return len(left) < len(right)
+	if len(left) != len(right) {
+		return len(left) < len(right)
+	}
+	for i := 0; i < n; i++ {
+		if left[i] != right[i] {
+			// Same letter, different case: lowercase sorts first.
+			return left[i] >= 'a'
+		}
+	}
+	return false
 }
 
 type vaultRefundTokenAccount struct {
