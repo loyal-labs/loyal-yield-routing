@@ -134,39 +134,40 @@ type earningsCheckpointSeed struct {
 	Exposures    []earningsCheckpointSeedExposure `json:"exposures"`
 }
 
-// EarningsUnavailableBody is the 503 envelope of the Next earnings route: an
-// error object with an optional detailCode plus freshness/outcome markers.
-type EarningsUnavailableBody struct {
-	Error struct {
-		Code       string  `json:"code"`
-		DetailCode *string `json:"detailCode,omitempty"`
-		Message    string  `json:"message"`
-	} `json:"error"`
-	Freshness string `json:"freshness"`
-	Outcome   string `json:"outcome"`
+// earningsUnavailableDetail is the error object of the 503 envelope.
+type earningsUnavailableDetail struct {
+	Code       string  `json:"code"`
+	DetailCode *string `json:"detailCode,omitempty"`
+	Message    string  `json:"message"`
 }
 
+// earningsError is the 503 envelope of the Next earnings route itself (the
+// push.go pattern): huma marshals the returned error value, so the wire
+// fields are exported — an error object with an optional detailCode plus
+// freshness/outcome markers.
 type earningsError struct {
-	body EarningsUnavailableBody
+	Detail    earningsUnavailableDetail `json:"error"`
+	Freshness string                    `json:"freshness"`
+	Outcome   string                    `json:"outcome"`
 }
 
-func (e *earningsError) Error() string  { return e.body.Error.Code }
+func (e *earningsError) Error() string  { return e.Detail.Code }
 func (e *earningsError) GetStatus() int { return 503 }
 
 // newEarningsError builds the route's 503 body the way
 // yield-optimization/earnings/route.ts does: message from the code alone, and
 // detailCode present exactly when the failure is a classified unavailable
-// error.
+// error (the TS error constructor always sets one).
 func newEarningsError(code string, detailCode *string) *earningsError {
-	body := EarningsUnavailableBody{Freshness: "unavailable", Outcome: "unavailable"}
-	body.Error.Code = code
-	body.Error.DetailCode = detailCode
+	e := earningsError{Freshness: "unavailable", Outcome: "unavailable"}
+	e.Detail.Code = code
+	e.Detail.DetailCode = detailCode
 	if code == "history_incomplete" {
-		body.Error.Message = "Earn history is still updating."
+		e.Detail.Message = "Earn history is still updating."
 	} else {
-		body.Error.Message = "Earn earnings are unavailable."
+		e.Detail.Message = "Earn earnings are unavailable."
 	}
-	return &earningsError{body: body}
+	return &e
 }
 
 // Earnings unavailable classifications from earnings-read-service.server.ts.
