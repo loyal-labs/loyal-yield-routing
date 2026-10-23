@@ -1,10 +1,15 @@
 package webapp
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"math/big"
+	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 )
 
 // POST /api/smart-accounts/yield-optimization/withdrawals/confirm ports
@@ -186,4 +191,125 @@ func withdrawFullExitResponse(proof withdrawFullExitZeroProof, position EarnWith
 		RemainingHoldings:     remaining,
 		Status:                proof.Status,
 	}
+}
+
+type earnWithdrawConfirmInput struct {
+	SessionInput
+	Raw rawJSON
+}
+
+type earnWithdrawConfirmOutput struct {
+	Body EarnWithdrawConfirmResponse
+}
+
+func (h earnRoutes) registerWithdrawConfirm(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "post-earn-withdraw-confirm",
+		Method:      http.MethodPost,
+		Path:        earnWithdrawConfirmPath,
+		Summary:     "Confirm an Earn withdrawal transaction",
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 500, 503),
+	}, h.earnWithdrawConfirm)
+	documentJSONBody[EarnWithdrawConfirmRequest](api, earnWithdrawConfirmPath)
+}
+
+// earnWithdrawConfirm is confirm/route.ts:40-86: principal, body, then the
+// verification, with every non-route error folding into 500 record_failed the
+// way the route's catch-all does.
+func (h earnRoutes) earnWithdrawConfirm(ctx context.Context, in *earnWithdrawConfirmInput) (*earnWithdrawConfirmOutput, error) {
+	account, err := h.account(ctx, in.SessionInput)
+	if err != nil {
+		if refused, ok := authRefusal(err); ok {
+			return nil, refused
+		}
+		return nil, earnUnavailable("withdraw confirm principal", err, "withdraw_confirm_unavailable", "The Earn withdrawal confirm is temporarily unavailable.")
+	}
+	body, err := parseWithdrawConfirmBody(in.Raw.data)
+	if err != nil {
+		var envelope *routeError
+		if errors.As(err, &envelope) {
+			return nil, envelope
+		}
+		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+	response, err := withdrawConfirmVerify(ctx, h.Chain, account, body, time.Now)
+	if err != nil {
+		var envelope *routeError
+		if errors.As(err, &envelope) {
+			return nil, envelope
+		}
+		return nil, earnError(http.StatusInternalServerError, "record_failed", confirmErrorText(err, "Confirmed yield withdrawal could not be recorded."))
+	}
+	return &earnWithdrawConfirmOutput{Body: *response}, nil
+}
+
+// withdrawConfirmVerify is verifyConfirmedEarnWithdrawal
+// (earn-withdraw-confirm.server.ts:564-759) minus the EarnWithdrawConfirmError
+// envelope, which earns its status and code here directly. `client` is the
+// chain surface and `now` the verified-at clock; both are parameters so the
+// scratch test can drive the whole flow offline.
+func withdrawConfirmVerify(ctx context.Context, client withdrawConfirmChain, account EarnAccount, body withdrawConfirmInput, now func() time.Time) (*EarnWithdrawConfirmResponse, error) {
+	// Next order (:577-664): principal match, canonical metadata, configured
+	// cluster, signature slot, transaction proof.
+	if body.WalletAddress != account.Wallet.String() || body.Settings != account.Settings.String() {
+		return nil, earnError(http.StatusForbidden, "principal_mismatch", "Confirmed yield withdrawal does not match the authenticated wallet.")
+	}
+	canonical, err := createWithdrawCanonicalInput(body)
+	if err != nil {
+		return nil, earnError(http.StatusBadRequest, "metadata_mismatch", confirmErrorText(err, "Confirmed yield withdrawal metadata is invalid."))
+	}
+	if canonical.Cluster != string(account.Cluster) {
+		return nil, earnError(http.StatusBadRequest, "cluster_mismatch", "Confirmed yield withdrawal cluster does not match the configured Solana environment.")
+	}
+	slot, err := withdrawConfirmedSignatureSlot(ctx, client, withdrawSleep, "withdrawal", canonical.WithdrawalSignature)
+	if err != nil {
+		return nil, earnError(http.StatusBadRequest, "unconfirmed_signature", confirmErrorText(err, "Withdrawal transaction is not confirmed."))
+	}
+	if canonical.ConfirmedSlot.Cmp(slot) != 0 {
+		// The client-supplied slot can be its confirmation context slot
+		// (RPC-lag fallback), not the landing slot; the server-resolved status
+		// slot is canonical (:635-646). Rejecting here would strand the
+		// withdrawal out of the read-model.
+		slog.Warn("[earn-withdraw-confirm] corrected client slot",
+			"clientSlot", canonical.ConfirmedSlot.String(),
+			"resolvedSlot", slot.String(),
+			"settings", canonical.Settings,
+			"walletAddress", canonical.WalletAddress,
+			"withdrawalSignature", canonical.WithdrawalSignature)
+		canonical.ConfirmedSlot = slot
+	}
+	if err := withdrawTransactionProof(ctx, client, withdrawSleep, canonical.Cluster, &canonical); err != nil {
+		return nil, earnError(http.StatusBadRequest, "invalid_transaction_proof", confirmErrorText(err, "Confirmed withdrawal transaction proof is invalid."))
+	}
+
+	// The position carries the corrected slot (:668).
+	position := withdrawVerifiedPosition(canonical, now())
+	if canonical.Mode != "full" {
+		return &EarnWithdrawConfirmResponse{
+			BlockingTokenAccounts: []withdrawBlockingTokenAccount{},
+			Position:              position,
+			RemainingHoldings:     []EarnWithdrawConfirmRemainingHolding{},
+			Status:                "withdrawal_recorded",
+		}, nil
+	}
+	if canonical.IsFinalStep != nil && !*canonical.IsFinalStep {
+		return &EarnWithdrawConfirmResponse{
+			BlockingTokenAccounts: []withdrawBlockingTokenAccount{},
+			Position:              position,
+			RemainingHoldings:     []EarnWithdrawConfirmRemainingHolding{},
+			Status:                "full_exit_incomplete",
+		}, nil
+	}
+
+	// Everything in the zero-proof step, including an unsafe slot, folds into
+	// the same retryable 503 (:688-758).
+	minContextSlot, err := withdrawSafeContextSlot(canonical.ConfirmedSlot)
+	if err == nil {
+		var proof withdrawFullExitZeroProof
+		proof, err = verifyWithdrawFullExitZeroBalances(ctx, client, withdrawSleep, now, canonical.Cluster, canonical, minContextSlot)
+		if err == nil {
+			return withdrawFullExitResponse(proof, position), nil
+		}
+	}
+	return nil, earnError(http.StatusServiceUnavailable, "full_exit_verification_retryable", confirmErrorText(err, "Post-withdraw balance verification failed."))
 }
