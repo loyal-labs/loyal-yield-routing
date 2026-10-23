@@ -410,6 +410,8 @@ proxying the session routes to Next.
 | `OBSERVABILITY_INGESTION_API_KEY` | no | the Next deployment's value, sent with each forwarded OTLP request |
 | `PRIVY_APP_ID` | no | the Next deployment's `NEXT_PUBLIC_PRIVY_APP_ID` |
 | `PRIVY_APP_SECRET` | no | the Next deployment's value; with `PRIVY_APP_ID`, Go serves `POST /api/auth/privy/complete` |
+| `REALTIME_AUTH_SECRET` | no | the realtime deployment's value (one `realtime-envelope` input); with it Go serves `POST /api/smart-accounts/yield-optimization/realtime/token`, without it the route answers 503 `realtime_unavailable` |
+| `REALTIME_EVENTS_URL` | no | the events URL returned in the token response (`realtime.askloyal.com/events` by default) |
 
 With sessions verified, Go serves `GET /api/smart-accounts/earn-max/summary`,
 `GET /api/smart-accounts/earn-max/activity` and `GET`/`POST
