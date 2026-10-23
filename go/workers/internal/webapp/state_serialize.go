@@ -164,6 +164,7 @@ type stateVaultReserveRow struct {
 	Market           *string
 	LiquidityMint    string
 	AmountRaw        int64
+	SupplyApyBps     *int64
 	SnapshotID       int64
 	ObservedSlot     int64
 	ObservedAt       time.Time
@@ -172,9 +173,13 @@ type stateVaultReserveRow struct {
 
 // stateVaultIdleRow mirrors loyal_yield.vault_idle_token_balances_current.
 type stateVaultIdleRow struct {
-	Mint         string
-	AmountRaw    int64
-	ObservedSlot int64
+	Mint             string
+	AmountRaw        int64
+	Owner            string
+	TokenAccount     string
+	SourceCommitment string
+	ObservedSlot     int64
+	ObservedAt       time.Time
 }
 
 // stateRebalanceDecisionRow mirrors the rebalance_decisions columns the
