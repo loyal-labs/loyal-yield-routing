@@ -2,6 +2,7 @@ import { Keypair } from "@solana/web3.js";
 import * as HardwareKey from "expo-hardware-key";
 import * as LocalAuthentication from "expo-local-authentication";
 import * as SecureStore from "expo-secure-store";
+import { Platform } from "react-native";
 
 import { getStoredPublicKey, loadKeypair } from "./keypair-storage";
 
@@ -41,14 +42,17 @@ export async function enableBiometrics(secretKey: Uint8Array): Promise<boolean> 
     JSON.stringify(Array.from(secretKey)),
     "Enable biometric unlock",
   );
-  const publicKey = Keypair.fromSecretKey(secretKey).publicKey.toBase58();
-  if (!(await opensTo(wrapped, publicKey))) return false;
   await SecureStore.setItemAsync(BIOMETRIC_KEYPAIR_KEY, wrapped, KEYCHAIN_OPTIONS);
   const stored = await SecureStore.getItemAsync(BIOMETRIC_KEYPAIR_KEY);
-  if (!stored || !(await opensTo(stored, publicKey))) return false;
+  if (!stored || stored !== wrapped) return false;
+  // Android authenticates the wrap itself. iOS wraps with the public key,
+  // so verify the saved key once to request authentication there as well.
+  if (Platform.OS !== "android") {
+    const publicKey = Keypair.fromSecretKey(secretKey).publicKey.toBase58();
+    if (!(await opensTo(stored, publicKey))) return false;
+  }
   await SecureStore.setItemAsync(BIOMETRIC_ENABLED_KEY, "true");
-  // Keep the old authenticated PIN until the persisted replacement opens.
-  await SecureStore.deleteItemAsync(LEGACY_BIOMETRIC_PIN_KEY);
+  // Retain the legacy credential until a later unlock opens the saved key.
   return true;
 }
 
@@ -92,7 +96,11 @@ export async function authenticateWithBiometrics(): Promise<Uint8Array | null> {
       );
       if (opened.ok) {
         const keypair = Keypair.fromSecretKey(new Uint8Array(JSON.parse(opened.plaintext)));
-        return keypair.publicKey.toBase58() === publicKey ? keypair.secretKey : null;
+        if (keypair.publicKey.toBase58() !== publicKey) return null;
+        // The persisted replacement has now authenticated the same wallet.
+        // Failed cleanup can retry next time without blocking this unlock.
+        await SecureStore.deleteItemAsync(LEGACY_BIOMETRIC_PIN_KEY).catch(() => {});
+        return keypair.secretKey;
       }
       if (opened.reason === "canceled") return null;
     }
