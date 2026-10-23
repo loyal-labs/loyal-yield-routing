@@ -131,8 +131,6 @@ export const zhRisks: RisksDict = {
       },
     },
   },
-  // Every layer a Loyal Earn deposit touches, in the order money flows through
-  // them. Keep this in sync with the Earn policy in packages/loyal-actions.
   riskRows: [
     {
       layer: "Kamino 借贷储备池",

@@ -28,9 +28,6 @@ const LINK_GROUPS: { href: string; icon: string; label: string }[][] = [
   ],
 ];
 
-// Figma 5462:75016 (disconnected) / 5462:74914 (connected) — the mobile
-// settings sheet behind the header gear: theme stepper, the sidebar's link
-// destinations, and connect/disconnect.
 export function SettingsSheet({
   isOpen,
   onClose,

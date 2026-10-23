@@ -25,8 +25,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // validateChallenge rejects malformed bodies itself (invalid_body /
-  // missing_token / missing_solutions), so no schema layer here.
   const result = await redeemCapChallenge(secret, body);
   if (!result.success) {
     return NextResponse.json(

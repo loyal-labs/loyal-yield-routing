@@ -1,3 +1,5 @@
+import type { Base64 } from "./brands";
+
 export interface DappConnectRequest {
   type: "DAPP_CONNECT_REQUEST";
   id: string;
@@ -18,16 +20,14 @@ export interface DappSignTransactionRequest {
   id: string;
   origin: string;
   favicon?: string;
-  // base64-encoded serialized transaction
-  transaction: string;
+  transaction: Base64;
 }
 
 export interface DappSignTransactionResponse {
   type: "DAPP_SIGN_TRANSACTION_RESPONSE";
   id: string;
   approved: boolean;
-  // base64-encoded signed transaction
-  signedTransaction?: string;
+  signedTransaction?: Base64;
   error?: string;
 }
 
@@ -36,16 +36,14 @@ export interface DappSignMessageRequest {
   id: string;
   origin: string;
   favicon?: string;
-  // base64-encoded message bytes
-  message: string;
+  message: Base64;
 }
 
 export interface DappSignMessageResponse {
   type: "DAPP_SIGN_MESSAGE_RESPONSE";
   id: string;
   approved: boolean;
-  // base64-encoded signature
-  signature?: string;
+  signature?: Base64;
   error?: string;
 }
 

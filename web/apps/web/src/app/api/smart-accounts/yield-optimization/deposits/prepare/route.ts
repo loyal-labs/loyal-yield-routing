@@ -7,6 +7,7 @@ import { pda } from "@loyal-labs/loyal-smart-accounts";
 import {
   createSmartAccountVaultsClient,
   isEarnPolicyUpdateRequiredError,
+  serializePreparedEarnUsdcDeposit,
 } from "@loyal-labs/smart-account-vaults";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
@@ -22,10 +23,7 @@ import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-ov
 import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
-import {
-  parseEarnDepositPrepareRequestBody,
-  serializePreparedEarnUsdcDeposit,
-} from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
+import { parseEarnDepositPrepareRequestBody } from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
 import {
   type EarnProductAsset,
   resolveEarnProductAsset,
@@ -40,8 +38,7 @@ import {
   findReconciledActiveYieldPositionForVault,
   type RoutePolicyRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
-
-const EARN_DEPOSIT_VAULT_INDEX = 1;
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 const connectionCache = new Map<SolanaEnv, Connection>();
 
@@ -96,7 +93,7 @@ async function handleRequest(
   }
 
   let amountRaw: bigint;
-  let mint: string | null;
+  let mint: string;
   lifecycle?.setVerifiedWallet(principal.walletAddress);
 
   try {
@@ -126,8 +123,6 @@ async function handleRequest(
       error instanceof Error ? error.message : "Unsupported Earn mint."
     );
   }
-  // Legacy bodies omit the mint (ASK-2099); from here on use the resolved
-  // product mint, which defaults those to USDC.
   mint = productMint.mint.toBase58();
   let policy: RoutePolicyRecord | null = null;
   let setupPolicy: RoutePolicyRecord | null = null;
@@ -144,7 +139,7 @@ async function handleRequest(
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const settingsPda = new PublicKey(principal.settingsPda);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda,
     });
@@ -154,19 +149,19 @@ async function handleRequest(
           authority: principal.walletAddress,
           cluster,
           settings: principal.settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+          vaultIndex: EARN_VAULT_INDEX,
           vaultPubkey: earnVaultPda.toBase58(),
         }),
         findReconciledActiveYieldPositionForVault({
           cluster,
           liquidityMint: mint,
           settings: principal.settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+          vaultIndex: EARN_VAULT_INDEX,
           walletAddress: principal.walletAddress,
         }),
         findCurrentEarnDepositOnboardingAttempt({
           settings: principal.settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+          vaultIndex: EARN_VAULT_INDEX,
           vaultPubkey: earnVaultPda.toBase58(),
           walletAddress: principal.walletAddress,
         }),
@@ -182,6 +177,7 @@ async function handleRequest(
       policy = {
         active: true,
         authority: principal.walletAddress,
+        cluster,
         delegatedSigners: [onboardingAttempt.delegatedSigner],
         firstSeenAt: onboardingAttempt.firstSeenAt,
         id: onboardingAttempt.routePolicyDbId ?? onboardingAttempt.policyId,

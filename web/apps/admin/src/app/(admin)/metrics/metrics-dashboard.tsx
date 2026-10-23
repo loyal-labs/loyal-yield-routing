@@ -30,9 +30,7 @@ import type {
   MetricsDashboardData,
   OperationVolume,
 } from "@/api.gen/types.gen";
-
-/** Fixed slot order; see the --metric-* comment in globals.css. */
-const SERIES_SLOT_COUNT = 6;
+import { SERIES_SLOT_COUNT } from "./metrics-series";
 
 const MIN_BUCKETS_FOR_TREND = 6;
 

@@ -228,10 +228,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
     [props.walletDesktopData.positions]
   );
 
-  // Held tokens only: the selector renders the trending list as its own
-  // section, so inlining popular tokens here would both empty that section
-  // (they'd count as owned) and mislabel them "Your tokens".
-  const swapTargetTokens = derivedTokens;
   const selectedVaultSwapTokens = useMemo<SwapToken[]>(
     () =>
       selectedVault
@@ -242,7 +238,6 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
         : [],
     [selectedVault]
   );
-  const vaultSwapTargetTokens = selectedVaultSwapTokens;
   const executeVaultSwap = props.smartAccountData.executeVaultSwap;
   const selectedVaultSwapExecutionContext = useMemo<
     SwapExecutionContext | undefined
@@ -523,8 +518,8 @@ export function HeroRightSidebar(props: HeroRightSidebarProps) {
           : derivedTokens;
       const targetTokens =
         isVaultSubview && selectedVaultSwapTokens.length > 0
-          ? vaultSwapTargetTokens
-          : swapTargetTokens;
+          ? selectedVaultSwapTokens
+          : derivedTokens;
       const currentFromToken =
         sourceTokens.length > 0
           ? sourceTokens.find(

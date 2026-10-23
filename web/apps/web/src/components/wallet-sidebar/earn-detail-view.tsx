@@ -24,11 +24,21 @@ import type {
   EarnEarningsResponse,
   EarningsRangeId,
 } from "@/lib/yield-optimization/earnings.shared";
+import {
+  earnForecastChartAxisCeiling,
+  EARN_FORECAST_EASE_EXPONENT,
+  EARN_FORECAST_MIN_APY_BPS,
+  EARN_MAIN_USDC_RESERVE_FALLBACK_APY_BPS,
+  EARN_TBILL_APY_BPS,
+} from "@loyal-labs/shared";
+
+export { deriveMainUsdcReserveApyBps as deriveMainUsdcReserveForecastApyBps } from "@loyal-labs/shared";
 
 const font = "var(--font-geist-sans), sans-serif";
 const secondary = "var(--muted-foreground)";
 const LOYAL_EARN_BRAND_COLOR = "var(--primary)";
-const EARN_BALANCE_DECIMALS = 6;
+const USDC_DECIMALS = 6;
+const EARN_BALANCE_DECIMALS = USDC_DECIMALS;
 export const EARN_BALANCE_SAMPLE_MS = 250;
 const USDC_RAW_SCALE = BigInt(1_000_000);
 const USDC_DISPLAY_DUST_TOLERANCE = 1.5 / Number(USDC_RAW_SCALE);
@@ -151,15 +161,13 @@ function snapDollarDisplayDust(value: number) {
     : value;
 }
 
-// Renders the full entered amount. The 6-digit ceiling only absorbs float
-// noise — typed input is already capped at USDC's 6 on-chain decimals.
 export function formatEarnActionCtaAmount(value: number) {
   if (!Number.isFinite(value)) {
     return "0";
   }
 
   return value.toLocaleString("en-US", {
-    maximumFractionDigits: 6,
+    maximumFractionDigits: USDC_DECIMALS,
     minimumFractionDigits: 0,
   });
 }
@@ -198,9 +206,8 @@ export function sanitizeBucksAmountInput(
     isDeletion && rawValue.endsWith(".") ? rawValue.slice(0, -1) : rawValue
   ).replace(/^0+(?=\d)/, "");
 
-  // USDC carries 6 on-chain decimals; anything finer can't be transferred.
   const decimals = nextValue.split(".")[1] ?? "";
-  if (decimals.length > 6) {
+  if (decimals.length > USDC_DECIMALS) {
     return null;
   }
 
@@ -251,7 +258,7 @@ export function buildEarnChartPoints(
 
   return Array.from({ length: months + 1 }, (_, index) => {
     const progress = index / months;
-    const eased = progress ** 1.08;
+    const eased = progress ** EARN_FORECAST_EASE_EXPONENT;
     const value = principal + (target - principal) * eased;
     return {
       date: FORECAST_DATES[index] ?? FORECAST_DATES[FORECAST_DATES.length - 1],
@@ -283,14 +290,14 @@ const EARN_COMPARISON_SERIES: {
   {
     color: "#2688EB",
     dashed: true,
-    fixedApyBps: 559,
+    fixedApyBps: EARN_MAIN_USDC_RESERVE_FALLBACK_APY_BPS,
     key: "mainUsdcReserve",
     label: "Main Kamino USDC",
   },
   {
     color: "#8E8E93",
     dashed: true,
-    fixedApyBps: 365,
+    fixedApyBps: EARN_TBILL_APY_BPS,
     key: "tBill",
     label: "T-Bill",
   },
@@ -304,8 +311,6 @@ const EARN_SERIES_DISPLAY: Record<
   mainUsdcReserve: { color: "#A7B3F6", label: "Main Kamino" },
   tBill: { color: "#B1B1B4", label: "T-Bill" },
 };
-
-const EARN_COMPARISON_MIN_APY_BPS = 50;
 
 type EarnComparisonPoint = {
   date: string;
@@ -321,7 +326,7 @@ function getEarnComparisonApyBps(
   forecastApyBps: number,
   fixedApyBps: number | null
 ): number {
-  return Math.max(fixedApyBps ?? forecastApyBps, EARN_COMPARISON_MIN_APY_BPS);
+  return Math.max(fixedApyBps ?? forecastApyBps, EARN_FORECAST_MIN_APY_BPS);
 }
 
 export function buildEarnComparisonPoints(
@@ -343,7 +348,7 @@ export function buildEarnComparisonPoints(
 
   return Array.from({ length: months + 1 }, (_, index) => {
     const progress = index / months;
-    const eased = progress ** 1.08;
+    const eased = progress ** EARN_FORECAST_EASE_EXPONENT;
     const values = EARN_COMPARISON_SERIES.reduce((acc, series) => {
       acc[series.key] = principal + (targets[series.key] - principal) * eased;
       return acc;
@@ -354,18 +359,6 @@ export function buildEarnComparisonPoints(
       values,
     };
   });
-}
-
-export function deriveMainUsdcReserveForecastApyBps(
-  history: Pick<EarnForecastApyHistoryResponse, "series">,
-  fallbackApyBps = 559
-): number {
-  const latestSample = history.series
-    ?.find((series) => series.key === "mainUsdcReserve")
-    ?.samples.at(-1);
-  return latestSample && Number.isFinite(latestSample.apyBps)
-    ? latestSample.apyBps
-    : fallbackApyBps;
 }
 
 function getEarnApyRate(apyBps: number): number {
@@ -414,17 +407,20 @@ export function selectEarnFullExitSources(
   return [draft.source];
 }
 
-// Facelift-only: the exact display EarnGrowingBalance renders (dust-snapped,
-// 6 decimals, grouped, $-prefixed), split so the redesigned pane can pop the
-// digits with a muted fraction. Keep in sync with the NumberFlow format below.
+const EARN_BALANCE_DISPLAY_FORMAT = {
+  maximumFractionDigits: EARN_BALANCE_DECIMALS,
+  minimumFractionDigits: EARN_BALANCE_DECIMALS,
+  useGrouping: true,
+} as const;
+
 export function splitEarnBalanceDisplay(baseAmount: number): {
   fraction: string;
   whole: string;
 } {
-  const formatted = snapDollarDisplayDust(baseAmount).toLocaleString("en-US", {
-    maximumFractionDigits: EARN_BALANCE_DECIMALS,
-    minimumFractionDigits: EARN_BALANCE_DECIMALS,
-  });
+  const formatted = snapDollarDisplayDust(baseAmount).toLocaleString(
+    "en-US",
+    EARN_BALANCE_DISPLAY_FORMAT
+  );
   const [whole, fraction] = formatted.split(".");
   return { fraction: `.${fraction}`, whole: `$${whole}` };
 }
@@ -446,29 +442,15 @@ export function EarnGrowingBalance({
           --number-flow-mask-width: 0.24em;
           color: ${isHidden ? "#BBBBC0" : "#000"};
           font-family: ${font};
-          font-size: 40px;
-          font-variant-numeric: tabular-nums;
-          font-weight: 600;
-          line-height: 46px;
         }
         :global(.earn-growing-balance-flow::part(decimal)),
         :global(.earn-growing-balance-flow::part(fraction)) {
           color: ${isHidden ? "#BBBBC0" : "rgba(60, 60, 67, 0.4)"};
         }
-        @media (max-width: 760px) {
-          :global(.earn-growing-balance-flow) {
-            font-size: clamp(30px, 9.5vw, 40px);
-            line-height: 1.08;
-          }
-        }
       `}</style>
       <NumberFlow
-        className="earn-growing-balance-flow"
-        format={{
-          maximumFractionDigits: EARN_BALANCE_DECIMALS,
-          minimumFractionDigits: EARN_BALANCE_DECIMALS,
-          useGrouping: true,
-        }}
+        className="earn-growing-balance-flow earn-growing-balance-type"
+        format={EARN_BALANCE_DISPLAY_FORMAT}
         opacityTiming={{ duration: 0, easing: "linear" }}
         plugins={EARN_NUMBER_FLOW_PLUGINS}
         prefix="$"
@@ -495,73 +477,6 @@ export function deriveEstimatedEarnedAmount({
   return Number.isFinite(earningsData.lifetimeEarnedUsd)
     ? earningsData.lifetimeEarnedUsd
     : 0;
-}
-
-function deriveLiveEarnedUsd({
-  apyBps,
-  generatedAt,
-  nowMs = Date.now(),
-  principalAmount,
-}: {
-  apyBps: number;
-  generatedAt: string | null;
-  nowMs?: number;
-  principalAmount: number;
-}) {
-  const generatedAtMs = generatedAt ? Date.parse(generatedAt) : Number.NaN;
-  const elapsedSeconds = Number.isFinite(generatedAtMs)
-    ? Math.max(0, (nowMs - generatedAtMs) / 1000)
-    : 0;
-
-  return getEarningsRatePerSecond(apyBps, principalAmount) * elapsedSeconds;
-}
-
-function normalizeDisplayedEarnedUsd(value: number) {
-  if (!Number.isFinite(value) || value <= 0) {
-    return 0;
-  }
-
-  return Number(value.toFixed(EARN_BALANCE_DECIMALS));
-}
-
-export function deriveEstimatedEarnedSummaryAmount({
-  apyBps,
-  canLiveEstimate = true,
-  earningsData,
-  generatedAt,
-  nowMs,
-  principalAmount,
-}: {
-  apyBps: number;
-  canLiveEstimate?: boolean;
-  earningsData: EarnEarningsResponse | null;
-  generatedAt: string | null;
-  nowMs?: number;
-  principalAmount: number;
-}) {
-  if (!earningsData) {
-    return 0;
-  }
-
-  const lifetimeEarnedUsd = Number.isFinite(earningsData.lifetimeEarnedUsd)
-    ? earningsData.lifetimeEarnedUsd
-    : 0;
-  const estimatedLifetimeEarnedUsd =
-    lifetimeEarnedUsd +
-    (canLiveEstimate
-      ? deriveLiveEarnedUsd({
-          apyBps,
-          generatedAt,
-          nowMs,
-          principalAmount,
-        })
-      : 0);
-
-  // A fresh RPC balance can include an Autodeposit sweep before the confirmed
-  // principal history catches up. Treating balance - principal as earned in
-  // that window turns new deposits into yield, so use the APY/history path as
-  // the display authority.
-  return normalizeDisplayedEarnedUsd(estimatedLifetimeEarnedUsd);
 }
 
 export function formatEarnedSummaryLabel(value: number) {
@@ -927,7 +842,7 @@ const HISTORICAL_HOVER_DATE_FORMAT = new Intl.DateTimeFormat("en-US", {
 });
 const HISTORICAL_MAIN_USDC_FALLBACK_APY_PERCENT =
   (EARN_COMPARISON_SERIES.find((series) => series.key === "mainUsdcReserve")
-    ?.fixedApyBps ?? 559) / 100;
+    ?.fixedApyBps ?? EARN_MAIN_USDC_RESERVE_FALLBACK_APY_BPS) / 100;
 
 function historicalApyValueSegments(
   apyPercent: number,
@@ -1469,7 +1384,7 @@ export function ForecastChart({
   apy,
   apyDataRevealed,
   isBalanceHidden = false,
-  mainUsdcReserveApyBps = 559,
+  mainUsdcReserveApyBps = EARN_MAIN_USDC_RESERVE_FALLBACK_APY_BPS,
   principal = 1000,
 }: {
   apy: EarnForecastApy;
@@ -1515,15 +1430,7 @@ export function ForecastChart({
 
   const loyalApyBps = getEarnComparisonApyBps(apy.apyBps, null);
   const loyalTarget = principal * getEarnForecastTargetMultiplier(loyalApyBps);
-  const scaleRange = Math.max(loyalTarget - principal, 0.01);
-  const scaleQuantum = Math.max(
-    10 ** (Math.floor(Math.log10(scaleRange)) - 1),
-    0.01
-  );
-  const scaleMax = Math.max(
-    Math.ceil(loyalTarget / scaleQuantum) * scaleQuantum,
-    principal + scaleRange
-  );
+  const scaleMax = earnForecastChartAxisCeiling(principal, loyalTarget);
 
   const isHovering = hoverIndex !== null;
   const focusIndex = hoverIndex ?? points.length - 1;

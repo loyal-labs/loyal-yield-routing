@@ -87,6 +87,25 @@ export function useSendRecentRecipients(walletAddress: string | null): {
   return { recents, recordSend };
 }
 
+export function useSendFormActive(onSubmitStarted: () => void): {
+  handleFormActiveChange: (isFormActive: boolean) => void;
+  isFormActive: boolean;
+  reopenForm: () => void;
+} {
+  const [isFormActive, setIsFormActive] = useState(true);
+  const handleFormActiveChange = useCallback(
+    (nextIsFormActive: boolean) => {
+      setIsFormActive(nextIsFormActive);
+      if (!nextIsFormActive) {
+        onSubmitStarted();
+      }
+    },
+    [onSubmitStarted]
+  );
+  const reopenForm = useCallback(() => setIsFormActive(true), []);
+  return { handleFormActiveChange, isFormActive, reopenForm };
+}
+
 function RecipientStashIcon() {
   return (
     <span className="flex size-11 shrink-0 items-center justify-center rounded-[11px] bg-accent">

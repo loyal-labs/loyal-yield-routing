@@ -29,8 +29,10 @@ import {
 import {
   formatLoadedScheduledSweepAvailableIn,
   getLoadedScheduledSweepExecuteNowAvailableAtMs,
+  getEarnTransactionRowLabel,
+  isScheduledSweepExecuting,
   type LoadedEarnAutodepositScheduledSweep,
-} from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+} from "@loyal-labs/shared";
 import {
   hydratePreparedEarnRecurringDelegationRefund,
   hydratePreparedEarnPolicyRefund,
@@ -127,38 +129,6 @@ export function formatEarnTransactionTimestamp(
 
 function getEarnTransactionConfirmedAt(item: EarnTransactionItem) {
   return item.confirmedAt ?? item.sortTimestamp ?? null;
-}
-
-export function getEarnTransactionRowLabel(
-  item: Pick<EarnTransactionItem, "eventType" | "kind">
-) {
-  switch (item.eventType) {
-    case "autodeposit_created":
-      return "Create allowance";
-    case "autodeposit_closed":
-      return "Remove allowance";
-    case "balance_sweep":
-      return "Balance sweep";
-    case "deposit_initialized":
-      return "Create & Deposit";
-    case "withdrawal_full":
-      return "Withdraw & Close";
-  }
-
-  switch (item.kind) {
-    case "deposit":
-      return "Deposit";
-    case "withdraw":
-      return "Withdraw";
-    case "rebalance":
-      return "Rebalanced";
-    case "reconciliation":
-      return "Reconciled";
-    case "balance_sweep":
-      return "Balance sweep";
-    case "autodeposit_action":
-      return "Allowance";
-  }
 }
 
 export function buildEarnTransactionDetail(
@@ -372,6 +342,48 @@ function CompoundMarketImage({ src }: { src: string }) {
   );
 }
 
+export function deriveEarnTransactionIconSources(
+  item: EarnTransactionItem,
+  coinSrc: string | null
+): { backSrc: string | null; frontSrc: string | null } {
+  const isMovement =
+    item.kind === "rebalance" || item.kind === "reconciliation";
+  return {
+    backSrc:
+      isMovement || item.kind === "withdraw" ? item.source.icon : coinSrc,
+    frontSrc:
+      isMovement || item.kind === "deposit" ? item.destination.icon : coinSrc,
+  };
+}
+
+export type EarnCompoundIconSlot =
+  | { kind: "kamino" }
+  | { kind: "market"; src: string }
+  | { kind: "usdc" };
+
+export function resolveEarnCompoundIconSlots({
+  backSrc = null,
+  frontSrc = null,
+  isWithdraw = false,
+}: {
+  backSrc?: string | null;
+  frontSrc?: string | null;
+  isWithdraw?: boolean;
+}): { back: EarnCompoundIconSlot; front: EarnCompoundIconSlot } {
+  return {
+    back: backSrc
+      ? { kind: "market", src: backSrc }
+      : isWithdraw
+      ? { kind: "kamino" }
+      : { kind: "usdc" },
+    front: frontSrc
+      ? { kind: "market", src: frontSrc }
+      : isWithdraw
+      ? { kind: "usdc" }
+      : { kind: "kamino" },
+  };
+}
+
 function CompoundIcon({
   backSrc = null,
   frontSrc = null,
@@ -381,20 +393,27 @@ function CompoundIcon({
   frontSrc?: string | null;
   isWithdraw?: boolean;
 }) {
-  const back = backSrc ? (
-    <CompoundMarketImage src={backSrc} />
-  ) : isWithdraw ? (
-    <CompoundKaminoImage />
-  ) : (
-    <CompoundUsdcImage />
-  );
-  const front = frontSrc ? (
-    <CompoundMarketImage src={frontSrc} />
-  ) : isWithdraw ? (
-    <CompoundUsdcImage />
-  ) : (
-    <CompoundKaminoImage />
-  );
+  const { back: backSlot, front: frontSlot } = resolveEarnCompoundIconSlots({
+    backSrc,
+    frontSrc,
+    isWithdraw,
+  });
+  const back =
+    backSlot.kind === "market" ? (
+      <CompoundMarketImage src={backSlot.src} />
+    ) : backSlot.kind === "kamino" ? (
+      <CompoundKaminoImage />
+    ) : (
+      <CompoundUsdcImage />
+    );
+  const front =
+    frontSlot.kind === "market" ? (
+      <CompoundMarketImage src={frontSlot.src} />
+    ) : frontSlot.kind === "kamino" ? (
+      <CompoundKaminoImage />
+    ) : (
+      <CompoundUsdcImage />
+    );
   return (
     <span
       aria-hidden="true"
@@ -498,12 +517,8 @@ function EarnTransactionRow({
   onSelect: (item: EarnTransactionItem) => void;
 }) {
   const label = getEarnTransactionRowLabel(item);
-  const isMovement =
-    item.kind === "rebalance" || item.kind === "reconciliation";
-  const compoundBackIcon =
-    isMovement || item.kind === "withdraw" ? item.source.icon : null;
-  const compoundFrontIcon =
-    isMovement || item.kind === "deposit" ? item.destination.icon : null;
+  const { backSrc: compoundBackIcon, frontSrc: compoundFrontIcon } =
+    deriveEarnTransactionIconSources(item, null);
   const timestamp =
     formatEarnTransactionTimestamp(
       getEarnTransactionConfirmedAt(item),
@@ -711,13 +726,7 @@ export function resolveVisiblePendingScheduledSweep(
   return scheduledSweeps.length > 0 ? null : pendingScheduledSweep ?? null;
 }
 
-function isPersistedScheduledSweepExecuting(
-  sweep: LoadedEarnAutodepositScheduledSweep
-): boolean {
-  return sweep.status === "requested" || sweep.status === "selected";
-}
-
-function isPersistedScheduledSweepRetryable(
+export function isPersistedScheduledSweepRetryable(
   sweep: LoadedEarnAutodepositScheduledSweep
 ): boolean {
   return sweep.status === "failed" || sweep.status === "released";
@@ -750,7 +759,7 @@ function getAutodepositProgressLabel(
   }
 }
 
-function getAutodepositProgressButtonLabel(
+export function getAutodepositProgressButtonLabel(
   progress: EarnAutodepositProgress | undefined
 ): string | null {
   switch (progress?.state) {
@@ -771,6 +780,41 @@ function getAutodepositProgressButtonLabel(
     default:
       return null;
   }
+}
+
+export function getEarnSweepProgressPhase(
+  progress: EarnAutodepositProgress | undefined
+): {
+  isActive: boolean;
+  isComplete: boolean;
+  isRetryable: boolean;
+} {
+  return {
+    isActive: Boolean(
+      progress &&
+        ["requesting", "requested", "selected", "pull_confirmed"].includes(
+          progress.state
+        )
+    ),
+    isComplete: progress?.state === "completed",
+    isRetryable: Boolean(
+      progress && ["failed", "released", "canceled"].includes(progress.state)
+    ),
+  };
+}
+
+export function getEarnSweepDelegationWindow(
+  executeNowAvailableAtMs: number | null,
+  nowMs: number
+): { availableInLabel: string | null; isWaitingForDelegation: boolean } {
+  const availableInLabel =
+    executeNowAvailableAtMs === null
+      ? null
+      : formatLoadedScheduledSweepAvailableIn(executeNowAvailableAtMs, nowMs);
+  return {
+    availableInLabel,
+    isWaitingForDelegation: availableInLabel !== null,
+  };
 }
 
 function ScheduledTransactionRow({
@@ -801,16 +845,11 @@ function ScheduledTransactionRow({
   );
   const progressLabel = getAutodepositProgressLabel(progress);
   const progressButtonLabel = getAutodepositProgressButtonLabel(progress);
-  const isProgressActive = Boolean(
-    progress &&
-      ["requesting", "requested", "selected", "pull_confirmed"].includes(
-        progress.state
-      )
-  );
-  const isProgressComplete = progress?.state === "completed";
-  const isProgressRetryable = Boolean(
-    progress && ["failed", "released", "canceled"].includes(progress.state)
-  );
+  const {
+    isActive: isProgressActive,
+    isComplete: isProgressComplete,
+    isRetryable: isProgressRetryable,
+  } = getEarnSweepProgressPhase(progress);
   const timeLabel =
     progressLabel ??
     (isRetryable
@@ -822,11 +861,8 @@ function ScheduledTransactionRow({
     "executeNowAvailableAt" in sweep
       ? getLoadedScheduledSweepExecuteNowAvailableAtMs(sweep)
       : null;
-  const availableInLabel =
-    executeNowAvailableAtMs === null
-      ? null
-      : formatLoadedScheduledSweepAvailableIn(executeNowAvailableAtMs, nowMs);
-  const isWaitingForDelegation = availableInLabel !== null;
+  const { availableInLabel, isWaitingForDelegation } =
+    getEarnSweepDelegationWindow(executeNowAvailableAtMs, nowMs);
   const isButtonDisabled =
     isPending ||
     isExecuting ||
@@ -2248,7 +2284,7 @@ export function EarnTransactionsPane({
                   ) : null}
                   {renderedScheduledSweeps.map((sweep) => {
                     const isPersistedExecuting =
-                      isPersistedScheduledSweepExecuting(sweep);
+                      isScheduledSweepExecuting(sweep);
                     const isRetryable =
                       isPersistedScheduledSweepRetryable(sweep);
                     const sweepSlotId = sweep.slotId ?? sweep.id;

@@ -1,7 +1,9 @@
 import {
+  type AddressLookupTableAccount,
   ComputeBudgetProgram,
   type Connection,
   type PublicKey,
+  type TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
@@ -13,7 +15,11 @@ import {
 } from "@/lib/wallet/rejection";
 import type { Signer } from "@/lib/wallet/signer";
 
-import type { HydratedPreparedOperation } from "./wire";
+export type HydratedPreparedOperation = {
+  instructions: readonly TransactionInstruction[];
+  lookupTableAccounts: readonly AddressLookupTableAccount[];
+  payer: PublicKey;
+};
 
 export type SentTransaction = { signature: string; confirmedSlot: string };
 

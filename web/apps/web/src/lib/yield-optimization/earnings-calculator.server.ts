@@ -449,8 +449,6 @@ function getApyAt(
     const found = lastIndexAtOrBefore(index.all.times, atMs);
     return found === -1 ? null : index.all.apys[found];
   }
-  // Reserve-scoped lookups also match unscoped samples; on ties the later
-  // array position wins, matching the old overwrite-in-order scan.
   const scoped = index.byReserve.get(reserve);
   const scopedFound = scoped ? lastIndexAtOrBefore(scoped.times, atMs) : -1;
   const unscopedFound = lastIndexAtOrBefore(index.unscoped.times, atMs);

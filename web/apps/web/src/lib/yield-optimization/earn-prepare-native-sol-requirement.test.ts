@@ -1,3 +1,9 @@
+import {
+  hydratePreparedEarnUsdcAutodepositSetup,
+  serializePreparedEarnUsdcAutodepositSetup,
+  hydratePreparedEarnUsdcDeposit,
+  serializePreparedEarnUsdcDeposit,
+} from "@loyal-labs/smart-account-vaults";
 import { describe, expect, test } from "bun:test";
 import type {
   SmartAccountNativeSolRequirement,
@@ -5,15 +11,6 @@ import type {
   SmartAccountPreparedEarnUsdcDeposit,
 } from "@loyal-labs/smart-account-vaults";
 import { PublicKey } from "@solana/web3.js";
-
-import {
-  hydratePreparedEarnUsdcAutodepositSetup,
-  serializePreparedEarnUsdcAutodepositSetup,
-} from "./earn-autodeposit-prepare-contracts.shared";
-import {
-  hydratePreparedEarnUsdcDeposit,
-  serializePreparedEarnUsdcDeposit,
-} from "./earn-deposit-prepare-contracts.shared";
 
 const PROGRAM_ID = new PublicKey("SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG");
 const PAYER = new PublicKey("11111111111111111111111111111113");

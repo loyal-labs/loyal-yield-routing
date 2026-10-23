@@ -249,8 +249,6 @@ function loadTrendingTokensFromNetwork(): Promise<TokenSearchResult[]> {
   )
     .then((results) => {
       trendingCache = results.filter((t): t is TokenSearchResult => t !== null);
-      // Only persist complete lists so a partial outage never pins a
-      // degraded picker for the full TTL.
       if (trendingCache.length === TRENDING_SYMBOLS.length) {
         writeClientCache({
           key: TRENDING_TOKENS_CACHE_KEY,

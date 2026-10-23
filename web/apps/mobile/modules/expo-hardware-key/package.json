@@ -1,0 +1,8 @@
+{
+  "name": "expo-hardware-key",
+  "version": "0.1.0",
+  "description": "Non-exportable hardware key (Secure Enclave, Android Keystore) that wraps and unwraps wallet secrets",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "private": true
+}

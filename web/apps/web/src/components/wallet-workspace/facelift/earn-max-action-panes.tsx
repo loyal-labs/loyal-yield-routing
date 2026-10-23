@@ -1,6 +1,7 @@
 "use client";
 
 import { floorToCents } from "@/components/wallet-workspace/facelift/floor-to-cents";
+import { EarnDualIcon } from "@/components/wallet-workspace/facelift/earn-activity-card";
 import {
   Infinity as InfinityIcon,
   Landmark,
@@ -50,9 +51,6 @@ export function EarnMaxInfinityBadge({ className }: { className: string }) {
   );
 }
 
-/** USDC coin + the red Earn MAX marker, source top-left → destination
- * bottom-right — same direction contract as the Earn activity DualIcon:
- * deposits read Main → Earn MAX, withdrawals Earn MAX → Main. */
 export function EarnMaxDualIcon({
   isWithdraw = false,
 }: {
@@ -68,14 +66,10 @@ export function EarnMaxDualIcon({
   );
   const marker = <EarnMaxInfinityBadge className="size-full" />;
   return (
-    <span className="relative block size-11 shrink-0">
-      <span className="absolute top-0 left-0 block size-[30px] overflow-hidden rounded-full">
-        {isWithdraw ? marker : coin}
-      </span>
-      <span className="absolute right-0 bottom-0 block size-[30px] overflow-hidden rounded-full">
-        {isWithdraw ? coin : marker}
-      </span>
-    </span>
+    <EarnDualIcon
+      destination={isWithdraw ? coin : marker}
+      source={isWithdraw ? marker : coin}
+    />
   );
 }
 
@@ -118,7 +112,6 @@ export function EarnMaxInfoFaqsCard({ className }: { className: string }) {
   );
 }
 
-// "1,010.22" → 1010220000n (USDC's 6 decimals); null when not a plain amount.
 function parseUsdcRaw(value: string): bigint | null {
   const cleaned = value.replaceAll(",", "");
   if (!/^\d+(?:\.\d{0,6})?$/.test(cleaned)) {

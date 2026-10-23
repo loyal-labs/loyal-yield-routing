@@ -1,11 +1,14 @@
+import {
+  hydratePreparedEarnUsdcDeposit,
+  type WireSmartAccountPreparedEarnUsdcDeposit,
+} from "@loyal-labs/smart-account-vaults";
 import { NextResponse } from "next/server";
-import { pda } from "@loyal-labs/loyal-smart-accounts";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
-import { PublicKey } from "@solana/web3.js";
 
 import { getOrCreateCurrentUser } from "@/features/chat/server/app-user";
 import { authenticateMobileWalletRequest } from "@/features/identity/server/mobile-wallet-auth";
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
+import { deriveEarnVaultAddress } from "@/features/smart-accounts/derivation";
 import { findReadyCurrentUserSmartAccount } from "@/features/smart-accounts/server/service";
 import { reportEarnDepositQuestCompletion } from "@/features/solana-week/server/quest-completion-service";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
@@ -18,12 +21,6 @@ import {
   verifyConfirmedEarnDeposit,
 } from "@/lib/yield-optimization/earn-deposit-confirm.server";
 import { citeEarnDepositPolicies } from "@/lib/yield-optimization/earn-deposit-policy-citation.server";
-import {
-  hydratePreparedEarnUsdcDeposit,
-  type WireSmartAccountPreparedEarnUsdcDeposit,
-} from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
-
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 type MobileConfirmFields = {
   preparedDeposit: WireSmartAccountPreparedEarnUsdcDeposit;
@@ -123,17 +120,7 @@ export async function POST(request: Request) {
       );
     }
     settingsPda = existing.settingsPda;
-    // Earn confirm keys on the vault (smart-account index 1), not the wallet's
-    // main account (index 0) that findReadyCurrentUserSmartAccount returns. The
-    // web client derives the vault from the prepared op; mirror that here so the
-    // canonical `smartAccountAddress` check passes and the vault-keyed position
-    // is matched. (Same derivation the deposit-confirm canonical uses.)
-    smartAccountAddress = pda
-      .getSmartAccountPda({
-        settingsPda: new PublicKey(settingsPda),
-        accountIndex: EARN_DEPOSIT_VAULT_INDEX,
-      })[0]
-      .toBase58();
+    smartAccountAddress = deriveEarnVaultAddress({ settingsPda });
   } catch (error) {
     console.error("[mobile-earn-deposit-confirm] resolve failed", {
       errorMessage:

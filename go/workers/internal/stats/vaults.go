@@ -47,9 +47,6 @@ func newVaultList(pool *pgxpool.Pool) *vaultList {
 	return &vaultList{pool: pool}
 }
 
-// page never holds mu across the read. A usable page is returned at once while
-// the single refresh runs detached; without one the caller waits for that
-// refresh or its own ctx, and a failed refresh is not retried for vaultsBackoff.
 func (v *vaultList) page(ctx context.Context) (vaultsPage, bool) {
 	v.mu.Lock()
 	now := time.Now()

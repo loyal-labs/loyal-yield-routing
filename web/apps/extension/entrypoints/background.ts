@@ -9,6 +9,7 @@ import type {
   DappSignMessageResponse,
   BackgroundToDappResponse,
 } from "~/src/lib/dapp-messages";
+import { type Base64, uint8ArrayToBase64 } from "~/src/lib/brands";
 import { getStoredPublicKey } from "~/src/lib/keypair-storage";
 import {
   activeWalletSource,
@@ -40,8 +41,8 @@ interface PendingDappRequest {
   approvalNonce: string;
   kind: "connect" | "signTransaction" | "signMessage";
   origin: string;
-  transaction?: string; // base64
-  message?: string; // base64
+  transaction?: Base64;
+  message?: Base64;
 }
 
 const pendingDappRequests = new Map<string, PendingDappRequest>();
@@ -128,12 +129,6 @@ async function applyViewMode(mode: "sidebar" | "popup") {
     await browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
     await browser.action.setPopup({ popup: "/popup.html" });
   }
-}
-
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
 }
 
 function base64ToUint8Array(b64: string): Uint8Array {
@@ -349,7 +344,6 @@ export default defineBackground(() => {
   let approvalPopupId: number | null = null;
 
   async function isExtensionUiOpen(): Promise<boolean> {
-    // Fast path: in-memory counter (accurate unless SW restarted)
     if (uiConnectionCount > 0) return true;
     try {
       const contexts = await (

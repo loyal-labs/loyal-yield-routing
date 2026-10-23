@@ -19,6 +19,10 @@
 // `isWalletSessionError` instead of matching codes, and telemetry can report
 // the actual failure instead of a blanket `request_failed`.
 
+import type { SolanaMobileWalletAdapterProtocolErrorCode } from "@solana-mobile/mobile-wallet-adapter-protocol";
+
+import { DeeplinkResponseError } from "./deeplink-protocol";
+
 export type WalletSessionFailure =
   | "authorization_expired"
   | "account_mismatch"
@@ -71,6 +75,43 @@ export function isWalletSessionError(
   error: unknown,
 ): error is WalletSessionError {
   return error instanceof WalletSessionError;
+}
+
+// React Native can deliver a native rejection as a plain object, so do not
+// require the value to inherit from Error (or from one particular JS realm).
+export function errorCodeOf(error: unknown): string | number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" || typeof code === "number"
+    ? code
+    : undefined;
+}
+
+export function hasErrorCode(error: unknown, code: string | number): boolean {
+  return errorCodeOf(error) === code;
+}
+
+export const MWA_ERROR = {
+  ERROR_AUTHORIZATION_FAILED: -1,
+  ERROR_NOT_SIGNED: -3,
+} as const satisfies Pick<
+  typeof SolanaMobileWalletAdapterProtocolErrorCode,
+  "ERROR_AUTHORIZATION_FAILED" | "ERROR_NOT_SIGNED"
+>;
+
+/**
+ * True when the wallet rejected the request because it no longer honors this
+ * app's authorization — the user disconnected the app inside the wallet. Both
+ * protocols express it: the deeplink protocol's 4100 unauthorized error
+ * (`DeeplinkResponseError.isUnauthorized`) and MWA's
+ * ERROR_AUTHORIZATION_FAILED. The stored authorization behind such a session
+ * is dead and must be dropped (`forgetWalletAuthorization`).
+ */
+export function isDeadAuthorization(error: unknown): boolean {
+  return (
+    (error instanceof DeeplinkResponseError && error.isUnauthorized) ||
+    hasErrorCode(error, MWA_ERROR.ERROR_AUTHORIZATION_FAILED)
+  );
 }
 
 /**

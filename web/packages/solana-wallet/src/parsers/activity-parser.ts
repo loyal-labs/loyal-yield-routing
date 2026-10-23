@@ -1,4 +1,9 @@
 import {
+  KAMINO_FARMS_PROGRAM_ID,
+  KAMINO_LEND_PROGRAM_ID as KAMINO_LEND_PROGRAM_ID_KEY,
+  SMART_ACCOUNTS_PROGRAM_ID,
+} from "@loyal-labs/actions/constants";
+import {
   type ParsedInnerInstruction,
   type ParsedInstruction,
   type ParsedMessage,
@@ -48,11 +53,11 @@ const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
 // smart-account vaults program moves funds in and out of Kamino — so without
 // classification they render as "Sent to Unknown recipient" in activity feeds.
 const EARN_PROGRAM_IDS = new Set([
-  "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG", // smart-account vaults
-  "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD", // Kamino Lend
-  "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr", // Kamino Farms
+  SMART_ACCOUNTS_PROGRAM_ID.toBase58(),
+  KAMINO_LEND_PROGRAM_ID_KEY.toBase58(),
+  KAMINO_FARMS_PROGRAM_ID.toBase58(),
 ]);
-const KAMINO_LEND_PROGRAM_ID = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
+const KAMINO_LEND_PROGRAM_ID = KAMINO_LEND_PROGRAM_ID_KEY.toBase58();
 const TOKEN_PROGRAM_ID = new PublicKey(
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 );
@@ -623,7 +628,7 @@ export function normalizeParsedTransaction(args: {
     isDustTokenTransfer({
       isUserSigned: isSigner,
       direction: tokenChange.direction,
-      rawAmount: tokenChange.absRaw,
+      absRaw: tokenChange.absRaw,
       decimals: tokenChange.decimals,
     })
   ) {

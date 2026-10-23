@@ -58,8 +58,6 @@ export class CompiledKeys {
     payerKeyMeta.isWritable = true;
 
     for (const ix of instructions) {
-      // This is the only difference from the original.
-      // getOrInsertDefault(ix.programId).isInvoked = true;
       getOrInsertDefault(ix.programId).isInvoked = false;
       for (const accountMeta of ix.keys) {
         const keyMeta = getOrInsertDefault(accountMeta.pubkey);

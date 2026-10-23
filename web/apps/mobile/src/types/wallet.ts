@@ -53,7 +53,6 @@ export type TransactionDetailsData = {
   networkFeeLamports?: number;
   comment?: string;
   signature?: string;
-  // For swap transactions
   swapFromMint?: string;
   swapToMint?: string;
   swapFromSymbol?: string;

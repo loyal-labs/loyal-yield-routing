@@ -34,9 +34,9 @@ report_http_response() {
     "$response_signal" "$response_status" "$response_excerpt" >&2
 }
 
-# otel_logs has a 30-day TTL. A marker older than that is deleted by design, so
-# looking it up would fail every restart. Renew it well before the TTL.
-if [ -s "$marker_file" ] && [ -z "$(find "$marker_file" -mtime +25)" ]; then
+otel_logs_ttl_days=30
+marker_renew_after_days=$((otel_logs_ttl_days - 5))
+if [ -s "$marker_file" ] && [ -z "$(find "$marker_file" -mtime +"$marker_renew_after_days")" ]; then
   marker="$(cat "$marker_file")"
   stage="persisted"
 else

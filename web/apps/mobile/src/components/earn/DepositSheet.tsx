@@ -54,10 +54,6 @@ import {
 
 const usdcLogo = require("../../../assets/images/earn/usdc.png");
 
-// Which stablecoin funds the deposit — one row per Earn product asset
-// (CASH/USDG/PYUSD/USDC/USDT/USDS on mainnet). Mirrors the web deposit
-// pane's DepositSourceOption; the picker chrome is the withdraw sheet's
-// source selector.
 type DepositSourceOption = {
   symbol: string;
   mint: string;
@@ -78,6 +74,29 @@ export function computeFirstDepositSolShortfall(
   solBalance: number | null
 ): number | null {
   return computeSolShortfall(FIRST_DEPOSIT_MIN_SOL, solBalance);
+}
+
+/**
+ * First-deposit SOL shortfall for one account, or null when the gate doesn't
+ * apply. Fails open: null while the position or SOL balance is still loading.
+ * A funded position with its route-policy pair takes the cheap top-up path —
+ * but a healed position can outlive that pair (post-full-exit orphans), and a
+ * missing pair sends even a top-up down first-time setup with its SOL cost, so
+ * the gate also opens on the policy read alone.
+ */
+export function firstDepositGateSolShortfall(args: {
+  accountLoaded: boolean;
+  hasFundedPosition: boolean;
+  routePolicyMissing: boolean;
+  solBalance: number | null;
+}): number | null {
+  if (!args.accountLoaded) {
+    return null;
+  }
+  if (args.hasFundedPosition && !args.routePolicyMissing) {
+    return null;
+  }
+  return computeFirstDepositSolShortfall(args.solBalance);
 }
 
 const COLOR_LABEL_DIM = "rgba(60, 60, 67, 0.6)";
@@ -142,10 +161,6 @@ export function DepositSheet({
     earnMax ? 1 : 0.94,
     earnMax ? 1 : 12
   );
-  // One row per Earn product asset, funded coins first (the sheet opens
-  // downward, so funded rows sit nearest the trigger); product order within
-  // each group. Empty rows stay visible but disabled so the coin set reads
-  // complete — mirrors the web deposit selector.
   const sourceOptions = useMemo<DepositSourceOption[]>(() => {
     const options = getEarnProductAssets(earnMax ? "mainnet" : env.solanaEnv)
       .filter((asset) => !earnMax || asset.symbol === "USDC")
@@ -633,9 +648,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 38,
   },
   container: {
-    // Definite height matching the modal's snap point. Without an explicit
-    // height, BottomSheetView sizes to content and absolute `bottom: 0`
-    // children land at the content's bottom, not the sheet's bottom.
     backgroundColor: "#FFF",
     borderTopLeftRadius: 38,
     borderTopRightRadius: 38,

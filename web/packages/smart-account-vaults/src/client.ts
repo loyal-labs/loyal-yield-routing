@@ -28,6 +28,7 @@ import {
   JUPITER_SWAP_PLATFORM_FEE_BPS_OFFSET,
   JUPITER_SWAP_SLIPPAGE_BPS_OFFSET,
   JupiterCrossMintSourceShard,
+  KAMINO_FARMS_PROGRAM_ID,
   KAMINO_USER_METADATA_SEED,
   KAMINO_VANILLA_OBLIGATION_ID,
   KAMINO_VANILLA_OBLIGATION_TAG,
@@ -354,9 +355,6 @@ const KAMINO_BROWSER_WITHDRAW_INSTRUCTIONS_URL =
 const IS_REACT_NATIVE =
   typeof navigator !== "undefined" && navigator.product === "ReactNative";
 const KAMINO_EARN_SETUP_RENT_BUFFER_LAMPORTS = 39_532_800;
-const KAMINO_FARMS_PROGRAM_ID = new PublicKey(
-  "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
-);
 const KAMINO_RESERVE_DISCRIMINATOR = Buffer.from([
   43, 242, 204, 202, 26, 247, 59, 127,
 ]);
@@ -6794,8 +6792,6 @@ export function createSmartAccountVaultsClient(
     settingsPda: PublicKey;
     signer: PublicKey;
   }): Promise<ResolvedEarnYieldRoutingPolicy> {
-    // A guard below can throw before this promise is awaited; keep its
-    // rejection observed so it can't surface as an unhandled rejection.
     const settingsPromise = observed(
       smartAccountsClient.smartAccounts.queries.fetchSettings(args.settingsPda)
     );
@@ -6963,8 +6959,6 @@ export function createSmartAccountVaultsClient(
         "Cannot safely prepare an Earn policy without scanning on-chain policies."
       );
     }
-    // Start the policy scan while the settings read resolves — the scan does
-    // not depend on it.
     const policiesPromise = observed(
       listRawPolicies({ settingsPda: args.settingsPda })
     );
@@ -9916,8 +9910,6 @@ export function createSmartAccountVaultsClient(
           ? createEarnFullWithdrawCleanupInstructions({
               vaultCollateralAtas: uniqueCloseableCollateralAtas,
               vaultPda,
-              // Sweeping the vault is one-time final-exit work: it must run
-              // after the last mint's withdraw, not after each mint's.
               vaultSweepLamports: isFinalBatch ? vaultSweepLamports : BigInt(0),
               vaultUsdcAta: batchVaultAta,
               liquidityTokenProgram: batchTokenProgram,

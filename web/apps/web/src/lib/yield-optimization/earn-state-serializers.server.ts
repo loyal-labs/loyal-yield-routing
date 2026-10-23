@@ -2,7 +2,7 @@ import type {
   CurrentEarnAutodepositState,
   PendingEarnAutodepositScheduledSweepRecord,
 } from "./earn-autodeposit-repository.server";
-import { getDisplayableEarnAutodepositScheduledSweeps } from "./earn-autodeposit-loaded-state.shared";
+import { getDisplayableEarnAutodepositScheduledSweeps } from "@loyal-labs/shared";
 import type {
   EarnDepositOnboardingAttemptRecord,
   EarnDepositOnboardingNextStep,

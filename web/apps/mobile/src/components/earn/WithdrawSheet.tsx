@@ -39,6 +39,7 @@ import {
   usdBalanceFormatter,
   useCaretBlink,
 } from "@/components/sheets/sheetFacts";
+import { EARN_WITHDRAW_SOURCE_DUST_USD } from "@loyal-labs/shared";
 import { useFixedSheetLayout } from "@/hooks/useFixedSheetLayout";
 import { useKeyboardRescueFocus } from "@/hooks/useKeyboardRescueFocus";
 
@@ -65,11 +66,6 @@ function sourceLabel(source: EarnWithdrawSourceInfo): string {
   }
   return `${marketName} · ${mintSymbol} reserve`;
 }
-
-// Sources under this are dust a partial withdraw can't clear on its own — the
-// Max-exit cleanup collects them, so the picker disables their rows (mirrors
-// the web withdraw pane's dust rule).
-const DUST_SOURCE_USD = 0.005;
 
 function SourceIcon({
   source,
@@ -120,7 +116,7 @@ function sourceBalanceUsd(source: EarnWithdrawSourceInfo): number {
 // Floors to 2 decimals so MAX never rounds UP past the real balance (5.939
 // must show 5.93, not 5.94 — the latter reads as "insufficient balance"). The
 // toFixed(4) absorbs float noise (5.939 * 100 === 593.9000000000001) before the
-// floor. Mirrors the web `floorToBucks`.
+// floor.
 function floorTo2(value: number): number {
   if (!Number.isFinite(value) || value <= 0) {
     return 0;
@@ -167,8 +163,6 @@ export function WithdrawSheet({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
-  // MAX means "empty this source". The 2-decimal input can't hold the exact
-  // balance (5.939), so we display a floored value but submit the exact amount.
   const [maxSelected, setMaxSelected] = useState(false);
 
   const { sheetHeight, snapPoints } = useFixedSheetLayout(
@@ -600,7 +594,7 @@ export function WithdrawSheet({
             .sort((a, b) => sourceBalanceUsd(b) - sourceBalanceUsd(a))
             .map((source) => {
               const isSelected = source.id === selectedSourceId;
-              const isDust = sourceBalanceUsd(source) < DUST_SOURCE_USD;
+              const isDust = sourceBalanceUsd(source) < EARN_WITHDRAW_SOURCE_DUST_USD;
               const label = sourceLabel(source);
               return (
                 <Pressable

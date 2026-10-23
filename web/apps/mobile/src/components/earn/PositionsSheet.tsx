@@ -20,6 +20,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFixedSheetLayout } from "@/hooks/useFixedSheetLayout";
 
+import { splitUsdCents } from "@/lib/format/usd";
 import type { EarnWithdrawSourceInfo } from "@/lib/solana/earn/earn-api";
 import { resolveEarnPositionDisplay } from "@/lib/solana/earn/earn-position-display";
 import { resolveTokenIcon } from "@/lib/solana/token-holdings/resolve-token-info";
@@ -36,19 +37,6 @@ import { VenueBadge } from "./venueBadge";
 const COLOR_LABEL_DIM = "rgba(60, 60, 67, 0.6)";
 const COLOR_VALUE_DIM = "rgba(60, 60, 67, 0.4)";
 const COLOR_WITHDRAW_BG = "#F5F5F5";
-
-// Round to integer cents BEFORE splitting — trunc-then-round-cents renders
-// 3.999999 (Kamino floor-valued $4) as "$3.100" (see the Earn balance twin).
-function splitUsd(value: number): { whole: string; cents: string } {
-  const safe = Number.isFinite(value) ? value : 0;
-  const totalCents = Math.round(safe * 100);
-  const whole = Math.trunc(totalCents / 100);
-  const cents = totalCents - whole * 100;
-  return {
-    whole: `$${whole.toLocaleString("en-US")}`,
-    cents: `.${cents.toString().padStart(2, "0")}`,
-  };
-}
 
 function sourceUsd(source: EarnWithdrawSourceInfo): number {
   const raw = Number(source.amountRaw);
@@ -272,7 +260,7 @@ export function PositionsSheet({
             market: source.market,
             liquidityMint: source.liquidityMint,
           });
-          const value = splitUsd(sourceUsd(source));
+          const value = splitUsdCents(sourceUsd(source));
           const tokenIcon = resolveTokenIcon({ mint: source.liquidityMint });
           return (
             <View key={source.id} style={styles.positionCell}>

@@ -35,6 +35,9 @@
       "@loyal-labs/shared/analytics-server": [
         "../../packages/shared/src/analytics-server.ts"
       ],
+      "@loyal-labs/shared/expo-push": [
+        "../../packages/shared/src/expo-push.ts"
+      ],
       "@loyal-labs/smart-account-vaults": [
         "../../packages/smart-account-vaults/src/index.ts"
       ],

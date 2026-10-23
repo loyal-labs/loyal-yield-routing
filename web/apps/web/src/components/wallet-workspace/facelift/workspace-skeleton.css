@@ -124,3 +124,17 @@
     animation: none;
   }
 }
+
+.earn-growing-balance-type {
+  font-size: 40px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 46px;
+}
+
+@media (max-width: 760px) {
+  .earn-growing-balance-type {
+    font-size: clamp(30px, 9.5vw, 40px);
+    line-height: 1.08;
+  }
+}

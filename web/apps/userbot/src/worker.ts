@@ -3,7 +3,7 @@ import { stat } from "node:fs/promises";
 import { createUserbotClient, type UserbotClientBundle } from "./lib/client";
 import { loadUserbotConfig, type UserbotConfig } from "./lib/env";
 import {
-  buildReauthGuidance,
+  authFailureGuidance,
   createNonInteractiveStartParams,
 } from "./lib/non-interactive-auth";
 import { resolveSessionSqlitePath } from "./lib/storage";
@@ -254,13 +254,10 @@ export async function runWorkerCli(
     await new Promise<never>(() => {
     });
   } catch (error) {
-    let guidance = "Run bun run auth:bootstrap.";
-    try {
-      guidance = buildReauthGuidance(loadConfig(env));
-    } catch {
-      // Keep default guidance when config cannot be loaded.
-    }
-    logger.error(`[userbot] Worker failed to start. ${guidance}`, error);
+    logger.error(
+      `[userbot] Worker failed to start. ${authFailureGuidance(loadConfig, env)}`,
+      error
+    );
     await worker.shutdown("startup_error");
     return 1;
   }

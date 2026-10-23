@@ -467,16 +467,18 @@ func (c *Client) ProgramAccounts(ctx context.Context, program solana.PublicKey, 
 	return out.Context.Slot, accounts, nil
 }
 
-// PriorityFees are the per-compute-unit prices, in micro-lamports, that
-// recent landed transactions writing any of writable paid, one per slot.
-func (c *Client) PriorityFees(ctx context.Context, writable []solana.PublicKey) ([]uint64, error) {
+type MicroLamports uint64
+
+// PriorityFees are the per-compute-unit prices that recent landed
+// transactions writing any of writable paid, one per slot.
+func (c *Client) PriorityFees(ctx context.Context, writable []solana.PublicKey) ([]MicroLamports, error) {
 	out, err := c.rpc.GetRecentPrioritizationFees(ctx, writable)
 	if err != nil {
 		return nil, failed("getRecentPrioritizationFees", err)
 	}
-	fees := make([]uint64, len(out))
+	fees := make([]MicroLamports, len(out))
 	for i, row := range out {
-		fees[i] = row.PrioritizationFee
+		fees[i] = MicroLamports(row.PrioritizationFee)
 	}
 	return fees, nil
 }

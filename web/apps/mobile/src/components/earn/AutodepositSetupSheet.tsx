@@ -177,10 +177,6 @@ export function AutodepositSetupSheet({
   }, [submitting, onDelete]);
 
   const thresholdUsd = amountToUsd(amount);
-  // Creating without enough SOL for the setup accounts' rent blocks the CTA
-  // outright (independent of the typed threshold) — same UX as DepositSheet's
-  // first-deposit gate. Otherwise the design's only validation: a $0 threshold
-  // can't create an autodeposit.
   const needsSolTopUp = mode === "create" && solShortfallBlocks(setupSolShortfall);
   const disabled = needsSolTopUp || thresholdUsd <= 0;
 

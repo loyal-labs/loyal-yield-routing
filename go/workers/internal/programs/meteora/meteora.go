@@ -51,9 +51,10 @@ func DecodeLbPair(a *chain.Account) (LbPair, error) {
 	}, nil
 }
 
-// PriceOfBin is the price of one lamport of token X in lamports of token Y.
-func PriceOfBin(binID int32, binStep uint16) float64 {
-	return math.Pow(1+float64(binStep)/basisPointMax, float64(binID))
+type RawPriceYPerX float64
+
+func PriceOfBin(binID int32, binStep uint16) RawPriceYPerX {
+	return RawPriceYPerX(math.Pow(1+float64(binStep)/basisPointMax, float64(binID)))
 }
 
 type PositionBin struct {

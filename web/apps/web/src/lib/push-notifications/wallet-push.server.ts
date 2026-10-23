@@ -1,5 +1,7 @@
 import "server-only";
 
+import { WALLET_PUSH_SEND_SECRET_ENV } from "@loyal-labs/shared/expo-push";
+
 import { getOptionalEnv } from "@/lib/core/config/shared";
 
 export type WalletPushPayload = {
@@ -13,17 +15,12 @@ export type WalletPushPayload = {
 // instead of reaching into the app database.
 // ponytail: reuses the existing `/api/push-tokens/debug-send` route as the
 // send endpoint; promote it to a non-debug path if this grows beyond earn.
-//
-// Configuration (both required, pushes are disabled when unset):
-// - MOBILE_PUSH_API_BASE_URL: app deployment origin
-// - MOBILE_PUSH_API_SECRET: must match the app's PUSH_DEBUG_SECRET
-//
 export async function sendWalletPush(
   walletAddress: string,
   payload: WalletPushPayload
 ): Promise<void> {
   const baseUrl = getOptionalEnv(process.env, "MOBILE_PUSH_API_BASE_URL");
-  const secret = getOptionalEnv(process.env, "MOBILE_PUSH_API_SECRET");
+  const secret = getOptionalEnv(process.env, WALLET_PUSH_SEND_SECRET_ENV.send);
   if (!baseUrl || !secret) {
     return;
   }

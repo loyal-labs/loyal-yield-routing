@@ -1,3 +1,15 @@
+import {
+  isCanonicalUuidV4,
+  LIFECYCLE_ERROR_CODES,
+  LIFECYCLE_ERROR_DETAILS,
+  type LifecycleErrorDetail,
+  type LifecycleErrorCode,
+  MOBILE_DEVICE_PLATFORMS,
+  type MobileDevicePlatform,
+  type MobileTelemetryReleaseContext,
+  type TelemetryDeviceIdentity,
+} from "@loyal-labs/shared";
+
 import { bestEffort } from "./best-effort";
 import { isSpanId, isTraceId, type JourneyTraceContext } from "./trace-context";
 import {
@@ -5,6 +17,18 @@ import {
   normalizeTelemetryPathname,
   sanitizeTelemetryText,
 } from "./error-contract";
+
+export {
+  isCanonicalUuidV4,
+  LIFECYCLE_ERROR_CODES,
+  LIFECYCLE_ERROR_DETAILS,
+  MOBILE_DEVICE_PLATFORMS,
+};
+export type {
+  LifecycleErrorDetail,
+  LifecycleErrorCode,
+  MobileDevicePlatform,
+};
 
 export const OBSERVABILITY_LIFECYCLE_ENDPOINT = "/api/observability/events";
 
@@ -162,8 +186,6 @@ export const LIFECYCLE_STAGES = {
     "state_observed",
     "ui_commit",
   ],
-  // Setup/delete sign wallet transactions (two shard policies on setup, one
-  // revocation on delete); pause/resume are backend-only generation bumps.
   "earn.autoswap.configuration": [
     "intent",
     "prepare",
@@ -191,90 +213,6 @@ export const LIFECYCLE_STAGES = {
   ],
 } as const satisfies Record<LifecycleFlowName, readonly string[]>;
 
-export const LIFECYCLE_ERROR_CODES = [
-  "unexpected_error",
-  "invalid_request",
-  "unauthenticated",
-  "captcha_verification_failed",
-  "wallet_selection_timeout",
-  "wallet_connection_timeout",
-  "wallet_connection_failed",
-  "wallet_authorization_expired",
-  "wallet_account_mismatch",
-  // The wallet could not produce a signature. Distinct from
-  // `invalid_wallet_signature`, which means a signature was produced and the
-  // backend rejected it during verification.
-  "wallet_signing_failed",
-  "wallet_signing_unsupported",
-  "wallet_rejected",
-  "invalid_wallet_origin",
-  "invalid_wallet_proof_kind",
-  "invalid_wallet_signature",
-  "invalid_wallet_signin",
-  "wallet_auth_completion_in_progress",
-  "smart_account_sponsor_not_configured",
-  "smart_account_provisioning_failed",
-  "smart_account_reservation_conflict",
-  "smart_account_signer_mismatch",
-  "smart_account_principal_mismatch",
-  "state_not_ready",
-  "policy_signer_missing",
-  "invalid_source",
-  "insufficient_usdc",
-  "insufficient_native_sol",
-  "earn_max_liquidity_unavailable",
-  "instruction_fetch_failed",
-  "instruction_validation_failed",
-  "transaction_too_large",
-  "cluster_mismatch",
-  "wallet_unavailable",
-  "wallet_mismatch",
-  "simulation_failed",
-  // Kamino KTX could not provide enough collateral to preserve the exact
-  // partial Earn withdrawal output after bounded rounding adjustments.
-  "earn_withdraw_underfilled",
-  // The route's output fell below the quote's minimum-out (Jupiter 6001).
-  "slippage_exceeded",
-  "send_failed",
-  "chain_confirmation_failed",
-  "slot_resolution_failed",
-  "backend_confirmation_failed",
-  "record_failed",
-  "full_exit_verification_retryable",
-  "autodeposit_not_found",
-  "autodeposit_not_active",
-  "earn_position_required",
-  "no_scheduled_sweeps",
-  "request_failed",
-  "progress_read_failed",
-  "execution_failed",
-  "kamino_top_up_failed",
-  "autodeposit_target_closed",
-  "unconfirmed_signature",
-  "metadata_mismatch",
-  "principal_mismatch",
-  "slot_mismatch",
-  "artifact_missing",
-  "token_approval_missing",
-  "realtime_unresolved",
-] as const;
-export type LifecycleErrorCode = (typeof LIFECYCLE_ERROR_CODES)[number];
-
-// Underlying causes behind a broad `errorCode`. Every value is a token this
-// repo defines — never a string forwarded from a vendor SDK — so nothing a
-// client holds can reach `loyal.error.detail`. Emitters map their native error
-// onto one of these; add a token here when a new cause needs telling apart.
-//
-// `mwa_*` are Mobile Wallet Adapter session failures, whose native codes are
-// EUNSPECIFIED (the module's catch-all), ERROR_WALLET_NOT_FOUND,
-// ERROR_SESSION_TIMEOUT, ERROR_SESSION_CLOSED, "Timed out waiting for local
-// association to be ready", and "Failed to end session".
-//
-// The rest name what went wrong behind a `request_failed` that carries no
-// `httpStatus` — meaning no response ever arrived, so the status that usually
-// explains a failure is absent. Four unrelated incidents look identical
-// without them: the device is offline, our own client timeout elapsed, Kamino
-// is down, or an RPC answered with an error (ASK-2018).
 export const MAX_LIFECYCLE_ERROR_MESSAGE_LENGTH = 256;
 
 // Where a browser flow ran. Bounded and derived by our own detection code —
@@ -284,28 +222,6 @@ export const MAX_LIFECYCLE_ERROR_MESSAGE_LENGTH = 256;
 export const LIFECYCLE_CLIENT_PLATFORMS = ["desktop", "mobile"] as const;
 export type LifecycleClientPlatform =
   (typeof LIFECYCLE_CLIENT_PLATFORMS)[number];
-
-// Which OS fleet a mobile device belongs to — same vocabulary as the metrics
-// contract's `platform` (ASK-2097). Distinct from `clientPlatform`, which is
-// a browser form-factor token.
-export const MOBILE_DEVICE_PLATFORMS = ["android", "ios"] as const;
-export type MobileDevicePlatform = (typeof MOBILE_DEVICE_PLATFORMS)[number];
-
-export const LIFECYCLE_ERROR_DETAILS = [
-  "mwa_unspecified",
-  "mwa_wallet_not_found",
-  "mwa_session_timeout",
-  "mwa_association_timeout",
-  "mwa_session_closed",
-  "mwa_end_session_failed",
-  // Connection-level fetch failure: DNS, TLS or a reset socket. React Native
-  // surfaces all of them as a bare TypeError("Network request failed").
-  "network_unreachable",
-  "request_timeout",
-  "kamino_upstream_unavailable",
-  "rpc_request_failed",
-] as const;
-export type LifecycleErrorDetail = (typeof LIFECYCLE_ERROR_DETAILS)[number];
 
 // The wallet adapter behind a sign-in attempt. Wallet-standard adapters
 // register under arbitrary display names the extension controls, so this is a
@@ -461,21 +377,11 @@ export type BrowserLifecycleEnvelope = LifecycleDiagnostics &
     timestamp: string;
   };
 
-// Mobile envelopes carry their own release/environment (the app fleet mixes
-// binary versions and OTA bundles) plus an optional wallet address that the
-// ingest route forwards verbatim, the same way web sessions report theirs.
-export type MobileLifecycleEnvelope = BrowserLifecycleEnvelope & {
-  /**
-   * Stable per-install UUID, the join key for a device's whole telemetry
-   * trail across sessions and wallets (ASK-2097). Optional: older clients
-   * predate it.
-   */
-  deviceId?: string;
-  devicePlatform?: MobileDevicePlatform;
-  environment: string;
-  release: string;
-  walletAddress?: string;
-};
+export type MobileLifecycleEnvelope = BrowserLifecycleEnvelope &
+  TelemetryDeviceIdentity &
+  MobileTelemetryReleaseContext & {
+    walletAddress?: string;
+  };
 
 export type NormalizedLifecycleEvent = BrowserLifecycleEnvelope & {
   trafficKind?: "external" | "internal" | "synthetic";
@@ -488,8 +394,6 @@ export type NormalizedLifecycleEvent = BrowserLifecycleEnvelope & {
   walletAddress?: string;
 };
 
-const UUID_V4_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SCHEDULED_SLOT_ID_PATTERN = /^[1-9][0-9]{0,19}$/;
 const MAX_EVENT_AGE_MS = 60 * 60 * 1000;
 const MAX_EVENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
@@ -506,10 +410,6 @@ function includes<T extends string>(
   value: unknown
 ): value is T {
   return typeof value === "string" && values.includes(value as T);
-}
-
-export function isCanonicalUuidV4(value: unknown): value is string {
-  return typeof value === "string" && UUID_V4_PATTERN.test(value);
 }
 
 export function normalizeLifecycleErrorCode(
@@ -720,9 +620,6 @@ export function parseBrowserLifecycleEnvelope(
   )
     ? record.clientPlatform
     : undefined;
-  // Exact-token match only: at the ingest boundary an unrecognized value is
-  // dropped, never bucketed into `other` — mapping display names onto tokens
-  // is the emitter's job via normalizeLifecycleWalletProvider.
   const walletProvider = includes(
     LIFECYCLE_WALLET_PROVIDERS,
     record.walletProvider
@@ -904,10 +801,7 @@ export function parseMobileLifecycleEnvelope(
   ) {
     throw new InvalidLifecycleEnvelopeError();
   }
-  if (
-    deviceId !== undefined &&
-    (typeof deviceId !== "string" || !UUID_V4_PATTERN.test(deviceId))
-  ) {
+  if (deviceId !== undefined && !isCanonicalUuidV4(deviceId)) {
     throw new InvalidLifecycleEnvelopeError();
   }
   if (

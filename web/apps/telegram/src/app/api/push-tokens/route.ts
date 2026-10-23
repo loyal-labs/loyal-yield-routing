@@ -8,7 +8,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const body = await req.json();
     const { token, telegramUserId, walletPublicKey, platform } = body;
 
-    if (!token || !platform) {
+    if (!token || (platform !== "ios" && platform !== "android")) {
       return NextResponse.json(
         { error: "Missing required fields: token, platform" },
         { status: 400 }

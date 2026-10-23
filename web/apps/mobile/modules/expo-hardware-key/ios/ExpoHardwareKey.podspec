@@ -1,13 +1,12 @@
 Pod::Spec.new do |s|
-  s.name           = 'ExpoSyncedKeychain'
+  s.name           = 'ExpoHardwareKey'
   s.version        = '0.1.0'
-  s.summary        = 'iCloud Keychain (kSecAttrSynchronizable) item storage'
-  s.description    = 'Reads and writes generic-password keychain items marked synchronizable, so iCloud Keychain carries them across the user devices. iOS only.'
+  s.summary        = 'Secure Enclave key that wraps and unwraps wallet secrets'
+  s.description    = 'A non-exportable P-256 Secure Enclave key; secrets are sealed with ECIES (X9.63 SHA-256, AES-GCM) and opened inside the enclave.'
   s.author         = ''
   s.homepage       = 'https://askloyal.com'
   s.platforms      = {
-    :ios => '15.1',
-    :tvos => '15.1'
+    :ios => '15.1'
   }
   s.source         = { git: '' }
   s.static_framework = true

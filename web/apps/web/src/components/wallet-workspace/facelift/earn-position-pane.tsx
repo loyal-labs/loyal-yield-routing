@@ -27,7 +27,7 @@ import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
 import { formatEarnApyLabel } from "@/lib/kamino/earn-forecast.shared";
-import { formatAutodepositUsdLabel } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+import { formatAutodepositUsdLabel } from "@loyal-labs/shared";
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
@@ -66,9 +66,6 @@ export function EarnPositionPane({
   const { isBalanceHidden } = useBalanceVisibility();
   const [isInfoOpen, setIsInfoOpen] = useState(false);
 
-  // Same toggle-state mapping as the old workspace's autodeposit card:
-  // while toggling the knob optimistically shows the target position and the
-  // hook reverts the state on failure.
   const autodepositState = autodeposit?.state ?? null;
   const isAutodepositToggling =
     autodepositState === "pausing" || autodepositState === "resuming";
@@ -201,13 +198,10 @@ export function EarnPositionPane({
                 <InfoTooltip text="Your balance grows at the current APY" />
               </div>
               {(() => {
-                // Same display EarnGrowingBalance renders (its NumberFlow
-                // timings are zeroed anyway), with pop-in digits; mobile font
-                // clamp mirrors its ≤760px media query.
                 const balance = splitEarnBalanceDisplay(data.earnBalanceUsd);
                 return (
                   <p
-                    className="whitespace-nowrap font-semibold text-[40px] leading-[46px] [font-variant-numeric:tabular-nums] max-[760px]:text-[clamp(30px,9.5vw,40px)] max-[760px]:leading-[1.08]"
+                    className="earn-growing-balance-type whitespace-nowrap"
                     style={{
                       color: isBalanceHidden
                         ? "var(--tertiary)"

@@ -18,6 +18,7 @@ import {
 } from "@/lib/yield-optimization/earn-rpc-holdings.client";
 import { serializeRoutePolicyState } from "@/lib/yield-optimization/earn-state-serializers.server";
 import { findActiveYieldRoutePolicyPair } from "@/lib/yield-optimization/yield-deposit-repository.server";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Read-only list of the wallet's Earn withdrawal sources (per-reserve positions
 // + one idle account per policy mint), keyed by wallet address.
@@ -30,8 +31,6 @@ import { findActiveYieldRoutePolicyPair } from "@/lib/yield-optimization/yield-d
 // rejected. The snapshot scans the policy's markets and reflects reality. Each
 // item still carries the prepare-source identifiers (type/id/reserve/
 // tokenAccount/mint) so a `withdraw/prepare` call can match it.
-const EARN_VAULT_INDEX = 1 as const;
-
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 type WithdrawSource = {

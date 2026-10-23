@@ -21,11 +21,19 @@ const DOG_HEAD_RATIO = 506 / 400;
 const DOG_OVERLAP = 0.2;
 const REVEAL_DELAY_MS = 120;
 
-// White panel anatomy (drives both the panel min-height and where the dog
-// snout meets it). pt 72 + title 80 + gap 16 + subtitle 48 + gap 48 + button 50.
+const TITLE_HEIGHT = 80;
+const TITLE_GAP = 16;
+const SUBTITLE_HEIGHT = 48;
+const BUTTON_GAP = 48;
 const BUTTON_HEIGHT = 50;
 const PANEL_PT = 72;
-const PANEL_CONTENT = PANEL_PT + 80 + 16 + 48 + 48 + BUTTON_HEIGHT;
+const PANEL_CONTENT =
+  PANEL_PT +
+  TITLE_HEIGHT +
+  TITLE_GAP +
+  SUBTITLE_HEIGHT +
+  BUTTON_GAP +
+  BUTTON_HEIGHT;
 const PANEL_PB = 40;
 
 // The paw is stamped onto the card after the slide-in spring has settled (~120ms
@@ -219,7 +227,7 @@ export function QuestCompleteNotification({
             </Text>
             <Text
               style={{
-                marginTop: 16,
+                marginTop: TITLE_GAP,
                 fontFamily: "Geist_400Regular",
                 fontSize: 17,
                 lineHeight: 22,
@@ -235,7 +243,7 @@ export function QuestCompleteNotification({
               accessibilityRole="button"
               accessibilityLabel={copy.cta}
               style={{
-                marginTop: 48,
+                marginTop: BUTTON_GAP,
                 height: BUTTON_HEIGHT,
                 borderRadius: 78,
                 backgroundColor: "#000",

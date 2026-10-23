@@ -22,8 +22,8 @@ import {
   computeAutodepositSetupSolShortfall,
 } from "@/components/earn/AutodepositSetupSheet";
 import {
-  computeFirstDepositSolShortfall,
   DepositSheet,
+  firstDepositGateSolShortfall,
 } from "@/components/earn/DepositSheet";
 import { EarnChartTabs } from "@/components/earn/EarnChartTabs";
 import { EarnDog } from "@/components/earn/EarnDog";
@@ -40,6 +40,7 @@ import { refreshEarnEarningsCache } from "@/hooks/wallet/useEarnEarnings";
 import { useEarnPosition } from "@/hooks/wallet/useEarnPosition";
 import { useTokenHoldings } from "@/hooks/wallet/useTokenHoldings";
 import { useAppReady } from "@/lib/app-ready";
+import { splitUsdCents } from "@/lib/format/usd";
 import {
   NATIVE_SOL_MINT,
   SOLANA_USDC_MINT_DEVNET,
@@ -55,7 +56,7 @@ import {
   type EarnHoldingItem,
   type EarnWithdrawSourceInfo,
 } from "@/lib/solana/earn/earn-api";
-import { getVisibleEarnScheduledSweeps } from "@/lib/solana/earn/earn-scheduled-sweep";
+import { getVisibleEarnAutodepositScheduledSweeps } from "@loyal-labs/shared";
 import { env } from "@/config/env";
 import { executeEarnDeposit } from "@/lib/solana/earn/deposit";
 import { getEarnProductAssets } from "@/lib/solana/earn/earn-product-mints";
@@ -141,8 +142,6 @@ export default function EarnScreen() {
     );
     return holding && Number.isFinite(holding.balance) ? holding.balance : null;
   }, [tokenHoldings]);
-  // Per-mint spendable balances for the deposit coin selector (token units ≈
-  // dollars — every Earn product stablecoin is 6-decimal).
   const stableBalancesByMint = useMemo(() => {
     const balances: Record<string, number> = {};
     for (const asset of getEarnProductAssets(env.solanaEnv)) {
@@ -211,21 +210,18 @@ export default function EarnScreen() {
   const [autodepositInfoOpen, setAutodepositInfoOpen] = useState(false);
   const autodepositInfoModeRef = useRef<"create" | "edit">("create");
   const [depositedUsd, setDepositedUsd] = useState<number | null>(null);
-  // First-deposit SOL gate: opening a position costs SOL (rent/fees), so with
-  // no existing position the wallet must hold FIRST_DEPOSIT_MIN_SOL. SOL
-  // balance comes from the same holdings read as the USDC balance; the missing
-  // SOL row means holdings haven't loaded, and the gate fails open until they
-  // do.
-  const firstDepositSolShortfall = useMemo(() => {
-    // A balance alone doesn't prove the cheap top-up path applies: a healed
-    // position can outlive its route-policy pair (post-full-exit orphans), and
-    // a missing pair sends even a top-up down first-time setup with its SOL
-    // cost — so gate on the policy read, not just the balance.
-    if (!earnPositionLoaded || (hasDeposit && !earnPolicyMissing)) return null;
-    const sol = tokenHoldings.find((h) => h.mint === NATIVE_SOL_MINT);
-    if (!sol) return null;
-    return computeFirstDepositSolShortfall(sol.balance);
-  }, [earnPositionLoaded, hasDeposit, earnPolicyMissing, tokenHoldings]);
+  const firstDepositSolShortfall = useMemo(
+    () =>
+      firstDepositGateSolShortfall({
+        accountLoaded: earnPositionLoaded,
+        hasFundedPosition: hasDeposit,
+        routePolicyMissing: earnPolicyMissing,
+        solBalance:
+          tokenHoldings.find((h) => h.mint === NATIVE_SOL_MINT)?.balance ??
+          null,
+      }),
+    [earnPositionLoaded, hasDeposit, earnPolicyMissing, tokenHoldings]
+  );
   const autodepositSolShortfall = useMemo(() => {
     const sol = tokenHoldings.find((h) => h.mint === NATIVE_SOL_MINT);
     if (!sol) return null;
@@ -733,7 +729,13 @@ export default function EarnScreen() {
           // Criteria met for immediate execution → the backend scheduled a bootstrap
           // sweep. Take the user straight to Activity so the pending transaction (and
           // its "Execute now" shortcut) is visible, instead of leaving them guessing.
-          if (getVisibleEarnScheduledSweeps(fresh.scheduledSweeps).length > 0) {
+          if (
+            getVisibleEarnAutodepositScheduledSweeps({
+              scheduledSweeps: fresh.scheduledSweeps ?? [],
+              walletBalanceFloorRaw: null,
+              walletBalanceRaw: null,
+            }).length > 0
+          ) {
             router.navigate({
               pathname: "/(tabs)/activity",
               params: { section: "earn" },
@@ -823,20 +825,10 @@ export default function EarnScreen() {
     })}`;
   }, [autodepositThresholdUsd]);
 
-  // Funded Earn Balance, split so the cents render dimmed (Figma 74:19926).
-  // Round to integer cents BEFORE splitting: Kamino's floor-division values a
-  // fresh $4 deposit at 3.999999, and trunc-then-round-cents rendered that as
-  // whole "3" + cents "100" — "$3.100" on screen, read as a drop to "3.1".
-  const balanceParts = useMemo(() => {
-    const usd = hasDeposit && depositedUsd != null ? depositedUsd : 0;
-    const totalCents = Math.round(usd * 100);
-    const whole = Math.trunc(totalCents / 100);
-    const cents = totalCents - whole * 100;
-    return {
-      whole: `$${whole.toLocaleString("en-US")}`,
-      cents: `.${cents.toString().padStart(2, "0")}`,
-    };
-  }, [hasDeposit, depositedUsd]);
+  const balanceParts = useMemo(
+    () => splitUsdCents(hasDeposit && depositedUsd != null ? depositedUsd : 0),
+    [hasDeposit, depositedUsd]
+  );
 
   return (
     <View style={styles.root}>

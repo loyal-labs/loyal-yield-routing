@@ -6,6 +6,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { getSolanaEndpoints, type SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, Keypair } from "@solana/web3.js";
 import type { WalletSigner } from "@loyal-labs/wallet-core/types";
 import { createKeypairSigner } from "~/src/lib/keypair-signer";
@@ -31,20 +32,10 @@ import {
   networkSelection,
 } from "~/src/lib/storage";
 
-// ---------------------------------------------------------------------------
-// RPC endpoints (inlined from @loyal-labs/solana-rpc — not available as a
-// direct extension dependency yet)
-// ---------------------------------------------------------------------------
-
-type Network = "mainnet" | "devnet";
-
-const RPC_ENDPOINTS: Record<Network, string> = {
-  mainnet: "https://fredra-z7l52f-fast-mainnet.helius-rpc.com",
-  devnet: "https://karlotta-a6micy-fast-devnet.helius-rpc.com",
-};
+type Network = Extract<SolanaEnv, "mainnet" | "devnet">;
 
 function getRpcUrl(network: Network): string {
-  return RPC_ENDPOINTS[network];
+  return getSolanaEndpoints(network).rpcEndpoint;
 }
 
 export type WalletState = "loading" | "noWallet" | "locked" | "unlocked";

@@ -37,11 +37,6 @@ import {
   resolveEarnTransactionMarketIcon,
 } from "@/lib/yield-optimization/earn-position-display";
 
-// Faithful copies of the old workspace's private Earn-mutation helpers
-// (app-wallet-workspace.tsx). The facelift cannot import them — they are
-// module-private — so each block below mirrors its source 1:1; keep them in
-// sync when the monolith changes.
-
 export type EarnWithdrawVaultsSource = NonNullable<
   SmartAccountEarnUsdcWithdrawInput["source"]
 >;
@@ -294,9 +289,6 @@ export function toEarnWithdrawReserveTarget(
   };
 }
 
-// app-wallet-workspace.tsx:5006-5012 — selected-source targeting. A full exit
-// is possible only when the selected source is the vault's sole positive
-// holding; cleanup is authorized later by a fresh all-source zero proof.
 export function selectFullExitWithdrawTargets(draft: EarnWithdrawDraft): {
   fullWithdrawalTargets: EarnWithdrawFullWithdrawalTarget[];
   target: EarnWithdrawFullWithdrawalTarget | null;

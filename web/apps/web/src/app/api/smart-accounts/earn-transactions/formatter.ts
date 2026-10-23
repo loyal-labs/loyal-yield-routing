@@ -1,3 +1,8 @@
+import type {
+  EarnTransactionKind,
+  SerializedEarnTransaction,
+} from "@loyal-labs/shared";
+
 import type { EarnAutodepositHistoryEventRecord } from "@/lib/yield-optimization/earn-autodeposit-repository.server";
 import {
   resolveEarnTransactionMarketIcon,
@@ -5,50 +10,20 @@ import {
 } from "@/lib/yield-optimization/earn-position-display";
 import type { UserYieldPositionHistoryEventRecord } from "@/lib/yield-optimization/yield-deposit-repository.server";
 
+export type EarnTransactionEvent =
+  | EarnAutodepositHistoryEventRecord
+  | UserYieldPositionHistoryEventRecord;
+
+export type {
+  EarnTransactionKind,
+  SerializedEarnTransaction,
+} from "@loyal-labs/shared";
+
 const AUTODEPOSIT_LABEL = "Autodeposit";
 const MAIN_USDC_LABEL = "Main";
 const EARN_VAULT_LABEL = "Earn";
 const MAIN_USDC_ICON = "/wallet-workspace/earn-vault-usdc.png";
 const EARN_VAULT_ICON = null;
-
-export type EarnTransactionKind =
-  | "autodeposit_action"
-  | "balance_sweep"
-  | "deposit"
-  | "reconciliation"
-  | "rebalance"
-  | "withdraw";
-
-export type EarnTransactionEvent =
-  | EarnAutodepositHistoryEventRecord
-  | UserYieldPositionHistoryEventRecord;
-
-export type SerializedEarnTransaction = {
-  amount: string;
-  confirmedAt: string;
-  confirmedSlot: string;
-  dateGroup: string;
-  destination: {
-    icon: string | null;
-    label: string;
-  };
-  eventType:
-    | UserYieldPositionHistoryEventRecord["eventType"]
-    | "autodeposit_closed"
-    | "autodeposit_created"
-    | "balance_sweep";
-  id: string;
-  kind: EarnTransactionKind;
-  liquidityMint: string;
-  rawAmount: string;
-  signature: string;
-  sortTimestamp: string;
-  source: {
-    icon: string | null;
-    label: string;
-  };
-  timestamp: string;
-};
 
 function isSelfMovement(transaction: SerializedEarnTransaction): boolean {
   return transaction.source.label === transaction.destination.label;

@@ -5,7 +5,7 @@ import { useEffect, useRef } from "react";
 
 import { track } from "@/lib/core/analytics";
 
-const SPLASH_DURATION = 2400; // ms - time before redirect
+const SPLASH_DURATION_MS = 2400;
 
 export default function SplashPage() {
   const router = useRouter();
@@ -20,7 +20,7 @@ export default function SplashPage() {
     hasRedirected.current = true;
     const timer = setTimeout(() => {
       router.replace("/telegram");
-    }, SPLASH_DURATION);
+    }, SPLASH_DURATION_MS);
     return () => clearTimeout(timer);
   }, [router]);
 

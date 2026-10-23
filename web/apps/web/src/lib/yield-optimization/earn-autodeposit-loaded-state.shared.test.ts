@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { getDisplayableEarnAutodepositScheduledSweeps } from "./earn-autodeposit-loaded-state.shared";
+import { getDisplayableEarnAutodepositScheduledSweeps } from "@loyal-labs/shared";
 
 describe("getDisplayableEarnAutodepositScheduledSweeps", () => {
   test("returns nothing while the config is not active", () => {

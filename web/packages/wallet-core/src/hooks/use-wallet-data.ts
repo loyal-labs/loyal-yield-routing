@@ -36,6 +36,7 @@ export type WalletDesktopData = {
 
 const EMPTY_POSITIONS: PortfolioPosition[] = [];
 const LOYL_MINT = "LYLikzBQtpa9ZgVrJsqYGQpR3cC1WMJrBHaXGrQmeta";
+const LOYL_PINNED_INDEX = 2;
 const JUPITER_TOKEN_SEARCH_URL = "https://lite-api.jup.ag/tokens/v2/search";
 const LOYL_ICON_URL =
   "https://avatars.githubusercontent.com/u/210601628?s=200&v=4";
@@ -272,7 +273,7 @@ function mapActivityToRowAndDetail(
     timestamp: timestamp.time,
     date: timestamp.date,
     icon: display.icon,
-    rawTimestamp: activity.timestamp ?? undefined,
+    rawTimestampMs: activity.timestamp ?? undefined,
   };
 
   return {
@@ -487,15 +488,12 @@ export function useWalletData(params: {
       }
     }
 
-    // Only LOYAL is pinned regardless of balance (3rd position / index 2);
-    // every other token appears solely when it has a non-zero balance, so real
-    // holdings fill the top instead of zero SOL/USDC placeholders.
-    const targetIndex = Math.min(2, rows.length);
+    const targetIndex = Math.min(LOYL_PINNED_INDEX, rows.length);
     const existingLoylIndex = rows.findIndex((r) => r.id === LOYL_MINT);
     if (existingLoylIndex >= 0) {
       if (existingLoylIndex !== targetIndex) {
         const [loylRow] = rows.splice(existingLoylIndex, 1);
-        rows.splice(Math.min(2, rows.length), 0, loylRow);
+        rows.splice(Math.min(LOYL_PINNED_INDEX, rows.length), 0, loylRow);
       }
     } else {
       const loylPosition = positions.find((p) => p.asset.mint === LOYL_MINT);
@@ -534,7 +532,7 @@ export function useWalletData(params: {
     const onChainIds = new Set(activityData.rows.map((r) => r.id));
     const uniqueLocalRows = localRows.filter((r) => !onChainIds.has(r.id));
     const rows = [...uniqueLocalRows, ...activityData.rows].sort(
-      (a, b) => (b.rawTimestamp ?? 0) - (a.rawTimestamp ?? 0)
+      (a, b) => (b.rawTimestampMs ?? 0) - (a.rawTimestampMs ?? 0)
     );
     const details = { ...activityData.details, ...localDetails };
     return { rows, details };

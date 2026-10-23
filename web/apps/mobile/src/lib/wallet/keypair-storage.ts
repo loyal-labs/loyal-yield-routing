@@ -1,27 +1,20 @@
 import { Keypair } from "@solana/web3.js";
+import * as HardwareKey from "expo-hardware-key";
 import * as SecureStore from "expo-secure-store";
-import * as SyncedKeychain from "expo-synced-keychain";
-
-import { mmkv } from "@/lib/storage";
 
 import { decryptSecret, encryptSecret } from "./crypto";
 import { isValidWalletPin } from "./pin";
 
-// The encrypted keypair must never leave the device. expo-secure-store's iOS
-// default (WHEN_UNLOCKED) is included in encrypted iTunes/Finder and iCloud
-// backups, and the blob's only protection is a 4-digit PIN at PBKDF2-10k —
-// trivially brute-forced offline once exported. THIS_DEVICE_ONLY excludes it
-// from every backup. The option is ignored on Android, where the equivalent
-// blob is already bound to the Keystore, so no platform branch is needed.
 const KEYCHAIN_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
 };
 
-const ENCRYPTED_KEYPAIR_KEY = "wallet_encrypted_keypair";
+const LEGACY_KEYPAIR_KEY = "wallet_encrypted_keypair";
+const HARDWARE_KEYPAIR_KEY = "wallet_hardware_keypair";
+const PIN_KEY_ALIAS = "wallet.pin";
+const UNWRAP_PROMPT = "Unlock your wallet";
 const WALLET_PUBLIC_KEY = "wallet_public_key";
 
-const ICLOUD_SYNC_ENABLED_KEY = "settings.icloudKeychainSync";
-const BIOMETRIC_RESTORE_PENDING_KEY = "wallet.biometricRestorePending";
 const FAILED_ATTEMPTS_KEY = "wallet_failed_attempts";
 const LOCKED_UNTIL_KEY = "wallet_locked_until";
 
@@ -39,6 +32,13 @@ function getLockoutDuration(attempts: number): number {
   if (attempts < 4) return 0;
   const index = Math.min(attempts - 4, LOCKOUT_DURATIONS_MS.length - 1);
   return LOCKOUT_DURATIONS_MS[index];
+}
+
+export class WalletKeyUnavailableError extends Error {
+  constructor() {
+    super("This wallet's hardware key is not usable on this device");
+    this.name = "WalletKeyUnavailableError";
+  }
 }
 
 export class PinLockedError extends Error {
@@ -69,9 +69,53 @@ async function recordFailedAttempt(): Promise<void> {
   }
 }
 
-async function resetAttempts(): Promise<void> {
+export async function resetAttempts(): Promise<void> {
   await SecureStore.deleteItemAsync(FAILED_ATTEMPTS_KEY);
   await SecureStore.deleteItemAsync(LOCKED_UNTIL_KEY);
+}
+
+async function openPinBlob(blob: string, pin: string): Promise<Keypair | null> {
+  const decrypted = await decryptSecret(blob, pin);
+  if (!decrypted) return null;
+  try {
+    return Keypair.fromSecretKey(new Uint8Array(JSON.parse(decrypted)));
+  } catch {
+    return null;
+  }
+}
+
+async function opensTo(
+  wrapped: string,
+  pin: string,
+  publicKey: string,
+): Promise<boolean> {
+  const opened = await HardwareKey.unwrap(PIN_KEY_ALIAS, wrapped, UNWRAP_PROMPT);
+  if (!opened.ok) return false;
+  const keypair = await openPinBlob(opened.plaintext, pin);
+  return keypair?.publicKey.toBase58() === publicKey;
+}
+
+async function sealUnderHardwareKey(
+  pinBlob: string,
+  pin: string,
+  publicKey: string,
+): Promise<boolean> {
+  if (!HardwareKey.isAvailable()) return false;
+  try {
+    await HardwareKey.ensureKey(PIN_KEY_ALIAS, "device");
+    const wrapped = await HardwareKey.wrap(PIN_KEY_ALIAS, pinBlob, UNWRAP_PROMPT);
+    if (!(await opensTo(wrapped, pin, publicKey))) return false;
+    await SecureStore.setItemAsync(
+      HARDWARE_KEYPAIR_KEY,
+      wrapped,
+      KEYCHAIN_OPTIONS,
+    );
+    const stored = await SecureStore.getItemAsync(HARDWARE_KEYPAIR_KEY);
+    return stored !== null && (await opensTo(stored, pin, publicKey));
+  } catch (error) {
+    console.warn("[wallet] hardware key seal failed", error);
+    return false;
+  }
 }
 
 export async function storeKeypair(
@@ -82,100 +126,19 @@ export async function storeKeypair(
     throw new Error("PIN must be 4 digits");
   }
   const serialized = JSON.stringify(Array.from(keypair.secretKey));
-  const encrypted = await encryptSecret(serialized, pin);
-  await SecureStore.setItemAsync(
-    ENCRYPTED_KEYPAIR_KEY,
-    encrypted,
-    KEYCHAIN_OPTIONS,
-  );
-  await SecureStore.setItemAsync(
-    WALLET_PUBLIC_KEY,
-    keypair.publicKey.toBase58(),
-    KEYCHAIN_OPTIONS,
-  );
-  if (isICloudSyncEnabled()) {
-    try {
-      await mirrorToSyncedKeychain(encrypted, keypair.publicKey.toBase58());
-    } catch (error) {
-      console.warn("[wallet] iCloud Keychain mirror failed", error);
-    }
-  }
-}
-
-export function isICloudSyncEnabled(): boolean {
-  return mmkv.getBoolean(ICLOUD_SYNC_ENABLED_KEY) ?? true;
-}
-
-export function isICloudSyncSupported(): boolean {
-  return SyncedKeychain.isAvailable();
-}
-
-async function mirrorToSyncedKeychain(
-  encrypted: string,
-  publicKey: string,
-): Promise<void> {
-  await SyncedKeychain.setItem(ENCRYPTED_KEYPAIR_KEY, encrypted);
-  await SyncedKeychain.setItem(WALLET_PUBLIC_KEY, publicKey);
-}
-
-export async function setICloudSyncEnabled(enabled: boolean): Promise<void> {
-  mmkv.setBoolean(ICLOUD_SYNC_ENABLED_KEY, enabled);
-  if (!SyncedKeychain.isAvailable()) return;
-  if (enabled) {
-    const encrypted = await SecureStore.getItemAsync(ENCRYPTED_KEYPAIR_KEY);
-    const publicKey = await SecureStore.getItemAsync(WALLET_PUBLIC_KEY);
-    if (encrypted && publicKey) {
-      await mirrorToSyncedKeychain(encrypted, publicKey);
-    }
+  const pinBlob = await encryptSecret(serialized, pin);
+  const publicKey = keypair.publicKey.toBase58();
+  if (await sealUnderHardwareKey(pinBlob, pin, publicKey)) {
+    await SecureStore.deleteItemAsync(LEGACY_KEYPAIR_KEY);
   } else {
-    await SyncedKeychain.deleteItem(ENCRYPTED_KEYPAIR_KEY);
-    await SyncedKeychain.deleteItem(WALLET_PUBLIC_KEY);
+    await SecureStore.setItemAsync(
+      LEGACY_KEYPAIR_KEY,
+      pinBlob,
+      KEYCHAIN_OPTIONS,
+    );
+    await SecureStore.deleteItemAsync(HARDWARE_KEYPAIR_KEY);
   }
-}
-
-export async function adoptEncryptedKeypair(
-  encrypted: string,
-  publicKey: string,
-): Promise<void> {
-  await SecureStore.setItemAsync(
-    ENCRYPTED_KEYPAIR_KEY,
-    encrypted,
-    KEYCHAIN_OPTIONS,
-  );
   await SecureStore.setItemAsync(WALLET_PUBLIC_KEY, publicKey, KEYCHAIN_OPTIONS);
-  await resetAttempts();
-  mmkv.setBoolean(BIOMETRIC_RESTORE_PENDING_KEY, true);
-}
-
-export function consumeBiometricRestorePending(): boolean {
-  const pending = mmkv.getBoolean(BIOMETRIC_RESTORE_PENDING_KEY) ?? false;
-  if (pending) mmkv.delete(BIOMETRIC_RESTORE_PENDING_KEY);
-  return pending;
-}
-
-export async function restoreFromSyncedKeychain(): Promise<boolean> {
-  if (!SyncedKeychain.isAvailable()) return false;
-  try {
-    const encrypted = await SyncedKeychain.getItem(ENCRYPTED_KEYPAIR_KEY);
-    const publicKey = await SyncedKeychain.getItem(WALLET_PUBLIC_KEY);
-    if (!encrypted || !publicKey) return false;
-    await adoptEncryptedKeypair(encrypted, publicKey);
-    mmkv.setBoolean(ICLOUD_SYNC_ENABLED_KEY, true);
-    return true;
-  } catch (error) {
-    console.warn("[wallet] iCloud Keychain restore failed", error);
-    return false;
-  }
-}
-
-export async function getStoredBackupPayload(): Promise<{
-  encrypted: string;
-  publicKey: string;
-} | null> {
-  const encrypted = await SecureStore.getItemAsync(ENCRYPTED_KEYPAIR_KEY);
-  const publicKey = await SecureStore.getItemAsync(WALLET_PUBLIC_KEY);
-  if (!encrypted || !publicKey) return null;
-  return { encrypted, publicKey };
 }
 
 export function generateKeypairInMemory(): Keypair {
@@ -195,41 +158,49 @@ export async function loadKeypair(pin: string): Promise<Keypair | null> {
   const remaining = await getLockoutRemaining();
   if (remaining > 0) throw new PinLockedError(remaining);
 
-  const encrypted = await SecureStore.getItemAsync(ENCRYPTED_KEYPAIR_KEY);
-  if (!encrypted) return null;
-
-  const decrypted = await decryptSecret(encrypted, pin);
-  if (!decrypted) {
-    await recordFailedAttempt();
+  const wrapped = await SecureStore.getItemAsync(HARDWARE_KEYPAIR_KEY);
+  const legacy = await SecureStore.getItemAsync(LEGACY_KEYPAIR_KEY);
+  const opened = wrapped
+    ? await HardwareKey.unwrap(PIN_KEY_ALIAS, wrapped, UNWRAP_PROMPT)
+    : null;
+  const pinBlob = opened?.ok ? opened.plaintext : legacy;
+  if (!pinBlob) {
+    if (wrapped) throw new WalletKeyUnavailableError();
     return null;
   }
 
+  const keypair = await openPinBlob(pinBlob, pin);
+  if (!keypair) {
+    await recordFailedAttempt();
+    return null;
+  }
   await resetAttempts();
-  return Keypair.fromSecretKey(new Uint8Array(JSON.parse(decrypted)));
+
+  if (legacy) {
+    const sealed =
+      opened?.ok ||
+      (await sealUnderHardwareKey(legacy, pin, keypair.publicKey.toBase58()));
+    if (sealed) await SecureStore.deleteItemAsync(LEGACY_KEYPAIR_KEY);
+  }
+  return keypair;
 }
 
 export async function hasStoredKeypair(): Promise<boolean> {
-  return (await SecureStore.getItemAsync(ENCRYPTED_KEYPAIR_KEY)) !== null;
+  return (
+    (await SecureStore.getItemAsync(HARDWARE_KEYPAIR_KEY)) !== null ||
+    (await SecureStore.getItemAsync(LEGACY_KEYPAIR_KEY)) !== null
+  );
 }
 
 export async function getStoredPublicKey(): Promise<string | null> {
   return SecureStore.getItemAsync(WALLET_PUBLIC_KEY);
 }
 
-export async function clearStoredKeypair(opts?: {
-  keepSyncedKeychain?: boolean;
-}): Promise<void> {
-  await SecureStore.deleteItemAsync(ENCRYPTED_KEYPAIR_KEY);
+export async function clearStoredKeypair(): Promise<void> {
+  await SecureStore.deleteItemAsync(HARDWARE_KEYPAIR_KEY);
+  await SecureStore.deleteItemAsync(LEGACY_KEYPAIR_KEY);
   await SecureStore.deleteItemAsync(WALLET_PUBLIC_KEY);
-  if (!opts?.keepSyncedKeychain) {
-    try {
-      await SyncedKeychain.deleteItem(ENCRYPTED_KEYPAIR_KEY);
-      await SyncedKeychain.deleteItem(WALLET_PUBLIC_KEY);
-    } catch (error) {
-      console.warn("[wallet] iCloud Keychain cleanup failed", error);
-    }
-  }
-  mmkv.delete(BIOMETRIC_RESTORE_PENDING_KEY);
+  await HardwareKey.deleteKey(PIN_KEY_ALIAS);
   await resetAttempts();
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { EARN_WITHDRAW_SOURCE_DUST_USD } from "@loyal-labs/shared";
 import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
 import {
   CircleDollarSign,
@@ -27,6 +28,7 @@ import {
   DualIcon,
   resolveEarnCoinIconSrc,
 } from "@/components/wallet-workspace/facelift/earn-activity-card";
+import { sortByFundedNearestTrigger } from "@/components/wallet-workspace/facelift/upward-selector-sort";
 import {
   FlowDiagram,
   FlowExplainerOverlay,
@@ -113,7 +115,7 @@ function SourceOptionRow({
 }) {
   const amount = splitUsdBalance(option.usd);
   const { isBalanceHidden } = useBalanceVisibility();
-  const isDust = option.usd < 0.005;
+  const isDust = option.usd < EARN_WITHDRAW_SOURCE_DUST_USD;
   return (
     <button
       className={`t-hover flex w-full items-center px-4 text-left disabled:opacity-40 enabled:hover:bg-accent ${rounded}`}
@@ -193,19 +195,17 @@ export function WithdrawPane({
       })),
     [sources]
   );
-  // The selector opens upward from the trigger, so withdrawable sources sit
-  // at the bottom (nearest the trigger) and $0.00 dust at the top — same
-  // contract as the deposit source selector.
   const listedOptions = useMemo(
     () =>
-      [...options].sort(
-        (a, b) => (a.usd >= 0.005 ? 1 : 0) - (b.usd >= 0.005 ? 1 : 0)
+      sortByFundedNearestTrigger(
+        options,
+        (option) => option.usd >= EARN_WITHDRAW_SOURCE_DUST_USD
       ),
     [options]
   );
   const selectedOption =
     options.find((option) => option.key === selectedKey) ??
-    options.find((option) => option.usd >= 0.005) ??
+    options.find((option) => option.usd >= EARN_WITHDRAW_SOURCE_DUST_USD) ??
     options[0] ??
     null;
   const fromBalance = splitUsdBalance(selectedOption?.usd ?? 0);
@@ -220,8 +220,6 @@ export function WithdrawPane({
   const amountLabel = amountUsd.toLocaleString("en-US", {
     maximumFractionDigits: 2,
   });
-  // Same mode derivation as the old workspace: compare the exact selected
-  // source balance for MAX even when its two-decimal label rounds differently.
   const withdrawMode = deriveEarnWithdrawMode({ amount: amountUsd, sources });
   const fullExitSources = useMemo(
     () => sources.filter((source) => source.type === "reserve"),

@@ -8,8 +8,8 @@ import {
 import {
   EARN_REALTIME_EVENT_TYPES,
   EARN_REALTIME_SCHEMA_VERSION,
-  type EarnAutodepositProgressState,
 } from "@/features/earn-realtime/types";
+import type { EarnAutodepositProgressState } from "@loyal-labs/shared";
 import { authenticateMobileEarnRequest } from "@/features/identity/server/mobile-earn-session";
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
 import { decodeWalletAddress } from "@/features/identity/server/wallet-auth-signature";
@@ -27,6 +27,7 @@ import {
   EARN_POSITION_REQUIRED_ERROR,
   hasActiveEarnRoutePolicyPair,
 } from "@/lib/yield-optimization/earn-position-gate.server";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Mobile twin of `yield-optimization/autodeposit/sweeps/execute`. Lets the
 // native app ask the worker to run the pending scheduled Autodeposit sweep now
@@ -38,8 +39,6 @@ import {
 // execute (the web gets these transitions over SSE; mobile polls the same
 // fallback contract) — read-only and wallet-address-keyed like
 // `mobile/earn/autodeposit/state`. Keep in sync with the session route.
-const EARN_VAULT_INDEX = 1 as const;
-
 function jsonError(
   status: number,
   code: string,

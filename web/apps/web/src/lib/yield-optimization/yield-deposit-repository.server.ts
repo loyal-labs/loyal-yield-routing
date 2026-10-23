@@ -2769,7 +2769,6 @@ export async function findCompleteYieldVaultExposureSnapshots(
   if (snapshots.length === 0) {
     return [];
   }
-  // Read in covering-index order, then restore chain order without a DB sort.
   snapshots.sort((left, right) => {
     if (left.observedSlot !== right.observedSlot) {
       return left.observedSlot < right.observedSlot ? -1 : 1;
@@ -3140,8 +3139,7 @@ export async function hasInactiveYieldRoutePolicyForVault(
         eq(managedVaults.vaultIndex, input.vaultIndex),
         eq(managedVaults.vaultPubkey, input.vaultPubkey),
         eq(routePolicies.authority, input.authority),
-        // The yield-owned cluster column is not in the app's partial model.
-        sql`${routePolicies}.cluster = ${normalizeLoyalCluster(input.cluster)}`,
+        eq(routePolicies.cluster, normalizeLoyalCluster(input.cluster)),
         eq(routePolicies.settings, input.settings),
         eq(routePolicies.vaultIndex, input.vaultIndex),
         eq(routePolicies.vaultPubkey, input.vaultPubkey),

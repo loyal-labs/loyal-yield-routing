@@ -4,6 +4,7 @@ import {
   SdkVerbosity,
   TrackingConsent,
 } from "@datadog/mobile-react-native";
+import { mobileChannelToEnvironment } from "@loyal-labs/shared";
 import * as Updates from "expo-updates";
 
 const CLIENT_TOKEN = "pub65e82b493fbf5faa4c3847345e32e609";
@@ -12,11 +13,7 @@ const SITE = "US5";
 const SERVICE = "mobile-app";
 
 function getDatadogEnv(): string {
-  const channel = Updates.channel ?? "";
-  if (channel === "production") return "prod";
-  if (channel === "preview") return "preview";
-  if (channel === "dapp-store") return "prod";
-  return "dev";
+  return mobileChannelToEnvironment(Updates.channel ?? "");
 }
 
 let initialized = false;

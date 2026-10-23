@@ -1,5 +1,6 @@
 "use client";
 
+import { buildEarnMaxDailySeries } from "@loyal-labs/shared";
 import {
   CircleCheck,
   Clock3,
@@ -18,7 +19,6 @@ import {
 } from "@/components/wallet-sidebar/earn-detail-view";
 import {
   ScrambledPopDigits,
-  ScrambleText,
   useBalanceVisibility,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
 import { readCssDurationMs } from "@/components/wallet-workspace/facelift/css-duration";
@@ -45,7 +45,10 @@ import {
   isEarnMaxWithdrawishAction,
   OperationRow,
 } from "@/components/wallet-workspace/facelift/earn-max-transaction-detail";
-import { GroupHeader } from "@/components/wallet-workspace/facelift/earn-activity-card";
+import {
+  EarnPositionRow,
+  GroupHeader,
+} from "@/components/wallet-workspace/facelift/earn-activity-card";
 import {
   EarnedBarsChart,
   type EarnedChartBar,
@@ -208,91 +211,6 @@ export function isEarnMaxUntouched(view: EarnMaxViewModel): boolean {
     view.activity.length === 0 &&
     !view.withdrawal
   );
-}
-
-const EARNED_WINDOW_DAYS = 30;
-
-// UTC days: Voltr's daily share prices close at 00:00 UTC, so a local-day
-// split would show each day's yield on the next local day east of UTC.
-function dayKey(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function buildEarnMaxDailySeries(view: EarnMaxViewModel): {
-  days: {
-    date: Date;
-    earnedUsd: number;
-    equityUsd: number | null;
-    isCurrent: boolean;
-  }[];
-} {
-  const equityByDay = new Map<string, { first: number; last: number }>();
-  for (const point of view.performance) {
-    const date = new Date(point.timestamp);
-    if (Number.isNaN(date.getTime())) {
-      continue;
-    }
-    const key = dayKey(date);
-    const existing = equityByDay.get(key);
-    if (existing) {
-      existing.last = point.equityUsd;
-    } else {
-      equityByDay.set(key, { first: point.equityUsd, last: point.equityUsd });
-    }
-  }
-  const flowsByDay = new Map<string, number>();
-  for (const operation of view.activity) {
-    if (!(operation.amountRaw && operation.timestamp)) {
-      continue;
-    }
-    const date = new Date(operation.timestamp);
-    if (Number.isNaN(date.getTime())) {
-      continue;
-    }
-    const sign =
-      operation.action === "deposit" || operation.action === "install"
-        ? 1
-        : operation.action === "withdraw_request"
-        ? -1
-        : 0;
-    if (sign === 0) {
-      continue;
-    }
-    const key = dayKey(date);
-    flowsByDay.set(
-      key,
-      (flowsByDay.get(key) ?? 0) + (sign * Number(operation.amountRaw)) / 1_000_000
-    );
-  }
-  const now = new Date();
-  const days: {
-    date: Date;
-    earnedUsd: number;
-    equityUsd: number | null;
-    isCurrent: boolean;
-  }[] = [];
-  let carryEquity: number | null = null;
-  for (let offset = EARNED_WINDOW_DAYS - 1; offset >= 0; offset -= 1) {
-    const date = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - offset)
-    );
-    const key = dayKey(date);
-    const dayEquity = equityByDay.get(key);
-    const equity: number | null = dayEquity?.last ?? carryEquity;
-    const raw =
-      equity === null
-        ? 0
-        : equity - (carryEquity ?? 0) - (flowsByDay.get(key) ?? 0);
-    const earned = raw < 0 && raw > -0.01 ? 0 : raw;
-    days.push({
-      date,
-      earnedUsd: earned,
-      equityUsd: equity,
-      isCurrent: offset === 0,
-    });
-    carryEquity = equity;
-  }
-  return { days };
 }
 
 export function buildEarnMaxEarnedBars(view: EarnMaxViewModel): EarnedChartBar[] {
@@ -522,32 +440,10 @@ function EarnMaxActivityCard({
       <div className="flex w-full flex-col px-2 pb-2">
         {tab === "Positions" ? (
           view.balanceUsd > 0 ? (
-            // Same row contract as the Earn Positions tab: 60px cell, amount
-            // under the label, Withdraw pill on the delayed hover reveal.
             <StaggerReveal className="flex w-full flex-col">
               <StaggerLine index={0}>
-                <div className="group t-hover flex w-full items-center rounded-2xl px-4 hover:bg-accent">
-                  <div className="flex items-center py-2 pr-3">
-                    <EarnMaxDualIcon />
-                  </div>
-                  <div className="flex h-[60px] min-w-0 flex-1 flex-col gap-0.5 py-[9px]">
-                    <span className="whitespace-nowrap text-[13px] text-muted-foreground leading-4">
-                      {EARN_MAX_STRATEGY_NAME} USDC
-                    </span>
-                    <p className="whitespace-nowrap font-semibold text-[20px] text-foreground leading-6">
-                      <ScrambleText
-                        isHidden={isBalanceHidden}
-                        text={balance.balanceWhole}
-                      />
-                      <span className="text-tertiary">
-                        <ScrambleText
-                          isHidden={isBalanceHidden}
-                          text={balance.balanceFraction}
-                        />
-                      </span>
-                    </p>
-                  </div>
-                  <div className="pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                <EarnPositionRow
+                  action={
                     <PendingWithdrawalTooltip pending={!!withdrawal && withdrawal.status !== "claimed"}>
                       <SmallPill
                         disabled={view.isBusy || (!!withdrawal && withdrawal.status !== "claimed")}
@@ -556,8 +452,14 @@ function EarnMaxActivityCard({
                         variant="light"
                       />
                     </PendingWithdrawalTooltip>
-                  </div>
-                </div>
+                  }
+                  actionWrapClassName="pointer-events-none flex pl-3 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-hover:delay-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                  amountFraction={balance.balanceFraction}
+                  amountWhole={balance.balanceWhole}
+                  icon={<EarnMaxDualIcon />}
+                  isHidden={isBalanceHidden}
+                  label={`${EARN_MAX_STRATEGY_NAME} USDC`}
+                />
               </StaggerLine>
             </StaggerReveal>
           ) : (

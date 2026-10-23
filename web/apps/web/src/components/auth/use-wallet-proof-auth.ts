@@ -25,6 +25,7 @@ import {
   useState,
 } from "react";
 
+import { filterInstalledWallets } from "@/components/auth/installed-wallet";
 import {
   useAuthApiClient,
   useAuthSession,
@@ -232,7 +233,7 @@ export function useWalletProofAuth({
   const lifecycleRef = useRef<LifecycleTracker | null>(null);
 
   const installedWallets = useMemo(
-    () => wallets.filter((candidate) => candidate.readyState === "Installed"),
+    () => filterInstalledWallets(wallets),
     [wallets]
   );
 
@@ -252,8 +253,6 @@ export function useWalletProofAuth({
             ? error.code
             : classifyWalletAdapterError(error)
         );
-      // Connected-wallet verification never sets selectedWalletNameRef, so
-      // fall back to the adapter the hook currently holds.
       const walletProvider = normalizeLifecycleWalletProvider(
         selectedWalletNameRef.current ?? wallet?.adapter.name
       );

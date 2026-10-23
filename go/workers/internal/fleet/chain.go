@@ -69,5 +69,5 @@ func recentPriorityFee(ctx context.Context, c *chain.Client, writable []string) 
 		return 0, err
 	}
 	slices.Sort(fees)
-	return fees[(len(fees)*75+99)/100-1], nil
+	return uint64(fees[(len(fees)*75+99)/100-1]), nil
 }
