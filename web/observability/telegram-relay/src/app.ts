@@ -295,6 +295,7 @@ export function createFanoutSender(senders: AlertSender[]): AlertSender {
   };
 }
 
+// Redacts with the shared RelayCredentials, so it also catches unprefixed bot tokens.
 function createOutgoingMessageLogger(
   destination: "telegram" | "slack",
   credentials: RelayCredentials

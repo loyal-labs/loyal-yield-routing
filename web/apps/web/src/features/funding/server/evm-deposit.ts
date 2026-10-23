@@ -40,6 +40,7 @@ const SOURCE_ASSETS = EVM_DEPOSIT_CHAINS.flatMap((chain) =>
 export function buildEvmDepositRequest(
   walletId: string,
   appId: string,
+  /** Must be identical when signing and when sending. */
   requestExpiryUnixMs: number
 ) {
   return {

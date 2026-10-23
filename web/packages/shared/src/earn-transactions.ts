@@ -47,5 +47,7 @@ export function getEarnTransactionRowLabel(item: {
       return "Balance sweep";
     case "autodeposit_action":
       return "Allowance";
+    default:
+      return "Transaction";
   }
 }

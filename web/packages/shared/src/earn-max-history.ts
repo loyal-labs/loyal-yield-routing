@@ -2,6 +2,7 @@ import type { EarnMaxActivityItem, EarnMaxPerformancePoint } from "./earn-max";
 const EARNED_WINDOW_DAYS = 30;
 const ROUNDING_DUST_USD = 0.01;
 
+// Voltr closes its daily share price at 00:00 UTC.
 function utcDayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
