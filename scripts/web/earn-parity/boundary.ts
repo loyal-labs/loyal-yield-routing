@@ -20,6 +20,7 @@ const STUBBED = [
   "lib/yield-optimization/yield-deposit-repository.server",
   "lib/yield-optimization/earn-reserve-target.server",
   "lib/yield-optimization/earn-autodeposit-repository.server",
+  "lib/yield-optimization/earn-policy-refund-state.server",
 ].map((path) => `${WEB_SRC}/${path}.ts`);
 
 export type Fixture = {
