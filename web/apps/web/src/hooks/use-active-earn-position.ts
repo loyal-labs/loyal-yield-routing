@@ -11,7 +11,7 @@ import {
   removeClientCache,
   writeClientCache,
 } from "@/lib/client-cache/client-cache";
-import { resolveEarnPositionDisplay } from "@/lib/yield-optimization/earn-position-display";
+import { resolveEarnPositionDisplay } from "@loyal-labs/smart-account-vaults";
 import {
   type EarnRpcHolding,
   type EarnRpcHoldingsSnapshot,
@@ -19,7 +19,7 @@ import {
   type EarnRpcWatchedAccount,
   fetchEarnRpcHoldingsSnapshot,
   sumEarnRpcHoldingsAmountRaw,
-} from "@/lib/yield-optimization/earn-rpc-holdings.client";
+} from "@loyal-labs/smart-account-vaults";
 
 const EARN_POSITION_CACHE_VERSION = 6;
 const EARN_POSITION_REFRESH_DEBOUNCE_MS = 350;

@@ -61,7 +61,7 @@ import {
   getStablecoinMintSetForSolanaEnv,
   isStablecoinMint,
 } from "@/lib/wallet/stablecoin-classification";
-import { getEarnProductAssetsForCluster } from "@/lib/yield-optimization/earn-product-mints.shared";
+import { getEarnProductAssetsForCluster } from "@loyal-labs/smart-account-vaults";
 
 type ActionView = Exclude<SubView, null>;
 
