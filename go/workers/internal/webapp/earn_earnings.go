@@ -99,12 +99,20 @@ func (h earnRoutes) earnEarnings(ctx context.Context, in *earningsRequest) (*ear
 	payload, err := readCachedEarnEarningsRangeSet(ctx, h.YieldDB, input,
 		h.scheduleEarningsRefresh(ctx), newEarningsReadDependencies(h.YieldDB, false))
 	if err != nil {
-		var unavailable *earningsUnavailableError
-		if errors.As(err, &unavailable) {
-			return nil, newEarningsError(unavailable.code, strPtr(unavailable.detailCode))
-		}
-		warnEarningsRead("route", err)
-		return nil, newEarningsError(earningsUnavailableCode, nil)
+		return nil, earningsRouteError(err)
 	}
 	return &earningsOutput{CacheControl: "no-store", Body: payload}, nil
+}
+
+// earningsRouteError maps a read-service failure onto the route's 503
+// envelope exactly as the TS catch block does: a classified unavailable error
+// keeps its code and detailCode, anything else degrades to
+// earnings_unavailable.
+func earningsRouteError(err error) error {
+	var unavailable *earningsUnavailableError
+	if errors.As(err, &unavailable) {
+		return newEarningsError(unavailable.code, strPtr(unavailable.detailCode))
+	}
+	warnEarningsRead("route", err)
+	return newEarningsError(earningsUnavailableCode, nil)
 }
