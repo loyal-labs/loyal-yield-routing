@@ -18,8 +18,15 @@ var earnDepositYieldGrants = []Grant{
 	{"loyal_yield.solana_week_quest_completions", "UPDATE"},
 }
 
+// earnDepositAppGrants is the earn-max context op's app schema footprint:
+// the find-or-create app user (privy_provisioning.go) and the smart-account
+// rows the sponsored-provisioning seam reads and writes — the same set the
+// privy-complete family declares for the same helpers.
+var earnDepositAppGrants = earnPrivyFamily.appGrants
+
 var earnDepositFamily = earnFamily{
 	name:        "earn deposit",
+	appGrants:   earnDepositAppGrants,
 	yieldGrants: earnDepositYieldGrants,
 	ready: func(h earnRoutes) bool {
 		return h.signedIn() && h.Chain != nil && h.YieldDB != nil && !h.PolicySigner.IsZero()
@@ -31,4 +38,5 @@ func (h earnRoutes) registerDeposit(api huma.API) {
 	h.registerPoliciesPrepare(api)
 	h.registerPoliciesConfirm(api)
 	h.registerDepositsConfirm(api)
+	h.registerEarnMaxContext(api)
 }
