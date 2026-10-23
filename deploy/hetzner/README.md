@@ -400,7 +400,7 @@ proxying the session routes to Next.
 | `AUTH_JWT_SECRET` | yes, until Next signs RS256 | the Next deployment's value; Go verifies HS256 under `sha256(secret)` |
 | `AUTH_JWT_RS256_PUBLIC_KEY` | no | SPKI PEM; verifies RS256 once Next signs with the private key |
 | `WEB_SOLANA_RPC_URL` | yes | reads the smart account's settings signers |
-| `WEB_APP_DATABASE_URL` | yes | App Neon; SELECT on `app_users` and `app_user_smart_accounts` (sessions), SELECT and INSERT on `earn_max_invite_redemptions` (Earn MAX routes), SELECT, INSERT and UPDATE on `push_tokens` (`/api/push-tokens`) |
+| `WEB_APP_DATABASE_URL` | yes | App Neon owner credential (the same value as `ADMIN_APP_DATABASE_URL`, by owner decision 2026-10-23: no role is created and no GRANT runs); SELECT on `app_users` and `app_user_smart_accounts` (sessions), SELECT and INSERT on `earn_max_invite_redemptions` (Earn MAX routes), SELECT, INSERT and UPDATE on `push_tokens` (`/api/push-tokens`) |
 | `WEB_YIELD_DATABASE_URL` | no | Yield Neon owner credential (the same value as `NEON_DATABASE_URL`, by owner decision 2026-10-23: no role is created and no GRANT runs); the Earn families below check their grants against it; without it Earn MAX reads show no current APY and no withdrawal health |
 | `EARN_MAX_INVITE_CODE_HASHES` | no | the Next deployment's value: comma-separated sha256 hex of the invite codes; unset or malformed, `POST /api/smart-accounts/earn-max/invite` keeps proxying to Next (a malformed entry logs one line) |
 | `AUTH_JWT_RS256_PRIVATE_KEY` | no | PKCS#8 PEM, the Next deployment's value; with it `loyal-web` mints the mobile Earn session JWT RS256, without it HS256 under `AUTH_JWT_SECRET` (`POST /api/smart-accounts/earn/session`, `POST /api/auth/privy/complete`) |
@@ -443,9 +443,10 @@ no GRANT runs.
 
 Observability ingest, earn session and earn cleanup check no yield grants.
 
-**App Neon (`WEB_APP_DATABASE_URL`): deploy-time owner ask.** No credential
-exists for this side yet. Before deploy the owner picks the credential and
-grants it:
+**App Neon (`WEB_APP_DATABASE_URL`).** By owner decision 2026-10-23 this is
+the App Neon owner credential (`neondb_owner` on `neondb`, the same value as
+`ADMIN_APP_DATABASE_URL`), which already holds every grant below; no role is
+created and no GRANT runs.
 
 | Group | App grants |
 |---|---|
