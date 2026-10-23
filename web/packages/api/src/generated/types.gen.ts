@@ -20,6 +20,112 @@ export type ActivityItem = {
     timestamp: string;
 };
 
+export type AutodepositCloseConfirmRequest = {
+    closeSignature: string;
+    cluster: string;
+    confirmedSlot: string;
+    delegatedSigner: string;
+    policyAccount: string;
+    recurringDelegation: string;
+    settings: string;
+    vaultIndex: number;
+    vaultPubkey: string;
+    walletAddress: string;
+};
+
+export type AutodepositFloorConfirmRequest = {
+    policyAccount: string;
+    recurringDelegation: string;
+    vaultIndex: number;
+    walletBalanceFloorRaw: string;
+};
+
+export type AutodepositFloorConfirmResponse = {
+    rebaselineSweep?: AutodepositFloorRebaselineSweep;
+    target: AutodepositSetupConfirmTarget;
+};
+
+export type AutodepositFloorRebaselineSweep = {
+    reason?: string;
+    status: string;
+    sweep?: AutodepositSetupConfirmSweep;
+};
+
+export type AutodepositSetupConfirmBootstrapSweep = {
+    reason?: string;
+    status: string;
+    sweep?: AutodepositSetupConfirmSweep;
+};
+
+export type AutodepositSetupConfirmRequest = {
+    amountPerPeriodRaw: string;
+    cluster: string;
+    confirmedSlot: string;
+    delegatedSigner: string;
+    expiryTimestamp: string;
+    liquidityMint: string;
+    nonce: string;
+    periodLengthSeconds: string;
+    policyAccount: string;
+    policyId: string;
+    policySeed: string;
+    recurringDelegation: string;
+    settings: string;
+    setupSignature: string;
+    setupStage: string;
+    startTimestamp: string;
+    subscriptionAuthority: string;
+    subscriptionAuthorityInitialization: string;
+    subscriptionDelegatee: string;
+    vaultIndex: number;
+    vaultPubkey: string;
+    vaultUsdcAta: string;
+    walletAddress: string;
+    walletBalanceFloorRaw: string;
+    walletUsdcAta: string;
+};
+
+export type AutodepositSetupConfirmResponse = {
+    bootstrapSweep?: AutodepositSetupConfirmBootstrapSweep;
+    confirmedSlot: string;
+    target?: AutodepositSetupConfirmTarget;
+};
+
+export type AutodepositSetupConfirmSweep = {
+    classification: string;
+    confidence: string;
+    eligibleAfter: string;
+    executeNowAvailableAt: string | null;
+    id: string;
+    lotCount: number;
+    originalAmountRaw: string;
+    reason: string;
+    remainingAmountRaw: string;
+    slotId: string;
+    status: string;
+};
+
+export type AutodepositSetupConfirmTarget = {
+    active: boolean;
+    balanceSweepPolicyId: string | null;
+    id: string;
+    lifecycleStatus: string;
+    policyAccount: string;
+    recurringDelegation: string | null;
+    walletBalanceFloorRaw: string | null;
+};
+
+export type AutodepositTargetResponse = {
+    target: AutodepositSetupConfirmTarget;
+};
+
+export type AutodepositToggleConfirmRequest = {
+    active: boolean;
+    policyAccount: string;
+    recurringDelegation: string;
+    vaultIndex: number;
+};
+
 export type CrossMintDeleteReadinessRequest = {
     expectedGeneration?: string;
 };
@@ -1967,6 +2073,170 @@ export type PostEarnSessionResponses = {
 };
 
 export type PostEarnSessionResponse = PostEarnSessionResponses[keyof PostEarnSessionResponses];
+
+export type PostAutodepositCloseConfirmData = {
+    body?: AutodepositCloseConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/autodeposit/close/confirm';
+};
+
+export type PostAutodepositCloseConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostAutodepositCloseConfirmError = PostAutodepositCloseConfirmErrors[keyof PostAutodepositCloseConfirmErrors];
+
+export type PostAutodepositCloseConfirmResponses = {
+    /**
+     * OK
+     */
+    200: AutodepositTargetResponse;
+};
+
+export type PostAutodepositCloseConfirmResponse = PostAutodepositCloseConfirmResponses[keyof PostAutodepositCloseConfirmResponses];
+
+export type PostAutodepositFloorConfirmData = {
+    body?: AutodepositFloorConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/autodeposit/floor/confirm';
+};
+
+export type PostAutodepositFloorConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostAutodepositFloorConfirmError = PostAutodepositFloorConfirmErrors[keyof PostAutodepositFloorConfirmErrors];
+
+export type PostAutodepositFloorConfirmResponses = {
+    /**
+     * OK
+     */
+    200: AutodepositFloorConfirmResponse;
+};
+
+export type PostAutodepositFloorConfirmResponse = PostAutodepositFloorConfirmResponses[keyof PostAutodepositFloorConfirmResponses];
+
+export type PostAutodepositSetupConfirmData = {
+    body?: AutodepositSetupConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/autodeposit/setup/confirm';
+};
+
+export type PostAutodepositSetupConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostAutodepositSetupConfirmError = PostAutodepositSetupConfirmErrors[keyof PostAutodepositSetupConfirmErrors];
+
+export type PostAutodepositSetupConfirmResponses = {
+    /**
+     * OK
+     */
+    200: AutodepositSetupConfirmResponse;
+};
+
+export type PostAutodepositSetupConfirmResponse = PostAutodepositSetupConfirmResponses[keyof PostAutodepositSetupConfirmResponses];
+
+export type PostAutodepositToggleConfirmData = {
+    body?: AutodepositToggleConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/autodeposit/toggle/confirm';
+};
+
+export type PostAutodepositToggleConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostAutodepositToggleConfirmError = PostAutodepositToggleConfirmErrors[keyof PostAutodepositToggleConfirmErrors];
+
+export type PostAutodepositToggleConfirmResponses = {
+    /**
+     * OK
+     */
+    200: AutodepositTargetResponse;
+};
+
+export type PostAutodepositToggleConfirmResponse = PostAutodepositToggleConfirmResponses[keyof PostAutodepositToggleConfirmResponses];
 
 export type PostEarnCrossMintDeleteReadinessData = {
     body?: CrossMintDeleteReadinessRequest;

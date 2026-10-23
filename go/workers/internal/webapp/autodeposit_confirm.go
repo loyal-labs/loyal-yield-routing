@@ -330,8 +330,12 @@ func serializeAutodepositFloorSweep(sweep *autodepositFloorSweep) *AutodepositSe
 	return out
 }
 
-func autodepositTargetOutput(target autodepositTargetRow) *AutodepositTargetResponse {
-	return &AutodepositTargetResponse{Target: serializeAutodepositTarget(target)}
+type autodepositTargetOutput struct {
+	Body AutodepositTargetResponse
+}
+
+func newAutodepositTargetOutput(target autodepositTargetRow) *autodepositTargetOutput {
+	return &autodepositTargetOutput{Body: AutodepositTargetResponse{Target: serializeAutodepositTarget(target)}}
 }
 
 // ---- handlers ----
@@ -352,7 +356,7 @@ func (h earnRoutes) registerAutodepositClose(api huma.API) {
 	documentJSONBody[AutodepositCloseConfirmRequest](api, autodepositCloseConfirmPath)
 }
 
-func (h earnRoutes) autodepositCloseConfirm(ctx context.Context, in *autodepositCloseConfirmInput) (*AutodepositTargetResponse, error) {
+func (h earnRoutes) autodepositCloseConfirm(ctx context.Context, in *autodepositCloseConfirmInput) (*autodepositTargetOutput, error) {
 	// route.ts:158-162.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
@@ -401,7 +405,7 @@ func (h earnRoutes) autodepositCloseConfirm(ctx context.Context, in *autodeposit
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "record_failed", err.Error())
 	}
-	return autodepositTargetOutput(target), nil
+	return newAutodepositTargetOutput(target), nil
 }
 
 type autodepositFloorConfirmInput struct {
@@ -483,7 +487,7 @@ func (h earnRoutes) registerAutodepositToggle(api huma.API) {
 	documentJSONBody[AutodepositToggleConfirmRequest](api, autodepositToggleConfirmPath)
 }
 
-func (h earnRoutes) autodepositToggleConfirm(ctx context.Context, in *autodepositToggleConfirmInput) (*AutodepositTargetResponse, error) {
+func (h earnRoutes) autodepositToggleConfirm(ctx context.Context, in *autodepositToggleConfirmInput) (*autodepositTargetOutput, error) {
 	// route.ts:36-40.
 	account, err := h.account(ctx, in.SessionInput)
 	if err != nil {
@@ -509,5 +513,5 @@ func (h earnRoutes) autodepositToggleConfirm(ctx context.Context, in *autodeposi
 	if input.Active {
 		sendAutodepositWalletPush(ctx, account.Wallet.String(), autodepositEnabledPush())
 	}
-	return autodepositTargetOutput(target), nil
+	return newAutodepositTargetOutput(target), nil
 }

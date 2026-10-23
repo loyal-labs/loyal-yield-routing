@@ -25,6 +25,10 @@ export type Post = {
   "/api/push-tokens": Types.PushTokenSaved;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn/session": Types.EarnSessionResponse;
+  "/api/smart-accounts/yield-optimization/autodeposit/close/confirm": Types.AutodepositTargetResponse;
+  "/api/smart-accounts/yield-optimization/autodeposit/floor/confirm": Types.AutodepositFloorConfirmResponse;
+  "/api/smart-accounts/yield-optimization/autodeposit/setup/confirm": Types.AutodepositSetupConfirmResponse;
+  "/api/smart-accounts/yield-optimization/autodeposit/toggle/confirm": Types.AutodepositTargetResponse;
   "/api/smart-accounts/yield-optimization/cross-mint/delete/readiness": Types.CrossMintDeleteReadinessResponse;
   "/api/smart-accounts/yield-optimization/cross-mint/toggle": Types.CrossMintToggleResponse;
   "/api/smart-accounts/yield-optimization/policies/confirm": Types.EarnPolicyConfirmResponse;
