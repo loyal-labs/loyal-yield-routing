@@ -147,7 +147,11 @@ function rewriteTelegramApp(root: string, versions: Map<string, string>): void {
 }
 
 function rewriteMobile(root: string, versions: Map<string, string>): void {
-  rewritePackageJsonDependencies(path.join(root, "package.json"), versions);
+  const packageJsonPath = path.join(root, "package.json");
+  const packageJson = rewritePackageJsonDependencies(packageJsonPath, versions);
+  // EAS installs the standalone app directly; this hook installs the monorepo.
+  delete packageJson.scripts?.["eas-build-pre-install"];
+  writeJsonFile(packageJsonPath, packageJson);
   removeExternalTsconfigPaths(path.join(root, "tsconfig.json"));
   removeIfExists(path.join(root, "CLAUDE.md"));
 
