@@ -301,6 +301,17 @@ func isoMS(t time.Time) string {
 	return time.UnixMilli(t.UnixMilli()).UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }
 
+// msTime truncates to millisecond precision, what a JS Date keeps. Postgres
+// timestamps carry microseconds the TS readers never see.
+func msTime(t time.Time) time.Time {
+	if _, off := t.Zone(); off == 0 {
+		return time.UnixMilli(t.UnixMilli())
+	}
+	return time.UnixMilli(t.UnixMilli()).UTC()
+}
+
+func msTimeMillis(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
+
 func jsonFloat(f float64) string {
 	var w jsonWriter
 	w.number(f)
