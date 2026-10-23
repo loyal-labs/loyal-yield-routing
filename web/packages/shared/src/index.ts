@@ -49,6 +49,22 @@ export type {
   LoadedEarnAutodepositState,
 } from "./earn-autodeposit-loaded-state";
 
+export {
+  buildEarnForecastProjection,
+  clampEarnForecastApyBps,
+  deriveMainUsdcReserveApyBps,
+  earnForecastChartAxisCeiling,
+  EARN_FORECAST_EASE_EXPONENT,
+  EARN_FORECAST_MIN_APY_BPS,
+  EARN_MAIN_USDC_RESERVE_FALLBACK_APY_BPS,
+  EARN_TBILL_APY_BPS,
+  getEarnForecastTargetMultiplier,
+} from "./earn-forecast";
+export type {
+  EarnApyHistorySeriesLike,
+  EarnApyHistorySeriesSample,
+} from "./earn-forecast";
+
 export { getEarnTransactionRowLabel } from "./earn-transactions";
 export type {
   EarnTransactionEventType,
