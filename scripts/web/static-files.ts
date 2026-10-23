@@ -1,49 +1,38 @@
-// Writes the SEO files and page manifest into the built Vite dist, so Go can
-// serve the files and distinguish page routes from missing URLs:
-//
-//   bun scripts/web/static-files.ts <dist-dir>   (default: web/apps/loyal/dist)
-//
-//   sitemap.xml     apps/web src/app/sitemap.ts (default export)
-//   llms.txt        apps/web src/app/llms.txt/route.ts (GET)
-//   llms-full.txt   apps/web src/app/llms-full.txt/route.ts (GET)
-//   page-paths.json Vite page routes with blog slugs expanded from the archive
-//
-// Both llms handlers and the sitemap read the blog archive through apps/web's
-// own loader, so their output here is by construction what Vercel serves. The
-// script imports those modules under bun, which needs two shims: their import
-// chain pulls in `server-only` (a marker that throws outside a React server)
-// and `next/font/google` (bundler-generated). Both are answered by the same
-// src/next-compat stubs the Vite build aliases in, registered as a runtime
-// plugin before the imports. apps/web resolves public/blog relative to its own
-// cwd, so the script runs from there; the dist argument is resolved first.
 import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { routes } from "../../web/apps/loyal/src/routes.table";
 
 const root = join(import.meta.dir, "../..");
-const dist = resolve(process.argv[2] ?? join(root, "web/apps/loyal/dist"));
+const invocationCwd = process.cwd();
+const dist = resolve(
+  invocationCwd,
+  process.argv[2] ?? join(root, "web/apps/loyal/dist")
+);
 const webApp = join(root, "web/apps/web");
 const fontGoogleCompat = join(
   root,
   "web/apps/loyal/src/next-compat/font-google.ts"
 );
 
-Bun.plugin({
-  name: "loyal-web-static-files",
-  setup(build) {
-    build.module("server-only", () => ({
-      contents: "export {};",
-      loader: "js",
-    }));
-    build.module("next/font/google", () => ({
-      contents: `export * from ${JSON.stringify(fontGoogleCompat)};`,
-      loader: "ts",
-    }));
-  },
-});
+function prepareAppsWebImports(): void {
+  Bun.plugin({
+    name: "loyal-web-static-files",
+    setup(build) {
+      build.module("server-only", () => ({
+        contents: "export {};",
+        loader: "js",
+      }));
+      build.module("next/font/google", () => ({
+        contents: `export * from ${JSON.stringify(fontGoogleCompat)};`,
+        loader: "ts",
+      }));
+    },
+  });
+  process.chdir(webApp);
+}
 
-process.chdir(webApp);
+prepareAppsWebImports();
 
 type SitemapEntry = {
   url: string;

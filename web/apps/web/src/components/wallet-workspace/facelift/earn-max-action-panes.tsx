@@ -8,7 +8,7 @@ import {
   Vault,
   Wallet,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { sanitizeBucksAmountInput } from "@/components/wallet-sidebar/earn-detail-view";
 import {
@@ -276,12 +276,6 @@ export function EarnMaxDepositPane({
 }) {
   const { isBalanceHidden } = useBalanceVisibility();
   const [amount, setAmount] = useState("");
-  // The funding balance is only auto-refreshed after Earn transactions, so
-  // re-read it on open to pick up swaps and external transfers.
-  const { refreshMainUsdcAmount } = earnData.actions;
-  useEffect(() => {
-    void refreshMainUsdcAmount();
-  }, [refreshMainUsdcAmount]);
 
   const sourceUsd = earnData.actions.mainUsdcAmount ?? 0;
   const sourceBalance = splitUsdBalance(sourceUsd);

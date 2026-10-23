@@ -108,8 +108,8 @@ function formatUtcDay(value: number): string {
   }).format(new Date(value));
 }
 
-function formatUtcTick(value: number, spanMs: number): string {
-  if (spanMs > 2 * DAY_MS) {
+function formatUtcTick(value: number, dateOnlyLabels: boolean): string {
+  if (dateOnlyLabels) {
     return formatUtcDay(value);
   }
   return new Intl.DateTimeFormat("en-US", {
@@ -256,15 +256,21 @@ function buildBucketGrid(data: MetricsDashboardData): number[] {
   return buckets;
 }
 
-/**
- * Tick step and label format are chosen together: sub-day steps would print
- * duplicate date-only labels, and day steps on a short window print two ticks.
- */
-function buildAxisTicks(bucketGrid: number[]): number[] {
+function resolveAxisTicks(bucketGrid: number[]): {
+  formatTick: (value: number) => string;
+  ticks: number[];
+} {
   const span = bucketGrid[bucketGrid.length - 1] - bucketGrid[0];
-  const step =
-    span > 2 * DAY_MS ? DAY_MS : span > DAY_MS ? DAY_MS / 2 : DAY_MS / 4;
-  return bucketGrid.filter((time) => time % step === 0);
+  const dateOnlyLabels = span > 2 * DAY_MS;
+  const step = dateOnlyLabels
+    ? DAY_MS
+    : span > DAY_MS
+      ? DAY_MS / 2
+      : DAY_MS / 4;
+  return {
+    formatTick: (value: number) => formatUtcTick(value, dateOnlyLabels),
+    ticks: bucketGrid.filter((time) => time % step === 0),
+  };
 }
 
 function buildOperationCharts({
@@ -581,7 +587,7 @@ function MetricChartCard({
 
   const showTrend = chart.bucketCount >= MIN_BUCKETS_FOR_TREND;
   const volume = chart.volume;
-  const axisSpan = bucketGrid[bucketGrid.length - 1] - bucketGrid[0];
+  const axis = resolveAxisTicks(bucketGrid);
 
   return (
     <Card className="min-w-0 gap-4">
@@ -656,12 +662,10 @@ function MetricChartCard({
                 dataKey="bucketTime"
                 domain={[bucketGrid[0], bucketGrid[bucketGrid.length - 1]]}
                 scale="time"
-                tickFormatter={(value: number) =>
-                  formatUtcTick(value, axisSpan)
-                }
+                tickFormatter={axis.formatTick}
                 tickLine={false}
                 tickMargin={8}
-                ticks={buildAxisTicks(bucketGrid)}
+                ticks={axis.ticks}
                 type="number"
               />
               <YAxis
