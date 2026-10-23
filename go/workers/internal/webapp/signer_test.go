@@ -15,10 +15,12 @@ var signerReach = map[string]struct {
 	owner string
 	from  []string
 }{
-	"NewSigner":  {"internal/jwt", []string{"cmd/loyal-web/main.go"}},
-	"Mint":       {"internal/jwt", []string{"internal/webapp/earn_session.go", "internal/webapp/earn_privy.go"}},
-	"NewSponsor": {"internal/earnprep", []string{"cmd/loyal-web/main.go"}},
-	"Cosign":     {"internal/earnprep", []string{"internal/webapp/earn_sponsor.go"}},
+	"NewSigner":         {"internal/jwt", []string{"cmd/loyal-web/main.go"}},
+	"Mint":              {"internal/jwt", []string{"internal/webapp/earn_session.go", "internal/webapp/earn_privy.go"}},
+	"NewRealtimeIssuer": {"internal/jwt", []string{"cmd/loyal-web/main.go"}},
+	"IssueRealtime":     {"internal/jwt", []string{"internal/webapp/state_realtime.go"}},
+	"NewSponsor":        {"internal/earnprep", []string{"cmd/loyal-web/main.go"}},
+	"Cosign":            {"internal/earnprep", []string{"internal/webapp/earn_sponsor.go"}},
 }
 
 func TestSigningStaysWithItsOps(t *testing.T) {

@@ -219,6 +219,12 @@ func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB *pgxpool.
 			degraded("Earn session mint", fmt.Errorf("AUTH_JWT_RS256_PRIVATE_KEY: %w", err))
 		}
 	}
+	if raw, ok := optionalCredential("Earn realtime token", "REALTIME_AUTH_SECRET"); ok && raw != "" {
+		if e.Realtime, err = jwt.NewRealtimeIssuer(raw); err != nil {
+			degraded("Earn realtime token", err)
+		}
+		e.RealtimeURL = webapp.ResolveRealtimeEventsURL(appEnvironment)
+	}
 	if raw, ok := optionalCredential("sponsored smart account setup", "SMART_ACCOUNT_SPONSOR_PK"); ok {
 		if e.Sponsor, err = earnprep.NewSponsor(raw); err != nil {
 			degraded("sponsored smart account setup", err)

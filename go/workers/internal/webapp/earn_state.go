@@ -6,10 +6,12 @@ package webapp
 //	GET  /api/smart-accounts/yield-optimization/earn-state
 //	GET  /api/smart-accounts/yield-optimization/position
 //	POST /api/smart-accounts/yield-optimization/position/reconcile
+//	POST /api/smart-accounts/yield-optimization/realtime/token
 //
 // <- web/apps/web/src/app/api/smart-accounts/yield-optimization/{earn-state,
-// position, position/reconcile}/route.ts (mobile twins .../mobile/earn/state
-// and .../mobile/earn/autodeposit/state). Earn-state runs five independent
+// position, position/reconcile, realtime/token}/route.ts (mobile twins
+// .../mobile/earn/state and .../mobile/earn/autodeposit/state). Earn-state
+// runs five independent
 // loads, each degraded into loadErrors + null on failure exactly like
 // loadEarnStatePart; the position load also runs the reconcile writers, so
 // this is a read family with a bounded write blast radius.
@@ -87,6 +89,7 @@ func (h earnRoutes) registerState(api huma.API) {
 	}, h.earnState)
 	h.registerPosition(api)
 	h.registerReconcile(api)
+	h.registerRealtime(api)
 }
 
 // stateCurrentTotalAmountRaw ports loadCurrentTotalAmountRaw: the sum of the

@@ -52,7 +52,6 @@ import {
   updateEarnAutodepositThreshold,
 } from "@/lib/solana/earn/autodeposit";
 import {
-  toWithdrawPrepareSource,
   type EarnWithdrawSourceInfo,
 } from "@/lib/solana/earn/earn-api";
 import {
@@ -597,12 +596,17 @@ export default function EarnScreen() {
         if (!signer || !isWalletUnlocked(state)) {
           throw new Error("Unlock your wallet to withdraw.");
         }
+        const picked =
+          source ?? (withdrawSources.length === 1 ? withdrawSources[0] : null);
+        if (!picked) {
+          throw new Error("Select an Earn source before withdrawing.");
+        }
         await executeEarnWithdraw({
           signer,
           amountUsd,
           flowId: metric.flowId,
           mode,
-          source: source ? toWithdrawPrepareSource(source) : null,
+          sourceId: picked.id,
         });
         // confirmEarnWithdraw wrote the reduced read-model — trust it over the live
         // read, which lags HIGH right after a withdraw (funds still in the obligation

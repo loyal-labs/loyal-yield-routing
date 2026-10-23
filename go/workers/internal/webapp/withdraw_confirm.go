@@ -25,40 +25,40 @@ const earnWithdrawConfirmPath = "/api/smart-accounts/yield-optimization/withdraw
 // EarnWithdrawConfirmRequest documents the request body for OpenAPI; the
 // handler parses the raw bytes so the TS error messages carry over verbatim.
 type EarnWithdrawConfirmRequest struct {
-	AccountingReserve          *string         `json:"accountingReserve,omitempty"`
-	AutodepositClose           *struct{}       `json:"autodepositClose,omitempty"`
-	Cluster                    *string         `json:"cluster,omitempty"`
-	ConfirmedSlot              *string         `json:"confirmedSlot,omitempty"`
-	DelegatedSigner            *string         `json:"delegatedSigner,omitempty"`
-	ExecutionReserve           *string         `json:"executionReserve,omitempty"`
-	IsFinalStep                *bool           `json:"isFinalStep,omitempty"`
-	LiquidityMint              *string         `json:"liquidityMint,omitempty"`
-	Market                     *string         `json:"market,omitempty"`
-	Mode                       *string         `json:"mode,omitempty"`
-	PolicyAccount              *string         `json:"policyAccount,omitempty"`
-	PolicyID                   *string         `json:"policyId,omitempty"`
-	PolicySeed                 *string         `json:"policySeed,omitempty"`
-	RequestedWithdrawAmountRaw *string         `json:"requestedWithdrawAmountRaw,omitempty"`
-	ReserveWithdrawals         *[]struct{}     `json:"reserveWithdrawals,omitempty"`
-	Settings                   *string         `json:"settings,omitempty"`
-	SetupPolicyAccount         *string         `json:"setupPolicyAccount,omitempty"`
-	SetupPolicyID              *string         `json:"setupPolicyId,omitempty"`
-	SetupPolicySeed            *string         `json:"setupPolicySeed,omitempty"`
-	SmartAccountAddress        *string         `json:"smartAccountAddress,omitempty"`
-	SourceAmountRaw            *string         `json:"sourceAmountRaw,omitempty"`
-	SourceID                   *string         `json:"sourceId,omitempty"`
-	SourceMetadata             *map[string]any `json:"sourceMetadata,omitempty"`
-	SourceMint                 *string         `json:"sourceMint,omitempty"`
-	SourceTokenAccount         *string         `json:"sourceTokenAccount,omitempty"`
-	SourceType                 *string         `json:"sourceType,omitempty"`
-	StepCount                  *int            `json:"stepCount,omitempty"`
-	StepIndex                  *int            `json:"stepIndex,omitempty"`
-	TargetReserve              *string         `json:"targetReserve,omitempty"`
-	VaultIndex                 *int            `json:"vaultIndex,omitempty"`
-	VaultPubkey                *string         `json:"vaultPubkey,omitempty"`
-	WalletAddress              *string         `json:"walletAddress,omitempty"`
-	WithdrawalSignature        *string         `json:"withdrawalSignature,omitempty"`
-	WithdrawnAmountRaw         *string         `json:"withdrawnAmountRaw,omitempty"`
+	AccountingReserve          *string                                 `json:"accountingReserve,omitempty"`
+	AutodepositClose           *struct{}                               `json:"autodepositClose,omitempty"`
+	Cluster                    *string                                 `json:"cluster,omitempty"`
+	ConfirmedSlot              *string                                 `json:"confirmedSlot,omitempty"`
+	DelegatedSigner            *string                                 `json:"delegatedSigner,omitempty"`
+	ExecutionReserve           *string                                 `json:"executionReserve,omitempty"`
+	IsFinalStep                *bool                                   `json:"isFinalStep,omitempty"`
+	LiquidityMint              *string                                 `json:"liquidityMint,omitempty"`
+	Market                     *string                                 `json:"market,omitempty"`
+	Mode                       *string                                 `json:"mode,omitempty"`
+	PolicyAccount              *string                                 `json:"policyAccount,omitempty"`
+	PolicyID                   *string                                 `json:"policyId,omitempty"`
+	PolicySeed                 *string                                 `json:"policySeed,omitempty"`
+	RequestedWithdrawAmountRaw *string                                 `json:"requestedWithdrawAmountRaw,omitempty"`
+	ReserveWithdrawals         *[]EarnWithdrawConfirmReserveWithdrawal `json:"reserveWithdrawals,omitempty"`
+	Settings                   *string                                 `json:"settings,omitempty"`
+	SetupPolicyAccount         *string                                 `json:"setupPolicyAccount,omitempty"`
+	SetupPolicyID              *string                                 `json:"setupPolicyId,omitempty"`
+	SetupPolicySeed            *string                                 `json:"setupPolicySeed,omitempty"`
+	SmartAccountAddress        *string                                 `json:"smartAccountAddress,omitempty"`
+	SourceAmountRaw            *string                                 `json:"sourceAmountRaw,omitempty"`
+	SourceID                   *string                                 `json:"sourceId,omitempty"`
+	SourceMetadata             *map[string]any                         `json:"sourceMetadata,omitempty"`
+	SourceMint                 *string                                 `json:"sourceMint,omitempty"`
+	SourceTokenAccount         *string                                 `json:"sourceTokenAccount,omitempty"`
+	SourceType                 *string                                 `json:"sourceType,omitempty"`
+	StepCount                  *int                                    `json:"stepCount,omitempty"`
+	StepIndex                  *int                                    `json:"stepIndex,omitempty"`
+	TargetReserve              *string                                 `json:"targetReserve,omitempty"`
+	VaultIndex                 *int                                    `json:"vaultIndex,omitempty"`
+	VaultPubkey                *string                                 `json:"vaultPubkey,omitempty"`
+	WalletAddress              *string                                 `json:"walletAddress,omitempty"`
+	WithdrawalSignature        *string                                 `json:"withdrawalSignature,omitempty"`
+	WithdrawnAmountRaw         *string                                 `json:"withdrawnAmountRaw,omitempty"`
 }
 
 // EarnWithdrawConfirmPosition is serializeVerifiedWithdrawPosition
@@ -312,4 +312,19 @@ func withdrawConfirmVerify(ctx context.Context, client withdrawConfirmChain, acc
 		}
 	}
 	return nil, earnError(http.StatusServiceUnavailable, "full_exit_verification_retryable", confirmErrorText(err, "Post-withdraw balance verification failed."))
+}
+
+// EarnWithdrawConfirmReserveWithdrawal documents one reserveWithdrawals entry
+// of the confirm body: the SDK's SmartAccountEarnUsdcReserveWithdrawalMetadata
+// (smart-account-vaults/src/types.ts:819-829), echoed from prepare.
+type EarnWithdrawConfirmReserveWithdrawal struct {
+	AccountingReserve       string  `json:"accountingReserve"`
+	CollateralAta           string  `json:"collateralAta"`
+	ExecutionMarket         string  `json:"executionMarket"`
+	ExecutionReserve        string  `json:"executionReserve"`
+	KaminoWithdrawAmountRaw string  `json:"kaminoWithdrawAmountRaw"`
+	LiquidityMint           string  `json:"liquidityMint"`
+	Market                  *string `json:"market"`
+	Reserve                 string  `json:"reserve"`
+	WithdrawnAmountRaw      string  `json:"withdrawnAmountRaw"`
 }
