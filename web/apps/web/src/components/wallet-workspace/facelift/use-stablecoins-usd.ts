@@ -9,7 +9,6 @@ import {
   isStablecoinMint,
 } from "@/lib/wallet/stablecoin-classification";
 
-// Same stablecoin bucketing the sidebar's Stablecoins cell uses.
 export function useStablecoinsUsd(
   positions: WalletDesktopData["positions"]
 ): number {

@@ -9,10 +9,6 @@ import {
 } from "./chunk-load-contract";
 
 const CLIENT_REPORT_GRACE_MS = 250;
-// A tab left open across several deploys must stay recoverable, so the guard
-// ages out instead of latching for the whole tab lifetime. Retrying the exact
-// chunk a reload already failed to fix is what would loop, so that stays
-// blocked for the full window regardless of the remaining attempt budget.
 const RELOAD_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_RELOADS_PER_COOLDOWN = 2;
 const PAGE_SESSION_ID_STORAGE_KEY = "loyal.observability.page-session-id";

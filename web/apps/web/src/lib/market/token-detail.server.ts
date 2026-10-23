@@ -22,7 +22,6 @@ export type TokenDetailChartPoint = {
   priceUsd: number;
 };
 
-// CoinGecko market_chart `days` values the chart range tabs map to.
 export const TOKEN_CHART_DAYS = ["1", "7", "30", "365", "max"] as const;
 
 export type TokenChartDays = (typeof TOKEN_CHART_DAYS)[number];

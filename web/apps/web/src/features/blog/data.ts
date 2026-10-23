@@ -122,7 +122,6 @@ function loadAllPosts(): Promise<BlogPostFull[]> {
       (post): post is BlogPostFull => post !== null
     );
 
-    // Newest first.
     return posts.sort((a, b) => b.date.localeCompare(a.date));
   })();
 
