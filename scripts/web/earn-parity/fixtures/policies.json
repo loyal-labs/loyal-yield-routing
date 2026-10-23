@@ -16,7 +16,7 @@
     "loyalSmartAccounts": {
       "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
     },
-    "earnYieldRouterPublicKey": "oz8skK9o2N5w85rrkMfBVdeg6wnjAqMzriVSupERo3C",
+    "earnYieldRouterPublicKey": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
     "deploymentPrivateKey": null
   },
   "boundary": {},
@@ -35,7 +35,7 @@
         "jsonrpc": "2.0",
         "result": {
           "context": {
-            "slot": 460570549,
+            "slot": 460571593,
             "apiVersion": "4.3.0-alpha.2"
           },
           "value": {
