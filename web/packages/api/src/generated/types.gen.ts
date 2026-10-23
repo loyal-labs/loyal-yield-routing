@@ -1496,6 +1496,13 @@ export type PushTokenSaved = {
     success: boolean;
 };
 
+export type RealtimeTokenResponse = {
+    accessToken: string;
+    eventsUrl: string;
+    expiresAt: string;
+    schemaVersion: number;
+};
+
 export type RefundPrepareRequest = {
     kind?: 'policy' | 'recurring_delegation' | 'vault';
     policyAccount?: string;
@@ -3134,6 +3141,45 @@ export type PostEarnPositionReconcileResponses = {
 };
 
 export type PostEarnPositionReconcileResponse = PostEarnPositionReconcileResponses[keyof PostEarnPositionReconcileResponses];
+
+export type PostEarnRealtimeTokenData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        'Content-Type'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/realtime/token';
+};
+
+export type PostEarnRealtimeTokenErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnRealtimeTokenError = PostEarnRealtimeTokenErrors[keyof PostEarnRealtimeTokenErrors];
+
+export type PostEarnRealtimeTokenResponses = {
+    /**
+     * OK
+     */
+    200: RealtimeTokenResponse;
+};
+
+export type PostEarnRealtimeTokenResponse = PostEarnRealtimeTokenResponses[keyof PostEarnRealtimeTokenResponses];
 
 export type PostEarnWithdrawConfirmData = {
     body?: EarnWithdrawConfirmRequest;

@@ -5,6 +5,5 @@ POST /api/smart-accounts/mobile/earn/deposit/confirm
 POST /api/smart-accounts/mobile/earn/deposit/prepare-context
 POST /api/smart-accounts/mobile/earn/withdraw/cleanup/confirm
 POST /api/smart-accounts/mobile/earn/withdraw/cleanup/prepare-context
-POST /api/smart-accounts/yield-optimization/realtime/token
 POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm
 POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare
