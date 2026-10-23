@@ -1,11 +1,11 @@
+import {
+  hydratePreparedEarnUsdcDeposit,
+  type WireSmartAccountPreparedEarnUsdcDeposit,
+} from "@loyal-labs/smart-account-vaults";
 import { describe, expect, test } from "bun:test";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
-import {
-  hydratePreparedEarnUsdcDeposit,
-  parseEarnDepositPrepareRequestBody,
-  type WireSmartAccountPreparedEarnUsdcDeposit,
-} from "./earn-deposit-prepare-contracts.shared";
+import { parseEarnDepositPrepareRequestBody } from "./earn-deposit-prepare-contracts.shared";
 
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 

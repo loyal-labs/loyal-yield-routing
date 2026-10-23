@@ -307,6 +307,19 @@ type AsyncPolicyTransactionPayloadLike = {
   transactionMessage: Uint8Array;
 };
 
+type InjectableRpcMethod =
+  | "getBalance"
+  | "getFeeForMessage"
+  | "getLatestBlockhash"
+  | "getMultipleAccountsInfo"
+  | "getTokenAccountBalance"
+  | "getTokenAccountsByOwner";
+
+type InjectableConnection = Omit<Connection, InjectableRpcMethod> &
+  Partial<Pick<Connection, InjectableRpcMethod>> & {
+    _rpcRequest?: (methodName: string, args: unknown[]) => Promise<unknown>;
+  };
+
 const EARN_SAME_MINT_INSTRUCTION_CONSTRAINT_INDEXES = [0, 1] as const;
 const EARN_POLICY_PACKET_DATA_SIZE = 1232;
 const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
@@ -756,15 +769,7 @@ async function estimatePreparedFeeLamports(args: {
   prepared: PreparedLoyalSmartAccountsOperation<string>;
 }): Promise<bigint> {
   const fallback = getFallbackPreparedFeeLamports(args.prepared);
-  const connectionWithFees = args.connection as Connection & {
-    getFeeForMessage?: (
-      message: ReturnType<typeof compilePreparedOperation>["message"],
-      commitment?: "confirmed"
-    ) => Promise<{ value: number | null } | number | null>;
-    getLatestBlockhash?: (
-      commitment?: "confirmed"
-    ) => Promise<{ blockhash: string }>;
-  };
+  const connectionWithFees: InjectableConnection = args.connection;
 
   if (typeof connectionWithFees.getFeeForMessage !== "function") {
     return fallback;
@@ -804,12 +809,7 @@ async function getExistingAccountSet(args: {
     return existing;
   }
 
-  const connectionWithBatch = args.connection as Connection & {
-    getMultipleAccountsInfo?: (
-      publicKeys: PublicKey[],
-      commitment?: "confirmed"
-    ) => Promise<Array<AccountInfo<Buffer> | null>>;
-  };
+  const connectionWithBatch: InjectableConnection = args.connection;
 
   if (typeof connectionWithBatch.getMultipleAccountsInfo === "function") {
     try {
@@ -823,8 +823,7 @@ async function getExistingAccountSet(args: {
         }
       });
       return existing;
-    } catch {
-    }
+    } catch {}
   }
 
   if (typeof args.connection.getAccountInfo !== "function") {
@@ -837,8 +836,7 @@ async function getExistingAccountSet(args: {
       if (info) {
         existing.add(account.toBase58());
       }
-    } catch {
-    }
+    } catch {}
   }
 
   return existing;
@@ -855,12 +853,7 @@ async function getAccountInfoMap(args: {
     return results;
   }
 
-  const connectionWithBatch = args.connection as Connection & {
-    getMultipleAccountsInfo?: (
-      publicKeys: PublicKey[],
-      commitment?: "confirmed"
-    ) => Promise<Array<AccountInfo<Buffer> | null>>;
-  };
+  const connectionWithBatch: InjectableConnection = args.connection;
 
   if (typeof connectionWithBatch.getMultipleAccountsInfo === "function") {
     try {
@@ -872,8 +865,7 @@ async function getAccountInfoMap(args: {
         results.set(account.toBase58(), infos[index] ?? null);
       });
       return results;
-    } catch {
-    }
+    } catch {}
   }
 
   for (const account of accounts) {
@@ -904,11 +896,7 @@ async function estimateNativeSolRequirement(args: {
   const unknownRentCandidates = rentCandidates.filter(
     (candidate) => candidate.exists === undefined
   );
-  const connectionWithBlockhash = args.connection as Connection & {
-    getLatestBlockhash?: (
-      commitment?: "confirmed"
-    ) => Promise<{ blockhash: string }>;
-  };
+  const connectionWithBlockhash: InjectableConnection = args.connection;
   let latestBlockhashPromise: Promise<{ blockhash: string }> | null = null;
   const getSharedLatestBlockhash =
     typeof connectionWithBlockhash.getLatestBlockhash === "function"
@@ -3143,11 +3131,8 @@ function createEarnFullWithdrawCleanupInstructions(args: {
   return instructions;
 }
 
-// Prepare-time read of the vault PDA's SOL for the final-exit sweep. Feature-
-// checked like the deposit-side top-up read: some injected connections don't
-// implement getBalance — sweeping 0 there simply skips the refund.
 async function getVaultSweepLamportsOrZero(
-  connection: Connection,
+  connection: InjectableConnection,
   vaultPda: PublicKey
 ): Promise<bigint> {
   if (typeof connection.getBalance !== "function") {
@@ -3161,14 +3146,11 @@ async function getVaultSweepLamportsOrZero(
 }
 
 async function getTokenAccountAmountOrZero(
-  connection: Connection,
+  connection: InjectableConnection,
   tokenAccount: PublicKey
 ): Promise<bigint> {
-  const getTokenAccountBalance = (
-    connection as {
-      getTokenAccountBalance?: Connection["getTokenAccountBalance"];
-    }
-  ).getTokenAccountBalance;
+  const getTokenAccountBalance: InjectableConnection["getTokenAccountBalance"] =
+    connection.getTokenAccountBalance;
   if (typeof getTokenAccountBalance !== "function") {
     return BigInt(0);
   }
@@ -3824,11 +3806,9 @@ async function getProgramAccountsCompat(
     filters: GetProgramAccountsFilter[];
   }
 ): Promise<readonly { pubkey: PublicKey; account: AccountInfo<Buffer> }[]> {
-  const rpcRequest = (
-    connection as Connection & {
-      _rpcRequest?: (methodName: string, args: unknown[]) => Promise<unknown>;
-    }
-  )._rpcRequest?.bind(connection);
+  const rpcRequest = (connection as InjectableConnection)._rpcRequest?.bind(
+    connection
+  );
   if (!rpcRequest) {
     return connection.getProgramAccounts(programId, config);
   }
@@ -7695,8 +7675,7 @@ export function createSmartAccountVaultsClient(
         reserve: earnTarget.reserve,
         wallet: vaultPda,
       });
-    } catch {
-    }
+    } catch {}
   }
 
   async function prepareEarnUsdcDeposit(
@@ -10382,11 +10361,8 @@ export function createSmartAccountVaultsClient(
       TOKEN_PROGRAM_ID
     );
 
-    const getTokenAccountsByOwner = (
-      config.connection as {
-        getTokenAccountsByOwner?: Connection["getTokenAccountsByOwner"];
-      }
-    ).getTokenAccountsByOwner;
+    const getTokenAccountsByOwner: InjectableConnection["getTokenAccountsByOwner"] =
+      config.connection.getTokenAccountsByOwner;
     const [lamports, tokenAccountsResponse, token2022AccountsResponse] =
       await Promise.all([
         getVaultSweepLamportsOrZero(config.connection, vaultPda),

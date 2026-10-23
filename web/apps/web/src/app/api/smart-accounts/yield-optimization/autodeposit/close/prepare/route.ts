@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
-import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
+import {
+  createSmartAccountVaultsClient,
+  serializePreparedEarnUsdcAutodepositClose,
+} from "@loyal-labs/smart-account-vaults";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
 
@@ -14,10 +17,7 @@ import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-ov
 import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
-import {
-  parseEarnAutodepositClosePrepareRequestBody,
-  serializePreparedEarnUsdcAutodepositClose,
-} from "@/lib/yield-optimization/earn-autodeposit-prepare-contracts.shared";
+import { parseEarnAutodepositClosePrepareRequestBody } from "@/lib/yield-optimization/earn-autodeposit-prepare-contracts.shared";
 
 const connectionCache = new Map<SolanaEnv, Connection>();
 
@@ -39,8 +39,7 @@ function getConnection(cluster: SolanaEnv): Connection {
     return cached;
   }
 
-  const { rpcEndpoint, websocketEndpoint } =
-    getServerSolanaEndpoints(cluster);
+  const { rpcEndpoint, websocketEndpoint } = getServerSolanaEndpoints(cluster);
   const connection = new Connection(rpcEndpoint, {
     commitment: "confirmed",
     disableRetryOnRateLimit: true,

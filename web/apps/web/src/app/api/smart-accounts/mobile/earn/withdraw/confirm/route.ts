@@ -1,3 +1,7 @@
+import {
+  hydratePreparedEarnUsdcWithdraw,
+  type WireSmartAccountPreparedEarnUsdcWithdraw,
+} from "@loyal-labs/smart-account-vaults";
 import { NextResponse } from "next/server";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
@@ -16,10 +20,6 @@ import {
   EarnWithdrawConfirmError,
   verifyConfirmedEarnWithdrawal,
 } from "@/lib/yield-optimization/earn-withdraw-confirm.server";
-import {
-  hydratePreparedEarnUsdcWithdraw,
-  type WireSmartAccountPreparedEarnUsdcWithdraw,
-} from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
 
 type MobileWithdrawConfirmFields = {
   preparedWithdraw: WireSmartAccountPreparedEarnUsdcWithdraw;

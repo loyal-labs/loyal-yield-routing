@@ -1,5 +1,8 @@
 import { env } from "@/config/env";
-import type { SmartAccountNativeSolRequirement } from "@loyal-labs/smart-account-vaults";
+import type {
+  SmartAccountNativeSolRequirement,
+  WirePreparedLoyalSmartAccountsOperation as WirePreparedOperation,
+} from "@loyal-labs/smart-account-vaults";
 import {
   fetchWithTimeout,
   FetchTimeoutError,
@@ -7,7 +10,6 @@ import {
 import type { LifecycleErrorDetail } from "@/services/observability";
 
 import { earnHeaders, earnWalletRead } from "./earn-session";
-import type { WirePreparedOperation } from "./wire";
 
 // A first-ever deposit provisions the smart account inline on the server
 // (finalized-creation wait plus reservation-conflict retries), which can

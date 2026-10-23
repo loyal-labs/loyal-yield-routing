@@ -10,3 +10,4 @@ export * from "./voltr/prepare";
 export * from "./voltr/program";
 export * from "./voltr/visibility";
 export * from "./wire/prepared-operation-wire.shared";
+export * from "./wire/earn-prepare-wire.shared";

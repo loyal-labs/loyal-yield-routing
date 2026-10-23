@@ -1,7 +1,9 @@
 import { normalizeLoyalCluster } from "@loyal-labs/actions";
 import {
   createSmartAccountVaultsClient,
+  hydratePreparedOperation,
   isEarnPolicyUpdateRequiredError,
+  serializePreparedEarnUsdcDeposit,
 } from "@loyal-labs/smart-account-vaults";
 import { PublicKey } from "@solana/web3.js";
 
@@ -30,12 +32,8 @@ import {
 import { signEarnAuth, withEarnAuth } from "./earn-auth";
 import {
   signAndSendPreparedOperations,
-} from "./send-prepared";
-import {
-  hydratePreparedOperation,
-  serializePreparedEarnUsdcDeposit,
   type HydratedPreparedOperation,
-} from "./wire";
+} from "./send-prepared";
 
 const DEPOSIT_NETWORK_MESSAGE =
   "We couldn't reach the network to prepare the deposit. No funds moved — check your connection and try again.";

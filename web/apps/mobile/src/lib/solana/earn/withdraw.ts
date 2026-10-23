@@ -1,6 +1,8 @@
 import { normalizeLoyalCluster } from "@loyal-labs/actions";
 import {
   createSmartAccountVaultsClient,
+  hydratePreparedOperation,
+  serializePreparedEarnUsdcWithdraw,
   type SmartAccountEarnUsdcCleanupInput,
   type SmartAccountEarnUsdcWithdrawInput,
 } from "@loyal-labs/smart-account-vaults";
@@ -35,12 +37,10 @@ import {
   type WirePreparedEarnWithdraw,
 } from "./earn-api";
 import { signEarnAuth, withEarnAuth } from "./earn-auth";
-import { signAndSendPreparedOperations } from "./send-prepared";
 import {
-  hydratePreparedOperation,
-  serializePreparedEarnUsdcWithdraw,
+  signAndSendPreparedOperations,
   type HydratedPreparedOperation,
-} from "./wire";
+} from "./send-prepared";
 
 const USDC_DECIMALS = 6;
 // The wallet fee-pays every withdrawal transaction itself. Observed prod cost

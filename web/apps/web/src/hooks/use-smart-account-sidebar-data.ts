@@ -10,6 +10,10 @@ import {
 import {
   combineSmartAccountNativeSolRequirements,
   createSmartAccountVaultsClient,
+  hydratePreparedEarnUsdcDeposit,
+  hydratePreparedEarnUsdcWithdraw,
+  sendPreparedBatchWithWallet,
+  sendPreparedWithWallet,
   type SmartAccountEarnCrossMintProjectedPolicyInput,
   type SmartAccountNativeSolRequirement,
   type SmartAccountOverview,
@@ -27,8 +31,6 @@ import {
   type SmartAccountSpendingLimitSnapshot,
   type SmartAccountVaultSnapshot,
   SOL_SPENDING_LIMIT_MINT,
-  sendPreparedBatchWithWallet,
-  sendPreparedWithWallet,
 } from "@loyal-labs/smart-account-vaults";
 import { resolveSolanaEnv } from "@loyal-labs/solana-rpc";
 import {
@@ -121,10 +123,7 @@ import {
   buildEarnPolicyConfirmRequestBody,
   buildEarnWithdrawalConfirmRequestBody,
 } from "@/lib/yield-optimization/earn-confirm-contracts.shared";
-import {
-  type EarnDepositPrepareResponse,
-  hydratePreparedEarnUsdcDeposit,
-} from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
+import { type EarnDepositPrepareResponse } from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
 import {
   type EarnPolicyPrepareResponse,
   hydratePreparedEarnUsdcYieldRoutingPolicy,
@@ -134,10 +133,7 @@ import {
   hydratePreparedEarnUsdcCleanup,
   serializePreparedEarnUsdcCleanup,
 } from "@/lib/yield-optimization/earn-withdraw-cleanup-contracts.shared";
-import {
-  type EarnWithdrawPrepareResponse,
-  hydratePreparedEarnUsdcWithdraw,
-} from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
+import { type EarnWithdrawPrepareResponse } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
 
 import { useSolanaWalletDataClient } from "./use-solana-wallet-data-client";
 import { createTokenMarketMintsSignature } from "./use-wallet-desktop-data";

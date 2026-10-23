@@ -1,3 +1,7 @@
+import {
+  hydratePreparedEarnUsdcDeposit,
+  type WireSmartAccountPreparedEarnUsdcDeposit,
+} from "@loyal-labs/smart-account-vaults";
 import { NextResponse } from "next/server";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
@@ -18,10 +22,6 @@ import {
   verifyConfirmedEarnDeposit,
 } from "@/lib/yield-optimization/earn-deposit-confirm.server";
 import { citeEarnDepositPolicies } from "@/lib/yield-optimization/earn-deposit-policy-citation.server";
-import {
-  hydratePreparedEarnUsdcDeposit,
-  type WireSmartAccountPreparedEarnUsdcDeposit,
-} from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
 
 const EARN_DEPOSIT_VAULT_INDEX = 1;
 

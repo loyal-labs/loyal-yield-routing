@@ -40,13 +40,18 @@ export function computeRebalanceEligibilityFloorRaw(
   reserveStatuses: readonly SafeReserveApyStatusRow[],
   decimals: number
 ): bigint | null {
-  // Only reserves the Safe monitor still considers eligible can anchor a
-  // spread. Stale or below-liquidity reserves routinely report 0%, which would
-  // otherwise invent an enormous edge and collapse the floor to nothing.
-  const apys = reserveStatuses
-    .filter((status) => status.status === "eligible")
-    .map((status) => status.supplyApyPercent)
-    .filter((apy): apy is number => apy !== null && Number.isFinite(apy) && apy > 0);
+  const eligibleSpreadReserves = reserveStatuses.filter(
+    (status): status is SafeReserveApyStatusRow & {
+      supplyApyPercent: number;
+    } =>
+      status.status === "eligible" &&
+      status.supplyApyPercent !== null &&
+      Number.isFinite(status.supplyApyPercent) &&
+      status.supplyApyPercent > 0
+  );
+  const apys = eligibleSpreadReserves.map(
+    (reserve) => reserve.supplyApyPercent
+  );
   if (apys.length < 2) {
     return null;
   }

@@ -1,10 +1,10 @@
+import { hydratePreparedOperation } from "@loyal-labs/smart-account-vaults";
 import { getConnection } from "@/lib/solana/rpc/connection";
 import type { Signer } from "@/lib/wallet/signer";
 
 import { prepareEarnRefund, type EarnRefundPrepareRequest } from "./earn-api";
 import { signEarnAuth, withEarnAuth } from "./earn-auth";
 import { signAndSendPreparedOperations } from "./send-prepared";
-import { hydratePreparedOperation } from "./wire";
 
 export type EarnRefundResult = {
   signature: string;
