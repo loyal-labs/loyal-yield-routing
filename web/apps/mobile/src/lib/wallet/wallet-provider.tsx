@@ -54,6 +54,7 @@ import {
   getStoredPublicKey,
   hasStoredKeypair,
   importKeypair,
+  keepLegacyICloudSyncOn,
   loadKeypair,
   restoreFromSyncedKeychain as restoreFromSyncedKeypair,
   storeKeypair,
@@ -245,6 +246,7 @@ function WalletProviderCore({
 
       const exists = await hasStoredKeypair();
       if (exists) {
+        keepLegacyICloudSyncOn();
         const pk = await getStoredPublicKey();
         setPublicKey(pk);
         const bioEnabled = await isBiometricEnabled();

@@ -9,8 +9,11 @@
 // "unsupported" instead of throwing at import time.
 import {
   adoptEncryptedKeypair,
+  deleteSyncedKeychainCopyOf,
   getStoredBackupPayload,
+  getStoredPublicKey,
   isICloudSyncEnabled,
+  markSeedBackupConfirmed,
   setICloudSyncEnabled,
 } from "./keypair-storage";
 
@@ -141,17 +144,24 @@ export async function writeCloudBackup(): Promise<WalletBackupEnvelope> {
   return envelope;
 }
 
-export async function setICloudBackupEnabled(enabled: boolean): Promise<void> {
-  await setICloudSyncEnabled(enabled);
-  if (enabled) {
-    try {
-      await writeCloudBackup();
-    } catch (error) {
-      console.warn("[wallet] iCloud Drive backup failed", error);
-    }
-  } else {
+export async function enableICloudBackup(): Promise<void> {
+  await setICloudSyncEnabled(true);
+  try {
+    await writeCloudBackup();
+  } catch (error) {
+    console.warn("[wallet] iCloud Drive backup failed", error);
+  }
+}
+
+export async function confirmSeedBackupAndDeleteICloudCopies(): Promise<void> {
+  const publicKey = await getStoredPublicKey();
+  if (!publicKey) throw new Error("No wallet on this device");
+  await deleteSyncedKeychainCopyOf(publicKey);
+  if ((await findCloudBackup())?.publicKey === publicKey) {
     await deleteCloudBackup();
   }
+  await setICloudSyncEnabled(false);
+  markSeedBackupConfirmed();
 }
 
 export function isICloudBackupEnabled(): boolean {

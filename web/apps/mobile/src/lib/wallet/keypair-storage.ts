@@ -7,8 +7,7 @@ import { mmkv } from "@/lib/storage";
 import { decryptSecret, encryptSecret } from "./crypto";
 import { isValidWalletPin } from "./pin";
 
-// The encrypted keypair must never leave the device. expo-secure-store's iOS
-// default (WHEN_UNLOCKED) is included in encrypted iTunes/Finder and iCloud
+// expo-secure-store's iOS default (WHEN_UNLOCKED) is included in encrypted iTunes/Finder and iCloud
 // backups, and the blob's only protection is a 4-digit PIN at PBKDF2-10k —
 // trivially brute-forced offline once exported. THIS_DEVICE_ONLY excludes it
 // from every backup. The option is ignored on Android, where the equivalent
@@ -21,6 +20,7 @@ const ENCRYPTED_KEYPAIR_KEY = "wallet_encrypted_keypair";
 const WALLET_PUBLIC_KEY = "wallet_public_key";
 
 const ICLOUD_SYNC_ENABLED_KEY = "settings.icloudKeychainSync";
+const SEED_BACKUP_CONFIRMED_KEY = "wallet.seedBackupConfirmed";
 const BIOMETRIC_RESTORE_PENDING_KEY = "wallet.biometricRestorePending";
 const FAILED_ATTEMPTS_KEY = "wallet_failed_attempts";
 const LOCKED_UNTIL_KEY = "wallet_locked_until";
@@ -81,6 +81,9 @@ export async function storeKeypair(
   if (!isValidWalletPin(pin)) {
     throw new Error("PIN must be 4 digits");
   }
+  if (mmkv.getBoolean(ICLOUD_SYNC_ENABLED_KEY) === undefined) {
+    mmkv.setBoolean(ICLOUD_SYNC_ENABLED_KEY, false);
+  }
   const serialized = JSON.stringify(Array.from(keypair.secretKey));
   const encrypted = await encryptSecret(serialized, pin);
   await SecureStore.setItemAsync(
@@ -103,7 +106,21 @@ export async function storeKeypair(
 }
 
 export function isICloudSyncEnabled(): boolean {
-  return mmkv.getBoolean(ICLOUD_SYNC_ENABLED_KEY) ?? true;
+  return mmkv.getBoolean(ICLOUD_SYNC_ENABLED_KEY) ?? false;
+}
+
+export function keepLegacyICloudSyncOn(): void {
+  if (mmkv.getBoolean(ICLOUD_SYNC_ENABLED_KEY) === undefined) {
+    mmkv.setBoolean(ICLOUD_SYNC_ENABLED_KEY, true);
+  }
+}
+
+export function isSeedBackupConfirmed(): boolean {
+  return mmkv.getBoolean(SEED_BACKUP_CONFIRMED_KEY) ?? false;
+}
+
+export function markSeedBackupConfirmed(): void {
+  mmkv.setBoolean(SEED_BACKUP_CONFIRMED_KEY, true);
 }
 
 export function isICloudSyncSupported(): boolean {
@@ -120,17 +137,21 @@ async function mirrorToSyncedKeychain(
 
 export async function setICloudSyncEnabled(enabled: boolean): Promise<void> {
   mmkv.setBoolean(ICLOUD_SYNC_ENABLED_KEY, enabled);
-  if (!SyncedKeychain.isAvailable()) return;
-  if (enabled) {
-    const encrypted = await SecureStore.getItemAsync(ENCRYPTED_KEYPAIR_KEY);
-    const publicKey = await SecureStore.getItemAsync(WALLET_PUBLIC_KEY);
-    if (encrypted && publicKey) {
-      await mirrorToSyncedKeychain(encrypted, publicKey);
-    }
-  } else {
-    await SyncedKeychain.deleteItem(ENCRYPTED_KEYPAIR_KEY);
-    await SyncedKeychain.deleteItem(WALLET_PUBLIC_KEY);
+  if (!enabled || !SyncedKeychain.isAvailable()) return;
+  const encrypted = await SecureStore.getItemAsync(ENCRYPTED_KEYPAIR_KEY);
+  const publicKey = await SecureStore.getItemAsync(WALLET_PUBLIC_KEY);
+  if (encrypted && publicKey) {
+    await mirrorToSyncedKeychain(encrypted, publicKey);
   }
+}
+
+export async function deleteSyncedKeychainCopyOf(
+  publicKey: string,
+): Promise<void> {
+  if (!SyncedKeychain.isAvailable()) return;
+  if ((await SyncedKeychain.getItem(WALLET_PUBLIC_KEY)) !== publicKey) return;
+  await SyncedKeychain.deleteItem(ENCRYPTED_KEYPAIR_KEY);
+  await SyncedKeychain.deleteItem(WALLET_PUBLIC_KEY);
 }
 
 export async function adoptEncryptedKeypair(
@@ -145,6 +166,7 @@ export async function adoptEncryptedKeypair(
   await SecureStore.setItemAsync(WALLET_PUBLIC_KEY, publicKey, KEYCHAIN_OPTIONS);
   await resetAttempts();
   mmkv.setBoolean(BIOMETRIC_RESTORE_PENDING_KEY, true);
+  mmkv.setBoolean(ICLOUD_SYNC_ENABLED_KEY, true);
 }
 
 export function consumeBiometricRestorePending(): boolean {
@@ -160,7 +182,6 @@ export async function restoreFromSyncedKeychain(): Promise<boolean> {
     const publicKey = await SyncedKeychain.getItem(WALLET_PUBLIC_KEY);
     if (!encrypted || !publicKey) return false;
     await adoptEncryptedKeypair(encrypted, publicKey);
-    mmkv.setBoolean(ICLOUD_SYNC_ENABLED_KEY, true);
     return true;
   } catch (error) {
     console.warn("[wallet] iCloud Keychain restore failed", error);
@@ -230,6 +251,7 @@ export async function clearStoredKeypair(opts?: {
     }
   }
   mmkv.delete(BIOMETRIC_RESTORE_PENDING_KEY);
+  mmkv.delete(SEED_BACKUP_CONFIRMED_KEY);
   await resetAttempts();
 }
 

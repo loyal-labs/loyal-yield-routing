@@ -2,7 +2,7 @@ import * as Clipboard from "expo-clipboard";
 import Constants from "expo-constants";
 import * as Haptics from "expo-haptics";
 import * as Linking from "expo-linking";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import * as Updates from "expo-updates";
 import {
   Bell,
@@ -16,6 +16,7 @@ import {
   Lightbulb,
   Mail,
   MessageSquare,
+  ShieldCheck,
   RotateCcw,
   Trash2,
 } from "lucide-react-native";
@@ -30,10 +31,13 @@ import { getShowTips, setShowTips } from "@/lib/settings";
 import { mmkv } from "@/lib/storage";
 import { isBiometricAvailable } from "@/lib/wallet/biometrics";
 import {
+  enableICloudBackup,
   isICloudBackupEnabled,
-  setICloudBackupEnabled,
 } from "@/lib/wallet/icloud-backup";
-import { isICloudSyncSupported } from "@/lib/wallet/keypair-storage";
+import {
+  isICloudSyncSupported,
+  isSeedBackupConfirmed,
+} from "@/lib/wallet/keypair-storage";
 import { WALLET_PIN_LENGTH } from "@/lib/wallet/pin";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
 import { Pressable, ScrollView, Text, View } from "@/tw";
@@ -161,6 +165,9 @@ export default function ProfileScreen() {
   const [showTips, setShowTipsState] = useState(getShowTips);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
   const [icloudBackupOn, setICloudBackupOn] = useState(isICloudBackupEnabled);
+  const [seedBackupConfirmed, setSeedBackupConfirmed] = useState(
+    isSeedBackupConfirmed,
+  );
   const [showBioPinInput, setShowBioPinInput] = useState(false);
   const [bioPin, setBioPin] = useState("");
   const [bioPinError, setBioPinError] = useState<string | null>(null);
@@ -175,6 +182,13 @@ export default function ProfileScreen() {
   useEffect(() => {
     isBiometricAvailable().then(setBiometricsAvailable);
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      setICloudBackupOn(isICloudBackupEnabled());
+      setSeedBackupConfirmed(isSeedBackupConfirmed());
+    }, []),
+  );
 
   const handleSupport = useCallback(() => {
     if (process.env.EXPO_OS !== "web") {
@@ -236,16 +250,27 @@ export default function ProfileScreen() {
     [wallet],
   );
 
-  const handleICloudBackupToggle = useCallback((value: boolean) => {
-    if (process.env.EXPO_OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    setICloudBackupOn(value);
-    setICloudBackupEnabled(value).catch((error) => {
-      console.warn("[settings] iCloud backup toggle failed", error);
-      setICloudBackupOn(!value);
-    });
-  }, []);
+  const handleOpenSeedBackup = useCallback(() => {
+    router.push("/wallet/seed-backup");
+  }, [router]);
+
+  const handleICloudBackupToggle = useCallback(
+    (value: boolean) => {
+      if (process.env.EXPO_OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+      if (!value) {
+        handleOpenSeedBackup();
+        return;
+      }
+      setICloudBackupOn(true);
+      enableICloudBackup().catch((error) => {
+        console.warn("[settings] iCloud backup toggle failed", error);
+        setICloudBackupOn(false);
+      });
+    },
+    [handleOpenSeedBackup],
+  );
 
   const handleBioPinSubmit = useCallback(async () => {
     if (bioPin.length !== WALLET_PIN_LENGTH) {
@@ -468,6 +493,17 @@ export default function ProfileScreen() {
                   value: icloudBackupOn,
                   onValueChange: handleICloudBackupToggle,
                 }}
+              />
+            )}
+
+            {!isVaultBacked && !seedBackupConfirmed && (
+              <ProfileCell
+                icon={
+                  <ShieldCheck size={28} strokeWidth={1.5} color="rgba(0,0,0,0.6)" />
+                }
+                title="Back Up Secret Key"
+                showChevron
+                onPress={handleOpenSeedBackup}
               />
             )}
 

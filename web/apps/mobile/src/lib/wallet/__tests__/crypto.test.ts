@@ -1,4 +1,6 @@
-import { encryptSecret, decryptSecret } from "../crypto";
+import { Buffer } from "buffer";
+
+import { decryptSecret, encryptSecret, parseBlob } from "../crypto";
 
 describe("wallet crypto", () => {
   it("encrypts and decrypts a secret key round-trip", async () => {
@@ -23,5 +25,17 @@ describe("wallet crypto", () => {
   it("returns null for corrupted ciphertext", async () => {
     const decrypted = await decryptSecret("not-valid-json", "password");
     expect(decrypted).toBeNull();
+  });
+
+  it("reads a legacy JSON blob as version 0 and a 0x4C header blob as its version and KDF id", async () => {
+    const legacy = await encryptSecret("secret", "1234");
+    expect(parseBlob(legacy)).toMatchObject({ version: 0, kdfId: 1 });
+
+    const { salt, iv, data } = JSON.parse(legacy);
+    const headed = Buffer.from([0x4c, 1, 1, ...salt, ...iv, ...data]).toString(
+      "base64",
+    );
+    expect(parseBlob(headed)).toMatchObject({ version: 1, kdfId: 1 });
+    expect(await decryptSecret(headed, "1234")).toBe("secret");
   });
 });

@@ -35,13 +35,29 @@ jest.mock("expo-synced-keychain", () => ({
   }),
 }));
 
+const mockCloudWriteFile = jest.fn(async () => {});
+
+jest.mock("react-native", () => ({ Platform: { OS: "ios" } }));
+
+jest.mock("react-native-cloud-storage", () => ({
+  CloudStorageScope: { AppData: "AppData" },
+  CloudStorage: {
+    isCloudAvailable: jest.fn(async () => true),
+    writeFile: (...args: unknown[]) => mockCloudWriteFile(...(args as [])),
+    exists: jest.fn(async () => false),
+  },
+}));
+
 import { mmkv } from "@/lib/storage";
+
+import { refreshCloudBackupIfEnabled } from "../icloud-backup";
 
 import {
   clearStoredKeypair,
   getStoredPublicKey,
   hasStoredKeypair,
   isICloudSyncEnabled,
+  keepLegacyICloudSyncOn,
   loadKeypair,
   restoreFromSyncedKeychain,
   setICloudSyncEnabled,
@@ -57,33 +73,20 @@ beforeEach(async () => {
   await setICloudSyncEnabled(false);
 });
 
-test("iCloud backup is ON by default: a fresh install mirrors a new wallet with no toggle touched", async () => {
-  mmkv.delete("settings.icloudKeychainSync"); // brand-new install: flag unset
+test("a new wallet with no opt-in writes no iCloud Keychain or Drive copy, before or after a restart", async () => {
+  mmkv.delete("settings.icloudKeychainSync");
   await storeKeypair(keypair, PIN);
-  expect(syncedStore.get("wallet_public_key")).toBe(
-    keypair.publicKey.toBase58(),
-  );
-  expect(syncedStore.get("wallet_encrypted_keypair")).toBeTruthy();
+  keepLegacyICloudSyncOn();
+  await refreshCloudBackupIfEnabled();
+  expect(syncedStore.size).toBe(0);
+  expect(mockCloudWriteFile).not.toHaveBeenCalled();
+  expect(isICloudSyncEnabled()).toBe(false);
 });
 
 test("storeKeypair does not touch the synced keychain when sync is off", async () => {
   await storeKeypair(keypair, PIN);
   expect(localStore.size).toBeGreaterThan(0);
   expect(syncedStore.size).toBe(0);
-});
-
-test("enabling sync mirrors an existing wallet; disabling removes the copies", async () => {
-  await storeKeypair(keypair, PIN);
-  await setICloudSyncEnabled(true);
-  expect(syncedStore.get("wallet_public_key")).toBe(
-    keypair.publicKey.toBase58(),
-  );
-  expect(syncedStore.get("wallet_encrypted_keypair")).toBeTruthy();
-
-  await setICloudSyncEnabled(false);
-  expect(syncedStore.size).toBe(0);
-  // Local wallet must survive the toggle.
-  expect(await hasStoredKeypair()).toBe(true);
 });
 
 test("storeKeypair mirrors when sync is on (PIN change keeps the copy fresh)", async () => {
