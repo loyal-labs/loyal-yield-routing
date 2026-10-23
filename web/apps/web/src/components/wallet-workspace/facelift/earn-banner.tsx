@@ -14,13 +14,8 @@ function bannerAsset(file: string): string {
   return `${ASSET_BASE}/${file}?${EARN_BANNER_ASSET_VERSION_QUERY}=${ASSET_VERSION}`;
 }
 
-// Same autoplay clock as the mobile home carousel; the story pill fill reads
-// it too, so the bar always lands exactly when the banner rolls.
 const ROLL_INTERVAL_MS = 4000;
 
-// A collapse is remembered as the generation it happened in. Bump the
-// generation and deploy to force-expand the banners for every user (new
-// campaign, changed banner set); collapsing again stores the new value.
 const COLLAPSE_GENERATION = "1";
 const COLLAPSE_STORAGE_KEY = "loyal:earn-banner-collapsed";
 
@@ -118,8 +113,6 @@ const BANNERS: EarnBannerConfig[] = [
   },
   {
     accent: "#5f0019",
-    // The mascot's chin (bottom ~463 of 500) tucks behind the white CTA
-    // (Figma 5079:139084) — the art is drawn before the button on purpose.
     art: (
       <div className="absolute inset-[48%_15.13%_7.36%_15.13%]">
         {/* eslint-disable-next-line @next/next/no-img-element */}

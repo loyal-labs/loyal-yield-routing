@@ -147,10 +147,6 @@ export async function recordAndReportQuestCompletion(args: {
 
   const result = await reportQuestCompletion();
   const status = await applyReportResult(row.id, result);
-  // Quest 1 push (ASK-1651 P2): fires at most once — the row transitions to
-  // 'reported' a single time, and already-reported rows return above. Quest 2
-  // gets no push here; the P1 "$X moved to EARN" push lands at that same
-  // moment from the sweep notify.
   if (status === "reported" && args.kind === "earn_deposit") {
     await sendWalletPush(walletId, quest1DonePush());
   }

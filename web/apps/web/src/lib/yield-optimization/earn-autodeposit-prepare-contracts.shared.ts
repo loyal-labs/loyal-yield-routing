@@ -1,14 +1,9 @@
-import {
-  hydratePreparedOperation,
-  serializePreparedOperation,
-  type SmartAccountEarnUsdcAutodepositCloseMetadata,
-  type SmartAccountEarnUsdcAutodepositSetupMetadata,
-  type SmartAccountNativeSolRequirement,
-  type SmartAccountPreparedEarnUsdcAutodepositClose,
-  type SmartAccountPreparedEarnUsdcAutodepositSetup,
-  type WirePreparedLoyalSmartAccountsOperation,
+import type {
+  SmartAccountPreparedEarnUsdcAutodepositClose,
+  SmartAccountPreparedEarnUsdcAutodepositSetup,
+  WireSmartAccountPreparedEarnUsdcAutodepositClose,
+  WireSmartAccountPreparedEarnUsdcAutodepositSetup,
 } from "@loyal-labs/smart-account-vaults";
-import { PublicKey } from "@solana/web3.js";
 
 export type EarnAutodepositSetupPrepareRequestBody = {
   amountRaw: string;
@@ -126,48 +121,6 @@ export type EarnAutodepositCloseConfirmRequestBody = {
   vaultIndex: 1;
   vaultPubkey: string;
   walletAddress: string;
-};
-
-export type WireSmartAccountPreparedEarnUsdcAutodepositSetup = {
-  authorityInitializationRequired: boolean;
-  nativeSolRequirement: SmartAccountNativeSolRequirement;
-  persistence: SmartAccountEarnUsdcAutodepositSetupMetadata;
-  policy: {
-    account: string | null;
-    id: string | null;
-    seed: string | null;
-  };
-  prepared: WirePreparedLoyalSmartAccountsOperation;
-  stage: SmartAccountPreparedEarnUsdcAutodepositSetup["stage"];
-  subscription: {
-    amountPerPeriodRaw: string;
-    authority: string;
-    expiryTimestamp: string;
-    nonce: string;
-    periodLengthSeconds: string;
-    recurringDelegation: string;
-    startTimestamp: string;
-  };
-  vault: {
-    accountIndex: 1;
-    pubkey: string;
-    usdcAta: string;
-  };
-};
-
-export type WireSmartAccountPreparedEarnUsdcAutodepositClose = {
-  persistence: SmartAccountEarnUsdcAutodepositCloseMetadata;
-  policy: {
-    account: string;
-  };
-  prepared: WirePreparedLoyalSmartAccountsOperation;
-  subscription: {
-    recurringDelegation: string;
-  };
-  vault: {
-    accountIndex: 1;
-    pubkey: string;
-  };
 };
 
 export type EarnAutodepositSetupPrepareResponse = {
@@ -559,110 +512,5 @@ export function parseEarnAutodepositCloseConfirmRequestBody(
     vaultIndex: readVaultIndex(record),
     vaultPubkey: readRequiredString(record, "vaultPubkey"),
     walletAddress: readRequiredString(record, "walletAddress"),
-  };
-}
-
-export function serializePreparedEarnUsdcAutodepositSetup(
-  preparedSetup: SmartAccountPreparedEarnUsdcAutodepositSetup
-): WireSmartAccountPreparedEarnUsdcAutodepositSetup {
-  return {
-    authorityInitializationRequired:
-      preparedSetup.authorityInitializationRequired,
-    nativeSolRequirement: preparedSetup.nativeSolRequirement,
-    persistence: preparedSetup.persistence,
-    policy: {
-      account: preparedSetup.policy.account?.toBase58() ?? null,
-      id: preparedSetup.policy.id?.toString() ?? null,
-      seed: preparedSetup.policy.seed?.toString() ?? null,
-    },
-    prepared: serializePreparedOperation(preparedSetup.prepared),
-    stage: preparedSetup.stage,
-    subscription: {
-      amountPerPeriodRaw:
-        preparedSetup.subscription.amountPerPeriodRaw.toString(),
-      authority: preparedSetup.subscription.authority.toBase58(),
-      expiryTimestamp: preparedSetup.subscription.expiryTimestamp.toString(),
-      nonce: preparedSetup.subscription.nonce.toString(),
-      periodLengthSeconds:
-        preparedSetup.subscription.periodLengthSeconds.toString(),
-      recurringDelegation:
-        preparedSetup.subscription.recurringDelegation.toBase58(),
-      startTimestamp: preparedSetup.subscription.startTimestamp.toString(),
-    },
-    vault: {
-      accountIndex: preparedSetup.vault.accountIndex,
-      pubkey: preparedSetup.vault.pubkey.toBase58(),
-      usdcAta: preparedSetup.vault.usdcAta.toBase58(),
-    },
-  };
-}
-
-export function hydratePreparedEarnUsdcAutodepositSetup(
-  wire: WireSmartAccountPreparedEarnUsdcAutodepositSetup
-): SmartAccountPreparedEarnUsdcAutodepositSetup {
-  return {
-    authorityInitializationRequired: wire.authorityInitializationRequired,
-    nativeSolRequirement: wire.nativeSolRequirement,
-    persistence: wire.persistence,
-    policy: {
-      account: wire.policy.account ? new PublicKey(wire.policy.account) : null,
-      id: wire.policy.id ? BigInt(wire.policy.id) : null,
-      seed: wire.policy.seed ? BigInt(wire.policy.seed) : null,
-    },
-    prepared: hydratePreparedOperation(wire.prepared),
-    stage: wire.stage,
-    subscription: {
-      amountPerPeriodRaw: BigInt(wire.subscription.amountPerPeriodRaw),
-      authority: new PublicKey(wire.subscription.authority),
-      expiryTimestamp: BigInt(wire.subscription.expiryTimestamp),
-      nonce: BigInt(wire.subscription.nonce),
-      periodLengthSeconds: BigInt(wire.subscription.periodLengthSeconds),
-      recurringDelegation: new PublicKey(wire.subscription.recurringDelegation),
-      startTimestamp: BigInt(wire.subscription.startTimestamp),
-    },
-    vault: {
-      accountIndex: wire.vault.accountIndex,
-      pubkey: new PublicKey(wire.vault.pubkey),
-      usdcAta: new PublicKey(wire.vault.usdcAta),
-    },
-  };
-}
-
-export function serializePreparedEarnUsdcAutodepositClose(
-  preparedClose: SmartAccountPreparedEarnUsdcAutodepositClose
-): WireSmartAccountPreparedEarnUsdcAutodepositClose {
-  return {
-    persistence: preparedClose.persistence,
-    policy: {
-      account: preparedClose.policy.account.toBase58(),
-    },
-    prepared: serializePreparedOperation(preparedClose.prepared),
-    subscription: {
-      recurringDelegation:
-        preparedClose.subscription.recurringDelegation.toBase58(),
-    },
-    vault: {
-      accountIndex: preparedClose.vault.accountIndex,
-      pubkey: preparedClose.vault.pubkey.toBase58(),
-    },
-  };
-}
-
-export function hydratePreparedEarnUsdcAutodepositClose(
-  wire: WireSmartAccountPreparedEarnUsdcAutodepositClose
-): SmartAccountPreparedEarnUsdcAutodepositClose {
-  return {
-    persistence: wire.persistence,
-    policy: {
-      account: new PublicKey(wire.policy.account),
-    },
-    prepared: hydratePreparedOperation(wire.prepared),
-    subscription: {
-      recurringDelegation: new PublicKey(wire.subscription.recurringDelegation),
-    },
-    vault: {
-      accountIndex: wire.vault.accountIndex,
-      pubkey: new PublicKey(wire.vault.pubkey),
-    },
   };
 }

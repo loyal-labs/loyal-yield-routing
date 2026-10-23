@@ -40,6 +40,11 @@ import { YIELD_OPTIMIZATION_DATABASE_URL_ENV_NAME } from "@/lib/yield-optimizati
 
 // web3.js PACKET_DATA_SIZE — the buffer MessageV0.serialize() encodes into.
 const PACKET_DATA_SIZE = 1232;
+const MESSAGE_VERSION_PREFIX_BYTES = 1;
+const MESSAGE_HEADER_BYTES = 3;
+const PUBKEY_BYTES = 32;
+const BLOCKHASH_BYTES = 32;
+const PROGRAM_ID_INDEX_BYTES = 1;
 
 const KNOWN_AFFECTED_WALLETS = [
   "3zy7sRsejWYX55dcKxxWW3cA734Q3W1RJg26LWRr967J",
@@ -84,14 +89,14 @@ function shortVecLength(value: number): number {
  * oversized, so it cannot report how far over the limit we are.
  */
 function measureMessageV0(message: MessageV0): number {
-  let length = 1 + 3; // version prefix + header
+  let length = MESSAGE_VERSION_PREFIX_BYTES + MESSAGE_HEADER_BYTES;
   length += shortVecLength(message.staticAccountKeys.length);
-  length += 32 * message.staticAccountKeys.length;
-  length += 32; // recentBlockhash
+  length += PUBKEY_BYTES * message.staticAccountKeys.length;
+  length += BLOCKHASH_BYTES;
 
   length += shortVecLength(message.compiledInstructions.length);
   for (const instruction of message.compiledInstructions) {
-    length += 1; // programIdIndex
+    length += PROGRAM_ID_INDEX_BYTES;
     length += shortVecLength(instruction.accountKeyIndexes.length);
     length += instruction.accountKeyIndexes.length;
     length += shortVecLength(instruction.data.length);
@@ -100,7 +105,7 @@ function measureMessageV0(message: MessageV0): number {
 
   length += shortVecLength(message.addressTableLookups.length);
   for (const lookup of message.addressTableLookups) {
-    length += 32; // table account key
+    length += PUBKEY_BYTES;
     length += shortVecLength(lookup.writableIndexes.length);
     length += lookup.writableIndexes.length;
     length += shortVecLength(lookup.readonlyIndexes.length);

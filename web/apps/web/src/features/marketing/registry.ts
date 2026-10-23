@@ -11,11 +11,6 @@
  * 1. Add the slug to MARKETING_PAGE_SLUGS below.
  * 2. Add copy under header.features in every i18n/<locale>/common.ts.
  * 3. Create src/app/<slug>/page.tsx.
- * 4. Marketing pages are translated: i18n/locale.ts derives the
- *    TRANSLATED_PATHS entry from the slug. Create
- *    src/app/<locale>/<slug>/page.tsx for every locale in LOCALES, and add
- *    the route's dates to the sitemap map in src/app/sitemap.ts (tsc fails
- *    until every translated path has one).
  */
 export const MARKETING_PAGE_SLUGS = ["earn", "agents"] as const;
 export type MarketingPageSlug = (typeof MARKETING_PAGE_SLUGS)[number];

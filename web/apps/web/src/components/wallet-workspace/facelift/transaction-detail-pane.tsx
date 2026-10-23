@@ -1,19 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { getEarnTransactionRowLabel } from "@loyal-labs/shared";
 
 import { EarnYieldIcon } from "@/components/wallet-sidebar/portfolio-content";
 import {
+  deriveEarnTransactionIconSources,
   formatEarnTransactionDateGroup,
   formatEarnTransactionTimestamp,
   getEarnTransactionAmountColor,
-  getEarnTransactionRowLabel,
 } from "@/components/wallet-workspace/earn-transactions-pane";
-import { copyTextToClipboard } from "@/components/wallet-workspace/facelift/copy-text";
 import {
   DualIcon,
   resolveEarnCoinIconSrc,
 } from "@/components/wallet-workspace/facelift/earn-activity-card";
+import {
+  RouteRow,
+  SignatureCell,
+  truncateMiddle,
+} from "@/components/wallet-workspace/facelift/transaction-detail-cells";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { openTrackedLink } from "@/lib/core/analytics";
@@ -22,42 +26,6 @@ import { resolveEarnPositionDisplay } from "@/lib/yield-optimization/earn-positi
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
-
-function truncateMiddle(value: string): string {
-  if (value.length <= 12) {
-    return value;
-  }
-  return `${value.slice(0, 4)}…${value.slice(-4)}`;
-}
-
-function RouteRow({
-  icon,
-  label,
-  value,
-  valueSuffix,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  valueSuffix?: string;
-}) {
-  return (
-    <div className="flex h-[60px] w-full items-center rounded-2xl px-4">
-      <div className="flex shrink-0 items-center py-2 pr-3">{icon}</div>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5 py-2">
-        <p className="text-[13px] leading-4 text-muted-foreground">
-          {label}
-        </p>
-        <p className="truncate font-medium text-[16px] text-foreground leading-5">
-          {value}
-          {valueSuffix ? (
-            <span className="text-tertiary"> · {valueSuffix}</span>
-          ) : null}
-        </p>
-      </div>
-    </div>
-  );
-}
 
 function RouteTile({
   side,
@@ -97,39 +65,6 @@ function DetailCell({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SignatureCell({ signature }: { signature: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <div className="flex w-full items-center">
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5 px-4 py-[11px]">
-        <p className="text-[13px] leading-4 text-muted-foreground">Signature</p>
-        <p className="truncate text-[16px] text-foreground leading-5 tracking-[-0.176px]">
-          {truncateMiddle(signature)}
-        </p>
-      </div>
-      <button
-        aria-label="Copy transaction signature"
-        className="t-hover flex shrink-0 items-center justify-center px-4"
-        onClick={() => {
-          void copyTextToClipboard(signature).then((didCopy) => {
-            if (didCopy) {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1500);
-            }
-          });
-        }}
-        type="button"
-      >
-        <ThemedIcon
-          className="size-6 text-tertiary"
-          src={`${ASSET_BASE}/${copied ? "icon-check.svg" : "icon-copy.svg"}`}
-        />
-      </button>
-    </div>
-  );
-}
-
 // Earn transaction detail in the wallet detail's design (Figma 4879:69018
 // Deposited / 4880:74343 Withdrawn): identity header, amount hero, From → To
 // route rows, details card, explorer button pinned bottom. Covers every
@@ -147,8 +82,6 @@ export function EarnTransactionDetailPane({
   walletAddress: string | null;
 }) {
   const publicEnv = usePublicEnv();
-  const isMovement =
-    item.kind === "rebalance" || item.kind === "reconciliation";
   const isAllowanceAction = item.kind === "autodeposit_action";
   const title = getEarnTransactionRowLabel(item);
   const confirmedAt = item.confirmedAt ?? item.sortTimestamp;
@@ -159,8 +92,6 @@ export function EarnTransactionDetailPane({
   const ownAddress = walletAddress ? truncateMiddle(walletAddress) : null;
   const hasSignature = item.signature.length > 0;
   const transactionUrl = getExplorerTxUrl(item.signature);
-  // Same art derivation as the activity list's TransactionRow, so the header
-  // identity matches the row that opened it.
   const coinSrc = item.liquidityMint
     ? resolveEarnCoinIconSrc({
         liquidityMint: item.liquidityMint,
@@ -173,10 +104,10 @@ export function EarnTransactionDetailPane({
         market: null,
       }).mintSymbol
     : "USDC";
-  const backSrc =
-    isMovement || item.kind === "withdraw" ? item.source.icon : coinSrc;
-  const frontSrc =
-    isMovement || item.kind === "deposit" ? item.destination.icon : coinSrc;
+  const { backSrc, frontSrc } = deriveEarnTransactionIconSources(
+    item,
+    coinSrc
+  );
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">

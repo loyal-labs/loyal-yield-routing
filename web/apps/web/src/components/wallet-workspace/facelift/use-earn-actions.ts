@@ -124,16 +124,13 @@ import {
 import type {
   LoadedEarnAutodepositConfig,
   LoadedEarnAutodepositScheduledSweep,
-} from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+} from "@loyal-labs/shared";
 import { hasEarnCleanupCandidate } from "@/lib/yield-optimization/earn-cleanup-ui-state";
 import {
   fetchEarnTransactions,
   invalidateEarnTransactionsCache,
 } from "@/lib/yield-optimization/earn-transactions.client";
 
-// Same local widening the old workspace uses: the loaded state only knows
-// created/creating/paused; pausing/resuming/closing are optimistic transients
-// while a toggle/close request is in flight.
 export type EarnAutodepositConfigView = Omit<
   LoadedEarnAutodepositConfig,
   "state"
@@ -199,12 +196,8 @@ export type PendingEarnApproval = {
   reject: () => void;
 };
 
-// The old workspace's Earn mutation orchestration (app-wallet-workspace.tsx
-// handlers) rebuilt for the facelift panes. Every executor call, precondition,
-// optimistic update, observability event and refresh registration mirrors the
-// monolith; the one structural change is that the review overlay's
-// per-stage "Continue" clicks are auto-chained after a single up-front
-// approval gate — the wallet still prompts per signature.
+const PENDING_SIGNATURE_CAP_MS = 20_000;
+
 export function useEarnActions(deps: {
   autodepositConfig: EarnAutodepositConfigView | null;
   hasPosition: boolean;
@@ -302,13 +295,11 @@ export function useEarnActions(deps: {
     setPendingTransactionSignatures((current) =>
       current.includes(signature) ? current : [...current, signature]
     );
-    // ponytail: 20s cap — the indexer lag is ~5s, and a mismatch must never
-    // pin a skeleton row for long.
     window.setTimeout(() => {
       setPendingTransactionSignatures((current) =>
         current.filter((existing) => existing !== signature)
       );
-    }, 20_000);
+    }, PENDING_SIGNATURE_CAP_MS);
   }, []);
 
   const [depositError, setDepositError] = useState<string | null>(null);

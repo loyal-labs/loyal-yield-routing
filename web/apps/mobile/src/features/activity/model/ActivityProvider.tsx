@@ -9,6 +9,12 @@ import {
   useState,
 } from "react";
 import { Alert } from "react-native";
+import {
+  EARN_AUTODEPOSIT_MIN_VISIBLE_SCHEDULED_SWEEP_RAW,
+  getVisibleEarnAutodepositScheduledSweeps,
+  type EarnAutodepositProgressState,
+  type LoadedEarnAutodepositScheduledSweep,
+} from "@loyal-labs/shared";
 
 import { nudgeQuestProgressCheck } from "@/components/quests/QuestCompletionWatcher";
 import { useEarnActivity } from "@/hooks/wallet/useEarnActivity";
@@ -28,18 +34,12 @@ import {
   EarnApiError,
   fetchEarnAutodepositSweepProgress,
   fetchEarnRefundScan,
-  type EarnAutodepositScheduledSweep,
   type EarnAutodepositState,
-  type EarnAutodepositSweepProgressState,
   type EarnRefundPrepareRequest,
   type EarnTransactionItem,
 } from "@/lib/solana/earn/earn-api";
 import { executeEarnRefund } from "@/lib/solana/earn/refund";
-import {
-  EARN_SCHEDULED_SWEEP_MIN_VISIBLE_RAW,
-  getVisibleEarnScheduledSweeps,
-  isScheduledSweepDue,
-} from "@/lib/solana/earn/earn-scheduled-sweep";
+import { isScheduledSweepDue } from "@/lib/solana/earn/earn-scheduled-sweep";
 import { earnTransactionTimestampMs } from "@/lib/solana/earn/earn-tx-display";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
 import type { LifecycleFlow } from "@/services/observability";
@@ -67,13 +67,13 @@ type ActivityContextValue = {
     throwOnError?: boolean;
   }) => Promise<EarnAutodepositState | null>;
   refreshAutodepositAndHoldings: () => Promise<unknown>;
-  earnScheduledSweeps: EarnAutodepositScheduledSweep[];
+  earnScheduledSweeps: LoadedEarnAutodepositScheduledSweep[];
   autodepositPausedMissingPosition: boolean;
   isExecutingSweep: boolean;
   executeScheduledSweep: () => Promise<void>;
   sweepMorph: SweepMorph | null;
   clearSweepMorph: () => void;
-  sweepProgressState: EarnAutodepositSweepProgressState | null;
+  sweepProgressState: EarnAutodepositProgressState | null;
   walletUnread: boolean;
   earnUnread: boolean;
   anyUnread: boolean;
@@ -99,7 +99,7 @@ export type EarnRefundItem = {
 };
 
 export type SweepMorph = {
-  sweeps: EarnAutodepositScheduledSweep[];
+  sweeps: LoadedEarnAutodepositScheduledSweep[];
   scheduledSlotId: string;
   resultTx: EarnTransactionItem | null;
   baselineTxIds: ReadonlySet<string>;
@@ -111,30 +111,21 @@ const ActivityContext = createContext<ActivityContextValue | null>(null);
 const isBalanceSweepTx = (tx: EarnTransactionItem): boolean =>
   tx.kind === "balance_sweep" || tx.eventType === "balance_sweep";
 
-// Cadence + bound for polling a due scheduled sweep to resolution. Short ticks so
-// the row clears promptly after an execute — the server-side reconcile drops it on
-// the next read once the worker has reverted/failed the slot. Capped (~40s) so a
-// backend-stuck slot can't poll forever (a manual pull works after that). The
-// floor on perceived latency is the worker's async revert, not this interval.
 const DUE_SWEEP_POLL_MS = 2000;
-const MAX_DUE_SWEEP_POLLS = 20;
+const DUE_SWEEP_POLL_BUDGET_MS = 40_000;
+const MAX_DUE_SWEEP_POLLS = DUE_SWEEP_POLL_BUDGET_MS / DUE_SWEEP_POLL_MS;
 
-// After "Execute now", the worker's resulting `balance_sweep` tx can lag behind
-// the slot clearing. Poll the Earn feed for it on a short cadence so the morph
-// can swap to it promptly, bounded (~60s) so a stuck/no-op execution can't poll
-// forever — the executing row just lingers until a manual pull / blur.
 const SWEEP_RESULT_POLL_MS = 2500;
-const MAX_SWEEP_RESULT_POLLS = 24;
-// Hard cap on how long a morph stays pinned (incl. after it resolves) so it
-// can't hold a row out of its normal date group indefinitely if the user never
-// leaves the screen.
-const SWEEP_MORPH_MAX_MS = 120_000;
+const SWEEP_RESULT_POLL_BUDGET_MS = 60_000;
+const MAX_SWEEP_RESULT_POLLS =
+  SWEEP_RESULT_POLL_BUDGET_MS / SWEEP_RESULT_POLL_MS;
+const SWEEP_MORPH_MAX_PINNED_MS = 120_000;
 
 const SWEEP_PROGRESS_POLL_MS = 1000;
 const MAX_SWEEP_PROGRESS_POLLS = 45;
 const MAX_SWEEP_PROGRESS_MISSES = 3;
 
-const SWEEP_PROGRESS_END_STATES = new Set<EarnAutodepositSweepProgressState>([
+const SWEEP_PROGRESS_END_STATES = new Set<EarnAutodepositProgressState>([
   "completed",
   "failed",
   "canceled",
@@ -164,7 +155,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
   });
 
   // The visibility cap needs the live wallet USDC balance (see
-  // getVisibleEarnScheduledSweeps) so a scheduled slot whose surplus was already
+  // getVisibleEarnAutodepositScheduledSweeps) so a scheduled slot whose surplus was already
   // swept into Earn hides instead of lingering as a phantom row. Only read
   // holdings when there's actually a candidate sweep to evaluate, so passive
   // Activity views don't pay for it. Read-only (no signer) — never prompts Seed
@@ -179,7 +170,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
     (autodeposit?.scheduledSweeps ?? []).some(
       (sweep) =>
         /^\d+$/.test(sweep.remainingAmountRaw) &&
-        BigInt(sweep.remainingAmountRaw) >= EARN_SCHEDULED_SWEEP_MIN_VISIBLE_RAW,
+        BigInt(sweep.remainingAmountRaw) >= EARN_AUTODEPOSIT_MIN_VISIBLE_SCHEDULED_SWEEP_RAW,
     );
   const { tokenHoldings, refreshTokenHoldings } = useTokenHoldings(
     hasScheduledSweepCandidate ? publicKey : null,
@@ -200,11 +191,11 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
 
   const earnScheduledSweeps = useMemo(
     () =>
-      getVisibleEarnScheduledSweeps(
-        autodeposit?.scheduledSweeps,
-        walletUsdcRaw,
-        scheduledSweepFloorRaw,
-      ),
+      getVisibleEarnAutodepositScheduledSweeps({
+        scheduledSweeps: autodeposit?.scheduledSweeps ?? [],
+        walletBalanceFloorRaw: scheduledSweepFloorRaw,
+        walletBalanceRaw: walletUsdcRaw,
+      }),
     [autodeposit, walletUsdcRaw, scheduledSweepFloorRaw],
   );
 
@@ -372,7 +363,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
     const timeoutId = setTimeout(() => {
       failPendingSweep();
       setSweepMorph(null);
-    }, SWEEP_MORPH_MAX_MS);
+    }, SWEEP_MORPH_MAX_PINNED_MS);
     return () => clearTimeout(timeoutId);
   }, [sweepMorph, failPendingSweep]);
 
@@ -382,7 +373,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
   }, [publicKey, failPendingSweep]);
 
   const [sweepProgressState, setSweepProgressState] =
-    useState<EarnAutodepositSweepProgressState | null>(null);
+    useState<EarnAutodepositProgressState | null>(null);
   const dueSweepSlotId =
     earnScheduledSweeps.find(isScheduledSweepDue)?.id ?? null;
   const watchedSweepSlotId = sweepMorph

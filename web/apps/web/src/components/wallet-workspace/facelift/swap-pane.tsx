@@ -16,7 +16,7 @@ import {
   TOKEN_SEARCH_DEBOUNCE_MS,
   TOKEN_SEARCH_MIN_LENGTH,
 } from "@/components/wallet-sidebar/token-select-view";
-import type { SwapToken } from "@/components/wallet-sidebar/types";
+import { LOYL_TOKEN, type SwapToken } from "@/components/wallet-sidebar/types";
 import {
   ActionErrorBody,
   ActionProcessingBody,
@@ -29,6 +29,10 @@ import {
   ScrambleText,
   useBalanceVisibility,
 } from "@/components/wallet-workspace/facelift/balance-visibility";
+import {
+  PANE_CLIP,
+  PANE_CLIP_MOBILE_ONLY,
+} from "@/components/wallet-workspace/facelift/pane-clip";
 import { PaneReveal } from "@/components/wallet-workspace/facelift/pane-transitions";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
@@ -121,11 +125,6 @@ function SwapTokenPill({
   );
 }
 
-// Swap screen (Figma 4819:414629 wide / 4813:404479 downsized): the middle
-// pane form. Quote/execute logic is the OG SwapContent orchestration ported
-// onto useSwap — debounced Jupiter quote, price-ratio fallback, MAX with the
-// SOL fee reserve, flip keeps the USD value. Confirm walks the step screens:
-// processing (4813:405472) → success (4813:406464) or error (4813:407564).
 export function SwapPane({
   activeSelectSide,
   fromToken,
@@ -358,14 +357,11 @@ export function SwapPane({
       : null);
 
   return (
-    /* The result screens unclip the pane on desktop so their dog can drop
-        into the shell's 8px gap and sit flush with the viewport bottom (same
-        escape the earn empty pane uses); the form keeps the clip. */
     <section
       className={`flex h-full w-full min-w-0 flex-1 flex-col rounded-3xl bg-card max-[795px]:rounded-none ${
         step === "success" || step === "error"
-          ? "max-[795px]:overflow-clip"
-          : "overflow-clip"
+          ? PANE_CLIP_MOBILE_ONLY
+          : PANE_CLIP
       }`}
     >
       <header className="flex w-full shrink-0 items-center p-2">
@@ -633,6 +629,45 @@ function toSelectorToken(
   };
 }
 
+export function buildSwapTargetTokens({
+  derivedTokens,
+  earnEligibleMints,
+  earnProductAssets,
+  popularTokens,
+}: {
+  derivedTokens: SwapToken[];
+  earnEligibleMints: ReadonlySet<string>;
+  earnProductAssets: readonly { mint: string; symbol: string }[];
+  popularTokens: SwapToken[];
+}): SwapToken[] {
+  const heldMints = new Set(
+    derivedTokens.map((token) => token.mint).filter(Boolean)
+  );
+  const listedMints = new Set([
+    ...heldMints,
+    ...popularTokens.map((token) => token.mint),
+  ]);
+  const missingEarnStables = earnProductAssets
+    .filter((asset) => !listedMints.has(asset.mint))
+    .map((asset) => ({
+      balance: 0,
+      icon: getTokenIconUrl(asset.symbol),
+      mint: asset.mint,
+      price: 1,
+      symbol: asset.symbol,
+    }));
+  const rank = (token: SwapToken) =>
+    token.mint === LOYL_TOKEN.mint
+      ? 0
+      : token.mint && earnEligibleMints.has(token.mint)
+      ? 1
+      : 2;
+
+  return [...derivedTokens, ...missingEarnStables].sort(
+    (a, b) => rank(a) - rank(b)
+  );
+}
+
 export function SwapTokenSelectPane({
   earnEligibleMints,
   nameByMint,
@@ -734,8 +769,6 @@ export function SwapTokenSelectPane({
     refreshTrending();
   }, [refreshTrending]);
 
-  // Debounced remote search. Each keystroke aborts the request before it; a
-  // failed or aborted one leaves the previous results on screen.
   useEffect(() => {
     if (!isRemoteSearchEnabled || rawQuery.length < TOKEN_SEARCH_MIN_LENGTH) {
       searchAbortRef.current?.abort();

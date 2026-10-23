@@ -84,6 +84,9 @@ jobs:
       - name: install mobile
         working-directory: web/apps/mobile
         run: bun install --frozen-lockfile
+      - name: build workspace packages
+        working-directory: web
+        run: bun run build:solana-packages
       - name: mobile tsc
         working-directory: web/apps/mobile
         run: bunx tsc --noEmit
@@ -93,6 +96,5 @@ jobs:
       - name: solana-wallet tests
         working-directory: web
         run: |
-          bun run --cwd packages/shared build
-          bun run --cwd packages/solana-rpc build
+          bun run build:solana-packages
           bun run --cwd packages/solana-wallet test

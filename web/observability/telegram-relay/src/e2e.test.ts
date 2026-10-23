@@ -111,7 +111,7 @@ function createSystem(options: SystemOptions = {}) {
     now: () => now,
     analyze: createAlertAnalyzer(config),
     dailyRecapEnabled: config.dailyRecapEnabled,
-    dailyRecapAtMinutes: config.dailyRecapAtMinutes,
+    dailyRecapMinutesPastUtcMidnight: config.dailyRecapAtUtcMinutes,
     escalationMultiplier: config.escalationMultiplier,
     restartGraceMs: config.restartGraceMs,
     startedAt: startAt,
@@ -394,7 +394,7 @@ describe("relay end to end", () => {
     // --- The incident stays quiet for the rest of the period -------------
     // The window runs to the recap, not to the cooldown, so an hour in the
     // signature is still muted rather than re-announced.
-    const expiresAt = recapAfter(START, system.config.dailyRecapAtMinutes);
+    const expiresAt = recapAfter(START, system.config.dailyRecapAtUtcMinutes);
     expect(expiresAt).toBeGreaterThan(START + system.config.cooldownMs);
 
     system.advanceTo(START + system.config.cooldownMs + MINUTE);
@@ -613,7 +613,7 @@ describe("relay end to end", () => {
 
     // The recap survives its own rejection and is retried on the next sweep
     // with every counter intact.
-    system.advanceTo(recapAfter(START, system.config.dailyRecapAtMinutes));
+    system.advanceTo(recapAfter(START, system.config.dailyRecapAtUtcMinutes));
     expect(system.relay.stats().dailyEvents).toBe(3);
     await system.sweep();
     // Held as a pending recap, not lost and not left to grow in the live
@@ -659,7 +659,7 @@ describe("relay end to end", () => {
     expect(system.calls).toHaveLength(1);
 
     // Sweeps racing a further delivery must not double-post the recap.
-    system.advanceTo(recapAfter(START, system.config.dailyRecapAtMinutes));
+    system.advanceTo(recapAfter(START, system.config.dailyRecapAtUtcMinutes));
     await Promise.all([
       system.sweep(),
       system.sweep(),
@@ -709,7 +709,7 @@ describe("relay end to end", () => {
     await after.sweep();
     expect(after.calls).toHaveLength(0);
 
-    after.advanceTo(recapAfter(START, after.config.dailyRecapAtMinutes));
+    after.advanceTo(recapAfter(START, after.config.dailyRecapAtUtcMinutes));
     await after.sweep();
     expect(after.calls).toHaveLength(1);
     expect(after.calls[0]?.silent).toBe(true);

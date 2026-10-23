@@ -18,6 +18,7 @@ import {
   findActiveYieldPositionsForVault,
   findActiveYieldRoutePolicyPair,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Read-only mobile twin of the web client's live on-chain Earn holdings read
 // (`earn-rpc-holdings.client.ts`, summed by the sidebar for its headline
@@ -42,7 +43,6 @@ import {
 // Fallbacks: one retry on rejection, then 502 → the client keeps the
 // read-model balance; plus a residual observedAt: null suppression should a
 // stale snapshot slip through anyway.
-const EARN_VAULT_INDEX = 1;
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 function jsonError(

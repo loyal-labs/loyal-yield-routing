@@ -23,14 +23,15 @@ type EarnToastListener = {
   begin: (flow: EarnFlowId) => void;
   settle: () => void;
   show: (detail: EarnToastDetail) => void;
-  signed: () => void;
+  signed: (stage: EarnToastWalletSignStage) => void;
 };
 
 let listener: EarnToastListener | null = null;
 
-// The wallet-sign stage message. The wallet adapter bridge calls
-// earnToast.signed() when a signature resolves, and the host only advances
-// the toast when this exact message is showing — keep them in sync.
+export const EARN_TOAST_WALLET_SIGN_STAGE = "wallet-sign" as const;
+
+export type EarnToastWalletSignStage = typeof EARN_TOAST_WALLET_SIGN_STAGE;
+
 export const CONFIRM_IN_WALLET_MESSAGE = "Confirm in wallet";
 
 // Step scripts for the multi-stage Earn flows. Entries are the exact
@@ -110,8 +111,8 @@ export const earnToast = {
   settle() {
     listener?.settle();
   },
-  signed() {
-    listener?.signed();
+  signed(stage: EarnToastWalletSignStage) {
+    listener?.signed(stage);
   },
   success(message: string) {
     listener?.show({ message, phase: "success" });
@@ -198,7 +199,8 @@ export function EarnToastHost() {
         }
       },
       show,
-      signed: () => {
+      signed: (stage) => {
+        if (stage !== EARN_TOAST_WALLET_SIGN_STAGE) return;
         if (
           detailRef.current?.phase === "loading" &&
           detailRef.current.message === CONFIRM_IN_WALLET_MESSAGE

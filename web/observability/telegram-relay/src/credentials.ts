@@ -45,11 +45,6 @@ export class RelayCredentials {
     ];
   }
 
-  /**
-   * Strips these credentials out of text the relay did not author. Called as a
-   * method, never detached: it reads `#secrets` off `this`.
-   */
-  redactLogText(text: string): string {
-    return stripSecrets(text, this.#secrets);
-  }
+  readonly redactLogText = (text: string): string =>
+    stripSecrets(text, this.#secrets);
 }

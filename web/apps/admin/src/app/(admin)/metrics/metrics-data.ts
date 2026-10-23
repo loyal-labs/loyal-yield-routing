@@ -14,7 +14,7 @@ const RESPONSE_SIZE_LIMIT = 5 * 1_024 * 1_024;
 // Two-hour buckets keep the same 7-day window while giving each p95 a real
 // sample population behind it.
 export const BUCKET_MINUTES = 120;
-const GRANULARITY = "2h";
+const GRANULARITY = `${BUCKET_MINUTES / 60}h`;
 
 const OPERATION_FIELD = "arrayElement(Attributes, 'loyal.operation')";
 const PHASE_FIELD = "arrayElement(Attributes, 'loyal.phase')";

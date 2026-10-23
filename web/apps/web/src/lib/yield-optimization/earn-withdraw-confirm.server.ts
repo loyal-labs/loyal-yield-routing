@@ -464,8 +464,6 @@ async function resolveConfirmedSignatureSlot(args: {
   operation: "autodeposit close" | "withdrawal";
   signature: string;
 }): Promise<bigint> {
-  // Same RPC-lag hazard as the deposit confirm: a status read can land on a
-  // node that has not seen the transaction yet — poll before rejecting.
   const slot = await pollRpcRead(async () => {
     const { value } = await getConnection(args.cluster).getSignatureStatuses(
       [args.signature],

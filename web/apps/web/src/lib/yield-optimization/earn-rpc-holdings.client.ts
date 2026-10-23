@@ -88,7 +88,6 @@ export type EarnRpcWatchedAccount = {
 
 export type EarnRpcHoldingsSnapshot = {
   completeness: "complete";
-  /** @deprecated Wire compatibility; value is nominal stablecoin-par micros. */
   currentTotalAmountRaw: string;
   currentTotalNominalUsdMicros: string;
   holdings: EarnRpcHolding[];

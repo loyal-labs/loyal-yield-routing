@@ -87,6 +87,8 @@ function formatRecipientLabel(value: string): string {
 }
 
 const INVALID_RECIPIENT_HINT = "Invalid Solana address";
+const AMOUNT_ROW_PADDING_X = 16;
+const SWAP_BUTTON_WIDTH = 52;
 
 function formatFeeUsd(feeUsd: number | null): string {
   if (feeUsd === null) return "";
@@ -1094,7 +1096,7 @@ function AmountStep({
     () =>
       fitAmountFontSize(
         `${currencyMode === "USD" ? "$" : ""}${displayAmount || "0"}`,
-        SCREEN_WIDTH - 32 - 52, // px-16*2 + swap button
+        SCREEN_WIDTH - 2 * AMOUNT_ROW_PADDING_X - SWAP_BUTTON_WIDTH,
       ),
     [currencyMode, displayAmount],
   );
@@ -1146,12 +1148,12 @@ function AmountStep({
         </View>
       </View>
 
-      <View style={{ paddingTop: 36, paddingHorizontal: 16 }}>
+      <View style={{ paddingTop: 36, paddingHorizontal: AMOUNT_ROW_PADDING_X }}>
         <Pressable style={amountFieldStyles.row} onPress={openKeyboard}>
           <View
             style={[
               amountFieldStyles.visual,
-              { paddingRight: 52, pointerEvents: "none" },
+              { paddingRight: SWAP_BUTTON_WIDTH, pointerEvents: "none" },
             ]}
           >
             {currencyMode === "USD" ? (

@@ -23,7 +23,7 @@ import type { EarnPositionData } from "@/components/wallet-workspace/facelift/us
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useEarnEarnings } from "@/hooks/use-earn-earnings";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
-import { rawTokenAmountToNumber } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+import { rawTokenAmountToNumber } from "@loyal-labs/shared";
 import { deriveEarnEarningsDisplayAmounts } from "@/lib/yield-optimization/earnings-display.shared";
 
 const BAR_COLOR = "color-mix(in srgb, var(--positive) 40%, transparent)";
@@ -112,8 +112,6 @@ export function useEarnEarnedData(data: EarnPositionData) {
   const hasRealBars = (realBars?.length ?? 0) > 0;
   const showEarningsLoader = isEarningsLoading && !hasRealBars;
   const estimatedTodayEarnedUsd = estimatedEarnedAmounts.todayEarnedUsd;
-  // Reconcile the in-progress bar against the live estimate — prior bars stay
-  // daily (non-cumulative) values.
   const dailyBars = useMemo(
     () =>
       (realBars ?? []).map((bar) =>
@@ -180,8 +178,6 @@ export function EarnedBarsChart({
     () => dailyBars.reduce((max, bar) => Math.max(max, bar.earnedUsd), 0),
     [dailyBars]
   );
-  // Earn's feed never goes below zero; Earn MAX equity can (drawdowns), so
-  // the scale gains a baseline and loss bars drop under it in red.
   const minDailyEarnedUsd = useMemo(
     () => dailyBars.reduce((min, bar) => Math.min(min, bar.earnedUsd), 0),
     [dailyBars]

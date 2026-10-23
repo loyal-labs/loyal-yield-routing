@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { getLoadedScheduledSweepExecuteNowAvailableAtMs } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+import { getLoadedScheduledSweepExecuteNowAvailableAtMs } from "@loyal-labs/shared";
 
 export function useScheduledSweepNowMs(
   sweeps: readonly Parameters<

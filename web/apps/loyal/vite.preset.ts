@@ -63,8 +63,6 @@ export function nextSpa(options: NextSpaOptions): UserConfig {
     Object.entries(process.env).filter(([key]) => key.startsWith("NEXT_PUBLIC_")),
   );
 
-  // layout.tsx tints the favicon by VERCEL_ENV, which Next reads on the server.
-  // Here the build stands in for the server: a prod build is Vercel's production.
   const vercelEnv = resolveVercelEnv(process.env);
 
   const apiOrigin = process.env.LOYAL_WEB_ORIGIN || "http://127.0.0.1:8080";

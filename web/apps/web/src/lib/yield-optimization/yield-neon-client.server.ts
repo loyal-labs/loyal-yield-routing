@@ -200,6 +200,7 @@ export const routePolicies = loyalYieldSchema.table(
   "route_policies",
   {
     id: bigserial("id", { mode: "bigint" }).primaryKey(),
+    cluster: text("cluster"),
     settings: text("settings").notNull(),
     authority: text("authority").notNull(),
     policySeed: bigint("policy_seed", { mode: "bigint" }).notNull(),
@@ -661,8 +662,6 @@ export const earnApyHourlySnapshots = loyalYieldSchema.table(
   ]
 );
 
-// Hourly Kamino reserve share prices (liquidity per collateral token).
-// Migration owned by loyal-yield-routing (0084_earn_reserve_share_prices).
 export const earnReserveSharePrices = loyalYieldSchema.table(
   "earn_reserve_share_prices",
   {
@@ -689,7 +688,6 @@ export const earnReserveSharePrices = loyalYieldSchema.table(
   ]
 );
 
-// Migration owned by loyal-yield-routing (0086_earn_fleet_allocations_hourly).
 export const earnFleetAllocationsHourly = loyalYieldSchema.table(
   "earn_fleet_allocations_hourly",
   {

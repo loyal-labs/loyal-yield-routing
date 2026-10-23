@@ -1,17 +1,14 @@
 import {
+  hydratePreparedEarnUsdcAutodepositClose,
   hydratePreparedOperation,
+  serializePreparedEarnUsdcAutodepositClose,
   serializePreparedOperation,
   type SmartAccountEarnUsdcCleanupMetadata,
   type SmartAccountPreparedEarnUsdcCleanup,
   type WirePreparedLoyalSmartAccountsOperation,
+  type WireSmartAccountPreparedEarnUsdcAutodepositClose,
 } from "@loyal-labs/smart-account-vaults";
 import { PublicKey } from "@solana/web3.js";
-
-import {
-  hydratePreparedEarnUsdcAutodepositClose,
-  serializePreparedEarnUsdcAutodepositClose,
-  type WireSmartAccountPreparedEarnUsdcAutodepositClose,
-} from "./earn-autodeposit-prepare-contracts.shared";
 
 export type WireSmartAccountPreparedEarnUsdcCleanup = {
   autodepositClosePrepared?: WireSmartAccountPreparedEarnUsdcAutodepositClose | null;
@@ -161,8 +158,7 @@ export function parseEarnWithdrawCleanupConfirmRequestBody(
   return {
     cleanupSignature: readNonEmptyString(record, "cleanupSignature"),
     confirmedSlot: readUnsignedIntegerString(record, "confirmedSlot"),
-    preparedCleanup:
-      preparedCleanup as WireSmartAccountPreparedEarnUsdcCleanup,
+    preparedCleanup: preparedCleanup as WireSmartAccountPreparedEarnUsdcCleanup,
     ...(typeof autodepositCloseSignature === "string" &&
     autodepositCloseSignature.trim().length > 0
       ? { autodepositCloseSignature: autodepositCloseSignature.trim() }

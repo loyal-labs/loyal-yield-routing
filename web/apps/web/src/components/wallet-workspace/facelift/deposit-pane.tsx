@@ -26,8 +26,10 @@ import { SheetReveal } from "@/components/wallet-workspace/facelift/sheet-reveal
 import { SkeletonReveal } from "@/components/wallet-workspace/facelift/skeleton-reveal";
 import { TextSwap } from "@/components/wallet-workspace/facelift/text-swap";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
+import { sortByFundedNearestTrigger } from "@/components/wallet-workspace/facelift/upward-selector-sort";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import type { EarnPositionData } from "@/components/wallet-workspace/facelift/use-earn-position-data";
+import { useEarnUsdcSourceUsd } from "@/components/wallet-workspace/facelift/use-stablecoins-usd";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import {
   splitUsdBalance,
@@ -108,7 +110,6 @@ function DepositSourceOptionRow({
   );
 }
 
-// The selected asset remains the same mint through deposit and routing.
 const createDepositSteps = (symbol: string): readonly FlowStep[] => [
   {
     Icon: CircleDollarSign,
@@ -161,6 +162,11 @@ export function DepositPane({
   );
   const { actions } = earnData;
 
+  const mainUsdcSourceUsd = useEarnUsdcSourceUsd(
+    actions.mainUsdcAmount,
+    data.positions,
+    (position) => position.publicValueUsd ?? position.publicBalance ?? 0
+  );
   const sourceOptions = useMemo<DepositSourceOption[]>(() => {
     const cluster = resolveLoyalClusterForSolanaEnv(
       resolveSolanaEnv(publicEnv.solanaEnv)
@@ -177,13 +183,12 @@ export function DepositPane({
         mint,
         symbol: asset.symbol,
         usd:
-          asset.stablecoin === Stablecoin.USDC &&
-          actions.mainUsdcAmount !== null
-            ? actions.mainUsdcAmount
+          asset.stablecoin === Stablecoin.USDC
+            ? mainUsdcSourceUsd
             : portfolioUsd,
       };
     });
-  }, [actions.mainUsdcAmount, data.positions, publicEnv.solanaEnv]);
+  }, [data.positions, mainUsdcSourceUsd, publicEnv.solanaEnv]);
   const defaultSource = useMemo(() => {
     const usdc = sourceOptions.find(
       (source) => source.symbol === Stablecoin.USDC
@@ -202,10 +207,7 @@ export function DepositPane({
     sourceOptions.find((source) => source.key === selectedSourceKey) ??
     defaultSource;
   const listedSourceOptions = useMemo(
-    () =>
-      [...sourceOptions].sort(
-        (a, b) => (a.usd > 0 ? 1 : 0) - (b.usd > 0 ? 1 : 0)
-      ),
+    () => sortByFundedNearestTrigger(sourceOptions, (option) => option.usd > 0),
     [sourceOptions]
   );
   const sourceUsd = selectedSource.usd;

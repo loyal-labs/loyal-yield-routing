@@ -1,6 +1,9 @@
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
-import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
+import {
+  createSmartAccountVaultsClient,
+  serializePreparedEarnUsdcWithdraw,
+} from "@loyal-labs/smart-account-vaults";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { NextResponse } from "next/server";
@@ -21,8 +24,8 @@ import {
 import {
   type EarnWithdrawLegacyPrepareRequest,
   parseEarnWithdrawPrepareRequestBody,
-  serializePreparedEarnUsdcWithdraw,
 } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Mobile twin of `yield-optimization/withdrawals/prepare`. Identical source
 // selection + prepare logic, but authenticated by a wallet signature (no
@@ -32,8 +35,6 @@ import {
 // `earn-withdraw-input-resolution.server.ts`, shared with `../prepare-context`
 // (the on-device build twin) — this route remains for app versions that
 // predate on-device prepare.
-const EARN_DEPOSIT_VAULT_INDEX = 1;
-
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 function jsonError(
@@ -144,7 +145,7 @@ export async function POST(request: Request) {
     const serverEnv = getServerEnv();
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda: new PublicKey(settingsPda),
     });

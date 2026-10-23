@@ -33,8 +33,7 @@ export interface FormattedMessage {
 }
 
 const MAX_RENDERED_ROWS = 8;
-/** Headroom for the "and N more" footer while rows are being fitted. */
-const FOOTER_RESERVE = 48;
+const FOOTER_RESERVE_CHARS = 48;
 const SPARKLINE = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
 export function formatTelegramMessage(
@@ -266,7 +265,7 @@ function formatPrettyMessage(
   const link = payload.link.trim();
   const suffix = link ? `\n\n${escapeHtml(link)}` : "";
 
-  const budget = TELEGRAM_MESSAGE_LIMIT - suffix.length - FOOTER_RESERVE;
+  const budget = TELEGRAM_MESSAGE_LIMIT - suffix.length - FOOTER_RESERVE_CHARS;
   const rendered: string[] = [];
   let used = header.length;
   for (const block of blocks) {
@@ -325,7 +324,7 @@ function formatDailyRecap(daily: DailySummary): FormattedMessage {
       `${formatClock(signature.firstAt)}–${formatClock(signature.lastAt)} UTC`
     )}</i>`;
 
-    if (used + line.length + FOOTER_RESERVE > TELEGRAM_MESSAGE_LIMIT) {
+    if (used + line.length + FOOTER_RESERVE_CHARS > TELEGRAM_MESSAGE_LIMIT) {
       break;
     }
     rendered.push(line);

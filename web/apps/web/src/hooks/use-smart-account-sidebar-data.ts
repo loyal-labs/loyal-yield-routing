@@ -10,6 +10,10 @@ import {
 import {
   combineSmartAccountNativeSolRequirements,
   createSmartAccountVaultsClient,
+  hydratePreparedEarnUsdcDeposit,
+  hydratePreparedEarnUsdcWithdraw,
+  sendPreparedBatchWithWallet,
+  sendPreparedWithWallet,
   type SmartAccountEarnCrossMintProjectedPolicyInput,
   type SmartAccountNativeSolRequirement,
   type SmartAccountOverview,
@@ -27,8 +31,6 @@ import {
   type SmartAccountSpendingLimitSnapshot,
   type SmartAccountVaultSnapshot,
   SOL_SPENDING_LIMIT_MINT,
-  sendPreparedBatchWithWallet,
-  sendPreparedWithWallet,
 } from "@loyal-labs/smart-account-vaults";
 import { resolveSolanaEnv } from "@loyal-labs/solana-rpc";
 import {
@@ -59,7 +61,10 @@ import type {
   TokenRow,
   TransactionDetail,
 } from "@/components/wallet-sidebar/types";
-import { earnToast } from "@/components/wallet-workspace/facelift/earn-toast";
+import {
+  EARN_TOAST_WALLET_SIGN_STAGE,
+  earnToast,
+} from "@/components/wallet-workspace/facelift/earn-toast";
 import { useAuthSession } from "@/contexts/auth-session-context";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import {
@@ -93,7 +98,7 @@ import {
   getStablecoinMintSetForSolanaEnv,
   isStablecoinMint,
 } from "@/lib/wallet/stablecoin-classification";
-import type { LoadedEarnAutodepositScheduledSweep } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+import type { LoadedEarnAutodepositScheduledSweep } from "@loyal-labs/shared";
 import {
   EarnPrepareRequestError,
   fetchEarnPrepare,
@@ -121,10 +126,7 @@ import {
   buildEarnPolicyConfirmRequestBody,
   buildEarnWithdrawalConfirmRequestBody,
 } from "@/lib/yield-optimization/earn-confirm-contracts.shared";
-import {
-  type EarnDepositPrepareResponse,
-  hydratePreparedEarnUsdcDeposit,
-} from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
+import { type EarnDepositPrepareResponse } from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
 import {
   type EarnPolicyPrepareResponse,
   hydratePreparedEarnUsdcYieldRoutingPolicy,
@@ -134,10 +136,7 @@ import {
   hydratePreparedEarnUsdcCleanup,
   serializePreparedEarnUsdcCleanup,
 } from "@/lib/yield-optimization/earn-withdraw-cleanup-contracts.shared";
-import {
-  type EarnWithdrawPrepareResponse,
-  hydratePreparedEarnUsdcWithdraw,
-} from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
+import { type EarnWithdrawPrepareResponse } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
 
 import { useSolanaWalletDataClient } from "./use-solana-wallet-data-client";
 import { createTokenMarketMintsSignature } from "./use-wallet-desktop-data";
@@ -2592,7 +2591,7 @@ function mapVaultActivity(
       timestamp: timestamp.time,
       date: timestamp.date,
       icon,
-      rawTimestamp: activity.timestamp ?? undefined,
+      rawTimestampMs: activity.timestamp ?? undefined,
     },
     detail: {
       activity: {
@@ -2603,7 +2602,7 @@ function mapVaultActivity(
         timestamp: timestamp.time,
         date: timestamp.date,
         icon,
-        rawTimestamp: activity.timestamp ?? undefined,
+        rawTimestampMs: activity.timestamp ?? undefined,
       },
       usdValue,
       status: activity.status === "failed" ? "Failed" : "Completed",
@@ -2765,7 +2764,7 @@ function createWalletAdapterBridge(
       }
 
       const signed = await wallet.signTransaction(transaction);
-      earnToast.signed();
+      earnToast.signed(EARN_TOAST_WALLET_SIGN_STAGE);
       return signed;
     },
     ...(wallet.signAllTransactions
@@ -2776,7 +2775,7 @@ function createWalletAdapterBridge(
             transactions: T[]
           ): Promise<T[]> => {
             const signed = await wallet.signAllTransactions!(transactions);
-            earnToast.signed();
+            earnToast.signed(EARN_TOAST_WALLET_SIGN_STAGE);
             return signed;
           },
         }
@@ -2794,7 +2793,7 @@ function createWalletAdapterBridge(
               nextConnection,
               sendOptions
             );
-            earnToast.signed();
+            earnToast.signed(EARN_TOAST_WALLET_SIGN_STAGE);
             return signature;
           },
         }),
@@ -5650,8 +5649,6 @@ export function useSmartAccountSidebarData(
           };
         }
 
-        // threshold-1: read settings to learn the proposal's transactionIndex,
-        // then approve + execute as separate signs.
         const settingsAfterPropose =
           await client.sdk.smartAccounts.queries.fetchSettings(settingsPda);
         const transactionIndex = BigInt(

@@ -1,60 +1,49 @@
 import {
-  SOLANA_USDC_MINT_DEVNET,
-  SOLANA_USDC_MINT_MAINNET,
-  SOLANA_USDT_MINT_MAINNET,
-} from "@/lib/solana/constants";
-
-// Kamino lending-market pubkeys (base58). Ported from `@loyal-labs/loyal-actions`
-// — mobile doesn't depend on that package, so the handful of markets the Earn
-// vault can hold are inlined here. Keep in sync with the web's source of truth
-// `frontend/src/lib/yield-optimization/earn-position-display.ts`.
-const KAMINO_MAIN_MARKET = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF";
-const KAMINO_DEVNET_MAIN_MARKET = "27MKCQo5qP7ijrwWSMKX2Jeb3PhK2NZmHQ9befWVRS4J";
-const KAMINO_FIGURE_MARKET = "CqAoLuqWtavaVE8deBjMKe8ZfSt9ghR6Vb8nfsyabyHA";
-const KAMINO_MAPLE_MARKET = "6WEGfej9B9wjxRs6t4BYpb9iCXd8CpTpJ8fVSNzHCC5y";
-const KAMINO_ONRE_MARKET = "47tfyEG9SsdEnUm9cw5kY9BXngQGqu3LBoop9j5uTAv8";
-const KAMINO_ETHENA_MARKET = "BJnbcRHqvppTyGesLzWASGKnmnF1wq9jZu6ExrjT7wvF";
-const KAMINO_JLP_MARKET = "DxXdAyU3kCjnyggvHmY5nAwg5cRbbmdyX3npfDMjjMek";
-const KAMINO_BITCOIN_MARKET = "GMqmFygF5iSm5nkckYU6tieggFcR42SyjkkhK5rswFRs";
-const KAMINO_SUPERSTATE_OPENING_BELL_MARKET =
-  "CF32kn7AY8X1bW7ZkGcHc4X9ZWTxqKGCJk6QwrQkDcdw";
-const KAMINO_HUMA_MARKET = "52FSGeeokLpgvgAMdqxyt5Hoc2TbUYj5b8yxrEdZ37Vf";
-const KAMINO_SOLSTICE_MARKET = "9Y7uwXgQ68mGqRtZfuFaP4hc4fxeJ7cE9zTtqTxVhfGU";
+  KAMINO_BITCOIN_MARKET,
+  KAMINO_DEVNET_MAIN_MARKET,
+  KAMINO_ETHENA_MARKET,
+  KAMINO_FIGURE_MARKET,
+  KAMINO_HUMA_MARKET,
+  KAMINO_JLP_MARKET,
+  KAMINO_MAIN_MARKET,
+  KAMINO_MAPLE_MARKET,
+  KAMINO_ONRE_MARKET,
+  KAMINO_SOLSTICE_MARKET,
+  KAMINO_SUPERSTATE_OPENING_BELL_MARKET,
+  LoyalCluster,
+  STABLECOIN_MINTS_BY_CLUSTER,
+} from "@loyal-labs/actions";
 
 export type EarnVenueKey = "kamino" | "prime" | "maple" | "onre" | "ethena";
 
 const MARKET_NAMES: Record<string, string> = {
-  [KAMINO_MAIN_MARKET]: "Main Kamino",
-  [KAMINO_DEVNET_MAIN_MARKET]: "Main Kamino",
-  [KAMINO_FIGURE_MARKET]: "Prime Market",
-  [KAMINO_MAPLE_MARKET]: "Maple Market",
-  [KAMINO_ONRE_MARKET]: "OnRe Market",
-  [KAMINO_ETHENA_MARKET]: "Ethena Market",
-  [KAMINO_JLP_MARKET]: "JLP Market",
-  [KAMINO_BITCOIN_MARKET]: "Bitcoin Market",
-  [KAMINO_SUPERSTATE_OPENING_BELL_MARKET]: "Superstate Market",
-  [KAMINO_HUMA_MARKET]: "Huma Market",
-  [KAMINO_SOLSTICE_MARKET]: "Solstice Market",
+  [KAMINO_MAIN_MARKET.toBase58()]: "Main Kamino",
+  [KAMINO_DEVNET_MAIN_MARKET.toBase58()]: "Main Kamino",
+  [KAMINO_FIGURE_MARKET.toBase58()]: "Prime Market",
+  [KAMINO_MAPLE_MARKET.toBase58()]: "Maple Market",
+  [KAMINO_ONRE_MARKET.toBase58()]: "OnRe Market",
+  [KAMINO_ETHENA_MARKET.toBase58()]: "Ethena Market",
+  [KAMINO_JLP_MARKET.toBase58()]: "JLP Market",
+  [KAMINO_BITCOIN_MARKET.toBase58()]: "Bitcoin Market",
+  [KAMINO_SUPERSTATE_OPENING_BELL_MARKET.toBase58()]: "Superstate Market",
+  [KAMINO_HUMA_MARKET.toBase58()]: "Huma Market",
+  [KAMINO_SOLSTICE_MARKET.toBase58()]: "Solstice Market",
 };
 
 const MARKET_VENUES: Record<string, EarnVenueKey> = {
-  [KAMINO_FIGURE_MARKET]: "prime",
-  [KAMINO_MAPLE_MARKET]: "maple",
-  [KAMINO_ONRE_MARKET]: "onre",
-  [KAMINO_ETHENA_MARKET]: "ethena",
+  [KAMINO_FIGURE_MARKET.toBase58()]: "prime",
+  [KAMINO_MAPLE_MARKET.toBase58()]: "maple",
+  [KAMINO_ONRE_MARKET.toBase58()]: "onre",
+  [KAMINO_ETHENA_MARKET.toBase58()]: "ethena",
 };
 
-const MINT_SYMBOLS: Record<string, string> = {
-  [SOLANA_USDC_MINT_MAINNET]: "USDC",
-  [SOLANA_USDC_MINT_DEVNET]: "USDC",
-  [SOLANA_USDT_MINT_MAINNET]: "USDT",
-  // Remaining Earn product stablecoins (canonical mints in
-  // `@loyal-labs/actions`; inlined per this module's convention).
-  CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH: "CASH",
-  "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH": "USDG",
-  "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo": "PYUSD",
-  USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA: "USDS",
-};
+const MINT_SYMBOLS: Record<string, string> = Object.fromEntries(
+  Object.values(LoyalCluster).flatMap((cluster) =>
+    Object.entries(STABLECOIN_MINTS_BY_CLUSTER[cluster]).map(
+      ([symbol, mint]) => [mint.toBase58(), symbol],
+    ),
+  ),
+);
 
 function shortenAddress(address: string): string {
   return address.length <= 10

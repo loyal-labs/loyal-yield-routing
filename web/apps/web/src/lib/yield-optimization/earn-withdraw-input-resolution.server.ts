@@ -330,9 +330,6 @@ export async function resolveEarnUsdcWithdrawInput(args: {
     logTag,
   } = args;
   const settingsPdaKey = new PublicKey(settingsPda);
-  // Policy identity is durable setup metadata. The money position itself is
-  // derived from the live chain snapshot below, so a newly finalized deposit
-  // can be withdrawn before LaserStream has projected its aggregate row.
   let policyResult: Awaited<ReturnType<typeof findActiveYieldRoutePolicyPair>> =
     null;
   for (const delayMs of POLICY_PROJECTION_RETRY_DELAYS_MS) {
@@ -511,7 +508,6 @@ export async function resolveEarnUsdcWithdrawInput(args: {
     settingsPda: settingsPdaKey,
     target: withdrawTarget,
     ...(fullWithdrawalTargets.length > 0 ? { fullWithdrawalTargets } : {}),
-    // Full withdrawal and policy close are intentionally separate phases.
     closePoliciesOnFullWithdrawal: false,
     source:
       selectedSource.type === "idle"

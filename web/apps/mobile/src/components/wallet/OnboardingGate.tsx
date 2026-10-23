@@ -5,6 +5,7 @@ import {
   usePrivy,
 } from "@privy-io/expo";
 import type { User as PrivyUser } from "@privy-io/expo";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { Keypair } from "@solana/web3.js";
 import * as SeedVault from "expo-seed-vault";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,6 +26,7 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { BiometricSetupScreen } from "@/components/wallet/BiometricSetupScreen";
+import { SeedBackupScreen } from "@/components/wallet/SeedBackupScreen";
 import { ImportWalletScreen } from "@/components/wallet/ImportWalletScreen";
 import { OnboardingSlidesScreen } from "@/components/wallet/OnboardingSlidesScreen";
 import {
@@ -51,11 +53,6 @@ import {
   disconnectDeeplinkWallet,
   getInstalledDeeplinkWallets,
 } from "@/lib/wallet/deeplink-signer";
-import {
-  findCloudBackup,
-  restoreCloudBackup,
-  type WalletBackupEnvelope,
-} from "@/lib/wallet/icloud-backup";
 import {
   connectMwaWallet,
   deauthorizeMwaWallet,
@@ -87,7 +84,13 @@ import {
 } from "@/services/observability";
 import { Text, View } from "@/tw";
 
-type Step = OnboardingStartStep | "create" | "login" | "import" | "biometric-setup";
+type Step =
+  | OnboardingStartStep
+  | "create"
+  | "login"
+  | "import"
+  | "seed-backup"
+  | "biometric-setup";
 type TransitionDirection = "forward" | "backward";
 
 type Props = {
@@ -216,7 +219,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     finalizeDeeplinkSigner,
     finalizeVaultSigner,
     finalizePrivySigner,
-    refreshFromStorage,
   } = useWallet();
   const { user: privyUser, logout: privyLogout } = usePrivy();
   const { sendCode, loginWithCode } = useLoginWithEmail();
@@ -294,28 +296,6 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     getInstalledDeeplinkWallets().then(setDeeplinkWallets);
   }, []);
 
-  const [cloudBackup, setCloudBackup] = useState<WalletBackupEnvelope | null>(
-    null,
-  );
-  useEffect(() => {
-    if (mode !== "setup") return;
-    findCloudBackup().then(setCloudBackup);
-  }, [mode]);
-
-  const handleRestoreCloudBackup = useCallback(async () => {
-    if (!cloudBackup) return;
-    setFinalizing(true);
-    try {
-      await restoreCloudBackup(cloudBackup);
-      await refreshFromStorage();
-    } catch (e) {
-      setFinalizing(false);
-      setConnectWalletError(
-        e instanceof Error ? e.message : "Restoring the backup failed",
-      );
-    }
-  }, [cloudBackup, refreshFromStorage]);
-
   useEffect(() => {
     setScreenAnimationsReady(true);
   }, []);
@@ -334,7 +314,7 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
       authFlowRef.current?.observe("challenge");
       setPendingKeypair(keypair);
       setPendingPin(pin);
-      navigateToStep("biometric-setup", "forward");
+      navigateToStep("seed-backup", "forward");
     },
     [navigateToStep],
   );
@@ -675,12 +655,8 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
     content = (
       <WalletSetupOnboardingScreen
         connectMode={connectMode}
-        hasCloudBackup={cloudBackup != null}
         connectWalletPending={connectWalletPending}
         connectWalletError={connectWalletError}
-        onRestoreCloudBackup={() => {
-          void handleRestoreCloudBackup();
-        }}
         onConnectWallet={() => {
           void handleConnectWallet();
         }}
@@ -724,6 +700,15 @@ function PrivyOnboardingGate({ mode = "setup", onReplayDone }: Props) {
           navigateToStep("setup-onboarding", "backward");
         }}
       />
+    );
+  } else if (step === "seed-backup") {
+    content = (
+      pendingKeypair && (
+        <SeedBackupScreen
+          secretKeyHex={bytesToHex(pendingKeypair.secretKey)}
+          onComplete={() => navigateToStep("biometric-setup", "forward")}
+        />
+      )
     );
   } else {
     content = (

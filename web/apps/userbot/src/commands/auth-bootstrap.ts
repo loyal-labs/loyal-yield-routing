@@ -7,7 +7,7 @@ import {
   type UserbotConfig,
 } from "../lib/env";
 import {
-  buildReauthGuidance,
+  authFailureGuidance,
   createBotTokenStartParams,
 } from "../lib/non-interactive-auth";
 
@@ -145,13 +145,10 @@ export async function runAuthBootstrapCli(
     await runAuthBootstrap(overrides);
     return 0;
   } catch (error) {
-    let guidance = "Run bun run auth:bootstrap.";
-    try {
-      guidance = buildReauthGuidance(loadConfig(env));
-    } catch {
-      // Keep default guidance when config cannot be loaded.
-    }
-    logger.error(`[userbot] Auth bootstrap failed. ${guidance}`, error);
+    logger.error(
+      `[userbot] Auth bootstrap failed. ${authFailureGuidance(loadConfig, env)}`,
+      error
+    );
     return 1;
   }
 }

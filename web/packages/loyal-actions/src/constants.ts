@@ -210,6 +210,12 @@ export const KAMINO_LEND_PROGRAM_ID = new PublicKey(
 export const KAMINO_DEVNET_LEND_PROGRAM_ID = new PublicKey(
   "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
 );
+export const KAMINO_FARMS_PROGRAM_ID = new PublicKey(
+  "FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr"
+);
+export const SMART_ACCOUNTS_PROGRAM_ID = new PublicKey(
+  "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+);
 export const KAMINO_DEPOSIT_RESERVE_LIQUIDITY_DISCRIMINATOR = [
   216, 224, 191, 27, 204, 151, 102, 175,
 ] as const;

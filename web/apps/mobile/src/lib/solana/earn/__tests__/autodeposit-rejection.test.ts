@@ -36,6 +36,8 @@ jest.mock(
       prepareEarnUsdcAutodepositClose: (...args: unknown[]) =>
         mockPrepareClose(...args),
     }),
+    serializePreparedEarnUsdcAutodepositClose: () => ({ serialized: true }),
+    serializePreparedEarnUsdcAutodepositSetup: jest.fn(),
   }),
   { virtual: true },
 );
@@ -90,11 +92,6 @@ jest.mock("../send-prepared", () => ({
     mockSendPreparedOperation(...args),
   signAndSendPreparedOperations: jest.fn(),
 }));
-jest.mock("../wire", () => ({
-  serializePreparedEarnAutodepositClose: () => ({ serialized: true }),
-  serializePreparedEarnAutodepositSetup: jest.fn(),
-}));
-
 // eslint-disable-next-line import/first
 import {
   executeEarnAutodepositClose,

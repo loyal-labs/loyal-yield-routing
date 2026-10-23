@@ -108,8 +108,7 @@ export interface AlertRelayOptions {
   now?: () => number;
   analyze?: AlertAnalyzer;
   dailyRecapEnabled?: boolean;
-  /** Minutes past UTC midnight at which the daily recap is posted. */
-  dailyRecapAtMinutes?: number;
+  dailyRecapMinutesPastUtcMidnight?: number;
   /**
    * Break the cooldown when volume grows by this factor, so an escalating
    * incident is not invisible for a whole window. `0` disables escalation.
@@ -125,7 +124,7 @@ export interface AlertRelayOptions {
   maxFlushAttempts?: number;
 }
 
-const DEFAULT_DAILY_RECAP_AT_MINUTES = 6 * 60;
+const DEFAULT_DAILY_RECAP_MINUTES_PAST_UTC_MIDNIGHT = 6 * 60;
 const DAY_MS = 86_400_000;
 
 const MAX_TRACKED_SIGNATURES = 20;
@@ -294,9 +293,6 @@ export class AlertRelay {
       return this.withLock(this.eventLocks, key, async () => {
         const existing = this.windows.get(key);
 
-        // Closing is silent now, but it still has to happen before the alert
-        // that reopens the key, or the reopened window would inherit a
-        // cooldown that has already expired.
         if (existing && existing.expiresAt <= now && !existing.deferred) {
           this.closeWindow(existing);
         }
@@ -472,8 +468,6 @@ export class AlertRelay {
       silent: true,
     });
 
-    // Cleared only once Telegram has accepted, so a failed recap is retried on
-    // the next sweep instead of leaving the post-deploy burst unreported.
     this.restartRecapDone = true;
     for (const window of deferred) {
       window.deferred = false;
@@ -484,11 +478,6 @@ export class AlertRelay {
     this.windows.delete(window.key);
   }
 
-  /**
-   * Folds an accepted delivery into the reporting period. Separate from the
-   * window bookkeeping because a delivery whose alert Telegram rejected is not
-   * accepted: it will arrive again, and must be counted then, not twice.
-   */
   private countDelivery(
     payload: ClickStackWebhookPayload,
     analysis: AlertAnalysis,
@@ -503,7 +492,10 @@ export class AlertRelay {
   }
 
   private recapAtMinutes(): number {
-    return this.options.dailyRecapAtMinutes ?? DEFAULT_DAILY_RECAP_AT_MINUTES;
+    return (
+      this.options.dailyRecapMinutesPastUtcMidnight ??
+      DEFAULT_DAILY_RECAP_MINUTES_PAST_UTC_MIDNIGHT
+    );
   }
 
   private async flushDailyRecap(now: number): Promise<void> {
@@ -519,9 +511,6 @@ export class AlertRelay {
         return;
       }
 
-      // Closing the period is synchronous, so a delivery arriving while the
-      // recap is in flight is counted against the next period instead of
-      // being dropped when the tally is replaced.
       const tally = this.daily;
       const until = this.nextRecapAt;
       this.daily = emptyTally(until);
@@ -1002,7 +991,7 @@ function summarize(window: AlertWindow): WindowSummary {
   };
 }
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 
 export interface PersistedWindow {
   key: string;
@@ -1013,10 +1002,8 @@ export interface PersistedWindow {
   lastEventAt: number;
   eventCount: number;
   openingEventCount: number;
-  /** Optional only for snapshots written before evaluation deduplication. */
-  evaluationCounts?: [string, number][];
-  /** Optional only for snapshots written before evaluation deduplication. */
-  peakEvaluationEventCount?: number;
+  evaluationCounts: [string, number][];
+  peakEvaluationEventCount: number;
   suppressedAlerts: number;
   sampledRows: number;
   signatures: (SignatureState & { key: string })[];
@@ -1134,9 +1121,7 @@ function deserializeWindow(saved: PersistedWindow): AlertWindow {
     uniqueValues.set(label, new Set(values));
   }
 
-  const evaluationCounts = new Map<string, number>(
-    saved.evaluationCounts ?? [[evaluationKey(saved.payload), saved.eventCount]]
-  );
+  const evaluationCounts = new Map<string, number>(saved.evaluationCounts);
 
   return {
     key: saved.key,
@@ -1148,8 +1133,7 @@ function deserializeWindow(saved: PersistedWindow): AlertWindow {
     eventCount: saved.eventCount,
     openingEventCount: saved.openingEventCount,
     evaluationCounts,
-    peakEvaluationEventCount:
-      saved.peakEvaluationEventCount ?? Math.max(saved.openingEventCount, 1),
+    peakEvaluationEventCount: saved.peakEvaluationEventCount,
     suppressedAlerts: saved.suppressedAlerts,
     sampledRows: saved.sampledRows,
     signatures,

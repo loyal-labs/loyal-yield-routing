@@ -1,6 +1,10 @@
 import { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "@loyal-labs/shared";
 import { normalizeLoyalCluster } from "@loyal-labs/actions";
-import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
+import {
+  createSmartAccountVaultsClient,
+  serializePreparedEarnUsdcAutodepositClose,
+  serializePreparedEarnUsdcAutodepositSetup,
+} from "@loyal-labs/smart-account-vaults";
 import { PublicKey } from "@solana/web3.js";
 
 import { track } from "@/lib/analytics/analytics";
@@ -33,10 +37,6 @@ import {
   signAndSendPreparedOperation,
   signAndSendPreparedOperations,
 } from "./send-prepared";
-import {
-  serializePreparedEarnAutodepositClose,
-  serializePreparedEarnAutodepositSetup,
-} from "./wire";
 
 const USDC_DECIMALS = 6;
 const DEFAULT_AMOUNT_PER_PERIOD_RAW = (
@@ -286,7 +286,7 @@ async function runEarnAutodepositSetup(
           (auth) =>
             confirmEarnAutodepositSetup({
               auth,
-              preparedSetup: serializePreparedEarnAutodepositSetup(stage),
+              preparedSetup: serializePreparedEarnUsdcAutodepositSetup(stage),
               setupSignature: sent[i].signature,
               confirmedSlot: sent[i].confirmedSlot,
               walletBalanceFloorRaw,
@@ -524,7 +524,7 @@ async function runEarnAutodepositClose(
             confirmEarnAutodepositClose({
               auth: retryAuth,
               preparedClose:
-                serializePreparedEarnAutodepositClose(preparedClose),
+                serializePreparedEarnUsdcAutodepositClose(preparedClose),
               closeSignature: sent.signature,
               confirmedSlot: sent.confirmedSlot,
             }),

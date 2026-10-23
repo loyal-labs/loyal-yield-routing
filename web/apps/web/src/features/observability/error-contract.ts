@@ -1,4 +1,16 @@
 import {
+  isCanonicalUuidV4,
+  MAX_ERROR_MESSAGE_LENGTH,
+  MAX_ERROR_NAME_LENGTH,
+  MAX_ERROR_STACK_LENGTH,
+  MOBILE_DEVICE_PLATFORMS,
+  MOBILE_ERROR_OPERATIONS,
+  type MobileDevicePlatform,
+  type MobileErrorEnvelope,
+  type MobileErrorOperation,
+} from "@loyal-labs/shared";
+
+import {
   type BrowserChunkDiagnostics,
   isBrowserChunkUrlFromOrigin,
   isBrowserClientBuildId,
@@ -10,9 +22,6 @@ export const OBSERVABILITY_ERROR_ENDPOINT = "/api/observability/errors";
 
 export const MAX_OBSERVABILITY_REQUEST_BYTES = 16 * 1024;
 
-const MAX_ERROR_NAME_LENGTH = 80;
-const MAX_ERROR_MESSAGE_LENGTH = 512;
-const MAX_ERROR_STACK_LENGTH = 4096;
 const MAX_PATHNAME_LENGTH = 256;
 const MAX_RAW_FIELD_LENGTH = 12 * 1024;
 const MAX_EVENT_AGE_MS = 60 * 60 * 1000;
@@ -73,21 +82,12 @@ const EXTENSION_FRAME_PATTERN =
   /\b(?:chrome|moz|safari-web|safari|ms-browser)-extension:\/\//i;
 const FIRST_PARTY_FRAME_PATTERN = /\bhttps?:\/\//i;
 
-export const MOBILE_ERROR_OPERATIONS = [
-  "mobile.global_error",
-  "mobile.fatal_error",
-  "mobile.unhandled_rejection",
-] as const;
-
-export type MobileErrorOperation = (typeof MOBILE_ERROR_OPERATIONS)[number];
-
-// Same vocabulary as the metrics contract's `platform`; a device identity is
-// useless without knowing which OS fleet it belongs to (ASK-2097).
-export const MOBILE_DEVICE_PLATFORMS = ["android", "ios"] as const;
-export type MobileDevicePlatform = (typeof MOBILE_DEVICE_PLATFORMS)[number];
-
-const DEVICE_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export { MOBILE_DEVICE_PLATFORMS, MOBILE_ERROR_OPERATIONS };
+export type {
+  MobileDevicePlatform,
+  MobileErrorEnvelope,
+  MobileErrorOperation,
+};
 
 export type ServerErrorOperation = "next.request.error";
 
@@ -110,27 +110,6 @@ export type BrowserErrorEnvelope = {
 export type ParseBrowserErrorEnvelopeOptions = {
   expectedChunkOrigin: string;
   now?: number;
-};
-
-// Mobile envelopes carry their own release/environment: the app fleet mixes
-// binary versions and OTA updates, so the server's Vercel release would be
-// meaningless for them.
-export type MobileErrorEnvelope = {
-  /**
-   * Stable per-install UUID, the join key for a device's whole telemetry
-   * trail across sessions and wallets (ASK-2097). Optional: older clients
-   * predate it.
-   */
-  deviceId?: string;
-  devicePlatform?: MobileDevicePlatform;
-  environment: string;
-  message: string;
-  name: string;
-  operation: MobileErrorOperation;
-  pathname: string;
-  release: string;
-  stack?: string;
-  timestamp: string;
 };
 
 export type NormalizedErrorEvent = {
@@ -586,11 +565,7 @@ export function parseMobileErrorEnvelope(
   if (!isAllowedMobileOperation(record.operation)) {
     throw new InvalidObservabilityEnvelopeError();
   }
-  if (
-    record.deviceId !== undefined &&
-    (typeof record.deviceId !== "string" ||
-      !DEVICE_ID_PATTERN.test(record.deviceId))
-  ) {
+  if (record.deviceId !== undefined && !isCanonicalUuidV4(record.deviceId)) {
     throw new InvalidObservabilityEnvelopeError();
   }
   if (

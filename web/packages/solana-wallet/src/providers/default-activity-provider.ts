@@ -16,6 +16,10 @@ import type {
   WalletDataLogger,
 } from "../types";
 
+const SIGNATURE_OVERFETCH_FACTOR = 2;
+const MIN_SIGNATURE_BATCH_SIZE = 30;
+const MAX_SIGNATURE_PAGES = 3;
+
 export function createRpcActivityProvider(args: {
   rpcEndpoint: string;
   websocketEndpoint: string;
@@ -67,16 +71,16 @@ export function createRpcActivityProvider(args: {
   ): Promise<ActivityPage> => {
     const connection = getConnection();
     const desiredCount = options.limit ?? 10;
-    // Fetch more signatures per RPC call to account for filtered-out noise.
-    // Keep batch size moderate to avoid 429 rate limits from the RPC.
-    const batchSize = Math.max(desiredCount * 2, 30);
-    const maxPages = 3;
+    const batchSize = Math.max(
+      desiredCount * SIGNATURE_OVERFETCH_FACTOR,
+      MIN_SIGNATURE_BATCH_SIZE
+    );
 
     const activities: WalletActivity[] = [];
     let cursor = options.before;
     let lastSignature: string | undefined;
 
-    for (let page = 0; page < maxPages; page += 1) {
+    for (let page = 0; page < MAX_SIGNATURE_PAGES; page += 1) {
       const signatures = await connection.getSignaturesForAddress(owner, {
         limit: batchSize,
         before: cursor,

@@ -194,7 +194,7 @@ export function FaceliftSidebar({
       void loadActivity();
     }
   }, [data.walletAddress, loadActivity]);
-  const latestActivityAt = data.allActivityRows[0]?.rawTimestamp ?? 0;
+  const latestActivityAt = data.allActivityRows[0]?.rawTimestampMs ?? 0;
   const activitySeenKey = data.walletAddress
     ? `loyal:activity-seen:${data.walletAddress}`
     : null;

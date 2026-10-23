@@ -46,7 +46,13 @@ const DOG_BODY = "M147 686L0 343H441V0L637 343L686 0L980 784L147 686Z";
 
 const PUPIL_CX = 539;
 const PUPIL_CY = 488;
-const MAX_OFFSET = 37; // ~6px scaled up (6 * 980/160)
+const DOG_VIEWBOX_WIDTH = 980;
+const DOG_VIEWBOX_HEIGHT = 784;
+const DOG_WIDTH_PX = 160;
+const PUPIL_MAX_OFFSET_PX = 6;
+const MAX_OFFSET = Math.round(
+  PUPIL_MAX_OFFSET_PX * (DOG_VIEWBOX_WIDTH / DOG_WIDTH_PX)
+);
 
 const WHITE_MAIN =
   "M542.333 423.938C623.408 428.186 686.147 488.592 682.464 558.856L388.867 543.47C392.549 473.205 461.259 419.689 542.333 423.938Z";
@@ -103,7 +109,7 @@ type DogMood = "main" | "upset" | "scared" | "huh" | "excited" | "cry" | "nice";
 const IDLE_TIMEOUT = 5000;
 const REACTION_DURATION = 2000;
 const SCARED_CLICK_THRESHOLD = 3;
-const MORPH_DURATION = 0.4; // seconds
+const MORPH_DURATION_SECONDS = 0.4;
 
 const WHITES: Record<DogMood, string> = {
   main: WHITE_MAIN,
@@ -146,7 +152,7 @@ function useMorphPath(paths: Record<DogMood, string>, mood: DogMood) {
       const tick = (now: number) => {
         if (cancelled) return;
         const t = Math.min(
-          (now - startRef.current) / (MORPH_DURATION * 1000),
+          (now - startRef.current) / (MORPH_DURATION_SECONDS * 1000),
           1
         );
         const eased = t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
@@ -195,8 +201,8 @@ export function DogWithMood({
       if (!svg) return;
 
       const rect = svg.getBoundingClientRect();
-      const scaleX = 980 / rect.width;
-      const scaleY = 784 / rect.height;
+      const scaleX = DOG_VIEWBOX_WIDTH / rect.width;
+      const scaleY = DOG_VIEWBOX_HEIGHT / rect.height;
       const mx = (e.clientX - rect.left) * scaleX;
       const my = (e.clientY - rect.top) * scaleY;
       const dx = mx - PUPIL_CX;
@@ -338,9 +344,9 @@ export function DogWithMood({
   return (
     <svg
       ref={svgRef}
-      width="160"
+      width={DOG_WIDTH_PX}
       height="128"
-      viewBox="0 0 980 784"
+      viewBox={`0 0 ${DOG_VIEWBOX_WIDTH} ${DOG_VIEWBOX_HEIGHT}`}
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       onClick={handleDogClick}

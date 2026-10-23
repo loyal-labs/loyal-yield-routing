@@ -40,8 +40,8 @@ const SOURCE_ASSETS = EVM_DEPOSIT_CHAINS.flatMap((chain) =>
 export function buildEvmDepositRequest(
   walletId: string,
   appId: string,
-  /** Unix ms; must be identical when signing and when sending. */
-  requestExpiry: number
+  /** Must be identical when signing and when sending. */
+  requestExpiryUnixMs: number
 ) {
   return {
     version: 1 as const,
@@ -54,7 +54,7 @@ export function buildEvmDepositRequest(
     },
     headers: {
       "privy-app-id": appId,
-      "privy-request-expiry": String(requestExpiry),
+      "privy-request-expiry": String(requestExpiryUnixMs),
     },
   };
 }

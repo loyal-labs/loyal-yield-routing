@@ -6,9 +6,14 @@
 // The glob and the parsing live in blog-posts.ts, reached only through the
 // dynamic import below: the entry chunk is downloaded on every page, so the
 // post bodies must stay in one lazy chunk that the blog pages pull.
+import {
+  BLOG_POSTS_PER_PAGE,
+  toBlogPageResult,
+  toBlogPostMeta,
+} from "@/features/blog/blog-pagination";
 import type { BlogPageResult, BlogPost, BlogPostFull } from "@/features/blog/types";
 
-export const BLOG_POSTS_PER_PAGE = 9;
+export { BLOG_POSTS_PER_PAGE };
 
 let allPostsPromise: Promise<BlogPostFull[]> | undefined;
 
@@ -16,35 +21,12 @@ function loadAllPosts(): Promise<BlogPostFull[]> {
   return (allPostsPromise ??= import("./blog-posts").then((m) => m.allPosts));
 }
 
-function toMeta(post: BlogPostFull): BlogPost {
-  return {
-    slug: post.slug,
-    title: post.title,
-    date: post.date,
-    updated: post.updated,
-    hero: post.hero,
-    description: post.description,
-    author: post.author,
-    readingTime: post.readingTime,
-  };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
 export async function getBlogPosts({
   page = 1,
   perPage = BLOG_POSTS_PER_PAGE,
 }: { page?: number; perPage?: number } = {}): Promise<BlogPageResult> {
   const allPosts = await loadAllPosts();
-  const total = allPosts.length;
-  const totalPages = Math.max(1, Math.ceil(total / perPage));
-  const safePage = clamp(Math.trunc(page) || 1, 1, totalPages);
-  const start = (safePage - 1) * perPage;
-  const posts = allPosts.slice(start, start + perPage).map(toMeta);
-
-  return { posts, page: safePage, perPage, total, totalPages };
+  return toBlogPageResult(allPosts, { page, perPage });
 }
 
 export async function getBlogPost(slug: string): Promise<BlogPostFull | null> {
@@ -60,7 +42,7 @@ export async function getMoreArticles(
   return allPosts
     .filter((post) => post.slug !== slug)
     .slice(0, count)
-    .map(toMeta);
+    .map(toBlogPostMeta);
 }
 
 export async function getAllBlogSlugs(): Promise<string[]> {
@@ -70,5 +52,5 @@ export async function getAllBlogSlugs(): Promise<string[]> {
 
 export async function getAllBlogPosts(): Promise<BlogPost[]> {
   const allPosts = await loadAllPosts();
-  return allPosts.map(toMeta);
+  return allPosts.map(toBlogPostMeta);
 }

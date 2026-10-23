@@ -8,22 +8,23 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 
-import type {
-  EarnAutodepositScheduledSweep,
-  EarnTransactionItem,
-} from "@/lib/solana/earn/earn-api";
+import {
+  formatLoadedScheduledSweepAvailableIn,
+  getEarnTransactionRowLabel,
+  getLoadedScheduledSweepExecuteNowAvailableAtMs,
+  isScheduledSweepExecuting,
+  type LoadedEarnAutodepositScheduledSweep,
+} from "@loyal-labs/shared";
+
+import type { EarnTransactionItem } from "@/lib/solana/earn/earn-api";
 import {
   formatScheduledSweepAmount,
-  formatScheduledSweepAvailableIn,
   formatScheduledSweepTime,
-  getScheduledSweepExecuteNowAvailableAtMs,
   getScheduledSweepStatusLabels,
-  isScheduledSweepAwaitingExecution,
 } from "@/lib/solana/earn/earn-scheduled-sweep";
 import {
   formatEarnRowTime,
   getEarnTransactionAmountColor,
-  getEarnTransactionRowLabel,
   groupEarnTransactions,
 } from "@/lib/solana/earn/earn-tx-display";
 import { Text, View } from "@/tw";
@@ -88,18 +89,15 @@ function EarnScheduledRow({
   forceExecuting = false,
   progressState = null,
 }: {
-  sweep: EarnAutodepositScheduledSweep;
+  sweep: LoadedEarnAutodepositScheduledSweep;
   isExecuting: boolean;
   onExecute: () => void;
   forceExecuting?: boolean;
   progressState?: string | null;
 }) {
-  const awaiting = forceExecuting || isScheduledSweepAwaitingExecution(sweep);
+  const awaiting = forceExecuting || isScheduledSweepExecuting(sweep);
 
-  // "Available in Xs" countdown until the delegation window opens (mirrors the
-  // web button). Ticks once a second only while a future availableAt exists,
-  // and stops itself once the window opens.
-  const availableAtMs = getScheduledSweepExecuteNowAvailableAtMs(sweep);
+  const availableAtMs = getLoadedScheduledSweepExecuteNowAvailableAtMs(sweep);
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     if (availableAtMs === null || availableAtMs <= Date.now()) {
@@ -116,11 +114,9 @@ function EarnScheduledRow({
   const availableInLabel =
     availableAtMs === null
       ? null
-      : formatScheduledSweepAvailableIn(availableAtMs, nowMs);
+      : formatLoadedScheduledSweepAvailableIn(availableAtMs, nowMs);
 
   const statusLabels = getScheduledSweepStatusLabels(sweep, progressState);
-  // "Try again" stays tappable; active/complete progress states lock the
-  // button like the web (isProgressActive/isProgressComplete).
   const progressLocked =
     progressState === "requested" ||
     progressState === "selected" ||

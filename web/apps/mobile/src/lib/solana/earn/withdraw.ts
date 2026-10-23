@@ -1,6 +1,8 @@
 import { normalizeLoyalCluster } from "@loyal-labs/actions";
 import {
   createSmartAccountVaultsClient,
+  hydratePreparedOperation,
+  serializePreparedEarnUsdcWithdraw,
   type SmartAccountEarnUsdcCleanupInput,
   type SmartAccountEarnUsdcWithdrawInput,
 } from "@loyal-labs/smart-account-vaults";
@@ -35,12 +37,10 @@ import {
   type WirePreparedEarnWithdraw,
 } from "./earn-api";
 import { signEarnAuth, withEarnAuth } from "./earn-auth";
-import { signAndSendPreparedOperations } from "./send-prepared";
 import {
-  hydratePreparedOperation,
-  serializePreparedEarnUsdcWithdraw,
+  signAndSendPreparedOperations,
   type HydratedPreparedOperation,
-} from "./wire";
+} from "./send-prepared";
 
 const USDC_DECIMALS = 6;
 // The wallet fee-pays every withdrawal transaction itself. Observed prod cost
@@ -97,10 +97,7 @@ function hydrateEarnWithdrawInput(
                   id: wire.source.id,
                   mint: new PublicKey(wire.source.mint),
                   tokenAccount: new PublicKey(wire.source.tokenAccount),
-                  tokenProgramId: wireTokenProgram(
-                    wire.source.tokenProgramId,
-                    wire.source.mint,
-                  ),
+                  tokenProgramId: new PublicKey(wire.source.tokenProgramId),
                   type: "idle" as const,
                 }
               : {
@@ -531,7 +528,7 @@ async function runEarnWithdraw(
 
   let context = await fetchContext();
 
-  for (let round = 0; context?.withdrawInput.autodepositClose; round++) {
+  for (let round = 0; context.withdrawInput.autodepositClose; round++) {
     if (round >= MAX_WITHDRAW_AUTODEPOSIT_CLOSES) {
       throw new Error(
         "Couldn't remove the Autodeposit tied to this position. Delete the Autodeposit and try again.",
@@ -553,207 +550,175 @@ async function runEarnWithdraw(
     context = await fetchContext();
   }
 
-  if (context) {
-    const client = createSmartAccountVaultsClient({
-      connection: getConnection(),
-      programId: new PublicKey(context.programId),
-    });
-    const needsSeparateCleanup = context.withdrawInput.mode === "full";
-    const withdrawInput = hydrateEarnWithdrawInput(
-      context,
-      args.signer.publicKey,
+  const client = createSmartAccountVaultsClient({
+    connection: getConnection(),
+    programId: new PublicKey(context.programId),
+  });
+  const needsSeparateCleanup = context.withdrawInput.mode === "full";
+  const withdrawInput = hydrateEarnWithdrawInput(
+    context,
+    args.signer.publicKey,
+  );
+  let operations: HydratedPreparedOperation[];
+  let hasSteps: boolean;
+  let wirePreparedWithdraw: WirePreparedEarnWithdraw;
+  try {
+    const preparedWithdraw = await withConnectionRetry(
+      "device prepare",
+      WITHDRAW_NETWORK_MESSAGE,
+      () =>
+        client.prepareEarnUsdcWithdraw({
+          ...withdrawInput,
+          closePoliciesOnFullWithdrawal: false,
+        }),
     );
-    let operations: HydratedPreparedOperation[];
-    let hasSteps: boolean;
-    let wirePreparedWithdraw: WirePreparedEarnWithdraw;
-    try {
-      const preparedWithdraw = await withConnectionRetry(
-        "device prepare",
-        WITHDRAW_NETWORK_MESSAGE,
-        () =>
-          client.prepareEarnUsdcWithdraw({
-            ...withdrawInput,
-            closePoliciesOnFullWithdrawal: false,
-          }),
-      );
-      hasSteps = preparedWithdraw.withdrawSteps.length > 0;
-      operations = hasSteps
-        ? preparedWithdraw.withdrawSteps.map((step) => step.prepared)
-        : [preparedWithdraw.prepared];
-      wirePreparedWithdraw =
-        serializePreparedEarnUsdcWithdraw(preparedWithdraw);
-      flow.observe("prepare");
-    } catch (error) {
-      if (!isRetryExhaustion(error)) {
-        flow.failFrom("prepare", error, prepareSubstage("device_prepare"));
-        throw error;
-      }
-      console.warn(
-        "[earn-withdraw] device prepare exhausted; recovering via server prepare",
-        { errorDetail: error.detail },
-      );
-      const serverPrepared = await serverPrepareWithdraw(
-        {
-          signer: args.signer,
-          amountRaw,
-          mode: args.mode,
-          source: args.source,
-          prepareAuth,
-        },
-        flow,
-      );
-      const steps =
-        serverPrepared.withdrawSteps && serverPrepared.withdrawSteps.length > 0
-          ? serverPrepared.withdrawSteps
-          : null;
-      hasSteps = steps !== null;
-      operations = (steps ?? [{ prepared: serverPrepared.prepared }]).map(
-        (step) => hydratePreparedOperation(step.prepared),
-      );
-      wirePreparedWithdraw = serverPrepared;
-      flow.observe("prepare", {
-        ...prepareSubstage("server_prepare"),
-        ...(error.detail !== undefined ? { errorDetail: error.detail } : {}),
-      });
+    hasSteps = preparedWithdraw.withdrawSteps.length > 0;
+    operations = hasSteps
+      ? preparedWithdraw.withdrawSteps.map((step) => step.prepared)
+      : [preparedWithdraw.prepared];
+    wirePreparedWithdraw =
+      serializePreparedEarnUsdcWithdraw(preparedWithdraw);
+    flow.observe("prepare");
+  } catch (error) {
+    if (!isRetryExhaustion(error)) {
+      flow.failFrom("prepare", error, prepareSubstage("device_prepare"));
+      throw error;
     }
-    const withdrawResult = await signSendAndConfirmWithdraw({
-      signer: args.signer,
-      prepareAuth,
-      operations,
-      hasSteps,
-      wirePreparedWithdraw,
-      flow,
-    });
-    if (!needsSeparateCleanup) {
-      flow.complete("ui_commit");
-      return {
-        withdrawalSignatures: withdrawResult.withdrawalSignatures,
-      };
-    }
-
-    const minContextSlot = withdrawResult.withdrawalConfirmedSlots.reduce(
-      (latest, slot) => (BigInt(slot) > BigInt(latest) ? slot : latest),
+    console.warn(
+      "[earn-withdraw] device prepare exhausted; recovering via server prepare",
+      { errorDetail: error.detail },
     );
-    let cleanupSignature: string | undefined;
-    try {
-      const cleanupContext = await fetchCleanupContextWithRetry({
-        flowId: flow.flowId,
+    const serverPrepared = await serverPrepareWithdraw(
+      {
         signer: args.signer,
+        amountRaw,
+        mode: args.mode,
+        source: args.source,
         prepareAuth,
-        minContextSlot,
-      });
-      flow.observe("full_exit_verify");
-      const cleanupClient = createSmartAccountVaultsClient({
-        connection: getConnection(),
-        programId: new PublicKey(cleanupContext.programId),
-      });
-      const preparedCleanup = await withConnectionRetry(
-        "device cleanup prepare",
-        WITHDRAW_NETWORK_MESSAGE,
-        () =>
-          cleanupClient.prepareEarnUsdcCleanup(
-            hydrateEarnWithdrawCleanupInput(
-              cleanupContext,
-              args.signer.publicKey,
-            ),
-          ),
-      );
-      flow.observe("cleanup_prepare", { cleanupRequired: true });
-      const [cleanupResult] = await signAndSendPreparedOperations({
-        connection: getConnection(),
-        signer: args.signer,
-        operations: [preparedCleanup.prepared],
-      });
-      flow.observe("cleanup_wallet_submit_confirm", {
-        chainState: "confirmed",
-        cleanupRequired: true,
-      });
-      cleanupSignature = cleanupResult?.signature;
-      if (cleanupResult) {
-        try {
-          await retryEarnApiCall({
-            attempts: CLEANUP_CONFIRM_ATTEMPTS,
-            delayMs: CLEANUP_CONFIRM_RETRY_DELAY_MS,
-            retryableCodes: RETRYABLE_CLEANUP_CONFIRM_CODES,
-            run: () =>
-              withEarnAuth(
-                args.signer,
-                prepareAuth,
-                "earn-withdraw-confirm",
-                (auth) =>
-                  confirmEarnWithdrawCleanup({
-                    auth,
-                    cleanupSignature: cleanupResult.signature,
-                    confirmedSlot: cleanupResult.confirmedSlot,
-                  }),
-              ),
-          });
-          flow.observe("cleanup_backend_confirm", {
-            chainState: "confirmed",
-            cleanupRequired: true,
-            persistenceState: "recorded",
-          });
-        } catch (error) {
-          flow.observe("cleanup_backend_confirm", {
-            chainState: "confirmed",
-            cleanupRequired: true,
-            errorCode: "backend_confirmation_failed",
-            persistenceState: "failed",
-            recoveryRequired: true,
-          });
-          console.warn(
-            "[earn-withdraw] cleanup confirm failed; backend will reconcile",
-            error,
-          );
-        }
-      }
-      flow.observe("cleanup", { cleanupRequired: true });
-    } catch (error) {
-      flow.observe("cleanup", {
-        cleanupRequired: true,
-        errorCode: mapLifecycleErrorCode(error),
-      });
-      console.warn("[earn-withdraw] cleanup skipped after landed withdrawal", {
-        errorMessage: error instanceof Error ? error.message : String(error),
-        errorName: error instanceof Error ? error.name : typeof error,
-        minContextSlot,
-        withdrawalSignatures: withdrawResult.withdrawalSignatures,
-      });
-    }
+      },
+      flow,
+    );
+    const steps =
+      serverPrepared.withdrawSteps && serverPrepared.withdrawSteps.length > 0
+        ? serverPrepared.withdrawSteps
+        : null;
+    hasSteps = steps !== null;
+    operations = (steps ?? [{ prepared: serverPrepared.prepared }]).map(
+      (step) => hydratePreparedOperation(step.prepared),
+    );
+    wirePreparedWithdraw = serverPrepared;
+    flow.observe("prepare", {
+      ...prepareSubstage("server_prepare"),
+      ...(error.detail !== undefined ? { errorDetail: error.detail } : {}),
+    });
+  }
+  const withdrawResult = await signSendAndConfirmWithdraw({
+    signer: args.signer,
+    prepareAuth,
+    operations,
+    hasSteps,
+    wirePreparedWithdraw,
+    flow,
+  });
+  if (!needsSeparateCleanup) {
     flow.complete("ui_commit");
     return {
-      ...(cleanupSignature !== undefined ? { cleanupSignature } : {}),
       withdrawalSignatures: withdrawResult.withdrawalSignatures,
     };
   }
 
-  // Backend predates `prepare-context` — legacy server-side prepare.
-  const preparedWithdraw = await serverPrepareWithdraw(
-    {
-      signer: args.signer,
-      amountRaw,
-      mode: args.mode,
-      source: args.source,
-      prepareAuth,
-    },
-    flow,
+  const minContextSlot = withdrawResult.withdrawalConfirmedSlots.reduce(
+    (latest, slot) => (BigInt(slot) > BigInt(latest) ? slot : latest),
   );
-
-  flow.observe("prepare");
-  const steps =
-    preparedWithdraw.withdrawSteps && preparedWithdraw.withdrawSteps.length > 0
-      ? preparedWithdraw.withdrawSteps
-      : null;
-  const withdrawResult = await signSendAndConfirmWithdraw({
-    signer: args.signer,
-    prepareAuth,
-    operations: (steps ?? [{ prepared: preparedWithdraw.prepared }]).map(
-      (step) => hydratePreparedOperation(step.prepared),
-    ),
-    hasSteps: steps !== null,
-    wirePreparedWithdraw: preparedWithdraw,
-    flow,
-  });
+  let cleanupSignature: string | undefined;
+  try {
+    const cleanupContext = await fetchCleanupContextWithRetry({
+      flowId: flow.flowId,
+      signer: args.signer,
+      prepareAuth,
+      minContextSlot,
+    });
+    flow.observe("full_exit_verify");
+    const cleanupClient = createSmartAccountVaultsClient({
+      connection: getConnection(),
+      programId: new PublicKey(cleanupContext.programId),
+    });
+    const preparedCleanup = await withConnectionRetry(
+      "device cleanup prepare",
+      WITHDRAW_NETWORK_MESSAGE,
+      () =>
+        cleanupClient.prepareEarnUsdcCleanup(
+          hydrateEarnWithdrawCleanupInput(
+            cleanupContext,
+            args.signer.publicKey,
+          ),
+        ),
+    );
+    flow.observe("cleanup_prepare", { cleanupRequired: true });
+    const [cleanupResult] = await signAndSendPreparedOperations({
+      connection: getConnection(),
+      signer: args.signer,
+      operations: [preparedCleanup.prepared],
+    });
+    flow.observe("cleanup_wallet_submit_confirm", {
+      chainState: "confirmed",
+      cleanupRequired: true,
+    });
+    cleanupSignature = cleanupResult?.signature;
+    if (cleanupResult) {
+      try {
+        await retryEarnApiCall({
+          attempts: CLEANUP_CONFIRM_ATTEMPTS,
+          delayMs: CLEANUP_CONFIRM_RETRY_DELAY_MS,
+          retryableCodes: RETRYABLE_CLEANUP_CONFIRM_CODES,
+          run: () =>
+            withEarnAuth(
+              args.signer,
+              prepareAuth,
+              "earn-withdraw-confirm",
+              (auth) =>
+                confirmEarnWithdrawCleanup({
+                  auth,
+                  cleanupSignature: cleanupResult.signature,
+                  confirmedSlot: cleanupResult.confirmedSlot,
+                }),
+            ),
+        });
+        flow.observe("cleanup_backend_confirm", {
+          chainState: "confirmed",
+          cleanupRequired: true,
+          persistenceState: "recorded",
+        });
+      } catch (error) {
+        flow.observe("cleanup_backend_confirm", {
+          chainState: "confirmed",
+          cleanupRequired: true,
+          errorCode: "backend_confirmation_failed",
+          persistenceState: "failed",
+          recoveryRequired: true,
+        });
+        console.warn(
+          "[earn-withdraw] cleanup confirm failed; backend will reconcile",
+          error,
+        );
+      }
+    }
+    flow.observe("cleanup", { cleanupRequired: true });
+  } catch (error) {
+    flow.observe("cleanup", {
+      cleanupRequired: true,
+      errorCode: mapLifecycleErrorCode(error),
+    });
+    console.warn("[earn-withdraw] cleanup skipped after landed withdrawal", {
+      errorMessage: error instanceof Error ? error.message : String(error),
+      errorName: error instanceof Error ? error.name : typeof error,
+      minContextSlot,
+      withdrawalSignatures: withdrawResult.withdrawalSignatures,
+    });
+  }
   flow.complete("ui_commit");
-  return { withdrawalSignatures: withdrawResult.withdrawalSignatures };
+  return {
+    ...(cleanupSignature !== undefined ? { cleanupSignature } : {}),
+    withdrawalSignatures: withdrawResult.withdrawalSignatures,
+  };
 }

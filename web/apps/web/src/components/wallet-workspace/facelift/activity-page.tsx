@@ -41,9 +41,6 @@ import {
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-// Rows revealed per scroll step; the full list is already client-side (the
-// earn-transactions response has no pagination), so "loading on scroll" is
-// windowed rendering over the shared 5-minute cache.
 const PAGE_SIZE = 30;
 
 type ActivityFeedEntry =

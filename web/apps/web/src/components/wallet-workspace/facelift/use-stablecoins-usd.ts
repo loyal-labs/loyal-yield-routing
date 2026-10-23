@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  getStablecoinMintForCluster,
+  resolveLoyalClusterForSolanaEnv,
+  Stablecoin,
+} from "@loyal-labs/actions";
+import { resolveSolanaEnv } from "@loyal-labs/solana-rpc";
 import { useMemo } from "react";
 
 import { usePublicEnv } from "@/contexts/public-env-context";
@@ -9,7 +15,25 @@ import {
   isStablecoinMint,
 } from "@/lib/wallet/stablecoin-classification";
 
-// Same stablecoin bucketing the sidebar's Stablecoins cell uses.
+export function useEarnUsdcSourceUsd(
+  mainUsdcAmount: number | null,
+  positions: WalletDesktopData["positions"],
+  portfolioUsdFor: (position: WalletDesktopData["positions"][number]) => number
+): number {
+  const publicEnv = usePublicEnv();
+  const usdcMint = getStablecoinMintForCluster(
+    resolveLoyalClusterForSolanaEnv(resolveSolanaEnv(publicEnv.solanaEnv)),
+    Stablecoin.USDC
+  ).toBase58();
+  if (mainUsdcAmount !== null) {
+    return mainUsdcAmount;
+  }
+  const position = positions.find(
+    (candidate) => candidate.asset.mint === usdcMint
+  );
+  return position ? portfolioUsdFor(position) : 0;
+}
+
 export function useStablecoinsUsd(
   positions: WalletDesktopData["positions"]
 ): number {

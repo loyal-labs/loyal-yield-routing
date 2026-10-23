@@ -2,7 +2,10 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
-import { earnMaxInviteRedemptions } from "@loyal-labs/db-core/schema";
+import {
+  EARN_MAX_INVITE_CODE_HASHES_ENV,
+  earnMaxInviteRedemptions,
+} from "@loyal-labs/db-core/schema";
 import { eq } from "drizzle-orm";
 
 import { getDatabase } from "@/lib/core/database";
@@ -33,7 +36,7 @@ export function parseInviteCodeHashes(raw: string | undefined): Set<string> {
     const hash = entry.trim().toLowerCase();
     if (!hash) continue;
     if (!HASH_PATTERN.test(hash)) {
-      throw new Error("EARN_MAX_INVITE_CODE_HASHES has a malformed entry");
+      throw new Error(`${EARN_MAX_INVITE_CODE_HASHES_ENV} has a malformed entry`);
     }
     hashes.add(hash);
   }
@@ -58,7 +61,7 @@ export async function redeemInvite(input: {
   const normalized = normalizeInviteCode(input.code);
   if (!normalized) return "invalid_code";
   const codeHash = hashInviteCode(normalized);
-  if (!parseInviteCodeHashes(process.env.EARN_MAX_INVITE_CODE_HASHES).has(codeHash)) {
+  if (!parseInviteCodeHashes(process.env[EARN_MAX_INVITE_CODE_HASHES_ENV]).has(codeHash)) {
     return "invalid_code";
   }
   const db = getDatabase();

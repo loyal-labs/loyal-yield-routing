@@ -260,7 +260,7 @@ func autonomousVaultPoolPrice(pool meteora.LbPair, loyalMintAccount, usdcMintAcc
 	if err != nil {
 		return 0, err
 	}
-	price := meteora.PriceOfBin(pool.ActiveID, pool.BinStep) * math.Pow10(int(loyal.Decimals)-int(usdc.Decimals))
+	price := float64(meteora.PriceOfBin(pool.ActiveID, pool.BinStep)) * math.Pow10(int(loyal.Decimals)-int(usdc.Decimals))
 	if math.IsNaN(price) || math.IsInf(price, 0) || price <= 0 {
 		return 0, errors.New("Meteora returned an invalid active-bin price.")
 	}

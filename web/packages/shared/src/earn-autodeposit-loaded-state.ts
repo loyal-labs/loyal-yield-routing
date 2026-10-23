@@ -1,3 +1,17 @@
+export const EARN_AUTODEPOSIT_PROGRESS_STATES = [
+  "scheduled",
+  "requested",
+  "selected",
+  "pull_confirmed",
+  "completed",
+  "failed",
+  "canceled",
+  "released",
+] as const;
+
+export type EarnAutodepositProgressState =
+  (typeof EARN_AUTODEPOSIT_PROGRESS_STATES)[number];
+
 export type LoadedEarnAutodepositScheduledSweep = {
   classification: string;
   confidence: string;
@@ -56,10 +70,12 @@ type EarnAutodepositDisplayStatus =
   | "pausing"
   | "resuming";
 
-const EXECUTING_SWEEP_STATUSES = new Set(["requested", "selected"]);
+export function isScheduledSweepExecuting(sweep: { status: string }): boolean {
+  return sweep.status === "requested" || sweep.status === "selected";
+}
 
 export function getDisplayableEarnAutodepositScheduledSweeps<
-  T extends { status: string },
+  T extends { status: string }
 >(
   status: EarnAutodepositDisplayStatus,
   scheduledSweeps: readonly T[] | null | undefined
@@ -73,7 +89,7 @@ export function getDisplayableEarnAutodepositScheduledSweeps<
   // so a plain 'scheduled' sibling would double-display the funds. Hide
   // scheduled rows until the execution settles; they return afterward if
   // surplus genuinely remains.
-  return sweeps.some((sweep) => EXECUTING_SWEEP_STATUSES.has(sweep.status))
+  return sweeps.some(isScheduledSweepExecuting)
     ? sweeps.filter((sweep) => sweep.status !== "scheduled")
     : sweeps;
 }

@@ -12,7 +12,7 @@ import { PublicKey } from "@solana/web3.js";
 
 import {
   type CurrentBestApyReserveByStablecoin,
-  DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE,
+  DEFAULT_MIN_DELIBERATE_VENUE_TOTAL_SUPPLY_USD_ESTIMATE,
   getCurrentBestApyReserveByStablecoin,
   getLatestReserveObservationsByReserve,
 } from "@/lib/kamino/timescale-reserve-client.server";
@@ -22,9 +22,6 @@ import {
 } from "./earn-product-mints.shared";
 import type { UserYieldPositionRecord } from "./yield-deposit-repository.server";
 
-// A reserve this small cannot be a deliberate Earn venue — the hidden OnRe
-// USDC reserve that swallowed a user's top-ups (ASK-1764) held ~$17k and
-// later ~$37.
 export type EarnReserveIneligibilityReason =
   | "below_liquidity_floor"
   | "unsampled_reserve";
@@ -136,6 +133,35 @@ export async function findBestSafeEarnReserveTargetWithRetry(args: {
       setTimeout(resolve, RESERVE_SELECTION_RETRY_DELAY_MS)
     );
   }
+}
+
+export async function resolveEarnDepositTarget(args: {
+  activePosition: Pick<
+    UserYieldPositionRecord,
+    "currentLiquidityMint" | "currentMarket" | "currentReserve"
+  > | null;
+  cluster: LoyalCluster;
+  hasActiveRoutePolicy: boolean;
+  liquidityMint: string;
+  logTag: string;
+  productMint: EarnProductAsset;
+}): Promise<EarnUsdcReserveTarget | null> {
+  const existingTarget =
+    args.hasActiveRoutePolicy && args.activePosition
+      ? await resolveEligibleEarnDepositTarget({
+          cluster: args.cluster,
+          liquidityMint: args.liquidityMint,
+          logTag: args.logTag,
+          position: args.activePosition,
+        })
+      : null;
+  return (
+    existingTarget ??
+    (await findBestSafeEarnReserveTargetWithRetry({
+      cluster: args.cluster,
+      productMint: args.productMint,
+    }))
+  );
 }
 
 export function selectBestSafeEarnReserveTarget(args: {
@@ -256,7 +282,8 @@ export async function findEarnReserveTargetIneligibility(args: {
     return "unsampled_reserve";
   }
   if (
-    observation.totalSupplyUsdEstimate <= DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE
+    observation.totalSupplyUsdEstimate <=
+    DEFAULT_MIN_DELIBERATE_VENUE_TOTAL_SUPPLY_USD_ESTIMATE
   ) {
     return "below_liquidity_floor";
   }

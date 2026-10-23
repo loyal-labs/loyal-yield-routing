@@ -55,7 +55,7 @@ export function filterHoldingsByCategory(
 }
 
 // USD valuation for a holding: prefer the precomputed valueUsd, then derive
-// from a spot price. Mirrors the totalPortfolioUsd logic on the wallet screen.
+// from a spot price.
 export function holdingUsdValue(holding: TokenHolding): number | null {
   if (typeof holding.valueUsd === "number" && Number.isFinite(holding.valueUsd)) {
     return holding.valueUsd;

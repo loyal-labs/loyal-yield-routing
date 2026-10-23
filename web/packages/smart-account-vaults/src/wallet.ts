@@ -1,6 +1,6 @@
 import {
   compilePreparedOperation,
-  translateAndThrowAnchorError,
+  translateAnchorError,
 } from "@loyal-labs/loyal-smart-accounts-core";
 import bs58 from "bs58";
 import type { VersionedTransaction } from "@solana/web3.js";
@@ -37,19 +37,22 @@ function translateSimulationLogs(logs: string[]): Error | null {
     new Error("Transaction simulation failed."),
     { logs }
   );
-  try {
-    translateAndThrowAnchorError(placeholder);
-  } catch (error) {
-    // The translator rethrows the placeholder unchanged when the logs carry no
-    // recognizable failure — which is what a clean diagnostic simulation looks
-    // like (e.g. the user rejected in the wallet and the transaction itself is
-    // fine). Surfacing the placeholder there would replace the real error with
-    // a fabricated "Transaction simulation failed.", so keep the original.
-    if (error === placeholder) {
-      return null;
-    }
-    return error instanceof Error ? error : null;
+  const translation = translateAnchorError(placeholder);
+  if (!translation.recognized) {
+    return null;
   }
+  return translation.error instanceof Error ? translation.error : null;
+}
+
+const WALLET_USER_REJECTED_CODE = 4001;
+
+function isUserRejection(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === WALLET_USER_REJECTED_CODE
+  );
 }
 
 async function getSimulationDiagnosticError(args: {
@@ -58,13 +61,7 @@ async function getSimulationDiagnosticError(args: {
   prepared: PreparedOperation;
   transaction: VersionedTransaction;
 }): Promise<Error | null> {
-  // An explicit user denial must not become a failure of a dependent transaction.
-  if (
-    args.error &&
-    typeof args.error === "object" &&
-    "code" in args.error &&
-    args.error.code === 4001
-  ) {
+  if (isUserRejection(args.error)) {
     return null;
   }
   if (typeof args.connection.simulateTransaction !== "function") {
@@ -415,8 +412,6 @@ export async function sendPreparedBatchWithWallet({
   if (sendMode === "sign-and-confirm-each") {
     const signatures: string[] = [];
     for (const [index, operation] of prepared.entries()) {
-      // Fetch a fresh blockhash and request approval only after the preceding
-      // transaction and its confirmation callback have completed.
       const signature = await sendPreparedWithWallet({
         connection,
         wallet,

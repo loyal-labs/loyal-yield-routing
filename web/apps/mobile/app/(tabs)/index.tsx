@@ -20,8 +20,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LogoHeader } from "@/components/LogoHeader";
 import {
-  computeFirstDepositSolShortfall,
   DepositSheet,
+  firstDepositGateSolShortfall,
 } from "@/components/earn/DepositSheet";
 import { getLoyalApyBps } from "@/components/earn/earnForecastModel";
 import { nudgeQuestProgressCheck } from "@/components/quests/QuestCompletionWatcher";
@@ -35,6 +35,7 @@ import { UnshieldSheet } from "@/components/wallet/UnshieldSheet";
 import { shouldShowWalletTopUp } from "@/components/wallet/wallet-screen-helpers";
 import {
   filterHoldingsByCategory,
+  holdingUsdValue,
   sumHoldingsUsd,
 } from "@/features/wallet-categories/model/categorize";
 import {
@@ -181,20 +182,9 @@ export default function WalletScreen() {
     let hasValuation = false;
 
     for (const holding of tokenHoldings) {
-      if (
-        typeof holding.valueUsd === "number" &&
-        Number.isFinite(holding.valueUsd)
-      ) {
-        total += holding.valueUsd;
-        hasValuation = true;
-        continue;
-      }
-      if (
-        typeof holding.priceUsd === "number" &&
-        Number.isFinite(holding.priceUsd) &&
-        holding.priceUsd > 0
-      ) {
-        total += holding.balance * holding.priceUsd;
+      const value = holdingUsdValue(holding);
+      if (value != null) {
+        total += value;
         hasValuation = true;
       }
     }
@@ -238,23 +228,17 @@ export default function WalletScreen() {
     return getLoyalApyBps(forecastSummary);
   }, [earnPosition, forecastSummary]);
 
-  // First-deposit SOL gate: opening the first Earn position costs SOL
-  // (rent/fees), so with no existing position the wallet must hold
-  // FIRST_DEPOSIT_MIN_SOL. Null while the position/balance are loading — the
-  // gate fails open.
-  const firstDepositSolShortfall = useMemo(() => {
-    // A balance alone doesn't prove the cheap top-up path applies: a missing
-    // route-policy pair (post-full-exit orphans) sends even a top-up down
-    // first-time setup with its SOL cost — gate on the policy read too.
-    if (!earnLoaded || (earnUsd > 0 && !earnPolicyMissing)) return null;
-    return computeFirstDepositSolShortfall(
-      solBalanceLamports != null ? solBalanceLamports / 1e9 : null
-    );
-  }, [earnLoaded, earnUsd, earnPolicyMissing, solBalanceLamports]);
+  const firstDepositSolShortfall = useMemo(
+    () =>
+      firstDepositGateSolShortfall({
+        accountLoaded: earnLoaded,
+        hasFundedPosition: earnUsd > 0,
+        routePolicyMissing: earnPolicyMissing,
+        solBalance: solBalanceLamports != null ? solBalanceLamports / 1e9 : null,
+      }),
+    [earnLoaded, earnUsd, earnPolicyMissing, solBalanceLamports]
+  );
 
-  // Wallet stablecoin balances feed the Deposit sheet's coin selector and its
-  // available/insufficient state (token units ≈ dollars for every 6-decimal
-  // Earn product stablecoin).
   const stableBalancesByMint = useMemo(() => {
     const balances: Record<string, number> = {};
     for (const asset of getEarnProductAssets(env.solanaEnv)) {

@@ -835,6 +835,8 @@ export const appUserWallets = pgTable(
 // Earn MAX is invite-only. The valid codes live only as SHA-256 hashes in the
 // EARN_MAX_INVITE_CODE_HASHES env var; a redemption row crosses a code out.
 // Unique on code_hash (one use per code) and wallet (one code per wallet).
+export const EARN_MAX_INVITE_CODE_HASHES_ENV = "EARN_MAX_INVITE_CODE_HASHES";
+
 export const earnMaxInviteRedemptions = pgTable(
   "earn_max_invite_redemptions",
   {
@@ -1027,7 +1029,6 @@ export const appSmartAccountSettingsChangeRequests = pgTable(
 );
 
 /**
- * Active/removed root Settings signer read model used by wallet onboarding.
  * A signer row can be linked to an app user only after wallet auth proves
  * ownership of signerAddress.
  */

@@ -8,7 +8,6 @@ import {
   Bell,
   ChevronRight,
   CircleHelp,
-  Cloud,
   Fingerprint,
   Globe,
   Heart,
@@ -29,11 +28,6 @@ import { PinPadInput } from "@/components/wallet/PinPadInput";
 import { getShowTips, setShowTips } from "@/lib/settings";
 import { mmkv } from "@/lib/storage";
 import { isBiometricAvailable } from "@/lib/wallet/biometrics";
-import {
-  isICloudBackupEnabled,
-  setICloudBackupEnabled,
-} from "@/lib/wallet/icloud-backup";
-import { isICloudSyncSupported } from "@/lib/wallet/keypair-storage";
 import { WALLET_PIN_LENGTH } from "@/lib/wallet/pin";
 import { isWalletUnlocked, useWallet } from "@/lib/wallet/wallet-provider";
 import { Pressable, ScrollView, Text, View } from "@/tw";
@@ -160,7 +154,6 @@ export default function ProfileScreen() {
   );
   const [showTips, setShowTipsState] = useState(getShowTips);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
-  const [icloudBackupOn, setICloudBackupOn] = useState(isICloudBackupEnabled);
   const [showBioPinInput, setShowBioPinInput] = useState(false);
   const [bioPin, setBioPin] = useState("");
   const [bioPinError, setBioPinError] = useState<string | null>(null);
@@ -236,17 +229,6 @@ export default function ProfileScreen() {
     [wallet],
   );
 
-  const handleICloudBackupToggle = useCallback((value: boolean) => {
-    if (process.env.EXPO_OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    setICloudBackupOn(value);
-    setICloudBackupEnabled(value).catch((error) => {
-      console.warn("[settings] iCloud backup toggle failed", error);
-      setICloudBackupOn(!value);
-    });
-  }, []);
-
   const handleBioPinSubmit = useCallback(async () => {
     if (bioPin.length !== WALLET_PIN_LENGTH) {
       setBioPinError("PIN must be 4 digits");
@@ -299,42 +281,23 @@ export default function ProfileScreen() {
     if (process.env.EXPO_OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     }
-    const finishReset = async (keepCloudBackup: boolean) => {
-      await wallet.resetWallet({ keepCloudBackup });
+    const finishReset = async () => {
+      await wallet.resetWallet();
       router.replace("/");
     };
-    if (!isVaultBacked && isICloudSyncSupported() && isICloudBackupEnabled()) {
-      Alert.alert(
-        "Reset Wallet",
-        "Your wallet is backed up to iCloud.\n\n“Remove from this device” keeps the iCloud backup so you can restore this wallet later.\n\n“Delete everywhere” also deletes the iCloud backup. Deletion syncs through iCloud asynchronously, so other devices may keep a copy for a while. Make sure you have backed up your secret key.",
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Remove from this device",
-            onPress: () => void finishReset(true),
-          },
-          {
-            text: "Delete everywhere",
-            style: "destructive",
-            onPress: () => void finishReset(false),
-          },
-        ],
-      );
-      return;
-    }
     Alert.alert(
       "Reset Wallet",
-      `This will permanently delete your wallet from this device${isICloudSyncSupported() ? " and remove any iCloud copies" : ""}. Make sure you have backed up your secret key. This action cannot be undone.`,
+      "This will permanently delete your wallet from this device. Make sure you have backed up your secret key. This action cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Reset",
           style: "destructive",
-          onPress: () => void finishReset(false),
+          onPress: () => void finishReset(),
         },
       ],
     );
-  }, [isVaultBacked, router, wallet]);
+  }, [router, wallet]);
 
   return (
     <View className="flex-1 bg-white">
@@ -458,17 +421,6 @@ export default function ProfileScreen() {
                   </View>
                 )}
               </>
-            )}
-
-            {!isVaultBacked && isICloudSyncSupported() && (
-              <ProfileCell
-                icon={<Cloud size={28} strokeWidth={1.5} color="rgba(0,0,0,0.6)" />}
-                title="iCloud Backup"
-                toggle={{
-                  value: icloudBackupOn,
-                  onValueChange: handleICloudBackupToggle,
-                }}
-              />
             )}
 
             {!isVaultBacked && (

@@ -33,10 +33,8 @@ export async function hasEarnSharePriceHistory(
   return rows.length > 0;
 }
 
-// A sample stays in force until the next one, for at most six hours, so the
-// allocation at the start of the window can come from just before it.
 const HOUR_MS = 60 * 60 * 1000;
-const ALLOCATION_SEED_LOOKBACK_MS = 6 * HOUR_MS;
+const ALLOCATION_SAMPLE_MAX_HOLD_MS = 6 * HOUR_MS;
 
 export async function loadEarnAllocationHistory(
   cluster: string,
@@ -59,7 +57,7 @@ export async function loadEarnAllocationHistory(
         gte(
           earnFleetAllocationsHourly.observedHour,
           new Date(
-            Math.floor((sinceMs - ALLOCATION_SEED_LOOKBACK_MS) / HOUR_MS) *
+            Math.floor((sinceMs - ALLOCATION_SAMPLE_MAX_HOLD_MS) / HOUR_MS) *
               HOUR_MS
           )
         ),

@@ -1,5 +1,10 @@
 import "server-only";
 
+import type {
+  TokenDetailChartPoint,
+  TokenDetailResponse,
+} from "./token-detail.shared";
+
 const COINGECKO_BASE_URL = "https://pro-api.coingecko.com/api/v3";
 const SOLANA_NETWORK = "solana";
 const SOLANA_POOL_PREFIX = "solana_";
@@ -17,54 +22,14 @@ export function isLikelySolanaMint(mint: string): boolean {
   return BASE58_MINT_PATTERN.test(mint);
 }
 
-export type TokenDetailChartPoint = {
-  timestamp: number;
-  priceUsd: number;
-};
-
-// CoinGecko market_chart `days` values the chart range tabs map to.
 export const TOKEN_CHART_DAYS = ["1", "7", "30", "365", "max"] as const;
 
 export type TokenChartDays = (typeof TOKEN_CHART_DAYS)[number];
 
-export type TokenDetailResponse = {
-  mint: string;
-  token: {
-    decimals: number | null;
-    logoUrl: string | null;
-    name: string | null;
-    symbol: string | null;
-  };
-  links: {
-    website: string | null;
-    twitter: string | null;
-    explorer: string | null;
-    discord: string | null;
-    telegram: string | null;
-  };
-  market: {
-    fdvUsd: number | null;
-    holderCount: number | null;
-    liquidityUsd: number | null;
-    marketCapUsd: number | null;
-    priceChange24hPercent: number | null;
-    priceUsd: number | null;
-    updatedAt: string | null;
-    volume24hUsd: number | null;
-  };
-  info: {
-    description: string | null;
-    gtScore: number | null;
-    gtVerified: boolean;
-    mintAuthority: string | null;
-    freezeAuthority: string | null;
-    holderDistribution: {
-      top10: string;
-      rest: string;
-    } | null;
-  };
-  chart: TokenDetailChartPoint[];
-};
+export type {
+  TokenDetailChartPoint,
+  TokenDetailResponse,
+} from "./token-detail.shared";
 
 export type TokenMarketResponse = {
   mint: string;

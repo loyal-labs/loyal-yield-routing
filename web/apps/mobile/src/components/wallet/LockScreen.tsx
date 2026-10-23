@@ -6,13 +6,13 @@ import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { LogoHeader } from "@/components/LogoHeader";
 import { PinPadInput } from "@/components/wallet/PinPadInput";
 import { getBiometricType } from "@/lib/wallet/biometrics";
-import { PinLockedError } from "@/lib/wallet/keypair-storage";
+import { PinLockedError, WalletKeyUnavailableError } from "@/lib/wallet/keypair-storage";
 import { WALLET_PIN_LENGTH } from "@/lib/wallet/pin";
 import { useWallet } from "@/lib/wallet/wallet-provider";
 import { Pressable, Text, View } from "@/tw";
 
 export function LockScreen() {
-  const { unlock, unlockWithBiometrics, biometricEnabled } = useWallet();
+  const { unlock, unlockWithBiometrics, biometricEnabled, resetWallet } = useWallet();
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [unlocking, setUnlocking] = useState(false);
@@ -21,6 +21,7 @@ export function LockScreen() {
   >("none");
   const [biometricFailed, setBiometricFailed] = useState(false);
   const [lockCountdown, setLockCountdown] = useState(0);
+  const [keyUnavailable, setKeyUnavailable] = useState(false);
 
   const didAttemptBiometric = useRef(false);
 
@@ -126,6 +127,8 @@ export function LockScreen() {
         const seconds = Math.ceil(e.remainingMs / 1000);
         setLockCountdown(seconds);
         setError(`Wallet locked for ${seconds}s`);
+      } else if (e instanceof WalletKeyUnavailableError) {
+        setKeyUnavailable(true);
       } else {
         setError("Incorrect PIN");
       }
@@ -161,6 +164,29 @@ export function LockScreen() {
     biometricEnabled && biometricFailed && biometricType !== "none" && !unlocking;
   const isFaceId = biometricType === "faceid";
   const BiometricIcon = isFaceId ? Scan : Fingerprint;
+
+  if (keyUnavailable) {
+    return (
+      <Animated.View entering={FadeIn.duration(200)} style={styles.container}>
+        <LogoHeader />
+        <View className="flex-1 items-center justify-center px-6">
+          <Text style={styles.title}>Key not usable</Text>
+          <Text style={styles.subtitle}>
+            This wallet&apos;s key is not usable on this phone. Import your secret
+            key.
+          </Text>
+          <View style={{ width: "100%", marginTop: 32 }}>
+            <Pressable
+              style={styles.primaryButton}
+              onPress={() => void resetWallet()}
+            >
+              <Text style={styles.primaryButtonText}>Import secret key</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Animated.View>
+    );
+  }
 
   if (unlocking) {
     return (

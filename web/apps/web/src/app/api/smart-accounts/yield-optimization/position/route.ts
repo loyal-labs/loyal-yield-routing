@@ -93,8 +93,6 @@ function serializePosition(
       supplyApyBps: position.initialSupplyApyBps?.toString() ?? null,
     },
     holdings,
-    // Deprecated compatibility field. This is a nominal stablecoin-par total,
-    // never a balance denominated in any one mint.
     currentTotalAmountRaw: currentTotalNominalUsdMicros.toString(),
     currentTotalNominalUsdMicros: currentTotalNominalUsdMicros.toString(),
     principalAmountRaw: position.principalAmountRaw.toString(),

@@ -12,8 +12,8 @@ import {
 } from "@/lib/yield-optimization/earnings-read-service.server";
 import { readCachedEarnEarningsRangeSet } from "@/lib/yield-optimization/earnings-cache.server";
 import type { EarnEarningsUnavailableResponse } from "@/lib/yield-optimization/earnings.shared";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
-const EARN_VAULT_INDEX = 1;
 export const maxDuration = 300;
 
 function jsonError(status: number, code: string, message: string) {

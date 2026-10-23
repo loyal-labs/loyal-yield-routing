@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { usePublicEnv } from "@/contexts/public-env-context";
 
 import { CapWidget } from "./cap-widget";
+import { hasInstalledWalletOption } from "./installed-wallet";
 import { WalletTab } from "./wallet-tab";
 
 export function WalletSignIn({
@@ -16,14 +17,8 @@ export function WalletSignIn({
   const { captcha } = usePublicEnv();
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const captchaSatisfied = captcha.mode === "disabled" || captchaToken !== null;
-  // No installed wallet extension and no connected wallet means sign-in
-  // cannot proceed, so asking for captcha verification is pointless noise
-  // (ASK-2066). Mirrors the `readyState === "Installed"` filter in
-  // use-wallet-proof-auth.
   const { connected, wallets } = useWallet();
-  const hasWalletOption =
-    connected ||
-    wallets.some((candidate) => candidate.readyState === "Installed");
+  const hasWalletOption = hasInstalledWalletOption(connected, wallets);
 
   const [isCollapsed, setIsCollapsed] = useState(false);
   useEffect(() => {

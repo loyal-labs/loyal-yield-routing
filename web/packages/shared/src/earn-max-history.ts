@@ -1,9 +1,9 @@
 import type { EarnMaxActivityItem, EarnMaxPerformancePoint } from "./earn-max";
 const EARNED_WINDOW_DAYS = 30;
+const ROUNDING_DUST_USD = 0.01;
 
-// UTC days: Voltr's daily share prices close at 00:00 UTC, so a local-day
-// split would show each day's yield on the next local day east of UTC.
-function dayKey(date: Date): string {
+// Voltr closes its daily share price at 00:00 UTC.
+function utcDayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
@@ -24,7 +24,7 @@ export function buildEarnMaxDailySeries(view: {
     if (Number.isNaN(date.getTime())) {
       continue;
     }
-    const key = dayKey(date);
+    const key = utcDayKey(date);
     const existing = equityByDay.get(key);
     if (existing) {
       existing.last = point.equityUsd;
@@ -50,7 +50,7 @@ export function buildEarnMaxDailySeries(view: {
     if (sign === 0) {
       continue;
     }
-    const key = dayKey(date);
+    const key = utcDayKey(date);
     flowsByDay.set(
       key,
       (flowsByDay.get(key) ?? 0) +
@@ -64,7 +64,7 @@ export function buildEarnMaxDailySeries(view: {
     equityUsd: number | null;
     isCurrent: boolean;
   }[] = [];
-  const windowStart = dayKey(
+  const windowStart = utcDayKey(
     new Date(
       Date.UTC(
         now.getUTCFullYear(),
@@ -85,15 +85,14 @@ export function buildEarnMaxDailySeries(view: {
         now.getUTCDate() - offset
       )
     );
-    const key = dayKey(date);
+    const key = utcDayKey(date);
     const dayEquity = equityByDay.get(key);
     const equity: number | null = dayEquity?.last ?? carryEquity;
     const raw =
       equity === null
         ? 0
         : equity - (carryEquity ?? 0) - (flowsByDay.get(key) ?? 0);
-    // Deposit rounding dust (< 1 cent) is not a loss; real losses still chart.
-    const earned = raw < 0 && raw > -0.01 ? 0 : raw;
+    const earned = raw < 0 && raw > -ROUNDING_DUST_USD ? 0 : raw;
     days.push({
       date,
       earnedUsd: earned,

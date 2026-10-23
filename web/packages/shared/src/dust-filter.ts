@@ -47,18 +47,17 @@ export function isDustSolTransfer(input: SolDustInput): boolean {
 export type TokenDustInput = {
   isUserSigned: boolean;
   direction: "in" | "out";
-  /** Absolute raw token amount (post-decimal). Must be non-negative. */
-  rawAmount: bigint;
+  absRaw: bigint;
   decimals: number;
 };
 
 export function isDustTokenTransfer(input: TokenDustInput): boolean {
   if (input.isUserSigned) return false;
   if (input.direction !== "in") return false;
-  if (input.rawAmount <= BigInt(0)) return false;
+  if (input.absRaw <= BigInt(0)) return false;
 
   const decimals = Math.max(0, input.decimals);
   const divisor = 10 ** decimals;
-  const normalized = Number(input.rawAmount) / divisor;
+  const normalized = Number(input.absRaw) / divisor;
   return normalized < TOKEN_DUST_NORMALIZED_THRESHOLD;
 }

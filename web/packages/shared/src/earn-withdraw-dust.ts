@@ -1,0 +1,1 @@
+export const EARN_WITHDRAW_SOURCE_DUST_USD = 0.005;

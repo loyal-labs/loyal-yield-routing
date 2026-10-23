@@ -8,26 +8,27 @@ const SHOW_TOTAL_MS =
 
 // Entrance and idle animate the same property (transform), so we split them
 // across two nested <g> wrappers — outer plays show/hide, inner plays the
-// breathing loop. Entrance offset is 440px to fully clear the 'y' letter's
-// descender mask (which extends to y≈596); o/a's smaller masks still hide
-// the extra travel. Each dog gets its own idle keyframe with different
-// amplitudes and coprime-ish durations so they drift independently.
+// breathing loop. The entrance offset fully clears the 'y' letter's descender
+// mask (which extends to y≈596); o/a's smaller masks still hide the extra
+// travel. Each dog gets its own idle keyframe with different amplitudes and
+// coprime-ish durations so they drift independently.
+const ENTRANCE_OFFSET_PX = 440;
 const STYLE = `
   @keyframes four-dogs-show-v {
-    from { transform: translateY(440px); }
+    from { transform: translateY(${ENTRANCE_OFFSET_PX}px); }
     to { transform: translateY(0); }
   }
   @keyframes four-dogs-hide-v {
     from { transform: translateY(0); }
-    to { transform: translateY(440px); }
+    to { transform: translateY(${ENTRANCE_OFFSET_PX}px); }
   }
   @keyframes four-dogs-show-h {
-    from { transform: translateX(440px); }
+    from { transform: translateX(${ENTRANCE_OFFSET_PX}px); }
     to { transform: translateX(0); }
   }
   @keyframes four-dogs-hide-h {
     from { transform: translateX(0); }
-    to { transform: translateX(440px); }
+    to { transform: translateX(${ENTRANCE_OFFSET_PX}px); }
   }
   @keyframes four-dogs-idle-o {
     0%   { transform: translateY(0); }

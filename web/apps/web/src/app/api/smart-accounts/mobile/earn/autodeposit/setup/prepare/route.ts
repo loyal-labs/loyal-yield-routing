@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
-import { createSmartAccountVaultsClient } from "@loyal-labs/smart-account-vaults";
+import {
+  createSmartAccountVaultsClient,
+  serializePreparedEarnUsdcAutodepositSetup,
+} from "@loyal-labs/smart-account-vaults";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
 import { Connection, PublicKey } from "@solana/web3.js";
 
@@ -13,10 +16,7 @@ import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-ov
 import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
-import {
-  parseEarnAutodepositSetupPrepareRequestBody,
-  serializePreparedEarnUsdcAutodepositSetup,
-} from "@/lib/yield-optimization/earn-autodeposit-prepare-contracts.shared";
+import { parseEarnAutodepositSetupPrepareRequestBody } from "@/lib/yield-optimization/earn-autodeposit-prepare-contracts.shared";
 import {
   EARN_AUTODEPOSIT_PAUSED_MISSING_POSITION,
   findCurrentEarnAutodepositState,
