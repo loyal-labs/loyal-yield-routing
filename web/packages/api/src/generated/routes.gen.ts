@@ -5,6 +5,7 @@ export type Get = {
   "/api/mobile/dapps": Types.MobileTrustedDappsResponse;
   "/api/mobile/library": Types.MobileLibraryResponse;
   "/api/mobile/tokens/{mint}": Types.MobileTokenDetailResponse;
+  "/api/smart-accounts/earn-forecast/summary": Types.EarnForecastSummaryResponse;
   "/api/smart-accounts/earn-max/activity": Types.EarnMaxActivity;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn-max/summary": Types.EarnMaxSummaryResponse;
@@ -12,14 +13,21 @@ export type Get = {
   "/api/smart-accounts/yield-optimization/earn-state": Types.EarnStateResponse;
   "/api/smart-accounts/yield-optimization/earnings": Types.EarningsRangeSet;
   "/api/smart-accounts/yield-optimization/position": Types.EarnPositionResponse;
+  "/api/solana-week/progress": Types.SolanaWeekQuestProgressResponse;
   "/api/summaries": Types.SummariesResponse;
 };
 
 export type Post = {
   "/api/auth/privy/complete": Types.PrivyCompleteResponse;
+  "/api/observability/errors": Types.ObsIngestAccepted;
+  "/api/observability/events": Types.ObsJourneyAccepted;
+  "/api/observability/metrics": Types.ObsIngestAccepted;
   "/api/push-tokens": Types.PushTokenSaved;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn/session": Types.EarnSessionResponse;
+  "/api/smart-accounts/yield-optimization/cross-mint/delete/readiness": Types.CrossMintDeleteReadinessResponse;
+  "/api/smart-accounts/yield-optimization/cross-mint/toggle": Types.CrossMintToggleResponse;
+  "/api/smart-accounts/yield-optimization/policies/confirm": Types.EarnPolicyConfirmResponse;
   "/api/smart-accounts/yield-optimization/policies/prepare": Types.EarnPolicyPrepareResponse;
   "/api/smart-accounts/yield-optimization/policy-refunds/prepare": Types.EarnPolicyRefundPrepareResponse;
   "/api/smart-accounts/yield-optimization/policy-refunds/scan": Types.EarnPolicyRefundScanResponse;

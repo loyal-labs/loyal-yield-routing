@@ -1,6 +1,8 @@
+import type { EarnStatePolicy, EarnStatePosition } from "@loyal-labs/api";
 import { resolveLoyalClusterForSolanaEnv } from "@loyal-labs/actions";
 import {
   type EarnRpcHolding,
+  type EarnRpcPolicyMetadata,
   fetchEarnRpcHoldingsSnapshot,
 } from "@loyal-labs/smart-account-vaults";
 import { PublicKey } from "@solana/web3.js";
@@ -8,10 +10,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   fetchEarnState,
-  type EarnPosition,
   type EarnStateResponse,
 } from "@/lib/solana/earn/earn-api";
 import { getConnection, getSolanaEnv } from "@/lib/solana/rpc/connection";
+
+type EarnPosition = Pick<
+  EarnStatePosition,
+  "currentTotalAmountRaw" | "principalAmountRaw" | "status"
+>;
 
 const MUTATION_TRUST_MS = 20_000;
 
@@ -28,14 +34,36 @@ function reconcileBalance(
   if (position === null) {
     return Number(liveTotalRaw) > 0
       ? {
-          currentAmountRaw: liveTotalRaw,
-          currentSupplyApyBps: null,
+          currentTotalAmountRaw: liveTotalRaw,
           principalAmountRaw: liveTotalRaw,
           status: "active",
         }
       : null;
   }
-  return { ...position, currentAmountRaw: liveTotalRaw };
+  return { ...position, currentTotalAmountRaw: liveTotalRaw };
+}
+
+function toRpcPolicy(policy: EarnStatePolicy): EarnRpcPolicyMetadata {
+  return {
+    account: policy.account,
+    delegatedSigners: policy.delegatedSigners ?? undefined,
+    id: policy.id,
+    kaminoLiquidityMints: policy.kaminoLiquidityMints ?? undefined,
+    kaminoMarkets: policy.kaminoMarkets ?? undefined,
+    riskProfile: policy.riskProfile,
+    routeModes: policy.routeModes ?? undefined,
+    seed: policy.seed,
+    setupPolicy: {
+      account: policy.setupPolicy.account,
+      delegatedSigners: policy.setupPolicy.delegatedSigners ?? undefined,
+      id: policy.setupPolicy.id,
+      seed: policy.setupPolicy.seed,
+    },
+    stableMints: policy.stableMints ?? undefined,
+    universePreset: policy.universePreset,
+    vaultIndex: policy.vaultIndex,
+    vaultPubkey: policy.vaultPubkey,
+  };
 }
 
 async function readLiveHoldings(
@@ -47,7 +75,7 @@ async function readLiveHoldings(
   return fetchEarnRpcHoldingsSnapshot({
     cluster: resolveLoyalClusterForSolanaEnv(getSolanaEnv()),
     connection: getConnection(),
-    policy: state.policy,
+    policy: toRpcPolicy(state.policy),
     programId: new PublicKey(state.programId),
     settingsPda: new PublicKey(state.settingsPda),
   });

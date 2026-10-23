@@ -471,7 +471,7 @@ export function ActivityProvider({ children }: { children: ReactNode }) {
       return [];
     }
     try {
-      const { scan } = await fetchEarnRefundScan(publicKey);
+      const scan = await fetchEarnRefundScan(publicKey);
       const items: EarnRefundItem[] = [
         ...(scan?.policies ?? [])
           .filter((policy) => policy.canRefund && (policy.lamports ?? 0) > 0)

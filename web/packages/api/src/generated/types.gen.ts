@@ -20,6 +20,27 @@ export type ActivityItem = {
     timestamp: string;
 };
 
+export type CrossMintDeleteReadinessRequest = {
+    expectedGeneration?: string;
+};
+
+export type CrossMintDeleteReadinessResponse = {
+    expectedGeneration: string;
+    policies: Array<string> | null;
+    status: string;
+};
+
+export type CrossMintToggleRequest = {
+    enabled?: boolean;
+    expectedGeneration?: string;
+};
+
+export type CrossMintToggleResponse = {
+    enabled: boolean;
+    generation: string;
+    status: string;
+};
+
 export type DepositWireAccountKey = {
     isSigner: boolean;
     isWritable: boolean;
@@ -65,6 +86,50 @@ export type DepositWireSimulationDiagnostics = {
     settingsPda: string;
 };
 
+export type EarnForecastApyHistoryResponse = {
+    feeBps: number;
+    generatedAt: string;
+    riskProfile: string;
+    samples: Array<EarnForecastApyHistorySample> | null;
+    series: Array<EarnForecastApyHistorySeries> | null;
+    window: EarnForecastApyWindow;
+};
+
+export type EarnForecastApyHistorySample = {
+    apyBps: number;
+    observedAt: string;
+};
+
+export type EarnForecastApyHistorySeries = {
+    key: string;
+    label: string;
+    metadata: {
+        [key: string]: unknown;
+    };
+    samples: Array<EarnForecastApyHistorySample> | null;
+};
+
+export type EarnForecastApyWindow = {
+    endedAt: string;
+    startedAt: string;
+};
+
+export type EarnForecastResponse = {
+    apyBps: number;
+    availability: string;
+    rangeHighBps: number;
+    rangeLowBps: number;
+    source: string;
+    strategy: string;
+    updatedAt: string;
+    window: EarnForecastApyWindow;
+};
+
+export type EarnForecastSummaryResponse = {
+    forecast: EarnForecastResponse;
+    history: EarnForecastApyHistoryResponse;
+};
+
 export type EarnMaxActivity = {
     operations: Array<ActivityItem>;
     performance: Array<PerformancePoint>;
@@ -104,6 +169,41 @@ export type EarnMaxSummary = {
 export type EarnMaxSummaryResponse = {
     config: EarnMaxConfig;
     summary: EarnMaxSummary;
+};
+
+export type EarnPolicyConfirmPolicy = {
+    account: string;
+    id: string;
+    seed: string;
+    vaultIndex: number;
+    vaultPubkey: string;
+};
+
+export type EarnPolicyConfirmRequest = {
+    cluster?: string;
+    confirmedSlot?: string;
+    delegatedSigner?: string;
+    liquidityMint?: string;
+    market?: string;
+    policyAccount?: string;
+    policyId?: string;
+    policySeed?: string;
+    policySignature?: string;
+    settings?: string;
+    setupPolicyAccount?: string;
+    setupPolicyConfirmedSlot?: string;
+    setupPolicyId?: string;
+    setupPolicySeed?: string;
+    setupPolicySignature?: string;
+    stage?: 'route_policy' | 'setup_policy';
+    targetReserve?: string;
+    vaultIndex?: number;
+    vaultPubkey?: string;
+    walletAddress?: string;
+};
+
+export type EarnPolicyConfirmResponse = {
+    policy: EarnPolicyConfirmPolicy;
 };
 
 export type EarnPolicyPersistence = {
@@ -812,6 +912,10 @@ export type ErrorModel = {
     type?: string;
 };
 
+export type ForecastUnavailableError = {
+    error: string;
+};
+
 export type HealthView = {
     lastKnownAttention: boolean;
     observedAt: string | null;
@@ -922,6 +1026,24 @@ export type MobileTrustedDappsResponse = {
     dapps: Array<MobileTrustedDapp>;
 };
 
+export type ObsIngestAccepted = {
+    accepted: boolean;
+};
+
+export type ObsIngestRejected = {
+    error: string;
+};
+
+export type ObsJourneyAccepted = {
+    accepted: boolean;
+    trafficKind?: string;
+};
+
+export type ObsJourneyUnavailable = {
+    error: string;
+    trafficKind: string;
+};
+
 export type PerformancePoint = {
     equityUsd: number;
     timestamp: string;
@@ -1000,6 +1122,19 @@ export type SerializedEarnTransaction = {
     sortTimestamp: string;
     source: EarnTransactionAccount;
     timestamp: string;
+};
+
+export type SolanaWeekQuestProgressItem = {
+    attempts: number;
+    kind: string;
+    reportedAt: string | null;
+    solanaStatus: string | null;
+    status: string;
+};
+
+export type SolanaWeekQuestProgressResponse = {
+    quests: Array<SolanaWeekQuestProgressItem> | null;
+    walletAddress: string;
 };
 
 export type SummariesResponse = {
@@ -1345,6 +1480,196 @@ export type HeadMobileTokenDetailResponses = {
 
 export type HeadMobileTokenDetailResponse = HeadMobileTokenDetailResponses[keyof HeadMobileTokenDetailResponses];
 
+export type PostObservabilityErrorsData = {
+    body?: {
+        [key: string]: unknown;
+    };
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        Origin?: string;
+        'Sec-Fetch-Site'?: string;
+        'Content-Type'?: string;
+        'Content-Length'?: string;
+        'X-Forwarded-Proto'?: string;
+        'X-Forwarded-For'?: string;
+        'X-Vercel-Forwarded-For'?: string;
+        'CF-Connecting-IP'?: string;
+        'X-Real-IP'?: string;
+        'X-Loyal-Synthetic-Probe'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/observability/errors';
+};
+
+export type PostObservabilityErrorsErrors = {
+    /**
+     * Bad Request
+     */
+    400: ObsIngestRejected;
+    /**
+     * Forbidden
+     */
+    403: ObsIngestRejected;
+    /**
+     * Request Entity Too Large
+     */
+    413: ObsIngestRejected;
+    /**
+     * Unsupported Media Type
+     */
+    415: ObsIngestRejected;
+    /**
+     * Too Many Requests
+     */
+    429: ObsIngestRejected;
+};
+
+export type PostObservabilityErrorsError = PostObservabilityErrorsErrors[keyof PostObservabilityErrorsErrors];
+
+export type PostObservabilityErrorsResponses = {
+    /**
+     * OK
+     */
+    200: ObsIngestAccepted;
+    /**
+     * Accepted
+     */
+    202: ObsIngestAccepted;
+};
+
+export type PostObservabilityErrorsResponse = PostObservabilityErrorsResponses[keyof PostObservabilityErrorsResponses];
+
+export type PostObservabilityEventsData = {
+    body?: {
+        [key: string]: unknown;
+    };
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        Origin?: string;
+        'Sec-Fetch-Site'?: string;
+        'Content-Type'?: string;
+        'Content-Length'?: string;
+        'X-Forwarded-Proto'?: string;
+        'X-Forwarded-For'?: string;
+        'X-Vercel-Forwarded-For'?: string;
+        'CF-Connecting-IP'?: string;
+        'X-Real-IP'?: string;
+        'X-Loyal-Synthetic-Probe'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/observability/events';
+};
+
+export type PostObservabilityEventsErrors = {
+    /**
+     * Bad Request
+     */
+    400: ObsIngestRejected;
+    /**
+     * Forbidden
+     */
+    403: ObsIngestRejected;
+    /**
+     * Request Entity Too Large
+     */
+    413: ObsIngestRejected;
+    /**
+     * Unsupported Media Type
+     */
+    415: ObsIngestRejected;
+    /**
+     * Too Many Requests
+     */
+    429: ObsIngestRejected;
+    /**
+     * Service Unavailable
+     */
+    503: ObsJourneyUnavailable;
+};
+
+export type PostObservabilityEventsError = PostObservabilityEventsErrors[keyof PostObservabilityEventsErrors];
+
+export type PostObservabilityEventsResponses = {
+    /**
+     * OK
+     */
+    200: ObsJourneyAccepted;
+    /**
+     * Accepted
+     */
+    202: ObsJourneyAccepted;
+};
+
+export type PostObservabilityEventsResponse = PostObservabilityEventsResponses[keyof PostObservabilityEventsResponses];
+
+export type PostObservabilityMetricsData = {
+    body?: {
+        [key: string]: unknown;
+    };
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        Origin?: string;
+        'Sec-Fetch-Site'?: string;
+        'Content-Type'?: string;
+        'Content-Length'?: string;
+        'X-Forwarded-Proto'?: string;
+        'X-Forwarded-For'?: string;
+        'X-Vercel-Forwarded-For'?: string;
+        'CF-Connecting-IP'?: string;
+        'X-Real-IP'?: string;
+        'X-Loyal-Synthetic-Probe'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/observability/metrics';
+};
+
+export type PostObservabilityMetricsErrors = {
+    /**
+     * Bad Request
+     */
+    400: ObsIngestRejected;
+    /**
+     * Forbidden
+     */
+    403: ObsIngestRejected;
+    /**
+     * Request Entity Too Large
+     */
+    413: ObsIngestRejected;
+    /**
+     * Unsupported Media Type
+     */
+    415: ObsIngestRejected;
+    /**
+     * Too Many Requests
+     */
+    429: ObsIngestRejected;
+};
+
+export type PostObservabilityMetricsError = PostObservabilityMetricsErrors[keyof PostObservabilityMetricsErrors];
+
+export type PostObservabilityMetricsResponses = {
+    /**
+     * OK
+     */
+    200: ObsIngestAccepted;
+    /**
+     * Accepted
+     */
+    202: ObsIngestAccepted;
+};
+
+export type PostObservabilityMetricsResponse = PostObservabilityMetricsResponses[keyof PostObservabilityMetricsResponses];
+
 export type PostPushTokenData = {
     body?: PushTokenRequest;
     headers?: {
@@ -1382,6 +1707,31 @@ export type PostPushTokenResponses = {
 };
 
 export type PostPushTokenResponse = PostPushTokenResponses[keyof PostPushTokenResponses];
+
+export type GetEarnForecastSummaryData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-forecast/summary';
+};
+
+export type GetEarnForecastSummaryErrors = {
+    /**
+     * Service Unavailable
+     */
+    503: ForecastUnavailableError;
+};
+
+export type GetEarnForecastSummaryError = GetEarnForecastSummaryErrors[keyof GetEarnForecastSummaryErrors];
+
+export type GetEarnForecastSummaryResponses = {
+    /**
+     * OK
+     */
+    200: EarnForecastSummaryResponse;
+};
+
+export type GetEarnForecastSummaryResponse = GetEarnForecastSummaryResponses[keyof GetEarnForecastSummaryResponses];
 
 export type GetEarnMaxActivityData = {
     body?: never;
@@ -1618,6 +1968,98 @@ export type PostEarnSessionResponses = {
 
 export type PostEarnSessionResponse = PostEarnSessionResponses[keyof PostEarnSessionResponses];
 
+export type PostEarnCrossMintDeleteReadinessData = {
+    body?: CrossMintDeleteReadinessRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/cross-mint/delete/readiness';
+};
+
+export type PostEarnCrossMintDeleteReadinessErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnCrossMintDeleteReadinessError = PostEarnCrossMintDeleteReadinessErrors[keyof PostEarnCrossMintDeleteReadinessErrors];
+
+export type PostEarnCrossMintDeleteReadinessResponses = {
+    /**
+     * OK
+     */
+    200: CrossMintDeleteReadinessResponse;
+};
+
+export type PostEarnCrossMintDeleteReadinessResponse = PostEarnCrossMintDeleteReadinessResponses[keyof PostEarnCrossMintDeleteReadinessResponses];
+
+export type PostEarnCrossMintToggleData = {
+    body?: CrossMintToggleRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/cross-mint/toggle';
+};
+
+export type PostEarnCrossMintToggleErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnCrossMintToggleError = PostEarnCrossMintToggleErrors[keyof PostEarnCrossMintToggleErrors];
+
+export type PostEarnCrossMintToggleResponses = {
+    /**
+     * OK
+     */
+    200: CrossMintToggleResponse;
+};
+
+export type PostEarnCrossMintToggleResponse = PostEarnCrossMintToggleResponses[keyof PostEarnCrossMintToggleResponses];
+
 export type GetEarnStateData = {
     body?: never;
     headers?: {
@@ -1691,6 +2133,48 @@ export type GetEarnEarningsResponses = {
 };
 
 export type GetEarnEarningsResponse = GetEarnEarningsResponses[keyof GetEarnEarningsResponses];
+
+export type PostEarnPoliciesConfirmData = {
+    body?: EarnPolicyConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/policies/confirm';
+};
+
+export type PostEarnPoliciesConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnPoliciesConfirmError = PostEarnPoliciesConfirmErrors[keyof PostEarnPoliciesConfirmErrors];
+
+export type PostEarnPoliciesConfirmResponses = {
+    /**
+     * OK
+     */
+    200: EarnPolicyConfirmResponse;
+};
+
+export type PostEarnPoliciesConfirmResponse = PostEarnPoliciesConfirmResponses[keyof PostEarnPoliciesConfirmResponses];
 
 export type PostEarnPoliciesPrepareData = {
     body?: never;
@@ -1935,6 +2419,44 @@ export type PostEarnWithdrawalsPrepareResponses = {
 };
 
 export type PostEarnWithdrawalsPrepareResponse = PostEarnWithdrawalsPrepareResponses[keyof PostEarnWithdrawalsPrepareResponses];
+
+export type GetSolanaWeekProgressData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/solana-week/progress';
+};
+
+export type GetSolanaWeekProgressErrors = {
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type GetSolanaWeekProgressError = GetSolanaWeekProgressErrors[keyof GetSolanaWeekProgressErrors];
+
+export type GetSolanaWeekProgressResponses = {
+    /**
+     * OK
+     */
+    200: SolanaWeekQuestProgressResponse;
+};
+
+export type GetSolanaWeekProgressResponse = GetSolanaWeekProgressResponses[keyof GetSolanaWeekProgressResponses];
 
 export type GetSummariesData = {
     body?: never;
