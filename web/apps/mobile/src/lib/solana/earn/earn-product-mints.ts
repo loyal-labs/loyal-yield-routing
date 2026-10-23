@@ -1,11 +1,5 @@
-import {
-  getStablecoinMintForCluster,
-  getStablecoinsForCluster,
-  getStablecoinTokenProgramForCluster,
-  LoyalCluster,
-  STABLECOIN_TOKEN_PROGRAMS,
-  Stablecoin,
-} from "@loyal-labs/actions";
+import { LoyalCluster, STABLECOIN_TOKEN_PROGRAMS, Stablecoin } from "@loyal-labs/actions";
+import { getEarnProductAssetsForCluster } from "@loyal-labs/smart-account-vaults";
 import type { PublicKey } from "@solana/web3.js";
 
 export const EARN_PRODUCT_DECIMALS = 6;
@@ -17,10 +11,10 @@ export type EarnProductAsset = {
 };
 
 function assetsForCluster(cluster: LoyalCluster): EarnProductAsset[] {
-  return getStablecoinsForCluster(cluster).map((stablecoin) => ({
-    symbol: stablecoin,
-    mint: getStablecoinMintForCluster(cluster, stablecoin).toBase58(),
-    tokenProgramId: getStablecoinTokenProgramForCluster(cluster, stablecoin),
+  return getEarnProductAssetsForCluster(cluster).map((asset) => ({
+    symbol: asset.symbol,
+    mint: asset.mint.toBase58(),
+    tokenProgramId: asset.tokenProgramId,
   }));
 }
 
