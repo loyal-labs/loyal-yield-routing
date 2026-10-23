@@ -252,9 +252,6 @@ export default function WalletScreen() {
     );
   }, [earnLoaded, earnUsd, earnPolicyMissing, solBalanceLamports]);
 
-  // Wallet stablecoin balances feed the Deposit sheet's coin selector and its
-  // available/insufficient state (token units ≈ dollars for every 6-decimal
-  // Earn product stablecoin).
   const stableBalancesByMint = useMemo(() => {
     const balances: Record<string, number> = {};
     for (const asset of getEarnProductAssets(env.solanaEnv)) {

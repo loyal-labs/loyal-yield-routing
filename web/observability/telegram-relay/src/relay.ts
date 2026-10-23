@@ -294,9 +294,6 @@ export class AlertRelay {
       return this.withLock(this.eventLocks, key, async () => {
         const existing = this.windows.get(key);
 
-        // Closing is silent now, but it still has to happen before the alert
-        // that reopens the key, or the reopened window would inherit a
-        // cooldown that has already expired.
         if (existing && existing.expiresAt <= now && !existing.deferred) {
           this.closeWindow(existing);
         }
@@ -472,8 +469,6 @@ export class AlertRelay {
       silent: true,
     });
 
-    // Cleared only once Telegram has accepted, so a failed recap is retried on
-    // the next sweep instead of leaving the post-deploy burst unreported.
     this.restartRecapDone = true;
     for (const window of deferred) {
       window.deferred = false;
@@ -484,11 +479,6 @@ export class AlertRelay {
     this.windows.delete(window.key);
   }
 
-  /**
-   * Folds an accepted delivery into the reporting period. Separate from the
-   * window bookkeeping because a delivery whose alert Telegram rejected is not
-   * accepted: it will arrive again, and must be counted then, not twice.
-   */
   private countDelivery(
     payload: ClickStackWebhookPayload,
     analysis: AlertAnalysis,
@@ -507,9 +497,6 @@ export class AlertRelay {
   }
 
   private async flushDailyRecap(now: number): Promise<void> {
-    // `pendingRecap` is swapped in synchronously below, but the send that
-    // follows is not: without this flag two sweeps overlapping on the timer
-    // would both reach the same unsent recap and post it twice.
     if (this.recapInFlight) {
       return;
     }
@@ -519,9 +506,6 @@ export class AlertRelay {
         return;
       }
 
-      // Closing the period is synchronous, so a delivery arriving while the
-      // recap is in flight is counted against the next period instead of
-      // being dropped when the tally is replaced.
       const tally = this.daily;
       const until = this.nextRecapAt;
       this.daily = emptyTally(until);
@@ -662,8 +646,6 @@ export class AlertRelay {
     const tail = previous.then(() => gate);
     locks.set(key, tail);
 
-    // `await previous` sits inside the try so that a rejection can never skip
-    // `release()` and strand every later waiter on this key.
     try {
       await previous;
       return await action();
@@ -940,11 +922,6 @@ function summarizeDaily(daily: DailyTally, until: number): DailySummary {
   };
 }
 
-/**
- * The next occurrence of the configured wall-clock minute, strictly after
- * `from`. Strictly, so a relay that starts exactly on the boundary does not
- * immediately post a recap for a period it did not observe.
- */
 export function nextRecapTime(from: number, atMinutes: number): number {
   const offset = ((atMinutes % 1440) + 1440) % 1440;
   const midnight = Math.floor(from / DAY_MS) * DAY_MS;

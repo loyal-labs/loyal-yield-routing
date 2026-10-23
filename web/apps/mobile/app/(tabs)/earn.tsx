@@ -141,8 +141,6 @@ export default function EarnScreen() {
     );
     return holding && Number.isFinite(holding.balance) ? holding.balance : null;
   }, [tokenHoldings]);
-  // Per-mint spendable balances for the deposit coin selector (token units ≈
-  // dollars — every Earn product stablecoin is 6-decimal).
   const stableBalancesByMint = useMemo(() => {
     const balances: Record<string, number> = {};
     for (const asset of getEarnProductAssets(env.solanaEnv)) {
