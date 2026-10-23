@@ -180,8 +180,6 @@ export async function reportMobileErrorEnvelope(
 ): Promise<boolean> {
   try {
     return await exportErrorEvent({
-      // The device reports its own release/environment — the app fleet mixes
-      // binary versions and OTA updates that Vercel's release can't describe.
       deploymentEnvironment: envelope.environment,
       ...(envelope.deviceId ? { deviceId: envelope.deviceId } : {}),
       ...(envelope.devicePlatform
@@ -332,9 +330,8 @@ export async function reportMobileLifecycleEnvelope(
   walletAddress?: string
 ): Promise<boolean> {
   try {
-    // The device reports its own release/environment. An explicit wallet
-    // argument wins over the envelope's so the route stays the single place
-    // that decides which address is trusted.
+    // An explicit wallet argument wins over the envelope's so the route stays
+    // the single place that decides which address is trusted.
     const { environment, release, ...event } = envelope;
     const resolvedWallet = walletAddress ?? event.walletAddress;
     return await exportLifecycleEvent({

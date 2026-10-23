@@ -5,6 +5,7 @@
 // misses everything that happens before auth, and the error channel carried
 // no correlator at all.
 
+import { isCanonicalUuidV4 } from "@loyal-labs/shared";
 import { Platform } from "react-native";
 
 import { mmkv } from "@/lib/storage";
@@ -12,12 +13,6 @@ import { mmkv } from "@/lib/storage";
 export type MobileDevicePlatform = "android" | "ios";
 
 const DEVICE_ID_KEY = "observability.deviceId";
-
-// The ingest validates the id as a canonical UUID v4 and drops the whole
-// envelope otherwise, so a corrupted stored value must be regenerated, not
-// sent.
-const UUID_V4_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function generateUuid(): string {
   const cryptoApi = (globalThis as { crypto?: { randomUUID?: () => string } })
@@ -32,7 +27,7 @@ function generateUuid(): string {
 
 export function getObservabilityDeviceId(): string {
   const existing = mmkv.getString(DEVICE_ID_KEY);
-  if (existing && UUID_V4_PATTERN.test(existing)) return existing;
+  if (existing && isCanonicalUuidV4(existing)) return existing;
   const generated = generateUuid();
   mmkv.setString(DEVICE_ID_KEY, generated);
   return generated;

@@ -1,14 +1,22 @@
 // ClickStack error reporting (ASK-1804) — posts unhandled JS errors, fatal JS
 // crashes, and unhandled promise rejections to the askloyal.com observability
-// ingest at `/api/observability/mobile/errors`, the mobile twin of the browser
-// pipeline in `frontend/src/features/observability`. The envelope shape is a
-// hand-written twin of `MobileErrorEnvelope` in
-// `frontend/src/features/observability/error-contract.ts` — keep them in sync.
+// ingest at `/api/observability/mobile/errors`.
 //
 // Best-effort by design: every path here swallows its own failures. Telemetry
 // must never crash the app or block a user flow. Native crashes (JS VM dies
 // before this code runs) stay with Datadog — this covers the JS layer only.
 
+import {
+  type LifecycleErrorDetail,
+  type LifecycleErrorCode,
+  MAX_ERROR_MESSAGE_LENGTH,
+  MAX_ERROR_NAME_LENGTH,
+  MAX_ERROR_STACK_LENGTH,
+  mobileChannelToEnvironment,
+  type MobileErrorEnvelope,
+  type MobileErrorOperation,
+  isTelemetryHttpStatus,
+} from "@loyal-labs/shared";
 import * as Updates from "expo-updates";
 
 import { env } from "@/config/env";
@@ -28,29 +36,6 @@ import {
   getObservabilityDevicePlatform,
 } from "@/services/device-identity";
 
-type MobileErrorOperation =
-  | "mobile.global_error"
-  | "mobile.fatal_error"
-  | "mobile.unhandled_rejection";
-
-type MobileErrorEnvelope = {
-  deviceId?: string;
-  devicePlatform?: "android" | "ios";
-  environment: string;
-  message: string;
-  name: string;
-  operation: MobileErrorOperation;
-  pathname: string;
-  release: string;
-  stack?: string;
-  timestamp: string;
-};
-
-// Server-side caps from the error contract — truncate client-side too so
-// envelopes stay well under the 16KB request limit.
-const MAX_ERROR_NAME_LENGTH = 80;
-const MAX_ERROR_MESSAGE_LENGTH = 512;
-const MAX_ERROR_STACK_LENGTH = 4096;
 const REPORT_TIMEOUT_MS = 1250;
 const DEDUP_WINDOW_MS = 5000;
 const DEDUP_MAX_ENTRIES = 128;
@@ -95,15 +80,8 @@ function currentDeviceIdentity(): {
   return deviceIdentity;
 }
 
-// Same channel → environment mapping as `src/lib/datadog/datadog.ts`
-// (not imported from there: that module top-level imports the Datadog native
-// SDK, which must stay lazy-loaded).
 export function getObservabilityEnvironment(): string {
-  const channel = Updates.channel ?? "";
-  if (channel === "production") return "prod";
-  if (channel === "preview") return "preview";
-  if (channel === "dapp-store") return "prod";
-  return "dev";
+  return mobileChannelToEnvironment(Updates.channel ?? "");
 }
 
 export function getObservabilityRelease(): string {
@@ -345,41 +323,14 @@ type LifecycleStageMap = {
 
 type LifecycleFlowName = keyof LifecycleVariantMap;
 
-// Every value here must exist in the backend's LIFECYCLE_ERROR_CODES
-// (frontend/src/features/observability/lifecycle-contract.ts) — the ingest
-// drops the whole envelope on an unknown code, so a typo costs the event.
-type LifecycleErrorCode =
-  | "unexpected_error"
-  | "request_failed"
-  | "unconfirmed_signature"
-  | "backend_confirmation_failed"
-  | "send_failed"
-  | "earn_withdraw_underfilled"
-  | "earn_max_liquidity_unavailable"
-  | "insufficient_native_sol"
-  | "wallet_rejected"
-  | "wallet_account_mismatch"
-  | "wallet_authorization_expired"
-  | "wallet_unavailable"
-  | "wallet_connection_failed"
-  | "wallet_connection_timeout"
-  | "wallet_signing_failed";
-
-// Same contract, same cost on a typo — an unknown detail is dropped rather
-// than failing the envelope, so a mistake here costs the field silently.
-// Mirrors the `request_failed` arm of the backend's LIFECYCLE_ERROR_DETAILS.
-export type LifecycleErrorDetail =
-  | "network_unreachable"
-  | "request_timeout"
-  | "kamino_upstream_unavailable"
-  | "rpc_request_failed";
-
 const LIFECYCLE_ERROR_DETAILS: readonly LifecycleErrorDetail[] = [
   "network_unreachable",
   "request_timeout",
   "kamino_upstream_unavailable",
   "rpc_request_failed",
 ];
+
+export type { LifecycleErrorDetail };
 
 export type LifecycleDiagnostics = {
   autodepositCloseRequired?: boolean;
@@ -497,14 +448,7 @@ export function mapLifecycleErrorDetail(
 function httpStatusOf(error: unknown): number | undefined {
   if (!error || typeof error !== "object") return undefined;
   const { status } = error as { status?: unknown };
-  // Range-checked against the ingest's own bounds: an out-of-range value would
-  // fail envelope validation and cost the entire event, not just this field.
-  return typeof status === "number" &&
-    Number.isInteger(status) &&
-    status >= 100 &&
-    status <= 599
-    ? status
-    : undefined;
+  return isTelemetryHttpStatus(status) ? status : undefined;
 }
 
 function generateFlowId(): string {
