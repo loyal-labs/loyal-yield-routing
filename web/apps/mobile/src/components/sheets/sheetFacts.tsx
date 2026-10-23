@@ -155,8 +155,6 @@ export function formatSolTopUpCta(shortfall: number, purpose: string): string {
 
 export const SCREEN_WIDTH = Dimensions.get("screen").width;
 
-// Amount auto-shrink: keep the big amount on one line by scaling the font
-// down; lineHeight stays pinned so the baseline holds.
 export const AMOUNT_MAX_FONT_SIZE = 48;
 export const AMOUNT_MIN_FONT_SIZE = 22;
 export const AMOUNT_CHAR_WIDTH_RATIO = 0.6;
@@ -175,9 +173,6 @@ export function fitUsdAmountFontSize(displayValue: string): number {
   return fitAmountFontSize(`$${displayValue || "0"}`, SCREEN_WIDTH - 48);
 }
 
-// Truncate (never round) to avoid floating-point rounding pushing the amount
-// past the balance minus fee reserve, which caused "insufficient funds" when
-// tapping MAX.
 export function truncateAmountTo6Decimals(value: number): number {
   return Math.floor(value * 1e6) / 1e6;
 }
