@@ -266,7 +266,9 @@ func (h earnRoutes) mediumFeeAwareEarnForecast(ctx context.Context, deps forecas
 		return forecastCacheValue
 	}
 
-	realized, err := h.realizedEarnForecast(ctx, deps, now)
+	// The cached result serves every caller, so one caller hanging up must
+	// not cancel the read and cache a miss (Next's read ignores the abort).
+	realized, err := h.realizedEarnForecast(context.WithoutCancel(ctx), deps, now)
 	if err != nil {
 		slog.Warn("[earn-forecast] realized APY read failed", "error", err)
 	}
