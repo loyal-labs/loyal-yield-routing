@@ -140,7 +140,7 @@ type withdrawFullExitZeroProof struct {
 
 // classifyWithdrawZeroProof ports classifyZeroProof
 // (earn-full-exit-zero-proof.server.ts:124-206).
-func classifyWithdrawZeroProof(holdingsSnapshot earnprep.WithdrawSnapshot, vaultSnapshot withdrawVaultSnapshot, minContextSlot uint64) (withdrawFullExitZeroProof, error) {
+func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.WithdrawSnapshot, vaultSnapshot withdrawVaultSnapshot, minContextSlot uint64) (withdrawFullExitZeroProof, error) {
 	if holdingsSnapshot.ObservedSlot < minContextSlot {
 		return withdrawFullExitZeroProof{}, errors.New("Earn full-exit proof was observed before the withdrawal confirmation slot.")
 	}
@@ -152,7 +152,7 @@ func classifyWithdrawZeroProof(holdingsSnapshot earnprep.WithdrawSnapshot, vault
 	// balance, or any positive balance of a mint that is not a canonical idle
 	// product asset at the expected ATA and token program.
 	idleAssetByTokenAccount := map[string]earnprep.WithdrawProductAsset{}
-	for _, asset := range earnprep.WithdrawProductAssets("mainnet-beta") {
+	for _, asset := range earnprep.WithdrawProductAssets(cluster) {
 		ata, err := spl.AssociatedTokenAddress(vaultSnapshot.VaultPda, asset.Mint, asset.TokenProgram)
 		if err != nil {
 			return withdrawFullExitZeroProof{}, err
@@ -224,7 +224,7 @@ func verifyWithdrawFullExitZeroBalances(ctx context.Context, client withdrawConf
 		if err != nil {
 			return err
 		}
-		proof, err = classifyWithdrawZeroProof(holdings, vaultSnapshot, minContextSlot)
+		proof, err = classifyWithdrawZeroProof(cluster, holdings, vaultSnapshot, minContextSlot)
 		return err
 	})
 	return proof, err
