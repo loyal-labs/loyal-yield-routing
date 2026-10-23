@@ -70,6 +70,17 @@ export type EarnPublicStats = {
     totalUsers: number;
 };
 
+export type EarnSessionRequest = {
+    issuedAt: string;
+    signature: string;
+    walletAddress: string;
+};
+
+export type EarnSessionResponse = {
+    expiresAt: string;
+    token: string;
+};
+
 export type EarnStatsPoint = {
     label: string;
     periodLabel: string;
@@ -239,6 +250,26 @@ export type PolicyBinding = {
     seed: string;
 };
 
+export type PrivyAuthUser = {
+    authMethod: string;
+    displayAddress: string;
+    email?: string;
+    provider: string;
+    settingsPda: string;
+    smartAccountAddress: string;
+    subjectAddress: string;
+    walletAddress: string;
+};
+
+export type PrivyCompleteRequest = {
+    walletAddress: string;
+    [key: string]: unknown;
+};
+
+export type PrivyCompleteResponse = {
+    user: PrivyAuthUser;
+};
+
 export type PushError = {
     error: string;
 };
@@ -297,6 +328,54 @@ export type WithdrawalView = {
     requestId: string;
     status: string;
 };
+
+export type PostAuthPrivyCompleteData = {
+    body?: PrivyCompleteRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        'privy-id-token'?: string;
+        'X-Forwarded-Proto'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/auth/privy/complete';
+};
+
+export type PostAuthPrivyCompleteErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostAuthPrivyCompleteError = PostAuthPrivyCompleteErrors[keyof PostAuthPrivyCompleteErrors];
+
+export type PostAuthPrivyCompleteResponses = {
+    /**
+     * OK
+     */
+    200: PrivyCompleteResponse;
+};
+
+export type PostAuthPrivyCompleteResponse = PostAuthPrivyCompleteResponses[keyof PostAuthPrivyCompleteResponses];
 
 export type GetEarnStatsData = {
     body?: never;
@@ -723,6 +802,39 @@ export type GetEarnMaxSummaryResponses = {
 };
 
 export type GetEarnMaxSummaryResponse = GetEarnMaxSummaryResponses[keyof GetEarnMaxSummaryResponses];
+
+export type PostEarnSessionData = {
+    body?: EarnSessionRequest;
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn/session';
+};
+
+export type PostEarnSessionErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+};
+
+export type PostEarnSessionError = PostEarnSessionErrors[keyof PostEarnSessionErrors];
+
+export type PostEarnSessionResponses = {
+    /**
+     * OK
+     */
+    200: EarnSessionResponse;
+};
+
+export type PostEarnSessionResponse = PostEarnSessionResponses[keyof PostEarnSessionResponses];
 
 export type GetSummariesData = {
     body?: never;
