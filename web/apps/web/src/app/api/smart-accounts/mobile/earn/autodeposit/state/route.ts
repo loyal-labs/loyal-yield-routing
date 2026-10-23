@@ -15,8 +15,7 @@ import {
   findPendingEarnAutodepositScheduledSweeps,
   type PendingEarnAutodepositScheduledSweepRecord,
 } from "@/lib/yield-optimization/earn-autodeposit-repository.server";
-
-const EARN_VAULT_INDEX = 1 as const;
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 function jsonError(
   status: number,

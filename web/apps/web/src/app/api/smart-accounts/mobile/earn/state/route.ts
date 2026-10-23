@@ -16,8 +16,7 @@ import {
   findReconciledActiveYieldPositionForVault,
   type UserYieldPositionRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
-
-const EARN_VAULT_INDEX = 1;
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 function jsonError(
   status: number,

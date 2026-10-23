@@ -2,9 +2,12 @@ import { env } from "@/config/env";
 import {
   EARN_AUTODEPOSIT_PROGRESS_STATES,
   type EarnAutodepositProgressState,
-  type EarnTransactionEventType,
-  type EarnTransactionKind,
+  type EarnForecastApyHistorySample,
+  type EarnForecastApyHistorySeries,
+  type EarnForecastSummaryResponse,
+  type EarnTransactionsResponse,
   type LoadedEarnAutodepositScheduledSweep,
+  type SerializedEarnTransaction,
 } from "@loyal-labs/shared";
 import type {
   SmartAccountNativeSolRequirement,
@@ -830,33 +833,11 @@ export async function fetchEarnEarnings(
   return payload.ranges["30D"];
 }
 
-export type EarnTransactionAccount = { label: string; icon: string | null };
+export type { EarnTransactionAccount } from "@loyal-labs/shared";
 
-// One Earn vault transaction (deposit/withdraw/rebalance/autodeposit). Mirrors
-// the web `earn-transactions` response: `amount` is pre-formatted with its sign,
-// `dateGroup`/`timestamp` are display strings, raw values echoed for detail.
-export type EarnTransactionItem = {
-  id: string;
-  kind: EarnTransactionKind;
-  eventType: EarnTransactionEventType;
-  confirmedAt?: string;
-  dateGroup: string;
-  timestamp: string;
-  amount: string;
-  rawAmount: string;
-  signature: string;
-  sortTimestamp?: string;
-  confirmedSlot: string;
-  // The moved stablecoin's mint; null on legacy (USDC-only) rows. Lets the
-  // client render per-mint coin icons.
-  liquidityMint?: string | null;
-  source: EarnTransactionAccount;
-  destination: EarnTransactionAccount;
-};
+export type EarnTransactionItem = SerializedEarnTransaction;
 
-export type EarnTransactionsResponse = {
-  transactions: EarnTransactionItem[];
-};
+export type { EarnTransactionsResponse };
 
 export async function fetchEarnTransactions(
   walletAddress: string,
@@ -873,29 +854,11 @@ export async function fetchEarnTransactions(
   return (await res.json()) as EarnTransactionsResponse;
 }
 
-// Global (per-cluster, not per-user) Earn APY forecast + history — unauthenticated.
-// Mirrors the web `/earn-forecast/summary` response consumed by the APY/Forecast
-// charts. APYs are in basis points.
-export type EarnApySample = { apyBps: number; observedAt: string };
+export type EarnApySample = EarnForecastApyHistorySample;
 
-export type EarnApySeries = {
-  key: "loyal" | "mainUsdcReserve";
-  samples: EarnApySample[];
-};
+export type EarnApySeries = EarnForecastApyHistorySeries;
 
-export type EarnForecastSummary = {
-  forecast: {
-    apyBps: number;
-    rangeHighBps: number;
-    rangeLowBps: number;
-    window: { startedAt: string; endedAt: string };
-  };
-  history: {
-    samples: EarnApySample[];
-    series?: EarnApySeries[];
-    window?: { startedAt: string; endedAt: string };
-  };
-};
+export type EarnForecastSummary = EarnForecastSummaryResponse;
 
 export async function fetchEarnForecastSummary(): Promise<EarnForecastSummary> {
   const res = await fetch(

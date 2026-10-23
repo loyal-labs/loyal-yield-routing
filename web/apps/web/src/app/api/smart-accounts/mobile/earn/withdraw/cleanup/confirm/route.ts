@@ -18,8 +18,7 @@ import {
   resolveConfirmedSignatureSlot,
 } from "@/lib/yield-optimization/earn-cleanup-confirm.server";
 import { findEarnCleanupVaultState } from "@/lib/yield-optimization/yield-deposit-repository.server";
-
-const EARN_DEPOSIT_VAULT_INDEX = 1;
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 const connectionCache = new Map<SolanaEnv, Connection>();
 
@@ -157,7 +156,7 @@ export async function POST(request: Request) {
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const settingsPdaKey = new PublicKey(settingsPda);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda: settingsPdaKey,
     });
@@ -165,7 +164,7 @@ export async function POST(request: Request) {
       authority: walletAddress,
       includeInactive: true,
       settings: settingsPda,
-      vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       vaultPubkey: earnVaultPda.toBase58(),
     });
     if (!cleanupState) {
@@ -211,7 +210,7 @@ export async function POST(request: Request) {
         confirmedSlot: fields.confirmedSlot,
         settings: settingsPda,
         status: "full_exit_closed",
-        vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+        vaultIndex: EARN_VAULT_INDEX,
         walletAddress,
       }
     );

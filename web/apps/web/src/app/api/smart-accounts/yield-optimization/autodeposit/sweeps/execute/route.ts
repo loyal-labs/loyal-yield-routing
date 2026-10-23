@@ -24,8 +24,7 @@ import {
   EARN_POSITION_REQUIRED_ERROR,
   hasActiveEarnRoutePolicyPair,
 } from "@/lib/yield-optimization/earn-position-gate.server";
-
-const EARN_AUTODEPOSIT_VAULT_INDEX = 1;
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 function jsonError(
   status: number,
@@ -134,7 +133,7 @@ export async function GET(request: Request) {
   try {
     const autodeposit = await findCurrentEarnAutodepositState({
       settings: principal.settingsPda,
-      vaultIndex: EARN_AUTODEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       walletAddress: principal.walletAddress,
     });
     if (!autodeposit) {
@@ -229,7 +228,7 @@ async function handleExecuteRequest(
 
     const autodeposit = await findCurrentEarnAutodepositState({
       settings: principal.settingsPda,
-      vaultIndex: EARN_AUTODEPOSIT_VAULT_INDEX,
+      vaultIndex: EARN_VAULT_INDEX,
       walletAddress: principal.walletAddress,
     });
 

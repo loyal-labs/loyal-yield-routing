@@ -27,6 +27,7 @@ import {
   EARN_POSITION_REQUIRED_ERROR,
   hasActiveEarnRoutePolicyPair,
 } from "@/lib/yield-optimization/earn-position-gate.server";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Mobile twin of `yield-optimization/autodeposit/sweeps/execute`. Lets the
 // native app ask the worker to run the pending scheduled Autodeposit sweep now
@@ -38,8 +39,6 @@ import {
 // execute (the web gets these transitions over SSE; mobile polls the same
 // fallback contract) — read-only and wallet-address-keyed like
 // `mobile/earn/autodeposit/state`. Keep in sync with the session route.
-const EARN_VAULT_INDEX = 1 as const;
-
 function jsonError(
   status: number,
   code: string,

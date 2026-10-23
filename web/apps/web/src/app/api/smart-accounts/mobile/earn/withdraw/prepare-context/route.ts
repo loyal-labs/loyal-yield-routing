@@ -22,6 +22,7 @@ import {
   type EarnWithdrawLegacyPrepareRequest,
   parseEarnWithdrawPrepareRequestBody,
 } from "@/lib/yield-optimization/earn-withdraw-prepare-contracts.shared";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Context twin of `../prepare` for ON-DEVICE withdraw prepare: same auth and
 // source-selection/reconcile logic (shared via
@@ -30,8 +31,6 @@ import {
 // `prepareEarnUsdcWithdraw` on its own RPC/IP allowance — mirroring the
 // deposit `prepare-context` and the on-device autodeposit flows. `../prepare`
 // stays for app versions that predate on-device prepare.
-const EARN_DEPOSIT_VAULT_INDEX = 1;
-
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 function jsonError(
@@ -142,7 +141,7 @@ export async function POST(request: Request) {
     const serverEnv = getServerEnv();
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda: new PublicKey(settingsPda),
     });

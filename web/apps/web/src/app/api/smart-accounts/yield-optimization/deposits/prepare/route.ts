@@ -38,8 +38,7 @@ import {
   findReconciledActiveYieldPositionForVault,
   type RoutePolicyRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
-
-const EARN_DEPOSIT_VAULT_INDEX = 1;
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 const connectionCache = new Map<SolanaEnv, Connection>();
 
@@ -140,7 +139,7 @@ async function handleRequest(
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const settingsPda = new PublicKey(principal.settingsPda);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda,
     });
@@ -150,19 +149,19 @@ async function handleRequest(
           authority: principal.walletAddress,
           cluster,
           settings: principal.settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+          vaultIndex: EARN_VAULT_INDEX,
           vaultPubkey: earnVaultPda.toBase58(),
         }),
         findReconciledActiveYieldPositionForVault({
           cluster,
           liquidityMint: mint,
           settings: principal.settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+          vaultIndex: EARN_VAULT_INDEX,
           walletAddress: principal.walletAddress,
         }),
         findCurrentEarnDepositOnboardingAttempt({
           settings: principal.settingsPda,
-          vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+          vaultIndex: EARN_VAULT_INDEX,
           vaultPubkey: earnVaultPda.toBase58(),
           walletAddress: principal.walletAddress,
         }),

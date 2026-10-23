@@ -19,15 +19,13 @@ import {
   type EarnProductAsset,
   resolveEarnProductAsset,
 } from "@/lib/yield-optimization/earn-product-mints.shared";
-import {
-  findBestSafeEarnReserveTargetWithRetry,
-  resolveEligibleEarnDepositTarget,
-} from "@/lib/yield-optimization/earn-reserve-target.server";
+import { resolveEarnDepositTarget } from "@/lib/yield-optimization/earn-reserve-target.server";
 import {
   findActiveYieldRoutePolicyPair,
   findReconciledActiveYieldPositionForVault,
   type RoutePolicyRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Context twin of `../prepare` for ON-DEVICE deposit prepare: same auth,
 // provisioning gate, and DB reads, but instead of building the deposit here
@@ -36,7 +34,6 @@ import {
 // runs `prepareEarnUsdcDeposit` on its own RPC/IP allowance — mirroring the
 // on-device autodeposit setup/close flows. `../prepare` stays for app
 // versions that predate on-device prepare.
-const EARN_DEPOSIT_VAULT_INDEX = 1;
 
 function jsonError(
   status: number,
@@ -122,7 +119,7 @@ export async function POST(request: Request) {
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const settings = new PublicKey(settingsPda);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda: settings,
     });
@@ -131,35 +128,27 @@ export async function POST(request: Request) {
         authority: walletAddress,
         cluster,
         settings: settingsPda,
-        vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+        vaultIndex: EARN_VAULT_INDEX,
         vaultPubkey: earnVaultPda.toBase58(),
       }),
       findReconciledActiveYieldPositionForVault({
         cluster,
         liquidityMint: mint,
         settings: settingsPda,
-        vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+        vaultIndex: EARN_VAULT_INDEX,
         walletAddress,
       }),
     ]);
     policy = policyResult?.routePolicy ?? null;
     const policySigner = getDeploymentPolicySignerPublicKey();
-    // A top-up deposits into the same-mint reserve the position is already in
-    // — same rule as `../prepare` — unless that reserve is
-    // ineligible (hidden/unsampled or drained); then fall back to the default
-    // reserve instead of feeding it (ASK-1764).
-    const existingTarget =
-      policy && activePosition
-        ? await resolveEligibleEarnDepositTarget({
-            cluster,
-            liquidityMint: mint,
-            logTag: "mobile-earn-deposit-prepare-context",
-            position: activePosition,
-          })
-        : null;
-    const target =
-      existingTarget ??
-      (await findBestSafeEarnReserveTargetWithRetry({ cluster, productMint }));
+    const target = await resolveEarnDepositTarget({
+      activePosition,
+      cluster,
+      hasActiveRoutePolicy: policy !== null,
+      liquidityMint: mint,
+      logTag: "mobile-earn-deposit-prepare-context",
+      productMint,
+    });
     if (!target) {
       return jsonError(
         409,

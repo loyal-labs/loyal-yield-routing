@@ -63,12 +63,20 @@ export {
 export type {
   EarnApyHistorySeriesLike,
   EarnApyHistorySeriesSample,
+  EarnForecastApyHistoryResponse,
+  EarnForecastApyHistorySample,
+  EarnForecastApyHistorySeries,
+  EarnForecastResponse,
+  EarnForecastSummaryResponse,
 } from "./earn-forecast";
 
 export { getEarnTransactionRowLabel } from "./earn-transactions";
 export type {
+  EarnTransactionAccount,
   EarnTransactionEventType,
   EarnTransactionKind,
+  EarnTransactionsResponse,
+  SerializedEarnTransaction,
 } from "./earn-transactions";
 
 export { EARN_WITHDRAW_SOURCE_DUST_USD } from "./earn-withdraw-dust";

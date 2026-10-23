@@ -17,6 +17,32 @@ export type EarnTransactionEventType =
   | "rebalance_confirmed"
   | "snapshot_reconciled";
 
+export type EarnTransactionAccount = {
+  icon: string | null;
+  label: string;
+};
+
+export type SerializedEarnTransaction = {
+  amount: string;
+  confirmedAt: string;
+  confirmedSlot: string;
+  dateGroup: string;
+  destination: EarnTransactionAccount;
+  eventType: EarnTransactionEventType;
+  id: string;
+  kind: EarnTransactionKind;
+  liquidityMint: string;
+  rawAmount: string;
+  signature: string;
+  sortTimestamp: string;
+  source: EarnTransactionAccount;
+  timestamp: string;
+};
+
+export type EarnTransactionsResponse = {
+  transactions: SerializedEarnTransaction[];
+};
+
 export function getEarnTransactionRowLabel(item: {
   eventType: EarnTransactionEventType;
   kind: EarnTransactionKind;
