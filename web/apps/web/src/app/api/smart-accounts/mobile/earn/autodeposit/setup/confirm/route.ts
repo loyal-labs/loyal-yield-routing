@@ -52,13 +52,13 @@ import {
   type EarnAutodepositBootstrapWalletBalanceSnapshot,
   type PendingEarnAutodepositScheduledSweepRecord,
 } from "@/lib/yield-optimization/earn-autodeposit-repository.server";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Mobile twin of `yield-optimization/autodeposit/setup/confirm`. The device
 // echoes the serialized prepared setup it signed + signature/slot + the chosen
 // threshold; this route rebuilds the canonical confirm payload server-side. The
 // canonicalization + bootstrap-sweep scheduling mirror the session route — keep
 // in sync.
-const EARN_DEPOSIT_VAULT_INDEX = 1 as const;
 const MONTH_PERIOD_SECONDS = BigInt(30 * 24 * 60 * 60);
 const BOOTSTRAP_BALANCE_SOURCE = "app_autodeposit_setup_confirm";
 const BOOTSTRAP_BALANCE_SOURCE_COMMITMENT = "confirmed";
@@ -117,7 +117,7 @@ function createCanonicalAutodepositSetupInput(
   })[0];
   const expectedVault = pda.getSmartAccountPda({
     settingsPda: settings,
-    accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+    accountIndex: EARN_VAULT_INDEX,
   })[0];
   const earnTarget = getKaminoUsdcEarnTargetForCluster(cluster);
   const usdcMint = earnTarget.liquidityMint;
@@ -154,7 +154,7 @@ function createCanonicalAutodepositSetupInput(
     recurringDelegation: expectedRecurringDelegation.toBase58(),
     subscriptionAuthority: expectedSubscriptionAuthority.toBase58(),
     subscriptionDelegatee: expectedVault.toBase58(),
-    vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+    vaultIndex: EARN_VAULT_INDEX,
     vaultPubkey: expectedVault.toBase58(),
     vaultUsdcAta: expectedVaultUsdcAta.toBase58(),
     walletUsdcAta: expectedWalletUsdcAta.toBase58(),

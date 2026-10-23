@@ -16,8 +16,7 @@ import {
   serializeEarnTransactionEvent,
   type SerializedEarnTransaction,
 } from "@/app/api/smart-accounts/earn-transactions/formatter";
-
-const EARN_VAULT_INDEX = 1;
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 function jsonError(status: number, code: string, message: string): NextResponse {
   return NextResponse.json({ error: { code, message } }, { status });

@@ -29,13 +29,12 @@ import {
   type BalanceSweepTargetRecord,
   type ConfirmedEarnAutodepositCloseInput,
 } from "@/lib/yield-optimization/earn-autodeposit-repository.server";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Mobile twin of `yield-optimization/autodeposit/close/confirm`. The device
 // echoes the serialized prepared close it signed + signature/slot; this route
 // rebuilds the canonical confirm payload server-side and records the closed
 // target. The canonicalization mirrors the session route — keep in sync.
-const EARN_DEPOSIT_VAULT_INDEX = 1 as const;
-
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 type MobileCloseConfirmFields = {
@@ -93,14 +92,14 @@ function createCanonicalAutodepositCloseInput(
   const settings = new PublicKey(requestInput.settings);
   const expectedVault = pda.getSmartAccountPda({
     settingsPda: settings,
-    accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+    accountIndex: EARN_VAULT_INDEX,
   })[0];
   const expectedPolicySigner = getDeploymentPolicySignerPublicKey().toBase58();
   const canonicalInput = {
     ...normalizedRequestInput,
     cluster,
     delegatedSigner: expectedPolicySigner,
-    vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+    vaultIndex: EARN_VAULT_INDEX,
     vaultPubkey: expectedVault.toBase58(),
   };
 

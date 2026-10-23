@@ -31,15 +31,13 @@ import {
   type EarnProductAsset,
   resolveEarnProductAsset,
 } from "@/lib/yield-optimization/earn-product-mints.shared";
-import {
-  findBestSafeEarnReserveTargetWithRetry,
-  resolveEligibleEarnDepositTarget,
-} from "@/lib/yield-optimization/earn-reserve-target.server";
+import { resolveEarnDepositTarget } from "@/lib/yield-optimization/earn-reserve-target.server";
 import {
   findActiveYieldRoutePolicyPair,
   findReconciledActiveYieldPositionForVault,
   type RoutePolicyRecord,
 } from "@/lib/yield-optimization/yield-deposit-repository.server";
+import { EARN_VAULT_INDEX } from "@/features/smart-accounts/derivation";
 
 // Mobile twin of `/api/smart-accounts/yield-optimization/deposits/prepare`.
 // Identical prepare logic, but authenticated by a wallet signature (no
@@ -47,8 +45,6 @@ import {
 // itself instead of reading it from a session principal. Mobile then signs +
 // sends the returned prepared op with the device wallet. Keep the prepare body
 // below in sync with the session route.
-const EARN_DEPOSIT_VAULT_INDEX = 1;
-
 const connectionCache = new Map<SolanaEnv, Connection>();
 
 function jsonError(
@@ -226,7 +222,7 @@ export async function POST(request: Request) {
     const programId = new PublicKey(serverEnv.loyalSmartAccounts.programId);
     const settings = new PublicKey(settingsPda);
     const [earnVaultPda] = pda.getSmartAccountPda({
-      accountIndex: EARN_DEPOSIT_VAULT_INDEX,
+      accountIndex: EARN_VAULT_INDEX,
       programId,
       settingsPda: settings,
     });
@@ -235,14 +231,14 @@ export async function POST(request: Request) {
         authority: walletAddress,
         cluster,
         settings: settingsPda,
-        vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+        vaultIndex: EARN_VAULT_INDEX,
         vaultPubkey: earnVaultPda.toBase58(),
       }),
       findReconciledActiveYieldPositionForVault({
         cluster,
         liquidityMint: mint,
         settings: settingsPda,
-        vaultIndex: EARN_DEPOSIT_VAULT_INDEX,
+        vaultIndex: EARN_VAULT_INDEX,
         walletAddress,
       }),
     ]);
@@ -268,26 +264,14 @@ export async function POST(request: Request) {
             : {}),
         }
       : undefined;
-    // A top-up deposits into the same-mint reserve the position is already in,
-    // mirroring the session deposit-prepare. The previous best-reserve lookup
-    // re-picked the best fresh candidate and hard-failed attempts whenever
-    // every safe reserve for the selected mint was
-    // momentarily flagged reserveLastUpdateStale in the Timescale feed.
-    // Exception (ASK-1764): an ineligible current reserve (hidden/unsampled
-    // or drained) is never followed — choose the best eligible reserve for
-    // the same selected mint.
-    const existingTarget =
-      policy && activePosition
-        ? await resolveEligibleEarnDepositTarget({
-            cluster,
-            liquidityMint: mint,
-            logTag: "mobile-earn-deposit-prepare",
-            position: activePosition,
-          })
-        : null;
-    const target =
-      existingTarget ??
-      (await findBestSafeEarnReserveTargetWithRetry({ cluster, productMint }));
+    const target = await resolveEarnDepositTarget({
+      activePosition,
+      cluster,
+      hasActiveRoutePolicy: policy !== null,
+      liquidityMint: mint,
+      logTag: "mobile-earn-deposit-prepare",
+      productMint,
+    });
     if (!target) {
       return jsonError(
         409,

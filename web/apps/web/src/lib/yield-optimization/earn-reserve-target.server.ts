@@ -138,6 +138,35 @@ export async function findBestSafeEarnReserveTargetWithRetry(args: {
   }
 }
 
+export async function resolveEarnDepositTarget(args: {
+  activePosition: Pick<
+    UserYieldPositionRecord,
+    "currentLiquidityMint" | "currentMarket" | "currentReserve"
+  > | null;
+  cluster: LoyalCluster;
+  hasActiveRoutePolicy: boolean;
+  liquidityMint: string;
+  logTag: string;
+  productMint: EarnProductAsset;
+}): Promise<EarnUsdcReserveTarget | null> {
+  const existingTarget =
+    args.hasActiveRoutePolicy && args.activePosition
+      ? await resolveEligibleEarnDepositTarget({
+          cluster: args.cluster,
+          liquidityMint: args.liquidityMint,
+          logTag: args.logTag,
+          position: args.activePosition,
+        })
+      : null;
+  return (
+    existingTarget ??
+    (await findBestSafeEarnReserveTargetWithRetry({
+      cluster: args.cluster,
+      productMint: args.productMint,
+    }))
+  );
+}
+
 export function selectBestSafeEarnReserveTarget(args: {
   cluster: LoyalCluster;
   productMint: EarnProductAsset;
