@@ -7,10 +7,22 @@ import "github.com/danielgtaylor/huma/v2"
 // POST /api/smart-accounts/yield-optimization/policies/prepare     <- web/apps/web/src/app/api/smart-accounts/yield-optimization/policies/prepare/route.ts
 // POST /api/smart-accounts/yield-optimization/policies/confirm     <- web/apps/web/src/app/api/smart-accounts/yield-optimization/policies/confirm/route.ts
 // POST /api/smart-accounts/earn-max/context                        <- web/apps/web/src/app/api/smart-accounts/mobile/earn-max/route.ts POST
+// earnDepositYieldGrants covers the confirm unit's reads and writes: the
+// policy pair read behind the citation (EARN.md's activePolicyPair) and the
+// mobile quest report's solana_week_quest_completions rows.
+var earnDepositYieldGrants = []Grant{
+	{"loyal_yield.managed_vaults", "SELECT"},
+	{"loyal_yield.route_policies", "SELECT"},
+	{"loyal_yield.solana_week_quest_completions", "SELECT"},
+	{"loyal_yield.solana_week_quest_completions", "INSERT"},
+	{"loyal_yield.solana_week_quest_completions", "UPDATE"},
+}
+
 var earnDepositFamily = earnFamily{
-	name: "earn deposit",
+	name:        "earn deposit",
+	yieldGrants: earnDepositYieldGrants,
 	ready: func(h earnRoutes) bool {
-		return h.signedIn() && h.Chain != nil && !h.PolicySigner.IsZero()
+		return h.signedIn() && h.Chain != nil && h.YieldDB != nil && !h.PolicySigner.IsZero()
 	},
 	register: earnRoutes.registerDeposit,
 }
@@ -18,4 +30,5 @@ var earnDepositFamily = earnFamily{
 func (h earnRoutes) registerDeposit(api huma.API) {
 	h.registerPoliciesPrepare(api)
 	h.registerPoliciesConfirm(api)
+	h.registerDepositsConfirm(api)
 }
