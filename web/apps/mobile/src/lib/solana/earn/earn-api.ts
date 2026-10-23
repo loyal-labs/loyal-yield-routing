@@ -22,6 +22,7 @@ import type {
   SolanaWeekQuestProgressResponse,
 } from "@loyal-labs/api";
 import { env } from "@/config/env";
+import { FetchTimeoutError } from "@/lib/network/fetch-with-timeout";
 import {
   EARN_AUTODEPOSIT_PROGRESS_STATES,
   type EarnAutodepositProgressState,
@@ -67,6 +68,8 @@ export class EarnApiError extends Error {
   }
 }
 
+const PREPARE_TIMEOUT_MS = 120_000;
+
 export function earnNetworkError(
   message: string,
   detail?: LifecycleErrorDetail,
@@ -91,15 +94,27 @@ export async function prepareEarnDeposit(args: {
   mint: string;
   flowId?: string;
 }): Promise<DprepResponse> {
-  const res = await earnWalletRead(
-    args.walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/deposits/prepare`,
-    {
-      body: JSON.stringify({ amountRaw: args.amountRaw, mint: args.mint }),
-      flowId: args.flowId,
-      method: "POST",
-    },
-  );
+  let res: Response;
+  try {
+    res = await earnWalletRead(
+      args.walletAddress,
+      `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/deposits/prepare`,
+      {
+        body: JSON.stringify({ amountRaw: args.amountRaw, mint: args.mint }),
+        flowId: args.flowId,
+        method: "POST",
+        timeoutMs: PREPARE_TIMEOUT_MS,
+      },
+    );
+  } catch (error) {
+    if (error instanceof FetchTimeoutError) {
+      throw earnNetworkError(
+        "Setting up your Earn account is taking longer than usual. It finishes in the background — try again in a minute.",
+        "request_timeout",
+      );
+    }
+    throw error;
+  }
   if (!res.ok) {
     return throwEarnError(res, "Failed to prepare Earn deposit.");
   }

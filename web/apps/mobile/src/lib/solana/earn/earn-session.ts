@@ -253,6 +253,7 @@ type BearerInit = {
   body?: string;
   flowId?: string;
   method?: "GET" | "POST";
+  timeoutMs?: number;
 };
 
 function getWithBearer(
@@ -263,6 +264,7 @@ function getWithBearer(
   return fetchWithTimeout(url, {
     body: init.body,
     method: init.method ?? "GET",
+    timeoutMs: init.timeoutMs,
     headers: token
       ? { ...earnHeaders(init.flowId), Authorization: `Bearer ${token}` }
       : earnHeaders(init.flowId),

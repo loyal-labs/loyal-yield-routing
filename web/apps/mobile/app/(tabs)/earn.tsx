@@ -804,14 +804,13 @@ export default function EarnScreen() {
   // so only the missing final stage needs signing.
   const isAutodepositSetUp =
     autodepositThresholdUsd != null && autodeposit?.status !== "pending";
-  const autodepositSubtitle = earnAutodepositLabel(
+  const autodepositSubtitle =
     isAutodepositSetUp && autodepositThresholdUsd != null
-      ? {
+      ? earnAutodepositLabel({
           keepAmount: String(autodepositThresholdUsd),
           state: autodepositEnabled ? "created" : "paused",
-        }
-      : null
-  );
+        })
+      : null;
 
   const balanceParts = useMemo(
     () => splitUsdCents(hasDeposit && depositedUsd != null ? depositedUsd : 0),
