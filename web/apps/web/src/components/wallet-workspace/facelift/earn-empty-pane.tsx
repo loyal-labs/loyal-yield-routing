@@ -2,6 +2,7 @@
 
 import { DogLottie } from "@/components/wallet-workspace/facelift/dog-lottie";
 import { InfoTooltip } from "@/components/wallet-workspace/facelift/info-tooltip";
+import { PANE_CLIP_MOBILE_ONLY } from "@/components/wallet-workspace/facelift/pane-clip";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
 import { LedgerSignInLink } from "@/components/auth/ledger-sign-in-link";
@@ -233,7 +234,9 @@ export function EarnEmptyPane({
             })()}
           </div>
 
-          <div className="-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:relative max-[795px]:bottom-0 max-[795px]:min-h-0 max-[795px]:w-full max-[795px]:flex-1 max-[795px]:items-end max-[795px]:overflow-clip max-[795px]:rounded-b-3xl">
+          <div
+            className={`-bottom-2 pointer-events-none absolute inset-x-0 flex justify-center max-[795px]:relative max-[795px]:bottom-0 max-[795px]:min-h-0 max-[795px]:w-full max-[795px]:flex-1 max-[795px]:items-end ${PANE_CLIP_MOBILE_ONLY} max-[795px]:rounded-b-3xl`}
+          >
             {/* Desktop: the dog is a bottom-anchored square, so capping width caps
             height. ~380px of header/headline/CTA sits above it, so shrink with
             viewport height below 800px (380 + 420) to keep the CTA clear. */}

@@ -14,13 +14,12 @@ import { NextResponse } from "next/server";
 
 import { authenticateMobileWalletRequest } from "@/features/identity/server/mobile-wallet-auth";
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
-import { resolveFundedSmartAccount } from "@/features/smart-accounts/server/funded-smart-account.server";
-import { isSmartAccountProvisioningError } from "@/features/smart-accounts/server/service";
 import { getServerEnv } from "@/lib/core/config/server";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
 import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
+import { ensureMobileEarnDepositSmartAccount } from "@/lib/yield-optimization/mobile-earn-deposit-account-gate.server";
 import { hasLiveBalanceSweepTargetForWallet } from "@/lib/yield-optimization/earn-autodeposit-repository.server";
 import { parseEarnDepositPrepareRequestBody } from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
 import {
@@ -129,42 +128,18 @@ export async function POST(request: Request) {
   // product mint, which defaults those to USDC.
   mint = productMint.mint.toBase58();
 
-  let settingsPda: string;
-  let smartAccountAddress: string;
-  try {
-    const gate = await resolveFundedSmartAccount({
-      connection,
-      walletAddress,
-      mint: productMint.mint,
-      amountRaw,
-      request,
-    });
-    if (gate.outcome === "insufficient_balance") {
-      return jsonError(
-        402,
-        "insufficient_balance",
-        "Wallet must hold the selected mint before its Earn account can be created."
-      );
-    }
-    settingsPda = gate.settingsPda;
-    smartAccountAddress = gate.smartAccountAddress;
-  } catch (error) {
-    if (isSmartAccountProvisioningError(error)) {
-      return jsonError(error.status, error.code, error.message);
-    }
-    console.error("[mobile-earn-deposit-prepare] provisioning failed", {
-      errorMessage:
-        error instanceof Error ? error.message : "Unknown provisioning error.",
-      errorName: error instanceof Error ? error.name : typeof error,
-      stack: error instanceof Error ? error.stack : undefined,
-      walletAddress,
-    });
-    return jsonError(
-      502,
-      "provisioning_failed",
-      "Failed to resolve the smart account for this wallet."
-    );
+  const gate = await ensureMobileEarnDepositSmartAccount({
+    amountRaw,
+    logTag: "mobile-earn-deposit-prepare",
+    productMint,
+    request,
+    solanaEnv,
+    walletAddress,
+  });
+  if (!gate.ok) {
+    return gate.response;
   }
+  const { settingsPda, smartAccountAddress } = gate;
 
   let policy: RoutePolicyRecord | null = null;
 

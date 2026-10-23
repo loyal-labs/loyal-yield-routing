@@ -4,22 +4,15 @@ import {
 } from "@loyal-labs/actions";
 import { pda } from "@loyal-labs/loyal-smart-accounts";
 import type { SolanaEnv } from "@loyal-labs/solana-rpc";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { NextResponse } from "next/server";
 
-import { getOrCreateCurrentUser } from "@/features/chat/server/app-user";
 import { authenticateMobileWalletRequest } from "@/features/identity/server/mobile-wallet-auth";
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
-import {
-  ensureWalletUserSmartAccountTraced,
-  findReadyCurrentUserSmartAccount,
-  isSmartAccountProvisioningError,
-} from "@/features/smart-accounts/server/service";
 import { getServerEnv } from "@/lib/core/config/server";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
-import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
-import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
+import { ensureMobileEarnDepositSmartAccount } from "@/lib/yield-optimization/mobile-earn-deposit-account-gate.server";
 import { hasLiveBalanceSweepTargetForWallet } from "@/lib/yield-optimization/earn-autodeposit-repository.server";
 import { parseEarnDepositPrepareRequestBody } from "@/lib/yield-optimization/earn-deposit-prepare-contracts.shared";
 import {
@@ -42,11 +35,8 @@ import {
 // per-IP-rate-limited Solana RPC pipe) it returns the inputs so the device
 // runs `prepareEarnUsdcDeposit` on its own RPC/IP allowance — mirroring the
 // on-device autodeposit setup/close flows. `../prepare` stays for app
-// versions that predate on-device prepare; keep the auth/provisioning gate
-// below in sync with it.
+// versions that predate on-device prepare.
 const EARN_DEPOSIT_VAULT_INDEX = 1;
-
-const connectionCache = new Map<SolanaEnv, Connection>();
 
 function jsonError(
   status: number,
@@ -58,46 +48,6 @@ function jsonError(
 
 function getConfiguredSolanaEnv(): SolanaEnv {
   return resolveLoyalWebSolanaEnvFromEnv(process.env);
-}
-
-function getConnection(cluster: SolanaEnv): Connection {
-  const cached = connectionCache.get(cluster);
-  if (cached) {
-    return cached;
-  }
-
-  const { rpcEndpoint, websocketEndpoint } = getServerSolanaEndpoints(cluster);
-  const connection = new Connection(rpcEndpoint, {
-    commitment: "confirmed",
-    disableRetryOnRateLimit: true,
-    fetch: getFrontendSolanaRpcFetch(globalThis.fetch),
-    wsEndpoint: websocketEndpoint,
-  });
-  connectionCache.set(cluster, connection);
-  return connection;
-}
-
-// Sum the selected mint across the wallet's token accounts (parsed RPC; no
-// spl-token dependency, mirroring the frontend asset provider).
-async function getWalletMintBalanceRaw(
-  connection: Connection,
-  owner: PublicKey,
-  mint: PublicKey
-): Promise<bigint> {
-  const { value } = await connection.getParsedTokenAccountsByOwner(owner, {
-    mint,
-  });
-  let total = BigInt(0);
-  for (const entry of value) {
-    const parsed = entry.account.data.parsed as
-      | { info?: { tokenAmount?: { amount?: unknown } } }
-      | undefined;
-    const amount = parsed?.info?.tokenAmount?.amount;
-    if (typeof amount === "string") {
-      total += BigInt(amount);
-    }
-  }
-  return total;
 }
 
 export async function POST(request: Request) {
@@ -152,64 +102,18 @@ export async function POST(request: Request) {
   // product mint, which defaults those to USDC.
   mint = productMint.mint.toBase58();
 
-  // Resolve (provisioning if needed) the canonical smart account for this
-  // wallet — same gate as `../prepare`: the first-ever provisioning is
-  // sponsored, so require the wallet to already hold the selected mint it is
-  // depositing before minting an account for it.
-  let settingsPda: string;
-  let smartAccountAddress: string;
-  try {
-    const user = await getOrCreateCurrentUser({
-      provider: "solana",
-      authMethod: "wallet",
-      subjectAddress: walletAddress,
-      walletAddress,
-    });
-    const existing = await findReadyCurrentUserSmartAccount({
-      userId: user.id,
-      walletAddress,
-    });
-    if (existing) {
-      settingsPda = existing.settingsPda;
-      smartAccountAddress = existing.smartAccountAddress;
-    } else {
-      const mintBalanceRaw = await getWalletMintBalanceRaw(
-        getConnection(solanaEnv),
-        new PublicKey(walletAddress),
-        productMint.mint
-      );
-      if (mintBalanceRaw < amountRaw) {
-        return jsonError(
-          402,
-          "insufficient_balance",
-          "Wallet must hold the selected mint before its Earn account can be created."
-        );
-      }
-      const ensured = await ensureWalletUserSmartAccountTraced({
-        userId: user.id,
-        walletAddress,
-        request,
-      });
-      settingsPda = ensured.smartAccount.settingsPda;
-      smartAccountAddress = ensured.smartAccount.smartAccountAddress;
-    }
-  } catch (error) {
-    if (isSmartAccountProvisioningError(error)) {
-      return jsonError(error.status, error.code, error.message);
-    }
-    console.error("[mobile-earn-deposit-prepare-context] provisioning failed", {
-      errorMessage:
-        error instanceof Error ? error.message : "Unknown provisioning error.",
-      errorName: error instanceof Error ? error.name : typeof error,
-      stack: error instanceof Error ? error.stack : undefined,
-      walletAddress,
-    });
-    return jsonError(
-      502,
-      "provisioning_failed",
-      "Failed to resolve the smart account for this wallet."
-    );
+  const gate = await ensureMobileEarnDepositSmartAccount({
+    amountRaw,
+    logTag: "mobile-earn-deposit-prepare-context",
+    productMint,
+    request,
+    solanaEnv,
+    walletAddress,
+  });
+  if (!gate.ok) {
+    return gate.response;
   }
+  const { settingsPda, smartAccountAddress } = gate;
 
   let policy: RoutePolicyRecord | null = null;
 

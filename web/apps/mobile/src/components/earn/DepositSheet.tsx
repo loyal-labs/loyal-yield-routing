@@ -76,6 +76,29 @@ export function computeFirstDepositSolShortfall(
   return computeSolShortfall(FIRST_DEPOSIT_MIN_SOL, solBalance);
 }
 
+/**
+ * First-deposit SOL shortfall for one account, or null when the gate doesn't
+ * apply. Fails open: null while the position or SOL balance is still loading.
+ * A funded position with its route-policy pair takes the cheap top-up path —
+ * but a healed position can outlive that pair (post-full-exit orphans), and a
+ * missing pair sends even a top-up down first-time setup with its SOL cost, so
+ * the gate also opens on the policy read alone.
+ */
+export function firstDepositGateSolShortfall(args: {
+  accountLoaded: boolean;
+  hasFundedPosition: boolean;
+  routePolicyMissing: boolean;
+  solBalance: number | null;
+}): number | null {
+  if (!args.accountLoaded) {
+    return null;
+  }
+  if (args.hasFundedPosition && !args.routePolicyMissing) {
+    return null;
+  }
+  return computeFirstDepositSolShortfall(args.solBalance);
+}
+
 const COLOR_LABEL_DIM = "rgba(60, 60, 67, 0.6)";
 const COLOR_CHIP_BG = "#F2F2F7";
 const COLOR_CHIP_SOFT = "rgba(0, 0, 0, 0.04)";

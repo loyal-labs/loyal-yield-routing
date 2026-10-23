@@ -22,7 +22,11 @@ import {
 } from "./deeplink-session-storage";
 import { WalletRejectedError } from "./rejection";
 import { adoptWalletReturnedTransaction, type Signer } from "./signer";
-import { forgetWalletAuthorization, WalletSessionError } from "./wallet-session-error";
+import {
+  forgetWalletAuthorization,
+  isDeadAuthorization,
+  WalletSessionError,
+} from "./wallet-session-error";
 
 export const DEEPLINK_WALLET_LABELS: Record<DeeplinkWalletProvider, string> = {
   phantom: "Phantom",
@@ -305,9 +309,7 @@ export class DeeplinkSigner implements Signer {
         if (error.isUserDecline) {
           throw new WalletRejectedError(SIGNING_DECLINED_MESSAGE);
         }
-        if (error.isUnauthorized) {
-          // The user disconnected this app inside the wallet — the same dead
-          // authorization as MWA's ERROR_AUTHORIZATION_FAILED.
+        if (isDeadAuthorization(error)) {
           throw await forgetWalletAuthorization(
             clearDeeplinkSession,
             "authorization_expired",
