@@ -443,5 +443,3 @@ func cleanupCloseIntentInput(cluster string, closeMeta map[string]any, signature
 		WalletAddress:       wallet,
 	}, nil
 }
-
-

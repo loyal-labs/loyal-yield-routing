@@ -321,5 +321,3 @@ WHERE policy_account = $1 RETURNING id`, target.PolicyAccount, signature, now).S
 	}
 	return tx.Commit(ctx)
 }
-
-
