@@ -80,8 +80,8 @@ CREATE TABLE push_tokens (token text PRIMARY KEY, telegram_user_id bigint, walle
 	registerPush(humachi.New(r, apiConfig()), &Auth{keys: keys, appDB: pool}, pool)
 	for _, tc := range []struct {
 		name, header, value, token, platform string
-		status                     int
-		body                       string
+		status                               int
+		body                                 string
 	}{
 		{"cookie session", "Cookie", walletSessionCookie + "=" + cookie, "cookie-token", "ios", 200, `{"success":true}`},
 		{"bearer session", "Authorization", "Bearer " + bearer, "bearer-token", "android", 200, `{"success":true}`},
