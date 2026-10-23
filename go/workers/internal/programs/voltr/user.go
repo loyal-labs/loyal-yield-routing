@@ -113,12 +113,12 @@ func ceilDiv(a, b *big.Int) *big.Int {
 
 func (v Vault) unrealisedManagementFeeLP(accountedLP *big.Int, now time.Time) (*big.Int, error) {
 	feeBPS := uint64(v.ManagerManagementFeeBPS) + uint64(v.AdminManagementFeeBPS) + uint64(v.ProtocolManagementFeeBPS)
-	elapsed := now.Unix() - int64(v.LastManagementFeeUpdateUnix)
-	if v.LastManagementFeeUpdateUnix == 0 || v.TotalValueRaw == 0 || feeBPS == 0 || elapsed <= 0 {
+	elapsed := new(big.Int).Sub(big.NewInt(now.Unix()), new(big.Int).SetUint64(v.LastManagementFeeUpdateUnix))
+	if v.LastManagementFeeUpdateUnix == 0 || v.TotalValueRaw == 0 || feeBPS == 0 || elapsed.Sign() <= 0 {
 		return new(big.Int), nil
 	}
 	totalValue := new(big.Int).SetUint64(v.TotalValueRaw)
-	feeAsset := new(big.Int).Mul(totalValue, big.NewInt(elapsed))
+	feeAsset := new(big.Int).Mul(totalValue, elapsed)
 	feeAsset.Mul(feeAsset, new(big.Int).SetUint64(feeBPS))
 	feeAsset = ceilDiv(feeAsset, big.NewInt(bps*secondsPerYear))
 	if feeAsset.Cmp(totalValue) >= 0 {

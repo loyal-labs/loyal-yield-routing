@@ -69,7 +69,7 @@ async function recordFailedAttempt(): Promise<void> {
   }
 }
 
-async function resetAttempts(): Promise<void> {
+export async function resetAttempts(): Promise<void> {
   await SecureStore.deleteItemAsync(FAILED_ATTEMPTS_KEY);
   await SecureStore.deleteItemAsync(LOCKED_UNTIL_KEY);
 }
