@@ -1002,7 +1002,7 @@ function summarize(window: AlertWindow): WindowSummary {
   };
 }
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 
 export interface PersistedWindow {
   key: string;
@@ -1013,10 +1013,8 @@ export interface PersistedWindow {
   lastEventAt: number;
   eventCount: number;
   openingEventCount: number;
-  /** Optional only for snapshots written before evaluation deduplication. */
-  evaluationCounts?: [string, number][];
-  /** Optional only for snapshots written before evaluation deduplication. */
-  peakEvaluationEventCount?: number;
+  evaluationCounts: [string, number][];
+  peakEvaluationEventCount: number;
   suppressedAlerts: number;
   sampledRows: number;
   signatures: (SignatureState & { key: string })[];
@@ -1134,9 +1132,7 @@ function deserializeWindow(saved: PersistedWindow): AlertWindow {
     uniqueValues.set(label, new Set(values));
   }
 
-  const evaluationCounts = new Map<string, number>(
-    saved.evaluationCounts ?? [[evaluationKey(saved.payload), saved.eventCount]]
-  );
+  const evaluationCounts = new Map<string, number>(saved.evaluationCounts);
 
   return {
     key: saved.key,
@@ -1148,8 +1144,7 @@ function deserializeWindow(saved: PersistedWindow): AlertWindow {
     eventCount: saved.eventCount,
     openingEventCount: saved.openingEventCount,
     evaluationCounts,
-    peakEvaluationEventCount:
-      saved.peakEvaluationEventCount ?? Math.max(saved.openingEventCount, 1),
+    peakEvaluationEventCount: saved.peakEvaluationEventCount,
     suppressedAlerts: saved.suppressedAlerts,
     sampledRows: saved.sampledRows,
     signatures,

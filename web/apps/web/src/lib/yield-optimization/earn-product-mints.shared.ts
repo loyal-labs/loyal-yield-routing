@@ -43,16 +43,10 @@ export function getEarnProductAssetsForCluster(
 
 export function resolveEarnProductAsset(args: {
   cluster: LoyalCluster;
-  // null = legacy deposit body that predates mint selection; those clients
-  // always meant USDC (ASK-2099).
-  mint: string | PublicKey | null;
+  mint: string | PublicKey;
 }): EarnProductAsset {
   const mint =
-    args.mint === null
-      ? getStablecoinMintForCluster(args.cluster, Stablecoin.USDC)
-      : typeof args.mint === "string"
-      ? new PublicKey(args.mint)
-      : args.mint;
+    typeof args.mint === "string" ? new PublicKey(args.mint) : args.mint;
   const asset = getEarnProductAssetsForCluster(args.cluster).find((candidate) =>
     candidate.mint.equals(mint)
   );

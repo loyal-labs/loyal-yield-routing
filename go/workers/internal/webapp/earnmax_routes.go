@@ -325,7 +325,6 @@ func (h earnMaxRoutes) registerReads(api huma.API) {
 		if err != nil {
 			return nil, h.refused(err)
 		}
-		// Older web bundles still check this endpoint before showing Earn MAX.
 		return &inviteOutput{h.headers, InviteStatus{Redeemed: true}}, nil
 	})
 }

@@ -119,24 +119,20 @@ export type EarnDepositPrepareContext = {
     reserve: string;
     market: string;
     liquidityMint: string;
-    // Absent from backends that predate multi-mint Earn (those only ever
-    // target USDC, where the SDK defaults the program itself).
-    liquidityTokenProgram?: string;
+    liquidityTokenProgram: string;
     supplyApyBps: string | null;
   } | null;
 };
 
 // Resolves the on-device prepare context (auth + provisioning + DB reads only
-// — no instruction building server-side). Returns null when the backend
-// predates the endpoint so the caller can fall back to the server prepare.
-// `mint` selects the Earn product stablecoin; the server defaults omitted
-// mints to USDC (legacy-client shim, ASK-2099).
+// — no instruction building server-side). `mint` selects the Earn product
+// stablecoin.
 export async function fetchEarnDepositPrepareContext(args: {
   auth: EarnAuthFields;
   amountRaw: string;
   mint: string;
   flowId?: string;
-}): Promise<EarnDepositPrepareContext | null> {
+}): Promise<EarnDepositPrepareContext> {
   let res: Response;
   try {
     res = await fetchWithTimeout(
@@ -161,49 +157,10 @@ export async function fetchEarnDepositPrepareContext(args: {
     }
     throw error;
   }
-  if (res.status === 404) {
-    return null;
-  }
   if (!res.ok) {
     return throwEarnError(res, "Failed to prepare Earn deposit.");
   }
   return (await res.json()) as EarnDepositPrepareContext;
-}
-
-export async function prepareEarnDeposit(args: {
-  auth: EarnAuthFields;
-  amountRaw: string;
-  mint: string;
-  flowId?: string;
-}): Promise<EarnDepositPrepareResponse> {
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(
-      `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/deposit/prepare`,
-      {
-        method: "POST",
-        headers: earnHeaders(args.flowId),
-        body: JSON.stringify({
-          ...args.auth,
-          amountRaw: args.amountRaw,
-          mint: args.mint,
-        }),
-        timeoutMs: PREPARE_TIMEOUT_MS,
-      },
-    );
-  } catch (error) {
-    if (error instanceof FetchTimeoutError) {
-      throw earnNetworkError(
-        "Setting up your Earn account is taking longer than usual. It finishes in the background — try again in a minute.",
-        "request_timeout",
-      );
-    }
-    throw error;
-  }
-  if (!res.ok) {
-    return throwEarnError(res, "Failed to prepare Earn deposit.");
-  }
-  return (await res.json()) as EarnDepositPrepareResponse;
 }
 
 export type EarnWithdrawMode = "partial" | "full";
@@ -296,9 +253,7 @@ export type EarnWithdrawPrepareContext = {
           amountRaw: string;
           mint: string;
           tokenAccount: string;
-          // Absent from backends that predate multi-mint Earn; the hydrator
-          // derives it from `mint` via the product catalog then.
-          tokenProgramId?: string;
+          tokenProgramId: string;
         }
       | null;
     target: {
@@ -334,15 +289,14 @@ export type EarnWithdrawPrepareContext = {
 };
 
 // Resolves the on-device withdraw prepare context (auth + source selection
-// only — no instruction building server-side). Returns null when the backend
-// predates the endpoint so the caller can fall back to the server prepare.
+// only — no instruction building server-side).
 export async function fetchEarnWithdrawPrepareContext(args: {
   auth: EarnAuthFields;
   amountRaw: string;
   mode: EarnWithdrawMode;
   source?: EarnWithdrawSource;
   flowId?: string;
-}): Promise<EarnWithdrawPrepareContext | null> {
+}): Promise<EarnWithdrawPrepareContext> {
   const res = await fetch(
     `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/withdraw/prepare-context`,
     {
@@ -356,9 +310,6 @@ export async function fetchEarnWithdrawPrepareContext(args: {
       }),
     },
   );
-  if (res.status === 404) {
-    return null;
-  }
   if (!res.ok) {
     return throwEarnError(res, "Failed to prepare Earn withdrawal.");
   }
@@ -536,19 +487,18 @@ export type EarnAutodepositState = {
   lifecycleStatus: string;
   vaultIndex: number;
   scheduledSweeps?: LoadedEarnAutodepositScheduledSweep[];
-  // Resume metadata for the device-side prepare (absent on older backends):
-  // a half-finished setup must reuse the recorded seed/nonce/window so the SDK
-  // returns the missing stage for the SAME policy/delegation pair.
-  policySeed?: string;
-  recurringDelegationNonce?: string | null;
-  periodLengthSeconds?: string | null;
-  startTimestamp?: string | null;
-  recurringDelegationExpiryTimestamp?: string | null;
+  // Resume metadata for the device-side prepare: a half-finished setup must
+  // reuse the recorded seed/nonce/window so the SDK returns the missing stage
+  // for the SAME policy/delegation pair.
+  policySeed: string;
+  recurringDelegationNonce: string | null;
+  periodLengthSeconds: string | null;
+  startTimestamp: string | null;
+  recurringDelegationExpiryTimestamp: string | null;
 };
 
 // Deployment parameters the device needs to run the SDK's autodeposit prepare
-// locally. Absent/null on backends that predate device-side prepare or when
-// the deployment isn't configured for it.
+// locally. Null when the deployment isn't configured for it.
 export type EarnAutodepositPrepareContext = {
   cluster: string;
   policySigner: string;
@@ -714,8 +664,8 @@ export type EarnAutodepositSweepProgress = {
 
 // Read-only progress of one scheduled sweep, keyed by wallet address (no
 // signature) — the polled twin of the contract the web receives over SSE.
-// Returns null on ANY failure, including 404 from a backend that predates the
-// endpoint, so callers can quietly fall back to the coarse state polling.
+// Returns null on ANY failure, so callers can quietly fall back to the coarse
+// state polling.
 export async function fetchEarnAutodepositSweepProgress(
   walletAddress: string,
   slotId: string,
@@ -847,8 +797,7 @@ export type EarnEarningsResponse = {
 };
 
 // The backend returns every range in one payload (7D/30D/1Y/ALL); the mobile
-// chart plots the 30-day daily range. Older backends returned that one range
-// flat, so accept both shapes — the OTA and the backend deploy independently.
+// chart plots the 30-day daily range.
 export type EarnEarningsRangeSetResponse = {
   ranges: Record<"7D" | "30D" | "1Y" | "ALL", EarnEarningsResponse>;
 };
@@ -877,10 +826,8 @@ export async function fetchEarnEarnings(
   if (!res.ok) {
     return throwEarnError(res, "Failed to load Earn earnings.");
   }
-  const payload = (await res.json()) as
-    | EarnEarningsRangeSetResponse
-    | EarnEarningsResponse;
-  return "ranges" in payload ? payload.ranges["30D"] : payload;
+  const payload = (await res.json()) as EarnEarningsRangeSetResponse;
+  return payload.ranges["30D"];
 }
 
 export type EarnTransactionAccount = { label: string; icon: string | null };
