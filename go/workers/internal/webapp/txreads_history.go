@@ -520,13 +520,6 @@ func replayPositionHistory(seed txreadsPositionSeed, events []txreadsHoldingEven
 	return history
 }
 
-func txreadsDeref(value *int64) int64 {
-	if value == nil {
-		return 0
-	}
-	return *value
-}
-
 // txreadsSyntheticSignature is the formatter's fallback
 // [type, depositId, withdrawalId, decisionId, snapshotId].filter(Boolean).join(":").
 func txreadsSyntheticSignature(typ string, event txreadsHoldingEvent) string {

@@ -15,7 +15,6 @@ const (
 	txreadsMainUSDCLabel    = "Main"
 	txreadsEarnVaultLabel   = "Earn"
 	txreadsMainUSDCIcon     = "/wallet-workspace/earn-vault-usdc.png"
-	txreadsEarnVaultIcon    = "" // EARN_VAULT_ICON is null in the formatter.
 )
 
 // Compact Kamino market names (earn-position-display.ts KNOWN_MARKET_NAMES
