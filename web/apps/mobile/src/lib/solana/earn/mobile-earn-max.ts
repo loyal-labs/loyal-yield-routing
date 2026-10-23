@@ -25,7 +25,7 @@ async function earnMaxAccount(signer: Signer) {
     walletAddress,
     "/api/smart-accounts/earn-max/summary"
   );
-  const account = summary?.config ?? (await provisionEarnMaxAccount(token));
+  const account = summary?.config ?? (await provisionEarnMaxAccount(walletAddress));
   if (account.walletAddress !== walletAddress) {
     throw new Error("Earn MAX account does not match this wallet.");
   }
