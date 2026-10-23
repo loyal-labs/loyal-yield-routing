@@ -156,9 +156,8 @@ func (h earnRoutes) earnMaxContextSettings(ctx context.Context, wallet solana.Pu
 	if err != nil {
 		return "", earnMaxContextFailed("wallet usdc balance", err)
 	}
-	if balance < earnMaxContextMinUsdc {
-		return "", earnError(http.StatusPaymentRequired, "insufficient_balance",
-			"At least $1 USDC is needed in your wallet to set up Earn MAX.")
+	if err := earnMaxContextBalanceGate(balance); err != nil {
+		return "", err
 	}
 	userID, err = h.privyGetOrCreateUser(ctx, wallet, "")
 	if err != nil {
@@ -208,6 +207,17 @@ func (h earnRoutes) earnMaxWalletUsdcBalance(ctx context.Context, wallet solana.
 		total += token.Amount
 	}
 	return total, nil
+}
+
+// earnMaxContextBalanceGate is mobile.ts:80-88: the shipped clients send no
+// deposit amount, so a wallet holding less than $1 USDC cannot have its
+// setup sponsored.
+func earnMaxContextBalanceGate(balance uint64) error {
+	if balance < earnMaxContextMinUsdc {
+		return earnError(http.StatusPaymentRequired, "insufficient_balance",
+			"At least $1 USDC is needed in your wallet to set up Earn MAX.")
+	}
+	return nil
 }
 
 // earnMaxContextFailed is the Next POST's catch (mobile.ts:132-148): a
