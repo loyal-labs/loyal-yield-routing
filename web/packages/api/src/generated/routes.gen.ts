@@ -31,6 +31,7 @@ export type Post = {
   "/api/smart-accounts/yield-optimization/autodeposit/toggle/confirm": Types.AutodepositTargetResponse;
   "/api/smart-accounts/yield-optimization/cross-mint/delete/readiness": Types.CrossMintDeleteReadinessResponse;
   "/api/smart-accounts/yield-optimization/cross-mint/toggle": Types.CrossMintToggleResponse;
+  "/api/smart-accounts/yield-optimization/deposits/prepare": Types.DprepResponse;
   "/api/smart-accounts/yield-optimization/policies/confirm": Types.EarnPolicyConfirmResponse;
   "/api/smart-accounts/yield-optimization/policies/prepare": Types.EarnPolicyPrepareResponse;
   "/api/smart-accounts/yield-optimization/policy-refunds/prepare": Types.EarnPolicyRefundPrepareResponse;

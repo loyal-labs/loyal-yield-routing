@@ -192,6 +192,105 @@ export type DepositWireSimulationDiagnostics = {
     settingsPda: string;
 };
 
+export type DprepNativeSolItem = {
+    account?: string;
+    kind: string;
+    label: string;
+    lamports: string;
+    stage: string;
+};
+
+export type DprepNativeSolRequirement = {
+    balanceLamports: string;
+    balanceSource: string;
+    canProceed: boolean;
+    deficitLamports: string;
+    items: Array<DprepNativeSolItem> | null;
+    payer: string;
+    requiredLamports: string;
+};
+
+export type DprepPersistence = {
+    cluster: string;
+    delegatedSigner: string;
+    depositMint: string;
+    kaminoLiquidityMints: Array<string> | null;
+    kaminoMarkets: Array<string> | null;
+    liquidityMint: string;
+    market: string;
+    policyAccount: string;
+    policyId: string;
+    policyInitialization: string;
+    policySeed: string;
+    principalAmountRaw: string;
+    riskProfile: string;
+    routeModes: Array<string> | null;
+    settings: string;
+    setupPolicyAccount?: string;
+    setupPolicyId?: string;
+    setupPolicySeed?: string;
+    stableMints: Array<string> | null;
+    swapLanes?: Array<EarnPolicySwapLanePersistence>;
+    targetReserve: string;
+    targetSupplyApyBps: string | null;
+    threshold?: number;
+    universePreset: string;
+    vaultIndex: number;
+    vaultPubkey: string;
+    walletAddress: string;
+};
+
+export type DprepPolicyRef = {
+    account: string;
+    id: string;
+    sameMintInstructionConstraintIndexes: Array<number> | null;
+    seed: string;
+};
+
+export type DprepPreparedDeposit = {
+    kaminoSetupAccountCount: number;
+    kaminoSetupRentLamports: string;
+    kaminoSetupRequired: boolean;
+    nativeSolRequirement: DprepNativeSolRequirement;
+    persistence: DprepPersistence;
+    policy: DprepPolicyRef;
+    policyFinalizePrepared: DepositWirePreparedOperation;
+    policySetupPrepared: DepositWirePreparedOperation;
+    prepared: DepositWirePreparedOperation;
+    setupPolicy?: EarnSetupPolicyRef;
+    targetReserve: DprepTargetReserve;
+    vault: DprepVault;
+};
+
+export type DprepRequestBody = {
+    amountRaw: string;
+    mint: string;
+};
+
+export type DprepResponse = {
+    cluster?: string;
+    preparedDeposit: DprepPreparedDeposit;
+    programId?: string;
+    settingsPda?: string;
+    smartAccountAddress?: string;
+};
+
+export type DprepTargetReserve = {
+    liquidityMint: string;
+    liquidityTokenProgram: string;
+    market: string;
+    obligation: string;
+    reserve: string;
+    supplyApyBps: string | null;
+};
+
+export type DprepVault = {
+    accountIndex: number;
+    collateralAta: string | null;
+    pubkey: string;
+    usdcAta: string;
+};
+
 export type EarnForecastApyHistoryResponse = {
     feeBps: number;
     generatedAt: string;
@@ -2329,6 +2428,56 @@ export type PostEarnCrossMintToggleResponses = {
 };
 
 export type PostEarnCrossMintToggleResponse = PostEarnCrossMintToggleResponses[keyof PostEarnCrossMintToggleResponses];
+
+export type PostEarnDepositsPrepareData = {
+    body?: DprepRequestBody;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/deposits/prepare';
+};
+
+export type PostEarnDepositsPrepareErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Payment Required
+     */
+    402: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+};
+
+export type PostEarnDepositsPrepareError = PostEarnDepositsPrepareErrors[keyof PostEarnDepositsPrepareErrors];
+
+export type PostEarnDepositsPrepareResponses = {
+    /**
+     * OK
+     */
+    200: DprepResponse;
+};
+
+export type PostEarnDepositsPrepareResponse = PostEarnDepositsPrepareResponses[keyof PostEarnDepositsPrepareResponses];
 
 export type GetEarnStateData = {
     body?: never;
