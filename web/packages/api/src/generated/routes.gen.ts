@@ -8,7 +8,10 @@ export type Get = {
   "/api/smart-accounts/earn-max/activity": Types.EarnMaxActivity;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn-max/summary": Types.EarnMaxSummaryResponse;
+  "/api/smart-accounts/earn-transactions": Types.EarnTransactionsResponse;
   "/api/smart-accounts/yield-optimization/earn-state": Types.EarnStateResponse;
+  "/api/smart-accounts/yield-optimization/earnings": Types.EarningsRangeSet;
+  "/api/smart-accounts/yield-optimization/position": Types.EarnPositionResponse;
   "/api/summaries": Types.SummariesResponse;
 };
 
@@ -17,4 +20,9 @@ export type Post = {
   "/api/push-tokens": Types.PushTokenSaved;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn/session": Types.EarnSessionResponse;
+  "/api/smart-accounts/yield-optimization/policies/prepare": Types.EarnPolicyPrepareResponse;
+  "/api/smart-accounts/yield-optimization/policy-refunds/prepare": Types.EarnPolicyRefundPrepareResponse;
+  "/api/smart-accounts/yield-optimization/policy-refunds/scan": Types.EarnPolicyRefundScanResponse;
+  "/api/smart-accounts/yield-optimization/position/reconcile": Types.EarnPositionReconcileResponse;
+  "/api/smart-accounts/yield-optimization/withdrawals/prepare": Types.EarnWithdrawPrepareResponse;
 };

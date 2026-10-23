@@ -7,7 +7,6 @@ POST /api/observability/mobile/errors
 POST /api/observability/mobile/events
 POST /api/observability/mobile/metrics
 GET /api/smart-accounts/earn-forecast/summary
-GET /api/smart-accounts/earn-transactions
 POST /api/smart-accounts/mobile/earn-max
 POST /api/smart-accounts/mobile/earn/autodeposit/close/confirm
 POST /api/smart-accounts/mobile/earn/autodeposit/floor/confirm
@@ -39,16 +38,9 @@ POST /api/smart-accounts/yield-optimization/cross-mint/delete/readiness
 POST /api/smart-accounts/yield-optimization/cross-mint/toggle
 POST /api/smart-accounts/yield-optimization/deposits/confirm
 * /api/smart-accounts/yield-optimization/deposits/prepare
-* /api/smart-accounts/yield-optimization/earnings
 POST /api/smart-accounts/yield-optimization/policies/confirm
-POST /api/smart-accounts/yield-optimization/policies/prepare
-POST /api/smart-accounts/yield-optimization/policy-refunds/prepare
-POST /api/smart-accounts/yield-optimization/policy-refunds/scan
-GET /api/smart-accounts/yield-optimization/position
-* /api/smart-accounts/yield-optimization/position/reconcile
 POST /api/smart-accounts/yield-optimization/realtime/token
 POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/confirm
 POST /api/smart-accounts/yield-optimization/withdrawals/cleanup/prepare
 POST /api/smart-accounts/yield-optimization/withdrawals/confirm
-* /api/smart-accounts/yield-optimization/withdrawals/prepare
 * /api/solana-week/progress
