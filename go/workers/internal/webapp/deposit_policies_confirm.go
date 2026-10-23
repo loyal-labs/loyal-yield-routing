@@ -117,6 +117,17 @@ func (h earnRoutes) earnPoliciesConfirm(ctx context.Context, in *earnPoliciesCon
 	if body.WalletAddress != account.Wallet.String() || body.Settings != account.Settings.String() {
 		return nil, earnError(http.StatusForbidden, "principal_mismatch", "Confirmed yield policy does not match the authenticated wallet session.")
 	}
+	response, err := h.depositConfirmPolicyResponse(ctx, account, body)
+	if err != nil {
+		return nil, err
+	}
+	return &earnPoliciesConfirmOutput{Body: *response}, nil
+}
+
+// depositConfirmPolicyResponse is route.ts:306-375 minus auth and parsing:
+// canonical metadata, configured-cluster check, the RPC status wait, the slot
+// match and the verified-policy serialization.
+func (h earnRoutes) depositConfirmPolicyResponse(ctx context.Context, account EarnAccount, body earnPolicyConfirmBody) (*EarnPolicyConfirmResponse, error) {
 	canonical, err := depositCanonicalPolicyInput(body)
 	if err != nil {
 		return nil, earnError(http.StatusBadRequest, "metadata_mismatch", confirmErrorText(err, "Confirmed yield policy metadata is invalid."))
@@ -160,7 +171,7 @@ func (h earnRoutes) earnPoliciesConfirm(ctx context.Context, in *earnPoliciesCon
 		policy.ID = canonical.SetupPolicyID.String()
 		policy.Seed = canonical.SetupPolicySeed.String()
 	}
-	return &earnPoliciesConfirmOutput{Body: EarnPolicyConfirmResponse{Policy: policy}}, nil
+	return &EarnPolicyConfirmResponse{Policy: policy}, nil
 }
 
 // confirmErrorText mirrors `error instanceof Error ? error.message : fallback`
