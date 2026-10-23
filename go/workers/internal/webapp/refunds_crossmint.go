@@ -12,8 +12,8 @@ import (
 // cross-mint/toggle/route.ts and cross-mint/delete/readiness/route.ts.
 
 const (
-	crossMintTogglePath           = "/api/smart-accounts/yield-optimization/cross-mint/toggle"
-	crossMintDeleteReadinessPath  = "/api/smart-accounts/yield-optimization/cross-mint/delete/readiness"
+	crossMintTogglePath          = "/api/smart-accounts/yield-optimization/cross-mint/toggle"
+	crossMintDeleteReadinessPath = "/api/smart-accounts/yield-optimization/cross-mint/delete/readiness"
 
 	// route.ts:106-108 and :148 (toggle), :108-110 (delete readiness).
 	crossMintNotInstalledMessage = "Autoswap is not installed."

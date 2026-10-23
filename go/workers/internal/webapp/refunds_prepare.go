@@ -246,6 +246,22 @@ func (h earnRoutes) registerRefunds(api huma.API) {
 		Responses:   errorResponses[routeError](api, 400, 401, 409, 500, 503),
 	}, h.earnPolicyRefundPrepare)
 	documentJSONBody[RefundPrepareRequest](api, refundsPreparePath)
+	huma.Register(api, huma.Operation{
+		OperationID: "post-earn-cross-mint-toggle",
+		Method:      http.MethodPost,
+		Path:        crossMintTogglePath,
+		Summary:     "Enable or pause the Earn cross-mint autoswap for the signed-in wallet",
+		Responses:   errorResponses[routeError](api, 400, 401, 404, 409, 503),
+	}, h.earnCrossMintToggle)
+	documentJSONBody[CrossMintToggleRequest](api, crossMintTogglePath)
+	huma.Register(api, huma.Operation{
+		OperationID: "post-earn-cross-mint-delete-readiness",
+		Method:      http.MethodPost,
+		Path:        crossMintDeleteReadinessPath,
+		Summary:     "Check which Autoswap policies remain on chain before a delete",
+		Responses:   errorResponses[routeError](api, 400, 401, 404, 409, 503),
+	}, h.earnCrossMintDeleteReadiness)
+	documentJSONBody[CrossMintDeleteReadinessRequest](api, crossMintDeleteReadinessPath)
 }
 
 func (h earnRoutes) earnPolicyRefundPrepare(ctx context.Context, in *refundPrepareInput) (*refundPrepareOutput, error) {
