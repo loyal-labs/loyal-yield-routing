@@ -79,18 +79,19 @@ CREATE TABLE push_tokens (token text PRIMARY KEY, telegram_user_id bigint, walle
 	r := chi.NewRouter()
 	registerPush(humachi.New(r, apiConfig()), &Auth{keys: keys, appDB: pool}, pool)
 	for _, tc := range []struct {
-		name, header, value, token string
+		name, header, value, token, platform string
 		status                     int
 		body                       string
 	}{
-		{"cookie session", "Cookie", walletSessionCookie + "=" + cookie, "cookie-token", 200, `{"success":true}`},
-		{"bearer session", "Authorization", "Bearer " + bearer, "bearer-token", 200, `{"success":true}`},
-		{"no credentials", "", "", "anon-token", 401, `{"error":{"code":"unauthenticated","message":"No active auth session."}}`},
-		{"tampered cookie", "Cookie", walletSessionCookie + "=" + cookie[:len(cookie)-4] + "AAAA", "tampered-token", 401, `{"error":{"code":"unauthenticated","message":"No active auth session."}}`},
-		{"bearer sent as cookie", "Cookie", walletSessionCookie + "=" + bearer, "swap-cookie-token", 401, `{"error":{"code":"unauthenticated","message":"No active auth session."}}`},
-		{"cookie sent as bearer", "Authorization", "Bearer " + cookie, "swap-bearer-token", 401, `{"error":{"code":"invalid_mobile_session","message":"Mobile Earn session is invalid or expired."}}`},
+		{"cookie session", "Cookie", walletSessionCookie + "=" + cookie, "cookie-token", "ios", 200, `{"success":true}`},
+		{"bearer session", "Authorization", "Bearer " + bearer, "bearer-token", "android", 200, `{"success":true}`},
+		{"no credentials", "", "", "anon-token", "ios", 401, `{"error":{"code":"unauthenticated","message":"No active auth session."}}`},
+		{"tampered cookie", "Cookie", walletSessionCookie + "=" + cookie[:len(cookie)-4] + "AAAA", "tampered-token", "ios", 401, `{"error":{"code":"unauthenticated","message":"No active auth session."}}`},
+		{"bearer sent as cookie", "Cookie", walletSessionCookie + "=" + bearer, "swap-cookie-token", "ios", 401, `{"error":{"code":"unauthenticated","message":"No active auth session."}}`},
+		{"unknown platform", "Cookie", walletSessionCookie + "=" + cookie, "web-token", "web", 400, `{"error":"Missing required fields: token, platform"}`},
+		{"cookie sent as bearer", "Authorization", "Bearer " + cookie, "swap-bearer-token", "ios", 401, `{"error":{"code":"invalid_mobile_session","message":"Mobile Earn session is invalid or expired."}}`},
 	} {
-		req := httptest.NewRequest(http.MethodPost, pushPath, strings.NewReader(`{"token":"`+tc.token+`","platform":"ios"}`))
+		req := httptest.NewRequest(http.MethodPost, pushPath, strings.NewReader(`{"token":"`+tc.token+`","platform":"`+tc.platform+`"}`))
 		req.Header.Set("Content-Type", "application/json")
 		if tc.header != "" {
 			req.Header.Set(tc.header, tc.value)
