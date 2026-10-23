@@ -440,6 +440,17 @@ export type EarnMaxConfig = {
     walletAddress: string;
 };
 
+export type EarnMaxContextRequest = {
+    action?: string;
+};
+
+export type EarnMaxContextResponse = {
+    cluster: string;
+    programId: string;
+    settingsPda: string;
+    walletAddress: string;
+};
+
 export type EarnMaxErrorDetail = {
     code: string;
     message?: string;
@@ -2187,6 +2198,60 @@ export type GetEarnMaxActivityResponses = {
 };
 
 export type GetEarnMaxActivityResponse = GetEarnMaxActivityResponses[keyof GetEarnMaxActivityResponses];
+
+export type PostEarnMaxContextData = {
+    body?: EarnMaxContextRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/earn-max/context';
+};
+
+export type PostEarnMaxContextErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Payment Required
+     */
+    402: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Bad Gateway
+     */
+    502: RouteError;
+};
+
+export type PostEarnMaxContextError = PostEarnMaxContextErrors[keyof PostEarnMaxContextErrors];
+
+export type PostEarnMaxContextResponses = {
+    /**
+     * OK
+     */
+    200: EarnMaxContextResponse;
+};
+
+export type PostEarnMaxContextResponse = PostEarnMaxContextResponses[keyof PostEarnMaxContextResponses];
 
 export type GetEarnMaxInviteData = {
     body?: never;

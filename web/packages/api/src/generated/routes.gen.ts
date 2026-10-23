@@ -24,6 +24,7 @@ export type Post = {
   "/api/observability/events": Types.ObsJourneyAccepted;
   "/api/observability/metrics": Types.ObsIngestAccepted;
   "/api/push-tokens": Types.PushTokenSaved;
+  "/api/smart-accounts/earn-max/context": Types.EarnMaxContextResponse;
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn/session": Types.EarnSessionResponse;
   "/api/smart-accounts/yield-optimization/autodeposit/close/confirm": Types.AutodepositTargetResponse;
