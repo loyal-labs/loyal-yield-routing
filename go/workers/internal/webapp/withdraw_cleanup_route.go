@@ -264,7 +264,10 @@ func (h earnRoutes) cleanupAutodepositClose(ctx context.Context, account EarnAcc
 		return nil, cleanupPrepareFailed(err)
 	}
 	if len(infos) == 0 || infos[0] == nil {
-		return nil, cleanupPrepareFailed(h.reconcileMissingAutodepositPolicy(ctx, target))
+		if err := h.reconcileMissingAutodepositPolicy(ctx, target); err != nil {
+			return nil, cleanupPrepareFailed(err)
+		}
+		return nil, nil
 	}
 	delegation, err := solana.PublicKeyFromBase58(*target.RecurringDelegation)
 	if err != nil {
