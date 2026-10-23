@@ -83,7 +83,7 @@ func (h earnRoutes) prepareRecurringDelegationRefundKind(ctx context.Context, ac
 	if err != nil {
 		return nil, refundPrepareFailed(err)
 	}
-	dbState, err := h.txreadsRefundDBState(ctx, account, policyAddresses, openDelegations)
+	dbState, err := h.txreadsRefundDBState(ctx, account, earnVaultIndex, policyAddresses, openDelegations)
 	if err != nil {
 		return nil, refundPrepareFailed(err)
 	}
@@ -183,7 +183,7 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 	if err != nil {
 		return nil, refundPrepareFailed(err)
 	}
-	dbState, err := h.txreadsRefundDBState(ctx, account, []string{policyAccount.String()}, openDelegations)
+	dbState, err := h.txreadsRefundDBState(ctx, account, earnVaultIndex, []string{policyAccount.String()}, openDelegations)
 	if err != nil {
 		return nil, refundPrepareFailed(err)
 	}
@@ -234,7 +234,7 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 		}
 	}
 	if !holdsChainFunds {
-		holds, err := h.txreadsVaultHoldsKaminoCollateral(ctx, account)
+		holds, err := h.txreadsVaultHoldsKaminoCollateral(ctx, account, earnVaultIndex)
 		if err != nil {
 			return nil, refundPrepareFailed(err)
 		}

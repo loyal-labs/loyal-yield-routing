@@ -500,7 +500,7 @@ func (h earnRoutes) txreadsVaultDBFlags(ctx context.Context, account EarnAccount
 // txreadsRefundDBState ports findEarnPolicyRefundDbState. With no policy
 // accounts the DB contributes nothing and only the open wallet-to-vault
 // delegations remain; the caller supplies those.
-func (h earnRoutes) txreadsRefundDBState(ctx context.Context, account EarnAccount, policyAddresses []string, openDelegations []EarnPolicyRefundRecurringDelegation) (txreadsRefundDBState, error) {
+func (h earnRoutes) txreadsRefundDBState(ctx context.Context, account EarnAccount, index uint8, policyAddresses []string, openDelegations []EarnPolicyRefundRecurringDelegation) (txreadsRefundDBState, error) {
 	state := txreadsRefundDBState{
 		activeAutodepositAccounts:  map[string]bool{},
 		activeManagedVaultAccounts: map[string]bool{},
@@ -517,7 +517,7 @@ func (h earnRoutes) txreadsRefundDBState(ctx context.Context, account EarnAccoun
 	policyIDByAccount := map[string]string{}
 	policyAccountByID := map[string]string{}
 	rows, err := h.YieldDB.Query(ctx, txreadsRefundPolicyRowsSQL,
-		account.Settings.String(), int16(earnVaultIndex), policyAddresses)
+		account.Settings.String(), int16(index), policyAddresses)
 	if err != nil {
 		return state, err
 	}
@@ -536,7 +536,7 @@ func (h earnRoutes) txreadsRefundDBState(ctx context.Context, account EarnAccoun
 	}
 
 	vaultRows, err := h.YieldDB.Query(ctx, txreadsRefundManagedVaultsSQL,
-		account.Settings.String(), int16(earnVaultIndex))
+		account.Settings.String(), int16(index))
 	if err != nil {
 		return state, err
 	}
@@ -560,7 +560,7 @@ func (h earnRoutes) txreadsRefundDBState(ctx context.Context, account EarnAccoun
 	}
 
 	positionRows, err := h.YieldDB.Query(ctx, txreadsRefundActivePositionsSQL,
-		account.Settings.String(), int16(earnVaultIndex), policyAddresses)
+		account.Settings.String(), int16(index), policyAddresses)
 	if err != nil {
 		return state, err
 	}
@@ -576,7 +576,7 @@ func (h earnRoutes) txreadsRefundDBState(ctx context.Context, account EarnAccoun
 		return state, err
 	}
 
-	autodepositRows, err := h.txreadsAutodepositRows(ctx, account, policyAddresses)
+	autodepositRows, err := h.txreadsAutodepositRows(ctx, account, index, policyAddresses)
 	if err != nil {
 		return state, err
 	}
@@ -628,11 +628,11 @@ func txreadsDelegationAddresses(rows []txreadsAutodepositRow) []string {
 	return addresses
 }
 
-func (h earnRoutes) txreadsAutodepositRows(ctx context.Context, account EarnAccount, policyAddresses []string) ([]txreadsAutodepositRow, error) {
+func (h earnRoutes) txreadsAutodepositRows(ctx context.Context, account EarnAccount, index uint8, policyAddresses []string) ([]txreadsAutodepositRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	rows, err := h.YieldDB.Query(ctx, txreadsRefundAutodepositRowsSQL,
-		account.Settings.String(), int16(earnVaultIndex), policyAddresses)
+		account.Settings.String(), int16(index), policyAddresses)
 	if err != nil {
 		return nil, err
 	}
@@ -799,10 +799,9 @@ func txreadsVaultHoldsChainFunds(snapshot txreadsVaultSnapshot) bool {
 // txreadsVaultSnapshot reads the vault at confirmed. The SOL balance mirrors
 // getVaultSweepLamportsOrZero (:3134): a failed read contributes zero instead
 // of failing the scan.
-func (h earnRoutes) txreadsVaultSnapshot(ctx context.Context, account EarnAccount, usdcMint solana.PublicKey) (txreadsVaultSnapshot, error) {
+func (h earnRoutes) txreadsVaultSnapshot(ctx context.Context, vault, usdcMint solana.PublicKey) (txreadsVaultSnapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	vault := account.Vault
 	snapshot := txreadsVaultSnapshot{tokenAccounts: []EarnVaultRefundTokenAccount{}}
 	usdcAta, err := spl.AssociatedTokenAddress(vault, usdcMint, solana.TokenProgramID)
 	if err != nil {
@@ -844,7 +843,7 @@ func (h earnRoutes) txreadsVaultSnapshot(ctx context.Context, account EarnAccoun
 // mint, read through the shared holdings snapshot with no dependence on DB
 // policy rows (they may be missing, ASK-2252), failing closed on unreadable
 // reserves.
-func (h earnRoutes) txreadsVaultHoldsKaminoCollateral(ctx context.Context, account EarnAccount) (bool, error) {
+func (h earnRoutes) txreadsVaultHoldsKaminoCollateral(ctx context.Context, account EarnAccount, index uint8) (bool, error) {
 	mints := make([]string, 0, 6)
 	for _, product := range dtargetProductMintsForCluster(account.Cluster) {
 		mints = append(mints, product.Mint)
@@ -853,7 +852,7 @@ func (h earnRoutes) txreadsVaultHoldsKaminoCollateral(ctx context.Context, accou
 	snapshot, err := earnprep.FetchWithdrawHoldingsSnapshot(ctx, h.Chain, earnprep.WithdrawHoldingsArgs{
 		Cluster: string(account.Cluster),
 		Policy: &earnprep.WithdrawPolicyUniverse{
-			VaultIndex:           earnVaultIndex,
+			VaultIndex:           index,
 			StableMints:          mints,
 			KaminoLiquidityMints: mints,
 			KaminoMarkets:        markets,
@@ -929,6 +928,71 @@ func txreadsVaultRefundEntry(account EarnAccount, snapshot txreadsVaultSnapshot,
 	}
 }
 
+// txreadsVaultFacts is what one vault index contributes to the verdict on
+// each policy that names it: the DB liveness rows, the open wallet-to-vault
+// delegations and whether the vault still holds funds on chain.
+type txreadsVaultFacts struct {
+	vault           solana.PublicKey
+	snapshot        txreadsVaultSnapshot
+	openDelegations []EarnPolicyRefundRecurringDelegation
+	db              txreadsRefundDBState
+	holdsChainFunds bool
+}
+
+func (h earnRoutes) txreadsReadVaultFacts(ctx context.Context, account EarnAccount, index uint8, policyAddresses []string) (txreadsVaultFacts, error) {
+	vault, _, err := squads.SmartAccountAddress(account.Settings, index)
+	if err != nil {
+		return txreadsVaultFacts{}, err
+	}
+	facts := txreadsVaultFacts{vault: vault}
+	if facts.openDelegations, err = h.txreadsOpenDelegations(ctx, account.Wallet, vault); err != nil {
+		return txreadsVaultFacts{}, err
+	}
+	if facts.db, err = h.txreadsRefundDBState(ctx, account, index, policyAddresses, facts.openDelegations); err != nil {
+		return txreadsVaultFacts{}, err
+	}
+	if facts.snapshot, err = h.txreadsVaultSnapshot(ctx, vault, txreadsUSDCMint(account.Cluster)); err != nil {
+		return txreadsVaultFacts{}, err
+	}
+	facts.holdsChainFunds = txreadsVaultHoldsChainFunds(facts.snapshot)
+	if !facts.holdsChainFunds {
+		if facts.holdsChainFunds, err = h.txreadsVaultHoldsKaminoCollateral(ctx, account, index); err != nil {
+			return txreadsVaultFacts{}, err
+		}
+	}
+	return facts, nil
+}
+
+// txreadsScanPolicy is one policy's scan entry, judged by the facts of the
+// vault it belongs to.
+func txreadsScanPolicy(policy txreadsPolicySeed, vaults map[uint8]txreadsVaultFacts) EarnPolicyRefundScanPolicy {
+	facts := vaults[earnVaultIndex]
+	address := policy.address.String()
+	activeManagedVault := facts.db.activeManagedVaultAccounts[address]
+	activeAutodeposit := facts.db.activeAutodepositAccounts[address]
+	referencedByActivePosition := facts.db.activePositionAccounts[address]
+	blockedReason := txreadsPolicyBlockedReason(activeAutodeposit, activeManagedVault, referencedByActivePosition, facts.holdsChainFunds)
+	lamports := policy.lamports
+	delegations := facts.db.byPolicyAccount[address]
+	if delegations == nil {
+		delegations = []EarnPolicyRefundRecurringDelegation{}
+	}
+	return EarnPolicyRefundScanPolicy{
+		Account:                    address,
+		AccountIndex:               policy.accountIndex,
+		ActiveAutodeposit:          activeAutodeposit,
+		ActiveManagedVault:         activeManagedVault,
+		BlockedReason:              blockedReason,
+		CanRefund:                  blockedReason == nil,
+		DBPresent:                  facts.db.routePolicyAccounts[address],
+		Lamports:                   &lamports,
+		RecurringDelegations:       delegations,
+		ReferencedByActivePosition: referencedByActivePosition,
+		Seed:                       strconv.FormatUint(policy.seed, 10),
+		State:                      policy.state,
+	}
+}
+
 // txreadsScanPolicyRefunds ports scanEarnPolicyRefunds
 // (earn-policy-refund.server.ts:228): the chain and DB liveness facts each
 // route policy and the Earn vault need before a refund may run.
@@ -941,64 +1005,26 @@ func (h earnRoutes) txreadsScanPolicyRefunds(ctx context.Context, account EarnAc
 	for _, policy := range policies {
 		policyAddresses = append(policyAddresses, policy.address.String())
 	}
-	openDelegations, err := h.txreadsOpenDelegations(ctx, account.Wallet, account.Vault)
+	earnFacts, err := h.txreadsReadVaultFacts(ctx, account, earnVaultIndex, policyAddresses)
 	if err != nil {
 		return EarnPolicyRefundScanResponse{}, err
 	}
-	dbState, err := h.txreadsRefundDBState(ctx, account, policyAddresses, openDelegations)
-	if err != nil {
-		return EarnPolicyRefundScanResponse{}, err
-	}
-	snapshot, err := h.txreadsVaultSnapshot(ctx, account, txreadsUSDCMint(account.Cluster))
-	if err != nil {
-		return EarnPolicyRefundScanResponse{}, err
-	}
+	vaults := map[uint8]txreadsVaultFacts{earnVaultIndex: earnFacts}
 	vaultFlags, err := h.txreadsVaultDBFlags(ctx, account)
 	if err != nil {
 		return EarnPolicyRefundScanResponse{}, err
 	}
-	holdsChainFunds := txreadsVaultHoldsChainFunds(snapshot)
-	if !holdsChainFunds {
-		holds, err := h.txreadsVaultHoldsKaminoCollateral(ctx, account)
-		if err != nil {
-			return EarnPolicyRefundScanResponse{}, err
-		}
-		holdsChainFunds = holds
-	}
 
 	scanPolicies := make([]EarnPolicyRefundScanPolicy, 0, len(policies))
 	for _, policy := range policies {
-		address := policy.address.String()
-		activeManagedVault := dbState.activeManagedVaultAccounts[address]
-		activeAutodeposit := dbState.activeAutodepositAccounts[address]
-		referencedByActivePosition := dbState.activePositionAccounts[address]
-		blockedReason := txreadsPolicyBlockedReason(activeAutodeposit, activeManagedVault, referencedByActivePosition, holdsChainFunds)
-		lamports := policy.lamports
-		delegations := dbState.byPolicyAccount[address]
-		if delegations == nil {
-			delegations = []EarnPolicyRefundRecurringDelegation{}
-		}
-		scanPolicies = append(scanPolicies, EarnPolicyRefundScanPolicy{
-			Account:                    address,
-			AccountIndex:               policy.accountIndex,
-			ActiveAutodeposit:          activeAutodeposit,
-			ActiveManagedVault:         activeManagedVault,
-			BlockedReason:              blockedReason,
-			CanRefund:                  blockedReason == nil,
-			DBPresent:                  dbState.routePolicyAccounts[address],
-			Lamports:                   &lamports,
-			RecurringDelegations:       delegations,
-			ReferencedByActivePosition: referencedByActivePosition,
-			Seed:                       strconv.FormatUint(policy.seed, 10),
-			State:                      policy.state,
-		})
+		scanPolicies = append(scanPolicies, txreadsScanPolicy(policy, vaults))
 	}
 
 	return EarnPolicyRefundScanResponse{
 		Policies:             scanPolicies,
-		RecurringDelegations: txreadsCollectDelegations(dbState.byPolicyAccount, openDelegations),
+		RecurringDelegations: txreadsCollectDelegations(earnFacts.db.byPolicyAccount, earnFacts.openDelegations),
 		SettingsPDA:          account.Settings.String(),
-		Vault:                txreadsVaultRefundEntry(account, snapshot, vaultFlags),
+		Vault:                txreadsVaultRefundEntry(account, earnFacts.snapshot, vaultFlags),
 		VaultIndex:           earnVaultIndex,
 		VaultPubkey:          account.Vault.String(),
 	}, nil
