@@ -2,8 +2,10 @@ package webapp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -37,13 +39,15 @@ type autodepositTargetRow struct {
 	WalletTokenAta          string
 	VaultTokenAta           string
 	SubscriptionAuthority   *string
+	LastSeenSignature       string
+	StartTimestamp          uint64
 	RecurringDelegationNull bool
 	RecurringDelegationNu64 uint64
 }
 
 const autodepositTargetColumns = `id, active, balance_sweep_policy_id, chain_status, policy_account, recurring_delegation, wallet_balance_floor_raw,
 	settings, wallet, vault_index, vault_pubkey, wallet_usdc_ata, vault_usdc_ata, token_mint, wallet_token_ata, vault_token_ata,
-	subscription_authority, recurring_delegation_nonce`
+	subscription_authority, last_seen_signature, start_timestamp, recurring_delegation_nonce`
 
 func scanAutodepositTarget(row pgx.Row) (autodepositTargetRow, error) {
 	var target autodepositTargetRow
@@ -53,7 +57,7 @@ func scanAutodepositTarget(row pgx.Row) (autodepositTargetRow, error) {
 		&target.RecurringDelegation, &target.WalletBalanceFloorRaw, &target.Settings, &target.Wallet,
 		&target.VaultIndex, &target.VaultPubkey, &target.WalletUsdcAta, &target.VaultUsdcAta,
 		&target.TokenMint, &target.WalletTokenAta, &target.VaultTokenAta,
-		&target.SubscriptionAuthority, &nonce,
+		&target.SubscriptionAuthority, &target.LastSeenSignature, &target.StartTimestamp, &nonce,
 	)
 	if err != nil {
 		return autodepositTargetRow{}, err
@@ -194,4 +198,395 @@ func (h earnRoutes) recordAutodepositSetupIntent(ctx context.Context, in autodep
 		return autodepositTargetRow{}, errors.New("Failed to record autodeposit setup intent.")
 	}
 	return target, nil
+}
+
+// ---- bootstrap sweep scheduling (earn-autodeposit-repository.server.ts:989) ----
+
+// autodepositBootstrapSnapshot is the wallet USDC balance observed at confirm
+// time (route.ts readBootstrapWalletBalanceSnapshot :309).
+type autodepositBootstrapSnapshot struct {
+	AmountRaw        uint64
+	ObservedSlot     uint64
+	ObservedAt       time.Time
+	Mint             string
+	Owner            string
+	AccountDataHash  string
+	AccountLamports  string
+	AccountOwner     string
+	SetupSignature   string
+	Source           string
+	SourceCommitment string
+}
+
+// autodepositSweepRow mirrors PendingEarnAutodepositScheduledSweepRecord.
+type autodepositSweepRow struct {
+	Classification        string
+	Confidence            string
+	EligibleAfter         time.Time
+	ExecuteNowAvailableAt *time.Time
+	ID                    int64
+	LotCount              int64
+	OriginalAmountRaw     uint64
+	Reason                string
+	RemainingAmountRaw    uint64
+	SlotID                int64
+	Status                string
+}
+
+func (s autodepositSweepRow) isOpen() bool {
+	return s.Status == "scheduled" && s.RemainingAmountRaw > 0
+}
+
+// autodepositBootstrapResult is EarnAutodepositBootstrapSweepResult: status is
+// "scheduled", "already_exists" or "skipped" (skipped carries a reason).
+type autodepositBootstrapResult struct {
+	Status string
+	Reason string
+	Sweep  *autodepositSweepRow
+}
+
+const autodepositBootstrapEventSource = "app_autodeposit_setup_confirm"
+const autodepositEventTargetIDMax = 999999999999
+
+// createBootstrapWalletBalanceEventID ports createBootstrapWalletBalanceEventId
+// (earn-autodeposit-event-id.shared.ts): App bootstrap events reserve the
+// negative target-ID range.
+func createBootstrapWalletBalanceEventID(targetID int64) (int64, error) {
+	if targetID <= 0 || targetID > autodepositEventTargetIDMax {
+		return 0, fmt.Errorf("Autodeposit target ID %d is outside the reserved App event ID range.", targetID)
+	}
+	return -targetID, nil
+}
+
+func isAppAutodepositBootstrapEventSource(source string) bool {
+	switch source {
+	case "app_autodeposit_artifact_reconcile", "app_autodeposit_setup_confirm", "mobile_autodeposit_artifact_reconcile":
+		return true
+	}
+	return false
+}
+
+// resolveEarnAutodepositDelegationReadyAt ports
+// resolveEarnAutodepositDelegationReadyAt (:385): start seconds to a wall
+// clock; nil when the target never set a start.
+func resolveEarnAutodepositDelegationReadyAt(startTimestamp uint64) *time.Time {
+	if startTimestamp == 0 {
+		return nil
+	}
+	ms := new(big.Int).Mul(new(big.Int).SetUint64(startTimestamp), big.NewInt(1000))
+	if !ms.IsInt64() {
+		return nil
+	}
+	ready := time.UnixMilli(ms.Int64())
+	return &ready
+}
+
+func resolveAutodepositSweepEligibleAfter(startTimestamp uint64, scheduledAt time.Time) time.Time {
+	if ready := resolveEarnAutodepositDelegationReadyAt(startTimestamp); ready != nil && ready.After(scheduledAt) {
+		return *ready
+	}
+	return scheduledAt
+}
+
+type autodepositBootstrapEvidence struct {
+	AccountLamports string `json:"accountLamports"`
+	AccountOwner    string `json:"accountOwner"`
+	Bootstrap       bool   `json:"bootstrap"`
+	SetupSignature  string `json:"setupSignature"`
+}
+
+func (s autodepositBootstrapSnapshot) evidence(setupSignature string) ([]byte, error) {
+	return json.Marshal(autodepositBootstrapEvidence{
+		AccountLamports: s.AccountLamports,
+		AccountOwner:    s.AccountOwner,
+		Bootstrap:       true,
+		SetupSignature:  setupSignature,
+	})
+}
+
+// scheduleBootstrapAutodepositSweep ports scheduleBootstrapEarnAutodepositSweep
+// (earn-autodeposit-repository.server.ts:989-1254). The TS runs each batch as
+// its own transaction; here the whole schedule runs in one tx, which is
+// strictly more atomic (a crash cannot leave a projection without its event).
+func (h earnRoutes) scheduleBootstrapAutodepositSweep(ctx context.Context, snapshot autodepositBootstrapSnapshot, target autodepositTargetRow) (autodepositBootstrapResult, error) {
+	tx, err := h.YieldDB.Begin(ctx)
+	if err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	result, err := scheduleBootstrapAutodepositSweepTx(ctx, tx, time.Now(), snapshot, target)
+	if err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+	return result, nil
+}
+
+func scheduleBootstrapAutodepositSweepTx(ctx context.Context, tx pgx.Tx, now time.Time, snapshot autodepositBootstrapSnapshot, target autodepositTargetRow) (autodepositBootstrapResult, error) {
+	sourceEventID, err := createBootstrapWalletBalanceEventID(target.ID)
+	if err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+	if !isAppAutodepositBootstrapEventSource(snapshot.Source) {
+		return autodepositBootstrapResult{}, fmt.Errorf("Autodeposit bootstrap source %s cannot use the App event ID range.", snapshot.Source)
+	}
+
+	var previousAmountRaw *uint64
+	err = tx.QueryRow(ctx, `SELECT amount_raw FROM loyal_yield.balance_sweep_wallet_balances_current
+		WHERE target_id = $1 AND mint = $2`, target.ID, snapshot.Mint).Scan(&previousAmountRaw)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return autodepositBootstrapResult{}, err
+	}
+
+	projectionEvidence, err := snapshot.evidence(snapshot.SetupSignature)
+	if err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO loyal_yield.balance_sweep_wallet_balances_current (
+		target_id, wallet, wallet_usdc_ata, wallet_token_ata, amount_raw, owner, mint,
+		observed_slot, observed_at, source, source_commitment, account_data_hash, raw_evidence, updated_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+	ON CONFLICT (target_id, mint) DO UPDATE SET
+		wallet = EXCLUDED.wallet, wallet_usdc_ata = EXCLUDED.wallet_usdc_ata,
+		wallet_token_ata = EXCLUDED.wallet_token_ata, amount_raw = EXCLUDED.amount_raw,
+		owner = EXCLUDED.owner, observed_slot = EXCLUDED.observed_slot,
+		observed_at = EXCLUDED.observed_at, source = EXCLUDED.source,
+		source_commitment = EXCLUDED.source_commitment,
+		account_data_hash = EXCLUDED.account_data_hash,
+		raw_evidence = EXCLUDED.raw_evidence, updated_at = EXCLUDED.updated_at
+	WHERE balance_sweep_wallet_balances_current.observed_slot <= EXCLUDED.observed_slot`,
+		target.ID, target.Wallet, target.WalletUsdcAta, target.WalletTokenAta, snapshot.AmountRaw,
+		snapshot.Owner, snapshot.Mint, snapshot.ObservedSlot, snapshot.ObservedAt, snapshot.Source,
+		snapshot.SourceCommitment, snapshot.AccountDataHash, projectionEvidence, now); err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+
+	floorRaw := uint64(0)
+	if target.WalletBalanceFloorRaw != nil {
+		floorRaw = *target.WalletBalanceFloorRaw
+	}
+	if snapshot.AmountRaw <= floorRaw {
+		return autodepositBootstrapResult{Status: "skipped", Reason: "wallet_balance_at_or_below_floor"}, nil
+	}
+	surplusRaw := snapshot.AmountRaw - floorRaw
+
+	eventEvidence, err := snapshot.evidence(target.LastSeenSignature)
+	if err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+	var deltaAmountRaw *int64
+	if previousAmountRaw != nil {
+		delta := int64(snapshot.AmountRaw) - int64(*previousAmountRaw)
+		deltaAmountRaw = &delta
+	}
+	var eventID int64
+	err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_wallet_balance_events (
+		event_id, target_id, wallet, wallet_usdc_ata, wallet_token_ata, mint,
+		previous_amount_raw, amount_raw, delta_amount_raw, observed_slot, observed_at,
+		source, source_commitment, txn_signature, account_data_hash, raw_evidence, projected_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NULL,$14,$15,$16)
+	ON CONFLICT (event_id) DO NOTHING
+	RETURNING event_id`,
+		sourceEventID, target.ID, target.Wallet, target.WalletUsdcAta, target.WalletTokenAta, snapshot.Mint,
+		previousAmountRaw, snapshot.AmountRaw, deltaAmountRaw, snapshot.ObservedSlot, snapshot.ObservedAt,
+		snapshot.Source, snapshot.SourceCommitment, snapshot.AccountDataHash, eventEvidence, now).Scan(&eventID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var owner int64
+		var source string
+		err := tx.QueryRow(ctx, `SELECT target_id, source FROM loyal_yield.balance_sweep_wallet_balance_events
+			WHERE event_id = $1`, sourceEventID).Scan(&owner, &source)
+		if err != nil || owner != target.ID || !isAppAutodepositBootstrapEventSource(source) {
+			conflict := "an event that could not be loaded"
+			if err == nil {
+				conflict = fmt.Sprintf("target %d from %s", owner, source)
+			}
+			return autodepositBootstrapResult{}, fmt.Errorf(
+				"Autodeposit bootstrap event ID %d for target %d conflicts with %s.", sourceEventID, target.ID, conflict)
+		}
+	} else if err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+
+	var lotID int64
+	var lotRemaining uint64
+	var lotSlotID *int64
+	var lotStatus string
+	var lotTargetID int64
+	err = tx.QueryRow(ctx, `SELECT id, remaining_amount_raw, scheduled_slot_id, status, target_id
+		FROM loyal_yield.balance_sweep_surplus_lots WHERE source_event_id = $1`, sourceEventID).
+		Scan(&lotID, &lotRemaining, &lotSlotID, &lotStatus, &lotTargetID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return autodepositBootstrapResult{}, err
+	}
+	if lotID != 0 {
+		if lotTargetID != target.ID {
+			return autodepositBootstrapResult{}, fmt.Errorf(
+				"Autodeposit bootstrap event ID %d for target %d is linked to a lot for target %d.",
+				sourceEventID, target.ID, lotTargetID)
+		}
+		if lotStatus == "open" {
+			slotID := int64(0)
+			if lotSlotID != nil {
+				slotID = *lotSlotID
+			} else {
+				slotID, err = ensureScheduledAutodepositSlotTx(ctx, tx, now, target.ID, snapshot.Mint,
+					resolveAutodepositSweepEligibleAfter(startTimestampOf(target), snapshot.ObservedAt.Add(time.Hour)))
+				if err != nil {
+					return autodepositBootstrapResult{}, err
+				}
+				if _, err := tx.Exec(ctx, `UPDATE loyal_yield.balance_sweep_surplus_lots
+					SET scheduled_slot_id = $1, updated_at = $2 WHERE id = $3`, slotID, now, lotID); err != nil {
+					return autodepositBootstrapResult{}, err
+				}
+			}
+			sweep, err := findScheduledAutodepositSweepBySlotID(ctx, tx, target, slotID)
+			if err != nil {
+				return autodepositBootstrapResult{}, err
+			}
+			if sweep != nil && sweep.isOpen() {
+				return autodepositBootstrapResult{Status: "already_exists", Sweep: sweep}, nil
+			}
+		}
+		return autodepositBootstrapResult{Status: "skipped", Reason: "bootstrap_sweep_already_closed"}, nil
+	}
+
+	eligibleAfter := resolveAutodepositSweepEligibleAfter(startTimestampOf(target), snapshot.ObservedAt.Add(time.Hour))
+	slotID, err := ensureScheduledAutodepositSlotTx(ctx, tx, now, target.ID, snapshot.Mint, eligibleAfter)
+	if err != nil {
+		return autodepositBootstrapResult{}, err
+	}
+	var insertedLotID *int64
+	err = tx.QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_surplus_lots (
+		target_id, scheduled_slot_id, source_event_id, source_signature,
+		original_amount_raw, remaining_amount_raw, classification, eligible_after,
+		status, confidence, reason, created_at, updated_at
+	) VALUES ($1,$2,$3,NULL,$4,$5,'initial_surplus',$6,'open','confirmed_snapshot',
+		'initial Autodeposit surplus detected at setup confirmation',$7,$7)
+	ON CONFLICT (source_event_id) DO NOTHING
+	RETURNING id`, target.ID, slotID, sourceEventID, surplusRaw, surplusRaw, eligibleAfter, now).Scan(&insertedLotID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return autodepositBootstrapResult{}, err
+	}
+	if insertedLotID != nil {
+		sweep, err := findScheduledAutodepositSweepBySlotID(ctx, tx, target, slotID)
+		if err != nil {
+			return autodepositBootstrapResult{}, err
+		}
+		if sweep != nil {
+			return autodepositBootstrapResult{Status: "scheduled", Sweep: sweep}, nil
+		}
+	}
+
+	var raceSlotID *int64
+	var raceStatus string
+	var raceTargetID int64
+	var raceLotID int64
+	err = tx.QueryRow(ctx, `SELECT id, scheduled_slot_id, status, target_id
+		FROM loyal_yield.balance_sweep_surplus_lots WHERE source_event_id = $1`, sourceEventID).
+		Scan(&raceLotID, &raceSlotID, &raceStatus, &raceTargetID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return autodepositBootstrapResult{}, err
+	}
+	if err == nil {
+		if raceTargetID != target.ID {
+			return autodepositBootstrapResult{}, fmt.Errorf(
+				"Autodeposit bootstrap event ID %d for target %d raced with a lot for target %d.",
+				sourceEventID, target.ID, raceTargetID)
+		}
+		if raceStatus == "open" {
+			raceWinnerSlotID := slotID
+			if raceSlotID != nil {
+				raceWinnerSlotID = *raceSlotID
+			} else {
+				if _, err := tx.Exec(ctx, `UPDATE loyal_yield.balance_sweep_surplus_lots
+					SET scheduled_slot_id = $1, updated_at = $2 WHERE id = $3`, raceWinnerSlotID, now, raceLotID); err != nil {
+					return autodepositBootstrapResult{}, err
+				}
+			}
+			sweep, err := findScheduledAutodepositSweepBySlotID(ctx, tx, target, raceWinnerSlotID)
+			if err != nil {
+				return autodepositBootstrapResult{}, err
+			}
+			if sweep != nil && sweep.isOpen() {
+				return autodepositBootstrapResult{Status: "already_exists", Sweep: sweep}, nil
+			}
+		}
+	}
+	return autodepositBootstrapResult{Status: "skipped", Reason: "bootstrap_sweep_already_closed"}, nil
+}
+
+func startTimestampOf(target autodepositTargetRow) uint64 {
+	return target.StartTimestamp
+}
+
+// ensureScheduledAutodepositSlotTx ports ensureScheduledAutodepositSlot
+// (:457): the same three steps as the Go worker's openSlotFor — take the
+// target's turn, cancel a slot whose lots drained, then upsert against the
+// partial unique index (migrations/yield/0109_autodeposit_one_scheduled_slot.sql:115).
+func ensureScheduledAutodepositSlotTx(ctx context.Context, tx pgx.Tx, now time.Time, targetID int64, mint string, eligibleAfter time.Time) (int64, error) {
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM loyal_yield.balance_sweep_targets WHERE id = $1 FOR UPDATE`, targetID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE loyal_yield.balance_sweep_scheduled_slots AS slot
+		SET status = 'canceled', last_error = 'its lots drained before new lots arrived', updated_at = $1
+		WHERE slot.target_id = $2 AND slot.status = 'scheduled'
+		AND NOT EXISTS (
+			SELECT 1 FROM loyal_yield.balance_sweep_surplus_lots AS lot
+			WHERE lot.scheduled_slot_id = slot.id AND lot.status = 'open' AND lot.remaining_amount_raw > 0
+		)`, now, targetID); err != nil {
+		return 0, err
+	}
+	var slotID int64
+	err := tx.QueryRow(ctx, `INSERT INTO loyal_yield.balance_sweep_scheduled_slots
+		(target_id, token_mint, eligible_after, status, created_at, updated_at)
+		VALUES ($1, $2, $3, 'scheduled', $4, $4)
+		ON CONFLICT (target_id) WHERE status = 'scheduled' DO UPDATE
+		SET eligible_after = GREATEST(balance_sweep_scheduled_slots.eligible_after, EXCLUDED.eligible_after),
+		updated_at = EXCLUDED.updated_at
+		RETURNING id`, targetID, mint, eligibleAfter, now).Scan(&slotID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, errors.New("Failed to create Autodeposit scheduled slot.")
+	}
+	if err != nil {
+		return 0, err
+	}
+	return slotID, nil
+}
+
+// findScheduledAutodepositSweepBySlotID ports
+// findScheduledAutodepositSweepBySlotId (:517), reading the same aggregation
+// as findPendingEarnAutodepositScheduledSweeps (:768) inside the open tx.
+func findScheduledAutodepositSweepBySlotID(ctx context.Context, tx pgx.Tx, target autodepositTargetRow, slotID int64) (*autodepositSweepRow, error) {
+	// The sweep aggregation runs on the caller's pool in TS; inside the
+	// bootstrap tx the same rows are visible, so read them here directly.
+	var sweep autodepositSweepRow
+	err := tx.QueryRow(ctx, `SELECT slot.id,
+		COALESCE(MIN(lot.classification::text) FILTER (WHERE lot.status = 'open'), 'unknown'),
+		COALESCE(MIN(lot.confidence) FILTER (WHERE lot.status = 'open'), 'unknown'),
+		MIN(slot.eligible_after),
+		COUNT(*) FILTER (WHERE lot.status = 'open' AND lot.remaining_amount_raw > 0),
+		COALESCE(SUM(lot.original_amount_raw) FILTER (WHERE lot.status = 'open'), claim.amount_raw, 0)::bigint,
+		COALESCE(MIN(lot.reason) FILTER (WHERE lot.status = 'open'), 'Autodeposit scheduled sweep'),
+		COALESCE(SUM(lot.remaining_amount_raw) FILTER (WHERE lot.status = 'open'), claim.amount_raw, 0)::bigint,
+		MIN(slot.status::text)
+		FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+		LEFT JOIN loyal_yield.balance_sweep_surplus_lots AS lot ON lot.scheduled_slot_id = slot.id
+		LEFT JOIN loyal_yield.balance_sweep_lot_claims AS claim
+			ON claim.claim_token = slot.claim_token AND claim.status = 'selected'
+		WHERE slot.id = $1 AND slot.target_id = $2
+		GROUP BY slot.id, claim.amount_raw`, slotID, target.ID).
+		Scan(&sweep.ID, &sweep.Classification, &sweep.Confidence, &sweep.EligibleAfter, &sweep.LotCount,
+			&sweep.OriginalAmountRaw, &sweep.Reason, &sweep.RemainingAmountRaw, &sweep.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sweep.SlotID = slotID
+	ready := resolveEarnAutodepositDelegationReadyAt(startTimestampOf(target))
+	sweep.ExecuteNowAvailableAt = ready
+	return &sweep, nil
 }
