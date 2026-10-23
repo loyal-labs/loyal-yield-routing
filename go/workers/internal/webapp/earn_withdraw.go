@@ -15,4 +15,5 @@ var earnWithdrawFamily = earnFamily{
 func (h earnRoutes) registerWithdraw(api huma.API) {
 	h.registerWithdrawConfirm(api)
 	h.registerCleanupPrepare(api)
+	h.registerCleanupConfirm(api)
 }
