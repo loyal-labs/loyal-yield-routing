@@ -172,9 +172,14 @@ function getHumanReadableRuntimeError(
   );
 }
 
-export function translateAndThrowAnchorError(err: unknown): never {
+export type AnchorErrorTranslation = {
+  error: unknown;
+  recognized: boolean;
+};
+
+export function translateAnchorError(err: unknown): AnchorErrorTranslation {
   if (!isErrorWithLogs(err)) {
-    throw err;
+    return { error: err, recognized: false };
   }
 
   const translatedError =
@@ -183,7 +188,7 @@ export function translateAndThrowAnchorError(err: unknown): never {
     err;
 
   if (typeof Error.captureStackTrace === "function") {
-    Error.captureStackTrace(translatedError, translateAndThrowAnchorError);
+    Error.captureStackTrace(translatedError, translateAnchorError);
   }
 
   if (translatedError !== err) {
@@ -196,7 +201,11 @@ export function translateAndThrowAnchorError(err: unknown): never {
     }
   }
 
-  throw translatedError;
+  return { error: translatedError, recognized: translatedError !== err };
+}
+
+export function translateAndThrowAnchorError(err: unknown): never {
+  throw translateAnchorError(err).error;
 }
 
 export const isErrorWithLogs = (err: unknown): err is ErrorWithLogs => {

@@ -17,38 +17,15 @@ import { PopDigits } from "@/components/wallet-workspace/facelift/pop-digits";
 import { SkeletonReveal } from "@/components/wallet-workspace/facelift/skeleton-reveal";
 import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { splitUsdBalance } from "@/hooks/use-wallet-desktop-data";
+import type {
+  TokenDetailChartPoint,
+  TokenDetailResponse,
+} from "@/lib/market/token-detail.shared";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 
-type ChartPoint = { priceUsd: number; timestamp: number };
-
-// Client mirror of the /api/tokens/[mint] payload — the server response type
-// lives in a server-only module and can't be imported here.
-type TokenDetail = {
-  chart: ChartPoint[];
-  info: {
-    description: string | null;
-    gtVerified: boolean;
-    holderDistribution: { top10: string } | null;
-  };
-  links: {
-    discord: string | null;
-    explorer: string | null;
-    telegram: string | null;
-    twitter: string | null;
-    website: string | null;
-  };
-  market: {
-    fdvUsd: number | null;
-    holderCount: number | null;
-    liquidityUsd: number | null;
-    marketCapUsd: number | null;
-    priceChange24hPercent: number | null;
-    priceUsd: number | null;
-    volume24hUsd: number | null;
-  };
-  token: { logoUrl: string | null; name: string | null; symbol: string | null };
-};
+type ChartPoint = TokenDetailChartPoint;
+type TokenDetail = TokenDetailResponse;
 
 const CHART_RANGES = [
   { days: "1", label: "1D" },

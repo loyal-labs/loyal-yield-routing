@@ -485,6 +485,14 @@ func Decide(s Snapshot) Decision {
 	return decideSnapshot(s, initializationSnapshotReady)
 }
 
+func decideWithAuditedReason(s Snapshot) Decision {
+	decision := Decide(s)
+	if decision.Action == HoldManualRecovery && s.ManualReason != "" {
+		decision.Reason = s.ManualReason
+	}
+	return decision
+}
+
 func decideSnapshot(s Snapshot, initializationReady func(Snapshot) bool) Decision {
 	if s.Trustful {
 		if s.MonitorsArmed && s.Nonterminal == "" && s.StrategyReceiptIntegrityFault {

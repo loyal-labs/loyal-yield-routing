@@ -13,13 +13,12 @@ export function StaggerReveal({
 
   useLayoutEffect(() => {
     const el = groupRef.current;
-    if (!el) {
+    if (!el || el.classList.contains("is-shown")) {
       return;
     }
-    el.classList.remove("is-shown");
     void el.offsetHeight;
     el.classList.add("is-shown");
-  }, []);
+  });
 
   return (
     <div className={`t-stagger ${className ?? ""}`} ref={groupRef}>

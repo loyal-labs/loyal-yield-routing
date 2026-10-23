@@ -172,3 +172,8 @@ export async function getExpoPushReceipts(
 
   return { receipts, deviceNotRegisteredReceiptIds };
 }
+
+export const WALLET_PUSH_SEND_SECRET_ENV = {
+  send: "MOBILE_PUSH_API_SECRET",
+  accept: "PUSH_DEBUG_SECRET",
+} as const;
