@@ -242,9 +242,9 @@ func canonicalizeAutodepositCloseInput(in autodepositCloseInput, policySigner so
 		}
 		return nil
 	}
-	if err := assert(in.Cluster, cluster, "cluster"); err != nil {
-		return in, err
-	}
+	// TS's cluster assert compares the normalized request cluster against the
+	// canonical one — tautological after normalizeLoyalCluster accepted it —
+	// so only the signer, index and vault asserts can fire here.
 	if err := assert(in.DelegatedSigner, policySigner.String(), "delegatedSigner"); err != nil {
 		return in, err
 	}
@@ -347,7 +347,7 @@ func (h earnRoutes) registerAutodepositClose(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        autodepositCloseConfirmPath,
 		Summary:     "Confirm an Earn autodeposit close",
-		Responses:   errorResponses[routeError](api, 400, 401, 403),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 503),
 	}, h.autodepositCloseConfirm)
 	documentJSONBody[AutodepositCloseConfirmRequest](api, autodepositCloseConfirmPath)
 }
@@ -415,7 +415,7 @@ func (h earnRoutes) registerAutodepositFloor(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        autodepositFloorConfirmPath,
 		Summary:     "Confirm an Earn autodeposit wallet balance floor update",
-		Responses:   errorResponses[routeError](api, 400, 401),
+		Responses:   errorResponses[routeError](api, 400, 401, 503),
 	}, h.autodepositFloorConfirm)
 	documentJSONBody[AutodepositFloorConfirmRequest](api, autodepositFloorConfirmPath)
 }
@@ -478,7 +478,7 @@ func (h earnRoutes) registerAutodepositToggle(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        autodepositToggleConfirmPath,
 		Summary:     "Confirm an Earn autodeposit enable or disable",
-		Responses:   errorResponses[routeError](api, 400, 401),
+		Responses:   errorResponses[routeError](api, 400, 401, 503),
 	}, h.autodepositToggleConfirm)
 	documentJSONBody[AutodepositToggleConfirmRequest](api, autodepositToggleConfirmPath)
 }

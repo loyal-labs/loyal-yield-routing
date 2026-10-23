@@ -347,7 +347,7 @@ func (h earnRoutes) registerAutodepositSetup(api huma.API) {
 		Method:      http.MethodPost,
 		Path:        autodepositSetupConfirmPath,
 		Summary:     "Confirm an Earn autodeposit setup stage",
-		Responses:   errorResponses[routeError](api, 400, 401, 403, 409),
+		Responses:   errorResponses[routeError](api, 400, 401, 403, 409, 503),
 	}, h.autodepositSetupConfirm)
 	documentJSONBody[AutodepositSetupConfirmRequest](api, autodepositSetupConfirmPath)
 }
