@@ -129,10 +129,12 @@ type withdrawBlockingTokenAccount struct {
 	TokenProgramID string `json:"tokenProgramId"`
 }
 
-// withdrawFullExitZeroProof is the slice of EarnFullExitZeroProof the confirm
-// response serializes; cleanupTokenAccounts only reaches the server log.
+// withdrawFullExitZeroProof is EarnFullExitZeroProof: the withdraw confirm
+// response serializes all but cleanupTokenAccounts, which the cleanup prepare
+// feeds back into its builder.
 type withdrawFullExitZeroProof struct {
 	BlockingTokenAccounts []withdrawBlockingTokenAccount
+	CleanupTokenAccounts  []withdrawCleanupTokenAccount
 	ObservedSlot          string
 	RemainingHoldings     []earnprep.WithdrawHolding
 	Status                string
@@ -160,19 +162,25 @@ func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.Withdra
 		idleAssetByTokenAccount[ata.String()] = asset
 	}
 	var blocking []withdrawBlockingTokenAccount
+	cleanup := []withdrawCleanupTokenAccount{}
 	for _, account := range vaultSnapshot.TokenAccounts {
-		if account.Amount == 0 {
-			continue
-		}
 		asset, known := idleAssetByTokenAccount[account.Address.String()]
-		if !known || asset.Mint != account.Mint || asset.TokenProgram != account.Program || account.Amount >= withdrawFinalExitDustRaw {
+		if account.Amount > 0 && (!known || asset.Mint != account.Mint || asset.TokenProgram != account.Program || account.Amount >= withdrawFinalExitDustRaw) {
 			blocking = append(blocking, withdrawBlockingTokenAccount{
 				Address:        account.Address.String(),
 				AmountRaw:      strconv.FormatUint(account.Amount, 10),
 				Mint:           account.Mint.String(),
 				TokenProgramID: account.Program.String(),
 			})
+			continue
 		}
+		cleanup = append(cleanup, withdrawCleanupTokenAccount{
+			Address:        account.Address.String(),
+			AmountRaw:      strconv.FormatUint(account.Amount, 10),
+			Decimals:       6,
+			Mint:           account.Mint.String(),
+			TokenProgramID: account.Program.String(),
+		})
 	}
 	var remainingReserveHoldings int
 	for _, holding := range holdingsSnapshot.Holdings {
@@ -192,28 +200,37 @@ func classifyWithdrawZeroProof(cluster string, holdingsSnapshot earnprep.Withdra
 	}
 	return withdrawFullExitZeroProof{
 		BlockingTokenAccounts: blocking,
+		CleanupTokenAccounts:  cleanup,
 		ObservedSlot:          strconv.FormatUint(holdingsSnapshot.ObservedSlot, 10),
 		RemainingHoldings:     remaining,
 		Status:                status,
 	}, nil
 }
 
-// verifyWithdrawFullExitZeroBalances ports verifyEarnFullExitZeroBalances
-// (earn-full-exit-zero-proof.server.ts:208-285): the holdings snapshot and the
-// vault token inventory under one slot-lag retry, then the classification.
+// verifyWithdrawFullExitZeroBalances is the withdraw confirm's call of
+// verifyEarnFullExitZeroBalances, over the canonical universe.
 func verifyWithdrawFullExitZeroBalances(ctx context.Context, client withdrawConfirmChain, sleep func(context.Context) error, now func() time.Time, cluster string, in withdrawCanonicalInput, minContextSlot uint64) (withdrawFullExitZeroProof, error) {
-	var proof withdrawFullExitZeroProof
 	settings, err := withdrawPublicKeyInput(in.Settings)
 	if err != nil {
 		return withdrawFullExitZeroProof{}, err
 	}
+	return verifyFullExitZeroBalances(ctx, client, sleep, now, cluster, earnprep.WithdrawCanonicalUniverse(cluster), settings, minContextSlot)
+}
+
+// verifyFullExitZeroBalances ports verifyEarnFullExitZeroBalances
+// (earn-full-exit-zero-proof.server.ts:208-285): the holdings snapshot through
+// the given policy universe and the vault token inventory under one slot-lag
+// retry, then the classification. Withdraw confirm and both cleanup routes
+// share it.
+func verifyFullExitZeroBalances(ctx context.Context, client withdrawConfirmChain, sleep func(context.Context) error, now func() time.Time, cluster string, policy *earnprep.WithdrawPolicyUniverse, settings solana.PublicKey, minContextSlot uint64) (withdrawFullExitZeroProof, error) {
+	var proof withdrawFullExitZeroProof
 	usdcMint := earnUSDCMint(LoyalCluster(cluster))
-	err = withdrawSlotLagRetry(ctx, sleep, func() error {
+	err := withdrawSlotLagRetry(ctx, sleep, func() error {
 		holdings, err := earnprep.FetchWithdrawHoldingsSnapshot(ctx, client, earnprep.WithdrawHoldingsArgs{
 			Cluster:                     cluster,
 			MinContextSlot:              minContextSlot,
 			Now:                         now,
-			Policy:                      earnprep.WithdrawCanonicalUniverse(cluster),
+			Policy:                      policy,
 			SettingsPda:                 settings,
 			RequireCompleteReserveReads: true,
 		})

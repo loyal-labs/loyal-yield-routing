@@ -270,7 +270,7 @@ func cleanupPolicyAccountsClosed(ctx context.Context, client withdrawConfirmChai
 // (earn-cleanup-confirm.server.ts:118-158): the zero proof must still demand
 // only the policy close, and every prepared policy account must be gone.
 func cleanupAssertFullExitProven(ctx context.Context, client withdrawConfirmChain, now func() time.Time, cluster string, state *RoutePolicyPair, settings solana.PublicKey, policyAccounts []string, minContextSlot uint64) error {
-	proof, err := verifyCleanupFullExitZeroBalances(ctx, client, now, cluster, state.Route, settings, minContextSlot)
+	proof, err := verifyFullExitZeroBalances(ctx, client, withdrawSleep, now, cluster, cleanupPolicyUniverse(cluster, state.Route), settings, minContextSlot)
 	if err != nil {
 		return cleanupRetryable(err)
 	}

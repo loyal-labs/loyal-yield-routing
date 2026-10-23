@@ -105,16 +105,6 @@ ORDER BY confirmed_slot DESC, id DESC LIMIT 1`,
 	return slot, nil
 }
 
-// cleanupZeroProof is EarnFullExitZeroProof with the cleanupTokenAccounts the
-// prepare route feeds back into the builder (route.ts:269-275); the confirm
-// route drops them.
-type cleanupZeroProof struct {
-	BlockingTokenAccounts []withdrawBlockingTokenAccount
-	CleanupTokenAccounts  []withdrawCleanupTokenAccount
-	RemainingHoldings     []earnprep.WithdrawHolding
-	Status                string
-}
-
 // withdrawCleanupTokenAccount is the proof's cleanup entry (earn-full-exit-
 // zero-proof.server.ts:183-191): decimals is the literal 6 the TS pins.
 type withdrawCleanupTokenAccount struct {
@@ -123,83 +113,6 @@ type withdrawCleanupTokenAccount struct {
 	Decimals       uint8
 	Mint           string
 	TokenProgramID string
-}
-
-// classifyCleanupZeroProof ports classifyZeroProof
-// (earn-full-exit-zero-proof.server.ts:124-206) with the cleanup list: a
-// vault token account blocks policy close when it holds a non-dust balance or
-// any balance of a mint that is not a canonical idle product asset at the
-// expected ATA and token program; everything unblocked is cleanup material.
-func classifyCleanupZeroProof(holdingsSnapshot earnprep.WithdrawSnapshot, vaultSnapshot withdrawVaultSnapshot, minContextSlot uint64) (cleanupZeroProof, error) {
-	if holdingsSnapshot.ObservedSlot < minContextSlot {
-		return cleanupZeroProof{}, errors.New("Earn full-exit proof was observed before the withdrawal confirmation slot.")
-	}
-	if vaultSnapshot.ObservedSlot < minContextSlot {
-		return cleanupZeroProof{}, errors.New("Earn vault token inventory was observed before the withdrawal confirmation slot.")
-	}
-	idleAssetByTokenAccount := map[string]earnprep.WithdrawProductAsset{}
-	for _, asset := range earnprep.WithdrawProductAssets("mainnet-beta") {
-		ata, err := spl.AssociatedTokenAddress(vaultSnapshot.VaultPda, asset.Mint, asset.TokenProgram)
-		if err != nil {
-			return cleanupZeroProof{}, err
-		}
-		idleAssetByTokenAccount[ata.String()] = asset
-	}
-	var blocking []withdrawBlockingTokenAccount
-	blocked := map[string]bool{}
-	for _, account := range vaultSnapshot.TokenAccounts {
-		if account.Amount == 0 {
-			continue
-		}
-		asset, known := idleAssetByTokenAccount[account.Address.String()]
-		if !known || asset.Mint != account.Mint || asset.TokenProgram != account.Program || account.Amount >= withdrawFinalExitDustRaw {
-			blocking = append(blocking, withdrawBlockingTokenAccount{
-				Address:        account.Address.String(),
-				AmountRaw:      strconv.FormatUint(account.Amount, 10),
-				Mint:           account.Mint.String(),
-				TokenProgramID: account.Program.String(),
-			})
-			blocked[account.Address.String()] = true
-		}
-	}
-	var cleanup []withdrawCleanupTokenAccount
-	for _, account := range vaultSnapshot.TokenAccounts {
-		if blocked[account.Address.String()] {
-			continue
-		}
-		cleanup = append(cleanup, withdrawCleanupTokenAccount{
-			Address:        account.Address.String(),
-			AmountRaw:      strconv.FormatUint(account.Amount, 10),
-			Decimals:       6,
-			Mint:           account.Mint.String(),
-			TokenProgramID: account.Program.String(),
-		})
-	}
-	remainingReserveHoldings := 0
-	for _, holding := range holdingsSnapshot.Holdings {
-		if holding.Kind == "kamino" && holding.AmountRaw > 0 {
-			remainingReserveHoldings++
-		}
-	}
-	status := "full_exit_incomplete"
-	if remainingReserveHoldings == 0 && len(blocking) == 0 {
-		status = "policy_close_required"
-	}
-	remaining := make([]earnprep.WithdrawHolding, 0, len(holdingsSnapshot.Holdings))
-	for _, holding := range holdingsSnapshot.Holdings {
-		if holding.AmountRaw > 0 {
-			remaining = append(remaining, holding)
-		}
-	}
-	if cleanup == nil {
-		cleanup = []withdrawCleanupTokenAccount{}
-	}
-	return cleanupZeroProof{
-		BlockingTokenAccounts: blocking,
-		CleanupTokenAccounts:  cleanup,
-		RemainingHoldings:     remaining,
-		Status:                status,
-	}, nil
 }
 
 // cleanupPolicyUniverse ports resolveFullExitPolicyMetadata
@@ -224,35 +137,6 @@ func cleanupPolicyUniverse(cluster string, route RoutePolicy) *earnprep.Withdraw
 		KaminoLiquidityMints: liquidity,
 		KaminoMarkets:        policyMarkets,
 	}
-}
-
-// verifyCleanupFullExitZeroBalances ports verifyEarnFullExitZeroBalances
-// (earn-full-exit-zero-proof.server.ts:208-285) for the cleanup routes: the
-// holdings snapshot (through the DB policy's universe) and the vault token
-// inventory under one slot-lag retry, then the classification.
-func verifyCleanupFullExitZeroBalances(ctx context.Context, client withdrawConfirmChain, now func() time.Time, cluster string, route RoutePolicy, settings solana.PublicKey, minContextSlot uint64) (cleanupZeroProof, error) {
-	var proof cleanupZeroProof
-	usdcMint := earnUSDCMint(LoyalCluster(cluster))
-	err := withdrawSlotLagRetry(ctx, withdrawSleep, func() error {
-		holdings, err := earnprep.FetchWithdrawHoldingsSnapshot(ctx, client, earnprep.WithdrawHoldingsArgs{
-			Cluster:                     cluster,
-			MinContextSlot:              minContextSlot,
-			Now:                         now,
-			Policy:                      cleanupPolicyUniverse(cluster, route),
-			SettingsPda:                 settings,
-			RequireCompleteReserveReads: true,
-		})
-		if err != nil {
-			return err
-		}
-		vaultSnapshot, err := fetchWithdrawVaultSnapshot(ctx, client, settings, usdcMint, minContextSlot)
-		if err != nil {
-			return err
-		}
-		proof, err = classifyCleanupZeroProof(holdings, vaultSnapshot, minContextSlot)
-		return err
-	})
-	return proof, err
 }
 
 // cleanupVaultSweepLamports ports getVaultSweepLamportsOrZero

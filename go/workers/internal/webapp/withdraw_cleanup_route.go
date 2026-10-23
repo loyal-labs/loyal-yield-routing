@@ -92,7 +92,7 @@ func (h earnRoutes) cleanupPrepare(ctx context.Context, account EarnAccount, raw
 			return nil, err
 		}
 	}
-	proof, err := verifyCleanupFullExitZeroBalances(ctx, h.Chain, time.Now, string(account.Cluster), state.Route, account.Settings, *minContextSlot)
+	proof, err := verifyFullExitZeroBalances(ctx, h.Chain, withdrawSleep, time.Now, string(account.Cluster), cleanupPolicyUniverse(string(account.Cluster), state.Route), account.Settings, *minContextSlot)
 	if err != nil {
 		slog.Error("[earn-withdraw-cleanup-prepare] zero proof retryable", "error", err,
 			"minContextSlot", *minContextSlot, "settings", account.Settings.String(), "walletAddress", account.Wallet.String())
