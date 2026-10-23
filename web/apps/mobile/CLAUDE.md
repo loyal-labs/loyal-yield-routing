@@ -76,9 +76,15 @@ Privy (`@privy-io/expo`) is the identity layer; `src/components/wallet/PrivyProv
 
 Legacy biometric login uses `wallet_biometric_password`, a SecureStore record
 protected by biometric authentication. Keep it through PIN unlocks and native
-module failures. Remove it only after the hardware-wrapped biometric key has
-been persisted and verified to open to the same wallet. Checking the enabled
-flag must not read the protected PIN or trigger an authentication prompt.
+module failures. Remove it only after a subsequent hardware biometric unlock
+opens the persisted key to the same wallet. Checking the enabled flag must not
+read the protected PIN or trigger an authentication prompt.
+
+Enabling biometrics requests one approval: Android authenticates encryption,
+while iOS encrypts with the public key and authenticates one verification
+decrypt. Verify the stored wrapped bytes match before enabling; do not add
+immediate verification decrypts on Android, which each open another prompt.
+Keep the existing per-operation native authentication requirements unchanged.
 
 Canceled or failed hardware reads are retryable; only an explicitly invalidated
 key opens recovery. Recovery reuses the import screen without resetting the

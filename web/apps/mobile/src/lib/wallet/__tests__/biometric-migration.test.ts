@@ -1,8 +1,9 @@
 import { Keypair } from "@solana/web3.js";
 import * as HardwareKey from "expo-hardware-key";
 import * as SecureStore from "expo-secure-store";
+import { Platform } from "react-native";
 
-import { authenticateWithBiometrics, isBiometricEnabled } from "../biometrics";
+import { authenticateWithBiometrics, enableBiometrics, isBiometricEnabled } from "../biometrics";
 import { encryptSecret } from "../crypto";
 import { loadKeypair } from "../keypair-storage";
 
@@ -44,6 +45,7 @@ const write = jest.mocked(SecureStore.setItemAsync);
 beforeEach(() => {
   store.clear();
   jest.clearAllMocks();
+  Platform.OS = "android";
 });
 
 async function seedLegacy(): Promise<Keypair> {
@@ -61,16 +63,44 @@ test("upgrade detects existing biometric login without prompting at startup", as
   expect(read.mock.calls.some(([key]) => key === "wallet_biometric_password")).toBe(false);
 });
 
-test("legacy biometric unlock authenticates, verifies persisted replacement, then removes the old PIN", async () => {
+test("legacy biometric unlock keeps the old PIN until a later hardware unlock verifies the saved wallet", async () => {
   const keypair = await seedLegacy();
   const secret = await authenticateWithBiometrics();
   expect(Keypair.fromSecretKey(secret!).publicKey.toBase58()).toBe(keypair.publicKey.toBase58());
   expect(read).toHaveBeenCalledWith("wallet_biometric_password", expect.objectContaining({ requireAuthentication: true }));
-  expect(store.has("wallet_biometric_password")).toBe(false);
+  expect(store.get("wallet_biometric_password")).toBe("1234");
   expect(store.has("wallet_biometric_keypair")).toBe(true);
   read.mockClear();
   expect(await authenticateWithBiometrics()).toEqual(secret);
+  expect(store.has("wallet_biometric_password")).toBe(false);
   expect(read.mock.calls.some(([key]) => key === "wallet_biometric_password")).toBe(false);
+});
+
+test.each(["android", "ios"] as const)("%s setup requests one authenticated operation and preserves legacy access", async (platform) => {
+  Platform.OS = platform;
+  const keypair = await seedLegacy();
+  expect(await enableBiometrics(keypair.secretKey)).toBe(true);
+  // Android's wrap prompts; iOS wraps without a prompt and authenticates unwrap.
+  expect(HardwareKey.wrap).toHaveBeenCalledTimes(1);
+  expect(unwrap).toHaveBeenCalledTimes(platform === "android" ? 0 : 1);
+  expect(store.get("wallet_biometric_password")).toBe("1234");
+  expect(await authenticateWithBiometrics()).toEqual(keypair.secretKey);
+  expect(store.has("wallet_biometric_password")).toBe(false);
+});
+
+test("canceling Android setup does not enable biometrics or persist a key", async () => {
+  jest.mocked(HardwareKey.wrap).mockRejectedValueOnce(new Error("User canceled"));
+  await expect(enableBiometrics(Keypair.generate().secretKey)).rejects.toThrow("User canceled");
+  expect(await isBiometricEnabled()).toBe(false);
+  expect(store.has("wallet_biometric_keypair")).toBe(false);
+  expect(unwrap).not.toHaveBeenCalled();
+});
+
+test("canceling iOS verification does not enable unauthenticated biometric setup", async () => {
+  Platform.OS = "ios";
+  unwrap.mockResolvedValueOnce({ ok: false, reason: "canceled" });
+  expect(await enableBiometrics(Keypair.generate().secretKey)).toBe(false);
+  expect(await isBiometricEnabled()).toBe(false);
 });
 
 test("manual PIN migration keeps legacy biometric unlock available", async () => {
@@ -93,27 +123,45 @@ test("older native binaries retain legacy biometric login without the hardware m
   }
 });
 
-test.each(["failed", "canceled", "invalidated"] as const)("%s migration verification retains the authenticated legacy credential", async (reason) => {
+test.each(["failed", "canceled", "invalidated"] as const)("%s first hardware unlock retains the legacy credential", async (reason) => {
   const keypair = await seedLegacy();
-  // Finish the PIN migration first so the injected failure is biometric-only.
-  await loadKeypair("1234");
-  unwrap.mockImplementationOnce(unwrap.getMockImplementation()!)
-    .mockResolvedValueOnce({ ok: false, reason });
   expect(await authenticateWithBiometrics()).toEqual(keypair.secretKey);
+  unwrap.mockResolvedValueOnce({ ok: false, reason });
+  expect(await authenticateWithBiometrics()).toEqual(reason === "canceled" ? null : keypair.secretKey);
   expect(store.get("wallet_biometric_password")).toBe("1234");
   expect(await isBiometricEnabled()).toBe(true);
   expect(await authenticateWithBiometrics()).toEqual(keypair.secretKey);
+  expect(store.has("wallet_biometric_password")).toBe(false);
 });
 
-test("a failed persisted-blob verification does not remove the legacy credential", async () => {
+test("a changed storage read-back cannot enable biometrics or remove the legacy credential", async () => {
   const keypair = await seedLegacy();
-  await loadKeypair("1234");
-  const normal = unwrap.getMockImplementation()!;
-  unwrap.mockImplementationOnce(normal) // Open PIN blob.
-    .mockImplementationOnce(normal) // Verify candidate biometric blob.
-    .mockResolvedValueOnce({ ok: false, reason: "failed" }); // Verify persisted blob.
+  store.delete("wallet_biometric_enabled");
+  write.mockImplementationOnce(async (key) => { store.set(key, "corrupted"); });
+  expect(await enableBiometrics(keypair.secretKey)).toBe(false);
+  expect(await isBiometricEnabled()).toBe(false);
+  expect(store.get("wallet_biometric_password")).toBe("1234");
+  expect(unwrap).not.toHaveBeenCalled();
+});
+
+test("a hardware key for another wallet cannot unlock or retire the legacy credential", async () => {
+  const keypair = await seedLegacy();
+  await enableBiometrics(keypair.secretKey);
+  unwrap.mockResolvedValueOnce({ ok: true, plaintext: JSON.stringify(Array.from(Keypair.generate().secretKey)) });
+  expect(await authenticateWithBiometrics()).toBeNull();
+  expect(store.get("wallet_biometric_password")).toBe("1234");
+  expect(await authenticateWithBiometrics()).toEqual(keypair.secretKey);
+  expect(store.has("wallet_biometric_password")).toBe(false);
+});
+
+test("failed legacy cleanup does not block verified hardware unlock and retries later", async () => {
+  const keypair = await seedLegacy();
+  await enableBiometrics(keypair.secretKey);
+  jest.mocked(SecureStore.deleteItemAsync).mockRejectedValueOnce(new Error("SecureStore unavailable"));
   expect(await authenticateWithBiometrics()).toEqual(keypair.secretKey);
   expect(store.get("wallet_biometric_password")).toBe("1234");
+  expect(await authenticateWithBiometrics()).toEqual(keypair.secretKey);
+  expect(store.has("wallet_biometric_password")).toBe(false);
 });
 
 test("a failed biometric write keeps legacy access", async () => {
