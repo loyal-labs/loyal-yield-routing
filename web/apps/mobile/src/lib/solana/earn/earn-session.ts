@@ -4,6 +4,7 @@ import { Buffer } from "buffer";
 import Constants from "expo-constants";
 
 import { env } from "@/config/env";
+import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
 import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
 import type { Signer } from "@/lib/wallet/signer";
 
@@ -259,7 +260,7 @@ function getWithBearer(
   token: string | null,
   init: BearerInit,
 ): Promise<Response> {
-  return fetch(url, {
+  return fetchWithTimeout(url, {
     body: init.body,
     method: init.method ?? "GET",
     headers: token

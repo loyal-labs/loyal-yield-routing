@@ -12,7 +12,9 @@ import {
   fetchEarnState,
   type EarnStateResponse,
 } from "@/lib/solana/earn/earn-api";
+import { deliberateSession } from "@/lib/solana/earn/earn-session";
 import { getConnection, getSolanaEnv } from "@/lib/solana/rpc/connection";
+import type { Signer } from "@/lib/wallet/signer";
 
 type EarnPosition = Pick<
   EarnStatePosition,
@@ -81,7 +83,10 @@ async function readLiveHoldings(
   });
 }
 
-export function useEarnPosition(walletAddress: string | null) {
+export function useEarnPosition(
+  walletAddress: string | null,
+  signer?: Signer | null,
+) {
   const [position, setPosition] = useState<EarnPosition | null>(null);
   const [holdings, setHoldings] = useState<EarnRpcHolding[]>([]);
   const [policyMissing, setPolicyMissing] = useState(false);
@@ -89,15 +94,20 @@ export function useEarnPosition(walletAddress: string | null) {
   const [hasLoaded, setHasLoaded] = useState(false);
   const fetchIdRef = useRef(0);
   const mutatedAtRef = useRef(0);
+  const signerRef = useRef(signer);
+  signerRef.current = signer;
 
   const markEarnMutation = useCallback(() => {
     mutatedAtRef.current = Date.now();
   }, []);
 
   const refreshEarnPosition = useCallback(
-    async (options?: { throwOnError?: boolean }) => {
+    async (options?: { signIn?: boolean; throwOnError?: boolean }) => {
       if (!walletAddress) {
         return;
+      }
+      if (options?.signIn && signerRef.current) {
+        await deliberateSession(signerRef.current);
       }
       const fetchId = ++fetchIdRef.current;
       setIsLoading(true);

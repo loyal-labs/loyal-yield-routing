@@ -32,6 +32,7 @@ import {
   type EarnWithdrawMode,
 } from "./earn-api";
 import { signEarnAuth, withEarnAuth } from "./earn-auth";
+import { ensureEarnSession } from "./earn-session";
 import {
   signAndSendPreparedOperations,
   type HydratedPreparedOperation,
@@ -212,8 +213,8 @@ async function signSendAndConfirmWithdraw(args: {
     confirmedSlot: string,
     step?: (typeof steps)[number],
   ) => {
-    try {
-      await confirmEarnWithdraw({
+    const confirm = () =>
+      confirmEarnWithdraw({
         body: withdrawConfirmBody({
           confirmedSlot,
           prepared: args.prepared,
@@ -222,6 +223,15 @@ async function signSendAndConfirmWithdraw(args: {
         }),
         walletAddress: args.signer.publicKey.toBase58(),
       });
+    try {
+      try {
+        await confirm();
+      } catch (error) {
+        if (error instanceof EarnApiError && (error.status ?? 0) < 500) {
+          throw error;
+        }
+        await confirm();
+      }
     } catch (error) {
       confirmLost = true;
       console.warn(
@@ -362,6 +372,7 @@ async function runEarnWithdraw(
   flow: LifecycleFlow<"earn.withdrawal">,
 ): Promise<EarnWithdrawResult> {
   const amountRaw = usdToUsdcRaw(args.amountUsd);
+  await ensureEarnSession(args.signer);
   await assertSolForFees(
     getConnection(),
     args.signer.publicKey,
