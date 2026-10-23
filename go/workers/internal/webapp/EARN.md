@@ -52,7 +52,7 @@ execute and the policy signer key; reuse `internal/programs/*`. Prove bytes with
 
 ## Signing
 
-Only `earn_session.go` and `earn_privy.go` call `h.Session.Mint`; only `earn_deposit.go` calls
+Only `earn_session.go` and `earn_privy.go` call `h.Session.Mint`; only `earn_sponsor.go` (the sponsored provisioning seam, `ensureSmartAccount`) calls
 `h.Sponsor.Cosign`. `signer_test.go` fails on any other caller.
 
 ## Census

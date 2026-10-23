@@ -11,3 +11,7 @@ export * from "./voltr/program";
 export * from "./voltr/visibility";
 export * from "./wire/prepared-operation-wire.shared";
 export * from "./wire/earn-prepare-wire.shared";
+export * from "./earn/position-display";
+export * from "./earn/product-mints";
+export * from "./earn/rpc-holdings";
+export * from "./earn/withdraw-sources";
