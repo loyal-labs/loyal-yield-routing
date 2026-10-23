@@ -1,3 +1,4 @@
+import type { SolanaWeekQuestProgressItem } from "@loyal-labs/api";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { AppState } from "react-native";
@@ -7,7 +8,6 @@ import { QUEST_EVENTS } from "@/lib/analytics/quest-events";
 import {
   fetchSolanaWeekQuestProgress,
   type SolanaWeekQuestKind,
-  type SolanaWeekQuestProgressItem,
 } from "@/lib/solana/earn/earn-api";
 import { mmkv } from "@/lib/storage";
 import { useWallet } from "@/lib/wallet/wallet-provider";
@@ -88,7 +88,7 @@ export function QuestCompletionWatcher() {
     const poll = async () => {
       try {
         const res = await fetchSolanaWeekQuestProgress(pk);
-        if (active) handleProgress(res.quests, pk);
+        if (active) handleProgress(res.quests ?? [], pk);
       } catch {
       }
     };

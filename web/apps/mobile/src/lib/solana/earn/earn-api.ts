@@ -5,6 +5,7 @@ import type {
   EarningsBar,
   EarningsRange,
   EarningsRangeSet,
+  SolanaWeekQuestProgressResponse,
 } from "@loyal-labs/api";
 import { env } from "@/config/env";
 import {
@@ -803,33 +804,12 @@ export async function confirmEarnDeposit(
 
 export type SolanaWeekQuestKind = "earn_deposit" | "first_autodeposit_sweep";
 
-export type SolanaWeekQuestStatus =
-  | "reported"
-  | "pending"
-  | "failed"
-  | "not_started";
-
-export type SolanaWeekQuestProgressItem = {
-  kind: SolanaWeekQuestKind;
-  status: SolanaWeekQuestStatus;
-  solanaStatus: string | null;
-  reportedAt: string | null;
-  attempts: number;
-};
-
-export type SolanaWeekQuestProgressResponse = {
-  walletAddress: string;
-  quests: SolanaWeekQuestProgressItem[];
-};
-
 export async function fetchSolanaWeekQuestProgress(
   walletAddress: string,
 ): Promise<SolanaWeekQuestProgressResponse> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.apiBaseUrl}/api/solana-week/progress?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}`,
+    `${env.apiBaseUrl}/api/solana-week/progress`,
   );
   if (!res.ok) {
     return throwEarnError(res, "Failed to load quest progress.");
