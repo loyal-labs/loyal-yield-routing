@@ -12,14 +12,14 @@ type WirePreparedInstructionKey struct {
 
 type WirePreparedInstruction struct {
 	DataBase64 string                       `json:"dataBase64"`
-	Keys       []WirePreparedInstructionKey `json:"keys"`
+	Keys       []WirePreparedInstructionKey `json:"keys" nullable:"false"`
 	ProgramID  string                       `json:"programId"`
 }
 
 type WireAddressLookupTable struct {
 	Key   string `json:"key"`
 	State struct {
-		Addresses                  []string `json:"addresses"`
+		Addresses                  []string `json:"addresses" nullable:"false"`
 		Authority                  *string  `json:"authority"`
 		DeactivationSlot           string   `json:"deactivationSlot"`
 		LastExtendedSlot           uint64   `json:"lastExtendedSlot"`
@@ -31,8 +31,8 @@ type WireAddressLookupTable struct {
 // Earn vault refund never carries lookup tables or simulation diagnostics, but
 // the fields are part of the response contract and must serialize as present.
 type WirePreparedOperation struct {
-	Instructions         []WirePreparedInstruction `json:"instructions"`
-	LookupTableAccounts  []WireAddressLookupTable  `json:"lookupTableAccounts"`
+	Instructions         []WirePreparedInstruction `json:"instructions" nullable:"false"`
+	LookupTableAccounts  []WireAddressLookupTable  `json:"lookupTableAccounts" nullable:"false"`
 	Operation            string                    `json:"operation"`
 	Payer                string                    `json:"payer"`
 	ProgramID            string                    `json:"programId"`

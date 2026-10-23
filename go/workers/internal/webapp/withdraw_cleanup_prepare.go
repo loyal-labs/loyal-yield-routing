@@ -336,12 +336,6 @@ func buildEarnUsdcCleanup(ctx context.Context, client *chain.Client, in cleanupC
 	return wire, nil
 }
 
-// cleanupCloseError marks the two plain builder errors the TS messages name,
-// so the route can answer 500 prepare_failed with the exact text.
-type cleanupCloseError struct{ err error }
-
-func (e cleanupCloseError) Error() string { return e.err.Error() }
-
 // buildCleanupPolicyCloseOperation ports prepareCloseLiveYieldRoutingPoliciesSync
 // (client.ts:11868-11886) and its precheck: keep the policies that still
 // exist on chain, refuse when none do (the caller sees a nil operation), then
@@ -373,19 +367,16 @@ func buildCleanupPolicyCloseOperation(ctx context.Context, client *chain.Client,
 	if len(live) == 0 {
 		return nil, nil
 	}
-	for i, info := range liveInfos {
+	for _, info := range liveInfos {
 		decoded, decodeErr := squads.DecodeProgramInteractionPolicy(info)
-		if decodeErr != nil {
-			if decodeErr.Error() == "policy is not ProgramInteraction" {
-				return nil, cleanupCloseError{errors.New("Yield routing cleanup only accepts program-interaction policies.")}
-			}
+		if decodeErr != nil && !errors.Is(decodeErr, squads.ErrNotProgramInteraction) {
 			return nil, decodeErr
 		}
 		if decoded.Settings != in.SettingsPda {
-			return nil, cleanupCloseError{errors.New("Policy belongs to another vault.")}
+			return nil, errors.New("Policy belongs to another vault.")
 		}
-		if live[i] != in.RoutePolicyAccount && in.SetupPolicyAccount != nil && live[i] != *in.SetupPolicyAccount {
-			return nil, cleanupCloseError{errors.New("Policy belongs to another vault.")}
+		if decodeErr != nil {
+			return nil, errors.New("Yield routing cleanup only accepts program-interaction policies.")
 		}
 	}
 	remove, err := earnprep.WithdrawPolicyRemoveSync(in.SettingsPda, in.FeePayer, in.Wallet, live)
@@ -423,10 +414,10 @@ func buildAutodepositClosePrepared(ctx context.Context, client *chain.Client, in
 	if infos[0] != nil {
 		decoded, err := squads.DecodeProgramInteractionPolicy(infos[0])
 		if err != nil || !cleanupIsSubscriptionSweepPolicy(decoded) {
-			return nil, cleanupCloseError{errors.New("Refusing to close a policy that is not an Autodeposit sweep policy.")}
+			return nil, errors.New("Refusing to close a policy that is not an Autodeposit sweep policy.")
 		}
 		if decoded.Settings != in.SettingsPda {
-			return nil, cleanupCloseError{errors.New("Policy belongs to another vault.")}
+			return nil, errors.New("Policy belongs to another vault.")
 		}
 	}
 	closePolicy, err := earnprep.WithdrawPolicyRemoveSync(in.SettingsPda, in.FeePayer, in.Wallet, []solana.PublicKey{close_.Policy})

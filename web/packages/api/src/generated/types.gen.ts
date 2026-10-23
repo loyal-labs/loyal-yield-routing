@@ -1688,7 +1688,7 @@ export type WireAddressLookupTable = {
 };
 
 export type WireAddressLookupTableStateStruct = {
-    addresses: Array<string> | null;
+    addresses: Array<string>;
     authority: string | null;
     deactivationSlot: string;
     lastExtendedSlot: number;
@@ -1713,7 +1713,7 @@ export type WirePreparedEarnRecurringDelegationRefund = {
 
 export type WirePreparedInstruction = {
     dataBase64: string;
-    keys: Array<WirePreparedInstructionKey> | null;
+    keys: Array<WirePreparedInstructionKey>;
     programId: string;
 };
 
@@ -1724,8 +1724,8 @@ export type WirePreparedInstructionKey = {
 };
 
 export type WirePreparedOperation = {
-    instructions: Array<WirePreparedInstruction> | null;
-    lookupTableAccounts: Array<WireAddressLookupTable> | null;
+    instructions: Array<WirePreparedInstruction>;
+    lookupTableAccounts: Array<WireAddressLookupTable>;
     operation: string;
     payer: string;
     programId: string;

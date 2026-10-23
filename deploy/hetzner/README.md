@@ -441,7 +441,7 @@ no GRANT runs.
 | earn withdraw (confirm, cleanup prepare and confirm) | SELECT on `user_yield_position_withdrawals`, `balance_sweep_executions`, `balance_sweep_wallet_balance_events`, `balance_sweep_lot_claim_items`, `managed_vaults`, `route_policies`; SELECT, UPDATE on `balance_sweep_policies`, `balance_sweep_targets`, `balance_sweep_surplus_lots`, `balance_sweep_lot_claims` |
 | Earn MAX reads | SELECT on `multiply_route_states` |
 
-Observability ingest, earn session and earn cleanup check no yield grants.
+Observability ingest and earn session check no yield grants.
 
 **App Neon (`WEB_APP_DATABASE_URL`).** By owner decision 2026-10-23 this is
 the App Neon owner credential (`neondb_owner` on `neondb`, the same value as

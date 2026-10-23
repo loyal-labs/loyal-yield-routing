@@ -26,14 +26,11 @@ var earnFamilies = []earnFamily{
 	earnPrivyFamily,
 	earnDepositFamily,
 	earnWithdrawFamily,
-	earnCleanupFamily,
 	earnAutodepositFamily,
 	earnRefundsFamily,
 	earnWprepFamily,
 	earnDprepFamily,
 }
-
-func notPorted(earnRoutes) bool { return false }
 
 func registerEarn(api huma.API, h earnRoutes) {
 	for _, family := range earnFamilies {
