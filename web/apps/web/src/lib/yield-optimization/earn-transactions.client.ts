@@ -1,24 +1,14 @@
 "use client";
 
+import type {
+  EarnTransactionEventType,
+  EarnTransactionKind,
+} from "@loyal-labs/shared";
+
 export type EarnTransactionItem = {
   id: string;
-  kind:
-    | "autodeposit_action"
-    | "balance_sweep"
-    | "deposit"
-    | "withdraw"
-    | "rebalance"
-    | "reconciliation";
-  eventType:
-    | "autodeposit_closed"
-    | "autodeposit_created"
-    | "balance_sweep"
-    | "deposit_initialized"
-    | "deposit_top_up"
-    | "withdrawal_partial"
-    | "withdrawal_full"
-    | "rebalance_confirmed"
-    | "snapshot_reconciled";
+  kind: EarnTransactionKind;
+  eventType: EarnTransactionEventType;
   confirmedAt?: string;
   dateGroup: string;
   timestamp: string;

@@ -55,7 +55,7 @@ import {
   type EarnHoldingItem,
   type EarnWithdrawSourceInfo,
 } from "@/lib/solana/earn/earn-api";
-import { getVisibleEarnScheduledSweeps } from "@/lib/solana/earn/earn-scheduled-sweep";
+import { getVisibleEarnAutodepositScheduledSweeps } from "@loyal-labs/shared";
 import { env } from "@/config/env";
 import { executeEarnDeposit } from "@/lib/solana/earn/deposit";
 import { getEarnProductAssets } from "@/lib/solana/earn/earn-product-mints";
@@ -733,7 +733,13 @@ export default function EarnScreen() {
           // Criteria met for immediate execution → the backend scheduled a bootstrap
           // sweep. Take the user straight to Activity so the pending transaction (and
           // its "Execute now" shortcut) is visible, instead of leaving them guessing.
-          if (getVisibleEarnScheduledSweeps(fresh.scheduledSweeps).length > 0) {
+          if (
+            getVisibleEarnAutodepositScheduledSweeps({
+              scheduledSweeps: fresh.scheduledSweeps ?? [],
+              walletBalanceFloorRaw: null,
+              walletBalanceRaw: null,
+            }).length > 0
+          ) {
             router.navigate({
               pathname: "/(tabs)/activity",
               params: { section: "earn" },

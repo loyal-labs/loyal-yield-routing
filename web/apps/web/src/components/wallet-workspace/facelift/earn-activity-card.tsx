@@ -1,5 +1,7 @@
 "use client";
 
+import { getEarnTransactionRowLabel } from "@loyal-labs/shared";
+
 import { SelectableRow } from "@/components/wallet-workspace/facelift/selectable-row";
 import {
   type ReactNode,
@@ -16,9 +18,10 @@ import {
   formatEarnTransactionTimestamp,
   formatScheduledSweepAmount,
   formatScheduledSweepTime,
+  getAutodepositProgressButtonLabel,
   getEarnTransactionAmountColor,
-  getEarnTransactionRowLabel,
   groupEarnTransactions,
+  isPersistedScheduledSweepRetryable,
   resolveEarnTransactionDisplayTimeZone,
   shouldShowScheduledSweepsSection,
 } from "@/components/wallet-workspace/earn-transactions-pane";
@@ -46,7 +49,7 @@ import {
   getLoadedScheduledSweepExecuteNowAvailableAtMs,
   type LoadedEarnAutodepositScheduledSweep,
   rawTokenAmountToNumber,
-} from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+} from "@loyal-labs/shared";
 import {
   resolveEarnPositionDisplay,
   resolveEarnTransactionMarketIcon,
@@ -170,38 +173,6 @@ export type ExecuteNowControls = {
   progressBySlot: Readonly<Record<string, EarnAutodepositProgress>>;
   run: (sweep: LoadedEarnAutodepositScheduledSweep) => Promise<boolean>;
 };
-
-// earn-transactions-pane.tsx:726-780 — sweep button copy per execute-now
-// progress state, and the persisted-retry check. Unlike the OG the subtitle
-// keeps the schedule time — status shows ONLY in the button (user request).
-function isPersistedScheduledSweepRetryable(
-  sweep: LoadedEarnAutodepositScheduledSweep
-): boolean {
-  return sweep.status === "failed" || sweep.status === "released";
-}
-
-function getAutodepositProgressButtonLabel(
-  progress: EarnAutodepositProgress | undefined
-): string | null {
-  switch (progress?.state) {
-    case "requesting":
-      return "Requesting...";
-    case "requested":
-      return "Queued";
-    case "selected":
-      return "Preparing...";
-    case "pull_confirmed":
-      return "Depositing...";
-    case "completed":
-      return "Complete";
-    case "failed":
-    case "released":
-    case "canceled":
-      return "Try again";
-    default:
-      return null;
-  }
-}
 
 // OG behavior (earn-transactions-pane.tsx ScheduledTransactionRow) in the
 // facelift row styling: countdown until execute-now unlocks, per-slot

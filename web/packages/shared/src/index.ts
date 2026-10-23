@@ -27,3 +27,30 @@ export { buildEarnMaxDailySeries } from "./earn-max-history";
 export { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "./earn-autodeposit";
 
 export { MOBILE_DISTINCT_ID_PREFIX } from "./analytics-core";
+
+export {
+  EARN_AUTODEPOSIT_MIN_VISIBLE_SCHEDULED_SWEEP_RAW,
+  EARN_AUTODEPOSIT_PROGRESS_STATES,
+  earnAutodepositConfigFromLoadedState,
+  formatAutodepositUsdLabel,
+  formatLoadedScheduledSweepAvailableIn,
+  getDisplayableEarnAutodepositScheduledSweeps,
+  getLoadedScheduledSweepExecuteNowAvailableAtMs,
+  getVisibleEarnAutodepositScheduledSweeps,
+  isLoadedEarnAutodepositConfig,
+  isScheduledSweepExecuting,
+  parseUnsignedRawTokenAmount,
+  rawTokenAmountToNumber,
+} from "./earn-autodeposit-loaded-state";
+export type {
+  EarnAutodepositProgressState,
+  LoadedEarnAutodepositConfig,
+  LoadedEarnAutodepositScheduledSweep,
+  LoadedEarnAutodepositState,
+} from "./earn-autodeposit-loaded-state";
+
+export { getEarnTransactionRowLabel } from "./earn-transactions";
+export type {
+  EarnTransactionEventType,
+  EarnTransactionKind,
+} from "./earn-transactions";

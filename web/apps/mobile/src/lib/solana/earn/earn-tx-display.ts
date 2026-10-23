@@ -1,44 +1,5 @@
 import type { EarnTransactionItem } from "./earn-api";
 
-// Row title for an Earn transaction. Mirrors the web pane's
-// `getEarnTransactionRowLabel`: the specific lifecycle events win over the
-// generic kind (e.g. a `deposit_initialized` reads "Create & Deposit").
-export function getEarnTransactionRowLabel(
-  item: Pick<EarnTransactionItem, "eventType" | "kind">,
-): string {
-  switch (item.eventType) {
-    case "autodeposit_created":
-      return "Create allowance";
-    case "autodeposit_closed":
-      return "Remove allowance";
-    case "balance_sweep":
-      return "Balance sweep";
-    case "deposit_initialized":
-      return "Create & Deposit";
-    case "withdrawal_full":
-      return "Withdraw & Close";
-    default:
-      break;
-  }
-
-  switch (item.kind) {
-    case "deposit":
-      return "Deposit";
-    case "withdraw":
-      return "Withdraw";
-    case "rebalance":
-      return "Rebalanced";
-    case "reconciliation":
-      return "Reconciled";
-    case "balance_sweep":
-      return "Balance sweep";
-    case "autodeposit_action":
-      return "Allowance";
-    default:
-      return "Transaction";
-  }
-}
-
 export function getEarnTransactionAmountColor(
   kind: EarnTransactionItem["kind"],
 ): string {

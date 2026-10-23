@@ -9,7 +9,7 @@ import { findReadyCurrentUserSmartAccount } from "@/features/smart-accounts/serv
 import { getServerEnv } from "@/lib/core/config/server";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
 import { getDeploymentPolicySignerPublicKey } from "@/lib/yield-optimization/deployment-policy-signer.server";
-import { getDisplayableEarnAutodepositScheduledSweeps } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+import { getDisplayableEarnAutodepositScheduledSweeps } from "@loyal-labs/shared";
 import {
   findCurrentEarnAutodepositState,
   findPendingEarnAutodepositScheduledSweeps,

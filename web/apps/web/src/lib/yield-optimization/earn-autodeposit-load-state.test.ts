@@ -507,7 +507,7 @@ describe("Earn autodeposit load state", () => {
 
   test("loaded autodeposit config only keeps scheduled sweeps while active", async () => {
     const { earnAutodepositConfigFromLoadedState } = await import(
-      "./earn-autodeposit-loaded-state.shared"
+      "@loyal-labs/shared"
     );
     const scheduledSweep = createLoadedScheduledSweep();
     const loaded = {
@@ -546,7 +546,7 @@ describe("Earn autodeposit load state", () => {
     const {
       formatLoadedScheduledSweepAvailableIn,
       getLoadedScheduledSweepExecuteNowAvailableAtMs,
-    } = await import("./earn-autodeposit-loaded-state.shared");
+    } = await import("@loyal-labs/shared");
     const availableAtMs = getLoadedScheduledSweepExecuteNowAvailableAtMs(
       createLoadedScheduledSweep({
         executeNowAvailableAt: "2026-06-16T00:00:30.000Z",

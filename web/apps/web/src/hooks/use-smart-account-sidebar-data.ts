@@ -95,7 +95,7 @@ import {
   getStablecoinMintSetForSolanaEnv,
   isStablecoinMint,
 } from "@/lib/wallet/stablecoin-classification";
-import type { LoadedEarnAutodepositScheduledSweep } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+import type { LoadedEarnAutodepositScheduledSweep } from "@loyal-labs/shared";
 import {
   EarnPrepareRequestError,
   fetchEarnPrepare,

@@ -124,7 +124,7 @@ import {
 import type {
   LoadedEarnAutodepositConfig,
   LoadedEarnAutodepositScheduledSweep,
-} from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+} from "@loyal-labs/shared";
 import { hasEarnCleanupCandidate } from "@/lib/yield-optimization/earn-cleanup-ui-state";
 import {
   fetchEarnTransactions,

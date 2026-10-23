@@ -18,8 +18,8 @@ import {
 import {
   EARN_REALTIME_EVENT_TYPES,
   EARN_REALTIME_SCHEMA_VERSION,
-  type EarnAutodepositProgressState,
 } from "@/features/earn-realtime/types";
+import type { EarnAutodepositProgressState } from "@loyal-labs/shared";
 import {
   EARN_POSITION_REQUIRED_ERROR,
   hasActiveEarnRoutePolicyPair,

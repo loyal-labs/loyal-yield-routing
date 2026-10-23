@@ -1,8 +1,8 @@
 import {
   EARN_AUTODEPOSIT_PROGRESS_STATES,
-  type EarnAutodepositProgress,
   type EarnAutodepositProgressState,
-} from "./types";
+} from "@loyal-labs/shared";
+import type { EarnAutodepositProgress } from "./types";
 
 const DECIMAL_SLOT_ID_PATTERN = /^\d+$/;
 const AUTODEPOSIT_PROGRESS_STATES = new Set<string>(
