@@ -313,6 +313,9 @@ type stateReconciledSnapshot struct {
 // lock; the staged snapshot is only published (is_current, context) after its
 // positions and idle balances are written.
 func (h earnRoutes) stateRecordReconciledSnapshot(ctx context.Context, in stateReconciledSnapshot) error {
+	if len(in.IdleBalances) == 0 {
+		return errors.New("A complete Earn snapshot requires idle token balances.")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	tx, err := h.YieldDB.Begin(ctx)

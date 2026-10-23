@@ -147,7 +147,7 @@ func (h earnRoutes) earnPosition(ctx context.Context, in *sessionRequest) (*stat
 		return nil, earnUnavailable("earn-position idle balances", err, "position_unavailable", "Earn position is unavailable.")
 	}
 
-	supplyApyBps := h.stateCurrentSupplyApyBps(ctx, position.CurrentReserve)
+	supplyApyBps := h.stateCurrentSupplyApyBps(ctx, *position)
 
 	serialized, err := serializeEarnPosition(*position, supplyApyBps, reserveRows, idleRows, account.Cluster)
 	if err != nil {
@@ -164,8 +164,8 @@ func (h earnRoutes) earnPosition(ctx context.Context, in *sessionRequest) (*stat
 // 500 ms) around one Timescale lookup of the position's reserve, a failed
 // feed logging and leaving the APY unset. The feed only tracks mainnet, so a
 // devnet position is read through its mainnet twin reserve.
-func (h earnRoutes) stateCurrentSupplyApyBps(ctx context.Context, currentReserve string) *string {
-	reserve := stateTimescaleReserveForPosition(currentReserve)
+func (h earnRoutes) stateCurrentSupplyApyBps(ctx context.Context, position stateYieldPositionRow) *string {
+	reserve := stateTimescaleReserveForPosition(position)
 	var apy *float64
 	for attempt := 0; ; attempt++ {
 		value, err := h.stateTimescaleSupplyApy(ctx, reserve)
@@ -174,7 +174,7 @@ func (h earnRoutes) stateCurrentSupplyApyBps(ctx context.Context, currentReserve
 			break
 		}
 		if attempt >= 2 {
-			slog.Warn("[earn-position] current Timescale reserve lookup failed", "error", err, "currentReserve", currentReserve, "timescaleReserve", reserve)
+			slog.Warn("[earn-position] current Timescale reserve lookup failed", "error", err, "currentReserve", position.CurrentReserve, "timescaleReserve", reserve)
 			break
 		}
 		select {
@@ -342,13 +342,21 @@ func statePositionDisplay(liquidityMint string, market *string) EarnPositionDisp
 }
 
 // stateTimescaleReserveForPosition ports resolveTimescaleReserveForPosition
-// (position/route.ts:42): the devnet Earn venue is read through its mainnet
+// (position/route.ts:42): the devnet Earn venue (the devnet USDC target's
+// reserve, market and liquidity mint together) is read through its mainnet
 // twin reserve, which is what the Timescale feed samples.
-func stateTimescaleReserveForPosition(currentReserve string) string {
-	if currentReserve == "9uKMtFU9UJ9DfbwzCReGENb31appi79KTEeDGdCnvMjy" {
-		return "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+func stateTimescaleReserveForPosition(position stateYieldPositionRow) string {
+	const (
+		devnetReserve      = "9uKMtFU9UJ9DfbwzCReGENb31appi79KTEeDGdCnvMjy"
+		devnetMarket       = "27MKCQo5qP7ijrwWSMKX2Jeb3PhK2NZmHQ9befWVRS4J"
+		mainnetTwinReserve = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59"
+	)
+	if position.CurrentReserve == devnetReserve &&
+		position.CurrentMarket != nil && *position.CurrentMarket == devnetMarket &&
+		position.CurrentLiquidityMint == stateDevnetUSDCMint {
+		return mainnetTwinReserve
 	}
-	return currentReserve
+	return position.CurrentReserve
 }
 
 // serializeEarnPositionHolding ports serializeKaminoHolding
