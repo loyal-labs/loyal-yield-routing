@@ -23,23 +23,24 @@ func strconvFormatInt(v int64) string {
 // stateYieldPositionRow mirrors loyal_yield.user_yield_positions for the
 // position serializer (only the columns the response reads).
 type stateYieldPositionRow struct {
-	ID                   int64
-	Settings             string
-	VaultIndex           int16
-	VaultPubkey          string
-	InitialReserve       string
-	InitialMarket        *string
-	InitialLiquidityMint string
-	InitialSupplyApyBps  *int64
-	PrincipalAmountRaw   int64
-	CurrentReserve       string
-	CurrentMarket        *string
-	CurrentLiquidityMint string
-	CurrentAmountRaw     int64
-	CurrentObservedSlot  int64
-	CurrentObservedAt    time.Time
-	LastHoldingEventID   *int64
-	Status               string
+	ID                      int64
+	Settings                string
+	VaultIndex              int16
+	VaultPubkey             string
+	InitialReserve          string
+	InitialMarket           *string
+	InitialLiquidityMint    string
+	InitialSupplyApyBps     *int64
+	PrincipalAmountRaw      int64
+	CurrentReserve          string
+	CurrentMarket           *string
+	CurrentLiquidityMint    string
+	CurrentAmountRaw        int64
+	CurrentObservedSlot     int64
+	CurrentObservedAt       time.Time
+	LastHoldingEventID      *int64
+	LastRebalanceDecisionID *int64
+	Status                  string
 }
 
 // stateHoldingEventRow mirrors loyal_yield.user_yield_position_holding_events.
@@ -341,7 +342,7 @@ func serializeEarnStatePosition(position stateYieldPositionRow, currentTotalAmou
 			ObservedSlot:  strconvFormatInt(position.CurrentObservedSlot),
 			Provenance: EarnStateProvenance{
 				LastHoldingEventID:      stateInt64Ptr(position.LastHoldingEventID),
-				LastRebalanceDecisionID: nil,
+				LastRebalanceDecisionID: stateInt64Ptr(position.LastRebalanceDecisionID),
 			},
 			Reserve: position.CurrentReserve,
 		},

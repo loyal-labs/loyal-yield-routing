@@ -20,7 +20,8 @@ import (
 const statePositionColumns = `id, settings, vault_index, vault_pubkey, initial_reserve,
   initial_market, initial_liquidity_mint, initial_supply_apy_bps, principal_amount_raw,
   current_reserve, current_market, current_liquidity_mint, current_amount_raw,
-  current_observed_slot, current_observed_at, last_holding_event_id, status`
+  current_observed_slot, current_observed_at, last_holding_event_id,
+  last_rebalance_decision_id, status`
 
 const stateEventColumns = `id, position_id, event_type::text, reserve, market, liquidity_mint,
   amount_raw, observed_slot, observed_at, source_rebalance_decision_id, source_snapshot_id`
@@ -30,7 +31,8 @@ func scanStatePosition(row pgx.Row) (*stateYieldPositionRow, error) {
 	err := row.Scan(&p.ID, &p.Settings, &p.VaultIndex, &p.VaultPubkey, &p.InitialReserve,
 		&p.InitialMarket, &p.InitialLiquidityMint, &p.InitialSupplyApyBps, &p.PrincipalAmountRaw,
 		&p.CurrentReserve, &p.CurrentMarket, &p.CurrentLiquidityMint, &p.CurrentAmountRaw,
-		&p.CurrentObservedSlot, &p.CurrentObservedAt, &p.LastHoldingEventID, &p.Status)
+		&p.CurrentObservedSlot, &p.CurrentObservedAt, &p.LastHoldingEventID,
+		&p.LastRebalanceDecisionID, &p.Status)
 	if err != nil {
 		return nil, err
 	}
