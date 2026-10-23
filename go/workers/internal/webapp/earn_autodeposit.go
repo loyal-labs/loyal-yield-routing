@@ -47,4 +47,5 @@ func (h earnRoutes) registerAutodeposit(api huma.API) {
 	h.registerAutodepositClose(api)
 	h.registerAutodepositFloor(api)
 	h.registerAutodepositToggle(api)
+	h.registerAutodepositSweeps(api)
 }
