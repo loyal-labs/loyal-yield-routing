@@ -33,9 +33,9 @@ daily pin job flags anything loyal-app adds after that.
 One base URL: `env.apiBaseUrl` (`web/apps/mobile/src/config/env.ts`), from
 `EXPO_PUBLIC_API_BASE_URL`, default `https://next.askloyal.com` (loyal-web).
 M-base (#543) deleted `API_BASE_URL` and `EARN_API_BASE_URL`. The `eas.json`
-profiles still carry the old value until Vlad flips them (see Deploy
-sequence). `GRID_AUTH_BASE_URL` (default `auth.askloyal.com`) is configured but
-never called.
+profiles now use `https://next.askloyal.com` (owner-authorized correction,
+2026-10-23). Builds and OTA publication remain separate release steps.
+`GRID_AUTH_BASE_URL` (default `auth.askloyal.com`) is configured but never called.
 
 The routes census (`scripts/web/routes-census.ts --check`, in CI) reads every
 `${env.apiBaseUrl}/api/...` path in the app and matches it to a server route.
@@ -320,11 +320,20 @@ Before Vlad's next Earn build from main, in this order:
    line.
 2. The preflight passes against https://next.askloyal.com: the `preflight`
    step of `scripts/web/mobile-go-check.ts` (see Post-deploy verification).
-3. Vlad flips `EXPO_PUBLIC_API_BASE_URL` in `eas.json` to
-   https://next.askloyal.com, preview profile first, then makes the next Earn
-   build.
+   **Configuration verified 2026-10-23:** the deployed routes were disabled
+   by missing grants on `loyal_web_stats_reader`. Added the documented content,
+   session, Earn MAX, and push grants; installed encrypted session-verification,
+   RPC, and CoinGecko credentials in `65-mobile-api.conf`; restarted only
+   `loyal-web`. Summaries, dApps, library, and USDC token detail now return 200
+   with `X-Loyal-API-Source: go`. Unauthenticated Earn MAX reads and push
+   registration return 401 from Go; Earn MAX carries `earn-max-v4`. Readiness
+   passes with zero restarts. Signed-in device checks remain a separate step;
+   this probe did not register a push token or submit a transaction.
+3. `EXPO_PUBLIC_API_BASE_URL` in every `eas.json` profile is now
+   https://next.askloyal.com (2026-10-23). Release a preview build before the
+   production build; this configuration correction itself publishes neither.
 
-A build from main before step 3 sends Earn calls to the telegram Vercel app.
+Older revisions of `eas.json` send Earn calls to the telegram Vercel app.
 The preflight exists because Go proxies what it does not register, and the
 proxy target (the web Next app) has none of `summaries`, `mobile/*` or
 `push-tokens`, and answers Earn MAX summary without `config.walletAddress`,
@@ -392,9 +401,9 @@ The on-device mainnet deposit and withdraw stay on Vlad's preview build.
    RS256, then the secret is dropped.
 2. Go to deploy `loyal-web` and to install the credentials and grants,
    including the `AUTH_JWT_SECRET` credential (Deploy sequence, step 1).
-3. Vlad's `eas.json` flip of `EXPO_PUBLIC_API_BASE_URL` to
-   https://next.askloyal.com, preview profile first (step 3), and the owner's go
-   to flip the production profile after the preview canary. The build is Vlad's.
+3. Release the corrected `eas.json` profiles through a preview build first
+   (step 3), then production on the owner's go. The API URL correction is
+   authorized; builds and publication remain Vlad's.
 4. An Earn MAX mobile screen design (none exists).
 5. RS256 on Vercel, then remove `AUTH_JWT_SECRET` from Go.
 6. An empty performance chart for 100 or more signatures: the Go reader drops

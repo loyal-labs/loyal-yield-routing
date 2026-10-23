@@ -1,1 +1,1 @@
-Earn MAX test release: explore Earn MAX with deposits, withdrawals and claims, plus an updated home screen. Restart to try it.
+Loyal 0.6.0: Earn MAX and improved wallet unlock.

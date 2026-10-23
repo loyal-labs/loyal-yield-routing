@@ -1,0 +1,210 @@
+{
+  "route": "refund",
+  "branch": "synthetic: kind vault; chain answers re-addressed from a real closed Earn vault (recordedFrom) whose only leftover is a zero-balance USDC ATA; DB says no active position, autodeposit or managed vault; one op = CloseAccount of that ATA, no transfer, no SOL sweep",
+  "processEnv": {
+    "NEXT_PUBLIC_SOLANA_ENV": "mainnet"
+  },
+  "recordedFrom": {
+    "walletAddress": "2VyHaBiuqiLNZzMNT9K4zevSds84J121vYfLHg1gBh64",
+    "settingsPda": "2h5SMDMbyUAosyjwev91WRfnTntkrWDg1GqXkACto4UP",
+    "policySeeds": [
+      1,
+      2,
+      4,
+      5
+    ],
+    "reserves": []
+  },
+  "request": {
+    "body": {
+      "kind": "vault"
+    }
+  },
+  "principal": {
+    "walletAddress": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+    "settingsPda": "EEA8aso4Vky11KYsL66jsBujUW8quseSr9GinxAPpmvw",
+    "smartAccountAddress": "F7zuL14omw4JJfS1cvsWXVb3wh48dvsonMJgoc9tYu3e"
+  },
+  "serverEnv": {
+    "loyalSmartAccounts": {
+      "programId": "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG"
+    },
+    "earnYieldRouterPublicKey": "62JLkPeE4oG65LRB3W3m52RVicmYq3xFHdv7TecCsPj5",
+    "deploymentPrivateKey": null
+  },
+  "boundary": {
+    "findEarnVaultRefundDbState": {
+      "hasActiveAutodeposit": false,
+      "hasActiveManagedVault": false,
+      "hasActivePosition": false
+    }
+  },
+  "transport": [
+    {
+      "kind": "rpc",
+      "method": "getBalance",
+      "params": [
+        "pPiw9pKpPUPRBdqx3ybBQzS6DWmUWkUghvane15PZ1G",
+        {
+          "commitment": "confirmed"
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "result": {
+          "context": {
+            "slot": 460573324,
+            "apiVersion": "4.3.0-alpha.2"
+          },
+          "value": 0
+        }
+      }
+    },
+    {
+      "kind": "rpc",
+      "method": "getTokenAccountsByOwner",
+      "params": [
+        "pPiw9pKpPUPRBdqx3ybBQzS6DWmUWkUghvane15PZ1G",
+        {
+          "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "encoding": "base64",
+          "commitment": "confirmed"
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "result": {
+          "context": {
+            "slot": 460573324,
+            "apiVersion": "4.3.0-alpha.2"
+          },
+          "value": []
+        }
+      }
+    },
+    {
+      "kind": "rpc",
+      "method": "getTokenAccountsByOwner",
+      "params": [
+        "pPiw9pKpPUPRBdqx3ybBQzS6DWmUWkUghvane15PZ1G",
+        {
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "encoding": "base64",
+          "commitment": "confirmed"
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "result": {
+          "context": {
+            "slot": 460573322,
+            "apiVersion": "4.3.0-alpha.2"
+          },
+          "value": [
+            {
+              "pubkey": "t8em6eXzjeZ2PFCRKhk1QhJFJSiXcqZyADWUPiKZ5Wu",
+              "account": {
+                "lamports": 1488440,
+                "data": [
+                  "xvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEMI/2yCGS/YtWyRj6W3geh4Muvtiv391CTtJWLh/Ni/wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "rentEpoch": 18446744073709552000,
+                "space": 165
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "rpc",
+      "method": "getBalance",
+      "params": [
+        "pPiw9pKpPUPRBdqx3ybBQzS6DWmUWkUghvane15PZ1G",
+        {
+          "commitment": "confirmed"
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "result": {
+          "context": {
+            "slot": 460573325,
+            "apiVersion": "4.3.0-alpha.2"
+          },
+          "value": 0
+        }
+      }
+    },
+    {
+      "kind": "rpc",
+      "method": "getTokenAccountsByOwner",
+      "params": [
+        "pPiw9pKpPUPRBdqx3ybBQzS6DWmUWkUghvane15PZ1G",
+        {
+          "programId": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+        },
+        {
+          "encoding": "base64",
+          "commitment": "confirmed"
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "result": {
+          "context": {
+            "slot": 460573325,
+            "apiVersion": "4.3.0-alpha.2"
+          },
+          "value": []
+        }
+      }
+    },
+    {
+      "kind": "rpc",
+      "method": "getTokenAccountsByOwner",
+      "params": [
+        "pPiw9pKpPUPRBdqx3ybBQzS6DWmUWkUghvane15PZ1G",
+        {
+          "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "encoding": "base64",
+          "commitment": "confirmed"
+        }
+      ],
+      "response": {
+        "jsonrpc": "2.0",
+        "result": {
+          "context": {
+            "slot": 460573325,
+            "apiVersion": "4.3.0-alpha.2"
+          },
+          "value": [
+            {
+              "pubkey": "t8em6eXzjeZ2PFCRKhk1QhJFJSiXcqZyADWUPiKZ5Wu",
+              "account": {
+                "lamports": 1488440,
+                "data": [
+                  "xvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWEMI/2yCGS/YtWyRj6W3geh4Muvtiv391CTtJWLh/Ni/wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "executable": false,
+                "rentEpoch": 18446744073709552000,
+                "space": 165
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
