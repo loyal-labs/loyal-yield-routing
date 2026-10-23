@@ -13,7 +13,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2"
@@ -28,7 +27,7 @@ import (
 // answers 400 invalid_request naming the field.
 func parseRefundPublicKey(value, label string) (solana.PublicKey, error) {
 	key, err := solana.PublicKeyFromBase58(value)
-	if err != nil || strings.TrimSpace(value) == "" {
+	if err != nil {
 		return solana.PublicKey{}, earnError(http.StatusBadRequest, "invalid_request", label+" is not a valid public key.")
 	}
 	return key, nil
@@ -180,10 +179,6 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 		return nil, refundPrepareFailed(err)
 	}
 	info := infoReads[0]
-	policyAddresses := make([]string, 0, len(policies))
-	for _, policy := range policies {
-		policyAddresses = append(policyAddresses, policy.address.String())
-	}
 	openDelegations, err := h.txreadsOpenDelegations(ctx, account.Wallet, account.Vault)
 	if err != nil {
 		return nil, refundPrepareFailed(err)
