@@ -114,7 +114,7 @@ func limitMobileEarn(next http.Handler) http.Handler {
 		}
 		status := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(status, r)
-		if status.code != http.StatusUnauthorized {
+		if status.code >= http.StatusOK && status.code < http.StatusMultipleChoices {
 			wallet.ReserveN(time.Now(), 1)
 		}
 	})
