@@ -259,6 +259,139 @@ type autodepositSweepsExecuteInput struct {
 	Raw         rawJSON
 }
 
+// autodepositSweepProgressRecord is EarnAutodepositScheduledSweepProgressRecord.
+type autodepositSweepProgressRecord struct {
+	SlotID                int64
+	Status                string
+	CompletedAt           *time.Time
+	CompletionFailureCode *string
+	EventID               *int64
+	OccurredAt            time.Time
+}
+
+// findAutodepositSweepProgress ports
+// findEarnAutodepositScheduledSweepProgress (:848-901): the slot's execution
+// completion columns plus the newest autodeposit realtime event for the slot;
+// occurredAt falls back to the slot's updated_at when no event exists.
+func (h earnRoutes) findAutodepositSweepProgress(ctx context.Context, targetID, slotID int64) (*autodepositSweepProgressRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var progress autodepositSweepProgressRecord
+	err := h.YieldDB.QueryRow(ctx, `SELECT
+  slot.id,
+  slot.status::text,
+  execution.completed_at,
+  execution.completion_failure_code,
+  latest_event.id,
+  COALESCE(latest_event.created_at, slot.updated_at)
+FROM loyal_yield.balance_sweep_scheduled_slots AS slot
+LEFT JOIN loyal_yield.balance_sweep_executions AS execution
+  ON execution.id = slot.execution_id
+LEFT JOIN LATERAL (
+  SELECT event.id, event.created_at
+  FROM loyal_yield.realtime_events AS event
+  WHERE event.scheduled_slot_id = slot.id
+    AND event.scope = 'autodeposit'
+  ORDER BY event.id DESC
+  LIMIT 1
+) AS latest_event ON true
+WHERE slot.target_id = $1
+  AND slot.id = $2
+LIMIT 1`, targetID, slotID).
+		Scan(&progress.SlotID, &progress.Status, &progress.CompletedAt,
+			&progress.CompletionFailureCode, &progress.EventID, &progress.OccurredAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &progress, nil
+}
+
+// resolveAutodepositProgressState ports resolveProgressState (route.ts:89-112):
+// the execution outcome wins, then the executed status, then the live slot
+// statuses; an unrecognized status has no renderable state.
+func resolveAutodepositProgressState(progress autodepositSweepProgressRecord) string {
+	if progress.CompletedAt != nil {
+		return "completed"
+	}
+	if progress.CompletionFailureCode != nil {
+		return "failed"
+	}
+	if progress.Status == "executed" {
+		return "pull_confirmed"
+	}
+	switch progress.Status {
+	case "scheduled", "requested", "selected", "failed", "released", "canceled":
+		return progress.Status
+	}
+	return ""
+}
+
+type autodepositSweepsProgressInput struct {
+	SessionInput
+	SlotID string `query:"slotId" required:"false"`
+}
+
+func (h earnRoutes) autodepositSweepsProgress(ctx context.Context, in *autodepositSweepsProgressInput) (*AutodepositSweepsProgressResponse, error) {
+	// route.ts:115-118.
+	account, err := h.account(ctx, in.SessionInput)
+	if err != nil {
+		return nil, earnUnavailable("load Earn account", err, "account_unavailable", "Earn account is unavailable.")
+	}
+
+	// route.ts:120-131.
+	slotID, err := parseAutodepositSlotID(in.SlotID)
+	if err != nil {
+		return nil, earnError(http.StatusBadRequest, "invalid_request", err.Error())
+	}
+
+	// route.ts:133-145.
+	target, err := h.findCurrentAutodepositTarget(ctx, account.Settings.String(), account.Wallet.String())
+	if err != nil {
+		return nil, earnError(http.StatusInternalServerError, "progress_read_failed",
+			"Failed to read Autodeposit sweep progress.")
+	}
+	if target == nil {
+		return nil, earnError(http.StatusNotFound, "autodeposit_not_found",
+			"No Earn Autodeposit policy is available for this wallet.")
+	}
+
+	// route.ts:147-158.
+	progress, err := h.findAutodepositSweepProgress(ctx, target.ID, slotID)
+	if err != nil {
+		return nil, earnError(http.StatusInternalServerError, "progress_read_failed",
+			"Failed to read Autodeposit sweep progress.")
+	}
+	if progress == nil {
+		return nil, earnError(http.StatusNotFound, "scheduled_sweep_not_found",
+			"No matching Autodeposit scheduled sweep is available.")
+	}
+	state := resolveAutodepositProgressState(*progress)
+	if state == "" {
+		return nil, earnError(http.StatusNotFound, "scheduled_sweep_not_found",
+			"No matching Autodeposit scheduled sweep is available.")
+	}
+
+	response := &AutodepositSweepsProgressResponse{
+		EventType:       autodepositRealtimeEventType,
+		OccurredAt:      isoMilliseconds(progress.OccurredAt),
+		ScheduledSlotID: strconv.FormatInt(progress.SlotID, 10),
+		SchemaVersion:   autodepositRealtimeSchemaVersion,
+		Scope:           "autodeposit",
+		State:           state,
+	}
+	if progress.EventID != nil {
+		eventID := strconv.FormatInt(*progress.EventID, 10)
+		response.EventID = &eventID
+	}
+	if progress.CompletionFailureCode != nil {
+		response.FailureCode = progress.CompletionFailureCode
+	}
+	return response, nil
+}
+
 func (h earnRoutes) registerAutodepositSweeps(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "post-autodeposit-sweeps-execute",
@@ -268,6 +401,13 @@ func (h earnRoutes) registerAutodepositSweeps(api huma.API) {
 		Responses:   errorResponses[routeError](api, 400, 401, 404, 409, 500, 503),
 	}, h.autodepositSweepsExecute)
 	documentJSONBody[AutodepositSweepsExecuteRequest](api, autodepositSweepsExecutePath)
+	huma.Register(api, huma.Operation{
+		OperationID: "get-autodeposit-sweeps-execute",
+		Method:      http.MethodGet,
+		Path:        autodepositSweepsExecutePath,
+		Summary:     "Read the progress of one Earn autodeposit scheduled sweep",
+		Responses:   errorResponses[routeError](api, 400, 401, 404, 500, 503),
+	}, h.autodepositSweepsProgress)
 }
 
 func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodepositSweepsExecuteInput) (*AutodepositSweepsExecuteResponse, error) {
