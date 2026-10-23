@@ -115,6 +115,36 @@ export type AutodepositSetupConfirmTarget = {
     walletBalanceFloorRaw: string | null;
 };
 
+export type AutodepositSweepRequestResult = {
+    acceleratedAmountRaw: string;
+    acceleratedLotCount: number;
+    eligibleAfter: string;
+    slotId: string;
+    status: string;
+    targetId: string;
+};
+
+export type AutodepositSweepsExecuteRequest = {
+    slotId?: string;
+};
+
+export type AutodepositSweepsExecuteResponse = {
+    status: string;
+    sweepRequest: AutodepositSweepRequestResult;
+    target: AutodepositSetupConfirmTarget;
+};
+
+export type AutodepositSweepsProgressResponse = {
+    eventId?: string;
+    eventType: string;
+    failureCode?: string;
+    occurredAt: string;
+    scheduledSlotId: string;
+    schemaVersion: number;
+    scope: string;
+    state: string;
+};
+
 export type AutodepositTargetResponse = {
     target: AutodepositSetupConfirmTarget;
 };
@@ -289,6 +319,69 @@ export type DprepVault = {
     collateralAta: string | null;
     pubkey: string;
     usdcAta: string;
+};
+
+export type EarnDepositConfirmCurrentHolding = {
+    amountRaw: string;
+    liquidityMint: string;
+    market: string;
+    observedAt: string;
+    observedSlot: string;
+    provenance: EarnDepositConfirmPositionProvenance;
+    reserve: string;
+};
+
+export type EarnDepositConfirmInitialHolding = {
+    liquidityMint: string;
+    market: string;
+    reserve: string;
+    supplyApyBps: string | null;
+};
+
+export type EarnDepositConfirmPosition = {
+    currentHolding: EarnDepositConfirmCurrentHolding;
+    id: string;
+    initialHolding: EarnDepositConfirmInitialHolding;
+    principalAmountRaw: string;
+    status: string;
+};
+
+export type EarnDepositConfirmPositionProvenance = {
+    lastHoldingEventId: string | null;
+    lastRebalanceDecisionId: string | null;
+};
+
+export type EarnDepositConfirmRequest = {
+    cluster?: string;
+    confirmedSlot?: string;
+    delegatedSigner?: string;
+    depositMint?: string;
+    depositSignature?: string;
+    liquidityMint?: string;
+    market?: string;
+    policyAccount?: string;
+    policyConfirmedSlot?: string;
+    policyId?: string;
+    policyInitialization?: 'create' | 'reuse';
+    policySeed?: string;
+    policySignature?: string;
+    principalAmountRaw?: string;
+    settings?: string;
+    setupPolicyAccount?: string;
+    setupPolicyConfirmedSlot?: string;
+    setupPolicyId?: string;
+    setupPolicySeed?: string;
+    setupPolicySignature?: string;
+    smartAccountAddress?: string;
+    targetReserve?: string;
+    targetSupplyApyBps?: string;
+    vaultIndex?: number;
+    vaultPubkey?: string;
+    walletAddress?: string;
+};
+
+export type EarnDepositConfirmResponse = {
+    position: EarnDepositConfirmPosition;
 };
 
 export type EarnForecastApyHistoryResponse = {
@@ -2399,6 +2492,105 @@ export type PostAutodepositSetupConfirmResponses = {
 
 export type PostAutodepositSetupConfirmResponse = PostAutodepositSetupConfirmResponses[keyof PostAutodepositSetupConfirmResponses];
 
+export type GetAutodepositSweepsExecuteData = {
+    body?: never;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: {
+        slotId?: string;
+    };
+    url: '/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute';
+};
+
+export type GetAutodepositSweepsExecuteErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type GetAutodepositSweepsExecuteError = GetAutodepositSweepsExecuteErrors[keyof GetAutodepositSweepsExecuteErrors];
+
+export type GetAutodepositSweepsExecuteResponses = {
+    /**
+     * OK
+     */
+    200: AutodepositSweepsProgressResponse;
+};
+
+export type GetAutodepositSweepsExecuteResponse = GetAutodepositSweepsExecuteResponses[keyof GetAutodepositSweepsExecuteResponses];
+
+export type PostAutodepositSweepsExecuteData = {
+    body?: AutodepositSweepsExecuteRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+        'Content-Type'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute';
+};
+
+export type PostAutodepositSweepsExecuteErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Not Found
+     */
+    404: RouteError;
+    /**
+     * Conflict
+     */
+    409: RouteError;
+    /**
+     * Internal Server Error
+     */
+    500: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostAutodepositSweepsExecuteError = PostAutodepositSweepsExecuteErrors[keyof PostAutodepositSweepsExecuteErrors];
+
+export type PostAutodepositSweepsExecuteResponses = {
+    /**
+     * OK
+     */
+    200: AutodepositSweepsExecuteResponse;
+};
+
+export type PostAutodepositSweepsExecuteResponse = PostAutodepositSweepsExecuteResponses[keyof PostAutodepositSweepsExecuteResponses];
+
 export type PostAutodepositToggleConfirmData = {
     body?: AutodepositToggleConfirmRequest;
     headers?: {
@@ -2528,6 +2720,48 @@ export type PostEarnCrossMintToggleResponses = {
 };
 
 export type PostEarnCrossMintToggleResponse = PostEarnCrossMintToggleResponses[keyof PostEarnCrossMintToggleResponses];
+
+export type PostEarnDepositsConfirmData = {
+    body?: EarnDepositConfirmRequest;
+    headers?: {
+        Authorization?: string;
+        Cookie?: string;
+        'X-Forwarded-Host'?: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/smart-accounts/yield-optimization/deposits/confirm';
+};
+
+export type PostEarnDepositsConfirmErrors = {
+    /**
+     * Bad Request
+     */
+    400: RouteError;
+    /**
+     * Unauthorized
+     */
+    401: RouteError;
+    /**
+     * Forbidden
+     */
+    403: RouteError;
+    /**
+     * Service Unavailable
+     */
+    503: RouteError;
+};
+
+export type PostEarnDepositsConfirmError = PostEarnDepositsConfirmErrors[keyof PostEarnDepositsConfirmErrors];
+
+export type PostEarnDepositsConfirmResponses = {
+    /**
+     * OK
+     */
+    200: EarnDepositConfirmResponse;
+};
+
+export type PostEarnDepositsConfirmResponse = PostEarnDepositsConfirmResponses[keyof PostEarnDepositsConfirmResponses];
 
 export type PostEarnDepositsPrepareData = {
     body?: DprepRequestBody;

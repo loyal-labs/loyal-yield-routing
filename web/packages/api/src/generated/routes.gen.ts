@@ -10,6 +10,7 @@ export type Get = {
   "/api/smart-accounts/earn-max/invite": Types.InviteStatus;
   "/api/smart-accounts/earn-max/summary": Types.EarnMaxSummaryResponse;
   "/api/smart-accounts/earn-transactions": Types.EarnTransactionsResponse;
+  "/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute": Types.AutodepositSweepsProgressResponse;
   "/api/smart-accounts/yield-optimization/earn-state": Types.EarnStateResponse;
   "/api/smart-accounts/yield-optimization/earnings": Types.EarningsRangeSet;
   "/api/smart-accounts/yield-optimization/position": Types.EarnPositionResponse;
@@ -28,9 +29,11 @@ export type Post = {
   "/api/smart-accounts/yield-optimization/autodeposit/close/confirm": Types.AutodepositTargetResponse;
   "/api/smart-accounts/yield-optimization/autodeposit/floor/confirm": Types.AutodepositFloorConfirmResponse;
   "/api/smart-accounts/yield-optimization/autodeposit/setup/confirm": Types.AutodepositSetupConfirmResponse;
+  "/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute": Types.AutodepositSweepsExecuteResponse;
   "/api/smart-accounts/yield-optimization/autodeposit/toggle/confirm": Types.AutodepositTargetResponse;
   "/api/smart-accounts/yield-optimization/cross-mint/delete/readiness": Types.CrossMintDeleteReadinessResponse;
   "/api/smart-accounts/yield-optimization/cross-mint/toggle": Types.CrossMintToggleResponse;
+  "/api/smart-accounts/yield-optimization/deposits/confirm": Types.EarnDepositConfirmResponse;
   "/api/smart-accounts/yield-optimization/deposits/prepare": Types.DprepResponse;
   "/api/smart-accounts/yield-optimization/policies/confirm": Types.EarnPolicyConfirmResponse;
   "/api/smart-accounts/yield-optimization/policies/prepare": Types.EarnPolicyPrepareResponse;
