@@ -59,8 +59,6 @@ configure_render_frontend_url() {
 
 configure_render_frontend_url
 
-# HyperDX derives its fallback origin from the internal application port. The
-# public local origin is nginx on PORT, so make that boundary explicit too.
 if [ "${RENDER:-}" != "true" ] && [ -z "${FRONTEND_URL:-}" ]; then
   export FRONTEND_URL="http://localhost:$PORT"
 fi

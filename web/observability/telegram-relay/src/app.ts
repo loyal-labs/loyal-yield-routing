@@ -271,7 +271,6 @@ export function createSlackSender(
   };
 }
 
-/** Send each accepted alert to both destinations before acknowledging it. */
 export function createFanoutSender(senders: AlertSender[]): AlertSender {
   return async (payload, context) => {
     const results = await Promise.allSettled(

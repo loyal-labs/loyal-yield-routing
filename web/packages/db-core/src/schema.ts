@@ -1028,11 +1028,6 @@ export const appSmartAccountSettingsChangeRequests = pgTable(
   ]
 );
 
-/**
- * Active/removed root Settings signer read model used by wallet onboarding.
- * A signer row can be linked to an app user only after wallet auth proves
- * ownership of signerAddress.
- */
 export const appSmartAccountSigners = pgTable(
   "app_smart_account_signers",
   {
