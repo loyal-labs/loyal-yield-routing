@@ -353,7 +353,7 @@ export default function EarnScreen() {
     if (!earnPositionLoaded) {
       return;
     }
-    const raw = position ? Number(position.currentAmountRaw) : 0;
+    const raw = position ? Number(position.currentTotalAmountRaw) : 0;
     const usd = position && Number.isFinite(raw) ? raw / 1e6 : 0;
     if (usd > 0) {
       setDepositedUsd(usd);
@@ -373,7 +373,7 @@ export default function EarnScreen() {
       lastChartBalanceRawRef.current = null;
       return;
     }
-    const raw = position ? Number(position.currentAmountRaw) : 0;
+    const raw = position ? Number(position.currentTotalAmountRaw) : 0;
     if (!Number.isFinite(raw)) {
       return;
     }

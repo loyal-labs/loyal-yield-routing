@@ -192,7 +192,7 @@ export default function WalletScreen() {
     // headline balance equals the sum of the three overview buckets shown below
     // (Earn + Stablecoins + Crypto). Without this the headline silently omits
     // the Earn deposit and no longer reconciles with the category cards.
-    const earnRaw = Number(earnPosition?.currentAmountRaw);
+    const earnRaw = Number(earnPosition?.currentTotalAmountRaw);
     if (Number.isFinite(earnRaw) && earnRaw > 0) {
       total += earnRaw / 1e6;
       hasValuation = true;
@@ -217,7 +217,7 @@ export default function WalletScreen() {
     [tokenHoldings]
   );
   const earnUsd = useMemo(() => {
-    const raw = Number(earnPosition?.currentAmountRaw);
+    const raw = Number(earnPosition?.currentTotalAmountRaw);
     return Number.isFinite(raw) ? raw / 1e6 : 0;
   }, [earnPosition]);
   const earnApyBps = useMemo(() => {
