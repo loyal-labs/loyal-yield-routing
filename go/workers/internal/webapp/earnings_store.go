@@ -151,3 +151,234 @@ WHERE settings = $1 AND vault_index = $2
 	}
 	return fingerprint, nil
 }
+
+// ---- Ledger events (findYieldPositionEvents, repository:3559) ----
+
+type earningsSourceRow struct {
+	id            int64
+	confirmedSlot int64
+	amountRaw     int64
+	sourceType    *string
+	confirmedAt   time.Time
+	liquidityMint string
+}
+
+type earningsHoldingRef struct {
+	id               int64
+	positionID       int64
+	eventType        string
+	principalDelta   *int64
+	sourceDeposit    *int64
+	sourceWithdrawal *int64
+}
+
+// loadEarningsLedgerEvents replays deposits, withdrawals and their holding
+// records into the sorted ledger the calculator consumes. Ambiguous holding
+// links (two records for one cash event, or a record whose kind contradicts
+// its source) refuse the ledger rather than guess a principal path.
+func loadEarningsLedgerEvents(ctx context.Context, pool *pgxpool.Pool, input earningsReadInput) ([]earningsEvent, error) {
+	const depositsQ = `SELECT id, confirmed_slot, principal_amount_raw, confirmed_at, liquidity_mint
+FROM ` + earningsSchema + `.user_yield_position_deposits
+WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3
+ORDER BY confirmed_at ASC`
+	const withdrawalsQ = `SELECT id, confirmed_slot, withdrawn_amount_raw, source_type, confirmed_at, liquidity_mint
+FROM ` + earningsSchema + `.user_yield_position_withdrawals
+WHERE settings = $1 AND vault_index = $2 AND wallet_address = $3
+ORDER BY confirmed_at ASC`
+
+	deposits, err := scanEarningsSourceRows(ctx, pool, depositsQ, input, false)
+	if err != nil {
+		return nil, err
+	}
+	withdrawals, err := scanEarningsSourceRows(ctx, pool, withdrawalsQ, input, true)
+	if err != nil {
+		return nil, err
+	}
+
+	depositsBySource, withdrawalsBySource := map[int64][]earningsHoldingRef{}, map[int64][]earningsHoldingRef{}
+	appendRef := func(index map[int64][]earningsHoldingRef, id *int64, ref earningsHoldingRef) {
+		if id != nil {
+			index[*id] = append(index[*id], ref)
+		}
+	}
+	scanHoldings := func(byDeposit bool) error {
+		var q string
+		if byDeposit {
+			q = `SELECT id, position_id, event_type, principal_delta_raw, source_deposit_id, source_withdrawal_id
+FROM ` + earningsSchema + `.user_yield_position_holding_events
+WHERE source_deposit_id = ANY($1::bigint[])`
+		} else {
+			q = `SELECT id, position_id, event_type, principal_delta_raw, source_deposit_id, source_withdrawal_id
+FROM ` + earningsSchema + `.user_yield_position_holding_events
+WHERE source_withdrawal_id = ANY($1::bigint[])`
+		}
+		ids := make([]int64, 0, 64)
+		if byDeposit {
+			for _, row := range deposits {
+				ids = append(ids, row.id)
+			}
+		} else {
+			for _, row := range withdrawals {
+				ids = append(ids, row.id)
+			}
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		rows, err := pool.Query(ctx, q, ids)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ref earningsHoldingRef
+			if err := rows.Scan(&ref.id, &ref.positionID, &ref.eventType, &ref.principalDelta, &ref.sourceDeposit, &ref.sourceWithdrawal); err != nil {
+				return err
+			}
+			if byDeposit {
+				appendRef(depositsBySource, ref.sourceDeposit, ref)
+			} else {
+				appendRef(withdrawalsBySource, ref.sourceWithdrawal, ref)
+			}
+		}
+		return rows.Err()
+	}
+	if err := scanHoldings(true); err != nil {
+		return nil, err
+	}
+	if err := scanHoldings(false); err != nil {
+		return nil, err
+	}
+
+	metadata := func(matches []earningsHoldingRef, eventType string, sourceType *string) (holdingEventID, positionID *int64, initializesPosition *bool, principalDeltaRaw *int64, err error) {
+		if len(matches) == 0 {
+			return
+		}
+		if len(matches) != 1 {
+			return nil, nil, nil, nil, &earningsHistoryError{detail: "principal_history_position_ambiguous"}
+		}
+		holding := matches[0]
+		isDeposit := holding.eventType == "deposit_initialized" || holding.eventType == "deposit_top_up"
+		isWithdrawal := holding.eventType == "withdrawal_full" || holding.eventType == "withdrawal_partial"
+		if (eventType == "deposit") != isDeposit || (eventType == "withdrawal" && !isWithdrawal) {
+			return nil, nil, nil, nil, &earningsHistoryError{detail: "principal_history_position_ambiguous"}
+		}
+		if holding.sourceDeposit != nil && holding.sourceWithdrawal != nil {
+			return nil, nil, nil, nil, &earningsHistoryError{detail: "principal_history_position_ambiguous"}
+		}
+		initializes := holding.eventType == "deposit_initialized"
+		var delta *int64
+		if sourceType == nil || *sourceType != "chain_snapshot" {
+			delta = holding.principalDelta
+		}
+		return &holding.id, &holding.positionID, &initializes, delta, nil
+	}
+
+	const settlementsQ = `SELECT h.id, h.position_id, h.observed_at, h.observed_slot, h.liquidity_mint
+FROM ` + earningsSchema + `.user_yield_position_holding_events h
+JOIN ` + earningsSchema + `.user_yield_positions p ON p.id = h.position_id
+WHERE p.settings = $1 AND p.wallet_address = $2 AND p.vault_index = $3
+  AND h.event_type = 'snapshot_reconciled'
+  AND h.amount_raw = 0
+  AND h.principal_delta_raw IS NOT NULL
+  AND h.source_deposit_id IS NULL
+  AND h.source_withdrawal_id IS NULL
+  AND (h.source_signature IS NOT NULL OR EXISTS (
+    SELECT 1 FROM ` + earningsSchema + `.vault_position_snapshots s
+    WHERE s.id = h.source_snapshot_id
+      AND s.context->>'publication_scope' = 'complete_product_vault'
+      AND COALESCE(s.context->>'idle_vault_liquidity_amount_raw', '0') = '0'
+      AND NOT EXISTS (SELECT 1 FROM ` + earningsSchema + `.vault_position_snapshot_positions p2
+                      WHERE p2.snapshot_id = s.id AND p2.amount_raw > 0)
+  ))`
+	settlementRows, err := pool.Query(ctx, settlementsQ, input.settings, input.walletAddress, input.vaultIndex)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]earningsEvent, 0, len(deposits)+len(withdrawals)+8)
+	for settlementRows.Next() {
+		var id, positionID int64
+		var confirmedAt time.Time
+		var confirmedSlot int64
+		var liquidityMint string
+		if err := settlementRows.Scan(&id, &positionID, &confirmedAt, &confirmedSlot, &liquidityMint); err != nil {
+			settlementRows.Close()
+			return nil, err
+		}
+		events = append(events, earningsEvent{
+			confirmedAt:         msTime(confirmedAt),
+			confirmedSlot:       confirmedSlot,
+			liquidityMint:       liquidityMint,
+			holdingEventID:      &id,
+			positionID:          &positionID,
+			initializesPosition: earningsBool(false),
+			settlesPosition:     earningsBool(true),
+			eventType:           "withdrawal",
+		})
+	}
+	if err := settlementRows.Err(); err != nil {
+		settlementRows.Close()
+		return nil, err
+	}
+	settlementRows.Close()
+
+	for _, row := range deposits {
+		holdingID, positionID, initializes, delta, err := metadata(depositsBySource[row.id], "deposit", nil)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, earningsEvent{
+			amountRaw:           row.amountRaw,
+			confirmedAt:         msTime(row.confirmedAt),
+			confirmedSlot:       row.confirmedSlot,
+			liquidityMint:       row.liquidityMint,
+			holdingEventID:      holdingID,
+			positionID:          positionID,
+			initializesPosition: initializes,
+			principalDeltaRaw:   delta,
+			eventType:           "deposit",
+		})
+	}
+	for _, row := range withdrawals {
+		holdingID, positionID, initializes, delta, err := metadata(withdrawalsBySource[row.id], "withdrawal", row.sourceType)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, earningsEvent{
+			amountRaw:           row.amountRaw,
+			confirmedAt:         msTime(row.confirmedAt),
+			confirmedSlot:       row.confirmedSlot,
+			liquidityMint:       row.liquidityMint,
+			holdingEventID:      holdingID,
+			positionID:          positionID,
+			initializesPosition: initializes,
+			principalDeltaRaw:   delta,
+			eventType:           "withdrawal",
+		})
+	}
+	return sortEarningsEvents(events)
+}
+
+func scanEarningsSourceRows(ctx context.Context, pool *pgxpool.Pool, q string, input earningsReadInput, withdrawals bool) ([]earningsSourceRow, error) {
+	rows, err := pool.Query(ctx, q, input.settings, input.vaultIndex, input.walletAddress)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []earningsSourceRow
+	for rows.Next() {
+		var row earningsSourceRow
+		if withdrawals {
+			if err := rows.Scan(&row.id, &row.confirmedSlot, &row.amountRaw, &row.sourceType, &row.confirmedAt, &row.liquidityMint); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := rows.Scan(&row.id, &row.confirmedSlot, &row.amountRaw, &row.confirmedAt, &row.liquidityMint); err != nil {
+				return nil, err
+			}
+		}
+		row.confirmedAt = msTime(row.confirmedAt)
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
