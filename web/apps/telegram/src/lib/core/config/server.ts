@@ -1,5 +1,7 @@
 import "server-only";
 
+import { WALLET_PUSH_SEND_SECRET_ENV } from "@loyal-labs/shared/expo-push";
+
 import { getOptionalEnv, getRequiredEnv, isStrictTrue } from "./shared";
 
 const CLOUDFLARE_CDN_BASE_URL_ENV_KEYS = [
@@ -131,7 +133,7 @@ export const serverEnv = {
     return getRequiredEnv("TELEGRAM_SETUP_SECRET");
   },
   get pushDebugSecret(): string {
-    return getRequiredEnv("PUSH_DEBUG_SECRET");
+    return getRequiredEnv(WALLET_PUSH_SEND_SECRET_ENV.accept);
   },
   get libraryUploadToken(): string {
     return getRequiredEnv("LIBRARY_UPLOAD_TOKEN");

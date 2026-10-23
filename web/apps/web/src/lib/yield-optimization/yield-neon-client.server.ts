@@ -200,6 +200,7 @@ export const routePolicies = loyalYieldSchema.table(
   "route_policies",
   {
     id: bigserial("id", { mode: "bigint" }).primaryKey(),
+    cluster: text("cluster"),
     settings: text("settings").notNull(),
     authority: text("authority").notNull(),
     policySeed: bigint("policy_seed", { mode: "bigint" }).notNull(),

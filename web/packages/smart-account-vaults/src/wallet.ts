@@ -1,6 +1,6 @@
 import {
   compilePreparedOperation,
-  translateAndThrowAnchorError,
+  translateAnchorError,
 } from "@loyal-labs/loyal-smart-accounts-core";
 import bs58 from "bs58";
 import type { VersionedTransaction } from "@solana/web3.js";
@@ -37,19 +37,11 @@ function translateSimulationLogs(logs: string[]): Error | null {
     new Error("Transaction simulation failed."),
     { logs }
   );
-  try {
-    translateAndThrowAnchorError(placeholder);
-  } catch (error) {
-    // The translator rethrows the placeholder unchanged when the logs carry no
-    // recognizable failure — which is what a clean diagnostic simulation looks
-    // like (e.g. the user rejected in the wallet and the transaction itself is
-    // fine). Surfacing the placeholder there would replace the real error with
-    // a fabricated "Transaction simulation failed.", so keep the original.
-    if (error === placeholder) {
-      return null;
-    }
-    return error instanceof Error ? error : null;
+  const translation = translateAnchorError(placeholder);
+  if (!translation.recognized) {
+    return null;
   }
+  return translation.error instanceof Error ? translation.error : null;
 }
 
 const WALLET_USER_REJECTED_CODE = 4001;

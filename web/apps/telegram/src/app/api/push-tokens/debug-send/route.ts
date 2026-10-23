@@ -1,4 +1,5 @@
 import { pushTokens } from "@loyal-labs/db-core/schema";
+import { WALLET_PUSH_SEND_SECRET_ENV } from "@loyal-labs/shared/expo-push";
 import { timingSafeEqual } from "crypto";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
@@ -19,7 +20,9 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     expectedToken = serverEnv.pushDebugSecret;
   } catch {
-    console.error("PUSH_DEBUG_SECRET environment variable is not set");
+    console.error(
+      `${WALLET_PUSH_SEND_SECRET_ENV.accept} environment variable is not set`
+    );
     return NextResponse.json(
       { error: "Server misconfigured" },
       { status: 500 }

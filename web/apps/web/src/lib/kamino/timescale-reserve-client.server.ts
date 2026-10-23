@@ -159,7 +159,7 @@ export type CurrentBestApyReserveByStablecoin = TimescaleReserveUpdateRow & {
 };
 export type CurrentEligibleSafeReserve = CurrentBestApyReserveByStablecoin;
 
-export const DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE = 100_000;
+export const DEFAULT_MIN_DELIBERATE_VENUE_TOTAL_SUPPLY_USD_ESTIMATE = 100_000;
 // Bound both receipt age and the frontier's actual chain age. The observer
 // timestamps replays when received, so receipt alone cannot prove catch-up.
 const RESERVE_STREAM_MAX_AGE_MS = 240 * 1000;
@@ -758,7 +758,7 @@ export class TimescaleReserveClient {
           gt(
             current.totalSupplyUsdEstimate,
             args.minTotalSupplyUsdEstimate ??
-              DEFAULT_MIN_TOTAL_SUPPLY_USD_ESTIMATE
+              DEFAULT_MIN_DELIBERATE_VENUE_TOTAL_SUPPLY_USD_ESTIMATE
           ),
           gte(current.supplyApy, 0),
           lt(current.supplyApy, args.maxSupplyApy ?? DEFAULT_MAX_SUPPLY_APY),

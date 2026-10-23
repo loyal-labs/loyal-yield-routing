@@ -3137,8 +3137,7 @@ export async function hasInactiveYieldRoutePolicyForVault(
         eq(managedVaults.vaultIndex, input.vaultIndex),
         eq(managedVaults.vaultPubkey, input.vaultPubkey),
         eq(routePolicies.authority, input.authority),
-        // The yield-owned cluster column is not in the app's partial model.
-        sql`${routePolicies}.cluster = ${normalizeLoyalCluster(input.cluster)}`,
+        eq(routePolicies.cluster, normalizeLoyalCluster(input.cluster)),
         eq(routePolicies.settings, input.settings),
         eq(routePolicies.vaultIndex, input.vaultIndex),
         eq(routePolicies.vaultPubkey, input.vaultPubkey),

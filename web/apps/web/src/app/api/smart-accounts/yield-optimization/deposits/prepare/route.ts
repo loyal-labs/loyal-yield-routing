@@ -178,6 +178,7 @@ async function handleRequest(
       policy = {
         active: true,
         authority: principal.walletAddress,
+        cluster,
         delegatedSigners: [onboardingAttempt.delegatedSigner],
         firstSeenAt: onboardingAttempt.firstSeenAt,
         id: onboardingAttempt.routePolicyDbId ?? onboardingAttempt.policyId,
