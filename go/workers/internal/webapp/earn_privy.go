@@ -30,6 +30,7 @@ var earnPrivyFamily = earnFamily{
 		{"app_user_wallets", "INSERT"},
 		{"app_user_wallets", "UPDATE"},
 		{"app_user_smart_accounts", "SELECT"},
+		{"app_user_smart_accounts", "INSERT"},
 		{"app_user_smart_accounts", "UPDATE"},
 		{"app_smart_account_signers", "SELECT"},
 		{"app_smart_account_signers", "INSERT"},
@@ -131,7 +132,7 @@ func (h earnRoutes) privyComplete(ctx context.Context, in *privyCompleteInput) (
 		return nil, earnUnavailable("privy user upsert", err,
 			"privy_sign_in_unavailable", "Could not start your session. Please try again.")
 	}
-	smartAccount, err := h.privyEnsureSmartAccount(ctx, userID, wallet)
+	ensured, err := h.ensureSmartAccount(ctx, userID, wallet)
 	if err != nil {
 		var refused *routeError
 		if errors.As(err, &refused) {
@@ -153,8 +154,8 @@ func (h earnRoutes) privyComplete(ctx context.Context, in *privyCompleteInput) (
 		"displayAddress":      wallet.String(),
 		"provider":            "solana",
 		"walletAddress":       wallet.String(),
-		"smartAccountAddress": smartAccount.SmartAccountAddress,
-		"settingsPda":         smartAccount.SettingsPda,
+		"smartAccountAddress": ensured.SmartAccount.SmartAccountAddress,
+		"settingsPda":         ensured.SmartAccount.SettingsPda,
 	}
 	if identity.Email != "" {
 		claims["email"] = identity.Email
@@ -191,8 +192,8 @@ func (h earnRoutes) privyComplete(ctx context.Context, in *privyCompleteInput) (
 			DisplayAddress:      wallet.String(),
 			Provider:            "solana",
 			WalletAddress:       wallet.String(),
-			SmartAccountAddress: smartAccount.SmartAccountAddress,
-			SettingsPda:         smartAccount.SettingsPda,
+			SmartAccountAddress: ensured.SmartAccount.SmartAccountAddress,
+			SettingsPda:         ensured.SmartAccount.SettingsPda,
 			Email:               email,
 		},
 	}}, nil
