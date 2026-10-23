@@ -1,6 +1,14 @@
 import type {
+  AutodepositCloseConfirmRequest,
+  AutodepositFloorConfirmRequest,
+  AutodepositSetupConfirmRequest,
+  AutodepositSweepsExecuteRequest,
+  AutodepositSweepsExecuteResponse,
+  AutodepositSweepsProgressResponse,
+  AutodepositToggleConfirmRequest,
   EarnPolicyRefundPrepareResponse,
   EarnPolicyRefundScanResponse,
+  EarnStateAutodeposit,
   EarnStateResponse,
   EarningsBar,
   EarningsRange,
@@ -15,11 +23,12 @@ import {
   type EarnForecastApyHistorySeries,
   type EarnForecastSummaryResponse,
   type EarnTransactionsResponse,
-  type LoadedEarnAutodepositScheduledSweep,
   type SerializedEarnTransaction,
 } from "@loyal-labs/shared";
 import type {
   SmartAccountNativeSolRequirement,
+  SmartAccountPreparedEarnUsdcAutodepositClose,
+  SmartAccountPreparedEarnUsdcAutodepositSetup,
   WirePreparedLoyalSmartAccountsOperation as WirePreparedOperation,
 } from "@loyal-labs/smart-account-vaults";
 import {
@@ -44,18 +53,6 @@ export type EarnAuthFields = {
 };
 
 export type EarnSessionAuth = { sessionToken: string };
-
-function earnAuthParts(auth: EarnAuthFields | EarnSessionAuth): {
-  headers: Record<string, string>;
-  bodyFields: Record<string, string>;
-} {
-  return "sessionToken" in auth
-    ? {
-        bodyFields: {},
-        headers: { Authorization: `Bearer ${auth.sessionToken}` },
-      }
-    : { bodyFields: { ...auth }, headers: {} };
-}
 
 // The serialized prepared deposit. Only the fields mobile needs to sign+send are
 // typed; the whole object is echoed back to `confirm` opaquely.
@@ -452,194 +449,163 @@ export function toWithdrawPrepareSource(
   };
 }
 
-export type EarnAutodepositSetupStage =
-  | "initialize_subscription_authority"
-  | "approve_token_delegate"
-  | "create_policy"
-  | "create_recurring_delegation";
-
-export type WirePreparedEarnAutodepositSetup = {
-  prepared: WirePreparedOperation;
-  stage: EarnAutodepositSetupStage;
-  policy: { seed: string | null };
-  persistence: { policySeed: string | null };
-};
-
-export type WirePreparedEarnAutodepositClose = {
-  prepared: WirePreparedOperation;
-};
-
-export type EarnAutodepositState = {
-  active: boolean;
-  status: string;
-  policyAccount: string;
-  recurringDelegation: string | null;
-  walletBalanceFloorRaw: string | null;
-  lifecycleStatus: string;
+export type EarnAutodepositState = EarnStateAutodeposit & {
   vaultIndex: number;
-  scheduledSweeps?: LoadedEarnAutodepositScheduledSweep[];
-  // Resume metadata for the device-side prepare: a half-finished setup must
-  // reuse the recorded seed/nonce/window so the SDK returns the missing stage
-  // for the SAME policy/delegation pair.
-  policySeed: string;
-  recurringDelegationNonce: string | null;
-  periodLengthSeconds: string | null;
-  startTimestamp: string | null;
-  recurringDelegationExpiryTimestamp: string | null;
-};
-
-// Deployment parameters the device needs to run the SDK's autodeposit prepare
-// locally. Null when the deployment isn't configured for it.
-export type EarnAutodepositPrepareContext = {
-  cluster: string;
-  policySigner: string;
-  programId: string;
 };
 
 export type EarnAutodepositStateResponse = {
   autodeposit: EarnAutodepositState | null;
-  prepareContext?: EarnAutodepositPrepareContext | null;
-  settingsPda: string | null;
-  smartAccountAddress: string | null;
+  policySigner: string;
+  programId: string;
+  settingsPda: string;
 };
 
 export async function fetchEarnAutodepositState(
   walletAddress: string,
 ): Promise<EarnAutodepositStateResponse> {
+  const state = await fetchEarnState(walletAddress);
+  const autodeposit = state.autodeposit as EarnStateAutodeposit | null;
+  return {
+    autodeposit: autodeposit
+      ? { ...autodeposit, vaultIndex: state.vault.accountIndex }
+      : null,
+    policySigner: state.policySignerPublicKey,
+    programId: state.programId,
+    settingsPda: state.settingsPda,
+  };
+}
+
+async function postAutodeposit(
+  walletAddress: string,
+  path: string,
+  body: object,
+  fallback: string,
+  flowId?: string,
+): Promise<Response> {
   const res = await earnWalletRead(
     walletAddress,
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/state?walletAddress=${encodeURIComponent(
-      walletAddress,
-    )}`,
+    `${env.apiBaseUrl}${path}`,
+    { body: JSON.stringify(body), flowId, method: "POST" },
   );
   if (!res.ok) {
-    return throwEarnError(res, "Failed to load Autodeposit state.");
+    return throwEarnError(res, fallback);
   }
-  return (await res.json()) as EarnAutodepositStateResponse;
+  return res;
+}
+
+function requirePersisted(value: string | null, key: string): string {
+  if (!value) {
+    throw new Error(`prepared autodeposit metadata is missing ${key}.`);
+  }
+  return value;
 }
 
 export async function confirmEarnAutodepositSetup(args: {
-  auth: EarnAuthFields;
-  preparedSetup: WirePreparedEarnAutodepositSetup;
-  setupSignature: string;
   confirmedSlot: string;
+  preparedSetup: SmartAccountPreparedEarnUsdcAutodepositSetup;
+  setupSignature: string;
   walletBalanceFloorRaw: string;
 }): Promise<void> {
-  const { auth, ...rest } = args;
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/setup/confirm`,
-    {
-      method: "POST",
-      headers: earnHeaders(),
-      body: JSON.stringify({ ...auth, ...rest }),
-    },
+  const { persistence, stage } = args.preparedSetup;
+  const body: AutodepositSetupConfirmRequest = {
+    amountPerPeriodRaw: persistence.amountPerPeriodRaw,
+    cluster: persistence.cluster,
+    confirmedSlot: args.confirmedSlot,
+    delegatedSigner: persistence.delegatedSigner,
+    expiryTimestamp: persistence.expiryTimestamp,
+    liquidityMint: persistence.liquidityMint,
+    nonce: persistence.nonce,
+    periodLengthSeconds: persistence.periodLengthSeconds,
+    policyAccount: requirePersisted(persistence.policyAccount, "policyAccount"),
+    policyId: requirePersisted(persistence.policyId, "policyId"),
+    policySeed: requirePersisted(persistence.policySeed, "policySeed"),
+    recurringDelegation: persistence.recurringDelegation,
+    settings: persistence.settings,
+    setupSignature: args.setupSignature,
+    setupStage: stage,
+    startTimestamp: persistence.startTimestamp,
+    subscriptionAuthority: persistence.subscriptionAuthority,
+    subscriptionAuthorityInitialization:
+      persistence.subscriptionAuthorityInitialization,
+    subscriptionDelegatee: persistence.subscriptionDelegatee,
+    vaultIndex: persistence.vaultIndex,
+    vaultPubkey: persistence.vaultPubkey,
+    vaultUsdcAta: persistence.vaultUsdcAta,
+    walletAddress: persistence.walletAddress,
+    walletBalanceFloorRaw: args.walletBalanceFloorRaw,
+    walletUsdcAta: persistence.walletUsdcAta,
+  };
+  await postAutodeposit(
+    persistence.walletAddress,
+    "/api/smart-accounts/yield-optimization/autodeposit/setup/confirm",
+    body,
+    "Failed to confirm Autodeposit setup.",
   );
-  if (!res.ok) {
-    await throwEarnError(res, "Failed to confirm Autodeposit setup.");
-  }
 }
 
 export async function updateEarnAutodepositFloor(args: {
-  auth: EarnAuthFields | EarnSessionAuth;
+  walletAddress: string;
   policyAccount: string;
   recurringDelegation: string;
   vaultIndex: number;
   walletBalanceFloorRaw: string;
 }): Promise<void> {
-  const { auth, ...rest } = args;
-  const { headers, bodyFields } = earnAuthParts(auth);
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/floor/confirm`,
-    {
-      method: "POST",
-      headers: { ...earnHeaders(), ...headers },
-      body: JSON.stringify({ ...bodyFields, ...rest }),
-    },
+  const { walletAddress, ...body } = args;
+  await postAutodeposit(
+    walletAddress,
+    "/api/smart-accounts/yield-optimization/autodeposit/floor/confirm",
+    body satisfies AutodepositFloorConfirmRequest,
+    "Failed to update Autodeposit threshold.",
   );
-  if (!res.ok) {
-    await throwEarnError(res, "Failed to update Autodeposit threshold.");
-  }
 }
 
 export async function toggleEarnAutodeposit(args: {
-  auth: EarnAuthFields | EarnSessionAuth;
+  walletAddress: string;
   flowId?: string;
   active: boolean;
   policyAccount: string;
   recurringDelegation: string;
   vaultIndex: number;
 }): Promise<void> {
-  const { auth, flowId, ...rest } = args;
-  const { headers, bodyFields } = earnAuthParts(auth);
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/toggle/confirm`,
-    {
-      method: "POST",
-      headers: { ...earnHeaders(flowId), ...headers },
-      body: JSON.stringify({ ...bodyFields, ...rest }),
-    },
+  const { walletAddress, flowId, ...body } = args;
+  await postAutodeposit(
+    walletAddress,
+    "/api/smart-accounts/yield-optimization/autodeposit/toggle/confirm",
+    body satisfies AutodepositToggleConfirmRequest,
+    "Failed to update Autodeposit on/off state.",
+    flowId,
   );
-  if (!res.ok) {
-    await throwEarnError(res, "Failed to update Autodeposit on/off state.");
-  }
 }
 
 export async function confirmEarnAutodepositClose(args: {
-  auth: EarnAuthFields;
-  preparedClose: WirePreparedEarnAutodepositClose;
+  preparedClose: SmartAccountPreparedEarnUsdcAutodepositClose;
   closeSignature: string;
   confirmedSlot: string;
 }): Promise<void> {
-  const { auth, ...rest } = args;
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/close/confirm`,
-    {
-      method: "POST",
-      headers: earnHeaders(),
-      body: JSON.stringify({ ...auth, ...rest }),
-    },
+  const { persistence } = args.preparedClose;
+  const body: AutodepositCloseConfirmRequest = {
+    ...persistence,
+    closeSignature: args.closeSignature,
+    confirmedSlot: args.confirmedSlot,
+  };
+  await postAutodeposit(
+    persistence.walletAddress,
+    "/api/smart-accounts/yield-optimization/autodeposit/close/confirm",
+    body,
+    "Failed to confirm Autodeposit removal.",
   );
-  if (!res.ok) {
-    await throwEarnError(res, "Failed to confirm Autodeposit removal.");
-  }
 }
 
-export type EarnAutodepositSweepExecuteResponse = {
-  status: string;
-  sweepRequest: {
-    acceleratedAmountRaw: string;
-    acceleratedLotCount: number;
-    eligibleAfter: string;
-    slotId: string;
-    targetId: string;
-  };
-  target: {
-    active: boolean;
-    balanceSweepPolicyId: string | null;
-    id: string;
-    lifecycleStatus: string;
-    policyAccount: string;
-    recurringDelegation: string | null;
-    walletBalanceFloorRaw: string | null;
-  };
-};
-
-export async function requestEarnAutodepositSweepExecute(args: {
-  auth: EarnAuthFields | EarnSessionAuth;
-}): Promise<EarnAutodepositSweepExecuteResponse> {
-  const { headers, bodyFields } = earnAuthParts(args.auth);
-  const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/sweeps/execute`,
-    {
-      method: "POST",
-      headers: { ...earnHeaders(), ...headers },
-      body: JSON.stringify(bodyFields),
-    },
+export async function requestEarnAutodepositSweepExecute(
+  walletAddress: string,
+): Promise<AutodepositSweepsExecuteResponse> {
+  const res = await postAutodeposit(
+    walletAddress,
+    "/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute",
+    {} satisfies AutodepositSweepsExecuteRequest,
+    "Failed to execute Autodeposit sweep now.",
   );
-  if (!res.ok) {
-    return throwEarnError(res, "Failed to execute Autodeposit sweep now.");
-  }
-  return (await res.json()) as EarnAutodepositSweepExecuteResponse;
+  return (await res.json()) as AutodepositSweepsExecuteResponse;
 }
 
 const EARN_SWEEP_PROGRESS_STATES = new Set<string>(
@@ -653,8 +619,6 @@ export type EarnAutodepositSweepProgress = {
   occurredAt?: string;
 };
 
-// Read-only progress of one scheduled sweep, keyed by wallet address (no
-// signature) — the polled twin of the contract the web receives over SSE.
 // Returns null on ANY failure, so callers can quietly fall back to the coarse
 // state polling.
 export async function fetchEarnAutodepositSweepProgress(
@@ -664,18 +628,17 @@ export async function fetchEarnAutodepositSweepProgress(
   try {
     const res = await earnWalletRead(
       walletAddress,
-      `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/autodeposit/sweeps/execute?walletAddress=${encodeURIComponent(
-        walletAddress,
-      )}&slotId=${encodeURIComponent(slotId)}`,
+      `${env.apiBaseUrl}/api/smart-accounts/yield-optimization/autodeposit/sweeps/execute?slotId=${encodeURIComponent(
+        slotId,
+      )}`,
     );
     if (!res.ok) {
       return null;
     }
-    const value = (await res.json()) as Record<string, unknown> | null;
+    const value = (await res.json()) as AutodepositSweepsProgressResponse | null;
     if (
       !value ||
       value.scheduledSlotId !== slotId ||
-      typeof value.state !== "string" ||
       !EARN_SWEEP_PROGRESS_STATES.has(value.state)
     ) {
       return null;
@@ -683,10 +646,8 @@ export async function fetchEarnAutodepositSweepProgress(
     return {
       scheduledSlotId: slotId,
       state: value.state as EarnAutodepositProgressState,
-      failureCode:
-        typeof value.failureCode === "string" ? value.failureCode : undefined,
-      occurredAt:
-        typeof value.occurredAt === "string" ? value.occurredAt : undefined,
+      failureCode: value.failureCode,
+      occurredAt: value.occurredAt,
     };
   } catch {
     return null;

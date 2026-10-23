@@ -248,7 +248,11 @@ export async function silentEarnToken(
   return signer ? silentSession(signer) : null;
 }
 
-type BearerInit = { body?: string; method?: "GET" | "POST" };
+type BearerInit = {
+  body?: string;
+  flowId?: string;
+  method?: "GET" | "POST";
+};
 
 function getWithBearer(
   url: string,
@@ -259,8 +263,8 @@ function getWithBearer(
     body: init.body,
     method: init.method ?? "GET",
     headers: token
-      ? { ...earnHeaders(), Authorization: `Bearer ${token}` }
-      : earnHeaders(),
+      ? { ...earnHeaders(init.flowId), Authorization: `Bearer ${token}` }
+      : earnHeaders(init.flowId),
   });
 }
 
