@@ -1,5 +1,4 @@
 import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
-import type { SolanaMobileWalletAdapterProtocolErrorCode } from "@solana-mobile/mobile-wallet-adapter-protocol";
 import type { Web3MobileWallet } from "@solana-mobile/mobile-wallet-adapter-protocol-web3js";
 import { Buffer } from "buffer";
 import type { TurboModule } from "react-native";
@@ -15,7 +14,11 @@ import {
   type StoredMwaAccount,
 } from "./mwa-account-storage";
 import {
+  errorCodeOf,
   forgetWalletAuthorization,
+  hasErrorCode,
+  isDeadAuthorization,
+  MWA_ERROR,
   WalletSessionError,
   type WalletSessionFailure,
 } from "./wallet-session-error";
@@ -59,22 +62,6 @@ async function getMwa() {
   return import("@solana-mobile/mobile-wallet-adapter-protocol-web3js");
 }
 
-// SolanaMobileWalletAdapter(Protocol)Error rejections carry a `code` — string
-// for session-level errors, negative number for wallet protocol errors. React
-// Native can deliver a native rejection as a plain object, so do not require
-// the value to inherit from Error (or from one particular JS realm).
-function hasErrorCode(error: unknown, code: string | number): boolean {
-  return errorCodeOf(error) === code;
-}
-
-function errorCodeOf(error: unknown): string | number | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" || typeof code === "number"
-    ? code
-    : undefined;
-}
-
 // Backing out of the wallet chooser rejects with a *sentence* as the code:
 // the native module calls `promise.reject(String, Throwable)`, whose first
 // argument RN uses as the code (SolanaMobileWalletAdapterModule.kt). Matching
@@ -90,14 +77,6 @@ function isAssociationCancellation(error: unknown): boolean {
       error.message.includes(ASSOCIATION_CANCELLED_TEXT))
   );
 }
-
-const MWA_ERROR = {
-  ERROR_AUTHORIZATION_FAILED: -1,
-  ERROR_NOT_SIGNED: -3,
-} as const satisfies Pick<
-  typeof SolanaMobileWalletAdapterProtocolErrorCode,
-  "ERROR_AUTHORIZATION_FAILED" | "ERROR_NOT_SIGNED"
->;
 
 function isUserCancellation(error: unknown): boolean {
   return (
@@ -285,7 +264,7 @@ export class MwaSigner implements Signer {
       if (hasErrorCode(error, MWA_ERROR.ERROR_NOT_SIGNED)) {
         throw new WalletRejectedError(SIGNING_DECLINED_MESSAGE);
       }
-      if (hasErrorCode(error, MWA_ERROR.ERROR_AUTHORIZATION_FAILED)) {
+      if (isDeadAuthorization(error)) {
         // ERROR_AUTHORIZATION_FAILED raised by the signing call rather than by
         // `authorize`: some wallets accept the reauthorization and only refuse
         // the privileged method, so `reauthorize`'s recovery never runs. It is
@@ -314,7 +293,7 @@ export class MwaSigner implements Signer {
         auth_token: this.authToken,
       });
     } catch (error) {
-      if (!hasErrorCode(error, MWA_ERROR.ERROR_AUTHORIZATION_FAILED)) throw error;
+      if (!isDeadAuthorization(error)) throw error;
       throw await forgetWalletAuthorization(
         clearMwaAccount,
         "authorization_expired",
