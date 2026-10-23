@@ -221,11 +221,11 @@ describe("errorDetail on the wire", () => {
     }).failFrom("prepare", new TypeError("undefined is not a function"));
 
     expect(
-      posts.filter((post) => post.path.includes("/mobile/errors")),
+      posts.filter((post) => post.path.endsWith("/api/observability/errors")),
     ).toHaveLength(expectedReports);
     // The lifecycle event is emitted either way.
     expect(
-      posts.filter((post) => post.path.includes("/mobile/events")),
+      posts.filter((post) => post.path.endsWith("/api/observability/events")),
     ).not.toHaveLength(0);
   });
 

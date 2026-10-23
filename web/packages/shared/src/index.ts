@@ -23,6 +23,17 @@ export type { ChatSummary, SummariesApiResponse, Topic } from "./summaries";
 export type * from "./earn-max";
 
 export { buildEarnMaxDailySeries } from "./earn-max-history";
+export {
+  earnMaxApyFigure,
+  earnMaxControls,
+  earnMaxDailySeries,
+  earnMaxPending,
+  earnMaxPendingMessage,
+  earnMaxPendingSubtitle,
+  earnMaxWithdrawalPending,
+  formatEarnMaxApyLabel,
+} from "./earn-max-view";
+export type { EarnMaxPending, EarnMaxWithdrawalInput } from "./earn-max-view";
 
 export { EARN_AUTODEPOSIT_DEFAULT_AMOUNT_PER_PERIOD_USDC } from "./earn-autodeposit";
 
@@ -106,3 +117,19 @@ export type {
   MobileTelemetryReleaseContext,
   TelemetryDeviceIdentity,
 } from "./telemetry-contract";
+
+export {
+  EARN_FORECAST_REALIZED_MAX_AGE_MS,
+  earnAutodepositLabel,
+  earnWithdrawSourceKey,
+  earnWithdrawSources,
+  formatEarnApyLabel,
+  formatEarnApyPercent,
+  toForecastApy,
+} from "./earn-view";
+export type {
+  EarnAutodepositViewState,
+  EarnForecastApy,
+  EarnHoldingInput,
+  EarnWithdrawSourceModel,
+} from "./earn-view";

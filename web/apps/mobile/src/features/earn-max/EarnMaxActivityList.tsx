@@ -1,3 +1,8 @@
+import {
+  earnMaxPending,
+  earnMaxPendingMessage,
+  earnMaxWithdrawalPending,
+} from "@loyal-labs/shared";
 import { Fragment, useEffect, useState } from "react";
 import { useIsFocused } from "@react-navigation/native";
 import {
@@ -20,7 +25,8 @@ export function EarnMaxActivityList() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [checkedAt, setCheckedAt] = useState<Date | null>(null);
-  const withdrawal = summary?.withdrawal;
+  const withdrawal = summary?.withdrawal ?? null;
+  const pending = earnMaxPending(withdrawal);
   useEffect(() => {
     setCheckedAt(null);
     setActionError(null);
@@ -32,7 +38,7 @@ export function EarnMaxActivityList() {
           {actionError ?? error}
         </Text>
       )}
-      {withdrawal && (
+      {withdrawal && earnMaxWithdrawalPending(withdrawal) && (
         <View style={styles.pendingRow}>
           <EarnMaxWithdrawalIcon />
           <View style={{ flex: 1, gap: 8 }}>
@@ -42,18 +48,12 @@ export function EarnMaxActivityList() {
             <Text style={styles.subtitle}>
               {withdrawal.canClaim
                 ? "Ready to claim to your wallet."
-                : withdrawal.claimBlockedReason
-                ? "Waiting for available liquidity. Check again later."
+                : pending
+                ? earnMaxPendingMessage(pending)
                 : `Available after ${new Date(
                     withdrawal.readyBy
                   ).toLocaleString()}, subject to vault liquidity.`}
             </Text>
-            {withdrawal.health?.status === "operator_attention" && (
-              <Text style={styles.subtitle}>
-                Your withdrawal needs operator attention. Your request remains
-                pending.
-              </Text>
-            )}
             <Pressable
               accessibilityRole="button"
               accessibilityState={{

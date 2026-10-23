@@ -22,7 +22,7 @@ import { ThemedIcon } from "@/components/wallet-workspace/facelift/themed-icon";
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { openTrackedLink } from "@/lib/core/analytics";
 import { getExplorerTxUrl } from "@/lib/solana/explorer";
-import { resolveEarnPositionDisplay } from "@/lib/yield-optimization/earn-position-display";
+import { resolveEarnPositionDisplay } from "@loyal-labs/smart-account-vaults";
 import type { EarnTransactionItem } from "@/lib/yield-optimization/earn-transactions.client";
 
 const ASSET_BASE = "/wallet-workspace/facelift";

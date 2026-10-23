@@ -1,3 +1,4 @@
+import type { EarnPositionDisplay } from "@loyal-labs/api";
 import {
   KAMINO_BITCOIN_MARKET,
   KAMINO_DEVNET_MAIN_MARKET,
@@ -51,16 +52,15 @@ function shortenAddress(address: string): string {
     : `${address.slice(0, 4)}…${address.slice(-4)}`;
 }
 
-export type EarnPositionDisplay = {
-  marketName: string;
-  mintSymbol: string;
-  venue: EarnVenueKey;
-};
+type ResolvedEarnPositionDisplay = Pick<
+  EarnPositionDisplay,
+  "marketName" | "mintSymbol"
+> & { venue: EarnVenueKey };
 
 export function resolveEarnPositionDisplay(args: {
   market: string | null;
   liquidityMint: string;
-}): EarnPositionDisplay {
+}): ResolvedEarnPositionDisplay {
   const mintSymbol =
     MINT_SYMBOLS[args.liquidityMint] ?? shortenAddress(args.liquidityMint);
 

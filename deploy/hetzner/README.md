@@ -400,9 +400,60 @@ proxying the session routes to Next.
 | `AUTH_JWT_SECRET` | yes, until Next signs RS256 | the Next deployment's value; Go verifies HS256 under `sha256(secret)` |
 | `AUTH_JWT_RS256_PUBLIC_KEY` | no | SPKI PEM; verifies RS256 once Next signs with the private key |
 | `WEB_SOLANA_RPC_URL` | yes | reads the smart account's settings signers |
-| `WEB_APP_DATABASE_URL` | yes | App Neon; SELECT on `app_users` and `app_user_smart_accounts` (sessions), SELECT and INSERT on `earn_max_invite_redemptions` (Earn MAX routes), SELECT, INSERT and UPDATE on `push_tokens` (`/api/push-tokens`) |
-| `WEB_YIELD_DATABASE_URL` | no | Yield Neon; SELECT on `loyal_yield.multiply_route_states`; without it Earn MAX reads show no current APY and no withdrawal health |
+| `WEB_APP_DATABASE_URL` | yes | App Neon owner credential (the same value as `ADMIN_APP_DATABASE_URL`, by owner decision 2026-10-23: no role is created and no GRANT runs); SELECT on `app_users` and `app_user_smart_accounts` (sessions), SELECT and INSERT on `earn_max_invite_redemptions` (Earn MAX routes), SELECT, INSERT and UPDATE on `push_tokens` (`/api/push-tokens`) |
+| `WEB_YIELD_DATABASE_URL` | no | Yield Neon owner credential (the same value as `NEON_DATABASE_URL`, by owner decision 2026-10-23: no role is created and no GRANT runs); the Earn families below check their grants against it; without it Earn MAX reads show no current APY and no withdrawal health |
 | `EARN_MAX_INVITE_CODE_HASHES` | no | the Next deployment's value: comma-separated sha256 hex of the invite codes; unset or malformed, `POST /api/smart-accounts/earn-max/invite` keeps proxying to Next (a malformed entry logs one line) |
+| `AUTH_JWT_RS256_PRIVATE_KEY` | no | PKCS#8 PEM, the Next deployment's value; with it `loyal-web` mints the mobile Earn session JWT RS256, without it HS256 under `AUTH_JWT_SECRET` (`POST /api/smart-accounts/earn/session`, `POST /api/auth/privy/complete`) |
+| `EARN_YIELD_ROUTER_PUBLIC_KEY` | no | base58 public key of the deployment policy signer; Earn transaction prepares read only this public key, never `DEPLOYMENT_PK` |
+| `SMART_ACCOUNT_SPONSOR_PK` | no | the Next deployment's value: base58 64-byte secret key that cosigns sponsored smart account setup (deposit prepare, Earn MAX context) |
+| `OBSERVABILITY_OTLP_ENDPOINT` | no | the Next deployment's value; `/api/observability/*` forward to its `/v1/{logs,metrics,traces}` |
+| `OBSERVABILITY_INGESTION_API_KEY` | no | the Next deployment's value, sent with each forwarded OTLP request |
+| `PRIVY_APP_ID` | no | the Next deployment's `NEXT_PUBLIC_PRIVY_APP_ID` |
+| `PRIVY_APP_SECRET` | no | the Next deployment's value; with `PRIVY_APP_ID`, Go serves `POST /api/auth/privy/complete` |
+| `REALTIME_AUTH_SECRET` | no | the realtime deployment's value (one `realtime-envelope` input); with it Go serves `POST /api/smart-accounts/yield-optimization/realtime/token`, without it the route answers 503 `realtime_unavailable` |
+| `REALTIME_EVENTS_URL` | no | the events URL returned in the token response (`realtime.askloyal.com/events` by default) |
+
+### Earn family grants
+
+At startup `loyal-web` checks each Earn family's grants once
+(`CheckEarnGrants`, `go/workers/internal/webapp/earn_register.go`) and
+serves the family only when every grant below is present on both databases;
+a family missing any grant logs the grants it lacks and keeps proxying to Next.
+This table is the contract that check proves. Yield grants are all in schema
+`loyal_yield`.
+
+**Yield Neon (`WEB_YIELD_DATABASE_URL`).** By owner decision 2026-10-23 this is
+the Yield Neon owner credential (`neondb_owner`, the `NEON_DATABASE_URL` value),
+which already holds every privilege on `loyal_yield.*`; no role is created and
+no GRANT runs.
+
+| Family | Yield grants |
+|---|---|
+| earn state | SELECT on `balance_sweep_executions`, `balance_sweep_lot_claims`, `balance_sweep_policies`, `balance_sweep_scheduled_slots`, `balance_sweep_surplus_lots`, `balance_sweep_targets`, `cross_mint_swap_policies`, `cross_mint_vault_opt_ins`, `earn_deposit_onboarding_attempts`, `rebalance_decisions`, `route_policies`; SELECT, UPDATE on `managed_vaults`, `user_yield_positions`; SELECT, INSERT on `user_yield_position_holding_events`, `vault_position_snapshot_positions`; INSERT, UPDATE on `vault_position_snapshots`; SELECT, INSERT, DELETE on `vault_idle_token_balances_current`, `vault_reserve_positions_current` |
+| earn earnings | SELECT, INSERT, UPDATE on `earn_earnings_snapshots`; SELECT on `earn_history_day_revisions`, `managed_vaults`, `rebalance_decisions`, `user_yield_position_deposits`, `user_yield_position_holding_events`, `user_yield_position_withdrawals`, `user_yield_positions`, `vault_idle_token_balances_current`, `vault_position_snapshot_positions`, `vault_position_snapshots` |
+| earn transactions | SELECT on `balance_sweep_executions`, `balance_sweep_lot_claims`, `balance_sweep_policies`, `balance_sweep_surplus_lots`, `balance_sweep_targets`, `managed_vaults`, `rebalance_decisions`, `route_policies`, `user_yield_position_deposits`, `user_yield_position_withdrawals`, `vault_position_snapshot_positions`, `vault_position_snapshots`; SELECT, INSERT on `user_yield_position_holding_events`; SELECT, UPDATE on `user_yield_positions` |
+| earn public reads | SELECT on `earn_fleet_allocations_hourly`, `earn_reserve_share_prices`, `solana_week_quest_completions` |
+| earn deposit | SELECT on `managed_vaults`, `route_policies`; SELECT, INSERT, UPDATE on `solana_week_quest_completions` (the quest table) |
+| earn deposit prepare (dprep) | every earn state grant, plus SELECT on `earn_deposit_onboarding_attempts` |
+| earn autodeposit | SELECT on `balance_sweep_executions`, `balance_sweep_lot_claim_items`, `managed_vaults`, `realtime_events`, `route_policies`; SELECT, UPDATE on `balance_sweep_lot_claims`; SELECT, INSERT, UPDATE on `balance_sweep_scheduled_slots`, `balance_sweep_surplus_lots`, `balance_sweep_targets`, `balance_sweep_wallet_balances_current`; SELECT, INSERT on `balance_sweep_wallet_balance_events`; USAGE on sequence `balance_sweep_floor_rebaseline_event_id_seq` |
+| earn refunds and cross-mint | SELECT on `balance_sweep_lot_claims`, `balance_sweep_policies`, `balance_sweep_surplus_lots`, `balance_sweep_targets`, `cross_mint_swap_policies`, `managed_vaults`, `rebalance_decisions`, `route_policies`, `user_yield_positions`; SELECT, UPDATE on `cross_mint_vault_opt_ins` |
+| earn withdraw prepare (wprep) | SELECT on `managed_vaults`, `route_policies` |
+| earn withdraw (confirm, cleanup prepare and confirm) | SELECT on `user_yield_position_withdrawals`, `balance_sweep_executions`, `balance_sweep_wallet_balance_events`, `balance_sweep_lot_claim_items`, `managed_vaults`, `route_policies`; SELECT, UPDATE on `balance_sweep_policies`, `balance_sweep_targets`, `balance_sweep_surplus_lots`, `balance_sweep_lot_claims` |
+| Earn MAX reads | SELECT on `multiply_route_states` |
+
+Observability ingest and earn session check no yield grants.
+
+**App Neon (`WEB_APP_DATABASE_URL`).** By owner decision 2026-10-23 this is
+the App Neon owner credential (`neondb_owner` on `neondb`, the same value as
+`ADMIN_APP_DATABASE_URL`), which already holds every grant below; no role is
+created and no GRANT runs.
+
+| Group | App grants |
+|---|---|
+| `AuthGrants` (sessions; earn public reads, refunds, wprep) | SELECT on `app_users`, `app_user_smart_accounts` |
+| `EarnMaxGrants` (Earn MAX routes) | SELECT, INSERT on `earn_max_invite_redemptions` |
+| `PushGrants` (`/api/push-tokens`) | SELECT, INSERT, UPDATE on `push_tokens` |
+| privy `appGrants` (privy complete, earn deposit, dprep) | SELECT, INSERT, UPDATE on `app_users`, `app_user_smart_accounts`, `app_smart_account_signers`; INSERT, UPDATE on `app_user_wallets` |
 
 With sessions verified, Go serves `GET /api/smart-accounts/earn-max/summary`,
 `GET /api/smart-accounts/earn-max/activity` and `GET`/`POST

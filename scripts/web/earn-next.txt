@@ -1,0 +1,2 @@
+# Client calls under a Go-only prefix that only Next answers today. Each Earn lane deletes its lines
+# when Go serves the path; scripts/web/routes-census.ts fails on a new line, a stale line or an unlisted call.

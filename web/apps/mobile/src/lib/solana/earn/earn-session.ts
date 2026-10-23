@@ -4,17 +4,17 @@ import { Buffer } from "buffer";
 import Constants from "expo-constants";
 
 import { env } from "@/config/env";
+import { fetchWithTimeout } from "@/lib/network/fetch-with-timeout";
 import { getWalletSigner } from "@/lib/solana/wallet/wallet-details";
 import type { Signer } from "@/lib/wallet/signer";
 
 import type { EarnAuthFields } from "./earn-api";
-import type { EarnAuthPurpose } from "./earn-auth";
 
 const STORAGE_KEY = "earn.sessions.v2";
 const LEGACY_STORAGE_KEY = "earn.session.v1";
 const EXPIRY_SAFETY_MS = 5 * 60 * 1000;
 const FAILED_MINT_COOLDOWN_MS = 60 * 1000;
-const SESSION_PURPOSE: EarnAuthPurpose = "earn-max";
+const SESSION_PURPOSE = "earn-max";
 const SILENT_SIGNERS: ReadonlySet<Signer["kind"]> = new Set(["privy", "local"]);
 
 type StoredEarnSession = { token: string; expiresAt: string };
@@ -41,7 +41,7 @@ export function earnHeaders(flowId?: string): Record<string, string> {
 
 export async function signEarnAuthFields(
   signer: Signer,
-  purpose: EarnAuthPurpose,
+  purpose: typeof SESSION_PURPOSE,
 ): Promise<EarnAuthFields> {
   const walletAddress = signer.publicKey.toBase58();
   const issuedAt = new Date().toISOString();
@@ -137,7 +137,7 @@ async function mint(
   startedAt: number,
 ): Promise<string | null> {
   const res = await fetch(
-    `${env.apiBaseUrl}/api/smart-accounts/mobile/earn/session`,
+    `${env.apiBaseUrl}/api/smart-accounts/earn/session`,
     {
       method: "POST",
       headers: earnHeaders(),
@@ -248,12 +248,25 @@ export async function silentEarnToken(
   return signer ? silentSession(signer) : null;
 }
 
-function getWithBearer(url: string, token: string | null): Promise<Response> {
-  return fetch(url, {
-    method: "GET",
+type BearerInit = {
+  body?: string;
+  flowId?: string;
+  method?: "GET" | "POST";
+  timeoutMs?: number;
+};
+
+function getWithBearer(
+  url: string,
+  token: string | null,
+  init: BearerInit,
+): Promise<Response> {
+  return fetchWithTimeout(url, {
+    body: init.body,
+    method: init.method ?? "GET",
+    timeoutMs: init.timeoutMs,
     headers: token
-      ? { ...earnHeaders(), Authorization: `Bearer ${token}` }
-      : earnHeaders(),
+      ? { ...earnHeaders(init.flowId), Authorization: `Bearer ${token}` }
+      : earnHeaders(init.flowId),
   });
 }
 
@@ -271,10 +284,11 @@ async function isInvalidSession(res: Response): Promise<boolean> {
 export async function earnWalletRead(
   walletAddress: string,
   url: string,
+  init: BearerInit = {},
 ): Promise<Response> {
   const startedAt = generation;
   const token = await silentEarnToken(walletAddress);
-  const res = await getWithBearer(url, token);
+  const res = await getWithBearer(url, token, init);
   if (!token || !(await isInvalidSession(res))) {
     return res;
   }
@@ -284,7 +298,7 @@ export async function earnWalletRead(
   if (!fresh) {
     return res;
   }
-  const retried = await getWithBearer(url, fresh);
+  const retried = await getWithBearer(url, fresh, init);
   const rejected = await isInvalidSession(retried);
   if (rejected && startedAt === generation) {
     failedMintAt.set(walletAddress, Date.now());

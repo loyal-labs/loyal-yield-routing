@@ -6,7 +6,7 @@ import {
   EarnHeader,
 } from "@/components/earn/EarnScreenControls";
 import * as Haptics from "expo-haptics";
-import { buildEarnMaxDailySeries } from "@loyal-labs/shared";
+import { earnMaxApyFigure, earnMaxDailySeries } from "@loyal-labs/shared";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -15,7 +15,7 @@ import { DepositSheet } from "@/components/earn/DepositSheet";
 import { PositionsSheet } from "@/components/earn/PositionsSheet";
 import { WithdrawSheet } from "@/components/earn/WithdrawSheet";
 import { useEarnMax } from "@/features/earn-max/EarnMaxProvider";
-import { useTokenHoldings } from "@/hooks/wallet/useTokenHoldings";
+import { useEarnMaxFundingUsdc } from "@/features/earn-max/useEarnMaxFundingUsdc";
 import { useWallet } from "@/lib/wallet/wallet-provider";
 import type { EarnEarningsResponse } from "@/lib/solana/earn/earn-api";
 import { SOLANA_USDC_MINT_MAINNET as USDC } from "@/lib/solana/constants";
@@ -23,38 +23,33 @@ export default function EarnMaxScreen() {
   const insets = useSafeAreaInsets();
   const isFocused = useIsFocused();
   const { publicKey } = useWallet();
-  const { tokenHoldings, refreshTokenHoldings } = useTokenHoldings(publicKey);
   const {
     summary,
     activity,
-    busy,
+    controls,
     run,
     error,
-    publicApyBps,
     refresh,
     hasLoaded,
+    supported,
   } = useEarnMax();
+  const walletUsdc = useEarnMaxFundingUsdc(supported ? publicKey : null) ?? 0;
   useEffect(() => {
-    if (isFocused) {
-      void refresh().catch(() => {});
-      void refreshTokenHoldings(true);
-    }
-  }, [isFocused, refresh, refreshTokenHoldings]);
+    if (isFocused) void refresh().catch(() => {});
+  }, [isFocused, refresh]);
   const [sheet, setSheet] = useState<
     "deposit" | "withdraw" | "positions" | null
   >(null);
   const openDeposit = useCallback(() => {
     void Haptics.selectionAsync();
-    void refreshTokenHoldings(true);
     setSheet("deposit");
-  }, [refreshTokenHoldings]);
+  }, []);
   useEffect(() => {
     if (!isFocused) setSheet(null);
   }, [isFocused]);
-  const apy = summary?.forecastApyBps ?? publicApyBps;
+  const apy = summary?.forecastApyBps ?? null;
   const balance = summary?.balanceUsd ?? (hasLoaded && !error ? 0 : undefined);
   const split = (balance ?? 0).toFixed(2).split(".");
-  const walletUsdc = tokenHoldings.find((h) => h.mint === USDC)?.balance ?? 0;
   const earnings = useMemo<EarnEarningsResponse | null>(() => {
     if (
       !summary ||
@@ -63,7 +58,7 @@ export default function EarnMaxScreen() {
       summary.coverage !== "complete"
     )
       return null;
-    const days = buildEarnMaxDailySeries({
+    const days = earnMaxDailySeries({
       performance: activity.performance,
       activity: activity.operations,
     }).days;
@@ -100,12 +95,12 @@ export default function EarnMaxScreen() {
       <View style={{ flex: 1, overflow: "hidden" }}>
         <EarnHeader
           title="Earn MAX"
-          apyLabel={apy == null ? "—" : `${(apy / 100).toFixed(2)}% APY`}
+          apyLabel={earnMaxApyFigure(summary)?.label ?? "—"}
           onBack={() => router.navigate("/(tabs)")}
         />
         {error && (
           <Pressable
-            onPress={() => void refresh()}
+            onPress={() => void refresh({ signIn: true })}
             accessibilityRole="button"
             accessibilityLabel="Retry loading Earn MAX"
             style={{ paddingHorizontal: 16, paddingVertical: 8 }}
@@ -127,8 +122,12 @@ export default function EarnMaxScreen() {
               : error || summary
               ? "unavailable"
               : "ready",
-            history: summary?.apyHistory ?? [],
-            apyBps: apy ?? null,
+            history: (summary?.apyHistory ?? []).flatMap((point) =>
+              point.apyBps === null
+                ? []
+                : [{ date: point.date, apyBps: point.apyBps }]
+            ),
+            apyBps: apy,
           }}
         />
       </View>
@@ -139,10 +138,8 @@ export default function EarnMaxScreen() {
         hasDeposit
         fullWidthActions
         balanceLoading={balance == null}
-        depositDisabled={busy || !hasLoaded || !!error}
-        withdrawDisabled={
-          busy || !hasLoaded || !!error || (!summary?.withdrawal && !balance)
-        }
+        depositDisabled={!controls.canDeposit || !hasLoaded || !!error}
+        withdrawDisabled={!controls.canWithdraw || !hasLoaded || !!error}
         onPositions={() => {
           void Haptics.selectionAsync();
           setSheet("positions");
@@ -150,8 +147,7 @@ export default function EarnMaxScreen() {
         onDeposit={openDeposit}
         onWithdraw={() => {
           void Haptics.selectionAsync();
-          if (summary?.withdrawal) activityLink();
-          else setSheet("withdraw");
+          setSheet("withdraw");
         }}
       />
       <DepositSheet
@@ -169,7 +165,6 @@ export default function EarnMaxScreen() {
             action: "deposit",
             amountRaw: BigInt(Math.round(amount * 100)) * 10000n,
           });
-          void refreshTokenHoldings(true);
         }}
       />
       <WithdrawSheet
@@ -181,7 +176,7 @@ export default function EarnMaxScreen() {
         }
         availableUsdc={balance}
         onWithdraw={async (amount, _source, mode) => {
-          if (summary?.withdrawal)
+          if (!controls.canWithdraw)
             throw new Error("Claim your pending withdrawal first.");
           await run({
             action: "request_withdrawal",
@@ -202,9 +197,9 @@ export default function EarnMaxScreen() {
         balanceCents={`.${split[1]}`}
         sources={[]}
         earnMax={{
-          apyBps: apy ?? null,
+          apyBps: apy,
           earnedUsd: summary?.earnedUsd ?? null,
-          withdrawDisabled: busy || !!summary?.withdrawal || !balance,
+          withdrawDisabled: !controls.canWithdraw,
         }}
         onDeposit={openDeposit}
         onWithdraw={() => setSheet("withdraw")}

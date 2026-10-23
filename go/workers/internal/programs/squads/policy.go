@@ -325,6 +325,9 @@ type DecodedPolicy struct {
 	Full                                    *FullPayload
 }
 
+var ErrNotProgramInteraction = errors.New("policy is not ProgramInteraction")
+
+// DecodeProgramInteractionPolicy returns the settings account alongside ErrNotProgramInteraction so callers can check ownership first.
 func DecodeProgramInteractionPolicy(account *chain.Account) (DecodedPolicy, error) {
 	if account == nil || account.Owner != ProgramID || account.Executable {
 		return DecodedPolicy{}, errors.New("policy account is absent or not owned by Squads")
@@ -335,7 +338,7 @@ func DecodeProgramInteractionPolicy(account *chain.Account) (DecodedPolicy, erro
 		return DecodedPolicy{}, err
 	}
 	if h.Kind != policyKindProgramInteraction {
-		return DecodedPolicy{}, errors.New("policy is not ProgramInteraction")
+		return DecodedPolicy{Settings: h.Settings}, ErrNotProgramInteraction
 	}
 	p := DecodedPolicy{Settings: h.Settings, Seed: h.PolicySeed, Bump: h.Bump, TransactionIndex: h.TransactionIndex, StaleTransactionIndex: h.StaleTransactionIndex, Signers: h.Signers, Permissions: h.Permissions, Threshold: h.Threshold, TimeLock: h.TimeLock, VaultIndex: h.VaultIndex}
 	var payload PolicyPayloadView

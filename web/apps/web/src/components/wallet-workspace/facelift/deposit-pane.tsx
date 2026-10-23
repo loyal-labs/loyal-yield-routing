@@ -37,7 +37,7 @@ import {
 } from "@/hooks/use-wallet-desktop-data";
 import { formatEarnApyLabel } from "@/lib/kamino/earn-forecast.shared";
 import { getTokenIconUrl } from "@/lib/token-icon";
-import { getEarnProductAssetsForCluster } from "@/lib/yield-optimization/earn-product-mints.shared";
+import { getEarnProductAssetsForCluster } from "@loyal-labs/smart-account-vaults";
 
 const ASSET_BASE = "/wallet-workspace/facelift";
 const MIN_DEPOSIT_USD = 1;

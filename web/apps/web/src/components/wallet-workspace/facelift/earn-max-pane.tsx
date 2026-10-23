@@ -1,6 +1,13 @@
 "use client";
 
-import { buildEarnMaxDailySeries } from "@loyal-labs/shared";
+import {
+  earnMaxDailySeries,
+  earnMaxPending,
+  earnMaxPendingMessage,
+  earnMaxPendingSubtitle,
+  earnMaxWithdrawalPending,
+  formatEarnMaxApyLabel,
+} from "@loyal-labs/shared";
 import {
   CircleCheck,
   Clock3,
@@ -33,7 +40,6 @@ import {
   EarnMaxDualIcon,
   EarnMaxInfoFaqsCard,
   EarnMaxWithdrawPane,
-  formatEarnMaxApyLabel,
 } from "@/components/wallet-workspace/facelift/earn-max-action-panes";
 import { EarnEmptyPane } from "@/components/wallet-workspace/facelift/earn-empty-pane";
 import { EarnStatsPanel } from "@/components/wallet-workspace/facelift/earn-stats-panel";
@@ -214,7 +220,7 @@ export function isEarnMaxUntouched(view: EarnMaxViewModel): boolean {
 }
 
 export function buildEarnMaxEarnedBars(view: EarnMaxViewModel): EarnedChartBar[] {
-  return buildEarnMaxDailySeries(view).days.map((day) => ({
+  return earnMaxDailySeries(view).days.map((day) => ({
     apyBps: null,
     earnedUsd: day.earnedUsd,
     endAt: day.date.toISOString(),
@@ -375,19 +381,8 @@ function EarnMaxActivityCard({
   const { tabBarRef, underlineRef } = useUnderlineTabs(tab);
 
   const withdrawal = view.withdrawal;
-  const needsAttention = withdrawal?.health?.status === "operator_attention";
-  const healthUnavailable = withdrawal?.health?.status === "unavailable";
-  const showWithdrawalStatus =
-    !!withdrawal?.claimBlockedReason || needsAttention || healthUnavailable;
-  const withdrawalStatusText = needsAttention
-    ? "Vault withdrawals need operator attention. Your request is still pending and may take longer than usual. You do not need to submit it again."
-    : healthUnavailable
-    ? withdrawal?.health?.lastKnownAttention
-      ? "The last vault status required operator attention. An updated status is unavailable. Your request remains pending."
-      : "An updated vault status is unavailable. Your request remains pending. Check status again before claiming."
-    : withdrawal?.claimBlockedReason === "insufficient_liquidity"
-    ? "The vault does not have enough available USDC to pay this withdrawal yet. Check again later."
-    : "Vault liquidity could not be verified. Check status before claiming.";
+  const pending = earnMaxPending(withdrawal);
+  const needsAttention = pending === "operator_attention";
   const groups: { items: EarnMaxActivityItem[]; label: string }[] = [];
   for (const item of view.activity.slice(0, TRANSACTIONS_LIMIT)) {
     const label = item.timestamp
@@ -444,9 +439,9 @@ function EarnMaxActivityCard({
               <StaggerLine index={0}>
                 <EarnPositionRow
                   action={
-                    <PendingWithdrawalTooltip pending={!!withdrawal && withdrawal.status !== "claimed"}>
+                    <PendingWithdrawalTooltip pending={earnMaxWithdrawalPending(withdrawal)}>
                       <SmallPill
-                        disabled={view.isBusy || (!!withdrawal && withdrawal.status !== "claimed")}
+                        disabled={!view.canWithdraw}
                         label="Withdraw"
                         onClick={onWithdraw}
                         variant="light"
@@ -518,24 +513,16 @@ function EarnMaxActivityCard({
                           amountLabel={usdcRawLabel(withdrawal.amountRaw)}
                           isWithdraw
                           subtitle={
-                            needsAttention
-                              ? "Waiting for operator review"
-                              : healthUnavailable
-                              ? "Withdrawal status unavailable"
-                              : withdrawal.claimBlockedReason ===
-                            "insufficient_liquidity"
-                              ? "Waiting for vault liquidity"
-                              : withdrawal.claimBlockedReason ===
-                                "liquidity_unavailable"
-                              ? "Liquidity not verified"
+                            pending
+                              ? earnMaxPendingSubtitle(pending)
                               : minutesLeftLabel(withdrawal.readyBy)
                           }
                           title="Withdraw"
                         />
-                        {showWithdrawalStatus ? (
+                        {pending ? (
                           <div className="flex flex-col items-start gap-2 px-4 pt-1 pb-2">
                             <p className="text-[13px] text-muted-foreground leading-4">
-                              {withdrawalStatusText}
+                              {earnMaxPendingMessage(pending)}
                             </p>
                             <SmallPill
                               disabled={view.isBusy}
@@ -665,9 +652,8 @@ function EarnMaxMainPane({
           maximumFractionDigits: 2,
           minimumFractionDigits: 2,
         })}`;
-  const hasPendingWithdrawal =
-    view.withdrawal !== null && view.withdrawal.status !== "claimed";
-  const canWithdraw = view.balanceUsd > 0 && !hasPendingWithdrawal && !view.isBusy;
+  const hasPendingWithdrawal = earnMaxWithdrawalPending(view.withdrawal);
+  const canWithdraw = view.canWithdraw;
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col">
       <div className="flex min-h-0 w-full flex-1 flex-col gap-2 overflow-y-auto">
@@ -1061,7 +1047,7 @@ export function EarnMaxWorkspace({
               }
               onViewAllActivity={onViewAllActivity}
               onWithdraw={() => {
-                if (!view.isBusy && (!view.withdrawal || view.withdrawal.status === "claimed")) {
+                if (view.canWithdraw) {
                   setScreen("withdraw");
                 }
               }}

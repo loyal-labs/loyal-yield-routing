@@ -12,14 +12,18 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/chain"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnmax"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/engine"
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/jwt"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webapp"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/webserve"
 )
@@ -196,6 +200,56 @@ func earnMax(rpcClient *chain.Client, grants grantVerdicts, yieldDB *pgxpool.Poo
 	return &webapp.EarnMax{Reader: earnmax.NewReader(rpcClient, yield), Cluster: cluster, Invites: invites}
 }
 
+func earn(ctx context.Context, rpcClient *chain.Client, appDB, yieldDB *pgxpool.Pool) *webapp.Earn {
+	cluster, err := webapp.ParseSolanaCluster(os.Getenv("LOYAL_WEB_SOLANA_CLUSTER"))
+	if err != nil {
+		degraded("Earn routes", err)
+		return nil
+	}
+	e := &webapp.Earn{YieldDB: yieldDB, Chain: rpcClient, Cluster: cluster}
+	if raw, ok := optionalCredential("Earn transaction routes", "EARN_YIELD_ROUTER_PUBLIC_KEY"); ok && raw != "" {
+		if e.PolicySigner, err = earnprep.ParsePolicySigner(raw); err != nil {
+			degraded("Earn transaction routes", err)
+		}
+	}
+	secret, okSecret := optionalCredential("Earn session mint", "AUTH_JWT_SECRET")
+	private, okPrivate := optionalCredential("Earn session mint", "AUTH_JWT_RS256_PRIVATE_KEY")
+	if okSecret && okPrivate {
+		if e.Session, err = jwt.NewSigner(secret, strings.ReplaceAll(private, `\n`, "\n")); err != nil {
+			degraded("Earn session mint", fmt.Errorf("AUTH_JWT_RS256_PRIVATE_KEY: %w", err))
+		}
+	}
+	if raw, ok := optionalCredential("Earn realtime token", "REALTIME_AUTH_SECRET"); ok && raw != "" {
+		if e.Realtime, err = jwt.NewRealtimeIssuer(raw); err != nil {
+			degraded("Earn realtime token", err)
+		}
+		e.RealtimeURL = webapp.ResolveRealtimeEventsURL(appEnvironment)
+	}
+	if raw, ok := optionalCredential("sponsored smart account setup", "SMART_ACCOUNT_SPONSOR_PK"); ok {
+		if e.Sponsor, err = earnprep.NewSponsor(raw); err != nil {
+			degraded("sponsored smart account setup", err)
+		}
+	}
+	endpoint, okEndpoint := optionalCredential("observability ingest", "OBSERVABILITY_OTLP_ENDPOINT")
+	key, okKey := optionalCredential("observability ingest", "OBSERVABILITY_INGESTION_API_KEY")
+	if okEndpoint && okKey && endpoint != "" && key != "" {
+		if u, err := url.Parse(strings.TrimSpace(endpoint)); err == nil && u.Host != "" {
+			e.OTLP = &webapp.OTLP{Endpoint: u, IngestionKey: strings.TrimSpace(key)}
+		} else {
+			degraded("observability ingest", errors.New("OBSERVABILITY_OTLP_ENDPOINT is not a URL"))
+		}
+	}
+	appID, okID := optionalCredential("Privy sign-in", "PRIVY_APP_ID")
+	appSecret, okAppSecret := optionalCredential("Privy sign-in", "PRIVY_APP_SECRET")
+	if okID && okAppSecret && appID != "" && appSecret != "" {
+		e.Privy = &webapp.Privy{AppID: strings.TrimSpace(appID), AppSecret: strings.TrimSpace(appSecret)}
+	}
+	grantCtx, cancel := context.WithTimeout(ctx, grantBound)
+	defer cancel()
+	e.Granted = webapp.CheckEarnGrants(grantCtx, appDB, yieldDB)
+	return e
+}
+
 func run(ctx context.Context) error {
 	cfg, err := config()
 	if err != nil {
@@ -216,11 +270,13 @@ func run(ctx context.Context) error {
 		cfg.ContentDB = grants.Content
 		cfg.StatsDB = grants.Stats
 	}
-	if auth, rpcClient := openAuth(appDB, grants.Session); auth != nil {
+	auth, rpcClient := openAuth(appDB, grants.Session)
+	if auth != nil {
 		cfg.Auth = auth
 		cfg.EarnMax = earnMax(rpcClient, grants, yieldDB)
 		cfg.PushDB = grants.Push
 	}
+	cfg.Earn = earn(ctx, rpcClient, appDB, yieldDB)
 	server := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           webapp.New(cfg),

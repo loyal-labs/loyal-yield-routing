@@ -24,6 +24,7 @@ export type EarnMaxViewModel = {
   apyHistory: EarnMaxApyPoint[];
   apyWindowDays: number | null;
   balanceUsd: number;
+  canWithdraw: boolean;
   coverage: EarnMaxCoverage;
   currentApyBps: number | null;
   earnedUsd: number | null;

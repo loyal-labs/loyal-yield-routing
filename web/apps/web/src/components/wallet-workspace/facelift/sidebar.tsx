@@ -1,6 +1,7 @@
 "use client";
 
 import { useEscapeOverlay } from "@/components/wallet-workspace/facelift/escape-owner";
+import { formatEarnMaxApyLabel } from "@loyal-labs/shared";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { Moon, Sun } from "lucide-react";
 import {
@@ -17,7 +18,6 @@ import {
 } from "@/components/wallet-workspace/facelift/balance-visibility";
 import { copyTextToClipboard } from "@/components/wallet-workspace/facelift/copy-text";
 import { DropdownReveal } from "@/components/wallet-workspace/facelift/dropdown-reveal";
-import { formatEarnMaxApyLabel } from "@/components/wallet-workspace/facelift/earn-max-action-panes";
 import { InfoTooltip } from "@/components/wallet-workspace/facelift/info-tooltip";
 import { PopDigits } from "@/components/wallet-workspace/facelift/pop-digits";
 import { ReceiveSheet } from "@/components/wallet-workspace/facelift/receive-sheet";

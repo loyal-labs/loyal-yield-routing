@@ -79,15 +79,3 @@ export type EarnMaxActivityResponse = {
   performance: EarnMaxPerformancePoint[];
 };
 
-export type MobileEarnMaxContext = {
-  cluster: "mainnet";
-  walletAddress: string;
-  settingsPda: string;
-  programId: string;
-};
-
-export type MobileEarnMaxResponses = {
-  summary: EarnMaxSummaryResponse;
-  activity: EarnMaxActivityResponse;
-  context: MobileEarnMaxContext;
-};

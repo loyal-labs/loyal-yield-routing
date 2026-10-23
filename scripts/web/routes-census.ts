@@ -5,8 +5,10 @@
 // Servers: the Next routes of web/apps/{web,telegram} and the paths of `loyal-web openapi`.
 // Clients: path templates in web/apps/mobile built as `${env.<base>}/api/...`, and string
 // arguments of helpers that build such a URL from a parameter.
+// Web clients: "/api/..." literals in web/apps/web/src outside app/api, under GO_ONLY_PREFIXES.
 // Fails on (a) a client path no server answers, (b) a Next or Go route under /mobile/ outside
-// mobile-twins.txt and GO_MOBILE_ROUTES, (c) a hand-written exported type named like a generated one.
+// mobile-twins.txt and GO_MOBILE_ROUTES, (c) a hand-written exported type named like a generated one,
+// (d) a mobile or web client path under GO_ONLY_PREFIXES answered only by Next and not in earn-next.txt.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -19,6 +21,8 @@ const root = join(import.meta.dir, "../..");
 const web = join(root, "web");
 const mobile = join(web, "apps/mobile");
 const twinsFile = join(import.meta.dir, "mobile-twins.txt");
+const earnNextFile = join(import.meta.dir, "earn-next.txt");
+const webSrc = join(web, "apps/web/src");
 
 const BASES: Record<string, { next: NextApp[]; go: boolean }> = {
   apiBaseUrl: { next: ["web"], go: true },
@@ -26,6 +30,18 @@ const BASES: Record<string, { next: NextApp[]; go: boolean }> = {
 const THIRD_PARTY_BASES = new Set(["gridAuthBaseUrl"]);
 
 const GO_MOBILE_ROUTES = new Set(["/api/mobile/dapps", "/api/mobile/library", "/api/mobile/tokens/{mint}"]);
+
+const GO_ONLY_PREFIXES = [
+  "/api/smart-accounts/yield-optimization",
+  "/api/smart-accounts/earn-transactions",
+  "/api/smart-accounts/earn-forecast",
+  "/api/smart-accounts/earn-max",
+  "/api/smart-accounts/earn",
+  "/api/smart-accounts/mobile",
+  "/api/solana-week",
+  "/api/observability",
+  "/api/auth/privy/complete",
+];
 
 const CLIENT_TYPE_DIRS = [join(mobile, "src"), join(web, "apps/loyal/src")];
 
@@ -186,6 +202,62 @@ function clientPaths(): ClientPath[] {
   return paths;
 }
 
+function goOnly(path: string): boolean {
+  return GO_ONLY_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+function webClientPaths(): ClientPath[] {
+  const paths: ClientPath[] = [];
+  for (const file of walk(webSrc, (f) => /\.tsx?$/.test(f) && !f.startsWith(join(webSrc, "app/api/")) && !/(__tests__|\.test\.)/.test(f))) {
+    const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node) => {
+      let path: string | undefined;
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) path = node.text;
+      else if (ts.isTemplateExpression(node)) path = node.head.text + node.templateSpans.map((span) => `{}${span.literal.text}`).join("");
+      path = path?.split("?")[0];
+      if (path?.startsWith("/api/") && goOnly(path)) {
+        paths.push({ base: "web", method: callMethod(node), path, at: `${relative(root, file)}:${sf.getLineAndCharacterOfPosition(node.getStart()).line + 1}` });
+      }
+      if (!ts.isTemplateExpression(node)) ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  return paths;
+}
+
+function earnNextLines(): string[] {
+  return readFileSync(earnNextFile, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+}
+
+function checkGoOnly(clients: ClientPath[], next: Server[], go: Server[]): void {
+  const listed = new Set(earnNextLines());
+  const nextOnly = new Set<string>();
+  const serves = (servers: Server[], client: ClientPath) =>
+    servers.some((server) => answers(server, client) && (!client.method || server.methods.includes(client.method)));
+  for (const client of clients) {
+    if (!goOnly(client.path) || serves(go, client) || !serves(next, client)) continue;
+    const line = `${client.method ?? "*"} ${client.path}`;
+    if (nextOnly.has(line)) continue;
+    nextOnly.add(line);
+    if (!listed.has(line)) {
+      fail(`${client.at}: ${client.path} is answered only by Next: serve it from Go on this path (go/workers/internal/webapp/earn_*.go, registered in registerAPI and OpenAPI()), then delete the client's /mobile/ twin`);
+    }
+  }
+  for (const line of listed) {
+    if (!nextOnly.has(line)) fail(`scripts/web/earn-next.txt lists \`${line}\`, which no client calls on Next alone any more: delete that line`);
+  }
+  const base = spawnSync("git", ["show", "origin/main:scripts/web/earn-next.txt"], { cwd: root, encoding: "utf8" });
+  if (base.status === 0) {
+    const before = new Set(base.stdout.split("\n").map((line) => line.trim()));
+    for (const line of listed) {
+      if (!before.has(line)) fail(`scripts/web/earn-next.txt gained \`${line}\`: the list may only shrink, so serve the path from Go instead`);
+    }
+  }
+}
+
 function twins(): Set<string> {
   return new Set(
     readFileSync(twinsFile, "utf8")
@@ -285,6 +357,7 @@ function main(): void {
   }
   checkTwins(next);
   checkGoMobile(go);
+  checkGoOnly([...paths, ...webClientPaths()], next.web, go);
   checkGeneratedTypes();
 
   if (errors.length > 0) {

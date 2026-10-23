@@ -1,60 +1,56 @@
-import type { MobileEarnMaxResponses } from "@loyal-labs/shared";
 import {
   createSmartAccountVaultsClient,
-  deriveEarnMaxVoltrAuthority,
-  EARN_MAX_VOLTR_ACCOUNT_INDEX,
+  prepareEarnMaxVoltr,
   voltrClaimPlan,
   VoltrClaimLiquidityError,
   voltrDepositPlan,
+  type VoltrPlanBuilder,
   voltrRequestWithdrawalPlan,
 } from "@loyal-labs/smart-account-vaults";
-import { PublicKey } from "@solana/web3.js";
+import { type Connection, PublicKey } from "@solana/web3.js";
 
 import { getConnection, getSolanaEnv } from "@/lib/solana/rpc/connection";
 import type { Signer } from "@/lib/wallet/signer";
-import { requestEarnMax } from "@/services/api";
+import { fetchEarnMax, provisionEarnMaxAccount } from "@/services/api";
 import { startLifecycleFlow } from "@/services/observability";
 
-import { EarnApiError } from "./earn-api";
-import { signEarnAuth, withEarnAuth } from "./earn-auth";
-import { clearEarnSession, getEarnSessionToken } from "./earn-session";
+import { deliberateSession } from "./earn-session";
 import { signAndSendPreparedOperation } from "./send-prepared";
 
-export async function readMobileEarnMax<A extends keyof MobileEarnMaxResponses>(
-  signer: Signer,
-  action: A
-): Promise<MobileEarnMaxResponses[A]> {
-  const token = await getEarnSessionToken(signer.publicKey.toBase58());
-  if (token) {
-    try {
-      return await requestEarnMax(action, { sessionToken: token });
-    } catch (error) {
-      if (
-        !(error instanceof EarnApiError) ||
-        error.code !== "invalid_mobile_session"
-      ) {
-        throw error;
-      }
-      await clearEarnSession();
-    }
-  }
-  try {
-    return await requestEarnMax(action, {
-      walletAddress: signer.publicKey.toBase58(),
-    });
-  } catch (error) {
-    if (!(error instanceof EarnApiError) || error.status !== 401) throw error;
-  }
-  const auth = await signEarnAuth(signer, "earn-max");
-  return withEarnAuth(signer, auth, "earn-max", (fresh) =>
-    requestEarnMax(action, fresh)
+async function earnMaxAccount(signer: Signer) {
+  const walletAddress = signer.publicKey.toBase58();
+  const token = await deliberateSession(signer);
+  if (!token) throw new Error("Sign in to use Earn MAX.");
+  const summary = await fetchEarnMax(
+    walletAddress,
+    "/api/smart-accounts/earn-max/summary"
   );
+  const account = summary?.config ?? (await provisionEarnMaxAccount(walletAddress));
+  if (account.walletAddress !== walletAddress) {
+    throw new Error("Earn MAX account does not match this wallet.");
+  }
+  return account;
 }
 
 export type MobileEarnMaxOperation =
   | { action: "deposit"; amountRaw: bigint }
   | { action: "request_withdrawal"; amountRaw: bigint | "max" }
   | { action: "claim" };
+
+function planFor(
+  connection: Connection,
+  operation: MobileEarnMaxOperation
+): VoltrPlanBuilder {
+  switch (operation.action) {
+    case "deposit":
+      return async (context) => voltrDepositPlan(context, operation.amountRaw);
+    case "request_withdrawal":
+      return (context) =>
+        voltrRequestWithdrawalPlan(connection, context, operation.amountRaw);
+    case "claim":
+      return (context) => voltrClaimPlan(connection, context);
+  }
+}
 
 const activeWallets = new Set<string>();
 
@@ -91,53 +87,18 @@ export async function executeMobileEarnMax(
   flow.observe("intent");
   let stage: "prepare" | "wallet_submit_confirm" = "prepare";
   try {
-    const context = await readMobileEarnMax(signer, "context");
-    if (
-      context.cluster !== "mainnet" ||
-      context.walletAddress !== walletAddress
-    ) {
-      throw new Error(
-        "Earn MAX context does not match this wallet and cluster."
-      );
-    }
+    const account = await earnMaxAccount(signer);
     if (getSolanaEnv() !== "mainnet")
       throw new Error("Earn MAX requires mainnet.");
     const connection = getConnection();
-    const settingsPda = new PublicKey(context.settingsPda);
-    const client = createSmartAccountVaultsClient({
-      connection,
-      programId: new PublicKey(context.programId),
-    });
-    const settings = await client.sdk.smartAccounts.queries.fetchSettings(
-      settingsPda
-    );
-    if (Number(settings.threshold) !== 1 || Number(settings.timeLock) !== 0) {
-      throw new Error(
-        "Earn MAX needs a single-signer smart account without a time lock."
-      );
-    }
-    const planContext = {
-      authority: deriveEarnMaxVoltrAuthority(settingsPda, context.programId),
+    const programId = new PublicKey(account.programId);
+    const prepared = await prepareEarnMaxVoltr({
+      build: planFor(connection, operation),
+      client: createSmartAccountVaultsClient({ connection, programId }),
       owner: signer.publicKey,
-    };
-    const plan =
-      operation.action === "deposit"
-        ? voltrDepositPlan(planContext, operation.amountRaw)
-        : operation.action === "request_withdrawal"
-        ? await voltrRequestWithdrawalPlan(
-            connection,
-            planContext,
-            operation.amountRaw
-          )
-        : await voltrClaimPlan(connection, planContext);
-    const prepared = await client.prepareCustomInstructionSync({
-      accountIndex: EARN_MAX_VOLTR_ACCOUNT_INDEX,
-      feePayer: signer.publicKey,
-      instructions: plan.vault,
-      settingsPda,
-      signer: signer.publicKey,
+      programId,
+      settingsPda: new PublicKey(account.settingsPda),
     });
-    if (!prepared) throw new Error("Earn MAX transaction is too large.");
     if (getSolanaEnv() !== "mainnet")
       throw new Error("Earn MAX requires mainnet.");
     flow.observe("prepare");
@@ -145,10 +106,7 @@ export async function executeMobileEarnMax(
     const sent = await signAndSendPreparedOperation({
       connection,
       signer,
-      operation: {
-        ...prepared,
-        instructions: [...plan.outer, ...prepared.instructions],
-      },
+      operation: prepared,
     });
     flow.complete("wallet_submit_confirm", { chainState: "confirmed" });
     return sent;

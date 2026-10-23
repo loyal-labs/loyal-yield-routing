@@ -32,7 +32,7 @@ declare global {
 }
 
 const MAX_DURATION_MS = 24 * 60 * 60 * 1000;
-const MOBILE_METRICS_PATH = "/api/observability/mobile/metrics";
+const MOBILE_METRICS_PATH = "/api/observability/metrics";
 
 let currentPathname = "/";
 let appLoadCaptured = false;
