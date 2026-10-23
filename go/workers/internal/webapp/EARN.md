@@ -9,7 +9,7 @@ One family file, `earn_<family>.go`, already in this package. Its header lists t
 Next file each ports. Touch nothing else in `internal/webapp`; a shared change goes in your report.
 Delete the header once every path in it is served. The family var at the top is the contract:
 
-- `ready`: replace `notPorted` with what the ops need, e.g. `func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil }`.
+- `ready`: what the ops need, e.g. `func(h earnRoutes) bool { return h.signedIn() && h.YieldDB != nil }`.
 - `appGrants` / `yieldGrants`: every table your SQL touches, as `{"loyal_yield.table", "SELECT"}`.
   Add `EarnPolicyGrants...` when you call `activePolicyPair`. `CheckEarnGrants` checks them once
   at startup; a missing grant keeps the family proxied to Next.

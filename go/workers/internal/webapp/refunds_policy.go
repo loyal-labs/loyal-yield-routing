@@ -19,6 +19,7 @@ import (
 	"github.com/solana-foundation/solana-go/v2"
 	"github.com/solana-foundation/solana-go/v2/rpc"
 
+	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/earnprep"
 	"github.com/loyal-labs/loyal-yield-routing/go/workers/internal/programs/squads"
 )
 
@@ -265,18 +266,12 @@ func (h earnRoutes) preparePolicyRefundKind(ctx context.Context, account EarnAcc
 	}
 
 	// prepareClosePoliciesSync (client.ts:11791-11816): the resolver re-read
-	// plus one executeSettingsTransactionSync with one PolicyRemove, whose
-	// bytes squads.PolicyApply.Replace already builds.
+	// plus one executeSettingsTransactionSync with one PolicyRemove, the same
+	// builder the cleanup routes use.
 	if err := resolvePolicyForClose(ctx, h, policyAccount, account.Settings); err != nil {
 		return nil, refundPrepareFailed(err)
 	}
-	apply := squads.PolicyApply{
-		Settings:  account.Settings,
-		RentPayer: account.Wallet,
-		Signer:    account.Wallet,
-		Replace:   []solana.PublicKey{policyAccount},
-	}
-	closeInstruction, err := apply.Instruction()
+	closeInstruction, err := earnprep.WithdrawPolicyRemoveSync(account.Settings, account.Wallet, account.Wallet, []solana.PublicKey{policyAccount})
 	if err != nil {
 		return nil, refundPrepareFailed(err)
 	}
