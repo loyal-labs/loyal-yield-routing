@@ -13,6 +13,7 @@ import { authenticateMobileWalletRequest } from "@/features/identity/server/mobi
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
 import { findReadyCurrentUserSmartAccount } from "@/features/smart-accounts/server/service";
 import { getServerEnv } from "@/lib/core/config/server";
+import { rejectUnsupportedMobileBuild } from "@/lib/mobile-build-floor.server";
 import { resolveLoyalWebSolanaEnvFromEnv } from "@/lib/core/config/solana-env-override";
 import { getServerSolanaEndpoints } from "@/lib/solana/rpc-endpoints.server";
 import { getFrontendSolanaRpcFetch } from "@/lib/solana/rpc-rate-limit";
@@ -68,6 +69,11 @@ function getConnection(cluster: SolanaEnv): Connection {
 }
 
 export async function POST(request: Request) {
+  const unsupported = rejectUnsupportedMobileBuild(request);
+  if (unsupported) {
+    return unsupported;
+  }
+
   let body: unknown;
   try {
     body = await request.json();

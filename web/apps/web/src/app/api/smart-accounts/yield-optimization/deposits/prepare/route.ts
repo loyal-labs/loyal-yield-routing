@@ -94,7 +94,7 @@ async function handleRequest(
   }
 
   let amountRaw: bigint;
-  let mint: string | null;
+  let mint: string;
   lifecycle?.setVerifiedWallet(principal.walletAddress);
 
   try {
@@ -124,8 +124,6 @@ async function handleRequest(
       error instanceof Error ? error.message : "Unsupported Earn mint."
     );
   }
-  // Legacy bodies omit the mint (ASK-2099); from here on use the resolved
-  // product mint, which defaults those to USDC.
   mint = productMint.mint.toBase58();
   let policy: RoutePolicyRecord | null = null;
   let setupPolicy: RoutePolicyRecord | null = null;

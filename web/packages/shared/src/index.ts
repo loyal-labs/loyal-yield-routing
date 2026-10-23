@@ -56,3 +56,8 @@ export type {
 } from "./earn-transactions";
 
 export { EARN_WITHDRAW_SOURCE_DUST_USD } from "./earn-withdraw-dust";
+export {
+  isMobileBuildSupported,
+  MIN_SUPPORTED_MOBILE_BUILD,
+  MOBILE_BUILD_HEADER,
+} from "./client-floor";

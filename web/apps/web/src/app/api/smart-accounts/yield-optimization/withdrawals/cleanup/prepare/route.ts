@@ -111,12 +111,11 @@ export async function POST(request: Request) {
     }
 
     const connection = getConnection(solanaEnv);
-    let requestBody: unknown = {};
+    let requestBody: unknown;
     try {
       requestBody = await request.json();
     } catch {
-      // Released web bundles sent an empty request. Preserve that contract by
-      // falling back to the projected full-withdrawal slot below.
+      return jsonError(400, "invalid_request", "Invalid request body.");
     }
     const requestedMinContextSlot =
       requestBody !== null &&
