@@ -8,8 +8,8 @@ import {
 import {
   EARN_REALTIME_EVENT_TYPES,
   EARN_REALTIME_SCHEMA_VERSION,
-  type EarnAutodepositProgressState,
 } from "@/features/earn-realtime/types";
+import type { EarnAutodepositProgressState } from "@loyal-labs/shared";
 import { authenticateMobileEarnRequest } from "@/features/identity/server/mobile-earn-session";
 import { WalletAuthError } from "@/features/identity/server/wallet-auth-errors";
 import { decodeWalletAddress } from "@/features/identity/server/wallet-auth-signature";

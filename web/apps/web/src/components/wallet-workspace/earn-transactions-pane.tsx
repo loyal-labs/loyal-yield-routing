@@ -29,8 +29,10 @@ import {
 import {
   formatLoadedScheduledSweepAvailableIn,
   getLoadedScheduledSweepExecuteNowAvailableAtMs,
+  getEarnTransactionRowLabel,
+  isScheduledSweepExecuting,
   type LoadedEarnAutodepositScheduledSweep,
-} from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+} from "@loyal-labs/shared";
 import {
   hydratePreparedEarnRecurringDelegationRefund,
   hydratePreparedEarnPolicyRefund,
@@ -127,38 +129,6 @@ export function formatEarnTransactionTimestamp(
 
 function getEarnTransactionConfirmedAt(item: EarnTransactionItem) {
   return item.confirmedAt ?? item.sortTimestamp ?? null;
-}
-
-export function getEarnTransactionRowLabel(
-  item: Pick<EarnTransactionItem, "eventType" | "kind">
-) {
-  switch (item.eventType) {
-    case "autodeposit_created":
-      return "Create allowance";
-    case "autodeposit_closed":
-      return "Remove allowance";
-    case "balance_sweep":
-      return "Balance sweep";
-    case "deposit_initialized":
-      return "Create & Deposit";
-    case "withdrawal_full":
-      return "Withdraw & Close";
-  }
-
-  switch (item.kind) {
-    case "deposit":
-      return "Deposit";
-    case "withdraw":
-      return "Withdraw";
-    case "rebalance":
-      return "Rebalanced";
-    case "reconciliation":
-      return "Reconciled";
-    case "balance_sweep":
-      return "Balance sweep";
-    case "autodeposit_action":
-      return "Allowance";
-  }
 }
 
 export function buildEarnTransactionDetail(
@@ -711,13 +681,7 @@ export function resolveVisiblePendingScheduledSweep(
   return scheduledSweeps.length > 0 ? null : pendingScheduledSweep ?? null;
 }
 
-function isPersistedScheduledSweepExecuting(
-  sweep: LoadedEarnAutodepositScheduledSweep
-): boolean {
-  return sweep.status === "requested" || sweep.status === "selected";
-}
-
-function isPersistedScheduledSweepRetryable(
+export function isPersistedScheduledSweepRetryable(
   sweep: LoadedEarnAutodepositScheduledSweep
 ): boolean {
   return sweep.status === "failed" || sweep.status === "released";
@@ -750,7 +714,7 @@ function getAutodepositProgressLabel(
   }
 }
 
-function getAutodepositProgressButtonLabel(
+export function getAutodepositProgressButtonLabel(
   progress: EarnAutodepositProgress | undefined
 ): string | null {
   switch (progress?.state) {
@@ -2248,7 +2212,7 @@ export function EarnTransactionsPane({
                   ) : null}
                   {renderedScheduledSweeps.map((sweep) => {
                     const isPersistedExecuting =
-                      isPersistedScheduledSweepExecuting(sweep);
+                      isScheduledSweepExecuting(sweep);
                     const isRetryable =
                       isPersistedScheduledSweepRetryable(sweep);
                     const sweepSlotId = sweep.slotId ?? sweep.id;

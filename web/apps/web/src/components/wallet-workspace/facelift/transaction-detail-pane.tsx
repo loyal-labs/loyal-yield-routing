@@ -1,5 +1,7 @@
 "use client";
 
+import { getEarnTransactionRowLabel } from "@loyal-labs/shared";
+
 import { useState } from "react";
 
 import { EarnYieldIcon } from "@/components/wallet-sidebar/portfolio-content";
@@ -7,7 +9,6 @@ import {
   formatEarnTransactionDateGroup,
   formatEarnTransactionTimestamp,
   getEarnTransactionAmountColor,
-  getEarnTransactionRowLabel,
 } from "@/components/wallet-workspace/earn-transactions-pane";
 import { copyTextToClipboard } from "@/components/wallet-workspace/facelift/copy-text";
 import {

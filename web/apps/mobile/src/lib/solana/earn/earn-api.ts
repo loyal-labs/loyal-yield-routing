@@ -1,4 +1,11 @@
 import { env } from "@/config/env";
+import {
+  EARN_AUTODEPOSIT_PROGRESS_STATES,
+  type EarnAutodepositProgressState,
+  type EarnTransactionEventType,
+  type EarnTransactionKind,
+  type LoadedEarnAutodepositScheduledSweep,
+} from "@loyal-labs/shared";
 import type { SmartAccountNativeSolRequirement } from "@loyal-labs/smart-account-vaults";
 import {
   fetchWithTimeout,
@@ -518,28 +525,6 @@ export type WirePreparedEarnAutodepositClose = {
   prepared: WirePreparedOperation;
 };
 
-// A pending Autodeposit "bootstrap" sweep — the surplus the backend scheduled to
-// move into Earn ~1h after setup (or after a threshold edit). Mirrors the web
-// `LoadedEarnAutodepositScheduledSweep`. `remainingAmountRaw > 0` means it's
-// still pending; `eligibleAfter` is the ISO time the sweep worker becomes free
-// to run it. `status` is the aggregated slot status
-// (scheduled/requested/selected/failed/released) — the backend only returns live
-// pending slots, so it's used for button state, not visibility.
-export type EarnAutodepositScheduledSweep = {
-  classification: string;
-  confidence: string;
-  eligibleAfter: string;
-  // ISO time the "Execute now" acceleration becomes available (the recurring
-  // delegation window opening) — drives the web's "Available in Xs" button
-  // countdown. Absent/null on older backends or when already available.
-  executeNowAvailableAt?: string | null;
-  id: string;
-  originalAmountRaw: string;
-  reason: string;
-  remainingAmountRaw: string;
-  status: string;
-};
-
 export type EarnAutodepositState = {
   active: boolean;
   status: string;
@@ -548,7 +533,7 @@ export type EarnAutodepositState = {
   walletBalanceFloorRaw: string | null;
   lifecycleStatus: string;
   vaultIndex: number;
-  scheduledSweeps?: EarnAutodepositScheduledSweep[];
+  scheduledSweeps?: LoadedEarnAutodepositScheduledSweep[];
   // Resume metadata for the device-side prepare (absent on older backends):
   // a half-finished setup must reuse the recorded seed/nonce/window so the SDK
   // returns the missing stage for the SAME policy/delegation pair.
@@ -714,32 +699,13 @@ export async function requestEarnAutodepositSweepExecute(args: {
   return (await res.json()) as EarnAutodepositSweepExecuteResponse;
 }
 
-// Granular slot states as the worker moves a sweep through its pipeline —
-// mirrors the web `EARN_AUTODEPOSIT_PROGRESS_STATES` (earn-realtime types).
-export type EarnAutodepositSweepProgressState =
-  | "scheduled"
-  | "requested"
-  | "selected"
-  | "pull_confirmed"
-  | "completed"
-  | "failed"
-  | "canceled"
-  | "released";
-
-const EARN_SWEEP_PROGRESS_STATES = new Set<string>([
-  "scheduled",
-  "requested",
-  "selected",
-  "pull_confirmed",
-  "completed",
-  "failed",
-  "canceled",
-  "released",
-]);
+const EARN_SWEEP_PROGRESS_STATES = new Set<string>(
+  EARN_AUTODEPOSIT_PROGRESS_STATES,
+);
 
 export type EarnAutodepositSweepProgress = {
   scheduledSlotId: string;
-  state: EarnAutodepositSweepProgressState;
+  state: EarnAutodepositProgressState;
   failureCode?: string;
   occurredAt?: string;
 };
@@ -773,7 +739,7 @@ export async function fetchEarnAutodepositSweepProgress(
     }
     return {
       scheduledSlotId: slotId,
-      state: value.state as EarnAutodepositSweepProgressState,
+      state: value.state as EarnAutodepositProgressState,
       failureCode:
         typeof value.failureCode === "string" ? value.failureCode : undefined,
       occurredAt:
@@ -914,25 +880,6 @@ export async function fetchEarnEarnings(
     | EarnEarningsResponse;
   return "ranges" in payload ? payload.ranges["30D"] : payload;
 }
-
-export type EarnTransactionKind =
-  | "autodeposit_action"
-  | "balance_sweep"
-  | "deposit"
-  | "withdraw"
-  | "rebalance"
-  | "reconciliation";
-
-export type EarnTransactionEventType =
-  | "autodeposit_closed"
-  | "autodeposit_created"
-  | "balance_sweep"
-  | "deposit_initialized"
-  | "deposit_top_up"
-  | "withdrawal_partial"
-  | "withdrawal_full"
-  | "rebalance_confirmed"
-  | "snapshot_reconciled";
 
 export type EarnTransactionAccount = { label: string; icon: string | null };
 

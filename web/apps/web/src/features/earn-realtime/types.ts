@@ -1,3 +1,8 @@
+import {
+  EARN_AUTODEPOSIT_PROGRESS_STATES,
+  type EarnAutodepositProgressState,
+} from "@loyal-labs/shared";
+
 export const EARN_REALTIME_SCHEMA_VERSION = 1 as const;
 
 export const EARN_REALTIME_EVENT_TYPES = {
@@ -9,20 +14,6 @@ export const EARN_REALTIME_EVENT_TYPES = {
   rebalance: "earn.rebalance.confirmed",
   transaction: "earn.transaction.recorded",
 } as const;
-
-export const EARN_AUTODEPOSIT_PROGRESS_STATES = [
-  "scheduled",
-  "requested",
-  "selected",
-  "pull_confirmed",
-  "completed",
-  "failed",
-  "canceled",
-  "released",
-] as const;
-
-export type EarnAutodepositProgressState =
-  (typeof EARN_AUTODEPOSIT_PROGRESS_STATES)[number];
 
 export type EarnRealtimeInvalidation = {
   schemaVersion: typeof EARN_REALTIME_SCHEMA_VERSION;

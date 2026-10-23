@@ -3,7 +3,6 @@ export {
   isEarnAutodepositTerminalState,
   mergeEarnAutodepositProgress,
   type EarnAutodepositProgress,
-  type EarnAutodepositProgressState,
   type EarnRealtimeConnectionState,
   type EarnRealtimeInvalidation,
   type EarnRealtimeProtocolIssue,

@@ -30,7 +30,7 @@ import {
   getVisibleEarnAutodepositScheduledSweeps,
   rawTokenAmountToNumber,
   type LoadedEarnAutodepositScheduledSweep,
-} from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+} from "@loyal-labs/shared";
 
 export type { EarnAutodepositConfigView };
 

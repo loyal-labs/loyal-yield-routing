@@ -23,7 +23,7 @@ import type { EarnPositionData } from "@/components/wallet-workspace/facelift/us
 import { usePublicEnv } from "@/contexts/public-env-context";
 import { useEarnEarnings } from "@/hooks/use-earn-earnings";
 import { useEarnForecastApy } from "@/hooks/use-earn-forecast-apy";
-import { rawTokenAmountToNumber } from "@/lib/yield-optimization/earn-autodeposit-loaded-state.shared";
+import { rawTokenAmountToNumber } from "@loyal-labs/shared";
 import { deriveEarnEarningsDisplayAmounts } from "@/lib/yield-optimization/earnings-display.shared";
 
 const BAR_COLOR = "color-mix(in srgb, var(--positive) 40%, transparent)";
