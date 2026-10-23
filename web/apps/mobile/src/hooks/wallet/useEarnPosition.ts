@@ -55,12 +55,14 @@ function toRpcPolicy(policy: EarnStatePolicy): EarnRpcPolicyMetadata {
     riskProfile: policy.riskProfile,
     routeModes: policy.routeModes ?? undefined,
     seed: policy.seed,
-    setupPolicy: {
-      account: policy.setupPolicy.account,
-      delegatedSigners: policy.setupPolicy.delegatedSigners ?? undefined,
-      id: policy.setupPolicy.id,
-      seed: policy.setupPolicy.seed,
-    },
+    setupPolicy: policy.setupPolicy
+      ? {
+          account: policy.setupPolicy.account,
+          delegatedSigners: policy.setupPolicy.delegatedSigners ?? undefined,
+          id: policy.setupPolicy.id,
+          seed: policy.setupPolicy.seed,
+        }
+      : null,
     stableMints: policy.stableMints ?? undefined,
     universePreset: policy.universePreset,
     vaultIndex: policy.vaultIndex,

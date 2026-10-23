@@ -49,7 +49,7 @@ type AutodepositSweepRequestResult struct {
 // sweepRequest, target }) — key order matches the route's object literal.
 type AutodepositSweepsExecuteResponse struct {
 	Status       string                         `json:"status"`
-	SweepRequest *AutodepositSweepRequestResult `json:"sweepRequest"`
+	SweepRequest AutodepositSweepRequestResult  `json:"sweepRequest"`
 	Target       *AutodepositSetupConfirmTarget `json:"target"`
 }
 
@@ -477,7 +477,7 @@ func (h earnRoutes) autodepositSweepsExecute(ctx context.Context, in *autodeposi
 
 	return &autodepositSweepsExecuteOutput{Body: AutodepositSweepsExecuteResponse{
 		Status: "requested",
-		SweepRequest: &AutodepositSweepRequestResult{
+		SweepRequest: AutodepositSweepRequestResult{
 			AcceleratedAmountRaw: strconv.FormatUint(result.AcceleratedAmountRaw, 10),
 			AcceleratedLotCount:  result.AcceleratedLotCount,
 			EligibleAfter:        isoMilliseconds(result.EligibleAfter),
